@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO: what to do when user starts the policy without a configuration?
+// - create on-demand dynamic default balloons, as many as resource zones?
+// - if a pod requests a balloon type that does not exist, create a nice default type for it?
+
+
 package balloons
 
 import (
