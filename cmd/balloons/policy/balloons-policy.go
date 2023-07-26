@@ -177,6 +177,15 @@ func CreateBalloonsPolicy(policyOptions *policy.BackendOptions) policy.Backend {
 			p.reserved = cpus
 			p.allowed = p.allowed.Union(cpus)
 		}
+	} else if len(p.options.Reserved) == 0 {
+		// Reserved resources are unspecified. Default to
+		// singe logical CPU.
+		cpus, err := p.cpuAllocator.AllocateCpus(&p.allowed, 1, cpuallocator.PriorityNone)
+		if err != nil {
+			log.Fatal("unspecified ReservedResources, failed to allocate the default reserved CPU: %s", err)
+		}
+		p.reserved = cpus
+		p.allowed = p.allowed.Union(cpus)
 	}
 	if p.reserved.IsEmpty() {
 		log.Fatal("%s cannot run without reserved CPUs that are also AvailableResources", PolicyName)
