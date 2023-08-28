@@ -11,20 +11,12 @@ ENV PATH=$PATH:/usr/local/go/bin
 ENV GOPATH=/go
 ENV PATH=$GOPATH/bin:$PATH
 
+# Get the memtierd binary
+RUN GOBIN=/usr/local/bin go install github.com/intel/memtierd/cmd/memtierd@latest
+
+# Build the memtierd NRI-plugin binary
 COPY . .
-
-# Get the Memtierd binary
-RUN git clone https://github.com/intel/memtierd.git \
-    && cd memtierd/ \
-    && make bin/memtierd \
-    && mv bin/memtierd /bin \
-    && cd ..
-
-RUN GO111MODULE=on go get -u github.com/containerd/nri/pkg/stub
-RUN GO111MODULE=on go get -u github.com/sirupsen/logrus
-RUN GO111MODULE=on go get -u gopkg.in/yaml.v2
-
-# Build the plugin binary
+RUN go mod download
 RUN go build -gcflags "all=-N -l"
 
 RUN mv memtierd-nri /bin/10-memtierd-nri
