@@ -94,30 +94,27 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 
 	// Check that class is of correct form
 	pattern := "^[A-Za-z0-9_-]+$"
-	regex, err := regexp.Compile(pattern)
-	if err != nil {
-		// Handle error if the pattern is invalid
-		log.Fatalf("Invalid regex pattern:", err)
-		return nil
-	}
+	regex := regexp.MustCompile(pattern)
 
 	if !regex.MatchString(class) {
-		log.Fatalf("Invalid memtierd.class.nri!")
+		log.Errorf("invalid class.memtierd.nri %q, does not match %q", class, pattern)
 		return nil
-	}
-
-	// You can specify the template here based on the given class ex. class.memtierd.nri: low-prio -> template = low-prio.yaml
-	// Plugin looks in the /template directory and looks for the low-prio.yaml then
-	template := ""
-
-	if class == "example-configuration" {
-		template = "example-configuration.yaml"
 	}
 
 	fullCgroupPath := getFullCgroupPath(ctr)
-	podDirectory, outputFilePath, configFilePath := editMemtierdConfig(fullCgroupPath, podName, containerName, template, hostRoot)
-	startMemtierd(podName, containerName, podDirectory, outputFilePath, configFilePath)
+	podDirectory, outputFilePath, statsFilePath, configFilePath, err := prepareMemtierdRunEnv(fullCgroupPath, podName, containerName, class, hostRoot)
+	if err != nil {
+		log.Errorf("failed to prepare memtierd run environment: %v", err)
+		return nil
+	}
+	err = startMemtierd(podName, containerName, podDirectory, outputFilePath, statsFilePath, configFilePath)
+	if err != nil {
+		log.Errorf("failed to start memtierd: %v", err)
+		return nil
+	}
 
+	log.Infof("started memtierd for %s:%s, output files in %s", podName, containerName, podDirectory)
+	log.Debugf("memtierd watching pids in %q", fullCgroupPath)
 	return nil
 }
 
@@ -133,7 +130,7 @@ func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *ap
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 1 {
 			// Error occurred that is not related to "no processes found"
-			log.Fatalf("Error killing memtierd process: %v. Output: %s\n", err, out)
+			log.Errorf("Error killing memtierd process matching %q: %v. Output: %s\n", dirPath, err, out)
 		} else {
 			// "No processes found" error, do nothing
 			log.Printf("No processes found for memtierd process\n")
@@ -220,42 +217,39 @@ func getFullCgroupPath(ctr *api.Container) string {
 		log.Fatalf("cgroup path not found")
 	}
 
-	log.Printf("Cgroup path: %s", fullCgroupPath)
-
 	return fullCgroupPath
 }
 
-func editMemtierdConfig(fullCgroupPath string, podName string, containerName string, template string, hostRoot string) (string, string, string) {
-	templatePath := fmt.Sprintf("/templates/%s", template)
-	yamlFile, err := ioutil.ReadFile(templatePath)
+func prepareMemtierdRunEnv(fullCgroupPath string, podName string, containerName string, class string, hostRoot string) (string, string, string, string, error) {
+	configTemplatePath := fmt.Sprintf("/templates/%s.yaml.in", class)
+	yamlFile, err := ioutil.ReadFile(configTemplatePath)
 	if err != nil {
-		log.Fatalf("Error reading YAML file: %v\n", err)
+		return "", "", "", "", fmt.Errorf("cannot read memtierd configuration for class %q: %w", class, err)
 	}
 
 	// Create pod directory if it doesn't exist
 	podDirectory := fmt.Sprintf("%s%s/memtierd/%s", hostRoot, os.TempDir(), podName)
 	if err := os.MkdirAll(podDirectory, 0755); err != nil {
-		log.Fatalf("Error creating directory: %v", err)
+		return "", "", "", "", fmt.Errorf("cannot create memtierd run directory %q: %w", podDirectory, err)
 	}
 
 	outputFilePath := fmt.Sprintf("%s/memtierd.%s.output", podDirectory, containerName)
+	statsFilePath := fmt.Sprintf("%s/memtierd.%s.stats", podDirectory, containerName)
 
+	// Instantiate memtierd configuration from configuration template
 	var memtierdConfig MemtierdConfig
 	err = yaml.Unmarshal(yamlFile, &memtierdConfig)
 	if err != nil {
-		log.Fatalf("Error unmarshaling YAML: %v\n", err)
+		return "", "", "", "", fmt.Errorf("cannot parse class %q configuration YAML in %q: %w", class, configTemplatePath, err)
 	}
-
 	fullCgroupPathString := fullCgroupPath
-
-	// Edit the Policy and Routine configs
 	policyConfigFieldString := string(memtierdConfig.Policy.Config)
 	policyConfigFieldString = strings.Replace(policyConfigFieldString, "$CGROUP2_ABS_PATH", fullCgroupPathString, 1)
 
 	// Loop through the routines
 	for i := 0; i < len(memtierdConfig.Routines); i++ {
 		routineConfigFieldString := string(memtierdConfig.Routines[i].Config)
-		routineConfigFieldString = strings.Replace(routineConfigFieldString, "$MEMTIERD_SWAP_STATS_PATH", outputFilePath, 1)
+		routineConfigFieldString = strings.Replace(routineConfigFieldString, "$MEMTIERD_SWAP_STATS_PATH", statsFilePath, 1)
 		memtierdConfig.Routines[i].Config = routineConfigFieldString
 	}
 
@@ -263,25 +257,22 @@ func editMemtierdConfig(fullCgroupPath string, podName string, containerName str
 
 	out, err := yaml.Marshal(&memtierdConfig)
 	if err != nil {
-		log.Fatalf("Error marshaling YAML: %v\n", err)
+		return "", "", "", "", fmt.Errorf("cannot marshal class %q configuration YAML: %w", class, err)
 	}
 
 	configFilePath := fmt.Sprintf(podDirectory+"/%s.yaml", containerName)
 	err = ioutil.WriteFile(configFilePath, out, 0644)
 	if err != nil {
-		log.Fatalf("Error writing YAML file: %v\n", err)
+		return "", "", "", "", fmt.Errorf("cannot write class %q configuration into file %q: %w", class, configFilePath, err)
 	}
-	log.Infof("YAML file successfully modified.")
 
-	return podDirectory, outputFilePath, configFilePath
+	return podDirectory, outputFilePath, statsFilePath, configFilePath, nil
 }
 
-func startMemtierd(podName string, containerName string, podDirectory string, outputFilePath string, configFilePath string) {
-	log.Infof("Starting Memtierd")
-
+func startMemtierd(podName string, containerName string, podDirectory string, outputFilePath, statsFilePath, configFilePath string) error {
 	outputFile, err := os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		fmt.Printf("Failed to open output file: %v\n", err)
+		return fmt.Errorf("failed to create memtierd output file: %w", err)
 	}
 
 	// Create the command and write its output to the output file
@@ -294,8 +285,9 @@ func startMemtierd(podName string, containerName string, podDirectory string, ou
 
 	// Start the command in the background
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("Failed to start command: %v\n", err)
+		return fmt.Errorf("failed to start command %s: %q", cmd, err)
 	}
+	return nil
 }
 
 func main() {
@@ -309,6 +301,7 @@ func main() {
 	log.SetFormatter(&logrus.TextFormatter{
 		PadLevelText: true,
 	})
+	log.Infof("starting memtierd devel version 3")
 
 	flag.StringVar(&pluginName, "name", "", "plugin name to register to NRI")
 	flag.StringVar(&pluginIdx, "idx", "", "plugin index to register to NRI")
