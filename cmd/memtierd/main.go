@@ -61,6 +61,10 @@ type options struct {
 	HostRoot string
 }
 
+const (
+	annotationSuffix = ".memtierd.nri"
+)
+
 var opt = options{}
 
 var (
@@ -77,11 +81,52 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	return 0, nil
 }
 
+func prettyPrintCtr(pod *api.PodSandbox, ctr *api.Container) string {
+	return fmt.Sprintf("%s/%s:%s", pod.GetNamespace(), pod.GetName(), ctr.GetName())
+}
+
+func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	ppName := prettyPrintCtr(pod, ctr)
+	annotations := pod.GetAnnotations()
+	unified := map[string]string{}
+	class := ""
+	for key, value := range annotations {
+		annPrefix, isMyAnn := strings.CutSuffix(key, annotationSuffix)
+		if !isMyAnn {
+			continue
+		}
+		switch annPrefix {
+		case "memory.swap.max":
+			unified["memory.swap.max"] = value
+		case "memory.high":
+			unified["memory.high"] = value
+		case "class":
+			class = value
+		default:
+			log.Errorf("CreateContainer %s: pod has invalid annotation: %q", ppName, key)
+		}
+	}
+	if len(unified) == 0 {
+		return nil, nil, nil
+	}
+	ca := api.ContainerAdjustment{
+		Linux: &api.LinuxContainerAdjustment{
+			Resources: &api.LinuxResources{
+				Unified: unified,
+			},
+		},
+	}
+	log.Infof("CreateContainer %s: class %q, LinuxResources.Unified=%v", ppName, class, ca.Linux.Resources.Unified)
+	return &ca, nil, nil
+}
+
 func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
-	log.Infof("Starting container %s/%s/%s...", pod.GetNamespace(), pod.GetName(), ctr.GetName())
+	ppName := prettyPrintCtr(pod, ctr)
+	log.Infof("Starting container %s...", ppName)
 
 	hostRoot := opt.HostRoot
 
+	namespace := pod.GetNamespace()
 	podName := pod.GetName()
 	containerName := ctr.GetName()
 	annotations := pod.GetAnnotations()
@@ -102,19 +147,18 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 
 	fullCgroupPath := getFullCgroupPath(ctr)
-	podDirectory, outputFilePath, statsFilePath, configFilePath, err := prepareMemtierdRunEnv(fullCgroupPath, podName, containerName, class, hostRoot)
+	podDirectory, outputFilePath, configFilePath, err := prepareMemtierdRunEnv(fullCgroupPath, namespace, podName, containerName, class, hostRoot)
 	if err != nil {
 		log.Errorf("failed to prepare memtierd run environment: %v", err)
 		return nil
 	}
-	err = startMemtierd(podName, containerName, podDirectory, outputFilePath, statsFilePath, configFilePath)
+	err = startMemtierd(configFilePath, outputFilePath)
 	if err != nil {
 		log.Errorf("failed to start memtierd: %v", err)
 		return nil
 	}
 
-	log.Infof("started memtierd for %s:%s, output files in %s", podName, containerName, podDirectory)
-	log.Debugf("memtierd watching pids in %q", fullCgroupPath)
+	log.Infof("launched memtierd for %s, config and output files in %s", ppName, podDirectory)
 	return nil
 }
 
@@ -220,27 +264,27 @@ func getFullCgroupPath(ctr *api.Container) string {
 	return fullCgroupPath
 }
 
-func prepareMemtierdRunEnv(fullCgroupPath string, podName string, containerName string, class string, hostRoot string) (string, string, string, string, error) {
+func prepareMemtierdRunEnv(fullCgroupPath string, namespace string, podName string, containerName string, class string, hostRoot string) (string, string, string, error) {
 	configTemplatePath := fmt.Sprintf("/templates/%s.yaml.in", class)
 	yamlFile, err := ioutil.ReadFile(configTemplatePath)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("cannot read memtierd configuration for class %q: %w", class, err)
+		return "", "", "", fmt.Errorf("cannot read memtierd configuration for class %q: %w", class, err)
 	}
 
 	// Create pod directory if it doesn't exist
-	podDirectory := fmt.Sprintf("%s%s/memtierd/%s", hostRoot, os.TempDir(), podName)
+	podDirectory := fmt.Sprintf("%s%s/memtierd/%s/%s", hostRoot, os.TempDir(), namespace, podName)
 	if err := os.MkdirAll(podDirectory, 0755); err != nil {
-		return "", "", "", "", fmt.Errorf("cannot create memtierd run directory %q: %w", podDirectory, err)
+		return "", "", "", fmt.Errorf("cannot create memtierd run directory %q: %w", podDirectory, err)
 	}
 
-	outputFilePath := fmt.Sprintf("%s/memtierd.%s.output", podDirectory, containerName)
-	statsFilePath := fmt.Sprintf("%s/memtierd.%s.stats", podDirectory, containerName)
+	outputFilePath := fmt.Sprintf("%s/%s.memtierd.output", podDirectory, containerName)
+	statsFilePath := fmt.Sprintf("%s/%s.memtierd.stats", podDirectory, containerName)
 
 	// Instantiate memtierd configuration from configuration template
 	var memtierdConfig MemtierdConfig
 	err = yaml.Unmarshal(yamlFile, &memtierdConfig)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("cannot parse class %q configuration YAML in %q: %w", class, configTemplatePath, err)
+		return "", "", "", fmt.Errorf("cannot parse class %q configuration YAML in %q: %w", class, configTemplatePath, err)
 	}
 	fullCgroupPathString := fullCgroupPath
 	policyConfigFieldString := string(memtierdConfig.Policy.Config)
@@ -257,19 +301,19 @@ func prepareMemtierdRunEnv(fullCgroupPath string, podName string, containerName 
 
 	out, err := yaml.Marshal(&memtierdConfig)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("cannot marshal class %q configuration YAML: %w", class, err)
+		return "", "", "", fmt.Errorf("cannot marshal class %q configuration YAML: %w", class, err)
 	}
 
-	configFilePath := fmt.Sprintf(podDirectory+"/%s.yaml", containerName)
+	configFilePath := fmt.Sprintf(podDirectory+"/%s.memtierd.config.yaml", containerName)
 	err = ioutil.WriteFile(configFilePath, out, 0644)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("cannot write class %q configuration into file %q: %w", class, configFilePath, err)
+		return "", "", "", fmt.Errorf("cannot write class %q configuration into file %q: %w", class, configFilePath, err)
 	}
 
-	return podDirectory, outputFilePath, statsFilePath, configFilePath, nil
+	return podDirectory, outputFilePath, configFilePath, nil
 }
 
-func startMemtierd(podName string, containerName string, podDirectory string, outputFilePath, statsFilePath, configFilePath string) error {
+func startMemtierd(configFilePath, outputFilePath string) error {
 	outputFile, err := os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create memtierd output file: %w", err)
@@ -301,7 +345,6 @@ func main() {
 	log.SetFormatter(&logrus.TextFormatter{
 		PadLevelText: true,
 	})
-	log.Infof("starting memtierd devel version 3")
 
 	flag.StringVar(&pluginName, "name", "", "plugin name to register to NRI")
 	flag.StringVar(&pluginIdx, "idx", "", "plugin index to register to NRI")
