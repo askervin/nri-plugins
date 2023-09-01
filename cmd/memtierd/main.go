@@ -35,11 +35,61 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"github.com/containerd/nri/pkg/stub"
+
+	"github.com/intel/memtierd/pkg/memtier"
 )
 
 type plugin struct {
-	stub stub.Stub
-	mask stub.EventMask
+	stub   stub.Stub
+	mask   stub.EventMask
+	config *pluginConfig
+}
+
+type pluginConfig struct {
+	// DirectAnnotations lists cgroups v2 memory controls where
+	// values from corresponding annotations can be directly
+	// written to. No files are allowed by default. Example:
+	// {"memory.swap.max", "memory.high"}
+	// allows writing data from annotations to cgroups v2:
+	// annotations:
+	//   # The default for all containers in the pod:
+	//   memory.swap.max.memtierd.nri: "max"
+	//   # Applies only to CONTAINERNAME in the pod:
+	//   memory.high.memtierd.nri/CONTAINERNAME: "4G"
+	DirectAnnotations []string
+
+	// Classes define how memory of all workloads in each QoS
+	// class should be managed.
+	Classes     []QoSClass
+}
+
+type QoSClass struct {
+	// Name of the QoS class. Can be a built-in Kubernetes QoS class
+	// (BestEffort, Burstable, Guaranteed) or a custom class in
+	// which a pod or container is annotated. Annotation examples:
+	// annotations:
+	//   # The default for all containers in the pod:
+	//   class.memtierd.nri: "swap"
+	//   # Override the default for CONTAINERNAME:
+	//   class.memtierd.nri/CONTAINERNAME: "Guaranteed"
+	Name string
+
+	// MemoryThrottlingFactor affects how memory.high is
+	// calculated based on container and node resources.
+	// https://kubernetes.io/blog/2023/05/05/qos-memory-resources/
+	MemoryThrottlingFactor float32
+
+	// SwapFactor defines the proportion of container's memory
+	// (resources.limits.memory) that can be on swap. "1.0" means
+	// that all memory can be swapped out. If containers memory
+	// limit is undefined, positive SwapFactor value sets
+	// memory.swap.max to "max".
+	SwapFactor float32
+
+	// MemtierdConfig is a string that contains full configuration
+	// for memtierd. If non-empty, memtierd will be launched to
+	// track each container of this QoS class.
+	MemtierdConfig string
 }
 
 type MemtierdConfig struct {
@@ -47,15 +97,17 @@ type MemtierdConfig struct {
 	Routines []Routines `yaml:"routines"`
 }
 
-type Routines struct {
-	Name   string `yaml:"name"`
-	Config string `yaml:"config"`
-}
+type Routines memtier.RoutineConfig
+// struct {
+// 	Name   string `yaml:"name"`
+// 	Config string `yaml:"config"`
+// }
 
-type Policy struct {
-	Name   string `yaml:"name"`
-	Config string `yaml:"config"`
-}
+type Policy memtier.PolicyConfig
+// struct {
+// 	Name   string `yaml:"name"`
+// 	Config string `yaml:"config"`
+// }
 
 type options struct {
 	HostRoot string
@@ -72,9 +124,16 @@ var (
 )
 
 func (p *plugin) Configure(ctx context.Context, config, runtime, version string) (stub.EventMask, error) {
-	log.Infof("Connected to %s/%s...", runtime, version)
+	log.Infof("Connected to %s %s...", runtime, version)
 
-	if config == "" {
+	if config != "" {
+		log.Infof("loading configuration from NRI server:\n%s", config)
+		cfg := pluginConfig{}
+		err := yaml.Unmarshal([]byte(config), &cfg)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse provided configuration: %w", err)
+		}
+		p.config = &cfg
 		return 0, nil
 	}
 
