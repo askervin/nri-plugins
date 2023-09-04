@@ -1,18 +1,13 @@
-FROM debian:stable-slim
+FROM debian:unstable-slim
 
-RUN apt-get update && apt-get install -y software-properties-common build-essential gnupg make curl sudo git socat vim procps
-
-# Install Go 1.19
-RUN curl -LO https://golang.org/dl/go1.19.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go1.19.linux-amd64.tar.gz && \
-    rm go1.19.linux-amd64.tar.gz
+RUN apt-get update && apt-get install -y golang gnupg curl sudo socat vim procps
 
 ENV PATH=$PATH:/usr/local/go/bin
 ENV GOPATH=/go
 ENV PATH=$GOPATH/bin:$PATH
 
 # Get the memtierd binary
-RUN GOBIN=/usr/local/bin go install github.com/intel/memtierd/cmd/memtierd@latest
+RUN GOBIN=/usr/local/bin go install github.com/intel/memtierd/cmd/memtierd@58dd6fe04b64f53121fd29d3156b8760db21940f
 
 # Build the memtierd NRI-plugin binary
 COPY . .
