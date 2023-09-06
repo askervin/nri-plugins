@@ -647,3 +647,20 @@ func TestCPUTopologyLevel(t *testing.T) {
 	}
 
 }
+
+func TestSplitBranch(t *testing.T) {
+	root, err := NewCpuTreeFromSystem()
+	if err != nil {
+		t.Fatalf("failed to build CPU tree from system: %s", err)
+	}
+	fmt.Printf("\n%s\n", root.PrettyPrint())
+	newRoot := root.SplitBranches(CPUTopologyLevelNuma,
+		func (cpu int) int {
+			leaf := root.FindLeafWithCpu(cpu)
+			if leaf == nil {
+				t.Fatalf("cpu %d not in tree:\n%s\n\n", cpu, root.PrettyPrint())
+			}
+			return leaf.NthBorn() - 1
+		})
+	fmt.Printf("AFTER SPLIT:\n%s\n", newRoot.PrettyPrint())
+}

@@ -131,6 +131,19 @@ func (t *cpuTreeNode) String() string {
 	return fmt.Sprintf("%s%v", t.name, t.children)
 }
 
+func (t *cpuTreeNode) PrettyPrint() string {
+	origDepth := int(t.level)
+	lines := []string{}
+	t.DepthFirstWalk(func(tn *cpuTreeNode) error {
+		lines = append(lines,
+			fmt.Sprintf("%s%s: %q cpus: %s",
+				strings.Repeat(" ", (int(tn.level)-origDepth)*4),
+				tn.level, tn.name, tn.cpus))
+		return nil
+	})
+	return strings.Join(lines, "\n")
+}
+
 // String returns cpuTreeNodeAttributes as a string.
 func (tna cpuTreeNodeAttributes) String() string {
 	return fmt.Sprintf("%s{%d,%v,%d,%d}", tna.t.name, tna.depth,
@@ -144,6 +157,26 @@ func NewCpuTree(name string) *cpuTreeNode {
 		name: name,
 		cpus: cpuset.New(),
 	}
+}
+
+func (t *cpuTreeNode) CopyTree() *cpuTreeNode {
+	newNode := t.CopyNode()
+	newNode.children = []*cpuTreeNode{}
+	for _, child := range t.children {
+		newNode.AddChild(child.CopyTree())
+	}
+	return newNode
+}
+
+func (t *cpuTreeNode) CopyNode() *cpuTreeNode {
+	newNode := cpuTreeNode{
+		name:     t.name,
+		level:    t.level,
+		parent:   t.parent,
+		children: t.children,
+		cpus:     t.cpus,
+	}
+	return &newNode
 }
 
 // AddChild adds new child node to a CPU tree node.
@@ -163,6 +196,38 @@ func (t *cpuTreeNode) AddCpus(cpus cpuset.CPUSet) {
 // Cpus returns CPUs of a CPU tree node.
 func (t *cpuTreeNode) Cpus() cpuset.CPUSet {
 	return t.cpus
+}
+
+// NthBorn returns the order number of the tree node among its
+// siblings. Returns 0 for the root node, -1 if the node is not listed
+// among the children of its parent.
+func (t *cpuTreeNode) NthBorn() int {
+	if t.parent == nil {
+		return 0
+	}
+	for idx, child := range t.parent.children {
+		if child == t {
+			return idx + 1
+		}
+	}
+	return -1
+}
+
+func (t *cpuTreeNode) FindLeafWithCpu(cpu int) *cpuTreeNode {
+	var found *cpuTreeNode
+	t.DepthFirstWalk(func(tn *cpuTreeNode) error {
+		if len(tn.children) > 0 {
+			return nil
+		}
+		for _, cpuHere := range tn.cpus.List() {
+			if cpu == cpuHere {
+				found = tn
+				return WalkStop
+			}
+		}
+		return nil // not found here, no more children to search
+	})
+	return found
 }
 
 // WalkSkipChildren error returned from a DepthFirstWalk handler
@@ -236,13 +301,18 @@ func NewCpuTreeFromSystem() (*cpuTreeNode, error) {
 				nodeTree.level = CPUTopologyLevelNuma
 				dieTree.AddChild(nodeTree)
 				node := sys.Node(nodeID)
+				threadsSeen := map[int]struct{}{}
 				for _, cpuID := range node.CPUSet().List() {
+					if _, alreadySeen := threadsSeen[cpuID]; alreadySeen {
+						continue
+					}
 					cpuTree := NewCpuTree(fmt.Sprintf("p%dd%dn%dcpu%d", packageID, dieID, nodeID, cpuID))
 
 					cpuTree.level = CPUTopologyLevelCore
 					nodeTree.AddChild(cpuTree)
 					cpu := sys.CPU(cpuID)
 					for _, threadID := range cpu.ThreadCPUSet().List() {
+						threadsSeen[threadID] = struct{}{}
 						threadTree := NewCpuTree(fmt.Sprintf("p%dd%dn%dcpu%dt%d", packageID, dieID, nodeID, cpuID, threadID))
 						threadTree.level = CPUTopologyLevelThread
 						cpuTree.AddChild(threadTree)
@@ -310,6 +380,73 @@ func (t *cpuTreeNode) toAttributedSlice(
 		child.toAttributedSlice(currentCpus, freeCpus, filter,
 			tnas, depth+1, currentCpuCountsHere, freeCpuCountsHere)
 	}
+}
+
+// SplitBranches returns the root node of new CPU tree where all
+// branches of a topology level (ctl) have been split into new
+// classes.
+func (t *cpuTreeNode) SplitBranches(splitLevel CPUTopologyLevel, cpuClassifier func(int) int) *cpuTreeNode {
+	var newRoot *cpuTreeNode
+	currentBranch := make([]*cpuTreeNode, CPUTopologyLevelCount)
+	t.DepthFirstWalk(func(tn *cpuTreeNode) error {
+		// Dive into the level that will be split.
+		if tn.level != splitLevel {
+			newNode := tn.CopyNode()
+			newNode.children = []*cpuTreeNode{}
+			newNode.parent = currentBranch[tn.level-1]
+			if newNode.parent != nil {
+				newNode.parent.children = append(newNode.parent.children, newNode)
+			}
+			currentBranch[tn.level] = newNode
+			return nil
+		}
+		// Divide this node to the number of different classes
+		// where node's CPUs belong to.
+		cpuClass := map[int]int{}    // cpu -> class
+		classCpus := map[int][]int{} // class -> list of cpus
+		// classify CPUs to the map: cpu -> class
+		for _, cpu := range t.cpus.List() {
+			class := cpuClassifier(cpu)
+			cpuClass[cpu] = class
+			classCpus[class] = append(classCpus[class], cpu)
+		}
+		fmt.Printf("TODO: create class siblings for %q: %v\n", tn.name, classCpus)
+		for class, cpus := range classCpus {
+			cpuMask := cpuset.New(cpus...)
+			newNode := NewCpuTree(fmt.Sprintf("%sclass%d", tn.name, class))
+			newNode.cpus = tn.cpus.Intersection(cpuMask)
+			newNode.level = tn.level
+			newNode.parent = currentBranch[tn.level-1]
+			if newNode.parent != nil {
+				newNode.parent.children = append(newNode.parent.children, newNode)
+			}
+			currentBranch[tn.level] = newNode
+			for _, child := range tn.children {
+				newChild := child.CopyTree()
+				newChild.DepthFirstWalk(func(cn *cpuTreeNode) error {
+					cn.cpus = cn.cpus.Intersection(cpuMask)
+					if cn.cpus.Size() == 0 && cn.parent != nil {
+						// remove this node
+						// from parent's
+						// children as there
+						// are no cpus.
+						newSiblings := []*cpuTreeNode{}
+						for _, child := range cn.parent.children {
+							if child != cn {
+								newSiblings = append(newSiblings, child)
+							}
+						}
+						cn.parent.children = newSiblings
+					}
+					return nil
+				})
+				newNode.AddChild(newChild)
+			}
+		}
+		return WalkSkipChildren
+	})
+	newRoot = currentBranch[t.level]
+	return newRoot
 }
 
 // NewAllocator returns new CPU allocator for allocating CPUs from a
