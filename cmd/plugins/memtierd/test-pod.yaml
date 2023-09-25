@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+  labels:
+    app: test-pod
+  annotations:
+    # Set the default memtierd class for all containers in this pod.
+    class.memtierd.nri.io: swap-idle-data
+
+    # Clear class from the c2-noswap container.
+    class.memtierd.nri.io/c2-noswap: ""
+
+    # Always enable swap, but do not swap due to pressure from
+    # memory.high
+    memory.swap.max.memtierd.nri.io: max
+    memory.high.memory-qos.nri.io: max
+spec:
+  containers:
+  - name: c0-lowprio
+    image: busybox
+    imagePullPolicy: IfNotPresent
+    command:
+      - sh
+      - -c
+      - dd count=1 bs=80M if=/dev/zero | sleep inf
+    resources:
+      requests:
+        memory: 64M
+      limits:
+        memory: 100M
+  - name: c1-normal
+    image: busybox
+    imagePullPolicy: IfNotPresent
+    command:
+      - sh
+      - -c
+      - dd count=1 bs=80M if=/dev/zero | sleep inf
+    resources:
+      requests:
+        memory: 64M
+      limits:
+        memory: 100M
+  - name: c2-noswap
+    image: busybox
+    imagePullPolicy: IfNotPresent
+    command:
+      - sh
+      - -c
+      - dd count=1 bs=80M if=/dev/zero | sleep inf
+    resources:
+      requests:
+        memory: 64M
+      limits:
+        memory: 100M
+  terminationGracePeriodSeconds: 1
