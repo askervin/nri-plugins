@@ -64,6 +64,12 @@ type qosClass struct {
 	// for memtierd. If non-empty, a separate memtierd will be
 	// launched to track each container of this QoS class.
 	MemtierdConfig string
+
+	// AllowSwap: if true, set memory.swap.max to max, if false,
+	// set memory.swap.max to 0. If undefined, do not touch
+	// memory.swap.max. Direct annotation that defines value of
+	// memory.swap.max overrides this option.
+	AllowSwap *bool
 }
 
 type memtierdEnv struct {
@@ -181,10 +187,10 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) *map[string]s
 }
 
 // CreateContainer responsibilities:
-// - validate all annotations effective for a new container so that
-//   validation is no more needed in StartContainer.
-// - configure cgroups unified parameters, for instance
-//   memory.swap.max.
+//   - validate all annotations effective for a new container so that
+//     validation is no more needed in StartContainer.
+//   - configure cgroups unified parameters, for instance
+//     memory.swap.max.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	ppName := pprintCtr(pod, ctr)
 	unified := map[string]string{}
@@ -197,6 +203,22 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 			unified["memory.high"] = value
 		case "class":
 			class = value
+			if class != "" {
+				qoscls, err := p.qosClass(class)
+				if err != nil {
+					return nil, nil, loggedErrorf("CreateContainer: cannot search for class %q: %s", class, err)
+				}
+				if qoscls == nil {
+					return nil, nil, loggedErrorf("CreateContainer: unknown class %q", class)
+				}
+				if qoscls.AllowSwap != nil {
+					if *qoscls.AllowSwap {
+						associate(&unified, "memory.swap.max", "max", false)
+					} else {
+						associate(&unified, "memory.swap.max", "0", false)
+					}
+				}
+			}
 		default:
 			log.Errorf("CreateContainer %s: pod has invalid annotation: %q", ppName, annPrefix)
 		}
@@ -228,18 +250,18 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	podName := pod.GetName()
 	containerName := ctr.GetName()
 
-	qoscls, ok := (*effectiveAnnotations(pod, ctr))["class"]
-	if !ok || qoscls == "" {
+	annotatedClass, ok := (*effectiveAnnotations(pod, ctr))["class"]
+	if !ok || annotatedClass == "" {
 		log.Debugf("StartContainer: container %q has no QoS class", ppName)
 		return nil
 	}
 
-	memtierdConfig, err := p.classMemtierdConfig(qoscls)
-	if err != nil {
-		return loggedErrorf("cannot get MemtierdConfig: %s", err)
+	qoscls, err := p.qosClass(annotatedClass)
+	if qoscls == nil || err != nil {
+		return loggedErrorf("cannot find QoS class for %s: %s", ppName, err)
 	}
-	if memtierdConfig == "" {
-		log.Debugf("StartContainer: QoS class %q has no MemtierdConfig in the configuration", qoscls)
+	if qoscls.MemtierdConfig == "" {
+		log.Debugf("StartContainer: QoS class %q has no MemtierdConfig in the configuration", annotatedClass)
 		return nil
 	}
 
@@ -247,7 +269,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	if err != nil {
 		return loggedErrorf("cannot detect cgroup v2 path for container %q: %v", ppName, err)
 	}
-	mtdEnv, err := newMemtierdEnv(fullCgroupsPath, namespace, podName, containerName, memtierdConfig, hostRoot)
+	mtdEnv, err := newMemtierdEnv(fullCgroupsPath, namespace, podName, containerName, qoscls.MemtierdConfig, hostRoot)
 	if err != nil || mtdEnv == nil {
 		return loggedErrorf("failed to prepare memtierd run environment: %v", err)
 	}
@@ -260,17 +282,17 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	return nil
 }
 
-// classMemtierdConfig returns memtierd configuration for a QoS class
-func (p *plugin) classMemtierdConfig(cls string) (string, error) {
+// qosClass returns QoS class from plugin config based on class name.
+func (p *plugin) qosClass(className string) (*qosClass, error) {
 	if p.config == nil {
-		return "", fmt.Errorf("plugin is not configured")
+		return nil, fmt.Errorf("plugin is not configured")
 	}
 	for _, class := range p.config.Classes {
-		if class.Name == cls {
-			return class.MemtierdConfig, nil
+		if class.Name == className {
+			return &class, nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // StopContainer stops the memtierd that manages a container.
@@ -424,7 +446,6 @@ func (me *memtierdEnv) startMemtierd() error {
 	me.cmd = cmd
 	return nil
 }
-
 
 // main program to run the plugin.
 func main() {

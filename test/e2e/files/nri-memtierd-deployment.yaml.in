@@ -70,6 +70,7 @@ data:
   config.yaml: |
     classes:
     - name: swap-idle-data
+      allowswap: true
       memtierdconfig: |
         policy:
           name: age
