@@ -39,33 +39,34 @@ type plugin struct {
 	mask           stub.EventMask
 	config         *pluginConfig
 	cgroupsDir     string
-	ctrMemtierdEnv map[string]*MemtierdEnv
+	ctrMemtierdEnv map[string]*memtierdEnv
 }
 
 type pluginConfig struct {
 	// Classes define how memory of all workloads in each QoS
 	// class should be managed.
-	Classes []QoSClass
+	Classes []qosClass
 }
 
-type QoSClass struct {
-	// Name of the QoS class. Can be a built-in Kubernetes QoS class
-	// (BestEffort, Burstable, Guaranteed) or a custom class in
-	// which a pod or container is annotated. Annotation examples:
+type qosClass struct {
+	// Name of the QoS class, matches to annotations in
+	// pods. Examples:
 	// annotations:
 	//   # The default for all containers in the pod:
-	//   class.memtierd.nri.io: swap
-	//   # Override the default for CONTAINERNAME:
-	//   class.memtierd.nri.io/CONTAINERNAME: noswap
+	//   class.memtierd.nri.io: swap-idle-data
+	//   # Override the default for CONTAINERNAME1:
+	//   class.memtierd.nri.io/CONTAINERNAME1: noswap
+	//   # Do not apply any class for CONTAINERNAME2:
+	//   class.memtierd.nri.io/CONTAINERNAME2: ""
 	Name string
 
 	// MemtierdConfig is a string that contains full configuration
-	// for memtierd. If non-empty, memtierd will be launched to
-	// track each container of this QoS class.
+	// for memtierd. If non-empty, a separate memtierd will be
+	// launched to track each container of this QoS class.
 	MemtierdConfig string
 }
 
-type MemtierdEnv struct {
+type memtierdEnv struct {
 	pid        int
 	ctrDir     string
 	configFile string
@@ -88,13 +89,16 @@ var (
 	log *logrus.Logger
 )
 
+// Configure handles connecting to container runtime's NRI server.
 func (p *plugin) Configure(ctx context.Context, config, runtime, version string) (stub.EventMask, error) {
 	log.Infof("Connected to %s %s...", runtime, version)
 	if config != "" {
-		log.Debugf("loading configuration from NRI server")
 		if err := p.setConfig([]byte(config)); err != nil {
-			return 0, err
+			return 0, loggedErrorf("Configure: loading configuration from NRI server failed: %s", err)
 		}
+		log.Debugf("Using configuration from NRI server")
+	} else {
+		log.Debugf("No configuration from NRI server")
 	}
 	return 0, nil
 }
@@ -105,9 +109,8 @@ func (p *plugin) setConfig(config []byte) error {
 	cfg := pluginConfig{}
 	err := yaml.Unmarshal(config, &cfg)
 	if err != nil {
-		errWithContext := fmt.Errorf("setConfig: cannot parse configuration: %w", err)
-		log.Debugf("%s", errWithContext)
-		return errWithContext
+		log.Tracef("setConfig: parsing failed: %s", err)
+		return fmt.Errorf("setConfig: cannot parse configuration: %w", err)
 	}
 	p.config = &cfg
 	if log.GetLevel() == logrus.TraceLevel {
@@ -125,6 +128,7 @@ func pprintCtr(pod *api.PodSandbox, ctr *api.Container) string {
 	return fmt.Sprintf("%s/%s:%s", pod.GetNamespace(), pod.GetName(), ctr.GetName())
 }
 
+// loggedErrorf formats, logs and returns an error.
 func loggedErrorf(s string, args ...any) error {
 	err := fmt.Errorf(s, args...)
 	log.Errorf("%s", err)
@@ -132,7 +136,8 @@ func loggedErrorf(s string, args ...any) error {
 }
 
 // associate adds new key-value pair to a map, or updates existing
-// pair if called with override. Returns true if added/updated.
+// pair if called with the override set. Returns true if the pair was
+// added/updated.
 func associate(m *map[string]string, key, value string, override bool) bool {
 	if _, exists := (*m)[key]; override || !exists {
 		(*m)[key] = value
@@ -142,8 +147,8 @@ func associate(m *map[string]string, key, value string, override bool) bool {
 }
 
 // effectiveAnnotations returns map of annotation key prefixes and
-// values that are effective for a container.
-// Example: a container-specific pod annotation
+// values that are effective for a container. Example: a
+// container-specific pod annotation
 //
 //	memory.high.memory-qos.nri.io/CTRNAME: 10000000
 //
@@ -158,7 +163,6 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) *map[string]s
 			// Override possibly already found pod-level annotation.
 			log.Tracef("- found container-specific annotation %q", key)
 			associate(&effAnn, annPrefix, value, true)
-			effAnn[annPrefix] = value
 			continue
 		}
 		annPrefix, hasSuffix = strings.CutSuffix(key, annotationSuffix)
@@ -172,11 +176,15 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) *map[string]s
 			}
 			continue
 		}
-		log.Tracef("- ignoring annotation %q", key)
 	}
 	return &effAnn
 }
 
+// CreateContainer responsibilities:
+// - validate all annotations effective for a new container so that
+//   validation is no more needed in StartContainer.
+// - configure cgroups unified parameters, for instance
+//   memory.swap.max.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	ppName := pprintCtr(pod, ctr)
 	unified := map[string]string{}
@@ -207,6 +215,52 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	return &ca, nil, nil
 }
 
+// StartContainer launches a memtierd to manage container's memory if
+// the container is associated with a QoS class that has memtierd
+// configuration.
+func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	ppName := pprintCtr(pod, ctr)
+	log.Tracef("StartContainer: %s", ppName)
+
+	hostRoot := opt.HostRoot
+
+	namespace := pod.GetNamespace()
+	podName := pod.GetName()
+	containerName := ctr.GetName()
+
+	qoscls, ok := (*effectiveAnnotations(pod, ctr))["class"]
+	if !ok || qoscls == "" {
+		log.Debugf("StartContainer: container %q has no QoS class", ppName)
+		return nil
+	}
+
+	memtierdConfig, err := p.classMemtierdConfig(qoscls)
+	if err != nil {
+		return loggedErrorf("cannot get MemtierdConfig: %s", err)
+	}
+	if memtierdConfig == "" {
+		log.Debugf("StartContainer: QoS class %q has no MemtierdConfig in the configuration", qoscls)
+		return nil
+	}
+
+	fullCgroupsPath, err := p.getFullCgroupsPath(ctr)
+	if err != nil {
+		return loggedErrorf("cannot detect cgroup v2 path for container %q: %v", ppName, err)
+	}
+	mtdEnv, err := newMemtierdEnv(fullCgroupsPath, namespace, podName, containerName, memtierdConfig, hostRoot)
+	if err != nil || mtdEnv == nil {
+		return loggedErrorf("failed to prepare memtierd run environment: %v", err)
+	}
+	err = mtdEnv.startMemtierd()
+	if err != nil {
+		return loggedErrorf("failed to start memtierd: %v", err)
+	}
+	p.ctrMemtierdEnv[ppName] = mtdEnv
+	log.Infof("StartContainer: launched memtierd for %q with config %q", ppName, mtdEnv.configFile)
+	return nil
+}
+
+// classMemtierdConfig returns memtierd configuration for a QoS class
 func (p *plugin) classMemtierdConfig(cls string) (string, error) {
 	if p.config == nil {
 		return "", fmt.Errorf("plugin is not configured")
@@ -219,85 +273,45 @@ func (p *plugin) classMemtierdConfig(cls string) (string, error) {
 	return "", nil
 }
 
-func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
-	ppName := pprintCtr(pod, ctr)
-	log.Tracef("StartContainer: %s", ppName)
-
-	hostRoot := opt.HostRoot
-
-	namespace := pod.GetNamespace()
-	podName := pod.GetName()
-	containerName := ctr.GetName()
-
-	qosClass, ok := (*effectiveAnnotations(pod, ctr))["class"]
-	if !ok || qosClass == "" {
-		log.Debugf("StartContainer: container %q has no QoS class", ppName)
-		return nil
-	}
-
-	memtierdConfig, err := p.classMemtierdConfig(qosClass)
-	if err != nil {
-		return loggedErrorf("cannot get MemtierdConfig: %s", err)
-	}
-	if memtierdConfig == "" {
-		log.Debugf("StartContainer: QoS class %q has no MemtierdConfig in the configuration", qosClass)
-		return nil
-	}
-
-	fullCgroupsPath, err := p.getFullCgroupsPath(ctr)
-	if err != nil {
-		return loggedErrorf("cannot detect cgroup v2 path for container %q: %v", ppName, err)
-	}
-	memtierdEnv, err := newMemtierdEnv(fullCgroupsPath, namespace, podName, containerName, memtierdConfig, hostRoot)
-	if err != nil || memtierdEnv == nil {
-		log.Errorf("failed to prepare memtierd run environment: %v", err)
-		return nil
-	}
-	err = memtierdEnv.startMemtierd()
-	if err != nil {
-		log.Errorf("failed to start memtierd: %v", err)
-		return nil
-	}
-	p.ctrMemtierdEnv[ppName] = memtierdEnv
-	log.Infof("StartContainer: launched memtierd for %q with config %q", ppName, memtierdEnv.configFile)
-	return nil
-}
-
+// StopContainer stops the memtierd that manages a container.
 func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
 	ppName := pprintCtr(pod, ctr)
 
-	memtierdEnv, ok := p.ctrMemtierdEnv[ppName]
-	if !ok || memtierdEnv == nil {
+	mtdEnv, ok := p.ctrMemtierdEnv[ppName]
+	if !ok || mtdEnv == nil {
 		log.Tracef("StopContainer: no memtierd environment for %s", ppName)
 		return nil, nil
 	}
-	log.Debugf("StopContainer: stopping memtierd of %s, destroy %s", ppName, memtierdEnv.ctrDir)
+	delete(p.ctrMemtierdEnv, ppName)
 
-	if memtierdEnv.cmd != nil && memtierdEnv.cmd.Process != nil {
-		pid := memtierdEnv.cmd.Process.Pid
+	log.Debugf("StopContainer: stopping memtierd of %s, destroy %s", ppName, mtdEnv.ctrDir)
+
+	if mtdEnv.cmd != nil && mtdEnv.cmd.Process != nil {
+		pid := mtdEnv.cmd.Process.Pid
 		log.Tracef("StopContainer: killing memtierd %d", pid)
-		if err := memtierdEnv.cmd.Process.Kill(); err != nil {
+		if err := mtdEnv.cmd.Process.Kill(); err != nil {
 			log.Debugf("StopContainer: killing memtierd of %s (pid: %d) failed: %s", ppName, pid, err)
 		}
 		// Close files, read exit status (leave no zombie processes behind)
-		go memtierdEnv.cmd.Wait()
+		go mtdEnv.cmd.Wait()
 	}
 
-	log.Tracef("StopContainer: removing memtierd run directory %s", memtierdEnv.ctrDir)
-	if err := os.RemoveAll(memtierdEnv.ctrDir); err != nil {
+	log.Tracef("StopContainer: removing memtierd run directory %s", mtdEnv.ctrDir)
+	if err := os.RemoveAll(mtdEnv.ctrDir); err != nil {
 		log.Debugf("StopContainer: removing memtierd run dir of %s (%q) failed: %s",
-			ppName, memtierdEnv.ctrDir, err)
+			ppName, mtdEnv.ctrDir, err)
 	}
-
 	log.Infof("StopContainer: stopped memtierd of %s", ppName)
-	return []*api.ContainerUpdate{}, nil
+	return nil, nil
 }
 
+// onClose handles losing connection to the NRI server
 func (p *plugin) onClose() {
 	log.Infof("Connection to the runtime lost, exiting...")
 	os.Exit(0)
 }
 
+// detectCgroupsDir sets plugin's cgroups mount point
 func (p *plugin) detectCgroupsDir() error {
 	file, err := os.Open("/proc/mounts")
 	if err != nil {
@@ -321,23 +335,18 @@ func (p *plugin) detectCgroupsDir() error {
 	return fmt.Errorf("cgroup2 missing in /proc/mounts")
 }
 
+// getFullCgroupsPath returns container's cgroups directory.
 func (p *plugin) getFullCgroupsPath(ctr *api.Container) (string, error) {
 	var fullCgroupsPath string
 	cgroupsPath := ctr.Linux.CgroupsPath
 	log.Tracef("getFullCgroupsPath: ctr.Id=%q ctr.cgroupsPath=%q", ctr.Id, cgroupsPath)
-
-	split := strings.Split(cgroupsPath, ":")
-
-	containerId := split[len(split)-1]
-	log.Tracef("getFullCgroupsPath: containerId=%q", containerId)
-
 	err := filepath.WalkDir(p.cgroupsDir, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
-			if strings.Contains(path, containerId) {
-				log.Tracef("getFullCgroupsPath: containerId matches %s", path)
+			if strings.Contains(path, ctr.Id) {
+				log.Tracef("getFullCgroupsPath: container Id matches %s", path)
 				fullCgroupsPath = path
 				return io.EOF
 			}
@@ -347,12 +356,14 @@ func (p *plugin) getFullCgroupsPath(ctr *api.Container) (string, error) {
 	if err == io.EOF {
 		err = nil
 	} else {
-		log.Tracef("getFullCgroupsPath: could not find directory that matches *%s* anywhere under cgroups root %q", containerId, p.cgroupsDir)
+		log.Tracef("getFullCgroupsPath: could not find a directory matching *%s* anywhere under cgroups root %q", ctr.Id, p.cgroupsDir)
 	}
 	return fullCgroupsPath, err
 }
 
-func newMemtierdEnv(fullCgroupPath string, namespace string, podName string, containerName string, memtierdConfigIn string, hostRoot string) (*MemtierdEnv, error) {
+// newMemtierdEnv prepares new memtierd run environment with a
+// configuration file template instantiated for managing a container.
+func newMemtierdEnv(fullCgroupPath string, namespace string, podName string, containerName string, memtierdConfigIn string, hostRoot string) (*memtierdEnv, error) {
 	// Create container directory if it doesn't exist
 	ctrDir := fmt.Sprintf("%s%s/memtierd/%s/%s/%s", hostRoot, os.TempDir(), namespace, podName, containerName)
 	if err := os.MkdirAll(ctrDir, 0755); err != nil {
@@ -378,7 +389,7 @@ func newMemtierdEnv(fullCgroupPath string, namespace string, podName string, con
 		return nil, fmt.Errorf("cannot write memtierd configuration into file %q: %w", configFilePath, err)
 	}
 
-	me := MemtierdEnv{}
+	me := memtierdEnv{}
 	me.outputFile = outputFilePath
 	me.configFile = configFilePath
 	me.pidFile = pidFilePath
@@ -386,7 +397,8 @@ func newMemtierdEnv(fullCgroupPath string, namespace string, podName string, con
 	return &me, nil
 }
 
-func (me *MemtierdEnv) startMemtierd() error {
+// startMemtierd launches memtierd in prepared environment.
+func (me *memtierdEnv) startMemtierd() error {
 	outputFile, err := os.OpenFile(me.outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create memtierd output file: %w", err)
@@ -413,6 +425,8 @@ func (me *MemtierdEnv) startMemtierd() error {
 	return nil
 }
 
+
+// main program to run the plugin.
 func main() {
 	var (
 		pluginName  string
@@ -444,7 +458,7 @@ func main() {
 	}
 
 	p := &plugin{
-		ctrMemtierdEnv: map[string]*MemtierdEnv{},
+		ctrMemtierdEnv: map[string]*memtierdEnv{},
 	}
 
 	if configFile != "" {

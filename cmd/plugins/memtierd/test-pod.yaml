@@ -14,7 +14,7 @@ metadata:
     # Always enable swap, but do not swap due to pressure from
     # memory.high
     memory.swap.max.memtierd.nri.io: max
-    memory.high.memory-qos.nri.io: max
+    memory.high.memtierd.nri.io: max
 spec:
   containers:
   - name: c0-lowprio
