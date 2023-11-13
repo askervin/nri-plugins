@@ -183,6 +183,9 @@ type BalloonDef struct {
 	// +kubebuilder:validation:Enum="";system;package;die;numa;core;thread
 	// +kubebuilder:validation:Format:string
 	ShareIdleCpusInSame CPUTopologyLevel `json:"shareIdleCPUsInSame,omitempty"`
+	// PreferCloseToDevices: prefer creating new balloons of this
+	// type close to listed devices.
+	PreferCloseToDevices []string `json:"preferCloseToDevices",omitempty`
 }
 
 // String stringifies a BalloonDef

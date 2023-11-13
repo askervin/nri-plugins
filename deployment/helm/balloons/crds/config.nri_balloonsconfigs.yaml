@@ -112,6 +112,11 @@ spec:
                         will be placed in the same balloon instances. The default
                         is false: namespaces have no effect on placement.'
                       type: boolean
+                    preferCloseToDevices:
+                      description: prefer creating new balloons of this type close to listed devices.
+                      items:
+                        type: string
+                      type: array
                     preferSpreadOnPhysicalCores:
                       description: PreferSpreadOnPhysicalCores is the balloon type
                         specific parameter of the policy level parameter with the

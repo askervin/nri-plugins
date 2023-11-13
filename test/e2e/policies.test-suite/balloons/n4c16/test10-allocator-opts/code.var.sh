@@ -42,6 +42,19 @@ report allowed
 verify 'len(cores["pod3c0"]) == 1' \
        'len(cpus["pod3c0"]) == 2' \
        'cpus["pod3c0"] == cpus["pod3c1"]'
+vm-command "kubectl delete pods --all --now"
+
+# pod4 in a 3-CPU balloon, should hit primary NUMA (1)
+CPUREQ="3" MEMREQ="100M" CPULIM="6" MEMLIM="100M"
+POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: close-numa-1-or-0" CONTCOUNT=1 create balloons-busybox
+report allowed
+verify '"node1" in nodes["pod4c0"]'
+
+# pod5 in a 2-CPU balloon, does not fit to node1, should hit secondary NUMA (0)
+CPUREQ="2" MEMREQ="100M" CPULIM="6" MEMLIM="100M"
+POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: close-numa-1-or-0" CONTCOUNT=1 create balloons-busybox
+report allowed
+verify '"node0" in nodes["pod5c0"]'
 
 cleanup
 helm-terminate

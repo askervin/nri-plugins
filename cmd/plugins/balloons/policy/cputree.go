@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	system "github.com/containers/nri-plugins/pkg/sysfs"
+	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
@@ -55,8 +56,9 @@ type cpuTreeNodeAttributes struct {
 // cpuTreeAllocator allocates CPUs from the branch of a CPU tree
 // where the "root" node is the topmost CPU of the branch.
 type cpuTreeAllocator struct {
-	options cpuTreeAllocatorOptions
-	root    *cpuTreeNode
+	options             cpuTreeAllocatorOptions
+	root                *cpuTreeNode
+	cachedTopologyHints map[string]topology.Hints
 }
 
 // cpuTreeAllocatorOptions contains parameters for the CPU allocator
@@ -67,7 +69,10 @@ type cpuTreeAllocatorOptions struct {
 	// the opposite (packed allocations).
 	topologyBalancing           bool
 	preferSpreadOnPhysicalCores bool
+	preferCloseToDevices        []string
 }
+
+var emptyCpuSet = cpuset.New()
 
 // String returns string representation of a CPU tree node.
 func (t *cpuTreeNode) String() string {
@@ -395,8 +400,9 @@ func (t *cpuTreeNode) SplitLevel(splitLevel CPUTopologyLevel, cpuClassifier func
 // CPU tree branch.
 func (t *cpuTreeNode) NewAllocator(options cpuTreeAllocatorOptions) *cpuTreeAllocator {
 	ta := &cpuTreeAllocator{
-		root:    t,
-		options: options,
+		root:                t,
+		options:             options,
+		cachedTopologyHints: map[string]topology.Hints{},
 	}
 	if options.preferSpreadOnPhysicalCores {
 		newTree := t.SplitLevel(CPUTopologyLevelNuma,
@@ -502,8 +508,167 @@ func (ta *cpuTreeAllocator) sorterRelease(tnas []cpuTreeNodeAttributes) func(int
 //   - removeFromCpus contains CPUs in currentCpus set from which
 //     abs(delta) CPUs can be freed.
 func (ta *cpuTreeAllocator) ResizeCpus(currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	resizers := []cpuResizerFunc{
+		ta.resizeCpusOnlyIfNecessary,
+		ta.resizeCpusWithDevices,
+		ta.resizeCpusOneAtATime,
+		ta.resizeCpusMaxLocalSet,
+		ta.resizeCpusNow}
+	return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
+}
+
+type cpuResizerFunc func(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error)
+
+func (ta *cpuTreeAllocator) nextCpuResizer(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	if len(resizers) == 0 {
+		return freeCpus, currentCpus, fmt.Errorf("internal error: a CPU resizer consulted next resizer but there was no one left")
+	}
+	remainingResizers := resizers[1:]
+	log.Debugf("calling resizer %v(%s, %s, %d)", resizers[0], currentCpus, freeCpus, delta)
+	addFrom, removeFrom, err := resizers[0](remainingResizers, currentCpus, freeCpus, delta)
+	log.Debugf("resizer %v suggests addFrom=%s removeFrom=%s err=%s", resizers[0], addFrom, removeFrom, err)
+	return addFrom, removeFrom, err
+}
+
+// resizeCpusNow does not call next resizer. Instead it keeps all CPU
+// allocations from freeCpus and CPU releases from currentCpus equally
+// good. This is the terminal block of resizers chain.
+func (ta *cpuTreeAllocator) resizeCpusNow(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	return freeCpus, currentCpus, nil
+}
+
+// resizeCpusOnlyIfNecessary is the fast path for making trivial
+// reservations and to fail if resizing is not possible.
+func (ta *cpuTreeAllocator) resizeCpusOnlyIfNecessary(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	switch {
+	case delta == 0:
+		// Nothing to do.
+		return emptyCpuSet, emptyCpuSet, nil
+	case delta > 0:
+		if freeCpus.Size() < delta {
+			return freeCpus, emptyCpuSet, fmt.Errorf("not enough free CPUs (%d) to resize current CPU set from %d to %d CPUs", freeCpus.Size(), currentCpus.Size(), currentCpus.Size() + delta)
+		} else if freeCpus.Size() == delta {
+			// Allocate all the remaining free CPUs.
+			return freeCpus, emptyCpuSet, nil
+		}
+	case delta < 0:
+		if currentCpus.Size() < -delta {
+			return emptyCpuSet, currentCpus, fmt.Errorf("not enough current CPUs (%d) to release %d CPUs", currentCpus.Size(), -delta)
+		} else if currentCpus.Size() == -delta {
+			// Free all allocated CPUs.
+			return emptyCpuSet, currentCpus, nil
+		}
+	}
+	return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
+}
+
+// resizeCpusWithDevices prefers allocating CPUs from those freeCpus
+// that are topologically close to preferred devices, and releasing
+// those currentCpus that are not.
+func (ta *cpuTreeAllocator) resizeCpusWithDevices(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	allHints := []topology.Hints{}
+	for _, devPath := range ta.options.preferCloseToDevices {
+		hints, err := ta.topologyHints(devPath)
+		if err != nil {
+			log.Errorf("failed to find topology of device %q: %v", devPath, err)
+			continue
+		}
+		if len(hints) > 0 {
+			allHints = append(allHints, hints)
+		}
+	}
+	if len(allHints) == 0 {
+		return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
+	}
 	if delta > 0 {
-		addFromSuperset, removeFromSuperset, err := ta.resizeCpus(currentCpus, freeCpus, delta)
+		// Allocate N=delta CPUs from freeCpus based on topology hints.
+		// Build a new set of freeCpus with at least N CPUs based on
+		// intersection with CPU hints.
+		// In case of conflicting topology hints the first
+		// hints in the list are the most important.
+		remainingFreeCpus := freeCpus
+		appliedHints := 0
+		totalHints := 0
+		for _, hints := range allHints {
+			for _, hint := range hints {
+				totalHints++
+				newRemainingFreeCpus := remainingFreeCpus.Intersection(cpuset.MustParse(hint.CPUs))
+				if newRemainingFreeCpus.Size() >= delta {
+					appliedHints++
+					log.Debugf("apply device hint CPUs %v, freeCpus %v --> %v\n", hint.CPUs, remainingFreeCpus, newRemainingFreeCpus)
+					remainingFreeCpus = newRemainingFreeCpus
+				} else {
+					log.Debugf("ignore device hint CPUs %v, cannot allocate %d from freeCpus %v", hint.CPUs, delta, remainingFreeCpus)
+				}
+			}
+		}
+		log.Debugf("original freeCpus %v, applied %d out of %d hints, remaining free CPUs: %v",
+			freeCpus, appliedHints, totalHints, remainingFreeCpus)
+		return ta.nextCpuResizer(resizers, currentCpus, remainingFreeCpus, delta)
+	} else if delta < 0 {
+		// Free N=-delta CPUs from currentCpus based on topology hints.
+		// 1. Sort currentCpus based on topology hints (leastHintedCpus).
+		// 2. Pick largest hint value that has to be released (maxHints).
+		// 3. Free all CPUs that have a hint value smaller than maxHints.
+		// 4. Let next CPU resizer choose CPUs to be freed among
+		//    CPUs with hint value maxHints.
+		currentCpuHints := map[int]uint64{}
+		for hintPriority, hints := range allHints {
+			for _, hint := range hints {
+				for _, cpu := range cpuset.MustParse(hint.CPUs).Intersection(currentCpus).UnsortedList() {
+					currentCpuHints[cpu] += 1 << (len(allHints) - 1 - hintPriority)
+				}
+			}
+		}
+		leastHintedCpus := currentCpus.UnsortedList()
+		sort.Slice(leastHintedCpus, func (i, j int) bool {
+			return currentCpuHints[leastHintedCpus[i]] < currentCpuHints[leastHintedCpus[j]]
+		})
+		log.Debugf("currentCpus %v in the least hinted order:", currentCpus)
+		for _, cpu := range leastHintedCpus {
+			log.Debugf("  - cpu: %d hints: %d", cpu, currentCpuHints[cpu])
+		}
+		maxHints := currentCpuHints[leastHintedCpus[-delta]]
+		currentToFreeForSure := cpuset.New()
+		currentToFreeMaybe := cpuset.New()
+		for i := 0; i < len(leastHintedCpus) && currentCpuHints[leastHintedCpus[i]] <= maxHints; i++ {
+			if currentCpuHints[leastHintedCpus[i]] < maxHints {
+				currentToFreeForSure = currentToFreeForSure.Union(cpuset.New(leastHintedCpus[i]))
+			} else {
+				currentToFreeMaybe = currentToFreeMaybe.Union(cpuset.New(leastHintedCpus[i]))
+			}
+		}
+		remainingDelta := delta + currentToFreeForSure.Size()
+		log.Debugf("device hints: currentCpus %s: free for sure: %s, free %d more from: %s",
+			currentCpus, currentToFreeForSure, remainingDelta, currentToFreeMaybe)
+		_, freeFromMaybe, err := ta.nextCpuResizer(resizers, currentToFreeMaybe, freeCpus, -remainingDelta)
+		// Do not include possible extra CPUs from
+		// freeFromMaybe to make sure that all CPUs with least
+		// hints will be freed.
+		for _, cpu := range freeFromMaybe.UnsortedList() {
+			if currentToFreeForSure.Size() >= -delta {
+				break
+			}
+			currentToFreeForSure = currentToFreeForSure.Union(cpuset.New(cpu))
+		}
+		return freeCpus, currentToFreeForSure, err
+	}
+	return freeCpus, currentCpus, nil
+}
+
+// Fetch cached topology hint, return error only once per bad dev
+func (ta *cpuTreeAllocator) topologyHints(dev string) (topology.Hints, error) {
+	if hints, ok := ta.cachedTopologyHints[dev]; ok {
+		return hints, nil
+	}
+	hints, err := topology.NewTopologyHints(dev)
+	ta.cachedTopologyHints[dev] = hints
+	return hints, err
+}
+
+func (ta *cpuTreeAllocator) resizeCpusOneAtATime(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	if delta > 0 {
+		addFromSuperset, removeFromSuperset, err := ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
 		if !ta.options.preferSpreadOnPhysicalCores || addFromSuperset.Size() == delta {
 			return addFromSuperset, removeFromSuperset, err
 		}
@@ -515,7 +680,7 @@ func (ta *cpuTreeAllocator) ResizeCpus(currentCpus, freeCpus cpuset.CPUSet, delt
 		// set by adding one CPU at a time.
 		addFrom := cpuset.New()
 		for n := 0; n < delta; n++ {
-			addSingleFrom, _, err := ta.resizeCpus(currentCpus, freeCpus, 1)
+			addSingleFrom, _, err := ta.nextCpuResizer(resizers, currentCpus, freeCpus, 1)
 			if err != nil {
 				return addFromSuperset, removeFromSuperset, err
 			}
@@ -540,7 +705,7 @@ func (ta *cpuTreeAllocator) ResizeCpus(currentCpus, freeCpus cpuset.CPUSet, delt
 	removeFrom := cpuset.New()
 	addFrom := cpuset.New()
 	for n := 0; n < -delta; n++ {
-		_, removeSingleFrom, err := ta.resizeCpus(currentCpus, freeCpus, -1)
+		_, removeSingleFrom, err := ta.nextCpuResizer(resizers, currentCpus, freeCpus, -1)
 		if err != nil {
 			return addFrom, removeFrom, err
 		}
@@ -563,7 +728,7 @@ func (ta *cpuTreeAllocator) ResizeCpus(currentCpus, freeCpus cpuset.CPUSet, delt
 	return addFrom, removeFrom, nil
 }
 
-func (ta *cpuTreeAllocator) resizeCpus(currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+func (ta *cpuTreeAllocator) resizeCpusMaxLocalSet(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
 	tnas := ta.root.ToAttributedSlice(currentCpus, freeCpus,
 		func(tna *cpuTreeNodeAttributes) bool {
 			// filter out branches with insufficient cpus
@@ -587,5 +752,5 @@ func (ta *cpuTreeAllocator) resizeCpus(currentCpus, freeCpus cpuset.CPUSet, delt
 	if len(tnas) == 0 {
 		return freeCpus, currentCpus, fmt.Errorf("not enough free CPUs")
 	}
-	return tnas[0].freeCpus, tnas[0].currentCpus, nil
+	return ta.nextCpuResizer(resizers, tnas[0].currentCpus, tnas[0].freeCpus, delta)
 }

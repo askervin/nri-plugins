@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
@@ -228,11 +229,17 @@ func TestResizeCpus(t *testing.T) {
 		topo  string
 		ccids []int
 	}
+	cachedTopologyHints := map[string]topology.Hints{
+		"/dev/mydev":                           topology.Hints{"x": topology.Hint{CPUs: "0-7"}},
+		"/sys/devices/system/node/node2":       topology.Hints{"y": topology.Hint{CPUs: "2-3"}},
+		"/sys/devices/pci0000:00/0000:00:02.0": topology.Hints{"z": topology.Hint{CPUs: "4-7"}},
+	}
 	tcases := []struct {
 		name                   string
-		topology               [5]int // package, die, numa, core, thread count
-		allocatorTB            bool   // allocator topologyBalancing
-		allocatorPSoPC         bool   // allocator preferSpreadOnPhysicalCores
+		topology               [5]int   // package, die, numa, core, thread count
+		allocatorTB            bool     // allocator topologyBalancing
+		allocatorPSoPC         bool     // allocator preferSpreadOnPhysicalCores
+		allocatorPCtD          []string // allocator preferCloseToDevices
 		allocations            []int
 		deltas                 []int
 		allocate               bool
@@ -471,6 +478,26 @@ func TestResizeCpus(t *testing.T) {
 				{"package", []int{1, 2}}, {"package", []int{1, 2, 3}}, {"package", []int{1, 2, 3, 4}},
 			},
 		},
+		{
+			name:           "prefer close to devices",
+			topology:       [5]int{2, 1, 2, 4, 1},
+			allocatorTB:    true,
+			allocatorPSoPC: true,
+			allocatorPCtD: []string{
+				"/dev/mydev",
+				"/sys/devices/pci0000:00/0000:00:02.0",
+			},
+			deltas: []int{
+				2,
+			},
+			allocate: true,
+			operateOnCcid: []int{
+				1,
+			},
+			expectCurrentOnSame:    []string{},
+			expectCurrentNotOnSame: []string{},
+			expectDisjoint:         []TopoCcids{},
+		},
 	}
 	for _, tc := range tcases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -478,7 +505,9 @@ func TestResizeCpus(t *testing.T) {
 			treeA := tree.NewAllocator(cpuTreeAllocatorOptions{
 				topologyBalancing:           tc.allocatorTB,
 				preferSpreadOnPhysicalCores: tc.allocatorPSoPC,
+				preferCloseToDevices:        tc.allocatorPCtD,
 			})
+			treeA.cachedTopologyHints = cachedTopologyHints
 			currentCpus := cpuset.New()
 			freeCpus := tree.Cpus()
 			if len(tc.allocations) > 0 {
@@ -584,7 +613,7 @@ func TestWalk(t *testing.T) {
 		foundLevel := CPUTopologyLevelUndefined
 		rv := tree.DepthFirstWalk(func(tn *cpuTreeNode) error {
 			foundName = tn.name
-			foundLevel = tn.level
+			foundLevel = string(tn.level)
 			return nil
 		})
 		if rv != nil {
