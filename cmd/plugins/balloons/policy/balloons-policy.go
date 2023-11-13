@@ -569,10 +569,11 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 	// are type specific allocator options, otherwise use policy
 	// default allocator.
 	cpuTreeAllocator := p.cpuTreeAllocator
-	if blnDef.AllocatorTopologyBalancing != nil || blnDef.PreferSpreadOnPhysicalCores != nil {
+	if blnDef.AllocatorTopologyBalancing != nil || blnDef.PreferSpreadOnPhysicalCores != nil || len(blnDef.PreferCloseToDevices) > 0 {
 		allocatorOptions := cpuTreeAllocatorOptions{
 			topologyBalancing:           p.bpoptions.AllocatorTopologyBalancing,
 			preferSpreadOnPhysicalCores: p.bpoptions.PreferSpreadOnPhysicalCores,
+			preferCloseToDevices:        blnDef.PreferCloseToDevices,
 		}
 		if blnDef.AllocatorTopologyBalancing != nil {
 			allocatorOptions.topologyBalancing = *blnDef.AllocatorTopologyBalancing

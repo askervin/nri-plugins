@@ -116,6 +116,8 @@ Balloons policy parameters:
     request less.
   - `CpuClass` specifies the name of the CPU class according to which
     CPUs of balloons are configured.
+  - `PreferCloseToDevices`: prefer creating new balloons close to
+    listed devices. List of strings
   - `PreferSpreadingPods`: if `true`, containers of the same pod
     should be spread to different balloons of this type. The default
     is `false`: prefer placing containers of the same pod to the same
@@ -145,6 +147,8 @@ Balloons policy parameters:
       the balloon.
   - `PreferSpreadOnPhysicalCores` overrides the policy level option
     with the same name in the scope of this balloon type.
+  - `PreferCloseToDevices` prefers creating new balloons close to
+    listed devices.
   - `AllocatorPriority` (0: High, 1: Normal, 2: Low, 3: None). CPU
     allocator parameter, used when creating new or resizing existing
     balloons. If there are balloon types with pre-created balloons

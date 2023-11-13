@@ -12,6 +12,14 @@ nri_resource_policy_cfg=${TEST_DIR}/balloons-allocator-opts.cfg helm-launch ball
 
 # pod0 in a 2-CPU balloon
 CPUREQ="100m" MEMREQ="100M" CPULIM="100m" MEMLIM="100M"
+POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: close-to-vda-and-pci" CONTCOUNT=1 create balloons-busybox
+report allowed
+verify 'len(cores["pod0c0"]) == 1' \
+       'len(cpus["pod0c0"]) == 1'
+exit 0
+
+# pod0 in a 2-CPU balloon
+CPUREQ="100m" MEMREQ="100M" CPULIM="100m" MEMLIM="100M"
 POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: policydefaults" CONTCOUNT=1 create balloons-busybox
 report allowed
 verify 'len(cores["pod0c0"]) == 2' \
