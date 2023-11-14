@@ -3,12 +3,12 @@
   become: no
   become_user: root
   vars:
-    - cri_runtime: "{{ cri_runtime }}"
-    - is_containerd: false
-    - is_crio: false
-    - plugin_name: "{{ plugin_name }}"
-    - image_ref: "unset"
-    - test_image: "localhost/{{ plugin_name }}:testing"
+    cri_runtime: "{{ cri_runtime }}"
+    is_containerd: false
+    is_crio: false
+    plugin_name: "{{ plugin_name }}"
+    image_ref: "unset"
+    test_image: "localhost/{{ plugin_name }}:testing"
 
   tasks:
     - set_fact:
