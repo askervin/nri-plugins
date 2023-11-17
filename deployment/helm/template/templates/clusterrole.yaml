@@ -1,0 +1,40 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nri-resource-policy-template
+  labels:
+    {{- include "template-plugin.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - watch
+- apiGroups:
+  - topology.node.k8s.io
+  resources:
+  - noderesourcetopologies
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - delete
+- apiGroups:
+  - config.nri
+  resources:
+  - templatepolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - config.nri
+  resources:
+  - templatepolicies/status
+  verbs:
+  - get
+  - update
+  - patch
