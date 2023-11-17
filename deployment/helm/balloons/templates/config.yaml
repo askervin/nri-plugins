@@ -4,7 +4,7 @@ metadata:
   name: default
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "balloons-plugin.labels" . | nindent 4 }}
+    {{- include "nri-plugin.labels" . | nindent 4 }}
 policy:
   {{- toYaml .Values.config.policy | nindent 2 }}
 common:
