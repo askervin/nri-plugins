@@ -42,19 +42,24 @@ report allowed
 verify 'len(cores["pod3c0"]) == 1' \
        'len(cpus["pod3c0"]) == 2' \
        'cpus["pod3c0"] == cpus["pod3c1"]'
-vm-command "kubectl delete pods --all --now"
 
-# pod4 in a 3-CPU balloon, should hit primary NUMA (1)
+# pod4 in new balloon for which node2 should have been kept free
 CPUREQ="3" MEMREQ="100M" CPULIM="6" MEMLIM="100M"
-POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: close-numa-1-or-0" CONTCOUNT=1 create balloons-busybox
+POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: device-node2" CONTCOUNT=1 create balloons-busybox
 report allowed
-verify '"node1" in nodes["pod4c0"]'
+verify '{"node2"} == nodes["pod4c0"]' \
+       'len(cores["pod4c0"]) == 2' \
+       'len(cpus["pod2c0"]) == 4'
 
-# pod5 in a 2-CPU balloon, does not fit to node1, should hit secondary NUMA (0)
+vm-command "kubectl delete pods pod0 pod1 pod2 --now"
+
+# pod5 in new balloon that will not fit on node2, ignore device hint and allocate from elsewhere
 CPUREQ="2" MEMREQ="100M" CPULIM="6" MEMLIM="100M"
-POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: close-numa-1-or-0" CONTCOUNT=1 create balloons-busybox
+POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: device-node2" CONTCOUNT=1 create balloons-busybox
 report allowed
-verify '"node0" in nodes["pod5c0"]'
+verify '"node2" not in nodes["pod5c0"]' \
+       'len(cores["pod5c0"]) == 2' \
+       'len(cpus["pod5c0"]) == 2'
 
 cleanup
 helm-terminate

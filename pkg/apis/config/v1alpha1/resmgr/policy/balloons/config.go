@@ -186,6 +186,9 @@ type BalloonDef struct {
 	// PreferCloseToDevices: prefer creating new balloons of this
 	// type close to listed devices.
 	PreferCloseToDevices []string `json:"preferCloseToDevices",omitempty`
+	// PreferFarFromDevices: prefer creating new balloons of this
+	// type far from listed devices.
+	PreferFarFromDevices []string `json:"preferFarFromDevices",omitempty`
 }
 
 // String stringifies a BalloonDef

@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
@@ -229,10 +228,10 @@ func TestResizeCpus(t *testing.T) {
 		topo  string
 		ccids []int
 	}
-	cachedTopologyHints := map[string]topology.Hints{
-		"/dev/mydev":                           topology.Hints{"x": topology.Hint{CPUs: "0-7"}},
-		"/sys/devices/system/node/node2":       topology.Hints{"y": topology.Hint{CPUs: "2-3"}},
-		"/sys/devices/pci0000:00/0000:00:02.0": topology.Hints{"z": topology.Hint{CPUs: "4-7"}},
+	cacheCloseCpuSets := map[string][]cpuset.CPUSet{
+		"/dev/mydev":                           []cpuset.CPUSet{cpuset.MustParse("0-7"), cpuset.MustParse("1-6")},
+		"/sys/devices/system/node/node2":       []cpuset.CPUSet{cpuset.MustParse("2-3")},
+		"/sys/devices/pci0000:00/0000:00:02.0": []cpuset.CPUSet{cpuset.MustParse("4-7")},
 	}
 	tcases := []struct {
 		name                   string
@@ -507,7 +506,7 @@ func TestResizeCpus(t *testing.T) {
 				preferSpreadOnPhysicalCores: tc.allocatorPSoPC,
 				preferCloseToDevices:        tc.allocatorPCtD,
 			})
-			treeA.cachedTopologyHints = cachedTopologyHints
+			treeA.cacheCloseCpuSets = cacheCloseCpuSets
 			currentCpus := cpuset.New()
 			freeCpus := tree.Cpus()
 			if len(tc.allocations) > 0 {
