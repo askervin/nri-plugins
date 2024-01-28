@@ -43,7 +43,10 @@
       become: yes
       shell: "{{ item }}"
       with_items:
+        - ctr -n k8s.io images ls | awk '/{{ plugin_name }}/{print $1}' | while read img; do echo ctr -n k8s.io images rm $img; done
+        - sleep 1
         - ctr -n k8s.io images import `basename {{ nri_resource_policy_images.stdout_lines[0] }}`
+        - sleep 1
         - ctr -n k8s.io images tag --force `ctr -n k8s.io images ls | grep sha256:{{ image_ref }} | tr -s '\t' ' ' | cut -d ' ' -f1` {{ test_image }}
       when: is_containerd
 

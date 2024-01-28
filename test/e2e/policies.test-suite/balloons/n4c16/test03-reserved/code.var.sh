@@ -9,6 +9,7 @@ cleanup() {
          kubectl delete pod -n kube-system --now pod3
          kubectl delete pods --now pod4 pod5 pod6
          kubectl delete pod -n kube-system --now pod7
+         kubectl delete pod -n kube-system --now pod8
          kubectl delete namespace monitor-mypods
          kubectl delete namespace system-logs
          kubectl delete namespace my-exact-name"
@@ -81,6 +82,21 @@ CPUREQ="100m" MEMREQ="100M" CPULIM="100m" MEMLIM="100M"
 namespace=kube-system create balloons-busybox
 report allowed
 verify 'cpus["pod7c0"] == {"cpu00", "cpu01", "cpu02"}'
+
+# pod8: kube-system, inflate the reserved balloon, 3 CPUs will not suffice
+CPUREQ="3" MEMREQ="3" CPULIM="100m" MEMLIM="100M"
+namespace=kube-system create balloons-busybox
+report allowed
+verify 'len(cpus["pod7c0"]) == 4' \
+       'cpus["pod8c0"] == cpus["pod7c0"]' \
+       '{"cpu00", "cpu01", "cpu02"}.issubset(cpus["pod7c0"])'
+
+
+# delete pod8: deflate the reserved balloon back to reserved CPUs
+vm-command 'kubectl delete pod -n kube-system --now pod8'
+report allowed
+verify 'cpus["pod7c0"] == {"cpu00", "cpu01", "cpu02"}'
+
 
 cleanup
 
