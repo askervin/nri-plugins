@@ -255,6 +255,22 @@ special `default` balloon, that means reserved CPUs unless `MinCPUs`
 or `MaxCPUs` of the `default` balloon type are explicitely defined in
 the `BalloonTypes` configuration.
 
+## Running containers without CPU or memory pinning
+
+Some containers may need to run on all CPUs or access all memories
+without restrictions. Annotate these pods and containers to prevent
+any resource policy from modifying CPU and memory pinning.
+
+```yaml
+cpu.preserve.resource-policy.nri.io/container.CONTAINER_NAME: "true"
+cpu.preserve.resource-policy.nri.io/pod: "true"
+cpu.preserve.resource-policy.nri.io: "true"
+
+memory.preserve.resource-policy.nri.io/container.CONTAINER_NAME: "true"
+memory.preserve.resource-policy.nri.io/pod: "true"
+memory.preserve.resource-policy.nri.io: "true"
+```
+
 ## Metrics and Debugging
 
 In order to enable more verbose logging and metrics exporting from the
