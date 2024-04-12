@@ -25,6 +25,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	cpucontrol "github.com/containers/nri-plugins/pkg/resmgr/control/cpu"
 	"github.com/containers/nri-plugins/pkg/resmgr/events"
+	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	policy "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/utils"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
@@ -68,6 +69,7 @@ type balloons struct {
 	balloons           []*Balloon  // balloon instances: reserved, default and user-defined
 
 	cpuAllocator cpuallocator.CPUAllocator // CPU allocator used by the policy
+	memAllocator *libmem.Allocator         // memory allocator
 }
 
 // Balloon contains attributes of a balloon instance
@@ -92,6 +94,7 @@ type Balloon struct {
 	//   currently assigned to the balloon.
 	PodIDs       map[string][]string
 	cpuTreeAlloc *cpuTreeAllocator
+	memAllocator *libmem.Allocator
 }
 
 var log logger.Logger = logger.NewLogger("policy")
@@ -136,9 +139,38 @@ func (bln Balloon) MaxAvailMilliCpus(freeCpus cpuset.CPUSet) int {
 	return bln.Def.MaxCpus * 1000
 }
 
+// AllowedCpus returns CPUs that containers in the balloon are allowed
+// to use.
+func (bln Balloon) AllowedCpus() cpuset.CPUSet {
+	return bln.Cpus.Union(bln.SharedIdleCpus)
+}
+
+// AllowedMems returns
+func (bln Balloon) AllowedMems() idset.IDSet {
+	cpus := bln.AllowedCpus()
+	mems := idset.NewIDSet()
+	if len(bln.Def.MemoryTypes) == 0 {
+		// Return nodes that include any of the CPUs of the
+		// balloon.
+
+		// TODO: loop through nodes using libmem, and get ClosestCPUs()?
+		for _, nodeID := range bln.memAllocator.NodeIDs() {
+			if !cpus.Intersection(sys.Node(nodeID).CPUSet()).IsEmpty() {
+				mems.Add(nodeID)
+			}
+		}
+		return mems
+	}
+	for cpu := range cpus {
+		// TODO: build/store somewhere kindmask based on bln.Def.MemoryTypes
+		mems.Add(bln.memAllocator.GetClosestNodesForCPU(cpu, bln.memsKindMask)...)
+	}
+}
+
 // New creates a new uninitialized balloons policy instance.
 func New() policy.Backend {
-	return &balloons{}
+	return &balloons{
+	}
 }
 
 // Setup initializes the balloons policy instance.
@@ -155,6 +187,7 @@ func (p *balloons) Setup(policyOptions *policy.BackendOptions) error {
 	p.options = policyOptions
 	p.cch = policyOptions.Cache
 	p.cpuAllocator = cpuallocator.NewCPUAllocator(policyOptions.System)
+	p.memAllocator, _ = libmem.NewAllocator(libmem.WithSystemNodes(p.options.System))
 
 	log.Info("setting up %s policy...", PolicyName)
 	if p.cpuTree, err = NewCpuTreeFromSystem(); err != nil {
@@ -566,8 +599,9 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 		PodIDs:         make(map[string][]string),
 		Cpus:           cpus,
 		SharedIdleCpus: cpuset.New(),
-		Mems:           p.closestMems(cpus),
+		Mems:           idset.NewIDSet(),
 		cpuTreeAlloc:   cpuTreeAlloc,
+		memAlloc:       p.memAllocator,
 	}
 	if confCpus {
 		if err = p.useCpuClass(bln); err != nil {
@@ -1188,19 +1222,6 @@ func (p *balloons) fillFarFromDevices(blnDefs []*BalloonDef) {
 	}
 }
 
-// closestMems returns memory node IDs good for pinning containers
-// that run on given CPUs
-func (p *balloons) closestMems(cpus cpuset.CPUSet) idset.IDSet {
-	mems := idset.NewIDSet()
-	sys := p.options.System
-	for _, nodeID := range sys.NodeIDs() {
-		if !cpus.Intersection(sys.Node(nodeID).CPUSet()).IsEmpty() {
-			mems.Add(nodeID)
-		}
-	}
-	return mems
-}
-
 // filterBalloons returns balloons for which the test function returns true
 func filterBalloons(balloons []*Balloon, test func(*Balloon) bool) (ret []*Balloon) {
 	for _, bln := range balloons {
@@ -1282,11 +1303,11 @@ func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
 
 func (p *balloons) updatePinning(blns ...*Balloon) {
 	for _, bln := range blns {
-		cpus := bln.Cpus.Union(bln.SharedIdleCpus)
-		bln.Mems = p.closestMems(cpus)
+		cpus := bln.AllowedCpus()
+		mems := bln.AllowedMems()
 		for _, cID := range bln.ContainerIDs() {
 			if c, ok := p.cch.LookupContainer(cID); ok {
-				p.pinCpuMem(c, cpus, bln.Mems)
+				p.pinCpuMem(c, cpus, mems)
 			}
 		}
 	}

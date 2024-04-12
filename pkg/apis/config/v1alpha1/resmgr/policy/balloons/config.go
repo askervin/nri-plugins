@@ -43,7 +43,9 @@ type Config struct {
 	// PinCPU controls pinning containers to CPUs.
 	// +kubebuilder:default=true
 	PinCPU *bool `json:"pinCPU,omitempty"`
-	// PinMemory controls pinning containers to memory nodes.
+	// PinMemory controls pinning containers to memory nodes. The
+	// value set here can be overridden with balloon type specific
+	// setting with the same name.
 	// +kubebuilder:default=true
 	PinMemory *bool `json:"pinMemory,omitempty"`
 	// IdleCpuClass controls how unusded CPUs outside any a
@@ -165,6 +167,16 @@ type BalloonDef struct {
 	// is allowed to co-exist. If reached, new balloons cannot be
 	// created anymore.
 	MaxBalloons int `json:"maxBalloons,omitempty"`
+	// PinMemory is balloon type specific override for the
+	// PinMemory policy level option.
+	PinMemory *bool `json:"pinMemory,omitempty"`
+	// MemoryTypes is a list of memory types where containers must
+	// be pinned to. Allowed values are "dram", "pmem" and
+	// "hbm". Containers are pinned to every memory node that is
+	// the closest node of its type to any of balloon's CPUs. If
+	// empty or undefined, the default is to pin only on memory
+	// available on the same NUMA node as CPUs of the balloon.
+	MemoryTypes []string `json:"memoryTypes,omitempty"`
 	// PreferSpreadingPods: containers of the same pod may be
 	// placed on separate balloons. The default is false: prefer
 	// placing containers of a pod to the same balloon(s).
