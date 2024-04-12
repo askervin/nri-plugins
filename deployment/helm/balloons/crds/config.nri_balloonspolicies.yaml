@@ -140,6 +140,17 @@ spec:
                         usable by containers in a balloon. Balloon size will not be
                         inflated larger than MaxCpus.
                       type: integer
+                    memoryTypes:
+                      description: |-
+                        MemoryTypes is a list of memory types where containers must
+                        be pinned to. Allowed values are "dram", "pmem" and
+                        "hbm". Containers are pinned to every memory node that is
+                        the closest node of its type to any of balloon's CPUs. If
+                        empty or undefined, the default is to pin only on memory
+                        available on the same NUMA node as CPUs of the balloon.
+                      items:
+                        type: string
+                      type: array
                     minBalloons:
                       description: |-
                         MinBalloons is the number of balloon instances that always
@@ -165,6 +176,11 @@ spec:
                       items:
                         type: string
                       type: array
+                    pinMemory:
+                      description: |-
+                        PinMemory is balloon type specific override for the
+                        PinMemory policy level option.
+                      type: boolean
                     preferCloseToDevices:
                       description: |-
                         PreferCloseToDevices: prefer creating new balloons of this
@@ -343,7 +359,10 @@ spec:
                 type: boolean
               pinMemory:
                 default: true
-                description: PinMemory controls pinning containers to memory nodes.
+                description: |-
+                  PinMemory controls pinning containers to memory nodes. The
+                  value set here can be overridden with balloon type specific
+                  setting with the same name.
                 type: boolean
               preferSpreadOnPhysicalCores:
                 description: |-

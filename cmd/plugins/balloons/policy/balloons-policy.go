@@ -25,6 +25,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	cpucontrol "github.com/containers/nri-plugins/pkg/resmgr/control/cpu"
 	"github.com/containers/nri-plugins/pkg/resmgr/events"
+	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	policy "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/utils"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
@@ -68,6 +69,7 @@ type balloons struct {
 	balloons           []*Balloon  // balloon instances: reserved, default and user-defined
 
 	cpuAllocator cpuallocator.CPUAllocator // CPU allocator used by the policy
+	memAllocator *libmem.Allocator         // memory allocator
 }
 
 // Balloon contains attributes of a balloon instance
@@ -92,6 +94,8 @@ type Balloon struct {
 	//   currently assigned to the balloon.
 	PodIDs       map[string][]string
 	cpuTreeAlloc *cpuTreeAllocator
+	memAlloc     *libmem.Allocator
+	memKindMask  libmem.KindMask
 }
 
 var log logger.Logger = logger.NewLogger("policy")
@@ -136,6 +140,34 @@ func (bln Balloon) MaxAvailMilliCpus(freeCpus cpuset.CPUSet) int {
 	return bln.Def.MaxCpus * 1000
 }
 
+// AllowedCpus returns CPUs that containers in the balloon are allowed
+// to use.
+func (bln Balloon) AllowedCpus() cpuset.CPUSet {
+	return bln.Cpus.Union(bln.SharedIdleCpus)
+}
+
+// AllowedMems returns
+func (bln Balloon) AllowedMems() idset.IDSet {
+	cpus := bln.AllowedCpus()
+	mems := idset.NewIDSet()
+	if len(bln.Def.MemoryTypes) == 0 {
+		// Return nodes that include any of the CPUs of the
+		// balloon.
+
+		for _, nodeID := range bln.memAlloc.GetNodeIDs() {
+			if !cpus.Intersection(bln.memAlloc.GetNode(nodeID).CloseCPUs()).IsEmpty() {
+				mems.Add(nodeID)
+			}
+		}
+		return mems
+	}
+	if nodes, err := bln.memAlloc.GetClosestNodesForCPUs(cpus, bln.memKindMask); err == nil {
+
+		mems.Add(nodes...)
+	}
+	return mems
+}
+
 // New creates a new uninitialized balloons policy instance.
 func New() policy.Backend {
 	return &balloons{}
@@ -155,6 +187,7 @@ func (p *balloons) Setup(policyOptions *policy.BackendOptions) error {
 	p.options = policyOptions
 	p.cch = policyOptions.Cache
 	p.cpuAllocator = cpuallocator.NewCPUAllocator(policyOptions.System)
+	p.memAllocator, _ = libmem.NewAllocator(libmem.WithSystemNodes(policyOptions.System))
 
 	log.Info("setting up %s policy...", PolicyName)
 	if p.cpuTree, err = NewCpuTreeFromSystem(); err != nil {
@@ -560,14 +593,22 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 		return nil, balloonsError("could not allocate minCpus (%d) for balloon %s[%d]: %w", blnDef.MinCpus, blnDef.Name, freeInstance, err)
 	}
 	p.freeCpus = p.freeCpus.Difference(cpus)
+	memKinds := []libmem.Kind{}
+	for _, memType := range blnDef.MemoryTypes {
+		if memKind, err := libmem.ParseKind(memType); err == nil {
+			memKinds = append(memKinds, memKind)
+		}
+	}
 	bln := &Balloon{
 		Def:            blnDef,
 		Instance:       freeInstance,
 		PodIDs:         make(map[string][]string),
 		Cpus:           cpus,
 		SharedIdleCpus: cpuset.New(),
-		Mems:           p.closestMems(cpus),
+		Mems:           idset.NewIDSet(),
 		cpuTreeAlloc:   cpuTreeAlloc,
+		memAlloc:       p.memAllocator,
+		memKindMask:    libmem.MaskForKinds(memKinds...),
 	}
 	if confCpus {
 		if err = p.useCpuClass(bln); err != nil {
@@ -960,6 +1001,11 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 					blnDef.Name, blnDef.MaxBalloons)
 			}
 		}
+		for _, mtype := range blnDef.MemoryTypes {
+			if _, err := libmem.ParseKind(mtype); err != nil {
+				return balloonsError("invalid memory type %q in ballon type %q", mtype, blnDef.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -1188,19 +1234,6 @@ func (p *balloons) fillFarFromDevices(blnDefs []*BalloonDef) {
 	}
 }
 
-// closestMems returns memory node IDs good for pinning containers
-// that run on given CPUs
-func (p *balloons) closestMems(cpus cpuset.CPUSet) idset.IDSet {
-	mems := idset.NewIDSet()
-	sys := p.options.System
-	for _, nodeID := range sys.NodeIDs() {
-		if !cpus.Intersection(sys.Node(nodeID).CPUSet()).IsEmpty() {
-			mems.Add(nodeID)
-		}
-	}
-	return mems
-}
-
 // filterBalloons returns balloons for which the test function returns true
 func filterBalloons(balloons []*Balloon, test func(*Balloon) bool) (ret []*Balloon) {
 	for _, bln := range balloons {
@@ -1282,11 +1315,12 @@ func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
 
 func (p *balloons) updatePinning(blns ...*Balloon) {
 	for _, bln := range blns {
-		cpus := bln.Cpus.Union(bln.SharedIdleCpus)
-		bln.Mems = p.closestMems(cpus)
+		cpus := bln.AllowedCpus()
+		mems := bln.AllowedMems()
+		bln.Mems = mems
 		for _, cID := range bln.ContainerIDs() {
 			if c, ok := p.cch.LookupContainer(cID); ok {
-				p.pinCpuMem(c, cpus, bln.Mems)
+				p.pinCpuMem(c, cpus, mems)
 			}
 		}
 	}
