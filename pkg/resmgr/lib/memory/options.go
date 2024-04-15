@@ -89,7 +89,7 @@ func WithSystemNodes(sys sysfs.System, pickers ...func(sysfs.Node) bool) Allocat
 			a.nodes[id] = n
 			a.ids = append(a.ids, id)
 
-			log.Info("discovered %s node, %d memory, close CPUs %s",
+			log.Info("discovered %s node %d, %d memory, close CPUs %s",
 				n.kind, n.id, n.capacity, n.closeCPUs.String())
 		}
 

@@ -48,6 +48,16 @@ var (
 	}
 )
 
+func ParseKind(s string) (Kind, error) {
+	lowerS := strings.ToLower(s)
+	for kind, kindString := range kindToString {
+		if lowerS == strings.ToLower(kindString) {
+			return kind, nil
+		}
+	}
+	return Kind(0), fmt.Errorf("cannot parse memory kind from %q", s)
+}
+
 func TypeToKind(t system.MemoryType) Kind {
 	if k, ok := typeToKind[t]; ok {
 		return k

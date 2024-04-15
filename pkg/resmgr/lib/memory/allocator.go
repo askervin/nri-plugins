@@ -88,6 +88,21 @@ func (a *Allocator) Release(workload string) error {
 	return nil
 }
 
+// GetNodeIDs returns nodes IDs in the allocator
+func (a *Allocator) GetNodeIDs() []ID {
+	ids := make([]ID, len(a.ids), len(a.ids))
+	copy(ids, a.ids)
+	return ids
+}
+
+// GetNode returns node object with given ID
+func (a *Allocator) GetNode(id ID) *Node {
+	if node, ok := a.nodes[id]; ok {
+		return node
+	}
+	return nil
+}
+
 // GetAvailableKinds returns the mask of available memory kinds.
 func (a *Allocator) GetAvailableKinds() KindMask {
 	var mask KindMask
@@ -117,7 +132,7 @@ func (a *Allocator) GetClosestNodes(nodeID ID, kinds KindMask) ([]ID, error) {
 }
 
 // GetClosestNodesForCPU returns the set of matching nodes closest to a requested set.
-func (a *Allocator) GetClosestNodesForCPU(cpus cpuset.CPUSet, kinds KindMask) ([]ID, error) {
+func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) ([]ID, error) {
 	if cpus.IsEmpty() || kinds.IsEmpty() {
 		return []ID{}, nil
 	}
