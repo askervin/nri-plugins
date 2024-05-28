@@ -1315,6 +1315,9 @@ func (p *balloons) updatePinning(blns ...*Balloon) {
 	for _, bln := range blns {
 		cpus := bln.Cpus.Union(bln.SharedIdleCpus)
 		bln.Mems = p.closestMems(cpus)
+		if bln.Def.HideHyperthreads != nil && *bln.Def.HideHyperthreads {
+			cpus = p.cpuTree.FilterThreadPerCore(cpus)
+		}
 		for _, cID := range bln.ContainerIDs() {
 			if c, ok := p.cch.LookupContainer(cID); ok {
 				p.pinCpuMem(c, cpus, bln.Mems)
