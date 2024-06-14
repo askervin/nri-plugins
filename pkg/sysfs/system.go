@@ -116,6 +116,7 @@ type System interface {
 	CoreKindCPUs(CoreKind) cpuset.CPUSet
 	CoreKinds() []CoreKind
 	AllThreadsForCPUs(cpuset.CPUSet) cpuset.CPUSet
+	SingleThreadPerCore(cpuset.CPUSet) cpuset.CPUSet
 
 	Offlined() cpuset.CPUSet
 	Isolated() cpuset.CPUSet
@@ -669,6 +670,25 @@ func (sys *system) AllThreadsForCPUs(cpus cpuset.CPUSet) cpuset.CPUSet {
 		}
 	}
 	return all
+}
+
+// SingleThreadPerCore returns a subset of input cpus so that from
+// each physical core only a cpu with the smallest id is included in
+// the set.
+func (sys *system) SingleThreadPerCore(cpus cpuset.CPUSet) cpuset.CPUSet {
+	result := make([]int, 0, cpus.Size())
+	handled := make(map[int]struct{}, cpus.Size())
+	for _, cpu := range cpus.List() {
+		if _, ok := handled[cpu]; ok {
+			continue
+		}
+		handled[cpu] = struct{}{}
+		result = append(result, cpu)
+		for _, sibling := range sys.CPU(cpu).ThreadCPUSet().UnsortedList() {
+			handled[sibling] = struct{}{}
+		}
+	}
+	return cpuset.New(result...)
 }
 
 // Offlined gets the set of offlined CPUs.
