@@ -120,14 +120,30 @@ func NewAllocator(options ...AllocatorOption) (*Allocator, error) {
 }
 
 // CPUSetAffinity returns the mask of closest nodes for the given cpuset.
-func (a *Allocator) CPUSetAffinity(cpus cpuset.CPUSet) NodeMask {
-	nodes := NodeMask(0)
+func (a *Allocator) CPUSetAffinity(cpus cpuset.CPUSet, mtypes TypeMask) NodeMask {
+	cpuNodes := NodeMask(0)
+	cpuNodeTypes := TypeMask(0)
+	extraNodes := NodeMask(0)
+	maskOutNodes := NodeMask(0)
+	// Find nodes with at least one CPU in the cpuset.
 	a.ForeachNode(a.masks.nodes.all, func(n *Node) bool {
 		if !cpus.Intersection(n.cpus).IsEmpty() {
-			nodes |= n.Mask()
+			cpuNodes |= n.Mask()
+			cpuNodeTypes |= n.memType.Mask()
+			if mtypes != 0 && !mtypes.Contains(n.memType) {
+				// This CPU node is of unwanted memory type.
+				maskOutNodes |= n.Mask()
+			}
 		}
 		return ForeachMore
 	})
+	// Expand nodes with closest nodes of requested memory types.
+	missing := mtypes &^ cpuNodeTypes
+	if missing != 0 {
+		extraNodes, _ = a.defaultExpand(cpuNodes, missing)
+	}
+	nodes := (cpuNodes | extraNodes) &^ maskOutNodes
+	log.Debug("CPU-node-affinity(cpus=%s, mtypes=%s): cpuNodes=%s; extraNodes=%s; maskOutNodes=%s; return nodes=%s", cpus, mtypes, cpuNodes, extraNodes, maskOutNodes, nodes)
 	return nodes
 }
 

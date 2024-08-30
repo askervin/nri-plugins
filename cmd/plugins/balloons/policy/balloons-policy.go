@@ -1252,7 +1252,7 @@ func (p *balloons) fillFarFromDevices(blnDefs []*BalloonDef) {
 // closestMems returns memory node IDs good for pinning containers
 // that run on given CPUs
 func (p *balloons) closestMems(cpus cpuset.CPUSet) idset.IDSet {
-	return idset.NewIDSet(p.memAllocator.CPUSetAffinity(cpus).Slice()...)
+	return idset.NewIDSet(p.memAllocator.CPUSetAffinity(cpus, 0).Slice()...)
 }
 
 // filterBalloons returns balloons for which the test function returns true
@@ -1475,6 +1475,18 @@ func (p *balloons) pinCpuMem(c cache.Container, cpus cpuset.CPUSet, mems idset.I
 				c.SetCpusetMems(zone.MemsetString())
 			}
 		} else {
+			memTypeMask, err := c.MemoryTypes()
+			if err != nil {
+				log.Error("%v", err)
+			}
+			if memTypeMask != 0 {
+				// memory-type pod/container-specific
+				// annotation overrides balloon's
+				// memory options that are the default
+				// to all containers in the balloon.
+				log.Debug("  - %s memory-type annotation overrides balloon mems %s", c.PrettyName(), mems)
+				mems = idset.NewIDSet(p.memAllocator.CPUSetAffinity(cpus, memTypeMask).Slice()...)
+			}
 			log.Debug("  - requested %s to memory %s", c.PrettyName(), mems)
 			zone := p.allocMem(c, mems, false)
 			log.Debug("  - allocated %s to memory %s", c.PrettyName(), zone)
