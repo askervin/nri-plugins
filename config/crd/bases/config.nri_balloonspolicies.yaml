@@ -247,6 +247,7 @@ spec:
                       - package
                       - die
                       - numa
+                      - l2cache
                       - core
                       - thread
                       type: string
