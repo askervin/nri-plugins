@@ -5,9 +5,9 @@ on:
     types:
       - published
 # Remove this trigger event once workflow behavior is validated
-  issues:
-    types:
-      - opened
+  push:
+    branches:
+      - 'test-release/**'
 
 jobs:
   createPullRequest:
@@ -18,17 +18,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Determine Repository Variable
-      # Remove this conditional logic once the workflow behavior
-      # is validated
-          run: |
-            if [[ "${{ github.event_name }}" == "issues" && "${{ github.event.action }}" == "opened" ]]; then
-              echo "repository=fmuyassarov/community-operators" >> $GITHUB_ENV
-            else
-              echo "repository=k8s-operatorhub/community-operators" >> $GITHUB_ENV
-            fi
-
+        run: |
+          if [[ "${{ github.repository }}" != "containers/nri-plugins" ]]; then
+            nri_plugins="${{ github.repository }}"
+            nri_plugins_owner="${nri_plugins%/*}"
+            echo "git ref: ${{ github.event.ref }}"
+            git_ref_heads_branch="${{ github.event.ref }}"
+            git_branch="${git_ref_heads_branch#*/*/}"
+            echo "git branch: $git_branch"
+            echo "using community-operators from $nri_plugins_owner"
+            echo "repository=$nri_plugins_owner/community-operators" >> $GITHUB_ENV
+          else
+            echo "repository=DELME-k8s-operatorhub/community-operators" >> $GITHUB_ENV
+          fi
+          echo "GITHUB_ENV: $GITHUB_ENV"
+          cat "$GITHUB_ENV"
       - name: Build the bundle
         run: pushd deployment/operator && VERSION=0.8.1 make bundle && popd
 
