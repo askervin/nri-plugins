@@ -72,6 +72,7 @@ type cpuTreeAllocatorOptions struct {
 	preferCloseToDevices        []string
 	preferFarFromDevices        []string
 	virtDevCpusets              map[string][]cpuset.CPUSet
+	deviceUpdateOnEveryCpu      func(cpuset.CPUSet)
 }
 
 var emptyCpuSet = cpuset.New()
@@ -548,6 +549,7 @@ func (ta *cpuTreeAllocator) sorterRelease(tnas []cpuTreeNodeAttributes) func(int
 func (ta *cpuTreeAllocator) ResizeCpus(currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
 	resizers := []cpuResizerFunc{
 		ta.resizeCpusOnlyIfNecessary,
+		ta.resizeCpusWithDynamicDeviceHints,
 		ta.resizeCpusWithDevices,
 		ta.resizeCpusOneAtATime,
 		ta.resizeCpusMaxLocalSet,
@@ -599,10 +601,57 @@ func (ta *cpuTreeAllocator) resizeCpusOnlyIfNecessary(resizers []cpuResizerFunc,
 	return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
 }
 
+// resizeCpusWithDynamicDeviceHints handles allocating CPUs in
+// scenarios where each individual CPU allocation may change which
+// CPUs are good after it. If the deviceUpdateOnEveryCpu callback is
+// set, it is called after each CPU allocation to update the state of
+// virtual devices. If not set or if CPUs are released instead of
+// allocated, call next resizers.
+func (ta *cpuTreeAllocator) resizeCpusWithDynamicDeviceHints(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	log.Debug("  - DELME: enter resizeCpusWithDynamicDeviceHints, currentCpus=%q, delta=%d", currentCpus, delta)
+	if ta.options.deviceUpdateOnEveryCpu == nil {
+		return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
+	}
+	log.Debug("  - DELME: current virtDevs %+v", ta.options.virtDevCpusets)
+	ta.options.deviceUpdateOnEveryCpu(currentCpus)
+	log.Debug("  - DELME: updated virtDevs %+v", ta.options.virtDevCpusets)
+	if delta <= 0 {
+		return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
+	}
+	// Update virtual devices on every CPU allocation. Request
+	// first allocation of all delta CPUs, but choose only one CPU
+	// from returned CPU set. Requesting initially a large CPU set
+	// increases likelihood that the first CPU that we choose into
+	// the addedCpus set works as a good seed for getting many
+	// CPUs that are close to each other.
+	addFrom, removeFrom, err := ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
+	if err != nil || addFrom.Size() < delta {
+		log.Debugf("  - DELME: big allocation of %d CPUs causes immediate return. addFrom size: %d, err: %v", delta, addFrom.Size(), err)
+		return addFrom, removeFrom, err
+	}
+	addedCpus := cpuset.New()
+	for {
+		addedCpu := addFrom.List()[0]
+		addedCpus = addedCpus.Union(cpuset.New(addedCpu))
+		if addedCpus.Size() >= delta {
+			break
+		}
+		currentCpus = currentCpus.Union(cpuset.New(addedCpu))
+		freeCpus = freeCpus.Difference(currentCpus)
+		ta.options.deviceUpdateOnEveryCpu(currentCpus)
+		addFrom, removeFrom, err = ta.nextCpuResizer(resizers, currentCpus, freeCpus, 1)
+		if err != nil || addFrom.Size() < 1 {
+			return addedCpus, removeFrom, err
+		}
+	}
+	return addedCpus.Union(addFrom), removeFrom, err
+}
+
 // resizeCpusWithDevices prefers allocating CPUs from those freeCpus
 // that are topologically close to preferred devices, and releasing
 // those currentCpus that are not.
 func (ta *cpuTreeAllocator) resizeCpusWithDevices(resizers []cpuResizerFunc, currentCpus, freeCpus cpuset.CPUSet, delta int) (cpuset.CPUSet, cpuset.CPUSet, error) {
+	log.Debug("  - DELME: enter resizeCpusWithDevices, currentCpus=%q, delta=%d", currentCpus, delta)
 	// allCloseCpuSets contains cpusets in the order of priority.
 	// Applying the first cpusets in it are prioritized over ones
 	// after them.
@@ -618,6 +667,7 @@ func (ta *cpuTreeAllocator) resizeCpusWithDevices(resizers []cpuResizerFunc, cur
 		}
 	}
 	if len(allCloseCpuSets) == 0 {
+		log.Debug("  - no close/far device hints")
 		return ta.nextCpuResizer(resizers, currentCpus, freeCpus, delta)
 	}
 	if delta > 0 {
