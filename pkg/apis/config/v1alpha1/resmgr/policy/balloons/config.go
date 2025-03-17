@@ -94,6 +94,8 @@ type Config struct {
 	// options has no effect unless agent:NodeResourceTopology
 	// enables basic topology exposure.
 	ShowContainersInNrt *bool `json:"showContainersInNrt,omitempty"`
+	// LoadClasses specify available loads in balloon types.
+	LoadClasses []LoadClass `json:"loadClasses,omitempty"`
 }
 
 type CPUTopologyLevel string
@@ -202,6 +204,11 @@ type BalloonDef struct {
 	// CpuClass controls how CPUs of a balloon are (re)configured
 	// whenever a balloon is created, inflated or deflated.
 	CpuClass string `json:"cpuClass,omitempty"`
+	// Loads lists load classes corresponding to expected load
+	// caused by containers in these balloons. CPUs are selected
+	// to balloons avoiding overload.
+	// +listType=set
+	Loads []string `json:"loads,omitempty"`
 	// MinBalloons is the number of balloon instances that always
 	// exist even if they would become empty. At init this number
 	// of instances will be created before assigning any
@@ -259,6 +266,38 @@ type BalloonDef struct {
 	// may generate a lot of traffic and large CR object updates
 	// to Kubernetes API server.
 	ShowContainersInNrt *bool `json:"showContainersInNrt,omitempty"`
+}
+
+// LoadClass specification example:
+//
+// - name: avx
+//   # massive use of vector instruction on one CPU consumes compute units
+//   # of the sibling hyperthreaded CPU on the same physical core.
+//   level: core
+//   # avoid using sibling hyperthreaded CPU on the same physical core
+//   # even within the same balloon.
+//   avoidSameLevelWithinBalloon: true
+// - name: memory-bandwidth
+//   # memory bandwidth intensive workloads cause L2 cache misses
+//   # on workloads using the same L2 cache.
+//   level: l2cache
+//   # however, select CPUs with in the same L2 cache to the same balloon
+//   # as workload threads may share data in the L2 cache.
+//   avoidSameLevelWithinBalloon: false
+type LoadClass struct {
+	// Name of the load class.
+	// +kube:validation:Required
+	Name string `json:"name"`
+	// Level specifies the topology level loaded by the load class.
+	// +kubebuilder:validation:Enum=system;package;die;numa;l2cache;core;thread
+	// +kubebuilder:validation:Format:string
+	Level CPUTopologyLevel `json:"level"`
+	// AvoidSameLevelWithinBalloon controls whether containers
+	// in the same balloon should avoid using CPUs of the same
+	// level of the load class. The default is false: containers
+	// in the same balloon may use CPUs of the same level of the
+	// load class.
+	AvoidSameLevelWithinBalloon bool `json:"avoidSameLevelWithinBalloon,omitempty"`
 }
 
 // String stringifies a BalloonDef
