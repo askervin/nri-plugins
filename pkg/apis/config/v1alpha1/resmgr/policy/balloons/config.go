@@ -202,6 +202,15 @@ type BalloonDef struct {
 	// CpuClass controls how CPUs of a balloon are (re)configured
 	// whenever a balloon is created, inflated or deflated.
 	CpuClass string `json:"cpuClass,omitempty"`
+	// LoadClasses lists types of load induced by containers in
+	// these balloons. Supported classes are the
+	// following. "membw" avoids CPUs that share caches with CPUs
+	// in other "membw" load balloons. "avx" avoids selecting
+	// hyperthreads from the same core where other thread is
+	// allocated to an "avx" balloon.
+	// +listType=set
+	// +kubebuilder:validation:items:XValidation:rule="self == 'membw' || self == 'avx'",messageExpression="\"invalid load class: \" + self + \", expected avx or membw\""
+	LoadClasses []string `json:"loadClasses,omitempty"`
 	// MinBalloons is the number of balloon instances that always
 	// exist even if they would become empty. At init this number
 	// of instances will be created before assigning any

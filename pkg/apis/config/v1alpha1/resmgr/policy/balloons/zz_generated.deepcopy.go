@@ -63,6 +63,11 @@ func (in *BalloonDef) DeepCopyInto(out *BalloonDef) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.LoadClasses != nil {
+		in, out := &in.LoadClasses, &out.LoadClasses
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.PreferCloseToDevices != nil {
 		in, out := &in.PreferCloseToDevices, &out.PreferCloseToDevices
 		*out = make([]string, len(*in))
