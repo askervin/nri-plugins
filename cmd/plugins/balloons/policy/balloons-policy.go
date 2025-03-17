@@ -64,8 +64,38 @@ const (
 	virtDevECores = "efficient cores"
 	// virtDevPCores is the name of a virtual device close to
 	// high performance cores.
-	virtDevPCores = "performance cores"
+	virtDevPCores        = "performance cores"
+	virtDevLoadedCore    = "loaded core"
+	virtDevLoadedCacheL2 = "loaded cache l2"
 )
+
+type loadClassType struct {
+	name                       string
+	virtDevs                   []string
+	updateOnEveryCpuAllocation bool
+}
+
+// loadClassVirtDevs maps load classes to virtual device names.
+var predefinedLoadClasses = map[string]loadClassType{
+	"membw": {
+		name:     "membw",
+		virtDevs: []string{virtDevLoadedCacheL2},
+	},
+	"avx": {
+		name:                       "avx",
+		virtDevs:                   []string{virtDevLoadedCore},
+		updateOnEveryCpuAllocation: true,
+	},
+}
+
+func virtDevsChangeDuringCpuAllocation(lcs []string) bool {
+	for _, lc := range lcs {
+		if loadClass, ok := predefinedLoadClasses[lc]; ok && loadClass.updateOnEveryCpuAllocation {
+			return true
+		}
+	}
+	return false
+}
 
 // balloons contains configuration and runtime attributes of the balloons policy
 type balloons struct {
@@ -109,9 +139,12 @@ type Balloon struct {
 	PodIDs map[string][]string
 	// Groups is a multiset (group-by-value -> appearance-count)
 	// of evaluated GroupBy expressions on containers in the balloon.
-	Groups       map[string]int
-	cpuTreeAlloc *cpuTreeAllocator
-	memTypeMask  libmem.TypeMask
+	Groups map[string]int
+	// LoadedVirtDevs is a set of virtual devices under load due
+	// to this balloon.
+	LoadedVirtDevs map[string]struct{}
+	cpuTreeAlloc   *cpuTreeAllocator
+	memTypeMask    libmem.TypeMask
 }
 
 var log logger.Logger = logger.NewLogger("policy")
@@ -744,6 +777,53 @@ func (p *balloons) forgetCpuClass(bln *Balloon) {
 	}
 }
 
+func (p *balloons) updateLoadedVirtDevsInAllocatorOptions(allocatorOptions *cpuTreeAllocatorOptions, lcs []string) map[string]struct{} {
+	loadedVirtDevs := make(map[string]struct{})
+	for _, lc := range lcs {
+		for _, virtDev := range predefinedLoadClasses[lc].virtDevs {
+			if _, ok := loadedVirtDevs[virtDev]; ok {
+				// already handled this type of load
+				// virtual through some other load class
+				continue
+			}
+			// Go through all balloons that share the same
+			// loaded virtual device and collect their
+			// CPUs into vdCpus (virtual device CPUs)
+			vdCpus := cpuset.New()
+			for _, bln := range p.balloons {
+				if _, ok := bln.LoadedVirtDevs[virtDev]; !ok {
+					continue
+				}
+				vdCpus = vdCpus.Union(bln.Cpus)
+			}
+			loadedVirtDevs[virtDev] = struct{}{}
+			p.updateLoadedVirtDev(allocatorOptions, virtDev, vdCpus, true)
+		}
+	}
+	return loadedVirtDevs
+}
+
+func (p *balloons) updateLoadedVirtDev(allocatorOptions *cpuTreeAllocatorOptions, virtDevName string, vdCpus cpuset.CPUSet, overwrite bool) {
+	log.Debugf("    ... updating loaded virtual device %q with CPUs %q", virtDevName, vdCpus)
+	prevCpus := cpuset.New()
+	if !overwrite && len(allocatorOptions.virtDevCpusets[virtDevName]) > 0 {
+		prevCpus = allocatorOptions.virtDevCpusets[virtDevName][0]
+	}
+	// Calculate all CPUs within the blast radius that depends on
+	// the loaded virtual device.
+	switch virtDevName {
+	case virtDevLoadedCore:
+		// add all CPUs from same cores of virtual device CPUs
+		allocatorOptions.virtDevCpusets[virtDevName] = []cpuset.CPUSet{prevCpus.Union(p.cpuTree.system().AllThreadsForCPUs(vdCpus))}
+	case virtDevLoadedCacheL2:
+		// add all CPUs from the same L2 cache of virtual
+		// device CPUs
+		allocatorOptions.virtDevCpusets[virtDevName] = []cpuset.CPUSet{prevCpus.Union(p.cpuTree.system().AllCPUsSharingNthLevelCacheWithCPUs(2, vdCpus))}
+	default:
+		log.Error("internal error: unknown loaded virtual device %q", virtDevName)
+	}
+}
+
 func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, error) {
 	var cpus cpuset.CPUSet
 	var err error
@@ -788,30 +868,46 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 	if blnDef.PreferSpreadOnPhysicalCores != nil {
 		allocatorOptions.preferSpreadOnPhysicalCores = *blnDef.PreferSpreadOnPhysicalCores
 	}
+	loadedVirtDevs := p.updateLoadedVirtDevsInAllocatorOptions(&allocatorOptions, blnDef.LoadClasses)
+	log.Debugf("balloon %s[%d] virtDevCpusets: %+v", blnDef.Name, freeInstance, allocatorOptions.virtDevCpusets)
 	cpuTreeAlloc := p.cpuTree.NewAllocator(allocatorOptions)
 
-	// Allocate CPUs
-	addFromCpus, _, err := cpuTreeAlloc.ResizeCpus(cpuset.New(), p.freeCpus, blnDef.MinCpus)
-	if err != nil {
-		return nil, balloonsError("failed to choose a cpuset for allocating MinCpus: %d from free cpus %q", blnDef.MinCpus, p.freeCpus)
-	}
-	cpus, err = p.cpuAllocator.AllocateCpus(&addFromCpus, blnDef.MinCpus, blnDef.AllocatorPriority.Value().Option())
-	if err != nil {
-		return nil, balloonsError("could not allocate minCpus (%d) for balloon %s[%d]: %w", blnDef.MinCpus, blnDef.Name, freeInstance, err)
-	}
-	p.freeCpus = p.freeCpus.Difference(cpus)
+	// // Allocate CPUs
+	// addFromCpus, _, err := cpuTreeAlloc.ResizeCpus(cpuset.New(), p.freeCpus, blnDef.MinCpus)
+	// if err != nil {
+	// 	return nil, balloonsError("failed to choose a cpuset for allocating MinCpus: %d from free cpus %q", blnDef.MinCpus, p.freeCpus)
+	// }
+	// cpus, err = p.cpuAllocator.AllocateCpus(&addFromCpus, blnDef.MinCpus, blnDef.AllocatorPriority.Value().Option())
+	// if err != nil {
+	// 	return nil, balloonsError("could not allocate minCpus (%d) for balloon %s[%d]: %w", blnDef.MinCpus, blnDef.Name, freeInstance, err)
+	// }
+	// p.freeCpus = p.freeCpus.Difference(cpus)
 	memTypeMask, _ := memTypeMaskFromStringList(blnDef.MemoryTypes)
 	bln := &Balloon{
-		Def:            blnDef,
-		Instance:       freeInstance,
-		Groups:         make(map[string]int),
-		PodIDs:         make(map[string][]string),
-		Cpus:           cpus,
+		Def:      blnDef,
+		Instance: freeInstance,
+		Groups:   make(map[string]int),
+		PodIDs:   make(map[string][]string),
+		// Cpus:           cpus,
+		Cpus:           cpuset.New(),
 		SharedIdleCpus: cpuset.New(),
-		Mems:           p.closestMems(cpus),
+		// Mems:           p.closestMems(cpus),
+		LoadedVirtDevs: loadedVirtDevs,
 		cpuTreeAlloc:   cpuTreeAlloc,
 		memTypeMask:    memTypeMask,
 	}
+	if virtDevsChangeDuringCpuAllocation(blnDef.LoadClasses) {
+		log.Debug("DELME - virtDevs of classes %v change during allocations", blnDef.LoadClasses)
+		cpuTreeAlloc.options.deviceUpdateOnEveryCpu = func(currentCpus cpuset.CPUSet) {
+			for _, lc := range blnDef.LoadClasses {
+				for _, virtDev := range predefinedLoadClasses[lc].virtDevs {
+					p.updateLoadedVirtDev(&cpuTreeAlloc.options, virtDev, currentCpus, false)
+				}
+			}
+		}
+	}
+	p.resizeBalloon(bln, blnDef.MinCpus*1000)
+	bln.Mems = p.closestMems(bln.Cpus)
 	if confCpus {
 		if err = p.useCpuClass(bln); err != nil {
 			log.Errorf("failed to apply CPU configuration to new balloon %s[%d] (cpus: %s): %w", blnDef.Name, freeInstance, cpus, err)
@@ -1488,6 +1584,22 @@ func (p *balloons) fillFarFromDevices(blnDefs []*BalloonDef) {
 			}
 		}
 	}
+	// Add virtual devices related to load classes to be avoided.
+	for _, blnDef := range blnDefs {
+		addedVirtDevs := map[string]struct{}{}
+		for _, lc := range blnDef.LoadClasses {
+			loadClass, ok := predefinedLoadClasses[lc]
+			if !ok {
+				continue
+			}
+			for _, virtDev := range loadClass.virtDevs {
+				if _, ok := addedVirtDevs[virtDev]; ok {
+					continue
+				}
+				blnDef.PreferFarFromDevices = append(blnDef.PreferFarFromDevices, virtDev)
+			}
+		}
+	}
 }
 
 // memTypeMaskFromStringList returns memory type mask corresponding a
@@ -1533,6 +1645,8 @@ func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
 			log.Warnf("failed to apply CPU class to balloon %s: %v", bln.PrettyName(), err)
 		}
 	}()
+	p.updateLoadedVirtDevsInAllocatorOptions(&bln.cpuTreeAlloc.options, bln.Def.LoadClasses)
+	//log.Debugf("resizing balloon %s[%d] virtDevCpusets: %+v", bln.Def.Name, freeInstance, allocatorOptions.virtDevCpusets)
 	if cpuCountDelta > 0 {
 		// Inflate the balloon.
 		addFromCpus, _, err := bln.cpuTreeAlloc.ResizeCpus(bln.Cpus, p.freeCpus, cpuCountDelta)
