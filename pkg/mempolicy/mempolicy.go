@@ -32,8 +32,8 @@ const (
 	MPOL_PREFERRED_MANY
 	MPOL_WEIGHTED_INTERLEAVE
 
-	MPOL_F_STATIC_NODES uint = (1 << 15)
-	MPOL_F_RELATIVE_NODES uint =(1 << 14)
+	MPOL_F_STATIC_NODES   uint = (1 << 15)
+	MPOL_F_RELATIVE_NODES uint = (1 << 14)
 	MPOL_F_NUMA_BALANCING uint = (1 << 13)
 
 	MAX_NUMA_NODES = 1024
@@ -77,7 +77,7 @@ func SetMempolicy(mpol uint, nodes []int) error {
 func GetMempolicy() (uint, []int, error) {
 	var mpol uint
 	maxNode := uint64(MAX_NUMA_NODES)
-	nodeMask := make([]uint64, maxNode / 64)
+	nodeMask := make([]uint64, maxNode/64)
 	nodeMaskPtr := unsafe.Pointer(&nodeMask[0])
 	_, _, errno := syscall.Syscall(SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mpol)), uintptr(nodeMaskPtr), uintptr(maxNode))
 	if errno != 0 {
@@ -85,8 +85,8 @@ func GetMempolicy() (uint, []int, error) {
 	}
 
 	nodes := make([]int, 0)
-	for i := 0; i < int(maxNode); i++ {
-		if (nodeMask[i / 64] & (1 << (i % 64))) != 0 {
+	for i := range int(maxNode) {
+		if (nodeMask[i/64] & (1 << (i % 64))) != 0 {
 			nodes = append(nodes, i)
 		}
 	}
