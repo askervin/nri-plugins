@@ -11,13 +11,13 @@ import (
 	"strings"
 	"syscall"
 
-	// system "github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/mempolicy"
+	system "github.com/containers/nri-plugins/pkg/sysfs"
+	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
 const (
 	SYS_SET_MEMPOLICY = 238
-
 )
 
 // parseListSet parses "list set" syntax ("0,61-63,2") into a list ([0, 61, 62, 63, 2])
@@ -55,6 +55,22 @@ func parseListSet(listSet string) ([]int, error) {
 	return result, nil
 }
 
+func nodesWithinDistance(sys system.System, maxDist int, fromNodes ...idset.ID) idset.IDSet {
+	result := idset.NewIDSet()
+	for _, toNode := range sys.NodeIDs() {
+		if fromNodes.Has(toNode) {
+			result.Add(toNode)
+			continue
+		}
+		for _, fromNode := range fromNodes {
+			if sys.NodeDistance(fromNode, toNode) <= maxDist {
+				result.Add(toNode)
+			}
+		}
+	}
+	return result
+}
+
 func main() {
 	var err error
 
@@ -80,7 +96,7 @@ func main() {
 
 	nodes := []int{}
 	if *nodesFlag != "" {
-		if nodes, err = parseListSet(*nodesFlag); err !=  nil {
+		if nodes, err = parseListSet(*nodesFlag); err != nil {
 			log.Fatalf("invalid nodes: %v", err)
 		}
 	}
