@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -11,13 +10,19 @@ import (
 	"strings"
 	"syscall"
 
+	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/mempolicy"
 	system "github.com/containers/nri-plugins/pkg/sysfs"
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
 const (
 	SYS_SET_MEMPOLICY = 238
+)
+
+var (
+	log = logger.NewLogger("mpolset")
 )
 
 // parseListSet parses "list set" syntax ("0,61-63,2") into a list ([0, 61, 62, 63, 2])
@@ -55,14 +60,14 @@ func parseListSet(listSet string) ([]int, error) {
 	return result, nil
 }
 
-func nodesWithinDistance(sys system.System, maxDist int, fromNodes ...idset.ID) idset.IDSet {
+func nodesWithinDistance(sys system.System, maxDist int, fromNodes idset.IDSet) idset.IDSet {
 	result := idset.NewIDSet()
 	for _, toNode := range sys.NodeIDs() {
 		if fromNodes.Has(toNode) {
 			result.Add(toNode)
 			continue
 		}
-		for _, fromNode := range fromNodes {
+		for _, fromNode := range fromNodes.Members() {
 			if sys.NodeDistance(fromNode, toNode) <= maxDist {
 				result.Add(toNode)
 			}
@@ -71,17 +76,34 @@ func nodesWithinDistance(sys system.System, maxDist int, fromNodes ...idset.ID) 
 	return result
 }
 
+func nodesForCPUs(sys system.System, cpus cpuset.CPUSet) (idset.IDSet, error) {
+	result := idset.NewIDSet()
+	sysCPUs := sys.PresentCPUs()
+	for _, id := range cpus.UnsortedList() {
+		if !sysCPUs.Contains(id) {
+			return nil, fmt.Errorf("CPU %d not in system CPUs %v", id, sysCPUs.List())
+		}
+		cpu := sys.CPU(id)
+		result.Add(cpu.NodeID())
+	}
+	fmt.Printf("nodesForCPUs(%v): %v\n", cpus.List(), result)
+	return result, nil
+}
+
 func main() {
 	var err error
+	var sys system.System
 
 	runtime.LockOSThread()
 	debug.SetGCPercent(-1)
 	runtime.GOMAXPROCS(1)
-	log.SetPrefix("mpolset: ")
-	log.SetFlags(0)
+	//log.SetPrefix("mpolset: ")
+	// log.SetFlags(0)
 	modeFlag := flag.Uint("mode", 0, "Memory policy mode")
-	nodesFlag := flag.String("nodes", "", "Comma-separated list of NUMA nodes")
+	nodesFlag := flag.String("nodes", "", "Comma-separated list of nodes, e.g. 0,1-3")
 	ignoreErrorsFlag := flag.Bool("ignore-errors", false, "Ignore errors when setting memory policy")
+	cpusFlag := flag.String("cpus", "", "Comma-separated list of CPUs, e.g. 24-47,97-99")
+	distFlag := flag.Int("dist", 0, "Max distance from given -cpus or -nodes when setting memory policy")
 	flag.Parse()
 
 	args := flag.Args()
@@ -94,21 +116,48 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Build a list of nodes from cpus or nodes.
 	nodes := []int{}
-	if *nodesFlag != "" {
-		if nodes, err = parseListSet(*nodesFlag); err != nil {
-			log.Fatalf("invalid nodes: %v", err)
+	switch {
+	case *cpusFlag != "" && *nodesFlag != "":
+		log.Fatalf("cannot specify both cpus and nodes")
+	case *cpusFlag != "":
+		cpus, err := parseListSet(*cpusFlag)
+		if err != nil {
+			log.Fatalf("invalid -cpus: %v", err)
+		}
+		sys, err = system.DiscoverSystem(system.DiscoverCPUTopology)
+		if err != nil {
+			log.Fatalf("failed to discover CPU topology needed by -cpus: %v", err)
+		}
+		nodeset, err := nodesForCPUs(sys, cpuset.New(cpus...))
+		if err != nil {
+			log.Fatalf("failed to get nodes from -cpus %q: %v", *cpusFlag, err)
+		}
+		for _, node := range nodeset.Members() {
+			nodes = append(nodes, int(node))
+		}
+	case *nodesFlag != "":
+		nodes, err = parseListSet(*nodesFlag)
+		if err != nil {
+			log.Fatalf("invalid -nodes: %v", err)
 		}
 	}
-	if len(nodes) == 0 && *modeFlag != 0 {
-		log.Fatalf("no nodes specified but required by mode %d", *modeFlag)
+
+	if *distFlag > 0 {
+		if sys == nil {
+			sys, err = system.DiscoverSystem(system.DiscoverCPUTopology)
+			if err != nil {
+				log.Fatalf("failed to discover CPU topology needed by -dist: %v", err)
+			}
+		}
+		expandedNodes := nodesWithinDistance(sys, *distFlag, idset.NewIDSet(nodes...)).Members()
+		log.Info("nodes within distance %d of %v: %v", *distFlag, nodes, expandedNodes)
+		nodes = expandedNodes
 	}
 
-	// TODO: discover system only if needed
-	//discoverSystem(*hostRootFlag)
-
 	if err := mempolicy.SetMempolicy(*modeFlag, nodes); err != nil {
-		log.Printf("SetMempolicy failed: %v", err)
+		log.Errorf("SetMempolicy failed: %v", err)
 		if ignoreErrorsFlag == nil || !*ignoreErrorsFlag {
 			os.Exit(1)
 		}
