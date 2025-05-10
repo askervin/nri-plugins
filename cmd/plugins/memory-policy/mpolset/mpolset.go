@@ -1,3 +1,19 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// mpolset is an executable that sets the memory policy for a process
+// and then executes the specified command.
 package main
 
 import (
@@ -76,18 +92,28 @@ func nodesWithinDistance(sys system.System, maxDist int, fromNodes idset.IDSet) 
 	return result
 }
 
-func nodesForCPUs(sys system.System, cpus cpuset.CPUSet) (idset.IDSet, error) {
+func nodesForCPUs(sys system.System, cpus cpuset.CPUSet) idset.IDSet {
+	result := sys.IDSetForCPUs(cpus, func(cpu system.CPU) idset.ID { return cpu.NodeID() })
+	log.Debug("nodesForCPUs(%v): %v\n", cpus.List(), result)
+	return result
+}
+
+func packagesForCPUs(sys system.System, cpus cpuset.CPUSet) idset.IDSet {
+	result := sys.IDSetForCPUs(cpus, func(cpu system.CPU) idset.ID { return cpu.PackageID() })
+	log.Debug("packagesForCPUs(%v): %v\n", cpus.List(), result)
+	return result
+}
+
+func nodesForPackages(sys system.System, packages idset.IDSet) idset.IDSet {
 	result := idset.NewIDSet()
-	sysCPUs := sys.PresentCPUs()
-	for _, id := range cpus.UnsortedList() {
-		if !sysCPUs.Contains(id) {
-			return nil, fmt.Errorf("CPU %d not in system CPUs %v", id, sysCPUs.List())
+	for _, nodeId := range sys.NodeIDs() {
+		pkgId := sys.Node(nodeId).PackageID()
+		if packages.Has(pkgId) {
+			result.Add(nodeId)
 		}
-		cpu := sys.CPU(id)
-		result.Add(cpu.NodeID())
 	}
-	fmt.Printf("nodesForCPUs(%v): %v\n", cpus.List(), result)
-	return result, nil
+	log.Debug("nodesForPackages(%v): %v\n", packages.SortedMembers(), result)
+	return result
 }
 
 func main() {
@@ -97,14 +123,24 @@ func main() {
 	runtime.LockOSThread()
 	debug.SetGCPercent(-1)
 	runtime.GOMAXPROCS(1)
-	//log.SetPrefix("mpolset: ")
-	// log.SetFlags(0)
 	modeFlag := flag.Uint("mode", 0, "Memory policy mode")
 	nodesFlag := flag.String("nodes", "", "Comma-separated list of nodes, e.g. 0,1-3")
-	ignoreErrorsFlag := flag.Bool("ignore-errors", false, "Ignore errors when setting memory policy")
 	cpusFlag := flag.String("cpus", "", "Comma-separated list of CPUs, e.g. 24-47,97-99")
+	pkgsFlag := flag.String("pkgs", "", "Comma-separated list of packages, e.g. 2-3")
 	distFlag := flag.Int("dist", 0, "Max distance from given -cpus or -nodes when setting memory policy")
+	ignoreErrorsFlag := flag.Bool("ignore-errors", false, "Ignore errors when setting memory policy")
+	verboseFlag := flag.Bool("v", false, "Enable verbose logging")
+	veryVerboseFlag := flag.Bool("vv", false, "Enable very verbose logging")
 	flag.Parse()
+
+	logger.SetLevel(logger.LevelError)
+	if *verboseFlag || *veryVerboseFlag {
+		logger.SetLevel(logger.LevelDebug)
+		log.EnableDebug(true)
+		if *veryVerboseFlag {
+			logger.Get("sysfs").EnableDebug(true)
+		}
+	}
 
 	args := flag.Args()
 	if len(args) < 1 {
@@ -116,31 +152,49 @@ func main() {
 		os.Exit(0)
 	}
 
+	nodeSources := 0
+	for _, nodeSource := range []*string{cpusFlag, nodesFlag, pkgsFlag} {
+		if nodeSource != nil && *nodeSource != "" {
+			nodeSources++
+		}
+	}
+
+	if nodeSources > 1 {
+		log.Fatalf("cannot specify more than one of -cpus, -nodes, or -pkgs")
+	}
+	if nodeSources == 1 {
+		sys, err = system.DiscoverSystem(system.DiscoverCPUTopology)
+		if err != nil {
+			log.Fatalf("failed to discover CPU topology needed by -cpus, -nodes, or -pkgs: %v", err)
+		}
+	}
+
 	// Build a list of nodes from cpus or nodes.
 	nodes := []int{}
 	switch {
-	case *cpusFlag != "" && *nodesFlag != "":
-		log.Fatalf("cannot specify both cpus and nodes")
 	case *cpusFlag != "":
 		cpus, err := parseListSet(*cpusFlag)
 		if err != nil {
 			log.Fatalf("invalid -cpus: %v", err)
 		}
-		sys, err = system.DiscoverSystem(system.DiscoverCPUTopology)
 		if err != nil {
 			log.Fatalf("failed to discover CPU topology needed by -cpus: %v", err)
 		}
-		nodeset, err := nodesForCPUs(sys, cpuset.New(cpus...))
-		if err != nil {
-			log.Fatalf("failed to get nodes from -cpus %q: %v", *cpusFlag, err)
-		}
-		for _, node := range nodeset.Members() {
+		for _, node := range nodesForCPUs(sys, cpuset.New(cpus...)).SortedMembers() {
 			nodes = append(nodes, int(node))
 		}
 	case *nodesFlag != "":
 		nodes, err = parseListSet(*nodesFlag)
 		if err != nil {
 			log.Fatalf("invalid -nodes: %v", err)
+		}
+	case *pkgsFlag != "":
+		pkgs, err := parseListSet(*pkgsFlag)
+		if err != nil {
+			log.Fatalf("invalid -pkgs: %v", err)
+		}
+		for _, node := range nodesForPackages(sys, idset.NewIDSet(pkgs...)).SortedMembers() {
+			nodes = append(nodes, int(node))
 		}
 	}
 
@@ -151,19 +205,20 @@ func main() {
 				log.Fatalf("failed to discover CPU topology needed by -dist: %v", err)
 			}
 		}
-		expandedNodes := nodesWithinDistance(sys, *distFlag, idset.NewIDSet(nodes...)).Members()
+		expandedNodes := nodesWithinDistance(sys, *distFlag, idset.NewIDSet(nodes...)).SortedMembers()
 		log.Info("nodes within distance %d of %v: %v", *distFlag, nodes, expandedNodes)
 		nodes = expandedNodes
 	}
 
+	log.Debug("setting memory policy: %d, nodes: %v\n", *modeFlag, nodes)
 	if err := mempolicy.SetMempolicy(*modeFlag, nodes); err != nil {
 		log.Errorf("SetMempolicy failed: %v", err)
 		if ignoreErrorsFlag == nil || !*ignoreErrorsFlag {
 			os.Exit(1)
 		}
-
 	}
 
+	log.Debug("executing: %v\n", args)
 	err = syscall.Exec(args[0], args, os.Environ())
 	if err != nil {
 		log.Fatalf("Exec failed: %v", err)
