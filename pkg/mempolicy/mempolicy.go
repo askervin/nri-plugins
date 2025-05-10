@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// mempolicy package provides low-level functions to set and get
+// default memory policyfor a process using the Linux kernel's
+// set_mempolicy and get_mempolicy syscalls.
 package mempolicy
 
 import (
