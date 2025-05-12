@@ -19,9 +19,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
-	_ "sigs.k8s.io/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/sirupsen/logrus"
 
@@ -30,6 +31,8 @@ import (
 
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	system "github.com/containers/nri-plugins/pkg/sysfs"
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
+	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
 type plugin struct {
@@ -38,6 +41,12 @@ type plugin struct {
 }
 
 type pluginConfig struct {
+}
+
+type annParameters struct {
+	Mode  string   `json:"mode"`
+	Nodes string   `json:"nodes"`
+	Flags []string `json:"flags,omitempty"`
 }
 
 const (
@@ -94,15 +103,11 @@ func associate(m map[string]string, key, value string, override bool) bool {
 // values that are effective for a container.
 // Example: a container-specific pod annotation
 //
-//	mode.memory-policy.nri.io/CTRNAME: MPOL_INTERLEAVE
-//	nodes.memory-policy.nri.io/CTRNAME: same-package
-//	flags.memory-policy.nri.io/CTRNAME: MPOL_F_STATIC_NODES
+// parameters.memory-policy.nri.io/container.CTRNAME: |+
 //
-// shows up as
-//
-//	effAnn["mode"] = "MPOL_INTERLEAVE"
-//	effAnn["nodes"] = "same-package"
-//	effAnn["flags"] = "MPOL_F_STATIC_NODES"
+//	mode: MPOL_INTERLEAVE
+//	nodes: cpu-packages
+//	flags: [MPOL_F_STATIC_NODES]
 func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]string {
 	effAnn := map[string]string{}
 	for key, value := range pod.GetAnnotations() {
@@ -111,7 +116,6 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]st
 			// Override possibly already found pod-level annotation.
 			log.Tracef("- found container-specific annotation %q", key)
 			associate(effAnn, annPrefix, value, true)
-			effAnn[annPrefix] = value
 			continue
 		}
 		annPrefix, hasSuffix = strings.CutSuffix(key, annotationSuffix)
@@ -130,73 +134,123 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]st
 	return effAnn
 }
 
-// CreateContainer modifies container when it is being created.
-func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
-	annMode := ""
-	annNodes := ""
-	annFlags := ""
-	ppName := pprintCtr(pod, ctr)
-	log.Tracef("CreateContainer %s", ppName)
-	for annPrefix, value := range effectiveAnnotations(pod, ctr) {
-		switch {
-		case annPrefix == "mode":
-			annMode = value
-		case annPrefix == "nodes":
-			annNodes = value
-		case annPrefix == "flags":
-			annFlags = value
+func getParametersAnnotation(ann map[string]string) (*annParameters, error) {
+	if value, ok := ann["parameters"]; ok {
+		params := &annParameters{}
+		if err := yaml.Unmarshal([]byte(value), params); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal parameters: %w", err)
 		}
+		return params, nil
 	}
-	if annMode == "" {
-		log.Tracef("no memory policy mode specified for %s", ppName)
-		return nil, nil, nil
+	return nil, nil
+}
+
+func applyParameters(ctr *api.Container, ppName string, parameters *annParameters) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	var err error
+	mode, ok := api.MpolMode_value[parameters.Mode]
+	if !ok {
+		log.Errorf("invalid memory policy mode %q for %s", parameters.Mode, ppName)
+		return nil, nil, fmt.Errorf("invalid memory policy mode %q", parameters.Mode)
 	}
 
-	mode, ok := api.MpolMode_value[annMode]
-	if !ok {
-		log.Errorf("invalid memory policy mode %q for %s", annMode, ppName)
-		return nil, nil, fmt.Errorf("invalid memory policy mode %q", annMode)
+	nodeMask := libmem.NewNodeMask()
+	ctrCpuset := sys.OnlineCPUs()
+	if ctrCpus := ctr.GetLinux().GetResources().GetCpu().GetCpus(); ctrCpus != "" {
+		ctrCpuset, err = cpuset.Parse(ctrCpus)
+		if err != nil {
+			log.Errorf("failed to parse CPUs %q: %v", ctrCpus, err)
+			return nil, nil, fmt.Errorf("failed to parse CPUs %q: %v", ctrCpus, err)
+		}
 	}
+
+	switch {
+	case parameters.Nodes == "cpu-packages":
+		pkgs := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
+			return cpu.PackageID()
+		})
+		nodeMask = libmem.NewNodeMask()
+		log.Tracef("nodeids %v", sys.NodeIDs())
+		for _, nodeId := range sys.NodeIDs() {
+			log.Tracef("node %d: package %d", nodeId, sys.Node(nodeId).PackageID())
+			nodePkgId := sys.Node(nodeId).PackageID()
+			if pkgs.Has(nodePkgId) {
+				nodeMask = nodeMask.Set(nodeId)
+			}
+		}
+		log.Tracef("- cpu-packages with CPUs %q, packages: %q, nodes: %q", ctrCpuset, pkgs, nodeMask.MemsetString())
+
+	case parameters.Nodes == "cpu-nodes":
+		nodeIds := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
+			return cpu.NodeID()
+		})
+		nodeMask = libmem.NewNodeMask(nodeIds.Members()...)
+		log.Tracef("- cpu-nodes with CPUs %q, nodes: %q", ctrCpuset, nodeMask.MemsetString())
+
+	case strings.HasPrefix(parameters.Nodes, "max-dist:"):
+		maxDist := parameters.Nodes[len("max-dist:"):]
+		maxDistInt, err := strconv.Atoi(maxDist)
+		if err != nil {
+			log.Errorf("failed to parse max-dist %q: %v", maxDist, err)
+			return nil, nil, fmt.Errorf("failed to parse max-dist %q: %v", maxDist, err)
+		}
+		nodeMask = libmem.NewNodeMask()
+		fromNodes := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
+			return cpu.NodeID()
+		})
+		for _, fromNode := range fromNodes.Members() {
+			for _, toNode := range sys.NodeIDs() {
+				if sys.NodeDistance(fromNode, toNode) <= maxDistInt {
+					log.Tracef("node %d is within distance %d from node %d (max-dist is %d)", toNode, maxDistInt, fromNode, sys.NodeDistance(fromNode, toNode))
+					nodeMask = nodeMask.Set(toNode)
+				}
+			}
+		}
+		log.Tracef("- max-dist %d from CPU nodes %q of CPUs %q, nodes %q", maxDistInt, fromNodes, ctrCpuset, nodeMask.MemsetString())
+
+	default:
+		nodeMask, err = libmem.ParseNodeMask(parameters.Nodes)
+		if err != nil {
+			log.Errorf("failed to parse nodes %q: %v", parameters.Nodes, err)
+			return nil, nil, fmt.Errorf("failed to parse nodes %q: %v", parameters.Nodes, err)
+		}
+	}
+	nodes := nodeMask.MemsetString()
 
 	flags := []api.MpolFlag{}
-	if annFlags != "" {
-		for _, annFlag := range strings.Split(annFlags, ",") {
-			if annFlag == "" {
-				continue
-			}
-			annFlag = strings.TrimSpace(annFlag)
-			if flag, ok := api.MpolFlag_value[annFlag]; ok {
-				flags = append(flags, api.MpolFlag(flag))
+	if len(parameters.Flags) > 0 {
+		for _, flag := range parameters.Flags {
+			flag = strings.TrimSpace(flag)
+			if flagValue, ok := api.MpolFlag_value[flag]; ok {
+				flags = append(flags, api.MpolFlag(flagValue))
 			} else {
-				log.Errorf("invalid memory policy flag %q for %s", annFlag, ppName)
-				return nil, nil, fmt.Errorf("invalid memory policy flag %q", annFlag)
+				log.Errorf("invalid memory policy flag %q for %s", flag, ppName)
+				return nil, nil, fmt.Errorf("invalid memory policy flag %q", flag)
 			}
 		}
 	}
 
-	nodes := ""
-	if annNodes != "" {
-		nodeIds := sys.NodeIDs()
-		ctrCpus := ctr.GetLinux().GetResources().GetCpu().GetCpus()
-		switch {
-		case annNodes == "same-package":
-			// Use all nodes from the same package as the container's CPUs
-			if ctrCpus != "" {
-				log.Errorf("NOT IMPLEMENTED: get nodes for packages of CPUs %q", ctrCpus)
-				return nil, nil, fmt.Errorf("NOT IMPLEMENTED: nodes:same-package for %s", ppName)
-			}
-		case annNodes == "same-nodes":
-			if ctrCpus != "" {
-				log.Errorf("NOT IMPLEMENTED: get nodes for CPUs %q", ctrCpus)
-				return nil, nil, fmt.Errorf("NOT IMPLEMENTED: nodes:same-nodes for %s", ppName)
-			}
-		}
-		nodes = libmem.NewNodeMask(nodeIds...).MemsetString()
-	}
-	ca := api.ContainerAdjustment{}
+	ca := &api.ContainerAdjustment{}
 	ca.SetLinuxMemoryPolicy(api.MpolMode(mode), nodes, flags...)
 	log.Debugf("CreateContainer %s: adjust: %+v", ppName, ca)
-	return &ca, nil, nil
+	return ca, nil, nil
+}
+
+// CreateContainer modifies container when it is being created.
+func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	ppName := pprintCtr(pod, ctr)
+	log.Tracef("CreateContainer %s", ppName)
+
+	effAnn := effectiveAnnotations(pod, ctr)
+	parameters, err := getParametersAnnotation(effAnn)
+	if err != nil {
+		log.Errorf("invalid parameters annotation in %s: %v", ppName, err)
+		return nil, nil, err
+	}
+	if parameters != nil {
+		return applyParameters(ctr, ppName, parameters)
+	}
+
+	return nil, nil, nil
 }
 
 func main() {
@@ -243,7 +297,7 @@ func main() {
 
 	sys, err = system.DiscoverSystem(system.DiscoverCPUTopology)
 	if err != nil {
-		log.Fatalf("failed to discover CPU topology needed by -dist: %v", err)
+		log.Fatalf("failed to discover CPU topology: %v", err)
 	}
 
 	opts := []stub.Option{
