@@ -162,6 +162,7 @@ func applyParameters(ctr *api.Container, ppName string, parameters *annParameter
 			return nil, nil, fmt.Errorf("failed to parse CPUs %q: %v", ctrCpus, err)
 		}
 	}
+	ctrMems := ctr.GetLinux().GetResources().GetCpu().GetMems()
 
 	switch {
 	case parameters.Nodes == "cpu-packages":
@@ -207,12 +208,15 @@ func applyParameters(ctr *api.Container, ppName string, parameters *annParameter
 		}
 		log.Tracef("- max-dist %d from CPU nodes %q of CPUs %q, nodes %q", maxDistInt, fromNodes, ctrCpuset, nodeMask.MemsetString())
 
-	default:
+	case parameters.Nodes[0] >= '0' && parameters.Nodes[0] <= '9':
 		nodeMask, err = libmem.ParseNodeMask(parameters.Nodes)
 		if err != nil {
 			log.Errorf("failed to parse nodes %q: %v", parameters.Nodes, err)
 			return nil, nil, fmt.Errorf("failed to parse nodes %q: %v", parameters.Nodes, err)
 		}
+
+	default:
+		return nil, nil, fmt.Errorf("invalid nodes: %q", parameters.Nodes)
 	}
 	nodes := nodeMask.MemsetString()
 
@@ -226,6 +230,14 @@ func applyParameters(ctr *api.Container, ppName string, parameters *annParameter
 				log.Errorf("invalid memory policy flag %q for %s", flag, ppName)
 				return nil, nil, fmt.Errorf("invalid memory policy flag %q", flag)
 			}
+		}
+	}
+
+	log.Tracef("CreateContainer %s: nodes: %q allowed: %q", ppName, nodes, ctrMems)
+	if nodes != "" && ctrMems != "" {
+		allowedMemsMask, err := libmem.ParseNodeMask(ctrMems)
+		if err == nil && (nodeMask&allowedMemsMask) != nodeMask {
+			log.Warningf("not all nodes %q in allowed mems %q", nodes, ctrMems)
 		}
 	}
 
