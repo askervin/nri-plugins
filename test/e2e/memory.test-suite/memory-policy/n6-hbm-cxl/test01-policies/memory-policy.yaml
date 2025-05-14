@@ -1,0 +1,21 @@
+classes:
+- name: class-without-policy
+- name: interleave-relative-nodes
+  policy:
+    mode: MPOL_INTERLEAVE
+    nodes: 0-1
+    flags:
+    - MPOL_F_RELATIVE_NODES
+- name: prefer-cxl
+  policy:
+    mode: MPOL_PREFERRED
+    nodes: 7-8
+    flags:
+    - MPOL_F_STATIC_NODES
+- name: bind-and-balance-relative
+  policy:
+    mode: MPOL_BIND
+    nodes: 0,1
+    flags:
+    - MPOL_F_NUMA_BALANCING
+    - MPOL_F_RELATIVE_NODES
