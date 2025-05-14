@@ -43,7 +43,7 @@ type plugin struct {
 type pluginConfig struct {
 }
 
-type annParameters struct {
+type annPolicy struct {
 	Mode  string   `json:"mode"`
 	Nodes string   `json:"nodes"`
 	Flags []string `json:"flags,omitempty"`
@@ -103,7 +103,7 @@ func associate(m map[string]string, key, value string, override bool) bool {
 // values that are effective for a container.
 // Example: a container-specific pod annotation
 //
-// parameters.memory-policy.nri.io/container.CTRNAME: |+
+// policy.memory-policy.nri.io/container.CTRNAME: |+
 //
 //	mode: MPOL_INTERLEAVE
 //	nodes: cpu-packages
@@ -134,23 +134,23 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]st
 	return effAnn
 }
 
-func getParametersAnnotation(ann map[string]string) (*annParameters, error) {
-	if value, ok := ann["parameters"]; ok {
-		params := &annParameters{}
+func getPolicyAnnotation(ann map[string]string) (*annPolicy, error) {
+	if value, ok := ann["policy"]; ok {
+		params := &annPolicy{}
 		if err := yaml.Unmarshal([]byte(value), params); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal parameters: %w", err)
+			return nil, fmt.Errorf("failed to unmarshal policy: %w", err)
 		}
 		return params, nil
 	}
 	return nil, nil
 }
 
-func applyParameters(ctr *api.Container, ppName string, parameters *annParameters) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+func applyPolicy(ctr *api.Container, ppName string, policy *annPolicy) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	var err error
-	mode, ok := api.MpolMode_value[parameters.Mode]
+	mode, ok := api.MpolMode_value[policy.Mode]
 	if !ok {
-		log.Errorf("invalid memory policy mode %q for %s", parameters.Mode, ppName)
-		return nil, nil, fmt.Errorf("invalid memory policy mode %q", parameters.Mode)
+		log.Errorf("invalid memory policy mode %q for %s", policy.Mode, ppName)
+		return nil, nil, fmt.Errorf("invalid memory policy mode %q", policy.Mode)
 	}
 
 	nodeMask := libmem.NewNodeMask()
@@ -173,11 +173,11 @@ func applyParameters(ctr *api.Container, ppName string, parameters *annParameter
 	}
 
 	switch {
-	case parameters.Nodes == "allowed-mems":
+	case policy.Nodes == "allowed-mems":
 		nodeMask = allowedMemsMask
 		log.Tracef("- allowed-mems, nodes: %q", nodeMask.MemsetString())
 
-	case parameters.Nodes == "cpu-packages":
+	case policy.Nodes == "cpu-packages":
 		pkgs := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
 			return cpu.PackageID()
 		})
@@ -192,15 +192,15 @@ func applyParameters(ctr *api.Container, ppName string, parameters *annParameter
 		}
 		log.Tracef("- cpu-packages with CPUs %q, packages: %q, nodes: %q", ctrCpuset, pkgs, nodeMask.MemsetString())
 
-	case parameters.Nodes == "cpu-nodes":
+	case policy.Nodes == "cpu-nodes":
 		nodeIds := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
 			return cpu.NodeID()
 		})
 		nodeMask = libmem.NewNodeMask(nodeIds.Members()...)
 		log.Tracef("- cpu-nodes with CPUs %q, nodes: %q", ctrCpuset, nodeMask.MemsetString())
 
-	case strings.HasPrefix(parameters.Nodes, "max-dist:"):
-		maxDist := parameters.Nodes[len("max-dist:"):]
+	case strings.HasPrefix(policy.Nodes, "max-dist:"):
+		maxDist := policy.Nodes[len("max-dist:"):]
 		maxDistInt, err := strconv.Atoi(maxDist)
 		if err != nil {
 			log.Errorf("failed to parse max-dist %q: %v", maxDist, err)
@@ -220,20 +220,20 @@ func applyParameters(ctr *api.Container, ppName string, parameters *annParameter
 		}
 		log.Tracef("- max-dist %d from CPU nodes %q of CPUs %q, nodes %q", maxDistInt, fromNodes, ctrCpuset, nodeMask.MemsetString())
 
-	case parameters.Nodes[0] >= '0' && parameters.Nodes[0] <= '9':
-		nodeMask, err = libmem.ParseNodeMask(parameters.Nodes)
+	case policy.Nodes[0] >= '0' && policy.Nodes[0] <= '9':
+		nodeMask, err = libmem.ParseNodeMask(policy.Nodes)
 		if err != nil {
-			log.Errorf("failed to parse nodes %q: %v", parameters.Nodes, err)
-			return nil, nil, fmt.Errorf("failed to parse nodes %q: %v", parameters.Nodes, err)
+			log.Errorf("failed to parse nodes %q: %v", policy.Nodes, err)
+			return nil, nil, fmt.Errorf("failed to parse nodes %q: %v", policy.Nodes, err)
 		}
 
 	default:
-		return nil, nil, fmt.Errorf("invalid nodes: %q", parameters.Nodes)
+		return nil, nil, fmt.Errorf("invalid nodes: %q", policy.Nodes)
 	}
 
 	flags := []api.MpolFlag{}
-	if len(parameters.Flags) > 0 {
-		for _, flag := range parameters.Flags {
+	if len(policy.Flags) > 0 {
+		for _, flag := range policy.Flags {
 			flag = strings.TrimSpace(flag)
 			if flagValue, ok := api.MpolFlag_value[flag]; ok {
 				flags = append(flags, api.MpolFlag(flagValue))
@@ -262,13 +262,13 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	log.Tracef("CreateContainer %s", ppName)
 
 	effAnn := effectiveAnnotations(pod, ctr)
-	parameters, err := getParametersAnnotation(effAnn)
+	policy, err := getPolicyAnnotation(effAnn)
 	if err != nil {
-		log.Errorf("invalid parameters annotation in %s: %v", ppName, err)
+		log.Errorf("invalid policy annotation in %s: %v", ppName, err)
 		return nil, nil, err
 	}
-	if parameters != nil {
-		return applyParameters(ctr, ppName, parameters)
+	if policy != nil {
+		return applyPolicy(ctr, ppName, policy)
 	}
 
 	return nil, nil, nil
