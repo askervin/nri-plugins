@@ -6,6 +6,10 @@
     cri_runtime: "{{ cri_runtime }}"
     is_containerd: false
     is_crio: false
+    plugin_name: "memory-policy"
+    image_ref: "unset"
+    test_image: "localhost/{{ plugin_name }}:testing"
+
 
   tasks:
     - set_fact:
@@ -18,14 +22,20 @@
     - name: copy helm charts
       become: yes
       copy:
-        src: "{{ nri_resource_policy_src }}/deployment/helm/memory-policy"
+        src: "{{ nri_resource_policy_src }}/deployment/helm/{{ plugin_name }}"
         dest: "./helm"
 
     - name: get latest nri-memory-policy deployment image name
       delegate_to: localhost
-      shell: "ls -1t {{ nri_resource_policy_src }}/build/images/nri-memory-policy-image-*.tar"
-      register: nri_policy_images
-      failed_when: nri_policy_images.rc != 0
+      shell: "ls -1t {{ nri_resource_policy_src }}/build/images/nri-{{ plugin_name }}-image-*.tar"
+      register: nri_plugin_images
+      failed_when: nri_plugin_images.rc != 0
+
+    - name: parse image reference from image tarball
+      become: no
+      set_fact:
+        image_ref: "{{ nri_plugin_images.stdout_lines[0] | regex_replace('.*-image-([0-9a-z]*).tar', '\\1') }}"
+      delegate_to: localhost
 
     - name: copy latest nri-memory-policy deployment image
       copy: src="{{ nri_plugin_images.stdout_lines[0] }}" dest="."
