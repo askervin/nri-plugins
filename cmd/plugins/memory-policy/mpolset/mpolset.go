@@ -33,10 +33,6 @@ import (
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
-const (
-	SYS_SET_MEMPOLICY = 238
-)
-
 var (
 	log = logger.NewLogger("mpolset")
 )
@@ -123,7 +119,7 @@ func main() {
 	runtime.LockOSThread()
 	debug.SetGCPercent(-1)
 	runtime.GOMAXPROCS(1)
-	modeFlag := flag.Uint("mode", 0, "Memory policy mode")
+	modeFlag := flag.String("mode", "", "Memory policy mode. Valid values are mode numbers and names from linux/mempolicy.h, e.g. 3 or MPOL_INTERLEAVE")
 	nodesFlag := flag.String("nodes", "", "Comma-separated list of nodes, e.g. 0,1-3")
 	cpusFlag := flag.String("cpus", "", "Comma-separated list of CPUs, e.g. 24-47,97-99")
 	pkgsFlag := flag.String("pkgs", "", "Comma-separated list of packages, e.g. 2-3")
@@ -143,12 +139,37 @@ func main() {
 	}
 
 	args := flag.Args()
-	if len(args) < 1 {
+
+	mode := uint(0)
+	switch {
+	case *modeFlag == "help":
+		fmt.Printf("Valid memory policy modes:\n")
+		for mode := range len(mempolicy.ModeNames) {
+			fmt.Printf("  %s (%d)\n", mempolicy.ModeNames[uint(mode)], mode)
+		}
+		os.Exit(0)
+	case *modeFlag != "" && (*modeFlag)[0] >= '0' && (*modeFlag)[0] <= '9':
+		imode, err := strconv.Atoi(*modeFlag)
+		if err != nil {
+			log.Fatalf("invalid -mode: %v", err)
+		}
+		mode = uint(imode)
+	case *modeFlag != "":
+		ok := false
+		mode, ok = mempolicy.Modes[*modeFlag]
+		if !ok {
+			log.Fatalf("invalid -mode: %v", *modeFlag)
+		}
+	case len(args) > 0:
+		log.Fatalf("missing -mode")
+	}
+
+	if len(args) == 0 {
 		mode, nodes, err := mempolicy.GetMempolicy()
 		if err != nil {
 			log.Fatalf("GetMempolicy failed: %v", err)
 		}
-		fmt.Printf("Current memory policy: %d, nodes: %v\n", mode, nodes)
+		fmt.Printf("Current memory policy: %d (%s), nodes: %v\n", mode, mempolicy.ModeNames[mode], nodes)
 		os.Exit(0)
 	}
 
@@ -210,8 +231,8 @@ func main() {
 		nodes = expandedNodes
 	}
 
-	log.Debug("setting memory policy: %d, nodes: %v\n", *modeFlag, nodes)
-	if err := mempolicy.SetMempolicy(*modeFlag, nodes); err != nil {
+	log.Debug("setting memory policy: %d, nodes: %v\n", mode, nodes)
+	if err := mempolicy.SetMempolicy(mode, nodes); err != nil {
 		log.Errorf("SetMempolicy failed: %v", err)
 		if ignoreErrorsFlag == nil || !*ignoreErrorsFlag {
 			os.Exit(1)
