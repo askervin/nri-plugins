@@ -7,6 +7,7 @@ metadata:
     {{- include "nri-plugin.labels" . | nindent 4 }}
 data:
   config.yaml: |
+    injectMpolset: true
     classes:
     - name: interleave-all
       policy:

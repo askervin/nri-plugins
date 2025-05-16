@@ -41,7 +41,8 @@ type plugin struct {
 }
 
 type Config struct {
-	Classes []*MemoryPolicyClass `json:"classes,omitempty"`
+	InjectMpolset bool                 `json:"injectMpolset,omitempty"`
+	Classes       []*MemoryPolicyClass `json:"classes,omitempty"`
 }
 
 type MemoryPolicyClass struct {
@@ -280,6 +281,8 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 
 // CreateContainer modifies container when it is being created.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	var ca *api.ContainerAdjustment
+	var err error
 	ppName := pprintCtr(pod, ctr)
 	log.Tracef("CreateContainer %s", ppName)
 
@@ -290,13 +293,12 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		return nil, nil, err
 	}
 	if policy != nil {
-		if ca, err := applyPolicy(ctr, policy); err == nil {
-			log.Debugf("CreateContainer %s: from annotated policy: %s", ppName, ca)
-			return ca, nil, nil
-		} else {
+		ca, err = applyPolicy(ctr, policy)
+		if err != nil {
 			log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
 			return nil, nil, err
 		}
+		log.Debugf("CreateContainer %s: from annotated policy: %s", ppName, ca)
 	}
 
 	class, err := p.takeClassAnnotation(effAnn)
@@ -304,22 +306,57 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		log.Errorf("invalid class annotation in %s: %v", ppName, err)
 		return nil, nil, err
 	}
-	if class != nil && class.Policy != nil {
-		if ca, err := applyPolicy(ctr, class.Policy); err == nil {
-			log.Debugf("CreateContainer %s: from annotated class %q: %s", ppName, class.Name, ca)
-			return ca, nil, nil
-		} else {
+	if ca == nil && class != nil && class.Policy != nil {
+		ca, err := applyPolicy(ctr, class.Policy)
+		if err != nil {
 			log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
 			return nil, nil, err
 		}
+		log.Debugf("CreateContainer %s: from annotated class %q: %s", ppName, class.Name, ca)
 	}
 
+	// Check for unknown annotations.
 	for ann := range effAnn {
 		log.Errorf("unknown annotation in %s: %s%s", ppName, ann, annotationSuffix)
 		return nil, nil, fmt.Errorf("unknown annotation %s%s", ann, annotationSuffix)
 	}
 
-	return nil, nil, nil
+	if p.config.InjectMpolset && ca != nil && ca.Linux != nil && ca.Linux.MemoryPolicy != nil {
+		log.Debugf("CreateContainer %s: injecting mpolset, workaround for old container runtimes", ppName)
+		mpol := ca.Linux.MemoryPolicy
+		ca.Linux.MemoryPolicy = nil
+		ca.AddMount(&api.Mount{
+			Source:      "TODO-WHERE-TO-GET-THIS",
+			Destination: "/.nri-memory-policy",
+			Type:        "bind",
+			Options:     []string{"bind", "ro", "rslave"},
+		})
+		flags := []string{}
+		for _, flag := range mpol.Flags {
+			if flagName, ok := api.MpolFlag_name[int32(flag)]; ok {
+				flags = append(flags, flagName)
+			} else {
+				log.Errorf("invalid memory policy flag %q", flag)
+				return nil, nil, fmt.Errorf("invalid memory policy flag %q", flag)
+			}
+		}
+
+		mpolsetArgs := []string{
+			"/.nri-memory-policy/mpolset",
+			"--mode %s", api.MpolMode_name[int32(mpol.Mode)],
+			"--nodes", mpol.Nodes,
+		}
+		if len(flags) > 0 {
+			mpolsetArgs = append(mpolsetArgs, "--flags", strings.Join(flags, ","))
+		}
+		mpolsetArgs = append(mpolsetArgs, "--")
+
+		// Prefix the command with mpolset.
+		ca.SetArgs(append(mpolsetArgs, ctr.GetArgs()...))
+		log.Debugf("CreateContainer %s: new args: %q", ppName, ca.GetArgs())
+	}
+
+	return ca, nil, nil
 }
 
 func main() {
