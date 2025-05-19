@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -58,6 +59,7 @@ type MemoryPolicy struct {
 
 const (
 	annotationSuffix = ".memory-policy.nri.io"
+	mpolsetInjectDir = "/mnt/nri-memory-policy-mpolset"
 )
 
 var (
@@ -75,7 +77,46 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 		}
 		return 0, nil
 	}
+	// If we are to use mpolset injection, prepare /mnt/nri-memory-policy-mpolset
+	// to contain mpolset so that it can be injected into containers
+	if p.config != nil && p.config.InjectMpolset {
+		if err := prepareMpolset(); err != nil {
+			log.Errorf("failed to prepare mpolset: %v", err)
+			return 0, fmt.Errorf("configuration option injectMpolset preparation failed: %v", err)
+		}
+	}
 	return 0, nil
+}
+
+func prepareMpolset() error {
+	// copy mpolset to /mnt/nri-memory-policy-mpolset
+	if err := os.MkdirAll(mpolsetInjectDir, 0755); err != nil {
+		log.Debugf("failed to create %q: %v", mpolsetInjectDir, err)
+	}
+	// mpolset is expected to be located in the same directory as this plugin
+	mpolsetTarget := filepath.Join(mpolsetInjectDir, "mpolset")
+	// read the directory of this plugin and replace plugin's name (for example nri-memory-policy) with mpolset
+	// to get the path to mpolset
+	pluginPath, err := os.Executable()
+	if err != nil {
+		log.Debugf("failed to get plugin path: %v", err)
+	}
+	pluginDir := filepath.Dir(pluginPath)
+	mpolsetSource := filepath.Join(pluginDir, "mpolset")
+	// check that mpolset exists
+	if _, err := os.Stat(mpolsetSource); os.IsNotExist(err) {
+		log.Errorf("mpolset not found in %q: %v", pluginDir, err)
+		return fmt.Errorf("configuration injectMpolset requires mpolset, but it was not found in %q: %v", pluginDir, err)
+	}
+	// copy mpolset to /mnt/nri-memory-policy-mpolset which is located on the host
+	mpolsetData, err := os.ReadFile(mpolsetSource)
+	if err != nil {
+		return fmt.Errorf("failed to read mpolset contents from %q: %v", mpolsetSource, err)
+	}
+	if err := os.WriteFile(mpolsetTarget, mpolsetData, 0755); err != nil {
+		return fmt.Errorf("failed to %q mpolset: %v", mpolsetTarget, err)
+	}
+	return nil
 }
 
 // onClose handles losing connection to container runtime.
@@ -307,7 +348,7 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		return nil, nil, err
 	}
 	if ca == nil && class != nil && class.Policy != nil {
-		ca, err := applyPolicy(ctr, class.Policy)
+		ca, err = applyPolicy(ctr, class.Policy)
 		if err != nil {
 			log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
 			return nil, nil, err
@@ -326,8 +367,8 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		mpol := ca.Linux.MemoryPolicy
 		ca.Linux.MemoryPolicy = nil
 		ca.AddMount(&api.Mount{
-			Source:      "TODO-WHERE-TO-GET-THIS",
-			Destination: "/.nri-memory-policy",
+			Source:      mpolsetInjectDir,
+			Destination: mpolsetInjectDir,
 			Type:        "bind",
 			Options:     []string{"bind", "ro", "rslave"},
 		})
@@ -342,8 +383,8 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		}
 
 		mpolsetArgs := []string{
-			"/.nri-memory-policy/mpolset",
-			"--mode %s", api.MpolMode_name[int32(mpol.Mode)],
+			filepath.Join(mpolsetInjectDir, "mpolset"),
+			"--mode", api.MpolMode_name[int32(mpol.Mode)],
 			"--nodes", mpol.Nodes,
 		}
 		if len(flags) > 0 {

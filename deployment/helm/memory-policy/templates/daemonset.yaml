@@ -69,6 +69,8 @@ spec:
             mountPath: /etc/nri/memory-policy
           - name: nrisockets
             mountPath: /var/run/nri
+          - name: mpolset-vol
+            mountPath: /mnt/nri-memory-policy-mpolset
       {{- if .Values.podPriorityClassNodeCritical }}
       priorityClassName: system-node-critical
       {{- end }}
@@ -79,6 +81,10 @@ spec:
       - name: nrisockets
         hostPath:
           path: /var/run/nri
+          type: DirectoryOrCreate
+      - name: mpolset-vol
+        hostPath:
+          path: /mnt/nri-memory-policy-mpolset
           type: DirectoryOrCreate
       {{- if .Values.nri.runtime.patchConfig }}
       - name: containerd-config
