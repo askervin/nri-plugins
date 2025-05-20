@@ -610,8 +610,8 @@ github.com/apache/arrow/go/v11 v11.0.0/go.mod h1:Eg5OsL5H+e299f7u5ssuXsuHQVEGC4x
 github.com/apache/thrift v0.16.0/go.mod h1:PHK3hniurgQaNMZYaCLEqXKsYK8upmhPbmdP2FXSqgU=
 github.com/askervin/gofmbt v0.0.0-20250119175120-506d925f666f h1:AKRIaPPDqBRhpWnvxhvtdbVtkV/3XrboabuFaLyp1kw=
 github.com/askervin/gofmbt v0.0.0-20250119175120-506d925f666f/go.mod h1:1rWH2fCHPoGz1ApWyGyEV9YhZ2ZHeeCPaHcicW3b6uk=
-github.com/askervin/nri v0.1.1-0.20250520093920-3bd4590f4d22 h1:la/Rg7cfp4pjCsREVquRy9MhyGWPqHuowwpCcPspCLk=
-github.com/askervin/nri v0.1.1-0.20250520093920-3bd4590f4d22/go.mod h1:/Y3/3+KAlv3FBkd8CQ5e90z9MS9t097n8kXkYB7BvF4=
+github.com/askervin/nri v0.1.1-0.20250520164349-2dd29ecf531e h1:4pI2ydnKNA7uP+TkEJIWkKzITtHez1Lo6qPo9g3Y0xE=
+github.com/askervin/nri v0.1.1-0.20250520164349-2dd29ecf531e/go.mod h1:/Y3/3+KAlv3FBkd8CQ5e90z9MS9t097n8kXkYB7BvF4=
 github.com/askervin/runtime-spec v1.0.3-0.20250423073229-57c949588e88 h1:Rs1b8ssNo+RX0wq0ROF+OGpQ4aks2gmi9906a5tNBZk=
 github.com/askervin/runtime-spec v1.0.3-0.20250423073229-57c949588e88/go.mod h1:0ccwhiCQXxLwvWvVsdVdxTe+IFfXyJTjr/wNue5fNJY=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=

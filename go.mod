@@ -101,7 +101,7 @@ require (
 )
 
 replace (
-	github.com/containerd/nri => github.com/askervin/nri v0.1.1-0.20250520093920-3bd4590f4d22
+	github.com/containerd/nri => github.com/askervin/nri v0.1.1-0.20250520164349-2dd29ecf531e
 	github.com/containers/nri-plugins/pkg/topology v0.0.0 => ./pkg/topology
 	github.com/opencontainers/runtime-spec => github.com/askervin/runtime-spec v1.0.3-0.20250423073229-57c949588e88
 	github.com/opencontainers/runtime-tools => github.com/opencontainers/runtime-tools v0.0.0-20221026201742-946c877fa809
