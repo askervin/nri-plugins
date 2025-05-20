@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/mempolicy"
+	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	system "github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 	idset "github.com/intel/goresctrl/pkg/utils"
@@ -36,41 +38,6 @@ import (
 var (
 	log = logger.NewLogger("mpolset")
 )
-
-// parseListSet parses "list set" syntax ("0,61-63,2") into a list ([0, 61, 62, 63, 2])
-func parseListSet(listSet string) ([]int, error) {
-	var result []int
-	parts := strings.Split(listSet, ",")
-	for _, part := range parts {
-		if strings.Contains(part, "-") {
-			rangeParts := strings.Split(part, "-")
-			if len(rangeParts) != 2 {
-				return nil, fmt.Errorf("invalid range: %s", part)
-			}
-			start, err := strconv.Atoi(rangeParts[0])
-			if err != nil {
-				return nil, err
-			}
-			end, err := strconv.Atoi(rangeParts[1])
-			if err != nil {
-				return nil, err
-			}
-			if start > end {
-				return nil, fmt.Errorf("invalid range: %s (start > end)", part)
-			}
-			for i := start; i <= end; i++ {
-				result = append(result, i)
-			}
-		} else {
-			num, err := strconv.Atoi(part)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, num)
-		}
-	}
-	return result, nil
-}
 
 func nodesWithinDistance(sys system.System, maxDist int, fromNodes idset.IDSet) idset.IDSet {
 	result := idset.NewIDSet()
@@ -90,26 +57,46 @@ func nodesWithinDistance(sys system.System, maxDist int, fromNodes idset.IDSet) 
 
 func nodesForCPUs(sys system.System, cpus cpuset.CPUSet) idset.IDSet {
 	result := sys.IDSetForCPUs(cpus, func(cpu system.CPU) idset.ID { return cpu.NodeID() })
-	log.Debug("nodesForCPUs(%v): %v\n", cpus.List(), result)
+	log.Debug("nodes of cpus %v: %v\n", cpus.List(), result)
 	return result
 }
 
 func packagesForCPUs(sys system.System, cpus cpuset.CPUSet) idset.IDSet {
 	result := sys.IDSetForCPUs(cpus, func(cpu system.CPU) idset.ID { return cpu.PackageID() })
-	log.Debug("packagesForCPUs(%v): %v\n", cpus.List(), result)
+	log.Debug("packages of cpus %v: %v\n", cpus.List(), result)
 	return result
 }
 
-func nodesForPackages(sys system.System, packages idset.IDSet) idset.IDSet {
+func cpuNodesForPackages(sys system.System, packages idset.IDSet) idset.IDSet {
 	result := idset.NewIDSet()
 	for _, nodeId := range sys.NodeIDs() {
+		if sys.Node(nodeId).CPUSet().Size() == 0 {
+			continue
+		}
 		pkgId := sys.Node(nodeId).PackageID()
 		if packages.Has(pkgId) {
 			result.Add(nodeId)
 		}
 	}
-	log.Debug("nodesForPackages(%v): %v\n", packages.SortedMembers(), result)
+	log.Debug("cpu nodes of packages %v: %v\n", packages.SortedMembers(), result)
 	return result
+}
+
+func modeToString(mode uint) string {
+	// Convert mode to string representation
+	flagsStr := ""
+	for name, value := range mempolicy.Flags {
+		if mode&value != 0 {
+			flagsStr += "|"
+			flagsStr += name
+			mode &= ^value
+		}
+	}
+	modeStr := mempolicy.ModeNames[mode]
+	if modeStr == "" {
+		modeStr = fmt.Sprintf("unknown mode %d)", mode)
+	}
+	return modeStr + flagsStr
 }
 
 func main() {
@@ -120,10 +107,12 @@ func main() {
 	debug.SetGCPercent(-1)
 	runtime.GOMAXPROCS(1)
 	modeFlag := flag.String("mode", "", "Memory policy mode. Valid values are mode numbers and names from linux/mempolicy.h, e.g. 3 or MPOL_INTERLEAVE")
+	flagsFlag := flag.String("flags", "", "Comma-separated list of memory policy flags,e.g. MPOL_F_STATIC_NODES")
 	nodesFlag := flag.String("nodes", "", "Comma-separated list of nodes, e.g. 0,1-3")
-	cpusFlag := flag.String("cpus", "", "Comma-separated list of CPUs, e.g. 24-47,97-99")
-	pkgsFlag := flag.String("pkgs", "", "Comma-separated list of packages, e.g. 2-3")
-	distFlag := flag.Int("dist", 0, "Max distance from given -cpus or -nodes when setting memory policy")
+	nodesOfCpusFlag := flag.String("nodes-of-cpus", "", "Comma-separated list of CPUs, e.g. 24-47,97-99")
+	nodesOfPkgsFlag := flag.String("nodes-of-pkgs", "", "Comma-separated list of packages, e.g. 2-3")
+	pkgsOfCpusFlag := flag.String("pkgs-of-cpus", "", "Comma-separated list of CPUs, e.g. 24-47,97-99")
+	distFlag := flag.Int("dist", 0, "Expand nodes with those within given distance from any of the specified nodes")
 	ignoreErrorsFlag := flag.Bool("ignore-errors", false, "Ignore errors when setting memory policy")
 	verboseFlag := flag.Bool("v", false, "Enable verbose logging")
 	veryVerboseFlag := flag.Bool("vv", false, "Enable very verbose logging")
@@ -169,12 +158,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("GetMempolicy failed: %v", err)
 		}
-		fmt.Printf("Current memory policy: %d (%s), nodes: %v\n", mode, mempolicy.ModeNames[mode], nodes)
+		modeStr := modeToString(mode)
+		fmt.Printf("Current memory policy: %s (%d), nodes: %v\n", modeStr, mode, nodes)
 		os.Exit(0)
 	}
 
 	nodeSources := 0
-	for _, nodeSource := range []*string{cpusFlag, nodesFlag, pkgsFlag} {
+	for _, nodeSource := range []*string{nodesFlag, nodesOfCpusFlag, nodesOfPkgsFlag, pkgsOfCpusFlag} {
 		if nodeSource != nil && *nodeSource != "" {
 			nodeSources++
 		}
@@ -193,28 +183,35 @@ func main() {
 	// Build a list of nodes from cpus or nodes.
 	nodes := []int{}
 	switch {
-	case *cpusFlag != "":
-		cpus, err := parseListSet(*cpusFlag)
-		if err != nil {
-			log.Fatalf("invalid -cpus: %v", err)
-		}
-		if err != nil {
-			log.Fatalf("failed to discover CPU topology needed by -cpus: %v", err)
-		}
-		for _, node := range nodesForCPUs(sys, cpuset.New(cpus...)).SortedMembers() {
-			nodes = append(nodes, int(node))
-		}
 	case *nodesFlag != "":
-		nodes, err = parseListSet(*nodesFlag)
+		nodeMask, err := libmem.ParseNodeMask(*nodesFlag)
 		if err != nil {
 			log.Fatalf("invalid -nodes: %v", err)
 		}
-	case *pkgsFlag != "":
-		pkgs, err := parseListSet(*pkgsFlag)
+		nodes = nodeMask.Slice()
+	case *nodesOfCpusFlag != "":
+		cpus, err := cpuset.Parse(*nodesOfCpusFlag)
 		if err != nil {
-			log.Fatalf("invalid -pkgs: %v", err)
+			log.Fatalf("invalid -nodes-of-cpus: %v", err)
 		}
-		for _, node := range nodesForPackages(sys, idset.NewIDSet(pkgs...)).SortedMembers() {
+		for _, node := range nodesForCPUs(sys, cpus).SortedMembers() {
+			nodes = append(nodes, int(node))
+		}
+	case *nodesOfPkgsFlag != "":
+		pkgs, err := libmem.ParseNodeMask(*nodesOfPkgsFlag)
+		if err != nil {
+			log.Fatalf("invalid -nodes-of-pkgs: %v", err)
+		}
+		for _, node := range cpuNodesForPackages(sys, idset.NewIDSet(pkgs.Slice()...)).SortedMembers() {
+			nodes = append(nodes, int(node))
+		}
+	case *pkgsOfCpusFlag != "":
+		cpus, err := cpuset.Parse(*pkgsOfCpusFlag)
+		if err != nil {
+			log.Fatalf("invalid -pkgs-of-cpus: %v", err)
+		}
+		packages := packagesForCPUs(sys, cpus)
+		for _, node := range cpuNodesForPackages(sys, packages).SortedMembers() {
 			nodes = append(nodes, int(node))
 		}
 	}
@@ -227,11 +224,29 @@ func main() {
 			}
 		}
 		expandedNodes := nodesWithinDistance(sys, *distFlag, idset.NewIDSet(nodes...)).SortedMembers()
-		log.Info("nodes within distance %d of %v: %v", *distFlag, nodes, expandedNodes)
+		log.Debug("nodes within distance %d of %v: %v", *distFlag, nodes, expandedNodes)
 		nodes = expandedNodes
 	}
 
-	log.Debug("setting memory policy: %d, nodes: %v\n", mode, nodes)
+	if *flagsFlag != "" {
+		if strings.Contains(*flagsFlag, "help") {
+			fmt.Printf("Valid memory policy flags:\n")
+			for flag := range mempolicy.Flags {
+				fmt.Printf("  %s\n", flag)
+			}
+			os.Exit(0)
+		}
+		flags := strings.Split(*flagsFlag, ",")
+		for _, flag := range flags {
+			flagBit, ok := mempolicy.Flags[flag]
+			if !ok {
+				log.Fatalf("invalid -flags: %v", flag)
+			}
+			mode |= flagBit
+		}
+	}
+
+	log.Debug("setting memory policy: %s (%d), nodes: %v\n", modeToString(mode), mode, nodes)
 	if err := mempolicy.SetMempolicy(mode, nodes); err != nil {
 		log.Errorf("SetMempolicy failed: %v", err)
 		if ignoreErrorsFlag == nil || !*ignoreErrorsFlag {
@@ -240,8 +255,12 @@ func main() {
 	}
 
 	log.Debug("executing: %v\n", args)
-	err = syscall.Exec(args[0], args, os.Environ())
+	executable, err := exec.LookPath(args[0])
 	if err != nil {
-		log.Fatalf("Exec failed: %v", err)
+		log.Fatalf("Looking for executable %q failed: %v", args[0], err)
+	}
+	err = syscall.Exec(executable, args, os.Environ())
+	if err != nil {
+		log.Fatalf("Executing %q failed: %v", executable, err)
 	}
 }
