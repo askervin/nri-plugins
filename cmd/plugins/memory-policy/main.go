@@ -131,6 +131,17 @@ func (p *plugin) setConfig(config []byte) error {
 	if err := yaml.Unmarshal(config, cfg); err != nil {
 		return fmt.Errorf("failed to unmarshal configuration: %w", err)
 	}
+	for _, class := range cfg.Classes {
+		if class.Name == "" {
+			return fmt.Errorf("name missing in class definition")
+		}
+		if class.Policy == nil {
+			return fmt.Errorf("class %q has no policy", class.Name)
+		}
+		if class.Policy.Mode == "" {
+			return fmt.Errorf("class %q has no mode", class.Name)
+		}
+	}
 	p.config = cfg
 	log.Debugf("plugin configuration: %+v", p.config)
 	return nil
