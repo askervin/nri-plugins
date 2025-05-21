@@ -330,6 +330,74 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 	return ca, nil
 }
 
+func (p *plugin) getPolicy(pod *api.PodSandbox, ctr *api.Container) (*MemoryPolicy, error) {
+	effAnn := effectiveAnnotations(pod, ctr)
+
+	policy, err := takePolicyAnnotation(effAnn)
+	if err != nil {
+		return nil, fmt.Errorf("invalid 'policy' annotation: %w", err)
+	}
+	if policy != nil {
+		log.Tracef("effective policy annotation: %+v", policy)
+		return policy, nil
+	}
+
+	class, err := p.takeClassAnnotation(effAnn)
+	if err != nil {
+		return nil, fmt.Errorf("invalid 'class' annotation: %w", err)
+	}
+	if class != nil {
+		log.Tracef("effective class annotation: %+v", class)
+		if class.Policy == nil {
+			return nil, fmt.Errorf("class %q has no policy", class.Name)
+		}
+		return class.Policy, nil
+	}
+
+	// Check for unknown annotations.
+	for ann := range effAnn {
+		return nil, fmt.Errorf("unknown annotation %s%s", ann, annotationSuffix)
+	}
+
+	log.Tracef("no memory policy found in annotations")
+	return nil, nil
+}
+
+func (p *plugin) convertToCommandInjection(ctr *api.Container, ca *api.ContainerAdjustment) error {
+	if ca == nil || ca.Linux == nil || ca.Linux.MemoryPolicy == nil {
+		return nil
+	}
+	mpol := ca.Linux.MemoryPolicy
+	ca.Linux.MemoryPolicy = nil
+	ca.AddMount(&api.Mount{
+		Source:      mpolsetInjectDir,
+		Destination: mpolsetInjectDir,
+		Type:        "bind",
+		Options:     []string{"bind", "ro", "rslave"},
+	})
+	flags := []string{}
+	for _, flag := range mpol.Flags {
+		if flagName, ok := api.MpolFlag_name[int32(flag)]; ok {
+			flags = append(flags, flagName)
+		} else {
+			return fmt.Errorf("invalid memory policy flag %q", flag)
+		}
+	}
+
+	mpolsetArgs := []string{
+		filepath.Join(mpolsetInjectDir, "mpolset"),
+		"--mode", api.MpolMode_name[int32(mpol.Mode)],
+		"--nodes", mpol.Nodes,
+	}
+	if len(flags) > 0 {
+		mpolsetArgs = append(mpolsetArgs, "--flags", strings.Join(flags, ","))
+	}
+	mpolsetArgs = append(mpolsetArgs, "--")
+
+	ca.SetArgs(append(mpolsetArgs, ctr.GetArgs()...))
+	return nil
+}
+
 // CreateContainer modifies container when it is being created.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	var ca *api.ContainerAdjustment
@@ -337,82 +405,30 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	ppName := pprintCtr(pod, ctr)
 	log.Tracef("CreateContainer %s", ppName)
 
-	effAnn := effectiveAnnotations(pod, ctr)
-
-	policy, err := takePolicyAnnotation(effAnn)
-	log.Tracef("effective policy annotations: %+v", policy)
+	policy, err := p.getPolicy(pod, ctr)
 	if err != nil {
-		log.Errorf("CreateContainer %s: invalid policy annotation: %v", ppName, err)
+		log.Errorf("CreateContainer %s: failed to get policy: %v", ppName, err)
 		return nil, nil, err
 	}
-	if policy != nil {
-		ca, err = applyPolicy(ctr, policy)
-		if err != nil {
-			log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
-			return nil, nil, err
-		}
-		log.Debugf("CreateContainer %s: from annotated policy: %s", ppName, ca)
+	if policy == nil {
+		log.Tracef("CreateContainer %s: no memory policy", ppName)
+		return nil, nil, nil
 	}
 
-	class, err := p.takeClassAnnotation(effAnn)
-	log.Tracef("effective class annotations: %+v", class)
+	ca, err = applyPolicy(ctr, policy)
 	if err != nil {
-		log.Errorf("invalid class annotation in %s: %v", ppName, err)
+		log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
 		return nil, nil, err
 	}
-	if ca == nil && class != nil {
-		if class.Policy == nil {
-			return nil, nil, fmt.Errorf("class %q has no policy", class.Name)
-		}
-		ca, err = applyPolicy(ctr, class.Policy)
-		if err != nil {
-			log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
+	log.Debugf("CreateContainer %s: from annotated policy: %s", ppName, ca)
+
+	if p.config.InjectMpolset {
+		if err := p.convertToCommandInjection(ctr, ca); err != nil {
+			log.Errorf("CreateContainer %s: failed to converting adjustment into mpolset command: %v", ppName, err)
 			return nil, nil, err
 		}
-		log.Debugf("CreateContainer %s: from annotated class %q: %s", ppName, class.Name, ca)
+		log.Debugf("CreateContainer %s: converted to command injection %v", ppName, ca)
 	}
-
-	// Check for unknown annotations.
-	for ann := range effAnn {
-		log.Errorf("unknown annotation in %s: %s%s", ppName, ann, annotationSuffix)
-		return nil, nil, fmt.Errorf("unknown annotation %s%s", ann, annotationSuffix)
-	}
-
-	if p.config.InjectMpolset && ca != nil && ca.Linux != nil && ca.Linux.MemoryPolicy != nil {
-		log.Debugf("CreateContainer %s: injecting mpolset, workaround for old container runtimes", ppName)
-		mpol := ca.Linux.MemoryPolicy
-		ca.Linux.MemoryPolicy = nil
-		ca.AddMount(&api.Mount{
-			Source:      mpolsetInjectDir,
-			Destination: mpolsetInjectDir,
-			Type:        "bind",
-			Options:     []string{"bind", "ro", "rslave"},
-		})
-		flags := []string{}
-		for _, flag := range mpol.Flags {
-			if flagName, ok := api.MpolFlag_name[int32(flag)]; ok {
-				flags = append(flags, flagName)
-			} else {
-				log.Errorf("invalid memory policy flag %q", flag)
-				return nil, nil, fmt.Errorf("invalid memory policy flag %q", flag)
-			}
-		}
-
-		mpolsetArgs := []string{
-			filepath.Join(mpolsetInjectDir, "mpolset"),
-			"--mode", api.MpolMode_name[int32(mpol.Mode)],
-			"--nodes", mpol.Nodes,
-		}
-		if len(flags) > 0 {
-			mpolsetArgs = append(mpolsetArgs, "--flags", strings.Join(flags, ","))
-		}
-		mpolsetArgs = append(mpolsetArgs, "--")
-
-		// Prefix the command with mpolset.
-		ca.SetArgs(append(mpolsetArgs, ctr.GetArgs()...))
-		log.Debugf("CreateContainer %s: new args: %q", ppName, ca.GetArgs())
-	}
-
 	return ca, nil, nil
 }
 
