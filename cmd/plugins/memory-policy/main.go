@@ -186,7 +186,7 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]st
 				_, hasClass := effAnn["class"]
 				_, hasPolicy := effAnn["policy"]
 				if hasClass || hasPolicy {
-					log.Tracef("- ignoring pod-level annotation %q due to a container-level annotation", key)
+					log.Tracef("- ignoring pod-level annotation %q due to a container-specific annotation", key)
 					continue
 				}
 			}
@@ -194,7 +194,6 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]st
 			effAnn[annPrefix] = value
 			continue
 		}
-		log.Tracef("- ignoring annotation %q", key)
 	}
 	return effAnn
 }
@@ -339,7 +338,9 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	log.Tracef("CreateContainer %s", ppName)
 
 	effAnn := effectiveAnnotations(pod, ctr)
+
 	policy, err := takePolicyAnnotation(effAnn)
+	log.Tracef("effective policy annotations: %+v", policy)
 	if err != nil {
 		log.Errorf("CreateContainer %s: invalid policy annotation: %v", ppName, err)
 		return nil, nil, err
@@ -354,11 +355,15 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	}
 
 	class, err := p.takeClassAnnotation(effAnn)
+	log.Tracef("effective class annotations: %+v", class)
 	if err != nil {
 		log.Errorf("invalid class annotation in %s: %v", ppName, err)
 		return nil, nil, err
 	}
-	if ca == nil && class != nil && class.Policy != nil {
+	if ca == nil && class != nil {
+		if class.Policy == nil {
+			return nil, nil, fmt.Errorf("class %q has no policy", class.Name)
+		}
 		ca, err = applyPolicy(ctr, class.Policy)
 		if err != nil {
 			log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
