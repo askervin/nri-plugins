@@ -8,6 +8,26 @@ image:
   #tag: unstable
   pullPolicy: Always
 
+config:
+    injectMpolset: true
+    classes:
+    - name: interleave-all
+      policy:
+        mode: MPOL_INTERLEAVE
+        nodes: allowed-mems
+    - name: interleave-cpu-packages
+      policy:
+        mode: MPOL_INTERLEAVE
+        nodes: cpu-packages
+    - name: interleave-cpu-nodes
+      policy:
+        mode: MPOL_INTERLEAVE
+        nodes: cpu-nodes
+    - name: interleave-within-socket
+      policy:
+        mode: MPOL_INTERLEAVE
+        nodes: max-dist:19
+
 resources:
   cpu: 10m
   memory: 100Mi
