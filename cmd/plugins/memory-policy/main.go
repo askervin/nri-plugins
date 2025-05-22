@@ -67,6 +67,20 @@ var (
 	log *logrus.Logger
 )
 
+func (mpol *MemoryPolicy) String() string {
+	if mpol == nil {
+		return "nil"
+	}
+	modeFlags := strings.Join(append([]string{mpol.Mode}, mpol.Flags...), "|")
+	return fmt.Sprintf("%s:%s", modeFlags, mpol.Nodes)
+}
+
+// onClose handles losing connection to container runtime.
+func (p *plugin) onClose() {
+	log.Infof("Connection to the runtime lost, exiting...")
+	os.Exit(0)
+}
+
 // Configure handles connecting to container runtime's NRI server.
 func (p *plugin) Configure(ctx context.Context, config, runtime, version string) (stub.EventMask, error) {
 	log.Infof("Connected to %s %s...", runtime, version)
@@ -88,6 +102,7 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	return 0, nil
 }
 
+// prepareMpolset prepares mpolset for injection into containers.
 func prepareMpolset() error {
 	// copy mpolset to /mnt/nri-memory-policy-mpolset
 	if err := os.MkdirAll(mpolsetInjectDir, 0755); err != nil {
@@ -117,12 +132,6 @@ func prepareMpolset() error {
 		return fmt.Errorf("failed to %q mpolset: %v", mpolsetTarget, err)
 	}
 	return nil
-}
-
-// onClose handles losing connection to container runtime.
-func (p *plugin) onClose() {
-	log.Infof("Connection to the runtime lost, exiting...")
-	os.Exit(0)
 }
 
 // setConfig applies new plugin configuration.
@@ -158,13 +167,16 @@ func pprintCtr(pod *api.PodSandbox, ctr *api.Container) string {
 // returns pod-level annotations. "policy" and "class" annotations
 // are mutually exclusive.
 //
-// Example: a container-specific pod annotation
+// Example annotations:
 //
-// class.memory-policy.nri.io: my-default-class-for-containers-in-pod
-// policy.memory-policy.nri.io/container.my-special-container: |+
+// class.memory-policy.nri.io: default-class-for-containers-in-pod
+//
+// class.memory-policy.nri.io/container.my-special-container: special-class
+//
+// policy.memory-policy.nri.io/container.my-special-container2: |+
 //
 //	mode: MPOL_INTERLEAVE
-//	nodes: cpu-packages
+//	nodes: max-dist:19
 //	flags: [MPOL_F_STATIC_NODES]
 func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]string {
 	effAnn := map[string]string{}
@@ -198,9 +210,15 @@ func effectiveAnnotations(pod *api.PodSandbox, ctr *api.Container) map[string]st
 	return effAnn
 }
 
+// takePolicyAnnotation() takes the policy annotation from the
+// annotations map. It returns the policy and removes the
+// annotation from the map.
 func takePolicyAnnotation(ann map[string]string) (*MemoryPolicy, error) {
 	if value, ok := ann["policy"]; ok {
 		delete(ann, "policy")
+		if value == "" {
+			return nil, nil
+		}
 		policy := &MemoryPolicy{}
 		if err := yaml.Unmarshal([]byte(value), policy); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal policy: %w", err)
@@ -210,9 +228,15 @@ func takePolicyAnnotation(ann map[string]string) (*MemoryPolicy, error) {
 	return nil, nil
 }
 
+// takeClassAnnotation() takes the class annotation from the
+// annotations map. It returns the class and removes the
+// annotation from the map.
 func (p *plugin) takeClassAnnotation(ann map[string]string) (*MemoryPolicyClass, error) {
 	if value, ok := ann["class"]; ok {
 		delete(ann, "class")
+		if value == "" {
+			return nil, nil
+		}
 		for _, class := range p.config.Classes {
 			if class.Name == value {
 				return class, nil
@@ -223,8 +247,48 @@ func (p *plugin) takeClassAnnotation(ann map[string]string) (*MemoryPolicyClass,
 	return nil, nil
 }
 
+// getPolicy() returns the memory policy for a container.
+func (p *plugin) getPolicy(pod *api.PodSandbox, ctr *api.Container) (*MemoryPolicy, error) {
+	effAnn := effectiveAnnotations(pod, ctr)
+
+	policy, err := takePolicyAnnotation(effAnn)
+	if err != nil {
+		return nil, fmt.Errorf("invalid 'policy' annotation: %w", err)
+	}
+	if policy != nil {
+		log.Tracef("- effective policy annotation: %+v", policy)
+		return policy, nil
+	}
+
+	class, err := p.takeClassAnnotation(effAnn)
+	if err != nil {
+		return nil, fmt.Errorf("invalid 'class' annotation: %w", err)
+	}
+	if class != nil {
+		log.Tracef("effective class annotation: %+v", class)
+		if class.Policy == nil {
+			return nil, fmt.Errorf("class %q has no policy", class.Name)
+		}
+		return class.Policy, nil
+	}
+
+	// Check for unknown annotations.
+	for ann := range effAnn {
+		return nil, fmt.Errorf("unknown annotation %s%s", ann, annotationSuffix)
+	}
+
+	log.Tracef("- no memory policy found in annotations")
+	return nil, nil
+}
+
+// applyPolicy() applies the memory policy to the container. It
+// returns the container adjustment that should be applied to the
+// container.
 func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjustment, error) {
 	var err error
+	if policy == nil {
+		return nil, nil
+	}
 	mode, ok := api.MpolMode_value[policy.Mode]
 	if !ok {
 		return nil, fmt.Errorf("invalid memory policy mode %q", policy.Mode)
@@ -250,14 +314,18 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 	log.Tracef("- allowed mems: %s, cpus %s", ctrMems, ctrCpuset)
 
 	switch {
+	// "all" includes all nodes into the mask.
 	case policy.Nodes == "all":
 		nodeMask = libmem.NewNodeMask(sys.NodeIDs()...)
 		log.Tracef("- nodes %q (all)", nodeMask.MemsetString())
 
+	// "allowed-mems" includes only allowed memory nodes into the mask.
 	case policy.Nodes == "allowed-mems":
 		nodeMask = allowedMemsMask
 		log.Tracef("- nodes: %q (allowed-mems)", nodeMask.MemsetString())
 
+	// "cpu-packages" includes all nodes that are in the same package
+	// as the CPUs in the container's cpuset.
 	case policy.Nodes == "cpu-packages":
 		pkgs := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
 			return cpu.PackageID()
@@ -271,6 +339,7 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 		}
 		log.Tracef("- nodes: %q (cpu-packages %q)", nodeMask.MemsetString(), pkgs)
 
+	// "cpu-nodes" includes all nodes in the cpuset of the container.
 	case policy.Nodes == "cpu-nodes":
 		nodeIds := sys.IDSetForCPUs(ctrCpuset, func(cpu system.CPU) idset.ID {
 			return cpu.NodeID()
@@ -278,6 +347,8 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 		nodeMask = libmem.NewNodeMask(nodeIds.Members()...)
 		log.Tracef("- nodes: %q (cpu-nodes)", nodeMask.MemsetString())
 
+	// "max-dist:<int>" includes all nodes that are within the
+	// specified distance from the CPUs in the container's cpuset.
 	case strings.HasPrefix(policy.Nodes, "max-dist:"):
 		maxDist := policy.Nodes[len("max-dist:"):]
 		maxDistInt, err := strconv.Atoi(maxDist)
@@ -297,6 +368,7 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 		}
 		log.Tracef("- nodes %q (max-dist %d from CPU nodes %q)", nodeMask.MemsetString(), maxDistInt, fromNodes)
 
+	// <int>[-<int>][, ...] includes the set of nodes.
 	case policy.Nodes[0] >= '0' && policy.Nodes[0] <= '9':
 		nodeMask, err = libmem.ParseNodeMask(policy.Nodes)
 		if err != nil {
@@ -330,40 +402,13 @@ func applyPolicy(ctr *api.Container, policy *MemoryPolicy) (*api.ContainerAdjust
 	return ca, nil
 }
 
-func (p *plugin) getPolicy(pod *api.PodSandbox, ctr *api.Container) (*MemoryPolicy, error) {
-	effAnn := effectiveAnnotations(pod, ctr)
-
-	policy, err := takePolicyAnnotation(effAnn)
-	if err != nil {
-		return nil, fmt.Errorf("invalid 'policy' annotation: %w", err)
-	}
-	if policy != nil {
-		log.Tracef("effective policy annotation: %+v", policy)
-		return policy, nil
-	}
-
-	class, err := p.takeClassAnnotation(effAnn)
-	if err != nil {
-		return nil, fmt.Errorf("invalid 'class' annotation: %w", err)
-	}
-	if class != nil {
-		log.Tracef("effective class annotation: %+v", class)
-		if class.Policy == nil {
-			return nil, fmt.Errorf("class %q has no policy", class.Name)
-		}
-		return class.Policy, nil
-	}
-
-	// Check for unknown annotations.
-	for ann := range effAnn {
-		return nil, fmt.Errorf("unknown annotation %s%s", ann, annotationSuffix)
-	}
-
-	log.Tracef("no memory policy found in annotations")
-	return nil, nil
-}
-
-func (p *plugin) convertToCommandInjection(ctr *api.Container, ca *api.ContainerAdjustment) error {
+// toCommandInjection() converts the memory policy container
+// adjustment into a command injection. It removes the memory policy
+// from the container adjustment and adds a bind mount to the
+// mpolsetInjectDir. It also sets the command line arguments to
+// run mpolset with the memory policy options before executing the
+// original command.
+func toCommandInjection(ctr *api.Container, ca *api.ContainerAdjustment) error {
 	if ca == nil || ca.Linux == nil || ca.Linux.MemoryPolicy == nil {
 		return nil
 	}
@@ -410,24 +455,25 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		log.Errorf("CreateContainer %s: failed to get policy: %v", ppName, err)
 		return nil, nil, err
 	}
-	if policy == nil {
+	if policy == nil || policy.Mode == "" {
 		log.Tracef("CreateContainer %s: no memory policy", ppName)
 		return nil, nil, nil
 	}
 
+	log.Debugf("CreateContainer %s: apply memory policy %s", ppName, policy)
 	ca, err = applyPolicy(ctr, policy)
 	if err != nil {
 		log.Errorf("CreateContainer %s failed to apply policy: %v", ppName, err)
 		return nil, nil, err
 	}
-	log.Debugf("CreateContainer %s: from annotated policy: %s", ppName, ca)
+	log.Tracef("CreateContainer %s: memory policy adjustment: %s", ppName, ca)
 
 	if p.config.InjectMpolset {
-		if err := p.convertToCommandInjection(ctr, ca); err != nil {
+		if err := toCommandInjection(ctr, ca); err != nil {
 			log.Errorf("CreateContainer %s: failed to converting adjustment into mpolset command: %v", ppName, err)
 			return nil, nil, err
 		}
-		log.Debugf("CreateContainer %s: converted to command injection %v", ppName, ca)
+		log.Tracef("CreateContainer %s: converted to command injection %s", ppName, ca)
 	}
 	return ca, nil, nil
 }
