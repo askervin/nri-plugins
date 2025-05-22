@@ -22,7 +22,9 @@ ANN4="policy.memory-policy.nri.io/container.pod0c4: |+
       nodes: 4,5
       flags:
       - MPOL_F_STATIC_NODES" \
-CONTCOUNT=5 \
+ANN5="policy.memory-policy.nri.io/container.pod0c5: \"\"" \
+ANN6="class.memory-policy.nri.io/container.pod0c6: \"\"" \
+CONTCOUNT=7 \
 create besteffort
 
 verify-policy pod0c0 'prefer=relative:4'
@@ -30,3 +32,5 @@ verify-policy pod0c1 'prefer (many):4-5'
 verify-policy pod0c2 'interleave=static:0-3'
 verify-policy pod0c3 'bind:2-3'
 verify-policy pod0c4 'bind=static:4-5'
+verify-policy pod0c5 'default' # unset pod-default with empty policy
+verify-policy pod0c6 'default' # unset pod-default with empty class
