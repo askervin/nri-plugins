@@ -65,6 +65,9 @@ const (
 var (
 	sys system.System
 	log *logrus.Logger
+
+	verbose     bool
+	veryVerbose bool
 )
 
 func (mpol *MemoryPolicy) String() string {
@@ -437,6 +440,9 @@ func toCommandInjection(ctr *api.Container, ca *api.ContainerAdjustment) error {
 	if len(flags) > 0 {
 		mpolsetArgs = append(mpolsetArgs, "--flags", strings.Join(flags, ","))
 	}
+	if veryVerbose {
+		mpolsetArgs = append(mpolsetArgs, "-vv")
+	}
 	mpolsetArgs = append(mpolsetArgs, "--")
 
 	ca.SetArgs(append(mpolsetArgs, ctr.GetArgs()...))
@@ -480,12 +486,10 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 
 func main() {
 	var (
-		pluginName  string
-		pluginIdx   string
-		configFile  string
-		err         error
-		verbose     bool
-		veryVerbose bool
+		pluginName string
+		pluginIdx  string
+		configFile string
+		err        error
 	)
 
 	log = logrus.StandardLogger()
@@ -497,7 +501,7 @@ func main() {
 	flag.StringVar(&pluginIdx, "idx", "", "plugin index to register to NRI")
 	flag.StringVar(&configFile, "config", "", "configuration file name")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
-	flag.BoolVar(&veryVerbose, "vv", false, "very verbose output")
+	flag.BoolVar(&veryVerbose, "vv", false, "very verbose output and run mpolset -vv injected in containers")
 	flag.Parse()
 
 	if verbose {
