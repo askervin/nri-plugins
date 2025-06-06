@@ -94,6 +94,31 @@ spec:
                         AllocatorTopologyBalancing is the balloon type specific
                         parameter of the policy level parameter with the same name.
                       type: boolean
+                    components:
+                      description: |-
+                        Components contains list of sub-balloons from which this
+                        balloon definition is composed of. This is used to
+                        allocate CPUs and memory using different rules for
+                        different subset of CPUs.
+                      items:
+                        description: BalloonDefComponent contains a balloon component
+                          definition.
+                        properties:
+                          balloonType:
+                            description: |-
+                              BalloonType is the name of the balloon type of this
+                              component. It must match the name of a balloon type
+                              defined in the policy.
+                            type: string
+                          cpuPortion:
+                            description: |-
+                              CpuPortion specifies the portion of CPUs in this component
+                              relative to other components where CpuPortion is defined.
+                            type: integer
+                        required:
+                        - balloonType
+                        type: object
+                      type: array
                     cpuClass:
                       description: |-
                         CpuClass controls how CPUs of a balloon are (re)configured

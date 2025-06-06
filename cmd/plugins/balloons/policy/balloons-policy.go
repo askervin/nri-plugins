@@ -116,6 +116,7 @@ type Balloon struct {
 	LoadedVirtDevs map[string]struct{}
 	cpuTreeAlloc   *cpuTreeAllocator
 	memTypeMask    libmem.TypeMask
+	components     []*Balloon
 }
 
 // loadClassVirtDev is a virtual device under load due to a load class.
@@ -162,12 +163,33 @@ func (bln Balloon) ContainerCount() int {
 }
 
 func (bln Balloon) AvailMilliCpus() int {
+	if len(bln.components) > 0 {
+		sumAvail := 0
+		for _, comp := range bln.components {
+			sumAvail += comp.AvailMilliCpus()
+		}
+		return sumAvail
+	}
 	return bln.Cpus.Size() * 1000
 }
 
 func (bln Balloon) MaxAvailMilliCpus(freeCpus cpuset.CPUSet) int {
-	if bln.Def.MaxCpus == NoLimit {
-		return (bln.Cpus.Size() + freeCpus.Size()) * 1000
+	if len(bln.components) > 0 {
+		sumMaxAvail := 0
+		for _, comp := range bln.components {
+			sumMaxAvail += comp.MaxAvailMilliCpus(freeCpus)
+		}
+		sumMaxCpus := sumMaxAvail / 1000
+		if sumMaxCpus > freeCpus.Size() {
+			sumMaxCpus = freeCpus.Size()
+		}
+		if bln.Def.MaxCpus == NoLimit || bln.Def.MaxCpus > sumMaxCpus {
+			return sumMaxCpus * 1000
+		}
+	} else {
+		if bln.Def.MaxCpus == NoLimit {
+			return (bln.Cpus.Size() + freeCpus.Size()) * 1000
+		}
 	}
 	return bln.Def.MaxCpus * 1000
 }
@@ -741,6 +763,14 @@ func (p *balloons) useCpuClass(bln *Balloon) error {
 	// - User-defined CPU AllocatorPriority: bln.Def.AllocatorPriority.
 	// - All existing balloon instances: p.balloons.
 	// - CPU configurations by user: bln.Def.CpuClass (for bln in p.balloons)
+	if len(bln.components) > 0 {
+		// If this is a composite balloon, CPU class is
+		// defined in the component balloons.
+		for _, compBln := range bln.components {
+			p.useCpuClass(compBln)
+		}
+		return nil
+	}
 	if err := cpucontrol.Assign(p.cch, bln.Def.CpuClass, bln.Cpus.UnsortedList()...); err != nil {
 		log.Warnf("failed to apply class %q on CPUs %q: %v", bln.Def.CpuClass, bln.Cpus, err)
 	} else {
@@ -821,6 +851,63 @@ func (p *balloons) virtDevsChangeDuringCpuAllocation(loadClassNames []string) bo
 	return false
 }
 
+func (p *balloons) newCompositeBalloon(blnDef *BalloonDef, confCpus bool, freeInstance int) (*Balloon, error) {
+	componentBlns := make([]*Balloon, 0, len(blnDef.Components))
+	deleteComponentBlns := func() {
+		for _, compBln := range componentBlns {
+			log.Debugf("removing component balloon %s of composite balloon %s",
+				compBln.PrettyName(), blnDef.Name)
+			p.deleteBalloon(compBln)
+		}
+	}
+	for _, comp := range blnDef.Components {
+		// Create a balloon for each component.
+		compDef := p.balloonDefByName(comp.DefName)
+		if compDef == nil {
+			deleteComponentBlns()
+			return nil, balloonsError("unknown balloon definition %q in composite balloon %q",
+				comp.DefName, blnDef.Name)
+		}
+		compBln, err := p.newBalloon(compDef, confCpus)
+		if err != nil || compBln == nil {
+			deleteComponentBlns()
+			return nil, balloonsError("failed to create component balloon %q for composite balloon %q: %v",
+				comp.DefName, blnDef.Name, err)
+		}
+		componentBlns = append(componentBlns, compBln)
+		log.Debugf("created component balloon %s of composite balloon %s",
+			compBln.PrettyName(), blnDef.Name)
+	}
+	memTypeMask, _ := memTypeMaskFromStringList(blnDef.MemoryTypes)
+	bln := &Balloon{
+		Def:            blnDef,
+		Instance:       freeInstance,
+		Groups:         make(map[string]int),
+		PodIDs:         make(map[string][]string),
+		Cpus:           cpuset.New(),
+		SharedIdleCpus: cpuset.New(),
+		LoadedVirtDevs: make(map[string]struct{}),
+		cpuTreeAlloc:   nil, // Allocator is not used for composite balloons.
+		memTypeMask:    memTypeMask,
+		components:     componentBlns,
+	}
+	log.Debugf("created composite balloon %s with %d components. Now resize it to %d mCPU",
+		bln.PrettyName(), len(bln.components), blnDef.MinCpus*1000)
+	if err := p.resizeBalloon(bln, blnDef.MinCpus*1000); err != nil {
+		deleteComponentBlns()
+		return nil, err
+	}
+	if confCpus {
+		if err := p.useCpuClass(bln); err != nil {
+			deleteComponentBlns()
+			log.Errorf("failed to apply CPU configuration to new composite balloon %s[%d] (cpus: %s): %w",
+				blnDef.Name, bln.Instance, bln.Cpus, err)
+			return nil, err
+		}
+	}
+	return bln, nil
+}
+
 func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, error) {
 	var cpus cpuset.CPUSet
 	var err error
@@ -842,6 +929,9 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 		if isFree {
 			break
 		}
+	}
+	if len(blnDef.Components) > 0 {
+		return p.newCompositeBalloon(blnDef, confCpus, freeInstance)
 	}
 	// Configure cpuTreeAllocator for this balloon. The reserved
 	// balloon always prefers to be close to the virtual device
@@ -1337,6 +1427,9 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 	if len(undefinedLoadClasses) > 0 {
 		return balloonsError("loads defined in balloonTypes but missing from loadClasses: %v", undefinedLoadClasses)
 	}
+	// TODO: validate composite balloons:
+	// - no circular compositions
+	// - every balloontype name must be in BalloonDefs
 	return nil
 }
 
@@ -1635,8 +1728,35 @@ func (p *balloons) closestMems(cpus cpuset.CPUSet) idset.IDSet {
 	return idset.NewIDSet(p.memAllocator.CPUSetAffinity(cpus).Slice()...)
 }
 
+// resizeCompositeBalloon changes the CPUs allocated for all sub-components
+func (p *balloons) resizeCompositeBalloon(bln *Balloon, newMilliCpus int) error {
+	origFreeCpus := p.freeCpus.Clone()
+	origCompBlnsCpus := []cpuset.CPUSet{}
+	newMilliCpusPerComponent := newMilliCpus / len(bln.components)
+	blnCpus := cpuset.New()
+	for _, compBln := range bln.components {
+		origCompBlnsCpus = append(origCompBlnsCpus, compBln.Cpus.Clone())
+		if err := p.resizeBalloon(compBln, newMilliCpusPerComponent); err != nil {
+			p.freeCpus = origFreeCpus
+			for i, origCompBlnCpus := range origCompBlnsCpus {
+				bln.components[i].Cpus = origCompBlnCpus
+			}
+			return balloonsError("resize composite balloon %s: %w", bln.PrettyName(), err)
+		}
+		blnCpus = blnCpus.Union(compBln.Cpus)
+	}
+	bln.Cpus = blnCpus
+	log.Debugf("- resize composite ballooon successful: %s, freecpus: %#s", bln, p.freeCpus)
+	p.updatePinning(bln)
+	// TODO: set CPU class etc.
+	return nil
+}
+
 // resizeBalloon changes the CPUs allocated for a balloon, if allowed.
 func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
+	if len(bln.components) > 0 {
+		return p.resizeCompositeBalloon(bln, newMilliCpus)
+	}
 	oldCpuCount := bln.Cpus.Size()
 	newCpuCount := (newMilliCpus + 999) / 1000
 	if bln.Def.MaxCpus > NoLimit && newCpuCount > bln.Def.MaxCpus {

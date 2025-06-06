@@ -142,6 +142,11 @@ func (l CPUTopologyLevel) Value() int {
 type BalloonDef struct {
 	// Name of the balloon definition.
 	Name string `json:"name"`
+	// Components contains list of sub-balloons from which this
+	// balloon definition is composed of. This is used to
+	// allocate CPUs and memory using different rules for
+	// different subset of CPUs.
+	Components []BalloonDefComponent `json:"components,omitempty"`
 	// Namespaces control which namespaces are assigned into
 	// balloon instances from this definition. This is used by
 	// namespace assign methods.
@@ -267,6 +272,19 @@ type BalloonDef struct {
 	// may generate a lot of traffic and large CR object updates
 	// to Kubernetes API server.
 	ShowContainersInNrt *bool `json:"showContainersInNrt,omitempty"`
+}
+
+// BalloonDefComponent contains a balloon component definition.
+// +kubebuilder:object:generate=true
+type BalloonDefComponent struct {
+	// DefName is the name of the balloon type of this
+	// component. It must match the name of a balloon type
+	// defined in the policy.
+	// +kubebuilder:validation:Required
+	DefName string `json:"balloonType"`
+	// CpuPortion specifies the portion of CPUs in this component
+	// relative to other components where CpuPortion is defined.
+	CpuPortion *int `json:"cpuPortion,omitempty"`
 }
 
 // LoadClass specifies how a load affects the system and load
