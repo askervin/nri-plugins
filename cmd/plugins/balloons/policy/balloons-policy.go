@@ -19,6 +19,7 @@ import (
 	"math"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/balloons"
 	"github.com/containers/nri-plugins/pkg/cpuallocator"
@@ -186,10 +187,9 @@ func (bln Balloon) MaxAvailMilliCpus(freeCpus cpuset.CPUSet) int {
 		if bln.Def.MaxCpus == NoLimit || bln.Def.MaxCpus > sumMaxCpus {
 			return sumMaxCpus * 1000
 		}
-	} else {
-		if bln.Def.MaxCpus == NoLimit {
-			return (bln.Cpus.Size() + freeCpus.Size()) * 1000
-		}
+	}
+	if bln.Def.MaxCpus == NoLimit {
+		return (bln.Cpus.Size() + freeCpus.Size()) * 1000
 	}
 	return bln.Def.MaxCpus * 1000
 }
@@ -1379,6 +1379,7 @@ func (p *balloons) applyBalloonDef(balloons *[]*Balloon, blnDef *BalloonDef, fre
 func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 	seenNames := map[string]struct{}{}
 	undefinedLoadClasses := map[string]struct{}{}
+	compositeBlnDefs := map[string]*BalloonDef{}
 	for _, blnDef := range bpoptions.BalloonDefs {
 		if blnDef.Name == "" {
 			return balloonsError("missing or empty name in a balloon type")
@@ -1411,6 +1412,32 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 		if blnDef.PreferIsolCpus && blnDef.ShareIdleCpusInSame != "" {
 			log.Warn("WARNING: using PreferIsolCpus with ShareIdleCpusInSame is highly discouraged")
 		}
+		if len(blnDef.Components) > 0 {
+			compositeBlnDefs[blnDef.Name] = blnDef
+			if blnDef.CpuClass != "" {
+				return balloonsError("composite balloon %q cannot have CpuClasses", blnDef.Name)
+			}
+			forbiddenCpuAllocationOptions := []string{}
+			if blnDef.PreferSpreadOnPhysicalCores != nil {
+				forbiddenCpuAllocationOptions = append(forbiddenCpuAllocationOptions, "PreferSpreadOnPhysicalCores")
+			}
+			if blnDef.AllocatorTopologyBalancing != nil {
+				forbiddenCpuAllocationOptions = append(forbiddenCpuAllocationOptions, "AllocatorTopologyBalancing")
+			}
+			if len(blnDef.PreferCloseToDevices) > 0 {
+				forbiddenCpuAllocationOptions = append(forbiddenCpuAllocationOptions, "PreferCloseToDevices")
+			}
+			if blnDef.PreferIsolCpus {
+				forbiddenCpuAllocationOptions = append(forbiddenCpuAllocationOptions, "PreferIsolCpus")
+			}
+			if blnDef.PreferCoreType != "" {
+				forbiddenCpuAllocationOptions = append(forbiddenCpuAllocationOptions, "PreferCoreType")
+			}
+			if len(forbiddenCpuAllocationOptions) > 0 {
+				return balloonsError("CPU allocation options not allowed in composite balloons, but %q has: %s",
+					blnDef.Name, strings.Join(forbiddenCpuAllocationOptions, ", "))
+			}
+		}
 		for _, load := range blnDef.Loads {
 			undefinedLoadClasses[load] = struct{}{}
 		}
@@ -1427,9 +1454,41 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 	if len(undefinedLoadClasses) > 0 {
 		return balloonsError("loads defined in balloonTypes but missing from loadClasses: %v", undefinedLoadClasses)
 	}
-	// TODO: validate composite balloons:
-	// - no circular compositions
-	// - every balloontype name must be in BalloonDefs
+	var circularCheck func(name string, seen map[string]int) error
+	circularCheck = func(name string, seen map[string]int) error {
+		if seen[name] > 0 {
+			return balloonsError("circular composition detected in composite balloon %q", name)
+		}
+		seen[name] += 1
+		if compBlnDef, ok := compositeBlnDefs[name]; ok {
+			for _, comp := range compBlnDef.Components {
+				if err := circularCheck(comp.DefName, seen); err != nil {
+					return err
+				}
+			}
+		}
+		seen[name] -= 1
+		return nil
+	}
+	for compBlnName, compBlnDef := range compositeBlnDefs {
+		for compIdx, comp := range compBlnDef.Components {
+			if comp.DefName == "" {
+				return balloonsError("missing or empty component balloonType name in composite balloon %q component %d",
+					compBlnName, compIdx+1)
+			}
+			// Make sure every component balloon type is
+			// defined in BalloonDefs.
+			if _, ok := seenNames[comp.DefName]; !ok {
+				return balloonsError("balloon type %q in composite balloon %q is not defined in balloonTypes",
+					comp.DefName, compBlnName)
+			}
+		}
+		// Check for circular compositions.
+		seen := map[string]int{}
+		if err := circularCheck(compBlnName, seen); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
