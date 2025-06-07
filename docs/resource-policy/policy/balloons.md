@@ -275,6 +275,17 @@ Balloons policy parameters:
     should get their CPUs from separate cache blocks for best
     performance. Every listed class must be specified in
     `loadClasses`.
+  - `components` is a list of components of composite balloons. A
+    composite balloon enables allocating single set of CPUs where CPUs
+    to each subset (component) have been selected based on different
+    criteria (other balloonType). For example, a composite balloon
+    "balance-n0-n1" can have two subsets of CPUs: one selected from
+    node0 and the other from node1. If a container requesting 8 CPUs
+    is assigned to the "balance-n0-n1" balloon, then 4 CPUs are
+    allocated from node0 and the other 4 from node1. Every balloon
+    component in the list can have following properties:
+    - `balloonType` (string) is the name of the balloon type that
+      specifies how CPUs of this component are selected.
 - `loadClasses`: lists properties of loads that containers in balloons
   generate to some parts of the system. When the policy allocates CPUs
   for load generating balloon instances, it selects CPUs so that it
