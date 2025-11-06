@@ -64,7 +64,8 @@ typedef struct {
     int cpufreq_minmax[MAX_COMB][2]; // cpufreq min/max [kHz] pairs
     int cpufreq_count;               // Number of cpufreq min/max pairs
     int iterations;                  // Number of iterations per measurement
-    int repeats;                     // Number of repetitions for each measurement
+    int manager_rounds;              // Number of manager loop rounds per combination
+    int repeats;                     // Number of repetitions of all combinations
 } options_t;
 
 typedef struct {
@@ -91,16 +92,18 @@ void print_usage() {
         "  -s <time_us,...>   Worker thread sleeps, report sleep accuracy.\n"
         "  -w <time_us,...>   Worker thread work periods, report number of memory accesses.\n"
         "  -n <workers,...>   Number of workers. The default is available CPUs - 1.\n"
+        "\n"
         "  -p <pol/prio,...>  Comma-separated list of scheduling policy/priority.\n"
         "                     0=OTHER, 1=FIFO, 2=RR, 3=BATCH, 5=IDLE (default: 0/0), see sched_setscheduler(2)\n"
         "  -i <[min/]max,...> Comma-separated list of cpuidle min/max state pairs (default: 0/99)\n"
         "  -f <min/max,...>   Comma-separated list of cpufreq min/max [kHz] pairs (default: 0/9999999) or constant frequencies\n"
-        "  -I <iterations>    Number of iterations per measurement (default: 1000)\n"
-        "  -R <repeats>       Number of repetitions of each measurement (default: 1)\n"
+        "  -I <iterations>    Number of iterations per each measurement (default: 100)\n"
+        "  -R <rounds>        Number of manager loop rounds for each a combination (default: 10)\n"
+        "  -RR <repeats>      Number of top-level repeats going through all combinations (default: 1)\n"
         "  -h                 Show this help message\n"
         "\n"
         "Example:\n"
-        "  in-place-scaling -a 1000 -s 1000 -w 200 -p 1/10 -f 800000/2400000,2400000\n"
+        "  in-place-scaling -a 1ms -s 10us -w 200us -p 1/10 -f 800MHz/2.4GHz,4.6GHz -n 2\n"
     );
 }
 
@@ -336,6 +339,47 @@ void print_latencies(int64_t *latencies) {
     printf("%ld %ld %ld %ld %ld %ld %ld %ld %ld %.0f", min, p5, p50, p80, p90, p95, p99, p999, max, avg_latency);
 }
 
+// asctime_to_us - convert ASCII time string to microseconds, accept <FLOAT>[us|ms|s]
+int asctime_to_us(const char* str) {
+    char* endptr;
+    double value = strtod(str, &endptr);
+    if (endptr == str) {
+        fprintf(stderr, "invalid time format: %s\n", str);
+        exit(EXIT_FAILURE);
+    }
+    while (*endptr == ' ' || *endptr == '\t') endptr++; // skip spaces
+    if (strcmp(endptr, "s") == 0) {
+        return (int)(value * 1000000);
+    } else if (strcmp(endptr, "ms") == 0) {
+        return (int)(value * 1000);
+    } else if (strcmp(endptr, "us") == 0 || *endptr == '\0') {
+        return (int)(value);
+    } else {
+        fprintf(stderr, "unknown time unit in: %s\n", str);
+        exit(EXIT_FAILURE);
+    }
+}
+
+int asckhz_to_khz(const char* str) {
+    char* endptr;
+    double value = strtod(str, &endptr);
+    if (endptr == str) {
+        fprintf(stderr, "invalid frequency format: %s\n", str);
+        exit(EXIT_FAILURE);
+    }
+    while (*endptr == ' ' || *endptr == '\t') endptr++; // skip spaces
+    if (strcmp(endptr, "GHz") == 0) {
+        return (int)(value * 1000000);
+    } else if (strcmp(endptr, "MHz") == 0) {
+        return (int)(value * 1000);
+    } else if (strcmp(endptr, "kHz") == 0 || *endptr == '\0') {
+        return (int)(value);
+    } else {
+        fprintf(stderr, "unknown frequency unit in: %s\n", str);
+        exit(EXIT_FAILURE);
+    }
+}
+
 void parse_options(int argc, char *argv[], options_t* options) {
     // Set default values
     memset(options, 0, sizeof(options_t));
@@ -344,7 +388,7 @@ void parse_options(int argc, char *argv[], options_t* options) {
 
     options->worker_sleeps_us[options->worker_sleeps_count++] = 1000; // Default worker sleep 1000 us
 
-    options->worker_works_us[options->worker_works_count++] = 200; // Default worker work 200 us
+    options->worker_works_us[options->worker_works_count++] = 0; // Default worker work 0 us
 
     options->workers[options->workers_count++] = get_allowed_cpus_count(0) - 1; // Default number of workers: available CPUs - 1
 
@@ -358,7 +402,8 @@ void parse_options(int argc, char *argv[], options_t* options) {
     options->cpufreq_minmax[options->cpufreq_count++][1] = 9999999; // Default cpufreq max [kHz]
 
     options->repeats = 1;
-    options->iterations = 1000;
+    options->manager_rounds = 2; // FIXME: real default 10;
+    options->iterations = 10; // FIXME: real default 100;
 
     // Parse command-line arguments and override defaults
     for (int i = 1; i < argc; i++) {
@@ -366,14 +411,14 @@ void parse_options(int argc, char *argv[], options_t* options) {
             options->adaptation_count = 0; // Reset defaults
             char *token = strtok(argv[++i], ",");
             while (token && options->adaptation_count < MAX_COMB) {
-                options->adaptation_us[options->adaptation_count++] = atoi(token);
+                options->adaptation_us[options->adaptation_count++] = asctime_to_us(token);
                 token = strtok(NULL, ",");
             }
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) { // worker sleeps
             options->worker_sleeps_count = 0; // Reset defaults
             char *token = strtok(argv[++i], ",");
             while (token && options->worker_sleeps_count < MAX_COMB) {
-                options->worker_sleeps_us[options->worker_sleeps_count++] = atoi(token);
+                options->worker_sleeps_us[options->worker_sleeps_count++] = asctime_to_us(token);
                 token = strtok(NULL, ",");
             }
         } else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) { // worker works
@@ -425,18 +470,20 @@ void parse_options(int argc, char *argv[], options_t* options) {
                 char *slash = strchr(token, '/');
                 if (slash) {
                     *slash = '\0';
-                    options->cpufreq_minmax[options->cpufreq_count][0] = atoi(token);
-                    options->cpufreq_minmax[options->cpufreq_count++][1] = atoi(slash + 1);
+                    options->cpufreq_minmax[options->cpufreq_count][0] = asckhz_to_khz(token);
+                    options->cpufreq_minmax[options->cpufreq_count++][1] = asckhz_to_khz(slash + 1);
                 } else {
                     // Without slash, freq is constant (set min and max)
-                    options->cpufreq_minmax[options->cpufreq_count][0] = atoi(token);
-                    options->cpufreq_minmax[options->cpufreq_count++][1] = atoi(token);
+                    options->cpufreq_minmax[options->cpufreq_count][0] = asckhz_to_khz(token);
+                    options->cpufreq_minmax[options->cpufreq_count++][1] = asckhz_to_khz(token);
                 }
                 token = strtok(NULL, ",");
             }
         } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
             options->iterations = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-R") == 0 && i + 1 < argc) {
+            options->manager_rounds = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-RR") == 0 && i + 1 < argc) {
             options->repeats = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-h") == 0) {
             print_usage();
@@ -586,6 +633,7 @@ typedef enum {
 typedef struct {
     int worker_id;
     int pid;
+    int cpu;
     // orders: manager writes, worker reads
     volatile wpm_orders_t orders;
     // status: manager reads, worker writes
@@ -595,8 +643,9 @@ typedef struct {
     // pipe for manager-worker communication
     int pipe_to_worker[2];
     int pipe_from_worker[2];
-    // reserved padding
-    char reserved[256 - sizeof(int)*2 - sizeof(wpm_orders_t) - sizeof(wpm_status_t) - sizeof(int64_t) - sizeof(int) * 2];
+    // latencies recorded by the manager
+    int latency[1024];
+    int latency_count;
 } wpm_worker_shm_t;
 
 int wpm_worker(options_iterator_t* iter, wpm_worker_shm_t* shm) {
@@ -659,6 +708,15 @@ int wpm_worker(options_iterator_t* iter, wpm_worker_shm_t* shm) {
     return 0;
 }
 
+int wpm_latency_save(wpm_worker_shm_t* shm, int latency_ns) {
+    if (shm->latency_count >= 1024) {
+        printf("DEBUG: wpm_latency_save: failed to save latency for worker %d\n", shm->worker_id);
+        return -1; // no space
+    }
+    shm->latency[shm->latency_count++] = latency_ns;
+    return 0;
+}
+
 void wpm_worker_pipe_write(wpm_worker_shm_t* shm, const char* message) {
     write(shm->pipe_to_worker[1], message, strlen(message));
 }
@@ -676,7 +734,8 @@ void wpm_worker_pipe_query(wpm_worker_shm_t* shm, const char* query, char* respo
     wpm_worker_pipe_write(shm, query);
     wpm_worker_pipe_read(shm, response, response_size);
     uint64_t end_ns = get_time_ns();
-    printf("DEBUG: wpm_pipe_query_worker: in %ld ns received from worker %d: %s\n", end_ns-start_ns, worker_id, response);
+    if (wpm_latency_save(shm, end_ns - start_ns)) return;
+    printf("DEBUG: wpm_pipe_query_worker: in %d ns received from worker %d: %s\n", shm->latency[shm->latency_count-1], worker_id, response);
 }
 
 static inline void wpm_workers_oneshot_orders(wpm_worker_shm_t* shm, wpm_orders_t orders) {
@@ -714,7 +773,8 @@ void wpm_worker_togglebit(wpm_worker_shm_t* shm) {
         // busy wait
     }
     uint64_t end_ns = get_time_ns();
-    printf("DEBUG: wpm_togglebit_worker: in %ld ns worker %d toggled bit from %d to %d\n", end_ns - start_ns, worker_id, initial_status != 0, current_status != 0);
+    if (wpm_latency_save(shm, end_ns - start_ns)) return;
+    printf("DEBUG: wpm_togglebit_worker: in %d ns worker %d toggled bit from %lx to %lx\n", shm->latency[shm->latency_count-1], worker_id, initial_status, current_status);
 }
 
 void wpm_workers_togglebit(wpm_worker_shm_t** shms) {
@@ -799,21 +859,46 @@ void wpm_workers_destroy(wpm_worker_shm_t** shms) {
     }
 }
 
+void wpm_workers_stop_changed(wpm_worker_shm_t** shms) {
+    for (wpm_worker_shm_t** shmp = shms; *shmp != NULL; shmp++) {
+        wpm_worker_shm_t* shm = *shmp;
+        if (shm->cpu == -2) { // unassigned
+            printf("DEBUG: wpm_stop_changed_workers: stopping worker %d (pid %d) due to CPU unassignment\n", shm->worker_id, shm->pid);
+            shm->orders = WPM_ORDER_EXIT;
+            close(shm->pipe_from_worker[0]);
+            close(shm->pipe_to_worker[1]);
+        }
+    }
+    delay(1 * MILLISECOND); // give workers time to process exit order
+    // wait for changed workers to exit
+    for (wpm_worker_shm_t** shmp = shms; *shmp != NULL; shmp++) {
+        wpm_worker_shm_t* shm = *shmp;
+        if (shm->cpu == -2) { // unassigned
+            if (!(shm->status & WPM_STATUS_EXITED)) {
+                printf("DEBUG: wpm_stop_changed_workers: waiting for worker %d to exit, current orders: 0x%x status: 0x%x, cycles: %ld\n", shm->worker_id, shm->orders, shm->status, shm->cycles);
+                kill(shm->pid, SIGTERM); // force kill if needed
+                break;
+            }
+            printf("DEBUG: wpm_stop_changed_workers: worker %d exited after %ld cycles\n", shm->worker_id, shm->cycles);
+        }
+    }
+}
+
 void wpm_set_sched(options_iterator_t* iter, wpm_worker_shm_t** shms) {
     options_t* options = iter->options;
     int policy = options->polprio[iter->polprio_idx][0];
     int priority = options->polprio[iter->polprio_idx][1];
-    int num_workers = options->workers[iter->workers_idx];
     printf("DEBUG: main thread (pid %d) set to policy %d priority %d\n", getpid(), policy, priority);
     set_scheduler(0, policy, priority);
-    for (int worker=0; worker<num_workers; worker++) {
-        wpm_worker_shm_t* shm = shms[worker];
+    for (wpm_worker_shm_t** shmp = shms; *shmp != NULL; shmp++) {
+        wpm_worker_shm_t* shm = *shmp;
         printf("DEBUG: worker %d (pid %d) set to policy %d priority %d\n", shm->worker_id, shm->pid, policy, priority);
         set_scheduler(shm->pid, policy, priority);
     }
 }
 
-void wpm_set_cpu_affinity(options_iterator_t* iter, wpm_worker_shm_t** shms, cpu_set_t current_cpuset) {
+// wpm_cpu_affinity_init - assign initial CPU affinity to main thread and workers
+void wpm_cpu_affinity_init(options_iterator_t* iter, wpm_worker_shm_t** shms, cpu_set_t current_cpuset) {
     options_t* options = iter->options;
     int num_workers = options->workers[iter->workers_idx];
 
@@ -827,11 +912,34 @@ void wpm_set_cpu_affinity(options_iterator_t* iter, wpm_worker_shm_t** shms, cpu
             } else {
                 wpm_worker_shm_t* shm = shms[assign_next];
                 set_cpu_affinity(shm->pid, cpu);
+                shm->cpu = cpu;
                 printf("DEBUG: worker %d (pid %d) assigned to CPU %d\n", shm->worker_id, shm->pid, cpu);
             }
             assign_next++;
         }
     }
+    for (int worker = (assign_next>=0?assign_next:0); worker < num_workers; worker++) {
+        wpm_worker_shm_t* shm = shms[worker];
+        shm->cpu = -1; // never assigned
+        printf("DEBUG: worker %d (pid %d) not assigned to any CPU\n", shm->worker_id, shm->pid);
+    }
+}
+
+int wpm_cpu_affinity_mark_changed(wpm_worker_shm_t** shms, cpu_set_t* last_cpuset) {
+    int changed = 0;
+    cpu_set_t current_cpuset;
+    for (wpm_worker_shm_t** shmp = shms; *shmp != NULL; shmp++) {
+        wpm_worker_shm_t* shm = *shmp;
+        cpu_set_t worker_cpuset;
+        if (shm->cpu < 0) continue; // worker CPU not assigned
+        get_cpu_affinity(shm->pid, &worker_cpuset);
+        if (!CPU_ISSET(shm->cpu, &worker_cpuset)) {
+            shm->cpu = -2; // unassigned
+            changed = 1;
+        }
+    }
+    // TODO: detect main thread CPU change as well
+    return changed;
 }
 
 void wpm_allocate_shms(options_iterator_t* iter, wpm_worker_shm_t*** out_shms) {
@@ -864,6 +972,8 @@ int worker_pool_manager(options_iterator_t* iter) {
     // shms are shared memory between workers and the manager.
     // Separately allocate own shm for each worker to avoid cache lines sharing.
     int num_workers = iter->options->workers[iter->workers_idx];
+    int a_us = iter->options->adaptation_us[iter->adaptation_idx];
+
     cpu_set_t current_cpuset;
 
     wpm_worker_shm_t** shms;
@@ -873,16 +983,26 @@ int worker_pool_manager(options_iterator_t* iter) {
     wpm_workers_create(iter, shms, WPM_ORDER_WORK | WPM_ORDER_SLEEP);
 
     get_cpu_affinity(0, &current_cpuset);
-    wpm_set_cpu_affinity(iter, shms, current_cpuset);
+    wpm_cpu_affinity_init(iter, shms, current_cpuset);
     wpm_set_sched(iter, shms);
 
-    delay(1 * SECOND); // sleep 1 second for testing
+    for (int manager_round=0; manager_round < iter->options->manager_rounds; manager_round++) {
+        delay(a_us * MICROSECOND);
 
-    for (int i=0; i<iter->options->iterations; i++) {
-        wpm_workers_togglebit(shms);
-    }
-    for (int i=0; i<iter->options->iterations; i++) {
-        wpm_workers_pipe_ping(shms);
+        for (int i=0; i<iter->options->iterations; i++) {
+            wpm_workers_togglebit(shms);
+        }
+        // TODO: report shm->latency
+        for (int i=0; i<iter->options->iterations; i++) {
+            wpm_workers_pipe_ping(shms);
+        }
+        // TODO: report shm->latency
+        if (!wpm_cpu_affinity_mark_changed(shms, &current_cpuset)) {
+            printf("DEBUG: worker_pool_manager: CPU affinity unchanged\n");
+        } else {
+            printf("DEBUG: worker_pool_manager: CPU affinity changed, reassigning\n");
+            wpm_workers_stop_changed(shms);
+        }
     }
 
     wpm_workers_destroy(shms);
