@@ -24,6 +24,11 @@
     cached_runtime_tarball: ""
     remote_runtime_tarball: ""
     cached_helm_tarball: "{{ cache_dir }}/{{ helm_tarball | basename }}"
+    fedora_mirror: "http://www.nic.funet.fi/pub/mirrors/fedora.redhat.com"
+    dnf_proxy: "{{ dnf_proxy | default('') }}"
+    docker_registry_proxy: "{{ docker_registry_proxy | default('') }}"
+    quay_registry_proxy: "{{ quay_registry_proxy | default('') }}"
+    k8s_registry_proxy: "{{ k8s_registry_proxy | default('') }}"
 
   tasks:
     - name: Check if runtime is containerd
@@ -114,6 +119,16 @@
         state: present
         name: kubernetes
       when: ansible_facts['distribution'] == "Fedora"
+
+    - name: Setup dnf_proxy specifically for rpms
+      shell: |
+        host_os_ip=$(ip route | awk '/default via/{print $3}')
+        echo -e "[main]\nproxy={{ dnf_proxy }}" | sed -e "s/localhost/$host_os_ip/g" > /etc/dnf/dnf.conf
+        sed -i -e "s|^metalink=|#metalink=|g" -e "s|^mirrorlist=|#mirrorlist=|g" /etc/yum.repos.d/*
+        sed -i -e "s|^#baseurl.*/pub/fedora|baseurl={{ fedora_mirror }}/pub/fedora|g" /etc/yum.repos.d/fedora*.repo
+        sed -e 's|https:|http:|g' -i /etc/yum.repos.d/*
+      become: true
+      when: (ansible_facts['distribution'] == "Fedora") and (dnf_proxy != "")
 
     # Install Helm from a release tarball to /usr/local.
     - name: Install Helm binaries from release tarball
@@ -401,6 +416,55 @@
             path: /etc/containerd/config.toml
             regexp: '/opt/cni/bin'
             replace: '/usr/libexec/cni'
+
+        - name: Setup image registry proxies for containerd
+          when: (docker_registry_proxy != "" or quay_registry_proxy != "" or k8s_registry_proxy != "")
+          become: true
+          shell: |
+            declare -A registry_proxy=(
+                ["registry-1.docker.io"]="{{ docker_registry_proxy }}"
+                ["quay.io"]="{{ quay_registry_proxy }}"
+                ["registry.k8s.io"]="{{ k8s_registry_proxy }}"
+            )
+            host_os_ip=$(ip route | awk '/default via/{print $3}')
+            mirrors_file=/etc/containerd/conf.d/mirrors.toml
+            mkdir -p $(dirname $mirrors_file)
+            if [[ "$(containerd --version)" == *"containerd/v2"* ]]; then
+                echo Setup container image registry mirrors to containerd v2
+                CONTAINERD_CERTSD=/etc/containerd/certs.d
+                for registry in "${!registry_proxy[@]}"; do
+                    regsubdir=$(sed 's/^.*[.]\([^.]*\)[.]\([^.]*\)$/\1.\2/g' <<< "$registry")
+                    proxy="${registry_proxy[$registry]}"
+                    proxy="${proxy//localhost/$host_os_ip}"
+                    if [ -z "$proxy" ]; then
+                        continue
+                    fi
+                    mkdir -p $CONTAINERD_CERTSD/$regsubdir
+                    cat  > $CONTAINERD_CERTSD/$regsubdir/hosts.toml <<EOF
+            server="https://$registry"
+            [host."http://$proxy"]
+              capabilities = ["pull", "resolve"]
+              skip_verify = true
+            EOF
+                done
+                cat > $mirrors_file <<EOF
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".registry]
+                config_path = "$CONTAINERD_CERTSD"
+            EOF
+            else
+                echo Setup container image registry mirrors to containerd v1
+                echo '[plugins."io.containerd.grpc.v1.cri".registry.mirrors]' > $mirrors_file
+                for registry in "${!registry_proxy[@]}"; do
+                    proxy="${registry_proxy[$registry]}"
+                    proxy="${proxy//localhost/$host_os_ip}"
+                    if [ -z "$proxy" ]; then
+                        continue
+                    fi
+                    echo "  [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"$registry\"]" >> $mirrors_file
+                    echo "    endpoint = [\"http://$proxy\"]" >> $mirrors_file
+                done
+            fi
 
     - name: Configure bridge CNI plugin
       when: cni_plugin == "bridge"
