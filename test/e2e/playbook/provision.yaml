@@ -552,71 +552,71 @@
         - echo "net.ipv4.conf.*.rp_filter = 0" >> /etc/sysctl.d/k8s.conf
         - sysctl -p /etc/sysctl.d/k8s.conf || true
 
-    - name: Restart kubelet
-      ansible.builtin.service:
-        name: kubelet
-        daemon_reload: true
-        state: restarted
+    # - name: Restart kubelet
+    #   ansible.builtin.service:
+    #     name: kubelet
+    #     daemon_reload: true
+    #     state: restarted
 
-    - name: Initialize the Kubernetes cluster using kubeadm
-      ansible.builtin.command:
-        cmd: kubeadm init --pod-network-cidr="{{ network }}"
+    # - name: Initialize the Kubernetes cluster using kubeadm
+    #   ansible.builtin.command:
+    #     cmd: kubeadm init --pod-network-cidr="{{ network }}"
 
-    - name: Setup kubeconfig for vagrant user
-      ansible.builtin.command: "{{ item }}"
-      with_items:
-        - mkdir -p /home/vagrant/.kube
-        - cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
-        - chown vagrant:vagrant /home/vagrant/.kube/config
-        - mkdir -p /root/.kube
-        - cp -i /etc/kubernetes/admin.conf /root/.kube/config
+    # - name: Setup kubeconfig for vagrant user
+    #   ansible.builtin.command: "{{ item }}"
+    #   with_items:
+    #     - mkdir -p /home/vagrant/.kube
+    #     - cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
+    #     - chown vagrant:vagrant /home/vagrant/.kube/config
+    #     - mkdir -p /root/.kube
+    #     - cp -i /etc/kubernetes/admin.conf /root/.kube/config
 
-    - name: Install single-node cluster
-      become: false
-      ansible.builtin.shell: "{{ item }}"
-      with_items:
-        - kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
-        - kubectl taint nodes --all node-role.kubernetes.io/master- || true
+    # - name: Install single-node cluster
+    #   become: false
+    #   ansible.builtin.shell: "{{ item }}"
+    #   with_items:
+    #     - kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+    #     - kubectl taint nodes --all node-role.kubernetes.io/master- || true
 
-    - name: Install cilium CNI plugin
-      when: cni_plugin == "cilium"
-      block:
-        - name: "Use irregular download path if cilium release is latest"
-          when: cni_release == "latest"
-          ansible.builtin.set_fact:
-            cilium_tarball: https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz
+    # - name: Install cilium CNI plugin
+    #   when: cni_plugin == "cilium"
+    #   block:
+    #     - name: "Use irregular download path if cilium release is latest"
+    #       when: cni_release == "latest"
+    #       ansible.builtin.set_fact:
+    #         cilium_tarball: https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz
 
-        - name: "Use regular download path if cilium release is not latest"
-          when: cni_release != "latest"
-          ansible.builtin.set_fact:
-            cilium_tarball: https://github.com/cilium/cilium-cli/releases/download/{{ cni_release }}/cilium-linux-amd64.tar.gz
+    #     - name: "Use regular download path if cilium release is not latest"
+    #       when: cni_release != "latest"
+    #       ansible.builtin.set_fact:
+    #         cilium_tarball: https://github.com/cilium/cilium-cli/releases/download/{{ cni_release }}/cilium-linux-amd64.tar.gz
 
-        - name: "Fetch and extract {{ cni_release }} cilium (installer) release tarball"
-          ansible.builtin.unarchive:
-            src: "{{ cilium_tarball }}"
-            dest: /usr/local/bin
-            remote_src: true
+    #     - name: "Fetch and extract {{ cni_release }} cilium (installer) release tarball"
+    #       ansible.builtin.unarchive:
+    #         src: "{{ cilium_tarball }}"
+    #         dest: /usr/local/bin
+    #         remote_src: true
 
-        - name: Run cilium installer
-          ansible.builtin.command: "{{ item }}"
-          with_items:
-            - cilium install --wait
-            - cilium status --wait
+    #     - name: Run cilium installer
+    #       ansible.builtin.command: "{{ item }}"
+    #       with_items:
+    #         - cilium install --wait
+    #         - cilium status --wait
 
-    - name: Generate join command
-      ansible.builtin.command:
-        cmd: kubeadm token create --print-join-command
-      register: join_command
+    # - name: Generate join command
+    #   ansible.builtin.command:
+    #     cmd: kubeadm token create --print-join-command
+    #   register: join_command
 
-    - name: Copy join command to local file
-      delegate_to: localhost
-      become: false
-      ansible.builtin.copy:
-        content: "{{ join_command.stdout_lines[0] }}"
-        dest: "{{ outdir }}/join-command"
-        mode: '0644'
+    # - name: Copy join command to local file
+    #   delegate_to: localhost
+    #   become: false
+    #   ansible.builtin.copy:
+    #     content: "{{ join_command.stdout_lines[0] }}"
+    #     dest: "{{ outdir }}/join-command"
+    #     mode: '0644'
 
-    - name: Enable kubelet systemd service
-      ansible.builtin.systemd:
-        name: kubelet
-        enabled: true
+    # - name: Enable kubelet systemd service
+    #   ansible.builtin.systemd:
+    #     name: kubelet
+    #     enabled: true
