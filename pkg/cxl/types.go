@@ -15,9 +15,10 @@
 package cxl
 
 type Devices struct {
-	SysfsPath     string          // Sysfs path to the CXL bus, e.g. /sys/bus/cxl
-	MemoryDevices []*MemoryDevice // Memory devices on this CXL bus
-	RegionDevices []*RegionDevice // Region devices on this CXL bus
+	SysfsPath       string            // Sysfs path to the CXL bus, e.g. /sys/bus/cxl
+	MemoryDevices   []*MemoryDevice   // Memory devices on this CXL bus
+	RegionDevices   []*RegionDevice   // Region devices on this CXL bus
+	EndpointDevices []*EndpointDevice // Endpoint devices on this CXL bus
 }
 
 // Memory device in sysfs:
@@ -53,17 +54,18 @@ type Devices struct {
 // See https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-bus-cxl
 // for more details.
 type MemoryDevice struct {
-	SysfsPath       string          // Sysfs path to the memory device, e.g. /sys/bus/cxl/devices/mem0
-	RAMSize         uint64          // RAM (volatile memory) size in bytes
-	PMEMSize        uint64          // PMEM (persistent memory) size in bytes
-	FirmwareVersion string          // FirmwareVersion string
-	Serial          uint64          // 64-bit PCIe device serial number
-	NUMANode        int             // NUMA node affinity, CPU node on host, -1 if not set
-	Driver          string          // Driver name from uevent, e.g. "cxl_mem". Empty when memdev is disabled.
-	Major           int             // Major device number from uevent
-	Minor           int             // Minor device number from uevent
-	Enabled         bool            // Whether the memory device is enabled (Driver != "")
-	Regions         []*RegionDevice // Region devices associated with this memory device
+	SysfsPath       string // Sysfs path to the memory device, e.g. /sys/bus/cxl/devices/mem0
+	Name            string // Memory device name, e.g. "mem0"
+	DevName         string // uvent DEVNAME, e.g. "cxl/mem0"
+	RamSize         uint64 // RAM (volatile memory) size in bytes
+	PmemSize        uint64 // PMEM (persistent memory) size in bytes
+	FirmwareVersion string // FirmwareVersion string
+	Serial          uint64 // 64-bit PCIe device serial number
+	NumaNode        int    // NUMA node affinity, CPU node on host, -1 if not set
+	Driver          string // Driver name from uevent, e.g. "cxl_mem". Empty when memdev is disabled.
+	Major           int    // Major device number from uevent
+	Minor           int    // Minor device number from uevent
+	Enabled         bool   // Whether the memory device is enabled (Driver != "")
 }
 
 // Memory region in sysfs (dax_regionY is a subdirectory in regionX):
@@ -123,9 +125,26 @@ type MemoryDevice struct {
 // RegionDevice represents a memory region device in sysfs
 type RegionDevice struct {
 	SysfsPath string          // Sysfs path to the region device, e.g. /sys/bus/cxl/devices/region0
+	Name      string          // Region name, e.g. "region0"
 	Size      uint64          // Size in bytes
 	Mode      string          // Mode string, e.g. "ram"
-	Devices   []*MemoryDevice // Memory devices associated with this region
+	Targets   []string        // Target decoders, e.g. ["decoder4.0", "decoder7.0"]
+	Memories  []*MemoryDevice // Memory devices associated with this region
+}
+
+type EndpointDevice struct {
+	SysfsPath    string                    // Sysfs path to the endpoint device, e.g. /sys/bus/cxl/devices/endpoint4
+	UportMajor   int                       // Major device number of the uport
+	UportMinor   int                       // Minor device number of the uport
+	UportDevName string                    // Device name of the uport, e.g. "cxl/mem0"
+	Decoders     map[string]*DecoderDevice // Decoders in this endpoint, key is decoder name
+}
+
+type DecoderDevice struct {
+	SysfsPath string // Sysfs path to the decoder device, e.g. /sys/bus/cxl/devices/decoder4.0
+	Name      string // Decoder name, e.g. "decoder4.0"
+	Mode      string // Decoder mode, e.g. "ram"
+	Region    string // Associated region name, e.g. "region0"
 }
 
 // Creating a region with the cxl tool from two memory devices:
@@ -265,6 +284,18 @@ func NewMemoryDevice() *MemoryDevice {
 // NewRegionDevice creates a new RegionDevice instance
 func NewRegionDevice() *RegionDevice {
 	return &RegionDevice{}
+}
+
+// NewEndpointDevice creates a new EndpointDevice instance
+func NewEndpointDevice() *EndpointDevice {
+	return &EndpointDevice{
+		Decoders: make(map[string]*DecoderDevice),
+	}
+}
+
+// NewDecoderDevice creates a new DecoderDevice instance
+func NewDecoderDevice() *DecoderDevice {
+	return &DecoderDevice{}
 }
 
 // Note: cxl destroy-region region0 --force
