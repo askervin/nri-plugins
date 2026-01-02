@@ -17,10 +17,11 @@ package cxl
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
-func scanDevices(sysfsRoot string) (*Devices, error) {
+func DevicesFromSysfs(sysfsRoot string) (*Devices, error) {
 	devicesPath := sysfsRoot + "/sys/bus/cxl/devices"
 
 	devices := NewDevices(devicesPath)
@@ -44,6 +45,43 @@ func scanDevices(sysfsRoot string) (*Devices, error) {
 				return nil, err
 			}
 			devices.RegionDevices = append(devices.RegionDevices, region)
+		case strings.HasPrefix(deviceEntry.Name(), "endpoint"):
+			sysfsEndpointPath := devicesPath + "/" + deviceEntry.Name()
+			endpoint, err := endpointDeviceFromSysfs(sysfsEndpointPath)
+			if err != nil {
+				return nil, err
+			}
+			devices.EndpointDevices = append(devices.EndpointDevices, endpoint)
+		}
+	}
+
+	devToMemdev := make(map[string]*MemoryDevice)
+	for _, memdev := range devices.MemoryDevices {
+		dev := fmt.Sprintf("%d:%d", memdev.Major, memdev.Minor)
+		devToMemdev[dev] = memdev
+	}
+
+	// Regions have multiple target decoders, each of which may point to a memory device
+	// via endpoint/decoderX/region and region/targetX.
+	devToRegions := make(map[string][]string)
+	regionToDevs := make(map[string][]string)
+	for _, endpoint := range devices.EndpointDevices {
+		for _, decoder := range endpoint.Decoders {
+			if decoder.Region != "" {
+				dev := fmt.Sprintf("%d:%d", endpoint.UportMajor, endpoint.UportMinor)
+				devToRegions[dev] = append(devToRegions[dev], decoder.Region)
+				regionToDevs[decoder.Region] = append(regionToDevs[decoder.Region], dev)
+			}
+		}
+	}
+
+	for _, region := range devices.RegionDevices {
+		devs := regionToDevs[region.Name]
+		for _, dev := range devs {
+			memdev, exists := devToMemdev[dev]
+			if exists {
+				region.Memories = append(region.Memories, memdev)
+			}
 		}
 	}
 
@@ -51,63 +89,116 @@ func scanDevices(sysfsRoot string) (*Devices, error) {
 }
 
 func memoryDeviceFromSysfs(sysfsMemdevPath string) (*MemoryDevice, error) {
-	var err error
-	memdev := &MemoryDevice{
-		SysfsPath: sysfsMemdevPath,
-	}
+	memdev := NewMemoryDevice()
+	memdev.SysfsPath = sysfsMemdevPath
+	memdev.Name = sysfsMemdevPath[strings.LastIndex(sysfsMemdevPath, "/")+1:]
 
-	// /sys/bus/cxl/devices/mem0/uevent:
-	// DEVTYPE=cxl_memdev
-	// DRIVER=cxl_mem // empty or missing if memdev is disabled
-	// MAJOR=251
-	// MINOR=0
-	// MODALIAS=cxl:t5
-	ueventPath := sysfsMemdevPath + "/uevent"
-	ueventData, err := os.ReadFile(ueventPath)
+	err := parse(
+		// /sys/bus/cxl/devices/mem0/uevent:
+		// MAJOR=251
+		// MINOR=0
+		// DEVNAME=cxl/mem0
+		// DEVTYPE=cxl_memdev
+		// DRIVER=cxl_mem // empty or missing if memdev is disabled
+		// MODALIAS=cxl:t5
+		parseWithSscanf(sysfsMemdevPath+"/uevent", "MAJOR=%d", &memdev.Major),
+		parseWithSscanf(sysfsMemdevPath+"/uevent", "MINOR=%d", &memdev.Minor),
+		parseWithSscanf(sysfsMemdevPath+"/uevent", "DEVNAME=%s", &memdev.DevName),
+		parseIgnoring(MissingLine{}), // allow missing DRIVER line
+		parseWithSscanf(sysfsMemdevPath+"/uevent", "DRIVER=%s", &memdev.Driver),
+		parseIgnoring(), // fail again on missing lines
+		// /sys/bus/cxl/devices/mem0/numa_node:0
+		parseWithSscanf(sysfsMemdevPath+"/numa_node", "%d", &memdev.NumaNode),
+		// /sys/bus/cxl/devices/mem0/serial:0xc100e2e0
+		parseWithSscanf(sysfsMemdevPath+"/serial", "0x%x", &memdev.Serial),
+		// /sys/bus/cxl/devices/mem0/pmem/size:0x0
+		parseWithSscanf(sysfsMemdevPath+"/pmem/size", "0x%x", &memdev.PmemSize),
+		// /sys/bus/cxl/devices/mem0/ram/size:0x10000000
+		parseWithSscanf(sysfsMemdevPath+"/ram/size", "0x%x", &memdev.RamSize),
+	)
 	if err != nil {
 		return nil, err
 	}
-	for _, line := range strings.Split(string(ueventData), "\n") {
-		if strings.HasPrefix(line, "MAJOR=") {
-			fmt.Sscanf(line, "MAJOR=%d", &memdev.Major)
-		} else if strings.HasPrefix(line, "MINOR=") {
-			fmt.Sscanf(line, "MINOR=%d", &memdev.Minor)
-		} else if strings.HasPrefix(line, "DRIVER=") {
-			fmt.Sscanf(line, "DRIVER=%s", &memdev.Driver)
-			memdev.Enabled = (memdev.Driver != "")
-		}
-	}
-	// Parse RAM and PMEM sizes from hex values
-	// /sys/bus/cxl/devices/mem0/pmem/size:0x0
-	// /sys/bus/cxl/devices/mem0/ram/size:0x10000000
-	ramSizePath := sysfsMemdevPath + "/ram/size"
-	memdev.RAMSize, err = uint64FromHexFile(ramSizePath)
-	if err != nil {
-		return nil, err
-	}
-
-	pmemSizePath := sysfsMemdevPath + "/pmem/size"
-	memdev.PMEMSize, err = uint64FromHexFile(pmemSizePath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse serial number
-	// /sys/bus/cxl/devices/mem0/serial:0xc100e2e0
-	serialPath := sysfsMemdevPath + "/serial"
-	memdev.Serial, err = uint64FromHexFile(serialPath)
-	if err != nil {
-		return nil, err
-	}
+	memdev.Enabled = memdev.Driver != ""
 	return memdev, nil
 }
 
-func uint64FromHexFile(filepath string) (uint64, error) {
-	data, err := os.ReadFile(filepath)
+func regionDeviceFromSysfs(sysfsRegionPath string) (*RegionDevice, error) {
+	region := NewRegionDevice()
+	region.SysfsPath = sysfsRegionPath
+	region.Name = sysfsRegionPath[strings.LastIndex(sysfsRegionPath, "/")+1:]
+
+	err := parse(
+		// /sys/bus/cxl/devices/region0/size:0x200000000
+		parseWithSscanf(sysfsRegionPath+"/size", "0x%x", &region.Size),
+		// /sys/bus/cxl/devices/region0/mode:ram
+		parseWithSscanf(sysfsRegionPath+"/mode", "%s", &region.Mode),
+	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	var value uint64
-	fmt.Sscanf(string(data), "0x%x", &value)
-	return value, nil
+
+	// parse decoders from regionX/targetN for N=0,1,...
+	for i := 0; ; i++ {
+		var targetDecoder string
+		err := parse(
+			parseIgnoring(MissingFile{}), // allow missing targetN files
+			parseWithSscanf(fmt.Sprintf("%s/target%d", sysfsRegionPath, i), "%s", &targetDecoder),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if targetDecoder == "" {
+			break
+		}
+		region.Targets = append(region.Targets, targetDecoder)
+	}
+	return region, nil
+}
+
+func endpointDeviceFromSysfs(sysfsEndpointPath string) (*EndpointDevice, error) {
+	endpoint := NewEndpointDevice()
+	endpoint.SysfsPath = sysfsEndpointPath
+
+	err := parse(
+		// /sys/bus/cxl/devices/endpoint4/uport/dev:251:0
+		parseWithSscanf(sysfsEndpointPath+"/uport/dev", "%d:%d", &endpoint.UportMajor, &endpoint.UportMinor),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	endpointEntries, err := os.ReadDir(endpoint.SysfsPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range endpointEntries {
+		isDecoder, _ := filepath.Match("decoder[0-9]*", entry.Name())
+		switch {
+		case isDecoder:
+			sysfsDecoderPath := endpoint.SysfsPath + "/" + entry.Name()
+			decoder, err := decoderDeviceFromSysfs(sysfsDecoderPath)
+			if err != nil {
+				return nil, err
+			}
+			endpoint.Decoders[decoder.Name] = decoder
+		}
+	}
+	return endpoint, nil
+}
+
+func decoderDeviceFromSysfs(sysfsDecoderPath string) (*DecoderDevice, error) {
+	decoder := NewDecoderDevice()
+	decoder.SysfsPath = sysfsDecoderPath
+	decoder.Name = sysfsDecoderPath[strings.LastIndex(sysfsDecoderPath, "/")+1:]
+
+	err := parse(
+		parseWithSscanf(sysfsDecoderPath+"/mode", "%s", &decoder.Mode),
+		parseIgnoring(MissingLine{}), // region file is empty if not assigned
+		parseWithSscanf(sysfsDecoderPath+"/region", "%s", &decoder.Region),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return decoder, nil
 }
