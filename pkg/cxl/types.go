@@ -127,7 +127,9 @@ type RegionDevice struct {
 	SysfsPath string          // Sysfs path to the region device, e.g. /sys/bus/cxl/devices/region0
 	Name      string          // Region name, e.g. "region0"
 	Size      uint64          // Size in bytes
+	Resource  uint64          // Resource start address
 	Mode      string          // Mode string, e.g. "ram"
+	Node      int             // NUMA node affinity, CPU node on host, -1 if not set
 	Targets   []string        // Target decoders, e.g. ["decoder4.0", "decoder7.0"]
 	Memories  []*MemoryDevice // Memory devices associated with this region
 }
@@ -267,13 +269,15 @@ type DecoderDevice struct {
 
 // /sys/devices/platform/ACPI0017:00/root0/port2/port3/dport1/0000:0f:00.0/mem0/uevent:DEVNAME=cxl/mem0
 
+// ZoneInfo is read from /proc/zoneinfo
+type ZoneInfo struct {
+	FilePath  string // path to contents, e.g. /proc/zoneinfo
+	PfnToNode map[int64]int
+}
+
 // NewDevices creates a new Devices instance
-func NewDevices(sysfsPath string) *Devices {
-	return &Devices{
-		SysfsPath:     sysfsPath,
-		MemoryDevices: []*MemoryDevice{},
-		RegionDevices: []*RegionDevice{},
-	}
+func NewDevices() *Devices {
+	return &Devices{}
 }
 
 // NewMemoryDevice creates a new MemoryDevice instance
@@ -283,7 +287,9 @@ func NewMemoryDevice() *MemoryDevice {
 
 // NewRegionDevice creates a new RegionDevice instance
 func NewRegionDevice() *RegionDevice {
-	return &RegionDevice{}
+	return &RegionDevice{
+		Node: -1,
+	}
 }
 
 // NewEndpointDevice creates a new EndpointDevice instance
@@ -296,6 +302,12 @@ func NewEndpointDevice() *EndpointDevice {
 // NewDecoderDevice creates a new DecoderDevice instance
 func NewDecoderDevice() *DecoderDevice {
 	return &DecoderDevice{}
+}
+
+func NewZoneInfo() *ZoneInfo {
+	return &ZoneInfo{
+		PfnToNode: make(map[int64]int),
+	}
 }
 
 // Note: cxl destroy-region region0 --force

@@ -24,7 +24,8 @@ import (
 func DevicesFromSysfs(sysfsRoot string) (*Devices, error) {
 	devicesPath := sysfsRoot + "/sys/bus/cxl/devices"
 
-	devices := NewDevices(devicesPath)
+	devices := NewDevices()
+	devices.SysfsPath = devicesPath
 	deviceEntries, err := os.ReadDir(devicesPath)
 	if err != nil {
 		return nil, err
@@ -55,6 +56,18 @@ func DevicesFromSysfs(sysfsRoot string) (*Devices, error) {
 		}
 	}
 
+	if len(devices.RegionDevices) > 0 {
+		if err := linkRegionsToMemoryDevices(devices); err != nil {
+			return nil, err
+		}
+		if err := linkRegionsToNumaNodes(sysfsRoot, devices); err != nil {
+			return nil, err
+		}
+	}
+	return devices, nil
+}
+
+func linkRegionsToMemoryDevices(devices *Devices) error {
 	devToMemdev := make(map[string]*MemoryDevice)
 	for _, memdev := range devices.MemoryDevices {
 		dev := fmt.Sprintf("%d:%d", memdev.Major, memdev.Minor)
@@ -63,13 +76,11 @@ func DevicesFromSysfs(sysfsRoot string) (*Devices, error) {
 
 	// Regions have multiple target decoders, each of which may point to a memory device
 	// via endpoint/decoderX/region and region/targetX.
-	devToRegions := make(map[string][]string)
 	regionToDevs := make(map[string][]string)
 	for _, endpoint := range devices.EndpointDevices {
 		for _, decoder := range endpoint.Decoders {
 			if decoder.Region != "" {
 				dev := fmt.Sprintf("%d:%d", endpoint.UportMajor, endpoint.UportMinor)
-				devToRegions[dev] = append(devToRegions[dev], decoder.Region)
 				regionToDevs[decoder.Region] = append(regionToDevs[decoder.Region], dev)
 			}
 		}
@@ -85,7 +96,53 @@ func DevicesFromSysfs(sysfsRoot string) (*Devices, error) {
 		}
 	}
 
-	return devices, nil
+	return nil
+}
+
+func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
+	zoneInfo := NewZoneInfo()
+	err := parse(func(p *parser) error {
+		data, err := p.getFileContent(sysfsRoot + "/proc/zoneinfo")
+		if err != nil {
+			return err
+		}
+		var nodeID int = -1
+		var startPfn int64 = -1
+		var lineNumber int
+		for line := range strings.SplitSeq(data, "\n") {
+			lineNumber++
+			switch {
+			case strings.HasPrefix(line, "Node "):
+				_, err := fmt.Sscanf(line, "Node %d,", &nodeID)
+				if err != nil {
+					return fmt.Errorf("failed to parse Node number in /proc/zoneinfo line %d: %w", lineNumber, err)
+				}
+			case strings.HasPrefix(line, "  start_pfn:"):
+				_, err := fmt.Sscanf(line, "  start_pfn: %d", &startPfn)
+				if err != nil {
+					return fmt.Errorf("failed to parse start_pfn in /proc/zoneinfo line %d: %w", lineNumber, err)
+				}
+				if nodeID == -1 {
+					return fmt.Errorf("found start_pfn before Node in /proc/zoneinfo line %d", lineNumber)
+				}
+				zoneInfo.PfnToNode[startPfn] = nodeID
+				nodeID = -1
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, region := range devices.RegionDevices {
+		startPfn := int64(region.Resource >> 12)
+		node, ok := zoneInfo.PfnToNode[startPfn]
+		if !ok {
+			return fmt.Errorf("failed to find NUMA node for region %s with resource %x: missing start_pfn %d in /proc/zoneinfo", region.Name, region.Resource, startPfn)
+		}
+		region.Node = node
+	}
+	return nil
 }
 
 func memoryDeviceFromSysfs(sysfsMemdevPath string) (*MemoryDevice, error) {
@@ -133,6 +190,8 @@ func regionDeviceFromSysfs(sysfsRegionPath string) (*RegionDevice, error) {
 		parseWithSscanf(sysfsRegionPath+"/size", "0x%x", &region.Size),
 		// /sys/bus/cxl/devices/region0/mode:ram
 		parseWithSscanf(sysfsRegionPath+"/mode", "%s", &region.Mode),
+		// /sys/bus/cxl/devices/region0/resource:0x6d0000000
+		parseWithSscanf(sysfsRegionPath+"/resource", "0x%x", &region.Resource),
 	)
 	if err != nil {
 		return nil, err
