@@ -29,57 +29,35 @@ type parser struct {
 	ignoreErrorTypes map[string]bool
 }
 
-type parseable interface {
-	parse(p *parser) error
-}
+type parseFunc func(p *parser) error
 
-type sscanfSpec struct {
-	filepath string
-	format   string
-	dests    []any
-}
-
-func (sf *sscanfSpec) parse(p *parser) error {
-	var err error
-	data, err := p.getFileContent(sf.filepath)
-	if err != nil {
-		return err
-	}
-	for line := range strings.SplitSeq(data, "\n") {
-		_, err = fmt.Sscanf(line, sf.format, sf.dests...)
-		if err == nil {
-			return nil
+func parseWithSscanf(filepath, format string, dests ...any) parseFunc {
+	return func(p *parser) error {
+		var err error
+		data, err := p.getFileContent(filepath)
+		if err != nil {
+			return err
 		}
-	}
-	return MissingLine{fmt.Errorf("failed to parse %s: no line matches format %q", sf.filepath, sf.format)}
-}
-
-func parseWithSscanf(filepath, format string, dests ...any) parseable {
-	return &sscanfSpec{
-		filepath: filepath,
-		format:   format,
-		dests:    dests,
+		for line := range strings.SplitSeq(data, "\n") {
+			_, err = fmt.Sscanf(line, format, dests...)
+			if err == nil {
+				return nil
+			}
+		}
+		return MissingLine{fmt.Errorf("failed to parse %s: no line matches format %q", filepath, format)}
 	}
 }
 
-func parseIgnoring(errors ...error) parseable {
+func parseIgnoring(errors ...error) parseFunc {
 	errorTypes := make(map[string]bool)
 	for _, err := range errors {
 		errType := fmt.Sprintf("%T", err)
 		errorTypes[errType] = true
 	}
-	return &ignoreErrorsSpec{
-		errorTypes: errorTypes,
+	return func(p *parser) error {
+		p.ignoreErrorTypes = errorTypes
+		return nil
 	}
-}
-
-type ignoreErrorsSpec struct {
-	errorTypes map[string]bool
-}
-
-func (ies *ignoreErrorsSpec) parse(p *parser) error {
-	p.ignoreErrorTypes = ies.errorTypes
-	return nil
 }
 
 func (p *parser) getFileContent(filepath string) (string, error) {
@@ -98,17 +76,9 @@ func (p *parser) getFileContent(filepath string) (string, error) {
 	return data, nil
 }
 
-func parse(parseTasks ...parseable) error {
-	p := &parser{
-		fileCache:        map[string]string{},
-		ignoreErrorTypes: map[string]bool{},
-	}
-	return p.parse(parseTasks...)
-}
-
-func (p *parser) parse(parseTasks ...parseable) error {
+func (p *parser) parse(parseTasks ...parseFunc) error {
 	for _, pt := range parseTasks {
-		if err := pt.parse(p); err != nil {
+		if err := pt(p); err != nil {
 			if p.isIgnored(err) {
 				continue
 			}
@@ -119,7 +89,14 @@ func (p *parser) parse(parseTasks ...parseable) error {
 }
 
 func (p *parser) isIgnored(err error) bool {
-	// compare only error types
 	errType := fmt.Sprintf("%T", err)
 	return p.ignoreErrorTypes[errType]
+}
+
+func parse(parseTasks ...parseFunc) error {
+	p := &parser{
+		fileCache:        map[string]string{},
+		ignoreErrorTypes: map[string]bool{},
+	}
+	return p.parse(parseTasks...)
 }
