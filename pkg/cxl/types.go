@@ -315,3 +315,23 @@ func NewZoneInfo() *ZoneInfo {
 // In a test where a process used memory (movable 2MB hugepages) from the region
 // continued to work after kernel automatically moved its data to other physical memory
 // (data written to the hugepages was preserved and successfully read from new hugepages on node 0).
+
+func (ds *Devices) GetRegionDevices() []*RegionDevice {
+	return ds.RegionDevices
+}
+
+func (rd *RegionDevice) GetName() string {
+	return rd.Name
+}
+
+func (rd *RegionDevice) GetMode() string {
+	return rd.Mode
+}
+
+func (rd *RegionDevice) GetSize() uint64 {
+	return rd.Size
+}
+
+func (rd *RegionDevice) GetNode() int {
+	return rd.Node
+}
