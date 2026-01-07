@@ -136,9 +136,23 @@ func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
 	}
 	for _, region := range devices.RegionDevices {
 		startPfn := int64(region.Resource >> 12)
+		endPfn := startPfn + (int64(region.Size) >> 12) - 1
 		node, ok := zoneInfo.PfnToNode[startPfn]
 		if !ok {
-			return fmt.Errorf("failed to find NUMA node for region %s with resource %x: missing start_pfn %d in /proc/zoneinfo", region.Name, region.Resource, startPfn)
+			// not all memories are onlined, so try to find any node in the range
+			for pfn := range zoneInfo.PfnToNode {
+				if pfn >= startPfn && pfn <= endPfn {
+					node = zoneInfo.PfnToNode[pfn]
+					ok = true
+					fmt.Printf("DEBUG: found NUMA node %d for region %s with resource %x at pfn %x that fits between start_pfn %x and end_pfn %x\n", node, region.Name, region.Resource, pfn, startPfn, endPfn)
+					break
+				}
+			}
+			if !ok {
+				// TODO: this is not fatal error. It only means that all the memory is offline, and therefore the node cannot be determined from /proc/zoneinfo
+				// that does not show start_pfn when there is no online memory in the zone.
+				return fmt.Errorf("failed to find NUMA node for region %s with resource %x: missing start_pfn %d in /proc/zoneinfo", region.Name, region.Resource, startPfn)
+			}
 		}
 		region.Node = node
 	}
