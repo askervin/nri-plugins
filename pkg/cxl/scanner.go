@@ -101,6 +101,16 @@ func linkRegionsToMemoryDevices(devices *Devices) error {
 
 func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
 	zoneInfo := NewZoneInfo()
+	/* Regions with onlined memory are cheapest to map to NUMA
+	   nodes by looking at start PFNs of all zones with memory. If
+	   the first memory block of the node is online
+	   (.../nodeX/memoryNNN/state) then start_pfn will match
+	   region's resource>>12. If any of the blocks is online,
+	   start_pfn will be between region's resource>>12 and
+	   (resource+size)>>12. If none of the blocks is online but
+	   the region is still enabled (driver is bound),
+	   regionX/dax_regionY/daxN.M/target_node points to the node.
+	*/
 	err := parse(func(p *parser) error {
 		data, err := p.getFileContent(sysfsRoot + "/proc/zoneinfo")
 		if err != nil {
@@ -108,6 +118,7 @@ func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
 		}
 		var nodeID int = -1
 		var startPfn int64 = -1
+		var pagesPresent uint64
 		var lineNumber int
 		for line := range strings.SplitSeq(data, "\n") {
 			lineNumber++
@@ -127,6 +138,12 @@ func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
 				}
 				zoneInfo.PfnToNode[startPfn] = nodeID
 				nodeID = -1
+			case strings.HasPrefix(line, "        present"):
+				_, err := fmt.Sscanf(line, "        present %d", &pagesPresent)
+				if err != nil {
+					return fmt.Errorf("failed to parse present pages in /proc/zoneinfo line %d: %w", lineNumber, err)
+				}
+				zoneInfo.NodeToPresent[nodeID] += pagesPresent
 			}
 		}
 		return nil
@@ -139,22 +156,33 @@ func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
 		endPfn := startPfn + (int64(region.Size) >> 12) - 1
 		node, ok := zoneInfo.PfnToNode[startPfn]
 		if !ok {
-			// not all memories are onlined, so try to find any node in the range
+			node = -1
+			// The first memory is not onlined, so try to
+			// match any PFN in the region to a node.
 			for pfn := range zoneInfo.PfnToNode {
 				if pfn >= startPfn && pfn <= endPfn {
 					node = zoneInfo.PfnToNode[pfn]
-					ok = true
 					fmt.Printf("DEBUG: found NUMA node %d for region %s with resource %x at pfn %x that fits between start_pfn %x and end_pfn %x\n", node, region.Name, region.Resource, pfn, startPfn, endPfn)
 					break
 				}
 			}
-			if !ok {
-				// TODO: this is not fatal error. It only means that all the memory is offline, and therefore the node cannot be determined from /proc/zoneinfo
-				// that does not show start_pfn when there is no online memory in the zone.
-				return fmt.Errorf("failed to find NUMA node for region %s with resource %x: missing start_pfn %d in /proc/zoneinfo", region.Name, region.Resource, startPfn)
+			if node == -1 {
+				// There is no onlined memory at all
+				// in the region. If the driver is
+				// bound, we may be able to find the
+				// node from dax device target_node.
+				if matches, err := filepath.Glob(filepath.Join(region.SysfsPath, "dax_region*/dax*/target_node")); err == nil && len(matches) == 1 {
+					if parse(parseWithSscanf(matches[0], "%d", &node)) == nil {
+						fmt.Printf("DEBUG: found NUMA node %d for region %s from dax target_node\n", node, region.Name)
+					}
+				}
 			}
 		}
 		region.Node = node
+		if region.Node >= 0 {
+			region.OnlineSize = zoneInfo.NodeToPresent[region.Node] << 12
+		}
+		region.Enabled = (region.Node >= 0)
 	}
 	return nil
 }
@@ -179,7 +207,7 @@ func memoryDeviceFromSysfs(sysfsMemdevPath string) (*MemoryDevice, error) {
 		parseWithSscanf(sysfsMemdevPath+"/uevent", "DRIVER=%s", &memdev.Driver),
 		parseIgnoring(), // fail again on missing lines
 		// /sys/bus/cxl/devices/mem0/numa_node:0
-		parseWithSscanf(sysfsMemdevPath+"/numa_node", "%d", &memdev.NumaNode),
+		parseWithSscanf(sysfsMemdevPath+"/numa_node", "%d", &memdev.NodeAffinity),
 		// /sys/bus/cxl/devices/mem0/serial:0xc100e2e0
 		parseWithSscanf(sysfsMemdevPath+"/serial", "0x%x", &memdev.Serial),
 		// /sys/bus/cxl/devices/mem0/pmem/size:0x0
