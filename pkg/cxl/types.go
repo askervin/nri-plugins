@@ -61,7 +61,7 @@ type MemoryDevice struct {
 	PmemSize        uint64 // PMEM (persistent memory) size in bytes
 	FirmwareVersion string // FirmwareVersion string
 	Serial          uint64 // 64-bit PCIe device serial number
-	NumaNode        int    // NUMA node affinity, CPU node on host, -1 if not set
+	NodeAffinity    int    // NUMA node affinity, CPU node on host, -1 if not set
 	Driver          string // Driver name from uevent, e.g. "cxl_mem". Empty when memdev is disabled.
 	Major           int    // Major device number from uevent
 	Minor           int    // Minor device number from uevent
@@ -124,14 +124,16 @@ type MemoryDevice struct {
 
 // RegionDevice represents a memory region device in sysfs
 type RegionDevice struct {
-	SysfsPath string          // Sysfs path to the region device, e.g. /sys/bus/cxl/devices/region0
-	Name      string          // Region name, e.g. "region0"
-	Size      uint64          // Size in bytes
-	Resource  uint64          // Resource start address
-	Mode      string          // Mode string, e.g. "ram"
-	Node      int             // NUMA node affinity, CPU node on host, -1 if not set
-	Targets   []string        // Target decoders, e.g. ["decoder4.0", "decoder7.0"]
-	Memories  []*MemoryDevice // Memory devices associated with this region
+	SysfsPath  string          // Sysfs path to the region device, e.g. /sys/bus/cxl/devices/region0
+	Name       string          // Region name, e.g. "region0"
+	Size       uint64          // Size in bytes
+	Resource   uint64          // Resource start address
+	Mode       string          // Mode string, e.g. "ram"
+	Node       int             // NUMA node where region memory is located, -1 if region is disabled
+	OnlineSize uint64          // Size of onlined memory in bytes (may be 0 even if region is enabled)
+	Targets    []string        // Target decoders, e.g. ["decoder4.0", "decoder7.0"]
+	Memories   []*MemoryDevice // Memory devices associated with this region
+	Enabled    bool            // Whether the region is enabled (Node != -1)
 }
 
 type EndpointDevice struct {
@@ -271,8 +273,9 @@ type DecoderDevice struct {
 
 // ZoneInfo is read from /proc/zoneinfo
 type ZoneInfo struct {
-	FilePath  string // path to contents, e.g. /proc/zoneinfo
-	PfnToNode map[int64]int
+	FilePath      string // path to contents, e.g. /proc/zoneinfo
+	PfnToNode     map[int64]int
+	NodeToPresent map[int]uint64 // number of pages present per node
 }
 
 // NewDevices creates a new Devices instance
@@ -306,7 +309,8 @@ func NewDecoderDevice() *DecoderDevice {
 
 func NewZoneInfo() *ZoneInfo {
 	return &ZoneInfo{
-		PfnToNode: make(map[int64]int),
+		PfnToNode:     make(map[int64]int),
+		NodeToPresent: make(map[int]uint64),
 	}
 }
 
