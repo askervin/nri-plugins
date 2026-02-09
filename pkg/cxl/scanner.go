@@ -64,6 +64,23 @@ func DevicesFromSysfs(sysfsRoot string) (*Devices, error) {
 			return nil, err
 		}
 	}
+
+	nodesPath := sysfsRoot + "/sys/devices/system/node"
+	nodeEntries, err := os.ReadDir(nodesPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, nodeEntry := range nodeEntries {
+		if strings.HasPrefix(nodeEntry.Name(), "node") {
+			sysfsNodePath := nodesPath + "/" + nodeEntry.Name()
+			node, err := memoryNodeFromSysfs(sysfsNodePath)
+			if err != nil {
+				return nil, err
+			}
+			devices.MemoryNodes = append(devices.MemoryNodes, node)
+		}
+	}
+
 	return devices, nil
 }
 
@@ -286,6 +303,21 @@ func endpointDeviceFromSysfs(sysfsEndpointPath string) (*EndpointDevice, error) 
 		}
 	}
 	return endpoint, nil
+}
+
+func memoryNodeFromSysfs(sysfsNodePath string) (*MemoryNode, error) {
+	var err error
+	node := NewMemoryNode()
+	node.SysfsPath = sysfsNodePath
+	node.Name = sysfsNodePath[strings.LastIndex(sysfsNodePath, "/")+1:]
+	err = parse(
+		parseWithSscanf(sysfsNodePath+"/meminfo", "Node %d MemTotal: %d kB", &node.ID, &node.Size),
+	)
+	if err != nil {
+		return nil, err
+	}
+	node.Size = node.Size << 10 // kB to B
+	return node, nil
 }
 
 func decoderDeviceFromSysfs(sysfsDecoderPath string) (*DecoderDevice, error) {
