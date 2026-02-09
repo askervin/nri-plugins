@@ -19,6 +19,7 @@ type Devices struct {
 	MemoryDevices   []*MemoryDevice   // Memory devices on this CXL bus
 	RegionDevices   []*RegionDevice   // Region devices on this CXL bus
 	EndpointDevices []*EndpointDevice // Endpoint devices on this CXL bus
+	MemoryNodes     []*MemoryNode     // System memory node, e.g. /sys/devices/system/node/node0
 }
 
 // Memory device in sysfs:
@@ -142,6 +143,13 @@ type EndpointDevice struct {
 	UportMinor   int                       // Minor device number of the uport
 	UportDevName string                    // Device name of the uport, e.g. "cxl/mem0"
 	Decoders     map[string]*DecoderDevice // Decoders in this endpoint, key is decoder name
+}
+
+type MemoryNode struct {
+	SysfsPath string // Sysfs path to the memory node, e.g. /sys/devices/system/node/node0
+	ID        int    // Node ID, e.g. 0
+	Name      string // Node name, e.g. "node0"
+	Size      uint64 // Size in bytes
 }
 
 type DecoderDevice struct {
@@ -300,6 +308,11 @@ func NewEndpointDevice() *EndpointDevice {
 	return &EndpointDevice{
 		Decoders: make(map[string]*DecoderDevice),
 	}
+}
+
+// NewMemoryNode creates a new MemoryNode instance
+func NewMemoryNode() *MemoryNode {
+	return &MemoryNode{}
 }
 
 // NewDecoderDevice creates a new DecoderDevice instance
