@@ -23,7 +23,8 @@ import (
 )
 
 func main() {
-	devices, err := cxl.DevicesFromSysfs("")
+	sysfsRoot := os.Getenv("SYSFS_ROOT")
+	devices, err := cxl.DevicesFromSysfs(sysfsRoot)
 	if err != nil {
 		fmt.Println("Error reading CXL devices from sysfs:", err)
 		os.Exit(1)
