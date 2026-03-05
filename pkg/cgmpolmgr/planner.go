@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"math/bits"
 	"sort"
 	"time"
 )
@@ -219,16 +220,18 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	k := len(lagging)
 	bestSE := math.MaxFloat64
 	bestCount := 0
-	var bestNodes []int
+	var bestNodes uint64
 	var bestLimit int64
 
-	for mask := 1; mask < (1 << k); mask++ {
-		// Build the subset and find the minimum gap in it.
-		var nodes []int
+	for mask := uint64(1); mask < (1 << k); mask++ {
+		// Find the minimum gap and count nodes in the subset.
+		var nodes uint64
 		minGap := int64(math.MaxInt64)
+		s := int64(0)
 		for i := 0; i < k; i++ {
 			if mask&(1<<i) != 0 {
-				nodes = append(nodes, lagging[i].node)
+				nodes |= 1 << uint(lagging[i].node)
+				s++
 				if lagging[i].gap < minGap {
 					minGap = lagging[i].gap
 				}
@@ -237,7 +240,6 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 
 		// Per-node increase is the smaller of the budget share
 		// and the tightest gap in the subset.
-		s := int64(len(nodes))
 		perNode := maxLimit / s
 		if perNode > minGap {
 			perNode = minGap
@@ -248,14 +250,10 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 		}
 
 		// Compute squared error (se) to nwp.
-		inSubset := make(map[int]bool, len(nodes))
-		for _, n := range nodes {
-			inSubset[n] = true
-		}
 		se := float64(0)
 		for _, ng := range lagging {
 			var diff float64
-			if inSubset[ng.node] {
+			if nodes&(1<<uint(ng.node)) != 0 {
 				diff = float64(ng.gap - perNode)
 			} else {
 				diff = float64(ng.gap)
@@ -263,7 +261,7 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 			se += diff * diff
 		}
 
-		count := len(nodes)
+		count := int(s)
 		if se < bestSE || (se == bestSE && count > bestCount) {
 			bestSE = se
 			bestCount = count
@@ -272,12 +270,17 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 		}
 	}
 
-	if bestNodes == nil {
+	if bestNodes == 0 {
 		return nil, 0, fmt.Errorf("nextStep: no feasible allocation within [%d, %d]", minLimit, maxLimit)
 	}
 
-	sort.Ints(bestNodes)
-	return bestNodes, bestLimit, nil
+	var resultNodes []int
+	for nodeBit := 0; nodeBit < bits.Len64(bestNodes); nodeBit++ {
+		if bestNodes&(1<<uint(nodeBit)) != 0 {
+			resultNodes = append(resultNodes, nodeBit)
+		}
+	}
+	return resultNodes, bestLimit, nil
 }
 
 func (p *Planner) UpdatePlan() {
