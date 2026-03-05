@@ -167,6 +167,43 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 		}
 	}
 
+	// Precompute projection of ctp onto the pwp→nwp line for route
+	// steering. Line: P(t) = pwp + t·(nwp − pwp), t ∈ [0, 1].
+	var dotDD, dotCD, sumPwpCtp, sumDir float64
+	for n := range nodeSet {
+		dir := float64(nwp.nodeMem[n] - pwp.nodeMem[n])
+		off := float64(pwp.nodeMem[n] - ctp.nodeMem[n])
+		dotDD += dir * dir
+		dotCD += off * dir
+		sumPwpCtp += off
+		sumDir += dir
+	}
+	tProj := 0.0
+	if dotDD > 0 {
+		tProj = -dotCD / dotDD
+	}
+	// Growth constraint: prctp[n] >= ctp[n] for all n.
+	tMin := 0.0
+	for n := range nodeSet {
+		dir := float64(nwp.nodeMem[n] - pwp.nodeMem[n])
+		if dir > 0 {
+			tReq := float64(ctp.nodeMem[n]-pwp.nodeMem[n]) / dir
+			if tReq > tMin {
+				tMin = tReq
+			}
+		}
+	}
+	tPrctp := math.Max(tMin, math.Min(tProj, 1.0))
+	// Optimal future tracking point (oftp): if total memory increase
+	// from ctp to prctp >= maxLimit, oftp = prctp. Otherwise follow
+	// the line from prctp towards nwp until total increase = maxLimit,
+	// or stop at nwp.
+	tOftp := tPrctp
+	if totalInc := sumPwpCtp + tPrctp*sumDir; totalInc < float64(maxLimit) && sumDir > 0 {
+		tCand := (float64(maxLimit) - sumPwpCtp) / sumDir
+		tOftp = math.Min(tCand, 1.0)
+	}
+
 	// Compute gap[n] = max(0, nwp[n] - ctp[n]) for each node.
 	// Nodes with gap > 0 are "lagging" and are candidates for allocation.
 	type nodeGap struct {
@@ -206,17 +243,26 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 		return nil, 0, nil
 	}
 
+	// Precompute per-lagging-node gap to oftp and baseline SE.
+	oftpGap := make([]float64, len(lagging))
+	baseOftpSE := 0.0
+	for i, ng := range lagging {
+		dir := float64(nwp.nodeMem[ng.node] - pwp.nodeMem[ng.node])
+		oftpGap[i] = float64(pwp.nodeMem[ng.node]) + tOftp*dir - float64(ctp.nodeMem[ng.node])
+		baseOftpSE += oftpGap[i] * oftpGap[i]
+	}
+
 	// Enumerate all non-empty subsets of lagging nodes to find the
 	// (nextNodes, nextLimit) pair that minimizes the squared error
-	// between the anticipated memory usage and nwp.
+	// between the expected next trackpoint (entp) and the optimal
+	// future trackpoint (oftp) on the pwp→nwp route.
 	//
-	// For each subset S with per-node increase δ:
-	//   δ = min(maxLimit / |S|, min gap in S)
-	//   L = |S| * δ                        (must be >= minLimit)
-	//   SE = Σ (gap[n] - δ)² for n ∈ S  +  Σ gap[n]² for lagging n ∉ S
+	// For each subset S, the optimal per-node increase δ that
+	// minimizes SE = Σ_{n∈S}(δ − oftpGap[n])² + Σ_{n∉S}oftpGap[n]²
+	// is δ* = mean(oftpGap[n] for n ∈ S), clamped to the feasible
+	// range [⌈minLimit/|S|⌉, min(⌊maxLimit/|S|⌋, minGap)].
 	//
-	// Pick the candidate with minimum SE. Break ties by preferring
-	// more nodes (larger |S|), which spreads allocation more evenly.
+	// SE is computed analytically: s·δ² − 2·δ·ΣoftpGap + baseOftpSE.
 	k := len(lagging)
 	bestSE := math.MaxFloat64
 	bestCount := 0
@@ -224,10 +270,10 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	var bestLimit int64
 
 	for mask := uint64(1); mask < (1 << k); mask++ {
-		// Find the minimum gap and count nodes in the subset.
 		var nodes uint64
 		minGap := int64(math.MaxInt64)
 		s := int64(0)
+		sumOG := 0.0
 		for i := 0; i < k; i++ {
 			if mask&(1<<i) != 0 {
 				nodes |= 1 << uint(lagging[i].node)
@@ -235,31 +281,30 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 				if lagging[i].gap < minGap {
 					minGap = lagging[i].gap
 				}
+				sumOG += oftpGap[i]
 			}
 		}
 
-		// Per-node increase is the smaller of the budget share
-		// and the tightest gap in the subset.
-		perNode := maxLimit / s
-		if perNode > minGap {
-			perNode = minGap
-		}
-		limit := s * perNode
-		if limit < minLimit {
+		// Feasible per-node range.
+		lower := (minLimit + s - 1) / s
+		upper := min(maxLimit/s, minGap)
+		if lower > upper {
 			continue
 		}
 
-		// Compute squared error (se) to nwp.
-		se := float64(0)
-		for _, ng := range lagging {
-			var diff float64
-			if nodes&(1<<uint(ng.node)) != 0 {
-				diff = float64(ng.gap - perNode)
-			} else {
-				diff = float64(ng.gap)
-			}
-			se += diff * diff
+		// Optimal δ minimizing SE to oftp, clamped to feasible range.
+		delta := int64(math.Round(sumOG / float64(s)))
+		if delta < lower {
+			delta = lower
 		}
+		if delta > upper {
+			delta = upper
+		}
+		limit := s * delta
+
+		// SE to oftp (analytical).
+		df := float64(delta)
+		se := float64(s)*df*df - 2*df*sumOG + baseOftpSE
 
 		count := int(s)
 		if se < bestSE || (se == bestSE && count > bestCount) {
