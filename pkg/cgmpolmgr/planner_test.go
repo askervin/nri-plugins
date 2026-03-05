@@ -74,6 +74,22 @@ func TestInterestingNextSteps(t *testing.T) {
 		require.Equal(t, nextLimit, 2*GiB)
 
 	})
+
+	t.Run("join to optimal pwp-nwp track rather than minimize square error to nwp", func(t *testing.T) {
+		// n0: pwp→nwp increase, ctp→nwp flat already there
+		// n1: pwp→nwp flat, ctp→nwp a lot behind (n1 needs to grow)
+		// n2: pwp→nwp flat, ctp→nwp flat
+		// n3: pwp→nwp big increase, ctp→nwp tiny increase (n3 has no urgency to grow)
+		pwp := nm(0, 2, 6, 0)
+		nwp := nm(0, 14, 8, 0)
+		ctp := nm(0, 6, 4, 0)
+		nextNodes, nextLimit, err := nextStep(ctp, pwp, nwp, 1, 2)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		require.Equal(t, nextNodes, []int{2}, "nextNodes should prefer pwp-nwp path over directly reaching nwp")
+		require.Equal(t, nextLimit, int64(2))
+	})
 }
 
 func TestNextSteps(t *testing.T) {
