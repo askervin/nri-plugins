@@ -187,9 +187,19 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	// Minimize the number of lagging nodes by removing nodes that
 	// cannot fit minLimit even if it would be shared among all
 	// remaining lagging nodes.
-
-	// TODO: add loop that removes nodes where gap is not large
-	// enough from the tail of the lagging slice.
+	//
+	// With k lagging nodes and equal distribution, each gets at
+	// least minLimit/k bytes. If the smallest gap < minLimit/k
+	// (equivalently k*gap < minLimit), that node would exceed nwp
+	// in any subset of size k. Since it also can't help in any
+	// smaller subset (perNode would only grow), it's safe to drop.
+	for len(lagging) > 0 {
+		k := int64(len(lagging))
+		if k*lagging[len(lagging)-1].gap >= minLimit {
+			break
+		}
+		lagging = lagging[:len(lagging)-1]
+	}
 
 	if len(lagging) == 0 {
 		return nil, 0, nil
@@ -237,7 +247,7 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 			continue
 		}
 
-		// Compute squared error to nwp.
+		// Compute squared error (se) to nwp.
 		inSubset := make(map[int]bool, len(nodes))
 		for _, n := range nodes {
 			inSubset[n] = true
