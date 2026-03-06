@@ -167,41 +167,16 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 		}
 	}
 
-	// Precompute projection of ctp onto the pwp→nwp line for route
-	// steering. Line: P(t) = pwp + t·(nwp − pwp), t ∈ [0, 1].
-	var dotDD, dotCD, sumPwpCtp, sumDir float64
+	// Precompute v = nwp − pwp, c = ctp − pwp, and their dot products.
+	v := make(map[int]float64, len(nodeSet))
+	c := make(map[int]float64, len(nodeSet))
+	var vDotV, cDotV, cDotC float64
 	for n := range nodeSet {
-		dir := float64(nwp.nodeMem[n] - pwp.nodeMem[n])
-		off := float64(pwp.nodeMem[n] - ctp.nodeMem[n])
-		dotDD += dir * dir
-		dotCD += off * dir
-		sumPwpCtp += off
-		sumDir += dir
-	}
-	tProj := 0.0
-	if dotDD > 0 {
-		tProj = -dotCD / dotDD
-	}
-	// Growth constraint: prctp[n] >= ctp[n] for all n.
-	tMin := 0.0
-	for n := range nodeSet {
-		dir := float64(nwp.nodeMem[n] - pwp.nodeMem[n])
-		if dir > 0 {
-			tReq := float64(ctp.nodeMem[n]-pwp.nodeMem[n]) / dir
-			if tReq > tMin {
-				tMin = tReq
-			}
-		}
-	}
-	tPrctp := math.Max(tMin, math.Min(tProj, 1.0))
-	// Optimal future tracking point (oftp): if total memory increase
-	// from ctp to prctp >= maxLimit, oftp = prctp. Otherwise follow
-	// the line from prctp towards nwp until total increase = maxLimit,
-	// or stop at nwp.
-	tOftp := tPrctp
-	if totalInc := sumPwpCtp + tPrctp*sumDir; totalInc < float64(maxLimit) && sumDir > 0 {
-		tCand := (float64(maxLimit) - sumPwpCtp) / sumDir
-		tOftp = math.Min(tCand, 1.0)
+		v[n] = float64(nwp.nodeMem[n] - pwp.nodeMem[n])
+		c[n] = float64(ctp.nodeMem[n] - pwp.nodeMem[n])
+		vDotV += v[n] * v[n]
+		cDotV += c[n] * v[n]
+		cDotC += c[n] * c[n]
 	}
 
 	// Compute gap[n] = max(0, nwp[n] - ctp[n]) for each node.
@@ -243,26 +218,11 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 		return nil, 0, nil
 	}
 
-	// Precompute per-lagging-node gap to oftp and baseline SE.
-	oftpGap := make([]float64, len(lagging))
-	baseOftpSE := 0.0
-	for i, ng := range lagging {
-		dir := float64(nwp.nodeMem[ng.node] - pwp.nodeMem[ng.node])
-		oftpGap[i] = float64(pwp.nodeMem[ng.node]) + tOftp*dir - float64(ctp.nodeMem[ng.node])
-		baseOftpSE += oftpGap[i] * oftpGap[i]
-	}
-
-	// Enumerate all non-empty subsets of lagging nodes to find the
-	// (nextNodes, nextLimit) pair that minimizes the squared error
-	// between the expected next trackpoint (entp) and the optimal
-	// future trackpoint (oftp) on the pwp→nwp route.
-	//
-	// For each subset S, the optimal per-node increase δ that
-	// minimizes SE = Σ_{n∈S}(δ − oftpGap[n])² + Σ_{n∉S}oftpGap[n]²
-	// is δ* = mean(oftpGap[n] for n ∈ S), clamped to the feasible
-	// range [⌈minLimit/|S|⌉, min(⌊maxLimit/|S|⌋, minGap)].
-	//
-	// SE is computed analytically: s·δ² − 2·δ·ΣoftpGap + baseOftpSE.
+	// Enumerate all non-empty subsets of lagging nodes. For each
+	// subset (mask / direction), find the total limit that brings
+	// ctp closest to the pwp→nwp line, clamp it to [minLimit,
+	// min(maxLimit, s·minGap)], and pick the mask with the
+	// smallest squared distance.
 	k := len(lagging)
 	bestSE := math.MaxFloat64
 	bestCount := 0
@@ -270,47 +230,66 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	var bestLimit int64
 
 	for mask := uint64(1); mask < (1 << k); mask++ {
-		var nodes uint64
+		var nodesInMask uint64
 		minGap := int64(math.MaxInt64)
-		s := int64(0)
-		sumOG := 0.0
+		numNodes := int64(0)
+		var sumC, sumV float64
 		for i := 0; i < k; i++ {
 			if mask&(1<<i) != 0 {
-				nodes |= 1 << uint(lagging[i].node)
-				s++
+				n := lagging[i].node
+				nodesInMask |= 1 << uint(n)
+				numNodes++
 				if lagging[i].gap < minGap {
 					minGap = lagging[i].gap
 				}
-				sumOG += oftpGap[i]
+				sumC += c[n]
+				sumV += v[n]
 			}
 		}
 
-		// Feasible per-node range.
-		lower := (minLimit + s - 1) / s
-		upper := min(maxLimit/s, minGap)
+		// Feasible total-limit range.
+		lower := minLimit
+		upper := min(maxLimit, numNodes*minGap)
 		if lower > upper {
 			continue
 		}
 
-		// Optimal δ minimizing SE to oftp, clamped to feasible range.
-		delta := int64(math.Round(sumOG / float64(s)))
-		if delta < lower {
-			delta = lower
+		// Optimal total limit in this direction: the limit L hat minimizes
+		// squared distance from (ctp + L/s on selected) to line(pwp, nwp).
+		fnumNodes := float64(numNodes)
+		denom := fnumNodes*vDotV - sumV*sumV
+		var optLimit float64
+		if math.Abs(denom) > 1e-6 {
+			optLimit = fnumNodes * (cDotV*sumV - sumC*vDotV) / denom
+		} else {
+			optLimit = float64(lower)
 		}
-		if delta > upper {
-			delta = upper
+
+		// Clamp to feasible range.
+		limit := int64(math.Round(math.Max(float64(lower), math.Min(optLimit, float64(upper)))))
+		// if limit < lower {
+		// 	limit = lower
+		// }
+		// if limit > upper {
+		// 	limit = upper
+		// }
+
+		// Squared distance from (ctp + limit/nodes on selected) to
+		// line(pwp, nwp): |q|² − (q·v)²/|v|²
+		// where q[n] = c[n] + limit/s (selected) or c[n].
+		perNode := float64(limit) / fnumNodes
+		qDotQ := cDotC + 2*perNode*sumC + fnumNodes*perNode*perNode
+		qDotV := cDotV + perNode*sumV
+		se := qDotQ
+		if vDotV > 0 {
+			se -= qDotV * qDotV / vDotV
 		}
-		limit := s * delta
 
-		// SE to oftp (analytical).
-		df := float64(delta)
-		se := float64(s)*df*df - 2*df*sumOG + baseOftpSE
-
-		count := int(s)
+		count := int(numNodes)
 		if se < bestSE || (se == bestSE && count > bestCount) {
 			bestSE = se
 			bestCount = count
-			bestNodes = nodes
+			bestNodes = nodesInMask
 			bestLimit = limit
 		}
 	}
