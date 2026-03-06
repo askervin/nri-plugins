@@ -40,6 +40,197 @@ func nm(usage ...int64) *NodeMem {
 	return &NodeMem{nodeMem: m}
 }
 
+func TestNextStepSteeringTowardsPath(t *testing.T) {
+	//node1
+	//   △ ctpY                     nwp
+	//80Gx╴                      ╭───x
+	//   │        ctpB      3──4─╯
+	//  7├╴        x   ╭─1─2╯      x
+	//   │  pwp   ╭────╯ctpL      ctpC
+	//  6├╴  x────╯
+	//   │
+	//  5├╴
+	//   │
+	//  4├╴  x
+	//   │  ctpA
+	//  3├╴
+	//   │
+	//  2├╴
+	//   │
+	//  1├╴
+	//   │ ╷ ╷ ╷ ╷ ╷ ╷ ╷ ╷ ╷ ╷ ╷ ╷ ╷ctpX
+	//   ╰─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─x▷ node0
+	//     1 2 3 4 5 6 7 8 910111213140G
+	pwp := nm(20*GiB, 60*GiB)
+	nwp := nm(140*GiB, 80*GiB)
+
+	tcases := []struct {
+		name         string
+		ctp          *NodeMem
+		minLimit     int64
+		maxLimit     int64
+		nextNodes    []int
+		nextLimit    int64
+		nextLimitMax int64
+	}{
+		{
+			name:      "ctpA-1-2: small step towards pwp",
+			ctp:       nm(20*GiB+1, 40*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  2 * GiB,
+			nextNodes: []int{1},
+			nextLimit: 2 * GiB,
+		},
+		{
+			name:      "ctpA-1-20: practically catch pwp",
+			ctp:       nm(20*GiB+1, 40*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  20 * GiB,
+			nextNodes: []int{1},
+			nextLimit: 20 * GiB,
+		},
+		{
+			name:         "ctpA-30-100: catch line between pwp and nwp",
+			ctp:          nm(20*GiB+1, 40*GiB),
+			minLimit:     30 * GiB,
+			maxLimit:     100 * GiB,
+			nextNodes:    []int{0, 1},
+			nextLimit:    35 * GiB,
+			nextLimitMax: 55 * GiB,
+		},
+		{
+			name:      "ctpB-1-1: small step towards line between pwp and nwp",
+			ctp:       nm(50*GiB, 70*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  1 * GiB,
+			nextNodes: []int{0},
+			nextLimit: 1 * GiB,
+		},
+		{
+			name:         "ctpB-1-100: catch line between pwp and nwp",
+			ctp:          nm(50*GiB, 70*GiB),
+			minLimit:     1 * GiB,
+			maxLimit:     100 * GiB,
+			nextNodes:    []int{0},
+			nextLimit:    28 * GiB,
+			nextLimitMax: 32 * GiB,
+		},
+		{
+			name:      "ctpC-1-1: small step towards line between pwp and nwp",
+			ctp:       nm(130*GiB, 70*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  1 * GiB,
+			nextNodes: []int{1},
+			nextLimit: 1 * GiB,
+		},
+		{
+			name:         "ctpC-1-10: just reach the line between pwp and nwp",
+			ctp:          nm(130*GiB, 70*GiB),
+			minLimit:     1 * GiB,
+			maxLimit:     10 * GiB,
+			nextNodes:    []int{1},
+			nextLimit:    8500 * MiB,
+			nextLimitMax: 9500 * MiB,
+		},
+		{
+			name:      "ctpC-1-20: hit exactly nwp on maxLimit",
+			ctp:       nm(130*GiB, 70*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  20 * GiB,
+			nextNodes: []int{0, 1},
+			nextLimit: 20 * GiB,
+		},
+		{
+			name:      "ctpC-20-20: hit exactly nwp on limit",
+			ctp:       nm(130*GiB, 70*GiB),
+			minLimit:  20 * GiB,
+			maxLimit:  20 * GiB,
+			nextNodes: []int{0, 1},
+			nextLimit: 20 * GiB,
+		},
+		{
+			name:      "ctpC-20-100: hit exactly nwp on minLimit",
+			ctp:       nm(130*GiB, 70*GiB),
+			minLimit:  20 * GiB,
+			maxLimit:  100 * GiB,
+			nextNodes: []int{0, 1},
+			nextLimit: 20 * GiB,
+		},
+		{
+			name:      "ctpL1-10-100: exactly on the line, grow x, go below the line",
+			ctp:       nm(80*GiB, 70*GiB),
+			minLimit:  10 * GiB,
+			maxLimit:  100 * GiB,
+			nextNodes: []int{0},
+			nextLimit: 10 * GiB,
+		},
+		{
+			name:      "ctpL2-10-100: continuing right below the line, grow x,y, go above the line",
+			ctp:       nm(90*GiB, 70*GiB),
+			minLimit:  10 * GiB,
+			maxLimit:  100 * GiB,
+			nextNodes: []int{0, 1},
+			nextLimit: 10 * GiB,
+		},
+		{
+			name:         "ctpL3-10-100: continuing right above the line, grow x again, find back exactly on line",
+			ctp:          nm(95*GiB, 75*GiB),
+			minLimit:     10 * GiB,
+			maxLimit:     100 * GiB,
+			nextNodes:    []int{0},
+			nextLimit:    15 * GiB,
+			nextLimitMax: 17 * GiB,
+		},
+		{
+			name:      "ctpY-1-100: max step towards npw",
+			ctp:       nm(0*GiB, 80*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  100 * GiB,
+			nextNodes: []int{0},
+			nextLimit: 100 * GiB,
+		},
+		{
+			name:      "ctpY-1-200: max step to npw and no longer",
+			ctp:       nm(0*GiB, 80*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  200 * GiB,
+			nextNodes: []int{0},
+			nextLimit: 140 * GiB,
+		},
+		{
+			name:      "ctpX-1-42: max step towards npw",
+			ctp:       nm(140*GiB, 0*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  42 * GiB,
+			nextNodes: []int{1},
+			nextLimit: 42 * GiB,
+		},
+		{
+			name:      "ctpX-1-200: max step to npw and no longer",
+			ctp:       nm(140*GiB, 0*GiB),
+			minLimit:  1 * GiB,
+			maxLimit:  200 * GiB,
+			nextNodes: []int{1},
+			nextLimit: 80 * GiB,
+		},
+	}
+
+	for _, tc := range tcases {
+		t.Run(tc.name, func(t *testing.T) {
+			nextNodes, nextLimit, err := nextStep(tc.ctp, pwp, nwp, tc.minLimit, tc.maxLimit)
+			t.Logf("%s: nextNodes: %v, nextLimit: %.3f GiB", tc.name, nextNodes, float64(nextLimit)/float64(GiB))
+			require.Equal(t, tc.nextNodes, nextNodes)
+			if tc.nextLimitMax != 0 {
+				require.GreaterOrEqual(t, nextLimit, tc.nextLimit)
+				require.LessOrEqual(t, nextLimit, tc.nextLimitMax)
+			} else {
+				require.Equal(t, tc.nextLimit, nextLimit)
+			}
+			require.Equal(t, nil, err)
+		})
+	}
+}
+
 func TestInterestingNextSteps(t *testing.T) {
 	t.Run("all-in one lagging node", func(t *testing.T) {
 		// n0: pwp→nwp increase, ctp→nwp flat already there
@@ -70,7 +261,8 @@ func TestInterestingNextSteps(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		require.Equal(t, nextNodes, []int{1, 3}, "nextNodes should fill node3 and bring node1 to 9 GiB")
+		// Node 1 alone gets closest to the pwp→nwp line.
+		require.Equal(t, nextNodes, []int{1}, "nextNodes should increase usage only on node1 to get closest to pwp-nwp line")
 		require.Equal(t, nextLimit, 2*GiB)
 
 	})
