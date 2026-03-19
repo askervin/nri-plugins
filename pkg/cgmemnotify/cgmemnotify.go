@@ -33,18 +33,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Notification represents a ladder crossing notification
+// Notification represents a bound-crossing notification.
+// BoundCrossed is 0 for lower bound, 1 for upper bound.
 type Notification struct {
-	LadderIndex     int    // New ladder index
-	OldLadderIndex  int    // Old ladder index
-	MemoryCurrentKB uint64 // Current memory usage
+	BoundCrossed    int    // 0 = lower bound, 1 = upper bound
+	MemoryCurrentKB uint64 // Current memory usage in KB
 }
 
 // CgroupWatcher watches a cgroup for memory usage changes
 type CgroupWatcher struct {
 	CgroupPath         string
-	ladders            MemoryLadders
-	currentLadder      int // Current ladder position (index into ladders)
+	bounds             MemoryBounds
+	lastBoundCrossed   int // -1 = none yet, 0 = lower, 1 = upper
 	eventFd            int
 	memoryEventsFd     int
 	mu                 sync.RWMutex
@@ -73,59 +73,50 @@ func LogError(args ...interface{}) {
 }
 
 // NewCgroupWatcher creates a new cgroup watcher for the given cgroup path
-func NewCgroupWatcher(cgroupPath string, ml *MemoryLadders) (*CgroupWatcher, error) {
+func NewCgroupWatcher(cgroupPath string, bounds MemoryBounds) (*CgroupWatcher, error) {
 	// Validate cgroup path exists
 	if _, err := os.Stat(cgroupPath); err != nil {
 		return nil, fmt.Errorf("cgroup path does not exist: %w", err)
 	}
 
-	if ml == nil || len(*ml) == 0 {
-		return nil, fmt.Errorf("memory ladders cannot be empty")
-	}
-
 	watcher := &CgroupWatcher{
-		CgroupPath:     cgroupPath,
-		ladders:        *ml,
-		currentLadder:  0, // Start at the first ladder
-		eventFd:        -1,
-		memoryEventsFd: -1,
-		stopCh:         make(chan struct{}),
-		notifyCh:       make(chan Notification, 10),
-		pollInterval:   100 * time.Millisecond, // Default poll interval
+		CgroupPath:       cgroupPath,
+		bounds:           bounds,
+		lastBoundCrossed: -1,
+		eventFd:          -1,
+		memoryEventsFd:   -1,
+		stopCh:           make(chan struct{}),
+		notifyCh:         make(chan Notification, 10),
+		pollInterval:     100 * time.Millisecond, // Default poll interval
 	}
 
 	return watcher, nil
 }
 
-// SetConfig reconfigures the watcher with new memory ladders
-func (w *CgroupWatcher) SetConfig(ml *MemoryLadders) error {
-	if ml == nil || len(*ml) == 0 {
-		return fmt.Errorf("memory ladders cannot be empty")
-	}
-
+// SetBounds reconfigures the watcher with new memory bounds.
+// This resets the bound-crossing state and updates memory.high
+// to the new UpperKB, unblocking a throttled cgroup.
+func (w *CgroupWatcher) SetBounds(bounds MemoryBounds) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.ladders = *ml
-	// Reset to first ladder
-	w.currentLadder = 0
+	w.bounds = bounds
+	w.lastBoundCrossed = -1
 
-	// Update memory.high based on new configuration
+	// Update memory.high based on new upper bound.
 	return w.setupMemoryHigh()
 }
 
-// setupMemoryHigh sets memory.high based on the current ladder's high watermark
+// setupMemoryHigh sets memory.high based on the current upper bound
 func (w *CgroupWatcher) setupMemoryHigh() error {
 	var value []byte
 	memoryHighPath := filepath.Join(w.CgroupPath, "memory.high")
 
-	// If we're on the last ladder or it has no high watermark, set to "max"
-	if w.currentLadder >= len(w.ladders) || w.ladders[w.currentLadder].HighWatermarkKB == 0 {
+	if w.bounds.UpperKB == 0 {
 		w.memoryHighBytes = 0 // No limit
 		value = []byte("max\n")
 	} else {
-		// Set memory.high to current ladder's high watermark
-		w.memoryHighBytes = w.ladders[w.currentLadder].HighWatermarkKB * 1024
+		w.memoryHighBytes = w.bounds.UpperKB * 1024
 		value = []byte(fmt.Sprintf("%d\n", w.memoryHighBytes))
 	}
 	if err := os.WriteFile(memoryHighPath, value, 0644); err != nil {
@@ -368,12 +359,8 @@ func (w *CgroupWatcher) checkMemoryCurrentAboveHigh() bool {
 	return currentBytes >= threshold
 }
 
-// checkMemoryStatus reads current memory usage and checks for ladder crossings
+// checkMemoryStatus reads current memory usage and checks for bound crossings
 func (w *CgroupWatcher) checkMemoryStatus() {
-	if len(w.ladders) == 0 {
-		// No ladders, nothing to report.
-		return
-	}
 	// Read memory.current
 	memoryCurrentPath := filepath.Join(w.CgroupPath, "memory.current")
 	data, err := os.ReadFile(memoryCurrentPath)
@@ -390,44 +377,27 @@ func (w *CgroupWatcher) checkMemoryStatus() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	oldLadder := w.currentLadder
-
-	// Find the correct ladder for current memory usage
-	// Start from the lowest ladder and find the first one where:
-	// 1. currentKB is above the LowWatermarkKB
-	// 2. currentKB has not exceeded the HighWatermarkKB (or it's the last ladder with no limit)
-	newLadder := 0
-	for i := 0; i < len(w.ladders); i++ {
-		meetsLow := currentKB >= w.ladders[i].LowWatermarkKB
-		belowHigh := (w.ladders[i].HighWatermarkKB == 0 || currentKB < w.ladders[i].HighWatermarkKB)
-
-		if meetsLow && belowHigh {
-			newLadder = i
-			break
-		}
-
-		// Special case: if we're on the last ladder and exceeded its limit, stay on it
-		if i == len(w.ladders)-1 {
-			newLadder = i
-			break
-		}
+	// Upper bound crossed: memory reached the threshold.
+	// Keep memory.high as-is (cgroup stays throttled) until
+	// the caller provides new bounds via SetBounds.
+	if w.bounds.UpperKB > 0 && currentKB >= w.bounds.UpperKB && w.lastBoundCrossed != 1 {
+		LogDebug("upper bound crossed: memory %d KB >= %d KB\n", currentKB, w.bounds.UpperKB)
+		w.lastBoundCrossed = 1
+		w.sendNotification(1, currentKB)
+	} else if w.bounds.LowerKB > 0 && currentKB < w.bounds.LowerKB && w.lastBoundCrossed != 0 {
+		// Lower bound crossed: memory dropped below threshold.
+		LogDebug("lower bound crossed: memory %d KB < %d KB\n", currentKB, w.bounds.LowerKB)
+		w.lastBoundCrossed = 0
+		w.sendNotification(0, currentKB)
 	}
 
-	// If ladder changed, update and notify
-	if newLadder != oldLadder {
-		LogDebug("ladder change from %d to %d memory.current from %d to %d\n", w.currentLadder, newLadder, w.memoryCurrent, currentBytes)
-		w.currentLadder = newLadder
-		w.setupMemoryHigh() // Update memory.high for new ladder
-		w.sendNotification(newLadder, oldLadder, currentKB)
-	}
 	w.memoryCurrent = currentBytes
 }
 
-// sendNotification sends a ladder crossing notification
-func (w *CgroupWatcher) sendNotification(ladderIndex int, oldLadder int, currentKB uint64) {
+// sendNotification sends a bound-crossing notification
+func (w *CgroupWatcher) sendNotification(boundCrossed int, currentKB uint64) {
 	notification := Notification{
-		LadderIndex:     ladderIndex,
-		OldLadderIndex:  oldLadder,
+		BoundCrossed:    boundCrossed,
 		MemoryCurrentKB: currentKB,
 	}
 
@@ -438,14 +408,7 @@ func (w *CgroupWatcher) sendNotification(ladderIndex int, oldLadder int, current
 	}
 }
 
-// GetCurrentLadder returns the current ladder index
-func (w *CgroupWatcher) GetCurrentLadder() int {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.currentLadder
-}
-
-// Notifications returns a channel for receiving ladder crossing notifications
+// Notifications returns a channel for receiving bound-crossing notifications
 func (w *CgroupWatcher) Notifications() <-chan Notification {
 	return w.notifyCh
 }

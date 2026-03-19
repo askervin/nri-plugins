@@ -13,11 +13,12 @@
 // limitations under the License.
 package cgmemnotify
 
-// MemoryLadder represents a memory threshold level
-type MemoryLadder struct {
-	HighWatermarkKB uint64 // Threshold to move up to next ladder
-	LowWatermarkKB  uint64 // Threshold to move down to previous ladder
+// MemoryBounds defines lower and upper memory usage thresholds in KB.
+// The watcher sets memory.high to UpperKB and sends a notification
+// when either bound is crossed.  After an upper-bound notification
+// the cgroup stays throttled until the caller provides new bounds
+// via SetBounds.
+type MemoryBounds struct {
+	LowerKB uint64 // Notify when memory drops below this (0 = disabled)
+	UpperKB uint64 // Notify when memory reaches this; sets memory.high (0 = unlimited)
 }
-
-// MemoryLadders is a slice of memory thresholds arranged from lowest to highest
-type MemoryLadders []MemoryLadder
