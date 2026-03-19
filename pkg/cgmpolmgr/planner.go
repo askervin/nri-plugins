@@ -46,6 +46,7 @@ func (nm *NodeMem) Copy() *NodeMem {
 }
 
 type Waypoint struct {
+	Name  string
 	Usage *NodeMem
 }
 
@@ -323,14 +324,19 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 }
 
 // waypointReached reports whether the current memory usage has
-// reached (or exceeded) the given waypoint usage on any node.
-func waypointReached(ctp, wpUsage *NodeMem) bool {
+// reached the given waypoint. The waypoint is considered reached if
+// any node's usage strictly exceeds the waypoint target, or if the
+// remaining gap across all lagging nodes is less than minLimit (so
+// the next step cannot fit without overshooting).
+func waypointReached(ctp, wpUsage *NodeMem, minLimit int64) bool {
+	var remainingGap int64
 	for n, target := range wpUsage.nodeMem {
-		if ctp.nodeMem[n] >= target {
+		if ctp.nodeMem[n] > target {
 			return true
 		}
+		remainingGap += target - ctp.nodeMem[n]
 	}
-	return false
+	return remainingGap < minLimit
 }
 
 // extrapolateWaypoint generates a waypoint beyond the current usage
@@ -404,10 +410,11 @@ func (p *Planner) UpdateRoute() error {
 	// case memory was freed, then forward past reached waypoints.
 	nwpIdx := p.nextWaypointIndex
 	nwpIdx = min(nwpIdx, len(p.plan.Waypoints))
-	for nwpIdx > 0 && !waypointReached(ctp, p.plan.Waypoints[nwpIdx-1].Usage) {
+	minDistToWp := p.plan.MinLimit
+	for nwpIdx > 0 && !waypointReached(ctp, p.plan.Waypoints[nwpIdx-1].Usage, minDistToWp) {
 		nwpIdx--
 	}
-	for nwpIdx < len(p.plan.Waypoints) && waypointReached(ctp, p.plan.Waypoints[nwpIdx].Usage) {
+	for nwpIdx < len(p.plan.Waypoints) && waypointReached(ctp, p.plan.Waypoints[nwpIdx].Usage, minDistToWp) {
 		nwpIdx++
 	}
 
@@ -461,4 +468,11 @@ func (p *Planner) NextNodes() []int {
 
 func (p *Planner) NextLimit() int64 {
 	return p.nextLimit
+}
+
+func (p *Planner) NextWaypoint() *Waypoint {
+	if p.plan == nil || p.nextWaypointIndex < 0 || p.nextWaypointIndex >= len(p.plan.Waypoints) {
+		return nil
+	}
+	return &(p.plan.Waypoints[p.nextWaypointIndex])
 }

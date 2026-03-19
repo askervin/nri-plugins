@@ -20,15 +20,28 @@
 package cgmpolmgr
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	MiB int64 = 1024 * 1024
-	GiB       = 1024 * MiB
+	MiB  int64 = 1024 * 1024
+	GiB        = 1024 * MiB
+	GiBf       = float64(GiB)
 )
+
+// simulateUsageGrowth spreads nextLimit bytes of new memory usage
+// evenly across nextNodes in cur. When nextLimit is not evenly
+// divisible, the truncated remainder (at most len(nextNodes)-1 bytes)
+// is dropped.
+func simulateUsageGrowth(cur *NodeMem, nextNodes []int, nextLimit int64) {
+	perNode := nextLimit / int64(len(nextNodes))
+	for _, n := range nextNodes {
+		cur.nodeMem[n] += perNode
+	}
+}
 
 // nm constructs a NodeMem from a usage list for use in tests.
 // The index in the list is the node number and the value is its usage.
@@ -284,6 +297,118 @@ func TestInterestingNextSteps(t *testing.T) {
 	})
 }
 
+func TestPlannerSimple(t *testing.T) {
+	type wpCase struct {
+		name      string
+		waypoints []Waypoint
+	}
+	wpCases := []wpCase{
+		{
+			name: "DRAM-then-CXL",
+			waypoints: []Waypoint{
+				{Usage: nm(20*GiB, 0)},
+				{Usage: nm(20*GiB, 100*GiB)},
+			},
+		},
+		{
+			name: "CXL-then-DRAM",
+			waypoints: []Waypoint{
+				{Usage: nm(0, 100*GiB)},
+				{Usage: nm(20*GiB, 100*GiB)},
+			},
+		},
+		{
+			name: "interleave-start",
+			waypoints: []Waypoint{
+				{Usage: nm(20*GiB, 20*GiB)},
+				{Usage: nm(20*GiB, 100*GiB)},
+			},
+		},
+		{
+			name: "interleave-end",
+			waypoints: []Waypoint{
+				{Usage: nm(0, 80*GiB)},
+				{Usage: nm(20*GiB, 100*GiB)},
+			},
+		},
+	}
+
+	type limitCase struct {
+		name     string
+		minLimit int64
+		maxLimit int64
+	}
+	limitCases := []limitCase{
+		{"min1-max1", 1 * GiB, 1 * GiB},
+		{"min20-max20", 20 * GiB, 20 * GiB},
+		{"min5-max20", 5 * GiB, 20 * GiB},
+	}
+
+	for _, wc := range wpCases {
+		for _, lc := range limitCases {
+			t.Run(wc.name+"/"+lc.name, func(t *testing.T) {
+				plan := &Plan{
+					Waypoints: wc.waypoints,
+					MinLimit:  lc.minLimit,
+					MaxLimit:  lc.maxLimit,
+				}
+
+				p := NewPlanner()
+				p.SetPlan(plan)
+
+				cur := nm(0, 0)
+				lastWP := plan.Waypoints[len(plan.Waypoints)-1].Usage
+				wpReached := make([]bool, len(plan.Waypoints))
+
+				maxIter := 1000
+				for i := 0; i < maxIter; i++ {
+					err := p.UpdateRoute()
+					require.NoError(t, err, "iter %d", i)
+
+					nextNodes := p.NextNodes()
+					nextLimit := p.NextLimit()
+					if nextNodes == nil {
+						break
+					}
+
+					simulateUsageGrowth(cur, nextNodes, nextLimit)
+					p.UpdateUsage(cur)
+
+					// Check which waypoints have been reached.
+					for wi, wp := range plan.Waypoints {
+						if !wpReached[wi] {
+							reached := true
+							for n, target := range wp.Usage.nodeMem {
+								if cur.nodeMem[n] < target {
+									reached = false
+									break
+								}
+							}
+							if reached {
+								wpReached[wi] = true
+							}
+						}
+					}
+
+					// Stop once we've gone past the last waypoint total.
+					if cur.TotalMem() > lastWP.TotalMem()+plan.MaxLimit {
+						break
+					}
+				}
+
+				for wi, reached := range wpReached {
+					require.True(t, reached,
+						"waypoint %d not reached; cur=(%d,%d), wp=(%d,%d)",
+						wi,
+						cur.nodeMem[0], cur.nodeMem[1],
+						plan.Waypoints[wi].Usage.nodeMem[0],
+						plan.Waypoints[wi].Usage.nodeMem[1])
+				}
+			})
+		}
+	}
+}
+
 func TestPlannerFollow(t *testing.T) {
 	plan := &Plan{
 		Waypoints: []Waypoint{
@@ -315,10 +440,19 @@ func TestPlannerFollow(t *testing.T) {
 		nextNodes := p.NextNodes()
 		nextLimit := p.NextLimit()
 
-		t.Logf("iter %3d: cur=(%d,%d,%d,%d) GiB  nextNodes=%v  nextLimit=%.1f GiB",
+		nwpDescr := "<N/A>"
+		if nwp := p.NextWaypoint(); nwp != nil {
+			nwpUsage := nwp.Usage
+			nwpDescr = fmt.Sprintf("(%d,%d,%d,%d)",
+				nwpUsage.nodeMem[0]/GiB, nwpUsage.nodeMem[1]/GiB,
+				nwpUsage.nodeMem[2]/GiB, nwpUsage.nodeMem[3]/GiB)
+		}
+
+		t.Logf("iter %3d: curGiB=(%.1f,%.1f,%.1f,%.1f) nwp=%s nextNodes=%v/%.1f GiB",
 			i,
-			cur.nodeMem[0]/GiB, cur.nodeMem[1]/GiB,
-			cur.nodeMem[2]/GiB, cur.nodeMem[3]/GiB,
+			float64(cur.nodeMem[0])/GiBf, float64(cur.nodeMem[1])/GiBf,
+			float64(cur.nodeMem[2])/GiBf, float64(cur.nodeMem[3])/GiBf,
+			nwpDescr,
 			nextNodes,
 			float64(nextLimit)/float64(GiB))
 
@@ -334,11 +468,7 @@ func TestPlannerFollow(t *testing.T) {
 		require.LessOrEqual(t, nextLimit, plan.MaxLimit,
 			"nextLimit must be <= MaxLimit at iteration %d", i)
 
-		// Simulate: spread nextLimit evenly on nextNodes.
-		perNode := nextLimit / int64(len(nextNodes))
-		for _, n := range nextNodes {
-			cur.nodeMem[n] += perNode
-		}
+		simulateUsageGrowth(cur, nextNodes, nextLimit)
 
 		p.UpdateUsage(cur)
 
