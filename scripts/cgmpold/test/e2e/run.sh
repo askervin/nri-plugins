@@ -48,6 +48,14 @@ cd "$PROJECT_ROOT"
 make clean && make
 echo ""
 
+echo -e "${YELLOW}Cleaning up $E2E_HOST...${NC}"
+ssh "$E2E_HOST" 'for d in /tmp/cgmpold-e2e-*; do
+    [[ -d "$d" ]] || continue
+    sudo kill $(cat $d/*.pid)
+    rm -rf "$d"
+done
+'
+
 echo -e "${YELLOW}Copying binaries to $E2E_HOST...${NC}"
 # Create a temporary directory and copy binaries
 REMOTE_DIR="/tmp/cgmpold-e2e-$$"
@@ -144,7 +152,6 @@ export -f python-start
 python-input() {
     local port="$1"
     local code="$2"
-
     vm "socat tcp4:localhost:${port} - <<EOCODE
 $code
 sys.stdout.flush()
@@ -181,9 +188,11 @@ interactive() {
 # Cleanup function
 cleanup_remote() {
     status=$?
-    echo -e "(status $status) ${YELLOW}Cleaning up remote directory...${NC}"
-    vm "rm -rf $REMOTE_DIR"
-    wait || true
+    if [[ "$DEBUG" != "1" ]]; then
+        echo -e "(status $status) ${YELLOW}Cleaning up remote directory...${NC}"
+        vm "rm -rf $REMOTE_DIR"
+        wait || true
+    fi
     return $status
 }
 

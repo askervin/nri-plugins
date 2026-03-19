@@ -89,16 +89,20 @@ func main() {
 
 	// Validate NUMA nodes in configuration
 	for _, cgroupCfg := range config.Cgroups {
-		for _, mp := range cgroupCfg.MemoryPolicies {
-			parsed, err := cgmpolmgr.ParseMemoryPolicy(mp)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Invalid memory policy in %s: %v\n", cgroupCfg.Path, err)
-				os.Exit(1)
-			}
-			if err := mpolinject.ValidateNumaNodes(parsed.Nodes); err != nil {
-				fmt.Fprintf(os.Stderr, "Invalid NUMA nodes %v for %s: %v\n", parsed.Nodes, cgroupCfg.Path, err)
-				os.Exit(1)
-			}
+		dramNodes, err := cgmpolmgr.ParseNodeset(cgroupCfg.DRAMNodes)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid DRAM nodes for %s: %v\n", cgroupCfg.Path, err)
+			os.Exit(1)
+		}
+		cxlNodes, err := cgmpolmgr.ParseNodeset(cgroupCfg.CXLNodes)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid CXL nodes for %s: %v\n", cgroupCfg.Path, err)
+			os.Exit(1)
+		}
+		allNodes := append(dramNodes, cxlNodes...)
+		if err := mpolinject.ValidateNumaNodes(allNodes); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid NUMA nodes %v for %s: %v\n", allNodes, cgroupCfg.Path, err)
+			os.Exit(1)
 		}
 	}
 
@@ -187,15 +191,11 @@ func loadConfig(filename string) (*Config, error) {
 		if cgroup.Path == "" {
 			return nil, fmt.Errorf("cgroup %d: path is required", i)
 		}
-		if len(cgroup.MemoryPolicies) == 0 {
-			return nil, fmt.Errorf("cgroup %s: at least one memory policy is required", cgroup.Path)
+		if cgroup.MemoryUseOrder == "" {
+			return nil, fmt.Errorf("cgroup %s: memoryUseOrder is required", cgroup.Path)
 		}
-		for j, mp := range cgroup.MemoryPolicies {
-			// Parse and validate each memory policy
-			_, err := cgmpolmgr.ParseMemoryPolicy(mp)
-			if err != nil {
-				return nil, fmt.Errorf("cgroup %s, memoryPolicy %d: %w", cgroup.Path, j, err)
-			}
+		if _, err := cgmpolmgr.ParseMemoryUseOrder(cgroup.MemoryUseOrder); err != nil {
+			return nil, fmt.Errorf("cgroup %s: %w", cgroup.Path, err)
 		}
 	}
 

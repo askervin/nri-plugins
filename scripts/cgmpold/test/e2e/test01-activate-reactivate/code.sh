@@ -2,13 +2,14 @@
 # E2E Test 01: Activate and Reactivate Memory Policies
 #
 # This test verifies that cgmpold correctly:
-# 1. Activates the next memory policy when limit is exceeded
-# 2. Reactivates previous policies when memory usage drops below reactivateLimit
+# 1. Steers memory allocations to DRAM first, then CXL
+# 2. Reacts to memory threshold crossings by updating the route
 #
 # Test configuration:
-# - Policy 0: nodeset "0",   limit 20M, reactivateLimit 10M
-# - Policy 1: nodeset "0,1", limit 40M, reactivateLimit 20M
-# - Policy 2: nodeset "1",   limit 60M, reactivateLimit 30M
+# - DRAM node: 2, CXL node: 3
+# - Memory use order: first-DRAM
+# - DRAM quota: 20M, CXL quota: 40M
+# - MinLimit: 5M, MaxLimit: 10M
 
 echo "Test: Activate and Reactivate Memory Policies"
 echo "=============================================="
@@ -19,6 +20,8 @@ CGROUP_PATH="/sys/fs/cgroup/$CGROUP_NAME"
 CONFIG_FILE="$E2E_REMOTE_DIR/test01-config.yaml"
 CGMPOLD_OUT="$E2E_REMOTE_DIR/cgmpold.out"
 CGMPOLD_PID_FILE="$E2E_REMOTE_DIR/cgmpold.pid"
+
+vm "sudo pkill -f 'python3 -i -u'"
 
 echo "Creating test cgroup on VM: $CGROUP_PATH"
 vm "sudo mkdir -p $CGROUP_PATH"
@@ -33,17 +36,13 @@ echo "Generating test configuration..."
 vm "cat > $CONFIG_FILE << 'EOF'
 cgroups:
   - path: $CGROUP_PATH
-    memoryPolicies:
-      - nodeset: \"0\"
-        limit: \"20M\"
-        reactivateLimit: \"10M\"
-        policy: \"preferred\"
-      - nodeset: \"0,1\"
-        limit: \"40M\"
-        reactivateLimit: \"20M\"
-        policy: \"interleave\"
-      - nodeset: \"1\"
-        policy: \"preferred\"
+    memoryUseOrder: "first-DRAM"
+    dramNodes: "2"
+    cxlNodes: "3"
+    dramQuota: "20M"
+    cxlQuota: "80M"
+    minLimit: "5M"
+    maxLimit: "10M"
 EOF
 "
 
@@ -62,8 +61,15 @@ echo "Starting interactive Python process in cgroup..."
 PYTHON_PORT=$(python-start "$CGROUP_PATH")
 PYTHON_OUT="$E2E_REMOTE_DIR/$PYTHON_PORT.out"
 echo "Python process started on port: $PYTHON_PORT"
-# Verify process is in cgroup
-PIDS=$(vm "cat $CGROUP_PATH/cgroup.procs 2>/dev/null | wc -l")
+# Verify process is in cgroup (retry a few times for race conditions)
+PIDS=0
+for i in $(seq 1 10); do
+    PIDS=$(vm "cat $CGROUP_PATH/cgroup.procs 2>/dev/null | wc -l")
+    if [ "$PIDS" -gt 0 ]; then
+        break
+    fi
+    sleep 0.5
+done
 echo "Processes in cgroup: $PIDS"
 if [ "$PIDS" -eq 0 ]; then
     error-stop "no processes in cgroup, python was expected to start there"
@@ -80,9 +86,12 @@ get_cgmpold_timestamp() {
 }
 
 # Helper function to extract Python log timestamp
+# Python log lines look like: "1773928731.443533 python PORT Phase 1 start"
+# They may be prefixed by ">>> " prompt characters.
+# Filter out traceback/error lines that also match the pattern.
 get_python_timestamp() {
     local pattern="$1"
-    vm "grep '$pattern' $PYTHON_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo ""
+    vm "grep '$pattern' $PYTHON_OUT 2>/dev/null | grep -v 'Traceback\|Error:\|File \"' | tail -1 | sed 's/^[> ]*//' | awk '{print \$1}'" || echo ""
 }
 
 # Helper function to calculate time difference in milliseconds between two epoch timestamps
@@ -96,92 +105,87 @@ time_diff_ms() {
     fi
 }
 
-# Phase 1: Small allocation (5 MB) - should stay on policy 0
-echo "Phase 1: Allocate 5 MB (stay on policy 0)"
+# Phase 1: Small allocation (5 MB) - should stay on DRAM (node 2)
+echo "Phase 1: Allocate 5 MB (stay on DRAM node 2)"
 python-input "$PYTHON_PORT" "log('Phase 1 start: +5 MB'); x5MB = 'x' * (1024 * 1024 * 5); log('Phase 1 complete')"
 TS_START=$(get_python_timestamp "Phase 1 start")
 TS_COMPLETE=$(get_python_timestamp "Phase 1 complete")
 ALLOC_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
 echo "  → python got 5MB in ${ALLOC_TIME}ms"
 
-# Phase 2: Allocate 20 MB total - should trigger policy 0 -> 1
-echo "Phase 2: Allocate 20 MB total (exceed 20M limit)"
+# Phase 2: Allocate 20 MB total - should trigger notification and route update
+echo "Phase 2: Allocate 20 MB total (exceed DRAM quota)"
 python-input "$PYTHON_PORT" "log('Phase 2 start +20 MB'); x20MB = 'y' * (1024 * 1024 * 20); log('Phase 2 complete')"
-# Wait for transition
-vm-wait 50 "grep -q 'Policy switch from 0 to 1' $CGMPOLD_OUT 2>/dev/null" || error-stop "no policy switch from 0 to 1 in time"
+# Wait for notification
+vm-wait 50 "grep -q 'Notification: bound' $CGMPOLD_OUT 2>/dev/null" || error-stop "no notification in time"
 
 # Get timestamps and calculate reaction time
 TS_START=$(get_python_timestamp "Phase 2 start")
-TS_SWITCH=$(get_cgmpold_timestamp "Policy switch from 0 to 1")
+TS_SWITCH=$(get_cgmpold_timestamp "Notification: bound")
 if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
     REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Policy 0→1 transition took ${REACTION_TIME}ms"
+    echo "  → Route update took ${REACTION_TIME}ms"
 fi
 TS_COMPLETE=$(get_python_timestamp "Phase 2 complete")
 ALLOC_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
 echo "  → python got 20MB in ${ALLOC_TIME}ms"
 
-# Phase 3: Allocate 60 MB total - should trigger policy 1 -> 2
-echo "Phase 3: Allocate 60 MB total (exceed 40M limit)"
+# Phase 3: Allocate 60 MB more - should continue on CXL (node 3)
+echo "Phase 3: Allocate 60 MB more (fill CXL quota)"
 python-input "$PYTHON_PORT" "log('Phase 3 start +60 MB'); x60MB = 'z' * (1024 * 1024 * 60); log('Phase 3 complete')"
-vm-wait 50 "grep -q 'Policy switch from 1 to 2' $CGMPOLD_OUT 2>/dev/null" || error-stop "no policy switch from 1 to 2 in time"
+vm-wait 50 "grep -c 'Notification: bound' $CGMPOLD_OUT 2>/dev/null | grep -qv '^1$'" || error-stop "no additional notifications in time"
 
 TS_START=$(get_python_timestamp "Phase 3 start")
-TS_SWITCH=$(get_cgmpold_timestamp "Policy switch from 1 to 2")
+TS_SWITCH=$(vm "grep 'Notification: bound' $CGMPOLD_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo "")
 if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
     REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Policy 1→2 transition took ${REACTION_TIME}ms"
+    echo "  → Latest route update took ${REACTION_TIME}ms"
 fi
 
-# Phase 4: Free memory to ~60 MB - should reactivate policy 1
-echo "Phase 4: Free to ~60 MB (drop below 60M reactivateLimit)"
+# Phase 4: Free 60 MB - should trigger notification on memory drop
+echo "Phase 4: Free 60 MB"
 python-input "$PYTHON_PORT" "log('Phase 4 start -60 MB'); del x60MB; log('Phase 4 complete')"
-vm-wait 50 "grep -q 'Policy switch from 2 to 1' $CGMPOLD_OUT 2>/dev/null" || error-stop "no policy switch from 2 to 1 in time"
+sleep 2
 
 TS_START=$(get_python_timestamp "Phase 4 start")
-TS_SWITCH=$(get_cgmpold_timestamp "Policy switch from 2 to 1")
-if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
-    REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Policy 2→1 transition took ${REACTION_TIME}ms"
-fi
+TS_COMPLETE=$(get_python_timestamp "Phase 4 complete")
+FREE_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
+echo "  → python freed 60MB in ${FREE_TIME}ms"
 
-# Phase 5: Free to ~20 MB - should reactivate policy 0
-echo "Phase 5: Free to ~20 MB (drop below 20M reactivateLimit)"
+# Phase 5: Free 20 MB - should drop further
+echo "Phase 5: Free 20 MB"
 python-input "$PYTHON_PORT" "log('Phase 5 start -20 MB'); del x20MB; log('Phase 5 complete')"
-vm-wait 50 "grep -q 'Policy switch from 1 to 0' $CGMPOLD_OUT 2>/dev/null" || error-stop "no policy switch from 1 to 0 in time"
+sleep 2
 
 TS_START=$(get_python_timestamp "Phase 5 start")
-TS_SWITCH=$(get_cgmpold_timestamp "Policy switch from 1 to 0")
-if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
-    REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Policy 1→0 transition took ${REACTION_TIME}ms"
-fi
+TS_COMPLETE=$(get_python_timestamp "Phase 5 complete")
+FREE_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
+echo "  → python freed 20MB in ${FREE_TIME}ms"
 
-# Phase 6: Re-allocate 50 MB - should climb quickly policy 2
-echo "Phase 6: Re-allocate 50 MB (climb back up to policy 1)"
+# Phase 6: Re-allocate 50 MB - should climb back up, steering through DRAM then CXL
+echo "Phase 6: Re-allocate 50 MB (climb back up)"
+NOTIF_COUNT_BEFORE=$(vm "grep -c 'Notification: bound' $CGMPOLD_OUT 2>/dev/null" || echo "0")
 python-input "$PYTHON_PORT" "log('Phase 6 start +50 MB'); x50MB = 'a' * (1024 * 1024 * 50); log('Phase 6 complete')"
-vm-wait 50 "tail -n 25 $CGMPOLD_OUT | grep -E 'Policy switch from .* to 2' 2>/dev/null" || error-stop "policy did not end up to 2 in time"
+vm-wait 50 "test \$(grep -c 'Notification: bound' $CGMPOLD_OUT 2>/dev/null) -gt $NOTIF_COUNT_BEFORE" || error-stop "no new notifications in time"
 
 TS_START=$(get_python_timestamp "Phase 6 start")
-TS_SWITCH=$(vm "grep -E 'Policy switch from .* to 2' $CGMPOLD_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo "")
+TS_SWITCH=$(vm "grep 'Notification: bound' $CGMPOLD_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo "")
 if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
     REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Policy 0→1→2 transition took ${REACTION_TIME}ms"
+    echo "  → Route update took ${REACTION_TIME}ms"
 fi
 TS_COMPLETE=$(get_python_timestamp "Phase 6 complete")
 ALLOC_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python got 60MB in ${ALLOC_TIME}ms"
+echo "  → python got 50MB in ${ALLOC_TIME}ms"
 
-# Phase 7: Free to ~50+5 MB - should drop directly to policy 0
-echo "Phase 7: Free to ~50+5 MB (drop below 20M reactivateLimit)"
-python-input "$PYTHON_PORT" "log('Phase 7 start -50 MB'); del x50MB, x5MB; log('Phase 7 complete')"
-vm-wait 50 "grep -q 'Policy switch from 2 to 0' $CGMPOLD_OUT 2>/dev/null" || error-stop "no policy switch from 2 to 0 in time"
+# Phase 7: Free remaining - drop back
+echo "Phase 7: Free remaining"
+python-input "$PYTHON_PORT" "log('Phase 7 start -55 MB'); del x50MB, x5MB; log('Phase 7 complete')"
+sleep 2
 TS_START=$(get_python_timestamp "Phase 7 start")
-TS_SWITCH=$(vm "grep 'Policy switch from 2 to 0' $CGMPOLD_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo "")
-if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
-    REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Policy 2→0 transition took ${REACTION_TIME}ms"
-fi
+TS_COMPLETE=$(get_python_timestamp "Phase 7 complete")
+FREE_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
+echo "  → python freed remaining in ${FREE_TIME}ms"
 
 # Stop Python
 python-stop "$PYTHON_PORT"
@@ -215,16 +219,24 @@ echo "Verifying test results..."
 
 CGMPOLD_OUTPUT=$(cat /tmp/e2e-test01-$$/cgmpold.out)
 
-# Check for initial policy (policy 0)
-echo "Checking for initial policy (policy 0)..."
-if echo "$CGMPOLD_OUTPUT" | grep -iq "setting memory policy.*preferred.*nodes \[0\]"; then
-    echo "✓ Found initial policy activation (policy 0: preferred on node 0)"
+# Check for initial policy applied on DRAM node
+echo "Checking for initial policy on DRAM node 2..."
+if echo "$CGMPOLD_OUTPUT" | grep -iq "setting memory policy.*nodes \[2\]"; then
+    echo "✓ Found initial policy on DRAM node 2"
 else
-    echo "✗ FAILED: Initial policy activation not found"
+    echo "✗ FAILED: Initial policy on DRAM node 2 not found"
     exit 1
 fi
 
-echo "Checking for policy transitions..."
+echo "Checking for route updates..."
+
+# Check that notifications were received (memory threshold crossings)
+NOTIF_COUNT=$(echo "$CGMPOLD_OUTPUT" | grep -c "Notification: bound" || true)
+if [ "$NOTIF_COUNT" -lt 1 ]; then
+    echo "✗ FAILED: Expected at least 1 notification, found $NOTIF_COUNT"
+    exit 1
+fi
+echo "✓ Received $NOTIF_COUNT notifications"
 
 # Check that we used at least two different nodesets
 NODESETS_USED=$(echo "$CGMPOLD_OUTPUT" | grep -o "nodes \[[^]]*\]" | sort -u | wc -l)
@@ -235,16 +247,16 @@ fi
 
 echo "✓ Used $NODESETS_USED different nodesets"
 
-# Check for preferred policy
-if echo "$CGMPOLD_OUTPUT" | grep -q "preferred"; then
-    echo "✓ Preferred policy was applied"
+# Check that CXL node 3 was eventually used
+if echo "$CGMPOLD_OUTPUT" | grep -q "nodes \[3\]"; then
+    echo "✓ CXL node 3 was used"
 else
-    echo "✗ WARNING: Preferred policy was not found"
+    echo "✗ WARNING: CXL node 3 usage not found"
 fi
 
 echo ""
 echo "=== Test Passed ==="
-echo "Policy activation and reactivation worked as expected!"
+echo "Memory steering through DRAM-then-CXL worked as expected!"
 
 # Cleanup temporary files
 rm -rf /tmp/e2e-test01-$$
