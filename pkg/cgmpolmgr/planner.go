@@ -24,11 +24,19 @@ import (
 )
 
 type NodeMem struct {
-	nodeMem map[int]int64 // Memory usage on each node
+	nodeMem map[int]int64 // Memory amount or usage per node
 }
 
 func NewNodeMem() *NodeMem {
 	return &NodeMem{make(map[int]int64)}
+}
+
+func (nm *NodeMem) TotalMem() int64 {
+	var s int64
+	for _, v := range nm.nodeMem {
+		s += v
+	}
+	return s
 }
 
 func (nm *NodeMem) Copy() *NodeMem {
@@ -43,36 +51,15 @@ type Waypoint struct {
 
 type Plan struct {
 	// Plan is a sequence of waypoints. Each waypoint specifies
-	// memory usage on every allowed node at the point where total
-	// memory usage equals the sum of memory usages in the nodes.
+	// target memory usage per node when total memory usage equals
+	// the sum of memory usages in the waypoint.
 	//
-	// Between any two waypoints wpi and wpj, if i<j then memory
-	// usage of any node n in wpi never exceeds memory usage of
-	// the the same node n in wpj. In other words, memory usage
-	// can only grow in next waypoints for each node.
+	// Waypoints direct only memory allocations, never freeing or
+	// moving memory.  Therefore, between any two waypoints wpi
+	// and wpj, if i<j then wpi.Usage[n] <= wpj.Usage[n] for any
+	// node n. In other words, memory usage can only grow in next
+	// waypoints for each node.
 	Waypoints []Waypoint
-	// NextWaypointIndex is the index of the waypoint in the plan.
-	// While Waypoints is the "master plan", NextWaypointIndex is
-	// the next step.
-	NextWaypointIndex int
-	// Nodes is the set of nodes from which new memory allocations
-	// are allowed in the current plan, on the way to the next
-	// waypoint.
-	NextNodes []int
-	// NextLimit (in bytes) specifies the next checkpoint, in case
-	// of increased memory consumption, where the plan should be
-	// updated.
-	NextLimit int64
-}
-
-type Trackpoint struct {
-	Usage *NodeMem
-	Time  int64
-}
-
-type Planner struct {
-	Plan  *Plan
-	Track []Trackpoint
 	// MinLimit (bytes) is the minimum future memory allocation after which
 	// memory allocations are throttled in order to update the plan.
 	MinLimit int64
@@ -84,21 +71,53 @@ type Planner struct {
 	// -1: unlimited usage
 	// 0: node unavailable
 	// positive value: usage limit in bytes.
+	// If nil, then all nodes are allowed with unlimited usage.
 	AllowedUsage *NodeMem
+}
+
+type Trackpoint struct {
+	Usage *NodeMem
+	Time  int64
+}
+
+type Planner struct {
+	// plan is the current plan being followed.
+	plan *Plan
+	// track is a history of observed memory usage per node, with timestamps.
+	// The last element is the most recent trackpoint, representing the
+	// current memory usage.
+	track []Trackpoint
+	// nextWaypointIndex is the index of the waypoint in the plan.
+	// While Waypoints is the "master plan", nextWaypointIndex is
+	// the next step.
+	nextWaypointIndex int
+	// nextNodes is the set of nodes from which new memory
+	// allocations are allowed in the current plan, when
+	// navigating towards the next waypoint.
+	nextNodes []int
+	// nextLimit (in bytes) specifies the next checkpoint, in case
+	// of increased memory consumption, where the plan should be
+	// updated.
+	nextLimit int64
 }
 
 // NewPlanner creates a new Planner with the given plan.
 func NewPlanner() *Planner {
-	return &Planner{
-		AllowedUsage: NewNodeMem(),
-		MinLimit:     100 * 1024 * 1024,      // Default to 100 Mi
-		MaxLimit:     1 * 1024 * 1024 * 1024, // Default to 1 Gi
-	}
+	return &Planner{}
+}
+
+// SetPlan sets the plan for the planner and resets the track and next step.
+func (p *Planner) SetPlan(plan *Plan) {
+	p.plan = plan
+	p.track = nil
+	p.nextWaypointIndex = 0
+	p.nextNodes = nil
+	p.nextLimit = 0
 }
 
 // UpdateUsage updates the current memory usage in the planner.
 func (p *Planner) UpdateUsage(usage *NodeMem) {
-	p.Track = append(p.Track, Trackpoint{
+	p.track = append(p.track, Trackpoint{
 		Usage: usage.Copy(),
 		Time:  time.Now().UnixNano(),
 	})
@@ -111,7 +130,9 @@ func (p *Planner) UpdateUsage(usage *NodeMem) {
 //
 // Parameters:
 //
-//   - ctp: current trackpoint (most recent observed memory usage per node)
+//   - ctp: current trackpoint (most recent observed memory usage per
+//     node).  If ctp is nil, it is treated as an all-zeroes
+//     trackpoint (zero usage on all nodes).
 //
 //   - pwp: previous waypoint (last waypoint whose usage has been reached,
 //     or will be reached no matter how minLimit of memory is spread to nextNodes)
@@ -267,12 +288,6 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 
 		// Clamp to feasible range.
 		limit := int64(math.Round(math.Max(float64(lower), math.Min(optLimit, float64(upper)))))
-		// if limit < lower {
-		// 	limit = lower
-		// }
-		// if limit > upper {
-		// 	limit = upper
-		// }
 
 		// Squared distance from (ctp + limit/nodes on selected) to
 		// line(pwp, nwp): |q|² − (q·v)²/|v|²
@@ -307,49 +322,143 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	return resultNodes, bestLimit, nil
 }
 
-func (p *Planner) UpdatePlan() {
-	// The algorithm is as follows:
-	//
-	// 1. Find out previous and next waypoints based on current memory usage.
-	//    - Previous waypoint (pwp) is the last waypoint in the plan whose memory
-	//      usage has been reached or exceeded.
-	//    - Next waypoint (nwp) is the first waypoint in the plan whose memory
-	//      usage has not been reached yet.
-	//    - p.Plan.NextWaypointIndex is likely to make this quick, given that
-	//      usage has not changed much.
-	//    - Update p.Plan.NextWaypointIndex accordingly, if necessary.
-	//
-	// 2. Calculate linear route from pwp to nwp.
-	//    - What is the target ratio of memory usage from each of the nodes
-	//      where memory usage increases between pwp and nwp?
-	//    - Example: if there are two nodes, x and y, then pwp and nwp can be
-	//      drawn as two points in xy-coordinates, and the route as the direct
-	//      line connecting these points.
-	//
-	// 3. Calculate linear route from current trackpoint ctp to nwp.
-	//    - Current trackpoint is the last (most recent) usage point in
-	//      p.Track, that is, ctp=p.Track(len(p.Track)-1).
-	//    - Similar calculation as from pwp to nwp.
-	//
-	// 4. Compare these two routes to find out course correction.
-	//    - Example: consider two memory nodes, x and y.
-	//      1. If the slope is of pwp-nwp line is steeper than ctp-nwp,
-	//      then ctp is "to the left" or "on top of" the optimal pwp-nwp line,
-	//      and next allocations should increase consumption only on node x
-	//      until crossing pwp-nwp line.
-	//      2. If pwp-nwp slope is flatter than ctp-nwp slope,
-	//      then ctp is "to the right" or "below" the optimal pwp-nwp line,
-	//      and next allocations should increase consumption only on node y
-	//      until crossing pwp-nwp line.
-	//      3. If the slopes are equivalent, the usage is on optimal track between
-	//      waypoints, so keep target
-	//    - Based on nodes where memory usage should be increased in order to
-	//      get back to planned route (cases 1 and 2), or keep on track (case 3)
-	//      calculate the best set of nodes in NextNodes. If there are multiple
-	//      NextNodes, then expect equal amount of increased usage in all of them.
-	//      If there is only one node in NextNodes, then expect memory usage to
-	//      increase only on that node.
-	//      The combination of NextNodes and NextLimit (that must be equal or
-	//      between MinLimit and MaxLimit) should result in minimal square error
-	//      from the optimal pwp-nwp route.
+// waypointReached reports whether the current memory usage has
+// reached (or exceeded) the given waypoint usage on any node.
+func waypointReached(ctp, wpUsage *NodeMem) bool {
+	for n, target := range wpUsage.nodeMem {
+		if ctp.nodeMem[n] >= target {
+			return true
+		}
+	}
+	return false
+}
+
+// extrapolateWaypoint generates a waypoint beyond the current usage
+// by extending the direction from prev to last. The returned waypoint
+// is far enough ahead of ctp that nextStep can take a full maxLimit
+// step forward on every node with a positive direction component
+// without exceeding the waypoint.
+func extrapolateWaypoint(prev, last, ctp *NodeMem, maxLimit int64) *NodeMem {
+	nwp := NewNodeMem()
+
+	nodeSet := make(map[int]bool)
+	for n := range prev.nodeMem {
+		nodeSet[n] = true
+	}
+	for n := range last.nodeMem {
+		nodeSet[n] = true
+	}
+	for n := range ctp.nodeMem {
+		nodeSet[n] = true
+	}
+
+	// Direction vector: d[n] = last[n] − prev[n].
+	// Find the smallest integer multiplier t ≥ 1 such that
+	// last[n] + t·d[n] ≥ ctp[n] + maxLimit for every node
+	// where d[n] > 0. This guarantees the gap nwp[n] − ctp[n]
+	// is at least maxLimit, so nextStep can take a full
+	// MaxLimit-sized step without re-steering.
+	t := int64(1)
+	for n := range nodeSet {
+		d := last.nodeMem[n] - prev.nodeMem[n]
+		if d > 0 {
+			needed := ctp.nodeMem[n] + maxLimit - last.nodeMem[n]
+			if needed > 0 {
+				tNeeded := (needed + d - 1) / d // ceiling division
+				if tNeeded > t {
+					t = tNeeded
+				}
+			}
+		}
+	}
+
+	for n := range nodeSet {
+		d := last.nodeMem[n] - prev.nodeMem[n]
+		nwp.nodeMem[n] = last.nodeMem[n] + t*d
+	}
+
+	return nwp
+}
+
+// UpdateRoute updates the nextNodes and nextLimit based on the
+// current memory usage and plan.
+func (p *Planner) UpdateRoute() error {
+	if p.plan == nil {
+		return fmt.Errorf("UpdateRoute: no plan set")
+	}
+	if len(p.plan.Waypoints) == 0 {
+		return fmt.Errorf("UpdateRoute: plan has no waypoints")
+	}
+
+	// 1. Get the current trackpoint (ctp).
+	var ctp *NodeMem
+	if len(p.track) > 0 {
+		ctp = p.track[len(p.track)-1].Usage
+	} else {
+		ctp = NewNodeMem()
+	}
+
+	// Find the next waypoint (nwp): the first waypoint whose usage
+	// has not been reached on every node yet. Start from the cached
+	// nextWaypointIndex for efficiency, scanning backward first in
+	// case memory was freed, then forward past reached waypoints.
+	nwpIdx := p.nextWaypointIndex
+	nwpIdx = min(nwpIdx, len(p.plan.Waypoints))
+	for nwpIdx > 0 && !waypointReached(ctp, p.plan.Waypoints[nwpIdx-1].Usage) {
+		nwpIdx--
+	}
+	for nwpIdx < len(p.plan.Waypoints) && waypointReached(ctp, p.plan.Waypoints[nwpIdx].Usage) {
+		nwpIdx++
+	}
+
+	var pwp, nwp *NodeMem
+
+	if nwpIdx >= len(p.plan.Waypoints) {
+		// All waypoints have been exceeded. Extrapolate a new
+		// waypoint by continuing in the direction of the last
+		// segment.
+		lastIdx := len(p.plan.Waypoints) - 1
+		var prevUsage *NodeMem
+		if lastIdx > 0 {
+			prevUsage = p.plan.Waypoints[lastIdx-1].Usage
+		} else {
+			prevUsage = NewNodeMem()
+		}
+		pwp = p.plan.Waypoints[lastIdx].Usage
+		nwp = extrapolateWaypoint(prevUsage, pwp, ctp, p.plan.MaxLimit)
+	} else {
+		nwp = p.plan.Waypoints[nwpIdx].Usage
+		if nwpIdx > 0 {
+			pwp = p.plan.Waypoints[nwpIdx-1].Usage
+		} else {
+			pwp = NewNodeMem()
+		}
+	}
+
+	p.nextWaypointIndex = nwpIdx
+
+	// 2. Calculate the next step.
+	nextNodes, nextLimit, err := nextStep(ctp, pwp, nwp, p.plan.MinLimit, p.plan.MaxLimit)
+	if err != nil {
+		return fmt.Errorf("UpdateRoute: %w", err)
+	}
+
+	// 3. Store the results.
+	p.nextNodes = nextNodes
+	p.nextLimit = nextLimit
+
+	return nil
+}
+
+func (p *Planner) String() string {
+	return fmt.Sprintf("Plan: %+v, Track: %+v, NextWaypointIndex: %d, nextNodes: %+v, nextLimit: %d",
+		p.plan, p.track, p.nextWaypointIndex, p.nextNodes, p.nextLimit)
+}
+
+func (p *Planner) NextNodes() []int {
+	return p.nextNodes
+}
+
+func (p *Planner) NextLimit() int64 {
+	return p.nextLimit
 }
