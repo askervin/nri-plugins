@@ -111,7 +111,7 @@ func NewPlanner() *Planner {
 func (p *Planner) SetPlan(plan *Plan) {
 	p.plan = plan
 	p.track = nil
-	p.nextWaypointIndex = 0
+	p.nextWaypointIndex = -1
 	p.nextNodes = nil
 	p.nextLimit = 0
 }
@@ -395,6 +395,15 @@ func (p *Planner) UpdateRoute() error {
 	if len(p.plan.Waypoints) == 0 {
 		return fmt.Errorf("UpdateRoute: plan has no waypoints")
 	}
+	if p.plan.MinLimit <= 0 {
+		return fmt.Errorf("UpdateRoute: MinLimit must be positive, got %d", p.plan.MinLimit)
+	}
+	if p.plan.MaxLimit <= 0 {
+		return fmt.Errorf("UpdateRoute: MaxLimit must be positive, got %d", p.plan.MaxLimit)
+	}
+	if p.plan.MaxLimit < p.plan.MinLimit {
+		return fmt.Errorf("UpdateRoute: MaxLimit (%d) must be >= MinLimit (%d)", p.plan.MaxLimit, p.plan.MinLimit)
+	}
 
 	// 1. Get the current trackpoint (ctp).
 	var ctp *NodeMem
@@ -408,7 +417,7 @@ func (p *Planner) UpdateRoute() error {
 	// has not been reached on every node yet. Start from the cached
 	// nextWaypointIndex for efficiency, scanning backward first in
 	// case memory was freed, then forward past reached waypoints.
-	nwpIdx := p.nextWaypointIndex
+	nwpIdx := max(p.nextWaypointIndex, 0)
 	nwpIdx = min(nwpIdx, len(p.plan.Waypoints))
 	minDistToWp := p.plan.MinLimit
 	for nwpIdx > 0 && !waypointReached(ctp, p.plan.Waypoints[nwpIdx-1].Usage, minDistToWp) {
