@@ -35,32 +35,146 @@ type MemoryPolicy struct {
 	Policy          string `json:"policy,omitempty" yaml:"policy,omitempty"`
 }
 
-// MemoryUsePath describes the strategy for consuming DRAM and CXL memory
-// quotas along a memory usage path. For all values except MemoryUseFollowPath,
-// waypoints are automatically generated based on the available DRAM and CXL
-// memory quotas. For MemoryUseFollowPath, the user provides explicit waypoints
+// MemoryUseOrder describes the strategy for consuming DRAM and CXL memory
+// quotas. For all values except MemoryUseWaypoints, waypoints are
+// automatically generated based on the available DRAM and CXL memory
+// quotas. For MemoryUseWaypoints, the user provides explicit waypoints
 // as memory type / usage pairs.
-type MemoryUsePath int
+type MemoryUseOrder int
 
 const (
-	// MemoryUsePerformance prefers DRAM over CXL: consume the DRAM quota
+	// MemoryUseFirstDRAM prefers DRAM over CXL: consume the DRAM quota
 	// first, then fall back to CXL once DRAM is exhausted.
-	MemoryUsePerformance MemoryUsePath = iota
-	// MemoryUseEconomic prefers CXL over DRAM: consume the CXL quota
+	MemoryUseFirstDRAM MemoryUseOrder = iota
+	// MemoryUseFirstCXL prefers CXL over DRAM: consume the CXL quota
 	// first, then fall back to DRAM once CXL is exhausted.
-	MemoryUseEconomic
+	MemoryUseFirstCXL
 	// MemoryUseStartInterleaved prefers interleaving DRAM and CXL at the
-	// beginning of the path. Once the smaller quota has been fully used,
+	// beginning. Once the smaller quota has been fully used,
 	// the remaining memory type is consumed alone.
 	MemoryUseStartInterleaved
 	// MemoryUseEndInterleaved is the opposite of MemoryUseStartInterleaved:
 	// consume the excess of the larger quota first, then interleave DRAM
-	// and CXL for the remainder of the path.
+	// and CXL for the remainder.
 	MemoryUseEndInterleaved
-	// MemoryUseFollowPath follows a user-specified sequence of waypoints,
+	// MemoryUseWaypoints follows a user-specified sequence of waypoints,
 	// where each waypoint is a memory type / usage pair.
-	MemoryUseFollowPath
+	MemoryUseWaypoints
 )
+
+// ParseMemoryUseOrder parses a user-facing string into a MemoryUseOrder.
+func ParseMemoryUseOrder(s string) (MemoryUseOrder, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "first-dram":
+		return MemoryUseFirstDRAM, nil
+	case "first-cxl":
+		return MemoryUseFirstCXL, nil
+	case "start-interleaved":
+		return MemoryUseStartInterleaved, nil
+	case "end-interleaved":
+		return MemoryUseEndInterleaved, nil
+	case "waypoints":
+		return MemoryUseWaypoints, nil
+	default:
+		return 0, fmt.Errorf("unknown memory use order %q (valid: first-DRAM, first-CXL, start-interleaved, end-interleaved, waypoints)", s)
+	}
+}
+
+// MemoryUseWaypoint specifies a single waypoint in a user-defined
+// memory use order. MemoryType is "DRAM" or "CXL", and Usage is
+// a human-readable size string (e.g. "20G").
+type MemoryUseWaypoint struct {
+	MemoryType string `json:"memoryType" yaml:"memoryType"`
+	Usage      string `json:"usage" yaml:"usage"`
+}
+
+// GenerateWaypoints builds Planner-compatible waypoints from a
+// MemoryUseOrder and DRAM/CXL quotas and node IDs.
+//
+// dramNodes/cxlNodes are the NUMA node IDs for each memory type.
+// dramQuota/cxlQuota are the total byte quotas for DRAM and CXL.
+//
+// For MemoryUseWaypoints the caller must convert user-supplied
+// MemoryUseWaypoint entries separately.
+func GenerateWaypoints(order MemoryUseOrder, dramNodes, cxlNodes []int, dramQuota, cxlQuota int64) ([]Waypoint, error) {
+	if len(dramNodes) == 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: no DRAM nodes")
+	}
+	if len(cxlNodes) == 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: no CXL nodes")
+	}
+	if dramQuota <= 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: DRAM quota must be positive")
+	}
+	if cxlQuota <= 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: CXL quota must be positive")
+	}
+
+	// Helper: build a NodeMem that spreads total evenly across nodes.
+	spread := func(nodes []int, total int64) *NodeMem {
+		nm := NewNodeMem()
+		if total == 0 || len(nodes) == 0 {
+			return nm
+		}
+		perNode := total / int64(len(nodes))
+		for _, n := range nodes {
+			nm.nodeMem[n] = perNode
+		}
+		return nm
+	}
+
+	// Helper: merge two NodeMems (disjoint node sets).
+	merge := func(a, b *NodeMem) *NodeMem {
+		nm := a.Copy()
+		for n, v := range b.nodeMem {
+			nm.nodeMem[n] = v
+		}
+		return nm
+	}
+
+	switch order {
+	case MemoryUseFirstDRAM:
+		// wp0: all DRAM used, no CXL yet
+		// wp1: all DRAM + all CXL
+		wp0 := merge(spread(dramNodes, dramQuota), spread(cxlNodes, 0))
+		wp1 := merge(spread(dramNodes, dramQuota), spread(cxlNodes, cxlQuota))
+		return []Waypoint{{Usage: wp0}, {Usage: wp1}}, nil
+
+	case MemoryUseFirstCXL:
+		// wp0: no DRAM, all CXL used
+		// wp1: all DRAM + all CXL
+		wp0 := merge(spread(dramNodes, 0), spread(cxlNodes, cxlQuota))
+		wp1 := merge(spread(dramNodes, dramQuota), spread(cxlNodes, cxlQuota))
+		return []Waypoint{{Usage: wp0}, {Usage: wp1}}, nil
+
+	case MemoryUseStartInterleaved:
+		// Interleave both types until the smaller quota is exhausted,
+		// then use the remaining type alone.
+		smallerQuota := min(dramQuota, cxlQuota)
+		wp0 := merge(spread(dramNodes, smallerQuota), spread(cxlNodes, smallerQuota))
+		wp1 := merge(spread(dramNodes, dramQuota), spread(cxlNodes, cxlQuota))
+		return []Waypoint{{Usage: wp0}, {Usage: wp1}}, nil
+
+	case MemoryUseEndInterleaved:
+		// Use the excess of the larger quota first, then interleave.
+		var wp0 *NodeMem
+		if dramQuota > cxlQuota {
+			excess := dramQuota - cxlQuota
+			wp0 = merge(spread(dramNodes, excess), spread(cxlNodes, 0))
+		} else {
+			excess := cxlQuota - dramQuota
+			wp0 = merge(spread(dramNodes, 0), spread(cxlNodes, excess))
+		}
+		wp1 := merge(spread(dramNodes, dramQuota), spread(cxlNodes, cxlQuota))
+		return []Waypoint{{Usage: wp0}, {Usage: wp1}}, nil
+
+	case MemoryUseWaypoints:
+		return nil, fmt.Errorf("GenerateWaypoints: MemoryUseWaypoints requires caller to convert waypoints directly")
+
+	default:
+		return nil, fmt.Errorf("GenerateWaypoints: unknown order %d", order)
+	}
+}
 
 // ParseNodeset parses a cpuset list syntax string (e.g., "1,3-5,7") into a slice of node IDs
 func ParseNodeset(nodeset string) ([]int, error) {

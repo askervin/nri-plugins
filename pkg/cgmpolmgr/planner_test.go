@@ -13,9 +13,8 @@
 // limitations under the License.
 
 // cgmpolmgr package implements a dynamic memory policy manager for
-// cgroups. It takes cgroup-specific "memory ladders" as an input. The
-// ladders specify memory usage ranges and a memory policy to be
-// applied on all processes in the cgroup when usage is in that range.
+// cgroups. It uses a Planner to steer memory allocations across NUMA
+// nodes according to configurable waypoints.
 
 package cgmpolmgr
 
