@@ -35,6 +35,33 @@ type MemoryPolicy struct {
 	Policy          string `json:"policy,omitempty" yaml:"policy,omitempty"`
 }
 
+// MemoryUsePath describes the strategy for consuming DRAM and CXL memory
+// quotas along a memory usage path. For all values except MemoryUseFollowPath,
+// waypoints are automatically generated based on the available DRAM and CXL
+// memory quotas. For MemoryUseFollowPath, the user provides explicit waypoints
+// as memory type / usage pairs.
+type MemoryUsePath int
+
+const (
+	// MemoryUsePerformance prefers DRAM over CXL: consume the DRAM quota
+	// first, then fall back to CXL once DRAM is exhausted.
+	MemoryUsePerformance MemoryUsePath = iota
+	// MemoryUseEconomic prefers CXL over DRAM: consume the CXL quota
+	// first, then fall back to DRAM once CXL is exhausted.
+	MemoryUseEconomic
+	// MemoryUseStartInterleaved prefers interleaving DRAM and CXL at the
+	// beginning of the path. Once the smaller quota has been fully used,
+	// the remaining memory type is consumed alone.
+	MemoryUseStartInterleaved
+	// MemoryUseEndInterleaved is the opposite of MemoryUseStartInterleaved:
+	// consume the excess of the larger quota first, then interleave DRAM
+	// and CXL for the remainder of the path.
+	MemoryUseEndInterleaved
+	// MemoryUseFollowPath follows a user-specified sequence of waypoints,
+	// where each waypoint is a memory type / usage pair.
+	MemoryUseFollowPath
+)
+
 // ParseNodeset parses a cpuset list syntax string (e.g., "1,3-5,7") into a slice of node IDs
 func ParseNodeset(nodeset string) ([]int, error) {
 	nodeset = strings.TrimSpace(nodeset)

@@ -284,6 +284,83 @@ func TestInterestingNextSteps(t *testing.T) {
 	})
 }
 
-func TestNextSteps(t *testing.T) {
-	// Implement me
+func TestPlannerFollow(t *testing.T) {
+	plan := &Plan{
+		Waypoints: []Waypoint{
+			{Usage: nm(0*GiB, 2*GiB, 0*GiB, 5*GiB)},
+			{Usage: nm(1*GiB, 3*GiB, 1*GiB, 5*GiB)},
+			{Usage: nm(2*GiB, 10*GiB, 2*GiB, 5*GiB)},
+			{Usage: nm(2*GiB, 12*GiB, 10*GiB, 5*GiB)},
+		},
+		MinLimit: 1 * GiB,
+		MaxLimit: 4 * GiB,
+	}
+
+	p := NewPlanner()
+	p.SetPlan(plan)
+
+	// Current simulated usage, starts at zero.
+	cur := nm(0, 0, 0, 0)
+
+	// Run the simulation loop. We stop after going two full
+	// UpdateRoute rounds beyond the last waypoint.
+	lastWP := plan.Waypoints[len(plan.Waypoints)-1].Usage
+	lastWPTotal := lastWP.TotalMem()
+	roundsBeyond := 0
+	maxIter := 200
+	for i := 0; i < maxIter; i++ {
+		err := p.UpdateRoute()
+		require.NoError(t, err, "UpdateRoute iteration %d", i)
+
+		nextNodes := p.NextNodes()
+		nextLimit := p.NextLimit()
+
+		t.Logf("iter %3d: cur=(%d,%d,%d,%d) GiB  nextNodes=%v  nextLimit=%.1f GiB",
+			i,
+			cur.nodeMem[0]/GiB, cur.nodeMem[1]/GiB,
+			cur.nodeMem[2]/GiB, cur.nodeMem[3]/GiB,
+			nextNodes,
+			float64(nextLimit)/float64(GiB))
+
+		if nextNodes == nil {
+			t.Logf("iter %3d: nextNodes is nil, stopping", i)
+			break
+		}
+
+		require.Greater(t, nextLimit, int64(0),
+			"nextLimit must be positive at iteration %d", i)
+		require.GreaterOrEqual(t, nextLimit, plan.MinLimit,
+			"nextLimit must be >= MinLimit at iteration %d", i)
+		require.LessOrEqual(t, nextLimit, plan.MaxLimit,
+			"nextLimit must be <= MaxLimit at iteration %d", i)
+
+		// Simulate: spread nextLimit evenly on nextNodes.
+		perNode := nextLimit / int64(len(nextNodes))
+		for _, n := range nextNodes {
+			cur.nodeMem[n] += perNode
+		}
+
+		p.UpdateUsage(cur)
+
+		if cur.TotalMem() > lastWPTotal {
+			roundsBeyond++
+			if roundsBeyond >= 2 {
+				t.Logf("iter %3d: two rounds beyond last waypoint, done", i)
+				break
+			}
+		}
+	}
+
+	// Verify: every node's usage should be at least the last
+	// waypoint's value (with a tolerance of MaxLimit, since
+	// steering is approximate and we may overshoot on some
+	// nodes while lagging on others).
+	for n, target := range lastWP.nodeMem {
+		require.InDelta(t, target, cur.nodeMem[n], float64(plan.MaxLimit),
+			"node %d usage should be close to last waypoint target", n)
+	}
+
+	// Verify: we actually went beyond the last waypoint's total.
+	require.Greater(t, cur.TotalMem(), lastWPTotal,
+		"total usage should exceed the last waypoint total")
 }
