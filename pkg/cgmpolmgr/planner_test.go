@@ -297,6 +297,130 @@ func TestInterestingNextSteps(t *testing.T) {
 	})
 }
 
+func TestPlannerNegative(t *testing.T) {
+	t.Run("UpdateRoute without plan", func(t *testing.T) {
+		p := NewPlanner()
+		err := p.UpdateRoute()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no plan set")
+	})
+
+	t.Run("NextNodes before UpdateRoute", func(t *testing.T) {
+		p := NewPlanner()
+		require.Nil(t, p.NextNodes())
+	})
+
+	t.Run("NextLimit before UpdateRoute", func(t *testing.T) {
+		p := NewPlanner()
+		require.Equal(t, int64(0), p.NextLimit())
+	})
+
+	t.Run("NextWaypoint before UpdateRoute", func(t *testing.T) {
+		p := NewPlanner()
+		require.Nil(t, p.NextWaypoint())
+	})
+
+	t.Run("NextWaypoint with plan but before UpdateRoute", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(1*GiB, 0)}},
+			MinLimit:  1 * GiB,
+			MaxLimit:  1 * GiB,
+		})
+		// nextWaypointIndex is 0 after SetPlan, so NextWaypoint
+		// returns waypoint 0 even without UpdateRoute.
+		require.Nil(t, p.NextWaypoint())
+	})
+
+	t.Run("empty waypoints", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{},
+			MinLimit:  1 * GiB,
+			MaxLimit:  1 * GiB,
+		})
+		err := p.UpdateRoute()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no waypoints")
+	})
+
+	t.Run("all-zeroes single waypoint", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(0, 0)}},
+			MinLimit:  1 * GiB,
+			MaxLimit:  4 * GiB,
+		})
+		// The all-zeroes waypoint is immediately reached (remaining
+		// gap 0 < MinLimit), so UpdateRoute extrapolates. But the
+		// direction from the implicit zero origin to the all-zeroes
+		// waypoint is also zero, producing an extrapolated waypoint
+		// that is all zeroes. nextStep should return nil nodes since
+		// there is nowhere to go.
+		err := p.UpdateRoute()
+		require.NoError(t, err)
+		require.Nil(t, p.NextNodes())
+		require.Equal(t, int64(0), p.NextLimit())
+	})
+
+	t.Run("SetPlan resets state", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(10*GiB, 0)}},
+			MinLimit:  1 * GiB,
+			MaxLimit:  4 * GiB,
+		})
+		require.NoError(t, p.UpdateRoute())
+		require.NotNil(t, p.NextNodes())
+
+		// Setting a new plan resets everything.
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(0, 5*GiB)}},
+			MinLimit:  1 * GiB,
+			MaxLimit:  2 * GiB,
+		})
+		require.Nil(t, p.NextNodes())
+		require.Equal(t, int64(0), p.NextLimit())
+	})
+
+	t.Run("zero MinLimit", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(10*GiB, 0)}},
+			MinLimit:  0,
+			MaxLimit:  4 * GiB,
+		})
+		err := p.UpdateRoute()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "MinLimit must be positive")
+	})
+
+	t.Run("zero MaxLimit", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(10*GiB, 0)}},
+			MinLimit:  1 * GiB,
+			MaxLimit:  0,
+		})
+		err := p.UpdateRoute()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "MaxLimit must be positive")
+	})
+
+	t.Run("MaxLimit smaller than MinLimit", func(t *testing.T) {
+		p := NewPlanner()
+		p.SetPlan(&Plan{
+			Waypoints: []Waypoint{{Usage: nm(10*GiB, 0)}},
+			MinLimit:  4 * GiB,
+			MaxLimit:  1 * GiB,
+		})
+		err := p.UpdateRoute()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "MaxLimit")
+		require.Contains(t, err.Error(), "MinLimit")
+	})
+}
+
 func TestPlannerSimple(t *testing.T) {
 	type wpCase struct {
 		name      string
