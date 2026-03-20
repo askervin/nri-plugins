@@ -117,7 +117,7 @@ func (w *CgroupWatcher) setupMemoryHigh() error {
 		value = []byte("max\n")
 	} else {
 		w.memoryHighBytes = w.bounds.UpperKB * 1024
-		value = []byte(fmt.Sprintf("%d\n", w.memoryHighBytes))
+		value = fmt.Appendf([]byte{}, "%d\n", w.memoryHighBytes)
 	}
 	if err := os.WriteFile(memoryHighPath, value, 0644); err != nil {
 		LogDebug("%s: writing %q failed: %v\n", memoryHighPath, string(value), err)

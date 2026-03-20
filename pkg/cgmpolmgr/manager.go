@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,10 +46,12 @@ type CgroupConfig struct {
 
 // Manager manages a single cgroup's memory policy
 type Manager struct {
-	config  CgroupConfig
-	planner *Planner
-	watcher *cgmemnotify.CgroupWatcher
-	mu      sync.Mutex
+	config              CgroupConfig
+	planner             *Planner
+	watcher             *cgmemnotify.CgroupWatcher
+	allowedNodes        map[int]bool
+	allowedNodesWritten int
+	mu                  sync.Mutex
 }
 
 // LogDebug prints debug messages to stderr with a consistent prefix,
@@ -185,19 +188,22 @@ func convertUserWaypoints(userWPs []MemoryUseWaypoint, dramNodes, cxlNodes []int
 		nm := NewNodeMem()
 		// Spread DRAM usage evenly across DRAM nodes.
 		if dramUsage > 0 {
-			perNode := dramUsage / int64(len(dramNodes))
-			for _, n := range dramNodes {
-				nm.nodeMem[n] = perNode
+			memPerNode := dramUsage / int64(len(dramNodes))
+			for _, node := range dramNodes {
+				nm[node] = memPerNode
 			}
 		}
 		// Spread CXL usage evenly across CXL nodes.
 		if cxlUsage > 0 {
-			perNode := cxlUsage / int64(len(cxlNodes))
-			for _, n := range cxlNodes {
-				nm.nodeMem[n] = perNode
+			memPerNode := cxlUsage / int64(len(cxlNodes))
+			for _, node := range cxlNodes {
+				nm[node] = memPerNode
 			}
 		}
-		waypoints = append(waypoints, Waypoint{Usage: nm})
+		waypoints = append(waypoints, Waypoint{
+			Name:  strconv.Itoa(i),
+			Usage: nm,
+		})
 	}
 
 	return waypoints, nil
@@ -232,37 +238,32 @@ func (m *Manager) applyCurrentPolicy() error {
 	}
 
 	// Get NUMA statistics.
-	numaStats, err := m.watcher.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem)
-	if err != nil {
-		LogDebug("applyCurrentPolicy: failed to get NUMA stats: %v\n", err)
-		return fmt.Errorf("failed to get NUMA stats: %w", err)
-	}
 
 	// Build the set of allowed nodes: planner's NextNodes plus any
 	// node that already has usage (to avoid stranding memory).
-	allowedNodes := make(map[int]bool)
-	for _, node := range nodes {
-		allowedNodes[node] = true
+	if m.allowedNodes == nil {
+		m.allowedNodes = make(map[int]bool)
 	}
-	for node, usage := range numaStats {
-		if usage > 0 {
-			allowedNodes[node] = true
-		}
+	for _, node := range nodes {
+		m.allowedNodes[node] = true
 	}
 
-	// Write cpuset.mems.
-	cpusetMemsPath := filepath.Join(m.config.Path, "cpuset.mems")
-	nodesStr := ""
-	sep := ""
-	for node := range allowedNodes {
-		nodesStr += fmt.Sprintf("%s%d", sep, node)
-		sep = ","
+	if m.allowedNodesWritten < len(m.allowedNodes) {
+		// New nodes have been enabled. Nodes can never be disabled,
+		// therefore comparing the number of allowed nodes is enough.
+		cpusetMemsPath := filepath.Join(m.config.Path, "cpuset.mems")
+		nodesStr := ""
+		sep := ""
+		for node := range m.allowedNodes {
+			nodesStr += fmt.Sprintf("%s%d", sep, node)
+			sep = ","
+		}
+		if err := os.WriteFile(cpusetMemsPath, []byte(nodesStr), 0644); err != nil {
+			LogError("Failed to write cpuset.mems for %s: %v\n", m.config.Path, err)
+			return fmt.Errorf("failed to write cpuset.mems: %w", err)
+		}
+		LogDebug("Updated cpuset.mems for %s to %s\n", m.config.Path, nodesStr)
 	}
-	if err := os.WriteFile(cpusetMemsPath, []byte(nodesStr), 0644); err != nil {
-		LogError("Failed to write cpuset.mems for %s: %v\n", m.config.Path, err)
-		return fmt.Errorf("failed to write cpuset.mems: %w", err)
-	}
-	LogDebug("Updated cpuset.mems for %s to %s\n", m.config.Path, nodesStr)
 
 	if len(pids) == 0 {
 		LogDebug("applyCurrentPolicy: no processes in cgroup %s\n", m.config.Path)
@@ -276,8 +277,6 @@ func (m *Manager) applyCurrentPolicy() error {
 	if err := mpolinject.SetMemoryPolicy(pids, nodes); err != nil {
 		return fmt.Errorf("failed to set memory policy: %w", err)
 	}
-
-	logNumaStats(numaStats)
 	return nil
 }
 
@@ -309,6 +308,29 @@ func logNumaStats(numaStats map[int]uint64) {
 
 // Start starts watching the cgroup
 func (m *Manager) Start() error {
+	// TODO / TO CONSIDER
+
+	// - When starting with a cgroup with already running
+	// processes (that is, with non-zero memory.current), we
+	// should figure out numastats, and do Planner.UpdateUsage() +
+	// Planner.UpdateRoute() to start steering towards valid waypoint.
+
+	// - When starting with a cgroup without processes, we could
+	// add a minimal (for instance 1 MB) memory.high, so that we
+	// could immediately apply suitable memory policies instead of
+	// playing with cpuset.mems.
+
+	// If the cgroup already exists, check all nodes already contain data to avoid
+	// memory moves by restricting cpuset.mems.
+	if numaStats, err := m.watcher.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem); err == nil {
+		for node, usage := range numaStats {
+			if usage > 0 {
+				m.allowedNodes[node] = true
+			}
+		}
+		logNumaStats(numaStats)
+	}
+
 	if err := m.watcher.Start(); err != nil {
 		return err
 	}
@@ -346,7 +368,7 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 	}
 	usage := NewNodeMem()
 	for node, bytes := range numaStats {
-		usage.nodeMem[node] = int64(bytes)
+		usage[node] = int64(bytes)
 	}
 	m.planner.UpdateUsage(usage)
 
@@ -365,6 +387,9 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 	// at the right threshold. This also sets the new memory.high,
 	// unblocking the throttled cgroup.
 	m.updateWatcherBounds()
+
+	// Log the new NUMA distribution after applying the policy.
+	logNumaStats(numaStats)
 }
 
 // updateWatcherBounds reconfigures the CgroupWatcher with new memory
