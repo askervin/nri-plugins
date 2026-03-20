@@ -80,12 +80,20 @@ func ParseMemoryUseOrder(s string) (MemoryUseOrder, error) {
 	}
 }
 
-// MemoryUseWaypoint specifies a single waypoint in a user-defined
-// memory use order. MemoryType is "DRAM" or "CXL", and Usage is
-// a human-readable size string (e.g. "20G").
-type MemoryUseWaypoint struct {
+// MemoryUseWaypointEntry specifies memory usage for a single memory
+// type within a waypoint. MemoryType is "DRAM" or "CXL", and Usage
+// is a human-readable absolute size string (e.g. "20G").
+type MemoryUseWaypointEntry struct {
 	MemoryType string `json:"memoryType" yaml:"memoryType"`
 	Usage      string `json:"usage" yaml:"usage"`
+}
+
+// MemoryUseWaypoint specifies a single waypoint in a user-defined
+// memory use order. Each waypoint contains one or more entries, each
+// specifying an absolute memory usage for a memory type. Usage values
+// must be non-decreasing across waypoints for each memory type.
+type MemoryUseWaypoint struct {
+	TargetUsages []MemoryUseWaypointEntry `json:"targetUsages" yaml:"targetUsages"`
 }
 
 // GenerateWaypoints builds Planner-compatible waypoints from a

@@ -158,43 +158,57 @@ func NewManager(config CgroupConfig) (*Manager, error) {
 }
 
 // convertUserWaypoints converts user-supplied MemoryUseWaypoint entries
-// into Planner Waypoints. Each waypoint accumulates memory on the
-// appropriate nodes.
+// into Planner Waypoints. Each waypoint specifies absolute per-type
+// memory usage. Usage values must be non-decreasing across waypoints
+// for each memory type.
 func convertUserWaypoints(userWPs []MemoryUseWaypoint, dramNodes, cxlNodes []int) ([]Waypoint, error) {
 	if len(userWPs) == 0 {
 		return nil, fmt.Errorf("no waypoints specified")
 	}
 
-	// Accumulate per-node usage across waypoints (usage is monotonically increasing).
-	dramUsage := int64(0)
-	cxlUsage := int64(0)
+	prevDRAM := int64(0)
+	prevCXL := int64(0)
 	waypoints := make([]Waypoint, 0, len(userWPs))
 
 	for i, uwp := range userWPs {
-		usageBytes, err := ParseMemorySize(uwp.Usage)
-		if err != nil {
-			return nil, fmt.Errorf("waypoint %d: invalid usage: %w", i, err)
+		if len(uwp.TargetUsages) == 0 {
+			return nil, fmt.Errorf("waypoint %d: no target usages specified", i)
 		}
 
-		switch strings.ToUpper(strings.TrimSpace(uwp.MemoryType)) {
-		case "DRAM":
-			dramUsage += int64(usageBytes)
-		case "CXL":
-			cxlUsage += int64(usageBytes)
-		default:
-			return nil, fmt.Errorf("waypoint %d: unknown memory type %q (valid: DRAM, CXL)", i, uwp.MemoryType)
+		dramUsage := prevDRAM
+		cxlUsage := prevCXL
+
+		for j, entry := range uwp.TargetUsages {
+			usageBytes, err := ParseMemorySize(entry.Usage)
+			if err != nil {
+				return nil, fmt.Errorf("waypoint %d entry %d: invalid usage: %w", i, j, err)
+			}
+
+			switch strings.ToUpper(strings.TrimSpace(entry.MemoryType)) {
+			case "DRAM":
+				dramUsage = int64(usageBytes)
+			case "CXL":
+				cxlUsage = int64(usageBytes)
+			default:
+				return nil, fmt.Errorf("waypoint %d entry %d: unknown memory type %q (valid: DRAM, CXL)", i, j, entry.MemoryType)
+			}
+		}
+
+		if dramUsage < prevDRAM {
+			return nil, fmt.Errorf("waypoint %d: DRAM usage %d is less than previous waypoint's %d (must be non-decreasing)", i, dramUsage, prevDRAM)
+		}
+		if cxlUsage < prevCXL {
+			return nil, fmt.Errorf("waypoint %d: CXL usage %d is less than previous waypoint's %d (must be non-decreasing)", i, cxlUsage, prevCXL)
 		}
 
 		nm := NewNodeMem()
-		// Spread DRAM usage evenly across DRAM nodes.
-		if dramUsage > 0 {
+		if dramUsage > 0 && len(dramNodes) > 0 {
 			memPerNode := dramUsage / int64(len(dramNodes))
 			for _, node := range dramNodes {
 				nm[node] = memPerNode
 			}
 		}
-		// Spread CXL usage evenly across CXL nodes.
-		if cxlUsage > 0 {
+		if cxlUsage > 0 && len(cxlNodes) > 0 {
 			memPerNode := cxlUsage / int64(len(cxlNodes))
 			for _, node := range cxlNodes {
 				nm[node] = memPerNode
@@ -204,6 +218,9 @@ func convertUserWaypoints(userWPs []MemoryUseWaypoint, dramNodes, cxlNodes []int
 			Name:  strconv.Itoa(i),
 			Usage: nm,
 		})
+
+		prevDRAM = dramUsage
+		prevCXL = cxlUsage
 	}
 
 	return waypoints, nil
