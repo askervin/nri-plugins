@@ -124,9 +124,6 @@ python-input "$PYTHON_PORT" "log('Phase 1 start: +5 MB'); x5MB = 'x' * (1024 * 1
 wait-phase-stats 1
 echo "  → python got 5MB from DRAM in ${PHASE_DURATION}ms"
 
-echo "DELME: exit when ready to enter phase2?"
-interactive
-
 # Phase 2: Allocate 20 MB total - should trigger notification and route update
 echo "Phase 2: Allocate 20 MB total (exceed DRAM quota)"
 python-input "$PYTHON_PORT" "log('Phase 2 start +20 MB'); x20MB = 'y' * (1024 * 1024 * 20); log('Phase 2 complete')"
