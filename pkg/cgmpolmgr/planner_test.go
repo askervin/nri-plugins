@@ -35,21 +35,21 @@ const (
 // evenly across nextNodes in cur. When nextLimit is not evenly
 // divisible, the truncated remainder (at most len(nextNodes)-1 bytes)
 // is dropped.
-func simulateUsageGrowth(cur *NodeMem, nextNodes []int, nextLimit int64) {
+func simulateUsageGrowth(cur NodeMem, nextNodes []int, nextLimit int64) {
 	perNode := nextLimit / int64(len(nextNodes))
 	for _, n := range nextNodes {
-		cur.nodeMem[n] += perNode
+		cur[n] += perNode
 	}
 }
 
 // nm constructs a NodeMem from a usage list for use in tests.
 // The index in the list is the node number and the value is its usage.
-func nm(usage ...int64) *NodeMem {
-	m := make(map[int]int64, len(usage))
+func nm(usage ...int64) NodeMem {
+	m := make(NodeMem, len(usage))
 	for node, u := range usage {
 		m[node] = u
 	}
-	return &NodeMem{nodeMem: m}
+	return m
 }
 
 func TestNextStepSteeringTowardsPath(t *testing.T) {
@@ -78,7 +78,7 @@ func TestNextStepSteeringTowardsPath(t *testing.T) {
 
 	tcases := []struct {
 		name         string
-		ctp          *NodeMem
+		ctp          NodeMem
 		minLimit     int64
 		maxLimit     int64
 		nextNodes    []int
@@ -501,8 +501,8 @@ func TestPlannerSimple(t *testing.T) {
 					for wi, wp := range plan.Waypoints {
 						if !wpReached[wi] {
 							reached := true
-							for n, target := range wp.Usage.nodeMem {
-								if cur.nodeMem[n] < target {
+							for n, target := range wp.Usage {
+								if cur[n] < target {
 									reached = false
 									break
 								}
@@ -523,9 +523,9 @@ func TestPlannerSimple(t *testing.T) {
 					require.True(t, reached,
 						"waypoint %d not reached; cur=(%d,%d), wp=(%d,%d)",
 						wi,
-						cur.nodeMem[0], cur.nodeMem[1],
-						plan.Waypoints[wi].Usage.nodeMem[0],
-						plan.Waypoints[wi].Usage.nodeMem[1])
+						cur[0], cur[1],
+						plan.Waypoints[wi].Usage[0],
+						plan.Waypoints[wi].Usage[1])
 				}
 			})
 		}
@@ -567,14 +567,14 @@ func TestPlannerFollow(t *testing.T) {
 		if nwp := p.NextWaypoint(); nwp != nil {
 			nwpUsage := nwp.Usage
 			nwpDescr = fmt.Sprintf("(%d,%d,%d,%d)",
-				nwpUsage.nodeMem[0]/GiB, nwpUsage.nodeMem[1]/GiB,
-				nwpUsage.nodeMem[2]/GiB, nwpUsage.nodeMem[3]/GiB)
+				nwpUsage[0]/GiB, nwpUsage[1]/GiB,
+				nwpUsage[2]/GiB, nwpUsage[3]/GiB)
 		}
 
 		t.Logf("iter %3d: curGiB=(%.1f,%.1f,%.1f,%.1f) nwp=%s nextNodes=%v/%.1f GiB",
 			i,
-			float64(cur.nodeMem[0])/GiBf, float64(cur.nodeMem[1])/GiBf,
-			float64(cur.nodeMem[2])/GiBf, float64(cur.nodeMem[3])/GiBf,
+			float64(cur[0])/GiBf, float64(cur[1])/GiBf,
+			float64(cur[2])/GiBf, float64(cur[3])/GiBf,
 			nwpDescr,
 			nextNodes,
 			float64(nextLimit)/float64(GiB))
@@ -608,8 +608,8 @@ func TestPlannerFollow(t *testing.T) {
 	// waypoint's value (with a tolerance of MaxLimit, since
 	// steering is approximate and we may overshoot on some
 	// nodes while lagging on others).
-	for n, target := range lastWP.nodeMem {
-		require.InDelta(t, target, cur.nodeMem[n], float64(plan.MaxLimit),
+	for n, target := range lastWP {
+		require.InDelta(t, target, cur[n], float64(plan.MaxLimit),
 			"node %d usage should be close to last waypoint target", n)
 	}
 

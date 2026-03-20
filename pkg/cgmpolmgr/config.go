@@ -111,23 +111,23 @@ func GenerateWaypoints(order MemoryUseOrder, dramNodes, cxlNodes []int, dramQuot
 	}
 
 	// Helper: build a NodeMem that spreads total evenly across nodes.
-	spread := func(nodes []int, total int64) *NodeMem {
+	spread := func(nodes []int, total int64) NodeMem {
 		nm := NewNodeMem()
 		if total == 0 || len(nodes) == 0 {
 			return nm
 		}
 		perNode := total / int64(len(nodes))
 		for _, n := range nodes {
-			nm.nodeMem[n] = perNode
+			nm[n] = perNode
 		}
 		return nm
 	}
 
 	// Helper: merge two NodeMems (disjoint node sets).
-	merge := func(a, b *NodeMem) *NodeMem {
+	merge := func(a, b NodeMem) NodeMem {
 		nm := a.Copy()
-		for n, v := range b.nodeMem {
-			nm.nodeMem[n] = v
+		for n, v := range b {
+			nm[n] = v
 		}
 		return nm
 	}
@@ -157,7 +157,7 @@ func GenerateWaypoints(order MemoryUseOrder, dramNodes, cxlNodes []int, dramQuot
 
 	case MemoryUseEndInterleaved:
 		// Use the excess of the larger quota first, then interleave.
-		var wp0 *NodeMem
+		var wp0 NodeMem
 		if dramQuota > cxlQuota {
 			excess := dramQuota - cxlQuota
 			wp0 = merge(spread(dramNodes, excess), spread(cxlNodes, 0))

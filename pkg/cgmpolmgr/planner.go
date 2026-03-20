@@ -23,31 +23,40 @@ import (
 	"time"
 )
 
-type NodeMem struct {
-	nodeMem map[int]int64 // Memory amount or usage per node
+// NodeMem is a named map type representing memory amount or usage per
+// NUMA node. As a map, nil is a valid zero value for read-only use;
+// use NewNodeMem() to create a writable instance.
+type NodeMem map[int]int64
+
+func NewNodeMem() NodeMem {
+	return make(NodeMem)
 }
 
-func NewNodeMem() *NodeMem {
-	return &NodeMem{make(map[int]int64)}
+// Mem returns the memory amount for the given node.
+func (nm NodeMem) Mem(node int) int64 {
+	return nm[node]
 }
 
-func (nm *NodeMem) TotalMem() int64 {
+func (nm NodeMem) TotalMem() int64 {
 	var s int64
-	for _, v := range nm.nodeMem {
+	for _, v := range nm {
 		s += v
 	}
 	return s
 }
 
-func (nm *NodeMem) Copy() *NodeMem {
-	newNodeMem := make(map[int]int64)
-	maps.Copy(newNodeMem, nm.nodeMem)
-	return &NodeMem{nodeMem: newNodeMem}
+func (nm NodeMem) Copy() NodeMem {
+	if nm == nil {
+		return nil
+	}
+	newNodeMem := make(NodeMem, len(nm))
+	maps.Copy(newNodeMem, nm)
+	return newNodeMem
 }
 
 type Waypoint struct {
 	Name  string
-	Usage *NodeMem
+	Usage NodeMem
 }
 
 type Plan struct {
@@ -73,11 +82,11 @@ type Plan struct {
 	// 0: node unavailable
 	// positive value: usage limit in bytes.
 	// If nil, then all nodes are allowed with unlimited usage.
-	AllowedUsage *NodeMem
+	AllowedUsage NodeMem
 }
 
 type Trackpoint struct {
-	Usage *NodeMem
+	Usage NodeMem
 	Time  int64
 }
 
@@ -117,7 +126,7 @@ func (p *Planner) SetPlan(plan *Plan) {
 }
 
 // UpdateUsage updates the current memory usage in the planner.
-func (p *Planner) UpdateUsage(usage *NodeMem) {
+func (p *Planner) UpdateUsage(usage NodeMem) {
 	p.track = append(p.track, Trackpoint{
 		Usage: usage.Copy(),
 		Time:  time.Now().UnixNano(),
@@ -164,28 +173,28 @@ func (p *Planner) UpdateUsage(usage *NodeMem) {
 //     nextLimit, it is guaranteed that memory usage on any of nextNodes
 //     has not exceeded the usage in nwp, while it is possible that one
 //     or more of nextNodes has reached the usage in nwp.
-func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int, nextLimit int64, err error) {
+func nextStep(ctp, pwp, nwp NodeMem, minLimit, maxLimit int64) (nextNodes []int, nextLimit int64, err error) {
 	if ctp == nil || pwp == nil || nwp == nil {
 		return nil, 0, fmt.Errorf("nextStep: nil input")
 	}
 
 	// Gather all node IDs present in any of the three NodeMems.
 	nodeSet := make(map[int]bool)
-	for n := range ctp.nodeMem {
+	for n := range ctp {
 		nodeSet[n] = true
 	}
-	for n := range pwp.nodeMem {
+	for n := range pwp {
 		nodeSet[n] = true
 	}
-	for n := range nwp.nodeMem {
+	for n := range nwp {
 		nodeSet[n] = true
 	}
 
 	// Validate: nwp[n] >= pwp[n] for all nodes.
 	for n := range nodeSet {
-		if nwp.nodeMem[n] < pwp.nodeMem[n] {
+		if nwp[n] < pwp[n] {
 			return nil, 0, fmt.Errorf("nextStep: nwp[%d]=%d < pwp[%d]=%d: waypoints must be non-decreasing",
-				n, nwp.nodeMem[n], n, pwp.nodeMem[n])
+				n, nwp[n], n, pwp[n])
 		}
 	}
 
@@ -194,8 +203,8 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	c := make(map[int]float64, len(nodeSet))
 	var vDotV, cDotV, cDotC float64
 	for n := range nodeSet {
-		v[n] = float64(nwp.nodeMem[n] - pwp.nodeMem[n])
-		c[n] = float64(ctp.nodeMem[n] - pwp.nodeMem[n])
+		v[n] = float64(nwp[n] - pwp[n])
+		c[n] = float64(ctp[n] - pwp[n])
 		vDotV += v[n] * v[n]
 		cDotV += c[n] * v[n]
 		cDotC += c[n] * c[n]
@@ -209,7 +218,7 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 	}
 	var lagging []nodeGap
 	for n := range nodeSet {
-		g := nwp.nodeMem[n] - ctp.nodeMem[n]
+		g := nwp[n] - ctp[n]
 		if g > 0 {
 			lagging = append(lagging, nodeGap{n, g})
 		}
@@ -328,13 +337,13 @@ func nextStep(ctp, pwp, nwp *NodeMem, minLimit, maxLimit int64) (nextNodes []int
 // any node's usage strictly exceeds the waypoint target, or if the
 // remaining gap across all lagging nodes is less than minLimit (so
 // the next step cannot fit without overshooting).
-func waypointReached(ctp, wpUsage *NodeMem, minLimit int64) bool {
+func waypointReached(ctp, wpUsage NodeMem, minLimit int64) bool {
 	var remainingGap int64
-	for n, target := range wpUsage.nodeMem {
-		if ctp.nodeMem[n] > target {
+	for n, target := range wpUsage {
+		if ctp[n] > target {
 			return true
 		}
-		remainingGap += target - ctp.nodeMem[n]
+		remainingGap += target - ctp[n]
 	}
 	return remainingGap < minLimit
 }
@@ -344,17 +353,17 @@ func waypointReached(ctp, wpUsage *NodeMem, minLimit int64) bool {
 // is far enough ahead of ctp that nextStep can take a full maxLimit
 // step forward on every node with a positive direction component
 // without exceeding the waypoint.
-func extrapolateWaypoint(prev, last, ctp *NodeMem, maxLimit int64) *NodeMem {
+func extrapolateWaypoint(prev, last, ctp NodeMem, maxLimit int64) NodeMem {
 	nwp := NewNodeMem()
 
 	nodeSet := make(map[int]bool)
-	for n := range prev.nodeMem {
+	for n := range prev {
 		nodeSet[n] = true
 	}
-	for n := range last.nodeMem {
+	for n := range last {
 		nodeSet[n] = true
 	}
-	for n := range ctp.nodeMem {
+	for n := range ctp {
 		nodeSet[n] = true
 	}
 
@@ -366,9 +375,9 @@ func extrapolateWaypoint(prev, last, ctp *NodeMem, maxLimit int64) *NodeMem {
 	// MaxLimit-sized step without re-steering.
 	t := int64(1)
 	for n := range nodeSet {
-		d := last.nodeMem[n] - prev.nodeMem[n]
+		d := last[n] - prev[n]
 		if d > 0 {
-			needed := ctp.nodeMem[n] + maxLimit - last.nodeMem[n]
+			needed := ctp[n] + maxLimit - last[n]
 			if needed > 0 {
 				tNeeded := (needed + d - 1) / d // ceiling division
 				if tNeeded > t {
@@ -379,8 +388,8 @@ func extrapolateWaypoint(prev, last, ctp *NodeMem, maxLimit int64) *NodeMem {
 	}
 
 	for n := range nodeSet {
-		d := last.nodeMem[n] - prev.nodeMem[n]
-		nwp.nodeMem[n] = last.nodeMem[n] + t*d
+		d := last[n] - prev[n]
+		nwp[n] = last[n] + t*d
 	}
 
 	return nwp
@@ -406,7 +415,7 @@ func (p *Planner) UpdateRoute() error {
 	}
 
 	// 1. Get the current trackpoint (ctp).
-	var ctp *NodeMem
+	var ctp NodeMem
 	if len(p.track) > 0 {
 		ctp = p.track[len(p.track)-1].Usage
 	} else {
@@ -427,14 +436,14 @@ func (p *Planner) UpdateRoute() error {
 		nwpIdx++
 	}
 
-	var pwp, nwp *NodeMem
+	var pwp, nwp NodeMem
 
 	if nwpIdx >= len(p.plan.Waypoints) {
 		// All waypoints have been exceeded. Extrapolate a new
 		// waypoint by continuing in the direction of the last
 		// segment.
 		lastIdx := len(p.plan.Waypoints) - 1
-		var prevUsage *NodeMem
+		var prevUsage NodeMem
 		if lastIdx > 0 {
 			prevUsage = p.plan.Waypoints[lastIdx-1].Usage
 		} else {
@@ -469,6 +478,13 @@ func (p *Planner) UpdateRoute() error {
 func (p *Planner) String() string {
 	return fmt.Sprintf("Plan: %+v, Track: %+v, NextWaypointIndex: %d, nextNodes: %+v, nextLimit: %d",
 		p.plan, p.track, p.nextWaypointIndex, p.nextNodes, p.nextLimit)
+}
+
+func (p *Planner) Usage() NodeMem {
+	if len(p.track) == 0 {
+		return nil
+	}
+	return p.track[len(p.track)-1].Usage
 }
 
 func (p *Planner) NextNodes() []int {

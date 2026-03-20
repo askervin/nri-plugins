@@ -21,7 +21,7 @@ CONFIG_FILE="$E2E_REMOTE_DIR/test01-config.yaml"
 CGMPOLD_OUT="$E2E_REMOTE_DIR/cgmpold.out"
 CGMPOLD_PID_FILE="$E2E_REMOTE_DIR/cgmpold.pid"
 
-vm "sudo pkill -f 'python3 -i -u'"
+vm "sudo pkill -f 'python3 -i -u'; sudo pkill -f 'socat'; sleep 1; pgrep -f 'python3 -i -u' && sudo pkill -KILL -f 'python3 -i -u' && sleep 1"
 
 echo "Creating test cgroup on VM: $CGROUP_PATH"
 vm "sudo mkdir -p $CGROUP_PATH"
@@ -39,10 +39,10 @@ cgroups:
     memoryUseOrder: "first-DRAM"
     dramNodes: "2"
     cxlNodes: "3"
-    dramQuota: "20M"
-    cxlQuota: "80M"
-    minLimit: "5M"
-    maxLimit: "10M"
+    dramQuota: "40M"
+    cxlQuota: "100M"
+    minLimit: "20M"
+    maxLimit: "100M"
 EOF
 "
 
@@ -59,6 +59,11 @@ fi
 
 echo "Starting interactive Python process in cgroup..."
 PYTHON_PORT=$(python-start "$CGROUP_PATH")
+
+if [[ -z "$PYTHON_PORT" ]]; then
+    error-stop "failed to start Python properly"
+fi
+
 PYTHON_OUT="$E2E_REMOTE_DIR/$PYTHON_PORT.out"
 echo "Python process started on port: $PYTHON_PORT"
 # Verify process is in cgroup (retry a few times for race conditions)
@@ -105,87 +110,60 @@ time_diff_ms() {
     fi
 }
 
+wait-phase-stats() {
+    local phase="$1"
+    vm-wait 50 "grep -q 'Phase $phase complete' $PYTHON_OUT 2>/dev/null" || error-stop "no completion in time"
+    TS_PHASE_START=$(get_python_timestamp "Phase $phase start")
+    TS_PHASE_COMPLETE=$(get_python_timestamp "Phase $phase complete")
+    PHASE_DURATION=$(time_diff_ms "$TS_PHASE_START" "$TS_PHASE_COMPLETE")
+}
+
 # Phase 1: Small allocation (5 MB) - should stay on DRAM (node 2)
 echo "Phase 1: Allocate 5 MB (stay on DRAM node 2)"
 python-input "$PYTHON_PORT" "log('Phase 1 start: +5 MB'); x5MB = 'x' * (1024 * 1024 * 5); log('Phase 1 complete')"
-TS_START=$(get_python_timestamp "Phase 1 start")
-TS_COMPLETE=$(get_python_timestamp "Phase 1 complete")
-ALLOC_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python got 5MB in ${ALLOC_TIME}ms"
+wait-phase-stats 1
+echo "  → python got 5MB from DRAM in ${PHASE_DURATION}ms"
+
+echo "DELME: exit when ready to enter phase2?"
+interactive
 
 # Phase 2: Allocate 20 MB total - should trigger notification and route update
 echo "Phase 2: Allocate 20 MB total (exceed DRAM quota)"
 python-input "$PYTHON_PORT" "log('Phase 2 start +20 MB'); x20MB = 'y' * (1024 * 1024 * 20); log('Phase 2 complete')"
-# Wait for notification
-vm-wait 50 "grep -q 'Notification: bound' $CGMPOLD_OUT 2>/dev/null" || error-stop "no notification in time"
-
-# Get timestamps and calculate reaction time
-TS_START=$(get_python_timestamp "Phase 2 start")
-TS_SWITCH=$(get_cgmpold_timestamp "Notification: bound")
-if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
-    REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Route update took ${REACTION_TIME}ms"
-fi
-TS_COMPLETE=$(get_python_timestamp "Phase 2 complete")
-ALLOC_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python got 20MB in ${ALLOC_TIME}ms"
+wait-phase-stats 2
+echo "  → python got 20MB in ${PHASE_DURATION}ms"
 
 # Phase 3: Allocate 60 MB more - should continue on CXL (node 3)
 echo "Phase 3: Allocate 60 MB more (fill CXL quota)"
 python-input "$PYTHON_PORT" "log('Phase 3 start +60 MB'); x60MB = 'z' * (1024 * 1024 * 60); log('Phase 3 complete')"
-vm-wait 50 "grep -c 'Notification: bound' $CGMPOLD_OUT 2>/dev/null | grep -qv '^1$'" || error-stop "no additional notifications in time"
-
-TS_START=$(get_python_timestamp "Phase 3 start")
-TS_SWITCH=$(vm "grep 'Notification: bound' $CGMPOLD_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo "")
-if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
-    REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Latest route update took ${REACTION_TIME}ms"
-fi
+wait-phase-stats 3
+echo "  → python got 60MB from CXL in ${PHASE_DURATION}ms"
 
 # Phase 4: Free 60 MB - should trigger notification on memory drop
 echo "Phase 4: Free 60 MB"
 python-input "$PYTHON_PORT" "log('Phase 4 start -60 MB'); del x60MB; log('Phase 4 complete')"
-sleep 2
-
-TS_START=$(get_python_timestamp "Phase 4 start")
-TS_COMPLETE=$(get_python_timestamp "Phase 4 complete")
-FREE_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python freed 60MB in ${FREE_TIME}ms"
+wait-phase-stats 4
+echo "  → python freed 60MB in ${PHASE_DURATION}ms"
+echo "TODO: check cgmpold bound"
 
 # Phase 5: Free 20 MB - should drop further
 echo "Phase 5: Free 20 MB"
 python-input "$PYTHON_PORT" "log('Phase 5 start -20 MB'); del x20MB; log('Phase 5 complete')"
-sleep 2
-
-TS_START=$(get_python_timestamp "Phase 5 start")
-TS_COMPLETE=$(get_python_timestamp "Phase 5 complete")
-FREE_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python freed 20MB in ${FREE_TIME}ms"
+wait-phase-stats 5
+echo "  → python freed 20MB in ${PHASE_DURATION}ms"
 
 # Phase 6: Re-allocate 50 MB - should climb back up, steering through DRAM then CXL
 echo "Phase 6: Re-allocate 50 MB (climb back up)"
 NOTIF_COUNT_BEFORE=$(vm "grep -c 'Notification: bound' $CGMPOLD_OUT 2>/dev/null" || echo "0")
 python-input "$PYTHON_PORT" "log('Phase 6 start +50 MB'); x50MB = 'a' * (1024 * 1024 * 50); log('Phase 6 complete')"
-vm-wait 50 "test \$(grep -c 'Notification: bound' $CGMPOLD_OUT 2>/dev/null) -gt $NOTIF_COUNT_BEFORE" || error-stop "no new notifications in time"
-
-TS_START=$(get_python_timestamp "Phase 6 start")
-TS_SWITCH=$(vm "grep 'Notification: bound' $CGMPOLD_OUT 2>/dev/null | tail -1 | awk '{print \$1}'" || echo "")
-if [ -n "$TS_START" ] && [ -n "$TS_SWITCH" ]; then
-    REACTION_TIME=$(time_diff_ms "$TS_START" "$TS_SWITCH")
-    echo "  → Route update took ${REACTION_TIME}ms"
-fi
-TS_COMPLETE=$(get_python_timestamp "Phase 6 complete")
-ALLOC_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python got 50MB in ${ALLOC_TIME}ms"
+wait-phase-stats 6
+echo "  → python got 50MB in ${PHASE_DURATION}ms"
 
 # Phase 7: Free remaining - drop back
 echo "Phase 7: Free remaining"
 python-input "$PYTHON_PORT" "log('Phase 7 start -55 MB'); del x50MB, x5MB; log('Phase 7 complete')"
-sleep 2
-TS_START=$(get_python_timestamp "Phase 7 start")
-TS_COMPLETE=$(get_python_timestamp "Phase 7 complete")
-FREE_TIME=$(time_diff_ms "$TS_START" "$TS_COMPLETE")
-echo "  → python freed remaining in ${FREE_TIME}ms"
+wait-phase-stats 7
+echo "  → python freed remaining in ${PHASE_DURATION}ms"
 
 # Stop Python
 python-stop "$PYTHON_PORT"

@@ -121,18 +121,20 @@ python-start() {
     local port=$((PYTHON3_PORT_BASE + PYTHON3_PORT_COUNTER))
 
     local output_file="$E2E_REMOTE_DIR/$port.out"
+    local input_file="$E2E_REMOTE_DIR/$port.in"
+    local store_input="stdbuf -i0 -o0 -e0 tee ${input_file}"
 
     # Start socat+python on the remote host
     if [ -n "$cgroup_path" ]; then
         # Start Python process in the cgroup
-        vm "nohup sudo sh -c 'echo \$\$ > $cgroup_path/cgroup.procs && socat tcp4-listen:${port},fork,reuseaddr - | (python3 -i -u; pkill -f \"socat tcp4-listen:${port}\")' >& ${output_file} &" > /dev/null 2>&1
+        vm "nohup sudo sh -c 'echo \$\$ > $cgroup_path/cgroup.procs && socat -u tcp4-listen:${port},fork,reuseaddr - | (python3 -i -u; pkill -f \"socat -u tcp4-listen:${port}\")' >& ${output_file} &" > /dev/null 2>&1
     else
         # Start Python without cgroup
-        vm "nohup sh -c 'socat tcp4-listen:${port},fork,reuseaddr - | (python3 -i -u; pkill -f \"socat tcp4-listen:${port}\")' >& ${output_file} &" > /dev/null 2>&1
+        vm "nohup sh -c 'socat -u tcp4-listen:${port},fork,reuseaddr - | (python3 -i -u; pkill -f \"socat -u tcp4-listen:${port}\")' >& ${output_file} &" > /dev/null 2>&1
     fi
 
     # Disable prompts and get PID
-    # vm "echo -e 'import os,sys\nsys.ps1=\"\"\nsys.ps2=\"\"\nprint(\"PYTHON_READY\")\nprint(\"PID:\",os.getpid())\nsys.stdout.flush()' | socat - tcp4:localhost:${port}" 2>/dev/null || true
+    # vm "echo -e 'import os,sys\nsys.ps1=\"\"\nsys.ps2=\"\"\nprint(\"PYTHON_READY\")\nprint(\"PID:\",os.getpid())\nsys.stdout.flush()' | socat -u - tcp4:localhost:${port}" 2>/dev/null || true
     while ! python-input "$port" "
 import os,sys,time
 sys.ps1=''
@@ -141,6 +143,13 @@ log=lambda *args:print('%.06f' % time.time(),'python $port', *args)
 log('READY PID:',os.getpid())" 2>/dev/null; do
         sleep 0.1
     done
+    sleep 1
+    vm "bash -c 'set -x; grep READY $output_file >&2'" || {
+        echo "ERROR: python-start (run.sh): sending first command to python failed, no READY PID found" >&2
+        echo "Python output:" >&2
+        vm "cat $output_file" >&2
+        return
+    }
 
     # Return the port number
     echo "$port"
@@ -152,7 +161,7 @@ export -f python-start
 python-input() {
     local port="$1"
     local code="$2"
-    vm "socat tcp4:localhost:${port} - <<EOCODE
+    vm "socat -u - tcp4:localhost:${port} <<EOCODE
 $code
 sys.stdout.flush()
 EOCODE
@@ -165,7 +174,7 @@ export -f python-input
 python-stop() {
     local port="$1"
 
-    vm "echo 'sys.exit(0)' | socat - tcp4:localhost:${port}" 2>/dev/null || true
+    vm "echo 'sys.exit(0)' | socat -u - tcp4:localhost:${port}" 2>/dev/null || true
     vm "while fuser $E2E_REMOTE_DIR/$port.out; do sleep 0.1; done" >/dev/null
 }
 export -f python-stop
