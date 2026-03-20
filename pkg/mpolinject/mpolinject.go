@@ -19,11 +19,21 @@ package mpolinject
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+)
+
+const (
+	// maxWorkers is the maximum number of concurrent goroutines
+	// (each pinned to an OS thread) used for ptrace-based syscall
+	// injection. Ptrace workers are mostly blocked in wait4, not
+	// CPU-bound, so this does not need to track NumCPU.
+	maxWorkers = 8
 )
 
 const (
@@ -50,8 +60,26 @@ func LogDebug(s string, args ...any) {
 	fmt.Fprintf(os.Stderr, "%.06f DEBUG mpolinject: %s", float64(time.Now().UnixNano())/1e9, msg)
 }
 
+func SetMemoryPolicySingleThread(pids []int, preferredNodes []int) error {
+	if len(pids) == 0 {
+		return fmt.Errorf("no PIDs provided")
+	}
+	if len(preferredNodes) == 0 {
+		return fmt.Errorf("no preferred nodes provided")
+	}
+
+	mask := makeNodeMask(preferredNodes)
+	for _, pid := range pids {
+		if err := injectSetMempolicy(pid, preferredNodes, mask); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set memory policy for PID %d: %v\n", pid, err)
+		}
+	}
+	return nil
+}
+
 // SetMemoryPolicy injects set_mempolicy syscall into the given PIDs
-// to prefer memory allocations from the specified NUMA nodes
+// to prefer memory allocations from the specified NUMA nodes.
+// PIDs are processed in parallel using a bounded worker pool.
 func SetMemoryPolicy(pids []int, preferredNodes []int) error {
 	if len(pids) == 0 {
 		return fmt.Errorf("no PIDs provided")
@@ -60,23 +88,58 @@ func SetMemoryPolicy(pids []int, preferredNodes []int) error {
 		return fmt.Errorf("no preferred nodes provided")
 	}
 
-	// Create nodemask for the preferred nodes
+	// Create nodemask once — shared read-only across workers.
 	nodemask := makeNodeMask(preferredNodes)
 
-	var lastErr error
-	successCount := 0
+	type result struct {
+		pid int
+		err error
+	}
 
+	pidCh := make(chan int, len(pids))
 	for _, pid := range pids {
-		if err := injectSetMempolicy(pid, preferredNodes, nodemask); err != nil {
-			lastErr = err
-			fmt.Fprintf(os.Stderr, "Warning: failed to set memory policy for PID %d: %v\n", pid, err)
-		} else {
-			successCount++
+		pidCh <- pid
+	}
+	close(pidCh)
+
+	resultCh := make(chan result, len(pids))
+	numWorkers := min(len(pids), maxWorkers)
+
+	var wg sync.WaitGroup
+	for range numWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Ptrace state is per-OS-thread: attach, wait,
+			// peek/poke, cont, and detach must all happen on
+			// the same OS thread.
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+
+			for pid := range pidCh {
+				err := injectSetMempolicy(pid, preferredNodes, nodemask)
+				resultCh <- result{pid, err}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	var lastErr error
+	failCount := 0
+	for r := range resultCh {
+		if r.err != nil {
+			lastErr = r.err
+			fmt.Fprintf(os.Stderr, "Warning: failed to set memory policy for PID %d: %v\n", r.pid, r.err)
+			failCount++
 		}
 	}
 
-	if successCount == 0 && lastErr != nil {
-		return fmt.Errorf("failed to set memory policy for all PIDs: %w", lastErr)
+	if lastErr != nil {
+		return fmt.Errorf("failed to set memory policy for %d out of %d PIDs, last error: %w", failCount, len(pids), lastErr)
 	}
 
 	return nil
