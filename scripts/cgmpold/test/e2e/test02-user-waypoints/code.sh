@@ -228,21 +228,20 @@ vm "sudo rmdir $CGROUP_PATH 2>/dev/null || true"
 
 # Fetch output files for analysis
 echo "Fetching output files..."
-mkdir -p /tmp/e2e-test02-$$
-vm_fetch "$CGMPOLD_OUT" "/tmp/e2e-test02-$$/cgmpold.out"
-vm_fetch "$E2E_REMOTE_DIR/$PYTHON_PORT.out" "/tmp/e2e-test02-$$/python.out" 2>/dev/null || echo "No python output" > /tmp/e2e-test02-$$/python.out
+vm_fetch "$CGMPOLD_OUT" "$E2E_OUTPUT_DIR/cgmpold.out"
+vm_fetch "$E2E_REMOTE_DIR/$PYTHON_PORT.out" "$E2E_OUTPUT_DIR/python.out" 2>/dev/null || echo "No python output" > "$E2E_OUTPUT_DIR/python.out"
 
 echo ""
 echo "=== Python Output ==="
-cat /tmp/e2e-test02-$$/python.out 2>/dev/null | head -30 || echo "No Python output available"
+cat "$E2E_OUTPUT_DIR/python.out" 2>/dev/null | head -30 || echo "No Python output available"
 echo ""
 echo "=== cgmpold Output ==="
-cat /tmp/e2e-test02-$$/cgmpold.out
+cat "$E2E_OUTPUT_DIR/cgmpold.out"
 echo ""
 
 # Verify the test results
 echo "Verifying test results..."
-CGMPOLD_OUTPUT=$(cat /tmp/e2e-test02-$$/cgmpold.out)
+CGMPOLD_OUTPUT=$(cat "$E2E_OUTPUT_DIR/cgmpold.out")
 
 # Check that cgmpold received memory threshold notifications
 NOTIF_COUNT=$(echo "$CGMPOLD_OUTPUT" | grep -c "Notification: bound" || true)
@@ -286,9 +285,5 @@ echo "✓ Used $NODESETS_USED different nodesets (steering adapted)"
 echo ""
 echo "=== Test Passed ==="
 echo "User-defined waypoints with off-path detours worked as expected!"
-
-
-# Cleanup temporary files
-rm -rf /tmp/e2e-test02-$$
 
 true
