@@ -24,8 +24,8 @@ if [ -z "$E2E_HOST" ]; then
 fi
 
 # Get the directory containing this script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+RUN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$RUN_SCRIPT_DIR/../.." && pwd)"
 
 # Test directory is the first argument, default to current directory
 TEST_DIR="${1:-.}"
@@ -239,6 +239,12 @@ for TEST_SCRIPT in "${TEST_SCRIPTS[@]}"; do
     export TEST_NAME
     export TEST_PATH
     export E2E_REMOTE_DIR
+
+    # Create (or recreate) a local output directory for this test
+    E2E_OUTPUT_DIR="$RUN_SCRIPT_DIR/output/$TEST_NAME"
+    rm -rf "$E2E_OUTPUT_DIR"
+    mkdir -p "$E2E_OUTPUT_DIR"
+    export E2E_OUTPUT_DIR
 
     # Run the test in a subshell so it can use our functions but can't affect other tests
     if ( cd "$TEST_PATH" && source code.sh ); then
