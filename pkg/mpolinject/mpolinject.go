@@ -60,6 +60,28 @@ func LogDebug(s string, args ...any) {
 	fmt.Fprintf(os.Stderr, "%.06f DEBUG mpolinject: %s", float64(time.Now().UnixNano())/1e9, msg)
 }
 
+// SetMemoryPolicySingleThreadAttach injects set_mempolicy into the
+// given PIDs serially using PTRACE_ATTACH. Kept as a benchmark
+// reference for comparing against the PTRACE_SEIZE-based variants.
+func SetMemoryPolicySingleThreadAttach(pids []int, preferredNodes []int) error {
+	if len(pids) == 0 {
+		return fmt.Errorf("no PIDs provided")
+	}
+	if len(preferredNodes) == 0 {
+		return fmt.Errorf("no preferred nodes provided")
+	}
+
+	mask := makeNodeMask(preferredNodes)
+	for _, pid := range pids {
+		if err := injectSetMempolicyAttach(pid, preferredNodes, mask); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set memory policy for PID %d: %v\n", pid, err)
+		}
+	}
+	return nil
+}
+
+// SetMemoryPolicySingleThread injects set_mempolicy into the given
+// PIDs serially using PTRACE_SEIZE + PTRACE_INTERRUPT.
 func SetMemoryPolicySingleThread(pids []int, preferredNodes []int) error {
 	if len(pids) == 0 {
 		return fmt.Errorf("no PIDs provided")
@@ -70,7 +92,7 @@ func SetMemoryPolicySingleThread(pids []int, preferredNodes []int) error {
 
 	mask := makeNodeMask(preferredNodes)
 	for _, pid := range pids {
-		if err := injectSetMempolicy(pid, preferredNodes, mask); err != nil {
+		if err := injectSetMempolicySeize(pid, preferredNodes, mask); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to set memory policy for PID %d: %v\n", pid, err)
 		}
 	}
@@ -117,7 +139,7 @@ func SetMemoryPolicy(pids []int, preferredNodes []int) error {
 			defer runtime.UnlockOSThread()
 
 			for pid := range pidCh {
-				err := injectSetMempolicy(pid, preferredNodes, nodemask)
+				err := injectSetMempolicySeize(pid, preferredNodes, nodemask)
 				resultCh <- result{pid, err}
 			}
 		}()
@@ -162,15 +184,14 @@ func makeNodeMask(nodes []int) []uint64 {
 	return mask
 }
 
-// injectSetMempolicy injects set_mempolicy syscall into a running process
-func injectSetMempolicy(pid int, preferredNodes []int, nodemask []uint64) error {
+// injectSetMempolicyAttach injects set_mempolicy syscall into a
+// running process using PTRACE_ATTACH. Kept as a benchmark reference.
+func injectSetMempolicyAttach(pid int, preferredNodes []int, nodemask []uint64) error {
 	LogDebug("ptrace attaching pid %d\n", pid)
-	// Attach to the process using ptrace
 	if err := unix.PtraceAttach(pid); err != nil {
 		return fmt.Errorf("failed to attach to PID %d: %w", pid, err)
 	}
 
-	// Wait for the process to stop
 	var ws unix.WaitStatus
 	_, err := unix.Wait4(pid, &ws, 0, nil)
 	if err != nil {
@@ -178,140 +199,150 @@ func injectSetMempolicy(pid int, preferredNodes []int, nodemask []uint64) error 
 		return fmt.Errorf("failed to wait for PID %d: %w", pid, err)
 	}
 
-	// Ensure we detach on exit
 	defer unix.PtraceDetach(pid)
 
-	// Get current registers
+	return doSyscallInjection(pid, preferredNodes, nodemask)
+}
+
+// injectSetMempolicySeize injects set_mempolicy syscall into a running
+// process using PTRACE_SEIZE + PTRACE_INTERRUPT. Unlike the
+// PTRACE_ATTACH variant, PTRACE_SEIZE does not send SIGSTOP: it
+// attaches instantly and then uses a kernel-level interrupt to stop
+// the tracee, which avoids signal-delivery delays when the target is
+// throttled by memory.high.
+func injectSetMempolicySeize(pid int, preferredNodes []int, nodemask []uint64) error {
+	LogDebug("ptrace seizing pid %d\n", pid)
+	if err := unix.PtraceSeize(pid); err != nil {
+		return fmt.Errorf("failed to seize PID %d: %w", pid, err)
+	}
+
+	// Interrupt the tracee to bring it into ptrace-stop.
+	if err := unix.PtraceInterrupt(pid); err != nil {
+		unix.PtraceDetach(pid)
+		return fmt.Errorf("failed to interrupt PID %d: %w", pid, err)
+	}
+
+	// Wait for PTRACE_EVENT_STOP.
+	var ws unix.WaitStatus
+	_, err := unix.Wait4(pid, &ws, 0, nil)
+	if err != nil {
+		unix.PtraceDetach(pid)
+		return fmt.Errorf("failed to wait for PID %d: %w", pid, err)
+	}
+	if !ws.Stopped() || ws.StopSignal() != unix.SIGTRAP || ws>>16 != unix.PTRACE_EVENT_STOP {
+		unix.PtraceDetach(pid)
+		return fmt.Errorf("unexpected wait status for PID %d after interrupt: 0x%x", pid, uint32(ws))
+	}
+
+	// Ensure we detach on exit.
+	defer unix.PtraceDetach(pid)
+
+	// From here on the injection is identical to the attach variant:
+	// save state, write nodemask + syscall, execute, check result, restore.
+	return doSyscallInjection(pid, preferredNodes, nodemask)
+}
+
+// doSyscallInjection performs the syscall injection on an already
+// ptrace-stopped process. It saves registers and code at RIP, writes
+// a set_mempolicy syscall, executes it, checks the result, and
+// restores the original state.
+func doSyscallInjection(pid int, preferredNodes []int, nodemask []uint64) error {
+	// Get current registers.
 	var regs unix.PtraceRegs
 	if err := unix.PtraceGetRegs(pid, &regs); err != nil {
 		return fmt.Errorf("failed to get registers for PID %d: %w", pid, err)
 	}
 
-	// Save original registers and instruction pointer
 	origRegs := regs
 
-	// Save original instructions at RIP
+	// Save original instructions at RIP.
 	var origCode [8]byte
-	_, err = unix.PtracePeekData(pid, uintptr(regs.Rip), origCode[:])
-	if err != nil {
+	if _, err := unix.PtracePeekData(pid, uintptr(regs.Rip), origCode[:]); err != nil {
 		return fmt.Errorf("failed to read original code for PID %d: %w", pid, err)
 	}
 
-	// Prepare syscall arguments for set_mempolicy
-	// syscall: set_mempolicy(mode, nodemask, maxnode)
-	// Note: maxnode must be aligned to sizeof(unsigned long) boundary
+	// Determine set_mempolicy mode.
 	mode := MPOL_PREFERRED
 	if len(preferredNodes) > 1 {
-		// Use MPOL_INTERLEAVE for multiple nodes
 		mode = MPOL_INTERLEAVE
 	}
-	// Don't use MPOL_F_STATIC_NODES for now - test without it first
 
-	// maxnode should be a multiple of bits in unsigned long (64 bits on x86_64)
-	// Round up to next multiple of 64
+	// Compute maxnode (rounded up to a multiple of 64).
 	maxNodeID := 0
 	for _, node := range preferredNodes {
 		if node > maxNodeID {
 			maxNodeID = node
 		}
 	}
-	// Round up to next multiple of 64
 	maxnode := uint64(((maxNodeID / 64) + 1) * 64)
 
-	// We need to write the nodemask to the process memory
-	// Find a safe location (we'll use the stack)
-	stackPtr := regs.Rsp - 256 // Use space below current stack pointer for safety
-
-	// Align stack pointer to 8-byte boundary
-	stackPtr = stackPtr & ^uint64(7)
-
-	// Calculate how many unsigned longs we need for the nodemask
-	// Round up maxnode to nearest multiple of 64, then divide by 64
+	// Write the nodemask onto the tracee's stack.
+	stackPtr := (regs.Rsp - 256) & ^uint64(7)
 	numLongs := int((maxnode + 63) / 64)
 	if numLongs == 0 {
 		numLongs = 1
 	}
-
-	// Only use the number of words we actually need
-	nodemaskToWrite := nodemask[:numLongs]
-
-	// Write nodemask to process memory
-	for i, word := range nodemaskToWrite {
+	for i, word := range nodemask[:numLongs] {
 		wordBytes := (*[8]byte)(unsafe.Pointer(&word))[:]
 		if _, err := unix.PtracePokeData(pid, uintptr(stackPtr)+uintptr(i*8), wordBytes); err != nil {
 			return fmt.Errorf("failed to write nodemask to PID %d: %w", pid, err)
 		}
 	}
 
-	// Inject syscall instruction (0x0f 0x05) followed by int3 trap (0xcc)
-	// This creates: syscall; int3
+	// Inject syscall instruction (0x0f 0x05) followed by int3 (0xcc).
 	var syscallCode [8]byte
-	syscallCode[0] = 0x0f // syscall instruction byte 1
-	syscallCode[1] = 0x05 // syscall instruction byte 2
-	syscallCode[2] = 0xcc // int3 (trap) to stop after syscall
-
-	// Write syscall instruction at current RIP
+	syscallCode[0] = 0x0f
+	syscallCode[1] = 0x05
+	syscallCode[2] = 0xcc
 	if _, err := unix.PtracePokeData(pid, uintptr(regs.Rip), syscallCode[:]); err != nil {
 		return fmt.Errorf("failed to write syscall instruction for PID %d: %w", pid, err)
 	}
 
-	// Set up registers for set_mempolicy syscall
-	// x86_64 syscall convention: syscall number in RAX, args in RDI, RSI, RDX, R10, R8, R9
+	// Set up registers for set_mempolicy(mode, nodemask, maxnode).
 	regs.Rax = 238 // __NR_set_mempolicy on x86_64
 	regs.Rdi = uint64(mode)
 	regs.Rsi = stackPtr
 	regs.Rdx = maxnode
 
-	// Set the modified registers
 	if err := unix.PtraceSetRegs(pid, &regs); err != nil {
-		// Restore original code before returning
 		unix.PtracePokeData(pid, uintptr(origRegs.Rip), origCode[:])
 		return fmt.Errorf("failed to set registers for PID %d: %w", pid, err)
 	}
 
-	// Continue execution - this will execute the syscall instruction
+	// Execute the injected syscall.
 	if err := unix.PtraceCont(pid, 0); err != nil {
-		// Restore original code before returning
 		unix.PtracePokeData(pid, uintptr(origRegs.Rip), origCode[:])
 		return fmt.Errorf("failed to continue execution for PID %d: %w", pid, err)
 	}
 
-	// Wait for the int3 trap after syscall completes
-	_, err = unix.Wait4(pid, &ws, 0, nil)
-	if err != nil {
+	// Wait for the int3 trap.
+	var ws unix.WaitStatus
+	if _, err := unix.Wait4(pid, &ws, 0, nil); err != nil {
 		return fmt.Errorf("failed to wait for syscall completion for PID %d: %w", pid, err)
 	}
 
-	// Get the result registers
+	// Check syscall return value.
 	var resultRegs unix.PtraceRegs
 	if err := unix.PtraceGetRegs(pid, &resultRegs); err != nil {
-		// Restore original code before returning
 		unix.PtracePokeData(pid, uintptr(origRegs.Rip), origCode[:])
 		return fmt.Errorf("failed to get result registers for PID %d: %w", pid, err)
 	}
-
-	// Check return value (in RAX)
-	// Syscall returns negative errno on error
-	// In x86_64, kernel returns -errno as a large unsigned value
-	if resultRegs.Rax > uint64(0xfffffffffffff000) { // Check for error range
-		errno := syscall.Errno(uint64(0) - resultRegs.Rax) // Convert to positive errno
-		// Restore state before returning error
+	if resultRegs.Rax > uint64(0xfffffffffffff000) {
+		errno := syscall.Errno(uint64(0) - resultRegs.Rax)
 		unix.PtracePokeData(pid, uintptr(origRegs.Rip), origCode[:])
 		unix.PtraceSetRegs(pid, &origRegs)
 		return fmt.Errorf("set_mempolicy failed for PID %d: %v", pid, errno)
 	}
 
-	// Restore original instructions
+	// Restore original instructions and registers.
 	if _, err := unix.PtracePokeData(pid, uintptr(origRegs.Rip), origCode[:]); err != nil {
 		return fmt.Errorf("failed to restore original code for PID %d: %w", pid, err)
 	}
-
-	// Restore original registers
 	if err := unix.PtraceSetRegs(pid, &origRegs); err != nil {
 		return fmt.Errorf("failed to restore registers for PID %d: %w", pid, err)
 	}
 
-	LogDebug("ptrace restored pid %d\n", pid)
+	LogDebug("ptrace injection restored pid %d\n", pid)
 	return nil
 }
 
