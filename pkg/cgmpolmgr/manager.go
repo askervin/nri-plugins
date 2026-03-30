@@ -151,9 +151,10 @@ func NewManager(config CgroupConfig) (*Manager, error) {
 	}
 
 	return &Manager{
-		config:  config,
-		planner: planner,
-		watcher: watcher,
+		config:       config,
+		planner:      planner,
+		watcher:      watcher,
+		allowedNodes: make(map[int]bool),
 	}, nil
 }
 
