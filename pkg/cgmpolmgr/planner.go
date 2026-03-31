@@ -293,7 +293,12 @@ func nextStep(ctp, pwp, nwp NodeMem, minLimit, maxLimit int64) (nextNodes []int,
 		if math.Abs(denom) > 1e-6 {
 			optLimit = fnumNodes * (cDotV*sumV - sumC*vDotV) / denom
 		} else {
-			optLimit = float64(lower)
+			// Allocation direction is collinear with the
+			// waypoint line (common single-node case): any
+			// step size yields the same distance, so take
+			// the largest feasible step to minimize
+			// number of intermediate tests.
+			optLimit = float64(upper)
 		}
 
 		// Clamp to feasible range.
