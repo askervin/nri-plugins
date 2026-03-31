@@ -463,7 +463,9 @@ func (p *Planner) UpdateRoute() error {
 	p.nextWaypointIndex = nwpIdx
 
 	// 2. Calculate the next step.
+	LogDebug("UpdateRoute: calculate nextStep(ctp=%v, pwp=%v, nwp=%v, minLimit=%d, maxLimit=%d)\n", ctp, pwp, nwp, p.plan.MinLimit, p.plan.MaxLimit)
 	nextNodes, nextLimit, err := nextStep(ctp, pwp, nwp, p.plan.MinLimit, p.plan.MaxLimit)
+	LogDebug("UpdateRoute: nextStep returned nextNodes=%v, nextLimit=%d, err=%v\n", nextNodes, nextLimit, err)
 	if err != nil {
 		return fmt.Errorf("UpdateRoute: %w", err)
 	}

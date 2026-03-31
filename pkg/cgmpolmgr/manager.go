@@ -124,6 +124,8 @@ func NewManager(config CgroupConfig) (*Manager, error) {
 		}
 	}
 
+	LogDebug("NewManager: generated waypoints %v for cgroup %s\n", waypoints, config.Path)
+
 	// Build the plan and planner.
 	plan := &Plan{
 		Waypoints: waypoints,
