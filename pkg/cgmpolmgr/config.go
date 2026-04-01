@@ -105,17 +105,14 @@ type MemoryUseWaypoint struct {
 // For MemoryUseWaypoints the caller must convert user-supplied
 // MemoryUseWaypoint entries separately.
 func GenerateWaypoints(order MemoryUseOrder, dramNodes, cxlNodes []int, dramQuota, cxlQuota int64) ([]Waypoint, error) {
-	if len(dramNodes) == 0 {
-		return nil, fmt.Errorf("GenerateWaypoints: no DRAM nodes")
+	if len(dramNodes) == 0 && len(cxlNodes) == 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: no DRAM or CXL nodes")
 	}
-	if len(cxlNodes) == 0 {
-		return nil, fmt.Errorf("GenerateWaypoints: no CXL nodes")
+	if dramQuota < 0 || cxlQuota < 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: quotas must not be negative")
 	}
-	if dramQuota <= 0 {
-		return nil, fmt.Errorf("GenerateWaypoints: DRAM quota must be positive")
-	}
-	if cxlQuota <= 0 {
-		return nil, fmt.Errorf("GenerateWaypoints: CXL quota must be positive")
+	if dramQuota == 0 && cxlQuota == 0 {
+		return nil, fmt.Errorf("GenerateWaypoints: at least one quota must be positive")
 	}
 
 	// Helper: build a NodeMem that spreads total evenly across nodes.
@@ -140,6 +137,20 @@ func GenerateWaypoints(order MemoryUseOrder, dramNodes, cxlNodes []int, dramQuot
 		return nm
 	}
 
+	// Single-type cases: only one memory type has nodes and quota.
+	// Produce a single waypoint directing all allocations there.
+	if len(cxlNodes) == 0 || cxlQuota == 0 {
+		// DRAM-only: one waypoint using all DRAM quota.
+		wp := spread(dramNodes, dramQuota)
+		return []Waypoint{{Usage: wp}}, nil
+	}
+	if len(dramNodes) == 0 || dramQuota == 0 {
+		// CXL-only: one waypoint using all CXL quota.
+		wp := spread(cxlNodes, cxlQuota)
+		return []Waypoint{{Usage: wp}}, nil
+	}
+
+	// Both types present — use the requested order.
 	switch order {
 	case MemoryUseFirstDRAM:
 		// wp0: all DRAM used, no CXL yet
