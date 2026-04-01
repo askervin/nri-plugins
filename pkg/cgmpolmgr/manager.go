@@ -33,7 +33,8 @@ import (
 
 // ManagerConfig represents configuration for a single cgroup manager.
 type ManagerConfig struct {
-	Path               string              `json:"path" yaml:"path"`
+	CgroupPath         string              `json:"cgroupPath" yaml:"cgroupPath"`
+	CgroupName         string              `json:"cgroupName,omitempty" yaml:"cgroupName,omitempty"` // Pretty name for the cgroup, used in log messages
 	MemoryUseOrder     string              `json:"memoryUseOrder" yaml:"memoryUseOrder"`
 	MemoryUseWaypoints []MemoryUseWaypoint `json:"memoryUseWaypoints,omitempty" yaml:"memoryUseWaypoints,omitempty"`
 	DRAMNodes          string              `json:"dramNodes,omitempty" yaml:"dramNodes,omitempty"`
@@ -68,6 +69,24 @@ func LogDebug(s string, args ...any) {
 func LogError(s string, args ...any) {
 	msg := fmt.Sprintf(s, args...)
 	fmt.Fprintf(os.Stderr, "%.06f ERROR cgmpolmgr: %s", float64(time.Now().UnixNano())/1e9, msg)
+}
+
+// LogDebug logs a debug message prefixed with the cgroup name.
+func (m *Manager) LogDebug(s string, args ...any) {
+	msg := fmt.Sprintf(s, args...)
+	fmt.Fprintf(os.Stderr, "%.06f DEBUG cgmpolmgr %s: %s", float64(time.Now().UnixNano())/1e9, m.config.CgroupName, msg)
+}
+
+// LogError logs an error message prefixed with the cgroup name.
+func (m *Manager) LogError(s string, args ...any) {
+	msg := fmt.Sprintf(s, args...)
+	fmt.Fprintf(os.Stderr, "%.06f ERROR cgmpolmgr %s: %s", float64(time.Now().UnixNano())/1e9, m.config.CgroupName, msg)
+}
+
+// LogWarning logs a warning message prefixed with the cgroup name.
+func (m *Manager) LogWarning(s string, args ...any) {
+	msg := fmt.Sprintf(s, args...)
+	fmt.Fprintf(os.Stderr, "%.06f WARNING cgmpolmgr %s: %s", float64(time.Now().UnixNano())/1e9, m.config.CgroupName, msg)
 }
 
 // NewManager creates a new cgroup manager.
@@ -124,7 +143,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		}
 	}
 
-	LogDebug("NewManager: generated waypoints %v for cgroup %s\n", waypoints, config.Path)
+	LogDebug("NewManager: generated waypoints %v for cgroup %s\n", waypoints, config.CgroupPath)
 
 	// Build the plan and planner.
 	plan := &Plan{
@@ -148,7 +167,8 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 	}
 
 	notifier, err := cgmemnotify.NewMemNotifier(cgmemnotify.MemNotifierConfig{
-		CgroupPath: config.Path,
+		CgroupPath: config.CgroupPath,
+		CgroupName: config.CgroupName,
 		Bounds:     bounds,
 	})
 	if err != nil {
@@ -250,12 +270,12 @@ func (m *Manager) Initialize() error {
 func (m *Manager) applyCurrentPolicy() error {
 	nodes := m.planner.NextNodes()
 	if len(nodes) == 0 {
-		LogDebug("applyCurrentPolicy: no next nodes from planner for %s\n", m.config.Path)
+		m.LogDebug("applyCurrentPolicy: no next nodes from planner for %s\n", m.config.CgroupPath)
 		return nil
 	}
 
 	// Get all PIDs in the cgroup.
-	pids, err := cgmemnotify.GetPIDs(m.config.Path)
+	pids, err := cgmemnotify.GetPIDs(m.config.CgroupPath)
 	if err != nil {
 		return fmt.Errorf("failed to get PIDs: %w", err)
 	}
@@ -274,7 +294,7 @@ func (m *Manager) applyCurrentPolicy() error {
 	if m.allowedNodesWritten < len(m.allowedNodes) {
 		// New nodes have been enabled. Nodes can never be disabled,
 		// therefore comparing the number of allowed nodes is enough.
-		cpusetMemsPath := filepath.Join(m.config.Path, "cpuset.mems")
+		cpusetMemsPath := filepath.Join(m.config.CgroupPath, "cpuset.mems")
 		nodesStr := ""
 		sep := ""
 		for node := range m.allowedNodes {
@@ -282,20 +302,20 @@ func (m *Manager) applyCurrentPolicy() error {
 			sep = ","
 		}
 		if err := os.WriteFile(cpusetMemsPath, []byte(nodesStr), 0644); err != nil {
-			LogError("Failed to write cpuset.mems for %s: %v\n", m.config.Path, err)
+			m.LogError("Failed to write cpuset.mems for %s: %v\n", m.config.CgroupPath, err)
 			return fmt.Errorf("failed to write cpuset.mems: %w", err)
 		}
-		LogDebug("Updated cpuset.mems for %s to %s\n", m.config.Path, nodesStr)
+		m.LogDebug("Updated cpuset.mems for %s to %s\n", m.config.CgroupPath, nodesStr)
 	}
 
 	if len(pids) == 0 {
-		LogDebug("applyCurrentPolicy: no processes in cgroup %s\n", m.config.Path)
+		m.LogDebug("applyCurrentPolicy: no processes in cgroup %s\n", m.config.CgroupPath)
 		return nil
 	}
 
 	// Apply memory policy to all processes.
-	LogDebug("applyCurrentPolicy: setting memory policy for %s on nodes %v (%d processes)\n",
-		filepath.Base(m.config.Path), nodes, len(pids))
+	m.LogDebug("applyCurrentPolicy: setting memory policy for %s on nodes %v (%d processes)\n",
+		filepath.Base(m.config.CgroupPath), nodes, len(pids))
 
 	if err := mpolinject.SetMemoryPolicy(pids, nodes); err != nil {
 		return fmt.Errorf("failed to set memory policy: %w", err)
@@ -304,7 +324,7 @@ func (m *Manager) applyCurrentPolicy() error {
 }
 
 // logNumaStats logs NUMA memory distribution.
-func logNumaStats(numaStats map[int]uint64) {
+func (m *Manager) logNumaStats(numaStats map[int]uint64) {
 	if numaStats == nil {
 		return
 	}
@@ -326,7 +346,7 @@ func logNumaStats(numaStats map[int]uint64) {
 			nodeStrs = append(nodeStrs, fmt.Sprintf("node%d:NA", node))
 		}
 	}
-	LogDebug("NUMA memory distribution: %s\n", strings.Join(nodeStrs, " "))
+	m.LogDebug("NUMA memory distribution: %s\n", strings.Join(nodeStrs, " "))
 }
 
 // Start starts watching the cgroup
@@ -351,7 +371,7 @@ func (m *Manager) Start() error {
 				m.allowedNodes[node] = true
 			}
 		}
-		logNumaStats(numaStats)
+		m.logNumaStats(numaStats)
 	}
 
 	if err := m.notifier.Start(); err != nil {
@@ -380,13 +400,13 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	LogDebug("Notification: bound %d crossed, memory %d KB\n",
+	m.LogDebug("Notification: bound %d crossed, memory %d KB\n",
 		notification.BoundCrossed, notification.MemoryCurrentKB)
 
 	// Read current NUMA usage and feed it to the planner.
 	numaStats, err := m.notifier.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem)
 	if err != nil {
-		LogError("Failed to get NUMA stats: %v\n", err)
+		m.LogError("Failed to get NUMA stats: %v\n", err)
 		return
 	}
 	usage := NewNodeMem()
@@ -397,13 +417,13 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 
 	// Re-evaluate the route.
 	if err := m.planner.UpdateRoute(); err != nil {
-		LogError("UpdateRoute failed: %v\n", err)
+		m.LogError("UpdateRoute failed: %v\n", err)
 		return
 	}
 
 	// Apply the new policy for NextNodes.
 	if err := m.applyCurrentPolicy(); err != nil {
-		LogError("Failed to apply policy: %v\n", err)
+		m.LogError("Failed to apply policy: %v\n", err)
 	}
 
 	// Update the watcher's bounds so the next notification fires
@@ -412,7 +432,7 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 	m.updateWatcherBounds()
 
 	// Log the new NUMA distribution after applying the policy.
-	logNumaStats(numaStats)
+	m.logNumaStats(numaStats)
 }
 
 // updateWatcherBounds reconfigures the MemNotifier with new memory
@@ -422,7 +442,7 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 func (m *Manager) updateWatcherBounds() {
 	nextLimit := m.planner.NextLimit()
 	if nextLimit <= 0 {
-		LogDebug("updateWatcherBounds: nextLimit=%d, skipping\n", nextLimit)
+		m.LogDebug("updateWatcherBounds: nextLimit=%d, skipping\n", nextLimit)
 		return
 	}
 
@@ -447,10 +467,10 @@ func (m *Manager) updateWatcherBounds() {
 	}
 
 	if err := m.notifier.SetBounds(bounds); err != nil {
-		LogError("updateWatcherBounds: SetBounds failed: %v\n", err)
+		m.LogError("updateWatcherBounds: SetBounds failed: %v\n", err)
 		return
 	}
-	LogDebug("updateWatcherBounds: bounds lower=%d KB upper=%d KB (current=%d KB)\n",
+	m.LogDebug("updateWatcherBounds: bounds lower=%d KB upper=%d KB (current=%d KB)\n",
 		lowerKB, upperKB, currentTotal/1024)
 }
 

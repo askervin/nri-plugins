@@ -43,6 +43,7 @@ type Notification struct {
 // MemNotifier watches a cgroup for memory usage changes
 type MemNotifier struct {
 	CgroupPath         string
+	cgroupName         string
 	bounds             MemoryBounds
 	lastBoundCrossed   int // -1 = none yet, 0 = lower, 1 = upper
 	eventFd            int
@@ -72,6 +73,24 @@ func LogError(args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "%.06f ERROR cgmemnotify: %s", float64(time.Now().UnixNano())/1e6, msg)
 }
 
+// LogDebug logs a debug message prefixed with the cgroup name.
+func (mn *MemNotifier) LogDebug(s string, args ...any) {
+	msg := fmt.Sprintf(s, args...)
+	fmt.Fprintf(os.Stderr, "%.06f DEBUG cgmemnotify %s: %s", float64(time.Now().UnixNano())/1e9, mn.cgroupName, msg)
+}
+
+// LogError logs an error message prefixed with the cgroup name.
+func (mn *MemNotifier) LogError(s string, args ...any) {
+	msg := fmt.Sprintf(s, args...)
+	fmt.Fprintf(os.Stderr, "%.06f ERROR cgmemnotify %s: %s", float64(time.Now().UnixNano())/1e9, mn.cgroupName, msg)
+}
+
+// LogWarning logs a warning message prefixed with the cgroup name.
+func (mn *MemNotifier) LogWarning(s string, args ...any) {
+	msg := fmt.Sprintf(s, args...)
+	fmt.Fprintf(os.Stderr, "%.06f WARNING cgmemnotify %s: %s", float64(time.Now().UnixNano())/1e9, mn.cgroupName, msg)
+}
+
 // NewMemNotifier creates a new memory notifier for the given configuration.
 func NewMemNotifier(config MemNotifierConfig) (*MemNotifier, error) {
 	// Validate cgroup path exists
@@ -81,6 +100,7 @@ func NewMemNotifier(config MemNotifierConfig) (*MemNotifier, error) {
 
 	mn := &MemNotifier{
 		CgroupPath:       config.CgroupPath,
+		cgroupName:       config.CgroupName,
 		bounds:           config.Bounds,
 		lastBoundCrossed: -1,
 		eventFd:          -1,
@@ -120,10 +140,10 @@ func (mn *MemNotifier) setupMemoryHigh() error {
 		value = fmt.Appendf([]byte{}, "%d\n", mn.memoryHighBytes)
 	}
 	if err := os.WriteFile(memoryHighPath, value, 0644); err != nil {
-		LogDebug("%s: writing %q failed: %v\n", memoryHighPath, string(value), err)
+		mn.LogDebug("%s: writing %q failed: %v\n", memoryHighPath, string(value), err)
 		return err
 	}
-	LogDebug("%s: wrote %q\n", memoryHighPath, string(value))
+	mn.LogDebug("%s: wrote %q\n", memoryHighPath, string(value))
 	return nil
 }
 
@@ -139,7 +159,7 @@ func (mn *MemNotifier) Start() error {
 	if _, err := os.Stat(eventsPath); err == nil {
 		if err := mn.setupEventFd(); err != nil {
 			// Fall back to polling if eventfd setup fails
-			LogError("Warning: eventfd setup failed, falling back to polling: %v\n", err)
+			mn.LogError("Warning: eventfd setup failed, falling back to polling: %v\n", err)
 			go mn.pollLoop()
 		} else {
 			go mn.eventLoop()
@@ -191,7 +211,7 @@ func (mn *MemNotifier) eventLoop() {
 	// Create epoll instance
 	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
 	if err != nil {
-		LogError("Failed to create epoll: %v\n", err)
+		mn.LogError("Failed to create epoll: %v\n", err)
 		// Fall back to polling
 		mn.pollLoop()
 		return
@@ -204,7 +224,7 @@ func (mn *MemNotifier) eventLoop() {
 		Fd:     int32(mn.memoryEventsFd),
 	}
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, mn.memoryEventsFd, event); err != nil {
-		LogError("Failed to register memory.events with epoll: %v\n", err)
+		mn.LogError("Failed to register memory.events with epoll: %v\n", err)
 		// Fall back to polling
 		mn.pollLoop()
 		return
@@ -216,7 +236,7 @@ func (mn *MemNotifier) eventLoop() {
 		Fd:     int32(mn.eventFd),
 	}
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, mn.eventFd, &stopEvent); err != nil {
-		LogError("Failed to register eventfd with epoll: %v\n", err)
+		mn.LogError("Failed to register eventfd with epoll: %v\n", err)
 		// Continue without eventfd - will use timeout for stop check
 	}
 
@@ -244,7 +264,7 @@ func (mn *MemNotifier) eventLoop() {
 				// Interrupted by signal, continue
 				continue
 			}
-			LogError("EpollWait error: %v\n", err)
+			mn.LogError("EpollWait error: %v\n", err)
 			time.Sleep(mn.pollInterval)
 			continue
 		}
@@ -264,13 +284,13 @@ func (mn *MemNotifier) eventLoop() {
 				// to clear the event and allow future notifications.
 				_, err := unix.Seek(mn.memoryEventsFd, 0, unix.SEEK_SET)
 				if err != nil {
-					LogError("Failed to seek memory.events: %v, stop eventloop\n", err)
+					mn.LogError("Failed to seek memory.events: %v, stop eventloop\n", err)
 					return
 				}
 				buf := make([]byte, 4096)
 				nread, err := unix.Read(mn.memoryEventsFd, buf)
 				if err != nil {
-					LogError("Failed to read memory.events: %v, stop eventloop\n", err)
+					mn.LogError("Failed to read memory.events: %v, stop eventloop\n", err)
 					return
 				}
 				// Parse the content we just read
@@ -381,12 +401,12 @@ func (mn *MemNotifier) checkMemoryStatus() {
 	// Keep memory.high as-is (cgroup stays throttled) until
 	// the caller provides new bounds via SetBounds.
 	if mn.bounds.UpperKB > 0 && currentKB >= mn.bounds.UpperKB && mn.lastBoundCrossed != 1 {
-		LogDebug("upper bound crossed: memory %d KB >= %d KB\n", currentKB, mn.bounds.UpperKB)
+		mn.LogDebug("upper bound crossed: memory %d KB >= %d KB\n", currentKB, mn.bounds.UpperKB)
 		mn.lastBoundCrossed = 1
 		mn.sendNotification(1, currentKB)
 	} else if mn.bounds.LowerKB > 0 && currentKB < mn.bounds.LowerKB && mn.lastBoundCrossed != 0 {
 		// Lower bound crossed: memory dropped below threshold.
-		LogDebug("lower bound crossed: memory %d KB < %d KB\n", currentKB, mn.bounds.LowerKB)
+		mn.LogDebug("lower bound crossed: memory %d KB < %d KB\n", currentKB, mn.bounds.LowerKB)
 		mn.lastBoundCrossed = 0
 		mn.sendNotification(0, currentKB)
 	}

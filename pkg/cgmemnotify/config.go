@@ -26,5 +26,6 @@ type MemoryBounds struct {
 // MemNotifierConfig holds configuration for creating a MemNotifier.
 type MemNotifierConfig struct {
 	CgroupPath string       // Filesystem path to the cgroup directory
+	CgroupName string       // Pretty name for the cgroup, used in log messages
 	Bounds     MemoryBounds // Initial memory bounds
 }
