@@ -143,8 +143,6 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		}
 	}
 
-	LogDebug("NewManager: generated waypoints %v for cgroup %s\n", waypoints, config.CgroupPath)
-
 	// Build the plan and planner.
 	plan := &Plan{
 		Waypoints: waypoints,
@@ -160,10 +158,10 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 	}
 
 	// Derive initial memory bounds from the planner's first step.
-	// UpperKB throttles the cgroup; the watcher will notify us when
+	// Upper throttles the cgroup; the notifier will notify us when
 	// memory reaches this threshold so we can re-steer.
 	bounds := cgmemnotify.MemoryBounds{
-		UpperKB: uint64(planner.NextLimit()) / 1024,
+		Upper: uint64(planner.NextLimit()),
 	}
 
 	notifier, err := cgmemnotify.NewMemNotifier(cgmemnotify.MemNotifierConfig{
@@ -175,12 +173,15 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		return nil, err
 	}
 
-	return &Manager{
+	m := &Manager{
 		config:       config,
 		planner:      planner,
 		notifier:     notifier,
 		allowedNodes: make(map[int]bool),
-	}, nil
+	}
+
+	m.LogDebug("NewManager: created with waypoints %v for cgroup %s\n", waypoints, config.CgroupPath)
+	return m, nil
 }
 
 // convertUserWaypoints converts user-supplied MemoryUseWaypoint entries
@@ -340,8 +341,7 @@ func (m *Manager) logNumaStats(numaStats map[int]uint64) {
 	var nodeStrs []string
 	for node := 0; node <= maxNode; node++ {
 		if bytes, ok := numaStats[node]; ok {
-			mb := bytes / (1024 * 1024)
-			nodeStrs = append(nodeStrs, fmt.Sprintf("node%d:%dMB", node, mb))
+			nodeStrs = append(nodeStrs, fmt.Sprintf("node%d:%d", node, bytes))
 		} else {
 			nodeStrs = append(nodeStrs, fmt.Sprintf("node%d:NA", node))
 		}
@@ -400,8 +400,8 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.LogDebug("Notification: bound %d crossed, memory %d KB\n",
-		notification.BoundCrossed, notification.MemoryCurrentKB)
+	m.LogDebug("Notification: bound %d crossed, memory %d bytes\n",
+		notification.BoundCrossed, notification.MemoryCurrent)
 
 	// Read current NUMA usage and feed it to the planner.
 	numaStats, err := m.notifier.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem)
@@ -451,27 +451,27 @@ func (m *Manager) updateWatcherBounds() {
 	if len(m.planner.track) > 0 {
 		currentTotal = uint64(m.planner.track[len(m.planner.track)-1].Usage.TotalMem())
 	}
-	upperKB := (currentTotal + uint64(nextLimit)) / 1024
+	upper := currentTotal + uint64(nextLimit)
 
 	// Set lower bound to detect significant memory drops.
 	// If memory drops by more than nextLimit from the current level,
-	// the watcher notifies us so we can re-steer and lower memory.high.
-	var lowerKB uint64
+	// the notifier tells us so we can re-steer and lower memory.high.
+	var lower uint64
 	if currentTotal > uint64(nextLimit) {
-		lowerKB = (currentTotal - uint64(nextLimit)) / 1024
+		lower = currentTotal - uint64(nextLimit)
 	}
 
 	bounds := cgmemnotify.MemoryBounds{
-		LowerKB: lowerKB,
-		UpperKB: upperKB,
+		Lower: lower,
+		Upper: upper,
 	}
 
 	if err := m.notifier.SetBounds(bounds); err != nil {
 		m.LogError("updateWatcherBounds: SetBounds failed: %v\n", err)
 		return
 	}
-	m.LogDebug("updateWatcherBounds: bounds lower=%d KB upper=%d KB (current=%d KB)\n",
-		lowerKB, upperKB, currentTotal/1024)
+	m.LogDebug("updateWatcherBounds: bounds lower=%d bytes upper=%d bytes (current=%d bytes)\n",
+		lower, upper, currentTotal)
 }
 
 // Stop stops watching the cgroup
