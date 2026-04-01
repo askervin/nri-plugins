@@ -13,14 +13,14 @@
 // limitations under the License.
 package cgmemnotify
 
-// MemoryBounds defines lower and upper memory usage thresholds in KB.
-// The notifier sets memory.high to UpperKB and sends a notification
+// MemoryBounds defines lower and upper memory usage thresholds in bytes.
+// The notifier sets memory.high to Upper and sends a notification
 // when either bound is crossed.  After an upper-bound notification
 // the cgroup stays throttled until the caller provides new bounds
 // via SetBounds.
 type MemoryBounds struct {
-	LowerKB uint64 // Notify when memory drops below this (0 = disabled)
-	UpperKB uint64 // Notify when memory reaches this; sets memory.high (0 = unlimited)
+	Lower uint64 // Notify when memory drops below this (0 = disabled)
+	Upper uint64 // Notify when memory reaches this; sets memory.high (0 = unlimited)
 }
 
 // MemNotifierConfig holds configuration for creating a MemNotifier.

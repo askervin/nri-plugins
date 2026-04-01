@@ -36,8 +36,8 @@ import (
 // Notification represents a bound-crossing notification.
 // BoundCrossed is 0 for lower bound, 1 for upper bound.
 type Notification struct {
-	BoundCrossed    int    // 0 = lower bound, 1 = upper bound
-	MemoryCurrentKB uint64 // Current memory usage in KB
+	BoundCrossed  int    // 0 = lower bound, 1 = upper bound
+	MemoryCurrent uint64 // Current memory usage in bytes
 }
 
 // MemNotifier watches a cgroup for memory usage changes
@@ -115,7 +115,7 @@ func NewMemNotifier(config MemNotifierConfig) (*MemNotifier, error) {
 
 // SetBounds reconfigures the notifier with new memory bounds.
 // This resets the bound-crossing state and updates memory.high
-// to the new UpperKB, unblocking a throttled cgroup.
+// to the new Upper, unblocking a throttled cgroup.
 func (mn *MemNotifier) SetBounds(bounds MemoryBounds) error {
 	mn.mu.Lock()
 	defer mn.mu.Unlock()
@@ -132,11 +132,11 @@ func (mn *MemNotifier) setupMemoryHigh() error {
 	var value []byte
 	memoryHighPath := filepath.Join(mn.CgroupPath, "memory.high")
 
-	if mn.bounds.UpperKB == 0 {
+	if mn.bounds.Upper == 0 {
 		mn.memoryHighBytes = 0 // No limit
 		value = []byte("max\n")
 	} else {
-		mn.memoryHighBytes = mn.bounds.UpperKB * 1024
+		mn.memoryHighBytes = mn.bounds.Upper
 		value = fmt.Appendf([]byte{}, "%d\n", mn.memoryHighBytes)
 	}
 	if err := os.WriteFile(memoryHighPath, value, 0644); err != nil {
@@ -392,7 +392,6 @@ func (mn *MemNotifier) checkMemoryStatus() {
 	if err != nil {
 		return
 	}
-	currentKB := currentBytes / 1024
 
 	mn.mu.Lock()
 	defer mn.mu.Unlock()
@@ -400,25 +399,25 @@ func (mn *MemNotifier) checkMemoryStatus() {
 	// Upper bound crossed: memory reached the threshold.
 	// Keep memory.high as-is (cgroup stays throttled) until
 	// the caller provides new bounds via SetBounds.
-	if mn.bounds.UpperKB > 0 && currentKB >= mn.bounds.UpperKB && mn.lastBoundCrossed != 1 {
-		mn.LogDebug("upper bound crossed: memory %d KB >= %d KB\n", currentKB, mn.bounds.UpperKB)
+	if mn.bounds.Upper > 0 && currentBytes >= mn.bounds.Upper && mn.lastBoundCrossed != 1 {
+		mn.LogDebug("upper bound crossed: memory %d bytes >= %d bytes\n", currentBytes, mn.bounds.Upper)
 		mn.lastBoundCrossed = 1
-		mn.sendNotification(1, currentKB)
-	} else if mn.bounds.LowerKB > 0 && currentKB < mn.bounds.LowerKB && mn.lastBoundCrossed != 0 {
+		mn.sendNotification(1, currentBytes)
+	} else if mn.bounds.Lower > 0 && currentBytes < mn.bounds.Lower && mn.lastBoundCrossed != 0 {
 		// Lower bound crossed: memory dropped below threshold.
-		mn.LogDebug("lower bound crossed: memory %d KB < %d KB\n", currentKB, mn.bounds.LowerKB)
+		mn.LogDebug("lower bound crossed: memory %d bytes < %d bytes\n", currentBytes, mn.bounds.Lower)
 		mn.lastBoundCrossed = 0
-		mn.sendNotification(0, currentKB)
+		mn.sendNotification(0, currentBytes)
 	}
 
 	mn.memoryCurrent = currentBytes
 }
 
 // sendNotification sends a bound-crossing notification
-func (mn *MemNotifier) sendNotification(boundCrossed int, currentKB uint64) {
+func (mn *MemNotifier) sendNotification(boundCrossed int, currentBytes uint64) {
 	notification := Notification{
-		BoundCrossed:    boundCrossed,
-		MemoryCurrentKB: currentKB,
+		BoundCrossed:  boundCrossed,
+		MemoryCurrent: currentBytes,
 	}
 
 	select {
