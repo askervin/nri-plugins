@@ -14,7 +14,7 @@
 
 // cgmpolmgr package implements a dynamic memory policy manager for
 // cgroups. It uses a Planner to steer memory allocations across NUMA
-// nodes according to configurable waypoints, and a CgroupWatcher to
+// nodes according to configurable waypoints, and a MemNotifier to
 // detect when memory usage crosses configurable bounds.
 package cgmpolmgr
 
@@ -31,8 +31,8 @@ import (
 	"github.com/containers/nri-plugins/pkg/mpolinject"
 )
 
-// CgroupConfig represents configuration for a single cgroup
-type CgroupConfig struct {
+// ManagerConfig represents configuration for a single cgroup manager.
+type ManagerConfig struct {
 	Path               string              `json:"path" yaml:"path"`
 	MemoryUseOrder     string              `json:"memoryUseOrder" yaml:"memoryUseOrder"`
 	MemoryUseWaypoints []MemoryUseWaypoint `json:"memoryUseWaypoints,omitempty" yaml:"memoryUseWaypoints,omitempty"`
@@ -46,9 +46,9 @@ type CgroupConfig struct {
 
 // Manager manages a single cgroup's memory policy
 type Manager struct {
-	config              CgroupConfig
+	config              ManagerConfig
 	planner             *Planner
-	watcher             *cgmemnotify.CgroupWatcher
+	notifier            *cgmemnotify.MemNotifier
 	allowedNodes        map[int]bool
 	allowedNodesWritten int
 	mu                  sync.Mutex
@@ -71,7 +71,7 @@ func LogError(s string, args ...any) {
 }
 
 // NewManager creates a new cgroup manager.
-func NewManager(config CgroupConfig) (*Manager, error) {
+func NewManager(config ManagerConfig) (*Manager, error) {
 	// Parse memory use order.
 	order, err := ParseMemoryUseOrder(config.MemoryUseOrder)
 	if err != nil {
@@ -147,7 +147,10 @@ func NewManager(config CgroupConfig) (*Manager, error) {
 		UpperKB: uint64(planner.NextLimit()) / 1024,
 	}
 
-	watcher, err := cgmemnotify.NewCgroupWatcher(config.Path, bounds)
+	notifier, err := cgmemnotify.NewMemNotifier(cgmemnotify.MemNotifierConfig{
+		CgroupPath: config.Path,
+		Bounds:     bounds,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +158,7 @@ func NewManager(config CgroupConfig) (*Manager, error) {
 	return &Manager{
 		config:       config,
 		planner:      planner,
-		watcher:      watcher,
+		notifier:     notifier,
 		allowedNodes: make(map[int]bool),
 	}, nil
 }
@@ -342,7 +345,7 @@ func (m *Manager) Start() error {
 
 	// If the cgroup already exists, check all nodes already contain data to avoid
 	// memory moves by restricting cpuset.mems.
-	if numaStats, err := m.watcher.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem); err == nil {
+	if numaStats, err := m.notifier.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem); err == nil {
 		for node, usage := range numaStats {
 			if usage > 0 {
 				m.allowedNodes[node] = true
@@ -351,7 +354,7 @@ func (m *Manager) Start() error {
 		logNumaStats(numaStats)
 	}
 
-	if err := m.watcher.Start(); err != nil {
+	if err := m.notifier.Start(); err != nil {
 		return err
 	}
 
@@ -364,7 +367,7 @@ func (m *Manager) Start() error {
 // monitorLoop monitors notifications from the watcher and steers
 // memory policy using the planner.
 func (m *Manager) monitorLoop() {
-	notifyCh := m.watcher.Notifications()
+	notifyCh := m.notifier.Notifications()
 
 	for notification := range notifyCh {
 		m.handleNotification(notification)
@@ -381,7 +384,7 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 		notification.BoundCrossed, notification.MemoryCurrentKB)
 
 	// Read current NUMA usage and feed it to the planner.
-	numaStats, err := m.watcher.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem)
+	numaStats, err := m.notifier.NumaStat(cgmemnotify.LmcAnon | cgmemnotify.LmcShmem)
 	if err != nil {
 		LogError("Failed to get NUMA stats: %v\n", err)
 		return
@@ -412,7 +415,7 @@ func (m *Manager) handleNotification(notification cgmemnotify.Notification) {
 	logNumaStats(numaStats)
 }
 
-// updateWatcherBounds reconfigures the CgroupWatcher with new memory
+// updateWatcherBounds reconfigures the MemNotifier with new memory
 // bounds so that memory.high is set to (current usage + NextLimit).
 // A lower bound is also set so that significant memory drops (e.g.
 // process frees) trigger a re-evaluation of the route.
@@ -443,7 +446,7 @@ func (m *Manager) updateWatcherBounds() {
 		UpperKB: upperKB,
 	}
 
-	if err := m.watcher.SetBounds(bounds); err != nil {
+	if err := m.notifier.SetBounds(bounds); err != nil {
 		LogError("updateWatcherBounds: SetBounds failed: %v\n", err)
 		return
 	}
@@ -453,11 +456,11 @@ func (m *Manager) updateWatcherBounds() {
 
 // Stop stops watching the cgroup
 func (m *Manager) Stop() {
-	m.watcher.Stop()
+	m.notifier.Stop()
 }
 
-// GetConfig returns the cgroup configuration.
-func (m *Manager) GetConfig() CgroupConfig {
+// GetConfig returns the manager configuration.
+func (m *Manager) GetConfig() ManagerConfig {
 	return m.config
 }
 

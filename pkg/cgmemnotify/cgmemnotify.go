@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// cgmemnotify package implements a watcher that listens (epoll) to
+// cgmemnotify package implements a notifier that listens (epoll) to
 // cgroup memory.events and reports when memory usage grows above or
 // below given limits. If available, it immediately updates limits to
 // next levels in order to cause minimal delay in cgroup processes
@@ -40,8 +40,8 @@ type Notification struct {
 	MemoryCurrentKB uint64 // Current memory usage in KB
 }
 
-// CgroupWatcher watches a cgroup for memory usage changes
-type CgroupWatcher struct {
+// MemNotifier watches a cgroup for memory usage changes
+type MemNotifier struct {
 	CgroupPath         string
 	bounds             MemoryBounds
 	lastBoundCrossed   int // -1 = none yet, 0 = lower, 1 = upper
@@ -72,16 +72,16 @@ func LogError(args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "%.06f ERROR cgmemnotify: %s", float64(time.Now().UnixNano())/1e6, msg)
 }
 
-// NewCgroupWatcher creates a new cgroup watcher for the given cgroup path
-func NewCgroupWatcher(cgroupPath string, bounds MemoryBounds) (*CgroupWatcher, error) {
+// NewMemNotifier creates a new memory notifier for the given configuration.
+func NewMemNotifier(config MemNotifierConfig) (*MemNotifier, error) {
 	// Validate cgroup path exists
-	if _, err := os.Stat(cgroupPath); err != nil {
+	if _, err := os.Stat(config.CgroupPath); err != nil {
 		return nil, fmt.Errorf("cgroup path does not exist: %w", err)
 	}
 
-	watcher := &CgroupWatcher{
-		CgroupPath:       cgroupPath,
-		bounds:           bounds,
+	mn := &MemNotifier{
+		CgroupPath:       config.CgroupPath,
+		bounds:           config.Bounds,
 		lastBoundCrossed: -1,
 		eventFd:          -1,
 		memoryEventsFd:   -1,
@@ -90,34 +90,34 @@ func NewCgroupWatcher(cgroupPath string, bounds MemoryBounds) (*CgroupWatcher, e
 		pollInterval:     100 * time.Millisecond, // Default poll interval
 	}
 
-	return watcher, nil
+	return mn, nil
 }
 
-// SetBounds reconfigures the watcher with new memory bounds.
+// SetBounds reconfigures the notifier with new memory bounds.
 // This resets the bound-crossing state and updates memory.high
 // to the new UpperKB, unblocking a throttled cgroup.
-func (w *CgroupWatcher) SetBounds(bounds MemoryBounds) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (mn *MemNotifier) SetBounds(bounds MemoryBounds) error {
+	mn.mu.Lock()
+	defer mn.mu.Unlock()
 
-	w.bounds = bounds
-	w.lastBoundCrossed = -1
+	mn.bounds = bounds
+	mn.lastBoundCrossed = -1
 
 	// Update memory.high based on new upper bound.
-	return w.setupMemoryHigh()
+	return mn.setupMemoryHigh()
 }
 
 // setupMemoryHigh sets memory.high based on the current upper bound
-func (w *CgroupWatcher) setupMemoryHigh() error {
+func (mn *MemNotifier) setupMemoryHigh() error {
 	var value []byte
-	memoryHighPath := filepath.Join(w.CgroupPath, "memory.high")
+	memoryHighPath := filepath.Join(mn.CgroupPath, "memory.high")
 
-	if w.bounds.UpperKB == 0 {
-		w.memoryHighBytes = 0 // No limit
+	if mn.bounds.UpperKB == 0 {
+		mn.memoryHighBytes = 0 // No limit
 		value = []byte("max\n")
 	} else {
-		w.memoryHighBytes = w.bounds.UpperKB * 1024
-		value = fmt.Appendf([]byte{}, "%d\n", w.memoryHighBytes)
+		mn.memoryHighBytes = mn.bounds.UpperKB * 1024
+		value = fmt.Appendf([]byte{}, "%d\n", mn.memoryHighBytes)
 	}
 	if err := os.WriteFile(memoryHighPath, value, 0644); err != nil {
 		LogDebug("%s: writing %q failed: %v\n", memoryHighPath, string(value), err)
@@ -128,25 +128,25 @@ func (w *CgroupWatcher) setupMemoryHigh() error {
 }
 
 // Start begins watching the cgroup for memory changes
-func (w *CgroupWatcher) Start() error {
+func (mn *MemNotifier) Start() error {
 	// Set memory.high based on current ladder
-	if err := w.setupMemoryHigh(); err != nil {
+	if err := mn.setupMemoryHigh(); err != nil {
 		return fmt.Errorf("failed to setup memory.high: %w", err)
 	}
 
 	// Try to use memory.events for notifications (cgroup v2)
-	eventsPath := filepath.Join(w.CgroupPath, "memory.events")
+	eventsPath := filepath.Join(mn.CgroupPath, "memory.events")
 	if _, err := os.Stat(eventsPath); err == nil {
-		if err := w.setupEventFd(); err != nil {
+		if err := mn.setupEventFd(); err != nil {
 			// Fall back to polling if eventfd setup fails
 			LogError("Warning: eventfd setup failed, falling back to polling: %v\n", err)
-			go w.pollLoop()
+			go mn.pollLoop()
 		} else {
-			go w.eventLoop()
+			go mn.eventLoop()
 		}
 	} else {
 		// Fall back to polling
-		go w.pollLoop()
+		go mn.pollLoop()
 	}
 
 	return nil
@@ -156,35 +156,35 @@ func (w *CgroupWatcher) Start() error {
 // This creates two file descriptors:
 //  1. eventFd: Used for signaling stop requests to the event loop
 //  2. memoryEventsFd: Monitors memory.events file for kernel notifications
-func (w *CgroupWatcher) setupEventFd() error {
+func (mn *MemNotifier) setupEventFd() error {
 	// Create an eventfd for internal signaling (e.g., stop requests)
 	efd, err := unix.Eventfd(0, unix.EFD_CLOEXEC)
 	if err != nil {
 		return fmt.Errorf("failed to create eventfd: %w", err)
 	}
-	w.eventFd = efd
+	mn.eventFd = efd
 
 	// Open memory.events file which the kernel updates on memory events
 	// This file is monitored via epoll for efficient event-driven notifications
-	eventsPath := filepath.Join(w.CgroupPath, "memory.events")
+	eventsPath := filepath.Join(mn.CgroupPath, "memory.events")
 	fd, err := unix.Open(eventsPath, unix.O_RDONLY, 0)
 	if err != nil {
-		unix.Close(w.eventFd)
+		unix.Close(mn.eventFd)
 		return fmt.Errorf("failed to open memory.events: %w", err)
 	}
-	w.memoryEventsFd = fd
+	mn.memoryEventsFd = fd
 
 	return nil
 }
 
 // eventLoop waits for cgroup events using eventfd and epoll
-func (w *CgroupWatcher) eventLoop() {
+func (mn *MemNotifier) eventLoop() {
 	defer func() {
-		if w.eventFd >= 0 {
-			unix.Close(w.eventFd)
+		if mn.eventFd >= 0 {
+			unix.Close(mn.eventFd)
 		}
-		if w.memoryEventsFd >= 0 {
-			unix.Close(w.memoryEventsFd)
+		if mn.memoryEventsFd >= 0 {
+			unix.Close(mn.memoryEventsFd)
 		}
 	}()
 
@@ -193,7 +193,7 @@ func (w *CgroupWatcher) eventLoop() {
 	if err != nil {
 		LogError("Failed to create epoll: %v\n", err)
 		// Fall back to polling
-		w.pollLoop()
+		mn.pollLoop()
 		return
 	}
 	defer unix.Close(epfd)
@@ -201,38 +201,38 @@ func (w *CgroupWatcher) eventLoop() {
 	// Register memory.events file descriptor with epoll
 	event := &unix.EpollEvent{
 		Events: unix.EPOLLPRI,
-		Fd:     int32(w.memoryEventsFd),
+		Fd:     int32(mn.memoryEventsFd),
 	}
-	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, w.memoryEventsFd, event); err != nil {
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, mn.memoryEventsFd, event); err != nil {
 		LogError("Failed to register memory.events with epoll: %v\n", err)
 		// Fall back to polling
-		w.pollLoop()
+		mn.pollLoop()
 		return
 	}
 
 	// Register eventfd with epoll for stop signal
 	stopEvent := unix.EpollEvent{
 		Events: unix.EPOLLIN,
-		Fd:     int32(w.eventFd),
+		Fd:     int32(mn.eventFd),
 	}
-	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, w.eventFd, &stopEvent); err != nil {
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, mn.eventFd, &stopEvent); err != nil {
 		LogError("Failed to register eventfd with epoll: %v\n", err)
 		// Continue without eventfd - will use timeout for stop check
 	}
 
 	// Start a goroutine to signal eventfd when stop is requested
 	go func() {
-		<-w.stopCh
+		<-mn.stopCh
 		// Write to eventfd to wake up EpollWait
 		buf := make([]byte, 8)
 		buf[0] = 1
-		unix.Write(w.eventFd, buf)
+		unix.Write(mn.eventFd, buf)
 	}()
 
 	events := make([]unix.EpollEvent, 10)
 
 	// Do initial check
-	w.checkMemoryStatus()
+	mn.checkMemoryStatus()
 
 	for {
 		// Wait for events with 1 second timeout
@@ -245,13 +245,13 @@ func (w *CgroupWatcher) eventLoop() {
 				continue
 			}
 			LogError("EpollWait error: %v\n", err)
-			time.Sleep(w.pollInterval)
+			time.Sleep(mn.pollInterval)
 			continue
 		}
 
 		// Check if stop was requested
 		select {
-		case <-w.stopCh:
+		case <-mn.stopCh:
 			return
 		default:
 		}
@@ -259,55 +259,55 @@ func (w *CgroupWatcher) eventLoop() {
 		highEvents := 0
 		for i := 0; i < n; i++ {
 			// Events occurred - check which ones
-			if events[i].Fd == int32(w.memoryEventsFd) {
+			if events[i].Fd == int32(mn.memoryEventsFd) {
 				// Memory event. Must read whole file from pos 0 to the end
 				// to clear the event and allow future notifications.
-				_, err := unix.Seek(w.memoryEventsFd, 0, unix.SEEK_SET)
+				_, err := unix.Seek(mn.memoryEventsFd, 0, unix.SEEK_SET)
 				if err != nil {
 					LogError("Failed to seek memory.events: %v, stop eventloop\n", err)
 					return
 				}
 				buf := make([]byte, 4096)
-				nread, err := unix.Read(w.memoryEventsFd, buf)
+				nread, err := unix.Read(mn.memoryEventsFd, buf)
 				if err != nil {
 					LogError("Failed to read memory.events: %v, stop eventloop\n", err)
 					return
 				}
 				// Parse the content we just read
 				content := string(buf[:nread])
-				if w.checkMemoryHighFromContent(content) {
+				if mn.checkMemoryHighFromContent(content) {
 					highEvents++
 				}
-			} else if events[i].Fd == int32(w.eventFd) {
+			} else if events[i].Fd == int32(mn.eventFd) {
 				// Stop signal received via eventfd
 				return
 			}
 		}
 		// There are real high events, or it is time for a periodic check (timeout)
 		if highEvents > 0 || n == 0 {
-			w.checkMemoryStatus()
+			mn.checkMemoryStatus()
 		}
 	}
 }
 
 // pollLoop continuously polls memory status
-func (w *CgroupWatcher) pollLoop() {
-	ticker := time.NewTicker(w.pollInterval)
+func (mn *MemNotifier) pollLoop() {
+	ticker := time.NewTicker(mn.pollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-w.stopCh:
+		case <-mn.stopCh:
 			return
 		case <-ticker.C:
-			w.checkMemoryStatus()
+			mn.checkMemoryStatus()
 		}
 	}
 }
 
 // checkMemoryHighFromContent parses memory.events content for "high" counter
 // and validates by comparing memory.current against the expected limit
-func (w *CgroupWatcher) checkMemoryHighFromContent(content string) bool {
+func (mn *MemNotifier) checkMemoryHighFromContent(content string) bool {
 	// Parse memory.events to find "high" counter
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
@@ -320,29 +320,29 @@ func (w *CgroupWatcher) checkMemoryHighFromContent(content string) bool {
 		if err != nil {
 			continue
 		}
-		newHighReached := highEventCount > w.lastHighEventCount
-		if w.lastHighEventCount == 0 {
+		newHighReached := highEventCount > mn.lastHighEventCount
+		if mn.lastHighEventCount == 0 {
 			// First time seeing the counter. Possibly
 			// watching this cgroup memory.events was just
 			// started. Report memory.high only if
 			// memory.current is already above threshold
-			newHighReached = w.checkMemoryCurrentAboveHigh()
+			newHighReached = mn.checkMemoryCurrentAboveHigh()
 		}
-		w.lastHighEventCount = highEventCount
+		mn.lastHighEventCount = highEventCount
 		return newHighReached
 	}
 	return false
 }
 
 // checkMemoryCurrentAboveHigh validates that memory.current has actually reached memory.high
-func (w *CgroupWatcher) checkMemoryCurrentAboveHigh() bool {
+func (mn *MemNotifier) checkMemoryCurrentAboveHigh() bool {
 	// If no limit is set.
-	if w.memoryHighBytes == 0 {
+	if mn.memoryHighBytes == 0 {
 		return false
 	}
 
 	// Read memory.current
-	memoryCurrentPath := filepath.Join(w.CgroupPath, "memory.current")
+	memoryCurrentPath := filepath.Join(mn.CgroupPath, "memory.current")
 	data, err := os.ReadFile(memoryCurrentPath)
 	if err != nil {
 		return false
@@ -355,14 +355,14 @@ func (w *CgroupWatcher) checkMemoryCurrentAboveHigh() bool {
 
 	// Only consider it a valid memory.high event if memory.current >= memory.high
 	// Allow some tolerance (95% of limit) to account for timing
-	threshold := w.memoryHighBytes * 95 / 100
+	threshold := mn.memoryHighBytes * 95 / 100
 	return currentBytes >= threshold
 }
 
 // checkMemoryStatus reads current memory usage and checks for bound crossings
-func (w *CgroupWatcher) checkMemoryStatus() {
+func (mn *MemNotifier) checkMemoryStatus() {
 	// Read memory.current
-	memoryCurrentPath := filepath.Join(w.CgroupPath, "memory.current")
+	memoryCurrentPath := filepath.Join(mn.CgroupPath, "memory.current")
 	data, err := os.ReadFile(memoryCurrentPath)
 	if err != nil {
 		return
@@ -374,56 +374,56 @@ func (w *CgroupWatcher) checkMemoryStatus() {
 	}
 	currentKB := currentBytes / 1024
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	mn.mu.Lock()
+	defer mn.mu.Unlock()
 
 	// Upper bound crossed: memory reached the threshold.
 	// Keep memory.high as-is (cgroup stays throttled) until
 	// the caller provides new bounds via SetBounds.
-	if w.bounds.UpperKB > 0 && currentKB >= w.bounds.UpperKB && w.lastBoundCrossed != 1 {
-		LogDebug("upper bound crossed: memory %d KB >= %d KB\n", currentKB, w.bounds.UpperKB)
-		w.lastBoundCrossed = 1
-		w.sendNotification(1, currentKB)
-	} else if w.bounds.LowerKB > 0 && currentKB < w.bounds.LowerKB && w.lastBoundCrossed != 0 {
+	if mn.bounds.UpperKB > 0 && currentKB >= mn.bounds.UpperKB && mn.lastBoundCrossed != 1 {
+		LogDebug("upper bound crossed: memory %d KB >= %d KB\n", currentKB, mn.bounds.UpperKB)
+		mn.lastBoundCrossed = 1
+		mn.sendNotification(1, currentKB)
+	} else if mn.bounds.LowerKB > 0 && currentKB < mn.bounds.LowerKB && mn.lastBoundCrossed != 0 {
 		// Lower bound crossed: memory dropped below threshold.
-		LogDebug("lower bound crossed: memory %d KB < %d KB\n", currentKB, w.bounds.LowerKB)
-		w.lastBoundCrossed = 0
-		w.sendNotification(0, currentKB)
+		LogDebug("lower bound crossed: memory %d KB < %d KB\n", currentKB, mn.bounds.LowerKB)
+		mn.lastBoundCrossed = 0
+		mn.sendNotification(0, currentKB)
 	}
 
-	w.memoryCurrent = currentBytes
+	mn.memoryCurrent = currentBytes
 }
 
 // sendNotification sends a bound-crossing notification
-func (w *CgroupWatcher) sendNotification(boundCrossed int, currentKB uint64) {
+func (mn *MemNotifier) sendNotification(boundCrossed int, currentKB uint64) {
 	notification := Notification{
 		BoundCrossed:    boundCrossed,
 		MemoryCurrentKB: currentKB,
 	}
 
 	select {
-	case w.notifyCh <- notification:
+	case mn.notifyCh <- notification:
 	default:
 		// Channel full, skip this notification
 	}
 }
 
 // Notifications returns a channel for receiving bound-crossing notifications
-func (w *CgroupWatcher) Notifications() <-chan Notification {
-	return w.notifyCh
+func (mn *MemNotifier) Notifications() <-chan Notification {
+	return mn.notifyCh
 }
 
-// Stop stops the watcher
-func (w *CgroupWatcher) Stop() {
-	close(w.stopCh)
+// Stop stops the notifier
+func (mn *MemNotifier) Stop() {
+	close(mn.stopCh)
 }
 
 // RemoveMemoryHigh sets memory.high to "max", removing the throttling limit
-func (w *CgroupWatcher) RemoveMemoryHigh() error {
-	memoryHighPath := filepath.Join(w.CgroupPath, "memory.high")
-	w.mu.Lock()
-	w.memoryHighBytes = 0
-	w.mu.Unlock()
+func (mn *MemNotifier) RemoveMemoryHigh() error {
+	memoryHighPath := filepath.Join(mn.CgroupPath, "memory.high")
+	mn.mu.Lock()
+	mn.memoryHighBytes = 0
+	mn.mu.Unlock()
 	return os.WriteFile(memoryHighPath, []byte("max\n"), 0644)
 }
 
@@ -453,10 +453,10 @@ func GetPIDs(cgroupPath string) ([]int, error) {
 }
 
 // SetMemoryPressure configures memory pressure notifications (optional advanced feature)
-func (w *CgroupWatcher) SetMemoryPressure(threshold uint64) error {
+func (mn *MemNotifier) SetMemoryPressure(threshold uint64) error {
 	// This could use memory.pressure or PSI (Pressure Stall Information)
 	// For now, we rely on polling/events
-	pressurePath := filepath.Join(w.CgroupPath, "memory.pressure")
+	pressurePath := filepath.Join(mn.CgroupPath, "memory.pressure")
 	if _, err := os.Stat(pressurePath); err != nil {
 		return fmt.Errorf("memory.pressure not available: %w", err)
 	}
@@ -561,7 +561,7 @@ var lmcNames = map[LinuxMemoryCategory]string{
 // The categories parameter is a bitmask of LinuxMemoryCategory flags to count.
 // If categories is 0, returns nil, nil (no categories requested).
 // Returns a map where keys are NUMA node IDs and values are memory usage in bytes.
-func (w *CgroupWatcher) NumaStat(categories LinuxMemoryCategory) (map[int]uint64, error) {
+func (mn *MemNotifier) NumaStat(categories LinuxMemoryCategory) (map[int]uint64, error) {
 	// If no categories specified, return nil
 	if categories == 0 {
 		return nil, nil
@@ -576,7 +576,7 @@ func (w *CgroupWatcher) NumaStat(categories LinuxMemoryCategory) (map[int]uint64
 	}
 
 	// Read memory.numa_stat
-	numaStatPath := filepath.Join(w.CgroupPath, "memory.numa_stat")
+	numaStatPath := filepath.Join(mn.CgroupPath, "memory.numa_stat")
 	file, err := os.Open(numaStatPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open memory.numa_stat: %w", err)
