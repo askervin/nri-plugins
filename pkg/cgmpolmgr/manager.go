@@ -97,14 +97,24 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		return nil, fmt.Errorf("invalid memoryUseOrder: %w", err)
 	}
 
-	// Parse node sets.
-	dramNodes, err := ParseNodeset(config.DRAMNodes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid dramNodes: %w", err)
+	// Parse node sets. Empty strings are allowed when only one
+	// memory type is present.
+	var dramNodes, cxlNodes []int
+	if config.DRAMNodes != "" {
+		dramNodes, err = ParseNodeset(config.DRAMNodes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dramNodes: %w", err)
+		}
 	}
-	cxlNodes, err := ParseNodeset(config.CXLNodes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid cxlNodes: %w", err)
+	if config.CXLNodes != "" {
+		cxlNodes, err = ParseNodeset(config.CXLNodes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cxlNodes: %w", err)
+		}
+	}
+
+	if len(dramNodes) == 0 && len(cxlNodes) == 0 {
+		return nil, fmt.Errorf("at least one of dramNodes or cxlNodes must be specified")
 	}
 
 	// Parse quotas.
@@ -341,12 +351,12 @@ func (m *Manager) logNumaStats(numaStats map[int]uint64) {
 	var nodeStrs []string
 	for node := 0; node <= maxNode; node++ {
 		if bytes, ok := numaStats[node]; ok {
-			nodeStrs = append(nodeStrs, fmt.Sprintf("node%d:%d", node, bytes))
+			nodeStrs = append(nodeStrs, fmt.Sprintf("%d:%d", node, bytes))
 		} else {
-			nodeStrs = append(nodeStrs, fmt.Sprintf("node%d:NA", node))
+			nodeStrs = append(nodeStrs, fmt.Sprintf("%d:NA", node))
 		}
 	}
-	m.LogDebug("NUMA memory distribution: %s\n", strings.Join(nodeStrs, " "))
+	m.LogDebug("NUMA memory distribution: [%s]\n", strings.Join(nodeStrs, " "))
 }
 
 // Start starts watching the cgroup
