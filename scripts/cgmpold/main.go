@@ -31,7 +31,7 @@ import (
 
 // Config represents the daemon configuration
 type Config struct {
-	Cgroups []cgmpolmgr.CgroupConfig `json:"cgroups" yaml:"cgroups"`
+	Cgroups []cgmpolmgr.ManagerConfig `json:"cgroups" yaml:"cgroups"`
 }
 
 func main() {
@@ -91,17 +91,17 @@ func main() {
 	for _, cgroupCfg := range config.Cgroups {
 		dramNodes, err := cgmpolmgr.ParseNodeset(cgroupCfg.DRAMNodes)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid DRAM nodes for %s: %v\n", cgroupCfg.Path, err)
+			fmt.Fprintf(os.Stderr, "Invalid DRAM nodes for %s: %v\n", cgroupCfg.CgroupPath, err)
 			os.Exit(1)
 		}
 		cxlNodes, err := cgmpolmgr.ParseNodeset(cgroupCfg.CXLNodes)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid CXL nodes for %s: %v\n", cgroupCfg.Path, err)
+			fmt.Fprintf(os.Stderr, "Invalid CXL nodes for %s: %v\n", cgroupCfg.CgroupPath, err)
 			os.Exit(1)
 		}
 		allNodes := append(dramNodes, cxlNodes...)
 		if err := mpolinject.ValidateNumaNodes(allNodes); err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid NUMA nodes %v for %s: %v\n", allNodes, cgroupCfg.Path, err)
+			fmt.Fprintf(os.Stderr, "Invalid NUMA nodes %v for %s: %v\n", allNodes, cgroupCfg.CgroupPath, err)
 			os.Exit(1)
 		}
 	}
@@ -111,7 +111,7 @@ func main() {
 	for _, cgroupCfg := range config.Cgroups {
 		manager, err := cgmpolmgr.NewManager(cgroupCfg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create manager for %s: %v\n", cgroupCfg.Path, err)
+			fmt.Fprintf(os.Stderr, "Failed to create manager for %s: %v\n", cgroupCfg.CgroupPath, err)
 			continue
 		}
 		managers = append(managers, manager)
@@ -127,7 +127,7 @@ func main() {
 		if err := manager.Initialize(); err != nil {
 			cgConfig := manager.GetConfig()
 			fmt.Fprintf(os.Stderr, "Failed to initialize memory policy for %s: %v\n",
-				cgConfig.Path, err)
+				cgConfig.CgroupPath, err)
 		}
 	}
 
@@ -136,7 +136,7 @@ func main() {
 		if err := manager.Start(); err != nil {
 			cgConfig := manager.GetConfig()
 			fmt.Fprintf(os.Stderr, "Failed to start watcher for %s: %v\n",
-				cgConfig.Path, err)
+				cgConfig.CgroupPath, err)
 		}
 	}
 
@@ -188,14 +188,14 @@ func loadConfig(filename string) (*Config, error) {
 
 	// Validate configuration
 	for i, cgroup := range config.Cgroups {
-		if cgroup.Path == "" {
+		if cgroup.CgroupPath == "" {
 			return nil, fmt.Errorf("cgroup %d: path is required", i)
 		}
 		if cgroup.MemoryUseOrder == "" {
-			return nil, fmt.Errorf("cgroup %s: memoryUseOrder is required", cgroup.Path)
+			return nil, fmt.Errorf("cgroup %s: memoryUseOrder is required", cgroup.CgroupPath)
 		}
 		if _, err := cgmpolmgr.ParseMemoryUseOrder(cgroup.MemoryUseOrder); err != nil {
-			return nil, fmt.Errorf("cgroup %s: %w", cgroup.Path, err)
+			return nil, fmt.Errorf("cgroup %s: %w", cgroup.CgroupPath, err)
 		}
 	}
 
