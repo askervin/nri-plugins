@@ -21,6 +21,7 @@
           vars:
             shorthands:
               'vanilla': "git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux"
+              'v6.19': "git clone --depth 1 -b v6.19 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux"
               'mainline': "git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git linux"
               'cxl-next': "git clone --depth 1 -b next https://git.kernel.org/pub/scm/linux/kernel/git/cxl/cxl.git linux"
         - name: Generate kernel Fedora packages tarball name... getsource {{ kernel_getsource }} getsource_cmd {{ kernel_getsource_cmd }}
