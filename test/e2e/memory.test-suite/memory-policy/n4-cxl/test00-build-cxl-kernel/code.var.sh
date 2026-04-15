@@ -9,6 +9,9 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
+# Installing dev env may have caused installing conflicting (too new) kernel headers
+# compared to custom kernel build. Remove them, if that's the case.
+vm-command "rpm -qa | grep -q kernel-headers && rpm -e kernel-headers --nodeps"
 vm-kernel-pkgs-install
 
 vm-command "command -v cxl || dnf install -y /usr/bin/cxl numactl"
