@@ -851,8 +851,8 @@ memory-type.resource-policy.nri.io/container.CONTAINER_NAME: HBM,DRAM
 These options configure CPU behavior and power management.
 
 **`cpuClass`** (string)
-- References a CPU class defined in `control.cpu.classes`
-  (policy-level configuration).
+- References a CPU class defined in `cpuClasses` (preferred) or
+  `control.cpu.classes` (legacy, policy-level configuration).
 - Applied when balloon is created, inflated, or deflated.
 - Configures frequency scaling and C-states for CPUs in the balloon.
 
@@ -860,14 +860,19 @@ These options configure CPU behavior and power management.
 - CPU class for idle CPUs (not in any balloon).
 - Applied when CPUs are removed from balloons.
 
-**`control.cpu.classes`** (object, policy-level configuration):
+**`cpuClasses`** (list, policy-level configuration):
 
-Each CPU class (keyed by name) can define:
+User-friendly CPU class definitions. Each class is an object with:
 
-- `minFreq` (integer): Minimum CPU frequency in kHz.
-- `maxFreq` (integer): Maximum CPU frequency in kHz.
-- `uncoreMinFreq` (integer): Minimum uncore frequency in kHz.
-- `uncoreMaxFreq` (integer): Maximum uncore frequency in kHz.
+- `name` (string): Class name referenced by `cpuClass` in balloon types.
+- `minFreq` (string or number): Minimum CPU frequency. Accepts values
+  with units: `"3.2GHz"`, `"2900MHz"`, `"2900000kHz"`, or a plain
+  number in kHz. Also accepts symbolic names: `"min"` (platform
+  minimum), `"base"` (CPU base frequency), `"turbo"` (maximum turbo
+  frequency), which are resolved at runtime from sysfs.
+- `maxFreq` (string or number): Maximum CPU frequency (same format).
+- `uncoreMinFreq` / `uncoreMaxFreq` (string or number): Uncore
+  frequency limits (same format).
 - `disabledCstates` (list): C-state names to disable (e.g., `["C6", "C8"]`).
   - Disabling deep C-states reduces latency by preventing deep sleep.
   - Disabling intermediate C-states keeps CPU more responsive longer
@@ -875,6 +880,17 @@ Each CPU class (keyed by name) can define:
     not needed.
   - List available C-states: `grep
     . /sys/devices/system/cpu/cpu0/cpuidle/state*/name`.
+- `energyPerformancePreference` (integer): EPP value for CPUs.
+- `freqGovernor` (string): CPUFreq governor (e.g., `"performance"`).
+- `turboPriority` (integer): Controls exclusive turbo frequency
+  access. Among CPU classes with active balloons, only the class
+  with the highest `turboPriority` gets the symbolic frequency
+  `"turbo"` resolved to the actual turbo frequency. All other
+  classes get `"turbo"` resolved to the base frequency. When the
+  highest-priority class no longer has active balloons, the next
+  highest-priority class regains turbo. If all classes have
+  `turboPriority` 0 (default), every class gets real turbo -- no
+  competition occurs.
 
 ```yaml
 balloonTypes:
@@ -884,6 +900,37 @@ balloonTypes:
   cpuClass: normal
 idleCPUClass: powersave
 
+cpuClasses:
+- name: turbo
+  minFreq: "turbo"
+  maxFreq: "turbo"
+  disabledCstates: [C6, C8, C10]
+  turboPriority: 10
+- name: normal
+  minFreq: "min"
+  maxFreq: "turbo"
+  turboPriority: 1
+- name: powersave
+  minFreq: "min"
+  maxFreq: "1.2GHz"
+```
+
+**`control.cpu.classes`** (object, legacy policy-level configuration):
+
+This is the original low-level CPU class configuration. It continues
+to work for backwards compatibility. If a class name is defined in
+both `cpuClasses` and `control.cpu.classes`, the `cpuClasses`
+definition takes precedence.
+
+Each CPU class (keyed by name) can define:
+
+- `minFreq` (integer): Minimum CPU frequency in kHz.
+- `maxFreq` (integer): Maximum CPU frequency in kHz.
+- `uncoreMinFreq` (integer): Minimum uncore frequency in kHz.
+- `uncoreMaxFreq` (integer): Maximum uncore frequency in kHz.
+- `disabledCstates` (list): C-state names to disable (e.g., `["C6", "C8"]`).
+
+```yaml
 control:
   cpu:
     classes:
@@ -1352,21 +1399,19 @@ spec:
     overloadsLevelInBalloon: false  # Share L2 between CPUs within balloon
 
   # CPU classes for frequency and C-state control
-  control:
-    cpu:
-      classes:
-        ultra-low-latency:
-          minFreq: 3500000
-          maxFreq: 3900000
-          uncoreMinFreq: 2400000
-          uncoreMaxFreq: 2400000
-          disabledCstates: [C6, C7, C8, C10]
-        normal:
-          minFreq: 800000
-          maxFreq: 2500000
-        powersave:
-          minFreq: 800000
-          maxFreq: 800000
+  cpuClasses:
+  - name: ultra-low-latency
+    minFreq: "base"
+    maxFreq: "turbo"
+    uncoreMinFreq: "2.4GHz"
+    uncoreMaxFreq: "2.4GHz"
+    disabledCstates: [C6, C7, C8, C10]
+  - name: normal
+    minFreq: "min"
+    maxFreq: "base"
+  - name: powersave
+    minFreq: "min"
+    maxFreq: "min"
 
   # Scheduling for high priority
   schedulingClasses:
