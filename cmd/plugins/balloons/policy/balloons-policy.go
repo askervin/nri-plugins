@@ -89,9 +89,10 @@ type balloons struct {
 	meters    *Meters      // balloon metrics
 	meterLock sync.RWMutex // protects metrics collection against allocation
 
-	cpuAllocator cpuallocator.CPUAllocator    // CPU allocator used by the policy
-	memAllocator *libmem.Allocator            // memory allocator used by the policy
-	loadVirtDev  map[string]*loadClassVirtDev // map LoadClasses to virtual devices
+	cpuAllocator   cpuallocator.CPUAllocator    // CPU allocator used by the policy
+	memAllocator   *libmem.Allocator            // memory allocator used by the policy
+	turboAllocator *CPUClassTurboAllocator      // turbo budget allocator based on CPUClasses
+	loadVirtDev    map[string]*loadClassVirtDev // map LoadClasses to virtual devices
 }
 
 // Balloon contains attributes of a balloon instance
@@ -791,20 +792,13 @@ func largest(sliceLen int, valueOf func(i int) int) ([]int, int) {
 // resetCpuClass resets CPU configurations globally. All balloons can
 // be ignored, their CPU configurations will be applied later.
 func (p *balloons) resetCpuClass() error {
-	// Usual inputs:
-	// - p.allowed (cpuset.CPUset): all CPUs available for this
-	//   policy.
-	// - p.IdleCpuClass (string): CPU class for allowed CPUs.
-	//
-	// Other inputs, if needed:
-	// - p.reserved (cpuset.CPUset): CPUs of ReservedResources
-	//   (typically for kube-system containers).
-	//
-	// Note: p.useCpuClass(balloon) will be called before assigning
-	// containers on the balloon, including the reserved balloon.
-	//
-	// TODO: don't depend on cpu controller directly
-	if err := cpucontrol.Assign(p.cch, p.bpoptions.IdleCpuClass, p.allowed.UnsortedList()...); err != nil {
+	// p.useCpuClass(balloon) will be called later for every balloon,
+	// including the reserved balloon, to set the per-balloon CPU
+	// class. Here we only assign the idle class to all allowed CPUs.
+	if p.turboAllocator == nil {
+		return nil
+	}
+	if err := p.turboAllocator.ResetIdle(p.allowed); err != nil {
 		log.Warnf("failed to reset class of available cpus: %v", err)
 	} else {
 		log.Debugf("reset class of available cpus: %q (reserved: %q)", p.allowed, p.reserved)
@@ -812,29 +806,11 @@ func (p *balloons) resetCpuClass() error {
 	return nil
 }
 
-// useCpuClass configures CPUs of a balloon.
+// useCpuClass configures CPUs of a balloon by delegating to the
+// turbo-aware CPU class allocator.
 func (p *balloons) useCpuClass(bln *Balloon) error {
-	// Usual inputs:
-	// - CPUs that cpuallocator has reserved for this balloon:
-	//   bln.Cpus (cpuset.CPUSet).
-	// - User-defined CPU configuration for CPUs of balloon of this type:
-	//   bln.Def.CpuClass (string).
-	// - Current configuration(?): feel free to add data
-	//   structure for this. For instance policy-global p.cpuConfs,
-	//   or balloon-local bln.cpuConfs.
-	//
-	// Other input examples, if needed:
-	// - Requested CPU resources by all containers in the balloon:
-	//   p.requestedMilliCpus(bln).
-	// - Free CPU resources in the balloon: p.freeMilliCpus(bln).
-	// - Number of assigned containers: bln.ContainerCount().
-	// - Container details: access p.cch with bln.ContainerIDs().
-	// - User-defined CPU AllocatorPriority: bln.Def.AllocatorPriority.
-	// - All existing balloon instances: p.balloons.
-	// - CPU configurations by user: bln.Def.CpuClass (for bln in p.balloons)
 	if len(bln.components) > 0 {
-		// If this is a composite balloon, CPU class is
-		// defined in the component balloons.
+		// Composite balloon: each component carries its own CpuClass.
 		log.Debugf("apply CPU class %q on CPUs %s of composite balloon %q",
 			bln.Def.CpuClass, bln.Cpus, bln.PrettyName())
 		for _, compBln := range bln.components {
@@ -842,23 +818,25 @@ func (p *balloons) useCpuClass(bln *Balloon) error {
 				log.Warnf("failed to apply CPU class %q on CPUs %s of %q in composite balloon %q: %v",
 					compBln.Def.CpuClass, compBln.Cpus, compBln.PrettyName(), bln.PrettyName(), err)
 			}
-
 		}
 		return nil
 	}
-	if err := cpucontrol.Assign(p.cch, bln.Def.CpuClass, bln.Cpus.UnsortedList()...); err != nil {
+	if p.turboAllocator == nil {
+		return nil
+	}
+	log.Debugf("apply CPU class %q on CPUs %q of %q", bln.Def.CpuClass, bln.Cpus, bln.PrettyName())
+	if err := p.turboAllocator.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
 		log.Warnf("failed to apply class %q on CPUs %q: %v", bln.Def.CpuClass, bln.Cpus, err)
-	} else {
-		log.Debugf("apply CPU class %q on CPUs %q of %q", bln.Def.CpuClass, bln.Cpus, bln.PrettyName())
 	}
 	return nil
 }
 
 // forgetCpuClass is called when CPUs of a balloon are released from duty.
 func (p *balloons) forgetCpuClass(bln *Balloon) {
-	// Use p.IdleCpuClass for bln.Cpus.
-	// Usual inputs: see useCpuClass
-	if err := cpucontrol.Assign(p.cch, p.bpoptions.IdleCpuClass, bln.Cpus.UnsortedList()...); err != nil {
+	if p.turboAllocator == nil {
+		return
+	}
+	if err := p.turboAllocator.ForgetClass(bln.Cpus); err != nil {
 		log.Warnf("failed to forget class %q of cpus %q: %v", bln.Def.CpuClass, bln.Cpus, err)
 	} else {
 		if len(bln.components) > 0 {
@@ -1432,6 +1410,13 @@ func changesCpuClasses(opts0, opts1 *BalloonsOptions) bool {
 			return true
 		}
 	}
+	// Detect changes in CPUClasses definitions (turbo attributes, frequencies, etc.)
+	if len(opts0.CPUClasses) != len(opts1.CPUClasses) {
+		return true
+	}
+	if utils.DumpJSON(opts0.CPUClasses) != utils.DumpJSON(opts1.CPUClasses) {
+		return true
+	}
 	return false
 }
 
@@ -1454,6 +1439,13 @@ func (p *balloons) Reconfigure(newCfg interface{}) error {
 			log.Infof("no configuration changes")
 		} else {
 			log.Infof("configuration changes only on CPU classes")
+			// Update CPUClasses definitions.
+			p.bpoptions.CPUClasses = newBalloonsOptions.CPUClasses
+			if p.turboAllocator != nil {
+				if err := p.turboAllocator.Reconfigure(p.bpoptions.CPUClasses, p.bpoptions.IdleCpuClass); err != nil {
+					log.Warnf("failed to reconfigure CPU class allocator: %v", err)
+				}
+			}
 			// Update new CPU classes to existing balloon
 			// definitions. The same BalloonDef instances
 			// must be kept in use, because each Balloon
@@ -1600,6 +1592,31 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 	if len(undefinedSchedulingClasses) > 0 {
 		return balloonsError("schedulingClass(es) defined in balloonTypes but missing from schedulingClasses: %v", undefinedSchedulingClasses)
 	}
+	// Validate CPUClasses.
+	cpuClassNames := map[string]struct{}{}
+	for _, cc := range bpoptions.CPUClasses {
+		if cc.Name == "" {
+			return balloonsError("missing or empty name in a cpuClasses entry")
+		}
+		if _, dup := cpuClassNames[cc.Name]; dup {
+			return balloonsError("duplicate cpuClasses name: %q", cc.Name)
+		}
+		cpuClassNames[cc.Name] = struct{}{}
+	}
+	// Verify that cpuClass references in balloon types are defined
+	// in either cpuClasses or existing control.cpu.classes.
+	existingControlClasses := cpucontrol.GetClasses()
+	for _, blnDef := range bpoptions.BalloonDefs {
+		if blnDef.CpuClass == "" {
+			continue
+		}
+		_, inCPUClasses := cpuClassNames[blnDef.CpuClass]
+		_, inControlClasses := existingControlClasses[blnDef.CpuClass]
+		if !inCPUClasses && !inControlClasses {
+			log.Warnf("cpuClass %q referenced by balloon type %q is not defined in cpuClasses or control.cpu.classes",
+				blnDef.CpuClass, blnDef.Name)
+		}
+	}
 	var circularCheck func(name string, seen map[string]int) error
 	circularCheck = func(name string, seen map[string]int) error {
 		if seen[name] > 0 {
@@ -1670,6 +1687,30 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	p.allowed = availableCpus.Intersection(p.options.System.OnlineCPUs())
 
 	setOmittedDefaults(bpoptions)
+
+	// Set bpoptions early so the turbo allocator construction below
+	// has access to CPUClasses.
+	p.bpoptions = bpoptions
+
+	// Construct or reconfigure the turbo-aware CPU class allocator.
+	// All cpucontrol.SetClass / cpucontrol.Assign calls flow through
+	// it.
+	if p.turboAllocator == nil {
+		ta, err := NewCPUClassTurboAllocator(
+			WithSystem(p.options.System),
+			WithCache(p.cch),
+			WithCPUClasses(bpoptions.CPUClasses),
+			WithIdleClass(bpoptions.IdleCpuClass),
+		)
+		if err != nil {
+			return balloonsError("failed to create CPU class turbo allocator: %w", err)
+		}
+		p.turboAllocator = ta
+	} else {
+		if err := p.turboAllocator.Reconfigure(bpoptions.CPUClasses, bpoptions.IdleCpuClass); err != nil {
+			return balloonsError("failed to reconfigure CPU class turbo allocator: %w", err)
+		}
+	}
 
 	reservedBalloonDef, defaultBalloonDef, err := p.fillBuiltinBalloonDefs(bpoptions)
 	if err != nil {
