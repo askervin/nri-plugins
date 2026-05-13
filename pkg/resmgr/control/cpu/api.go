@@ -24,6 +24,18 @@ func GetClasses() map[string]Class {
 	return getCPUController().getClasses()
 }
 
+// SetClass adds or updates a CPU class definition. This allows
+// policies to dynamically define CPU classes (e.g., from
+// user-friendly CPUClasses configuration) without requiring them
+// to be present in the static control.cpu.classes config.
+func SetClass(name string, class Class) {
+	ctl := getCPUController()
+	if ctl.classes == nil {
+		ctl.classes = make(map[string]Class)
+	}
+	ctl.classes[name] = class
+}
+
 // Assign assigns a set of cpus to a class.
 //
 // TODO: Drop this function. Don't store cpu class in policy data but implement
@@ -67,6 +79,8 @@ func Assign(c cache.Cache, class string, cpus ...int) error {
 		if err := ctl.enforceUncore(assignments, cpus...); err != nil {
 			log.Errorf("uncore frequency enforcement failed: %v", err)
 		}
+	} else {
+		log.Debugf("controller not started yet: deferring enforcement of class %q on cpus %v", class, cpus)
 	}
 
 	return nil

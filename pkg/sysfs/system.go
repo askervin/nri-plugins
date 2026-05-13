@@ -294,6 +294,8 @@ var (
 	}
 	cacheEnvOverridesVar  = "OVERRIDE_SYS_CACHES"
 	cacheEnvOverridesJson = os.Getenv(cacheEnvOverridesVar)
+	cpufreqEnvOverridesVar  = "OVERRIDE_SYS_CPUFREQ"
+	cpufreqEnvOverridesJson = os.Getenv(cpufreqEnvOverridesVar)
 )
 
 // MemInfo contains data read from a NUMA node meminfo file.
@@ -337,6 +339,16 @@ type cacheOverride struct {
 }
 
 var cacheEnvOverrides map[int][]*Cache
+
+// cpufreqOverride specifies frequency values to use instead of reading sysfs.
+type cpufreqOverride struct {
+	Cpus string `json:"cpus"` // CPU ids in list format, e.g. "0-15"
+	Base uint64 `json:"base"` // base frequency (kHz)
+	Min  uint64 `json:"min"`  // minimum frequency (kHz)
+	Max  uint64 `json:"max"`  // maximum/turbo frequency (kHz)
+}
+
+var cpufreqEnvOverrides map[int]CPUFreq
 
 // SetSysRoot sets the sys root directory.
 func SetSysRoot(root string) {
@@ -1062,6 +1074,10 @@ func (sys *system) discoverCPU(path string) error {
 	}
 	if _, err := readSysfsEntry(path, "cpufreq/cpuinfo_max_freq", &cpu.freq.Max); err != nil {
 		cpu.freq.Max = 0
+	}
+	// Apply cpufreq overrides from OVERRIDE_SYS_CPUFREQ if set.
+	if err := sys.applyCpufreqOverrides(cpu); err != nil {
+		log.Warnf("failed to apply cpufreq overrides for cpu%d: %v", cpu.id, err)
 	}
 	if _, err := readSysfsEntry(path, "cpufreq/energy_performance_preference", &cpu.epp); err != nil {
 		cpu.epp = EPPUnknown
@@ -2082,7 +2098,45 @@ func (sys *system) discoverCacheFromOverrides(cpu *cpu) (bool, error) {
 	return false, nil
 }
 
-// Discover cache associated with the given CPU.
+// applyCpufreqOverrides overrides CPU frequency values from OVERRIDE_SYS_CPUFREQ.
+func (sys *system) applyCpufreqOverrides(cpu *cpu) error {
+	if cpufreqEnvOverridesJson == "" {
+		return nil
+	}
+	if cpufreqEnvOverrides == nil {
+		sys.Debugf("parsing cpufreq overrides from %s=%q", cpufreqEnvOverridesVar, cpufreqEnvOverridesJson)
+		overrides, err := parseCpufreqOverrides(cpufreqEnvOverridesJson)
+		if err != nil {
+			return fmt.Errorf("failed to parse %s: %v", cpufreqEnvOverridesVar, err)
+		}
+		cpufreqEnvOverrides = overrides
+	}
+	if freq, ok := cpufreqEnvOverrides[cpu.id]; ok {
+		sys.Debugf("cpufreq override for cpu%d: base=%d min=%d max=%d", cpu.id, freq.Base, freq.Min, freq.Max)
+		cpu.freq = freq
+	}
+	return nil
+}
+
+// parseCpufreqOverrides parses JSON cpufreq overrides into a per-CPU map.
+func parseCpufreqOverrides(jsonData string) (map[int]CPUFreq, error) {
+	var overrides []cpufreqOverride
+	if err := json.Unmarshal([]byte(jsonData), &overrides); err != nil {
+		return nil, err
+	}
+	result := make(map[int]CPUFreq)
+	for _, o := range overrides {
+		cpus, err := idset.NewIDSetFromString(o.Cpus)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CPU list %q: %v", o.Cpus, err)
+		}
+		freq := CPUFreq{Base: o.Base, Min: o.Min, Max: o.Max}
+		for cpu := range cpus {
+			result[cpu] = freq
+		}
+	}
+	return result, nil
+}
 func (sys *system) discoverCache(cpu *cpu, path string) error {
 	var id idset.ID
 
