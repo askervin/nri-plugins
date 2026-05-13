@@ -733,6 +733,93 @@ spec:
                         type: boolean
                     type: object
                 type: object
+              cpuClasses:
+                description: |-
+                  CPUClasses define CPU frequency, C-state, and turbo
+                  attributes for CPU classes referenced by balloon types.
+                  This is a user-friendly alternative to
+                  control.cpu.classes: frequencies accept units like "3.2GHz"
+                  or "800MHz", C-state controls are specified directly, and
+                  exclusive turbo frequency access is controlled via
+                  turboPriority.
+                items:
+                  description: |-
+                    CPUClass specifies CPU frequency, C-state, and turbo attributes
+                    for a CPU class. This is a user-friendly alternative to the
+                    control.cpu.classes configuration: frequencies can be specified
+                    with units (e.g., "3.2GHz", "800MHz"), C-states are controlled
+                    directly, and turbo frequency allocation is supported.
+
+                    Turbo allocation: When multiple CPU classes use the symbolic
+                    frequency "turbo" in their minFreq or maxFreq, turboPriority
+                    controls which class gets actual turbo frequencies. Only the
+                    CPU class with the highest turboPriority among those with active
+                    balloons gets "turbo" resolved to the real turbo frequency.
+                    All other classes get "turbo" resolved to the base frequency.
+                    When the highest-priority class no longer has active balloons,
+                    the next highest-priority class gets turbo. If no class sets
+                    turboPriority (all are 0), every class gets real turbo.
+                  properties:
+                    disabledCstates:
+                      description: |-
+                        DisabledCstates lists C-states disabled for CPUs in this class.
+                        Example: ["C4", "C6", "C8", "C10"]
+                      items:
+                        type: string
+                      type: array
+                    energyPerformancePreference:
+                      description: EnergyPerformancePreference for CPUs in this class.
+                      minimum: 0
+                      type: integer
+                    freqGovernor:
+                      description: |-
+                        FreqGovernor is the CPUFreq governor for this class
+                        (e.g., "performance", "powersave", "schedutil").
+                      type: string
+                    maxFreq:
+                      description: |-
+                        MaxFreq is the maximum CPU frequency for this class.
+                        Same format and symbolic names as MinFreq.
+                      type: string
+                    minFreq:
+                      description: |-
+                        MinFreq is the minimum CPU frequency for this class.
+                        Accepts values with units: "3.2GHz", "2900MHz", "2900000kHz",
+                        or a plain number in kHz. Also accepts symbolic names: "min"
+                        (platform minimum), "base" (CPU base frequency), "turbo"
+                        (maximum turbo frequency), resolved at runtime from sysfs.
+                        When turboPriority is set, "turbo" resolves to actual turbo
+                        only for the highest-priority active class; others get base.
+                      type: string
+                    name:
+                      description: Name of the CPU class.
+                      minLength: 1
+                      type: string
+                    turboPriority:
+                      description: |-
+                        TurboPriority controls exclusive turbo frequency access.
+                        Among CPU classes with active balloons, only the class with
+                        the highest turboPriority gets the symbolic frequency "turbo"
+                        resolved to the actual turbo frequency. All other classes get
+                        "turbo" resolved to the base frequency instead.
+                        If all classes have turboPriority 0 (default), every class
+                        gets actual turbo frequencies -- no competition occurs.
+                      minimum: 0
+                      type: integer
+                    uncoreMaxFreq:
+                      description: |-
+                        UncoreMaxFreq is the maximum uncore frequency for this class.
+                        Accepts values with units like MinFreq.
+                      type: string
+                    uncoreMinFreq:
+                      description: |-
+                        UncoreMinFreq is the minimum uncore frequency for this class.
+                        Accepts values with units like MinFreq.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
               idleCPUClass:
                 description: |-
                   IdleCpuClass controls how unusded CPUs outside any a

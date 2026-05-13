@@ -32,6 +32,8 @@ type (
 	CPUTopologyLevel          = policy.CPUTopologyLevel
 	ComponentCreationStrategy = policy.ComponentCreationStrategy
 	SchedulingClass           = policy.SchedulingClass
+	CPUClass                  = policy.CPUClass
+	Frequency                 = policy.Frequency
 )
 
 const (
@@ -135,6 +137,14 @@ type Config struct {
 	// SchedulingClasses specify scheduling classes available in
 	// balloon types.
 	SchedulingClasses []*SchedulingClass `json:"schedulingClasses,omitempty"`
+	// CPUClasses define CPU frequency, C-state, and turbo
+	// attributes for CPU classes referenced by balloon types.
+	// This is a user-friendly alternative to
+	// control.cpu.classes: frequencies accept units like "3.2GHz"
+	// or "800MHz", C-state controls are specified directly, and
+	// exclusive turbo frequency access is controlled via
+	// turboPriority.
+	CPUClasses []*CPUClass `json:"cpuClasses,omitempty"`
 }
 
 // BalloonDef contains a balloon definition.
