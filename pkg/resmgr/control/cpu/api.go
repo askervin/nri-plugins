@@ -24,10 +24,31 @@ func GetClasses() map[string]Class {
 	return getCPUController().getClasses()
 }
 
+// SetClass adds or updates a CPU class definition. This allows
+// policies to dynamically define CPU classes (e.g., from
+// user-friendly CPUClasses configuration) without requiring them
+// to be present in the static control.cpu.classes config.
+//
+// The change is purely in-memory: any CPUs currently assigned to the
+// updated class are marked dirty so the next Commit() will re-enforce
+// the new definition on them in a single batch.
+func SetClass(name string, class Class) {
+	ctl := getCPUController()
+	if ctl.classes == nil {
+		ctl.classes = make(map[string]Class)
+	}
+	ctl.classes[name] = class
+	ctl.markClassDirty(name)
+}
+
 // Assign assigns a set of cpus to a class.
 //
-// TODO: Drop this function. Don't store cpu class in policy data but implement
-// controller-specific data store in cache.
+// The assignment is recorded in the cache (so it survives across
+// restarts) and the affected CPUs are marked dirty. No sysfs writes
+// happen here; the CPU controller's Commit() (invoked once per NRI
+// request after all per-container hooks have run) coalesces all
+// pending changes into the minimal set of writes needed to reach the
+// final desired state.
 func Assign(c cache.Cache, class string, cpus ...int) error {
 	// NOTE: no locking implemented anywhere around -> we don't expect multiple parallel callers
 
@@ -54,20 +75,7 @@ func Assign(c cache.Cache, class string, cpus ...int) error {
 
 	setClassAssignments(c, &assignments)
 
-	if getCPUController().started {
-		// We don't want to try to enforce until the controller has been fully
-		// started. Enforcement of all assignments happens on StarT(), anyway.
-		ctl := getCPUController()
-		if err := ctl.enforceCpufreq(class, cpus...); err != nil {
-			log.Errorf("cpufreq enforcement failed: %v", err)
-		}
-		if err := ctl.enforceCstates(class, cpus...); err != nil {
-			log.Errorf("cstate enforcement failed: %v", err)
-		}
-		if err := ctl.enforceUncore(assignments, cpus...); err != nil {
-			log.Errorf("uncore frequency enforcement failed: %v", err)
-		}
-	}
+	getCPUController().markCPUsDirty(cpus...)
 
 	return nil
 }

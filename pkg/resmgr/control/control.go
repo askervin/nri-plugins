@@ -40,6 +40,11 @@ type Control interface {
 	RunPostUpdateHooks(cache.Container) error
 	// RunPostStopHooks runs the post-stop hooks of all registered controllers.
 	RunPostStopHooks(cache.Container) error
+	// RunCommit invokes Commit on every running controller. It is meant
+	// to be called once per NRI request, after all per-container hooks
+	// have run, so that controllers can flush any deferred state
+	// changes (e.g. sysfs writes) in a single batch.
+	RunCommit() error
 }
 
 // Controller is the interface all resource controllers must implement.
@@ -58,6 +63,11 @@ type Controller interface {
 	PostUpdateHook(cache.Container) error
 	// PostStopHook is the controller's post-stop hook.
 	PostStopHook(cache.Container) error
+	// Commit applies any deferred state changes the controller has
+	// accumulated since the previous Commit. It is called once per
+	// NRI request, after all per-container hooks have run. Controllers
+	// with no deferred state should return nil.
+	Commit() error
 }
 
 // control encapsulates our controller-agnostic runtime state.
@@ -189,6 +199,21 @@ func (c *control) RunPostStopHooks(container cache.Container) error {
 		}
 	}
 	return nil
+}
+
+// RunCommit invokes Commit() on every running controller.
+func (c *control) RunCommit() error {
+	var errs []error
+	for _, controller := range c.controllers {
+		if !controller.running {
+			continue
+		}
+		log.Debugf("running %s commit hook", controller.name)
+		if err := controller.c.Commit(); err != nil {
+			errs = append(errs, controlError("%s commit failed: %v", controller.name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // runhook executes the given container hook according to the controller settings
