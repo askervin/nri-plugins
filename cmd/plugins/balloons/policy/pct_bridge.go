@@ -71,6 +71,13 @@ type sstBridge interface {
 	// GetCPUClosID returns the current CLOS association of a CPU.
 	GetCPUClosID(cpu int) (int, error)
 
+	// MaxHpCpus returns the maximum number of CPUs that can be
+	// simultaneously held in the high-priority CLOS on the given
+	// package. The second return value is false if the platform
+	// does not expose this capability; callers should then fall
+	// back to a free-CPU-count heuristic.
+	MaxHpCpus(pkgID int) (int, bool)
+
 	// Shutdown restores managed-mode platform state to a sensible
 	// default (associate all CPUs to CLOS 0, optionally disable
 	// SST-TF/CP). For the mock this also flushes the state file.

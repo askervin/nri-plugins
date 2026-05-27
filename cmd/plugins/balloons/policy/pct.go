@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"sort"
 
+	idset "github.com/intel/goresctrl/pkg/utils"
+
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
@@ -59,6 +61,11 @@ type CPUClassPctAllocator struct {
 	classPlan     map[string]*pctClassPlan // class name -> CLOS plan (PCT classes only)
 	idleClassName string
 	idleClos      int // CLOS used for CPUs not held by any PCT class
+	// hpUsed tracks CPUs currently held by HP balloons, grouped
+	// by package ID. Updated from UseClass / ForgetClass /
+	// ResetIdle so HpReserveCpus can reason about per-package
+	// remaining PCT room (= MaxHpCpus(pkg) - len(hpUsed[pkg])).
+	hpUsed map[int]cpuset.CPUSet
 }
 
 // NewCPUClassPctAllocator constructs a PCT allocator. The bridge
@@ -91,6 +98,7 @@ func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName s
 	}
 	a.idleClassName = idleCpuClassName
 	a.idleClos = pctDefaultHpClos // CLOS 0 == default-after-reset
+	a.hpUsed = map[int]cpuset.CPUSet{}
 
 	mode, plans, err := a.planClasses(classes)
 	if err != nil {
@@ -225,6 +233,7 @@ func (a *CPUClassPctAllocator) UseClass(className string, cpus cpuset.CPUSet) er
 	if !a.Active() || cpus.IsEmpty() {
 		return nil
 	}
+	a.trackHpUsage(className, cpus)
 	plan, ok := a.classPlan[className]
 	if !ok {
 		// Non-PCT class: in managed mode, send CPUs to the idle
@@ -243,6 +252,7 @@ func (a *CPUClassPctAllocator) ForgetClass(cpus cpuset.CPUSet) error {
 	if !a.Active() || cpus.IsEmpty() {
 		return nil
 	}
+	a.clearHpUsage(cpus)
 	if a.mode == pctModeAssocOnly {
 		return nil
 	}
@@ -255,10 +265,50 @@ func (a *CPUClassPctAllocator) ResetIdle(cpus cpuset.CPUSet) error {
 	if !a.Active() || cpus.IsEmpty() {
 		return nil
 	}
+	a.clearHpUsage(cpus)
 	if a.mode == pctModeAssocOnly {
 		return nil
 	}
 	return a.associate(cpus, a.idleClos)
+}
+
+// trackHpUsage records that `cpus` are now held by a balloon of
+// class `className`. CPUs are first removed from every package's
+// HP set (in case they moved between balloons), then re-added to
+// the appropriate package only if className is an HP class.
+func (a *CPUClassPctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet) {
+	if !a.IsManaged() {
+		return
+	}
+	a.clearHpUsage(cpus)
+	if !a.ClassIsHighPriority(className) {
+		return
+	}
+	perPkg := map[int][]int{}
+	for _, cpu := range cpus.UnsortedList() {
+		c := a.sys.CPU(idset.ID(cpu))
+		if c == nil {
+			continue
+		}
+		pkg := int(c.PackageID())
+		perPkg[pkg] = append(perPkg[pkg], cpu)
+	}
+	for pkg, list := range perPkg {
+		set := a.hpUsed[pkg]
+		a.hpUsed[pkg] = set.Union(cpuset.New(list...))
+	}
+}
+
+// clearHpUsage removes `cpus` from every package's HP set.
+func (a *CPUClassPctAllocator) clearHpUsage(cpus cpuset.CPUSet) {
+	if !a.IsManaged() {
+		return
+	}
+	for pkg, set := range a.hpUsed {
+		if remaining := set.Difference(cpus); remaining.Size() != set.Size() {
+			a.hpUsed[pkg] = remaining
+		}
+	}
 }
 
 func (a *CPUClassPctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
@@ -296,4 +346,157 @@ func (a *CPUClassPctAllocator) modeString() string {
 	default:
 		return "disabled"
 	}
+}
+
+// IsManaged reports whether PCT runs in managed mode (i.e. some
+// cpuClass uses pctPriority and we own the CLOS configuration).
+func (a *CPUClassPctAllocator) IsManaged() bool {
+	return a != nil && a.mode == pctModeManaged
+}
+
+// ReferencedClosIDs returns the sorted, deduplicated list of CLOS
+// IDs that appear in any pctClassPlan. Used to register one static
+// virtDevSstClos<N> per CLOS.
+func (a *CPUClassPctAllocator) ReferencedClosIDs() []int {
+	if !a.Active() {
+		return nil
+	}
+	seen := map[int]bool{}
+	ids := []int{}
+	for _, p := range a.classPlan {
+		if seen[p.ClosID] {
+			continue
+		}
+		seen[p.ClosID] = true
+		ids = append(ids, p.ClosID)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// ClassClosID returns the CLOS ID that the named cpuClass maps to,
+// or (-1, false) if the class has no PCT plan.
+func (a *CPUClassPctAllocator) ClassClosID(className string) (int, bool) {
+	if !a.Active() {
+		return -1, false
+	}
+	p, ok := a.classPlan[className]
+	if !ok {
+		return -1, false
+	}
+	return p.ClosID, true
+}
+
+// ClassIsHighPriority reports whether the cpuClass is the managed
+// HP class (pctPriority: high). Used to drive the dynamic
+// virtDevSstHpReserve close/far hint.
+func (a *CPUClassPctAllocator) ClassIsHighPriority(className string) bool {
+	if !a.IsManaged() {
+		return false
+	}
+	cc, ok := a.classByName[className]
+	return ok && cc.PctPriority == "high"
+}
+
+// ClosCpus returns the set of allowed CPUs currently associated to
+// CLOS closID, as reported by the SST bridge. Used at policy setup
+// to seed the static virtDevSstClos<N> virtual devices.
+func (a *CPUClassPctAllocator) ClosCpus(closID int, allowed cpuset.CPUSet) cpuset.CPUSet {
+	if !a.Active() {
+		return cpuset.New()
+	}
+	out := []int{}
+	for _, cpu := range allowed.UnsortedList() {
+		id, err := a.bridge.GetCPUClosID(cpu)
+		if err != nil {
+			continue
+		}
+		if id == closID {
+			out = append(out, cpu)
+		}
+	}
+	return cpuset.New(out...)
+}
+
+// HpInUseCpus returns the union of all CPUs that belong to
+// packages currently hosting at least one HP CPU. LP and non-PCT
+// balloons use this as a far-from hint so that LP/normal work
+// does not compete for shared package power budget with HP work.
+func (a *CPUClassPctAllocator) HpInUseCpus() cpuset.CPUSet {
+	if !a.IsManaged() {
+		return cpuset.New()
+	}
+	out := cpuset.New()
+	for pkgID, used := range a.hpUsed {
+		if used.IsEmpty() {
+			continue
+		}
+		pkg := a.sys.Package(idset.ID(pkgID))
+		if pkg == nil {
+			continue
+		}
+		out = out.Union(pkg.CPUSet())
+	}
+	return out
+}
+
+// HpReserveCpus returns the subset of `free` that lies on the
+// package with the largest remaining PCT high-priority budget.
+// The "HP room" of a package is
+//
+//	room = MaxHpCpus(pkg) − len(hpUsed[pkg] \ excludeBln)
+//
+// where excludeBln are CPUs of the balloon currently being
+// resized (so it does not compete against itself). Packages
+// where the bridge does not expose MaxHpCpus, or where every
+// package returns "unknown", fall back to a free-CPU-count
+// heuristic. Ties are broken by largest free-CPU count.
+//
+// The returned set is the intersection of the winning package's
+// CPUs with `free`. If no package has any room or no free CPUs,
+// returns the empty set so callers fall back to plain topology
+// placement.
+func (a *CPUClassPctAllocator) HpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet) cpuset.CPUSet {
+	if !a.IsManaged() || free.IsEmpty() {
+		return cpuset.New()
+	}
+	var bestPkg cpuset.CPUSet
+	bestRoom := -1
+	bestFree := -1
+	anyKnown := false
+	for _, pkgID := range a.sys.PackageIDs() {
+		pkg := a.sys.Package(pkgID)
+		if pkg == nil {
+			continue
+		}
+		pkgFree := pkg.CPUSet().Intersection(free)
+		if pkgFree.IsEmpty() {
+			continue
+		}
+		room := pkgFree.Size() // fallback: "most free CPUs"
+		if maxHp, ok := a.bridge.MaxHpCpus(int(pkgID)); ok {
+			anyKnown = true
+			used := a.hpUsed[int(pkgID)]
+			if excludeBln.Size() > 0 {
+				used = used.Difference(excludeBln)
+			}
+			room = maxHp - used.Size()
+			if room < 0 {
+				room = 0
+			}
+		}
+		if room > bestRoom || (room == bestRoom && pkgFree.Size() > bestFree) {
+			bestRoom = room
+			bestFree = pkgFree.Size()
+			bestPkg = pkgFree
+		}
+	}
+	if bestRoom <= 0 && anyKnown {
+		log.Debugf("pct: no HP room left on any package, falling back to topology placement")
+		return cpuset.New()
+	}
+	if bestPkg.IsEmpty() {
+		return cpuset.New()
+	}
+	return bestPkg
 }

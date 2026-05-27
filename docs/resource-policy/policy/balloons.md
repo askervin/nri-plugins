@@ -980,6 +980,22 @@ On hosts without SST support the PCT fields are ignored with a
 warning, so a single cpuClass YAML can be portable across PCT and
 non-PCT systems.
 
+**Allocation behaviour.** PCT settings also bias CPU selection:
+
+- For each `pctClosID: N` referenced by any cpuClass, a static
+  virtual device `SST CLOS N` is registered with the CPUs the SST
+  hardware currently maps to that CLOS. Balloon types using that
+  cpuClass prefer to be close to it; other balloon types
+  automatically prefer to be far from it.
+- In managed mode a dynamic virtual device `SST PCT HP reserve`
+  is registered with the CPUs of the package that has the most
+  free HP-capable CPUs. Balloon types whose cpuClass has
+  `pctPriority: high` prefer to be close to it (so their
+  containers actually enjoy PCT turbo), while every other balloon
+  type prefers to be far from it (so they do not drain the package
+  on which an HP container relies for turbo budget). The membership
+  is recomputed on every balloon resize.
+
 ```yaml
 cpuClasses:
 - name: rt-hp

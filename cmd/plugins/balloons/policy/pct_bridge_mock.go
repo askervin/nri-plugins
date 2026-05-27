@@ -48,7 +48,11 @@ type sstMockPackage struct {
 	CPSupported bool           `json:"cp_supported"`
 	CPEnabled   bool           `json:"cp_enabled"`
 	CPPriority  string         `json:"cp_priority,omitempty"` // "ordered" or "proportional"
-	Clos        []*sstMockClos `json:"clos,omitempty"`
+	// MaxHpCpus, when > 0, is reported through sstBridge.MaxHpCpus
+	// and used by the PCT allocator to decide which package has
+	// the most remaining HP turbo budget. 0 means "unknown".
+	MaxHpCpus int            `json:"max_hp_cpus,omitempty"`
+	Clos      []*sstMockClos `json:"clos,omitempty"`
 }
 
 // sstMockDoc is the full JSON document accepted in OVERRIDE_SST.
@@ -219,6 +223,19 @@ func (b *sstBridgeMock) GetCPUClosID(cpu int) (int, error) {
 		return 0, fmt.Errorf("pct mock: CPU %d not present in any seeded package", cpu)
 	}
 	return cl, nil
+}
+
+func (b *sstBridgeMock) MaxHpCpus(pkgID int) (int, bool) {
+	for _, pkg := range b.doc.Packages {
+		if pkg.ID != pkgID {
+			continue
+		}
+		if pkg.MaxHpCpus <= 0 {
+			return 0, false
+		}
+		return pkg.MaxHpCpus, true
+	}
+	return 0, false
 }
 
 func (b *sstBridgeMock) Shutdown() error {
