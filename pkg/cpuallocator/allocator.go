@@ -1546,7 +1546,7 @@ func (c *topologyCache) sstClosPriority(sys sysfs.System, pkgID idset.ID) map[in
 	closIds := make(map[int]int)
 	for _, cpuID := range c.pkg[pkgID].List() {
 		clos := sys.CPU(idset.ID(cpuID)).SstClos()
-		pp := sstinfo.ClosInfo[clos].ProportionalPriority
+		pp := sstinfo.ClosStatus[clos].ProportionalPriority
 		closPps[pp] = clos
 		closIds[clos] = 0 // 0 is a dummy value here
 	}

@@ -932,6 +932,66 @@ cpuClasses:
   maxFreq: "1.2GHz"
 ```
 
+#### Priority Core Turbo (PCT)
+
+On Intel Xeon CPUs that support [Intel Speed Select
+Technology](https://docs.kernel.org/admin-guide/pm/intel-speed-select.html)
+(SST), the balloons policy can additionally drive *Priority Core
+Turbo* (PCT) on a per-cpuClass basis. PCT lets a small number of
+*High Priority* (HP) cores reach the maximum turbo frequency
+while the remaining *Low Priority* (LP) cores are capped. The
+mapping between cpuClasses and the underlying SST-CP CLOSes is
+managed by the *PCT allocator* using the
+[goresctrl SST library](https://github.com/intel/goresctrl).
+
+Two new fields on a `cpuClasses` entry enable PCT:
+
+- `pctPriority` (string, optional): `"high"` or `"low"`. When set,
+  the balloons policy enters **managed mode** for PCT: it
+  performs the full SoC-wide SST setup (CP reset, TF enable, CLOS
+  configuration, CP enable) and associates CPUs of any balloon
+  using this cpuClass to the HP CLOS (default CLOS 0) or the LP
+  CLOS (default CLOS 3). At most one managed `high` and one
+  managed `low` cpuClass is allowed.
+- `pctClosID` (integer, optional, 0..*ClosCount-1*): pins this
+  cpuClass to a specific CLOS slot and selects **assoc-only
+  mode**: the policy only associates CPUs to the given CLOS
+  without reconfiguring the SoC-wide SST state. Use this when an
+  operator or the BIOS has already configured the CLOSes.
+
+`pctPriority` and `pctClosID` are **mutually exclusive** on the
+same cpuClass. Managed and assoc-only cpuClasses cannot be mixed
+in the same configuration.
+
+By default the CLOS minimum/maximum frequencies programmed in
+managed mode come from the cpuClass's own `minFreq`/`maxFreq`.
+Two optional overrides exist for cases where the hardware CLOS
+bounds should differ from the OS-visible cpufreq limits:
+
+- `pctMinFreq` (string, optional): CLOS minimum frequency,
+  defaults to `minFreq`. Accepts the same units and symbolic
+  names. Resolves `"turbo"` directly to the hardware maximum
+  turbo frequency, regardless of soft `turboPriority`
+  arbitration.
+- `pctMaxFreq` (string, optional): CLOS maximum frequency,
+  defaults to `maxFreq`. Same caveats as `pctMinFreq`.
+
+On hosts without SST support the PCT fields are ignored with a
+warning, so a single cpuClass YAML can be portable across PCT and
+non-PCT systems.
+
+```yaml
+cpuClasses:
+- name: rt-hp
+  minFreq: "turbo"
+  maxFreq: "turbo"
+  pctPriority: high
+- name: bg-lp
+  minFreq: "min"
+  maxFreq: "base"
+  pctPriority: low
+```
+
 **`control.cpu.classes`** (object, legacy policy-level configuration):
 
 This is the original low-level CPU class configuration. It continues

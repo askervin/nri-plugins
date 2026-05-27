@@ -91,6 +91,7 @@ type balloons struct {
 	cpuAllocator   cpuallocator.CPUAllocator    // CPU allocator used by the policy
 	memAllocator   *libmem.Allocator            // memory allocator used by the policy
 	turboAllocator *CPUClassTurboAllocator      // turbo budget allocator based on CPUClasses
+	pctAllocator   *CPUClassPctAllocator        // Intel Priority Core Turbo (PCT) allocator
 	loadVirtDev    map[string]*loadClassVirtDev // map LoadClasses to virtual devices
 }
 
@@ -804,6 +805,11 @@ func (p *balloons) resetCpuClass() error {
 		log.Debugf("reset class of available cpus: %q to idle class %q (reserved: %q)",
 			p.allowed, idle, p.reserved)
 	}
+	if p.pctAllocator != nil {
+		if err := p.pctAllocator.ResetIdle(p.allowed); err != nil {
+			log.Warnf("pct: failed to reset CLOS association of available cpus: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -830,6 +836,11 @@ func (p *balloons) useCpuClass(bln *Balloon) error {
 	if err := p.turboAllocator.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
 		log.Warnf("failed to apply class %q on CPUs %q: %v", className, bln.Cpus, err)
 	}
+	if p.pctAllocator != nil {
+		if err := p.pctAllocator.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
+			log.Warnf("pct: failed to apply CLOS for class %q on CPUs %q: %v", bln.Def.CpuClass, bln.Cpus, err)
+		}
+	}
 	return nil
 }
 
@@ -847,6 +858,11 @@ func (p *balloons) forgetCpuClass(bln *Balloon) {
 				bln.Def.Name, bln.Cpus, idle)
 		} else {
 			log.Debugf("forget class of cpus %q (idle class %q)", bln.Cpus, idle)
+		}
+	}
+	if p.pctAllocator != nil {
+		if err := p.pctAllocator.ForgetClass(bln.Cpus); err != nil {
+			log.Warnf("pct: failed to forget CLOS of cpus %q: %v", bln.Cpus, err)
 		}
 	}
 }
@@ -1617,6 +1633,8 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 	}
 	// Validate CPUClasses.
 	cpuClassNames := map[string]struct{}{}
+	pctManaged := map[string]string{} // class name -> "high"/"low"
+	pctAssocOnly := map[string]int{}  // class name -> CLOS id
 	for _, cc := range bpoptions.CPUClasses {
 		if cc.Name == "" {
 			return balloonsError("missing or empty name in a cpuClasses entry")
@@ -1625,6 +1643,43 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 			return balloonsError("duplicate cpuClasses name: %q", cc.Name)
 		}
 		cpuClassNames[cc.Name] = struct{}{}
+		// Validate PCT fields.
+		if cc.PctPriority != "" && cc.PctClosID != nil {
+			return balloonsError("cpuClass %q: pctPriority and pctClosID are mutually exclusive", cc.Name)
+		}
+		switch cc.PctPriority {
+		case "", "high", "low":
+		default:
+			return balloonsError("cpuClass %q: invalid pctPriority %q (allowed: \"high\", \"low\")", cc.Name, cc.PctPriority)
+		}
+		if cc.PctPriority != "" {
+			pctManaged[cc.Name] = cc.PctPriority
+		}
+		if cc.PctClosID != nil {
+			if *cc.PctClosID < 0 {
+				return balloonsError("cpuClass %q: pctClosID must be >= 0, got %d", cc.Name, *cc.PctClosID)
+			}
+			pctAssocOnly[cc.Name] = *cc.PctClosID
+		}
+	}
+	if len(pctManaged) > 0 && len(pctAssocOnly) > 0 {
+		return balloonsError("mixing managed (pctPriority) and assoc-only (pctClosID) PCT cpuClasses is not allowed: managed=%v, assocOnly=%v", pctManaged, pctAssocOnly)
+	}
+	if len(pctManaged) > 0 {
+		hpClasses, lpClasses := []string{}, []string{}
+		for name, prio := range pctManaged {
+			if prio == "high" {
+				hpClasses = append(hpClasses, name)
+			} else {
+				lpClasses = append(lpClasses, name)
+			}
+		}
+		if len(hpClasses) > 1 {
+			return balloonsError("at most one managed PCT cpuClass with pctPriority=high allowed, got %d: %v", len(hpClasses), hpClasses)
+		}
+		if len(lpClasses) > 1 {
+			return balloonsError("at most one managed PCT cpuClass with pctPriority=low allowed, got %d: %v", len(lpClasses), lpClasses)
+		}
 	}
 	// Verify that cpuClass references in balloon types are
 	// defined in cpuClasses. Using the legacy control.cpu.classes
@@ -1741,6 +1796,19 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	}
 	if err = p.validateConfig(bpoptions); err != nil {
 		return balloonsError("invalid configuration: %w", err)
+	}
+	// Construct or reconfigure the PCT (Priority Core Turbo)
+	// allocator after validation (so we don't program SST CLOSes
+	// if the user-facing config is malformed).
+	if p.pctAllocator == nil {
+		pa, err := NewCPUClassPctAllocator(p.options.System)
+		if err != nil {
+			return balloonsError("failed to create PCT allocator: %w", err)
+		}
+		p.pctAllocator = pa
+	}
+	if err := p.pctAllocator.Configure(bpoptions.CPUClasses, bpoptions.IdleCpuClass); err != nil {
+		return balloonsError("failed to configure PCT allocator: %w", err)
 	}
 	p.fillLoadVirtDevices(bpoptions.LoadClasses)
 	p.fillCloseToDevices(bpoptions.BalloonDefs)

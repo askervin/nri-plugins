@@ -56,4 +56,33 @@ type CPUClass struct {
 	// gets actual turbo frequencies -- no competition occurs.
 	// +kubebuilder:validation:Minimum=0
 	TurboPriority int `json:"turboPriority,omitempty"`
+	// PctPriority requests Intel Priority Core Turbo (PCT)
+	// hardware support, via SST-CP CLOSes, for CPUs in this
+	// class. "high" associates the CPUs to the high-priority
+	// CLOS (HP cores, typically running at Pmax). "low"
+	// associates them to the low-priority CLOS (LP cores,
+	// typically capped at P1). Unset = PCT is not requested
+	// for this class. Mutually exclusive with PctClosID.
+	// +kubebuilder:validation:Enum=high;low
+	PctPriority string `json:"pctPriority,omitempty"`
+	// PctClosID pins this class to a specific SST-CP CLOS ID
+	// (0..ClosCount-1, typically 0..3) and signals "assoc-only"
+	// mode: nri-plugin will only associate this class's CPUs to
+	// the given CLOS, without touching the SoC-wide SST state
+	// (no CPReset, no TFEnable, no CLOS reconfiguration). Use
+	// this when an operator or the BIOS has pre-configured the
+	// CLOSes. Mutually exclusive with PctPriority.
+	// +kubebuilder:validation:Minimum=0
+	PctClosID *int `json:"pctClosID,omitempty"`
+	// PctMinFreq overrides the CLOS minimum frequency that
+	// nri-plugin programs in managed mode. Defaults to MinFreq.
+	// Uses the same format as MinFreq but resolves "turbo"
+	// directly to the hardware maximum turbo frequency,
+	// without participating in the soft turboPriority
+	// arbitration. Ignored in assoc-only mode.
+	PctMinFreq Frequency `json:"pctMinFreq,omitempty"`
+	// PctMaxFreq overrides the CLOS maximum frequency that
+	// nri-plugin programs in managed mode. Defaults to MaxFreq.
+	// Same caveat as PctMinFreq.
+	PctMaxFreq Frequency `json:"pctMaxFreq,omitempty"`
 }
