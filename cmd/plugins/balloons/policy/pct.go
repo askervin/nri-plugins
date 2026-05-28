@@ -49,49 +49,52 @@ type pctClassPlan struct {
 	MaxFreq uint // kHz, 0 = leave alone
 }
 
-// CPUClassPctAllocator manages Intel Priority Core Turbo CLOS
-// associations driven by cpuClass definitions.
-type CPUClassPctAllocator struct {
-	sys           sysfs.System
-	sst           sst
-	mode          pctMode
-	classByName   map[string]*CPUClass
-	classPlan     map[string]*pctClassPlan // class name -> CLOS plan (PCT classes only)
-	idleClassName string
-	idleClos      int // CLOS used for CPUs not held by any PCT class
+// pctAllocator manages Intel Priority Core Turbo CLOS associations
+// driven by cpuClass definitions.
+type pctAllocator struct {
+	sys         sysfs.System
+	sst         sst
+	mode        pctMode
+	classByName map[string]*CPUClass
+	classPlan   map[string]*pctClassPlan // class name -> CLOS plan (PCT classes only)
+	// fallbackClos is the hardware CLOS used for CPUs whose class
+	// is not a PCT class. After SST reset CLOS 0 is the default,
+	// so we use it here too. This is a hardware-level concept,
+	// not a user-visible "idle".
+	fallbackClos int
+	allowed      cpuset.CPUSet
 	// hpUsed groups CPUs currently held by HP balloons by their
 	// package ID.
 	hpUsed map[int]cpuset.CPUSet
 }
 
-// NewCPUClassPctAllocator returns a new PCT allocator in the
-// disabled mode.
-func NewCPUClassPctAllocator(sys sysfs.System) (*CPUClassPctAllocator, error) {
+// newPctAllocator returns a new PCT allocator in the disabled mode.
+func newPctAllocator(sys sysfs.System) (*pctAllocator, error) {
 	s, err := newSst()
 	if err != nil {
 		return nil, err
 	}
-	return &CPUClassPctAllocator{
+	return &pctAllocator{
 		sys:  sys,
 		sst:  s,
 		mode: pctModeDisabled,
 	}, nil
 }
 
-// Configure selects the PCT operating mode from the given
-// cpuClass definitions and, in managed mode, programs the
-// corresponding SST CLOSes.
+// configure selects the PCT operating mode from the given cpuClass
+// definitions and, in managed mode, programs the corresponding SST
+// CLOSes. Honors `allowed` as the boundary of CPUs the allocator may
+// touch.
 //
 //   - classes: cpuClass definitions to inspect for PCT fields.
-//   - idleCpuClassName: name of the cpuClass to apply to idle
-//     CPUs.
-func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName string) error {
+//   - allowed: CPUs the allocator may configure.
+func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) error {
 	a.classByName = make(map[string]*CPUClass, len(classes))
 	for _, cc := range classes {
 		a.classByName[cc.Name] = cc
 	}
-	a.idleClassName = idleCpuClassName
-	a.idleClos = pctDefaultHpClos // CLOS 0 == default-after-reset
+	a.fallbackClos = pctDefaultHpClos // CLOS 0 == default-after-reset
+	a.allowed = allowed
 	a.hpUsed = map[int]cpuset.CPUSet{}
 
 	mode, plans, err := a.planClasses(classes)
@@ -155,7 +158,7 @@ func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName s
 
 // planClasses returns the PCT operating mode and the per-class
 // CLOS plan derived from cpuClasses.
-func (a *CPUClassPctAllocator) planClasses(classes []*CPUClass) (pctMode, map[string]*pctClassPlan, error) {
+func (a *pctAllocator) planClasses(classes []*CPUClass) (pctMode, map[string]*pctClassPlan, error) {
 	plans := map[string]*pctClassPlan{}
 	managed, assocOnly := false, false
 	for _, cc := range classes {
@@ -201,7 +204,7 @@ func (a *CPUClassPctAllocator) planClasses(classes []*CPUClass) (pctMode, map[st
 // resolveHWFreq returns the hardware frequency in kHz that the
 // given symbolic Frequency refers to. "turbo" resolves to the
 // platform's maximum turbo frequency.
-func (a *CPUClassPctAllocator) resolveHWFreq(f Frequency) uint {
+func (a *pctAllocator) resolveHWFreq(f Frequency) uint {
 	if f == 0 {
 		return 0
 	}
@@ -213,17 +216,24 @@ func (a *CPUClassPctAllocator) resolveHWFreq(f Frequency) uint {
 	return f.Resolve(info.minFreqKHz, info.baseFreqKHz, info.maxTurboFreqKHz)
 }
 
-// Active reports whether PCT is in effect (mode != disabled).
-func (a *CPUClassPctAllocator) Active() bool {
+// active reports whether PCT is in effect (mode != disabled).
+func (a *pctAllocator) active() bool {
 	return a != nil && a.mode != pctModeDisabled
 }
 
-// UseClass associates the given CPUs to the CLOS chosen for
-// className. In managed mode, CPUs whose className is not a PCT
-// class are associated to the idle CLOS. In assoc-only mode such
-// CPUs are left unchanged.
-func (a *CPUClassPctAllocator) UseClass(className string, cpus cpuset.CPUSet) error {
-	if !a.Active() || cpus.IsEmpty() {
+// useClass associates the given CPUs to the CLOS chosen for className.
+// In managed mode, CPUs whose className is not a PCT class are
+// associated to the fallback CLOS. In assoc-only mode such CPUs are
+// left unchanged. CPUs outside the configured Allowed set are silently
+// dropped.
+func (a *pctAllocator) useClass(className string, cpus cpuset.CPUSet) error {
+	if !a.active() {
+		return nil
+	}
+	if a.allowed.Size() > 0 {
+		cpus = cpus.Intersection(a.allowed)
+	}
+	if cpus.IsEmpty() {
 		return nil
 	}
 	a.trackHpUsage(className, cpus)
@@ -232,44 +242,20 @@ func (a *CPUClassPctAllocator) UseClass(className string, cpus cpuset.CPUSet) er
 		if a.mode == pctModeAssocOnly {
 			return nil
 		}
-		return a.associate(cpus, a.idleClos)
+		return a.associate(cpus, a.fallbackClos)
 	}
 	return a.associate(cpus, plan.ClosID)
-}
-
-// ForgetClass associates the given CPUs to the idle CLOS.
-func (a *CPUClassPctAllocator) ForgetClass(cpus cpuset.CPUSet) error {
-	if !a.Active() || cpus.IsEmpty() {
-		return nil
-	}
-	a.clearHpUsage(cpus)
-	if a.mode == pctModeAssocOnly {
-		return nil
-	}
-	return a.associate(cpus, a.idleClos)
-}
-
-// ResetIdle associates the given CPUs to the idle CLOS.
-func (a *CPUClassPctAllocator) ResetIdle(cpus cpuset.CPUSet) error {
-	if !a.Active() || cpus.IsEmpty() {
-		return nil
-	}
-	a.clearHpUsage(cpus)
-	if a.mode == pctModeAssocOnly {
-		return nil
-	}
-	return a.associate(cpus, a.idleClos)
 }
 
 // trackHpUsage updates per-package HP CPU bookkeeping so that
 // cpus are recorded as held by an HP class if className is HP,
 // and removed from HP bookkeeping otherwise.
-func (a *CPUClassPctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet) {
-	if !a.IsManaged() {
+func (a *pctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet) {
+	if !a.isManaged() {
 		return
 	}
 	a.clearHpUsage(cpus)
-	if !a.ClassIsHighPriority(className) {
+	if !a.classIsHighPriority(className) {
 		return
 	}
 	perPkg := map[int][]int{}
@@ -288,8 +274,8 @@ func (a *CPUClassPctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet
 }
 
 // clearHpUsage removes cpus from per-package HP bookkeeping.
-func (a *CPUClassPctAllocator) clearHpUsage(cpus cpuset.CPUSet) {
-	if !a.IsManaged() {
+func (a *pctAllocator) clearHpUsage(cpus cpuset.CPUSet) {
+	if !a.isManaged() {
 		return
 	}
 	for pkg, set := range a.hpUsed {
@@ -299,7 +285,7 @@ func (a *CPUClassPctAllocator) clearHpUsage(cpus cpuset.CPUSet) {
 	}
 }
 
-func (a *CPUClassPctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
+func (a *pctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
 	list := cpus.UnsortedList()
 	sort.Ints(list)
 	assocs := make([]pctClosAssoc, 0, len(list))
@@ -315,7 +301,7 @@ func (a *CPUClassPctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
 
 // Shutdown restores the platform to its default state. Safe to
 // call multiple times.
-func (a *CPUClassPctAllocator) Shutdown() error {
+func (a *pctAllocator) Shutdown() error {
 	if a == nil || !a.sst.Supported() {
 		return nil
 	}
@@ -325,7 +311,7 @@ func (a *CPUClassPctAllocator) Shutdown() error {
 	return a.sst.Shutdown()
 }
 
-func (a *CPUClassPctAllocator) modeString() string {
+func (a *pctAllocator) modeString() string {
 	switch a.mode {
 	case pctModeManaged:
 		return "managed"
@@ -336,62 +322,30 @@ func (a *CPUClassPctAllocator) modeString() string {
 	}
 }
 
-// IsManaged reports whether PCT runs in managed mode (i.e. some
+// isManaged reports whether PCT runs in managed mode (i.e. some
 // cpuClass uses pctPriority and we own the CLOS configuration).
-func (a *CPUClassPctAllocator) IsManaged() bool {
+func (a *pctAllocator) isManaged() bool {
 	return a != nil && a.mode == pctModeManaged
 }
 
-// ReferencedClosIDs returns the sorted, deduplicated list of CLOS
-// IDs referenced by any PCT cpuClass plan.
-func (a *CPUClassPctAllocator) ReferencedClosIDs() []int {
-	if !a.Active() {
-		return nil
-	}
-	seen := map[int]bool{}
-	ids := []int{}
-	for _, p := range a.classPlan {
-		if seen[p.ClosID] {
-			continue
-		}
-		seen[p.ClosID] = true
-		ids = append(ids, p.ClosID)
-	}
-	sort.Ints(ids)
-	return ids
-}
-
-// ClassClosID returns the CLOS ID that the named cpuClass maps to,
-// or (-1, false) if the class has no PCT plan.
-func (a *CPUClassPctAllocator) ClassClosID(className string) (int, bool) {
-	if !a.Active() {
-		return -1, false
-	}
-	p, ok := a.classPlan[className]
-	if !ok {
-		return -1, false
-	}
-	return p.ClosID, true
-}
-
-// ClassIsHighPriority reports whether className is the managed
-// PCT high-priority class (pctPriority: high).
-func (a *CPUClassPctAllocator) ClassIsHighPriority(className string) bool {
-	if !a.IsManaged() {
+// classIsHighPriority reports whether className is the managed PCT
+// high-priority class (pctPriority: high).
+func (a *pctAllocator) classIsHighPriority(className string) bool {
+	if !a.isManaged() {
 		return false
 	}
 	cc, ok := a.classByName[className]
 	return ok && cc.PctPriority == "high"
 }
 
-// ClosCpus returns the subset of allowed CPUs that are currently
+// closCpus returns the subset of Allowed CPUs that are currently
 // associated to CLOS closID.
-func (a *CPUClassPctAllocator) ClosCpus(closID int, allowed cpuset.CPUSet) cpuset.CPUSet {
-	if !a.Active() {
+func (a *pctAllocator) closCpus(closID int) cpuset.CPUSet {
+	if !a.active() {
 		return cpuset.New()
 	}
 	out := []int{}
-	for _, cpu := range allowed.UnsortedList() {
+	for _, cpu := range a.allowed.UnsortedList() {
 		id, err := a.sst.GetCPUClosID(cpu)
 		if err != nil {
 			continue
@@ -403,10 +357,10 @@ func (a *CPUClassPctAllocator) ClosCpus(closID int, allowed cpuset.CPUSet) cpuse
 	return cpuset.New(out...)
 }
 
-// HpInUseCpus returns the union of CPUs of all packages that
-// currently host at least one HP CPU.
-func (a *CPUClassPctAllocator) HpInUseCpus() cpuset.CPUSet {
-	if !a.IsManaged() {
+// hpInUseCpus returns the union of CPUs of all packages that
+// currently host at least one HP CPU, constrained to Allowed.
+func (a *pctAllocator) hpInUseCpus() cpuset.CPUSet {
+	if !a.isManaged() {
 		return cpuset.New()
 	}
 	out := cpuset.New()
@@ -420,24 +374,33 @@ func (a *CPUClassPctAllocator) HpInUseCpus() cpuset.CPUSet {
 		}
 		out = out.Union(pkg.CPUSet())
 	}
+	if a.allowed.Size() > 0 {
+		out = out.Intersection(a.allowed)
+	}
 	return out
 }
 
-// HpReserveCpus returns the subset of free CPUs that lies on the
+// hpReserveCpus returns the subset of free CPUs that lies on the
 // package with the largest remaining PCT high-priority room. The
 // HP room of a package is
 //
 //	room = MaxHpCpus(pkg) - len(hpUsed[pkg] \ excludeBln)
 //
-// Ties are broken by largest free-CPU count. Returns the empty
-// set when no package has any room or no free CPUs, or when free
-// is empty.
+// Ties are broken by largest free-CPU count. Returns the empty set
+// when no package has any room or no free CPUs, or when free is
+// empty. The returned set is constrained to Allowed.
 //
 //   - free: free CPUs to consider for placement.
 //   - excludeBln: CPUs to exclude from per-package HP room
 //     accounting.
-func (a *CPUClassPctAllocator) HpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet) cpuset.CPUSet {
-	if !a.IsManaged() || free.IsEmpty() {
+func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet) cpuset.CPUSet {
+	if !a.isManaged() {
+		return cpuset.New()
+	}
+	if a.allowed.Size() > 0 {
+		free = free.Intersection(a.allowed)
+	}
+	if free.IsEmpty() {
 		return cpuset.New()
 	}
 	var bestPkg cpuset.CPUSet
@@ -479,4 +442,112 @@ func (a *CPUClassPctAllocator) HpReserveCpus(free cpuset.CPUSet, excludeBln cpus
 		return cpuset.New()
 	}
 	return bestPkg
+}
+
+// referencedClosIDs returns the sorted, deduplicated list of CLOS
+// IDs referenced by any PCT cpuClass plan.
+func (a *pctAllocator) referencedClosIDs() []int {
+	if !a.active() {
+		return nil
+	}
+	seen := map[int]bool{}
+	ids := []int{}
+	for _, p := range a.classPlan {
+		if seen[p.ClosID] {
+			continue
+		}
+		seen[p.ClosID] = true
+		ids = append(ids, p.ClosID)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// classClosID returns the CLOS ID that the named cpuClass maps to,
+// or (-1, false) if the class has no PCT plan.
+func (a *pctAllocator) classClosID(className string) (int, bool) {
+	if !a.active() {
+		return -1, false
+	}
+	p, ok := a.classPlan[className]
+	if !ok {
+		return -1, false
+	}
+	return p.ClosID, true
+}
+
+// virtDevSstHpReserveHint and virtDevSstHpInUseHint are the
+// human-readable hint names returned in CpuPreference.Name for the
+// dynamic PCT placement preferences.
+const (
+	virtDevSstHpReserveHint = "sst-hp-reserve"
+	virtDevSstHpInUseHint   = "sst-hp-in-use"
+)
+
+// virtDevSstClosHint returns the human-readable hint name for the
+// CLOS-membership preference of the given CLOS ID.
+func virtDevSstClosHint(closID int) string {
+	return fmt.Sprintf("sst-clos-%d", closID)
+}
+
+// hints returns prefer/avoid CPU sets that PCT would like an upcoming
+// allocation under intent.ClassName to honor. Returned CpuPreference
+// sets are not yet intersected with Allowed; the handler does that.
+//
+// Behavior, mirroring the previously-implicit balloons logic:
+//   - Class has an explicit CLOS plan (assoc-only or managed): Prefer
+//     CLOS-member CPUs.
+//   - Class is the managed HP class: Prefer hpReserveCpus (a package
+//     with HP headroom), and also CLOS-member CPUs.
+//   - Class is not managed HP and at least one managed HP class
+//     exists: Avoid hpInUseCpus (packages currently hosting HP work).
+func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
+	if a == nil || !a.active() {
+		return AllocationHints{}
+	}
+	out := AllocationHints{}
+
+	if closID, ok := a.classClosID(intent.ClassName); ok {
+		closCpus := a.closCpus(closID)
+		if !closCpus.IsEmpty() {
+			out.Prefer = append(out.Prefer, CpuPreference{
+				Name: virtDevSstClosHint(closID),
+				Cpus: closCpus,
+			})
+		}
+	}
+
+	if a.classIsHighPriority(intent.ClassName) {
+		reserve := a.hpReserveCpus(intent.FreeCpus, intent.CurrentCpus)
+		if !reserve.IsEmpty() {
+			out.Prefer = append(out.Prefer, CpuPreference{
+				Name: virtDevSstHpReserveHint,
+				Cpus: reserve,
+			})
+		}
+		return out
+	}
+
+	if a.isManaged() && a.anyHighPriorityClassDefined() {
+		inUse := a.hpInUseCpus()
+		if !inUse.IsEmpty() {
+			out.Avoid = append(out.Avoid, CpuPreference{
+				Name: virtDevSstHpInUseHint,
+				Cpus: inUse,
+			})
+		}
+	}
+	return out
+}
+
+// anyHighPriorityClassDefined reports whether any configured cpuClass
+// has pctPriority=high. This is independent of whether such a class
+// currently has CPUs assigned.
+func (a *pctAllocator) anyHighPriorityClassDefined() bool {
+	for _, cc := range a.classByName {
+		if cc.PctPriority == "high" {
+			return true
+		}
+	}
+	return false
 }

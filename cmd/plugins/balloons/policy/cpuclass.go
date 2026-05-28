@@ -25,27 +25,93 @@ import (
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
-// CPUClassTurboAllocator owns all CPU-class lifecycle concerns for the
-// balloons policy: resolution of symbolic frequencies (min/base/turbo),
-// turbo-priority winner selection, and the actual cpucontrol.SetClass /
-// cpucontrol.Assign calls that follow from those decisions.
+// ConfigSpec carries cpuclass configuration applied via
+// cpuClassHandler.Configure. Idleness is intentionally absent — the
+// caller decides which class name (if any) means "idle" and applies
+// it via UseClass.
+type ConfigSpec struct {
+	// Classes is the set of user-facing CPUClass definitions.
+	Classes []*CPUClass
+	// TurboDomain selects turbo arbitration scope. Accepted values:
+	// "package" (default, per-socket) or "system" (single global
+	// domain).
+	TurboDomain string
+	// Allowed bounds every cpuclass operation: the handler will
+	// not touch CPUs outside this set, and CPU sets returned from
+	// Hints are always subsets of Allowed.
+	Allowed cpuset.CPUSet
+}
+
+// AllocationIntent describes a hypothetical CPU allocation a caller
+// would like to make. Passed to cpuClassHandler.Hints to retrieve
+// technology-agnostic placement preferences.
+type AllocationIntent struct {
+	// ClassName is the cpuClass name the caller intends to apply.
+	// An empty string means "no class".
+	ClassName string
+	// CurrentCpus are CPUs the caller's logical owner already
+	// holds (e.g. a balloon's current CPU set). Hints may use this
+	// as the "exclude self" set when computing context-aware
+	// preferences.
+	CurrentCpus cpuset.CPUSet
+	// AddCount is the number of CPUs the caller intends to add.
+	AddCount int
+	// FreeCpus is the caller's view of currently free CPUs.
+	FreeCpus cpuset.CPUSet
+}
+
+// CpuPreference is one prioritised placement hint. Name is a
+// human-readable origin (e.g. "sst-clos-3", "sst-hp-reserve") for
+// observability; callers may pass it into virtual-device names so
+// logs stay diagnosable.
+type CpuPreference struct {
+	Name string
+	Cpus cpuset.CPUSet
+}
+
+// AllocationHints is the technology-agnostic placement advice
+// returned by cpuClassHandler.Hints. Earlier entries are higher
+// priority. Empty slices mean "no opinion".
+type AllocationHints struct {
+	Prefer []CpuPreference
+	Avoid  []CpuPreference
+}
+
+// cpuClassHandler is the sole cpuclass entry point for policy code.
+// It owns construction and configuration of the underlying
+// per-technology allocators (cpufreq and pct), exposes a uniform
+// UseClass for cpuset-to-class assignment, and answers Hints queries
+// in technology-agnostic terms.
+type cpuClassHandler struct {
+	sys     sysfs.System
+	cch     cache.Cache
+	allowed cpuset.CPUSet
+
+	cpufreq *cpufreqAllocator
+	pct     *pctAllocator
+}
+
+// cpufreqAllocator owns cpufreq-side CPU-class lifecycle: resolution
+// of symbolic frequencies (min/base/turbo), turbo-priority winner
+// selection, and the cpucontrol.SetClass / cpucontrol.Assign calls
+// that follow.
 //
-// An allocator user only needs to call UseClass/ForgetClass for the
-// CPU sets it manages; the allocator takes care of pushing class
+// A handler-internal user only needs to call useClass for the CPU
+// sets it manages; the allocator takes care of pushing class
 // definitions to the CPU controller and re-assigning CPUs of classes
 // whose effective turbo frequency changes when the active winner
 // changes.
 //
 // Turbo arbitration is scoped to "turbo domains". The default domain
 // is the physical package (socket).
-type CPUClassTurboAllocator struct {
-	sys           sysfs.System
-	cch           cache.Cache
-	classes       []*CPUClass
-	classByName   map[string]*CPUClass
-	idleClassName string
-	turboDomain   string
-	turboInfo     *platformTurboInfo
+type cpufreqAllocator struct {
+	sys         sysfs.System
+	cch         cache.Cache
+	classes     []*CPUClass
+	classByName map[string]*CPUClass
+	turboDomain string
+	turboInfo   *platformTurboInfo
+	allowed     cpuset.CPUSet
 
 	// cpuDomain maps each known CPU id to its turbo domain id.
 	// TurboDomain package: domainID=physical_package_id of each CPU.
@@ -56,9 +122,8 @@ type CPUClassTurboAllocator struct {
 	domains []domainID
 
 	// activeCpus[d][className] is the set of CPUs in turbo domain d
-	// currently assigned to className by the latest UseClass /
-	// ForgetClass calls. recalculateTurbo() consults this map for
-	// each affected domain.
+	// currently assigned to className by the latest useClass call.
+	// recalculateTurbo() consults this map for each affected domain.
 	activeCpus map[domainID]map[string]cpuset.CPUSet
 
 	// winnerPrio[d] is the highest TurboPriority among CPU classes
@@ -83,71 +148,31 @@ const (
 	turboDomainSystem  = "system"
 )
 
-// TurboOption is a functional option for NewCPUClassTurboAllocator.
-type TurboOption func(*CPUClassTurboAllocator) error
+// TurboOption is a functional option for newCpufreqAllocator.
+type turboOption func(*cpufreqAllocator) error
 
-// WithSystem provides the sysfs system topology for symbolic frequency
-// resolution.
-func WithSystem(sys sysfs.System) TurboOption {
-	return func(a *CPUClassTurboAllocator) error {
+// withSystem provides the sysfs system topology for symbolic
+// frequency resolution.
+func withSystem(sys sysfs.System) turboOption {
+	return func(a *cpufreqAllocator) error {
 		a.sys = sys
 		return nil
 	}
 }
 
-// WithCache provides the resource manager cache for cpucontrol.Assign.
-func WithCache(cch cache.Cache) TurboOption {
-	return func(a *CPUClassTurboAllocator) error {
+// withCache provides the resource manager cache for cpucontrol.Assign.
+func withCache(cch cache.Cache) turboOption {
+	return func(a *cpufreqAllocator) error {
 		a.cch = cch
 		return nil
 	}
 }
 
-// WithCPUClasses provides the user-facing CPUClass definitions.
-func WithCPUClasses(classes []*CPUClass) TurboOption {
-	return func(a *CPUClassTurboAllocator) error {
-		a.classes = classes
-		a.classByName = make(map[string]*CPUClass, len(classes))
-		for _, cc := range classes {
-			a.classByName[cc.Name] = cc
-		}
-		return nil
-	}
-}
-
-// WithIdleClass provides the name of the idle CPU class used by
-// ForgetClass and ResetIdle.
-func WithIdleClass(name string) TurboOption {
-	return func(a *CPUClassTurboAllocator) error {
-		a.idleClassName = name
-		return nil
-	}
-}
-
-// WithTurboDomain selects the turbo arbitration domain. Accepted
-// values: "package" (per-socket arbitration, default), "system"
-// (single global arbitration domain). An empty value is treated as
-// "package".
-func WithTurboDomain(name string) TurboOption {
-	return func(a *CPUClassTurboAllocator) error {
-		switch name {
-		case "", turboDomainPackage, turboDomainSystem:
-			a.turboDomain = name
-			return nil
-		default:
-			return fmt.Errorf("CPUClassTurboAllocator: unsupported turboDomain %q (expected %q or %q)",
-				name, turboDomainPackage, turboDomainSystem)
-		}
-	}
-}
-
-// NewCPUClassTurboAllocator creates a turbo allocator and applies the
-// given options. The constructor pushes initial CPU class definitions
-// (with symbolic frequencies resolved against sysfs, when possible)
-// into the CPU controller via cpucontrol.SetClass, so subsequent
-// cpucontrol.Assign calls see the correct effective frequencies.
-func NewCPUClassTurboAllocator(opts ...TurboOption) (*CPUClassTurboAllocator, error) {
-	a := &CPUClassTurboAllocator{
+// newCpufreqAllocator creates a cpufreq allocator and applies the
+// given options. The constructor does not push any class definitions;
+// caller is expected to follow up with a configure() call.
+func newCpufreqAllocator(opts ...turboOption) (*cpufreqAllocator, error) {
+	a := &cpufreqAllocator{
 		activeCpus: map[domainID]map[string]cpuset.CPUSet{},
 		winnerPrio: map[domainID]int{},
 	}
@@ -157,35 +182,33 @@ func NewCPUClassTurboAllocator(opts ...TurboOption) (*CPUClassTurboAllocator, er
 		}
 	}
 	if a.sys == nil {
-		return nil, fmt.Errorf("CPUClassTurboAllocator: missing required option WithSystem")
+		return nil, fmt.Errorf("cpufreqAllocator: missing required option withSystem")
 	}
 	if a.cch == nil {
-		return nil, fmt.Errorf("CPUClassTurboAllocator: missing required option WithCache")
+		return nil, fmt.Errorf("cpufreqAllocator: missing required option withCache")
 	}
 	a.discoverPlatformInfo()
-	a.buildCpuDomains()
-	a.pushInitialClassDefinitions()
 	return a, nil
 }
 
-// Reconfigure replaces the CPU class set, idle class name and turbo
-// domain mode. Resets per-domain turbo winners so the next
-// UseClass/ForgetClass call recomputes the effective frequencies, and
-// re-pushes class definitions to the CPU controller.
-func (a *CPUClassTurboAllocator) Reconfigure(classes []*CPUClass, idleClass, turboDomain string) error {
+// configure replaces the CPU class set, turbo domain mode and the set
+// of allowed CPUs. Resets per-domain turbo winners so the next
+// useClass call recomputes the effective frequencies, and re-pushes
+// class definitions to the CPU controller.
+func (a *cpufreqAllocator) configure(classes []*CPUClass, turboDomain string, allowed cpuset.CPUSet) error {
 	a.classes = classes
 	a.classByName = make(map[string]*CPUClass, len(classes))
 	for _, cc := range classes {
 		a.classByName[cc.Name] = cc
 	}
-	a.idleClassName = idleClass
 	switch turboDomain {
 	case "", turboDomainPackage, turboDomainSystem:
 		a.turboDomain = turboDomain
 	default:
-		return fmt.Errorf("CPUClassTurboAllocator: unsupported turboDomain %q (expected %q or %q)",
+		return fmt.Errorf("cpufreqAllocator: unsupported turboDomain %q (expected %q or %q)",
 			turboDomain, turboDomainPackage, turboDomainSystem)
 	}
+	a.allowed = allowed
 	a.buildCpuDomains()
 	a.activeCpus = map[domainID]map[string]cpuset.CPUSet{}
 	a.winnerPrio = map[domainID]int{}
@@ -193,14 +216,104 @@ func (a *CPUClassTurboAllocator) Reconfigure(classes []*CPUClass, idleClass, tur
 	return nil
 }
 
-// Classes returns the current user-facing CPUClass set.
-func (a *CPUClassTurboAllocator) Classes() []*CPUClass {
+// classes returns the current user-facing CPUClass set.
+func (a *cpufreqAllocator) Classes() []*CPUClass {
 	return a.classes
 }
 
-// ClassByName looks up a CPUClass by name.
-func (a *CPUClassTurboAllocator) ClassByName(name string) *CPUClass {
+// classByNameLookup looks up a CPUClass by name.
+func (a *cpufreqAllocator) ClassByName(name string) *CPUClass {
 	return a.classByName[name]
+}
+
+// newCpuClassHandler constructs a cpuClassHandler with both internal
+// allocators (cpufreq and pct) ready in a "no configuration applied"
+// state. Configure must be called before the handler is usable.
+func newCpuClassHandler(sys sysfs.System, cch cache.Cache) (*cpuClassHandler, error) {
+	cpufreq, err := newCpufreqAllocator(withSystem(sys), withCache(cch))
+	if err != nil {
+		return nil, fmt.Errorf("cpuclass: failed to create cpufreq allocator: %w", err)
+	}
+	pct, err := newPctAllocator(sys)
+	if err != nil {
+		return nil, fmt.Errorf("cpuclass: failed to create pct allocator: %w", err)
+	}
+	return &cpuClassHandler{
+		sys:     sys,
+		cch:     cch,
+		cpufreq: cpufreq,
+		pct:     pct,
+	}, nil
+}
+
+// Configure (re)applies a configuration spec. Idempotent: may be
+// called repeatedly with changed classes, turbo-domain mode, or
+// allowed set.
+func (h *cpuClassHandler) Configure(spec ConfigSpec) error {
+	h.allowed = spec.Allowed
+	if err := h.cpufreq.configure(spec.Classes, spec.TurboDomain, spec.Allowed); err != nil {
+		return fmt.Errorf("cpuclass: cpufreq configure: %w", err)
+	}
+	if err := h.pct.configure(spec.Classes, spec.Allowed); err != nil {
+		return fmt.Errorf("cpuclass: pct configure: %w", err)
+	}
+	return nil
+}
+
+// UseClass applies className to the given CPUs across every internal
+// allocator. An empty className means "no class" (resolves to
+// "default" if such a class exists). CPUs outside the configured
+// Allowed set are silently dropped.
+func (h *cpuClassHandler) UseClass(className string, cpus cpuset.CPUSet) error {
+	if err := h.cpufreq.useClass(className, cpus); err != nil {
+		log.Warnf("cpuclass: cpufreq failed to apply class %q on CPUs %s: %v", className, cpus, err)
+	}
+	if err := h.pct.useClass(className, cpus); err != nil {
+		log.Warnf("cpuclass: pct failed to apply class %q on CPUs %s: %v", className, cpus, err)
+	}
+	return nil
+}
+
+// Hints returns technology-agnostic placement preferences for an
+// upcoming CPU allocation. The returned CpuPreference sets are always
+// subsets of the configured Allowed set.
+func (h *cpuClassHandler) Hints(intent AllocationIntent) AllocationHints {
+	hints := h.pct.hints(intent)
+	if h.allowed.Size() > 0 {
+		hints = intersectHints(hints, h.allowed)
+	}
+	return hints
+}
+
+// Shutdown releases any platform-level resources owned by the
+// handler. Safe to call multiple times.
+func (h *cpuClassHandler) Shutdown() error {
+	if h == nil || h.pct == nil {
+		return nil
+	}
+	return h.pct.Shutdown()
+}
+
+// intersectHints returns a copy of hints with every CpuPreference
+// constrained to the given bound. Preferences that become empty are
+// dropped.
+func intersectHints(hints AllocationHints, bound cpuset.CPUSet) AllocationHints {
+	out := AllocationHints{}
+	for _, p := range hints.Prefer {
+		s := p.Cpus.Intersection(bound)
+		if s.IsEmpty() {
+			continue
+		}
+		out.Prefer = append(out.Prefer, CpuPreference{Name: p.Name, Cpus: s})
+	}
+	for _, p := range hints.Avoid {
+		s := p.Cpus.Intersection(bound)
+		if s.IsEmpty() {
+			continue
+		}
+		out.Avoid = append(out.Avoid, CpuPreference{Name: p.Name, Cpus: s})
+	}
+	return out
 }
 
 // defaultClassName is the name of the CPU class used as a fallback
@@ -217,7 +330,7 @@ const defaultClassName = "default"
 // while cpucontrol's class map is what actually drives sysfs writes,
 // so a class defined only via control.cpu.classes is unknown to
 // classByName but known to cpucontrol.
-func (a *CPUClassTurboAllocator) isKnownClass(name string) bool {
+func (a *cpufreqAllocator) isKnownClass(name string) bool {
 	if _, ok := a.classByName[name]; ok {
 		return true
 	}
@@ -227,19 +340,18 @@ func (a *CPUClassTurboAllocator) isKnownClass(name string) bool {
 	return false
 }
 
-// ResolveClassName resolves a (possibly empty or unknown) configured
+// resolveClassName resolves a (possibly empty or unknown) configured
 // CPU class name to the class that should actually be applied. If the
 // configured name matches a class known to either cpuClasses or
 // control.cpu.classes it is returned unchanged. Otherwise, if a class
 // named "default" is known to either source, "default" is returned.
 // As a last resort the original name is returned, so the caller's
 // existing log/warning paths still see what was requested.
-func (a *CPUClassTurboAllocator) ResolveClassName(name string) string {
+func (a *cpufreqAllocator) resolveClassName(name string) string {
 	if name == "" {
-		// Empty is a valid "no class" assignment when neither a
-		// balloon type nor idleCpuClass requests a class; fall back
-		// to "default" only when one is configured, otherwise pass
-		// through silently.
+		// Empty is a valid "no class" assignment when the caller
+		// does not request any class; fall back to "default" only
+		// when one is configured, otherwise pass through silently.
 		if a.isKnownClass(defaultClassName) {
 			return defaultClassName
 		}
@@ -256,19 +368,23 @@ func (a *CPUClassTurboAllocator) ResolveClassName(name string) string {
 	return name
 }
 
-// UseClass marks the given CPUs as active under className, recalculates
+// useClass marks the given CPUs as active under className, recalculates
 // the turbo winner of every affected turbo domain, then assigns the
 // CPUs to className (per domain) via the CPU controller. The
 // recalculation runs first so that the controller's in-memory class
 // definitions for each affected domain reflect the correct effective
 // turbo frequency at the time of Assign. An empty or unknown
 // className resolves to the "default" CPU class when one is
-// configured.
-func (a *CPUClassTurboAllocator) UseClass(className string, cpus cpuset.CPUSet) error {
+// configured. CPUs outside the configured Allowed set are silently
+// dropped.
+func (a *cpufreqAllocator) useClass(className string, cpus cpuset.CPUSet) error {
+	if a.allowed.Size() > 0 {
+		cpus = cpus.Intersection(a.allowed)
+	}
 	if cpus.IsEmpty() {
 		return nil
 	}
-	className = a.ResolveClassName(className)
+	className = a.resolveClassName(className)
 	a.removeCpusFromAllClasses(cpus)
 	byDomain := a.cpusByDomain(cpus)
 	if className != "" {
@@ -292,57 +408,9 @@ func (a *CPUClassTurboAllocator) UseClass(className string, cpus cpuset.CPUSet) 
 	return nil
 }
 
-// ForgetClass removes the given CPUs from any active class set,
-// assigns them to the idle class (per turbo domain) via the CPU
-// controller, then recalculates the turbo winner of every affected
-// domain (the previously dominant class may have lost its last active
-// balloon in that domain). An empty or unknown idle class name
-// resolves to the "default" CPU class when one is configured.
-func (a *CPUClassTurboAllocator) ForgetClass(cpus cpuset.CPUSet) error {
-	if cpus.IsEmpty() {
-		return nil
-	}
-	idle := a.ResolveClassName(a.idleClassName)
-	a.removeCpusFromAllClasses(cpus)
-	byDomain := a.cpusByDomain(cpus)
-	for d, dc := range byDomain {
-		syn := a.controlClassName(idle, d)
-		if err := cpucontrol.Assign(a.cch, syn, dc.UnsortedList()...); err != nil {
-			return fmt.Errorf("failed to assign CPUs %s to idle class %q (turbo domain %d): %w",
-				dc, idle, d, err)
-		}
-	}
-	for d := range byDomain {
-		a.recalculateTurbo(d)
-	}
-	return nil
-}
-
-// ResetIdle assigns the given CPU set to the idle class (per turbo
-// domain) via the CPU controller. Used at policy startup to bring all
-// allowed CPUs to a known baseline before any container-driven
-// UseClass call. Does not affect the active-class tracking. An empty
-// or unknown idle class name resolves to the "default" CPU class when
-// one is configured.
-func (a *CPUClassTurboAllocator) ResetIdle(cpus cpuset.CPUSet) error {
-	if cpus.IsEmpty() {
-		return nil
-	}
-	idle := a.ResolveClassName(a.idleClassName)
-	byDomain := a.cpusByDomain(cpus)
-	for d, dc := range byDomain {
-		syn := a.controlClassName(idle, d)
-		if err := cpucontrol.Assign(a.cch, syn, dc.UnsortedList()...); err != nil {
-			return fmt.Errorf("failed to assign CPUs %s to idle class %q (turbo domain %d): %w",
-				dc, idle, d, err)
-		}
-	}
-	return nil
-}
-
 // removeCpusFromAllClasses removes the given CPUs from every active
 // class set, in every turbo domain. Empty class sets are deleted.
-func (a *CPUClassTurboAllocator) removeCpusFromAllClasses(cpus cpuset.CPUSet) {
+func (a *cpufreqAllocator) removeCpusFromAllClasses(cpus cpuset.CPUSet) {
 	for d, perClass := range a.activeCpus {
 		for name, set := range perClass {
 			newSet := set.Difference(cpus)
@@ -361,7 +429,7 @@ func (a *CPUClassTurboAllocator) removeCpusFromAllClasses(cpus cpuset.CPUSet) {
 // cpusByDomain groups the given CPU set by turbo domain id. CPUs that
 // are not present in cpuDomain (e.g., offline at discovery time) are
 // assigned to systemDomainID as a safe fallback.
-func (a *CPUClassTurboAllocator) cpusByDomain(cpus cpuset.CPUSet) map[domainID]cpuset.CPUSet {
+func (a *cpufreqAllocator) cpusByDomain(cpus cpuset.CPUSet) map[domainID]cpuset.CPUSet {
 	out := map[domainID]cpuset.CPUSet{}
 	for _, cpu := range cpus.UnsortedList() {
 		d, ok := a.cpuDomain[cpu]
@@ -373,11 +441,12 @@ func (a *CPUClassTurboAllocator) cpusByDomain(cpus cpuset.CPUSet) map[domainID]c
 	return out
 }
 
-// buildCpuDomains constructs the cpu->turboDomain map according to
-// the configured turboDomain mode. In "system" mode every CPU maps to
-// systemDomainID. In "package" mode (default) each CPU maps to its
-// physical_package_id.
-func (a *CPUClassTurboAllocator) buildCpuDomains() {
+// buildCpuDomains constructs the cpu->turboDomain map for the
+// configured Allowed CPUs only. In "system" mode every allowed CPU
+// maps to systemDomainID. In "package" mode (default) each maps to
+// its physical_package_id. CPUs outside Allowed are intentionally not
+// represented: cpuclass does not configure them.
+func (a *cpufreqAllocator) buildCpuDomains() {
 	a.cpuDomain = map[int]domainID{}
 	seen := map[domainID]bool{}
 	mode := a.turboDomain
@@ -385,6 +454,9 @@ func (a *CPUClassTurboAllocator) buildCpuDomains() {
 		mode = turboDomainPackage
 	}
 	for _, cpuID := range a.sys.CPUIDs() {
+		if a.allowed.Size() > 0 && !a.allowed.Contains(int(cpuID)) {
+			continue
+		}
 		c := a.sys.CPU(cpuID)
 		if c == nil {
 			continue
@@ -422,7 +494,7 @@ func (a *CPUClassTurboAllocator) buildCpuDomains() {
 // their bare name lets the CPU controller find their definition in
 // cfg.CPU.Classes (which is loaded after balloons.Start and thus
 // after the very first Assign calls).
-func (a *CPUClassTurboAllocator) controlClassName(name string, d domainID) string {
+func (a *cpufreqAllocator) controlClassName(name string, d domainID) string {
 	if name == "" {
 		return ""
 	}
@@ -446,10 +518,10 @@ func syntheticClassName(name string, d domainID) string {
 // discoverPlatformInfo reads platform turbo capabilities from sysfs.
 // Failure is non-fatal; symbolic frequencies will resolve to 0 in
 // that case (matching the behavior of the pre-allocator code path).
-func (a *CPUClassTurboAllocator) discoverPlatformInfo() {
+func (a *cpufreqAllocator) discoverPlatformInfo() {
 	info, err := discoverTurboInfo(a.sys)
 	if err != nil {
-		log.Warnf("CPUClassTurboAllocator: cannot discover platform turbo info: %v", err)
+		log.Warnf("cpufreqAllocator: cannot discover platform turbo info: %v", err)
 		return
 	}
 	a.turboInfo = info
@@ -463,7 +535,7 @@ func (a *CPUClassTurboAllocator) discoverPlatformInfo() {
 // platform max turbo frequency for every class. The first UseClass
 // call will trigger recalculateTurbo() for the affected domain to
 // enforce the priority-based effective turbo.
-func (a *CPUClassTurboAllocator) pushInitialClassDefinitions() {
+func (a *cpufreqAllocator) pushInitialClassDefinitions() {
 	if len(a.domains) == 0 {
 		return
 	}
@@ -499,7 +571,7 @@ func (a *CPUClassTurboAllocator) pushInitialClassDefinitions() {
 //     (class, domain) name as dirty. The CPU controller's Commit()
 //     then issues the minimal set of sysfs writes needed to reach
 //     the new desired state.
-func (a *CPUClassTurboAllocator) recalculateTurbo(d domainID) {
+func (a *cpufreqAllocator) recalculateTurbo(d domainID) {
 	if len(a.classes) == 0 {
 		return
 	}

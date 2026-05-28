@@ -68,19 +68,6 @@ const (
 	// virtDevPCores is the name of a virtual device close to
 	// high performance cores.
 	virtDevPCores = "performance cores"
-	// virtDevSstHpReserve is the name of a dynamic virtual
-	// device representing free CPUs of the package with the
-	// largest remaining Intel PCT (Priority Core Turbo)
-	// high-priority budget. Balloons whose cpuClass has
-	// pctPriority=high prefer to be close to it.
-	virtDevSstHpReserve = "SST PCT HP reserve"
-	// virtDevSstHpInUse names the dynamic virtual device whose
-	// membership is the union of CPUs of packages that currently
-	// host any HP (pctPriority=high) container. LP balloons and
-	// non-PCT balloons prefer to be far from it so that LP/normal
-	// load does not eat into the same package's shared power
-	// budget that the HP container needs for turbo.
-	virtDevSstHpInUse = "SST PCT HP in use"
 )
 
 // balloons contains configuration and runtime attributes of the balloons policy
@@ -101,12 +88,10 @@ type balloons struct {
 	meters    *Meters      // balloon metrics
 	meterLock sync.RWMutex // protects metrics collection against allocation
 
-	cpuAllocator   cpuallocator.CPUAllocator    // CPU allocator used by the policy
-	memAllocator   *libmem.Allocator            // memory allocator used by the policy
-	turboAllocator *CPUClassTurboAllocator      // turbo budget allocator based on CPUClasses
-	pctAllocator   *CPUClassPctAllocator        // Intel Priority Core Turbo (PCT) allocator
-	pctClosVirtDevs map[int]cpuset.CPUSet       // static virtDevSstClos<N> memberships
-	loadVirtDev    map[string]*loadClassVirtDev // map LoadClasses to virtual devices
+	cpuAllocator cpuallocator.CPUAllocator    // CPU allocator used by the policy
+	memAllocator *libmem.Allocator            // memory allocator used by the policy
+	cpuClasses   *cpuClassHandler             // CPU class handler (cpufreq + PCT internals)
+	loadVirtDev  map[string]*loadClassVirtDev // map LoadClasses to virtual devices
 }
 
 // Balloon contains attributes of a balloon instance
@@ -809,26 +794,21 @@ func (p *balloons) resetCpuClass() error {
 	// p.useCpuClass(balloon) will be called later for every balloon,
 	// including the reserved balloon, to set the per-balloon CPU
 	// class. Here we only assign the idle class to all allowed CPUs.
-	if p.turboAllocator == nil {
+	if p.cpuClasses == nil {
 		return nil
 	}
-	idle := p.turboAllocator.ResolveClassName(p.bpoptions.IdleCpuClass)
-	if err := p.turboAllocator.ResetIdle(p.allowed); err != nil {
+	idle := p.bpoptions.IdleCpuClass
+	if err := p.cpuClasses.UseClass(idle, p.allowed); err != nil {
 		log.Warnf("failed to reset class of available cpus: %v", err)
 	} else {
 		log.Debugf("reset class of available cpus: %q to idle class %q (reserved: %q)",
 			p.allowed, idle, p.reserved)
 	}
-	if p.pctAllocator != nil {
-		if err := p.pctAllocator.ResetIdle(p.allowed); err != nil {
-			log.Warnf("pct: failed to reset CLOS association of available cpus: %v", err)
-		}
-	}
 	return nil
 }
 
-// useCpuClass configures CPUs of a balloon by delegating to the
-// turbo-aware CPU class allocator.
+// useCpuClass configures CPUs of a balloon by delegating to the CPU
+// class handler.
 func (p *balloons) useCpuClass(bln *Balloon) error {
 	if len(bln.components) > 0 {
 		// Composite balloon: each component carries its own CpuClass.
@@ -842,29 +822,25 @@ func (p *balloons) useCpuClass(bln *Balloon) error {
 		}
 		return nil
 	}
-	if p.turboAllocator == nil {
+	if p.cpuClasses == nil {
 		return nil
 	}
-	className := p.turboAllocator.ResolveClassName(bln.Def.CpuClass)
-	log.Debugf("apply CPU class %q on CPUs %q of %q", className, bln.Cpus, bln.PrettyName())
-	if err := p.turboAllocator.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
-		log.Warnf("failed to apply class %q on CPUs %q: %v", className, bln.Cpus, err)
-	}
-	if p.pctAllocator != nil {
-		if err := p.pctAllocator.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
-			log.Warnf("pct: failed to apply CLOS for class %q on CPUs %q: %v", bln.Def.CpuClass, bln.Cpus, err)
-		}
+	log.Debugf("apply CPU class %q on CPUs %q of %q", bln.Def.CpuClass, bln.Cpus, bln.PrettyName())
+	if err := p.cpuClasses.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
+		log.Warnf("failed to apply class %q on CPUs %q: %v", bln.Def.CpuClass, bln.Cpus, err)
 	}
 	return nil
 }
 
 // forgetCpuClass is called when CPUs of a balloon are released from duty.
+// It reassigns those CPUs to the configured idle class — the handler
+// has no separate "forget" concept; every CPU is always in some class.
 func (p *balloons) forgetCpuClass(bln *Balloon) {
-	if p.turboAllocator == nil {
+	if p.cpuClasses == nil {
 		return
 	}
-	idle := p.turboAllocator.ResolveClassName(p.bpoptions.IdleCpuClass)
-	if err := p.turboAllocator.ForgetClass(bln.Cpus); err != nil {
+	idle := p.bpoptions.IdleCpuClass
+	if err := p.cpuClasses.UseClass(idle, bln.Cpus); err != nil {
 		log.Warnf("failed to forget class of cpus %q (idle class %q): %v", bln.Cpus, idle, err)
 	} else {
 		if len(bln.components) > 0 {
@@ -872,11 +848,6 @@ func (p *balloons) forgetCpuClass(bln *Balloon) {
 				bln.Def.Name, bln.Cpus, idle)
 		} else {
 			log.Debugf("forget class of cpus %q (idle class %q)", bln.Cpus, idle)
-		}
-	}
-	if p.pctAllocator != nil {
-		if err := p.pctAllocator.ForgetClass(bln.Cpus); err != nil {
-			log.Warnf("pct: failed to forget CLOS of cpus %q: %v", bln.Cpus, err)
 		}
 	}
 }
@@ -1075,8 +1046,8 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 	allocatorOptions := cpuTreeAllocatorOptions{
 		topologyBalancing:           p.bpoptions.AllocatorTopologyBalancing,
 		preferSpreadOnPhysicalCores: p.bpoptions.PreferSpreadOnPhysicalCores,
-		preferCloseToDevices:        blnDef.PreferCloseToDevices,
-		preferFarFromDevices:        blnDef.PreferFarFromDevices,
+		preferCloseToDevices:        append([]string(nil), blnDef.PreferCloseToDevices...),
+		preferFarFromDevices:        append([]string(nil), blnDef.PreferFarFromDevices...),
 		virtDevCpusets: map[string][]cpuset.CPUSet{
 			virtDevReservedCpus: {p.reserved},
 			virtDevIsolatedCpus: {p.options.System.Isolated()},
@@ -1084,7 +1055,7 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 			virtDevPCores:       {p.cpuAllocator.GetCPUPriorities()[cpuallocator.PriorityHigh]},
 		},
 	}
-	p.addPctVirtDevCpusets(allocatorOptions.virtDevCpusets, cpuset.New())
+	p.applyCpuClassHints(&allocatorOptions, blnDef.CpuClass, cpuset.New())
 	if blnDef.AllocatorTopologyBalancing != nil {
 		allocatorOptions.topologyBalancing = *blnDef.AllocatorTopologyBalancing
 	}
@@ -1495,9 +1466,13 @@ func (p *balloons) Reconfigure(newCfg interface{}) error {
 			p.bpoptions.CPUClasses = newBalloonsOptions.CPUClasses
 			p.bpoptions.IdleCpuClass = newBalloonsOptions.IdleCpuClass
 			p.bpoptions.TurboDomain = newBalloonsOptions.TurboDomain
-			if p.turboAllocator != nil {
-				if err := p.turboAllocator.Reconfigure(p.bpoptions.CPUClasses, p.bpoptions.IdleCpuClass, p.bpoptions.TurboDomain); err != nil {
-					log.Warnf("failed to reconfigure CPU class allocator: %v", err)
+			if p.cpuClasses != nil {
+				if err := p.cpuClasses.Configure(ConfigSpec{
+					Classes:     p.bpoptions.CPUClasses,
+					TurboDomain: p.bpoptions.TurboDomain,
+					Allowed:     p.allowed,
+				}); err != nil {
+					log.Warnf("failed to reconfigure CPU class handler: %v", err)
 				}
 			}
 			// Update new CPU classes to existing balloon
@@ -1786,23 +1761,14 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	// has access to CPUClasses.
 	p.bpoptions = bpoptions
 
-	// Construct or reconfigure the turbo-aware CPU class allocator.
-	if p.turboAllocator == nil {
-		ta, err := NewCPUClassTurboAllocator(
-			WithSystem(p.options.System),
-			WithCache(p.cch),
-			WithCPUClasses(bpoptions.CPUClasses),
-			WithIdleClass(bpoptions.IdleCpuClass),
-			WithTurboDomain(bpoptions.TurboDomain),
-		)
+	// Construct the CPU class handler that fronts both cpufreq and
+	// PCT internals.
+	if p.cpuClasses == nil {
+		h, err := newCpuClassHandler(p.options.System, p.cch)
 		if err != nil {
-			return balloonsError("failed to create CPU class turbo allocator: %w", err)
+			return balloonsError("failed to create CPU class handler: %w", err)
 		}
-		p.turboAllocator = ta
-	} else {
-		if err := p.turboAllocator.Reconfigure(bpoptions.CPUClasses, bpoptions.IdleCpuClass, bpoptions.TurboDomain); err != nil {
-			return balloonsError("failed to reconfigure CPU class turbo allocator: %w", err)
-		}
+		p.cpuClasses = h
 	}
 
 	reservedBalloonDef, defaultBalloonDef, err := p.fillBuiltinBalloonDefs(bpoptions)
@@ -1812,20 +1778,16 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	if err = p.validateConfig(bpoptions); err != nil {
 		return balloonsError("invalid configuration: %w", err)
 	}
-	// Construct or reconfigure the PCT (Priority Core Turbo)
-	// allocator after validation (so we don't program SST CLOSes
-	// if the user-facing config is malformed).
-	if p.pctAllocator == nil {
-		pa, err := NewCPUClassPctAllocator(p.options.System)
-		if err != nil {
-			return balloonsError("failed to create PCT allocator: %w", err)
-		}
-		p.pctAllocator = pa
+	// Configure the CPU class handler. Done after validation so we
+	// don't program platform state (e.g. SST CLOSes) if the
+	// user-facing config is malformed.
+	if err := p.cpuClasses.Configure(ConfigSpec{
+		Classes:     bpoptions.CPUClasses,
+		TurboDomain: bpoptions.TurboDomain,
+		Allowed:     p.allowed,
+	}); err != nil {
+		return balloonsError("failed to configure CPU class handler: %w", err)
 	}
-	if err := p.pctAllocator.Configure(bpoptions.CPUClasses, bpoptions.IdleCpuClass); err != nil {
-		return balloonsError("failed to configure PCT allocator: %w", err)
-	}
-	p.fillPctClosVirtDevs()
 	p.fillLoadVirtDevices(bpoptions.LoadClasses)
 	p.fillCloseToDevices(bpoptions.BalloonDefs)
 	p.fillFarFromDevices(bpoptions.BalloonDefs)
@@ -2019,104 +1981,42 @@ func (p *balloons) fillCloseToDevices(blnDefs []*BalloonDef) {
 			blnDef.PreferCloseToDevices = append(blnDef.PreferCloseToDevices, virtDevECores)
 		}
 	}
-	p.fillPctCloseToDevices(blnDefs)
 }
 
-// virtDevSstClosName returns the name of the static virtual device
-// that represents the CPUs currently associated to SST CLOS closID.
-func virtDevSstClosName(closID int) string {
-	return fmt.Sprintf("SST CLOS %d", closID)
-}
-
-// fillPctCloseToDevices appends implicit PreferCloseToDevices and
-// PreferFarFromDevices entries to balloon definitions according
-// to PCT settings on their cpuClass:
+// applyCpuClassHints queries the CPU class handler for placement
+// hints for an upcoming allocation under cpuClass and merges them
+// into opts as synthetic virtual devices. The names start with the
+// reserved "__cls_" prefix so they cannot collide with
+// user-configured device names.
 //
-//   - cpuClass with pctClosID: virtDevSstClos<N> is added to
-//     PreferCloseToDevices.
-//   - cpuClass with pctPriority=high: virtDevSstHpReserve is
-//     added to PreferCloseToDevices.
-//   - cpuClass with pctPriority=low, and every non-PCT balloon
-//     when at least one PCT high-priority class exists:
-//     virtDevSstHpInUse is added to PreferFarFromDevices.
-func (p *balloons) fillPctCloseToDevices(blnDefs []*BalloonDef) {
-	if !p.pctAllocator.Active() {
+//   - opts: allocator options to extend in place.
+//   - cpuClass: the cpuClass that the upcoming allocation will use.
+//   - currentCpus: CPUs the balloon already owns (excluded from HP
+//     room accounting in PCT hints).
+func (p *balloons) applyCpuClassHints(opts *cpuTreeAllocatorOptions, cpuClass string, currentCpus cpuset.CPUSet) {
+	if p.cpuClasses == nil || opts == nil {
 		return
 	}
-	hpClassExists := false
-	for _, blnDef := range blnDefs {
-		if p.pctAllocator.ClassIsHighPriority(blnDef.CpuClass) {
-			hpClassExists = true
-			break
-		}
+	if opts.virtDevCpusets == nil {
+		opts.virtDevCpusets = map[string][]cpuset.CPUSet{}
 	}
-	for _, blnDef := range blnDefs {
-		closID, hasClos := p.pctAllocator.ClassClosID(blnDef.CpuClass)
-		if hasClos {
-			devName := virtDevSstClosName(closID)
-			if !containsString(blnDef.PreferCloseToDevices, devName) {
-				blnDef.PreferCloseToDevices = append(blnDef.PreferCloseToDevices, devName)
-			}
-		}
-		if p.pctAllocator.ClassIsHighPriority(blnDef.CpuClass) {
-			if !containsString(blnDef.PreferCloseToDevices, virtDevSstHpReserve) {
-				blnDef.PreferCloseToDevices = append(blnDef.PreferCloseToDevices, virtDevSstHpReserve)
-			}
-			continue
-		}
-		if hpClassExists {
-			if !containsString(blnDef.PreferFarFromDevices, virtDevSstHpInUse) {
-				blnDef.PreferFarFromDevices = append(blnDef.PreferFarFromDevices, virtDevSstHpInUse)
-			}
-		}
+	hints := p.cpuClasses.Hints(AllocationIntent{
+		ClassName:   cpuClass,
+		CurrentCpus: currentCpus,
+		FreeCpus:    p.freeCpus,
+	})
+	for i, pref := range hints.Prefer {
+		name := fmt.Sprintf("__cls_pref_%d_%s", i, pref.Name)
+		opts.virtDevCpusets[name] = []cpuset.CPUSet{pref.Cpus}
+		opts.preferCloseToDevices = append(opts.preferCloseToDevices, name)
+		log.Debugf("cpuclass hint: prefer %q -> %s", name, pref.Cpus)
 	}
-}
-
-// addPctVirtDevCpusets adds CPU set memberships for every PCT
-// virtual device into virtDevCpusets: one entry per static
-// virtDevSstClos<N> and, in managed mode, one entry each for the
-// dynamic virtDevSstHpReserve and virtDevSstHpInUse devices.
-//
-//   - virtDevCpusets: map to extend with virtual device entries.
-//   - excludeBlnCpus: CPUs to exclude from per-package HP room
-//     accounting when computing virtDevSstHpReserve.
-func (p *balloons) addPctVirtDevCpusets(virtDevCpusets map[string][]cpuset.CPUSet, excludeBlnCpus cpuset.CPUSet) {
-	if !p.pctAllocator.Active() {
-		return
+	for i, av := range hints.Avoid {
+		name := fmt.Sprintf("__cls_avoid_%d_%s", i, av.Name)
+		opts.virtDevCpusets[name] = []cpuset.CPUSet{av.Cpus}
+		opts.preferFarFromDevices = append(opts.preferFarFromDevices, name)
+		log.Debugf("cpuclass hint: avoid %q -> %s", name, av.Cpus)
 	}
-	for closID, cpus := range p.pctClosVirtDevs {
-		virtDevCpusets[virtDevSstClosName(closID)] = []cpuset.CPUSet{cpus}
-	}
-	if p.pctAllocator.IsManaged() {
-		virtDevCpusets[virtDevSstHpReserve] = []cpuset.CPUSet{p.pctAllocator.HpReserveCpus(p.freeCpus, excludeBlnCpus)}
-		virtDevCpusets[virtDevSstHpInUse] = []cpuset.CPUSet{p.pctAllocator.HpInUseCpus()}
-	}
-}
-
-// updatePctDynamicVirtDevsInAllocatorOptions refreshes the
-// dynamic virtDevSstHpReserve and virtDevSstHpInUse entries in
-// opts.virtDevCpusets from current free CPUs and per-package HP
-// usage.
-//
-//   - opts: allocator options whose virtDevCpusets are updated in
-//     place; no-op when nil or PCT is not managed.
-//   - excludeBlnCpus: CPUs to exclude from per-package HP room
-//     accounting when computing virtDevSstHpReserve.
-func (p *balloons) updatePctDynamicVirtDevsInAllocatorOptions(opts *cpuTreeAllocatorOptions, excludeBlnCpus cpuset.CPUSet) {
-	if !p.pctAllocator.IsManaged() || opts == nil || opts.virtDevCpusets == nil {
-		return
-	}
-	opts.virtDevCpusets[virtDevSstHpReserve] = []cpuset.CPUSet{p.pctAllocator.HpReserveCpus(p.freeCpus, excludeBlnCpus)}
-	opts.virtDevCpusets[virtDevSstHpInUse] = []cpuset.CPUSet{p.pctAllocator.HpInUseCpus()}
-}
-
-func containsString(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // fillFarFromDevices adds BalloonDefs implicit device anti-affinities
@@ -2136,12 +2036,6 @@ func (p *balloons) fillFarFromDevices(blnDefs []*BalloonDef) {
 	}
 	for _, blnDef := range blnDefs {
 		for _, closeDev := range blnDef.PreferCloseToDevices {
-			// virtDevSstHpReserve has bespoke far-from
-			// handling (LP/non-PCT should avoid HpInUse, not
-			// HpReserve). Skip auto-propagation here.
-			if closeDev == virtDevSstHpReserve {
-				continue
-			}
 			if _, ok := devDefClose[closeDev]; !ok {
 				avoidDevs = append(avoidDevs, closeDev)
 				devDefClose[closeDev] = map[string]bool{}
@@ -2185,17 +2079,6 @@ func (p *balloons) fillLoadVirtDevices(loadClasses []LoadClass) {
 			updateOnEveryCpuAllocation: lc.OverloadsLevelInBalloon,
 		}
 		p.loadVirtDev[lc.Name] = virtDev
-	}
-}
-
-// fillPctClosVirtDevs populates p.pctClosVirtDevs with the
-// current CPU membership of every PCT-referenced CLOS. The map is
-// left empty when PCT is disabled.
-func (p *balloons) fillPctClosVirtDevs() {
-	p.pctClosVirtDevs = map[int]cpuset.CPUSet{}
-	for _, closID := range p.pctAllocator.ReferencedClosIDs() {
-		p.pctClosVirtDevs[closID] = p.pctAllocator.ClosCpus(closID, p.allowed)
-		log.Debugf("pct: virtDev %q -> CPUs %q", virtDevSstClosName(closID), p.pctClosVirtDevs[closID])
 	}
 }
 
@@ -2273,7 +2156,7 @@ func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
 		}
 	}()
 	p.updateLoadedVirtDevsInAllocatorOptions(&bln.cpuTreeAlloc.options, bln.Def.Loads)
-	p.updatePctDynamicVirtDevsInAllocatorOptions(&bln.cpuTreeAlloc.options, bln.Cpus)
+	p.applyCpuClassHints(&bln.cpuTreeAlloc.options, bln.Def.CpuClass, bln.Cpus)
 	if cpuCountDelta > 0 {
 		// Inflate the balloon.
 		addFromCpus, _, err := bln.cpuTreeAlloc.ResizeCpus(bln.Cpus, p.freeCpus, cpuCountDelta)
