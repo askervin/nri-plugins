@@ -18,22 +18,22 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/intel/goresctrl/pkg/sst"
+	gosst "github.com/intel/goresctrl/pkg/sst"
 	"github.com/intel/goresctrl/pkg/utils"
 )
 
-// sstBridgeGoresctrl is the real-hardware sstBridge backed by
+// sstGoresctrl is the real-hardware sst backed by
 // goresctrl/pkg/sst.
-type sstBridgeGoresctrl struct {
-	plat *sst.Platform
+type sstGoresctrl struct {
+	plat *gosst.Platform
 }
 
-func newSstBridgeGoresctrl() (sstBridge, error) {
-	b := &sstBridgeGoresctrl{}
-	if !sst.SstSupported() {
+func newSstGoresctrl() (sst, error) {
+	b := &sstGoresctrl{}
+	if !gosst.SstSupported() {
 		return b, nil
 	}
-	plat, err := sst.Init()
+	plat, err := gosst.Init()
 	if err != nil {
 		return nil, fmt.Errorf("SST init failed: %w", err)
 	}
@@ -41,16 +41,16 @@ func newSstBridgeGoresctrl() (sstBridge, error) {
 	return b, nil
 }
 
-func (b *sstBridgeGoresctrl) Supported() bool { return b.plat != nil }
+func (b *sstGoresctrl) Supported() bool { return b.plat != nil }
 
-func (b *sstBridgeGoresctrl) ClosCount() int {
+func (b *sstGoresctrl) ClosCount() int {
 	if b.plat == nil {
 		return 0
 	}
 	return b.plat.ClosCount()
 }
 
-func (b *sstBridgeGoresctrl) PackageIDs() []int {
+func (b *sstGoresctrl) PackageIDs() []int {
 	if b.plat == nil {
 		return nil
 	}
@@ -63,7 +63,7 @@ func (b *sstBridgeGoresctrl) PackageIDs() []int {
 	return ids
 }
 
-func (b *sstBridgeGoresctrl) CPUsOfPackage(pkgID int) []int {
+func (b *sstGoresctrl) CPUsOfPackage(pkgID int) []int {
 	if b.plat == nil {
 		return nil
 	}
@@ -84,7 +84,7 @@ func (b *sstBridgeGoresctrl) CPUsOfPackage(pkgID int) []int {
 	return out
 }
 
-func (b *sstBridgeGoresctrl) PrepareManagedMode() error {
+func (b *sstGoresctrl) PrepareManagedMode() error {
 	if b.plat == nil {
 		return fmt.Errorf("SST not supported on this host")
 	}
@@ -95,18 +95,18 @@ func (b *sstBridgeGoresctrl) PrepareManagedMode() error {
 		if err := pkg.TFEnable(); err != nil {
 			return fmt.Errorf("TFEnable on package %d: %w", pkg.ID(), err)
 		}
-		if err := pkg.CPSetPriorityType(sst.Ordered); err != nil {
+		if err := pkg.CPSetPriorityType(gosst.Ordered); err != nil {
 			return fmt.Errorf("CPSetPriorityType on package %d: %w", pkg.ID(), err)
 		}
 	}
 	return nil
 }
 
-func (b *sstBridgeGoresctrl) ConfigureClos(cfg pctClosConfig) error {
+func (b *sstGoresctrl) ConfigureClos(cfg pctClosConfig) error {
 	if b.plat == nil {
 		return fmt.Errorf("SST not supported on this host")
 	}
-	cc := sst.ClosConfig{MinFreq: cfg.MinFreq, MaxFreq: cfg.MaxFreq}
+	cc := gosst.ClosConfig{MinFreq: cfg.MinFreq, MaxFreq: cfg.MaxFreq}
 	for _, pkg := range b.plat.Packages() {
 		if err := pkg.ClosConfigure(cfg.ClosID, cc); err != nil {
 			return fmt.Errorf("ClosConfigure(%d) on package %d: %w", cfg.ClosID, pkg.ID(), err)
@@ -115,7 +115,7 @@ func (b *sstBridgeGoresctrl) ConfigureClos(cfg pctClosConfig) error {
 	return nil
 }
 
-func (b *sstBridgeGoresctrl) EnableCP() error {
+func (b *sstGoresctrl) EnableCP() error {
 	if b.plat == nil {
 		return fmt.Errorf("SST not supported on this host")
 	}
@@ -127,7 +127,7 @@ func (b *sstBridgeGoresctrl) EnableCP() error {
 	return nil
 }
 
-func (b *sstBridgeGoresctrl) AssociateCPUs(assocs []pctClosAssoc) error {
+func (b *sstGoresctrl) AssociateCPUs(assocs []pctClosAssoc) error {
 	if b.plat == nil {
 		return fmt.Errorf("SST not supported on this host")
 	}
@@ -146,7 +146,7 @@ func (b *sstBridgeGoresctrl) AssociateCPUs(assocs []pctClosAssoc) error {
 	return nil
 }
 
-func (b *sstBridgeGoresctrl) GetCPUClosID(cpu int) (int, error) {
+func (b *sstGoresctrl) GetCPUClosID(cpu int) (int, error) {
 	if b.plat == nil {
 		return 0, fmt.Errorf("SST not supported on this host")
 	}
@@ -156,7 +156,7 @@ func (b *sstBridgeGoresctrl) GetCPUClosID(cpu int) (int, error) {
 // MaxHpCpus returns the per-package SST-BF priority-core count.
 // The second return value is false when SST-BF support is not
 // exposed on the package.
-func (b *sstBridgeGoresctrl) MaxHpCpus(pkgID int) (int, bool) {
+func (b *sstGoresctrl) MaxHpCpus(pkgID int) (int, bool) {
 	if b.plat == nil {
 		return 0, false
 	}
@@ -183,7 +183,7 @@ func (b *sstBridgeGoresctrl) MaxHpCpus(pkgID int) (int, bool) {
 	return total, true
 }
 
-func (b *sstBridgeGoresctrl) Shutdown() error {
+func (b *sstGoresctrl) Shutdown() error {
 	if b.plat == nil {
 		return nil
 	}

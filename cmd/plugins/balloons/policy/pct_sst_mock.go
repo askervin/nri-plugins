@@ -49,7 +49,7 @@ type sstMockPackage struct {
 	CPEnabled   bool           `json:"cp_enabled"`
 	CPPriority  string         `json:"cp_priority,omitempty"` // "ordered" or "proportional"
 	// MaxHpCpus, when > 0, is the per-package PCT high-priority
-	// CPU count reported through sstBridge.MaxHpCpus. 0 means
+	// CPU count reported through sst.MaxHpCpus. 0 means
 	// "unknown".
 	MaxHpCpus int            `json:"max_hp_cpus,omitempty"`
 	Clos      []*sstMockClos `json:"clos,omitempty"`
@@ -62,18 +62,18 @@ type sstMockDoc struct {
 	Packages  []*sstMockPackage `json:"packages"`
 }
 
-// sstBridgeMock is an in-memory sstBridge implementation. Seed
+// sstMock is an in-memory sst implementation. Seed
 // state comes from OVERRIDE_SST; mutations from policy calls are
 // recorded into the in-memory doc and persisted to a state file
 // after every operation so e2e tests can inspect the result.
-type sstBridgeMock struct {
+type sstMock struct {
 	doc      *sstMockDoc
 	cpuPkg   map[int]*sstMockPackage // cpu -> package
 	cpuClos  map[int]int             // cpu -> currently-associated CLOS id
 	stateDir string
 }
 
-func newSstBridgeMock(jsonData string) (sstBridge, error) {
+func newSstMock(jsonData string) (sst, error) {
 	doc := &sstMockDoc{}
 	if err := json.Unmarshal([]byte(jsonData), doc); err != nil {
 		return nil, fmt.Errorf("failed to parse %s JSON: %w", sstOverrideEnvVar, err)
@@ -81,7 +81,7 @@ func newSstBridgeMock(jsonData string) (sstBridge, error) {
 	if doc.ClosCount == 0 {
 		doc.ClosCount = 4
 	}
-	b := &sstBridgeMock{
+	b := &sstMock{
 		doc:      doc,
 		cpuPkg:   map[int]*sstMockPackage{},
 		cpuClos:  map[int]int{},
@@ -121,11 +121,11 @@ func newSstBridgeMock(jsonData string) (sstBridge, error) {
 	return b, nil
 }
 
-func (b *sstBridgeMock) Supported() bool { return b.doc.Supported }
+func (b *sstMock) Supported() bool { return b.doc.Supported }
 
-func (b *sstBridgeMock) ClosCount() int { return b.doc.ClosCount }
+func (b *sstMock) ClosCount() int { return b.doc.ClosCount }
 
-func (b *sstBridgeMock) PackageIDs() []int {
+func (b *sstMock) PackageIDs() []int {
 	ids := make([]int, 0, len(b.doc.Packages))
 	for _, p := range b.doc.Packages {
 		ids = append(ids, p.ID)
@@ -134,7 +134,7 @@ func (b *sstBridgeMock) PackageIDs() []int {
 	return ids
 }
 
-func (b *sstBridgeMock) CPUsOfPackage(pkgID int) []int {
+func (b *sstMock) CPUsOfPackage(pkgID int) []int {
 	for _, p := range b.doc.Packages {
 		if p.ID == pkgID {
 			cpus, _ := parseCPUList(p.CPUs)
@@ -144,7 +144,7 @@ func (b *sstBridgeMock) CPUsOfPackage(pkgID int) []int {
 	return nil
 }
 
-func (b *sstBridgeMock) pkgEnsureClos(pkg *sstMockPackage, clos int) *sstMockClos {
+func (b *sstMock) pkgEnsureClos(pkg *sstMockPackage, clos int) *sstMockClos {
 	for _, c := range pkg.Clos {
 		if c.ID == clos {
 			return c
@@ -156,7 +156,7 @@ func (b *sstBridgeMock) pkgEnsureClos(pkg *sstMockPackage, clos int) *sstMockClo
 	return c
 }
 
-func (b *sstBridgeMock) PrepareManagedMode() error {
+func (b *sstMock) PrepareManagedMode() error {
 	for _, pkg := range b.doc.Packages {
 		// CPReset: clear CLOS configs, associate all CPUs to CLOS 0.
 		pkg.Clos = nil
@@ -171,7 +171,7 @@ func (b *sstBridgeMock) PrepareManagedMode() error {
 	return b.persist()
 }
 
-func (b *sstBridgeMock) ConfigureClos(cfg pctClosConfig) error {
+func (b *sstMock) ConfigureClos(cfg pctClosConfig) error {
 	for _, pkg := range b.doc.Packages {
 		c := b.pkgEnsureClos(pkg, cfg.ClosID)
 		c.MinFreq = cfg.MinFreq
@@ -181,7 +181,7 @@ func (b *sstBridgeMock) ConfigureClos(cfg pctClosConfig) error {
 	return b.persist()
 }
 
-func (b *sstBridgeMock) EnableCP() error {
+func (b *sstMock) EnableCP() error {
 	for _, pkg := range b.doc.Packages {
 		pkg.CPEnabled = true
 	}
@@ -189,7 +189,7 @@ func (b *sstBridgeMock) EnableCP() error {
 	return b.persist()
 }
 
-func (b *sstBridgeMock) AssociateCPUs(assocs []pctClosAssoc) error {
+func (b *sstMock) AssociateCPUs(assocs []pctClosAssoc) error {
 	for _, a := range assocs {
 		if _, ok := b.cpuPkg[a.CPU]; !ok {
 			return fmt.Errorf("pct mock: CPU %d not present in any seeded package", a.CPU)
@@ -217,7 +217,7 @@ func (b *sstBridgeMock) AssociateCPUs(assocs []pctClosAssoc) error {
 	return b.persist()
 }
 
-func (b *sstBridgeMock) GetCPUClosID(cpu int) (int, error) {
+func (b *sstMock) GetCPUClosID(cpu int) (int, error) {
 	cl, ok := b.cpuClos[cpu]
 	if !ok {
 		return 0, fmt.Errorf("pct mock: CPU %d not present in any seeded package", cpu)
@@ -225,7 +225,7 @@ func (b *sstBridgeMock) GetCPUClosID(cpu int) (int, error) {
 	return cl, nil
 }
 
-func (b *sstBridgeMock) MaxHpCpus(pkgID int) (int, bool) {
+func (b *sstMock) MaxHpCpus(pkgID int) (int, bool) {
 	for _, pkg := range b.doc.Packages {
 		if pkg.ID != pkgID {
 			continue
@@ -238,7 +238,7 @@ func (b *sstBridgeMock) MaxHpCpus(pkgID int) (int, bool) {
 	return 0, false
 }
 
-func (b *sstBridgeMock) Shutdown() error {
+func (b *sstMock) Shutdown() error {
 	for cpu := range b.cpuClos {
 		b.cpuClos[cpu] = 0
 	}
@@ -251,7 +251,7 @@ func (b *sstBridgeMock) Shutdown() error {
 	return b.persist()
 }
 
-func (b *sstBridgeMock) persist() error {
+func (b *sstMock) persist() error {
 	if err := os.MkdirAll(b.stateDir, 0o755); err != nil {
 		return err
 	}

@@ -21,7 +21,7 @@ import (
 )
 
 // pctClosConfig describes one CLOS configuration that the
-// pctAllocator wants the SST bridge to program.
+// pctAllocator wants to program.
 type pctClosConfig struct {
 	ClosID  int
 	MinFreq int // kHz
@@ -34,11 +34,11 @@ type pctClosAssoc struct {
 	ClosID int
 }
 
-// sstBridge is the subset of Intel SST functionality used by the
-// balloons policy. Implementations: sstBridgeGoresctrl for real
-// hardware via goresctrl/pkg/sst, and sstBridgeMock for an
+// sst is the subset of Intel SST functionality used by the
+// balloons policy. Implementations: sstGoresctrl for real
+// hardware via goresctrl/pkg/sst, and sstMock for an
 // in-memory fake seeded from OVERRIDE_SST.
-type sstBridge interface {
+type sst interface {
 	// Supported reports whether SST is available.
 	Supported() bool
 
@@ -78,13 +78,13 @@ type sstBridge interface {
 	Shutdown() error
 }
 
-// newSstBridge returns an SST bridge: the in-memory mock when
-// OVERRIDE_SST is set, otherwise the goresctrl-backed bridge.
-func newSstBridge() (sstBridge, error) {
+// newSst returns an SST implementation: the in-memory mock when
+// OVERRIDE_SST is set, otherwise the goresctrl-backed one.
+func newSst() (sst, error) {
 	if v := os.Getenv(sstOverrideEnvVar); v != "" {
-		return newSstBridgeMock(v)
+		return newSstMock(v)
 	}
-	return newSstBridgeGoresctrl()
+	return newSstGoresctrl()
 }
 
 // sstFreqValuesEqual reports whether two CLOS frequency values in

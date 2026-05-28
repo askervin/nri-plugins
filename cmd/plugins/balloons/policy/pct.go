@@ -53,7 +53,7 @@ type pctClassPlan struct {
 // associations driven by cpuClass definitions.
 type CPUClassPctAllocator struct {
 	sys           sysfs.System
-	bridge        sstBridge
+	sst           sst
 	mode          pctMode
 	classByName   map[string]*CPUClass
 	classPlan     map[string]*pctClassPlan // class name -> CLOS plan (PCT classes only)
@@ -67,14 +67,14 @@ type CPUClassPctAllocator struct {
 // NewCPUClassPctAllocator returns a new PCT allocator in the
 // disabled mode.
 func NewCPUClassPctAllocator(sys sysfs.System) (*CPUClassPctAllocator, error) {
-	br, err := newSstBridge()
+	s, err := newSst()
 	if err != nil {
 		return nil, err
 	}
 	return &CPUClassPctAllocator{
-		sys:    sys,
-		bridge: br,
-		mode:   pctModeDisabled,
+		sys:  sys,
+		sst:  s,
+		mode: pctModeDisabled,
 	}, nil
 }
 
@@ -104,7 +104,7 @@ func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName s
 		log.Debugf("pct: no cpuClasses request PCT; PCT allocator disabled")
 		return nil
 	}
-	if !a.bridge.Supported() {
+	if !a.sst.Supported() {
 		log.Warnf("pct: SST not supported on this host; ignoring PCT fields in cpuClasses")
 		a.mode = pctModeDisabled
 		a.classPlan = nil
@@ -113,7 +113,7 @@ func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName s
 	log.Infof("pct: mode=%s, %d PCT cpuClass(es)", a.modeString(), len(plans))
 
 	if mode == pctModeManaged {
-		if err := a.bridge.PrepareManagedMode(); err != nil {
+		if err := a.sst.PrepareManagedMode(); err != nil {
 			return fmt.Errorf("pct: failed to prepare managed mode: %w", err)
 		}
 		// Program every requested CLOS.
@@ -141,12 +141,12 @@ func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName s
 				}
 			}
 			cfg := pctClosConfig{ClosID: closID, MinFreq: minF, MaxFreq: maxF}
-			if err := a.bridge.ConfigureClos(cfg); err != nil {
+			if err := a.sst.ConfigureClos(cfg); err != nil {
 				return fmt.Errorf("pct: failed to configure CLOS %d: %w", closID, err)
 			}
 			log.Debugf("pct: programmed CLOS %d min=%d max=%d", closID, minF, maxF)
 		}
-		if err := a.bridge.EnableCP(); err != nil {
+		if err := a.sst.EnableCP(); err != nil {
 			return fmt.Errorf("pct: failed to enable SST-CP: %w", err)
 		}
 	}
@@ -306,7 +306,7 @@ func (a *CPUClassPctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
 	for _, c := range list {
 		assocs = append(assocs, pctClosAssoc{CPU: c, ClosID: clos})
 	}
-	if err := a.bridge.AssociateCPUs(assocs); err != nil {
+	if err := a.sst.AssociateCPUs(assocs); err != nil {
 		return fmt.Errorf("pct: associate cpus %s to CLOS %d: %w", cpus, clos, err)
 	}
 	log.Debugf("pct: associated cpus %s to CLOS %d", cpus, clos)
@@ -316,13 +316,13 @@ func (a *CPUClassPctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
 // Shutdown restores the platform to its default state. Safe to
 // call multiple times.
 func (a *CPUClassPctAllocator) Shutdown() error {
-	if a == nil || !a.bridge.Supported() {
+	if a == nil || !a.sst.Supported() {
 		return nil
 	}
 	if a.mode != pctModeManaged {
 		return nil
 	}
-	return a.bridge.Shutdown()
+	return a.sst.Shutdown()
 }
 
 func (a *CPUClassPctAllocator) modeString() string {
@@ -392,7 +392,7 @@ func (a *CPUClassPctAllocator) ClosCpus(closID int, allowed cpuset.CPUSet) cpuse
 	}
 	out := []int{}
 	for _, cpu := range allowed.UnsortedList() {
-		id, err := a.bridge.GetCPUClosID(cpu)
+		id, err := a.sst.GetCPUClosID(cpu)
 		if err != nil {
 			continue
 		}
@@ -454,7 +454,7 @@ func (a *CPUClassPctAllocator) HpReserveCpus(free cpuset.CPUSet, excludeBln cpus
 			continue
 		}
 		room := pkgFree.Size() // fallback: "most free CPUs"
-		if maxHp, ok := a.bridge.MaxHpCpus(int(pkgID)); ok {
+		if maxHp, ok := a.sst.MaxHpCpus(int(pkgID)); ok {
 			anyKnown = true
 			used := a.hpUsed[int(pkgID)]
 			if excludeBln.Size() > 0 {
