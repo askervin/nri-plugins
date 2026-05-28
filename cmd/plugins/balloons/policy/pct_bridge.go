@@ -34,59 +34,52 @@ type pctClosAssoc struct {
 	ClosID int
 }
 
-// sstBridge is the small subset of Intel SST functionality the
-// balloons policy needs. Implemented by sstBridgeGoresctrl (real
-// hardware via goresctrl/pkg/sst) and sstBridgeMock (in-memory
-// fake seeded from OVERRIDE_SST for development and e2e testing).
+// sstBridge is the subset of Intel SST functionality used by the
+// balloons policy. Implementations: sstBridgeGoresctrl for real
+// hardware via goresctrl/pkg/sst, and sstBridgeMock for an
+// in-memory fake seeded from OVERRIDE_SST.
 type sstBridge interface {
-	// Supported returns true if SST is available on this host
-	// (or the mock has been seeded as supported).
+	// Supported reports whether SST is available.
 	Supported() bool
 
-	// ClosCount returns the number of CLOSes supported (typically 4).
+	// ClosCount returns the number of CLOSes supported.
 	ClosCount() int
 
-	// PackageIDs returns the IDs of all packages present.
+	// PackageIDs returns the IDs of all packages.
 	PackageIDs() []int
 
-	// CPUsOfPackage returns the CPUs belonging to the given package.
+	// CPUsOfPackage returns the CPUs of the given package.
 	CPUsOfPackage(pkgID int) []int
 
-	// PrepareManagedMode performs the full SoC-wide initialization
-	// sequence required before per-CLOS configuration: CPReset,
-	// TFEnable, CPSetPriorityType(Ordered) for every package.
+	// PrepareManagedMode resets and enables SST-TF on every
+	// package and selects ordered priority arbitration.
 	PrepareManagedMode() error
 
-	// ConfigureClos programs CLOS bounds on every package.
+	// ConfigureClos programs CLOS frequency bounds on every
+	// package.
 	ConfigureClos(cfg pctClosConfig) error
 
-	// EnableCP enables SST-CP on every package, completing the
-	// managed-mode setup. Called once after all ConfigureClos calls.
+	// EnableCP enables SST-CP on every package.
 	EnableCP() error
 
-	// AssociateCPUs binds each CPU to the indicated CLOS. No-op if
-	// the CPU is already associated to that CLOS.
+	// AssociateCPUs binds each CPU to the indicated CLOS.
 	AssociateCPUs(assocs []pctClosAssoc) error
 
 	// GetCPUClosID returns the current CLOS association of a CPU.
 	GetCPUClosID(cpu int) (int, error)
 
 	// MaxHpCpus returns the maximum number of CPUs that can be
-	// simultaneously held in the high-priority CLOS on the given
-	// package. The second return value is false if the platform
-	// does not expose this capability; callers should then fall
-	// back to a free-CPU-count heuristic.
+	// held in the high-priority CLOS on the given package. The
+	// second return value is false if the platform does not
+	// expose this capability.
 	MaxHpCpus(pkgID int) (int, bool)
 
-	// Shutdown restores managed-mode platform state to a sensible
-	// default (associate all CPUs to CLOS 0, optionally disable
-	// SST-TF/CP). For the mock this also flushes the state file.
+	// Shutdown restores managed-mode platform state to defaults.
 	Shutdown() error
 }
 
-// newSstBridge selects the SST bridge implementation. If
-// OVERRIDE_SST is set the in-memory mock is used; otherwise the
-// real goresctrl-backed bridge.
+// newSstBridge returns an SST bridge: the in-memory mock when
+// OVERRIDE_SST is set, otherwise the goresctrl-backed bridge.
 func newSstBridge() (sstBridge, error) {
 	if v := os.Getenv(sstOverrideEnvVar); v != "" {
 		return newSstBridgeMock(v)
@@ -94,10 +87,9 @@ func newSstBridge() (sstBridge, error) {
 	return newSstBridgeGoresctrl()
 }
 
-// sstFreqValuesEqual reports whether two CLOS frequency values
-// (kHz) should be considered equal. Zero means "not specified",
-// which the bridge interprets as "leave whatever is there".
+// sstFreqValuesEqual reports whether two CLOS frequency values in
+// kHz are equal. Zero stands for "not specified".
 func sstFreqValuesEqual(a, b int) bool { return a == b }
 
-// cpusetToInts is a small helper used by the bridge implementations.
+// cpusetToInts returns the CPUs in s as an int slice.
 func cpusetToInts(s cpuset.CPUSet) []int { return s.UnsortedList() }

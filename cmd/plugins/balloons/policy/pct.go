@@ -32,7 +32,7 @@ const (
 	pctDefaultLpClos = 3
 )
 
-// pctMode is the operating mode chosen at Configure time.
+// pctMode is the operating mode of the PCT allocator.
 type pctMode int
 
 const (
@@ -50,9 +50,7 @@ type pctClassPlan struct {
 }
 
 // CPUClassPctAllocator manages Intel Priority Core Turbo CLOS
-// associations for the balloons policy. It is the sibling of
-// CPUClassTurboAllocator and is fed UseClass/ForgetClass calls
-// from the same balloon lifecycle hooks.
+// associations driven by cpuClass definitions.
 type CPUClassPctAllocator struct {
 	sys           sysfs.System
 	bridge        sstBridge
@@ -61,17 +59,13 @@ type CPUClassPctAllocator struct {
 	classPlan     map[string]*pctClassPlan // class name -> CLOS plan (PCT classes only)
 	idleClassName string
 	idleClos      int // CLOS used for CPUs not held by any PCT class
-	// hpUsed tracks CPUs currently held by HP balloons, grouped
-	// by package ID. Updated from UseClass / ForgetClass /
-	// ResetIdle so HpReserveCpus can reason about per-package
-	// remaining PCT room (= MaxHpCpus(pkg) - len(hpUsed[pkg])).
+	// hpUsed groups CPUs currently held by HP balloons by their
+	// package ID.
 	hpUsed map[int]cpuset.CPUSet
 }
 
-// NewCPUClassPctAllocator constructs a PCT allocator. The bridge
-// (real goresctrl or OVERRIDE_SST mock) is selected by
-// newSstBridge() based on environment. Configure() must be called
-// afterwards with the user's cpuClasses.
+// NewCPUClassPctAllocator returns a new PCT allocator in the
+// disabled mode.
 func NewCPUClassPctAllocator(sys sysfs.System) (*CPUClassPctAllocator, error) {
 	br, err := newSstBridge()
 	if err != nil {
@@ -84,13 +78,13 @@ func NewCPUClassPctAllocator(sys sysfs.System) (*CPUClassPctAllocator, error) {
 	}, nil
 }
 
-// Configure inspects the cpuClass definitions, picks a PCT
-// operating mode (disabled / managed / assoc-only) and, in
-// managed mode, programs the CLOSes. Subsequent UseClass /
-// ForgetClass calls then associate CPUs to the right CLOS.
-// idleCpuClassName is consulted only to decide which CLOS to use
-// for the policy-wide ResetIdle path; an unset / unrecognised
-// idle class falls back to the "default" class if defined.
+// Configure selects the PCT operating mode from the given
+// cpuClass definitions and, in managed mode, programs the
+// corresponding SST CLOSes.
+//
+//   - classes: cpuClass definitions to inspect for PCT fields.
+//   - idleCpuClassName: name of the cpuClass to apply to idle
+//     CPUs.
 func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName string) error {
 	a.classByName = make(map[string]*CPUClass, len(classes))
 	for _, cc := range classes {
@@ -159,9 +153,8 @@ func (a *CPUClassPctAllocator) Configure(classes []*CPUClass, idleCpuClassName s
 	return nil
 }
 
-// planClasses derives the per-class CLOS plan from cpuClasses and
-// returns the operating mode. Validation guarantees the two modes
-// don't mix here.
+// planClasses returns the PCT operating mode and the per-class
+// CLOS plan derived from cpuClasses.
 func (a *CPUClassPctAllocator) planClasses(classes []*CPUClass) (pctMode, map[string]*pctClassPlan, error) {
 	plans := map[string]*pctClassPlan{}
 	managed, assocOnly := false, false
@@ -205,9 +198,9 @@ func (a *CPUClassPctAllocator) planClasses(classes []*CPUClass) (pctMode, map[st
 	}
 }
 
-// resolveHWFreq resolves a symbolic Frequency using the platform
-// hardware values, ignoring the soft turboPriority arbitration.
-// "turbo" always resolves to the real hardware turbo ceiling.
+// resolveHWFreq returns the hardware frequency in kHz that the
+// given symbolic Frequency refers to. "turbo" resolves to the
+// platform's maximum turbo frequency.
 func (a *CPUClassPctAllocator) resolveHWFreq(f Frequency) uint {
 	if f == 0 {
 		return 0
@@ -226,9 +219,9 @@ func (a *CPUClassPctAllocator) Active() bool {
 }
 
 // UseClass associates the given CPUs to the CLOS chosen for
-// className. If className is not a PCT class, the CPUs are
-// associated to the idle CLOS (CLOS 0 in managed mode; left
-// unchanged in assoc-only mode).
+// className. In managed mode, CPUs whose className is not a PCT
+// class are associated to the idle CLOS. In assoc-only mode such
+// CPUs are left unchanged.
 func (a *CPUClassPctAllocator) UseClass(className string, cpus cpuset.CPUSet) error {
 	if !a.Active() || cpus.IsEmpty() {
 		return nil
@@ -236,9 +229,6 @@ func (a *CPUClassPctAllocator) UseClass(className string, cpus cpuset.CPUSet) er
 	a.trackHpUsage(className, cpus)
 	plan, ok := a.classPlan[className]
 	if !ok {
-		// Non-PCT class: in managed mode, send CPUs to the idle
-		// CLOS so any prior PCT association is cleared. In
-		// assoc-only mode, leave them alone.
 		if a.mode == pctModeAssocOnly {
 			return nil
 		}
@@ -259,8 +249,7 @@ func (a *CPUClassPctAllocator) ForgetClass(cpus cpuset.CPUSet) error {
 	return a.associate(cpus, a.idleClos)
 }
 
-// ResetIdle associates the given CPUs to the idle CLOS. Used at
-// policy startup to bring all available CPUs to a known baseline.
+// ResetIdle associates the given CPUs to the idle CLOS.
 func (a *CPUClassPctAllocator) ResetIdle(cpus cpuset.CPUSet) error {
 	if !a.Active() || cpus.IsEmpty() {
 		return nil
@@ -272,10 +261,9 @@ func (a *CPUClassPctAllocator) ResetIdle(cpus cpuset.CPUSet) error {
 	return a.associate(cpus, a.idleClos)
 }
 
-// trackHpUsage records that `cpus` are now held by a balloon of
-// class `className`. CPUs are first removed from every package's
-// HP set (in case they moved between balloons), then re-added to
-// the appropriate package only if className is an HP class.
+// trackHpUsage updates per-package HP CPU bookkeeping so that
+// cpus are recorded as held by an HP class if className is HP,
+// and removed from HP bookkeeping otherwise.
 func (a *CPUClassPctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet) {
 	if !a.IsManaged() {
 		return
@@ -299,7 +287,7 @@ func (a *CPUClassPctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet
 	}
 }
 
-// clearHpUsage removes `cpus` from every package's HP set.
+// clearHpUsage removes cpus from per-package HP bookkeeping.
 func (a *CPUClassPctAllocator) clearHpUsage(cpus cpuset.CPUSet) {
 	if !a.IsManaged() {
 		return
@@ -325,7 +313,7 @@ func (a *CPUClassPctAllocator) associate(cpus cpuset.CPUSet, clos int) error {
 	return nil
 }
 
-// Shutdown returns the platform to its default state. Safe to
+// Shutdown restores the platform to its default state. Safe to
 // call multiple times.
 func (a *CPUClassPctAllocator) Shutdown() error {
 	if a == nil || !a.bridge.Supported() {
@@ -355,8 +343,7 @@ func (a *CPUClassPctAllocator) IsManaged() bool {
 }
 
 // ReferencedClosIDs returns the sorted, deduplicated list of CLOS
-// IDs that appear in any pctClassPlan. Used to register one static
-// virtDevSstClos<N> per CLOS.
+// IDs referenced by any PCT cpuClass plan.
 func (a *CPUClassPctAllocator) ReferencedClosIDs() []int {
 	if !a.Active() {
 		return nil
@@ -387,9 +374,8 @@ func (a *CPUClassPctAllocator) ClassClosID(className string) (int, bool) {
 	return p.ClosID, true
 }
 
-// ClassIsHighPriority reports whether the cpuClass is the managed
-// HP class (pctPriority: high). Used to drive the dynamic
-// virtDevSstHpReserve close/far hint.
+// ClassIsHighPriority reports whether className is the managed
+// PCT high-priority class (pctPriority: high).
 func (a *CPUClassPctAllocator) ClassIsHighPriority(className string) bool {
 	if !a.IsManaged() {
 		return false
@@ -398,9 +384,8 @@ func (a *CPUClassPctAllocator) ClassIsHighPriority(className string) bool {
 	return ok && cc.PctPriority == "high"
 }
 
-// ClosCpus returns the set of allowed CPUs currently associated to
-// CLOS closID, as reported by the SST bridge. Used at policy setup
-// to seed the static virtDevSstClos<N> virtual devices.
+// ClosCpus returns the subset of allowed CPUs that are currently
+// associated to CLOS closID.
 func (a *CPUClassPctAllocator) ClosCpus(closID int, allowed cpuset.CPUSet) cpuset.CPUSet {
 	if !a.Active() {
 		return cpuset.New()
@@ -418,10 +403,8 @@ func (a *CPUClassPctAllocator) ClosCpus(closID int, allowed cpuset.CPUSet) cpuse
 	return cpuset.New(out...)
 }
 
-// HpInUseCpus returns the union of all CPUs that belong to
-// packages currently hosting at least one HP CPU. LP and non-PCT
-// balloons use this as a far-from hint so that LP/normal work
-// does not compete for shared package power budget with HP work.
+// HpInUseCpus returns the union of CPUs of all packages that
+// currently host at least one HP CPU.
 func (a *CPUClassPctAllocator) HpInUseCpus() cpuset.CPUSet {
 	if !a.IsManaged() {
 		return cpuset.New()
@@ -440,22 +423,19 @@ func (a *CPUClassPctAllocator) HpInUseCpus() cpuset.CPUSet {
 	return out
 }
 
-// HpReserveCpus returns the subset of `free` that lies on the
-// package with the largest remaining PCT high-priority budget.
-// The "HP room" of a package is
+// HpReserveCpus returns the subset of free CPUs that lies on the
+// package with the largest remaining PCT high-priority room. The
+// HP room of a package is
 //
-//	room = MaxHpCpus(pkg) − len(hpUsed[pkg] \ excludeBln)
+//	room = MaxHpCpus(pkg) - len(hpUsed[pkg] \ excludeBln)
 //
-// where excludeBln are CPUs of the balloon currently being
-// resized (so it does not compete against itself). Packages
-// where the bridge does not expose MaxHpCpus, or where every
-// package returns "unknown", fall back to a free-CPU-count
-// heuristic. Ties are broken by largest free-CPU count.
+// Ties are broken by largest free-CPU count. Returns the empty
+// set when no package has any room or no free CPUs, or when free
+// is empty.
 //
-// The returned set is the intersection of the winning package's
-// CPUs with `free`. If no package has any room or no free CPUs,
-// returns the empty set so callers fall back to plain topology
-// placement.
+//   - free: free CPUs to consider for placement.
+//   - excludeBln: CPUs to exclude from per-package HP room
+//     accounting.
 func (a *CPUClassPctAllocator) HpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet) cpuset.CPUSet {
 	if !a.IsManaged() || free.IsEmpty() {
 		return cpuset.New()

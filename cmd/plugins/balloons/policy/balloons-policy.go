@@ -2029,21 +2029,16 @@ func virtDevSstClosName(closID int) string {
 }
 
 // fillPctCloseToDevices appends implicit PreferCloseToDevices and
-// PreferFarFromDevices hints for balloon definitions based on PCT
-// settings.
+// PreferFarFromDevices entries to balloon definitions according
+// to PCT settings on their cpuClass:
 //
-//   - cpuClass with pctClosID: balloon gets close-to the static
-//     virtDevSstClos<N>. fillFarFromDevices() auto-mirrors that
-//     into far-from on the other balloon types.
-//   - cpuClass with pctPriority=high: balloon gets close-to the
-//     dynamic virtDevSstHpReserve. Note that we deliberately do
-//     NOT route this through fillFarFromDevices, because the
-//     correct anti-affinity for LP/non-PCT is to be far from the
-//     package that already hosts HP work, not the package with
-//     the most HP room.
-//   - cpuClass with pctPriority=low and every non-PCT balloon
-//     (when at least one HP class exists): balloon gets
-//     far-from the dynamic virtDevSstHpInUse.
+//   - cpuClass with pctClosID: virtDevSstClos<N> is added to
+//     PreferCloseToDevices.
+//   - cpuClass with pctPriority=high: virtDevSstHpReserve is
+//     added to PreferCloseToDevices.
+//   - cpuClass with pctPriority=low, and every non-PCT balloon
+//     when at least one PCT high-priority class exists:
+//     virtDevSstHpInUse is added to PreferFarFromDevices.
 func (p *balloons) fillPctCloseToDevices(blnDefs []*BalloonDef) {
 	if !p.pctAllocator.Active() {
 		return
@@ -2077,13 +2072,14 @@ func (p *balloons) fillPctCloseToDevices(blnDefs []*BalloonDef) {
 	}
 }
 
-// addPctVirtDevCpusets seeds per-balloon allocatorOptions
-// virtDevCpusets with the static virtDevSstClos<N> devices
-// (membership read from the SST bridge at config time) and a
-// fresh snapshot of the dynamic virtDevSstHpReserve device. The
-// dynamic device is refreshed before every resizeBalloon() call.
-// `excludeBlnCpus` are CPUs of the balloon being constructed; they
-// are not counted against per-package HP room.
+// addPctVirtDevCpusets adds CPU set memberships for every PCT
+// virtual device into virtDevCpusets: one entry per static
+// virtDevSstClos<N> and, in managed mode, one entry each for the
+// dynamic virtDevSstHpReserve and virtDevSstHpInUse devices.
+//
+//   - virtDevCpusets: map to extend with virtual device entries.
+//   - excludeBlnCpus: CPUs to exclude from per-package HP room
+//     accounting when computing virtDevSstHpReserve.
 func (p *balloons) addPctVirtDevCpusets(virtDevCpusets map[string][]cpuset.CPUSet, excludeBlnCpus cpuset.CPUSet) {
 	if !p.pctAllocator.Active() {
 		return
@@ -2098,11 +2094,14 @@ func (p *balloons) addPctVirtDevCpusets(virtDevCpusets map[string][]cpuset.CPUSe
 }
 
 // updatePctDynamicVirtDevsInAllocatorOptions refreshes the
-// dynamic virtDevSstHpReserve and virtDevSstHpInUse devices based
-// on currently free CPUs and per-package HP usage. Called just
-// before each resizeBalloon allocation. `excludeBlnCpus` are CPUs
-// already held by the balloon being resized; they do not count
-// against its own HP room.
+// dynamic virtDevSstHpReserve and virtDevSstHpInUse entries in
+// opts.virtDevCpusets from current free CPUs and per-package HP
+// usage.
+//
+//   - opts: allocator options whose virtDevCpusets are updated in
+//     place; no-op when nil or PCT is not managed.
+//   - excludeBlnCpus: CPUs to exclude from per-package HP room
+//     accounting when computing virtDevSstHpReserve.
 func (p *balloons) updatePctDynamicVirtDevsInAllocatorOptions(opts *cpuTreeAllocatorOptions, excludeBlnCpus cpuset.CPUSet) {
 	if !p.pctAllocator.IsManaged() || opts == nil || opts.virtDevCpusets == nil {
 		return
@@ -2189,13 +2188,9 @@ func (p *balloons) fillLoadVirtDevices(loadClasses []LoadClass) {
 	}
 }
 
-// fillPctClosVirtDevs records the per-CLOS CPU memberships that
-// the static virtDevSstClos<N> virtual devices will expose to the
-// CPU allocator. The membership is queried from the SST bridge
-// once at config time: in assoc-only mode it reflects the
-// operator/BIOS-managed CLOS layout, in managed mode it reflects
-// the layout produced by PrepareManagedMode (everything in CLOS
-// 0). If PCT is disabled the map is left empty.
+// fillPctClosVirtDevs populates p.pctClosVirtDevs with the
+// current CPU membership of every PCT-referenced CLOS. The map is
+// left empty when PCT is disabled.
 func (p *balloons) fillPctClosVirtDevs() {
 	p.pctClosVirtDevs = map[int]cpuset.CPUSet{}
 	for _, closID := range p.pctAllocator.ReferencedClosIDs() {

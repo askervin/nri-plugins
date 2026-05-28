@@ -153,10 +153,9 @@ func (b *sstBridgeGoresctrl) GetCPUClosID(cpu int) (int, error) {
 	return b.plat.GetCPUClosID(utils.ID(cpu))
 }
 
-// MaxHpCpus returns the per-package SST-BF / SST-TF priority-core
-// count if exposed (BF.Cores size). Returns false otherwise so
-// the allocator falls back to a generic "most free CPUs"
-// heuristic.
+// MaxHpCpus returns the per-package SST-BF priority-core count.
+// The second return value is false when SST-BF support is not
+// exposed on the package.
 func (b *sstBridgeGoresctrl) MaxHpCpus(pkgID int) (int, bool) {
 	if b.plat == nil {
 		return 0, false

@@ -416,7 +416,7 @@ func (a *CPUClassTurboAllocator) buildCpuDomains() {
 // class "name". User-facing cpuClasses (known to classByName) get a
 // per-domain synthetic name "<name>@d<N>" so that recalculateTurbo
 // can publish a different effective MaxFreq per domain. Other names
-// — empty, or legacy classes defined only in control.cpu.classes —
+// -- empty, or legacy classes defined only in control.cpu.classes --
 // pass through unchanged: legacy classes have no TurboPriority and
 // therefore do not participate in per-domain arbitration; using
 // their bare name lets the CPU controller find their definition in

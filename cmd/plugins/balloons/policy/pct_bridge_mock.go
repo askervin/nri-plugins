@@ -48,9 +48,9 @@ type sstMockPackage struct {
 	CPSupported bool           `json:"cp_supported"`
 	CPEnabled   bool           `json:"cp_enabled"`
 	CPPriority  string         `json:"cp_priority,omitempty"` // "ordered" or "proportional"
-	// MaxHpCpus, when > 0, is reported through sstBridge.MaxHpCpus
-	// and used by the PCT allocator to decide which package has
-	// the most remaining HP turbo budget. 0 means "unknown".
+	// MaxHpCpus, when > 0, is the per-package PCT high-priority
+	// CPU count reported through sstBridge.MaxHpCpus. 0 means
+	// "unknown".
 	MaxHpCpus int            `json:"max_hp_cpus,omitempty"`
 	Clos      []*sstMockClos `json:"clos,omitempty"`
 }
