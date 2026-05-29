@@ -40,6 +40,43 @@ assert-log-not-contains() {
     fi
 }
 
+# wait-assert-log-contains <regex> <message> [timeout=5]
+# Polls the pct log every 1s until <regex> matches or <timeout>
+# seconds pass. On timeout, defers to assert-log-contains so the
+# resulting command-error carries the captured log output.
+wait-assert-log-contains() {
+    local pat=$1
+    local msg=$2
+    local timeout=${3:-5}
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        pct-log 500
+        grep -E -q "$pat" <<< "$COMMAND_OUTPUT" && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    assert-log-contains "$pat" "$msg"
+}
+
+# wait-assert-log-grew <regex> <prev_count> <message> [timeout=5]
+# Like wait-assert-log-contains but for "did a fresh line appear?"
+# cases where the pattern already exists from an earlier phase.
+wait-assert-log-grew() {
+    local pat=$1
+    local prev=$2
+    local msg=$3
+    local timeout=${4:-5}
+    local elapsed=0 cur
+    while [ "$elapsed" -lt "$timeout" ]; do
+        pct-log 500
+        cur=$(grep -c -E "$pat" <<< "$COMMAND_OUTPUT")
+        [ "$cur" -gt "$prev" ] && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    command-error "$msg"
+}
+
 # wait-pod-gone <podname> [timeout=30]
 wait-pod-gone() {
     local pod=$1
@@ -54,30 +91,26 @@ wait-pod-gone() {
 
 helm_config=$TEST_DIR/balloons-pct-managed.cfg helm-launch balloons
 
-sleep 3
-
 # Managed-mode startup: PrepareManagedMode, ConfigureClos for the
 # HP (CLOS 0) and LP (CLOS 3) plans, EnableCP.
-assert-log-contains 'PrepareManagedMode done' "managed mode startup missing"
-assert-log-contains 'ConfigureClos.*ClosID:0.*MaxFreq:3800000' "HP CLOS 0 not programmed with turbo (3800000)"
-assert-log-contains 'ConfigureClos.*ClosID:3.*MaxFreq:2900000' "LP CLOS 3 not programmed with base (2900000)"
-assert-log-contains 'EnableCP done' "EnableCP missing"
+wait-assert-log-contains 'PrepareManagedMode done' "managed mode startup missing"
+wait-assert-log-contains 'ConfigureClos.*ClosID:0.*MaxFreq:3800000' "HP CLOS 0 not programmed with turbo (3800000)"
+wait-assert-log-contains 'ConfigureClos.*ClosID:3.*MaxFreq:2900000' "LP CLOS 3 not programmed with base (2900000)"
+wait-assert-log-contains 'EnableCP done' "EnableCP missing"
 
 # Phase 1.2: schedule a pod in the HP balloon.
 CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
        POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: pct-hp-bln" CONTCOUNT=1 \
        create balloons-busybox
+wait-assert-log-contains 'associated cpus .* to CLOS 0' "HP pod CPUs not associated to CLOS 0"
 report allowed
-sleep 2
-assert-log-contains 'associated cpus .* to CLOS 0' "HP pod CPUs not associated to CLOS 0"
 
 # Phase 1.3: schedule a pod in the LP balloon.
 CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
        POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: pct-lp-bln" CONTCOUNT=1 \
        create balloons-busybox
+wait-assert-log-contains 'associated cpus .* to CLOS 3' "LP pod CPUs not associated to CLOS 3"
 report allowed
-sleep 2
-assert-log-contains 'associated cpus .* to CLOS 3' "LP pod CPUs not associated to CLOS 3"
 
 # Phase 1.3b: verify HP-reserve allocation steering. The HP balloon
 # (pct-hp-bln) preferred to be close to virtDevSstHpReserve and
@@ -101,20 +134,16 @@ CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
        POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: pct-hp2-bln" CONTCOUNT=1 \
        create balloons-busybox
 report allowed
-sleep 2
 verify 'cpus["pod2c0"].issubset({"cpu10","cpu11","cpu12","cpu13"})'
 verify 'packages["pod2c0"] != packages["pod0c0"]'
 
 # Phase 1.4: remove pods; CPUs should return to CLOS 0 (idle).
-kubectl delete pods --all --now || vm-command "kubectl delete pods --all --now"
-sleep 5
-# After deletion there should be at least one fresh "to CLOS 0" line.
+# Snapshot the current "to CLOS 0" line count so we can detect a
+# fresh occurrence after deletion.
 pct-log 500
-LATEST_TO_LP=$(grep -n 'to CLOS 3' <<< "$COMMAND_OUTPUT" | tail -n 1 | cut -d: -f1 || echo 0)
-LATEST_TO_HP=$(grep -n 'to CLOS 0' <<< "$COMMAND_OUTPUT" | tail -n 1 | cut -d: -f1 || echo 0)
-if [ "${LATEST_TO_HP:-0}" -le "${LATEST_TO_LP:-0}" ]; then
-    command-error "after pod deletion the LP CPUs were not reassociated to CLOS 0"
-fi
+prev_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
+kubectl delete pods --all --now || vm-command "kubectl delete pods --all --now"
+wait-assert-log-grew 'to CLOS 0' "$prev_clos0" "after pod deletion the LP CPUs were not reassociated to CLOS 0"
 
 helm-terminate
 
@@ -124,23 +153,20 @@ helm-terminate
 
 helm_config=$TEST_DIR/balloons-pct-assoconly.cfg helm-launch balloons
 
-sleep 3
-
-# In assoc-only mode PrepareManagedMode and EnableCP must NOT have
-# been called.
-assert-log-not-contains 'PrepareManagedMode done' "PrepareManagedMode unexpectedly called in assoc-only mode"
-assert-log-not-contains 'EnableCP done' "EnableCP unexpectedly called in assoc-only mode"
-
 # Schedule a pod targeting the assoc-clos1 balloon.
 CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
        POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: assoc-clos1-bln" CONTCOUNT=1 \
        create balloons-busybox
 report allowed
-sleep 2
-assert-log-contains 'associated cpus .* to CLOS 1' "CPUs not associated to CLOS 1 in assoc-only mode"
+wait-assert-log-contains 'associated cpus .* to CLOS 1' "CPUs not associated to CLOS 1 in assoc-only mode"
+
+# Now that a full pod admission has gone through without any PCT
+# startup-time configuration, the negative checks for managed-mode
+# initialization are deterministic.
+assert-log-not-contains 'PrepareManagedMode done' "PrepareManagedMode unexpectedly called in assoc-only mode"
+assert-log-not-contains 'EnableCP done' "EnableCP unexpectedly called in assoc-only mode"
 
 vm-command "kubectl delete pods --all --now" || true
-sleep 2
 helm-terminate
 
 ###############################################################################
@@ -152,9 +178,6 @@ helm-terminate
 # crash because the policy fails to start. Use expect_error=1 so
 # helm-launch tolerates the failure.
 expect_error=1 helm_config=$TEST_DIR/balloons-pct-invalid.cfg helm-launch balloons
-sleep 2
-vm-command "kubectl -n kube-system logs ds/nri-resource-policy-balloons | grep -c 'mutually exclusive' || true"
-if [ "$(echo $COMMAND_OUTPUT | tr -d '[:space:]')" = "0" ]; then
-    command-error "Invalid PCT config (both pctPriority and pctClosID) was not reported as mutually exclusive"
-fi
+vm-run-until --timeout 10 "kubectl -n kube-system logs ds/nri-resource-policy-balloons 2>/dev/null | grep -q 'mutually exclusive'" \
+    || command-error "Invalid PCT config (both pctPriority and pctClosID) was not reported as mutually exclusive"
 helm-terminate || true
