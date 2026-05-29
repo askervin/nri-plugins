@@ -1983,11 +1983,23 @@ func (p *balloons) fillCloseToDevices(blnDefs []*BalloonDef) {
 	}
 }
 
+// cpuClassHintDevPrefix is the prefix used for synthetic virtual
+// device names that carry cpuClass placement hints. All such entries
+// are owned exclusively by applyCpuClassHints and are discarded on
+// every new allocation round, because hints are only valid for the
+// allocation they were requested for.
+const cpuClassHintDevPrefix = "__cls_"
+
 // applyCpuClassHints queries the CPU class handler for placement
 // hints for an upcoming allocation under cpuClass and merges them
 // into opts as synthetic virtual devices. The names start with the
-// reserved "__cls_" prefix so they cannot collide with
+// reserved cpuClassHintDevPrefix so they cannot collide with
 // user-configured device names.
+//
+// Any stale cpuClass hints left in opts from a previous allocation
+// round are removed first: hints reflect the cpuClass handler's
+// view at one specific moment and must not accumulate across
+// resize cycles.
 //
 //   - opts: allocator options to extend in place.
 //   - cpuClass: the cpuClass that the upcoming allocation will use.
@@ -1997,26 +2009,57 @@ func (p *balloons) applyCpuClassHints(opts *cpuTreeAllocatorOptions, cpuClass st
 	if p.cpuClasses == nil || opts == nil {
 		return
 	}
-	if opts.virtDevCpusets == nil {
-		opts.virtDevCpusets = map[string][]cpuset.CPUSet{}
-	}
-	hints := p.cpuClasses.Hints(AllocationIntent{
+	mergeCpuClassHints(opts, p.cpuClasses, AllocationIntent{
 		ClassName:   cpuClass,
 		CurrentCpus: currentCpus,
 		FreeCpus:    p.freeCpus,
 	})
+}
+
+// mergeCpuClassHints queries provider for placement hints described
+// by intent and merges them into opts. It first removes any cpuClass
+// hint entries left in opts from a previous allocation round so
+// hints from this round are the only ones in effect.
+func mergeCpuClassHints(opts *cpuTreeAllocatorOptions, provider cpuClassHints, intent AllocationIntent) {
+	if opts == nil || provider == nil {
+		return
+	}
+	if opts.virtDevCpusets == nil {
+		opts.virtDevCpusets = map[string][]cpuset.CPUSet{}
+	}
+	opts.preferCloseToDevices = filterOutHintDevs(opts.preferCloseToDevices)
+	opts.preferFarFromDevices = filterOutHintDevs(opts.preferFarFromDevices)
+	for name := range opts.virtDevCpusets {
+		if strings.HasPrefix(name, cpuClassHintDevPrefix) {
+			delete(opts.virtDevCpusets, name)
+		}
+	}
+	hints := provider.Hints(intent)
 	for i, pref := range hints.Prefer {
-		name := fmt.Sprintf("__cls_pref_%d_%s", i, pref.Name)
+		name := fmt.Sprintf("%spref_%d_%s", cpuClassHintDevPrefix, i, pref.Name)
 		opts.virtDevCpusets[name] = []cpuset.CPUSet{pref.Cpus}
 		opts.preferCloseToDevices = append(opts.preferCloseToDevices, name)
 		log.Debugf("cpuclass hint: prefer %q -> %s", name, pref.Cpus)
 	}
 	for i, av := range hints.Avoid {
-		name := fmt.Sprintf("__cls_avoid_%d_%s", i, av.Name)
+		name := fmt.Sprintf("%savoid_%d_%s", cpuClassHintDevPrefix, i, av.Name)
 		opts.virtDevCpusets[name] = []cpuset.CPUSet{av.Cpus}
 		opts.preferFarFromDevices = append(opts.preferFarFromDevices, name)
 		log.Debugf("cpuclass hint: avoid %q -> %s", name, av.Cpus)
 	}
+}
+
+// filterOutHintDevs returns devs with all cpuClass hint device names
+// (those carrying cpuClassHintDevPrefix) removed. The returned slice
+// reuses devs' backing array.
+func filterOutHintDevs(devs []string) []string {
+	out := devs[:0]
+	for _, d := range devs {
+		if !strings.HasPrefix(d, cpuClassHintDevPrefix) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // fillFarFromDevices adds BalloonDefs implicit device anti-affinities

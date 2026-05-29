@@ -69,6 +69,13 @@ type AllocationHints struct {
 	Avoid  []CpuPreference
 }
 
+// cpuClassHints is the minimum surface of cpuClassHandler that
+// balloons-policy.go relies on for placement hints. It exists so
+// tests can substitute a fake provider.
+type cpuClassHints interface {
+	Hints(AllocationIntent) AllocationHints
+}
+
 // cpuClassHandler is the sole cpuclass entry point for policy code.
 // It owns construction and configuration of the underlying
 // per-technology allocators (cpufreq and pct), exposes a uniform
