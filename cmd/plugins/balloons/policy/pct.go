@@ -49,10 +49,20 @@ type pctClassPlan struct {
 	MaxFreq uint // kHz, 0 = leave alone
 }
 
+// pctSys is the subset of sysfs.System that pctAllocator depends
+// on. Defined here so tests can substitute a fake without
+// implementing the full sysfs.System surface.
+type pctSys interface {
+	PackageIDs() []idset.ID
+	Package(id idset.ID) sysfs.CPUPackage
+	CPU(id idset.ID) sysfs.CPU
+	CPUIDs() []idset.ID
+}
+
 // pctAllocator manages Intel Priority Core Turbo CLOS associations
 // driven by cpuClass definitions.
 type pctAllocator struct {
-	sys         sysfs.System
+	sys         pctSys
 	sst         sst
 	mode        pctMode
 	classByName map[string]*CPUClass
@@ -69,7 +79,7 @@ type pctAllocator struct {
 }
 
 // newPctAllocator returns a new PCT allocator in the disabled mode.
-func newPctAllocator(sys sysfs.System) (*pctAllocator, error) {
+func newPctAllocator(sys pctSys) (*pctAllocator, error) {
 	s, err := newSst()
 	if err != nil {
 		return nil, err

@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"sort"
 
+	idset "github.com/intel/goresctrl/pkg/utils"
+
 	cpucfg "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control/cpu"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	cpucontrol "github.com/containers/nri-plugins/pkg/resmgr/control/cpu"
@@ -515,7 +517,10 @@ type platformTurboInfo struct {
 
 // discoverTurboInfo reads platform turbo capabilities from sysfs.
 // It uses the first online CPU's frequency range as representative.
-func discoverTurboInfo(sys sysfs.System) (*platformTurboInfo, error) {
+func discoverTurboInfo(sys interface {
+	CPUIDs() []idset.ID
+	CPU(id idset.ID) sysfs.CPU
+}) (*platformTurboInfo, error) {
 	cpuIDs := sys.CPUIDs()
 	if len(cpuIDs) == 0 {
 		return nil, fmt.Errorf("no CPUs found in system topology")
