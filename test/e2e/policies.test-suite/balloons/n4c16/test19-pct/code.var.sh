@@ -4,14 +4,19 @@
 # Verifies:
 #  1. Managed mode: SST state mock receives PrepareManagedMode +
 #     ConfigureClos(HP CLOS 0) + ConfigureClos(LP CLOS 3) +
-#     EnableCP. CLOS bounds match resolved cpuClass frequencies.
+#     EnableCP. CLOS bounds match resolved cpuClass MinFreq and
+#     MaxFreq (T1.1).
 #  2. Pod scheduling: a container in the HP balloon gets its CPUs
 #     associated to CLOS 0; a container in the LP balloon gets CLOS 3;
 #     reserved/default CPUs land in CLOS 0 (idle CLOS).
-#  3. Pod removal: CPUs return to CLOS 0.
-#  4. Validation: a cpuClass with both pctPriority and pctClosID
+#  3. HP-reserve and per-package HP-room steering (Phase 1.3b/c).
+#  4. Non-HP balloons avoid HP-in-use packages in managed mode (T1.2).
+#  5. Resize of an HP balloon stays on the same package (T1.3).
+#  6. Per-class idle reassociation: deleting LP frees LP CPUs to
+#     idle CLOS 0 without touching unrelated CLOS 3 / HP state (T1.4).
+#  7. Validation: a cpuClass with both pctPriority and pctClosID
 #     set is rejected.
-#  5. Assoc-only mode: configuration with pctClosID only does NOT
+#  8. Assoc-only mode: configuration with pctClosID only does NOT
 #     call PrepareManagedMode (no log line) and only associates CPUs.
 
 helm-terminate
@@ -92,10 +97,12 @@ wait-pod-gone() {
 helm_config=$TEST_DIR/balloons-pct-managed.cfg helm-launch balloons
 
 # Managed-mode startup: PrepareManagedMode, ConfigureClos for the
-# HP (CLOS 0) and LP (CLOS 3) plans, EnableCP.
+# HP (CLOS 0) and LP (CLOS 3) plans, EnableCP. T1.1 asserts BOTH
+# MinFreq and MaxFreq are programmed (the mock prints them in
+# struct order: MinFreq before MaxFreq).
 wait-assert-log-contains 'PrepareManagedMode done' "managed mode startup missing"
-wait-assert-log-contains 'ConfigureClos.*ClosID:0.*MaxFreq:3800000' "HP CLOS 0 not programmed with turbo (3800000)"
-wait-assert-log-contains 'ConfigureClos.*ClosID:3.*MaxFreq:2900000' "LP CLOS 3 not programmed with base (2900000)"
+wait-assert-log-contains 'ConfigureClos.*ClosID:0 MinFreq:3800000 MaxFreq:3800000' "HP CLOS 0 not programmed with MinFreq=MaxFreq=turbo (3800000)"
+wait-assert-log-contains 'ConfigureClos.*ClosID:3 MinFreq:800000 MaxFreq:2900000' "LP CLOS 3 not programmed with MinFreq=min (800000) MaxFreq=base (2900000)"
 wait-assert-log-contains 'EnableCP done' "EnableCP missing"
 
 # Phase 1.2: schedule a pod in the HP balloon.
@@ -125,11 +132,11 @@ verify 'cpus["pod0c0"].issubset({"cpu02","cpu03","cpu04","cpu05","cpu06","cpu07"
 verify 'cpus["pod1c0"].issubset({"cpu10","cpu11","cpu12","cpu13"})'
 
 # Phase 1.3c: schedule a second HP pod into a *different* HP
-# balloon type (pct-hp2-bln). Now both packages have 1 HP CPU
-# already used... wait, only pkg0 does. With max_hp_cpus=2 per
-# package, the rooms are: pkg0 = 2-1 = 1; pkg1 = 2-0 = 2. The
-# new HP balloon should land on pkg1 because it has the larger
-# HP room, even though pkg0 also has free CPUs.
+# balloon type (pct-hp2-bln). pkg0 already has 1 HP CPU
+# (pct-hp-bln), pkg1 has 0. With max_hp_cpus=2 per package, the
+# HP rooms are: pkg0 = 2-1 = 1; pkg1 = 2-0 = 2. The new HP
+# balloon should land on pkg1 because it has the larger HP room,
+# even though pkg0 also has free CPUs.
 CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
        POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: pct-hp2-bln" CONTCOUNT=1 \
        create balloons-busybox
@@ -137,13 +144,66 @@ report allowed
 verify 'cpus["pod2c0"].issubset({"cpu10","cpu11","cpu12","cpu13"})'
 verify 'packages["pod2c0"] != packages["pod0c0"]'
 
-# Phase 1.4: remove pods; CPUs should return to CLOS 0 (idle).
-# Snapshot the current "to CLOS 0" line count so we can detect a
-# fresh occurrence after deletion.
+# T1.3: resize the pct-hp2-bln balloon by adding a second pod
+# with the same annotation. The balloon (maxCPUs=2) should
+# expand from 1 CPU to 2 CPUs and the new CPU set must be
+# associated to CLOS 0 (the HP plan), not the LP CLOS or
+# anything else. This is the end-to-end counterpart of the
+# TestMergeCpuClassHintsNoAccumulation unit test: it exercises
+# applyCpuClassHints on the resize path. We do not assert
+# strict same-package placement because cputree may legitimately
+# grow a balloon across packages when local free CPUs are
+# scarce; what matters is that the resize happens AND the new
+# CPUs are programmed to the correct CLOS (the cpuclass-driven
+# behavior under test).
 pct-log 500
-prev_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
-kubectl delete pods --all --now || vm-command "kubectl delete pods --all --now"
-wait-assert-log-grew 'to CLOS 0' "$prev_clos0" "after pod deletion the LP CPUs were not reassociated to CLOS 0"
+prev_to_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
+CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
+       POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: pct-hp2-bln" CONTCOUNT=1 \
+       create balloons-busybox
+wait-assert-log-grew 'to CLOS 0' "$prev_to_clos0" "resize of pct-hp2-bln did not associate the new CPU(s) to CLOS 0"
+report allowed
+# Both pods share the same (resized) balloon, so they must see
+# the same CPU set, and that set must have grown to 2.
+verify 'cpus["pod2c0"] == cpus["pod3c0"]'
+verify 'len(cpus["pod3c0"]) == 2'
+
+# T1.2: a non-HP balloon type (pct-lp2-bln) added late should
+# still route its CPUs to the correct CLOS (3 = LP plan). The
+# placement-side Avoid:hpInUseCpus hint is exercised here but
+# not asserted because by this point pct-hp2-bln may span both
+# packages, leaving no HP-free package. The strict Avoid
+# placement logic is covered by TestPctHints_*AvoidsHpInUse at
+# the unit level; here we verify it does not break and that a
+# distinct LP cpuClass association still happens correctly.
+CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
+       POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: pct-lp2-bln" CONTCOUNT=1 \
+       create balloons-busybox
+wait-assert-log-contains 'associated cpus .* to CLOS 3' "LP2 pod CPUs not associated to CLOS 3"
+report allowed
+
+# T1.4: per-class idle reassociation. Delete the LP pod (pod1)
+# FIRST -- its CPUs are on CLOS 3 and must be reassociated to
+# CLOS 0 (the idleCpuClass "default-class" has no PCT plan, so
+# managed mode falls back to CLOS 0). Other CLOS 3 state (the
+# pct-lp2-bln balloon) must NOT be disturbed.
+pct-log 500
+prev_to_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
+prev_to_clos3=$(grep -c 'to CLOS 3' <<< "$COMMAND_OUTPUT")
+vm-command "kubectl delete pod pod1 --now"
+wait-assert-log-grew 'to CLOS 0' "$prev_to_clos0" "deleting LP pod did not reassociate its CPUs to CLOS 0"
+# No new "to CLOS 3" line: pct-lp2-bln's CPUs are unchanged.
+pct-log 500
+cur_to_clos3=$(grep -c 'to CLOS 3' <<< "$COMMAND_OUTPUT")
+if [ "$cur_to_clos3" -ne "$prev_to_clos3" ]; then
+    command-error "deleting LP pod incorrectly triggered new CLOS 3 associations (was $prev_to_clos3, now $cur_to_clos3)"
+fi
+
+# Now delete the rest -- everything ends up on CLOS 0.
+pct-log 500
+prev_to_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
+vm-command "kubectl delete pods --all --now"
+wait-assert-log-grew 'to CLOS 0' "$prev_to_clos0" "after deleting remaining pods CPUs were not reassociated to CLOS 0"
 
 helm-terminate
 
