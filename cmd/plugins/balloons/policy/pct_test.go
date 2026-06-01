@@ -19,6 +19,7 @@ import (
 	"sort"
 	"testing"
 
+	gosst "github.com/intel/goresctrl/pkg/sst"
 	idset "github.com/intel/goresctrl/pkg/utils"
 
 	"github.com/containers/nri-plugins/pkg/sysfs"
@@ -108,6 +109,11 @@ type fakeSst struct {
 	cpuClos   map[int]int // cpu -> CLOS id
 	maxHp     map[int]int // pkgID -> max HP CPUs (missing = "unknown")
 	pkgCpus   map[int]cpuset.CPUSet
+	// punits, when non-nil, overrides the synthesized one-punit-per-package
+	// Punits() output. Use to exercise multi-punit-per-package layouts.
+	punits []pctPunit
+	// closCfg, when non-nil, drives GetClosConfig() responses.
+	closCfg map[int]pctClosCfg
 }
 
 func (s *fakeSst) Supported() bool                                  { return s.supported }
@@ -132,6 +138,11 @@ func (s *fakeSst) GetCPUClosID(cpu int) (int, error) {
 // from the maxHp map. PunitID is always 0 (single punit per pkg
 // preserves the legacy per-package test semantics).
 func (s *fakeSst) Punits() []pctPunit {
+	if s.punits != nil {
+		out := make([]pctPunit, len(s.punits))
+		copy(out, s.punits)
+		return out
+	}
 	pkgIDs := map[int]struct{}{}
 	for id := range s.pkgCpus {
 		pkgIDs[id] = struct{}{}
@@ -167,6 +178,9 @@ func (s *fakeSst) Punits() []pctPunit {
 }
 
 func (s *fakeSst) GetClosConfig(closID int) (pctClosCfg, bool, error) {
+	if c, ok := s.closCfg[closID]; ok {
+		return c, true, nil
+	}
 	return pctClosCfg{}, false, nil
 }
 
@@ -457,4 +471,353 @@ func TestPctHintsAllowedBoundsResults(t *testing.T) {
 			t.Errorf("HP reserve = %s, want %s (pkg0 free cpus inside allowed)", got.Prefer[1].Cpus, want)
 		}
 	}
+}
+
+// --- Tier A/B/C reservation tests ----------------------------------
+
+// newTwoPunitFakeSys returns a fakeSys whose package layout matches
+// the standard two-punit-per-package fixture below: pkg0 = 0..7
+// (punit-0 = 0..3, punit-1 = 4..7), pkg1 = 8..15 (punit-2 = 8..11,
+// punit-3 = 12..15). The synthesis function does not know about
+// punits, only packages.
+func newTwoPunitFakeSys() *fakeSys {
+return &fakeSys{
+packageCpus: map[idset.ID]cpuset.CPUSet{
+0: cpuset.MustParse("0-7"),
+1: cpuset.MustParse("8-15"),
+},
+cpuPkg: map[int]idset.ID{
+0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0,
+8: 1, 9: 1, 10: 1, 11: 1, 12: 1, 13: 1, 14: 1, 15: 1,
+},
+}
+}
+
+// makeTwoPunitsPerPkg returns four punits laid out as in
+// newTwoPunitFakeSys, with the given MaxHpCpus per punit.
+func makeTwoPunitsPerPkg(hp0, hp1, hp2, hp3 int) []pctPunit {
+return []pctPunit{
+{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), MaxHpCpus: hp0},
+{PkgID: 0, PunitID: 1, CPUs: cpuset.MustParse("4-7"), MaxHpCpus: hp1},
+{PkgID: 1, PunitID: 2, CPUs: cpuset.MustParse("8-11"), MaxHpCpus: hp2},
+{PkgID: 1, PunitID: 3, CPUs: cpuset.MustParse("12-15"), MaxHpCpus: hp3},
+}
+}
+
+// TestPctHints_HpRoomTierAPunitWins: punit-0 is fully occupied by
+// HP work, punit-1 in the same package has full HP room. A request
+// for 1 HP CPU must steer to punit-1 (Tier A), not to pkg1.
+func TestPctHints_HpRoomTierAPunitWins(t *testing.T) {
+sys := newTwoPunitFakeSys()
+sst := &fakeSst{
+supported: true,
+punits:    makeTwoPunitsPerPkg(2, 2, 2, 2),
+}
+a := &pctAllocator{
+sys:         sys,
+sst:         sst,
+mode:        pctModeManaged,
+classByName: map[string]*CPUClass{"hp": {Name: "hp", PctPriority: "high"}},
+classPlan:   map[string]*pctClassPlan{"hp": {ClosID: 0}},
+allowed:     cpuset.MustParse("0-15"),
+// Punit-0 fully booked with HP (cpus 0,1 take both HP slots).
+hpUsed: map[int]cpuset.CPUSet{0: cpuset.MustParse("0-1")},
+}
+pctTestWirePunits(a)
+
+got := a.hints(AllocationIntent{
+ClassName:      "hp",
+FreeCpus:       cpuset.MustParse("2-15"),
+RequestedCount: 1,
+})
+
+// Find HP reserve hint.
+var reserve cpuset.CPUSet
+for _, p := range got.Prefer {
+if p.Name == virtDevSstHpReserveHint {
+reserve = p.Cpus
+}
+}
+if reserve.IsEmpty() {
+t.Fatalf("expected HP reserve hint, got Prefer=%+v", got.Prefer)
+}
+// Tier A: punit-1 (room=2) beats punit-0 (room=0) and the
+// equal-room punits in pkg1 because punit-0/punit-1 both belong
+// to pkg0 -- here we pick by largest room.
+// Actually both punit-1 (room=2), punit-2 (room=2), punit-3
+// (room=2) tie; tie-break by free-CPU count (all 4) and then
+// by iteration order (slice index 1 first). So expect punit-1.
+want := cpuset.MustParse("4-7")
+if !reserve.Equals(want) {
+t.Errorf("Tier A HP reserve = %s, want %s (punit-1)", reserve, want)
+}
+}
+
+// TestPctHints_HpRoomTierBSamePackage: punit-0 and punit-1 in pkg0
+// each have only 1 HP slot left, but together they offer 2 slots --
+// enough for the request. Pkg1 has only 1 HP slot in total. The
+// Tier-B aggregate must steer to pkg0 (free CPUs of both punits).
+func TestPctHints_HpRoomTierBSamePackage(t *testing.T) {
+sys := newTwoPunitFakeSys()
+sst := &fakeSst{
+supported: true,
+punits:    makeTwoPunitsPerPkg(2, 2, 1, 0),
+}
+a := &pctAllocator{
+sys:         sys,
+sst:         sst,
+mode:        pctModeManaged,
+classByName: map[string]*CPUClass{"hp": {Name: "hp", PctPriority: "high"}},
+classPlan:   map[string]*pctClassPlan{"hp": {ClosID: 0}},
+allowed:     cpuset.MustParse("0-15"),
+// Both pkg0 punits already host 1 HP CPU each, leaving room=1 in each.
+hpUsed: map[int]cpuset.CPUSet{
+0: cpuset.MustParse("0"), // punit-0 idx 0
+1: cpuset.MustParse("4"), // punit-1 idx 1
+},
+}
+pctTestWirePunits(a)
+
+got := a.hints(AllocationIntent{
+ClassName:      "hp",
+FreeCpus:       cpuset.MustParse("1-3,5-15"),
+RequestedCount: 2,
+})
+var reserve cpuset.CPUSet
+for _, p := range got.Prefer {
+if p.Name == virtDevSstHpReserveHint {
+reserve = p.Cpus
+}
+}
+if reserve.IsEmpty() {
+t.Fatalf("expected HP reserve hint, got Prefer=%+v", got.Prefer)
+}
+// Tier A is impossible (no single punit has room>=2 in pkg0,
+// and pkg1 punit-2 has 1 cpu only). Tier B: pkg0 sum-room=2
+// >= 2, pkg1 sum-room=1 < 2. Reserve = pkg0 free CPUs.
+want := cpuset.MustParse("1-3,5-7")
+if !reserve.Equals(want) {
+t.Errorf("Tier B HP reserve = %s, want %s (pkg0 union)", reserve, want)
+}
+}
+
+// TestPctHints_HpRoomTierCNoCrossPackage: request exceeds the HP
+// room of every single package. Tier C is never taken — the
+// allocator must return no HP-reserve hint so the caller falls back
+// to topology-only placement on the same socket.
+func TestPctHints_HpRoomTierCNoCrossPackage(t *testing.T) {
+sys := newTwoPunitFakeSys()
+sst := &fakeSst{
+supported: true,
+// pkg0 has 2 HP CPUs total, pkg1 has 2 HP CPUs total.
+punits: makeTwoPunitsPerPkg(1, 1, 1, 1),
+}
+a := &pctAllocator{
+sys:         sys,
+sst:         sst,
+mode:        pctModeManaged,
+classByName: map[string]*CPUClass{"hp": {Name: "hp", PctPriority: "high"}},
+classPlan:   map[string]*pctClassPlan{"hp": {ClosID: 0}},
+allowed:     cpuset.MustParse("0-15"),
+hpUsed:      map[int]cpuset.CPUSet{},
+}
+pctTestWirePunits(a)
+
+got := a.hints(AllocationIntent{
+ClassName:      "hp",
+FreeCpus:       cpuset.MustParse("0-15"),
+RequestedCount: 3, // > any single package's HP capacity (2)
+})
+for _, p := range got.Prefer {
+if p.Name == virtDevSstHpReserveHint {
+t.Errorf("Tier C must not emit HP reserve hint; got %+v", p)
+}
+}
+}
+
+// TestPctHints_HpInUseIsPunitGranular: managed-mode non-HP class
+// must Avoid only the punits currently hosting HP work, not the
+// entire package. This is a regression guard for the punit-keyed
+// rewrite of hpInUseCpus.
+func TestPctHints_HpInUseIsPunitGranular(t *testing.T) {
+sys := newTwoPunitFakeSys()
+sst := &fakeSst{
+supported: true,
+punits:    makeTwoPunitsPerPkg(2, 2, 2, 2),
+}
+a := &pctAllocator{
+sys:  sys,
+sst:  sst,
+mode: pctModeManaged,
+classByName: map[string]*CPUClass{
+"hp": {Name: "hp", PctPriority: "high"},
+"lp": {Name: "lp", PctPriority: "low"},
+},
+classPlan: map[string]*pctClassPlan{
+"hp": {ClosID: 0},
+"lp": {ClosID: 3},
+},
+allowed: cpuset.MustParse("0-15"),
+// HP work on punit-0 only (pkg0).
+hpUsed: map[int]cpuset.CPUSet{0: cpuset.MustParse("0")},
+}
+pctTestWirePunits(a)
+
+got := a.hints(AllocationIntent{
+ClassName: "lp",
+FreeCpus:  cpuset.MustParse("1-15"),
+})
+if len(got.Avoid) != 1 {
+t.Fatalf("Avoid count = %d, want 1: got=%+v", len(got.Avoid), got.Avoid)
+}
+// Must be punit-0 (cpus 0-3) ONLY, not all of pkg0 (0-7).
+want := cpuset.MustParse("0-3")
+if !got.Avoid[0].Cpus.Equals(want) {
+t.Errorf("Avoid = %s, want %s (punit-0 only, not full pkg0)", got.Avoid[0].Cpus, want)
+}
+}
+
+// --- classifyAssocOnlyHP tests -------------------------------------
+
+// TestPctClassifyAssocOnlyHP_MaxFreqWins: of two referenced CLOSes
+// with programmed MaxFreq, the larger MaxFreq is the HP class.
+func TestPctClassifyAssocOnlyHP_MaxFreqWins(t *testing.T) {
+a := &pctAllocator{
+sst: &fakeSst{
+supported: true,
+closCfg: map[int]pctClosCfg{
+1: {MinFreq: 1000000, MaxFreq: 3000000}, // base-ish
+2: {MinFreq: 2000000, MaxFreq: 3800000}, // turbo
+},
+},
+classPlan: map[string]*pctClassPlan{
+"c-base":  {ClosID: 1},
+"c-turbo": {ClosID: 2},
+},
+hpClasses: map[string]bool{},
+}
+classes := []*CPUClass{
+{Name: "c-base"},
+{Name: "c-turbo"},
+}
+a.classifyAssocOnlyHP(classes)
+if a.hpClasses["c-base"] {
+t.Errorf("c-base must NOT be classified HP (lower MaxFreq)")
+}
+if !a.hpClasses["c-turbo"] {
+t.Errorf("c-turbo must be classified HP (higher MaxFreq)")
+}
+}
+
+// TestPctClassifyAssocOnlyHP_TieBreakSmallerClos: when two CLOSes
+// share the highest MaxFreq, the smaller CLOS id wins (SST-CP
+// ordered-priority convention).
+func TestPctClassifyAssocOnlyHP_TieBreakSmallerClos(t *testing.T) {
+a := &pctAllocator{
+sst: &fakeSst{
+supported: true,
+closCfg: map[int]pctClosCfg{
+1: {MaxFreq: 3800000},
+2: {MaxFreq: 3800000}, // tie
+},
+},
+classPlan: map[string]*pctClassPlan{
+"c1": {ClosID: 1},
+"c2": {ClosID: 2},
+},
+hpClasses: map[string]bool{},
+}
+a.classifyAssocOnlyHP([]*CPUClass{{Name: "c1"}, {Name: "c2"}})
+if !a.hpClasses["c1"] {
+t.Errorf("c1 must win tie (smaller CLOS id)")
+}
+if a.hpClasses["c2"] {
+t.Errorf("c2 must NOT be HP (lost tie)")
+}
+}
+
+// TestPctClassifyAssocOnlyHP_NoProgrammedFreq: when no CLOS has a
+// programmed MaxFreq, no class is classified HP -- HP-specific
+// hints stay quiet.
+func TestPctClassifyAssocOnlyHP_NoProgrammedFreq(t *testing.T) {
+a := &pctAllocator{
+sst: &fakeSst{supported: true, closCfg: map[int]pctClosCfg{}},
+classPlan: map[string]*pctClassPlan{
+"c1": {ClosID: 1},
+},
+hpClasses: map[string]bool{},
+}
+a.classifyAssocOnlyHP([]*CPUClass{{Name: "c1"}})
+if len(a.hpClasses) != 0 {
+t.Errorf("hpClasses=%v, want empty when no CLOS has programmed MaxFreq", a.hpClasses)
+}
+}
+
+// TestPctClassifyAssocOnlyHP_ZeroMaxFreqIgnored: a CLOS that
+// returns (cfg, true, nil) but with MaxFreq==0 must not be
+// classified HP (zero is "not specified").
+func TestPctClassifyAssocOnlyHP_ZeroMaxFreqIgnored(t *testing.T) {
+a := &pctAllocator{
+sst: &fakeSst{
+supported: true,
+closCfg:   map[int]pctClosCfg{1: {MinFreq: 1000000}}, // MaxFreq=0
+},
+classPlan: map[string]*pctClassPlan{"c1": {ClosID: 1}},
+hpClasses: map[string]bool{},
+}
+a.classifyAssocOnlyHP([]*CPUClass{{Name: "c1"}})
+if a.hpClasses["c1"] {
+t.Errorf("c1 must NOT be HP when MaxFreq=0")
+}
+}
+
+// --- BF fallback test ----------------------------------------------
+
+// TestPctPunitMaxHpCpus_BfFallback: punit with TF unsupported but
+// BF-supported high-priority CPU set must report MaxHpCpus equal
+// to len(BF.HighPriorityCPUs).
+func TestPctPunitMaxHpCpus_BfFallback(t *testing.T) {
+pi := &gosst.PerfLevelInfo{
+BF: gosst.BFInfo{
+Supported:        true,
+HighPriorityCPUs: idset.NewIDSet(0, 1, 2, 3),
+},
+TF: gosst.TFInfo{Supported: false},
+}
+if got := punitMaxHpCpus(pi); got != 4 {
+t.Errorf("punitMaxHpCpus = %d, want 4 (BF fallback)", got)
+}
+}
+
+// TestPctPunitMaxHpCpus_TfWins: when both TF and BF are present,
+// TF takes precedence (largest bucket HighPriorityCoreCount sets
+// the cap).
+func TestPctPunitMaxHpCpus_TfWins(t *testing.T) {
+pi := &gosst.PerfLevelInfo{
+BF: gosst.BFInfo{
+Supported:        true,
+HighPriorityCPUs: idset.NewIDSet(0, 1), // 2
+},
+TF: gosst.TFInfo{
+Supported: true,
+Buckets: []gosst.TFBucketInfo{
+{ID: 0, HighPriorityCoreCount: 1},
+{ID: 1, HighPriorityCoreCount: 4}, // max
+{ID: 2, HighPriorityCoreCount: 2},
+},
+},
+}
+if got := punitMaxHpCpus(pi); got != 4 {
+t.Errorf("punitMaxHpCpus = %d, want 4 (largest TF bucket)", got)
+}
+}
+
+// TestPctPunitMaxHpCpus_NeitherSupported: with neither TF nor BF
+// supported, MaxHpCpus is 0 (the allocator excludes such punits
+// from HP steering).
+func TestPctPunitMaxHpCpus_NeitherSupported(t *testing.T) {
+pi := &gosst.PerfLevelInfo{}
+if got := punitMaxHpCpus(pi); got != 0 {
+t.Errorf("punitMaxHpCpus = %d, want 0", got)
+}
 }

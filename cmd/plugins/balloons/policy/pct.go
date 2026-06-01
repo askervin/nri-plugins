@@ -615,6 +615,10 @@ func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSe
 	}
 
 	// Tier A: best single punit that satisfies the request.
+	need := requested
+	if need < 1 {
+		need = 1
+	}
 	bestIdx := -1
 	bestRoom := 0
 	bestFree := -1
@@ -623,8 +627,9 @@ func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSe
 		if s.free.IsEmpty() || s.room <= 0 {
 			continue
 		}
-		if requested > 0 && s.free.Size() < requested {
-			// Punit cannot host the whole request.
+		// Both the punit's free CPUs and its remaining HP
+		// room must be able to host the entire request.
+		if s.free.Size() < need || s.room < need {
 			continue
 		}
 		if s.room > bestRoom || (s.room == bestRoom && s.free.Size() > bestFree) {
