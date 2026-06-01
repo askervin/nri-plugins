@@ -469,12 +469,6 @@ func (a *pctAllocator) modeString() string {
 	}
 }
 
-// isManaged reports whether PCT runs in managed mode (i.e. some
-// cpuClass uses pctPriority and we own the CLOS configuration).
-func (a *pctAllocator) isManaged() bool {
-	return a != nil && a.mode == pctModeManaged
-}
-
 // classIsHighPriority reports whether className is currently
 // classified as PCT high priority. In managed mode this comes from
 // pctPriority=high; in assoc-only mode it comes from the largest
@@ -796,11 +790,4 @@ func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
 		}
 	}
 	return out
-}
-
-// anyHighPriorityClassDefined reports whether any configured cpuClass
-// is currently classified as HP. Retained for compatibility with
-// older internal callers; new code should use hpHintsActive.
-func (a *pctAllocator) anyHighPriorityClassDefined() bool {
-	return len(a.hpClasses) > 0
 }

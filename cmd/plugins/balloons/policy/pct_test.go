@@ -266,8 +266,9 @@ func TestPctHintsNoClassNoOp(t *testing.T) {
 	// managed mode with no HP class defined and an unknown
 	// className: no prefer, no avoid.
 	classes := []*CPUClass{{Name: "lp", PctPriority: "low"}}
-	// "lp" is configured but classIsHighPriority is false; still the
-	// "anyHighPriorityClassDefined" gate must be false so no Avoid.
+	// "lp" is configured but classIsHighPriority is false; the
+	// hpHintsActive gate must also be false (no HP class in
+	// hpClasses) so the non-HP branch emits no Avoid.
 	a2 := newManagedPctForTest(t, classes,
 		map[string]*pctClassPlan{"lp": {ClosID: 3}},
 		cpuset.MustParse("0-7"), sys, sst)
