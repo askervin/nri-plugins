@@ -90,8 +90,8 @@ type pctAllocator struct {
 	// CPUs outside any known punit are absent from the map; the
 	// allocator treats them as "no HP knowledge".
 	punitByCpu map[int]int
-	// hpUsed[i] is the set of CPUs currently held by HP balloons
-	// on punits[i].
+	// hpUsed[i] is the set of CPUs currently held by HP-class
+	// workloads on punits[i].
 	hpUsed map[int]cpuset.CPUSet
 }
 
@@ -469,6 +469,12 @@ func (a *pctAllocator) modeString() string {
 	}
 }
 
+// isManaged reports whether PCT runs in managed mode (i.e. some
+// cpuClass uses pctPriority and we own the CLOS configuration).
+func (a *pctAllocator) isManaged() bool {
+	return a != nil && a.mode == pctModeManaged
+}
+
 // classIsHighPriority reports whether className is currently
 // classified as PCT high priority. In managed mode this comes from
 // pctPriority=high; in assoc-only mode it comes from the largest
@@ -551,7 +557,7 @@ func (a *pctAllocator) hpInUseCpus() cpuset.CPUSet {
 //     return the union of free CPUs across that package's punits.
 //     The picked package is the one with the largest aggregate
 //     room; ties broken by largest aggregate free-CPU count.
-//   - Tier C (cross-package): never. Steering an HP balloon across
+//   - Tier C (cross-package): never. Steering HP work across
 //     sockets defeats the turbo gains it would obtain, because
 //     cross-socket data traffic typically dominates per-core
 //     frequency benefits.
@@ -564,9 +570,11 @@ func (a *pctAllocator) hpInUseCpus() cpuset.CPUSet {
 //
 //   - free: free CPUs to consider for placement.
 //   - excludeBln: CPUs to exclude from HP-room accounting (the
-//     resizing balloon's own CPUs).
+//     caller's current CPU set, e.g. when expanding an existing
+//     allocation, so its current HP usage is not double-counted).
 //   - requested: number of CPUs the upcoming allocation wants.
-//     0 means "unknown" (newBalloon priming); Tier A is used.
+//     0 means "unknown" (initial priming before the count is
+//     known); Tier A is used.
 func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet, requested int) cpuset.CPUSet {
 	if !a.hpHintsActive() {
 		return cpuset.New()
@@ -790,4 +798,11 @@ func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
 		}
 	}
 	return out
+}
+
+// anyHighPriorityClassDefined reports whether any configured cpuClass
+// is currently classified as HP. Retained for compatibility with
+// older internal callers; new code should use hpHintsActive.
+func (a *pctAllocator) anyHighPriorityClassDefined() bool {
+	return len(a.hpClasses) > 0
 }

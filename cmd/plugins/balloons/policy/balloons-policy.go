@@ -788,6 +788,28 @@ func largest(sliceLen int, valueOf func(i int) int) ([]int, int) {
 	return largestIndices, largestValue
 }
 
+// defaultCpuClassName is the name of the implicit "default"
+// CPU class. When IdleCpuClass or a balloon type's CpuClass is left
+// unset and a class with this name is configured, that class is used
+// as the implicit fallback. This balloons-specific convention is kept
+// out of the policy-neutral cpuclass package and applied here.
+const defaultCpuClassName = "default"
+
+// resolveCpuClassName substitutes the configured "default" CPU class
+// for an empty name when such a class exists. Non-empty names are
+// returned unchanged.
+func (p *balloons) resolveCpuClassName(name string) string {
+	if name != "" {
+		return name
+	}
+	for _, cc := range p.bpoptions.CPUClasses {
+		if cc.Name == defaultCpuClassName {
+			return defaultCpuClassName
+		}
+	}
+	return name
+}
+
 // resetCpuClass resets CPU configurations globally. All balloons can
 // be ignored, their CPU configurations will be applied later.
 func (p *balloons) resetCpuClass() error {
@@ -797,7 +819,7 @@ func (p *balloons) resetCpuClass() error {
 	if p.cpuClasses == nil {
 		return nil
 	}
-	idle := p.bpoptions.IdleCpuClass
+	idle := p.resolveCpuClassName(p.bpoptions.IdleCpuClass)
 	if err := p.cpuClasses.UseClass(idle, p.allowed); err != nil {
 		log.Warnf("failed to reset class of available cpus: %v", err)
 	} else {
@@ -825,21 +847,22 @@ func (p *balloons) useCpuClass(bln *Balloon) error {
 	if p.cpuClasses == nil {
 		return nil
 	}
-	log.Debugf("apply CPU class %q on CPUs %q of %q", bln.Def.CpuClass, bln.Cpus, bln.PrettyName())
-	if err := p.cpuClasses.UseClass(bln.Def.CpuClass, bln.Cpus); err != nil {
-		log.Warnf("failed to apply class %q on CPUs %q: %v", bln.Def.CpuClass, bln.Cpus, err)
+	cpuClass := p.resolveCpuClassName(bln.Def.CpuClass)
+	log.Debugf("apply CPU class %q on CPUs %q of %q", cpuClass, bln.Cpus, bln.PrettyName())
+	if err := p.cpuClasses.UseClass(cpuClass, bln.Cpus); err != nil {
+		log.Warnf("failed to apply class %q on CPUs %q: %v", cpuClass, bln.Cpus, err)
 	}
 	return nil
 }
 
 // forgetCpuClass is called when CPUs of a balloon are released from duty.
-// It reassigns those CPUs to the configured idle class — the handler
+// It reassigns those CPUs to the configured idle class - the handler
 // has no separate "forget" concept; every CPU is always in some class.
 func (p *balloons) forgetCpuClass(bln *Balloon) {
 	if p.cpuClasses == nil {
 		return
 	}
-	idle := p.bpoptions.IdleCpuClass
+	idle := p.resolveCpuClassName(p.bpoptions.IdleCpuClass)
 	if err := p.cpuClasses.UseClass(idle, bln.Cpus); err != nil {
 		log.Warnf("failed to forget class of cpus %q (idle class %q): %v", bln.Cpus, idle, err)
 	} else {
@@ -1055,7 +1078,7 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 			virtDevPCores:       {p.cpuAllocator.GetCPUPriorities()[cpuallocator.PriorityHigh]},
 		},
 	}
-	p.applyCpuClassHints(&allocatorOptions, blnDef.CpuClass, cpuset.New(), 0)
+	p.applyCpuClassHints(&allocatorOptions, p.resolveCpuClassName(blnDef.CpuClass), cpuset.New(), 0)
 	if blnDef.AllocatorTopologyBalancing != nil {
 		allocatorOptions.topologyBalancing = *blnDef.AllocatorTopologyBalancing
 	}
@@ -2202,7 +2225,7 @@ func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
 		}
 	}()
 	p.updateLoadedVirtDevsInAllocatorOptions(&bln.cpuTreeAlloc.options, bln.Def.Loads)
-	p.applyCpuClassHints(&bln.cpuTreeAlloc.options, bln.Def.CpuClass, bln.Cpus, cpuCountDelta)
+	p.applyCpuClassHints(&bln.cpuTreeAlloc.options, p.resolveCpuClassName(bln.Def.CpuClass), bln.Cpus, cpuCountDelta)
 	if cpuCountDelta > 0 {
 		// Inflate the balloon.
 		addFromCpus, _, err := bln.cpuTreeAlloc.ResizeCpus(bln.Cpus, p.freeCpus, cpuCountDelta)

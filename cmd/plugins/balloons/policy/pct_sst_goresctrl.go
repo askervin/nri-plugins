@@ -301,6 +301,8 @@ func (b *sstGoresctrl) GetClosConfig(closID int) (pctClosCfg, bool, error) {
 	return pctClosCfg{}, false, nil
 }
 
+// MaxHpCpus method removed in favor of Punits().
+
 func (b *sstGoresctrl) Shutdown() error {
 	if b.plat == nil {
 		return nil

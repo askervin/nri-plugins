@@ -266,9 +266,8 @@ func TestPctHintsNoClassNoOp(t *testing.T) {
 	// managed mode with no HP class defined and an unknown
 	// className: no prefer, no avoid.
 	classes := []*CPUClass{{Name: "lp", PctPriority: "low"}}
-	// "lp" is configured but classIsHighPriority is false; the
-	// hpHintsActive gate must also be false (no HP class in
-	// hpClasses) so the non-HP branch emits no Avoid.
+	// "lp" is configured but classIsHighPriority is false; still the
+	// "anyHighPriorityClassDefined" gate must be false so no Avoid.
 	a2 := newManagedPctForTest(t, classes,
 		map[string]*pctClassPlan{"lp": {ClosID: 3}},
 		cpuset.MustParse("0-7"), sys, sst)
@@ -350,7 +349,7 @@ func TestPctHintsHighPriorityReserveAndClosCpus(t *testing.T) {
 	})
 
 	// Expect two Prefer hints: CLOS 0 members (cpu 0) and HP reserve
-	// (the package with more HP room — pkg1, since pkg0 has 2-1=1
+	// (the package with more HP room - pkg1, since pkg0 has 2-1=1
 	// room left and pkg1 has 2-0=2 room left).
 	if len(got.Prefer) != 2 {
 		t.Fatalf("Prefer count = %d, want 2: got=%+v", len(got.Prefer), got.Prefer)
@@ -373,7 +372,7 @@ func TestPctHintsHighPriorityReserveAndClosCpus(t *testing.T) {
 
 // TestPctHintsManagedNonHpAvoidsHpInUse covers the managed-mode
 // non-HP-class branch: hints must Avoid CPUs on packages currently
-// hosting HP balloons, so LP/idle classes do not steal HP turbo
+// hosting HP-class CPUs, so non-HP classes do not steal HP turbo
 // budget. THIS BRANCH IS NOT COVERED IN test19 e2e.
 func TestPctHintsManagedNonHpAvoidsHpInUse(t *testing.T) {
 	sys := newTwoPackageFakeSys()
@@ -405,7 +404,7 @@ func TestPctHintsManagedNonHpAvoidsHpInUse(t *testing.T) {
 	})
 
 	// LP has a CLOS plan, so Prefer must include CLOS 3 (empty in
-	// our setup) — but only if any CPU is currently on CLOS 3. With
+	// our setup) - but only if any CPU is currently on CLOS 3. With
 	// none, classClosID still matches but closCpus returns empty
 	// and the Prefer entry is skipped. So len(Prefer) == 0.
 	if len(got.Prefer) != 0 {
@@ -603,7 +602,7 @@ t.Errorf("Tier B HP reserve = %s, want %s (pkg0 union)", reserve, want)
 }
 
 // TestPctHints_HpRoomTierCNoCrossPackage: request exceeds the HP
-// room of every single package. Tier C is never taken — the
+// room of every single package. Tier C is never taken - the
 // allocator must return no HP-reserve hint so the caller falls back
 // to topology-only placement on the same socket.
 func TestPctHints_HpRoomTierCNoCrossPackage(t *testing.T) {

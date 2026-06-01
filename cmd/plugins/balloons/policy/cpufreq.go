@@ -171,31 +171,18 @@ func (a *cpufreqAllocator) isKnownClass(name string) bool {
 	return false
 }
 
-// resolveClassName resolves a (possibly empty or unknown) configured
-// CPU class name to the class that should actually be applied. If the
-// configured name matches a class known to either cpuClasses or
-// control.cpu.classes it is returned unchanged. Otherwise, if a class
-// named "default" is known to either source, "default" is returned.
-// As a last resort the original name is returned, so the caller's
-// existing log/warning paths still see what was requested.
+// resolveClassName validates a configured CPU class name. Empty
+// names pass through unchanged ("no class"). Known names pass
+// through unchanged. Unknown names are logged at error level and
+// returned unchanged so the caller sees what was requested.
 func (a *cpufreqAllocator) resolveClassName(name string) string {
 	if name == "" {
-		// Empty is a valid "no class" assignment when the caller
-		// does not request any class; fall back to "default" only
-		// when one is configured, otherwise pass through silently.
-		if a.isKnownClass(defaultClassName) {
-			return defaultClassName
-		}
 		return ""
 	}
 	if a.isKnownClass(name) {
 		return name
 	}
-	if a.isKnownClass(defaultClassName) {
-		log.Errorf("unknown CPU class %q: falling back to using %q", name, defaultClassName)
-		return defaultClassName
-	}
-	log.Errorf("unknown CPU class %q and fallback class %q missing from cpuClasses", name, defaultClassName)
+	log.Errorf("unknown CPU class %q", name)
 	return name
 }
 
@@ -204,10 +191,10 @@ func (a *cpufreqAllocator) resolveClassName(name string) string {
 // CPUs to className (per domain) via the CPU controller. The
 // recalculation runs first so that the controller's in-memory class
 // definitions for each affected domain reflect the correct effective
-// turbo frequency at the time of Assign. An empty or unknown
-// className resolves to the "default" CPU class when one is
-// configured. CPUs outside the configured Allowed set are silently
-// dropped.
+// turbo frequency at the time of Assign. An empty className is a
+// valid "no class" assignment. Unknown class names are logged at
+// error level and passed through. CPUs outside the configured
+// Allowed set are silently dropped.
 func (a *cpufreqAllocator) useClass(className string, cpus cpuset.CPUSet) error {
 	if a.allowed.Size() > 0 {
 		cpus = cpus.Intersection(a.allowed)
@@ -323,7 +310,7 @@ func (a *cpufreqAllocator) buildCpuDomains() {
 // pass through unchanged: legacy classes have no TurboPriority and
 // therefore do not participate in per-domain arbitration; using
 // their bare name lets the CPU controller find their definition in
-// cfg.CPU.Classes (which is loaded after balloons.Start and thus
+// cfg.CPU.Classes (which is loaded after the policy starts and thus
 // after the very first Assign calls).
 func (a *cpufreqAllocator) controlClassName(name string, d domainID) string {
 	if name == "" {

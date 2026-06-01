@@ -85,7 +85,7 @@ func TestMergeCpuClassHintsNoAccumulation(t *testing.T) {
 				},
 				Avoid: []CpuPreference{{Name: "lp-clos", Cpus: cpusAvoid}},
 			},
-			// Round 3: name at slot 0 CHANGES to C — without proper
+			// Round 3: name at slot 0 CHANGES to C - without proper
 			// cleanup the stale "__cls_pref_0_hp-reserve" map key from
 			// rounds 1+2 would survive into round 3.
 			{

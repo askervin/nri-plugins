@@ -57,7 +57,7 @@ type pctClosCfg struct {
 }
 
 // sst is the subset of Intel SST functionality used by the
-// balloons policy. Implementations: sstGoresctrl for real
+// cpuclass code. Implementations: sstGoresctrl for real
 // hardware via goresctrl/pkg/sst, and sstMock for an
 // in-memory fake seeded from OVERRIDE_SST.
 type sst interface {

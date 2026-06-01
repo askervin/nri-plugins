@@ -23,7 +23,7 @@ import (
 )
 
 // ConfigSpec carries cpuclass configuration applied via
-// cpuClassHandler.Configure. Idleness is intentionally absent — the
+// cpuClassHandler.Configure. Idleness is intentionally absent - the
 // caller decides which class name (if any) means "idle" and applies
 // it via UseClass.
 type ConfigSpec struct {
@@ -42,7 +42,7 @@ type ConfigSpec struct {
 type AllocationIntent struct {
 	// ClassName is the cpuClass the upcoming allocation will use.
 	ClassName string
-	// CurrentCpus are CPUs the balloon already owns; expansion
+	// CurrentCpus are CPUs the caller already owns; expansion
 	// uses these to exclude self from HP-room accounting.
 	CurrentCpus cpuset.CPUSet
 	// FreeCpus is the set of CPUs the caller is willing to choose
@@ -50,8 +50,9 @@ type AllocationIntent struct {
 	FreeCpus cpuset.CPUSet
 	// RequestedCount is the number of CPUs the upcoming
 	// allocation wants. 0 means "unknown" (e.g. priming
-	// hints at balloon creation before the first cpu count
-	// is known); handlers must treat 0 as "best effort".
+	// hints at allocation-target creation before the first
+	// cpu count is known); handlers must treat 0 as "best
+	// effort".
 	RequestedCount int
 }
 
@@ -75,8 +76,8 @@ type AllocationHints struct {
 }
 
 // cpuClassHints is the minimum surface of cpuClassHandler that
-// balloons-policy.go relies on for placement hints. It exists so
-// tests can substitute a fake provider.
+// policy code relies on for placement hints. It exists so tests
+// can substitute a fake provider.
 type cpuClassHints interface {
 	Hints(AllocationIntent) AllocationHints
 }
@@ -94,11 +95,6 @@ type cpuClassHandler struct {
 	cpufreq *cpufreqAllocator
 	pct     *pctAllocator
 }
-
-// defaultClassName is the name of the CPU class used as a fallback
-// when a balloon type does not specify cpuClass or when idleCpuClass
-// is left empty.
-const defaultClassName = "default"
 
 // newCpuClassHandler constructs a cpuClassHandler with both internal
 // allocators (cpufreq and pct) ready in a "no configuration applied"
@@ -135,9 +131,9 @@ func (h *cpuClassHandler) Configure(spec ConfigSpec) error {
 }
 
 // UseClass applies className to the given CPUs across every internal
-// allocator. An empty className means "no class" (resolves to
-// "default" if such a class exists). CPUs outside the configured
-// Allowed set are silently dropped.
+// allocator. An empty className means "no class" - CPUs are then
+// associated with the controllers' implicit defaults. CPUs outside
+// the configured Allowed set are silently dropped.
 func (h *cpuClassHandler) UseClass(className string, cpus cpuset.CPUSet) error {
 	if err := h.cpufreq.useClass(className, cpus); err != nil {
 		log.Warnf("cpuclass: cpufreq failed to apply class %q on CPUs %s: %v", className, cpus, err)
