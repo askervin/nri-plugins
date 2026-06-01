@@ -16,6 +16,7 @@ package balloons
 
 import (
 	"errors"
+	"sort"
 	"testing"
 
 	idset "github.com/intel/goresctrl/pkg/utils"
@@ -106,6 +107,7 @@ type fakeSst struct {
 	supported bool
 	cpuClos   map[int]int // cpu -> CLOS id
 	maxHp     map[int]int // pkgID -> max HP CPUs (missing = "unknown")
+	pkgCpus   map[int]cpuset.CPUSet
 }
 
 func (s *fakeSst) Supported() bool                                  { return s.supported }
@@ -124,8 +126,51 @@ func (s *fakeSst) GetCPUClosID(cpu int) (int, error) {
 	// treating it as "associated to CLOS 0 by default".
 	return -1, errFakeSstNoClos
 }
-func (s *fakeSst) MaxHpCpus(pkgID int) (int, bool)                  { v, ok := s.maxHp[pkgID]; return v, ok }
-func (s *fakeSst) Shutdown() error                                  { return nil }
+
+// Punits synthesizes one punit per package whose CPUs come from
+// pkgCpus (or maxHp keys if pkgCpus is nil) with MaxHpCpus set
+// from the maxHp map. PunitID is always 0 (single punit per pkg
+// preserves the legacy per-package test semantics).
+func (s *fakeSst) Punits() []pctPunit {
+	pkgIDs := map[int]struct{}{}
+	for id := range s.pkgCpus {
+		pkgIDs[id] = struct{}{}
+	}
+	for id := range s.maxHp {
+		pkgIDs[id] = struct{}{}
+	}
+	out := make([]pctPunit, 0, len(pkgIDs))
+	for id := range pkgIDs {
+		cpus, ok := s.pkgCpus[id]
+		if !ok {
+			// Derive a default cpu range matching newTwoPackageFakeSys layout.
+			if id == 0 {
+				cpus = cpuset.MustParse("0-3")
+			} else if id == 1 {
+				cpus = cpuset.MustParse("4-7")
+			}
+		}
+		out = append(out, pctPunit{
+			PkgID:     id,
+			PunitID:   0,
+			CPUs:      cpus,
+			MaxHpCpus: s.maxHp[id],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PkgID != out[j].PkgID {
+			return out[i].PkgID < out[j].PkgID
+		}
+		return out[i].PunitID < out[j].PunitID
+	})
+	return out
+}
+
+func (s *fakeSst) GetClosConfig(closID int) (pctClosCfg, bool, error) {
+	return pctClosCfg{}, false, nil
+}
+
+func (s *fakeSst) Shutdown() error { return nil }
 
 // --- helpers to construct a hand-wired pctAllocator -----------------
 
@@ -140,11 +185,53 @@ func newManagedPctForTest(t *testing.T, classes []*CPUClass, plans map[string]*p
 		classPlan:   plans,
 		allowed:     allowed,
 		hpUsed:      map[int]cpuset.CPUSet{},
+		hpClasses:   map[string]bool{},
 	}
 	for _, cc := range classes {
 		a.classByName[cc.Name] = cc
+		if cc.PctPriority == "high" {
+			a.hpClasses[cc.Name] = true
+		}
 	}
+	pctTestWirePunits(a)
 	return a
+}
+
+// pctTestWirePunits seeds a hand-built pctAllocator's punit caches
+// from its sst's Punits(), intersected with allowed. It is the
+// test-time equivalent of snapshotPunits() and lets struct-literal
+// fixtures exercise the punit-keyed code paths.
+func pctTestWirePunits(a *pctAllocator) {
+	if a.punitByCpu == nil {
+		a.punitByCpu = map[int]int{}
+	}
+	if a.hpClasses == nil {
+		a.hpClasses = map[string]bool{}
+	}
+	for name, cc := range a.classByName {
+		if cc.PctPriority == "high" {
+			a.hpClasses[name] = true
+		}
+	}
+	pus := a.sst.Punits()
+	a.punits = a.punits[:0]
+	for _, pu := range pus {
+		cpus := pu.CPUs
+		if a.allowed.Size() > 0 {
+			cpus = cpus.Intersection(a.allowed)
+		}
+		if cpus.IsEmpty() {
+			continue
+		}
+		idx := len(a.punits)
+		a.punits = append(a.punits, pctPunit{
+			PkgID: pu.PkgID, PunitID: pu.PunitID,
+			CPUs: cpus, MaxHpCpus: pu.MaxHpCpus,
+		})
+		for _, c := range cpus.UnsortedList() {
+			a.punitByCpu[c] = idx
+		}
+	}
 }
 
 // --- hints() test suite ---------------------------------------------
@@ -195,6 +282,7 @@ func TestPctHintsAssocOnlyPreferClosCpus(t *testing.T) {
 		allowed:     cpuset.MustParse("0-7"),
 		hpUsed:      map[int]cpuset.CPUSet{},
 	}
+	pctTestWirePunits(a)
 	got := a.hints(AllocationIntent{ClassName: "c1"})
 	if len(got.Prefer) != 1 {
 		t.Fatalf("Prefer count = %d, want 1: got=%+v", len(got.Prefer), got)
@@ -235,13 +323,15 @@ func TestPctHintsHighPriorityReserveAndClosCpus(t *testing.T) {
 		// pkg0 has 1 HP cpu already used (cpu 0).
 		hpUsed: map[int]cpuset.CPUSet{0: cpuset.MustParse("0")},
 	}
+	pctTestWirePunits(a)
 
 	// Free pool excludes the already-used cpu 0.
 	free := cpuset.MustParse("1-7")
 	got := a.hints(AllocationIntent{
-		ClassName:   "hp",
-		CurrentCpus: cpuset.New(),
-		FreeCpus:    free,
+		ClassName:      "hp",
+		CurrentCpus:    cpuset.New(),
+		FreeCpus:       free,
+		RequestedCount: 1,
 	})
 
 	// Expect two Prefer hints: CLOS 0 members (cpu 0) and HP reserve
@@ -293,6 +383,7 @@ func TestPctHintsManagedNonHpAvoidsHpInUse(t *testing.T) {
 		// pkg0 hosts HP cpu 1.
 		hpUsed: map[int]cpuset.CPUSet{0: cpuset.MustParse("1")},
 	}
+	pctTestWirePunits(a)
 	got := a.hints(AllocationIntent{
 		ClassName: "lp",
 		FreeCpus:  cpuset.MustParse("2-7"),
@@ -344,9 +435,11 @@ func TestPctHintsAllowedBoundsResults(t *testing.T) {
 			1: cpuset.MustParse("4"), // outside allowed
 		},
 	}
+	pctTestWirePunits(a)
 	got := a.hints(AllocationIntent{
-		ClassName: "hp",
-		FreeCpus:  cpuset.MustParse("1-3"),
+		ClassName:      "hp",
+		FreeCpus:       cpuset.MustParse("1-3"),
+		RequestedCount: 1,
 	})
 	// closCpus walks a.allowed, so cpu 4 is excluded automatically.
 	// Prefer[0] (closCpus) must contain only cpu 0.

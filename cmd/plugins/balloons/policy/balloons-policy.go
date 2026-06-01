@@ -1055,7 +1055,7 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool) (*Balloon, erro
 			virtDevPCores:       {p.cpuAllocator.GetCPUPriorities()[cpuallocator.PriorityHigh]},
 		},
 	}
-	p.applyCpuClassHints(&allocatorOptions, blnDef.CpuClass, cpuset.New())
+	p.applyCpuClassHints(&allocatorOptions, blnDef.CpuClass, cpuset.New(), 0)
 	if blnDef.AllocatorTopologyBalancing != nil {
 		allocatorOptions.topologyBalancing = *blnDef.AllocatorTopologyBalancing
 	}
@@ -2005,14 +2005,17 @@ const cpuClassHintDevPrefix = "__cls_"
 //   - cpuClass: the cpuClass that the upcoming allocation will use.
 //   - currentCpus: CPUs the balloon already owns (excluded from HP
 //     room accounting in PCT hints).
-func (p *balloons) applyCpuClassHints(opts *cpuTreeAllocatorOptions, cpuClass string, currentCpus cpuset.CPUSet) {
+//   - requestedCount: number of CPUs the upcoming allocation wants.
+//     Pass 0 when unknown (e.g. balloon creation before sizing).
+func (p *balloons) applyCpuClassHints(opts *cpuTreeAllocatorOptions, cpuClass string, currentCpus cpuset.CPUSet, requestedCount int) {
 	if p.cpuClasses == nil || opts == nil {
 		return
 	}
 	mergeCpuClassHints(opts, p.cpuClasses, AllocationIntent{
-		ClassName:   cpuClass,
-		CurrentCpus: currentCpus,
-		FreeCpus:    p.freeCpus,
+		ClassName:      cpuClass,
+		CurrentCpus:    currentCpus,
+		FreeCpus:       p.freeCpus,
+		RequestedCount: requestedCount,
 	})
 }
 
@@ -2199,7 +2202,7 @@ func (p *balloons) resizeBalloon(bln *Balloon, newMilliCpus int) error {
 		}
 	}()
 	p.updateLoadedVirtDevsInAllocatorOptions(&bln.cpuTreeAlloc.options, bln.Def.Loads)
-	p.applyCpuClassHints(&bln.cpuTreeAlloc.options, bln.Def.CpuClass, bln.Cpus)
+	p.applyCpuClassHints(&bln.cpuTreeAlloc.options, bln.Def.CpuClass, bln.Cpus, cpuCountDelta)
 	if cpuCountDelta > 0 {
 		// Inflate the balloon.
 		addFromCpus, _, err := bln.cpuTreeAlloc.ResizeCpus(bln.Cpus, p.freeCpus, cpuCountDelta)

@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
 // sstOverrideEnvVar holds JSON seeding the in-memory SST mock.
@@ -39,6 +41,13 @@ type sstMockClos struct {
 	CPUs    string `json:"cpus,omitempty"` // listset like "0-15"
 }
 
+// sstMockPunit seeds one punit's CPUs and HP capacity.
+type sstMockPunit struct {
+	ID        int    `json:"id"`
+	CPUs      string `json:"cpus"` // listset
+	MaxHpCpus int    `json:"max_hp_cpus,omitempty"`
+}
+
 // sstMockPackage seeds one package's worth of SST state.
 type sstMockPackage struct {
 	ID          int            `json:"id"`
@@ -48,11 +57,13 @@ type sstMockPackage struct {
 	CPSupported bool           `json:"cp_supported"`
 	CPEnabled   bool           `json:"cp_enabled"`
 	CPPriority  string         `json:"cp_priority,omitempty"` // "ordered" or "proportional"
-	// MaxHpCpus, when > 0, is the per-package PCT high-priority
-	// CPU count reported through sst.MaxHpCpus. 0 means
-	// "unknown".
-	MaxHpCpus int            `json:"max_hp_cpus,omitempty"`
-	Clos      []*sstMockClos `json:"clos,omitempty"`
+	// MaxHpCpus seeds a per-package HP CPU count for the
+	// back-compat case where Punits is not specified -- one
+	// synthetic punit is created containing every package CPU
+	// and this MaxHpCpus value.
+	MaxHpCpus int             `json:"max_hp_cpus,omitempty"`
+	Punits    []*sstMockPunit `json:"punits,omitempty"`
+	Clos      []*sstMockClos  `json:"clos,omitempty"`
 }
 
 // sstMockDoc is the full JSON document accepted in OVERRIDE_SST.
@@ -225,17 +236,64 @@ func (b *sstMock) GetCPUClosID(cpu int) (int, error) {
 	return cl, nil
 }
 
-func (b *sstMock) MaxHpCpus(pkgID int) (int, bool) {
-	for _, pkg := range b.doc.Packages {
-		if pkg.ID != pkgID {
+// Punits returns the per-punit topology of every seeded package.
+// If a package's seed omits the Punits list, a single synthetic
+// punit (ID 0) is returned spanning every CPU of the package,
+// carrying the package-level MaxHpCpus for back-compat with the
+// pre-punit OVERRIDE_SST schema.
+func (b *sstMock) Punits() []pctPunit {
+	out := []pctPunit{}
+	// Stable order: sort packages by ID, punits by ID.
+	pkgIDs := make([]int, 0, len(b.doc.Packages))
+	pkgByID := map[int]*sstMockPackage{}
+	for _, p := range b.doc.Packages {
+		pkgIDs = append(pkgIDs, p.ID)
+		pkgByID[p.ID] = p
+	}
+	sort.Ints(pkgIDs)
+	for _, pid := range pkgIDs {
+		pkg := pkgByID[pid]
+		if len(pkg.Punits) == 0 {
+			cpus, _ := parseCPUList(pkg.CPUs)
+			out = append(out, pctPunit{
+				PkgID:     pkg.ID,
+				PunitID:   0,
+				CPUs:      cpuset.New(cpus...),
+				MaxHpCpus: pkg.MaxHpCpus,
+			})
 			continue
 		}
-		if pkg.MaxHpCpus <= 0 {
-			return 0, false
+		punits := append([]*sstMockPunit(nil), pkg.Punits...)
+		sort.Slice(punits, func(i, j int) bool { return punits[i].ID < punits[j].ID })
+		for _, pu := range punits {
+			cpus, _ := parseCPUList(pu.CPUs)
+			out = append(out, pctPunit{
+				PkgID:     pkg.ID,
+				PunitID:   pu.ID,
+				CPUs:      cpuset.New(cpus...),
+				MaxHpCpus: pu.MaxHpCpus,
+			})
 		}
-		return pkg.MaxHpCpus, true
 	}
-	return 0, false
+	return out
+}
+
+// GetClosConfig returns the frequency bounds currently programmed
+// for closID. The mock's CLOS state is shared across packages by
+// construction (ConfigureClos writes it to all packages); we
+// return the first package's entry.
+func (b *sstMock) GetClosConfig(closID int) (pctClosCfg, bool, error) {
+	for _, pkg := range b.doc.Packages {
+		for _, cl := range pkg.Clos {
+			if cl.ID != closID {
+				continue
+			}
+			return pctClosCfg{MinFreq: cl.MinFreq, MaxFreq: cl.MaxFreq}, true, nil
+		}
+		// First package checked, no entry for closID.
+		return pctClosCfg{}, false, nil
+	}
+	return pctClosCfg{}, false, nil
 }
 
 func (b *sstMock) Shutdown() error {

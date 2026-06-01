@@ -73,8 +73,25 @@ type pctAllocator struct {
 	// not a user-visible "idle".
 	fallbackClos int
 	allowed      cpuset.CPUSet
-	// hpUsed groups CPUs currently held by HP balloons by their
-	// package ID.
+	// hpClasses holds the names of cpuClasses currently
+	// classified as high priority. In managed mode this is every
+	// class with pctPriority=high. In assoc-only mode it is
+	// populated from GetClosConfig at Configure(): the CLOS with
+	// the largest programmed MaxFreq is HP; classes targeting
+	// that CLOS are HP. Tie-break (equal MaxFreq) goes to the
+	// smaller CLOS id, matching SST-CP ordered-priority
+	// convention. Empty when no HP class can be determined.
+	hpClasses map[string]bool
+	// punits is the per-punit topology cached from sst.Punits()
+	// at Configure() time, with each punit's CPUs already
+	// intersected with allowed.
+	punits []pctPunit
+	// punitByCpu maps each allowed CPU to its index in punits.
+	// CPUs outside any known punit are absent from the map; the
+	// allocator treats them as "no HP knowledge".
+	punitByCpu map[int]int
+	// hpUsed[i] is the set of CPUs currently held by HP balloons
+	// on punits[i].
 	hpUsed map[int]cpuset.CPUSet
 }
 
@@ -106,6 +123,9 @@ func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) err
 	a.fallbackClos = pctDefaultHpClos // CLOS 0 == default-after-reset
 	a.allowed = allowed
 	a.hpUsed = map[int]cpuset.CPUSet{}
+	a.hpClasses = map[string]bool{}
+	a.punits = nil
+	a.punitByCpu = nil
 
 	mode, plans, err := a.planClasses(classes)
 	if err != nil {
@@ -123,7 +143,10 @@ func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) err
 		a.classPlan = nil
 		return nil
 	}
-	log.Infof("pct: mode=%s, %d PCT cpuClass(es)", a.modeString(), len(plans))
+
+	a.snapshotPunits()
+	log.Infof("pct: mode=%s, %d PCT cpuClass(es), %d punit(s) across %d package(s)",
+		a.modeString(), len(plans), len(a.punits), len(a.packageIDsFromPunits()))
 
 	if mode == pctModeManaged {
 		if err := a.sst.PrepareManagedMode(); err != nil {
@@ -141,10 +164,6 @@ func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) err
 		}
 		sort.Ints(closIDs)
 		for _, closID := range closIDs {
-			// Find the first plan that targets this CLOS to get
-			// the freq values (all plans for the same CLOS must
-			// agree; the per-class plan distinction matters only
-			// for assoc).
 			var minF, maxF int
 			for _, p := range plans {
 				if p.ClosID == closID {
@@ -157,13 +176,129 @@ func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) err
 			if err := a.sst.ConfigureClos(cfg); err != nil {
 				return fmt.Errorf("pct: failed to configure CLOS %d: %w", closID, err)
 			}
-			log.Debugf("pct: programmed CLOS %d min=%d max=%d", closID, minF, maxF)
+			log.Infof("pct: programmed CLOS %d min=%d max=%d kHz", closID, minF, maxF)
 		}
 		if err := a.sst.EnableCP(); err != nil {
 			return fmt.Errorf("pct: failed to enable SST-CP: %w", err)
 		}
+		// Managed mode: HP classes are exactly those with pctPriority=high.
+		for _, cc := range classes {
+			if cc.PctPriority == "high" {
+				a.hpClasses[cc.Name] = true
+				log.Infof("pct: cpuClass %q classified HP (managed: pctPriority=high, CLOS %d)",
+					cc.Name, plans[cc.Name].ClosID)
+			} else if cc.PctPriority == "low" {
+				log.Infof("pct: cpuClass %q classified LP (managed: pctPriority=low, CLOS %d)",
+					cc.Name, plans[cc.Name].ClosID)
+			}
+		}
+	} else {
+		// Assoc-only: classify HP/LP from CLOS configs programmed
+		// by the operator/BIOS. The CLOS with the largest MaxFreq
+		// among the CLOSes our cpuClasses target is HP.
+		a.classifyAssocOnlyHP(classes)
 	}
 	return nil
+}
+
+// snapshotPunits caches the per-punit topology from the sst
+// backend, intersecting each punit's CPUs with the allowed set.
+// Punits whose intersection with allowed is empty are dropped --
+// they cannot affect placement under this Configure(). The
+// resulting punits and punitByCpu indices drive HP accounting and
+// hpReserveCpus tier selection.
+func (a *pctAllocator) snapshotPunits() {
+	raw := a.sst.Punits()
+	a.punits = make([]pctPunit, 0, len(raw))
+	a.punitByCpu = map[int]int{}
+	for _, pu := range raw {
+		cpus := pu.CPUs
+		if a.allowed.Size() > 0 {
+			cpus = cpus.Intersection(a.allowed)
+		}
+		if cpus.IsEmpty() {
+			continue
+		}
+		idx := len(a.punits)
+		a.punits = append(a.punits, pctPunit{
+			PkgID:     pu.PkgID,
+			PunitID:   pu.PunitID,
+			CPUs:      cpus,
+			MaxHpCpus: pu.MaxHpCpus,
+		})
+		for _, c := range cpus.UnsortedList() {
+			a.punitByCpu[c] = idx
+		}
+	}
+}
+
+// packageIDsFromPunits returns the set of package IDs present in
+// the cached punits, in stable sorted order.
+func (a *pctAllocator) packageIDsFromPunits() []int {
+	seen := map[int]bool{}
+	ids := []int{}
+	for _, pu := range a.punits {
+		if seen[pu.PkgID] {
+			continue
+		}
+		seen[pu.PkgID] = true
+		ids = append(ids, pu.PkgID)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// classifyAssocOnlyHP populates hpClasses by reading the
+// programmed MaxFreq of each CLOS referenced by an assoc-only
+// cpuClass. The CLOS with the largest MaxFreq is treated as HP;
+// ties go to the smaller CLOS id (matching SST-CP ordered-priority
+// convention where lower CLOS ids have higher priority). When no
+// CLOS reports a programmed MaxFreq, no class is classified as HP
+// (HP-specific hints stay quiet for that class set).
+func (a *pctAllocator) classifyAssocOnlyHP(classes []*CPUClass) {
+	maxFreqs := map[int]int{}
+	closIDs := []int{}
+	for _, p := range a.classPlan {
+		if _, seen := maxFreqs[p.ClosID]; seen {
+			continue
+		}
+		cfg, ok, err := a.sst.GetClosConfig(p.ClosID)
+		if err != nil {
+			log.Warnf("pct: assoc-only: GetClosConfig(%d) failed: %v", p.ClosID, err)
+			continue
+		}
+		if !ok {
+			log.Infof("pct: assoc-only: CLOS %d not programmed; cannot classify HP/LP", p.ClosID)
+			continue
+		}
+		maxFreqs[p.ClosID] = cfg.MaxFreq
+		closIDs = append(closIDs, p.ClosID)
+		log.Infof("pct: assoc-only: CLOS %d programmed min=%d max=%d kHz", p.ClosID, cfg.MinFreq, cfg.MaxFreq)
+	}
+	if len(closIDs) == 0 {
+		return
+	}
+	sort.Ints(closIDs)
+	bestClos := -1
+	bestMax := -1
+	for _, id := range closIDs {
+		if maxFreqs[id] > bestMax {
+			bestMax = maxFreqs[id]
+			bestClos = id
+		}
+	}
+	if bestClos < 0 || bestMax <= 0 {
+		log.Infof("pct: assoc-only: no CLOS has a programmed MaxFreq; HP classification skipped")
+		return
+	}
+	for _, cc := range classes {
+		p, ok := a.classPlan[cc.Name]
+		if !ok || p.ClosID != bestClos {
+			continue
+		}
+		a.hpClasses[cc.Name] = true
+		log.Infof("pct: cpuClass %q classified HP (assoc-only: CLOS %d MaxFreq=%d kHz)", cc.Name, bestClos, bestMax)
+	}
 }
 
 // planClasses returns the PCT operating mode and the per-class
@@ -257,40 +392,42 @@ func (a *pctAllocator) useClass(className string, cpus cpuset.CPUSet) error {
 	return a.associate(cpus, plan.ClosID)
 }
 
-// trackHpUsage updates per-package HP CPU bookkeeping so that
-// cpus are recorded as held by an HP class if className is HP,
-// and removed from HP bookkeeping otherwise.
+// trackHpUsage updates per-punit HP CPU bookkeeping so cpus are
+// recorded as held by an HP class if className is HP, and removed
+// from HP bookkeeping otherwise. CPUs not mapped to any punit
+// (e.g. outside Allowed at Configure time) are ignored: they
+// cannot affect HP placement and tracking them would only confuse
+// hpInUseCpus.
 func (a *pctAllocator) trackHpUsage(className string, cpus cpuset.CPUSet) {
-	if !a.isManaged() {
+	if !a.hpHintsActive() {
 		return
 	}
 	a.clearHpUsage(cpus)
 	if !a.classIsHighPriority(className) {
 		return
 	}
-	perPkg := map[int][]int{}
+	perPunit := map[int][]int{}
 	for _, cpu := range cpus.UnsortedList() {
-		c := a.sys.CPU(idset.ID(cpu))
-		if c == nil {
+		idx, ok := a.punitByCpu[cpu]
+		if !ok {
 			continue
 		}
-		pkg := int(c.PackageID())
-		perPkg[pkg] = append(perPkg[pkg], cpu)
+		perPunit[idx] = append(perPunit[idx], cpu)
 	}
-	for pkg, list := range perPkg {
-		set := a.hpUsed[pkg]
-		a.hpUsed[pkg] = set.Union(cpuset.New(list...))
+	for idx, list := range perPunit {
+		set := a.hpUsed[idx]
+		a.hpUsed[idx] = set.Union(cpuset.New(list...))
 	}
 }
 
-// clearHpUsage removes cpus from per-package HP bookkeeping.
+// clearHpUsage removes cpus from per-punit HP bookkeeping.
 func (a *pctAllocator) clearHpUsage(cpus cpuset.CPUSet) {
-	if !a.isManaged() {
+	if !a.hpHintsActive() {
 		return
 	}
-	for pkg, set := range a.hpUsed {
+	for idx, set := range a.hpUsed {
 		if remaining := set.Difference(cpus); remaining.Size() != set.Size() {
-			a.hpUsed[pkg] = remaining
+			a.hpUsed[idx] = remaining
 		}
 	}
 }
@@ -338,14 +475,27 @@ func (a *pctAllocator) isManaged() bool {
 	return a != nil && a.mode == pctModeManaged
 }
 
-// classIsHighPriority reports whether className is the managed PCT
-// high-priority class (pctPriority: high).
+// classIsHighPriority reports whether className is currently
+// classified as PCT high priority. In managed mode this comes from
+// pctPriority=high; in assoc-only mode it comes from the largest
+// programmed CLOS MaxFreq (see classifyAssocOnlyHP). The two
+// regimes share one map so that hints() can treat HP/non-HP
+// classes uniformly.
 func (a *pctAllocator) classIsHighPriority(className string) bool {
-	if !a.isManaged() {
+	if !a.active() {
 		return false
 	}
-	cc, ok := a.classByName[className]
-	return ok && cc.PctPriority == "high"
+	return a.hpClasses[className]
+}
+
+// hpHintsActive reports whether HP-room reasoning (hpReserveCpus,
+// hpInUseCpus, trackHpUsage) is currently meaningful. It requires
+// PCT to be active *and* at least one cpuClass to be classified as
+// HP. In assoc-only mode without programmed CLOS frequencies this
+// is false even though the allocator runs, because we cannot
+// distinguish HP from LP CLOSes from the data we have.
+func (a *pctAllocator) hpHintsActive() bool {
+	return a.active() && len(a.hpClasses) > 0
 }
 
 // closCpus returns the subset of Allowed CPUs that are currently
@@ -367,22 +517,24 @@ func (a *pctAllocator) closCpus(closID int) cpuset.CPUSet {
 	return cpuset.New(out...)
 }
 
-// hpInUseCpus returns the union of CPUs of all packages that
-// currently host at least one HP CPU, constrained to Allowed.
+// hpInUseCpus returns the union of CPUs of every punit currently
+// hosting at least one HP CPU, constrained to Allowed. Expanding
+// HP usage to whole-punit (rather than whole-package) granularity
+// keeps the Avoid hint for non-HP classes from being unnecessarily
+// broad on TPMI-class platforms with multiple punits per package.
 func (a *pctAllocator) hpInUseCpus() cpuset.CPUSet {
-	if !a.isManaged() {
+	if !a.hpHintsActive() {
 		return cpuset.New()
 	}
 	out := cpuset.New()
-	for pkgID, used := range a.hpUsed {
+	for idx, used := range a.hpUsed {
 		if used.IsEmpty() {
 			continue
 		}
-		pkg := a.sys.Package(idset.ID(pkgID))
-		if pkg == nil {
+		if idx < 0 || idx >= len(a.punits) {
 			continue
 		}
-		out = out.Union(pkg.CPUSet())
+		out = out.Union(a.punits[idx].CPUs)
 	}
 	if a.allowed.Size() > 0 {
 		out = out.Intersection(a.allowed)
@@ -390,21 +542,39 @@ func (a *pctAllocator) hpInUseCpus() cpuset.CPUSet {
 	return out
 }
 
-// hpReserveCpus returns the subset of free CPUs that lies on the
-// package with the largest remaining PCT high-priority room. The
-// HP room of a package is
+// hpReserveCpus returns the CPU set the upcoming HP allocation
+// should prefer, computed with punit-granular HP-room accounting:
 //
-//	room = MaxHpCpus(pkg) - len(hpUsed[pkg] \ excludeBln)
+//	room(punit) = MaxHpCpus(punit) - len(hpUsed[punit] \ excludeBln)
 //
-// Ties are broken by largest free-CPU count. Returns the empty set
-// when no package has any room or no free CPUs, or when free is
-// empty. The returned set is constrained to Allowed.
+// Selection follows a strict tier order:
+//
+//   - Tier A (single-punit win): the punit with the largest
+//     non-zero room and at least requested free CPUs. Returns the
+//     free CPUs of that punit.
+//   - Tier B (same-package union): when no single punit can host
+//     `requested` HP CPUs but some package's punits jointly can,
+//     return the union of free CPUs across that package's punits.
+//     The picked package is the one with the largest aggregate
+//     room; ties broken by largest aggregate free-CPU count.
+//   - Tier C (cross-package): never. Steering an HP balloon across
+//     sockets defeats the turbo gains it would obtain, because
+//     cross-socket data traffic typically dominates per-core
+//     frequency benefits.
+//
+// When `requested` is 0 the function falls back to Tier A only --
+// pick the punit with the most HP room and at least one free CPU.
+// Returns the empty set when no punit/package satisfies any tier
+// or no free CPUs remain after Allowed-intersection; the caller
+// then falls back to topology-only placement.
 //
 //   - free: free CPUs to consider for placement.
-//   - excludeBln: CPUs to exclude from per-package HP room
-//     accounting.
-func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet) cpuset.CPUSet {
-	if !a.isManaged() {
+//   - excludeBln: CPUs to exclude from HP-room accounting (the
+//     resizing balloon's own CPUs).
+//   - requested: number of CPUs the upcoming allocation wants.
+//     0 means "unknown" (newBalloon priming); Tier A is used.
+func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet, requested int) cpuset.CPUSet {
+	if !a.hpHintsActive() {
 		return cpuset.New()
 	}
 	if a.allowed.Size() > 0 {
@@ -413,45 +583,117 @@ func (a *pctAllocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSe
 	if free.IsEmpty() {
 		return cpuset.New()
 	}
-	var bestPkg cpuset.CPUSet
-	bestRoom := -1
-	bestFree := -1
+
+	type punitState struct {
+		free cpuset.CPUSet
+		room int
+	}
+	states := make([]punitState, len(a.punits))
 	anyKnown := false
-	for _, pkgID := range a.sys.PackageIDs() {
-		pkg := a.sys.Package(pkgID)
-		if pkg == nil {
+	for i, pu := range a.punits {
+		states[i].free = pu.CPUs.Intersection(free)
+		if pu.MaxHpCpus <= 0 {
+			// Unknown capacity for this punit: do not let it
+			// influence HP steering. Leave room=0 so it never
+			// wins Tier A; package-aggregate Tier B still
+			// uses only known-capacity punits.
 			continue
 		}
-		pkgFree := pkg.CPUSet().Intersection(free)
-		if pkgFree.IsEmpty() {
+		anyKnown = true
+		used := a.hpUsed[i]
+		if excludeBln.Size() > 0 {
+			used = used.Difference(excludeBln)
+		}
+		room := pu.MaxHpCpus - used.Size()
+		if room < 0 {
+			room = 0
+		}
+		states[i].room = room
+	}
+	if !anyKnown {
+		return cpuset.New()
+	}
+
+	// Tier A: best single punit that satisfies the request.
+	bestIdx := -1
+	bestRoom := 0
+	bestFree := -1
+	for i := range a.punits {
+		s := states[i]
+		if s.free.IsEmpty() || s.room <= 0 {
 			continue
 		}
-		room := pkgFree.Size() // fallback: "most free CPUs"
-		if maxHp, ok := a.sst.MaxHpCpus(int(pkgID)); ok {
-			anyKnown = true
-			used := a.hpUsed[int(pkgID)]
-			if excludeBln.Size() > 0 {
-				used = used.Difference(excludeBln)
-			}
-			room = maxHp - used.Size()
-			if room < 0 {
-				room = 0
-			}
+		if requested > 0 && s.free.Size() < requested {
+			// Punit cannot host the whole request.
+			continue
 		}
-		if room > bestRoom || (room == bestRoom && pkgFree.Size() > bestFree) {
-			bestRoom = room
-			bestFree = pkgFree.Size()
-			bestPkg = pkgFree
+		if s.room > bestRoom || (s.room == bestRoom && s.free.Size() > bestFree) {
+			bestIdx = i
+			bestRoom = s.room
+			bestFree = s.free.Size()
 		}
 	}
-	if bestRoom <= 0 && anyKnown {
-		log.Debugf("pct: no HP room left on any package, falling back to topology placement")
-		return cpuset.New()
+	if bestIdx >= 0 {
+		log.Debugf("pct: hpReserveCpus tier=A punit=%d/%d room=%d free=%s",
+			a.punits[bestIdx].PkgID, a.punits[bestIdx].PunitID, bestRoom, states[bestIdx].free)
+		return states[bestIdx].free
 	}
-	if bestPkg.IsEmpty() {
-		return cpuset.New()
+
+	// Tier B: aggregate per package; pick the package whose
+	// punits together have the most room (and free CPUs).
+	if requested > 0 {
+		type pkgAgg struct {
+			room  int
+			free  cpuset.CPUSet
+			freeN int
+		}
+		agg := map[int]*pkgAgg{}
+		for i, pu := range a.punits {
+			if states[i].room <= 0 || states[i].free.IsEmpty() {
+				continue
+			}
+			e, ok := agg[pu.PkgID]
+			if !ok {
+				e = &pkgAgg{free: cpuset.New()}
+				agg[pu.PkgID] = e
+			}
+			e.room += states[i].room
+			e.free = e.free.Union(states[i].free)
+		}
+		pkgIDs := make([]int, 0, len(agg))
+		for id, e := range agg {
+			e.freeN = e.free.Size()
+			pkgIDs = append(pkgIDs, id)
+		}
+		sort.Ints(pkgIDs) // deterministic tie-break order
+		bestPkg := -1
+		bestPkgRoom := 0
+		bestPkgFree := -1
+		for _, id := range pkgIDs {
+			e := agg[id]
+			if e.room < requested {
+				continue
+			}
+			if e.freeN < requested {
+				continue
+			}
+			if e.room > bestPkgRoom || (e.room == bestPkgRoom && e.freeN > bestPkgFree) {
+				bestPkg = id
+				bestPkgRoom = e.room
+				bestPkgFree = e.freeN
+			}
+		}
+		if bestPkg >= 0 {
+			log.Debugf("pct: hpReserveCpus tier=B pkg=%d room=%d free=%s",
+				bestPkg, bestPkgRoom, agg[bestPkg].free)
+			return agg[bestPkg].free
+		}
 	}
-	return bestPkg
+
+	// Tier C is never taken: do not hint across packages.
+	log.Debugf("pct: hpReserveCpus tier=none (no punit or package has %d HP room with %d free CPUs)",
+		requested, free.Size())
+	return cpuset.New()
 }
 
 // referencedClosIDs returns the sorted, deduplicated list of CLOS
@@ -504,13 +746,14 @@ func virtDevSstClosHint(closID int) string {
 // allocation under intent.ClassName to honor. Returned CpuPreference
 // sets are not yet intersected with Allowed; the handler does that.
 //
-// Behavior, mirroring the previously-implicit balloons logic:
+// Behavior:
 //   - Class has an explicit CLOS plan (assoc-only or managed): Prefer
 //     CLOS-member CPUs.
-//   - Class is the managed HP class: Prefer hpReserveCpus (a package
-//     with HP headroom), and also CLOS-member CPUs.
-//   - Class is not managed HP and at least one managed HP class
-//     exists: Avoid hpInUseCpus (packages currently hosting HP work).
+//   - Class is currently classified HP: Prefer hpReserveCpus
+//     (best-fit punit; same-package union as fallback), and also
+//     CLOS-member CPUs. No cross-package hint is ever emitted.
+//   - Class is not HP and at least one HP class exists: Avoid
+//     hpInUseCpus (punits currently hosting HP work).
 func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
 	if a == nil || !a.active() {
 		return AllocationHints{}
@@ -528,7 +771,7 @@ func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
 	}
 
 	if a.classIsHighPriority(intent.ClassName) {
-		reserve := a.hpReserveCpus(intent.FreeCpus, intent.CurrentCpus)
+		reserve := a.hpReserveCpus(intent.FreeCpus, intent.CurrentCpus, intent.RequestedCount)
 		if !reserve.IsEmpty() {
 			out.Prefer = append(out.Prefer, CpuPreference{
 				Name: virtDevSstHpReserveHint,
@@ -538,7 +781,7 @@ func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
 		return out
 	}
 
-	if a.isManaged() && a.anyHighPriorityClassDefined() {
+	if a.hpHintsActive() {
 		inUse := a.hpInUseCpus()
 		if !inUse.IsEmpty() {
 			out.Avoid = append(out.Avoid, CpuPreference{
@@ -551,13 +794,8 @@ func (a *pctAllocator) hints(intent AllocationIntent) AllocationHints {
 }
 
 // anyHighPriorityClassDefined reports whether any configured cpuClass
-// has pctPriority=high. This is independent of whether such a class
-// currently has CPUs assigned.
+// is currently classified as HP. Retained for compatibility with
+// older internal callers; new code should use hpHintsActive.
 func (a *pctAllocator) anyHighPriorityClassDefined() bool {
-	for _, cc := range a.classByName {
-		if cc.PctPriority == "high" {
-			return true
-		}
-	}
-	return false
+	return len(a.hpClasses) > 0
 }

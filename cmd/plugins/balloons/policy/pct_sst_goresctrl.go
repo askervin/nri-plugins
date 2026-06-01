@@ -20,12 +20,20 @@ import (
 
 	gosst "github.com/intel/goresctrl/pkg/sst"
 	"github.com/intel/goresctrl/pkg/utils"
+
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
 // sstGoresctrl is the real-hardware sst backed by
-// goresctrl/pkg/sst.
+// goresctrl/pkg/sst. Per-(pkg, punit) topology and HP capacity
+// are snapshotted at Init() time -- the goresctrl Platform itself
+// snapshots CPU topology at Init(), so refreshing here would not
+// pick up CPU hotplug either.
 type sstGoresctrl struct {
 	plat *gosst.Platform
+	// punits is the cached per-punit topology + HP capacity in
+	// stable order (sorted by PkgID, then PunitID).
+	punits []pctPunit
 }
 
 func newSstGoresctrl() (sst, error) {
@@ -38,7 +46,107 @@ func newSstGoresctrl() (sst, error) {
 		return nil, fmt.Errorf("SST init failed: %w", err)
 	}
 	b.plat = plat
+	b.punits = discoverPunits(plat)
 	return b, nil
+}
+
+// discoverPunits snapshots per-punit topology and HP capacity for
+// every package the platform exposes. The PP level is the current
+// level of the first punit of each package, mirroring the
+// approach of goresctrl's "sst info" CLI. Logged at INFO so
+// operators can correlate placement decisions with the platform
+// state observed at startup. A failure on one package does not
+// abort discovery for the others.
+func discoverPunits(plat *gosst.Platform) []pctPunit {
+	out := []pctPunit{}
+	if plat == nil {
+		return out
+	}
+	for _, pkg := range plat.Packages() {
+		pkgID := pkg.ID()
+		st, err := pkg.GetStatus()
+		if err != nil {
+			log.Warnf("pct: SST status unavailable for package %d: %v", pkgID, err)
+			continue
+		}
+		// Pick the current PP level from any punit (they share
+		// a level on every platform we have seen); warn on
+		// divergence and stick with the first one.
+		level := -1
+		for _, pu := range st.Punits {
+			if level < 0 {
+				level = pu.PP.CurrentLevel
+				continue
+			}
+			if pu.PP.CurrentLevel != level {
+				log.Warnf("pct: package %d punits report differing PP levels; using level %d", pkgID, level)
+				break
+			}
+		}
+		if level < 0 {
+			log.Warnf("pct: package %d has no punits, skipping discovery", pkgID)
+			continue
+		}
+		info, err := pkg.GetPerfLevelInfo(level)
+		if err != nil {
+			log.Warnf("pct: SST PerfLevelInfo unavailable for package %d level %d: %v", pkgID, level, err)
+			continue
+		}
+		// Stable per-punit iteration.
+		punitIDs := make([]int, 0, len(st.Punits))
+		for id := range st.Punits {
+			punitIDs = append(punitIDs, int(id))
+		}
+		sort.Ints(punitIDs)
+		for _, pid := range punitIDs {
+			pu := st.Punits[utils.ID(pid)]
+			cpus := cpuset.New(pu.CPUs.Members()...)
+			max := 0
+			if pi, ok := info[utils.ID(pid)]; ok {
+				max = punitMaxHpCpus(pi)
+				log.Infof("pct: SST discovered: pkg=%d punit=%d level=%d cpus=%s maxHpCpus=%d (tf=%v bf=%v)",
+					pkgID, pid, level, cpus, max, pi.TF.Supported, pi.BF.Supported)
+			} else {
+				log.Infof("pct: SST discovered: pkg=%d punit=%d level=%d cpus=%s maxHpCpus=0 (no PerfLevelInfo)",
+					pkgID, pid, level, cpus)
+			}
+			out = append(out, pctPunit{
+				PkgID:     pkgID,
+				PunitID:   pid,
+				CPUs:      cpus,
+				MaxHpCpus: max,
+			})
+		}
+	}
+	return out
+}
+
+// punitMaxHpCpus returns the maximum number of CPUs that can be
+// promoted to high priority on this punit at the queried PP
+// level. SST-TF takes precedence: the largest bucket's
+// HighPriorityCoreCount sets the upper bound (smaller buckets
+// allow higher turbo but admit fewer HP cores -- the allocator
+// only needs to know the cap). When TF is unsupported or all
+// buckets are empty, fall back to len(BF.HighPriorityCPUs); BF
+// guarantees those CPUs run at an elevated *base* frequency, so
+// the count is exact. Returns 0 only when neither feature
+// exposes any HP CPUs.
+func punitMaxHpCpus(pi *gosst.PerfLevelInfo) int {
+	if pi == nil {
+		return 0
+	}
+	max := 0
+	if pi.TF.Supported {
+		for _, b := range pi.TF.Buckets {
+			if b.HighPriorityCoreCount > max {
+				max = b.HighPriorityCoreCount
+			}
+		}
+	}
+	if max == 0 && pi.BF.Supported {
+		max = len(pi.BF.HighPriorityCPUs)
+	}
+	return max
 }
 
 func (b *sstGoresctrl) Supported() bool { return b.plat != nil }
@@ -54,10 +162,14 @@ func (b *sstGoresctrl) PackageIDs() []int {
 	if b.plat == nil {
 		return nil
 	}
-	pkgs := b.plat.Packages()
-	ids := make([]int, 0, len(pkgs))
-	for _, p := range pkgs {
-		ids = append(ids, p.ID())
+	seen := map[int]bool{}
+	ids := []int{}
+	for _, pu := range b.punits {
+		if seen[pu.PkgID] {
+			continue
+		}
+		seen[pu.PkgID] = true
+		ids = append(ids, pu.PkgID)
 	}
 	sort.Ints(ids)
 	return ids
@@ -67,20 +179,25 @@ func (b *sstGoresctrl) CPUsOfPackage(pkgID int) []int {
 	if b.plat == nil {
 		return nil
 	}
-	pkg, ok := b.plat.Package(pkgID)
-	if !ok {
-		return nil
-	}
-	st, err := pkg.GetStatus()
-	if err != nil {
-		log.Warnf("pct: failed to get package %d status: %v", pkgID, err)
-		return nil
-	}
 	out := []int{}
-	for _, pu := range st.Punits {
-		out = append(out, pu.CPUs.Members()...)
+	for _, pu := range b.punits {
+		if pu.PkgID != pkgID {
+			continue
+		}
+		out = append(out, pu.CPUs.UnsortedList()...)
 	}
 	sort.Ints(out)
+	return out
+}
+
+// Punits returns the cached per-punit topology and HP capacity.
+func (b *sstGoresctrl) Punits() []pctPunit {
+	if b.plat == nil {
+		return nil
+	}
+	// Return a defensive copy so callers cannot mutate cached state.
+	out := make([]pctPunit, len(b.punits))
+	copy(out, b.punits)
 	return out
 }
 
@@ -153,35 +270,38 @@ func (b *sstGoresctrl) GetCPUClosID(cpu int) (int, error) {
 	return b.plat.GetCPUClosID(utils.ID(cpu))
 }
 
-// MaxHpCpus returns the per-package SST-BF priority-core count.
-// The second return value is false when SST-BF support is not
-// exposed on the package.
-func (b *sstGoresctrl) MaxHpCpus(pkgID int) (int, bool) {
+// GetClosConfig returns the frequency bounds programmed on CLOS
+// closID, queried from the first package (CLOS programming is
+// applied identically to every package by ConfigureClos). The
+// second return value is false when SST is unsupported, the
+// package status cannot be read, or closID is out of range.
+func (b *sstGoresctrl) GetClosConfig(closID int) (pctClosCfg, bool, error) {
 	if b.plat == nil {
-		return 0, false
+		return pctClosCfg{}, false, nil
 	}
-	pkg, ok := b.plat.Package(pkgID)
-	if !ok {
-		return 0, false
+	pkgs := b.plat.Packages()
+	if len(pkgs) == 0 {
+		return pctClosCfg{}, false, nil
 	}
-	st, err := pkg.GetStatus()
+	st, err := pkgs[0].GetStatus()
 	if err != nil {
-		return 0, false
+		return pctClosCfg{}, false, fmt.Errorf("GetClosConfig: package %d status: %w", pkgs[0].ID(), err)
 	}
-	total := 0
-	any := false
+	// Pick any punit -- per-package ConfigureClos programs all
+	// punits identically.
 	for _, pu := range st.Punits {
-		if !pu.BF.Supported {
-			continue
+		if closID < 0 || closID >= len(pu.Clos) {
+			return pctClosCfg{}, false, nil
 		}
-		any = true
-		total += pu.BF.Cores.Size()
+		return pctClosCfg{
+			MinFreq: pu.Clos[closID].Config.MinFreq,
+			MaxFreq: pu.Clos[closID].Config.MaxFreq,
+		}, true, nil
 	}
-	if !any {
-		return 0, false
-	}
-	return total, true
+	return pctClosCfg{}, false, nil
 }
+
+// MaxHpCpus method removed in favor of Punits().
 
 func (b *sstGoresctrl) Shutdown() error {
 	if b.plat == nil {

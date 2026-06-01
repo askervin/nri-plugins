@@ -116,4 +116,4 @@ replace (
 
 tool k8s.io/code-generator
 
-replace github.com/intel/goresctrl => /home/ask/github.com/intel/goresctrl
+replace github.com/intel/goresctrl => github.com/intel/goresctrl v0.12.1-0.20260601113444-fe1066ae9cce

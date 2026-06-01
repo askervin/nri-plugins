@@ -48,6 +48,11 @@ type AllocationIntent struct {
 	// FreeCpus is the set of CPUs the caller is willing to choose
 	// from (typically the policy's free-CPU pool).
 	FreeCpus cpuset.CPUSet
+	// RequestedCount is the number of CPUs the upcoming
+	// allocation wants. 0 means "unknown" (e.g. priming
+	// hints at balloon creation before the first cpu count
+	// is known); handlers must treat 0 as "best effort".
+	RequestedCount int
 }
 
 // CpuPreference is a named CPU set carrying a single placement

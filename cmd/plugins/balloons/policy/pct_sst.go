@@ -34,6 +34,28 @@ type pctClosAssoc struct {
 	ClosID int
 }
 
+// pctPunit describes one SST power domain (punit) exposed by the
+// platform. PkgID and PunitID together uniquely identify it; CPUs
+// is the set of logical CPUs in this punit; MaxHpCpus is the
+// maximum number of CPUs this punit can sustain at the elevated
+// PCT high-priority frequency (SST-TF bucket count, or SST-BF HP
+// CPU count when TF is unsupported). MaxHpCpus == 0 means the
+// platform does not expose HP capacity for this punit; the
+// allocator excludes such punits from HP steering.
+type pctPunit struct {
+	PkgID     int
+	PunitID   int
+	CPUs      cpuset.CPUSet
+	MaxHpCpus int
+}
+
+// pctClosCfg carries the frequency bounds programmed for one CLOS,
+// in kHz. Zero stands for "not specified / leave alone".
+type pctClosCfg struct {
+	MinFreq int
+	MaxFreq int
+}
+
 // sst is the subset of Intel SST functionality used by the
 // balloons policy. Implementations: sstGoresctrl for real
 // hardware via goresctrl/pkg/sst, and sstMock for an
@@ -51,6 +73,18 @@ type sst interface {
 	// CPUsOfPackage returns the CPUs of the given package.
 	CPUsOfPackage(pkgID int) []int
 
+	// Punits returns the per-punit topology and HP capacity of
+	// every package the platform exposes. Order is stable.
+	Punits() []pctPunit
+
+	// GetClosConfig returns the frequency bounds currently
+	// programmed for closID. The second return value is false
+	// when no information is available (e.g. closID not in
+	// range, or the platform does not expose per-CLOS
+	// configuration). Used in assoc-only mode to classify a CLOS
+	// as HP or LP from its programmed MaxFreq.
+	GetClosConfig(closID int) (pctClosCfg, bool, error)
+
 	// PrepareManagedMode resets and enables SST-TF on every
 	// package and selects ordered priority arbitration.
 	PrepareManagedMode() error
@@ -67,12 +101,6 @@ type sst interface {
 
 	// GetCPUClosID returns the current CLOS association of a CPU.
 	GetCPUClosID(cpu int) (int, error)
-
-	// MaxHpCpus returns the maximum number of CPUs that can be
-	// held in the high-priority CLOS on the given package. The
-	// second return value is false if the platform does not
-	// expose this capability.
-	MaxHpCpus(pkgID int) (int, bool)
 
 	// Shutdown restores managed-mode platform state to defaults.
 	Shutdown() error
