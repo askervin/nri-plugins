@@ -296,6 +296,22 @@ func (b *sstMock) GetClosConfig(closID int) (pctClosCfg, bool, error) {
 	return pctClosCfg{}, false, nil
 }
 
+// TFStatus mirrors the per-package TFEnabled flag onto each of
+// the package's punits (the mock's TF state is per-package).
+func (b *sstMock) TFStatus() (map[pctPunitID]bool, error) {
+	out := map[pctPunitID]bool{}
+	for _, pkg := range b.doc.Packages {
+		if len(pkg.Punits) == 0 {
+			out[pctPunitID{PkgID: pkg.ID, PunitID: 0}] = pkg.TFEnabled
+			continue
+		}
+		for _, pu := range pkg.Punits {
+			out[pctPunitID{PkgID: pkg.ID, PunitID: pu.ID}] = pkg.TFEnabled
+		}
+	}
+	return out, nil
+}
+
 func (b *sstMock) Shutdown() error {
 	for cpu := range b.cpuClos {
 		b.cpuClos[cpu] = 0

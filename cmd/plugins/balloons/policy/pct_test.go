@@ -186,6 +186,15 @@ func (s *fakeSst) GetClosConfig(closID int) (pctClosCfg, bool, error) {
 
 func (s *fakeSst) Shutdown() error { return nil }
 
+func (s *fakeSst) TFStatus() (map[pctPunitID]bool, error) {
+	// Tests do not care about SST-TF; report enabled everywhere.
+	out := map[pctPunitID]bool{}
+	for _, pu := range s.Punits() {
+		out[pctPunitID{PkgID: pu.PkgID, PunitID: pu.PunitID}] = true
+	}
+	return out, nil
+}
+
 // --- helpers to construct a hand-wired pctAllocator -----------------
 
 func newManagedPctForTest(t *testing.T, classes []*CPUClass, plans map[string]*pctClassPlan,

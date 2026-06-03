@@ -197,8 +197,50 @@ func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) err
 		// by the operator/BIOS. The CLOS with the largest MaxFreq
 		// among the CLOSes our cpuClasses target is HP.
 		a.classifyAssocOnlyHP(classes)
+		a.warnAssocOnlyTFDisabled()
 	}
 	return nil
+}
+
+// warnAssocOnlyTFDisabled checks the live SST-TF status on every
+// punit that overlaps with `allowed` and logs a warning for those
+// where TF is disabled. In assoc-only mode the plugin must not
+// toggle SST-TF (the operator owns global SST state), but without
+// SST-TF the standard turbo-ratio table caps HP cores at the
+// many-active-cores bucket frequency -- a low-CLOS-ID association
+// alone is not enough to exceed it. The warning points the
+// operator to the command that enables SST-TF on the punit.
+func (a *pctAllocator) warnAssocOnlyTFDisabled() {
+	if len(a.punits) == 0 {
+		return
+	}
+	status, err := a.sst.TFStatus()
+	if err != nil {
+		log.Warnf("pct: assoc-only: cannot read SST-TF status: %v", err)
+		return
+	}
+	for _, pu := range a.punits {
+		enabled, ok := status[pctPunitID{PkgID: pu.PkgID, PunitID: pu.PunitID}]
+		if !ok {
+			continue
+		}
+		if enabled {
+			continue
+		}
+		// Pick one representative CPU from the punit for the
+		// operator hint -- intel-speed-select needs at least
+		// one CPU on the target punit.
+		repCPU := -1
+		for _, c := range pu.CPUs.UnsortedList() {
+			repCPU = c
+			break
+		}
+		log.Warnf("pct: assoc-only: SST-TF disabled on pkg=%d punit=%d; "+
+			"HP cores on this punit cannot exceed the standard "+
+			"turbo-ratio bucket frequency. Enable with: "+
+			"intel-speed-select -c %d turbo-freq enable -a",
+			pu.PkgID, pu.PunitID, repCPU)
+	}
 }
 
 // snapshotPunits caches the per-punit topology from the sst

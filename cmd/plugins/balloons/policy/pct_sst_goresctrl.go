@@ -270,6 +270,23 @@ func (b *sstGoresctrl) GetCPUClosID(cpu int) (int, error) {
 	return b.plat.GetCPUClosID(utils.ID(cpu))
 }
 
+func (b *sstGoresctrl) TFStatus() (map[pctPunitID]bool, error) {
+	out := map[pctPunitID]bool{}
+	if b.plat == nil {
+		return out, nil
+	}
+	for _, pkg := range b.plat.Packages() {
+		st, err := pkg.GetStatus()
+		if err != nil {
+			return nil, fmt.Errorf("TFStatus: package %d status: %w", pkg.ID(), err)
+		}
+		for pid, pu := range st.Punits {
+			out[pctPunitID{PkgID: pkg.ID(), PunitID: int(pid)}] = pu.TF.Enabled
+		}
+	}
+	return out, nil
+}
+
 // GetClosConfig returns the frequency bounds programmed on CLOS
 // closID, queried from the first package (CLOS programming is
 // applied identically to every package by ConfigureClos). The

@@ -56,6 +56,12 @@ type pctClosCfg struct {
 	MaxFreq int
 }
 
+// pctPunitID identifies one power domain by (package, punit) ID.
+type pctPunitID struct {
+	PkgID   int
+	PunitID int
+}
+
 // sst is the subset of Intel SST functionality used by the
 // cpuclass code. Implementations: sstGoresctrl for real
 // hardware via goresctrl/pkg/sst, and sstMock for an
@@ -98,6 +104,16 @@ type sst interface {
 
 	// AssociateCPUs binds each CPU to the indicated CLOS.
 	AssociateCPUs(assocs []pctClosAssoc) error
+
+	// TFStatus returns the current SST-TF enabled state per
+	// power domain. The map is empty when SST is unsupported.
+	// The status is read at call time (SST-TF can be toggled
+	// out-of-band by the operator). Used in assoc-only mode to
+	// warn at configure time when SST-TF is disabled on a punit
+	// hosting PCT-managed CPUs -- without SST-TF, HP cores on
+	// that punit cannot exceed the standard turbo-ratio bucket
+	// limit even if associated to a low-CLOS-ID (HP) CLOS.
+	TFStatus() (map[pctPunitID]bool, error)
 
 	// GetCPUClosID returns the current CLOS association of a CPU.
 	GetCPUClosID(cpu int) (int, error)
