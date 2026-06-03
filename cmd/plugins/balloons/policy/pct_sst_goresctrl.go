@@ -328,6 +328,12 @@ func (b *sstGoresctrl) Shutdown() error {
 		if err := pkg.CPReset(); err != nil {
 			return fmt.Errorf("CPReset on package %d: %w", pkg.ID(), err)
 		}
+		if err := pkg.TFDisable(); err != nil {
+			return fmt.Errorf("TFDisable on package %d: %w", pkg.ID(), err)
+		}
+		if err := pkg.CPDisable(); err != nil {
+			return fmt.Errorf("CPDisable on package %d: %w", pkg.ID(), err)
+		}
 	}
 	return nil
 }
