@@ -830,3 +830,46 @@ if got := punitMaxHpCpus(pi); got != 0 {
 t.Errorf("punitMaxHpCpus = %d, want 0", got)
 }
 }
+
+// TestPctPunitGuaranteedHpCpus_TfSmallestBucket: with multiple
+// non-zero TF buckets, the guaranteed top-turbo HP CPU count is
+// the smallest HighPriorityCoreCount (smaller buckets unlock
+// higher turbo frequencies).
+func TestPctPunitGuaranteedHpCpus_TfSmallestBucket(t *testing.T) {
+pi := &gosst.PerfLevelInfo{
+TF: gosst.TFInfo{
+Supported: true,
+Buckets: []gosst.TFBucketInfo{
+{ID: 0, HighPriorityCoreCount: 24},
+{ID: 1, HighPriorityCoreCount: 8}, // smallest non-zero
+{ID: 2, HighPriorityCoreCount: 16},
+},
+},
+}
+if got := punitGuaranteedHpCpus(pi); got != 8 {
+t.Errorf("punitGuaranteedHpCpus = %d, want 8 (smallest TF bucket)", got)
+}
+}
+
+// TestPctPunitGuaranteedHpCpus_BfFallback: when TF is
+// unsupported, fall back to len(BF.HighPriorityCPUs).
+func TestPctPunitGuaranteedHpCpus_BfFallback(t *testing.T) {
+pi := &gosst.PerfLevelInfo{
+BF: gosst.BFInfo{
+Supported:        true,
+HighPriorityCPUs: idset.NewIDSet(0, 1, 2, 3),
+},
+}
+if got := punitGuaranteedHpCpus(pi); got != 4 {
+t.Errorf("punitGuaranteedHpCpus = %d, want 4 (BF fallback)", got)
+}
+}
+
+// TestPctPunitGuaranteedHpCpus_NeitherSupported: neither TF nor
+// BF -> 0.
+func TestPctPunitGuaranteedHpCpus_NeitherSupported(t *testing.T) {
+pi := &gosst.PerfLevelInfo{}
+if got := punitGuaranteedHpCpus(pi); got != 0 {
+t.Errorf("punitGuaranteedHpCpus = %d, want 0", got)
+}
+}

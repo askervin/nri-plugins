@@ -815,6 +815,22 @@ Record your own numbers:
 kubectl delete -f pod-hp-1.yaml -f pod-hp-2.yaml -f pod-hp-3.yaml \
     -f pod-hp-4.yaml -f pod-lp.yaml -f pod-hp-on-lp.yaml --ignore-not-found
 kubectl delete -f balloons-pct-managed.yaml --ignore-not-found
+```
+
+Deleting the `BalloonsPolicy` CR is the policy's defined "reset"
+trigger: the plugin reacts to losing its effective configuration
+by removing every `cpuclass.balloons.nri.io/*` extended resource
+it had published. Verify before uninstalling the chart:
+
+```bash
+kubectl get node -o jsonpath='{.items[0].status.capacity}' \
+    | jq 'with_entries(select(.key | startswith("cpuclass.balloons.nri.io/")))'
+# Expect: {}
+```
+
+Then uninstall the chart:
+
+```bash
 helm uninstall balloons -n kube-system
 ```
 
@@ -886,7 +902,91 @@ rm -rf pct-reporter
 # sudo crictl rmi localhost/pct-reporter:demo
 ```
 
-## 10. Troubleshooting
+## 10. Optional: help the scheduler avoid HP over-subscription (experimental)
+
+The default Kubernetes scheduler is unaware of how many CPUs on
+a node can become HP cores. Two HP pods can land on the same
+node even when a second node would have given them HP capacity,
+and HP pods can pile up beyond the platform's HP budget.
+
+The balloons policy ships an experimental opt-in that publishes
+a per-cpuClass extended resource on the local Node so the
+default scheduler can bin-pack on it. Set
+`publishExtendedResource: true` on every PCT-enabled cpuClass
+(i.e. classes that carry `pctClosID` or `pctPriority`) and the
+agent advertises:
+
+```text
+status.capacity:
+  cpuclass.balloons.nri.io/<class-name>: <free logical CPUs>
+```
+
+The capacity reflects "CPUs eligible for this class that are
+not currently held by balloons of other classes", and is
+re-published on every container create/update/release, so
+cross-class consumption (e.g. an LP balloon eating CPUs that
+would otherwise have been available for HP) is reflected
+immediately.
+
+For managed-mode HP classes, the per-punit cap used in the
+capacity formula is the *guaranteed top-turbo HP CPU count*
+(the smallest non-zero SST-TF bucket `HighPriorityCoreCount`,
+or the SST-BF `HighPriorityCPUs` count when TF is
+unsupported). This is the number of HP CPUs per punit that
+can simultaneously sustain the highest turbo frequency this
+platform exposes -- not the larger `MaxHpCpus` the allocator
+uses internally. On a Xeon 6 with four 8-core SST-TF buckets
+per punit and four active punits, that is 4 × 8 = 32 HP CPUs
+of guaranteed top-turbo headroom, which is what the scheduler
+should bin-pack on.
+
+Add the flag to the policy:
+
+```yaml
+  cpuClasses:
+  - name: hp-pct
+    pctPriority: high
+    pctMinFreq: base
+    pctMaxFreq: turbo
+    disabledCstates: [C6, C6P]
+    publishExtendedResource: true   # experimental
+  - name: lp-pct
+    pctPriority: low
+    pctMinFreq: min
+    pctMaxFreq: base
+    publishExtendedResource: true   # experimental
+```
+
+…and to every HP/LP pod, alongside the existing `cpu` request:
+
+```yaml
+    resources:
+      requests:
+        cpu: "2"
+        memory: "128Mi"
+        cpuclass.balloons.nri.io/hp-pct: "2"
+      limits:
+        cpu: "2"
+        memory: "128Mi"
+        cpuclass.balloons.nri.io/hp-pct: "2"
+```
+
+Verify on the node after applying:
+
+```bash
+kubectl get node -o jsonpath='{.items[0].status.capacity}' \
+    | jq 'with_entries(select(.key | startswith("cpuclass")))'
+```
+
+A pod whose request exceeds the published capacity gets
+`FailedScheduling: Insufficient cpuclass.balloons.nri.io/<name>`
+and stays `Pending` until another pod releases the resource.
+
+This is an experimental flag: the resource name, semantics
+(capacity vs. allocatable, conservative-on-grow), and update
+cadence may change before becoming stable.
+
+## 11. Troubleshooting
 
 - Plugin pod log shows `Speed Select Technology (SST) support not
   detected`: the pod cannot access `/dev/isst_interface`. Re-install

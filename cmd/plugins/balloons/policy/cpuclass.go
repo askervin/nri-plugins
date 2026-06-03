@@ -116,6 +116,23 @@ func newCpuClassHandler(sys sysfs.System, cch cache.Cache) (*cpuClassHandler, er
 	}, nil
 }
 
+// PctFreeClassCapacity returns the number of logical CPUs that
+// the PCT allocator can still route into the named cpuClass on
+// this node, given that 'held' lists CPUs already consumed by
+// some balloon belonging to any *other* cpuClass. Returns 0 if
+// PCT is inactive or the class has no PCT plan.
+func (h *cpuClassHandler) PctFreeClassCapacity(className string, held cpuset.CPUSet) int {
+	if h == nil || h.pct == nil {
+		return 0
+	}
+	return h.pct.freeClassCapacity(className, held)
+}
+
+// PctActive reports whether PCT is in effect on this node.
+func (h *cpuClassHandler) PctActive() bool {
+	return h != nil && h.pct != nil && h.pct.active()
+}
+
 // Configure (re)applies a configuration spec. Idempotent: may be
 // called repeatedly with changed classes, turbo-domain mode, or
 // allowed set.

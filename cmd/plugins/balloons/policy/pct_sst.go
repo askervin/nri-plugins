@@ -47,6 +47,16 @@ type pctPunit struct {
 	PunitID   int
 	CPUs      cpuset.CPUSet
 	MaxHpCpus int
+	// GuaranteedHpCpus is the count of HP CPUs on this punit that
+	// can simultaneously sustain the highest turbo frequency the
+	// platform exposes: the smallest non-zero SST-TF bucket's
+	// HighPriorityCoreCount (smaller buckets unlock higher
+	// frequencies), or len(SST-BF HighPriorityCPUs) when TF is
+	// unsupported. 0 if neither feature exposes HP capacity.
+	// Used to publish scheduler-visible HP capacity that reflects
+	// "guaranteed top-turbo headroom" rather than the worst-case
+	// MaxHpCpus.
+	GuaranteedHpCpus int
 }
 
 // pctClosCfg carries the frequency bounds programmed for one CLOS,

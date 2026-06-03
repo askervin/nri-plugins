@@ -102,19 +102,22 @@ func discoverPunits(plat *gosst.Platform) []pctPunit {
 			pu := st.Punits[utils.ID(pid)]
 			cpus := cpuset.New(pu.CPUs.Members()...)
 			max := 0
+			gtd := 0
 			if pi, ok := info[utils.ID(pid)]; ok {
 				max = punitMaxHpCpus(pi)
-				log.Infof("pct: SST discovered: pkg=%d punit=%d level=%d cpus=%s maxHpCpus=%d (tf=%v bf=%v)",
-					pkgID, pid, level, cpus, max, pi.TF.Supported, pi.BF.Supported)
+				gtd = punitGuaranteedHpCpus(pi)
+				log.Infof("pct: SST discovered: pkg=%d punit=%d level=%d cpus=%s maxHpCpus=%d guaranteedHpCpus=%d (tf=%v bf=%v)",
+					pkgID, pid, level, cpus, max, gtd, pi.TF.Supported, pi.BF.Supported)
 			} else {
 				log.Infof("pct: SST discovered: pkg=%d punit=%d level=%d cpus=%s maxHpCpus=0 (no PerfLevelInfo)",
 					pkgID, pid, level, cpus)
 			}
 			out = append(out, pctPunit{
-				PkgID:     pkgID,
-				PunitID:   pid,
-				CPUs:      cpus,
-				MaxHpCpus: max,
+				PkgID:            pkgID,
+				PunitID:          pid,
+				CPUs:             cpus,
+				MaxHpCpus:        max,
+				GuaranteedHpCpus: gtd,
 			})
 		}
 	}
@@ -147,6 +150,40 @@ func punitMaxHpCpus(pi *gosst.PerfLevelInfo) int {
 		max = len(pi.BF.HighPriorityCPUs)
 	}
 	return max
+}
+
+// punitGuaranteedHpCpus returns the count of HP CPUs that can
+// simultaneously reach the platform's highest exposed turbo
+// frequency on this punit. With SST-TF, smaller buckets unlock
+// higher turbo frequencies, so the smallest non-zero
+// HighPriorityCoreCount across buckets is the figure of merit:
+// staying at or below it lets every HP CPU sustain the top-bucket
+// frequency. When TF is unsupported, fall back to
+// len(BF.HighPriorityCPUs) -- BF guarantees those CPUs run at the
+// elevated base frequency, and there is no further headroom to
+// reserve. Returns 0 when neither feature exposes HP capacity.
+func punitGuaranteedHpCpus(pi *gosst.PerfLevelInfo) int {
+	if pi == nil {
+		return 0
+	}
+	if pi.TF.Supported {
+		min := 0
+		for _, b := range pi.TF.Buckets {
+			if b.HighPriorityCoreCount <= 0 {
+				continue
+			}
+			if min == 0 || b.HighPriorityCoreCount < min {
+				min = b.HighPriorityCoreCount
+			}
+		}
+		if min > 0 {
+			return min
+		}
+	}
+	if pi.BF.Supported {
+		return len(pi.BF.HighPriorityCPUs)
+	}
+	return 0
 }
 
 func (b *sstGoresctrl) Supported() bool { return b.plat != nil }

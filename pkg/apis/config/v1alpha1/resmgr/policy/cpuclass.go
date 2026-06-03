@@ -85,4 +85,14 @@ type CPUClass struct {
 	// nri-plugin programs in managed mode. Defaults to MaxFreq.
 	// Same caveat as PctMinFreq.
 	PctMaxFreq Frequency `json:"pctMaxFreq,omitempty"`
+	// PublishExtendedResource opts this CPU class into publishing
+	// a node-level extended resource named
+	// "cpuclass.balloons.nri.io/<class-name>" whose value reflects
+	// the number of logical CPUs that the balloons policy is
+	// currently able to route into this class on the node. The
+	// scheduler can then bin-pack/spread balloons by adding the
+	// same resource to pod requests, avoiding HP-CPU
+	// over-subscription on a single node. Has effect only when
+	// the class also carries PctPriority or PctClosID. Experimental.
+	PublishExtendedResource bool `json:"publishExtendedResource,omitempty"`
 }

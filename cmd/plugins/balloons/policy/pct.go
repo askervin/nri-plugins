@@ -276,10 +276,11 @@ func (a *pctAllocator) snapshotPunits() {
 		}
 		idx := len(a.punits)
 		a.punits = append(a.punits, pctPunit{
-			PkgID:     pu.PkgID,
-			PunitID:   pu.PunitID,
-			CPUs:      cpus,
-			MaxHpCpus: pu.MaxHpCpus,
+			PkgID:            pu.PkgID,
+			PunitID:          pu.PunitID,
+			CPUs:             cpus,
+			MaxHpCpus:        pu.MaxHpCpus,
+			GuaranteedHpCpus: pu.GuaranteedHpCpus,
 		})
 		for _, c := range cpus.UnsortedList() {
 			a.punitByCpu[c] = idx
@@ -419,6 +420,81 @@ func (a *pctAllocator) resolveHWFreq(f Frequency) uint {
 // active reports whether PCT is in effect (mode != disabled).
 func (a *pctAllocator) active() bool {
 	return a != nil && a.mode != pctModeDisabled
+}
+
+// freeClassCapacity returns the number of logical CPUs that can
+// still be allocated to className, given that 'held' lists CPUs
+// already consumed by some balloon on this node (any class).
+//
+// Managed mode:
+//   - HP class: sum over punits of
+//     min(GuaranteedHpCpus, |pu.CPUs \ held|).  HP capacity is
+//     bounded by the punit's *guaranteed top-turbo* HP count
+//     (smallest non-zero SST-TF bucket HighPriorityCoreCount, or
+//     SST-BF HP CPU count when TF is unsupported) -- not by the
+//     larger MaxHpCpus the allocator uses for steering. The
+//     scheduler-visible capacity must reflect how many CPUs can
+//     *actually* sustain the highest turbo frequency this
+//     platform exposes; otherwise HP pods get scheduled past the
+//     guaranteed-turbo headroom and fall back to lower-bucket
+//     frequencies. Punits with GuaranteedHpCpus == 0 contribute
+//     nothing.
+//   - LP (or any non-HP) class: |allowed \ held|.  In managed
+//     mode every free CPU is reachable as an LP CPU; the SST-TF
+//     bucket only affects HP eligibility.
+//
+// Assoc-only mode:
+//   - capacity(class) = |closCpus(plan.ClosID) \ held|.  The
+//     operator/BIOS pre-pins concrete CPUs to each CLOS, so only
+//     those CPUs are eligible for the class.
+//
+// Returns 0 for classes that have no PCT plan or when PCT is not
+// active. Negative intermediate counts are clamped to 0.
+func (a *pctAllocator) freeClassCapacity(className string, held cpuset.CPUSet) int {
+	if !a.active() {
+		return 0
+	}
+	plan, ok := a.classPlan[className]
+	if !ok {
+		return 0
+	}
+	allowed := a.allowed
+	if a.mode == pctModeAssocOnly {
+		eligible := a.closCpus(plan.ClosID)
+		if allowed.Size() > 0 {
+			eligible = eligible.Intersection(allowed)
+		}
+		return eligible.Difference(held).Size()
+	}
+	// Managed mode.
+	free := allowed
+	if free.Size() > 0 {
+		free = free.Difference(held)
+	}
+	if !a.classIsHighPriority(className) {
+		return free.Size()
+	}
+	total := 0
+	for _, pu := range a.punits {
+		puCpus := pu.CPUs
+		if allowed.Size() > 0 {
+			puCpus = puCpus.Intersection(allowed)
+		}
+		puFree := puCpus.Difference(held).Size()
+		gtdHp := pu.GuaranteedHpCpus
+		if gtdHp <= 0 {
+			continue
+		}
+		room := gtdHp
+		if puFree < room {
+			room = puFree
+		}
+		if room < 0 {
+			room = 0
+		}
+		total += room
+	}
+	return total
 }
 
 // useClass associates the given CPUs to the CLOS chosen for className.

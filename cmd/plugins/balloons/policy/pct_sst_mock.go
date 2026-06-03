@@ -43,9 +43,10 @@ type sstMockClos struct {
 
 // sstMockPunit seeds one punit's CPUs and HP capacity.
 type sstMockPunit struct {
-	ID        int    `json:"id"`
-	CPUs      string `json:"cpus"` // listset
-	MaxHpCpus int    `json:"max_hp_cpus,omitempty"`
+	ID               int    `json:"id"`
+	CPUs             string `json:"cpus"` // listset
+	MaxHpCpus        int    `json:"max_hp_cpus,omitempty"`
+	GuaranteedHpCpus int    `json:"guaranteed_hp_cpus,omitempty"`
 }
 
 // sstMockPackage seeds one package's worth of SST state.
@@ -256,10 +257,11 @@ func (b *sstMock) Punits() []pctPunit {
 		if len(pkg.Punits) == 0 {
 			cpus, _ := parseCPUList(pkg.CPUs)
 			out = append(out, pctPunit{
-				PkgID:     pkg.ID,
-				PunitID:   0,
-				CPUs:      cpuset.New(cpus...),
-				MaxHpCpus: pkg.MaxHpCpus,
+				PkgID:            pkg.ID,
+				PunitID:          0,
+				CPUs:             cpuset.New(cpus...),
+				MaxHpCpus:        pkg.MaxHpCpus,
+				GuaranteedHpCpus: pkg.MaxHpCpus,
 			})
 			continue
 		}
@@ -267,11 +269,16 @@ func (b *sstMock) Punits() []pctPunit {
 		sort.Slice(punits, func(i, j int) bool { return punits[i].ID < punits[j].ID })
 		for _, pu := range punits {
 			cpus, _ := parseCPUList(pu.CPUs)
+			gtd := pu.GuaranteedHpCpus
+			if gtd == 0 {
+				gtd = pu.MaxHpCpus
+			}
 			out = append(out, pctPunit{
-				PkgID:     pkg.ID,
-				PunitID:   pu.ID,
-				CPUs:      cpuset.New(cpus...),
-				MaxHpCpus: pu.MaxHpCpus,
+				PkgID:            pkg.ID,
+				PunitID:          pu.ID,
+				CPUs:             cpuset.New(cpus...),
+				MaxHpCpus:        pu.MaxHpCpus,
+				GuaranteedHpCpus: gtd,
 			})
 		}
 	}

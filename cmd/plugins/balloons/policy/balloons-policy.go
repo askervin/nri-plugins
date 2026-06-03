@@ -573,6 +573,40 @@ func (p *balloons) GetTopologyZones() []*policy.TopologyZone {
 	return zones
 }
 
+// GetExtendedResources returns the node-level extended resources
+// the balloons policy publishes for the local Node.
+func (p *balloons) GetExtendedResources() map[string]int64 {
+	out := map[string]int64{}
+	if p.cpuClasses == nil || !p.cpuClasses.PctActive() {
+		return out
+	}
+	if p.bpoptions == nil {
+		return out
+	}
+	for _, cc := range p.bpoptions.CPUClasses {
+		if cc == nil || !cc.PublishExtendedResource {
+			continue
+		}
+		if cc.PctPriority == "" && cc.PctClosID == nil {
+			log.Warnf("ignoring publishExtendedResource on non-PCT cpuClass %q", cc.Name)
+			continue
+		}
+		held := cpuset.New()
+		for _, bln := range p.balloons {
+			if p.resolveCpuClassName(bln.Def.CpuClass) == cc.Name {
+				continue
+			}
+			held = held.Union(bln.Cpus)
+		}
+		free := p.cpuClasses.PctFreeClassCapacity(cc.Name, held)
+		if free < 0 {
+			free = 0
+		}
+		out["cpuclass.balloons.nri.io/"+cc.Name] = int64(free)
+	}
+	return out
+}
+
 // balloonByContainer returns a balloon that contains a container.
 func (p *balloons) balloonByContainer(c cache.Container) *Balloon {
 	podID := c.GetPodID()
