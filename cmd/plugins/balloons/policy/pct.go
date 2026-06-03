@@ -182,15 +182,28 @@ func (a *pctAllocator) configure(classes []*CPUClass, allowed cpuset.CPUSet) err
 			return fmt.Errorf("pct: failed to enable SST-CP: %w", err)
 		}
 		// Managed mode: HP classes are exactly those with pctPriority=high.
+		// LP classes are those with pctPriority=low.
+		var lpClos *int
 		for _, cc := range classes {
 			if cc.PctPriority == "high" {
 				a.hpClasses[cc.Name] = true
 				log.Infof("pct: cpuClass %q classified HP (managed: pctPriority=high, CLOS %d)",
 					cc.Name, plans[cc.Name].ClosID)
 			} else if cc.PctPriority == "low" {
+				id := plans[cc.Name].ClosID
+				lpClos = &id
 				log.Infof("pct: cpuClass %q classified LP (managed: pctPriority=low, CLOS %d)",
 					cc.Name, plans[cc.Name].ClosID)
 			}
+		}
+		// Idle / non-PCT CPUs must fall back to the LP CLOS (when
+		// defined). Leaving them on CLOS 0 inflates the SST-TF
+		// active-HP-core count on every punit and prevents bucket-0
+		// turbo selection on punits hosting both an HP and an LP
+		// balloon.
+		if lpClos != nil {
+			a.fallbackClos = *lpClos
+			log.Infof("pct: fallback CLOS for non-PCT CPUs set to %d (LP)", a.fallbackClos)
 		}
 	} else {
 		// Assoc-only: classify HP/LP from CLOS configs programmed

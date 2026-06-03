@@ -223,7 +223,9 @@ func (b *sstGoresctrl) ConfigureClos(cfg pctClosConfig) error {
 	if b.plat == nil {
 		return fmt.Errorf("SST not supported on this host")
 	}
-	cc := gosst.ClosConfig{MinFreq: cfg.MinFreq, MaxFreq: cfg.MaxFreq}
+	// pctClosConfig stores frequencies in kHz; goresctrl ClosConfig
+	// uses MHz (max ratio-encoded 25500 MHz on mbox platforms).
+	cc := gosst.ClosConfig{MinFreq: cfg.MinFreq / 1000, MaxFreq: cfg.MaxFreq / 1000}
 	for _, pkg := range b.plat.Packages() {
 		if err := pkg.ClosConfigure(cfg.ClosID, cc); err != nil {
 			return fmt.Errorf("ClosConfigure(%d) on package %d: %w", cfg.ClosID, pkg.ID(), err)
@@ -305,14 +307,16 @@ func (b *sstGoresctrl) GetClosConfig(closID int) (pctClosCfg, bool, error) {
 		return pctClosCfg{}, false, fmt.Errorf("GetClosConfig: package %d status: %w", pkgs[0].ID(), err)
 	}
 	// Pick any punit -- per-package ConfigureClos programs all
-	// punits identically.
+	// punits identically. goresctrl reports CLOS Config.Min/MaxFreq
+	// in MHz; convert to kHz so callers always see the same unit as
+	// they passed to ConfigureClos.
 	for _, pu := range st.Punits {
 		if closID < 0 || closID >= len(pu.Clos) {
 			return pctClosCfg{}, false, nil
 		}
 		return pctClosCfg{
-			MinFreq: pu.Clos[closID].Config.MinFreq,
-			MaxFreq: pu.Clos[closID].Config.MaxFreq,
+			MinFreq: pu.Clos[closID].Config.MinFreq * 1000,
+			MaxFreq: pu.Clos[closID].Config.MaxFreq * 1000,
 		}, true, nil
 	}
 	return pctClosCfg{}, false, nil
