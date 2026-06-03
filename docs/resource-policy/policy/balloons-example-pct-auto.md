@@ -278,20 +278,54 @@ later fails with `ErrImagePull`.
 The Intel SST device (`/dev/isst_interface`) is owned by `root` and
 is normally not visible inside non-privileged Kubernetes pods. The
 balloons Helm chart exposes a `pct` value that grants the plugin
-pod the access it needs to drive PCT:
+pod the access it needs to drive PCT. PCT cpuClass support
+(`pctPriority`, `pctClosID`) is not in a released balloons chart
+yet, so install the unstable build that includes it:
 
 ```bash
-helm repo add nri-plugins https://containers.github.io/nri-plugins
-helm repo update
-helm install nri-resource-policy-balloons \
-    nri-plugins/nri-resource-policy-balloons \
-    --namespace kube-system \
+helm install \
+    --devel \
+    -n kube-system \
+    balloons \
+    oci://ghcr.io/askervin/nri-plugins/helm-charts/nri-resource-policy-balloons \
+    --version v0.12-pct2-unstable \
+    --set image.name=ghcr.io/askervin/nri-plugins/nri-resource-policy-balloons \
+    --set image.tag=v0.12-pct2-unstable \
+    --set image.pullPolicy=Always \
     --set pct=true
 ```
 
 `--set pct=true` makes the plugin pod privileged and mounts the
 host `/dev` at `/host/dev`. Enable it only on nodes where PCT
 cpuClasses are used.
+
+Once PCT support is in a released balloons chart, the equivalent
+install command will be the standard one from
+[balloons.md](balloons.md#deployment) plus `--set pct=true`:
+
+```bash
+# Stable form (use this once PCT support is released):
+helm repo add nri-plugins https://containers.github.io/nri-plugins
+helm repo update
+helm install balloons nri-plugins/nri-resource-policy-balloons \
+    --namespace kube-system \
+    --set pct=true
+```
+
+Verify the plugin pod has the privileged settings the chart's
+`pct=true` flag enables:
+
+```bash
+kubectl -n kube-system get pod \
+    -l app.kubernetes.io/name=nri-resource-policy-balloons \
+    -o jsonpath='{.items[0].spec.containers[0].securityContext}{"\n"}'
+# Expect: {"privileged":true}
+
+kubectl -n kube-system get pod \
+    -l app.kubernetes.io/name=nri-resource-policy-balloons \
+    -o jsonpath='{.items[0].spec.containers[0].volumeMounts[?(@.name=="hostdev")]}{"\n"}'
+# Expect a mount of /host/dev.
+```
 
 Now apply the policy configuration. The `BalloonsPolicy` below
 defines three cpuClasses. Two of them (`hp-pct`, `lp-pct`) use
@@ -309,11 +343,13 @@ PCT allocator:
   frequency `base`, so LP cores are capped at base while idle LP
   cores still drop to Pmin (freeing turbo budget for HP cores).
 - `default` has no PCT fields. It is the implicit fallback for
-  idle CPUs and balloons that do not specify their `cpuClass`,
-  and it inherits the hardware-default CLOS (CLOS 0). Idle CPUs
-  on CLOS 0 do not affect HP turbo budget as long as they stay
-  in deep C-states (which they do, because `default` does not
-  override `disabledCstates`).
+  idle CPUs and balloons that do not specify their `cpuClass`.
+  In managed mode, when an LP class is defined, balloons routes
+  these CPUs to the LP CLOS automatically (logged as `pct:
+  fallback CLOS for non-PCT CPUs set to N (LP)`). This is
+  essential: leaving idle CPUs on the HP CLOS would inflate the
+  SST-TF active-HP-core count per punit and prevent bucket-0
+  turbo selection on punits that also host an LP balloon.
 
 `pctMinFreq` / `pctMaxFreq` accept the same symbolic names as
 `minFreq` / `maxFreq` (`min`, `base`, `turbo`) and also explicit
@@ -340,6 +376,14 @@ so the balloon size equals what the pod requests; with no
 `hideHyperthreads` the container sees exactly the logical CPUs
 the balloon allocated.
 
+`agent.nodeResourceTopology: true` and `showContainersInNrt: true`
+make the plugin publish per-balloon and per-container CPU sets in
+the cluster's `NodeResourceTopology` (NRT) CRs. The verification
+queries in step 6 read those CRs to confirm exactly which CPUs
+each pod's container ended up pinned to. The NRT CRD must exist
+in the cluster (`kubectl get crd
+noderesourcetopologies.topology.node.k8s.io`).
+
 `availableResources` is intentionally left unset: balloons manages
 all CPUs of the node, as in the normal mode of operation. The
 `reservedResources` covers physical CPU 0 (`0` and its SMT sibling
@@ -355,9 +399,12 @@ metadata:
   name: default
   namespace: kube-system
 spec:
+  agent:
+    nodeResourceTopology: true
   reservedResources:
     cpu: cpuset:0,1,128,129
   pinCPU: true
+  showContainersInNrt: true
 
   balloonTypes:
   - name: reserved
@@ -373,7 +420,7 @@ spec:
 
   cpuClasses:
   - name: default
-    # no PCT fields => CPUs fall back to the hardware-default CLOS
+    # no PCT fields => idle/default CPUs follow the fallback CLOS
   - name: hp-pct
     pctPriority: high
     pctMinFreq: base
@@ -534,23 +581,27 @@ anything.
 # node:
 
 # SST-PP profile (must report a level that has TF supported / enabled).
-sudo intel-speed-select perf-profile info \
+sudo intel-speed-select perf-profile info 2>&1 \
     | grep -E 'current|speed-select-turbo-freq|speed-select-core-power'
 
 # SST-CP state per package (must report enable-status: enabled
 # and priority-type: 1 (ordered) -- this is what
 # PrepareManagedMode + EnableCP set).
-sudo intel-speed-select core-power info
+sudo intel-speed-select core-power info 2>&1 \
+    | grep -E 'package-|powerdomain-|enable-status|priority-type'
 
 # SST-CP CLOS bounds. CLOS 0 should show max-frequency matching
 # the "programmed CLOS 0 max=<...> kHz" line in the plugin log;
 # CLOS 3 the corresponding LP cap.
-sudo intel-speed-select core-power get-config -c 0
-sudo intel-speed-select core-power get-config -c 3
+sudo intel-speed-select core-power get-config -c 0 2>&1 \
+    | grep -E 'powerdomain-|clos-min|clos-max'
+sudo intel-speed-select core-power get-config -c 3 2>&1 \
+    | grep -E 'powerdomain-|clos-min|clos-max'
 
-# SST-TF on every punit. enable-status should be enabled (the
-# plugin called TFEnable in PrepareManagedMode).
-sudo intel-speed-select turbo-freq info
+# SST-TF enable state on every punit (plugin called TFEnable in
+# PrepareManagedMode).
+sudo intel-speed-select perf-profile info 2>&1 \
+    | grep -E 'package-|powerdomain-|speed-select-turbo-freq:'
 ```
 
 ### 6.3. Per-CPU associations
@@ -571,8 +622,8 @@ echo "LP_CPUS=$LP_CPUS"
 
 # Expected: clos:0 for every CPU in HP_CPUS, clos:3 for every CPU
 # in LP_CPUS.
-sudo intel-speed-select -c "$HP_CPUS" core-power get-assoc | grep -E 'cpu-|clos:'
-sudo intel-speed-select -c "$LP_CPUS" core-power get-assoc | grep -E 'cpu-|clos:'
+sudo intel-speed-select -c "$HP_CPUS" core-power get-assoc 2>&1 | grep -E 'cpu-|clos:'
+sudo intel-speed-select -c "$LP_CPUS" core-power get-assoc 2>&1 | grep -E 'cpu-|clos:'
 ```
 
 ### 6.4. Verify punit spread
@@ -592,6 +643,58 @@ sudo ./sst info | awk '/SST-PP/,/SST-BF/' | grep -E '^\s+[0-9]'
 
 The pinned CPUs of `pct-hp-1` .. `pct-hp-4` should each fall in a
 different `(pkg, punit)` row.
+
+### 6.5. Verify container-to-balloon-to-CPU mapping via NRT
+
+The `agent.nodeResourceTopology: true` and `showContainersInNrt:
+true` settings in step 4 make the plugin publish per-balloon and
+per-container CPU sets in the
+`noderesourcetopologies.topology.node.k8s.io` CR for the node.
+Print every balloon (zone type `balloon`) and every container
+(zone type `allocation for container`) assigned to it:
+
+```bash
+kubectl get noderesourcetopologies.topology.node.k8s.io -o json | jq -r '
+  ["NODE","BALLOON","CPUSET"],
+  (
+    .items.[] as $node
+    | $node.zones[]
+    | select(.type == "balloon")
+    | [
+        $node.metadata.name,
+        .name,
+        (.attributes[] | select(.name=="cpuset") | .value)
+      ]
+  ) | @tsv'
+
+kubectl get noderesourcetopologies.topology.node.k8s.io -o json | jq -r '
+  ["NODE","BALLOON","CONTAINER","CPUS"],
+  (
+    .items.[] as $node
+    | $node.zones[]
+    | select(.type == "allocation for container")
+    | [
+        $node.metadata.name,
+        .parent,
+        .name,
+        (.attributes[] | select(.name=="cpuset") | .value)
+      ]
+  ) | @tsv'
+```
+
+Expected:
+
+- Four `hp-bln[0]`..`hp-bln[3]` zones, each with a 2-CPU set on a
+  distinct punit, and the matching `pct-hp-N/bench` container
+  pinned to that same set.
+- One `lp-bln[0]` zone with the 8-CPU set, and `pct-lp/bench`
+  pinned to the same set.
+- A `reserved[0]` zone with cpuset `0,1,128,129`.
+
+The CPU sets here must match the `cpus=` value printed by the
+benchmark inside each pod (step 7), the `clos:0` / `clos:3`
+reported by `core-power get-assoc` (step 6.3), and the punit
+mapping (step 6.4).
 
 ## 7. Observe performance
 
@@ -706,32 +809,81 @@ Record your own numbers:
 
 ## 9. Cleanup
 
+### 9.1. Kubernetes side
+
 ```bash
 kubectl delete -f pod-hp-1.yaml -f pod-hp-2.yaml -f pod-hp-3.yaml \
     -f pod-hp-4.yaml -f pod-lp.yaml -f pod-hp-on-lp.yaml --ignore-not-found
 kubectl delete -f balloons-pct-managed.yaml --ignore-not-found
-helm uninstall nri-resource-policy-balloons -n kube-system
+helm uninstall balloons -n kube-system
 ```
 
-In managed mode the plugin's `Shutdown()` restores SST defaults
-automatically on graceful exit (CPReset → TFDisable → CPDisable
-per package), so no manual `intel-speed-select` teardown is
-required. Verify on the node:
+### 9.2. Restore SST defaults on the node
+
+In managed mode the plugin's `Shutdown()` will, on a graceful
+exit, run `CPReset → TFDisable → CPDisable` per package and
+return the platform to its initial SST state. In practice
+`helm uninstall` may not give the daemonset enough termination
+grace for that hook to complete, so always verify and, if SST
+is still enabled, run the teardown explicitly:
 
 ```bash
 # node:
-sudo intel-speed-select core-power info | grep -E 'enable-status'
-sudo intel-speed-select turbo-freq info | grep -E 'enable-status'
-```
+sudo intel-speed-select core-power info 2>&1 \
+    | grep -E 'enable-status' | sort -u
+sudo intel-speed-select perf-profile info 2>&1 \
+    | grep -E 'speed-select-turbo-freq:' | sort -u
 
-Both should report `disabled`. If the plugin pod was killed
-ungracefully (SIGKILL, node crash) SST state may persist; reset
-it with:
-
-```bash
-# node:
+# If any value above is "enabled", reset:
 sudo intel-speed-select turbo-freq disable -a
 sudo intel-speed-select core-power disable
+
+# Re-verify (both expected to be disabled):
+sudo intel-speed-select core-power info 2>&1 \
+    | grep -E 'enable-status' | sort -u
+# Expect (both lines):
+#   clos-enable-status:disabled
+#   enable-status:disabled
+sudo intel-speed-select perf-profile info 2>&1 \
+    | grep -E 'speed-select-turbo-freq:' | sort -u
+# Expect: speed-select-turbo-freq:disabled
+```
+
+### 9.3. Restore `cpufreq` defaults on the node
+
+The managed-mode plugin does not write `scaling_min_freq` /
+`scaling_max_freq`, but earlier workloads or kernel modules might
+have. Reset them to the hardware limits as a precaution:
+
+```bash
+# node:
+for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+    base=${f%scaling_max_freq}cpuinfo_max_freq
+    sudo tee "$f" < "$base" > /dev/null
+done
+for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_min_freq; do
+    base=${f%scaling_min_freq}cpuinfo_min_freq
+    sudo tee "$f" < "$base" > /dev/null
+done
+
+# Verify (should print exactly the hardware min and the hardware
+# max in kHz):
+for i in $(seq 0 $(($(nproc) - 1))); do
+    cat /sys/devices/system/cpu/cpu$i/cpufreq/scaling_max_freq \
+        /sys/devices/system/cpu/cpu$i/cpufreq/scaling_min_freq
+done | sort -u
+```
+
+### 9.4. Remove leftover files
+
+```bash
+rm -f balloons-pct-managed.yaml \
+      pod-hp-1.yaml pod-hp-2.yaml pod-hp-3.yaml pod-hp-4.yaml \
+      pod-lp.yaml pod-hp-on-lp.yaml
+# Optional:
+rm -rf pct-reporter
+# Optional, on the node, free disk used by the demo image:
+# sudo crictl rmi localhost/pct-reporter:demo
 ```
 
 ## 10. Troubleshooting
