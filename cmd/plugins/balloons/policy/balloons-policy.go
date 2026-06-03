@@ -1674,6 +1674,30 @@ func (p *balloons) validateConfig(bpoptions *BalloonsOptions) error {
 			}
 			pctAssocOnly[cc.Name] = *cc.PctClosID
 		}
+		// pctMinFreq/pctMaxFreq only take effect in managed
+		// mode (pctPriority); they program the SST CLOS that
+		// balloons owns. With pctClosID the CLOS is
+		// pre-programmed by intel-speed-select/BIOS, and
+		// without any PCT field the cpuClass is not a PCT
+		// class at all. In both cases these fields are silent
+		// no-ops; reject them so users don't tweak values that
+		// have no effect.
+		if cc.PctMinFreq != 0 || cc.PctMaxFreq != 0 {
+			switch {
+			case cc.PctClosID != nil:
+				return balloonsError("cpuClass %q: pctMinFreq/pctMaxFreq require pctPriority (managed mode); they are incompatible with pctClosID, where the SST CLOS is pre-programmed by intel-speed-select/BIOS", cc.Name)
+			case cc.PctPriority == "":
+				return balloonsError("cpuClass %q: pctMinFreq/pctMaxFreq require pctPriority (managed mode); the cpuClass is currently not a PCT class", cc.Name)
+			}
+		}
+		// publishExtendedResource only makes sense for PCT
+		// classes -- the agent computes capacity from a PCT
+		// plan. Reject it on non-PCT classes so users don't
+		// expect a node-level resource that will never be
+		// published.
+		if cc.PublishExtendedResource && cc.PctPriority == "" && cc.PctClosID == nil {
+			return balloonsError("cpuClass %q: publishExtendedResource requires the cpuClass to be a PCT class (set pctPriority or pctClosID)", cc.Name)
+		}
 	}
 	if len(pctManaged) > 0 && len(pctAssocOnly) > 0 {
 		return balloonsError("mixing managed (pctPriority) and assoc-only (pctClosID) PCT cpuClasses is not allowed: managed=%v, assocOnly=%v", pctManaged, pctAssocOnly)
