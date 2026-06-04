@@ -182,28 +182,22 @@ CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
 wait-assert-log-contains 'associated cpus .* to CLOS 3' "LP2 pod CPUs not associated to CLOS 3"
 report allowed
 
-# T1.4: per-class idle reassociation. Delete the LP pod (pod1)
-# FIRST -- its CPUs are on CLOS 3 and must be reassociated to
-# CLOS 0 (the idleCpuClass "default-class" has no PCT plan, so
-# managed mode falls back to CLOS 0). Other CLOS 3 state (the
-# pct-lp2-bln balloon) must NOT be disturbed.
+# T1.4: per-class idle reassociation. Delete the LP pod (pod1).
+# Its CPUs are reassociated to the LP fallback CLOS (3) because
+# the idleCpuClass "default-class" has no PCT plan, and managed
+# mode must NOT silently park idle CPUs on the HP CLOS 0 (which
+# would consume limited Priority Core Turbo capacity).
 pct-log 500
-prev_to_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
 prev_to_clos3=$(grep -c 'to CLOS 3' <<< "$COMMAND_OUTPUT")
 vm-command "kubectl delete pod pod1 --now"
-wait-assert-log-grew 'to CLOS 0' "$prev_to_clos0" "deleting LP pod did not reassociate its CPUs to CLOS 0"
-# No new "to CLOS 3" line: pct-lp2-bln's CPUs are unchanged.
-pct-log 500
-cur_to_clos3=$(grep -c 'to CLOS 3' <<< "$COMMAND_OUTPUT")
-if [ "$cur_to_clos3" -ne "$prev_to_clos3" ]; then
-    command-error "deleting LP pod incorrectly triggered new CLOS 3 associations (was $prev_to_clos3, now $cur_to_clos3)"
-fi
+wait-assert-log-grew 'to CLOS 3' "$prev_to_clos3" "deleting LP pod did not reassociate its CPUs to LP fallback CLOS 3"
 
-# Now delete the rest -- everything ends up on CLOS 0.
+# Now delete the rest -- all freed CPUs end up on the LP
+# fallback CLOS 3 for the same reason.
 pct-log 500
-prev_to_clos0=$(grep -c 'to CLOS 0' <<< "$COMMAND_OUTPUT")
+prev_to_clos3=$(grep -c 'to CLOS 3' <<< "$COMMAND_OUTPUT")
 vm-command "kubectl delete pods --all --now"
-wait-assert-log-grew 'to CLOS 0' "$prev_to_clos0" "after deleting remaining pods CPUs were not reassociated to CLOS 0"
+wait-assert-log-grew 'to CLOS 3' "$prev_to_clos3" "after deleting remaining pods CPUs were not reassociated to LP fallback CLOS 3"
 
 helm-terminate
 

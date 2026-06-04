@@ -28,6 +28,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/kubernetes"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
+	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass"
 	"github.com/containers/nri-plugins/pkg/resmgr/events"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	policy "github.com/containers/nri-plugins/pkg/resmgr/policy"
@@ -90,7 +91,7 @@ type balloons struct {
 
 	cpuAllocator cpuallocator.CPUAllocator    // CPU allocator used by the policy
 	memAllocator *libmem.Allocator            // memory allocator used by the policy
-	cpuClasses   *cpuClassHandler             // CPU class handler (cpufreq + PCT internals)
+	cpuClasses   *cpuclass.Handler            // CPU class handler (cpufreq + PCT internals)
 	loadVirtDev  map[string]*loadClassVirtDev // map LoadClasses to virtual devices
 }
 
@@ -252,6 +253,7 @@ func (p *balloons) Start() error {
 func (p *balloons) Sync(add []cache.Container, del []cache.Container) error {
 	p.BlockMeters()
 	defer p.UnblockMeters()
+	defer p.commitCpuClasses()
 
 	log.Debugf("synchronizing state...")
 	for _, c := range del {
@@ -275,6 +277,7 @@ func (p *balloons) Sync(add []cache.Container, del []cache.Container) error {
 func (p *balloons) AllocateResources(c cache.Container) error {
 	p.BlockMeters()
 	defer p.UnblockMeters()
+	defer p.commitCpuClasses()
 
 	if c.PreserveCpuResources() {
 		log.Infof("not handling resources of container %s, preserving CPUs %q and memory %q", c.PrettyName(), c.GetCpusetCpus(), c.GetCpusetMems())
@@ -328,6 +331,7 @@ func (p *balloons) AllocateResources(c cache.Container) error {
 func (p *balloons) ReleaseResources(c cache.Container) error {
 	p.BlockMeters()
 	defer p.UnblockMeters()
+	defer p.commitCpuClasses()
 
 	log.Debugf("releasing container %s...", c.PrettyName())
 	if bln := p.balloonByContainer(c); bln != nil {
@@ -361,6 +365,7 @@ func (p *balloons) ReleaseResources(c cache.Container) error {
 func (p *balloons) UpdateResources(c cache.Container) error {
 	p.BlockMeters()
 	defer p.UnblockMeters()
+	defer p.commitCpuClasses()
 
 	log.Debugf("(not) updating container %s...", c.PrettyName())
 	return nil
@@ -861,6 +866,21 @@ func (p *balloons) resetCpuClass() error {
 			p.allowed, idle, p.reserved)
 	}
 	return nil
+}
+
+// commitCpuClasses flushes any pending cpufreq, cpuidle and uncore
+// sysfs writes accumulated by previous UseClass / Configure calls
+// since the last commit. Called from the deferred path of the
+// public balloons lifecycle entry points so multiple class
+// reassignments within one NRI request batch coalesce into a
+// minimal set of writes.
+func (p *balloons) commitCpuClasses() {
+	if p.cpuClasses == nil {
+		return
+	}
+	if err := p.cpuClasses.Commit(); err != nil {
+		log.Warnf("cpu class commit produced an error: %v", err)
+	}
 }
 
 // useCpuClass configures CPUs of a balloon by delegating to the CPU
@@ -1503,6 +1523,7 @@ func changesCpuClasses(opts0, opts1 *BalloonsOptions) bool {
 func (p *balloons) Reconfigure(newCfg interface{}) error {
 	p.BlockMeters()
 	defer p.UnblockMeters()
+	defer p.commitCpuClasses()
 
 	balloonsOptions, ok := newCfg.(*BalloonsOptions)
 	if !ok {
@@ -1524,7 +1545,7 @@ func (p *balloons) Reconfigure(newCfg interface{}) error {
 			p.bpoptions.IdleCpuClass = newBalloonsOptions.IdleCpuClass
 			p.bpoptions.TurboDomain = newBalloonsOptions.TurboDomain
 			if p.cpuClasses != nil {
-				if err := p.cpuClasses.Configure(ConfigSpec{
+				if err := p.cpuClasses.Configure(cpuclass.ConfigSpec{
 					Classes:     p.bpoptions.CPUClasses,
 					TurboDomain: p.bpoptions.TurboDomain,
 					Allowed:     p.allowed,
@@ -1845,7 +1866,7 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	// Construct the CPU class handler that fronts both cpufreq and
 	// PCT internals.
 	if p.cpuClasses == nil {
-		h, err := newCpuClassHandler(p.options.System, p.cch)
+		h, err := cpuclass.New(p.options.System)
 		if err != nil {
 			return balloonsError("failed to create CPU class handler: %w", err)
 		}
@@ -1862,7 +1883,7 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	// Configure the CPU class handler. Done after validation so we
 	// don't program platform state (e.g. SST CLOSes) if the
 	// user-facing config is malformed.
-	if err := p.cpuClasses.Configure(ConfigSpec{
+	if err := p.cpuClasses.Configure(cpuclass.ConfigSpec{
 		Classes:     bpoptions.CPUClasses,
 		TurboDomain: bpoptions.TurboDomain,
 		Allowed:     p.allowed,
@@ -2092,7 +2113,7 @@ func (p *balloons) applyCpuClassHints(opts *cpuTreeAllocatorOptions, cpuClass st
 	if p.cpuClasses == nil || opts == nil {
 		return
 	}
-	mergeCpuClassHints(opts, p.cpuClasses, AllocationIntent{
+	mergeCpuClassHints(opts, p.cpuClasses, cpuclass.AllocationIntent{
 		ClassName:      cpuClass,
 		CurrentCpus:    currentCpus,
 		FreeCpus:       p.freeCpus,
@@ -2100,11 +2121,18 @@ func (p *balloons) applyCpuClassHints(opts *cpuTreeAllocatorOptions, cpuClass st
 	})
 }
 
+// cpuClassHints is the minimum surface of cpuclass.Handler that
+// policy code relies on for placement hints. It exists so tests
+// can substitute a fake provider.
+type cpuClassHints interface {
+	Hints(cpuclass.AllocationIntent) cpuclass.AllocationHints
+}
+
 // mergeCpuClassHints queries provider for placement hints described
 // by intent and merges them into opts. It first removes any cpuClass
 // hint entries left in opts from a previous allocation round so
 // hints from this round are the only ones in effect.
-func mergeCpuClassHints(opts *cpuTreeAllocatorOptions, provider cpuClassHints, intent AllocationIntent) {
+func mergeCpuClassHints(opts *cpuTreeAllocatorOptions, provider cpuClassHints, intent cpuclass.AllocationIntent) {
 	if opts == nil || provider == nil {
 		return
 	}

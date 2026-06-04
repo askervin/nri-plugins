@@ -15,12 +15,16 @@
 package v1alpha1
 
 import (
+	"sort"
+
 	cpucfg "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control/cpu"
 	policyapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy"
+	logger "github.com/containers/nri-plugins/pkg/log"
 )
 
 var (
-	_ ResmgrConfig = &BalloonsPolicy{}
+	_      ResmgrConfig = &BalloonsPolicy{}
+	bplog               = logger.NewLogger("config-v1alpha1")
 )
 
 func (c *BalloonsPolicy) AgentConfig() *AgentConfig {
@@ -37,50 +41,103 @@ func (c *BalloonsPolicy) CommonConfig() *CommonConfig {
 	if c == nil {
 		return nil
 	}
-	ctrl := c.Spec.Control
-	// Inject user-friendly cpuClasses into control.cpu.classes so
-	// the CPU controller sees them at startup. CPUClasses entries
-	// take precedence over identically-named control.cpu.classes.
-	// Symbolic frequencies (min, base, turbo) are passed as 0 here;
-	// the balloons policy resolves them at runtime using sysfs data.
-	if len(c.Spec.CPUClasses) > 0 {
-		if ctrl.CPU.Classes == nil {
-			ctrl.CPU.Classes = make(map[string]cpucfg.Class)
-		}
-		for _, cc := range c.Spec.CPUClasses {
-			ctrl.CPU.Classes[cc.Name] = cpucfg.Class{
-				MinFreq:                     freqKHzOrZero(cc.MinFreq),
-				MaxFreq:                     freqKHzOrZero(cc.MaxFreq),
-				EnergyPerformancePreference: cc.EnergyPerformancePreference,
-				UncoreMinFreq:               freqKHzOrZero(cc.UncoreMinFreq),
-				UncoreMaxFreq:               freqKHzOrZero(cc.UncoreMaxFreq),
-				FreqGovernor:                cc.FreqGovernor,
-				DisabledCstates:             cc.DisabledCstates,
-			}
-		}
-	}
 	return &CommonConfig{
-		Control:         ctrl,
+		Control:         c.Spec.Control,
 		Log:             c.Spec.Log,
 		Instrumentation: c.Spec.Instrumentation,
 	}
 }
 
-// freqKHzOrZero returns the kHz value of a frequency, or 0 if it is
-// symbolic (min/base/turbo). Symbolic frequencies are resolved later
-// by the policy using actual platform sysfs data.
-func freqKHzOrZero(f policyapi.Frequency) uint {
-	if f.IsSymbolic() {
-		return 0
-	}
-	return f.KHz()
-}
-
+// PolicyConfig returns the balloons-specific configuration handed to
+// the policy. Before returning, any legacy control.cpu.classes
+// entries are folded into Spec.Config.CPUClasses (without overriding
+// entries with matching names). The legacy CPU controller is no
+// longer used by the balloons policy; this reverse merge preserves
+// backwards compatibility so existing configurations keep working
+// while users migrate to the cpuClasses syntax.
 func (c *BalloonsPolicy) PolicyConfig() interface{} {
 	if c == nil {
 		return nil
 	}
+	mergeLegacyCpuClasses(&c.Spec)
 	return &c.Spec.Config
+}
+
+// mergeLegacyCpuClasses appends synthetic CPUClass entries derived
+// from spec.Control.CPU.Classes for names that do not already exist
+// in spec.Config.CPUClasses. Conflicting names log a single warning
+// per name. Idempotent: repeated calls do not add duplicate entries
+// and do not warn again for the same conflict.
+func mergeLegacyCpuClasses(spec *BalloonsPolicySpec) {
+	legacy := spec.Control.CPU.Classes
+	if len(legacy) == 0 {
+		return
+	}
+	existing := map[string]*policyapi.CPUClass{}
+	for _, cc := range spec.Config.CPUClasses {
+		existing[cc.Name] = cc
+	}
+	// Sort the legacy class names so warning order is deterministic.
+	names := make([]string, 0, len(legacy))
+	for name := range legacy {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	added := []string{}
+	for _, name := range names {
+		cc := legacy[name]
+		if prev, ok := existing[name]; ok {
+			// Skip silently when the explicit entry already
+			// has the exact values converted from the legacy
+			// entry. That happens when a prior PolicyConfig()
+			// call already merged this spec.
+			if cpuClassMatchesLegacy(prev, cc) {
+				continue
+			}
+			bplog.Warn("control.cpu.classes entry %q overridden by cpuClasses entry; remove the legacy entry to silence this warning", name)
+			continue
+		}
+		synth := &policyapi.CPUClass{
+			Name:                        name,
+			MinFreq:                     policyapi.Frequency(cc.MinFreq),
+			MaxFreq:                     policyapi.Frequency(cc.MaxFreq),
+			EnergyPerformancePreference: cc.EnergyPerformancePreference,
+			UncoreMinFreq:               policyapi.Frequency(cc.UncoreMinFreq),
+			UncoreMaxFreq:               policyapi.Frequency(cc.UncoreMaxFreq),
+			FreqGovernor:                cc.FreqGovernor,
+			DisabledCstates:             append([]string(nil), cc.DisabledCstates...),
+		}
+		spec.Config.CPUClasses = append(spec.Config.CPUClasses, synth)
+		existing[name] = synth
+		added = append(added, name)
+	}
+	if len(added) > 0 {
+		bplog.Warn("control.cpu.classes is deprecated; converted to cpuClasses: %v", added)
+	}
+}
+
+// cpuClassMatchesLegacy reports whether cc has the exact field
+// values that the reverse converter would produce for legacy. Used
+// to suppress spurious "override" warnings when the same spec is
+// processed more than once.
+func cpuClassMatchesLegacy(cc *policyapi.CPUClass, legacy cpucfg.Class) bool {
+	if cc.MinFreq != policyapi.Frequency(legacy.MinFreq) ||
+		cc.MaxFreq != policyapi.Frequency(legacy.MaxFreq) ||
+		cc.EnergyPerformancePreference != legacy.EnergyPerformancePreference ||
+		cc.UncoreMinFreq != policyapi.Frequency(legacy.UncoreMinFreq) ||
+		cc.UncoreMaxFreq != policyapi.Frequency(legacy.UncoreMaxFreq) ||
+		cc.FreqGovernor != legacy.FreqGovernor {
+		return false
+	}
+	if len(cc.DisabledCstates) != len(legacy.DisabledCstates) {
+		return false
+	}
+	for i := range cc.DisabledCstates {
+		if cc.DisabledCstates[i] != legacy.DisabledCstates[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *BalloonsPolicy) Validate() error {

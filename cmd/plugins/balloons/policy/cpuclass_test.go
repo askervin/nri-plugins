@@ -18,18 +18,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
-// fakeHintProvider returns a scripted sequence of AllocationHints,
+// fakeHintProvider returns a scripted sequence of cpuclass.AllocationHints,
 // one per Hints() call. After the script is exhausted it keeps
 // returning the last entry.
 type fakeHintProvider struct {
-	script []AllocationHints
+	script []cpuclass.AllocationHints
 	calls  int
 }
 
-func (f *fakeHintProvider) Hints(_ AllocationIntent) AllocationHints {
+func (f *fakeHintProvider) Hints(_ cpuclass.AllocationIntent) cpuclass.AllocationHints {
 	i := f.calls
 	if i >= len(f.script) {
 		i = len(f.script) - 1
@@ -70,26 +71,26 @@ func TestMergeCpuClassHintsNoAccumulation(t *testing.T) {
 	cpusAvoid := cpuset.MustParse("0-1")
 
 	provider := &fakeHintProvider{
-		script: []AllocationHints{
+		script: []cpuclass.AllocationHints{
 			// Round 1: one prefer (A), one avoid.
 			{
-				Prefer: []CpuPreference{{Name: "hp-reserve", Cpus: cpusA}},
-				Avoid:  []CpuPreference{{Name: "lp-clos", Cpus: cpusAvoid}},
+				Prefer: []cpuclass.CpuPreference{{Name: "hp-reserve", Cpus: cpusA}},
+				Avoid:  []cpuclass.CpuPreference{{Name: "lp-clos", Cpus: cpusAvoid}},
 			},
 			// Round 2: two prefers (A, B) - different name at index 1
 			// so the slot-0 name stays stable, slot-1 is new.
 			{
-				Prefer: []CpuPreference{
+				Prefer: []cpuclass.CpuPreference{
 					{Name: "hp-reserve", Cpus: cpusA},
 					{Name: "extra", Cpus: cpusB},
 				},
-				Avoid: []CpuPreference{{Name: "lp-clos", Cpus: cpusAvoid}},
+				Avoid: []cpuclass.CpuPreference{{Name: "lp-clos", Cpus: cpusAvoid}},
 			},
 			// Round 3: name at slot 0 CHANGES to C - without proper
 			// cleanup the stale "__cls_pref_0_hp-reserve" map key from
 			// rounds 1+2 would survive into round 3.
 			{
-				Prefer: []CpuPreference{{Name: "third", Cpus: cpusC}},
+				Prefer: []cpuclass.CpuPreference{{Name: "third", Cpus: cpusC}},
 				Avoid:  nil,
 			},
 		},
@@ -102,7 +103,7 @@ func TestMergeCpuClassHintsNoAccumulation(t *testing.T) {
 	}
 
 	for round := 1; round <= 3; round++ {
-		mergeCpuClassHints(opts, provider, AllocationIntent{})
+		mergeCpuClassHints(opts, provider, cpuclass.AllocationIntent{})
 
 		gotPrefDevs := countHintDevs(opts.preferCloseToDevices)
 		gotFarDevs := countHintDevs(opts.preferFarFromDevices)
