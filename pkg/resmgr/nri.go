@@ -1077,9 +1077,6 @@ func (p *nriPlugin) runPostAllocateHooks(method string, created cache.Container)
 				c.PrettyName(), c.GetState())
 		}
 	}
-	if err := m.control.RunCommit(); err != nil {
-		nri.Warnf("%s: controller commit failed: %v", method, err)
-	}
 	return nil
 }
 
@@ -1088,9 +1085,6 @@ func (p *nriPlugin) runPostStartHooks(method string, c cache.Container) error {
 	m := p.resmgr
 	if err := m.control.RunPostStartHooks(c); err != nil {
 		nri.Errorf("%s: post-start hook failed for %s: %v", method, c.PrettyName(), err)
-	}
-	if err := m.control.RunCommit(); err != nil {
-		nri.Warnf("%s: controller commit failed: %v", method, err)
 	}
 	return nil
 }
@@ -1117,9 +1111,6 @@ func (p *nriPlugin) runPostReleaseHooks(method string, released ...cache.Contain
 			nri.Warnf("%s: skipping pending container %s (in state %v)",
 				method, c.PrettyName(), c.GetState())
 		}
-	}
-	if err := m.control.RunCommit(); err != nil {
-		nri.Warnf("%s: controller commit failed: %v", method, err)
 	}
 	return nil
 }

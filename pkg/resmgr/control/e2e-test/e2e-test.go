@@ -122,11 +122,6 @@ func (ctl *testctl) PostStopHook(c cache.Container) error {
 	return nil
 }
 
-// Commit is a no-op for the e2e test controller.
-func (ctl *testctl) Commit() error {
-	return nil
-}
-
 // dumpE2ETestControllerState prints internal info used by e2e testing script.
 func (ctl *testctl) dumpE2ETestControllerState(w http.ResponseWriter, req *http.Request) {
 	log.Debugf("output E2E test controller state...")

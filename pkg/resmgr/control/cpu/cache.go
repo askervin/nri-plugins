@@ -32,10 +32,7 @@ func getClassAssignments(c cache.Cache) *cpuClassAssignments {
 	a := &cpuClassAssignments{}
 
 	if !c.GetPolicyEntry(cacheKeyCPUAssignments, a) {
-		// Expected on a fresh policy startup: the cache has no
-		// prior CPU class assignments. Callers create entries
-		// via Assign() and persist them via setClassAssignments.
-		log.Debugf("no cached state of CPU class assignments found")
+		log.Errorf("no cached state of CPU class assignments found")
 	}
 
 	return a

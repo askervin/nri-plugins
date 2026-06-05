@@ -285,9 +285,6 @@ func (m *resmgr) startControllers() error {
 		return resmgrError("failed to start resource controllers: %v", err)
 	}
 
-	if err := m.control.RunCommit(); err != nil {
-		log.Warnf("failed to commit controller state with initial configuration: %v", err)
-	}
 
 	return nil
 }
@@ -345,9 +342,6 @@ func (m *resmgr) reconfigure(cfg cfgapi.ResmgrConfig) error {
 			log.Warnf("failed to apply configuration to containers: %v", err)
 		}
 
-		if err := m.control.RunCommit(); err != nil {
-			log.Warnf("failed to commit controller state after reconfigure: %v", err)
-		}
 
 		return nil
 	}

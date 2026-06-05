@@ -45,25 +45,6 @@ type cpuctl struct {
 	cstates       *cstates.Cstates // C-states handler
 	uncoreEnabled bool             // whether we need to care about uncore
 	started       bool
-	lastFreq      map[int]cpufreqState // cpu id -> last successfully written cpufreq values
-	// dirtyCPUs accumulates CPUs whose desired class definition or
-	// class assignment has changed since the last Commit(). Writes to
-	// sysfs are deferred until Commit() so that intermediate bursts
-	// of Assign()/SetClass() calls within a single policy decision
-	// do not produce sequences of redundant or temporarily-wrong
-	// sysfs writes.
-	dirtyCPUs map[int]bool
-}
-
-// cpufreqState tracks the last successfully written cpufreq values
-// for a single CPU. Used to skip redundant sysfs writes.
-type cpufreqState struct {
-	min      uint
-	max      uint
-	governor string
-	hasMin   bool
-	hasMax   bool
-	hasGov   bool
 }
 
 type Class = cfgcpu.Class
@@ -143,171 +124,35 @@ func (ctl *cpuctl) PostStopHook(c cache.Container) error {
 	return nil
 }
 
-// markCPUsDirty records the given CPUs as needing a sysfs re-check at
-// the next Commit().
-func (ctl *cpuctl) markCPUsDirty(cpus ...int) {
-	if ctl.dirtyCPUs == nil {
-		ctl.dirtyCPUs = make(map[int]bool, len(cpus))
-	}
-	for _, c := range cpus {
-		ctl.dirtyCPUs[c] = true
-	}
-}
-
-// markClassDirty records every CPU currently assigned to the given
-// class as dirty. Used when SetClass changes a class definition that
-// already has CPUs assigned to it.
-func (ctl *cpuctl) markClassDirty(class string) {
-	if ctl.cache == nil {
-		return
-	}
-	assignments := *getClassAssignments(ctl.cache)
-	cpus, ok := assignments[class]
-	if !ok {
-		return
-	}
-	ctl.markCPUsDirty(cpus.Members()...)
-}
-
-// Commit flushes deferred per-CPU sysfs updates accumulated since the
-// previous Commit. It is the choke point that converts the desired
-// state (class definitions in ctl.classes + cached class assignments)
-// into the minimal set of sysfs writes needed to reach it. Per-CPU
-// writes are still deduplicated against ctl.lastFreq, so even if a
-// CPU is marked dirty by multiple intermediate Assign/SetClass calls
-// the final value is written at most once.
-func (ctl *cpuctl) Commit() error {
-	if !ctl.started || len(ctl.dirtyCPUs) == 0 {
-		return nil
-	}
-
-	assignments := *getClassAssignments(ctl.cache)
-
-	// Group dirty CPUs by their currently assigned class. CPUs that
-	// no longer appear in any class assignment are skipped: there is
-	// no class definition to enforce on them.
-	cpuClass := make(map[int]string, len(ctl.dirtyCPUs))
-	for class, cpus := range assignments {
-		for id := range cpus {
-			if ctl.dirtyCPUs[int(id)] {
-				cpuClass[int(id)] = class
-			}
-		}
-	}
-
-	byClass := make(map[string][]int, len(ctl.classes))
-	for cpu, class := range cpuClass {
-		byClass[class] = append(byClass[class], cpu)
-	}
-
-	var firstErr error
-	for class, cpus := range byClass {
-		if _, ok := ctl.classes[class]; !ok {
-			log.Warnf("commit: class %q (cpus %v) missing from configuration", class, cpus)
-			continue
-		}
-		if err := ctl.enforceCpufreq(class, cpus...); err != nil {
-			log.Errorf("commit: cpufreq enforcement failed for class %q: %v", class, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-		if err := ctl.enforceCstates(class, cpus...); err != nil {
-			log.Errorf("commit: cstate enforcement failed for class %q: %v", class, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-
-	// Uncore is per-die; recompute over all dirty CPUs in one pass.
-	affectedCPUs := make([]int, 0, len(ctl.dirtyCPUs))
-	for cpu := range ctl.dirtyCPUs {
-		affectedCPUs = append(affectedCPUs, cpu)
-	}
-	if err := ctl.enforceUncore(assignments, affectedCPUs...); err != nil {
-		log.Errorf("commit: uncore enforcement failed: %v", err)
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	// Clear the dirty set unconditionally. enforceCpufreq has its own
-	// per-property lastFreq update logic that avoids re-trying writes
-	// that keep failing for unchanged desired values.
-	ctl.dirtyCPUs = nil
-
-	return firstErr
-}
-
-// enforceCpufreq enforces a class-specific cpufreq configuration to a cpuset.
-// Per-CPU sysfs writes are skipped when the desired value matches the
-// last successfully written value (tracked in ctl.lastFreq). A write
-// failure on one CPU/property is logged but does not stop processing
-// of remaining CPUs/properties. The first error encountered is
-// returned to the caller.
+// enforceCpufreq enforces a class-specific cpufreq configuration to a cpuset
 func (ctl *cpuctl) enforceCpufreq(class string, cpus ...int) error {
 	c, ok := ctl.classes[class]
 	if !ok {
 		return fmt.Errorf("non-existent cpu class %q", class)
 	}
-	if ctl.lastFreq == nil {
-		ctl.lastFreq = make(map[int]cpufreqState)
+
+	if min := int(c.MinFreq); min > 0 {
+		log.Debugf("enforcing cpu frequency min %d from class %q on %v", min, class, cpus)
+		if err := utils.SetCPUsScalingMinFreq(cpus, min); err != nil {
+			return fmt.Errorf("cannot set min freq %d: %w", min, err)
+		}
 	}
 
-	min := uint(c.MinFreq)
-	max := uint(c.MaxFreq)
-	governor := c.FreqGovernor
-
-	var firstErr error
-	for _, cpu := range cpus {
-		state := ctl.lastFreq[cpu]
-
-		if min > 0 && (!state.hasMin || state.min != min) {
-			log.Debugf("enforcing cpu frequency min %d from class %q on cpu %d", min, class, cpu)
-			if err := utils.SetCPUScalingMinFreq(utils.ID(cpu), int(min)); err != nil {
-				log.Errorf("cannot set min freq %d on cpu %d: %v", min, cpu, err)
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-			// Update the cache even on failure: the desired value
-			// is unchanged so retrying on every Assign would just
-			// spam logs without ever succeeding. A subsequent
-			// configure() resets lastFreq so a real configuration
-			// change still triggers a fresh attempt.
-			state.min = min
-			state.hasMin = true
+	if max := int(c.MaxFreq); max > 0 {
+		log.Debugf("enforcing cpu frequency max %d from class %q on %v", max, class, cpus)
+		if err := utils.SetCPUsScalingMaxFreq(cpus, max); err != nil {
+			return fmt.Errorf("cannot set max freq %d: %w", max, err)
 		}
-
-		if max > 0 && (!state.hasMax || state.max != max) {
-			log.Debugf("enforcing cpu frequency max %d from class %q on cpu %d", max, class, cpu)
-			if err := utils.SetCPUScalingMaxFreq(utils.ID(cpu), int(max)); err != nil {
-				log.Errorf("cannot set max freq %d on cpu %d: %v", max, cpu, err)
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-			state.max = max
-			state.hasMax = true
-		}
-
-		if governor != "" && (!state.hasGov || state.governor != governor) {
-			log.Debugf("enforcing cpu frequency governor %q from class %q on cpu %d", governor, class, cpu)
-			if err := utils.SetCPUScalingGovernor(utils.ID(cpu), governor); err != nil {
-				log.Errorf("cannot set cpufreq governor %q on cpu %d: %v", governor, cpu, err)
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-			state.governor = governor
-			state.hasGov = true
-		}
-
-		ctl.lastFreq[cpu] = state
 	}
 
-	return firstErr
+	if governor := c.FreqGovernor; governor != "" {
+		log.Debugf("enforcing cpu frequency governor %q from class %q on %v", governor, class, cpus)
+		if err := utils.SetScalingGovernorForCPUs(cpus, governor); err != nil {
+			return fmt.Errorf("cannot set cpufreq governor %q: %w", governor, err)
+		}
+	}
+
+	return nil
 }
 
 // enforceCstates enforces a class-specific C-state configuration to a cpuset
@@ -431,37 +276,11 @@ func idSetIntersects(a, b utils.IDSet) bool {
 }
 
 func (ctl *cpuctl) configure(cfg *cfgapi.Config) error {
-	// Preserve any class definitions that were pushed via SetClass
-	// before the controller started. The balloons policy uses
-	// SetClass to publish CPU class definitions with proper kHz
-	// values resolved from symbolic frequencies (min/base/turbo).
-	// CommonConfig() also injects placeholder entries (kHz=0) into
-	// cfg.CPU.Classes so that controller startup sanity checks see
-	// the class names. Merge them: cfg-provided classes seed the
-	// map, then any SetClass-pushed values take precedence.
-	preserved := ctl.classes
 	ctl.classes = nil
 	ctl.uncoreEnabled = false
-	// Reset per-CPU last-written cache: a config change may
-	// alter min/max for the same class, so the next enforce
-	// pass must actually write to sysfs.
-	ctl.lastFreq = nil
-	// Reset the dirty set; we'll re-populate it below with every
-	// CPU currently assigned to a known class so that the Commit()
-	// at the end of configure() re-enforces the full desired state.
-	ctl.dirtyCPUs = nil
 
 	if cfg != nil && len(cfg.CPU.Classes) != 0 {
-		ctl.classes = make(map[string]Class, len(cfg.CPU.Classes))
-		for name, c := range cfg.CPU.Classes {
-			ctl.classes[name] = c
-		}
-	}
-	for name, c := range preserved {
-		if ctl.classes == nil {
-			ctl.classes = make(map[string]Class)
-		}
-		ctl.classes[name] = c
+		ctl.classes = cfg.CPU.Classes
 	}
 
 	// Re-configure CPUs that are assigned to some known class
@@ -502,15 +321,15 @@ func (ctl *cpuctl) configure(cfg *cfgapi.Config) error {
 		}
 	}
 
-	// Mark every CPU assigned to a known class as dirty so the
-	// Commit() below re-enforces all per-CPU values in one batch.
-	// Classes that have disappeared from the configuration are
-	// preserved in the cache, but their CPUs are not re-enforced
-	// (see the warning below).
+	// Configure the system
 	for class, cpus := range assignments {
 		if _, ok := ctl.classes[class]; ok {
-			for id := range cpus {
-				ctl.markCPUsDirty(int(id))
+			// Re-configure cpus (sysfs) according to new class parameters
+			if err := ctl.enforceCpufreq(class, cpus.SortedMembers()...); err != nil {
+				log.Errorf("cpufreq enforcement on re-configure failed: %v", err)
+			}
+			if err := ctl.enforceCstates(class, cpus.SortedMembers()...); err != nil {
+				log.Errorf("cpufreq enforcement on re-configure failed: %v", err)
 			}
 		} else {
 			// TODO: what should we really do with classes that do not exist in
@@ -519,6 +338,9 @@ func (ctl *cpuctl) configure(cfg *cfgapi.Config) error {
 			// which case the CPUs will be reconfigured.
 			log.Warnf("class %q with cpus %v missing from the configuration", class, cpus)
 		}
+	}
+	if err := ctl.enforceUncore(assignments); err != nil {
+		log.Errorf("uncore frequency enforcement on re-configure failed: %v", err)
 	}
 
 	log.Debugf("cpu controller configured")
