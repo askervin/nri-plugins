@@ -17,10 +17,10 @@ package v1alpha1
 import (
 	"testing"
 
+	control "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control"
 	cpucfg "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control/cpu"
 	policyapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy"
 	balloonscfg "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/balloons"
-	control "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control"
 )
 
 // mkSpec builds a BalloonsPolicySpec carrying the given cpuClasses
@@ -46,10 +46,10 @@ func TestMergeLegacy_AddsMissingNames(t *testing.T) {
 		"old": {MinFreq: 1_000_000, MaxFreq: 2_000_000, FreqGovernor: "performance"},
 	})
 	mergeLegacyCpuClasses(spec)
-	if len(spec.Config.CPUClasses) != 1 {
-		t.Fatalf("want 1 cpuClass after merge, got %d", len(spec.Config.CPUClasses))
+	if len(spec.CPUClasses) != 1 {
+		t.Fatalf("want 1 cpuClass after merge, got %d", len(spec.CPUClasses))
 	}
-	cc := spec.Config.CPUClasses[0]
+	cc := spec.CPUClasses[0]
 	if cc.Name != "old" || cc.MinFreq.KHz() != 1_000_000 || cc.MaxFreq.KHz() != 2_000_000 || cc.FreqGovernor != "performance" {
 		t.Errorf("merged class wrong: %+v", cc)
 	}
@@ -70,10 +70,10 @@ func TestMergeLegacy_ExplicitWins(t *testing.T) {
 		},
 	)
 	mergeLegacyCpuClasses(spec)
-	if len(spec.Config.CPUClasses) != 1 {
-		t.Fatalf("want 1 cpuClass (explicit unchanged), got %d", len(spec.Config.CPUClasses))
+	if len(spec.CPUClasses) != 1 {
+		t.Fatalf("want 1 cpuClass (explicit unchanged), got %d", len(spec.CPUClasses))
 	}
-	cc := spec.Config.CPUClasses[0]
+	cc := spec.CPUClasses[0]
 	if cc != explicit {
 		t.Errorf("explicit entry was replaced")
 	}
@@ -90,10 +90,10 @@ func TestMergeLegacy_Idempotent(t *testing.T) {
 		"b": {MaxFreq: 2_000_000},
 	})
 	mergeLegacyCpuClasses(spec)
-	first := len(spec.Config.CPUClasses)
+	first := len(spec.CPUClasses)
 	mergeLegacyCpuClasses(spec)
-	if len(spec.Config.CPUClasses) != first {
-		t.Errorf("second merge added entries: first=%d second=%d", first, len(spec.Config.CPUClasses))
+	if len(spec.CPUClasses) != first {
+		t.Errorf("second merge added entries: first=%d second=%d", first, len(spec.CPUClasses))
 	}
 }
 
@@ -103,7 +103,7 @@ func TestMergeLegacy_NoLegacy_NoChange(t *testing.T) {
 	keep := &policyapi.CPUClass{Name: "x"}
 	spec := mkSpec([]*policyapi.CPUClass{keep}, nil)
 	mergeLegacyCpuClasses(spec)
-	if len(spec.Config.CPUClasses) != 1 || spec.Config.CPUClasses[0] != keep {
-		t.Errorf("cpuClasses unexpectedly modified: %+v", spec.Config.CPUClasses)
+	if len(spec.CPUClasses) != 1 || spec.CPUClasses[0] != keep {
+		t.Errorf("cpuClasses unexpectedly modified: %+v", spec.CPUClasses)
 	}
 }

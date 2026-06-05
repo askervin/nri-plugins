@@ -23,8 +23,8 @@ import (
 )
 
 var (
-	_      ResmgrConfig = &BalloonsPolicy{}
-	bplog               = logger.NewLogger("config-v1alpha1")
+	_     ResmgrConfig = &BalloonsPolicy{}
+	bplog              = logger.NewLogger("config-v1alpha1")
 )
 
 func (c *BalloonsPolicy) AgentConfig() *AgentConfig {
@@ -74,7 +74,7 @@ func mergeLegacyCpuClasses(spec *BalloonsPolicySpec) {
 		return
 	}
 	existing := map[string]*policyapi.CPUClass{}
-	for _, cc := range spec.Config.CPUClasses {
+	for _, cc := range spec.CPUClasses {
 		existing[cc.Name] = cc
 	}
 	// Sort the legacy class names so warning order is deterministic.
@@ -107,7 +107,7 @@ func mergeLegacyCpuClasses(spec *BalloonsPolicySpec) {
 			FreqGovernor:                cc.FreqGovernor,
 			DisabledCstates:             append([]string(nil), cc.DisabledCstates...),
 		}
-		spec.Config.CPUClasses = append(spec.Config.CPUClasses, synth)
+		spec.CPUClasses = append(spec.CPUClasses, synth)
 		existing[name] = synth
 		added = append(added, name)
 	}

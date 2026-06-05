@@ -140,10 +140,3 @@ func newSst() (sst, error) {
 	}
 	return newSstGoresctrl()
 }
-
-// sstFreqValuesEqual reports whether two CLOS frequency values in
-// kHz are equal. Zero stands for "not specified".
-func sstFreqValuesEqual(a, b int) bool { return a == b }
-
-// cpusetToInts returns the CPUs in s as an int slice.
-func cpusetToInts(s cpuset.CPUSet) []int { return s.UnsortedList() }

@@ -471,7 +471,7 @@ enforce-lines-since "$defaultcls_step3"
 upd_lines="$COMMAND_OUTPUT"
 # Every CPU currently using "default" (free CPUs 2-7,11-13 + reserved
 # CPU 10 = 10 CPUs) must have its maxFreq rewritten to 3800000 right
-# after the CR patch — no pod create/stop in between.
+# after the CR patch -- no pod create/stop in between.
 for cpu in 2 3 4 5 6 7 10 11 12 13; do
     if ! grep "on cpu $cpu\$" <<< "$upd_lines" | grep 'default' | grep -q 'max 3800000'; then
         echo "$upd_lines"

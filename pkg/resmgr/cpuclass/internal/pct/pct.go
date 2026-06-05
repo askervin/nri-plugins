@@ -207,11 +207,12 @@ func (a *Allocator) Configure(classes []*policyapi.CPUClass, allowed cpuset.CPUS
 		// LP classes are those with pctPriority=low.
 		var lpClos *int
 		for _, cc := range classes {
-			if cc.PctPriority == "high" {
+			switch cc.PctPriority {
+			case "high":
 				a.hpClasses[cc.Name] = true
 				log.Infof("pct: cpuClass %q classified HP (managed: pctPriority=high, CLOS %d)",
 					cc.Name, plans[cc.Name].ClosID)
-			} else if cc.PctPriority == "low" {
+			case "low":
 				id := plans[cc.Name].ClosID
 				lpClos = &id
 				log.Infof("pct: cpuClass %q classified LP (managed: pctPriority=low, CLOS %d)",
@@ -457,8 +458,8 @@ func (a *Allocator) Active() bool {
 //
 // Same formula in managed and assoc-only modes:
 //   - HP class: sum over HP-eligible punits of
-//     min(GuaranteedHpCpus, |pu.CPUs ∩ Allowed \ held|). HP
-//     capacity is bounded by the punit's *guaranteed top-turbo*
+//     min(GuaranteedHpCpus, |pu.CPUs intersect Allowed minus held|).
+//     HP capacity is bounded by the punit's *guaranteed top-turbo*
 //     HP count (smallest non-zero SST-TF bucket
 //     HighPriorityCoreCount, or SST-BF HP CPU count when TF is
 //     unsupported) -- not by the larger MaxHpCpus the allocator
@@ -467,7 +468,7 @@ func (a *Allocator) Active() bool {
 //     turbo frequency this platform exposes; otherwise HP pods
 //     get scheduled past the guaranteed-turbo headroom and fall
 //     back to lower-bucket frequencies.
-//   - non-HP class: |Allowed \ held|. The allocator can
+//   - non-HP class: |Allowed minus held|. The allocator can
 //     re-associate any Allowed CPU to any CLOS on demand, so the
 //     gating set is what the plugin owns, not what currently
 //     lives on the target CLOS in hardware.
@@ -626,12 +627,6 @@ func (a *Allocator) modeString() string {
 	default:
 		return "disabled"
 	}
-}
-
-// isManaged reports whether PCT runs in managed mode (i.e. some
-// cpuClass uses pctPriority and we own the CLOS configuration).
-func (a *Allocator) isManaged() bool {
-	return a != nil && a.mode == pctModeManaged
 }
 
 // classIsHighPriority reports whether className is currently
@@ -862,25 +857,6 @@ func (a *Allocator) hpReserveCpus(free cpuset.CPUSet, excludeBln cpuset.CPUSet, 
 	return cpuset.New()
 }
 
-// referencedClosIDs returns the sorted, deduplicated list of CLOS
-// IDs referenced by any PCT cpuClass plan.
-func (a *Allocator) referencedClosIDs() []int {
-	if !a.Active() {
-		return nil
-	}
-	seen := map[int]bool{}
-	ids := []int{}
-	for _, p := range a.classPlan {
-		if seen[p.ClosID] {
-			continue
-		}
-		seen[p.ClosID] = true
-		ids = append(ids, p.ClosID)
-	}
-	sort.Ints(ids)
-	return ids
-}
-
 // classClosID returns the CLOS ID that the named cpuClass maps to,
 // or (-1, false) if the class has no PCT plan.
 func (a *Allocator) classClosID(className string) (int, bool) {
@@ -957,13 +933,6 @@ func (a *Allocator) Hints(intent types.AllocationIntent) types.AllocationHints {
 		}
 	}
 	return out
-}
-
-// anyHighPriorityClassDefined reports whether any configured cpuClass
-// is currently classified as HP. Retained for compatibility with
-// older internal callers; new code should use hpHintsActive.
-func (a *Allocator) anyHighPriorityClassDefined() bool {
-	return len(a.hpClasses) > 0
 }
 
 // turboInfo holds the platform frequency reference used by the PCT

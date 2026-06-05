@@ -103,7 +103,7 @@ func newDieFakeSys(cpus map[int]dieFakeCpu) *dieFakeSys {
 	for cpu, loc := range cpus {
 		cpuPkg[cpu] = idset.ID(loc.pkg)
 		pkgCpus[loc.pkg] = pkgCpus[loc.pkg].Union(cpuset.New(cpu))
-		k := pkgDieKey{loc.pkg, loc.die}
+		k := pkgDieKey(loc)
 		dieCpus[k] = dieCpus[k].Union(cpuset.New(cpu))
 		if pkgDies[loc.pkg] == nil {
 			pkgDies[loc.pkg] = map[int]bool{}

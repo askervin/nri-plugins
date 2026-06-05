@@ -157,9 +157,10 @@ func (s *fakeSst) Punits() []pctPunit {
 		cpus, ok := s.pkgCpus[id]
 		if !ok {
 			// Derive a default cpu range matching newTwoPackageFakeSys layout.
-			if id == 0 {
+			switch id {
+			case 0:
 				cpus = cpuset.MustParse("0-3")
-			} else if id == 1 {
+			case 1:
 				cpus = cpuset.MustParse("4-7")
 			}
 		}
@@ -892,24 +893,24 @@ func TestPctPunitGuaranteedHpCpus_NeitherSupported(t *testing.T) {
 // hpEligiblePunit must be set up by the caller after the helper
 // returns to keep the test intent explicit.
 func newAssocOnlyPctForTest(t *testing.T, classes []*policyapi.CPUClass, plans map[string]*pctClassPlan,
-allowed cpuset.CPUSet, sys *fakeSys, sst *fakeSst) *Allocator {
-t.Helper()
-a := &Allocator{
-sys:             sys,
-sst:             sst,
-mode:            pctModeAssocOnly,
-classByName:     map[string]*policyapi.CPUClass{},
-classPlan:       plans,
-allowed:         allowed,
-hpUsed:          map[int]cpuset.CPUSet{},
-hpClasses:       map[string]bool{},
-hpEligiblePunit: map[int]bool{},
-}
-for _, cc := range classes {
-a.classByName[cc.Name] = cc
-}
-pctTestWirePunits(a)
-return a
+	allowed cpuset.CPUSet, sys *fakeSys, sst *fakeSst) *Allocator {
+	t.Helper()
+	a := &Allocator{
+		sys:             sys,
+		sst:             sst,
+		mode:            pctModeAssocOnly,
+		classByName:     map[string]*policyapi.CPUClass{},
+		classPlan:       plans,
+		allowed:         allowed,
+		hpUsed:          map[int]cpuset.CPUSet{},
+		hpClasses:       map[string]bool{},
+		hpEligiblePunit: map[int]bool{},
+	}
+	for _, cc := range classes {
+		a.classByName[cc.Name] = cc
+	}
+	pctTestWirePunits(a)
+	return a
 }
 
 // TestFreeClassCapacity_AssocOnlyHpFromFallbackCLOS verifies the
@@ -920,45 +921,45 @@ return a
 // -- not zero. (Pre-fix the result was 0 because closCpus(HP CLOS)
 // was empty.)
 func TestFreeClassCapacity_AssocOnlyHpFromFallbackCLOS(t *testing.T) {
-sys := newTwoPackageFakeSys()
-sst := &fakeSst{
-supported: true,
-// All CPUs are on CLOS 3 (the LP/fallback CLOS). The HP
-// CLOS 0 has no CPUs associated to it.
-cpuClos: map[int]int{
-0: 3, 1: 3, 2: 3, 3: 3,
-4: 3, 5: 3, 6: 3, 7: 3,
-},
-// Two punits (one per package); each guarantees 2 HP CPUs at top turbo.
-punits: []pctPunit{
-{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
-{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
-},
-}
-classes := []*policyapi.CPUClass{
-{Name: "hp"}, // pctPriority not set; HP is decided by classifyAssocOnlyHP at runtime
-{Name: "lp"},
-}
-a := newAssocOnlyPctForTest(t, classes,
-map[string]*pctClassPlan{"hp": {ClosID: 0}, "lp": {ClosID: 3}},
-cpuset.MustParse("0-7"), sys, sst)
-a.hpClasses["hp"] = true // simulate classifyAssocOnlyHP result
+	sys := newTwoPackageFakeSys()
+	sst := &fakeSst{
+		supported: true,
+		// All CPUs are on CLOS 3 (the LP/fallback CLOS). The HP
+		// CLOS 0 has no CPUs associated to it.
+		cpuClos: map[int]int{
+			0: 3, 1: 3, 2: 3, 3: 3,
+			4: 3, 5: 3, 6: 3, 7: 3,
+		},
+		// Two punits (one per package); each guarantees 2 HP CPUs at top turbo.
+		punits: []pctPunit{
+			{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
+			{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
+		},
+	}
+	classes := []*policyapi.CPUClass{
+		{Name: "hp"}, // pctPriority not set; HP is decided by classifyAssocOnlyHP at runtime
+		{Name: "lp"},
+	}
+	a := newAssocOnlyPctForTest(t, classes,
+		map[string]*pctClassPlan{"hp": {ClosID: 0}, "lp": {ClosID: 3}},
+		cpuset.MustParse("0-7"), sys, sst)
+	a.hpClasses["hp"] = true // simulate classifyAssocOnlyHP result
 
-// Held by some non-HP balloon: 2 CPUs (one per punit).
-held := cpuset.MustParse("3,7")
+	// Held by some non-HP balloon: 2 CPUs (one per punit).
+	held := cpuset.MustParse("3,7")
 
-gotHp := a.FreeClassCapacity("hp", held)
-wantHp := 2 + 2 // both punits: min(2, |{0,1,2}|=3)=2 and min(2, |{4,5,6}|=3)=2
-if gotHp != wantHp {
-t.Errorf("HP capacity (assoc-only, all cpus on fallback CLOS) = %d, want %d",
-gotHp, wantHp)
-}
+	gotHp := a.FreeClassCapacity("hp", held)
+	wantHp := 2 + 2 // both punits: min(2, |{0,1,2}|=3)=2 and min(2, |{4,5,6}|=3)=2
+	if gotHp != wantHp {
+		t.Errorf("HP capacity (assoc-only, all cpus on fallback CLOS) = %d, want %d",
+			gotHp, wantHp)
+	}
 
-gotLp := a.FreeClassCapacity("lp", held)
-wantLp := 8 - 2 // allowed (8) minus held (2)
-if gotLp != wantLp {
-t.Errorf("LP capacity (assoc-only) = %d, want %d", gotLp, wantLp)
-}
+	gotLp := a.FreeClassCapacity("lp", held)
+	wantLp := 8 - 2 // allowed (8) minus held (2)
+	if gotLp != wantLp {
+		t.Errorf("LP capacity (assoc-only) = %d, want %d", gotLp, wantLp)
+	}
 }
 
 // TestFreeClassCapacity_AssocOnlyHpTFDisabledPunitExcluded verifies
@@ -967,52 +968,52 @@ t.Errorf("LP capacity (assoc-only) = %d, want %d", gotLp, wantLp)
 // GuaranteedHpCpus is non-zero. Prevents over-publishing HP
 // capacity on nodes that cannot actually deliver top turbo.
 func TestFreeClassCapacity_AssocOnlyHpTFDisabledPunitExcluded(t *testing.T) {
-sys := newTwoPackageFakeSys()
-sst := &fakeSst{
-supported: true,
-punits: []pctPunit{
-{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
-{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
-},
-}
-a := newAssocOnlyPctForTest(t, []*policyapi.CPUClass{{Name: "hp"}},
-map[string]*pctClassPlan{"hp": {ClosID: 0}},
-cpuset.MustParse("0-7"), sys, sst)
-a.hpClasses["hp"] = true
-// pctTestWirePunits marked both eligible; flip pkg1 punit to
-// TF-disabled to model the assoc-only "operator did not enable
-// SST-TF on this punit" case.
-a.hpEligiblePunit[1] = false
+	sys := newTwoPackageFakeSys()
+	sst := &fakeSst{
+		supported: true,
+		punits: []pctPunit{
+			{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
+			{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
+		},
+	}
+	a := newAssocOnlyPctForTest(t, []*policyapi.CPUClass{{Name: "hp"}},
+		map[string]*pctClassPlan{"hp": {ClosID: 0}},
+		cpuset.MustParse("0-7"), sys, sst)
+	a.hpClasses["hp"] = true
+	// pctTestWirePunits marked both eligible; flip pkg1 punit to
+	// TF-disabled to model the assoc-only "operator did not enable
+	// SST-TF on this punit" case.
+	a.hpEligiblePunit[1] = false
 
-got := a.FreeClassCapacity("hp", cpuset.New())
-want := 2 // only pkg0 contributes
-if got != want {
-t.Errorf("HP capacity with one TF-disabled punit = %d, want %d", got, want)
-}
+	got := a.FreeClassCapacity("hp", cpuset.New())
+	want := 2 // only pkg0 contributes
+	if got != want {
+		t.Errorf("HP capacity with one TF-disabled punit = %d, want %d", got, want)
+	}
 }
 
 // TestFreeClassCapacity_AssocOnlyNoHpClassification: assoc-only
 // where no class was classified HP (e.g. no CLOS has a programmed
 // MaxFreq) falls through to the non-HP formula |Allowed \ held|.
 func TestFreeClassCapacity_AssocOnlyNoHpClassification(t *testing.T) {
-sys := newTwoPackageFakeSys()
-sst := &fakeSst{
-supported: true,
-punits: []pctPunit{
-{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
-{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
-},
-}
-a := newAssocOnlyPctForTest(t, []*policyapi.CPUClass{{Name: "c1"}},
-map[string]*pctClassPlan{"c1": {ClosID: 1}},
-cpuset.MustParse("0-7"), sys, sst)
-// Intentionally no entries in a.hpClasses.
+	sys := newTwoPackageFakeSys()
+	sst := &fakeSst{
+		supported: true,
+		punits: []pctPunit{
+			{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
+			{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
+		},
+	}
+	a := newAssocOnlyPctForTest(t, []*policyapi.CPUClass{{Name: "c1"}},
+		map[string]*pctClassPlan{"c1": {ClosID: 1}},
+		cpuset.MustParse("0-7"), sys, sst)
+	// Intentionally no entries in a.hpClasses.
 
-got := a.FreeClassCapacity("c1", cpuset.MustParse("1,5"))
-want := 8 - 2
-if got != want {
-t.Errorf("non-HP assoc-only capacity = %d, want %d", got, want)
-}
+	got := a.FreeClassCapacity("c1", cpuset.MustParse("1,5"))
+	want := 8 - 2
+	if got != want {
+		t.Errorf("non-HP assoc-only capacity = %d, want %d", got, want)
+	}
 }
 
 // TestFreeClassCapacity_ManagedHpRespectsEligibility keeps the
@@ -1020,50 +1021,50 @@ t.Errorf("non-HP assoc-only capacity = %d, want %d", got, want)
 // (PrepareManagedMode enables SST-TF) and the result is the
 // guaranteed-top-turbo sum, capped by per-punit free CPUs.
 func TestFreeClassCapacity_ManagedHpRespectsEligibility(t *testing.T) {
-sys := newTwoPackageFakeSys()
-sst := &fakeSst{
-supported: true,
-punits: []pctPunit{
-{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
-{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
-},
-}
-classes := []*policyapi.CPUClass{
-{Name: "hp", PctPriority: "high"},
-{Name: "lp", PctPriority: "low"},
-}
-a := newManagedPctForTest(t, classes,
-map[string]*pctClassPlan{"hp": {ClosID: 0}, "lp": {ClosID: 3}},
-cpuset.MustParse("0-7"), sys, sst)
+	sys := newTwoPackageFakeSys()
+	sst := &fakeSst{
+		supported: true,
+		punits: []pctPunit{
+			{PkgID: 0, PunitID: 0, CPUs: cpuset.MustParse("0-3"), GuaranteedHpCpus: 2},
+			{PkgID: 1, PunitID: 0, CPUs: cpuset.MustParse("4-7"), GuaranteedHpCpus: 2},
+		},
+	}
+	classes := []*policyapi.CPUClass{
+		{Name: "hp", PctPriority: "high"},
+		{Name: "lp", PctPriority: "low"},
+	}
+	a := newManagedPctForTest(t, classes,
+		map[string]*pctClassPlan{"hp": {ClosID: 0}, "lp": {ClosID: 3}},
+		cpuset.MustParse("0-7"), sys, sst)
 
-gotHp := a.FreeClassCapacity("hp", cpuset.MustParse("3"))
-wantHp := 2 + 2 // pkg0: min(2, 3)=2; pkg1: min(2, 4)=2
-if gotHp != wantHp {
-t.Errorf("managed HP capacity = %d, want %d", gotHp, wantHp)
-}
-gotLp := a.FreeClassCapacity("lp", cpuset.MustParse("3"))
-wantLp := 8 - 1
-if gotLp != wantLp {
-t.Errorf("managed LP capacity = %d, want %d", gotLp, wantLp)
-}
+	gotHp := a.FreeClassCapacity("hp", cpuset.MustParse("3"))
+	wantHp := 2 + 2 // pkg0: min(2, 3)=2; pkg1: min(2, 4)=2
+	if gotHp != wantHp {
+		t.Errorf("managed HP capacity = %d, want %d", gotHp, wantHp)
+	}
+	gotLp := a.FreeClassCapacity("lp", cpuset.MustParse("3"))
+	wantLp := 8 - 1
+	if gotLp != wantLp {
+		t.Errorf("managed LP capacity = %d, want %d", gotLp, wantLp)
+	}
 
-// Squeeze pkg0: hold 3 of its 4 CPUs => pkg0 contributes min(2,1)=1.
-gotHp = a.FreeClassCapacity("hp", cpuset.MustParse("0-2"))
-wantHp = 1 + 2
-if gotHp != wantHp {
-t.Errorf("managed HP capacity with squeezed pkg0 = %d, want %d", gotHp, wantHp)
-}
+	// Squeeze pkg0: hold 3 of its 4 CPUs => pkg0 contributes min(2,1)=1.
+	gotHp = a.FreeClassCapacity("hp", cpuset.MustParse("0-2"))
+	wantHp = 1 + 2
+	if gotHp != wantHp {
+		t.Errorf("managed HP capacity with squeezed pkg0 = %d, want %d", gotHp, wantHp)
+	}
 }
 
 // TestFreeClassCapacity_UnknownClassReturnsZero: unknown class
 // (no PCT plan) yields 0 regardless of mode.
 func TestFreeClassCapacity_UnknownClassReturnsZero(t *testing.T) {
-sys := newTwoPackageFakeSys()
-sst := &fakeSst{supported: true}
-a := newManagedPctForTest(t, []*policyapi.CPUClass{{Name: "hp", PctPriority: "high"}},
-map[string]*pctClassPlan{"hp": {ClosID: 0}},
-cpuset.MustParse("0-7"), sys, sst)
-if got := a.FreeClassCapacity("nope", cpuset.New()); got != 0 {
-t.Errorf("unknown class capacity = %d, want 0", got)
-}
+	sys := newTwoPackageFakeSys()
+	sst := &fakeSst{supported: true}
+	a := newManagedPctForTest(t, []*policyapi.CPUClass{{Name: "hp", PctPriority: "high"}},
+		map[string]*pctClassPlan{"hp": {ClosID: 0}},
+		cpuset.MustParse("0-7"), sys, sst)
+	if got := a.FreeClassCapacity("nope", cpuset.New()); got != 0 {
+		t.Errorf("unknown class capacity = %d, want 0", got)
+	}
 }
