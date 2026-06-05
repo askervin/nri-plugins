@@ -98,6 +98,16 @@ type Allocator struct {
 	// hpUsed[i] is the set of CPUs currently held by HP-class
 	// workloads on punits[i].
 	hpUsed map[int]cpuset.CPUSet
+	// hpEligiblePunit[i] reports whether punits[i] can actually
+	// host HP-class CPUs at top turbo. Populated at Configure().
+	// In managed mode every punit becomes eligible (the plugin
+	// enables SST-TF itself). In assoc-only mode a punit is
+	// eligible only when SST-TF is currently enabled on it
+	// (operator's responsibility); otherwise its standard
+	// turbo-ratio bucket caps HP frequency and the punit must
+	// not contribute to scheduler-visible HP capacity. Missing
+	// entries are treated as not eligible.
+	hpEligiblePunit map[int]bool
 }
 
 // NewAllocator returns a new PCT allocator in the disabled mode.
@@ -129,6 +139,7 @@ func (a *Allocator) Configure(classes []*policyapi.CPUClass, allowed cpuset.CPUS
 	a.allowed = allowed
 	a.hpUsed = map[int]cpuset.CPUSet{}
 	a.hpClasses = map[string]bool{}
+	a.hpEligiblePunit = map[int]bool{}
 	a.punits = nil
 	a.punitByCpu = nil
 
@@ -156,6 +167,12 @@ func (a *Allocator) Configure(classes []*policyapi.CPUClass, allowed cpuset.CPUS
 	if mode == pctModeManaged {
 		if err := a.sst.PrepareManagedMode(); err != nil {
 			return fmt.Errorf("pct: failed to prepare managed mode: %w", err)
+		}
+		// Managed mode owns SST-TF and enables it on every punit
+		// (PrepareManagedMode). All snapshotted punits are thus
+		// HP-eligible.
+		for idx := range a.punits {
+			a.hpEligiblePunit[idx] = true
 		}
 		// Program every requested CLOS.
 		closesProgrammed := map[int]bool{}
@@ -215,34 +232,41 @@ func (a *Allocator) Configure(classes []*policyapi.CPUClass, allowed cpuset.CPUS
 		// by the operator/BIOS. The CLOS with the largest MaxFreq
 		// among the CLOSes our cpuClasses target is HP.
 		a.classifyAssocOnlyHP(classes)
-		a.warnAssocOnlyTFDisabled()
+		a.evaluateAssocOnlyHpEligibility()
 	}
 	return nil
 }
 
-// warnAssocOnlyTFDisabled checks the live SST-TF status on every
-// punit that overlaps with `allowed` and logs a warning for those
-// where TF is disabled. In assoc-only mode the plugin must not
-// toggle SST-TF (the operator owns global SST state), but without
-// SST-TF the standard turbo-ratio table caps HP cores at the
-// many-active-cores bucket frequency -- a low-CLOS-ID association
-// alone is not enough to exceed it. The warning points the
-// operator to the command that enables SST-TF on the punit.
-func (a *Allocator) warnAssocOnlyTFDisabled() {
+// evaluateAssocOnlyHpEligibility populates hpEligiblePunit and
+// warns the operator about punits where SST-TF is disabled. In
+// assoc-only mode the plugin must not toggle SST-TF (the operator
+// owns global SST state). Without SST-TF the standard turbo-ratio
+// table caps HP cores at the many-active-cores bucket frequency --
+// a low-CLOS-ID association alone is not enough to exceed it.
+// Capacity for HP cpuClasses on such punits must therefore be
+// reported as zero, otherwise the scheduler bin-packs HP pods onto
+// nodes that cannot actually deliver top turbo. The warning points
+// the operator at the intel-speed-select command that enables it.
+func (a *Allocator) evaluateAssocOnlyHpEligibility() {
 	if len(a.punits) == 0 {
 		return
 	}
 	status, err := a.sst.TFStatus()
 	if err != nil {
 		log.Warnf("pct: assoc-only: cannot read SST-TF status: %v", err)
+		// Unknown TF state: leave every punit ineligible. Safer
+		// to under-publish HP capacity than to over-publish it.
 		return
 	}
-	for _, pu := range a.punits {
+	for idx, pu := range a.punits {
 		enabled, ok := status[pctPunitID{PkgID: pu.PkgID, PunitID: pu.PunitID}]
 		if !ok {
+			// No entry: TF state unknown for this punit. Treat
+			// as ineligible.
 			continue
 		}
 		if enabled {
+			a.hpEligiblePunit[idx] = true
 			continue
 		}
 		// Pick one representative CPU from the punit for the
@@ -431,27 +455,32 @@ func (a *Allocator) Active() bool {
 // still be allocated to className, given that 'held' lists CPUs
 // already consumed by some balloon on this node (any class).
 //
-// Managed mode:
-//   - HP class: sum over punits of
-//     min(GuaranteedHpCpus, |pu.CPUs \ held|).  HP capacity is
-//     bounded by the punit's *guaranteed top-turbo* HP count
-//     (smallest non-zero SST-TF bucket HighPriorityCoreCount, or
-//     SST-BF HP CPU count when TF is unsupported) -- not by the
-//     larger MaxHpCpus the allocator uses for steering. The
-//     scheduler-visible capacity must reflect how many CPUs can
-//     *actually* sustain the highest turbo frequency this
-//     platform exposes; otherwise HP pods get scheduled past the
-//     guaranteed-turbo headroom and fall back to lower-bucket
-//     frequencies. Punits with GuaranteedHpCpus == 0 contribute
-//     nothing.
-//   - LP (or any non-HP) class: |allowed \ held|.  In managed
-//     mode every free CPU is reachable as an LP CPU; the SST-TF
-//     bucket only affects HP eligibility.
+// Same formula in managed and assoc-only modes:
+//   - HP class: sum over HP-eligible punits of
+//     min(GuaranteedHpCpus, |pu.CPUs ∩ Allowed \ held|). HP
+//     capacity is bounded by the punit's *guaranteed top-turbo*
+//     HP count (smallest non-zero SST-TF bucket
+//     HighPriorityCoreCount, or SST-BF HP CPU count when TF is
+//     unsupported) -- not by the larger MaxHpCpus the allocator
+//     uses for steering. The scheduler-visible capacity must
+//     reflect how many CPUs can *actually* sustain the highest
+//     turbo frequency this platform exposes; otherwise HP pods
+//     get scheduled past the guaranteed-turbo headroom and fall
+//     back to lower-bucket frequencies.
+//   - non-HP class: |Allowed \ held|. The allocator can
+//     re-associate any Allowed CPU to any CLOS on demand, so the
+//     gating set is what the plugin owns, not what currently
+//     lives on the target CLOS in hardware.
 //
-// Assoc-only mode:
-//   - capacity(class) = |closCpus(plan.ClosID) \ held|.  The
-//     operator/BIOS pre-pins concrete CPUs to each CLOS, so only
-//     those CPUs are eligible for the class.
+// The modes differ in how hpEligiblePunit is populated:
+//   - Managed mode: every snapshotted punit is HP-eligible (the
+//     plugin enables SST-TF itself via PrepareManagedMode).
+//   - Assoc-only mode: a punit is HP-eligible only when SST-TF
+//     is currently enabled on it (operator's responsibility).
+//     Punits where TF is disabled cannot exceed the standard
+//     turbo-ratio bucket and contribute 0 to HP capacity, so the
+//     scheduler does not bin-pack HP pods onto nodes that cannot
+//     deliver top turbo.
 //
 // Returns 0 for classes that have no PCT plan or when PCT is not
 // active. Negative intermediate counts are clamped to 0.
@@ -459,19 +488,10 @@ func (a *Allocator) FreeClassCapacity(className string, held cpuset.CPUSet) int 
 	if !a.Active() {
 		return 0
 	}
-	plan, ok := a.classPlan[className]
-	if !ok {
+	if _, ok := a.classPlan[className]; !ok {
 		return 0
 	}
 	allowed := a.allowed
-	if a.mode == pctModeAssocOnly {
-		eligible := a.closCpus(plan.ClosID)
-		if allowed.Size() > 0 {
-			eligible = eligible.Intersection(allowed)
-		}
-		return eligible.Difference(held).Size()
-	}
-	// Managed mode.
 	free := allowed
 	if free.Size() > 0 {
 		free = free.Difference(held)
@@ -480,7 +500,10 @@ func (a *Allocator) FreeClassCapacity(className string, held cpuset.CPUSet) int 
 		return free.Size()
 	}
 	total := 0
-	for _, pu := range a.punits {
+	for idx, pu := range a.punits {
+		if !a.hpEligiblePunit[idx] {
+			continue
+		}
 		puCpus := pu.CPUs
 		if allowed.Size() > 0 {
 			puCpus = puCpus.Intersection(allowed)
