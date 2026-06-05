@@ -160,6 +160,7 @@ func (m *resmgr) updateConfig(newCfg interface{}) (bool, error) {
 
 	reconfErr := m.reconfigure(cfg)
 	m.updateTopologyZones()
+	m.updateNodeExtendedResources()
 	return false, reconfErr
 }
 
@@ -284,6 +285,7 @@ func (m *resmgr) startControllers() error {
 		return resmgrError("failed to start resource controllers: %v", err)
 	}
 
+
 	return nil
 }
 
@@ -294,6 +296,15 @@ func (m *resmgr) updateTopologyZones() {
 		if err := m.agent.UpdateNrtCR(m.policy.ActivePolicy(), zones); err != nil {
 			log.Errorf("failed to update topology zones: %v", err)
 		}
+	}
+}
+
+// updateNodeExtendedResources publishes (or clears) the
+// node-level extended resources the active policy advertises.
+func (m *resmgr) updateNodeExtendedResources() {
+	resources := m.policy.GetExtendedResources()
+	if err := m.agent.UpdateNodeExtendedResources(resources); err != nil {
+		log.Errorf("failed to update node extended resources: %v", err)
 	}
 }
 
@@ -330,6 +341,7 @@ func (m *resmgr) reconfigure(cfg cfgapi.ResmgrConfig) error {
 		if err != nil {
 			log.Warnf("failed to apply configuration to containers: %v", err)
 		}
+
 
 		return nil
 	}
