@@ -10,7 +10,7 @@ are capped at base. This is the "assoc-only" PCT mode: the operator
 container CPUs to the chosen CLOSes and does not reconfigure SST-CP.
 
 For background on the feature, see the
-[Intel® Xeon® 6 with Priority Core Turbo Technical
+[Intel(R) Xeon(R) 6 with Priority Core Turbo Technical
 Brief](https://www.intel.com/content/www/us/en/products/docs/processors/xeon/6-priority-core-turbo-brief.html),
 the [PCT section of the balloons policy
 documentation](balloons.md#priority-core-turbo-pct), and the
@@ -48,7 +48,7 @@ visibly higher in the HP pods than in the LP pod.
 
 Hardware and platform:
 
-- A server with Intel® Xeon® 6 CPUs that support SST-PP and SST-CP.
+- A server with Intel(R) Xeon(R) 6 CPUs that support SST-PP and SST-CP.
   This example was written against a dual-socket Xeon 6776P.
 - SST-PP and SST-CP enabled on the platform (see step 2).
 - A Linux kernel with the `isst_if_*` (or `isst_tpmi_*`) modules
@@ -136,8 +136,8 @@ punit that contains at least one of the CPUs passed via `-c`:
 - SST-TF (so HP cores can exceed the standard turbo-ratio bucket
   limit),
 - SST-CP with `priority-type:ordered`,
-- the initial CPU-to-CLOS association (the passed CPUs → CLOS 0,
-  every other CPU on the punit → CLOS 3).
+- the initial CPU-to-CLOS association (the passed CPUs -> CLOS 0,
+  every other CPU on the punit -> CLOS 3).
 
 The balloons policy overwrites the CPU-to-CLOS associations at pod
 admission time, but it does **not** enable SST-TF or SST-CP for
@@ -289,7 +289,9 @@ EOF
 `linux-cpupower` ships `/usr/sbin/turbostat`. `util-linux` provides
 `taskset` and the rest of the standard userspace.
 
-Build the image. Use whichever tool is available on your build host:
+Build the image. Use whichever tool is available on your build host.
+With docker, prefix with `sudo` if your user is not in the `docker`
+group:
 
 ```bash
 # With docker:
@@ -409,16 +411,16 @@ kubectl -n kube-system get pod \
 Now apply the policy configuration. The `BalloonsPolicy` below
 defines three cpuClasses with only `pctClosID` set (no
 `pctPriority`, no frequency overrides), which selects assoc-only
-mode for PCT and lets the SST-CP CLOS bounds — set by the
-`intel-speed-select turbo-freq enable -a` recipe in step 2 — define
+mode for PCT and lets the SST-CP CLOS bounds -- set by the
+`intel-speed-select turbo-freq enable -a` recipe in step 2 -- define
 the actual frequency caps. Following the Linux SST guidance, the
 cpuClasses do not touch `minFreq` / `maxFreq` at all.
 
 The CLOS layout matches what `turbo-freq enable -a` programs in
 ordered priority mode:
 
-- CLOS 0 — HP — bucket-0 turbo (Pmax),
-- CLOS 3 — LP — LP clip (= base on this platform),
+- CLOS 0 -- HP -- bucket-0 turbo (Pmax),
+- CLOS 3 -- LP -- LP clip (= base on this platform),
 - the class named `default` is the implicit fallback for idle CPUs
   and balloons that do not specify their `cpuClass`. It is mapped
   to the LP CLOS so idle CPUs do not consume HP turbo budget.
@@ -517,9 +519,20 @@ Expected:
 ```text
 pct: SST discovered: pkg=0 punit=0 level=1 cpus=<...> ...
 pct: mode=assoc-only, 3 PCT cpuClass(es), 4 punit(s) across 2 package(s)
+pct: assoc-only: CLOS 0 programmed min=0 max=<ceiling> kHz
+pct: assoc-only: CLOS 3 programmed min=0 max=<ceiling> kHz
 pct: cpuClass "hp-clos0" classified HP (assoc-only: CLOS 0 ...)
-pct: cpuClass "lp-clos3" classified LP (assoc-only: CLOS 3 ...)
 ```
+
+The `assoc-only: CLOS N programmed` lines record permissive
+(min=0, max=hardware ceiling) bounds that the plugin writes when
+entering assoc-only mode; they leave the SST-CP CLOS bounds that
+`turbo-freq enable -a` programmed in step 2 unchanged in practice,
+because the effective frequency is the minimum of the per-CLOS
+cap and the SST-TF bucket-0 limit. The plugin only classifies one
+cpuClass per priority bucket on the same CLOS, so when both
+`default` and `lp-clos3` use CLOS 3 only one of them is reported in
+the classification log.
 
 If any punit you intend to host HP pods on shows up with an
 `assoc-only: SST-TF disabled on pkg=N punit=M` warning, repeat
@@ -620,7 +633,7 @@ done
 wait
 ```
 
-Sample shape on a dual-socket Intel® Xeon® 6776P (replace
+Sample shape on a dual-socket Intel(R) Xeon(R) 6776P (replace
 `<...>` with your own measurements):
 
 ```text
@@ -645,7 +658,7 @@ Verify that the four HP balloons landed on four distinct punits.
 With the policy's `cpu` debug log enabled, balloons logs the
 (pkg, punit) of each balloon at admission time. You can also map
 the `cpus` line of each HP pod back to a punit through the
-`sst info` output from step 2 — each HP pod's CPUs should fall
+`sst info` output from step 2 -- each HP pod's CPUs should fall
 into a different punit row.
 
 Optionally cross-check the same numbers from outside the pod with
@@ -726,7 +739,12 @@ Expected (one row per balloon and one row per pod's container):
   pinned to that exact set.
 - One `lp-bln[0]` zone with the 8-CPU set, and `pct-lp/bench`
   pinned to the same set.
-- A `reserved[0]` zone with cpuset `0,1,128,129`.
+- A `reserved[0]` zone covering the currently-used subset of the
+  reserved pool (the SMT pair of physical CPU 0 -- `0,128` -- is the
+  typical outcome on this layout; balloons compacts the reserved
+  balloon to what its containers actually need).
+- An empty `default[0]` zone may also appear; it is the unused
+  default balloon and can be ignored.
 
 The CPU sets here must match the `cpus=` value printed by the
 benchmark inside each pod (step 7) and the `clos:N` reported by
@@ -786,7 +804,7 @@ Sample shape (replace with your own measurements):
 ```
 
 Per-thread `events_per_sec` should drop from the HP value to
-roughly LP base / HP turbo × HP value — the same ratio as the
+roughly LP base / HP turbo x HP value -- the same ratio as the
 per-CPU frequency ratio reported by `mhz_avg`. This is the
 headline number aligned with the PCT brief: priority cores let
 the same code finish more work per unit time because they run at
@@ -925,10 +943,17 @@ the SST-BF `HighPriorityCPUs` count when TF is unsupported)
 -- not the larger `MaxHpCpus`. That is the number of HP CPUs
 per punit that can simultaneously sustain the highest turbo
 frequency this platform exposes, which is the right figure
-for the scheduler to bin-pack on. In assoc-only mode (this
-document) the published capacity is simply the size of the
-CLOS CPU set minus what is currently held by other classes,
-so what you publish equals what you pinned to that CLOS.
+for the scheduler to bin-pack on. In assoc-only mode a punit
+contributes to HP capacity only when SST-TF is currently
+enabled on it (the operator's responsibility -- typically via
+`intel-speed-select ... turbo-freq enable -a`); a punit where
+SST-TF is disabled cannot exceed the standard turbo-ratio
+bucket frequency and contributes `0`, so the scheduler will
+not bin-pack HP pods onto nodes that cannot deliver top
+turbo. Same-class consumption inside HP is intentionally not
+subtracted (an admitted HP pod does not shrink the published
+HP capacity); only cross-class consumption is. LP capacity
+equals `|Allowed \ held|`.
 
 Add the flag to the policy:
 
@@ -943,7 +968,8 @@ Add the flag to the policy:
     publishExtendedResource: true   # experimental
 ```
 
-…and to every HP/LP pod, alongside the existing `cpu` request:
+...and to every HP/LP pod, alongside the existing `cpu`
+request:
 
 ```yaml
     resources:
@@ -962,6 +988,12 @@ Verify on the node after applying:
 ```bash
 kubectl get node -o jsonpath='{.items[0].status.capacity}' \
     | jq 'with_entries(select(.key | startswith("cpuclass")))'
+# Expect (HP capacity = sum_punit GuaranteedHpCpus over
+# SST-TF-enabled punits; LP capacity = |Allowed \ held|):
+# {
+#   "cpuclass.balloons.nri.io/hp-clos0": "<HP capacity>",
+#   "cpuclass.balloons.nri.io/lp-clos3": "<free CPUs>"
+# }
 ```
 
 A pod whose request exceeds the published capacity gets

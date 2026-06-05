@@ -12,7 +12,7 @@ plugin programs the corresponding SST-CP CLOSes, enables SST-TF,
 and associates container CPUs to the right CLOS at admission time.
 
 A companion document,
-[balloons-example-pct-manual.md](balloons-example-pct-manual.md),
+[balloons-pct-example-manual.md](balloons-pct-example-manual.md),
 walks through the same demo with the "assoc-only" PCT mode in
 which the operator owns the SST configuration and balloons only
 associates CPUs. The two documents share build steps and pod
@@ -20,7 +20,7 @@ YAMLs; the differences are concentrated in the BalloonsPolicy
 (step 4) and the inspection step (step 6).
 
 For background on the feature, see the
-[Intel® Xeon® 6 with Priority Core Turbo Technical
+[Intel(R) Xeon(R) 6 with Priority Core Turbo Technical
 Brief](https://www.intel.com/content/www/us/en/products/docs/processors/xeon/6-priority-core-turbo-brief.html),
 the [PCT section of the balloons policy
 documentation](balloons.md#priority-core-turbo-pct), and the
@@ -59,7 +59,7 @@ visibly higher in the HP pods than in the LP pod.
 
 Hardware and platform:
 
-- A server with Intel® Xeon® 6 CPUs that support SST-PP, SST-CP
+- A server with Intel(R) Xeon(R) 6 CPUs that support SST-PP, SST-CP
   and SST-TF. This example was written against a dual-socket Xeon
   6776P.
 - SST features enabled at the platform level (SST-PP profile
@@ -100,7 +100,7 @@ Optional tools used in this example:
   for loading the benchmark image without a registry.
 
 > **No manual SST step.** Unlike the
-> [assoc-only example](balloons-example-pct-manual.md), there is
+> [assoc-only example](balloons-pct-example-manual.md), there is
 > no `intel-speed-select turbo-freq enable -a` step here.
 > Programming SST-CP CLOS bounds, enabling SST-CP in ordered
 > priority mode, and enabling SST-TF on every package are all
@@ -210,7 +210,9 @@ EOF
 `linux-cpupower` ships `/usr/sbin/turbostat`. `util-linux` provides
 `taskset` and the rest of the standard userspace.
 
-Build the image. Use whichever tool is available on your build host:
+Build the image. Use whichever tool is available on your build host.
+With docker, prefix with `sudo` if your user is not in the `docker`
+group:
 
 ```bash
 # With docker:
@@ -329,7 +331,7 @@ kubectl -n kube-system get pod \
 
 Now apply the policy configuration. The `BalloonsPolicy` below
 defines three cpuClasses. Two of them (`hp-pct`, `lp-pct`) use
-`pctPriority` — this is what selects **managed** mode for the
+`pctPriority` -- this is what selects **managed** mode for the
 PCT allocator:
 
 - `hp-pct` requests `pctPriority: high`. balloons assigns it to
@@ -460,6 +462,7 @@ pct: programmed CLOS 0 min=2300000 max=4600000 kHz
 pct: programmed CLOS 3 min=800000 max=2300000 kHz
 pct: cpuClass "hp-pct" classified HP (managed: pctPriority=high, CLOS 0)
 pct: cpuClass "lp-pct" classified LP (managed: pctPriority=low, CLOS 3)
+pct: fallback CLOS for non-PCT CPUs set to 3 (LP)
 ```
 
 ## 5. Deploy the HP and LP pods
@@ -613,10 +616,10 @@ sudo intel-speed-select perf-profile info 2>&1 \
 # below assumes a single-container pod; adjust if you changed the
 # layout.)
 HP_CPUS=$(for p in pct-hp-1 pct-hp-2 pct-hp-3 pct-hp-4; do
-    kubectl logs $p 2>/dev/null | awk -F'cpus=| ' '/starting/ {print $3}'
+    kubectl logs $p 2>/dev/null | awk -F'cpus=| ' '/starting/ {print $4}'
 done | paste -sd,)
 LP_CPUS=$(kubectl logs pct-lp 2>/dev/null \
-    | awk -F'cpus=| ' '/starting/ {print $3}')
+    | awk -F'cpus=| ' '/starting/ {print $4}')
 echo "HP_CPUS=$HP_CPUS"
 echo "LP_CPUS=$LP_CPUS"
 
@@ -689,7 +692,12 @@ Expected:
   pinned to that same set.
 - One `lp-bln[0]` zone with the 8-CPU set, and `pct-lp/bench`
   pinned to the same set.
-- A `reserved[0]` zone with cpuset `0,1,128,129`.
+- A `reserved[0]` zone covering the currently-used subset of the
+  reserved pool (the SMT pair of physical CPU 0 -- `0,128` -- is the
+  typical outcome on this layout; balloons compacts the reserved
+  balloon to what its containers actually need).
+- An empty `default[0]` zone may also appear; it is the unused
+  default balloon and can be ignored.
 
 The CPU sets here must match the `cpus=` value printed by the
 benchmark inside each pod (step 7), the `clos:0` / `clos:3`
@@ -707,7 +715,7 @@ done
 wait
 ```
 
-Sample shape on a dual-socket Intel® Xeon® 6776P (replace
+Sample shape on a dual-socket Intel(R) Xeon(R) 6776P (replace
 `<...>` with your own measurements):
 
 ```text
@@ -790,7 +798,7 @@ Sample shape (replace with your own measurements):
 ```
 
 Per-thread `events_per_sec` should drop from the HP value to
-roughly LP base / HP turbo × HP value — the same ratio as the
+roughly LP base / HP turbo x HP value -- the same ratio as the
 per-CPU frequency ratio reported by `mhz_avg`. This is the
 headline number aligned with the PCT brief: priority cores let
 the same code finish more work per unit time because they run at
@@ -837,7 +845,7 @@ helm uninstall balloons -n kube-system
 ### 9.2. Restore SST defaults on the node
 
 In managed mode the plugin's `Shutdown()` will, on a graceful
-exit, run `CPReset → TFDisable → CPDisable` per package and
+exit, run `CPReset -> TFDisable -> CPDisable` per package and
 return the platform to its initial SST state. In practice
 `helm uninstall` may not give the daemonset enough termination
 grace for that hook to complete, so always verify and, if SST
@@ -936,7 +944,7 @@ unsupported). This is the number of HP CPUs per punit that
 can simultaneously sustain the highest turbo frequency this
 platform exposes -- not the larger `MaxHpCpus` the allocator
 uses internally. On a Xeon 6 with four 8-core SST-TF buckets
-per punit and four active punits, that is 4 × 8 = 32 HP CPUs
+per punit and four active punits, that is 4 x 8 = 32 HP CPUs
 of guaranteed top-turbo headroom, which is what the scheduler
 should bin-pack on.
 
@@ -957,7 +965,7 @@ Add the flag to the policy:
     publishExtendedResource: true   # experimental
 ```
 
-…and to every HP/LP pod, alongside the existing `cpu` request:
+...and to every HP/LP pod, alongside the existing `cpu` request:
 
 ```yaml
     resources:
