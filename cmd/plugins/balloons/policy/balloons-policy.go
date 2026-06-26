@@ -91,7 +91,7 @@ type balloons struct {
 
 	cpuAllocator cpuallocator.CPUAllocator    // CPU allocator used by the policy
 	memAllocator *libmem.Allocator            // memory allocator used by the policy
-	cpuClasses   *cpuclass.Handler            // CPU class handler (cpufreq + PCT internals)
+	cpuClasses   *cpuclass.Handler            // CPU class handler (cpufreq + SST/PCT internals)
 	loadVirtDev  map[string]*loadClassVirtDev // map LoadClasses to virtual devices
 }
 
@@ -841,12 +841,12 @@ func (p *balloons) resolveCpuClassName(name string) string {
 	if name != "" {
 		return name
 	}
-	for _, cc := range p.bpoptions.CPUClasses {
-		if cc.Name == defaultCpuClassName {
-			return defaultCpuClassName
-		}
+	if slices.ContainsFunc(p.bpoptions.CPUClasses, func(cc CPUClass) bool {
+		return cc.Name == defaultCpuClassName
+	}) {
+		return defaultCpuClassName
 	}
-	return name
+	return ""
 }
 
 // resetCpuClass resets CPU configurations globally. All balloons can
@@ -1864,7 +1864,7 @@ func (p *balloons) setConfig(bpoptions *BalloonsOptions) error {
 	p.bpoptions = bpoptions
 
 	// Construct the CPU class handler that fronts both cpufreq and
-	// PCT internals.
+	// SST/PCT internals.
 	if p.cpuClasses == nil {
 		h, err := cpuclass.New(p.options.System)
 		if err != nil {
