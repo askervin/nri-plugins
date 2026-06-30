@@ -334,5 +334,6 @@ func classDefFromCPUClass(cc *policyapi.CPUClass, info *platformTurboInfo, effec
 		UncoreMaxFreq:               resolve(cc.UncoreMaxFreq),
 		FreqGovernor:                cc.FreqGovernor,
 		DisabledCstates:             cc.DisabledCstates,
+		DisableIRQs:                 cc.DisableIRQs,
 	}
 }

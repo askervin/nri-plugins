@@ -35,6 +35,7 @@ type ClassDef struct {
 	UncoreMaxFreq               uint
 	FreqGovernor                string
 	DisabledCstates             []string
+	DisableIRQs                 bool
 }
 
 // Equal reports whether two ClassDef values describe identical
@@ -46,7 +47,8 @@ func (c ClassDef) Equal(other ClassDef) bool {
 		c.EnergyPerformancePreference != other.EnergyPerformancePreference ||
 		c.UncoreMinFreq != other.UncoreMinFreq ||
 		c.UncoreMaxFreq != other.UncoreMaxFreq ||
-		c.FreqGovernor != other.FreqGovernor {
+		c.FreqGovernor != other.FreqGovernor ||
+		c.DisableIRQs != other.DisableIRQs {
 		return false
 	}
 	if len(c.DisabledCstates) != len(other.DisabledCstates) {

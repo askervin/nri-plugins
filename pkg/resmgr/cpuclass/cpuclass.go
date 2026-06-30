@@ -32,6 +32,7 @@ import (
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/cpufreq"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/cpuidle"
+	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/irq"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/pct"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/types"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/uncorefreq"
@@ -90,6 +91,7 @@ type Handler struct {
 
 	freqWriter   *cpufreq.Writer
 	idleWriter   *cpuidle.Writer
+	irqWriter    *irq.Writer
 	uncoreWriter *uncorefreq.Writer
 }
 
@@ -104,6 +106,7 @@ func New(sys sysfs.System) (*Handler, error) {
 		dirtyCPUs:    map[int]bool{},
 		freqWriter:   cpufreq.NewWriter(cpufreq.Hooks{}),
 		idleWriter:   cpuidle.NewWriter(cpuidle.Hooks{}),
+		irqWriter:    irq.NewWriter(),
 		uncoreWriter: uncorefreq.NewWriter(uncorefreq.Hooks{}),
 	}
 	freq, err := cpufreq.New(sys, h)
@@ -145,6 +148,7 @@ func (h *Handler) Configure(spec ConfigSpec) error {
 	h.cpuClass = map[int]string{}
 	h.dirtyCPUs = map[int]bool{}
 	h.freqWriter.Reset()
+	h.irqWriter.Reset()
 	h.uncoreWriter.Reset()
 	if err := h.cpufreq.Configure(spec.Classes, spec.TurboDomain, spec.Allowed); err != nil {
 		return fmt.Errorf("cpuclass: cpufreq configure: %w", err)
@@ -193,9 +197,9 @@ func (h *Handler) AssignCPUs(name string, cpus []int) {
 	}
 }
 
-// Commit flushes pending cpufreq, cpuidle and uncore changes to
-// sysfs. Per-property writes are deduplicated against the writers'
-// lastWritten caches.
+// Commit flushes pending cpufreq, cpuidle, irq and uncore changes
+// to sysfs. Per-property writes are deduplicated against the
+// writers' lastWritten caches.
 func (h *Handler) Commit() error {
 	if h == nil || len(h.dirtyCPUs) == 0 {
 		return nil
@@ -221,6 +225,11 @@ func (h *Handler) Commit() error {
 		}
 		if err := h.idleWriter.Enforce(name, def.DisabledCstates, cpus); err != nil && firstErr == nil {
 			firstErr = err
+		}
+		if def.DisableIRQs {
+			if err := h.irqWriter.EnforceIRQMask(name, true, cpus); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	dirtyDies := uncorefreq.DiesForCpus(h.sys, h.dirtyCPUs)
