@@ -885,6 +885,12 @@ CPU class definitions. Each class is an object with:
     not needed.
   - List available C-states: `grep
     . /sys/devices/system/cpu/cpu0/cpuidle/state*/name`.
+- `disableIRQs` (bool): Mask CPUs of this class from all IRQs when
+  applied. When `true`, policy writes the CPU mask with these CPUs
+  cleared to the `smp_affinity` files of all interrupts. This can
+  reduce latency and jitter by preventing interrupt handlers from
+  running on these CPUs. Requires root privileges to modify some IRQs.
+  Default is `false` (no change to existing behavior).
 - `energyPerformancePreference` (integer): EPP value for CPUs.
 - `freqGovernor` (string): CPUFreq governor (e.g., `"performance"`).
 - `turboPriority` (integer): Controls exclusive turbo frequency
