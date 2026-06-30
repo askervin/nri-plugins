@@ -95,4 +95,13 @@ type CPUClass struct {
 	// over-subscription on a single node. Has effect only when
 	// the class also carries PctPriority or SstClosID. Experimental.
 	PublishExtendedResource bool `json:"publishExtendedResource,omitempty"`
+	// DisableIRQs masks CPUs of this class from all IRQs when
+	// applied. When true, resource policy writes the CPU mask
+	// with these CPUs cleared to the smp_affinity files of all
+	// interrupts. This can reduce latency and jitter by
+	// preventing interrupt handlers from running on same CPUs
+	// with critical containers. Requires root privileges to
+	// modify some IRQs. Default is false (no change to existing
+	// behavior).
+	DisableIRQs bool `json:"disableIRQs,omitempty"`
 }
