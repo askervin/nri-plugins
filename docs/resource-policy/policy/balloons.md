@@ -477,6 +477,11 @@ balloonTypes:
   - `/sys/class/drm/card0`
   - `/sys/devices/system/cpu/cpu14/cache/index2`
   - `/sys/devices/system/node/node0`
+- Device-plugin devices assigned to a container via the kubelet pod
+  resources API, referenced by their extended resource name with the
+  `podresourceapi:` prefix, like
+  - `podresourceapi:nvidia.com/gpu`
+  - `podresourceapi:intel.com/sgx`
 - First device in list has highest priority.
 - Automatically adds anti-affinity between listed devices and other balloon types.
 
@@ -488,6 +493,30 @@ balloonTypes:
 - name: network-io
   preferCloseToDevices:
   - /sys/class/net/eth0
+```
+
+Unlike sysfs device paths, whose CPU locality is fixed, a
+`podresourceapi:<resourceName>` entry is resolved per container: when a
+container that got such a device triggers creation of a new balloon
+(for instance with `preferNewBalloons: true`), the CPUs of the new
+balloon are selected close to the NUMA node(s) of the exact device
+instance that the kubelet device manager assigned to that container.
+This enables, for example, allocating CPUs from the socket that is
+closest to the specific PCI device a container was given, when
+identical devices exist on multiple sockets.
+
+Using `podresourceapi:` devices requires the pod resources API to be
+enabled with the agent option `podResourceAPI: true`.
+
+```yaml
+config:
+  agent:
+    podResourceAPI: true
+  balloonTypes:
+  - name: gpu-workloads
+    preferNewBalloons: true
+    preferCloseToDevices:
+    - podresourceapi:nvidia.com/gpu
 ```
 
 #### Dynamic CPU Preferences
