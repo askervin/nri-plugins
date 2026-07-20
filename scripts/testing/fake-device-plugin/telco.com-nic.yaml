@@ -1,0 +1,6 @@
+resourceName: telco.com/nic
+devices:
+- id: telconics0n01
+  numaNodes: [0,1]
+- id: telconics1n23
+  numaNodes: [2,3]

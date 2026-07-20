@@ -1,0 +1,10 @@
+resourceName: tech.com/tpu
+devices:
+- id: tcomtpus0n0
+  numaNodes: [0]
+- id: tcomtpus0n1
+  numaNodes: [1]
+- id: tcomtpus1n2
+  numaNodes: [2]
+- id: tcomtpus1n3
+  numaNodes: [3]
