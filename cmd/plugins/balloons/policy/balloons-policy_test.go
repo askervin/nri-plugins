@@ -94,3 +94,37 @@ func TestChangesBalloons(t *testing.T) {
 		})
 	}
 }
+
+func TestWildcardMatch(t *testing.T) {
+	tcases := []struct {
+		pattern  string
+		name     string
+		expected bool
+	}{
+		{"tech.com/tpu", "tech.com/tpu", true},
+		{"tech.com/tpu", "tech.com/gpu", false},
+		{"tech.com/*", "tech.com/tpu", true},
+		{"tech.com/*", "tech.com/", true},
+		{"tech.com/*", "telco.com/nic", false},
+		{"*/gpu", "nvidia.com/gpu", true},
+		{"*/gpu", "nvidia.com/tpu", false},
+		{"*", "anything/at-all", true},
+		{"tech.com/?pu", "tech.com/tpu", true},
+		{"tech.com/?pu", "tech.com/gpu", true},
+		{"tech.com/?pu", "tech.com/pu", false},
+		{"tech.com/?pu", "tech.com/ttpu", false},
+		{"a*c*e", "abcde", true},
+		{"a*c*e", "ace", true},
+		{"a*c*e", "abce", true},
+		{"a*c*e", "abcd", false},
+		{"", "", true},
+		{"", "x", false},
+	}
+	for _, tc := range tcases {
+		t.Run(tc.pattern+" vs "+tc.name, func(t *testing.T) {
+			if got := wildcardMatch(tc.pattern, tc.name); got != tc.expected {
+				t.Errorf("wildcardMatch(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.expected)
+			}
+		})
+	}
+}

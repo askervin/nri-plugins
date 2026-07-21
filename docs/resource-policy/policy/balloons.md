@@ -482,6 +482,12 @@ balloonTypes:
   `podresourceapi:` prefix, like
   - `podresourceapi:nvidia.com/gpu`
   - `podresourceapi:intel.com/sgx`
+
+  The resource name may contain shell-style wildcards (`*` matches any
+  sequence of characters, `?` matches a single character) to match
+  several resources at once, like
+  - `podresourceapi:nvidia.com/*`
+  - `podresourceapi:*/gpu`
 - First device in list has highest priority.
 - Automatically adds anti-affinity between listed devices and other balloon types.
 
@@ -503,7 +509,9 @@ balloon are selected close to the NUMA node(s) of the exact device
 instance that the kubelet device manager assigned to that container.
 This enables, for example, allocating CPUs from the socket that is
 closest to the specific PCI device a container was given, when
-identical devices exist on multiple sockets.
+identical devices exist on multiple sockets. When the resource name
+contains wildcards, the CPUs are selected close to the NUMA node(s) of
+all assigned device instances whose resource name matches the pattern.
 
 Using `podresourceapi:` devices requires the pod resources API to be
 enabled with the agent option `podResourceAPI: true`.

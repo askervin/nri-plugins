@@ -6,11 +6,50 @@ helm_config=$TEST_DIR/balloons-podresources.cfg helm-launch balloons
 
 cleanup() {
     vm-command 'pidof fake-device-plugin && kill $(pidof fake-device-plugin) && sleep 1'
+    vm-command "kubectl delete pods --all --now" || true
 }
 
-cleanup
+# verify-podres-locality RESOURCE CONTAINER...
+#
+# Reads the balloons policy debug log to find, for each CONTAINER, the
+# NUMA node(s) of the device instance matching RESOURCE that the
+# kubelet device manager assigned to it (the log line is emitted by
+# containerDeviceCpus when it resolves a "podresourceapi:" hint). It
+# then verifies that all CPUs the container is allowed to run on belong
+# to those NUMA node(s), that is, that the balloon's CPUs really landed
+# close to the assigned device. Relies on report/verify's nodes[] map,
+# so call "report allowed" before this.
+verify-podres-locality() {
+    local resource=$1
+    shift
+    vm-command "kubectl -n kube-system logs ds/nri-resource-policy-balloons | grep 'pod-resource device \"$resource\"'" >/dev/null \
+        || command-error "no device-locality log lines for resource $resource"
+    local log="$COMMAND_OUTPUT"
+    local ctr
+    for ctr in "$@"; do
+        # The pod resources API reports a device that spans several
+        # NUMA nodes as one entry per node, so collect the union of the
+        # NUMA nodes over all log lines mentioning this container.
+        local lines
+        lines=$(grep "/$ctr matches" <<< "$log")
+        [ -n "$lines" ] \
+            || command-error "no device-locality log line for container $ctr (resource $resource)"
+        local numas
+        numas=$(sed -n 's/.*NUMA nodes \[\([0-9 ]*\)\].*/\1/p' <<< "$lines" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
+        [ -n "$numas" ] \
+            || command-error "could not parse NUMA nodes for container $ctr from: $lines"
+        local nodeset="" n
+        for n in $numas; do
+            nodeset="$nodeset\"node$n\","
+        done
+        out "### container $ctr got $resource on NUMA node(s): $numas"
+        verify "len(nodes[\"$ctr\"]) > 0" \
+               "nodes[\"$ctr\"].issubset({$nodeset})"
+    done
+}
 
 # Install and (re)start fake-device-plugins
+cleanup
 vm-command "command -v fake-device-plugin" || {
     HOST_DEVICE_PLUGIN=$OUTPUT_DIR/fake-device-plugin
 
@@ -50,13 +89,16 @@ EOF
 vm-command "fake-device-plugin -config fake-nic.yaml >& fake-nic.output &"
 sleep 1
 
+
+# Wait until both fake device plugins have registered and their
+# devices are Allocatable.
 rounds=0
 while vm-command "kubectl describe node \$(hostname) | grep -E 'Capacity|Alloc|telco.com|tech.com'"; do
     ( grep -A2 Allocatable <<< "$COMMAND_OUTPUT" | grep -qE 'tech.com/tpu:.*4' ) && \
         ( grep -A2 Allocatable <<< "$COMMAND_OUTPUT" | grep -qE 'telco.com/nic:.*2' ) && \
         break
-    rounds+=$(( rounds + 1 ))
-    (( rounds > 10 )) && error "waiting for fake-device-plugin resources timed out"
+    rounds=$(( rounds + 1 ))
+    (( rounds > 60 )) && error "waiting for fake-device-plugin resources timed out"
     sleep 1
 done
 
@@ -69,9 +111,20 @@ CPUREQ=2 CPULIM=4 MEMREQ=10M MEMLIM=50M \
        create balloons-busybox
 report allowed
 
-# TODO: verify both containers received CPUs near their NICs
-# Use "kubectl get pod" and jq to read containerStatuses from pod0c0 and pod0c1
-# and match numas["pod0c0"] and numas["pod0c1"]
+# The two NIC-consuming containers matched "podresourceapi:telco.com/*".
+# Each got a different telco.com/nic device, one on NUMA nodes {0,1}
+# (package 0) and the other on NUMA nodes {2,3} (package 1). Verify that
+# each container's CPUs landed on the NUMA node(s) of its assigned NIC,
+# and that the two containers ended up on disjoint (different-package)
+# node sets.
+verify-podres-locality "telco.com/nic" pod0c0 pod0c1
+verify 'disjoint_sets(nodes["pod0c0"], nodes["pod0c1"])'
+
+# DELME dont free, there should be enough cpus
+# Free the NIC balloons before the next phase so that the TPU pods
+# below can be placed on the NUMA nodes of their own devices without
+# competing for CPUs with the still-running NIC containers.
+# vm-command "kubectl delete pod pod0 --now"
 
 
 declare -a EXTREQ=( "tech.com/tpu: \"1\"" "cpuclass.balloons.nri.io/pct-hp: \"1\"" )
@@ -81,3 +134,21 @@ CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
        CONTCOUNT=4 \
        create balloons-busybox
 report allowed
+
+# The four TPU-consuming containers matched "podresourceapi:tech.com/*".
+# There are four tech.com/tpu devices, one on each of NUMA nodes 0..3,
+# so the four containers get four distinct devices. Verify that each
+# HP balloon's single CPU landed on the NUMA node of its assigned TPU,
+# and that all four ended up on distinct NUMA nodes.
+verify-podres-locality "tech.com/tpu" pod1c0 pod1c1 pod1c2 pod1c3
+verify 'disjoint_sets(nodes["pod1c0"], nodes["pod1c1"], nodes["pod1c2"], nodes["pod1c3"])'
+
+# Sanity check (cf. test19-pct): the hp-near-tpu balloons use the
+# pct-hp cpuClass, so their CPUs must have been associated to the PCT
+# high-priority CLOS 0.
+vm-command "kubectl -n kube-system logs ds/nri-resource-policy-balloons | grep -E 'associated cpus .* to CLOS 0'" \
+    || command-error "hp-near-tpu balloon CPUs were not associated to PCT HP CLOS 0"
+
+cleanup
+vm-command "kubectl delete pods --all --now" || true
+helm-terminate

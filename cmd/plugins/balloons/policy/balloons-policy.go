@@ -1135,8 +1135,8 @@ func (p *balloons) newBalloon(blnDef *BalloonDef, confCpus bool, c cache.Contain
 			virtDevPCores:       {p.cpuAllocator.GetCPUPriorities()[cpuallocator.PriorityHigh]},
 		},
 	}
-	p.applyCpuClassHints(&allocatorOptions, p.resolveCpuClassName(blnDef.CpuClass), cpuset.New(), 0)
 	p.applyPodResourcesHints(&allocatorOptions, c)
+	p.applyCpuClassHints(&allocatorOptions, p.resolveCpuClassName(blnDef.CpuClass), cpuset.New(), 0)
 	if blnDef.AllocatorTopologyBalancing != nil {
 		allocatorOptions.topologyBalancing = *blnDef.AllocatorTopologyBalancing
 	}
@@ -2202,12 +2202,54 @@ const podResourceHintDevPrefix = "__podres_"
 // podResourceDeviceName returns the device-plugin extended resource
 // name and true if dev refers to a pod-resource device, that is if it
 // is of the form "podresourceapi:<resourceName>". Otherwise it returns
-// "", false.
+// "", false. The returned resource name may contain shell-style
+// wildcards ('*' and '?') that are matched against the names of the
+// resources reported by the pod resources API, for example
+// "podresourceapi:tech.com/*" matches every resource in the
+// "tech.com/" domain.
 func podResourceDeviceName(dev string) (string, bool) {
 	if podresapi.IsPodResourceHint(dev) {
 		return strings.TrimPrefix(dev, podresapi.HintProvider), true
 	}
 	return "", false
+}
+
+// wildcardMatch reports whether name matches pattern, where '*' in
+// pattern matches any (possibly empty) sequence of characters and '?'
+// matches exactly one character. The match is anchored at both ends.
+// Patterns without wildcards are compared for equality.
+func wildcardMatch(pattern, name string) bool {
+	if !strings.ContainsAny(pattern, "*?") {
+		return pattern == name
+	}
+	// Two-pointer glob matcher with backtracking over '*'.
+	var (
+		p, n         int
+		star         = -1
+		starMatchLen int
+	)
+	for n < len(name) {
+		switch {
+		case p < len(pattern) && (pattern[p] == '?' || pattern[p] == name[n]):
+			p++
+			n++
+		case p < len(pattern) && pattern[p] == '*':
+			star = p
+			starMatchLen = n
+			p++
+		case star >= 0:
+			// Backtrack: let the last '*' consume one more char.
+			p = star + 1
+			starMatchLen++
+			n = starMatchLen
+		default:
+			return false
+		}
+	}
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
 }
 
 // podResourceHintDevName returns the synthetic virtual device name for
@@ -2246,12 +2288,16 @@ func (p *balloons) containerDeviceCpus(c cache.Container, resourceName string) (
 	}
 	numas := map[int64]struct{}{}
 	for _, dev := range ctrRes.GetDevices() {
-		if dev.GetResourceName() != resourceName {
+		if !wildcardMatch(resourceName, dev.GetResourceName()) {
 			continue
 		}
+		devNumas := make([]int64, 0)
 		for _, node := range dev.GetTopology().GetNodes() {
 			numas[node.GetID()] = struct{}{}
+			devNumas = append(devNumas, node.GetID())
 		}
+		log.Debugf("pod-resource device %q of container %s matches pattern %q, NUMA nodes %v, device IDs %v",
+			dev.GetResourceName(), c.PrettyName(), resourceName, devNumas, dev.GetDeviceIds())
 	}
 	if len(numas) == 0 {
 		return emptyCpuSet, false
