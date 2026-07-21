@@ -63,14 +63,14 @@ vm-command "command -v fake-device-plugin" || {
 vm-command "cat > fake-tpu.yaml <<EOF
 resourceName: tech.com/tpu
 devices:
-- id: tcomtpus0-numa0
-  numaNodes: [0]
-- id: tcomtpus0-numa1
-  numaNodes: [1]
-- id: tcomtpus1-numa2
-  numaNodes: [2]
-- id: tcomtpus1-numa3
+- id: tcomtpu-0-s1-numa3
   numaNodes: [3]
+- id: tcomtpu-1-s0-numa1
+  numaNodes: [1]
+- id: tcomtpu-2-s0-numa0
+  numaNodes: [0]
+- id: tcomtpu-3-s1-numa2
+  numaNodes: [2]
 EOF
 " || command-error "failed to create fake-tpu.yaml"
 
@@ -120,12 +120,13 @@ report allowed
 verify-podres-locality "telco.com/nic" pod0c0 pod0c1
 verify 'disjoint_sets(nodes["pod0c0"], nodes["pod0c1"])'
 
-# DELME dont free, there should be enough cpus
-# Free the NIC balloons before the next phase so that the TPU pods
-# below can be placed on the NUMA nodes of their own devices without
-# competing for CPUs with the still-running NIC containers.
+# # Free the NIC balloons before the next phase so that the TPU pods
+# # below can be placed on the NUMA nodes of their own devices without
+# # competing for CPUs with the still-running NIC containers. Without
+# # this, node2's only usable CPUs (10-11; cpu8 is off, cpu9 reserved)
+# # are held by pod0c1's NIC balloon, leaving no room for the node2 TPU.
 # vm-command "kubectl delete pod pod0 --now"
-
+# vm-command "kubectl wait --for=delete pod/pod0 --timeout=30s" || true
 
 declare -a EXTREQ=( "tech.com/tpu: \"1\"" "cpuclass.balloons.nri.io/pct-hp: \"1\"" )
 declare -a EXTLIM=( "tech.com/tpu: \"1\"" "cpuclass.balloons.nri.io/pct-hp: \"1\"" )
@@ -149,6 +150,27 @@ verify 'disjoint_sets(nodes["pod1c0"], nodes["pod1c1"], nodes["pod1c2"], nodes["
 vm-command "kubectl -n kube-system logs ds/nri-resource-policy-balloons | grep -E 'associated cpus .* to CLOS 0'" \
     || command-error "hp-near-tpu balloon CPUs were not associated to PCT HP CLOS 0"
 
+vm-command "kubectl delete pods --all --now"
+
+# Create pods that use both a tpu and a nic. Align pod2 near nic, pod3 near tpu.
+declare -a EXTREQ=( "tech.com/tpu: \"1\"" "telco.com/nic: \"1\"" "cpuclass.balloons.nri.io/pct-hp: \"2\"" )
+declare -a EXTLIM=( "tech.com/tpu: \"1\"" "telco.com/nic: \"1\"" "cpuclass.balloons.nri.io/pct-hp: \"2\"" )
+CPUREQ=2 CPULIM=2 MEMREQ=10M MEMLIM=10M \
+       POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: hp-near-tpu" \
+       CONTCOUNT=1 \
+       create balloons-busybox
+report allowed
+verify-podres-locality "tech.com/tpu" pod2c0
+
+declare -a EXTREQ=( "tech.com/tpu: \"1\"" "telco.com/nic: \"1\"" )
+declare -a EXTREQ=( "tech.com/tpu: \"1\"" "telco.com/nic: \"1\"" )
+CPUREQ=1 CPULIM=1 MEMREQ=10M MEMLIM=10M \
+       POD_ANNOTATION="balloon.balloons.resource-policy.nri.io: near-nic" \
+       CONTCOUNT=1 \
+       create balloons-busybox
+report allowed
+verify-podres-locality "telco.com/nic" pod3c0
+
 cleanup
-vm-command "kubectl delete pods --all --now" || true
+vm-command "kubectl delete pods --all --now"
 helm-terminate
