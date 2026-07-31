@@ -1,12 +1,12 @@
 TESTNS=repro-dup
-# Triggering transient duplicates is timing sensitive. We might need to
-# adjust these for our bigger nightly test machine.
+# Triggering transient duplicates is timing sensitive.
 PODS=16
 CONTAINERS=3
 
 setup() {
     vm-command "kubectl create namespace $TESTNS"
-    helm_config=$(instantiate helm-config.yaml) helm-launch topology-aware
+    # Disable debug logging, otherwise log rotation may prevent finding remap lines.
+    helm_config=$(DEBUG_LOGGERS="none" instantiate helm-config.yaml) helm-launch topology-aware
 }
 
 cleanup() {
@@ -16,23 +16,32 @@ cleanup() {
 }
 
 create-containers() {
-    n=$PODS CONTCOUNT=$CONTAINERS CPUREQ=150m namespace=$TESTNS wait='' create burstable
+    n=$PODS CONTCOUNT=$CONTAINERS CPUREQ=10m MEMREQ=50M CPULIM=10m namespace=$TESTNS wait='' create burstable
+    # Wait at least a quarter of containers are running to have
+    # many ocontainers in many different stages.
+    vm-command "nc=0; lnc=-1
+	       while (( nc < $(( PODS * CONTAINERS / 4 )) )); do
+    	           sleep 0.1
+                   nc=\$(pgrep -f pod[0-9]+c[0-9]+ | wc -l)
+		   [ \$lnc = \$nc ] || echo \$nc podXcY processes running
+		   lnc=\$nc
+               done"
 }
 
 kill-containers() {
-    local commands=""
-
-    commands="pkill -9 -f nri-resource-policy-topology-aware || :"
     case ${k8scri:-containerd} in
         containerd)
-            vm-command 'pkill -9 -f nri-resource-policy-topology-aware || :; \
-                       kill -9 $(pidof containerd) || :; \
-                       pkill -9 -f "sleep inf" || :'
+            vm-command 'kill -STOP $(pidof containerd)
+                       pkill -9 -f "sleep inf"
+		       sleep 1
+                       kill -9 $(pidof containerd)'
+
             ;;
         cri-o)
-            vm-command 'pkill -9 -f nri-resource-policy-topology-aware || :; \
-                       kill -9 $(pidof crio) || :; \
-                       pkill -9 -f "sleep inf" || :'
+            vm-command 'kill -STOP $(pidof crio)
+                       pkill -9 -f "sleep inf"
+		       sleep 1
+                       kill -9 $(pidof crio)'
             ;;
         *)
             error "Unknown runtime: $runtime"
@@ -41,19 +50,15 @@ kill-containers() {
 }
 
 wait-containers-restart() {
-    local statuses="" pod=""
+    local statuses=""
 
     while ! [[ "$statuses" == "Running" ]]; do
+        sleep 5
+	if vm-command "kubectl logs -n kube-system ds/nri-resource-policy-topology-aware 2>&1 | grep -iE 'remap|keeping|duplicate'"; then
+	    break
+	fi
         vm-command "kubectl get pods -A --no-headers=true | tr -s '\t' ' '| cut -d ' ' -f4 | sort -u"
         statuses=$COMMAND_OUTPUT
-        [[ "$statuses" == *"Running"*"Unknown"* ]] && (
-            vm-command "kubectl get pods -A -o name | grep topology-aware"
-            pod=$COMMAND_OUTPUT
-            if [ -n "$pod" ]; then
-                vm-command "kubectl delete -n kube-system $pod"
-            fi
-            sleep 5
-        )
     done
 }
 
@@ -90,7 +95,7 @@ check-no-duplicate-allocations() {
 pull-logs() {
     local cnt=0
     while [ $cnt -lt 5 ]; do
-        vm-command "kubectl logs -n kube-system ds/nri-resource-policy-topology-aware"
+        vm-command "kubectl logs -n kube-system ds/nri-resource-policy-topology-aware 2>&1 | grep -iE 'remap|keeping|duplicate|unable'"
         if grep -q 'unable to retrieve container logs for' <<< $COMMAND_OUTPUT; then
             echo "Unable to retrieve policy logs, retrying..."
             sleep 3
@@ -138,6 +143,11 @@ while true; do
         echo "Max retries ($retries) reached, could not reproduce the issue, giving up"
         break
     fi
+
+    # Re-create all pods, otherwise CrashLoopBackup may prevents finding remaps.
+    cleanup
+    setup
+    create-containers
 done
 
 cleanup
