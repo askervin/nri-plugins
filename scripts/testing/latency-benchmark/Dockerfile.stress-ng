@@ -1,0 +1,7 @@
+# Container image for the stress-ng background ("noisy neighbour")
+# workload that competes with the latency-sensitive benchmark.
+FROM registry.fedoraproject.org/fedora-minimal:43
+
+RUN microdnf install -y --setopt=install_weak_deps=False stress-ng && microdnf clean all
+
+ENTRYPOINT ["/usr/bin/stress-ng"]

@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${BENCH_JOB_NAME:-sleep-accuracy}
+  namespace: ${BENCH_NAMESPACE:-latency-benchmark}
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        ${BENCH_LABEL_KEY:-latency}: ${BENCH_LABEL_VALUE:-critical}
+        app: sleep-accuracy
+    spec:
+      restartPolicy: Never
+      nodeName: ${NODE_NAME}
+      containers:
+      - name: sleep-accuracy
+        image: ${SLEEP_ACCURACY_IMAGE:-localhost/sleep-accuracy:latest}
+        imagePullPolicy: Never
+        args:
+        $(for arg in ${BENCH_ARGS}; do echo "
+        - \"${arg}\"
+	"; done)
+        securityContext:
+          # CAP_SYS_NICE lets the process keep the realtime scheduling
+          # policy that balloons sets for it. Without it the kernel
+          # would refuse SCHED_FIFO.
+          capabilities:
+            add:
+            - SYS_NICE
+        resources:
+          requests:
+            cpu: "${BENCH_CPU_REQUEST:-2}"
+            memory: ${BENCH_MEM_REQUEST:-256Mi}
+          limits:
+            cpu: "${BENCH_CPU_REQUEST:-2}"
+            memory: ${BENCH_MEM_REQUEST:-256Mi}

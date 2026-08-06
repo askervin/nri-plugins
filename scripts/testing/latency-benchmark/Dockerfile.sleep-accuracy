@@ -1,0 +1,25 @@
+# Container image for running the sleep-accuracy benchmark tool.
+#
+# The tool is built from source in a builder stage and copied into a
+# minimal runtime image. Nothing in this image configures CPU
+# frequencies, C-states or scheduling parameters: all of that is left
+# to the container runtime and the NRI balloons policy.
+FROM registry.fedoraproject.org/fedora:43 AS builder
+
+RUN dnf install -y --setopt=install_weak_deps=False gcc glibc-static make && dnf clean all
+
+WORKDIR /build
+COPY sleep-accuracy.c Makefile ./
+# Static linking keeps the runtime image free of a libc dependency and
+# avoids the dynamic loader touching disk on the latency-critical path.
+RUN make STATIC=1
+
+FROM registry.fedoraproject.org/fedora-minimal:43
+
+# util-linux provides taskset and chrt, useful when inspecting what the
+# balloons policy actually applied to the benchmark process.
+RUN microdnf install -y --setopt=install_weak_deps=False util-linux procps-ng && microdnf clean all
+
+COPY --from=builder /build/sleep-accuracy /usr/local/bin/sleep-accuracy
+
+ENTRYPOINT ["/usr/local/bin/sleep-accuracy"]
