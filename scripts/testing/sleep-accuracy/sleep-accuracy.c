@@ -52,6 +52,11 @@
 // MAX_COMB - maximum number of combinations for cpus, pol/prio, busy, sleep...
 #define MAX_COMB 10
 
+// SCHED_POL_KEEP - pseudo scheduling policy: do not change the
+// scheduling policy and priority of the process, only measure and
+// report the effective ones.
+#define SCHED_POL_KEEP -1
+
 pid_t main_thread_pid = 0;
 
 typedef enum {
@@ -98,7 +103,13 @@ void print_usage() {
         "                     futex: thread 1 and thread 2 pinned to cpu0 and cpu1 respectively, or both pinned to cpu0 if cpu1 is -1\n"
         "  -t <interval,...>  Comma-separated list of CPU toggling intervals [ns], if CPU toggling is used with -c cpu0/cpu1 (default: 1000000)\n"
         "  -p <pol/prio,...>  Comma-separated list of Scheduling policy/priority.\n"
-        "                     0=OTHER, 1=FIFO, 2=RR, 3=BATCH, 5=IDLE (default: 0/0), see sched_setscheduler(2)\n"
+        "                     0=OTHER, 1=FIFO, 2=RR, 3=BATCH, 5=IDLE, see sched_setscheduler(2)\n"
+        "                     (default: no scheduling policy or priority is set, the ones the\n"
+        "                     process already has are kept, for instance the ones set by a\n"
+        "                     container runtime or the NRI balloons policy)\n"
+        "                     \"keep\" in the list has the same effect as the default.\n"
+        "                     The effective policy and priority are always reported in the\n"
+        "                     schedpol and schedprio columns.\n"
         "  -f <min/max,...>   Comma-separated list of cpufreq min/max [kHz] pairs (default: 0/9999999)\n"
         "  -i <min/max,...>   Comma-separated list of cpuidle min/max state pairs (default: 0/99)\n"
         "  -B <busy,...>      Comma-separated list of busy durations [ns] (default: 0,1000,1000000)\n"
@@ -147,14 +158,38 @@ void set_cpu_affinity(int cpu) {
   }
 }
 
-// set_scheduler - set scheduling policy and priority
+// set_scheduler - set scheduling policy and priority.
+// If policy is SCHED_POL_KEEP, keep whatever policy and priority the
+// process already has.
 void set_scheduler(int policy, int priority) {
     struct sched_param param;
+    if (policy == SCHED_POL_KEEP) {
+        return;
+    }
     param.sched_priority = priority;
     if (sched_setscheduler(0, policy, &param) == -1) {
         perror("sched_setscheduler");
         exit(EXIT_FAILURE);
     }
+}
+
+// get_scheduler - read effective scheduling policy and priority
+void get_scheduler(int *policy, int *priority) {
+    struct sched_param param = {};
+    int pol = sched_getscheduler(0);
+    if (pol == -1) {
+        perror("sched_getscheduler");
+        *policy = -2;
+        *priority = -2;
+        return;
+    }
+    *policy = pol;
+    if (sched_getparam(0, &param) == -1) {
+        perror("sched_getparam");
+        *priority = -2;
+        return;
+    }
+    *priority = param.sched_priority;
 }
 
 // set_cpuidle_minmax - enable/disable cpuidle/stateX's
@@ -770,7 +805,7 @@ void parse_options(int argc, char *argv[]) {
     options.iterations = 1000;
     options.repeats = 1;
 
-    options.polprio[options.polprio_count][0] = 0; // Default policy OTHER
+    options.polprio[options.polprio_count][0] = SCHED_POL_KEEP; // Default scheduler policy: no change
     options.polprio[options.polprio_count++][1] = 0; // Default priority 0
 
     options.cpuidle_minmax[options.cpuidle_count][0] = 0; // Default cpuidle min state
@@ -812,10 +847,16 @@ void parse_options(int argc, char *argv[]) {
             char *token = strtok(argv[++i], ",");
             while (token && options.polprio_count < MAX_COMB) {
                 char *slash = strchr(token, '/');
-                if (slash) {
+                if (strcmp(token, "keep") == 0) {
+                    options.polprio[options.polprio_count][0] = SCHED_POL_KEEP;
+                    options.polprio[options.polprio_count++][1] = 0;
+                } else if (slash) {
                     *slash = '\0';
                     options.polprio[options.polprio_count][0] = atoi(token);
                     options.polprio[options.polprio_count++][1] = atoi(slash + 1);
+                } else {
+                    fprintf(stderr, "Invalid scheduling policy/priority: %s\n", token);
+                    exit(EXIT_FAILURE);
                 }
                 token = strtok(NULL, ",");
             }
@@ -924,7 +965,9 @@ int main(int argc, char *argv[]) {
 
 
                 for (int pp_idx = 0; pp_idx < options.polprio_count; pp_idx++) {
+                    int eff_schedpol, eff_schedprio;
                     set_scheduler(options.polprio[pp_idx][0], options.polprio[pp_idx][1]);
+                    get_scheduler(&eff_schedpol, &eff_schedprio);
 
                     for (int cpuidle_idx = 0; cpuidle_idx < options.cpuidle_count; cpuidle_idx++) {
                         int cpuidle_min = -1;
@@ -983,8 +1026,8 @@ int main(int argc, char *argv[]) {
                                            cpu,
                                            cpu_other,
                                            cpu_other != -1 ? toggle_ns : -1,
-                                           options.polprio[pp_idx][0],
-                                           options.polprio[pp_idx][1],
+                                           eff_schedpol,
+                                           eff_schedprio,
                                            cpuidle_min,
                                            cpuidle_max,
                                            cpufreq_min,
