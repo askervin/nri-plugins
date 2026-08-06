@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${NOISE_DEPLOYMENT_NAME:-stress-ng-noise}
+  namespace: ${BENCH_NAMESPACE:-latency-benchmark}
+spec:
+  replicas: ${NOISE_REPLICAS:-4}
+  selector:
+    matchLabels:
+      app: stress-ng-noise
+  template:
+    metadata:
+      labels:
+        ${NOISE_LABEL_KEY:-latency}: ${NOISE_LABEL_VALUE:-noise}
+        app: stress-ng-noise
+    spec:
+      nodeName: ${NODE_NAME}
+      terminationGracePeriodSeconds: ${NOISE_GRACE_SECONDS:-2}
+      containers:
+      - name: stress-ng
+        image: ${STRESS_NG_IMAGE:-localhost/stress-ng:latest}
+        imagePullPolicy: Never
+        args:
+        $(for arg in ${NOISE_ARGS}; do echo "
+        - \"${arg}\"
+	"; done)
+        resources:
+          requests:
+            cpu: "${NOISE_CPU_REQUEST:-1}"
+            memory: ${NOISE_MEM_REQUEST:-512Mi}
+          limits:
+            cpu: "${NOISE_CPU_REQUEST:-1}"
+            memory: ${NOISE_MEM_REQUEST:-512Mi}
