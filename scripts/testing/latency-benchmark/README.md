@@ -24,7 +24,7 @@ Without `-p` the tool does not call `sched_setscheduler()` at all, and
 reports the policy and priority it inherited in the `schedpol` and
 `schedprio` output columns. If it did set its own policy, it would
 silently erase the realtime class the balloons policy had applied and
-stages 4-7 would measure nothing.
+stages 4-8 would measure nothing.
 
 ## Scripts
 
@@ -69,10 +69,11 @@ for inspection instead of cleaning up.
 
 ## Stage ladder
 
-Stages 1-6 are incremental: each keeps what the previous one configured
-and adds one mechanism. **Stage 7 is a replacement**, not an increment:
-it drops the cpufreq and `turboPriority` arbitration of stages 5-6 and
-lets PCT hardware do the priority work instead.
+Stages 1-7 are incremental: each keeps what the previous one configured
+and adds one mechanism. **Stage 8 is a replacement**, not an increment:
+it drops the cpufreq and `turboPriority` arbitration of stages 6-7 and
+lets PCT hardware do the priority work instead. IRQ isolation is not a
+frequency control, so stage 8 keeps it.
 
 | # | Stage | Adds |
 | --- | --- | --- |
@@ -80,11 +81,27 @@ lets PCT hardware do the priority work instead.
 | 2 | `default-balloon` | Policy installed, benchmark shares the default balloon with the noise. |
 | 3 | `dedicated-cpus` | Own balloon with dedicated CPUs (`preferNewBalloons`). |
 | 4 | `realtime-sched` | `SCHED_FIFO` priority 80 via `schedulingClasses`. |
-| 5 | `disabled-cstates` | `disabledCstates: [C1E, C6]` on the benchmark's CPUs via `cpuClasses`. |
-| 6 | `max-freq-turbo-prio` | `minFreq: base`, `maxFreq: turbo`, and `turboPriority` capping every other class at base. |
-| 7 | `pct-priority-cores` | `pctPriority: high` on the benchmark's CPUs, `low` everywhere else. Replaces the stage 5-6 frequency controls. |
+| 5 | `isolate-irqs` | `irqMode: isolate` keeping hardware interrupts off the benchmark's CPUs. |
+| 6 | `disabled-cstates` | `disabledCstates: [C1E, C6]` on the benchmark's CPUs via `cpuClasses`. |
+| 7 | `max-freq-turbo-prio` | `minFreq: base`, `maxFreq: turbo`, and `turboPriority` capping every other class at base. |
+| 8 | `pct-priority-cores` | `pctPriority: high` on the benchmark's CPUs, `low` everywhere else. Replaces the stage 6-7 frequency controls. |
 
-Stage 7 needs a low-priority class covering everything else, including
+Stage 5 also makes the noise and default balloons IRQ sinks
+(`irqMode: sink`). `isolate` alone only removes the benchmark's CPUs
+from an IRQ's affinity when some other allowed CPU is left, so without a
+sink, IRQs whose affinity is a subset of those CPUs would stay put. The
+sink gives them the noise CPUs to land on instead.
+
+Not every IRQ can be moved. The kernel manages some affinities itself
+and keeps `smp_affinity_list` read-only even for root; the per-queue
+MSI-X interrupts of virtio devices are a common example. If such an IRQ
+sits on a CPU the stage isolates, the isolation is incomplete. The
+harness counts the refusals into `irq_affinity_failures` in the stage
+environment and marks each affinity `rw` or `ro` in `node-state.txt`, so
+that this shows up as a recorded fact rather than as unexplained
+latency.
+
+Stage 8 needs a low-priority class covering everything else, including
 `idleCPUClass`: idle CPUs left outside the LP CLOS would inflate the
 active high-priority core count and defeat the point.
 
@@ -104,7 +121,7 @@ Job and Deployment, the helm values and install log, the plugin's own
 log, `kubectl` output, the node state, the stage's environment, and the
 raw `sleep-accuracy` output.
 
-`latencies.csv` holds one row per measurement. The 23 configuration
+`latencies.csv` holds one row per measurement. The 26 configuration
 columns describe what was in effect, followed by the 23 columns
 `sleep-accuracy` prints. In a configuration column **0 means the option
 was not configured**; otherwise the column holds the value in use
@@ -124,13 +141,24 @@ since each stage directory keeps the configuration row it was run with:
 
 Meaningful numbers need a node that actually has the mechanisms the
 stages use: `cpufreq`, `cpuidle`, uncore frequency control, and SST/PCT
-(`/dev/isst_interface`) for stage 7. `run-benchmark.sh` warns about
+(`/dev/isst_interface`) for stage 8. `run-benchmark.sh` warns about
 whatever is missing and records `cpu_tuning_applied=0` in the stage
 environment when the policy could not apply CPU tuning, so that
 unusable results are recognisable afterwards.
 
-Stage 7 needs the plugin to run privileged with `/dev` access. The
+Stage 8 needs the plugin to run privileged with `/dev` access. The
 harness passes `--set allowPCT=true` for it automatically.
+
+The runtime has to offer NRI to the plugin. containerd enables NRI by
+default since 2.0, so nothing is needed there, and the harness checks
+what the runtime reports before the first stage. Only if NRI really is
+off does it ask the chart to enable it with
+`nri.runtime.patchConfig=true`; `PATCH_RUNTIME_CONFIG=1` forces that on.
+Patching is not the default because the init container that does it
+rewrites `/etc/containerd/config.toml` and restarts containerd. On a
+configuration that is entirely comments, as the containerd.io packages
+ship, that container also panics on a nil map, leaving the plugin stuck
+in `Init:CrashLoopBackOff`.
 
 The harness forwards any `OVERRIDE_*` variable to the plugin container,
 which lets the e2e simulated-platform hooks (`OVERRIDE_SYS_CPUFREQ`,

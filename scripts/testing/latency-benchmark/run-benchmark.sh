@@ -98,6 +98,19 @@ RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/results/$(date +%Y%m%d-%H%M%S)}"
 # ALLOW_PCT - give the plugin the privileges it needs for PCT.
 ALLOW_PCT="${ALLOW_PCT:-}"
 
+# PATCH_RUNTIME_CONFIG - non-empty: let the chart's patch-runtime init
+# container edit the runtime configuration to enable NRI.
+#
+# Off by default, because the runtimes this benchmark targets enable NRI
+# themselves: containerd has done so since 2.0. Patching an already
+# working runtime gains nothing and can lose everything, since the init
+# container rewrites /etc/containerd/config.toml and restarts containerd.
+# On a config that is entirely comments, as shipped by the containerd.io
+# packages, the init container also panics on a nil map and the plugin
+# never starts. check_nri_enabled turns this on by itself if it finds a
+# runtime where NRI really is off.
+PATCH_RUNTIME_CONFIG="${PATCH_RUNTIME_CONFIG:-}"
+
 # OVERRIDE_* - simulated sysfs and SST for the plugin, as used by the
 # e2e tests: OVERRIDE_SYS_CSTATES, OVERRIDE_SYS_CPUFREQ, OVERRIDE_SST,
 # OVERRIDE_SST_STATE_DIR. Any variable whose name starts with OVERRIDE_
@@ -112,6 +125,54 @@ overridden_vars() {
     compgen -v | grep '^OVERRIDE_' | sort | while read -r name; do
         [ -n "${!name:-}" ] && echo "$name"
     done
+}
+
+# check_nri_enabled - make sure the runtime offers NRI to the plugin.
+#
+# The plugin can only do its work if the runtime talks NRI, so NRI being
+# off has to be dealt with before the first stage rather than showing up
+# as a plugin that installs but never pins anything. Enabling it is left
+# to the chart's init container, which is only requested when NRI really
+# is off: that container rewrites the runtime configuration and restarts
+# containerd, which is not something to do to a node already working.
+#
+# Ask containerd what it resolved rather than looking for the socket:
+# /run/nri is mode 0700 root:root, so an unprivileged test never sees the
+# socket even when it is there. The dumped configuration also covers the
+# defaults, and containerd has enabled NRI by default since 2.0.
+check_nri_enabled() {
+    if [ -n "$PATCH_RUNTIME_CONFIG" ]; then
+        info "Runtime configuration patching requested (PATCH_RUNTIME_CONFIG)."
+        return 0
+    fi
+    local dump
+    dump="$($SUDO containerd config dump 2>/dev/null)"
+    if [ -n "$dump" ]; then
+        # The nri section carries "disable = true|false". Read that flag
+        # from the section rather than grepping the whole dump, where
+        # other plugins have disable flags of their own.
+        local disabled
+        disabled="$(printf '%s\n' "$dump" | awk '
+            /io\.containerd\.nri\.v1\.nri/ { inside = 1; next }
+            inside && /^ *\[/            { exit }
+            inside && /disable/          { print $3; exit }')"
+        case "$disabled" in
+            false)
+                info "containerd reports NRI enabled, no runtime patching needed."
+                return 0
+                ;;
+            true)
+                warn "containerd reports NRI disabled, asking the chart to enable it;"
+                warn "this rewrites the runtime configuration and restarts containerd"
+                PATCH_RUNTIME_CONFIG=1
+                return 0
+                ;;
+        esac
+    fi
+    # Neither the dump nor the flag was readable. Say so instead of
+    # silently patching a runtime that may well be fine.
+    warn "cannot tell whether the runtime has NRI enabled;"
+    warn "assuming it does, set PATCH_RUNTIME_CONFIG=1 if the plugin does not start"
 }
 
 # check_node_capabilities - warn about tuning mechanisms this node does
@@ -163,6 +224,9 @@ Key environment variables:
   CHART                balloons helm chart path or name
   PLUGIN_IMAGE         override plugin image, as name:tag
   ALLOW_PCT            non-empty: helm --set allowPCT=true
+  PATCH_RUNTIME_CONFIG non-empty: let the chart rewrite the runtime
+                       configuration to enable NRI (default: only when
+                       the runtime reports NRI disabled)
   DISABLED_CSTATES     C-states to disable (default: C1E,C6)
   OVERRIDE_*           simulated platform for the plugin, for validating
                        this harness on a VM only (see comments in script)
@@ -242,6 +306,27 @@ if [ -z "$CHART" ]; then
     fi
 fi
 
+# The chart installs the BalloonsPolicy CRD, and the CRD rejects fields
+# it does not know about. A released chart therefore cannot run stages
+# that use options added after that release: the configuration is
+# refused outright. Check the fields the stages need up front instead of
+# letting a stage fail mid-run with a page of decoding errors.
+crd_file=""
+if [ -d "$CHART" ]; then
+    crd_file="$CHART/crds/config.nri_balloonspolicies.yaml"
+elif helm show crds "$CHART" > /dev/null 2>&1; then
+    crd_file="$(mktemp)"
+    helm show crds "$CHART" > "$crd_file" 2>/dev/null
+fi
+if [ -n "$crd_file" ] && [ -s "$crd_file" ]; then
+    for field in irqMode irqClaim pctPriority turboPriority; do
+        grep -q "^ *${field}:" "$crd_file" ||
+            warn "the chart's BalloonsPolicy CRD does not support $field," \
+                 "stages using it will fail: set CHART to a checkout of" \
+                 "deployment/helm/balloons"
+    done
+fi
+
 # Default the noise to half the node's CPUs, so it competes for CPU time
 # without completely starving the node.
 node_cpus="$(nproc)"
@@ -318,19 +403,112 @@ node_state_snapshot() {
         else
             echo "intel-speed-select not available"
         fi
-        echo "=== IRQ affinities (non-default only) ==="
+        echo "=== IRQ affinities ==="
+        # "ro" marks an affinity the kernel manages itself and refuses to
+        # let anyone change, so the balloons policy cannot isolate it.
+        # The mode bits are read rather than tested with -w, because this
+        # snapshot does not run as root and the files belong to root.
+        local num writable
         for irq in /proc/irq/[0-9]*; do
             [ -r "$irq/smp_affinity_list" ] || continue
-            echo "$(basename "$irq"): $(cat "$irq/smp_affinity_list" 2>/dev/null)"
+            num="$(basename "$irq")"
+            case "$(stat -c %A "$irq/smp_affinity_list" 2>/dev/null)" in
+                ??w*) writable=rw ;;
+                *)    writable=ro ;;
+            esac
+            # /proc/interrupts has the IRQ number, one count per CPU and
+            # then the description. Drop the all-digit count fields.
+            printf '%s: %s (%s) %s\n' "$num" \
+                "$(cat "$irq/smp_affinity_list" 2>/dev/null)" "$writable" \
+                "$(awk -v n="$num:" '$1 == n {
+                       for (i = 2; i <= NF; i++)
+                           if ($i !~ /^[0-9]+$/) d = d " " $i
+                       sub(/^ +/, "", d); print d; exit }' \
+                   /proc/interrupts 2>/dev/null)"
         done
     } > "$out" 2>&1
 }
 
 # wait_for_daemonset - wait until the plugin is running on this node.
+#
+# "rollout status" is not enough on its own. It reports the generation
+# helm installed, but a stage that changes the pod spec (allowPCT does,
+# because it makes the container privileged) replaces the pod, and the
+# rollout can be reported complete against the outgoing generation while
+# the incoming pod is still starting. A benchmark started then runs with
+# no plugin at all: nothing is pinned, no scheduling class is applied,
+# and the stage silently measures an unconfigured system.
+#
+# So wait for a pod of the current generation to be Ready on this node,
+# and for its container to have stopped restarting.
 wait_for_daemonset() {
     local timeout="${1:-180}"
     kubectl rollout status -n "$HELM_NAMESPACE" \
-            "ds/$HELM_RELEASE" --timeout="${timeout}s"
+            "ds/$HELM_RELEASE" --timeout="${timeout}s" || return 1
+
+    # Take the selector from the DaemonSet rather than assuming the
+    # chart's label values, so this keeps working if they change.
+    local selector
+    selector="$(kubectl get ds "$HELM_RELEASE" -n "$HELM_NAMESPACE" \
+                    -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' \
+                    2>/dev/null | sed 's/,$//')"
+    [ -n "$selector" ] || selector="app.kubernetes.io/name=nri-resource-policy-balloons"
+
+    local deadline=$((SECONDS + timeout))
+    local pod ready
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        # The plugin is a DaemonSet, so exactly one pod is expected here.
+        pod="$(kubectl get pods -n "$HELM_NAMESPACE" \
+                   -l "$selector" \
+                   --field-selector "spec.nodeName=$NODE_NAME" \
+                   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+        if [ -n "$pod" ]; then
+            ready="$(kubectl get pod "$pod" -n "$HELM_NAMESPACE" \
+                         -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)"
+            if [ "$ready" = true ]; then
+                echo "plugin pod $pod is ready"
+                return 0
+            fi
+        fi
+        sleep 2
+    done
+    warn "no ready plugin pod on $NODE_NAME after ${timeout}s"
+    return 1
+}
+
+# wait_for_policy_status TIMEOUT - wait until the plugin reports that it
+# has applied the current configuration on this node.
+#
+# The policy records, per node, the generation of the BalloonsPolicy it
+# last processed and whether that succeeded. Comparing the reported
+# generation with the CR's own tells apart "applied" from "not seen yet",
+# which a status value alone cannot: right after an apply the status
+# still describes the previous generation and reads Success.
+wait_for_policy_status() {
+    local timeout="${1:-10}"
+    local deadline=$((SECONDS + timeout))
+    # Node names may contain dots, which jsonpath would read as field
+    # separators, so index the map with a quoted key.
+    local key="{.status.nodes['$NODE_NAME']}"
+    local generation reported status node_status
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        generation="$(kubectl get balloonspolicy default -n "$HELM_NAMESPACE" \
+                          -o jsonpath='{.metadata.generation}' 2>/dev/null)"
+        node_status="$(kubectl get balloonspolicy default -n "$HELM_NAMESPACE" \
+                           -o jsonpath="$key" 2>/dev/null)"
+        reported="$(printf '%s' "$node_status" | sed -n 's/.*"generation":\([0-9]*\).*/\1/p')"
+        status="$(printf '%s' "$node_status" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+        if [ -n "$generation" ] && [ "$reported" = "$generation" ]; then
+            echo "policy generation $generation reported as $status on $NODE_NAME"
+            [ "$status" = Success ] && return 0
+            # A rejected configuration will not become valid by waiting.
+            printf '%s\n' "$node_status"
+            return 1
+        fi
+        sleep 1
+    done
+    echo "timeout: policy generation $generation, node reported ${reported:-none}"
+    return 1
 }
 
 # deploy_noise - start the background workload, if any.
@@ -425,9 +603,11 @@ run_stage() {
         local -a helm_args=(
             install "$HELM_RELEASE" "$CHART"
             --namespace "$HELM_NAMESPACE"
-            --set nri.runtime.patchConfig=true
             --wait --timeout 300s
         )
+        if [ -n "$PATCH_RUNTIME_CONFIG" ]; then
+            helm_args+=(--set nri.runtime.patchConfig=true)
+        fi
         if [ -n "$ALLOW_PCT" ] || [ -n "${STAGE_NEEDS_PCT:-}" ]; then
             helm_args+=(--set allowPCT=true)
         fi
@@ -476,8 +656,18 @@ run_stage() {
             return 1
         fi
         # The policy watches its configuration and reconfigures
-        # asynchronously. Give it time to pre-create balloons and apply
-        # CPU tuning before any workload starts.
+        # asynchronously, so wait for it to report that it accepted this
+        # configuration before starting any workload. Waiting on the
+        # status beats sleeping a fixed time: a rejected configuration is
+        # caught here instead of turning into a stage that quietly
+        # measures an unconfigured system.
+        if ! wait_for_policy_status "${CONFIG_SETTLE_SECONDS:-10}" \
+                 >> "$stage_dir/kubectl-apply.log" 2>&1; then
+            warn "policy did not report success for this configuration," \
+                 "see $stage_dir/kubectl-apply.log"
+        fi
+        # Even after the policy accepts the configuration, applying CPU
+        # tuning to the hardware takes a moment.
         sleep "${CONFIG_SETTLE_SECONDS:-10}"
     else
         info "Baseline stage: no balloons policy installed."
@@ -543,6 +733,20 @@ run_stage() {
                  "$stage_dir/nri-resource-policy.log" >&2
             echo "cpu_tuning_applied=0" >> "$stage_dir/stage-env.txt"
         fi
+        # Some IRQ affinities cannot be changed at all: the kernel
+        # manages them itself and makes smp_affinity_list read-only even
+        # for root. Typical examples are the per-queue MSI-X interrupts
+        # of virtio devices. If such an IRQ happens to sit on a CPU the
+        # stage wanted to isolate, the isolation is incomplete, which
+        # the latencies will show but nothing else would explain.
+        local irq_failed
+        irq_failed="$(grep -c "failed to set affinity of irq" \
+            "$stage_dir/nri-resource-policy.log" 2>/dev/null || true)"
+        if [ "${irq_failed:-0}" -gt 0 ]; then
+            warn "$irq_failed IRQ affinity updates were refused by the kernel," \
+                 "IRQ isolation is incomplete"
+            echo "irq_affinity_failures=$irq_failed" >> "$stage_dir/stage-env.txt"
+        fi
     fi
     kubectl get pods -n "$BENCH_NAMESPACE" -o wide \
         > "$stage_dir/pods.txt" 2>&1
@@ -586,6 +790,7 @@ info "Results directory: $RESULTS_DIR"
 info "Node: $NODE_NAME ($node_cpus CPUs)"
 info "Chart: $CHART"
 info "Stages: ${run_stages[*]}"
+[ "$dry_run" = 1 ] || check_nri_enabled
 [ "$dry_run" = 1 ] || check_node_capabilities
 
 if [ "$dry_run" = 0 ]; then
