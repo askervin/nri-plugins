@@ -92,14 +92,30 @@ from an IRQ's affinity when some other allowed CPU is left, so without a
 sink, IRQs whose affinity is a subset of those CPUs would stay put. The
 sink gives them the noise CPUs to land on instead.
 
-Not every IRQ can be moved. The kernel manages some affinities itself
-and keeps `smp_affinity_list` read-only even for root; the per-queue
-MSI-X interrupts of virtio devices are a common example. If such an IRQ
-sits on a CPU the stage isolates, the isolation is incomplete. The
-harness counts the refusals into `irq_affinity_failures` in the stage
-environment and marks each affinity `rw` or `ro` in `node-state.txt`, so
-that this shows up as a recorded fact rather than as unexplained
-latency.
+Not every IRQ can be moved. The kernel manages the affinity of some
+interrupts itself and refuses to hand it over, in either of two ways:
+`smp_affinity_list` is read-only, as for the per-queue MSI-X interrupts
+of virtio devices, or the file is writable but every write fails with
+`EIO`, as for the per-queue interrupts of NVMe and QAT devices. The
+second kind cannot be spotted from the file mode, so a stage can only
+discover it by trying. If such an IRQ sits on a CPU the stage isolates,
+the isolation is incomplete. The harness counts the refusals into
+`irq_affinity_failures` in the stage environment and marks each affinity
+`rw` or `ro` in `node-state.txt`, so that this shows up as a recorded
+fact rather than as unexplained latency.
+
+A large `irq_affinity_failures` is normal on a server with many NVMe
+devices and says little on its own: the drivers spread one queue per
+CPU, so on a 128-CPU node every CPU hosts managed interrupts and no
+choice of benchmark CPUs avoids them. What matters is whether those
+interrupts actually fire. They only do when something drives the device,
+and the background load here is CPU, cache and anonymous memory with no
+disk I/O, so in practice they stay near-silent: measured on a 128-CPU
+two-socket node, the managed NVMe queues pinned to the benchmark's CPUs
+fired twice in 40 seconds under the benchmark's own load, against about
+1300 per second when `stress-ng --hdd` was added. Adding disk or
+accelerator load to the noise would put that interference back, and no
+IRQ configuration could remove it.
 
 Stage 8 needs a low-priority class covering everything else, including
 `idleCPUClass`: idle CPUs left outside the LP CLOS would inflate the

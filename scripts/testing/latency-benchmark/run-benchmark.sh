@@ -733,19 +733,28 @@ run_stage() {
                  "$stage_dir/nri-resource-policy.log" >&2
             echo "cpu_tuning_applied=0" >> "$stage_dir/stage-env.txt"
         fi
-        # Some IRQ affinities cannot be changed at all: the kernel
-        # manages them itself and makes smp_affinity_list read-only even
-        # for root. Typical examples are the per-queue MSI-X interrupts
-        # of virtio devices. If such an IRQ happens to sit on a CPU the
-        # stage wanted to isolate, the isolation is incomplete, which
-        # the latencies will show but nothing else would explain.
-        local irq_failed
+        # Some IRQ affinities cannot be changed at all, because the
+        # kernel manages them itself: either smp_affinity_list is
+        # read-only, as for virtio per-queue MSI-X interrupts, or writes
+        # to it fail with EIO, as for NVMe and QAT per-queue interrupts.
+        # Record how many were refused and how many distinct IRQs that
+        # was. The count alone is alarming but not informative: those
+        # drivers put one queue on every CPU, so on a large node no
+        # choice of benchmark CPUs avoids them, and they only cost
+        # anything while something drives the device. Note it as a fact
+        # to weigh against the load, not as a failure.
+        local irq_failed irq_distinct
         irq_failed="$(grep -c "failed to set affinity of irq" \
             "$stage_dir/nri-resource-policy.log" 2>/dev/null || true)"
         if [ "${irq_failed:-0}" -gt 0 ]; then
-            warn "$irq_failed IRQ affinity updates were refused by the kernel," \
-                 "IRQ isolation is incomplete"
+            irq_distinct="$(grep -oE "failed to set affinity of irq [0-9]+" \
+                "$stage_dir/nri-resource-policy.log" 2>/dev/null |
+                awk '{print $NF}' | sort -u | wc -l)"
+            info "$irq_distinct IRQs are kernel-managed and stayed where they" \
+                 "were ($irq_failed refused updates); normal on nodes with" \
+                 "per-CPU NVMe or accelerator queues, see node-state.txt"
             echo "irq_affinity_failures=$irq_failed" >> "$stage_dir/stage-env.txt"
+            echo "irq_unmovable_count=$irq_distinct" >> "$stage_dir/stage-env.txt"
         fi
     fi
     kubectl get pods -n "$BENCH_NAMESPACE" -o wide \
