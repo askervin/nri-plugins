@@ -146,6 +146,27 @@ because the actual value says more than a bare 1.
 
 `summary.txt` is a quick per-stage table of p50/p90/p99/p999/max.
 
+A stage that turns out to have measured a system the policy had not
+configured is left out of the CSV and rerun, up to `STAGE_RETRIES`
+attempts. Its logs are kept in `<stage>.unconfigured`, and the run exits
+non-zero if a stage never produced a valid measurement, so a gap in the
+data is visible instead of being filled with baseline numbers under a
+stage's name.
+
+The check reads the measurement itself rather than the policy's status,
+because the policy reports a configuration as applied before it has
+finished acting on it. `sleep-accuracy` prints the scheduling policy it
+inherited, so a stage that configured a scheduling class and measured
+`schedpol` 0 measured the baseline. Stages that configure no scheduling
+class are checked against the plugin's record of assigning the benchmark
+container to a balloon. The failure this catches is real: rewriting
+thousands of IRQ affinities on a heavily loaded node can take longer than
+containerd's NRI request timeout, and containerd then closes the
+connection, the plugin exits with `connection to NRI/runtime lost` and
+restarts, and a container created while it was away never reaches a
+balloon. In a five-cycle run on a 128-CPU node under a load average of
+170, this hit stage 8 twice.
+
 The CSV can be rebuilt from stored logs without re-running anything,
 since each stage directory keeps the configuration row it was run with:
 

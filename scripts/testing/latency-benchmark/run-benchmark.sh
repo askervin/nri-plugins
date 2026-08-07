@@ -92,6 +92,12 @@ NOISE_LABEL_VALUE="${NOISE_LABEL_VALUE:-noise}"
 NOISE_DEPLOYMENT_NAME="${NOISE_DEPLOYMENT_NAME:-stress-ng-noise}"
 NOISE_SETTLE_SECONDS="${NOISE_SETTLE_SECONDS:-15}"
 
+# STAGE_RETRIES - how many times to run a stage that turns out to have
+# measured a system the policy had not configured. Such a run is a lost
+# measurement rather than a result, so repeating it is the only way to
+# get the stage's data at all. 1 disables retrying.
+STAGE_RETRIES="${STAGE_RETRIES:-3}"
+
 # RESULTS_DIR - where logs and the CSV go.
 RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/results/$(date +%Y%m%d-%H%M%S)}"
 
@@ -228,6 +234,8 @@ Key environment variables:
                        configuration to enable NRI (default: only when
                        the runtime reports NRI disabled)
   DISABLED_CSTATES     C-states to disable (default: C1E,C6)
+  STAGE_RETRIES        attempts for a stage that measured an
+                       unconfigured system (default: $STAGE_RETRIES, 1 disables)
   OVERRIDE_*           simulated platform for the plugin, for validating
                        this harness on a VM only (see comments in script)
 
@@ -511,6 +519,62 @@ wait_for_policy_status() {
     return 1
 }
 
+# check_stage_measured_config STAGE_DIR - decide whether the numbers this
+# stage produced describe the configuration it asked for.
+#
+# A stage can pass every check above and still measure an unconfigured
+# system. The policy reports a configuration as applied before it has
+# finished acting on it, and the plugin can die afterwards: a stage that
+# rewrites thousands of IRQ affinities on a loaded node can exceed
+# containerd's NRI request timeout, at which point containerd closes the
+# connection, the plugin exits and restarts, and any container created
+# while it was away never reaches a balloon. Nothing upstream of the
+# measurement notices, and the resulting row looks like a plausible
+# regression rather than a missing configuration.
+#
+# The measurement itself is the witness: sleep-accuracy reports the
+# scheduling policy and priority it inherited, so a stage that asked for
+# a scheduling class and got schedpol 0 measured the baseline. Stages
+# that configure no scheduling class have nothing to check this way, so
+# they fall back to the plugin's own record of the assignment.
+#
+# Returns 0 when the measurement is trustworthy, 1 when it is not.
+check_stage_measured_config() {
+    local stage_dir="$1"
+    local log="$stage_dir/sleep-accuracy.log"
+    [ -f "$log" ] || return 0
+    [ -z "${STAGE_NO_BALLOONS:-}" ] || return 0
+
+    local reason=""
+
+    if [ -n "${BENCH_SCHEDULINGCLASS:-}" ]; then
+        # Field 6 is schedpol, field 7 schedprio; 0 means the container
+        # inherited the default policy, so the class never reached it.
+        local unconfigured
+        unconfigured="$(awk '$1 == "nanosleep" && $6 == 0' "$log" | wc -l)"
+        if [ "$unconfigured" -gt 0 ]; then
+            reason="$unconfigured measurements ran with scheduling policy 0,"
+            reason="$reason but the stage configured $BENCH_SCHEDULINGCLASS"
+        fi
+    elif [ -f "$stage_dir/nri-resource-policy.log" ]; then
+        grep -q "assigning container $BENCH_NAMESPACE/.* to balloon" \
+             "$stage_dir/nri-resource-policy.log" ||
+            reason="the plugin never assigned the benchmark container to a balloon"
+    fi
+
+    [ -n "$reason" ] || return 0
+
+    warn "stage $STAGE_NAME measured an unconfigured system: $reason"
+    # Name the likely cause when the plugin's log shows it, so that the
+    # run log says what to do rather than only that something was wrong.
+    if grep -q "connection to NRI/runtime lost" \
+            "$stage_dir/nri-resource-policy.log" 2>/dev/null; then
+        warn "the plugin lost its connection to the runtime during this stage"
+    fi
+    echo "measured_config_valid=0" >> "$stage_dir/stage-env.txt"
+    return 1
+}
+
 # deploy_noise - start the background workload, if any.
 deploy_noise() {
     local stage_dir="$1"
@@ -770,8 +834,29 @@ run_stage() {
     fi
 
     ###
-    ### 6. Append to the CSV.
+    ### 6. Append to the CSV, unless the stage measured something else
+    ### than what it configured.
     ###
+    # Keep such a run out of the CSV rather than in it with a marker:
+    # every consumer of the CSV would otherwise have to know to filter
+    # it, and the numbers are baseline numbers under a stage's name,
+    # which is worse than no numbers at all. The logs stay on disk.
+    if ! check_stage_measured_config "$stage_dir"; then
+        # A retry writes into the same directory, so move this attempt
+        # aside first. Both the discarded run and the one that replaces
+        # it stay available for working out why the first one failed.
+        local attempt_dir="$stage_dir.unconfigured"
+        local n=1
+        while [ -e "$attempt_dir" ]; do
+            n=$((n + 1))
+            attempt_dir="$stage_dir.unconfigured-$n"
+        done
+        mv "$stage_dir" "$attempt_dir"
+        warn "not adding stage $STAGE_NAME to the CSV," \
+             "logs kept in $(basename "$attempt_dir")"
+        return 2
+    fi
+
     local measurements=0
     if [ -f "$stage_dir/sleep-accuracy.log" ]; then
         csv_append_stage "$stage_dir/sleep-accuracy.log" \
@@ -807,13 +892,30 @@ if [ "$dry_run" = 0 ]; then
 fi
 
 failed_stages=()
+invalid_stages=()
 stage_index=0
 for stage in "${run_stages[@]}"; do
     stage_index=$((stage_index + 1))
-    # Keep the console output and the run log in sync, but read the
-    # exit status of run_stage itself rather than of tee.
-    run_stage "$stage_index" "$stage" 2>&1 | tee -a "$RUN_LOG"
-    if [ "${PIPESTATUS[0]}" != 0 ]; then
+    # A stage that measured an unconfigured system (exit 2) is worth
+    # repeating: the cause is a transient loss of the plugin's runtime
+    # connection, not a bad configuration, so the next attempt usually
+    # succeeds. A stage that failed outright (exit 1) is not retried,
+    # because nothing about it would be different the second time.
+    attempt=1
+    while :; do
+        run_stage "$stage_index" "$stage" 2>&1 | tee -a "$RUN_LOG"
+        rc="${PIPESTATUS[0]}"
+        [ "$rc" = 2 ] || break
+        if [ "$attempt" -ge "$STAGE_RETRIES" ]; then
+            warn "stage $stage measured an unconfigured system in" \
+                 "$attempt attempts, giving up"
+            invalid_stages+=("$stage")
+            break
+        fi
+        attempt=$((attempt + 1))
+        warn "retrying stage $stage (attempt $attempt/$STAGE_RETRIES)"
+    done
+    if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then
         failed_stages+=("$stage")
     fi
 done
@@ -844,8 +946,14 @@ csv_summary "$CSV_FILE" | tee "$RESULTS_DIR/summary.txt"
 
 stages_with_data="$(awk -F, 'NR > 1 { print $2 }' "$CSV_FILE" | sort -u | wc -l)"
 info "Stages with measurements: $stages_with_data / ${#run_stages[@]}"
+if [ ${#invalid_stages[@]} -gt 0 ]; then
+    warn "stages left out of the CSV, having measured an unconfigured" \
+         "system: ${invalid_stages[*]}"
+fi
 if [ ${#failed_stages[@]} -gt 0 ]; then
     warn "stages that failed or produced no measurements: ${failed_stages[*]}"
+fi
+if [ ${#failed_stages[@]} -gt 0 ] || [ ${#invalid_stages[@]} -gt 0 ]; then
     warn "see $RUN_LOG and the stage directories for details"
     exit 1
 fi
