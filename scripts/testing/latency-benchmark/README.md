@@ -125,9 +125,21 @@ active high-priority core count and defeat the point.
 
 Every stage runs the same `stress-ng` load, so that a stage's numbers
 reflect the policy and not a quiet machine. `NOISE_WORKLOAD` selects
-what it burns: `cpu`, `mem` (memory bandwidth), `both` (default), or
-`none`. `NOISE_REPLICAS` sets how many containers burn it (default:
-half the node's CPUs).
+what it burns: `cpu`, `mem` (memory bandwidth), `both` (default),
+`vector`, or `none`. `NOISE_REPLICAS` sets how many containers burn it
+(default: half the node's CPUs).
+
+`vector` is a different kind of neighbour from the others. Wide vector
+and matrix instructions draw enough current that the core cannot hold its
+frequency, and on server parts that licence-based downclocking reaches
+every core in the domain — including one running nothing but a
+latency-sensitive task that issues no vector instructions at all. It is
+therefore the load that most directly tests whether the policy's
+frequency and priority controls protect such a task, and the one thing a
+CPU and memory bandwidth load does not exercise. Comparing a `vector`
+campaign against a `both` campaign is only meaningful if nothing else
+changed between them, since the stages differ in how much they can do
+about frequency.
 
 ## Results
 
