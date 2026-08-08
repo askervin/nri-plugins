@@ -194,48 +194,71 @@ done
 ###
 ### 6. Reset SST-CP / PCT configuration.
 ###
-# The balloons policy in managed PCT mode reconfigures SST-CP CLOSes, and
-# the hardware keeps three separate pieces of state that all have to go
-# back, because none of them is undone by undoing another:
+# The balloons policy in managed PCT mode reconfigures SST-CP, and it
+# leaves behind two separate pieces of state, both of which have to be
+# undone, and in the right way:
 #
-#   - the CLOS definitions and the core-power feature itself,
-#   - which CLOS each CPU is associated with, and
-#   - SST-TF (turbo-freq) and SST-BF (base-freq), the priority-core
-#     features PCT builds on.
+#   - the CLOS frequency limits, and
+#   - which CLOS each CPU is associated with.
 #
-# Leaving the last of these enabled is what makes the node unusable
-# rather than merely untuned. Measured on a Xeon 6776P: with SST-TF left
-# enabled after a PCT stage, every one of the 128 CPUs ran at 500 MHz --
-# IA32_PERF_STATUS ratio 0x05 -- while HWP_REQUEST asked for 4600 MHz and
-# the package drew 86 W of its 350 W limit. A fixed integer loop took
-# 2.83 s instead of 0.30 s, so the whole node was 9x slow, on an idle
-# machine, with the governor at performance and turbo enabled. Nothing in
-# cpufreq, cpuidle, RAPL or thermal state showed a cause; only
-# IA32_THERM_STATUS bit 10 ("power limitation") hinted at it. Disabling
-# turbo-freq and base-freq restored full speed immediately.
+# The limits are what cripple the node. The policy programs its CLOSes
+# with min=0 max=0 (it expresses "no limit" as zero), and in SST-CP a
+# clos-max of 0 means zero, not unlimited. Measured on a Xeon 6776P, that
+# left every one of the 128 CPUs running at 500 MHz of a 4600 MHz part --
+# IA32_PERF_STATUS ratio 0x05 -- while HWP_REQUEST asked for 4600 and the
+# package drew 86 W of its 350 W limit. A fixed integer loop took 2.83 s
+# instead of 0.30 s, so the whole node was 9x slow, on an idle machine,
+# with the governor at performance and turbo enabled. Nothing in cpufreq,
+# cpuidle, RAPL or thermal state showed a cause; only IA32_THERM_STATUS
+# bit 10 ("power limitation") hinted at it. A benchmark that inherits
+# that state measures a crippled node and has no way to tell.
 #
-# A benchmark that inherits that state measures a crippled node and has
-# no way to tell.
+# Reprogramming every CLOS to an explicit "unlimited" is what clears it.
+# Disabling core-power does not: the limits stay programmed, and the
+# clamp survives with them. Verified against that exact leftover state --
+# a busy CPU went from 500 MHz back to 4600 as soon as the CLOSes were
+# reprogrammed, with core-power still enabled.
+#
+# SST-TF (turbo-freq) and SST-BF (base-freq) are deliberately NOT
+# disabled here. Disabling them also clears the clamp -- it was how the
+# clamp was first cleared by hand -- but it breaks the PCT stage
+# outright: the plugin's managed mode re-enables SST-TF while handling
+# NRI Synchronize, and starting from a disabled state made that call
+# exceed containerd's plugin_request_timeout every time, so containerd
+# closed the connection, the plugin exited with "connection to
+# NRI/runtime lost" and restarted, and the stage measured an
+# unconfigured system. With the disable in place the PCT stage failed 6
+# times out of 6; with the CLOS reprogramming instead, it passed.
+# Set RESET_SST_PRIORITY_CORES=1 to disable them anyway, when handing the
+# node back rather than benchmarking on it again.
 if command -v intel-speed-select >/dev/null 2>&1; then
     info "Resetting SST-CP (PCT) configuration ..."
-    # Un-associate every CPU from its CLOS before disabling core-power.
-    # Disabling the feature does not clear the associations, and they are
-    # what a later stage or campaign inherits: after the PCT stage here,
-    # 127 of 128 CPUs were still associated with CLOS 3, the
-    # low-priority class.
+    # 25500 MHz is the maximum the ratio-encoded mailbox field can hold,
+    # and is how intel-speed-select spells "Max Turbo frequency".
+    for clos in 0 1 2 3; do
+        intel-speed-select core-power config -c "$clos" \
+            --min 0 --max 25500 >/dev/null 2>&1 ||
+            warn "intel-speed-select core-power config -c $clos failed"
+    done
+    # Un-associate every CPU from its CLOS. Disabling core-power does not
+    # clear the associations, and they are what a later stage or campaign
+    # inherits: after the PCT stage here, 127 of 128 CPUs were still
+    # associated with CLOS 3, the low-priority class.
     ncpus="$(nproc)"
     intel-speed-select -c "0-$((ncpus - 1))" core-power assoc --clos 0 \
         >/dev/null 2>&1 ||
         warn "intel-speed-select core-power assoc --clos 0 failed"
     intel-speed-select --debug core-power disable >/dev/null 2>&1 ||
         warn "intel-speed-select core-power disable failed (may be unsupported)"
-    # -a applies to all packages. Both are expected to fail on parts
-    # without the feature, hence the note rather than a warning.
-    info "Resetting SST-TF / SST-BF (priority core) configuration ..."
-    intel-speed-select turbo-freq disable -a >/dev/null 2>&1 ||
-        info "intel-speed-select turbo-freq disable failed (may be unsupported)"
-    intel-speed-select base-freq disable -a >/dev/null 2>&1 ||
-        info "intel-speed-select base-freq disable failed (may be unsupported)"
+    if [ -n "${RESET_SST_PRIORITY_CORES:-}" ]; then
+        # -a applies to all packages. Both are expected to fail on parts
+        # without the feature, hence the note rather than a warning.
+        info "Disabling SST-TF / SST-BF (priority core) configuration ..."
+        intel-speed-select turbo-freq disable -a >/dev/null 2>&1 ||
+            info "intel-speed-select turbo-freq disable failed (may be unsupported)"
+        intel-speed-select base-freq disable -a >/dev/null 2>&1 ||
+            info "intel-speed-select base-freq disable failed (may be unsupported)"
+    fi
 else
     info "intel-speed-select not found, skipping PCT reset."
 fi

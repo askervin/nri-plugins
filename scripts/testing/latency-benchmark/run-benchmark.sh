@@ -429,13 +429,14 @@ fi
 
 # check_node_speed - is this node running at a sane frequency at all?
 #
-# Left-over SST-TF or SST-BF state from an earlier PCT stage can clamp
-# every CPU to the hardware minimum -- 500 MHz of a 4600 MHz part on the
-# machine this was found on -- while cpufreq, cpuidle, RAPL and thermal
-# state all look normal and HWP still reports the full range as
-# requested. Two campaign cycles were measured on such a node before
-# anyone noticed, because latency numbers from a uniformly 9x-slow
-# machine still look like plausible latency numbers.
+# Left-over SST-CP CLOS limits from an earlier PCT stage can clamp every
+# CPU to the hardware minimum -- 500 MHz of a 4600 MHz part on the machine
+# this was found on -- while cpufreq, cpuidle, RAPL and thermal state all
+# look normal and HWP still reports the full range as requested. The
+# policy programs its CLOSes with max=0 meaning "no limit", but the
+# hardware reads 0 as zero. Two campaign cycles were measured on such a
+# node before anyone noticed, because latency numbers from a uniformly
+# 9x-slow machine still look like plausible latency numbers.
 #
 # IA32_PERF_STATUS bits 15:8 hold the ratio the core is actually running
 # at, in 100 MHz units. That was the only reading that told the truth:
@@ -485,8 +486,9 @@ check_node_speed() {
 
     warn "node is clamped to ${best} MHz, below" \
          "NODE_SPEED_MIN_MHZ=$NODE_SPEED_MIN_MHZ"
-    warn "left-over SST-TF/SST-BF or CLOS state is the usual cause: check" \
-         "'intel-speed-select turbo-freq info -l 1' and rerun reset-node.sh"
+    warn "left-over SST-CP CLOS limits are the usual cause: check" \
+         "'intel-speed-select -c $cpu core-power get-config -c 0' for a" \
+         "clos-max of 0 MHz, and rerun reset-node.sh"
     return 1
 }
 
