@@ -406,6 +406,90 @@ instantiate() {
     eval "echo -e \"$(<"$template")\"" | grep -v '^ *$'
 }
 
+# NODE_SPEED_MIN_MHZ - the frequency a single busy CPU must reach after a
+# reset for the node to be considered usable.
+#
+# Defaults to the node's own base frequency where cpufreq reports one, so
+# that the threshold means "this node can still reach the speed it is
+# specified for" rather than an absolute number that would be wrong on
+# the next part. A clamp deep enough to matter takes the achieved
+# frequency well below base -- 500 MHz against a base of 2300 on the node
+# this was found on -- while a healthy node under a single-threaded load
+# reaches base or turbo. 0 disables the check.
+if [ -z "${NODE_SPEED_MIN_MHZ:-}" ]; then
+    base_khz="$(cat /sys/devices/system/cpu/cpu0/cpufreq/base_frequency \
+                2>/dev/null)"
+    if [ -n "$base_khz" ] && [ "$base_khz" -gt 0 ] 2>/dev/null; then
+        # Just under base: HWP may sit a bin below it even when healthy.
+        NODE_SPEED_MIN_MHZ=$(( base_khz / 1000 * 9 / 10 ))
+    else
+        NODE_SPEED_MIN_MHZ=1000
+    fi
+fi
+
+# check_node_speed - is this node running at a sane frequency at all?
+#
+# Left-over SST-TF or SST-BF state from an earlier PCT stage can clamp
+# every CPU to the hardware minimum -- 500 MHz of a 4600 MHz part on the
+# machine this was found on -- while cpufreq, cpuidle, RAPL and thermal
+# state all look normal and HWP still reports the full range as
+# requested. Two campaign cycles were measured on such a node before
+# anyone noticed, because latency numbers from a uniformly 9x-slow
+# machine still look like plausible latency numbers.
+#
+# IA32_PERF_STATUS bits 15:8 hold the ratio the core is actually running
+# at, in 100 MHz units. That was the only reading that told the truth:
+# /proc/cpuinfo reported a nominal 2300 MHz regardless, and turbostat's
+# Bzy_MHz agreed with the clamp but is not always installed. The MSR has
+# to be sampled while the CPU is busy, since an idle core sits at the
+# minimum quite legitimately.
+#
+# Returns 0 when the node looks healthy or cannot be checked, 1 when it
+# is clamped.
+check_node_speed() {
+    [ "$NODE_SPEED_MIN_MHZ" -gt 0 ] || return 0
+    command -v rdmsr >/dev/null 2>&1 || {
+        info "rdmsr not available, skipping node speed check" \
+             "(install msr-tools to enable it)."
+        return 0
+    }
+
+    # Load one CPU and read what it achieves. cpu 1 rather than 0:
+    # cpu 0 is reserved for kube-system and is never idle enough to be a
+    # clean sample, but it is also not where the benchmark runs.
+    local cpu=1 mhz=0 best=0 ps
+    taskset -c "$cpu" timeout 3 \
+        bash -c 'i=0; while :; do i=$((i + 1)); done' >/dev/null 2>&1 &
+    local spinner=$!
+    sleep 1
+    # A few samples: HWP can take a moment to ramp, and the highest
+    # observed value is the one that says what the node is capable of.
+    local n
+    for n in 1 2 3; do
+        ps="$($SUDO rdmsr -p "$cpu" 0x198 2>/dev/null)" || continue
+        [ -n "$ps" ] || continue
+        mhz=$(( ((0x$ps >> 8) & 0xff) * 100 ))
+        [ "$mhz" -gt "$best" ] && best="$mhz"
+        sleep 0.5
+    done
+    kill "$spinner" 2>/dev/null
+    wait "$spinner" 2>/dev/null
+
+    [ "$best" -gt 0 ] || {
+        info "could not read IA32_PERF_STATUS, skipping node speed check."
+        return 0
+    }
+
+    info "Node speed check: cpu$cpu reached ${best} MHz under load."
+    [ "$best" -ge "$NODE_SPEED_MIN_MHZ" ] && return 0
+
+    warn "node is clamped to ${best} MHz, below" \
+         "NODE_SPEED_MIN_MHZ=$NODE_SPEED_MIN_MHZ"
+    warn "left-over SST-TF/SST-BF or CLOS state is the usual cause: check" \
+         "'intel-speed-select turbo-freq info -l 1' and rerun reset-node.sh"
+    return 1
+}
+
 # node_state_snapshot FILE - record the hardware state actually in
 # effect, so results can be checked against what was intended.
 node_state_snapshot() {
@@ -436,10 +520,44 @@ node_state_snapshot() {
             echo "$d: min=$(cat "$d/min_freq_khz" 2>/dev/null) max=$(cat "$d/max_freq_khz" 2>/dev/null)"
         done
         echo "=== SST / PCT ==="
+        # Through $SUDO: intel-speed-select needs root for every
+        # subcommand, and without it this section recorded only "Must run
+        # as root" -- which is how a node left clamped by leftover SST-TF
+        # state got through a whole campaign undetected.
         if command -v intel-speed-select >/dev/null 2>&1; then
-            intel-speed-select core-power get-config 2>&1 | head -60
+            echo "--- core-power (CLOS definitions) ---"
+            $SUDO intel-speed-select core-power get-config 2>&1 | head -40
+            echo "--- core-power associations ---"
+            # Per-CPU, because a CLOS association surviving a reset is
+            # exactly the state that needs to be visible afterwards.
+            $SUDO intel-speed-select -c "0-$(($(nproc) - 1))" \
+                  core-power get-assoc 2>&1 | grep -E "cpu-|clos:" | head -40
+            echo "--- turbo-freq (SST-TF) ---"
+            $SUDO intel-speed-select turbo-freq info -l 1 2>&1 |
+                grep -iE "enable|high-priority-cores-count" | head -10
+            echo "--- base-freq (SST-BF) ---"
+            $SUDO intel-speed-select base-freq info -l 1 2>&1 |
+                grep -iE "enable|high-priority-base" | head -10
+            echo "--- perf-profile level ---"
+            $SUDO intel-speed-select perf-profile get-config-current-level 2>&1 |
+                grep -m4 current_level
         else
             echo "intel-speed-select not available"
+        fi
+        echo "=== achieved frequency (IA32_PERF_STATUS bits 15:8 x 100 MHz) ==="
+        # The one reading that told the truth when the node was clamped:
+        # cpufreq and /proc/cpuinfo both reported a nominal value while
+        # the cores actually ran at 500 MHz.
+        if command -v rdmsr >/dev/null 2>&1; then
+            for c in 0 1 $(( $(nproc) / 2 )) $(( $(nproc) - 1 )); do
+                local ps
+                ps="$($SUDO rdmsr -p "$c" 0x198 2>/dev/null)"
+                [ -n "$ps" ] || continue
+                echo "cpu$c: perf_status=$ps ratio=$(( (0x$ps >> 8) & 0xff ))" \
+                     "=> $(( ((0x$ps >> 8) & 0xff) * 100 )) MHz"
+            done
+        else
+            echo "rdmsr not available (install msr-tools for this)"
         fi
         echo "=== IRQ affinities ==="
         # "ro" marks an affinity the kernel manages itself and refuses to
@@ -684,6 +802,14 @@ run_stage() {
     info "Resetting node ..."
     $SUDO "$SCRIPT_DIR/reset-node.sh" > "$stage_dir/reset.log" 2>&1 ||
         warn "node reset reported problems, see $stage_dir/reset.log"
+
+    # Check after the reset, not before: the reset is what is supposed to
+    # have cleared any clamp, so this asks whether it worked. Recorded
+    # rather than fatal, because on a node with no SST at all there is
+    # nothing to undo and the run is still meaningful.
+    if ! check_node_speed; then
+        echo "node_speed_clamped=1" >> "$stage_dir/stage-env.txt"
+    fi
 
     kubectl create namespace "$BENCH_NAMESPACE" >/dev/null 2>&1
 

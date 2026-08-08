@@ -140,11 +140,18 @@ if [ -d "$SYS_CPU/cpu0/cpufreq" ]; then
                 warn "cannot reset $cpufreq/scaling_min_freq"
         fi
     done
-    # Restore the default governor and energy/performance preference.
-    if [ -n "${RESET_GOVERNOR:-}" ]; then
-        write_all "$SYS_CPU/cpu*/cpufreq/scaling_governor" "$RESET_GOVERNOR" ||
-            warn "no scaling_governor files"
-    fi
+    # Restore the governor and energy/performance preference.
+    #
+    # The governor is set to a fixed value rather than left as found,
+    # because it is inherited node state that survives nothing in
+    # particular: a reboot changed it from performance to powersave
+    # between two campaigns here, and since the governor decides how
+    # quickly a core ramps up after an idle period, that silently changed
+    # what the benchmark measured. A campaign is only comparable to
+    # another if the harness, not the last boot, decided this.
+    write_all "$SYS_CPU/cpu*/cpufreq/scaling_governor" \
+              "${RESET_GOVERNOR:-performance}" ||
+        warn "no scaling_governor files"
     write_all "$SYS_CPU/cpu*/cpufreq/energy_performance_preference" \
               "${RESET_EPP:-default}" >/dev/null 2>&1
 else
@@ -187,13 +194,48 @@ done
 ###
 ### 6. Reset SST-CP / PCT configuration.
 ###
-# The balloons policy in managed PCT mode reconfigures SST-CP CLOSes.
-# Disable core-power so that the next stage starts from a clean slate
-# and non-PCT stages are not affected by leftover CLOS assignments.
+# The balloons policy in managed PCT mode reconfigures SST-CP CLOSes, and
+# the hardware keeps three separate pieces of state that all have to go
+# back, because none of them is undone by undoing another:
+#
+#   - the CLOS definitions and the core-power feature itself,
+#   - which CLOS each CPU is associated with, and
+#   - SST-TF (turbo-freq) and SST-BF (base-freq), the priority-core
+#     features PCT builds on.
+#
+# Leaving the last of these enabled is what makes the node unusable
+# rather than merely untuned. Measured on a Xeon 6776P: with SST-TF left
+# enabled after a PCT stage, every one of the 128 CPUs ran at 500 MHz --
+# IA32_PERF_STATUS ratio 0x05 -- while HWP_REQUEST asked for 4600 MHz and
+# the package drew 86 W of its 350 W limit. A fixed integer loop took
+# 2.83 s instead of 0.30 s, so the whole node was 9x slow, on an idle
+# machine, with the governor at performance and turbo enabled. Nothing in
+# cpufreq, cpuidle, RAPL or thermal state showed a cause; only
+# IA32_THERM_STATUS bit 10 ("power limitation") hinted at it. Disabling
+# turbo-freq and base-freq restored full speed immediately.
+#
+# A benchmark that inherits that state measures a crippled node and has
+# no way to tell.
 if command -v intel-speed-select >/dev/null 2>&1; then
     info "Resetting SST-CP (PCT) configuration ..."
+    # Un-associate every CPU from its CLOS before disabling core-power.
+    # Disabling the feature does not clear the associations, and they are
+    # what a later stage or campaign inherits: after the PCT stage here,
+    # 127 of 128 CPUs were still associated with CLOS 3, the
+    # low-priority class.
+    ncpus="$(nproc)"
+    intel-speed-select -c "0-$((ncpus - 1))" core-power assoc --clos 0 \
+        >/dev/null 2>&1 ||
+        warn "intel-speed-select core-power assoc --clos 0 failed"
     intel-speed-select --debug core-power disable >/dev/null 2>&1 ||
         warn "intel-speed-select core-power disable failed (may be unsupported)"
+    # -a applies to all packages. Both are expected to fail on parts
+    # without the feature, hence the note rather than a warning.
+    info "Resetting SST-TF / SST-BF (priority core) configuration ..."
+    intel-speed-select turbo-freq disable -a >/dev/null 2>&1 ||
+        info "intel-speed-select turbo-freq disable failed (may be unsupported)"
+    intel-speed-select base-freq disable -a >/dev/null 2>&1 ||
+        info "intel-speed-select base-freq disable failed (may be unsupported)"
 else
     info "intel-speed-select not found, skipping PCT reset."
 fi
@@ -217,15 +259,19 @@ fi
 # every IRQ back to "all CPUs allowed". Many IRQs reject writes (managed
 # per-CPU interrupts, timers), which is expected and not an error.
 info "Clearing CPU affinity from IRQs ..."
-all_cpus_mask="$(printf '%x' $(( (1 << $(nproc)) - 1 )) 2>/dev/null)"
-if [ -n "${IRQ_AFFINITY_MASK:-}" ]; then
-    all_cpus_mask="$IRQ_AFFINITY_MASK"
+# Use smp_affinity_list rather than the hexadecimal smp_affinity mask.
+# Building the mask arithmetically breaks above 63 CPUs, where 1 << nproc
+# overflows bash's 64-bit integers and yields a zero mask; the list form
+# needs no arithmetic and no comma-separated 32-bit groups.
+all_cpus_list="0-$(( $(nproc) - 1 ))"
+if [ -n "${IRQ_AFFINITY_LIST:-}" ]; then
+    all_cpus_list="$IRQ_AFFINITY_LIST"
 fi
 irq_reset=0
 irq_failed=0
 for irq_dir in /proc/irq/[0-9]*; do
-    [ -w "$irq_dir/smp_affinity" ] || continue
-    if echo "$all_cpus_mask" > "$irq_dir/smp_affinity" 2>/dev/null; then
+    [ -w "$irq_dir/smp_affinity_list" ] || continue
+    if echo "$all_cpus_list" > "$irq_dir/smp_affinity_list" 2>/dev/null; then
         irq_reset=$((irq_reset + 1))
     else
         irq_failed=$((irq_failed + 1))
@@ -233,7 +279,18 @@ for irq_dir in /proc/irq/[0-9]*; do
 done
 info "IRQ affinity reset on $irq_reset IRQs ($irq_failed rejected, normal for managed IRQs)."
 if [ -w /proc/irq/default_smp_affinity ]; then
-    echo "$all_cpus_mask" > /proc/irq/default_smp_affinity 2>/dev/null ||
+    # default_smp_affinity has no list form, so it keeps the mask. Write
+    # it as comma-separated 32-bit groups, which is what the kernel
+    # expects for more than 32 CPUs.
+    default_mask="$(awk -v n="$(nproc)" 'BEGIN {
+        groups = int((n + 31) / 32); out = ""
+        for (i = 0; i < groups; i++) {
+            bits = (n - i * 32 >= 32) ? 32 : n - i * 32
+            g = sprintf("%08x", (bits == 32) ? 4294967295 : (2 ^ bits) - 1)
+            out = (out == "") ? g : g "," out
+        }
+        print out }')"
+    echo "$default_mask" > /proc/irq/default_smp_affinity 2>/dev/null ||
         warn "cannot reset default_smp_affinity"
 fi
 
