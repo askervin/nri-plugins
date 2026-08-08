@@ -352,24 +352,36 @@ fi
 # cache. Both are given a timeout far beyond the benchmark duration and
 # restarted by the Deployment if they ever exit.
 #
-# vector is a different kind of neighbour: wide vector and matrix
-# instructions draw enough current that the core cannot hold its
-# frequency, so the licence-based downclocking of AVX-512 on server parts
-# slows every core in the domain, including one running nothing but a
-# latency-sensitive task. That makes it the interesting case for a policy
-# whose job is to protect such a task, and it is the one thing a CPU and
-# memory bandwidth load does not exercise. vecmath and vecfp issue wide
-# integer and floating-point SIMD, and matrix with the prod method issues
-# dense floating-point matrix work. Which vector width each of those
-# reaches is up to the stress-ng build and the compiler that produced it,
-# so confirm from the plugin's frequency reporting that the frequency
-# really does drop, rather than assuming AVX-512 got used.
+# vector is a different kind of neighbour: wide vector instructions draw
+# enough current that the core cannot hold its frequency, and the
+# licence-based downclocking that follows reaches every core in the
+# frequency domain, including one running nothing but a latency-sensitive
+# task. That makes it the interesting case for a policy whose job is to
+# protect such a task, and the one thing a CPU and memory bandwidth load
+# does not exercise.
+#
+# vecwide, not the other vector stressors: which of them actually costs
+# frequency is a property of the silicon and of what the stress-ng build
+# was compiled to emit, and it has to be measured rather than assumed. On
+# a Xeon 6776P (Granite Rapids), all at one instance per CPU and ~99.8%
+# busy, the busy frequency was 2198 MHz for vecwide, 2300 for vecfp, 2396
+# for matrix-3d, and 2444 for vecmath, fma, matrix and the cpu+vm load
+# above -- so vecmath and matrix downclock no more than plain integer
+# work, and only vecwide is clearly a licence-limited load. Mixing
+# anything into vecwide only raised the frequency again (2223 MHz at
+# vecwide:vecfp 3:1), so the default is vecwide alone.
+#
+# Confirm this on any new part before drawing conclusions from a vector
+# campaign: turbostat's Bzy_MHz under each load, compared at equal Busy%,
+# is what settles it. If the frequency does not move, the campaign
+# measured a differently-shaped CPU load and says nothing about
+# downclocking.
 case "$NOISE_WORKLOAD" in
     cpu)  NOISE_ARGS="${NOISE_ARGS:---cpu 1 --timeout 0}" ;;
     mem)  NOISE_ARGS="${NOISE_ARGS:---vm 1 --vm-bytes 256M --vm-keep --timeout 0}" ;;
     both) NOISE_ARGS="${NOISE_ARGS:---cpu 1 --vm 1 --vm-bytes 256M --vm-keep --timeout 0}" ;;
     vector)
-          NOISE_ARGS="${NOISE_ARGS:---vecmath 1 --vecfp 1 --matrix 1 --matrix-method prod --timeout 0}" ;;
+          NOISE_ARGS="${NOISE_ARGS:---vecwide 1 --timeout 0}" ;;
     none) NOISE_ARGS="" ;;
     *)    error "invalid NOISE_WORKLOAD: $NOISE_WORKLOAD" \
                 "(cpu|mem|both|vector|none)" ;;
