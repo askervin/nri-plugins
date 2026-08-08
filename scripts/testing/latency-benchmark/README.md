@@ -130,16 +130,28 @@ what it burns: `cpu`, `mem` (memory bandwidth), `both` (default),
 (default: half the node's CPUs).
 
 `vector` is a different kind of neighbour from the others. Wide vector
-and matrix instructions draw enough current that the core cannot hold its
-frequency, and on server parts that licence-based downclocking reaches
-every core in the domain — including one running nothing but a
-latency-sensitive task that issues no vector instructions at all. It is
-therefore the load that most directly tests whether the policy's
-frequency and priority controls protect such a task, and the one thing a
-CPU and memory bandwidth load does not exercise. Comparing a `vector`
-campaign against a `both` campaign is only meaningful if nothing else
-changed between them, since the stages differ in how much they can do
-about frequency.
+instructions draw enough current that the core cannot hold its frequency,
+and the licence-based downclocking that follows reaches every core in the
+frequency domain — including one running nothing but a latency-sensitive
+task that issues no vector instructions at all. It is therefore the load
+that most directly tests whether the policy's frequency and priority
+controls protect such a task, and the one thing a CPU and memory
+bandwidth load does not exercise.
+
+Which stressor actually costs frequency has to be measured, not assumed:
+it depends on the silicon and on what the `stress-ng` build emits.
+Measured on a Xeon 6776P at one instance per CPU and ~99.8% busy, the
+busy frequency was 2198 MHz for `vecwide`, 2300 for `vecfp`, 2396 for
+`matrix-3d`, and 2444 MHz for `vecmath`, `fma`, `matrix` and the default
+`both` load — so on that part `vecmath` and `matrix` downclock no more
+than plain integer work, and `vecwide` is the only clearly
+licence-limited load. Hence `vector` is `--vecwide`. Check
+`turbostat`'s `Bzy_MHz` at equal `Busy%` before trusting a vector
+campaign on different hardware.
+
+Comparing a `vector` campaign against a `both` campaign is only
+meaningful if nothing else changed between them, since the stages differ
+in how much they can do about frequency.
 
 ## Results
 
