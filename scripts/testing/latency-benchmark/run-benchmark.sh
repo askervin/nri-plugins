@@ -79,10 +79,12 @@ BENCH_JOB_NAME="${BENCH_JOB_NAME:-sleep-accuracy}"
 BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}"
 
 # NOISE_WORKLOAD - what the background containers stress:
-#   cpu   busy loops on the CPU
-#   mem   memory bandwidth
-#   both  CPU and memory bandwidth
-#   none  no background workload at all
+#   cpu    busy loops on the CPU
+#   mem    memory bandwidth
+#   both   CPU and memory bandwidth
+#   vector wide vector and matrix instructions, which draw enough
+#          current to pull the whole frequency domain down
+#   none   no background workload at all
 NOISE_WORKLOAD="${NOISE_WORKLOAD:-both}"
 NOISE_REPLICAS="${NOISE_REPLICAS:-}"
 NOISE_CPU_REQUEST="${NOISE_CPU_REQUEST:-1}"
@@ -225,7 +227,7 @@ Key environment variables:
   BENCH_REPEATS        sleep-accuracy repeats (default: $BENCH_REPEATS)
   BENCH_SLEEPS         requested sleep durations [ns] (default: $BENCH_SLEEPS)
   BENCH_ARGS           full sleep-accuracy argument override
-  NOISE_WORKLOAD       cpu|mem|both|none (default: $NOISE_WORKLOAD)
+  NOISE_WORKLOAD       cpu|mem|both|vector|none (default: $NOISE_WORKLOAD)
   NOISE_REPLICAS       background containers (default: CPUs/2)
   CHART                balloons helm chart path or name
   PLUGIN_IMAGE         override plugin image, as name:tag
@@ -349,12 +351,28 @@ fi
 # --vm allocates and touches memory, competing for memory bandwidth and
 # cache. Both are given a timeout far beyond the benchmark duration and
 # restarted by the Deployment if they ever exit.
+#
+# vector is a different kind of neighbour: wide vector and matrix
+# instructions draw enough current that the core cannot hold its
+# frequency, so the licence-based downclocking of AVX-512 on server parts
+# slows every core in the domain, including one running nothing but a
+# latency-sensitive task. That makes it the interesting case for a policy
+# whose job is to protect such a task, and it is the one thing a CPU and
+# memory bandwidth load does not exercise. vecmath and vecfp issue wide
+# integer and floating-point SIMD, and matrix with the prod method issues
+# dense floating-point matrix work. Which vector width each of those
+# reaches is up to the stress-ng build and the compiler that produced it,
+# so confirm from the plugin's frequency reporting that the frequency
+# really does drop, rather than assuming AVX-512 got used.
 case "$NOISE_WORKLOAD" in
     cpu)  NOISE_ARGS="${NOISE_ARGS:---cpu 1 --timeout 0}" ;;
     mem)  NOISE_ARGS="${NOISE_ARGS:---vm 1 --vm-bytes 256M --vm-keep --timeout 0}" ;;
     both) NOISE_ARGS="${NOISE_ARGS:---cpu 1 --vm 1 --vm-bytes 256M --vm-keep --timeout 0}" ;;
+    vector)
+          NOISE_ARGS="${NOISE_ARGS:---vecmath 1 --vecfp 1 --matrix 1 --matrix-method prod --timeout 0}" ;;
     none) NOISE_ARGS="" ;;
-    *)    error "invalid NOISE_WORKLOAD: $NOISE_WORKLOAD (cpu|mem|both|none)" ;;
+    *)    error "invalid NOISE_WORKLOAD: $NOISE_WORKLOAD" \
+                "(cpu|mem|both|vector|none)" ;;
 esac
 
 export NODE_NAME BENCH_NAMESPACE
