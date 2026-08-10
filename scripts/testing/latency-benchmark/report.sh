@@ -272,7 +272,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
             # harness that has the state checks. Older stage directories
             # rebuild with zeros, meaning "not verified", rather than
             # failing or silently shifting the columns.
-            local verify_row
             if [ -f "$stage_dir/verify-row.csv" ]; then
                 verify_row="$(cat "$stage_dir/verify-row.csv")"
             else
