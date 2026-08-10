@@ -22,7 +22,7 @@ spec:
         args:
         $(for arg in ${BENCH_ARGS}; do echo "
         - \"${arg}\"
-	"; done)
+"; done)
         securityContext:
           # CAP_SYS_NICE lets the process keep the realtime scheduling
           # policy that balloons sets for it. Without it the kernel

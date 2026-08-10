@@ -23,7 +23,7 @@ spec:
         args:
         $(for arg in ${NOISE_ARGS}; do echo "
         - \"${arg}\"
-	"; done)
+"; done)
         resources:
           requests:
             cpu: "${NOISE_CPU_REQUEST:-1}"
