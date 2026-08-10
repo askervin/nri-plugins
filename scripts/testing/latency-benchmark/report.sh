@@ -27,6 +27,9 @@ CSV_CONFIG_COLUMNS=(
     sched_class
     sched_policy
     sched_priority
+    irq_mode
+    irq_claim
+    other_irq_mode
     disabled_cstates
     cpu_min_freq
     cpu_max_freq
@@ -104,6 +107,12 @@ csv_config_row() {
     # Keep the C-state names, but make the field CSV-safe.
     cstates="${cstates//,/+}"
 
+    # irqClaim is a list of patterns that may contain commas and spaces.
+    # Join the items with + so that the field stays a single CSV column.
+    local irq_claim="${BENCH_IRQCLAIM:-}"
+    irq_claim="${irq_claim//,/+}"
+    irq_claim="${irq_claim// /_}"
+
     # pinCPU and pinMemory default to on in the generated configuration,
     # but nothing pins anything when no policy is installed.
     local pin_cpu="${PINCPU:-true}" pin_memory="${PINMEMORY:-false}"
@@ -124,6 +133,9 @@ csv_config_row() {
         "$(csv_flag "${BENCH_SCHEDULINGCLASS:-}")"
         "$(csv_flag "${SCHEDCLASS_POLICY:-}")"
         "$(csv_flag "${SCHEDCLASS_PRIORITY:-}")"
+        "$(csv_flag "${BENCH_IRQMODE:-}")"
+        "$(csv_flag "$irq_claim")"
+        "$(csv_flag "${NOISE_IRQMODE:-}")"
         "$(csv_flag "$cstates")"
         "$(csv_flag "${CPUCLASS_BENCH_MINFREQ:-}")"
         "$(csv_flag "${CPUCLASS_BENCH_MAXFREQ:-}")"

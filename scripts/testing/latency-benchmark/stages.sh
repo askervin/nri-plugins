@@ -13,10 +13,10 @@
 # and the CSV feature columns (see csv_columns in report.sh), where 0
 # means "this configuration option was not in use".
 #
-# Stages 1-6 are incremental: each one keeps everything the previous
-# stage configured and adds one more mechanism. Stage 7 is NOT
+# Stages 1-7 are incremental: each one keeps everything the previous
+# stage configured and adds one more mechanism. Stage 8 is NOT
 # incremental: it replaces the cpufreq/turboPriority controls of stages
-# 5-6 with PCT priority cores.
+# 6-7 with PCT priority cores.
 
 # STAGES - stage names in execution order.
 STAGES=(
@@ -24,6 +24,7 @@ STAGES=(
     default-balloon
     dedicated-cpus
     realtime-sched
+    isolate-irqs
     disabled-cstates
     max-freq-turbo-prio
     pct-priority-cores
@@ -33,8 +34,13 @@ STAGES=(
 # stages never leak configuration into each other.
 stage_reset_vars() {
     unset STAGE_DESCRIPTION STAGE_NO_BALLOONS STAGE_NEEDS_PCT
-    unset RESERVED_CPU AVAILABLE_CPU PINCPU PINMEMORY
-    unset ALLOCATORTOPOLOGYBALANCING IDLECPUCLASS TURBODOMAIN LOG_DEBUG_CPU
+    # RESERVED_CPU, AVAILABLE_CPU, PINCPU, PINMEMORY and
+    # ALLOCATORTOPOLOGYBALANCING are deliberately not reset here. No
+    # stage sets them: they describe the node and the run as a whole, so
+    # they come from the environment and must survive every stage. Only
+    # variables a stage may set belong below.
+    unset IDLECPUCLASS TURBODOMAIN LOG_DEBUG_CPU
+    unset LOG_DEBUG_IRQ
     # Pod labels are not stage-specific: the same Job and Deployment
     # yaml is used in every stage, so the labels the balloon types match
     # must stay as configured for the whole run.
@@ -42,12 +48,13 @@ stage_reset_vars() {
     unset BENCH_MINCPUS BENCH_MAXCPUS BENCH_MINBALLOONS BENCH_PREFERNEWBALLOONS
     unset BENCH_ALLOCATORPRIORITY BENCH_SCHEDULINGCLASS BENCH_CPUCLASS
     unset BENCH_SHAREIDLECPUS BENCH_HIDEHYPERTHREADS BENCH_LOADS
+    unset BENCH_IRQCLAIM BENCH_IRQMODE
     unset NOISE_BTYPE_SKIP NOISE_BTYPE_NAME
     unset NOISE_MINCPUS NOISE_MAXCPUS NOISE_ALLOCATORPRIORITY
     unset NOISE_PREFERNEWBALLOONS NOISE_CPUCLASS NOISE_SCHEDULINGCLASS
-    unset NOISE_SHAREIDLECPUS NOISE_LOADS
+    unset NOISE_SHAREIDLECPUS NOISE_LOADS NOISE_IRQCLAIM NOISE_IRQMODE
     unset DEFAULT_MINCPUS DEFAULT_MAXCPUS DEFAULT_CPUCLASS
-    unset DEFAULT_SHAREIDLECPUS DEFAULT_LOADS
+    unset DEFAULT_SHAREIDLECPUS DEFAULT_LOADS DEFAULT_IRQCLAIM DEFAULT_IRQMODE
     unset LOADCLASS_NAME LOADCLASS_LEVEL LOADCLASS_OVERLOADS
     unset SCHEDCLASS_NAME SCHEDCLASS_POLICY SCHEDCLASS_PRIORITY
     unset SCHEDCLASS_IOCLASS SCHEDCLASS_IOPRIORITY
@@ -104,23 +111,41 @@ stage_realtime-sched() {
     SCHEDCLASS_IOPRIORITY=0
 }
 
-# Stage 5: disable C-states on the benchmark's CPUs so they never enter
+# Stage 5: keep hardware interrupts off the benchmark's CPUs. With
+# irqMode isolate the policy removes those CPUs from the affinity of
+# every IRQ that no balloon claims or sinks.
+#
+# The noise and default balloons become IRQ sinks. Without a sink, an
+# isolated CPU is only dropped from an IRQ's affinity if some other
+# allowed CPU remains, so IRQs whose affinity is a subset of the
+# benchmark's CPUs would stay there. Sinking them on the CPUs that run
+# the noise moves them out of the way for good.
+stage_isolate-irqs() {
+    stage_realtime-sched
+    STAGE_DESCRIPTION="realtime + IRQs kept off benchmark CPUs (irqMode isolate)"
+    BENCH_IRQMODE=isolate
+    NOISE_IRQMODE=sink
+    DEFAULT_IRQMODE=sink
+    LOG_DEBUG_IRQ=1
+}
+
+# Stage 6: disable C-states on the benchmark's CPUs so they never enter
 # deep sleep and pay the wakeup cost. Other CPUs keep their C-states.
 stage_disabled-cstates() {
-    stage_realtime-sched
-    STAGE_DESCRIPTION="realtime + deep C-states disabled on benchmark CPUs"
+    stage_isolate-irqs
+    STAGE_DESCRIPTION="realtime + isolated IRQs + deep C-states disabled on benchmark CPUs"
     BENCH_CPUCLASS=latency-critical
     CPUCLASS_BENCH_NAME=latency-critical
     CPUCLASS_BENCH_DISABLEDCSTATES=${DISABLED_CSTATES:-C1E,C6}
     LOG_DEBUG_CPU=1
 }
 
-# Stage 6: maximize the frequency of the benchmark's CPUs and use
+# Stage 7: maximize the frequency of the benchmark's CPUs and use
 # turboPriority so that the benchmark class wins exclusive turbo
 # access, capping every other class at base frequency.
 stage_max-freq-turbo-prio() {
     stage_disabled-cstates
-    STAGE_DESCRIPTION="C-states off + max/turbo frequency, other CPUs capped via turboPriority"
+    STAGE_DESCRIPTION="isolated IRQs + C-states off + max/turbo frequency, other CPUs capped via turboPriority"
     CPUCLASS_BENCH_MINFREQ=base
     CPUCLASS_BENCH_MAXFREQ=turbo
     CPUCLASS_BENCH_TURBOPRIORITY=10
@@ -136,13 +161,14 @@ stage_max-freq-turbo-prio() {
     TURBODOMAIN=${TURBODOMAIN:-package}
 }
 
-# Stage 7: replacement, not an increment. Drop the soft cpufreq turbo
-# arbitration of stages 5-6 and let PCT hardware do the priority
+# Stage 8: replacement, not an increment. Drop the soft cpufreq turbo
+# arbitration of stages 6-7 and let PCT hardware do the priority
 # work: benchmark CPUs go to the high-priority CLOS, everything else
-# (including idle CPUs) to the low-priority CLOS.
+# (including idle CPUs) to the low-priority CLOS. IRQ isolation is not a
+# frequency control, so it stays.
 stage_pct-priority-cores() {
-    stage_realtime-sched
-    STAGE_DESCRIPTION="realtime + C-states off + PCT priority cores (replaces cpufreq/turboPriority)"
+    stage_isolate-irqs
+    STAGE_DESCRIPTION="realtime + isolated IRQs + C-states off + PCT priority cores (replaces cpufreq/turboPriority)"
     BENCH_CPUCLASS=hp-pct
     CPUCLASS_BENCH_NAME=hp-pct
     CPUCLASS_BENCH_DISABLEDCSTATES=${DISABLED_CSTATES:-C1E,C6}
