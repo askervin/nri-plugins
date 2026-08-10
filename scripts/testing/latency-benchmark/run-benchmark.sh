@@ -539,7 +539,23 @@ node_state_snapshot() {
         # state got through a whole campaign undetected.
         if command -v intel-speed-select >/dev/null 2>&1; then
             echo "--- core-power (CLOS definitions) ---"
-            $SUDO intel-speed-select core-power get-config 2>&1 | head -40
+            # One CLOS at a time: get-config requires -c and fails with
+            # "Invalid clos id" without it, which is how every run up to
+            # this point recorded the frequency limits of no CLOS at all
+            # while a policy-programmed clos-max of 0 MHz was clamping
+            # the whole node to 500 MHz. The achieved-frequency section
+            # above showed the symptom; this shows the cause.
+            #
+            # Only the min and max lines are kept, on one line per CLOS,
+            # because get-config repeats the whole block for every CPU in
+            # the package and the interesting part is four numbers.
+            for clos in 0 1 2 3; do
+                echo -n "clos $clos: "
+                $SUDO intel-speed-select core-power get-config -c "$clos" 2>&1 |
+                    grep -E "clos-(min|max)" | head -2 |
+                    sed 's/^ *//' | tr '\n' ' '
+                echo
+            done
             echo "--- core-power associations ---"
             # Per-CPU, because a CLOS association surviving a reset is
             # exactly the state that needs to be visible afterwards.
