@@ -48,10 +48,17 @@ const (
 
 // pctClassPlan records the CLOS that should be used for one PCT
 // cpuClass and the freq bounds to program in managed mode.
+//
+// MinFreq 0 means "no floor", which is what the hardware also means by
+// zero, so it needs no translation. MaxFreq is different: see
+// planClasses, where an unset maximum is resolved to the platform's
+// maximum turbo frequency rather than left at 0. A MaxFreq of 0 must
+// never reach the hardware -- SST-CP reads a clos-max of zero as zero
+// MHz, not as "unlimited".
 type pctClassPlan struct {
 	ClosID  int
-	MinFreq uint // kHz, 0 = leave alone
-	MaxFreq uint // kHz, 0 = leave alone
+	MinFreq uint // kHz, 0 = no floor
+	MaxFreq uint // kHz, always concrete: never 0 in managed mode
 }
 
 // Sys is the subset of sysfs.System that Allocator depends
@@ -194,6 +201,7 @@ func (a *Allocator) Configure(classes []*policyapi.CPUClass, allowed cpuset.CPUS
 					break
 				}
 			}
+			maxF = a.clampClosMaxFreq(closID, maxF)
 			cfg := pctClosConfig{ClosID: closID, MinFreq: minF, MaxFreq: maxF}
 			if err := a.sst.ConfigureClos(cfg); err != nil {
 				return fmt.Errorf("pct: failed to configure CLOS %d: %w", closID, err)
@@ -413,7 +421,22 @@ func (a *Allocator) planClasses(classes []*policyapi.CPUClass) (pctMode, map[str
 				maxSrc = cc.MaxFreq
 			}
 			plan.MinFreq = a.resolveHWFreq(minSrc)
-			plan.MaxFreq = a.resolveHWFreq(maxSrc)
+			// An unset maximum means "do not cap this class", but
+			// SST-CP has no encoding for that: a clos-max of 0 is
+			// read as zero MHz. Programming it capped every CPU of a
+			// 4600 MHz Xeon 6776P at 500 MHz -- including the
+			// high-priority class, whose whole purpose is to run
+			// fast -- and cpufreq, HWP and thermal state all still
+			// reported the full range, so nothing short of
+			// IA32_PERF_STATUS on a busy core showed it. Resolve it
+			// to the platform maximum instead, which is the same
+			// thing the user meant and the highest value the
+			// hardware can express.
+			if maxSrc == 0 {
+				plan.MaxFreq = a.platformMaxFreq()
+			} else {
+				plan.MaxFreq = a.resolveHWFreq(maxSrc)
+			}
 			plans[cc.Name] = plan
 		case cc.SstClosID != nil:
 			assocOnly = true
@@ -432,9 +455,63 @@ func (a *Allocator) planClasses(classes []*policyapi.CPUClass) (pctMode, map[str
 	}
 }
 
+// clampClosMaxFreq is the last line of defence before a CLOS maximum
+// reaches the hardware. A maximum of zero throttles every CPU in the
+// CLOS to the hardware minimum -- 500 MHz of a 4600 MHz part on the
+// machine this was found on -- so it is never what anyone wants, and
+// there is no legitimate configuration that asks for it. goresctrl does
+// not reject it either: closConfigure only checks min > max, and
+// 0 > 0 is false.
+//
+// planClasses already resolves an unset maximum, so reaching here with
+// zero means a bug rather than a configuration choice. Log it loudly
+// and substitute the platform maximum rather than returning an error:
+// refusing to configure would leave the CLOSes in whatever state the
+// previous run left behind, which is the worse outcome of the two.
+func (a *Allocator) clampClosMaxFreq(closID, maxF int) int {
+	if maxF > 0 {
+		return maxF
+	}
+	safe := int(a.platformMaxFreq())
+	log.Errorf("pct: refusing to program CLOS %d with max=0 kHz, which would "+
+		"throttle its CPUs to the hardware minimum; using %d kHz instead. "+
+		"This is a bug: an unset maximum should have been resolved earlier.",
+		closID, safe)
+	return safe
+}
+
+// pctMaxMboxFreqKHz is the largest frequency the mailbox CLOS
+// registers can hold: the field is an 8-bit ratio in 100 MHz units, so
+// 255 * 100 MHz. intel-speed-select displays this value as "Max Turbo
+// frequency", and it is what an uncapped CLOS should be programmed with
+// when the platform's own maximum cannot be discovered.
+const pctMaxMboxFreqKHz = 25_500_000
+
+// platformMaxFreq returns the highest frequency this platform can
+// reach, in kHz, for use as the maximum of a CLOS the user did not cap.
+//
+// Falling back to pctMaxMboxFreqKHz when the platform cannot be probed
+// is deliberate: an over-large maximum is clamped by the hardware to
+// what it can actually do, whereas a too-small one silently throttles
+// every CPU in the CLOS. The failure modes are not symmetric, so this
+// errs towards "uncapped".
+func (a *Allocator) platformMaxFreq() uint {
+	info, err := discoverTurboInfo(a.sys)
+	if err != nil || info == nil || info.maxTurboFreqKHz == 0 {
+		log.Warnf("pct: cannot discover platform max frequency (%v); "+
+			"using %d kHz as the uncapped CLOS maximum", err, pctMaxMboxFreqKHz)
+		return pctMaxMboxFreqKHz
+	}
+	return info.maxTurboFreqKHz
+}
+
 // resolveHWFreq returns the hardware frequency in kHz that the
 // given symbolic policyapi.Frequency refers to. "turbo" resolves to the
 // platform's maximum turbo frequency.
+//
+// A zero frequency means "unset" and is returned unchanged. Callers
+// programming a CLOS maximum must not pass it to the hardware as-is:
+// see planClasses and clampClosMaxFreq.
 func (a *Allocator) resolveHWFreq(f policyapi.Frequency) uint {
 	if f == 0 {
 		return 0
