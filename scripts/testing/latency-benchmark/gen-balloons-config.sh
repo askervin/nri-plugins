@@ -31,6 +31,7 @@ Policy-level:
   IDLECPUCLASS                  idleCPUClass
   TURBODOMAIN                   turboDomain (package|system)
   LOG_DEBUG_CPU                 non-empty: add cpu+cpuclass debug logging
+  LOG_DEBUG_IRQ                 non-empty: add irq debug logging
 
 Benchmark balloon (runs sleep-accuracy):
   BENCH_BTYPE_NAME              balloon type name (default: latency-critical)
@@ -44,6 +45,8 @@ Benchmark balloon (runs sleep-accuracy):
   BENCH_SHAREIDLECPUS           shareIdleCPUsInSame
   BENCH_HIDEHYPERTHREADS        hideHyperthreads
   BENCH_LOADS                   single load class name
+  BENCH_IRQCLAIM                comma-separated irqClaim patterns/numbers
+  BENCH_IRQMODE                 irqMode (sink|isolate)
   BENCH_BTYPE_SKIP              non-empty: do not define this type at all,
                                 the benchmark falls back to the default balloon
 
@@ -54,11 +57,11 @@ Noise balloon (runs stress-ng):
   NOISE_LABEL_KEY/VALUE         default: latency/noise
   NOISE_MINCPUS, NOISE_MAXCPUS, NOISE_ALLOCATORPRIORITY (default: low),
   NOISE_PREFERNEWBALLOONS, NOISE_CPUCLASS, NOISE_SCHEDULINGCLASS,
-  NOISE_SHAREIDLECPUS, NOISE_LOADS
+  NOISE_SHAREIDLECPUS, NOISE_LOADS, NOISE_IRQCLAIM, NOISE_IRQMODE
 
 Default balloon:
   DEFAULT_MINCPUS, DEFAULT_MAXCPUS, DEFAULT_CPUCLASS,
-  DEFAULT_SHAREIDLECPUS, DEFAULT_LOADS
+  DEFAULT_SHAREIDLECPUS, DEFAULT_LOADS, DEFAULT_IRQCLAIM, DEFAULT_IRQMODE
 
 loadClasses (emitted only if LOADCLASS_NAME is set):
   LOADCLASS_NAME, LOADCLASS_LEVEL (default: l2cache),
@@ -102,6 +105,21 @@ opt_list() {
         echo "${indent}${field}:"
         echo "${indent}- ${value}"
     fi
+    return 0
+}
+
+# opt_qlist FIELD VALUE - print a YAML list of quoted items, one per
+# comma-separated item in VALUE. Used for irqClaim, whose items are IRQ
+# numbers or /proc/interrupts patterns like "*eth0 *": they contain
+# wildcards and spaces, so they must stay quoted strings.
+opt_qlist() {
+    local field="$1" value="$2" indent="${3:-    }"
+    [ -z "$value" ] && return 0
+    echo "${indent}${field}:"
+    local item
+    while IFS= read -r item; do
+        [ -n "$item" ] && echo "${indent}- \"${item}\""
+    done <<< "${value//,/$'\n'}"
     return 0
 }
 
@@ -192,6 +210,8 @@ EOF
     opt cpuClass "${BENCH_CPUCLASS:-}"
     opt shareIdleCPUsInSame "${BENCH_SHAREIDLECPUS:-}"
     opt_list loads "${BENCH_LOADS:-}"
+    opt_qlist irqClaim "${BENCH_IRQCLAIM:-}"
+    opt irqMode "${BENCH_IRQMODE:-}"
 fi
 
 # Noise balloon for the stress-ng background workload.
@@ -212,6 +232,8 @@ EOF
     opt schedulingClass "${NOISE_SCHEDULINGCLASS:-}"
     opt shareIdleCPUsInSame "${NOISE_SHAREIDLECPUS:-}"
     opt_list loads "${NOISE_LOADS:-}"
+    opt_qlist irqClaim "${NOISE_IRQCLAIM:-}"
+    opt irqMode "${NOISE_IRQMODE:-}"
 fi
 
 # Catch-all balloon.
@@ -221,6 +243,8 @@ opt maxCPUs "${DEFAULT_MAXCPUS:-}"
 opt cpuClass "${DEFAULT_CPUCLASS:-}"
 opt shareIdleCPUsInSame "${DEFAULT_SHAREIDLECPUS:-}"
 opt_list loads "${DEFAULT_LOADS:-}"
+opt_qlist irqClaim "${DEFAULT_IRQCLAIM:-}"
+opt irqMode "${DEFAULT_IRQMODE:-}"
 
 if [ -n "${LOADCLASS_NAME:-}" ]; then
     cat <<EOF
@@ -257,5 +281,8 @@ EOF
 if [ -n "${LOG_DEBUG_CPU:-}" ]; then
     echo "    - cpu"
     echo "    - cpuclass"
+fi
+if [ -n "${LOG_DEBUG_IRQ:-}" ]; then
+    echo "    - irq"
 fi
 echo "    source: true"
