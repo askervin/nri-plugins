@@ -501,6 +501,17 @@ node_state_snapshot() {
         date -Is
         echo "=== kernel ==="
         uname -a
+        # The runtime's NRI timeouts decide whether a stage can be
+        # measured at all: the plugin's initial Synchronize has to fit
+        # inside plugin_request_timeout, or the runtime closes the
+        # connection and the plugin restarts, and containers created
+        # while it is away never reach a balloon. On a large node that
+        # budget can be the difference between a measured stage and a
+        # gap, so it belongs in the record next to the hardware state.
+        echo "=== runtime NRI timeouts ==="
+        $SUDO containerd config dump 2>/dev/null |
+            grep -E "plugin_re(quest|gistration)_timeout" ||
+            echo "n/a (not containerd, or config dump unavailable)"
         echo "=== kernel.numa_balancing ==="
         cat /proc/sys/kernel/numa_balancing 2>/dev/null || echo "n/a"
         echo "=== cpufreq scaling_min_freq/scaling_max_freq/governor per CPU ==="
