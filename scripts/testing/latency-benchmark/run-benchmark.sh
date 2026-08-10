@@ -78,6 +78,15 @@ BENCH_LABEL_VALUE="${BENCH_LABEL_VALUE:-critical}"
 BENCH_JOB_NAME="${BENCH_JOB_NAME:-sleep-accuracy}"
 BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}"
 
+# SKIP_DURING_VALIDATION - non-empty: do not validate while the benchmark
+# runs. Exists to answer the question the during-validation itself raises:
+# whether reading the node while it is being measured perturbs the
+# measurement. Run the same stage with and without it and compare the tail
+# latencies; that is evidence, where an argument that sysfs reads are free
+# is only an argument. Not for use in a campaign -- a stage run this way
+# has no during-phase evidence, and its ARTIFACTS.txt says so.
+SKIP_DURING_VALIDATION="${SKIP_DURING_VALIDATION:-}"
+
 # NOISE_WORKLOAD - what the background containers stress:
 #   cpu    busy loops on the CPU
 #   mem    memory bandwidth
@@ -1013,8 +1022,8 @@ STAGE_ARTIFACTS=(
     "stage-env.txt          every stage variable, plus what was observed"
     "balloons-config.yaml   the BalloonsPolicy this stage asked for"
     "node-state-before.txt  the node as the reset left it (full)"
-    "node-state-during.txt  the node while the benchmark ran (light)"
-    "bench-process-during.txt  where the benchmark's thread actually was"
+    "node-state-during.txt?  the node while the benchmark ran (light)"
+    "bench-process-during.txt?  where the benchmark's thread actually was"
     "node-state-after.txt   the node after the benchmark (full)"
     "node-state.txt         alias of node-state-after.txt"
     "sleep-accuracy.log     the measurements"
@@ -1051,6 +1060,13 @@ stage_expected_artifacts() {
                     stress-ng-deployment.yaml)
                         [ "$NOISE_WORKLOAD" != none ] &&
                         [ "$NOISE_REPLICAS" != 0 ] || continue ;;
+                    # Expected unless the during-validation was skipped on
+                    # purpose. A campaign never skips it, so for campaign
+                    # data these are as required as the rest; this keeps
+                    # the perturbation control run from reporting two
+                    # missing artifacts that it was asked not to produce.
+                    node-state-during.txt|bench-process-during.txt)
+                        [ -z "$SKIP_DURING_VALIDATION" ] || continue ;;
                 esac
                 ;;
         esac
@@ -2014,11 +2030,20 @@ run_stage() {
     # "during" snapshot of an idle node would be a fabrication -- it would
     # be indistinguishable from a real one in the file, and it would make
     # the during checks pass for a stage nobody validated.
-    local during_phase
-    during_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
-                        -l app=sleep-accuracy \
-                        -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
-    if [ "$during_phase" = Running ]; then
+    local during_phase=""
+    if [ -n "$SKIP_DURING_VALIDATION" ]; then
+        info "Skipping the during-benchmark validation" \
+             "(SKIP_DURING_VALIDATION is set)."
+    else
+        during_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
+                            -l app=sleep-accuracy \
+                            -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
+    fi
+    if [ -n "$SKIP_DURING_VALIDATION" ]; then
+        echo "during_snapshot=0" >> "$stage_dir/stage-env.txt"
+        echo "during_state_checks=skipped-by-request" \
+            >> "$stage_dir/stage-env.txt"
+    elif [ "$during_phase" = Running ]; then
         bench_process_snapshot "$stage_dir/bench-process-during.txt" \
                                "$bench_cpus"
         node_state_snapshot "$stage_dir/node-state-during.txt" light \
