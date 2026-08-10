@@ -1368,13 +1368,18 @@ check_stage_configured_state() {
         fi
     fi
 
+    # Only sets STATE_CHECK_FAILURES; writing the result is the caller's
+    # job, via verify-row.csv. A check that appended its own verdict to
+    # the stage directory would add a line every time it ran, so running
+    # it a second time over stored logs -- which is the whole point of
+    # keeping the logs -- silently accumulated stale verdicts in data
+    # that was supposed to be a record.
     if [ ${#failed[@]} = 0 ]; then
         STATE_CHECK_FAILURES=ok
         info "State checks passed for the configuration of stage $STAGE_NAME."
         return 0
     fi
     STATE_CHECK_FAILURES="$(IFS=+; echo "${failed[*]}")"
-    echo "state_checks=$STATE_CHECK_FAILURES" >> "$stage_dir/stage-env.txt"
     return 1
 }
 
