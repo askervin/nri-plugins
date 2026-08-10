@@ -1083,3 +1083,196 @@ func TestFreeClassCapacity_UnknownClassReturnsZero(t *testing.T) {
 		t.Errorf("unknown class capacity = %d, want 0", got)
 	}
 }
+
+// --- CLOS maximum frequency must never be programmed as zero ---------
+//
+// SST-CP reads a clos-max of 0 as zero MHz, not as "unlimited". On a
+// Xeon 6776P that clamped all 128 CPUs to 500 MHz of a 4600 MHz part,
+// the high-priority class included, while cpufreq and HWP still
+// reported the full range. The tests below pin both layers of the fix:
+// planClasses resolving an unset maximum, and clampClosMaxFreq refusing
+// a zero that reaches the programming step anyway.
+
+// freqFakeSys is a fakeSys that also exposes per-CPU frequency data, so
+// that discoverTurboInfo can succeed. fakeSys deliberately returns no
+// CPUIDs, which exercises only the undiscoverable-platform path.
+type freqFakeSys struct {
+	fakeSys
+	cpuIDs  []idset.ID
+	minKHz  uint64
+	baseKHz uint64
+	maxKHz  uint64
+}
+
+func (s *freqFakeSys) CPUIDs() []idset.ID { return s.cpuIDs }
+
+func (s *freqFakeSys) CPU(id idset.ID) sysfs.CPU {
+	pkg, ok := s.cpuPkg[int(id)]
+	if !ok {
+		return nil
+	}
+	return &freqFakeCPU{
+		fakeCPU: fakeCPU{id: id, pkg: pkg},
+		freq: sysfs.CPUFreq{
+			Base: s.baseKHz,
+			Min:  s.minKHz,
+			Max:  s.maxKHz,
+		},
+	}
+}
+
+type freqFakeCPU struct {
+	fakeCPU
+	freq sysfs.CPUFreq
+}
+
+func (c *freqFakeCPU) Online() bool                  { return true }
+func (c *freqFakeCPU) BaseFrequency() uint64         { return c.freq.Base }
+func (c *freqFakeCPU) FrequencyRange() sysfs.CPUFreq { return c.freq }
+
+// newFreqFakeSys returns a two-package fake whose CPUs report
+// 800 MHz minimum, 2300 MHz base and 4600 MHz turbo -- the Xeon 6776P
+// the clamp was found on.
+func newFreqFakeSys() *freqFakeSys {
+	base := newTwoPackageFakeSys()
+	return &freqFakeSys{
+		fakeSys: *base,
+		cpuIDs:  []idset.ID{0, 1, 2, 3, 4, 5, 6, 7},
+		minKHz:  800_000,
+		baseKHz: 2_300_000,
+		maxKHz:  4_600_000,
+	}
+}
+
+// TestPctPlanClasses_UnsetMaxFreqResolvesToPlatformMax: a cpuClass that
+// sets pctPriority but no maximum must be planned with the platform's
+// turbo frequency, not 0. This is exactly what the benchmark's stage 8
+// configured, and what clamped the node.
+func TestPctPlanClasses_UnsetMaxFreqResolvesToPlatformMax(t *testing.T) {
+	sys := newFreqFakeSys()
+	a := &Allocator{sys: sys, sst: &fakeSst{supported: true}}
+
+	classes := []*policyapi.CPUClass{
+		{Name: "hp-pct", PctPriority: "high"},
+		{Name: "lp-pct", PctPriority: "low"},
+	}
+	mode, plans, err := a.planClasses(classes)
+	if err != nil {
+		t.Fatalf("planClasses: %v", err)
+	}
+	if mode != pctModeManaged {
+		t.Fatalf("mode = %v, want managed", mode)
+	}
+	for _, name := range []string{"hp-pct", "lp-pct"} {
+		p, ok := plans[name]
+		if !ok {
+			t.Fatalf("no plan for %q", name)
+		}
+		if p.MaxFreq != 4_600_000 {
+			t.Errorf("%s: MaxFreq = %d kHz, want 4600000 (platform turbo); "+
+				"0 would clamp the CLOS to the hardware minimum", name, p.MaxFreq)
+		}
+		if p.MinFreq != 0 {
+			t.Errorf("%s: MinFreq = %d kHz, want 0 (unset means no floor)", name, p.MinFreq)
+		}
+	}
+}
+
+// TestPctPlanClasses_ExplicitMaxFreqHonoured: an explicit maximum, both
+// symbolic and numeric, must survive planning unchanged. The fix must
+// not override a cap the user asked for.
+func TestPctPlanClasses_ExplicitMaxFreqHonoured(t *testing.T) {
+	sys := newFreqFakeSys()
+	a := &Allocator{sys: sys, sst: &fakeSst{supported: true}}
+
+	classes := []*policyapi.CPUClass{
+		{Name: "sym", PctPriority: "high", PctMaxFreq: policyapi.FrequencyBase},
+		{Name: "num", PctPriority: "low", PctMaxFreq: policyapi.Frequency(3_000_000)},
+	}
+	_, plans, err := a.planClasses(classes)
+	if err != nil {
+		t.Fatalf("planClasses: %v", err)
+	}
+	if got := plans["sym"].MaxFreq; got != 2_300_000 {
+		t.Errorf("symbolic base MaxFreq = %d kHz, want 2300000", got)
+	}
+	if got := plans["num"].MaxFreq; got != 3_000_000 {
+		t.Errorf("numeric MaxFreq = %d kHz, want 3000000", got)
+	}
+}
+
+// TestPctPlanClasses_MaxFreqFallsBackWhenPlatformUnknown: when the
+// platform cannot be probed, an unset maximum must still not be 0. The
+// mailbox maximum is used, which the hardware clamps down to whatever it
+// can actually reach -- the safe direction to err in.
+func TestPctPlanClasses_MaxFreqFallsBackWhenPlatformUnknown(t *testing.T) {
+	// newTwoPackageFakeSys returns no CPUIDs, so discoverTurboInfo fails.
+	a := &Allocator{sys: newTwoPackageFakeSys(), sst: &fakeSst{supported: true}}
+
+	_, plans, err := a.planClasses([]*policyapi.CPUClass{
+		{Name: "hp", PctPriority: "high"},
+	})
+	if err != nil {
+		t.Fatalf("planClasses: %v", err)
+	}
+	if got := plans["hp"].MaxFreq; got != pctMaxMboxFreqKHz {
+		t.Errorf("MaxFreq with undiscoverable platform = %d kHz, want %d",
+			got, uint(pctMaxMboxFreqKHz))
+	}
+}
+
+// TestPctClampClosMaxFreq: the last line of defence. A zero reaching the
+// programming step is a bug, but it must never be passed to the
+// hardware; anything positive must pass through untouched.
+func TestPctClampClosMaxFreq(t *testing.T) {
+	a := &Allocator{sys: newFreqFakeSys(), sst: &fakeSst{supported: true}}
+
+	if got := a.clampClosMaxFreq(3, 0); got != 4_600_000 {
+		t.Errorf("clampClosMaxFreq(0) = %d kHz, want 4600000 (platform turbo)", got)
+	}
+	if got := a.clampClosMaxFreq(0, 2_300_000); got != 2_300_000 {
+		t.Errorf("clampClosMaxFreq(2300000) = %d kHz, want it unchanged", got)
+	}
+}
+
+// TestPctConfigure_ProgramsNoZeroMaxFreq is the end-to-end guard: run
+// Configure the way stage 8 of the latency benchmark does -- high and
+// low PCT classes, no frequencies anywhere -- and assert that every CLOS
+// actually handed to the hardware has a positive maximum.
+func TestPctConfigure_ProgramsNoZeroMaxFreq(t *testing.T) {
+	sys := newFreqFakeSys()
+	rec := &recordingSst{fakeSst: fakeSst{supported: true}}
+	a := &Allocator{sys: sys, sst: rec, mode: pctModeDisabled}
+
+	classes := []*policyapi.CPUClass{
+		{Name: "hp-pct", PctPriority: "high"},
+		{Name: "lp-pct", PctPriority: "low"},
+	}
+	if err := a.Configure(classes, cpuset.MustParse("0-7")); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if len(rec.configured) == 0 {
+		t.Fatal("no CLOS was programmed")
+	}
+	for _, cfg := range rec.configured {
+		if cfg.MaxFreq <= 0 {
+			t.Errorf("CLOS %d programmed with MaxFreq = %d; a clos-max of 0 "+
+				"clamps its CPUs to the hardware minimum", cfg.ClosID, cfg.MaxFreq)
+		}
+		if cfg.MinFreq > cfg.MaxFreq {
+			t.Errorf("CLOS %d: MinFreq %d > MaxFreq %d, which the hardware rejects",
+				cfg.ClosID, cfg.MinFreq, cfg.MaxFreq)
+		}
+	}
+}
+
+// recordingSst captures the CLOS configurations passed to the hardware.
+type recordingSst struct {
+	fakeSst
+	configured []pctClosConfig
+}
+
+func (s *recordingSst) ConfigureClos(cfg pctClosConfig) error {
+	s.configured = append(s.configured, cfg)
+	return nil
+}
