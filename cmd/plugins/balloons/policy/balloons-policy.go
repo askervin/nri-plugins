@@ -993,6 +993,12 @@ func (p *balloons) applyIrqAffinities() {
 			isolateCpus = isolateCpus.Union(bln.Cpus)
 		}
 	}
+	// Outcomes are collected and logged once, instead of a line per
+	// interrupt, so that a driver with a queue on every CPU cannot flood
+	// the log. See the summary after the loop.
+	irqSetOk := []int{}
+	irqSetFailed := []int{}
+	irqSetErrors := map[string][]int{}
 	for _, hwIrq := range hwIrqs {
 		newCpus := p.allowed
 		curCpus, err := hwIrq.AffinityCpus()
@@ -1016,11 +1022,52 @@ func (p *balloons) applyIrqAffinities() {
 			continue
 		}
 		if err := hwIrq.SetAffinityCpus(newCpus); err != nil {
-			log.Debugf("failed to set affinity of %s to %q: %v", hwIrq, newCpus, err)
+			irqSetFailed = append(irqSetFailed, hwIrq.Num())
+			// Group by the error rather than printing one line per
+			// interrupt. Drivers that put a queue on every CPU fail
+			// identically for every one of them: on a 128-CPU node with
+			// NVMe and QAT queues this loop produced ~13500 failure
+			// lines per reconciliation, all saying the same thing about
+			// 288 interrupts, which is enough to push the plugin's
+			// startup and configuration logging out of the kubelet's
+			// 10Mi container log and out of any collected record of what
+			// the policy actually programmed.
+			reason := err.Error()
+			if i := strings.LastIndex(reason, ": "); i >= 0 {
+				reason = reason[i+2:]
+			}
+			irqSetErrors[reason] = append(irqSetErrors[reason], hwIrq.Num())
 		} else {
-			log.Debugf("set affinity of %s to %q", hwIrq, newCpus)
+			irqSetOk = append(irqSetOk, hwIrq.Num())
 		}
 	}
+
+	// One line per outcome, naming every interrupt involved. The numbers
+	// are kept because they are what tells an unmovable per-queue
+	// interrupt from one that should have moved and did not, and the
+	// benchmark harness reads them back to decide exactly that.
+	if len(irqSetOk) > 0 {
+		log.Debugf("set affinity of %d irqs: %s",
+			len(irqSetOk), irqNumsToString(irqSetOk))
+	}
+	for reason, nums := range irqSetErrors {
+		log.Debugf("failed to set affinity of %d irqs (%s): %s",
+			len(nums), reason, irqNumsToString(nums))
+	}
+	if len(irqSetFailed) > 0 {
+		log.Debugf("%d of %d irqs did not accept a new affinity",
+			len(irqSetFailed), len(irqSetOk)+len(irqSetFailed))
+	}
+}
+
+// irqNumsToString formats interrupt numbers as a comma-separated list.
+func irqNumsToString(nums []int) string {
+	sort.Ints(nums)
+	strs := make([]string, 0, len(nums))
+	for _, num := range nums {
+		strs = append(strs, strconv.Itoa(num))
+	}
+	return strings.Join(strs, ",")
 }
 
 // updateLoadedVirtDevsInAllocatorOptions updates CPU allocator
