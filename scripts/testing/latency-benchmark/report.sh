@@ -44,6 +44,28 @@ CSV_CONFIG_COLUMNS=(
     pin_memory
 )
 
+# CSV_VERIFY_COLUMNS - what the node was actually found to be in,
+# as opposed to what the stage asked for.
+#
+# The configuration columns above say what was requested. These say what
+# the harness could verify afterwards, which is not the same thing: a
+# stage can request a C-state be disabled, have the policy report
+# success, and still run on a CPU where it is enabled. Keeping both in
+# the same row is what lets an analysis tell "configured" from
+# "configured and confirmed".
+#
+#   bench_cpus     effective cpuset of the benchmark container, read
+#                  from its cgroup while it was running, with commas
+#                  replaced by + so the field stays one CSV column.
+#                  0 when it could not be determined.
+#   state_checks   ok, or a +-joined list of the state checks that
+#                  failed. See check_stage_configured_state.
+#                  0 for rows collected before this check existed.
+CSV_VERIFY_COLUMNS=(
+    bench_cpus
+    state_checks
+)
+
 # CSV_MEASUREMENT_COLUMNS - columns from the sleep-accuracy output.
 CSV_MEASUREMENT_COLUMNS=(
     benchmark
@@ -74,7 +96,18 @@ CSV_MEASUREMENT_COLUMNS=(
 # csv_header - print the CSV header line.
 csv_header() {
     local IFS=,
-    echo "${CSV_CONFIG_COLUMNS[*]},${CSV_MEASUREMENT_COLUMNS[*]}"
+    echo "${CSV_CONFIG_COLUMNS[*]},${CSV_VERIFY_COLUMNS[*]},${CSV_MEASUREMENT_COLUMNS[*]}"
+}
+
+# csv_verify_row_unknown - a verification row of all zeros, for a stage
+# whose logs predate these columns or where the checks could not run.
+csv_verify_row_unknown() {
+    local row=() i
+    for ((i = 0; i < ${#CSV_VERIFY_COLUMNS[@]}; i++)); do
+        row+=(0)
+    done
+    local IFS=,
+    echo "${row[*]}"
 }
 
 # csv_flag VALUE - normalise a configuration value for the CSV.
@@ -153,16 +186,17 @@ csv_config_row() {
     echo "${row[*]}"
 }
 
-# csv_append_stage LOGFILE CONFIG_ROW CSVFILE - append one CSV row per
-# measurement line found in LOGFILE.
+# csv_append_stage LOGFILE CONFIG_ROW CSVFILE [VERIFY_ROW] - append one
+# CSV row per measurement line found in LOGFILE.
 #
 # sleep-accuracy prints a header line followed by one line per
 # measurement. Lines that do not start with a known benchmark name are
 # ignored, which skips the header and any container noise on stdout.
 csv_append_stage() {
     local logfile="$1" config_row="$2" csvfile="$3"
+    local verify_row="${4:-$(csv_verify_row_unknown)}"
     [ -f "$logfile" ] || return 0
-    awk -v prefix="$config_row" '
+    awk -v prefix="$config_row,$verify_row" '
         $1 == "nanosleep" || $1 == "networking" || $1 == "futex" {
             # A complete measurement line has 23 fields.
             if (NF != 23) next
@@ -234,8 +268,19 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         # with, so the CSV can be rebuilt without re-deriving it.
         if [ -f "$stage_dir/config-row.csv" ] && \
            [ -f "$stage_dir/sleep-accuracy.log" ]; then
+            # verify-row.csv only exists for stages collected by a
+            # harness that has the state checks. Older stage directories
+            # rebuild with zeros, meaning "not verified", rather than
+            # failing or silently shifting the columns.
+            local verify_row
+            if [ -f "$stage_dir/verify-row.csv" ]; then
+                verify_row="$(cat "$stage_dir/verify-row.csv")"
+            else
+                verify_row="$(csv_verify_row_unknown)"
+            fi
             csv_append_stage "$stage_dir/sleep-accuracy.log" \
-                             "$(cat "$stage_dir/config-row.csv")" /dev/stdout
+                             "$(cat "$stage_dir/config-row.csv")" /dev/stdout \
+                             "$verify_row"
         fi
     done
 fi

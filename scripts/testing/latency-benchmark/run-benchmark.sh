@@ -679,6 +679,108 @@ node_state_snapshot() {
     } > "$out" 2>&1
 }
 
+# plugin_pod - name of the plugin pod on this node, or empty.
+#
+# Takes the selector from the DaemonSet rather than assuming the chart's
+# label values, so it keeps working if the chart changes them.
+plugin_pod() {
+    local selector
+    selector="$(kubectl get ds "$HELM_RELEASE" -n "$HELM_NAMESPACE" \
+                    -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' \
+                    2>/dev/null | sed 's/,$//')"
+    [ -n "$selector" ] || selector="app.kubernetes.io/name=nri-resource-policy-balloons"
+    kubectl get pods -n "$HELM_NAMESPACE" -l "$selector" \
+        --field-selector "spec.nodeName=$NODE_NAME" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null
+}
+
+# PLUGIN_LOG_PID - pid of the running "kubectl logs -f" follower, if any.
+PLUGIN_LOG_PID=""
+
+# start_plugin_log FILE - begin streaming the plugin's log into FILE.
+#
+# Streamed from the moment the pod is ready rather than read once after
+# the stage, because a single post-hoc "kubectl logs --tail=-1" can only
+# return what the kubelet still holds. The kubelet rotates container logs
+# at containerLogMaxSize, 10Mi by default, and the debug logging these
+# stages enable is far from small: an IRQ-isolating stage on a node with
+# per-CPU NVMe and QAT queues emits ~13500 "failed to set affinity of irq"
+# lines and ~11500 "set affinity of irq" lines, and reached 8.2 MB in
+# 52000 lines here. 56 of 133 collected logs were truncated at the head
+# by exactly that, and what falls off the front is the startup and
+# configuration phase -- the part that says what the policy programmed.
+# The "programmed CLOS ... max=0" line that named the clamp defect
+# appeared in none of the truncated stage-8 logs and in all five of the
+# untruncated ones, and the "cpu class commit produced an error" message
+# that cpu_tuning_applied=0 greps for is emitted at configuration time
+# too, so on a truncated log that check cannot fire even when it should.
+#
+# Following the log keeps the whole stage regardless of rotation: the
+# stream is read as it is produced, so the file on disk grows past
+# whatever the kubelet is willing to retain.
+start_plugin_log() {
+    local out="$1"
+    local pod
+    pod="$(plugin_pod)"
+    if [ -z "$pod" ]; then
+        warn "no plugin pod to follow logs from"
+        return 1
+    fi
+    # --tail=-1 to include what the pod has already logged between
+    # becoming ready and this call, so the startup phase is not lost in
+    # the gap; -f to keep receiving the rest.
+    kubectl logs -f --tail=-1 -n "$HELM_NAMESPACE" "$pod" > "$out" 2>&1 &
+    PLUGIN_LOG_PID=$!
+    echo "following logs of plugin pod $pod (pid $PLUGIN_LOG_PID)"
+}
+
+# stop_plugin_log FILE - stop the follower and make sure FILE has the
+# whole stage in it.
+#
+# A followed stream can end early: the plugin restarting closes it, and
+# so does any transient API server error. Both leave a short file that
+# still looks like a log. So the follower's output is compared against a
+# final direct read, and whichever has more lines is kept -- the direct
+# read wins on a stream that died at the start, the follower wins once
+# rotation has thrown away what the direct read would return.
+stop_plugin_log() {
+    local out="$1"
+    if [ -n "$PLUGIN_LOG_PID" ]; then
+        # SIGTERM, then reap. kubectl exits on its own once the stream
+        # closes, so a failed wait here is expected, not an error.
+        kill "$PLUGIN_LOG_PID" 2>/dev/null
+        wait "$PLUGIN_LOG_PID" 2>/dev/null
+        PLUGIN_LOG_PID=""
+    fi
+
+    local pod direct followed_lines direct_lines
+    pod="$(plugin_pod)"
+    [ -n "$pod" ] || return 0
+    direct="$out.direct"
+    kubectl logs --tail=-1 -n "$HELM_NAMESPACE" "$pod" > "$direct" 2>/dev/null
+    followed_lines="$(wc -l < "$out" 2>/dev/null || echo 0)"
+    direct_lines="$(wc -l < "$direct" 2>/dev/null || echo 0)"
+    if [ "$direct_lines" -gt "$followed_lines" ]; then
+        warn "followed plugin log has $followed_lines lines against" \
+             "$direct_lines from a direct read; keeping the direct read." \
+             "The follower may have been disconnected."
+        mv "$direct" "$out"
+    else
+        rm -f "$direct"
+    fi
+
+    # Record whether the log starts where the plugin does. A log missing
+    # its startup phase cannot witness what the policy programmed, and
+    # that has to be visible in the results rather than inferred later.
+    if [ -s "$out" ] && ! head -5 "$out" |
+            grep -qE 'registering controller|level=(INFO|WARN)'; then
+        warn "plugin log does not start at plugin startup:" \
+             "the configuration phase may have been rotated away"
+        return 1
+    fi
+    return 0
+}
+
 # wait_for_daemonset - wait until the plugin is running on this node.
 #
 # "rollout status" is not enough on its own. It reports the generation
@@ -814,6 +916,399 @@ check_stage_measured_config() {
         warn "the plugin lost its connection to the runtime during this stage"
     fi
     echo "measured_config_valid=0" >> "$stage_dir/stage-env.txt"
+    return 1
+}
+
+# capture_cgroups STAGE_DIR - record the effective cpusets of the
+# benchmark and noise containers, while the benchmark is still running.
+#
+# Called as soon as the benchmark pod is Running, not after the Job
+# completes. A completed Job's container is gone and so is its cgroup, so
+# the post-hoc capture this replaces recorded only the noise containers:
+# every collected cgroups.txt of a loaded campaign holds 90 stress-ng
+# entries and no sleep-accuracy entry at all, and on the unloaded
+# campaign the file is empty in all 45 stages. That left the CPUs the
+# benchmark actually ran on unwitnessed by anything except a single line
+# in the plugin's log -- which is the policy's intent, not the kernel's
+# cgroup.
+#
+# Prints the benchmark container's effective cpuset on stdout, empty if
+# it could not be read.
+capture_cgroups() {
+    local stage_dir="$1"
+    local kube_cgroups="$SCRIPT_DIR/../kube-cgroups"
+    [ -x "$kube_cgroups" ] || return 0
+
+    $SUDO "$kube_cgroups" -n "$BENCH_NAMESPACE" \
+        -f 'cpuset.cpus.effective|cpuset.mems.effective' \
+        > "$stage_dir/cgroups.txt" 2>&1
+
+    # kube-cgroups prints a pod block, a container line under it, and
+    # then one "file: value" line per file. Pick the cpuset of the
+    # container inside the benchmark pod, whose name is the Job's.
+    awk -v job="$BENCH_JOB_NAME" '
+        /^[^ ]/            { inpod = (index($0, job) > 0); next }
+        inpod && /cpuset\.cpus\.effective:/ {
+            sub(/^ *cpuset\.cpus\.effective: */, ""); print; exit }
+    ' "$stage_dir/cgroups.txt" 2>/dev/null
+}
+
+# wait_for_bench_pod_running TIMEOUT - wait until the benchmark pod has a
+# running container, so its cgroup exists and can be read.
+wait_for_bench_pod_running() {
+    local timeout="${1:-120}"
+    local deadline=$((SECONDS + timeout))
+    local pod phase
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        pod="$(kubectl get pod -n "$BENCH_NAMESPACE" -l app=sleep-accuracy \
+                   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+        if [ -n "$pod" ]; then
+            phase="$(kubectl get pod -n "$BENCH_NAMESPACE" "$pod" \
+                         -o jsonpath='{.status.phase}' 2>/dev/null)"
+            # Succeeded too: a short benchmark can finish before this
+            # loop first looks, and there is nothing left to wait for.
+            case "$phase" in
+                Running|Succeeded|Failed) echo "$pod"; return 0 ;;
+            esac
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# cpulist_expand LIST - expand "0-3,8" into one CPU number per line.
+cpulist_expand() {
+    local range lo hi
+    local IFS=,
+    for range in $1; do
+        case "$range" in
+            "")  ;;
+            *-*) lo="${range%%-*}"; hi="${range##*-}"
+                 while [ "$lo" -le "$hi" ] 2>/dev/null; do
+                     echo "$lo"; lo=$((lo + 1))
+                 done ;;
+            *)   echo "$range" ;;
+        esac
+    done
+}
+
+# resolve_freq SYMBOL - turn base/turbo/min into a kHz value from this
+# node's own cpufreq, so the comparison means "the frequency the stage
+# asked for" on any part. Numeric values pass through. Empty output
+# means the symbol could not be resolved and the check must be skipped.
+resolve_freq() {
+    local want="$1" cpufreq=/sys/devices/system/cpu/cpu0/cpufreq
+    case "$want" in
+        base)   cat "$cpufreq/base_frequency" 2>/dev/null ;;
+        turbo)  cat "$cpufreq/cpuinfo_max_freq" 2>/dev/null ;;
+        min)    cat "$cpufreq/cpuinfo_min_freq" 2>/dev/null ;;
+        [0-9]*) echo "$want" ;;
+        *)      echo "" ;;
+    esac
+}
+
+# check_stage_configured_state STAGE_DIR BENCH_CPUS - is the node in the
+# state this stage asked for?
+#
+# Everything here is read out of the snapshot the harness already writes,
+# which until now was recorded and never looked at: a "grep node-state"
+# over the harness found one write and no reads. That is how campaign 1
+# was lost. Every fact needed to catch its 500 MHz clamp was in those
+# files from the first stage onwards, and nothing compared them against
+# what the stage had configured, so five cycles of stages 4-7 were
+# collected against a crippled node and looked like results.
+#
+# The checks are deliberately about the benchmark's own CPUs, since those
+# are what the latencies describe. Each writes one name into
+# STATE_CHECK_FAILURES when it fails; a check that cannot be evaluated --
+# no snapshot section, an unresolvable symbolic frequency, a stage that
+# does not configure the mechanism -- is skipped rather than failed, so a
+# node without some piece of hardware does not produce a wall of noise.
+#
+# Returns 0 when every evaluated check passed, 1 otherwise.
+STATE_CHECK_FAILURES=""
+check_stage_configured_state() {
+    local stage_dir="$1" bench_cpus="$2"
+    local snapshot="$stage_dir/node-state.txt"
+    local plugin_log="$stage_dir/nri-resource-policy.log"
+    STATE_CHECK_FAILURES=""
+    [ -f "$snapshot" ] || return 0
+    [ -z "${STAGE_NO_BALLOONS:-}" ] || return 0
+
+    local -a failed=()
+    local -a bench=()
+    if [ -n "$bench_cpus" ] && [ "$bench_cpus" != 0 ]; then
+        mapfile -t bench < <(cpulist_expand "$bench_cpus")
+    fi
+
+    ###
+    ### PCT: a CLOS maximum of 0 is the defect that cost three campaigns.
+    ###
+    # SST-CP reads clos-max 0 as zero MHz, not as "no limit", so a CLOS
+    # programmed that way clamps its CPUs to the hardware minimum. The
+    # snapshot prints "clos N: clos-min:X MHz clos-max:Y MHz", or
+    # "clos-max:Max Turbo frequency" when unlimited.
+    if [ -n "${CPUCLASS_BENCH_PCTPRIORITY:-}" ]; then
+        local zero_clos
+        zero_clos="$(awk '/^clos [0-9]+:/ && /clos-max:0 MHz/ { print $2 }' \
+                     "$snapshot" | tr -d ':' | tr '\n' '+' | sed 's/+$//')"
+        if [ -n "$zero_clos" ]; then
+            failed+=("clos-max-zero($zero_clos)")
+            warn "CLOS $zero_clos has clos-max 0 MHz, which SST-CP reads" \
+                 "as zero: these CPUs are clamped to the hardware minimum"
+        fi
+        # get-config needs -c per CLOS; without it the snapshot records
+        # "Invalid clos id" and says nothing. That was true of every run
+        # of the first three campaigns, and is why the clamp hid.
+        if grep -q "Invalid clos id" "$snapshot"; then
+            failed+=("clos-limits-unreadable")
+        fi
+    fi
+
+    ###
+    ### Achieved frequency: is the node running at a sane speed at all?
+    ###
+    # Each sampled CPU is loaded before being read, so a low reading here
+    # is a real clamp rather than an idle core at its minimum. Requiring
+    # every sampled CPU to be low is what distinguishes the two: one idle
+    # CPU at 500 MHz is legitimate, all of them is not.
+    local sampled low
+    sampled="$(grep -cE '^cpu[0-9]+: perf_status=' "$snapshot" 2>/dev/null)"
+    if [ "${sampled:-0}" -gt 0 ] && [ "$NODE_SPEED_MIN_MHZ" -gt 0 ]; then
+        low="$(awk -v lim="$NODE_SPEED_MIN_MHZ" '
+            /^cpu[0-9]+: perf_status=/ {
+                # Prefer "(busy max of N samples: NNNN MHz)", which says
+                # what the CPU reached rather than what it happened to be
+                # at in the final sample. Snapshots taken before that was
+                # recorded only have the "=> NNNN MHz" figure, and those
+                # were sampled idle, so they are counted but cannot be
+                # trusted to mean a clamp on their own.
+                #
+                # The number is matched and extracted as its own field
+                # rather than by offset arithmetic from the label, which
+                # is how "4600" first got read as "600" here and made a
+                # healthy node look clamped.
+                mhz = ""
+                if (match($0, /busy max of [0-9]+ samples: [0-9]+/)) {
+                    s = substr($0, RSTART, RLENGTH)
+                    n_f = split(s, f, " ")
+                    mhz = f[n_f]
+                } else if (match($0, /=> [0-9]+ MHz/)) {
+                    s = substr($0, RSTART, RLENGTH)
+                    split(s, f, " ")
+                    mhz = f[2]
+                }
+                if (mhz != "" && mhz + 0 < lim) n++
+            } END { print n + 0 }' "$snapshot")"
+        if [ "$low" = "$sampled" ]; then
+            failed+=("node-clamped")
+            warn "every sampled CPU is below ${NODE_SPEED_MIN_MHZ} MHz:" \
+                 "the node was clamped while this stage was measured"
+        fi
+    fi
+
+    ###
+    ### C-states: disabled where asked, and only where asked.
+    ###
+    if [ -n "${CPUCLASS_BENCH_DISABLEDCSTATES:-}" ] && [ ${#bench[@]} -gt 0 ]; then
+        local want_cstates="${CPUCLASS_BENCH_DISABLEDCSTATES}"
+        local cstate missing_on="" leaked_on=""
+        local IFS=,
+        for cstate in $want_cstates; do
+            unset IFS
+            local c n_enabled=0
+            for c in "${bench[@]}"; do
+                # "cpuN/cpuidle/stateM: name=C1E disable=1"
+                awk -v cpu="cpu$c/" -v name="name=$cstate " '
+                    index($0, cpu) && index($0, name) &&
+                    index($0, "disable=1") { found = 1 }
+                    END { exit(found ? 0 : 1) }' "$snapshot" ||
+                    n_enabled=$((n_enabled + 1))
+            done
+            [ "$n_enabled" = 0 ] || missing_on="$missing_on $cstate"
+            # And a CPU the class does not cover should still have it.
+            # Checking one such CPU is enough to tell "the policy scoped
+            # this to the benchmark" from "something disabled it
+            # globally", which would make the stage measure the whole
+            # node rather than the mechanism.
+            local other=""
+            local oc
+            for oc in $(online_cpus); do
+                local is_bench=0 b
+                for b in "${bench[@]}"; do
+                    [ "$oc" = "$b" ] && { is_bench=1; break; }
+                done
+                [ "$is_bench" = 0 ] && { other="$oc"; break; }
+            done
+            if [ -n "$other" ]; then
+                awk -v cpu="cpu$other/" -v name="name=$cstate " '
+                    index($0, cpu) && index($0, name) &&
+                    index($0, "disable=1") { found = 1 }
+                    END { exit(found ? 0 : 1) }' "$snapshot" &&
+                    leaked_on="$leaked_on $cstate"
+            fi
+            IFS=,
+        done
+        unset IFS
+        # The lists are accumulated with a leading space per item; strip
+        # it before joining, or the label reads "(+C6)".
+        missing_on="${missing_on# }"
+        leaked_on="${leaked_on# }"
+        if [ -n "$missing_on" ]; then
+            failed+=("cstates-not-disabled(${missing_on// /+})")
+            warn "C-states${missing_on} are still enabled on the benchmark" \
+                 "CPUs ($bench_cpus), but the stage disabled them"
+        fi
+        if [ -n "$leaked_on" ]; then
+            failed+=("cstates-disabled-node-wide(${leaked_on// /+})")
+            warn "C-states${leaked_on} are disabled outside the benchmark" \
+                 "CPUs too: this stage measures the node, not the mechanism"
+        fi
+    fi
+
+    ###
+    ### cpufreq limits on the benchmark's CPUs.
+    ###
+    if [ ${#bench[@]} -gt 0 ]; then
+        local field want got resolved c bad
+        for field in MAXFREQ MINFREQ; do
+            eval "want=\${CPUCLASS_BENCH_${field}:-}"
+            [ -n "$want" ] || continue
+            resolved="$(resolve_freq "$want")"
+            [ -n "$resolved" ] || continue
+            local key=max; [ "$field" = MINFREQ ] && key=min
+            bad=""
+            for c in "${bench[@]}"; do
+                got="$(awk -v cpu="/cpu$c/cpufreq:" -v k="$key=" '
+                    index($0, cpu) {
+                        n = split($0, f, " ")
+                        for (i = 1; i <= n; i++)
+                            if (index(f[i], k) == 1) {
+                                sub(k, "", f[i]); print f[i]; exit }
+                    }' "$snapshot")"
+                [ -n "$got" ] || continue
+                # Exact equality: both sides are kHz straight out of
+                # sysfs, and the policy writes the value it resolved.
+                [ "$got" = "$resolved" ] || bad="$bad cpu$c($got)"
+            done
+            if [ -n "$bad" ]; then
+                failed+=("cpufreq-$key-wrong")
+                warn "scaling_${key}_freq is not the requested $want" \
+                     "(${resolved} kHz) on:${bad}"
+            fi
+        done
+    fi
+
+    ###
+    ### IRQ isolation: nothing left pointing at the benchmark's CPUs.
+    ###
+    # Only meaningful when the stage asked for isolation. IRQs the kernel
+    # manages itself cannot be moved -- smp_affinity_list is read-only
+    # for some, and writes fail with EIO for NVMe and QAT per-queue
+    # interrupts -- so those are exempt. The exemption list is taken from
+    # the plugin's own failures rather than assumed, which also means a
+    # newly unmovable IRQ shows up as a finding instead of hiding.
+    #
+    # Also exempt are IRQs with no /proc/interrupts line, which the
+    # snapshot records with an empty description: unallocated legacy ISA
+    # vectors with no driver attached. The policy enumerates interrupts
+    # from /proc/interrupts, so these are never candidates for isolation
+    # and never fire -- but they keep a default affinity of every CPU,
+    # which without this exemption reads as a dozen offenders on every
+    # isolate stage.
+    if [ "${BENCH_IRQMODE:-}" = isolate ] && [ ${#bench[@]} -gt 0 ]; then
+        local exempt_file="$stage_dir/.irq-exempt"
+        {
+            # Kernel-managed, marked ro in the snapshot.
+            awk '/^[0-9]+: / && /\(ro\)/ { sub(":", "", $1); print $1 }' \
+                "$snapshot"
+            # No device behind them: "NUM: LIST (rw)" and nothing after.
+            awk '/^[0-9]+: / && NF == 3 { sub(":", "", $1); print $1 }' \
+                "$snapshot"
+            # Writes refused with EIO, as reported by the plugin.
+            grep -oE "failed to set affinity of irq [0-9]+" "$plugin_log" \
+                2>/dev/null | awk '{print $NF}'
+        } | sort -u > "$exempt_file"
+
+        local offenders
+        offenders="$(awk -v cpus="$(printf '%s,' "${bench[@]}")" '
+            BEGIN {
+                n = split(cpus, c, ",")
+                for (i = 1; i <= n; i++) if (c[i] != "") bench[c[i]] = 1
+            }
+            # First file: the exemption list, one IRQ number per line.
+            FNR == NR { exempt[$1] = 1; next }
+            /^[0-9]+: / {
+                irq = $1; sub(":", "", irq)
+                if (irq in exempt) next
+                # "NUM: LIST (rw) description"
+                list = $2
+                nr = split(list, ranges, ",")
+                for (i = 1; i <= nr; i++) {
+                    if (split(ranges[i], se, "-") == 2) { lo = se[1]; hi = se[2] }
+                    else { lo = ranges[i] + 0; hi = lo }
+                    for (cpu = lo; cpu <= hi; cpu++)
+                        if (cpu in bench) { print irq; next }
+                }
+            }' "$exempt_file" "$snapshot" | sort -un | tr '\n' '+' | sed 's/+$//')"
+        rm -f "$exempt_file"
+        if [ -n "$offenders" ]; then
+            local n_off
+            # Count the items, not the newlines: printf writes no trailing
+            # newline, so "wc -l" reported one fewer than there were and a
+            # single offender was announced as "0 movable IRQs".
+            n_off="$(printf '%s\n' "$offenders" | tr '+' '\n' | grep -c .)"
+            failed+=("irqs-on-bench-cpus($n_off)")
+            warn "$n_off movable IRQs still allow the benchmark CPUs" \
+                 "($bench_cpus) despite irqMode isolate: $offenders"
+        fi
+    fi
+
+    ###
+    ### The cpuset itself: did the benchmark get its own CPUs?
+    ###
+    if [ -n "${BENCH_PREFERNEWBALLOONS:-}" ] && [ ${#bench[@]} -gt 0 ]; then
+        local want_n="${BENCH_MAXCPUS:-$BENCH_CPUS}"
+        if [ "${#bench[@]}" != "$want_n" ]; then
+            failed+=("bench-cpuset-size(${#bench[@]}!=$want_n)")
+            warn "the benchmark ran on ${#bench[@]} CPUs ($bench_cpus)," \
+                 "but the stage asked for $want_n"
+        fi
+        # And the noise must not be on them. cgroups.txt holds every
+        # container's effective cpuset, so this is a direct check rather
+        # than an inference from the policy's intent.
+        local shared
+        shared="$(awk -v cpus="$(printf '%s,' "${bench[@]}")" '
+            BEGIN {
+                n = split(cpus, c, ",")
+                for (i = 1; i <= n; i++) if (c[i] != "") bench[c[i]] = 1
+            }
+            /^[^ ]/ { pod = $0; sub(":$", "", pod); next }
+            /cpuset\.cpus\.effective:/ {
+                if (pod ~ /sleep-accuracy/) next
+                list = $2
+                nr = split(list, ranges, ",")
+                for (i = 1; i <= nr; i++) {
+                    if (split(ranges[i], se, "-") == 2) { lo = se[1]; hi = se[2] }
+                    else { lo = ranges[i] + 0; hi = lo }
+                    for (cpu = lo; cpu <= hi; cpu++)
+                        if (cpu in bench) { print pod; next }
+                }
+            }' "$stage_dir/cgroups.txt" 2>/dev/null | sort -u | wc -l)"
+        if [ "${shared:-0}" -gt 0 ]; then
+            failed+=("noise-shares-bench-cpus($shared)")
+            warn "$shared other containers have the benchmark's CPUs" \
+                 "($bench_cpus) in their cpuset"
+        fi
+    fi
+
+    if [ ${#failed[@]} = 0 ]; then
+        STATE_CHECK_FAILURES=ok
+        info "State checks passed for the configuration of stage $STAGE_NAME."
+        return 0
+    fi
+    STATE_CHECK_FAILURES="$(IFS=+; echo "${failed[*]}")"
+    echo "state_checks=$STATE_CHECK_FAILURES" >> "$stage_dir/stage-env.txt"
     return 1
 }
 
@@ -963,6 +1458,13 @@ run_stage() {
             warn "balloons daemonset not ready, see $stage_dir/helm-install.log"
         fi
 
+        # Start following the plugin's log before the configuration is
+        # applied, so that what the policy programs is captured as it
+        # happens rather than read back afterwards from a log the kubelet
+        # may have rotated. See start_plugin_log.
+        start_plugin_log "$stage_dir/nri-resource-policy.log" \
+            >> "$stage_dir/helm-install.log" 2>&1
+
         info "Applying BalloonsPolicy configuration ..."
         if ! kubectl apply -f "$config_yaml" > "$stage_dir/kubectl-apply.log" 2>&1; then
             warn "applying BalloonsPolicy failed, see $stage_dir/kubectl-apply.log"
@@ -1005,6 +1507,22 @@ run_stage() {
         return 1
     fi
 
+    # Read the benchmark's own cgroup while its container still exists.
+    # After the Job completes the cgroup is gone, which is why the
+    # capture that used to happen in the collection step below recorded
+    # only the noise containers.
+    local bench_cpus=""
+    if wait_for_bench_pod_running 300 >/dev/null; then
+        bench_cpus="$(capture_cgroups "$stage_dir")"
+        if [ -n "$bench_cpus" ]; then
+            info "Benchmark container cpuset: $bench_cpus"
+        else
+            warn "could not read the benchmark container's cpuset"
+        fi
+    else
+        warn "benchmark pod never started running"
+    fi
+
     # Wait for completion. On failure, keep going: the pod logs and the
     # policy logs are collected below and explain what happened.
     local job_ok=1
@@ -1033,8 +1551,11 @@ run_stage() {
 
     # What the policy decided, and what the node actually looks like.
     if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
-        kubectl logs -n "$HELM_NAMESPACE" "daemonset/$HELM_RELEASE" \
-            --tail=-1 > "$stage_dir/nri-resource-policy.log" 2>&1
+        # Stop the follower started before the configuration was applied,
+        # and note it if the log still does not reach back to startup.
+        if ! stop_plugin_log "$stage_dir/nri-resource-policy.log"; then
+            echo "plugin_log_truncated=1" >> "$stage_dir/stage-env.txt"
+        fi
         kubectl get balloonspolicies.config.nri -n "$HELM_NAMESPACE" \
             -o yaml > "$stage_dir/balloonspolicy-status.yaml" 2>&1
         # A stage can be configured correctly and still change nothing,
@@ -1075,12 +1596,14 @@ run_stage() {
         > "$stage_dir/pods.txt" 2>&1
     node_state_snapshot "$stage_dir/node-state.txt"
 
-    # Effective cpusets of the benchmark and noise containers, to
-    # confirm the balloons actually took effect.
-    if [ -x "$SCRIPT_DIR/../kube-cgroups" ]; then
-        $SUDO "$SCRIPT_DIR/../kube-cgroups" -n "$BENCH_NAMESPACE" \
-            -f 'cpuset.cpus.effective|cpuset.mems.effective' \
-            > "$stage_dir/cgroups.txt" 2>&1
+    # Compare the snapshot against what the stage configured. Until this
+    # existed the snapshot was written and never read, so a stage could
+    # be misconfigured in every way the snapshot records and still
+    # produce a row that looked like a result.
+    local state_checks=0
+    if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
+        check_stage_configured_state "$stage_dir" "$bench_cpus"
+        state_checks="${STATE_CHECK_FAILURES:-0}"
     fi
 
     ###
@@ -1107,10 +1630,20 @@ run_stage() {
         return 2
     fi
 
+    # What could be verified about the state the stage actually ran in,
+    # alongside what it asked for. Stored in the stage directory too, so
+    # that report.sh can rebuild the CSV from logs without re-deriving it.
+    # The cpuset is a cpulist that may contain commas, so join it with +
+    # to keep it inside a single CSV column.
+    local verify_row="${bench_cpus:-0}"
+    verify_row="${verify_row//,/+},${state_checks}"
+    echo "$verify_row" > "$stage_dir/verify-row.csv"
+
     local measurements=0
     if [ -f "$stage_dir/sleep-accuracy.log" ]; then
         csv_append_stage "$stage_dir/sleep-accuracy.log" \
-                         "$(cat "$stage_dir/config-row.csv")" "$CSV_FILE"
+                         "$(cat "$stage_dir/config-row.csv")" "$CSV_FILE" \
+                         "$verify_row"
         measurements="$(grep -cE '^(nanosleep|networking|futex) ' \
             "$stage_dir/sleep-accuracy.log" 2>/dev/null || echo 0)"
     fi
