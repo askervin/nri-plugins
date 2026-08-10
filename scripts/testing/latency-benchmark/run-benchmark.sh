@@ -522,28 +522,121 @@ check_node_speed() {
     return 1
 }
 
-# node_state_snapshot FILE - record the hardware state actually in
-# effect, so results can be checked against what was intended.
+# safe_cpus_list AVOID - the online CPUs except those in AVOID, as a
+# cpulist. Empty when AVOID is empty, unresolvable, or would leave
+# nothing behind, so a caller can tell "do not confine me" from "confine
+# me to these".
+safe_cpus_list() {
+    local avoid="${1:-}"
+    [ -n "$avoid" ] && [ "$avoid" != 0 ] || { echo ""; return 0; }
+    local -a keep=()
+    local oc
+    for oc in $(online_cpus); do
+        local skip=0 a
+        for a in $(cpulist_expand "$avoid"); do
+            [ "$oc" = "$a" ] && { skip=1; break; }
+        done
+        [ "$skip" = 0 ] && keep+=("$oc")
+    done
+    [ ${#keep[@]} -gt 0 ] || { echo ""; return 0; }
+    local IFS=,
+    echo "${keep[*]}"
+}
+
+# cpulist_compress LIST - collapse "0,3,4,5,9" into "0,3-5,9". Empty
+# input yields "all", the meaning it has wherever this is used: no
+# confinement was applied.
+cpulist_compress() {
+    local list="${1:-}"
+    [ -n "$list" ] || { echo "all"; return 0; }
+    cpulist_expand "$list" | awk '
+        NR == 1 { lo = hi = $1; next }
+        $1 == hi + 1 { hi = $1; next }
+        { out = out sep (lo == hi ? lo : lo "-" hi); sep = ","
+          lo = hi = $1 }
+        END { print out sep (lo == hi ? lo : lo "-" hi) }'
+}
+
+# node_state_snapshot FILE [MODE] [AVOID_CPUS] - record the hardware
+# state actually in effect, so results can be checked against what was
+# intended.
+#
+# MODE is "full" (the default) or "light".
+#
+# A full snapshot loads each sampled CPU before reading its achieved
+# frequency, and asks intel-speed-select about every online CPU. Both are
+# the right thing to do between stages and the wrong thing to do while a
+# stage is being measured: the busy loop lands on the benchmark's own CPU,
+# and the per-CPU speed-select calls read MSRs on other CPUs, which the
+# kernel does by sending each one an IPI. Either would land in exactly the
+# tail latencies the benchmark exists to measure.
+#
+# A light snapshot therefore records only what one CPU can read about
+# another without touching it: plain sysfs and procfs attributes, whose
+# values the kernel already holds in memory. It adds no load of its own,
+# and confines every command it runs to the complement of AVOID_CPUS, so
+# that not even this script's own shell is scheduled on a benchmark CPU
+# while the benchmark is running.
+#
+# What a light snapshot gives up is the achieved frequency, the one fact
+# that cannot be had from another CPU, and the SST/PCT configuration,
+# which intel-speed-select reads through the package mailbox. Neither is
+# lost: nothing reprograms SST between the moment the policy settles and
+# the end of the stage -- the harness applies no configuration while the
+# benchmark runs -- so the full snapshot taken afterwards, with the policy
+# still installed and the noise still running, describes the same state
+# under the same load. And the benchmark reports the frequency limits of
+# its own CPU per round from inside the container, at no cost at all.
 node_state_snapshot() {
-    local out="$1"
-    {
+    local out="$1" mode="${2:-full}" avoid="${3:-}"
+    local safe=""
+    if [ "$mode" = light ]; then
+        safe="$(safe_cpus_list "$avoid")"
+    fi
+    # A subshell, ( ) rather than { }, for the sake of the taskset below:
+    # a redirected group is not a subshell, so BASHPID inside one is the
+    # harness's own pid and confining it would outlive the snapshot and
+    # pin the whole run to a handful of CPUs.
+    (
+        # Confine this subshell, and so everything it forks, before it
+        # reads anything.
+        if [ -n "$safe" ]; then
+            taskset -cp "$safe" "$BASHPID" >/dev/null 2>&1 ||
+                echo "warning: could not confine the snapshot to CPUs $safe"
+        fi
+        echo "=== snapshot mode ==="
+        # The confinement as a range list. Spelled out CPU by CPU it is a
+        # 700-character line on this node, which buries the two facts that
+        # matter: which CPUs were kept clear, and that anything was.
+        echo "mode=$mode avoid_cpus=${avoid:-none}" \
+             "confined_to=$(cpulist_compress "${safe:-}")"
         echo "=== date ==="
         date -Is
         echo "=== kernel ==="
         uname -a
-        # The runtime's NRI timeouts decide whether a stage can be
-        # measured at all: the plugin's initial Synchronize has to fit
-        # inside plugin_request_timeout, or the runtime closes the
-        # connection and the plugin restarts, and containers created
-        # while it is away never reach a balloon. On a large node that
-        # budget can be the difference between a measured stage and a
-        # gap, so it belongs in the record next to the hardware state.
-        echo "=== runtime NRI timeouts ==="
-        $SUDO containerd config dump 2>/dev/null |
-            grep -E "plugin_re(quest|gistration)_timeout" ||
-            echo "n/a (not containerd, or config dump unavailable)"
+        if [ "$mode" = full ]; then
+            # The runtime's NRI timeouts decide whether a stage can be
+            # measured at all: the plugin's initial Synchronize has to fit
+            # inside plugin_request_timeout, or the runtime closes the
+            # connection and the plugin restarts, and containers created
+            # while it is away never reach a balloon. On a large node that
+            # budget can be the difference between a measured stage and a
+            # gap, so it belongs in the record next to the hardware state.
+            echo "=== runtime NRI timeouts ==="
+            $SUDO containerd config dump 2>/dev/null |
+                grep -E "plugin_re(quest|gistration)_timeout" ||
+                echo "n/a (not containerd, or config dump unavailable)"
+        fi
         echo "=== kernel.numa_balancing ==="
         cat /proc/sys/kernel/numa_balancing 2>/dev/null || echo "n/a"
+        # scaling_min_freq, scaling_max_freq and scaling_governor are the
+        # limits the driver has been told to honour, which it keeps in
+        # memory, so reading them costs the sampled CPU nothing. The
+        # current-frequency attributes next to them are a different matter:
+        # on intel_pstate with HWP, scaling_cur_freq and cpuinfo_cur_freq
+        # are served by an MSR read on the CPU being asked about, which the
+        # kernel performs by interrupting it. They are deliberately not
+        # read here, in either mode -- see the achieved-frequency section.
         echo "=== cpufreq scaling_min_freq/scaling_max_freq/governor per CPU ==="
         for c in /sys/devices/system/cpu/cpu*/cpufreq; do
             [ -d "$c" ] || continue
@@ -567,7 +660,14 @@ node_state_snapshot() {
         # subcommand, and without it this section recorded only "Must run
         # as root" -- which is how a node left clamped by leftover SST-TF
         # state got through a whole campaign undetected.
-        if command -v intel-speed-select >/dev/null 2>&1; then
+        if [ "$mode" != full ]; then
+            # Every subcommand here talks to the package through MSRs or
+            # the mailbox, and get-assoc is asked about each online CPU in
+            # turn, so on this node one snapshot is hundreds of MSR reads
+            # that the kernel dispatches as IPIs. Skipped while measuring.
+            echo "skipped in light mode (per-CPU MSR reads would" \
+                 "interrupt the benchmark)"
+        elif command -v intel-speed-select >/dev/null 2>&1; then
             echo "--- core-power (CLOS definitions) ---"
             # One CLOS at a time: get-config requires -c and fails with
             # "Invalid clos id" without it, which is how every run up to
@@ -617,7 +717,17 @@ node_state_snapshot() {
         # busy or idle, but not enough to compare two stages' frequencies
         # against each other. Three campaigns' worth of snapshots were
         # read that way before the difference was noticed.
-        if command -v rdmsr >/dev/null 2>&1; then
+        if [ "$mode" != full ]; then
+            # Both halves are unsafe while the benchmark runs: the busy
+            # loop would compete with it for its own CPU, and rdmsr -p
+            # reads the MSR on the target CPU, which the kernel does by
+            # sending it an IPI. There is no cheap version of this reading,
+            # so a light snapshot simply does not have it -- the full
+            # snapshot at the end of the stage does, taken with the policy
+            # still installed and the noise still running.
+            echo "skipped in light mode (needs a busy loop and per-CPU" \
+                 "MSR reads, both of which would perturb the benchmark)"
+        elif command -v rdmsr >/dev/null 2>&1; then
             local ps spinner mhz best n
             # First two online CPUs (reserved, and where the benchmark
             # runs), the middle one and the last one -- picked out of the
@@ -653,6 +763,11 @@ node_state_snapshot() {
         else
             echo "rdmsr not available (install msr-tools for this)"
         fi
+        # Kept in both modes. smp_affinity_list and /proc/interrupts are
+        # read from the reader's own CPU, so this costs the benchmark
+        # nothing, and an interrupt that is aimed at a benchmark CPU while
+        # the benchmark is running is a fact worth having at that moment
+        # rather than inferred afterwards.
         echo "=== IRQ affinities ==="
         # "ro" marks an affinity the kernel manages itself and refuses to
         # let anyone change, so the balloons policy cannot isolate it.
@@ -676,7 +791,7 @@ node_state_snapshot() {
                        sub(/^ +/, "", d); print d; exit }' \
                    /proc/interrupts 2>/dev/null)"
         done
-    } > "$out" 2>&1
+    ) > "$out" 2>&1
 }
 
 # plugin_pod - name of the plugin pod on this node, or empty.
@@ -772,13 +887,29 @@ stop_plugin_log() {
     # Record whether the log starts where the plugin does. A log missing
     # its startup phase cannot witness what the policy programmed, and
     # that has to be visible in the results rather than inferred later.
-    if [ -s "$out" ] && ! head -5 "$out" |
-            grep -qE 'registering controller|level=(INFO|WARN)'; then
+    if ! plugin_log_complete "$out"; then
         warn "plugin log does not start at plugin startup:" \
              "the configuration phase may have been rotated away"
         return 1
     fi
     return 0
+}
+
+# plugin_log_complete LOGFILE - does this log reach back to plugin
+# startup, or has the kubelet rotated its head away?
+#
+# The plugin's first lines are its controller registrations, at INFO. A log
+# that begins mid-stream with a debug line lost its startup phase to
+# rotation. Kept as a function of the file alone, with no reference to the
+# stage's own notes, so that it gives the same answer for a log being
+# collected now and for one stored in a campaign months ago -- which is
+# what lets the checks that depend on a complete log run over the archive
+# without mistaking truncation for a defect.
+plugin_log_complete() {
+    local logfile="$1"
+    [ -s "$logfile" ] || return 1
+    head -5 "$logfile" |
+        grep -qE 'registering controller|level=(INFO|WARN)'
 }
 
 # wait_for_daemonset - wait until the plugin is running on this node.
@@ -860,6 +991,120 @@ wait_for_policy_status() {
         sleep 1
     done
     echo "timeout: policy generation $generation, node reported ${reported:-none}"
+    return 1
+}
+
+# STAGE_ARTIFACTS - the files every stage is expected to produce, and
+# what each is for. This list is the definition of "comparable": a
+# campaign whose stages all have these files can be analysed as one set,
+# and a stage missing one of them is thinner than its siblings in a way
+# that has to be visible rather than discovered halfway through an
+# analysis.
+#
+# Written into every stage directory and checked at the end of the stage.
+# The check exists because the archive it was written for has four
+# different artifact sets in it, from four generations of this script,
+# and nothing at the time said which stage had what.
+#
+# Names ending in ? are expected only for some stages, listed in
+# stage_expected_artifacts.
+STAGE_ARTIFACTS=(
+    "config-row.csv         the stage's configuration, as CSV columns"
+    "stage-env.txt          every stage variable, plus what was observed"
+    "balloons-config.yaml   the BalloonsPolicy this stage asked for"
+    "node-state-before.txt  the node as the reset left it (full)"
+    "node-state-during.txt  the node while the benchmark ran (light)"
+    "bench-process-during.txt  where the benchmark's thread actually was"
+    "node-state-after.txt   the node after the benchmark (full)"
+    "node-state.txt         alias of node-state-after.txt"
+    "sleep-accuracy.log     the measurements"
+    "sleep-accuracy-job.yaml  the job that produced them"
+    "sleep-accuracy-pod.yaml  the pod as the API server saw it"
+    "cgroups.txt            every container's effective cpuset"
+    "cgroups-bench.txt      the benchmark container's cgroup, read live"
+    "pods.txt               what was running on the node"
+    "reset.log              what the pre-stage reset did"
+    "verify-row.csv         what could be verified, as CSV columns"
+    "helm-install.log?      installing the policy"
+    "kubectl-apply.log?     applying the configuration"
+    "nri-resource-policy.log?  the policy's own log, from startup"
+    "balloonspolicy-status.yaml?  what the policy reported back"
+    "stress-ng-deployment.yaml?  the background workload"
+)
+
+# stage_expected_artifacts - the artifact names this stage should have,
+# resolving the conditional ones against its configuration.
+stage_expected_artifacts() {
+    local entry name
+    for entry in "${STAGE_ARTIFACTS[@]}"; do
+        name="${entry%% *}"
+        case "$name" in
+            *\?)
+                name="${name%\?}"
+                case "$name" in
+                    # A baseline stage installs no policy, so it has no
+                    # helm, apply, policy-log or status artifacts. Their
+                    # absence is the stage working as intended.
+                    helm-install.log|kubectl-apply.log|\
+                    nri-resource-policy.log|balloonspolicy-status.yaml)
+                        [ -z "${STAGE_NO_BALLOONS:-}" ] || continue ;;
+                    stress-ng-deployment.yaml)
+                        [ "$NOISE_WORKLOAD" != none ] &&
+                        [ "$NOISE_REPLICAS" != 0 ] || continue ;;
+                esac
+                ;;
+        esac
+        echo "$name"
+    done
+}
+
+# check_stage_artifacts STAGE_DIR - is this stage's record as complete as
+# every other stage's?
+#
+# Writes ARTIFACTS.txt (what was expected and what was found) and returns
+# 0 when nothing is missing. Missing files are recorded, not fatal: a
+# stage with good measurements and one absent log is still worth having,
+# as long as the gap is written down where an analysis will see it.
+check_stage_artifacts() {
+    local stage_dir="$1"
+    local -a missing=() empty=()
+    local name
+    {
+        echo "# Artifacts expected of every stage, and what this stage has."
+        echo "# state  bytes  name  purpose"
+        local entry purpose
+        for name in $(stage_expected_artifacts); do
+            purpose=""
+            for entry in "${STAGE_ARTIFACTS[@]}"; do
+                case "${entry%% *}" in
+                    "$name"|"$name?")
+                        purpose="$(echo "${entry#* }" | sed 's/^ *//')"
+                        break ;;
+                esac
+            done
+            if [ ! -e "$stage_dir/$name" ]; then
+                missing+=("$name")
+                printf 'MISSING  %6s  %-26s %s\n' - "$name" "$purpose"
+            elif [ ! -s "$stage_dir/$name" ]; then
+                empty+=("$name")
+                printf 'EMPTY    %6s  %-26s %s\n' 0 "$name" "$purpose"
+            else
+                printf 'ok       %6s  %-26s %s\n' \
+                    "$(stat -c %s "$stage_dir/$name" 2>/dev/null)" \
+                    "$name" "$purpose"
+            fi
+        done
+    } > "$stage_dir/ARTIFACTS.txt"
+
+    [ ${#missing[@]} = 0 ] && [ ${#empty[@]} = 0 ] && return 0
+    [ ${#missing[@]} = 0 ] ||
+        echo "artifacts_missing=$(IFS=+; echo "${missing[*]}")" \
+            >> "$stage_dir/stage-env.txt"
+    [ ${#empty[@]} = 0 ] ||
+        echo "artifacts_empty=$(IFS=+; echo "${empty[*]}")" \
+            >> "$stage_dir/stage-env.txt"
+    warn "stage $STAGE_NAME is missing ${#missing[@]} and has" \
+         "${#empty[@]} empty artifacts, see $(basename "$stage_dir")/ARTIFACTS.txt"
     return 1
 }
 
@@ -1023,6 +1268,76 @@ bench_cpuset_from_plugin_log() {
         sed -n 's/.*cpus:"\([^"]*\)".*/\1/p' | tail -1
 }
 
+# bench_process_snapshot FILE [AVOID_CPUS] - what the kernel thinks of
+# the benchmark process, read while it is running.
+#
+# The gap this closes: everything else the harness verifies is read from
+# the node, or from the container's cgroup, or from the policy's own log.
+# None of them says where the benchmark's thread actually is. The cgroup
+# says which CPUs it is allowed on, which is not the same claim -- with a
+# two-CPU cpuset the scheduler may move a single-threaded process between
+# them, and it is precisely that migration this campaign sets out to
+# measure. /proc has the answer: Cpus_allowed_list is the mask in force on
+# the thread itself rather than on its cgroup, and field 39 of
+# /proc/PID/stat is the CPU it last ran on.
+#
+# Everything here is a read of memory the kernel already holds, so it
+# costs the benchmark's CPU nothing, and the whole function runs confined
+# to other CPUs. sleep-accuracy also reports its own scheduler policy and
+# priority per round from inside the container; this is the outside view of
+# the same facts, which is what makes it evidence rather than an echo.
+bench_process_snapshot() {
+    local out="$1" avoid="${2:-}"
+    local safe
+    safe="$(safe_cpus_list "$avoid")"
+    # A subshell, so the taskset below confines this reader and not the
+    # harness. See node_state_snapshot.
+    (
+        [ -n "$safe" ] && taskset -cp "$safe" "$BASHPID" >/dev/null 2>&1
+        echo "=== date ==="
+        date -Is
+        local -a pids=()
+        # By executable name: the container's process keeps its own name in
+        # the host's pid namespace, and there is exactly one of it.
+        mapfile -t pids < <(pgrep -x sleep-accuracy 2>/dev/null)
+        if [ ${#pids[@]} = 0 ]; then
+            echo "no sleep-accuracy process found"
+            exit 0
+        fi
+        local pid
+        for pid in "${pids[@]}"; do
+            echo "=== pid $pid ==="
+            # One thread expected. More would mean the tool is not what
+            # this campaign assumes it is, so count them rather than
+            # assert it.
+            local -a tasks=()
+            mapfile -t tasks < <(ls "/proc/$pid/task" 2>/dev/null)
+            echo "threads=${#tasks[@]}"
+            local tid
+            for tid in "${tasks[@]}"; do
+                # stat's field 39 is the last CPU. comm can contain spaces
+                # and parentheses, so count fields from the closing one.
+                echo "task $tid: last_cpu=$(awk '{
+                        for (i = NF; i > 0; i--)
+                            if ($i == ")" || $i ~ /\)$/) { c = i; break }
+                        print $(c + 37)
+                    }' "/proc/$pid/task/$tid/stat" 2>/dev/null)"
+                grep -E "^(Cpus_allowed_list|Mems_allowed_list|voluntary_ctxt|nonvoluntary_ctxt)" \
+                    "/proc/$pid/task/$tid/status" 2>/dev/null |
+                    sed "s/^/task $tid: /"
+                # The scheduler policy and priority the kernel has the
+                # thread under, from outside the container. A realtime
+                # stage that silently did not take effect looks identical
+                # from the inside if the tool is asked and believed.
+                chrt -p "$tid" 2>/dev/null | sed "s/^/task $tid: /" ||
+                    echo "task $tid: chrt unavailable"
+            done
+            echo "cgroup:"
+            sed 's/^/  /' "/proc/$pid/cgroup" 2>/dev/null
+        done
+    ) > "$out" 2>&1
+}
+
 # cpulist_expand LIST - expand "0-3,8" into one CPU number per line.
 cpulist_expand() {
     local range lo hi
@@ -1054,8 +1369,24 @@ resolve_freq() {
     esac
 }
 
-# check_stage_configured_state STAGE_DIR BENCH_CPUS - is the node in the
-# state this stage asked for?
+# check_stage_configured_state STAGE_DIR BENCH_CPUS [PHASE] - is the node
+# in the state this stage asked for?
+#
+# PHASE is "after" (the default), "during" or "before", and selects which
+# snapshot to read: node-state-PHASE.txt, falling back to node-state.txt
+# so that stage directories written before the snapshot was split still
+# check. Every failure is labelled with the phase, because when a
+# configuration went wrong matters as much as that it did: a "during"
+# failure with a clean "after" means something moved back on its own,
+# while the reverse means the stage was measured before its configuration
+# had settled.
+#
+# Which checks can run is decided by what the snapshot contains, not by
+# the phase: a light snapshot has no SST section and no achieved-frequency
+# section, and those checks skip themselves when the section is absent.
+# That is deliberate -- a check must not report "ok" for evidence it never
+# saw. The one exception is the noise-cpuset check, which reads a file
+# collected at the end of the stage and is skipped explicitly below.
 #
 # Everything here is read out of the snapshot the harness already writes,
 # which until now was recorded and never looked at: a "grep node-state"
@@ -1075,8 +1406,9 @@ resolve_freq() {
 # Returns 0 when every evaluated check passed, 1 otherwise.
 STATE_CHECK_FAILURES=""
 check_stage_configured_state() {
-    local stage_dir="$1" bench_cpus="$2"
-    local snapshot="$stage_dir/node-state.txt"
+    local stage_dir="$1" bench_cpus="$2" phase="${3:-after}"
+    local snapshot="$stage_dir/node-state-$phase.txt"
+    [ -f "$snapshot" ] || snapshot="$stage_dir/node-state.txt"
     local plugin_log="$stage_dir/nri-resource-policy.log"
     STATE_CHECK_FAILURES=""
     [ -f "$snapshot" ] || return 0
@@ -1331,6 +1663,59 @@ check_stage_configured_state() {
     fi
 
     ###
+    ### Deployment order: was the policy serving NRI before the workloads
+    ### were created?
+    ###
+    # The recommended order for a resource policy plugin, and the order
+    # this harness uses: install and configure the policy, then the
+    # background workload, then the benchmark. It matters for more than
+    # tidiness. A container created while the plugin is not connected is
+    # never offered to it, so it never reaches a balloon and keeps the
+    # runtime's default cpuset -- which for the noise means it is free to
+    # run on the benchmark's CPUs, quietly turning an isolation stage into
+    # a shared-CPU one. Doing it in this order also keeps the plugin's
+    # initial Synchronize small: it enumerates what already exists, so
+    # starting it before 90 noise containers rather than after is the
+    # difference between a handful of containers and ninety in one NRI
+    # request that has to fit inside plugin_request_timeout.
+    #
+    # The check is that every container the stage created did reach a
+    # balloon, which is the observable consequence of the order being
+    # right. Only in the after phase, where the plugin's log covers the
+    # whole stage, and only worth anything now that the log is followed
+    # from startup instead of read back afterwards: with a truncated log
+    # the assign lines for the earliest containers are simply gone, and
+    # this would report every stage as broken. Truncation is tested on the
+    # log itself rather than read from the stage's notes, so that the
+    # check behaves the same over the stored campaigns, whose stage-env
+    # files predate that marker.
+    if [ "$phase" = after ] && plugin_log_complete "$plugin_log"; then
+        local assigned_bench
+        assigned_bench="$(grep -cE "assigning container $BENCH_NAMESPACE/$BENCH_JOB_NAME[^ ]*/" \
+            "$plugin_log" 2>/dev/null || true)"
+        if [ "${assigned_bench:-0}" = 0 ]; then
+            failed+=("bench-not-assigned")
+            warn "the policy never assigned the benchmark container to a" \
+                 "balloon: it was created while the plugin was not serving NRI"
+        fi
+        # And the noise, which is where an ordering mistake does its damage
+        # quietly. Compared against the replicas that were asked for, not
+        # against a fixed number.
+        if [ "$NOISE_WORKLOAD" != none ] && [ "${NOISE_REPLICAS:-0}" != 0 ]; then
+            local assigned_noise
+            assigned_noise="$(grep -oE "assigning container $BENCH_NAMESPACE/$NOISE_DEPLOYMENT_NAME[^ ]*" \
+                "$plugin_log" 2>/dev/null | sort -u | wc -l)"
+            if [ "${assigned_noise:-0}" -lt "$NOISE_REPLICAS" ]; then
+                failed+=("noise-not-assigned($assigned_noise/$NOISE_REPLICAS)")
+                warn "only $assigned_noise of $NOISE_REPLICAS noise" \
+                     "containers reached a balloon: the rest keep the" \
+                     "runtime's default cpuset and may run on the" \
+                     "benchmark's CPUs"
+            fi
+        fi
+    fi
+
+    ###
     ### The cpuset itself: did the benchmark get its own CPUs?
     ###
     if [ -n "${BENCH_PREFERNEWBALLOONS:-}" ] && [ ${#bench[@]} -gt 0 ]; then
@@ -1342,8 +1727,13 @@ check_stage_configured_state() {
         fi
         # And the noise must not be on them. cgroups.txt holds every
         # container's effective cpuset, so this is a direct check rather
-        # than an inference from the policy's intent.
-        local shared
+        # than an inference from the policy's intent. It is collected at
+        # the end of the stage, so in the before and during phases the file
+        # is either absent or belongs to the previous stage; awk over a
+        # missing file would quietly report zero offenders, which reads as
+        # a pass. Skip it explicitly instead.
+        local shared=0
+        [ -f "$stage_dir/cgroups.txt" ] &&
         shared="$(awk -v cpus="$(printf '%s,' "${bench[@]}")" '
             BEGIN {
                 n = split(cpus, c, ",")
@@ -1376,9 +1766,16 @@ check_stage_configured_state() {
     # that was supposed to be a record.
     if [ ${#failed[@]} = 0 ]; then
         STATE_CHECK_FAILURES=ok
-        info "State checks passed for the configuration of stage $STAGE_NAME."
+        info "State checks ($phase) passed for the configuration of stage" \
+             "$STAGE_NAME."
         return 0
     fi
+    # Each failure carries the phase it was seen in, so that a row in the
+    # CSV says when the node stopped being what the stage asked for.
+    local i
+    for i in "${!failed[@]}"; do
+        failed[i]="$phase:${failed[i]}"
+    done
     STATE_CHECK_FAILURES="$(IFS=+; echo "${failed[*]}")"
     return 1
 }
@@ -1470,6 +1867,15 @@ run_stage() {
     if ! check_node_speed; then
         echo "node_speed_clamped=1" >> "$stage_dir/stage-env.txt"
     fi
+
+    # The "before" snapshot: the node as the reset left it, and so the
+    # baseline every later reading is a change from. Taken in full mode --
+    # nothing is being measured yet, so the busy loop and the speed-select
+    # calls cost nothing. This is what makes a stage's own record
+    # self-contained: without it, a stage that starts from a node some
+    # earlier stage left misconfigured looks identical to one that starts
+    # clean and is broken by its own configuration.
+    node_state_snapshot "$stage_dir/node-state-before.txt" full
 
     kubectl create namespace "$BENCH_NAMESPACE" >/dev/null 2>&1
 
@@ -1590,6 +1996,60 @@ run_stage() {
         warn "could not read the benchmark container's cpuset"
     fi
 
+    ###
+    ### 4b. Validate while the benchmark is running.
+    ###
+    # The phase that did not exist before, and the only one that can
+    # answer "was the node in the configured state while these numbers
+    # were being produced?". Everything read here is read from other CPUs,
+    # confined away from the benchmark's own, and adds no load: see
+    # node_state_snapshot's light mode and bench_process_snapshot.
+    #
+    # The process snapshot comes first and is the cheap one, because it is
+    # the reading that disappears: after the Job completes the process is
+    # gone, and with it the only evidence of where its thread actually ran.
+    #
+    # Whether the benchmark was in fact still running is recorded rather
+    # than assumed. A short benchmark can finish before this point, and a
+    # "during" snapshot of an idle node would be a fabrication -- it would
+    # be indistinguishable from a real one in the file, and it would make
+    # the during checks pass for a stage nobody validated.
+    local during_phase
+    during_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
+                        -l app=sleep-accuracy \
+                        -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
+    if [ "$during_phase" = Running ]; then
+        bench_process_snapshot "$stage_dir/bench-process-during.txt" \
+                               "$bench_cpus"
+        node_state_snapshot "$stage_dir/node-state-during.txt" light \
+                            "$bench_cpus"
+        # Did it stay running throughout? A snapshot that began during the
+        # benchmark and ended after it describes a node that was partly
+        # idle, which is worth knowing when reading it.
+        local after_snap_phase
+        after_snap_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
+                                -l app=sleep-accuracy \
+                                -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
+        echo "during_snapshot=1" >> "$stage_dir/stage-env.txt"
+        echo "during_snapshot_pod_phase=$during_phase..$after_snap_phase" \
+            >> "$stage_dir/stage-env.txt"
+        local during_checks=skipped
+        if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
+            check_stage_configured_state "$stage_dir" "$bench_cpus" during
+            during_checks="${STATE_CHECK_FAILURES:-0}"
+        fi
+        echo "during_state_checks=$during_checks" >> "$stage_dir/stage-env.txt"
+    else
+        warn "the benchmark was not running when the during-validation" \
+             "was due (pod phase: ${during_phase:-unknown}), so this stage" \
+             "has no during-snapshot"
+        echo "during_snapshot=0" >> "$stage_dir/stage-env.txt"
+        echo "during_snapshot_pod_phase=${during_phase:-unknown}" \
+            >> "$stage_dir/stage-env.txt"
+        echo "during_state_checks=no-during-snapshot" \
+            >> "$stage_dir/stage-env.txt"
+    fi
+
     # Wait for completion. On failure, keep going: the pod logs and the
     # policy logs are collected below and explain what happened.
     local job_ok=1
@@ -1670,7 +2130,20 @@ run_stage() {
             -f 'cpuset.cpus.effective|cpuset.mems.effective' \
             > "$stage_dir/cgroups.txt" 2>&1
     fi
-    node_state_snapshot "$stage_dir/node-state.txt"
+    # The "after" snapshot. Full mode: the benchmark is over, so the busy
+    # loop and the per-CPU speed-select reads are free again, and this is
+    # the only phase that can have them. Taken with the policy still
+    # installed and the noise still running, so the SST configuration and
+    # the achieved frequencies it records are the ones the benchmark ran
+    # under.
+    node_state_snapshot "$stage_dir/node-state-after.txt" full
+    # Also under the name the checks and the stored campaigns have always
+    # used, so that report.sh, the analysis scripts and every existing
+    # stage directory keep working. A hard link rather than a copy: same
+    # file, two names, no chance of the two disagreeing.
+    ln -f "$stage_dir/node-state-after.txt" "$stage_dir/node-state.txt" \
+        2>/dev/null ||
+        cp "$stage_dir/node-state-after.txt" "$stage_dir/node-state.txt"
 
     # Compare the snapshot against what the stage configured. Until this
     # existed the snapshot was written and never read, so a stage could
@@ -1692,10 +2165,26 @@ run_stage() {
         echo "bench_cpus_source=cgroup" >> "$stage_dir/stage-env.txt"
     fi
 
-    local state_checks=0
+    local state_checks=0 after_checks=0
     if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
-        check_stage_configured_state "$stage_dir" "$bench_cpus"
-        state_checks="${STATE_CHECK_FAILURES:-0}"
+        check_stage_configured_state "$stage_dir" "$bench_cpus" after
+        after_checks="${STATE_CHECK_FAILURES:-0}"
+        # One CSV column carries the verdict of both phases that have one,
+        # so a row is readable without opening the stage directory. "ok"
+        # only when both phases are ok: a stage whose configuration was
+        # right afterwards but wrong while it was measured has measured the
+        # wrong thing, and the whole point of the during phase is that this
+        # is the case the after phase cannot see.
+        local during_checks
+        during_checks="$(sed -n 's/^during_state_checks=//p' \
+                             "$stage_dir/stage-env.txt" 2>/dev/null | tail -1)"
+        during_checks="${during_checks:-no-during-snapshot}"
+        case "$after_checks/$during_checks" in
+            ok/ok)  state_checks=ok ;;
+            ok/*)   state_checks="$during_checks" ;;
+            */ok)   state_checks="$after_checks" ;;
+            *)      state_checks="$after_checks+$during_checks" ;;
+        esac
     fi
 
     ###
@@ -1730,6 +2219,10 @@ run_stage() {
     local verify_row="${bench_cpus:-0}"
     verify_row="${verify_row//,/+},${state_checks}"
     echo "$verify_row" > "$stage_dir/verify-row.csv"
+
+    # Last, because verify-row.csv is itself one of the artifacts: is this
+    # stage's record as complete as every other stage's?
+    check_stage_artifacts "$stage_dir" || true
 
     local measurements=0
     if [ -f "$stage_dir/sleep-accuracy.log" ]; then
