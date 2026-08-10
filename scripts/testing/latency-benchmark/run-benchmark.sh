@@ -267,6 +267,36 @@ error() { echo "run-benchmark.sh: error: $*" >&2; exit 1; }
 warn()  { echo "run-benchmark.sh: warning: $*" >&2; }
 info()  { echo "### $*"; }
 
+# online_cpus_list - the node's online CPUs, as a cpulist ("0-3,8-11").
+# online_cpus       - the same set, one CPU number per line.
+#
+# From sysfs, not from nproc: nproc reports how many CPUs the calling
+# process may run on, so under a restricted affinity it undercounts, and
+# it says nothing about which CPUs those are. "0-$((nproc - 1))"
+# additionally assumes the online CPUs are contiguous and start at 0,
+# which offlining any CPU makes false.
+online_cpus_list() {
+    local list=""
+    if [ -r /sys/devices/system/cpu/online ]; then
+        read -r list < /sys/devices/system/cpu/online
+    fi
+    # A uniprocessor kernel omits the file entirely; anything else means
+    # sysfs is not mounted, and CPU 0 is the only safe assumption left.
+    echo "${list:-0}"
+}
+
+online_cpus() {
+    local range lo hi
+    local IFS=,
+    for range in $(online_cpus_list); do
+        case "$range" in
+            *-*) lo="${range%%-*}"; hi="${range##*-}"
+                 while [ "$lo" -le "$hi" ]; do echo "$lo"; lo=$((lo + 1)); done ;;
+            *)   echo "$range" ;;
+        esac
+    done
+}
+
 if [ "$list_stages" = 1 ]; then
     for stage in "${STAGES[@]}"; do
         stage_reset_vars
@@ -339,7 +369,7 @@ fi
 
 # Default the noise to half the node's CPUs, so it competes for CPU time
 # without completely starving the node.
-node_cpus="$(nproc)"
+node_cpus="$(online_cpus | wc -l)"
 if [ -z "$NOISE_REPLICAS" ]; then
     NOISE_REPLICAS=$(( node_cpus / 2 ))
     [ "$NOISE_REPLICAS" -lt 1 ] && NOISE_REPLICAS=1
@@ -559,7 +589,7 @@ node_state_snapshot() {
             echo "--- core-power associations ---"
             # Per-CPU, because a CLOS association surviving a reset is
             # exactly the state that needs to be visible afterwards.
-            $SUDO intel-speed-select -c "0-$(($(nproc) - 1))" \
+            $SUDO intel-speed-select -c "$(online_cpus_list)" \
                   core-power get-assoc 2>&1 | grep -E "cpu-|clos:" | head -40
             echo "--- turbo-freq (SST-TF) ---"
             $SUDO intel-speed-select turbo-freq info -l 1 2>&1 |
@@ -589,7 +619,15 @@ node_state_snapshot() {
         # read that way before the difference was noticed.
         if command -v rdmsr >/dev/null 2>&1; then
             local ps spinner mhz best n
-            for c in 0 1 $(( $(nproc) / 2 )) $(( $(nproc) - 1 )); do
+            # First two online CPUs (reserved, and where the benchmark
+            # runs), the middle one and the last one -- picked out of the
+            # online list rather than computed from a count, so that an
+            # offline CPU is never sampled and never silently skipped.
+            local -a oc
+            mapfile -t oc < <(online_cpus)
+            for c in "${oc[0]}" "${oc[1]}" \
+                     "${oc[$(( ${#oc[@]} / 2 ))]}" "${oc[-1]}"; do
+                [ -n "$c" ] || continue
                 taskset -c "$c" timeout 2 \
                     bash -c 'i=0; while :; do i=$((i + 1)); done' \
                     >/dev/null 2>&1 &
