@@ -934,14 +934,20 @@ check_stage_measured_config() {
 #
 # Prints the benchmark container's effective cpuset on stdout, empty if
 # it could not be read.
+#
+# Only the benchmark pod is scanned, not the whole namespace: with 90
+# noise pods deployed, walking all of them takes long enough that a short
+# benchmark can finish first, and the container whose cgroup is wanted is
+# gone by the time its turn comes. The noise cpusets are captured
+# separately, after the benchmark, where nothing is racing.
 capture_cgroups() {
-    local stage_dir="$1"
+    local stage_dir="$1" outfile="${2:-$stage_dir/cgroups-bench.txt}"
     local kube_cgroups="$SCRIPT_DIR/../kube-cgroups"
     [ -x "$kube_cgroups" ] || return 0
 
-    $SUDO "$kube_cgroups" -n "$BENCH_NAMESPACE" \
+    $SUDO "$kube_cgroups" -n "$BENCH_NAMESPACE" -p "$BENCH_JOB_NAME" \
         -f 'cpuset.cpus.effective|cpuset.mems.effective' \
-        > "$stage_dir/cgroups.txt" 2>&1
+        > "$outfile" 2>&1
 
     # kube-cgroups prints a pod block, a container line under it, and
     # then one "file: value" line per file. Pick the cpuset of the
@@ -950,30 +956,71 @@ capture_cgroups() {
         /^[^ ]/            { inpod = (index($0, job) > 0); next }
         inpod && /cpuset\.cpus\.effective:/ {
             sub(/^ *cpuset\.cpus\.effective: */, ""); print; exit }
-    ' "$stage_dir/cgroups.txt" 2>/dev/null
+    ' "$outfile" 2>/dev/null
 }
 
-# wait_for_bench_pod_running TIMEOUT - wait until the benchmark pod has a
-# running container, so its cgroup exists and can be read.
-wait_for_bench_pod_running() {
-    local timeout="${1:-120}"
+# capture_bench_cpuset STAGE_DIR TIMEOUT - read the benchmark container's
+# effective cpuset from its cgroup, while the container still exists.
+#
+# Polls rather than waiting for a phase and then reading once. The
+# container's cgroup appears somewhere between the pod being scheduled
+# and the process starting, and disappears as soon as it exits, so a
+# single read after the pod reports Running is a race a short benchmark
+# wins: at 2000 iterations the measurement is over in a fraction of a
+# second.
+#
+# The poll is deliberately tight, and the pod's phase is only checked
+# every POD_PHASE_EVERY reads. A "kubectl get pod" costs more than the
+# cgroup read it would guard, so asking every iteration widens the very
+# window this is trying to close.
+#
+# Prints the cpuset, or nothing if the container came and went between
+# two reads. The caller has a slower but complete fallback for that.
+capture_bench_cpuset() {
+    local stage_dir="$1" timeout="${2:-300}"
     local deadline=$((SECONDS + timeout))
-    local pod phase
+    local cpus phase gone=0 i=0
+    local POD_PHASE_EVERY=20
     while [ "$SECONDS" -lt "$deadline" ]; do
-        pod="$(kubectl get pod -n "$BENCH_NAMESPACE" -l app=sleep-accuracy \
-                   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-        if [ -n "$pod" ]; then
-            phase="$(kubectl get pod -n "$BENCH_NAMESPACE" "$pod" \
-                         -o jsonpath='{.status.phase}' 2>/dev/null)"
-            # Succeeded too: a short benchmark can finish before this
-            # loop first looks, and there is nothing left to wait for.
+        cpus="$(capture_cgroups "$stage_dir")"
+        if [ -n "$cpus" ]; then
+            echo "$cpus"
+            return 0
+        fi
+        i=$((i + 1))
+        if [ $((i % POD_PHASE_EVERY)) = 0 ]; then
+            phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
+                         -l app=sleep-accuracy \
+                         -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
             case "$phase" in
-                Running|Succeeded|Failed) echo "$pod"; return 0 ;;
+                # One more round after the pod is terminal, in case the
+                # cgroup outlived the process just long enough.
+                Succeeded|Failed) [ "$gone" = 1 ] && return 1; gone=1 ;;
             esac
         fi
-        sleep 1
     done
     return 1
+}
+
+# bench_cpuset_from_plugin_log LOGFILE - the CPUs the policy assigned to
+# the benchmark container, from the plugin's own log.
+#
+# The fallback for when the container's cgroup could not be read in time.
+# Weaker evidence than the cgroup -- it is what the policy decided, not
+# what the kernel applied -- but the two agreed in every stage where both
+# were available, and it is far better than nothing.
+#
+# Takes the last matching line, because the log spans the whole stage and
+# a retried stage assigns more than one pod. Only usable now that the log
+# reaches back to plugin startup: while logs were being truncated by
+# rotation, the surviving assign line could belong to a different pod
+# entirely, which is exactly how a stage came to look as if it had run on
+# cpu96-97 when its C-states say it ran on cpu1-2.
+bench_cpuset_from_plugin_log() {
+    local logfile="$1"
+    [ -f "$logfile" ] || return 0
+    grep "assigning container.*/$BENCH_JOB_NAME " "$logfile" 2>/dev/null |
+        sed -n 's/.*cpus:"\([^"]*\)".*/\1/p' | tail -1
 }
 
 # cpulist_expand LIST - expand "0-3,8" into one CPU number per line.
@@ -1039,6 +1086,15 @@ check_stage_configured_state() {
     local -a bench=()
     if [ -n "$bench_cpus" ] && [ "$bench_cpus" != 0 ]; then
         mapfile -t bench < <(cpulist_expand "$bench_cpus")
+    else
+        # Without the benchmark's cpuset there is nothing to check the
+        # per-CPU state against, so the C-state, cpufreq, IRQ isolation
+        # and cpuset checks below all skip. Say so: reporting "ok" for a
+        # stage where most of the checks never ran is worse than
+        # reporting nothing, because it reads as confirmation.
+        failed+=("bench-cpuset-unknown")
+        warn "the benchmark's cpuset is unknown, so the per-CPU state" \
+             "checks are skipped for this stage"
     fi
 
     ###
@@ -1225,7 +1281,17 @@ check_stage_configured_state() {
             # No device behind them: "NUM: LIST (rw)" and nothing after.
             awk '/^[0-9]+: / && NF == 3 { sub(":", "", $1); print $1 }' \
                 "$snapshot"
-            # Writes refused with EIO, as reported by the plugin.
+            # Writes refused with EIO, as reported by the plugin. Two
+            # formats: the aggregate the policy emits now,
+            #   failed to set affinity of N irqs (reason): 1,2,3
+            # and the per-interrupt line it emitted before,
+            #   failed to set affinity of irq N to "..."
+            # Both are matched, because stage directories collected with
+            # either plugin build are worth checking, and reading only
+            # one leaves the exemption list empty -- which reports every
+            # kernel-managed NVMe queue as an isolation failure.
+            sed -n 's/.*failed to set affinity of [0-9]* irqs ([^)]*): \([0-9,]*\).*/\1/p' \
+                "$plugin_log" 2>/dev/null | tr ',' '\n'
             grep -oE "failed to set affinity of irq [0-9]+" "$plugin_log" \
                 2>/dev/null | awk '{print $NF}'
         } | sort -u > "$exempt_file"
@@ -1512,15 +1578,11 @@ run_stage() {
     # capture that used to happen in the collection step below recorded
     # only the noise containers.
     local bench_cpus=""
-    if wait_for_bench_pod_running 300 >/dev/null; then
-        bench_cpus="$(capture_cgroups "$stage_dir")"
-        if [ -n "$bench_cpus" ]; then
-            info "Benchmark container cpuset: $bench_cpus"
-        else
-            warn "could not read the benchmark container's cpuset"
-        fi
+    bench_cpus="$(capture_bench_cpuset "$stage_dir" "$BENCH_TIMEOUT")"
+    if [ -n "$bench_cpus" ]; then
+        info "Benchmark container cpuset: $bench_cpus"
     else
-        warn "benchmark pod never started running"
+        warn "could not read the benchmark container's cpuset"
     fi
 
     # Wait for completion. On failure, keep going: the pod logs and the
@@ -1594,12 +1656,37 @@ run_stage() {
     fi
     kubectl get pods -n "$BENCH_NAMESPACE" -o wide \
         > "$stage_dir/pods.txt" 2>&1
+    # The noise containers' cpusets. Safe to take now: the noise runs
+    # until the stage tears it down, so unlike the benchmark's own cgroup
+    # there is nothing to race. The noise-shares-bench-cpus check reads
+    # this file.
+    if [ -x "$SCRIPT_DIR/../kube-cgroups" ]; then
+        $SUDO "$SCRIPT_DIR/../kube-cgroups" -n "$BENCH_NAMESPACE" \
+            -f 'cpuset.cpus.effective|cpuset.mems.effective' \
+            > "$stage_dir/cgroups.txt" 2>&1
+    fi
     node_state_snapshot "$stage_dir/node-state.txt"
 
     # Compare the snapshot against what the stage configured. Until this
     # existed the snapshot was written and never read, so a stage could
     # be misconfigured in every way the snapshot records and still
     # produce a row that looked like a result.
+    # If the cgroup read lost its race with a short benchmark, fall back
+    # to what the policy said it assigned. Recorded so an analysis can
+    # tell the two apart: the cgroup is what the kernel applied, the log
+    # is only what the policy intended.
+    if [ -z "$bench_cpus" ] && [ -z "${STAGE_NO_BALLOONS:-}" ]; then
+        bench_cpus="$(bench_cpuset_from_plugin_log \
+                          "$stage_dir/nri-resource-policy.log")"
+        if [ -n "$bench_cpus" ]; then
+            info "Benchmark cpuset from the policy log: $bench_cpus" \
+                 "(cgroup read lost its race with the benchmark)"
+            echo "bench_cpus_source=plugin-log" >> "$stage_dir/stage-env.txt"
+        fi
+    elif [ -n "$bench_cpus" ]; then
+        echo "bench_cpus_source=cgroup" >> "$stage_dir/stage-env.txt"
+    fi
+
     local state_checks=0
     if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
         check_stage_configured_state "$stage_dir" "$bench_cpus"
