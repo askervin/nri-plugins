@@ -577,13 +577,40 @@ node_state_snapshot() {
         # The one reading that told the truth when the node was clamped:
         # cpufreq and /proc/cpuinfo both reported a nominal value while
         # the cores actually ran at 500 MHz.
+        #
+        # Each CPU is loaded for a moment before it is read, because an
+        # idle core sits at the minimum quite legitimately and this
+        # snapshot is taken after the benchmark job has finished. Without
+        # the load, the reading for the benchmark's own CPUs says what the
+        # policy permits rather than what the benchmark achieved -- which
+        # is enough to catch a clamp, since a clos-max of 0 caps a core
+        # busy or idle, but not enough to compare two stages' frequencies
+        # against each other. Three campaigns' worth of snapshots were
+        # read that way before the difference was noticed.
         if command -v rdmsr >/dev/null 2>&1; then
+            local ps spinner mhz best n
             for c in 0 1 $(( $(nproc) / 2 )) $(( $(nproc) - 1 )); do
-                local ps
-                ps="$($SUDO rdmsr -p "$c" 0x198 2>/dev/null)"
+                taskset -c "$c" timeout 2 \
+                    bash -c 'i=0; while :; do i=$((i + 1)); done' \
+                    >/dev/null 2>&1 &
+                spinner=$!
+                # HWP takes a moment to ramp, so sample a few times and
+                # keep the highest: that is what the CPU is capable of
+                # under this configuration.
+                best=0 ps=""
+                for n in 1 2 3; do
+                    sleep 0.3
+                    ps="$($SUDO rdmsr -p "$c" 0x198 2>/dev/null)" || continue
+                    [ -n "$ps" ] || continue
+                    mhz=$(( ((0x$ps >> 8) & 0xff) * 100 ))
+                    [ "$mhz" -gt "$best" ] && best="$mhz"
+                done
+                kill "$spinner" 2>/dev/null
+                wait "$spinner" 2>/dev/null
                 [ -n "$ps" ] || continue
                 echo "cpu$c: perf_status=$ps ratio=$(( (0x$ps >> 8) & 0xff ))" \
-                     "=> $(( ((0x$ps >> 8) & 0xff) * 100 )) MHz"
+                     "=> $(( ((0x$ps >> 8) & 0xff) * 100 )) MHz" \
+                     "(busy max of 3 samples: ${best} MHz)"
             done
         else
             echo "rdmsr not available (install msr-tools for this)"
