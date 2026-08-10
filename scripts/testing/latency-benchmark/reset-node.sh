@@ -68,6 +68,23 @@ done
 info() { [ "$quiet" = 1 ] || echo "### $*"; }
 warn() { echo "reset-node.sh: warning: $*" >&2; }
 
+# online_cpus_list - the node's online CPUs, as a cpulist ("0-3,8-11").
+#
+# From sysfs, not from nproc: nproc reports how many CPUs the calling
+# process may run on, so under a restricted affinity it undercounts, and
+# it says nothing about which CPUs those are. The kernel already prints
+# exactly the ranged form that smp_affinity_list and intel-speed-select
+# -c both accept, so it is passed through as-is.
+online_cpus_list() {
+    local list=""
+    if [ -r /sys/devices/system/cpu/online ]; then
+        read -r list < /sys/devices/system/cpu/online
+    fi
+    # A uniprocessor kernel omits the file entirely; anything else means
+    # sysfs is not mounted, and CPU 0 is the only safe assumption left.
+    echo "${list:-0}"
+}
+
 # write_all GLOB VALUE - write VALUE into every existing file matching
 # GLOB. Returns 1 if no file matched, so callers can report that a
 # whole mechanism is missing rather than warning per CPU.
@@ -244,8 +261,7 @@ if command -v intel-speed-select >/dev/null 2>&1; then
     # clear the associations, and they are what a later stage or campaign
     # inherits: after the PCT stage here, 127 of 128 CPUs were still
     # associated with CLOS 3, the low-priority class.
-    ncpus="$(nproc)"
-    intel-speed-select -c "0-$((ncpus - 1))" core-power assoc --clos 0 \
+    intel-speed-select -c "$(online_cpus_list)" core-power assoc --clos 0 \
         >/dev/null 2>&1 ||
         warn "intel-speed-select core-power assoc --clos 0 failed"
     intel-speed-select --debug core-power disable >/dev/null 2>&1 ||
@@ -286,7 +302,13 @@ info "Clearing CPU affinity from IRQs ..."
 # Building the mask arithmetically breaks above 63 CPUs, where 1 << nproc
 # overflows bash's 64-bit integers and yields a zero mask; the list form
 # needs no arithmetic and no comma-separated 32-bit groups.
-all_cpus_list="0-$(( $(nproc) - 1 ))"
+#
+# The online set comes from sysfs rather than from nproc. nproc reports
+# how many CPUs the *calling process* may run on, so a reset run under a
+# restricted affinity would silently narrow every IRQ to a subset of the
+# node; and "0-$((nproc - 1))" additionally assumes the online CPUs are
+# contiguous and start at 0, which offlining any CPU makes false.
+all_cpus_list="$(online_cpus_list)"
 if [ -n "${IRQ_AFFINITY_LIST:-}" ]; then
     all_cpus_list="$IRQ_AFFINITY_LIST"
 fi
@@ -305,12 +327,24 @@ if [ -w /proc/irq/default_smp_affinity ]; then
     # default_smp_affinity has no list form, so it keeps the mask. Write
     # it as comma-separated 32-bit groups, which is what the kernel
     # expects for more than 32 CPUs.
-    default_mask="$(awk -v n="$(nproc)" 'BEGIN {
-        groups = int((n + 31) / 32); out = ""
-        for (i = 0; i < groups; i++) {
-            bits = (n - i * 32 >= 32) ? 32 : n - i * 32
-            g = sprintf("%08x", (bits == 32) ? 4294967295 : (2 ^ bits) - 1)
-            out = (out == "") ? g : g "," out
+    #
+    # Built from the same cpulist as above rather than from a CPU count,
+    # so that an offline CPU in the middle of the range leaves its bit
+    # clear instead of the mask claiming every CPU below the highest.
+    default_mask="$(awk -v list="$all_cpus_list" 'BEGIN {
+        n = split(list, ranges, ",")
+        for (i = 1; i <= n; i++) {
+            if (split(ranges[i], se, "-") == 2) { lo = se[1]; hi = se[2] }
+            else { lo = ranges[i] + 0; hi = lo }
+            for (c = lo; c <= hi; c++) {
+                bit[int(c / 32)] += 2 ^ (c % 32)
+                if (int(c / 32) > top) top = int(c / 32)
+            }
+        }
+        out = ""
+        for (g = 0; g <= top; g++) {
+            s = sprintf("%08x", bit[g])
+            out = (out == "") ? s : s "," out
         }
         print out }')"
     echo "$default_mask" > /proc/irq/default_smp_affinity 2>/dev/null ||
