@@ -314,7 +314,11 @@ func (irq *Irq) SetAffinityCpus(cpus cpuset.CPUSet) error {
 	if err := os.WriteFile(irq.smpAffinityListPath(), []byte(cpus.String()), 0644); err != nil {
 		return fmt.Errorf("failed to set affinity of irq %d to %q: %w", irq.num, cpus, err)
 	}
-	log.Debugf("irq %s smp_affinity_list written: %s", irq, cpus)
+	// Deliberately not logged per interrupt. Callers reconfigure every
+	// interrupt on the node at once, so on a node with per-CPU NVMe and
+	// accelerator queues one line each is thousands of lines per change,
+	// enough to push everything else out of a rotated log. The balloons
+	// policy reports the outcome as an aggregate instead.
 	return nil
 }
 
