@@ -2,9 +2,9 @@
 
 # build-images.sh - build the benchmark container images on this node.
 #
-# Builds two images with podman and imports them into the containerd
-# k8s.io namespace, so that Kubernetes can run them with
-# imagePullPolicy: Never and no registry involved:
+# Builds two images with podman or docker, whichever is available, and
+# imports them into the containerd k8s.io namespace, so that Kubernetes
+# can run them with imagePullPolicy: Never and no registry involved:
 #
 #   localhost/sleep-accuracy:latest  the latency benchmark tool
 #   localhost/stress-ng:latest       the background workload
@@ -36,6 +36,7 @@ Environment:
                          (default: $TOOL_DIR)
   SLEEP_ACCURACY_IMAGE   default: $SLEEP_ACCURACY_IMAGE
   STRESS_NG_IMAGE        default: $STRESS_NG_IMAGE
+  BUILDER                podman or docker (default: whichever is found)
 EOF
 }
 
@@ -56,19 +57,35 @@ error() {
     exit 1
 }
 
-command -v podman >/dev/null || error "podman not found, cannot build images"
+# Either builder can produce the images. Only the save syntax differs,
+# so pick one here and branch on it in import_to_containerd.
+BUILDER="${BUILDER:-}"
+if [ -z "$BUILDER" ]; then
+    for candidate in podman docker; do
+        command -v "$candidate" >/dev/null && { BUILDER="$candidate"; break; }
+    done
+fi
+[ -n "$BUILDER" ] || error "neither podman nor docker found, cannot build images"
+command -v "$BUILDER" >/dev/null || error "BUILDER=$BUILDER not found"
+echo "### Building images with $BUILDER."
 
 # import_to_containerd IMAGE - make IMAGE available to kubelet.
 #
 # Kubernetes talks to containerd, which has its own image store,
-# separate from podman's. Export from podman and import into the
-# k8s.io namespace of containerd.
+# separate from the builder's. Export from the builder and import into
+# the k8s.io namespace of containerd.
 import_to_containerd() {
     local image="$1"
     local tarball
     tarball="$(mktemp -t "$(basename "${image%%:*}").XXXXXX.tar")"
     echo "### Exporting $image ..."
-    podman save --format docker-archive -o "$tarball" "$image"
+    if [ "$BUILDER" = podman ]; then
+        podman save --format docker-archive -o "$tarball" "$image"
+    else
+        # docker save always writes a docker archive, and unlike podman
+        # it has no --format option.
+        docker save -o "$tarball" "$image"
+    fi
     echo "### Importing $image into containerd (namespace k8s.io) ..."
     # --digests avoids "ctr: content digest not found" on some versions.
     sudo ctr -n k8s.io images import --no-unpack=false "$tarball"
@@ -81,7 +98,7 @@ if [ "$build_sleep_accuracy" = 1 ]; then
     echo "### Building $SLEEP_ACCURACY_IMAGE from $TOOL_DIR ..."
     # Build context is the tool directory, so that the Dockerfile can
     # COPY the sources, but the Dockerfile itself lives here.
-    podman build \
+    "$BUILDER" build \
         -f "$SCRIPT_DIR/Dockerfile.sleep-accuracy" \
         -t "$SLEEP_ACCURACY_IMAGE" \
         "$TOOL_DIR"
@@ -90,7 +107,7 @@ fi
 
 if [ "$build_stress_ng" = 1 ]; then
     echo "### Building $STRESS_NG_IMAGE ..."
-    podman build \
+    "$BUILDER" build \
         -f "$SCRIPT_DIR/Dockerfile.stress-ng" \
         -t "$STRESS_NG_IMAGE" \
         "$SCRIPT_DIR"
