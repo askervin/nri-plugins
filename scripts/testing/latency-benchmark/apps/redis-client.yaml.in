@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${APP_JOB_NAME:-redis-client}
+  namespace: ${BENCH_NAMESPACE:-latency-benchmark}
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        # The client's own balloon, which no stage configures: it is
+        # measurement apparatus, not workload. See apps/redis.sh.
+        ${CLIENT_LABEL_KEY:-latency}: ${CLIENT_LABEL_VALUE:-client}
+        app: redis-client
+    spec:
+      restartPolicy: Never
+      nodeName: ${NODE_NAME}
+      hostNetwork: ${REDIS_CLIENT_HOST_NETWORK:-false}
+      containers:
+      - name: redis-benchmark
+        image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
+        imagePullPolicy: ${REDIS_IMAGE_PULL_POLICY:-IfNotPresent}
+        # The round loop is carried as base64 so that a multi-word script
+        # with its own quoting survives template expansion untouched. The
+        # readable script is written next to this file as redis-run.sh.
+        #
+        # Every double quote is escaped: instantiate() expands this file
+        # inside a double-quoted eval, so a bare quote would close that
+        # string and the rest of the line would run as a pipeline on the
+        # harness host instead of reaching the manifest.
+        command:
+        - /bin/sh
+        - -c
+        - \"echo ${APP_SHELL_B64} | base64 -d | /bin/sh\"
+        resources:
+          requests:
+            cpu: \"${REDIS_CLIENT_CPUS:-2}\"
+            memory: ${REDIS_CLIENT_MEM_REQUEST:-256Mi}
+          limits:
+            cpu: \"${REDIS_CLIENT_CPUS:-2}\"
+            memory: ${REDIS_CLIENT_MEM_REQUEST:-256Mi}

@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${APP_JOB_NAME:-openssl}
+  namespace: ${BENCH_NAMESPACE:-latency-benchmark}
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        ${BENCH_LABEL_KEY:-latency}: ${BENCH_LABEL_VALUE:-critical}
+        app: openssl
+    spec:
+      restartPolicy: Never
+      nodeName: ${NODE_NAME}
+      containers:
+      - name: openssl
+        image: ${OPENSSL_IMAGE:-localhost/openssl:latest}
+        imagePullPolicy: Never
+        # The round loop is carried as base64 so that a multi-word script
+        # with its own quoting survives template expansion untouched. The
+        # readable script is written next to this file as openssl-run.sh.
+        #
+        # Every double quote below is escaped: instantiate() expands this
+        # file inside a double-quoted eval, so a bare quote would close
+        # that string and the rest of the line would run as a pipeline on
+        # the harness host instead of reaching the manifest.
+        args:
+        - \"echo ${APP_SHELL_B64} | base64 -d | /bin/sh\"
+        securityContext:
+          # CAP_SYS_NICE lets the process keep the realtime scheduling
+          # policy balloons sets for it; without it the kernel refuses
+          # SCHED_FIFO and the realtime stages would measure nothing.
+          capabilities:
+            add:
+            - SYS_NICE
+        resources:
+          requests:
+            cpu: \"${BENCH_CPU_REQUEST:-2}\"
+            memory: ${BENCH_MEM_REQUEST:-256Mi}
+          limits:
+            cpu: \"${BENCH_CPU_REQUEST:-2}\"
+            memory: ${BENCH_MEM_REQUEST:-256Mi}

@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: ${BENCH_JOB_NAME:-sleep-accuracy}
+  name: ${APP_JOB_NAME:-sleep-accuracy}
   namespace: ${BENCH_NAMESPACE:-latency-benchmark}
 spec:
   backoffLimit: 0
@@ -20,7 +20,7 @@ spec:
         image: ${SLEEP_ACCURACY_IMAGE:-localhost/sleep-accuracy:latest}
         imagePullPolicy: Never
         args:
-        $(for arg in ${BENCH_ARGS}; do echo "
+        $(for arg in ${APP_ARGS}; do echo "
         - \"${arg}\"
 "; done)
         securityContext:
