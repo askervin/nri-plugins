@@ -33,7 +33,7 @@ Policy-level:
   LOG_DEBUG_CPU                 non-empty: add cpu+cpuclass debug logging
   LOG_DEBUG_IRQ                 non-empty: add irq debug logging
 
-Benchmark balloon (runs sleep-accuracy):
+Benchmark balloon (runs the application under test):
   BENCH_BTYPE_NAME              balloon type name (default: latency-critical)
   BENCH_LABEL_KEY/VALUE         pod label matched (default: latency/critical)
   BENCH_MINCPUS, BENCH_MAXCPUS  balloon size (default: 1, 2)
@@ -58,6 +58,14 @@ Noise balloon (runs stress-ng):
   NOISE_MINCPUS, NOISE_MAXCPUS, NOISE_ALLOCATORPRIORITY (default: low),
   NOISE_PREFERNEWBALLOONS, NOISE_CPUCLASS, NOISE_SCHEDULINGCLASS,
   NOISE_SHAREIDLECPUS, NOISE_LOADS, NOISE_IRQCLAIM, NOISE_IRQMODE
+
+Client balloon (emitted only if CLIENT_BTYPE_NAME is set, which an
+application module does when its measurement needs a load generator):
+  CLIENT_BTYPE_NAME             balloon type name
+  CLIENT_LABEL_KEY/VALUE        pod label matched (default: latency/client)
+  CLIENT_MINCPUS, CLIENT_MAXCPUS, CLIENT_ALLOCATORPRIORITY (default: normal),
+  CLIENT_PREFERNEWBALLOONS (default: true), CLIENT_CPUCLASS,
+  CLIENT_SCHEDULINGCLASS, CLIENT_SHAREIDLECPUS, CLIENT_IRQMODE
 
 Default balloon:
   DEFAULT_MINCPUS, DEFAULT_MAXCPUS, DEFAULT_CPUCLASS,
@@ -234,6 +242,33 @@ EOF
     opt_list loads "${NOISE_LOADS:-}"
     opt_qlist irqClaim "${NOISE_IRQCLAIM:-}"
     opt irqMode "${NOISE_IRQMODE:-}"
+fi
+
+# Client balloon, for an application whose measurement needs a load
+# generator. Emitted only when an application module asked for it, so
+# every other application's configuration is unchanged.
+#
+# Deliberately NOT configured by any stage: the client is measurement
+# apparatus, and its stage-independence is what lets a change in the
+# measured latency be attributed to the server's configuration rather
+# than to the instrument. See apps/redis.sh for the full argument.
+if [ -n "${CLIENT_BTYPE_NAME:-}" ]; then
+    cat <<EOF
+  - name: ${CLIENT_BTYPE_NAME}
+    matchExpressions:
+    - key: pod/labels/${CLIENT_LABEL_KEY:-latency}
+      operator: In
+      values:
+      - ${CLIENT_LABEL_VALUE:-client}
+    preferNewBalloons: ${CLIENT_PREFERNEWBALLOONS:-true}
+    allocatorPriority: ${CLIENT_ALLOCATORPRIORITY:-normal}
+EOF
+    opt minCPUs "${CLIENT_MINCPUS:-}"
+    opt maxCPUs "${CLIENT_MAXCPUS:-}"
+    opt cpuClass "${CLIENT_CPUCLASS:-}"
+    opt schedulingClass "${CLIENT_SCHEDULINGCLASS:-}"
+    opt shareIdleCPUsInSame "${CLIENT_SHAREIDLECPUS:-}"
+    opt irqMode "${CLIENT_IRQMODE:-}"
 fi
 
 # Catch-all balloon.

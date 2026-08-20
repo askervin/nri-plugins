@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${REDIS_SERVER_NAME:-redis-server}
+  namespace: ${BENCH_NAMESPACE:-latency-benchmark}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-server
+  template:
+    metadata:
+      labels:
+        ${BENCH_LABEL_KEY:-latency}: ${BENCH_LABEL_VALUE:-critical}
+        app: redis-server
+    spec:
+      nodeName: ${NODE_NAME}
+      terminationGracePeriodSeconds: 2
+      hostNetwork: ${REDIS_SERVER_HOST_NETWORK:-false}
+      containers:
+      - name: redis
+        image: ${REDIS_IMAGE:-docker.io/library/redis:7-alpine}
+        imagePullPolicy: ${REDIS_IMAGE_PULL_POLICY:-IfNotPresent}
+        # Persistence off, both kinds. An RDB save forks the server and
+        # writes to disk, and an AOF rewrite does the same; either would
+        # land in exactly the tail latencies this measures. protected-mode
+        # off because the load generator connects from another pod.
+        #
+        # Every value is quoted, and every quote escaped, for two reasons:
+        # instantiate() expands this file inside a double-quoted eval, so a
+        # bare quote would close that string; and YAML 1.1 reads an
+        # unquoted "no" as the boolean false, which the API server then
+        # rejects as a bool where a string was wanted.
+        args:
+        - \"--save\"
+        - \"\"
+        - \"--appendonly\"
+        - \"no\"
+        - \"--protected-mode\"
+        - \"no\"
+        - \"--bind\"
+        - \"0.0.0.0\"
+        - \"--port\"
+        - \"${REDIS_PORT:-6379}\"
+        securityContext:
+          # As for every subject of this benchmark: without CAP_SYS_NICE
+          # the kernel refuses the SCHED_FIFO the policy sets, and the
+          # realtime stages would measure nothing.
+          capabilities:
+            add:
+            - SYS_NICE
+        readinessProbe:
+          tcpSocket:
+            port: ${REDIS_PORT:-6379}
+          initialDelaySeconds: 1
+          periodSeconds: 1
+        resources:
+          requests:
+            cpu: \"${BENCH_CPU_REQUEST:-2}\"
+            memory: ${BENCH_MEM_REQUEST:-256Mi}
+          limits:
+            cpu: \"${BENCH_CPU_REQUEST:-2}\"
+            memory: ${BENCH_MEM_REQUEST:-256Mi}

@@ -1,0 +1,20 @@
+# Container image for the openssl throughput workload.
+#
+# openssl speed is a self-contained CPU benchmark: it encrypts a buffer
+# in a loop for a fixed wall-clock time and reports bytes per second per
+# block size. No I/O, no network, no warm-up, and nothing in this image
+# configures frequencies, C-states or scheduling parameters -- all of
+# that is left to the container runtime and the NRI balloons policy.
+#
+# Built locally rather than pulled so that the Job can run with
+# imagePullPolicy: Never, like the other benchmark images, with no
+# registry in the measurement path.
+FROM registry.fedoraproject.org/fedora-minimal:43
+
+# coreutils for seq, used by the round loop; util-linux and procps-ng for
+# taskset, chrt and ps when inspecting what the policy actually applied.
+RUN microdnf install -y --setopt=install_weak_deps=False \
+        openssl coreutils util-linux procps-ng && \
+    microdnf clean all
+
+ENTRYPOINT ["/bin/sh", "-c"]

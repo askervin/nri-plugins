@@ -33,6 +33,7 @@ set -u -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/stages.sh"
 source "$SCRIPT_DIR/report.sh"
+source "$SCRIPT_DIR/apps.sh"
 
 ###
 ### Configuration
@@ -53,7 +54,32 @@ NODE_NAME="${NODE_NAME:-$(hostname)}"
 SLEEP_ACCURACY_IMAGE="${SLEEP_ACCURACY_IMAGE:-localhost/sleep-accuracy:latest}"
 STRESS_NG_IMAGE="${STRESS_NG_IMAGE:-localhost/stress-ng:latest}"
 
-# BENCH_ARGS - sleep-accuracy arguments.
+# BENCH_APPS - which applications this run measures, in the order they
+# run within each stage.
+#
+#   sleep-accuracy   process wakeup latency from nanosleep (the default)
+#   openssl          cipher throughput, compute-intensive
+#   redis            request latency and rate, latency-sensitive
+#
+# Applications run SEQUENTIALLY inside a stage, never concurrently. Run
+# together they would contend for the balloon's CPUs and none of them
+# would be measuring the policy; run in sequence they see the same node
+# state, the same policy generation and the same instance of the
+# background load, which is stronger evidence than three separate
+# campaigns can give -- at the cost of multiplying stage wall-clock by the
+# number of applications. One application per campaign stays the unit of
+# comparison; see DESIGN-apps.md.
+BENCH_APPS="${BENCH_APPS:-sleep-accuracy}"
+
+# APP_SETTLE_SECONDS - quiet time between two applications in one stage,
+# so that the second does not start while the first one's containers are
+# still being torn down.
+APP_SETTLE_SECONDS="${APP_SETTLE_SECONDS:-5}"
+
+# sleep-accuracy arguments, kept here because usage() reports them and
+# campaign scripts set them. The application module composes the actual
+# argument list from these; every other application has its own
+# variables, named after it (OPENSSL_*, REDIS_*).
 #
 # No -p, -c, -f or -i: scheduling policy and priority, CPU affinity,
 # frequencies and idle states are all left entirely to the container
@@ -65,11 +91,17 @@ BENCH_BUSYS="${BENCH_BUSYS:-0}"
 BENCH_ITERATIONS="${BENCH_ITERATIONS:-20000}"
 BENCH_REPEATS="${BENCH_REPEATS:-3}"
 BENCH_BENCHMARKS="${BENCH_BENCHMARKS:-nanosleep}"
-BENCH_ARGS="${BENCH_ARGS:--b $BENCH_BENCHMARKS -B $BENCH_BUSYS -s $BENCH_SLEEPS -I $BENCH_ITERATIONS -r $BENCH_REPEATS}"
+# BENCH_ARGS is the name the sleep-accuracy override had before there
+# were application modules. Left empty unless the caller sets it, so that
+# apps/sleep-accuracy.sh can tell "overridden" from "use the defaults".
+BENCH_ARGS="${BENCH_ARGS:-}"
 
-# Resources requested by the benchmark container. The CPU request must
-# match the balloon size wanted for it: balloons sizes dynamic balloons
-# from container CPU requests.
+# Resources requested by the application's container. Shared by every
+# application and deliberately so: each one runs in the same balloon,
+# with the same pod label, requesting the same CPUs, so that a difference
+# between two applications is not partly a difference in what the policy
+# was asked to do. The CPU request must match the balloon size wanted for
+# it: balloons sizes dynamic balloons from container CPU requests.
 BENCH_CPUS="${BENCH_CPUS:-2}"
 BENCH_CPU_REQUEST="${BENCH_CPU_REQUEST:-$BENCH_CPUS}"
 BENCH_MEM_REQUEST="${BENCH_MEM_REQUEST:-256Mi}"
@@ -217,13 +249,18 @@ usage() {
     cat <<EOF
 Usage: run-benchmark.sh [options] [stage ...]
 
-Benchmarks process wakeup latency under a ladder of NRI balloons policy
-configurations. With no stage arguments, runs all stages in order.
+Benchmarks a latency- or throughput-sensitive application under a ladder
+of NRI balloons policy configurations. With no stage arguments, runs all
+stages in order.
 
 Stages:
 $(printf '  %s\n' "${STAGES[@]}")
 
+Applications (-a, default: $BENCH_APPS):
+$(printf '  %s\n' "${APPS[@]}")
+
 Options:
+  -a APPS     comma-separated applications to measure, in run order
   -l          list stages with descriptions and exit
   -d          dry run: generate and print configurations, run nothing
   -k          keep the last stage's policy and workloads running at exit
@@ -231,11 +268,21 @@ Options:
 
 Key environment variables:
   RESULTS_DIR          results directory (default: results/<timestamp>)
+  BENCH_APPS           applications to measure (default: $BENCH_APPS)
   BENCH_CPUS           CPUs for the benchmark balloon (default: $BENCH_CPUS)
   BENCH_ITERATIONS     sleep-accuracy iterations (default: $BENCH_ITERATIONS)
-  BENCH_REPEATS        sleep-accuracy repeats (default: $BENCH_REPEATS)
+  BENCH_REPEATS        sleep-accuracy repeats, and the round count the
+                       other applications default to (default: $BENCH_REPEATS)
   BENCH_SLEEPS         requested sleep durations [ns] (default: $BENCH_SLEEPS)
   BENCH_ARGS           full sleep-accuracy argument override
+  OPENSSL_CIPHER       openssl speed -evp algorithm (default: aes-128-cbc)
+  OPENSSL_SECONDS      seconds per block size per round (default: 5)
+  OPENSSL_MULTI        openssl -multi N (default: unset, one thread)
+  REDIS_CLIENT_ARGS    redis-benchmark arguments
+                       (default: -n 200000 -c 50 -t get)
+  REDIS_CLIENT_CPUS    CPUs for the load generator's own balloon,
+                       which no stage configures (default: 2)
+  REDIS_HOST_NETWORK   non-empty: loopback instead of the pod network
   NOISE_WORKLOAD       cpu|mem|both|vector|none (default: $NOISE_WORKLOAD)
   NOISE_REPLICAS       background containers (default: CPUs/2)
   CHART                balloons helm chart path or name
@@ -254,6 +301,8 @@ Examples:
   ./run-benchmark.sh -l
   ./run-benchmark.sh -d
   ./run-benchmark.sh baseline-no-balloons dedicated-cpus
+  ./run-benchmark.sh -a openssl
+  ./run-benchmark.sh -a redis realtime-sched pct-priority-cores
   BENCH_ITERATIONS=100000 BENCH_REPEATS=5 ./run-benchmark.sh
 EOF
 }
@@ -261,8 +310,9 @@ EOF
 dry_run=0
 keep_last=0
 list_stages=0
-while getopts "ldkh" opt; do
+while getopts "a:ldkh" opt; do
     case "$opt" in
+        a) BENCH_APPS="$OPTARG" ;;
         l) list_stages=1 ;;
         d) dry_run=1 ;;
         k) keep_last=1 ;;
@@ -325,6 +375,14 @@ if [ $# -gt 0 ]; then
 else
     run_stages=("${STAGES[@]}")
 fi
+
+# Applications to measure, in the order they run within each stage.
+IFS=, read -r -a run_apps <<< "$BENCH_APPS"
+[ ${#run_apps[@]} -gt 0 ] || error "BENCH_APPS is empty"
+for app in "${run_apps[@]}"; do
+    app_exists "$app" ||
+        error "unknown application: $app (have: ${APPS[*]})"
+done
 
 ###
 ### Preflight
@@ -433,7 +491,32 @@ export BENCH_LABEL_KEY BENCH_LABEL_VALUE
 export NOISE_ARGS NOISE_REPLICAS NOISE_CPU_REQUEST NOISE_MEM_REQUEST
 export NOISE_DEPLOYMENT_NAME NOISE_LABEL_KEY NOISE_LABEL_VALUE
 
+# An application without a witness of its own cannot be run without the
+# during-benchmark validation, because then nothing at all would say that
+# a realtime stage was realtime.
+#
+# sleep-accuracy reports the scheduling policy it inherited, so its rows
+# carry their own proof. For openssl and redis the only proof is the
+# kernel's view of the running process, which bench_process_snapshot
+# records with chrt during the measurement. Skip that and the stage would
+# produce rows nobody can vouch for, which is exactly what the rest of
+# this harness exists to prevent -- so refuse the combination up front
+# rather than write unverifiable data.
+if [ -n "$SKIP_DURING_VALIDATION" ]; then
+    for app in "${run_apps[@]}"; do
+        declare -F "app_${app}_witness" >/dev/null && continue
+        error "SKIP_DURING_VALIDATION cannot be used with $app:" \
+              "the during-benchmark snapshot is the only witness that" \
+              "this application ran in the configured state"
+    done
+fi
+
 mkdir -p "$RESULTS_DIR"
+# METRICS_FILE is the canonical record every application writes, and what
+# the plot pipeline consumes. CSV_FILE is sleep-accuracy's own wide CSV,
+# unchanged in shape from before there was more than one application, so
+# that the archived campaigns' tooling and checksums keep working.
+METRICS_FILE="$RESULTS_DIR/metrics.csv"
 CSV_FILE="$RESULTS_DIR/latencies.csv"
 RUN_LOG="$RESULTS_DIR/run.log"
 
@@ -1022,18 +1105,12 @@ STAGE_ARTIFACTS=(
     "stage-env.txt          every stage variable, plus what was observed"
     "balloons-config.yaml   the BalloonsPolicy this stage asked for"
     "node-state-before.txt  the node as the reset left it (full)"
-    "node-state-during.txt?  the node while the benchmark ran (light)"
-    "bench-process-during.txt?  where the benchmark's thread actually was"
     "node-state-after.txt   the node after the benchmark (full)"
     "node-state.txt         alias of node-state-after.txt"
-    "sleep-accuracy.log     the measurements"
-    "sleep-accuracy-job.yaml  the job that produced them"
-    "sleep-accuracy-pod.yaml  the pod as the API server saw it"
+    "metrics.csv            every application's figures, as CSV rows"
     "cgroups.txt            every container's effective cpuset"
-    "cgroups-bench.txt      the benchmark container's cgroup, read live"
     "pods.txt               what was running on the node"
     "reset.log              what the pre-stage reset did"
-    "verify-row.csv         what could be verified, as CSV columns"
     "helm-install.log?      installing the policy"
     "kubectl-apply.log?     applying the configuration"
     "nri-resource-policy.log?  the policy's own log, from startup"
@@ -1041,12 +1118,29 @@ STAGE_ARTIFACTS=(
     "stress-ng-deployment.yaml?  the background workload"
 )
 
-# stage_expected_artifacts - the artifact names this stage should have,
-# resolving the conditional ones against its configuration.
+# APP_ARTIFACTS - the files every application in a stage is expected to
+# produce. "<app>" is replaced by the application's name, so a stage
+# measuring one application has exactly the files it had before this was
+# generalised, and one measuring three has three sets.
+APP_ARTIFACTS=(
+    "<app>.log                     the measurements"
+    "<app>-job.yaml                the job that produced them"
+    "<app>-pod.yaml                the pod as the API server saw it"
+    "<app>-cgroup.txt              the subject container's cgroup, read live"
+    "<app>-verify-row.csv          what could be verified, as CSV columns"
+    "<app>-node-state-during.txt?  the node while it ran (light)"
+    "<app>-bench-process-during.txt?  where the subject's thread actually was"
+)
+
+# stage_expected_artifacts - the artifacts this stage should have, one
+# "NAME<TAB>PURPOSE" per line, with the conditional ones resolved against
+# the stage's configuration and the per-application ones expanded over
+# every application the run measures.
 stage_expected_artifacts() {
-    local entry name
+    local entry name purpose app
     for entry in "${STAGE_ARTIFACTS[@]}"; do
         name="${entry%% *}"
+        purpose="$(echo "${entry#* }" | sed 's/^ *//')"
         case "$name" in
             *\?)
                 name="${name%\?}"
@@ -1060,17 +1154,33 @@ stage_expected_artifacts() {
                     stress-ng-deployment.yaml)
                         [ "$NOISE_WORKLOAD" != none ] &&
                         [ "$NOISE_REPLICAS" != 0 ] || continue ;;
+                esac
+                ;;
+        esac
+        printf '%s\t%s\n' "$name" "$purpose"
+    done
+    for app in "${run_apps[@]}"; do
+        for entry in "${APP_ARTIFACTS[@]}"; do
+            name="${entry%% *}"
+            purpose="$(echo "${entry#* }" | sed 's/^ *//')"
+            case "$name" in
+                *\?)
+                    name="${name%\?}"
                     # Expected unless the during-validation was skipped on
                     # purpose. A campaign never skips it, so for campaign
                     # data these are as required as the rest; this keeps
                     # the perturbation control run from reporting two
                     # missing artifacts that it was asked not to produce.
-                    node-state-during.txt|bench-process-during.txt)
-                        [ -z "$SKIP_DURING_VALIDATION" ] || continue ;;
-                esac
-                ;;
-        esac
-        echo "$name"
+                    [ -z "$SKIP_DURING_VALIDATION" ] || continue
+                    ;;
+            esac
+            printf '%s\t%s\n' "${name//<app>/$app}" "$purpose"
+        done
+        # The redis server manifest, for an application that has one.
+        if [ "$app" = redis ]; then
+            printf '%s\t%s\n' redis-server.yaml \
+                "the server, which is the subject of the state checks"
+        fi
     done
 }
 
@@ -1084,32 +1194,26 @@ stage_expected_artifacts() {
 check_stage_artifacts() {
     local stage_dir="$1"
     local -a missing=() empty=()
-    local name
+    local name purpose
     {
         echo "# Artifacts expected of every stage, and what this stage has."
         echo "# state  bytes  name  purpose"
-        local entry purpose
-        for name in $(stage_expected_artifacts); do
-            purpose=""
-            for entry in "${STAGE_ARTIFACTS[@]}"; do
-                case "${entry%% *}" in
-                    "$name"|"$name?")
-                        purpose="$(echo "${entry#* }" | sed 's/^ *//')"
-                        break ;;
-                esac
-            done
+        while IFS=$'\t' read -r name purpose; do
+            [ -n "$name" ] || continue
             if [ ! -e "$stage_dir/$name" ]; then
                 missing+=("$name")
-                printf 'MISSING  %6s  %-26s %s\n' - "$name" "$purpose"
+                printf 'MISSING  %6s  %-38s %s\n' - "$name" "$purpose"
             elif [ ! -s "$stage_dir/$name" ]; then
                 empty+=("$name")
-                printf 'EMPTY    %6s  %-26s %s\n' 0 "$name" "$purpose"
+                printf 'EMPTY    %6s  %-38s %s\n' 0 "$name" "$purpose"
             else
-                printf 'ok       %6s  %-26s %s\n' \
+                printf 'ok       %6s  %-38s %s\n' \
                     "$(stat -c %s "$stage_dir/$name" 2>/dev/null)" \
                     "$name" "$purpose"
             fi
-        done
+        # Process substitution rather than a pipe, so that the arrays
+        # above are the ones this function returns on.
+        done < <(stage_expected_artifacts)
     } > "$stage_dir/ARTIFACTS.txt"
 
     [ ${#missing[@]} = 0 ] && [ ${#empty[@]} = 0 ] && return 0
@@ -1144,22 +1248,43 @@ check_stage_artifacts() {
 # they fall back to the plugin's own record of the assignment.
 #
 # Returns 0 when the measurement is trustworthy, 1 when it is not.
+# Called per application, because the witness is the application's own
+# output where it has one. sleep-accuracy reports the scheduling policy it
+# inherited, which is the strongest evidence available: it comes from
+# inside the measured process. openssl and redis report nothing of the
+# kind, so for them the witness is the kernel's own view of the running
+# process, recorded with chrt in the during-benchmark snapshot. That is an
+# outside view rather than a self-report, which if anything makes it
+# better evidence; what it depends on is the snapshot existing, which is
+# why SKIP_DURING_VALIDATION is refused for those applications.
 check_stage_measured_config() {
-    local stage_dir="$1"
-    local log="$stage_dir/sleep-accuracy.log"
+    local stage_dir="$1" app="${2:-sleep-accuracy}"
+    local log="$stage_dir/$app.log"
     [ -f "$log" ] || return 0
     [ -z "${STAGE_NO_BALLOONS:-}" ] || return 0
 
     local reason=""
 
     if [ -n "${BENCH_SCHEDULINGCLASS:-}" ]; then
-        # Field 6 is schedpol, field 7 schedprio; 0 means the container
-        # inherited the default policy, so the class never reached it.
-        local unconfigured
-        unconfigured="$(awk '$1 == "nanosleep" && $6 == 0' "$log" | wc -l)"
-        if [ "$unconfigured" -gt 0 ]; then
-            reason="$unconfigured measurements ran with scheduling policy 0,"
-            reason="$reason but the stage configured $BENCH_SCHEDULINGCLASS"
+        if declare -F "app_${app}_witness" >/dev/null; then
+            reason="$("app_${app}_witness" "$stage_dir" "$log")"
+        else
+            # chrt prints "... current scheduling policy: SCHED_FIFO".
+            local want
+            case "${SCHEDCLASS_POLICY:-fifo}" in
+                fifo) want=SCHED_FIFO ;;
+                rr)   want=SCHED_RR ;;
+                *)    want="SCHED_${SCHEDCLASS_POLICY^^}" ;;
+            esac
+            local snapshot="$stage_dir/$app-bench-process-during.txt"
+            if [ ! -s "$snapshot" ]; then
+                reason="no during-benchmark snapshot, so nothing witnesses"
+                reason="$reason that $app ran with $BENCH_SCHEDULINGCLASS"
+            elif ! grep -q "scheduling policy: $want" "$snapshot"; then
+                reason="the kernel had no $app thread under $want while the"
+                reason="$reason measurement ran, but the stage configured"
+                reason="$reason $BENCH_SCHEDULINGCLASS"
+            fi
         fi
     elif [ -f "$stage_dir/nri-resource-policy.log" ]; then
         grep -q "assigning container $BENCH_NAMESPACE/.* to balloon" \
@@ -1169,7 +1294,7 @@ check_stage_measured_config() {
 
     [ -n "$reason" ] || return 0
 
-    warn "stage $STAGE_NAME measured an unconfigured system: $reason"
+    warn "stage $STAGE_NAME measured an unconfigured system with $app: $reason"
     # Name the likely cause when the plugin's log shows it, so that the
     # run log says what to do rather than only that something was wrong.
     if grep -q "connection to NRI/runtime lost" \
@@ -1180,8 +1305,8 @@ check_stage_measured_config() {
     return 1
 }
 
-# capture_cgroups STAGE_DIR - record the effective cpusets of the
-# benchmark and noise containers, while the benchmark is still running.
+# capture_cgroups STAGE_DIR [OUTFILE] - record the effective cpuset of the
+# application's subject container, while it is still running.
 #
 # Called as soon as the benchmark pod is Running, not after the Job
 # completes. A completed Job's container is gone and so is its cgroup, so
@@ -1202,19 +1327,23 @@ check_stage_measured_config() {
 # gone by the time its turn comes. The noise cpusets are captured
 # separately, after the benchmark, where nothing is racing.
 capture_cgroups() {
-    local stage_dir="$1" outfile="${2:-$stage_dir/cgroups-bench.txt}"
+    local stage_dir="$1"
+    local outfile="${2:-$stage_dir/${APP_NAME:-bench}-cgroup.txt}"
     local kube_cgroups="$SCRIPT_DIR/../kube-cgroups"
     [ -x "$kube_cgroups" ] || return 0
+    local subject="${APP_SUBJECT_POD:-${BENCH_JOB_NAME}}"
 
-    $SUDO "$kube_cgroups" -n "$BENCH_NAMESPACE" -p "$BENCH_JOB_NAME" \
+    $SUDO "$kube_cgroups" -n "$BENCH_NAMESPACE" -p "$subject" \
         -f 'cpuset.cpus.effective|cpuset.mems.effective' \
         > "$outfile" 2>&1
 
     # kube-cgroups prints a pod block, a container line under it, and
     # then one "file: value" line per file. Pick the cpuset of the
-    # container inside the benchmark pod, whose name is the Job's.
-    awk -v job="$BENCH_JOB_NAME" '
-        /^[^ ]/            { inpod = (index($0, job) > 0); next }
+    # container inside the subject pod. For an application with a
+    # separate load generator the subject is the server, since the server
+    # is what sits in the balloon the ladder configures.
+    awk -v subject="$subject" '
+        /^[^ ]/            { inpod = (index($0, subject) > 0); next }
         inpod && /cpuset\.cpus\.effective:/ {
             sub(/^ *cpuset\.cpus\.effective: */, ""); print; exit }
     ' "$outfile" 2>/dev/null
@@ -1251,7 +1380,7 @@ capture_bench_cpuset() {
         i=$((i + 1))
         if [ $((i % POD_PHASE_EVERY)) = 0 ]; then
             phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
-                         -l app=sleep-accuracy \
+                         -l "$APP_POD_SELECTOR" \
                          -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
             case "$phase" in
                 # One more round after the pod is terminal, in case the
@@ -1280,7 +1409,8 @@ capture_bench_cpuset() {
 bench_cpuset_from_plugin_log() {
     local logfile="$1"
     [ -f "$logfile" ] || return 0
-    grep "assigning container.*/$BENCH_JOB_NAME " "$logfile" 2>/dev/null |
+    local subject="${APP_SUBJECT_POD:-${BENCH_JOB_NAME}}"
+    grep "assigning container.*/$subject" "$logfile" 2>/dev/null |
         sed -n 's/.*cpus:"\([^"]*\)".*/\1/p' | tail -1
 }
 
@@ -1302,30 +1432,40 @@ bench_cpuset_from_plugin_log() {
 # to other CPUs. sleep-accuracy also reports its own scheduler policy and
 # priority per round from inside the container; this is the outside view of
 # the same facts, which is what makes it evidence rather than an echo.
+#
+# For openssl and redis it is not a second opinion but the ONLY one:
+# neither tool reports the scheduling policy it inherited, so the chrt
+# reading below is what witnesses that a realtime stage was realtime.
+# That is why SKIP_DURING_VALIDATION is refused for those applications.
 bench_process_snapshot() {
     local out="$1" avoid="${2:-}"
     local safe
     safe="$(safe_cpus_list "$avoid")"
+    local procname="${APP_SUBJECT_PROCESS:-sleep-accuracy}"
     # A subshell, so the taskset below confines this reader and not the
     # harness. See node_state_snapshot.
     (
         [ -n "$safe" ] && taskset -cp "$safe" "$BASHPID" >/dev/null 2>&1
         echo "=== date ==="
         date -Is
+        echo "=== subject ==="
+        echo "app=${APP_NAME:-unknown} process=$procname" \
+             "subject_pod=${APP_SUBJECT_POD:-unknown}"
         local -a pids=()
         # By executable name: the container's process keeps its own name in
         # the host's pid namespace, and there is exactly one of it.
-        mapfile -t pids < <(pgrep -x sleep-accuracy 2>/dev/null)
+        mapfile -t pids < <(pgrep -x "$procname" 2>/dev/null)
         if [ ${#pids[@]} = 0 ]; then
-            echo "no sleep-accuracy process found"
+            echo "no $procname process found"
             exit 0
         fi
         local pid
         for pid in "${pids[@]}"; do
             echo "=== pid $pid ==="
-            # One thread expected. More would mean the tool is not what
-            # this campaign assumes it is, so count them rather than
-            # assert it.
+            # Thread count, not asserted: sleep-accuracy is single
+            # threaded and openssl is too unless -multi is given, while
+            # redis-server has its own background threads. What matters is
+            # that the number is recorded rather than assumed.
             local -a tasks=()
             mapfile -t tasks < <(ls "/proc/$pid/task" 2>/dev/null)
             echo "threads=${#tasks[@]}"
@@ -1385,13 +1525,15 @@ resolve_freq() {
     esac
 }
 
-# check_stage_configured_state STAGE_DIR BENCH_CPUS [PHASE] - is the node
-# in the state this stage asked for?
+# check_stage_configured_state STAGE_DIR BENCH_CPUS [PHASE] [SNAPSHOT] -
+# is the node in the state this stage asked for?
 #
-# PHASE is "after" (the default), "during" or "before", and selects which
-# snapshot to read: node-state-PHASE.txt, falling back to node-state.txt
-# so that stage directories written before the snapshot was split still
-# check. Every failure is labelled with the phase, because when a
+# PHASE is "after" (the default), "during" or "before", and labels the
+# findings. SNAPSHOT names the file to read; without it the phase picks
+# node-state-PHASE.txt, falling back to node-state.txt so that stage
+# directories written before the snapshot was split still check. The
+# during phase passes the file explicitly, because with more than one
+# application per stage there is one during-snapshot per application. Every failure is labelled with the phase, because when a
 # configuration went wrong matters as much as that it did: a "during"
 # failure with a clean "after" means something moved back on its own,
 # while the reverse means the stage was measured before its configuration
@@ -1423,8 +1565,11 @@ resolve_freq() {
 STATE_CHECK_FAILURES=""
 check_stage_configured_state() {
     local stage_dir="$1" bench_cpus="$2" phase="${3:-after}"
-    local snapshot="$stage_dir/node-state-$phase.txt"
-    [ -f "$snapshot" ] || snapshot="$stage_dir/node-state.txt"
+    local snapshot="${4:-}"
+    if [ -z "$snapshot" ]; then
+        snapshot="$stage_dir/node-state-$phase.txt"
+        [ -f "$snapshot" ] || snapshot="$stage_dir/node-state.txt"
+    fi
     local plugin_log="$stage_dir/nri-resource-policy.log"
     STATE_CHECK_FAILURES=""
     [ -f "$snapshot" ] || return 0
@@ -1706,13 +1851,29 @@ check_stage_configured_state() {
     # check behaves the same over the stored campaigns, whose stage-env
     # files predate that marker.
     if [ "$phase" = after ] && plugin_log_complete "$plugin_log"; then
+        local subject="${APP_SUBJECT_POD:-${BENCH_JOB_NAME}}"
         local assigned_bench
-        assigned_bench="$(grep -cE "assigning container $BENCH_NAMESPACE/$BENCH_JOB_NAME[^ ]*/" \
+        assigned_bench="$(grep -cE "assigning container $BENCH_NAMESPACE/$subject[^ ]*/" \
             "$plugin_log" 2>/dev/null || true)"
         if [ "${assigned_bench:-0}" = 0 ]; then
             failed+=("bench-not-assigned")
             warn "the policy never assigned the benchmark container to a" \
                  "balloon: it was created while the plugin was not serving NRI"
+        fi
+        # The load generator, where an application has one. Its balloon is
+        # what keeps the instrument out of the measurement, so a client
+        # that never reached it makes the stage's numbers a mix of the
+        # server's treatment and the client's -- which is the confound the
+        # client balloon exists to remove.
+        if [ -n "${APP_NEEDS_CLIENT:-}" ] && [ -n "${APP_JOB_NAME:-}" ]; then
+            local assigned_client
+            assigned_client="$(grep -cE "assigning container $BENCH_NAMESPACE/$APP_JOB_NAME[^ ]*/" \
+                "$plugin_log" 2>/dev/null || true)"
+            if [ "${assigned_client:-0}" = 0 ]; then
+                failed+=("client-not-assigned")
+                warn "the policy never assigned the load generator to a" \
+                     "balloon, so it was not kept out of the measurement"
+            fi
         fi
         # And the noise, which is where an ordering mistake does its damage
         # quietly. Compared against the replicas that were asked for, not
@@ -1749,15 +1910,19 @@ check_stage_configured_state() {
         # missing file would quietly report zero offenders, which reads as
         # a pass. Skip it explicitly instead.
         local shared=0
+        # The subject itself is on those CPUs by construction, and so is
+        # the load generator if it happens to share them, so neither is an
+        # offender. Every other container is.
         [ -f "$stage_dir/cgroups.txt" ] &&
-        shared="$(awk -v cpus="$(printf '%s,' "${bench[@]}")" '
+        shared="$(awk -v cpus="$(printf '%s,' "${bench[@]}")" \
+                      -v subject="${APP_SUBJECT_POD:-sleep-accuracy}" '
             BEGIN {
                 n = split(cpus, c, ",")
                 for (i = 1; i <= n; i++) if (c[i] != "") bench[c[i]] = 1
             }
             /^[^ ]/ { pod = $0; sub(":$", "", pod); next }
             /cpuset\.cpus\.effective:/ {
-                if (pod ~ /sleep-accuracy/) next
+                if (index(pod, subject) > 0) next
                 list = $2
                 nr = split(list, ranges, ",")
                 for (i = 1; i <= nr; i++) {
@@ -1817,6 +1982,214 @@ deploy_noise() {
     sleep "$NOISE_SETTLE_SECONDS"
 }
 
+# wait_for_app_pod TIMEOUT - the phase of the application's Job pod, once
+# it has reached Running or a terminal phase.
+#
+# Prints the phase. Returns 1 only if it never got out of Pending, which
+# means the Job could not be scheduled at all.
+#
+# The during-validation used to sample the phase once, which was right when
+# the pod whose cgroup had just been polled for was the same pod the Job
+# creates. It is wrong for an application whose subject is a separate
+# long-lived server: that cgroup is readable the moment the server is
+# ready, so the sample happened while the client pod was still Pending, and
+# every redis stage was discarded for having no witness. Waiting is the fix
+# rather than relaxing the witness -- the snapshot has to exist.
+#
+# Terminal phases end the wait too, because a measurement short enough to
+# be over already has genuinely no during-phase to snapshot, and pretending
+# otherwise is the fabrication the whole during-validation guards against.
+wait_for_app_pod() {
+    local timeout="${1:-120}"
+    local deadline=$((SECONDS + timeout)) phase=""
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        phase="$(kubectl get pod -n "$BENCH_NAMESPACE" -l "$APP_POD_SELECTOR" \
+                     -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
+        case "$phase" in
+            Running|Succeeded|Failed) echo "$phase"; return 0 ;;
+        esac
+        sleep 1
+    done
+    echo "${phase:-unknown}"
+    return 1
+}
+
+# run_app APP STAGE_DIR - measure one application in the stage that has
+# already been configured.
+#
+# Everything here was inline in run_stage when there was only ever
+# sleep-accuracy to run. What made it separable is that the harness needs
+# to know only six things about an application -- its log, its Job, how to
+# find its pod, whose cgroup and which process are its subject -- and the
+# module provides all six.
+#
+# Records into APP_CPUS and APP_JOB_OK, which run_stage reads.
+run_app() {
+    local app="$1" stage_dir="$2"
+
+    app_reset_vars
+    # Auto-export: the yaml templates read these from a child process's
+    # environment, the same reason the stage functions run under set -a.
+    set -a
+    "app_${app}_defaults"
+    set +a
+
+    info "--------------------------------------------------------------"
+    info "Application $app: ${APP_ARGS:-(no arguments)}"
+    info "--------------------------------------------------------------"
+
+    # Whatever the Job needs to exist first. For redis that is the server,
+    # which is the subject of every state check; the Job is its client.
+    if declare -F "app_${app}_start" >/dev/null; then
+        set -a
+        if ! "app_${app}_start" "$stage_dir"; then
+            set +a
+            warn "could not start $app"
+            APP_JOB_OK[$app]=0
+            declare -F "app_${app}_stop" >/dev/null && "app_${app}_stop"
+            return 1
+        fi
+        set +a
+    fi
+
+    # A base64-carried entrypoint is unreadable in the manifest, so the
+    # script itself goes into the stage directory. The record has to say
+    # what ran, not just that something did.
+    if [ -n "${APP_SHELL:-}" ]; then
+        printf '%s\n' "$APP_SHELL" > "$stage_dir/$app-run.sh"
+    fi
+
+    # Both the exit status and the size: a template whose expansion goes
+    # wrong can leave an empty file and still succeed, and "kubectl apply"
+    # of an empty file is not an error either, so without this check the
+    # application would simply never run and the stage would report that it
+    # measured nothing without saying why.
+    "app_${app}_manifest" > "$stage_dir/$app-job.yaml"
+    if [ ! -s "$stage_dir/$app-job.yaml" ]; then
+        warn "the $app manifest rendered empty; check apps/$app.yaml.in for" \
+             "an unescaped double quote, which instantiate() would read as" \
+             "the end of its own string"
+        APP_JOB_OK[$app]=0
+        declare -F "app_${app}_stop" >/dev/null && "app_${app}_stop"
+        return 1
+    fi
+    kubectl delete job "$APP_JOB_NAME" -n "$BENCH_NAMESPACE" \
+            --ignore-not-found >/dev/null 2>&1
+    if ! kubectl apply -f "$stage_dir/$app-job.yaml" >/dev/null; then
+        warn "cannot start the $app job"
+        APP_JOB_OK[$app]=0
+        declare -F "app_${app}_stop" >/dev/null && "app_${app}_stop"
+        return 1
+    fi
+
+    # Read the subject's cgroup while its container still exists. For a
+    # Job that is a race against a short measurement; for a long-lived
+    # server it succeeds on the first read.
+    local bench_cpus=""
+    bench_cpus="$(capture_bench_cpuset "$stage_dir" "$BENCH_TIMEOUT")"
+    APP_CPUS[$app]="$bench_cpus"
+    if [ -n "$bench_cpus" ]; then
+        info "$app subject cpuset: $bench_cpus"
+    else
+        warn "could not read the $app subject container's cpuset"
+    fi
+
+    ###
+    ### Validate while the measurement is running.
+    ###
+    # The only phase that can answer "was the node in the configured state
+    # while these numbers were being produced?". Everything read here is
+    # read from other CPUs, confined away from the subject's own, and adds
+    # no load: see node_state_snapshot's light mode and
+    # bench_process_snapshot.
+    #
+    # The process snapshot comes first and is the cheap one, because it is
+    # the reading that disappears: once the Job completes the process is
+    # gone, and with it the only evidence of where its thread actually ran
+    # -- and, for openssl and redis, the only evidence of what scheduling
+    # policy the kernel had it under.
+    #
+    # Whether the measurement was in fact still running is recorded rather
+    # than assumed. A short one can finish before this point, and a
+    # "during" snapshot of an idle node would be a fabrication: it would be
+    # indistinguishable from a real one in the file, and it would make the
+    # during checks pass for a stage nobody validated.
+    local during_phase=""
+    if [ -n "$SKIP_DURING_VALIDATION" ]; then
+        info "Skipping the during-benchmark validation" \
+             "(SKIP_DURING_VALIDATION is set)."
+        echo "${app}_during_snapshot=0" >> "$stage_dir/stage-env.txt"
+        echo "${app}_during_state_checks=skipped-by-request" \
+            >> "$stage_dir/stage-env.txt"
+    else
+        during_phase="$(wait_for_app_pod "${APP_POD_WAIT:-180}")"
+        if [ "$during_phase" = Running ]; then
+            bench_process_snapshot \
+                "$stage_dir/$app-bench-process-during.txt" "$bench_cpus"
+            node_state_snapshot \
+                "$stage_dir/$app-node-state-during.txt" light "$bench_cpus"
+            # Did it stay running throughout? A snapshot that began during
+            # the measurement and ended after it describes a node that was
+            # partly idle, which is worth knowing when reading it.
+            local after_snap_phase
+            after_snap_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
+                                    -l "$APP_POD_SELECTOR" \
+                                    -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
+            echo "${app}_during_snapshot=1" >> "$stage_dir/stage-env.txt"
+            echo "${app}_during_snapshot_pod_phase=$during_phase..$after_snap_phase" \
+                >> "$stage_dir/stage-env.txt"
+            local during_checks=skipped
+            if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
+                check_stage_configured_state "$stage_dir" "$bench_cpus" during \
+                    "$stage_dir/$app-node-state-during.txt"
+                during_checks="${STATE_CHECK_FAILURES:-0}"
+            fi
+            echo "${app}_during_state_checks=$during_checks" \
+                >> "$stage_dir/stage-env.txt"
+        else
+            warn "$app was not running when the during-validation was due" \
+                 "(pod phase: ${during_phase:-unknown}), so it has no" \
+                 "during-snapshot"
+            echo "${app}_during_snapshot=0" >> "$stage_dir/stage-env.txt"
+            echo "${app}_during_snapshot_pod_phase=${during_phase:-unknown}" \
+                >> "$stage_dir/stage-env.txt"
+            echo "${app}_during_state_checks=no-during-snapshot" \
+                >> "$stage_dir/stage-env.txt"
+        fi
+    fi
+
+    # Wait for completion. On failure, keep going: the pod logs and the
+    # policy logs are collected below and explain what happened.
+    APP_JOB_OK[$app]=1
+    if ! kubectl wait --for=condition=complete \
+            "job/$APP_JOB_NAME" -n "$BENCH_NAMESPACE" \
+            --timeout="${APP_TIMEOUT:-$BENCH_TIMEOUT}s" >/dev/null 2>&1; then
+        APP_JOB_OK[$app]=0
+        warn "the $app job did not complete within" \
+             "${APP_TIMEOUT:-$BENCH_TIMEOUT}s"
+    fi
+
+    ###
+    ### Collect this application's output.
+    ###
+    local pod
+    pod="$(kubectl get pod -n "$BENCH_NAMESPACE" -l "$APP_POD_SELECTOR" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+    if [ -n "$pod" ]; then
+        kubectl logs -n "$BENCH_NAMESPACE" "$pod" \
+            > "$stage_dir/$app.log" 2>&1
+        kubectl get pod -n "$BENCH_NAMESPACE" "$pod" -o yaml \
+            > "$stage_dir/$app-pod.yaml" 2>&1
+    else
+        warn "$app pod not found"
+    fi
+
+    # Tear down what _start brought up, so the next application in this
+    # stage, and the next stage, start from the same place.
+    declare -F "app_${app}_stop" >/dev/null && "app_${app}_stop"
+    return 0
+}
+
 # run_stage STAGE_INDEX STAGE_NAME
 run_stage() {
     local STAGE_INDEX="$1" STAGE_NAME="$2"
@@ -1833,6 +2206,16 @@ run_stage() {
     export BENCH_CPUS
     set -a
     "stage_$STAGE_NAME"
+    # Every application's defaults, before the configuration is generated
+    # rather than before each application runs, because an application may
+    # need a balloon type of its own in that configuration -- redis needs
+    # one for its load generator. Called again before each application
+    # runs, which is why these functions have to be idempotent.
+    local a
+    for a in "${run_apps[@]}"; do
+        app_reset_vars
+        "app_${a}_defaults"
+    done
     set +a
 
     info "=============================================================="
@@ -1857,10 +2240,10 @@ run_stage() {
     {
         echo "stage=$STAGE_NAME"
         echo "description=$STAGE_DESCRIPTION"
-        echo "bench_args=$BENCH_ARGS"
+        echo "apps=$BENCH_APPS"
         echo "noise_workload=$NOISE_WORKLOAD replicas=$NOISE_REPLICAS"
         echo "noise_args=$NOISE_ARGS"
-        set | grep -E '^(BENCH|NOISE|DEFAULT|CPUCLASS|SCHEDCLASS|LOADCLASS|IDLECPUCLASS|TURBODOMAIN|PINCPU|PINMEMORY|RESERVED_CPU|AVAILABLE_CPU|ALLOCATORTOPOLOGY|STAGE)_?[A-Z_]*=' | sort
+        set | grep -E '^(APP|BENCH|CLIENT|NOISE|DEFAULT|CPUCLASS|SCHEDCLASS|LOADCLASS|IDLECPUCLASS|TURBODOMAIN|PINCPU|PINMEMORY|RESERVED_CPU|AVAILABLE_CPU|ALLOCATORTOPOLOGY|STAGE|OPENSSL|REDIS|SLEEP_ACCURACY)_?[A-Z_]*=' | sort
     } > "$stage_dir/stage-env.txt" 2>/dev/null
 
     if [ "$dry_run" = 1 ]; then
@@ -1988,119 +2371,30 @@ run_stage() {
     deploy_noise "$stage_dir"
 
     ###
-    ### 4. Run the benchmark.
+    ### 4. Measure, one application at a time.
     ###
-    info "Running sleep-accuracy: $BENCH_ARGS"
-    instantiate "$SCRIPT_DIR/sleep-accuracy-job.yaml.in" \
-        > "$stage_dir/sleep-accuracy-job.yaml"
-    kubectl delete job "$BENCH_JOB_NAME" -n "$BENCH_NAMESPACE" \
-            --ignore-not-found >/dev/null 2>&1
-    if ! kubectl apply -f "$stage_dir/sleep-accuracy-job.yaml" >/dev/null; then
-        warn "cannot start the benchmark job"
-        return 1
-    fi
-
-    # Read the benchmark's own cgroup while its container still exists.
-    # After the Job completes the cgroup is gone, which is why the
-    # capture that used to happen in the collection step below recorded
-    # only the noise containers.
-    local bench_cpus=""
-    bench_cpus="$(capture_bench_cpuset "$stage_dir" "$BENCH_TIMEOUT")"
-    if [ -n "$bench_cpus" ]; then
-        info "Benchmark container cpuset: $bench_cpus"
-    else
-        warn "could not read the benchmark container's cpuset"
-    fi
-
-    ###
-    ### 4b. Validate while the benchmark is running.
-    ###
-    # The phase that did not exist before, and the only one that can
-    # answer "was the node in the configured state while these numbers
-    # were being produced?". Everything read here is read from other CPUs,
-    # confined away from the benchmark's own, and adds no load: see
-    # node_state_snapshot's light mode and bench_process_snapshot.
+    # Sequentially, never concurrently: run together they would contend
+    # for the balloon's CPUs and none of them would be measuring the
+    # policy. In sequence each one sees the same node state, the same
+    # policy generation and the same instance of the background load.
     #
-    # The process snapshot comes first and is the cheap one, because it is
-    # the reading that disappears: after the Job completes the process is
-    # gone, and with it the only evidence of where its thread actually ran.
-    #
-    # Whether the benchmark was in fact still running is recorded rather
-    # than assumed. A short benchmark can finish before this point, and a
-    # "during" snapshot of an idle node would be a fabrication -- it would
-    # be indistinguishable from a real one in the file, and it would make
-    # the during checks pass for a stage nobody validated.
-    local during_phase=""
-    if [ -n "$SKIP_DURING_VALIDATION" ]; then
-        info "Skipping the during-benchmark validation" \
-             "(SKIP_DURING_VALIDATION is set)."
-    else
-        during_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
-                            -l app=sleep-accuracy \
-                            -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
-    fi
-    if [ -n "$SKIP_DURING_VALIDATION" ]; then
-        echo "during_snapshot=0" >> "$stage_dir/stage-env.txt"
-        echo "during_state_checks=skipped-by-request" \
-            >> "$stage_dir/stage-env.txt"
-    elif [ "$during_phase" = Running ]; then
-        bench_process_snapshot "$stage_dir/bench-process-during.txt" \
-                               "$bench_cpus"
-        node_state_snapshot "$stage_dir/node-state-during.txt" light \
-                            "$bench_cpus"
-        # Did it stay running throughout? A snapshot that began during the
-        # benchmark and ended after it describes a node that was partly
-        # idle, which is worth knowing when reading it.
-        local after_snap_phase
-        after_snap_phase="$(kubectl get pod -n "$BENCH_NAMESPACE" \
-                                -l app=sleep-accuracy \
-                                -o jsonpath='{.items[0].status.phase}' 2>/dev/null)"
-        echo "during_snapshot=1" >> "$stage_dir/stage-env.txt"
-        echo "during_snapshot_pod_phase=$during_phase..$after_snap_phase" \
-            >> "$stage_dir/stage-env.txt"
-        local during_checks=skipped
-        if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
-            check_stage_configured_state "$stage_dir" "$bench_cpus" during
-            during_checks="${STATE_CHECK_FAILURES:-0}"
-        fi
-        echo "during_state_checks=$during_checks" >> "$stage_dir/stage-env.txt"
-    else
-        warn "the benchmark was not running when the during-validation" \
-             "was due (pod phase: ${during_phase:-unknown}), so this stage" \
-             "has no during-snapshot"
-        echo "during_snapshot=0" >> "$stage_dir/stage-env.txt"
-        echo "during_snapshot_pod_phase=${during_phase:-unknown}" \
-            >> "$stage_dir/stage-env.txt"
-        echo "during_state_checks=no-during-snapshot" \
-            >> "$stage_dir/stage-env.txt"
-    fi
-
-    # Wait for completion. On failure, keep going: the pod logs and the
-    # policy logs are collected below and explain what happened.
-    local job_ok=1
-    if ! kubectl wait --for=condition=complete \
-            "job/$BENCH_JOB_NAME" -n "$BENCH_NAMESPACE" \
-            --timeout="${BENCH_TIMEOUT}s" >/dev/null 2>&1; then
-        job_ok=0
-        warn "benchmark job did not complete within ${BENCH_TIMEOUT}s"
-    fi
+    # APP_CPUS and APP_JOB_OK carry each application's results out of
+    # run_app, keyed by name, for the state checks and the CSV below.
+    declare -A APP_CPUS=() APP_JOB_OK=()
+    local app first=1
+    for app in "${run_apps[@]}"; do
+        [ "$first" = 1 ] || {
+            info "Letting the node settle for ${APP_SETTLE_SECONDS}s" \
+                 "before the next application ..."
+            sleep "$APP_SETTLE_SECONDS"
+        }
+        first=0
+        run_app "$app" "$stage_dir" || warn "application $app had problems"
+    done
 
     ###
-    ### 5. Collect everything.
+    ### 5. Collect what is stage-wide.
     ###
-    local bench_pod
-    bench_pod="$(kubectl get pod -n "$BENCH_NAMESPACE" \
-        -l "app=sleep-accuracy" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-
-    if [ -n "$bench_pod" ]; then
-        kubectl logs -n "$BENCH_NAMESPACE" "$bench_pod" \
-            > "$stage_dir/sleep-accuracy.log" 2>&1
-        kubectl get pod -n "$BENCH_NAMESPACE" "$bench_pod" -o yaml \
-            > "$stage_dir/sleep-accuracy-pod.yaml" 2>&1
-    else
-        warn "benchmark pod not found"
-    fi
-
     # What the policy decided, and what the node actually looks like.
     if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
         # Stop the follower started before the configuration was applied,
@@ -2170,57 +2464,26 @@ run_stage() {
         2>/dev/null ||
         cp "$stage_dir/node-state-after.txt" "$stage_dir/node-state.txt"
 
-    # Compare the snapshot against what the stage configured. Until this
-    # existed the snapshot was written and never read, so a stage could
-    # be misconfigured in every way the snapshot records and still
-    # produce a row that looked like a result.
-    # If the cgroup read lost its race with a short benchmark, fall back
-    # to what the policy said it assigned. Recorded so an analysis can
-    # tell the two apart: the cgroup is what the kernel applied, the log
-    # is only what the policy intended.
-    if [ -z "$bench_cpus" ] && [ -z "${STAGE_NO_BALLOONS:-}" ]; then
-        bench_cpus="$(bench_cpuset_from_plugin_log \
-                          "$stage_dir/nri-resource-policy.log")"
-        if [ -n "$bench_cpus" ]; then
-            info "Benchmark cpuset from the policy log: $bench_cpus" \
-                 "(cgroup read lost its race with the benchmark)"
-            echo "bench_cpus_source=plugin-log" >> "$stage_dir/stage-env.txt"
-        fi
-    elif [ -n "$bench_cpus" ]; then
-        echo "bench_cpus_source=cgroup" >> "$stage_dir/stage-env.txt"
-    fi
-
-    local state_checks=0 after_checks=0
-    if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
-        check_stage_configured_state "$stage_dir" "$bench_cpus" after
-        after_checks="${STATE_CHECK_FAILURES:-0}"
-        # One CSV column carries the verdict of both phases that have one,
-        # so a row is readable without opening the stage directory. "ok"
-        # only when both phases are ok: a stage whose configuration was
-        # right afterwards but wrong while it was measured has measured the
-        # wrong thing, and the whole point of the during phase is that this
-        # is the case the after phase cannot see.
-        local during_checks
-        during_checks="$(sed -n 's/^during_state_checks=//p' \
-                             "$stage_dir/stage-env.txt" 2>/dev/null | tail -1)"
-        during_checks="${during_checks:-no-during-snapshot}"
-        case "$after_checks/$during_checks" in
-            ok/ok)  state_checks=ok ;;
-            ok/*)   state_checks="$during_checks" ;;
-            */ok)   state_checks="$after_checks" ;;
-            *)      state_checks="$after_checks+$during_checks" ;;
-        esac
-    fi
-
     ###
-    ### 6. Append to the CSV, unless the stage measured something else
-    ### than what it configured.
+    ### 6. Judge the stage, per application, and append to the CSVs.
     ###
-    # Keep such a run out of the CSV rather than in it with a marker:
-    # every consumer of the CSV would otherwise have to know to filter
-    # it, and the numbers are baseline numbers under a stage's name,
-    # which is worse than no numbers at all. The logs stay on disk.
-    if ! check_stage_measured_config "$stage_dir"; then
+    # A stage that measured something other than what it configured is
+    # kept out of the CSVs rather than in them with a marker: every
+    # consumer would otherwise have to know to filter it, and the numbers
+    # are baseline numbers under a stage's name, which is worse than no
+    # numbers at all. The logs stay on disk.
+    #
+    # One application failing that test discards the whole stage, because
+    # what failed is the stage's configuration, which every application in
+    # it shares. Retrying only the one that noticed would leave the others
+    # measured against a configuration now known to have been wrong.
+    local app bad_app=""
+    for app in "${run_apps[@]}"; do
+        app_reset_vars
+        "app_${app}_defaults"
+        check_stage_measured_config "$stage_dir" "$app" || { bad_app="$app"; break; }
+    done
+    if [ -n "$bad_app" ]; then
         # A retry writes into the same directory, so move this attempt
         # aside first. Both the discarded run and the one that replaces
         # it stay available for working out why the first one failed.
@@ -2231,41 +2494,116 @@ run_stage() {
             attempt_dir="$stage_dir.unconfigured-$n"
         done
         mv "$stage_dir" "$attempt_dir"
-        warn "not adding stage $STAGE_NAME to the CSV," \
+        warn "not adding stage $STAGE_NAME to the CSVs," \
              "logs kept in $(basename "$attempt_dir")"
         return 2
     fi
 
-    # What could be verified about the state the stage actually ran in,
-    # alongside what it asked for. Stored in the stage directory too, so
-    # that report.sh can rebuild the CSV from logs without re-deriving it.
-    # The cpuset is a cpulist that may contain commas, so join it with +
-    # to keep it inside a single CSV column.
-    local verify_row="${bench_cpus:-0}"
-    verify_row="${verify_row//,/+},${state_checks}"
-    echo "$verify_row" > "$stage_dir/verify-row.csv"
+    # What could be verified about the state each application actually ran
+    # in, alongside what the stage asked for. Written per application,
+    # because the subject cpuset and the during-phase verdict are the
+    # application's own; the after-phase verdict is the stage's and is
+    # shared. Stored in the stage directory so that report.sh can rebuild
+    # either CSV from logs without re-deriving anything.
+    local measurements=0 app_measurements
+    local config_row
+    config_row="$(cat "$stage_dir/config-row.csv")"
+    for app in "${run_apps[@]}"; do
+        app_reset_vars
+        "app_${app}_defaults"
+        local bench_cpus="${APP_CPUS[$app]:-}"
 
-    # Last, because verify-row.csv is itself one of the artifacts: is this
-    # stage's record as complete as every other stage's?
+        # If the cgroup read lost its race with a short benchmark, fall
+        # back to what the policy said it assigned. Recorded so an
+        # analysis can tell the two apart: the cgroup is what the kernel
+        # applied, the log is only what the policy intended.
+        if [ -z "$bench_cpus" ] && [ -z "${STAGE_NO_BALLOONS:-}" ]; then
+            bench_cpus="$(bench_cpuset_from_plugin_log \
+                              "$stage_dir/nri-resource-policy.log")"
+            if [ -n "$bench_cpus" ]; then
+                info "$app cpuset from the policy log: $bench_cpus" \
+                     "(the cgroup read lost its race)"
+                echo "${app}_cpus_source=plugin-log" >> "$stage_dir/stage-env.txt"
+            fi
+        elif [ -n "$bench_cpus" ]; then
+            echo "${app}_cpus_source=cgroup" >> "$stage_dir/stage-env.txt"
+        fi
+
+        # Compare the after-snapshot against what the stage configured.
+        # Until this existed the snapshot was written and never read, so a
+        # stage could be misconfigured in every way the snapshot records
+        # and still produce a row that looked like a result.
+        local state_checks=0 after_checks=0 during_checks
+        if [ -z "${STAGE_NO_BALLOONS:-}" ]; then
+            check_stage_configured_state "$stage_dir" "$bench_cpus" after
+            after_checks="${STATE_CHECK_FAILURES:-0}"
+            # One CSV column carries the verdict of both phases that have
+            # one, so a row is readable without opening the stage
+            # directory. "ok" only when both phases are ok: a stage whose
+            # configuration was right afterwards but wrong while it was
+            # measured has measured the wrong thing, and the whole point of
+            # the during phase is that this is the case the after phase
+            # cannot see.
+            during_checks="$(sed -n "s/^${app}_during_state_checks=//p" \
+                                 "$stage_dir/stage-env.txt" 2>/dev/null | tail -1)"
+            during_checks="${during_checks:-no-during-snapshot}"
+            case "$after_checks/$during_checks" in
+                ok/ok)  state_checks=ok ;;
+                ok/*)   state_checks="$during_checks" ;;
+                */ok)   state_checks="$after_checks" ;;
+                *)      state_checks="$after_checks+$during_checks" ;;
+            esac
+        fi
+
+        # The cpuset is a cpulist that may contain commas, so join it with
+        # + to keep it inside a single CSV column.
+        local verify_row="${bench_cpus:-0}"
+        verify_row="${verify_row//,/+},${state_checks}"
+        echo "$verify_row" > "$stage_dir/$app-verify-row.csv"
+
+        # The canonical metrics, which every application emits and which
+        # is what the plot pipeline consumes.
+        csv_append_metrics "$app" "$stage_dir/$app.log" "$config_row" \
+                           "$METRICS_FILE" "$verify_row"
+        app_measurements="$METRIC_ROWS_APPENDED"
+        csv_append_metrics "$app" "$stage_dir/$app.log" "$config_row" \
+                           "$stage_dir/metrics.csv" "$verify_row"
+        measurements=$((measurements + app_measurements))
+
+        # And, for sleep-accuracy only, latencies.csv in exactly the shape
+        # it has always had. Deliberate duplication in one place: it keeps
+        # the archived campaigns' tooling and checksums working, and keeps
+        # a new sleep-accuracy campaign directly comparable to them by the
+        # scripts that already exist.
+        if [ "$app" = sleep-accuracy ] && [ -f "$stage_dir/$app.log" ]; then
+            csv_append_stage "$stage_dir/$app.log" "$config_row" \
+                             "$CSV_FILE" "$verify_row"
+        fi
+
+        if [ "$app_measurements" = 0 ]; then
+            warn "application $app produced no measurements in stage $STAGE_NAME"
+            [ -f "$stage_dir/$app.log" ] &&
+                tail -20 "$stage_dir/$app.log" >&2
+        else
+            info "$app: $app_measurements figures."
+        fi
+    done
+
+    # Last, because the per-application verify rows and metrics.csv are
+    # themselves artifacts: is this stage's record as complete as every
+    # other stage's?
     check_stage_artifacts "$stage_dir" || true
-
-    local measurements=0
-    if [ -f "$stage_dir/sleep-accuracy.log" ]; then
-        csv_append_stage "$stage_dir/sleep-accuracy.log" \
-                         "$(cat "$stage_dir/config-row.csv")" "$CSV_FILE" \
-                         "$verify_row"
-        measurements="$(grep -cE '^(nanosleep|networking|futex) ' \
-            "$stage_dir/sleep-accuracy.log" 2>/dev/null || echo 0)"
-    fi
 
     if [ "$measurements" = 0 ]; then
         warn "stage $STAGE_NAME produced no measurements"
-        [ -f "$stage_dir/sleep-accuracy.log" ] &&
-            tail -20 "$stage_dir/sleep-accuracy.log" >&2
         return 1
     fi
-    info "Stage $STAGE_NAME done: $measurements measurements."
-    [ "$job_ok" = 1 ] || warn "results may be incomplete"
+    info "Stage $STAGE_NAME done: $measurements figures from" \
+         "${#run_apps[@]} application(s)."
+    for app in "${run_apps[@]}"; do
+        [ "${APP_JOB_OK[$app]:-1}" = 1 ] ||
+            warn "$app did not complete cleanly, its results may be incomplete"
+    done
     return 0
 }
 
@@ -2277,11 +2615,18 @@ info "Results directory: $RESULTS_DIR"
 info "Node: $NODE_NAME ($node_cpus CPUs)"
 info "Chart: $CHART"
 info "Stages: ${run_stages[*]}"
+info "Applications: ${run_apps[*]}"
 [ "$dry_run" = 1 ] || check_nri_enabled
 [ "$dry_run" = 1 ] || check_node_capabilities
 
 if [ "$dry_run" = 0 ]; then
-    csv_header > "$CSV_FILE"
+    csv_metrics_header > "$METRICS_FILE"
+    # Only when sleep-accuracy is actually measured: an empty
+    # latencies.csv with only a header reads as "measured nothing" rather
+    # than as "this run was not about that application".
+    case ",$BENCH_APPS," in
+        *,sleep-accuracy,*) csv_header > "$CSV_FILE" ;;
+    esac
 fi
 
 failed_stages=()
@@ -2333,14 +2678,33 @@ fi
 ### Summary
 ###
 info "=============================================================="
-info "Results: $CSV_FILE"
+info "Results: $METRICS_FILE"
+[ -f "$CSV_FILE" ] && info "         $CSV_FILE (sleep-accuracy, wide form)"
 info "=============================================================="
-csv_summary "$CSV_FILE" | tee "$RESULTS_DIR/summary.txt"
+{
+    csv_metrics_summary "$METRICS_FILE"
+    # sleep-accuracy's own table too, when it ran: it is the one the
+    # existing campaign notes quote, and it says p50/p90/p99/p999/max per
+    # sleep in one place.
+    if [ -f "$CSV_FILE" ]; then
+        echo
+        echo "=== sleep-accuracy, per stage and requested sleep ==="
+        csv_summary "$CSV_FILE"
+    fi
+} | tee "$RESULTS_DIR/summary.txt"
 
-stages_with_data="$(awk -F, 'NR > 1 { print $2 }' "$CSV_FILE" | sort -u | wc -l)"
+stages_with_data="$(awk -F, 'NR > 1 { print $2 }' "$METRICS_FILE" |
+                    sort -u | wc -l)"
 info "Stages with measurements: $stages_with_data / ${#run_stages[@]}"
+for app in "${run_apps[@]}"; do
+    n="$(awk -F, -v a="$app" '
+             NR == 1 { for (i = 1; i <= NF; i++) if ($i == "app") c = i; next }
+             c && $c == a { n++ }
+             END { print n + 0 }' "$METRICS_FILE")"
+    info "  $app: $n figures"
+done
 if [ ${#invalid_stages[@]} -gt 0 ]; then
-    warn "stages left out of the CSV, having measured an unconfigured" \
+    warn "stages left out of the CSVs, having measured an unconfigured" \
          "system: ${invalid_stages[*]}"
 fi
 if [ ${#failed_stages[@]} -gt 0 ]; then

@@ -39,6 +39,11 @@ stage_reset_vars() {
     # stage sets them: they describe the node and the run as a whole, so
     # they come from the environment and must survive every stage. Only
     # variables a stage may set belong below.
+    #
+    # CLIENT_* is not reset either, and for a stronger reason: it
+    # describes the load generator of an application that needs one, and
+    # the whole point of that balloon is that it is identical in every
+    # stage. An application module owns those variables; no stage does.
     unset IDLECPUCLASS TURBODOMAIN LOG_DEBUG_CPU
     unset LOG_DEBUG_IRQ
     # Pod labels are not stage-specific: the same Job and Deployment
