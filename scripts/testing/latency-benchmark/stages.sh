@@ -16,7 +16,12 @@
 # Stages 1-7 are incremental: each one keeps everything the previous
 # stage configured and adds one more mechanism. Stage 8 is NOT
 # incremental: it replaces the cpufreq/turboPriority controls of stages
-# 6-7 with PCT priority cores.
+# 6-7 with PCT priority cores. Stage 9 is incremental again, on top of
+# stage 8.
+#
+# A stage may also declare a precondition the node must already satisfy,
+# with STAGE_REQUIRES_ISOLCPUS. Such a stage refuses to run rather than
+# measuring a mechanism that is not there -- see run-benchmark.sh.
 
 # STAGES - stage names in execution order.
 STAGES=(
@@ -28,12 +33,14 @@ STAGES=(
     disabled-cstates
     max-freq-turbo-prio
     pct-priority-cores
+    isolcpus
 )
 
 # stage_reset_vars - clear every variable a stage may set, so that
 # stages never leak configuration into each other.
 stage_reset_vars() {
     unset STAGE_DESCRIPTION STAGE_NO_BALLOONS STAGE_NEEDS_PCT
+    unset STAGE_REQUIRES_ISOLCPUS
     # RESERVED_CPU, AVAILABLE_CPU, PINCPU, PINMEMORY and
     # ALLOCATORTOPOLOGYBALANCING are deliberately not reset here. No
     # stage sets them: they describe the node and the run as a whole, so
@@ -52,6 +59,7 @@ stage_reset_vars() {
     unset BENCH_BTYPE_NAME BENCH_BTYPE_SKIP
     unset BENCH_MINCPUS BENCH_MAXCPUS BENCH_MINBALLOONS BENCH_PREFERNEWBALLOONS
     unset BENCH_ALLOCATORPRIORITY BENCH_SCHEDULINGCLASS BENCH_CPUCLASS
+    unset BENCH_PREFERISOLCPUS
     unset BENCH_SHAREIDLECPUS BENCH_HIDEHYPERTHREADS BENCH_LOADS
     unset BENCH_IRQCLAIM BENCH_IRQMODE
     unset NOISE_BTYPE_SKIP NOISE_BTYPE_NAME
@@ -187,4 +195,42 @@ stage_pct-priority-cores() {
     CPUCLASS_OTHER_PCTPRIORITY=low
     LOG_DEBUG_CPU=1
     STAGE_NEEDS_PCT=1
+}
+
+# Stage 9: on top of PCT, take the benchmark's CPUs from the set the
+# kernel isolated with the isolcpus= boot parameter.
+#
+# This is the one stage that cannot be set up from userspace. isolcpus is
+# a kernel command line parameter, so the node must already have been
+# booted with it; the stage refuses to run otherwise rather than
+# measuring a preferIsolCpus that silently fell back to ordinary CPUs.
+#
+# What isolcpus adds on top of everything before it: the kernel keeps its
+# own load balancer off those CPUs entirely. Stages 3-8 stop *other
+# containers* from running there and stop interrupts and frequency
+# competition; none of them stops the kernel scheduler from considering
+# the CPU a normal member of a scheduling domain. This is the difference
+# between "nothing else is placed here" and "the scheduler does not even
+# look here".
+#
+# Exclusivity is not configured here and does not need to be. Given any
+# isolated CPUs, the policy puts them on the avoid-list of every balloon
+# type that does not set preferIsolCpus, and never offers them as shared
+# idle CPUs. So one balloon prefers them and every other balloon keeps
+# away. The state checks verify both halves of that rather than trusting
+# it: the benchmark must be on isolated CPUs only, and nothing else may
+# be on them at all.
+#
+# Which CPUs to isolate is an operator decision made on the kernel
+# command line, not here. Two rules: never the first CPU of a socket,
+# which carries timers and workqueues that would land in the measurement
+# as jitter; and few enough that the ~95 other containers still fit on
+# what is left, because "avoid" is a preference and a node with nowhere
+# else to go will spill onto isolated CPUs anyway. run-benchmark.sh
+# prints a suitable cpulist for this node when the precondition fails.
+stage_isolcpus() {
+    stage_pct-priority-cores
+    STAGE_DESCRIPTION="PCT priority cores + benchmark CPUs taken from kernel isolcpus"
+    BENCH_PREFERISOLCPUS=true
+    STAGE_REQUIRES_ISOLCPUS=1
 }

@@ -44,6 +44,12 @@ Benchmark balloon (runs the application under test):
   BENCH_CPUCLASS                name from CPUCLASS_BENCH_* below
   BENCH_SHAREIDLECPUS           shareIdleCPUsInSame
   BENCH_HIDEHYPERTHREADS        hideHyperthreads
+  BENCH_PREFERISOLCPUS          preferIsolCpus: prefer kernel-isolated CPUs
+                                (isolcpus= boot parameter). Only this role
+                                has it: the point of the option is that one
+                                balloon takes the isolated CPUs and every
+                                other balloon then avoids them, which the
+                                policy does by itself.
   BENCH_LOADS                   single load class name
   BENCH_IRQCLAIM                comma-separated irqClaim patterns/numbers
   BENCH_IRQMODE                 irqMode (sink|isolate)
@@ -214,6 +220,13 @@ if [ -z "${BENCH_BTYPE_SKIP:-}" ]; then
 EOF
     opt minBalloons "${BENCH_MINBALLOONS:-}"
     opt hideHyperthreads "${BENCH_HIDEHYPERTHREADS:-}"
+    # preferIsolCpus makes this balloon prefer the CPUs the kernel isolated
+    # with isolcpus=. The exclusivity that gives is the policy's own work,
+    # not something configured here: with any isolated CPUs present the
+    # policy adds them to the avoid-list of every balloon type that does
+    # NOT prefer them, and it never hands them out as shared idle CPUs. So
+    # setting it on one balloon type is what keeps the rest off them.
+    opt preferIsolCpus "${BENCH_PREFERISOLCPUS:-}"
     opt schedulingClass "${BENCH_SCHEDULINGCLASS:-}"
     opt cpuClass "${BENCH_CPUCLASS:-}"
     opt shareIdleCPUsInSame "${BENCH_SHAREIDLECPUS:-}"

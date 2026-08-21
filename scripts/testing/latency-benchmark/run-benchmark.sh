@@ -356,6 +356,77 @@ online_cpus() {
     done
 }
 
+# isolated_cpus_list - the CPUs the kernel took out of its scheduling
+# domains via the isolcpus= boot parameter, as a cpulist. Empty when there
+# are none.
+#
+# /sys/devices/system/cpu/isolated is the same file the policy reads (see
+# pkg/sysfs readSysfsIDSet "isolated"), so the harness and the policy
+# cannot disagree about what "isolated" means. The file exists on every
+# kernel that supports the parameter and is empty when it was not given,
+# so an empty answer means "no isolcpus" rather than "cannot tell".
+isolated_cpus_list() {
+    local list=""
+    [ -r /sys/devices/system/cpu/isolated ] &&
+        read -r list < /sys/devices/system/cpu/isolated
+    echo "${list:-}"
+}
+
+# suggest_isolcpus [CORES_PER_SOCKET] - a cpulist suitable for the
+# isolcpus boot parameter on this node: whole physical cores,
+# CORES_PER_SOCKET of them from each socket, never the core that holds the
+# socket's lowest-numbered CPU.
+#
+# Printed in the error message when a stage that needs isolcpus finds
+# none, so the operator does not have to work out the topology by hand.
+#
+# Three properties, each of which matters:
+#
+# Not the socket's first core. Its CPU 0 carries timers, workqueues, RCU
+# callbacks and assorted housekeeping the kernel does not move elsewhere,
+# and any of that landing on a benchmark CPU shows up as jitter in exactly
+# the tail being measured. Cores, not CPUs, so that with SMT enabled the
+# *sibling* of cpu0 is excluded too -- isolating a thread whose partner is
+# still doing housekeeping isolates nothing.
+#
+# Whole cores. Isolating one thread of a core and leaving the other to the
+# background load would hand the noise a seat inside the benchmark's own
+# core, which is worse than not isolating at all.
+#
+# Few of them. "Other balloons avoid isolated CPUs" is a preference, not a
+# guarantee: a node whose remaining CPUs cannot hold its other ~95
+# containers will spill onto the isolated ones and quietly defeat the
+# stage. Two cores per socket is enough for the benchmark balloon at either
+# core count, with a spare pair on the socket PCT happens to pick.
+suggest_isolcpus() {
+    local cores_per_socket="${1:-2}" c pkg sibs
+    for c in $(online_cpus); do
+        pkg="$(cat "/sys/devices/system/cpu/cpu$c/topology/physical_package_id" \
+               2>/dev/null)"
+        [ -n "$pkg" ] || continue
+        sibs="$(cat "/sys/devices/system/cpu/cpu$c/topology/thread_siblings_list" \
+                2>/dev/null)"
+        [ -n "$sibs" ] || sibs="$c"
+        # Key each core by its lowest sibling, so both threads of one core
+        # sort together and are taken or skipped as a unit.
+        echo "$pkg ${sibs%%[,-]*} $c"
+    done | sort -k1,1n -k2,2n -k3,3n | awk -v n="$cores_per_socket" '
+        # pkg and core are seeded with -1 rather than left unset. An unset
+        # awk variable is both "" and 0, and against a numeric-looking
+        # field awk then compares NUMERICALLY, so "$1 != pkg" was 0 != 0 on
+        # the very first row: the reset never fired, the first socket
+        # counted one core too few and lost a core from the suggestion
+        # while the second socket, which did reset, was right. Package ids
+        # and CPU numbers are never negative, so -1 can match neither.
+        BEGIN { pkg = -1; core = -1 }
+        $1 != pkg { pkg = $1; ncores = 0; core = -1 }
+        $2 != core { core = $2; ncores++ }
+        # ncores == 1 is the socket lowest-numbered core -- every logical
+        # CPU of it, not just the lowest -- deliberately skipped.
+        ncores > 1 && ncores <= n + 1 { printf "%s%s", (out++ ? "," : ""), $3 }
+        END { print "" }'
+}
+
 if [ "$list_stages" = 1 ]; then
     for stage in "${STAGES[@]}"; do
         stage_reset_vars
@@ -719,6 +790,13 @@ node_state_snapshot() {
                 grep -E "plugin_re(quest|gistration)_timeout" ||
                 echo "n/a (not containerd, or config dump unavailable)"
         fi
+        # Kept in both modes: it is one short sysfs read of a value the
+        # kernel already holds, and it is what the isolcpus checks below
+        # compare the benchmark's cpuset against. Recording it per stage
+        # rather than once per run also catches the case nobody expects --
+        # a node rebooted mid-campaign with a different isolcpus.
+        echo "=== kernel isolated CPUs (isolcpus=) ==="
+        echo "isolated_cpus=$(isolated_cpus_list)"
         echo "=== kernel.numa_balancing ==="
         cat /proc/sys/kernel/numa_balancing 2>/dev/null || echo "n/a"
         # scaling_min_freq, scaling_max_freq and scaling_governor are the
@@ -1824,6 +1902,81 @@ check_stage_configured_state() {
     fi
 
     ###
+    ### isolcpus: did the benchmark get isolated CPUs, and ONLY the
+    ### benchmark?
+    ###
+    # Two claims, checked separately, because they fail for different
+    # reasons and mean different things.
+    #
+    # The benchmark must be on isolated CPUs. preferIsolCpus is a
+    # preference: with too few isolated CPUs the policy quietly falls back
+    # to ordinary ones, and the stage then measures the previous stage
+    # again under a name claiming otherwise. The precondition check refuses
+    # a node with no isolated CPUs at all; this catches the subtler case of
+    # a node with some, but not enough, or with the wrong ones.
+    #
+    # Nothing else may be on them. That is the policy's own doing -- given
+    # any isolated CPUs it adds them to every non-preferring balloon type's
+    # avoid-list and never offers them as shared idle CPUs -- but "avoid"
+    # is a preference too, and a node whose other containers do not fit
+    # elsewhere will spill onto them. Read from cgroups.txt, so this is
+    # what the kernel applied rather than what the policy intended.
+    if [ -n "${BENCH_PREFERISOLCPUS:-}" ]; then
+        local isolated_list
+        isolated_list="$(sed -n 's/^isolated_cpus=//p' "$snapshot" | tail -1)"
+        if [ -z "$isolated_list" ]; then
+            failed+=("isolcpus-empty")
+            warn "the stage asked for kernel-isolated CPUs, but the node" \
+                 "had none while it was measured"
+        elif [ ${#bench[@]} -gt 0 ]; then
+            local -a isolated=()
+            mapfile -t isolated < <(cpulist_expand "$isolated_list")
+            local not_isolated="" b i is_iso
+            for b in "${bench[@]}"; do
+                is_iso=0
+                for i in "${isolated[@]}"; do
+                    [ "$b" = "$i" ] && { is_iso=1; break; }
+                done
+                [ "$is_iso" = 0 ] && not_isolated="$not_isolated cpu$b"
+            done
+            if [ -n "$not_isolated" ]; then
+                failed+=("bench-not-isolated(${not_isolated// /+})")
+                warn "the benchmark ran on CPUs outside the isolated set" \
+                     "($isolated_list):${not_isolated}"
+            fi
+
+            # And nothing else on them. The subject is expected there; so
+            # is anything the harness itself pins there, which is nothing.
+            local intruders=0
+            [ -f "$stage_dir/cgroups.txt" ] &&
+            intruders="$(awk -v cpus="$(printf '%s,' "${isolated[@]}")" \
+                             -v subject="${APP_SUBJECT_POD:-sleep-accuracy}" '
+                BEGIN {
+                    n = split(cpus, c, ",")
+                    for (i = 1; i <= n; i++) if (c[i] != "") iso[c[i]] = 1
+                }
+                /^[^ ]/ { pod = $0; sub(":$", "", pod); next }
+                /cpuset\.cpus\.effective:/ {
+                    if (index(pod, subject) > 0) next
+                    nr = split($2, ranges, ",")
+                    for (i = 1; i <= nr; i++) {
+                        if (split(ranges[i], se, "-") == 2) { lo = se[1]; hi = se[2] }
+                        else { lo = ranges[i] + 0; hi = lo }
+                        for (cpu = lo; cpu <= hi; cpu++)
+                            if (cpu in iso) { print pod; next }
+                    }
+                }' "$stage_dir/cgroups.txt" 2>/dev/null | sort -u | wc -l)"
+            if [ "${intruders:-0}" -gt 0 ]; then
+                failed+=("others-on-isolcpus($intruders)")
+                warn "$intruders other containers have kernel-isolated CPUs" \
+                     "($isolated_list) in their cpuset; the isolated set is" \
+                     "too large for this node, or the other balloons had" \
+                     "nowhere else to go"
+            fi
+        fi
+    fi
+
+    ###
     ### Deployment order: was the policy serving NRI before the workloads
     ### were created?
     ###
@@ -2245,6 +2398,41 @@ run_stage() {
         echo "noise_args=$NOISE_ARGS"
         set | grep -E '^(APP|BENCH|CLIENT|NOISE|DEFAULT|CPUCLASS|SCHEDCLASS|LOADCLASS|IDLECPUCLASS|TURBODOMAIN|PINCPU|PINMEMORY|RESERVED_CPU|AVAILABLE_CPU|ALLOCATORTOPOLOGY|STAGE|OPENSSL|REDIS|SLEEP_ACCURACY)_?[A-Z_]*=' | sort
     } > "$stage_dir/stage-env.txt" 2>/dev/null
+
+    ###
+    ### 0. Preconditions the node must already satisfy.
+    ###
+    # A stage may depend on something no amount of configuration can turn
+    # on. isolcpus is a kernel command line parameter: it needs a reboot,
+    # so the only honest thing a stage that depends on it can do on a node
+    # without it is refuse.
+    #
+    # Refusing matters more than it looks. preferIsolCpus on a node with no
+    # isolated CPUs is a silent no-op -- the policy falls back to ordinary
+    # CPUs, the stage runs, and it produces a plausible copy of the
+    # previous stage's numbers under a name claiming a mechanism that was
+    # never in effect. That is the single failure mode this whole harness
+    # is built to prevent, so it is caught before the node is touched at
+    # all, not diagnosed afterwards.
+    if [ -n "${STAGE_REQUIRES_ISOLCPUS:-}" ]; then
+        local have_isolcpus
+        have_isolcpus="$(isolated_cpus_list)"
+        if [ -z "$have_isolcpus" ]; then
+            warn "stage $STAGE_NAME needs kernel-isolated CPUs, but" \
+                 "/sys/devices/system/cpu/isolated is empty on $NODE_NAME."
+            warn "Add isolcpus=<cpulist> to the kernel command line and" \
+                 "reboot. For this node: isolcpus=$(suggest_isolcpus 2)"
+            warn "(whole physical cores, two per socket, never the core" \
+                 "holding a socket's first CPU, and few enough that the" \
+                 "other containers still fit on what is left)"
+            echo "stage_precondition_failed=no-isolcpus" \
+                >> "$stage_dir/stage-env.txt"
+            [ "$dry_run" = 1 ] || return 1
+        else
+            info "Kernel-isolated CPUs: $have_isolcpus"
+            echo "isolcpus=$have_isolcpus" >> "$stage_dir/stage-env.txt"
+        fi
+    fi
 
     if [ "$dry_run" = 1 ]; then
         info "Dry run, generated configuration:"

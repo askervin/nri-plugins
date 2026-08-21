@@ -145,6 +145,7 @@ frequency control, so stage 8 keeps it.
 | 6 | `disabled-cstates` | `disabledCstates: [C1E, C6]` on the benchmark's CPUs via `cpuClasses`. |
 | 7 | `max-freq-turbo-prio` | `minFreq: base`, `maxFreq: turbo`, and `turboPriority` capping every other class at base. |
 | 8 | `pct-priority-cores` | `pctPriority: high` on the benchmark's CPUs, `low` everywhere else. Replaces the stage 6-7 frequency controls. |
+| 9 | `isolcpus` | `preferIsolCpus: true`, so the benchmark's CPUs come from the set the kernel isolated with the `isolcpus=` boot parameter. |
 
 Stage 5 also makes the noise and default balloons IRQ sinks
 (`irqMode: sink`). `isolate` alone only removes the benchmark's CPUs
@@ -180,6 +181,72 @@ IRQ configuration could remove it.
 Stage 8 needs a low-priority class covering everything else, including
 `idleCPUClass`: idle CPUs left outside the LP CLOS would inflate the
 active high-priority core count and defeat the point.
+
+## Stage 9: kernel isolcpus
+
+Stage 9 is the only stage that cannot be set up from userspace at all.
+`isolcpus=` is a kernel command line parameter, so the node has to have
+been booted with it, and **the stage refuses to run on a node that was
+not**. That refusal is the point: `preferIsolCpus` on a node with no
+isolated CPUs is a silent no-op — the policy falls back to ordinary CPUs
+and the stage produces a plausible copy of stage 8's numbers under a name
+claiming a mechanism that was never in effect. `run-benchmark.sh` checks
+`/sys/devices/system/cpu/isolated` before touching the node and prints a
+cpulist suitable for this machine when it is empty.
+
+What isolcpus adds on top of everything before it: the kernel keeps its
+own load balancer off those CPUs entirely. Stages 3-8 stop *other
+containers* from running there, and stop interrupts and frequency
+competition; none of them stops the kernel scheduler from treating the CPU
+as an ordinary member of a scheduling domain. This is the difference
+between "nothing else is placed here" and "the scheduler does not even
+look here".
+
+**Exclusivity is the policy's own doing, not something configured here.**
+Given any isolated CPUs, the policy puts them on the avoid-list of every
+balloon type that does not set `preferIsolCpus`, and never offers them as
+shared idle CPUs. So one balloon prefers them and every other balloon
+keeps away. Both halves are verified rather than trusted: the state checks
+fail with `bench-not-isolated` if the benchmark ran on any CPU outside the
+isolated set, and with `others-on-isolcpus` if any other container's
+cgroup has one of them in its cpuset.
+
+Which CPUs to isolate is an operator decision, and two rules govern it:
+
+- **Never the core holding a socket's first CPU.** It carries timers,
+  workqueues, RCU callbacks and assorted housekeeping the kernel does not
+  move elsewhere, and any of that landing on a benchmark CPU shows up as
+  jitter in exactly the tail being measured. Whole *cores*, so that with
+  SMT enabled cpu0's sibling is excluded too — isolating a thread whose
+  partner is still doing housekeeping isolates nothing.
+- **Few of them.** "Other balloons avoid isolated CPUs" is a preference,
+  not a guarantee: a node whose remaining CPUs cannot hold its other
+  containers will spill onto the isolated ones and quietly defeat the
+  stage. On the 128-CPU node this was built for, 90 noise replicas plus the
+  default, reserved and client balloons need about 95 CPUs, so four
+  isolated CPUs leave ample room.
+
+`suggest_isolcpus` implements both rules; on a two-socket, 64-core,
+SMT-off node it yields `isolcpus=1,2,65,66`.
+
+Note that isolcpus persists across reboots, since it lives on the kernel
+command line. `reset-node.sh` does not and cannot undo it — removing it is
+a deliberate edit plus another reboot.
+
+**Check that the boot config you edited is the one that boots.** On the node
+this was first run on, `/etc/default/grub` plus `update-grub` writes
+`/boot/grub/grub.cfg` and changes nothing, because the EFI GRUB
+(`\EFI\ubuntu\grubx64.efi`) has its own *full* standalone
+`/boot/efi/EFI/ubuntu/grub.cfg` rather than the usual chainload stub. The
+first reboot came back with the old command line and no error. Before
+rebooting, grep the new parameter out of **both** files, and read the entry
+that `set default=` names rather than the first `menuentry` — the first
+entry tracks the newest installed kernel, which may not be what boots.
+
+While you are there, check that the default entry still names the *running*
+kernel. If a newer kernel has been installed since the last boot, an
+unpinned reboot changes the kernel as well as adding isolcpus, and the stage
+then measures two things at once.
 
 ## Background load
 

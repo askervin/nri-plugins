@@ -42,7 +42,20 @@ CSV_CONFIG_COLUMNS=(
     noise_workload
     pin_cpu
     pin_memory
+    prefer_isolcpus
 )
+
+# NEW CONFIGURATION COLUMNS ARE APPENDED, NEVER INSERTED.
+#
+# Every reader of these CSVs looks columns up by name, so order does not
+# matter to them. What order does matter to is a stored config-row.csv:
+# report.sh can rebuild either CSV from a stage directory collected months
+# ago, and such a row has as many fields as that harness had columns. A
+# column appended on the right leaves an old row simply short, which
+# pad_config_row below fills with 0 -- "this option was not configured",
+# which is exactly true of a stage that predates the option. A column
+# inserted in the middle would instead shift every field after it and
+# silently mislabel the data.
 
 # CSV_VERIFY_COLUMNS - what the node was actually found to be in,
 # as opposed to what the stage asked for.
@@ -221,6 +234,7 @@ csv_config_row() {
         "$(csv_flag "${NOISE_WORKLOAD:-}")"
         "$(csv_flag "$pin_cpu")"
         "$(csv_flag "$pin_memory")"
+        "$(csv_flag "${BENCH_PREFERISOLCPUS:-}")"
     )
     local IFS=,
     echo "${row[*]}"
@@ -363,6 +377,29 @@ csv_summary() {
     ' "$csvfile"
 }
 
+# pad_config_row ROW - a stored configuration row widened to today's
+# column count, by appending 0 for each column that did not exist when it
+# was written. Too many fields is not padded but reported: that means the
+# row came from a *newer* harness than this one, and guessing which column
+# to drop would corrupt the result.
+pad_config_row() {
+    local row="$1"
+    local have want
+    have="$(printf '%s' "$row" | awk -F, '{print NF}')"
+    want=${#CSV_CONFIG_COLUMNS[@]}
+    if [ "$have" -gt "$want" ]; then
+        echo "report.sh: configuration row has $have fields but this" \
+             "harness knows $want; rebuild with the harness that wrote it" >&2
+        printf '%s' "$row"
+        return 1
+    fi
+    while [ "$have" -lt "$want" ]; do
+        row="$row,0"
+        have=$((have + 1))
+    done
+    printf '%s' "$row"
+}
+
 # stage_verify_row STAGE_DIR [APP] - the verification columns recorded
 # for this stage, per application where the harness recorded them that
 # way, or for the stage as a whole where it did not.
@@ -416,7 +453,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         for stage_dir in "$results_dir"/[0-9]*; do
             [ -d "$stage_dir" ] || continue
             [ -f "$stage_dir/config-row.csv" ] || continue
-            config_row="$(cat "$stage_dir/config-row.csv")"
+            config_row="$(pad_config_row "$(cat "$stage_dir/config-row.csv")")"
             for app in "${APPS[@]}"; do
                 [ -f "$stage_dir/$app.log" ] || continue
                 csv_append_metrics "$app" "$stage_dir/$app.log" \
@@ -433,7 +470,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         if [ -f "$stage_dir/config-row.csv" ] && \
            [ -f "$stage_dir/sleep-accuracy.log" ]; then
             csv_append_stage "$stage_dir/sleep-accuracy.log" \
-                             "$(cat "$stage_dir/config-row.csv")" /dev/stdout \
+                             "$(pad_config_row "$(cat "$stage_dir/config-row.csv")")" \
+                             /dev/stdout \
                              "$(stage_verify_row "$stage_dir" sleep-accuracy)"
         fi
     done
