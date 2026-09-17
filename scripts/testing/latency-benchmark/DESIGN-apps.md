@@ -400,8 +400,9 @@ authoritative.
   clarified.
 - **Per-application artifact names.** Every file an application produces is
   `<app>-<suffix>`: `<app>.log`, `<app>-job.yaml`, `<app>-pod.yaml`,
-  `<app>-cgroup.txt`, `<app>-run.sh`, `<app>-verify-row.csv`,
-  `<app>-node-state-during.txt`, `<app>-bench-process-during.txt`. Uniform, no
+  `<app>-cgroup.txt`, `<app>-cgroup-all.txt`, `<app>-run.sh`,
+  `<app>-verify-row.csv`, `<app>-node-state-during.txt`,
+  `<app>-bench-process-during.txt`. Uniform, no
   special case for the single-application run. The first three happen to keep
   the names they had. `node-state-{before,after}.txt`, `cgroups.txt`,
   `pods.txt`, `reset.log` and the policy artifacts stay stage-wide, because

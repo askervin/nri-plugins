@@ -290,6 +290,30 @@ application's raw output. `ARTIFACTS.txt` in every stage directory lists
 what was expected and what is there, so a thin stage is visible rather
 than discovered halfway through an analysis.
 
+The cgroup record is deliberately complete rather than selective:
+
+- **`cgroups.txt`** — every readable cgroup file of every container in the
+  namespace, taken after the benchmark, when nothing is racing and nothing can
+  be perturbed. About 4 KB per container, so ~480 KB on a node running ninety
+  background containers.
+- **`<app>-cgroup.txt`** — the subject container's cpuset alone, read *live*.
+  Narrow on purpose: it is produced by a poll loop racing a short measurement
+  for a container that disappears when the Job ends, and reading seventy-five
+  files per iteration instead of two would lose that race.
+- **`<app>-cgroup-all.txt`** — every readable cgroup file of the subject, read
+  live, once, immediately after the cpuset latch above has proved the container
+  exists. Best-effort: a very short measurement can still finish first, which
+  `ARTIFACTS.txt` then reports.
+
+Recording all of it rather than a chosen few is a lesson learnt the hard way.
+The snapshot used to hold cpuset and nothing else, and the CFS quota that turned
+out to dominate the no-policy anchor — ninety background containers throttled in
+92% of their periods, worth 63× on a 50 µs sleep's p999 — was therefore
+invisible in every campaign already collected and had to be measured again from
+scratch. `cpu.max` and `cpu.stat` would have shown it in the first stage. Set
+`CGROUP_ALL_FILES` to a narrower regexp if a run must be smaller, but the
+default is everything.
+
 Two CSVs, and the difference matters:
 
 **`metrics.csv`** is the canonical record and the one to analyse. Every

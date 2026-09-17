@@ -71,6 +71,26 @@ STRESS_NG_IMAGE="${STRESS_NG_IMAGE:-localhost/stress-ng:latest}"
 # comparison; see DESIGN-apps.md.
 BENCH_APPS="${BENCH_APPS:-sleep-accuracy}"
 
+# STAGE_SET - which set of configurations to run when no stage is named on
+# the command line.
+#
+#   ladder    the incremental ladder: nine stages, each adding one mechanism
+#             to the one before it. Answers "what does adding X buy?"
+#   pcttune   the reference plus frequency floors, one at a time: does locking
+#             the high-priority CLOS to max turbo, and capping the background
+#             CPUs at base, make PCT's benefit larger and more predictable at
+#             the longer sleeps where v4 showed it fading?
+#   ablation  one reference -- the best known configuration for minimal
+#             wakeup latency -- with one option removed at a time. Answers
+#             "what does leaving X out cost?", which is the question an
+#             operator has, and it reaches combinations the ladder cannot:
+#             the ladder only ever arrives at PCT through turboPriority, so
+#             cpufreq-instead-of-PCT at otherwise equal settings has no data
+#             in it at all.
+#
+# Named stages on the command line work regardless of the set.
+STAGE_SET="${STAGE_SET:-ladder}"
+
 # APP_SETTLE_SECONDS - quiet time between two applications in one stage,
 # so that the second does not start while the first one's containers are
 # still being torn down.
@@ -253,13 +273,17 @@ Benchmarks a latency- or throughput-sensitive application under a ladder
 of NRI balloons policy configurations. With no stage arguments, runs all
 stages in order.
 
-Stages:
-$(printf '  %s\n' "${STAGES[@]}")
+Stage sets (-S, default: $STAGE_SET):
+  ladder     $(echo "${STAGES[@]}" | fold -s -w 58 | sed '2,$s/^/             /')
+  ablation   $(echo "${STAGES_ABLATION[@]}" | fold -s -w 58 | sed '2,$s/^/             /')
+  pcttune    $(echo "${STAGES_PCTTUNE[@]}" | fold -s -w 58 | sed '2,$s/^/             /')
+  pctp999    $(echo "${STAGES_PCTP999[@]}" | fold -s -w 58 | sed '2,$s/^/             /')
 
 Applications (-a, default: $BENCH_APPS):
 $(printf '  %s\n' "${APPS[@]}")
 
 Options:
+  -S SET      stage set: ladder|ablation|pcttune|pctp999 (default: $STAGE_SET)
   -a APPS     comma-separated applications to measure, in run order
   -l          list stages with descriptions and exit
   -d          dry run: generate and print configurations, run nothing
@@ -268,6 +292,7 @@ Options:
 
 Key environment variables:
   RESULTS_DIR          results directory (default: results/<timestamp>)
+  STAGE_SET            ladder|ablation|pcttune|pctp999 (default: $STAGE_SET)
   BENCH_APPS           applications to measure (default: $BENCH_APPS)
   BENCH_CPUS           CPUs for the benchmark balloon (default: $BENCH_CPUS)
   BENCH_ITERATIONS     sleep-accuracy iterations (default: $BENCH_ITERATIONS)
@@ -310,8 +335,9 @@ EOF
 dry_run=0
 keep_last=0
 list_stages=0
-while getopts "a:ldkh" opt; do
+while getopts "S:a:ldkh" opt; do
     case "$opt" in
+        S) STAGE_SET="$OPTARG" ;;
         a) BENCH_APPS="$OPTARG" ;;
         l) list_stages=1 ;;
         d) dry_run=1 ;;
@@ -427,8 +453,18 @@ suggest_isolcpus() {
         END { print "" }'
 }
 
+# The stage list this set names. Resolved before -l so that listing shows
+# the set that would actually run.
+case "$STAGE_SET" in
+    ladder)   set_stages=("${STAGES[@]}") ;;
+    ablation) set_stages=("${STAGES_ABLATION[@]}") ;;
+    pcttune)  set_stages=("${STAGES_PCTTUNE[@]}") ;;
+    pctp999)  set_stages=("${STAGES_PCTP999[@]}") ;;
+    *) error "unknown STAGE_SET: $STAGE_SET (ladder|ablation|pcttune|pctp999)" ;;
+esac
+
 if [ "$list_stages" = 1 ]; then
-    for stage in "${STAGES[@]}"; do
+    for stage in "${set_stages[@]}"; do
         stage_reset_vars
         "stage_$stage"
         printf '%-24s %s\n' "$stage" "$STAGE_DESCRIPTION"
@@ -444,7 +480,7 @@ if [ $# -gt 0 ]; then
             error "unknown stage: $stage (see -l)"
     done
 else
-    run_stages=("${STAGES[@]}")
+    run_stages=("${set_stages[@]}")
 fi
 
 # Applications to measure, in the order they run within each stage.
@@ -1186,7 +1222,7 @@ STAGE_ARTIFACTS=(
     "node-state-after.txt   the node after the benchmark (full)"
     "node-state.txt         alias of node-state-after.txt"
     "metrics.csv            every application's figures, as CSV rows"
-    "cgroups.txt            every container's effective cpuset"
+    "cgroups.txt            every cgroup control of every container"
     "pods.txt               what was running on the node"
     "reset.log              what the pre-stage reset did"
     "helm-install.log?      installing the policy"
@@ -1204,7 +1240,8 @@ APP_ARTIFACTS=(
     "<app>.log                     the measurements"
     "<app>-job.yaml                the job that produced them"
     "<app>-pod.yaml                the pod as the API server saw it"
-    "<app>-cgroup.txt              the subject container's cgroup, read live"
+    "<app>-cgroup.txt              the subject container's cpuset, read live"
+    "<app>-cgroup-all.txt?         every cgroup control of the subject, read live"
     "<app>-verify-row.csv          what could be verified, as CSV columns"
     "<app>-node-state-during.txt?  the node while it ran (light)"
     "<app>-bench-process-during.txt?  where the subject's thread actually was"
@@ -1244,12 +1281,27 @@ stage_expected_artifacts() {
             case "$name" in
                 *\?)
                     name="${name%\?}"
-                    # Expected unless the during-validation was skipped on
-                    # purpose. A campaign never skips it, so for campaign
-                    # data these are as required as the rest; this keeps
-                    # the perturbation control run from reporting two
-                    # missing artifacts that it was asked not to produce.
-                    [ -z "$SKIP_DURING_VALIDATION" ] || continue
+                    # Each conditional artifact is conditional on its own
+                    # thing, named here. Treating one condition as standing
+                    # for all of them would either hide a real gap or report
+                    # one that is not there.
+                    case "$name" in
+                        # The during-phase artifacts: expected unless the
+                        # during-validation was skipped on purpose. A campaign
+                        # never skips it, so for campaign data these are as
+                        # required as the rest; this keeps the perturbation
+                        # control run from reporting two missing artifacts
+                        # that it was asked not to produce.
+                        *-node-state-during.txt|*-bench-process-during.txt)
+                            [ -z "$SKIP_DURING_VALIDATION" ] || continue ;;
+                        # The full cgroup dump races a short measurement: the
+                        # container can exit between the cpuset latch and the
+                        # dump. Listed always, so losing the race is visible
+                        # in ARTIFACTS.txt rather than silent -- it is a thing
+                        # worth knowing about a stage, and not fatal, since
+                        # the cpuset it was after is latched separately.
+                        *) : ;;
+                    esac
                     ;;
             esac
             printf '%s\t%s\n' "${name//<app>/$app}" "$purpose"
@@ -1383,8 +1435,32 @@ check_stage_measured_config() {
     return 1
 }
 
-# capture_cgroups STAGE_DIR [OUTFILE] - record the effective cpuset of the
-# application's subject container, while it is still running.
+# CGROUP_ALL_FILES / CGROUP_LATCH_FILES - which cgroup files to record.
+#
+# Everything readable, by default. A v2 container directory holds about 75
+# files and all of them are cheap; the two write-only ones (cgroup.kill,
+# memory.reclaim) read as empty and kube-cgroups skips empty files, so
+# "everything" needs no exclusion list. A full dump of a loaded node's ninety
+# containers is a few hundred kilobytes, which is nothing beside the plugin
+# log in the same directory.
+#
+# Recording all of it rather than a chosen few is the lesson of the anchors
+# investigation: the snapshot held cpuset and nothing else, so the CFS quota
+# that turned out to dominate the no-policy anchor -- ninety noise containers
+# throttled in 92% of their periods, worth 63x on the 50 us p999 -- was
+# invisible in every stored campaign and had to be measured again from
+# scratch. cpu.max and cpu.stat would have shown it in the first stage.
+#
+# CGROUP_LATCH_FILES is deliberately NOT everything. It is used by the poll
+# loop that races a short Job for its cpuset, where each iteration's cost
+# widens the very window it is trying to close, and where the answer wanted is
+# one line. The full dump happens once, after the latch has confirmed the
+# container is alive.
+CGROUP_ALL_FILES="${CGROUP_ALL_FILES:-.}"
+CGROUP_LATCH_FILES="${CGROUP_LATCH_FILES:-cpuset.cpus.effective|cpuset.mems.effective}"
+
+# capture_cgroups STAGE_DIR [OUTFILE] [FILTER] - record the effective cpuset of
+# the application's subject container, while it is still running.
 #
 # Called as soon as the benchmark pod is Running, not after the Job
 # completes. A completed Job's container is gone and so is its cgroup, so
@@ -1407,12 +1483,13 @@ check_stage_measured_config() {
 capture_cgroups() {
     local stage_dir="$1"
     local outfile="${2:-$stage_dir/${APP_NAME:-bench}-cgroup.txt}"
+    local filter="${3:-$CGROUP_LATCH_FILES}"
     local kube_cgroups="$SCRIPT_DIR/../kube-cgroups"
     [ -x "$kube_cgroups" ] || return 0
     local subject="${APP_SUBJECT_POD:-${BENCH_JOB_NAME}}"
 
     $SUDO "$kube_cgroups" -n "$BENCH_NAMESPACE" -p "$subject" \
-        -f 'cpuset.cpus.effective|cpuset.mems.effective' \
+        -f "$filter" \
         > "$outfile" 2>&1
 
     # kube-cgroups prints a pod block, a container line under it, and
@@ -1865,6 +1942,22 @@ check_stage_configured_state() {
                 "$plugin_log" 2>/dev/null | tr ',' '\n'
             grep -oE "failed to set affinity of irq [0-9]+" "$plugin_log" \
                 2>/dev/null | awk '{print $NF}'
+            # Affinities the policy probed and found unwritable, which it
+            # reports as "irq N (...) affinity is read-only". This is a
+            # third wording, from a newer plugin that checks before writing
+            # instead of writing and failing, and it has to be read here or
+            # the IRQs it names count as isolation failures.
+            #
+            # They cannot be spotted any other way. The snapshot marks them
+            # rw, because stat sees a writable file -- these are exactly the
+            # NVMe and QAT per-queue interrupts whose writes fail with EIO,
+            # the case the file mode cannot reveal. On this node that is one
+            # queue per NVMe device per CPU, so a two-CPU benchmark balloon
+            # showed four "offenders" in every isolate stage of a whole
+            # campaign set while the isolation was in fact as complete as
+            # the hardware allows.
+            grep -oE "irq [0-9]+ \([^)]*\) affinity is read-only" \
+                "$plugin_log" 2>/dev/null | awk '{print $2}'
         } | sort -u > "$exempt_file"
 
         local offenders
@@ -2243,6 +2336,20 @@ run_app() {
     APP_CPUS[$app]="$bench_cpus"
     if [ -n "$bench_cpus" ]; then
         info "$app subject cpuset: $bench_cpus"
+        # Every cgroup control of the subject, once, now that the latch has
+        # proved the container exists. Not in the poll loop above: the loop's
+        # job is to win a race, and reading seventy-five files per iteration
+        # instead of two would lose it. Not after the Job either -- the
+        # container and its cgroup are gone by then, which is the whole reason
+        # the latch exists.
+        #
+        # Best-effort by design: a very short measurement can still finish
+        # between the latch and here, leaving a file that holds only the pod
+        # header or nothing. That is why the artifact is registered as
+        # conditional. The cpuset itself is already latched above and does not
+        # depend on this succeeding.
+        capture_cgroups "$stage_dir" \
+            "$stage_dir/$app-cgroup-all.txt" "$CGROUP_ALL_FILES" >/dev/null
     else
         warn "could not read the $app subject container's cpuset"
     fi
@@ -2613,12 +2720,25 @@ run_stage() {
         # anything while something drives the device. Note it as a fact
         # to weigh against the load, not as a failure.
         local irq_failed irq_distinct
-        irq_failed="$(grep -c "failed to set affinity of irq" \
+        # Every wording, not just the per-IRQ one: an earlier plugin
+        # reported these only in aggregate ("failed to set affinity of N
+        # irqs (...): 1,2,3") and a newer one reports read-only probes, so
+        # counting one form alone recorded zero unmovable IRQs on a node
+        # with a hundred of them.
+        irq_failed="$(grep -cE "failed to set affinity of irq|failed to set affinity of [0-9]+ irqs|affinity is read-only" \
             "$stage_dir/nri-resource-policy.log" 2>/dev/null || true)"
         if [ "${irq_failed:-0}" -gt 0 ]; then
-            irq_distinct="$(grep -oE "failed to set affinity of irq [0-9]+" \
-                "$stage_dir/nri-resource-policy.log" 2>/dev/null |
-                awk '{print $NF}' | sort -u | wc -l)"
+            irq_distinct="$({
+                grep -oE "failed to set affinity of irq [0-9]+" \
+                    "$stage_dir/nri-resource-policy.log" 2>/dev/null |
+                    awk '{print $NF}'
+                sed -n 's/.*failed to set affinity of [0-9]* irqs ([^)]*): \([0-9,]*\).*/\1/p' \
+                    "$stage_dir/nri-resource-policy.log" 2>/dev/null |
+                    tr ',' '\n'
+                grep -oE "irq [0-9]+ \([^)]*\) affinity is read-only" \
+                    "$stage_dir/nri-resource-policy.log" 2>/dev/null |
+                    awk '{print $2}'
+            } | grep -c . )"
             info "$irq_distinct IRQs are kernel-managed and stayed where they" \
                  "were ($irq_failed refused updates); normal on nodes with" \
                  "per-CPU NVMe or accelerator queues, see node-state.txt"
@@ -2628,13 +2748,21 @@ run_stage() {
     fi
     kubectl get pods -n "$BENCH_NAMESPACE" -o wide \
         > "$stage_dir/pods.txt" 2>&1
-    # The noise containers' cpusets. Safe to take now: the noise runs
-    # until the stage tears it down, so unlike the benchmark's own cgroup
-    # there is nothing to race. The noise-shares-bench-cpus check reads
-    # this file.
+    # Every cgroup control of every container in the namespace. Safe to take
+    # now, and only now: the noise runs until the stage tears it down, so
+    # unlike the benchmark's own cgroup there is nothing to race, and the
+    # benchmark is over so nothing here can perturb a measurement. The
+    # noise-shares-bench-cpus and others-on-isolcpus checks read this file.
+    #
+    # Full rather than cpuset-only since 2026-08-28. The cost is ~4 KB per
+    # container -- a few hundred KB on a loaded node -- and no measurable time,
+    # because kube-cgroups' per-pod `kubectl describe` dominates and reading
+    # seventy-five files per container costs the same as reading two (measured:
+    # 0.86 s either way, against 4.75 s before that script stopped spawning two
+    # processes per file).
     if [ -x "$SCRIPT_DIR/../kube-cgroups" ]; then
         $SUDO "$SCRIPT_DIR/../kube-cgroups" -n "$BENCH_NAMESPACE" \
-            -f 'cpuset.cpus.effective|cpuset.mems.effective' \
+            -f "$CGROUP_ALL_FILES" \
             > "$stage_dir/cgroups.txt" 2>&1
     fi
     # The "after" snapshot. Full mode: the benchmark is over, so the busy
@@ -2802,6 +2930,7 @@ run_stage() {
 info "Results directory: $RESULTS_DIR"
 info "Node: $NODE_NAME ($node_cpus CPUs)"
 info "Chart: $CHART"
+info "Stage set: $STAGE_SET"
 info "Stages: ${run_stages[*]}"
 info "Applications: ${run_apps[*]}"
 [ "$dry_run" = 1 ] || check_nri_enabled
