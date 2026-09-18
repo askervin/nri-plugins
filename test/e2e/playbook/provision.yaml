@@ -426,6 +426,36 @@
             regexp: '(CNI_NETWORK)'
             replace: "{{ network }}"
 
+        # systemd ships /usr/lib/systemd/network/99-default.link with
+        # MACAddressPolicy=persistent, which makes systemd-udevd rewrite the
+        # MAC address of every new veth ~15-40 ms after it appears. The CNI
+        # bridge plugin records the host-side veth MAC in its ADD result, and
+        # cri-o (unlike containerd) runs the CNI CHECK operation as part of
+        # RunPodSandbox for cniVersion >= 0.4.0. If udev wins that race the
+        # CHECK fails with "Interface vethXXXX Mac doesn't match: ... not
+        # found" and the sandbox creation fails, which kubelet then retries.
+        # Container hosts have no use for persistent veth MACs, so turn the
+        # rewriting off. (systemd already does this for bridge/bond/team
+        # devices in 98-default-mac-none.link.)
+        - name: Stop systemd-udevd from rewriting veth MAC addresses
+          ansible.builtin.copy:
+            dest: /etc/systemd/network/97-veth-mac-none.link
+            owner: root
+            group: root
+            mode: '0644'
+            content: |
+              [Match]
+              Kind=veth
+
+              [Link]
+              NamePolicy=keep kernel database onboard slot path
+              AlternativeNamesPolicy=database onboard slot path
+              MACAddressPolicy=none
+
+        - name: Reload udev rules
+          ansible.builtin.command:
+            cmd: udevadm control --reload
+
     - name: Setup NRI
       ansible.builtin.file:
         path: "{{ item }}"
