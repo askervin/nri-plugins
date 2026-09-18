@@ -38,14 +38,14 @@ kill-containers() {
                        kill -9 $(pidof containerd)'
 
             ;;
-        cri-o)
+        crio|cri-o)
             vm-command 'kill -STOP $(pidof crio)
                        pkill -9 -f "sleep inf"
 		       sleep 1
                        kill -9 $(pidof crio)'
             ;;
         *)
-            error "Unknown runtime: $runtime"
+            error "Unknown runtime: ${k8scri:-containerd}"
             ;;
     esac
 }
