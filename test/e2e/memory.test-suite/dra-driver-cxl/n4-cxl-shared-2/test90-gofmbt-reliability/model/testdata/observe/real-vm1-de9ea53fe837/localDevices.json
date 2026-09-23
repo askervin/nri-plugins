@@ -1,0 +1,37 @@
+{
+  "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+  "devices": [
+    {
+      "serial": 3238060769,
+      "serialHex": "c100e2e1",
+      "memdev": "mem0",
+      "region": "region0",
+      "node": 2,
+      "dax": "dax0.0",
+      "claims": {
+        "9368eb95-71ad-4f5b-bc8d-a39811bf138b": [
+          {
+            "request": "mem",
+            "region": "region0",
+            "mode": "numa",
+            "size": 134217728,
+            "dax": "dax0.0"
+          }
+        ],
+        "97c0635b-b75d-49ee-b7fa-3fec0fbdfbbd": [
+          {
+            "request": "mem",
+            "region": "region0",
+            "mode": "dax",
+            "size": 134217728,
+            "dax": "dax0.1",
+            "daxDevice": "/dev/dax0.1",
+            "major": 252,
+            "minor": 2
+          }
+        ]
+      }
+    }
+  ],
+  "viewOf": "state.json"
+}

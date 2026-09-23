@@ -1,0 +1,1903 @@
+{
+ "bytes": {
+  "dax": "dax0.0",
+  "hex": "78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "memdev": "mem0",
+  "region": "region0"
+ },
+ "errors": [],
+ "k8s": {
+  "claims": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-a/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "8c1d02e4",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "0644829a-2838-4cb6-9708-f7ff0d84a9dc"
+      },
+      "name": "cxl-lease-8c1d02e4",
+      "namespace": "cxl-demo",
+      "uid": "c1a1979a-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-8c1d02e4",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-b/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "51aa7b09",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "a64408de-46c9-4958-9cea-7de90e55ddd5"
+      },
+      "name": "cxl-lease-51aa7b09",
+      "namespace": "cxl-demo",
+      "uid": "c1a1c620-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-51aa7b09",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-c/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "e0c4d3f1",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "7d1c55e0-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+      },
+      "name": "cxl-lease-e0c4d3f1",
+      "namespace": "cxl-demo",
+      "uid": "c1a1f6b6-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-e0c4d3f1",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-d/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a0000064",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "ccbb6315-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a0000064",
+      "namespace": "cxl-demo",
+      "uid": "c1a16315-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a0000064",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-e/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a0000065",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "bbbc5383-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a0000065",
+      "namespace": "cxl-demo",
+      "uid": "c1a15383-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a0000065",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-f/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a0000066",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "22b50239-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a0000066",
+      "namespace": "cxl-demo",
+      "uid": "c1a10239-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a0000066",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-g/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a0000067",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "55b232af-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a0000067",
+      "namespace": "cxl-demo",
+      "uid": "c1a132af-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a0000067",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-h/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a0000068",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "c50d2f3e-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a0000068",
+      "namespace": "cxl-demo",
+      "uid": "c1a12f3e-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a0000068",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-i/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a0000069",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "b20a1fa8-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a0000069",
+      "namespace": "cxl-demo",
+      "uid": "c1a11fa8-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a0000069",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-j/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a000006a",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "2b034e12-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a000006a",
+      "namespace": "cxl-demo",
+      "uid": "c1a14e12-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a000006a",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-k/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a000006b",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "5c047e84-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a000006b",
+      "namespace": "cxl-demo",
+      "uid": "c1a17e84-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a000006b",
+        "resource": "pods"
+       }
+      ]
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceClaim",
+     "metadata": {
+      "annotations": {
+       "cxl.nri.io/requester": "cxl-demo/reader-l/main"
+      },
+      "creationTimestamp": "2026-10-20T12:00:18Z",
+      "labels": {
+       "cxl.nri.io/lease": "a000006c",
+       "cxl.nri.io/node": "n4-cxl-shared-2-fedora-43-containerd",
+       "cxl.nri.io/requester-uid": "c260eb27-0000-4000-8000-000000000000"
+      },
+      "name": "cxl-lease-a000006c",
+      "namespace": "cxl-demo",
+      "uid": "c1a1eb27-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "devices": {
+       "config": [
+        {
+         "opaque": {
+          "driver": "cxl.nri.io",
+          "parameters": {
+           "apiVersion": "cxl.nri.io/v1alpha1",
+           "device": {
+            "mode": "dax",
+            "readOnly": true
+           },
+           "kind": "MemoryConfig"
+          }
+         }
+        }
+       ],
+       "requests": [
+        {
+         "exactly": {
+          "allocationMode": "ExactCount",
+          "capacity": {
+           "requests": {
+            "shares": "1"
+           }
+          },
+          "count": 1,
+          "deviceClassName": "cxl-local-shared",
+          "selectors": [
+           {
+            "cel": {
+             "expression": "device.attributes[\"cxl.nri.io\"].serial == \"0xc100e2e1\""
+            }
+           }
+          ]
+         },
+         "name": "lease"
+        }
+       ]
+      }
+     },
+     "status": {
+      "allocation": {
+       "devices": {
+        "config": [
+         {
+          "opaque": {
+           "driver": "cxl.nri.io",
+           "parameters": {
+            "apiVersion": "cxl.nri.io/v1alpha1",
+            "device": {
+             "mode": "dax",
+             "readOnly": true
+            },
+            "kind": "MemoryConfig"
+           }
+          },
+          "source": "FromClaim"
+         }
+        ],
+        "results": [
+         {
+          "consumedCapacity": {
+           "shares": "1"
+          },
+          "device": "memdev-c100e2e1",
+          "driver": "cxl.nri.io",
+          "pool": "n4-cxl-shared-2-fedora-43-containerd",
+          "request": "lease"
+         }
+        ]
+       },
+       "nodeSelector": {
+        "nodeSelectorTerms": [
+         {
+          "matchFields": [
+           {
+            "key": "metadata.name",
+            "operator": "In",
+            "values": [
+             "n4-cxl-shared-2-fedora-43-containerd"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      },
+      "reservedFor": [
+       {
+        "name": "cxl-lease-a000006c",
+        "resource": "pods"
+       }
+      ]
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "drivers": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "kind": "Pod",
+     "metadata": {
+      "name": "nri-dra-driver-cxl-2",
+      "namespace": "kube-system"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "containerStatuses": [
+       {
+        "ready": false,
+        "restartCount": 1
+       }
+      ],
+      "phase": "Running"
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "pods": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "writer",
+      "namespace": "cxl-demo",
+      "uid": "30c961ce-314b-4317-b08f-af695a53d3f2"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-a",
+      "namespace": "cxl-demo",
+      "uid": "0644829a-2838-4cb6-9708-f7ff0d84a9dc"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-b",
+      "namespace": "cxl-demo",
+      "uid": "a64408de-46c9-4958-9cea-7de90e55ddd5"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-c",
+      "namespace": "cxl-demo",
+      "uid": "7d1c55e0-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-d",
+      "namespace": "cxl-demo",
+      "uid": "ccbb6315-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-e",
+      "namespace": "cxl-demo",
+      "uid": "bbbc5383-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-f",
+      "namespace": "cxl-demo",
+      "uid": "22b50239-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-g",
+      "namespace": "cxl-demo",
+      "uid": "55b232af-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-h",
+      "namespace": "cxl-demo",
+      "uid": "c50d2f3e-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-i",
+      "namespace": "cxl-demo",
+      "uid": "b20a1fa8-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-j",
+      "namespace": "cxl-demo",
+      "uid": "2b034e12-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-k",
+      "namespace": "cxl-demo",
+      "uid": "5c047e84-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "apiVersion": "v1",
+     "kind": "Pod",
+     "metadata": {
+      "annotations": {},
+      "labels": {},
+      "name": "reader-l",
+      "namespace": "cxl-demo",
+      "uid": "c260eb27-0000-4000-8000-000000000000"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "slices": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "name": "n4-cxl-shared-2-fedora-43-containerd-cxl.nri.io-x"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "nodeAffinity": {
+          "int": 0
+         },
+         "persistent": {
+          "bool": false
+         },
+         "serial": {
+          "string": "0xc100e2e1"
+         },
+         "shared": {
+          "bool": true
+         },
+         "size": {
+          "int": 1073741824
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "memdev"
+         }
+        },
+        "capacity": {
+         "shares": {
+          "value": "1M"
+         }
+        },
+        "name": "memdev-c100e2e1"
+       },
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       },
+       {
+        "attributes": {
+         "size": {
+          "int": 8362471424
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166476Ki"
+         }
+        },
+        "name": "dram"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-2-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "name": "n4-cxl-shared-1-fedora-43-containerd-cxl.nri.io-x"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       },
+       {
+        "attributes": {
+         "size": {
+          "int": 8362471424
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166476Ki"
+         }
+        },
+        "name": "dram"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-1-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "name": "fake-cxl-pool-x"
+     },
+     "spec": {
+      "devices": [],
+      "driver": "cxl-pool.nri.io",
+      "nodeSelector": {
+       "nodeSelectorTerms": [
+        {
+         "matchExpressions": [
+          {
+           "key": "kubernetes.io/hostname",
+           "operator": "In",
+           "values": [
+            "n4-cxl-shared-1-fedora-43-containerd",
+            "n4-cxl-shared-2-fedora-43-containerd"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      "pool": {
+       "generation": 1,
+       "name": "fake-cxl-pool",
+       "resourceSliceCount": 1
+      }
+     }
+    }
+   ],
+   "kind": "List"
+  }
+ },
+ "node": {
+  "hostname": "n4-cxl-shared-2-fedora-43-containerd",
+  "mappers": [
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6000,
+    "podUID": "0644829a-2838-4cb6-9708-f7ff0d84a9dc"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6001,
+    "podUID": "a64408de-46c9-4958-9cea-7de90e55ddd5"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6002,
+    "podUID": "7d1c55e0-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6003,
+    "podUID": "ccbb6315-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6004,
+    "podUID": "bbbc5383-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6005,
+    "podUID": "22b50239-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6006,
+    "podUID": "55b232af-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6007,
+    "podUID": "c50d2f3e-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6008,
+    "podUID": "b20a1fa8-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6009,
+    "podUID": "2b034e12-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6010,
+    "podUID": "5c047e84-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 6011,
+    "podUID": "c260eb27-0000-4000-8000-000000000000"
+   }
+  ],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc100e2e1",
+    "size": 1073741824
+   }
+  ],
+  "regions": [
+   {
+    "dax": [
+     {
+      "driver": "device_dax",
+      "name": "dax0.0",
+      "size": 1073741824,
+      "targetNode": 2
+     }
+    ],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "ram",
+    "name": "region0",
+    "size": 1073741824
+   }
+  ]
+ }
+}

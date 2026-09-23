@@ -1,0 +1,94 @@
+{
+  "2b7af236-70cf-405d-8371-b3b2ebfe858b": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-2b7af236-70cf-405d-8371-b3b2ebfe858b-0",
+          "nri.io/cxl=lease-2b7af236-70cf-405d-8371-b3b2ebfe858b"
+        ],
+        "ShareID": "454239da-38f8-4c65-b2fc-7a4e6776eb4f",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "6d0fbe39-d9e1-4866-8474-39e0f4da83c1": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-6d0fbe39-d9e1-4866-8474-39e0f4da83c1-0",
+          "nri.io/cxl=lease-6d0fbe39-d9e1-4866-8474-39e0f4da83c1"
+        ],
+        "ShareID": "dad4574e-284f-4650-b0b0-ce511675ceb0",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-89cd4ac7-5822-47f6-ae4a-6d18054cf3fd-0",
+          "nri.io/cxl=lease-89cd4ac7-5822-47f6-ae4a-6d18054cf3fd"
+        ],
+        "ShareID": "cee217e4-6ca7-4aba-87e0-9c48ce07a8a4",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "b5baf7e1-63d3-401c-bf89-0bc563bb4542": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": null,
+        "ShareID": "cd7bd20c-b5a1-44ad-8877-9ef4a69dfa48",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-e448ebdb-7065-47a9-a6fb-b3b560fb7f6a-0",
+          "nri.io/cxl=lease-e448ebdb-7065-47a9-a6fb-b3b560fb7f6a"
+        ],
+        "ShareID": "6bf2a008-ec44-4e2d-8ef5-e1d6a8fa0a73",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

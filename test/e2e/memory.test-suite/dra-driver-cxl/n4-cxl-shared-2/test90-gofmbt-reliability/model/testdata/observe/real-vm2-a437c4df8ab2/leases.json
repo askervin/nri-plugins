@@ -1,0 +1,138 @@
+{
+  "claims": {
+    "2b7af236-70cf-405d-8371-b3b2ebfe858b": {
+      "uid": "2b7af236-70cf-405d-8371-b3b2ebfe858b",
+      "namespace": "cxl-pool-demo",
+      "name": "reader-a-cxl-6c84l",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "reader-a",
+          "uid": "48f21d6b-5919-40e8-adf9-e227cc4dd94f"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/2b7af236-70cf-405d-8371-b3b2ebfe858b"
+    },
+    "6d0fbe39-d9e1-4866-8474-39e0f4da83c1": {
+      "uid": "6d0fbe39-d9e1-4866-8474-39e0f4da83c1",
+      "namespace": "cxl-pool-demo",
+      "name": "reader-b-cxl-snrsp",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "reader-b",
+          "uid": "c8da2bd8-7193-4e08-a65e-62033aa7487e"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/6d0fbe39-d9e1-4866-8474-39e0f4da83c1"
+    },
+    "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd": {
+      "uid": "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd",
+      "namespace": "cxl-pool-demo",
+      "name": "reader-c-cxl-lwvrl",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "reader-c",
+          "uid": "55b01a46-67af-4dba-a549-da1c16edc4c2"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/89cd4ac7-5822-47f6-ae4a-6d18054cf3fd"
+    },
+    "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a": {
+      "uid": "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a",
+      "namespace": "cxl-pool-demo",
+      "name": "writer-cxl-dws7v",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "writer",
+          "uid": "aabbc117-ac37-418a-9dee-c9e1b93516ee"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/e448ebdb-7065-47a9-a6fb-b3b560fb7f6a"
+    }
+  },
+  "leases": {
+    "345e7acb": {
+      "id": "345e7acb",
+      "claim": "89cd4ac7-5822-47f6-ae4a-6d18054cf3fd",
+      "mode": "dax",
+      "shared": true,
+      "sharedDevice": true,
+      "deviceSource": "local",
+      "readOnly": true,
+      "serial": "0xc100e2e1",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "reader-c",
+        "uid": "55b01a46-67af-4dba-a549-da1c16edc4c2"
+      },
+      "container": "main",
+      "state": "Pending",
+      "node": -1,
+      "created": "2026-11-10T09:28:06.120622789Z"
+    },
+    "81911d15": {
+      "id": "81911d15",
+      "claim": "e448ebdb-7065-47a9-a6fb-b3b560fb7f6a",
+      "source": "local",
+      "mode": "dax",
+      "shared": false,
+      "sharedDevice": true,
+      "deviceSource": "local",
+      "serial": "0xc100e2e1",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "writer",
+        "uid": "aabbc117-ac37-418a-9dee-c9e1b93516ee"
+      },
+      "container": "main",
+      "state": "Ready",
+      "node": -1,
+      "bytes": 1073741824,
+      "dax": "/dev/dax0.0",
+      "created": "2026-11-10T09:27:51.180243783Z"
+    },
+    "a0ff0406": {
+      "id": "a0ff0406",
+      "claim": "2b7af236-70cf-405d-8371-b3b2ebfe858b",
+      "mode": "dax",
+      "shared": true,
+      "sharedDevice": true,
+      "deviceSource": "local",
+      "readOnly": true,
+      "serial": "0xc100e2e1",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "reader-a",
+        "uid": "48f21d6b-5919-40e8-adf9-e227cc4dd94f"
+      },
+      "container": "main",
+      "state": "Pending",
+      "node": -1,
+      "created": "2026-11-10T09:28:05.028305183Z"
+    },
+    "d1537514": {
+      "id": "d1537514",
+      "claim": "6d0fbe39-d9e1-4866-8474-39e0f4da83c1",
+      "mode": "dax",
+      "shared": true,
+      "sharedDevice": true,
+      "deviceSource": "local",
+      "readOnly": true,
+      "serial": "0xc100e2e1",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "reader-b",
+        "uid": "c8da2bd8-7193-4e08-a65e-62033aa7487e"
+      },
+      "container": "main",
+      "state": "Pending",
+      "node": -1,
+      "created": "2026-11-10T09:28:05.580065995Z"
+    }
+  },
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "viewOf": "state.json"
+}

@@ -1,0 +1,83 @@
+{
+  "1726d601-c25f-4e41-8006-cf1b31f03d81": {
+    "claimName": "cxl-pool-demo/mbt-plse-vm2-0-g1-c0-qs9j4",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "40fda3cd-ac39-42a0-806e-595f5f021d8e": {
+    "claimName": "cxl-pool-demo/mbt-ldax-vm2-0-g1-c0-c87kt",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "dax",
+        "sysfsPath": "/sys/bus/cxl/devices/region5",
+        "numaNodes": null,
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1",
+        "daxDevice": "/dev/dax5.1",
+        "daxMajor": 252,
+        "daxMinor": 4
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "571c9014-6824-40cd-ad10-866234c7c360": {
+    "claimName": "cxl-pool-demo/mbt-lease-vm2-0-g1-c0-h7hf5",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "be8736e2-987a-449f-bcf7-86ccf665d1f8": {
+    "claimName": "cxl-pool-demo/mbt-lnuma-vm2-0-g1-c0-8fpqv",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "numa",
+        "sysfsPath": "/sys/bus/cxl/devices/region5",
+        "numaNodes": [
+          2
+        ],
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1"
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  }
+}

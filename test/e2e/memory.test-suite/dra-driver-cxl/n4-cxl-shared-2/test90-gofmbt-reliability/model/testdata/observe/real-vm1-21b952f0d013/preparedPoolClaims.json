@@ -1,0 +1,50 @@
+{
+  "27858f00-621a-4a9b-8604-e3148a64041f": {
+    "claimName": "cxl-pool-demo/mbt-pfsd-c-vm1-0-g2-c0-tddjc",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "c-pmem0",
+        "pool": "pool-c",
+        "serial": 3249414146,
+        "shared": true,
+        "size": 266338304,
+        "mode": "fs",
+        "readOnly": true,
+        "memdev": "mem1",
+        "region": "region1",
+        "dax": "",
+        "node": -1,
+        "persistent": true,
+        "ndRegion": "region1",
+        "namespace": "namespace1.0",
+        "blockDevice": "/dev/pmem1",
+        "blockMajor": 259,
+        "access": "direct",
+        "fsType": "erofs",
+        "path": "/run/cxl-fs/C1AE2002",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae2002-direct"
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-c",
+          "DeviceName": "c-pmem0",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-27858f00-621a-4a9b-8604-e3148a64041f-0"
+          ],
+          "ShareID": "6fe73a87-f4db-4595-8c4d-816ede8f5882",
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+    "viewOf": "state.json"
+  }
+}

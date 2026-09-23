@@ -1,0 +1,122 @@
+{
+  "3f069b9b-4d2a-4893-a9c3-64be590d519b": {
+    "claimName": "cxl-pool-demo/mbt-xnuma-c-vm2-0-g1-c0-2mcvr",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "c-pooled0",
+        "pool": "pool-c",
+        "serial": 3253608449,
+        "shared": false,
+        "size": 268435456,
+        "mode": "numa",
+        "memdev": "mem2",
+        "region": "region2",
+        "dax": "dax2.0",
+        "node": 3
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-c",
+          "DeviceName": "c-pooled0",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-3f069b9b-4d2a-4893-a9c3-64be590d519b-0"
+          ],
+          "ShareID": null,
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "6f4a52e6-65bd-4391-a9b3-3de39cd87299": {
+    "claimName": "cxl-pool-demo/mbt-sexcl-a-vm2-0-g1-c0-6mxdn",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "a-shared0",
+        "pool": "pool-a",
+        "serial": 3249405953,
+        "shared": true,
+        "size": 268435456,
+        "mode": "dax",
+        "memdev": "mem3",
+        "region": "region0",
+        "dax": "dax0.0",
+        "daxDevice": "/dev/dax0.0",
+        "daxMajor": 252,
+        "daxMinor": 1,
+        "node": -1
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-a",
+          "DeviceName": "a-shared0",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-6f4a52e6-65bd-4391-a9b3-3de39cd87299-0"
+          ],
+          "ShareID": "8318035b-1be1-41d2-87d5-954eec8668d0",
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "7cb25ed6-1877-47ed-b3c0-4fa44547ea94": {
+    "claimName": "cxl-pool-demo/mbt-xdax-a-vm2-0-g1-c0-pvpd2",
+    "devices": [
+      {
+        "result": 0,
+        "request": "mem",
+        "device": "a-pooled0",
+        "pool": "pool-a",
+        "serial": 3253600257,
+        "shared": false,
+        "size": 536870912,
+        "mode": "dax",
+        "memdev": "mem4",
+        "region": "region3",
+        "dax": "dax3.0",
+        "daxDevice": "/dev/dax3.0",
+        "daxMajor": 252,
+        "daxMinor": 3,
+        "node": -1
+      }
+    ],
+    "result": {
+      "Err": null,
+      "Devices": [
+        {
+          "Requests": [
+            "mem"
+          ],
+          "PoolName": "pool-a",
+          "DeviceName": "a-pooled0",
+          "CDIDeviceIDs": [
+            "nri.io/cxl-pool=claim-7cb25ed6-1877-47ed-b3c0-4fa44547ea94-0"
+          ],
+          "ShareID": null,
+          "Metadata": null
+        }
+      ]
+    },
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  }
+}

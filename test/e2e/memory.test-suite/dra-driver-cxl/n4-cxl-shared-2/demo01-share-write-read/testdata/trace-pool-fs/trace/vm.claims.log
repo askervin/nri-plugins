@@ -1,0 +1,29 @@
+1792700020.100000 vm.claims ADDED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10010-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700020.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10010-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792700060.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10010-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting
+1792700062.400000 vm.claims DELETED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10010-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting
+1792700064.100000 vm.claims ADDED claim cxl-demo/cxl-lease-7b3e5a10 uid=c1a10011-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700064.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-7b3e5a10 uid=c1a10011-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792700120.100000 vm.claims ADDED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700120.600000 vm.claims ADDED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700121.100000 vm.claims ADDED claim cxl-demo/cxl-lease-e0c4d3f1 uid=c1a10014-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700121.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-e0c4d3f1 uid=c1a10014-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792700121.500000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700122.000000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700122.100000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700122.600000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700131.500000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700132.000000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700132.100000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700132.600000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700141.500000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700142.000000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700142.100000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700142.600000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=- node=- reservedFor=- status=-
+1792700180.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-7b3e5a10 uid=c1a10011-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting
+1792700181.500000 vm.claims DELETED claim cxl-demo/cxl-lease-7b3e5a10 uid=c1a10011-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting
+1792700186.000000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700186.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700241.300000 vm.claims DELETED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a10012-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=- deleting
+1792700241.800000 vm.claims DELETED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a10013-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=- deleting
+1792700242.300000 vm.claims DELETED claim cxl-demo/cxl-lease-e0c4d3f1 uid=c1a10014-0000-4000-8000-000000000000 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting

@@ -1,0 +1,58 @@
+{
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "devices": [
+    {
+      "serial": 3238065633,
+      "serialHex": "c100f5e1",
+      "memdev": "mem0",
+      "region": "region1",
+      "node": -1,
+      "persistent": true,
+      "ndRegion": "region1",
+      "namespace": "namespace1.0",
+      "blockDevice": "/dev/pmem1",
+      "blockMajor": 259,
+      "claims": {
+        "08cc8a3c-9a99-47f5-bbe2-2a3fc2728788": [
+          {
+            "request": "lease",
+            "region": "region1",
+            "mode": "fs",
+            "size": 534773760,
+            "readOnly": true,
+            "access": "direct",
+            "fsType": "ext4",
+            "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+            "path": "/run/cxl-fs/C100F5E1"
+          }
+        ],
+        "3de936cb-234f-4a67-bf2e-ddced2c17a84": [
+          {
+            "request": "mem",
+            "region": "region1",
+            "mode": "fs",
+            "size": 534773760,
+            "readOnly": true,
+            "access": "direct",
+            "fsType": "ext4",
+            "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+            "path": "/run/cxl-fs/C100F5E1"
+          }
+        ],
+        "ebf00479-be45-4185-b027-10a914de8cf6": [
+          {
+            "request": "mem",
+            "region": "region1",
+            "mode": "fs",
+            "size": 534773760,
+            "access": "direct",
+            "fsType": "ext4",
+            "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+            "path": "/run/cxl-fs/C100F5E1"
+          }
+        ]
+      }
+    }
+  ],
+  "viewOf": "state.json"
+}

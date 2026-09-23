@@ -1,0 +1,18 @@
+{
+  "a072f899-096c-4e1d-96e1-103e6f2ad13c": {
+    "claimName": "cxl-pool-demo/borrower-cxl-6pstk",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  }
+}

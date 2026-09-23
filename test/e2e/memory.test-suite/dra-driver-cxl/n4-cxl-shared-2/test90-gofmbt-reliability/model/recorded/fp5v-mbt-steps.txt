@@ -1,0 +1,22 @@
+# mbt-cxl online seed=1793186577 profile=fullp coverage=C1x3,C2x2,C3 depth=3 gofmbt=v0.0.0-20261027151000-bc12d421910e
+# --profile fullp --seed 1793186577 --depth 3 --coverage C1x3,C2x2,C3 --randomness 1 --unsettled 3 --max-restarts 2 --local-blocks vm2=8,vm1=2,vm0=2 --node-hb0 2 --node-hb1 3 --avoid "" --avoid-holes=false --stall-window 30s --max-paths 0 --plan-states 0 --steps 0 --duration 20m0s --settle-timeout 3m0s --unblock-timeout 5m30s --plan-ahead=true --plan-time 10s --replay /tmp/p13-runs/fp5v/steps.txt
+settle
+#adopt 1 plsa=c-pmem0:8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90 phead=c-pmem0:bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8 plsa=c-pmem1:8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90 phead=c-pmem1:bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8
+create pwr-c@vm0#0
+settle
+#adopt 3 puuid=c-pmem0:1d85b819-da4f-4124-8050-0d4ad898cfb6 plsa=c-pmem0:18b08128bb790635a52c813cb32344a242bc61d3b61e9a6beb5f08e698de7bfe phead=c-pmem0:fd5dbdcbbfe32ba2f526a497241aba3e07c3a23e94d48497ea658d7f874e60f3
+pwrite pwr-c@vm0#0 img
+delete pwr-c@vm0#0
+settle
+#adopt 6 phead=c-pmem0:ac8eb5c77f6aeeab29f081ab0d67138ec8667479a3549db4269287e41f485d2c
+create plse@vm0#0
+settle
+#adopt 8
+driver-kill-at vm0 bind
+lease-get plse@vm0#0 pfc
+#adopt 10 lopen=plse@vm0#0:failed
+settle
+#adopt 11 alt=1
+delete plse@vm0#0
+settle
+#adopt 13

@@ -1,0 +1,7 @@
+1792600020.900000 server fake-cxl-pool: 2026/10/22 12:00:20.000000 attachment shared0@n4-cxl-shared-1-fedora-43-containerd: attached
+1792600103.500000 server fake-cxl-pool: 2026/10/22 12:00:43.000000 attachment shared0@n4-cxl-shared-1-fedora-43-containerd: exclusive false
+1792600103.900000 server fake-cxl-pool: 2026/10/22 12:00:43.000000 attachment shared0@n4-cxl-shared-2-fedora-43-containerd: attached
+1792600166.500000 server fake-cxl-pool: 2026/10/22 12:00:46.000000 attachment shared0@n4-cxl-shared-2-fedora-43-containerd: detaching qemu device fcp_shared0.hp1
+1792600166.900000 server fake-cxl-pool: 2026/10/22 12:00:46.000000 attachment shared0@n4-cxl-shared-2-fedora-43-containerd: detached (qemu device fcp_shared0.hp1)
+1792600168.500000 server fake-cxl-pool: 2026/10/22 12:00:48.000000 attachment shared0@n4-cxl-shared-1-fedora-43-containerd: detaching qemu device fcp_shared0.hp1
+1792600168.900000 server fake-cxl-pool: 2026/10/22 12:00:48.000000 attachment shared0@n4-cxl-shared-1-fedora-43-containerd: detached (qemu device fcp_shared0.hp1)

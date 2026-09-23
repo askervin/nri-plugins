@@ -1,0 +1,61 @@
+{
+ "node": {
+  "hostname": "n4-cxl-shared-0-fedora-43-containerd",
+  "mappers": [
+   {
+    "block": "pmem0",
+    "comm": "llama-server",
+    "path": "/models/Qwen3-0.6B-Q4_K_M.gguf",
+    "pid": 97460,
+    "podUID": "61baec91-0082-4767-a2f1-edb9fa4cb5de",
+    "source": "loop0"
+   }
+  ],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc1ae0001",
+    "size": 536870912
+   }
+  ],
+  "mounts": [
+   {
+    "block": "pmem0",
+    "dax": false,
+    "fstype": "erofs",
+    "kind": "node",
+    "loop": true,
+    "mountRO": true,
+    "ro": true,
+    "source": "/dev/loop0",
+    "target": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-cached"
+   }
+  ],
+  "openers": [],
+  "regions": [
+   {
+    "dax": [],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "pmem",
+    "name": "region0",
+    "namespaces": [
+     {
+      "block": "pmem0",
+      "fs": "erofs",
+      "major": 259,
+      "minor": 0,
+      "mode": "fsdax",
+      "name": "namespace0.0",
+      "ro": true,
+      "size": 534773760
+     }
+    ],
+    "size": 536870912
+   }
+  ]
+ }
+}

@@ -1,0 +1,2 @@
+1792700002.000000 vm.driver I1103 12:00:02.000000  4242 local.go:779] local: memdev mem0 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, 268435456 bytes) in 1.2s
+1792700002.500000 vm.driver I1103 12:00:02.000000  4242 draplugin.go:300] cxl.nri.io: claim cxl-demo/w1: prepared memdev-c100e2e1 (serial 0xc100e2e1, mode numa, read-only false) as mem0 region0 dax dax0.0 node 2

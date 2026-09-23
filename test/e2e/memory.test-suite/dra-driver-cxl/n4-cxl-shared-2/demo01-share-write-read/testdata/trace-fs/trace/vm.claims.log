@@ -1,0 +1,14 @@
+1792600001.000000 vm.claims ADDED claim cxl-demo/writer-cxl-7hhht uid=1ea5e001 allocated=cxl.nri.io/n4-cxl-shared-1-fedora-43-containerd/lease node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792600020.100000 vm.claims ADDED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10006 allocated=- node=- reservedFor=- status=-
+1792600020.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10006 allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792600060.100000 vm.claims ADDED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a1000a allocated=- node=- reservedFor=- status=-
+1792600061.100000 vm.claims ADDED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a1000b allocated=- node=- reservedFor=- status=-
+1792600062.100000 vm.claims ADDED claim cxl-demo/cxl-lease-e0c4d3f1 uid=c1a1000c allocated=- node=- reservedFor=- status=-
+1792600100.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10006 allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting
+1792600102.500000 vm.claims DELETED claim cxl-demo/cxl-lease-3f2a91c0 uid=c1a10006 allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting
+1792600103.000000 vm.claims MODIFIED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a1000a allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792600103.100000 vm.claims MODIFIED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a1000b allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792600103.200000 vm.claims MODIFIED claim cxl-demo/cxl-lease-e0c4d3f1 uid=c1a1000c allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792600164.200000 vm.claims DELETED claim cxl-demo/cxl-lease-8c1d02e4 uid=c1a1000a allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=- deleting
+1792600164.700000 vm.claims DELETED claim cxl-demo/cxl-lease-51aa7b09 uid=c1a1000b allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=- deleting
+1792600165.200000 vm.claims DELETED claim cxl-demo/cxl-lease-e0c4d3f1 uid=c1a1000c allocated=cxl-pool.nri.io/fake-cxl-pool/shared0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=- deleting

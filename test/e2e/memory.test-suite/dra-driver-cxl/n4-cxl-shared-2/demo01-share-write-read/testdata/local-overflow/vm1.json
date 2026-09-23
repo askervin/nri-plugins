@@ -1,0 +1,8 @@
+{
+ "node": {
+  "hostname": "n4-cxl-shared-1-fedora-43-containerd",
+  "mappers": [],
+  "memdevs": [],
+  "regions": []
+ }
+}

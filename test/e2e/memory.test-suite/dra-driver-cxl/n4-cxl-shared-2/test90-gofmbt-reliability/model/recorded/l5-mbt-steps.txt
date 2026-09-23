@@ -1,0 +1,38 @@
+# mbt-cxl online seed=5 profile=full coverage=C1x3,C2x2,C3 depth=3 gofmbt=extended
+# --profile full --seed 5 --depth 3 --coverage C1x3,C2x2,C3 --randomness 1 --unsettled 3 --max-restarts 2 --local-blocks vm2=8,vm1=2,vm0=2 --node-hb0 2 --node-hb1 3 --avoid "" --avoid-holes=false --max-paths 0 --steps 0 --duration 2h0m0s --settle-timeout 3m0s --unblock-timeout 5m30s --plan-ahead=true --plan-time 10s
+settle
+#adopt 1
+create lease@vm0#0
+create lease@vm2#0
+settle
+#adopt 4
+lease-get lease@vm2#0 numa
+#adopt 5 lease=lease@vm2#0:1599cf9e
+crash lease@vm0#0
+settle
+#adopt 7
+create lnuma@vm2#1
+containerd-restart vm2
+lease-get lease@vm0#0 dax
+#adopt 10 lease=lease@vm0#0:d89f8dab
+settle
+#adopt 11
+create lsteer@vm2#0
+kubelet-restart vm2
+settle
+#adopt 14 restarts=lsteer@vm2#0:0+0
+create xdax-c@vm2#0
+settle
+#adopt 16
+create sdax-a@vm2#0
+read xdax-c@vm2#0
+#adopt 18 data=c-pooled0:mbt-1270
+driver-restart vm2
+driver-kill vm2
+settle
+#adopt 21
+crash lease@vm2#0
+write sdax-a@vm2#0
+containerd-restart vm2
+read sdax-a@vm2#0
+settle

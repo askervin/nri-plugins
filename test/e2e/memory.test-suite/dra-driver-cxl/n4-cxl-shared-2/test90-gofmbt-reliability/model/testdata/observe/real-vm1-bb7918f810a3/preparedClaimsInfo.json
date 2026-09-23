@@ -1,0 +1,18 @@
+{
+  "53e688de-e888-43a7-a7c5-96f0e699b27d": {
+    "claimName": "cxl-pool-demo/mbt-plse-vm1-0-g2-c0-4924j",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+    "viewOf": "state.json"
+  }
+}

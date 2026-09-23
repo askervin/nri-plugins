@@ -1,0 +1,73 @@
+{
+  "08cc8a3c-9a99-47f5-bbe2-2a3fc2728788": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100f5e1",
+        "CDIDeviceIDs": null,
+        "ShareID": "3104e9e5-f6ee-4d91-9933-6184fa072062",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "3de936cb-234f-4a67-bf2e-ddced2c17a84": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "mem"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100f5e1",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-3de936cb-234f-4a67-bf2e-ddced2c17a84-0"
+        ],
+        "ShareID": "c7d49341-017a-49a5-bf7d-38ac5de042fd",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "ebf00479-be45-4185-b027-10a914de8cf6": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "mem"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100f5e1",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-ebf00479-be45-4185-b027-10a914de8cf6-0"
+        ],
+        "ShareID": "08707a74-b0c4-470b-b4eb-1a3c70087e15",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  },
+  "f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae-0",
+          "nri.io/cxl=lease-f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae"
+        ],
+        "ShareID": "40f449b7-9008-4641-a570-95be40d4f18b",
+        "Metadata": null
+      }
+    ],
+    "viewOf": "state.json"
+  }
+}

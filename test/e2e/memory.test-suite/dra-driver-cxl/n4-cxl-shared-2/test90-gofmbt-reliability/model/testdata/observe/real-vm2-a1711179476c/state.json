@@ -1,0 +1,282 @@
+{
+  "schema": 2,
+  "generation": 190,
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "memdevs": [
+    {
+      "serial": "0xc1ae0001",
+      "name": "mem2",
+      "source": "pool",
+      "facts": {
+        "shared": true,
+        "coherent": true
+      },
+      "regions": [
+        "region2"
+      ],
+      "grants": [
+        {
+          "claim": "96b6e48a-830a-43a4-9c8a-3840050c2fcb",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    },
+    {
+      "serial": "0xc1ae2001",
+      "name": "mem1",
+      "source": "pool",
+      "facts": {
+        "shared": true,
+        "coherent": true
+      },
+      "regions": [
+        "region1"
+      ],
+      "grants": [
+        {
+          "claim": "e06f998b-02ca-455e-bd6a-bdf394dad89b",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    }
+  ],
+  "regions": [
+    {
+      "name": "region1",
+      "mode": "ram",
+      "targets": [
+        "0xc1ae2001"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "numaNode": 3,
+      "size": 268435456,
+      "daxDevices": [
+        {
+          "name": "dax1.0",
+          "dev": {
+            "major": 252,
+            "minor": 0
+          },
+          "size": 268435456,
+          "ranges": [
+            {
+              "start": 36775657472,
+              "end": 37044092927
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "users": [
+            {
+              "claim": "e06f998b-02ca-455e-bd6a-bdf394dad89b",
+              "result": 0
+            }
+          ],
+          "whole": true
+        }
+      ]
+    },
+    {
+      "name": "region2",
+      "mode": "ram",
+      "targets": [
+        "0xc1ae0001"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "numaNode": 2,
+      "size": 268435456,
+      "daxDevices": [
+        {
+          "name": "dax2.0",
+          "dev": {
+            "major": 252,
+            "minor": 1
+          },
+          "size": 268435456,
+          "ranges": [
+            {
+              "start": 28722593792,
+              "end": 28991029247
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "users": [
+            {
+              "claim": "96b6e48a-830a-43a4-9c8a-3840050c2fcb",
+              "result": 0
+            }
+          ],
+          "whole": true
+        }
+      ]
+    }
+  ],
+  "grants": [
+    {
+      "ref": {
+        "claim": "96b6e48a-830a-43a4-9c8a-3840050c2fcb",
+        "result": 0
+      },
+      "serial": "0xc1ae0001",
+      "asked": {
+        "source": "pool",
+        "kind": "shared",
+        "mode": "dax",
+        "size": 268435456,
+        "shared": true
+      },
+      "intent": {
+        "region": "region2"
+      },
+      "got": {
+        "region": "region2",
+        "dax": "dax2.0",
+        "size": 268435456
+      },
+      "state": "RELEASING"
+    },
+    {
+      "ref": {
+        "claim": "e06f998b-02ca-455e-bd6a-bdf394dad89b",
+        "result": 0
+      },
+      "serial": "0xc1ae2001",
+      "asked": {
+        "source": "pool",
+        "kind": "shared",
+        "mode": "dax",
+        "size": 268435456,
+        "shared": true
+      },
+      "intent": {
+        "region": "region1"
+      },
+      "got": {
+        "region": "region1",
+        "dax": "dax1.0",
+        "size": 268435456
+      },
+      "state": "REALISED"
+    }
+  ],
+  "preparations": [
+    {
+      "uid": "96b6e48a-830a-43a4-9c8a-3840050c2fcb",
+      "driver": "cxl-pool.nri.io",
+      "claimName": "cxl-pool-demo/mbt-sexcl-a-vm2-0-g1-c0-zfg5f",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "UNPREPARING",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "pool-a",
+          "device": "a-shared0",
+          "shareID": "09e75779-7f99-4cb3-971b-0858d1822c7b",
+          "grant": {
+            "claim": "96b6e48a-830a-43a4-9c8a-3840050c2fcb",
+            "result": 0
+          }
+        }
+      ]
+    },
+    {
+      "uid": "e06f998b-02ca-455e-bd6a-bdf394dad89b",
+      "driver": "cxl-pool.nri.io",
+      "claimName": "cxl-pool-demo/mbt-sdax-c-vm2-0-g1-c0-ppdxm",
+      "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "pool-c",
+          "device": "c-shared0",
+          "shareID": "0388cf4e-7792-48a4-ad62-e80e81d13c4d",
+          "grant": {
+            "claim": "e06f998b-02ca-455e-bd6a-bdf394dad89b",
+            "result": 0
+          }
+        }
+      ]
+    }
+  ],
+  "provenance": [
+    {
+      "serial": "0xc100e2e1",
+      "state": "LOCAL",
+      "lastSeen": "2026-11-10T09:51:21.155596566Z"
+    },
+    {
+      "serial": "0xc1ae0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "lastSeen": "2026-11-10T10:00:06.417401633Z"
+    },
+    {
+      "serial": "0xc1ae1001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "lastSeen": "2026-11-10T09:51:21.14478767Z"
+    },
+    {
+      "serial": "0xc1ae2001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T10:00:06.417401633Z"
+    },
+    {
+      "serial": "0xc1ae2002",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:51:21.14478767Z"
+    },
+    {
+      "serial": "0xc1ee0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "lastSeen": "2026-11-10T09:58:00.626823224Z"
+    },
+    {
+      "serial": "0xc1ee1001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "lastSeen": "2026-11-10T09:51:21.14478767Z"
+    },
+    {
+      "serial": "0xc1ee2001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:55:05.79509742Z"
+    },
+    {
+      "serial": "0xc1ee2002",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:51:21.14478767Z"
+    }
+  ],
+  "listedPools": [
+    {
+      "pool": "cxl-pool.nri.io/pool-a",
+      "listed": "2026-11-10T09:51:21.14478767Z"
+    },
+    {
+      "pool": "cxl-pool.nri.io/pool-b",
+      "listed": "2026-11-10T09:51:21.14478767Z"
+    },
+    {
+      "pool": "cxl-pool.nri.io/pool-c",
+      "listed": "2026-11-10T09:51:21.14478767Z"
+    }
+  ]
+}

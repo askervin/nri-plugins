@@ -1,0 +1,4 @@
+QEMU 11.1.1 monitor - type 'help' for more information
+(qemu) i[K[Din[K[D[Dinf[K[D[D[Dinfo[K[D[D[D[Dinfo [K[D[D[D[D[Dinfo v[K[D[D[D[D[D[Dinfo ve[K[D[D[D[D[D[D[Dinfo ver[K[D[D[D[D[D[D[D[Dinfo vers[K[D[D[D[D[D[D[D[D[Dinfo versi[K[D[D[D[D[D[D[D[D[D[Dinfo versio[K[D[D[D[D[D[D[D[D[D[D[Dinfo version[K
+11.1.1openSUSE Slowroll
+(qemu) 

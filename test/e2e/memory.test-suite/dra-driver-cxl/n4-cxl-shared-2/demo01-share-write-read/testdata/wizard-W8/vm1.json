@@ -1,0 +1,114 @@
+{
+ "errors": [],
+ "node": {
+  "hostname": "n4-cxl-shared-1-fedora-43-containerd",
+  "mappers": [
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 5008,
+    "podUID": "09a54550-0000-4000-8000-000000000000"
+   },
+   {
+    "comm": "python3",
+    "dax": "dax1.0",
+    "perms": "rw-s",
+    "pid": 5002,
+    "podUID": "e970ac4e-0000-4000-8000-000000000000"
+   }
+  ],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc100e2e1",
+    "size": 268435456
+   },
+   {
+    "enabled": true,
+    "name": "mem1",
+    "numaNode": 0,
+    "serial": "0xc1ae0001",
+    "size": 268435456
+   },
+   {
+    "enabled": true,
+    "name": "mem2",
+    "numaNode": 0,
+    "serial": "0xc1ae0002",
+    "size": 536870912
+   }
+  ],
+  "mounts": [
+   {
+    "block": "pmem0",
+    "dax": true,
+    "fstype": "ext4",
+    "kind": "node",
+    "loop": false,
+    "mountRO": false,
+    "ro": false,
+    "source": "/dev/pmem0",
+    "target": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct"
+   }
+  ],
+  "openers": [],
+  "regions": [
+   {
+    "dax": [
+     {
+      "driver": "device_dax",
+      "name": "dax0.0",
+      "size": 134217728,
+      "targetNode": 2
+     }
+    ],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "ram",
+    "name": "region0",
+    "size": 268435456
+   },
+   {
+    "dax": [
+     {
+      "driver": "device_dax",
+      "name": "dax1.0",
+      "size": 268435456,
+      "targetNode": 2
+     }
+    ],
+    "memdevs": [
+     "mem1"
+    ],
+    "mode": "ram",
+    "name": "region1",
+    "size": 268435456
+   },
+   {
+    "dax": [],
+    "memdevs": [
+     "mem2"
+    ],
+    "mode": "pmem",
+    "name": "region2",
+    "namespaces": [
+     {
+      "block": "pmem0",
+      "fs": "ext4",
+      "major": 259,
+      "minor": 0,
+      "mode": "fsdax",
+      "name": "namespace0.0",
+      "ro": false,
+      "size": 534773760
+     }
+    ],
+    "size": 536870912
+   }
+  ]
+ }
+}

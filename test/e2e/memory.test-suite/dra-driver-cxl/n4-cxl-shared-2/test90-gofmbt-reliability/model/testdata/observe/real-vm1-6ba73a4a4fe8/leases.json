@@ -1,0 +1,41 @@
+{
+  "claims": {
+    "9a6c0f7d-d78f-446e-91a5-c313136a526f": {
+      "uid": "9a6c0f7d-d78f-446e-91a5-c313136a526f",
+      "namespace": "cxl-pool-demo",
+      "name": "lease-b-lease-n4phs",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "lease-b",
+          "uid": "9d7d892e-e20f-4eb6-85cb-3415d20643cd"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/9a6c0f7d-d78f-446e-91a5-c313136a526f"
+    }
+  },
+  "leases": {
+    "0011233a": {
+      "id": "0011233a",
+      "claim": "9a6c0f7d-d78f-446e-91a5-c313136a526f",
+      "mode": "fs",
+      "shared": true,
+      "sharedDevice": true,
+      "deviceSource": "pool",
+      "readWrite": true,
+      "name": "0011233a",
+      "serial": "0xc1ae0001",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "lease-b",
+        "uid": "9d7d892e-e20f-4eb6-85cb-3415d20643cd"
+      },
+      "container": "main",
+      "state": "Pending",
+      "node": -1,
+      "created": "2026-11-10T09:44:26.910855343Z"
+    }
+  },
+  "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+  "viewOf": "state.json"
+}

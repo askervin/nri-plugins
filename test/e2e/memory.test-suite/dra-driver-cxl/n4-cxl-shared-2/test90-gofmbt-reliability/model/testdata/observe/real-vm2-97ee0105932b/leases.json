@@ -1,0 +1,33 @@
+{
+  "claims": {
+    "1726d601-c25f-4e41-8006-cf1b31f03d81": {
+      "uid": "1726d601-c25f-4e41-8006-cf1b31f03d81",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-plse-vm2-0-g1-c0-qs9j4",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-plse-vm2-0-g1",
+          "uid": "0343737f-2695-4d20-a248-19414d748135"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/1726d601-c25f-4e41-8006-cf1b31f03d81"
+    },
+    "571c9014-6824-40cd-ad10-866234c7c360": {
+      "uid": "571c9014-6824-40cd-ad10-866234c7c360",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-lease-vm2-0-g1-c0-h7hf5",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-lease-vm2-0-g1",
+          "uid": "6f852003-6f22-448f-8030-a7c28050392b"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/571c9014-6824-40cd-ad10-866234c7c360"
+    }
+  },
+  "leases": {},
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "viewOf": "state.json"
+}

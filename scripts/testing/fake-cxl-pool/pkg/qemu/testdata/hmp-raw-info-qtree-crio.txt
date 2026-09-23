@@ -1,0 +1,105 @@
+QEMU 11.1.1 monitor - type 'help' for more information
+(qemu) i[K[Din[K[D[Dinf[K[D[D[Dinfo[K[D[D[D[Dinfo [K[D[D[D[D[Dinfo q[K[D[D[D[D[D[Dinfo qt[K[D[D[D[D[D[D[Dinfo qtr[K[D[D[D[D[D[D[D[Dinfo qtre[K[D[D[D[D[D[D[D[D[Dinfo qtree[K[D[D[D[D[D[D[D[D[D[Dinfo qtree [K[D[D[D[D[D[D[D[D[D[D[Dinfo qtree -[K[D[D[D[D[D[D[D[D[D[D[D[Dinfo qtree -b[K
+bus: main-system-bus
+  type System
+  dev: pxb-cxl-host, id ""
+    bus: cxlhb1
+      type pxb-cxl-bus
+      dev: cxl-rp, id "cxlrp0hb1"
+        bus: cxlrp0hb1
+          type CXL
+          dev: cxl-upstream, id "cxlsw_usrp0hb1"
+            bus: cxlsw_usrp0hb1
+              type PCIE
+              dev: cxl-downstream, id "cxlsw_ds1_usrp0hb1"
+                bus: cxlsw_ds1_usrp0hb1
+                  type PCIE
+              dev: cxl-downstream, id "cxlsw_ds0_usrp0hb1"
+                bus: cxlsw_ds0_usrp0hb1
+                  type PCIE
+                  dev: cxl-type3, id "cxl_memdev2.hp3"
+  dev: pxb-cxl-host, id ""
+    bus: cxlhb0
+      type pxb-cxl-bus
+      dev: cxl-rp, id "cxlrp0hb0"
+        bus: cxlrp0hb0
+          type CXL
+          dev: cxl-upstream, id "cxlsw_usrp0hb0"
+            bus: cxlsw_usrp0hb0
+              type PCIE
+              dev: cxl-downstream, id "cxlsw_ds1_usrp0hb0"
+                bus: cxlsw_ds1_usrp0hb0
+                  type PCIE
+                  dev: cxl-type3, id "cxl_memdev1.hp2"
+              dev: cxl-downstream, id "cxlsw_ds0_usrp0hb0"
+                bus: cxlsw_ds0_usrp0hb0
+                  type PCIE
+                  dev: cxl-type3, id "cxl_memdev0.hp1"
+  dev: ps2-mouse, id ""
+  dev: ps2-kbd, id ""
+  dev: hpet, id ""
+  dev: ioapic, id ""
+  dev: q35-pcihost, id ""
+    bus: pcie.0
+      type PCIE
+      dev: pxb-cxl, id "cxlhb1"
+      dev: pxb-cxl, id "cxlhb0"
+      dev: pcie-root-port, id "rp_disk"
+        bus: rp_disk
+          type PCIE
+          dev: virtio-blk-pci, id "virtio_disk0"
+            bus: virtio-bus
+              type virtio-pci-bus
+              dev: virtio-blk-device, id ""
+      dev: virtio-net-pci, id ""
+        bus: virtio-bus
+          type virtio-pci-bus
+          dev: virtio-net-device, id ""
+      dev: ICH9-SMB, id ""
+        bus: i2c
+          type i2c-bus
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+          dev: smbus-eeprom, id ""
+      dev: ich9-ahci, id ""
+        bus: ide.5
+          type IDE
+        bus: ide.4
+          type IDE
+        bus: ide.3
+          type IDE
+        bus: ide.2
+          type IDE
+          dev: ide-cd, id ""
+        bus: ide.1
+          type IDE
+        bus: ide.0
+          type IDE
+      dev: ICH9-LPC, id ""
+        bus: isa.0
+          type ISA
+          dev: port92, id ""
+          dev: vmmouse, id ""
+          dev: vmport, id ""
+          dev: i8042, id ""
+          dev: isa-parallel, id ""
+          dev: isa-serial, id ""
+          dev: isa-pcspk, id ""
+          dev: isa-pit, id ""
+          dev: isa-i8259, id ""
+          dev: isa-i8259, id ""
+          dev: mc146818rtc, id ""
+          dev: i8257, id ""
+          dev: i8257, id ""
+      dev: mch, id ""
+  dev: fw_cfg_io, id ""
+  dev: kvmclock, id ""
+  dev: kvmvapic, id ""
+  dev: cxl-fmw, id ""
+  dev: cxl-fmw, id ""
+(qemu) 

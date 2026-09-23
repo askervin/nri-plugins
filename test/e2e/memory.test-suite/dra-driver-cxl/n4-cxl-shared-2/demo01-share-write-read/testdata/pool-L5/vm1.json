@@ -1,0 +1,34 @@
+{
+ "errors": [],
+ "node": {
+  "hostname": "n4-cxl-shared-1-fedora-43-containerd",
+  "mappers": [],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc1ae0001",
+    "size": 268435456
+   }
+  ],
+  "regions": [
+   {
+    "dax": [
+     {
+      "driver": "device_dax",
+      "name": "dax0.0",
+      "size": 268435456,
+      "targetNode": 2
+     }
+    ],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "ram",
+    "name": "region0",
+    "size": 268435456
+   }
+  ]
+ }
+}

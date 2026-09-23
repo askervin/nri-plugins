@@ -1,0 +1,1 @@
+1792700015.000000 vm1.driver I1103 12:00:15.000000  4242 persistent.go:573] cxl-pool.nri.io: device 0xc1ae0002: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct (ext4, rw, dax=always)

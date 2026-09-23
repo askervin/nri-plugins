@@ -1,0 +1,74 @@
+{
+  "bootID": "boot-1",
+  "devices": [
+    {
+      "serial": 3238060769,
+      "serialHex": "c100e2e1",
+      "memdev": "mem0",
+      "creating": "region0",
+      "node": 2,
+      "claims": {
+        "11111111-0000-0000-0000-000000000001": [
+          {
+            "request": "mem",
+            "region": "region0",
+            "mode": "numa",
+            "size": 134217728,
+            "dax": "dax0.1"
+          }
+        ],
+        "11111111-0000-0000-0000-000000000002": [
+          {
+            "request": "mem",
+            "region": "region0",
+            "mode": "dax",
+            "size": 134217728,
+            "dax": "dax0.2",
+            "daxDevice": "/dev/dax0.2",
+            "major": 252,
+            "minor": 2,
+            "readOnly": true
+          }
+        ],
+        "11111111-0000-0000-0000-000000000005": null,
+        "22222222-0000-0000-0000-000000000001": [
+          {
+            "request": "memory",
+            "region": "region0",
+            "mode": "numa",
+            "size": 134217728,
+            "dax": "dax0.3"
+          }
+        ]
+      }
+    },
+    {
+      "serial": 3238060770,
+      "serialHex": "c100e2e2",
+      "memdev": "mem1",
+      "creating": "region1",
+      "node": -1,
+      "shared": true,
+      "claims": {
+        "11111111-0000-0000-0000-000000000003": null,
+        "11111111-0000-0000-0000-000000000004": null
+      }
+    },
+    {
+      "serial": 3249414145,
+      "serialHex": "c1ae2001",
+      "memdev": "mem2",
+      "region": "region2",
+      "node": -1,
+      "persistent": true,
+      "ndRegion": "region7",
+      "namespace": "namespace7.0",
+      "blockDevice": "/dev/pmem7",
+      "blockMajor": 259,
+      "claims": {
+        "11111111-0000-0000-0000-000000000006": null
+      }
+    }
+  ],
+  "viewOf": "state.json"
+}

@@ -1,0 +1,2 @@
+1792600106.900000 vm.block.udev KERNEL[6106.900000] add      /devices/platform/ACPI0017:00/root0/nvdimm-bridge0/ndbus0/region0/pfn0.1/block/pmem0 (block)
+1792600166.400000 vm.block.udev KERNEL[6166.400000] remove   /devices/platform/ACPI0017:00/root0/nvdimm-bridge0/ndbus0/region0/pfn0.1/block/pmem0 (block)

@@ -1,0 +1,112 @@
+{
+  "11111111-0000-0000-0000-000000000001": {
+    "claimName": "demo/c-numa",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "numa",
+        "sysfsPath": "/sys/bus/cxl/devices/region0",
+        "numaNodes": [
+          2
+        ],
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1",
+        "container": {
+          "steering": {
+            "policy": "auto"
+          }
+        },
+        "origins": {
+          "container.steering.policy": "claim"
+        }
+      }
+    ],
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "11111111-0000-0000-0000-000000000002": {
+    "claimName": "demo/c-dax",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "dax",
+        "sysfsPath": "/sys/bus/cxl/devices/region0",
+        "numaNodes": null,
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1",
+        "daxDevice": "/dev/dax0.2",
+        "daxMajor": 252,
+        "daxMinor": 2,
+        "readOnly": true
+      }
+    ],
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "11111111-0000-0000-0000-000000000007": {
+    "claimName": "demo/c-lease",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  },
+  "22222222-0000-0000-0000-000000000001": {
+    "claimName": "demo/cxl-lease-0a1b2c3d",
+    "devices": [
+      {
+        "requestName": "memory",
+        "deviceName": "memdev-c100e2e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "numa",
+        "sysfsPath": "/sys/bus/cxl/devices/region0",
+        "numaNodes": [
+          2
+        ],
+        "nodeAffinities": [
+          0
+        ],
+        "totalBytes": 134217728,
+        "consumedBytes": 134217728,
+        "serial": "0xc100e2e1"
+      }
+    ],
+    "lend": {
+      "lease": "0a1b2c3d",
+      "pod": {
+        "namespace": "demo",
+        "name": "requester",
+        "uid": "55555555-0000-0000-0000-000000000001"
+      },
+      "container": "main",
+      "nodes": [
+        2
+      ]
+    },
+    "bootID": "boot-1",
+    "viewOf": "state.json"
+  }
+}

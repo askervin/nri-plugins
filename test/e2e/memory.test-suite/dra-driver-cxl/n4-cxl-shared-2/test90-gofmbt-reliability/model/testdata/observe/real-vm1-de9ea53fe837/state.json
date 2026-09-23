@@ -1,0 +1,540 @@
+{
+  "schema": 2,
+  "generation": 93,
+  "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+  "memdevs": [
+    {
+      "serial": "0xc100e2e1",
+      "name": "mem0",
+      "source": "local",
+      "facts": {
+        "numaAffinity": 0
+      },
+      "regions": [
+        "region0"
+      ],
+      "grants": [
+        {
+          "claim": "97c0635b-b75d-49ee-b7fa-3fec0fbdfbbd",
+          "result": 0
+        },
+        {
+          "claim": "9368eb95-71ad-4f5b-bc8d-a39811bf138b",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    },
+    {
+      "serial": "0xc1ae2001",
+      "name": "mem3",
+      "source": "pool",
+      "facts": {
+        "shared": true,
+        "coherent": true
+      },
+      "regions": [
+        "region2"
+      ],
+      "grants": [
+        {
+          "claim": "a178e39b-0d22-45cc-a0de-a0b86bda6fb1",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    },
+    {
+      "serial": "0xc1ee0001",
+      "name": "mem2",
+      "source": "pool",
+      "facts": {
+        "coherent": true
+      },
+      "regions": [
+        "region3"
+      ],
+      "grants": [
+        {
+          "claim": "990daaea-ebba-4a57-b4f5-319d4bf71364",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    },
+    {
+      "serial": "0xc1ee2001",
+      "source": "pool",
+      "facts": {
+        "coherent": true
+      },
+      "grants": [
+        {
+          "claim": "8f59bf33-6fac-4ea8-8196-3e579319da54",
+          "result": 0
+        }
+      ],
+      "state": "ACTIVE"
+    }
+  ],
+  "regions": [
+    {
+      "name": "region0",
+      "mode": "ram",
+      "targets": [
+        "0xc100e2e1"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "numaNode": 2,
+      "size": 268435456,
+      "daxDevices": [
+        {
+          "name": "dax0.0",
+          "dev": {
+            "major": 252,
+            "minor": 1
+          },
+          "size": 134217728,
+          "ranges": [
+            {
+              "start": 27111981056,
+              "end": 27246198783
+            }
+          ],
+          "driver": "kmem",
+          "state": "KMEM_ONLINE",
+          "users": [
+            {
+              "claim": "9368eb95-71ad-4f5b-bc8d-a39811bf138b",
+              "result": 0
+            }
+          ]
+        },
+        {
+          "name": "dax0.1",
+          "dev": {
+            "major": 252,
+            "minor": 2
+          },
+          "size": 134217728,
+          "ranges": [
+            {
+              "start": 27246198784,
+              "end": 27380416511
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "users": [
+            {
+              "claim": "97c0635b-b75d-49ee-b7fa-3fec0fbdfbbd",
+              "result": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "region2",
+      "mode": "ram",
+      "targets": [
+        "0xc1ae2001"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "numaNode": 3,
+      "size": 268435456,
+      "daxDevices": [
+        {
+          "name": "dax2.0",
+          "dev": {
+            "major": 252,
+            "minor": 4
+          },
+          "size": 268435456,
+          "ranges": [
+            {
+              "start": 35970351104,
+              "end": 36238786559
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "users": [
+            {
+              "claim": "a178e39b-0d22-45cc-a0de-a0b86bda6fb1",
+              "result": 0
+            }
+          ],
+          "whole": true
+        }
+      ]
+    },
+    {
+      "name": "region3",
+      "mode": "ram",
+      "targets": [
+        "0xc1ee0001"
+      ],
+      "owner": "ours",
+      "state": "OWNED",
+      "setUp": true,
+      "numaNode": 2,
+      "size": 536870912,
+      "daxDevices": [
+        {
+          "name": "dax3.0",
+          "dev": {
+            "major": 252,
+            "minor": 3
+          },
+          "size": 536870912,
+          "ranges": [
+            {
+              "start": 27380416512,
+              "end": 27917287423
+            }
+          ],
+          "driver": "device_dax",
+          "state": "DEVICE_DAX",
+          "users": [
+            {
+              "claim": "990daaea-ebba-4a57-b4f5-319d4bf71364",
+              "result": 0
+            }
+          ],
+          "whole": true
+        }
+      ]
+    }
+  ],
+  "grants": [
+    {
+      "ref": {
+        "claim": "8f59bf33-6fac-4ea8-8196-3e579319da54",
+        "result": 0
+      },
+      "serial": "0xc1ee2001",
+      "asked": {
+        "source": "pool",
+        "kind": "exclusive",
+        "mode": "numa",
+        "size": 268435456
+      },
+      "state": "JOURNALED"
+    },
+    {
+      "ref": {
+        "claim": "9368eb95-71ad-4f5b-bc8d-a39811bf138b",
+        "result": 0
+      },
+      "serial": "0xc100e2e1",
+      "asked": {
+        "source": "local",
+        "kind": "exclusive",
+        "mode": "numa",
+        "size": 134217728
+      },
+      "intent": {
+        "region": "region0"
+      },
+      "got": {
+        "region": "region0",
+        "dax": "dax0.0",
+        "numaNode": 2,
+        "size": 134217728
+      },
+      "state": "REALISED"
+    },
+    {
+      "ref": {
+        "claim": "97c0635b-b75d-49ee-b7fa-3fec0fbdfbbd",
+        "result": 0
+      },
+      "serial": "0xc100e2e1",
+      "asked": {
+        "source": "local",
+        "kind": "exclusive",
+        "mode": "dax",
+        "size": 134217728
+      },
+      "intent": {
+        "region": "region0"
+      },
+      "got": {
+        "region": "region0",
+        "dax": "dax0.1",
+        "size": 134217728
+      },
+      "state": "REALISED"
+    },
+    {
+      "ref": {
+        "claim": "990daaea-ebba-4a57-b4f5-319d4bf71364",
+        "result": 0
+      },
+      "serial": "0xc1ee0001",
+      "asked": {
+        "source": "pool",
+        "kind": "exclusive",
+        "mode": "dax",
+        "size": 536870912
+      },
+      "intent": {
+        "region": "region3"
+      },
+      "got": {
+        "region": "region3",
+        "dax": "dax3.0",
+        "size": 536870912
+      },
+      "state": "REALISED"
+    },
+    {
+      "ref": {
+        "claim": "a178e39b-0d22-45cc-a0de-a0b86bda6fb1",
+        "result": 0
+      },
+      "serial": "0xc1ae2001",
+      "asked": {
+        "source": "pool",
+        "kind": "shared",
+        "mode": "dax",
+        "size": 268435456,
+        "shared": true
+      },
+      "intent": {
+        "region": "region2"
+      },
+      "got": {
+        "region": "region2",
+        "dax": "dax2.0",
+        "size": 268435456
+      },
+      "state": "REALISED"
+    }
+  ],
+  "preparations": [
+    {
+      "uid": "268867df-1687-4a95-a31e-4bdd66546fe9",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/mbt-lease-vm1-0-g1-c0-nkzbc",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "leaseClaim",
+          "request": "lease",
+          "pool": "n4-cxl-shared-1-fedora-43-containerd",
+          "device": "lease",
+          "shareID": "cc968a66-46dd-4a0c-a53b-cf03ba5c7524",
+          "leaseClaim": {
+            "uid": "268867df-1687-4a95-a31e-4bdd66546fe9"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "8f59bf33-6fac-4ea8-8196-3e579319da54",
+      "driver": "cxl-pool.nri.io",
+      "claimName": "cxl-pool-demo/mbt-xnuma-c-vm1-0-g1-c0-dwf6h",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARING",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "pool-c",
+          "device": "c-pooled0",
+          "grant": {
+            "claim": "8f59bf33-6fac-4ea8-8196-3e579319da54",
+            "result": 0
+          }
+        }
+      ]
+    },
+    {
+      "uid": "9368eb95-71ad-4f5b-bc8d-a39811bf138b",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/mbt-lsteer-vm1-0-g1-c0-ln9v9",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "n4-cxl-shared-1-fedora-43-containerd",
+          "device": "memdev-c100e2e1",
+          "shareID": "9c70d863-e305-4d54-b9d0-4bf5f944d380",
+          "settings": {
+            "container": {
+              "steering": {
+                "policy": "auto"
+              }
+            },
+            "origins": {
+              "container.steering.policy": "claim cxl-pool-demo/mbt-lsteer-vm1-0-g1-c0-ln9v9 request mem"
+            }
+          },
+          "grant": {
+            "claim": "9368eb95-71ad-4f5b-bc8d-a39811bf138b",
+            "result": 0
+          }
+        }
+      ]
+    },
+    {
+      "uid": "97c0635b-b75d-49ee-b7fa-3fec0fbdfbbd",
+      "driver": "cxl.nri.io",
+      "claimName": "cxl-pool-demo/mbt-ldax-vm1-0-g1-c0-m5rvh",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "n4-cxl-shared-1-fedora-43-containerd",
+          "device": "memdev-c100e2e1",
+          "shareID": "f2ac655e-0c9f-4196-98ac-4f5d3f58b919",
+          "grant": {
+            "claim": "97c0635b-b75d-49ee-b7fa-3fec0fbdfbbd",
+            "result": 0
+          }
+        }
+      ]
+    },
+    {
+      "uid": "990daaea-ebba-4a57-b4f5-319d4bf71364",
+      "driver": "cxl-pool.nri.io",
+      "claimName": "cxl-pool-demo/mbt-xdax-a-vm1-0-g1-c0-9vlrd",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "pool-a",
+          "device": "a-pooled0",
+          "grant": {
+            "claim": "990daaea-ebba-4a57-b4f5-319d4bf71364",
+            "result": 0
+          }
+        }
+      ]
+    },
+    {
+      "uid": "a178e39b-0d22-45cc-a0de-a0b86bda6fb1",
+      "driver": "cxl-pool.nri.io",
+      "claimName": "cxl-pool-demo/mbt-sdax-c-vm1-0-g1-c0-rbdjd",
+      "bootID": "46537e1b-8ce7-44a2-9bac-b841ddb0aa7d",
+      "state": "PREPARED",
+      "results": [
+        {
+          "index": 0,
+          "kind": "grant",
+          "request": "mem",
+          "pool": "pool-c",
+          "device": "c-shared0",
+          "shareID": "5bdac689-1421-436f-8413-7e86b5cdf135",
+          "grant": {
+            "claim": "a178e39b-0d22-45cc-a0de-a0b86bda6fb1",
+            "result": 0
+          }
+        }
+      ]
+    }
+  ],
+  "leaseClaims": [
+    {
+      "uid": "268867df-1687-4a95-a31e-4bdd66546fe9",
+      "namespace": "cxl-pool-demo",
+      "name": "mbt-lease-vm1-0-g1-c0-nkzbc",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "mbt-lease-vm1-0-g1",
+          "uid": "e1cac38a-1eda-4335-b84b-843762a35782"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/268867df-1687-4a95-a31e-4bdd66546fe9",
+      "state": "OPEN"
+    }
+  ],
+  "provenance": [
+    {
+      "serial": "0xc100e2e1",
+      "state": "LOCAL",
+      "lastSeen": "2026-11-10T09:51:24.628411622Z"
+    },
+    {
+      "serial": "0xc1ae0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "lastSeen": "2026-11-10T09:51:24.618135394Z"
+    },
+    {
+      "serial": "0xc1ae1001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "lastSeen": "2026-11-10T09:51:24.618135394Z"
+    },
+    {
+      "serial": "0xc1ae2001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:53:04.526378014Z"
+    },
+    {
+      "serial": "0xc1ae2002",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:51:24.618135394Z"
+    },
+    {
+      "serial": "0xc1ee0001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "lastSeen": "2026-11-10T09:53:04.526378014Z"
+    },
+    {
+      "serial": "0xc1ee1001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "lastSeen": "2026-11-10T09:51:24.618135394Z"
+    },
+    {
+      "serial": "0xc1ee2001",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:52:42.77476111Z"
+    },
+    {
+      "serial": "0xc1ee2002",
+      "state": "POOL",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "lastSeen": "2026-11-10T09:51:24.618135394Z"
+    }
+  ],
+  "listedPools": [
+    {
+      "pool": "cxl-pool.nri.io/pool-a",
+      "listed": "2026-11-10T09:51:24.618135394Z"
+    },
+    {
+      "pool": "cxl-pool.nri.io/pool-b",
+      "listed": "2026-11-10T09:51:24.618135394Z"
+    },
+    {
+      "pool": "cxl-pool.nri.io/pool-c",
+      "listed": "2026-11-10T09:51:24.618135394Z"
+    }
+  ]
+}

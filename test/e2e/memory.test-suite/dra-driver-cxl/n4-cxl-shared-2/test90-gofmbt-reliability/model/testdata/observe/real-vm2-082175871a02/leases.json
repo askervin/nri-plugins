@@ -1,0 +1,44 @@
+{
+  "claims": {
+    "f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae": {
+      "uid": "f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae",
+      "namespace": "cxl-pool-demo",
+      "name": "leaser-lease-rvbc6",
+      "pods": [
+        {
+          "namespace": "cxl-pool-demo",
+          "name": "leaser",
+          "uid": "623d5560-afe1-465f-a1f8-8f6f1860a78d"
+        }
+      ],
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae"
+    }
+  },
+  "leases": {
+    "11a52fcd": {
+      "id": "11a52fcd",
+      "claim": "f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae",
+      "source": "local",
+      "mode": "fs",
+      "shared": true,
+      "readOnly": true,
+      "access": "direct",
+      "fsType": "ext4",
+      "name": "data",
+      "path": "/run/cxl/fs/data",
+      "serial": "0xc100f5e1",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "leaser",
+        "uid": "623d5560-afe1-465f-a1f8-8f6f1860a78d"
+      },
+      "container": "main",
+      "state": "Ready",
+      "node": -1,
+      "bytes": 534773760,
+      "created": "2026-11-10T09:47:37.0121049Z"
+    }
+  },
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "viewOf": "state.json"
+}

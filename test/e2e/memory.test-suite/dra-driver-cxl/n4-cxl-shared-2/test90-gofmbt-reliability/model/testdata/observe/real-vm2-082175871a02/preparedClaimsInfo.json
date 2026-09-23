@@ -1,0 +1,124 @@
+{
+  "08cc8a3c-9a99-47f5-bbe2-2a3fc2728788": {
+    "claimName": "cxl-pool-demo/cxl-lease-11a52fcd",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "memdev-c100f5e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "fs",
+        "sysfsPath": "/sys/bus/cxl/devices/region1",
+        "numaNodes": null,
+        "nodeAffinities": [
+          1
+        ],
+        "totalBytes": 534773760,
+        "consumedBytes": 534773760,
+        "serial": "0xc100f5e1",
+        "readOnly": true,
+        "persistent": true,
+        "namespace": "namespace1.0",
+        "blockDevice": "/dev/pmem1",
+        "blockMajor": 259,
+        "access": "direct",
+        "path": "/run/cxl-fs/C100F5E1",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+        "fsType": "ext4"
+      }
+    ],
+    "lend": {
+      "lease": "11a52fcd",
+      "pod": {
+        "namespace": "cxl-pool-demo",
+        "name": "leaser",
+        "uid": "623d5560-afe1-465f-a1f8-8f6f1860a78d"
+      },
+      "container": "main",
+      "fsDir": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae",
+      "name": "data",
+      "mounts": [
+        "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae/data"
+      ]
+    },
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "3de936cb-234f-4a67-bf2e-ddced2c17a84": {
+    "claimName": "cxl-pool-demo/fs-ro",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100f5e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "fs",
+        "sysfsPath": "/sys/bus/cxl/devices/region1",
+        "numaNodes": null,
+        "nodeAffinities": [
+          1
+        ],
+        "totalBytes": 534773760,
+        "consumedBytes": 534773760,
+        "serial": "0xc100f5e1",
+        "readOnly": true,
+        "persistent": true,
+        "namespace": "namespace1.0",
+        "blockDevice": "/dev/pmem1",
+        "blockMajor": 259,
+        "access": "direct",
+        "path": "/run/cxl-fs/C100F5E1",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+        "fsType": "ext4"
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "ebf00479-be45-4185-b027-10a914de8cf6": {
+    "claimName": "cxl-pool-demo/fs-rw",
+    "devices": [
+      {
+        "requestName": "mem",
+        "deviceName": "memdev-c100f5e1",
+        "result": 0,
+        "deviceType": "memdev",
+        "mode": "fs",
+        "sysfsPath": "/sys/bus/cxl/devices/region1",
+        "numaNodes": null,
+        "nodeAffinities": [
+          1
+        ],
+        "totalBytes": 534773760,
+        "consumedBytes": 534773760,
+        "serial": "0xc100f5e1",
+        "persistent": true,
+        "namespace": "namespace1.0",
+        "blockDevice": "/dev/pmem1",
+        "blockMajor": 259,
+        "access": "direct",
+        "path": "/run/cxl-fs/C100F5E1",
+        "nodeMount": "/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+        "fsType": "ext4"
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  },
+  "f9f9f5b5-f5e7-4f36-85a9-fced1dbc8cae": {
+    "claimName": "cxl-pool-demo/leaser-lease-rvbc6",
+    "devices": [
+      {
+        "requestName": "lease",
+        "deviceName": "lease",
+        "result": 0,
+        "deviceType": "lease",
+        "numaNodes": null,
+        "totalBytes": 0,
+        "consumedBytes": 0
+      }
+    ],
+    "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+    "viewOf": "state.json"
+  }
+}

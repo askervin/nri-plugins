@@ -1,0 +1,16 @@
+{
+  "bootID": "a3986f07-9578-4187-b527-61ec39c9a7fc",
+  "devices": [
+    {
+      "serial": 3238060769,
+      "serialHex": "c100e2e1",
+      "memdev": "mem0",
+      "region": "region0",
+      "node": 2,
+      "dax": "dax0.0",
+      "shared": true,
+      "claims": {}
+    }
+  ],
+  "viewOf": "state.json"
+}
