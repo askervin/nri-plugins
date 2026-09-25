@@ -399,6 +399,9 @@ vm-setup() {
     local vagrantdir="$output_dir"
     local files="$nri_resource_policy_src/test/e2e/files"
     local qemu_dir="${qemu_dir:-/usr/share/qemu}"
+    # The Vagrantfile reads QEMU_BIN when starting the VM, both here and in
+    # vm-reboot. Empty means the qemu-system-x86_64 found in PATH.
+    export QEMU_BIN="${qemu_bin:-}"
     local efi_code efi_vars kind
     local box_name="$distro" box_file="" package_box="" use_cached_box=""
     local no_provision="" e2e_no_provision=""

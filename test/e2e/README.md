@@ -161,6 +161,19 @@ Worth knowing:
   running any test. Raise `CLUSTER_READY_TIMEOUT` (300 seconds by default) if a
   large topology needs longer.
 
+## Running the VM in a qemu of your own
+
+Set `qemu_bin` to run the test VM in a qemu other than the one in `PATH`, a
+qemu built from git for instance:
+
+```shell
+qemu_bin=~/git/qemu/build/qemu-system-x86_64 ./run_tests.sh memory.test-suite
+```
+
+The setting applies to a VM the framework creates after it: the `Vagrantfile`
+of an output directory which already exists is not rewritten. Remove the output
+directory, or `vagrant destroy -f` in it, to recreate the VM.
+
 ## Collecting coverage data
 
 The tests can collect the same kind of coverage data from the plugins they

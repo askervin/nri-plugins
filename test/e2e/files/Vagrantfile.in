@@ -97,6 +97,11 @@ Vagrant.configure("2") do |config|
     qemu.extra_netdev_args = "net=192.168.76.0/24,dhcpstart=192.168.76.9"
     qemu.ssh_port = SSH_PORT
     qemu.qemu_dir = "QEMU_DIR"
+    # Run the VM in a qemu of your own, for instance one built from git, with
+    # qemu_bin=/path/to/qemu-system-x86_64 ./run_tests.sh ...
+    if !"#{ENV['QEMU_BIN']}".empty?
+      qemu.qemu_bin = "#{ENV['QEMU_BIN']}"
+    end
     qemu.smp = "QEMU_SMP"
     qemu.extra_qemu_args = [
       "-device", "pcie-root-port,id=rp_disk,bus=pcie.0,port=0x9,chassis=5",

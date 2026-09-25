@@ -31,6 +31,8 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 SRC_DIR=$(realpath "$SCRIPT_DIR/../..")
 LIB_DIR=$(realpath "$SCRIPT_DIR/lib")
 qemu_dir="${qemu_dir:-/usr/share/qemu}"
+# Path to the qemu-system-x86_64 to run the VM in, the one in PATH by default.
+qemu_bin="${qemu_bin:-}"
 
 export OUTPUT_DIR=${outdir:-"$SCRIPT_DIR"/output}
 
