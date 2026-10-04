@@ -1,0 +1,64 @@
+# fake-cxl-pool-server configuration example.
+# Run: bin/fake-cxl-pool-server -config config.example.yaml [-v]
+# Every key is optional; without a config file the server uses the
+# defaults shown here.
+
+# Listen address. VMs with slirp networking reach the host loopback at
+# 192.168.76.2, so clients in e2e VMs use http://192.168.76.2:9909.
+listen: 127.0.0.1:9909
+
+# Serials of devices created without one: serialBase+1, +2, ...
+serialBase: 0xc1f00000
+
+# Persistent state (dynamic devices, allocations, attachments, hotplug
+# counters). Default: next to the first pool dir (<dir>.state.json).
+# "-" disables persistence.
+stateFile: /tmp/fake-cxl-pool.state.json
+
+# Memory pools: directories of device backing files <dir>/<device>.raw.
+pools:
+  - name: default
+    dir: /tmp/fake-cxl-pool        # created if missing
+    capacity: 8G                   # max sum of device sizes in this pool
+    sharable: true                 # shared devices may be created here
+
+# Static inventory: created at startup (backing files too) if missing.
+# Sizes must be multiples of 256M (CXL capacity unit).
+devices:
+  - name: shared0
+    size: 256M
+    shared: true
+    pool: default                  # file: /tmp/fake-cxl-pool/shared0.raw
+    serial: 0xc1f0ee01
+  - name: pooled0
+    size: 512M
+    file: /tmp/fake-cxl-pool/pooled0.raw   # explicit path allowed
+    labels:
+      tier: slow
+
+# Static hosts. Discovery finds running e2e VMs without this; a config
+# host with the same name as a discovered VM overrides its sockets.
+hosts:
+  - name: n4-cxl-shared-1-fedora-43-containerd
+    # uuid: b6a78455-edb1-558d-8cf1-01a259f76e97   # default: qemu -uuid
+    # qmp: /path/to/n4-cxl-shared-1-fedora-43-containerd/qmp.sock
+    # hmp: /path/to/n4-cxl-shared-1-fedora-43-containerd/monitor.sock
+    # control: hmp                 # force the monitor protocol (qmp|hmp)
+
+discovery:
+  # Scan /proc for qemu-system-* processes. The VM name comes from
+  # .vagrant/machines/<name>/ in a -drive path, sockets from -qmp, -monitor
+  # and -chardev socket + -mon, relative to the vagrant project dir (qemu
+  # -daemonize chdirs to /). qmp-e2e.sock is never used: it belongs to the
+  # test framework's vm-qmp.
+  qemu: true
+  interval: 10s
+  # Only VMs whose name matches one of these patterns (default: all).
+  # names: ["n4-cxl-shared-*"]
+  # Pre-declared beram_*/befile_* backends of qemu command lines become
+  # devices of scope "local".
+  localDevices: true
+
+# How long DELETE .../attachments/{host} waits for qemu to delete the
+# device (DEVICE_DELETED, ~6 s when the guest has released it).
+detachTimeout: 15s

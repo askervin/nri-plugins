@@ -1,0 +1,40 @@
+# WS4 generator diff: test/e2e/lib/topology2qemuopts.py before (git HEAD copy) vs after the WS4 change
+# (re-run after the follow-up that added "hdm-for-passthrough")
+# 2026-10-02T17:19:10+03:00, script: /home/akervine/.claude/jobs/5b6674cf/tmp/ws4/gen-diff.sh
+# Inputs: every topology.var.json under test/e2e (except output dirs and the new n4-cxl-shared-*),
+# the run.sh default topology, the docstring examples, and a dimm/nvdimm/nested-switch case,
+# each with SEPARATED_OUTPUT_VARS=0 and =1 (the mode vm.bash uses). Output compared byte by byte,
+# including stderr and exit status. 'SAME' = identical, a DIFF line would be followed by the diff.
+# Original: b48ac0e5468664a0 (HEAD), copy: b48ac0e5468664a0
+
+SAME  SEPARATED_OUTPUT_VARS=0 ./memory.test-suite/memory-policy/n4-cxl/topology.var.json (1669 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./memory.test-suite/memory-policy/n4-cxl/topology.var.json (1820 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./memory.test-suite/memory-policy/n6-hbm-cxl/topology.var.json (1693 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./memory.test-suite/memory-policy/n6-hbm-cxl/topology.var.json (1969 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./memory.test-suite/memtierd/n6-hbm-cxl/topology.var.json (1693 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./memory.test-suite/memtierd/n6-hbm-cxl/topology.var.json (1969 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/balloons/n4c16/topology.var.json (964 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/balloons/n4c16/topology.var.json (1108 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/balloons/n6-hbm-cxl/topology.var.json (1693 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/balloons/n6-hbm-cxl/topology.var.json (1969 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/balloons/s8c4k/topology.var.json (2783 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/balloons/s8c4k/topology.var.json (3239 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/topology-aware/n4c128/topology.var.json (971 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/topology-aware/n4c128/topology.var.json (1115 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/topology-aware/n4c16/topology.var.json (964 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/topology-aware/n4c16/topology.var.json (1108 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/topology-aware/n6-hbm-cxl/topology.var.json (1693 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/topology-aware/n6-hbm-cxl/topology.var.json (1969 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 ./policies.test-suite/topology-aware/s8c4k/topology.var.json (2783 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 ./policies.test-suite/topology-aware/s8c4k/topology.var.json (3239 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 run.sh-default (1729 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 run.sh-default (2005 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 doc-numa (1325 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 doc-numa (1529 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 doc-cxl1 (656 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 doc-cxl1 (723 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 doc-cxl2 (1267 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 doc-cxl2 (1376 bytes)
+SAME  SEPARATED_OUTPUT_VARS=0 dimms (1435 bytes)
+SAME  SEPARATED_OUTPUT_VARS=1 dimms (1592 bytes)
+overall: no differences
