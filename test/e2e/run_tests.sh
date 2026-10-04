@@ -226,8 +226,18 @@ for POLICY_DIR in "$TESTS_ROOT_DIR"/*; do
             if ! [ -d "$TOPOLOGY_DIR" ]; then
                 continue
             fi
-            if ! [[ "$(basename "$TOPOLOGY_DIR")" =~ .*"$TESTS_TOPOLOGY_FILTER".* ]]; then
-                continue
+            # A filter that names a topology directory selects only that
+            # topology: otherwise n4-cxl would select also n4-cxl-shared-1
+            # and n4-cxl-shared-2 and create VMs for them. Any other filter
+            # matches a substring of the topology name, as before.
+            if [ -n "$TESTS_TOPOLOGY_FILTER" ]; then
+                if [ -d "$POLICY_DIR/$TESTS_TOPOLOGY_FILTER" ]; then
+                    if [ "$(basename "$TOPOLOGY_DIR")" != "$TESTS_TOPOLOGY_FILTER" ]; then
+                        continue
+                    fi
+                elif ! [[ "$(basename "$TOPOLOGY_DIR")" =~ .*"$TESTS_TOPOLOGY_FILTER".* ]]; then
+                    continue
+                fi
             fi
             if [ "$(basename "$TOPOLOGY_DIR")" == "vm-files" ]; then
                 continue
