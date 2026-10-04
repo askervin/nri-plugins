@@ -27,6 +27,8 @@ CONTAINERD_RELEASE = ""
 CONTAINERD_SRC = ""
 CACHE_DIR="#{ENV['CACHE_DIR']}"
 NO_PROVISION = "#{ENV['E2E_NO_PROVISION']}"
+# Qemu to run the VM in. If empty, run qemu-system-ARCH found in PATH.
+QEMU_BIN = "#{ENV['QEMU_BIN']}"
 
 if CRI_RUNTIME == "containerd"
   CONTAINERD_RELEASE = "#{ENV['containerd_release']}"
@@ -97,6 +99,7 @@ Vagrant.configure("2") do |config|
     qemu.extra_netdev_args = "net=192.168.76.0/24,dhcpstart=192.168.76.9"
     qemu.ssh_port = SSH_PORT
     qemu.qemu_dir = "QEMU_DIR"
+    qemu.qemu_bin = QEMU_BIN if !QEMU_BIN.empty?
     qemu.smp = "QEMU_SMP"
     qemu.extra_qemu_args = [
       "-device", "pcie-root-port,id=rp_disk,bus=pcie.0,port=0x9,chassis=5",

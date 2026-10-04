@@ -457,6 +457,37 @@ vm-setup() {
     local MEM=$(echo $VM_QEMU_CPUMEM | sed 's/MACHINE:.*CPU:.*SMP:.*MEM:-m \([^|]*\).*/\1/g')
     local EXTRA_ARGS=$(echo $VM_QEMU_CPUMEM | sed 's/MACHINE:.*CPU:.*SMP:.*MEM:.*EXTRA:\([^|]*\).*/\1/g')
     local EXTRA_ARGS+="${EXTRA_ARGS:+,} \"-monitor\", \"unix:monitor.sock,server,nowait\""
+    # A QMP socket serves one client at a time. qmp.sock is for clients that
+    # keep the connection open, like a CXL memory pool emulator waiting for
+    # device events, and qmp-e2e.sock is for vm-qmp, which connects for one
+    # command at a time. Sockets are relative to the output dir, the working
+    # directory of qemu.
+    EXTRA_ARGS+=", \"-qmp\", \"unix:qmp.sock,server,nowait\", \"-qmp\", \"unix:qmp-e2e.sock,server,nowait\""
+
+    # SMBIOS system UUID of the VM is a version 5 UUID of the VM name, so it
+    # is known without asking the VM. The VM sees it in
+    # /sys/class/dmi/id/product_uuid, and kubelet reports it as
+    # node.status.nodeInfo.systemUUID, which lets tools on the host map
+    # Kubernetes nodes to qemu processes. It is recorded in the env file of
+    # the VM as VM_UUID. cloud-init takes a UUID that starts with "ec2" for
+    # an EC2 instance, so in that case hash "<VM name>-1" (-2, ...) instead.
+    local vm_uuid
+    vm_uuid=$(python3 -c '
+import sys, uuid
+name, suffix = sys.argv[1], 0
+vm_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, name)
+while str(vm_uuid).startswith("ec2"):
+    suffix += 1
+    vm_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, "%s-%d" % (name, suffix))
+print(vm_uuid)' "$vmname") || error "cannot create UUID for VM $vmname"
+    EXTRA_ARGS+=", \"-uuid\", \"$vm_uuid\""
+
+    # Run the VM in a custom qemu, for instance in a development build, if
+    # qemu_bin is set when the VM is created. It is recorded in the env file
+    # of the VM, so that every later vagrant up keeps using the same qemu.
+    if [ -n "$qemu_bin" ] && { [[ "$qemu_bin" != /* ]] || [ ! -x "$qemu_bin" ]; }; then
+        error "qemu_bin=$qemu_bin is not an absolute path of an executable"
+    fi
 
     case $efi in
         "") ;;
@@ -489,6 +520,7 @@ vm-setup() {
     fi
 
     VM_MONITOR="(cd \"$output_dir\" && socat STDIO unix-connect:monitor.sock)"
+    VM_QMP="$output_dir/qmp-e2e.sock"
 
     if [ "$vagrant_debug" == "1" ]; then
 	echo "MACHINE: $MACHINE"
@@ -536,6 +568,8 @@ vm-setup() {
 		-e "s/SSH_PORT=/SSH_PORT=$SSH_PORT/g" \
                 -e "s:CACHE_DIR=:CACHE_DIR=\"$CACHE_DIR\":g" \
                 -e "s:E2E_NO_PROVISION=:E2E_NO_PROVISION=$e2e_no_provision:g" \
+                -e "s:QEMU_BIN=:QEMU_BIN=\"$qemu_bin\":g" \
+                -e "s:VM_UUID=:VM_UUID=$vm_uuid:g" \
 		"$files/env.in" > "$vagrantdir/env"
 	else
 	    sed -e "s/DNS_NAMESERVER=\"\"/DNS_NAMESERVER=\"$dns_nameserver\"/g" \
@@ -543,8 +577,13 @@ vm-setup() {
 		-e "s/SSH_PORT=/SSH_PORT=$SSH_PORT/g" \
                 -e "s:CACHE_DIR=:CACHE_DIR=\"$CACHE_DIR\":g" \
                 -e "s:E2E_NO_PROVISION=:E2E_NO_PROVISION=$e2e_no_provision:g" \
+                -e "s:QEMU_BIN=:QEMU_BIN=\"$qemu_bin\":g" \
+                -e "s:VM_UUID=:VM_UUID=$vm_uuid:g" \
 		"$files/env.in" > "$vagrantdir/env"
 	fi
+    elif [ -n "$qemu_bin" ] && ! grep -qx "QEMU_BIN=\"$qemu_bin\"" "$vagrantdir/env"; then
+        echo "WARNING: ignoring qemu_bin=$qemu_bin, the VM exists already." \
+             "Its qemu is QEMU_BIN in $vagrantdir/env." >&2
     fi
 
     # An env file written before this VM was known to come from a box has no
@@ -578,6 +617,15 @@ vm-setup() {
              exit 1
          fi
      fi
+
+     # Qemu creates the files of file-backed memory, like CXL memory shared
+     # with other VMs, but not the directories of the files. Create them on
+     # every start, as they may be in a tmpfs emptied after VM creation.
+     local mem_path
+     for mem_path in $(grep -o 'mem-path=[^,"]*' Vagrantfile | sed 's/^mem-path=//'); do
+         mkdir -p "$(dirname "$mem_path")" ||
+             error "cannot create directory for qemu memory backend file $mem_path"
+     done
 
      if ! (export ANSIBLE_SSH_ARGS="$SSH_PERSIST_OPTS"
            vagrant up $no_provision --provider qemu || error "failed to bring up VM"); then
@@ -730,8 +778,8 @@ vm-reboot() { # script API
         fi
 
         if [ $_shutdown = 0 ]; then
-            for _pid in $(lsof -Fp monitor.sock 2>/dev/null); do
-                kill ${_pid#p} || :
+            for _pid in $(vm-qemu-pid "$_vagrantdir"); do
+                kill $_pid || :
             done
             sleep 3
             vagrant status 2>/dev/null | grep running || {
@@ -741,8 +789,8 @@ vm-reboot() { # script API
         fi
 
         if [ $_shutdown = 0 ]; then
-            for _pid in $(lsof -Fp monitor.sock 2>/dev/null); do
-                kill -9 ${_pid#p} || :
+            for _pid in $(vm-qemu-pid "$_vagrantdir"); do
+                kill -9 $_pid || :
             done
             sleep 3
             vagrant status 2>/dev/null | grep running || {
@@ -760,6 +808,24 @@ vm-reboot() { # script API
         vagrant up --no-provision
     )
     deadline=$_deadline host-wait-vm-ssh-server $_vagrantdir
+}
+
+vm-qemu-pid() { # script API
+    # Usage: vm-qemu-pid [VAGRANTDIR]
+    #
+    # Print the process id of the qemu of the VM in VAGRANTDIR, the output
+    # directory. The default is $OUTPUT_DIR.
+    #
+    # Neither "lsof monitor.sock" nor the working directory of qemu tells
+    # VMs apart: every qemu has the same relative socket paths, and works in
+    # "/" after daemonizing. The disk image of the VM is in VAGRANTDIR.
+    local _dir _pid
+    _dir="$(realpath "${1:-$OUTPUT_DIR}")"
+    for _pid in $(pgrep qemu-system); do
+        if grep -qaF "$_dir/.vagrant/machines/" "/proc/$_pid/cmdline" 2>/dev/null; then
+            echo "$_pid"
+        fi
+    done
 }
 
 vm-cpu-hotplug() { # script API
@@ -810,12 +876,14 @@ vm-cxl-hw() { # script API
     for plugged_id in $(vm-monitor "info qtree -b" | awk -F\" '/dev: cxl-type3/{print $2}' | sed 's/\.hp.*//g'); do
         plugged[$plugged_id]=1
     done
-    vm-monitor "info memdev" | awk '/ beram_cxl_memdev/{print $3}' | while read beram_id; do
-        read dev bus sn <<< "$(sed -e 's/^beram_\(cxl_memdev[0-9]\+\)__bus_\(.*\)__sn_\(.*\)$/\1 \2 \3/g' <<< "$beram_id")"
+    # Backends of the devices are beram_* (memory-backend-ram) or befile_*
+    # (memory-backend-file), see topology2qemuopts.py.
+    vm-monitor "info memdev" | awk '/ be(ram|file)_cxl_memdev/{print $3}' | while read be_id; do
+        read dev bus sn <<< "$(sed -e 's/^be\(ram\|file\)_\(cxl_memdev[0-9]\+\)__bus_\(.*\)__sn_\(.*\)$/\2 \3 \4/g' <<< "$be_id")"
         echo -n "$dev"
         [ "$show_bus" = 1 ] && echo -n " bus=$bus"
         [ "$show_sn" = 1 ] && echo -n " sn=$sn"
-        [ "$show_be" = 1 ] && echo -n " volatile-memdev=$beram_id"
+        [ "$show_be" = 1 ] && echo -n " volatile-memdev=$be_id"
         [ "${plugged[$dev]}" = 1 ] && echo -n " plugged"
         echo
     done
@@ -982,6 +1050,80 @@ vm-monitor() { # script API
         error "sending command to Qemu monitor failed"
     fi
     echo ""
+}
+
+vm-qmp() { # script API
+    # Usage: vm-qmp COMMAND [ARGUMENTS_JSON]
+    #        vm-qmp QMP_REQUEST_JSON
+    #
+    # Execute COMMAND on Qemu Machine Protocol (QMP) monitor, and print
+    # the response, {"return": ...} or {"error": ...}, as a line of JSON.
+    # Return non-zero exit status if the response is an error. Fail the
+    # test if there is no response in ${qmp_timeout:-30} seconds. Events
+    # that qemu sends before the response are not printed.
+    #
+    # vm-qmp has a QMP socket of its own, so it works also when another
+    # QMP client is connected to qmp.sock in the output directory.
+    #
+    # Examples:
+    #   vm-qmp query-version
+    #   vm-qmp qom-list '{"path": "/machine/peripheral"}'
+    #   vm-qmp '{"execute": "query-memdev"}'
+    local rv
+    [ -n "$VM_QMP" ] ||
+        error "VM is not running"
+    [ -S "$VM_QMP" ] ||
+        error "QMP socket $VM_QMP not found, VM created without it?"
+    python3 - "$VM_QMP" "$1" "$2" "${qmp_timeout:-30}" <<'EOF'
+import json, os, socket, sys
+
+sock_path, command, arguments, timeout = sys.argv[1:5]
+if command.lstrip().startswith("{"):
+    request = json.loads(command)
+else:
+    request = {"execute": command}
+    if arguments:
+        request["arguments"] = json.loads(arguments)
+
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(float(timeout))
+    # The absolute path of a socket in an output directory may be too long
+    # for connect().
+    os.chdir(os.path.dirname(sock_path))
+    s.connect(os.path.basename(sock_path))
+    f = s.makefile("rwb")
+
+    def send(msg):
+        f.write(json.dumps(msg).encode() + b"\n")
+        f.flush()
+
+    def receive():
+        """Return next greeting or response, skip events."""
+        while True:
+            line = f.readline()
+            if not line:
+                raise EOFError("connection closed by qemu")
+            msg = json.loads(line)
+            if "QMP" in msg or "return" in msg or "error" in msg:
+                return msg
+
+    receive()
+    send({"execute": "qmp_capabilities"})
+    receive()
+    send(request)
+    response = receive()
+except Exception as e:
+    print("vm-qmp: %s: %s" % (sock_path, e), file=sys.stderr)
+    sys.exit(2)
+print(json.dumps(response))
+sys.exit(1 if "error" in response else 0)
+EOF
+    rv=$?
+    if [ "$rv" = "2" ]; then
+        error "sending command to Qemu QMP monitor failed"
+    fi
+    return $rv
 }
 
 vm-run-until() { # script API
