@@ -207,18 +207,21 @@ const (
 
 // Attachment is the hotplug state of a device in a host.
 type Attachment struct {
-	ID           string    `json:"id"`
-	Device       string    `json:"device"`
-	Host         string    `json:"host"`
-	Serial       string    `json:"serial"`
-	Slot         Slot      `json:"slot"`
-	QemuDeviceID string    `json:"qemuDeviceId"`
-	QemuObjectID string    `json:"qemuObjectId"`
-	State        string    `json:"state"`
-	Error        string    `json:"error,omitempty"`
-	Adopted      bool      `json:"adopted,omitempty"`
-	Created      time.Time `json:"created"`
-	Updated      time.Time `json:"updated"`
+	ID           string `json:"id"`
+	Device       string `json:"device"`
+	Host         string `json:"host"`
+	Serial       string `json:"serial"`
+	Slot         Slot   `json:"slot"`
+	QemuDeviceID string `json:"qemuDeviceId"`
+	QemuObjectID string `json:"qemuObjectId"`
+	State        string `json:"state"`
+	Error        string `json:"error,omitempty"`
+	// Owner is the owner given in the attach request that created the
+	// attachment ("" if none, or adopted).
+	Owner   string    `json:"owner,omitempty"`
+	Adopted bool      `json:"adopted,omitempty"`
+	Created time.Time `json:"created"`
+	Updated time.Time `json:"updated"`
 }
 
 // AttachmentID returns the id of the attachment of a device to a host.

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package guest
+package memctl
 
 import (
 	"context"
@@ -125,8 +125,8 @@ func (f *fakeSys) exec(ctx context.Context, name string, args ...string) (string
 	return "", errors.New("unexpected command " + name + " " + strings.Join(args, " "))
 }
 
-func (f *fakeSys) guest() *Guest {
-	return &Guest{
+func (f *fakeSys) manager() *Manager {
+	return &Manager{
 		SysRoot:      f.root,
 		DevRoot:      "/dev",
 		Exec:         f.exec,
@@ -144,7 +144,7 @@ func (f *fakeSys) commands() string {
 
 func TestFindAndWait(t *testing.T) {
 	f := newFakeSys(t)
-	g := f.guest()
+	g := f.manager()
 	if _, err := g.FindMemdev(0xc1f00001); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not found, got %v", err)
 	}
@@ -177,7 +177,7 @@ func TestFindAndWait(t *testing.T) {
 func TestRegionRAMOnlineRelease(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1f00001")
-	g := f.guest()
+	g := f.manager()
 	ctx := context.Background()
 	ri, err := g.CreateRegion(ctx, "mem0", ModeRAM, "")
 	if err != nil {
@@ -241,13 +241,24 @@ func TestRegionDevDax(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1f00001")
 	os.Remove(f.p(memPath + "/driver")) // disabled memdev gets enabled
-	g := f.guest()
+	g := f.manager()
 	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDevDax, "decoder0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ri.Driver != DriverDeviceDax || ri.Mode != ModeDevDax || ri.Device != "/dev/dax0.0" {
 		t.Fatalf("unexpected region info %+v", ri)
+	}
+	if _, _, err := g.DaxDevNumbers("dax0.0"); err == nil {
+		t.Fatal("expected an error for a missing dev file")
+	}
+	f.write("bus/cxl/devices/region0/dax_region0/dax0.0/dev", "251:3")
+	if ma, mi, err := g.DaxDevNumbers("dax0.0"); err != nil || ma != 251 || mi != 3 {
+		t.Fatalf("dax device numbers %d:%d %v", ma, mi, err)
+	}
+	f.write("bus/cxl/devices/region0/dax_region0/dax0.0/dev", "bogus")
+	if _, _, err := g.DaxDevNumbers("dax0.0"); err == nil {
+		t.Fatal("expected a parse error")
 	}
 	cmds := f.commands()
 	if !strings.HasPrefix(cmds, "cxl enable-memdev mem0\n") || !strings.Contains(cmds, "daxctl reconfigure-device --mode=devdax --force dax0.0") {
@@ -258,5 +269,69 @@ func TestRegionDevDax(t *testing.T) {
 	}
 	if _, err := g.CreateRegion(context.Background(), "mem0", "bogus", ""); err == nil {
 		t.Fatal("expected invalid mode error")
+	}
+}
+
+// The kernel binds the dax device of a ram region to kmem by itself, and
+// its driver link exists before dev_dax_kmem_probe has added the memory
+// blocks: CreateRegion must wait for the blocks (e2e test10-dra-pooling
+// failed its first NodePrepare with "no memory blocks found").
+func TestRegionRAMWaitsForBlocks(t *testing.T) {
+	f := newFakeSys(t)
+	f.plug("0xc1ee0001")
+	for _, b := range []int{74, 75} {
+		os.RemoveAll(f.p("devices/system/memory/memory" + itoa(b)))
+	}
+	g := f.manager()
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		for _, b := range []int{74, 75} {
+			f.write("devices/system/memory/memory"+itoa(b)+"/state", "offline")
+		}
+	}()
+	ri, err := g.CreateRegion(context.Background(), "mem0", ModeRAM, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ri.Blocks) != 2 {
+		t.Fatalf("CreateRegion returned before the memory blocks appeared: %+v", ri)
+	}
+	if _, err := g.Online("mem0", true); err != nil {
+		t.Fatal(err)
+	}
+	// Without blocks, the wait ends with the context.
+	os.RemoveAll(f.p("devices/system/memory/memory75"))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := g.waitRegionBlocks(ctx, "region0"); err == nil || !strings.Contains(err.Error(), "1 of 2 memory blocks") {
+		t.Fatalf("expected a timeout with 1 of 2 blocks, got %v", err)
+	}
+}
+
+// The same race for a shared (devdax) region: the switch from the kernel's
+// kmem binding to device_dax must wait for the kmem probe.
+func TestRegionDevDaxWaitsForKmemProbe(t *testing.T) {
+	f := newFakeSys(t)
+	f.plug("0xc1ae0001")
+	for _, b := range []int{74, 75} {
+		os.RemoveAll(f.p("devices/system/memory/memory" + itoa(b)))
+	}
+	g := f.manager()
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		for _, b := range []int{74, 75} {
+			f.write("devices/system/memory/memory"+itoa(b)+"/state", "offline")
+		}
+	}()
+	start := time.Now()
+	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDevDax, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ri.Driver != DriverDeviceDax {
+		t.Fatalf("unexpected region info %+v", ri)
+	}
+	if time.Since(start) < 30*time.Millisecond {
+		t.Fatalf("CreateRegion switched drivers before the kmem probe finished")
 	}
 }

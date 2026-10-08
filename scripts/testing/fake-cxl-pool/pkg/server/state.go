@@ -130,7 +130,7 @@ func (s *Server) loadState() (map[string]uint64, error) {
 		}
 		sn, err := api.ParseSerial(pd.Serial)
 		if err != nil {
-			sn = s.serials.Next(pd.Name)
+			sn = s.serials.Next(pd.Name, pd.Shared)
 			s.logf("ERROR: state: device %s: %v; kept with the new serial 0x%x", pd.Name, err, sn)
 		} else if err := s.serials.Use(sn, pd.Name); err != nil {
 			s.logf("ERROR: state: device %s: %v; kept with the duplicate serial", pd.Name, err)
