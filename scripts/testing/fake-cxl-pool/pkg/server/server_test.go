@@ -92,7 +92,7 @@ func newTestEnv(t *testing.T, extraConfig string) *testEnv {
 	e.fakes["/e2e/vm2/qmp.sock"] = f2
 	cfgText := `
 listen: 127.0.0.1:0
-serialBase: 0xc1f00000
+exclusiveSerialBase: 0xc1ee0000
 stateFile: ` + filepath.Join(dir, "state.json") + `
 pools:
   - name: default
@@ -103,7 +103,7 @@ devices:
   - name: shared0
     size: 256M
     shared: true
-    serial: 0xc1f0ee00
+    serial: 0xc1ae0000
   - name: pooled0
     size: 512M
 ` + extraConfig
@@ -241,8 +241,8 @@ func TestCreateDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Name != "dev0" || d.Serial != "0xc1f00002" || d.State != api.DeviceFree || d.Scope != api.ScopePool {
-		// pooled0 got 0xc1f00001 at startup
+	if d.Name != "dev0" || d.Serial != "0xc1ee0002" || d.State != api.DeviceFree || d.Scope != api.ScopePool {
+		// pooled0 got 0xc1ee0001 at startup
 		t.Fatalf("unexpected device %+v", d)
 	}
 	if st, err := os.Stat(d.Path); err != nil || st.Size() != 256<<20 {
@@ -252,11 +252,19 @@ func TestCreateDevice(t *testing.T) {
 	mustCode(t, err, api.CodeConflict)
 	_, err = e.c.CreateDevice(ctx, api.DeviceCreate{Name: "big", Size: 2 << 30})
 	mustCode(t, err, api.CodeConflict)
-	_, err = e.c.CreateDevice(ctx, api.DeviceCreate{Name: "x", Size: 256 << 20, Serial: "0xc1f0ee00"})
+	_, err = e.c.CreateDevice(ctx, api.DeviceCreate{Name: "x", Size: 256 << 20, Serial: "0xc1ae0000"})
 	mustCode(t, err, api.CodeConflict)
 	d2, err := e.c.CreateDevice(ctx, api.DeviceCreate{Name: "s1", Size: 256 << 20, Shared: true, Serial: "0xabc"})
 	if err != nil || d2.Serial != "0xabc" || !d2.Shared {
 		t.Fatalf("unexpected device %+v %v", d2, err)
+	}
+	// a shared device without a serial gets one from the shared base
+	d3, err := e.c.CreateDevice(ctx, api.DeviceCreate{Name: "s2", Size: 256 << 20, Shared: true})
+	if err != nil || d3.Serial != "0xc1ae0001" || !d3.Shared {
+		t.Fatalf("unexpected device %+v %v", d3, err)
+	}
+	if err := e.c.DeleteDevice(ctx, "s2", false); err != nil {
+		t.Fatal(err)
 	}
 	ds, err := e.c.Devices(ctx, client.DeviceListOptions{Shared: ptr(true)})
 	if err != nil || len(ds) != 2 || ds[0].Name != "s1" || ds[1].Name != "shared0" {
@@ -285,13 +293,13 @@ func TestAttachDetachExclusive(t *testing.T) {
 	}
 	// prefers a slot that is not reserved for the local device (ds1_hb1)
 	if a.State != api.AttachmentAttached || a.Slot.Bus != "ds0_hb0" || a.QemuDeviceID != "fcp_pooled0.hp1" ||
-		a.QemuObjectID != "fcp_pooled0.hp1" || a.Serial != "0xc1f00001" || a.ID != "pooled0@vm1" {
+		a.QemuObjectID != "fcp_pooled0.hp1" || a.Serial != "0xc1ee0001" || a.ID != "pooled0@vm1" {
 		t.Fatalf("unexpected attachment %+v", a)
 	}
 	f1 := e.fake("vm1")
 	cmds := strings.Join(f1.Commands(), "\n")
 	if !strings.Contains(cmds, "object_add memory-backend-file,id=fcp_pooled0.hp1,size=536870912,share=on,mem-path="+filepath.Join(e.dir, "pool", "pooled0.raw")) ||
-		!strings.Contains(cmds, "device_add cxl-type3,bus=ds0_hb0,volatile-memdev=fcp_pooled0.hp1,id=fcp_pooled0.hp1,sn=0xc1f00001") {
+		!strings.Contains(cmds, "device_add cxl-type3,bus=ds0_hb0,volatile-memdev=fcp_pooled0.hp1,id=fcp_pooled0.hp1,sn=0xc1ee0001") {
 		t.Fatalf("unexpected qemu commands:\n%s", cmds)
 	}
 	// idempotent
@@ -347,7 +355,7 @@ func TestAttachShared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a1.Serial != "0xc1f0ee00" || a2.Serial != a1.Serial {
+	if a1.Serial != "0xc1ae0000" || a2.Serial != a1.Serial {
 		t.Fatalf("serials differ: %s %s", a1.Serial, a2.Serial)
 	}
 	d, _ := e.c.Device(ctx, "shared0")
@@ -655,7 +663,7 @@ func TestPersistenceAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, h := range []string{"vm1", "vm2"} {
-		if _, _, err := e.c.Attach(ctx, "dyn", api.AttachRequest{Host: h}); err != nil {
+		if _, _, err := e.c.Attach(ctx, "dyn", api.AttachRequest{Host: h, Owner: "k8s:" + h}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -663,8 +671,12 @@ func TestPersistenceAndRestart(t *testing.T) {
 	// server restart: same qemus
 	e.start()
 	d, err := e.c.Device(ctx, "dyn")
-	if err != nil || len(d.Attachments) != 2 || d.Serial != "0xc1f00002" {
+	if err != nil || len(d.Attachments) != 2 || d.Serial != "0xc1ae0001" {
 		t.Fatalf("device not restored: %+v %v", d, err)
+	}
+	// attachment owners survive
+	if d.Attachments[0].Owner != "k8s:"+d.Attachments[0].Host || d.Attachments[1].Owner != "k8s:"+d.Attachments[1].Host {
+		t.Fatalf("attachment owners not restored: %+v", d.Attachments)
 	}
 	l, err := e.c.Device(ctx, "vm1.memdev0")
 	if err != nil || l.Allocation == nil || l.Allocation.Owner != "claim-x" {
@@ -753,7 +765,7 @@ func TestConfigErrors(t *testing.T) {
 	}
 	cfg := DefaultConfig()
 	if cfg.Listen != "127.0.0.1:9909" || cfg.Pools[0].Dir != "/tmp/fake-cxl-pool" || cfg.StateFile != "/tmp/fake-cxl-pool.state.json" ||
-		uint64(*cfg.SerialBase) != 0xc1f00000 || !cfg.Discovery.QemuEnabled() {
+		uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 || !cfg.Discovery.QemuEnabled() {
 		t.Fatalf("unexpected defaults %+v", cfg)
 	}
 }
@@ -764,7 +776,7 @@ func TestStaticFileBackendBinding(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "pool", "static0.raw")
 	e := &testEnv{t: t, dir: dir, fakes: map[string]*qemu.Fake{}, alive: map[int]bool{101: true, 102: true}}
-	obj := "befile_cxl_memdev0__bus_ds0_hb0__sn_0xc1f0ee00"
+	obj := "befile_cxl_memdev0__bus_ds0_hb0__sn_0xc1ae0000"
 	for i, n := range []string{"vm1", "vm2"} {
 		e.procs = append(e.procs, vmCmdline(n, 101+i, "-object", "memory-backend-file,id="+obj+",share=on,mem-path="+file+",size=256M"))
 		f := newVMFake()
@@ -774,7 +786,7 @@ func TestStaticFileBackendBinding(t *testing.T) {
 	cfg, err := ParseConfig([]byte(`
 stateFile: "-"
 pools: [{name: default, dir: ` + filepath.Join(dir, "pool") + `}]
-devices: [{name: static0, size: 256M, shared: true, file: ` + file + `, serial: 0xc1f0ee00}]
+devices: [{name: static0, size: 256M, shared: true, file: ` + file + `, serial: 0xc1ae0000}]
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -787,7 +799,7 @@ devices: [{name: static0, size: 256M, shared: true, file: ` + file + `, serial: 
 	}
 	for _, n := range []string{"vm1", "vm2"} {
 		a, _, err := e.c.Attach(ctx, "static0", api.AttachRequest{Host: n})
-		if err != nil || a.QemuObjectID != obj || a.Slot.Bus != "ds0_hb0" || a.Serial != "0xc1f0ee00" {
+		if err != nil || a.QemuObjectID != obj || a.Slot.Bus != "ds0_hb0" || a.Serial != "0xc1ae0000" {
 			t.Fatalf("attach to %s: %+v %v", n, a, err)
 		}
 	}

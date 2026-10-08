@@ -239,7 +239,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 		}
 		sn = v
 	} else {
-		sn = s.serials.NextExcept(name, s.localSerialLocked)
+		sn = s.serials.NextExcept(name, req.Shared, s.localSerialLocked)
 	}
 	if err := p.Reserve(name, size); err != nil {
 		s.serials.Release(sn)
@@ -736,6 +736,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 			QemuDeviceID: qemuID,
 			QemuObjectID: objID,
 			State:        api.AttachmentAttaching,
+			Owner:        req.Owner,
 			Created:      now,
 			Updated:      now,
 		},

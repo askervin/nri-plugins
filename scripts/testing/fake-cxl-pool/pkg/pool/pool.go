@@ -151,16 +151,19 @@ func ValidName(name string) error {
 	return nil
 }
 
-// Serials allocates serial numbers from a base.
+// Serials allocates serial numbers: shared devices from one base,
+// exclusive devices from another. Uniqueness is checked over all serials.
 type Serials struct {
-	mu   sync.Mutex
-	base uint64
-	used map[uint64]string // serial -> device
+	mu            sync.Mutex
+	sharedBase    uint64
+	exclusiveBase uint64
+	used          map[uint64]string // serial -> device
 }
 
-// NewSerials returns a serial allocator.
-func NewSerials(base uint64) *Serials {
-	return &Serials{base: base, used: map[uint64]string{}}
+// NewSerials returns a serial allocator with the bases of shared and
+// exclusive devices.
+func NewSerials(sharedBase, exclusiveBase uint64) *Serials {
+	return &Serials{sharedBase: sharedBase, exclusiveBase: exclusiveBase, used: map[uint64]string{}}
 }
 
 // Use marks a serial used by a device. It fails if another device has it.
@@ -181,16 +184,21 @@ func (s *Serials) Release(serial uint64) {
 	delete(s.used, serial)
 }
 
-// Next allocates the lowest free serial above the base for a device.
-func (s *Serials) Next(device string) uint64 {
-	return s.NextExcept(device, nil)
+// Next allocates the lowest free serial above the base of the device kind
+// (shared or exclusive) for a device.
+func (s *Serials) Next(device string, shared bool) uint64 {
+	return s.NextExcept(device, shared, nil)
 }
 
 // NextExcept is Next that also skips the serials for which skip is true.
-func (s *Serials) NextExcept(device string, skip func(uint64) bool) uint64 {
+func (s *Serials) NextExcept(device string, shared bool, skip func(uint64) bool) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for sn := s.base + 1; ; sn++ {
+	base := s.exclusiveBase
+	if shared {
+		base = s.sharedBase
+	}
+	for sn := base + 1; ; sn++ {
 		if _, ok := s.used[sn]; !ok && (skip == nil || !skip(sn)) {
 			s.used[sn] = device
 			return sn

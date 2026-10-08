@@ -9,6 +9,10 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
 - `fake-cxl-pool-client` (CLI) and `pkg/client` (Go library) talk to the
   server's REST API. In a VM, the client also prepares hotplugged memory for
   use and releases it before detach (`guest` commands).
+- `fake-cxl-pool-controller` connects a Kubernetes cluster to the server:
+  it publishes the pool devices for DRA (driver `cxl-pool.generic`) and
+  attaches and detaches them as the scheduler allocates and frees claims
+  (see [fake-cxl-pool-controller](#fake-cxl-pool-controller)).
 
 A device may be *exclusive* (attached to one VM, used as system RAM there) or
 *shared* (the same backing file attached to several VMs, same serial in
@@ -17,13 +21,13 @@ every VM, used as devdax).
 ## Build and test
 
 ```
-make -C scripts/testing/fake-cxl-pool          # bin/fake-cxl-pool-server, bin/fake-cxl-pool-client
+make -C scripts/testing/fake-cxl-pool          # bin/fake-cxl-pool-{server,client,controller}
 make -C scripts/testing/fake-cxl-pool test     # unit tests (go test -race)
 make -C scripts/testing/fake-cxl-pool lint     # go vet + gofmt
 ```
 
-The client is built static for amd64 (`CGO_ENABLED=0 GOARCH=amd64`), so it
-can be copied into the e2e VMs as is:
+The client and the controller are built static for amd64
+(`CGO_ENABLED=0 GOARCH=amd64`), so they can be copied into the e2e VMs as is:
 
 ```
 scp -F test/e2e/<vm>/.ssh-config scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client vagrant@node:/tmp/
@@ -42,6 +46,17 @@ and keeps its state in /tmp/fake-cxl-pool.state.json. `-v` logs every qemu
 command and HTTP request. See [config.example.yaml](config.example.yaml)
 for all keys (pools, static devices, static hosts, discovery filters,
 detach timeout).
+
+### Serial numbers
+
+The guest finds a device by its serial (`/sys/bus/cxl/devices/memN/serial`),
+so serials are unique over all devices of the server. Devices created
+without a serial get the next free one above the base of their kind:
+`0xc1` = CXL, then `00` = present at boot (the e2e topology's local devices
+are `0xc100e2e0+i`), `ae` = shared pool devices (`sharedSerialBase`,
+default `0xc1ae0000`: `0xc1ae0001`, ...), `ee` = exclusive pool devices
+(`exclusiveSerialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...). The kind
+is decided when the serial is assigned; a later `PATCH shared` keeps it.
 
 VMs with slirp networking (the e2e VMs) reach the host loopback at
 192.168.76.2, which is the client's default server:
@@ -108,7 +123,7 @@ fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
 runs in from its hostname and system uuid (`/sys/class/dmi/id/product_uuid`,
 else `/etc/machine-id`; uuids are compared without dashes). `guest`
 commands take a device name (the serial is looked up from the server) or a
-serial (`0xc1f00001`, no server needed) and must run as root. Exit codes: 0
+serial (`0xc1ee0001`, no server needed) and must run as root. Exit codes: 0
 ok, 1 error, 2 usage, 3 conflict or timeout (the device is still held).
 
 ### Sharing a device between two VMs (devdax)
@@ -152,6 +167,67 @@ and keeps an exclusive device in state `error`, so that it is not given to
 another VM. `detach --force` forgets a failed attachment. A timed-out
 attachment clears itself if qemu deletes the device later.
 
+## fake-cxl-pool-controller
+
+The cluster side of the DRA driver `cxl-pool.generic`. The node side is the
+`cxl-pool.generic` helper of kubelet-cxl-plugin in
+intel-resource-drivers-for-kubernetes; the contract between the two is
+[plan-2-dra/10-contract.md](plan-2-dra/10-contract.md), shipped as
+doc/cxl/POOL.md in the driver repository. The controller:
+
+- publishes the pool devices of the server (`GET /devices?scope=pool`) as one
+  cluster-scoped ResourceSlice (`allNodes`) of pool `fake-cxl-pool`.
+  Exclusive devices have `capacity.memory`, shared devices
+  `allowMultipleAllocations` and `capacity.hosts` (how many nodes may attach
+  them); all have `bindsToNode` and the binding conditions
+  `cxl-pool.generic/Attached` / `cxl-pool.generic/AttachFailed`. Device
+  names become DNS labels; devices in state `error` are not published. The
+  slice is updated when the device list changes (server events, or every
+  sync interval) and deleted when the controller stops (it has no owner,
+  nothing else garbage collects it).
+- attaches a device when the scheduler allocates it to a claim: node =
+  `allocation.nodeSelector` (`metadata.name`), host = the server host whose
+  uuid is the Node's `status.nodeInfo.systemUUID` (lower case, dashes
+  ignored), else the host whose name is the node name. Then it writes
+  `cxl-pool.generic/Attached=True` and the device data (serial, shared, size,
+  host, attachment) into `claim.status.devices[]`, which releases the
+  scheduler's binding wait and tells the node plugin which memdev to wait
+  for. A node that is not a pool host, a 409 or another error gives
+  `AttachFailed=True` (reason `NoHost`, `Conflict`, `Timeout`,
+  `AttachError`), and the scheduler allocates again.
+- detaches a device when no allocated claim wants it on that node any more.
+  The node plugin has released it in NodeUnprepare by then; if the guest
+  still holds it, the attachment stays `detaching` (or `failed`) and the
+  controller only logs it.
+
+The attachment owner is `k8s:resourceclaim/<claim uid>` (`-owner-prefix`).
+The controller is stateless: it only touches attachments with its owner
+prefix on hosts that are Nodes of its cluster, never adopted ones or those
+made with the CLI, so a restart just re-confirms existing attachments.
+Each cluster runs one controller; several clusters (for instance the
+single-node clusters of n4-cxl-shared-1 and -2) may share one server, and
+then share its devices, including shared devices attached to nodes of
+different clusters.
+
+```
+fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
+    [-driver-name cxl-pool.generic] [-pool-name fake-cxl-pool]
+    [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
+    [-shared-hosts 4] [-owner-prefix k8s:] [-v]
+```
+
+`-server` defaults to `$FAKE_CXL_POOL_SERVER`, `-kubeconfig` to
+`$KUBECONFIG`, else the in-cluster config. In the e2e VMs:
+
+```
+systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-controller -kubeconfig /root/.kube/config -v
+```
+
+[deploy/fake-cxl-pool-controller.yaml](deploy/fake-cxl-pool-controller.yaml)
+runs it as a Deployment with a ServiceAccount and the RBAC it needs
+(`resourceclaims/driver` `arbitrary-node:update` for `cxl-pool.generic`,
+`resourceclaims/status`, `resourceslices`, nodes, events).
+
 ## REST API
 
 Base URL `http://HOST:9909/api/v1`, JSON, errors as
@@ -175,7 +251,9 @@ GET    /events                    (text/event-stream)
 ```
 
 Attach: 201 attached, 200 already attached, 202 attaching (`wait: false`),
-409 sharing/ownership/slot/capacity conflicts, 503 qemu errors. Detach: 200
+409 sharing/ownership/slot/capacity conflicts, 503 qemu errors. An
+attachment records the `owner` of the attach request that created it
+(fake-cxl-pool-controller filters its own attachments by it). Detach: 200
 detached, 202 detaching (`wait=false`), 409 the guest did not release the
 device in time (attachment `failed`).
 
@@ -184,13 +262,17 @@ device in time (attachment `failed`).
 ```
 cmd/fake-cxl-pool-server   server main
 cmd/fake-cxl-pool-client   CLI
+cmd/fake-cxl-pool-controller  DRA pool controller (cxl-pool.generic) main
 pkg/api                    JSON types, routes, errors, size/serial units
 pkg/client                 Go client library
+pkg/controller             DRA pool controller: ResourceSlice publisher, attach/detach reconciler
 pkg/server                 config, state machine, persistence, HTTP handlers
 pkg/qemu                   Monitor interface: QMP (persistent, events, QOM tree), HMP
                            (text protocol, info qtree parser), discovery, fake monitor
 pkg/pool                   pools, backing files, serials
-pkg/guest                  guest side: sysfs + cxl/daxctl
+pkg/cxl/memctl in nri-plugins  guest side: sysfs + cxl/daxctl
+deploy/                    Kubernetes manifests (controller Deployment + RBAC)
 plan/                      design and findings of the workstreams
+plan-2-dra/                DRA driver extension, controller, e2e: specs and findings
 proto/                     qemu prototyping scripts (WS3)
 ```

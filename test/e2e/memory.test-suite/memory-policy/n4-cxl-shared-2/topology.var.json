@@ -5,7 +5,7 @@
 	      [{"switch": [{"pool-slot": "1G"},
 			   {"pool-slot": "1G"},
 			   {"mem": "256M", "present": false, "shared": true,
-			    "file": "/tmp/fake-cxl-pool/static-shared0.raw", "sn": "0xc1f0ee00"},
+			    "file": "/tmp/fake-cxl-pool/static-shared0.raw", "sn": "0xc1ae0000"},
 			   {"mem": "256M", "present": false}]}],
 	      [{"switch": [{"pool-slot": "1G"}, {"pool-slot": "1G"}, {"pool-slot": "1G"}, {"pool-slot": "1G"}]}]
 	    ]}

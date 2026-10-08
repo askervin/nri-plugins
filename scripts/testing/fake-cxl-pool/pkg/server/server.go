@@ -174,7 +174,7 @@ func New(cfg *Config, opts Options) (*Server, error) {
 		log:       opts.Logger,
 		started:   time.Now(),
 		pools:     map[string]*pool.Pool{},
-		serials:   pool.NewSerials(uint64(*cfg.SerialBase)),
+		serials:   pool.NewSerials(uint64(*cfg.SharedSerialBase), uint64(*cfg.ExclusiveSerialBase)),
 		devices:   map[string]*device{},
 		hosts:     map[string]*host{},
 		atts:      map[string]*attachment{},
@@ -219,7 +219,7 @@ func New(cfg *Config, opts Options) (*Server, error) {
 			}
 		}
 		if !ok {
-			sn = s.serials.NextExcept(d.Name, s.localSerialLocked)
+			sn = s.serials.NextExcept(d.Name, d.Shared, s.localSerialLocked)
 		}
 		d.serial, d.Serial, d.needSerial = sn, api.FormatSerial(sn), false
 	}
@@ -857,7 +857,7 @@ func (s *Server) newLocalDeviceLocked(name string, lb qemu.LocalBackend) *device
 	// attach and create time.
 	sn := lb.Serial
 	if !lb.HasSerial {
-		sn = s.serials.NextExcept(name, s.localSerialLocked)
+		sn = s.serials.NextExcept(name, lb.QomType == qemu.MemoryBackendFile, s.localSerialLocked)
 	} else if owner, ok := s.serials.Owner(sn); ok {
 		s.logf("WARNING: local device %s has the serial 0x%x of pool device %s: that device cannot be attached to the same VM", name, sn, owner)
 	}

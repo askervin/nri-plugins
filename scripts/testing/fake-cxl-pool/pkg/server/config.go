@@ -30,27 +30,34 @@ import (
 
 // Defaults.
 const (
-	DefaultSerialBase      = 0xc1f00000
-	DefaultPoolName        = "default"
-	DefaultPoolDir         = "/tmp/fake-cxl-pool"
-	DefaultPoolCapacity    = 8 << 30
-	DefaultDiscoveryPeriod = 10 * time.Second
-	DefaultDetachTimeout   = 15 * time.Second
-	DefaultAttachTimeout   = 30 * time.Second
+	// Serial scheme: 0xc1 = CXL, 0x00 in the next byte = present at boot
+	// (e2e topology local devices are 0xc100e2e0+i), 0xae = shared pool
+	// devices, 0xee = exclusive pool devices.
+	DefaultSharedSerialBase    = 0xc1ae0000
+	DefaultExclusiveSerialBase = 0xc1ee0000
+	DefaultPoolName            = "default"
+	DefaultPoolDir             = "/tmp/fake-cxl-pool"
+	DefaultPoolCapacity        = 8 << 30
+	DefaultDiscoveryPeriod     = 10 * time.Second
+	DefaultDetachTimeout       = 15 * time.Second
+	DefaultAttachTimeout       = 30 * time.Second
 	// CapacityMultiplier: CXL device capacity is reported in 256 MiB units.
 	CapacityMultiplier = 256 << 20
 )
 
 // Config is the server configuration (YAML).
 type Config struct {
-	Listen        string          `json:"listen,omitempty"`
-	SerialBase    *api.Serial     `json:"serialBase,omitempty"`
-	StateFile     string          `json:"stateFile,omitempty"`
-	Pools         []PoolConfig    `json:"pools,omitempty"`
-	Devices       []DeviceConfig  `json:"devices,omitempty"`
-	Hosts         []HostConfig    `json:"hosts,omitempty"`
-	Discovery     DiscoveryConfig `json:"discovery"`
-	DetachTimeout api.Duration    `json:"detachTimeout,omitempty"`
+	Listen string `json:"listen,omitempty"`
+	// SharedSerialBase and ExclusiveSerialBase: devices without a serial
+	// get the next free serial above the base of their kind.
+	SharedSerialBase    *api.Serial     `json:"sharedSerialBase,omitempty"`
+	ExclusiveSerialBase *api.Serial     `json:"exclusiveSerialBase,omitempty"`
+	StateFile           string          `json:"stateFile,omitempty"`
+	Pools               []PoolConfig    `json:"pools,omitempty"`
+	Devices             []DeviceConfig  `json:"devices,omitempty"`
+	Hosts               []HostConfig    `json:"hosts,omitempty"`
+	Discovery           DiscoveryConfig `json:"discovery"`
+	DetachTimeout       api.Duration    `json:"detachTimeout,omitempty"`
 }
 
 // PoolConfig configures a pool.
@@ -133,9 +140,13 @@ func (c *Config) Complete() error {
 	if c.Listen == "" {
 		c.Listen = api.DefaultListen
 	}
-	if c.SerialBase == nil {
-		sb := api.Serial(DefaultSerialBase)
-		c.SerialBase = &sb
+	if c.SharedSerialBase == nil {
+		sb := api.Serial(DefaultSharedSerialBase)
+		c.SharedSerialBase = &sb
+	}
+	if c.ExclusiveSerialBase == nil {
+		sb := api.Serial(DefaultExclusiveSerialBase)
+		c.ExclusiveSerialBase = &sb
 	}
 	if len(c.Pools) == 0 {
 		c.Pools = []PoolConfig{{Name: DefaultPoolName, Dir: DefaultPoolDir}}

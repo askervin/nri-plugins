@@ -28,7 +28,10 @@ VM1="$POOL_VM1_DIR"    # the other VM, driven over ssh from the host
 VM2="$OUTPUT_DIR"      # the VM of this test
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
-SHARED_SERIAL=0xc1f0ee01  # not 0xc1f0ee00, the static device of the topology
+# Serials: 0xc1ae.... shared, 0xc1ee.... exclusive pool devices (the server
+# assigns those), 0xc100.... boot-time devices of a VM. 0xc1ae0001, not
+# 0xc1ae0000: that is the static shared device of the topology.
+SHARED_SERIAL=0xc1ae0001
 MEM_SIZE=$(( 256 << 20 ))
 MiB=$(( 1 << 20 ))
 
@@ -136,6 +139,8 @@ pool-client "$VM2" create --size 128M --name excl0 &&
 pool-client "$VM2" -o json create --size 256M --name excl0 || command-error "cannot create excl0"
 pool-assert "$COMMAND_OUTPUT" "not j['shared'] and j['state'] == 'free' and j['size'] == $MEM_SIZE"
 EXCL_SERIAL=$(pool-value "$COMMAND_OUTPUT" 'j["serial"]')
+[[ "$EXCL_SERIAL" == 0xc1ee* ]] ||
+    error "the server assigned serial $EXCL_SERIAL to the exclusive device excl0, expected 0xc1ee...."
 EXCL_FILE=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
 [ -f "$EXCL_FILE" ] || error "backing file $EXCL_FILE of excl0 is missing"
 pool-client "$VM2" -o json attach excl0 --self || command-error "cannot attach excl0 to VM2"

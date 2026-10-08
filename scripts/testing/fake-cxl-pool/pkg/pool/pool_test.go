@@ -69,18 +69,35 @@ func TestBackingFile(t *testing.T) {
 }
 
 func TestSerials(t *testing.T) {
-	s := NewSerials(0xc1f00000)
-	if err := s.Use(0xc1f00001, "a"); err != nil {
+	s := NewSerials(0xc1ae0000, 0xc1ee0000)
+	if err := s.Use(0xc1ee0001, "a"); err != nil {
 		t.Fatal(err)
 	}
-	if sn := s.Next("b"); sn != 0xc1f00002 {
+	if sn := s.Next("b", false); sn != 0xc1ee0002 {
 		t.Fatalf("unexpected serial 0x%x", sn)
 	}
-	if err := s.Use(0xc1f00002, "c"); err == nil {
+	if sn := s.Next("s", true); sn != 0xc1ae0001 {
+		t.Fatalf("unexpected shared serial 0x%x", sn)
+	}
+	if err := s.Use(0xc1ee0002, "c"); err == nil {
 		t.Fatal("expected conflict")
 	}
-	s.Release(0xc1f00001)
-	if sn := s.Next("d"); sn != 0xc1f00001 {
+	if err := s.Use(0xc1ae0001, "c"); err == nil {
+		t.Fatal("expected conflict across kinds")
+	}
+	// uniqueness is over all serials: an explicit exclusive-looking serial
+	// on a shared device blocks it for the exclusive allocator too
+	if err := s.Use(0xc1ee0003, "s2"); err != nil {
+		t.Fatal(err)
+	}
+	if sn := s.Next("e", false); sn != 0xc1ee0004 {
+		t.Fatalf("unexpected serial 0x%x", sn)
+	}
+	s.Release(0xc1ee0001)
+	if sn := s.Next("d", false); sn != 0xc1ee0001 {
+		t.Fatalf("unexpected serial 0x%x", sn)
+	}
+	if sn := s.NextExcept("x", true, func(sn uint64) bool { return sn == 0xc1ae0002 }); sn != 0xc1ae0003 {
 		t.Fatalf("unexpected serial 0x%x", sn)
 	}
 }

@@ -352,7 +352,9 @@ pool-server-start() { # script API
     # Build fake-cxl-pool and start fake-cxl-pool-server on the host, on
     # 127.0.0.1:$POOL_PORT (9909, or $FAKE_CXL_POOL_PORT). DEVICES is the
     # YAML list of the static devices of the server, the value of
-    # "devices:" in its configuration. The configuration
+    # "devices:" in its configuration. Serials follow the scheme of the
+    # server: 0xc1ae.... for shared and 0xc1ee.... for exclusive devices
+    # (0xc100.... are boot-time devices of the VMs). The configuration
     # (fake-cxl-pool.yaml), the state (fake-cxl-pool.state.json, removed
     # first: every server starts empty) and the log
     # (fake-cxl-pool-server.log) are in $TEST_OUTPUT_DIR.

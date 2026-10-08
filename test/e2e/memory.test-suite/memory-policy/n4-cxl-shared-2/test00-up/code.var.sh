@@ -6,8 +6,11 @@
 # - Qemu answers on QMP, and host bridges have HDM decoders
 #   (hdm_for_passthrough=on) for more than one region per host bridge.
 # - Qemu has the statically shared, file-backed CXL memory device of the
-#   topology (cxl_memdev0, serial 0xc1f0ee00) and the local one (cxl_memdev1),
+#   topology (cxl_memdev0, serial 0xc1ae0000) and the local one (cxl_memdev1),
 #   both unplugged, and the empty pool slots for hotplugging pool devices.
+#   Serials: 0xc100.... boot-time devices of one VM, 0xc1ae.... shared and
+#   0xc1ee.... exclusive pool devices. VMs created before this scheme have
+#   0xc1f0ee00 here: recreate them (see the error message).
 # - The VM sees no CXL memory devices.
 #
 # The topologies n4-cxl-shared-1 and n4-cxl-shared-2 are identical, so their
@@ -66,8 +69,12 @@ python3 -c 'import json, sys; v = json.loads(sys.argv[1])["return"]; print("%(ma
 echo "### qemu CXL memory devices and slots"
 cxl_hw=$(show_sn=1 show_be=1 vm-cxl-hw)
 echo "$cxl_hw"
-grep -q "^cxl_memdev0 sn=0xc1f0ee00 volatile-memdev=befile_cxl_memdev0__" <<< "$cxl_hw" ||
-    error "statically shared, file-backed CXL memory device cxl_memdev0 sn=0xc1f0ee00 not found"
+if grep -q "^cxl_memdev0 sn=0xc1f0ee00 " <<< "$cxl_hw"; then
+    error "cxl_memdev0 has the serial 0xc1f0ee00 of an older topology, expected 0xc1ae0000 (shared pool devices are 0xc1ae....). The VM was created from the older topology.var.json. Recreate it: vagrant destroy in $OUTPUT_DIR, remove the directory, and run
+  qemu_bin=\$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 ./run_tests.sh memory.test-suite/memory-policy/$(basename "$TOPOLOGY_DIR")/test00-up"
+fi
+grep -q "^cxl_memdev0 sn=0xc1ae0000 volatile-memdev=befile_cxl_memdev0__" <<< "$cxl_hw" ||
+    error "statically shared, file-backed CXL memory device cxl_memdev0 sn=0xc1ae0000 not found"
 grep -q "^cxl_memdev1 sn=0xc100e2e1 volatile-memdev=beram_cxl_memdev1__" <<< "$cxl_hw" ||
     error "local CXL memory device cxl_memdev1 not found"
 if grep -q plugged <<< "$cxl_hw"; then

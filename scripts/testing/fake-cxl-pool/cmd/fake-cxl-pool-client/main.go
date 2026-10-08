@@ -30,9 +30,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/containers/nri-plugins/pkg/cxl/memctl"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
-	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/guest"
 )
 
 // Exit codes.
@@ -743,15 +743,15 @@ func (c *cli) deviceSerial(ctx context.Context, dev string) (uint64, error) {
 	return api.ParseSerial(d.Serial)
 }
 
-func (c *cli) newGuest() *guest.Guest {
-	g := guest.New()
+func (c *cli) newGuest() *memctl.Manager {
+	g := memctl.New()
 	if c.verbose {
 		g.Logf = func(format string, args ...any) { fmt.Fprintf(c.stderr, format+"\n", args...) }
 	}
 	return g
 }
 
-func (c *cli) guestMemdev(ctx context.Context, g *guest.Guest, dev string) (string, error) {
+func (c *cli) guestMemdev(ctx context.Context, g *memctl.Manager, dev string) (string, error) {
 	sn, err := c.deviceSerial(ctx, dev)
 	if err != nil {
 		return "", err
@@ -759,7 +759,7 @@ func (c *cli) guestMemdev(ctx context.Context, g *guest.Guest, dev string) (stri
 	return g.FindMemdev(sn)
 }
 
-func (c *cli) printRegionInfo(ri *guest.RegionInfo) error {
+func (c *cli) printRegionInfo(ri *memctl.RegionInfo) error {
 	if c.json() {
 		return c.printJSON(ri)
 	}
@@ -829,7 +829,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 		decoder := fs.String("decoder", "", "root decoder (default: the one of the device's host bridge)")
 		timeout := fs.Duration("timeout", 30*time.Second, "timeout")
 		pos, err := parse(fs, args[1:])
-		if err != nil || len(pos) != 1 || (*mode != guest.ModeDevDax && *mode != guest.ModeRAM) {
+		if err != nil || len(pos) != 1 || (*mode != memctl.ModeDevDax && *mode != memctl.ModeRAM) {
 			return firstErr(err, usagef("guest region create DEVICE --mode devdax|ram [--decoder decoderX.Y]"))
 		}
 		m, err := c.guestMemdev(ctx, g, pos[0])
@@ -871,7 +871,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 		}
 		ri, err := g.Info(m)
 		if err != nil {
-			ri = &guest.RegionInfo{Memdev: m, Node: -1}
+			ri = &memctl.RegionInfo{Memdev: m, Node: -1}
 		}
 		return c.printRegionInfo(ri)
 	case "release":
@@ -881,7 +881,7 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 			return firstErr(err, usagef("guest release DEVICE"))
 		}
 		m, err := c.guestMemdev(ctx, g, pos[0])
-		if errors.Is(err, guest.ErrNotFound) {
+		if errors.Is(err, memctl.ErrNotFound) {
 			if !c.json() {
 				fmt.Fprintf(c.stdout, "%s: not present, nothing to release\n", pos[0])
 			}
