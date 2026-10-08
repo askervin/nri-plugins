@@ -1,0 +1,106 @@
+# fake-cxl-pool-controller as a Deployment with its own ServiceAccount and
+# RBAC (plan-2-dra/10-contract.md section 5).
+#
+# Not used by the e2e tests: they run the controller in the VM as a
+# transient systemd unit with the admin kubeconfig (plan-2-dra D26). This
+# manifest is for the realistic tests (test18) and for clusters of real
+# nodes. Build and load the image first, for instance:
+#   make -C scripts/testing/fake-cxl-pool
+#   (image with bin/fake-cxl-pool-controller as entrypoint) -> localhost/fake-cxl-pool-controller:testing
+#
+# hostNetwork: the pod reaches the fake-cxl-pool server on the VM host at
+# the slirp gateway 192.168.76.2. Run one controller per cluster; several
+# clusters may share one server.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fake-cxl-pool
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fake-cxl-pool-controller
+  namespace: fake-cxl-pool
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fake-cxl-pool-controller
+rules:
+- apiGroups: [resource.k8s.io]
+  resources: [resourceslices]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [resource.k8s.io]
+  resources: [resourceclaims]
+  verbs: [get, list, watch]
+- apiGroups: [resource.k8s.io]
+  resources: [resourceclaims/status]
+  verbs: [get, patch, update]
+- apiGroups: [resource.k8s.io]
+  resources: [resourceclaims/driver]
+  verbs: ["arbitrary-node:patch", "arbitrary-node:update"]
+  resourceNames: ["cxl-pool.generic"]
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fake-cxl-pool-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fake-cxl-pool-controller
+subjects:
+- kind: ServiceAccount
+  name: fake-cxl-pool-controller
+  namespace: fake-cxl-pool
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-cxl-pool-controller
+  namespace: fake-cxl-pool
+  labels:
+    app: fake-cxl-pool-controller
+spec:
+  replicas: 1
+  # never two controllers at a time: Recreate, not RollingUpdate
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: fake-cxl-pool-controller
+  template:
+    metadata:
+      labels:
+        app: fake-cxl-pool-controller
+    spec:
+      serviceAccountName: fake-cxl-pool-controller
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: controller
+        image: localhost/fake-cxl-pool-controller:testing
+        imagePullPolicy: IfNotPresent
+        args:
+        - -server
+        - http://192.168.76.2:9909
+        - -driver-name
+        - cxl-pool.generic
+        - -pool-name
+        - fake-cxl-pool
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+      # SIGTERM: the controller deletes its ResourceSlice before it exits
+      terminationGracePeriodSeconds: 30

@@ -129,10 +129,14 @@ CXL structures:
                                   file must exist. Qemus that are given the
                                   same file share the memory.
                         "sn"      (optional) serial number of the device, for
-                                  instance "0xc1f0ee00". The default is
+                                  instance "0xc1ae0000". The default is
                                   0xc100e2e0 + index of the device. Give the
                                   same "file" and "sn" to a device in many
                                   VMs to make them see the same device.
+                                  Scheme: 0xc100.... boot-time devices of one
+                                  VM (the default), 0xc1ae.... shared and
+                                  0xc1ee.... exclusive CXL memory pool
+                                  devices (fake-cxl-pool).
                         "shared"  (optional) true declares that the device is
                                   meant to be shared with other VMs. Requires
                                   "file". Changes nothing in qemu options:
@@ -190,7 +194,7 @@ CXL structures:
       [
           {"switch": [
               {"mem": "256M", "present": false, "shared": true,
-               "file": "/tmp/fake-cxl-pool/static-shared0.raw", "sn": "0xc1f0ee00"},
+               "file": "/tmp/fake-cxl-pool/static-shared0.raw", "sn": "0xc1ae0000"},
               {"pool-slot": "1G"},
               {"pool-slot": "1G"}
           ]}

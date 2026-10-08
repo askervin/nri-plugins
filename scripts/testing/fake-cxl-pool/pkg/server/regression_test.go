@@ -170,7 +170,7 @@ func TestAdoptionRespectsExclusive(t *testing.T) {
 	// someone plugs the same exclusive device into vm1 behind the server
 	obj := "fcp_pooled0.hp7"
 	f1.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: obj, Size: 256 << 20, MemPath: filepath.Join(dir, "pool", "pooled0.raw"), Share: true})
-	if err := f1.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 0xc1f00001}); err != nil {
+	if err := f1.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 0xc1ee0001}); err != nil {
 		t.Fatal(err)
 	}
 	srv.refreshTrees(ctx)
@@ -188,7 +188,7 @@ func TestAdoptionRespectsExclusive(t *testing.T) {
 	}
 	obj = "fcp_s0.hp9"
 	f3.AddObject(qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: obj, Size: 256 << 20, MemPath: filepath.Join(dir2, "pool", "s0.raw"), Share: true})
-	if err := f3.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 0xc1f00001}); err != nil {
+	if err := f3.PlugDevice(qemu.CXLType3{ID: obj, Bus: "ds0_hb0", VolatileMemdev: obj, Serial: 0xc1ee0001}); err != nil {
 		t.Fatal(err)
 	}
 	srv2.refreshTrees(ctx)
