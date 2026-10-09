@@ -1,0 +1,736 @@
+plan-3 option A: companion pod + DRA lend
+========================================
+Written 2026-10-08 by the Opus research agent for starting point A of
+01-starting-points.txt. Read-only research: no sources changed, nothing run
+in the VMs.
+
+Sources read: kubernetes v1.37.1 (~/github.com/kubernetes/kubernetes,
+"git describe" = v1.37.1-1-g8aaeb4e53d1), kubelet-cxl-plugin
+(intel-resource-drivers-for-kubernetes cmd/kubelet-cxl-plugin: pool.go,
+nri.go, driver.go, node_state.go), doc/cxl/POOL.md, fake-cxl-pool
+pkg/controller (reconciler.go, status.go), plan-2-dra/00-overview.md,
+plan-2-dra/10-contract.md, ws-c traces of test10 (timings).
+K8s paths below are relative to the kubernetes checkout. "K:" = verified in
+kubernetes source, "D:" = verified in our driver, "C:" = verified in our
+controller, "UNVERIFIED" = reasoning that was not checked against code.
+
+
+0. Summary
+----------
+Short version: this works on stock Kubernetes v1.37.1. Only
+kubelet-cxl-plugin needs changes. The pool controller needs none.
+
+A running pod cannot gain a ResourceClaim, so the request is a second pod:
+the "companion". It is pinned to the requester's node and owns one
+ResourceClaim. Kubernetes runs the companion through the same path that
+works today in test10/test11: allocation -> attach by the controller ->
+binding condition -> bind -> NodePrepare. kubelet-cxl-plugin then "lends"
+the prepared device to the requester's container, which is already
+running. Deleting the companion releases everything. The ownership chain
+requester pod -> companion pod -> claim means nothing is left over: the
+garbage collector and the resourceclaim controller remove the pieces in
+the order that release-before-detach needs.
+
+The lend itself (changing cpuset.mems of a running container, injecting
+/dev/daxX.Y) is option B's subject. This option needs B to provide two
+calls, Lend(container, device) and Revoke(container, device). The exclusive
+case (a NUMA node in cpuset.mems through NRI UpdateContainers) is known to
+work; nri-plugins resource policies do it routinely. The shared devdax case
+works only if B shows that a device node can be injected at runtime,
+possibly with pre-authorization when the container is created.
+
+
+1. Kubernetes facts this option relies on (verified, v1.37.1)
+------------------------------------------------------------
+F1 A pod cannot gain a claim after creation.
+   K: pkg/apis/core/validation/validation.go:5859 ValidatePodUpdate. Only
+   these spec fields are munged before the final DeepEqual: images,
+   activeDeadlineSeconds, tolerations (additions only), schedulingGates
+   (removals only), nodeSelector/nodeAffinity of gated pods
+   (validation.go:5911-5991). Any other difference, including
+   spec.resourceClaims and containers[].resources.claims, is rejected:
+   validation.go:5998 "pod updates may not change fields other than
+   ...". ValidatePodResize (validation.go:6491) allows cpu and memory only:
+   validation.go:6577/6668 "only cpu and memory resources are mutable".
+   Ephemeral containers cannot carry claims, and they cannot be removed:
+   validation.go:6478 "may not be removed". So the borrower has to be a
+   different pod.
+
+F2 The scheduler handles a pod pinned through nodeAffinity normally, DRA
+   included; a pod with nodeName set skips the scheduler.
+   K: pkg/scheduler/framework/plugins/nodeaffinity/node_affinity.go:150-200.
+   PreFilter turns matchFields metadata.name In [node] into
+   PreFilterResult{NodeNames}, so only that node is evaluated.
+   pkg/scheduler/eventhandlers.go:138,459 assignedPod: pods with nodeName
+   never enter the scheduling queue. Kubelet then refuses to prepare their
+   unallocated claims: pkg/kubelet/cm/dra/manager.go:312-316 "pod ... is
+   not allowed to use ResourceClaim" when the pod is not in reservedFor.
+
+F3 Binding conditions block binding until the controller sets Attached.
+   K: dynamicresources.go:1661 PreBind -> bindClaim (reservedFor,
+   allocation), then 1712-1730: the event BindingConditionsPending, then a
+   poll every 5 s until bindingTimeout. isClaimReadyForBinding
+   (dynamicresources.go:1995-2028) needs every bindingCondition True and no
+   bindingFailureCondition True. Feature gates: DRADeviceBindingConditions
+   is beta and on by default since 1.36 (pkg/features/kube_features.go:1466).
+   DRAResourceClaimDeviceStatus is GA in 1.37 (kube_features.go:1527).
+
+F4 A pod whose claim does not exist yet waits, and is queued again when
+   the claim is created.
+   K: dynamicresources.go:303-311 PreEnqueue -> foreachPodResourceClaim
+   (536-567) fails while the claim is missing or being deleted (553: "is
+   being deleted"). dynamicresources.go:288 EventsToRegister: ResourceClaim
+   Add|Update|Delete requeues the pod. So the companion can be created
+   before its claim (sequence step 3).
+
+F5 Kubelet prepares every claim in pod.spec.resourceClaims, but injects
+   CDI devices only into containers that reference the claim.
+   K: pkg/kubelet/cm/dra/manager.go:266-316 iterates over
+   pod.Spec.ResourceClaims, GETs each claim and checks reservedFor.
+   manager.go:521-545 GetResources returns CDI devices only for
+   container.Resources.Claims. Pod validation does not require that a claim
+   is referenced (validation.go:3303-3345). So the companion's pause
+   container references nothing: it gets no /dev/dax node and no env, and
+   NodePrepare still runs.
+
+F6 Prepare happens at sandbox creation. Unprepare happens after all
+   containers have stopped and before the pod status is final. Failures
+   are retried.
+   K: pkg/kubelet/kuberuntime/kuberuntime_manager.go:1718-1729
+   PrepareDynamicResources before the sandbox is created.
+   pkg/kubelet/kubelet.go:2439-2446 "resources must be unprepared AFTER all
+   containers have stopped and BEFORE the pod status is changed on the API
+   server". An error is returned from SyncTerminatingPod, so the pod worker
+   retries. pkg/kubelet/kubelet_pods.go:1121-1135
+   PodCouldHaveRunningContainers stays true while the DRA manager still
+   references the pod (manager.go:791), so the pod object is not finally
+   deleted before Unprepare succeeds. cm/dra/manager.go:187-235
+   reconcileLoop also unprepares claims of inactive pods.
+
+F7 Claim deallocation and deletion.
+   K: pkg/controller/resourceclaim/controller.go:1486-1545 (syncClaim). A
+   reservedFor pod is dropped when the pod is gone, replaced (UID
+   mismatch), or done. isPodDone (1830-1833) means phase terminal, or
+   deleted while still unscheduled. When reservedFor becomes empty, the
+   allocation is cleared and the finalizer removed (1602-1648, comment at
+   1608 "deallocates a claim as soon as the last consumer stops using it").
+   A claim with a controller ownerReference to a Pod (owningPod,
+   1723-1731) is deleted by this controller as soon as that pod is done
+   (1675-1692 "Deleted unused generated claim"). It does not wait for the
+   garbage collector. This check is about ownership, not templates, so it
+   also applies to a claim that the requester creates with controller:true
+   -> companion.
+   Template-generated claims get exactly that ownerReference
+   (controller.go:1125-1137, Controller: true, generateName
+   <pod>-<claim>-).
+
+F8 Garbage collection of dependents across pods.
+   K: pkg/controller/garbagecollector/garbagecollector.go:383-455
+   isDangling. The owner is looked up in the dependent's namespace (398,
+   434: namespace-local owners only). A UID mismatch counts as absent
+   (447). attemptToDeleteItem (503 onward) deletes an item with no solid
+   owners. A pod may own a pod; nothing special-cases that. Set
+   blockOwnerDeletion only if needed: with the
+   OwnerReferencesPermissionEnforcement admission plugin, it requires
+   delete permission on the owner (plugin/pkg/admission/gc/
+   gc_admission.go:122-150). Background deletion does not need it, so
+   leave it unset.
+
+F9 Opaque claim config reaches the driver in the allocation.
+   K: staging/src/k8s.io/dynamic-resource-allocation/structured/internal/
+   experimental/allocator_experimental.go:458-478 and stable/
+   allocator_stable.go:349-376 copy claim.spec.devices.config[] into
+   status.allocation.devices.config[] with Source=FromClaim.
+   D: node_state.go:561-602 already parses such configs for cxl.generic
+   (MemoryPolicyConfig, apiVersion cxl.generic/v1alpha1). The kubeletplugin
+   helper hands the whole claim to PrepareResourceClaims (pool.go:202).
+
+F10 Downward API env for the requester's identity: metadata.uid and
+   spec.nodeName are valid fieldRefs (validation.go:2859-2860).
+
+F11 Quota: DRA claims are counted per DeviceClass
+   (<class>.deviceclass.resource.k8s.io/devices,
+   pkg/quota/v1/evaluator/core/resource_claims.go:50). A namespace's
+   borrowing can therefore be capped with a standard ResourceQuota, which
+   is a benefit of going through DRA. Companion pods also count towards
+   the pods quota.
+
+F12 Eviction order: rankMemoryPressure =
+   orderedBy(exceedMemoryRequests, priority, memory)
+   (pkg/kubelet/eviction/helpers.go:819-820). A pause container with memory
+   requests well above its usage is ranked last within its priority.
+
+F13 The pod-level cgroup is created once and never reconciled: K:
+   pkg/kubelet/cm/pod_container_manager_linux.go:79-108 EnsureExists only
+   writes limits when the cgroup does not exist yet. A memory.max that the
+   plugin raises on the pod cgroup survives until a pods/resize.
+   UNVERIFIED: containerd does not rewrite container memory.max outside
+   UpdateContainerResources. Option B or C should confirm.
+
+Our side:
+D1 pool.go prepares from claim.status.devices[].data (serial, shared,
+   size). It reuses an existing region for a second claim with the same
+   serial (prepareDevice, preparedDevice) and releases only when no other
+   prepared claim uses the serial (unprepareClaim, pool.go:451-474). State
+   is kept in preparedPoolClaims.json (save/load 568-607). No CXL_CLAIM
+   marker is added for pool claims, so NRI steering ignores them (D24).
+D2 nri.go CreateContainer returns early for containers without a
+   CXL_CLAIM_ env (nri.go:145-149). The plugin tracks only containers with
+   cxl.generic claims and has no Synchronize handler. The NRI plugin
+   starts after both kubelet plugins (driver.go:318-329).
+D3 Deployment RBAC (deployments/cxl/base/resource-driver.yaml:85-95)
+   grants nodes get, resourceslices *, and resourceclaims, but no pods.
+C1 The controller (reconciler.go:92-197) computes desired attachments
+   from allocated claims only. It ignores devices.config, reservedFor and
+   pods. Several claims on the same (device, host) give one attachment
+   (desired[k] is a list), which is detached only when no allocated claim
+   wants it. It writes conditions with SetStatusCondition per type and
+   leaves foreign conditions alone (status.go:141-157).
+
+
+2. Object model
+---------------
+Three objects per request. The ownership chain is
+requester pod <- companion pod <- claim (arrow = "owned by").
+
+  requester pod (already running, opted in at creation)
+     ^ ownerReference (no controller flag)
+  companion pod   cxl-lend-<x>   pinned to the requester's node, pause image
+     ^ ownerReference controller:true
+  ResourceClaim   cxl-lend-<x>   same name as the companion, carries LendConfig
+
+Why the claim is owned by the companion and not the reverse: one delete
+(of the companion) releases everything. The resourceclaim controller
+deletes the claim as soon as the companion is done (F7), even if a Failed
+companion object lingers after an eviction. Why the companion is owned by
+the requester: deleting the requester garbage-collects the companion (F8),
+and through it the claim.
+
+Why the borrower identity is in the claim's opaque config and not in
+companion annotations: the node plugin gets the claim in
+PrepareResourceClaims (F9), so it needs no pod GET and no new RBAC (D3).
+The data is in the object that Unprepare is about, and it is easy to
+unit-test. Companion annotations mirror it for humans and for the
+requester's own reconciliation.
+
+Names: the requester picks the name client-side, because the companion
+must name its claim before it exists:
+  cxl-lend-<requester-pod-name truncated to 40>-<5 random [a-z0-9]>
+The claim gets the same name. AlreadyExists -> pick a new suffix. Each
+cycle has fresh names and UIDs, so a repeated request never collides with
+a claim that is still being deallocated.
+
+2.1 Requester pod (existing workload, two opt-in additions)
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+  namespace: demo
+  annotations:
+    cxl-pool.generic/may-borrow: "true"      # opt-in: the plugin tracks this pod's containers
+                                              # and (option B) pre-authorizes dax devices
+spec:
+  serviceAccountName: cxl-borrower           # may create/delete pods + resourceclaims (2.4)
+  containers:
+  - name: app
+    image: registry.example/app:1
+    env:
+    - {name: POD_NAME,      valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+    - {name: POD_NAMESPACE, valueFrom: {fieldRef: {fieldPath: metadata.namespace}}}
+    - {name: POD_UID,       valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+    - {name: NODE_NAME,     valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
+    resources:
+      requests: {cpu: 500m, memory: 512Mi}
+      limits:   {memory: 1Gi}
+```
+
+2.2 Companion pod
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cxl-lend-app-7f3k2
+  namespace: demo
+  labels:
+    cxl-pool.generic/lend: "true"            # NEVER copy the requester's labels:
+    cxl-pool.generic/borrower-uid: "<POD_UID>"  # a ReplicaSet/Service/PDB selector would adopt it
+  annotations:
+    cxl-pool.generic/borrower-pod: app
+    cxl-pool.generic/borrower-container: app
+  ownerReferences:
+  - apiVersion: v1
+    kind: Pod
+    name: app
+    uid: "<POD_UID>"
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchFields:
+          - {key: metadata.name, operator: In, values: ["<NODE_NAME>"]}
+  tolerations:
+  - operator: Exists                         # follow the requester onto tainted nodes
+  priorityClassName: ""                      # set to the requester's class (eviction, preemption)
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 1
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  resourceClaims:
+  - name: mem
+    resourceClaimName: cxl-lend-app-7f3k2    # not referenced by the container (F5)
+  containers:
+  - name: hold
+    image: registry.k8s.io/pause:3.10.2      # the sandbox image, already on every node
+    resources:                               # Guaranteed QoS, far above pause's usage (F12)
+      requests: {cpu: 1m, memory: 8Mi}
+      limits:   {cpu: 1m, memory: 8Mi}
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65535
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities: {drop: [ALL]}
+```
+
+2.3 ResourceClaim. Created after the companion, because it needs the
+companion's UID.
+
+Exclusive memory ("I need 512 MiB extra memory [from pool P]"):
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: cxl-lend-app-7f3k2
+  namespace: demo
+  ownerReferences:
+  - apiVersion: v1
+    kind: Pod
+    name: cxl-lend-app-7f3k2
+    uid: "<companion uid>"
+    controller: true                         # F7: deleted as soon as the companion is done
+spec:
+  devices:
+    requests:
+    - name: mem
+      exactly:
+        deviceClassName: cxl-pool-memory
+        capacity: {requests: {memory: 512Mi}}
+        # optional pool choice: selectors: [{cel: {expression: 'device.attributes["cxl-pool.generic"].pool == "default"'}}]
+    config:
+    - requests: [mem]
+      opaque:
+        driver: cxl-pool.generic
+        parameters:
+          apiVersion: cxl-pool.generic/v1alpha1
+          kind: LendConfig
+          pod: {namespace: demo, name: app, uid: "<POD_UID>"}
+          container: app
+```
+
+Shared device ("I need shared CXL device 0xc1ae0001"): same metadata and
+config. The request becomes:
+
+```yaml
+    - name: mem
+      exactly:
+        deviceClassName: cxl-shared-memory
+        selectors:
+        - cel: {expression: 'device.attributes["cxl-pool.generic"].serial == "0xc1ae0001"'}
+```
+
+2.4 Requester RBAC (namespace-scoped)
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: cxl-borrower, namespace: demo}
+rules:
+- {apiGroups: [""], resources: [pods], verbs: [get, list, watch, create, delete]}
+- {apiGroups: [resource.k8s.io], resources: [resourceclaims], verbs: [get, list, watch, create, delete]}
+```
+
+This is the weak point of letting the container use the API itself
+(variant E2): "create pods" lets it run any pod that the namespace's Pod
+Security level allows. The narrowing is a ValidatingAdmissionPolicy bound
+to the cxl-borrower ServiceAccount. It admits only pods that have the
+cxl-pool.generic/lend label, the pause image, no volumes besides the
+projected token (and automount is false), exactly one resourceClaim named
+like metadata.name, and an ownerReference of kind Pod. UNVERIFIED: the CEL
+is not written. The alternative is that kubelet-cxl-plugin creates the
+companion on behalf of an authenticated socket request (option E1). The
+object model above stays the same; only the creator changes.
+
+2.5 Opaque config fields (new, apiVersion cxl-pool.generic/v1alpha1, kind LendConfig)
+- pod.namespace: must equal claim.namespace (enforced by the plugin).
+- pod.name, pod.uid: the borrower. The plugin resolves the UID through its
+  NRI pod index (PodSandbox.uid, nri api.proto:395).
+- container: the container name inside the borrower.
+- optional memoryLimit: "raise" (default) | "keep". See 4.3.
+No other fields. A claim without a LendConfig is a normal pod-time claim
+and works exactly as today.
+
+
+3. Sequence
+-----------
+Request (exclusive, 512 MiB). Times are from the test10 trace (ws-c,
+2026-10-06):
+
+ 1. Container: reads POD_*, NODE_NAME, picks name N.
+ 2. POST companion pod N (ownerRef -> requester). The scheduler's
+    PreEnqueue fails: claim N is missing (F4).
+ 3. POST ResourceClaim N (ownerRef controller -> companion UID from
+    step 2). Claim Add event -> companion is requeued (F4).
+ 4. Scheduler: nodeAffinity PreFilter -> only NODE_NAME (F2). DRA allocates
+    a pool device: allNodes slice, bindsToNode -> allocation.nodeSelector
+    = NODE_NAME. Reserve, then PreBind: reservedFor = [companion], event
+    BindingConditionsPending, 5 s poll (F3). [test10: +0.05 s]
+ 5. fake-cxl-pool-controller: desired (device, host) -> attach -> status
+    Attached=True + data. Unchanged code (C1). [test10: +0.6 s]
+ 6. PreBind poll sees Attached -> bind companion. [test10: +5.1 s; the 5 s
+    poll interval dominates]
+ 7. Kubelet: PrepareDynamicResources before the sandbox (F6) ->
+    cxl-pool.generic NodePrepare(claim N):
+      a. existing code: wait for the memdev, create the region, online
+         movable -> NUMA node 2 (shared: devdax /dev/dax0.0) [test10: +5.7 s]
+      b. NEW: parse LendConfig; find the borrower container (podUID, name)
+         in the NRI index; record the lend in preparedPoolClaims.json
+         (state "lending"); call Lend (option B). Exclusive: cpuset.mems
+         := original mems + node 2 (and memory.max raised, 4.3). Shared:
+         /dev/dax0.0 injected + device cgroup allow. State "lent".
+      c. NEW, optional: patch claim.status.devices[] entry condition
+         cxl-pool.generic/Lent=True, message "node 2 lent to demo/app/app"
+         (or "/dev/dax0.0 ..."). Feedback for the requester.
+ 8. Pause starts; the companion becomes Running.
+ 9. Container: polls (a) companion Ready and the claim's Lent condition,
+    or (b) locally /sys/fs/cgroup/cpuset.mems.effective, /dev/dax*. Then
+    uses the memory (numactl --membind / mbind / mmap of the dax).
+Request-to-usable: about 6-7 s on the fake pool, dominated by the 5 s
+binding poll.
+
+Release (container says "give back N"):
+ 10. Container: stops using the memory (munmap the dax; for exclusive,
+     frees or migrates its data).
+ 11. DELETE pod N (graceful, never --force; see R5).
+ 12. Kubelet: kills pause -> SyncTerminatingPod -> UnprepareDynamicResources
+     before the status changes (F6) -> NodeUnprepare(claim N):
+       a. NEW: Revoke (B). Exclusive: cpuset.mems := original (the kernel
+          migrates the borrower's pages back to DRAM), memory.max
+          restored. Shared: the device node is removed from the container
+          (unless another lend of the same serial to the same container
+          is active).
+       b. existing: release the region (offline, disable/destroy region,
+          disable memdev) unless another claim on the node uses the serial.
+       Failure (pages cannot move, dax still mapped) -> error -> kubelet
+       retries (F6). Nothing proceeds until it succeeds.
+ 13. Pod N becomes terminal/deleted -> the resourceclaim controller drops
+     reservedFor, deallocates, and deletes claim N (F7). [test10: claim
+     DELETED +0.5 s after unprepare]
+ 14. Controller: the attachment is no longer desired -> detach -> qemu
+     device_del completes because the guest released it. [test10: +7 s
+     after unprepare, the qemu hot-remove]
+Release-to-detached: about 8 s.
+
+Repeat: the same steps with a new name N'. Nothing from cycle N is reused
+or needed.
+
+
+4. Changes needed
+-----------------
+
+4.1 fake-cxl-pool-controller: none.
+Verified C1: it ignores config, pods and reservedFor. Two claims on one
+shared device on one node already give one attachment that is detached
+after both are gone. The optional Lent condition from the node plugin is
+preserved, because the controller sets conditions by type (status.go:141-157)
+and only rewrites data, which the node plugin does not touch. Optional,
+not needed: an event on the claim. If R7 (detaching a device that was
+attached but never prepared) turns out to leave a zombie, that is an
+existing issue of the pod-time flow too; it is not specific to lending.
+
+4.2 kubelet-cxl-plugin (DRA driver repo, branch 5fC-cxl)
+
+pool.go
+- New types:
+    type lendConfig struct{ APIVersion, Kind string; Pod struct{Namespace, Name, UID string}; Container string; MemoryLimit string }
+    type poolLend struct {
+        Namespace, PodName, PodUID, Container string
+        State      string   // "lending" | "lent" | "revoking"
+        OrigMems   string   // cpuset.mems before the first lend to this container (exclusive)
+        Raised     uint64   // bytes added to memory.max (exclusive, 0 if "keep")
+    }
+  preparedPoolClaim gains `Lend *poolLend json:"lend,omitempty"`, persisted
+  in preparedPoolClaims.json (save/load are unchanged; the JSON simply
+  grows).
+- parseLendConfig(claim): scan status.allocation.devices.config[] for
+  Opaque.Driver == p.name, Source FromClaim, kind LendConfig. Reject
+  FromClass (a class must not lend). Check pod.namespace == claim
+  namespace and a non-empty container. Malformed -> Prepare error.
+- An interface so that pool.go stays testable with a fake:
+    type lender interface {
+        Ready() bool                                   // NRI synchronized
+        Lookup(podUID, container string) (ctrID string, err error)
+        Lend(ctx, l *poolLend, devs []preparedPoolDevice) error
+        Revoke(ctx, l *poolLend, devs []preparedPoolDevice) error  // borrower gone: nil
+    }
+  poolDriver gains `lender lender` (nil -> lending disabled: a claim with
+  LendConfig fails Prepare with a clear error).
+- prepareClaim (pool.go:212): after the device loop, if a LendConfig is
+  present: lender not Ready -> fail (kubelet retries). Lookup fails (the
+  borrower is not on this node or not opted in) -> fail(rollback). Then
+  set pc.Lend (state "lending"), sync() (persist before touching the
+  container), Lend, set state "lent", sync(). A Lend error -> Revoke
+  (best effort), rollback, fail. The early "already prepared" return
+  (pool.go:214) re-runs Lend when the state is not "lent".
+- unprepareClaim (pool.go:451): before the release loop, if pc.Lend !=
+  nil: state "revoking", sync(), Revoke with the devices that no OTHER
+  lend still gives to the same container (refcount on (podUID, container,
+  serial), computed from p.prepared like preparedDevice). A Revoke error
+  -> return the error (no release; kubelet retries). The release loop and
+  the shared-serial refcount are unchanged.
+- Lent condition (optional, step 7c): a status patch on the claim's
+  status.devices entry (driver, pool, device). Needs RBAC resourceclaims/
+  status patch + resourceclaims/driver "associated-node:patch" for
+  cxl-pool.generic, because DRAResourceClaimGranularStatusAuthorization
+  is beta and on by default (kube_features.go:1533,
+  pkg/registry/resource/utils.go:146-180). The e2e runs with an admin
+  kubeconfig and needs nothing extra.
+
+nri.go
+- A container index, kept for pods annotated cxl-pool.generic/may-borrow:
+  podUID -> {sandbox id, namespace, name}; (podUID, ctrName) -> {ctrID,
+  pid, cgroupDir}. Fill it in RunPodSandbox/CreateContainer/StartContainer,
+  clear it in RemoveContainer/RemovePodSandbox.
+- Implement Synchronize(pods, containers): rebuild the index after a
+  plugin or runtime restart. Then re-check every "lent" lend from the pool
+  state: cpuset.mems contains the node, the dax node is present. Re-apply
+  the missing pieces through UpdateContainers (returned from Synchronize).
+  Mark Ready().
+- CreateContainer: in addition to today's CXL_CLAIM_ handling, if (podUID,
+  name) is the borrower of active lends, return an adjustment that
+  re-applies them at creation: cpuset.mems (LinuxCPU.mems, api.proto:575),
+  memory limit, the dax devices (ContainerAdjustment linux devices,
+  api.proto:673), env CXL_LENT_*. This covers a borrower container that
+  crashes and restarts while the companion still holds the device
+  (lifecycle row 9). This path needs no runtime injection mechanics: plain
+  NRI adjustments, which are known to work.
+- Lend/Revoke for a running container: UpdateContainers (api.proto:31)
+  with LinuxResources cpu.mems (+ memory.limit). For the devdax node:
+  whatever option B establishes (device cgroup pre-authorized at
+  CreateContainer for may-borrow pods + mknod/bind-mount into the mount
+  namespace). Conflict with another NRI resource policy that owns
+  cpuset.mems (balloons, topology-aware): see R8.
+
+driver.go
+- Pool helper started before NRI (driver.go:308-329): pass the nriPlugin
+  to pool.lender after startNRIPlugin. Ready() stays false until
+  Synchronize, so early Prepare/Unprepare calls error and are retried.
+- Flag --pool-lend (default true when NRI is enabled).
+
+doc/cxl/POOL.md: a new section "Lending a pool device to a running
+container" (object model 2, LendConfig, Lent condition, semantics: lent
+resources follow the pod object, not the container; release is
+cooperative).
+
+deployments/cxl: RBAC for the optional Lent condition. Example manifests
+for the companion and the claim, and the requester Role (+ VAP).
+
+Tests: pool_test.go gets a fake lender (prepare+lend, lend failure rolls
+back the region, unprepare revokes before release, revoke error blocks
+release, refcount of two lends on one shared serial to the same and to
+different containers, restart with a "lending"/"revoking" state).
+nri_test.go: the index, the re-lend adjustment on CreateContainer, and
+Synchronize.
+
+4.3 Exclusive memory: cpuset.mems is not enough
+A NUMA node in cpuset.mems does not raise the container's memory.max.
+A requester limited to 1 GiB gets no extra capacity from a lent 512 MiB
+node. Lend therefore also has to raise memory.max by the device size: the
+container's limit through NRI UpdateContainers (LinuxMemory.limit), and
+the pod cgroup's memory.max by a direct write when the pod has a limit
+(the pod cgroup is outside NRI, and kubelet does not reconcile it, F13).
+Revoke restores both. To avoid an OOM kill, Revoke refuses (error, kubelet
+retries) while memory.current > the original limit. This is the
+"cooperative release" contract: give back means first shrink. Caveat:
+a later pods/resize by kubelet overwrites the raised limits (R9).
+memoryLimit: "keep" in LendConfig skips this for requesters without
+limits. The first e2e should use such a requester to keep the prototype
+small.
+
+
+5. Lifecycle table
+------------------
+Columns: what happens, what is left over, where it is verified/handled.
+
+| # | event | what happens | leftovers | basis |
+|---|-------|--------------|-----------|-------|
+| 1 | request | companion + claim created; allocate -> attach -> Attached -> bind -> NodePrepare (region) -> Lend | none extra; 3 API objects, 1 attachment, 1 region, 1 lend | F2-F5, F9, D1, 4.2 |
+| 2 | use | the borrower uses the node (mbind/numactl) or mmaps /dev/daxX.Y | - | B |
+| 3 | release | delete companion -> pause killed -> Unprepare: Revoke, release region -> claim deallocated and deleted -> controller detach | none (claim deleted by the resourceclaim controller F7, companion deleted, attachment gone) | F6, F7, C1 |
+| 4 | repeat (many cycles) | fresh names/UIDs each cycle; nothing from the previous cycle is reused. Concurrent requests: independent companions | none. Exclusive: the same device can be re-allocated before the old detach finishes only if it stays on the same node, in which case the controller keeps the attachment (C1) and Prepare re-enables the disabled memdev (POOL.md deviation, probeGrace) | D1, C1 |
+| 5 | requester pod deleted (normal) | kubelet stops the requester's containers (all mappings gone) -> requester object removed -> GC deletes the companion (graceful) -> Unprepare: Revoke finds no borrower -> no-op -> release -> claim deleted -> detach | none; delay = GC latency (seconds) + row 3 | F8, F6, F7 |
+| 6 | requester pod terminal but not deleted (restartPolicy Never/Job) | containers gone; companion keeps running (GC acts only on deletion) -> the device stays held until the requester pod object is deleted (e.g. Job ttlSecondsAfterFinished) | held device (bounded by the pod object lifetime); optional fix: the plugin deletes companions of borrowers in terminal pods (needs pods delete RBAC) | F8; design choice |
+| 7 | companion deleted by the requester | = row 3 | none | |
+| 8 | companion evicted (node pressure) / preempted | kubelet kills pause -> Unprepare -> Revoke from a LIVE borrower: exclusive pages migrate to DRAM (may fail -> retry); shared: the device node is removed, and if still mapped, the release fails -> retry until unmapped. Pod Failed -> claim deleted at once (F7, controller ref). The Failed companion object stays until the requester deletes it or the requester is deleted (GC) | the Failed companion object (no resources); the borrower loses the memory unexpectedly | F6, F7, F12; mitigation: Guaranteed QoS, same priority as the requester, see R3 |
+| 9 | borrower container crashes and restarts (process held a devdax mapping) | the kernel drops the mapping with the process; the runtime creates a new container -> NRI CreateContainer re-applies the active lends as adjustments (cpuset.mems, devices, memory limit) | none; the lend survives restarts, release only by deleting the companion | 4.2 nri.go |
+| 10 | borrower holds a devdax mapping when the companion is deleted | Revoke removes the node (the mapping survives); release: disable-region fails (busy) -> Unprepare error -> kubelet retries; the companion stays Terminating, the claim allocated, the attachment kept | nothing dangling, only delayed: it completes once the process unmaps or exits | F6; starting-points "known hard facts" |
+| 11 | node plugin restart, lends active | state loaded from preparedPoolClaims.json (lends included); NRI Synchronize rebuilds the index and re-checks/re-applies lends; Prepare/Unprepare arriving before Ready() error and are retried; a companion deleted during the downtime: kubelet retries Unprepare until the plugin is registered again (F6 reconcileLoop) | none | D1, F6, 4.2 |
+| 12 | node plugin restart in the middle of a lend ("lending"/"revoking" in state) | on Prepare retry, the lend is re-run (idempotent: set mems, ensure device); on Unprepare retry, Revoke is re-run (idempotent) | none | 4.2 |
+| 13 | controller restart | stateless reconcile; attachments re-confirmed; a detach due during the downtime happens afterwards | attachment lingers while the controller is down | D22, C1 |
+| 14 | requester deleted while the companion is still in PreBind | GC deletes the unbound companion -> the claim's reservedFor is dropped (isPodDone: deleted and unscheduled, F7) -> deallocated -> the controller detaches an attached-but-never-prepared device | see R7 | F7 |
+| 15 | attach fails (AttachFailed / timeout) | PreBind fails, the scheduler deallocates and retries; the companion stays Pending | the requester must time out and delete the companion (= row 3, no attachment) | F3 |
+| 16 | two borrowers of one shared device on one node | two companions, two claims, each one `hosts` unit; one attachment (C1); one region, reused (D1); two lends; the first release revokes only its container, and the region is released by the last claim | none | D1, C1; R6 accounting |
+| 17 | one borrower, the same shared device twice | two lends to one container: refcount, so the first Revoke keeps the device node | none | 4.2 refcount |
+| 18 | force delete of the companion (--grace-period=0 --force) | the pod object disappears before Unprepare -> claim deallocated -> the controller detaches while the region exists -> zombie qemu device (contract section 7 hazard) | zombie until VM restart | contract 7; R5 |
+| 19 | node reboot | regions and lends gone; the companion sandbox is recreated -> Prepare returns the cached result from the stale state file (an existing gap of the pod-time flow, load() only warns) | stale state | D1; not specific to A |
+
+
+6. Feasibility verdict
+----------------------
+It needs a small-to-moderate change in our code: kubelet-cxl-plugin only.
+No upstream change. The controller is unchanged.
+
+- Exclusive memory: feasible now. All Kubernetes mechanics are verified
+  (F1-F13). Changing cpuset.mems of a running container through NRI
+  UpdateContainers is established practice in nri-plugins. The open part
+  is memory.max (4.3).
+- Shared devdax: feasible only if option B shows a working runtime
+  injection of /dev/daxX.Y (most likely device cgroup pre-authorization at
+  CreateContainer for may-borrow pods + mknod into the mount namespace).
+  Everything else in A (claims, attach, refcount, lifecycle) is the same
+  as for exclusive devices.
+- The request channel (who creates the companion) is orthogonal. A works
+  with the container using the API itself (E2, RBAC + VAP) or with the
+  node plugin creating the companion (E1). The object model stays the
+  same.
+
+What A gets from Kubernetes for free: scheduling and capacity accounting
+of pool devices, quota (F11), binding conditions/attach ordering,
+release-before-detach (F6), and cleanup through GC and the resourceclaim
+controller. Every lend is an ordinary DRA claim visible with kubectl.
+
+
+7. Effort estimate
+------------------
+Sizes are lines of Go/bash, estimated.
+- pool.go LendConfig, lend state, refcount, lender interface, tests:
+  ~250 + ~300 test, 1 day.
+- nri.go container index, Synchronize, re-lend at CreateContainer,
+  cpuset.mems + memory.max lend/revoke: ~300 + ~200 test, 1-1.5 days.
+- devdax lend/revoke per option B: ~150, 1 day (after B's result).
+- driver.go wiring, flag, RBAC, POOL.md section: ~100, 0.5 day.
+- e2e test12-dra-lend (n4-cxl-shared-2): request helpers in dra.source.sh
+  (create companion+claim, wait Lent, release, assert no leftovers:
+  claims, pods, server attachments, regions, /dev/dax in the container):
+  ~300 bash, 1-1.5 days including VM runs.
+Total about 4-6 agent-days. The exclusive-only first milestone is about
+2.5 days.
+
+
+8. Risks
+--------
+R1 The devdax lend depends on B. If B finds that runtime device injection
+   is impossible even with pre-authorization, shared lending falls back
+   to the requester being created with the device (not "live").
+R2 Request trust: pod-create RBAC for the container is broad. A VAP must
+   narrow it (2.4), or option E1 is used.
+R3 Companion eviction/preemption silently takes memory away from a live
+   borrower (row 8). Mitigation: Guaranteed QoS, priority = requester's.
+   UNVERIFIED: whether DRA-aware preemption could pick the companion as a
+   victim for another pod that wants the same device. Equal or higher
+   priority prevents it.
+R4 Release is cooperative: a borrower that keeps a dax mapped, or keeps
+   more pages than DRAM can take, blocks Unprepare indefinitely (retried,
+   no leak, but the companion stays Terminating). Requester libraries
+   must unmap/shrink before deleting.
+R5 A force delete of the companion leads to a zombie device (existing
+   contract hazard, row 18). The requester code and the VAP should forbid
+   gracePeriodSeconds=0. A VAP cannot see delete options (UNVERIFIED);
+   document it.
+R6 Shared device accounting: `hosts` capacity counts claims, not nodes.
+   Two borrowers on one node use two units (row 16). Acceptable, but
+   the contract's "max attached nodes" wording becomes "max claims".
+R7 Detach of a device that was attached but never prepared (row 14): the
+   memdev is bound to cxl_mem but has no region. UNVERIFIED whether qemu
+   hot-remove completes. It applies equally to the pod-time flow (pod
+   deleted during PreBind) and is worth one e2e check.
+R8 Several writers of cpuset.mems: if a resource-policy NRI plugin
+   (balloons/topology-aware) also sets cpuset.mems for the borrower, the
+   lend and the policy overwrite each other. Either the lend runs only
+   where kubelet-cxl-plugin is the mems owner, or the policy learns about
+   lent nodes. Also, other containers with an inherited (empty)
+   cpuset.mems can fall back onto the lent CPU-less node. That is
+   "exclusive" only by convention, the same as in today's D24 flow.
+R9 memory.max raised by the plugin is overwritten by a later in-place
+   resize of the requester, and is not visible in the pod spec or the
+   scheduler's memory accounting (the device is accounted in DRA
+   instead).
+R10 Latency: the scheduler's fixed 5 s binding-condition poll (F3) puts
+   a ~5 s floor on each request. That is fine for "more memory", too slow
+   for very frequent cycles.
+R11 Lifecycle follows the pod object, not the container (row 6):
+   terminal-but-undeleted pods keep their devices.
+
+
+9. Concrete next step (if A is chosen)
+-------------------------------------
+Prototype, in this order. Each step can be run on n4-cxl-shared-2
+(single-node cluster, pool server on the host):
+
+ P1 (no code) Run by hand: the companion YAML (2.2) + exclusive claim
+    (2.3, 512Mi, device pooled0 0xc1ee0001) next to a busybox
+    "requester" with the may-borrow annotation and no memory limit.
+    Confirm: the companion is scheduled via matchFields, the claim is
+    prepared, and node 2 appears. Delete the requester -> the companion is
+    GC'd -> the claim is deleted -> detached. Delete the companion only ->
+    the same. This validates F2-F8 end to end with today's binaries
+    (the lend is not implemented yet, so the container sees nothing).
+ P2 pool.go: LendConfig + lend state + fake-lender tests.
+ P3 nri.go: index + Synchronize + exclusive Lend/Revoke (cpuset.mems only,
+    memoryLimit keep). e2e test12-dra-lend part 1: a busybox requester
+    with no limit; request 512Mi -> assert that
+    /sys/fs/cgroup/cpuset.mems.effective inside contains the new node and
+    `numactl --membind` (or a python mmap+mbind) allocates there. Release
+    -> mems back, region gone, attachment detached. Repeat 3 cycles.
+    Assert after each cycle: 0 lend pods, 0 claims, 0 k8s: attachments
+    on the server, no region0.
+ P4 Shared: with B's mechanism, lend 0xc1ae0001 (256Mi) to a
+    python:3-alpine requester; pool-dax-rw.py writes, a second requester
+    on the same node reads (two companions, row 16). Release one, the
+    other still reads, release the second, the region is gone. A
+    restart of the borrower container while lent -> the device is back
+    (row 9).
+ P5 memory.max raise/restore (4.3), plugin restart with active lends
+    (row 11), and deleting the requester while lent (row 5).
+
+
+Report (short)
+--------------
+Verdict: A is feasible on stock Kubernetes v1.37.1 with changes only in
+kubelet-cxl-plugin; the pool controller needs none. A running pod cannot
+gain claims (ValidatePodUpdate validation.go:5998; resize allows only
+cpu/memory, 6577), so a pause "companion" pod is used instead. It is
+pinned through nodeAffinity matchFields metadata.name (node_affinity.go:
+174-199) and owns a claim (ownerRef controller:true) that carries a
+LendConfig in its opaque config (copied into the allocation,
+allocator_experimental.go:458-478). The scheduler, the controller and
+NodePrepare run unchanged. The plugin then lends the prepared node or dax
+device to the borrower container, and revokes it in Unprepare. Unprepare
+runs after the companion's containers stop and before the pod status is
+final (kubelet.go:2439), with retries. Cleanup is complete and ordered:
+deleting the companion -> resourceclaim controller dealloc/delete
+(controller.go:1602-1692) -> controller detach. Deleting the requester ->
+GC deletes the companion (garbagecollector.go:383-455). Exclusive lending
+is ready to prototype (cpuset.mems via NRI, plus a memory.max raise).
+Shared devdax lending depends on option B's runtime injection result.
+Main risks: the breadth of the request RBAC, companion eviction, the
+cooperative release (mappings/pages block Unprepare), force-delete
+zombies, competing cpuset.mems writers, and a ~5 s binding poll per
+request. Effort: about 4-6 agent-days; the exclusive-only milestone is
+about 2.5 days. Next step: P1, a manual run of the object model on
+n4-cxl-shared-2 with today's binaries, then pool.go lend state and the
+NRI exclusive lend with e2e test12-dra-lend.

@@ -1,0 +1,431 @@
+02-option-resize-and-extended-resources: in-place resize, DRA extended
+resources, node-allocatable DRA, and what a running pod can gain in 1.37
+=========================================================================
+Starting point C of 01-starting-points.txt. Written 2026-10-08 (Opus).
+Read-only analysis. Kubernetes = ~/github.com/kubernetes/kubernetes at
+v1.37.1 (git describe: v1.37.1-1-g8aaeb4e53d1). All k8s paths below are
+relative to that checkout. Our side = ~/github.com/intel/
+intel-resource-drivers-for-kubernetes (abbreviated "ird/").
+
+VERDICT
+-------
+Not possible today. In v1.37.1 there is NO path by which a running pod
+gains a new ResourceClaim, a new DRA-backed extended resource, or a new
+DRA device of any kind. Every link of the chain is closed:
+
+  1. API: pods/resize can change only cpu and memory (container and
+     pod level) plus, behind an alpha gate, memory-backed emptyDir
+     sizeLimit. Extended resources, containers[].resources.claims and
+     spec.resourceClaims are explicitly frozen. Plain pod update
+     (ValidatePodUpdate) does not list resourceClaims as mutable.
+  2. Scheduler: DRA allocation (including the KEP-5004 extended-resource
+     claim and the KEP-5517 node-allocatable status) happens only in the
+     scheduling cycle of an unbound pod. The only 1.37 feature that sends
+     bound pods back to the scheduler (KEP-5836, alpha, off) makes the
+     DRA plugin Skip them on purpose.
+  3. Kubelet: resize admission never consults DRA; NodePrepareResources
+     is called only when the pod sandbox is created; CDI edits from DRA
+     reach a container only at container creation; the CRI resize call
+     carries only LinuxContainerResources (cpu/memory/hugepages/unified).
+
+What resize CAN do that is useful to us: raise (and lower) the memory
+limit of a running container, which is the cgroup memory.max that caps
+use of any NUMA node we lend (option A/B). That is a complement to
+another option, not an attach mechanism. See "Resize as the memory-limit
+knob" below.
+
+1. pods/resize subresource and ValidatePodResize (KEP-1287, KEP-5419)
+---------------------------------------------------------------------
+Registry
+- pkg/registry/core/pod/storage/storage.go:108-119: resize store uses
+  registrypod.ResizeStrategy; ResizeREST at :404-428.
+- pkg/registry/core/pod/strategy.go:372-380: reset-fields filter covers
+  only spec.containers[*].{resources,resizePolicy} and the same for
+  initContainers.
+- strategy.go:386-417 dropNonResizeUpdates: newPod.Spec = oldPod.Spec,
+  then only containers[*].Resources / ResizePolicy (the whole
+  ResourceRequirements, i.e. including .Claims, is copied in),
+  pod-level spec.resources (if InPlacePodLevelResourcesVerticalScaling),
+  and volumes (if InPlacePodVerticalScalingMemoryBackedVolumes) are
+  taken from the request. Status is reset to old (strategy.go:409).
+  So spec.resourceClaims sent to pods/resize are silently dropped.
+- strategy.go:470-475: ValidateUpdate -> ValidatePodResize.
+
+ValidatePodResize, pkg/apis/core/validation/validation.go:6491-6672
+- :6508-6510 QoS class must not change (Guaranteed stays Guaranteed:
+  requests == limits for cpu and memory must still hold after resize).
+- :6513 node must support resize (isPodResizeRequestSupported :6903).
+- :6526-6536 pod-level resources resize needs
+  InPlacePodLevelResourcesVerticalScaling; validatePodLevelResourcesResize
+  :6712-6752 allows only cpu/memory at pod level (:6733-6736 "only cpu
+  and memory resources are mutable at pod-level") and, with
+  DRANodeAllocatableResources, checks that pod-level resources still
+  cover container + DRA node-allocatable amounts (:6739-6749,
+  validatePodLevelResourcesCoverDRA :6820).
+- :6543-6547 containers may not be added/removed/renamed.
+- :6571-6582 "only cpu and memory resources are mutable" for regular
+  containers. dropCPUMemoryResourcesFromContainer :6779-6784 masks cpu
+  and memory and KEEPS the new Claims; comment :6782 "Resource claims
+  are immutable during pod resize". Any change to an extended resource
+  (e.g. intel.com/cxl-pool: 1 -> 2) or to resources.claims fails the
+  DeepEqual at :6576.
+- :6584-6612 init/sidecar containers, same rule.
+- :6614-6657 volumes: only memory-backed emptyDir sizeLimit, and only
+  with InPlacePodVerticalScalingMemoryBackedVolumes (alpha 1.37).
+- :6664-6669 final DeepEqual of the whole spec: everything else frozen.
+- :6921-6935 validateContainerResize: requests/limits may not be removed.
+
+Plain pod update, for completeness: updatablePodSpecFields
+validation.go:5849-5855 (images, activeDeadlineSeconds, toleration
+additions, terminationGracePeriodSeconds; plus scheduling gates/node
+affinity rules handled separately), final check :5995-6000. API doc:
+staging/src/k8s.io/api/core/v1/types.go:4660 "This field is immutable"
+(spec.resourceClaims) and :3072 (container resources.claims).
+
+Pod status cannot be used as a back door either:
+- validatePodResourceClaimStatuses / validatePodExtendedResourceClaimStatus
+  (validation.go:6210-6211, :6280, :6391-6438): an extendedResourceClaimStatus
+  request mapping must name an extended resource that already is in the
+  container's spec requests (:6412-6416), which resize cannot add.
+- validateNodeAllocatableResourceClaimStatus (:6307-6350): each entry's
+  claim must be in spec.resourceClaims or status.resourceClaimStatuses
+  (:6318-6340). An unrelated (companion) claim is rejected.
+
+2. Kubelet resize admission and actuation
+-----------------------------------------
+- pkg/kubelet/allocation/allocation_manager.go:602-649
+  handlePodResourcesResize -> canAdmitPod (:651-666) runs the kubelet
+  admit handlers with Operation=ResizeOperation.
+- Handlers: pkg/kubelet/kubelet.go:851 (resizeAdmitHandler), :1134
+  (containerManager AllocateResources: cpu/memory/topology/device
+  managers), :1137 predicate handler, :1185 registration. No DRA handler.
+- pkg/kubelet/allocation/handlers.go:56-108: infeasible cases (swap,
+  memory-backed volumes, static CPU manager for Guaranteed integer CPU,
+  static memory manager :97-103 unless InPlacePodVerticalScalingExclusiveMemory
+  alpha).
+- pkg/kubelet/lifecycle/predicate.go:119-247: GeneralPredicates against
+  the node object; :346-375 removeMissingExtendedResources drops DRA-backed
+  extended resources from the fit check (DRA is trusted, not rechecked).
+- Node capacity used by admission comes from cAdvisor MachineInfo, read
+  ONCE at kubelet start: pkg/kubelet/kubelet.go:704-711; the only
+  non-test setter of the cache is that call (kubelet_getters.go:467).
+  Memory hot-added after kubelet start (pool regions onlined as a NUMA
+  node) is never in node capacity/allocatable without a kubelet restart.
+  No node-resource hot-plug gate exists in pkg/features/kube_features.go.
+- Actuation: pkg/kubelet/kuberuntime/kuberuntime_manager.go:882
+  doPodResizeAction, :1227 updatePodContainerResources ->
+  kuberuntime_container.go:410-416 updateContainerResources ->
+  CRI UpdateContainerResources with generateContainerResources
+  (kuberuntime_container_linux.go:331-341): only LinuxContainerResources.
+  memory.max = container limit + DRA node-allocatable memory
+  (getMemoryLimit :127-149, GetContainerDRAAllocations :176-178).
+  CpusetMems is set only at container creation by the memory manager
+  (pkg/kubelet/cm/internal_container_lifecycle_linux.go:46), not on resize.
+- Memory limit decrease is refused if current usage is above the new
+  limit (kuberuntime_manager.go:1166-1221, validateMemoryResizeAction);
+  kubelet retries.
+- Scheduler involvement: none for the resize decision. KEP-5836
+  InPlacePodVerticalScalingSchedulerPreemption (alpha 1.37, default off,
+  kube_features.go:569-573, :1721-1723) re-queues bound pods whose
+  resize is Deferred so the scheduler can preempt for them
+  (pkg/scheduler/eventhandlers.go:137,160-162,205; plugin
+  pkg/scheduler/framework/plugins/deferredpodscheduling, Permit
+  :151-156 never binds). The DRA plugin explicitly Skips those pods in
+  PreFilter/Filter/PostFilter: dynamicresources.go:573-575, :934-936,
+  :1156-1158. So even the newest "scheduler looks at a running pod"
+  path does no DRA work.
+
+3. DRA extended resources (KEP-5004), 1.37 state
+------------------------------------------------
+- DeviceClass.spec.extendedResourceName:
+  staging/src/k8s.io/api/resource/v1/types.go:2448-2461.
+- Scheduler flow: pkg/scheduler/framework/plugins/dynamicresources/
+  extendeddynamicresources.go:48-74 (overview), preFilter :146-208
+  creates an in-memory claim "<extended-resources>" owned by the pod,
+  filter :217-278 converts node-unprovided extended resources to device
+  requests; the quantity is a DEVICE COUNT (createResourceRequestAndMappings
+  :342-404, ExactCount at ~:393-394): "512Mi of pool memory" is not
+  expressible, only "N pool devices". PreBind creates the claim in the
+  API (:528) and patches pod.status.extendedResourceClaimStatus (:562).
+  Only one such claim per pod (findExtendedResourceClaim :119-131).
+- Kubelet: pkg/kubelet/cm/dra/manager.go:266-276 appends the claim from
+  status.extendedResourceClaimStatus to spec.resourceClaims for
+  prepare; GetResources :559-560 for CDI at container creation.
+- All of this runs exactly once, at scheduling/sandbox-creation time.
+  Extended resource requests are frozen by resize (section 1), and
+  extended-resource requests must equal limits (not overcommittable),
+  so there is no "grow by one device" path.
+- Gate: DRAExtendedResource alpha 1.34, beta 1.36, GA+locked 1.37
+  (kube_features.go:1487-1491).
+
+4. DRA node-allocatable resources (KEP-5517) and our plugin
+-----------------------------------------------------------
+- Gate DRANodeAllocatableResources: alpha 1.36, still alpha/off in 1.37
+  (kube_features.go:1502-1504, KEP at :272-275).
+- ResourceSlice device.nodeAllocatableResources maps claimed device
+  capacity onto node "memory"/"cpu"/hugepages. The scheduler computes
+  the footprint and checks it against node allocatable
+  (nodeallocatabledynamicresources.go:63-110), and patches
+  pod.status.nodeAllocatableResourceClaimStatuses in PreBind (:609-635).
+  Kubelet adds those amounts to container memory.max
+  (kuberuntime_container_linux.go:176-178, :136-148, only when the
+  container declares a memory limit) and to the pod cgroup
+  (pkg/kubelet/cm/helpers_linux.go:180-199). status_manager.go:267-268
+  and :1492-1493: kubelet does not own that status field.
+- Our plugin: ird/cmd/kubelet-cxl-plugin/node_state.go:313 and :341
+  publish NodeAllocatableResources for local CXL regions and SystemDRAM
+  devices; memoryNodeAllocatableResources :365-383 maps
+  capacity "memory" 1:1 to node memory. ird/doc/cxl/README.md:18
+  requires the gate; ird/doc/cxl/POOL.md:48 "Pool devices do not use
+  nodeAllocatableResources".
+- POOL.md is right, and this analysis gives the code-level reason:
+  the scheduler would charge pool bytes against node allocatable memory
+  (nodeFitsResources over totalPodDemand, :103-106), and node allocatable
+  is derived from MachineInfo read at kubelet start (section 2). Pool
+  memory attached later is not in it, so the pool claim would consume
+  DRAM headroom that it does not use, and could make the pod
+  unschedulable on a node that has the pool memory available.
+- The status field is append-protected by validation (section 1 end):
+  only claims of the pod's own spec may appear. It is also computed
+  only in the scheduling cycle. A running pod cannot gain an entry.
+
+5. Other 1.37 features checked; none adds a device to a running pod
+------------------------------------------------------------------
+- DRAOptionalNodeOperations (alpha 1.37, kube_features.go:1506-1508),
+  ResourceSlice.spec.skipNodeOperations types.go:232-266: lets kubelet
+  skip NodePrepare/NodeUnprepare for devices that need no node work. It
+  does not change WHEN claims are considered; no help.
+- DRAWorkloadResourceClaims (KEP-5729, beta-but-off 1.37,
+  kube_features.go:1545-1548): PodGroup-level claims shared by pods; the
+  PodGroup's resourceClaims are immutable too (API doc in
+  staging/src/k8s.io/api/scheduling/v1beta1/types_swagger_doc_generated.go:203).
+- DRADeviceBindingConditions (beta, on), DRAResourceClaimDeviceStatus
+  (GA 1.37), DRAConsumableCapacity (beta, on): used by our pool flow,
+  scheduling-time only.
+- InPlacePodLevelResourcesVerticalScaling (KEP-5419, beta on since 1.36,
+  kube_features.go:1693-1696): cpu/memory only (section 1).
+- PodLevelResourceManagers (beta, off) and memory manager options: no
+  claims.
+- ResourceClaim reservedFor: the resourceclaim controller keeps a
+  reservedFor entry for a pod that exists and is not done even if the
+  pod does not reference the claim (pkg/controller/resourceclaim/
+  controller.go:1486-1541), and deallocates when the last consumer goes
+  (:1602-1633). That is a lifecycle hook a custom allocator could use
+  (claim lives while the running pod lives), but kubelet never prepares
+  such a claim (dra/manager.go:266: only spec.resourceClaims +
+  extended-resource claim, and :312-316 requires reservedFor) and
+  nothing in-tree allocates it for a bound pod. This is option A/E
+  territory with a self-written allocator; it is noted, not pursued.
+
+Gate summary for 1.37
+  DynamicResourceAllocation              GA, locked on
+  DRAExtendedResource                    GA, locked on
+  DRAResourceClaimDeviceStatus           GA, locked on
+  DRADeviceBindingConditions             beta, on
+  DRAConsumableCapacity                  beta, on
+  DRAResourceClaimGranularStatusAuth.    beta, on
+  DRANodeAllocatableResources            alpha, off   (our plugin needs it)
+  DRAOptionalNodeOperations              alpha, off
+  DRAWorkloadResourceClaims              beta, off
+  InPlacePodVerticalScaling              GA, locked on
+  InPlacePodLevelResourcesVerticalScaling beta, on
+  InPlacePodVerticalScalingExclusiveMemory alpha, off
+  InPlacePodVerticalScalingMemoryBackedVolumes alpha, off
+  InPlacePodVerticalScalingSchedulerPreemption alpha, off
+  PodLevelResources                      beta, on
+  NodeDeclaredFeatures                   GA, locked on
+
+6. Resize as the memory-limit knob for lent pool memory (works today)
+---------------------------------------------------------------------
+Whatever option attaches the memory (A companion claim + B lend), the
+container's memory.max still caps its total usage over ALL nodes,
+including the lent one, and the pod cgroup memory.max (sum of container
+limits, helpers_linux.go:180+) caps the pod. A lent exclusive device of
+X bytes is usable only if memory.max has X bytes of headroom.
+
+Ways to get that headroom:
+a) Burstable pod, raise only limits via pods/resize (+X), requests
+   unchanged. QoS stays Burstable (validation.go:6508). Kubelet
+   admission fit is request-based, so no accounting against DRAM
+   happens; kubelet recomputes container and pod memory.max. Release:
+   after the lend is revoked and pages have moved off the CXL node,
+   resize -X; kubelet refuses while usage > new limit
+   (kuberuntime_manager.go:1166-1221) and retries, which is safe.
+b) Guaranteed pod: requests must move with limits, so +X is charged
+   against node allocatable memory that excludes hot-plugged pool memory
+   (kubelet.go:704-711). Result: DRAM double-accounting, possible
+   Deferred/Infeasible resize, and with static memory manager it is
+   Infeasible (handlers.go:97-103). Not recommended.
+c) No container memory limit at all: lent memory usable without resize,
+   but no isolation; our plugin's memory.high steering (cgmpolmgr) is
+   then the only brake.
+d) Our NRI plugin raises memory.max itself (plugin-initiated
+   UpdateContainers, LinuxResources.memory.limit) and re-adds X in the
+   UpdateContainer hook whenever kubelet resizes. Does not raise the pod
+   cgroup memory.max, which kubelet owns; would need a direct write to
+   the pod cgroup that kubelet may later overwrite (UNVERIFIED: when
+   kubelet re-applies pod cgroup limits outside resize). Fragile.
+
+Interaction with our NRI steering (UNVERIFIED in a VM; reasoned from
+code): kubelet resize does not send CpusetMems
+(kuberuntime_container_linux.go:331-341), so cpuset.mems written by
+cgmpolmgr stays. memory.high is only in the CRI request with MemoryQoS
+(kuberuntime_container_linux.go:203+); otherwise cgmpolmgr's memory.high
+is untouched. containerd runs NRI UpdateContainer for CRI updates, so
+our plugin sees every kubelet-driven change and can re-assert.
+
+Who calls pods/resize: the requester (ServiceAccount with patch on
+pods/resize in its namespace) or the node plugin/controller (RBAC
+pods/resize cluster-wide; kubelet's node authorizer does not grant it to
+a DaemonSet ServiceAccount). Note the resize is visible in pod spec and
+survives plugin restarts; the lend does not unless persisted. That
+asymmetry must be reconciled (see lifecycle table).
+
+Recommendation inside the overall design: if the chosen option lends an
+exclusive pool node to a container WITH a memory limit, pair it with (a):
+the "memory X MiB" request = lend X + resize limit +X; give-back =
+revoke/migrate + resize -X. Document Guaranteed pods as unsupported, or
+require them to be created with headroom.
+
+Lifecycle table for (a), combined with a lend of option A/B
+  request    lend NUMA node (A/B), then pods/resize limit +X; if the
+             resize is rejected or Infeasible, revoke the lend (atomic
+             from the requester's view).
+  use        memory.max includes X; cgmpolmgr steers to the CXL node.
+  release    stop steering to CXL node, migrate/offline (B), then
+             resize -X; kubelet retries until usage < new limit.
+  repeat     each cycle +X/-X; the generation counter of the pod grows;
+             no leftovers as long as -X is always issued.
+  pod deleted  nothing to undo for resize; claim/lend cleanup is the
+             other option's job.
+  plugin restart  limit stays raised in spec; plugin must reload its
+             lend record (preparedPoolClaims.json) and, if a lend is
+             gone, resize -X (otherwise a dangling raised limit: not a
+             leak of pool memory, but of DRAM headroom for that pod).
+  controller restart  no effect on the limit.
+  requester crash (container restart)  the new container is created
+             with the raised spec limit; NRI CreateContainer must
+             re-apply the lend or the plugin must resize -X.
+
+7. What is missing upstream: smallest change to add a claim to a running pod
+---------------------------------------------------------------------------
+The idea "allow appends to pod.spec.resourceClaims + kubelet re-sync" is
+not small, because four separate components each assume claims are
+fixed before the sandbox exists. Minimal sketch of a KEP
+("DRA: ResourceClaims for running pods", SIG Node + SIG Scheduling,
+WG Device Management):
+
+API / validation
+- New subresource pods/resourceclaims (pattern: pods/ephemeralcontainers,
+  ValidatePodEphemeralContainersUpdate validation.go:6455), allowing
+  append AND removal of spec.resourceClaims entries and of the matching
+  containers[].resources.claims entries, only when the pod is bound and
+  the node declares the feature (NodeDeclaredFeatures, like resize's
+  isPodResizeRequestSupported :6903). Removal is required for our
+  give-back requirement; append-only would leak.
+- Pod status: per-claim attach state (e.g. resourceClaimStatuses gains
+  a phase, or a PodCondition "ResourceClaimsPending"), mirroring
+  PodResizePending/InProgress.
+- validateNodeAllocatableResourceClaimStatus and
+  extendedResourceClaimStatus validation unchanged (they key off spec).
+
+resourceclaim controller
+- Create claims from templates for added entries and delete generated
+  claims of removed entries (today it creates them for new pods;
+  handling spec changes on an existing pod is UNVERIFIED but the sync is
+  per pod, so likely a small change).
+
+Scheduler
+- A bound pod with an unallocated claim must get an allocation
+  constrained to spec.nodeName, with Reserve/PreBind (including
+  binding conditions: our pool controller attaches during PreBind
+  wait) but without Bind. Today only unscheduled pods run the DRA
+  plugin; KEP-5836's deferred-resize re-queue (eventhandlers.go:137-205,
+  deferredpodscheduling Permit) is the closest precedent, and the DRA
+  plugin would have to stop Skipping such pods (dynamicresources.go:573,
+  :934, :1156) and gain a "node already fixed, allocate only the new
+  claim" mode. Node-allocatable footprint (KEP-5517) must be
+  recomputed and nodeAllocatableResourceClaimStatuses re-patched.
+  Removal: claim deallocation already works when reservedFor empties
+  (controller.go:1602-1633).
+
+Kubelet
+- syncPod must detect new/removed claims for running pods; today
+  PrepareDynamicResources is called only when CreateSandbox is true
+  (kuberuntime_manager.go:1678-1730). prepareResources is cache-based
+  and idempotent (dra/manager.go:250-470), so calling it again for the
+  delta is cheap. Unprepare of a removed claim while the pod runs is new
+  behaviour (today only at pod termination).
+- Delivery to the container is the hard part: CDI edits are applied
+  only at container creation (kubelet_pods.go:654 -> cm GetResources
+  -> dra GetResources :521-560), and the CRI has no call to add
+  devices/mounts/env to a running container (UpdateContainerResources
+  = LinuxContainerResources only). Choices: (i) restart the container
+  (a resizePolicy-like "RestartContainer" for claims: simple, but kills
+  the "running" premise); (ii) new CRI RPC "UpdateContainerDevices"
+  (containerd + CRI-O work, device cgroup + mknod in the container's
+  mount namespace, i.e. option B mechanics upstreamed); (iii) leave it
+  to the DRA driver (NodePrepare for an already-running pod -> driver
+  injects via NRI), i.e. upstream only does accounting.
+- Memory accounting: the kubelet would re-run the resize actuation path
+  to apply new nodeAllocatable amounts to memory.max.
+
+DRA driver (ours)
+- NodePrepareResources may arrive for a pod whose containers already
+  run; with (iii) kubelet-cxl-plugin must inject (dax node, cpuset.mems,
+  memory.max) at prepare time and revoke at unprepare time, refusing
+  unprepare while a devdax is mmapped (cxl disable-region fails until
+  unmapped) - the API needs a way for the driver to report "busy".
+- Pool controller: unchanged (it reacts to claims, reconciler.go).
+
+KEP-level risks
+- Pod spec immutability is a long-standing principle; the
+  ephemeralcontainers precedent took ~5 releases to GA and still
+  forbids resources/removal. Expect strong push-back on removal.
+- Requires changes across apiserver, scheduler, kubelet, CRI and both
+  runtimes, plus kubelet/apiserver version skew handling.
+- Security: injecting devices into a running container broadens the
+  attack surface; PSA/admission webhooks see only pod creation today.
+- Device in-use semantics on removal (mmap, open fds) are driver
+  specific and have no API today.
+- Timeline: today is after 1.37 GA; a new KEP would at best land alpha
+  in 1.39 or 1.40, beta two releases later, default-on in 2028. Not a
+  base for this project's prototype.
+A cheaper upstream variant that would already help us: "kubelet calls
+NodePrepareResources for claims that list a running pod in reservedFor
+and are annotated for it" with no pod spec change (the claim controller
+already ties reservedFor lifetime to the pod, controller.go:1486-1541).
+It still needs an allocator for bound pods (scheduler change above), so
+it saves the API/CRI work but not the scheduler work. Also not
+available before 1.39+.
+
+FEASIBILITY / EFFORT / RISKS / NEXT STEP
+----------------------------------------
+Feasibility
+- Claim or DRA extended resource added to a running pod: impossible in
+  1.37.1; needs an upstream KEP touching validation, scheduler, kubelet,
+  CRI/runtimes and drivers.
+- Resize of the container memory limit around a lent pool node: works
+  today (Burstable pods, limit-only), small change in our code.
+- DRANodeAllocatableResources for pool devices: keep it off (POOL.md is
+  correct); it would charge pool bytes to DRAM allocatable.
+Effort
+- Upstream route: multi-person, multi-release (KEP + implementation in
+  4+ components), 18-24 months to default-on. "Wait for upstream" means
+  no live attach before ~2028.
+- Resize knob in our flow: 2-4 days (RBAC pods/resize, +X/-X in the
+  request/release sequence, restart reconciliation, e2e test in
+  n4-cxl-shared-2: lend + resize + allocate > old limit succeeds).
+Risks
+- Resize knob: Guaranteed pods (QoS lock, DRAM accounting, static
+  memory manager Infeasible); dangling raised limit after plugin or
+  container restart; resize -X refused while usage is high (retries,
+  must be ordered after migration).
+Next step if C is chosen as a component
+- Fold "resize limit +X / -X" into the release/request sequence of the
+  winning attach option (A+B or E1+B) and add one e2e assertion: a
+  Burstable busybox with limit L allocates L+X/2 after the lend+resize
+  and is OOM-free; after release+resize -X the limit is back to L.
+- Optionally raise the "kubelet prepares claims reserved for a running
+  pod" idea in WG Device Management as a long-term direction, citing
+  this CXL pooling use case; do not block on it.

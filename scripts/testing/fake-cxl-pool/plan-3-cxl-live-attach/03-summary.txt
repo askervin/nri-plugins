@@ -1,0 +1,190 @@
+plan-3-cxl-live-attach: summary of the five analyses
+=====================================================
+Written 2026-10-08 (Fable) from 02-option-*.txt. Verdicts first, then the
+chosen design, its life cycle, and its limitations.
+
+Verdicts
+--------
+C  Resize / DRA extended resources ........ impossible in v1.37.1. pods/resize
+   changes only cpu and memory (and emptyDir sizeLimit behind an alpha gate),
+   the scheduler allocates DRA devices only for unbound pods, kubelet runs
+   NodePrepare only when the sandbox is created. An upstream fix is a
+   cross-component KEP (new pods/resourceclaims subresource, scheduler mode
+   for bound pods, kubelet delta prepare, CRI device delivery): alpha 1.39+
+   at best. Keep only its by-product: pods/resize can raise a running
+   container's memory limit (Burstable pods; Guaranteed pods are a problem).
+D  Sidecar / ephemeral container ........... not a primary design. Ephemeral
+   containers cannot carry resources or claims and cannot be removed. A
+   sidecar cannot add claims to its own pod either; as a privileged attacher
+   it bypasses the scheduler and DRA, fights cgmpolmgr over cpuset.mems and
+   puts pool credentials in the workload. A sidecar is at most a request
+   broker (D1), which the node plugin channel (E1) does better.
+A  Companion pod + DRA lend ................ feasible on stock 1.37.1, changes
+   only in kubelet-cxl-plugin, none in fake-cxl-pool or the controller.
+E  Request channel via kubelet-cxl-plugin . feasible, our code only. E1 (a
+   "dynamic" token device whose NodePrepare injects a unix socket into the
+   container) authenticates the caller without any credential in the pod.
+B  Runtime injection mechanics ............. measured in VM2:
+   - device cgroup of a running container cannot be changed through the
+     runtime: NRI UpdateContainers drops LinuxResources.devices (containerd
+     nri_api_linux.go:1087), CRI has no field, `runc update` skips devices;
+     replacing runc's eBPF program by hand works but the next runtime update
+     reverts it. Pre-authorizing `c <dax major>:* rw` at creation (NRI
+     CreateContainer) works but opens every dax device of the node to a root
+     container with CAP_MKNOD.
+   - passing an open dax fd over a unix socket (SCM_RIGHTS) works with no
+     device node, no cgroup change, no privilege: uid 1000, all caps dropped,
+     mmap read/write verified. The device cgroup is checked only at open().
+   - cpuset.mems via NRI UpdateContainers: grow works; shrink migrates pages
+     back at once (cgroup v2 always migrates); a movable CXL node as the only
+     node breaks the container; offlining with pages still there works
+     (pages move to DRAM) but the stale node number stays in cpuset.mems, so
+     revoke must shrink first. Writing cpuset.mems in cgroupfs (as cgmpolmgr
+     does today) is undone by the next runtime update of the container.
+   - correction to 01-starting-points.txt: a devdax region CAN be released
+     while mapped: `cxl disable-region` succeeds, the kernel tears down the
+     mapping and the holder gets SIGBUS at its next access. Only system-RAM
+     use blocks release.
+
+Clear winner: A + E1 + B  ("lease" design)
+------------------------------------------
+1. Opt-in at pod creation. The pod claims the token device `dynamic` of the
+   node's cxl.generic ResourceSlice (DeviceClass cxl-dynamic; the device has
+   no capacity and allowMultipleAllocations, so any number of pods can claim
+   it). NodePrepare of that claim injects into the container a CDI bind mount
+   of a per-claim host directory with `cxl.sock` and the static `cxl-request`
+   CLI, and env CXL_LEASE_SOCKET. Nothing else changes for the pod.
+2. Request from inside: `cxl-request memory 512Mi` or `cxl-request shared
+   0xc1ae0001` (HTTP/JSON over the socket: POST /v1/leases). The plugin
+   authenticates the caller by the socket (claim -> pod via reservedFor) and
+   by SO_PEERCRED pid -> /proc/<pid>/cgroup -> container (table kept by the
+   NRI stub). A lease id (8 hex) names everything the request creates.
+3. Allocation through Kubernetes, unchanged: the plugin creates, in the
+   requester's namespace, a ResourceClaim (class cxl-pool-memory with
+   capacity memory >= X, or cxl-shared-memory with the serial selector;
+   opaque config {kind: LendConfig, pod{namespace,name,uid}, container,
+   lease}) and a companion pause pod that references the claim, is pinned
+   with required nodeAffinity metadata.name == node, has an ownerReference
+   to the requester pod and tolerates everything. The scheduler allocates,
+   fake-cxl-pool-controller attaches, binding conditions release the bind,
+   kubelet calls the plugin's NodePrepare for the companion claim: region,
+   then the LEND:
+   - exclusive: online_movable -> NUMA node N; NRI UpdateContainers on the
+     requester container with cpuset.mems = its DRAM nodes + N (never N
+     alone). Response: {node: N, size}. Memory limits: see limitations.
+   - shared: devdax; the plugin opens /dev/daxX.Y and sends the fd to the
+     requester over the lease socket (SCM_RIGHTS). `cxl-request shared ...
+     --exec CMD` receives it and execs CMD with the fd inherited and
+     CXL_LEASE_FD set, so unmodified tools work. No device node, no cgroup
+     rule.
+4. Release: `cxl-release <lease>` (or --all) -> the plugin revokes (shrink
+   cpuset.mems via NRI, which migrates the pages; the shared fd is simply no
+   longer usable after release: SIGBUS if still mapped, so apps munmap first)
+   and deletes the companion pod. Kubelet unprepares the companion's claim
+   (plugin releases the region: offline, destroy, disable memdev), the
+   resourceclaim controller deletes the claim, the controller detaches,
+   qemu hot-removes. Nothing of the lease remains.
+5. Cleanup without a release: ownerReference GC deletes the companion when
+   the requester pod is deleted (same namespace is required: GC treats
+   owners in another namespace as absent); NRI StopContainer/RemoveContainer
+   of the requester and NodeUnprepare of the token claim make the plugin
+   delete the companions it still knows; a reconcile at start and every 60 s
+   deletes companions whose requester container is gone. Every path ends in
+   the same unprepare -> deallocate -> detach chain, so pool server state is
+   cleaned too.
+Why the plugin creates the companion (E1) and not the container (E2): no API
+token or RBAC in tenant pods, forgery-proof caller identity, a return channel
+for node/fd. Cost: the plugin needs cluster-wide pods and resourceclaims
+create/delete/get/list/watch; a ValidatingAdmissionPolicy can pin companion
+shape and ownership to the plugin's node (later; the e2e runs as admin).
+
+Life cycle table (lease design)
+-------------------------------
+request ............ lease Creating -> claim+companion created -> Pending
+                     (BindingConditionsPending) -> companion Running ->
+                     NodePrepare -> Lending -> Ready; ~6-7 s, 5 s of it the
+                     scheduler's binding poll.
+unsatisfiable ...... companion stays Pending; `cxl-request --wait` times out
+                     and the lease is released (companion deleted). The pool
+                     server never sees it.
+attach failure ..... AttachFailed on the claim -> scheduler deallocates ->
+                     retried by the scheduler; lease stays Pending until
+                     timeout, then released.
+use ................ exclusive: node N in cpuset.mems of that container only
+                     (other containers of the pod are untouched; kubelet and
+                     cgmpolmgr do not know N). shared: fd in the app.
+release ............ revoke (migrate) -> companion delete -> unprepare
+                     (offline/destroy/disable) -> claim deleted -> detach
+                     (~8 s). Offline EBUSY blocks unprepare: kubelet retries,
+                     companion stays Terminating, device stays attached (no
+                     zombie, no leak, but no progress until pages move).
+repeat ............. new lease id per request: no name collisions; the
+                     exclusive device gets a new region, the shared one a new
+                     fd. Verified in B: 3 lend/revoke cycles without leftovers.
+requester container
+crashes/restarts ... NRI CreateContainer of the new instance: the plugin
+                     re-applies exclusive lends (cpuset.mems); shared fds are
+                     gone with the process and must be requested again (the
+                     lease stays, `cxl-request shared --lease <id>` re-sends
+                     the fd).
+requester pod
+deleted ............ graceful: NodeUnprepare of the token claim releases all
+                     leases of the pod before the pod finishes; GC deletes
+                     companions anyway (ownerReference). Force delete: GC
+                     still deletes companions -> normal unprepare path; the
+                     requester's pages are already gone with the pod.
+companion evicted/
+preempted .......... unprepare runs -> lend revoked -> memory taken from a
+                     live requester (pages migrate to DRAM; shared fd SIGBUS).
+                     Mitigation: Guaranteed QoS 1m/8Mi companion, tolerations;
+                     the lease shows Failed and the app may request again.
+plugin restart ..... lease table and preparedPoolClaims.json persisted; NRI
+                     Synchronize rebuilds the container table; sockets are
+                     re-created inside the mounted directories; reconcile
+                     drops leases whose requester or companion is gone.
+controller restart . stateless reconcile (plan-2-dra D22); nothing to do.
+kubelet restart .... claims re-prepared idempotently (existing behaviour).
+node lost .......... companions are node-pinned and owned by pods on that
+                     node; pod GC removes them when the node object goes;
+                     attachments of a dead VM are detached when the server
+                     sees the qemu pid gone (existing behaviour).
+
+Limitations and open risks
+--------------------------
+- Memory limits: lent memory counts against the requester's memory.max and
+  the pod cgroup. Without a raise the extra node adds locality, not room.
+  For the prototype requester pods have no memory limit; for limited pods
+  use pods/resize on the Burstable container (works now; Guaranteed pods
+  need the request raised too, which is charged to DRAM allocatable). Node
+  allocatable never includes pool memory (kubelet reads capacity once;
+  DRANodeAllocatableResources is alpha and off).
+- cpuset.mems ownership: the lend must go through NRI (containerd's stored
+  spec), and only one component may own a container's cpuset.mems.
+  cgmpolmgr writes cgroupfs directly today, which the next runtime update
+  reverts; this is an existing weakness of the pod-time steering as well.
+  Prototype rule: a container is either steered (local CXL claim) or
+  borrowing, not both; unify later (cgmpolmgr applying node sets via NRI).
+  nri-resource-policy or the kubelet memory manager would conflict too.
+- Movable-only node must never be the only node in cpuset.mems.
+- Forced revoke of a shared device kills the holder (SIGBUS); exclusive
+  revoke can stall on EBUSY (pinned pages, full DRAM). Release is
+  cooperative by design.
+- Latency floor ~5 s per request (scheduler binding poll), ~6 s detach
+  (pciehp). Fine for "extra memory", not for fine-grained allocation.
+- `cxl create-region` right after hotplug failed once in B ("add_dev()
+  failed"); the lend flow needs one retry.
+- RBAC: the plugin creates pods and claims cluster-wide (a VAP can pin the
+  shape); companions count against tenant ResourceQuota (correct, but a
+  surprise); DRA-aware preemption may evict companions (unverified).
+- The plugin must run as a host process or a DaemonSet with hostPID and the
+  NRI socket (the shipped DaemonSet has neither); the lend socket needs
+  SELinux labels checked on Fedora (unverified).
+- Devices follow pod lifetime: a pod that finished but is kept keeps its
+  leases until deleted or its token claim is unprepared.
+- fd passing cannot be revoked short of release; a passed fd can be dup'ed
+  or passed on inside the pod.
+- Hazards inherited from plan-2-dra: force-deleting a COMPANION while its
+  region is onlined leaves a qemu zombie device (the requester pod itself
+  can be force-deleted safely).
+
+Decision: implement the lease design (04-implementation-plan.txt).
