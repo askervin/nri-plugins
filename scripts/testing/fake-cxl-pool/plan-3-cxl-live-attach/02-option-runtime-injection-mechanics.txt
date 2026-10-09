@@ -1,0 +1,420 @@
+plan-3 option B: runtime injection mechanics
+============================================
+Written 2026-10-08 (Opus agent B). Scope: the "lend" step on its own: how a
+node agent gives an already RUNNING container (1) a new NUMA node in
+cpuset.mems and (2) a devdax char device /dev/daxX.Y, and how it takes
+them away again. It does not matter here who triggers the lend (A, D, E).
+
+Test bed: VM2 = n4-cxl-shared-2-fedora-43-containerd, kernel 7.3.0-rc4,
+Kubernetes v1.37.1, containerd 2.4.1 (NRI v0.12.3 in the runtime), runc
+1.5.2 with the systemd cgroup driver, cgroup v2. fake-cxl-pool-server on
+the host with shared0 (256M, shared, 0xc1ae0001) and pooled0 (512M,
+exclusive, 0xc1ee0001). A throwaway NRI plugin "nri-lend" (stub, idx 90,
+~100 lines, /tmp/5jY-B/nri-lend/main.go, never in the repo) did two things:
+(a) CreateContainer: for pods with the annotation cxl-lend.test/may-want-cxl=<major>
+it added the device cgroup rule "c <major>:* rw", and in its second version
+also a bind mount /run/cxl-lend/<pod-uid> -> /dev/cxl with options rbind,rslave;
+(b) a unix socket for unsolicited UpdateContainers ("mems ID NODES",
+"dev ID MAJ MIN"). The dax char major in VM2 was 252 (/proc/devices).
+
+Source versions: NRI ~/go/pkg/mod/github.com/containerd/nri@v0.12.2;
+containerd ~/github.com/containerd/containerd at v2.3.0-266-g1ab181cb6 (main,
+the closest source on hand: the v2.4.1 commit f2551031 is not in that
+clone, so the line numbers are from main. What VM2 actually did agrees
+with this code); runc v1.5.2 update.go fetched from GitHub to
+/tmp/5jY-B/dl-runc; Linux ~/github.com/torvalds/linux v7.2-15794.
+
+----------------------------------------------------------------------
+1. Verdict matrix
+----------------------------------------------------------------------
+
+Device node (where the container gets a path to open)
+  M1 nsenter -t PID -m mknod /dev/daxX.Y in the container's /dev ......... WORKS (the node appears; you can only open it with a device cgroup permission, see M5-M10)
+  M2 bind mount of the host /dev/daxX.Y into a directory the
+     container has with HostToContainer/rslave propagation:
+     M2a hostPath volume + mountPropagation: HostToContainer .............. WORKS (needs that volume in the pod spec at creation)
+     M2b NRI CreateContainer mount adjustment (rbind,rslave)
+         of /run/cxl-lend/<pod-uid> -> /dev/cxl .......................... WORKS (needs the NRI plugin to see the container at creation; the pod spec does not change)
+  M3 mknod in a host directory that M2 propagates (a nodev /run tmpfs) ..... WORKS: the container's bind mount does not carry nodev
+  M4 the container mknods the node itself (root with CAP_MKNOD,
+     which is a containerd default capability) ............................. WORKS once the major is pre-authorized. This is a security problem, see 5.
+
+Device cgroup permission (a v2 eBPF program, checked at open()/mknod())
+  M5 NRI UpdateContainers LinuxResources.devices .......................... IMPOSSIBLE: the field is silently dropped
+  M6 CRI UpdateContainerResources / crictl update ......................... IMPOSSIBLE: the CRI message has no devices field
+  M7 runc update -r with devices .......................................... IMPOSSIBLE: runc skips devices by design
+  M8 systemctl set-property <scope> DeviceAllow= .......................... NOT ENOUGH alone: runc's own program still denies (several programs are ANDed)
+  M9 the node agent replaces runc's BPF program (bpftool or cilium/ebpf)
+     AND sets systemd DeviceAllow ......................................... WORKS, but behind the runtime's back and fragile
+  M10 pre-authorize "c <dax major>:* rw" at creation (NRI CreateContainer
+      adjustment LinuxResources.devices) ................................... WORKS (needs pre-authorization at creation). It survives runtime updates.
+  M10' a privileged container ............................................ works, but not acceptable
+  M11 SCM_RIGHTS: the agent opens the dax device on the host and passes the
+      fd over a unix socket; the container mmaps the fd ................... WORKS with NO device node, NO device cgroup change and NO pre-authorization.
+      The container needs only a socket it can reach, which it gets at
+      creation (hostPath/CDI mount) or via the request channel of E1.
+
+NUMA node (cpuset.mems)
+  N1 NRI UpdateContainers cpuset.mems: grow ............................... WORKS; no pages move
+  N2 NRI UpdateContainers cpuset.mems: shrink ............................. WORKS; the kernel migrates the pages off the removed node at once (202M in under 1 s)
+  N3 cpuset.mems = the movable-only CXL node alone ......................... BREAKS the container: non-movable allocations fail, so exec/probes fail
+  N4 offline + release the node while the container still uses it ........ WORKS: offline migrates its pages to DRAM. cpuset.mems keeps the stale node, which must be cleaned up (see 3.4).
+  N5 write cpuset.mems directly in cgroupfs (cgmpolmgr does this) .......... WORKS until the next runtime update of that container, which writes the containerd spec value back (and so migrates the pages again)
+
+Revoke of a dax device
+  R1 remove the node (umount the bind mount / rm the node) ................. WORKS; existing fds and mappings stay valid
+  R2 revoke the device cgroup rule ........................................ affects only new open()s; existing fds and mappings stay valid
+  R3 release the region (cxl disable-region / guest release) while a
+     container still has it open and mmapped ............................... SUCCEEDS (rc 0). The kernel zaps the mappings and the user gets SIGBUS at its next access.
+     This contradicts the "known hard fact" in 01-starting-points.txt for
+     devdax (see 4.3).
+
+----------------------------------------------------------------------
+2. Evidence: device node and permission
+----------------------------------------------------------------------
+
+2.1 Pods. lend-bb (busybox) and lend-py (python:3-alpine) were plain;
+lend-bbpre and lend-pypre had the annotation (so M10 applied); lend-py2
+was plain and unprivileged (uid 1000, all capabilities dropped,
+allowPrivilegeEscalation false); lend-pynrim was annotated, uid 1000 with
+all caps dropped, and had the M2b NRI mount. The first four pods also had
+a hostPath /run/cxl-lend -> /cxl with mountPropagation HostToContainer.
+All pods were Guaranteed (1 CPU, 600Mi).
+
+The runtime spec of a plain container compared with a pre-authorized one
+(crictl inspect .info.runtimeSpec.linux.resources.devices):
+  lend-bb:    [{"access":"rwm","allow":false}]
+  lend-pypre: [{"access":"rwm","allow":false},
+               {"access":"rw","allow":true,"major":252,"type":"c"}]
+The rule reaches the OCI spec through
+nri pkg/runtime-tools/generate/generate.go:343-345 (AdjustResources:
+r.Devices -> AddLinuxResourcesDevice). Linux.Devices (generate.go:543-555,
+AdjustDevices) adds a node AND its rule, but that happens only at creation.
+
+2.2 M1 nsenter mknod (for p in bb bbpre py pypre):
+  nsenter -t $pid -m -- mknod -m 0666 /dev/dax0.0 c 252 0
+  bb:    sh: can't create /dev/dax0.0: Operation not permitted
+  bbpre: OPEN-OK
+  py:    PermissionError: [Errno 1] Operation not permitted: '/dev/dax0.0'
+  pypre: hello-from-pypre-7        (pool-dax-rw.py write + read back through mmap)
+The container's /dev is "tmpfs rw,nosuid" (no nodev). The mknod runs in the
+host's cgroup, so creating the node is always allowed. Open() is what the
+container's device cgroup checks.
+
+2.3 M2a hostPath HostToContainer:
+  touch /run/cxl-lend/dax0.0 && mount --bind /dev/dax0.0 /run/cxl-lend/dax0.0
+  inside the pod (mountinfo): 314 1406 0:9 /dax0.0 /cxl/dax0.0 rw,nosuid master:2 - devtmpfs
+  bb: Operation not permitted; bbpre: OPEN-OK; py: EPERM; pypre: hello-from-pypre-15
+A hostPath shared by all pods gives the node to every pod that mounts the
+directory, so in practice it has to be per pod. M2b does that.
+
+2.4 M2b NRI mount adjustment with rslave (lend-pynrim, uid 1000):
+  mountinfo: /cxl-lend/<pod-uid> /dev/cxl rw master:11 - tmpfs
+  3 cycles of {mount --bind /dev/dax0.0 $H/dax0.0; chown 1000:1000 /dev/dax0.0;
+  write+read; umount; rm; chown 0:0}: nrim-cycle-1, -2, -3 read back, and
+  ls /dev/cxl was empty after every revoke. Note the permissions: the bind
+  mount shows the inode of the host devtmpfs node, so its owner and mode
+  apply in every container that gets it. For a non-root container the
+  agent must chown/chmod the host node, or use M1 (a private inode per
+  container) or M11.
+  M3: mknod $H/sub/dax0.0 c 252 0 on the host (/run is nosuid,nodev) opened
+  fine inside the container ("nrim-cycle-3"): the bind mount runc made at
+  /dev/cxl has no nodev.
+
+2.5 M5 NRI UpdateContainers devices (lendctl dev <lend-py> 252 0):
+  update ... failed=[] err=<nil>   (reported as a success)
+  BPF before: 216 cgroup_device multi
+  BPF after:  216 cgroup_device multi, 226 cgroup_device multi sd_devices
+  spec after: [{"access":"rwm","allow":false}]  -> open still EPERM
+Code: containerd internal/cri/nri/nri_api_linux.go:470-492 (UpdateContainer
+-> toCRIResources -> cri.UpdateContainerResources); toCRIResources
+nri_api_linux.go:1087-1114 copies memory, cpu (including cpus/mems),
+hugepages and unified only. Devices are dropped. NRI itself ignores them
+for updates too: nri pkg/adaptation/result.go:1094ff updateResources
+handles Memory, Cpu, HugepageLimits, Unified, ... but not Devices.
+api.proto:551 marks LinuxResources.devices "for NRI v1 emulation".
+
+2.6 M6 CRI: vendor/k8s.io/cri-api/.../api.proto:961-981
+LinuxContainerResources = cpu_period, cpu_quota, cpu_shares,
+memory_limit_in_bytes, oom_score_adj, cpuset_cpus, cpuset_mems,
+hugepage_limits, unified, memory_swap_limit_in_bytes. There are no
+devices, so crictl update has no device option either.
+
+2.7 M7 runc update (runc --systemd-cgroup update -r res.json <id>, with
+devices [deny all, allow c 252:0 rw]): rc=0, but runc's program 216 stayed
+and open was still EPERM. runc v1.5.2 update.go:389-395:
+  // XXX(kolyshkin@): currently "runc update" is unable to change
+  // device configuration, so add this to skip device update. ...
+  config.Cgroups.SkipDevices = true
+containerd's task Update path (container_update_resources.go:78-140 ->
+task.Update(WithResources(spec.Linux.Resources)) -> shim init.go:475-481 ->
+runc update) therefore can never change devices, whatever goes into the spec.
+
+2.8 Side effect seen in M5/M7: every runtime update attaches a fresh
+systemd program "sd_devices" next to runc's. That program is generated from
+the scope's DeviceAllow= list, which runc set at creation from the spec
+rules. Several cgroup_device programs are ANDed: a single deny wins. So:
+  - systemctl set-property --runtime <scope> DeviceAllow="char-252 rw" (M8)
+    replaced sd_devices, but runc's program 216 still denied: EPERM.
+  - A pre-authorized container keeps its access through updates: the scope
+    of lend-pypre had DeviceAllow=char-252 rw, and after an NRI cpuset
+    update (new sd_devices 230) mmap still worked (hello-from-pypre-23).
+
+2.9 M9 replace the eBPF program. /tmp/5jY-B/bpf/gen.py turned the rules of
+/run/containerd/runc/k8s.io/<id>/state.json (config.cgroups.devices: deny
+all, char/block "m", 1:3, 1:5, 1:7, 1:8, 1:9, 5:0, 5:2, 10:200, 136:*) plus
+"c 252:0 rw" into C. Compiled with clang -target bpf; then
+  bpftool prog load allow.o /sys/fs/bpf/lend_py_allow type cgroup/dev
+  bpftool cgroup attach $cg device pinned ... multi; bpftool cgroup detach $cg device id <runc prog>
+  lend-py (whose sd_devices already allowed 252 thanks to M8): hello-from-py-55
+  lend-bb (runc program only): OPEN-OK after the replace; then ONE unrelated
+    NRI UpdateContainers (cpuset) attached a new sd_devices from the
+    creation-time DeviceAllow -> EPERM again; after
+    systemctl set-property --runtime <scope> DeviceAllow="/dev/dax0.0 rw" -> OPEN-OK.
+Attaching the new program before detaching the old one never widens access
+for a moment (AND semantics). A working M9 therefore needs both:
+replacing runc's program (it must reproduce runc's rule set) and adding
+the device to systemd's DeviceAllow. This is a private reimplementation of
+runc's devicefilter, outside containerd's view, and it breaks again if
+runc changes how it does devices.
+
+2.10 M11 SCM_RIGHTS fd passing (lend-py2: uid 1000, caps dropped, no
+annotation; hostPath /run/cxl-sock -> /cxl-sock). The host server
+(fdserver.py) opened /dev/dax0.0 O_RDWR and sent the fd with
+socket.send_fds; the container did recv_fds -> mmap(MAP_SHARED, 256M) ->
+write/read:
+  container: uid=1000 got fd 4 for dax0.0 size=268435456, wrote at 2M, read back: scm-rights-from-py2
+             ls /dev/dax*: []
+  server:    sent /dev/dax0.0 fd to peer pid=167038 uid=1000 cgroup=0::/kubepods.slice/kubepods-pod151a2046_...slice/cri-containerd-558f0885....scope
+  host:      pool-dax-rw.py read /dev/dax0.0 2M -> scm-rights-from-py2
+Why it works: the device cgroup is checked only on open()/mknod()
+(cgroup-v2.rst:2785-2800; security/device_cgroup.c:854
+devcgroup_check_permission via inode permission), and the dax mmap path
+checks only dax_alive/alignment/MAP_SHARED (drivers/dax/device.c:15-30).
+The /sys/bus/dax/devices/<name>/size that the container read is the host
+sysfs (read-only). It is not needed if the agent sends the size along.
+SO_PEERCRED gives the peer pid, and its /proc/<pid>/cgroup gives the
+container id: that is how the server authenticates the requester (E1).
+
+----------------------------------------------------------------------
+3. Evidence: cpuset.mems
+----------------------------------------------------------------------
+
+pooled0: guest region create --mode ram + guest online --movable -> node 2
+(512 MB, no CPUs). The allocator ran in lend-py: python3 -c
+'b=b"\x01"*(200<<20); sleep'. numast = cpuset.mems, cpuset.mems.effective
+and anon N<i> from the container's memory.numa_stat.
+
+3.1 Grow / shrink through NRI (N1, N2):
+  lendctl mems <id> 0        10:24:42 mems=0   eff=0   anon: N0=202M N1=0M N2=0M
+  lendctl mems <id> 0,2      10:24:44 mems=0,2 eff=0,2 anon: N0=202M N2=0M   (grow: nothing moves)
+                             /proc/PID/status Mems_allowed_list: 0,2
+  migratepages PID 0 2       10:24:46 ...             anon: N0=0M   N2=202M  (a steering agent moving pages)
+  lendctl mems <id> 0        10:24:48 mems=0   eff=0   anon: N0=202M N2=0M   (shrink: migrated in <1 s)
+Kernel: on cgroup v2 CS_MEMORY_MIGRATE is always set (kernel/cgroup/cpuset.c:
+3632-3634). cpuset_update_tasks_nodemask (cpuset.c:2686-2740) rebinds the
+mempolicies and queues cpuset_migrate_mm(old_mems_allowed -> new) for each
+thread group leader. The migration is asynchronous on a workqueue
+(cpuset.c:2587-2618, do_migrate_pages MPOL_MF_MOVE_ALL), and
+cgroup-v2.rst:2569-2585 warns "may not be complete and some memory pages
+may be left behind" (pinned pages, pages of other mms). Only memory mapped
+by the leader's mm is migrated: page cache that is not mapped stays.
+
+3.2 Movable-only (N3): lendctl mems <id> 2 -> the existing 202M moved to
+N2, but a new 50M allocation in the container failed (exit 120), and
+crictl exec failed. The kernel said:
+  python3: page allocation failure: order:0, mode:0x500cc2(GFP_HIGHUSER|__GFP_ACCOUNT) ... cpuset=cri-containerd-cf6b....scope,mems_allowed=2
+  runc:[2:INIT]: page allocation failure: order:0, mode:0x140cc0(GFP_USER|__GFP_COMP) ... mems_allowed=2
+Back to 0,2 -> exec worked again. Rule: a lend only ever ADDS the CXL node
+to the DRAM nodes, never replaces them. This matches the "start fails"
+fact for running containers too: exec probes would fail and kill the pod.
+
+3.3 Offline while in use (N4): mems=0,2 with 202M on N2, then
+`fake-cxl-pool-client guest release pooled0` (offline + destroy region +
+disable memdev):
+  10:28:33 release rc=0 (immediately)
+  10:28:33 mems=0,2 eff=0 anon: N0=202M     node/online: 0-1
+  Mems_allowed_list of the process: 0
+memory offlining migrated the movable pages to DRAM (inside the cpuset
+here). Afterwards cpuset.mems still says "0,2", only the effective value
+dropped node 2. cgroup-v2.rst:2566-2567: the value "won't be affected by
+any memory nodes hotplug events". If a later device comes online as node 2
+again (another lend, maybe to another container), this container regains
+it automatically. So revoke MUST also shrink cpuset.mems (and the
+containerd spec) through NRI. The offline fails (EBUSY, then guest release
+fails, and you must NOT detach: zombie) if DRAM cannot absorb the pages
+or if pages are long-term pinned (RDMA, io_uring fixed buffers, vfio).
+This was not reproduced, it follows from offline_pages semantics.
+
+3.4 Who owns cpuset.mems (N5). containerd keeps the NRI-set value in the
+container spec (spec cpu.mems: 0). An empty CpusetMems in a CRI update
+leaves it alone (internal/cri/opts/spec_linux_opts.go:398), but any
+update rewrites the cgroup from the spec:
+  echo 0,2 > $cg/cpuset.mems; migratepages PID 0 2   -> mems=0,2 anon N2=202M
+  lendctl dev <id> 1 3   (an unrelated NRI update, no cpuset in it)
+                                                      -> mems=0   anon N0=202M
+That is a silent migration back. pkg/cgmpolmgr writes cpuset.mems directly
+(manager.go:306-323, allowNodes), so with today's code ANY UpdateContainers
+for that container by any plugin, or a kubelet resize, undoes its node
+set. Conversely, a lend done by someone else around cgmpolmgr is undone
+at cgmpolmgr's next allowNodes. nri-plugins pushes cpuset changes as
+unsolicited UpdateContainers (pkg/resmgr/nri.go:704-720, cache
+SetCpusetMems container.go:833-847). If nri-resource-policy runs on the
+node, it also owns cpuset.mems of the containers it manages. Consequence:
+the lend of a node must go through the one component that owns steering
+for that container: in kubelet-cxl-plugin, cgmpolmgr gets an
+"allow/forbid node" API and applies the result via NRI UpdateContainers
+(so the containerd spec matches) and, where it must react fast, also in
+cgroupfs. Two owners of cpuset.mems on one container cannot be made safe.
+
+----------------------------------------------------------------------
+4. Evidence: revoke and cleanup of a dax device
+----------------------------------------------------------------------
+
+4.1 Removing the node (R1): umount + rm of the bind mount, or rm through
+nsenter: new opens give ENOENT, existing fds and mappings keep working
+(the holder kept reading).
+4.2 Revoking the permission (R2): only new open() is checked, so revoking
+the rule (back to a program without 252) does nothing to existing fds or
+mappings (see the source in 2.10). Neither R1 nor R2 takes memory away
+from the container.
+4.3 Release while mapped (R3). The holder (lend-py2, fd via SCM_RIGHTS,
+fd kept open, ticking every 2 s):
+  10:21:53 keepfd read 2M: holder-py2 tick 3
+  10:21:54 guest release shared0 -> "mem0: released", rc=0 (cxl disable-region, no --force)
+  holder: command terminated with exit code 135 (128+SIGBUS) at its next access
+Also with the fd closed (mapping only): release rc=0, and the maps entry
+became "/dev/dax0.0 (deleted)". Kernel: drivers/dax/bus.c:422-428
+kill_dev_dax() -> kill_dax() + unmap_mapping_range(inode->i_mapping, 0, 0, 1)
+zaps every PTE; new faults fail through the dax_alive check (device.c:23)
+-> VM_FAULT_SIGBUS. So on this kernel a devdax region CAN be released
+while it is mapped: memory-safe, and nothing dangles in the guest, but the
+borrower dies (unless it handles SIGBUS). The sentence in
+01-starting-points.txt "a devdax that a process still has mmapped cannot
+be released" does not hold for devdax with this kernel and memctl; it
+holds for system-RAM (online) memory, where offline needs migratable
+pages. A re-create after release returned the same data (the backing file
+persists).
+4.4 One transient failure: the first `guest region create` right after
+`guest wait` failed ("endpoint4: add_dev() failed ... no active memdevs");
+retrying 3 s later worked. Lend procedures need a retry (memctl or
+NodePrepare) or must wait until the endpoint is up.
+
+----------------------------------------------------------------------
+5. Security notes
+----------------------------------------------------------------------
+- M10 can only be per major ("c 252:* rw"): the dax minors are allocated
+  when regions are created and are unknown at container creation. Then any
+  root process in the container with CAP_MKNOD (in containerd's default
+  capability set) can mknod ANY dax minor and open it. Shown in lend-pypre:
+  mknod /tmp/d c 252 0 -> open ok. Every devdax on the node becomes
+  reachable: other tenants' shared devices, and devdax views of exclusive
+  devices before they are onlined. If M10 is used, the CreateContainer
+  adjustment must also drop CAP_MKNOD; NRI cannot adjust capabilities in
+  v0.12 (ContainerAdjustment has no capability field), so this needs a
+  validating admission policy or pod securityContext (drop MKNOD / ALL),
+  or it is only for non-root containers.
+- M11 grants exactly one device to exactly one requester. The container
+  needs neither a device node nor any cgroup change, and the node stays
+  root:root 0600 on the host. Who may ask for what is decided by the
+  agent: SO_PEERCRED -> pid -> cgroup -> container id -> pod -> claim.
+  Weakness: the fd outlives the agent's will. A process can dup the fd,
+  pass it on (to another container over any socket it shares) or fork.
+  Revoke is therefore by release (R3: SIGBUS everywhere), not by policy.
+  The same holds for M1/M2 once the device is opened.
+- M9 needs CAP_BPF/CAP_SYS_ADMIN in the agent, and if it is done wrong
+  (rules missed) the container loses /dev/null & co. Not recommended.
+
+----------------------------------------------------------------------
+6. Recommended procedures
+----------------------------------------------------------------------
+
+6.1 Shared device (devdax), recommended: M11 fd passing.
+  Preconditions at creation: the container has a socket to the agent (a
+  CDI/NRI mount of the kubelet-cxl-plugin request socket; option E1). No
+  device rule, no pre-authorization.
+  Lend: (1) the device is attached and the region created (devdax),
+  NodePrepare as today; (2) the agent authenticates the requester
+  (SO_PEERCRED -> /proc/pid/cgroup -> container id, which it knows via NRI)
+  and checks the claim/lend; (3) it opens /dev/daxX.Y O_RDWR and sends the
+  fd with its size and alignment (SCM_RIGHTS); (4) it records the lend
+  (container id, device, pid) persistently (preparedPoolClaims.json).
+  The application mmaps MAP_SHARED with a length that is a multiple of 2M.
+  Revoke (voluntary): the application munmaps and closes and tells the
+  agent; the agent checks that no process of the container's cgroup has
+  the device in /proc/*/maps or /proc/*/fd (the device's major:minor, or
+  "(deleted)" + name); then guest release; then detach.
+  Revoke (forced: pod deleted, claim gone, plugin decision): guest release
+  even while mapped. Borrowers get SIGBUS, the region goes away safely,
+  then detach. Pod deletion: the processes are gone, so the release just
+  works.
+  Alternative when the app needs a path (legacy software opening
+  /dev/daxX.Y): M10 + M2b (pre-authorize the major + NRI rslave mount of a
+  per-pod directory at creation for may-want-CXL containers; lend = host
+  bind mount of the node into /run/cxl-lend/<pod-uid>/, revoke = umount +
+  rm), with CAP_MKNOD dropped. M1 (nsenter mknod into /dev) works as well,
+  without M2b, but the agent then has to enter mount namespaces.
+
+6.2 Exclusive device (new NUMA node):
+  Lend: attach -> region ram -> online movable (NodePrepare as today) ->
+  the steering owner (cgmpolmgr in kubelet-cxl-plugin) adds the node:
+  cpuset.mems = DRAM nodes + CXL node, applied via NRI UpdateContainers so
+  that containerd's spec agrees; memory.high/steering as today. Never only
+  the CXL node. Without steering, the application uses it via
+  set_mempolicy/mbind or numactl.
+  Revoke: (1) the owner removes the node: NRI UpdateContainers cpuset.mems
+  = DRAM nodes. The kernel migrates the container's pages back (check
+  memory.numa_stat N<cxl>=0, retry migratepages for leftovers); (2) guest
+  release (offline: migrates whatever is left from any process, fails
+  with EBUSY if it cannot; then do NOT detach, retry later or report);
+  (3) detach. If the order is broken (offline first), it still works, as
+  shown in 3.3, but cpuset.mems must be shrunk afterwards anyway (stale
+  node number).
+  Pod deleted: the cgroup is gone; release + detach as today.
+
+6.3 Lifecycle table (B mechanics; the trigger is someone else's)
+  request    shared: fd over socket | exclusive: online node, owner adds it to cpuset.mems via NRI
+  use        shared: mmap of the fd | exclusive: steering/mempolicy; pages migrate in on demand
+  release    shared: munmap+close, agent verifies, release, detach | exclusive: shrink mems (migrates back), offline, detach
+  repeat     shown 3x (M2b) and 2x region re-create after release; new dax minors/node ids may be reused, so stale cpuset.mems values are a leak (3.3)
+  pod deleted  processes gone: release + detach always succeed (no mapping, no cpuset)
+  plugin restart  fds already passed stay valid; the lend record must be persisted; cpuset.mems is in containerd's spec (NRI) so it survives; a direct cgroupfs write survives only until the next update
+  controller restart  no effect on B mechanics
+  requester crashes  its mappings vanish with it; the agent learns about it by NRI StopContainer/RemoveContainer or a socket hangup; release is then safe
+  container restart (same pod)  a new container id: no node, no fd, no cpuset; the lend must be redone or revoked (NRI CreateContainer/StartContainer tell)
+
+----------------------------------------------------------------------
+7. Feasibility, effort, risks, next step
+----------------------------------------------------------------------
+Feasibility:
+  cpuset.mems lend/revoke via NRI UpdateContainers ........ works today (needs a small change in our code: cgmpolmgr must apply its node set through NRI, or at least re-assert it after runtime updates)
+  dax via fd passing ...................................... works today with no runtime change; needs our code: a socket server in kubelet-cxl-plugin (E1)
+  dax via device node + pre-authorized major ................ works today; needs a small change in our code (NRI CreateContainer adjustment + mount) and a CAP_MKNOD policy
+  dax device cgroup change at runtime through the runtime ... impossible without an upstream change (NRI update + CRI + runc all drop devices)
+  dax device cgroup change behind the runtime (M9) ......... possible, not recommended
+Effort (prototype in kubelet-cxl-plugin): fd-passing server + auth via
+NRI container table, 2-3 days; cgmpolmgr allow/forbid node API + NRI
+update path, 2 days; e2e test (lend/revoke loop, SIGBUS on forced revoke,
+migration checks), 2 days.
+Risks: (1) a forced revoke kills shared-memory users with SIGBUS (needs a
+protocol and documentation); (2) offline EBUSY with pinned pages or full
+DRAM (release must not proceed to detach: zombie); (3) cpuset.mems owner
+conflicts with nri-resource-policy or the kubelet memory manager (static
+policy) on the same node; (4) the async, possibly incomplete migration on
+shrink (check numa_stat before offline); (5) region-create races right
+after attach (retry); (6) fds passed on beyond the requester (no
+per-process revoke).
+Next step if chosen: add to kubelet-cxl-plugin a unix-socket "lend" server
+that, for shared claims, passes the dax fd (M11) and, for exclusive
+claims, asks cgmpolmgr to add the node through NRI UpdateContainers.
+Make cgmpolmgr's cpuset.mems writes go through NRI. Write an e2e test in
+n4-cxl-shared-2 modelled on this run: plain unprivileged pod -> lend
+shared0 by fd -> both VMs see writes -> forced revoke gives SIGBUS ->
+release/detach -> 0 cxl-type3; exclusive: lend node -> migratepages in ->
+revoke migrates back -> offline -> detach.
+
+Cleanup done: guest release + detach of shared0 and pooled0, server stopped,
+state file removed, pods and configmap deleted, nri-lend stopped and
+removed, BPF pins and helper scripts removed. VM2: `info qtree -b` 0
+cxl-type3, no mem*/region* in /sys/bus/cxl/devices, no zombie. The host
+pool files in /tmp/fake-cxl-pool were left in place.
