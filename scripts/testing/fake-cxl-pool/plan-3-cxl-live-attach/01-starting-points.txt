@@ -1,0 +1,184 @@
+plan-3-cxl-live-attach: attaching pool CXL memory to a RUNNING container
+=========================================================================
+Task: scripts/testing/fake-cxl-pool/5jY-task-cxl-attach-running-container.txt
+Written 2026-10-08 (Fable). Each starting point below is researched in depth
+by one Opus agent, which writes 02-option-<name>.txt in this directory.
+03-summary.txt (Fable) compares them afterwards.
+
+The problem
+-----------
+A container is already running ("may-want-CXL"). From inside it, a request
+is made: "I need X MiB extra memory [from pool P]" (exclusive device -> a
+new NUMA node that only this container may use) or "I need shared CXL
+device C [from pool P]" (a devdax device node in the container). Preferably
+the request is handled through kubelet-cxl-plugin (the DRA driver: node side
+cxl.generic + cxl-pool.generic helpers + NRI plugin in one process). Life
+cycle: the same container may request and give back devices many times with
+no dangling claims, attachments, regions or device nodes; everything,
+including DRA claims and pool server attachments, is gone when the
+container/pod is removed.
+
+What exists (read these first, they are the ground truth of our side)
+- plan-2-dra/00-overview.md (decisions D20-D34), plan-2-dra/10-contract.md
+  (node plugin <-> pool controller contract), plan/10-design-pooling-dra.md.
+- Node plugin: ~/github.com/intel/intel-resource-drivers-for-kubernetes/
+  cmd/kubelet-cxl-plugin/{driver.go,pool.go,node_state.go,nri.go,udev.go},
+  doc/cxl/POOL.md. nri.go steers memory of containers with CXL claims via
+  CDI env markers CXL_CLAIM_<uid> + pkg/cgmpolmgr (cpuset.mems, memory.high).
+- Pool controller: nri-plugins scripts/testing/fake-cxl-pool/pkg/controller
+  (reconciler.go: claims -> attachments), README.md (REST API, client CLI),
+  pkg/api/types.go, pkg/cxl/memctl (region create/online/release on a node).
+- e2e: test/e2e/memory.test-suite/memory-policy/{dra.source.sh,
+  n4-cxl-shared-2/test10-dra-pooling,test11-dra-sharing} show the current
+  pod-time flow: claim -> scheduler -> controller attach -> Attached ->
+  bind -> NodePrepare (region, devdax or online_movable) -> pod runs.
+- Kubernetes source: ~/github.com/kubernetes/kubernetes at v1.37.1.
+  Pointers: pkg/apis/core/validation/validation.go (ValidatePodUpdate,
+  ValidatePodResize at ~6491, ephemeral container validation),
+  pkg/kubelet/cm/dra/manager.go (which claims kubelet prepares: from
+  pod.Spec.ResourceClaims), pkg/scheduler/framework/plugins/dynamicresources/
+  (allocation only during pod scheduling; extended-resource claims KEP-5004),
+  pkg/kubelet/kuberuntime (UpdateContainerResources), pkg/controller/
+  resourceclaim (claim GC: pod-owned claims from templates),
+  pkg/registry/core/pod (resize/ephemeralcontainers subresources).
+- NRI API: ~/go/pkg/mod/github.com/containerd/nri@v0.12.2/pkg/api/api.proto:
+  UpdateContainers (plugin-initiated) carries LinuxResources only;
+  LinuxResources.devices is marked "for NRI v1 emulation"; CreateContainer
+  adjustments can add devices, mounts, env, CDI devices.
+- Known hard facts: pod.spec.resourceClaims is immutable; a pod with
+  spec.nodeName set bypasses the scheduler, so its DRA claims are never
+  allocated (use required nodeAffinity on metadata.name instead); an
+  exclusive device onlined online_movable cannot be the only node in a
+  container's cpuset.mems (ZONE_MOVABLE: container start fails), so the
+  DRAM nodes must stay; a devdax that a process still has mmapped cannot be
+  released (cxl disable-region fails) until it is unmapped.
+
+Starting points
+---------------
+
+A. Companion pod + DRA lend  (02-option-companion-pod-dra-lend.txt)
+   Idea: the request creates a ResourceClaim (or a pod with a
+   ResourceClaimTemplate) and a tiny "companion" pod on the same node
+   (required nodeAffinity metadata.name == node, ownerReference -> the
+   requesting pod so GC removes it with the pod). The scheduler allocates a
+   pool device for the companion, fake-cxl-pool-controller attaches it,
+   kubelet-cxl-plugin prepares it as today, and then LENDS the prepared
+   device to the requesting container (how: option B). The claim carries
+   who the borrower is (opaque device config `devices.config[].opaque`
+   with driver cxl-pool.generic: {kind: Lend, podUID, container} or
+   companion pod annotations). Release = delete the companion pod: kubelet
+   unprepares -> plugin revokes the lend -> releases the region ->
+   controller detaches. Research: verify immutability of pod claims
+   (ValidatePodUpdate), ownerReference GC of pods and of template-generated
+   claims, nodeAffinity-pinned scheduling with DRA (binding conditions,
+   PreBind), how the node plugin learns the borrower (opaque config vs
+   annotations vs claim reservedFor), restart safety (plugin restart with
+   active lends: persist in preparedPoolClaims.json), corner cases:
+   requester pod dies first (companion GC -> unprepare with the borrower
+   gone), companion evicted/OOM (tiny pause image, no resources),
+   many request/release cycles (unique names, no leftovers), two borrowers
+   of one shared device on one node. Deliver: object model with exact
+   YAML, sequence, lifecycle table, what to change in kubelet-cxl-plugin
+   (pool.go: lend/revoke hooks) and whether the controller needs changes
+   (probably none). Next steps: prototype plan with sizes.
+
+B. Runtime injection mechanics  (02-option-runtime-injection-mechanics.txt)
+   The "lend" step itself, independent of who triggers it: how can a node
+   agent give an already running container (1) a new NUMA node: cpuset.mems
+   via NRI UpdateContainers (nri-plugins does this; cgroup v2 cpuset
+   migrates memory when mems change: verify, and what happens on revoke +
+   memory offline when the borrower still has pages there), and (2) a new
+   char device node /dev/daxX.Y: device cgroup v2 is an eBPF program set by
+   the runtime at creation; can it be changed at runtime through NRI
+   UpdateContainers (does containerd/CRI-O apply LinuxResources.devices?
+   check containerd's NRI integration in the module cache or
+   ~/github.com/containerd), through `runc update`, or must it be
+   pre-authorized at creation (NRI CreateContainer adjustment adding a
+   device cgroup rule `c <dax major>:* rwm` for containers annotated
+   may-want-CXL; the dax char major is fixed while the module is loaded)?
+   Then the node itself: nsenter -m into the container's mount namespace
+   and mknod/bind-mount, or a hostPath volume with mountPropagation
+   HostToContainer so a host bind mount appears inside. Also cleanup:
+   remove node, revoke rule, what if the process still has it open/mapped.
+   You have EXCLUSIVE use of the VMs for experiments (the other agents only
+   read code): VM2 = test/e2e/n4-cxl-shared-2-fedora-43-containerd (ssh -F
+   <dir>/.ssh-config node sudo bash -l), its Kubernetes is a single-node
+   cluster; start fake-cxl-pool-server on the host like
+   pool.source.sh pool-server-start does (never use qmp.sock yourself), attach
+   a shared device with fake-cxl-pool-client, `guest region create --mode
+   devdax`, then run a plain busybox pod and prove: a /dev/daxX.Y injected at
+   runtime is mmap-able inside it (python:3-alpine + pool-dax-rw.py are
+   cached in the VM), and cpuset.mems of a running container can be grown
+   and shrunk through NRI (you may write a 50-line throwaway NRI plugin
+   with github.com/containerd/nri/pkg/stub, run on the VM). Clean up:
+   release, detach, stop server, remove pods; qemu must end with 0
+   cxl-type3 devices. Deliver: a matrix of mechanisms x (works / needs
+   pre-authorization / impossible) with evidence, and the recommended lend
+   and revoke procedures for exclusive and shared devices.
+
+C. In-place resize and DRA extended resources  (02-option-resize-and-extended-resources.txt)
+   Can a running pod be grown into pool memory through the pods/resize
+   subresource (KEP-1287 in-place pod vertical scaling) combined with DRA
+   extended resources (KEP-5004: DeviceClass.extendedResourceName, scheduler
+   creates an extended-resource ResourceClaim) or pod-level resources?
+   Analyze v1.37.1: ValidatePodResize (which fields may change), kubelet
+   resize admission (does it involve the scheduler/DRA at all), scheduler's
+   extended-resource claim creation path, DRA feature gates. Expected: not
+   possible today; then describe exactly what would be missing (where a KEP
+   would have to touch: validation, scheduler re-allocation for running
+   pods, kubelet calling NodePrepare for a claim added later) and whether a
+   smaller upstream change (e.g. allowing appends to pod.spec.resourceClaims
+   + kubelet re-sync) is realistic. Also: raising the container memory limit
+   with resize when pool memory is lent (orthogonal but useful). Deliver:
+   verdict with code references, and the upstream-change sketch.
+
+D. Sidecar or ephemeral container as the broker  (02-option-sidecar-or-ephemeral-broker.txt)
+   What can a native sidecar (restartPolicy Always init container) or an
+   ephemeral container (pods/ephemeralcontainers, kubectl debug) do for the
+   main container? Facts to verify in v1.37.1: ephemeral containers cannot
+   have resources or claims and cannot be removed; sidecars are spec-time
+   only, share volumes/IPC/network (not mount namespace), may be privileged.
+   Variants: (D1) sidecar as request broker only: it has a ServiceAccount and
+   creates the companion pod/claim of option A on behalf of the main
+   container (the main container talks to it over localhost or a shared
+   emptyDir socket); (D2) privileged sidecar does everything itself via the
+   pool protocol (fake-cxl-pool-client attach + memctl region) and shares
+   the dax node through a shared volume (mknod on emptyDir: nodev?) and
+   cpuset via ...? (bypasses DRA and the scheduler: no capacity accounting,
+   breaks the "through kubelet-cxl-driver" preference, document why);
+   (D3) ephemeral debug container as an ad-hoc attach tool (one-shot,
+   cannot be removed: lifecycle problems). Deliver: capability table,
+   security/lifecycle assessment, and whether D1 adds anything over the
+   container using the Kubernetes API itself or over option E.
+
+E. Request channel through kubelet-cxl-plugin  (02-option-node-plugin-request-channel.txt)
+   How does a request from inside the container reach the node plugin, and
+   how does the plugin act on it? Variants: (E1) a "dynamic CXL" token
+   device in a ResourceSlice of the node plugin (allowMultipleAllocations,
+   no capacity) whose NodePrepare injects a unix socket (CDI mount) + env
+   into the container: the pod declares "may want CXL" at creation with a
+   claim for that device; the plugin authenticates requests by the socket
+   peer (SO_PEERCRED pid -> container via NRI data) and knows pod/container;
+   (E2) the container uses the Kubernetes API directly (ServiceAccount with
+   RBAC to create pods/resourceclaims in its namespace) and the plugin only
+   sees the resulting companion claim (option A); (E3) a CRD or annotation
+   on the pod that the plugin or controller watches. For E1 study the node
+   plugin code for where a request server fits (it already runs a DRA gRPC
+   server and an NRI stub), CDI mount injection of a host socket, RBAC the
+   plugin would need to create pods/claims (is a kubelet plugin creating
+   pods acceptable? compare with CSI node plugins), and what the request
+   CLI in the container looks like (`cxl-request memory 512Mi`,
+   `cxl-request shared 0xc1ae0001`, `cxl-release ...`). Deliver: recommended
+   channel with its trust model, the CLI/API shape, and the changes to
+   kubelet-cxl-plugin; where E1 and A meet (the plugin creates the companion
+   pod) vs E2 (anyone can).
+
+Guidance for every agent
+- Verify against source code; quote file:line for every Kubernetes or
+  containerd claim. Mark unverified statements as such.
+- Keep the lifecycle requirement central: write a lifecycle table
+  (request, use, release, repeat, pod deleted, node plugin restart,
+  controller restart, requester crashes) for your option.
+- End with: feasibility (works today / needs small change in our code /
+  needs upstream change / impossible), effort estimate, risks, and the
+  concrete next step if this option is chosen.

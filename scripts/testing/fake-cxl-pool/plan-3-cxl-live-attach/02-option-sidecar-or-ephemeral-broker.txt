@@ -1,0 +1,443 @@
+plan-3-cxl-live-attach, option D: sidecar or ephemeral container as the broker
+==============================================================================
+Written 2026-10-08 (Opus research agent, read-only: no VM access, no code run).
+Sources: kubernetes v1.37.1 (~/github.com/kubernetes/kubernetes, tag
+v1.37.1-1-g8aaeb4e53d1), containerd main (~/github.com/containerd/containerd,
+v2.3.0-266), Linux (~/github.com/torvalds/linux, v7.2-15794), our
+kubelet-cxl-plugin, fake-cxl-pool, pkg/cxl/memctl, pkg/cgmpolmgr.
+Paths: K = kubernetes, C = containerd, L = linux, I = intel-resource-drivers-
+for-kubernetes/cmd/kubelet-cxl-plugin, N = nri-plugins.
+"UNVERIFIED" marks a statement not proven by code or experiment here.
+
+TL;DR
+-----
+- Ephemeral containers cannot hold resources or claims, cannot be removed,
+  changed or restarted, never run a preStop, and share only the PID
+  namespace of a target. They are not a lifecycle-capable broker. D3: drop it.
+- Native sidecars are spec-time only (no container of any kind can be added
+  after creation, except ephemeral ones). They share network, IPC, pod
+  volumes and optionally PID. They never share the mount namespace or the
+  device cgroup. They start before and stop after the main containers.
+- D2 (privileged sidecar does attach + region itself) technically works for
+  the most part. It needs privileged mode, bypasses DRA, the scheduler, the
+  pool controller and kubelet-cxl-plugin, and collides with all three: the
+  plugin re-publishes the sidecar's regions as free cxl.generic devices, the
+  controller ignores or deletes its attachments depending on the owner
+  string, and cgmpolmgr rewrites cpuset.mems. Nothing cleans up after a
+  SIGKILL or a node loss. Drop it as a product path. One finding from it is
+  worth keeping for option B: passing a devdax fd over SCM_RIGHTS gets past
+  the device cgroup, which checks only at open().
+- D1 (unprivileged sidecar as request broker for option A) works today with
+  no Kubernetes change. All it adds over E2 (main container calls the API
+  itself) is that the token stays out of the main container and the app
+  gets a local socket protocol instead of a k8s client. It adds nothing that
+  E1 (socket from kubelet-cxl-plugin) lacks, and E1 needs no RBAC in user
+  namespaces, no extra image per pod and no ServiceAccount power to create
+  pods. D1 is worth keeping only as a fallback packaging of E2, or for
+  clusters where the node plugin must not create pods. It is not the
+  recommendation.
+- Verdict: none of D1/D2/D3 should be the primary design. Keep D1 as a
+  documented fallback, demoted to "E2 + convenience sidecar". Hand the
+  SCM_RIGHTS fd trick from D2 to option B.
+
+1. Verified Kubernetes facts
+----------------------------
+1.1 Ephemeral containers (what they may and may not have)
+- The allow-list is K pkg/apis/core/validation/validation.go:96-118.
+  Allowed: Name, Image, Command, Args, WorkingDir, EnvFrom, Env,
+  VolumeMounts, VolumeDevices, TerminationMessage*, ImagePullPolicy,
+  SecurityContext, Stdin, StdinOnce, TTY. Forbidden: Ports (102),
+  Resources (105), Liveness/Readiness/StartupProbe (108-110), Lifecycle
+  (111). Fields missing from the map are forbidden too when set
+  (validateFieldAllowList, 3902-3921): ResizePolicy, RestartPolicy and
+  RestartPolicyRules. The list is applied in validateEphemeralContainers,
+  3841-3899, at 3882.
+- resourceClaims: claims live in Resources.Claims (K pkg/apis/core/types.go:
+  2770, "This field is immutable. It can only be set for containers."), and
+  Resources is forbidden, so an ephemeral container cannot reference a
+  claim. kubelet takes CDI devices only from container.Resources.Claims
+  (K pkg/kubelet/cm/dra/manager.go:518-529), so no claim device can reach
+  one. The type says "Ephemeral containers use spare resources already
+  allocated to the pod" (types.go:4688).
+- securityContext is allowed, including privileged: true. Pod Security
+  Admission does evaluate the ephemeralcontainers subresource (it is not in
+  ignoredPodSubresources, K staging/src/k8s.io/pod-security-admission/
+  admission/admission.go:316-323, check at 331). So a privileged ephemeral
+  container needs a namespace at PSA level "privileged".
+- volumeMounts may name only volumes that already exist in the pod spec
+  (validateContainerCommon gets the pod volumes map, 3862). subPath and
+  subPathExpr are forbidden (3885-3894). Volumes cannot be added (1.3).
+- targetContainerName must name a non-ephemeral container (3874-3877). The
+  only effect is PID namespace targeting: kubelet resolves the target ID
+  (K pkg/kubelet/kuberuntime/kuberuntime_container.go:124-139) and sets
+  NamespaceOptions.Pid = TARGET (kuberuntime_container_linux.go:91-94).
+  CRI NamespaceOption has only network, pid, ipc, target_id and
+  userns_options (K staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/
+  api.proto:433-457). There is no mount, cgroup or device-cgroup sharing
+  in CRI for any container type.
+- Not removable, not changeable: ValidatePodEphemeralContainersUpdate
+  rejects removal ("may not be removed", 6478) and any change of an
+  existing entry (6479-6482). The subresource strategy discards every
+  other spec change (K pkg/registry/core/pod/strategy.go:325-339). Static
+  pods are refused (6463-6464). Ephemeral containers cannot be set at
+  create (ValidatePodCreate, 5769-5772).
+- Never restarted: kubelet starts an ephemeral container only when it has
+  no status yet (K pkg/kubelet/kuberuntime/kuberuntime_manager.go:1370-1378).
+  It is started even before init completes (1905-1915).
+- RBAC: no bootstrap role grants pods/ephemeralcontainers (no match in
+  K plugin/pkg/auth/authorizer/rbac/bootstrappolicy/; edit grants pods,
+  pods/exec and pods/attach at policy.go:165-168). It must be granted
+  explicitly.
+- The ServiceAccount admission plugin also handles ephemeral containers
+  (K plugin/pkg/admission/serviceaccount/admission.go:187, 399).
+
+1.2 Native sidecars (init containers with restartPolicy: Always)
+- Same Container type as main containers. They may carry Lifecycle and
+  probes (validation.go:3955-3961; plain init containers may not,
+  3963-3976). Resources.Claims is validated like any container's
+  (validateContainerCommon at 3935), so a sidecar can reference the same
+  pod-level claim as the main container. Claims stay spec-time only.
+- Start: init containers run in order. The init container after a sidecar
+  starts once the sidecar is running and its startupProbe, if any, has
+  succeeded (kuberuntime_container.go:1132-1160). The main containers start
+  only after all init containers (podHasInitialized, 1155-1157). A sidecar
+  that crashes is restarted by itself without restarting the main
+  container (1095-1107, 1163-1172).
+- Stop: on pod termination, sidecars wait until every main container has
+  terminated, then stop in reverse order (K pkg/kubelet/kuberuntime/
+  kuberuntime_termination_order.go:43-96, used by killContainersWithSyncResult,
+  kuberuntime_container.go:932-945). This bounded ordering is useful for
+  cleanup (see D2). It holds within terminationGracePeriodSeconds only.
+- What is shared with the main container: network and IPC (POD mode,
+  K pkg/kubelet/kuberuntime/util/util.go:74-88), PID only with
+  shareProcessNamespace (91-103), and pod volumes (emptyDir and others
+  declared at creation). What is not shared: mount namespace, cgroup
+  (each container has its own cgroup under the pod cgroup, so its own
+  cpuset.mems, memory.max and device BPF program), and /dev (each
+  container's /dev is its own tmpfs).
+- The ServiceAccount token is mounted into every init and regular container
+  unless automount is off (admission.go:418-470, shouldAutomount 256-263).
+  To give the token to the sidecar alone: automountServiceAccountToken:
+  false plus a projected serviceAccountToken volume mounted only in the
+  sidecar.
+
+1.3 Can any container be added or changed after pod creation?
+- No, apart from ephemeral containers. ValidateContainerUpdates rejects any
+  change in the number of containers or init containers ("pod updates may
+  not add or remove containers", validation.go:5745-5748). The only
+  mutable spec fields are containers[*].image, initContainers[*].image,
+  activeDeadlineSeconds, added tolerations and a terminationGracePeriod
+  corner case (updatablePodSpecFields 5849-5855, deep-equal guard 5994-5999).
+  Gated pods may also change nodeSelector and nodeAffinity before
+  scheduling. An image change restarts the container, so it is no
+  live-attach tool.
+- pods/resize may change only the cpu and memory requests/limits of
+  containers and sidecars (6577, 6668) and the sizeLimit of memory-backed
+  emptyDirs. It cannot add or remove volumes. Option C covers this.
+- So a sidecar must be in the pod from creation: a webhook could inject it
+  for pods marked may-want-CXL. E1 has the same creation-time requirement
+  through its token claim.
+
+1.4 emptyDir mount flags (the "mknod on a shared volume" idea)
+- Disk emptyDir: kubelet only creates a directory, mode 0777
+  (K pkg/volume/emptydir/empty_dir.go:468-510). No mount, no flags.
+- Memory emptyDir: tmpfs mounted with only size= and noswap
+  (empty_dir.go:338-359, options 601-611). No nodev, no nosuid.
+- Hugepages emptyDir: "nodev" there is the source name of hugetlbfs
+  (empty_dir.go:404), not a mount flag.
+- The runtime bind-mounts volumes with "rbind", a propagation flag and
+  ro/rw only (C internal/cri/opts/spec_linux_opts.go:154-201). nodev is
+  added only to the container's own cgroupfs mount (76).
+- So neither kubelet nor containerd sets nodev on an emptyDir. A bind mount
+  inherits the source mount's flags: if /var/lib/kubelet sits on a nodev
+  filesystem, nodev applies (UNVERIFIED for our VMs, check
+  `findmnt -T /var/lib/kubelet`). CRI-O was not checked (UNVERIFIED).
+- nodev is not the real gate. open() of a char device checks both
+  MNT_NODEV (L fs/namei.c:4225-4253, may_open_dev) and the device cgroup
+  of the opening task (inode_permission -> devcgroup_inode_permission,
+  L fs/namei.c:657; on cgroup v2 a BPF program, L security/device_cgroup.c:
+  854-856). An unprivileged main container's BPF program allows only the
+  default devices plus those in its spec at creation. A /dev/daxX.Y node
+  that a sidecar mknods into the shared emptyDir is visible to the main
+  container, but open() fails with EPERM. The device cgroup must be
+  pre-authorized, which is option B's subject.
+- Workaround, from the same code: the check runs at open, not at mmap or
+  read/write. drivers/dax/device.c (dax_open 333, dax_mmap_prepare 273) has
+  no devcgroup hook. If a privileged sidecar opens /dev/daxX.Y and passes
+  the fd over a unix socket in the shared emptyDir (SCM_RIGHTS), the main
+  container can mmap it with no change to its device cgroup. UNVERIFIED by
+  experiment: worth one test by the option B agent. Cost: the app must
+  receive an fd, it cannot open a path.
+
+1.5 What a privileged container reaches in a sibling container
+- containerd, privileged: no cgroup namespace (C internal/cri/server/
+  container_create.go:809-815), host /dev populated at creation and all
+  devices allowed (848-858), writable sysfs and cgroupfs, all
+  capabilities, no masked paths (C pkg/oci/spec_opts.go:1427-1435).
+  Privileged also requires a privileged sandbox (850-851), which kubelet
+  derives from the pod's containers.
+- So a privileged sidecar sees the whole host /sys/fs/cgroup read-write.
+  It can write the main container's cpuset.mems, memory.high and memory.max
+  directly, and could even replace its device BPF program (bpf(2)
+  BPF_PROG_ATTACH on the cgroup dir; that is a hack against
+  runtime-owned state).
+  It can use /sys/bus/cxl and /sys/bus/dax (memctl's sysfs plus the
+  cxl/daxctl CLIs in the image), so `fake-cxl-pool-client guest region
+  create` and `guest online` work from it (UNVERIFIED by experiment).
+- Reaching the main container's mount namespace needs a PID: with
+  shareProcessNamespace (or hostPID) the sidecar sees the main
+  container's processes. /proc/<pid>/ns/* and /proc/<pid>/root need
+  ptrace_may_access(PTRACE_MODE_READ_FSCREDS) (L fs/proc/namespaces.c:63,
+  fs/proc/base.c:736): trivial with all capabilities. setns(mnt) plus mknod
+  in the main container's /dev then works, but the main container's own
+  open() still hits its device cgroup (1.4). Without a PID-namespace link
+  the sidecar must find the main container's cgroup some other way: the
+  pod cgroup path from its own /proc/self/cgroup plus the container ID
+  from the pod status.
+- Sidecar volumeMount with mountPropagation Bidirectional (privileged only,
+  validation.go:1474-1475) and HostToContainer in the main container lets
+  bind mounts made by the sidecar appear in the main container. Same
+  device-cgroup gate.
+- An unprivileged sidecar reaches nothing of the main container except
+  shared volumes, localhost, IPC objects, and signals and /proc reads when
+  PID is shared and the UID matches.
+
+2. Variants
+-----------
+D1  Sidecar = request broker for option A. An unprivileged native sidecar
+    with its own ServiceAccount token, which the main container does not
+    get. The main container talks to it over a unix socket in a shared
+    emptyDir (or localhost). On "memory 512Mi" or "shared 0xc1ae0001" the
+    sidecar creates the companion pod plus claim/template of option A:
+    nodeAffinity on its node (downward API spec.nodeName), ownerReference
+    to its own pod (downward API metadata.uid), lend target = {podUID,
+    container}. It waits for the plugin to report the lend, then answers
+    with NUMA node or dax path (or fd, see B). "release" deletes the
+    companion pod. The node plugin must still do the lend/revoke (option B
+    mechanics, option A hooks). D1 is only the "who creates the objects"
+    part.
+D2  Privileged sidecar does everything: `fake-cxl-pool-client attach DEV
+    --host $NODE --owner sidecar:<poduid>`, `guest wait`, `guest region
+    create --mode ram|devdax`, `guest online --movable`, then for exclusive
+    memory writes the main container's cpuset.mems (host cgroupfs), and for
+    shared memory hands over the dax device (fd over SCM_RIGHTS, or mknod
+    plus a device-cgroup rule that someone else pre-authorized). Release
+    runs the steps in reverse.
+D3  Ephemeral debug container as a one-shot attach tool: `kubectl debug
+    --target=main --profile=sysadmin` (privileged) runs the D2 steps once and
+    exits. Release is a second ephemeral container with a new name.
+
+3. Capability table
+-------------------
+Capability                         | D1 sidecar broker   | D2 priv. sidecar         | D3 ephemeral one-shot
+-----------------------------------|---------------------|--------------------------|----------------------
+Can be added to a running pod      | no (spec-time)      | no (spec-time)           | yes (only kind that can)
+Can hold resources / DRA claims    | yes, at creation    | yes, at creation         | no (validation.go:105)
+Can be removed / restarted         | lives with pod;     | same as D1               | neither (6478, mgr:1370)
+                                   | restarts on crash   |                          |
+preStop / ordered stop after main  | yes                 | yes                      | no (Lifecycle forbidden)
+Shares mount ns with main          | no                  | no (setns via /proc/pid  | no (target = PID only)
+                                   |                     | with shareProcessNS)     |
+Can write main's cpuset.mems       | no                  | yes (host cgroupfs rw)   | yes if privileged
+Can give main a usable /dev/dax    | no (B does it)      | only fd passing, or mknod| same as D2
+                                   |                     | + pre-authorized devcg   |
+Creates DRA objects (option A)     | yes (RBAC)          | not needed (bypasses)    | possible, pointless
+Goes through scheduler/controller/ | yes                 | no                       | no
+  kubelet-cxl-plugin               |                     |                          |
+Capacity accounting                | yes (ResourceSlice) | none                     | none
+Privileges                         | none on node; RBAC  | privileged + pool creds  | privileged + RBAC on
+                                   | create pods/claims  | + PSA privileged ns      | pods/ephemeralcontainers
+Works today                        | yes, with option A+B| mostly (UNVERIFIED in VM)| mostly, same as D2
+
+4. Lifecycle tables
+-------------------
+D1 (needs option A for the objects and option B for the lend):
+Event                 | What happens                                         | Leftovers?
+----------------------|------------------------------------------------------|-----------
+request               | sidecar creates companion pod + claim; scheduler     | none
+                      | allocates; controller attaches; plugin prepares and  |
+                      | lends to {podUID, main}                              |
+use                   | main uses NUMA node / dax                            | -
+release               | sidecar deletes companion; kubelet unprepares; plugin| none if main has
+                      | revokes; controller detaches                         | unmapped (else unprepare
+                      |                                                      | retries, A/B issue)
+repeat                | new companion with a unique name (generateName)      | none
+pod deleted           | ownerReference GC removes companions, even if the    | none (GC)
+                      | sidecar is already dead; claim GC as option A        |
+node plugin restart   | option A/B (preparedPoolClaims.json + lend state)    | as A
+controller restart    | stateless reconcile (D22)                            | none
+requester (main)      | main restarts in the same pod: the lend must be      | B: re-lend on new
+  crashes             | re-applied to the new container ID (NRI              | container ID
+                      | CreateContainer sees the same podUID/name)           |
+sidecar crashes       | kubelet restarts it; must re-learn its companions    | none (owned by pod)
+                      | (list pods by label + owner UID); requests in flight |
+                      | fail and are retried by the client                   |
+
+D2:
+Event                 | What happens                                         | Leftovers?
+----------------------|------------------------------------------------------|-----------
+request               | client attach (owner must NOT start with "k8s:", or  | -
+                      | the controller detaches it: D22), region create,     |
+                      | online / devdax, cpuset.mems or fd handover          |
+use                   | works, but kubelet-cxl-plugin sees a new region on a | DOUBLE ALLOCATION RISK:
+                      | memdev not in poolSerials and publishes it as a free | region published as
+                      | cxl.generic device (I node_state.go:157-170,         | cxl.generic device
+                      | 265-272; pool.go:187-199; rescan driver.go:456-470)  |
+release               | sidecar: drop node from cpuset.mems, guest release,  | fails while mmapped
+                      | detach. Main must unmap first (no revoke)            |
+repeat                | sidecar must keep its own state (emptyDir file)      | on bugs
+pod deleted, graceful | main stops first, then sidecar SIGTERM: release +    | none, within grace
+                      | detach (termination_order.go:84). Main is gone, so   | period
+                      | the mmaps are gone                                   |
+pod force-deleted /   | sidecar SIGKILLed or never runs                      | attachment + region
+  grace exceeded /    |                                                      | dangle; nobody owns
+  node lost           |                                                      | them
+kubelet-cxl-plugin    | unaware; it may publish/allocate the region (above)  | conflict
+  restart             |                                                      |
+controller restart    | ignores non-k8s owners                               | dangling attachments
+                      |                                                      | never reconciled
+main crashes          | new container ID, new cgroup: sidecar must notice    | lost cpuset grant
+                      | and re-write cpuset.mems; cgmpolmgr (if the main has |
+                      | a CXL claim) rewrites mems from its own set          |
+                      | (N pkg/cgmpolmgr/manager.go:308-323)                 |
+sidecar crashes       | restarted; recover state from emptyDir               | ok if state persisted
+
+D3:
+Event                 | What happens                                         | Leftovers?
+----------------------|------------------------------------------------------|-----------
+request               | patch pods/ephemeralcontainers with a new name; runs | +1 terminated entry in
+                      | the D2 steps; exits                                  | pod spec, forever
+release               | another ephemeral container                          | +1 entry, forever
+repeat                | N cycles = 2N entries in spec and status, never      | pod object grows
+                      | removable (6478)                                     |
+pod deleted           | nothing runs (no Lifecycle, no restart)              | attachment + region
+                      |                                                      | dangle
+main crashes          | nobody re-applies cpuset or dax                      | lost grant
+plugin / controller   | as D2                                                | as D2
+
+5. Security assessment
+----------------------
+D1: The sidecar needs RBAC create/delete on pods and resourceclaims (or
+    resourceclaimtemplates) in its namespace. That right is much broader
+    than "ask for CXL": it can create any pod the namespace's PSA level
+    allows, with any image. Mitigation: a ValidatingAdmissionPolicy that
+    allows such creates only when (a) the pod is a companion of the fixed
+    shape (pause image, no volumes, one claim of class cxl-pool-memory or
+    cxl-shared-memory, nodeAffinity only), and (b) its ownerReference UID
+    equals the caller's bound-token pod UID, request.userInfo.extra
+    ["authentication.kubernetes.io/pod-uid"] (K staging/src/k8s.io/
+    apiserver/pkg/authentication/serviceaccount/util.go:45). Then a pod can
+    only make companions for itself. The same policy is needed for E2. D1
+    keeps the token out of the main container (projected token mounted in
+    the sidecar only, no shareProcessNamespace, different UID). That is
+    D1's only security gain, and it is real only if the main container
+    cannot reach the sidecar's filesystem. Quota for pool memory: a
+    ResourceQuota on DRA device classes limits abuse (UNVERIFIED for
+    v1.37 count syntax).
+D2: Privileged in every workload pod that may want CXL. That means
+    host-root-equivalent code in the workload pod, a PSA "privileged"
+    namespace, and pool-server or fabric-manager credentials inside the
+    workload (the fake server has no auth, so any pod that reaches
+    192.168.76.2:9909 can attach or detach any device on any host). No
+    capacity accounting, so a pod can take the whole pool. The sidecar
+    image is the attack surface. Unacceptable beyond a lab demo.
+D3: Whoever may patch pods/ephemeralcontainers can run privileged code in
+    every pod of the namespace (PSA permitting). Giving the workload that
+    right to its own namespace equals D2's risk plus a cross-pod reach.
+    Debug-only.
+
+6. Does D1 add value?
+---------------------
+Over E2 (main container uses the Kubernetes API itself):
+ + the token is not in the main container;
+ + the app needs no k8s client, only a 3-verb socket protocol, and the
+   sidecar encapsulates the wait-for-lend, the timeouts and release-on-exit;
+ + the sidecar sees the main container exit (shared PID, or socket EOF) and
+   can delete the companions at once instead of waiting for pod deletion.
+   This is a real lifecycle gain when the main container exits but the pod
+   stays (restartPolicy Never/OnFailure Jobs).
+ - one more image and container per pod, resources counted in the pod's
+   requests;
+ - the RBAC and admission-policy problem is the same as E2;
+ - the main container is still trusted to talk to the socket, so it can
+   ask for anything the sidecar may create. Authorization moves into the
+   sidecar code, which the pod author controls, so it is no real boundary:
+   only the admission policy and quota are.
+Over E1 (socket injected by kubelet-cxl-plugin via a token claim):
+ - E1 authenticates the requester by SO_PEERCRED pid -> container (via
+   NRI), an identity the pod cannot forge. D1's socket peer is always
+   "something in my pod".
+ - E1 needs no RBAC in user namespaces, no per-pod sidecar and no webhook
+   injection, and the node plugin knows the borrower without any
+   pod-supplied data.
+ - Both need a creation-time declaration (E1: token claim, D1: sidecar).
+   D1 gives nothing E1 lacks, except when cluster policy forbids the node
+   plugin from creating pods (if E1's plugin is the one creating the
+   companion). Then D1 (or E2) moves the "create companion" right from the
+   node agent into the namespace, which some admins may prefer.
+Verdict on D1: a packaging of E2, not a separate mechanism. Keep it as the
+fallback when E1's node-side companion creation is not acceptable. Even
+then, a client library or CLI in the main container (pure E2) with the
+admission policy is simpler, unless keeping the token out of the main
+container matters.
+
+7. Feasibility, effort, risks
+-----------------------------
+D1: works today, given option A (companion + lend) and option B (lend
+    mechanics). Our code: a new small sidecar binary (socket server,
+    client-go, create/delete pod, watch lend status). Effort: about 400-600
+    lines of Go plus RBAC/VAP manifests and an e2e test, 3-5 days on top of
+    A+B. Risks: RBAC breadth (needs the VAP), a sidecar per pod, the token
+    leaking if PID namespace sharing is on, the sidecar crashing mid-request
+    (idempotent names: companion name = hash(podUID, request id)).
+D2: technically possible today (privileged plus host cgroupfs and sysfs),
+    with fd passing for devdax (UNVERIFIED). Making it coexist with our
+    stack needs changes in our code: kubelet-cxl-plugin must not publish
+    regions on pool memdevs it did not prepare (today it publishes them,
+    node_state.go:265-272), and the controller must leave non-k8s owners
+    alone (it does, D22) while somebody GCs them (nobody does). Effort for a
+    lab demo: 1-2 days. For something supportable: a re-implementation of
+    the node plugin inside a sidecar. Risks: privileged workload pods, no
+    accounting, double allocation, dangling attachments on force delete or
+    node loss, cpuset fights with cgmpolmgr, NRI policies and the runtime.
+D3: possible as a manual debug procedure. Not viable as a mechanism: entries
+    can never be removed, there is no cleanup hook and no claims. Effort is
+    small, value is nil.
+
+8. Which variant is worth keeping
+---------------------------------
+- D3: no. Mention it in docs as a manual "kubectl debug --profile=sysadmin"
+  recipe for lab debugging only.
+- D2: no as a design. Keep two findings: (1) SCM_RIGHTS fd passing gets
+  past the device cgroup, which checks only at open (L fs/namei.c:657), so
+  the node plugin itself could hand a shared devdax fd to a container over
+  E1's socket with no device-cgroup change at all (a possible alternative
+  to B's pre-authorization); (2) the cleanup ordering (sidecars stop after
+  the main containers) is a general tool if a per-pod agent is ever needed.
+  Also record the hazard D2 exposes: kubelet-cxl-plugin publishes regions on
+  pool memdevs that it did not prepare. That hazard exists already if anyone
+  runs `fake-cxl-pool-client guest region create` by hand on a node.
+  Consider ignoring every memdev whose serial is in the pool serial ranges
+  (0xc1ae..., 0xc1ee..., D27), not only prepared ones.
+- D1: keep as a fallback note under E2, not as the main path. The
+  recommendation should come from E1 (+A+B). D1 matters only if node-side
+  companion creation is rejected.
+
+9. Next step (if D1 were chosen anyway)
+---------------------------------------
+1. Finish option A's lend hooks and option B's mechanics first; D1 depends
+   on both.
+2. Write cmd/cxl-broker-sidecar: unix socket in emptyDir /run/cxl, verbs
+   memory <size> [pool], shared <serial>, release <id>. Companion name
+   cxl-<podUID[:8]>-<reqid>, ownerReference to its own pod, nodeAffinity on
+   spec.nodeName. Wait for the lend (claim status or companion
+   annotation), answer {numaNode} / {daxPath}.
+3. Manifests: ServiceAccount, Role (pods, resourceclaims: create, delete,
+   get, list, watch), and a ValidatingAdmissionPolicy that pins the
+   companion shape and ownerReference uid == the pod-uid extra.
+4. e2e on n4-cxl-shared-2: 5 request/release cycles, then delete the pod.
+   Expect 0 companions, 0 claims and 0 attachments with owner k8s:*.
+   Check `guest info` for no regions.
+Immediate next step regardless of the choice: ask the option B agent to
+test SCM_RIGHTS handover of a /dev/daxX.Y fd into an unprivileged busybox
+or python container (mmap and read/write without a device-cgroup rule).

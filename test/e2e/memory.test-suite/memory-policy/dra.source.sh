@@ -27,6 +27,15 @@
 DRA_DRIVER_SRC="${CXL_DRA_DRIVER_SRC:-$HOME/github.com/intel/intel-resource-drivers-for-kubernetes}"
 DRA_DRIVER_BIN="$DRA_DRIVER_SRC/bin/kubelet-cxl-plugin"
 DRA_DEVICE_CLASSES="$DRA_DRIVER_SRC/deployments/cxl/pool/device-classes.yaml"
+# Lending pool memory to running containers (plan-3-cxl-live-attach): the
+# CLI that the node plugin mounts into containers that claim the token
+# device "dynamic" (DeviceClass cxl-dynamic), and the directory of the
+# per-claim lease sockets in the VM. Both are optional: dra-build and
+# dra-install skip them when the driver sources do not have them.
+DRA_REQUEST_BIN="$DRA_DRIVER_SRC/bin/cxl-request"
+DRA_REQUEST_VM_BIN=/usr/local/bin/cxl-request
+DRA_DYNAMIC_CLASS="$DRA_DRIVER_SRC/deployments/cxl/pool/device-class-dynamic.yaml"
+DRA_LEASE_DIR=/var/lib/kubelet/plugins/cxl.generic/leases
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
 DRA_POOL_DRIVER=cxl-pool.generic   # pool devices, published by the controller
 DRA_LOCAL_DRIVER=cxl.generic       # node-local CXL and DRAM, published by the node plugin
@@ -34,6 +43,7 @@ DRA_NS=cxl-pool-demo               # namespace of the test objects
 DRA_INSTALLED_VMS=()               # VMDIRs where dra-install started the components
 DRA_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 DRA_DAX_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/pool-dax-rw.py"
+DRA_NUMA_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/numa-touch.py"
 DRA_JSON=""                        # JSON of the last dra-json/dra-wait
 DRA_TRACE_DIR=""                   # $TEST_OUTPUT_DIR/trace of a running trace
 DRA_TRACE_RUNNING=""
@@ -155,12 +165,16 @@ dra-dax-tool-install() { # script API
     # Usage: dra-dax-tool-install VMDIR
     #
     # Create ConfigMap dax-rw in $DRA_NS of the cluster of the VM of VMDIR,
-    # with key dax-rw.py = pool-dax-rw.py: the tool that writes and reads
-    # strings in a devdax device. Pods mount it at /tools and run it with
-    # python3 (image docker.io/library/python:3-alpine).
+    # with the tools that pods mount at /tools and run with python3 (image
+    # docker.io/library/python:3-alpine):
+    #   dax-rw.py      = pool-dax-rw.py: write and read strings in a devdax
+    #                    device, or through an inherited fd (--fd N)
+    #   numa-touch.py  = numa-touch.py: allocate and touch memory that
+    #                    prefers one NUMA node, report where the pages are
     local vmdir="$1"
     dra-vm-put-file "$vmdir" "$DRA_DAX_TOOL" /root/dax-rw.py
-    dra-vm-command "$vmdir" "kubectl create configmap dax-rw -n $DRA_NS --from-file=dax-rw.py=/root/dax-rw.py --dry-run=client -o yaml | kubectl apply -f -" ||
+    dra-vm-put-file "$vmdir" "$DRA_NUMA_TOOL" /root/numa-touch.py
+    dra-vm-command "$vmdir" "kubectl create configmap dax-rw -n $DRA_NS --from-file=dax-rw.py=/root/dax-rw.py --from-file=numa-touch.py=/root/numa-touch.py --dry-run=client -o yaml | kubectl apply -f -" ||
         command-error "cannot create ConfigMap dax-rw in $(dra-vm-label "$vmdir")"
 }
 
@@ -176,11 +190,16 @@ dra-build() { # script API
     # "go mod vendor" first: vendor/ is not in git there, and go.mod may
     # replace nri-plugins with this checkout) and
     # fake-cxl-pool (server, client and controller) on the host. Both are
-    # static amd64 binaries that dra-install copies to the VMs.
+    # static amd64 binaries that dra-install copies to the VMs. Build also
+    # the lease CLI cxl-request when the driver sources have cmd/cxl-request.
     [ -d "$DRA_DRIVER_SRC/cmd/kubelet-cxl-plugin" ] ||
         error "dra-build: no kubelet-cxl-plugin sources in $DRA_DRIVER_SRC. Clone https://github.com/intel/intel-resource-drivers-for-kubernetes there (a branch with the cxl-pool.generic helper), or point CXL_DRA_DRIVER_SRC to a clone"
     host-command "cd \"$DRA_DRIVER_SRC\" && go mod vendor && CGO_ENABLED=0 GOARCH=amd64 go build -mod vendor -o bin/kubelet-cxl-plugin ./cmd/kubelet-cxl-plugin" ||
         command-error "cannot build kubelet-cxl-plugin in $DRA_DRIVER_SRC"
+    if [ -d "$DRA_DRIVER_SRC/cmd/cxl-request" ]; then
+        host-command "cd \"$DRA_DRIVER_SRC\" && CGO_ENABLED=0 GOARCH=amd64 go build -mod vendor -o bin/cxl-request ./cmd/cxl-request" ||
+            command-error "cannot build cxl-request in $DRA_DRIVER_SRC"
+    fi
     host-command "make -C \"$nri_resource_policy_src/scripts/testing/fake-cxl-pool\"" ||
         command-error "cannot build fake-cxl-pool"
     [ -x "$DRA_CONTROLLER_BIN" ] ||
@@ -193,7 +212,10 @@ dra-install() { # script API
     # Run kubelet-cxl-plugin and fake-cxl-pool-controller in the VM of
     # VMDIR as transient systemd units of the same names, with the admin
     # kubeconfig of the VM. Apply the DeviceClasses of the driver
-    # (cxl-pool-memory, cxl-shared-memory), and create namespace $DRA_NS
+    # (cxl-pool-memory, cxl-shared-memory, and cxl-dynamic if the driver
+    # has it). If dra-build built cxl-request, install it as
+    # $DRA_REQUEST_VM_BIN and tell the node plugin (--cxl-request-bin) to
+    # mount it into the containers of lease claims. Create namespace $DRA_NS
     # empty (delete objects that an earlier run left). Wait until the
     # cluster has the pool ResourceSlice of the controller, the node's
     # cxl.generic ResourceSlice and the kubelet plugin socket of
@@ -201,7 +223,7 @@ dra-install() { # script API
     #
     # Call pool-server-start first: the controller needs the server, and
     # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup.
-    local vmdir="$1" name label url
+    local vmdir="$1" name label url request_flag=""
     name=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
     [ -x "$DRA_DRIVER_BIN" ] || error "dra-install: no $DRA_DRIVER_BIN, run dra-build first"
@@ -216,12 +238,24 @@ dra-install() { # script API
     dra-vm-put-file "$vmdir" "$DRA_DEVICE_CLASSES" /root/cxl-pool-device-classes.yaml
     dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/kubelet-cxl-plugin /usr/local/bin/fake-cxl-pool-controller && echo '{}' > /etc/kubelet-cxl-plugin.yaml" ||
         command-error "cannot install the DRA components in $label"
+    if [ -x "$DRA_REQUEST_BIN" ]; then
+        dra-vm-put-file "$vmdir" "$DRA_REQUEST_BIN" "$DRA_REQUEST_VM_BIN"
+        dra-vm-command "$vmdir" "chmod 755 $DRA_REQUEST_VM_BIN" ||
+            command-error "cannot install cxl-request in $label"
+        request_flag=" --cxl-request-bin $DRA_REQUEST_VM_BIN"
+    fi
+    if [ -f "$DRA_DYNAMIC_CLASS" ]; then
+        dra-vm-put-file "$vmdir" "$DRA_DYNAMIC_CLASS" /root/cxl-dynamic-device-class.yaml
+    else
+        dra-vm-command "$vmdir" "rm -f /root/cxl-dynamic-device-class.yaml"
+    fi
     # The prepared pool claims of the node plugin refer to regions. Without
-    # regions they are leftovers of an earlier VM boot.
-    dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json; fi"
+    # regions they are leftovers of an earlier VM boot, and so are the
+    # leases (leases.json) and the lease sockets of token claims (leases/).
+    dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 
     echo "dra-install $label: starting kubelet-cxl-plugin and fake-cxl-pool-controller"
-    dra-vm-command "$vmdir" "systemd-run --unit kubelet-cxl-plugin --property=Restart=no -E NODE_NAME=$name -E KUBECONFIG=/root/.kube/config /usr/local/bin/kubelet-cxl-plugin --node-name $name -f /etc/kubelet-cxl-plugin.yaml -v 4" ||
+    dra-vm-command "$vmdir" "systemd-run --unit kubelet-cxl-plugin --property=Restart=no -E NODE_NAME=$name -E KUBECONFIG=/root/.kube/config /usr/local/bin/kubelet-cxl-plugin --node-name $name -f /etc/kubelet-cxl-plugin.yaml$request_flag -v 4" ||
         command-error "cannot start kubelet-cxl-plugin in $label"
     dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
         command-error "cannot start fake-cxl-pool-controller in $label"
@@ -232,7 +266,7 @@ dra-install() { # script API
     else
         trap dra-cleanup EXIT
     fi
-    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml" ||
+    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml && if [ -f /root/cxl-dynamic-device-class.yaml ]; then kubectl apply -f /root/cxl-dynamic-device-class.yaml; fi" ||
         command-error "cannot create the DeviceClasses in $label"
 
     retry-until --timeout 60 --interval 2 --message "$label: ResourceSlices of $DRA_POOL_DRIVER and $DRA_LOCAL_DRIVER on $name, $DRA_POOL_DRIVER kubelet plugin socket" \
@@ -301,8 +335,8 @@ dra-uninstall() { # script API
     if [ -n "$left" ]; then
         dra-vm-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
     fi
-    dra-vm-command "$vmdir" "kubectl delete --ignore-not-found -f /root/cxl-pool-device-classes.yaml 2>/dev/null || kubectl delete deviceclass --ignore-not-found cxl-pool-memory cxl-shared-memory"
-    dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions left, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json; fi"
+    dra-vm-command "$vmdir" "kubectl delete --ignore-not-found -f /root/cxl-pool-device-classes.yaml 2>/dev/null || kubectl delete deviceclass --ignore-not-found cxl-pool-memory cxl-shared-memory; kubectl delete deviceclass --ignore-not-found cxl-dynamic"
+    dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions left, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
     dra-installed-remove "$vmdir"
     return 0
 }
@@ -338,6 +372,163 @@ dra-cleanup() {
         fi
     done
     return 0
+}
+
+###
+### Containers of pods, and leases of pool memory
+###
+
+dra-pod-container() {
+    # Usage: dra-pod-container POD[/CONTAINER]
+    #
+    # Print "POD CONTAINER" (CONTAINER empty if not given).
+    local pod="${1%%/*}" container=""
+    [[ "$1" == */* ]] && container="${1#*/}"
+    echo "$pod $container"
+}
+
+dra-exec() { # script API
+    # Usage: dra-exec VMDIR POD[/CONTAINER] COMMAND [ARGS...]
+    #
+    # Run COMMAND with ARGS in a container of pod POD in $DRA_NS (kubectl
+    # exec; the default container when CONTAINER is not given). The
+    # arguments reach the container as they are, one argv word each.
+    # COMMAND_OUTPUT has what COMMAND printed to stdout, DRA_EXEC_STDERR what
+    # it printed to stderr (both are shown), COMMAND_STATUS its exit status,
+    # which is also returned.
+    # Example: dra-exec "$VM" borrower/main cxl-request memory 512Mi
+    local vmdir="$1" pod container cmd errfile
+    read -r pod container <<< "$(dra-pod-container "$2")"
+    shift 2
+    cmd="kubectl exec -n $DRA_NS $pod${container:+ -c $container} --$(printf ' %q' "$@")"
+    echo -e "\e[38;5;13mroot@$(dra-vm-label "$vmdir")>\e[0m $cmd"
+    errfile=$(mktemp)
+    COMMAND_OUTPUT=$(dra-vm-command-q "$vmdir" "$cmd" 2>"$errfile")
+    COMMAND_STATUS=$?
+    DRA_EXEC_STDERR=$(cat "$errfile")
+    rm -f "$errfile"
+    [ -z "$COMMAND_OUTPUT" ] || echo "$COMMAND_OUTPUT"
+    [ -z "$DRA_EXEC_STDERR" ] || echo "(stderr) $DRA_EXEC_STDERR"
+    [ "$COMMAND_STATUS" == 0 ] || echo "(exit status $COMMAND_STATUS)"
+    return "$COMMAND_STATUS"
+}
+
+dra-last-json() { # script API
+    # Usage: dra-last-json TEXT
+    #
+    # Print the last line of TEXT that is a JSON object, for instance the
+    # response of "cxl-request memory 512Mi" among other output. Return 1
+    # if there is none.
+    python3 -c '
+import json, sys
+last = None
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        last = json.loads(line)
+    except ValueError:
+        continue
+if last is None:
+    sys.exit(1)
+print(json.dumps(last))' <<< "$1"
+}
+
+dra-leases() { # script API
+    # Usage: dra-leases VMDIR POD[/CONTAINER]
+    #
+    # Run "cxl-request list" in the container (the default container of
+    # POD when not given) and print its leases as one JSON list, whatever
+    # form cxl-request printed them in (a list, {"leases": [...]}, or one
+    # object per line). COMMAND_OUTPUT and DRA_LEASES have the list. Fail
+    # the test if cxl-request fails.
+    local vmdir="$1" target="$2"
+    dra-exec "$vmdir" "$target" "$DRA_REQUEST_VM_BIN" list ||
+        command-error "cxl-request list failed in $target"
+    DRA_LEASES=$(python3 -c '
+import json, sys
+text = sys.stdin.read().strip()
+leases = []
+try:
+    j = json.loads(text) if text else []
+    if isinstance(j, dict):
+        j = j.get("leases", [j] if "lease" in j else [])
+    leases = j or []
+except ValueError:
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            leases.append(json.loads(line))
+print(json.dumps(leases))' <<< "$COMMAND_OUTPUT") ||
+        error "dra-leases: cannot parse the output of cxl-request list: $COMMAND_OUTPUT"
+    COMMAND_OUTPUT="$DRA_LEASES"
+    echo "leases of $target: $DRA_LEASES"
+}
+
+dra-container-cgroup() { # script API
+    # Usage: dra-container-cgroup VMDIR POD CONTAINER
+    #
+    # Print the cgroup v2 directory of container CONTAINER of pod POD in
+    # $DRA_NS, in the VM of VMDIR: the cgroup of its init process (crictl
+    # inspect .info.pid, /proc/PID/cgroup). Processes of "kubectl exec" run
+    # in the same cgroup.
+    local vmdir="$1" pod="$2" container="$3"
+    dra-vm-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
+        pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ] &&
+        cg=\$(sed -n 's/^0:://p' /proc/\$pid/cgroup) && [ -d \"/sys/fs/cgroup\$cg\" ] && echo \"/sys/fs/cgroup\$cg\""
+}
+
+dra-container-file() { # script API
+    # Usage: dra-container-file VMDIR POD CONTAINER FILE
+    #
+    # Show cgroup FILE (for instance cpuset.mems.effective or
+    # memory.numa_stat) of container CONTAINER of pod POD, read in the VM
+    # of VMDIR. COMMAND_OUTPUT has its contents. Fail the test if the
+    # container or the file cannot be found.
+    local vmdir="$1" pod="$2" container="$3" file="$4" cg
+    cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") ||
+        error "dra-container-file: no cgroup of container $container of pod $pod in $(dra-vm-label "$vmdir")"
+    dra-vm-command "$vmdir" "cat $cg/$file" ||
+        command-error "cannot read $file of container $container of pod $pod"
+}
+
+dra-container-anon() { # script API
+    # Usage: dra-container-anon VMDIR POD CONTAINER NODE
+    #
+    # Print the anonymous memory of container CONTAINER of pod POD on NUMA
+    # node NODE in bytes ("anon N<NODE>=" of memory.numa_stat, 0 if the
+    # node is not listed), quietly.
+    local vmdir="$1" pod="$2" container="$3" node="$4" cg
+    cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") || return 1
+    dra-vm-command-q "$vmdir" "cat $cg/memory.numa_stat" |
+        awk -v n="N$node" '$1 == "anon" { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == n) v = kv[2] } } END { print v + 0 }'
+}
+
+dra-container-bpf-count() {
+    # Usage: dra-container-bpf-count VMDIR POD CONTAINER
+    local cg
+    cg=$(dra-container-cgroup "$1" "$2" "$3") || return 1
+    dra-vm-command-q "$1" "bpftool cgroup show $cg 2>/dev/null | grep -c cgroup_device"
+}
+
+dra-container-devices() { # script API
+    # Usage: dra-container-devices VMDIR POD CONTAINER
+    #
+    # Print what the device cgroup of container CONTAINER of pod POD allows,
+    # in a form to compare before and after: the device rules of its runtime
+    # spec (crictl inspect, line "spec: ...") and the distinct eBPF device
+    # programs attached to its cgroup (line "bpf: ...", hashes of their code,
+    # bpftool). Measured in VM2 (containerd, systemd cgroup driver): the
+    # first runtime update of a container (crictl update, NRI
+    # UpdateContainers) attaches one more, different program; later updates
+    # add none. Compare the spec line to see whether the rules changed.
+    # Quietly. dra-container-bpf-count prints how many are attached.
+    local vmdir="$1" pod="$2" container="$3" cg
+    cg=$(dra-container-cgroup "$vmdir" "$pod" "$container") || return 1
+    dra-vm-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}'); id=\${id#*://}
+        echo \"spec: \$(crictl inspect \$id 2>/dev/null | jq -c .info.runtimeSpec.linux.resources.devices)\"
+        echo \"bpf: \$(for p in \$(bpftool cgroup show $cg 2>/dev/null | awk '\$2 == \"cgroup_device\" {print \$1}'); do bpftool prog dump xlated id \$p | sha256sum | cut -c1-16; done | sort -u | tr '\\n' ' ')\""
 }
 
 ###
@@ -787,8 +978,9 @@ patterns = {
     # fake-cxl-pool-controller: what it attached, detached and wrote.
     "controller": r"(?i)attach|detach|condition|status|publish|slice|error|fail",
     # kubelet-cxl-plugin: the pool helper (prepared, released, unprepared),
-    # pool devices skipped by the cxl.generic publisher, errors.
-    "driver": r"(?i)cxl-pool\.generic|pool device|rescanAndPublish|error|fail",
+    # pool devices skipped by the cxl.generic publisher, the lease broker
+    # (leases, companions, lends and revokes, fds sent), errors.
+    "driver": r"(?i)cxl-pool\.generic|pool device|rescanAndPublish|lease|companion|\blend|revok|error|fail",
     "scheduler": r"(?i)binding|resourceclaim|claim|bound|error",
     "events": r"",
     "claims": r"",
@@ -836,6 +1028,7 @@ with open(out_path, "w") as out:
     out.write("# fake-cxl-pool-controller, <vm>.driver = kubelet-cxl-plugin, <vm>.scheduler,\n")
     out.write("# <vm>.kubelet, <vm>.events, <vm>.claims (ResourceClaim changes), <vm>.pods,\n")
     out.write("# <vm>.udev (kernel uevents) of the VMs: %s.\n" % vms)
+    out.write("# cxl-lease-<id> are the companion pods and claims of leases.\n")
     out.write("# The full trace is trace.txt.\n")
     t0 = rows[0][0] if rows else 0
     for t, tag, text in rows:

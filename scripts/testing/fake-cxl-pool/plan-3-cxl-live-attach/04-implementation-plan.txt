@@ -1,0 +1,991 @@
+plan-3-cxl-live-attach: implementation plan of the lease design
+================================================================
+Written 2026-10-08 (Fable). Design: 03-summary.txt "Clear winner". Details
+and evidence: 02-option-companion-pod-dra-lend.txt (objects, lifecycle),
+02-option-node-plugin-request-channel.txt (channel, auth, CLI),
+02-option-runtime-injection-mechanics.txt (lend/revoke procedures).
+Three Opus agents: W1a and W1b in the driver repository (disjoint files,
+shared Go interface below), W2 the e2e test in nri-plugins. Nothing in
+fake-cxl-pool server/client/controller changes.
+
+Repositories and ground rules
+- Driver: ~/github.com/intel/intel-resource-drivers-for-kubernetes, branch
+  5fC-cxl, uncommitted work from plan-2-dra present (pool.go etc.). go.mod
+  has `replace github.com/containers/nri-plugins => /home/akervine/github.com/containers/nri-plugins`;
+  run `go mod vendor` before `go build -mod vendor`. Build:
+  `CGO_ENABLED=0 go build -mod vendor -o bin/kubelet-cxl-plugin ./cmd/kubelet-cxl-plugin`.
+- nri-plugins: ~/github.com/containers/nri-plugins, branch 5jQ-cxl.
+- Nobody commits. W1a/W1b: unit tests only, no VM use. W2 owns the VMs.
+- The plugin runs as a host process in the VMs (dra.source.sh dra-install).
+
+Shared Go interface (package main, cmd/kubelet-cxl-plugin/lend.go, owned by
+W1b; W1a codes against it and may stub it in tests)
+----------------------------------------------------------------------------
+// containerRef is a running container known to the NRI stub.
+type containerRef struct {
+    PodUID, PodNamespace, PodName, Name, ID string
+    Pid        uint32 // init pid at StartContainer (0 if unknown)
+    CgroupPath string // absolute cgroup v2 dir, as resolveContainerCgroupDir
+    BaseMems   string // cpuset.mems.effective at start, e.g. "0-1"
+}
+type Lender interface {
+    // ContainerByPid finds the container whose cgroup contains pid
+    // (/proc/<pid>/cgroup prefix match against CgroupPath).
+    ContainerByPid(pid int) (*containerRef, bool)
+    // Container by pod UID and container name.
+    Container(podUID, name string) (*containerRef, bool)
+    // LendNode adds NUMA node to the container's cpuset.mems through NRI
+    // UpdateContainers (mems = BaseMems + all lent nodes). Idempotent.
+    LendNode(ctx context.Context, podUID, name string, node int) error
+    // RevokeNode removes the node (pages migrate back). Idempotent; a
+    // container that is gone is not an error.
+    RevokeNode(ctx context.Context, podUID, name string, node int) error
+    // LentNodes returns the nodes currently lent to the container.
+    LentNodes(podUID, name string) []int
+    // OnContainerGone registers a callback for StopContainer/RemoveContainer
+    // of a container that has lends or a lease socket (W1a releases leases).
+    OnContainerGone(func(ref containerRef))
+    // OnContainerStarted registers a callback for StartContainer (W1a
+    // re-applies exclusive lends of Ready leases to a restarted container).
+    OnContainerStarted(func(ref containerRef))
+}
+The *nriPlugin (nri.go) implements Lender. driver.go already keeps
+driver.nriPlugin; W1a reaches it as `driver.nriPlugin` (nil when NRI failed
+to start: then lease requests fail with "lending unavailable: NRI not
+connected").
+
+W1b: lend primitives in nri.go (+ lend.go, lend_test.go)
+----------------------------------------------------------
+1. Container table: fill on CreateContainer (pod uid/ns/name, container
+   name, id), StartContainer (pid, cgroup dir via resolveContainerCgroupDir,
+   BaseMems from <cgroup>/cpuset.mems.effective), StopContainer/
+   RemoveContainer (remove, fire OnContainerGone). Implement Synchronize
+   (stub.SynchronizeInterface): rebuild the table from the runtime's list of
+   pods and containers at (re)connect; BaseMems of a container that already
+   has lends: read cpuset.mems.effective minus the lent nodes W1a re-applies
+   (document the approximation).
+2. LendNode/RevokeNode: compute mems = BaseMems union lent nodes (k8s.io/
+   utils/cpuset for parsing/formatting), call
+   p.stub.UpdateContainers([]*api.ContainerUpdate{{ContainerId: id, Linux:
+   &api.LinuxContainerUpdate{Resources: &api.LinuxResources{Cpu:
+   &api.LinuxCPU{Mems: api.String(mems)}}}}}) and check the per-container
+   result (UpdateContainers returns failed updates). Never set a cpuset.mems
+   without BaseMems (a movable node alone breaks the container). Keep the
+   lent set per container id in memory; LentNodes reads it.
+3. Interaction with cgmpolmgr steering: a container that has a cgmpolmgr
+   manager (p.managers[id]) is refused for LendNode with a clear error
+   ("container is memory-steered by a local CXL claim; lending is not
+   supported together with steering yet"); document in POOL.md.
+4. Unit tests with a fake stub (the stub interface used: UpdateContainers,
+   Start, Stop): table lifecycle, mems arithmetic, idempotence, revoke of a
+   gone container, refusal when steered. Existing nri.go behaviour must stay
+   unchanged (go test ./cmd/kubelet-cxl-plugin/...).
+
+W1a: token device, lease broker, companion objects, CLI
+-------------------------------------------------------
+Files: dynamic.go (token device + CDI edits), broker.go (socket server,
+leases, companions, fd passing), lease_store.go (persistence), pool.go
+(LendConfig hooks), driver.go/main.go (wiring, flags), cmd/cxl-request/
+(static CLI, new), deployments/cxl/pool/device-class-dynamic.yaml and
+examples/borrower-pod.yaml, doc/cxl/POOL.md "Lending to running containers",
+RBAC additions in deployments/cxl/base/resource-driver.yaml (pods and
+resourceclaims: create, get, list, watch, delete; events create).
+1. Token device: node_state.go GetResources publishes in the cxl.generic
+   slice a device `dynamic` (attributes type=dynamic, name=dynamic; no
+   capacity; AllowMultipleAllocations true; no NodeAllocatableResources).
+   DeviceClass cxl-dynamic: device.driver == "cxl.generic" &&
+   device.attributes["cxl.generic"].type == "dynamic". buildDevInfos gets a
+   synthetic DeviceInfo for it (Dev type *device.DynamicToken).
+2. Prepare of a claim containing the token (prepareAllocatedDevices path):
+   create <plugin data dir>/leases/<claim uid>/ (0755) and start a listener
+   on <dir>/cxl.sock (0666); return, besides the existing claim marker, a CDI
+   device `generic/cxl=lease-<claim uid>` with mounts
+   {hostPath: <dir>, containerPath: /run/cxl, options: [rbind, rw]} and
+   {hostPath: <flag --cxl-request-bin, default /usr/local/bin/cxl-request>,
+   containerPath: /usr/local/bin/cxl-request, options: [bind, ro]} and env
+   CXL_LEASE_SOCKET=/run/cxl/cxl.sock. Record claim uid -> pod (reservedFor)
+   in the store. Unprepare: release all leases of the claim's pod (delete
+   companions, wait for them to disappear, bounded by the kubelet RPC
+   timeout: return an error "still releasing" so kubelet retries if not done
+   in 30 s), close the listener, remove the directory. On plugin start:
+   re-create listeners for stored claims (the directory is already mounted
+   into the containers; a fresh socket inside it is reachable).
+3. Protocol on cxl.sock: SOCK_STREAM unix, one JSON object per line.
+   Request {"op":"lease","kind":"memory","size":"512Mi","wait":"120s",
+   "requestId":"..."} | {"op":"lease","kind":"shared","serial":"0xc1ae0001",
+   "wait":"120s"} | {"op":"release","lease":"<id>"} | {"op":"release",
+   "all":true} | {"op":"list"} | {"op":"fd","lease":"<id>"} (re-send the fd
+   of a Ready shared lease). Response: one JSON line {"lease":"<8 hex>",
+   "state":"Creating|Pending|Lending|Ready|Releasing|Failed","kind":...,
+   "node":N,"size":bytes,"serial":"0x..","dax":"/dev/daxX.Y","error":"..."};
+   for a Ready shared lease the response line is sent with the open dax fd
+   as SCM_RIGHTS ancillary data on the same write (net.UnixConn.WriteMsgUnix;
+   open the dax O_RDWR; close the plugin's copy after sending).
+   Caller auth: SO_PEERCRED (syscall.GetsockoptUcred) pid -> lender.
+   ContainerByPid; the container's pod UID must be the pod of the claim that
+   owns the socket; otherwise 403-style {"error":"not a container of the
+   claim's pod"}. The lease is bound to (pod UID, container name).
+4. Companion objects in the requester's namespace: ResourceClaim
+   `cxl-lease-<id>` (spec.devices.requests[0]: exactly {deviceClassName:
+   cxl-pool-memory, capacity.requests.memory: <size>} or {deviceClassName:
+   cxl-shared-memory, selectors: [cel serial == <serial>]}; spec.devices.
+   config[0].opaque {driver: cxl-pool.generic, parameters: {apiVersion:
+   cxl-pool.generic/v1alpha1, kind: LendConfig, lease: <id>, pod: {namespace,
+   name, uid}, container: <name>}}; ownerReference -> requester pod
+   (controller: true)) and Pod `cxl-lease-<id>` (ownerReference -> requester
+   pod; nodeAffinity required matchFields metadata.name In [node];
+   tolerations [{operator: Exists}]; restartPolicy Always; one container
+   `pause` image registry.k8s.io/pause:3.10 with resources requests=limits
+   cpu 1m memory 8Mi and NO resources.claims; spec.resourceClaims [{name:
+   lease, resourceClaimName: cxl-lease-<id>}]; labels cxl-pool.generic/lease=
+   <id>, cxl-pool.generic/requester-uid=<pod uid>). kubelet prepares the
+   claim although no container references it (dra/manager.go). Create the
+   claim first, then the pod.
+5. pool.go hooks: parse LendConfig from claim.Status.Allocation.Devices.
+   Config (opaque, driver == pool driver name) in prepareClaim; after
+   prepareDevice: exclusive -> lender.LendNode(ctx, pod.uid, container,
+   node) (retry the region creation once after 3 s on "add_dev() failed"
+   style errors; a lend error fails the Prepare: kubelet retries, nothing
+   is left half done because Unprepare revokes idempotently); shared ->
+   nothing to lend here; then broker.OnPrepared(lease, LendConfig, device
+   info incl. dax path and node). In unprepareClaim, before release:
+   exclusive -> lender.RevokeNode; shared -> broker.OnReleasing(lease) (the
+   fd holders get SIGBUS after region destroy, documented). Store the lend in
+   preparedPoolClaims.json (new fields) so a restart re-applies it
+   (OnContainerStarted callback: for each Ready exclusive lease of that
+   container, LendNode again).
+6. Lease state machine and store: leases.json in the plugin data dir,
+   written before any API object is created (Creating), then Pending
+   (objects exist), Lending (companion claim prepared, lend in progress),
+   Ready, Releasing, Failed (message). "wait" blocks the request until Ready
+   or Failed or timeout (timeout -> release and Failed "timeout"). Release
+   = Releasing, RevokeNode (exclusive), delete companion pod (foreground
+   propagation; the claim follows by ownerReference and by the
+   resourceclaim controller), wait until pod and claim are gone, drop the
+   lease. Reconcile at start and every 60 s: leases whose requester
+   container is gone (lender.Container fails) or whose companion pod is gone
+   -> release/drop; companions with our labels on this node without a lease
+   -> delete. OnContainerGone -> release all leases of (pod, container).
+7. Flags (main.go): --cxl-request-bin, --lease-wait-default 120s,
+   --companion-image registry.k8s.io/pause:3.10, --pool-lend (default true).
+8. cmd/cxl-request (static, CGO_ENABLED=0): `cxl-request memory 512Mi
+   [--wait 120s]`, `cxl-request shared 0xc1ae0001 [--exec CMD ARGS...]`
+   (receives the fd, sets CXL_LEASE_FD=<n> and CXL_LEASE=<id>,
+   CXL_LEASE_DAX, CXL_LEASE_SIZE, then execs CMD with the fd inherited at
+   fd 3; without --exec it prints the JSON and exits, the fd is dropped),
+   `cxl-request fd <lease> --exec CMD` (re-attach), `cxl-release <lease>|
+   --all` (also as `cxl-request release`), `cxl-request list`. Socket from
+   $CXL_LEASE_SOCKET. Exit codes 0/1/2(usage)/3(timeout or failed).
+9. Unit tests: protocol (fake Lender, fake clientset, fake pool helper
+   hook): lease create -> objects created with the exact spec; auth
+   rejection; OnPrepared -> Ready; release deletes objects and revokes;
+   restart loads the store and re-creates sockets; reconcile drops
+   orphaned leases; LendConfig parsing. go vet, go test -race.
+10. Docs: POOL.md section with the flow, the protocol, the CLI, the
+   limitations from 03-summary.txt (memory limits, steering conflict,
+   SIGBUS on forced release, RBAC).
+
+W2: e2e test12-dra-live-attach (nri-plugins test/e2e)
+------------------------------------------------------
+memory.test-suite/memory-policy/n4-cxl-shared-2/test12-dra-live-attach/code.var.sh,
+helpers added to memory-policy/dra.source.sh (dra-install copies
+bin/cxl-request from the driver repo to /usr/local/bin of the VM and passes
+--cxl-request-bin; dra-build builds it; `dra-exec VMDIR POD CMD...`;
+`dra-leases VMDIR POD`), pool-dax-rw.py gains `--fd N` (use the inherited fd
+instead of opening the device) and a small `numa-touch.py` (allocate N MiB
+with MPOL_PREFERRED on node X via ctypes set_mempolicy, touch pages, sleep)
+delivered through the existing dax-rw ConfigMap mechanism.
+Story (fedora only, VM2 only; preconditions and trace like test10): server
+devices pooled0 512M 0xc1ee0001 and shared0 256M shared 0xc1ae0001;
+dra-install; apply DeviceClass cxl-dynamic; pre-pull pause:3.10 and
+python:3-alpine.
+A. "A pod that may want CXL later": pod `borrower` (python:3-alpine, no
+   memory limit, sleep infinity) with a claim for cxl-dynamic; it starts
+   immediately (no pool device involved); inside: /run/cxl/cxl.sock and
+   cxl-request exist; `cxl-request list` is empty. VM: cxl.generic slice
+   has the dynamic device, no pool attachments.
+B. "Ask for 512Mi of pooled memory from inside": `kubectl exec borrower --
+   cxl-request memory 512Mi` -> JSON with lease L1 and node N; companion
+   pod cxl-lease-L1 Running with ownerReference to borrower; claim
+   Attached; server attachment pooled0@VM2; borrower's Mems_allowed_list
+   contains N while another container of the same pod (add a second idle
+   container) does not; numa-touch.py 256MiB preferred N -> container
+   cgroup memory.numa_stat anon on node N > 200 MiB (VM side).
+C. "Give it back": `cxl-release L1` -> pages migrated (numa_stat node N 0,
+   process still alive), Mems_allowed back to DRAM nodes, companion and
+   claim gone, VM has no memdevs, server pooled0 free, qemu no cxl-type3.
+D. "Shared memory as a file descriptor": `cxl-request shared 0xc1ae0001
+   --exec python3 /tools/dax-rw.py --fd 3 write 0 "<TAG>"` ->
+   host pool-file-string of shared0.raw at 0 == TAG; `... --exec python3
+   /tools/dax-rw.py --fd 3 read 0` == TAG; the container has no /dev/dax*
+   node and its device cgroup is unchanged; `cxl-release --all`.
+E. "Repeat": three more cycles of B-C and D with distinct lease ids; after
+   each: no companions, claims, attachments, regions left (assert counts
+   from kubectl, server JSON and cxl-dump).
+F. "Delete the pod while leases are active": take one memory and one shared
+   lease, `kubectl delete pod borrower`; within 90 s: companions and claims
+   gone (GC), server attachments empty, VM memdevs empty, qemu clean.
+G. trace stop + summary.
+Phase 1 (now): write helpers, scripts, tools; dry-run bash -n/shellcheck;
+pre-pull images; prepare the DeviceClass and pod YAML. Phase 2 (after W1a +
+W1b report and the orchestrator says go): build, run, debug; small fixes in
+the driver allowed and documented ("fixed by W2"); design problems ->
+report.
+
+Reporting
+- Each agent appends "Status" and "Findings" to this file under its own
+  heading (W1a / W1b / W2) when done; deviations from 03-summary.txt are
+  listed explicitly.
+
+W1b Status
+----------
+Done (2026-10-08, Opus agent W1b). Driver repo, branch 5fC-cxl on top of
+48feb5a, nothing committed:
+- cmd/kubelet-cxl-plugin/lend.go (new): containerRef and Lender exactly as
+  specified above (no interface change), `var _ Lender = (*nriPlugin)(nil)`,
+  the container table, Synchronize, ContainerByPid, Container, LendNode,
+  RevokeNode, LentNodes, OnContainerGone, OnContainerStarted, and one extra
+  method outside the interface: (*nriPlugin).WaitSynchronized(ctx) error.
+- cmd/kubelet-cxl-plugin/nri.go (extended): table fields in nriPlugin;
+  Create/Start/Stop/RemoveContainer feed the table; p.stub is now the
+  narrow interface nriStub {Start, Stop, UpdateContainers} (stub.Stub
+  satisfies it); resolveContainerCgroupDir reads procDir/cgroupRoot
+  (package vars, defaults "/proc" and "/sys/fs/cgroup", so behaviour is
+  unchanged). Steering code paths are unchanged.
+- cmd/kubelet-cxl-plugin/lend_test.go (new): 8 tests with a fake stub and
+  fake /proc + cgroupfs in t.TempDir(): table lifecycle, mems arithmetic,
+  idempotence, gone container, steering refusal, update failures / NRI not
+  connected / cancelled ctx, never-without-base, base excludes nodes lent
+  to others, Synchronize (restart and reconnect), concurrent lends.
+- Results: go mod vendor ok; CGO_ENABLED=0 go build -mod vendor
+  ./cmd/kubelet-cxl-plugin ok; go vet -mod vendor ./cmd/kubelet-cxl-plugin/...
+  clean; go test -mod vendor -race ./cmd/kubelet-cxl-plugin/... ok (all old
+  and new tests; TestLend* also with -count=5); gofmt clean. First run was
+  before W1a's files existed; while W1a was editing, the package did not
+  compile for ~4 min (undefined tokenClaims, leaseCDIDeviceID, ...); after
+  that, with broker.go, dynamic.go, lease_store.go and W1a's driver.go/
+  main.go/node_state.go changes present, vet, go test -race and the build
+  all passed again.
+- Not done: POOL.md (owned by W1a). Text for its "Lending to running
+  containers" section: "A container that has a local CXL claim (memory
+  steered by cgmpolmgr) cannot borrow: the lend is refused with
+  'container is memory-steered by a local CXL claim; lending is not
+  supported together with steering yet'. Both components would own the
+  container's cpuset.mems, and cgmpolmgr writes cgroupfs directly, which
+  the next NRI update reverts."
+
+W1b Findings
+------------
+1. Container table. Every container is tracked (not only those with
+   claims), keyed by container id: CreateContainer adds pod uid/ns/name,
+   name, id; StartContainer adds Pid (ctr.GetPid()), CgroupPath
+   (resolveContainerCgroupDir) and BaseMems, then fires OnContainerStarted;
+   StopContainer and RemoveContainer remove the entry and fire
+   OnContainerGone once (whichever comes first). The callbacks fire for
+   EVERY container, not only those with lends or a lease socket: W1a
+   filters. Container(podUID, name) returns the newest entry (creation
+   order) if a restarting container briefly has two ids.
+   ContainerByPid matches /proc/<pid>/cgroup against CgroupPath by path
+   element (dir or dir/...; ".../c1" does not match ".../c10"); for an
+   entry without a resolved cgroup it falls back to "cgroup path contains
+   the container id" (cri-containerd-<id>.scope, crio-<id>.scope).
+2. Deadlock rule (measured in source, not in a VM): containerd's NRI
+   wrapper takes one lock for every event AND for unsolicited updates
+   (internal/nri/nri.go updateFromPlugin l.Lock()), and NRI StartContainer
+   runs before task.Start (cri/server/container_start.go:240/247).
+   Therefore UpdateContainers must never be called synchronously from an
+   NRI event handler. Consequences in the code: OnContainerGone and
+   OnContainerStarted callbacks run in their own goroutines (W1a may call
+   LendNode from them; the update then waits until the StartContainer
+   event has returned, which is what we want); p.mu (taken by the event
+   handlers) is never held across UpdateContainers; a separate lendMu
+   serializes LendNode/RevokeNode. W1a must not call LendNode/RevokeNode
+   from inside Synchronize/Create/Start/Stop handlers of its own.
+3. Synchronize (stub.SynchronizeInterface) on start/restart: rebuilds the
+   table from the runtime's pods and containers (CREATED, RUNNING, PAUSED;
+   STOPPED skipped). Running ones get pid, cgroup and BaseMems like at
+   StartContainer. It fires no OnContainerStarted (W1a re-applies from its
+   lease store at start; WaitSynchronized(ctx) lets it wait for the table,
+   because stub.Start returns after Configure, before Synchronize). On a
+   reconnect, lent sets of containers that remain are kept and containers
+   that vanished fire OnContainerGone. A container synced with claims that
+   have DRAM/CXL devices (same rule as CreateContainer's plan) is marked
+   steered, although cgmpolmgr steering itself is not resumed after a
+   plugin restart (existing behaviour).
+4. BaseMems derivation: cpuset.mems.effective of the container cgroup at
+   StartContainer (fallback: the spec's linux.resources.cpu.mems if the
+   file is unreadable), MINUS the nodes currently lent to any container by
+   this plugin (an unconstrained container started while another
+   container's lent CXL node is online would otherwise count that node as
+   its own). Approximation after a restart: the lent sets are lost, so
+   BaseMems = effective still contains the nodes lent before the restart;
+   every node passed to LendNode/RevokeNode is a pool node and is removed
+   from BaseMems at that call. A previously lent node whose lease W1a does
+   NOT re-apply stays in BaseMems until RevokeNode(node) is called for it;
+   RevokeNode also issues the shrink when the node is not in the lent set
+   but appears in the cgroup's cpuset.mems. Not covered: an unconstrained
+   container started while a pool node was online but before any lend of
+   it (node not lent yet), whose effective set then includes the pool
+   node. The first LendNode/RevokeNode of that node to THAT container
+   removes it; for other containers it remains (they could use it anyway,
+   being unconstrained: existing weakness).
+5. LendNode/RevokeNode: mems = (BaseMems \ {node}) union lent (k8s.io/
+   utils/cpuset), sent as UpdateContainers([{ContainerId, Linux.Resources.
+   Cpu.Mems}]). Note: LinuxCPU.Mems is a plain string in NRI v0.12.2, not
+   an OptionalString as the spec's api.String(mems) suggested. A failed
+   update (returned in the failed list) or an error is returned and the
+   lent set is not changed. Refusals: base empty after removing the node
+   ("base memory nodes unknown, refusing to set cpuset.mems without
+   them"), container not started yet, not found (LendNode only), NRI not
+   connected (p.stub nil: "lending unavailable: NRI not connected"), ctx
+   already done. Idempotent: no update when nothing changes. Revoke of a
+   gone/unknown container is nil (containerd also returns success for
+   unknown ids). Revoke never removes the node from cpuset.mems "too
+   early" because the kernel migrates pages at once on shrink (02-...
+   mechanics 3.1); checking numa_stat afterwards is W1a's job.
+   On revoke to an empty lent set the container keeps an EXPLICIT
+   cpuset.mems = BaseMems (it may have been empty = all nodes before the
+   first lend). This is intended: a later pool node with the same number
+   is not inherited.
+6. Steering refusal: LendNode returns an error wrapping errSteered
+   ("container is memory-steered by a local CXL claim; lending is not
+   supported together with steering yet") when p.managers[id] or
+   p.pending[id] exists or the entry is marked steered. RevokeNode is
+   allowed (no-op unless something to undo).
+7. Open issues: (a) UpdateContainers in the stub uses
+   context.Background(), so ctx cannot cancel an update in flight; a hung
+   runtime blocks LendNode (and other lends via lendMu). (b) The stub does
+   not reconnect after onClose (existing behaviour); after a runtime
+   restart LendNode gets the stub's error until the plugin restarts.
+   (c) nri-resource-policy or the kubelet memory manager on the same node
+   would also own cpuset.mems (03-summary limitation); not detected.
+   (d) The update sends only Cpu.Mems; containerd's toCRIResources then
+   passes zero cpu shares/quota/period and memory limit, which containerd's
+   WithResources skips (internal/cri/opts/spec_linux_opts.go:386-401, "!= 0"
+   checks), so only cpuset.mems changes; lendctl in 02-...mechanics did the
+   same on containerd 2.4.1. CRI-O is unverified.
+   (e) Lent sets are in memory only; persistence is W1a's lease store plus re-application through LendNode.
+
+W2 Status (phase 1)
+-------------------
+2026-10-08, Opus agent W2. Phase 1 done: helpers, test, tools written and
+checked; test12 NOT run. Nothing committed. kubelet-cxl-plugin and
+fake-cxl-pool-controller were not started in any VM.
+
+Files (nri-plugins, test/e2e/memory.test-suite/memory-policy/):
+- dra.source.sh (extended):
+  - variables DRA_REQUEST_BIN ($DRA_DRIVER_SRC/bin/cxl-request),
+    DRA_REQUEST_VM_BIN (/usr/local/bin/cxl-request), DRA_DYNAMIC_CLASS
+    (deployments/cxl/pool/device-class-dynamic.yaml), DRA_LEASE_DIR
+    (/var/lib/kubelet/plugins/cxl.generic/leases), DRA_NUMA_TOOL.
+  - dra-build also builds ./cmd/cxl-request (static, -mod vendor) when the
+    driver has cmd/cxl-request. dra-install copies it to
+    /usr/local/bin/cxl-request and passes `--cxl-request-bin
+    /usr/local/bin/cxl-request` only when it was built, and applies
+    device-class-dynamic.yaml when the driver has it: test10/test11 keep
+    working with a driver without lending. dra-uninstall deletes
+    DeviceClass cxl-dynamic too.
+  - ConfigMap dax-rw now carries dax-rw.py and numa-touch.py.
+  - new helpers: dra-exec VMDIR POD[/CONTAINER] CMD ARGS... (kubectl exec,
+    argv kept word by word with %q; COMMAND_OUTPUT = stdout only,
+    DRA_EXEC_STDERR, COMMAND_STATUS), dra-last-json TEXT, dra-leases VMDIR
+    POD[/CONTAINER] (cxl-request list normalized to one JSON list:
+    accepts a list, {"leases": [...]}, one object, or one object per
+    line), dra-container-cgroup VMDIR POD CONTAINER (containerID from the
+    pod status -> crictl inspect .info.pid -> /proc/PID/cgroup),
+    dra-container-file VMDIR POD CONTAINER FILE (cpuset.mems.effective,
+    memory.numa_stat, ...), dra-container-anon VMDIR POD CONTAINER NODE
+    (bytes of "anon N<node>=" in memory.numa_stat), dra-container-devices
+    VMDIR POD CONTAINER (runtime spec device rules + ids of the attached
+    cgroup_device eBPF programs, for before/after comparison).
+  - trace summary: driver lines also match lease|companion|lend|revok.
+- n4-cxl-shared-2/test12-dra-live-attach/code.var.sh (new, 581 lines):
+  story A-G of the W2 spec, sections as in test10; B/C/D are functions
+  (lend-memory, give-back, share, nothing-left, companion-check) that E
+  repeats for cycles 2-4 and F reuses (cycle 5).
+- n4-cxl-shared-2/pool-dax-rw.py: `--fd N write|read OFFSET [TEXT]` uses
+  the inherited fd (size: st_size of a regular file, else the sysfs size
+  of the dax device behind /proc/self/fd/N, else CXL_LEASE_SIZE). The old
+  `write|read DEV OFFSET` form is unchanged (reads now map PROT_READ only).
+- n4-cxl-shared-2/numa-touch.py (new): `numa-touch.py [--hold] MIB NODE`:
+  set_mempolicy(MPOL_PREFERRED, NODE) through libc syscall() (musl has no
+  set_mempolicy wrapper), MAP_PRIVATE anonymous mapping, a write per page,
+  prints "pid", "pages N<i>=..." (from /proc/self/numa_maps, its mapping
+  only), "ready"; --hold keeps the memory until SIGTERM and prints the
+  pages line again on every SIGUSR1. Exit 1 when the node is not allowed
+  (EINVAL), 2 on usage.
+
+Verified:
+- bash -n and `shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016` clean on
+  dra.source.sh and test12 (same exclusions as test10/11). py_compile of
+  both tools.
+- numa-touch.py on the host (glibc, 8 nodes: node with memory -> all
+  pages there; memoryless node 0 -> EINVAL, exit 1; --hold + SIGUSR1
+  report; migratepages moved the pages and the next report showed it),
+  and in VM2 under musl (python:3-alpine via `ctr run`: node 1 ok, node 7
+  EINVAL).
+- pool-dax-rw.py --fd on a regular file on the host (write/read at 0 and
+  1M, read through a read-only fd, offset range check, usage errors, old
+  DEV mode unchanged) and under musl in VM2.
+- Pre-pulled in VM2: registry.k8s.io/pause:3.10 (was missing, only
+  3.10.2 was there; sha256:873ed751...) and docker.io/library/python:3-alpine
+  (up to date, sha256:5e80f9e3...).
+- `kubectl apply --dry-run=server` in VM2: the ResourceClaimTemplate
+  (class cxl-dynamic, not existing yet) + borrower pod: accepted. A
+  companion pod + LendConfig claim shaped as W1a step 4 says: accepted,
+  and every companion-check assertion of test12 holds on the
+  server-defaulted objects (tolerations stay [{operator: Exists}], QoS
+  Guaranteed, quantities 1m/8Mi stay as written).
+- Helpers live in VM2 on a claim-less copy of the borrower pod in a
+  scratch namespace (deleted afterwards): dra-exec (stdout/stderr split,
+  exit status, quoting of spaces and quotes), dra-container-cgroup of both
+  containers, dra-container-file, dra-container-anon (64 MiB touched by a
+  `kubectl exec`ed numa-touch.py showed as anon N1=70696960 in the
+  container cgroup: exec'd processes are in the container cgroup),
+  dra-container-devices ("spec: [{"access":"rwm","allow":false}]", one
+  cgroup_device program), touch-start/touch-pages/touch-stop, the "no
+  /dev/dax*" check, dra-last-json, dra-leases on 7 output forms (stubbed).
+- VM2 left as found: no namespaces added, no plugin units; /root has
+  dax-rw.py and numa-touch.py (what dra-dax-tool-install puts there),
+  /tmp/w2tools has copies of the tools from the musl test.
+
+W2 Findings
+-----------
+1. Deviation from the story, by fact: "another container of the same pod
+   does not [have node N]" does not hold in VM2 as specified. Every
+   container there has an EMPTY cpuset.mems (kube-proxy, coredns, the
+   scratch borrower; kubepods.slice too): no CPU manager, no NRI policy.
+   An empty cpuset.mems inherits the root's effective mems, which grows
+   with every onlined node, so container idle has N in
+   cpuset.mems.effective and Mems_allowed_list without any lend (R8 of
+   02-option-companion-pod-dra-lend.txt, "exclusive only by convention").
+   test12 asserts what is true and meaningful instead: cpuset.mems (the
+   container's own file) of main == DRAM nodes + N after the lend and ==
+   DRAM nodes after the release (the lend made it explicit), cpuset.mems
+   of idle unchanged; if idle's cpuset.mems is empty (VM2), it asserts N
+   IS in idle's effective nodes and says so; only if idle has its nodes
+   set does it assert N absent and that numa-touch.py in idle gets EINVAL.
+   Consequence for the design (report, not fixed): pages of other
+   containers can land on a lent node (only as a fallback, the node has no
+   CPUs), and the release then depends on offline migrating them.
+2. Node lists are compared as sets: the kernel and k8s.io/utils/cpuset
+   both join ranges ("0-1" + 2 prints "0-2").
+3. In the container only /usr/local/bin/cxl-request is mounted, so test12
+   uses `cxl-request release L|--all`, not `cxl-release`.
+4. D reads the shared bytes back with `cxl-request fd <lease> --exec ...`
+   (re-send of the Ready lease's fd), not with a second `cxl-request
+   shared`: a second shared lease for the same serial in the same pod
+   would be a second claim on the same device and node. D also checks the
+   --exec environment: CXL_LEASE_FD=3, CXL_LEASE, CXL_LEASE_SIZE ==
+   256 MiB, CXL_LEASE_DAX == readlink /proc/self/fd/3.
+5. The borrower's token claim comes from a ResourceClaimTemplate, so F
+   checks that the token claim is deleted with the pod and that
+   $DRA_LEASE_DIR/<token claim uid> is removed (unprepare). The pod has no
+   memory limit (lent memory is charged to the container).
+6. F deletes the pod with one memory lease whose 256 MiB are in use on the
+   lent node (numa-touch --hold) and one shared lease (fd dropped), and
+   requires everything gone within 90 s of the delete.
+
+Questions for phase 2 (to check against W1a's code before the first run):
+a. Response JSON of `cxl-request memory`: is it one line on stdout with
+   lease, state=Ready, kind=memory, node, size (int or string both work)?
+   Does `cxl-request shared ... --exec` print anything before exec (test12
+   takes the shared lease id from `cxl-request list`)?
+b. `cxl-request list` output form (dra-leases accepts the usual ones) and
+   whether a released lease disappears at once or shows Releasing for a
+   while (test12 expects [] after release / nothing-left, with waits on
+   the API objects first).
+c. Does `release` block until the companion and claim are gone? test12
+   waits for them anyway (90 s).
+d. Flag order: test12 calls `cxl-request memory 512Mi --wait 120s` and
+   `cxl-request shared SERIAL --wait 120s --exec CMD...`; --exec must end
+   option parsing (CMD has its own -c / --fd options).
+e. LendConfig parameters.pod: exactly {namespace, name, uid}? test12
+   asserts equality; companion pod ownerReference without controller: true,
+   claim ownerReference with controller: true (as written in W1a step 4).
+f. Lease directory: test12 expects
+   /var/lib/kubelet/plugins/cxl.generic/leases/<token claim uid>/cxl.sock
+   (DRA_LEASE_DIR); adjust if W1a uses another data dir.
+g. dra-install's preparedPoolClaims.json cleanup on a VM without regions:
+   should leases.json get the same treatment (stale after a VM reboot), or
+   does the plugin's reconcile drop those leases?
+
+W1a Status
+----------
+Done 2026-10-08 (Opus agent W1a), items 1-10. Driver repo, branch 5fC-cxl
+on top of 48feb5a, nothing committed, no VM used. W1b's lend.go/nri.go
+were used as they are (not edited); no stub file was ever created
+(lend.go existed when W1a first compiled). go mod vendor: no change.
+Files (all in ~/github.com/intel/intel-resource-drivers-for-kubernetes):
+- pkg/cxl/device/device.go: DeviceTypeDynamic, DynamicDeviceName
+  ("dynamic"), LeaseCDISpecName ("cxl-leases"), LendConfigKind, type
+  DynamicToken struct{}.
+- cmd/kubelet-cxl-plugin/node_state.go: buildDevInfos adds devInfos
+  ["dynamic"] = {Name dynamic, Dev *DynamicToken} when
+  DriverConfig.PublishDynamicToken (json:"-", set from --pool-lend && pool
+  helper enabled); GetResources publishes it (type=dynamic, name=dynamic,
+  AllowMultipleAllocations true, no capacity, no NodeAllocatableResources);
+  prepareAllocatedDevices: DeviceType "dynamic", appends CDI id
+  generic/cxl=lease-<claim uid> to the token result next to the claim
+  marker, and calls nodeState.dynamic.OpenClaim(claim) (error "lending to
+  running containers is disabled" when the broker is absent).
+- cmd/kubelet-cxl-plugin/dynamic.go (new): token CDI device + spec file
+  cxl-leases, OpenClaim/CloseClaim, per-claim listener, SELinux label.
+- cmd/kubelet-cxl-plugin/broker.go (new): protocol, auth, lease state
+  machine, companion objects, fd passing, release, reconcile, container
+  callbacks, pool hooks (OnLending/OnPrepared/OnLendFailed/OnReleasing).
+- cmd/kubelet-cxl-plugin/lease_store.go (new): leases.json (token claims +
+  leases), atomic write 0600.
+- cmd/kubelet-cxl-plugin/pool.go: poolLeaseHooks interface, poolLend
+  (persisted as preparedPoolClaim.lend in preparedPoolClaims.json:
+  {lease, pod{namespace,name,uid}, container, nodes}), setLending,
+  parseLendConfig, checkLend/lend/revoke, one region-creation retry after
+  3 s on "add_dev" errors (all claims), revoke before release in
+  unprepareClaim (a revoke error fails the Unprepare).
+- cmd/kubelet-cxl-plugin/driver.go: broker created after newNodeState and
+  BEFORE the kubelet plugins register (sockets of stored token claims are
+  back before kubelet calls in); after NRI: pool.setLending(lender, broker)
+  and broker.start(lender) with lender = driver.nriPlugin or nil;
+  UnprepareResourceClaims calls broker.CloseClaim first; Shutdown stops
+  the broker (keeps leases).
+- cmd/kubelet-cxl-plugin/main.go: flags (below).
+- cmd/kubelet-cxl-plugin/broker_test.go (new, 10 tests), cmd/cxl-request/
+  {main.go,main_test.go} (new, 6 tests).
+- deployments/cxl/pool/device-class-dynamic.yaml,
+  deployments/cxl/pool/examples/borrower-pod.yaml (new),
+  deployments/cxl/base/resource-driver.yaml (ClusterRole: resourceclaims
+  get,list,watch,create,delete; pods get,list,watch,create,delete; events
+  create in "" and events.k8s.io).
+- doc/cxl/POOL.md: new section "Lending to running containers" (opt-in,
+  flow, companion objects, protocol, CLI, life cycle, limitations incl.
+  W1b's steering text).
+Results: `go vet -mod vendor ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...`
+clean; `go test -mod vendor -race ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...`
+ok (62 tests incl. the old ones and W1b's; broker tests also -count=10,
+CLI -count=5); gofmt clean; `CGO_ENABLED=0 go build -mod vendor -o
+bin/kubelet-cxl-plugin ./cmd/kubelet-cxl-plugin` and `-o bin/cxl-request
+./cmd/cxl-request`: both "statically linked" (cxl-request 3.9 MB).
+
+What W2 needs to run it
+- Build: `CGO_ENABLED=0 go build -mod vendor -o bin/cxl-request ./cmd/cxl-request`.
+- Flags of kubelet-cxl-plugin (all optional, defaults shown):
+  --pool-lend=true (BoolFlag; disable with --pool-lend=false; env POOL_LEND;
+    needs the pool helper, i.e. non-empty --pool-driver-name)
+  --cxl-request-bin /usr/local/bin/cxl-request (env CXL_REQUEST_BIN; if
+    the file is missing the CLI mounts are left out with a warning, the
+    socket still works)
+  --lease-wait-default 2m0s (env LEASE_WAIT_DEFAULT)
+  --companion-image registry.k8s.io/pause:3.10 (env COMPANION_IMAGE)
+- Paths on the node: /var/lib/kubelet/plugins/cxl.generic/leases.json,
+  /var/lib/kubelet/plugins/cxl.generic/leases/<token claim uid>/cxl.sock,
+  CDI spec /etc/cdi/cxl-leases.yaml (--cdi-root, default /etc/cdi), pool
+  lends in /var/lib/kubelet/plugins/cxl-pool.generic/preparedPoolClaims.json.
+  dra-install's cleanup of a fresh VM should remove leases.json and the
+  leases/ directory together with preparedPoolClaims.json (question g:
+  the reconcile drops leases whose companion or requester is gone, but a
+  stored token claim whose pod vanished in a VM reboot keeps its socket
+  until kubelet unprepares it).
+- In the container: /run/cxl/cxl.sock, env CXL_LEASE_SOCKET=/run/cxl/cxl.sock,
+  /usr/local/bin/cxl-request AND /usr/local/bin/cxl-release (both bind
+  mounts of the same binary; it switches on argv[0]), for containers that
+  list the token claim in resources.claims only.
+- DeviceClass (deployments/cxl/pool/device-class-dynamic.yaml):
+    apiVersion: resource.k8s.io/v1
+    kind: DeviceClass
+    metadata:
+      name: cxl-dynamic
+    spec:
+      selectors:
+      - cel:
+          expression: 'device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "dynamic"'
+- Borrower pod (deployments/cxl/pool/examples/borrower-pod.yaml, comments
+  omitted here):
+    apiVersion: resource.k8s.io/v1
+    kind: ResourceClaimTemplate
+    metadata:
+      name: cxl-dynamic
+    spec:
+      spec:
+        devices:
+          requests:
+          - name: dyn
+            exactly:
+              deviceClassName: cxl-dynamic
+    ---
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: borrower
+    spec:
+      resourceClaims:
+      - name: dyn
+        resourceClaimTemplateName: cxl-dynamic
+      containers:
+      - name: app
+        image: docker.io/library/python:3-alpine
+        command: ["sleep", "infinity"]
+        resources:
+          claims:
+          - name: dyn
+      - name: idle
+        image: docker.io/library/python:3-alpine
+        command: ["sleep", "infinity"]
+
+Protocol as implemented (cxl.sock, SOCK_STREAM, one JSON object per line
+each way, several requests per connection allowed)
+- Requests: {"op":"lease","kind":"memory","size":"512Mi","wait":"120s",
+  "requestId":"..."}, {"op":"lease","kind":"shared","serial":"0xc1ae0001",
+  "wait":"120s"}, {"op":"release","lease":"<id>","wait":"..."},
+  {"op":"release","all":true}, {"op":"list"}, {"op":"fd","lease":"<id>"}.
+  serial: any base accepted by strconv.ParseUint(s, 0, 64), normalized to
+  0x<lower hex> for the CEL selector. size: a resource.Quantity > 0.
+- Response: {"lease":"<8 hex>","state":"...","kind":"memory|shared",
+  "node":N,"size":<bytes, int>,"serial":"0x..","dax":"/dev/daxX.Y",
+  "error":"..."}; omitted fields are absent (node only for a lent memory
+  lease; size is the requested size until Ready, then the device size).
+  list and release-all: {"leases":[...]} ([] when empty).
+- States: Creating, Pending, Lending, Ready, Releasing, Failed; and
+  "Released" (response only: the lease is gone).
+- Ready shared lease: the response line to "lease" and "fd" goes with the
+  open dax fd (O_RDWR) as SCM_RIGHTS in one WriteMsgUnix; the plugin
+  closes its copy after sending.
+- Auth: SO_PEERCRED pid -> Lender.ContainerByPid -> the container's pod
+  UID must be in the token claim's reservedFor (re-read from the API once
+  on a miss, for claims shared by several pods). Otherwise every request
+  on that connection gets {"error":"not a container of the claim's pod
+  (...)"}; without NRI: {"error":"lending unavailable: NRI not connected"}.
+- Release/list/fd scope: lease/fd belong to (pod uid, container); list,
+  release and release-all accept any container of the same pod; fd only
+  the owning container.
+
+Answers to W2's phase-2 questions
+a. `cxl-request memory 512Mi --wait 120s` prints exactly one line on
+   stdout (the response JSON as received); node and size are integers.
+   `cxl-request shared ... --exec CMD` prints nothing itself on success
+   (stdout/stderr belong to CMD); on a non-Ready response it prints the
+   response line on stderr and exits 3 (1 for an error field).
+b. list: {"leases":[...]}; a released lease disappears when its
+   companion pod and claim are gone (the release request waits for that).
+c. release blocks until the companion pod and claim are NotFound, at most
+   "wait" (default 120 s), then answers state Released (exit 0) or the
+   current state Releasing (exit 3).
+d. Options may follow the positional argument; --exec ends parsing, the
+   rest is CMD verbatim. `--wait D` and `--wait=D` both work.
+e. Yes: parameters.pod is exactly {namespace, name, uid}; the full
+   parameters object is {"apiVersion":"cxl-pool.generic/v1alpha1",
+   "kind":"LendConfig","lease":"<id>","pod":{...},"container":"<name>"}.
+   Companion pod ownerReference {apiVersion v1, kind Pod, name, uid}
+   without controller (and without blockOwnerDeletion); claim
+   ownerReference the same plus controller: true.
+f. Yes, /var/lib/kubelet/plugins/cxl.generic/leases/<token claim uid>/cxl.sock
+   (the --kubelet-plugin-dir of cxl.generic + leases/).
+g. See "Paths on the node" above: clean leases.json and leases/ too.
+
+Choices where the spec left room (and small deviations)
+1. Release deletes BOTH companion objects (pod, then claim; foreground
+   propagation) and waits until both are NotFound. The claim's controller
+   owner is the requester pod (as specified), so the resourceclaim
+   controller would only delete it when the REQUESTER is done; deleting
+   it explicitly while the companion terminates is safe (finalizer until
+   deallocation; kubelet unprepares from its own claim cache).
+2. Extra companion fields beyond the spec: label cxl-pool.generic/node=
+   <node> (reconcile lists orphans by it; a Pending companion has no
+   nodeName), annotation cxl-pool.generic/requester=<ns>/<pod>/<ctr>,
+   automountServiceAccountToken false, enableServiceLinks false,
+   terminationGracePeriodSeconds 1. Request name and pod claim name:
+   "lease". The claim's config has no "requests" list (applies to all).
+3. OnContainerGone does NOT release unconditionally (it fires on every
+   container stop, including restarts): leases are released when the
+   pod is gone/being deleted/Succeeded/Failed, has a different UID, or
+   has restartPolicy Never, and no new instance of the container is
+   already running; otherwise they are kept and OnContainerStarted re-applies exclusive
+   lends (lifecycle row "requester container crashes/restarts" of
+   03-summary). The reconcile uses the same rule for "requester
+   container gone".
+4. Re-application after a plugin restart is done by the broker's
+   reconcile (start, after (*nriPlugin).WaitSynchronized with a 30 s cap,
+   then every 60 s: LendNode for every Ready memory lease whose
+   container exists; idempotent), not by pool.go. pool.go persists the
+   lend so its Unprepare can revoke after a restart.
+5. Lend failures (errSteered, not started, not found, NRI not connected,
+   base mems unknown, any LendNode error): Prepare fails and is rolled
+   back (region released, best-effort revoke), and the broker marks the
+   lease Failed with the error text and releases it; the waiting request
+   returns Failed with that message (coordinator item 3). A Failed lease
+   keeps state Failed (not Releasing) until it is gone.
+6. LendConfig is untrusted tenant input: accepted only with Source
+   FromClaim, apiVersion <pool driver>/v1alpha1, pod.namespace == claim
+   namespace, and only if the broker has that lease for the same pod and
+   container (OnLending), checked before any device is touched.
+7. Timeout: the response (state Failed, error "timeout: not Ready after
+   D") is sent at once; the release continues in the background.
+8. "wait":"0s" returns the current state and keeps the lease (Pending
+   leases stay until released or cleaned up by the pod's end).
+9. --exec is fork+exec+wait with signal forwarding and exit-code pass
+   through (exec.Cmd.ExtraFiles -> fd 3), not execve in place: dup2 onto
+   fd 3 in a running Go process can clobber the runtime's epoll fd.
+10. The CLI is also mounted as /usr/local/bin/cxl-release.
+11. The token is published only with --pool-lend AND the pool helper
+   enabled (lending needs the pool driver).
+12. Auth happens once per connection (at accept).
+
+W1a Findings
+------------
+1. The add_dev retry applies to every pool claim, not only companion
+   claims (harmless, one 3 s retry on that error text only).
+2. Unprepare of a companion claim without NRI (lender nil) logs a warning
+   and releases anyway (offline migrates the pages; the stale node stays
+   in cpuset.mems of the requester). With NRI, a RevokeNode error fails
+   the Unprepare (kubelet retries).
+3. Pool hooks run with the pool helper's lock held and take only the
+   broker's lock; the broker never calls into the pool helper, and no
+   LendNode/RevokeNode is called from an NRI handler (W1b's deadlock
+   rule: callbacks and releases run in goroutines; pool Prepare/Unprepare
+   are DRA gRPC calls).
+4. The token claim's Unprepare (driver.UnprepareResourceClaims) releases
+   all leases of the claim and waits up to 30 s, else returns "claim
+   ns/name: still releasing N leases, retry" (kubelet retries; its RPC
+   timeout is 45 s). Unknown claims return nil at once.
+5. W2 finding 1 (empty cpuset.mems of other containers) is real and not
+   addressed: a lend makes only the borrower's cpuset.mems explicit;
+   unconstrained containers can fall back onto the lent node.
+6. Unverified (needs the VM): SELinux connectto from container_t to the
+   plugin's socket (labels are set best effort to container_file_t only
+   when /sys/fs/selinux/enforce exists; if test12 hangs on connect, check
+   `ausearch -m avc`); the "ro" bind of the CLI under the image's
+   /usr/local/bin (runc creates the mount point file); that kubelet
+   prepares the companion's unreferenced claim and that GC removes
+   companions (both from source reading in 02-option-*).
+7. The fake clientset deletes objects at once, so unit tests do not cover
+   a companion that stays Terminating except for CloseClaim's "still
+   releasing" path (covered with a reactor that ignores deletes).
+8. Open: no rate limit or per-claim lease cap (DynamicPolicy of
+   02-option-node-plugin-request-channel 3.1 not implemented); events are
+   not emitted although RBAC allows them; no VAP for the companion shape.
+
+W2 Status (phase 2)
+-------------------
+2026-10-08, Opus agent W2. test12-dra-live-attach PASSES on VM2
+(n4-cxl-shared-2-fedora-43-containerd) with W1a's and W1b's driver as
+built; then test10-dra-pooling and test01-shared-cxl PASS once more (no
+regression, VM clean). No driver change by W2 (nothing "fixed by W2"); all
+fixes were in the test. Nothing committed. qmp.sock never touched by W2
+(monitor.sock `info qtree -b` only, as pool.source.sh does).
+
+Runs (from test/e2e, logs in ~/.claude/jobs/w2/):
+- test12-run1.log FAIL in C: test bug, nothing-left compared ALL devices
+  of the server, which also lists the static devices of the other VMs
+  (n4-cxl-shared-1...memdev1). Fix: only pooled0 and shared0. Everything
+  before it (A, B, the lend, the 256 MiB migration back) had passed.
+- test12-run2.log FAIL in D: test bug, the device cgroup comparison used
+  the ids of the attached eBPF programs (Finding 2). Fix below.
+- test12-run3.log PASS, A-G, 4 memory and 4 shared cycles + F, 10 distinct
+  lease ids. Traces: test12-run3.trace.txt, test12-run3.trace-summary.txt
+  (1115 lines), excerpt of cycle 1: test12-run3.trace-summary-cycle1.txt.
+  No FailedPrepare, no AVC (SELinux is disabled in VM2), no plugin hang.
+- test10-after-w2.log PASS (attached 1.1 s, pod Running 6.6 s after the
+  claim, detached 8.3 s after the delete: as in plan-2-dra).
+- test01-after-w2.log PASS (detaches 6.5 s).
+Afterwards: port 9909 free; in VM2 no kubelet-cxl-plugin/controller units,
+no cxl-pool-demo namespace, no DeviceClasses or ResourceSlices, no mem*/
+region*, no leases.json, leases/ or preparedPoolClaims.json; qemu has no
+cxl-type3.
+
+Timings (test12-run3; plugin log times from the trace, test steps with
+1 s polling):
+| step | values (s) |
+|------|------|
+| cxl-request memory 512Mi -> Ready (CLI, kubectl exec incl.) | 5.73 5.74 5.74 5.90 5.77 |
+| cxl-request shared --exec write (CLI incl. write) | 5.84 5.63 5.62 5.60 |
+| companion created -> lease Ready (plugin log, 10 leases) | 4.8-5.4 (5 s of it the scheduler's binding poll; attach 30 ms) |
+| release request -> lease released (revoke, companion pod and claim gone) | 1.6-2.0 |
+| lease released -> DEVICE_DELETED (detach, pciehp) | 5.2-5.5 |
+| release -> detached | 7.0-7.4 |
+| release -> nothing left (test step, all checks) | 9.9 8.6 8.6 9.7 |
+| borrower pod Running after apply (token claim only) | 2.0 |
+| pod delete with 2 active leases -> everything clean | 20.9 (test step), 19.6 (trace: Terminating -> last DEVICE_DELETED) |
+
+Changes in phase 2 (nri-plugins test/e2e only):
+- dra.source.sh: dra-install and dra-uninstall also remove
+  /var/lib/kubelet/plugins/cxl.generic/leases.json and leases/ when the VM
+  has no CXL regions (with preparedPoolClaims.json); dra-container-devices
+  prints the device rules of the runtime spec and the DISTINCT device
+  programs (sha256 of `bpftool prog dump xlated`), new
+  dra-container-bpf-count.
+- test12: pool device check limited to pooled0/shared0; release response
+  checked (state Released); D compares the device RULES (spec line) and
+  proves the device cgroup still denies the dax device: mknod
+  /tmp/daxX.Y c MAJ:MIN in the container succeeds, opening it fails with
+  "Operation not permitted", while the passed fd reads and writes.
+
+Trace summary of the passing run, cycle 1 (B and C; udev, kubelet and
+rescan lines left out here, all in test12-run3.trace-summary.txt):
+  14:55:36.733716    +7.455s vm.claims      ADDED claim cxl-pool-demo/cxl-lease-26b5dfcc uid=da54e405 allocated=- node=- reservedFor=- status=-
+  14:55:36.741872    +7.463s vm.pods        ADDED      cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Pending             0               0s
+  14:55:36.754240    +7.476s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Pending             0               0s
+  14:55:36.771735    +7.493s vm.claims      MODIFIED claim cxl-pool-demo/cxl-lease-26b5dfcc uid=da54e405 allocated=cxl-pool.generic/fake-cxl-pool/pooled0 node=n4-cxl-shared-2-fedora-43-containerd reserv
+  14:55:36.777522    +7.499s vm.events      cxl-pool-demo   Pod   cxl-lease-26b5dfcc   BindingConditionsPending   waiting for binding conditions for device on node n4-cxl-shared-2-fedora-43-containerd
+  14:55:37.156383    +7.878s vm.driver      I1008 11:55:36.492444  205063 broker.go:568] lease broker: lease 26b5dfcc: cxl-pool-demo/borrower/main requests memory 512Mi
+  14:55:37.156445    +7.878s vm.driver      I1008 11:55:36.509593  205063 broker.go:854] lease broker: lease 26b5dfcc: created companion claim and pod cxl-pool-demo/cxl-lease-26b5dfcc
+  14:55:37.279268    +8.001s server         fake-cxl-pool: 2026/10/08 14:55:37.279117 attachment pooled0@n4-cxl-shared-2-fedora-43-containerd: attaching to slot cxlsw_ds0_usrp0hb0 as fcp_pooled0.hp1 (ba
+  14:55:37.310067    +8.031s server         fake-cxl-pool: 2026/10/08 14:55:37.309919 attachment pooled0@n4-cxl-shared-2-fedora-43-containerd: attached
+  14:55:37.343234    +8.065s vm.claims      MODIFIED claim cxl-pool-demo/cxl-lease-26b5dfcc uid=da54e405 allocated=cxl-pool.generic/fake-cxl-pool/pooled0 node=n4-cxl-shared-2-fedora-43-containerd reserv
+  14:55:37.349617    +8.071s vm.events      cxl-pool-demo   ResourceClaim   cxl-lease-26b5dfcc   Attached                   pooled0 attached to n4-cxl-shared-2-fedora-43-containerd (slot cxlsw_ds0_usrp0
+  14:55:37.580544    +8.302s vm.controller  fake-cxl-pool-controller: 2026/10/08 11:55:37.081498 attached pooled0 to n4-cxl-shared-2-fedora-43-containerd (node n4-cxl-shared-2-fedora-43-containerd, slot
+  14:55:37.580585    +8.302s vm.controller  fake-cxl-pool-controller: 2026/10/08 11:55:37.110023 status of claim cxl-pool-demo/cxl-lease-26b5dfcc device pooled0 node n4-cxl-shared-2-fedora-43-containerd
+  14:55:41.781306   +12.503s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Pending             0               5s
+  14:55:41.792555   +12.514s vm.events      cxl-pool-demo   Pod             cxl-lease-26b5dfcc   Scheduled                  Successfully assigned cxl-pool-demo/cxl-lease-26b5dfcc to n4-cxl-shared-2-fedo
+  14:55:41.803212   +12.524s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   ContainerCreating   0               5s
+  14:55:42.038379   +12.760s vm.driver      I1008 11:55:41.767717  205063 pool.go:340] cxl-pool.generic: claim cxl-pool-demo/cxl-lease-26b5dfcc: prepared pooled0 (serial 0xc1ee0001, shared false) as mem
+  14:55:42.038393   +12.760s vm.driver      I1008 11:55:41.767782  205063 lend.go:519] NRI lend: lend node 2: ctr=cxl-pool-demo/borrower/main id=298ac4020b5ee8a3847e48b4bfc785280f6e9dd178849e992a83d72b7
+  14:55:42.038423   +12.760s vm.driver      I1008 11:55:41.806230  205063 pool.go:434] cxl-pool.generic: lease 26b5dfcc: lent node 2 to cxl-pool-demo/borrower/main
+  14:55:42.324990   +13.046s vm.driver      I1008 11:55:41.807615  205063 broker.go:1223] lease broker: lease 26b5dfcc: Ready (serial 0xc1ee0001, node 2, dax "", 536870912 bytes)
+  14:55:49.836421   +20.558s vm.events      cxl-pool-demo   Pod             cxl-lease-26b5dfcc   Pulled                     Container image "registry.k8s.io/pause:3.10" already present on machine and ca
+  14:55:49.845237   +20.567s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   ContainerCreating   0               13s
+  14:55:49.885165   +20.606s vm.events      cxl-pool-demo   Pod             cxl-lease-26b5dfcc   Created                    Container created
+  14:55:50.156332   +20.878s vm.driver      I1008 11:55:49.628489  205063 nri.go:152] NRI CreateContainer: ctr=cxl-pool-demo/cxl-lease-26b5dfcc/pause id=eea6de4423742ad1302894239aaf0058c7410cc2109bd0c59
+  14:55:54.046457   +24.768s vm.events      cxl-pool-demo   Pod             cxl-lease-26b5dfcc   Started                    Container started
+  14:55:54.058043   +24.779s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             1/1   Running             0               17s
+  14:55:54.280673   +25.002s vm.driver      I1008 11:55:53.790927  205063 nri.go:237] NRI StartContainer: ctr=cxl-pool-demo/cxl-lease-26b5dfcc/pause id=eea6de4423742ad1302894239aaf0058c7410cc2109bd0c591
+  14:55:54.280745   +25.002s vm.driver      I1008 11:55:53.791005  205063 nri.go:243] NRI StartContainer: ctr=cxl-pool-demo/cxl-lease-26b5dfcc/pause id=eea6de4423742ad1302894239aaf0058c7410cc2109bd0c591
+  14:56:04.598882   +35.320s vm.driver      I1008 11:56:04.095727  205063 broker.go:868] lease broker: lease 26b5dfcc: releasing (released by main, was Ready)
+  14:56:04.598944   +35.320s vm.driver      I1008 11:56:04.096473  205063 lend.go:519] NRI lend: revoke node 2: ctr=cxl-pool-demo/borrower/main id=298ac4020b5ee8a3847e48b4bfc785280f6e9dd178849e992a83d72
+  14:56:04.621567   +35.343s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             1/1   Terminating         0               28s
+  14:56:04.630055   +35.351s vm.events      cxl-pool-demo   Pod             cxl-lease-26b5dfcc   Killing                    Stopping container pause
+  14:56:04.639719   +35.361s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             1/1   Terminating         0               28s
+  14:56:04.640729   +35.362s vm.claims      MODIFIED claim cxl-pool-demo/cxl-lease-26b5dfcc uid=da54e405 allocated=cxl-pool.generic/fake-cxl-pool/pooled0 node=n4-cxl-shared-2-fedora-43-containerd reserv
+  14:56:04.652559   +35.374s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             1/1   Terminating         0               28s
+  14:56:04.860364   +35.582s vm.driver      I1008 11:56:04.410725  205063 nri.go:286] NRI StopContainer: ctr=cxl-pool-demo/cxl-lease-26b5dfcc/pause
+  14:56:05.185250   +35.907s vm.driver      I1008 11:56:04.737343  205063 lend.go:507] NRI lend: revoke node 2: ctr=cxl-pool-demo/borrower/main: nothing to do (base=0-1 lent=)
+  14:56:05.258049   +35.979s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Completed           0               29s
+  14:56:05.272260   +35.994s vm.claims      MODIFIED claim cxl-pool-demo/cxl-lease-26b5dfcc uid=da54e405 allocated=- node=- reservedFor=- status=- deleting
+  14:56:05.280122   +36.001s vm.claims      DELETED claim cxl-pool-demo/cxl-lease-26b5dfcc uid=da54e405 allocated=- node=- reservedFor=- status=- deleting
+  14:56:05.472534   +36.194s vm.driver      I1008 11:56:04.981062  205063 pool.go:621] cxl-pool.generic: released mem0 (serial 0xc1ee0001)
+  14:56:05.472548   +36.194s vm.driver      I1008 11:56:04.981137  205063 pool.go:668] cxl-pool.generic: unprepared claim cxl-pool-demo/cxl-lease-26b5dfcc (da54e405-bffc-40d1-8bac-5d770d371195)
+  14:56:05.734503   +36.456s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Completed           0               29s
+  14:56:05.752861   +36.474s vm.pods        MODIFIED   cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Completed           0               29s
+  14:56:05.759618   +36.481s vm.pods        DELETED    cxl-pool-demo   cxl-lease-26b5dfcc                                             0/1   Completed           0               29s
+  14:56:05.797938   +36.519s server         fake-cxl-pool: 2026/10/08 14:56:05.797806 attachment pooled0@n4-cxl-shared-2-fedora-43-containerd: detaching qemu device fcp_pooled0.hp1
+  14:56:06.656258   +37.378s vm.driver      I1008 11:56:05.988206  205063 broker.go:922] lease broker: lease 26b5dfcc: released
+  14:56:12.052983   +42.774s server         fake-cxl-pool: 2026/10/08 14:56:12.052502 qmp /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/qmp.sock: event D
+  14:56:12.061074   +42.782s server         fake-cxl-pool: 2026/10/08 14:56:12.060618 attachment pooled0@n4-cxl-shared-2-fedora-43-containerd: detached (qemu device fcp_pooled0.hp1)
+  14:56:12.071821   +42.793s vm.events      default         Node            n4-cxl-shared-2-fedora-43-containerd   Detached                   pooled0 detached from n4-cxl-shared-2-fedora-43-containerd (
+
+W2 Findings (phase 2)
+---------------------
+1. The lease design works end to end on stock Kubernetes in VM2: a
+   running container asked for 512Mi, got pooled0 as NUMA node 2 in its
+   own cpuset.mems (0-2, written through NRI; the other container's
+   cpuset.mems stayed empty), put 256 MiB there (numa_stat anon N2 = 256
+   MiB), released it while the process kept running (pages moved to N0 in
+   < 1 s, numa-touch.py still alive and reporting N0), and the device went
+   back to the pool in ~7 s. Shared memory: the written string was in the
+   host's shared0.raw, read back through a re-sent fd (`cxl-request fd`),
+   with CXL_LEASE_FD=3, CXL_LEASE, CXL_LEASE_SIZE=268435456, CXL_LEASE_DAX
+   == readlink /proc/self/fd/3; no /dev/dax* in the container. Four cycles
+   left nothing behind; deleting the pod with a memory lease in use and a
+   shared lease cleaned up everything (GC + "requester container gone").
+2. Device cgroup (measured, containerd + systemd cgroup driver): the first
+   runtime update of a container (crictl update or NRI UpdateContainers,
+   here the lend) attaches one more cgroup_device eBPF program with
+   DIFFERENT code next to runc's (probably systemd's for the scope's
+   DeviceAllow); later updates add none (checked with 3 updates). The
+   device rules of the spec stay [{"access":"rwm","allow":false}], and an
+   mknod'ed dax node cannot be opened after the lend: the fd passing does
+   not widen the device cgroup. Ids of attached programs are not a usable
+   "unchanged" signal.
+3. Companion start is slow because of its CPU limit (report, not changed:
+   the 1m/8Mi Guaranteed shape is W1a step 4 / 03-summary). In test12 the
+   companion pause pod took ~12 s from NodePrepare to Running (Prepare
+   +12.8 s, Pulled +20.6 s, Started +24.8 s) while test10's pods take ~1 s.
+   Measured in VM2 with plain pause pods: limits cpu 1m -> Running after
+   14.4 s, 10m -> 14.3 s, 100m -> 2.4 s, 1 -> 2.4 s, no CPU limit -> 2.4 s.
+   The CFS quota of the pod cgroup throttles the sandbox and runc init.
+   The lease is Ready at NodePrepare, so requests do not wait for it, but
+   a companion that is still starting cannot be stopped before it has
+   started: in F the shared lease's companion was 7 s old and not started
+   when the borrower was deleted, and its unprepare waited until kubelet
+   had created and started its pause container (+12 s), most of F's 20 s.
+   Suggestion for W1a/coordinator: companion requests=limits cpu 100m (or
+   no CPU limit, Burstable) - 100m charges 0.1 CPU per lease to the node.
+4. A lease is Ready when the companion's claim is prepared, before the
+   companion's container runs (by design: kubelet prepares before it
+   creates containers). Nothing depends on the pause container running.
+5. Kubelet logs "failed to read memory cgroup config for the pod" (pod
+   cgroup already removed) for every companion at teardown: noise of
+   kubelet, harmless; it also appears for other short pods.
+6. The companion of F that was stopped right after its start ended
+   "Error" instead of "Completed" (pause killed during start with
+   terminationGracePeriodSeconds 1). Harmless, cosmetic.
+7. The R8 limitation (phase 1 Finding 1) is confirmed in the VM: idle's
+   cpuset.mems.effective was 0-2 during every lend, without a lend.
+8. Not tested (left out): requester container restart (re-applied lend),
+   plugin restart with active leases (reconcile after WaitSynchronized),
+   lease timeout / unsatisfiable request (pooled0 busy), auth rejection
+   from another pod, CRI-O, SELinux enforcing (VM2 has it disabled), a
+   steered container (refusal), several borrowers at once.
+
+Orchestrator status (Fable, 2026-10-08, end of the task)
+========================================================
+Result: the lease design is implemented and proven on VM2. test12-dra-live-
+attach PASSES (run3: 4 exclusive and 4 shared request/release cycles from
+inside a running container, 10 distinct lease ids, pod deletion with two
+active leases cleaned up in 21 s, nothing left in Kubernetes, the pool
+server, the guest kernel or qemu). test10-dra-pooling and test01-shared-cxl
+pass afterwards (no regression, VM clean). Verified by the orchestrator:
+driver `go vet` + `go test -race` (cmd/kubelet-cxl-plugin, cmd/cxl-request)
+pass, both binaries build static.
+
+Measured (run3): request to Ready 5.7-5.9 s (5 s is the scheduler's binding
+poll); release to lease gone 1.6-2.0 s, to device detached 7.0-7.4 s; 256
+MiB migrated back from the lent node in < 1 s with the process running.
+
+Change after run3 (orchestrator, from W2 finding 3): companion pod CPU
+requests=limits raised from 1m to 100m (broker.go, broker_test.go, POOL.md).
+A 1m-limited pause container needed ~12 s to reach Running, which delayed
+the cleanup of a lease whose companion had not started yet (most of the
+21 s in step F). Unit tests pass; run4 of test12 with this change is logged
+in ~/.claude/jobs/w2/test12-run4-cpu100m.log.
+
+Where things are (nothing committed):
+- Driver repo (5fC-cxl, on top of 48feb5a): cmd/kubelet-cxl-plugin/
+  {lend.go,lend_test.go,broker.go,broker_test.go,dynamic.go,lease_store.go}
+  new; nri.go, pool.go, driver.go, main.go, node_state.go, pkg/cxl/device
+  changed; cmd/cxl-request new; deployments/cxl/pool/device-class-dynamic.yaml,
+  examples/borrower-pod.yaml new; RBAC in deployments/cxl/base/
+  resource-driver.yaml; doc/cxl/POOL.md "Lending to running containers".
+- nri-plugins (5jQ-cxl, on top of 0e663b51c): test/e2e/memory.test-suite/
+  memory-policy/dra.source.sh extended; n4-cxl-shared-2/test12-dra-live-attach,
+  numa-touch.py new; pool-dax-rw.py --fd; plan-3-cxl-live-attach/ (this dir).
+- fake-cxl-pool server, client and controller: unchanged.
+
+Not covered by tests yet (candidates for test13+): requester container
+restart with active leases, plugin restart with active leases, lease
+timeout / unsatisfiable request, caller from another pod rejected, steered
+container refused, several borrowers at once, CRI-O, SELinux enforcing
+(disabled in VM2), memory-limited requester pods (pods/resize step).
+
+Known design limitations (see 03-summary.txt): lent node is visible to
+other containers with an empty cpuset.mems (exclusive by convention until
+others are pinned to DRAM); lent memory counts against the borrower's
+memory limit; forced release of a shared fd gives SIGBUS; ~5 s floor per
+request; lending and cgmpolmgr steering cannot share a container yet.
+
+Orchestrator addendum (2026-10-08, after run4/run5 of test12)
+- run4 FAIL: test12 still asserted the companion's cpu 1m after the 100m
+  change (test fixed: assertion now 100m).
+- run5 FAIL in step F, cycle 5, cxl-request shared: lease Ready but the fd
+  response carried `opening /dev/dax2.0: no such device or address` (ENXIO).
+  Race between the device_dax bind and udev's (re)creation of the /dev node:
+  cycles reuse dax names, so a node of the previous incarnation (or none)
+  can be there when the broker opens it. Fixed by the orchestrator in
+  broker.go: openDaxDevice waits up to 5 s for a node whose major:minor
+  matches /sys/bus/dax/devices/<name>/dev (retrying ENOENT/ENXIO), then
+  falls back to a private mknod with the sysfs numbers. Cycles 1-4 of run5
+  had passed, including F's memory lease; the 100m companion change itself
+  caused no problem.
+- run6 (companion cpu 100m + openDaxDevice): test12 PASS. Step F (pod
+  deleted with two active leases) clean in 14.6 s, down from 20.9 s with the
+  1m companion. The private-node fallback was not needed in this run. VM2
+  left clean (0 cxl-type3, port 9909 free). Log:
+  ~/.claude/jobs/w2/test12-run6-daxopen.log. Driver unit tests pass.

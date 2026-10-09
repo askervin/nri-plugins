@@ -1,0 +1,871 @@
+plan-3-cxl-live-attach / 02-option-node-plugin-request-channel
+==============================================================
+Starting point E: how a request from inside a RUNNING container reaches
+kubelet-cxl-plugin, and how the plugin acts on it.
+Written 2026-10-08 (Opus agent E). Read-only study: no source modified,
+nothing run in the VMs.
+
+Abbreviations
+  K8S   = ~/github.com/kubernetes/kubernetes at v1.37.1 (v1.37.1-1-g8aaeb4e53d1)
+  DRV   = ~/github.com/intel/intel-resource-drivers-for-kubernetes (48feb5a)
+  KCP   = DRV/cmd/kubelet-cxl-plugin
+  CTRD  = ~/github.com/containerd/containerd (v2.3.0-266-g1ab181cb6)
+  NRI   = ~/go/pkg/mod/github.com/containerd/nri@v0.12.2
+  CDI   = ~/go/pkg/mod/tags.cncf.io/container-device-interface{,/specs-go}@v1.1.0
+  FCP   = nri-plugins/scripts/testing/fake-cxl-pool
+  "A" / "B" / "C" = the other starting points (companion pod + lend,
+  runtime injection mechanics, resize/extended resources).
+
+
+0. Verdict in one paragraph
+---------------------------
+Recommended: E1. A pod that "may want CXL" declares it at creation with a
+claim on a capacity-less, allowMultipleAllocations token device
+("dynamic") in the node plugin's own cxl.generic ResourceSlice. Its
+NodePrepare gives the container (via CDI, the path kubelet already uses)
+a bind mount of a per-claim host directory that holds a unix socket, a
+static client binary and env variables. The plugin serves a small
+HTTP/JSON lease API on that socket and authenticates a caller twice: the
+socket it came in on identifies the claim (and through the claim's
+reservedFor, the pod), and the SO_PEERCRED/SO_PEERPIDFD pid -> /proc/<pid>/cgroup
+-> container table that the NRI stub keeps identifies the container. For
+each lease the plugin creates a companion pod and claim (option A).
+Choose: create them in the PLUGIN'S OWN namespace (a namespaced Role,
+pinned to the plugin's node by a ValidatingAdmissionPolicy), not in the
+requester's namespace (a ClusterRole that can create pods anywhere). The
+plugin then lends the prepared device to the requesting container
+(option B mechanics). Cleanup is driven by node-local events that the
+plugin always sees: NRI StopContainer/RemoveContainer, the token claim's
+NodeUnprepare (kubelet calls it only after all containers are stopped
+and before the pod is finished), and a reconcile at startup. You do not
+need a separate cluster component, and the fake-cxl-pool-controller
+needs no changes. E2 (the container calls the Kubernetes API itself)
+works without a node-side server, but it needs a ServiceAccount token
+and broad RBAC in every tenant namespace and has no return channel for
+the NUMA node / dax path. E3 (CRD or annotation) is the right *external*
+API if operators or autoscalers must grow pods from outside. You can add
+it later behind the same lease model. It is not an in-container channel
+by itself.
+
+Feasibility: works with small-to-medium changes in our code. No upstream
+change is needed for the channel. The lend step (B) and the memory
+limit of the borrower (C) are the real open problems, and they are not
+specific to E.
+
+
+1. Ground truth verified in v1.37.1 (file:line)
+-----------------------------------------------
+
+1.1 CDI container edits from a DRA driver reach the container
+  - KCP returns CDI device IDs in kubeletplugin.PrepareResult
+    (pool.go:260-266, node_state.go:495-503). The kubelet DRA manager keeps
+    them per claim/request (K8S pkg/kubelet/cm/dra/claiminfo.go:151,
+    :214-228). For each container it collects the IDs of the claims that
+    the container lists in resources.claims, plus the extended-resource
+    claim (K8S pkg/kubelet/cm/dra/manager.go:521-603; only
+    pod.Spec.ResourceClaims that the container references, :527-552).
+  - container manager: opts.CDIDevices = append(..., resOpts.CDIDevices...)
+    (K8S pkg/kubelet/cm/container_manager_linux.go:752-757)
+  - CRI: ContainerConfig.CDIDevices = makeCDIDevices(opts), names only
+    (K8S pkg/kubelet/kuberuntime/kuberuntime_container.go:380, :472-481)
+  - containerd resolves the names against the CDI spec dirs (/etc/cdi,
+    /var/run/cdi) when it creates the container: WithCDI(config.Annotations,
+    config.CDIDevices) (CTRD internal/cri/server/container_create_linux.go:103-104;
+    internal/cri/opts/spec_linux.go:139-180 -> cdispec.WithCDIDevices)
+  - CDI applies mounts as OCI mounts (CDI pkg/cdi/container-edits.go:124-129).
+    The spec type has HostPath, ContainerPath, Options, Type
+    (CDI specs-go/config.go:50-55), next to Env and DeviceNodes (:26-34).
+  => A host directory bind mount + env injected at NodePrepare reach the
+     container at CreateContainer. Kubelet re-reads nothing later: this
+     is a one-shot at creation. That is why the token must be in the pod
+     spec from the start (pod.spec.resourceClaims is immutable, a known
+     fact).
+  - Consequence: mount the DIRECTORY, not the socket file. A bind mount of
+    the socket inode goes stale when the plugin restarts and re-creates
+    the socket. A new socket created in a bind-mounted directory is
+    visible inside at once (same directory, no mount propagation needed).
+  - NRI also gives the plugin each container's CDI device names
+    (NRI pkg/api/api.proto Container.CDI_devices = 20), its env (= 8) and
+    its pid (= 12, filled at StartContainer and in Synchronize), and the
+    pod uid/namespace/name (PodSandbox.uid = 3). The SynchronizeRequest
+    lists all pods and containers (api.proto:188-195), so the container
+    table can be rebuilt after a plugin restart.
+
+1.2 Kubelet ordering at pod termination (cleanup hook for leases)
+  - "resources must be unprepared AFTER all containers have stopped and
+    BEFORE the pod status is changed on the API server"
+    (K8S pkg/kubelet/kubelet.go:2439-2446). An Unprepare error returns
+    from SyncTerminatedPod, so kubelet retries.
+  - The pod object is not finished while kubelet still might need to
+    unprepare (K8S pkg/kubelet/kubelet_pods.go:1119-1135,
+    PodMightNeedToUnprepareResources).
+  - A claim shared by several pods is unprepared only for the last pod
+    (K8S pkg/kubelet/cm/dra/manager.go:680-690).
+  - The kubelet->plugin gRPC timeout is 45 s
+    (K8S pkg/kubelet/cm/dra/plugin/dra_plugin.go:43), so a token Unprepare
+    must not block longer. It returns an error ("leases still releasing")
+    and kubelet calls again.
+  => The token claim's NodeUnprepare is a reliable "this pod is done, its
+     containers are dead" hook. The pod object cannot vanish
+     gracefully before it succeeds. That is exactly the "everything is
+     gone when the pod is removed" requirement.
+
+1.3 Identity of a kubelet plugin
+  - The DaemonSet runs as ServiceAccount
+    intel-cxl-resource-driver:intel-cxl-resource-driver-service-account
+    (DRV deployments/cxl/base/resource-driver.yaml:18-19). Its ClusterRole
+    has nodes get, resourceslices *, resourceclaims get (:80-94). The
+    ValidatingAdmissionPolicy limits ResourceSlice writes to slices whose
+    spec.nodeName == the token's node
+    (:111-150, via request.userInfo.extra['authentication.kubernetes.io/node-name']).
+  - The node-name / pod-name / pod-uid extras of SA tokens:
+    K8S staging/src/k8s.io/apiserver/pkg/authentication/serviceaccount/util.go:40-48,
+    set at :169-182. ServiceAccountTokenPodNodeInfo has been GA and locked since 1.32
+    (K8S pkg/features/kube_features.go:2154-2157).
+  - Kubernetes itself uses the same "node-associated SA" idea for DRA
+    drivers: status.devices writes check the "associated-node:<verb>"
+    verb first when the SA's node equals the claim's allocated node
+    (K8S pkg/registry/resource/utils.go:148-170;
+    DRAResourceClaimGranularStatusAuthorization beta, default on since 1.36,
+    kube_features.go:1533-1535).
+  - The e2e does NOT exercise any of this: kubelet-cxl-plugin runs as a
+    transient systemd unit with KUBECONFIG=/root/.kube/config, the admin
+    kubeconfig (test/e2e/memory.test-suite/memory-policy/dra.source.sh:193-226,
+    the systemd-run at :224; plan-2-dra D26). Any RBAC design below must be
+    tested with the DaemonSet (or with a kubeconfig of the plugin's SA
+    token) to mean anything.
+  - The client comes from --kubeconfig/KUBECONFIG or from the in-cluster
+    config (DRV pkg/helpers/flags.go:41-44, :72-77).
+
+1.4 A capacity-less allowMultipleAllocations device = a token
+  - API: "If AllowMultipleAllocations is set to true, the device can be
+    allocated more than once, and all of its capacity is consumable"
+    (K8S staging/src/k8s.io/api/resource/v1/types.go:516-523;
+    feature gate DRAConsumableCapacity, beta, default on since 1.36,
+    pkg/features/kube_features.go:1457-1460). Validation has no rule that
+    such a device must have capacity
+    (K8S pkg/apis/resource/validation/validation.go:1059-1061 and on).
+  - Allocator (incubating, which the v1.37 default gates select):
+    allowMultipleAllocations only counts with the ConsumableCapacity
+    feature (staging/.../structured/internal/incubating/allocator_incubating.go:1334-1337).
+    Such a device is never put into allocatingDevices (:1424-1430). Every
+    allocation gets a fresh shareID and the consumed capacity of the
+    request (:1449-1462). "A persisted allow-multiple allocation with no
+    per-share capacity is recorded only in AllocatedSharedDeviceIDs" (:1687-1696).
+    So with no capacity, any number of claims can allocate the device,
+    each with its own shareID.
+  - KCP already publishes allowMultipleAllocations devices (DRAM, CXL
+    regions: node_state.go:313-314, :341-342). A token device without
+    capacity and without nodeAllocatableResources is a small addition.
+  - To cap the number of "may want CXL" pods per node, optionally give the
+    token a capacity `leases: {value: "32", requestPolicy: {default: "1",
+    validValues: ["1"]}}`. Each claim then consumes 1, the same trick that
+    POOL.md:84 uses for `hosts`. Per namespace: ResourceQuota on
+    `cxl-dynamic.deviceclass.resource.k8s.io/devices`
+    (K8S pkg/quota/v1/evaluator/core/resource_claims.go:50).
+  - Caveat: a DeviceClass that selects all cxl.generic devices would also
+    match the token. The base class in DRV is stale (it selects driver
+    "cxl.intel.com", deployments/cxl/base/device-class.yaml), and no e2e
+    class selects cxl.generic. Still, existing and future cxl.generic
+    classes must add `attributes["cxl.generic"].type != "dynamic"`, or
+    the token gets its own driver name (see 6.2).
+
+1.5 GC, controllers, RBAC of comparable components
+  - Template-generated claims get a controller ownerReference to their pod
+    (K8S pkg/controller/resourceclaim/controller.go:1124-1134). They are
+    deleted when the pod is done and the claim is unreserved (:1663-1680).
+    The finalizer is dropped after deallocation (:1640-1662).
+  - The GC resolves ownerReferences only inside the dependent's namespace.
+    An owner in another namespace counts as absent, the dependent is
+    deleted, and an OwnerRefInvalidNamespace event is emitted
+    (K8S pkg/controller/garbagecollector/graph_builder.go:495-534).
+    => A companion in the plugin's namespace CANNOT be owned by the
+    requester pod. Its cleanup is the plugin's job, with safety nets
+    (section 4).
+  - blockOwnerDeletion=true needs update permission on the owner's
+    finalizers when OwnerReferencesPermissionEnforcement is enabled
+    (K8S plugin/pkg/admission/gc/gc_admission.go:149, :241). Do not set it.
+  - Pods on a deleted node are removed by podgc gcOrphaned
+    (K8S pkg/controller/podgc/gc_controller.go:229).
+  - job-controller: pods list/watch/create/delete/patch cluster-wide
+    (K8S plugin/pkg/auth/authorizer/rbac/bootstrappolicy/controller_policy.go:298-304).
+    resource-claim-controller: resourceclaims get/list/watch/create/delete
+    cluster-wide (:205-210). Pod-creating cluster-wide rights are normal
+    for controllers in kube-controller-manager, never for node agents.
+  - CSI (from memory, not in the K8S tree, UNVERIFIED here): CSI node
+    plugins (driver + node-driver-registrar) need no API write rights.
+    Object creation (PVs) is done by the cluster-level external-provisioner
+    sidecar. Its optional "distributed provisioning" mode
+    (--node-deployment) runs it on every node with the same cluster-wide
+    PV rights, and it relies on per-node filtering in the provisioner, not
+    on RBAC. Kubelet itself creates only mirror pods, limited to its node by the
+    NodeRestriction admission plugin.
+  => A kubelet plugin that can create pods in ALL namespaces is unusual,
+     and reviewers will object to it. A plugin that creates pods in ONE
+     namespace that it owns, limited by CEL to its own node and to a fixed
+     pod shape, is defensible. It is the same pattern as the
+     ResourceSlice VAP that the driver already ships.
+
+
+2. What exists in kubelet-cxl-plugin, and where a request server fits
+--------------------------------------------------------------------
+  - One process (main.go:116 -> helpers.NewApp -> newDriver, driver.go:355-479)
+    with: kubeletplugin helper for cxl.generic (driver.go:413-421),
+    a second helper for cxl-pool.generic (pool.go:148-163, started at
+    driver.go:428), the NRI stub (nri.go:76-108, started at driver.go:444),
+    the udev watcher (driver.go:451-475). The driver struct holds all of
+    them (driver.go:165-174), so a fourth component ("dynamic broker")
+    fits the same way: built in newDriver after pool and NRI, stopped in
+    Shutdown (driver.go:608-621).
+  - NodePrepare of cxl.generic: nodeState.Prepare records pod->claim from
+    claim.Status.ReservedFor (node_state.go:446-456). This map (podClaims)
+    is NOT persisted, so it is empty after a restart. prepareAllocatedDevices
+    looks devices up in Allocatable by name (:490-493) and injects a per-claim
+    CDI marker device CXL_CLAIM_<uid>=1 (:540-546, :690-733). The broker
+    has to persist its own pod/claim data.
+  - The NRI plugin reads the CXL_CLAIM markers from the container env at
+    CreateContainer (nri.go:145) and starts cgmpolmgr at StartContainer
+    with the container pid (nri.go:206-254). resolveContainerCgroupDir
+    reads /proc/<pid>/cgroup (nri.go:371-398). The SAME function maps an
+    SO_PEERCRED pid to a cgroup, so the container lookup is
+    already half written.
+  - Gaps found that matter for E1 (they exist today, independent of E):
+    (a) nri.go implements no Synchronize. After a plugin restart, running
+        containers lose their cgmpolmgr managers, and the plugin does not
+        know their pids or cgroups.
+    (b) The DaemonSet has no hostPID and no /var/run/nri mount
+        (resource-driver.yaml:20-71). In DaemonSet mode, the NRI stub cannot
+        connect, and /proc/<pid> of a container pid does not resolve. The
+        plugin only works fully as a host process (as in the e2e). E1
+        needs both, so the DaemonSet must add hostPID: true and the NRI
+        socket mount.
+    (c) Exclusive pool memory: "make sure the container is allowed to
+        use the memory node (update cpuset.mems), and other containers
+        are not" is a TODO (DRV doc/cxl/POOL.md:244). With empty
+        cpuset.mems, every container inherits a newly onlined node. This
+        is option B's problem, but E's lend depends on it.
+  - The pool helper hooks for the lend: prepareClaim succeeds at pool.go:270-279
+    (p.mu held). unprepareClaim releases at pool.go:451-474. A lend/revoke
+    callback goes there. The pool contract (POOL.md, FCP/pkg/controller)
+    needs no change, because companions are ordinary claims.
+  - Controller: watches claims and nodes only (FCP/pkg/controller/controller.go:145-162),
+    owner of an attachment = "k8s:resourceclaim/<uid>" (reconciler.go:69-72).
+    Its RBAC (FCP/deploy/fake-cxl-pool-controller.yaml:25-48) is already
+    enough: companion claims are attached like any claim. No change.
+
+
+3. Variants compared
+--------------------
+
+3.1 E1: token device + socket served by the node plugin (RECOMMENDED)
+
+  Pod side (the only thing the user writes):
+
+    apiVersion: resource.k8s.io/v1
+    kind: ResourceClaimTemplate
+    metadata: {name: cxl-dynamic}
+    spec:
+      spec:
+        devices:
+          requests:
+          - name: dyn
+            exactly: {deviceClassName: cxl-dynamic}
+    ---
+    apiVersion: v1
+    kind: Pod
+    metadata: {name: may-want-cxl}
+    spec:
+      resourceClaims:
+      - {name: dyn, resourceClaimTemplateName: cxl-dynamic}
+      containers:
+      - name: app
+        image: busybox
+        resources:
+          claims: [{name: dyn}]      # only containers listing it get the socket
+
+  Admin side:
+
+    apiVersion: resource.k8s.io/v1
+    kind: DeviceClass
+    metadata: {name: cxl-dynamic}
+    spec:
+      selectors:
+      - cel: {expression: 'device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "dynamic"'}
+      config:                       # admin limits, Source=FromClass; claim config may only lower them
+      - opaque:
+          driver: cxl.generic
+          parameters:
+            apiVersion: cxl.intel.com/v1alpha1
+            kind: DynamicPolicy
+            maxLeases: 4             # concurrent leases per token claim
+            maxMemory: 4Gi           # sum of exclusive leases per token claim
+            shared: ["0xc1ae0001"]   # serials that may be requested shared ([] = none, ["*"] = any)
+            pools: ["default"]
+            waitTimeout: 120s
+
+  Device in the node's cxl.generic slice:
+
+    - name: dynamic
+      attributes:
+        type: {string: dynamic}
+      allowMultipleAllocations: true
+      # optional: capacity: {leases: {value: "32", requestPolicy: {default: "1", validValues: ["1"]}}}
+
+  NodePrepare of a claim with the token: CDI device
+  generic/cxl=dynamic-<claimUID> with
+      mounts: [{hostPath: <sockroot>/<claimUID>, containerPath: /run/cxl,
+                options: [rbind, rw, nosuid, nodev, noexec]}       # dir: socket
+               {hostPath: <bindir>/cxl-request, containerPath: /run/cxl-bin/cxl-request,
+                options: [bind, ro, nosuid, nodev]}]               # static client
+      env:    [CXL_DYNAMIC_SOCKET=/run/cxl/cxl.sock,
+               CXL_REQUEST=/run/cxl-bin/cxl-request]
+  (<sockroot> = /var/lib/kubelet/plugins/cxl.generic/dynamic. The existing
+  CXL_CLAIM_<uid> marker stays and is how NRI recognises the container.)
+  Do not put the client into /usr/local/bin: CDI cannot append to PATH.
+  Setting env PATH would replace the image's PATH.
+  The second mount (noexec on /run/cxl) keeps the socket dir free of
+  executables. The client binary is ~3 MB, Go, CGO_ENABLED=0, so busybox
+  and distroless images work.
+
+  Plugin side:
+  - one listener per prepared token claim (opened at Prepare, re-opened at
+    startup from the persisted prepared claims, closed at Unprepare);
+  - per connection: getsockopt SO_PEERPIDFD (Linux >= 6.5; x/sys v0.47.0
+    in DRV/go.mod:13 defines it), falling back to SO_PEERCRED
+    (unix.GetsockoptUcred). pid -> /proc/<pid>/cgroup -> container record
+    from the NRI table (cgroup dir equal or a prefix of the peer's path)
+    -> containerID, pod uid. Accept only if that container's env has
+    CXL_CLAIM_<this claim's uid> AND its pod uid is in the claim's
+    reservedFor. Otherwise 403. With a pidfd, check that the pid is still
+    alive after the lookup (pidfd poll), which closes the pid-reuse race.
+  - acting on a request: create the companion pod + claim (3.1.2), wait for
+    the pool helper's prepare of that claim (hook in pool.go), lend the
+    device (B), answer.
+
+  3.1.1 Who creates the companion: plugin, broker or separate component?
+    (a) The plugin creates it in its own namespace (`cxl-dynamic`, or
+        the plugin's POD_NAMESPACE): Role + RoleBinding in that namespace
+        only: pods {create, delete, get, list, watch},
+        resourceclaims {create, delete, get, list, watch}, events create.
+        ValidatingAdmissionPolicy (sketch, appendix B) for requests by
+        the plugin SA in that namespace: nodeAffinity must be exactly
+        matchFields metadata.name In [<userNodeName>], image == the
+        configured pause image, no volumes, automountServiceAccountToken
+        false, no hostPath/hostNetwork/privileged, ownerReferences only
+        to objects in the namespace, label cxl.generic/node == userNodeName.
+        DELETE is allowed only for objects labelled with the caller's node.
+        A compromised plugin is already root on its node. With (a) it
+        gains the right to run pause pods on its own node, nothing more.
+        RECOMMENDED.
+    (b) The plugin creates it in the requester's namespace: ClusterRole
+        pods/resourceclaims create/delete in all namespaces (the job
+        controller's rights, controller_policy.go:302) on a DaemonSet SA
+        on every node. The VAP can pin it to its node and pod shape, but a
+        compromised node can still create pods in every tenant namespace,
+        with that namespace's default SA unless the VAP forbids it.
+        Upside: owner GC to the requester pod and the tenant's
+        ResourceQuota on cxl-pool-memory apply natively. Rejected as the
+        default, but keep it as a switch if tenant quota accounting
+        in the tenant's namespace is a hard requirement.
+    (c) A separate cluster component (Deployment, one replica) creates the
+        companion. The plugin only brokers, by writing a request object
+        (CRD "CxlLease", or a ConfigMap) that the component turns into a
+        pod + claim. This moves the pod-create right off the nodes, but
+        adds a component, a CRD, a second hop of latency and a second
+        restart-consistency problem, and the plugin still needs create
+        rights on the request objects. It pays off only together with E3
+        (an external API anyway). Not needed for E1.
+    The pool controller is NOT a good host for (c): it is product
+    specific (POOL.md:14-17), and companion creation is generic to the
+    node plugin.
+
+  3.1.2 Companion objects of one lease (namespace cxl-dynamic, lease id 7f3a9c21)
+
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: cxl-lease-7f3a9c21
+      namespace: cxl-dynamic
+      labels:
+        cxl.generic/lease: 7f3a9c21
+        cxl.generic/node: node1
+        cxl.generic/requester-pod-uid: 1b6e...        # for reconcile
+      annotations:
+        cxl.generic/requester: cxl-pool-demo/may-want-cxl/app
+        cxl.generic/requester-container-id: 3fa1...
+        cxl.generic/token-claim-uid: 9c0d...
+        cxl.generic/request: '{"kind":"memory","size":"512Mi"}'
+    spec:
+      priorityClassName: <optional, high, so that it is not preempted>
+      terminationGracePeriodSeconds: 5
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Always
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchFields: [{key: metadata.name, operator: In, values: [node1]}]
+      tolerations: [{operator: Exists}]   # follow the requester onto tainted nodes
+      resourceClaims: [{name: mem, resourceClaimName: cxl-lease-7f3a9c21}]
+      containers:
+      - name: hold
+        image: registry.k8s.io/pause:3.10
+        resources:
+          claims: [{name: mem}]
+          requests: {cpu: 1m, memory: 1Mi}
+          limits: {cpu: 1m, memory: 4Mi}          # Guaranteed-like, never OOM/evicted first
+    ---
+    apiVersion: resource.k8s.io/v1
+    kind: ResourceClaim
+    metadata:
+      name: cxl-lease-7f3a9c21
+      namespace: cxl-dynamic
+      labels: {cxl.generic/lease: 7f3a9c21, cxl.generic/node: node1}
+      ownerReferences:                          # GC with the companion; same namespace
+      - {apiVersion: v1, kind: Pod, name: cxl-lease-7f3a9c21, uid: <companion uid>}
+    spec:
+      devices:
+        requests:
+        - name: mem
+          exactly:
+            deviceClassName: cxl-pool-memory   # shared: cxl-shared-memory + serial selector
+            capacity: {requests: {memory: 512Mi}}
+
+    Order: create the pod first, then the claim with ownerReference to the
+    pod's uid. The scheduler keeps the pod pending until the claim exists.
+    If the plugin dies in between, the startup reconcile deletes the
+    orphan pod. Release = delete the pod. GC then deletes the claim, but
+    only after kubelet unprepared it and the resourceclaim controller
+    deallocated it, so the pool order "release before detach" holds.
+    The plugin does NOT use controller: true on the claim. That would
+    make the resourceclaim controller treat it as template-generated
+    (owningPod, controller.go:1669), which is harmless but surprising.
+    (An alternative without a separate claim object is a per-size
+    ResourceClaimTemplate. Sizes vary per request, so it would mean a
+    template per lease. Not better.)
+
+3.2 E2: the container calls the Kubernetes API itself
+  - Needs: an SA token in the container (automount), a Role in every
+    tenant namespace with pods + resourceclaims create/delete/get, the
+    pod's own uid and node name (downward API), and a Kubernetes client in
+    the image.
+  - The plugin only sees a companion claim. It must still learn the
+    borrower from untrusted input (an annotation or opaque config
+    {kind: Lend, podUID, container}) and validate it: same namespace,
+    borrower pod on this node, borrower opted in (a token claim or an
+    annotation). The validation code is nearly the same as in E1.
+  - Return channel: the container needs "which NUMA node" or "which
+    /dev/daxX.Y". In E1 the socket answers. In E2 the plugin would have to
+    write it somewhere the tenant can read: claim status.devices[].data
+    (the pool controller owns that entry; the node plugin would need
+    associated-node:patch on resourceclaims/driver), or annotations of
+    the companion pod (needs pods patch). Lending a device node into a
+    running container needs B anyway.
+  - Lifecycle is fine through ownerReference GC (companion owned by the
+    requester pod, same namespace). Leftovers after a client crash are
+    collected when the pod goes away, but not earlier.
+  - Security: the tenant can now create ANY pod in its namespace unless a
+    VAP restricts it. Workloads must carry an API token, which many
+    hardening guides forbid.
+  - Verdict: possible today with no node plugin server, so it is the
+    fastest prototype of A. It is a poor product channel: per-namespace
+    RBAC, a token in the workload, no synchronous answer, and the plugin
+    still validates the borrower.
+
+3.3 E3: CRD or pod annotation
+  - Pod annotation written by the container: the container needs pods
+    patch on its own pod. That is E2 with a weaker object. Written by an
+    operator: fine, but then it is not "from inside the container".
+    Status back on the pod needs pods patch for the plugin in all
+    namespaces, which is too broad. Rejected.
+  - CRD CxlLease (namespaced, in the requester's namespace, owner = requester
+    pod so GC works natively):
+      spec: {podName, container, kind: memory|shared, size | serial, pool}
+      status: {phase: Pending|Ready|Releasing|Failed, numaNode, dax, reason, companion}
+    The node plugin watches CxlLeases whose pod is on its node (needs
+    cxlleases get/list/watch and cxlleases/status patch, VAP-limited to
+    its node). Companion creation happens as in E1 (a) or (c).
+    It is a clean declarative API for external actors (autoscaler,
+    operator, kubectl), and its status answers the return-channel
+    problem. From inside the container it still needs an API token (E2's
+    drawback).
+  - Verdict: not the in-container channel. It IS the natural phase-2
+    external API. The E1 socket can later write CxlLease objects instead of
+    keeping a private lease table: same states, same fields.
+
+3.4 Where E1, E2 and A meet
+  - Option A is the "what" (companion pod + claim, the lend), E is the
+    "how the request arrives". E1 = A with the plugin as the only creator
+    of companions. E2 = A where anyone with RBAC creates companions and
+    the plugin validates the borrower. E3 = A driven by a declarative
+    object.
+  - In E1 the plugin creates the companion and also performs the lend, so
+    the borrower identity never passes through an untrusted object. That
+    is the main security gain over E2.
+
+
+4. Lease API, CLI and lifecycle (E1)
+------------------------------------
+
+4.1 Wire protocol: HTTP/1.1 + JSON over the per-claim unix socket
+  (works with `curl --unix-socket` and python too, not only with the CLI)
+
+    POST /v1/leases
+      {"kind":"memory","size":"512Mi","pool":"default","requestId":"<client token, optional>",
+       "wait":"120s"}
+      {"kind":"shared","serial":"0xc1ae0001","wait":"120s"}
+    -> 200 {"lease":"7f3a9c21","state":"Ready","kind":"memory","size":536870912,
+            "serial":"0xc1ee0001","numaNode":3}
+       200 {"lease":"5e0b11d4","state":"Ready","kind":"shared","size":268435456,
+            "serial":"0xc1ae0001","dax":"/dev/dax1.0","align":2097152}
+       202 {"lease":"...","state":"Pending","reason":"BindingConditionsPending"}  (wait expired or "wait":"0s")
+       403 not a container of this claim
+       409 {"reason":"LimitExceeded"|"SerialNotAllowed"|"DuplicateShared"}
+       503 plugin not ready (NRI not synchronised yet)
+    GET    /v1/leases               -> leases of the calling container
+    GET    /v1/leases/<id>          -> one lease (state, reason, companion)
+    DELETE /v1/leases/<id>[?wait=60s]
+    -> 200 {"state":"Released"} | 202 {"state":"Releasing"} |
+       409 {"reason":"InUse","detail":"/dev/dax1.0 mapped by pid 42"}  (shared, see B)
+    DELETE /v1/leases                -> release all of the caller's leases
+
+  requestId makes a retried POST idempotent: the same caller with the same
+  requestId gets the same lease, so a client that timed out can retry
+  without leaking a lease.
+
+4.2 CLI inside the container ($CXL_REQUEST, or symlink it into the image)
+
+    cxl-request memory 512Mi [--pool default] [--wait 2m] [-o env|json]
+        prints   CXL_LEASE=7f3a9c21
+                 CXL_LEASE_NODE=3
+                 CXL_LEASE_SIZE=536870912
+    cxl-request shared 0xc1ae0001 [--wait 2m] [-o env|json]
+        prints   CXL_LEASE=5e0b11d4
+                 CXL_LEASE_DAX=/dev/dax1.0
+                 CXL_LEASE_SIZE=268435456
+    cxl-release <lease>... | --all [--wait 1m]
+    cxl-leases [-o json]
+  Exit codes: 0 ready/released, 2 pending at timeout (lease kept: release it
+  or wait again with `cxl-request --lease <id> --wait`), 3 denied/limit,
+  4 plugin unreachable. Use: eval "$($CXL_REQUEST memory 512Mi)" &&
+  numactl --membind=$CXL_LEASE_NODE ...
+
+4.3 Lease ownership and identity
+  - lease id: 8 random hex characters, unique among the plugin's live and
+    persisted leases. It names the companion objects (cxl-lease-<id>).
+    Repeated request/release cycles never reuse a name while the old
+    objects still exist (the plugin checks that the name is free).
+  - owner of a lease = (token claim uid, pod uid, container id). List and
+    release are allowed to any container of the same pod that holds the
+    token, so a sidecar can release. Lend targets are always the CALLER's
+    container. There is no "lend to container X" parameter, so the caller
+    cannot direct a device at a container that did not ask.
+
+4.4 Lease table (persisted, <plugin data dir>/cxl.generic/dynamicLeases.json,
+    atomic write like pool.go:568-581; an entry is written BEFORE any API
+    create = intent log)
+
+    {lease, state, kind, size|serial, tokenClaimUID, podUID, podNS/Name,
+     container, containerID, companionPod, companionPodUID, claimName,
+     claimUID, preparedSerial, numaNode|dax, created, reason}
+    states: Creating -> Pending -> Lending -> Ready -> Releasing -> (deleted)
+            any -> Failed (kept until released or the owner goes away)
+
+4.5 Lifecycle table
+
+  | event | what happens | leftovers? |
+  |---|---|---|
+  | pod created with token | scheduler allocates "dynamic" (shareID, no capacity); NodePrepare: dir <sockroot>/<claimUID>, listener, CDI mount+env; NRI Create/StartContainer records (ctrID, pod uid, pid, cgroup, claim uids) | none |
+  | request | auth (socket -> claim, pidfd -> container); limit check (class config); table entry Creating; create companion pod, then claim with ownerRef -> Pending; scheduler allocates a pool device (pinned by nodeAffinity), controller attaches, Attached, bind; pool helper prepares (region, online / devdax) -> hook -> Lending: lend to the caller (B: cpuset.mems / dax node) -> Ready; reply | none |
+  | request not satisfiable (no free device) | companion stays Unschedulable; at "wait" expiry the reply is 202 Pending (or with --fail-on-timeout: plugin deletes companion -> Failed) | the pending lease is visible in cxl-leases and released by cxl-release or by any cleanup below |
+  | AttachFailed / binding timeout | scheduler deallocates and retries (POOL.md:158-160); the plugin reports reason from the claim/pod conditions; after policy waitTimeout it deletes the companion -> Failed | none |
+  | use | nothing on the channel; NRI keeps the container record | - |
+  | release | Releasing: revoke the lend (B: migrate pages off / remove the dax node; for shared, 409 InUse while it is mapped), delete companion pod; kubelet unprepares the companion claim (pool.go:451-474: offline, destroy region, disable memdev), claim deallocated -> controller detaches -> GC deletes claim; the plugin removes the entry when the companion pod and claim are gone (informer) | none |
+  | repeat N times | new lease id, new companion names each time; old entries gone | none (check: list companions by lease label == table) |
+  | requesting container exits/crashes (restartPolicy Always restarts it as a new container) | NRI StopContainer/RemoveContainer -> all leases of that containerID -> Releasing (the pages die with the process; revoke is a no-op for a dead cgroup) | none; the restarted container asks again |
+  | pod deleted (graceful) | containers stop -> NRI events release leases; then kubelet calls NodeUnprepare(token): the plugin returns an error while any lease of that claim still has a companion, kubelet retries (45 s RPC timeout, backoff); when all companions are gone: close listener, remove dir, delete table rows -> success; the pod finishes only after that (kubelet.go:2439-2446, kubelet_pods.go:1119-1135) | none |
+  | pod force-deleted | the token claim is deallocated by the resourceclaim controller at once (harmless, no hardware); companions are in the plugin namespace, so they are NOT GC'd behind our back; kubelet still kills the containers it knew (NRI events -> release) and runs SyncTerminatedPod -> NodeUnprepare(token) from its claim cache (BELIEVED, verify in prototype); the startup/periodic reconcile catches the rest | none after reconcile |
+  | node plugin restart | listeners re-created from persisted token claims (same dirs, new sockets: containers see them, the dir is bind-mounted); NRI Synchronize rebuilds the container table (pid, cgroup); lease table loaded; reconcile: Creating rows -> look up companion by lease label (adopt or delete); companions with no row -> delete; rows whose container is gone (not in Synchronize) -> release; Lending rows -> redo the lend (idempotent) | none |
+  | node plugin down while pod deleted | kubelet's Unprepare(token) fails (plugin not registered) -> retried; the pod stays Terminating until the plugin is back, then normal path | none (delayed) |
+  | controller restart | no effect on E; it re-derives attachments from claims (POOL.md:308-309) | none |
+  | kubelet restart | claim cache checkpoint; companions and token unaffected | none |
+  | requester crashes mid-request (connection drops) | the request continues; the lease belongs to the container, not the connection; requestId makes the retry idempotent; if the container died, the NRI event releases it | none |
+  | companion evicted / preempted | pod gone -> kubelet unprepare -> revoke must happen first: pool.go unprepare hook calls broker.revoke synchronously before release (refuses release while revoke fails) -> lease Failed reason Evicted; caller sees it in cxl-leases | none; requester lost the memory (avoid with a high priorityClass, Guaranteed-like resources) |
+  | node deleted | podgc deletes companions (gc_controller.go:229); claims GC'd; controller detaches | none |
+  | two pods on one node lease the same shared serial | each lease gets its own companion + claim; each claim takes one `hosts` share of the device (POOL.md:84, :97-98), so one node uses two host slots; pool.go already shares one region between claims of the same serial (pool.go:248-251, :458-461); both borrowers get the dax node | none; improvement: refcount a second borrower onto the existing companion of that serial on the node instead of creating another |
+
+
+5. Trust model
+--------------
+  - Trusted: kernel (SO_PEERCRED/pidfd, /proc, cgroups), container runtime
+    (NRI data: pod uid, container env/CDI, pid), kubelet (only containers
+    that list the claim get the CDI mount), apiserver + admission (who may
+    create token claims: DeviceClass + ResourceQuota; what the plugin may
+    create: Role + VAP).
+  - Untrusted: everything inside the container, all request fields, and
+    the claim-level opaque config (set by the tenant, so it may only
+    lower class limits).
+  - Authorization = possession of the per-claim socket (only mounted into
+    containers that list the token claim) AND the caller's cgroup maps to
+    one of those containers. A process cannot reach another pod's socket
+    (different directory, not mounted). A sibling container without the
+    claim can only reach the socket through a proxy inside the claimant
+    container. The trust boundary is then the claimant container, which
+    is acceptable.
+  - Limits: maxLeases, maxMemory, allowed shared serials and pools from the
+    DeviceClass config (admin). Rate limit per claim (for example 10
+    requests/min) against companion churn. ResourceQuota on the cxl-dynamic
+    class bounds tokens per namespace, so the total pool use of a
+    namespace is <= tokens x maxMemory, enforced by the plugin. That is
+    weaker than native ResourceQuota on cxl-pool-memory (only option 3.1.1 (b)
+    gives that), so call it out.
+  - Plugin permissions: today resourceslices + resourceclaims get. E1
+    adds pods + resourceclaims create/delete/get/list/watch in ONE
+    namespace (Role), plus pods get cluster-wide (optional, for status
+    messages). The VAP limits it to its node and to the companion shape.
+  - SELinux (Fedora e2e VMs, UNVERIFIED): a container_t process must be
+    allowed to connectto the plugin's socket. Label the socket dir
+    container_file_t (or run the plugin as spc_t / container_runtime_t).
+    Check this in the prototype; it is the most likely "works as root on
+    my laptop, fails in the VM" item.
+  - User namespaces (hostUsers: false): the kernel translates SO_PEERCRED
+    pids into the receiver's pid namespace. The plugin must be in the host
+    pid namespace (host process, or DaemonSet hostPID: true, gap 2(b)).
+    Create the socket mode 0666 and authorize by cgroup, not by uid.
+
+
+6. Code changes in kubelet-cxl-plugin (recommended variant)
+-----------------------------------------------------------
+  LOC = rough new/changed lines without tests.
+
+  6.1 pkg/cxl/device (≈20)
+    - DeviceTypeDynamic = "dynamic", DynamicDeviceName = "dynamic",
+      type DynamicToken struct{}; CDI name "dynamic-<claimUID>".
+    - DynamicPolicy opaque config type (kind DynamicPolicy) with Validate,
+      next to memorypolicy.
+
+  6.2 node_state.go (≈80)
+    - buildDevInfos (159-261): add devInfos["dynamic"] = {Dev: &DynamicToken{}}
+      unless config.DisableDynamic. Rescans keep it (scanDevices rebuilds
+      it every time).
+    - GetResources (274-359): case *device.DynamicToken -> Device{Name:
+      "dynamic", Attributes{type: dynamic}, AllowMultipleAllocations:
+      true} (optional leases capacity; no NodeAllocatableResources).
+    - prepareAllocatedDevices (472-555): case *device.DynamicToken ->
+      DeviceType dynamic. Add CDI ID dynamic-<claimUID>. Parse
+      DynamicPolicy (class first, claim may only lower values) into
+      PreparedClaimInfo.Dynamic. Persist the reservedFor pod uids in
+      PreparedClaimInfo (new field PodUIDs) so that they survive a
+      restart (podClaims, :90-92, is in memory only).
+    - buildClaimMarkerSpec (719-733): for claims with a dynamic device add
+      the second CDI device with Mounts + Env (4.1/3.1). One spec file
+      "cxl-dynamic" is cleaner (same pattern as pool.go:521-566).
+    - claimedMemory in nri.go already ignores unknown device types
+      (nri.go:311-323), so a token claim does not start memory steering.
+    Alternative: a third kubeletplugin helper with its own driver name
+    (cxl-dynamic.generic), like pool.go:148-163. It cleanly separates the
+    token from cxl.generic classes, but costs another registration
+    socket and slice publisher (≈120 LOC). Pick it if classes that select
+    all cxl.generic devices exist in the field.
+
+  6.3 driver.go (≈60)
+    - driver.dyn *dynamicBroker. In newDriver after the NRI start
+      (driver.go:438-449): newDynamicBroker(client, nodeName, namespace,
+      sockRoot, dataDir, nri, pool), broker.Start(ctx) (load table,
+      re-open listeners for prepared token claims, start the informer on
+      companion pods/claims with label cxl.generic/node=<node>, reconcile).
+      NRI must be connected (Synchronize done) before the reconcile releases
+      anything. Until then, requests get 503.
+    - PrepareResourceClaims (517-527): after state.Prepare, for claims of
+      DeviceType dynamic: broker.OpenClaim(uid, ns/name, podUIDs, policy)
+      (idempotent: mkdir, listen).
+    - UnprepareResourceClaims (546-563): before state.Unprepare:
+      if err := d.dyn.CloseClaim(ctx, uid); err != nil -> response[uid] = err
+      (kubelet retries; CloseClaim starts releasing everything and returns
+      ErrBusy until the companions are gone; hard cap 10 min, then
+      success + warning, and the reconcile continues the cleanup).
+    - Shutdown (608-621): broker.Stop() closes listeners. It does NOT
+      release leases (a restart must be transparent).
+
+  6.4 nri.go (≈150)
+    - container table: ctrID -> {podUID, podNS, podName, name, pid,
+      cgroupDir, claimUIDs}. Fill it in StartContainer (206-254) for every
+      container with a CXL_CLAIM marker (not only those with a steering
+      plan), and in a new Synchronize(pods, containers) handler that uses
+      Container.Pid/Env (api.proto Container 12, 8). Synchronize also fixes
+      gap 2(a): restart cgmpolmgr for prepared steering claims.
+    - Lookup: ContainerForPid(pid) -> /proc/<pid>/cgroup (reuse
+      resolveContainerCgroupDir logic, 371-398) -> longest cgroupDir prefix.
+    - StopContainer/RemoveContainer (185-200, 259-267): broker.ContainerGone(ctrID).
+    - Lend primitives for B (exposed to the broker): UpdateContainers
+      with LinuxResources.cpuset.mems for exclusive memory (NRI
+      UpdateContainers carries LinuxResources only, per 01-starting-points).
+      CreateContainer adjustment hook for pre-authorizing the dax device
+      cgroup for token containers if B says that is needed (api.proto
+      ContainerAdjustment.linux.devices / resources, :660-680).
+
+  6.5 pool.go (≈40)
+    - poolDriver.lendHook interface {Prepared(claimNS, claimName, uid
+      string, devs []preparedPoolDevice); Revoke(ctx, claimNS, claimName,
+      uid string) error}, nil by default (tests unchanged).
+    - prepareClaim end (270-279): after a successful sync, call
+      Prepared ASYNCHRONOUSLY (channel). p.mu is held, and the broker
+      must not call back into the pool under it.
+    - unprepareClaim (451-474): before releasing, if the claim is a
+      companion (the hook knows it by ns/name): Revoke synchronously; on
+      error return it (kubelet retries the companion's unprepare, the
+      memory is not offlined under a borrower). The pool contract and
+      the controller are unchanged.
+
+  6.6 dynamic.go, new (≈700)
+    - lease table + persistence + state machine (4.4);
+    - per-claim listener: net.Listen("unix", <dir>/cxl.sock), chmod 0666,
+      http.Server with a ConnContext that captures the pidfd/ucred;
+      handlers of 4.1; auth (5);
+    - companion create/delete with client-go (pod first, then claim with
+      ownerRef), informer filtered by label node=<node> for state
+      (PodScheduled=False reason -> Pending reason; claim conditions
+      AttachFailed -> reason; prepared via pool hook -> Lending);
+    - lend/revoke dispatcher -> nri.go primitives (B);
+    - reconcile at start and every 60 s (orphans both ways, dead containers);
+    - events on the requester pod are optional (needs events create in
+      tenant namespaces; skip, log instead).
+
+  6.7 cmd/cxl-request, new (≈250): static client, 4.2. Ship it in the
+    driver image and copy it to <bindir> on the host (DaemonSet
+    initContainer or postStart). In the e2e, dra-install copies it next to
+    /usr/local/bin/kubelet-cxl-plugin
+    (dra.source.sh:214-217 pattern).
+
+  6.8 main.go flags (≈40): --dynamic (default false while experimental),
+    --dynamic-namespace (default $POD_NAMESPACE, else cxl-dynamic),
+    --dynamic-socket-dir, --dynamic-client-bin, --companion-image
+    (registry.k8s.io/pause:3.10), --companion-priority-class.
+
+  6.9 deployments (≈150 YAML): DeviceClass cxl-dynamic (+ DynamicPolicy);
+    Namespace cxl-dynamic; Role/RoleBinding (appendix A); VAP + binding
+    (appendix B); DaemonSet: hostPID: true, /var/run/nri mount, socket
+    dir is inside the already mounted /var/lib/kubelet/plugins; doc
+    doc/cxl/DYNAMIC.md (contract like POOL.md).
+
+  6.10 tests: unit tests with a fake clientset and a fake NRI table
+    (≈800). e2e test12-dra-dynamic in n4-cxl-shared-2: busybox pod with
+    the token, `cxl-request memory 512Mi` via kubectl exec, check the node
+    in the container, cxl-release, repeat 3x, then request + delete pod;
+    assert no companions/claims/attachments/regions left (the
+    test10/test11 assertions already exist: pool-client attachments,
+    cxl-assert regions == []).
+
+  Total: ≈1.5 kLOC Go + ≈1 kLOC tests, excluding the lend mechanics (B).
+
+
+7. Feasibility, effort, risks, next step
+----------------------------------------
+  Feasibility: the request channel works with changes in our code only.
+    Every Kubernetes mechanism it uses is in v1.37.1 and on by default
+    (CDI mounts, capacity-less allowMultipleAllocations, SA node extras,
+    VAP, unprepare ordering). End to end, it depends on B (lend
+    exclusive NUMA node / dax node into a running container) and on the
+    memory-limit question below.
+  Effort: token + CDI + NRI table + Synchronize ≈ 3 days; broker (socket,
+    auth, lease table, companion create/watch, reconcile) ≈ 6-8 days;
+    CLI ≈ 1 day; deployment/VAP ≈ 1 day; e2e test ≈ 3 days; total
+    ≈ 3 weeks for one developer to a working prototype in
+    n4-cxl-shared-2, plus B.
+  Risks:
+    R1 The borrower's memory limit: lent pages are charged to the
+       borrower's memcg, so container memory.max AND the pod cgroup
+       memory.max cap them. Lending 512Mi gives no extra room unless the
+       limit is raised (in-place resize, option C, or the plugin writing
+       memory.max of the container and the pod cgroup, which kubelet does
+       not expect). This affects every option. Escalate to the summary.
+    R2 Exclusivity of the new NUMA node (POOL.md:244 TODO): containers with
+       empty cpuset.mems inherit it. B must solve that (every other
+       container's mems pinned to the old nodes, or NRI CreateContainer
+       sets mems explicitly).
+    R3 A companion in the plugin's namespace hides pool usage from tenant
+       ResourceQuota. Mitigated by DeviceClass limits per token and
+       ResourceQuota on tokens. 3.1.1 (b) is the fallback.
+    R4 Token Unprepare that waits for companions can keep a pod
+       Terminating if a companion's unprepare cannot complete (memory not
+       offlinable). Mitigated by the cap (6.3), reconcile, and logging.
+    R5 SELinux on the socket (UNVERIFIED), and DaemonSet gaps 2(b)
+       (hostPID, NRI socket mount): in the e2e (host process) only SELinux
+       can bite.
+    R6 Force deletion of the requester pod: kubelet behaviour for pods
+       deleted from the API before termination is BELIEVED to still run
+       SyncTerminatedPod -> NodeUnprepare. NRI events and the reconcile
+       cover it either way. Verify in the prototype.
+    R7 Latency: a lease needs scheduler + attach + prepare (test10 measured
+       seconds: "attached ... pod Running" timings in its output). The CLI
+       must default to a generous wait (120 s).
+    R8 A class selecting all cxl.generic devices matches the token
+       (1.4). Fix the classes or use a separate driver name (6.2).
+  Next step if chosen: a throwaway prototype on n4-cxl-shared-2 (after
+    agent B's VM work is done) in two slices.
+    (1) Channel only: token device + CDI dir mount + socket + NRI pid
+        auth + a GET /v1/whoami endpoint. Prove from busybox that the
+        mount, the env, SO_PEERCRED -> container mapping and the 403 from a
+        sibling container without the claim all work, also after a
+        plugin restart (the socket is re-created in the bind-mounted dir).
+    (2) Companion flow with the plugin's Role-limited identity (a
+        kubeconfig with the SA token instead of admin, so that RBAC/VAP
+        is really tested): request/release 3x, pod delete with an
+        active lease, plugin kill -9 with an active lease. Lend as stubs
+        that only log until B's procedures land.
+
+
+Appendix A: RBAC of the plugin for E1 (in addition to resource-driver.yaml:80-94)
+
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata: {name: cxl-dynamic-companions, namespace: cxl-dynamic}
+    rules:
+    - {apiGroups: [""], resources: [pods], verbs: [get, list, watch, create, delete]}
+    - {apiGroups: [resource.k8s.io], resources: [resourceclaims], verbs: [get, list, watch, create, delete]}
+    - {apiGroups: [""], resources: [events], verbs: [create, patch]}
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata: {name: cxl-dynamic-companions, namespace: cxl-dynamic}
+    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: cxl-dynamic-companions}
+    subjects:
+    - {kind: ServiceAccount, name: intel-cxl-resource-driver-service-account, namespace: intel-cxl-resource-driver}
+  (The cluster-wide resourceclaims get that the plugin already has covers
+  reading token claims. Nothing cluster-wide is added.)
+
+Appendix B: VAP sketch for companion pods/claims
+
+    apiVersion: admissionregistration.k8s.io/v1
+    kind: ValidatingAdmissionPolicy
+    metadata: {name: cxl-dynamic-companions}
+    spec:
+      failurePolicy: Fail
+      matchConstraints:
+        namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cxl-dynamic}}
+        resourceRules:
+        - {apiGroups: [""], apiVersions: [v1], operations: [CREATE, DELETE], resources: [pods]}
+        - {apiGroups: [resource.k8s.io], apiVersions: [v1], operations: [CREATE, DELETE], resources: [resourceclaims]}
+      matchConditions:
+      - name: isPlugin
+        expression: request.userInfo.username == "system:serviceaccount:intel-cxl-resource-driver:intel-cxl-resource-driver-service-account"
+      variables:
+      - name: node
+        expression: request.userInfo.extra[?'authentication.kubernetes.io/node-name'][0].orValue('')
+      - name: obj
+        expression: 'request.operation == "DELETE" ? oldObject : object'
+      validations:
+      - expression: variables.node != "" && variables.obj.metadata.?labels[?'cxl.generic/node'].orValue('') == variables.node
+        message: companions must carry the plugin's own node label
+      - expression: >-
+          request.operation == "DELETE" || request.resource.resource != "pods" ||
+          (object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms.all(t,
+             t.matchFields.exists(f, f.key == "metadata.name" && f.values == [variables.node])) &&
+           object.spec.containers.all(c, c.image == "registry.k8s.io/pause:3.10" && !has(c.securityContext)) &&
+           (!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.ephemeral) && !has(v.hostPath))) &&
+           object.spec.?automountServiceAccountToken.orValue(true) == false && !has(object.spec.hostNetwork) && !has(object.spec.initContainers)
+        message: companion pods must be pause pods pinned to the plugin's node
+    (Untested CEL, a shape to start from. Bind with validationActions: [Deny].
+    Note that kube-apiserver adds a projected token volume unless
+    automountServiceAccountToken is false, hence that check.)
