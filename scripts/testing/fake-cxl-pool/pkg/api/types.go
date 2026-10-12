@@ -194,6 +194,11 @@ type AttachRequest struct {
 	Wait     *bool  `json:"wait,omitempty"`
 	Timeout  string `json:"timeout,omitempty"`
 	Force    bool   `json:"force,omitempty"`
+	// Exclusive attaches a shared device to this host only: the attach
+	// fails while the device is attached to another host, and attaching it
+	// to another host fails while this attachment is exclusive. An attach
+	// of an attached device sets the flag of the attachment.
+	Exclusive bool `json:"exclusive,omitempty"`
 }
 
 // Attachment states.
@@ -218,10 +223,13 @@ type Attachment struct {
 	Error        string `json:"error,omitempty"`
 	// Owner is the owner given in the attach request that created the
 	// attachment ("" if none, or adopted).
-	Owner   string    `json:"owner,omitempty"`
-	Adopted bool      `json:"adopted,omitempty"`
-	Created time.Time `json:"created"`
-	Updated time.Time `json:"updated"`
+	Owner string `json:"owner,omitempty"`
+	// Exclusive is the flag of the last attach request: no other host may
+	// attach the device meanwhile.
+	Exclusive bool      `json:"exclusive,omitempty"`
+	Adopted   bool      `json:"adopted,omitempty"`
+	Created   time.Time `json:"created"`
+	Updated   time.Time `json:"updated"`
 }
 
 // AttachmentID returns the id of the attachment of a device to a host.

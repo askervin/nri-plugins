@@ -534,6 +534,8 @@ available:
   | extended resources | `get-node-resource`, `wait-node-resource` |
   | interrupts | `resolve-irq`, `irq-cpu-ids`, `verify-irq-cpus` |
   | scheduling | `verify-sched`, `SCHED_*` |
+  | other VMs | `vmdir-of`, `vmdir-command`, `vmdir-put-file`, `vmdir-up`, `vmdir-restart` (`lib/k8s.bash`) |
+  | cluster shapes | `vm-k8s-reinit`, `vm-k8s-in-shape`, `vm-k8s-shape`, `vm-k8s-node-ip`, `vm-vmnet-ensure` (`lib/k8s.bash`) |
 
   Some of them are configured by variables a test case can set, notably
   `plugin_log_filter`, which restricts the log assertions to the log lines of
@@ -548,3 +550,40 @@ available:
 test suite directory and ending in the test case directory, `lib/test.bash`
 being the first one. Therefore a test case, or all test cases of a policy or a
 topology, can override any shared helper simply by redefining it.
+
+## Multi-node clusters
+
+Every VM is provisioned as a single-node cluster. A test can make other
+shapes of existing VMs, for instance one cluster of two VMs, and back, with
+`vm-k8s-reinit` (`lib/k8s.bash`):
+
+```bash
+vm-k8s-reinit "$POOL_VM2_DIR $POOL_VM1_DIR"     # one cluster: VM2 control plane, VM1 worker
+vm-k8s-reinit "$POOL_VM2_DIR" "$POOL_VM1_DIR"   # two single-node clusters
+```
+
+Each argument is a cluster: VM names or output directories, the control
+plane first. A cluster that has its shape is left alone in a second or so.
+The others are rebuilt with `kubeadm reset`, `kubeadm init` and `kubeadm
+join`, which loses all cluster state: deploy what the test needs after it.
+Pods run on every node, and every node has the admin kubeconfig. Rebuilding
+two nodes takes about half a minute, two single-node clusters about two
+minutes. Tests that need a shape declare it at their start, so that a
+failed test which left another shape does not break the next one.
+
+The VMs of a multi-node cluster need a VM network: their topologies set
+`vm_network` (`vm_network.var.sh`, for instance `cxl-pool` in
+`memory.test-suite/memory-policy/n4-cxl-shared-{1,2}`). Each such VM gets a
+second NIC on a qemu multicast socket of the host loopback, which needs no
+host privileges. The address and MAC of the VM and the multicast group of
+the network are derived and recorded as `VMNET_*` in the `env` file of the
+VM. An existing VM gets the NIC in its `Vagrantfile` and is restarted once
+by `vm-vmnet-ensure`. In a multi-node cluster the nodes use their VM
+network addresses, and the bridge CNI of every node hands out addresses of
+the node's pod CIDR only, with routes to the pod CIDRs of the other nodes.
+Only the bridge CNI is supported.
+
+To bring the VMs back to single-node clusters by hand, run any test that
+declares that shape, for instance
+`memory.test-suite/memory-policy/n4-cxl-shared-2/test11-dra-sharing`.
+

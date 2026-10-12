@@ -493,8 +493,14 @@ func (s *Server) checkAttachLocked(d *device, h *host, req api.AttachRequest) er
 		return api.Conflict("device %q is allocated to %q (request owner %q)", d.Name, d.Allocation.Owner, req.Owner)
 	}
 	for _, a := range s.deviceAttachmentsLocked(d.Name) {
-		if a.Host != h.name && !d.Shared {
+		switch {
+		case a.Host == h.name:
+		case !d.Shared:
 			return api.Conflict("device %q is not shared and it is attached to %q", d.Name, a.Host)
+		case req.Exclusive:
+			return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, a.Host)
+		case a.Exclusive:
+			return api.Conflict("device %q is attached exclusively to %q", d.Name, a.Host)
 		}
 	}
 	if _, ok := d.bindings[h.name]; !ok {
@@ -647,6 +653,9 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		return api.Attachment{}, 0, api.NotFound("host %q not found", req.Host)
 	}
 	if existing, ok, err := s.existingAttachmentLocked(d, h, req); ok || err != nil {
+		if err == nil {
+			err = s.updateExclusiveLocked(d, h, existing, req)
+		}
 		att, state := existing.Attachment, existing.State // copy under the lock
 		s.mu.Unlock()
 		if err != nil || state == api.AttachmentAttached {
@@ -691,6 +700,9 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	// was read (they are in s.atts); reconcile skips it in that case
 	s.storeTreeLocked(h, tree, gen, true)
 	if existing, ok, err := s.existingAttachmentLocked(d, h, req); ok || err != nil {
+		if err == nil {
+			err = s.updateExclusiveLocked(d, h, existing, req)
+		}
 		att := existing.Attachment
 		s.mu.Unlock()
 		h.opMu.Unlock()
@@ -737,6 +749,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 			QemuObjectID: objID,
 			State:        api.AttachmentAttaching,
 			Owner:        req.Owner,
+			Exclusive:    req.Exclusive,
 			Created:      now,
 			Updated:      now,
 		},
@@ -815,6 +828,28 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return a.Attachment, AttachCreated, nil
+}
+
+// updateExclusiveLocked sets the exclusive flag of an existing attachment
+// to that of an attach request. Exclusive needs the device attached to no
+// other host.
+func (s *Server) updateExclusiveLocked(d *device, h *host, a *attachment, req api.AttachRequest) error {
+	if a.Exclusive == req.Exclusive {
+		return nil
+	}
+	if req.Exclusive {
+		for _, o := range s.deviceAttachmentsLocked(d.Name) {
+			if o.Host != h.name {
+				return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, o.Host)
+			}
+		}
+	}
+	a.Exclusive = req.Exclusive
+	a.Updated = time.Now().UTC()
+	s.logf("attachment %s: exclusive %v", a.ID, a.Exclusive)
+	s.saveStateLocked()
+	s.publishAttachmentLocked(a)
+	return nil
 }
 
 // existingAttachmentLocked returns the existing attachment of the device to

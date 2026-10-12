@@ -68,13 +68,20 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 		// the size of a shared device is never a capacity: every
 		// allocation would consume it
 		one := resource.MustParse("1")
+		all := *resource.NewQuantity(int64(c.cfg.SharedHosts), resource.DecimalSI)
+		valid := []resource.Quantity{one}
+		if c.cfg.SharedHosts > 1 {
+			// all of it: an exclusive claim keeps every other claim off
+			// the device (attached with AttachRequest.Exclusive)
+			valid = append(valid, all)
+		}
 		rd.AllowMultipleAllocations = ptr.To(true)
 		rd.Capacity = map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
-			"hosts": {
-				Value: *resource.NewQuantity(int64(c.cfg.SharedHosts), resource.DecimalSI),
+			hostsCapacity: {
+				Value: all,
 				RequestPolicy: &resourceapi.CapacityRequestPolicy{
 					Default:     &one,
-					ValidValues: []resource.Quantity{one},
+					ValidValues: valid,
 				},
 			},
 		}

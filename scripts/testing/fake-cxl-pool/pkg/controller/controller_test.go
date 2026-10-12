@@ -128,21 +128,32 @@ func (p *fakePool) handler() http.Handler {
 			writeErr(w, api.NotFound("device %q not found", name))
 			return
 		}
-		p.attaches = append(p.attaches, api.AttachmentID(name, req.Host)+" "+req.Owner)
+		call := api.AttachmentID(name, req.Host) + " " + req.Owner
+		if req.Exclusive {
+			call += " exclusive"
+		}
+		p.attaches = append(p.attaches, call)
 		if code := p.attachErr[name]; code != "" {
 			writeErr(w, &api.Error{Code: code, Message: "injected " + code})
 			return
 		}
 		id := api.AttachmentID(name, req.Host)
-		if a, ok := p.atts[id]; ok {
-			writeJSON(w, 200, a)
-			return
-		}
 		for _, a := range p.atts {
-			if a.Device == name && !d.Shared {
+			switch {
+			case a.Device != name || a.Host == req.Host:
+			case !d.Shared:
 				writeErr(w, api.Conflict("device %q is not shared and it is attached to %q", name, a.Host))
 				return
+			case req.Exclusive || a.Exclusive:
+				writeErr(w, api.Conflict("device %q is attached to %q (exclusive attach)", name, a.Host))
+				return
 			}
+		}
+		if a, ok := p.atts[id]; ok {
+			a.Exclusive = req.Exclusive
+			p.atts[id] = a
+			writeJSON(w, 200, a)
+			return
 		}
 		p.counter++
 		a := api.Attachment{
@@ -150,6 +161,7 @@ func (p *fakePool) handler() http.Handler {
 			Slot:         api.Slot{Bus: fmt.Sprintf("ds%d", p.counter)},
 			QemuDeviceID: fmt.Sprintf("fcp_%s.hp%d", name, p.counter),
 			State:        api.AttachmentAttached,
+			Exclusive:    req.Exclusive,
 		}
 		p.atts[id] = a
 		writeJSON(w, 201, a)
@@ -285,6 +297,13 @@ func (e *env) sync() {
 // until the lister has it.
 func (e *env) createClaim(name, device, nodeName string, shareID string) *resourceapi.ResourceClaim {
 	e.t.Helper()
+	return e.createClaimHosts(name, device, nodeName, shareID, 0)
+}
+
+// createClaimHosts is createClaim with the hosts capacity consumed by a
+// shared device (0: none).
+func (e *env) createClaimHosts(name, device, nodeName string, shareID string, hosts int64) *resourceapi.ResourceClaim {
+	e.t.Helper()
 	r := resourceapi.DeviceRequestAllocationResult{
 		Request: "mem", Driver: DefaultDriverName, Pool: DefaultPoolName, Device: device,
 		BindingConditions:        []string{DefaultDriverName + "/Attached"},
@@ -292,6 +311,9 @@ func (e *env) createClaim(name, device, nodeName string, shareID string) *resour
 	}
 	if shareID != "" {
 		r.ShareID = ptr.To(types.UID(shareID))
+	}
+	if hosts > 0 {
+		r.ConsumedCapacity = map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: *resource.NewQuantity(hosts, resource.DecimalSI)}
 	}
 	claim := &resourceapi.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name, UID: types.UID("uid-" + name)},
@@ -435,7 +457,8 @@ func TestPublish(t *testing.T) {
 	if !*sh.Attributes["shared"].BoolValue || *sh.Attributes["size"].IntValue != 256<<20 ||
 		!ptr.Deref(sh.AllowMultipleAllocations, false) || len(sh.Capacity) != 1 ||
 		hosts.Value.Value() != 4 || hosts.RequestPolicy == nil || hosts.RequestPolicy.Default.Value() != 1 ||
-		len(hosts.RequestPolicy.ValidValues) != 1 || hosts.RequestPolicy.ValidValues[0].Value() != 1 ||
+		len(hosts.RequestPolicy.ValidValues) != 2 || hosts.RequestPolicy.ValidValues[0].Value() != 1 ||
+		hosts.RequestPolicy.ValidValues[1].Value() != 4 ||
 		!ptr.Deref(sh.BindsToNode, false) {
 		t.Fatalf("unexpected shared device %+v", sh)
 	}
@@ -706,5 +729,67 @@ func TestExclusiveMovesBetweenNodes(t *testing.T) {
 	}
 	if ids := e.pool.attachmentIDs(); len(ids) != 1 || ids[0] != "pooled0@node2" {
 		t.Fatalf("unexpected attachments %v", ids)
+	}
+}
+
+func TestExclusiveSharedClaim(t *testing.T) {
+	e := newEnv(t)
+	// all of the hosts capacity: attached exclusively
+	e.createClaimHosts("w", "shared0", "node1", "share-w", 4)
+	e.sync()
+	if att, _ := e.pool.calls(); len(att) != 1 || att[0] != "shared0@vm1 k8s:resourceclaim/uid-w exclusive" {
+		t.Fatalf("unexpected attach requests %v", att)
+	}
+	c, st := e.condition("w", "cxl-pool.generic/Attached")
+	if c == nil || !strings.Contains(string(st.Data.Raw), `"exclusive":true`) {
+		t.Fatalf("claim w: condition %+v data %s", c, st.Data.Raw)
+	}
+	// readers on the same node right after the writer: the attachment
+	// stays, its flag is dropped
+	e.deallocate("w")
+	e.createClaimHosts("r1", "shared0", "node1", "share-r1", 1)
+	e.sync()
+	att, det := e.pool.calls()
+	if len(det) != 0 || len(att) != 2 || att[1] != "shared0@vm1 k8s:resourceclaim/uid-r1" {
+		t.Fatalf("attach %v detach %v", att, det)
+	}
+	if c, _ := e.condition("r1", "cxl-pool.generic/Attached"); c == nil {
+		t.Fatal("claim r1: no Attached condition")
+	}
+	// and the other way round: an exclusive claim on the node of the
+	// reader sets the flag before it is Attached
+	e.deallocate("r1")
+	e.createClaimHosts("w2", "shared0", "node1", "share-w2", 4)
+	e.sync()
+	if att, _ = e.pool.calls(); len(att) != 3 || att[2] != "shared0@vm1 k8s:resourceclaim/uid-w2 exclusive" {
+		t.Fatalf("attach %v", att)
+	}
+	if c, _ := e.condition("w2", "cxl-pool.generic/Attached"); c == nil {
+		t.Fatal("claim w2: no Attached condition")
+	}
+}
+
+func TestExclusiveSharedConflict(t *testing.T) {
+	e := newEnv(t)
+	// another cluster has the device: an exclusive attach conflicts
+	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster"})
+	e.createClaimHosts("w", "shared0", "node1", "share-w", 4)
+	e.sync()
+	c, _ := e.condition("w", "cxl-pool.generic/AttachFailed")
+	if c == nil || c.Reason != ReasonConflict {
+		t.Fatalf("claim w: AttachFailed %+v", c)
+	}
+	if c, _ := e.condition("w", "cxl-pool.generic/Attached"); c != nil {
+		t.Fatalf("claim w: Attached %+v", c)
+	}
+	// a claim of one host is not exclusive
+	if e.c.exclusiveResult(&resourceapi.DeviceRequestAllocationResult{Device: "shared0",
+		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: resource.MustParse("1")}}) {
+		t.Fatal("one host is exclusive")
+	}
+	// an exclusive device is never attached with the flag
+	if e.c.exclusiveResult(&resourceapi.DeviceRequestAllocationResult{Device: "pooled0",
+		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: resource.MustParse("4")}}) {
+		t.Fatal("pooled0 is exclusive")
 	}
 }

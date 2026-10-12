@@ -391,6 +391,54 @@ func TestAttachShared(t *testing.T) {
 	mustCode(t, err, api.CodeNotFound)
 }
 
+func TestAttachSharedExclusive(t *testing.T) {
+	e := newTestEnv(t, "")
+	// exclusive to vm1: vm2 cannot attach
+	a1, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Exclusive: true})
+	if err != nil || !a1.Exclusive {
+		t.Fatalf("exclusive attach: %+v %v", a1, err)
+	}
+	_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"})
+	mustCode(t, err, api.CodeConflict)
+	if !strings.Contains(err.Error(), "attached exclusively to") {
+		t.Fatalf("conflict %v", err)
+	}
+	// an attach of vm1 without the flag drops it: vm2 can attach then
+	a1, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1"})
+	if err != nil || a1.Exclusive {
+		t.Fatalf("attach again without exclusive: %+v %v", a1, err)
+	}
+	if _, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"}); err != nil {
+		t.Fatal(err)
+	}
+	// attached to two hosts: neither can become exclusive
+	for _, h := range []string{"vm1", "vm2"} {
+		_, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: h, Exclusive: true})
+		mustCode(t, err, api.CodeConflict)
+		if !strings.Contains(err.Error(), "needs it attached nowhere else") {
+			t.Fatalf("conflict %v", err)
+		}
+	}
+	// after the detach from vm2, vm1 becomes exclusive; the flag persists
+	if _, _, err := e.c.Detach(ctx, "shared0", "vm2", client.DetachOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if a1, _, err = e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm1", Exclusive: true}); err != nil || !a1.Exclusive {
+		t.Fatalf("exclusive after detach: %+v %v", a1, err)
+	}
+	as, err := e.c.Attachments(ctx, "", "shared0")
+	if err != nil || len(as) != 1 || !as[0].Exclusive {
+		t.Fatalf("attachments %+v %v", as, err)
+	}
+	// a detach ends the exclusive attachment: vm2 can attach
+	if _, _, err := e.c.Detach(ctx, "shared0", "vm1", client.DetachOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.c.Attach(ctx, "shared0", api.AttachRequest{Host: "vm2"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDetachGuestHolds(t *testing.T) {
 	e := newTestEnv(t, "")
 	a, _, err := e.c.Attach(ctx, "pooled0", api.AttachRequest{Host: "vm1"})

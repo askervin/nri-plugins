@@ -121,6 +121,10 @@ AttachRequest {
   owner?: string          # must match device.allocation.owner if allocated
   wait?: bool             # default true: return when qemu accepted device_add
   timeout?: string        # default "30s"
+  exclusive?: bool        # shared device: 409 while it is attached to another host,
+                          # and other hosts get 409 while this attachment is exclusive;
+                          # an attach of an attached device sets the attachment's flag
+                          # (added 2026-10-12, single-writer data sharing)
 }
 Attachment {
   id: string              # "<device>@<host>"
