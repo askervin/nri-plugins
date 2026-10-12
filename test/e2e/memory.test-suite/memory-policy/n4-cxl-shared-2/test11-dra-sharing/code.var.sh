@@ -112,6 +112,9 @@ echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFI
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
 
+echo "### preconditions: two single-node clusters (test13 makes one cluster of them)"
+vm-k8s-reinit "$VM2" "$VM1"
+
 echo "### preconditions: cxl, daxctl and cxl-dump in both VMs, no CXL memory devices"
 pool-vm-tools-install "$VM2"
 pool-vm-tools-install "$VM1"

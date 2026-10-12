@@ -41,6 +41,7 @@ DRA_POOL_DRIVER=cxl-pool.generic   # pool devices, published by the controller
 DRA_LOCAL_DRIVER=cxl.generic       # node-local CXL and DRAM, published by the node plugin
 DRA_NS=cxl-pool-demo               # namespace of the test objects
 DRA_INSTALLED_VMS=()               # VMDIRs where dra-install started the components
+declare -A DRA_NODE_ONLY=()        # VMDIR -> 1: dra-install-node, a worker of a cluster
 DRA_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 DRA_DAX_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/pool-dax-rw.py"
 DRA_NUMA_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/numa-touch.py"
@@ -223,61 +224,129 @@ dra-install() { # script API
     #
     # Call pool-server-start first: the controller needs the server, and
     # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup.
-    local vmdir="$1" name label url request_flag=""
+    local vmdir="$1" name label url
     name=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
-    [ -x "$DRA_DRIVER_BIN" ] || error "dra-install: no $DRA_DRIVER_BIN, run dra-build first"
     [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
     [ -f "$DRA_DEVICE_CLASSES" ] || error "dra-install: no DeviceClasses $DRA_DEVICE_CLASSES in the driver sources"
     url="${POOL_GUEST_URL:-http://192.168.76.2:${FAKE_CXL_POOL_PORT:-9909}}"
 
-    echo "dra-install $label: stopping components of an earlier run, if any"
-    dra-vm-command "$vmdir" "for u in kubelet-cxl-plugin fake-cxl-pool-controller; do systemctl stop \$u 2>/dev/null; systemctl reset-failed \$u 2>/dev/null; done; true"
-    dra-vm-put-file "$vmdir" "$DRA_DRIVER_BIN" /usr/local/bin/kubelet-cxl-plugin
+    dra-install-files "$vmdir"
     dra-vm-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
     dra-vm-put-file "$vmdir" "$DRA_DEVICE_CLASSES" /root/cxl-pool-device-classes.yaml
-    dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/kubelet-cxl-plugin /usr/local/bin/fake-cxl-pool-controller && echo '{}' > /etc/kubelet-cxl-plugin.yaml" ||
-        command-error "cannot install the DRA components in $label"
-    if [ -x "$DRA_REQUEST_BIN" ]; then
-        dra-vm-put-file "$vmdir" "$DRA_REQUEST_BIN" "$DRA_REQUEST_VM_BIN"
-        dra-vm-command "$vmdir" "chmod 755 $DRA_REQUEST_VM_BIN" ||
-            command-error "cannot install cxl-request in $label"
-        request_flag=" --cxl-request-bin $DRA_REQUEST_VM_BIN"
-    fi
+    dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
+        command-error "cannot install fake-cxl-pool-controller in $label"
     if [ -f "$DRA_DYNAMIC_CLASS" ]; then
         dra-vm-put-file "$vmdir" "$DRA_DYNAMIC_CLASS" /root/cxl-dynamic-device-class.yaml
     else
         dra-vm-command "$vmdir" "rm -f /root/cxl-dynamic-device-class.yaml"
     fi
+
+    echo "dra-install $label: starting kubelet-cxl-plugin and fake-cxl-pool-controller"
+    dra-start-plugin "$vmdir"
+    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
+        command-error "cannot start fake-cxl-pool-controller in $label"
+    dra-installed-add "$vmdir" ""
+    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml && if [ -f /root/cxl-dynamic-device-class.yaml ]; then kubectl apply -f /root/cxl-dynamic-device-class.yaml; fi" ||
+        command-error "cannot create the DeviceClasses in $label"
+
+    dra-wait-node "$vmdir"
+
+    dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
+        command-error "cannot create namespace $DRA_NS in $label"
+}
+
+dra-install-node() { # script API
+    # Usage: dra-install-node VMDIR
+    #
+    # Run only kubelet-cxl-plugin in the VM of VMDIR, a worker node of the
+    # cluster of a VM where dra-install runs: one pool controller and one
+    # set of DeviceClasses per cluster, a node plugin on every node. Call
+    # dra-install on the control plane first. Wait until the cluster has
+    # the cxl.generic ResourceSlice of the node and the node has the
+    # kubelet plugin socket of cxl-pool.generic. dra-cleanup stops it.
+    local vmdir="$1" label
+    label=$(dra-vm-label "$vmdir")
+    dra-install-files "$vmdir"
+    echo "dra-install-node $label: starting kubelet-cxl-plugin"
+    dra-start-plugin "$vmdir"
+    dra-installed-add "$vmdir" 1
+    dra-wait-node "$vmdir"
+}
+
+dra-install-files() {
+    # Usage: dra-install-files VMDIR
+    #
+    # Stop the DRA components of an earlier run in the VM of VMDIR, install
+    # kubelet-cxl-plugin, its configuration and cxl-request (if dra-build
+    # built it), and remove node plugin state left by an earlier VM boot.
+    local vmdir="$1" label
+    label=$(dra-vm-label "$vmdir")
+    [ -x "$DRA_DRIVER_BIN" ] || error "dra-install: no $DRA_DRIVER_BIN, run dra-build first"
+    echo "dra-install $label: stopping components of an earlier run, if any"
+    dra-vm-command "$vmdir" "for u in kubelet-cxl-plugin fake-cxl-pool-controller; do systemctl stop \$u 2>/dev/null; systemctl reset-failed \$u 2>/dev/null; done; true"
+    dra-vm-put-file "$vmdir" "$DRA_DRIVER_BIN" /usr/local/bin/kubelet-cxl-plugin
+    dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/kubelet-cxl-plugin && echo '{}' > /etc/kubelet-cxl-plugin.yaml" ||
+        command-error "cannot install kubelet-cxl-plugin in $label"
+    dra-vm-command "$vmdir" "rm -f $DRA_REQUEST_VM_BIN"
+    if [ -x "$DRA_REQUEST_BIN" ]; then
+        dra-vm-put-file "$vmdir" "$DRA_REQUEST_BIN" "$DRA_REQUEST_VM_BIN"
+        dra-vm-command "$vmdir" "chmod 755 $DRA_REQUEST_VM_BIN" ||
+            command-error "cannot install cxl-request in $label"
+    fi
     # The prepared pool claims of the node plugin refer to regions. Without
     # regions they are leftovers of an earlier VM boot, and so are the
     # leases (leases.json) and the lease sockets of token claims (leases/).
     dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+}
 
-    echo "dra-install $label: starting kubelet-cxl-plugin and fake-cxl-pool-controller"
+dra-start-plugin() {
+    # Usage: dra-start-plugin VMDIR
+    #
+    # Start kubelet-cxl-plugin in the VM of VMDIR as a transient systemd
+    # unit, with the admin kubeconfig of the VM and, if cxl-request is
+    # installed, the flag that mounts it into the containers of lease
+    # claims.
+    local vmdir="$1" name request_flag=""
+    name=$(dra-vm-name "$vmdir")
+    [ ! -x "$DRA_REQUEST_BIN" ] || request_flag=" --cxl-request-bin $DRA_REQUEST_VM_BIN"
     dra-vm-command "$vmdir" "systemd-run --unit kubelet-cxl-plugin --property=Restart=no -E NODE_NAME=$name -E KUBECONFIG=/root/.kube/config /usr/local/bin/kubelet-cxl-plugin --node-name $name -f /etc/kubelet-cxl-plugin.yaml$request_flag -v 4" ||
-        command-error "cannot start kubelet-cxl-plugin in $label"
-    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
-        command-error "cannot start fake-cxl-pool-controller in $label"
-    dra-installed-remove "$vmdir"
-    DRA_INSTALLED_VMS+=("$vmdir")
+        command-error "cannot start kubelet-cxl-plugin in $(dra-vm-label "$vmdir")"
+}
+
+dra-installed-add() {
+    # Usage: dra-installed-add VMDIR NODE-ONLY
+    #
+    # Record that DRA components run in the VM of VMDIR (NODE-ONLY 1: only
+    # the node plugin), for dra-cleanup, and chain the EXIT trap:
+    # dra-cleanup, then pool-cleanup.
+    dra-installed-remove "$1"
+    DRA_INSTALLED_VMS+=("$1")
+    if [ -n "$2" ]; then
+        DRA_NODE_ONLY["$1"]=1
+    fi
     if type -t pool-cleanup >/dev/null; then
         trap 'dra-cleanup; pool-cleanup' EXIT
     else
         trap dra-cleanup EXIT
     fi
-    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml && if [ -f /root/cxl-dynamic-device-class.yaml ]; then kubectl apply -f /root/cxl-dynamic-device-class.yaml; fi" ||
-        command-error "cannot create the DeviceClasses in $label"
+}
 
+dra-wait-node() {
+    # Usage: dra-wait-node VMDIR
+    #
+    # Wait until the cluster of the VM of VMDIR has the pool ResourceSlice
+    # and the cxl.generic ResourceSlice of the node, and the node has the
+    # kubelet plugin socket of cxl-pool.generic.
+    local vmdir="$1" name label
+    name=$(dra-vm-name "$vmdir")
+    label=$(dra-vm-label "$vmdir")
     retry-until --timeout 60 --interval 2 --message "$label: ResourceSlices of $DRA_POOL_DRIVER and $DRA_LOCAL_DRIVER on $name, $DRA_POOL_DRIVER kubelet plugin socket" \
         'dra-install-ready "$vmdir" "$name"' || {
         dra-vm-command "$vmdir" "systemctl status --no-pager kubelet-cxl-plugin fake-cxl-pool-controller; journalctl --no-pager -n 40 -u kubelet-cxl-plugin; journalctl --no-pager -n 40 -u fake-cxl-pool-controller; kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/*"
         error "dra-install: the DRA components did not come up in $label"
     }
     dra-vm-command "$vmdir" "kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/"
-
-    dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
-        command-error "cannot create namespace $DRA_NS in $label"
 }
 
 dra-install-ready() {
@@ -315,21 +384,36 @@ dra-uninstall() { # script API
     # the controller has detached the devices of the node, stop both
     # units, delete the pool ResourceSlices the controller left and the
     # DeviceClasses. Never fails the test: it runs in the EXIT trap.
-    local vmdir="$1" name label left
+    local vmdir="$1" name label left v host
     name=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
+    if [ -n "${DRA_NODE_ONLY[$vmdir]}" ]; then
+        # A worker: the dra-uninstall of its control plane deleted the
+        # objects and waited for the detach of its devices.
+        echo "dra-uninstall $label (node plugin only)"
+        dra-vm-command "$vmdir" "systemctl stop kubelet-cxl-plugin 2>/dev/null; systemctl reset-failed kubelet-cxl-plugin 2>/dev/null; true"
+        dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions left, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+        dra-installed-remove "$vmdir"
+        return 0
+    fi
     echo "dra-uninstall $label"
     dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s"
     retry-until --timeout 60 --interval 2 --message "$label: no ResourceClaims in $DRA_NS" \
         '[ -z "$(dra-vm-command-q "$vmdir" "kubectl get resourceclaims -n $DRA_NS -o name 2>/dev/null")" ]' ||
         echo "dra-uninstall $label: ResourceClaims remain in $DRA_NS"
-    if [ -n "$(dra-pool-attachments "$name")" ]; then
-        retry-until --timeout 60 --interval 2 --message "$label: the controller detaches the pool devices of $name" \
-            '[ -z "$(dra-pool-attachments "$name")" ]' || {
-            echo "dra-uninstall $label: attachments left, pool-cleanup releases and detaches them:"
-            dra-pool-attachments "$name"
-        }
-    fi
+    # The controller of this cluster detaches the devices of every node of
+    # it: this one and the workers where dra-install-node runs.
+    for v in "$vmdir" "${DRA_INSTALLED_VMS[@]}"; do
+        [ "$v" == "$vmdir" ] || [ -n "${DRA_NODE_ONLY[$v]}" ] || continue
+        host=$(dra-vm-name "$v")
+        if [ -n "$(dra-pool-attachments "$host")" ]; then
+            retry-until --timeout 60 --interval 2 --message "$label: the controller detaches the pool devices of $host" \
+                '[ -z "$(dra-pool-attachments "$host")" ]' || {
+                echo "dra-uninstall $label: attachments left, pool-cleanup releases and detaches them:"
+                dra-pool-attachments "$host"
+            }
+        fi
+    done
     dra-vm-command "$vmdir" "for u in kubelet-cxl-plugin fake-cxl-pool-controller; do systemctl stop \$u 2>/dev/null; systemctl reset-failed \$u 2>/dev/null; done; true"
     left=$(dra-vm-command-q "$vmdir" "kubectl get resourceslices -o jsonpath='{range .items[?(@.spec.driver==\"$DRA_POOL_DRIVER\")]}{.metadata.name}{\"\\n\"}{end}'")
     if [ -n "$left" ]; then
@@ -348,6 +432,7 @@ dra-installed-remove() {
         [ "$v" == "$1" ] || keep+=("$v")
     done
     DRA_INSTALLED_VMS=("${keep[@]}")
+    unset "DRA_NODE_ONLY[$1]"
 }
 
 dra-cleanup() {
@@ -359,8 +444,14 @@ dra-cleanup() {
     # which runs next, releases and detaches them.
     local vmdir vms memdevs
     vms=("${DRA_INSTALLED_VMS[@]}")
+    # Control planes first: they delete the objects of the whole cluster
+    # and wait for the detach of the devices of all its nodes, while the
+    # node plugins of the workers still run.
     for vmdir in "${vms[@]}"; do
-        dra-uninstall "$vmdir"
+        [ -n "${DRA_NODE_ONLY[$vmdir]}" ] || dra-uninstall "$vmdir"
+    done
+    for vmdir in "${vms[@]}"; do
+        [ -z "${DRA_NODE_ONLY[$vmdir]}" ] || dra-uninstall "$vmdir"
     done
     dra-trace-stop
     for vmdir in "${vms[@]}"; do
@@ -764,19 +855,23 @@ dra-trace-start() { # script API
         name=$(dra-vm-name "$vmdir")
         # Collectors of an aborted trace may still run.
         dra-vm-command-q "$vmdir" "$DRA_TRACE_KILL; rm -rf /run/dra-trace; mkdir -p /run/dra-trace"
-        dra-trace-collect-vm "$vmdir" "$label.controller" lines "journalctl -f -n0 -o cat -u fake-cxl-pool-controller"
         dra-trace-collect-vm "$vmdir" "$label.driver" lines "journalctl -f -n0 -o cat -u kubelet-cxl-plugin"
+        dra-trace-collect-vm "$vmdir" "$label.udev" lines "stdbuf -oL udevadm monitor -k -u -s cxl -s dax -s memory -s node"
+        dra-trace-collect-vm "$vmdir" "$label.kubelet" lines "journalctl -f -n0 -o cat -u kubelet | grep --line-buffered -iE 'dra|resourceclaim|cxl'"
+        # The rest is of the cluster: once per cluster, on its control plane.
+        [ -z "${DRA_NODE_ONLY[$vmdir]}" ] || continue
+        dra-trace-collect-vm "$vmdir" "$label.controller" lines "journalctl -f -n0 -o cat -u fake-cxl-pool-controller"
         dra-trace-collect-vm "$vmdir" "$label.scheduler" lines "kubectl -n kube-system logs -f --tail=0 kube-scheduler-$name"
         dra-trace-collect-vm "$vmdir" "$label.events" lines "kubectl get events -A --watch-only -o custom-columns=NS:.metadata.namespace,KIND:.involvedObject.kind,NAME:.involvedObject.name,REASON:.reason,MSG:.message --no-headers"
         dra-trace-collect-vm "$vmdir" "$label.claims" claims "kubectl get resourceclaims -A -w --output-watch-events -o json"
         dra-trace-collect-vm "$vmdir" "$label.pods" lines "kubectl get pods -A -w --output-watch-events --no-headers"
-        dra-trace-collect-vm "$vmdir" "$label.udev" lines "stdbuf -oL udevadm monitor -k -u -s cxl -s dax -s memory -s node"
-        dra-trace-collect-vm "$vmdir" "$label.kubelet" lines "journalctl -f -n0 -o cat -u kubelet | grep --line-buffered -iE 'dra|resourceclaim|cxl'"
     done
     # Every remote collector writes its pid file just before it starts.
     for vmdir in "$@"; do
+        n=8
+        [ -z "${DRA_NODE_ONLY[$vmdir]}" ] || n=3
         retry-until --timeout 30 --message "trace collectors in $(dra-vm-label "$vmdir")" \
-            '[ "$(dra-vm-command-q "$vmdir" "ls /run/dra-trace/ | grep -c .pid\$")" == 8 ]' ||
+            '[ "$(dra-vm-command-q "$vmdir" "ls /run/dra-trace/ | grep -c .pid\$")" == "$n" ]' ||
             error "dra-trace-start: trace collectors did not start in $(dra-vm-label "$vmdir"), see $DRA_TRACE_DIR"
     done
     sleep 1   # for the watches to be established

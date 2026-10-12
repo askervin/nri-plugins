@@ -7,10 +7,14 @@
 # fake-cxl-pool-client in the VMs. The test runs against the VM of
 # n4-cxl-shared-2 (vm-command, "VM2") and drives the VM of n4-cxl-shared-1
 # ("VM1") over ssh from the host: the VMs reach the host at 192.168.76.2,
-# the slirp gateway, but not each other.
+# the slirp gateway. They reach each other only over their VM network
+# "cxl-pool" (vm_network.var.sh), which vm-k8s-reinit uses to make one
+# cluster of them (test13).
 #
 # The helpers that work on either VM take the output directory of the VM,
-# VMDIR: $OUTPUT_DIR for VM2, $POOL_VM1_DIR for VM1.
+# VMDIR: $OUTPUT_DIR for VM2, $POOL_VM1_DIR for VM1. The commands in other
+# VMs are those of lib/k8s.bash (vmdir-*), under the names that the tests
+# use.
 
 POOL_SRC_DIR="$nri_resource_policy_src/scripts/testing/fake-cxl-pool"
 POOL_BIN_DIR="$POOL_SRC_DIR/bin"
@@ -56,62 +60,39 @@ other-vm-command() { # script API
     #
     # Execute COMMAND as root in the VM of the output directory VMDIR, which
     # is not the VM of the test, the way vm-command does in the VM of the
-    # test: print the command and its output, set COMMAND_OUTPUT and
-    # COMMAND_STATUS and return the exit status of COMMAND.
-    local vmdir="$1" label
-    label="$(pool-vm-label "$vmdir")"
-    command-start "$label" "\e[38;5;13mroot@$label>\e[0m " "$2"
-    ssh -F "$vmdir/.ssh-config" node sudo bash -l <<<"$COMMAND" 2>&1 | command-handle-output
-    command-end "${PIPESTATUS[0]}"
-    return "$COMMAND_STATUS"
+    # test (vmdir-command of lib/k8s.bash).
+    vmdir-command "$1" "$2"
 }
 
 other-vm-command-q() {
     # Usage: other-vm-command-q VMDIR COMMAND
     #
     # Execute COMMAND as root in the VM of VMDIR quietly, like vm-command-q.
-    ssh -F "$1/.ssh-config" node sudo bash -l <<<"$2"
+    vmdir-command-q "$1" "$2"
 }
 
 other-vm-put-file() { # script API
     # Usage: other-vm-put-file VMDIR SRC-HOST-FILE DST-VM-FILE
     #
     # Copy a file from the host to the VM of VMDIR, like vm-put-file.
-    local vmdir="$1" src="$2" dst="$3" tmp
-    tmp="vm-put-file.${src##*/}"
-    host-command "scp -F \"$vmdir/.ssh-config\" \"$src\" node:\"$tmp\"" ||
-        command-error "failed to copy $src to $(basename "$vmdir")"
-    other-vm-command "$vmdir" "mkdir -p \"$(dirname "$dst")\" && mv \"$tmp\" \"$dst\"" ||
-        command-error "failed to move $src to $dst in $(basename "$vmdir")"
+    vmdir-put-file "$1" "$2" "$3"
 }
 
 pool-vm-command() { # script API
     # Usage: pool-vm-command VMDIR COMMAND
     #
     # vm-command in the VM of VMDIR: the VM of the test or another one.
-    if [ "$1" == "$OUTPUT_DIR" ]; then
-        vm-command "$2"
-    else
-        other-vm-command "$1" "$2"
-    fi
+    vmdir-command "$1" "$2"
 }
 
 pool-vm-command-q() {
     # Usage: pool-vm-command-q VMDIR COMMAND
-    if [ "$1" == "$OUTPUT_DIR" ]; then
-        vm-command-q "$2"
-    else
-        other-vm-command-q "$1" "$2"
-    fi
+    vmdir-command-q "$1" "$2"
 }
 
 pool-vm-put-file() { # script API
     # Usage: pool-vm-put-file VMDIR SRC-HOST-FILE DST-VM-FILE
-    if [ "$1" == "$OUTPUT_DIR" ]; then
-        vm-put-file "$2" "$3"
-    else
-        other-vm-put-file "$1" "$2" "$3"
-    fi
+    vmdir-put-file "$1" "$2" "$3"
 }
 
 pool-vm-qmp() { # script API
@@ -136,31 +117,7 @@ pool-vm-ssh-wait() {
     #
     # Wait until ssh to the VM of VMDIR works, TIMEOUT seconds at most
     # (default 180).
-    local vmdir="$1"
-    retry-until --timeout "${2:-180}" --interval 2 --message "ssh to $(basename "$vmdir")" \
-        '[ -f "$vmdir/.ssh-config" ] && command timeout 15 ssh -F "$vmdir/.ssh-config" -o ConnectTimeout=5 node true'
-}
-
-pool-vagrant-up() {
-    # Usage: pool-vagrant-up VMDIR
-    #
-    # Start the existing VM of VMDIR without provisioning it, the way
-    # vm-setup does, and wait for ssh.
-    local vmdir="$1"
-    ( cd "$vmdir" || exit 1
-      # qemu creates the backing files of file-backed memory, not their
-      # directories, and /tmp may have been emptied since VM creation.
-      for mem_path in $(grep -o 'mem-path=[^,"]*' Vagrantfile | sed 's/^mem-path=//'); do
-          mkdir -p "$(dirname "$mem_path")" || exit 1
-      done
-      vagrant up --no-provision --provider qemu || exit 1
-      if [ ! -f .ssh-config ]; then
-          vagrant ssh-config > .ssh-config || exit 1
-          printf '  ControlMaster auto\n  ControlPersist 60\n  ControlPath /tmp/ssh-%%C\n' >> .ssh-config
-          sed -i 's/^Host /Host node /' .ssh-config
-      fi
-    ) || error "cannot start the VM in $vmdir with vagrant up --no-provision"
-    pool-vm-ssh-wait "$vmdir" || error "ssh to the VM in $vmdir does not work after vagrant up"
+    vmdir-ssh-wait "$@"
 }
 
 pool-host-wait() { # script API
@@ -168,19 +125,8 @@ pool-host-wait() { # script API
     #
     # Make sure that the VM of VMDIR is up. Start it if it is not. Fail
     # with HINT, how to create the VM, if there is no VM in VMDIR.
-    local vmdir="$1" hint="$2" name
-    name="$(basename "$vmdir")"
-    [ -f "$vmdir/Vagrantfile" ] && [ -d "$vmdir/.vagrant" ] ||
-        error "no VM $name in $vmdir: $hint"
-    if [ -f "$vmdir/.ssh-config" ] && command timeout 30 ssh -F "$vmdir/.ssh-config" -o ConnectTimeout=5 node true; then
-        echo "pool-host-wait: $name is up"
-    else
-        echo "pool-host-wait: $name is not reachable, starting it"
-        pool-vagrant-up "$vmdir"
-    fi
-    pool-vm-command "$vmdir" "hostname" || command-error "cannot run commands in $name"
-    [ "$COMMAND_OUTPUT" == "$name" ] ||
-        error "the VM in $vmdir calls itself $COMMAND_OUTPUT, expected $name"
+    vmdir-up "$1" "$2"
+    echo "pool-host-wait: $(basename "$1") is up"
 }
 
 pool-vm-restart() { # script API
@@ -189,29 +135,7 @@ pool-vm-restart() { # script API
     # Restart qemu of the VM of VMDIR. That is the only way to get rid of a
     # CXL memory device that qemu cannot delete (a zombie device of a detach
     # without release).
-    local vmdir="$1" name i
-    name="$(basename "$vmdir")"
-    if [ "$vmdir" == "$OUTPUT_DIR" ]; then
-        timeout=300 vm-reboot || error "cannot restart $name"
-        return 0
-    fi
-    other-vm-command "$vmdir" "sync; shutdown -h 0" || :
-    for i in $(seq 60); do
-        (cd "$vmdir" && vagrant status 2>/dev/null | grep -q running) || break
-        sleep 2
-    done
-    if (cd "$vmdir" && vagrant status 2>/dev/null | grep -q running); then
-        echo "pool-vm-restart: $name did not shut down, vagrant halt"
-        (cd "$vmdir" && vagrant halt) || :
-        for i in $(seq 30); do
-            (cd "$vmdir" && vagrant status 2>/dev/null | grep -q running) || break
-            sleep 2
-        done
-        (cd "$vmdir" && vagrant status 2>/dev/null | grep -q running) &&
-            error "cannot stop $name, stop it by hand"
-    fi
-    echo "pool-vm-restart: $name stopped, starting it"
-    pool-vagrant-up "$vmdir"
+    vmdir-restart "$1"
 }
 
 pool-vm-require() { # script API
