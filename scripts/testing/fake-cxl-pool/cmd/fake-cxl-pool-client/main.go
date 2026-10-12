@@ -56,7 +56,7 @@ Commands:
   devices [NAME] [--shared] [--free] [--host H]
   create --size 256M [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
   attachments [--self | --host H] [--device D]
   allocate DEVICE --owner O [--note TEXT]
@@ -605,15 +605,16 @@ func (c *cli) cmdAttach(ctx context.Context, args []string) error {
 	noWait := fs.Bool("no-wait", false, "do not wait for qemu")
 	timeout := fs.String("timeout", "", "qemu timeout (default 30s)")
 	force := fs.Bool("force", false, "ignore the allocation owner")
+	exclusive := fs.Bool("exclusive", false, "shared device: no other host may attach it meanwhile")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) != 1 {
-		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait]"))
+		return firstErr(err, usagef("attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--exclusive]"))
 	}
 	h, err := c.hostArg(ctx, *host, *self)
 	if err != nil {
 		return err
 	}
-	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, Force: *force}
+	req := api.AttachRequest{Host: h, Slot: *slot, Owner: *owner, Timeout: *timeout, Force: *force, Exclusive: *exclusive}
 	if *numa >= 0 {
 		req.NumaNode = numa
 	}

@@ -47,6 +47,36 @@ type want struct {
 	device string // server device name, "" if not in the pool
 	node   string
 	host   *api.Host // nil: the node is not a pool host
+	// exclusive: a shared device allocated with all of its hosts capacity,
+	// attached with AttachRequest.Exclusive
+	exclusive bool
+}
+
+// hostsCapacity is the capacity of a shared device: the number of nodes
+// that may attach it at a time.
+const hostsCapacity resourceapi.QualifiedName = "hosts"
+
+// exclusiveResult reports whether an allocation result of a shared device
+// consumes all of its hosts capacity: then no other host may attach the
+// device while it is attached for the claim.
+func (c *Controller) exclusiveResult(r *resourceapi.DeviceRequestAllocationResult) bool {
+	d, ok := c.devices[r.Device]
+	if !ok || !d.Shared {
+		return false
+	}
+	q, ok := r.ConsumedCapacity[hostsCapacity]
+	return ok && q.Value() >= int64(c.cfg.SharedHosts)
+}
+
+// anyExclusive reports whether one of the wants of an attachment is
+// exclusive.
+func anyExclusive(ws []*want) bool {
+	for _, w := range ws {
+		if w.exclusive {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *want) key() attKey {
@@ -127,7 +157,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 			if r.Driver != c.cfg.DriverName || r.Pool != c.cfg.PoolName {
 				continue
 			}
-			w := &want{claim: claim, result: r, node: node}
+			w := &want{claim: claim, result: r, node: node, exclusive: c.exclusiveResult(&r)}
 			if d, ok := c.devices[r.Device]; ok {
 				w.device = d.Name
 			}
@@ -157,14 +187,25 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		actual[attKey{a.Device, a.Host}] = a
 	}
 
-	// 4. attach
+	// 4. attach, or set the exclusive flag of an attachment to that of
+	// its claims (an attachment serves all claims of the node)
+	// Attachments that exist come first: dropping the exclusive flag of
+	// the attachment of one node lets the new attachments of the other
+	// nodes in, in the same reconcile.
 	failures := map[attKey]failure{}
-	for _, k := range sortedKeys(desired) {
-		if _, ok := actual[k]; ok {
+	keys := sortedKeys(desired)
+	sort.SliceStable(keys, func(i, j int) bool {
+		_, ei := actual[keys[i]]
+		_, ej := actual[keys[j]]
+		return ei && !ej
+	})
+	for _, k := range keys {
+		exclusive := anyExclusive(desired[k])
+		if a, ok := actual[k]; ok && (a.State != api.AttachmentAttached || a.Exclusive == exclusive) {
 			continue
 		}
 		w := desired[k][0]
-		a, f := c.attach(ctx, w, k, actual, desired)
+		a, f := c.attach(ctx, w, k, exclusive, actual, desired)
 		switch {
 		case f != nil:
 			failures[k] = *f
@@ -213,25 +254,26 @@ func sortedKeys[V any](m map[attKey]V) []attKey {
 
 // attach attaches the device of a desired key. It returns the attachment,
 // or a failure, or neither (attaching continues, or waiting for a detach).
-func (c *Controller) attach(ctx context.Context, w *want, k attKey, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
+func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
 	owner := c.Owner(w.claim.UID)
 	actx, cancel := context.WithTimeout(ctx, c.cfg.AttachTimeout+10*time.Second)
 	defer cancel()
 	a, status, err := c.pool.Attach(actx, k.device, api.AttachRequest{
-		Host:    k.host,
-		Owner:   owner,
-		Wait:    ptr.To(true),
-		Timeout: c.cfg.AttachTimeout.String(),
+		Host:      k.host,
+		Owner:     owner,
+		Wait:      ptr.To(true),
+		Timeout:   c.cfg.AttachTimeout.String(),
+		Exclusive: exclusive,
 	})
 	if err == nil {
 		switch status {
 		case http.StatusAccepted:
 			c.logf("attach %s to %s for %s: still attaching after %s", k.device, k.host, w, c.cfg.AttachTimeout)
 		case http.StatusOK:
-			c.logf("attach %s to %s for %s: already attached (%s, owner %q)", k.device, k.host, w, a.State, a.Owner)
+			c.logf("attach %s to %s for %s: already attached (%s, owner %q, exclusive %v)", k.device, k.host, w, a.State, a.Owner, a.Exclusive)
 		default:
-			c.logf("attached %s to %s (node %s, slot %s, qemu device %s, owner %s) for %s/%s",
-				k.device, k.host, w.node, a.Slot.Bus, a.QemuDeviceID, owner, w.claim.Namespace, w.claim.Name)
+			c.logf("attached %s to %s (node %s, slot %s, qemu device %s, owner %s, exclusive %v) for %s/%s",
+				k.device, k.host, w.node, a.Slot.Bus, a.QemuDeviceID, owner, a.Exclusive, w.claim.Namespace, w.claim.Name)
 		}
 		return a, nil
 	}
@@ -283,9 +325,9 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		return
 	}
 	a, ok := actual[w.key()]
-	if !ok || a.State != api.AttachmentAttached {
+	if !ok || a.State != api.AttachmentAttached || (w.exclusive && !a.Exclusive) {
 		if ok {
-			c.debugf("%s: attachment %s is %s", w, a.ID, a.State)
+			c.debugf("%s: attachment %s is %s (exclusive %v, wanted %v)", w, a.ID, a.State, a.Exclusive, w.exclusive)
 		}
 		return
 	}
@@ -305,6 +347,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		HostUUID:     w.host.UUID,
 		Attachment:   a.ID,
 		QemuDeviceID: a.QemuDeviceID,
+		Exclusive:    w.exclusive,
 	}
 	cond := metav1.Condition{
 		Type:    c.condAttached(),

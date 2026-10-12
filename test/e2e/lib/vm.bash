@@ -602,6 +602,17 @@ print(vm_uuid)' "$vmname") || error "cannot create UUID for VM $vmname"
             echo "E2E_NO_PROVISION=1" >> "$vagrantdir/env"
     fi
 
+    # The NIC of the VM network of the topology, if it has one. An existing
+    # VM gets it at its next start (vm-vmnet-ensure restarts it).
+    if [ -n "$vm_network" ]; then
+        vm-vmnet-record "$vagrantdir" "$vm_network" ||
+            error "cannot record VM network $vm_network in $vagrantdir/env"
+        vm-vmnet-patch-vagrantfile "$vagrantdir/Vagrantfile.erb" "$vagrantdir" ||
+            error "cannot add the NIC of VM network $vm_network to $vagrantdir/Vagrantfile.erb"
+        vm-vmnet-patch-vagrantfile "$vagrantdir/Vagrantfile" "$vagrantdir" ||
+            error "cannot add the NIC of VM network $vm_network to $vagrantdir/Vagrantfile"
+    fi
+
     (cd "$vagrantdir";
      export ANSIBLE_PIPELINING=True;
      # Make sure the vagrant plugins are installed
@@ -673,6 +684,114 @@ EOF
         wait-for-node-ready
         wait-for-dns-ready
     fi
+}
+
+# A VM network connects the VMs of topologies that set vm_network (in
+# vm_network.var.sh of the topology), for instance to make a multi-node
+# Kubernetes cluster of them (vm-k8s-reinit). Each VM gets a second virtio
+# NIC, on a root port of its own, backed by a qemu socket netdev on a
+# multicast group of the host loopback: no host privileges, any number of
+# VMs, nothing leaves the host. The VM keeps its slirp NIC for everything
+# else. vm-setup adds the NIC to the qemu command line of the VM, and
+# vm-vmnet-ensure (lib/k8s.bash) configures it in the VM.
+VMNET_CIDR_PREFIX=10.76
+VMNET_PREFIX_LEN=16
+
+vm-vmnet-values() {
+    # Usage: vm-vmnet-values VMDIR NETWORK
+    #
+    # Print the settings of the VM of output directory VMDIR in VM network
+    # NETWORK, as env file lines VMNET_NAME, VMNET_MCAST, VMNET_MAC and
+    # VMNET_IP. They are derived, not configured: the multicast group and
+    # port from the user, the e2e output root (the parent of VMDIR) and
+    # NETWORK, so that the VMs of two users or two checkouts never share a
+    # segment ($vm_network_mcast=GROUP:PORT overrides it); the MAC and the
+    # address (in $VMNET_CIDR_PREFIX.0.0/$VMNET_PREFIX_LEN) from VM_UUID in
+    # VMDIR/env, so they are unique per VM name and stable.
+    local vmdir="$1" network="$2" vm_uuid
+    vm_uuid=$(sed -n 's/^VM_UUID=//p' "$vmdir/env" 2>/dev/null)
+    [ -n "$vm_uuid" ] || {
+        echo "vm-vmnet-values: no VM_UUID in $vmdir/env" >&2
+        return 1
+    }
+    python3 - "$vmdir" "$network" "$vm_uuid" "${vm_network_mcast:-}" "$VMNET_CIDR_PREFIX" <<'EOF'
+import hashlib, os, sys, uuid
+vmdir, network, vm_uuid, mcast, prefix = sys.argv[1:6]
+root = os.path.dirname(os.path.realpath(vmdir))
+h = hashlib.sha256(("%d:%s:%s" % (os.getuid(), root, network)).encode()).digest()
+if not mcast:
+    mcast = "239.255.%d.%d:%d" % (h[0], h[1], 17600 + (h[2] * 256 + h[3]) % 2000)
+b = uuid.UUID(vm_uuid).bytes
+c, d = b[3], b[4]
+if (c, d) == (0, 0):
+    d = 1
+elif (c, d) == (255, 255):
+    d = 254
+print("VMNET_NAME=%s" % network)
+print("VMNET_MCAST=%s" % mcast)
+print("VMNET_MAC=52:54:00:%02x:%02x:%02x" % (b[0], b[1], b[2]))
+print("VMNET_IP=%s.%d.%d" % (prefix, c, d))
+EOF
+}
+
+vm-vmnet-get() {
+    # Usage: vm-vmnet-get VMDIR VAR
+    #
+    # Print VAR (VMNET_NAME, VMNET_MCAST, VMNET_MAC or VMNET_IP) from the
+    # env file of the VM of VMDIR, nothing if it is not there.
+    sed -n "s/^$2=//p" "$1/env" 2>/dev/null | tail -n 1
+}
+
+vm-vmnet-record() {
+    # Usage: vm-vmnet-record VMDIR NETWORK
+    #
+    # Record the VM network settings of the VM of VMDIR in its env file,
+    # unless they are there, and add the network to NO_PROXY there. Fail if
+    # the VM is in another VM network.
+    local vmdir="$1" network="$2" old cidr="$VMNET_CIDR_PREFIX.0.0/$VMNET_PREFIX_LEN"
+    old=$(vm-vmnet-get "$vmdir" VMNET_NAME)
+    if [ -n "$old" ] && [ "$old" != "$network" ]; then
+        echo "vm-vmnet-record: $(basename "$vmdir") is in VM network $old, not $network" >&2
+        return 1
+    fi
+    if [ -z "$old" ]; then
+        vm-vmnet-values "$vmdir" "$network" >> "$vmdir/env" || return 1
+    fi
+    if grep -q '^NO_PROXY="' "$vmdir/env" && ! grep -q "^NO_PROXY=\".*$cidr" "$vmdir/env"; then
+        sed -i "s#^NO_PROXY=\"\([^\"]*\)\"#NO_PROXY=\"\1,$cidr\"#" "$vmdir/env" || return 1
+    fi
+}
+
+vm-vmnet-patch-vagrantfile() {
+    # Usage: vm-vmnet-patch-vagrantfile FILE VMDIR
+    #
+    # Add the NIC of the VM network of the VM of VMDIR (VMNET_* in its env
+    # file) to the qemu arguments in FILE, its Vagrantfile or
+    # Vagrantfile.erb, unless it is there. A running VM gets the NIC at its
+    # next start. The NIC has a root port of its own, after the devices of
+    # the topology, so that it takes no CXL slot and no PCI address of
+    # another device moves.
+    local file="$1" vmdir="$2" mcast mac line
+    [ -f "$file" ] || return 0
+    grep -q 'id=vmnet0' "$file" && return 0
+    mcast=$(vm-vmnet-get "$vmdir" VMNET_MCAST)
+    mac=$(vm-vmnet-get "$vmdir" VMNET_MAC)
+    [ -n "$mcast" ] && [ -n "$mac" ] || {
+        echo "vm-vmnet-patch-vagrantfile: no VMNET_MCAST/VMNET_MAC in $vmdir/env" >&2
+        return 1
+    }
+    line="    qemu.extra_qemu_args += [\"-netdev\", \"socket,id=vmnet0,mcast=$mcast,localaddr=127.0.0.1\", \"-device\", \"pcie-root-port,id=rp_vmnet,bus=pcie.0,port=0xa,chassis=6\", \"-device\", \"virtio-net-pci,netdev=vmnet0,bus=rp_vmnet,mac=$mac\"] # VM network $(vm-vmnet-get "$vmdir" VMNET_NAME)"
+    grep -q '^ *qemu\.disk_resize' "$file" || {
+        echo "vm-vmnet-patch-vagrantfile: no qemu.disk_resize line in $file to put the NIC before" >&2
+        return 1
+    }
+    sed -i "/^ *qemu\.disk_resize/i\\
+$line" "$file" || return 1
+    if command -v ruby >/dev/null && ! ruby -c "$file" >/dev/null; then
+        echo "vm-vmnet-patch-vagrantfile: $file is not valid Ruby after the patch" >&2
+        return 1
+    fi
+    echo "vm-vmnet-patch-vagrantfile: added the NIC of VM network $(vm-vmnet-get "$vmdir" VMNET_NAME) ($mac, $mcast) to $file"
 }
 
 vm-play() {

@@ -48,6 +48,9 @@ POOLED1_SIZE=$(( 256 << 20 ))
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
+echo "### preconditions: the VM is a single-node cluster (test13 makes a cluster of two)"
+vm-k8s-reinit "$VM2"
+
 echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices"
 pool-vm-tools-install "$VM2"
 pool-vm-reset "$VM2"

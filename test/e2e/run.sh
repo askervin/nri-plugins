@@ -258,7 +258,7 @@ fi
 
 # Note: lib/test.bash is read for its documentation only. It is not sourced
 # here, but by the test case itself, see run_tests.sh.
-script_source="$(< "$0") $(< "$LIB_DIR/vm.bash") $(< "$LIB_DIR/test.bash")"
+script_source="$(< "$0") $(< "$LIB_DIR/vm.bash") $(< "$LIB_DIR/test.bash") $(< "$LIB_DIR/k8s.bash")"
 
 help() { # script API
     # Usage: help [FUNCTION|all]

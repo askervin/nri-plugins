@@ -52,8 +52,21 @@ def set_preferred(node):
         sys.exit(1)
 
 
+def vma_start(addr):
+    """Start of the VMA that contains addr, from /proc/self/maps: the kernel
+    may merge the mapping with an anonymous neighbour, then it starts
+    below the address that mmap returned."""
+    with open("/proc/self/maps") as f:
+        for line in f:
+            lo, hi = (int(x, 16) for x in line.split()[0].split("-"))
+            if lo <= addr < hi:
+                return lo
+    return addr
+
+
 def pages(start):
     """Pages per node of the mapping at start, from /proc/self/numa_maps."""
+    start = vma_start(start)
     with open("/proc/self/numa_maps") as f:
         for line in f:
             fields = line.split()

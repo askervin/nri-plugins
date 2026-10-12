@@ -243,7 +243,7 @@ GET    /hosts/resolve?hostname=H&uuid=U
 GET    /devices?shared=&state=&host=&pool=&scope=
 POST   /devices                   GET|PATCH|DELETE /devices/{name}[?force=true]
 PUT    /devices/{name}/allocation DELETE /devices/{name}/allocation[?owner=&force=]
-POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "wait", "timeout", "force"}
+POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "wait", "timeout", "force", "exclusive"}
 GET    /devices/{name}/attachments[/{host}]
 DELETE /devices/{name}/attachments/{host}?wait=&timeout=&owner=&force=
 GET    /attachments?host=&device=  GET /attachments/{device@host}

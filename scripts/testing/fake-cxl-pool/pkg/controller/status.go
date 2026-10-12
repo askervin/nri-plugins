@@ -53,6 +53,7 @@ type DeviceData struct {
 	HostUUID     string `json:"hostUUID,omitempty"`
 	Attachment   string `json:"attachment"`
 	QemuDeviceID string `json:"qemuDeviceId"`
+	Exclusive    bool   `json:"exclusive,omitempty"`
 }
 
 // deviceStatus returns the status entry of a result, matched by driver,
