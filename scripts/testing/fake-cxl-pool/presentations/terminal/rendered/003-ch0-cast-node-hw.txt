@@ -1,11 +1,11 @@
 CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.02 what a node sees │ frame 3/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
-    ┌┄ Scheduler ┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Kubernetes API + objects ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Pool controller ┄┄┄┄┄┄┄┄┄┄┄┐
-    ┆  (not on stage yet)   ┆    ┆  (not on stage yet)                          ┆    ┆  (not on stage yet)         ┆
-    ┆                       ┆    ┆                                              ┆    ┆                             ┆
-    ┆                       ┆    ┆                                              ┆    ┆                             ┆
-    ┆                       ┆    ┆                                              ┆    ┆                             ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;243m┌┄ Scheduler ┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Kubernetes API + objects ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Pool controller ┄┄┄┄┄┄┄┄┄┄┄┐[0m
+    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m   [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m         [38;5;243m┆[0m
+    [38;5;243m┆[0m                       [38;5;243m┆[0m    [38;5;243m┆[0m                                              [38;5;243m┆[0m    [38;5;243m┆[0m                             [38;5;243m┆[0m
+    [38;5;243m┆[0m                       [38;5;243m┆[0m    [38;5;243m┆[0m                                              [38;5;243m┆[0m    [38;5;243m┆[0m                             [38;5;243m┆[0m
+    [38;5;243m┆[0m                       [38;5;243m┆[0m    [38;5;243m┆[0m                                              [38;5;243m┆[0m    [38;5;243m┆[0m                             [38;5;243m┆[0m
+    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
 
@@ -13,16 +13,16 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.02 what a node se
 
 
 
-    ┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
-    ┆  (not on stage yet)      ┆    ┆  (not on stage yet)                                                          ┆
-    ┆                          ┆    ┆                                                                              ┆
-    ┆                          ┆    ┆                                                                              ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;243m┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m
+    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m      [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m                                                          [38;5;243m┆[0m
+    [38;5;243m┆[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m                                                                              [38;5;243m┆[0m
+    [38;5;243m┆[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m                                                                              [38;5;243m┆[0m
+    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
 
-    ┌★ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
-    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
-    │★ no CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself          │
-    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    [38;5;114m┌★ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐[0m
+    [38;5;114m│[0m  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             [38;5;114m│[0m
+    [38;5;114m│★[0m [38;5;114mno CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself[0m          [38;5;114m│[0m
+    [38;5;114m└──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘[0m
     ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
     ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
@@ -31,9 +31,9 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.02 what a node se
     What one node sees: a hot-plugged device appears as memN, with the device's serial number. Software on the node
     turns it into a region, and then either into system RAM (a new NUMA node, used like DRAM) or into a /dev/daxX.Y
     device that programs map.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m

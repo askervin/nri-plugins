@@ -7,11 +7,11 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.05 the workload �
     │                       │    │  pods: none                                  │    │                             │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
-    ╔★ demo / app ═══════════════════╗
-    ║  (a container of a pod)        ║
-    ║★ env, /dev/daxX.Y, NUMA nodes  ║
-    ║★ cxl-request, if it opts in    ║
-    ╚════════════════════════════════╝
+    [38;5;114m╔★ demo / app ═══════════════════╗[0m
+    [38;5;114m║[0m  (a container of a pod)        [38;5;114m║[0m
+    [38;5;114m║★[0m [38;5;114menv, /dev/daxX.Y, NUMA nodes[0m  [38;5;114m║[0m
+    [38;5;114m║★[0m [38;5;114mcxl-request, if it opts in[0m    [38;5;114m║[0m
+    [38;5;114m╚════════════════════════════════╝[0m
 
     ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
     │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
@@ -31,9 +31,9 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.05 the workload �
     Inside a container (double lines). The workload never talks to the pool: it gets environment variables, a device
     node, or more NUMA nodes in its cpuset.mems. A container that opted in with a token claim can also ask for memory
     itself, with the cxl-request command.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m

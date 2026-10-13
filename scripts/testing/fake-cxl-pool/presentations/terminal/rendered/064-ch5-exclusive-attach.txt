@@ -2,9 +2,9 @@ CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.04 the pool k
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
     │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
-    │  cxl-lease-36c2ee71:  │    │  slices: pool, node-a, node-b                │    │★ attached shared0 -> node-a │
-    │  shared0 @ node-a     │    │★ claims: cxl-lease-36c2ee71 Attached         │    │★ exclusive: true            │
-    │  hosts: 4/4 taken     │    │  pods: writer; cxl-lease-36c2ee71 Pending    │    │★ status Attached written    │
+    │  cxl-lease-36c2ee71:  │    │  slices: pool, node-a, node-b                │    │[38;5;222m★[0m [38;5;222mattached shared0 -> node-a[0m │
+    │  shared0 @ node-a     │    │[38;5;222m★[0m [38;5;222mclaims: cxl-lease-36c2ee71 Attached[0m         │    │[38;5;222m★[0m [38;5;222mexclusive: true[0m            │
+    │  hosts: 4/4 taken     │    │  pods: writer; cxl-lease-36c2ee71 Pending    │    │[38;5;222m★[0m [38;5;222mstatus Attached written[0m    │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-a (VM1, worker) ─────────────────────    ─ ONE NODE: node-b (VM2, control plane) ──────────────
     ╔═ writer / main ════════╗
@@ -21,34 +21,34 @@ CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.04 the pool k
 
     ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
     │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
-    │★ mem0  serial 0xc1ae0001  256M  appears (udev)     │    │  no CXL memory devices                             │
-    └────────────────────────────────▲───────────────────┘    └────────────────────────────────────────────────────┘
-    ─ OUTSIDE THE CLUSTER, possibly ─│─(10)──────────────────────────────────────────────────────────────────
-    ┌─ Memory pool manager ──────────┴─────────────────────────────────────────────────────────────────────────────┐
-    │★ shared0  serial 0xc1ae0001  256M  shared     attached to node-a, EXCLUSIVE: other hosts get 409 Conflict    │
+    │[38;5;222m★[0m [38;5;222mmem0  serial 0xc1ae0001  256M  appears (udev)[0m     │    │  no CXL memory devices                             │
+    └────────────────────────────────[38;5;110m▲[0m───────────────────┘    └────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─[38;5;110m│[0m─[38;5;110m(10)[0m──────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ──────────[38;5;110m┴[0m─────────────────────────────────────────────────────────────────────────────┐
+    │[38;5;222m★[0m [38;5;222mshared0  serial 0xc1ae0001  256M  shared     attached to node-a, EXCLUSIVE: other hosts get 409 Conflict[0m    │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★10 Pool manager -> CXL memory (node-a): hot-plug cxl-type3 serial 0xc1ae0001 (hp1)   (steps 9-12 below)
+[38;5;110m★10 Pool manager -> CXL memory (node-a): [0mhot-plug cxl-type3 serial 0xc1ae0001 (hp1)   (steps 9-12 below)
     The pool enforces it too: an exclusive attachment refuses every other host, including the nodes of other clusters
     that share this pool.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 5, steps 1-12   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 5, steps 1-12   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
  ----- node-a -----  -- cluster -- pool  ----- node-b -----
-  │    │    │    │    │    │    │    │    │    │    │    │     1  -- kubectl apply: pod writer (node-a), token claim
-  │    │    │    │    ├────►    │    │    │    │    │    │     2  allocate dynamic @ node-a; bind writer -> node-a
-  │    ◄────┤    │    │    │    │    │    │    │    │    │     3  NodePrepareResources(token claim)
-  │    ├╌╌╌╌►    │    │    │    │    │    │    │    │    │     4  CDI lease-<uid>: /run/cxl, cxl-request
-  ├────►    │    │    │    │    │    │    │    │    │    │     5  cxl-request shared 0xc1ae0001 --exclusive
-  │    ├───────────────────►    │    │    │    │    │    │     6  read the pool slice: shared0 hosts = 4
-  │    ├───────────────────►    │    │    │    │    │    │     7  create claim (hosts: 4) + companion cxl-lease-36c2ee71
-  │    │    │    │    ├────►    │    │    │    │    │    │     8  allocate shared0 @ node-a (hosts 4 of 4)
-  │    │    │    │    │    │    ├────►    │    │    │    │  ★  9  POST /api/v1/devices/shared0/attachments {host:
-  │    │    │    │    │    │    │    │    │    │    │    │           node-a, owner: k8s:resourceclaim/<uid>, wait: true,
-  │    │    │    │    │    │    │    │    │    │    │    │           exclusive: true}
-  │    │    │    ◄───────────────────┤    │    │    │    │  ★ 10  hot-plug cxl-type3 serial 0xc1ae0001 (qemu device
-  │    │    │    │    │    │    │    │    │    │    │    │           fcp_shared0.hp1)
-  │    │    │    │    │    │    ◄╌╌╌╌┤    │    │    │    │  ★ 11  201 Created: attached, exclusive
-  │    │    │    │    │    ◄────┤    │    │    │    │    │  ★ 12  claim status: Attached=True, data {serial 0xc1ae0001,
-  │    │    │    │    │    │    │    │    │    │    │    │           shared true, size 268435456, exclusive true}
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     1  -- kubectl apply: pod writer (node-a), token claim
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     2  allocate dynamic @ node-a; bind writer -> node-a
+  [38;5;243m│[0m    ◄────┤    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     3  NodePrepareResources(token claim)
+  [38;5;243m│[0m    ├╌╌╌╌►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     4  CDI lease-<uid>: /run/cxl, cxl-request
+  ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     5  cxl-request shared 0xc1ae0001 --exclusive
+  [38;5;243m│[0m    ├───────────────────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     6  read the pool slice: shared0 hosts = 4
+  [38;5;243m│[0m    ├───────────────────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     7  create claim (hosts: 4) + companion cxl-lease-36c2ee71
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     8  allocate shared0 @ node-a (hosts 4 of 4)
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;110m├────►[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★  9[0m  POST /api/v1/devices/shared0/attachments {host:
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           node-a, owner: k8s:resourceclaim/<uid>, wait: true,
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           exclusive: true}
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;110m◄───────────────────┤[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 10[0m  hot-plug cxl-type3 serial 0xc1ae0001 (qemu device
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           fcp_shared0.hp1)
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;110m◄╌╌╌╌┤[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 11[0m  201 Created: attached, exclusive
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;110m◄────┤[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 12[0m  claim status: Attached=True, data {serial 0xc1ae0001,
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           shared true, size 268435456, exclusive true}

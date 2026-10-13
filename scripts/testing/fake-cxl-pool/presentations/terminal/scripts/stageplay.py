@@ -56,6 +56,22 @@ ASCII_MAP = str.maketrans({
 PRINTABLE_ASCII = {chr(c) for c in range(0x20, 0x7F)}
 ALLOWED_UNICODE = PRINTABLE_ASCII | set(UNICODE_GLYPHS)
 
+# --------------------------------------------------------------------------------- colors (--colors)
+
+# Foreground colors (xterm-256) by role; soft tones, no background, no bold, so every line stays
+# readable. added: an entity that appears in this frame; changed: a state line that differs
+# from the previous frame; removed: an entity shown for the last time; active: this frame's
+# messages (arrow, badge, caption head, new sequence rows); muted: not on stage yet, lifelines.
+PALETTES = {
+    "dark": {"added": 114, "changed": 222, "removed": 174, "active": 110, "muted": 243},
+    "light": {"added": 28, "changed": 130, "removed": 131, "active": 25, "muted": 248},
+}
+# legend words that double as the color key, colored wherever the legend contains them
+LEGEND_ROLES = (("new", "added"), ("changed", "changed"), ("┄┄", "muted"), ("not on stage yet", "muted"),
+                ("just gone", "removed"), ("(n) step n", "active"), ("▲►◄▼ this step", "active"))
+SGR_RESET = "\x1b[0m"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
 DIRS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 DIR_ORDER = ("up", "down", "left", "right")
 OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
@@ -143,19 +159,31 @@ class Layout:
 # --------------------------------------------------------------------------------- canvas
 
 class Canvas:
+    """Characters plus a color role per cell (None: default color); the roles are used only with --colors."""
+
     def __init__(self, width: int, height: int):
         self.width, self.height = width, height
         self.cells = [[" "] * width for _ in range(height)]
+        self.roles = [[None] * width for _ in range(height)]
 
-    def put(self, x: int, y: int, text: str) -> None:
+    def put(self, x: int, y: int, text: str, role: str | None = None) -> None:
         if not 0 <= y < self.height or x < 0 or x + len(text) > self.width:
             raise StoryError(f"text outside the canvas at ({x},{y}): {text!r}")
-        row = self.cells[y]
+        row, roles = self.cells[y], self.roles[y]
         for i, ch in enumerate(text):
             row[x + i] = ch
+            roles[x + i] = role
+
+    def tint(self, x: int, y: int, length: int, role: str | None) -> None:
+        """Color cells without changing their characters."""
+        for i in range(length):
+            self.roles[y][x + i] = role
 
     def lines(self) -> list:
         return ["".join(row).rstrip() for row in self.cells]
+
+    def spans(self) -> list:
+        return [runs(roles) for roles in self.roles]
 
 
 # --------------------------------------------------------------------------------- recorded story
@@ -443,6 +471,9 @@ class Stage:
         p.add_argument("--chapter", type=int, help="write only this chapter's files")
         p.add_argument("--frame", help="write only this frame (global number NNN or slug)")
         p.add_argument("--ascii", action="store_true", help="ASCII glyphs instead of box drawing")
+        p.add_argument("--colors", nargs="?", const="dark", choices=sorted(PALETTES), metavar="THEME",
+                       help="color what is new, changed, gone and this frame's messages (ANSI, view with "
+                            "less -R); THEME: dark (default) or light terminal background")
         p.add_argument("--list", action="store_true", help="print the index of frames, write nothing")
         return p.parse_args(argv)
 
@@ -739,6 +770,8 @@ class Renderer:
     def __init__(self, stage: Stage):
         self.stage = stage
         self.ascii = stage.args.ascii
+        self.palette = PALETTES[stage.args.colors] if stage.args.colors else None
+        self.spans: dict = {}          # line -> [(x0, x1, role)] of the frame being rendered
         self.problems: list = []
         self.warnings: set = set()
         self.meta_files: list = []
@@ -763,6 +796,7 @@ class Renderer:
         self.meta_files = []
         for k, snap in enumerate(st.snaps, start=1):
             self.cur = f"frame {self.names[k - 1]}"
+            self.spans = {}
             if snap.kind == "card":
                 lines = self.render_card(snap, k, total)
             else:
@@ -771,6 +805,7 @@ class Renderer:
             if self.ascii:
                 text = text.translate(ASCII_MAP)
             self.check_text(text, snap)
+            text = self.paint(text)
             files.append((self.names[k - 1], text))
             self.meta_files.append((self.names[k - 1], text, snap))
         index = self.index_text()
@@ -784,6 +819,44 @@ class Renderer:
 
     def problem(self, msg: str):
         self.problems.append(f"{self.cur}: {msg}")
+
+    # ---- colors
+
+    def mark(self, y: int, x0: int, x1: int, role: str | None) -> None:
+        """Color columns x0..x1-1 of output line y (with --colors; plain output ignores it)."""
+        if role is not None and x1 > x0:
+            self.spans.setdefault(y, []).append((x0, x1, role))
+
+    def mark_runs(self, y: int, roles: list) -> None:
+        for x0, x1, role in runs(roles):
+            self.mark(y, x0, x1, role)
+
+    def paint(self, text: str) -> str:
+        """Insert the color escapes of the marked spans; the checked plain text stays the same."""
+        if self.palette is None:
+            return text
+        out = []
+        for y, line in enumerate(text.split("\n")):
+            roles = [None] * len(line)
+            for x0, x1, role in self.spans.get(y, ()):
+                for x in range(max(0, x0), min(x1, len(line))):
+                    roles[x] = role
+            parts, cur = [], None
+            for ch, role in zip(line, roles):
+                if role != cur:
+                    if cur is not None:
+                        parts.append(SGR_RESET)
+                    if role is not None:
+                        parts.append(f"\x1b[38;5;{self.palette[role]}m")
+                    cur = role
+                parts.append(ch)
+            if cur is not None:
+                parts.append(SGR_RESET)
+            out.append("".join(parts))
+        painted = "\n".join(out)
+        if ANSI_RE.sub("", painted) != text:
+            self.problem("colored text differs from the plain text")
+        return painted
 
     def check_text(self, text: str, snap):
         allowed = PRINTABLE_ASCII if self.ascii else ALLOWED_UNICODE
@@ -896,19 +969,26 @@ class Renderer:
                 self.problem(str(exc))
                 continue
             for x, y, g, _, _ in path:
-                canvas.put(x, y, g)
+                canvas.put(x, y, g, "active")
                 taken.add((x, y))
             if self.place_badge(canvas, grid, path, step.n, taken) is None:
                 self.problem(f"step {step.n}: no room for the badge of the arrow {a} -> {b}")
         lines = canvas.lines()
         lines[0] = self.title_bar(snap, k, total)
-        caption = self.caption_block(snap)
+        for y, spans in enumerate(canvas.spans()[1:], start=1):
+            for x0, x1, role in spans:
+                self.mark(y, x0, x1, role)
+        caption = self.caption_block(snap, len(lines))
         if len(lines) != lay.diagram_lines or len(caption) != 3:
             self.problem(f"picture of {len(lines)} lines and caption of {len(caption)}: frames would jump")
         lines += caption
+        for word, role in LEGEND_ROLES:
+            x = lay.legend.find(word)
+            if x >= 0:
+                self.mark(len(lines), x, x + len(word), role)
         lines.append(lay.legend)
         lines.append("")
-        lines += self.render_msc(snap)
+        lines += self.render_msc(snap, len(lines))
         return lines
 
     @staticmethod
@@ -918,6 +998,13 @@ class Renderer:
     def draw_box(self, canvas: Canvas, box: BoxView) -> Placed:
         s = box.slot
         dotted = box.mode in ("placeholder", "gone")
+        # colors: the frame (border and title) tells new / gone / not yet; a marked line is new
+        # text in a new box and changed text in a box that was there before
+        frame_role = {"placeholder": "muted", "gone": "removed"}.get(
+            box.mode, "added" if box.title_star else None)
+        text_role = {"placeholder": "muted", "gone": "muted"}.get(box.mode)
+        star_role = {"placeholder": "muted", "gone": "removed"}.get(
+            box.mode, "added" if box.title_star else "changed")
         if dotted:
             h, v, tl, tr, bl, br = DOT_H, DOT_V, TL, TR, BL, BR
         elif s.style == "double":
@@ -931,7 +1018,7 @@ class Renderer:
             title = title[:s.w - 6]
         top = tl + (STAR if box.title_star else h) + " " + title + " "
         top += h * (s.w - 1 - len(top)) + tr
-        canvas.put(s.x, s.y, top)
+        canvas.put(s.x, s.y, top, frame_role)
         for x in range(s.x, s.x + len(title) + 5):     # title, its spaces, one more dash
             protected.add((x, s.y))
         inner = []
@@ -946,7 +1033,13 @@ class Renderer:
             if len(text) > room:
                 self.problem(f"box {s.name}: line {text!r} is {len(text)} characters, the box holds {room}")
                 text = text[:room]
-            canvas.put(s.x, s.y + 1 + i, v + (STAR if star else " ") + " " + text.ljust(s.tech_budget) + v)
+            y = s.y + 1 + i
+            canvas.put(s.x, y, v + (STAR if star else " ") + " " + text.ljust(s.tech_budget) + v)
+            canvas.tint(s.x, y, 1, frame_role)
+            canvas.tint(s.x + s.w - 1, y, 1, frame_role)
+            canvas.tint(s.x + 3, y, len(text), star_role if star else text_role)
+            if star:
+                canvas.tint(s.x + 1, y, 1, star_role)
         bottom = bl
         if s.tech == "footer" and tech:
             foot = f"({tech})"
@@ -954,7 +1047,7 @@ class Renderer:
             for x in range(s.x, s.x + len(foot) + 5):
                 protected.add((x, s.y + s.h - 1))
         bottom += h * (s.w - 1 - len(bottom)) + br
-        canvas.put(s.x, s.y + s.h - 1, bottom)
+        canvas.put(s.x, s.y + s.h - 1, bottom, frame_role)
         return Placed(slot=s, protected=protected)
 
     def fit_tech(self, s: Slot, techs: tuple):
@@ -1030,18 +1123,20 @@ class Renderer:
             return None
         candidates.sort(key=lambda c: (c[0], c[2], c[1]))
         _, x, y, text, _ = candidates[0]
-        canvas.put(x, y, text)
+        canvas.put(x, y, text, "active")
         for i in range(len(text)):
             taken.add((x + i, y))
         return (x, y, text)
 
     # ---- caption
 
-    def caption_block(self, snap: Snap) -> list:
+    def caption_block(self, snap: Snap, y0: int) -> list:
+        """The caption, starting at output line y0."""
         width = snap.layout.width
         lines = []
         shown = snap.arrows or [s for s in snap.new_steps][-1:]
         for step in shown:
+            self.mark(y0 + len(lines), 0, len(self.step_head(step)), "active")
             lines.append(self.step_line(step, width))
         extra = len(snap.new_steps) - len(shown)
         if extra > 0 and lines:
@@ -1058,12 +1153,15 @@ class Renderer:
         lines += [""] * (3 - len(lines))
         return lines[:3]
 
+    @staticmethod
+    def step_head(step: Step) -> str:
+        if step.kind == "note":
+            return f"{STAR}{step.n} "
+        return f"{STAR}{step.n} {step.src_name} -> {step.dst_name}: "
+
     def step_line(self, step: Step, width: int) -> str:
         """'★n from -> to: message', with the short message if the full one does not fit."""
-        if step.kind == "note":
-            head = f"{STAR}{step.n} "
-        else:
-            head = f"{STAR}{step.n} {step.src_name} -> {step.dst_name}: "
+        head = self.step_head(step)
         room = width - len(head)
         for text in (step.label, step.short):
             if text and len(text) <= room:
@@ -1072,7 +1170,8 @@ class Renderer:
 
     # ---- message sequence chart
 
-    def render_msc(self, snap: Snap) -> list:
+    def render_msc(self, snap: Snap, y0: int) -> list:
+        """The message sequence chart, starting at output line y0."""
         lay = snap.layout
         w = lay.lane_width
         keys = [ln.key for ln in lay.lanes]
@@ -1091,6 +1190,7 @@ class Renderer:
             head = f"MESSAGE SEQUENCE   chapter {snap.chapter}: no messages yet"
         right = f"{STAR} = new in this frame"
         out.append(head + " " * max(2, lay.width - len(head) - len(right)) + right)
+        self.mark(y0, len(out[0]) - len(right), len(out[0]), "active")
         row = [" "] * (life[-1] + 3)
         for i, ln in enumerate(lay.lanes):
             x = life[i] - len(ln.label) // 2
@@ -1118,8 +1218,14 @@ class Renderer:
                 r[x] = V
             return r
 
+        lifeline_roles = [None] * (life[-1] + 1)
+        for x in life:
+            lifeline_roles[x] = "muted"
+
         for step in steps:
             r = base()
+            roles = list(lifeline_roles)
+            is_new = step.n in new
             if step.kind != "note":
                 i, j = keys.index(step.src_lane), keys.index(step.dst_lane)
                 a, b = life[i], life[j]
@@ -1131,7 +1237,11 @@ class Renderer:
                     r[a], r[b] = "├", HEAD["right"]
                 else:
                     r[a], r[b] = "┤", HEAD["left"]
-            is_new = step.n in new
+                for x in range(lo, hi + 1):
+                    roles[x] = "active" if is_new else None
+            self.mark_runs(y0 + len(out), roles)
+            if is_new:
+                self.mark(y0 + len(out), marker_x, num_x + 2, "active")
             prefix = "-- " if step.kind == "note" else ""
             if is_new:
                 wrapped = textwrap.wrap(prefix + step.label, budget, subsequent_indent="   ",
@@ -1151,8 +1261,10 @@ class Renderer:
             out.append(line)
             for more in wrapped[1:]:
                 cont = "".join(base())
+                self.mark_runs(y0 + len(out), lifeline_roles)
                 out.append(cont + " " * (label_x - len(cont)) + more)
         if not steps:
+            self.mark_runs(y0 + len(out), lifeline_roles)
             out.append("".join(base()))
         return out
 
@@ -1161,7 +1273,8 @@ class Renderer:
     def index_text(self) -> str:
         st = self.stage
         out = [f"{st.title} -- index of frames", "",
-               "Present with:  cd rendered && less *     (:n next file, :p previous, :x first, q quit)", "",
+               f"Present with:  cd rendered && less {'-R ' if self.palette else ''}*"
+               "     (:n next file, :p previous, :x first, q quit)", "",
                " file                                    frame  steps drawn  title"]
         for snap, name in zip(st.snaps, self.names):
             drawn = ",".join(str(s.n) for s in snap.arrows) if snap.kind == "diagram" else "card"
@@ -1184,6 +1297,18 @@ def narrow_gaps(lay: Layout) -> list:
                     for x in range(a.x + a.w, b.x):
                         cells.append((x, y))
     return cells
+
+
+def runs(roles: list) -> list:
+    """[(x0, x1, role)] for the runs of equal, non-None roles (x1 exclusive)."""
+    out = []
+    start = 0
+    for x in range(1, len(roles) + 1):
+        if x == len(roles) or roles[x] != roles[start]:
+            if roles[start] is not None:
+                out.append((start, x, roles[start]))
+            start = x
+    return out
 
 
 def truncate(text: str, room: int) -> str:

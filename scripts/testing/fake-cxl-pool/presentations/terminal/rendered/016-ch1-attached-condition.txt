@@ -1,9 +1,9 @@
 CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.07 the claim says Attached │ frame 16/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
-    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      ◄────┤  (fake-cxl-pool-controller) │
-    │  pooled-memory:       │    │  slices: pool (pooled0, shared0), node-b     │(10)│★ attached pooled0 -> node-b │
-    │  pooled0 @ node-b     │    │★ claims: pooled-memory -> pooled0, Attached  │    │★ status Attached written    │
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      [38;5;110m◄────┤[0m  (fake-cxl-pool-controller) │
+    │  pooled-memory:       │    │  slices: pool (pooled0, shared0), node-b     │[38;5;110m(10)[0m│[38;5;222m★[0m [38;5;222mattached pooled0 -> node-b[0m │
+    │  pooled0 @ node-b     │    │[38;5;222m★[0m [38;5;222mclaims: pooled-memory -> pooled0, Attached[0m  │    │[38;5;222m★[0m [38;5;222mstatus Attached written[0m    │
     │  waiting for Attached │    │  pods: pooled-consumer Pending (binding)     │    │  owner: claim pooled-memory │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
@@ -28,25 +28,25 @@ CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.07 the claim say
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★10 Pool controller -> Kubernetes API: claim status: Attached=True + data {serial, size, ...}   (steps 9-10 below)
+[38;5;110m★10 Pool controller -> Kubernetes API: [0mclaim status: Attached=True + data {serial, size, ...}   (steps 9-10 below)
     The claim status now carries exactly what the node will need to find the device: its serial. That was 0.6 s after
     the claim was created, in the recorded run.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 1, steps 1-10   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 1, steps 1-10   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
-  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
-  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
-  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
-  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
-  │      │      │      │      │      │      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
-  │      │      │      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤  ★  9  201 Created: attachment pooled0@node-b attached
-  │      │      │      │      │      ◄──────┤      │  ★ 10  UpdateStatus claim.status.devices[pooled0]: condition
-  │      │      │      │      │      │      │      │           cxl-pool.generic/Attached=True 'pooled0 attached to
-  │      │      │      │      │      │      │      │           node-b (slot cxlsw_ds0_usrp0hb0)', data {serial
-  │      │      │      │      │      │      │      │           0xc1ee0001, shared false, size 536870912, host, hostUUID,
-  │      │      │      │      │      │      │      │           attachment, qemuDeviceId, exclusive}; event Attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     1  GET /api/v1/devices?scope=pool
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m     3  create the pool's ResourceSlice: pooled0, shared0
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m     4  publish node-b's ResourceSlice: dram, dynamic
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     6  allocate pooled0 @ node-b; binding wait
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m◄╌╌╌╌╌╌┤[0m  [38;5;110m★  9[0m  201 Created: attachment pooled0@node-b attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m◄──────┤[0m      [38;5;243m│[0m  [38;5;110m★ 10[0m  UpdateStatus claim.status.devices[pooled0]: condition
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           cxl-pool.generic/Attached=True 'pooled0 attached to
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           node-b (slot cxlsw_ds0_usrp0hb0)', data {serial
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           0xc1ee0001, shared false, size 536870912, host, hostUUID,
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           attachment, qemuDeviceId, exclusive}; event Attached

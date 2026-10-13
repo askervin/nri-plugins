@@ -1,11 +1,11 @@
 CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.01 the memory pool │ frame 2/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
-    ┌┄ Scheduler ┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Kubernetes API + objects ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Pool controller ┄┄┄┄┄┄┄┄┄┄┄┐
-    ┆  (not on stage yet)   ┆    ┆  (not on stage yet)                          ┆    ┆  (not on stage yet)         ┆
-    ┆                       ┆    ┆                                              ┆    ┆                             ┆
-    ┆                       ┆    ┆                                              ┆    ┆                             ┆
-    ┆                       ┆    ┆                                              ┆    ┆                             ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;243m┌┄ Scheduler ┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Kubernetes API + objects ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Pool controller ┄┄┄┄┄┄┄┄┄┄┄┐[0m
+    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m   [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m         [38;5;243m┆[0m
+    [38;5;243m┆[0m                       [38;5;243m┆[0m    [38;5;243m┆[0m                                              [38;5;243m┆[0m    [38;5;243m┆[0m                             [38;5;243m┆[0m
+    [38;5;243m┆[0m                       [38;5;243m┆[0m    [38;5;243m┆[0m                                              [38;5;243m┆[0m    [38;5;243m┆[0m                             [38;5;243m┆[0m
+    [38;5;243m┆[0m                       [38;5;243m┆[0m    [38;5;243m┆[0m                                              [38;5;243m┆[0m    [38;5;243m┆[0m                             [38;5;243m┆[0m
+    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
 
@@ -13,27 +13,27 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.01 the memory poo
 
 
 
-    ┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
-    ┆  (not on stage yet)      ┆    ┆  (not on stage yet)                                                          ┆
-    ┆                          ┆    ┆                                                                              ┆
-    ┆                          ┆    ┆                                                                              ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;243m┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m
+    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m      [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m                                                          [38;5;243m┆[0m
+    [38;5;243m┆[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m                                                                              [38;5;243m┆[0m
+    [38;5;243m┆[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m                                                                              [38;5;243m┆[0m
+    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
 
-    ┌┄ CXL memory seen by the node ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
-    ┆  (not on stage yet)                                                                                          ┆
-    ┆                                                                                                              ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;243m┌┄ CXL memory seen by the node ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m
+    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m                                                                                          [38;5;243m┆[0m
+    [38;5;243m┆[0m                                                                                                              [38;5;243m┆[0m
+    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
     ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
-    ┌★ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
-    │★ shared0  serial 0xc1ae0001  256M  shared     free                                                           │
-    │★ pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
-    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+    [38;5;114m┌★ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐[0m
+    [38;5;114m│★[0m [38;5;114mshared0  serial 0xc1ae0001  256M  shared     free[0m                                                           [38;5;114m│[0m
+    [38;5;114m│★[0m [38;5;114mpooled0  serial 0xc1ee0001  512M  exclusive  free[0m                                                           [38;5;114m│[0m
+    [38;5;114m└─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘[0m
     A CXL memory pool is a box of memory cabled to many servers; its manager attaches a device to a server and detaches
     it again. Here a fake one hot-plugs devices into qemu VMs. pooled0 is for one node at a time; shared0 can be
     attached to several nodes at once, and they all see the same bytes.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m

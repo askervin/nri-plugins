@@ -1,10 +1,10 @@
 CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.08 the pod gets its node │ frame 17/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
-    │  (kube-scheduler)     ├────►  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
-    │★ idle                 │(11)│  slices: pool (pooled0, shared0), node-b     │    │  attached pooled0 -> node-b │
+    │  (kube-scheduler)     [38;5;110m├────►[0m  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │[38;5;222m★[0m [38;5;222midle[0m                 │[38;5;110m(11)[0m│  slices: pool (pooled0, shared0), node-b     │    │  attached pooled0 -> node-b │
     │                       │    │  claims: pooled-memory -> pooled0, Attached  │    │  status Attached written    │
-    │                       │    │★ pods: pooled-consumer -> node-b, creating   │    │  owner: claim pooled-memory │
+    │                       │    │[38;5;222m★[0m [38;5;222mpods: pooled-consumer -> node-b, creating[0m   │    │  owner: claim pooled-memory │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
@@ -28,22 +28,22 @@ CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.08 the pod gets 
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★11 Scheduler -> Kubernetes API: bind pod pooled-consumer to node-b (event Scheduled)
+[38;5;110m★11 Scheduler -> Kubernetes API: [0mbind pod pooled-consumer to node-b (event Scheduled)
     The scheduler's next poll saw Attached and bound the pod, 5.1 s after the claim was created: the poll interval, not
     the attach, sets this delay.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 1, steps 1-11   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 1, steps 1-11   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
-  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
-  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
-  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
-  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
-  │      │      │      │      │      │      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
-  │      │      │      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     9  201 Created: attachment pooled0@node-b attached
-  │      │      │      │      │      ◄──────┤      │    10  claim status: Attached=True + data {serial, size, ...}
-  │      │      │      │      ├──────►      │      │  ★ 11  bind pod pooled-consumer to node-b (event Scheduled)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     1  GET /api/v1/devices?scope=pool
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m     3  create the pool's ResourceSlice: pooled0, shared0
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m     4  publish node-b's ResourceSlice: dram, dynamic
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     6  allocate pooled0 @ node-b; binding wait
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     9  201 Created: attachment pooled0@node-b attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m    10  claim status: Attached=True + data {serial, size, ...}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m├──────►[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 11[0m  bind pod pooled-consumer to node-b (event Scheduled)

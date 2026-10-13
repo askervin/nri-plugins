@@ -1,11 +1,11 @@
 CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.03 the cluster-wide parts │ frame 4/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
-    ┌★ Scheduler ───────────┐    ┌★ Kubernetes API + objects ───────────────────┐    ┌★ Pool controller ───────────┐
-    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
-    │★ idle                 │    │★ slices: no CXL offers yet                   │    │★ connected to the pool      │
-    │                       │    │★ claims: none                                │    │★ (2 devices)                │
-    │                       │    │★ pods: none                                  │    │                             │
-    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    [38;5;114m┌★ Scheduler ───────────┐[0m    [38;5;114m┌★ Kubernetes API + objects ───────────────────┐[0m    [38;5;114m┌★ Pool controller ───────────┐[0m
+    [38;5;114m│[0m  (kube-scheduler)     [38;5;114m│[0m    [38;5;114m│[0m  (kube-apiserver: slices, claims, pods)      [38;5;114m│[0m    [38;5;114m│[0m  (fake-cxl-pool-controller) [38;5;114m│[0m
+    [38;5;114m│★[0m [38;5;114midle[0m                 [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114mslices: no CXL offers yet[0m                   [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114mconnected to the pool[0m      [38;5;114m│[0m
+    [38;5;114m│[0m                       [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114mclaims: none[0m                                [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114m(2 devices)[0m                [38;5;114m│[0m
+    [38;5;114m│[0m                       [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114mpods: none[0m                                  [38;5;114m│[0m    [38;5;114m│[0m                             [38;5;114m│[0m
+    [38;5;114m└───────────────────────┘[0m    [38;5;114m└──────────────────────────────────────────────┘[0m    [38;5;114m└─────────────────────────────┘[0m
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
 
@@ -13,11 +13,11 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.03 the cluster-wi
 
 
 
-    ┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
-    ┆  (not on stage yet)      ┆    ┆  (not on stage yet)                                                          ┆
-    ┆                          ┆    ┆                                                                              ┆
-    ┆                          ┆    ┆                                                                              ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;243m┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m    [38;5;243m┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐[0m
+    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m      [38;5;243m┆[0m    [38;5;243m┆[0m  [38;5;243m(not on stage yet)[0m                                                          [38;5;243m┆[0m
+    [38;5;243m┆[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m                                                                              [38;5;243m┆[0m
+    [38;5;243m┆[0m                          [38;5;243m┆[0m    [38;5;243m┆[0m                                                                              [38;5;243m┆[0m
+    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m    [38;5;243m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
 
     ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
     │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
@@ -31,9 +31,9 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.03 the cluster-wi
     Kubernetes words used here: a ResourceSlice is an offer list of devices, a DeviceClass a kind of device, a
     ResourceClaim a request for a device (and, once allocated, what was granted), a Pod the workload. The scheduler
     picks devices and nodes; the pool controller is the pool's agent in the cluster.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m

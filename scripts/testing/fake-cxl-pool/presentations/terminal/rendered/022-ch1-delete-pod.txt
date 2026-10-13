@@ -4,19 +4,19 @@ CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.13 the pod is de
     │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
     │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │  attached pooled0 -> node-b │
     │                       │    │  claims: pooled-memory -> pooled0, Attached  │    │  status Attached written    │
-    │                       │    │★ pods: pooled-consumer Terminating           │    │  owner: claim pooled-memory │
+    │                       │    │[38;5;222m★[0m [38;5;222mpods: pooled-consumer Terminating[0m           │    │  owner: claim pooled-memory │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
-    ┌┄ pooled-consumer / consumer ┄┄┄┐
-    ┆  (pod pooled-consumer, node-b) ┆
-    ┆  CXL_POOL_NODE_C1EE0001=2      ┆
-    ┆★ (gone)                        ┆
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    [38;5;174m┌┄ pooled-consumer / consumer ┄┄┄┐[0m
+    [38;5;174m┆[0m  [38;5;243m(pod pooled-consumer, node-b)[0m [38;5;174m┆[0m
+    [38;5;174m┆[0m  [38;5;243mCXL_POOL_NODE_C1EE0001=2[0m      [38;5;174m┆[0m
+    [38;5;174m┆★[0m [38;5;174m(gone)[0m                        [38;5;174m┆[0m
+    [38;5;174m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m
 
     ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
-    │  (kubelet + containerd)  ├────►  (kubelet-cxl-plugin)                                                        │
-    │  pod pooled-consumer     │(18)│  prepared pooled0 (serial 0xc1ee0001) as mem0, region0, dax0.0: NUMA node 2  │
-    │★ terminating: unprepare  │    │  claim kept in preparedPoolClaims.json; region0 left out of the node's slice │
+    │  (kubelet + containerd)  [38;5;110m├────►[0m  (kubelet-cxl-plugin)                                                        │
+    │  pod pooled-consumer     │[38;5;110m(18)[0m│  prepared pooled0 (serial 0xc1ee0001) as mem0, region0, dax0.0: NUMA node 2  │
+    │[38;5;222m★[0m [38;5;222mterminating: unprepare[0m  │    │  claim kept in preparedPoolClaims.json; region0 left out of the node's slice │
     └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
 
     ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
@@ -28,29 +28,29 @@ CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.13 the pod is de
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★18 Pod runner (node-b) -> CXL agent (node-b): NodeUnprepareResources(claim pooled-memory)   (steps 16-18 below)
+[38;5;110m★18 Pod runner (node-b) -> CXL agent (node-b): [0mNodeUnprepareResources(claim pooled-memory)   (steps 16-18 below)
     kubelet unprepares the claims while the pod terminates, before the pod object is gone.
 
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 1, steps 1-18   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 1, steps 1-18   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
-  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
-  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
-  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
-  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
-  │      │      │      │      │      │      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
-  │      │      │      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     9  201 Created: attachment pooled0@node-b attached
-  │      │      │      │      │      ◄──────┤      │    10  claim status: Attached=True + data {serial, size, ...}
-  │      │      │      │      ├──────►      │      │    11  bind pooled-consumer -> node-b
-  │      ◄──────┤      │      │      │      │      │    12  NodePrepareResources(pooled-memory)
-  │      ├─────────────►      │      │      │      │    13  create-region on mem0; kmem; online_movable -> node 2
-  │      ├╌╌╌╌╌╌►      │      │      │      │      │    14  CDI pool-c1ee0001: env CXL_POOL_NODE_C1EE0001=2, ...
-  ◄─────────────┤      │      │      │      │      │    15  start container consumer (with the CDI env)
-  │      │      │      │      │      │      │      │  ★ 16  -- kubectl delete pod pooled-consumer
-  ◄─────────────┤      │      │      │      │      │  ★ 17  SIGTERM: container consumer stops
-  │      ◄──────┤      │      │      │      │      │  ★ 18  NodeUnprepareResources(claim pooled-memory)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     1  GET /api/v1/devices?scope=pool
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m     3  create the pool's ResourceSlice: pooled0, shared0
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m     4  publish node-b's ResourceSlice: dram, dynamic
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     6  allocate pooled0 @ node-b; binding wait
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     9  201 Created: attachment pooled0@node-b attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m    10  claim status: Attached=True + data {serial, size, ...}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m    11  bind pooled-consumer -> node-b
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    12  NodePrepareResources(pooled-memory)
+  [38;5;243m│[0m      ├─────────────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    13  create-region on mem0; kmem; online_movable -> node 2
+  [38;5;243m│[0m      ├╌╌╌╌╌╌►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    14  CDI pool-c1ee0001: env CXL_POOL_NODE_C1EE0001=2, ...
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    15  start container consumer (with the CDI env)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 16[0m  -- kubectl delete pod pooled-consumer
+  [38;5;110m◄─────────────┤[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 17[0m  SIGTERM: container consumer stops
+  [38;5;243m│[0m      [38;5;110m◄──────┤[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 18[0m  NodeUnprepareResources(claim pooled-memory)

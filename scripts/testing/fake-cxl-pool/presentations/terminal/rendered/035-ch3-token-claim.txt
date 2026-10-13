@@ -3,8 +3,8 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.01 opting i
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
     │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
     │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │  idle                       │
-    │                       │    │★ claims: borrower's token unallocated        │    │                             │
-    │                       │    │★ pods: borrower Pending                      │    │                             │
+    │                       │    │[38;5;222m★[0m [38;5;222mclaims: borrower's token unallocated[0m        │    │                             │
+    │                       │    │[38;5;222m★[0m [38;5;222mpods: borrower Pending[0m                      │    │                             │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.01 opting i
 
     ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
     │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
-    │  idle                    │    │★ published node-b's slice: dram (NUMA nodes 0-1), dynamic (the token device) │
+    │  idle                    │    │[38;5;222m★[0m [38;5;222mpublished node-b's slice: dram (NUMA nodes 0-1), dynamic (the token device)[0m │
     │                          │    │                                                                              │
     └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
 
@@ -28,15 +28,15 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.01 opting i
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★1 kubectl apply: token claim template, pod borrower
+[38;5;110m★1 [0mkubectl apply: token claim template, pod borrower
     The token device 'dynamic' of the node's slice has no capacity, and any number of pods may claim it: a permission
     slip to ask for memory later. The template makes one token claim per pod.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 3, steps 1-1   (earlier chapters: see their last frames)                ★ = new in this frame
+MESSAGE SEQUENCE   chapter 3, steps 1-1   (earlier chapters: see their last frames)                [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │  ★  1  -- kubectl apply: ResourceClaimTemplate cxl-lease-token
-  │      │      │      │      │      │      │      │           {deviceClassName cxl-dynamic} and Pod borrower
-  │      │      │      │      │      │      │      │           {resourceClaims: cxl -> template cxl-lease-token;
-  │      │      │      │      │      │      │      │           containers main (lists the claim) and idle (does not)}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★  1[0m  -- kubectl apply: ResourceClaimTemplate cxl-lease-token
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           {deviceClassName cxl-dynamic} and Pod borrower
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           {resourceClaims: cxl -> template cxl-lease-token;
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           containers main (lists the claim) and idle (does not)}

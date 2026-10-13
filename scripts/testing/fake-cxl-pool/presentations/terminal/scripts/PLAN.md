@@ -1645,3 +1645,8 @@ Command line (F.5)
 24. `s.settle()` (new): the current state counts as already shown; chapters
     reset boxes with it, so the first frame of a chapter marks only its own
     changes.
+25. `--colors [dark|light]` (added later): a color role per cell (added,
+    changed, removed, active, muted; palettes in `stageplay.PALETTES`) laid
+    over the plain frame, which is still what `--check` verifies. The legend
+    reads "★ new or changed" so that it is right with and without colors and
+    its words double as the color key. `rendered/` is rendered with colors.

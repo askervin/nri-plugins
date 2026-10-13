@@ -9,14 +9,14 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.04 a contai
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
     ╔═ borrower / main ══════════════╗     ╔═ borrower / idle ══════════════╗
     ║  (pod borrower, node-b)        ║     ║  (pod borrower, node-b)        ║
-    ║★ cxl-request memory 512Mi ...  ║     ║  no claim: no socket, no CLI   ║
+    ║[38;5;222m★[0m [38;5;222mcxl-request memory 512Mi ...[0m  ║     ║  no claim: no socket, no CLI   ║
     ║  cpuset.mems unset: all nodes  ║     ║  cpuset.mems unset: all nodes  ║
-    ╚═════════════════════════════╤══╝     ╚════════════════════════════════╝
-                                  └─────────(7)──────────┐
-    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ─▼─────────────────────────────────────────────────────────┐
+    ╚═════════════════════════════[38;5;110m╤[0m══╝     ╚════════════════════════════════╝
+                                  [38;5;110m└─────────(7)──────────┐[0m
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ─[38;5;110m▼[0m─────────────────────────────────────────────────────────┐
     │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
-    │  pod borrower            │    │★ lease 0c822f6e Creating: stored in leases.json before any API object exists │
-    │  running                 │    │★ caller: socket -> token claim -> pod borrower; SO_PEERCRED -> main          │
+    │  pod borrower            │    │[38;5;222m★[0m [38;5;222mlease 0c822f6e Creating: stored in leases.json before any API object exists[0m │
+    │  running                 │    │[38;5;222m★[0m [38;5;222mcaller: socket -> token claim -> pod borrower; SO_PEERCRED -> main[0m          │
     └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
 
     ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
@@ -28,20 +28,20 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.04 a contai
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★7 borrower/main -> CXL agent (node-b): cxl-request memory 512Mi
+[38;5;110m★7 borrower/main -> CXL agent (node-b): [0mcxl-request memory 512Mi
     The socket tells which claim, and so which pod, is asking; the kernel tells which process (SO_PEERCRED), and its
     cgroup which container. No credentials and no Kubernetes access inside the pod.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 3, steps 1-7   (earlier chapters: see their last frames)                ★ = new in this frame
+MESSAGE SEQUENCE   chapter 3, steps 1-7   (earlier chapters: see their last frames)                [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │     1  -- kubectl apply: token claim template, pod borrower
-  │      │      │      │      ├──────►      │      │     2  allocate dynamic @ node-b (no wait); bind borrower
-  │      ◄──────┤      │      │      │      │      │     3  NodePrepareResources(token claim)
-  │      ├╌╌╌╌╌╌►      │      │      │      │      │     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
-  ◄─────────────┤      │      │      │      │      │     5  start container main
-  ◄─────────────┤      │      │      │      │      │     6  start container idle
-  ├──────►      │      │      │      │      │      │  ★  7  cxl-request memory 512Mi  =
-  │      │      │      │      │      │      │      │           {"op":"lease","kind":"memory","size":"512Mi","wait":"120s
-  │      │      │      │      │      │      │      │           "} on /run/cxl/cxl.sock
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     1  -- kubectl apply: token claim template, pod borrower
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     2  allocate dynamic @ node-b (no wait); bind borrower
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     3  NodePrepareResources(token claim)
+  [38;5;243m│[0m      ├╌╌╌╌╌╌►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  start container main
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     6  start container idle
+  [38;5;110m├──────►[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★  7[0m  cxl-request memory 512Mi  =
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           {"op":"lease","kind":"memory","size":"512Mi","wait":"120s
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           "} on /run/cxl/cxl.sock

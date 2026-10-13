@@ -58,7 +58,7 @@ s.chapter(0, "Title and cast", "title and cast", heading=TITLE, body=[
     "  - for one node at a time, or shared by several nodes, read-write or read-only.",
     "",
     "How to read the frames",
-    "  The picture on top keeps every component in its place. ★ marks what changed in this frame.",
+    "  The picture on top keeps every component in its place. ★ marks what is new or changed in this frame.",
     "  The arrow is this frame's message; its number (n) is its row in the MESSAGE SEQUENCE below the picture,",
     "  which grows frame by frame and starts over in each chapter. Names in parentheses are the real",
     "  component names of the e2e tests these frames follow.",

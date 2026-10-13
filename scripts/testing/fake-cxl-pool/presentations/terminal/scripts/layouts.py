@@ -40,7 +40,7 @@ POOL = (26, 4)
 RULE_CLUSTER, RULE_NODE, RULE_OUTSIDE = 1, 8, 25
 OUTSIDE_RULE_END = 108   # leaves room on line 25 for a wire from the right edge down into the pool
 
-LEGEND = ("★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone"
+LEGEND = ("★ new or changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone"
           "   (n) step n   ▲►◄▼ this step")
 
 

@@ -1,10 +1,10 @@
 CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.01 the pool becomes an offer list │ frame 10/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
-    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      ◄────┤  (fake-cxl-pool-controller) │
-    │  idle                 │    │★ slices: pool (pooled0, shared0)             │(3) │★ published 2 devices        │
-    │                       │    │  claims: none                                │    │★ watching claims, nodes     │
-    │                       │    │  pods: none                                  │    │★ and the pool's events      │
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      [38;5;110m◄────┤[0m  (fake-cxl-pool-controller) │
+    │  idle                 │    │[38;5;222m★[0m [38;5;222mslices: pool (pooled0, shared0)[0m             │[38;5;110m(3)[0m │[38;5;222m★[0m [38;5;222mpublished 2 devices[0m        │
+    │                       │    │  claims: none                                │    │[38;5;222m★[0m [38;5;222mwatching claims, nodes[0m     │
+    │                       │    │  pods: none                                  │    │[38;5;222m★[0m [38;5;222mand the pool's events[0m      │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
@@ -28,19 +28,19 @@ CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.01 the pool beco
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★3 Pool controller -> Kubernetes API: create the pool's ResourceSlice: pooled0, shared0   (steps 1-3 below)
+[38;5;110m★3 Pool controller -> Kubernetes API: [0mcreate the pool's ResourceSlice: pooled0, shared0   (steps 1-3 below)
     The controller turns the pool's device list into an offer list. The devices are on no node yet: bindsToNode plus a
     binding condition tell the scheduler: pick a node, then wait until I say Attached.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 1, steps 1-3   (earlier chapters: see their last frames)                ★ = new in this frame
+MESSAGE SEQUENCE   chapter 1, steps 1-3   (earlier chapters: see their last frames)                [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      ├──────►  ★  1  GET /api/v1/devices?scope=pool
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤  ★  2  200: pooled0 512M exclusive free, shared0 256M shared free
-  │      │      │      │      │      ◄──────┤      │  ★  3  create ResourceSlice (driver cxl-pool.generic, pool
-  │      │      │      │      │      │      │      │           fake-cxl-pool, allNodes): pooled0 {serial 0xc1ee0001,
-  │      │      │      │      │      │      │      │           shared false, size 536870912, capacity memory 512Mi},
-  │      │      │      │      │      │      │      │           shared0 {serial 0xc1ae0001, shared true, capacity hosts
-  │      │      │      │      │      │      │      │           4, valid 1 or 4}; every device: bindsToNode,
-  │      │      │      │      │      │      │      │           bindingConditions [cxl-pool.generic/Attached]
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m├──────►[0m  [38;5;110m★  1[0m  GET /api/v1/devices?scope=pool
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m◄╌╌╌╌╌╌┤[0m  [38;5;110m★  2[0m  200: pooled0 512M exclusive free, shared0 256M shared free
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m◄──────┤[0m      [38;5;243m│[0m  [38;5;110m★  3[0m  create ResourceSlice (driver cxl-pool.generic, pool
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           fake-cxl-pool, allNodes): pooled0 {serial 0xc1ee0001,
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           shared false, size 536870912, capacity memory 512Mi},
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           shared0 {serial 0xc1ae0001, shared true, capacity hosts
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           4, valid 1 or 4}; every device: bindsToNode,
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           bindingConditions [cxl-pool.generic/Attached]

@@ -9,11 +9,11 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.14 a file d
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
     ╔═ borrower / main ══════════════╗     ╔═ borrower / idle ══════════════╗     ╔═ cxl-lease-d301f49a / pause ═══╗
     ║  (pod borrower, node-b)        ║     ║  (pod borrower, node-b)        ║     ║  (companion pod, node-b)       ║
-    ║★ fd 3 = /dev/dax0.0 (no node)  ║     ║  no claim: no socket, no CLI   ║     ║  claim: cxl-lease-d301f49a     ║
-    ║★ wrote TEXT at 0 through fd 3  ║     ║  cpuset.mems unset: all nodes  ║     ║  pause:3.10, 100m CPU, 8Mi     ║
-    ╚═══════════════▲════════════════╝     ╚════════════════════════════════╝     ╚════════════════════════════════╝
-                    └────────────────(38)────────────────┐
-    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ─┴─────────────────────────────────────────────────────────┐
+    ║[38;5;222m★[0m [38;5;222mfd 3 = /dev/dax0.0 (no node)[0m  ║     ║  no claim: no socket, no CLI   ║     ║  claim: cxl-lease-d301f49a     ║
+    ║[38;5;222m★[0m [38;5;222mwrote TEXT at 0 through fd 3[0m  ║     ║  cpuset.mems unset: all nodes  ║     ║  pause:3.10, 100m CPU, 8Mi     ║
+    ╚═══════════════[38;5;110m▲[0m════════════════╝     ╚════════════════════════════════╝     ╚════════════════════════════════╝
+                    [38;5;110m└────────────────(38)────────────────┐[0m
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ─[38;5;110m┴[0m─────────────────────────────────────────────────────────┐
     │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
     │  pod borrower            │    │  lease d301f49a Ready: shared0 prepared as mem0, region0, dax0.0 (mode dax)  │
     │  running                 │    │  caller: borrower/main                                                       │
@@ -25,55 +25,55 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.14 a file d
     └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
     ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
     ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
-    │★ shared0  serial 0xc1ae0001  256M  shared     attached to node-b; shared0.raw on the host holds TEXT         │
+    │[38;5;222m★[0m [38;5;222mshared0  serial 0xc1ae0001  256M  shared     attached to node-b; shared0.raw on the host holds TEXT[0m         │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★38 CXL agent (node-b) -> borrower/main: Ready + the open /dev/dax0.0 fd (SCM_RIGHTS)
+[38;5;110m★38 CXL agent (node-b) -> borrower/main: [0mReady + the open /dev/dax0.0 fd (SCM_RIGHTS)
     The device cgroup is checked only at open(): a passed fd needs no device node and no rule. A node made with mknod in
     the container still fails to open (EPERM). The host finds TEXT in the backing file.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 3, steps 1-38   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 3, steps 1-38   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │     1  -- kubectl apply: token claim template, pod borrower
-  │      │      │      │      ├──────►      │      │     2  allocate dynamic @ node-b (no wait); bind borrower
-  │      ◄──────┤      │      │      │      │      │     3  NodePrepareResources(token claim)
-  │      ├╌╌╌╌╌╌►      │      │      │      │      │     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
-  ◄─────────────┤      │      │      │      │      │     5  start container main
-  ◄─────────────┤      │      │      │      │      │     6  start container idle
-  ├──────►      │      │      │      │      │      │     7  cxl-request memory 512Mi
-  │      ├───────────────────────────►      │      │     8  create claim + companion pod cxl-lease-0c822f6e
-  │      │      │      │      ├──────►      │      │     9  allocate pooled0 @ node-b; event BindingConditionsPending
-  │      │      │      │      │      │      ├──────►    10  POST attach pooled0 {host: node-b}
-  │      │      │      ◄───────────────────────────┤    11  hot-plug cxl-type3 serial 0xc1ee0001
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤    12  201 Created: attached
-  │      │      │      │      │      ◄──────┤      │    13  claim status: Attached=True, data {serial 0xc1ee0001, ...}
-  │      │      │      │      ├──────►      │      │    14  bind cxl-lease-0c822f6e -> node-b
-  │      ◄──────┤      │      │      │      │      │    15  NodePrepareResources(cxl-lease-0c822f6e)
-  │      ├─────────────►      │      │      │      │    16  create-region; kmem; online_movable -> node 2
-  │      ├──────►      │      │      │      │      │    17  NRI UpdateContainers(main): cpuset.mems 0-1,2
-  ◄╌╌╌╌╌╌┤      │      │      │      │      │      │    18  {"lease":"0c822f6e","state":"Ready","node":2,...}
-  ├──────►      │      │      │      │      │      │    19  cxl-release 0c822f6e
-  │      ├──────►      │      │      │      │      │    20  NRI UpdateContainers(main): cpuset.mems 0-1
-  │      ├───────────────────────────►      │      │    21  delete companion cxl-lease-0c822f6e
-  │      ◄──────┤      │      │      │      │      │    22  NodeUnprepareResources(cxl-lease-0c822f6e)
-  │      ├─────────────►      │      │      │      │    23  offline; destroy region0; disable mem0
-  │      │      │      │      │      │      │      │    24  -- claim cxl-lease-0c822f6e deallocated and deleted
-  │      │      │      │      │      │      ├──────►    25  DELETE attachment pooled0@node-b
-  │      │      │      ◄───────────────────────────┤    26  hot-remove: device_del ... DEVICE_DELETED
-  ◄╌╌╌╌╌╌┤      │      │      │      │      │      │    27  {"lease":"0c822f6e","state":"Released"}
-  ├──────►      │      │      │      │      │      │    28  cxl-request shared 0xc1ae0001 --exec dax-rw.py ...
-  │      ├───────────────────────────►      │      │    29  create claim + companion cxl-lease-d301f49a (dax)
-  │      │      │      │      ├──────►      │      │    30  allocate shared0 @ node-b (hosts 1 of 4)
-  │      │      │      │      │      │      ├──────►    31  POST attach shared0 {host: node-b}
-  │      │      │      ◄───────────────────────────┤    32  hot-plug cxl-type3 serial 0xc1ae0001
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤    33  201 Created: attached
-  │      │      │      │      │      ◄──────┤      │    34  claim status: Attached=True
-  │      │      │      │      ├──────►      │      │    35  bind cxl-lease-d301f49a -> node-b
-  │      ◄──────┤      │      │      │      │      │    36  NodePrepareResources(cxl-lease-d301f49a)
-  │      ├─────────────►      │      │      │      │    37  cxl create-region; daxctl --mode=devdax -> /dev/dax0.0
-  ◄╌╌╌╌╌╌┤      │      │      │      │      │      │  ★ 38  open /dev/dax0.0 O_RDWR; {"lease":"d301f49a","state":"Ready"
-  │      │      │      │      │      │      │      │           ,"kind":"shared","mode":"dax","dax":"/dev/dax0.0","size":
-  │      │      │      │      │      │      │      │           268435456,"serial":"0xc1ae0001"} + the open fd
-  │      │      │      │      │      │      │      │           (SCM_RIGHTS)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     1  -- kubectl apply: token claim template, pod borrower
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     2  allocate dynamic @ node-b (no wait); bind borrower
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     3  NodePrepareResources(token claim)
+  [38;5;243m│[0m      ├╌╌╌╌╌╌►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  start container main
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     6  start container idle
+  ├──────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     7  cxl-request memory 512Mi
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m     8  create claim + companion pod cxl-lease-0c822f6e
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     9  allocate pooled0 @ node-b; event BindingConditionsPending
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►    10  POST attach pooled0 {host: node-b}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤    11  hot-plug cxl-type3 serial 0xc1ee0001
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤    12  201 Created: attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m    13  claim status: Attached=True, data {serial 0xc1ee0001, ...}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m    14  bind cxl-lease-0c822f6e -> node-b
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    15  NodePrepareResources(cxl-lease-0c822f6e)
+  [38;5;243m│[0m      ├─────────────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    16  create-region; kmem; online_movable -> node 2
+  [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    17  NRI UpdateContainers(main): cpuset.mems 0-1,2
+  ◄╌╌╌╌╌╌┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    18  {"lease":"0c822f6e","state":"Ready","node":2,...}
+  ├──────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    19  cxl-release 0c822f6e
+  [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    20  NRI UpdateContainers(main): cpuset.mems 0-1
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m    21  delete companion cxl-lease-0c822f6e
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    22  NodeUnprepareResources(cxl-lease-0c822f6e)
+  [38;5;243m│[0m      ├─────────────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    23  offline; destroy region0; disable mem0
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    24  -- claim cxl-lease-0c822f6e deallocated and deleted
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►    25  DELETE attachment pooled0@node-b
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤    26  hot-remove: device_del ... DEVICE_DELETED
+  ◄╌╌╌╌╌╌┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    27  {"lease":"0c822f6e","state":"Released"}
+  ├──────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    28  cxl-request shared 0xc1ae0001 --exec dax-rw.py ...
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m    29  create claim + companion cxl-lease-d301f49a (dax)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m    30  allocate shared0 @ node-b (hosts 1 of 4)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►    31  POST attach shared0 {host: node-b}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤    32  hot-plug cxl-type3 serial 0xc1ae0001
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤    33  201 Created: attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m    34  claim status: Attached=True
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m    35  bind cxl-lease-d301f49a -> node-b
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    36  NodePrepareResources(cxl-lease-d301f49a)
+  [38;5;243m│[0m      ├─────────────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    37  cxl create-region; daxctl --mode=devdax -> /dev/dax0.0
+  [38;5;110m◄╌╌╌╌╌╌┤[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 38[0m  open /dev/dax0.0 O_RDWR; {"lease":"d301f49a","state":"Ready"
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           ,"kind":"shared","mode":"dax","dax":"/dev/dax0.0","size":
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           268435456,"serial":"0xc1ae0001"} + the open fd
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           (SCM_RIGHTS)

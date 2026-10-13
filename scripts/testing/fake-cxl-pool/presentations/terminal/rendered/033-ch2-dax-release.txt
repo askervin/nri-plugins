@@ -1,58 +1,58 @@
 CXL memory pool + Kubernetes DRA │ Ch 2 DAX device claim │ 2.07 fast-forward: release │ frame 33/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
-    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) ├─┐
-    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │★ detached pooled0@node-b    │ │
-    │                       │    │★ claims: none                                │    │★ event Detached             │ │
-    │                       │    │★ pods: none                                  │    │                             │ │
-    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘ │
-    ─ ONE NODE: node-b (VM2, control plane) ──────────────────────────────────────────────────────────────────────── │
-    ┌┄ dax-claimer / main ┄┄┄┄┄┄┄┄┄┄┄┐                                                                               │
-    ┆  (pod dax-claimer, node-b)     ┆                                                                               │
-    ┆  /dev/dax0.0 (read-write)      ┆                                                                               │
-    ┆★ (gone)                        ┆                                                                               │
-    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘                                                                               │
-                                                                                                                (15) │
-    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐ │
-    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │ │
-    │★ idle                    │    │★ released mem0 (serial 0xc1ee0001); unprepared claim pooled-dax              │ │
-    │                          │    │                                                                              │ │
-    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘ │
-                                                                                                                     │
-    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐ │
-    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │ │
-    │★ no CXL memory devices                                                                                       │ │
-    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
-    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────   ┌────┘
-    ┌─ Memory pool manager ─────────────────────────────────────────────────────────────────────────────────────▼──┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) [38;5;110m├─┐[0m
+    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │[38;5;222m★[0m [38;5;222mdetached pooled0@node-b[0m    │ [38;5;110m│[0m
+    │                       │    │[38;5;222m★[0m [38;5;222mclaims: none[0m                                │    │[38;5;222m★[0m [38;5;222mevent Detached[0m             │ [38;5;110m│[0m
+    │                       │    │[38;5;222m★[0m [38;5;222mpods: none[0m                                  │    │                             │ [38;5;110m│[0m
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘ [38;5;110m│[0m
+    ─ ONE NODE: node-b (VM2, control plane) ──────────────────────────────────────────────────────────────────────── [38;5;110m│[0m
+    [38;5;174m┌┄ dax-claimer / main ┄┄┄┄┄┄┄┄┄┄┄┐[0m                                                                               [38;5;110m│[0m
+    [38;5;174m┆[0m  [38;5;243m(pod dax-claimer, node-b)[0m     [38;5;174m┆[0m                                                                               [38;5;110m│[0m
+    [38;5;174m┆[0m  [38;5;243m/dev/dax0.0 (read-write)[0m      [38;5;174m┆[0m                                                                               [38;5;110m│[0m
+    [38;5;174m┆★[0m [38;5;174m(gone)[0m                        [38;5;174m┆[0m                                                                               [38;5;110m│[0m
+    [38;5;174m└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘[0m                                                                               [38;5;110m│[0m
+                                                                                                                [38;5;110m(15)[0m [38;5;110m│[0m
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐ [38;5;110m│[0m
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │ [38;5;110m│[0m
+    │[38;5;222m★[0m [38;5;222midle[0m                    │    │[38;5;222m★[0m [38;5;222mreleased mem0 (serial 0xc1ee0001); unprepared claim pooled-dax[0m              │ [38;5;110m│[0m
+    │                          │    │                                                                              │ [38;5;110m│[0m
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘ [38;5;110m│[0m
+                                                                                                                     [38;5;110m│[0m
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐ [38;5;110m│[0m
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │ [38;5;110m│[0m
+    │[38;5;222m★[0m [38;5;222mno CXL memory devices[0m                                                                                       │ [38;5;110m│[0m
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ [38;5;110m│[0m
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────   [38;5;110m┌────┘[0m
+    ┌─ Memory pool manager ─────────────────────────────────────────────────────────────────────────────────────[38;5;110m▼[0m──┐
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
-    │★ pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    │[38;5;222m★[0m [38;5;222mpooled0  serial 0xc1ee0001  512M  exclusive  free[0m                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★15 Pool controller -> Pool manager: DELETE attachment pooled0@node-b   (steps 12-17 below)
+[38;5;110m★15 Pool controller -> Pool manager: [0mDELETE attachment pooled0@node-b   (steps 12-17 below)
     The same release chain as in chapter 1: unprepare, deallocate, detach. Nothing to take offline this time, because
     nothing was onlined.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 2, steps 1-17   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 2, steps 1-17   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │     1  -- kubectl apply: claim pooled-dax, pod dax-claimer
-  │      │      │      │      ├──────►      │      │     2  allocate pooled0 @ node-b; event BindingConditionsPending
-  │      │      │      │      │      │      ├──────►     3  POST attach pooled0 {host: node-b}
-  │      │      │      ◄───────────────────────────┤     4  hot-plug cxl-type3 serial 0xc1ee0001
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     5  201 Created: attached
-  │      │      │      │      │      ◄──────┤      │     6  claim status: Attached=True + data
-  │      │      │      │      ├──────►      │      │     7  bind dax-claimer -> node-b
-  │      ◄──────┤      │      │      │      │      │     8  NodePrepareResources(claim pooled-dax)
-  │      ├─────────────►      │      │      │      │     9  create-region; daxctl --mode=devdax -> /dev/dax0.0
-  │      ├╌╌╌╌╌╌►      │      │      │      │      │    10  CDI pool-c1ee0001: device node /dev/dax0.0 + env
-  ◄─────────────┤      │      │      │      │      │    11  start container main
-  │      │      │      │      │      │      │      │  ★ 12  -- kubectl delete pod dax-claimer
-  │      ◄──────┤      │      │      │      │      │  ★ 13  NodeUnprepareResources(claim pooled-dax)
-  │      ├─────────────►      │      │      │      │  ★ 14  cxl disable-region region0; cxl destroy-region region0; cxl
-  │      │      │      │      │      │      │      │           disable-memdev mem0 (nothing to offline)
-  │      │      │      │      │      │      ├──────►  ★ 15  DELETE /api/v1/devices/pooled0/attachments/node-b?wait=true&
-  │      │      │      │      │      │      │      │           timeout=1m0s
-  │      │      │      ◄───────────────────────────┤  ★ 16  hot-remove: device_del fcp_pooled0.hp1 ... DEVICE_DELETED
-  │      │      │      │      │      │      │      │           ... object-del
-  │      │      │      │      │      │      │      │  ★ 17  -- kubectl delete resourceclaim pooled-dax
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     1  -- kubectl apply: claim pooled-dax, pod dax-claimer
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     2  allocate pooled0 @ node-b; event BindingConditionsPending
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     3  POST attach pooled0 {host: node-b}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤     4  hot-plug cxl-type3 serial 0xc1ee0001
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     5  201 Created: attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m     6  claim status: Attached=True + data
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     7  bind dax-claimer -> node-b
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     8  NodePrepareResources(claim pooled-dax)
+  [38;5;243m│[0m      ├─────────────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     9  create-region; daxctl --mode=devdax -> /dev/dax0.0
+  [38;5;243m│[0m      ├╌╌╌╌╌╌►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    10  CDI pool-c1ee0001: device node /dev/dax0.0 + env
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    11  start container main
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 12[0m  -- kubectl delete pod dax-claimer
+  [38;5;243m│[0m      [38;5;110m◄──────┤[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 13[0m  NodeUnprepareResources(claim pooled-dax)
+  [38;5;243m│[0m      [38;5;110m├─────────────►[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 14[0m  cxl disable-region region0; cxl destroy-region region0; cxl
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           disable-memdev mem0 (nothing to offline)
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m├──────►[0m  [38;5;110m★ 15[0m  DELETE /api/v1/devices/pooled0/attachments/node-b?wait=true&
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           timeout=1m0s
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m◄───────────────────────────┤[0m  [38;5;110m★ 16[0m  hot-remove: device_del fcp_pooled0.hp1 ... DEVICE_DELETED
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           ... object-del
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 17[0m  -- kubectl delete resourceclaim pooled-dax

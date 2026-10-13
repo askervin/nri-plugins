@@ -4,7 +4,7 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.07 the memo
     │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
     │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │  attached pooled0 -> node-b │
     │                       │    │  claims: token; cxl-lease-0c822f6e Attached  │    │  status Attached written    │
-    │                       │    │★ pods: borrower; cxl-lease-0c822f6e Running  │    │                             │
+    │                       │    │[38;5;222m★[0m [38;5;222mpods: borrower; cxl-lease-0c822f6e Running[0m  │    │                             │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
     ╔═ borrower / main ══════════════╗     ╔═ borrower / idle ══════════════╗     ╔═ cxl-lease-0c822f6e / pause ═══╗
@@ -15,41 +15,41 @@ CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.07 the memo
 
     ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
     │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
-    │  pod cxl-lease-0c822f6e  │    │★ lease 0c822f6e Lending: its LendConfig matches lease, pod, container        │
-    │★ starting pause          │    │★ prepared pooled0 as NUMA node 2 for the companion's claim                   │
-    └──────────────────────────┘    └───────────────────────┬──────────────────────────────────────────────────────┘
-                                                            │ (16)
-    ┌─ CXL memory seen by the node ─────────────────────────▼──────────────────────────────────────────────────────┐
+    │  pod cxl-lease-0c822f6e  │    │[38;5;222m★[0m [38;5;222mlease 0c822f6e Lending: its LendConfig matches lease, pod, container[0m        │
+    │[38;5;222m★[0m [38;5;222mstarting pause[0m          │    │[38;5;222m★[0m [38;5;222mprepared pooled0 as NUMA node 2 for the companion's claim[0m                   │
+    └──────────────────────────┘    └───────────────────────[38;5;110m┬[0m──────────────────────────────────────────────────────┘
+                                                            [38;5;110m│[0m [38;5;110m(16)[0m
+    ┌─ CXL memory seen by the node ─────────────────────────[38;5;110m▼[0m──────────────────────────────────────────────────────┐
     │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
-    │★ mem0 -> region0 -> dax0.0 (kmem) -> NUMA node 2: 512 MB online_movable, no CPUs                             │
+    │[38;5;222m★[0m [38;5;222mmem0 -> region0 -> dax0.0 (kmem) -> NUMA node 2: 512 MB online_movable, no CPUs[0m                             │
     └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
     ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
     ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b, owner: claim cxl-lease-0c822f6e            │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★16 CXL agent (node-b) -> CXL memory (node-b): create-region; kmem; online_movable -> node 2
+[38;5;110m★16 CXL agent (node-b) -> CXL memory (node-b): [0mcreate-region; kmem; online_movable -> node 2
     The agent accepts a LendConfig only from a claim, for a lease that it knows, for the same pod and container: a
     tenant cannot lend memory to someone else's container.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 3, steps 1-16   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 3, steps 1-16   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │     1  -- kubectl apply: token claim template, pod borrower
-  │      │      │      │      ├──────►      │      │     2  allocate dynamic @ node-b (no wait); bind borrower
-  │      ◄──────┤      │      │      │      │      │     3  NodePrepareResources(token claim)
-  │      ├╌╌╌╌╌╌►      │      │      │      │      │     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
-  ◄─────────────┤      │      │      │      │      │     5  start container main
-  ◄─────────────┤      │      │      │      │      │     6  start container idle
-  ├──────►      │      │      │      │      │      │     7  cxl-request memory 512Mi
-  │      ├───────────────────────────►      │      │     8  create claim + companion pod cxl-lease-0c822f6e
-  │      │      │      │      ├──────►      │      │     9  allocate pooled0 @ node-b; event BindingConditionsPending
-  │      │      │      │      │      │      ├──────►    10  POST attach pooled0 {host: node-b}
-  │      │      │      ◄───────────────────────────┤    11  hot-plug cxl-type3 serial 0xc1ee0001
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤    12  201 Created: attached
-  │      │      │      │      │      ◄──────┤      │    13  claim status: Attached=True, data {serial 0xc1ee0001, ...}
-  │      │      │      │      ├──────►      │      │    14  bind cxl-lease-0c822f6e -> node-b
-  │      ◄──────┤      │      │      │      │      │    15  NodePrepareResources(cxl-lease-0c822f6e)
-  │      ├─────────────►      │      │      │      │  ★ 16  cxl create-region; daxctl --mode=system-ram (kmem);
-  │      │      │      │      │      │      │      │           online_movable -> NUMA node 2
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     1  -- kubectl apply: token claim template, pod borrower
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     2  allocate dynamic @ node-b (no wait); bind borrower
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     3  NodePrepareResources(token claim)
+  [38;5;243m│[0m      ├╌╌╌╌╌╌►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  start container main
+  ◄─────────────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     6  start container idle
+  ├──────►      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     7  cxl-request memory 512Mi
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m     8  create claim + companion pod cxl-lease-0c822f6e
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m     9  allocate pooled0 @ node-b; event BindingConditionsPending
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►    10  POST attach pooled0 {host: node-b}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄───────────────────────────┤    11  hot-plug cxl-type3 serial 0xc1ee0001
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤    12  201 Created: attached
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m    13  claim status: Attached=True, data {serial 0xc1ee0001, ...}
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►      [38;5;243m│[0m      [38;5;243m│[0m    14  bind cxl-lease-0c822f6e -> node-b
+  [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m    15  NodePrepareResources(cxl-lease-0c822f6e)
+  [38;5;243m│[0m      [38;5;110m├─────────────►[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★ 16[0m  cxl create-region; daxctl --mode=system-ram (kmem);
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           online_movable -> NUMA node 2

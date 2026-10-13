@@ -5,18 +5,18 @@ CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.02 the writer
     │  idle                 │    │  slices: pool, node-a, node-b                │    │  idle                       │
     │                       │    │  claims: writer's token -> dynamic @ node-a  │    │                             │
     │                       │    │  pods: writer -> node-a, starting            │    │                             │
-    └───────────────────────┘    └────────────────────▲─────────────────────────┘    └─────────────────────────────┘
-    ─ ONE NODE: node-a (VM1, worker) ─────────────────│───    ─ ONE NODE: node-b (VM2, control plane) ──────────────
-    ╔═ writer / main ════════╗                        │
-    ║  (pod writer, node-a)  ║                        │
-    ║★ request: exclusive    ║                        │
-    ║★ waiting ...           ║                        │
-    ╚════════════════════════╝                        │
-                                                      │ (6)
-    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ────────┴──┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    └───────────────────────┘    └────────────────────[38;5;110m▲[0m─────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-a (VM1, worker) ─────────────────[38;5;110m│[0m───    ─ ONE NODE: node-b (VM2, control plane) ──────────────
+    ╔═ writer / main ════════╗                        [38;5;110m│[0m
+    ║  (pod writer, node-a)  ║                        [38;5;110m│[0m
+    ║[38;5;222m★[0m [38;5;222mrequest: exclusive[0m    ║                        [38;5;110m│[0m
+    ║[38;5;222m★[0m [38;5;222mwaiting ...[0m           ║                        [38;5;110m│[0m
+    ╚════════════════════════╝                        [38;5;110m│[0m
+                                                      [38;5;110m│[0m [38;5;110m(6)[0m
+    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ────────[38;5;110m┴[0m──┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
     │  (kubelet)     │    │  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
-    │  pod writer    │    │★ lease 36c2ee71 Creating     │    │  idle          │    │  no leases                   │
-    │★ running       │    │★ shared0, dax, exclusive     │    │                │    │                              │
+    │  pod writer    │    │[38;5;222m★[0m [38;5;222mlease 36c2ee71 Creating[0m     │    │  idle          │    │  no leases                   │
+    │[38;5;222m★[0m [38;5;222mrunning[0m       │    │[38;5;222m★[0m [38;5;222mshared0, dax, exclusive[0m     │    │                │    │                              │
     └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
 
     ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
@@ -28,20 +28,20 @@ CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.02 the writer
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★6 CXL agent (node-a) -> Kubernetes API: read the pool slice: shared0 hosts = 4   (steps 5-6 below)
+[38;5;110m★6 CXL agent (node-a) -> Kubernetes API: [0mread the pool slice: shared0 hosts = 4   (steps 5-6 below)
     Exclusive = ask for ALL hosts of the device. The agent reads how many there are from the pool's offer list (valid
     values: 1 or 4) and asks for 4.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 5, steps 1-6   (earlier chapters: see their last frames)                ★ = new in this frame
+MESSAGE SEQUENCE   chapter 5, steps 1-6   (earlier chapters: see their last frames)                [38;5;110m★ = new in this frame[0m
  Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
  ----- node-a -----  -- cluster -- pool  ----- node-b -----
-  │    │    │    │    │    │    │    │    │    │    │    │     1  -- kubectl apply: pod writer (node-a), token claim
-  │    │    │    │    ├────►    │    │    │    │    │    │     2  allocate dynamic @ node-a; bind writer -> node-a
-  │    ◄────┤    │    │    │    │    │    │    │    │    │     3  NodePrepareResources(token claim)
-  │    ├╌╌╌╌►    │    │    │    │    │    │    │    │    │     4  CDI lease-<uid>: /run/cxl, cxl-request
-  ├────►    │    │    │    │    │    │    │    │    │    │  ★  5  cxl-request shared 0xc1ae0001 --exclusive  =  {"op":"l
-  │    │    │    │    │    │    │    │    │    │    │    │           ease","kind":"shared","serial":"0xc1ae0001","exclus
-  │    │    │    │    │    │    │    │    │    │    │    │           ive":true,"wait":"120s"}
-  │    ├───────────────────►    │    │    │    │    │    │  ★  6  read the pool's ResourceSlice: shared0 has capacity
-  │    │    │    │    │    │    │    │    │    │    │    │           hosts = 4
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     1  -- kubectl apply: pod writer (node-a), token claim
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     2  allocate dynamic @ node-a; bind writer -> node-a
+  [38;5;243m│[0m    ◄────┤    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     3  NodePrepareResources(token claim)
+  [38;5;243m│[0m    ├╌╌╌╌►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     4  CDI lease-<uid>: /run/cxl, cxl-request
+  [38;5;110m├────►[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★  5[0m  cxl-request shared 0xc1ae0001 --exclusive  =  {"op":"l
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           ease","kind":"shared","serial":"0xc1ae0001","exclus
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           ive":true,"wait":"120s"}
+  [38;5;243m│[0m    [38;5;110m├───────────────────►[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★  6[0m  read the pool's ResourceSlice: shared0 has capacity
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           hosts = 4

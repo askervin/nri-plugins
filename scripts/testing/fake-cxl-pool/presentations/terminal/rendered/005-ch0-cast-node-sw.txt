@@ -13,11 +13,11 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.04 the node's sof
 
 
 
-    ┌★ Pod runner ─────────────┐    ┌★ Node's CXL agent ───────────────────────────────────────────────────────────┐
-    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
-    │★ runs the pods of node-b │    │★ DRA plugins: cxl.generic (node memory), cxl-pool.generic (pool devices)     │
-    │                          │    │★ NRI plugin (changes running containers), lease broker (container requests)  │
-    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+    [38;5;114m┌★ Pod runner ─────────────┐[0m    [38;5;114m┌★ Node's CXL agent ───────────────────────────────────────────────────────────┐[0m
+    [38;5;114m│[0m  (kubelet + containerd)  [38;5;114m│[0m    [38;5;114m│[0m  (kubelet-cxl-plugin)                                                        [38;5;114m│[0m
+    [38;5;114m│★[0m [38;5;114mruns the pods of node-b[0m [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114mDRA plugins: cxl.generic (node memory), cxl-pool.generic (pool devices)[0m     [38;5;114m│[0m
+    [38;5;114m│[0m                          [38;5;114m│[0m    [38;5;114m│★[0m [38;5;114mNRI plugin (changes running containers), lease broker (container requests)[0m  [38;5;114m│[0m
+    [38;5;114m└──────────────────────────┘[0m    [38;5;114m└──────────────────────────────────────────────────────────────────────────────┘[0m
 
     ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
     │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
@@ -31,9 +31,9 @@ CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.04 the node's sof
     The Pod runner (kubelet with containerd) starts the pods of its node. Next to it runs one CXL agent per node: it
     prepares claims for kubelet (DRA plugins), publishes the node's own memory, changes running containers through NRI
     (containerd's plugin interface), and answers requests from containers.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      │      │
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m

@@ -1,6 +1,6 @@
 CXL memory from a pool, with Kubernetes DRA -- index of frames
 
-Present with:  cd rendered && less *     (:n next file, :p previous, :x first, q quit)
+Present with:  cd rendered && less -R *     (:n next file, :p previous, :x first, q quit)
 
  file                                    frame  steps drawn  title
  001-ch0-card.txt                         0.00   card         title card

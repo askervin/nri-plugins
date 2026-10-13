@@ -1,10 +1,10 @@
 CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.04 the scheduler picks device and node │ frame 13/82
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
-    │  (kube-scheduler)     ├────►  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
-    │★ pooled-memory:       │(6) │  slices: pool (pooled0, shared0), node-b     │    │  published 2 devices        │
-    │★ pooled0 @ node-b     │    │★ claims: pooled-memory -> pooled0 @ node-b   │    │  watching claims, nodes     │
-    │★ waiting for Attached │    │★ pods: pooled-consumer Pending (binding)     │    │  and the pool's events      │
+    │  (kube-scheduler)     [38;5;110m├────►[0m  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │[38;5;222m★[0m [38;5;222mpooled-memory:[0m       │[38;5;110m(6)[0m │  slices: pool (pooled0, shared0), node-b     │    │  published 2 devices        │
+    │[38;5;222m★[0m [38;5;222mpooled0 @ node-b[0m     │    │[38;5;222m★[0m [38;5;222mclaims: pooled-memory -> pooled0 @ node-b[0m   │    │  watching claims, nodes     │
+    │[38;5;222m★[0m [38;5;222mwaiting for Attached[0m │    │[38;5;222m★[0m [38;5;222mpods: pooled-consumer Pending (binding)[0m     │    │  and the pool's events      │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
 
@@ -28,19 +28,19 @@ CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.04 the scheduler
     │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★6 Scheduler -> Kubernetes API: allocate pooled0 @ node-b; binding wait
+[38;5;110m★6 Scheduler -> Kubernetes API: [0mallocate pooled0 @ node-b; binding wait
     pooled0 is the only exclusive device with 512Mi. The scheduler pins the claim to a node, here node-b, and then polls
     the claim until its binding condition Attached is True (for at most 600 s).
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 1, steps 1-6   (earlier chapters: see their last frames)                ★ = new in this frame
+MESSAGE SEQUENCE   chapter 1, steps 1-6   (earlier chapters: see their last frames)                [38;5;110m★ = new in this frame[0m
  Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
  -------- node-b --------    ---- cluster ----   pool
-  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
-  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
-  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
-  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
-  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
-  │      │      │      │      ├──────►      │      │  ★  6  write claim.status.allocation: device pooled0 (driver
-  │      │      │      │      │      │      │      │           cxl-pool.generic, pool fake-cxl-pool), nodeSelector
-  │      │      │      │      │      │      │      │           node-b; pod event BindingConditionsPending
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ├──────►     1  GET /api/v1/devices?scope=pool
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      ◄──────┤      [38;5;243m│[0m     3  create the pool's ResourceSlice: pooled0, shared0
+  [38;5;243m│[0m      ├───────────────────────────►      [38;5;243m│[0m      [38;5;243m│[0m     4  publish node-b's ResourceSlice: dram, dynamic
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;110m├──────►[0m      [38;5;243m│[0m      [38;5;243m│[0m  [38;5;110m★  6[0m  write claim.status.allocation: device pooled0 (driver
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           cxl-pool.generic, pool fake-cxl-pool), nodeSelector
+  [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m      [38;5;243m│[0m           node-b; pod event BindingConditionsPending

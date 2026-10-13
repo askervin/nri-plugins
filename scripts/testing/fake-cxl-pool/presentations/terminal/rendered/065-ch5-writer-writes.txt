@@ -2,55 +2,55 @@ CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.05 the writer
     ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
     ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
     │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
-    │★ shared0 hosts: 4/4   │    │  slices: pool, node-a, node-b                │    │  attached shared0 -> node-a │
-    │★ (the writer's lease) │    │  claims: cxl-lease-36c2ee71 Attached         │    │  exclusive: true            │
-    │                       │    │★ pods: writer; cxl-lease-36c2ee71 Running    │    │  status Attached written    │
+    │[38;5;222m★[0m [38;5;222mshared0 hosts: 4/4[0m   │    │  slices: pool, node-a, node-b                │    │  attached shared0 -> node-a │
+    │[38;5;222m★[0m [38;5;222m(the writer's lease)[0m │    │  claims: cxl-lease-36c2ee71 Attached         │    │  exclusive: true            │
+    │                       │    │[38;5;222m★[0m [38;5;222mpods: writer; cxl-lease-36c2ee71 Running[0m    │    │  status Attached written    │
     └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
     ─ ONE NODE: node-a (VM1, worker) ─────────────────────    ─ ONE NODE: node-b (VM2, control plane) ──────────────
     ╔═ writer / main ════════╗
     ║  (pod writer, node-a)  ║
-    ║★ lease Ready: fd 3 rw  ║
-    ║★ wrote TEXT; waits     ║
-    ╚═══════════▲════════════╝
-                └─────────────(16)─────────────┐
-    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ─┴─────────┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    ║[38;5;222m★[0m [38;5;222mlease Ready: fd 3 rw[0m  ║
+    ║[38;5;222m★[0m [38;5;222mwrote TEXT; waits[0m     ║
+    ╚═══════════[38;5;110m▲[0m════════════╝
+                [38;5;110m└─────────────(16)─────────────┐[0m
+    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ─[38;5;110m┴[0m─────────┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
     │  (kubelet)     │    │  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
-    │  pod writer    │    │★ lease 36c2ee71 Ready, excl. │    │  idle          │    │  no leases                   │
-    │  running       │    │★ fd O_RDWR passed to writer  │    │                │    │                              │
+    │  pod writer    │    │[38;5;222m★[0m [38;5;222mlease 36c2ee71 Ready, excl.[0m │    │  idle          │    │  no leases                   │
+    │  running       │    │[38;5;222m★[0m [38;5;222mfd O_RDWR passed to writer[0m  │    │                │    │                              │
     └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
 
     ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
     │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
-    │★ mem0 -> region0 -> /dev/dax0.0 (device_dax)       │    │  no CXL memory devices                             │
+    │[38;5;222m★[0m [38;5;222mmem0 -> region0 -> /dev/dax0.0 (device_dax)[0m       │    │  no CXL memory devices                             │
     └────────────────────────────────────────────────────┘    └────────────────────────────────────────────────────┘
     ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
     ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
-    │★ shared0  serial 0xc1ae0001  256M  shared     attached to node-a, EXCLUSIVE; shared0.raw holds TEXT          │
+    │[38;5;222m★[0m [38;5;222mshared0  serial 0xc1ae0001  256M  shared     attached to node-a, EXCLUSIVE; shared0.raw holds TEXT[0m          │
     │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
     └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
-★16 CXL agent (node-a) -> writer/main: Ready, exclusive + the fd (O_RDWR)   (steps 13-16 below)
+[38;5;110m★16 CXL agent (node-a) -> writer/main: [0mReady, exclusive + the fd (O_RDWR)   (steps 13-16 below)
     Ready 5.2 s after the request (6.3 s after the pod was created). The writer prints 'written' and waits for the file
     /tmp/done; the test checks on the host that the backing file holds TEXT.
-★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+★ [38;5;114mnew[0m or [38;5;222mchanged[0m in this frame   ╔═╗ inside a container   [38;5;243m┄┄[0m [38;5;243mnot on stage yet[0m / [38;5;174mjust gone[0m   [38;5;110m(n) step n[0m   [38;5;110m▲►◄▼ this step[0m
 
-MESSAGE SEQUENCE   chapter 5, steps 1-16   (earlier chapters: see their last frames)               ★ = new in this frame
+MESSAGE SEQUENCE   chapter 5, steps 1-16   (earlier chapters: see their last frames)               [38;5;110m★ = new in this frame[0m
  Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
  ----- node-a -----  -- cluster -- pool  ----- node-b -----
-  │    │    │    │    │    │    │    │    │    │    │    │     1  -- kubectl apply: pod writer (node-a), token claim
-  │    │    │    │    ├────►    │    │    │    │    │    │     2  allocate dynamic @ node-a; bind writer -> node-a
-  │    ◄────┤    │    │    │    │    │    │    │    │    │     3  NodePrepareResources(token claim)
-  │    ├╌╌╌╌►    │    │    │    │    │    │    │    │    │     4  CDI lease-<uid>: /run/cxl, cxl-request
-  ├────►    │    │    │    │    │    │    │    │    │    │     5  cxl-request shared 0xc1ae0001 --exclusive
-  │    ├───────────────────►    │    │    │    │    │    │     6  read the pool slice: shared0 hosts = 4
-  │    ├───────────────────►    │    │    │    │    │    │     7  create claim (hosts: 4) + companion cxl-lease-36c2ee71
-  │    │    │    │    ├────►    │    │    │    │    │    │     8  allocate shared0 @ node-a (hosts 4 of 4)
-  │    │    │    │    │    │    ├────►    │    │    │    │     9  POST attach shared0 {host: node-a, exclusive: true}
-  │    │    │    ◄───────────────────┤    │    │    │    │    10  hot-plug cxl-type3 serial 0xc1ae0001 (hp1)
-  │    │    │    │    │    │    ◄╌╌╌╌┤    │    │    │    │    11  201 Created: attached, exclusive
-  │    │    │    │    │    ◄────┤    │    │    │    │    │    12  claim status: Attached=True, exclusive true
-  │    │    │    │    ├────►    │    │    │    │    │    │  ★ 13  bind cxl-lease-36c2ee71 -> node-a
-  │    ◄────┤    │    │    │    │    │    │    │    │    │  ★ 14  NodePrepareResources(cxl-lease-36c2ee71)
-  │    ├─────────►    │    │    │    │    │    │    │    │  ★ 15  cxl create-region; daxctl --mode=devdax -> /dev/dax0.0
-  ◄╌╌╌╌┤    │    │    │    │    │    │    │    │    │    │  ★ 16  open /dev/dax0.0 O_RDWR; {"lease":"36c2ee71","state":"
-  │    │    │    │    │    │    │    │    │    │    │    │           Ready","kind":"shared","mode":"dax","exclusive":tru
-  │    │    │    │    │    │    │    │    │    │    │    │           e,"dax":"/dev/dax0.0","size":268435456} + the fd
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     1  -- kubectl apply: pod writer (node-a), token claim
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     2  allocate dynamic @ node-a; bind writer -> node-a
+  [38;5;243m│[0m    ◄────┤    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     3  NodePrepareResources(token claim)
+  [38;5;243m│[0m    ├╌╌╌╌►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     4  CDI lease-<uid>: /run/cxl, cxl-request
+  ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     5  cxl-request shared 0xc1ae0001 --exclusive
+  [38;5;243m│[0m    ├───────────────────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     6  read the pool slice: shared0 hosts = 4
+  [38;5;243m│[0m    ├───────────────────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     7  create claim (hosts: 4) + companion cxl-lease-36c2ee71
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     8  allocate shared0 @ node-a (hosts 4 of 4)
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ├────►    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m     9  POST attach shared0 {host: node-a, exclusive: true}
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ◄───────────────────┤    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    10  hot-plug cxl-type3 serial 0xc1ae0001 (hp1)
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ◄╌╌╌╌┤    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    11  201 Created: attached, exclusive
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    ◄────┤    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    12  claim status: Attached=True, exclusive true
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;110m├────►[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 13[0m  bind cxl-lease-36c2ee71 -> node-a
+  [38;5;243m│[0m    [38;5;110m◄────┤[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 14[0m  NodePrepareResources(cxl-lease-36c2ee71)
+  [38;5;243m│[0m    [38;5;110m├─────────►[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 15[0m  cxl create-region; daxctl --mode=devdax -> /dev/dax0.0
+  [38;5;110m◄╌╌╌╌┤[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m  [38;5;110m★ 16[0m  open /dev/dax0.0 O_RDWR; {"lease":"36c2ee71","state":"
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           Ready","kind":"shared","mode":"dax","exclusive":tru
+  [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m    [38;5;243m│[0m           e,"dax":"/dev/dax0.0","size":268435456} + the fd

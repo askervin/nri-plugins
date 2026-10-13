@@ -2,15 +2,18 @@
 
 A story in text frames (`rendered/`), one file per frame, made to be stepped
 through with `less`. The picture on top keeps every component in its place;
-`★` marks what changed, the arrow is the frame's message, and a message
+`★` marks what is new or changed, the arrow is the frame's message, and a message
 sequence chart below the picture grows frame by frame. The facts follow the
 e2e tests `test10`-`test13` of `n4-cxl-shared-2` and their recorded traces
 (see `scripts/PLAN.md`).
 
 ## Present
 
-    cd rendered && less *
+    cd rendered && less -R *
 
+- The frames in `rendered/` are rendered with `--colors` (see below), so
+  `less` needs `-R` to show colors instead of escape codes. Many
+  distributions already set `LESS=-R` (or `-M -I -R`); then `less *` will do.
 - `:n` next frame, `:p` previous frame, `:x` the first file (the index),
   `q` quit. The first file, `000-index.txt`, lists all frames; `:n` from
   there starts the talk.
@@ -30,7 +33,9 @@ e2e tests `test10`-`test13` of `n4-cxl-shared-2` and their recorded traces
 From this directory (`presentations/terminal/`); Python 3.9+, standard
 library only:
 
-    python3 scripts/story.py                  render all frames into rendered/, remove stale ones
+    python3 scripts/story.py --colors         render all frames into rendered/, remove stale ones
+    python3 scripts/story.py                  the same without colors (plain text, for less without -R)
+    python3 scripts/story.py --colors light   colors for a terminal with a light background
     python3 scripts/story.py --check          render in memory and verify every frame, write nothing
     python3 scripts/story.py --chapter 3      write only chapter 3's files (the others stay)
     python3 scripts/story.py --frame 045      write only frame 045 (or --frame <slug>)
@@ -52,6 +57,25 @@ Files are `NNN-chC-slug.txt`: `NNN` the position in the talk, `C` the
 chapter. A full render writes into a temporary directory first and then
 replaces the files, and removes `NNN-*.txt` files that the story no longer
 makes.
+
+## Colors
+
+`--colors` adds soft foreground colors (ANSI, xterm-256; no backgrounds, no
+bold) to what the frame is about; everything else keeps the terminal's
+default color. The legend line under the caption doubles as the key.
+
+| role    | dark | light | what                                                         |
+|---------|------|-------|--------------------------------------------------------------|
+| added   | 114  | 28    | a box that appears in this frame: border, title, lines       |
+| changed | 222  | 130   | a state line (and its `★`) that differs from the last frame  |
+| removed | 174  | 131   | a box shown for the last time: dotted border and epitaph     |
+| active  | 110  | 25    | this frame's arrow and `(n)`, the caption's `★n from -> to:`, the new sequence rows |
+| muted   | 243  | 248   | boxes not on stage yet, the lifelines of the sequence chart  |
+
+The palettes are `PALETTES` in `scripts/stageplay.py`. Colors are a layer
+over the plain text: `--check` verifies the plain frame, and the colored
+file is the same text with escape codes added (also checked), so `--colors`
+combines with `--ascii`, `--chapter` and `--frame`.
 
 ## Change the story
 
