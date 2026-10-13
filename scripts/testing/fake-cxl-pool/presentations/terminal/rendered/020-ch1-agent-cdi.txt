@@ -1,0 +1,55 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.11 what the container will get │ frame 20/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │  attached pooled0 -> node-b │
+    │                       │    │  claims: pooled-memory -> pooled0, Attached  │    │  status Attached written    │
+    │                       │    │  pods: pooled-consumer -> node-b, creating   │    │  owner: claim pooled-memory │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  ◄────┤  (kubelet-cxl-plugin)                                                        │
+    │  pod pooled-consumer     │(14)│  prepared pooled0 (serial 0xc1ee0001) as mem0, region0, dax0.0: NUMA node 2  │
+    │  preparing its claim     │    │★ claim kept in preparedPoolClaims.json; region0 left out of the node's slice │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  mem0 -> region0 -> dax0.0 (kmem) -> NUMA node 2: 512 MB online_movable, no CPUs                             │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★14 CXL agent (node-b) -> Pod runner (node-b): CDI pool-c1ee0001: env CXL_POOL_NODE_C1EE0001=2, ...
+    CDI (Container Device Interface) = edits to the container, here three environment variables. The agent keeps region0
+    out of its own slice, so that the same memory is not offered twice.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 1, steps 1-14   (earlier chapters: see their last frames)               ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
+  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
+  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
+  │      │      │      │      │      │      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
+  │      │      │      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     9  201 Created: attachment pooled0@node-b attached
+  │      │      │      │      │      ◄──────┤      │    10  claim status: Attached=True + data {serial, size, ...}
+  │      │      │      │      ├──────►      │      │    11  bind pooled-consumer -> node-b
+  │      ◄──────┤      │      │      │      │      │    12  NodePrepareResources(pooled-memory)
+  │      ├─────────────►      │      │      │      │    13  create-region on mem0; kmem; online_movable -> node 2
+  │      ├╌╌╌╌╌╌►      │      │      │      │      │  ★ 14  PrepareResult: CDI device generic/cxl=pool-c1ee0001: env
+  │      │      │      │      │      │      │      │           CXL_POOL_NODE_C1EE0001=2,
+  │      │      │      │      │      │      │      │           CXL_POOL_SIZE_C1EE0001=536870912,
+  │      │      │      │      │      │      │      │           CXL_POOL_SERIAL_C1EE0001=0xc1ee0001

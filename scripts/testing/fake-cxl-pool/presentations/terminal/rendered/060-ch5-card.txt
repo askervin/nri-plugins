@@ -1,0 +1,24 @@
+CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.00 title card │ frame 60/82
+
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Chapter 5    One exclusive writer, many read-only readers
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    The plot, by the sections of e2e test13 (one cluster of two nodes)
+      B   a writer on node-a gets shared0 EXCLUSIVELY, through a lease, and writes TEXT into it
+      C   meanwhile three readers ask for it read-only, two on node-b and one on node-a: they wait
+      D   the writer exits: all three readers get the device at once and read TEXT
+      E2  a late exclusive request fails cleanly; nobody loses the memory
+      F   a fourth reader on node-a uses a read-only claim from its creation
+      G   everybody finishes, and the device goes back to the pool
+
+      exclusive = request ALL 4 'hosts' of the shared device: the scheduler can give it to nobody else, and the
+                  pool refuses to attach it to any other host (also those of other clusters)
+      read-only = an fd opened O_RDONLY (lease) or a device node with permissions r (claim): kernel-enforced
+
+    Source: e2e test13-dra-shared-one-writer-many-readers and its recorded trace (its lease ids)  frames 5.01 - 5.20

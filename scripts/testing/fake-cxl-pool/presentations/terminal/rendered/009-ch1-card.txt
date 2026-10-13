@@ -1,0 +1,23 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.00 title card │ frame 9/82
+
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Chapter 1    A pod claims pooled memory as a NUMA node
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    The usual way: the memory is part of the pod's spec, so it is in place before the pod's containers start.
+
+      1. offer     the pool controller publishes the pool's devices; the node's agent publishes the node's memory
+      2. claim     a ResourceClaim asks for 512Mi of DeviceClass cxl-pool-memory; a Pod uses the claim
+      3. attach    the scheduler picks pooled0 and node-b and waits; the controller has the pool attach it
+      4. prepare   kubelet asks the node's agent to prepare the claim: region, system RAM, a new NUMA node
+      5. use       the container starts with environment variables that name the NUMA node
+      6. release   pod deleted: the agent takes the memory offline, then the controller detaches the device
+
+    All of chapters 1-3 happen on one node, node-b.
+
+    Source: e2e test10-dra-pooling and its recorded trace; driver doc/cxl/POOL.md                 frames 1.01 - 1.15

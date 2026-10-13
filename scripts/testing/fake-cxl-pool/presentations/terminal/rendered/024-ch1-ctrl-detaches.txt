@@ -1,0 +1,62 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.15 back to the pool │ frame 24/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) ├─┐
+    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │★ detached pooled0@node-b    │ │
+    │                       │    │★ claims: none                                │    │★ event Detached             │ │
+    │                       │    │★ pods: none                                  │    │                             │ │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘ │
+    ─ ONE NODE: node-b (VM2, control plane) ──────────────────────────────────────────────────────────────────────── │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                (20) │
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐ │
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │ │
+    │  idle                    │    │  released mem0 (serial 0xc1ee0001); unprepared claim pooled-memory           │ │
+    │                          │    │                                                                              │ │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘ │
+                                                                                                                     │
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐ │
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │ │
+    │★ no CXL memory devices                                                                                       │ │
+    └──────────────────────────────────────────────────────▲───────────────────────────────────────────────────────┘ │
+    ─ OUTSIDE THE CLUSTER, possibly ───────────────────────│─(21)────────────────────────────────────────────   ┌────┘
+    ┌─ Memory pool manager ────────────────────────────────┴────────────────────────────────────────────────────▼──┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │★ pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★20 Pool controller -> Pool manager: DELETE /api/v1/devices/pooled0/attachments/node-b?wait=true&timeout=1m0s
+★21 Pool manager -> CXL memory (node-b): hot-remove: device_del ... DEVICE_DELETED   (steps 20-22 below)
+    The controller detaches only devices that no allocated claim wants; qemu says DEVICE_DELETED after 6 s.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 1, steps 1-22   (earlier chapters: see their last frames)               ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
+  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
+  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
+  │      │      │      │      │      │      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
+  │      │      │      ◄───────────────────────────┤     8  hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     9  201 Created: attachment pooled0@node-b attached
+  │      │      │      │      │      ◄──────┤      │    10  claim status: Attached=True + data {serial, size, ...}
+  │      │      │      │      ├──────►      │      │    11  bind pooled-consumer -> node-b
+  │      ◄──────┤      │      │      │      │      │    12  NodePrepareResources(pooled-memory)
+  │      ├─────────────►      │      │      │      │    13  create-region on mem0; kmem; online_movable -> node 2
+  │      ├╌╌╌╌╌╌►      │      │      │      │      │    14  CDI pool-c1ee0001: env CXL_POOL_NODE_C1EE0001=2, ...
+  ◄─────────────┤      │      │      │      │      │    15  start container consumer (with the CDI env)
+  │      │      │      │      │      │      │      │    16  -- kubectl delete pod pooled-consumer
+  ◄─────────────┤      │      │      │      │      │    17  SIGTERM: container consumer stops
+  │      ◄──────┤      │      │      │      │      │    18  NodeUnprepareResources(pooled-memory)
+  │      ├─────────────►      │      │      │      │    19  offline; disable + destroy region0; disable mem0
+  │      │      │      │      │      │      ├──────►  ★ 20  DELETE /api/v1/devices/pooled0/attachments/node-b?wait=true&
+  │      │      │      │      │      │      │      │           timeout=1m0s
+  │      │      │      ◄───────────────────────────┤  ★ 21  hot-remove over QMP: device_del fcp_pooled0.hp1 ... event
+  │      │      │      │      │      │      │      │           DEVICE_DELETED (6 s later) ... object-del
+  │      │      │      │      │      │      │      │  ★ 22  -- kubectl delete resourceclaim pooled-memory

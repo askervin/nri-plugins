@@ -1,0 +1,46 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.01 the pool becomes an offer list │ frame 10/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      ◄────┤  (fake-cxl-pool-controller) │
+    │  idle                 │    │★ slices: pool (pooled0, shared0)             │(3) │★ published 2 devices        │
+    │                       │    │  claims: none                                │    │★ watching claims, nodes     │
+    │                       │    │  pods: none                                  │    │★ and the pool's events      │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
+    │  idle                    │    │  idle                                                                        │
+    │                          │    │                                                                              │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  no CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself          │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★3 Pool controller -> Kubernetes API: create the pool's ResourceSlice: pooled0, shared0   (steps 1-3 below)
+    The controller turns the pool's device list into an offer list. The devices are on no node yet: bindsToNode plus a
+    binding condition tell the scheduler: pick a node, then wait until I say Attached.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 1, steps 1-3   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      ├──────►  ★  1  GET /api/v1/devices?scope=pool
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤  ★  2  200: pooled0 512M exclusive free, shared0 256M shared free
+  │      │      │      │      │      ◄──────┤      │  ★  3  create ResourceSlice (driver cxl-pool.generic, pool
+  │      │      │      │      │      │      │      │           fake-cxl-pool, allNodes): pooled0 {serial 0xc1ee0001,
+  │      │      │      │      │      │      │      │           shared false, size 536870912, capacity memory 512Mi},
+  │      │      │      │      │      │      │      │           shared0 {serial 0xc1ae0001, shared true, capacity hosts
+  │      │      │      │      │      │      │      │           4, valid 1 or 4}; every device: bindsToNode,
+  │      │      │      │      │      │      │      │           bindingConditions [cxl-pool.generic/Attached]

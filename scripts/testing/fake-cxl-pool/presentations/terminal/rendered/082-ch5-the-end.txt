@@ -1,0 +1,25 @@
+CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.22 the end │ frame 82/82
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Where to look
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    nri-plugins, scripts/testing/fake-cxl-pool/
+      README.md                       the fake pool: server, client, controller
+      plan-2-dra/10-contract.md       the contract between the pool controller and the node's agent
+
+    intel-resource-drivers-for-kubernetes
+      doc/cxl/POOL.md                 the DRA driver's pool support: claims, options, leases, cxl-request
+      deployments/cxl/pool/           DeviceClasses and example claims and pods
+
+    nri-plugins, test/e2e/memory.test-suite/memory-policy/n4-cxl-shared-2/
+      test10-dra-pooling              chapter 1
+      test11-dra-sharing              chapter 4
+      test12-dra-live-attach          chapter 3
+      test13-dra-shared-one-writer-many-readers   chapters 2 and 5
+      each run writes trace-summary.txt: every component's log on one clock (dra-trace-summary)
+
+    On screen node-a = VM1 n4-cxl-shared-1-fedora-43-containerd, node-b = VM2 n4-cxl-shared-2-fedora-43-containerd.

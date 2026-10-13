@@ -1,0 +1,48 @@
+CXL memory pool + Kubernetes DRA │ Ch 2 DAX device claim │ 2.02 fast-forward: attach and prepare │ frame 28/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │★ attached pooled0 -> node-b │
+    │                       │    │★ claims: pooled-dax -> pooled0, Attached     │    │★ status Attached written    │
+    │                       │    │★ pods: dax-claimer -> node-b, creating       │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
+    │★ pod dax-claimer         │    │★ cxl-pool.generic: claim pooled-dax -> serial 0xc1ee0001, shared false       │
+    │★ preparing its claim     │    │★ PoolDeviceConfig in the claim: mode dax                                     │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │★ mem0  serial 0xc1ee0001  512M  appears (udev: add .../mem0 (cxl))                                           │
+    └──────────────────────────────────────────────────────▲───────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ───────────────────────│─(4)─────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────┴───────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │★ pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★4 Pool manager -> CXL memory (node-b): hot-plug cxl-type3 serial 0xc1ee0001   (steps 2-8 below)
+    Fast-forward: everything up to here is the same as in chapter 1. The pool does not know how the node will use the
+    device.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 2, steps 1-8   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      │      │     1  -- kubectl apply: claim pooled-dax, pod dax-claimer
+  │      │      │      │      ├──────►      │      │  ★  2  allocate pooled0 @ node-b; event BindingConditionsPending
+  │      │      │      │      │      │      ├──────►  ★  3  POST /api/v1/devices/pooled0/attachments {host: node-b,
+  │      │      │      │      │      │      │      │           owner: k8s:resourceclaim/<uid>}
+  │      │      │      ◄───────────────────────────┤  ★  4  hot-plug cxl-type3 serial 0xc1ee0001
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤  ★  5  201 Created: attached
+  │      │      │      │      │      ◄──────┤      │  ★  6  claim status: Attached=True, data {serial 0xc1ee0001, shared
+  │      │      │      │      │      │      │      │           false, size 536870912, ...}
+  │      │      │      │      ├──────►      │      │  ★  7  bind dax-claimer -> node-b
+  │      ◄──────┤      │      │      │      │      │  ★  8  NodePrepareResources(claim pooled-dax)

@@ -1,0 +1,24 @@
+CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.00 title card │ frame 1/82
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    CXL memory from a pool, with Kubernetes DRA
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    Pods that claim memory from a CXL memory pool:
+      - as a NUMA node, or as a DAX device (/dev/daxX.Y) that programs map,
+      - when the pod starts (a ResourceClaim), or while it already runs (a lease),
+      - for one node at a time, or shared by several nodes, read-write or read-only.
+
+    How to read the frames
+      The picture on top keeps every component in its place. ★ marks what changed in this frame.
+      The arrow is this frame's message; its number (n) is its row in the MESSAGE SEQUENCE below the picture,
+      which grows frame by frame and starts over in each chapter. Names in parentheses are the real
+      component names of the e2e tests these frames follow.
+
+      In less:  :n next frame   :p previous frame   j / k scroll down to the sequence   G its newest rows
+
+    Sources: nri-plugins e2e tests n4-cxl-shared-2/test10-13 and their recorded traces            frames 0.01 - 0.06

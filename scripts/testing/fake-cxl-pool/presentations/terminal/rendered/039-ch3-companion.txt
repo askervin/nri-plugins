@@ -1,0 +1,51 @@
+CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.05 a companion pod and claim │ frame 39/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │  idle                       │
+    │                       │    │★ claims: token; cxl-lease-0c822f6e waiting   │    │                             │
+    │                       │    │★ pods: borrower; cxl-lease-0c822f6e Pending  │    │                             │
+    └───────────────────────┘    └────────────────────────────────────────────▲─┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ──────────────────────────────────│─────────────────────────────────────
+    ╔═ borrower / main ══════════════╗     ╔═ borrower / idle ══════════════╗ │
+    ║  (pod borrower, node-b)        ║     ║  (pod borrower, node-b)        ║ │
+    ║  cxl-request memory 512Mi ...  ║     ║  no claim: no socket, no CLI   ║ │
+    ║  cpuset.mems unset: all nodes  ║     ║  cpuset.mems unset: all nodes  ║ │
+    ╚════════════════════════════════╝     ╚════════════════════════════════╝ │
+                                                                              │ (8)
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ──────────────────────┴────────────────────────────────────┐
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
+    │  pod borrower            │    │★ lease 0c822f6e Pending: companion claim and pod cxl-lease-0c822f6e created  │
+    │  running                 │    │★ caller: borrower/main                                                       │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  no CXL memory devices                                                                                       │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★8 CXL agent (node-b) -> Kubernetes API: create claim + companion pod cxl-lease-0c822f6e
+    A companion pod holds the claim on the container's behalf: pinned to this node, owned by the pod borrower
+    (garbage-collected with it), a pause container that uses nothing. From here on it is chapter 1.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 3, steps 1-8   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      │      │     1  -- kubectl apply: token claim template, pod borrower
+  │      │      │      │      ├──────►      │      │     2  allocate dynamic @ node-b (no wait); bind borrower
+  │      ◄──────┤      │      │      │      │      │     3  NodePrepareResources(token claim)
+  │      ├╌╌╌╌╌╌►      │      │      │      │      │     4  CDI lease-<uid>: /run/cxl, cxl-request, CXL_LEASE_SOCKET
+  ◄─────────────┤      │      │      │      │      │     5  start container main
+  ◄─────────────┤      │      │      │      │      │     6  start container idle
+  ├──────►      │      │      │      │      │      │     7  cxl-request memory 512Mi
+  │      ├───────────────────────────►      │      │  ★  8  create ResourceClaim cxl-lease-0c822f6e {deviceClassName
+  │      │      │      │      │      │      │      │           cxl-pool-memory, memory 512Mi, config LendConfig {lease
+  │      │      │      │      │      │      │      │           0c822f6e, pod borrower, container main}; ownerReference:
+  │      │      │      │      │      │      │      │           pod borrower} and Pod cxl-lease-0c822f6e {pause:3.10, cpu
+  │      │      │      │      │      │      │      │           100m, memory 8Mi, node affinity node-b, tolerates
+  │      │      │      │      │      │      │      │           everything, resourceClaims: lease -> the claim}

@@ -1,0 +1,24 @@
+CXL memory pool + Kubernetes DRA │ Ch 2 DAX device claim │ 2.00 title card │ frame 26/82
+
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Chapter 2    The same device as a DAX device
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    Options travel in the claim as an opaque config of the driver: PoolDeviceConfig {mode: numa | dax, readOnly}.
+    The pool and the scheduler ignore it; only the node's agent reads it (a claim's config beats its class's).
+
+        pool device   claim says                      the container gets
+        exclusive     (nothing)                       a NUMA node                                  chapter 1
+        exclusive     mode: dax                       a /dev/daxX.Y device of its own              this chapter
+        shared        (nothing)                       a /dev/daxX.Y device, shared with others     chapter 4
+        shared        capacity.requests.hosts: "4"    a /dev/daxX.Y device, nobody else has it     chapter 5
+        any dax       readOnly: true                  the dax device, read-only                    chapter 5
+
+    A dax device is memory that the kernel never uses itself: programs map it, and its bytes stay in the device.
+
+    Source: e2e test13 part H2 (it ran on node-a; shown on node-b here); driver doc/cxl/POOL.md   frames 2.01 - 2.07

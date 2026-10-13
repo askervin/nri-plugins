@@ -1,0 +1,39 @@
+CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.05 the workload │ frame 6/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: no CXL offers yet                   │    │  connected to the pool      │
+    │                       │    │  claims: none                                │    │  (2 devices)                │
+    │                       │    │  pods: none                                  │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+    ╔★ demo / app ═══════════════════╗
+    ║  (a container of a pod)        ║
+    ║★ env, /dev/daxX.Y, NUMA nodes  ║
+    ║★ cxl-request, if it opts in    ║
+    ╚════════════════════════════════╝
+
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
+    │  runs the pods of node-b │    │  DRA plugins: cxl.generic (node memory), cxl-pool.generic (pool devices)     │
+    │                          │    │  NRI plugin (changes running containers), lease broker (container requests)  │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  no CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself          │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+    Inside a container (double lines). The workload never talks to the pool: it gets environment variables, a device
+    node, or more NUMA nodes in its cpuset.mems. A container that opted in with a token claim can also ask for memory
+    itself, with the cxl-request command.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      │      │

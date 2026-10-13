@@ -1,0 +1,47 @@
+CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.02 the writer asks for all of it │ frame 62/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: pool, node-a, node-b                │    │  idle                       │
+    │                       │    │  claims: writer's token -> dynamic @ node-a  │    │                             │
+    │                       │    │  pods: writer -> node-a, starting            │    │                             │
+    └───────────────────────┘    └────────────────────▲─────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-a (VM1, worker) ─────────────────│───    ─ ONE NODE: node-b (VM2, control plane) ──────────────
+    ╔═ writer / main ════════╗                        │
+    ║  (pod writer, node-a)  ║                        │
+    ║★ request: exclusive    ║                        │
+    ║★ waiting ...           ║                        │
+    ╚════════════════════════╝                        │
+                                                      │ (6)
+    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ────────┴──┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
+    │  pod writer    │    │★ lease 36c2ee71 Creating     │    │  idle          │    │  no leases                   │
+    │★ running       │    │★ shared0, dax, exclusive     │    │                │    │                              │
+    └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
+    │  no CXL memory devices                             │    │  no CXL memory devices                             │
+    └────────────────────────────────────────────────────┘    └────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★6 CXL agent (node-a) -> Kubernetes API: read the pool slice: shared0 hosts = 4   (steps 5-6 below)
+    Exclusive = ask for ALL hosts of the device. The agent reads how many there are from the pool's offer list (valid
+    values: 1 or 4) and asks for 4.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 5, steps 1-6   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
+ ----- node-a -----  -- cluster -- pool  ----- node-b -----
+  │    │    │    │    │    │    │    │    │    │    │    │     1  -- kubectl apply: pod writer (node-a), token claim
+  │    │    │    │    ├────►    │    │    │    │    │    │     2  allocate dynamic @ node-a; bind writer -> node-a
+  │    ◄────┤    │    │    │    │    │    │    │    │    │     3  NodePrepareResources(token claim)
+  │    ├╌╌╌╌►    │    │    │    │    │    │    │    │    │     4  CDI lease-<uid>: /run/cxl, cxl-request
+  ├────►    │    │    │    │    │    │    │    │    │    │  ★  5  cxl-request shared 0xc1ae0001 --exclusive  =  {"op":"l
+  │    │    │    │    │    │    │    │    │    │    │    │           ease","kind":"shared","serial":"0xc1ae0001","exclus
+  │    │    │    │    │    │    │    │    │    │    │    │           ive":true,"wait":"120s"}
+  │    ├───────────────────►    │    │    │    │    │    │  ★  6  read the pool's ResourceSlice: shared0 has capacity
+  │    │    │    │    │    │    │    │    │    │    │    │           hosts = 4

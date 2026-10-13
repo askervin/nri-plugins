@@ -1,0 +1,39 @@
+CXL memory pool + Kubernetes DRA │ Ch 4 sharing │ 4.01 two nodes, one pool │ frame 54/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │★ slices: pool, node-a, node-b                │    │★ pool hosts of the nodes:   │
+    │                       │    │  claims: none                                │    │★ node-a = VM1, node-b = VM2 │
+    │                       │    │  pods: none                                  │    │★ (by systemUUID)            │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-a (VM1, worker) ─────────────────────    ─ ONE NODE: node-b (VM2, control plane) ──────────────
+
+
+
+
+
+
+    ┌★ Pod runner ───┐    ┌★ Node's CXL agent ───────────┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
+    │★ idle          │    │★ published node-a's slice    │    │  idle          │    │  published node-b's slice    │
+    │                │    │★ no leases                   │    │                │    │  no leases                   │
+    └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
+
+    ┌★ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
+    │★ no CXL memory devices                             │    │  no CXL memory devices                             │
+    └────────────────────────────────────────────────────┘    └────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │★ shared0  serial 0xc1ae0001  256M  shared     free: 4 'hosts', each node takes 1                             │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+    shared0 offers no memory capacity (every node would get all of it) but a 'hosts' capacity of 4: how many nodes may
+    have it at once. A claim takes 1 by default; a claim that takes all 4 has it alone.
+
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 4: no messages yet                                                      ★ = new in this frame
+ Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
+ ----- node-a -----  -- cluster -- pool  ----- node-b -----
+  │    │    │    │    │    │    │    │    │    │    │    │

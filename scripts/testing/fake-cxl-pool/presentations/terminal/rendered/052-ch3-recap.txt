@@ -1,0 +1,25 @@
+CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.18 recap │ frame 52/82
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Recap: borrowing memory while running
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    Lease states (in leases.json of the node's agent)
+      Creating -> Pending -> Lending -> Ready -> Releasing -> Released        (Failed: timeout or a lend error)
+        Creating   stored before any API object exists
+        Pending    companion claim and pod created; waiting for the scheduler and the pool
+        Lending    the companion's claim is being prepared on this node
+        Ready      NUMA node added to the container's cpuset.mems, or the dax fd passed
+        Releasing  node revoked, companion deleted, waiting until it is gone
+
+    Commands in the container (each prints the JSON response; exit code 3 = Failed or not Ready in time)
+      cxl-request memory <size> [--dax [--read-only]] [--wait D] [--exec CMD...]   a NUMA node, or a dax fd
+      cxl-request shared <serial> [--exclusive] [--read-only] [--wait D] [--exec CMD...]
+      cxl-request fd <lease> --exec CMD...      cxl-release <lease> | --all      cxl-request list
+
+    Limits: lent memory counts against the container's memory limit; release is cooperative; lending is
+    exclusive only where containers have cpuset.mems set. A lease took 5.7 s (mostly the scheduler's poll),
+    giving it back 8.4-10.4 s, in the recorded run.

@@ -1,0 +1,25 @@
+CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.21 recap │ frame 81/82
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Recap: what enforced what
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    exclusive     the scheduler: a claim that consumes all 4 'hosts' of shared0 leaves nothing to allocate,
+                  AND the pool: an exclusive attachment refuses every other host, also those of other clusters
+    read-only     a lease: the fd is opened O_RDONLY; a claim: the CDI device node has permissions r
+                  (device cgroup). Both are enforced by the kernel, root or not
+    sharing       a dax device only, the same serial on every node, one attachment per node
+    cleanup       always: unprepare -> deallocate -> detach; the agent releases the leases of a container
+                  that stopped for good, a timed-out lease cleans up after itself
+
+    Timings of the recorded run (test13)
+      exclusive lease Ready                5.2 s after cxl-request, 6.3 s after the writer pod was created
+      writer exit -> all 3 readers hold    13.2 s (9.4 s in another run): ~6 s hot-remove, ~5 s scheduler poll
+      late exclusive request               Failed after its --wait 15s, nothing left behind
+      read-only claim on an attached node  Attached 0.1 s after the claim
+
+    test13 goes on with pooled0 as a dax device: through a lease (cxl-request memory 256Mi --dax) on node-b,
+    and through a claim with mode: dax on node-a, which found the bytes that the lease had written (chapter 2).

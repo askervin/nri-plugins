@@ -1,0 +1,50 @@
+CXL memory pool + Kubernetes DRA │ Ch 4 sharing │ 4.02 fast-forward: the writer's claim │ frame 55/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │★ shared-memory:       │    │  slices: pool, node-a, node-b                │    │★ attached shared0 -> node-a │
+    │★ shared0 @ node-a     │    │★ claims: shared-memory Attached (node-a)     │    │★ status Attached written    │
+    │★ hosts: 1/4           │    │★ pods: writer -> node-a, creating            │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-a (VM1, worker) ─────────────────────    ─ ONE NODE: node-b (VM2, control plane) ──────────────
+
+
+
+
+
+
+    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
+    │  idle          │    │  published node-a's slice    │    │  idle          │    │  published node-b's slice    │
+    │                │    │  no leases                   │    │                │    │  no leases                   │
+    └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
+    │★ mem0  serial 0xc1ae0001  256M  appears (udev)     │    │  no CXL memory devices                             │
+    └────────────────────────────────▲───────────────────┘    └────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─│─(4)───────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ──────────┴─────────────────────────────────────────────────────────────────────────────┐
+    │★ shared0  serial 0xc1ae0001  256M  shared     attached to node-a                                             │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★4 Pool manager -> CXL memory (node-a): hot-plug cxl-type3 serial 0xc1ae0001   (steps 1-6 below)
+    Fast-forward: the writer's claim on node-a takes 1 of shared0's 4 hosts; then the same chain as in chapter 1.
+
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 4, steps 1-6   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
+ ----- node-a -----  -- cluster -- pool  ----- node-b -----
+  │    │    │    │    │    │    │    │    │    │    │    │  ★  1  -- kubectl apply: ResourceClaim shared-memory
+  │    │    │    │    │    │    │    │    │    │    │    │           {deviceClassName cxl-shared-memory, selector
+  │    │    │    │    │    │    │    │    │    │    │    │           device.attributes["cxl-pool.generic"].serial ==
+  │    │    │    │    │    │    │    │    │    │    │    │           "0xc1ae0001"} and Pod writer (on node-a)
+  │    │    │    │    ├────►    │    │    │    │    │    │  ★  2  allocate shared0 @ node-a (consumedCapacity hosts 1, a
+  │    │    │    │    │    │    │    │    │    │    │    │           shareID); BindingConditionsPending
+  │    │    │    │    │    │    ├────►    │    │    │    │  ★  3  POST /api/v1/devices/shared0/attachments {host:
+  │    │    │    │    │    │    │    │    │    │    │    │           node-a, owner: k8s:resourceclaim/<uid>}
+  │    │    │    ◄───────────────────┤    │    │    │    │  ★  4  hot-plug cxl-type3 serial 0xc1ae0001
+  │    │    │    │    │    │    ◄╌╌╌╌┤    │    │    │    │  ★  5  201 Created: attached
+  │    │    │    │    │    ◄────┤    │    │    │    │    │  ★  6  claim status: Attached=True, data {serial 0xc1ae0001,
+  │    │    │    │    │    │    │    │    │    │    │    │           shared true, size 268435456, ...}

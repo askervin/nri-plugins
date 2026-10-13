@@ -1,0 +1,22 @@
+CXL memory pool + Kubernetes DRA │ Ch 4 sharing │ 4.00 title card │ frame 53/82
+
+
+
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Chapter 4    Sharing: one device, several nodes
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    node-a (VM1, a worker) joins node-b (VM2, the control plane) in one cluster, with one pool controller.
+    (e2e test11 used two single-node clusters that share one pool server: the mechanics are the same.)
+
+      - shared0 has no memory capacity to hand out, but a 'hosts' capacity of 4: how many nodes may have it
+      - one claim per node, one attachment per node: the same serial, the same backing file, the same bytes
+      - shared memory is always a dax device: two kernels that both online the same bytes as RAM would corrupt
+        each other silently. That is also why auto_online_blocks must be offline on every node.
+
+    Source: e2e test11-dra-sharing; shown in the two-node cluster of test13                       frames 4.01 - 4.06

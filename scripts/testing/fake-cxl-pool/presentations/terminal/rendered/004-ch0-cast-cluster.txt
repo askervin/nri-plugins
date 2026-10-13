@@ -1,0 +1,39 @@
+CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.03 the cluster-wide parts │ frame 4/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌★ Scheduler ───────────┐    ┌★ Kubernetes API + objects ───────────────────┐    ┌★ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │★ idle                 │    │★ slices: no CXL offers yet                   │    │★ connected to the pool      │
+    │                       │    │★ claims: none                                │    │★ (2 devices)                │
+    │                       │    │★ pods: none                                  │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+    ┆  (not on stage yet)      ┆    ┆  (not on stage yet)                                                          ┆
+    ┆                          ┆    ┆                                                                              ┆
+    ┆                          ┆    ┆                                                                              ┆
+    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  no CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself          │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+    Kubernetes words used here: a ResourceSlice is an offer list of devices, a DeviceClass a kind of device, a
+    ResourceClaim a request for a device (and, once allocated, what was granted), a Pod the workload. The scheduler
+    picks devices and nodes; the pool controller is the pool's agent in the cluster.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      │      │

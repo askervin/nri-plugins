@@ -1,0 +1,24 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.16 recap │ frame 25/82
+
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Recap: a pod claims pooled memory as a NUMA node
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    What happened, and who did it                                            (recorded run: seconds after apply)
+
+      1. offer     pool controller: one ResourceSlice for the whole pool; node agent: one per node
+      2. claim     you: a ResourceClaim (DeviceClass cxl-pool-memory, 512Mi) and a Pod that uses it      0.0
+      3. attach    scheduler: pooled0 @ node-b, then it waits for Attached                                0.08
+                   pool controller + pool manager: hot-plug, then claim status Attached=True              0.6
+      4. prepare   scheduler binds the pod at its next poll                                               5.1
+                   kubelet -> node agent: region, kmem, online_movable: NUMA node 2                       5.6
+      5. use       container consumer runs with CXL_POOL_NODE_C1EE0001=2                                  6.2
+      6. release   pod deleted: unprepare (offline, destroy region), deallocate, detach    10.3, 10.7, 11.0, 11.5
+                   qemu reports the device removed (DEVICE_DELETED)                                       17.6
+
+    The pool never learns what the node does with the device; the node never talks to the pool.

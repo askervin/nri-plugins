@@ -1,0 +1,48 @@
+CXL memory pool + Kubernetes DRA │ Ch 5 writer and readers │ 5.01 the writer opts in │ frame 61/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: pool, node-a, node-b                │    │  idle                       │
+    │                       │    │★ claims: writer's token -> dynamic @ node-a  │    │                             │
+    │                       │    │★ pods: writer -> node-a, starting            │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-a (VM1, worker) ─────────────────────    ─ ONE NODE: node-b (VM2, control plane) ──────────────
+    ╔★ writer / main ════════╗
+    ║  (pod writer, node-a)  ║
+    ║★ socket + cxl-request  ║
+    ║★ starting              ║
+    ╚════════════════════════╝
+
+    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    │  (kubelet)     ◄────┤  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
+    │★ pod writer    │(4) │★ lease socket for writer     │    │  idle          │    │  no leases                   │
+    │★ starting      │    │★ no leases                   │    │                │    │                              │
+    └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
+    │  no CXL memory devices                             │    │  no CXL memory devices                             │
+    └────────────────────────────────────────────────────┘    └────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★4 CXL agent (node-a) -> Pod runner (node-a): CDI lease-<uid>: /run/cxl, cxl-request   (steps 1-4 below)
+    The writer opts in like the borrower of chapter 3: a token claim from the template cxl-lease-token. TEXT is the
+    string it will write: 'dra-one-writer <timestamp>: written by the exclusive writer'.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 5, steps 1-4   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
+ ----- node-a -----  -- cluster -- pool  ----- node-b -----
+  │    │    │    │    │    │    │    │    │    │    │    │  ★  1  -- kubectl apply: Pod writer (node-a, restartPolicy
+  │    │    │    │    │    │    │    │    │    │    │    │           Never) {claim cxl -> template cxl-lease-token;
+  │    │    │    │    │    │    │    │    │    │    │    │           container main runs: cxl-request shared 0xc1ae0001
+  │    │    │    │    │    │    │    │    │    │    │    │           --exclusive --wait 120s --exec sh -c 'dax-rw.py
+  │    │    │    │    │    │    │    │    │    │    │    │           --fd 3 write 0 TEXT; echo written; wait for
+  │    │    │    │    │    │    │    │    │    │    │    │           /tmp/done'}
+  │    │    │    │    ├────►    │    │    │    │    │    │  ★  2  allocate dynamic @ node-a; bind writer -> node-a
+  │    ◄────┤    │    │    │    │    │    │    │    │    │  ★  3  NodePrepareResources(the writer's token claim)
+  │    ├╌╌╌╌►    │    │    │    │    │    │    │    │    │  ★  4  CDI lease-<claim uid>: /run/cxl (the socket),
+  │    │    │    │    │    │    │    │    │    │    │    │           cxl-request, CXL_LEASE_SOCKET

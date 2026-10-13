@@ -1,0 +1,23 @@
+CXL memory pool + Kubernetes DRA │ Ch 3 borrow while running │ 3.00 title card │ frame 34/82
+
+
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Chapter 3    Memory for a container that is already running
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    A pod's claims are fixed when it is created: neither the scheduler nor kubelet add devices to a running pod.
+    So a running container BORROWS pool memory through the node's CXL agent instead:
+
+      1. opt in at creation:  claim the token device 'dynamic' (DeviceClass cxl-dynamic): a socket and a CLI appear
+      2. ask from inside:     cxl-request memory 512Mi        -> a NUMA node added to this container's cpuset.mems
+                              cxl-request shared 0xc1ae0001   -> an open /dev/daxX.Y file descriptor, no device node
+      3. give back:           cxl-release <lease>             -> pages move to DRAM, device goes back to the pool
+
+    Behind the scenes the agent creates a companion pod and claim, cxl-lease-<id>, on the container's behalf;
+    from there on it is chapter 1 again. Lease ids are those of the recorded run.
+
+    Source: e2e test12-dra-live-attach and its recorded trace; driver doc/cxl/POOL.md             frames 3.01 - 3.17

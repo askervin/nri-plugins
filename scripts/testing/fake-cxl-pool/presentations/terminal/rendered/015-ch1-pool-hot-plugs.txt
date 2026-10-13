@@ -1,0 +1,49 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.06 the device arrives in the node │ frame 15/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  pooled-memory:       │    │  slices: pool (pooled0, shared0), node-b     │    │  attach pooled0 -> node-b   │
+    │  pooled0 @ node-b     │    │  claims: pooled-memory -> pooled0 @ node-b   │    │  host = Node's systemUUID   │
+    │  waiting for Attached │    │  pods: pooled-consumer Pending (binding)     │    │  owner: claim pooled-memory │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
+    │  idle                    │    │  published node-b's slice: dram (NUMA nodes 0-1), dynamic (a token device)   │
+    │                          │    │                                                                              │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │★ mem0  serial 0xc1ee0001  512M  appears (udev: add .../mem0 (cxl))                                           │
+    └──────────────────────────────────────────────────────▲───────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ───────────────────────│─(8)─────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────┴───────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │★ pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★8 Pool manager -> CXL memory (node-b): hot-plug cxl-type3 serial 0xc1ee0001 (fcp_pooled0.hp1)
+    In a real pool the fabric manager connects the device to the server; here qemu hot-plugs a CXL memory device into
+    the VM. The node's kernel sees a new memory device, mem0, with the serial.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 1, steps 1-8   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
+  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
+  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
+  │      │      │      │      │      │      ├──────►     7  POST attach pooled0 {host: node-b, owner: the claim}
+  │      │      │      ◄───────────────────────────┤  ★  8  hot-plug over QMP: object-add memory-backend-file (id
+  │      │      │      │      │      │      │      │           fcp_pooled0.hp1, mem-path pooled0.raw, share=on) +
+  │      │      │      │      │      │      │      │           device_add cxl-type3 (bus cxlsw_ds0_usrp0hb0, serial
+  │      │      │      │      │      │      │      │           0xc1ee0001)

@@ -1,0 +1,58 @@
+CXL memory pool + Kubernetes DRA │ Ch 4 sharing │ 4.04 fast-forward: node-b's claim │ frame 57/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │★ shared-memory-b:     │    │  slices: pool, node-a, node-b                │    │★ attached shared0 -> node-b │
+    │★ shared0 @ node-b     │    │★ claims: shared-memory (a), -b (b) Attached  │    │  status Attached written    │
+    │★ hosts: 2/4           │    │★ pods: writer Running; reader Pending        │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-a (VM1, worker) ─────────────────────    ─ ONE NODE: node-b (VM2, control plane) ──────────────
+    ╔═ writer / writer ══════╗
+    ║  (pod writer, node-a)  ║
+    ║  wrote at offset 0:    ║
+    ║  'hello from node-a'   ║
+    ╚════════════════════════╝
+
+    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐    ┌─ Pod runner ───┐    ┌─ Node's CXL agent ───────────┐
+    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │    │  (kubelet)     │    │  (kubelet-cxl-plugin)        │
+    │  pod writer    │    │  prepared shared0: dax0.0    │    │  idle          │    │  published node-b's slice    │
+    │  running       │    │  no leases                   │    │                │    │  no leases                   │
+    └────────────────┘    └──────────────────────────────┘    └────────────────┘    └──────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ──────────────────────┐    ┌─ CXL memory seen by the node ──────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)   │
+    │  mem0 -> region0 -> /dev/dax0.0 (device_dax)       │    │★ mem0  serial 0xc1ae0001  256M  appears (udev)     │
+    └────────────────────────────────────────────────────┘    └─────────────────────────▲──────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ────────────────────────────────────────────────────│─(14)───────────────
+    ┌─ Memory pool manager ─────────────────────────────────────────────────────────────┴──────────────────────────┐
+    │★ shared0  serial 0xc1ae0001  256M  shared     attached to node-a and node-b: one attachment each             │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★14 Pool manager -> CXL memory (node-b): hot-plug the same backing file, serial 0xc1ae0001   (steps 11-16 below)
+    Fast-forward: the same serial in every node; that is how each node's agent finds the device. Two attachments of one
+    device, each owned by its claim.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 4, steps 1-16   (earlier chapters: see their last frames)               ★ = new in this frame
+ Pod agnt kblt  HW  schd  API ctrl pool  HW  kblt agnt  Pod    #  message
+ ----- node-a -----  -- cluster -- pool  ----- node-b -----
+  │    │    │    │    │    │    │    │    │    │    │    │     1  -- kubectl apply: claim + pod writer (node-a)
+  │    │    │    │    ├────►    │    │    │    │    │    │     2  allocate shared0 @ node-a (hosts 1)
+  │    │    │    │    │    │    ├────►    │    │    │    │     3  POST attach shared0 {host: node-a}
+  │    │    │    ◄───────────────────┤    │    │    │    │     4  hot-plug cxl-type3 serial 0xc1ae0001
+  │    │    │    │    │    │    ◄╌╌╌╌┤    │    │    │    │     5  201 Created: attached
+  │    │    │    │    │    ◄────┤    │    │    │    │    │     6  claim status: Attached=True + data
+  │    ◄────┤    │    │    │    │    │    │    │    │    │     7  NodePrepareResources(shared-memory)
+  │    ├─────────►    │    │    │    │    │    │    │    │     8  cxl create-region; daxctl --mode=devdax -> /dev/dax0.0
+  │    ├╌╌╌╌►    │    │    │    │    │    │    │    │    │     9  CDI pool-c1ae0001: /dev/dax0.0, CXL_SHARED_DAX_...
+  ◄─────────┤    │    │    │    │    │    │    │    │    │    10  start container writer
+  │    │    │    │    │    │    │    │    │    │    │    │  ★ 11  -- kubectl apply: ResourceClaim shared-memory-b (the
+  │    │    │    │    │    │    │    │    │    │    │    │           same selector) and Pod reader (on node-b)
+  │    │    │    │    ├────►    │    │    │    │    │    │  ★ 12  allocate shared0 @ node-b (hosts: 2 of 4 now);
+  │    │    │    │    │    │    │    │    │    │    │    │           BindingConditionsPending
+  │    │    │    │    │    │    ├────►    │    │    │    │  ★ 13  POST /api/v1/devices/shared0/attachments {host:
+  │    │    │    │    │    │    │    │    │    │    │    │           node-b, owner: claim shared-memory-b}
+  │    │    │    │    │    │    │    ├────►    │    │    │  ★ 14  hot-plug the SAME backing file as cxl-type3 serial
+  │    │    │    │    │    │    │    │    │    │    │    │           0xc1ae0001
+  │    │    │    │    │    │    ◄╌╌╌╌┤    │    │    │    │  ★ 15  201 Created: attached
+  │    │    │    │    │    ◄────┤    │    │    │    │    │  ★ 16  claim status: Attached=True

@@ -1,0 +1,47 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.05 the controller asks the pool │ frame 14/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) ├─┐
+    │  pooled-memory:       │    │  slices: pool (pooled0, shared0), node-b     │    │★ attach pooled0 -> node-b   │ │
+    │  pooled0 @ node-b     │    │  claims: pooled-memory -> pooled0 @ node-b   │    │★ host = Node's systemUUID   │ │
+    │  waiting for Attached │    │  pods: pooled-consumer Pending (binding)     │    │★ owner: claim pooled-memory │ │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘ │
+    ─ ONE NODE: node-b (VM2, control plane) ──────────────────────────────────────────────────────────────────────── │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                     │
+                                                                                                                 (7) │
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐ │
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │ │
+    │  idle                    │    │  published node-b's slice: dram (NUMA nodes 0-1), dynamic (a token device)   │ │
+    │                          │    │                                                                              │ │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘ │
+                                                                                                                     │
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐ │
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │ │
+    │  no CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself          │ │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────   ┌────┘
+    ┌─ Memory pool manager ─────────────────────────────────────────────────────────────────────────────────────▼──┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │★ pooled0  serial 0xc1ee0001  512M  exclusive  attaching to node-b                                            │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★7 Pool controller -> Pool manager: POST attach pooled0 {host: node-b, owner: the claim}
+    The controller saw the allocation and asks the pool to attach pooled0. It finds the node's pool host by the Node's
+    systemUUID (the VM's qemu -uuid). The claim owns the attachment.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 1, steps 1-7   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
+  │      ├───────────────────────────►      │      │     4  publish node-b's ResourceSlice: dram, dynamic
+  │      │      │      │      │      │      │      │     5  -- kubectl apply: claim pooled-memory, pod pooled-consumer
+  │      │      │      │      ├──────►      │      │     6  allocate pooled0 @ node-b; binding wait
+  │      │      │      │      │      │      ├──────►  ★  7  POST /api/v1/devices/pooled0/attachments {host: node-b,
+  │      │      │      │      │      │      │      │           owner: k8s:resourceclaim/<claim uid>, wait: true,
+  │      │      │      │      │      │      │      │           timeout: 1m0s, exclusive: false}

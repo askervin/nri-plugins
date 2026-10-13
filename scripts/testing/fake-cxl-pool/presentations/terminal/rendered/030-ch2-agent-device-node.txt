@@ -1,0 +1,52 @@
+CXL memory pool + Kubernetes DRA │ Ch 2 DAX device claim │ 2.04 a device node for the container │ frame 30/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │  slices: pool (pooled0, shared0), node-b     │    │  attached pooled0 -> node-b │
+    │                       │    │  claims: pooled-dax -> pooled0, Attached     │    │  status Attached written    │
+    │                       │    │  pods: dax-claimer -> node-b, creating       │    │                             │
+    └───────────────────────┘    └──────────────────────────────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ───────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  ◄────┤  (kubelet-cxl-plugin)                                                        │
+    │  pod dax-claimer         │(10)│  prepared pooled0 (serial 0xc1ee0001, mode dax) as mem0, region0, dax0.0     │
+    │  preparing its claim     │    │★ CDI: device node /dev/dax0.0, env CXL_POOL_DAX_C1EE0001=/dev/dax0.0, ...    │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  mem0 -> region0 -> /dev/dax0.0 (device_dax, char device 252:0); no NUMA node: online size 0                 │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  attached to node-b as qemu device fcp_pooled0.hp1              │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★10 CXL agent (node-b) -> Pod runner (node-b): CDI pool-c1ee0001: device node /dev/dax0.0 + env
+    A device node in the container, plus a device cgroup rule that lets the container open it: that is what a CDI device
+    node means. No CXL_POOL_NODE variable this time.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 2, steps 1-10   (earlier chapters: see their last frames)               ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      │      │     1  -- kubectl apply: claim pooled-dax, pod dax-claimer
+  │      │      │      │      ├──────►      │      │     2  allocate pooled0 @ node-b; event BindingConditionsPending
+  │      │      │      │      │      │      ├──────►     3  POST attach pooled0 {host: node-b}
+  │      │      │      ◄───────────────────────────┤     4  hot-plug cxl-type3 serial 0xc1ee0001
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     5  201 Created: attached
+  │      │      │      │      │      ◄──────┤      │     6  claim status: Attached=True + data
+  │      │      │      │      ├──────►      │      │     7  bind dax-claimer -> node-b
+  │      ◄──────┤      │      │      │      │      │     8  NodePrepareResources(claim pooled-dax)
+  │      ├─────────────►      │      │      │      │     9  create-region; daxctl --mode=devdax -> /dev/dax0.0
+  │      ├╌╌╌╌╌╌►      │      │      │      │      │  ★ 10  PrepareResult: CDI device generic/cxl=pool-c1ee0001:
+  │      │      │      │      │      │      │      │           deviceNodes [/dev/dax0.0, type c, 252:0], env
+  │      │      │      │      │      │      │      │           CXL_POOL_DAX_C1EE0001=/dev/dax0.0,
+  │      │      │      │      │      │      │      │           CXL_POOL_SIZE_C1EE0001=536870912,
+  │      │      │      │      │      │      │      │           CXL_POOL_SERIAL_C1EE0001=0xc1ee0001

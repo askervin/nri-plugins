@@ -1,0 +1,26 @@
+CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.07 cast recap │ frame 8/82
+
+
+
+
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+    Cast and chapters
+    ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+    Cast (box title = what it does; in parentheses = what it is called in the code)
+      Memory pool manager          fake-cxl-pool-server: owns the devices, hot-plugs them into nodes
+      Pool controller              fake-cxl-pool-controller: the cluster side of DRA driver cxl-pool.generic
+      Kubernetes API + objects     kube-apiserver: ResourceSlices, DeviceClasses, ResourceClaims, Pods
+      Scheduler                    kube-scheduler: picks a device and a node for every claim of a pod
+      Pod runner                   kubelet + containerd: prepares the claims of a pod, starts its containers
+      Node's CXL agent             kubelet-cxl-plugin: DRA plugins, NRI plugin, lease broker
+      CXL memory seen by the node  /sys/bus/cxl: memN, regionN, daxX.Y; NUMA nodes
+      <pod> / <container>          a container of a workload pod, for example reader-a / main
+      request tool                 cxl-request / cxl-release in the container, socket /run/cxl/cxl.sock
+
+    Chapters
+      1  a pod claims pooled memory as a NUMA node                  e2e test10-dra-pooling
+      2  the same device as a DAX device                            test13, part H2
+      3  memory for a container that is already running            test12-dra-live-attach
+      4  sharing: one device, several nodes                         test11-dra-sharing
+      5  one exclusive writer, many read-only readers               test13-dra-shared-one-writer-many-readers

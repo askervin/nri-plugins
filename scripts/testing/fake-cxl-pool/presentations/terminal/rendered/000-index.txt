@@ -1,0 +1,94 @@
+CXL memory from a pool, with Kubernetes DRA -- index of frames
+
+Present with:  cd rendered && less *     (:n next file, :p previous, :x first, q quit)
+
+ file                                    frame  steps drawn  title
+ 001-ch0-card.txt                         0.00   card         title card
+ 002-ch0-cast-pool.txt                    0.01                the memory pool
+ 003-ch0-cast-node-hw.txt                 0.02                what a node sees
+ 004-ch0-cast-cluster.txt                 0.03                the cluster-wide parts
+ 005-ch0-cast-node-sw.txt                 0.04                the node's software
+ 006-ch0-cast-container.txt               0.05                the workload
+ 007-ch0-cast-zones.txt                   0.06                where things run
+ 008-ch0-cast-recap.txt                   0.07   card         cast recap
+ 009-ch1-card.txt                         1.00   card         title card
+ 010-ch1-publish-pool.txt                 1.01   3            the pool becomes an offer list
+ 011-ch1-publish-node.txt                 1.02   4            the node's own offer list
+ 012-ch1-claim-and-pod.txt                1.03                a claim and a pod
+ 013-ch1-scheduler-allocates.txt          1.04   6            the scheduler picks device and node
+ 014-ch1-ctrl-attaches.txt                1.05   7            the controller asks the pool
+ 015-ch1-pool-hot-plugs.txt               1.06   8            the device arrives in the node
+ 016-ch1-attached-condition.txt           1.07   10           the claim says Attached
+ 017-ch1-scheduler-binds.txt              1.08   11           the pod gets its node
+ 018-ch1-kubelet-prepares.txt             1.09   12           kubelet asks the node's agent
+ 019-ch1-agent-region.txt                 1.10   13           a new NUMA node
+ 020-ch1-agent-cdi.txt                    1.11   14           what the container will get
+ 021-ch1-container-runs.txt               1.12   15           the container runs
+ 022-ch1-delete-pod.txt                   1.13   18           the pod is deleted
+ 023-ch1-agent-releases.txt               1.14   19           the node lets go of the memory
+ 024-ch1-ctrl-detaches.txt                1.15   20,21        back to the pool
+ 025-ch1-recap.txt                        1.16   card         recap
+ 026-ch2-card.txt                         2.00   card         title card
+ 027-ch2-dax-claim.txt                    2.01                a claim with an option
+ 028-ch2-same-as-chapter-1.txt            2.02   4            fast-forward: attach and prepare
+ 029-ch2-agent-devdax.txt                 2.03   9            a dax device instead of a NUMA node
+ 030-ch2-agent-device-node.txt            2.04   10           a device node for the container
+ 031-ch2-dax-runs.txt                     2.05   11           the container maps the device
+ 032-ch2-read-only-option.txt             2.06                the read-only option
+ 033-ch2-dax-release.txt                  2.07   15           fast-forward: release
+ 034-ch3-card.txt                         3.00   card         title card
+ 035-ch3-token-claim.txt                  3.01                opting in: a token claim
+ 036-ch3-token-prepared.txt               3.02   4            a socket for the pod
+ 037-ch3-borrower-runs.txt                3.03   5,6          a running pod, no CXL memory yet
+ 038-ch3-request-memory.txt               3.04   7            a container asks for memory
+ 039-ch3-companion.txt                    3.05   8            a companion pod and claim
+ 040-ch3-companion-attached.txt           3.06   11           fast-forward: an ordinary claim
+ 041-ch3-lend-checked.txt                 3.07   16           the memory is ready to lend
+ 042-ch3-agent-lends.txt                  3.08   17           node 2 is lent to one container
+ 043-ch3-lease-ready.txt                  3.09   18           the lease is Ready
+ 044-ch3-release-revoke.txt               3.10   20           giving it back while running
+ 045-ch3-release-chain.txt                3.11   21           fast-forward: nothing left
+ 046-ch3-shared-request.txt               3.12   29           asking for the shared device
+ 047-ch3-shared-attached.txt              3.13   32           fast-forward: shared0 arrives
+ 048-ch3-fd-passed.txt                    3.14   38           a file descriptor instead of a device
+ 049-ch3-fd-again-release.txt             3.15   41           fast-forward: once more, then release
+ 050-ch3-two-leases.txt                   3.16   49           fast-forward: two leases alive
+ 051-ch3-pod-deleted.txt                  3.17   52           the pod goes, its leases go
+ 052-ch3-recap.txt                        3.18   card         recap
+ 053-ch4-card.txt                         4.00   card         title card
+ 054-ch4-two-nodes.txt                    4.01                two nodes, one pool
+ 055-ch4-writer-claim.txt                 4.02   4            fast-forward: the writer's claim
+ 056-ch4-writer-writes.txt                4.03   10           node-a writes
+ 057-ch4-reader-claim.txt                 4.04   14           fast-forward: node-b's claim
+ 058-ch4-reader-reads.txt                 4.05   20           node-b reads the same bytes
+ 059-ch4-independent.txt                  4.06   24           each node lets go on its own
+ 060-ch5-card.txt                         5.00   card         title card
+ 061-ch5-writer-pod.txt                   5.01   4            the writer opts in
+ 062-ch5-exclusive-request.txt            5.02   6            the writer asks for all of it
+ 063-ch5-writer-companion.txt             5.03   8            all four hosts taken
+ 064-ch5-exclusive-attach.txt             5.04   10           the pool keeps everybody else out
+ 065-ch5-writer-writes.txt                5.05   16           the writer writes
+ 066-ch5-reader-a-asks.txt                5.06   19           a reader asks
+ 067-ch5-readers-b-c.txt                  5.07   24           two more readers
+ 068-ch5-readers-wait.txt                 5.08                the readers wait
+ 069-ch5-writer-exits.txt                 5.09   28           the writer exits
+ 070-ch5-writer-cleanup.txt               5.10   29           fast-forward: the writer's lease goes
+ 071-ch5-ctrl-detaches.txt                5.11   35           a detour: detached for a moment
+ 072-ch5-attached-to-both.txt             5.12   38,41        shared0 into both nodes
+ 073-ch5-readers-prepared.txt             5.13   46,48        both nodes prepare the device
+ 074-ch5-read-only-fds.txt                5.14   49           read-only file descriptors
+ 075-ch5-all-readers-hold.txt             5.15   51           three readers hold the memory
+ 076-ch5-late-exclusive.txt               5.16   56           a late exclusive request fails cleanly
+ 077-ch5-reader-d-claim.txt               5.17   60           a fourth reader, with a claim
+ 078-ch5-reader-d-runs.txt                5.18   64           four readers at once
+ 079-ch5-readers-finish.txt               5.19   69           fast-forward: the readers finish
+ 080-ch5-pool-free.txt                    5.20   75,77        back to the pool
+ 081-ch5-recap.txt                        5.21   card         recap
+ 082-ch5-the-end.txt                      5.22   card         the end
+
+ chapter 0: Title and cast (8 files)
+ chapter 1: A pod claims pooled memory as a NUMA node (17 files)
+ chapter 2: The same device as a DAX device (8 files)
+ chapter 3: Memory for a container that is already running (19 files)
+ chapter 4: Sharing: one device, several nodes (7 files)
+ chapter 5: One exclusive writer, many read-only readers (23 files)

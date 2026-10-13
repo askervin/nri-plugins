@@ -1,0 +1,39 @@
+CXL memory pool + Kubernetes DRA │ Ch 0 title and cast │ 0.01 the memory pool │ frame 2/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌┄ Scheduler ┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Kubernetes API + objects ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Pool controller ┄┄┄┄┄┄┄┄┄┄┄┐
+    ┆  (not on stage yet)   ┆    ┆  (not on stage yet)                          ┆    ┆  (not on stage yet)         ┆
+    ┆                       ┆    ┆                                              ┆    ┆                             ┆
+    ┆                       ┆    ┆                                              ┆    ┆                             ┆
+    ┆                       ┆    ┆                                              ┆    ┆                             ┆
+    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    ─ ONE NODE: node-b (VM2, control plane) ────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+    ┌┄ Pod runner ┄┄┄┄┄┄┄┄┄┄┄┄┄┐    ┌┄ Node's CXL agent ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+    ┆  (not on stage yet)      ┆    ┆  (not on stage yet)                                                          ┆
+    ┆                          ┆    ┆                                                                              ┆
+    ┆                          ┆    ┆                                                                              ┆
+    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+
+    ┌┄ CXL memory seen by the node ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+    ┆  (not on stage yet)                                                                                          ┆
+    ┆                                                                                                              ┆
+    └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌★ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │★ shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │★ pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+    A CXL memory pool is a box of memory cabled to many servers; its manager attaches a device to a server and detaches
+    it again. Here a fake one hot-plugs devices into qemu VMs. pooled0 is for one node at a time; shared0 can be
+    attached to several nodes at once, and they all see the same bytes.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 0: no messages yet                                                      ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      │      │

@@ -1,0 +1,44 @@
+CXL memory pool + Kubernetes DRA │ Ch 1 NUMA node claim │ 1.02 the node's own offer list │ frame 11/82
+    ─ ANYWHERE IN THE CLUSTER ──────────────────────────────────────────────────────────────────────────────────────
+    ┌─ Scheduler ───────────┐    ┌─ Kubernetes API + objects ───────────────────┐    ┌─ Pool controller ───────────┐
+    │  (kube-scheduler)     │    │  (kube-apiserver: slices, claims, pods)      │    │  (fake-cxl-pool-controller) │
+    │  idle                 │    │★ slices: pool (pooled0, shared0), node-b     │    │  published 2 devices        │
+    │                       │    │  claims: none                                │    │  watching claims, nodes     │
+    │                       │    │  pods: none                                  │    │  and the pool's events      │
+    └───────────────────────┘    └───────────────────────▲──────────────────────┘    └─────────────────────────────┘
+    ─ ONE NODE: node-b (VM2, control plane) ─────────────│──────────────────────────────────────────────────────────
+                                                         │
+                                                         │
+                                                         │ (4)
+                                                         │
+                                                         │
+                                                         │
+    ┌─ Pod runner ─────────────┐    ┌─ Node's CXL agent ─┴─────────────────────────────────────────────────────────┐
+    │  (kubelet + containerd)  │    │  (kubelet-cxl-plugin)                                                        │
+    │  idle                    │    │★ published node-b's slice: dram (NUMA nodes 0-1), dynamic (a token device)   │
+    │                          │    │                                                                              │
+    └──────────────────────────┘    └──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─ CXL memory seen by the node ────────────────────────────────────────────────────────────────────────────────┐
+    │  (/sys/bus/cxl: memN regionN daxX.Y, NUMA nodes)                                                             │
+    │  no CXL memory devices; auto_online_blocks = offline: the kernel never onlines CXL memory by itself          │
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ─ OUTSIDE THE CLUSTER, possibly ─────────────────────────────────────────────────────────────────────────
+    ┌─ Memory pool manager ────────────────────────────────────────────────────────────────────────────────────────┐
+    │  shared0  serial 0xc1ae0001  256M  shared     free                                                           │
+    │  pooled0  serial 0xc1ee0001  512M  exclusive  free                                                           │
+    └─ (fake-cxl-pool-server on the host, REST API :9909; hot-plugs cxl-type3 devices into the qemu VMs over QMP) ─┘
+★4 CXL agent (node-b) -> Kubernetes API: publish node-b's ResourceSlice: dram, dynamic
+    The node's agent publishes the node's own memory in a slice of its own; the 'dynamic' token device is for chapter 3.
+    The scheduler always tries node-local offers first: they need no binding wait.
+★ changed in this frame   ╔═╗ inside a container   ┄┄ not on stage yet / just gone   (n) step n   ▲►◄▼ this step
+
+MESSAGE SEQUENCE   chapter 1, steps 1-4   (earlier chapters: see their last frames)                ★ = new in this frame
+ Pod   agnt   kblt    HW    schd    API   ctrl   pool    #  message
+ -------- node-b --------    ---- cluster ----   pool
+  │      │      │      │      │      │      ├──────►     1  GET /api/v1/devices?scope=pool
+  │      │      │      │      │      │      ◄╌╌╌╌╌╌┤     2  200: pooled0 512M exclusive free, shared0 256M shared free
+  │      │      │      │      │      ◄──────┤      │     3  create the pool's ResourceSlice: pooled0, shared0
+  │      ├───────────────────────────►      │      │  ★  4  publish ResourceSlice (driver cxl.generic, node node-b):
+  │      │      │      │      │      │      │      │           dram (NUMA nodes 0-1), dynamic (the token device: no
+  │      │      │      │      │      │      │      │           capacity, any number of claims)
