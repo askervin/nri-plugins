@@ -14,8 +14,9 @@
 
 // Package memctl makes hotplugged CXL memory devices usable and releases
 // them again: find a memdev by serial, create a region in devdax or
-// system-ram mode, online or offline its memory, destroy the region and
-// disable the memdev. It drives sysfs and the cxl and daxctl CLIs.
+// system-ram mode, online or offline its memory, slice the dax region of a
+// region into dax devices, destroy the region and disable the memdev. It
+// drives sysfs and the cxl and daxctl CLIs.
 package memctl
 
 import (
@@ -26,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +61,9 @@ type Manager struct {
 	LookPath func(name string) (string, error)
 	// Logf logs what is done ("" output if nil).
 	Logf func(format string, args ...any)
+	// WriteFile writes a value to a sysfs attribute (os.WriteFile if
+	// nil).
+	WriteFile func(path, val string) error
 	// PollInterval for waits.
 	PollInterval time.Duration
 }
@@ -98,8 +103,29 @@ func readTrim(path string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-func writeFile(path, val string) error {
+func (mc *Manager) writeFile(path, val string) error {
+	if mc.WriteFile != nil {
+		return mc.WriteFile(path, val)
+	}
 	return os.WriteFile(path, []byte(val), 0o644)
+}
+
+// parseHex returns the hex number in s, with or without 0x.
+func parseHex(s string) (uint64, error) {
+	return strconv.ParseUint(strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X"), 16, 64)
+}
+
+// readUint returns the number in a sysfs attribute, decimal or 0x hex.
+func readUint(path string) (uint64, error) {
+	s, err := readTrim(path)
+	if err != nil {
+		return 0, err
+	}
+	v, err := strconv.ParseUint(s, 0, 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse %q in %s: %w", s, path, err)
+	}
+	return v, nil
 }
 
 func (mc *Manager) list(pattern string) []string {
@@ -304,6 +330,276 @@ func (mc *Manager) DaxDevNumbers(dax string) (major, minor int, err error) {
 	return major, minor, nil
 }
 
+// DaxRegionDir returns the sysfs directory of the dax region attributes of
+// a region (regionN/dax_regionN/dax_region).
+func (mc *Manager) DaxRegionDir(region string) string {
+	if m, _ := filepath.Glob(mc.cxlDev(region, "dax_region*", "dax_region")); len(m) > 0 {
+		return m[0]
+	}
+	return mc.cxlDev(region, "dax_"+region, "dax_region")
+}
+
+// DaxRegionInfo returns the free bytes and the allocation alignment of the
+// dax region of a region, and the dax devices of the region.
+func (mc *Manager) DaxRegionInfo(region string) (available, align uint64, devices []string, err error) {
+	dir := mc.DaxRegionDir(region)
+	if available, err = readUint(filepath.Join(dir, "available_size")); err != nil {
+		return 0, 0, nil, err
+	}
+	if align, err = readUint(filepath.Join(dir, "align")); err != nil {
+		return 0, 0, nil, err
+	}
+	return available, align, mc.DaxDevices(region), nil
+}
+
+// DaxDeviceSize returns the size of a dax device in bytes.
+func (mc *Manager) DaxDeviceSize(dax string) (uint64, error) {
+	return readUint(mc.daxDev(dax, "size"))
+}
+
+// DaxDeviceResource returns the start address of the memory of a dax
+// device.
+func (mc *Manager) DaxDeviceResource(dax string) (uint64, error) {
+	return readUint(mc.daxDev(dax, "resource"))
+}
+
+// UnbindDax unbinds a dax device from its driver. A device that kmem has
+// with memory blocks that are not offline is not unbound: the kernel could
+// not remove that memory, it would stay online until a reboot.
+func (mc *Manager) UnbindDax(ctx context.Context, dax string) error {
+	cur := mc.DaxDriver(dax)
+	if cur == "" {
+		return nil
+	}
+	if cur == DriverKmem {
+		if err := mc.checkOffline(dax); err != nil {
+			return err
+		}
+	}
+	if err := mc.writeFile(filepath.Join(mc.SysRoot, "bus", "dax", "drivers", cur, "unbind"), dax); err != nil {
+		return fmt.Errorf("unbind %s from %s: %w", dax, cur, err)
+	}
+	if got := mc.DaxDriver(dax); got != "" {
+		return fmt.Errorf("%s is still bound to %q", dax, got)
+	}
+	mc.logf("%s: unbound from %s", dax, cur)
+	return nil
+}
+
+// checkOffline returns an error that lists the memory blocks of a dax
+// device that are not offline, nil if there are none.
+func (mc *Manager) checkOffline(dax string) error {
+	bs, err := mc.MemoryBlockSize()
+	if err != nil {
+		return fmt.Errorf("%s: %w", dax, err)
+	}
+	blocks, err := mc.DaxDeviceBlocks(dax, bs)
+	if err != nil {
+		return err
+	}
+	var online []int
+	for _, b := range blocks {
+		if st, err := readTrim(mc.block(b, "state")); err != nil || st != "offline" {
+			online = append(online, b)
+		}
+	}
+	if len(online) > 0 {
+		return fmt.Errorf("%s: memory blocks %v are not offline, kmem keeps it", dax, online)
+	}
+	return nil
+}
+
+// ResizeDaxDevice unbinds a dax device from its driver and sets its size
+// in bytes, a multiple of the align of its dax region. The device is left
+// unbound.
+func (mc *Manager) ResizeDaxDevice(ctx context.Context, dax string, size uint64) error {
+	if err := mc.UnbindDax(ctx, dax); err != nil {
+		return err
+	}
+	if err := mc.writeFile(mc.daxDev(dax, "size"), strconv.FormatUint(size, 10)); err != nil {
+		return fmt.Errorf("%s: set size %d: %w", dax, size, err)
+	}
+	got, err := mc.DaxDeviceSize(dax)
+	if err != nil {
+		return err
+	}
+	if got != size {
+		return fmt.Errorf("%s: size is %d after setting %d", dax, got, size)
+	}
+	mc.logf("%s: size %d", dax, size)
+	return nil
+}
+
+// CreateDaxDevice creates a dax device of size bytes in the dax region of
+// a region and returns its name. The device is not bound to a driver.
+func (mc *Manager) CreateDaxDevice(ctx context.Context, region string, size uint64) (string, error) {
+	dax, err := mc.newDaxDevice(region)
+	if err != nil {
+		return "", err
+	}
+	if err := mc.ResizeDaxDevice(ctx, dax, size); err != nil {
+		if derr := mc.DeleteDaxDevice(ctx, region, dax); derr != nil {
+			mc.logf("%s: %v", region, derr)
+		}
+		return "", err
+	}
+	return dax, nil
+}
+
+// CreateDaxDeviceAt creates a dax device in the dax region of a region
+// with the size bytes of memory from the physical address start, and
+// returns its name (see CreateDaxDeviceRanges).
+func (mc *Manager) CreateDaxDeviceAt(ctx context.Context, region string, start, size uint64) (string, error) {
+	if size == 0 {
+		return "", fmt.Errorf("%s: a dax device of size 0", region)
+	}
+	return mc.CreateDaxDeviceRanges(ctx, region, []Range{{Start: start, End: start + size - 1}})
+}
+
+// CreateDaxDeviceRanges creates a dax device in the dax region of a region
+// with the memory of the ranges, and returns its name. The device is not
+// bound to a driver. When the dax region does not give the device exactly
+// that memory, the device is deleted and an error returned.
+func (mc *Manager) CreateDaxDeviceRanges(ctx context.Context, region string, ranges []Range) (string, error) {
+	if len(ranges) == 0 {
+		return "", fmt.Errorf("%s: a dax device without memory", region)
+	}
+	want := slices.Clone(ranges)
+	sort.Slice(want, func(i, j int) bool { return want[i].Start < want[j].Start })
+	dax, err := mc.newDaxDevice(region)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range ranges {
+		if err = mc.writeFile(mc.daxDev(dax, "mapping"), r.String()); err != nil {
+			err = fmt.Errorf("%s: map %s: %w", dax, r, err)
+			break
+		}
+	}
+	if err == nil {
+		// The kernel ignores a length that is not a multiple of the
+		// device align without an error.
+		var got []Range
+		got, err = mc.DaxDeviceRanges(dax)
+		if err == nil && !slices.Equal(got, want) {
+			err = fmt.Errorf("%s: memory %v after mapping %v", dax, got, want)
+		}
+	}
+	if err != nil {
+		if derr := mc.DeleteDaxDevice(ctx, region, dax); derr != nil {
+			mc.logf("%s: %v", region, derr)
+		}
+		return "", err
+	}
+	mc.logf("%s: mapped %v", dax, want)
+	return dax, nil
+}
+
+// newDaxDevice creates a dax device of size 0 in the dax region of a
+// region and returns its name.
+func (mc *Manager) newDaxDevice(region string) (string, error) {
+	dir := mc.DaxRegionDir(region)
+	if err := mc.writeFile(filepath.Join(dir, "create"), "1"); err != nil {
+		return "", fmt.Errorf("%s: create a dax device: %w", region, err)
+	}
+	// reading create returns the youngest device of the dax region
+	dax, err := readTrim(filepath.Join(dir, "create"))
+	if err != nil {
+		return "", err
+	}
+	if dax == "" {
+		return "", fmt.Errorf("%s: no dax device was created", region)
+	}
+	mc.logf("%s: created %s", region, dax)
+	return dax, nil
+}
+
+// DeleteDaxDevice unbinds a dax device, sets its size to 0 and deletes it
+// from the dax region of a region. The first dax device of a region
+// (daxN.0) is kept with size 0. A device that does not exist is not an
+// error.
+func (mc *Manager) DeleteDaxDevice(ctx context.Context, region, dax string) error {
+	if _, err := os.Lstat(mc.daxDev(dax)); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err := mc.ResizeDaxDevice(ctx, dax, 0); err != nil {
+		return err
+	}
+	if strings.HasSuffix(dax, ".0") {
+		return nil
+	}
+	if err := mc.writeFile(filepath.Join(mc.DaxRegionDir(region), "delete"), dax); err != nil {
+		return fmt.Errorf("%s: delete %s: %w", region, dax, err)
+	}
+	mc.logf("%s: deleted %s", region, dax)
+	return nil
+}
+
+// Range is a range of physical addresses from Start to End, both
+// included, as the kernel shows them.
+type Range struct {
+	Start uint64 `json:"start"`
+	End   uint64 `json:"end"`
+}
+
+// Size returns the number of bytes in the range.
+func (r Range) Size() uint64 {
+	return r.End - r.Start + 1
+}
+
+// Aligned tells whether the range starts and ends at multiples of align.
+func (r Range) Aligned(align uint64) bool {
+	return align > 0 && r.Start%align == 0 && r.Size()%align == 0
+}
+
+// String returns the range as "0x<start>-0x<end>".
+func (r Range) String() string {
+	return fmt.Sprintf("0x%x-0x%x", r.Start, r.End)
+}
+
+// blocks returns the numbers of the memory blocks of bs bytes that lie
+// wholly in the range.
+func (r Range) blocks(bs uint64) []int {
+	var out []int
+	for b := (r.Start + bs - 1) / bs; (b+1)*bs-1 <= r.End; b++ {
+		out = append(out, int(b))
+	}
+	return out
+}
+
+// MemoryBlockSize returns the size of the memory blocks of the system in
+// bytes (devices/system/memory/block_size_bytes, hex without 0x).
+func (mc *Manager) MemoryBlockSize() (uint64, error) {
+	path := filepath.Join(mc.SysRoot, "devices", "system", "memory", "block_size_bytes")
+	s, err := readTrim(path)
+	if err != nil {
+		return 0, err
+	}
+	bs, err := parseHex(s)
+	if err != nil || bs == 0 {
+		return 0, fmt.Errorf("cannot parse the memory block size %q in %s", s, path)
+	}
+	return bs, nil
+}
+
+// RegionRange returns the physical address range of a region.
+func (mc *Manager) RegionRange(region string) (Range, error) {
+	res, err := readTrim(mc.cxlDev(region, "resource"))
+	if err != nil {
+		return Range{}, err
+	}
+	sz, err := readTrim(mc.cxlDev(region, "size"))
+	if err != nil {
+		return Range{}, err
+	}
+	start, err1 := parseHex(res)
+	size, err2 := parseHex(sz)
+	if err := errors.Join(err1, err2); err != nil || size == 0 {
+		return Range{}, fmt.Errorf("cannot parse region %s resource %q size %q", region, res, sz)
+	}
+	return Range{Start: start, End: start + size - 1}, nil
+}
+
 // RegionBlocks returns the memory block numbers of a region.
 func (mc *Manager) RegionBlocks(region string) ([]int, error) {
 	blocks, _, err := mc.regionBlocks(region)
@@ -311,37 +607,170 @@ func (mc *Manager) RegionBlocks(region string) ([]int, error) {
 }
 
 // regionBlocks returns the memory block numbers of a region that exist,
-// and how many blocks the region spans.
+// and how many blocks lie wholly in the region (kmem adds only those).
 func (mc *Manager) regionBlocks(region string) ([]int, int, error) {
-	res, err := readTrim(mc.cxlDev(region, "resource"))
+	r, err := mc.RegionRange(region)
 	if err != nil {
 		return nil, 0, err
 	}
-	sz, err := readTrim(mc.cxlDev(region, "size"))
+	bs, err := mc.MemoryBlockSize()
 	if err != nil {
 		return nil, 0, err
 	}
-	bsz, err := readTrim(filepath.Join(mc.SysRoot, "devices", "system", "memory", "block_size_bytes"))
-	if err != nil {
-		return nil, 0, err
-	}
-	start, err1 := strconv.ParseUint(strings.TrimPrefix(res, "0x"), 16, 64)
-	size, err2 := strconv.ParseUint(strings.TrimPrefix(sz, "0x"), 16, 64)
-	bs, err3 := strconv.ParseUint(strings.TrimPrefix(bsz, "0x"), 16, 64)
-	if err := errors.Join(err1, err2, err3); err != nil || bs == 0 {
-		return nil, 0, fmt.Errorf("cannot parse region %s resource %q size %q block size %q", region, res, sz, bsz)
-	}
+	whole := r.blocks(bs)
 	var out []int
-	for b := start / bs; b < (start+size)/bs; b++ {
-		if _, err := os.Stat(mc.block(int(b), "state")); err == nil {
-			out = append(out, int(b))
+	for _, b := range whole {
+		if mc.blockExists(b) {
+			out = append(out, b)
 		}
 	}
-	return out, int((start+size)/bs - start/bs), nil
+	return out, len(whole), nil
+}
+
+// DaxDeviceRanges returns the physical address ranges of the memory of a
+// dax device (its mappingN), in address order. Without mappings (kernels
+// before 5.10) the device has one range from its resource and size. A
+// device of size 0 has none.
+func (mc *Manager) DaxDeviceRanges(dax string) ([]Range, error) {
+	dirs, _ := filepath.Glob(mc.daxDev(dax, "mapping[0-9]*"))
+	if len(dirs) == 0 {
+		size, err := mc.DaxDeviceSize(dax)
+		if err != nil || size == 0 {
+			return nil, err
+		}
+		start, err := mc.DaxDeviceResource(dax)
+		if err != nil {
+			return nil, err
+		}
+		return []Range{{Start: start, End: start + size - 1}}, nil
+	}
+	out := make([]Range, 0, len(dirs))
+	for _, dir := range dirs {
+		start, err := readUint(filepath.Join(dir, "start"))
+		if err != nil {
+			return nil, err
+		}
+		end, err := readUint(filepath.Join(dir, "end"))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Range{Start: start, End: end})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	return out, nil
+}
+
+// DaxDeviceBlocks returns the numbers of the memory blocks of a dax device
+// that exist: the blocks of bs bytes that lie wholly in its memory, which
+// kmem adds.
+func (mc *Manager) DaxDeviceBlocks(dax string, bs uint64) ([]int, error) {
+	blocks, _, err := mc.daxBlocks(dax, bs)
+	return blocks, err
+}
+
+// daxBlocks returns the numbers of the memory blocks of a dax device that
+// exist, and how many blocks lie wholly in its memory.
+func (mc *Manager) daxBlocks(dax string, bs uint64) ([]int, int, error) {
+	if bs == 0 {
+		return nil, 0, errors.New("memory block size 0")
+	}
+	ranges, err := mc.DaxDeviceRanges(dax)
+	if err != nil {
+		return nil, 0, err
+	}
+	var out []int
+	want := 0
+	for _, r := range ranges {
+		for _, b := range r.blocks(bs) {
+			want++
+			if mc.blockExists(b) {
+				out = append(out, b)
+			}
+		}
+	}
+	return out, want, nil
+}
+
+// WaitDaxBlocks waits until every memory block of a dax device that is
+// bound to kmem exists.
+func (mc *Manager) WaitDaxBlocks(ctx context.Context, dax string) error {
+	bs, err := mc.MemoryBlockSize()
+	if err != nil {
+		return err
+	}
+	for {
+		blocks, want, err := mc.daxBlocks(dax, bs)
+		if err != nil {
+			return err
+		}
+		if want == 0 {
+			return fmt.Errorf("%s has no whole memory block of %d bytes", dax, bs)
+		}
+		if len(blocks) == want {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: %d of %d memory blocks appeared: %w", dax, len(blocks), want, ctx.Err())
+		case <-time.After(mc.PollInterval):
+		}
+	}
+}
+
+// RegionFreeGaps returns the ranges of the memory of a region that none of
+// its dax devices has, in address order.
+func (mc *Manager) RegionFreeGaps(region string) ([]Range, error) {
+	rr, err := mc.RegionRange(region)
+	if err != nil {
+		return nil, err
+	}
+	var used []Range
+	for _, dax := range mc.DaxDevices(region) {
+		ranges, err := mc.DaxDeviceRanges(dax)
+		if err != nil {
+			return nil, err
+		}
+		used = append(used, ranges...)
+	}
+	sort.Slice(used, func(i, j int) bool { return used[i].Start < used[j].Start })
+	var gaps []Range
+	next := rr.Start
+	for _, u := range used {
+		if u.Start > next {
+			gaps = append(gaps, Range{Start: next, End: u.Start - 1})
+		}
+		if u.End >= next {
+			next = u.End + 1
+		}
+	}
+	if next <= rr.End {
+		gaps = append(gaps, Range{Start: next, End: rr.End})
+	}
+	return gaps, nil
 }
 
 func (mc *Manager) block(n int, p ...string) string {
 	return filepath.Join(append([]string{mc.SysRoot, "devices", "system", "memory", "memory" + strconv.Itoa(n)}, p...)...)
+}
+
+// blockExists tells whether memory block n exists.
+func (mc *Manager) blockExists(n int) bool {
+	_, err := os.Stat(mc.block(n, "state"))
+	return err == nil
+}
+
+// BlocksNode returns the NUMA node of online memory blocks
+// (/sys/devices/system/memory/memoryN/nodeM), -1 if not found.
+func (mc *Manager) BlocksNode(blocks []int) int {
+	for _, b := range blocks {
+		m, _ := filepath.Glob(mc.block(b, "node*"))
+		for _, path := range m {
+			if n, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(path), "node")); err == nil {
+				return n
+			}
+		}
+	}
+	return -1
 }
 
 // SetBlocksState onlines ("online", "online_movable") or offlines
@@ -362,7 +791,7 @@ func (mc *Manager) SetBlocksState(blocks []int, state string) error {
 			}
 			continue
 		}
-		if err := writeFile(mc.block(b, "state"), state); err != nil {
+		if err := mc.writeFile(mc.block(b, "state"), state); err != nil {
 			return fmt.Errorf("memory%d: %s: %w", b, state, err)
 		}
 		mc.logf("memory%d: %s", b, state)
@@ -379,46 +808,67 @@ func (mc *Manager) has(cmd string) bool {
 }
 
 // SetDaxDriver binds a dax device to device_dax (devdax) or kmem
-// (system-ram). Memory of kmem must be offline before switching away.
+// (system-ram), with daxctl when it is installed, else through sysfs (see
+// SetDaxDriverSysfs). Memory of kmem must be offline before switching
+// away.
 func (mc *Manager) SetDaxDriver(ctx context.Context, dax, driver string) error {
 	cur := mc.DaxDriver(dax)
 	if cur == driver {
 		return nil
 	}
-	if mc.has("daxctl") {
-		mode := "devdax"
-		if driver == DriverKmem {
-			mode = "system-ram"
-		}
-		args := []string{"reconfigure-device", "--mode=" + mode, "--force", dax}
-		if driver == DriverKmem {
-			args = []string{"reconfigure-device", "--mode=" + mode, "--no-online", dax}
-		}
-		if _, err := mc.Exec(ctx, "daxctl", args...); err != nil {
-			return err
-		}
-	} else {
-		drivers := filepath.Join(mc.SysRoot, "bus", "dax", "drivers")
-		if cur != "" {
-			if err := writeFile(filepath.Join(drivers, cur, "unbind"), dax); err != nil {
-				return fmt.Errorf("unbind %s from %s: %w", dax, cur, err)
-			}
-			mc.logf("%s: unbound from %s", dax, cur)
-		}
-		// new_id makes the driver match and probe the device; bind is a
-		// fallback if the id was already there. The id is removed again
-		// afterwards, so that a later device with the same name binds to
-		// its default driver.
-		if err := writeFile(filepath.Join(drivers, driver, "new_id"), dax); err != nil {
+	if !mc.has("daxctl") {
+		return mc.SetDaxDriverSysfs(ctx, dax, driver)
+	}
+	mode := "devdax"
+	if driver == DriverKmem {
+		mode = "system-ram"
+	}
+	args := []string{"reconfigure-device", "--mode=" + mode, "--force", dax}
+	if driver == DriverKmem {
+		args = []string{"reconfigure-device", "--mode=" + mode, "--no-online", dax}
+	}
+	if _, err := mc.Exec(ctx, "daxctl", args...); err != nil {
+		return err
+	}
+	return mc.checkDaxDriver(dax, driver)
+}
+
+// SetDaxDriverSysfs binds a dax device to device_dax or kmem through the
+// sysfs attributes of the dax bus. The memory blocks that kmem adds are
+// offline unless auto_online_blocks onlines them.
+func (mc *Manager) SetDaxDriverSysfs(ctx context.Context, dax, driver string) error {
+	if mc.DaxDriver(dax) == driver {
+		return nil
+	}
+	drivers := filepath.Join(mc.SysRoot, "bus", "dax", "drivers")
+	if err := mc.UnbindDax(ctx, dax); err != nil {
+		return err
+	}
+	// kmem matches the dax devices of CXL regions by their type, so bind
+	// is enough; a new_id would make kmem probe every unbound dax device
+	// of the regions. device_dax does not match them by type: new_id
+	// makes it match and probe the device, bind is a fallback if the id
+	// was already there. The id is removed again afterwards, so that a
+	// later device with the same name binds to its default driver.
+	if driver != DriverKmem {
+		if err := mc.writeFile(filepath.Join(drivers, driver, "new_id"), dax); err != nil {
 			mc.logf("%s: new_id: %v", driver, err)
 		}
-		if mc.DaxDriver(dax) != driver {
-			if err := writeFile(filepath.Join(drivers, driver, "bind"), dax); err != nil {
-				return fmt.Errorf("bind %s to %s: %w", dax, driver, err)
-			}
-		}
-		_ = writeFile(filepath.Join(drivers, driver, "remove_id"), dax)
 	}
+	if mc.DaxDriver(dax) != driver {
+		if err := mc.writeFile(filepath.Join(drivers, driver, "bind"), dax); err != nil {
+			return fmt.Errorf("bind %s to %s: %w", dax, driver, err)
+		}
+	}
+	if driver != DriverKmem {
+		_ = mc.writeFile(filepath.Join(drivers, driver, "remove_id"), dax)
+	}
+	return mc.checkDaxDriver(dax, driver)
+}
+
+// checkDaxDriver returns an error if a dax device is not bound to driver,
+// and logs the binding otherwise.
+func (mc *Manager) checkDaxDriver(dax, driver string) error {
 	if got := mc.DaxDriver(dax); got != driver {
 		return fmt.Errorf("%s is bound to %q, not %q", dax, got, driver)
 	}
@@ -555,7 +1005,8 @@ func (mc *Manager) waitRegionBlocks(ctx context.Context, region string) error {
 		if err != nil {
 			return err
 		}
-		if want > 0 && len(blocks) == want {
+		// a region without a whole block gets no memory blocks
+		if len(blocks) == want {
 			return nil
 		}
 		select {
@@ -588,30 +1039,15 @@ func (mc *Manager) Online(memdev string, movable bool) (*RegionInfo, error) {
 	return ri, nil
 }
 
-// Release makes the memdev removable: offlines its memory, disables and
-// destroys its regions and disables the memdev. A missing memdev is not an
+// Release makes the memdev removable: releases its regions (see
+// ReleaseRegions) and disables the memdev. A missing memdev is not an
 // error.
 func (mc *Manager) Release(ctx context.Context, memdev string) error {
 	if _, err := os.Stat(mc.cxlDev(memdev)); err != nil {
 		return nil
 	}
-	for _, r := range mc.Regions(memdev) {
-		for _, dax := range mc.DaxDevices(r) {
-			if mc.DaxDriver(dax) == DriverKmem {
-				if blocks, err := mc.RegionBlocks(r); err == nil {
-					if err := mc.SetBlocksState(blocks, "offline"); err != nil {
-						return fmt.Errorf("%s: cannot offline memory (in use?): %w", r, err)
-					}
-				}
-			}
-		}
-		if _, err := mc.Exec(ctx, "cxl", "disable-region", r); err != nil {
-			return err
-		}
-		if _, err := mc.Exec(ctx, "cxl", "destroy-region", r); err != nil {
-			return err
-		}
-		mc.logf("%s: destroyed %s", memdev, r)
+	if err := mc.ReleaseRegions(ctx, memdev); err != nil {
+		return err
 	}
 	if _, err := os.Stat(mc.cxlDev(memdev, "driver")); err == nil {
 		if _, err := mc.Exec(ctx, "cxl", "disable-memdev", memdev); err != nil {
@@ -619,5 +1055,44 @@ func (mc *Manager) Release(ctx context.Context, memdev string) error {
 		}
 		mc.logf("%s: disabled", memdev)
 	}
+	return nil
+}
+
+// ReleaseRegions releases the memdev's regions (see ReleaseRegion). The
+// memdev stays enabled. A missing memdev is not an error.
+func (mc *Manager) ReleaseRegions(ctx context.Context, memdev string) error {
+	if _, err := os.Stat(mc.cxlDev(memdev)); err != nil {
+		return nil
+	}
+	for _, r := range mc.Regions(memdev) {
+		if err := mc.ReleaseRegion(ctx, r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReleaseRegion offlines the memory of a region, and disables and destroys
+// the region. A missing region is not an error.
+func (mc *Manager) ReleaseRegion(ctx context.Context, region string) error {
+	if _, err := os.Stat(mc.cxlDev(region)); err != nil {
+		return nil
+	}
+	for _, dax := range mc.DaxDevices(region) {
+		if mc.DaxDriver(dax) == DriverKmem {
+			if blocks, err := mc.RegionBlocks(region); err == nil {
+				if err := mc.SetBlocksState(blocks, "offline"); err != nil {
+					return fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
+				}
+			}
+		}
+	}
+	if _, err := mc.Exec(ctx, "cxl", "disable-region", region); err != nil {
+		return err
+	}
+	if _, err := mc.Exec(ctx, "cxl", "destroy-region", region); err != nil {
+		return err
+	}
+	mc.logf("destroyed %s", region)
 	return nil
 }

@@ -13,10 +13,13 @@
 #   0xc1f0ee00 here: recreate them (see the error message).
 # - The VM sees no CXL memory devices.
 #
-# The topologies n4-cxl-shared-1 and n4-cxl-shared-2 are identical, so their
-# VMs can share the same CXL memory devices. Hot-removing and hotplugging a
-# device again needs a patched qemu. Give it when creating the VM, see
-# qemu_bin in .github/skills/run-e2e-tests/SKILL.md, for instance:
+# The topologies n4-cxl-shared-1 and n4-cxl-shared-2 have the same pool
+# slots and the same statically shared device, so their VMs can share the
+# same CXL memory devices. They differ only in the size of the local device:
+# 256M in n4-cxl-shared-1, 1G in n4-cxl-shared-2. Hot-removing and
+# hotplugging a device again needs a patched qemu. Give it when creating
+# the VM, see qemu_bin in .github/skills/run-e2e-tests/SKILL.md, for
+# instance:
 #   qemu_bin=$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 \
 #     ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-1/test00-up
 

@@ -204,9 +204,9 @@ companion-check() {
     dra-assert "$pod_json" "{'operator': 'Exists'} in j['spec']['tolerations']"
     dra-assert "$pod_json" "j['spec']['resourceClaims'] == [{'name': 'lease', 'resourceClaimName': '$name'}]"
     # The companion only holds the claim: a pause container that uses
-    # nothing of it, Guaranteed with 1m CPU and 8Mi memory.
+    # nothing of it, Guaranteed with 100m CPU and 16Mi memory.
     dra-assert "$pod_json" "[c['image'] for c in j['spec']['containers']] == ['$PAUSE_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
-    dra-assert "$pod_json" "j['spec']['containers'][0]['resources']['requests'] == j['spec']['containers'][0]['resources']['limits'] == {'cpu': '100m', 'memory': '8Mi'}"
+    dra-assert "$pod_json" "j['spec']['containers'][0]['resources']['requests'] == j['spec']['containers'][0]['resources']['limits'] == {'cpu': '100m', 'memory': '16Mi'}"
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$name"
     claim_json="$COMMAND_OUTPUT"
     dra-claim-conditions "$VM2" "$name"

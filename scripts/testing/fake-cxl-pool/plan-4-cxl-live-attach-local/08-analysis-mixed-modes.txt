@@ -1,0 +1,113 @@
+plan-4-cxl-live-attach-local: numa and dax claims on one local device
+=====================================================================
+Written 2026-10-14 (Fable), answering the user's question whether the
+mode exclusivity of 02 (P2: a device serves numa or dax claims, never
+both at a time) is really necessary, or whether every claim could get a
+dax slice that is either passed to the pod or turned into system RAM of
+the shared node. Measured on VM2 (n4-cxl-shared-2, kernel 7.3.0-rc4,
+local device cxl_memdev1 hotplugged for the measurement and hot-removed
+again; script measurements/cxl-mixed-slices-exp.sh).
+
+1. Verdict: the exclusivity is not necessary
+--------------------------------------------
+One region, one dax region, slices of both kinds at the same time:
+  dax0.0  offset 0        64 MiB   device_dax   (dax claim)
+  dax0.1  offset 128 MiB  128 MiB  kmem, onlined as node 2 (numa claim)
+  dax0.2  offset 64 MiB   32 MiB   device_dax   (dax claim, first-fit into
+                                                 the gap before the kmem slice)
+All three coexisted; node 2 had 131072 kB online; write/read on dax0.0
+did not show in dax0.2; teardown (offline, unbind, size 0, delete,
+destroy-region) left nothing; the patched qemu hot-removed the device.
+Why 02 chose exclusivity, and what removes the problem:
+- kmem needs every range of a dax device aligned to the memory block size
+  (start and size; drivers/dax/kmem.c dax_kmem_range ->
+  memory_block_aligned_range, ENOSPC per range when nothing is left). With
+  the dax allocator's first-fit placement at 2 MiB, a kmem slice after a
+  2 MiB dax slice would start misaligned (01 1.2 measured the rejection).
+- Two ways out, both measured or read in the source:
+  a. All slices are multiples of the memory block size. First-fit then
+     keeps every gap and every start block-aligned (induction over
+     allocations and releases; a request larger than one gap becomes a
+     multi-range device, dev_dax_resize's retry loop, and every range is
+     still block-aligned). Granularity: 128 MiB in the VMs, up to 2 GiB on
+     servers with more than 64 GB of RAM (x86 probe_memory_block_size).
+  b. Explicit placement: /sys/bus/dax/devices/daxX.Y/mapping (write-only,
+     "<start>-<end>" in hex, since v5.10, Documentation/ABI/testing/
+     sysfs-bus-dax) allocates exactly that range for a zero-size device;
+     a taken range fails with ENOMEM; a length that is not a multiple of
+     the device align is silently ignored (the write returns success and
+     the size stays 0: check the size after the write). Measured: the
+     kmem slice was placed at the 128 MiB boundary while a later 32 MiB
+     dax slice took the 2 MiB-granular gap before it. So kmem slices can
+     stay block-aligned while dax slices keep 2 MiB granularity.
+
+2. What changes for the containers
+----------------------------------
+- numa claims: the plugin creates a kmem slice (block multiple), binds
+  kmem, onlines its blocks movable; node N is the region's target_node
+  (known before onlining from daxX.Y/target_node), the same for every
+  numa slice of the device and of the host bridge window. Steering at
+  pod creation (PreparedDeviceInfo NUMANodes [N]) and lending (LendNode N
+  with the lease as holder) are unchanged; several containers share N;
+  memory.max and cgmpolmgr's quota steering bound their use, as the user
+  expects. Capacity online equals the sum of the numa slices, not the
+  whole device (an improvement over 02: the unclaimed part stays offline).
+- dax claims: unchanged (device_dax slice, zeroed, CDI node).
+- Release of a numa slice: offline its blocks (pages of any container on
+  N may sit there: migration, EBUSY retry as today), unbind, size 0,
+  delete; the region goes with the last slice of either kind.
+- No application-visible performance difference between a kmem slice and
+  a whole-region online (07 section 2). struct pages of a slice come from
+  DRAM unless memmap_on_memory is set and the kernel parameter
+  memory_hotplug.memmap_on_memory is on.
+
+3. Accounting: the one real constraint
+--------------------------------------
+The scheduler consumes what the claim requests, rounded by the
+requestPolicy step (01 section 4). If numa slices are block-rounded but
+the device's step stays 2 MiB, the scheduler can admit more than the
+device holds (two 64 MiB numa claims take 256 MiB of a 256 MiB device
+while the scheduler still sees 128 MiB free): a later claim fails at
+Prepare, which is exactly the stuck-pod problem the question wants gone.
+So the step must be the rounding the allocator applies. Options:
+  A. step = memory block size for the device's memory capacity (default
+     128Mi in the VMs, 2Gi on big servers), dax slices rounded up to it as
+     well. Mixed modes with first-fit alone (2a), no mode attribute, no
+     mode classes, no Prepare conflicts. Granularity loss for dax slices,
+     accepted by the user ("ok even if 128M").
+  B. step = 2Mi and numa claims refused on the node (dax-only node), as a
+     driver option for nodes that want fine dax slices. The class
+     cxl-local-memory must not match such a device (publish attribute
+     numa: false and select on it), so pods stay Pending with a clear
+     scheduler message instead of a Prepare error.
+  C. step = 2Mi with numa slices placed by "mapping" (2b) and allocator-
+     side accounting: rejected, because the scheduler's view and the
+     device's real free space diverge (the stuck-pod case above).
+Recommendation: A by default, B as the per-node option (config
+localSliceStep: 2Mi, implying dax-only). The mode attribute becomes
+informational ("none", "numa", "dax", "numa+dax") and the local classes
+stop filtering on it.
+
+4. What the change costs (plan-5 candidate, not done in plan-4)
+----------------------------------------------------------------
+Driver: local.go numa path becomes a kmem slice (create, size, bind kmem,
+online the slice's blocks; release offlines only them; alignment check
+before binding, "mapping" only as a fallback or for option B);
+requestPolicy step from memory_block_size_bytes; drop the mode conflict
+error and the mode filters; LOCAL.md. memctl: CreateDaxDeviceAt(region,
+start, size) over the mapping attribute, DaxDeviceRanges (mappingN),
+BlocksOf(dax). e2e: test14 B/C/E and test15 B/E lose their mode-conflict
+steps and gain mixed-mode ones (numa and dax claims on the device at the
+same time, node online size equals the numa slices, release of one kind
+leaves the other). The lending, steering, broker and CLI do not change.
+Measured costs of the primitives are in W2's timings (06): region create
+0.11 s, slice 0.05-0.15 s, so a numa slice should take well under a
+second.
+
+5. Correction to the measurement scripts of 01
+----------------------------------------------
+measurements/cxl-partition-exp.sh and -exp2.sh read the memory block size
+as decimal (8000000 instead of 0x8000000); the block numbers they printed
+were wrong, the conclusions were not (the kernel's own "too small after
+alignment" rejection decided 01 1.2). Fixed in the scripts; the mixed
+measurement used the corrected parsing.

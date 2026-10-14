@@ -238,17 +238,31 @@ func linkRegionsToNumaNodes(sysfsRoot string, devices *Devices) error {
 				// in the region. If the driver is
 				// bound, we may be able to find the
 				// node from dax device target_node.
-				if matches, err := filepath.Glob(filepath.Join(region.SysfsPath, "dax_region*/dax*/target_node")); err == nil && len(matches) == 1 {
-					if parse(parseWithSscanf(matches[0], "%d", &node)) == nil {
-						log.Debugf("found NUMA node %d for region %s from dax target_node", node, region.Name)
-					}
-				}
+				node = daxTargetNode(region)
 			}
 		}
 		region.Node = node
 		region.Enabled = (region.Node >= 0)
 	}
 	return nil
+}
+
+// daxTargetNode returns the target_node of the first dax device of a
+// region that has one, -1 if none has. All dax devices of a region have the
+// node of the region.
+func daxTargetNode(region *RegionDevice) int {
+	matches, err := filepath.Glob(filepath.Join(region.SysfsPath, "dax_region*/dax*/target_node"))
+	if err != nil {
+		return -1
+	}
+	for _, path := range matches {
+		node := -1
+		if parse(parseWithSscanf(path, "%d", &node)) == nil && node >= 0 {
+			log.Debugf("found NUMA node %d for region %s from dax target_node %s", node, region.Name, path)
+			return node
+		}
+	}
+	return -1
 }
 
 // countRegionOnlineSizes counts onlined memory in every region from the memory
