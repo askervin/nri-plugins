@@ -1,0 +1,52 @@
+plan-4-cxl-live-attach-local: review
+====================================
+Two Opus reviewer agents after the implementation agents report (R1: driver
+repository, R2: nri-plugins e2e and memctl). Each writes "R1 Review" / "R2
+Review" into 06-status.txt: findings ordered by severity, each with file
+and line, what is wrong, and the fix; then the orchestrator decides what
+goes back to the implementation agents. Review the working trees (git diff
+against HEAD b57b62b in the driver, ee6442a22 in nri-plugins), not only the
+status notes.
+
+Points of view
+--------------
+1. No reinvented wheels: memctl functions used where they exist (regions,
+   dax drivers, blocks, dev numbers); pool.go and local.go share
+   lending.go, parseDeviceConfig, daxCDIDevice; the broker builds one
+   companion claim shape with a source switch, not three builders; the
+   CLI parses flags with the existing helpers; e2e tests use dra-*,
+   pool-*, cxl-* helpers and retry-until, never sleep-then-check, never
+   raw kubectl loops where a helper exists; k8s client-go and
+   k8s.io/api/resource/v1 types used directly (no hand-written JSON for
+   claims).
+2. Design conformance (02): one region per device, mode per device,
+   numa whole-device, dax slices 2 MiB, mode attribute, requestPolicy,
+   memdev not disabled on release, LendConfig path identical for both
+   drivers, source default pool, firstAvailable for any, nothing changes
+   for pool devices or cxl-node regions. Every deviation must be in
+   06-status.txt; undocumented ones are findings.
+3. Life cycle and leaks: every Prepare failure path releases what it
+   acquired; Unprepare order revoke -> release -> state -> publish; restart
+   reconcile destroys leftovers and never touches foreign regions; a gone
+   memdev or slice is not an error; state files written atomically;
+   locks: no hook called back under a lock that the hook needs (nodeState
+   lock vs broker lock vs allocator lock), no UpdateContainers from an
+   NRI event handler (plan-3 W1b deadlock rule).
+4. Correctness details: consumedCapacity parsing (Quantity to bytes),
+   serial formatting (lower-case hex with 0x in attributes, upper-case
+   without in env), CDI device names valid, per-claim CDI spec rebuilt
+   from state, "r" permissions for read-only, env prefix CXL_LOCAL_,
+   subrequest names "lease/local" in config lookup, old state files load.
+5. Style (.github/skills/coding-style/SKILL.md): ASCII only, function
+   comments say what, not how or who calls; no history ("previously",
+   "now we") in comments or docs; gofmt; golangci-lint no new findings;
+   tests cover the failure paths, not only the happy path.
+6. Docs: LOCAL.md and POOL.md match the code (flags, attribute names,
+   class names, env, protocol fields, error texts); examples apply
+   cleanly (kubectl apply --dry-run=client if a cluster is reachable, else
+   yaml syntax).
+7. e2e specifics (R2): tests start from a clean VM and leave it clean;
+   every wait has a timeout and a message; assertions compare sets for
+   node lists; nothing depends on probe-order names (memN, daxX.Y) except
+   through sysfs lookups made at run time; the test does not weaken an
+   assertion to pass (compare with 04); regression tests still pass.

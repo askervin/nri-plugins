@@ -1,0 +1,763 @@
+
+=== page 1 ===
+ 
+ 
+ 
+ 
+ 
+   
+ 
+ 
+ 
+ 
+ 
+Maxview User Guide 
+ 
+ 
+ 
+2026-05 (Revision: 2.0) 
+confidential under NDA 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Ref: <Doc Reference> 
+  
+
+=== page 2 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 2 
+ 
+By using this document, in addition to any agreements you have with Unifabrix, you accept the terms 
+set forth below. 
+You may not use or facilitate the use of this document in connection with any infringement or other 
+legal analysis concerning Unifabrix products described herein. You agree to grant Unifabrix a non -
+exclusive, royalty -free license to any patent claim thereafter drafted which includes subject matter 
+disclosed herein.  
+INFORMATION IN THIS DOCUMENT IS PROVIDED IN CONNECTION WITH UNIFABRIX PRODUCTS. 
+NOLICENSE, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, TO ANY INTELLECTUAL 
+PROPERTY RIGHTS IS GRANTED BY THIS DOCUMENT. EXCEPT AS PROVIDED IN UNIFABRIX'S TERMS 
+AND CONDITIONS OF SALE FOR SUCH PRODUCTS, UNIFABRIX ASSUMES NO LIABILITY WHATSOEVER 
+AND UNIFABRIX DISCLAIMSANY EXPRESS OR IMPLIED WARRANTY, RELATING TO SALE AND/OR USE 
+OF UNIFABRIX PRODUCTS INCLUDING LIABILITY OR WARRANTIES RELATING TO FITNESS FOR A 
+PARTICULAR PURPOSE,  MERCHANTABILITY, OR INFRINGEMENT OF ANY PATENT, COPYRIGHT OR 
+OTHER INTELLECTUALPROPERTY RIGHT. 
+A "Mission Critical Application" is any application in which failure of the Unifabrix Product could result, 
+directly or indirectly, in personal injury or death. SHOULD YOU PURCHASE OR USE UNIFABRIX'S 
+PRODUCTS FOR ANY SUCH MISSION CRITICAL APPLICATION, YOU SHALL INDEMNIFY AND HOLD 
+UNIFABRIX AND ITS SUBSIDIARIES, SUBCONTRACTORS AND AFFILIATES, AND THE DIRECTORS, 
+OFFICERS, AND  EMPLOYEES OF EACH, HARMLESS AGAINST ALL CLAIMS COSTS, DAMAGES, AND 
+EXPENSES AND REASONABLE ATTORNEYS' FEES ARISING OUT OF, DIRECTLY OR INDIRECTLY, ANY 
+CLAIM OF PRODUCT LIABILITY, PERSONAL INJURY, OR DEATH ARISING IN ANY WAY OUT OF SUCH 
+MISSION CRITICAL  APPLICATION, WHETHER OR NOT UNIFABRIX OR ITS SUBCONTRACTOR WAS 
+NEGLIGENT IN THE DESIGN, MANUFACTURE, OR WARNING OF THE UNIFABRIX PRODUCT OR ANY OF 
+ITS PARTS. 
+Unifabrix may make changes to specifications and product descriptions at any time, without notice.  
+Designers must not rely on the absence or characteristics of any features or instructions marked  
+"reserved" or "undefined". Unifabrix reserves these for future definition and shall have no responsibility 
+whatsoever for conflicts or incompatibilities arising from future changes to them. The information here 
+is subject to change without notice. Do not finalize a design with this information. 
+The products described in this document may contain design defects or errors known as errata  which 
+may cause the product to deviate from published specifications. Current characterized errata are  
+available on request. 
+This document contains information on products in the design phase of development.  Unifabrix and 
+the Unifabrix logo are trademarks of Unifabrix LTD. 
+*Other names and brands may be claimed as the property of others. 
+Copyright © 2026, Unifabrix LTD. All Rights Reserved. 
+  
+=== page 3 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 3 
+ 
+Intended Audience ................................ ................................ ................................ ................................ ... 4 
+Definitions ................................ ................................ ................................ ................................ ................  4 
+MAX................................ ................................ ................................ ................................ ......................  4 
+Memory Resource ................................ ................................ ................................ ................................  4 
+Card ................................ ................................ ................................ ................................ ......................  4 
+Port................................ ................................ ................................ ................................ .......................  4 
+Host ................................ ................................ ................................ ................................ ......................  5 
+HDM ................................ ................................ ................................ ................................ .....................  5 
+Viewport ................................ ................................ ................................ ................................ ...............  5 
+NUMA ................................ ................................ ................................ ................................ ...................  5 
+Cables ................................ ................................ ................................ ................................ ..................  5 
+Host Configuration ................................ ................................ ................................ ................................ ... 6 
+Supported Operating Systems ................................ ................................ ................................ .............  6 
+Supported Kernels ................................ ................................ ................................ ................................  6 
+Kernel Parameters ................................ ................................ ................................ ...............................  6 
+Update Kernel parameters ................................ ................................ ................................ ...................  7 
+Custom Kernel ................................ ................................ ................................ ................................ ..... 7 
+Using the Host................................ ................................ ................................ ................................ .......... 7 
+Determining port number ................................ ................................ ................................ .....................  8 
+Setting the port name ................................ ................................ ................................ ..........................  8 
+Inspect CXL Memory ................................ ................................ ................................ ............................  8 
+Using CXL Memory ................................ ................................ ................................ ..............................  8 
+Fundamental Rules ................................ ................................ ................................ ................................ .. 9 
+Link States ................................ ................................ ................................ ................................ .........10 
+Performance testing ................................ ................................ ................................ .......................... 10 
+API ................................ ................................ ................................ ................................ .......................... 11 
+Configuration Flows ................................ ................................ ................................ ........................... 11 
+Allocate memory for a single client ................................ ................................ ............................... 11 
+Remove expanded memory from a client ................................ ................................ ...................... 12 
+Increase size of expanded memory ................................ ................................ ............................... 12 
+Decrease size of expanded memory ................................ ................................ .............................. 12 
+Functions ................................ ................................ ................................ ................................ ........... 13 
+Max Status ................................ ................................ ................................ ................................ .....14 
+Ports ................................ ................................ ................................ ................................ ............... 14 
+Port Details................................ ................................ ................................ ................................ .....14 
+HDM Size................................ ................................ ................................ ................................ ........14 
+Access Counters ................................ ................................ ................................ ............................ 14 
+Port Name ................................ ................................ ................................ ................................ ......14 
+=== page 4 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 4 
+ 
+Memory Resources ................................ ................................ ................................ ........................ 15 
+Memory Distance ................................ ................................ ................................ ........................... 15 
+List Viewports ................................ ................................ ................................ ................................ 15 
+Viewport ................................ ................................ ................................ ................................ .........15 
+Create Viewport ................................ ................................ ................................ ............................. 15 
+Allocate Memory ................................ ................................ ................................ ............................ 16 
+Free Memory ................................ ................................ ................................ ................................ ..16 
+Attach Viewport ................................ ................................ ................................ ............................. 16 
+Detach Viewport ................................ ................................ ................................ ............................. 16 
+Admin Settings ................................ ................................ ................................ ............................... 17 
+MAX Power ................................ ................................ ................................ ................................ ....17 
+Time ................................ ................................ ................................ ................................ ............... 17 
+Logs ................................ ................................ ................................ ................................ ............... 17 
+Update ................................ ................................ ................................ ................................ ............ 17 
+ 
+ 
+  
+=== page 5 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 5 
+ 
+  
+Intended Audience 
+This document is aimed at technical staff who are performing the planning, installation, configuration, 
+and evaluation of the MAX memory pool appliance. 
+Definitions  
+MAX structure 
+ 
+ 
+MAX 
+UnifabriX MAX is a high -performance CXL appliance designed for memory pooling and sharing. It 
+enables dynamic allocation of remote memory resources and supports multi -port access for low -
+latency communication. The MAX is managed and operated using a standard REST API. 
+Memory Resource 
+A memory resource is a set of physical resources, sharing the same properties, which can be exposed 
+by the MAX as memory to connected hosts. 
+Card 
+Also known as a module, it is an expansion adapter inside the MAX that provides one or more ports. 
+The number of ports (and by extension the number of cards) dictates the maximum number of hosts 
+that can be attached to a single MAX. 
+
+=== page 6 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 6 
+ 
+Port 
+A single physical connection to a host. The port belongs to a specific card and carries memory traffic 
+to an attached host. Each port is connected to the MAX and supports up to Gen5 x 16 operation. 
+Host 
+A generic term for a consumer of the remote memory exposed by the MAX. In the common case, a 
+rack-mounted server that is connected to the MAX by one or more ports.  
+HDM 
+HDM – host-managed device memory. Defined in CXL spec. 
+Viewport 
+A viewport is a logical entity representing a contiguous range of memory that can dynamically 
+grow/shrink and dynamically be exposed to host(s) as a sub -range in an HDM. In memory pooling 
+scenarios, each viewport is exposed by exactly one HDM. In a memory sharing scenario, a viewport can 
+be attached to more than a single HDM (i.e., on different physical ports). A viewport can only contain 
+memory allocations from a single memory resource. To learn more about viewports, please refer to the 
+API user guide. 
+NUMA 
+Numa – non uniform memory access. Computers often appear as a single logical unit containing 
+processors and memory but that is an abstraction of how they are physically constructed. Each NUMA 
+node is a separate physical region that may contain compute and memory resources . Because it is a 
+separate region, the memory access time (latency) can vary, lending to its name. 
+Cables 
+MCIO 
+UnifabriX uses standard MCIO cables for connecting hosts to the MAX memory appliance. The cables 
+are used for bi-directional data exchange between the MAX and the hosts. 
+ 
+
+=== page 7 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 7 
+ 
+ 
+ 
+Host Configuration 
+It is the responsibility of the customer to ensure that the hosts are configured appropriately to work 
+with the MAX memory appliance. If the host machines are provided by Unifabrix, they will be configured 
+correctly upon arrival. If the customer provides their own hosts (or modifies the default settings), here 
+are the guidelines for correct operation. 
+Supported Operating Systems 
+Only operating systems based on the Linux kernel are supported by Unifabrix. Specifically, we ship our 
+systems with OpenSUSE 15.5 but we support all Linux based operating systems. Other operating 
+systems may work (e.g. Windows) but we do not officially support them. The rest of this section refers 
+specifically to Linux configuration, using OpenSUSE flavour commands in the examples. 
+Supported Kernels 
+The hosts can use any kernel from version 5.1 4 up to the latest. There are always differences a nd 
+improvements as the kernel is developed and we attempt to capture the relevant differences here. The 
+general rule of thumb is “newer is better” as CXL is still in its early days and the kernel subsystem is 
+constantly improving. 
+To check the currently running kernel, use: 
+uname –r  
+ 
+You will see a number such as 7.0.0-lp156.6.g8b31e45-default or 5.14.21-150500.55.88-default. The 
+first two numbers <x>.<y> represent the kernel version (major and minor). The rest can be safely ignored 
+as it has little relevance in this scenario. 
+Kernel Parameters 
+The Linux kernel is very large  and has many runtime options. These options can be influenced by 
+command line parameters, generally passed to the kernel by the boot loader. The MAX memory 
+appliance requires these parameters to be set appropriately to ensure interoperability. 
+To check the current parameters, use: 
+cat /proc/cmdline  
+ 
+The following is a description of the relevant kernel parameters , extracted from the Linux kernel 
+documentation. You can refer to the full kernel documentation for more details.  
+Parameter Name Description 
+movable_node Allows an entire NUMA node to be configured as movable memory. This 
+is primarily used in high -end servers and virtualized environments to 
+enable memory hot -unplugging (physical removal of memory) without 
+crashing the system. 
+memhp_default_state Set the default online policy for hotplugged memory. It determines 
+whether newly added memory blocks are automatically brought online 
+or left offline for manual activation. 
+=== page 8 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 8 
+ 
+ 
+This should normally be set to ‘offline’ to ensure the system does not try 
+to use any CXL memory before it has been allocated and mapped by the 
+MAX. 
+If you are using a static memory configuration (i.e. you  can guarantee 
+that the full HDM size is allocated and mapped before the kernel boots)  
+‘online_movable’ can be used to automatically online CXL memory. 
+dax_hmem.region_idle Controls how Heterogeneous Memory Management (HMEM) devices 
+are initialized. Without this parameter, dax_hmem might automatically 
+configure memory regions (e.g., from CXL) to be consumed as system 
+memory. When enabled, it prevents the driver from automatic ally 
+claiming these memory ranges, leaving them in a raw daxdev state (e.g., 
+/dev/daxN.Y) to be used via direct file access or for later conversion to 
+system RAM by the user. 
+ 
+This should be set to 1 if you are planning to use the memory in dax 
+mode. 
+efi Leave this parameter as default (do not set). 
+ 
+If it is set to nosoftreserve, the kernel will disable this SP reservation  
+(ignore the SP bit from the BIOS)  and treat the memory by its base type 
+(i.e. EFI_CONVENTIONAL_MEMORY / "System RAM"). This will cause the 
+memory to be onlined immediately in non-movable mode. 
+ 
+Update Kernel parameters 
+Edit the file /etc/default/grub. 
+Modify the variable GRUB_CMDLINE_LINUX (or GRUB_CMDLINE_LINUX_DEFAULT) by adding the 
+kernel parameters and values as appropriate. When you are done, save the file and rebuild the 
+configuration with: 
+grub2-mkconfig -o /boot/grub2/grub.cfg 
+ 
+Restart the kernel after making these changes by rebooting the machine. 
+Custom Kernel 
+If you build a kernel from source, you must ensure these options are set: 
+CONFIG_NUMA=y 
+CONFIG_MEMORY_HOTPLUG=y 
+CONFIG_HAVE_MEMBLOCK=y 
+CONFIG_MOVABLE_NODE=y 
+ 
+ 
+  
+=== page 9 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 9 
+ 
+Using the Host 
+Once the hardware and software are installed and configured, use the information in this section to test 
+the functionality and use the remote memory. 
+ 
+Determining port number 
+You can see the serial number of the card that the port is attached to from the host. It is exposed 
+through a standard PCIe capability and can be viewed with a command like this: 
+lspci -v -d 1fab:01ff | grep Serial 
+ 
+This serial number can be correlated with the information available from the ‘max status’ API function 
+to determine which port this host is connected to. 
+Setting the port name 
+Use the ‘set name’ API function  to set the name of the port in the MAX. This will help you uniquely 
+determine which host is connected to which port(s) from the MAX side. 
+Inspect CXL Memory 
+Each non-zero size HDM that is attached to the host will appear as a separate NUMA node on the host. 
+You can see these nodes with: 
+numactl -H 
+ 
+Using CXL Memory 
+In Linux, a /dev/dax device is often created automatically for each HDM. Setting the memory online 
+allows it to be managed by the kernel so it can be allocated using standard memory allocators for use 
+by applications. Alternatively, applications can claim exclusive access to the memory by accessing the 
+DAX device directly. Keep in mind that the HDM can be larger than the memory that is actually allocated. 
+Therefore, it is important to only online memory blocks that are backed by physical memory. 
+If your kernel is not configured to create DAX devices automatically from the CXL memory, you may 
+have to do it manually: 
+daxctl create-device   
+ 
+Once you have a DAX device, you can access it directly from a DAX-aware application, or set it to system 
+RAM mode so the kernel can manage it: 
+daxctl reconfigure-device /dev/dax0.1 -m system-ram 
+ 
+If you set it to system RAM mode, it will behave as normal locally attached DRAM. You can then ‘online’ 
+the memory and start to use it. Using sysfs, you can set each OS memory block online or offline 
+individually. 
+echo ‘online’ > /sys/devices/system/memory/memory<id>/state 
+Or 
+=== page 10 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 10 
+ 
+echo ‘offline’ > /sys/devices/system/memory/memory<id>/state 
+ 
+ 
+  
+=== page 11 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 11 
+ 
+Fundamental Rules 
+There are many valid flows and resulting configurations. The following section illustrates only a few 
+examples of what is possible. Understanding the fundamental rules of operation is the most important, 
+as it sets the boundaries of legal activity when working with the system. 
+1. Cables must be connected before the host is powered on 
+Hot-plug of cables or cards is not supported. All physical infrastructure must be in place before power 
+is applied to the hosts or MAX. 
+2. The MAX must be powered on before the hosts 
+The MAX requires the links to be in a disconnected state when powered on. This way, they can properly 
+detect link status changes as the hosts change power states. The cables must be physically connected 
+but no power should be applied to the hosts before the MAX has completed its boot. You will know that 
+the boot has completed when the API becomes available. 
+3. HDMs must be configured before the host is powered on 
+The host BIOS reads the HDMs at boot time, according to the CXL protocol. It is important that the 
+HDMs are set to a valid size (non-zero multiple of the block size) before the host is powered on. In the 
+current implementation, the HDM sizes cannot be chan ged while the host is powered on. To change 
+the size of the HDMs, first power down the host so it can re-read the new size at boot time. 
+4. Give the allocator context 
+In many cases it is preferred to attach the viewport to an HDM before allocating memory. That way, the 
+allocator can choose the lowest latency memory for the attached HDM. The lowest latency cannot be 
+guaranteed however. In the case of a shared viewport, the memory access latency may be non-uniform 
+(different HDMs will have different access times to the same memory). Also in the case that the lowest 
+latency memory for the sel ected HDM has already been allocated so higher latency memory must be 
+used to fulfill the request. 
+Link States 
+The link changes state as the host is booted. The following table describes the possible states and 
+their meanings. 
+Link State Name Description 
+No Power Host not connected to electricity 
+Off Host is powered down 
+Reset Host is in reset state 
+Mem Init Host is up but mem is not enabled 
+Mem Enabled Memory is ready to be accessed 
+Up Link is up and CXL memory initialized 
+ 
+ 
+Performance testing 
+For your convenience you have in the host at /root/test/mlc an easy-to-use Intel tool for testing 
+latency and bandwidth. 
+=== page 12 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 12 
+ 
+Run basic mlc test:  
+test/mlc 
+For further information about mlc and its results please refer: 
+https://www.intel.com/content/www/us/en/developer/articles/tool/intelr-memory-
+latency-checker.html 
+API 
+The MAX provides a REST-API interface, listening on TCP port 9999.  The API is meant for system 
+administrators to set up the system for users. It can be accessed by any HTTP client, such as a web 
+browser or command line utility like ‘curl’. 
+ 
+Example: Assuming that the that MAX’s IP is 192.168.1.1 then the API UI URL is: 
+http:/192.168.1.1:9999/api/docs 
+ 
+Specific functions are found under http://192.168.1.1:9999/api/<API>, for example: 
+http://192.168.1.1:9999/api/v1/max/status 
+ 
+Configuration Flows 
+The following flows outline the correct order of function calls to perform common tasks. These are not 
+comprehensive and meant to illustrate the fundamental rules of how to work with the remote memory. 
+The flows can be modified and expanded to address more specific use cases. Unless otherwise stated 
+explicitly, all flows assume these starting conditions:  
+• All MAX machines powered on 
+• All clients (hosts) powered off 
+• All cables connected 
+• All HDMs are disabled (set to 0 size) 
+o ‘/api/v1/ports/1.0/0/config_size’ For hdm 0 on port 1.0 
+• No viewports exist (implies no allocations and no attachments)  
+o '/api/v1/viewports/meta’ list all existing viewports 
+Allocate memory for a single client  
+1. Assume the starting conditions above.  
+2. Determine the maximum size of memory that the host will be allocated and set the HDM size 
+to match maximum allocation. You must set a size for HDM0 at minimum, otherwise the host 
+will not see any expanded memory. You can optionally set HDM1 as well. 
+• Example to set port1.0, hdm0 to 10GiB 
+• '/api/v1/ports/1.0/0/config_size?req_size=10G'  
+3. Create one viewport to hold the memory allocation. The viewport can be shared or not shared, 
+depending on whether you want more than one host to have concurrent access to the same 
+memory allocation. The viewport can also be marked as persistent, meaning it will not be 
+destroyed if it is detached from all HDMs. 
+• Example of creating viewport named ‘vp’ which is shared and persistent 
+• '/api/v1/viewports/new?name=vp&shared=true&persist=true’ 
+=== page 13 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 13 
+ 
+4. Attach the viewport to an HDM. The viewport can only be attached to one HDM if it is not 
+shared, or one HDM from each host if it is shared. In many cases it is preferred to attach the 
+viewport before allocating memory so that the allocator can choose the lowest latency 
+memory for the current port. 
+• Example to attach viewport ‘vp’ to port 1.0 hdm 0 with no offset, and persistent 
+• '/api/v1/viewports/provisioning/attach?viewport=vp&port=1.0&hdm=0&offset=0&pe
+rsist=true’ 
+5. Allocate memory from one of the available memory resources to the viewport. If the viewport 
+is shared, you must use a memory resource that is sharable. The memory is now accessible 
+to the host. 
+• Example to allocate 10G to viewport ‘vp’ from memory resource 0 
+• '/api/v1/viewports/provisioning/allocate?viewport=vp&mem=0&size=10G'  
+6. Power on the host. It will read the HDMs and make the memory accessible in the host’s 
+physical address space. 
+7. Set expanded memory ‘online’. This step is different depending on the operating system. See 
+the section Using CXL Memory for more information.  
+Remove expanded memory from a client  
+1. Set expanded memory ‘offline’, according to the rules of the specific operating system in use 
+on the host. See the section Using CXL Memory for more information. 
+2. Free allocated memory. This removes the memory blocks from the viewport and returns them 
+to the free pool so they can be allocated again. 
+• Example to free 10GiB from viewport ‘vp’ 
+• /api/v1/viewports/provisioning/free?viewport=vp&size=10G' 
+3. Detach viewport from port  
+• Example to detach viewport ‘vp’ from port 1.0 hdm 0 
+• '/api/v1/viewports/provisioning/detach?viewport=vp&port=1.0&hdm=0' 
+4. Delete viewport  
+• Example to delete viewport ‘vp’ 
+• '/api/v1/viewports/vp’ 
+Increase size of expanded memory  
+Assumes   
+• HDM is large enough to accommodate the new allocation  
+• Viewport is already created, attached to a port and has at least one allocation  
+1. Allocate more memory (from same memory resource to existing viewport) 
+• Example to add an additional 1GB to viewport ‘vp’ 
+• '/api/v1/viewports/provisioning/allocate?viewport=vp&mem=0&size=1G' 
+2. Set additional memory ‘online’  
+Decrease size of expanded memory  
+Assumes  
+• Viewport is already created, attached to a port and has at least one allocation  
+1. Set memory to be removed as ‘offline’  
+2. Free memory (same size that was removed in the previous step) from the viewport  
+• /api/v1/viewports/provisioning/free?viewport=vp&size=1G'  
+  
+=== page 14 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 14 
+ 
+ 
+  
+=== page 15 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 15 
+ 
+Functions 
+Each function below specifies the REST call (GET, PUT, PATCH, etc.) the URI, and the API versions 
+that support this function. 
+Max Status 
+GET /api/v1/max/status 0.7.0 
+Query general information about MAX and it’s properties 
+ 
+Ports 
+GET /api/v1/ports/meta 0.7.0 
+List all existing ports: ID and name 
+ 
+Port Details 
+GET /api/v1/ports/{port_id} 0.7.0 
+Query details about a specific port: hdm sizes, connectivity state, attached viewports 
+etc. 
+ 
+HDM Size 
+GET /api/v1/ports/{portid}/{hdmid}/config_size 0.7.0 
+Query the size of an HDM. 
+ 
+PATCH /api/v1/ports/{portid}/{hdmid}/config_size 0.7.0 
+Set the visible size of the HDM that will be exposed to the host. The HDM size limits the 
+amount of memory that can be accessed by the attached host, but the HDM size is 
+independent of any allocations.   
+ 
+Access Counters 
+GET /api/v1/ports /{port_id}/{index}/get_counters 0.8.2 
+Return read and write access counters per memory block. Can only be called when 
+link is up. 
+ 
+ 
+  
+=== page 16 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 16 
+ 
+Port Name 
+POST /api/v1/ports/{portid}/set_name 1.0.0 
+Modify the port name. The port name must be unique, per MAX. The name can be 
+used to identify it and the host it is attached to. 
+ 
+Memory Resources 
+GET /api/v1/memory_resources 0.7.0 
+List all existing memory resources. For each resource list: id, name, total resource size 
+(in bytes) and free memory (in bytes). MAX memory is accessible to all viewports, while 
+card-local memory is only accessible by the ports on that card.   
+ 
+Memory Distance 
+GET /api/v1/ memory_resources/distances 0.7.0 
+List memory resources distance maps, providing distances between memory 
+resources and ports. This can give the user a hint as to the expected latency to access 
+this resource. 
+ 
+List Viewports 
+GET /api/v1/viewports/meta 0.9.0 
+List all existing viewports 
+ 
+Viewport 
+The {viewport} parameter can be either the name or ID of the viewport. 
+GET /api/v1/viewports/{viewport}   0.9.0 
+Query viewport details. 
+ 
+DELETE /api/v1/viewports/{viewport}   0.9.0 
+Delete an existing viewport. Before a viewport can be deleted, all allocated memory 
+must be freed and the viewport must be detached from all HDMs. 
+ 
+PATCH /api/v1/viewports/{viewport}   0.9.0 
+Modify viewport properties – name, shared and persistence. 
+ 
+ 
+  
+=== page 17 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 17 
+ 
+Create Viewport 
+POST /api/v1/viewports/new 0.9.0 
+A viewport must first be created before memory resources can be allocated , and the 
+viewport can be attached to an HDM.    
+ 
+The viewport must be marked as ‘shared’ if it is to be allocated to more than one HDM, 
+otherwise it is restricted to a single HDM.    
+ 
+A viewport can also be marked as ‘persistent’, meaning that its allocations are not 
+automatically freed after the viewport is detached from all HDMs. This can be 
+important in the case that a shared memory viewport is defined with a dynamic set of 
+hosts where the set size may be zero at some point. On the other hand, automatic de-
+allocation of memory resources may be a time -saver in the case where only a single 
+HDM is expected and the memory could be reused by subsequent allocations. 
+ 
+Allocate Memory 
+POST /api/v1/viewports/provisioning/allocate   0.9.0 
+Allocate memory from the specified resource to the viewport. Once the first allocation 
+is requested, all subsequent allocations must be from the same memory resource.   
+ 
+Free Memory 
+POST /api/v1/viewports/provisioning/free  0.9.0 
+Free memory from viewport. Memory can be freed while the viewport is attached 
+(dynamic allocation) but should be first placed in offline mode on the host. 
+ 
+Attach Viewport 
+POST /api/v1/viewports/provisioning/attach 0.9.0 
+=== page 18 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 18 
+ 
+When a viewport is created, it is not attached to any HDM and has no allocated 
+memory. Before it can be used, it must be attached to an HDM.   
+The attachment can be placed at a specific offset from the start of the HDM. This is 
+intended to be used in the case of shared memory, where different groups of viewports 
+may be attached to specific HDMs, and must appear at a certain offset so software 
+sees the addresses in the expected way.  
+An attachment can be marked as ‘persistent’, which means it will automatically 
+reattach to HDMs even if the port link is lost. This is distinct from the ‘persistent’ 
+attribute of the viewport itself. By default, attachments are persistent; they will remain 
+as configured even if the host reboots or otherwise loses the link. In some cases, the 
+user knows that the attachment is for a single use only and wants to ‘clean up’ 
+automatically when the host is powered down. 
+ 
+Detach Viewport 
+POST /api/v1/viewports/provisioning/detach 0.9.0 
+Detach a viewport from an HDM. This will break the association between the memory 
+and the HDM. The memory blocks on the host should be placed in offline mode before 
+detaching a viewport. If detached explicitly using this function, the attachment will no 
+longer re-attach automatically even if it is marked ‘persistent’.   
+ 
+Admin Settings 
+GET /api/v1/admin/settings 0.6.0 
+Read the IP networking settings. 
+ 
+PATCH /api/v1/admin/settings 0.6.0 
+Set the IP networking settings of the MAX. 
+ 
+MAX Power 
+POST /api/v1/admin/power 0.6.0 
+Use to change the power state of the MAX appliance. 
+ 
+Takes one parameter: “shutdown”, “reboot” or “power cycle”.  You must be sure that 
+no connected hosts are using memory before using this function.   
+ 
+Time 
+GET /api/v1/admin/time 0.6.0 
+Get the current system time. 
+ 
+PATCH /api/v1/admin/time 0.6.0 
+=== page 19 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 19 
+ 
+Set the system time. You can select the timezone and NTP pool servers, or override the 
+date/time completely. 
+ 
+Logs 
+GET /api/v1/admin/logs 0.9.0 
+Download encrypted file that contains  MAX logs. After calling the function, download 
+the file and send it to the Unifabrix support team. 
+ 
+ 
+  
+=== page 20 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 20 
+ 
+Update 
+POST /api/v1/admin/update 0.6.0 
+Upload “.pack” for software update and “.update” file for firmware update. 
+ 
+GET /api/v1/admin/update/{job_id} 0.9.0 
+Query the update state for a specific job ID. The job ID is returned in the v1 ‘update’ 
+function. 
+ 
+POST /api/v2/admin/update 1.0.0 
+Add update v2 with file content (instead of binary content). Sends an update file (either 
+firmware or software) as multipart/form -data. Progress feedback (for v1 and v2) has 
+been added to get an indication of how long the update will take and how far it ha s 
+progressed.   
+ 
+GET /api/v2/admin/update/ 1.0.0 
+Query the update state. Only one outstanding update is allowed in v2. 
+ 
+ 
+=== page 21 ===
+Maxview User Guide 
+  
+ 
+Revision: 2.0 UnifabriX Proprietary and 
+Confidential 
+Unifabrix LTD. 
+2026-05 Ref:  P a g e  | 21 
+ 
+ 

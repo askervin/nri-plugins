@@ -1,0 +1,97 @@
+plan-4-cxl-live-attach-local: can dax slices become per-container NUMA nodes?
+===========================================================================
+Written 2026-10-14 (Fable), answering a question of the user: slice a region
+at the dax level (01 1.2), then turn each slice into system memory with
+kmem (daxctl reconfigure-device --mode=system-ram), so that a large local
+device serves many containers as ordinary memory, statically or borrowed,
+with the driver owning the conversion and cpuset.mems. Sources: linux
+1b78070aaef6 (v7.3-rc).
+
+1. A kmem slice cannot become a node of its own
+-----------------------------------------------
+- kmem onlines a dax device into dev_dax->target_node (drivers/dax/kmem.c:400,
+  515), which is the dax region's node = phys_to_target_node() of the
+  region's HPA, i.e. the node of the CFMWS window (01 1.1). target_node and
+  numa_node of a dax device are read-only (drivers/dax/bus.c:1298, 1332).
+  Every slice of a region, and every region of a window, lands in the same
+  NUMA node. Measured in 01: all slices of region0 had target_node 2.
+- NUMA nodes cannot be created at run time. node_possible_map is fixed at
+  boot: ACPI SRAT nodes plus one fake node per CFMWS window
+  (drivers/acpi/numa/srat.c:430-458, acpi_parse_cfmws), and
+  add_memory_driver_managed refuses a node outside it
+  (mm/memory_hotplug.c:1524 "node %d was absent from the node_possible_map").
+  numa=fake is a boot parameter. Proposals for dynamic node creation are
+  not in mainline.
+- The only way to get more CXL nodes is static platform configuration:
+  several CFMWS windows for one host bridge (qemu: several cxl-fmw entries
+  with the same target; firmware on real machines decides). Then regions
+  can be placed in different windows (cxl create-region -d decoderX.Y), one
+  node per window, bounded by root decoders, host bridge decoders (4 in
+  qemu) and endpoint decoders (4): a few nodes per device at 256 MiB
+  granularity, decided before the kernel boots. Not per container.
+So "a NUMA node per container" is not available on Linux, whatever the
+slicing. What is available: slices of one node.
+
+2. kmem slices: what they would and would not give
+--------------------------------------------------
+"numa slices": in numa mode the plugin carves a kmem slice per claim
+instead of onlining the whole region, and onlines only those slices.
+Would give:
+- Only claimed capacity is online. Unclaimed memory stays offline (not
+  usable by unconstrained containers or page cache: the R8 exposure of
+  plan-3 shrinks to the claimed part), and a release offlines only the
+  slice's blocks, so there is less to migrate.
+- Fine-grained static and dynamic use of one large device as system RAM
+  with the driver in control (cpuset.mems through steering or lending,
+  cleanup on release), which is exactly the use case of the question.
+- No application-visible performance difference to a region-wide online:
+  same hardware path (HDM decoder to device DPA), same node, same
+  ZONE_MOVABLE page allocator; a slice's struct pages come from DRAM
+  unless memmap_on_memory is set on the slice before binding
+  (drivers/dax/bus.c:1374 is writable; the full-region device of
+  drivers/dax/cxl.c has it on). So no "performance penalty" option is
+  needed; the choice is about semantics and granularity.
+Would not give:
+- Placement isolation. A container whose cpuset.mems includes node N
+  allocates from any online block of N, including other containers'
+  slices; a slice is a capacity unit, not a fence. Per-container quotas on
+  a shared node stay soft: cgroup v2 has no per-node limit; cgmpolmgr's
+  CXLQuota (memory steering by cpuset.mems as usage grows) is the existing
+  tool for that, and it keeps working: it sees one node N as today.
+- Freedom of size. kmem needs the slice start and size aligned to the
+  memory block size (01 1.2 measured: a misaligned slice is rejected),
+  128 MiB in the VMs, up to 2 GiB on large servers (memory_block_size_bytes
+  grows with RAM). With the dax allocator's first-fit 2 MiB placement, kmem
+  slices stay aligned only if every slice before them is a block multiple:
+  either all slices of a region are rounded to the block size (dax slices
+  lose their 2 MiB granularity on that device), or kmem and dax are not
+  mixed on one region (02 P2 keeps that rule). On a device with more than
+  one endpoint decoder, mixing is possible at the region level instead:
+  one numa region and one dax region, 256 MiB granularity (01 1.1: qemu
+  endpoints have 4 decoders; 256M e2e devices have room for one region,
+  the 1G pool slots would have room for four).
+- Accounting exactness. The scheduler accounts the requested bytes
+  (requestPolicy step 2 MiB); a kmem slice takes the block-rounded size.
+  The allocator must keep its own byte accounting and fail a Prepare that
+  does not fit (rare: only near a full device), or the device publishes a
+  block-sized step when numa slicing is enabled (coarse for dax).
+
+3. Recommendation
+-----------------
+- Not now: the task's scope is covered by 02 (numa mode = whole region,
+  dax mode = slices), and the first e2e runs of that are in progress.
+- Next step (plan-5 candidate), as a refinement of numa mode rather than a
+  new mode or claim option: numa claims get kmem slices rounded up to the
+  memory block size, online_movable, memmap_on_memory=1 when the slice
+  allows it; the whole-region online remains for pool devices (attached
+  for one claim) and as the fallback when a slice cannot be carved. The
+  same node N is lent or steered as today, so broker, lend.go, cgmpolmgr
+  and the tests of plan-4 need no interface change; LOCAL.md documents
+  that a slice bounds online capacity, not placement. Decide the
+  accounting rule (allocator-side check, default) before implementing, and
+  measure on VM2: slice online/offline times, and whether offlining one
+  slice's blocks migrates pages of other containers on N as expected.
+- Do not design for per-container NUMA nodes; where hard isolation of
+  capacity matters, dax mode (own character device per claim) already
+  provides it, and system-RAM semantics with hard per-container limits
+  would need kernel work (per-node memcg limits) that does not exist.

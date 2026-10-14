@@ -1,0 +1,211 @@
+plan-4-cxl-live-attach-local: implementation plan, mixed numa and dax
+=====================================================================
+Written 2026-10-14 (Fable), after the user's decision on 08-analysis-
+mixed-modes.txt: a local device serves numa and dax claims at the same
+time; every slice is a multiple of the memory block size, which is read
+from /sys/devices/system/memory/block_size_bytes (HEX without 0x:
+"8000000" is 128 MiB) and published as the step of the memory capacity.
+Two Opus agents: W3 (driver and memctl), W4 (topology, VM, e2e). Ground
+rules of 00-README.txt apply (nothing committed; W3 unit tests only; W4
+owns the VMs). The state of the trees before this plan: 06-status.txt
+"Orchestrator closing status" (test14, test15, test10, test12, test13 PASS).
+
+1. Design changes against 02
+----------------------------
+D12 P2 (one mode per device) is dropped. A region hosts kmem slices (numa
+    claims) and device_dax slices (dax claims) at the same time. Mode
+    conflicts and the Prepare error for them disappear.
+D13 Slice sizes: every slice, numa or dax, is a multiple of the memory
+    block size BS. The device's memory capacity publishes
+      requestPolicy: {default: <device size>, validRange: {min: BS, step: BS}}
+    and the attribute memoryBlockSize (int, bytes), so the scheduler's
+    consumed capacity equals the slice the allocator carves: no
+    over-commit, no Prepare failure for lack of room. The allocator still
+    rounds up defensively and refuses when available_size is short.
+D14 numa claim = kmem slice: create the slice (first-fit, which stays
+    block-aligned when every slice is a block multiple), verify every range
+    of the device is block-aligned (daxX.Y/mappingN/start,end), bind kmem,
+    wait for its memory blocks, online them movable; node N =
+    daxX.Y/target_node (the window's node, shared by all numa slices of
+    the device and of the host bridge). If the verification fails (it
+    should not), delete the slice and place it explicitly with the
+    "mapping" attribute into the first block-aligned free gap of the
+    region (08 section 1b; check the size after the write: a misaligned
+    length is silently ignored). Release: offline the slice's blocks
+    (EBUSY fails the Unprepare, kubelet retries), unbind, size 0, delete;
+    the region is destroyed with the last slice of either kind. The
+    whole-region online (memctl.CreateRegion ModeRAM + Online) stays for
+    the pool helper only.
+D15 Node size semantics: the memory of node N grows by BS per online
+    block of a numa slice and shrinks on release; dax slices add nothing
+    to N. Containers with numa claims (steered or lent) share N; their
+    memory.max and cgmpolmgr bound their use. Unclaimed capacity stays
+    offline.
+D16 Attribute mode becomes informational: "none", "numa", "dax" or
+    "numa+dax" (what the device holds now). The DeviceClasses
+    cxl-local-memory and cxl-local-dax stop filtering on it (the dax class
+    keeps its LocalDeviceConfig). LendConfig, broker, cxl-request, steering
+    and lend.go are unchanged; a numa lease's response size is the slice
+    size.
+D17 e2e topology: the local device of n4-cxl-shared-2 grows from 256M to
+    1G (HB0 switch port 3, "mem": "1G", present false, serial 0xc100e2e1
+    unchanged), so that one device holds up to 8 slices of 128 MiB (the
+    VMs' BS). The cxl-fmw windows grow from 4G to 8G (topology2qemuopts:
+    total CXL memory 7.25G rounds to 8G), nothing else moves. n4-cxl-
+    shared-1 keeps 256M; test00-up's comment "identical topologies" and
+    its checks are updated (sizes are not checked there today). VM2 is
+    recreated from the new topology with the patched qemu; VM1 stays.
+
+2. W3: driver and memctl (~/github.com/intel/intel-resource-drivers-for-kubernetes, nri-plugins pkg/cxl/memctl)
+---------------------------------------------------------------------------
+memctl (nri-plugins):
+ a. MemoryBlockSize() (uint64, error): parses block_size_bytes as hex
+    (regionBlocks already does; share the parsing). Unit test with
+    "8000000" -> 134217728 and with "0x8000000".
+ b. DaxDeviceRanges(dax) ([]Range{Start, End}, error) from mappingN
+    (fallback: resource + size for a single range); DaxDeviceBlocks(dax,
+    bs) ([]int, error): the memory block numbers of all ranges;
+    WaitDaxBlocks(ctx, dax) like waitRegionBlocks but per device.
+ c. CreateDaxDeviceAt(ctx, region string, start, size uint64) (string,
+    error): create, write "0x%x-0x%x" to mapping, read size back, error
+    (and delete the device) if it is not the requested size; the caller
+    binds. RegionFreeGaps(region) ([]Range) from the region's resource and
+    the ranges of all its dax devices, for the fallback placement.
+ d. Keep CreateRegion, Online, Release, ReleaseRegions as they are.
+driver:
+ e. local.go: block size read at construction (and re-read in Acquire,
+    cheap); size rounding to BS for both modes; the numa path of D14
+    (slice, verify, fallback placement, bind kmem with SetDaxDriver, wait
+    blocks, online movable, Node from target_node); per-slice Mode in the
+    state (localSlice.Mode), the device-level Mode field becomes derived
+    ("none"/"numa"/"dax"/"numa+dax") for the attribute; Release per D14;
+    region destroyed with the last slice; Reconcile understands kmem slices
+    (offline + delete leftovers of unknown claims); no errModeConflict.
+    State file: keep the bootID envelope; old files load (mode per device
+    maps to mode per slice).
+ f. node_state.go: requestPolicy from the block size (D13), attribute
+    memoryBlockSize, mode attribute per D16; PreparedDeviceInfo of a numa
+    claim: NUMANodes [N], TotalBytes = slice size, ConsumedBytes = slice
+    size; nothing else changes for steering. lentDevice for a numa lease:
+    Size = slice size, Node N.
+ g. deployments/cxl/local/device-classes.yaml: drop the mode conditions.
+    doc/cxl/LOCAL.md: mixed modes, block size step and attribute, node
+    size semantics (D15), the mapping fallback, slices and memory.max /
+    cgmpolmgr as the per-container bound; remove the mode conflict text.
+ h. Unit tests: block size parsing (hex) through the allocator; rounding;
+    requestPolicy values; mixed slices on one fake region (dax, numa, dax,
+    numa in that order: first-fit alignment, blocks of each numa slice
+    onlined and offlined, region destroyed with the last); the fallback
+    placement path with a fake sysfs whose first-fit result is misaligned;
+    release failure paths; state file migration; publication attribute
+    "numa+dax". Then go vet, go test -race, gofmt, golangci-lint (no new
+    findings vs b57b62b), both binaries build, `go mod vendor` after the
+    memctl change. Append "W3 Status" and "W3 Findings" to 06-status.txt
+    with what W4 asserts on (attribute names, requestPolicy fields, mode
+    values, log lines for slice create/online/offline/delete with their
+    timings).
+
+3. W4: topology, VM2, e2e (nri-plugins test/e2e)
+------------------------------------------------
+Order: topology and VM first (long, independent of W3), then tests.
+ a. Before destroying VM2 record from test/e2e/n4-cxl-shared-2-fedora-43-
+    containerd/: env (QEMU_BIN, proxy values, VM_DISK_SIZE, VMNET_*), the
+    qemu binary path of the running VM (readlink /proc/<pid>/exe; it is
+    the patched qemu that pool-vm-require demands), and the kernel version
+    in the VM. Then: vagrant destroy -f in that directory, remove the
+    directory, change n4-cxl-shared-2/topology.var.json per D17, update
+    test00-up's header comment (the -2 local device is 1G, -1 keeps 256M)
+    and run `qemu_bin=<that path> ./run_tests.sh memory.test-suite/memory-
+    policy/n4-cxl-shared-2/test00-up` with the proxy variables of the old
+    env exported (vm-setup copies them into the new env). Expect 20-40
+    minutes; the kernel comes from the cache (test00-up installs it and
+    reboots). Verify: pool-vm-require passes (run test01-shared-cxl after
+    the VM is up: it also needs VM1, which is untouched), block size of
+    the VM (hex, expect 0x8000000), the local device backend size 1G in
+    qemu (info memdev). If the recreation fails, report and stop: do not
+    improvise with VM1.
+ b. dra.source.sh: dra-local-device waits for the cxlmem device and now
+    also exports its block size (read from the VM as hex, converted) and
+    size; helpers dra-node-memtotal VMDIR NODE (MemTotal kB of
+    /sys/devices/system/node/nodeN/meminfo, 0 when the node directory is
+    gone) and dra-node-wait VMDIR NODE EXPECTED_KB (retry-until with a
+    message) for the node size assertions; dra-py helpers as needed
+    (request_policy already exists; add block size attribute).
+ c. test14-dra-local-memdev (static claims; rework the mode-conflict
+    sections into coexistence):
+    A. device cxlmem-c100e2e1: size 1Gi, requestPolicy default 1Gi, min
+       and step = BS (128Mi, computed from the VM's block size, not hard
+       coded), attribute memoryBlockSize == BS, mode none, no region.
+    B. numa-a 128Mi (cxl-local-memory) -> region, node N appears, MemTotal
+       of N == 128Mi; container cpuset.mems has N; numa-touch lands on N.
+       dax-1 64Mi (cxl-local-dax) WHILE numa-a runs -> slice of 128Mi
+       (rounded by the step: consumedCapacity 128Mi, CXL_LOCAL_SIZE
+       134217728), /dev/daxX.Y in the container, MemTotal of N unchanged,
+       mode "numa+dax". numa-b 256Mi -> MemTotal of N == 384Mi, both numa
+       containers have N. shared-slice claim 128Mi referenced by two pods
+       -> same device path in both, isolation against dax-1 by write/read.
+       Capacity: consumed sums to 640Mi, available_size of the dax region
+       matches.
+    C. Decrease: delete numa-a -> MemTotal of N == 256Mi within 30 s, dax
+       pods unaffected (read their tags again), numa-b still has N;
+       delete numa-b -> MemTotal 0 or node gone, region still exists
+       (dax slices), mode "dax"; delete the dax pods and the shared claim
+       -> region destroyed, memdev enabled, mode none, nothing left
+       (localDevices.json has no claims, no cxl-local CDI devices).
+    D. read-only dax claim (16Mi -> 128Mi slice, "r" permission,
+       check-ro), a numa+readOnly config refused with the event text (keep
+       from the current test), a dax claim without an amount -> 1Gi slice
+       (the whole device) while nothing else holds it; cleanup.
+    E. trace summary with timings (slice create, online, offline, delete).
+ d. test15-dra-local-live-attach (leases; static and dynamic numa
+    together, as the user asked):
+    A. static numa pod static-a 128Mi -> MemTotal of N == 128Mi (record N).
+    B. borrower: `cxl-request memory 128Mi --source local` -> Ready,
+       source local, node == N, MemTotal == 256Mi; main's cpuset.mems has
+       N, idle's does not; numa-touch from main lands on N.
+    C. `cxl-request memory 64Mi --source local --dax --exec dax-rw write`
+       WHILE the numa lease is Ready -> a 128Mi dax slice, MemTotal
+       unchanged, mode "numa+dax"; a second dax lease 128Mi, isolation
+       between the two by tags, `cxl-request fd` re-read.
+    D. second static numa pod static-b 256Mi -> MemTotal == 512Mi; a second
+       numa lease 128Mi -> 640Mi; release the FIRST numa lease -> 512Mi
+       (the node stays in main's cpuset.mems: the second lease holds it,
+       D1's holder rule with a static claim on the same node too); release
+       the second -> 384Mi and N leaves main's cpuset.mems; delete static-a
+       -> 256Mi; the dax leases still work (read tags); release them;
+       delete static-b -> MemTotal 0 or node gone; region destroyed, mode
+       none.
+    E. local first, then pool: fill the local device with a 1Gi local
+       lease (whole device), then `--source any` 256Mi -> source pool,
+       serial 0xc1ee0001, its request lease/pool; release both; detach seen
+       in the server; the plugin journal never shows the pool serial as a
+       local device (keep).
+    F. delete the borrower with a numa lease in use and a dax lease ->
+       everything gone within 60 s (keep the current F with the local
+       numa + pool dax, or local numa + local dax now that they coexist).
+    G. trace summary; timings: request to Ready for numa and dax local
+       leases, slice online/offline.
+ e. Every MemTotal assertion waits with a timeout and a message
+    (dra-node-wait), compares exact kB (BS/1024 per block), and prints
+    the numactl -H line of N. Node lists as sets. No sleeps.
+ f. Regression after test14 and test15 pass: test10, test12, test13 (VM1
+    is unchanged; vm-k8s-reinit rebuilds the two-node cluster with the
+    recreated VM2), test01-shared-cxl. Leave both VMs clean.
+ g. Append "W4 Status" (recreation log and times, verdicts per test with
+    the build used, timings, assertions changed and why) and "W4 Findings"
+    to 06-status.txt.
+
+4. Coordination
+---------------
+- W3 appends "W3 Status" when done; W4 waits for it before its first
+  dra-build (poll 06-status.txt every 60 s during the VM recreation and
+  test writing; the VM work does not need the driver).
+- W3's names W4 needs, decided here so that W4 can write tests early:
+  attribute memoryBlockSize (int); requestPolicy default = device size,
+  validRange min = step = BS; mode values none|numa|dax|numa+dax; env of
+  dax slices unchanged (CXL_LOCAL_*); numa claims and leases report node
+  N and size = slice size; log lines contain "slice" with the dax name,
+  the mode and the size.
+- Reviews (R3 driver, R4 e2e) after W4 reports, as in 05-review.txt, with
+  the extra point: the block size is parsed as hex everywhere (driver,
+  memctl, tests), and nothing hard-codes 128 MiB.

@@ -1,0 +1,183 @@
+plan-4-cxl-live-attach-local: findings
+======================================
+Written 2026-10-14 (Fable). Measured on the VM of n4-cxl-fedora-43-containerd
+(kernel 7.3.0-rc4, qemu 10.x stock, four 256M cxl-type3 devices hotplugged
+for the measurement; scripts: plan-4-cxl-live-attach-local/measurements/cxl-partition-exp*.sh)
+and read in the sources: linux (~/github.com/torvalds/linux, 1b78070aaef6,
+v7.3-rc), qemu (~/github.com/qemu/qemu, ff076b1e6c, the patched build of the
+e2e VMs), kubernetes (~/github.com/kubernetes/kubernetes, v1.37.1).
+
+1. Can a local CXL memory device be partitioned into arbitrarily many
+   regions or slices?  No at the region level, yes at the dax level.
+----------------------------------------------------------------------------
+1.1 Regions per device are bounded by HDM decoders and by size granularity.
+  - Every CXL component has a fixed number of HDM decoders; one region
+    takes one decoder on the endpoint, on every switch port on the path
+    and on the host bridge, plus space in the root decoder's window.
+    QEMU: CXL_HDM_DECODER_COUNT = 4 at every level
+    (include/hw/cxl/cxl_component.h:187). Measured in the VM:
+    endpoints and switch ports 4 decoders each; host bridges 1 decoder
+    without hdm_for_passthrough=on (n4-cxl) and 4 with it (n4-cxl-shared-*,
+    pool-vm-require checks it). The CXL spec allows up to 32 per component;
+    real devices have 1 to about 10.
+  - The kernel allocates region HPA in multiples of 256 MiB times the
+    interleave ways (drivers/cxl/core/region.c:678-682, alloc_hpa).
+    Measured: `cxl create-region -s 128M` on a 256M device fails with
+    EINVAL ("set_size failed"); a 256M device holds exactly one region.
+  - Measured: with one host bridge decoder, the second region on the other
+    device of the same host bridge fails ("failed to set target0 to mem2").
+    n4-cxl can hold one region per host bridge at a time.
+  So region-level partitioning is coarse (256 MiB steps) and bounded (4 per
+  device in qemu, fewer when the host bridge or switch is the bottleneck).
+  All regions of one host bridge window share one NUMA node: the node of a
+  region is phys_to_target_node() of its window, and ACPI gives every CFMWS
+  window one fake node (drivers/acpi/numa/srat.c acpi_parse_cfmws). Measured:
+  region on HB0 -> node 2, region on HB1 -> node 3; pool devices on HB1 of
+  n4-cxl-shared-2 land in node 3 together, which the pool work already lives
+  with.
+
+1.2 A region in devdax mode is a dynamic dax region that can be sliced.
+  - drivers/dax/cxl.c:20 allocates the dax region with IORESOURCE_DAX_KMEM
+    and without IORESOURCE_DAX_STATIC, so the dax bus offers
+    /sys/bus/cxl/devices/regionN/dax_regionN/dax_region/{align,
+    available_size, create, delete, id, seed, size} (drivers/dax/bus.c
+    dax_region_visible). Measured in the VM: all present, align 2 MiB.
+  - Slicing procedure, measured (the whole thing takes well under a
+    second): the region's first dax device daxX.0 covers the region; unbind
+    it (echo daxX.0 > /sys/bus/dax/drivers/kmem/unbind), write a smaller
+    size to /sys/bus/dax/devices/daxX.0/size, bind device_dax; then for
+    every further slice `echo 1 > dax_region/create`, name = `cat
+    dax_region/create` (the youngest device), write its size, bind
+    device_dax. Each slice is a character device of its own (252:0, 252:1,
+    252:2 in the measurement), /dev/daxX.Y, with target_node of the window.
+    Release: unbind, `echo 0 > size`, `echo daxX.Y > dax_region/delete`
+    (delete needs an unbound, zero-size device; daxX.0 is kept at size 0
+    and reused). `cxl disable-region; cxl destroy-region` removes it all
+    (0.24 s). available_size tracks the free bytes.
+  - Slice sizes are multiples of the region align (2 MiB; the allocator is
+    first-fit). The number of slices is bounded by dax minors only
+    (dynamic major 252, up to MINORMASK): "arbitrarily many" in practice.
+  - kmem (system-ram) slices must be aligned to the memory block size
+    (128 MiB in the VMs, 2 GiB on large servers), start and size: a 128M
+    slice at offset 64M was rejected ("kmem dax0.1: mapping0 too small
+    after alignment ... probe failed -22"). Since the dax allocator is
+    first-fit at 2 MiB, mixing dax and kmem slices on one region breaks
+    kmem alignment. Consequence for the design: a device is used in one
+    mode at a time; numa mode uses the whole region as one kmem device
+    (the pool helper does this already), dax mode slices.
+  - A new dax device of a CXL region binds to kmem by default
+    (dax_match_type, IORESOURCE_DAX_KMEM) unless CONFIG_DEV_DAX_KMEM is off;
+    memctl.SetDaxDriver already switches drivers explicitly, never rely on
+    the default. In the measurement one region's dax device appeared bound
+    to device_dax; the cause was not found, the explicit bind covers it.
+  - devdax mmap needs CONFIG_FS_DAX=y in the guest kernel; without it every
+    mmap fails with "dax_mmap_prepare: fail, vma is not DAX capable" (the
+    n4-cxl VM's kernel lacks it, section 5).
+
+1.3 Many containers from one device: numa mode shares the node (capacity is
+  accounted by DRA, isolation is by cpuset.mems of the containers as for
+  pool nodes and local regions today); dax mode gives every claim its own
+  slice (a separate character device: real isolation), and several pods
+  share a slice by referencing the same ResourceClaim (kubelet prepares a
+  claim once per node and reuses the result for every pod that references
+  it: pkg/kubelet/cm/dra/manager.go:386-390 "Resources already prepared").
+
+2. Is the number of attached devices limited in commercial pools?  Yes.
+----------------------------------------------------------------------------
+  - UnifabriX MAX (Maxview User Guide 2.0, text in
+    plan-4-cxl-live-attach-local/measurements/Maxview_User_Guide-2.0.pdf.txt): a host
+    connects over one or more ports; each port exposes a fixed small
+    number of HDMs ("set a size for HDM0 at minimum ... optionally HDM1");
+    "HDMs must be configured before the host is powered on", their sizes
+    cannot change while the host runs; each non-zero HDM is one NUMA node
+    on the host; allocations ("viewports") are attached into an HDM at an
+    offset and can grow and shrink. So the host sees a fixed set of memory
+    devices (HDMs) sized at boot, and dynamic capacity arrives as
+    sub-ranges of them, not as new devices. "The number of ports (and by
+    extension the number of cards) dictates the maximum number of hosts".
+  - Switch-based pools that hot-add a device per allocation (what
+    fake-cxl-pool models) are bounded by the host's HDM decoders per host
+    bridge (1.1), the switch's downstream ports / vPPBs per virtual switch,
+    and the fixed CFMWS window size of the host (qemu: cxl-fmw size).
+  - The "Intel Xeon 6 with PCT" technical brief is about Priority Core
+    Turbo and says nothing about CXL (no match for "cxl" in its text).
+  Conclusion for the design: pooled attachments are scarce and slow to
+  change (hotplug, controller round trip); local devices are always there
+  and cheap to repartition (0.06 s region create, sub-second slicing). The
+  local design must not depend on the number of regions a device can
+  hold: one region per device, sliced.
+
+3. Explicit cxl-local.generic, or is cxl.generic clear enough?
+----------------------------------------------------------------------------
+  Recommendation: keep the driver name cxl.generic for node-local devices,
+  add the attribute source: local to its memory devices (the pool
+  controller publishes source: pool), and express locality in DeviceClass
+  names: cxl-local-memory, cxl-local-dax next to cxl-pool-memory,
+  cxl-shared-memory.
+  - A DRA driver name is the identity of a ResourceSlice publisher and
+    kubelet plugin. cxl.generic is per node by construction (slices per
+    node, prepared by the node plugin); pool devices needed a second driver
+    because a different component publishes and prepares them, not
+    because of latency. Renaming to cxl-local.generic would change the CDI
+    kind, claim markers, the token device, every pod YAML and the docs for
+    no new information.
+  - Admins and users choose a DeviceClass, not a driver: classes already
+    encode the distinction (pool-memory vs shared-memory), and
+    cxl-local-* vs cxl-pool-* makes latency class explicit where users
+    look. A class can also select by attribute (source, type, mode,
+    nodeAffinity) and carry the mode config, so new device kinds (CXL 3
+    fabric-attached memory, GFAM, devices with a latency attribute) are
+    new attributes and classes, not new driver names.
+  - A request that accepts either gets it with firstAvailable
+    (DRAPrioritizedList is GA in 1.37): local first, then pool. That is
+    what cxl-request --source any does (02, section 6). A union class is
+    possible (CEL over device.driver) but hides the preference order.
+  Not recommended: a class named cxl.generic for "any local device": it
+  would match the token and DRAM too.
+
+4. Kubernetes facts used by the design (v1.37.1)
+----------------------------------------------------------------------------
+  - An already prepared claim is not prepared again for a second pod on
+    the node (dra/manager.go:386); NodeUnprepare comes when the last pod
+    of the claim on the node is gone. Shared slices need no driver work.
+  - A capacity request without an amount consumes the whole capacity, or
+    requestPolicy.default if set (structured/internal/experimental/
+    consumable_capacity.go fillEmptyRequest); with a requestPolicy
+    validRange {min, step} the scheduler rounds requests up to the step
+    (roundUpRange). So a memdev device with requestPolicy validRange
+    {min: 2Mi, step: 2Mi} gets slice sizes that fit the dax align.
+  - Feature gates: DRAConsumableCapacity, DRADeviceBindingConditions,
+    DRAPartitionableDevices beta on by default; DRAPrioritizedList,
+    DRAResourceClaimDeviceStatus GA; DRANodeAllocatableResources alpha,
+    off by default (the n4-cxl VM has it on, n4-cxl-shared-2 does not: the
+    apiserver drops the field there, as today for cxl-node devices).
+  - The scheduler tries devices without binding conditions first (POOL.md
+    "What the scheduler does"), so with a union of local and pool devices
+    local wins when it fits; firstAvailable makes the order explicit.
+
+5. State of the e2e VMs (2026-10-14)
+----------------------------------------------------------------------------
+  n4-cxl-fedora-43-containerd: kernel 7.3.0-rc4 built WITHOUT CONFIG_FS_DAX
+  (devdax mmap impossible), stock qemu /usr/bin/qemu-system-x86_64 (no
+  hot-remove: a zombie cxl-type3 from an earlier fake-pool run sits on
+  cxlsw_ds7_usrp0hb1, and the four devices hotplugged for the measurement
+  stay until a reboot; cxl-reset of test01-pkg-cxl reboots), host bridges
+  without hdm_for_passthrough (one region per host bridge), no daxctl, the
+  VM was created from an older topology (2+8 devices, the committed
+  topology has 2+2), cluster with DRANodeAllocatableResources=true.
+  Making it fit (patched qemu, FS_DAX kernel, hdm-for-passthrough in
+  topology.var.json, daxctl) means recreating the VM and touching
+  test01-pkg-cxl's expectations. Not worth it: n4-cxl-shared-2 has
+  everything the new tests need (04).
+  n4-cxl-shared-2-fedora-43-containerd (and -1): patched qemu, kernel with
+  FS_DAX, hdm_for_passthrough=on (4 decoders per host bridge), cxl, daxctl,
+  numactl, single-node cluster v1.37.1, clean (no memdevs, no DRA
+  components running), fake-cxl-pool-server not running on the host. Local
+  devices of the topology: cxl_memdev1 (plain 256M, serial 0xc100e2e1, HB0
+  switch port 3) and the static shared file device cxl_memdev0 (256M,
+  serial 0xc1ae0000, shared with VM1, HB0 port 2); both not present at boot
+  and attached through fake-cxl-pool-server as scope "local" devices
+  (names <host>.memdev1 and the configured static device) or with
+  vm-cxl-hotplug (then "adopted"). HB0 has 4 decoders, so the local device,
+  the static shared device and pool devices in HB0's two pool slots can
+  have regions at the same time. Memory block size 128 MiB.
