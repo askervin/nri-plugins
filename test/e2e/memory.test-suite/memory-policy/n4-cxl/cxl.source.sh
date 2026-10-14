@@ -23,10 +23,23 @@ cxl-tools-install() { # script API
         error "cannot build $src_dir/scripts/cxl-dump/cxl-dump.go"
     vm-put-file "$host_cxl_dump" "/usr/local/bin/cxl-dump"
 
-    CXL_BLOCK_SIZE=$(( 0x$(vm-command-q "cat /sys/devices/system/memory/block_size_bytes") ))
-    [ "$CXL_BLOCK_SIZE" -gt 0 ] ||
+    CXL_BLOCK_SIZE=$(cxl-block-size-parse "$(vm-command-q "cat /sys/devices/system/memory/block_size_bytes")") ||
         error "cannot read memory block size from the VM"
     echo "cxl-tools-install: memory block size $CXL_BLOCK_SIZE bytes"
+}
+
+cxl-block-size-parse() { # script API
+    # Usage: cxl-block-size-parse TEXT
+    #
+    # Print the memory block size in bytes that TEXT, the contents of
+    # /sys/devices/system/memory/block_size_bytes, gives: hexadecimal with
+    # or without 0x ("8000000" is 128 MiB). Return 1 unless TEXT is a
+    # positive hexadecimal number.
+    local hex="${1//[[:space:]]/}"
+    hex="${hex#0x}"
+    [[ "$hex" =~ ^[0-9a-fA-F]+$ ]] || return 1
+    (( 16#$hex > 0 )) || return 1
+    echo $(( 16#$hex ))
 }
 
 cxl-dump() { # script API

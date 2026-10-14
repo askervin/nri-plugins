@@ -36,6 +36,13 @@ DRA_REQUEST_BIN="$DRA_DRIVER_SRC/bin/cxl-request"
 DRA_REQUEST_VM_BIN=/usr/local/bin/cxl-request
 DRA_DYNAMIC_CLASS="$DRA_DRIVER_SRC/deployments/cxl/pool/device-class-dynamic.yaml"
 DRA_LEASE_DIR=/var/lib/kubelet/plugins/cxl.generic/leases
+# Node-local CXL memory devices that the node plugin publishes whole and
+# partitions on demand (cxl.generic devices cxlmem-<serial>, doc/cxl/LOCAL.md
+# in the driver repository): the DeviceClasses cxl-local-memory and
+# cxl-local-dax, optional like the dynamic class, and the state file of the
+# regions and slices that the node plugin created.
+DRA_LOCAL_CLASSES="$DRA_DRIVER_SRC/deployments/cxl/local/device-classes.yaml"
+DRA_LOCAL_STATE=/var/lib/kubelet/plugins/cxl.generic/localDevices.json
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
 DRA_POOL_DRIVER=cxl-pool.generic   # pool devices, published by the controller
 DRA_LOCAL_DRIVER=cxl.generic       # node-local CXL and DRAM, published by the node plugin
@@ -46,6 +53,26 @@ DRA_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 DRA_DAX_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/pool-dax-rw.py"
 DRA_NUMA_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/numa-touch.py"
 DRA_JSON=""                        # JSON of the last dra-json/dra-wait
+DRA_LOCAL_NAME=""                  # dra-local-device: the device in fake-cxl-pool-server,
+DRA_LOCAL_SERIAL=""                # its serial (0x<lower-case hex>),
+DRA_LOCAL_HEX=""                   # the serial in environment variable names (upper-case hex),
+DRA_LOCAL_SIZE=""                  # its size in bytes,
+DRA_LOCAL_DEVICE=""                # its device in the cxl.generic ResourceSlice (cxlmem-<hex>),
+DRA_LOCAL_BLOCK_SIZE=""            # the memory block size of the VM in bytes,
+DRA_LOCAL_LD=""                    # dra-py expression of its ResourceSlice device,
+DRA_LOCAL_REGIONS=""               # cxl-py expression of its regions in cxl-dump,
+DRA_LOCAL_ATTACHMENT=""            # and the state of its attachment to the VM
+DRA_CLAIM_JSON=""                  # dra-local-claim-check: the claim
+DRA_CLAIM_UID=""                   # and its uid
+DRA_NODE_KB=""                     # dra-node-wait: the last MemTotal of the node in kB
+DRA_TOOLS_IMAGE=docker.io/library/python:3-alpine   # the image of pods that run the tools of dra-dax-tool-install
+DRA_MEMDEV=""                      # JSON of the last dra-memdev-sysfs/dra-memdev-wait
+DRA_TOUCH_VM=""                    # dra-touch-start: the VM and POD/CONTAINER of numa-touch.py,
+DRA_TOUCH_TARGET=""
+DRA_TOUCH_EXEC=""                  # kubectl exec into that container,
+DRA_TOUCH_PID=""                   # its pid in the container,
+DRA_TOUCH_LOG=""                   # and its output when it had touched its memory
+DRA_TOUCH_PAGES=""                 # dra-touch-pages: its pages on the node
 DRA_TRACE_DIR=""                   # $TEST_OUTPUT_DIR/trace of a running trace
 DRA_TRACE_RUNNING=""
 DRA_TRACE_VMS=()
@@ -167,7 +194,7 @@ dra-dax-tool-install() { # script API
     #
     # Create ConfigMap dax-rw in $DRA_NS of the cluster of the VM of VMDIR,
     # with the tools that pods mount at /tools and run with python3 (image
-    # docker.io/library/python:3-alpine):
+    # $DRA_TOOLS_IMAGE):
     #   dax-rw.py      = pool-dax-rw.py: write and read strings in a devdax
     #                    device, or through an inherited fd (--fd N)
     #   numa-touch.py  = numa-touch.py: allocate and touch memory that
@@ -213,8 +240,9 @@ dra-install() { # script API
     # Run kubelet-cxl-plugin and fake-cxl-pool-controller in the VM of
     # VMDIR as transient systemd units of the same names, with the admin
     # kubeconfig of the VM. Apply the DeviceClasses of the driver
-    # (cxl-pool-memory, cxl-shared-memory, and cxl-dynamic if the driver
-    # has it). If dra-build built cxl-request, install it as
+    # (cxl-pool-memory, cxl-shared-memory, and cxl-dynamic, cxl-local-memory
+    # and cxl-local-dax if the driver has them). If dra-build built
+    # cxl-request, install it as
     # $DRA_REQUEST_VM_BIN and tell the node plugin (--cxl-request-bin) to
     # mount it into the containers of lease claims. Create namespace $DRA_NS
     # empty (delete objects that an earlier run left). Wait until the
@@ -241,13 +269,18 @@ dra-install() { # script API
     else
         dra-vm-command "$vmdir" "rm -f /root/cxl-dynamic-device-class.yaml"
     fi
+    if [ -f "$DRA_LOCAL_CLASSES" ]; then
+        dra-vm-put-file "$vmdir" "$DRA_LOCAL_CLASSES" /root/cxl-local-device-classes.yaml
+    else
+        dra-vm-command "$vmdir" "rm -f /root/cxl-local-device-classes.yaml"
+    fi
 
     echo "dra-install $label: starting kubelet-cxl-plugin and fake-cxl-pool-controller"
     dra-start-plugin "$vmdir"
     dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
         command-error "cannot start fake-cxl-pool-controller in $label"
     dra-installed-add "$vmdir" ""
-    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml && if [ -f /root/cxl-dynamic-device-class.yaml ]; then kubectl apply -f /root/cxl-dynamic-device-class.yaml; fi" ||
+    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml && for f in /root/cxl-dynamic-device-class.yaml /root/cxl-local-device-classes.yaml; do if [ -f \$f ]; then kubectl apply -f \$f || exit 1; fi; done" ||
         command-error "cannot create the DeviceClasses in $label"
 
     dra-wait-node "$vmdir"
@@ -294,10 +327,19 @@ dra-install-files() {
         dra-vm-command "$vmdir" "chmod 755 $DRA_REQUEST_VM_BIN" ||
             command-error "cannot install cxl-request in $label"
     fi
-    # The prepared pool claims of the node plugin refer to regions. Without
-    # regions they are leftovers of an earlier VM boot, and so are the
-    # leases (leases.json) and the lease sockets of token claims (leases/).
-    dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+    dra-state-cleanup "$vmdir"
+}
+
+dra-state-cleanup() {
+    # Usage: dra-state-cleanup VMDIR
+    #
+    # Remove the state of the node plugin in the VM of VMDIR that refers to
+    # CXL regions, if the VM has no regions: then it is a leftover of an
+    # earlier VM boot. That is the prepared pool claims
+    # (preparedPoolClaims.json), the regions and slices of local devices
+    # (localDevices.json), the leases (leases.json) and the lease sockets of
+    # token claims (leases/).
+    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
 dra-start-plugin() {
@@ -383,7 +425,8 @@ dra-uninstall() { # script API
     # controller detaches the devices when the claims are gone), wait until
     # the controller has detached the devices of the node, stop both
     # units, delete the pool ResourceSlices the controller left and the
-    # DeviceClasses. Never fails the test: it runs in the EXIT trap.
+    # DeviceClasses (those of local devices too, if dra-install applied
+    # them). Never fails the test: it runs in the EXIT trap.
     local vmdir="$1" name label left v host
     name=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
@@ -392,7 +435,7 @@ dra-uninstall() { # script API
         # objects and waited for the detach of its devices.
         echo "dra-uninstall $label (node plugin only)"
         dra-vm-command "$vmdir" "systemctl stop kubelet-cxl-plugin 2>/dev/null; systemctl reset-failed kubelet-cxl-plugin 2>/dev/null; true"
-        dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions left, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+        dra-state-cleanup "$vmdir"
         dra-installed-remove "$vmdir"
         return 0
     fi
@@ -419,8 +462,8 @@ dra-uninstall() { # script API
     if [ -n "$left" ]; then
         dra-vm-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
     fi
-    dra-vm-command "$vmdir" "kubectl delete --ignore-not-found -f /root/cxl-pool-device-classes.yaml 2>/dev/null || kubectl delete deviceclass --ignore-not-found cxl-pool-memory cxl-shared-memory; kubectl delete deviceclass --ignore-not-found cxl-dynamic"
-    dra-vm-command "$vmdir" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions left, keeping the pool state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+    dra-vm-command "$vmdir" "kubectl delete --ignore-not-found -f /root/cxl-pool-device-classes.yaml 2>/dev/null || kubectl delete deviceclass --ignore-not-found cxl-pool-memory cxl-shared-memory; kubectl delete deviceclass --ignore-not-found cxl-dynamic cxl-local-memory cxl-local-dax; if [ -f /root/cxl-local-device-classes.yaml ]; then kubectl delete --ignore-not-found -f /root/cxl-local-device-classes.yaml; fi"
+    dra-state-cleanup "$vmdir"
     dra-installed-remove "$vmdir"
     return 0
 }
@@ -463,6 +506,573 @@ dra-cleanup() {
         fi
     done
     return 0
+}
+
+###
+### Node-local CXL memory devices
+###
+
+dra-local-find() {
+    # Usage: dra-local-find VMDIR
+    #
+    # Set DRA_LOCAL_NAME, DRA_LOCAL_SERIAL, DRA_LOCAL_HEX, DRA_LOCAL_SIZE,
+    # DRA_LOCAL_DEVICE and DRA_LOCAL_ATTACHMENT (attached, detached, or
+    # another attachment state) of the local CXL memory device of the VM of
+    # VMDIR in fake-cxl-pool-server: the device of scope local that is
+    # bound to this VM only and is not shared (a memory-backend-ram device
+    # of the topology). Fail the test unless there is exactly one.
+    local host found
+    type -t pool-host-client >/dev/null ||
+        error "${FUNCNAME[1]}: needs pool.source.sh and fake-cxl-pool-server (pool-server-start)"
+    host=$(dra-vm-name "$1")
+    pool-host-client -o json devices || command-error "cannot list the devices of fake-cxl-pool-server"
+    found=$(pool-value "$COMMAND_OUTPUT" "chr(10).join(' '.join([d['name'], d['serial'], str(d['size']), next((a['state'] for a in d.get('attachments') or [] if a['host'] == '$host'), 'detached')]) for d in j if d.get('scope') == 'local' and not d.get('shared') and (d.get('localHosts') or [d.get('localHost')]) == ['$host'])")
+    [ -n "$found" ] && [ "$(wc -l <<< "$found")" == 1 ] ||
+        error "${FUNCNAME[1]}: expected one local, not shared device of $host in fake-cxl-pool-server, found: '$found'"
+    read -r DRA_LOCAL_NAME DRA_LOCAL_SERIAL DRA_LOCAL_SIZE DRA_LOCAL_ATTACHMENT <<< "$found"
+    DRA_LOCAL_HEX=${DRA_LOCAL_SERIAL#0x}
+    DRA_LOCAL_DEVICE="cxlmem-${DRA_LOCAL_HEX,,}"
+    DRA_LOCAL_HEX=${DRA_LOCAL_HEX^^}
+}
+
+dra-local-device() { # script API
+    # Usage: dra-local-device VMDIR
+    #
+    # Attach the local CXL memory device of the VM of VMDIR (see
+    # dra-local-find) through fake-cxl-pool-server, unless it is attached,
+    # and wait until pkg/cxl sees it in the VM. If dra-install runs in the
+    # VM, wait also until the node's cxl.generic ResourceSlice has its
+    # device. Print and set DRA_LOCAL_NAME (the device in the server),
+    # DRA_LOCAL_SERIAL (0x<lower-case hex>), DRA_LOCAL_HEX (the serial in
+    # environment variable names, upper-case hex), DRA_LOCAL_SIZE (bytes),
+    # DRA_LOCAL_DEVICE (cxlmem-<lower-case hex>, its device in the
+    # ResourceSlice), DRA_LOCAL_BLOCK_SIZE (the memory block size of the
+    # VM in bytes, see dra-block-size), DRA_LOCAL_LD (its device in the
+    # ResourceSlices of dra-py) and DRA_LOCAL_REGIONS (its regions in
+    # cxl-dump of cxl-py). The attachment has the owner
+    # e2e:dra-local-device, not a k8s: owner of the pool controller.
+    local vmdir="$1" host label v installed=""
+    host=$(dra-vm-name "$vmdir")
+    label=$(dra-vm-label "$vmdir")
+    dra-local-find "$vmdir"
+    case "$DRA_LOCAL_ATTACHMENT" in
+        attached)
+            echo "dra-local-device $label: $DRA_LOCAL_NAME is attached already";;
+        detached)
+            pool-host-client -o json attach "$DRA_LOCAL_NAME" --host "$host" --owner e2e:dra-local-device ||
+                command-error "cannot attach the local device $DRA_LOCAL_NAME to $label";;
+        *)
+            error "dra-local-device: the attachment of $DRA_LOCAL_NAME to $host is $DRA_LOCAL_ATTACHMENT";;
+    esac
+    pool-cxl-wait "$vmdir" local-device "by_serial($DRA_LOCAL_SERIAL) is not None" 60
+    for v in "${DRA_INSTALLED_VMS[@]}"; do
+        [ "$v" != "$vmdir" ] || installed=1
+    done
+    if [ -n "$installed" ]; then
+        dra-wait "$vmdir" local-device resourceslices "device('$DRA_LOCAL_DEVICE', '$DRA_LOCAL_DRIVER', '$host') is not None" 60
+    fi
+    DRA_LOCAL_BLOCK_SIZE=$(dra-block-size "$vmdir") ||
+        error "dra-local-device: cannot read the memory block size of $label"
+    DRA_LOCAL_LD="device('$DRA_LOCAL_DEVICE', '$DRA_LOCAL_DRIVER', '$host')"
+    DRA_LOCAL_REGIONS="[r for r in regions if by_serial($DRA_LOCAL_SERIAL) is not None and names(r['Memories']) == [by_serial($DRA_LOCAL_SERIAL)['Name']]]"
+    echo "dra-local-device $label: $DRA_LOCAL_NAME, serial $DRA_LOCAL_SERIAL ($DRA_LOCAL_HEX), $DRA_LOCAL_SIZE bytes, ResourceSlice device $DRA_LOCAL_DEVICE, memory block size $DRA_LOCAL_BLOCK_SIZE bytes"
+}
+
+dra-local-detach() { # script API
+    # Usage: dra-local-detach VMDIR
+    #
+    # Detach the local CXL memory device of the VM of VMDIR (see
+    # dra-local-device) if it is attached, and wait until pkg/cxl does not
+    # see it any more. While the node plugin runs, wait first until it has
+    # released the regions of the device. Then release what is left of it
+    # in the VM (fake-cxl-pool-client guest release: offline, destroy the
+    # regions, disable the memdev) and detach it through
+    # fake-cxl-pool-server.
+    local vmdir="$1" host label expr
+    host=$(dra-vm-name "$vmdir")
+    label=$(dra-vm-label "$vmdir")
+    dra-local-find "$vmdir"
+    if [ "$DRA_LOCAL_ATTACHMENT" == detached ]; then
+        echo "dra-local-detach $label: $DRA_LOCAL_NAME is not attached"
+        return 0
+    fi
+    expr="by_serial($DRA_LOCAL_SERIAL) is None or not any(by_serial($DRA_LOCAL_SERIAL)['Name'] in names(r['Memories']) for r in regions)"
+    if dra-vm-command-q "$vmdir" "systemctl is-active -q kubelet-cxl-plugin"; then
+        pool-cxl-wait "$vmdir" local-released "$expr" 60
+    fi
+    pool-client "$vmdir" guest release "$DRA_LOCAL_SERIAL" ||
+        command-error "cannot release $DRA_LOCAL_NAME in $label"
+    pool-host-client detach "$DRA_LOCAL_NAME" --host "$host" ||
+        command-error "cannot detach $DRA_LOCAL_NAME from $label"
+    pool-cxl-wait "$vmdir" local-detached "by_serial($DRA_LOCAL_SERIAL) is None" 60
+    echo "dra-local-detach $label: $DRA_LOCAL_NAME detached"
+}
+
+dra-memdev-sysfs() { # script API
+    # Usage: dra-memdev-sysfs VMDIR SERIAL
+    #
+    # Read in the sysfs of the VM of VMDIR what the CXL memory device with
+    # SERIAL (0x<lower-case hex>) has, as one JSON object:
+    #   memdev    its name (memN), null if it is not there
+    #   enabled   whether its driver is bound
+    #   regions   its regions: name, size, and of its dax region available
+    #             (available_size), align and dax: the dax devices (name,
+    #             size, node = target_node, dev = "major:minor", driver)
+    # DRA_MEMDEV and COMMAND_OUTPUT have the JSON. Return non-zero if the VM
+    # cannot be read.
+    local vmdir="$1" serial="$2" script text
+    script="s=$serial
+$(cat <<'EOF'
+for m in /sys/bus/cxl/devices/mem[0-9]*; do
+    [ "$(cat "$m/serial" 2>/dev/null)" == "$s" ] || continue
+    mem=${m##*/} ep="" drv=$(readlink "$m/driver" 2>/dev/null)
+    drv=${drv##*/}
+    for e in /sys/bus/cxl/devices/endpoint[0-9]*; do
+        [ "$(basename "$(readlink "$e/uport" 2>/dev/null)")" == "$mem" ] && ep=${e##*/}
+    done
+    echo "memdev $mem ${ep:--} ${drv:--}"
+    [ -n "$ep" ] || break
+    for r in /sys/bus/cxl/devices/region[0-9]*; do
+        [ -e "$r" ] || continue
+        cat "$r"/target* 2>/dev/null | grep -q "^decoder${ep#endpoint}\." || continue
+        dr=$(ls -d "$r"/dax_region[0-9]* 2>/dev/null | head -n 1)
+        echo "region ${r##*/} $(cat "$r/size") $(cat "$dr/dax_region/available_size" 2>/dev/null || echo -1) $(cat "$dr/dax_region/align" 2>/dev/null || echo -1)"
+        for x in "$dr"/dax[0-9]*.[0-9]*; do
+            [ -n "$dr" ] && [ -e "$x" ] || continue
+            d=$(readlink "$x/driver" 2>/dev/null)
+            d=${d##*/}
+            echo "dax ${x##*/} $(cat "$x/size") $(cat "$x/target_node") $(cat "$x/dev") ${d:--}"
+        done
+    done
+    break
+done
+EOF
+)"
+    text=$(dra-vm-command-q "$vmdir" "$script") || return 1
+    DRA_MEMDEV=$(python3 -c '
+import json, sys
+out = {"serial": sys.argv[1], "memdev": None, "enabled": False, "regions": []}
+for line in sys.stdin.read().splitlines():
+    w = line.split()
+    if len(w) == 4 and w[0] == "memdev":
+        out.update(memdev=w[1], endpoint=None if w[2] == "-" else w[2], enabled=w[3] != "-")
+    elif len(w) == 5 and w[0] == "region":
+        out["regions"].append({"name": w[1], "size": int(w[2], 0), "available": int(w[3], 0), "align": int(w[4], 0), "dax": []})
+    elif len(w) == 6 and w[0] == "dax" and out["regions"]:
+        out["regions"][-1]["dax"].append({"name": w[1], "size": int(w[2], 0), "node": int(w[3]), "dev": w[4], "driver": None if w[5] == "-" else w[5]})
+print(json.dumps(out))' "$serial" <<< "$text") || return 1
+    COMMAND_OUTPUT="$DRA_MEMDEV"
+}
+
+dra-memdev-wait() { # script API
+    # Usage: dra-memdev-wait VMDIR LABEL SERIAL EXPRESSION [TIMEOUT]
+    #
+    # Repeat dra-memdev-sysfs VMDIR SERIAL until the Python EXPRESSION (see
+    # dra-py, j is the document, dax_slices() its dax devices with a size)
+    # is true on it, TIMEOUT seconds at most (default 60). Store the last
+    # JSON in $TEST_OUTPUT_DIR/memdev.LABEL.<vm>.json and in DRA_MEMDEV and
+    # COMMAND_OUTPUT. Fail the test on timeout, showing the JSON.
+    local vmdir="$1" label="$2" serial="$3" expression="$4" tmo="${5:-60}" file
+    file="$TEST_OUTPUT_DIR/memdev.$label.$(dra-vm-label "$vmdir").json"
+    retry-until --timeout "$tmo" --message "$(dra-vm-label "$vmdir"): sysfs of CXL memory device $serial: $expression" \
+        'dra-memdev-sysfs "$vmdir" "$serial" && dra-py assert "$DRA_MEMDEV" "$expression" 2>/dev/null' || {
+        echo "$DRA_MEMDEV" > "$file"
+        error "$(dra-vm-label "$vmdir"): CXL memory device $serial did not reach the expected state in ${tmo}s: $expression
+sysfs: $DRA_MEMDEV"
+    }
+    echo "$DRA_MEMDEV" > "$file"
+    COMMAND_OUTPUT="$DRA_MEMDEV"
+    echo "memdev ok: $label: $expression"
+    echo "memdev $serial: $DRA_MEMDEV"
+}
+
+dra-block-size() { # script API
+    # Usage: dra-block-size VMDIR
+    #
+    # Print the memory block size of the VM of VMDIR in bytes, the unit in
+    # which memory goes online and offline: block_size_bytes in
+    # /sys/devices/system/memory, parsed by cxl-block-size-parse
+    # (cxl.source.sh). Return non-zero if it cannot be read.
+    local text
+    type -t cxl-block-size-parse >/dev/null ||
+        error "${FUNCNAME[1]}: needs cxl.source.sh"
+    text=$(dra-vm-command-q "$1" "cat /sys/devices/system/memory/block_size_bytes") || return 1
+    cxl-block-size-parse "$text"
+}
+
+dra-node-memtotal() { # script API
+    # Usage: dra-node-memtotal VMDIR NODE
+    #
+    # Print MemTotal of NUMA node NODE of the VM of VMDIR in kB
+    # (/sys/devices/system/node/nodeNODE/meminfo), 0 if the node is not
+    # there, quietly. Return non-zero if it cannot be read or NODE is not a
+    # number.
+    local kb
+    [[ "$2" =~ ^[0-9]+$ ]] || return 1
+    kb=$(dra-vm-command-q "$1" "d=/sys/devices/system/node/node$2; if [ -d \$d ]; then awk '\$3 == \"MemTotal:\" {print \$4}' \$d/meminfo; else echo 0; fi") || return 1
+    [[ "$kb" =~ ^[0-9]+$ ]] || return 1
+    echo "$kb"
+}
+
+dra-node-wait() { # script API
+    # Usage: dra-node-wait VMDIR NODE KB [TIMEOUT]
+    #
+    # Wait until MemTotal of NUMA node NODE of the VM of VMDIR is KB kB (0:
+    # the node has no memory or is not there), TIMEOUT seconds at most
+    # (default 30), and print the line of the node in "numactl -H".
+    # DRA_NODE_KB is the last MemTotal read. Fail the test on timeout.
+    local vmdir="$1" node="$2" kb="$3" tmo="${4:-30}" label
+    label=$(dra-vm-label "$vmdir")
+    [[ "$node" =~ ^[0-9]+$ ]] || error "dra-node-wait: NUMA node '$node' is not a number"
+    DRA_NODE_KB=""
+    retry-until --timeout "$tmo" --interval 1 --message "$label: MemTotal of NUMA node $node is $kb kB" \
+        'DRA_NODE_KB=$(dra-node-memtotal "$vmdir" "$node") && [ "$DRA_NODE_KB" == "$kb" ]' ||
+        error "$label: MemTotal of NUMA node $node is ${DRA_NODE_KB:-unreadable} kB after ${tmo}s, expected $kb kB"
+    echo "node ok: $label: MemTotal of NUMA node $node is $kb kB, numactl -H: $(dra-vm-command-q "$vmdir" "numactl -H | grep '^node $node size:'" || echo "no node $node")"
+}
+
+dra-node-size-exact() { # script API
+    # Usage: dra-node-size-exact VMDIR
+    #
+    # Fail the test unless MemTotal of a NUMA node of the VM of VMDIR grows
+    # and shrinks by exactly the memory blocks that go online and offline
+    # on it: memory_hotplug.memmap_on_memory is off (the parameter is
+    # missing or N).
+    local value
+    value=$(dra-vm-command-q "$1" "cat /sys/module/memory_hotplug/parameters/memmap_on_memory 2>/dev/null || echo missing")
+    echo "$(dra-vm-label "$1"): memory_hotplug.memmap_on_memory: $value"
+    [ "$value" == missing ] || [ "$value" == N ] ||
+        error "memory_hotplug.memmap_on_memory is '$value' in $(dra-vm-label "$1"), expected missing or N: with it, the vmemmap of hotplugged memory blocks comes from the blocks themselves, and MemTotal of a node is not the size of its online blocks. Boot the VM without memory_hotplug.memmap_on_memory"
+}
+
+dra-mi() { # script API
+    # Usage: dra-mi BYTES
+    #
+    # Print BYTES as a quantity in Mi.
+    echo "$(( $1 >> 20 ))Mi"
+}
+
+dra-local-round() { # script API
+    # Usage: dra-local-round BYTES
+    #
+    # Print BYTES rounded up to whole memory blocks of DRA_LOCAL_BLOCK_SIZE
+    # bytes (see dra-local-device): what a claim of BYTES consumes of a
+    # local device, the step of its capacity.
+    local bs="$DRA_LOCAL_BLOCK_SIZE"
+    echo $(( ($1 + bs - 1) / bs * bs ))
+}
+
+dra-local-blocks-require() { # script API
+    # Usage: dra-local-blocks-require VMDIR TOPOLOGY BLOCKS
+    #
+    # Fail the test unless the memory block size of the VM of VMDIR
+    # (DRA_LOCAL_BLOCK_SIZE) is a multiple of 16 MiB and its local device
+    # (see dra-local-device) is whole blocks, at least BLOCKS of them. The
+    # VM was created from TOPOLOGY.
+    local vmdir="$1" topology="$2" blocks="$3" bs="$DRA_LOCAL_BLOCK_SIZE" mib=$(( 1 << 20 ))
+    if ! [[ "$bs" =~ ^[0-9]+$ ]] || (( bs < 16 * mib || bs % (16 * mib) != 0 )); then
+        error "unexpected memory block size '$bs' bytes in $(dra-vm-label "$vmdir")"
+    fi
+    (( DRA_LOCAL_SIZE % bs == 0 && DRA_LOCAL_SIZE >= blocks * bs )) ||
+        error "the local device $DRA_LOCAL_NAME has $DRA_LOCAL_SIZE bytes, the test needs $blocks memory blocks of $bs bytes. The VM was created from an older topology.var.json of $topology: recreate it: vagrant destroy in $vmdir, remove the directory, and run
+  qemu_bin=\$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 ./run_tests.sh memory.test-suite/memory-policy/$topology/test00-up"
+    echo "memory block size $bs bytes ($(dra-mi "$bs")), the local device has $(( DRA_LOCAL_SIZE / bs )) blocks"
+}
+
+dra-local-slices-wait() { # script API
+    # Usage: dra-local-slices-wait VMDIR LABEL NODE numa|dax:BYTES...
+    #
+    # Wait until the local device of the VM of VMDIR (see dra-local-device)
+    # has one region with exactly these slices: numa slices bound to kmem,
+    # dax slices bound to device_dax, all of them dax devices of NUMA node
+    # NODE ("": any one node), and the rest of the region available.
+    # DRA_MEMDEV is the sysfs view of the device.
+    local vmdir="$1" label="$2" node="$3" want="" total=0 s kind size
+    shift 3
+    for s in "$@"; do
+        kind=${s%%:*} size=${s#*:}
+        case "$kind" in
+            numa) want+="('kmem', $size), ";;
+            dax) want+="('device_dax', $size), ";;
+            *) error "dra-local-slices-wait: unknown slice $s";;
+        esac
+        total=$(( total + size ))
+    done
+    dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" \
+        "len(j['regions']) == 1 and sorted((d['driver'], d['size']) for d in dax_slices()) == sorted([$want]) and len(set(d['node'] for d in dax_slices())) == 1${node:+ and dax_slices()[0]['node'] == $node} and j['regions'][0]['available'] == $DRA_LOCAL_SIZE - $total"
+}
+
+dra-local-node-size() { # script API
+    # Usage: dra-local-node-size VMDIR LABEL NODE BYTES [LOCAL]
+    #
+    # Wait until NUMA node NODE of the VM of VMDIR has BYTES of memory,
+    # whole memory blocks (MemTotal; 0: no memory or no node), and until
+    # the region of its local device (see dra-local-device), if there is
+    # one, has LOCAL bytes online in cxl-dump (default BYTES).
+    local vmdir="$1" label="$2" node="$3" bytes="$4" local_bytes="${5:-$4}" bs="$DRA_LOCAL_BLOCK_SIZE" blocks
+    (( bytes % bs == 0 )) || error "dra-local-node-size $label: $bytes bytes are not whole memory blocks of $bs bytes"
+    blocks=$(( bytes / bs ))
+    dra-node-wait "$vmdir" "$node" "$(( blocks * (bs / 1024) ))" 30
+    pool-cxl-wait "$vmdir" "node-$label" "len($DRA_LOCAL_REGIONS) <= 1 and all(r['OnlineSize'] == $local_bytes for r in $DRA_LOCAL_REGIONS)" 10
+}
+
+dra-local-mode-wait() { # script API
+    # Usage: dra-local-mode-wait VMDIR LABEL MODE
+    #
+    # Wait until the attribute mode of the local device of the VM of VMDIR
+    # (see dra-local-device) in its ResourceSlice is MODE. COMMAND_OUTPUT
+    # has the ResourceSlices.
+    dra-wait "$1" "$2" resourceslices "attr($DRA_LOCAL_LD, 'mode') == '$3'" 60
+}
+
+dra-local-claim-check() { # script API
+    # Usage: dra-local-claim-check VMDIR POD BYTES
+    #
+    # Check that the claim of pod POD in $DRA_NS is allocated to the local
+    # device of the VM of VMDIR (see dra-local-device) on its node and
+    # consumes BYTES of its memory. DRA_CLAIM_JSON and DRA_CLAIM_UID are
+    # the claim.
+    local vmdir="$1" pod="$2" bytes="$3" claim
+    claim=$(dra-pod-claim "$vmdir" "$pod") || error "pod $pod has no ResourceClaim"
+    dra-json "$vmdir" resourceclaim -n "$DRA_NS" "$claim"
+    DRA_CLAIM_JSON="$COMMAND_OUTPUT"
+    dra-assert "$DRA_CLAIM_JSON" "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and allocated_node() == '$(dra-vm-name "$vmdir")'"
+    dra-assert "$DRA_CLAIM_JSON" "consumed() == $bytes"
+    DRA_CLAIM_UID=$(dra-value "$DRA_CLAIM_JSON" "j['metadata']['uid']")
+}
+
+dra-local-claim-slice() { # script API
+    # Usage: dra-local-claim-slice VMDIR CLAIM-UID
+    #
+    # Print the dax device (daxX.Y) of the slice of the claim with
+    # CLAIM-UID in the state of the node plugin in the VM of VMDIR
+    # ($DRA_LOCAL_STATE: devices[].claims[CLAIM-UID][0].dax). Return 1 if
+    # the claim has no slice there.
+    local json
+    json=$(dra-vm-command-q "$1" "cat $DRA_LOCAL_STATE") || return 1
+    python3 -c '
+import json, sys
+uid = sys.argv[1]
+for d in json.loads(sys.stdin.read()).get("devices") or []:
+    slices = (d.get("claims") or {}).get(uid) or []
+    if slices and slices[0].get("dax"):
+        print(slices[0]["dax"])
+        sys.exit(0)
+sys.exit(1)' "$2" <<< "$json"
+}
+
+dra-delete-pod() { # script API
+    # Usage: dra-delete-pod VMDIR POD
+    #
+    # Delete pod POD in $DRA_NS and wait until it is gone.
+    dra-delete "$1" pod "$2" --grace-period=2 --wait=true --timeout=60s
+}
+
+dra-local-cdi-devices() {
+    # Usage: dra-local-cdi-devices VMDIR
+    #
+    # Print the CDI devices of dax slices of local devices (local-<claim
+    # uid>) in the CDI spec directories of the VM of VMDIR, quietly.
+    dra-vm-command-q "$1" "cat /etc/cdi/* /var/run/cdi/* 2>/dev/null | grep -oE 'name\"?: *\"?local-[0-9a-f-]+' | sed 's/.*local-/local-/' | sort -u"
+}
+
+dra-local-state-claims() {
+    # Usage: dra-local-state-claims VMDIR
+    #
+    # Print how many claims the node plugin in the VM of VMDIR has in its
+    # state file of local devices (0 without a file): the entries of every
+    # "claims" object or list in it, whatever the case of the key.
+    local json
+    json=$(dra-vm-command-q "$1" "cat $DRA_LOCAL_STATE 2>/dev/null || echo '{}'")
+    echo "$DRA_LOCAL_STATE: $json" >&2
+    python3 -c '
+import json, sys
+def count(o):
+    if isinstance(o, dict):
+        return sum(len(v) if k.lower() == "claims" and isinstance(v, (dict, list)) else count(v) for k, v in o.items())
+    if isinstance(o, list):
+        return sum(count(v) for v in o)
+    return 0
+print(count(json.loads(sys.stdin.read().strip() or "{}")))' <<< "$json"
+}
+
+dra-local-initial-state() { # script API
+    # Usage: dra-local-initial-state VMDIR LABEL [NODE]
+    #
+    # Wait until the local device of the VM of VMDIR (see dra-local-device)
+    # is in its initial state again: the memdev enabled, no region, mode
+    # none in the ResourceSlice, and no memory on its NUMA node NODE (if
+    # given). Check that nothing of its claims is left: no CDI devices of
+    # slices, no claims in the state of the node plugin, which must have
+    # its state file.
+    local vmdir="$1" label="$2" node="$3"
+    pool-cxl-wait "$vmdir" "$label" "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and $DRA_LOCAL_REGIONS == []" 60
+    dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" "j['memdev'] and j['enabled'] and j['regions'] == []" 10
+    dra-local-mode-wait "$vmdir" "$label-mode" none
+    [ -z "$(dra-local-cdi-devices "$vmdir")" ] ||
+        error "$label: CDI devices of local slices are left: $(dra-local-cdi-devices "$vmdir")"
+    dra-vm-command-q "$vmdir" "test -s $DRA_LOCAL_STATE" ||
+        error "$label: the node plugin has no $DRA_LOCAL_STATE"
+    [ "$(dra-local-state-claims "$vmdir")" == 0 ] ||
+        error "$label: the node plugin still has claims in $DRA_LOCAL_STATE"
+    [ -z "$node" ] || dra-node-wait "$vmdir" "$node" 0 10
+    echo "$label: the local device is in its initial state"
+}
+
+dra-plugin-log() { # script API
+    # Usage: dra-plugin-log VMDIR
+    #
+    # Print the log of kubelet-cxl-plugin in the VM of VMDIR since it
+    # started (the journal of its current invocation), quietly. Fail the
+    # test if it does not run.
+    local id
+    id=$(dra-vm-command-q "$1" "systemctl show -p InvocationID --value kubelet-cxl-plugin")
+    [ -n "$id" ] || error "dra-plugin-log: kubelet-cxl-plugin does not run in $(dra-vm-label "$1")"
+    dra-vm-command-q "$1" "journalctl --no-pager -o cat _SYSTEMD_INVOCATION_ID=$id"
+}
+
+dra-local-slices-aligned() { # script API
+    # Usage: dra-local-slices-aligned VMDIR
+    #
+    # Fail the test if the node plugin in the VM of VMDIR, since it started,
+    # created a region of a local device that does not start at a memory
+    # block boundary, placed a slice explicitly (the range that the kernel
+    # chose was not whole memory blocks) or rounded a slice up (a claim
+    # consumed less than whole memory blocks).
+    local log
+    log=$(dra-plugin-log "$1")
+    if grep -E 'local: .*(does not start at a memory block boundary|placing it explicitly|rounded up to)' <<< "$log"; then
+        error "the node plugin aligned, placed or rounded regions or slices of local devices itself, see above"
+    fi
+    echo "the node plugin's regions and slices were block-aligned: no slice placed explicitly or rounded up"
+}
+
+dra-local-slice-times() { # script API
+    # Usage: dra-local-slice-times VMDIR
+    #
+    # Print how long the node plugin in the VM of VMDIR took, by its log
+    # since it started, for the regions and slices of local devices:
+    # region created and released, slice created, onlined, offlined,
+    # zeroed and deleted, per mode of the slice (count, min, median, max).
+    echo "### regions and slices of local devices, times from the log of kubelet-cxl-plugin"
+    dra-plugin-log "$1" | python3 -c '
+import re, statistics, sys
+units = {"s": 1000.0, "ms": 1.0, "us": 0.001, "ns": 0.000001}
+times = {}
+for line in sys.stdin:
+    m = re.search(r"local: .*: (?:claim \S+: )?(created|onlined|offlined|zeroed|deleted) slice \S+ mode (\S+) .* in ([0-9.]+)(ms|us|ns|s)$", line) or \
+        re.search(r"local: .*: (created|released) region\S*() .*?in ([0-9.]+)(ms|us|ns|s)$", line)
+    if not m:
+        continue
+    what, mode, value, unit = m.groups()
+    key = "%s %s" % (what, "slice (%s)" % mode if mode else "region")
+    times.setdefault(key, []).append(float(value) * units[unit])
+if not times:
+    print("no region or slice times in the log")
+for key in sorted(times):
+    t = sorted(times[key])
+    print("%-24s n=%-3d min %8.3f ms  median %8.3f ms  max %8.3f ms" % (key, len(t), t[0], statistics.median(t), t[-1]))
+'
+}
+
+dra-claim-yaml() { # script API
+    # Usage: dra-claim-yaml claim|template NAME CLASS SIZE [read-only [MODE]]
+    #
+    # Print a ResourceClaim (claim) or a ResourceClaimTemplate (template)
+    # NAME with one request "mem" of DeviceClass CLASS for SIZE of memory
+    # ("": no amount). With read-only the opaque LocalDeviceConfig of the
+    # claim asks the node plugin for a read-only device in MODE (default
+    # dax).
+    local kind="$1" name="$2" class="$3" size="$4" devices
+    devices="devices:
+  requests:
+  - name: mem
+    exactly:
+      deviceClassName: $class"
+    if [ -n "$size" ]; then
+        devices+="
+      capacity:
+        requests:
+          memory: $size"
+    fi
+    if [ "$5" == read-only ]; then
+        devices+="
+  config:
+  - opaque:
+      driver: $DRA_LOCAL_DRIVER
+      parameters: {apiVersion: $DRA_LOCAL_DRIVER/v1alpha1, kind: LocalDeviceConfig, mode: ${6:-dax}, readOnly: true}"
+    fi
+    # shellcheck disable=SC2001 # sed indents every line
+    if [ "$kind" == claim ]; then
+        cat <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: $name
+spec:
+$(sed 's/^/  /' <<< "$devices")
+EOF
+    else
+        cat <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: $name
+spec:
+  spec:
+$(sed 's/^/    /' <<< "$devices")
+EOF
+    fi
+}
+
+dra-claim-pod-yaml() { # script API
+    # Usage: dra-claim-pod-yaml NAME claim|template SOURCE
+    #
+    # Print pod NAME whose claim "mem" is the ResourceClaim SOURCE (claim)
+    # or is made from the ResourceClaimTemplate SOURCE (template): one idle
+    # container "main" of $DRA_TOOLS_IMAGE that uses the claim, the tools
+    # of dra-dax-tool-install in /tools, no memory limit.
+    local name="$1" ref=resourceClaimName
+    [ "$2" == claim ] || ref=resourceClaimTemplateName
+    cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  terminationGracePeriodSeconds: 2
+  restartPolicy: Never
+  resourceClaims:
+  - name: mem
+    $ref: $3
+  volumes:
+  - name: tools
+    configMap:
+      name: dax-rw
+  containers:
+  - name: main
+    image: $DRA_TOOLS_IMAGE
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+    volumeMounts:
+    - name: tools
+      mountPath: /tools
+    resources:
+      claims:
+      - name: mem
+EOF
+}
+
+dra-claim-pod() { # script API
+    # Usage: dra-claim-pod VMDIR NAME CLASS SIZE [read-only [MODE]]
+    #
+    # Create pod NAME in the cluster of the VM of VMDIR with a claim of
+    # DeviceClass CLASS for SIZE (see dra-claim-yaml), made from a
+    # ResourceClaimTemplate NAME of its own: the claim lives and dies with
+    # the pod.
+    dra-apply "$1" <<< "$(dra-claim-yaml template "$2" "$3" "$4" "$5" "$6")
+---
+$(dra-claim-pod-yaml "$2" template "$2")"
 }
 
 ###
@@ -584,6 +1194,33 @@ dra-container-file() { # script API
         command-error "cannot read $file of container $container of pod $pod"
 }
 
+dra-container-read() { # script API
+    # Usage: dra-container-read VMDIR POD CONTAINER FILE
+    #
+    # Print cgroup FILE of container CONTAINER of pod POD in $DRA_NS, read
+    # in the VM of VMDIR, quietly. Return non-zero if the container or the
+    # file cannot be found.
+    local cg
+    cg=$(dra-container-cgroup "$1" "$2" "$3") || return 1
+    dra-vm-command-q "$1" "cat $cg/$4"
+}
+
+dra-mems-wait() { # script API
+    # Usage: dra-mems-wait VMDIR POD CONTAINER NODE
+    #
+    # Wait until cpuset.mems of container CONTAINER of pod POD in $DRA_NS
+    # has NUMA node NODE, 30 s at most, and print its cpuset.mems,
+    # cpuset.mems.effective and the Mems_allowed_list of a process in it.
+    # Fail the test on timeout.
+    local vmdir="$1" pod="$2" container="$3" node="$4" mems
+    retry-until --timeout 30 --interval 1 --message "cpuset.mems of container $container of $pod has node $node" \
+        'mems=$(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems) && dra-nodes-has "$mems" "$node"' ||
+        error "cpuset.mems of container $container of pod $pod is '$(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems)', expected that it has node $node"
+    echo "$pod/$container: cpuset.mems $mems (has node $node), effective $(dra-container-read "$vmdir" "$pod" "$container" cpuset.mems.effective)"
+    dra-exec "$vmdir" "$pod/$container" grep Mems_allowed_list /proc/self/status ||
+        command-error "cannot read Mems_allowed_list in container $container of pod $pod"
+}
+
 dra-container-anon() { # script API
     # Usage: dra-container-anon VMDIR POD CONTAINER NODE
     #
@@ -622,6 +1259,152 @@ dra-container-devices() { # script API
         echo \"bpf: \$(for p in \$(bpftool cgroup show $cg 2>/dev/null | awk '\$2 == \"cgroup_device\" {print \$1}'); do bpftool prog dump xlated id \$p | sha256sum | cut -c1-16; done | sort -u | tr '\\n' ' ')\""
 }
 
+dra-pod-claim() { # script API
+    # Usage: dra-pod-claim VMDIR POD [NAME]
+    #
+    # Print the name of the ResourceClaim of pod POD in $DRA_NS, the claim
+    # that the pod calls NAME (default: its first claim): the claim made
+    # from its template (status.resourceClaimStatuses), or the claim it
+    # references. Return 1 if there is none yet.
+    local vmdir="$1" pod="$2" name="$3" json claim
+    json=$(dra-vm-command-q "$vmdir" "kubectl get pod -n $DRA_NS $pod -o json") || return 1
+    claim=$(dra-py eval "$json" "next((s.get('resourceClaimName') for s in (j.get('status') or {}).get('resourceClaimStatuses') or [] if '$name' in ('', s.get('name'))), None) or next((c.get('resourceClaimName') for c in j['spec'].get('resourceClaims') or [] if '$name' in ('', c.get('name'))), None) or ''") || return 1
+    [ -n "$claim" ] || return 1
+    echo "$claim"
+}
+
+dra-nodes-py() {
+    # Usage: dra-nodes-py has|eq LIST ARG
+    #
+    # has: return 0 if node ARG is in the node list LIST ("0-1,3").
+    # eq:  return 0 if the node lists LIST and ARG have the same nodes
+    #      ("0-2" and "0-1,2": the kernel joins ranges).
+    python3 -c '
+import sys
+def nodes(text):
+    out = set()
+    for part in text.strip().split(","):
+        if part:
+            lo, _, hi = part.partition("-")
+            out.update(range(int(lo), int(hi or lo) + 1))
+    return out
+op, a, b = sys.argv[1:4]
+sys.exit(0 if (int(b) in nodes(a) if op == "has" else nodes(a) == nodes(b)) else 1)' "$1" "$2" "$3"
+}
+
+dra-nodes-has() { # script API
+    # Usage: dra-nodes-has LIST NODE
+    #
+    # Return 0 if NUMA node NODE is in the node list LIST ("0-1,3").
+    dra-nodes-py has "$1" "$2"
+}
+
+dra-nodes-eq() { # script API
+    # Usage: dra-nodes-eq LIST1 LIST2
+    #
+    # Return 0 if the node lists LIST1 and LIST2 have the same nodes.
+    dra-nodes-py eq "$1" "$2"
+}
+
+dra-touch-start() { # script API
+    # Usage: dra-touch-start VMDIR POD/CONTAINER MIB NODE
+    #
+    # Start numa-touch.py (dra-dax-tool-install) in the background in
+    # container CONTAINER of pod POD in $DRA_NS: MIB MiB that prefer NUMA
+    # node NODE, held until dra-touch-stop. Wait until it has touched every
+    # page. DRA_TOUCH_PID is its pid in the container, DRA_TOUCH_LOG its
+    # output then, with the pages per node. Fail the test if it fails.
+    local vmdir="$1" target="$2" mib="$3" node="$4" pod container
+    read -r pod container <<< "$(dra-pod-container "$target")"
+    DRA_TOUCH_VM="$vmdir"
+    DRA_TOUCH_TARGET="$target"
+    DRA_TOUCH_EXEC="kubectl exec -n $DRA_NS $pod${container:+ -c $container} --"
+    DRA_TOUCH_PID=""
+    # shellcheck disable=SC2016 # $1 and $2 are expanded by sh in the container
+    dra-exec "$vmdir" "$target" sh -c 'setsid python3 /tools/numa-touch.py --hold "$1" "$2" > /tmp/numa-touch.log 2>&1 < /dev/null &' sh "$mib" "$node" ||
+        command-error "cannot start numa-touch.py in $target"
+    retry-until --timeout 60 --interval 1 --message "numa-touch.py in $target has touched $mib MiB" \
+        'dra-vm-command-q "$vmdir" "$DRA_TOUCH_EXEC cat /tmp/numa-touch.log" | grep -qE "^numa-touch: (ready|.*failed)"' ||
+        error "numa-touch.py in $target did not finish touching its memory"
+    dra-exec "$vmdir" "$target" cat /tmp/numa-touch.log
+    grep -q "^numa-touch: ready" <<< "$COMMAND_OUTPUT" || error "numa-touch.py in $target failed: $COMMAND_OUTPUT"
+    DRA_TOUCH_PID=$(sed -n 's/^numa-touch: pid \([0-9]*\) .*/\1/p' <<< "$COMMAND_OUTPUT")
+    DRA_TOUCH_LOG="$COMMAND_OUTPUT"
+}
+
+dra-touch-log-pages() {
+    # Usage: dra-touch-log-pages TEXT NODE
+    #
+    # Print the pages on NODE in the last "numa-touch: pages" line of TEXT
+    # (0 if the node is not listed).
+    local pages
+    pages=$(grep '^numa-touch: pages' <<< "$1" | tail -n 1 | tr ' ' '\n' | sed -n "s/^N$2=//p")
+    echo "${pages:-0}"
+}
+
+dra-touch-pages() { # script API
+    # Usage: dra-touch-pages NODE
+    #
+    # Ask the numa-touch.py of dra-touch-start where its pages are now
+    # (SIGUSR1) and wait for its answer. DRA_TOUCH_PAGES is how many of
+    # them are on NUMA node NODE. Fail the test if it does not run any more.
+    local node="$1" before
+    [ -n "$DRA_TOUCH_PID" ] || error "dra-touch-pages: numa-touch.py does not run, call dra-touch-start first"
+    before=$(dra-touch-reports)
+    dra-exec "$DRA_TOUCH_VM" "$DRA_TOUCH_TARGET" kill -USR1 "$DRA_TOUCH_PID" ||
+        error "numa-touch.py (pid $DRA_TOUCH_PID) in $DRA_TOUCH_TARGET is not running any more"
+    retry-until --timeout 10 --interval 1 --message "numa-touch.py reports its pages" \
+        '[ "$(dra-touch-reports)" -gt "${before:-0}" ]' ||
+        error "numa-touch.py (pid $DRA_TOUCH_PID) in $DRA_TOUCH_TARGET did not report its pages"
+    dra-exec "$DRA_TOUCH_VM" "$DRA_TOUCH_TARGET" cat /tmp/numa-touch.log
+    DRA_TOUCH_PAGES=$(dra-touch-log-pages "$COMMAND_OUTPUT" "$node")
+}
+
+dra-touch-reports() {
+    # Usage: dra-touch-reports
+    #
+    # Print how many "pages" lines the numa-touch.py of dra-touch-start has
+    # written (0 if its log cannot be read).
+    local n
+    n=$(dra-vm-command-q "$DRA_TOUCH_VM" "$DRA_TOUCH_EXEC grep -c '^numa-touch: pages' /tmp/numa-touch.log")
+    echo "${n:-0}"
+}
+
+dra-touch-forget() { # script API
+    # Usage: dra-touch-forget
+    #
+    # Forget the numa-touch.py of dra-touch-start without stopping it, for
+    # instance when its pod is deleted.
+    DRA_TOUCH_PID=""
+}
+
+dra-touch-stop() { # script API
+    # Usage: dra-touch-stop
+    #
+    # Stop the numa-touch.py of dra-touch-start, if it runs.
+    [ -n "$DRA_TOUCH_PID" ] || return 0
+    dra-exec "$DRA_TOUCH_VM" "$DRA_TOUCH_TARGET" kill "$DRA_TOUCH_PID"
+    DRA_TOUCH_PID=""
+}
+
+dra-stays() { # script API
+    # Usage: dra-stays SECONDS MESSAGE SNIPPET
+    #
+    # Evaluate SNIPPET on the host at once and then once a second for
+    # SECONDS seconds, and fail the test with MESSAGE as soon as it is not
+    # true. SNIPPET must not refer to variables named _stays_*.
+    local _stays_secs="$1" _stays_msg="$2" _stays_snippet="$3" _stays_end
+    echo "checking for ${_stays_secs}s: $_stays_msg"
+    _stays_end=$(( SECONDS + _stays_secs ))
+    while true; do
+        eval "$_stays_snippet" ||
+            error "not true any more after $(( _stays_secs - _stays_end + SECONDS ))s: $_stays_msg"
+        [ "$SECONDS" -lt "$_stays_end" ] || break
+        sleep 1
+    done
+    echo "held for ${_stays_secs}s: $_stays_msg"
+}
+
 ###
 ### Querying and waiting
 ###
@@ -637,16 +1420,24 @@ dra-py() {
     #   by_name(name)          the item called name, None if not found
     #   slices(driver, node)   ResourceSlices of driver (and node, if given)
     #   devices(driver, node)  devices of those slices
-    #   device(name, driver)   the device called name, None if not found
+    #   device(name, driver, node)  the device called name (of driver, in
+    #                          the slice of node, if given), None if not found
     #   attr(dev, name)        value of an attribute ({"string": v} -> v)
     #   capacity(dev, name)    value of a capacity ("512Mi")
+    #   request_policy(dev, name)  requestPolicy of a capacity, None if none
+    #   quantity(q)            bytes of a quantity ("64Mi", "268435456")
+    #   MiB                    1 << 20
     #   results(claim)         allocation results of a ResourceClaim (j)
+    #   consumed(claim, name)  bytes of capacity name ("memory") that the
+    #                          allocation results of a claim (j) consume
     #   allocated_node(claim)  node of the allocation's nodeSelector
     #   condition(type, claim) status of a condition in status.devices
     #   device_data(dev, claim) data of the status.devices entry of dev
     #   events(reason, name)   Events with reason, of object name
+    #   dax_slices(driver)     dax devices with a size of a dra-memdev-sysfs
+    #                          document (j), bound to driver if given
     python3 -c '
-import json, sys
+import decimal, json, sys
 
 mode, expression = sys.argv[1], sys.argv[2]
 text = sys.stdin.read()
@@ -672,8 +1463,8 @@ def slices(driver=None, node=None):
 def devices(driver=None, node=None):
     return [d for s in slices(driver, node) for d in s["spec"].get("devices") or []]
 
-def device(name, driver=None):
-    return next((d for d in devices(driver) if d["name"] == name), None)
+def device(name, driver=None, node=None):
+    return next((d for d in devices(driver, node) if d["name"] == name), None)
 
 def attr(dev, name):
     attrs = (dev or {}).get("attributes") or {}
@@ -688,10 +1479,28 @@ def capacity(dev, name):
     c = ((dev or {}).get("capacity") or {}).get(name)
     return c.get("value") if c else None
 
+def request_policy(dev, name):
+    c = ((dev or {}).get("capacity") or {}).get(name)
+    return c.get("requestPolicy") if c else None
+
+MiB = 1 << 20
+SUFFIXES = [("Ki", 1 << 10), ("Mi", 1 << 20), ("Gi", 1 << 30), ("Ti", 1 << 40), ("Pi", 1 << 50), ("Ei", 1 << 60),
+            ("k", 10 ** 3), ("M", 10 ** 6), ("G", 10 ** 9), ("T", 10 ** 12), ("P", 10 ** 15), ("E", 10 ** 18)]
+
+def quantity(q):
+    q = str(q).strip()
+    for suffix, mult in SUFFIXES:
+        if q.endswith(suffix):
+            return int(decimal.Decimal(q[:-len(suffix)]) * mult)
+    return int(decimal.Decimal(q))
+
 def results(claim=None):
     claim = claim or j
     alloc = (claim.get("status") or {}).get("allocation") or {}
     return (alloc.get("devices") or {}).get("results") or []
+
+def consumed(claim=None, name="memory"):
+    return sum(quantity((r.get("consumedCapacity") or {}).get(name, 0)) for r in results(claim))
 
 def allocated_node(claim=None):
     claim = claim or j
@@ -720,6 +1529,10 @@ def events(reason=None, name=None):
     return [e for e in items
             if (reason is None or e.get("reason") == reason)
             and (name is None or e["involvedObject"].get("name") == name)]
+
+def dax_slices(driver=None):
+    return [d for r in j.get("regions") or [] for d in r.get("dax") or []
+            if d.get("size") and (driver is None or d.get("driver") == driver)]
 
 value = eval(expression)
 if mode == "eval":
@@ -1060,7 +1873,8 @@ dra-trace-summary() { # script API
     # Pick the lines that tell the story from the trace of dra-trace-stop:
     # claims created, allocated and deleted, binding conditions, attach and
     # detach in the server and the controller, prepare and release in the
-    # node plugin, udev events of the devices, pods starting and stopping.
+    # node plugin (pool devices, and regions and slices of local devices),
+    # udev events of the devices, pods starting and stopping.
     # Write them to $TEST_OUTPUT_DIR/trace-summary.txt and print it.
     [ -f "$DRA_TRACE_DIR/merged.txt" ] || error "dra-trace-summary: no trace, run dra-trace-start and dra-trace-stop first"
     python3 -c '
@@ -1074,8 +1888,10 @@ patterns = {
     "controller": r"(?i)attach|detach|condition|status|publish|slice|error|fail",
     # kubelet-cxl-plugin: the pool helper (prepared, released, unprepared),
     # pool devices skipped by the cxl.generic publisher, the lease broker
-    # (leases, companions, lends and revokes, fds sent), errors.
-    "driver": r"(?i)cxl-pool\.generic|pool device|rescanAndPublish|lease|companion|\blend|revok|error|fail",
+    # (leases, companions, lends and revokes, fds sent), the local
+    # allocator (regions and slices of local memdevs) and the cxlmem
+    # devices it publishes, errors.
+    "driver": r"(?i)cxl-pool\.generic|pool device|rescanAndPublish|lease|companion|\blend|revok|local:|cxlmem|no room for the slice|error|fail",
     "scheduler": r"(?i)binding|resourceclaim|claim|bound|error",
     "events": r"",
     "claims": r"",

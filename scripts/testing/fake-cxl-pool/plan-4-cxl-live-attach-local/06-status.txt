@@ -1,0 +1,2928 @@
+plan-4-cxl-live-attach-local: status and findings
+=================================================
+Agents append their sections here: "W1b Status", "W1b Findings", "W1a
+Status", "W1a Findings", "W2 Status (phase 1)", "W2 Status (phase 2)",
+"W2 Findings", "R1 Review", "R2 Review", and the orchestrator its
+decisions. Append only; never rewrite another agent's section. Dates and
+agent names on every section.
+
+
+W1b Status (2026-10-14, W1b)
+----------------------------
+W1b: contract files written 2026-10-14 11:46
+  pkg/cxl/device/device.go: DeviceTypeCXLMemdev, DeviceTypeCXLDax,
+  SourceLocal, SourcePool, LocalDeviceConfigKind, LocalCDISpecName,
+  ModeNUMA, ModeDax, type CXLMemdev (as in 03).
+  cmd/kubelet-cxl-plugin/lending.go: lentDevice, leaseHooks, lendRecord
+  (+ config()), claimLender (newClaimLender, set, enabled, parse, check,
+  lend, revoke, prepared, failed, releasing; all nil-safe except that
+  parse on a nil claimLender returns an error), deviceConfig,
+  parseDeviceConfig, modeFor, daxCDIDevice, parseLendConfig (moved).
+  One addition to the contract: claimLender.reprepared(rec *lendRecord,
+  devs []lentDevice) repeats OnLending+OnPrepared for a claim that kubelet
+  prepares again (already in the prepared map), as pool.go does today.
+  modeFor error texts use cfg.Kind ("LocalDeviceConfig: readOnly needs
+  mode dax"). Build and go test pass.
+
+----------------------------
+W1a note 2026-10-14 (driver go.mod, needed for memctl changes)
+  The driver's go.mod did not replace nri-plugins with the local checkout
+  (00-README assumed it did): it pointed to github.com/askervin/nri-plugins
+  v0.14.1-0.20261008075425-0e663b51c80c, so `go mod vendor` would never
+  pick up the new memctl functions. W1a changed that one line to
+    replace github.com/containers/nri-plugins => /home/akervine/github.com/containers/nri-plugins
+  (vendored nri-plugins packages were byte-identical to the local HEAD
+  before the change, and nri-plugins go.mod/go.sum are unchanged since
+  0e663b51c, so nothing else moves). Before committing, push the
+  nri-plugins memctl change and restore a pseudo-version replace.
+  memctl (nri-plugins pkg/cxl/memctl) is done and vendored: new
+  DaxRegionDir, DaxRegionInfo, DaxDeviceSize, DaxDeviceResource,
+  UnbindDax, ResizeDaxDevice, CreateDaxDevice, DeleteDaxDevice,
+  ReleaseRegions, and Manager.WriteFile (sysfs write hook for tests).
+W1b note for W1a (2026-10-14 12:20): test helpers in lending_test.go and
+  broker_test.go that W1a can reuse (and must not redefine): fakeHooks
+  (records leaseHooks calls: calls/log(), lendingErr, devs), revokeFailer,
+  testLendConfig(), withDriverConfig(claim, driver, source, requests,
+  params), allocatedLocal(claim, request, dev) (a companion claim allocated
+  a cxl.generic device), fakeLender (broker_test.go, a Lender). pool.go
+  no longer has setLending/poolLeaseHooks/poolLend/poolModeNUMA/poolModeDax/
+  poolDeviceConfig/parsePoolDeviceConfig: use device.ModeNUMA/ModeDax,
+  deviceConfig, parseDeviceConfig. driver.go wiring: W1b adds
+  `driver.state.lending.set(lender, driver.broker)` next to
+  `pool.lender.set(...)` once nodeState.lending exists.
+
+W1b Status (2026-10-14 12:15, W1b): steps 1-8 done
+---------------------------------------------------
+(The "W1b note for W1a" above says 12:20; it was written at about 12:05.)
+Files changed in ~/github.com/intel/intel-resource-drivers-for-kubernetes
+(nothing committed):
+  pkg/cxl/device/device.go                 contract constants, CXLMemdev; comments
+  cmd/kubelet-cxl-plugin/lending.go        (new) contract: lentDevice, leaseHooks,
+                                           lendRecord, claimLender, deviceConfig,
+                                           parseDeviceConfig, modeFor, daxCDIDevice,
+                                           parseLendConfig
+  cmd/kubelet-cxl-plugin/lending_test.go   (new) claimLender (disabled, NRI missing,
+                                           lend/revoke, partial lend, joined revoke
+                                           errors, hook forwarding, nil safety),
+                                           lendRecord JSON of old state files,
+                                           TestParseLendConfig (moved from
+                                           broker_test.go), parseDeviceConfig for both
+                                           kinds and the subrequest rule, modeFor,
+                                           daxCDIDevice
+  cmd/kubelet-cxl-plugin/pool.go           onto claimLender; Lend *lendRecord (JSON
+                                           unchanged); poolCDIDevice uses daxCDIDevice;
+                                           lentDevice conversion (Source pool);
+                                           driverName(); release unchanged
+  cmd/kubelet-cxl-plugin/pool_test.go      config tests moved to lending_test.go
+  cmd/kubelet-cxl-plugin/broker.go         source/serial options, one companion
+                                           request builder with a source switch
+                                           (companionSources, companionRequest,
+                                           companionDevices), OnPrepared([]lentDevice)
+                                           sets Source, PoolDriver "" allowed
+  cmd/kubelet-cxl-plugin/broker_test.go    new: TestBrokerCompanionClaimLocal (local
+                                           numa, local dax read-only + serial, pool +
+                                           serial, any dax, any numa + serial, any
+                                           without pool helper), TestBrokerLocalDaxLease,
+                                           TestBrokerLocalNumaLease, TestBrokerAnyLeaseFromPool
+                                           (real pool helper prepares "lease/pool"),
+                                           TestBrokerOldStoreSource; TestBrokerLeaseOptions
+                                           extended (sources, serial, shared+local,
+                                           no pool helper)
+  cmd/kubelet-cxl-plugin/lease_store.go    lease.Source, leaseSourceAny, source()
+  cmd/kubelet-cxl-plugin/main.go           --lend (env LEND), alias --pool-lend (env POOL_LEND)
+  cmd/kubelet-cxl-plugin/driver.go         PublishDynamicToken = Lend; PoolDriver:
+                                           pool.driverName(); wiring:
+                                           pool.lender.set + driver.state.lending.set
+  cmd/cxl-request/main.go, main_test.go    --source, --local, --serial; "source" in
+                                           the response type; usage
+  deployments/cxl/local/device-classes.yaml (new) cxl-local-memory, cxl-local-dax
+  deployments/cxl/local/examples/          (new) local-memory-pod.yaml,
+                                           local-dax-shared-slice.yaml,
+                                           local-dax-readonly-pod.yaml,
+                                           local-borrower-pod.yaml
+  deployments/cxl/pool/device-class-dynamic.yaml  comment: --lend, local and pool
+  doc/cxl/LOCAL.md (new), doc/cxl/POOL.md, doc/cxl/README.md
+Results (with W1b's files and W1a's state at 12:09, before W1a's node_state.go
+edits started breaking the build):
+  go vet -mod vendor ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...: clean
+    (./cmd/... ./pkg/... fails on pkg/fakehlml: hlml.h missing, same at b57b62b)
+  go test -mod vendor -race -count=5 ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...: ok
+  gofmt -l: clean (cmd/kubelet-gpu-plugin/driver.go is unformatted at b57b62b too)
+  golangci-lint run ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...:
+    no new findings vs b57b62b (17 -> 15: the two errcheck p.revoke findings
+    in pool.go are gone; prepareClaim cyclop 30 -> 28)
+  CGO_ENABLED=0 go build of kubelet-cxl-plugin and cxl-request: static, ok
+  At 12:15 the package does not build because of W1a's in-progress
+  node_state.go/driver.go (newNodeState arguments, writeCDISpec,
+  writeLocalCDISpec, unused imports): expected, not touched.
+
+What W2 needs
+  kubelet-cxl-plugin flags: --lend (default true, env LEND; the old
+    --pool-lend / POOL_LEND still work: dra.source.sh needs no change).
+    The token "dynamic" is published whenever lending is on, also without
+    the pool helper. --pool-driver-name "" disables the pool helper; then
+    pool leases fail with "pool helper disabled (--pool-driver-name)".
+  DeviceClasses: deployments/cxl/local/device-classes.yaml (cxl-local-memory,
+    cxl-local-dax); dra-install must apply it next to pool/device-classes.yaml.
+  Lease protocol: request "source": "local"|"pool"|"any" ("" = pool),
+    "serial" also with kind memory. Response and list entries carry
+    "source": the requested one until Ready, then the source of the
+    allocated device ("local" or "pool"); old leases without source show
+    "pool". "serial" of a Ready local lease is the memdev serial (0x...).
+  cxl-request: memory <size> [--local | --source local|pool|any] [--serial 0x..]
+    [--dax [--read-only]] [--exec ...]. Usage errors (exit 2):
+      --source and --local are for memory (shared leases are pool leases)
+      --serial is for memory (shared takes the serial as its argument)
+      invalid --source "x" (local, pool or any)
+      --local conflicts with --source pool
+  Broker error texts (response "error"):
+      pool helper disabled (--pool-driver-name)
+      invalid source "x" (local, pool or any)
+      source local: a shared lease is a pool lease (a local slice is shared through a ResourceClaim)
+      lending unavailable: NRI not connected; lease L: lending to running containers is disabled  (unchanged)
+  Companion claim (labels, annotation, pod: unchanged):
+    local:  requests[0] = {name: lease, exactly: {deviceClassName: cxl-local-memory
+            (cxl-local-dax with --dax), capacity.requests.memory: <size>,
+            selectors: [device.attributes["cxl.generic"].serial == "0x.."] with --serial}}
+            configs (no requests): opaque cxl.generic LendConfig
+            {apiVersion: cxl.generic/v1alpha1, ...}; dax: + LocalDeviceConfig
+            {mode: dax, readOnly}
+    any:    {name: lease, firstAvailable: [{name: local, ...}, {name: pool,
+            deviceClassName: cxl-pool-memory, ...}]}, configs of both drivers
+            with requests [lease/local] / [lease/pool]; the allocation result's
+            request is "lease/local" or "lease/pool". Without the pool helper:
+            the local exact request alone.
+    pool:   unchanged; with --serial adds the selector
+            device.attributes["cxl-pool.generic"].serial == "0x..".
+  Dax CDI env prefix of local slices (W1a fills it through daxCDIDevice):
+    CXL_LOCAL_DAX_<SERIAL>, CXL_LOCAL_SIZE_<SERIAL>, CXL_LOCAL_SERIAL_<SERIAL>,
+    CXL_LOCAL_READONLY_<SERIAL>=1.
+  Example YAMLs: deployments/cxl/local/examples/{local-memory-pod,
+    local-dax-shared-slice, local-dax-readonly-pod, local-borrower-pod}.yaml
+    (yaml syntax checked; no cluster used).
+
+W1b Findings (2026-10-14, W1b)
+------------------------------
+Deviations from 02-design.txt
+ 1. --pool-lend is a visible alias (urfave/cli v2 has no hidden aliases;
+    help shows "--lend, --pool-lend"); env POOL_LEND kept next to LEND.
+ 2. One lease.Source field: the requested source until OnPrepared, then
+    the device's source (03 step 3). A Pending "any" lease reports
+    "source":"any".
+ 3. Source any without the pool helper is a local-only lease (exact
+    request), not an error; source pool (or default) fails with
+    "pool helper disabled (--pool-driver-name)".
+ 4. --serial with source pool selects the pool device by serial
+    (02 6.1 only says "serial: now also allowed with kind memory").
+ 5. claimLender.reprepared(rec, devs) added to the contract: a claim that
+    kubelet prepares again repeats OnLending+OnPrepared (pool.go did this
+    inline; nodeState can use it the same way).
+ 6. claimLender.lend returns errLendingUnavailable for a numa device when
+    NRI is not connected (check() refuses that case earlier; defensive).
+    A revoke error during the lend-failure rollback is logged now (was
+    ignored).
+ 7. modeFor error texts use cfg.Kind: "LocalDeviceConfig: readOnly needs
+    mode dax", "PoolDeviceConfig: ..." (unchanged for pool claims).
+ 8. 02 6.4 (kind "claim") not implemented (optional, not in 03's W1b steps).
+Open issues / for W1a and the orchestrator
+ - node_state.go:619 (W1a's file) still says "(--pool-lend=false or no pool
+   helper)"; the token now needs only --lend. Exact change: replace
+   "lending to running containers is disabled (--pool-lend=false or no pool helper)"
+   with "lending to running containers is disabled (--lend=false)".
+ - deployments/cxl/base/resource-driver.yaml lines 94 and 96 say
+   "(--pool-lend)" in comments (owned by nobody): "(--lend)".
+ - go.mod's replace of nri-plugins was changed to the local checkout path
+   by someone other than W1b (00-README says it is so); it must not be
+   committed that way.
+ - LOCAL.md documents W1a's part (attributes, Prepare/Unprepare, state
+   file localDevices.json, CDI device generic/cxl=local-<claim uid> in
+   spec cxl-local, manageMemdevs) from 02/03, not from W1a's code; W1a or
+   R1 must check it against the final local.go/node_state.go. The mode
+   conflict error is described, not quoted.
+ - W1a: s.lending.lend() needs lentDevice.Mode set (device.ModeNUMA or
+   ModeDax), Node >= 0 for numa, Source device.SourceLocal, Driver
+   cxl.generic; the broker takes Serial/SerialHex, Size (response "size"
+   and CXL_LEASE_SIZE: use the slice size for dax, the consumed size for
+   numa), Node, DaxDevice from devs[0]. lendConfig from s.lending.parse()
+   has APIVersion cxl.generic/v1alpha1 (checked there).
+ - The broker's request check accepts a local lease before any local
+   device is known; if no cxlmem device fits, the companion stays Pending
+   and the lease fails with "timeout: not Ready after ..." (as a pool lease
+   without free pool memory).
+
+----------------------------
+W1a note 2026-10-14: change needed in W1b's test files (signature change)
+  buildDevInfos got its 4th argument (03 W1a step 3):
+    buildDevInfos(driverConfig, detected, poolSerials map[uint64]bool, localModes map[uint64]string)
+  Please append ", nil" to the four calls in W1b's test files:
+    cmd/kubelet-cxl-plugin/broker_test.go  TestTokenDevice: both buildDevInfos(...) calls
+    cmd/kubelet-cxl-plugin/pool_test.go    TestBuildDevInfosSkipsPoolDevices: both calls
+  e.g. buildDevInfos(&DriverConfig{}, devices, map[uint64]bool{0xc1ee0001: true}, nil)
+  Until then the package's tests do not compile; the binaries build.
+  Also: nodeState has new fields local (*localAllocator), lending
+  (*claimLender, from newClaimLender(device.DriverName) in newNodeState)
+  and republish (func()); newNodeState has a 6th argument local. Test
+  literals of nodeState (broker_test.go TestTokenDevice) need no change:
+  nil lending and nil local are handled.
+
+W2 Status (phase 1) (2026-10-14 12:25, W2)
+------------------------------------------
+Phase 1 done: helpers and both tests written and checked statically,
+VM2 prepared. test14/test15 NOT run, dra-build NOT run, the node plugin
+NOT started anywhere, the VM of n4-cxl and VM1 not touched. Nothing
+committed. Nothing under scripts/testing/fake-cxl-pool changed except
+this file; nothing in the driver repository changed.
+
+Files (nri-plugins, test/e2e/memory.test-suite/memory-policy/)
+- dra.source.sh (extended, existing behaviour kept):
+  - DRA_LOCAL_CLASSES ($DRA_DRIVER_SRC/deployments/cxl/local/device-classes.yaml):
+    dra-install copies it to /root/cxl-local-device-classes.yaml and
+    applies it when it exists (like the dynamic class, else removes the
+    copy); dra-uninstall deletes it with `kubectl delete -f` of that copy.
+  - DRA_LOCAL_STATE (/var/lib/kubelet/plugins/cxl.generic/localDevices.json);
+    new dra-state-cleanup VMDIR replaces the three copies of the "no
+    regions -> remove preparedPoolClaims.json, leases.json, leases/" command
+    (dra-install-files, both branches of dra-uninstall) and removes
+    localDevices.json too.
+  - dra-local-find / dra-local-device VMDIR / dra-local-detach VMDIR: the
+    local device is found in fake-cxl-pool-server as the one device of
+    scope local, not shared, bound to this VM only (no hard-coded name:
+    here n4-cxl-shared-2-fedora-43-containerd.memdev1, 0xc100e2e1);
+    attached with owner "e2e:dra-local-device" (no k8s: prefix: the
+    controller and dra-pool-attachments ignore it, pool-cleanup still
+    detaches it on failure); waits for pkg/cxl (pool-cxl-wait) and, when
+    dra-install runs in the VM, for device cxlmem-<hex> in the node's
+    cxl.generic slice. Sets DRA_LOCAL_NAME/SERIAL/HEX/SIZE/DEVICE.
+    dra-local-detach waits (60 s) until a running plugin has released the
+    device's regions, then `fake-cxl-pool-client guest release SERIAL`,
+    detach through the server, waits until pkg/cxl does not see it.
+    Both idempotent.
+  - dra-memdev-sysfs VMDIR SERIAL (JSON of memdev, enabled, regions with
+    dax_region available/align and dax devices: name, size, target_node,
+    dev, driver; all looked up at run time by serial -> endpoint uport ->
+    region targets), dra-memdev-wait VMDIR LABEL SERIAL EXPR [TMO].
+  - Generic helpers for the new tests: dra-pod-claim (claim of a pod,
+    template or reference), dra-nodes-has/dra-nodes-eq (node list sets),
+    dra-touch-start/dra-touch-pages/dra-touch-stop/dra-touch-log-pages
+    (numa-touch.py --hold in any pod/container; pages via SIGUSR1 without
+    sleep: waits for a new "pages" line), dra-stays SECONDS MSG SNIPPET
+    (a state that must hold: checked every second, fails at once).
+  - dra-py: device(name, driver, node), request_policy(dev, name),
+    quantity(q), consumed(claim, name), MiB, dax_slices().
+  - dra-trace-summary: driver lines also match local|slice|cxlmem|mode.
+- n4-cxl-shared-2/test14-dra-local-memdev/code.var.sh (new, 567 lines):
+  stories A-F of 04 (YAML inline: claim-yaml claim|template, pod-yaml).
+- n4-cxl-shared-2/test15-dra-local-live-attach/code.var.sh (new, 543 lines):
+  stories A-G of 04 (borrower of test12).
+- test10-13, pool.source.sh, cxl.source.sh, the .py tools: unchanged.
+
+Static checks
+- bash -n and `shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016`: clean on
+  dra.source.sh, test14, test15 (the exclusions of test10-12); test10-13
+  still clean with their exclusions. Plain ASCII.
+- py_compile: no new .py files; the inline Python was executed: dra-py
+  helpers on sample slices/claims/memdev JSON, the dra-memdev-sysfs parser
+  on a fake sysfs tree and live in VM2, local-state-claims on 5 shapes
+  (W1a's localDevices.json: devices[*].claims map counts as claims).
+- dra-local-find on the JSON of a throwaway fake-cxl-pool-server
+  (127.0.0.1:9919, discovery of VM2 only, run for 1 s, no attach, port free
+  afterwards): finds n4-cxl-shared-2-fedora-43-containerd.memdev1 0xc100e2e1
+  268435456; also on a two-VM variant (localHosts) and in attached state.
+  Note: a single-host local device has localHost only (no localHosts).
+- `kubectl apply --dry-run=server` in VM2 of the YAML of both tests
+  (templates with and without the read-only LocalDeviceConfig, the shared
+  ResourceClaim, the pods, the borrower): accepted.
+- Live in VM2 on a claim-less scratch pod (namespace w2-scratch, deleted):
+  dra-touch-start/pages/stop, dra-stays (true holds, false fails at 0 s),
+  dra-container-cgroup, dra-pod-claim (no claim -> 1).
+
+VM2 (n4-cxl-shared-2-fedora-43-containerd) state
+- Pre-pulled (all up to date): docker.io/library/busybox:latest,
+  docker.io/library/python:3-alpine, registry.k8s.io/pause:3.10.
+- cxl, daxctl, numactl, cxl-dump, fake-cxl-pool-client present.
+- No kubelet-cxl-plugin / fake-cxl-pool-controller units, no mem*/region*
+  in /sys/bus/cxl/devices, no cxl-type3 in qemu, auto_online_blocks
+  offline, /var/lib/kubelet/plugins empty, single-node cluster v1.37.1,
+  no extra namespaces. Port 9909 free on the host. /root has dax-rw.py and
+  numa-touch.py (dra-dax-tool-install), as after every DRA test.
+- Its static shared file device has the old serial 0xc1f0ee00 (test00-up
+  says recreate such VMs); the new tests do not use it.
+
+Driver-facing assumptions the tests assert on (W1a/W1b: please confirm;
+most already match "What W2 needs" of W1b and LOCAL.md)
+ slice device (W1a): name cxlmem-c100e2e1 in the node's cxl.generic slice;
+   attributes type "cxl-memdev", source "local", mode "none"|"numa"|"dax",
+   serial "0xc100e2e1", size 268435456 (int), name == memN of pkg/cxl,
+   nodeAffinity == memdev NodeAffinity == 0; capacity memory == 256Mi with
+   requestPolicy.validRange.min == "2Mi" and .step == "2Mi" (strings as
+   the apiserver returns them); allowMultipleAllocations true; no
+   cxl-node device for the plugin's own region; mode republished after
+   Prepare and Unprepare (waited for, 60 s).
+ claims (W1a): allocation result driver cxl.generic, device
+   cxlmem-c100e2e1, consumedCapacity memory == request (64Mi, 32Mi, 16Mi,
+   128Mi); four dax claims sum to 176Mi.
+ numa (W1a): one region on the memdev, OnlineSize 256M, node >= 2,
+   sysfs dax device driver kmem with target_node N; the containers of
+   the claims have N in their own cpuset.mems (contains, not equals:
+   cgmpolmgr writes N only for CXL-only claims); numa-touch 32 MiB lands
+   on N.
+ dax (W1a): region OnlineSize 0; each claim a dax device with the claimed
+   size bound to device_dax; dax_region available_size == 256M - sum of
+   slices after every change (slices are deleted one by one; daxX.0 kept
+   at size 0 is not counted: only devices with size > 0 are slices);
+   env CXL_LOCAL_DAX_C100E2E1=/dev/daxX.Y, CXL_LOCAL_SIZE_C100E2E1=<bytes>,
+   CXL_LOCAL_SERIAL_C100E2E1=0xc100e2e1 (lower-case), and
+   CXL_LOCAL_READONLY_C100E2E1=1 only for readOnly; /dev/daxX.Y a char
+   device with the sysfs major:minor; shared claim: the same path and
+   numbers in both pods; read-only: runtime spec device rule access "r"
+   for that major:minor, check-ro prints "open for writing refused: EPERM"
+   and "writable mapping refused: EACCES", CDI device "name: local-<claim
+   uid>" in /etc/cdi/* or /var/run/cdi/* with "permissions: r" and the
+   READONLY env (grep -A20).
+ end state (W1a): memdev present and Enabled, no region, mode none, no
+   CDI device named local-* left, localDevices.json absent or every
+   "claims" empty.
+ leases (W1b): `cxl-request memory 128Mi --source local --wait 60s` prints
+   one JSON line: state Ready, kind memory, source local, serial
+   0xc100e2e1, node >= 2, size >= 128Mi; companion claim cxl-lease-<id>:
+   requests == [one, exactly.deviceClassName cxl-local-memory|cxl-local-dax,
+   capacity.requests.memory == size]; configs: LendConfig of driver
+   cxl.generic {apiVersion cxl.generic/v1alpha1, lease, container main, pod
+   {namespace, name, uid}}, and for dax exactly one LocalDeviceConfig
+   (cxl.generic, mode dax, readOnly true|absent); no LocalDeviceConfig for
+   numa; owner borrower (controller true), reservedFor the companion;
+   companion pod pause:3.10 with labels cxl-pool.generic/lease and
+   .../requester-uid. A dax lease on a device in mode numa: exit 3, state
+   Failed, error contains "timeout", nothing left. `--exec` env
+   CXL_LEASE, CXL_LEASE_DAX, CXL_LEASE_SIZE (slice bytes),
+   CXL_LEASE_READONLY, CXL_LEASE_FD=3; `cxl-request list` entries with
+   lease, state, mode "dax", source, size (slice bytes), dax; `--local`
+   accepted as --source local; `cxl-request memory 64Mi --dax` without
+   --source: source pool.
+ any (W1b): requests[0].firstAvailable names [local, pool]; result request
+   "lease/local" (fits) or "lease/pool" (256Mi with 128Mi left); configs
+   exactly two LendConfigs with requests ["lease/local"] (cxl.generic) and
+   ["lease/pool"] (cxl-pool.generic) for numa leases.
+
+Deviations from 04-plan-e2e.txt (with reasons)
+ 1. test14 D: 04 says the consumedCapacity sum is 208Mi; 64+32+64+16 is
+    176Mi (available_size 80M). The test asserts 176Mi.
+ 2. test14 C and E: the moment between two modes (no region, mode none)
+    is not asserted: a claim of the other mode is waiting, and the
+    scheduler hands it the device within the polling interval. Asserted
+    instead: C, dax-early Running on a devdax region (OnlineSize 0, one
+    64M device_dax slice), memdev enabled; E, numa-late Running on a kmem
+    region on the same node N. The initial state (no region, enabled,
+    mode none, no CDI local-*, no claims in localDevices.json) is asserted
+    at the end of test14 E and after test15 C, D, E and F.
+ 3. test15 F: "two local leases (numa with pages, dax)" cannot both be
+    Ready on one device (one mode at a time, test15 B shows it). F uses a
+    local numa lease with 32 MiB in use and a pool dax lease
+    (`memory 64Mi --dax`, no --source: also checks the default source).
+ 4. test15 E adds a check that 04 does not ask for: after releasing the
+    pool lease the local lease's node is still in main's cpuset.mems
+    (see question 1).
+ 5. "stays Pending" (test14 B, E): wait for PodScheduled Unschedulable,
+    then dra-stays 20 s with no nodeName, then the claim unallocated.
+ 6. test12 keeps its own nodelist/touch helpers (the regression run must
+    use the test unchanged); it can switch to dra-nodes-*/dra-touch-*
+    afterwards.
+
+Questions for W1a/W1b/orchestrator
+ 1. Likely bug (lend.go, owned by neither agent in 03): changeLend keeps a
+    SET of lent nodes per container. Two leases of one container whose
+    memory is on the same node (a local region and a pool device in an HB0
+    slot share node 2: the server picks HB0 pool slots first) -> releasing
+    one revokes the node while the other lease is Ready. test15 E asserts
+    that the node stays lent. Fix candidates: refcount per container and
+    node in lend.go, or claimLender.revoke skipping nodes that another
+    Ready lease of the same container holds (the broker knows them).
+ 2. W1a: does a hotplugged memdev come up Enabled (cxl_mem bound) without
+    the plugin? test14 A asserts it as the initial state; if the plugin
+    enables it, or the kernel does not, tell me and I drop that check.
+ 3. W1a: requestPolicy validRange as published: exactly {min: 2Mi, step:
+    2Mi} (no max, no default)? The test checks min and step only.
+ 4. W1a: are numa claims' containers steered (cgmpolmgr) to cpuset.mems
+    == N only? test14 checks "contains N"; tell me if you expect DRAM nodes
+    there too.
+ 5. W1b: the size of a Ready local numa lease is the consumed size (as
+    your note says); test15 asserts >= 128Mi, so either works.
+
+Orchestrator decisions (2026-10-14 12:40, Fable)
+------------------------------------------------
+D1 W2's question 1 is a real bug of the plan-3 lend primitives, found by
+   the shared-node fact of 01 1.1: lend.go keeps a SET of lent nodes per
+   container, so two leases whose devices share a NUMA node (a local
+   region and a pool device under the same host bridge, or two pool
+   devices under one host bridge) break on the first release: the node is
+   revoked while the other lease is Ready. Fix, assigned to W1b (who owns
+   the callers), with ownership of lend.go and lend_test.go for it:
+   the Lender interface takes a holder:
+     LendNode(ctx, podUID, name string, node int, holder string) error
+     RevokeNode(ctx, podUID, name string, node int, holder string) error
+   The lent state of a container is node -> set of holders; cpuset.mems =
+   base + nodes that have at least one holder; a revoke removes the
+   holder and shrinks cpuset.mems only when the node has no holder left;
+   lend and revoke are idempotent per (node, holder). The holder is the
+   lease id (lendConfig.Lease, lendRecord.Lease) everywhere: lending.go
+   lend/revoke, the broker's re-apply of Ready leases (reconcile,
+   OnContainerStarted). The post-restart special case of RevokeNode
+   (shrink when the node is in the cgroup's cpuset.mems but not in the
+   lent set) applies only when the node has no holder. LentNodes keeps
+   returning distinct nodes. lend_test.go: existing tests adapted, plus
+   two holders of one node: release of one keeps the node, release of
+   both removes it. 02-design.txt section 5 gets this rule.
+D2 W1a's request: W1b appends ", nil" to the four buildDevInfos calls in
+   broker_test.go and pool_test.go (W1b's files).
+D3 W1b's open items: the node_state.go error text "(--pool-lend=false or
+   no pool helper)" -> "(--lend=false)" is W1a's (node_state.go); the
+   resource-driver.yaml comments "(--pool-lend)" -> "(--lend)" go to W1b.
+D4 W2's deviations accepted (176Mi sum: 04 was wrong; the mode switch
+   asserted instead of a brief free state; test15 F with a local numa and
+   a pool dax lease). W2's assumptions 2-4 are consistent with 02: a
+   hotplugged memdev is enabled by the kernel and the plugin never
+   disables a local device; requestPolicy min and step 2Mi; "contains"
+   for cpuset.mems.
+D5 Phase 2 of W2 starts when W1a reports and W1b has done D1-D3 and the
+   whole package builds and tests pass.
+
+W1b Status (follow-up, 2026-10-14 12:31, W1b): D1-D3 done
+----------------------------------------------------------
+D1 lend holders (lend.go, lend_test.go now W1b's for this fix)
+  Interface change (lend.go, Lender), for W1a and W2:
+    LendNode(ctx context.Context, podUID, name string, node int, holder string) error
+    RevokeNode(ctx context.Context, podUID, name string, node int, holder string) error
+  The holder is the lease id everywhere: claimLender.lend/revoke pass
+  cfg.Lease / rec.Lease (lending.go), the broker passes l.ID in release()
+  and the lease id in relendContainer (reconcile and OnContainerStarted).
+  No other callers exist (nri.go, node_state.go, local.go call the
+  claimLender, not the Lender).
+  Rule (nriPlugin): the lent state of a container is node -> set of
+  holders (type lentNodes); cpuset.mems = base + the nodes with at least
+  one holder; LendNode adds the holder (an update only when the node was
+  not lent yet); RevokeNode drops the holder and shrinks cpuset.mems only
+  when the node has no holder left; both idempotent per (node, holder);
+  revoking for a holder that does not hold the node changes nothing; the
+  post-restart special case (shrink when cgroup cpuset.mems has the node
+  but nothing is lent) applies only when the node has no holder; LentNodes
+  returns the distinct nodes. Known transient: after a plugin restart,
+  before the reconcile re-applied the Ready leases, an Unprepare revoke of
+  lease A shrinks a node that lease B also holds (no holders are known
+  yet); the reconcile re-lends it for B within its 60 s period.
+  Tests: lend_test.go TestLendTwoHolders (two holders of node 2: releasing
+  one keeps it although cgroup cpuset.mems has it, releasing both removes
+  it; idempotence; a non-holder revoke; two nodes with their own holders),
+  existing lend tests with holder "l1"; broker_test.go
+  TestBrokerTwoLeasesOneNode (a local and a pool lease on node 2: both
+  lease ids hold it, the reconcile re-applies both, the first release
+  keeps the node, the second removes it). fakeLender (broker_test.go)
+  keeps holders per node (lent: podUID/name -> node -> holders, new
+  holders(podUID, name, node)); its call log format is unchanged
+  ("lend <pod>/<ctr> <node>"), so W1a's node_state_test.go needed no edit.
+  Doc: POOL.md "Limitations", cpuset.mems bullet: a node is lent per
+  lease and stays until the last lease holding it is released. 02-design.txt
+  section 5 (planning doc in nri-plugins) not edited by W1b: orchestrator.
+D2 the four buildDevInfos calls in broker_test.go and pool_test.go have the
+  fourth argument (nil) (done at 12:20).
+D3 deployments/cxl/base/resource-driver.yaml: both "(--pool-lend)" comments
+  are "(--lend)". node_state.go no longer has the old text (W1a).
+Other change since the first status: driver.go wiring is now
+  `pool.lending().set(lender, driver.broker)` (pool.go lending(): nil-safe
+  accessor, no branch in newDriver) and `driver.state.lending.set(...)`.
+Results with W1a's current files (the whole package builds):
+  go vet -mod vendor ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...: clean
+  go test -mod vendor -race -count=5 ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...: ok
+    (one earlier run showed TestBrokerCloseClaimReleasesLeases failing
+    once in about 20 package runs; not reproduced in 15 further runs of the
+    broker tests nor 20 runs of the test alone; the test is unchanged from
+    b57b62b and does not touch sources or holders; likely the pre-existing
+    race of the initial reconcile with the companion creation)
+  gofmt: clean
+  golangci-lint (cxl packages) vs b57b62b: no new findings in W1b's files
+    (changeLend cyclop 21 as before, newDriver 23 -> 21, prepareClaim
+    30 -> 28, two errcheck findings gone); the diff shows W1a's
+    buildDevInfos 29 -> 25 and prepareAllocatedDevices gone.
+  CGO_ENABLED=0 builds of kubelet-cxl-plugin and cxl-request: ok, static
+
+W1a Status (2026-10-14 12:35, W1a): steps 1-5 done
+---------------------------------------------------
+Files changed (nothing committed):
+ nri-plugins (branch 5jQ-cxl):
+  pkg/cxl/memctl/memctl.go       DaxRegionDir, DaxRegionInfo, DaxDeviceSize,
+                                 DaxDeviceResource, UnbindDax, ResizeDaxDevice,
+                                 CreateDaxDevice, DeleteDaxDevice, ReleaseRegions
+                                 (Release = ReleaseRegions + disable-memdev),
+                                 ReleaseRegion(ctx, region), BlocksNode(blocks),
+                                 Manager.WriteFile (sysfs write hook, nil =
+                                 os.WriteFile); SetDaxDriver's sysfs path unbinds
+                                 through UnbindDax.
+  pkg/cxl/memctl/memctl_test.go  the fake sysfs fakes the kernel side of the dax
+                                 bus (create/delete/size/bind/unbind) through
+                                 WriteFile; TestDaxSlices, TestDaxDriverSysfs,
+                                 TestBlocksNodeAndReleaseRegion; errcheck findings
+                                 of the file fixed.
+ driver (branch 5fC-cxl):
+  go.mod                         replace -> /home/akervine/github.com/containers/nri-plugins
+                                 (see the W1a note above; revert before commit)
+  cmd/kubelet-cxl-plugin/local.go       (new) localAllocator: Acquire, Release,
+                                 Reconcile, Modes, holds, regionPath; state file
+  cmd/kubelet-cxl-plugin/local_test.go  (new) fakeLocalSys (embeds pool_test.go's
+                                 fakePoolSys, adds the dax bus): numa refcount,
+                                 dax slices (dax0.0 reuse, create, delete order,
+                                 rounding, no room), mode conflicts, sysfs-only
+                                 binding, add_dev retry, foreign region, state
+                                 file, Reconcile (unprepared claim, gone slice,
+                                 claim-less region, gone region, gone memdev)
+  cmd/kubelet-cxl-plugin/node_state.go  cxl-memdev publication, Prepare/Unprepare of
+                                 cxlmem claims, LendConfig path, cxl-local CDI
+                                 spec, republish hook; per-device prepare logic
+                                 moved into helpers (buildDevInfos cyclop 29->25,
+                                 prepareAllocatedDevices no longer over the limit)
+  cmd/kubelet-cxl-plugin/node_state_test.go  buildDevInfos rules, GetResources of
+                                 a cxlmem device, Prepare/Unprepare numa and dax
+                                 (CDI env/nodes, read-only, two slices, rollback,
+                                 config errors, restart rebuild), lending (numa,
+                                 dax, failure rollback, refusals), claims info
+                                 compatibility
+  cmd/kubelet-cxl-plugin/driver.go      DriverConfig.ManageMemdevs + manageMemdevs();
+                                 newDriverState (newLocalHelper + first scan +
+                                 newNodeState), newLocalHelper, newMemctl (shared
+                                 with newPoolHelper), republish hook, driver.started,
+                                 scanDevices/rescanAndPublish localModes argument
+  cmd/kubelet-cxl-plugin/driver_test.go TestDriverConfigManageMemdevs,
+                                 TestNewLocalHelper, TestRescanBeforeStart
+Results (with W1b's files of 12:3x present, including the D1 Lender change):
+  nri-plugins: go test -race ./pkg/cxl/...: ok; go vet: clean; gofmt -s: clean;
+    golangci-lint run ./pkg/cxl/...: 0 issues. `make golangci-lint` stops at
+    typecheck of the untracked cmd/plugins/balloons/policy/podresourcehints_test.go
+    (not ours, untouched). `make reformat` also rewrote 12 generated
+    pkg/apis/... files that go1.26 gofmt formats differently (unrelated, at
+    HEAD too): W1a reverted exactly those 12 (checked: their only change was
+    gofmt's); pkg/cxl needs no reformat.
+  driver: go mod vendor: vendored memctl == local memctl.
+    go vet -mod vendor ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...: clean
+      (./cmd/... ./pkg/... fails on pkg/fakehlml: hlml.h missing, as at b57b62b)
+    go test -mod vendor -race ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...: ok
+      (W1a's tests also -count=5: ok)
+    gofmt -l: clean
+    golangci-lint run ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...:
+      no new findings vs b57b62b (17 -> 14; newDriver cyclop 23 -> 21,
+      buildDevInfos 29 -> 25, prepareAllocatedDevices 18 -> below 15; the pool.go
+      changes are W1b's)
+    CGO_ENABLED=0 GOARCH=amd64 go build -mod vendor of kubelet-cxl-plugin and
+      cxl-request: static (built to /tmp/w1a/bin; bin/ not touched)
+
+What W2 needs
+  Device in the node's cxl.generic slice: name "cxlmem-" + lower-case hex serial
+    (cxlmem-c100e2e1). Attributes: type "cxl-memdev", name "memN", serial
+    "0x<hex>" (lower-case), source "local", size <RamSize bytes> (int),
+    nodeAffinity <memdev numa_node> (int, absent when -1), mode "none" | "numa"
+    | "dax". Capacity memory = RamSize with requestPolicy
+      {default: <RamSize rounded down to 2Mi>, validRange: {min: 2Mi, step: 2Mi}}
+    (no max; default is REQUIRED by the apiserver when validRange is set, and is
+    the whole device: a claim without an amount consumes all of it).
+    allowMultipleAllocations true; nodeAllocatableResources as cxl-node devices.
+  Published only when: memdev enabled (cxl_mem bound), RamSize > 0, not a pool
+    serial, not in ignoreDevices (name, cxl/memN, major:minor, serial dec/0xhex/hex),
+    and no region on it except the plugin's own. The plugin's own region is never
+    a cxl-node device; a memdev with a foreign region stays as today.
+  Config key: manageMemdevs (DriverConfig file, bool, default true); false = no
+    cxlmem devices, no regions, exactly the old behaviour.
+  Mode attribute: republished (rescan + PublishResources) after every Prepare
+    and Unprepare of a claim with a cxlmem result, also after a failed one.
+  numa claim: one ram region on the memdev, all blocks online_movable (OnlineSize
+    = whole memdev), dax device bound to kmem; PreparedDeviceInfo type cxl-node
+    with NUMANodes [N], so NRI steering is exactly as for cxl-node claims
+    (claim marker CXL_CLAIM_<uid>=1). Every numa claim of the memdev gets the same N.
+  dax claim: devdax region; the first slice is daxX.0 resized, later ones
+    dax_region/create; each bound to device_dax; a released slice is deleted
+    (daxX.0 is set to size 0 and kept, and reused by the next slice);
+    available_size = region size - sum of slice sizes. Slice size = consumed
+    capacity rounded up to the dax region align (2 MiB).
+  CDI: spec file "cxl-local" (cxl-local.yaml in the CDI root), kind generic/cxl;
+    device "local-<claim uid>" for the claim's first dax slice ("local-<uid>-<n>"
+    for further slices of the same claim, n = 1, 2, ...). PrepareResult device
+    CDI IDs: generic/cxl=claim-<uid> and generic/cxl=local-<uid>. Env:
+      CXL_LOCAL_DAX_<SERIAL>=/dev/daxX.Y
+      CXL_LOCAL_SIZE_<SERIAL>=<slice bytes>
+      CXL_LOCAL_SERIAL_<SERIAL>=0x<serial lower-case>
+      CXL_LOCAL_READONLY_<SERIAL>=1            (readOnly only)
+    (<SERIAL> upper-case hex, no 0x); device node {path /dev/daxX.Y, type c,
+    major, minor, permissions "r" when readOnly}. The spec is removed when no
+    dax slice is prepared.
+  Companion claims (LendConfig, driver cxl.generic): no claim marker CDI device
+    (the pause container is not steered); dax companions keep generic/cxl=local-<uid>.
+    lentDevice: Source local, Driver cxl.generic, Size = consumed bytes (numa) or
+    slice bytes (dax), Node N (numa) / -1, DaxDevice (dax).
+  State file: /var/lib/kubelet/plugins/cxl.generic/localDevices.json, mode 0600,
+    a JSON ARRAY of devices:
+      [{"serial": <decimal>, "serialHex": "c100e2e1", "memdev": "mem1",
+        "region": "region3", "mode": "numa"|"dax", "node": 2, "dax": "dax3.0",
+        "claims": {"<claim uid>": [{"request": "...", "region": "region3",
+          "size": <bytes>, "dax": "dax3.1", "daxDevice": "/dev/dax3.1",
+          "major": 252, "minor": 1, "readOnly": true}]}}]
+    "[]" when nothing is used (the file stays). At start, entries of gone memdevs
+    or regions are dropped, claims not in preparedClaimsInfo.json released,
+    claim-less regions destroyed.
+  Error texts (Prepare errors, seen in pod events):
+    mode conflict: "claim NS/NAME: device cxlmem-HEX: memdev is in use in another
+      mode: memdev memN (serial 0xHEX) is in mode numa, the claim wants dax"
+    no room: "...: no room for the slice: N bytes free in regionK, the slice needs M"
+    foreign region: "...: memdev memN has region regionK that the plugin did not create"
+    unmanaged: "...: local memdevs are not managed (manageMemdevs: false)"
+    "claim NS/NAME: LendConfig needs a cxl-memdev device"
+    "LocalDeviceConfig: readOnly needs mode dax", `LocalDeviceConfig: invalid mode "x" (numa or dax)`,
+    `invalid LocalDeviceConfig from FromClaim config: json: unknown field "x"`
+    (config errors are prefixed "claim NS/NAME: request REQ: ")
+    token claim without lending: "lending to running containers is disabled (--lend=false)"
+  Plugin log lines: "local: memdev memN (serial 0x..) ..." (create, slice,
+    release), "memctl: ..." (sysfs/cxl/daxctl steps).
+  Answers to W2's questions: (2) yes, the kernel enables a hotplugged memdev
+    (cxl_mem probes it); the plugin never disables a local memdev, and does not
+    publish a disabled one. (3) min and step 2Mi, plus default = whole device
+    (see above), no max. (4) numa claims are cxl-node claims for cgmpolmgr:
+    "contains N" is right.
+
+W1a Findings (2026-10-14, W1a)
+------------------------------
+Deviations from 02-design.txt (and 03), with reasons
+ 1. requestPolicy has default = device size (rounded down to 2Mi): the v1.37.1
+    apiserver rejects a validRange without default (pkg/apis/resource/
+    validation validateValidRequestValues: "required when validRange is
+    defined"). Same meaning as 02 ("no amount = whole device"). LOCAL.md
+    (W1b) shows only validRange: please add default.
+ 2. Disabled memdevs are not published: their regions cannot be seen (no
+    endpoint), so the "no foreign region" rule cannot be checked. LOCAL.md
+    should say "enabled".
+ 3. One CDI device per dax slice, not per claim: "local-<uid>" for the first,
+    "local-<uid>-<n>" for more slices of one claim. kubelet passes the CDI IDs
+    of every device of a claim to the runtime without de-duplication, so one
+    shared ID on two results would inject the device node twice.
+ 4. Claims with a LendConfig get no claim marker: the memory belongs to the
+    borrower, the companion's pause container must not be steered onto node N
+    (pool companion claims never had a cxl.generic marker either).
+ 5. memctl beyond 03: ReleaseRegion(ctx, region) (the allocator destroys only
+    its own region, never a foreign one on the same memdev), BlocksNode
+    (pool.go has a private copy, blocksNode: W1b may switch to memctl's),
+    Manager.WriteFile (testability: sysfs attributes of the dax bus cannot be
+    faked with plain files), UnbindDax(ctx, dax).
+ 6. Reconcile also releases allocator claims that are not in
+    preparedClaimsInfo.json (crash between Acquire and the claims file write;
+    kubelet then prepares again).
+ 7. newNodeState rewrites the cxl-claims and cxl-local CDI specs from the
+    prepared claims at start. Before, the start-up CDI cleanup removed
+    cxl-claims and it came back only with the next Prepare/Unprepare (new
+    containers of claims prepared before a restart lost their marker). The
+    cxl-local spec skips slices the allocator does not hold, so a stale
+    major:minor after a reboot never reaches a container.
+ 8. A Prepare whose prepared-claims files cannot be written rolls the claim
+    back (revoke, release, forget, specs rewritten); before, the claim stayed
+    prepared in memory only.
+ 9. rescanAndPublish only rescans until the kubelet plugin runs
+    (driver.started): kubelet can call Prepare as soon as Start registers,
+    before driver.helper is set. Its log line is "rescanning devices" (not
+    "udev event triggered").
+10. Testability.FakeMemoryDevices (optional in 03) not done. The allocator
+    has one snapshot, Modes() (serial -> mode, including a memdev whose
+    region is being created); its keys are the Serials() of 03.
+11. newDriver: first scan + newNodeState moved into newDriverState (with
+    newLocalHelper), newMemctl shared with newPoolHelper (keeps newDriver's
+    cyclop below the b57b62b value).
+Open issues, for W1b, W2, the orchestrator
+ - driver.go prepareResourceClaim (not W1a's part) returns the stored result
+   of a prepared claim from d.state.Prepared without the lock and without
+   calling nodeState.Prepare, so claimLender.reprepared (which nodeState.Prepare
+   calls for prepared companion claims) is never reached through kubelet.
+   Suggested change (orchestrator to assign):
+     func (d *driver) prepareResourceClaim(ctx context.Context, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
+         if err := d.state.Prepare(ctx, claim); err != nil {
+             return kubeletplugin.PrepareResult{Err: err}
+         }
+         d.state.Lock()
+         defer d.state.Unlock()
+         return d.state.Prepared[string(claim.UID)]
+     }
+ - Slices are bound with memctl.SetDaxDriver, which uses daxctl when installed
+   (`daxctl reconfigure-device --mode=devdax --force daxX.Y` on an unbound,
+   freshly sized device). 01 measured the sysfs bind; the daxctl path for a
+   disabled slice is not measured. If test14 fails there on VM2 (daxctl
+   installed), that is the place to look.
+ - buildDevInfos hides every region of a memdev the allocator uses (by serial,
+   as 03 specifies): a region an admin adds on such a memdev is not published
+   as cxl-node until the plugin releases the memdev.
+ - LOCAL.md vs code (W1b or R1): items 1-4 above, the mode conflict text above,
+   restart also releases claims that are not prepared.
+ - local_test.go reuses pool_test.go's fakePoolSys (plug, unplug, exec,
+   manager, wantCommand, wantBlocks), wantErr, noErr, cdiDeviceByName, and
+   broker_test.go/lending_test.go's fakeLender, fakeHooks, testNode, testNS:
+   keep them when refactoring.
+ - go.mod must get a pushed pseudo-version replace again before commit.
+
+W1a follow-up: driver.go fix done 2026-10-14 12:39
+  driver.go prepareResourceClaim always calls nodeState.Prepare and returns
+  the stored result under the lock. nodeState.Prepare checks "already
+  prepared" first (before the allocation check), touches no device, never
+  fails for a prepared claim, and calls claimLender.reprepared only for
+  claims with a stored lend. go vet and go test -race ./cmd/kubelet-cxl-plugin/...: ok.
+
+W1a Status (follow-up) (2026-10-14 12:41, W1a)
+---------------------------------------------
+1. driver.go prepareResourceClaim: always nodeState.Prepare, then the stored
+   PrepareResult under the state lock (no unlocked read of Prepared).
+   nodeState.prepare checks "already prepared" before anything else (also
+   before the allocation check, so a repeated Prepare with a claim object
+   whose status has no allocation still succeeds), touches no device, does
+   not republish, cannot fail, and calls claimLender.reprepared only for a
+   claim with a stored lend (reprepared ignores an OnLending error and then
+   skips OnPrepared). New test TestPrepareAlreadyPrepared (node_state_test.go):
+   repeated prepare of a numa companion claim and of a plain numa claim, with
+   nil allocation: same result, no commands, no republish, no LendNode, one
+   more OnLending+OnPrepared for the companion only.
+2. doc/cxl/LOCAL.md corrected: enabled memdevs only; requestPolicy with
+   default = whole device (API server requires it) next to validRange min/step
+   2Mi; one CDI device per slice (local-<uid>, local-<uid>-<n>); companion
+   claims have no claim marker (pause container not steered); the exact mode
+   conflict error; a repeated Prepare touches no device; daxX.0 kept with size
+   0; restart also releases claims that are not in preparedClaimsInfo.json and
+   writes no CDI device for gone slices; limitation: an admin region on a
+   memdev in use stays hidden. Plain ASCII, no history wording.
+   node_state.go already had "(--lend=false)"; nothing left to change there.
+Results: go vet -mod vendor ./cmd/kubelet-cxl-plugin/... clean; go test -mod
+   vendor -race ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...: ok; gofmt
+   clean; golangci-lint (CXL packages): no new findings vs b57b62b (still 14).
+   Note: one lint run failed with "inconsistent vendoring" while somebody ran
+   go mod vendor at 12:41 (vendor/modules.txt rewritten); a rerun was clean.
+Files touched in this follow-up: cmd/kubelet-cxl-plugin/driver.go
+   (prepareResourceClaim only), node_state.go (prepare), node_state_test.go,
+   doc/cxl/LOCAL.md. Nothing else.
+
+R1 Review (2026-10-14, R1)
+--------------------------
+Scope: driver working tree vs b57b62b (incl. untracked lending.go,
+local.go, their tests, deployments/cxl/local/, doc/cxl/LOCAL.md) and
+nri-plugins pkg/cxl/memctl vs ee6442a22. driver.go prepareResourceClaim and
+LOCAL.md re-read at 12:56 (mtimes 12:38 and 12:40, after W1a's follow-up).
+Paths below are relative to cmd/kubelet-cxl-plugin/ unless given.
+
+BLOCKER
+B1 node_state.go:661-716 (prepare), 574-623 (unprepare/releaseClaim): the
+   nodeState lock (s.Lock) is now held across slow device work and across
+   NRI UpdateContainers, and NRI event handlers take the same lock.
+   - NRI side: CreateContainer (nri.go:167) -> claimedMemory ->
+     p.state.GetClaimInfo (nri.go:320, node_state.go:1088) takes s.Lock
+     for every container with a CXL_CLAIM_ marker; Synchronize holds p.mu
+     (lend.go:334) and calls hasSteeredClaims -> GetClaimInfo (lend.go:360).
+   - Prepare side: under s.Lock, Acquire runs cxl create-region, onlining,
+     and the add_dev retry sleep of 3 s (local.go:266-275); lendClaim
+     (node_state.go:687) -> LendNode -> changeLend takes p.lendMu and p.mu
+     (lend.go:517-520) and calls UpdateContainers. Unprepare, under s.Lock,
+     calls RevokeNode (UpdateContainers) and Release (offlining a movable
+     node, which migrates pages).
+   Consequences:
+   (a) containerd holds the NRI adaptation lock while CreateContainer runs
+       (containerd vendor nri/pkg/adaptation/adaptation.go:324-325) and
+       needs the same lock for unsolicited updates (adaptation.go:481-482).
+       Our CreateContainer waits for s.Lock, Prepare's UpdateContainers
+       waits for containerd: after the 2 s plugin request timeout
+       (api.DefaultPluginRequestTimeout) containerd treats the plugin as
+       failed (plugin.go:624-628, isFatalError on DeadlineExceeded), closes
+       it, and creates the container with no adjustment. nri.go:138 onClose
+       only logs, there is no reconnect, so steering and lending stay off
+       until the plugin restarts. The same timeout happens without any
+       lend whenever a local Prepare or Unprepare holds s.Lock longer than
+       2 s (large device, the add_dev retry right after a hotplug, which
+       test14/test15 do, or an offline that migrates pages).
+   (b) ABBA deadlock with no timeout: Synchronize holds p.mu and waits for
+       s.Lock, while Prepare holds s.Lock and waits for p.mu inside
+       LendNode. s.Lock then stays held for good. The window is narrow
+       (Synchronize runs only at connect; lending.set happens right after
+       startNRIPlugin), but nothing recovers from it.
+   Before this change nodeState held its lock only for bookkeeping. The
+   pool helper does the same device work and lends under its own p.mu,
+   which no NRI handler takes. This breaks the plan-3 rule in 05 point 3.
+   Fix: the NRI readers must not use s.Lock. Give preparedClaims its own
+   lock (e.g. nodeState.infoMu sync.RWMutex, or an atomic.Pointer to a
+   copy-on-write map). GetClaimInfo/GetMemoryPolicy take only that lock;
+   prepare/forget take it only while they change the map, never across
+   Acquire, Release, lend or revoke. s.Lock stays the Prepare/Unprepare
+   serializer. Test: while a fake Lender blocks in LendNode inside
+   Prepare, GetClaimInfo must return (with a timeout in the test).
+
+BUG
+B2 local.go:444-464 with 204-227: a numa release that fails part of the
+   way leaves a partly offline region, and the next numa claim reuses it.
+   ReleaseRegion offlines blocks one by one (memctl.go:778-786 ->
+   SetBlocksState). EBUSY on block k leaves blocks 0..k-1 offline and
+   keeps the device with Claims {uid: nil} (local.go:462); 02 expects this
+   failure ("kubelet retries"). The API side deallocates the claim without
+   waiting for kubelet, so another numa claim can be prepared meanwhile:
+   device() sees len(d.Claims) == 1 (not leftovers, local.go:212), and
+   Acquire returns d.Node without onlining. The retried Unprepare then only
+   drops the nil entry (local.go:457-459). The node keeps fewer online
+   blocks than the capacity the scheduler accounts, until the device's
+   last release. Fix: for an existing numa device, Acquire calls
+   a.mem.Online(d.Memdev, true) again (SetBlocksState skips online blocks).
+   Or releaseClaim re-onlines the region best-effort when releaseRegion
+   fails. Test: make one block's offline fail during Release, then Acquire
+   a second numa claim and expect every block online_movable.
+B3 node_state.go:709-713 -> releaseClaim node_state.go:609: when
+   writePrepared fails, the rollback calls s.lending.releasing(lease).
+   broker.OnReleasing (broker.go:1505) then fails the lease with
+   "companion claim unprepared (companion pod deleted or evicted)": the
+   message is wrong, and kubelet's retry fails in OnLending ("lease X is
+   Failed"). The pool helper's equivalent path (pool.go sync failure) only
+   revokes. Fix: this rollback revokes, calls s.lending.failed(lend, err)
+   with the real error, and releases. releasing() is called only from
+   unprepare (split releaseClaim into revoke+release and the hook).
+
+RISK
+R1 local.go:527, 212-217, 469-475: restart reconcile knows the plugin's
+   region only by name. After a node reboot the state file survives and
+   region numbers start again at region0. A firmware- or admin-made region
+   on the same memdev that gets the stored name counts as the plugin's,
+   and Reconcile destroys it (claims not prepared -> releaseClaim ->
+   ReleaseRegion). An entry with Region "" (crash between the two saves in
+   device(), local.go:237-245) makes Reconcile run ReleaseRegions(memdev),
+   which destroys every region of the memdev. This conflicts with "restart
+   reconcile never touches foreign regions". The e2e VMs are not affected
+   (memdevs are hotplugged, and dra-install removes the file). Fix: store
+   /proc/sys/kernel/random/boot_id in localDevices.json and, when it
+   differs, drop every entry without touching sysfs. Optionally also store
+   and compare the region's resource address.
+R2 node_state.go:1131-1139: preparedClaimsInfo.json is written in place
+   (os.WriteFile). It now holds the Lend record and the slice info, and
+   newLocalHelper (driver.go:476) and newNodeState parse it at start, so a
+   file cut short by a crash stops the plugin from starting until an admin
+   deletes it. Fix: use writeJSONFile (local.go:609), which writes a temp
+   file and renames it.
+R3 Dax slices are not cleared between claims. A released slice's memory
+   goes unchanged to the next claim, possibly in another namespace, and a
+   read-only claim reads it on purpose
+   (deployments/cxl/local/examples/local-dax-readonly-pod.yaml:6-7).
+   Neither 02 section 8 nor LOCAL.md "Limitations" mentions it. Fix: zero
+   a slice in Acquire before returning it (mmap /dev/daxX.Y MAP_SHARED and
+   clear it: devdax has no write()), or at least list it under LOCAL.md
+   Limitations.
+R4 memctl.go:560: SetDaxDriver's sysfs path writes kmem/new_id.
+   driver_attach then binds to kmem every unbound non-empty dax device of
+   a CXL region (dax_match_type, linux drivers/dax/bus.c:67-84). A local
+   slice between ResizeDaxDevice and bindSlice (local.go:344-351) can then
+   be added as system RAM by a concurrent pool numa Prepare (separate
+   memctl.Manager and lock: driver.go:425, 472). This is unlikely (pool
+   writes new_id only when the kernel did not bind kmem itself). Fix: for
+   kmem write bind directly (the type already matches); keep new_id only
+   for device_dax.
+R5 node_state.go:693, local.go:189/247: rollbacks use the kubelet request
+   ctx. If Prepare ran out of time, exec.CommandContext fails at once and
+   the region or slice stays until the next Acquire or a restart.
+   Meanwhile the memdev is published with a mode and no claims. Fix:
+   context.WithoutCancel(ctx) with its own timeout for rollback calls
+   (pool.go rollback has the same pattern).
+
+STYLE / TESTS / DOCS
+S1 pool.go:549, 557-569: blocksNode duplicates memctl.BlocksNode
+   (memctl.go:486). Use p.mem.BlocksNode and delete the copy.
+S2 pool.go:727-740: save() duplicates writeJSONFile (local.go:609).
+S3 node_state.go:777: checkLend calls parseLendConfig(claim,
+   device.DriverName) instead of s.lending.parse(claim) (03 W1a step 3;
+   pool.go uses p.lender.parse). This deviation is not documented, but it
+   is harmless.
+S4 The failure paths of the release side have no tests: Unprepare with a
+   failing revoke (claim kept, no Release), Unprepare with a failing
+   Release (DeleteDaxDevice error or offline EBUSY: claim kept, CDI spec
+   unchanged, retry succeeds), addSlice cleanup after a resize or bind
+   failure (slice deleted, new region dropped), the writePrepared rollback
+   (W1a deviation 8), and Prepare failing after check() set the lease to
+   Lending. fakeLocalSys.writeAttr can return errors for chosen paths.
+S5 doc/cxl/LOCAL.md:245-246: "daxctl is optional: the plugin switches dax
+   drivers and creates slices through sysfs". In fact memctl.SetDaxDriver
+   uses `daxctl reconfigure-device` whenever daxctl is in PATH
+   (memctl.go:539-550). Write: "dax drivers are switched with daxctl when
+   it is installed, else through sysfs; slices are made through sysfs".
+S6 History wording: LOCAL.md:14 "as before"; POOL.md:389-390 "the old name
+   `--pool-lend` still works" (write "`--pool-lend` is an alias");
+   node_state_test.go:438 "as before".
+Note: go.mod replace points to the local checkout (documented; restore a
+   pushed pseudo-version before commit).
+
+DAX SLICING PROCEDURE (memctl vs 01 1.2 and linux drivers/dax/bus.c)
+- First slice: CreateRegion(devdax) binds daxX.0 to device_dax (moving it
+  off kmem and offlining), then ResizeDaxDevice unbinds, writes the size
+  and reads it back, then bindSlice -> SetDaxDriver(device_dax). 01
+  measured unbind kmem -> size -> bind device_dax. memctl adds one
+  device_dax bind/unbind cycle of daxX.0, which does no harm.
+- Later slices: echo 1 > create, cat create (youngest), size, bind. This
+  matches 01. The kernel agrees: create_store returns -ENOSPC when
+  available_size is 0 (bus.c:368-410), and addSlice checks the free space
+  first. A new device has size 0, and dax_bus_probe refuses size 0 with
+  -ENXIO (bus.c:199-216), so it stays unbound until it is sized and bound
+  explicitly, as memctl assumes.
+- Delete: unbind -> size 0 -> echo daxX.Y > delete, with daxX.0 kept at
+  size 0. This matches 01, and delete_store refuses a bound device, a
+  non-zero size and id 0 (bus.c:534-578). The region goes with cxl
+  disable-region + destroy-region and the memdev stays enabled, as
+  measured.
+- daxctl path (`daxctl reconfigure-device --mode=devdax --force daxX.Y` on
+  a freshly created, sized, never bound slice) is plausible, not verified.
+  As far as I recall libdaxctl (ndctl source is not in ~/github.com, so I
+  could not read it), reconfigure to devdax disables the device (a no-op
+  when it is unbound) and enables device_dax through new_id/bind. That is
+  the same call `daxctl create-device` makes for a new device, and the
+  kernel accepts the probe once size > 0. The unit fake only models "fails
+  at size 0". Check on VM2 (daxctl installed) for a devdax region R:
+    D=$(echo 1 > .../dax_region/create; cat .../dax_region/create)
+    echo 33554432 > /sys/bus/dax/devices/$D/size
+    daxctl reconfigure-device --mode=devdax --force $D; echo rc=$?
+    readlink /sys/bus/dax/devices/$D/driver   # .../device_dax
+    cat /sys/bus/dax/devices/$D/dev; ls -l /dev/$D   # same major:minor
+    daxctl list -D -d $D                     # mode devdax, size 32M
+  Repeat for daxX.0 after unbinding it from device_dax and shrinking it.
+  Then delete $D (unbind, size 0, delete) and create it again under the
+  same name: it must come up unbound (no new_id left behind). Also check
+  that dmesg has no "probe ... rejects match" for bound slices, and that
+  no daxdev-reconfigure@ unit acted (/etc/daxctl.conf.d empty).
+
+VERIFIED AND CORRECT
+- go build (static, both binaries), go vet, gofmt: clean.
+  go test -race -count=1 and -count=4 ./cmd/kubelet-cxl-plugin/...: ok;
+  ./cmd/cxl-request/... and ./pkg/cxl/...: ok. nri-plugins go test -race,
+  go vet ./pkg/cxl/...: ok; golangci-lint ./pkg/cxl/...: 0 issues. Driver
+  golangci-lint (cxl packages): 14 findings, as W1a/W1b report. I did not
+  check this count against b57b62b myself (vendor/ is not tracked).
+  Vendored memctl == local memctl.
+- D1 holders (lend.go): lendMu serializes changeLend; with/after/set give
+  idempotent lend and revoke per (node, holder); a revoke by a non-holder
+  changes nothing; the post-restart shrink happens only when the node has
+  no holder; the holder is the lease id everywhere (lending.go:171,195;
+  broker release and relendContainer); LentNodes returns distinct nodes.
+- Broker: one builder with a source switch (companionRequest,
+  companionDevices). For any: firstAvailable [local, pool], no Exactly,
+  and configs with Requests [lease/<source>]. parseDeviceConfig matches
+  "lease/local" by its full name or its parent and skips "lease/pool".
+  Class configs in the allocation carry the subrequest name. Serial
+  selectors are qualified by driver and normalized to 0x lower-case.
+  Shared + local/any is refused. OnPrepared sets Source.
+- Hooks: broker hooks take only b.mu and never call nodeState. claimLender
+  and allocator locks are leaves. The republish hook runs after s.Lock is
+  released, in both Prepare and Unprepare. Modes() has its own lock.
+- Unprepare order: releasing, revoke (an error fails), allocator Release
+  (an error fails), forget (maps, marker, cxl-local spec), files, then
+  republish outside the lock. Prepare: config errors come before Acquire;
+  any later error calls local.Release(claimUID), which is idempotent; a
+  lend failure revokes the partial lend, calls failed() and releases. A
+  gone memdev or slice is not an error in Release or Reconcile.
+- localDevices.json is atomic and 0600; old preparedClaimsInfo,
+  preparedPoolClaims (lendRecord JSON == poolLend) and leases.json without
+  source all load (tested).
+- Formats: attribute serial "0x%x", device name cxlmem-%x, env
+  CXL_LOCAL_*_<UPPER> with SERIAL=0x<lower>, CDI names local-<uid>[-n],
+  permissions "r" plus READONLY=1. consumedCapacity uses Quantity.Value();
+  without it the claim gets the whole device. requestPolicy is default +
+  min/step 2Mi, and addSlice rounds up to the region align.
+- Docs and examples match the code: classes and their CEL, attribute
+  table, error texts (mode conflict, pool helper disabled,
+  "(--lend=false)"), flags --lend/LEND with alias --pool-lend/POOL_LEND,
+  protocol fields, CLI usage. The YAML of local/ and device-class-dynamic
+  parses. Changed text is ASCII only.
+- k8s resource/v1 types are used directly; the opaque parameters are
+  marshalled from structs; cxl-request extends its existing option parser.
+
+Orchestrator decisions (2026-10-14 13:05, Fable), after R1
+-----------------------------------------------------------
+D6 R1's B1 is accepted as a blocker: nodeState's lock is held across device
+   work and NRI UpdateContainers while NRI handlers need it (GetClaimInfo),
+   which can hit containerd's 2 s NRI timeout (plugin closed, steering and
+   lending off until restart) or deadlock with Synchronize. Assigned to
+   W1a: preparedClaims (and podClaims, Prepared) behind a small lock that
+   GetClaimInfo/GetMemoryPolicy take alone; Prepare and Unprepare never
+   hold it across allocator Acquire/Release, lend/revoke, CDI writes or the
+   3 s retry; per-claim-UID serialization so two Prepares of one claim do
+   not race; a unit test in which GetClaimInfo returns while a fake Lender
+   blocks inside Prepare. B2, B3, R1 (boot_id in localDevices.json), R2
+   (writeJSONFile), R3 (zero a dax slice in Acquire with an mmap of
+   /dev/daxX.Y, measured cost in the status), R4 (memctl: write bind, not
+   new_id, for kmem), R5 (context.WithoutCancel with a timeout for
+   rollbacks), S3, S4, S5: W1a. S1, S2 (pool.go) and S6 in POOL.md: W1b.
+   Both keep the package compiling at every save: W2 runs dra-build on
+   this tree. W1a appends "W1a review fixes done <time>" when finished.
+
+R2 Review (2026-10-14 13:05, R2)
+--------------------------------
+Scope: git diff ee6442a22 of test/e2e/memory.test-suite/memory-policy/
+dra.source.sh and the new n4-cxl-shared-2/test14-dra-local-memdev and
+test15-dra-local-live-attach code.var.sh. I read them against 02, 04 and 05,
+the W1a/W1b/W2 sections and the orchestrator decisions in this file, and the
+driver working tree (broker.go, node_state.go, lending.go, local.go, pool.go,
+cmd/cxl-request) for the names the tests assert on. Read-only: no e2e test
+was run and no VM was touched. pkg/cxl/memctl is not reviewed here.
+
+Files reviewed (re-read at the end; line numbers below are of the final version)
+  dra.source.sh       first 12:04:07 (md5 1d7d1ae8bc66...), final 13:00:13
+                      (md5 e884ca82c772...): the only change is the narrowed
+                      "driver" pattern of dra-trace-summary (line 1461)
+  test14 code.var.sh  first 12:10:25 (md5 0df33105bb1e...), final 12:40:06
+                      (md5 294843e87f38...): adds the requestPolicy default
+                      assertion (line 391)
+  test15 code.var.sh  12:19:43 (md5 7edc11fd7152...), unchanged
+
+Blockers: none.
+
+Bugs
+B1 test14:393 (A) checks "no cxl-node device" only before any region
+   exists, so it is true by construction. The rule it stands for (02
+   section 2: the plugin's own region is never published as cxl-node) is
+   never checked while the plugin's region exists: not in test14 B or E
+   (numa region online), and not in test15 A, E or F (local numa lease). If
+   a change published the plugin's region as a second cxl-node device on
+   node N, both tests would still pass. Fix: after `wait-mode numa-mode
+   numa` (test14:417) and `wait-mode numa-late-mode numa` (549),
+   COMMAND_OUTPUT holds the slice JSON after the republish. Add
+     dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'cxl-node' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
+   and the same in test15 after the numa-mode wait (359), and after
+   any-two-regions (480-481) with a dra-json of resourceslices first.
+B2 (driver, outside this review's scope; for the orchestrator and R1)
+   node_state.go:351-376 (addLocalMemdevs) keeps pool devices out only
+   through poolSerials. pool.go:262-270 (updateSerials) fills poolSerials
+   from prepared and in-flight claims only. So a pool device that the
+   controller has attached but kubelet has not prepared yet is published
+   as cxlmem-<serial> with source local and mode none: the kernel enables
+   the memdev at hotplug, it has RamSize > 0 and no region, and the udev
+   rescan debounces for only 200 ms. The window runs from the attach until
+   the Prepare that follows the Attached condition and the binding. It has
+   no end if the pod never binds. A pending cxl-local-memory claim on that
+   node could take the device. For a shared pool device (0xc1ae....), that
+   would online memory that other VMs map (02 section 8 names this risk
+   only for the static shared device). No test catches it, because no
+   local claim is pending during a pool attach. Fix in the driver, for
+   instance: also exclude the serials of the cxl-pool.generic ResourceSlice
+   devices, or of pool claims allocated to this node. e2e evidence: in
+   test15 E, after the pool lease is Ready,
+     vm-command "journalctl --no-pager -o cat -u kubelet-cxl-plugin | grep 'discovered local memory device cxlmem-${POOLED0_SERIAL#0x}'"
+   must find nothing. The line is logged at V(3) and the plugin runs at
+   -v 4. The new "cxlmem" trace pattern also shows it in the test15 trace
+   summary.
+
+Risks
+R1 test15:468-494 (E): the check that the local lease keeps its node
+   after the pool lease is released is the only e2e coverage of D1 (W2
+   deviation 4). It tests the holder rule only if pooled0 lands under host
+   bridge 0, that is, if ANY1_NODE == ANY2_NODE. Nothing asserts that. With
+   different nodes, E-local-left passes without testing D1. Equal nodes are
+   expected: W2 notes the server picks HB0 pool slots first, and the node
+   is per host-bridge window. Fix: after line 482, add
+     [ "$ANY1_NODE" == "$ANY2_NODE" ] || error "pooled0 is on node $ANY2_NODE, the local device on $ANY1_NODE: the shared-node case of the lend holders is not exercised"
+   (or print which case ran, if different nodes must stay acceptable).
+R2 test14:307 local-state-claims treats a missing localDevices.json as
+   '{}', that is, 0 claims. So the end-state check (332) passes even if the
+   path is wrong or the file is never written. W1a says the file stays as
+   "[]" once written. Fix: in local-initial-state, before counting, add
+   `dra-vm-command-q "$VM2" "test -s $DRA_LOCAL_STATE" || error "no $DRA_LOCAL_STATE"`.
+R3 No failure path of a cxlmem claim is exercised end to end (05 point
+   5): not the Prepare rollback, not the republish after a failed Prepare,
+   and none of the error texts W1a lists. A cheap deterministic case: a pod
+   with a cxl-local-memory claim and claim config {kind: LocalDeviceConfig,
+   mode: numa, readOnly: true}. The pod event must contain
+   "LocalDeviceConfig: readOnly needs mode dax", no region appears, and the
+   mode stays none. Also untested: a claim without an amount, which should
+   consume the whole 256Mi (requestPolicy default). 04 asks for neither;
+   orchestrator's call.
+R4 test15:248, 259, 342: borrower-file prints nothing when the cgroup
+   lookup fails, and IDLE_MEMS is usually empty. So
+   `[ "$(borrower-file idle)" == "$IDLE_MEMS" ]` cannot tell "unchanged"
+   from "not read". test12 uses dra-container-file, which fails the test
+   instead. The effective-node check that follows catches most cases. Fix:
+   use a read that fails (see S2), or `IDLE_MEMS=$(borrower-file idle) || error ...`.
+R5 test15:411, 416: the "does not see TAG1" check passes vacuously if the
+   read inside --exec fails: the echo still prints "before: " and the
+   script goes on. Isolation is still proven later, when lease 1 reads TAG1
+   after lease 2 wrote TAG2. Fix: `t=$(python3 /tools/dax-rw.py --fd 3 read 1M) || exit 1; echo "before: $t"`.
+R6 dra.source.sh:957-975 (dra-stays) with the snippet at test14:167-168:
+   `[ -z "$(dra-vm-command-q ... {.spec.nodeName})" ]` is also true when
+   ssh or kubectl fails, so one tick can pass without reading the pod. The
+   claim-unallocated check after it limits the damage. Fix:
+   `n=$(dra-vm-command-q ...) && [ -z "$n" ]`.
+
+Style
+S1 dra.source.sh:586-592: dra-local-detach repeats what pool-cxl-wait
+   does (retry-until, pool-cxl-dump-json and cxl-py, pool-cxl-dump on
+   timeout). Use `pool-cxl-wait "$vmdir" local-released "$expr" 60` inside
+   the is-active branch.
+S2 test14:189-197 (mems-of) and test15:212-220 (borrower-file) are the
+   same quiet cgroup-file read. Add one quiet helper next to
+   dra-container-file and dra-container-anon (non-zero when the cgroup is
+   not found) and use it in both. test15:60-125 and 222-230 copy test12's
+   borrower-yaml, new-lease and mems-allowed, and dra-nodes-py repeats
+   test12's nodelist-py (deviation 6, accepted). Move them to dra.source.sh
+   once test12 may change.
+S3 test15:166-171 and 379-381: the retry-until over lease-objects is a
+   kubectl loop that dra-wait already covers:
+   `dra-wait "$VM2" late-lease-gone "pods,resourceclaims -n $DRA_NS -l $LEASE_LABEL=$LATE_LEASE" "items == []" 60`.
+S4 test15:336 reads TOKEN_CLAIM inline from resourceClaimStatuses;
+   `dra-pod-claim "$VM2" borrower` does the same.
+S5 dra.source.sh:519, 524: dra-local-find's errors say "dra-local-device:",
+   also when dra-local-detach calls it.
+S6 dra.source.sh:960-963 (dra-stays doc): "now and then once a second"
+   reads as "occasionally" (the meaning is: at once, then once a second).
+   "for states that must not change, such as a pod that must stay Pending"
+   is guidance for callers, which the coding-style skill keeps out of
+   function docs. The same applies to 543-544 ("pool-cleanup detaches it
+   if the test does not").
+S7 dra.source.sh:458: dra-uninstall deletes the local classes only if
+   /root/cxl-local-device-classes.yaml exists, while cxl-dynamic is deleted
+   by name. A dra-install with a driver that lacks the file leaves the
+   classes of an earlier run. Also run
+   `kubectl delete deviceclass --ignore-not-found cxl-local-memory cxl-local-dax`.
+S8 test15:208-209: companion-check ends with `... | grep -qF "$uid" &&
+   error`, so it returns 1 on success. Harmless today, wrong for any
+   caller that checks it. Use if/then.
+S9 test15:519 sets the helper's DRA_TOUCH_PID directly. A dra-touch-forget
+   would keep that state inside dra.source.sh.
+   (My earlier note about trace-summary noise from "local|slice|mode" no
+   longer applies: the 13:00 version uses "local:|cxlmem|in another
+   mode|no room for the slice".)
+
+Verified and found correct
+- bash -n, and `shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016`
+  (0.11.0): clean on dra.source.sh, test14, test15, pool.source.sh and
+  test10, test11 and test13. test12 reports SC2015 (info) at test12:444,
+  which predates this work (test12 is unchanged since ee6442a22). Without
+  exclusions, the new tests report only SC2016 and SC2154. All three files
+  are plain ASCII, and no comment describes history.
+- Waits: the only new sleep is in dra-stays, which checks that a state
+  holds; it is not act-sleep-verify. Every retry-until has --timeout and
+  --message. All dra-wait, dra-pod-wait, pool-cxl-wait and dra-memdev-wait
+  calls have timeouts. No snippet uses retry-until's reserved names.
+- No probe-order names: memN, the region, daxX.Y and major:minor come
+  from cxl-dump, sysfs (dra-memdev-sysfs: serial -> endpoint uport ->
+  region targets -> dax_region), the container environment or an os.stat
+  in the container. NUMA node N comes from cxl-dump or the lease response.
+  The local device is found in the server by scope, shared flag and host,
+  and its serial is derived from that. Node lists are compared as sets
+  (dra-nodes-eq and dra-nodes-has); the idle container's cpuset is
+  compared as in test12.
+- The names asserted match the driver tree:
+  - Device and capacity: cxlmem-<lower hex>; attributes type, source,
+    serial 0x<lower hex>, size, name, nodeAffinity and mode; requestPolicy
+    default, min and step as BinarySI quantities, so the "2Mi" string
+    comparisons hold; allowMultipleAllocations.
+  - Classes: cxl-local-memory and cxl-local-dax.
+  - Claim env and CDI: CXL_LOCAL_DAX_, SIZE_, SERIAL_ (=0x<lower hex>) and
+    READONLY_; CDI device local-<claim uid> in /etc/cdi.
+  - Companion claim: request "lease", exactly or firstAvailable [local,
+    pool], configs with requests [lease/local] and [lease/pool];
+    LendConfig with apiVersion cxl.generic/v1alpha1; LocalDeviceConfig
+    {mode dax, readOnly}; the cxl-pool.generic/* labels.
+  - Response: fields lease, state, kind, source, mode, node, size, serial
+    and dax; error text "timeout: not Ready after ...".
+  - cxl-request: exit code 3 for Failed; CXL_LEASE_READONLY is always 0
+    or 1; --local, --source, --dax and --read-only parse as the tests use
+    them.
+- 04 coverage: test14 A-F and test15 A-G implement the plan. The only
+  deviations are W2's documented ones, accepted in D4. The requestPolicy
+  default is asserted (test14:391). The mode gating test is sound:
+  dax-early (64Mi) and numa-late (32Mi) fit the remaining capacity, so
+  only the mode attribute can keep them Pending, and both start once the
+  mode is none. The isolation check in test14 D is stronger than 04 asks:
+  three different strings at the same offset, all read back. A claim or
+  lease of the other mode is created only after the mode it must avoid is
+  published, so no Prepare race arises.
+- Clean start and end:
+  - At start: pool-vm-reset and an empty cxl-dump. dra-install-files
+    removes localDevices.json with the other state files when no regions
+    exist.
+  - The local attachment's owner, e2e:dra-local-device, is ignored by the
+    controller (OwnerPrefix k8s:) and by dra-pool-attachments. pool-cleanup
+    releases and detaches it, since it is not adopted. A detach needs no
+    --owner.
+  - At the end the order is dra-cleanup -> dra-local-detach ->
+    pool-cleanup, as in 04. The EXIT trap 'dra-cleanup; pool-cleanup'
+    covers a failure anywhere after dra-install, and the next test's
+    pool-vm-reset covers a failed detach.
+- test10-13 behave the same. They now get two more DeviceClasses, applied
+  and deleted. localDevices.json is removed with the other state files.
+  device() keeps its two-argument form, and the new dra-py names only add.
+  No assertion in test10-13 depends on the set of classes or on the
+  trace-summary content, and the plugin log lines that test10 greps for
+  still exist. R2 ran no regression tests; they belong to W2 phase 2.
+
+W1b Status (review fixes, 2026-10-14 13:05, W1b)
+------------------------------------------------
+S1 pool.go: prepareDevice uses p.mem.BlocksNode (memctl); the copy
+   blocksNode is gone.
+S2 pool.go: save() is writeJSONFile(p.stateFile, p.prepared) (local.go);
+   same file format, mode 0600, tmp + rename.
+S6 POOL.md "Opting in": "`--pool-lend` and `POOL_LEND` are aliases"
+   instead of "the old name ... still works" (paragraph reflowed).
+   LOCAL.md:14 "as before" (also in R1's S6) is left as it is: this round
+   was limited to pool.go and POOL.md.
+Only pool.go and doc/cxl/POOL.md touched. Results with W1a's current
+files: go vet -mod vendor ./cmd/kubelet-cxl-plugin/ clean; gofmt clean;
+go test -mod vendor -race ./cmd/kubelet-cxl-plugin/... ok, and -count=5
+of the pool and broker tests ok; golangci-lint: pool.go only has the
+existing prepareClaim cyclop finding (28).
+
+Orchestrator decisions (2026-10-14 13:15, Fable), after R2
+-----------------------------------------------------------
+D7 R2's B2 is a real driver bug with pool-safety impact: a pool device
+   that is attached but not yet prepared (or whose pod never binds) is
+   published as a local cxlmem device, so a pending cxl-local claim can
+   take it and online memory that other hosts map. Fix, W1a, after D6:
+   the cxl.generic publisher excludes every serial that any pool
+   controller publishes: it lists the ResourceSlices of drivers other
+   than cxl.generic (the kube client of the plugin; the broker's
+   sharedHosts lists them already: share the code) and collects their
+   "serial" attributes (string, strconv.ParseUint base 0); these serials
+   are excluded from cxlmem publication together with the pool helper's
+   prepared/inflight serials. The set is refreshed on every rescan and
+   kept from the last successful list when the API call fails (log it);
+   when there is no successful list yet, no cxlmem device is published
+   (pool safety over availability) and the scan is retried after 30 s
+   (a timer in the rescan loop, only while the last list failed or none
+   succeeded). Unit tests with a fake clientset: a serial in a pool slice
+   is not published; API failure keeps the last set; the first failure
+   publishes nothing. LOCAL.md: one paragraph on how local and pool
+   devices are told apart.
+D8 R2's e2e items go to W2 after the current runs and before the final
+   reruns on the fixed driver: B1 (cxl-node absence asserted while the
+   plugin's region exists, in test14 and test15), R1 (test15 E asserts the
+   two leases share the node, otherwise D1 is not exercised: print and
+   assert), R2 (test -s localDevices.json before counting), R3 (two cheap
+   extra cases in test14: a claim with LocalDeviceConfig mode numa plus
+   readOnly true stays ContainerCreating with the event text
+   "LocalDeviceConfig: readOnly needs mode dax"; a dax claim with no
+   capacity amount gets the whole device, 256Mi slice), R4, R5, R6, S1-S9,
+   plus the D7 evidence in test15 E: the plugin journal has no "discovered
+   local memory device cxlmem-c1ee0001" (check W1a's exact log text in
+   its status).
+
+W2 Findings (phase 2) (2026-10-14 13:20, W2)
+--------------------------------------------
+Posted before the final reruns, so they can be routed now. None blocks a
+test; none is fixed by W2 (nothing in the driver repository changed).
+Logs and traces: ~/.claude/jobs/w2-plan4/.
+F1 (driver: broker CloseClaim + kubeletplugin serialization; W1b, with
+   W1a's D6 in mind) The unprepare of a token claim can stall the release
+   of its LOCAL leases for 30 s. driver.go UnprepareResourceClaims calls
+   broker.CloseClaim, which starts the releases and waits up to
+   leaseCloseTimeout (30 s) for them. The kubelet plugin helper serializes
+   all calls of a driver (kubeletplugin.Serialize defaults to true), and
+   the companion claim of a local lease belongs to the same driver
+   (cxl.generic), so its NodeUnprepareResources waits behind CloseClaim
+   until that times out. Pool companions are not affected (other driver,
+   other helper). Evidence, test15-run1 F (borrower deleted with a local
+   numa lease cbcaa361 and a pool dax lease):
+     09:48:07.809 lease broker: lease cbcaa361: releasing (requester container gone, was Ready)
+     09:48:07.847 NRI StopContainer: ctr=cxl-pool-demo/cxl-lease-cbcaa361/pause
+     (nothing for the companion claim for 30 s)
+     09:48:38.047 kubelet: NodeUnprepareResources failed for ResourceClaim borrower-cxl-2h24b:
+                  claim cxl-pool-demo/borrower-cxl-2h24b: still releasing 1 leases, retry
+     09:48:38.046-38.244 revoke node 2, offline memory202/203, destroyed region0 (the companion's Unprepare)
+     09:48:39.465 lease cbcaa361: released; lease socket closed
+   Pod delete -> clean: 36.6 s in run1; 8.7 s in run2, where kubelet
+   happened to unprepare the companion first. Suggested fixes: CloseClaim
+   returns "still releasing ..., retry" at once instead of waiting (kubelet
+   retries within about 1 s), or waits only for leases whose companion
+   claim is of another driver; or Serialize(false) for cxl.generic once
+   D6 gives nodeState its own fine-grained locking. test15 asserts <= 60 s
+   (04's bound) and passes either way; the bound was not changed.
+F2 (driver, D7, confirms R2's B2 in the VM) test15-run1, plugin journal:
+     09:47:27.972 node_state.go:389] discovered local memory device cxlmem-c1ee0001: mem1 serial 0xc1ee0001 size 536870912 mode none
+   (E: pooled0 attached for the --source any lease, before its Prepare at
+   09:47:32.29), and again at 09:48:02.51 (F, the pool dax lease). So the
+   pool device was published as a free local cxlmem device for about 4 s
+   each time. test15 now checks this (pool-not-local, after E's pool lease
+   and at the end of F, on the journal of the current plugin invocation).
+F3 (driver: companion pod shape, from plan-3, broker.go; W1b/orchestrator)
+   The companion's memory limit 8Mi is too small for runc init now and
+   then: test15-run1 E, cxl-lease-ac337132:
+     09:47:10 Memory cgroup out of memory: Killed process 262695 (runc:[2:INIT])
+              anon-rss:8844kB ... oom_memcg=/kubepods.slice/kubepods-podf31d9036...
+     event FailedCreatePodSandBox: ... cannot start a stopped process
+   kubelet retried and the pod ran about 1.5 s later; the lease was Ready
+   at Prepare and is not affected. Once in all runs so far. Suggestion:
+   requests=limits memory 16Mi (or 32Mi).
+F4 (measurement) a local lease is Ready in 0.3-0.43 s in the plugin (0.86 s
+   for the whole cxl-request in the container), a pool lease in 5.4 s
+   (5.7-5.9 s CLI): the scheduler's binding-condition poll. Details in W2
+   Status (phase 2).
+
+W1a review fixes done 2026-10-14 13:20
+
+W1a Status (review fixes) (2026-10-14 13:20, W1a)
+-------------------------------------------------
+B1 node_state.go: helpers.NodeState's mutex (s.Lock) guards only the tables
+   (Allocatable, Prepared, preparedClaims, podClaims) and is held only while
+   they are read or changed: preparedInfo, allocatable, store, forget, the
+   snapshot in persist, GetResources, GetClaimInfo, GetMemoryPolicy,
+   rescanAndPublish's swap, prepareResourceClaim's result read. New
+   nodeLocks (nodeState.locks, from newNodeState; nil = no serialization):
+   a lock per claim UID that Prepare and Unprepare hold for their whole
+   work (Acquire, Release, lend, revoke, rollback), and a write lock for
+   persist (snapshot under s.Lock, then the cxl-claims and cxl-local CDI
+   specs, preparedClaims.json and preparedClaimsInfo.json written outside
+   it, in snapshot order). Device work, lending, broker hooks, the token
+   socket and file/CDI writes run with no nodeState table lock; the
+   allocator keeps its own lock for device state; republish runs after the
+   claim lock is released. The CDI marker spec is written by persist (not
+   in prepareAllocatedDevices); addCDIClaimMarker/removeCDIClaimMarker and
+   writeLocalCDISpec are replaced by persist/buildLocalCDISpec; stale
+   slices are dropped once at start (forgetGoneSlices).
+   Test TestPrepareDoesNotBlockReaders: while a Lender blocks in LendNode
+   inside Prepare(u1), GetClaimInfo, GetMemoryPolicy, GetResources and a
+   Prepare+Unprepare of another claim finish; a second Prepare(u1) waits
+   and then only repeats the hooks; one LendNode, one slice. -race
+   -count=5: ok.
+B2 local.go device(): an existing numa device runs memctl Online again
+   (SetBlocksState skips online blocks). TestLocalNUMAReleaseFailure: the
+   offline of memory75 fails, memory74 is offline, the next numa claim has
+   every block online_movable, the retried release keeps the region.
+B3 node_state.go rollback(): after a persist failure it revokes the lend,
+   calls lending.failed(lend, err) with the write error, releases the local
+   memory and forgets the claim; releasing() is called from unprepare only.
+   TestPrepareLocalPersistFailure checks lend+revoke, "failed l1: failed to
+   write prepared claims info ...", no "releasing", region released, retry ok.
+R1 localDevices.json is {"bootID": "<boot_id>", "devices": [<as before
+   listed>]} (W2: the devices moved under "devices"; a list file without a
+   boot id is still read, as the state of an unknown boot). The boot id is
+   <sysfs root>/proc/sys/kernel/random/boot_id. State of another boot:
+   every entry dropped, no sysfs touched (unknown current boot "": kept).
+   An entry with region "" is only forgotten (Reconcile and leftovers);
+   ReleaseRegions is never called by the allocator. A region that a failed
+   creation leaves is adopted (the memdev had none, checked under the
+   allocator lock) and destroyed with the failure. Tests:
+   TestLocalStateOfAnotherBoot, TestLocalRegionCreationLeftovers.
+R2 preparedClaimsInfo.json written with writeJSONFile (tmp + rename, 0600).
+R3 Every dax slice is zeroed in Acquire after it is bound to device_dax and
+   before it is handed out: a private char node (mknod of the sysfs
+   major:minor in a temp dir, so a stale /dev/daxX.Y never matters),
+   MAP_SHARED windows of 64 MiB (multiple of the dax align), clear,
+   munmap. A zeroing error fails the Acquire and deletes the slice. Log
+   line: "local: memdev memN (serial 0x..): zeroed slice daxX.Y (N bytes)
+   in T". Cost: measured on this host's DRAM through tmpfs with the same
+   code (4 KiB faults): 64 MiB 29-64 ms, 256 MiB 114-241 ms (1-2.4 GB/s);
+   devdax maps 2 MiB pages, so real CXL memory should be at least as fast
+   per byte as its write bandwidth allows. Not measurable here for a VM:
+   qemu may emulate CXL memory accesses (MMIO), which can be orders of
+   magnitude slower; W2 please measure on VM2 from the log line for 64 MiB
+   and 256 MiB slices (a Prepare must stay well within kubelet's timeout).
+   LOCAL.md documents it. Tests: the fake records zeroing (TestLocalDaxSlices),
+   a zeroing error cleans up (TestLocalSliceFailures), zeroFile on a file
+   (TestZeroFile).
+R4 memctl SetDaxDriver sysfs path: kmem is bound with bind only (no new_id,
+   no remove_id); device_dax keeps new_id + bind fallback + remove_id.
+   memctl test checks the writes ("device_dax/unbind,kmem/bind").
+R5 rollbacks use rollbackContext(ctx) = WithTimeout(WithoutCancel(ctx), 1m):
+   nodeState.releaseLocal/rollback, allocator dropUnused and addSlice's
+   slice cleanup.
+S3 checkLend uses lending.parse (a nil lending is a disabled lender for
+   cxl.generic, as in test literals of nodeState).
+S4 tests: TestUnprepareLocalFailures (revoke error keeps claim and memory,
+   "releasing l1" sent, retry ok; slice delete error keeps the claim and its
+   CDI device, retry ok), TestLocalSliceFailures (devdax region failure,
+   zeroing failure, resize failure, bind failure, delete failure and retry),
+   TestPrepareLocalPersistFailure (B3), TestPrepareLocalFailsAfterCheck
+   (lease stays Lending: only "lending l1", no failed; the retry prepares).
+S5/S6 LOCAL.md node requirements: daxctl when installed, else sysfs; slices
+   through sysfs. LOCAL.md:14 and node_state_test.go "as before" removed.
+   LOCAL.md also: zeroing, boot id, re-onlining after a failed release.
+Files: nri-plugins pkg/cxl/memctl/memctl.go, memctl_test.go; driver
+   cmd/kubelet-cxl-plugin/local.go, local_test.go, node_state.go,
+   node_state_test.go, driver.go (newLocalHelper passes readBootID only),
+   doc/cxl/LOCAL.md; vendor/ refreshed (go mod vendor).
+Results: nri-plugins go test -race ./pkg/cxl/... ok, golangci-lint 0 issues,
+   gofmt clean. Driver: go vet clean, go test -race ./cmd/kubelet-cxl-plugin/...
+   ./cmd/cxl-request/... ok, the lock/rollback tests -count=5 ok, gofmt clean,
+   golangci-lint no new findings vs b57b62b (14), static builds of both
+   binaries ok. Installed in one step after testing the set through
+   go -overlay, so the tree compiled at every moment.
+
+W1a D7 done 2026-10-14 13:26
+
+W1a Status (D7) (2026-10-14 13:26, W1a)
+---------------------------------------
+New file cmd/kubelet-cxl-plugin/pool_slices.go (+ pool_slices_test.go):
+  poolSlices lists all ResourceSlices through the plugin's kube client
+  (RBAC already has list on resourceslices) and collects, from every slice
+  whose driver is not cxl.generic, the device attribute "serial" or
+  "<driver>/serial" through the broker's deviceSerial (normalizeSerial =
+  strconv.ParseUint base 0; broker.go not touched), parsed with
+  strconv.ParseUint(s, 0, 64). scanInput() merges these serials with the
+  pool helper's prepared/inflight serials into the poolSerials of the scan
+  (so they are excluded from cxlmem publication, and regions on them are
+  not cxl-node devices either). A failed list keeps the serials of the last
+  successful one; before the first success, the scan runs with a copy of
+  the configuration with manageMemdevs false: no cxl-memdev device at all,
+  regions and DRAM as usual. Listed at every scan: start, udev rescans, the
+  republish after Prepare/Unprepare, and driver.retryPoolList, a 30 s
+  ticker that rescans only while the last list failed. No client (tests):
+  nothing to exclude.
+driver.go: driver.poolSlices, newPoolSlices(config.Coreclient) passed to
+  newDriverState, scanInput in newDriverState and rescanAndPublish,
+  "go driver.retryPoolList(ctx)". node_state.go: the skip reason is
+  "pool device"; buildDevInfos doc. LOCAL.md: a paragraph on how local and
+  pool devices are told apart.
+Tests: TestPoolSlicesSerials (fake clientset: serials of a pool slice and
+  of another driver's "<driver>/serial", cxl.generic and bad serials
+  ignored; the pool serial is not published, the free one is; an API
+  failure keeps the last set and Failing() is true), TestPoolSlicesFirstListFails
+  (first list fails: nothing published and the config is not changed;
+  after a successful list the free memdev is published; no client: both).
+Exact log texts (cxl.generic plugin log):
+  published:     I... "discovered local memory device cxlmem-<hex>: memN serial 0x<hex> size <bytes> mode <mode>"   (V(3))
+  skipped pool:  I... "- not publishing memory device \"memN\" as a local memory device: pool device"   (V(4))
+  list failure:  W... "listing the ResourceSlices of pool controllers: <err>; using the serials of the last list"
+                 W... "listing the ResourceSlices of pool controllers: <err>; no local memory device is published until a list succeeds"
+                 W... "not publishing local memory devices: the devices of the pool controllers are not known"
+  W2 test15 E: grep for "discovered local memory device cxlmem-c1ee0001" must find nothing.
+Results: go vet clean; go test -race ./cmd/kubelet-cxl-plugin/...
+  ./cmd/cxl-request/... ok (pool slices and lock tests also -count=5);
+  gofmt clean; golangci-lint no new findings vs b57b62b (14); static builds
+  of both binaries ok.
+Open: every scan lists all ResourceSlices of the cluster (no field
+  selector, as the broker's sharedHosts); fine for the e2e clusters, a
+  field selector "spec.driver!=cxl.generic" could cut it in large ones.
+  A "serial" attribute of an unrelated driver that happens to equal a
+  memdev serial hides that memdev (fails safe).
+F5 (driver, W1a's R3 zeroing, BLOCKS every dax claim; 13:35, W2) test14
+   final run 1 (driver tree after "W1a D7 done 13:26") failed in C: pod
+   dax-early never starts.
+     FailedPrepareDynamicResources ... claim cxl-pool-demo/dax-early-mem-xndj9: device cxlmem-c100e2e1:
+       memdev mem0 (serial 0xc100e2e1): zeroing dax0.0: open /tmp/cxl-local-zero-2207848525/dax: permission denied
+   (the same on kubelet's retry; each time the region is created, the
+   slice made, then everything rolled back cleanly: "dax0.0: size 0",
+   "destroyed region0"). Cause: local.go zeroDax makes its private node
+   with os.MkdirTemp("", ...), that is in /tmp, and /tmp in VM2 (as on
+   Fedora by default) is tmpfs with nodev ("/tmp tmpfs rw,nosuid,nodev"):
+   opening a device node there is EACCES even for root. /dev (devtmpfs)
+   has no nodev. Small and local, so fixed by W2 (see "fixed by W2" in
+   W2 Status (phase 2)): the private node is made in a temporary directory
+   under the memctl DevRoot (/dev).
+
+W2 Status (phase 2) (2026-10-14 14:05, W2)
+------------------------------------------
+Result: test14-dra-local-memdev and test15-dra-local-live-attach PASS on
+the final driver (after "W1a review fixes done 13:20", "W1a D7 done
+13:26" and W2's zeroing fix, F5), with all of R2's D8 items in the tests;
+the regression test10, test12 and test13 PASS on the same build. VM2 and
+VM1 are clean: no kubelet-cxl-plugin or fake-cxl-pool-controller unit,
+no memdevs or regions, no cxl-type3 in qemu, no /dev/.cxl-local-zero-*,
+single-node clusters (test13 restored them), port 9909 free. Nothing
+committed. Logs, traces and trace summaries: ~/.claude/jobs/w2-plan4/.
+
+Verdicts per build (every run did its own dra-build of the tree at its start)
+ Build 1: tree after "W1a follow-up: driver.go fix done 12:39" (W1b's
+   pool.go review fixes of 13:03 possibly in the run2s); tests of phase 1
+   plus the requestPolicy default assertion:
+     12:43 test14 PASS   12:49 test15 PASS   12:52 test10 PASS
+     12:57 test12 PASS   13:02 test14 PASS (run2)   13:06 test15 PASS (run2)
+ Build 1b (13:13, W1a's D6 work partly in the tree): test14 with the D8
+   changes PASS (to validate the new cases only).
+ Build 2: tree after "W1a review fixes done 13:20" and "W1a D7 done 13:26"
+   (md5 of cmd/kubelet-cxl-plugin/*.go concatenated: 70030c12...):
+     13:31 test14 FAIL in C (F5: every dax Prepare fails: zeroing in /tmp,
+     nodev); test15 not run.
+ Build 3 = final: build 2 + W2's fix of F5 (md5 adc5fe2f...):
+     13:39 test14 PASS   13:43 test15 PASS   13:47 test10 PASS
+     13:52 test12 PASS   14:00 test13 PASS
+
+fixed by W2 (driver repository, W1a's file; small and local, 13:35)
+ cmd/kubelet-cxl-plugin/local.go: zeroDax(devRoot, major, minor, size,
+   align) makes its temporary directory with os.MkdirTemp(devRoot,
+   ".cxl-local-zero-") instead of os.MkdirTemp("", "cxl-local-zero-")
+   (/tmp is tmpfs nodev on Fedora: opening the private node gave EACCES);
+   newLocalAllocator sets zero to a closure that passes mem.DevRoot (/dev,
+   devtmpfs); doc comment and a comment on why. local_test.go: the
+   zeroDax error case passes t.TempDir(). +8 -5 lines. gofmt clean, go vet
+   clean, go test -race ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...
+   ok, golangci-lint: no finding in local.go. Afterwards no
+   /dev/.cxl-local-zero-* is left in VM2.
+
+Test changes in phase 2 (no assertion weakened)
+ - test14 A: requestPolicy default == whole device (W1a: the apiserver
+   requires default with validRange).
+ - D8 / R2 Review, all taken:
+   B1 no cxl-node device while the plugin's region exists: test14 after the
+      numa region (B), the dax region (C) and numa-late's region (E);
+      test15 after the local numa lease (A) and after the two regions of E.
+   R1 test15 E asserts that the local and the pool lease are on the same
+      node; on VM2 they are (node 2 both, every run), so D1's two-holder
+      case is exercised, and E-local-left proves the node stays lent.
+   R2 local-initial-state requires a non-empty localDevices.json (W1a's
+      {"bootID", "devices"} object; claims counted inside it).
+   R3 test14 A: a claim with LocalDeviceConfig {mode: numa, readOnly:
+      true}: event "LocalDeviceConfig: readOnly needs mode dax", pod
+      ContainerCreating for 10 s, no region, mode none, then deleted.
+      test14 E: a dax claim without an amount gets one 256Mi slice
+      (consumed 256Mi, CXL_LOCAL_SIZE 268435456), then the initial state
+      again.
+   R4 new dra-container-read (quiet, non-zero when not found); every
+      cpuset read of test15 goes into a variable and fails the test when
+      it cannot be read (IDLE_MEMS too); test14 mems-of and test15
+      borrower-file removed.
+   R5 the second dax lease exits if its read fails (no vacuous "before").
+   R6 dra-stays snippets treat an unread pod as not true (|| echo unread).
+   S1 dra-local-detach uses pool-cxl-wait. S2 dra-container-read (moving
+      test12's helpers to dra.source.sh stays for after the regression).
+   S3 dra-wait for the timed-out lease. S4 dra-pod-claim for the token
+      claim. S5 dra-local-find errors name the calling helper. S6 doc
+      wording of dra-stays and dra-local-device. S7 dra-uninstall also
+      deletes cxl-local-memory and cxl-local-dax by name. S8 if/then in
+      companion-check. S9 dra-touch-forget.
+   D7 evidence: test15 pool-not-local after E's pool lease and at the end
+      of F: the journal of the current plugin invocation has no
+      "discovered local memory device cxlmem-c1ee0001" (0 in the final
+      run; the build-1 run had 2, F2). The plugin logs "- not publishing
+      memory device "mem1" as a local memory device: pool device" instead.
+ - dra-trace-summary driver pattern: "local:|cxlmem|in another mode|no
+   room for the slice" instead of "local|slice|mode" (those matched
+   kubepods.slice cgroup paths and Mode:ram region dumps).
+ Static checks after every change: bash -n and shellcheck -s bash -e
+ SC2034,SC2154,SC1090,SC2016 clean on dra.source.sh, test14, test15;
+ ASCII only. test10-13 unchanged.
+
+Timings (final build; plugin log times unless "test step")
+ local numa region (create, bind kmem, online 2 blocks movable): 0.11 s
+   from "created region" to the claim prepared; test step: two numa pods
+   Running 3.6 s after apply.
+ numa release (offline 2 blocks, destroy region): 0.15-0.18 s.
+ dax region + first 64Mi slice: 0.35 s (incl. zeroing 55 ms); later
+   slices 0.05-0.15 s, almost all zeroing: 16 MiB 17-41 ms, 32 MiB
+   32-58 ms, 64 MiB 55-102 ms, 256 MiB 232 ms (the measurement W1a's R3
+   asks for: about 1.1-1.2 GB/s in VM2); slice delete
+   about 1 ms; last slice + region destroy 0.1 s.
+ mode switch for a waiting claim (test step): numa -> dax 4.2-5.1 s,
+   dax -> numa 3.0 s (scheduler requeue after the republish).
+ request -> Ready, plugin: local numa 0.28-0.31 s, local dax 0.52 s
+   (first, with the region) and 0.14-0.15 s (more slices), local by
+   --source any 0.31 s, pool by --source any 5.45 s, pool dax 5.38 s.
+   CLI in the container (test step): local numa 0.70-0.86 s, local dax
+   with --exec 0.89-0.98 s, any local 0.66-0.74 s, any pool 5.66-5.88 s;
+   test12's pool leases 5.72-5.93 s.
+ release, test step until nothing is left: local numa lease 8.3-8.5 s
+   (pages migrated back in < 1 s; the rest are the checks of companion,
+   claim, region, mode none, pool), three dax leases 5.6-6.9 s; pod
+   deleted with a local numa and a pool dax lease: 36.2-36.6 s, or 8.7 s
+   when kubelet happens to unprepare the companion first (F1).
+ test10 (final): attached 1.1 s, Running 6.7 s, detached 8.2 s; test12
+   (final): Ready 5.72-5.93 s, release until nothing left 8.6-10.6 s, pod
+   delete clean 14.6 s; test13: writer exit until all readers hold 13.0 s.
+
+Open (for the orchestrator): F1 (30 s stall of local lease release on
+pod deletion, kubeletplugin serialization + CloseClaim wait) and F3
+(companion memory limit 8Mi, a runc init OOM kill) are not fixed; see W2
+Findings (phase 2).
+
+Orchestrator decisions (2026-10-14 14:05, Fable), after W2 phase 2
+-------------------------------------------------------------------
+D9  W2's F1 (deleting a pod with a local lease takes ~36 s instead of ~9 s:
+    the token claim's CloseClaim waits up to 30 s for the lease releases,
+    while the companion claim of a local lease is unprepared by the same
+    driver, cxl.generic, and that call does not get through until the wait
+    times out) goes to W1b: first find where the serialization is (kubelet's
+    DRA manager, the kubeletplugin helper's gRPC server, or a lock of ours:
+    the CloseClaim wait must not hold any lock the companion's Unprepare
+    needs), then decouple: the token claim's Unprepare waits only for the
+    revokes and for the companion deletions to be issued (bounded by a few
+    seconds), not for the companion claims to be unprepared; a lease whose
+    companion is still terminating is left to the normal release path and
+    the reconcile, and the token claim closes. Measure with the unit tests
+    and give W2 the expected pod-deletion time; W2 reruns test15 and test12.
+D10 W2's F3 (companion pause container OOM-killed once at 8Mi): W1b raises
+    the companion memory to 16Mi (requests = limits), POOL.md and the test
+    assertions (test12 companion-check: W2) follow.
+D11 W2's fix in local.go (temporary zeroing node under memctl's DevRoot, not
+    /tmp which is nodev on Fedora) is accepted as is.
+
+W1b Status (D9-D10, 2026-10-14 14:12, W1b)
+------------------------------------------
+D9 where the serialization is: the kubelet plugin helper. kubeletplugin's
+   NodePrepareResources and NodeUnprepareResources take
+   serializeGRPCIfEnabled() (vendor/k8s.io/dynamic-resource-allocation/
+   kubeletplugin/draplugin.go:1262, a mutex or, with rolling updates, the
+   file lock serialize.lock) for the whole call; Serialize defaults to true
+   and driver.go starts cxl.generic without Serialize(false). Not kubelet:
+   pkg/kubelet/cm/dra/manager.go unprepareResources calls
+   NodeUnprepareResources outside its cache lock, per pod, with no
+   per-driver serialization. Not ours: CloseClaim holds no lock while it
+   waits (b.mu only inside the poll), and driver.UnprepareResourceClaims
+   calls CloseClaim before d.state.Unprepare, outside W1a's claim locks.
+   So the companion claim of a local lease (also cxl.generic) could not be
+   unprepared while the token claim's Unprepare waited in CloseClaim.
+   Fix (broker.go, dynamic.go): CloseClaim starts the releases and waits
+   only until every lease of the token claim is marked deleting: its
+   node revoked (release() revokes first) and the deletion of its
+   companion pod and claim requested without an API error. Then it closes
+   the socket, drops the token claim and removes the directory. Bound:
+   leaseCloseTimeout 5 s (was 30 s); after it: "claim <ns>/<name>: still
+   releasing N leases, retry" as before (kubelet retries). The leases stay
+   in the store in Releasing (Failed ones keep showing Failed) until their
+   companions are gone; the release goroutine drops them, and after a
+   plugin restart the reconcile restarts their release (state Releasing)
+   and drops them the same way, whether or not their token claim exists.
+   Tests: TestBrokerCloseClaimReleasesLeases (lease dropped and companions
+   gone after CloseClaim), TestBrokerCloseClaimDoesNotWaitForCompanions (a
+   local numa lease whose companion pod stays Terminating: CloseClaim
+   returns in well under 1 s, the node is revoked, the socket is gone,
+   the lease is Releasing; a plugin restart, then the companion goes: the
+   lease is dropped and nothing is left), TestBrokerCloseClaimRetry (the
+   companion claim's deletion fails: "still releasing 1 leases, retry",
+   socket kept; then it succeeds).
+   Side finding: the earlier one-off failure of TestBrokerCloseClaimReleasesLeases
+   was a data race in the test, not in the broker: the fake clientset's
+   PrependReactor (client-go testing/fake.go:104) does not lock against
+   concurrent Invokes, and the test added a reactor after the broker's
+   reconcile loop had started. The new tests add their reactors before
+   e.start() and switch them with atomic flags.
+   Expected timing for W2 (test12 F, test15 F): the token claim's
+   NodeUnprepareResources now returns within about 1 s (one NRI revoke and
+   four API calls), not after 30 s; kubelet then unprepares the companion
+   claims independently. Pod delete -> everything clean (no companions,
+   claims, slices, regions) should take about as long as W2's run2 (8.7 s),
+   at most about 15 s: the release loop polls the companion objects at
+   0.5, 1.5, 3.5, 7.5, 12.5 s after the release started. The 60 s bound
+   holds with a wide margin.
+D10 companion pod: requests = limits cpu 100m, memory 16Mi (was 8Mi) in
+   broker.go; TestBrokerMemoryLease asserts 16Mi; POOL.md says 16Mi. W2:
+   test12's companion-check must expect memory "16Mi".
+Docs: POOL.md "Life cycle" describes the new token-claim Unprepare (5 s
+   bound, does not wait for companions, leases Releasing until their
+   companions are gone, also across a restart).
+Results (W1a's current files present): go vet (cxl packages) clean; gofmt
+   clean; go test -race -count=5 of the broker/token/lend tests ok,
+   -count=20 of the CloseClaim tests ok, -count=3 of
+   ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ok; golangci-lint: no
+   new findings vs b57b62b; both binaries build static (CGO_ENABLED=0).
+Files touched this round: cmd/kubelet-cxl-plugin/broker.go, dynamic.go,
+   broker_test.go, doc/cxl/POOL.md.
+
+W2 Status (final) (2026-10-14 14:25, W2)
+----------------------------------------
+Build: the driver tree after "W1b Status (D9-D10) 14:12" (broker.go
+leaseCloseTimeout 5 s, companion memory 16Mi; W2's zeroDax fix still in
+local.go; md5 of cmd/kubelet-cxl-plugin/*.go concatenated 6a855091...),
+built by dra-build at the start of each run.
+Test change: test12 companion-check expects requests = limits
+{cpu: 100m, memory: 16Mi} (was 8Mi; its comment also said "1m CPU", now
+"100m CPU and 16Mi memory"). test15 asserts no companion resources, test13
+none either: unchanged. bash -n and shellcheck (test12's exclusions plus
+SC2015 for its existing line 444) clean.
+Verdicts (VM2 only, one run each, in this order):
+  14:16 test15-dra-local-live-attach PASS
+  14:21 test12-dra-live-attach PASS
+Pod deletion -> everything clean (test step, F of each test), against
+W1b's expectation (about 9 s, at most about 15 s):
+  test15 F (a local numa lease with 32 MiB in use + a pool dax lease):
+    8.6 s (before D9: 36.2-36.6 s, or 8.7 s by luck). No "still releasing"
+    in the trace: the token claim's Unprepare returned at once.
+  test12 F (a pool memory lease with 256 MiB in use + a shared lease):
+    14.5 s (14.6-14.9 s before D9: pool-only, F1 did not apply). Of it,
+    the two pool devices' detaches: pooled0 detached 6.8 s and shared0
+    13.0 s after the borrower went Terminating (the server detaches them
+    one after the other, each about 5-6 s of pciehp).
+  Both within 15 s. No FailedCreatePodSandBox and no memcg OOM kill in
+  either run (companions at 16Mi).
+Other timings of these runs: test15 local numa lease Ready 0.69 s, local
+dax with --exec 1.05 s, any local 0.75 s, any pool 5.67 s; test12 pool
+leases Ready 5.74-5.87 s, release until nothing left 8.56-8.72 s.
+VM2 left clean: no kubelet-cxl-plugin or fake-cxl-pool-controller unit, no
+memdevs or regions, no cxl-type3 in qemu, no /dev/.cxl-local-zero-*,
+port 9909 free. VM1 not touched in this round. Nothing committed.
+F1 and F3 are resolved by D9-D10 as far as these tests can see.
+
+Orchestrator closing status (2026-10-14 14:30, Fable)
+-----------------------------------------------------
+Result: the design of 02 is implemented in both repositories and proven on
+VM2 (n4-cxl-shared-2): test14-dra-local-memdev and test15-dra-local-live-
+attach PASS on the final build, and test10, test12 and test13 pass
+unchanged in behaviour (test12 only expects the companion's new 16Mi).
+Unit tests, vet, gofmt and golangci-lint (no new findings) pass in both
+trees; both binaries build static. Nothing is committed.
+
+Where the changes are
+- Driver (~/github.com/intel/intel-resource-drivers-for-kubernetes, 5fC-cxl,
+  on top of b57b62b): 21 files changed plus new cmd/kubelet-cxl-plugin/
+  {lending.go,local.go,pool_slices.go} with tests, deployments/cxl/local/,
+  doc/cxl/LOCAL.md. go.mod's replace of nri-plugins points to the local
+  checkout: push the nri-plugins memctl change first and restore a
+  pseudo-version replace before committing.
+- nri-plugins (5jQ-cxl, on top of ee6442a22): pkg/cxl/memctl (dax slicing,
+  ReleaseRegions, BlocksNode, WriteFile hook), test/e2e/memory.test-suite/
+  memory-policy/dra.source.sh, n4-cxl-shared-2/test14-dra-local-memdev and
+  test15-dra-local-live-attach, this plan directory.
+
+Review rounds: R1 (driver) and R2 (e2e) findings were all fixed or
+accepted with a recorded reason (D6-D11); the two review-found driver bugs
+(nodeState lock across device work and NRI updates; pool devices published
+as local before Prepare) and W2's two findings (36 s pod deletion with a
+local lease; companion OOM at 8Mi) are fixed and re-tested.
+
+Open items, not blocking
+- 02 6.4 (lease kind "claim", joining an existing claim) is designed only.
+- The pool-serial exclusion lists every ResourceSlice of the cluster on
+  each rescan (fine for the e2e clusters; an informer would be better in
+  large clusters).
+- After a plugin restart, before the reconcile re-applies Ready leases, a
+  revoke can briefly remove a node that another lease also holds (the
+  reconcile lends it back within 60 s).
+- Follow-up analysis 07: kmem slices for numa mode (online only claimed
+  capacity); per-container NUMA nodes are not possible.
+- The VM of n4-cxl has the four devices of the 01 measurement and an
+  older zombie plugged (stock qemu); cxl-reset of test01-pkg-cxl reboots
+  it at its next run.
+
+W3 Status (2026-10-14 16:30, W3): mixed numa and dax slices done
+-----------------------------------------------------------------
+Nothing committed. Tree to build: driver cmd/kubelet-cxl-plugin/*.go
+concatenated md5 017e17cb2466..., memctl.go md5 1d7a197fd166... (vendored
+copy identical, `go mod vendor` run).
+Files changed
+ nri-plugins (5jQ-cxl) pkg/cxl/memctl:
+  memctl.go       Range{Start, End} (End included, as the kernel shows it)
+                  with Size/Aligned/String; MemoryBlockSize() (block_size_bytes
+                  as hex, with or without 0x, shared parseHex); RegionRange;
+                  DaxDeviceRanges (mappingN, else resource+size); DaxDeviceBlocks
+                  (existing blocks wholly in the memory); WaitDaxBlocks;
+                  RegionFreeGaps; CreateDaxDeviceAt (create, write "0x<s>-0x<e>"
+                  to mapping, check the device has exactly that range, else
+                  delete it); SetDaxDriverSysfs (the sysfs branch of SetDaxDriver,
+                  exported; SetDaxDriver uses it without daxctl). regionBlocks
+                  counts only blocks wholly in the region, waitRegionBlocks returns
+                  at once when there is none (see Findings 2). CreateRegion,
+                  Online, Release, ReleaseRegions, SetDaxDriver unchanged otherwise.
+  memctl_test.go  fake mapping attribute; TestMemoryBlockSize ("8000000" ->
+                  134217728, "0x8000000", 2 GiB, bad values), TestRange,
+                  TestDaxDeviceRanges, TestCreateDaxDeviceAt, TestSetDaxDriverSysfs,
+                  TestRegionBlocksMisaligned.
+ driver (5fC-cxl):
+  cmd/kubelet-cxl-plugin/local.go    every allocation result is a slice (dax
+                  device) of one devdax region per memdev; numa slices: first-fit,
+                  range check, mapping fallback, kmem (sysfs bind), WaitDaxBlocks,
+                  online_movable, node = target_node; release offlines only the
+                  slice's blocks; region destroyed with the last slice of either
+                  mode; localSlice.Mode; device Mode derived (none|numa|dax|numa+dax);
+                  block size read at start and in every Acquire; localSnapshot /
+                  Snapshot() for the publisher; Reconcile offlines+deletes slices of
+                  unprepared claims and deletes orphan dax devices; old state files
+                  (mode per device) load; errModeConflict removed.
+  cmd/kubelet-cxl-plugin/local_test.go  fake with first-fit placement (multi-range),
+                  mappingN, the mapping attribute, memory blocks that exist while
+                  kmem holds memory (and an error if kmem lets go of online blocks);
+                  TestLocalBlockSize, TestLocalMixedSlices (dax, numa, dax, numa),
+                  TestLocalDaxSlices, TestLocalSlicesSysfs, TestLocalNUMAPlacement
+                  (fallback on a region 64 MiB off a block boundary),
+                  TestLocalNUMAReleaseFailure, TestLocalSliceFailures,
+                  TestLocalStateAndReconcile, TestLocalStateMigration,
+                  TestLocalRegionErrors, TestLocalStateOfAnotherBoot, TestZeroFile.
+  cmd/kubelet-cxl-plugin/node_state.go  attribute memoryBlockSize, requestPolicy
+                  from the block size, no publication below one block or without a
+                  known block size; buildDevInfos(..., *localSnapshot); numa claim
+                  info TotalBytes = ConsumedBytes = slice size (dax too).
+  cmd/kubelet-cxl-plugin/node_state_test.go  publication (snapshot, tiny memdev,
+                  unknown block size), TestLocalRequestPolicy, Prepare numa+dax
+                  coexistence, sizes rounded to blocks.
+  cmd/kubelet-cxl-plugin/driver.go      scanDevices takes local.Snapshot().
+  cmd/kubelet-cxl-plugin/pool_slices_test.go  buildDevInfos with a block size.
+  pkg/cxl/device/device.go              CXLMemdev.BlockSize; Mode comment.
+  deployments/cxl/local/device-classes.yaml  no mode conditions.
+  deployments/cxl/local/examples/{local-dax-readonly-pod,local-dax-shared-slice,
+                  local-memory-pod}.yaml  header comments (sizes, zeroing).
+  doc/cxl/LOCAL.md  mixed modes, block size step and attribute, slices and
+                  memory blocks with the mapping fallback, node size (D15),
+                  Prepare/Unprepare/restart, log lines, limitations.
+Results
+ nri-plugins: go test -race ./pkg/cxl/... ok; go vet ok; gofmt clean;
+   golangci-lint run ./pkg/cxl/... 0 issues; scripts/testing/fake-cxl-pool builds.
+ driver: go vet -mod vendor ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...
+   ./pkg/cxl/... clean; go test -mod vendor -race ./cmd/kubelet-cxl-plugin/...
+   ./cmd/cxl-request/... ok; allocator/prepare/publication tests -race -count=5 ok;
+   gofmt clean; golangci-lint (CXL packages) 14 findings, the same 14 as before
+   W3, a subset of b57b62b's 17 (no new ones); CGO_ENABLED=0 GOARCH=amd64
+   -mod vendor builds of kubelet-cxl-plugin and cxl-request: static (built to
+   /tmp/w3/bin, bin/ not touched).
+
+What W4 asserts on
+ Device cxlmem-<hex> in the node's cxl.generic slice:
+   attributes  type cxl-memdev, name memN, serial "0x<hex>", source local,
+     size <RamSize> (int), nodeAffinity (int, absent if unknown),
+     mode (string) "none" | "numa" | "dax" | "numa+dax" (what the device holds
+     at the last rescan; republished after every Prepare/Unprepare),
+     memoryBlockSize (int, bytes) = block_size_bytes read as hex (VM:
+     "8000000" -> 134217728).
+   capacity memory: value = RamSize;
+     requestPolicy.default = RamSize rounded down to whole blocks (1Gi for the
+       1G device), requestPolicy.validRange.min = .step = memoryBlockSize, no max.
+     A device of exactly one block (BS <= size < 2*BS) has instead
+       requestPolicy {default: BS, validValues: [BS]} (API: min+step <= capacity).
+     A memdev smaller than one block is not published (V(4) "RAM capacity N is
+       smaller than the memory block size BS"), nor any memdev while
+       block_size_bytes cannot be read ("the memory block size is unknown").
+   DeviceClasses cxl-local-memory and cxl-local-dax select
+     type == "cxl-memdev" only (no mode condition); dax keeps LocalDeviceConfig
+     mode: dax.
+ Claims
+   Every slice is a multiple of BS: the scheduler rounds the request
+     (consumedCapacity = 128Mi for a 64Mi request with 128 MiB blocks); the
+     allocator rounds up again defensively (warning "slice of N bytes rounded up
+     to M (memory block size BS, align A)" only when the scheduler did not).
+   numa claim: claim marker CDI device as before; prepared info cxl-node,
+     NUMANodes [N] (N = target_node of the slice, the same for all numa slices
+     of the device), TotalBytes = ConsumedBytes = slice bytes.
+   dax claim: CDI and env unchanged: CXL_LOCAL_DAX_<SERIAL>=/dev/daxX.Y,
+     CXL_LOCAL_SIZE_<SERIAL>=<slice bytes> (134217728 for a 64Mi request),
+     CXL_LOCAL_SERIAL_<SERIAL>, CXL_LOCAL_READONLY_<SERIAL>=1; zeroed.
+   No mode conflict error exists any more; a numa claim and a dax claim on one
+     device both prepare. Errors that remain: "no room for the slice: N bytes
+     free in regionK, the slice needs M"; "no room for the slice: no
+     block-aligned free range of M bytes in regionK (free [...], memory block
+     size BS)" (misaligned regions only); on Unprepare "releasing slice daxX.Y:
+     cannot offline its memory (in use?): ..." (kubelet retries); "memory block
+     size: ..." when block_size_bytes is unreadable; config errors unchanged
+     ("LocalDeviceConfig: readOnly needs mode dax" ...).
+ Leases (cxl-request, broker unchanged): a numa lease's response has
+   "source":"local", "mode":"numa", "node":N, "size":<slice bytes>
+   (134217728 for 64Mi or 128Mi with 128 MiB blocks), "serial":"0x<hex>";
+   a dax lease "node" absent/-1, "size":<slice bytes>, "dax":"/dev/daxX.Y".
+   The lease's slice is onlined in the companion's Prepare, before Ready.
+ Node N: MemTotal of /sys/devices/system/node/nodeN/meminfo = sum of the online
+   numa slices (BS/1024 kB per block; exact with memmap_on_memory off, as
+   measured in 08); dax slices add 0; a released numa slice shrinks N at once
+   (the offline is done in Unprepare before it returns). Unclaimed capacity
+   is never online (region creation adds and removes the whole region's
+   memory once while switching daxX.0 from kmem to device_dax).
+ sysfs view: one devdax region per device while any slice exists; numa slices
+   are dax devices bound to kmem (driver link kmem, size = slice), dax slices
+   device_dax; daxX.0 is the first slice of a new region (either mode) and is
+   kept with size 0 and no driver when released or when the fallback moved a
+   numa slice away from it. Do not assert other dax ids: the kernel reuses the
+   lowest free id (the unit fake does not).
+ localDevices.json: {"bootID": ..., "devices": [{..., "mode": "none|numa|dax|numa+dax",
+   "node": N, "dax": "daxX.0", "claims": {"<uid>": [{"request", "region",
+   "mode": "numa"|"dax", "size", "dax": "daxX.Y", "daxDevice" (dax only), ...}]}}]}
+ Plugin log lines (klog Info, default verbosity; times are milliseconds with 3
+ decimals, ASCII):
+   local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in 112.031ms
+   local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in 3.208ms
+   local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in 41.002ms
+   local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in 60.415ms
+   local: memdev mem1 (serial 0xc100e2e1) region0: claim <uid> request mem: slice dax0.1 mode numa size 134217728 node 2
+   local: memdev mem1 (serial 0xc100e2e1) region0: claim <uid> request mem: slice dax0.0 mode dax size 134217728 node -1 /dev/dax0.0
+   local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in 20.117ms
+   local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in 5.420ms
+   local: memdev mem1 (serial 0xc100e2e1): released region0 in 90.733ms
+   W... local: memdev mem1 (serial 0xc100e2e1): claim <uid>: slice dax0.2 at [0x...] is not aligned to the memory block size 134217728, placing it explicitly
+   (the "at" list has one "0x<start>-0x<end>" per range, end included; a dax
+   slice can have several ranges)
+   Slice create = "created slice" (create/resize + placement), slice online =
+   "onlined slice" (kmem bind, block wait, online), slice offline = "offlined
+   slice", slice delete = "deleted slice" (unbind, size 0, delete), zeroing
+   = "zeroed slice"; region create/destroy = "created regionK" / "released
+   regionK". The memctl lines ("memctl: memoryN: online_movable", "memctl:
+   daxX.Y: bound to kmem", "memctl: daxX.Y: mapped 0x..-0x..") stay as well.
+ discovered line (V(3)): "discovered local memory device cxlmem-<hex>: memN
+   serial 0x<hex> size <bytes> mode <mode> memory block size <bytes>".
+
+W3 Findings (2026-10-14 16:30, W3)
+----------------------------------
+Deviations from 09, with reasons
+ 1. numa slices are bound to kmem with memctl.SetDaxDriverSysfs (the sysfs
+    bind of that one device), not SetDaxDriver: with daxctl installed (VM2)
+    SetDaxDriver runs `daxctl reconfigure-device --mode=system-ram
+    --no-online`, a path no test has measured. As far as I know libdaxctl
+    binds through the driver's new_id, which makes kmem take every unbound
+    dax device of the CXL regions (R1's R4), and with --no-online it refuses
+    when the kernel auto-onlines added memory. The sysfs bind is what 08
+    measured. device_dax (dax slices, region creation) still goes through
+    SetDaxDriver/daxctl as measured in test14.
+ 2. memctl regionBlocks counts only the blocks that lie wholly in the
+    region, and waitRegionBlocks returns at once when there are none. kmem
+    adds only whole blocks, so before this, CreateRegion on a region that
+    does not start at a block boundary (the only case in which the mapping
+    fallback is needed) waited forever for a partial block. Same result for
+    aligned regions (all e2e regions), so the pool path behaves as before.
+ 3. A device of one block publishes requestPolicy {default: BS, validValues:
+    [BS]}: the API server rejects a validRange whose min+step exceeds the
+    capacity. Devices smaller than one block, and all devices while the
+    block size is unknown, are not published (a slice could not be served).
+ 4. ConsumedBytes = TotalBytes = slice size also for dax claims (09 named
+    only numa): one rule for all local slices; for dax TotalBytes already was
+    the slice size. cgmpolmgr's CXL quota of a numa claim is its slice.
+ 5. New memctl API beyond 09 2a-c: Range (with End included, as sysfs and the
+    mapping attribute have it), RegionRange, SetDaxDriverSysfs;
+    RegionFreeGaps returns an error as well.
+ 6. The scan input is a *localSnapshot (modes and block size) instead of the
+    modes map: buildDevInfos/scanDevices take it; nil literals in other
+    tests still compile; Modes() is kept for tests.
+ 7. Reconcile also deletes dax devices of the region that belong to no slice
+    (a crash between creating a slice and saving the state), offlining kmem
+    ones first.
+ 8. Old state files (mode per device): slices take the device mode. A numa
+    device of such a file has its whole region online (ram region, daxX.0 on
+    kmem): further numa claims share it (Online again, as before), a dax
+    claim gets "no room" (daxX.0 is counted as used), until the region is
+    released with its last claim. Only reachable when the plugin is
+    upgraded with numa claims prepared.
+ 9. A claim without consumed capacity gets the device size rounded down to
+    whole blocks (the scheduler normally fills consumedCapacity = default).
+10. The example manifests' comments were updated: local-dax-readonly-pod.yaml
+    said "dax memory is not cleared", wrong since R3's zeroing.
+Open issues
+ - VM2 has not run any of this (W4): the first-fit alignment, the kmem sysfs
+   bind of a slice of a CXL devdax region, WaitDaxBlocks and the movable
+   online of a slice next to a device_dax slice are measured in 08 and
+   modelled by the unit fake, not run by the plugin yet.
+ - Region creation still goes through the kernel's kmem binding of daxX.0
+   for the whole region (add, then remove its memory) before the first
+   slice; with auto_online_blocks "online" (Normal zone) that offline can
+   fail, as for the pool path. LOCAL.md requires "offline".
+ - Misaligned regions (block size larger than the CXL window granularity,
+   e.g. 2 GiB blocks on big servers): the head and tail of the region are
+   usable by dax slices only, but the published capacity is the whole
+   device, so a numa claim can be admitted and fail Prepare with "no
+   block-aligned free range". Publishing only block-aligned capacity, or
+   08's option B (dax-only nodes with 2Mi steps), would close it; neither is
+   in 09.
+ - Orphan dax devices are cleaned at restart only; a failed rollback during
+   a running plugin leaves the device until then (logged).
+ - MemTotal of N equals the numa slices only with memmap_on_memory off; dax
+   /cxl.c may ask for it, memory_hotplug.memmap_on_memory decides (off by
+   default, and off in the VMs per 08).
+ - go.mod still replaces nri-plugins with the local checkout (as before).
+
+W4 Status (2026-10-14 17:12, W4): VM2 recreated, mixed-mode tests PASS
+----------------------------------------------------------------------
+Result: VM2 (n4-cxl-shared-2) runs the new topology (local device 1G);
+test14-dra-local-memdev and test15-dra-local-live-attach rewritten for
+numa and dax slices on one device and PASS on W3's tree; the regression
+test10, test12, test13 and test01-shared-cxl PASS on the same build. No
+driver bug found, nothing changed in the driver repository or in
+pkg/cxl. Nothing committed. Logs: ~/.claude/jobs/w4-plan4/.
+
+1. VM2 recreation (09 3a)
+ Recorded before the destroy (copies in ~/.claude/jobs/w4-plan4/vm2-old-*):
+   qemu of the running VM2 (readlink /proc/<pid>/exe):
+     /home/akervine/github.com/qemu/qemu/build/qemu-system-x86_64
+     (QEMU 11.1.50, v11.1.0-1741-gff076b1e6c, "cxl: fix hot-remove ->
+     hotplug for a CXL device"); VM1 runs the same binary.
+   env: QEMU_BIN as above, PROXY=http://proxy-chain.intel.com:916
+     (HTTP(S)_PROXY from it), NO_PROXY="localhost,127.0.0.1,192.168.76.0/24,
+     10.96.0.0/12,10.217.0.0/16,10.76.0.0/16", VM_DISK_SIZE='30G',
+     VMNET_NAME=cxl-pool, VMNET_MCAST=239.255.40.124:18605,
+     VMNET_MAC=52:54:00:1b:6d:55, VMNET_IP=10.76.162.174,
+     VM_UUID=1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1.
+   kernel 7.3.0-rc4 (CONFIG_FS_DAX=y, DEV_DAX_KMEM=y), k8s v1.37.1,
+     containerd 2.4.1, helm 4.3.0 (same as VM1).
+   No test running, no fake-cxl-pool-server, port 9909 free.
+ Steps and times: vagrant destroy -f 15:42:01 (qemu gone 4 s later), the
+   directory removed; topology.var.json: HB0 switch port 3 "mem": "256M"
+   -> "1G" (nothing else); test00-up header comment updated in both
+   n4-cxl-shared-1 and -2 (the files stay identical: same pool slots and
+   shared device, local device 256M in -1, 1G in -2; checks unchanged);
+   `qemu_bin=<path above> ./run_tests.sh .../n4-cxl-shared-2/test00-up`
+   with the proxy exported: 15:42:50 -> 15:48:22, PASS (5.5 min: box,
+   kernel RPMs and the cached latest_* releases came from the cache).
+ The new env differs from the old one only in SSH_PORT (51197); VM_UUID
+   and VMNET_* are derived and identical.
+ qemu command line, old -> new: maxmem 15G -> 16G; the static shared
+   device has serial 0xc1ae0000 (the old VM still had 0xc1f0ee00);
+   beram_cxl_memdev1__bus_cxlsw_ds3_usrp0hb0__sn_0xc100e2e1 size 256M -> 1G.
+   cxl-fmw windows stay 8G each: they were 8G already (6.5G of CXL memory
+   rounded up to 4G steps), 7.25G rounds to 8G too, so D17's "4G -> 8G"
+   did not apply.
+ Verified: `info memdev`: beram_cxl_memdev1 size 1073741824, befile
+   (shared) 268435456; QMP qom-get power_controller_present true and
+   hdm_for_passthrough true on cxlhb0/cxlhb1; pool-vm-require passes on
+   both VMs (test01-shared-cxl, 15:50 and again at the end);
+   block_size_bytes "8000000" = 134217728; CONFIG_FS_DAX=y; daxctl, cxl,
+   numactl, cxl-dump present; single-node cluster Ready; auto_online_blocks
+   offline; no CXL devices.
+
+2. Helpers (dra.source.sh, additions only; test10-13 unchanged)
+ - DRA_LOCAL_BLOCK_SIZE: dra-local-device reads it with the new
+   dra-block-size VMDIR (block_size_bytes parsed as hex, with or without
+   0x) and prints it with the device.
+ - dra-node-memtotal VMDIR NODE (MemTotal kB of nodeN/meminfo, 0 when the
+   node directory is gone) and dra-node-wait VMDIR NODE KB [TIMEOUT]
+   (retry-until with a message, prints the "numactl -H" line of the node,
+   DRA_NODE_KB the last value).
+ - dra-mems-wait VMDIR POD CONTAINER NODE [not]: waits for node NODE in
+   cpuset.mems and prints cpuset.mems, .effective and Mems_allowed_list.
+ - dra-claim-yaml, dra-claim-pod-yaml, dra-claim-pod: test14's claim and
+   pod YAML helpers moved here (test15 needs static claims too);
+   DRA_TOOLS_IMAGE (python:3-alpine) is their image.
+ - dra-plugin-log VMDIR (journal of the current kubelet-cxl-plugin
+   invocation), dra-local-slices-aligned VMDIR (fails if the plugin logged
+   "placing it explicitly" or "rounded up to": first-fit kept every slice
+   block-aligned and the scheduler rounded every claim), and
+   dra-local-slice-times VMDIR (count/min/median/max of W3's "created |
+   onlined | offlined | zeroed | deleted slice ... in Xms" per mode, and
+   created/released region).
+ - dra-py: dax_slices(driver) filters by driver; trace-summary driver
+   pattern without "in another mode" (no mode conflicts any more).
+
+3. Tests (sizes in memory blocks BS read from the VM, nothing hard-codes
+   128 MiB; each test fails clearly if the local device has fewer blocks
+   than it needs; every MemTotal assertion waits with a timeout and
+   compares exact kB = blocks * BS/1024; node lists as sets; no sleeps)
+ test14-dra-local-memdev (A-E):
+   A device 1Gi, attribute memoryBlockSize == BS, requestPolicy min = step
+     = BS, default = device size, mode none, no region, no cxl-node, has_memory
+     = DRAM nodes only.
+   B numa-a (1 block) -> region, node N appears (target_node of the kmem
+     slice, == cxl-dump region node), MemTotal 131072 kB, cpuset.mems has N,
+     numa-touch lands on N; dax-1 (half a block) while numa-a runs ->
+     consumedCapacity 128Mi, CXL_LOCAL_SIZE 134217728, MemTotal unchanged,
+     mode numa+dax; numa-b (2 blocks) -> 393216 kB, both containers have N;
+     shared-slice (1 block) for dax-s1 and dax-s2 -> one slice, isolated from
+     dax-1 by tags; consumed sum 640Mi == the slices, available_size 384M.
+   C delete numa-a -> 262144 kB, dax data intact, numa-b keeps N; delete
+     numa-b -> 0 (node 2 gone), region kept for the dax slices, mode dax;
+     shared slice kept while dax-s2 runs; last slice -> initial state.
+   D numa+readOnly config refused ("LocalDeviceConfig: readOnly needs mode
+     dax", ContainerCreating, no region, mode none); read-only 16Mi -> 128Mi
+     slice, check-ro, device rule "r", CDI; dax claim without amount -> one
+     1Gi slice; initial state after each.
+   E slices aligned (log), trace summary, timings.
+ test15-dra-local-live-attach (A-G):
+   A static-a (1 block) -> N, MemTotal 128M; the borrower's cpuset.mems
+     unchanged.
+   B local numa lease 128Mi -> Ready, node N, size 134217728, MemTotal 256M,
+     lent to main (cpuset.mems DRAM+N, idle unchanged), numa-touch 64 MiB on N.
+   C dax leases 64Mi (slice and CXL_LEASE_SIZE 128Mi, companion requests
+     64Mi, consumes 128Mi) and 128Mi while the numa lease is Ready: isolated
+     by tags, cxl-request fd re-reads, MemTotal unchanged, mode numa+dax.
+   D static-b (2 blocks) -> 512M; second numa lease of half a block (size
+     134217728) -> 640M; release the FIRST lease -> 512M, N stays lent
+     (holder rule with static claims on N); release the second -> 384M, main
+     back to DRAM nodes, its touched pages off N while numa-touch lives;
+     static pods keep N; delete static-a -> 256M; dax leases still read
+     their tags; read-only lease 16Mi -> 128Mi slice, mapping refused;
+     release --all -> only static-b's slice; delete static-b -> 0, nothing left.
+   E --source any 1024Mi -> local, the whole device, MemTotal 1G; --source
+     any 256Mi -> pool (pooled0, lease/pool, same node 2), MemTotal 1.5G;
+     release the pool lease -> 1G, the local lease keeps N; release -> 0;
+     pool-not-local (D7) kept.
+   F borrower deleted with a local numa lease (pages in use), a local dax
+     lease and a pool dax lease (default source) -> all gone in 9.2-9.4 s.
+   G slices aligned (log), trace summary, timings.
+ Static checks: bash -n and shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016
+   clean on dra.source.sh, test14, test15, test10, test11, test13; test12
+   only its existing SC2015 (line 444); all ASCII.
+
+4. Verdicts (build: W3's tree, cmd/kubelet-cxl-plugin/*.go md5 017e17cb...,
+   memctl.go 1d7a197f..., built by dra-build at the start of every run;
+   the tree did not change during the runs)
+   16:37 test14 run1 PASS (first run of the new test)
+   16:39 test15 run1 FAIL in A, test bug: the borrower's cpuset.mems is ''
+         at start, compared with the DRAM nodes. Fixed: compare with its
+         initial value.
+   16:41 test15 run2 FAIL in A, test bug: a new check that the borrower's
+         Mems_allowed_list stays the DRAM nodes. An empty cpuset.mems
+         inherits every memory node, node 2 too (test12 knows this for
+         idle). Check dropped; the cpuset.mems check stays.
+   16:45 test15 run3 PASS
+   16:50 test14 run2 PASS (final version)   16:54 test15 run4 PASS (final)
+   16:55 test10 PASS   17:00 test12 PASS   17:07 test13 PASS
+   17:08 test01-shared-cxl PASS
+   Both VMs left clean: no kubelet-cxl-plugin or fake-cxl-pool-controller
+   unit, no memdevs or regions, has_memory 0-1, no cxl-type3 in qemu, no
+   /dev/.cxl-local-zero-*, no extra namespaces, single-node clusters
+   (test13 restored them), port 9909 free, no fake-cxl-pool-server.
+
+5. Timings (final runs)
+ Plugin log (dra-local-slice-times; ms, min/median/max):
+   created region 39-68 (one 246), released region 85-112
+   numa slice: created 1.5-76 (median 21-37), onlined 19-69 (median
+     29-32), offlined 18-131 (131 with migrated pages), deleted 2-6
+   dax slice: created 0.5-68, zeroed 52-180 per 128 MiB (1 GiB: 0.52 and
+     1.19 s), deleted 44-84
+ Request to Ready, plugin (broker "requests" -> "Ready"): local numa
+   0.15-0.33 s, local dax 0.18-0.24 s, any -> local (1Gi) 0.37 s, any ->
+   pool 5.28 s, pool dax 5.39 s. CLI in the container: local numa
+   0.58-0.80 s, local dax with --exec 0.65-0.77 s, any pool 5.79-5.90 s.
+ Pods Running after apply (test14): numa-a with the region 2.5-2.6 s,
+   dax-1 2.5 s, numa-b 2.5 s, whole-device dax 2.6-3.8 s; last claim
+   deleted -> initial state 4.6-4.7 s.
+ MemTotal transitions seen by the test, from the action (pod start and
+   checks included; the plugin's own times are above): increases
+   (pod apply/lease request) 1.4-4.7 s, decreases after a delete or a
+   release 1.4-2.7 s; with a pool device on the same node (attach and
+   detach) 8.4-10.3 s.
+ test15: last numa lease given back until main's pages left node 2
+   7.6-7.7 s; three dax leases released until their slices were gone
+   4.8-5.2 s; borrower deleted with three leases, everything clean
+   9.2-9.4 s.
+ Regression: test10 attached 1.1 s, Running 7.0 s, detached 8.9 s;
+   test12 leases Ready 5.82-5.94 s, release until nothing left 8.7-9.0 s,
+   pod deleted clean 14.6 s; test13 writer exit until all readers hold
+   12.2 s; test01 detaches 6.3-6.5 s.
+
+6. Assertions changed, and why
+ - Removed with D12: test14 B/E (a claim of the other mode stays Pending)
+   and test15 B (a dax lease times out while a numa lease holds the
+   device); replaced by coexistence of numa and dax claims and leases.
+ - requestPolicy min/step 2Mi -> memoryBlockSize; consumed and slice sizes
+   are the request rounded up to blocks (D13).
+ - Region OnlineSize == whole device -> == sum of the numa slices, plus
+   exact MemTotal of node N (D15).
+ - Numa lease "size >= request" -> "size == request rounded to blocks"
+   (stronger). test15 F now has a local dax lease too (superset).
+ - New: dra-local-slices-aligned in both tests (no explicit placement, no
+   rounding by the allocator).
+ - Nothing weakened. The only check given up is my own new Mems_allowed
+   check of the borrower in test15 A (wrong, see run2 above).
+
+W4 Findings (2026-10-14 17:12, W4)
+----------------------------------
+None blocks; no driver bug found; nothing fixed by W4 outside test/e2e.
+F1 (pkg/cxl, nri-plugins; owner to decide) cxl-dump reports a devdax
+   region with dax slices only and nothing online as disabled: test14 C,
+   after numa-b went (two device_dax slices plus the size-0 dax0.0 left):
+     cxl-dump: 1 regions (region0 node -1 0/1024M online)
+   while sysfs has the region and every dax device has target_node 2.
+   pkg/cxl/devices.go linkRegionsToNumaNodes takes target_node only when
+   the region has exactly one dax device (len(matches) == 1), and Enabled
+   is Node >= 0. The tests do not depend on it (they use the memdev's
+   Enabled and dra-memdev-sysfs). Fix candidate: use the target_node of
+   any dax device of the region (all have the window's node). Not changed:
+   pkg/cxl is shared with the driver's scan and nobody owns it in 09.
+F2 (measurement) deleting a dax slice takes 44-84 ms, a numa slice 2-6 ms
+   (after its offline); dax slices still go through device_dax/daxctl (W3
+   Findings 1). Zeroing dominates dax Prepare: 0.4-1.4 ms per MiB
+   (52-180 ms per 128 MiB, 1 GiB 0.52-1.19 s).
+F3 (topology, for 09 D17) the cxl-fmw windows did not grow: they were 8G
+   before the change. maxmem grew from 15G to 16G.
+F4 (test semantics, for reviewers) a container with an empty cpuset.mems
+   (the borrower's main before its first lend, test12's idle) inherits
+   every memory node, so a static numa claim on node N puts N into its
+   Mems_allowed_list without any lend; only cpuset.mems tells lent from
+   not lent. test15 asserts cpuset.mems.
+
+R4 Review (2026-10-14 17:36, R4)
+--------------------------------
+Scope: W4's e2e work in nri-plugins (5jQ-cxl, uncommitted). I diffed
+dra.source.sh against HEAD and against W2's copy
+(~/.claude/jobs/w4-plan4/dra.source.sh.before), and diffed test14 and
+test15 against W2's copies (test14.before, test15.before). Also reviewed:
+topology.var.json, the test00-up comment of n4-cxl-shared-1 and -2.
+Read against: 09 sections 1, 3 and 4; 05 points 1, 5 and 7; W3
+Status/Findings; W4 Status/Findings; R2 Review.
+Context code read: pool.source.sh, n4-cxl/cxl.source.sh, test10-13,
+lib/test.bash (retry-until), lib/vm.bash (vm-cxl-hw),
+lib/topology2qemuopts.py, the old and new qemu command lines of VM2, the
+driver's local.go/node_state.go (log formats, Unprepare order), and W4's
+logs test14-run2 and test15-run4.
+Read-only: no e2e test was run and no VM was touched. Line numbers are of
+the files at 17:36: dra.source.sh md5 81e0acaefa0f..., test14
+c0ea9e05ce60..., test15 383db69ba1e0..., topology.var.json
+a0ac73059e39..., test00-up (both files identical) 4debe2831a5f....
+
+Blockers: none.
+Bugs: none.
+
+Risks
+R1 test15:620-636 (D, the holder-rule step): it cannot tell which slice
+   went offline. The two NUMA leases and static-a each have a one-block
+   slice. After `release "$NUMA_LEASE1"`, MemTotal (-1 block), main's
+   cpuset.mems (lease 2 still holds N) and all later checks look the same
+   whether the plugin offlined lease 1's slice, lease 2's or static-a's.
+   The same holds for the second release (lease 2 vs static-a). So "release
+   the FIRST" (09 3d D) is checked for the lease objects (lease-1-gone) and
+   for the lend, but not for the slice. Unit tests cover the claim->slice
+   mapping; e2e does not.
+   Fix: at Ready, record each NUMA lease's slice from the plugin state:
+   localDevices.json devices[].claims[<uid of cxl-lease-LEASE>][0].dax
+   (companion-check already has the uid: export it). After each release,
+   dra-memdev-wait until that dax device has no size or is gone, while the
+   slices of the other live NUMA claims are still ('kmem', size). The names
+   come from the state at run time, not from probe order.
+R2 test15:413-439: nothing-left checks less than test14's
+   local-initial-state (test14:207-253). It does not run `test -s` on
+   localDevices.json, does not count the claims in it, and does not look
+   for leftover local-<uid> CDI devices. test15 is the only test that
+   prepares and unprepares local slices through companion claims: the dax
+   leases in C, D and F, and the borrower deleted with leases in F. A CDI
+   spec or state entry leaked on that path goes unseen; test14 covers only
+   static claims.
+   Fix: move local-cdi-devices, local-state-claims and local-initial-state
+   to dra.source.sh, as dra-local-initial-state VMDIR LABEL [NODE]. Call it
+   at the end of test15's nothing-left, and from test14 too.
+R3 W4 F1 says the tests do not depend on cxl-dump's region node. Two
+   assertions do:
+   - test14:354 `${LREGIONS}[0]['Node'] == $NUMA_NODE`
+   - test15:704 `[(r['Node'], r['OnlineSize']) for r in $LREGIONS] == [($ANY1_NODE, ...)]`
+   They pass only because at those points the region has exactly one dax
+   device (numa-a's slice; the whole-device lease). One more dax device at
+   that moment would fail them because of F1, not because of the driver.
+   Fix: keep them as pkg/cxl cross-checks and correct F1's statement. Once
+   F1 is fixed in pkg/cxl, also assert the region node in a multi-slice
+   state (test14 four-slices) as its regression check. Otherwise compare
+   only OnlineSize there.
+R4 The exact MemTotal assertions (node-size, `dra-node-wait ... 0`) hold
+   only while memory_hotplug.memmap_on_memory is off (W3 Findings, open
+   issues). CXL dax devices ask for it per device, for example
+   test/e2e/n4-cxl-fedora-43-crio/memory.test-suite/memory-policy/
+   test01-pkg-cxl/cxl-sysfs.two-regions.txt:452 "memmap_on_memory:1".
+   Nothing checks the parameter. A kernel or command line that enables it
+   makes every node-size fail with "MemTotal ... is X kB, expected Y kB",
+   with no hint why.
+   Fix: in the preconditions of test14 and test15 (or in
+   dra-local-device), fail unless
+   /sys/module/memory_hotplug/parameters/memmap_on_memory is missing or N.
+   The error should name the reason: the vmemmap of hotplugged blocks would
+   come from the blocks themselves.
+
+Style
+S1 test14 and test15 define the same helpers:
+   - mi and up (test14:60-73, test15:70-83)
+   - slices-wait (test14:107-128, test15:281-302, identical)
+   - node-size (test14:130-146, test15:304-321; test15 adds LOCAL)
+   - claim-check (test14:83-96, test15:441-450)
+   - delete-pod
+   - the setup of LD, LREGIONS, BS and the BS sanity checks
+     (test14:293-303, test15:493-503)
+   W4 moved the claim and pod YAML helpers to dra.source.sh for test15, but
+   not these (05 point 1).
+   Fix: move them to dra.source.sh with explicit arguments, for instance
+   dra-local-slices-wait VMDIR LABEL NODE SPEC...,
+   dra-local-node-size VMDIR LABEL NODE BYTES [LOCAL-BYTES] (on
+   DRA_LOCAL_BLOCK_SIZE) and dra-local-blocks-require N. Keep the
+   NODE_TIMES bookkeeping in the tests.
+S2 test15:400-411: pool-not-local looks up the plugin's InvocationID and
+   reads its journal itself. dra-plugin-log (dra.source.sh:723) now does
+   exactly that. Use `dra-plugin-log "$VM2" | grep -c ...`.
+S3 dra.source.sh:681-692: dra-block-size is a second parser of
+   block_size_bytes. cxl-tools-install (n4-cxl/cxl.source.sh:26) already
+   sets CXL_BLOCK_SIZE for the VM of the test, and test14/15 run it through
+   pool-vm-tools-install. Its parse, `$(( 0x$(...) ))`, breaks on a value
+   that has 0x and validates nothing.
+   Fix: parse the same way in both places (optional 0x, digit check,
+   16#), so that "the block size is parsed as hex everywhere" (09 section
+   4) holds for the tests' helpers as a whole.
+S4 dra.source.sh:1008-1023: no caller uses dra-mems-wait's "not" mode, and
+   it is wrong in the case F4 describes. By dra-nodes-has, an empty
+   cpuset.mems "does not have" NODE, yet the container inherits every
+   node, N included.
+   Fix: drop the option, or have "not" also require a non-empty
+   cpuset.mems.
+S5 test14:302-303 and test15:502-503: the error for a local device with
+   too few blocks ends "Was the VM created from an older topology.var.json?
+   See test00-up". test00-up does not check the local device's size, so a
+   VM2 created from the 256M topology passes it.
+   Fix: say what to do, as pool-vm-require's $recreate text does
+   (vagrant destroy in $VM2, remove the directory, run qemu_bin=...
+   ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test00-up).
+   Or have test00-up compare the size of beram_cxl_memdev1 in `info memdev`
+   with the topology.
+S6 dra.source.sh:695-722: dra-node-memtotal and dra-node-wait accept an
+   empty or non-numeric NODE. Then "/sys/devices/system/node/node" is not a
+   directory, MemTotal reads as 0, and `dra-node-wait VM "" 0` passes
+   without reading any node. test14 guards against this
+   (local-initial-state:251). test15's nothing-left (427) depends on
+   NUMA_NODE having been set in A.
+   Fix: `[[ "$node" =~ ^[0-9]+$ ]] || error ...` in dra-node-wait.
+S7 Minor:
+   - The dra-dax-tool-install doc (dra.source.sh:192-193) still names the
+     image literally, but DRA_TOOLS_IMAGE (line 64) is now the image of
+     the pods that run the tools.
+   - test15:772-775 print raw bc output (".595673"); test14:529 uses
+     printf %.1f.
+
+Verified and found correct
+- Block size:
+  - dra-block-size reads block_size_bytes as hex: it strips an optional
+    0x, checks the digits, then uses 16#. dra-local-device sets
+    DRA_LOCAL_BLOCK_SIZE after the device and its cxlmem device appear.
+    The logs show 134217728, and A asserts memoryBlockSize == BS.
+  - No code hard-codes 128 MiB, 131072 kB, 0x8000000 or 134217728. Every
+    claim, lease and slice size, TOUCH_MIB, RO_REQ and BAD_REQ is derived
+    from BS. "128M" appears only in the header comments that describe the
+    VM. Both tests fail clearly if the device has fewer blocks than they
+    need (5 and 7) or is not whole blocks.
+- MemTotal:
+  - Every transition goes through node-size -> dra-node-wait: retry-until
+    with --timeout 30, --interval 1 and --message, and an error that shows
+    the last value. The expected value is exactly
+    blocks * (BS / 1024) kB, with a whole-block check first; the numactl -H
+    line is printed. Each step is also cross-checked against the region's
+    OnlineSize in cxl-dump.
+  - test14 asserts 128, =, 384, 256 and 0 MiB, and 0 in every
+    local-initial-state. test15 asserts 128, 256, = (dax), 512, 640, 512,
+    384, 256, 0, 1024, 1536, 1024, 0 and 128 MiB, and 0 in nothing-left.
+    Pool and local sum correctly on the shared node in E.
+- Holder rule (W4 F4): after the first release, lent-check compares main's
+  cpuset.mems as a set with DRAM+N, not Mems_allowed_list. The ordering
+  makes this sound: node_state.go:663-670 revokes before local.Release, so
+  a wrong revoke would show before the MemTotal drop that node-size waits
+  for, and before lease-1-gone. After the second release, not-lent-check
+  waits for cpuset.mems == DRAM nodes and for no anon pages on N while
+  numa-touch.py lives. dra-mems-wait shows that static-a and static-b keep
+  N throughout.
+- Coexistence at the same time, not only in sequence:
+  - test14 B: numa-a, dax-1, numa-b and shared-slice in one region (2 kmem
+    + 2 device_dax slices, available_size checked); consumed sum 640Mi;
+    mode numa+dax; two pods share one slice; isolation shown by different
+    strings at one offset.
+  - test15: C has 2 NUMA + 2 dax slices; D up to 4 NUMA (static and
+    lease) + 2 dax, 7 of 8 blocks; F has a local NUMA lease with pages in
+    use, a local dax lease and a pool dax lease. Static NUMA pods and
+    cxl-request NUMA leases share the node.
+- Probe order: no literal memN, daxX.Y, regionN or node number.
+  - N is the target_node of the kmem slice in sysfs, cross-checked with
+    cxl-dump and with the lease responses.
+  - Dax names come from CXL_LOCAL_DAX_* or CXL_LEASE_DAX and are matched
+    against sysfs.
+  - daxX.0 at size 0 is excluded by dax_slices().
+- Reuse: the new helpers build on retry-until, dra-vm-command-q,
+  dra-container-read and dra-nodes-has, and the tests use the dra-*,
+  pool-* and cxl-* helpers. None of the new retry-until snippets uses its
+  reserved names. The only sleep is dra-stays (a hold check, as R2
+  accepted).
+- Clean start and end: unchanged from R2's verification (pool-vm-reset,
+  vm-k8s-reinit, the EXIT trap 'dra-cleanup; pool-cleanup', dra-cleanup ->
+  dra-local-detach -> pool-cleanup at the end). With NUMA slices: deleting
+  the pods in dra-uninstall unprepares them, memctl.ReleaseRegion offlines
+  the blocks of a region that has kmem dax devices for pool-cleanup's
+  guest release, and pool-vm-reset restarts a VM that has leftovers.
+- Topology:
+  - The only change is HB0 switch port 3 "mem" "256M" -> "1G"; the serial
+    0xc100e2e1 is derived and unchanged.
+  - The qemu command lines show the cxl-fmw windows at 8G before and after
+    (6.5G and 7.25G both round to 8G), so W4 F3 is right and D17's
+    "4G -> 8G" did not apply. maxmem went from 15G to 16G.
+  - The HB0 window holds 2 pool slots, the shared 256M device and the 1G
+    local device.
+- test00-up: the new comment is accurate. The two topologies differ only
+  in the local device (256M, 1G), and the other .var.sh files are
+  identical. The two code.var.sh files are still identical, and their
+  checks are unchanged. Their shellcheck notes (SC2086, SC2013) are older
+  than this change.
+- test10-13 and test01:
+  - Against W2's copy, dra.source.sh only adds: new functions and
+    variables, an optional driver argument of dax_slices() (the default is
+    the old behaviour), and the trace pattern without "in another mode".
+    No name clashes with test-local functions. No test10-13 assertion uses
+    the trace pattern.
+  - The test12 diff (companion 16Mi) is W2's D10 work.
+  - W4's runs: test10, test12, test13 and test01 PASS.
+- R2's accepted items are still in place: B1 (no-cxl-node at test14 356,
+  381 and 445, and test15 545 and 713), R1 (test15:709), R2
+  (test14:249), R3 (test14 D), R4 (test15:525), R5 (test15:584), R6
+  (test14:475), S1, S3-S9, and the D7 evidence (pool-not-local in E and
+  F).
+- The asserted names match W3: memoryBlockSize; requestPolicy default,
+  min and step; the mode values; CXL_LOCAL_SIZE / CXL_LEASE_SIZE as the
+  slice size; and the log texts "placing it explicitly", "rounded up to"
+  and "created|onlined|offlined|zeroed|deleted slice ... in X.XXXms". The
+  local-slice-times output in the run logs parses all of them.
+- Static checks: bash -n is clean. `shellcheck -s bash -e
+  SC2034,SC2154,SC1090,SC2016` (0.11.0) is clean on dra.source.sh,
+  test14, test15, test10, test11, test13 and test01. test12 has only its
+  older SC2015. All files are plain ASCII, and no comment describes
+  history.
+- 09 coverage: 3c A-E and 3d A-G are implemented. W4's documented
+  deviations (second lease of half a block, E's first lease via --source
+  any, F as a superset, and the dropped Mems_allowed check in test15 A per
+  F4) only add checks or fix a wrong one. No assertion was weakened
+  against W2's tests beyond what D12 removes.
+
+R3 Review (2026-10-14 17:40, R3)
+--------------------------------
+Scope: W3's mixed numa/dax slices. Driver 5fC-cxl working tree
+(cmd/kubelet-cxl-plugin/*.go md5 017e17cb..., the W3/W4 build) diffed
+against W3's pre-change copies in /tmp/w3/orig; nri-plugins
+pkg/cxl/memctl (memctl.go md5 1d7a197f, vendored copy identical).
+Kernel facts are checked against ~/github.com/torvalds/linux
+(7.3-rc1). Paths are relative to cmd/kubelet-cxl-plugin/ unless given.
+No VM was touched. Nothing in either tree was edited: one scratch test
+ran through `go test -overlay` from /tmp/r3.
+
+BLOCKER
+none.
+
+BUG
+B1 local.go:597-617 (reusable), 494, with memctl.go:367-380 (UnbindDax):
+   an orphan numa slice on daxX.0 is reused, and kmem is unbound from
+   memory that is still online. reusable() picks daxX.0 whenever no
+   claim's slice names it. It does not check whether daxX.0 is bound to
+   kmem with online blocks. ResizeDaxDevice then unbinds kmem. In the
+   7.3 kernel, dev_dax_kmem_remove (drivers/dax/kmem.c:513-547) fails
+   remove_memory with EBUSY, finishes the unbind anyway and logs "Hotplug
+   regions stuck online until reboot". The memory stays system RAM of
+   node N and its iomem reservation leaks, while the dax region counts
+   the range as free. Every later slice placed there then fails: the
+   device_dax probe cannot reserve the range, and kmem gets no
+   reservation, so WaitDaxBlocks times out. This lasts until a reboot.
+   Mixing modes makes the bug reachable: before W3, daxX.0 was never a
+   kmem slice next to other claims. How an orphan with online memory
+   appears while other claims keep the device:
+   - reconcileDevice drops a claim whose release failed
+     (local.go:892-895), and deleteOrphans' retry fails too;
+   - addSlice's rollback cannot offline (local.go:514-519, logged only),
+     for example after auto_online_blocks or a udev rule onlined the
+     slice into a kernel zone;
+   - the plugin crashes after onlining daxX.0 and before the save, and
+     the orphan delete at restart fails.
+   Confirmed in the unit fake. After acquire u1 numa (dax0.0, memory74
+   online), acquire u2 dax and delete(Claims, "u1"), Acquire(u3, dax)
+   succeeds with dax0.0. The fake reports "memory74 of dax0.0 removed in
+   state online_movable" (scratch test /tmp/r3/r3_test.go).
+   Fix:
+   (a) Never drop a slice whose release failed. reconcileDevice and the
+       addSlice rollback keep such slices under a reserved owner key
+       (for example "-", which no claim UID can be). usesDax then
+       excludes them from reuse, and device() deletes them like
+       leftovers before using the device. If that delete still fails,
+       the Acquire fails with the offline error. Reconcile retries them.
+   (b) memctl UnbindDax refuses to unbind kmem while a block of the
+       device (DaxDeviceBlocks) is not offline. "Memory of kmem must be
+       offline" is a precondition in three doc comments, and nothing
+       checks it. One check covers ResizeDaxDevice, DeleteDaxDevice and
+       SetDaxDriver*.
+   (c) Turn the scratch scenario into a test: an error, or an offline
+       followed by reuse, and never an online block removed.
+
+RISK
+R1 The mapping fallback has never run against a kernel. This covers
+   alignSlice -> RegionFreeGaps -> CreateDaxDeviceAt (local.go:540-559,
+   memctl.go:419-450). The e2e cannot reach it: VM regions are always
+   block-aligned (block size 128 MiB, HPA alignment 256 MiB, see the
+   proposal below), and W4 asserts that "placing it explicitly" is never
+   logged. From the source the code is right. range_parse uses kstrtoull
+   base 16, which accepts 0x, with the end included (drivers/dax/
+   bus.c:1147-1175). mapping_store silently ignores a misaligned length
+   (bus.c:1203-1209), which the range comparison after the write
+   catches. Close it with one manual run the next time VM2 is free:
+   devdax region R, daxX.0 resized to 64 MiB, then CreateDaxDeviceAt(R,
+   <next 128 MiB boundary>, 128 MiB). The ranges must match, a second
+   call on the same range must fail with ENOMEM, and the device must be
+   gone afterwards.
+
+STYLE / TESTS / DOCS
+S1 memctl.go:793-797: the SetDaxDriverSysfs doc says what the function
+   does not do ("without daxctl"). It also states a caller precondition
+   ("Memory of kmem must be offline before switching away"), copied from
+   SetDaxDriver. Proposed text: "SetDaxDriverSysfs binds a dax device to
+   device_dax or kmem through the sysfs attributes of the dax bus. The
+   memory blocks that kmem adds are offline unless auto_online_blocks
+   onlines them." With B1(b) in place, the precondition becomes an
+   error case.
+S2 Missing tests:
+   - the B1 scenario;
+   - Reconcile with an unprepared numa claim whose offline fails;
+   - failures inside the fallback (DeleteDaxDevice, RegionFreeGaps,
+     CreateDaxDeviceAt);
+   - a placed slice whose kmem bind fails: the rollback must delete the
+     placed device, not the original;
+   - a numa slice that first-fit splits over two gaps, onlined and
+     offlined (memctl tests DaxDeviceBlocks with two ranges, the
+     allocator never gets such a slice);
+   - WaitDaxBlocks timing out inside onlineSlice.
+S3 doc/cxl/LOCAL.md:300-303 says "does not start or end at a block
+   boundary". Only an unaligned start makes the scheduler admit more
+   than fits. An unaligned end leaves less than one block, which the
+   step accounting already excludes (capacity < (n+1) blocks).
+S4 doc/cxl/LOCAL.md:328-330 gives only the numa slices as the reason
+   for auto_online_blocks offline. Region creation also binds daxX.0 to
+   kmem for the whole region before switching it to device_dax. With
+   "online" the whole region is onlined in a kernel zone, and
+   CreateRegion's offline can fail (W3 open issue). Add that sentence.
+
+W3 open issue (c): a block size larger than the region alignment
+-----------------------------------------------------------------
+Facts from the 7.3 source. x86 caps the block size by the alignment of
+the CFMWS base and size (drivers/acpi/numa/srat.c acpi_parse_cfmws ->
+memory_block_advise_max_size; arch/x86/mm/init_64.c
+probe_memory_block_size), so window bases are block-aligned. Regions in
+a window get their HPA ascending at 256 MiB alignment
+(drivers/cxl/core/region.c alloc_hpa -> alloc_free_mem_region(...,
+SZ_256M); kernel/resource.c ascending by default). Consequences:
+- With BS <= 256 MiB (the VMs) every region is aligned.
+- With BS > 256 MiB a local region is misaligned exactly when the
+  regions below it in the same window (pool or shared devices under the
+  host bridge) do not end on a block boundary.
+- The head is then at most BS - 256 MiB, and the region holds at least
+  floor((S - (BS - 256 MiB)) / BS) whole blocks: one block less than
+  S/BS for a block-multiple S, while the scheduler counts S/BS.
+- First-fit dax slices make it worse. They take the head plus part of
+  the next block, which numa slices cannot use. TestLocalNUMAPlacement
+  shows it: dax0.0 gets the 64 MiB head and 64 MiB of memory75. A
+  numa, dax, numa, numa sequence of one-block claims on its 512 MiB
+  region (published 512Mi = 4 blocks, 3 whole blocks) fails the fourth
+  claim at Prepare.
+Proposal:
+1. Place every slice on whole blocks, dax slices too. In addSlice
+   (local.go:498) drop the `s.Mode == device.ModeNUMA` condition before
+   alignSlice. Aligned regions do not change (first-fit is aligned
+   already). On misaligned regions the head and tail are never used, so
+   a dax slice cannot split a block that numa needs. Let the fallback
+   cover several aligned gaps when no single gap fits: one mapping
+   write per range, since mapping_store appends a range through
+   alloc_dev_dax_range, then check all ranges. Free whole blocks then
+   stay usable after releases.
+2. Publish what the device is sure to hold (node_state.go:588,
+   602-618, 432). Capacity value and default become
+   usable(size, BS) = floor(size/BS)*BS when BS <= 256 MiB, else
+   floor((size - (BS - 256 MiB))/BS)*BS. The one-block validValues case
+   and "not published below one block" apply to usable. The only new
+   constant is the kernel's CXL HPA alignment (256 MiB), not a block
+   size. Optionally, the exact whole-block count of RegionRange while
+   the plugin holds the region (it is >= usable). The value then drops
+   back when the region is recreated, so the conservative value alone
+   is simpler.
+3. Log a warning when a created region is not block-aligned. Rewrite
+   the LOCAL.md limitation as "with memory blocks larger than 256 MiB a
+   device publishes one block less than its RAM capacity". Add a unit
+   test: the TestLocalNUMAPlacement region publishes 384Mi and serves
+   numa and dax claims in any order.
+Cost: nothing on the VMs or on aligned servers, at most one block per
+device on servers with blocks over 256 MiB. 08's option B (2Mi dax-only
+devices) is independent of this.
+
+VERIFIED AND CORRECT
+- (a) The block size is parsed as hex everywhere:
+  - memctl parseHex (with or without 0x) in MemoryBlockSize, which
+    regionBlocks and WaitDaxBlocks use;
+  - the driver reads it only through MemoryBlockSize (local.go:187), at
+    start, in every Acquire and in offlineSlice;
+  - e2e dra-block-size strips 0x and uses 16#;
+  - pkg/cxl/devices.go:261 uses Sscanf %x (unchanged; it does not
+    accept 0x, which the kernel never prints).
+  No 128 MiB, 0x8000000 or 134217728 appears outside tests in the
+  driver, memctl or LOCAL.md, except example sizes marked "with 128 MiB
+  blocks". localSliceStep (2 MiB) is gone. TestMemoryBlockSize and
+  TestLocalBlockSize cover "8000000", "0x8000000", 2 GiB and bad
+  values.
+- (b) The numa path:
+  - every range is checked (mappingN, else resource+size);
+  - the fallback deletes the first-fit device and maps one aligned
+    range, and the ranges are compared after the write;
+  - kmem is bound with a sysfs bind only, never new_id
+    (memctl.go:812-821);
+  - WaitDaxBlocks, then online_movable, with the zone check for blocks
+    that were already online;
+  - the node is target_node, with BlocksNode as the fallback;
+  - release offlines exactly the slice's DaxDeviceBlocks. EBUSY keeps
+    the slice with its claim and leaves other slices alone
+    (TestLocalNUMAReleaseFailure), and R1's B2 cannot happen per slice.
+    The legacy whole-region slice is re-onlined in Acquire;
+  - the region goes with the last claim of either mode;
+  - old state files load, with the slice mode taken from the device
+    mode.
+  Kernel cross-checks:
+  - kmem aligns every range separately (kmem.c:31-43);
+  - dev_dax_resize first-fit takes min(gap, to_alloc), so block
+    multiples stay aligned;
+  - dax_bus_probe refuses size 0, so created devices stay unbound
+    until they are bound.
+- (c) requestPolicy:
+  - default = floor(size/BS)*BS, validRange min = step = BS;
+  - one block gives validValues [BS], as the API needs (min + step <=
+    capacity, default a multiple of step, default in validValues);
+  - nothing is published below one block or with an unknown BS;
+  - TestLocalRequestPolicy covers these cases.
+- (d) Accounting:
+  - ConsumedBytes = TotalBytes = slice size for both modes
+    (node_state.go:1132-1133);
+  - slice = consumed whenever the scheduler applied the step;
+  - cgmpolmgr's CXL quota (nri.go:346) is the slice;
+  - a numa lentDevice has Size = slice and Node = NUMANodes[0], a dax
+    one Size = TotalBytes;
+  - CXL_LOCAL_SIZE is the slice.
+- (e) R1's fixes still hold:
+  - the nodeState lock covers only bookkeeping. Acquire, Release, lend
+    and revoke run under the per-claim lock only;
+  - NRI handlers never take a.mu, and Snapshot uses modesMu only;
+  - every Prepare failure releases through rollbackContext, and a
+    persist failure revokes, calls failed(cause), releases and forgets;
+  - releasing() is called only from unprepare (node_state.go:662) and
+    from the pool Unprepare;
+  - the addSlice rollback offlines before it deletes;
+  - dropUnused releases a device that has no claims.
+- (f) regionBlocks:
+  - Aligned regions: the same block list and count as before (for an
+    aligned start, (b+1)*bs-1 <= end holds exactly when b <
+    (start+size)/bs), so the pool helper's Online and Release see every
+    block.
+  - Misaligned regions on a real server: before W3, `want` counted the
+    partial head block, which kmem never adds, so waitRegionBlocks hung
+    until the deadline. This hit pool ModeRAM and the local auto-kmem
+    switch alike. Now it waits for exactly kmem's blocks, and Online and
+    ReleaseRegion never touch a partial block. That partial block could
+    belong to other memory.
+  - The online memory of such a pool region is smaller than the device
+    size by the head and tail. Pool claims take the whole device, so
+    nothing breaks.
+- Checks run:
+  - go vet, gofmt, go test -race (-count=1 and 3) in both trees: clean;
+  - golangci-lint: pkg/cxl 0 issues; the driver's CXL packages give the
+    same 14 findings as W3's list;
+  - CGO_ENABLED=0 static builds of kubelet-cxl-plugin and cxl-request
+    (to /tmp/r3bin).
+- (h) Docs and manifests match the code:
+  - LOCAL.md: attribute table, request policy text, log line formats
+    (checked against logSlice, createRegion and releaseRegion), error
+    texts, Unprepare and restart, Limitations, Node requirements;
+  - device-classes.yaml selects on type only, and cxl-local-dax keeps
+    its LocalDeviceConfig;
+  - the example comments are right (64Mi -> 128Mi, zeroing), and all
+    the YAML parses;
+  - no non-ASCII text was added (the six non-ASCII lines in
+    node_state.go and driver.go are from b57b62b), and there is no
+    history wording.
+- W3's deviations 1-10 are documented and are not findings.
+
+Orchestrator decisions (2026-10-14 17:50, Fable), after R3
+-----------------------------------------------------------
+D18 R3's B1 (an orphan numa slice on daxX.0 with online memory is reused:
+    unbinding kmem from online memory leaks the range until reboot) goes to
+    W3 with R3's fix: a slice whose release failed is never dropped from
+    the state but kept under a reserved owner so that it is never reused
+    (the next Acquire on that device retries its release first and fails
+    with the offline error if it still fails); memctl.UnbindDax refuses to
+    unbind kmem while any block of the device is online; R3's scratch
+    scenario becomes a unit test. S1-S4 and the missing tests of S2: W3.
+D19 R3's proposal for W3's open issue (block size larger than the region
+    alignment): accepted, W3: every slice, dax too, is placed on whole
+    blocks (the alignment check and the fallback apply to both modes, the
+    fallback may combine several aligned gaps); published capacity and
+    default are floor(size/BS)*BS when BS <= 256 MiB, else
+    floor((size - (BS - 256 MiB))/BS)*BS; a warning when a created region
+    is not block-aligned; LOCAL.md limitation and a unit test.
+D20 R3's R1 (the mapping fallback never ran on a kernel): accepted as
+    covered by the manual measurement of 08 section 1 (same sysfs
+    sequence: create, mapping write, size check, bind kmem, online); no
+    forced-fallback knob is added.
+D21 After W3's fixes W4 reruns test14, test15 and test12 on the new build
+    together with R4's items.
+
+Orchestrator decisions (2026-10-14 18:00, Fable), after R4
+-----------------------------------------------------------
+D22 R4's items go to W4: R1 (record each numa lease's slice from
+    localDevices.json at Ready and assert after each release that exactly
+    that slice is gone while the others keep their kmem size), R2
+    (dra-local-initial-state VMDIR LABEL [NODE] in dra.source.sh, used by
+    test14 and at the end of test15's nothing-left), R3 (correct the F1
+    statement; once D23 is in, assert the region node in the multi-slice
+    state of test14 as the pkg/cxl regression check), R4 (precondition:
+    /sys/module/memory_hotplug/parameters/memmap_on_memory missing or N,
+    with the reason in the error), S1-S7.
+D23 W4's F1 (pkg/cxl devices.go reports Node -1 for a devdax region with
+    more than one dax device): W3 fixes it in nri-plugins pkg/cxl (use the
+    target_node of any dax device of the region: they all share it), with
+    a parser unit test from a multi-slice sysfs dump (test14's cxl-dump
+    output under test/e2e/n4-cxl-shared-2-fedora-43-containerd/... has one),
+    then `go mod vendor` in the driver.
+D24 Final reruns by W4 after "W3 Status (review fixes)": test14, test15,
+    test12 and test01-shared-cxl; test10 and test13 once more only if a
+    driver change touched the pool path (W3 says in its status).
+
+W3 Status (review fixes) (2026-10-14 18:00, W3): D18, D19, D23, S1-S4 done
+---------------------------------------------------------------------------
+Nothing committed. Tree to build: driver cmd/kubelet-cxl-plugin/*.go
+concatenated md5 d105ea3caa9e..., memctl.go d457d3cdd7c5..., pkg/cxl
+devices.go fb232e3d8e4d... (vendored copies identical, `go mod vendor` run).
+D18 (R3 B1, orphan numa slice on daxX.0 reused)
+ (a) local.go: a slice whose release fails where no claim is left to retry
+     it is kept in the state under the reserved owner "-" (orphanOwner; no
+     claim UID is "-"): Reconcile's release of an unprepared claim, the
+     addSlice rollback, the restart deletion of a dax device that belongs to
+     no slice. "-" slices count as used (never reused, they also count in the
+     mode attribute), every Acquire on the device releases them first
+     (device()) and fails with that release error while they cannot be
+     released; every Reconcile retries them; the release of the last real
+     claim retries them and keeps the region while they stay. reusable()
+     also never takes a daxX.0 that kmem has (untracked, possibly online).
+ (b) memctl UnbindDax refuses to unbind kmem while a block of the device
+     (DaxDeviceBlocks) is not offline, and needs the block size for it; this
+     covers ResizeDaxDevice, DeleteDaxDevice and SetDaxDriverSysfs.
+ (c) R3's scenario: TestLocalUntrackedKmem (dax0.0 with online memory that
+     the state does not have is not reused, ResizeDaxDevice refuses, a
+     restart offlines and deletes it) and TestLocalFailedReleases (Reconcile
+     with a failing numa offline keeps the slice under "-", the next Acquire
+     fails with the offline error and touches nothing, then releases it and
+     reuses dax0.0; a rollback that cannot offline keeps the slice; the last
+     claim keeps the region for it; the next Acquire releases it). The fake
+     fails the test whenever memory blocks are removed while online.
+D19 (block size larger than the region alignment)
+ - Every slice, dax too, is checked for whole blocks and, if first-fit
+   crossed a block boundary, replaced by a device on the first whole free
+   blocks of the region in address order, combining several free ranges
+   (memctl.CreateDaxDeviceRanges: one mapping write per range, all ranges
+   compared after the writes; CreateDaxDeviceAt is its one-range form).
+ - Capacity value and requestPolicy.default = localUsableSize(RAM, BS):
+     floor(RAM/BS)*BS                          when BS <= 256 MiB
+     floor((RAM - (BS - 256 MiB))/BS)*BS       when BS >  256 MiB
+   (cxlRegionAlign = 256 MiB, the kernel's CXL HPA alignment). One block of
+   usable capacity -> validValues [BS]; usable 0 -> not published (V(4)
+   reason "RAM capacity N is not sure to hold a whole memory block of BS
+   bytes"); a claim without consumed capacity gets the usable size.
+   On the VMs (BS 128 MiB) nothing changes: the 1G device publishes 1Gi.
+ - A region that does not start at a block boundary is logged at creation.
+ - Tests: TestLocalPlacement (64 MiB-off region: dax slices on whole blocks,
+   a numa slice of two ranges onlined and offlined), TestLocalLargeBlocks
+   (512 MiB blocks, region 256 MiB after a boundary, publishes 1536Mi and
+   serves dax, numa, dax and then the other mode on the released blocks),
+   TestLocalPlacementFailures (first-fit device not deletable, mapping
+   failure, kmem bind failure of a placed device, unreadable region,
+   WaitDaxBlocks timeout in onlineSlice), TestLocalRequestPolicy cases for
+   512 MiB and 2 GiB blocks, buildDevInfos with 512 MiB blocks; memctl
+   TestCreateDaxDeviceAt (two ranges), TestUnbindKmemOnline.
+D23 (W4 F1) pkg/cxl devices.go: a region without online memory takes the
+   target_node of the first of its dax devices that has one (daxTargetNode),
+   not only when it has exactly one. New devices_test.go with testdata from
+   W4's test14 captures (pkg/cxl/testdata/test14-node-numa-b-deleted: three
+   dax devices, nothing online -> node 2, Enabled, OnlineSize 0; also one
+   device, a first device without a node, none; test14-node-four-claims:
+   node from the zones, OnlineSize 3 blocks). The dumps are filtered to
+   memN/regionN/endpointN files and the zoneinfo lines the parser reads; the
+   uport of endpoint4 (a link grep -r does not follow) is added by the test.
+   The test fails on the old devices.go (Node -1, Enabled false).
+S1 SetDaxDriverSysfs comment as R3 proposed. S2 tests above. S3, S4, D18 and
+   D19 in doc/cxl/LOCAL.md (capacity formula, whole-block placement of all
+   slices, owner "-", kmem never unbound from online memory, limitation:
+   one block less with blocks > 256 MiB, an unaligned end needs no room;
+   auto_online_blocks: region creation adds the whole region through kmem
+   for a moment).
+Results
+ nri-plugins: go test -race ./pkg/cxl/... ok, go vet ok, gofmt clean,
+   golangci-lint ./pkg/cxl/... 0 issues, scripts/testing/fake-cxl-pool builds.
+ driver: go vet clean; go test -race ./cmd/kubelet-cxl-plugin/...
+   ./cmd/cxl-request/... ok; local/prepare/publication tests -race -count=5
+   ok; gofmt clean; golangci-lint 14 findings, the same as before W3 (no new
+   ones vs b57b62b); static builds of kubelet-cxl-plugin and cxl-request ok.
+Pool helper path (for D24): driver pool.go is untouched, and so are memctl
+   CreateRegion, Online, Release and ReleaseRegion(s) in this round. Two
+   shared pieces changed: (1) memctl.UnbindDax now refuses kmem with
+   memory that is not offline; the pool path reaches it only without daxctl
+   (VM2 has daxctl), in CreateRegion(devdax) right after its own offline,
+   so the result is the same; (2) pkg/cxl devices.go changes only regions
+   with more than one dax device (the local allocator's), pool regions have
+   one. I see no need to rerun test10 and test13; D24 decides.
+What W4 must know (VM behaviour unchanged except where noted)
+ - cxl-dump: a local region with several dax devices and nothing online
+   now has node N (2 on VM2) and is enabled (was -1/false). Assert it.
+ - localDevices.json: "claims" can hold the key "-" with slices whose
+   release failed; never in a passing run. The device "mode" counts them.
+ - New log lines (klog, local allocator):
+   E... local: <release error>; keeping daxX.Y for a later release
+   W... local: memdev memN (serial 0x..): claim <uid>: keeping N slices for a later release
+   W... local: memdev memN (serial 0x..): regionK at 0x<s>-0x<e> does not start at a memory block boundary (block size BS): slices use only its N bytes of whole blocks
+   The "placing it explicitly" warning can now also name a dax slice.
+   Changed: the no-room error of the placement reads "no room for the slice:
+   no N bytes of whole free memory blocks in regionK (free [...], memory
+   block size BS)"; memctl logs "daxX.Y: mapped [0x..-0x.. ...]" (a list);
+   new memctl error "daxX.Y: memory blocks [N ...] are not offline, kmem
+   keeps it" (in Unprepare errors after "releasing slice daxX.Y: ...").
+ - Capacity formula above; requestPolicy unchanged for BS <= 256 MiB.
+ Note for the commit: nri-plugins' .gitignore ignores testdata/; the six
+   files under pkg/cxl/testdata/test14-* need `git add -f`, as the repo's
+   other tracked testdata files (pkg/cpuallocator/testdata/sysfs.tar.bz2).
+
+W4 Status (final) (2026-10-14 18:25, W4): R4 items done, final reruns PASS
+-------------------------------------------------------------------------
+Build: W3's tree after "W3 Status (review fixes) 18:00": driver
+cmd/kubelet-cxl-plugin/*.go md5 d105ea3caa9e..., memctl.go d457d3cdd7c5...,
+pkg/cxl/devices.go fb232e3d8e4d... (vendored copies identical); built by
+dra-build at the start of every run; unchanged through all runs. Test
+files at the runs: dra.source.sh 389acc3706e5..., n4-cxl/cxl.source.sh
+47587d6299be..., test14 3239604c4537..., test15 4700c8640447....
+Verdicts (VM2, one at a time; test10 and test13 not rerun: W3 says the
+pool path is unchanged, D24):
+  18:08 test14-dra-local-memdev PASS
+  18:15 test15-dra-local-live-attach PASS
+  18:21 test12-dra-live-attach PASS
+  18:23 test01-shared-cxl PASS (VM2 and VM1)
+Both VMs left clean: no kubelet-cxl-plugin or fake-cxl-pool-controller
+unit, no memdevs or regions, has_memory 0-1, no cxl-type3 in qemu, no
+/dev/.cxl-local-zero-*, no extra namespaces, single-node clusters, port
+9909 free, no fake-cxl-pool-server. Nothing committed. Logs:
+~/.claude/jobs/w4-plan4/{test14-run3,test15-run5,*-final}.log.
+
+R4 items (all taken)
+ R1 test15 records the slice of every NUMA claim from the plugin state:
+    numa-slice LABEL CLAIM-UID BYTES (dra-local-claim-slice:
+    localDevices.json devices[].claims[uid][0].dax; companion-check exports
+    COMPANION_UID, dra-local-claim-check DRA_CLAIM_UID) and checks it is a
+    kmem slice of that size. numa-slice-gone LABEL after each release or
+    delete: exactly that dax device is gone or size 0 while every other
+    recorded NUMA slice is still ('kmem', size). Run 18:15: static-a dax0.0,
+    lease-1 dax0.1, static-b dax0.4, lease-2 dax0.5; releasing lease 1 took
+    dax0.1 only (static-a, static-b, lease-2 kept), lease 2 dax0.5 only,
+    then static-a, then static-b.
+ R2 dra-local-initial-state VMDIR LABEL [NODE] (with dra-local-cdi-devices,
+    dra-local-state-claims, dra-local-mode-wait) in dra.source.sh: memdev
+    enabled, no region of the device, mode none, no local-<uid> CDI device,
+    a non-empty localDevices.json without claims (the "-" orphan key counts
+    too), no memory on NODE. test14 calls it (plus "regions == []"),
+    test15's nothing-left ends with it (all three nothing-left calls
+    passed).
+ R3 F1 corrected (below). W3's D23 is in: test14 asserts the region node
+    in the four-slice state and in the dax-only state of two slices with
+    nothing online ("cxl-dump without-numa-node: region0 node 2 0/1024M",
+    was node -1 before D23).
+ R4 dra-node-size-exact VMDIR in the preconditions of both tests:
+    /sys/module/memory_hotplug/parameters/memmap_on_memory must be missing
+    or N; the error names the reason (the vmemmap of hotplugged blocks would
+    come from the blocks, MemTotal would not be the online blocks). VM2: N.
+ S1 moved to dra.source.sh with explicit arguments: dra-mi,
+    dra-local-round, dra-local-blocks-require VMDIR TOPOLOGY BLOCKS (block
+    size sanity, whole blocks, at least BLOCKS), dra-local-slices-wait VMDIR
+    LABEL NODE SPEC..., dra-local-node-size VMDIR LABEL NODE BYTES [LOCAL],
+    dra-local-claim-check VMDIR POD BYTES, dra-delete-pod VMDIR POD,
+    dra-local-mode-wait VMDIR LABEL MODE; dra-local-device also sets
+    DRA_LOCAL_LD and DRA_LOCAL_REGIONS. The tests keep only node-size (the
+    NODE_TIMES bookkeeping) and their own checks.
+ S2 pool-not-local uses dra-plugin-log.
+ S3 one parser: cxl-block-size-parse TEXT in n4-cxl/cxl.source.sh (spaces
+    trimmed, optional 0x, hex digit check, positive, 16#); cxl-tools-install
+    sets CXL_BLOCK_SIZE with it (was $(( 0x$(...) ))), dra-block-size uses
+    it. Checked on "8000000", "0x8000000", " 8000000 ", "80000000" and bad
+    values. cxl.source.sh is shared with n4-cxl's test01-pkg-cxl (same
+    result for the kernel's values; that VM was not run).
+ S4 dra-mems-wait has no "not" mode any more (no caller had it).
+ S5 dra-local-blocks-require's error tells how to recreate VM2 (vagrant
+    destroy in VMDIR, remove the directory, qemu_bin=... ./run_tests.sh
+    .../TOPOLOGY/test00-up), as pool-vm-require does.
+ S6 dra-node-wait fails at once, and dra-node-memtotal returns 1, for a
+    non-numeric NODE.
+ S7 dra-dax-tool-install names $DRA_TOOLS_IMAGE; test15 prints its times
+    with printf (%.2f / %.1f).
+ Also: dra-local-slices-aligned now fails on W3's new warning that a region
+ "does not start at a memory block boundary" as well (never in these runs).
+ bash -n and shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016: clean on
+ dra.source.sh, cxl.source.sh, test10, test11, test13, test14, test15,
+ test01-shared-cxl; test12 only its existing SC2015; all ASCII.
+
+Correction to W4 Findings F1: two assertions did depend on cxl-dump's
+region node: test14 B (numa-a-region, LREGIONS[0]['Node'] == N) and test15
+E (any-two-regions, the local region's (Node, OnlineSize)). They passed
+because the region had one dax device or online memory at those points.
+With D23 in pkg/cxl the node is reported for several dax devices too, and
+test14 now asserts it in the multi-slice states.
+
+Assertions changed in this round, and why
+ - New (R1): which NUMA slice goes on each release (test15 D).
+ - New (R2): test15's end states also check the plugin state file, its
+   claims and the CDI devices of local slices.
+ - New (R3): region node of a multi-slice region (test14 B and C).
+ - New (R4): memmap_on_memory precondition in both tests.
+ - Moved, same checks: the S1 helpers. nothing-left of test15 no longer
+   waits for MemTotal 0 and mode none itself: dra-local-initial-state does.
+ - Nothing weakened.
+
+Timings (final runs; plugin log, ms min/median/max)
+ test14: created region 43-50, released region 95-110; numa slice created
+   1.5-56, onlined 26-38, offlined 20-67, deleted 1.6-5.7; dax slice
+   created 1.4-94, zeroed 85-89 per 128 MiB (1 GiB 563), deleted 48-72.
+ test15: created region 44-48, released 92-115; numa slice created 1.5-80,
+   onlined 15-68, offlined 19-81, deleted 1.9-5.4; dax created 0.7-2.1,
+   zeroed 51-87, deleted 51-119.
+ Request to Ready (plugin, broker "requests" -> "Ready"): local numa
+   0.11-0.35 s, local dax 0.18-0.22 s, any -> local 1Gi 0.32 s, any -> pool
+   5.25 s, pool dax 5.39 s. CLI: local numa 0.58 s, local dax with --exec
+   0.68 s, any local 0.76 s, any pool 5.67 s.
+ MemTotal transitions seen by the test (now measured after the cxl-dump
+   cross-check too, so about 1 s more than before): increases 2.6-6.6 s
+   from the apply/request, decreases 2.8-3.9 s from the delete/release,
+   10-11 s with the pool device attached or detached on the same node.
+ test15: last NUMA lease given back until main's pages left node 2 8.0 s;
+   three dax leases released 6.4 s; pod deleted with three leases, clean
+   11.5 s (this now includes dra-local-initial-state, which nothing-left
+   runs before T_DELETE is taken; 9.2-9.4 s before).
+ test12: leases Ready 5.72-5.80 s, release until nothing left 8.6-9.8 s,
+   pod deleted clean 14.6 s. test01: detaches 6.3-6.5 s.
+
+Orchestrator closing status, mixed modes (2026-10-14 18:40, Fable)
+------------------------------------------------------------------
+Result: 09-plan-mixed-modes.txt is implemented and proven. A local device
+serves numa and dax claims at the same time; every slice is a multiple of
+the memory block size, read from /sys/devices/system/memory/block_size_bytes
+as hex (unit-tested: "8000000" = 134217728) and published as the step and
+minimum of the memory capacity with default = whole device and attribute
+memoryBlockSize. On VM2 (1G local device, 128 MiB blocks): test14 PASS,
+test15 PASS (static numa pods and cxl-request numa leases on node 2,
+MemTotal 128M -> 256M -> 512M -> 640M -> 512M -> 384M -> 256M -> 0 with
+the exact slice removed at each release, dax leases alive throughout,
+whole-device lease and pool fallback, pod deletion clean), test12 PASS,
+test01-shared-cxl PASS; test10 and test13 passed on the previous build and
+the pool path did not change since (W3). Reviews R3 and R4 fixed or
+accepted with reasons (D18-D24). Unit tests, vet, gofmt, golangci-lint and
+static builds pass in both trees. Nothing is committed.
+
+Changes since the first closing status: driver local.go/node_state.go/
+driver.go/device.go, LOCAL.md, deployments/cxl/local (classes without
+mode filters, examples); nri-plugins pkg/cxl/memctl (block size, dax
+ranges, mapping placement, kmem unbind guard), pkg/cxl/devices.go (region
+node of multi-slice regions) with testdata (needs `git add -f`:
+.gitignore ignores testdata/), test/e2e dra.source.sh, n4-cxl/cxl.source.sh
+(shared block size parser), n4-cxl-shared-2/topology.var.json (1G local
+device; VM2 recreated), test00-up comments, test14, test15.
+
+Open items
+- n4-cxl's test01-pkg-cxl shares the block size parser change and was not
+  rerun (that VM needs a reboot first; same value for the kernel's format).
+- Capacity is conservative by one block per device on servers whose
+  memory block size is larger than 256 MiB (D19); dax slices are block
+  multiples everywhere (option B of 08, 2 MiB dax-only nodes, not done).
+- go.mod of the driver replaces nri-plugins with the local checkout:
+  restore a pushed pseudo-version before committing.

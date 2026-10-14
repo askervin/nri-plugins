@@ -1,0 +1,343 @@
+plan-4-cxl-live-attach-local: design
+====================================
+Written 2026-10-14 (Fable). Facts and measurements: 01-findings.txt.
+Prior art this builds on: plan-3-cxl-live-attach/03-summary.txt and
+04-implementation-plan.txt (lease design), plan-4-multinode/02 (dax modes,
+read-only, exclusive). Code: kubelet-cxl-plugin (node_state.go publishes
+local regions and DRAM, nri.go steers, pool.go prepares pool devices,
+broker.go/dynamic.go/lend.go lend to running containers, cmd/cxl-request),
+nri-plugins pkg/cxl (sysfs parser) and pkg/cxl/memctl (regions, dax, online).
+
+1. Principles
+-------------
+P1 One region per local device, created on first use, destroyed after the
+   last use. Regions are not a partitioning tool (01 1.1); the dax region
+   of a devdax region is (01 1.2). The device returns to its initial state
+   (memdev enabled, no region) when nothing uses it, so admins and other
+   tools see nothing of the plugin while it is idle.
+P2 A device serves one mode at a time: numa (the whole region online as a
+   movable NUMA node, shared by its claims with DRA capacity accounting,
+   as local regions and exclusive pool devices today) or dax (one devdax
+   slice per claim, 2 MiB granularity, each a character device of its
+   own). Measured reason: kmem slices need memory-block alignment, dax
+   slices are 2 MiB first-fit (01 1.2). The mode is published as an
+   attribute so that classes steer the scheduler away from a device in the
+   other mode.
+P3 Same allocation path as everything else: ResourceSlice device with
+   consumable capacity, claim, Prepare, CDI. No new API objects. Live
+   attach reuses the lease design unchanged except for where the companion
+   claim's device comes from.
+P4 Local and pool devices share code, not copies: the lend/revoke/hook
+   logic moves out of pool.go into a type both drivers use; the dax CDI
+   edits and the memctl calls are shared; cxl-request gains a source, not
+   a second command set.
+P5 Sharing a local slice between pods is DRA's own sharing: one
+   ResourceClaim referenced by several pods (01 1.3). The lease variant
+   that joins an existing claim is designed (section 6.4) but optional.
+P6 Explicit locality for users: DeviceClasses cxl-local-memory and
+   cxl-local-dax, attribute source: local, cxl-request --source
+   local|pool|any with local first for "any" (01 section 3).
+P7 Everything that exists keeps working: cxl-node regions (BIOS or admin
+   created, onlined RAM) are published and steered as today; pool devices
+   as today; test10-test13 pass unchanged. Defaults keep today's behaviour
+   (cxl-request without --source means pool).
+
+2. Device model (cxl.generic ResourceSlice of the node)
+--------------------------------------------------------
+Published next to the existing cxl-node, dram and dynamic devices:
+
+  - name: cxlmem-c100e2e1               # "cxlmem-" + serial, lower-case hex
+    attributes:
+      type:         {string: cxl-memdev}
+      name:         {string: mem1}           # memN, informational (changes with probe order)
+      serial:       {string: "0xc100e2e1"}   # as the pool controller publishes serials
+      source:       {string: local}
+      size:         {int: 268435456}
+      nodeAffinity: {int: 0}                 # CPU NUMA node of the device (memdev numa_node), absent if unknown
+      mode:         {string: none}           # none | numa | dax: how the plugin uses it now
+    capacity:
+      memory:
+        value: 256Mi
+        requestPolicy: {validRange: {min: 2Mi, step: 2Mi}}   # slices are 2 MiB multiples; no amount = whole device
+    allowMultipleAllocations: true
+    nodeAllocatableResources: memory mapping as for cxl-node devices (dropped by the apiserver without the alpha gate, as today)
+
+A memdev is published when: RamSize > 0; it is not a pool device
+(pool.Serials()); it is not excluded by ignoreDevices (name, cxl/memN,
+major:minor, serial); and every region on it is the plugin's own (none, or
+the one the local allocator created). A memdev with a foreign region (BIOS,
+admin, another tool; RAM or devdax) is not published as cxlmem: its RAM
+region is a cxl-node device as today, a foreign devdax region stays
+invisible as today. The plugin's own region is never published as cxl-node
+(same mechanism as poolIgnoreReason: the allocator's serials). Interleaved
+regions are not created by the plugin (one memdev per region).
+
+Config (DriverConfig, /etc/kubelet-cxl-plugin.yaml): manageMemdevs (bool,
+default true) publishes free memdevs and creates regions for them; false
+restores today's behaviour exactly.
+
+The mode attribute is "none" when the allocator holds nothing on the
+device, else the mode in use. It changes at Prepare and Unprepare, so the
+plugin republishes its slice after both (today it republishes only on udev
+events; region creation and destruction raise udev events too, so the
+republish after a prepare mostly happens anyway, but the explicit publish
+makes the attribute reliable and testable).
+
+3. Claims and DeviceClasses
+---------------------------
+deployments/cxl/local/device-classes.yaml:
+
+  cxl-local-memory   device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "cxl-memdev" && device.attributes["cxl.generic"].mode != "dax"
+                     (no config: mode numa is the default)
+  cxl-local-dax      device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "cxl-memdev" && device.attributes["cxl.generic"].mode != "numa"
+                     config: opaque cxl.generic {apiVersion: cxl.generic/v1alpha1, kind: LocalDeviceConfig, mode: dax}
+
+LocalDeviceConfig (opaque, driver cxl.generic, from the claim or the class,
+claim wins, per request as PoolDeviceConfig): mode numa|dax (default numa),
+readOnly (dax only). Strict decoding. It is the PoolDeviceConfig of local
+devices under the cxl.generic apiVersion; the parser is shared (03).
+
+Claims:
+  numa, 128Mi of a local device:  exactly {deviceClassName: cxl-local-memory, capacity: {requests: {memory: 128Mi}}}
+  dax slice, 64Mi:                exactly {deviceClassName: cxl-local-dax, capacity: {requests: {memory: 64Mi}}}
+  a specific device:              + selectors: [cel: device.attributes["cxl.generic"].serial == "0xc100e2e1"]
+  whole device:                   no capacity request (consumes all of it)
+  read-only slice:                class cxl-local-dax + claim config {kind: LocalDeviceConfig, mode: dax, readOnly: true}
+  shared slice:                   one ResourceClaim (not a template) referenced by several pods; they land on the
+                                  claim's node and get the same /dev/daxX.Y (one Prepare, 01 1.3)
+
+The mode attribute makes the classes avoid a device that is in the other
+mode; the race (two claims of different modes allocated before the first
+Prepare flipped the attribute) ends in a Prepare error for the second
+("device in mode numa, claim wants dax"): kubelet retries until the first
+claim is gone, the pod shows the error as an event. Documented, not solved.
+
+4. Prepare and Unprepare of a cxl-memdev claim (cxl.generic driver)
+-------------------------------------------------------------------
+The local allocator (new, cmd/kubelet-cxl-plugin/local.go) owns the
+regions and slices the plugin creates. State per serial: memdev, region,
+mode, and the claims using it with their slices; persisted in
+<cxl.generic data dir>/localDevices.json, written before and after every
+change. It uses memctl (nri-plugins pkg/cxl/memctl), extended with dax
+region slicing (03 W1a step 1).
+
+Prepare, for each allocation result of driver cxl.generic whose device is
+a cxlmem device (device info Dev type *device.CXLMemdev):
+ 1. cfg = LocalDeviceConfig for the request (class, then claim); mode =
+    cfg.mode or numa; readOnly only with dax.
+ 2. size = allocation result consumedCapacity["memory"] (the scheduler
+    fills it; a missing value means the whole device).
+ 3. allocator.Acquire(ctx, claimUID, request, serial, mode, size, readOnly):
+    - memdev by serial (memctl.FindMemdev; enabled by memctl.CreateRegion
+      if a release left it disabled: not expected, see Release).
+    - mode conflict: the device has the plugin's region in the other mode
+      with claims -> error (kubelet retries). A region of the plugin with
+      no claims (restart leftovers) is destroyed first.
+    - numa: memctl.CreateRegion(ModeRAM) (reuses an existing region) +
+      Online(movable) exactly as the pool helper does for exclusive
+      devices; node N from the dax device target_node or the blocks. Every
+      numa claim of the device gets the same N; the device keeps a
+      refcount of claims.
+    - dax: memctl.CreateRegion(ModeDevDax) if no region; then a slice of
+      size bytes: the first slice reuses daxX.0 (unbind, resize, bind
+      device_dax), later ones use dax_region/create; sizes are rounded up
+      to the region align (2 MiB; the requestPolicy already did that);
+      available_size < size -> error "no room" (should not happen: DRA
+      accounts the capacity; log loudly). Result: daxX.Y, /dev/daxX.Y,
+      major:minor (DaxDevNumbers), size.
+    - one retry after 3 s on "add_dev" errors as pool.go does.
+ 4. CDI and claim info:
+    - numa: the existing claim marker only; PreparedDeviceInfo
+      {DeviceType: cxl-node, NUMANodes: [N], TotalBytes: device size,
+      ConsumedBytes: size, SysfsPath: region} so that the NRI
+      CreateContainer steering (claimedMemory, cgmpolmgr) works unchanged
+      for containers that reference the claim. Nothing else to do: a
+      cxlmem claim in numa mode is a cxl-node claim whose node appeared at
+      Prepare.
+    - dax: CDI device generic/cxl=local-<claim uid> in spec file cxl-local
+      with the device node (type c, major, minor, path /dev/daxX.Y,
+      permissions "r" when readOnly) and env
+        CXL_LOCAL_DAX_<SERIAL>=/dev/daxX.Y
+        CXL_LOCAL_SIZE_<SERIAL>=<slice bytes>
+        CXL_LOCAL_SERIAL_<SERIAL>=0x<serial>
+        CXL_LOCAL_READONLY_<SERIAL>=1          (readOnly only)
+      (<SERIAL> upper-case hex without 0x, as the pool env). The CDI device
+      is per claim because every claim has its own slice. The claim's
+      PrepareResult lists the marker and this device. PreparedDeviceInfo
+      {DeviceType: cxl-dax (new constant; NRI steering ignores it), Dax,
+      DaxDevice, DaxMajor, DaxMinor, Slice size}.
+    - Two slices of the same device in one container (two claims) collide
+      on the env names; documented, the device nodes are distinct.
+ 5. LendConfig (companion claim of a lease, section 6): validated and lent
+    exactly as pool.go does today, through the shared lending code (03
+    contract): numa -> Lender.LendNode(pod, container, N); dax -> nothing
+    here, the broker passes the fd of /dev/daxX.Y. Hooks OnLending before
+    any device is touched, OnPrepared after, OnLendFailed on a lend error
+    (then rollback). The lend is persisted with the claim info.
+ 6. Rollback: a failed Prepare releases what it acquired for this claim
+    (slice, or the numa refcount; region destroyed if nothing else uses
+    it), like pool.go rollback.
+ 7. Publish the slice again (mode attribute).
+
+Unprepare: revoke the lend (if any; a revoke error fails the Unprepare, as
+pool.go), allocator.Release(claimUID): dax -> unbind, size 0, delete the
+slice (daxX.0 is kept at size 0 while other slices exist); numa -> drop the
+refcount; when the device has no claims left: offline (numa) and destroy
+the region (memctl.Release WITHOUT disabling the memdev: a local device
+stays enabled; new memctl option). An offline that fails with EBUSY fails
+the Unprepare (kubelet retries; the pages of other containers on a movable
+node migrate on the next try; same as pool). Then the existing cleanup
+(CDI marker, claim info files), the cxl-local CDI spec rewritten, publish.
+
+Restart: localDevices.json and preparedClaimsInfo.json are reloaded;
+regions are found again by memdev serial, slices by name and size (a slice
+that is gone is logged and dropped from the state; a region of the plugin
+with no claims is destroyed). dra-install's fresh-VM cleanup must remove
+localDevices.json together with the other state files when no regions
+exist (04).
+
+5. Steering, lending and cpuset.mems
+------------------------------------
+Unchanged rules from plan-3: a container that references a numa claim at
+creation is steered by cgmpolmgr (cpuset.mems through cgroupfs); a running
+container that borrows gets the node through NRI UpdateContainers; a
+container is either steered or borrowing, never both (LendNode refuses
+steered containers). A local numa region's node is the node of its host
+bridge window, shared by every region under that host bridge (01 1.1):
+cpuset.mems isolation is per node, so two numa devices under one host
+bridge are one node to the containers. Capacity accounting stays correct
+per device. Documented in LOCAL.md.
+Because devices share nodes, a container's lent nodes are counted per
+holder: the lend primitives (lend.go) keep node -> set of lease ids, add a
+node to cpuset.mems with its first holder and remove it with its last.
+Two leases on one node (a local region and a pool device under the same
+host bridge) therefore survive the release of either one.
+
+6. Lending local devices to running containers (cxl-request)
+-------------------------------------------------------------
+6.1 Request. The lease protocol (POOL.md "Protocol") gets one field and one
+    relaxation:
+      source: "pool" (default, today's behaviour) | "local" | "any"
+      serial: now also allowed with kind memory: selects the device
+    kind shared stays a pool kind (shared pool devices); a local slice is
+    shared through a claim (6.4). Validation: kind shared with source
+    local or any is an error; mode numa|dax, readOnly as today.
+    CLI: cxl-request memory <size> [--source local|pool|any] [--local]
+    [--serial 0x..] [--dax] [--read-only] ...; --local is --source local.
+    The response and `list` show "source" (the source actually allocated,
+    from the allocation result's driver: a lease with source any reports
+    local or pool once Ready) and "serial".
+6.2 Companion claim by source:
+    pool:  as today (class cxl-pool-memory, capacity memory; the
+           PoolDeviceConfig for dax leases).
+    local: exactly {deviceClassName: cxl-local-memory or cxl-local-dax by
+           mode, capacity.requests.memory: size, selectors: serial if
+           given}; configs: LendConfig for driver cxl.generic (apiVersion
+           cxl.generic/v1alpha1, same fields) and for dax a
+           LocalDeviceConfig {mode: dax, readOnly}.
+    any:   one request "lease" with firstAvailable: [{name: local, ...the
+           local request...}, {name: pool, ...the pool request...}] and the
+           configs of both drivers (each driver sees only its own opaque
+           configs; subrequest names are "lease/local" and "lease/pool",
+           which the per-request config lookup already understands). The
+           scheduler takes local when a local device fits, else pool.
+    Companion pod unchanged (node affinity to this node, pause, Guaranteed
+    100m/8Mi, owner the requester pod).
+6.3 Prepare of the companion claim runs in the cxl.generic driver (section
+    4 step 5) or in the pool helper, whichever driver the allocation picked;
+    both call the same hooks, so the broker's state machine (Creating,
+    Pending, Lending, Ready, Releasing, Failed) is untouched. Ready numa
+    lease: node N lent through NRI; Ready dax lease: the fd of
+    /dev/daxX.Y (the slice) with SCM_RIGHTS, O_RDONLY for readOnly;
+    cxl-request --exec as today (CXL_LEASE_FD=3, CXL_LEASE_SIZE = the
+    slice size). Release: revoke, companion deleted, kubelet unprepares the
+    companion claim, slice deleted (region destroyed when it was the last
+    user). Nothing of the lease remains (same checks as test12).
+6.4 Optional (phase 2, after everything else passes): kind "claim":
+    {"op":"lease","kind":"claim","claim":"<name>"} lends the devices of an
+    existing ResourceClaim of the requester's namespace that is allocated
+    to this node (a shared local slice, or a shared pool device another
+    pod prepared here) to the calling container: the companion pod
+    references that claim (resourceClaimName), the scheduler adds it to
+    reservedFor, kubelet does not call Prepare again (01 section 4), so
+    the broker cannot wait for a hook; instead it watches the companion to
+    become Running, then reads the plugin's own prepared-claim info of that
+    claim (node or dax device) and lends (LendNode or fd). Release deletes
+    the companion only; the claim stays with its other pods. Not needed
+    for the tests of this task; design it, implement it only if time
+    allows, never at the cost of the core.
+6.5 Token publication. Today the token "dynamic" is published only with
+    --pool-lend and the pool helper. Lending local devices needs neither:
+    the flag becomes --lend (default true; --pool-lend stays as a hidden
+    alias), the token is published whenever lending is on and NRI starts;
+    a source pool request without the pool helper fails with "pool helper
+    disabled (--pool-driver-name)". The broker keeps knowing the pool
+    driver name for pool requests and the sharedHosts lookup.
+
+7. Life cycle (local additions to the plan-3 table)
+----------------------------------------------------
+device appears (hotplug or boot) ... udev cxl event -> rescan -> cxlmem device
+                                     published, mode none
+first claim (numa) ................. region (ram), online movable, node N;
+                                     mode numa; steering or lend
+more numa claims ................... same node, refcount; capacity accounted
+                                     by the scheduler
+first claim (dax) .................. region (devdax), daxX.0 resized to the
+                                     slice; mode dax
+more dax claims .................... dax_region/create, one slice each;
+                                     available_size shrinks
+claim of the other mode ............ Prepare error, kubelet retries, pod
+                                     event; the scheduler avoids it once
+                                     the mode attribute is published
+last claim gone .................... offline (numa), slices deleted, region
+                                     destroyed, memdev stays enabled, mode
+                                     none; nothing left in sysfs
+plugin restart ..................... state reloaded, regions and slices found
+                                     by serial and name; leftovers without
+                                     claims destroyed; lends re-applied by
+                                     the broker's reconcile as today
+node reboot ........................ regions are gone; state files are
+                                     leftovers: dra-install removes them,
+                                     the plugin drops entries whose region
+                                     does not exist
+lease (local) ...................... as plan-3, with the companion claim on a
+                                     local class; Ready in ~1 s after the
+                                     companion is scheduled (no binding
+                                     condition, no attach): expect 2-4 s per
+                                     request instead of 6
+lease (any) ........................ local when it fits, else pool; the
+                                     response says which
+device hot-removed while in use .... not supported for local devices (they
+                                     are static); the kernel refuses the
+                                     removal of a device with an online
+                                     region anyway
+
+8. Limitations and risks
+------------------------
+- One region per device, one mode per device at a time (not necessary:
+  08-analysis-mixed-modes.txt measured numa and dax slices on one region
+  and recommends block-size steps instead of mode exclusivity); no
+  interleaving across devices; numa capacity is accounted but not isolated per claim
+  (cpuset.mems is per node; all regions of a host bridge share a node).
+- Slice sizes are 2 MiB multiples; the requestPolicy rounds up; a numa
+  claim's size is accounting only (the whole device is online).
+- Memory limits of borrowers, movable-only node rule, steered-vs-borrowing
+  exclusivity, SIGBUS on forced release of a dax fd, ~5 s floor for pool
+  leases: unchanged from plan-3. A local lease is faster (no attach).
+- Mode conflict race (section 3) ends in a kubelet retry loop until the
+  conflicting claim is gone; mitigated by the mode attribute.
+- Two claims of one device in one container collide on CXL_LOCAL_* env
+  names (device nodes are distinct).
+- nodeAllocatableResources for dax claims raises the container's memory
+  limit by the slice size although dax memory is not charged to the
+  cgroup (only with the alpha gate on); accepted, documented.
+- A device that the plugin finds with a foreign region is left alone
+  (not published as cxlmem); an admin who wants the plugin to take it
+  destroys the region.
+- Local device release keeps the memdev enabled (unlike pool). A pool
+  device's release path is unchanged.
+- The static shared file device of the e2e topology (0xc1ae0000) looks
+  like a local device to the plugin when attached; a numa claim on it
+  would online memory that another VM may map. Tests never do that;
+  ignoreDevices can exclude it; the pool controller's own devices are
+  excluded automatically (pool.Serials()).

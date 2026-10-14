@@ -1,0 +1,325 @@
+plan-4-cxl-live-attach-local: implementation plan, kubelet-cxl-plugin
+=====================================================================
+Written 2026-10-14 (Fable). Design: 02-design.txt. Two Opus agents in the
+driver repository (W1a: local allocator and publication, W1b: shared
+lending code, broker, CLI, classes, docs) with disjoint file ownership and
+the Go contract below. W1a also extends nri-plugins pkg/cxl/memctl.
+Ground rules: 00-README.txt. Style: .github/skills/coding-style/SKILL.md
+of nri-plugins (plain ASCII, function comments say what, not how; no
+history in comments). Both agents append to 06-status.txt when done:
+"W1a Status/Findings", "W1b Status/Findings", listing every deviation from
+02-design.txt.
+
+File ownership
+--------------
+W1b (first the contract files, within the first minutes, additive only):
+  pkg/cxl/device/device.go        new constants and types (below)
+  cmd/kubelet-cxl-plugin/lending.go   (new) the contract below
+then:
+  cmd/kubelet-cxl-plugin/pool.go, pool_test.go      refactor onto lending.go
+  cmd/kubelet-cxl-plugin/broker.go, broker_test.go, lease_store.go, dynamic.go
+  cmd/kubelet-cxl-plugin/main.go                    flags
+  cmd/kubelet-cxl-plugin/driver.go                  ONLY the lending wiring block after
+                                                    startNRIPlugin (pool.setLending ->
+                                                    claimLender.set for both drivers) and
+                                                    the PublishDynamicToken condition
+  cmd/cxl-request/*
+  deployments/cxl/local/device-classes.yaml, deployments/cxl/local/examples/*
+  doc/cxl/LOCAL.md (new), doc/cxl/POOL.md, doc/cxl/README.md
+W1a:
+  nri-plugins pkg/cxl/memctl/memctl.go, memctl_test.go   (dax slicing, release without disable)
+  cmd/kubelet-cxl-plugin/local.go, local_test.go          (new) the allocator
+  cmd/kubelet-cxl-plugin/node_state.go, node_state_test.go  publication, Prepare/Unprepare of cxlmem devices
+  cmd/kubelet-cxl-plugin/driver.go                  ONLY newDriver's allocator creation (next to
+                                                    newPoolHelper), scanDevices/rescanAndPublish
+                                                    arguments, Shutdown, and DriverConfig.ManageMemdevs
+  cmd/kubelet-cxl-plugin/driver_test.go
+Neither touches nri.go, lend.go, udev.go, or the e2e tree. If an agent must
+change a file of the other, it writes the exact change into 06-status.txt
+and asks the orchestrator instead of editing.
+
+Contract: pkg/cxl/device/device.go additions (W1b, first step)
+--------------------------------------------------------------
+  DeviceTypeCXLMemdev = "cxl-memdev"   // a local memdev with free capacity (02 section 2)
+  DeviceTypeCXLDax    = "cxl-dax"      // PreparedDeviceInfo type of a dax slice (NRI steering ignores it)
+  SourceLocal = "local"; SourcePool = "pool"
+  LocalDeviceConfigKind = "LocalDeviceConfig"
+  LocalCDISpecName = "cxl-local"
+  ModeNUMA = "numa"; ModeDax = "dax"   // pool.go's poolModeNUMA/poolModeDax become aliases of these
+  // CXLMemdev is the Dev of a cxlmem device in DevicesInfo.
+  type CXLMemdev struct {
+      Name         string // memN
+      Serial       uint64
+      Size         uint64 // RamSize, bytes
+      NodeAffinity int    // CPU NUMA node, -1 unknown
+      Mode         string // "none", ModeNUMA or ModeDax: the allocator's use of the device at scan time
+  }
+
+Contract: cmd/kubelet-cxl-plugin/lending.go (W1b, first step; W1a codes
+against it and does not edit it)
+------------------------------------------------------------------------
+  // lentDevice is one prepared device of a companion claim, as the broker
+  // needs it (both drivers fill it).
+  type lentDevice struct {
+      Driver, Source, Request, Device, Pool string
+      Serial    uint64
+      SerialHex string // lower-case hex, no 0x
+      Shared    bool
+      Size      uint64 // bytes the lease gets: slice size, or device size
+      Mode      string // device.ModeNUMA | device.ModeDax
+      ReadOnly  bool
+      Node      int    // numa: NUMA node, else -1
+      DaxDevice string // dax: /dev/daxX.Y
+  }
+  // leaseHooks is today's poolLeaseHooks with lentDevice (implemented by *broker).
+  type leaseHooks interface {
+      OnLending(cfg *lendConfig) error
+      OnPrepared(cfg *lendConfig, devs []lentDevice)
+      OnLendFailed(cfg *lendConfig, err error)
+      OnReleasing(lease string)
+  }
+  // lendRecord is today's poolLend: the lend of a prepared companion claim,
+  // persisted with the claim so that Unprepare can revoke after a restart.
+  type lendRecord struct {
+      Lease string `json:"lease"`; Pod podRef `json:"pod"`; Container string `json:"container"`; Nodes []int `json:"nodes,omitempty"`
+  }
+  // claimLender lends companion claims of one driver. Zero value usable;
+  // set is called when NRI and the broker are up (nil nodes: NRI not
+  // connected; nil hooks: lending disabled).
+  type claimLender struct { driver string; mu sync.Mutex; nodes Lender; hooks leaseHooks }
+  func newClaimLender(driver string) *claimLender
+  func (c *claimLender) set(nodes Lender, hooks leaseHooks)
+  func (c *claimLender) enabled() bool                                                   // hooks != nil
+  func (c *claimLender) parse(claim *resourceapi.ResourceClaim) (*lendConfig, error)      // today's parseLendConfig(claim, c.driver); nil, nil without a LendConfig
+  func (c *claimLender) check(cfg *lendConfig) error                                      // today's checkLend
+  func (c *claimLender) lend(ctx context.Context, cfg *lendConfig, devs []lentDevice) (*lendRecord, error)  // today's lend: LendNode for every ModeNUMA device with Node >= 0
+  func (c *claimLender) revoke(ctx context.Context, rec *lendRecord, claimName string) error              // today's revoke
+  func (c *claimLender) prepared(cfg *lendConfig, devs []lentDevice)                      // hooks.OnPrepared, nil-safe
+  func (c *claimLender) failed(cfg *lendConfig, err error)                                // hooks.OnLendFailed, nil-safe
+  func (c *claimLender) releasing(lease string)                                           // hooks.OnReleasing, nil-safe
+  // deviceConfig is PoolDeviceConfig and LocalDeviceConfig (same fields).
+  type deviceConfig struct { APIVersion, Kind string; Mode string; ReadOnly bool }
+  // parseDeviceConfig returns the config of kind for driver that applies to
+  // request (class first, then claim; a later one replaces; a config applies
+  // to the requests it lists, a request "r" also covers "r/s", or to all).
+  func parseDeviceConfig(claim *resourceapi.ResourceClaim, driver, kind, request string) (*deviceConfig, error)   // today's parsePoolDeviceConfig, generalized
+  func (cfg *deviceConfig) modeFor(shared bool) (string, error)                            // today's modeFor
+  // daxCDIDevice returns a CDI device with the dax device node (permissions
+  // "r" when readOnly) and env <envPrefix>DAX_<SERIAL>, <envPrefix>SIZE_<SERIAL>,
+  // <envPrefix>SERIAL_<SERIAL>, and <envPrefix>READONLY_<SERIAL>=1 when readOnly.
+  func daxCDIDevice(name, envPrefix, serialHex, daxDevice string, major, minor int, size uint64, readOnly bool) cdiSpecs.Device
+  errLendingUnavailable, lendConfig, podRef stay where they are (broker.go,
+  lease_store.go); lendConfig.APIVersion is "<driver>/v1alpha1" for either
+  driver.
+  // modeAttribute returns the mode attribute value of a device the
+  // allocator uses in mode m ("none" when m == "").
+  (W1a may put this in local.go; listed so that W1b's docs use the same words.)
+
+W1b: shared lending code, broker, CLI, classes, docs
+----------------------------------------------------
+ 1. Contract files first (device.go, lending.go): move the code from
+    pool.go without changing behaviour; keep pool.go compiling by making
+    poolLeaseHooks, poolLend, poolModeNUMA/poolModeDax, parseLendConfig,
+    parsePoolDeviceConfig thin aliases or wrappers until step 2 removes
+    them. Build and `go test` must pass after this step. Write "contract
+    files written" into 06-status.txt as the first line of W1b Status.
+ 2. pool.go onto the contract: poolDriver gets `lender *claimLender`
+    (newClaimLender(name)); setLending -> lender.set; prepareClaim uses
+    lender.parse/check/lend/prepared/failed, unprepareClaim
+    lender.releasing/revoke; preparedPoolClaim.Lend is a *lendRecord (JSON
+    unchanged: same field names, so old preparedPoolClaims.json files
+    load); poolCDIDevice uses daxCDIDevice for dax devices (env prefixes
+    CXL_POOL_ and CXL_SHARED_ as today; numa env unchanged);
+    preparedPoolDevice -> lentDevice conversion (Source pool). Release
+    semantics unchanged (pool devices are disabled after release).
+ 3. Broker (broker.go, lease_store.go): lease.Source ("" means pool in old
+    stores), leaseRequest.Source, response "source"; validation of 02 6.1
+    (shared needs source pool; serial allowed for memory). Companion claim
+    per 02 6.2: classes localMemoryClass "cxl-local-memory", localDaxClass
+    "cxl-local-dax"; source any -> firstAvailable with subrequests "local"
+    and "pool" (resourceapi.DeviceSubRequest; no Exactly in that case);
+    configs: LendConfig per driver involved (Driver cxl.generic with
+    APIVersion cxl.generic/v1alpha1; pool as today), LocalDeviceConfig
+    (driver cxl.generic, kind LocalDeviceConfig, mode dax, readOnly) and
+    PoolDeviceConfig for dax leases, each config with Requests listing its
+    subrequest for source any so a driver never sees the other's mode
+    config (the lookup understands "lease/local"). OnPrepared takes
+    []lentDevice: sets Serial, Bytes, Node/Dax from devs[0] as today, plus
+    l.Source = devs[0].Source. sharedHosts unchanged. The hooks interface
+    the broker implements is leaseHooks. Reconcile, release, auth, fd
+    passing: unchanged. Companion labels stay as they are.
+ 4. Token and flags (main.go, driver.go wiring block, dynamic.go): --lend
+    (bool, default true, env LEND) replaces --pool-lend; keep --pool-lend
+    as an alias (cli Aliases) so dra.source.sh keeps working.
+    PublishDynamicToken = Lend (no pool requirement). brokerConfig gets
+    PoolDriver "" when the pool helper is disabled: a source pool lease
+    then fails at request time with "pool helper disabled
+    (--pool-driver-name)". Wiring after NRI: pool.lender.set(lender,
+    broker) if pool != nil; driver.state.lending.set(lender, broker)
+    (W1a declares nodeState.lending *claimLender, created with
+    newClaimLender(device.DriverName) in newNodeState). The error texts
+    "lending unavailable: NRI not connected" and "lending to running
+    containers is disabled" stay.
+ 5. cxl-request: --source local|pool|any (default pool), --local (=
+    --source local), --serial for memory; "source" printed in list and
+    responses; usage text; tests for the new flags and their errors
+    (--source with shared, --serial with shared, bad source).
+ 6. deployments/cxl/local/device-classes.yaml (02 section 3, with
+    comments like pool/device-classes.yaml), examples: local-memory-pod.yaml
+    (numa, 128Mi), local-dax-shared-slice.yaml (one ResourceClaim of 64Mi
+    on cxl-local-dax referenced by two pods), local-dax-readonly-pod.yaml,
+    local-borrower-pod.yaml (token claim; comments show cxl-request memory
+    64Mi --local --dax --exec ...). pool/device-class-dynamic.yaml comment:
+    the token lends local and pool memory.
+ 7. Docs: doc/cxl/LOCAL.md (new): what the plugin publishes for local
+    devices (table of attributes and capacity), modes and classes,
+    LocalDeviceConfig, slices and sharing through a claim, what Prepare
+    does (region, online or slice), env of dax claims, the mode attribute
+    and the conflict race, steering vs lending, limitations (02 section
+    8), node requirements (cxl, daxctl optional: memctl works with sysfs
+    alone; CONFIG_FS_DAX for dax). POOL.md: the lease protocol table with
+    source and serial for memory, CLI lines, "Opting in" (--lend), a
+    sentence that the companion claim may be local. README.md: link
+    LOCAL.md. Plain ASCII.
+ 8. Unit tests: lending.go (parse/check/lend/revoke/hook forwarding with
+    a fake Lender and fake hooks: moved from pool_test.go where they
+    exist), parseDeviceConfig for both kinds and the subrequest rule,
+    daxCDIDevice; broker: companion claim shape for source local (both
+    modes, serial selector), any (firstAvailable, both configs with
+    Requests), pool unchanged, validation errors, OnPrepared sets Source,
+    old stores without source; cxl-request flags. go vet, go test -race
+    (-count=5 for broker), gofmt, golangci-lint with no new findings.
+
+W1a: memctl slicing, the local allocator, publication, Prepare/Unprepare
+-------------------------------------------------------------------------
+ 1. nri-plugins pkg/cxl/memctl (keep it compiling at every save: W1b runs
+    `go mod vendor` too):
+    - DaxRegionDir(region) string; DaxRegionInfo(region) (available, align
+      uint64, devices []string, err): reads regionN/dax_regionN/dax_region/
+      {available_size, align} and the dax devices.
+    - DaxDeviceSize(dax) (uint64, error); DaxDeviceResource(dax) (uint64,
+      error) (start address, for tests and logs).
+    - ResizeDaxDevice(ctx, dax string, size uint64) error: requires the
+      device unbound (unbind its current driver first: SetDaxDriver with
+      "" meaning unbind, or a new UnbindDax(ctx, dax)), writes size.
+    - CreateDaxDevice(ctx, region string, size uint64) (string, error):
+      `echo 1 > dax_region/create`, name = `cat create`, ResizeDaxDevice,
+      returns the name (not bound; the caller binds with SetDaxDriver).
+    - DeleteDaxDevice(ctx, region, dax string) error: unbind, size 0,
+      `echo dax > dax_region/delete`; deleting daxX.0 is not attempted
+      (resize it to 0 instead); a device that does not exist is not an
+      error.
+    - Release(ctx, memdev) keeps its behaviour (disable the memdev); add
+      ReleaseRegions(ctx, memdev) error that does everything but the
+      disable (local devices stay enabled), and let Release call it.
+    - Info(memdev) keeps returning the first dax device; add
+      RegionDaxDevices? No: DaxDevices(region) exists. Unit tests with a
+      fake sysfs tree in t.TempDir() as memctl_test.go does today (look
+      there first). gofmt, go vet, go test -race ./pkg/cxl/...; then `go
+      mod vendor` in the driver repository.
+ 2. local.go: localAllocator {mem *memctl.Manager, stateFile, mu, devices
+    map[uint64]*localDevice}; localDevice {Serial, SerialHex, Memdev,
+    Region, Mode, Node int, Dax (the kmem device in numa mode), Claims
+    map[claimUID]*localSlice}; localSlice {Request, Size, Dax, DaxDevice,
+    Major, Minor, ReadOnly}. Methods: load/save (atomic, 0600, like
+    pool.go), Acquire(ctx, claimUID, request string, serial uint64, mode
+    string, size uint64, readOnly bool) (*localSlice, node int, err) per
+    02 section 4 step 3 (the "add_dev" retry from pool.go: share
+    isAddDevError), Release(ctx, claimUID) error per 02 Unprepare
+    (ReleaseRegions when the device has no claims; no disable), Serials()
+    map[uint64]bool and Modes() map[uint64]string snapshots with their own
+    lock (like poolDriver.serials: a rescan must never wait for a
+    Prepare), Reconcile(ctx) at start (regions of the state with no claims
+    are destroyed; slices that are gone are dropped and logged; a region
+    that is gone drops the device entry). A mode conflict is
+    errModeConflict wrapping the detail. Logging like pool.go.
+    State file: <cxl.generic plugin data dir>/localDevices.json.
+ 3. node_state.go:
+    - buildDevInfos(driverConfig, detected, poolSerials, local
+      *localAllocator or its snapshots): cxlmem devices per 02 section 2
+      (free memdev rule, ignore lists, poolSerials, allocator serials
+      hide the plugin's regions from cxl-node publication; mode from the
+      allocator's Modes()). Dev = *device.CXLMemdev. Name "cxlmem-" +
+      SerialHex.
+    - GetResources: the cxlmem device with attributes type, name, serial,
+      source, size, nodeAffinity (omit if < 0), mode; capacity memory
+      with requestPolicy validRange min 2Mi step 2Mi (ptr quantities);
+      AllowMultipleAllocations true; NodeAllocatableResources as cxl-node.
+    - prepareAllocatedDevices: case *device.CXLMemdev: config =
+      parseDeviceConfig(claim, device.DriverName,
+      device.LocalDeviceConfigKind, request), mode = modeFor(false), size
+      from ConsumedCapacity["memory"] (else dev.Size), allocator.Acquire;
+      numa -> PreparedDeviceInfo{DeviceType: cxl-node, NUMANodes: [node],
+      TotalBytes: dev.Size, ConsumedBytes: size, SysfsPath: region}; dax
+      -> PreparedDeviceInfo{DeviceType: cxl-dax, TotalBytes: slice size,
+      ConsumedBytes: size} plus new fields DaxDevice, DaxMajor, DaxMinor,
+      Serial (string), ReadOnly, and the CDI device id
+      generic/cxl=local-<claim uid> appended to the kubeletplugin.Device
+      (spec file cxl-local, built from preparedClaims like the marker
+      spec: rebuild on every change, remove when empty; env prefix
+      CXL_LOCAL_ through daxCDIDevice). Hold the lentDevice list for the
+      claim.
+    - LendConfig handling in Prepare: cfg, err := s.lending.parse(claim);
+      if cfg != nil: s.lending.check(cfg) before any Acquire; after the
+      devices: rec, err := s.lending.lend(ctx, cfg, devs) (devs:
+      lentDevice per prepared cxlmem device, Source local, Driver
+      cxl.generic); on error: s.lending.revoke(rec), s.lending.failed(cfg,
+      err), rollback, fail; else store rec in PreparedClaimInfo.Lend
+      (*lendRecord, json "lend,omitempty") and after the files are written
+      s.lending.prepared(cfg, devs). A claim with a LendConfig whose
+      devices are not cxlmem (dram, cxl-node) is refused: "LendConfig
+      needs a cxl-memdev device". Careful with locks: nodeState.Prepare
+      holds s.Lock(); the hooks lock the broker; the broker must not call
+      back into nodeState under its lock (it does not today).
+    - Unprepare: if info.Lend != nil: s.lending.releasing(lease), revoke
+      (error fails the Unprepare); allocator.Release(claimUID); the
+      cxl-local CDI spec rewritten; existing cleanup; a failed Release
+      fails the Unprepare (kubelet retries).
+    - Rollback of a partially prepared claim: allocator.Release(claimUID)
+      (idempotent).
+    - After Prepare and Unprepare changed allocator state: publish
+      (nodeState cannot call driver.PublishResourceSlice; give nodeState a
+      `republish func()` set by newDriver, called outside s.Lock(), that
+      runs scanDevices + PublishResources like rescanAndPublish).
+    - Restart: PreparedClaimInfo with Lend and dax fields loads from older
+      files (omitempty). allocator.Reconcile in newDriver after the
+      allocator is created and before the first scan.
+ 4. driver.go (W1a's parts): DriverConfig.ManageMemdevs *bool (yaml
+    "manageMemdevs", nil = true); newLocalAllocator(config, cxlFlags,
+    sysfsRoot) next to newPoolHelper (nil when manageMemdevs false);
+    scanDevices(sysfsRoot, driverConfig, pool.Serials(), local snapshots);
+    rescanAndPublish passes them; nodeState gets the allocator and
+    lending (newClaimLender(device.DriverName)); Shutdown: nothing to stop
+    (state is on disk). TestabilityConfig: FakeMemoryDevices
+    []nricxl.MemoryDevice appended to detected MemoryDevices (for tests
+    and demos without hardware), optional.
+ 5. Unit tests: buildDevInfos (free memdev published; memdev with a
+    foreign region not; the plugin's own region not published as
+    cxl-node; pool serial excluded; ignoreDevices by serial/name; mode
+    attribute from the allocator), GetResources (attributes, capacity,
+    requestPolicy, AllowMultipleAllocations), allocator with a fake sysfs
+    and fake Exec (as pool_test.go fakes memctl: read it first): numa
+    acquire/release with refcount, dax slices (first slice reuses daxX.0,
+    later ones create, delete order, region destroyed with the last),
+    mode conflict, no room, restart reconcile (leftover region destroyed,
+    gone slice dropped), state file round trip; Prepare/Unprepare of a
+    cxlmem claim in both modes (CDI device for dax with "r" when
+    readOnly, env names), LendConfig path with a fake claimLender hooks
+    (lend called with the node, revoke on Unprepare, failure rolls back),
+    republish called. go vet, go test -race ./cmd/kubelet-cxl-plugin/...
+    (and ./pkg/cxl/... in nri-plugins), gofmt, golangci-lint no new
+    findings, both binaries build static.
+
+Order and coordination
+----------------------
+- W1b step 1 within the first minutes; W1a starts with memctl (nri-plugins)
+  and reads lending.go when it exists; if it does not exist after W1a's
+  memctl work is done, W1a writes a note in 06-status.txt and proceeds with
+  local.go against the contract as written here (compile errors until W1b
+  lands are expected and must not be "fixed" by W1a writing lending.go).
+- The package does not compile while both edit: each agent reports build
+  errors in files it does not own in 06-status.txt instead of editing them.
+- Both run the full unit test suite of cmd/kubelet-cxl-plugin at the end
+  and report the result with the other agent's files present.
+- 06-status.txt entries: files changed, what W2 needs (flags, paths, class
+  names, env names, response fields, error texts), deviations from 02.

@@ -1,0 +1,176 @@
+plan-4-cxl-live-attach-local: implementation plan, e2e tests (W2)
+=================================================================
+Written 2026-10-14 (Fable). Design: 02-design.txt; what the driver gives
+you: 03-plan-driver.txt and the W1a/W1b entries of 06-status.txt. Skills:
+.github/skills/run-e2e-tests/SKILL.md (how to run, never two tests at
+once, debugging), .github/skills/coding-style/SKILL.md (e2e: no sleeps,
+act then wait-until-verified with retry-until; plain ASCII). Existing
+helpers to reuse, not reinvent: test/e2e/memory.test-suite/memory-policy/
+dra.source.sh (dra-*: install, apply, wait, json/assert/value, exec,
+leases, container cgroup files, trace), n4-cxl-shared-2/pool.source.sh
+(pool-server-start, pool-client, pool-vm-*, pool-cxl-*, pool-file-string),
+n4-cxl/cxl.source.sh (cxl-dump/cxl-wait/cxl-assert/cxl-value on the
+pkg/cxl view of the VM), lib/k8s.bash (vm-k8s-reinit), lib/vm.bash
+(vm-cxl-hw/hotplug/hotremove), pool-dax-rw.py and numa-touch.py (tools
+delivered by the dax-rw ConfigMap). Read test10, test12 and test13 first:
+the new tests follow their structure (preconditions, lettered sections,
+trace summary, cleanup).
+
+Where
+-----
+Topology n4-cxl-shared-2 (01 section 5: patched qemu, kernel with
+FS_DAX, four host bridge decoders, daxctl, the DRA helpers). The VM of
+n4-cxl is not usable (01 section 5) and is not touched. The local device
+of the topology is cxl_memdev1: 256M, serial 0xc100e2e1, host bridge 0
+(node 2 once a region exists; CPU nodes are 0 and 1), not present at boot.
+It is attached through fake-cxl-pool-server as a scope "local" device
+(the server names it <host>.memdev1; find it with `pool-client -o json
+devices` by serial and scope, do not hard-code the name), or with
+vm-cxl-hotplug (then the server adopts it). Prefer the server: the patched
+qemu can hot-remove, so a detach at the end leaves the VM clean for the
+next test without a restart (check what pool-cleanup does with attachments
+the test made and whether the controller ignores local-scope attachments:
+it must, they have no k8s: owner). The static shared file device
+(0xc1ae0000) is not used by these tests.
+New tests: n4-cxl-shared-2/test14-dra-local-memdev and
+test15-dra-local-live-attach (after test13 in the numbering; single-node
+cluster: start with vm-k8s-reinit "$VM2" like test10/test12). Both need
+fake-cxl-pool-server (dra-install starts the controller, which needs it;
+test15 also uses a pool device): pool-server-start with pooled0 (512M,
+0xc1ee0001) exactly as test12.
+
+Helpers (dra.source.sh; keep every existing test working)
+---------------------------------------------------------
+- DRA_LOCAL_CLASSES="$DRA_DRIVER_SRC/deployments/cxl/local/device-classes.yaml":
+  dra-install applies it when the file exists (like DRA_DYNAMIC_CLASS),
+  dra-uninstall deletes those classes (read their names from the file).
+- dra-install-files: remove /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/localDevices.json
+  with the other state files when the VM has no regions.
+- dra-local-device VMDIR: attach the local 256M device of the VM through
+  the server if it is not attached, wait until pkg/cxl sees its serial
+  (pool-cxl-wait) and until the node's cxl.generic slice has the cxlmem
+  device (dra-wait on resourceslices with the dra-py helpers), print and
+  export its serial, hex serial and device name (cxlmem-c100e2e1).
+  dra-local-detach VMDIR: detach it (after the plugin released its
+  region). Both idempotent.
+- dra-trace-summary: driver lines also match "local|slice|cxlmem|mode".
+- dra-py: add helpers if the assertions need them (for instance
+  request_policy(d, 'memory')); keep them in the existing style.
+
+test14-dra-local-memdev: pods with claims on a local device
+-----------------------------------------------------------
+Preconditions as test12 (pool-vm-require, vm-k8s-reinit, tools, pool-vm-reset,
+server with pooled0, dra-build, dra-install, dra-pull-images busybox and
+python:3-alpine, dra-trace-start).
+A. The local device is a resource: dra-local-device; in the cxl.generic
+   slice of the node a device cxlmem-c100e2e1 with type cxl-memdev, serial,
+   source local, size 268435456, mode none, nodeAffinity 0, capacity
+   memory 256Mi with requestPolicy validRange min 2Mi step 2Mi,
+   allowMultipleAllocations; no cxl-node device; no region in the VM
+   (cxl-dump). Pool slice as before.
+B. Two pods share the device as a NUMA node: pod numa-a claims 128Mi
+   (class cxl-local-memory, ResourceClaimTemplate), pod numa-b 64Mi; both
+   Running; the VM has one region on the local device, mode ram, online
+   256M, node N (N >= 2); the slice shows mode numa; both containers see
+   node N in cpuset.mems (dra-container-file) or Mems_allowed_list, and
+   numa-touch.py 32 MiB on N from numa-a lands on N (memory.numa_stat of
+   the container). The claim status shows consumedCapacity 128Mi and 64Mi
+   (dra-json of the claims). A third pod dax-early claiming 64Mi on
+   cxl-local-dax stays Pending with a scheduler event that no device fits
+   (the mode attribute keeps it off; read the event text once and assert
+   on something stable, for instance the pod has no nodeName after 20 s
+   and the condition reason is Unschedulable).
+C. Release: delete numa-a and numa-b; wait: region gone (cxl-dump regions
+   == []), memdev still enabled (memdevs has the serial, Enabled true),
+   mode none in the slice; then dax-early gets scheduled and Running (the
+   same pod from B).
+D. Slices: dax-early has /dev/daxX.Y in the container (env CXL_LOCAL_DAX_
+   C100E2E1, CXL_LOCAL_SIZE_C100E2E1 == 67108864, SERIAL), a 64M slice in
+   the VM (cxl-dump or sysfs: dax device size, region in devdax mode);
+   pod dax-2 claims 32Mi -> a second slice (different minor), slice sizes
+   from sysfs; a ResourceClaim shared-slice of 64Mi on cxl-local-dax
+   referenced by two pods dax-s1 and dax-s2 -> one slice more (three
+   slices, available_size 96M), the same device path and major:minor in
+   both pods; dax-s1 writes TAG at offset 1M with pool-dax-rw.py (dax
+   device path mode), dax-s2 reads TAG; dax-early reads its own device at
+   1M and does not see TAG (isolation); dax-2 the same. A read-only pod
+   dax-ro with a claim config {kind: LocalDeviceConfig, mode: dax,
+   readOnly: true} of 16Mi: device node permissions "r" (crictl inspect
+   or the device cgroup through dra-container-devices), open for writing
+   refused (pool-dax-rw.py check-ro), env CXL_LOCAL_READONLY_C100E2E1=1.
+   Five claims on one 256M device at once: consumedCapacity sums to 176Mi
+   (64+32+64+16, with the shared claim counted once).
+E. A numa claim while slices exist: pod numa-late (32Mi, cxl-local-memory)
+   stays Pending (mode dax); delete all dax pods and the shared claim ->
+   slices gone one by one (available_size grows), region destroyed with
+   the last, mode none, then numa-late becomes Running with node N again;
+   delete it; nothing left: no region, memdev enabled, no cxl-local CDI
+   spec devices (/etc/cdi/cxl-local.yaml absent or empty), slice mode
+   none, localDevices.json has no claims.
+F. Trace summary and timings (region create, slice create, release).
+Cleanup: dra-cleanup, dra-local-detach, pool-cleanup (order as test12).
+
+test15-dra-local-live-attach: leases on a local device
+------------------------------------------------------
+Preconditions as test14 plus the borrower pod of test12 (token claim,
+python:3-alpine, two containers main and idle, no memory limit) and the
+cxl-dynamic class; dra-local-device.
+A. `cxl-request memory 128Mi --source local` from main: one line JSON,
+   state Ready, source local, serial 0xc100e2e1, node N; companion pod and
+   claim cxl-lease-<id> exist with the claim on cxl-local-memory and a
+   LendConfig for driver cxl.generic; region on the local device, mode
+   numa; main's cpuset.mems has N, idle's does not (same caveat handling
+   as test12 for an empty cpuset.mems); numa-touch.py 64 MiB on N from
+   main lands on N; the pool has no attachment (local lease: no attach).
+   Measure request-to-Ready: expect well under test12's 5.7 s (no binding
+   condition); print it.
+B. Mode conflict through a lease: `cxl-request memory 32Mi --source local
+   --dax --wait 20s` while A's lease is Ready -> Failed with timeout (the
+   scheduler has no device: mode numa), the lease is gone afterwards
+   (cxl-request list has only A's lease), no companion left.
+C. Give back: cxl-release of A's lease -> pages migrated (numa_stat node N
+   == 0), cpuset.mems back, companion and claim gone, region gone, mode
+   none, memdev enabled.
+D. Dax leases: `cxl-request memory 64Mi --source local --dax --exec
+   python3 /tools/dax-rw.py --fd 3 write 1M TAG1` and a second one of
+   32Mi (--exec ... read 1M; must NOT see TAG1: a different slice; then
+   write TAG2 into it); `cxl-request list` shows two Ready dax leases with
+   source local, sizes 64Mi and 32Mi, distinct dax paths; the VM has two
+   slices; `cxl-request fd <lease1> --exec ... read 1M` == TAG1;
+   `--read-only` lease of 16Mi: CXL_LEASE_READONLY=1 and a writable mapping
+   refused (pool-dax-rw.py check-ro --fd 3). Release all -> slices gone,
+   region gone.
+E. Local first, then pool: `cxl-request memory 128Mi --source any` ->
+   Ready with source local (the local device is free); a second `--source
+   any` of 256Mi (does not fit the 128M left on the local device) -> Ready
+   with source pool, serial 0xc1ee0001, pooled0 attached in the server, a
+   second region on a pool device; the companion claim of the second lease
+   has the firstAvailable request and the allocation result's request is
+   lease/pool (dra-json). Release both -> pooled0 detached (as test12 C),
+   local region gone.
+F. Delete the borrower with two local leases active (one numa with pages
+   in use, one dax): within 60 s companions and claims gone, region gone,
+   mode none, token claim directory removed.
+G. Trace summary; cleanup as test14.
+
+Regression (after both new tests pass): test10-dra-pooling and
+test12-dra-live-attach in n4-cxl-shared-2 must pass unchanged (the broker's
+default source is pool and the companion claim of a pool lease is as
+before). test13 is expensive (reshapes the clusters); run it once at the
+end if time allows, else say so.
+
+Phases
+------
+Phase 1 (now, while W1a/W1b work): helpers, both tests, YAML; bash -n and
+shellcheck with the exclusions test12 uses; pre-pull images in VM2; make
+sure the pool server is not running and the VM is clean (pool-vm-reset
+restarts it if it has devices). Do not start the node plugin from the
+unfinished driver tree. Write the open questions for W1a/W1b into
+06-status.txt (W2 Status, phase 1): exact response fields, env names,
+class names, error texts you assert on.
+Phase 2 (when the orchestrator says go: W1a and W1b have reported):
+dra-build, run test14, then test15, then the regression; fix test bugs;
+small driver fixes are allowed only for clear bugs and are listed under
+"fixed by W2" in 06-status.txt (the driver agents may be asked to fix
+instead). Report measured timings and every assertion that had to be
+weakened, with the reason.
