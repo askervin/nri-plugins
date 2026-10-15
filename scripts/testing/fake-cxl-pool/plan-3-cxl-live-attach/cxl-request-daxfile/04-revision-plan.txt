@@ -1,0 +1,393 @@
+cxl-request-daxfile: revision plan
+===================================
+Written 2026-10-12, after review of 01-03. Two corrections to the design
+of 02-implementation-plan.txt, and a study of a read-only option:
+
+  R1 "dax is always an option": CXL memory of the pool can be leased
+     EXCLUSIVELY as well as shared, and an exclusive lease can be used as a
+     dax device (fd or file), not only as a NUMA node. Use case,
+     single-writer data sharing: a dax-writer leases a device exclusively,
+     writes new contents and exits; then three dax-readers use the same
+     memory through dax devices at the same time, read-only.
+  R2 "do not restrict the borrower's capabilities": the borrower may keep
+     CAP_MKNOD, CAP_SYS_ADMIN or anything else (for development, say). The
+     driver enables device use, it does not dictate how users are
+     configured. 02's opt-in (DynamicConfig daxFiles) with its capability
+     rule (claims refused unless MKNOD is dropped) is withdrawn.
+  R3 Study: is a "read only" option worth having in the user-facing
+     configuration (claims, lease requests)?
+
+That kubelet-cxl-plugin mounts the lease file (not cxl-request) stays: it
+keeps the borrower free of mount privileges (01-findings.txt).
+Nothing in this plan is implemented yet. The prototype of 02/03 is in the
+working trees, uncommitted; the revision changes it.
+
+1. Findings of this revision
+----------------------------
+1.1 Maxview (UnifabriX MAX, User Guide 2.0) has no read-only access.
+Text extracted with a throwaway script (~/.claude/jobs/daxfile2/
+tools/pdftext.py; the PDF tools are not installed). Viewport properties are
+name, shared and persistent (PATCH /api/v1/viewports/{viewport}); attach
+takes the viewport, the HDM, an offset and "persistent"
+(POST /api/v1/viewports/provisioning/attach). The only read/write item is a
+per-block access counter (GET /api/v1/ports/{port_id}/{index}/get_counters).
+No permission, owner, lock or read-only concept anywhere (the words
+"read-only", "permission" and "protect" do not occur). So a read-only
+guarantee cannot come from the pool appliance: whatever a host has
+attached, it can write. Read-only is a property of how the node gives the
+memory to a container. The fake pool server stays as capable as Maxview:
+no read-only attach.
+The guide presents dax as a regular way to use attached memory, for any
+viewport ("Using CXL Memory": "Setting the memory online allows it to be
+managed by the kernel ... Alternatively, applications can claim exclusive
+access to the memory by accessing the DAX device directly"; and for
+dax_hmem: memory left "in a raw daxdev state (e.g., /dev/daxN.Y) to be used
+via direct file access or for later conversion to system RAM"). That
+supports R1: an exclusive device is not bound to the NUMA use.
+
+1.2 Guest-side read-only, measured in VM2 (kernel 7.3.0-rc4; log
+~/.claude/jobs/daxfile2/exp-ro.log). Pods: p-plain (root, default
+capabilities including MKNOD), p-ro (root, default capabilities plus
+SYS_ADMIN, device rule "c 252:* r"), p-rw (device rule "c 252:* rw").
+| mechanism | result |
+|---|---|
+| O_RDONLY dax fd passed over the socket (p-plain) | mmap(PROT_READ, MAP_SHARED) OK and reads; mmap(PROT_READ\|PROT_WRITE) EACCES; mprotect(PROT_WRITE) on the mapping EACCES; a store into the mapping: SIGSEGV; reopening /proc/self/fd/N O_RDWR or O_RDONLY: EPERM (device cgroup) |
+| device cgroup rule with access "r" (p-ro, root with MKNOD and SYS_ADMIN) | open(O_RDWR) of a node of the device: EPERM; open(O_RDONLY) + PROT_READ mapping: OK; reopening a read-only fd O_RDWR: EPERM |
+| read-only mount of the node (MOUNT_ATTR_RDONLY, mountinfo "ro") | open(O_RDWR) OK: no protection |
+| node mode 0400 against root | open(O_RDWR) OK (CAP_DAC_OVERRIDE): protects non-root users only |
+Kernel source agrees: mmap clears VM_MAYWRITE for MAP_SHARED of a file
+not open for writing (mm/mmap.c, "if (!(file->f_mode & FMODE_WRITE))"),
+devdax needs only VM_MAYSHARE (drivers/dax/device.c __check_vma), devdax
+has no read/write file operations, sb_permission() refuses writes on a
+read-only file system only for regular files, directories and symlinks
+(fs/namei.c), and devcgroup_inode_permission() checks the access type of
+every open of a char device (include/linux/device_cgroup.h).
+=> A read-only fd and a read-only device rule are kernel-enforced, whatever
+capabilities the container has (privileged containers excepted: their
+device cgroup allows everything). Mounts and mode bits are not.
+
+1.3 Per-device device-cgroup grants on a running container, measured in
+VM2 (kernel 7.3.0-rc4, containerd 2.4.1, runc 1.5.2 with the systemd cgroup
+driver, systemd 258; logs ~/.claude/jobs/daxfile2/exp-grant.log,
+exp-grant-update.log, ~/.claude/jobs/daxfile3/exp-ro-update.log). The
+container: root, the runtime's default capabilities (MKNOD; plus SYS_ADMIN
+in the third run), no rule for major 252: `mknod /tmp/d0 c 252 0` OK, open
+EPERM. A throwaway tool (~/.claude/jobs/daxfile2/grant) read runc's rules of
+the container from /run/containerd/runc/k8s.io/<id>/state.json
+(config.cgroups.devices, the 12 rules runc derived from the spec: deny all,
+"m" for all, /dev/null, zero, full, tty, random, urandom, pts, ptmx, tun)
+and regenerated runc's eBPF program with runc's own library:
+github.com/opencontainers/cgroups v0.1.0,
+`cgroups.DevicesSetV2(dir, &cgroups.Resources{Devices: rules})` with the
+devices package imported. It replaces every program attached to the cgroup
+(runc's and systemd's: "found more than one filter (2) ... removing extra
+filters!") by one with the complete rule list. The DeviceAllow entry was set
+with `systemctl set-property --runtime <scope> DeviceAllow="/dev/char/252:0
+<access>"`. Runtime updates were `crictl update --cpu-share N`. The third
+run had no dax device on the node: an open the device cgroup allows fails
+with ENXIO there (chrdev_open finds no device), one it denies with EPERM
+(devcgroup_inode_permission runs first).
+| step | result |
+|---|---|
+| grant "rw": DeviceAllow entry, then runc's rules + c 252:0 rw | open(O_RDWR) OK |
+| two runtime updates | systemd attaches a fresh program next to ours each time; open(O_RDWR) still OK |
+| the "rw" grant WITHOUT the DeviceAllow entry, then an update | systemd's new program denies: open EPERM |
+| grant "r" | open(O_RDWR) EPERM, open(O_RDONLY) allowed |
+| two runtime updates | the same |
+| upgrade to "rw" (entry and program), an update | both opens allowed |
+| downgrade to "r": program first, then DeviceAllow reset to the original list + the "r" entry, an update | O_RDWR EPERM, O_RDONLY allowed |
+| revoke: program with runc's rules only, then DeviceAllow reset to the original list, two updates | both opens EPERM |
+Why both parts: `runc update` never touches device rules (SkipDevices, see
+../02-option-runtime-injection-mechanics.txt 2.7), but every runtime update
+makes systemd regenerate its own device program from the scope's
+DeviceAllow. A grant survives updates only if DeviceAllow has it too.
+Setting DeviceAllow attaches systemd's regenerated program at once, so
+DeviceAllow can only widen access, never narrow it: a narrowing (downgrade,
+revoke) must replace the program first. A second entry for the same node
+does not narrow either; narrowing resets the list (empty assignment, then
+the remaining entries).
+This is the M9 result of ../02-option-runtime-injection-mechanics.txt
+2.9, which turned it down as "a private reimplementation of runc's
+devicefilter". The difference now: the program comes from runc's own
+library (the code runc runs at creation), from runc's own record of the
+rules, so nothing of runc's filter is rewritten; what remains is the
+dependency on runc's state file and rule model (section 5).
+=> A dax device can be granted to one running container, with "rw" or
+"r", changed and revoked again, without touching any other device and
+whatever its capabilities: with CAP_MKNOD or CAP_SYS_ADMIN the container
+can make or mount nodes for any dax minor, but opens only what is granted.
+
+1.4 Library: github.com/opencontainers/cgroups v0.1.0 exports
+cgroups.DevicesSetV2 and systemd.GenerateDeviceProps (set by importing
+github.com/opencontainers/cgroups/devices); it pulls in cilium/ebpf
+v0.17.3, coreos/go-systemd/v22 and godbus/dbus/v5. None is in the driver's
+go.mod today. The runc state file is runc's private format, but it is what
+runc itself reads back (stable across runc 1.x).
+
+2. Design
+---------
+2.1 Lease and claim options. One set of options, the same for leases and
+for claims a pod has from its creation:
+| option | values | meaning |
+|---|---|---|
+| use | numa, dax | numa: the memory is onlined and lent as a NUMA node (exclusive devices only, as today); dax: a devdax device, given as an fd and/or a file |
+| access | shared, exclusive | exclusive: no other lease or claim of the device, in any node, while this one lives |
+| readOnly | false, true | dax only: the container can map the memory for reading only |
+Valid combinations:
+| pool device | use | access | readOnly | example |
+|---|---|---|---|---|
+| exclusive (shared: false) | numa | exclusive (implied) | - | today's `cxl-request memory 512Mi` |
+| exclusive | dax | exclusive (implied) | false or true | `cxl-request memory 512Mi --dax --file /tmp/m.dax` |
+| shared (shared: true) | dax | shared | false or true | today's `cxl-request shared S`; readers: `--read-only` |
+| shared | dax | exclusive | false or true | the writer: `cxl-request shared S --exclusive --file /tmp/data.dax` |
+A shared pool device is never used as numa (two kernels onlining the same
+memory corrupt each other, ../../plan/00-overview.md D13).
+
+2.2 Exclusive access to a shared device.
+- Within a cluster, by DRA capacity: the pool slice publishes shared
+  devices with capacity hosts {value: N, requestPolicy {default: "1",
+  validValues: ["1", "N"]}} (today validValues ["1"]; N is the
+  controller's -shared-hosts, 4). An exclusive claim requests hosts: N:
+  the scheduler allocates it only while no other claim holds a share of
+  the device, and no other claim while it holds all N. So readers that ask
+  while the writer holds the device stay Pending and are allocated when it
+  is released; and the writer waits for readers likewise. No new
+  scheduling logic, and a lease request with --wait simply waits.
+- Across clusters (one pool server, several clusters, as in test11), by
+  the pool server: AttachRequest gains `exclusive`; an exclusive attach
+  fails with 409 Conflict while the device is attached to another host,
+  and any attach to another host fails while an exclusive attachment
+  exists. The attachment records `exclusive`. fake-cxl-pool-controller
+  attaches exclusively when the allocation result consumes all of the
+  device's hosts capacity (consumedCapacity["hosts"] == the published
+  value); a 409 becomes AttachFailed reason Conflict (existing path).
+  This is a fake-server extension; Maxview has no such attach flag, a real
+  pool controller would keep the cross-cluster rule in its own state.
+- Exclusive pool devices are exclusive already (one claim, one host).
+
+2.3 Exclusive devices as dax. The pool helper decides the region mode by
+the use option instead of by `shared`: dax -> devdax region (no onlining,
+no NUMA lend), numa -> today's ram region, online_movable, lend. A serial
+prepared for one use refuses a claim with the other use (as today for
+shared/exclusive). Release: dax regions are destroyed (no offline).
+
+2.4 Where the options live.
+- Lease requests: cxl-request flags --dax, --exclusive, --read-only;
+  request fields "use", "access", "readOnly". The broker validates the
+  combination (2.1), writes them into the companion claim: LendConfig gains
+  `use`, `readOnly` (exclusive is the capacity request of 2.2, plus
+  `access` in LendConfig for the pool helper's records).
+- Pod-time claims of pool devices (test10/test11 style): a new opaque
+  config of driver cxl-pool.generic, kind PoolDeviceConfig (apiVersion
+  cxl-pool.generic/v1alpha1) {use, readOnly}; claim source wins over class
+  source; exclusive is the user's own capacity request (hosts: N), as in
+  2.2. The CDI device node of a dax claim gets permissions "r" when
+  readOnly (the runtime then makes the device rule "r" at creation: no
+  grant machinery needed for pod-time claims; the CDI library maps
+  permissions to the rule's access, default "rwm"). The node keeps the
+  host node's owner and mode, as today.
+- Defaults keep today's behaviour: memory -> numa, shared -> dax, access
+  shared for shared devices, readOnly false.
+
+2.5 Read-only enforcement (R3), per access path:
+| path | how | kernel-enforced against |
+|---|---|---|
+| fd of a lease | the broker opens the dax device O_RDONLY | everything but a privileged container (which could open the device itself) |
+| file of a lease | per-device grant with access "r" (2.6); node mode 0400 | same |
+| pod-time claim | CDI device node permissions "r" | same |
+Limits, to document: read-only is per lease, not per device: another lease
+of the same device (in this or another node) may write, and readers see
+those writes. It guards against accidental writes by readers; it is not a
+consistency mechanism (exclusive access of the writer is, 2.2).
+Recommendation: yes, add readOnly. It costs little (an open flag, a
+device rule access type, a CDI permission), it is the natural pair of the
+exclusive writer, and it turns a reader's stray store into a SIGSEGV
+instead of silent corruption of shared data.
+
+2.6 Capability-agnostic lease files: per-device grants (R2).
+Withdrawn from 02 (code and docs): DynamicConfig daxFiles, the check at
+token claim Prepare (daxFilesContainers, mayMknodOrMount), the CapBnd
+check at request time, the NRI CreateContainer rule "c <major>:* rw", the
+env CXL_LEASE_DAX_FILES and containerRef.DaxAllowed. Any container with the
+token claim can have lease files; no opt-in at creation.
+Instead, when a file is mounted, its device is granted to that container,
+and the grant is revoked when the file goes:
+- grant(container, major, minor, access) and revoke(container, major,
+  minor), new file devicegrant.go in kubelet-cxl-plugin:
+  1. base rules: runc's state file <runc state root>/<container id>/
+     state.json (flag --runc-state-root, default
+     /run/containerd/runc/k8s.io), read at every change (it does not change
+     while the container runs, and is runc's own record).
+  2. grant: if the container's cgroup is a systemd scope (cgroup dir name
+     *.scope and the unit exists): add "/dev/char/<major>:<minor> <access>"
+     to the scope's DeviceAllow (runtime property, D-Bus
+     SetUnitProperties via go-systemd; the scope's DeviceAllow list before
+     the first grant is recorded). Then
+     cgroups.DevicesSetV2(<cgroup dir>, base rules + all current grants of
+     the container).
+  3. revoke: first the program (base rules + the remaining grants: new
+     opens are refused at once), then DeviceAllow (reset, the recorded list
+     + the remaining grants). The reset is an empty DeviceAllow array
+     followed by the entries in one SetUnitProperties call (what
+     systemctl's empty assignment sends; measured in 1.3). Setting
+     DeviceAllow never narrows by itself, so the program goes first.
+  4. two grants of one device to one container combine: the widest access
+     wins, and a revoke of one recomputes the access of the rest.
+  The grants of a container are kept in leases.json (with the files), so a
+  plugin restart can revoke them. A container that ends takes its cgroup
+  and its grants with it: nothing to revoke.
+- Order with the mount: grant, then mount; at release unmount, then
+  revoke, then the companion is deleted (the device goes). If the revoke
+  fails, the release is retried and the device stays (as 02 does for a
+  failed unmount): a node the container may have made itself must not
+  reach the next device with the same minor.
+- With per-device grants, a capable container that mknods or mounts
+  (devtmpfs) other dax nodes opens nothing but its own leases' devices, and
+  a node it made or a bind mount it took of a lease file is harmless after
+  the revoke. That replaces 02's "a stale file reaches the next device" by
+  a kernel-enforced rule; the unmount stays for tidiness.
+- fd passing needs no grant (it never did).
+- Privileged containers: their base rules allow every device; a grant adds
+  nothing, read-only cannot be enforced on them (the fd still is O_RDONLY).
+  Logged, not refused.
+- Unsupported environments (no runc state file: CRI-O/crun, another runc
+  root; no systemd D-Bus with the systemd driver): a file request fails
+  with "lease files need runc's device rules of the container (no <path>)";
+  fd leases work as today.
+- Deployment: the plugin needs the runc state root, the systemd D-Bus
+  socket (systemd driver) and the cgroup fs; it has them as a host process
+  (the e2e), a DaemonSet needs hostPath mounts of /run/containerd/runc,
+  /run/systemd and /sys/fs/cgroup.
+
+2.7 Life cycle, revised:
+| event | files and grants | lease |
+|---|---|---|
+| file request | grant (rw or r), private node (mode 0600 or 0400), mount | Ready |
+| release | unmount, revoke, node removed; retried until done, device stays meanwhile | companion deleted, device released |
+| container stops, lease kept for its restart | cgroup and mount namespace gone: records dropped, nodes removed | kept; ask again for the file |
+| pod deleted | as above | released with the token claim |
+| companion unprepared behind the broker | OnReleasing: unmount + revoke before the region goes (error fails the unprepare) | Failed, reconciled |
+| plugin restart | grants and mounts stay in the kernel; leases.json has them; reconcile drops records of ended containers | continues |
+| writer exclusive while readers hold shares (or the reverse) | - | the later request stays Pending (DRA capacity); across clusters AttachFailed Conflict until free |
+
+3. Implementation steps
+-----------------------
+Driver repository (5fC-cxl, working tree with the 02 prototype):
+ D1 Withdraw the opt-in: remove parseDynamicConfig, checkDaxFiles,
+    daxFilesContainers, mayMknodOrMount, capBoundHas, the CreateContainer
+    adjustment, daxFilesEnv, tokenClaim.DaxFiles/DaxContainers,
+    containerRef.DaxAllowed and the Synchronize detection; their tests;
+    DynamicConfigKind in pkg/cxl/device; the POOL.md text and the
+    legacy-borrower-pod example's opt-in.
+ D2 devicegrant.go: grant/revoke as in 2.6, behind an interface
+    (deviceGranter) so that broker tests use a fake. go.mod: add
+    github.com/opencontainers/cgroups v0.1.0 (and what it pulls in); go
+    mod vendor. Unit tests: rule list composition from a state.json
+    fixture (base + grants, revoke leaves the others), DeviceAllow list
+    bookkeeping, unsupported environment errors. The eBPF and D-Bus calls
+    run in the e2e only.
+ D3 broker: request fields use/access/readOnly; validation (2.1);
+    companion claim: exclusive -> capacity request hosts: N, N read from
+    the device in the pool's ResourceSlice (by serial); LendConfig use,
+    access, readOnly; the fd O_RDONLY for read-only leases (openDax gets
+    the flag); mountFile: grant before the mount, node mode 0400 for
+    read-only; unmountFiles/removeFile: revoke after the unmount; lease
+    records keep (major, minor, access) per file; reconcile/ containerGone
+    as today.
+ D4 pool helper: LendConfig use/readOnly and PoolDeviceConfig for pod-time
+    claims; region mode by use; same-serial conflicts by use; CDI device
+    node permissions "r" for read-only; dax CDI device also
+    for exclusive devices prepared as dax (env CXL_POOL_DAX_<serial>).
+ D5 cxl-request: --dax, --exclusive, --read-only (validation of the
+    combinations client side, too); usage, doc comment; tests.
+ D6 POOL.md: the options table (2.1), exclusive access, read-only (what it
+    guards and what not), lease files with per-device grants and their
+    requirements, the single-writer pattern as an example; examples:
+    writer and reader pods; DeviceClass/claim example with
+    PoolDeviceConfig readOnly.
+nri-plugins:
+ N1 fake-cxl-pool server: AttachRequest.Exclusive, attachment.Exclusive,
+    checkAttachLocked rules (2.2), REST docs (README, plan/20 deviations
+    note); unit tests (exclusive vs shared on two hosts, both orders;
+    same host idempotent; detach frees).
+ N2 fake-cxl-pool-controller: publisher validValues ["1", N]; attach with
+    Exclusive when consumedCapacity hosts == N; unit tests (exclusive
+    claim attaches exclusively; a 409 from the server -> AttachFailed
+    Conflict).
+ N3 e2e (below).
+
+4. Test plan
+------------
+Unit tests: as listed per step; all existing tests keep passing.
+e2e, test12-dra-live-attach (VM2):
+- Steps A-G unchanged. Step D keeps proving that the fd path changes no
+  device rule and that a node the container makes itself cannot be opened
+  (no grant without a file).
+- Step H, revised ("lease files, whatever the capabilities"): pod legacy
+  runs as root with the runtime's default capabilities (MKNOD) plus
+  SYS_ADMIN, its token claim has no extra config. File cycles as today
+  (path, owner, private mount, open + mmap after cxl-request exited, host
+  sees the bytes, fd sees the same). Isolation instead of "mknod fails":
+  while the container's own file is mounted, a second dax device exists
+  (pooled0 leased by container main of pod borrower as `memory 512Mi
+  --dax`): legacy can mknod its minor, but open of that node fails
+  (EPERM); its own device opens. The same through a devtmpfs mount, if
+  SELinux lets the container mount one (logged as skipped otherwise). After the release:
+  its own mknod'ed node and any bind mount of the old file fail to open
+  (revoked). The refused-pod part (legacy-mknod) is removed. The runtime
+  spec of legacy shows no dax rule (nothing at creation); a runtime update
+  (crictl update --cpu-share) during a file lease keeps the access.
+  Release while mapped (SIGBUS) and pod deletion with a file in use stay.
+- Step I, new: single-writer data sharing with shared0, in this order:
+  I1 pod writer (restartPolicy Never) runs
+     `cxl-request shared 0xc1ae0001 --exclusive --file /tmp/data.dax`
+     and becomes Ready: the companion claim consumes all hosts capacity,
+     the pool server's attachment is exclusive. The writer writes a tag at
+     several offsets through the file, then waits for a go file the test
+     creates.
+  I2 pod readers with three containers (one with SYS_ADMIN), each running
+     `cxl-request shared 0xc1ae0001 --read-only --file /tmp/data.dax
+     --wait 300s` in the background: all three leases stay Pending (their
+     companion pods unschedulable) while the writer holds the device.
+  I3 the test creates the go file; the writer exits 0 without a release.
+     The broker releases its lease (restartPolicy Never), then all three
+     reader leases become Ready (time measured from the writer's exit).
+  I4 each reader reads the tag through its file and through
+     `cxl-request fd`; a write through the file (open O_RDWR: EPERM),
+     through the fd (mmap PROT_WRITE: EACCES) and a store into the
+     read-only mapping (SIGSEGV) all fail, also in the SYS_ADMIN reader.
+     The host finds the tag in shared0.raw.
+  I5 while the readers hold their leases, another exclusive request with
+     --wait 10s ends Failed (timeout) and leaves nothing: no companion, no
+     claim, no file.
+  I6 the readers release; nothing is left.
+- Step J, new: an exclusive device as dax: container main of pod borrower
+  `cxl-request memory 512Mi --dax --file /tmp/pooled.dax`: no NUMA node
+  appears in its cpuset.mems, the region is devdax, read/write through the
+  file and the fd work, release leaves nothing.
+Other e2e: test10, test11, test01 as regression. Optional (D4 pod-time
+config): test11 with a reader claim PoolDeviceConfig readOnly: true in
+cluster 2: its write attempt fails, cluster 1 still writes.
+
+5. Risks and open questions
+---------------------------
+- Per-device grants work behind the runtime: they depend on runc's state
+  file and device rule semantics (update skips devices) and on systemd
+  regenerating its program from DeviceAllow. Verified on runc 1.5.2,
+  systemd 258, containerd 2.4.1. A runtime that rewrites device programs
+  on update would silently drop grants (new opens EPERM; open fds and
+  mappings keep working). Mitigation: the reconcile re-applies the grants
+  of running containers (idempotent), the e2e step H checks access after a
+  runtime update.
+- CRI-O/crun, cgroupfs driver: not covered by the measurements; cgroupfs
+  should need only the program part; crun keeps no runc state file (files
+  unsupported there until a crun backend exists).
+- Exclusive capacity N is read from the pool slice at request time; if the
+  controller republishes with another N meanwhile, the claim fails to
+  allocate (the request times out): acceptable.
+- A reader's lease waits behind a writer up to --wait (default 120 s): long
+  writers need a longer wait or a retry by the reader.
+- Read-only is per lease; a writer elsewhere still writes (documented).
+- Effort: driver D1-D6 about 3-4 days (D2 the largest, with its library
+  and e2e debugging), nri-plugins N1-N2 about 1 day, e2e steps H-J about
+  2 days.

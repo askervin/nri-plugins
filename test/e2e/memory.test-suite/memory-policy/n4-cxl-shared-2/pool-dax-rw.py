@@ -21,11 +21,12 @@ work on a device node that the container may only read (a read-only
 claim), and on a read-only fd (a read-only lease).
 
 With --fd N the device is not opened: N is a file descriptor that the
-process inherited, for instance from "cxl-request shared SERIAL --exec"
-(fd 3, CXL_LEASE_FD), which received it from kubelet-cxl-plugin over a unix
-socket. The container needs no device node for it. The size of the mapping
-comes from the sysfs of the device the fd refers to, from CXL_LEASE_SIZE,
-or, for a regular file (tests), from its size.
+process inherited, for instance from "cxl-request request --serial SERIAL
+--shared --exec" (fd 3, CXL_<KEY>_FD=3), which received it from
+kubelet-cxl-plugin over a unix socket. The container needs no device node
+for it. The size of the mapping comes from the sysfs of the device the fd
+refers to, from CXL_<KEY>_SIZE of the KEY whose CXL_<KEY>_FD is N, or, for
+a regular file (tests), from its size.
 
 The whole device is mapped MAP_SHARED: devdax refuses private mappings and
 mappings that are not aligned to the device alignment (2M). The mapping
@@ -55,6 +56,16 @@ def dax_size(name):
         return int(f.read())
 
 
+def env_size(fd):
+    """Return CXL_<KEY>_SIZE of the KEY whose CXL_<KEY>_FD is fd, or None."""
+    for name, value in os.environ.items():
+        if name.startswith("CXL_") and name.endswith("_FD") and value == str(fd):
+            size = os.environ.get(name[:-len("_FD")] + "_SIZE")
+            if size:
+                return int(size, 0)
+    return None
+
+
 def fd_size(fd):
     st = os.fstat(fd)
     if stat.S_ISREG(st.st_mode):
@@ -63,9 +74,10 @@ def fd_size(fd):
         return dax_size(os.readlink("/proc/self/fd/%d" % fd))
     except OSError:
         pass
-    if os.environ.get("CXL_LEASE_SIZE"):
-        return int(os.environ["CXL_LEASE_SIZE"], 0)
-    sys.exit("cannot find the size of fd %d: no sysfs entry, no CXL_LEASE_SIZE" % fd)
+    size = env_size(fd)
+    if size is not None:
+        return size
+    sys.exit("cannot find the size of fd %d: no sysfs entry, no CXL_<KEY>_SIZE with CXL_<KEY>_FD=%d" % (fd, fd))
 
 
 def string_at(m, offset):

@@ -197,7 +197,7 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 		return api.Device{}, api.InvalidArgument("size is required")
 	}
 	if size%CapacityMultiplier != 0 {
-		return api.Device{}, api.InvalidArgument("size %s is not a multiple of 256M (CXL capacity unit)", api.FormatSize(size))
+		return api.Device{}, api.InvalidArgument("size %s is not a multiple of %s (CXL capacity unit)", api.FormatSize(size), api.FormatSize(CapacityMultiplier))
 	}
 	poolName := req.Pool
 	if poolName == "" {
@@ -303,8 +303,8 @@ func (s *Server) PatchDevice(name string, patch api.DevicePatch) (api.Device, er
 	return v, nil
 }
 
-// DeleteDevice deletes a dynamic device and its backing file. With force,
-// attachments are detached first.
+// DeleteDevice deletes a device created over the API and its backing file.
+// With force, attachments are detached first.
 func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) error {
 	s.mu.RLock()
 	d := s.devices[name]

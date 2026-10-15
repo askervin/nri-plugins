@@ -4,22 +4,26 @@
 # test10 and test11 give pods memory of devices that the pool attaches to
 # the node on demand. A CXL memory device can also belong to the node
 # itself: cabled to it, there from boot. kubelet-cxl-plugin offers such a
-# local device whole, as device cxlmem-<serial> of the node's cxl.generic
-# ResourceSlice (attributes type cxl-memdev, source local, mode and
-# memoryBlockSize; capacity memory in steps of the memory block size of
-# the node, any number of claims), and carves a slice of the device for
-# every claim that it prepares, a multiple of the block size:
-# - DeviceClass cxl-local-memory: the slice becomes movable system memory
-#   of the NUMA node of the device. The node grows by the memory blocks
-#   of every such claim and shrinks by them when the claim goes. The
-#   containers of the claims get the node in their cpuset.mems.
-# - DeviceClass cxl-local-dax: the slice is a character device
-#   /dev/daxX.Y in the containers of the claim, so containers get isolated
+# local device whole, as device memdev-<serial> of the node's cxl.generic
+# ResourceSlice (attributes type memdev, source local, shared false,
+# serial, size, nodeAffinity and memoryBlockSize; capacity memory in steps
+# of the memory block size of the node, any number of claims), and carves
+# a slice of the device for every claim of DeviceClass cxl-local that it
+# prepares, a multiple of the block size, in the mode of the opaque
+# DeviceConfig of the claim:
+# - mode numa (the default): the slice becomes movable system memory of
+#   the NUMA node of the device. The node grows by the memory blocks of
+#   every such claim and shrinks by them when the claim goes. The
+#   containers of the claims get the node in their cpuset.mems and in
+#   CXL_<KEY>_NODE.
+# - mode dax: the slice is a character device /dev/daxX.Y in the
+#   containers of the claim (CXL_<KEY>_DAX), so containers get isolated
 #   pieces of one device. Pods that reference the same ResourceClaim share
 #   its slice. Dax slices add nothing to the NUMA node.
-# Claims of both classes share one device. The first claim creates a
-# region on the device, the last one destroys it. The attribute mode tells
-# what the device holds now: none, numa, dax or numa+dax.
+# Claims of both modes share one device. The first claim creates a region
+# on the device, the last one destroys it. The ResourceSlice does not
+# change meanwhile: what the device holds is in sysfs, not in its
+# attributes.
 #
 # The local device here is cxl_memdev1 of the topology (1G, host bridge
 # 0): 8 memory blocks of 128M in the VM. It is not present at boot: the
@@ -33,14 +37,15 @@
 # claims (one rounded up to a block, one shared by two pods) take slices
 # next to them, with data isolated between the slices; the node shrinking
 # block by block as the NUMA pods go, while the dax pods keep their data;
-# the device back in its initial state (no region, memdev enabled, mode
-# none); a claim with an invalid config that fails its Prepare; a
-# read-only slice; a dax claim without an amount that gets all of the
-# device; and the trace summary of what every component did, in order.
+# the device back in its initial state (no region, memdev enabled,
+# published as at the start); claims with invalid configs that fail their
+# Prepare; a read-only slice; a dax claim without an amount that gets all
+# of the device; and the trace summary of what every component did, in
+# order.
 #
 # Create the VM first with test00-up of n4-cxl-shared-2. The DRA driver
 # comes from ~/github.com/intel/intel-resource-drivers-for-kubernetes, or
-# CXL_DRA_DRIVER_SRC; it needs deployments/cxl/local/device-classes.yaml.
+# CXL_DRA_DRIVER_SRC; it needs deployments/cxl/device-classes.yaml.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"
@@ -51,19 +56,18 @@ VM2="$OUTPUT_DIR"      # the VM and the cluster of this test
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
 MiB=$(( 1 << 20 ))
-LOCAL_MEMORY_CLASS=cxl-local-memory   # a slice of the device as system memory of its NUMA node
-LOCAL_DAX_CLASS=cxl-local-dax         # a devdax slice of the device per claim
+LOCAL_CLASS=cxl-local  # a slice of a local memdev: numa (default) or dax (DeviceConfig)
 TAG="dra-local-memdev $(date +%Y-%m-%dT%H:%M:%S.%N)"
 NODE_LAST=0            # the last MemTotal of the node that node-size saw, in bytes
 NODE_TIMES=()          # changes of MemTotal of the node: "LABEL OLD->NEW MiB, seconds since t0"
 
-no-cxl-node() {
-    # Usage: no-cxl-node JSON
+no-region-device() {
+    # Usage: no-region-device JSON
     #
-    # Check that the ResourceSlices in JSON have no cxl-node device of this
+    # Check that the ResourceSlices in JSON have no region device of this
     # node: the region of the local device is not published again as
     # node-local CXL memory.
-    dra-assert "$1" "not any(attr(d, 'type') == 'cxl-node' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
+    dra-assert "$1" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 }
 
 node-size() {
@@ -87,33 +91,49 @@ initial-state() {
     cxl-assert "regions == []"
 }
 
+claim-env() {
+    # Usage: claim-env POD
+    #
+    # Set CLAIM_ENV to the CXL_ variables of container main of pod POD, and
+    # check that one of them is the marker of its claim (CXL_CLAIM_<uid>=1).
+    # shellcheck disable=SC2016 # expanded by sh in the container
+    dra-exec "$VM2" "$1" sh -c 'env | grep ^CXL_ | sort' ||
+        command-error "cannot read the environment of $1"
+    CLAIM_ENV="$COMMAND_OUTPUT"
+    [ "$(grep -cE '^CXL_CLAIM_[0-9a-f_]+=1$' <<< "$CLAIM_ENV")" == 1 ] ||
+        error "$1 has not one claim marker CXL_CLAIM_<uid>=1"
+}
+
+numa-env-check() {
+    # Usage: numa-env-check POD BYTES
+    #
+    # Check the environment of the NUMA slice of the claim of pod POD: the
+    # serial of the local device, its NUMA node NUMA_NODE, the size BYTES
+    # of the slice, mode numa, not shared, and the claim marker, nothing
+    # else.
+    claim-env "$1"
+    dra-env-assert "$1" "$CLAIM_ENV" "$DRA_LOCAL_HEX" \
+        SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$2" NODE="$NUMA_NODE"
+    [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 6 ] || error "$1 has other CXL_ variables: $CLAIM_ENV"
+}
+
 slice-check() {
     # Usage: slice-check POD BYTES [ro]
     #
     # Check the dax slice of the claim of pod POD: the environment of
-    # container main names the device, its size BYTES and the serial of the
-    # local device (and READONLY=1 with ro, else no READONLY); the device is
-    # a character device in the container with the numbers of a dax device
+    # container main names the device, its size BYTES, the serial of the
+    # local device, mode dax, not shared and READONLY=1 with ro, else
+    # READONLY=0, and has the claim marker, nothing else; the device is a
+    # character device in the container with the numbers of a dax device
     # of BYTES of the local device, bound to device_dax, in the VM.
     # SLICE_DAX is its path, SLICE_DEV its "major:minor".
-    local pod="$1" size="$2" ro="$3" env
-    # shellcheck disable=SC2016 # expanded by sh in the container
-    dra-exec "$VM2" "$pod" sh -c 'env | grep ^CXL_LOCAL_ | sort' ||
-        command-error "cannot read the environment of $pod"
-    env="$COMMAND_OUTPUT"
-    SLICE_DAX=$(sed -n "s/^CXL_LOCAL_DAX_$DRA_LOCAL_HEX=//p" <<< "$env")
-    [[ "$SLICE_DAX" == /dev/dax* ]] || error "$pod has no CXL_LOCAL_DAX_$DRA_LOCAL_HEX=/dev/daxX.Y"
-    grep -qx "CXL_LOCAL_SIZE_$DRA_LOCAL_HEX=$size" <<< "$env" ||
-        error "$pod has no CXL_LOCAL_SIZE_$DRA_LOCAL_HEX=$size"
-    grep -qx "CXL_LOCAL_SERIAL_$DRA_LOCAL_HEX=$DRA_LOCAL_SERIAL" <<< "$env" ||
-        error "$pod has no CXL_LOCAL_SERIAL_$DRA_LOCAL_HEX=$DRA_LOCAL_SERIAL"
-    if [ "$ro" == ro ]; then
-        grep -qx "CXL_LOCAL_READONLY_$DRA_LOCAL_HEX=1" <<< "$env" ||
-            error "$pod has no CXL_LOCAL_READONLY_$DRA_LOCAL_HEX=1"
-    else
-        grep -q "^CXL_LOCAL_READONLY_" <<< "$env" &&
-            error "$pod has CXL_LOCAL_READONLY_ without a read-only claim"
-    fi
+    local pod="$1" size="$2" ro=0
+    [ "$3" != ro ] || ro=1
+    claim-env "$pod"
+    dra-env-assert "$pod" "$CLAIM_ENV" "$DRA_LOCAL_HEX" \
+        SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=dax SIZE="$size" "DAX=/dev/dax*" READONLY="$ro"
+    [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 7 ] || error "$pod has other CXL_ variables: $CLAIM_ENV"
+    SLICE_DAX=$(dra-env-value "$CLAIM_ENV" "CXL_${DRA_LOCAL_HEX}_DAX")
     dra-exec "$VM2" "$pod" python3 -c 'import os, stat, sys; s = os.stat(sys.argv[1]); print("%s %d:%d" % ("c" if stat.S_ISCHR(s.st_mode) else "-", os.major(s.st_rdev), os.minor(s.st_rdev)))' "$SLICE_DAX" ||
         command-error "no $SLICE_DAX in $pod"
     [[ "$COMMAND_OUTPUT" == "c "* ]] || error "$SLICE_DAX is not a character device in $pod"
@@ -141,6 +161,14 @@ dax-read() {
     [ "$COMMAND_OUTPUT" == "$3" ] || error "$1 read '$COMMAND_OUTPUT' at 1M of $2, expected '$3'"
 }
 
+bad-pods-creating() {
+    # Usage: bad-pods-creating
+    #
+    # Return 0 if the containers of pods bad-config, bad-mode and bad-kind
+    # are all waiting in ContainerCreating.
+    [ "$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS bad-config bad-mode bad-kind -o jsonpath='{.items[*].status.containerStatuses[0].state.waiting.reason}'" || echo unread)" == "ContainerCreating ContainerCreating ContainerCreating" ]
+}
+
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
@@ -160,7 +188,7 @@ dra-node-size-exact "$VM2"
 echo "### preconditions: fake-cxl-pool-server on the host, with one exclusive device"
 pool-server-start "
   - name: pooled0
-    size: 512M
+    size: 512Mi
     shared: false
     pool: default
     serial: $POOLED0_SERIAL"
@@ -168,8 +196,6 @@ pool-client-install "$VM2"
 
 echo "### preconditions: the pool controller and the node plugin run in the cluster"
 dra-build
-[ -f "$DRA_LOCAL_CLASSES" ] ||
-    error "the driver in $DRA_DRIVER_SRC has no DeviceClasses of local devices ($DRA_LOCAL_CLASSES)"
 dra-install "$VM2"
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE"
 dra-dax-tool-install "$VM2"
@@ -177,8 +203,8 @@ dra-trace-start "$VM2"
 
 echo "### A: the local device is a resource of the node"
 # Attaching the local device plugs it into its own slot under host bridge
-# 0, as if it had been there from boot. The node plugin publishes it whole:
-# no region yet, mode none.
+# 0, as if it had been there from boot. The node plugin publishes it whole,
+# with no region yet.
 dra-local-device "$VM2"
 LD="$DRA_LOCAL_LD"             # the device in the ResourceSlices (dra-py)
 LREGIONS="$DRA_LOCAL_REGIONS"  # its regions in cxl-dump (cxl-py)
@@ -198,13 +224,16 @@ TOUCH_MIB=$(( BS / 4 / MiB ))
 pool-cxl-dump "$VM2" local-attached
 cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and by_serial($DRA_LOCAL_SERIAL)['RamSize'] == $DRA_LOCAL_SIZE"
 cxl-assert "regions == []"
-MEMDEV=$(cxl-value "by_serial($DRA_LOCAL_SERIAL)['Name']")
 AFFINITY=$(cxl-value "by_serial($DRA_LOCAL_SERIAL)['NodeAffinity']")
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 SLICES="$COMMAND_OUTPUT"
-dra-assert "$SLICES" "attr($LD, 'type') == 'cxl-memdev' and attr($LD, 'source') == 'local' and attr($LD, 'mode') == 'none'"
-dra-assert "$SLICES" "attr($LD, 'serial') == '$DRA_LOCAL_SERIAL' and attr($LD, 'size') == $DRA_LOCAL_SIZE and attr($LD, 'name') == '$MEMDEV'"
+# A memdev of source local, with the attributes of a pool memdev (test10)
+# and those of a node-local device. Nothing about its slices: no mode, no
+# name of the memdev in the VM.
+dra-assert "$SLICES" "attr($LD, 'type') == 'memdev' and attr($LD, 'source') == 'local' and attr($LD, 'shared') == False"
+dra-assert "$SLICES" "attr($LD, 'serial') == '$DRA_LOCAL_SERIAL' and attr($LD, 'size') == $DRA_LOCAL_SIZE"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'serial', 'shared', 'size', 'source', 'type']"
 # Host bridge 0 is on CPU node 0 (pxb-cxl numa_node=0).
 dra-assert "$SLICES" "attr($LD, 'nodeAffinity') == $AFFINITY and $AFFINITY == 0"
 # Capacity in steps of the memory block size, the smallest claim one
@@ -215,17 +244,22 @@ dra-assert "$SLICES" "quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE"
 dra-assert "$SLICES" "quantity((request_policy($LD, 'memory') or {}).get('validRange', {}).get('min', 0)) == $BS and quantity(request_policy($LD, 'memory')['validRange'].get('step', 0)) == $BS"
 dra-assert "$SLICES" "quantity(request_policy($LD, 'memory')['default']) == $DRA_LOCAL_SIZE"
 dra-assert "$SLICES" "${LD}.get('allowMultipleAllocations') == True"
-no-cxl-node "$SLICES"
+no-region-device "$SLICES"
 dra-assert "$SLICES" "len(slices('$DRA_POOL_DRIVER')) == 1 and [d['name'] for d in devices('$DRA_POOL_DRIVER')] == ['pooled0']"
+# The DeviceClasses of the driver select device kinds and carry no config:
+# the mode is the DeviceConfig of a claim.
 dra-json "$VM2" deviceclasses
-dra-assert "$COMMAND_OUTPUT" "{'$LOCAL_MEMORY_CLASS', '$LOCAL_DAX_CLASS'} <= set(names())"
+dra-assert "$COMMAND_OUTPUT" "sorted(n for n in names() if n.startswith('cxl-')) == sorted([$(printf "'%s', " "${DRA_CLASSES[@]}")])"
+dra-assert "$COMMAND_OUTPUT" "'\"memdev\"' in by_name('$LOCAL_CLASS')['spec']['selectors'][0]['cel']['expression'] and '\"$DRA_LOCAL_DRIVER\"' in by_name('$LOCAL_CLASS')['spec']['selectors'][0]['cel']['expression']"
+dra-assert "$COMMAND_OUTPUT" "not any(by_name(n)['spec'].get('config') for n in [$(printf "'%s', " "${DRA_CLASSES[@]}")])"
 # No memory of the device is online: the VM has only its DRAM nodes.
 vm-command "cat /sys/devices/system/node/has_memory" || command-error "cannot read the memory nodes of the VM"
 dra-nodes-eq "$COMMAND_OUTPUT" "$DRAM_NODES" || error "memory nodes $COMMAND_OUTPUT before any claim, expected $DRAM_NODES"
 
 echo "### B: NUMA and dax claims share the device, the NUMA node grows with the NUMA claims"
+# numa-a has no DeviceConfig: mode numa is the default.
 t0=$EPOCHREALTIME
-dra-claim-pod "$VM2" numa-a "$LOCAL_MEMORY_CLASS" "$(dra-mi "$NUMA_A")"
+dra-claim-pod "$VM2" numa-a "$LOCAL_CLASS" "$(dra-mi "$NUMA_A")"
 dra-pod-wait "$VM2" numa-a Running 120
 T_NUMA_A=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" numa-a "$NUMA_A"
@@ -238,8 +272,9 @@ NUMA_NODE=$(dra-value "$DRA_MEMDEV" "dax_slices('kmem')[0]['node']")
 echo "the local device is NUMA node $NUMA_NODE of the VM"
 node-size numa-a "$NUMA_A"
 pool-cxl-wait "$VM2" numa-a-region "len($LREGIONS) == 1 and ${LREGIONS}[0]['Node'] == $NUMA_NODE and len(regions) == 1"
-dra-local-mode-wait "$VM2" numa-mode numa
-no-cxl-node "$COMMAND_OUTPUT"
+dra-local-unchanged "$VM2"
+no-region-device "$COMMAND_OUTPUT"
+numa-env-check numa-a "$NUMA_A"
 dra-mems-wait "$VM2" numa-a main "$NUMA_NODE"
 # Memory that numa-a allocates on the node is on the node.
 dra-touch-start "$VM2" numa-a/main "$TOUCH_MIB" "$NUMA_NODE"
@@ -254,7 +289,7 @@ dra-touch-stop
 # block, the step of the capacity, and the slice has that size. It adds
 # nothing to the NUMA node.
 t0=$EPOCHREALTIME
-dra-claim-pod "$VM2" dax-1 "$LOCAL_DAX_CLASS" "$(dra-mi "$DAX1_REQ")"
+dra-claim-pod "$VM2" dax-1 "$LOCAL_CLASS" "$(dra-mi "$DAX1_REQ")" dax
 dra-pod-wait "$VM2" dax-1 Running 120
 T_DAX_1=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" dax-1 "$(dra-local-round "$DAX1_REQ")"
@@ -263,22 +298,23 @@ DAX1_DAX="$SLICE_DAX"
 DAX1_DEV="$SLICE_DEV"
 dra-local-slices-wait "$VM2" numa-a-dax-1 "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")"
 node-size dax-1 "$NUMA_A"
-dra-local-mode-wait "$VM2" numa-dax-mode numa+dax
-no-cxl-node "$COMMAND_OUTPUT"
-# A second NUMA claim: the node grows by its two blocks, both containers
-# have the node.
+dra-local-unchanged "$VM2"
+no-region-device "$COMMAND_OUTPUT"
+# A second NUMA claim, with mode numa in its DeviceConfig: the node grows
+# by its two blocks, both containers have the node.
 t0=$EPOCHREALTIME
-dra-claim-pod "$VM2" numa-b "$LOCAL_MEMORY_CLASS" "$(dra-mi "$NUMA_B")"
+dra-claim-pod "$VM2" numa-b "$LOCAL_CLASS" "$(dra-mi "$NUMA_B")" numa
 dra-pod-wait "$VM2" numa-b Running 120
 T_NUMA_B=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" numa-b "$NUMA_B"
 dra-local-slices-wait "$VM2" numa-b "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B"
 node-size numa-b $(( NUMA_A + NUMA_B ))
+numa-env-check numa-b "$NUMA_B"
 dra-mems-wait "$VM2" numa-a main "$NUMA_NODE"
 dra-mems-wait "$VM2" numa-b main "$NUMA_NODE"
 # One ResourceClaim referenced by two pods: prepared once, one slice for
 # both.
-dra-apply "$VM2" <<< "$(dra-claim-yaml claim shared-slice "$LOCAL_DAX_CLASS" "$(dra-mi "$SHARED")")
+dra-apply "$VM2" <<< "$(dra-claim-yaml claim shared-slice "$LOCAL_CLASS" "$(dra-mi "$SHARED")" dax)
 ---
 $(dra-claim-pod-yaml dax-s1 claim shared-slice)
 ---
@@ -322,8 +358,7 @@ dra-local-slices-wait "$VM2" without-numa-a "$NUMA_NODE" "dax:$(dra-local-round 
 dra-mems-wait "$VM2" numa-b main "$NUMA_NODE"
 dax-read dax-1 "$DAX1_DAX" "$TAG: dax-1"
 dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
-dra-json "$VM2" resourceslices
-dra-assert "$COMMAND_OUTPUT" "attr($LD, 'mode') == 'numa+dax'"
+dra-local-unchanged "$VM2"
 t0=$EPOCHREALTIME
 dra-delete-pod "$VM2" numa-b
 node-size numa-b-deleted 0
@@ -331,8 +366,8 @@ node-size numa-b-deleted 0
 # any memory online, from the dax devices.
 dra-local-slices-wait "$VM2" without-numa "$NUMA_NODE" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$SHARED"
 pool-cxl-wait "$VM2" without-numa-node "len($LREGIONS) == 1 and ${LREGIONS}[0]['Node'] == $NUMA_NODE" 10
-dra-local-mode-wait "$VM2" dax-mode dax
-no-cxl-node "$COMMAND_OUTPUT"
+dra-local-unchanged "$VM2"
+no-region-device "$COMMAND_OUTPUT"
 dax-read dax-1 "$DAX1_DAX" "$TAG: dax-1"
 dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
 # The shared slice stays while a pod of its claim runs.
@@ -351,28 +386,41 @@ dra-delete "$VM2" resourceclaim shared-slice --wait=true --timeout=60s
 initial-state released
 T_RELEASE=$(echo "$EPOCHREALTIME - $t0" | bc)
 
-echo "### D: a refused config, a read-only slice, a slice of the whole device"
-# A claim whose config the node plugin refuses (readOnly is for dax
-# slices): the scheduler allocates the device, the Prepare fails, the pod
-# stays ContainerCreating, and the device stays free.
-dra-claim-pod "$VM2" bad-config "$LOCAL_MEMORY_CLASS" "$(dra-mi "$BAD_REQ")" read-only numa
+echo "### D: refused configs, a read-only slice, a slice of the whole device"
+# Claims whose opaque config the node plugin refuses (readOnly is for dax
+# slices, there is no mode "memory", and no config kind DaxConfig): the
+# scheduler allocates the device, the Prepare fails, the pods stay
+# ContainerCreating, and the device stays free.
+dra-claim-pod "$VM2" bad-config "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" numa read-only
+dra-claim-pod "$VM2" bad-mode "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" memory
+dra-apply "$VM2" <<< "$(dra-claim-yaml template bad-kind "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" dax | sed 's/kind: DeviceConfig/kind: DaxConfig/')
+---
+$(dra-claim-pod-yaml bad-kind template bad-kind)"
 dra-wait "$VM2" bad-config-event "events -n $DRA_NS --field-selector involvedObject.name=bad-config" \
-    "any('LocalDeviceConfig: readOnly needs mode dax' in (e.get('message') or '') for e in items)" 120
+    "any('DeviceConfig: readOnly needs mode dax' in (e.get('message') or '') for e in items)" 120
 dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-config"
-dra-wait "$VM2" bad-config-creating "pod -n $DRA_NS bad-config" \
-    "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
-dra-stays 10 "pod bad-config is ContainerCreating" \
-    '[ "$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS bad-config -o jsonpath={.status.containerStatuses[0].state.waiting.reason}" || echo unread)" == ContainerCreating ]'
+dra-wait "$VM2" bad-mode-event "events -n $DRA_NS --field-selector involvedObject.name=bad-mode" \
+    "any('DeviceConfig: invalid mode \"memory\" (numa or dax)' in (e.get('message') or '') for e in items)" 120
+dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-mode"
+dra-wait "$VM2" bad-kind-event "events -n $DRA_NS --field-selector involvedObject.name=bad-kind" \
+    "any('unknown kind \"DaxConfig\" (DeviceConfig or MemoryPolicyConfig)' in (e.get('message') or '') for e in items)" 120
+dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-kind"
+for pod in bad-config bad-mode bad-kind; do
+    dra-wait "$VM2" "$pod-creating" "pod -n $DRA_NS $pod" \
+        "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
+done
+dra-stays 10 "pods bad-config, bad-mode and bad-kind are ContainerCreating" bad-pods-creating
 pool-cxl-dump "$VM2" bad-config
 cxl-assert "regions == []"
-dra-json "$VM2" resourceslices
-dra-assert "$COMMAND_OUTPUT" "attr($LD, 'mode') == 'none'"
+dra-local-unchanged "$VM2"
 dra-delete-pod "$VM2" bad-config
+dra-delete-pod "$VM2" bad-mode
+dra-delete-pod "$VM2" bad-kind
 initial-state bad-config-deleted
-# A read-only slice: the claim config says readOnly, the device node of
-# the container can only be opened for reading. An eighth of a block
-# consumes a block.
-dra-claim-pod "$VM2" dax-ro "$LOCAL_DAX_CLASS" "$(dra-mi "$RO_REQ")" read-only
+# A read-only slice: the claim config says mode dax and readOnly, the
+# device node of the container can only be opened for reading. An eighth
+# of a block consumes a block.
+dra-claim-pod "$VM2" dax-ro "$LOCAL_CLASS" "$(dra-mi "$RO_REQ")" dax read-only
 dra-pod-wait "$VM2" dax-ro Running 120
 dra-local-claim-check "$VM2" dax-ro "$(dra-local-round "$RO_REQ")"
 RO_UID="$DRA_CLAIM_UID"
@@ -380,7 +428,7 @@ slice-check dax-ro "$(dra-local-round "$RO_REQ")" ro
 RO_DAX="$SLICE_DAX"
 RO_DEV="$SLICE_DEV"
 dra-local-slices-wait "$VM2" read-only "$NUMA_NODE" "dax:$(dra-local-round "$RO_REQ")"
-dra-local-mode-wait "$VM2" ro-mode dax
+dra-local-unchanged "$VM2"
 dra-exec "$VM2" dax-ro python3 /tools/dax-rw.py check-ro "$RO_DAX" 0 ||
     error "dax-ro could open or map $RO_DAX for writing"
 for line in "open for writing refused: EPERM" "writable mapping refused: EACCES"; do
@@ -390,18 +438,24 @@ devices=$(dra-container-devices "$VM2" dax-ro main) || error "cannot read the de
 echo "device cgroup of dax-ro: $devices"
 dra-assert "$(sed -n 's/^spec: //p' <<< "$devices")" \
     "[d.get('access') for d in j if d.get('allow') and d.get('major') == ${RO_DEV%:*} and d.get('minor') == ${RO_DEV#*:}] == ['r']"
-# (grep exits 2 if a directory is missing, even if it matched: test the
-# output instead)
-dra-vm-command "$VM2" "f=\$(grep -l 'local-$RO_UID' /etc/cdi/* /var/run/cdi/* 2>/dev/null); [ -n \"\$f\" ] && echo \$f && grep -h -A20 'name: local-$RO_UID' \$f | grep -E 'permissions: r\$|READONLY_$DRA_LOCAL_HEX=1'" ||
-    command-error "no read-only CDI device local-$RO_UID in the VM"
-[ "$(grep -cE 'permissions: r$|READONLY_' <<< "$COMMAND_OUTPUT")" == 2 ] ||
-    error "the CDI device of dax-ro lacks permissions r or CXL_LOCAL_READONLY_$DRA_LOCAL_HEX"
+# The CDI device of the allocation result of the claim, claim-<uid>-0 in
+# the spec cxl-claims, has the device node with permissions r, the
+# environment of the slice and the claim marker. There is no CDI device
+# of the claim as a whole.
+cdi=$(dra-cdi-device "$VM2" "claim-$RO_UID-0")
+echo "CDI device claim-$RO_UID-0: $cdi"
+grep -qx "kind: generic/cxl" <<< "$cdi" || error "no CDI device claim-$RO_UID-0 of kind generic/cxl in the VM"
+grep -qE '^ *permissions: r$' <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no device node with permissions r"
+grep -qF -- "- CXL_${DRA_LOCAL_HEX}_READONLY=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no CXL_${DRA_LOCAL_HEX}_READONLY=1"
+grep -qF -- "- CXL_CLAIM_${RO_UID//-/_}=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no claim marker"
+[ "$(dra-cdi-devices-with "$VM2" "$RO_UID")" == "claim-$RO_UID-0" ] ||
+    error "the claim of dax-ro has other CDI devices than claim-$RO_UID-0: $(dra-cdi-devices-with "$VM2" "$RO_UID")"
 dra-delete-pod "$VM2" dax-ro
 initial-state ro-deleted
 # A dax claim without an amount consumes the whole device (the default of
 # the requestPolicy): one slice of all of it.
 t0=$EPOCHREALTIME
-dra-claim-pod "$VM2" dax-whole "$LOCAL_DAX_CLASS" ""
+dra-claim-pod "$VM2" dax-whole "$LOCAL_CLASS" "" dax
 dra-pod-wait "$VM2" dax-whole Running 120
 T_WHOLE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-local-claim-check "$VM2" dax-whole "$DRA_LOCAL_SIZE"

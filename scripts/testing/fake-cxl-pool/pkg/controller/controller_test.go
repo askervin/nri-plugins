@@ -22,6 +22,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -321,7 +322,7 @@ func (e *env) createClaimHosts(name, device, nodeName string, shareID string, ho
 			Allocation: &resourceapi.AllocationResult{
 				Devices: resourceapi.DeviceAllocationResult{Results: []resourceapi.DeviceRequestAllocationResult{
 					// a result of another driver is ignored
-					{Request: "local", Driver: "cxl.generic", Pool: "node1", Device: "region0"},
+					{Request: "local", Driver: "cxl.generic", Pool: "node1", Device: "region0-node2"},
 					r,
 				}},
 				NodeSelector: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
@@ -441,11 +442,25 @@ func TestPublish(t *testing.T) {
 	if _, ok := byName["bad0"]; ok {
 		t.Fatal("device in state error published")
 	}
+	// exactly the attributes of the contract: type, source, serial,
+	// shared, size
+	for _, name := range []string{"pooled0", "shared0"} {
+		var keys []string
+		for k := range byName[name].Attributes {
+			keys = append(keys, string(k))
+		}
+		sort.Strings(keys)
+		if got := strings.Join(keys, ","); got != "serial,shared,size,source,type" {
+			t.Fatalf("%s: attributes %s", name, got)
+		}
+		if a := byName[name].Attributes; *a["type"].StringValue != "memdev" || *a["source"].StringValue != "pool" {
+			t.Fatalf("%s: type %q source %q", name, *a["type"].StringValue, *a["source"].StringValue)
+		}
+	}
 	p := byName["pooled0"]
 	memory := p.Capacity["memory"]
 	if *p.Attributes["serial"].StringValue != "0xc1ee0001" || *p.Attributes["shared"].BoolValue ||
-		*p.Attributes["size"].IntValue != 512<<20 || *p.Attributes["source"].StringValue != "pool" ||
-		*p.Attributes["pool"].StringValue != "default" || len(p.Capacity) != 1 ||
+		*p.Attributes["size"].IntValue != 512<<20 || len(p.Capacity) != 1 ||
 		!memory.Value.Equal(resource.MustParse("512Mi")) || p.AllowMultipleAllocations != nil ||
 		!ptr.Deref(p.BindsToNode, false) ||
 		strings.Join(p.BindingConditions, ",") != "cxl-pool.generic/Attached" ||
@@ -454,7 +469,8 @@ func TestPublish(t *testing.T) {
 	}
 	sh := byName["shared0"]
 	hosts := sh.Capacity["hosts"]
-	if !*sh.Attributes["shared"].BoolValue || *sh.Attributes["size"].IntValue != 256<<20 ||
+	if *sh.Attributes["serial"].StringValue != "0xc1ae0001" ||
+		!*sh.Attributes["shared"].BoolValue || *sh.Attributes["size"].IntValue != 256<<20 ||
 		!ptr.Deref(sh.AllowMultipleAllocations, false) || len(sh.Capacity) != 1 ||
 		hosts.Value.Value() != 4 || hosts.RequestPolicy == nil || hosts.RequestPolicy.Default.Value() != 1 ||
 		len(hosts.RequestPolicy.ValidValues) != 2 || hosts.RequestPolicy.ValidValues[0].Value() != 1 ||

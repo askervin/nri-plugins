@@ -54,7 +54,7 @@ Commands:
   whoami                                  resolve this VM (uuid, hostname) to a host
   rescan                                  rediscover qemu processes
   devices [NAME] [--shared] [--free] [--host H]
-  create --size 256M [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
+  create --size 256Mi [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
   delete NAME [--force]
   attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
@@ -63,11 +63,11 @@ Commands:
   release DEVICE [--owner O] [--force]
   events                                  stream server events (JSON lines)
 
-Guest commands (run inside the VM, as root; DEVICE is a device name or a serial 0x...):
+Guest commands (run inside the VM, as root; DEVICE is a device name or a serial, 0x... or decimal):
   guest wait DEVICE [--timeout 30s]       wait until the device appears, print memN
   guest memdev DEVICE                     print memN of the device
-  guest region create DEVICE --mode devdax|ram [--decoder decoderX.Y]
-  guest online DEVICE [--movable]         online the memory of the region (mode ram)
+  guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]
+  guest online DEVICE [--movable]         online the memory of the region (mode numa)
   guest info DEVICE                       print memdev, region, dax device, mode, node
   guest release DEVICE                    offline, destroy regions, disable memdev
 
@@ -531,7 +531,7 @@ func (l labelFlags) Set(v string) error {
 
 func (c *cli) cmdCreate(ctx context.Context, args []string) error {
 	fs := c.flagSet("create")
-	size := fs.String("size", "", "device size, e.g. 256M")
+	size := fs.String("size", "", "device size, e.g. 256Mi")
 	shared := fs.Bool("shared", false, "shared device")
 	name := fs.String("name", "", "device name (default: generated)")
 	poolName := fs.String("pool", "", "pool name")
@@ -732,9 +732,10 @@ func (c *cli) cmdEvents(ctx context.Context, args []string) error {
 	return err
 }
 
-// deviceSerial returns the serial of a device name, or parses a serial.
+// deviceSerial returns the serial in dev (0x hex or decimal), or else the
+// serial of the device named dev.
 func (c *cli) deviceSerial(ctx context.Context, dev string) (uint64, error) {
-	if strings.HasPrefix(dev, "0x") || strings.HasPrefix(dev, "0X") {
+	if strings.HasPrefix(dev, "0x") || strings.HasPrefix(dev, "0X") || isDecimal(dev) {
 		return api.ParseSerial(dev)
 	}
 	d, err := c.client().Device(ctx, dev)
@@ -742,6 +743,11 @@ func (c *cli) deviceSerial(ctx context.Context, dev string) (uint64, error) {
 		return 0, err
 	}
 	return api.ParseSerial(d.Serial)
+}
+
+// isDecimal tells whether s is a non-empty string of decimal digits.
+func isDecimal(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 func (c *cli) newGuest() *memctl.Manager {
@@ -823,15 +829,18 @@ func (c *cli) cmdGuest(ctx context.Context, args []string) error {
 			return nil
 		}
 		if len(args) == 0 || args[0] != "create" {
-			return usagef("guest region create DEVICE --mode devdax|ram [--decoder decoderX.Y]")
+			return usagef("guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]")
 		}
 		fs := c.flagSet("guest region create")
-		mode := fs.String("mode", "", "devdax or ram")
+		mode := fs.String("mode", "", "numa or dax")
 		decoder := fs.String("decoder", "", "root decoder (default: the one of the device's host bridge)")
 		timeout := fs.Duration("timeout", 30*time.Second, "timeout")
 		pos, err := parse(fs, args[1:])
-		if err != nil || len(pos) != 1 || (*mode != memctl.ModeDevDax && *mode != memctl.ModeRAM) {
-			return firstErr(err, usagef("guest region create DEVICE --mode devdax|ram [--decoder decoderX.Y]"))
+		if err != nil || len(pos) != 1 || *mode == "" {
+			return firstErr(err, usagef("guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]"))
+		}
+		if err := memctl.ValidMode(*mode); err != nil {
+			return usagef("%v", err)
 		}
 		m, err := c.guestMemdev(ctx, g, pos[0])
 		if err != nil {

@@ -18,9 +18,10 @@
 #   prepares the claim: it finds the hotplugged memory device by its
 #   serial number, creates a region on it and onlines its memory. The
 #   memory becomes a new NUMA node, and the container gets its id in the
-#   environment variable CXL_POOL_NODE_<serial>. When the pod is gone, the
-#   node plugin releases the device, the controller detaches it, and the
-#   memory is back in the pool.
+#   environment variable CXL_<KEY>_NODE, next to CXL_<KEY>_MODE=numa,
+#   _SIZE, _SERIAL and _SHARED. When the pod is gone, the node plugin
+#   releases the device, the controller detaches it, and the memory is
+#   back in the pool.
 #
 # What you will see: the pool in a ResourceSlice, a claim of 512Mi that
 # waits for the attachment, a new 512 MB NUMA node in the VM and in the
@@ -61,12 +62,12 @@ CPU_NODES=$(cxl-value 'len(nodes)')
 echo "### preconditions: fake-cxl-pool-server on the host, with two exclusive devices"
 pool-server-start "
   - name: pooled0
-    size: 512M
+    size: 512Mi
     shared: false
     pool: default
     serial: $POOLED0_SERIAL
   - name: pooled1
-    size: 256M
+    size: 256Mi
     shared: false
     pool: default
     serial: $POOLED1_SERIAL"
@@ -89,16 +90,20 @@ dra-assert "$SLICES" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$DRA_POOL
 dra-assert "$SLICES" "sorted(d['name'] for d in devices('$DRA_POOL_DRIVER')) == ['pooled0', 'pooled1']"
 P0="device('pooled0', '$DRA_POOL_DRIVER')"
 P1="device('pooled1', '$DRA_POOL_DRIVER')"
-dra-assert "$SLICES" "attr($P0, 'shared') == False and attr($P0, 'size') == $POOLED0_SIZE and attr($P0, 'serial') == '$POOLED0_SERIAL'"
+# Every pool device is a memdev of source pool, with its serial, size and
+# whether hosts may share it: the attributes of a local memdev too.
+dra-assert "$SLICES" "attr($P0, 'type') == 'memdev' and attr($P0, 'source') == 'pool' and attr($P0, 'shared') == False and attr($P0, 'size') == $POOLED0_SIZE and attr($P0, 'serial') == '$POOLED0_SERIAL'"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${P0}['attributes']) == ['serial', 'shared', 'size', 'source', 'type']"
 dra-assert "$SLICES" "capacity($P0, 'memory') == '512Mi'"
-dra-assert "$SLICES" "attr($P1, 'shared') == False and attr($P1, 'size') == $POOLED1_SIZE and capacity($P1, 'memory') == '256Mi'"
+dra-assert "$SLICES" "attr($P1, 'type') == 'memdev' and attr($P1, 'shared') == False and attr($P1, 'size') == $POOLED1_SIZE and capacity($P1, 'memory') == '256Mi'"
 # The device is not on any node yet: the scheduler picks the node
 # (bindsToNode), and waits until the pool has attached the device there.
 dra-assert "$SLICES" "${P0}['bindsToNode'] == True and ${P0}['bindingConditions'] == ['$DRA_POOL_DRIVER/Attached']"
 dra-assert "$SLICES" "${P0}['bindingFailureConditions'] == ['$DRA_POOL_DRIVER/AttachFailed']"
 dra-assert "$SLICES" "len(slices('$DRA_LOCAL_DRIVER', '$VM2_NAME')) == 1"
-dra-assert "$SLICES" "any(attr(d, 'type') == 'dram' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
-dra-assert "$SLICES" "not any(attr(d, 'type') == 'cxl-node' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
+DRAM="device('dram', '$DRA_LOCAL_DRIVER', '$VM2_NAME')"
+dra-assert "$SLICES" "attr($DRAM, 'type') == 'dram' and attr($DRAM, 'source') == 'local' and attr($DRAM, 'size') > 0 and attr($DRAM, 'nodes')"
+dra-assert "$SLICES" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 # The pool itself says the same.
 pool-client "$VM2" devices || command-error "cannot list the devices of the pool"
 pool-client "$VM2" -o json devices || command-error "cannot list the devices of the pool"
@@ -116,7 +121,7 @@ spec:
     requests:
     - name: mem
       exactly:
-        deviceClassName: cxl-pool-memory
+        deviceClassName: cxl-pool
         capacity:
           requests:
             memory: 512Mi
@@ -186,13 +191,16 @@ echo "pooled0 is NUMA node $CXL_NODE of the VM"
 vm-command "numactl -H" || command-error "numactl failed"
 grep -q "^node $CXL_NODE size: 512 MB" <<< "$COMMAND_OUTPUT" ||
     error "numactl -H does not show node $CXL_NODE with 512 MB"
-# The container knows which node has its memory.
+# The container knows which node has its memory: the environment of the
+# device and the marker of its claim, nothing else.
 dra-kubectl "$VM2" "logs -n $DRA_NS pooled-consumer" || command-error "cannot get the log of pooled-consumer"
 POD_LOG="$COMMAND_OUTPUT"
-grep -qx "CXL_POOL_NODE_$POOLED0_HEX=$CXL_NODE" <<< "$POD_LOG" ||
-    error "pooled-consumer has no CXL_POOL_NODE_$POOLED0_HEX=$CXL_NODE"
-grep -qx "CXL_POOL_SIZE_$POOLED0_HEX=$POOLED0_SIZE" <<< "$POD_LOG" ||
-    error "pooled-consumer has no CXL_POOL_SIZE_$POOLED0_HEX=$POOLED0_SIZE"
+dra-env-assert pooled-consumer "$POD_LOG" "$POOLED0_HEX" \
+    SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$CXL_NODE"
+grep -qx "CXL_CLAIM_${CLAIM_UID//-/_}=1" <<< "$POD_LOG" ||
+    error "pooled-consumer has no claim marker CXL_CLAIM_${CLAIM_UID//-/_}=1"
+[ "$(grep -c '^CXL_' <<< "$POD_LOG")" == 6 ] ||
+    error "pooled-consumer has other CXL_ variables than the five of $POOLED0_SERIAL and the claim marker: $(grep '^CXL_' <<< "$POD_LOG")"
 grep -q "^/sys/devices/system/node/node$CXL_NODE/meminfo:Node $CXL_NODE MemTotal:" <<< "$POD_LOG" ||
     error "pooled-consumer does not see the memory of node $CXL_NODE"
 echo "pooled-consumer: $(grep "node$CXL_NODE/meminfo" <<< "$POD_LOG")"
@@ -212,7 +220,7 @@ retry-until --timeout 30 --message "node plugin rescan after preparing pooled0" 
     error "kubelet-cxl-plugin did not publish its resources after preparing pooled0"
 vm-command "journalctl --no-pager -o cat -u kubelet-cxl-plugin | grep -E 'prepared pooled0|ignoring region|rescanAndPublish'"
 dra-json "$VM2" resourceslices
-dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'cxl-node' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
+dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 
 echo "### E: delete the pod and the claim, the memory returns to the pool"
 # Kubelet unprepares the claim while the pod terminates: the node plugin

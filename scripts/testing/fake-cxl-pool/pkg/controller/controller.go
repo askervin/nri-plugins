@@ -19,7 +19,8 @@
 // condition and the device data into the claim status, and detaches the
 // device when the claim is deallocated. The controller is a stateless,
 // level-triggered reconciler: desired attachments come from ResourceClaims,
-// actual ones from the server. See plan-2-dra/10-contract.md.
+// actual ones from the server. The contract with the node plugin is
+// doc/cxl/POOL.md of the CXL DRA driver.
 package controller
 
 import (

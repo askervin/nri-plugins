@@ -1,0 +1,279 @@
+plan-5-api-consistency: status of S4 (documentation)
+====================================================
+D = /home/akervine/github.com/intel/intel-resource-drivers-for-kubernetes
+N = /home/akervine/github.com/containers/nri-plugins, P = N/scripts/testing/fake-cxl-pool
+Nothing committed, stashed or reverted.
+
+Status
+------
+done 2026-10-15 12:45 (pass 1 and pass 2)
+
+Files (all edited in the working trees only):
+  D/doc/cxl/README.md   overview of the two drivers, vocabulary table (02
+                        section 1), the six classes, document index;
+                        CAUTION and the version table kept
+  D/doc/cxl/USAGE.md    (was a placeholder) requirements; deploy
+                        (kustomize, nfd overlay + classes, DaemonSet
+                        limits, host process); cxl.generic devices and
+                        attributes; classes; DeviceConfig and
+                        MemoryPolicyConfig with error texts; steering (pool
+                        numa claims unsteered, Q1); environment variables;
+                        "What the memory contains"; the 11 claims of 02
+                        11.3 linked to deployments/cxl/examples/*; flags;
+                        configuration file; files on the node
+  D/doc/cxl/LOCAL.md    names updated, no mode attribute, DeviceConfig,
+                        CDI device claim-<uid> with CXL_<SERIAL>_*, examples
+                        of deployments/cxl/examples; "Steering and lending"
+                        removed (host bridge sentence moved to "Node size";
+                        lease limits point to LEASES.md); the compatibility
+                        sentence about per-device modes removed (S1 D10)
+  D/doc/cxl/POOL.md     the contract: type/source/serial/shared/size
+                        required (why), no pool attribute, further
+                        attributes under an own domain, cxl-pool /
+                        cxl-pool-shared, DeviceConfig, status data with the
+                        informational keys of the reference controller,
+                        CDI generic/cxl-pool=claim-<uid> and CXL_<SERIAL>_*;
+                        the TODO is a plain statement; "Leases" is a pointer
+                        to LEASES.md; the add_dev retry moved to "Ordering
+                        and failure semantics"
+  D/doc/cxl/LEASES.md   new: opting in, flow, cxl-request (synopsis,
+                        operations, options, validation texts, refusals,
+                        output, --exec environment, exit codes, examples),
+                        protocol, companion objects and their checks, life
+                        cycle, limitations
+  D/doc/cxl/BUILD.md    new section "Host binaries" (static
+                        kubelet-cxl-plugin and cxl-request)
+  P/README.md           numa|dax, 256Mi/8Gi/2Mi, serial input/output, attach
+                        --exclusive (I27 mapping), controller attributes
+                        and status data keys, exclusive attach, scope local
+                        = source local, contract pointer to doc/cxl/POOL.md,
+                        headings "(mode dax)" / "(mode numa, system RAM)"
+  P/plan-2-dra/10-contract.md  the pointer of 03 S4 (O1/Q4)
+  N/test/e2e/README.md  not changed: it names no class, command, flag or
+                        variable of the old API
+  Removed D/doc/cxl/POOL.md~ (untracked, gitignored editor backup of
+  POOL.md, 2026-10-06). No other backup in my scope.
+
+Checked against the code in pass 2
+----------------------------------
+(S1 done 12:25, S2 done 11:14; code read as of 12:30)
+- cxl-request: built with CGO_ENABLED=0 into /tmp/s4-cxl-request (not
+  into bin/). "help" output equals the synopsis of LEASES.md. Every
+  validation row of LEASES.md was run: the texts and exit code 2 match
+  R1-R10 and the extra texts (fd/env needs --lease ID, unknown operation,
+  unknown option, option of another operation, missing value, --exec
+  needs a command, --shared=maybe). The missing-socket text and exit 1
+  match. Every complete cxl-request command line in D/doc/cxl/*.md was
+  parsed by the binary: all get past the parser (stop at the missing
+  socket) except the synopsis lines with placeholders.
+- cmd/cxl-request/main.go: env output = api.ExecEnv(env, lease, -1)
+  (DAX kept, CXL_LEASE added); env --exec passes no fd; request/fd --exec
+  of a dax lease give FD=3 and fd 3; not Ready with --exec = exit 3, CMD
+  not started; --wait 0s = exit 0 unless Failed; forwarded signals TERM,
+  INT, HUP, QUIT; refusals on stdout, on stderr for env and --exec.
+- pkg/cxl/api: constants, Request/Response JSON (shared/readOnly always
+  present), EffectiveMode, Validate texts, Env fields per kind, Key/Nth,
+  RegionKey, ExecEnv, ParseSerial/FormatSerial.
+- pkg/cxl/device: class, attribute, label, CDI and spec names.
+- broker.go: R11 (also for local memdevs, S1 D7), "not a local device",
+  mode dax for a serial of a shared device, R12 texts and where they
+  apply (pool request; NRI in authenticate = every op), R13 and exit 3,
+  timeout semantics of request vs fd/env (S1 D6), "no such lease",
+  "no such lease of this container" (fd only for the requester
+  container), strict request decoding and unknown op text, companion
+  claim (exactly/firstAvailable, classes, selectors serial ==, size >=,
+  capacity memory/hosts, DeviceConfig per driver with requests
+  lease/<source>), companion pod (affinity, tolerations, restartPolicy,
+  automountServiceAccountToken, enableServiceLinks, grace 1 s, pause
+  100m/16Mi), labels and annotation, OnLending checks and the "lease <id>
+  is <state>" refusal, reconcile (60 s, states), requesterDone, close
+  timeout 5 s, lease id 8 hex digits.
+- lending.go: parseConfig precedence (class then claim, later replaces;
+  S1 D11), strictness, apiVersion check, error texts of modeFor; the
+  --leases=false text; leaseOf label.
+- lease_store.go: strict leases.json decoding with log and empty table.
+- lease_claims.go (was dynamic.go, S1 D9): socket path and modes 0666 /
+  0755, SELinux label, rbind /run/cxl, ro mount of --lease-cli only if it
+  exists, CXL_LEASE_SOCKET.
+- node_state.go: device names (memdev-<hex>, <region>-node<N>, dram,
+  lease), attribute sets of the four kinds, regionNodeAffinity, capacity
+  quantities (DRAM 16000Mi in the excerpt), nodeAllocatableResources
+  mapping, claim-<uid> CDI device with marker + api.Env + dax nodes
+  (permissions r), lease-<uid> for lease claims, removeCXLSpecs of both
+  kinds at start, DeviceConfig only for memdevs (regions/DRAM ignore it),
+  MemoryPolicyConfig through parseConfig with "MemoryPolicyConfig: ..."
+  errors, PreparedClaimInfo fields.
+- nri.go / lend.go: CXL quota = memdev numa slices + regions, DRAM quota,
+  default policies, errSteered text and that it applies to node lends
+  only (dax leases unaffected).
+- pool.go: order of Prepare (status data, DeviceConfig, same-preparation
+  check, prepare), status data required keys and serial parsing, CDI per
+  claim generic/cxl-pool=claim-<uid>, env from api.Env, dax nodes with r.
+- local.go: log line formats of LOCAL.md, "no room for the slice", no
+  per-device mode compatibility left (S1 D10).
+- main.go: all 15 flags of the USAGE.md table against
+  "kubelet-cxl-plugin --help" of a /tmp build (names, env vars, defaults).
+- driver.go: DriverConfig json tags = the keys of the configuration
+  table; yaml.UnmarshalStrict (unknown keys refused).
+- deployments/cxl: device-classes.yaml CEL = the class tables;
+  kustomization lists base + device-classes.yaml; the nfd overlay deploys
+  base only (S1 D14, R-S4-1 applied); the nine example files exist with
+  the claims and environment that USAGE.md shows; RBAC comments.
+- urfave/cli: an empty POOL_DRIVER_NAME environment variable counts as
+  set (flagFromEnvOrFile uses Getenv's found), so the DaemonSet advice in
+  USAGE.md works.
+- cxl.mk: fixed meanwhile (pkg/cxl/api, device, memorypolicy);
+  "make -n -B bin/kubelet-cxl-plugin" resolves. BUILD.md uses go build
+  (verified: static binaries into /tmp).
+- P (S2): client usage text, guest region create --mode numa|dax (numa
+  leaves memory offline, Online onlines it), controller and server flags,
+  publisher attributes, status data keys (hostUUID, exclusive omitempty),
+  AttachRequest "exclusive", exclusiveResult, DefaultPoolCapacity 8Gi.
+- Links: every relative link and #anchor in D/doc/cxl/*.md and P/README.md
+  resolves (script /tmp/s4-tools/links.py). Code comments and S2/S3 files
+  that cite POOL.md "What the pool controller writes", USAGE.md, LOCAL.md,
+  LEASES.md point to sections that exist, except the four of Requests.
+- Grep gate of S1 step 14 plus --mode ram/devdax, --local, --dax,
+  "source any", token, kind, cxl-request memory/shared over my files:
+  clean (only FAKE_CXL_POOL_SERVER, fake-cxl-pool attach --exclusive and
+  the REST field "exclusive", --lease-companion-image, the pod name
+  "borrower"). No non-ASCII character. No history wording except the one
+  sentence 03 prescribes for 10-contract.md.
+
+Deviations from 02/03
+---------------------
+D1 POOL.md: 03 says the "??? TODO" becomes a plain statement "with a
+   pointer to Q1". Q1 is in plan-5 of nri-plugins, which a reader of the
+   driver repository does not have; the statement points to USAGE.md
+   "Steering", where steered local claims and unsteered pool claims are
+   compared.
+D2 BUILD.md documents "go mod vendor" + "CGO_ENABLED=0 go build -mod
+   vendor" for the two host binaries (what the e2e dra-build does) instead
+   of "make bin/kubelet-cxl-plugin": there is no make target for
+   cxl-request, and the make target was broken while cxl.mk listed the
+   deleted packages. Both work now.
+D3 Not in 03's list for USAGE.md, added because the code needs them:
+   the DaemonSet limits come with the environment variables that turn off
+   what the image cannot do (CONFIG_STR {"manageMemdevs": false},
+   POOL_DRIVER_NAME empty, LEASES=false); "Files on the node" includes the
+   three CDI spec files and the start-up removal.
+Applied deviations of S1 in the documents: D4 (_<n> suffix for every key
+of a claim), D5 (help, -h, --help, --flag=bool), D6 (fd/env keep the
+lease at their timeout), D7 (serial lookup in both drivers' slices, R11
+for local memdevs), D9, D10, D11 (later class config replaces earlier),
+D12 (a gone dax slice: no device node, no DAX), D14 (overlay without
+classes). And the answers of "Names S3 and S4 rely on" (env prints
+CXL_LEASE, shared/readOnly always present, SHARED=1 for exclusive use of
+a shared device, the writer gets mode dax, refusals exit 1 / R13 exit 3,
+"request --serial S --read-only" needs --shared or --mode dax).
+
+Requests
+--------
+To S1 (comment pointers into the documents; the lease chapter moved from
+POOL.md to LEASES.md):
+- D/pkg/cxl/api/api.go:21 "See doc/cxl/POOL.md and doc/cxl/USAGE.md." ->
+  "See doc/cxl/LEASES.md (protocol) and doc/cxl/USAGE.md (environment)."
+- D/cmd/cxl-request/main.go:20 "See doc/cxl/POOL.md." -> "See
+  doc/cxl/LEASES.md."
+- D/cmd/kubelet-cxl-plugin/broker.go:59 "See doc/cxl/POOL.md and
+  doc/cxl/LOCAL.md." -> "See doc/cxl/LEASES.md."
+- D/cmd/kubelet-cxl-plugin/lending.go:41 "(doc/cxl/POOL.md, "Lending to
+  running containers")" -> "(doc/cxl/LEASES.md)": that section does not
+  exist any more.
+To S2, S3: none.
+
+Findings
+--------
+F1 (resolved) D/cxl.mk listed pkg/cxl/cdihelpers/*.go and
+   pkg/cxl/discovery/*.go after S1 deleted them, which broke "make cxl"
+   and the image build (S1 R-O1). It now lists pkg/cxl/api, device and
+   memorypolicy; the make target resolves.
+F2 Both drivers skip opaque configs of their driver with an unknown kind
+   (parseConfig "continue"s on another kind): a misspelled
+   "kind: DeviceConfg" is ignored without an error, and the device gets
+   the defaults. The documents say what is refused (unknown fields,
+   another apiVersion) and do not claim unknown kinds are refused. For the
+   review: an error for unknown kinds of the driver would catch typos.
+F3 A DeviceConfig on a cxl-region or cxl-dram request is ignored (only
+   memdevs parse it): "mode: dax" on a region gives numa memory without an
+   error. Documented ("regions and DRAM are always numa").
+F4 errSteered applies to node lends only: a steered container (with a
+   numa claim of cxl.generic) can take dax leases. 02 and the old docs
+   said "steered or borrowing, never both"; the documents now say "no numa
+   lease for a steered container".
+F5 "Leases follow the pod object: a finished but undeleted pod keeps its
+   leases until its lease claim is unprepared" is carried over from the
+   old POOL.md; S1 did not change that logic (requesterDone/containerGone
+   act when NRI forgets the container), so it was not re-verified on a VM.
+
+S4 Status (pass 3)
+------------------
+done 2026-10-15 (after O4 amendments A1-A4 and 06-review-1.txt I-5;
+texts and names from 05-status-S1.txt "S1 Status (review fixes)",
+checked in D's code: lending.go checkConfigKinds/numaOnly, node_state.go
+checkNUMAOnly/claimCDIDeviceName/buildClaimsCDISpec/prepareAllocatedDevices,
+pool.go checkClaim/poolCDIDeviceID/buildCDISpec, broker.go deleteOrphans,
+and the test expectations of TestDeviceConfigNUMAOnly and
+TestCheckConfigKinds).
+- A1 USAGE.md DeviceConfig: an opaque config of the driver with an
+  unknown kind fails the Prepare before any device is touched:
+  `unknown kind "..." (DeviceConfig or MemoryPolicyConfig)` (cxl.generic),
+  `unknown kind "..." (DeviceConfig)` (cxl-pool.generic), `unknown kind ""`
+  without a kind; MemoryPolicyConfig paragraph names the same text.
+  POOL.md: "Options of pool devices" and the start of NodePrepareResources.
+- A2 USAGE.md: regions and DRAM are numa only, a DeviceConfig may say
+  mode numa and nothing else; error texts "DeviceConfig: mode dax: a
+  region is used as numa only" / "... a dram ..." added to the list
+  (readOnly gives "readOnly needs mode dax", already listed); a note to
+  list the memdev requests in `requests` when a claim mixes dax memdev
+  and region/DRAM requests (a config without `requests` hits all of them).
+- A3 per-result CDI devices generic/cxl=claim-<uid>-<n> (cxl-claims) and
+  generic/cxl-pool=claim-<uid>-<n> (cxl-pool), n = index of the result,
+  gaps per driver; each with the claim marker and its own result's env and
+  node; a container gets the devices of the requests it references only;
+  pool devices carry the marker but are not steered; companion claims get
+  no CDI device. Updated: USAGE.md (environment section, marker row,
+  "Files on the node"), LOCAL.md (Prepare step 6, gone slice), POOL.md
+  (step 5), LEASES.md (lease result device with the marker only;
+  companion pod paragraph). README.md and P/README.md name no CDI device:
+  unchanged.
+- A4 LEASES.md "Life cycle" describes the reconcile's selection: it now
+  says pods and claims labelled cxl.generic/node=<node> and
+  cxl.generic/lease, named cxl-lease-<lease label value>, without a lease.
+- I-5 LOCAL.md (9) and POOL.md (7) CXL_<SERIAL>_* -> CXL_<KEY>_*, with
+  <KEY> explained (serial in upper-case hex, _2, _3 ...).
+- lease.yaml: no document quotes its commands; nothing to change.
+Checks: grep over D/doc/cxl/*.md and P/README.md finds no claim-<uid>
+without -<n>, no CXL_<SERIAL>, no "always numa", no "inject no claim
+marker"; error texts compared with the code strings; links and anchors
+resolve (/tmp/s4-tools/links.py, 0 bad); plain ASCII; no history wording.
+Deviations, Requests: none new. The four comment-pointer requests to S1
+of pass 2 are done (S1 I-2). Findings F2 and F3 of pass 2 are resolved
+by A1 and A2; F4 and F5 stand.
+
+S4 Status (R2 fixes)
+--------------------
+done 2026-10-15 (06-review-2.txt, O6)
+- I-1 LEASES.md exit codes: "Without --exec, request --wait 0s exits with
+  0 whatever the state of the lease, unless it is Failed. With --exec it
+  exits with 3 unless the lease is Ready at once." Checked:
+  cmd/cxl-request/main.go execute() turns ok into exitNotUsed when the
+  state is not Ready; exitCode() gives ok for wait 0 unless Failed.
+- I-2 USAGE.md examples 2, 4, 6 and 10: CXL_CLAIM_<uid>=1 added in sorted
+  position (after CXL_C1..., before CXL_DRAM_...), as in example 1 (A3:
+  pool devices carry the marker too).
+- I-3 LEASES.md: the validation table is introduced as the command lines
+  cxl-request refuses with exit 2 (no claim that every invalid line is);
+  the plugin refusal table has `invalid size "..."` (broker.go
+  requestOptions: not a positive quantity) and
+  `device <name> (serial 0x...) has no "hosts" capacity` (serialOptions).
+  Checked with a /tmp build (removed again): "request --size abc" passes
+  the CLI (exit 1 at the missing socket), so size is the plugin's check.
+- S-5 LEASES.md defaults: "local first, then pool" instead of "any source".
+- S-6 P/README.md Layout: one line "plan/, plan-*/  history of the
+  workstreams (design, findings, status)" instead of the plan/ and
+  plan-2-dra/ lines.
+Deviation: S-6 asked for "plan-*/"; the line says "plan/, plan-*/"
+because plan/ exists, does not match plan-*, and the README's REST API
+section cites plan/20-rest-api.md.
+Checks: plain ASCII, links and anchors resolve (0 bad), no history wording.

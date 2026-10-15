@@ -1,0 +1,852 @@
+plan-5-api-consistency: target API
+==================================
+Written 2026-10-15 (Fable). This file is the contract for S1-S4 (03-plan).
+Inventory and inconsistency numbers (I1-I28): 01-inventory.txt. Paths as
+in 01 (D = driver repository, N = nri-plugins, P = fake-cxl-pool, E = e2e
+memory-policy directory).
+
+Amendments (2026-10-15, after review R1): A1-A4 of 05-status-orchestrator.txt
+O4 are part of this contract: unknown config kinds fail; DeviceConfig on a
+region or dram request fails unless numa; CDI devices per allocation result
+(claim-<uid>-<n>) instead of per claim; deleteOrphans selects on the lease
+label too. Where a section below says otherwise, the amendment wins.
+
+0. Decisions in one screen
+--------------------------
+- One vocabulary, seven words, spelled identically everywhere:
+    source   local | pool            who provides the device
+    type     memdev | region | dram | lease   what the device is
+    shared   true | false            may several hosts map the same bytes
+    mode     numa | dax              how a container gets the memory
+    readOnly true | false            dax only: reads only
+    serial   0x<lower-case hex>      identity of a memdev
+    size     bytes (attribute, env) or a quantity (requests, CLI)
+- DeviceClasses select device kinds only; mode and readOnly are a config.
+  Six classes: cxl-local, cxl-pool, cxl-pool-shared, cxl-region, cxl-dram,
+  cxl-lease. Local first, then pool, is a firstAvailable request.
+- Two opaque config kinds: DeviceConfig {mode, readOnly} (both drivers,
+  same fields) and MemoryPolicyConfig (cxl.generic, unchanged fields).
+  LendConfig is gone: a companion claim is recognized by its label
+  cxl.generic/lease and checked against the lease table.
+- Environment: CXL_<KEY>_<FIELD> for every memory a container gets, KEY =
+  serial in upper-case hex (REGION<n>, DRAM for the devices without a
+  serial), FIELD in SERIAL, SHARED, MODE, SIZE, NODE, NODES, DAX, FD,
+  READONLY. A lease gives the same names (FD instead of DAX). Plus
+  CXL_CLAIM_<uid>=1 (marker), CXL_LEASE_SOCKET, CXL_LEASE.
+- cxl-request: first word = operation (request, release, list, fd, env),
+  everything else --opt or --opt ARG: --source, --mode, --shared,
+  --read-only, --size, --serial, --wait, --request-id, --lease, --all,
+  --exec. No cxl-release. Protocol fields mirror the options.
+- Driver flags: --pool-driver-name, --pool-prepare-timeout (unchanged);
+  --leases, --lease-cli, --lease-wait, --lease-companion-image.
+- memctl speaks numa|dax too; fake-cxl-pool prints sizes as 256Mi; the
+  pool controller publishes type: memdev and drops the pool attribute.
+- Shared Go package D/pkg/cxl/api for the lease protocol and the env
+  naming, used by the plugin and by cxl-request.
+
+1. Vocabulary (one meaning per word)
+------------------------------------
+source   Where the memory comes from. local: a device attached to the
+         node (memdev, region, DRAM) and managed by cxl.generic. pool: a
+         device of a memory pool, attached to the node by a pool
+         controller, prepared by cxl-pool.generic.
+type     What the published device is. memdev: a CXL memory device whose
+         region the node plugin creates when a claim needs it (local
+         memdevs are sliced, pool memdevs are used whole). region: a
+         region that existed before the plugin (BIOS or admin), online as
+         a NUMA node; claims consume its capacity and are steered to the
+         node. dram: the system DRAM nodes (one device). lease: the token
+         whose claim gives a container the lease socket.
+shared   Device attribute, bool. true: the same bytes may be mapped by
+         several hosts at a time (a pool device with a hosts capacity);
+         such memory is never onlined as RAM. false: one host at a time
+         (local memdevs, exclusive pool devices). Request-time (leases):
+         shared true = take one of the device's hosts; false = all of them
+         (exclusive). Sharing a device between pods of one node is DRA's
+         own sharing: several pods reference one ResourceClaim. Not an
+         attribute of regions or DRAM (always exclusive RAM).
+mode     How the container gets the memory. numa: online as system RAM of
+         a NUMA node N, the container is steered to N (claims of
+         cxl.generic) or N is lent into its cpuset.mems (leases; pool
+         claims give N in the environment, Q1 of 04). dax: a devdax
+         character device of its own (claims) or an open fd (leases).
+         Default numa; shared memory is dax only.
+readOnly dax only. The container's device node (claims) or fd (leases)
+         allows reads only, enforced by the device cgroup or the open
+         flags. Not a device attribute.
+serial   /sys/bus/cxl/devices/memN/serial as 0x<lower-case hex>, the
+         identity of a memdev in both drivers, in the claim status data,
+         in the protocol and in env values. In env names: upper-case hex
+         without 0x.
+size     Bytes. Attribute size of a device; env SIZE = the bytes the
+         claim or lease got (slice size, or device size); in requests and
+         the CLI a Kubernetes quantity (512Mi), "at least this much".
+hosts    Capacity of a shared pool device: how many nodes may have it
+         attached at a time. A claim consumes 1 by default; all of them =
+         exclusive.
+lease    One request of a running container for memory, identified by an
+         8 hex digit id, served by the lease broker through the lease
+         socket; its memory comes from a companion claim and pod
+         cxl-lease-<id>.
+claim marker  CXL_CLAIM_<uid>=1, injected into containers that reference
+         a cxl.generic claim; the NRI plugin reads it to find the claims
+         of a container. Internal, documented as such.
+Words that disappear: dynamic, token (user-facing), kind (lease),
+exclusive (as an option; stays as the English word for shared=false and
+as the fake-cxl-pool attach flag, which is a different thing: an
+attachment that blocks other hosts), cxl-node, cxl-memdev, cxlmem, pool
+helper (it is the pool driver), LocalDeviceConfig, PoolDeviceConfig,
+LendConfig, CXL_POOL_, CXL_SHARED_, CXL_LOCAL_.
+
+2. A. Attribute model
+---------------------
+2.1 Dimensions and where they live
+| dimension | device attribute | request-time | derived / informational |
+|---|---|---|---|
+| local vs pool | source (both drivers) | class (cxl-local vs cxl-pool*), firstAvailable order | protocol/response source |
+| pre-created vs on-demand region | type region vs memdev | class | - |
+| shared vs exclusive | shared (memdevs of both drivers) | capacity hosts (shared devices): 1 or all; lease shared true/false | env SHARED |
+| read-only vs read-write | - | DeviceConfig readOnly; lease readOnly | env READONLY, CDI permissions r |
+| dax vs numa | - (a device can do both; shared devices dax only) | DeviceConfig mode; lease mode | env MODE, NODE or DAX/FD |
+| which device | serial | CEL selector on serial; lease serial | env key |
+| how much | size, capacity memory (+ memoryBlockSize for local memdevs) | capacity request; lease size | env SIZE |
+| where (NUMA) | node (region), nodes (dram), nodeAffinity (memdev, region) | CEL selector | - |
+Considered and not adopted now (room kept in section 9):
+- volatile vs persistent: CXL pmem is a different thing from "the bytes
+  survive the claim". The user's observation is real: local dax slices
+  are zeroed before a claim gets them, pool devices keep their content
+  (the next claim, maybe on another node, reads what the last one wrote),
+  shared devices are shared bytes by definition. This is documented per
+  source (USAGE.md "What the memory contains"), not an attribute. The
+  attribute name persistent (bool) is reserved for memdevs with pmem
+  capacity; the mode value fsdax is reserved with it.
+- dax-capable / numa-capable attributes: a shared device is dax only; the
+  scheduler cannot correlate a DeviceConfig with attributes anyway, so the
+  Prepare error with a clear message stays the check. Not published.
+- interleave, QoS, latency, bandwidth: section 9.
+
+2.2 cxl.generic devices (node-owned slice, pool = node name)
+```yaml
+- name: memdev-c100e2e1              # "memdev-" + serial, lower-case hex
+  attributes:
+    type:            {string: memdev}
+    source:          {string: local}
+    serial:          {string: "0xc100e2e1"}
+    shared:          {bool: false}
+    size:            {int: 1073741824}          # RAM capacity of the memdev
+    nodeAffinity:    {int: 0}                   # CPU NUMA node; absent if unknown
+    memoryBlockSize: {int: 134217728}           # every slice is a multiple of it
+  capacity:
+    memory: {value: 1Gi, requestPolicy: {default: 1Gi, validRange: {min: 128Mi, step: 128Mi}}}
+  allowMultipleAllocations: true
+  nodeAllocatableResources: {memory: {mapping: {capacityKey: memory, capacityMultiplier: "1"}}}
+- name: region0-node2                # "region" + N + "-node" + M: a pre-created region online as node M
+  attributes:
+    type:            {string: region}
+    source:          {string: local}
+    node:            {int: 2}
+    size:            {int: 2147483648}
+    nodeAffinity:    {int: 0}                   # if all memdevs of the region agree; absent otherwise
+  capacity: {memory: {value: 2Gi}}
+  allowMultipleAllocations: true
+  nodeAllocatableResources: as above
+- name: dram
+  attributes:
+    type:            {string: dram}
+    source:          {string: local}
+    nodes:           {string: "0-1"}            # cpuset syntax
+    size:            {int: 16777216000}
+  capacity: {memory: {value: ...}}
+  allowMultipleAllocations: true
+  nodeAllocatableResources: as above
+- name: lease
+  attributes:
+    type:            {string: lease}
+  allowMultipleAllocations: true
+```
+Removed: attribute name (unstable memN, or the device name again),
+attribute mode (I5; with it the republish after Prepare/Unprepare and
+nodeState.republish), device name styles cxl-region0-node2, system-dram,
+dynamic, cxlmem-<hex> (I14). The capacity, requestPolicy and
+nodeAllocatableResources of local memdevs are unchanged (plan-4 D13,
+D19). Every cxl.generic device has type; every memory device has source
+and size: a DeviceClass may reference type, source and size without
+has() guards. (A CEL runtime error, for example a missing attribute key,
+fails the allocation of the claim; verified in Kubernetes v1.37.1
+staging/src/k8s.io/dynamic-resource-allocation/structured/internal/
+incubating/allocator_incubating.go:1298-1304. Attributes that only some
+devices have, serial, shared, node, nodes, nodeAffinity, memoryBlockSize,
+are for claim selectors, and a selector that names one of them must be
+used with a class that guarantees it, as the examples do.)
+
+2.3 cxl-pool.generic devices (cluster slice of the pool controller)
+```yaml
+- name: pooled0                      # the pool controller's device name, a DNS label
+  attributes:
+    type:   {string: memdev}         # REQUIRED (new)
+    source: {string: pool}           # REQUIRED
+    serial: {string: "0xc1ee0001"}   # REQUIRED
+    shared: {bool: false}            # REQUIRED
+    size:   {int: 536870912}         # REQUIRED
+  capacity: {memory: {value: 512Mi}}
+  bindsToNode: true
+  bindingConditions: ["cxl-pool.generic/Attached"]
+  bindingFailureConditions: ["cxl-pool.generic/AttachFailed"]
+- name: shared0
+  attributes: {type: {string: memdev}, source: {string: pool}, serial: {string: "0xc1ae0001"}, shared: {bool: true}, size: {int: 268435456}}
+  allowMultipleAllocations: true
+  capacity: {hosts: {value: "4", requestPolicy: {default: "1", validValues: ["1", "4"]}}}
+  bindsToNode: true
+  bindingConditions: ["cxl-pool.generic/Attached"]
+  bindingFailureConditions: ["cxl-pool.generic/AttachFailed"]
+```
+Removed: attribute pool (I16). A controller may publish further
+attributes under its own domain (the contract says so); the reference
+controller publishes none. Claim status data (serial, shared, size
+required; host, hostUUID, attachment, qemuDeviceId, exclusive
+informational) and the conditions are unchanged.
+
+2.4 Why these names
+- type values are the CXL words for the hardware objects (memdev, region)
+  plus the two non-CXL devices the driver publishes for steering (dram)
+  and leasing (lease). cxl-node said "node" for a region and clashed with
+  the Kubernetes Node in every sentence.
+- source is already in both drivers; it is the one word users need for
+  "local first, then pool".
+- shared is a capability of a device, true only for devices that a fabric
+  attaches to several hosts; publishing shared: false on local memdevs
+  makes the memdev attribute set identical in both drivers (type, source,
+  serial, shared, size) so that documentation, selectors and env names can
+  be written once.
+- mode stays (daxctl calls the same choice a mode: devdax or system-ram);
+  the values numa and dax are the user's words.
+
+3. B. DeviceClasses (one file: D/deployments/cxl/device-classes.yaml)
+----------------------------------------------------------------------
+| class | selector (CEL) | gets |
+|---|---|---|
+| cxl-local | device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "memdev" | a slice of a local memdev: RAM of its NUMA node (mode numa, default) or a devdax device (DeviceConfig mode: dax) |
+| cxl-pool | device.driver == "cxl-pool.generic" && device.attributes["cxl-pool.generic"].type == "memdev" && device.attributes["cxl-pool.generic"].shared == false | a whole exclusive pool device: a new NUMA node (default) or a devdax device (mode: dax) |
+| cxl-pool-shared | device.driver == "cxl-pool.generic" && device.attributes["cxl-pool.generic"].type == "memdev" && device.attributes["cxl-pool.generic"].shared == true | a shared pool device as devdax; one of its hosts by default, all of them (exclusive) with capacity.requests.hosts |
+| cxl-region | device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "region" | capacity of a pre-created CXL NUMA node; the container is steered to it (with MemoryPolicyConfig) |
+| cxl-dram | device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "dram" | DRAM capacity for steering (with MemoryPolicyConfig) |
+| cxl-lease | device.driver == "cxl.generic" && device.attributes["cxl.generic"].type == "lease" | the lease socket and cxl-request |
+Rules and reasons:
+- Classes select device kinds; they carry no config. mode and readOnly
+  are request-time choices that the scheduler does not see, so a class
+  per mode (cxl-local-dax) would double the class count for every new
+  dimension and still not keep a dax claim off a region. One config kind
+  with two fields (section 4) is the DRA way: classes pick devices,
+  config configures. There are no convenience classes with baked-in
+  config (the user ruled out alternative spellings).
+- The naming scheme is cxl-<source>[-shared] for memdevs: cxl-local has no
+  -shared twin because cxl.generic publishes no shared device; the day a
+  multi-headed local device is published as shared: true, cxl-local-shared
+  is its name. cxl-region and cxl-dram are node-local by nature and say
+  what the device is.
+- "Local first, then pool" is a prioritized list, not a union class: the
+  scheduler evaluates pools without binding conditions first anyway, but a
+  union class would need the user to add per-driver configs and could not
+  carry per-source selectors. Example in section 11.3 (claim 9). A union
+  class is listed in 04 as Q2 (recommendation: no).
+- Pre-created regions and DRAM get shipped classes (I3): the demo defined
+  its own, so they are already a user-facing contract.
+- The legacy cxl.intel.com class and the five examples that use it are
+  removed (I2). deployments/cxl/base keeps namespace.yaml and
+  resource-driver.yaml; kustomization lists ../device-classes.yaml.
+- The broker uses the class names as constants (device.ClassLocal,
+  ClassPool, ClassPoolShared); a unit test in the driver loads
+  device-classes.yaml and checks that each class name exists and that its
+  CEL contains the driver name and type (and shared) it stands for, so the
+  YAML and the broker cannot drift apart.
+
+4. C. Opaque configurations
+---------------------------
+4.1 DeviceConfig (both drivers; replaces PoolDeviceConfig and LocalDeviceConfig)
+```yaml
+config:
+- opaque:
+    driver: cxl.generic                 # or cxl-pool.generic
+    parameters:
+      apiVersion: cxl.generic/v1alpha1  # <driver>/v1alpha1
+      kind: DeviceConfig
+      mode: dax                         # numa (default; dax for shared devices) | dax
+      readOnly: true                    # dax only; default false
+```
+- Fields identical in both drivers; apiVersion group = the driver name
+  (the opaque driver field already names the driver; a user copies the
+  block and changes driver and apiVersion together).
+- Decoding: DisallowUnknownFields; apiVersion and kind must match; mode in
+  {"", numa, dax}; readOnly needs effective mode dax; shared devices
+  refuse mode numa. Error texts (the e2e asserts on them):
+    "DeviceConfig: invalid mode %q (numa or dax)"
+    "DeviceConfig: mode numa: a shared device is used as dax only"
+    "DeviceConfig: readOnly needs mode dax"
+- Precedence: class config, then claim config, the later one replaces the
+  earlier; a config applies to the requests it lists (a request "r" covers
+  its subrequests "r/s") or to all requests of its driver. Unchanged.
+- One parser for every kind: parseConfig(claim, driver, kind, request, out
+  any) in lending.go (renamed from parseDeviceConfig) handles DeviceConfig
+  and MemoryPolicyConfig alike (strict decode, apiVersion check); the
+  MemoryPolicyConfig-specific rule "one policy per container" stays in
+  nri.go.
+4.2 MemoryPolicyConfig (cxl.generic): kind, apiVersion and fields
+unchanged (memoryUseOrder, memoryUseWaypoints, minStep, maxStep of
+cgmpolmgr.Policy); decoded strictly (I6). Scope: the steering of one
+container (per claim), while DeviceConfig is per device request; two
+kinds because two scopes.
+4.3 LendConfig: removed (I6, I21). A companion claim is recognized by the
+label cxl.generic/lease=<id> on the ResourceClaim object (kubelet passes
+the full object to PrepareResourceClaims). Protection, checked by the
+broker in OnLending(id, claim) before any device is touched:
+  - the id is in the lease table and the lease is Creating or Pending (or
+    Lending/Ready for a re-prepare after a restart);
+  - claim.Name == "cxl-lease-"+id and claim.Namespace == lease.Pod.Namespace;
+  - claim has an ownerReference with UID == lease.Pod.UID.
+A claim that carries the label and fails a check fails its Prepare with
+"claim <ns>/<name>: not the companion of lease <id>" (kubelet retries; the
+pod that references such a claim never starts). A tenant can create a
+claim with the label only in its own namespace and cannot make it the
+companion of a lease it did not request. The checks are stronger than
+LendConfig's (which trusted pod and container fields in the config).
+Both drivers do the same through companionLender (section 8).
+
+5. D. CDI and environment variables
+-----------------------------------
+5.1 CDI layout
+| driver | CDI kind | spec file | device | content |
+|---|---|---|---|---|
+| cxl.generic | generic/cxl | cxl-claims | claim-<uid> | CXL_CLAIM_<uid>=1; CXL_<KEY>_* of every memory device of the claim; device nodes of its dax slices (permissions r when readOnly) |
+| cxl.generic | generic/cxl | cxl-leases | lease-<uid> | rbind /run/cxl rw; bind ro --lease-cli at /usr/local/bin/cxl-request; CXL_LEASE_SOCKET=/run/cxl/cxl.sock |
+| cxl-pool.generic | generic/cxl-pool | cxl-pool | claim-<uid> | CXL_<KEY>_* of the claim's pool devices; device node for dax (permissions r when readOnly) |
+Removed: the cxl-local spec and local-<uid>[-n] devices (merged into
+claim-<uid>), the per-serial pool-<hex>[-ro] devices (per claim now, I26),
+the hardware spec with CXL_DEVICE (I8; node_state keeps a start-up
+function removeCXLSpecs that deletes every spec of kinds generic/cxl and
+generic/cxl-pool before the three writers rewrite theirs), the
+/usr/local/bin/cxl-release mount (I9). Pool claims inject no claim marker
+(the marker is for cxl.generic's NRI steering; Q1 of 04).
+5.2 Environment of a container, per memory device of its claims
+```
+CXL_<KEY>_SERIAL=0x<hex>       memdevs (type memdev, both drivers)
+CXL_<KEY>_SHARED=0|1           memdevs
+CXL_<KEY>_MODE=numa|dax        every memory device
+CXL_<KEY>_SIZE=<bytes>         every memory device: what this claim got
+CXL_<KEY>_NODE=<N>             mode numa: memdev slice, pool device, region
+CXL_<KEY>_NODES=<cpuset>       dram
+CXL_<KEY>_DAX=/dev/daxX.Y      mode dax (claims)
+CXL_<KEY>_FD=<n>               mode dax (leases with --exec; replaces DAX)
+CXL_<KEY>_READONLY=0|1         mode dax
+```
+KEY: memdev: the serial in upper-case hex without 0x (C100E2E1); the
+second and later slices of the same memdev within one claim: <HEX>_2,
+<HEX>_3 (two claims of one memdev in one container still collide, as
+today; documented). region: REGION<n> from the region name (REGION0).
+dram: DRAM. Hex digits never spell LEASE, CLAIM, REGION or DRAM, so the
+prefixes do not clash. Programs scan CXL_*_MODE to enumerate what they got.
+Other variables: CXL_CLAIM_<uid with underscores>=1 (marker, internal),
+CXL_LEASE_SOCKET=/run/cxl/cxl.sock (lease claims), CXL_LEASE=<id>
+(cxl-request --exec). Nothing else; CXL_POOL_*, CXL_SHARED_*, CXL_LOCAL_*,
+CXL_LEASE_FD/DAX/SIZE/READONLY, CXL_DEVICE are gone (I7).
+Why one scheme: a program reads the same names whether its memory came
+from a claim at pod creation or from cxl-request later; the key is the
+identity that both drivers publish (serial); SHARED and READONLY are
+always present for the devices they apply to, so a program never has to
+guess whether absence means false or "older driver".
+5.3 Produced by one function: api.Env(api.Memory{...}) (section 8.1) is
+used by the CDI builders of both drivers and by the broker for the env
+and exec operations, so the names exist in exactly one place.
+
+6. E. The lease protocol and cxl-request
+----------------------------------------
+6.1 cxl-request synopsis (the whole CLI)
+```
+cxl-request request [--source local|pool] [--mode numa|dax] [--shared] [--read-only]
+                    [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
+                    [--exec CMD [ARG...]]
+cxl-request release (--lease ID | --all) [--wait DURATION]
+cxl-request list
+cxl-request fd  --lease ID [--wait DURATION] --exec CMD [ARG...]
+cxl-request env --lease ID [--wait DURATION] [--exec CMD [ARG...]]
+cxl-request help
+```
+The first word is the operation; every other input is --opt or --opt ARG
+(--opt=ARG is accepted too); --exec ends the options, the rest is the
+command. There is no second binary name: cxl-release is gone, its
+function is "cxl-request release --lease ID" (I9). The socket is
+$CXL_LEASE_SOCKET; without it exit 1 with "CXL_LEASE_SOCKET is not set
+(the pod needs a claim on DeviceClass cxl-lease)".
+Options map one to one to the attribute model and to the protocol fields:
+| option | protocol field | values, default | meaning |
+|---|---|---|---|
+| --source | source | local, pool; omitted = local first, then pool | which devices |
+| --mode | mode | numa, dax; omitted = numa, or dax when --shared | how the memory is given |
+| --shared | shared | bool, default false | take one host of a shared device (default: exclusive use: all hosts of a shared device, or an exclusive device) |
+| --read-only | readOnly | bool, default false | dax: the fd allows reads only |
+| --size | size | quantity, e.g. 512Mi | at least this much: a capacity request on exclusive devices, a selector size >= on shared devices |
+| --serial | serial | 0x hex or decimal, normalized to 0x<lower hex> | this device |
+| --wait | wait | Go duration; omitted = the plugin's --lease-wait; 0s = do not wait | request/fd/env: until Ready; release: until Released |
+| --request-id | requestId | string | the same id from the same container returns the same lease (retry after a lost connection; repeat the whole command) |
+| --lease | lease | 8 hex digits | release, fd, env |
+| --all | all | bool | release every lease of the pod |
+| --exec | (none) | CMD ARG... | run CMD with the lease's environment (and its fd as fd 3 for dax) |
+Validation, in the CLI (exit 2, before any socket I/O) and again in the
+broker (response {"error": ...}); the texts are the contract for the e2e:
+  R1  --source: "invalid source %q (local or pool)"
+  R2  --mode: "invalid mode %q (numa or dax)"
+  R3  --shared with --mode numa: "shared memory is never onlined as RAM: use mode dax"
+  R4  --shared with --source local: "local devices are not shareable; share a ResourceClaim between pods instead"
+  R5  --read-only with effective mode numa: "readOnly needs mode dax"
+  R6  request without --shared, --serial and --size: "size or serial is required"
+  R7  --serial not a number: "invalid serial %q"
+  R8  --exec with release or list: "--exec is for request, fd and env"; fd without --exec: "fd needs --exec"
+  R9  release with neither or both of --lease and --all: "release takes --lease ID or --all"
+  R10 --wait not a duration or negative: "invalid wait %q"
+  R11 (broker) --shared with a serial of an exclusive device: "device 0x..: not shareable"
+  R12 (broker) a pool request while --pool-driver-name is empty: "pool driver disabled (--pool-driver-name)"; a lease while NRI is not connected: "lending unavailable: NRI not connected"
+  R13 fd on a lease whose mode is numa: "lease <id> is not a dax lease; use env"
+Defaults are the safe ones: exclusive, read-write, numa, any source; a
+request names a shared device by serial and gets it exclusively unless it
+says --shared (the writer of single-writer sharing needs no option, the
+readers say --shared --read-only). The class side differs on purpose: a
+claim on cxl-pool-shared consumes one host by default because the class
+name already says shared.
+6.2 Output and exit codes
+request, release, list print the plugin's JSON response line. env prints
+the environment as KEY=VALUE lines, sorted, one per line (shell-evaluable:
+eval "$(cxl-request env --lease ID)"), or with --exec runs CMD with it.
+fd needs --exec: CMD runs with the fd as fd 3 and the environment of 6.4.
+Exit codes: 0 ok; 1 error (no socket, connection, invalid response, CMD
+could not start); 2 usage (R1-R10); 3 the lease is Failed, not Ready
+within --wait (request, fd, env), not Released within --wait (release), or
+fd on a non-dax lease. With --exec, CMD's exit code is passed through
+(128+signal when signaled); signals to cxl-request are forwarded.
+6.3 Protocol (SOCK_STREAM unix socket, one JSON object per line each way)
+Request fields (all optional except op):
+  op         request | release | list | fd | env
+  source     local | pool
+  mode       numa | dax
+  shared     bool
+  readOnly   bool
+  size       quantity string
+  serial     string
+  wait       duration string
+  requestId  string
+  lease      string
+  all        bool
+Response:
+  lease      id
+  state      Creating | Pending | Lending | Ready | Releasing | Failed | Released
+  source     local | pool: the requested one, or the one allocated once Ready; omitted while undecided
+  mode       numa | dax (effective)
+  shared     bool (effective)
+  readOnly   bool
+  size       bytes once Ready (the slice or the device), the requested quantity in bytes before
+  serial     0x<hex> once known
+  node       int, mode numa and Ready
+  dax        /dev/daxX.Y, mode dax and Ready (informational: no node in the container)
+  env        {"CXL_<KEY>_...": "..."} once Ready: what a claim of this memory would inject (5.2), with DAX for dax leases
+  error      message
+  leases     [response...] for list and release --all
+The fd of a Ready dax lease rides on the response of request and fd as
+SCM_RIGHTS. requestId, the states, the wait semantics (timeout releases
+the lease and answers Failed "timeout: not Ready after D"; wait 0s returns
+the state and keeps the lease), release semantics and authentication are
+unchanged from POOL.md "Protocol". kind, exclusive and the literal source
+"any" are gone (I10).
+6.4 Environment of --exec
+The response's env map, with every CXL_<KEY>_DAX replaced by
+CXL_<KEY>_FD=3 (dax) and CXL_LEASE=<id> added. A numa lease has no fd:
+request --exec and env --exec run CMD with CXL_<KEY>_NODE and the rest.
+Computed by api.ExecEnv (8.1) so that the CLI knows no names of its own.
+6.5 Companion claim and pod of a lease (broker)
+Unchanged shape (POOL.md "Lending"), with:
+- labels cxl.generic/lease=<id>, cxl.generic/requester-uid=<pod uid>,
+  cxl.generic/node=<node>; annotation cxl.generic/requester=<ns>/<pod>/<ctr>
+  (I13);
+- request "lease": exactly one source -> exactly; both -> firstAvailable
+  [{name: local, ...}, {name: pool, ...}]; the local subrequest is left
+  out when shared is true (cxl.generic publishes no shared device), the
+  pool one when the pool driver is disabled;
+- per source: deviceClassName cxl-local | cxl-pool | cxl-pool-shared
+  (device.ClassLocal, ClassPool, ClassPoolShared); when --serial names a
+  pool device the broker reads its shared and hosts from the pool
+  ResourceSlices (as sharedHosts does today) to pick cxl-pool or
+  cxl-pool-shared; selectors: serial == "0x..." when given, size >= N when
+  shared and size given; capacity: memory = size on exclusive devices,
+  hosts = all when a shared device is taken exclusively (serial without
+  --shared), nothing when shared (default 1);
+- configs: one DeviceConfig per source driver {mode: <effective>, readOnly}
+  (always written, so the claim shows what was asked), no LendConfig;
+- the companion pod is unchanged (pause, 100m/16Mi, node affinity,
+  tolerations, owner reference).
+6.6 Lease store
+lease fields: ID, Claim (uid of the lease claim whose socket received it;
+was TokenClaim), RequestID, Source, Mode, Shared, Hosts, ReadOnly, Size,
+Serial, Pod, Container, State, Error, Node, Bytes, Dax, Created. Kind and
+Exclusive are gone. The store file stays leases.json (plan-4 stores are
+not migrated: everything is unreleased; a leases.json with "kind" fails
+to decode strictly and the plugin logs it and starts with an empty table;
+the e2e VMs are clean).
+
+7. F. Flags, configuration, fake-cxl-pool CLIs, REST
+----------------------------------------------------
+7.1 kubelet-cxl-plugin (D/cmd/kubelet-cxl-plugin/main.go)
+| flag | env | default | meaning |
+|---|---|---|---|
+| --pool-driver-name | POOL_DRIVER_NAME | cxl-pool.generic | DRA driver name of the pool driver; "" disables it |
+| --pool-prepare-timeout | POOL_PREPARE_TIMEOUT | 30s | how long the pool driver waits for a hotplugged memdev |
+| --leases | LEASES | true | lend memory to running containers: publish the lease device, serve lease sockets, create companions (needs NRI) |
+| --lease-cli | LEASE_CLI | /usr/local/bin/cxl-request | host path of the static cxl-request, mounted into containers of lease claims |
+| --lease-wait | LEASE_WAIT | 120s | default wait of a lease request |
+| --lease-companion-image | LEASE_COMPANION_IMAGE | registry.k8s.io/pause:3.10 | image of the companion pods |
+--sysfs, --config-str/-c, --config-file/-f, --nri-name, --nri-idx,
+--nri-socket and the common flags are unchanged. Gone: --lend, --pool-lend,
+LEND, POOL_LEND, --cxl-request-bin, --lease-wait-default,
+--companion-image (I11). CXLFlags fields: Leases, LeaseCLI, LeaseWait,
+LeaseCompanionImage.
+7.2 Driver configuration file (DriverConfig): every field gets a
+lower-camel json tag (ignoreDevices, ignoreRegions, ignoreNodes,
+ignoreNewMemoryDevices, ignoreNewRegions, ignoreNewNodes, ignoreDRAMNodes,
+udevStableDuration, testability, manageMemdevs) (I12); PublishDynamicToken
+becomes PublishLeaseDevice (json:"-"). Semantics unchanged.
+7.3 fake-cxl-pool-controller: flags unchanged (-server, -kubeconfig,
+-driver-name, -pool-name, -sync-interval, -attach-timeout,
+-detach-timeout, -shared-hosts, -owner-prefix, -v). Publishes type: memdev,
+no pool attribute (2.3).
+7.4 fake-cxl-pool-server: flags and REST unchanged. Config keys unchanged.
+Sizes in table output and FormatSize: binary units with the i (256Mi,
+1Gi, 0 stays 0); ParseSize keeps accepting 256M, 256Mi, 256MiB,
+268435456, 0x10000000 (I17). JSON sizes stay integers. scope (pool|local)
+stays: it is the server's word for "whose device is it" and Host.source is
+taken; the documentation says that a scope local device is what cxl.generic
+publishes as source local.
+7.5 fake-cxl-pool-client: commands and flags unchanged except
+  guest region create DEVICE --mode numa|dax [--decoder X]   (was devdax|ram, I15)
+  guest info prints mode numa|dax
+--shared (create, devices) and attach --exclusive stay: an exclusive
+attachment is the server's mechanism behind "hosts = all" and
+AttachRequest.Exclusive, documented as such in POOL.md (I27). Size
+examples in the usage text use 256Mi.
+7.6 Serials: 0x<lower-case hex> on output everywhere (attributes, status
+data, protocol, env values, fake-cxl-pool JSON); inputs accept 0x hex or
+decimal (cxl-request --serial, fake-cxl-pool --serial, guest DEVICE).
+
+8. G. Go-level API
+------------------
+8.1 New: D/pkg/cxl/api (no Kubernetes imports; cxl-request stays small)
+```go
+package api
+const (
+    SocketEnv      = "CXL_LEASE_SOCKET"
+    DefaultSocket  = "/run/cxl/cxl.sock"
+    LeaseEnv       = "CXL_LEASE"
+    ClaimEnvPrefix = "CXL_CLAIM_"
+    SourceLocal = "local"; SourcePool = "pool"
+    ModeNUMA = "numa"; ModeDax = "dax"
+    OpRequest = "request"; OpRelease = "release"; OpList = "list"; OpFd = "fd"; OpEnv = "env"
+    StateCreating, StatePending, StateLending, StateReady, StateReleasing, StateFailed, StateReleased
+)
+type Request struct { Op, Source, Mode string; Shared, ReadOnly bool; Size, Serial, Wait, RequestID, Lease string; All bool }   // json tags as in 6.3
+type Response struct { Lease, State, Source, Mode string; Shared, ReadOnly bool; Size uint64; Serial string; Node *int; Dax string; Env map[string]string; Error string; Leases *[]Response }
+// Memory is what a claim or lease gives a container: the fields of 5.2.
+type Memory struct { Key string; Serial string; Shared bool; Mode string; Size uint64; Node int; Nodes string; Dax string; ReadOnly bool }
+func Key(serial uint64, n int) string          // "C100E2E1", "C100E2E1_2"
+func RegionKey(region string) string            // "REGION0"
+const DRAMKey = "DRAM"
+func Env(m Memory) map[string]string            // 5.2, DAX for dax
+func ExecEnv(env map[string]string, lease string, fd int) []string   // 6.4
+func ParseSerial(s string) (uint64, error); func FormatSerial(v uint64) string   // 0x<lower hex>
+```
+Used by: broker.go (types, Env in responses), node_state.go and pool.go
+(Env for CDI), cxl-request (types, ExecEnv), e2e-independent unit tests.
+device.SourceLocal/SourcePool/ModeNUMA/ModeDax are deleted in favour of
+api.*; memctl keeps its own ModeNUMA/ModeDax ("numa", "dax"; a unit test
+in the driver asserts api.ModeNUMA == memctl.ModeNUMA and the same for
+dax, since the two modules cannot share the constant).
+8.2 D/pkg/cxl/device: keeps the Kubernetes-facing names, nothing else.
+```go
+DriverName = "cxl.generic"; PoolDriverName = "cxl-pool.generic"
+DeviceTypeMemdev = "memdev"; DeviceTypeRegion = "region"; DeviceTypeDRAM = "dram"; DeviceTypeLease = "lease"
+AttrType, AttrSource, AttrSerial, AttrShared, AttrSize, AttrNode, AttrNodes, AttrNodeAffinity, AttrMemoryBlockSize  (QualifiedName)
+CapacityMemory = "memory"; CapacityHosts = "hosts"
+ClassLocal = "cxl-local"; ClassPool = "cxl-pool"; ClassPoolShared = "cxl-pool-shared"; ClassRegion = "cxl-region"; ClassDRAM = "cxl-dram"; ClassLease = "cxl-lease"
+DeviceConfigKind = "DeviceConfig"
+LeaseDeviceName = "lease"; MemdevDevicePrefix = "memdev-"; DRAMDeviceName = "dram"
+LeaseLabel = "cxl.generic/lease"; RequesterUIDLabel = "cxl.generic/requester-uid"; NodeLabel = "cxl.generic/node"; RequesterAnnotation = "cxl.generic/requester"
+CDIVendor = "generic"; CDIClass = "cxl"; CDIKind = "generic/cxl"; PoolCDIClass = "cxl-pool"; PoolCDIKind = "generic/cxl-pool"
+ClaimsCDISpecName = "cxl-claims"; LeasesCDISpecName = "cxl-leases"; PoolCDISpecName = "cxl-pool"
+PreparedClaimsFileName, DefaultSysfsRoot, DefaultConfigStr, SysfsRootEnvVarName, ConfigStrEnvVarName (unchanged)
+type DeviceInfo, DevicesInfo (unchanged, minus CDIName); type Memdev (was CXLMemdev, minus Mode); type DRAM (was SystemDRAM); type LeaseToken (was DynamicToken)
+```
+Deleted: PciRegexp, CXLRegexp, CXLDevicePattern, PCIAddressLength,
+DefaultNamingStyle, DeviceTypeCXLPool, DeviceTypeCXLNode,
+DeviceTypeCXLMemdev, DeviceTypeCXLDax, DeviceTypeDynamic,
+DynamicDeviceName, LendConfigKind, PoolDeviceConfigKind,
+LocalDeviceConfigKind, LocalCDISpecName, DeviceInfo.CDIName (I18, I25);
+packages D/pkg/cxl/discovery and D/pkg/cxl/cdihelpers (I8, I18; the other
+drivers have their own copies and do not import these).
+8.3 D/pkg/cxl/memorypolicy: unchanged API (APIVersion, Kind,
+MemoryPolicyConfig, Validate).
+8.4 N/pkg/cxl/memctl
+```go
+const ModeNUMA = "numa"; ModeDax = "dax"          // were ModeRAM "ram", ModeDevDax "devdax"
+func (mc *Manager) CreateRegion(ctx, memdev, mode, decoder string) (*RegionInfo, error)   // mode numa|dax
+RegionInfo.Mode: numa | dax | "" (unknown driver)
+```
+Removed: CreateDaxDeviceAt (CreateDaxDeviceRanges covers it). Unexported:
+daxDeviceResource, daxRegionDir, endpoint, hostBridgeUID, rootDecoder
+(internal only). Everything else unchanged; the guest CLI and the drivers
+follow the mode rename.
+8.5 P/pkg/api, P/pkg/client, P/pkg/server, P/pkg/controller: unchanged
+exported API; FormatSize output (7.4); publisher attributes (2.3).
+8.6 Internal names of the plugin (package main), old -> new
+  Lender -> nodeLender (lends NUMA nodes to containers through NRI)
+  claimLender -> companionLender (lends the devices of a companion claim
+      to the lease's container; parse -> leaseOf(claim) returning the id
+      from the label, check -> OnLending(id, claim))
+  leaseHooks: unchanged name; OnLending(id string, claim *ResourceClaim) error,
+      OnPrepared(id string, devs []lentDevice), OnLendFailed(id string, err error),
+      OnReleasing(id string)
+  tokenClaims -> leaseClaims; tokenClaim -> leaseClaim; store.Claims keeps its json key "claims"
+  lendConfig -> deleted; lendRecord{Lease, Pod, Container, Nodes} unchanged
+  deviceConfig: unchanged name, kind DeviceConfig; parseDeviceConfig -> parseConfig
+  leaseKindMemory, leaseKindShared, leaseSourceAny, poolMemoryClass, poolSharedClass, localMemoryClass, localDaxClass -> deleted (device.Class*)
+  DynamicToken -> LeaseToken; PublishDynamicToken -> PublishLeaseDevice
+  CXLFlags.Lend/CXLRequestBin/LeaseWaitDefault/CompanionImage -> Leases/LeaseCLI/LeaseWait/LeaseCompanionImage
+  brokerConfig.RequestBin -> CLI; defaultCXLRequestBin -> defaultLeaseCLI; cxlReleaseContainerPath -> deleted
+  PreparedDeviceInfo: DeviceType in {memdev, region, dram, lease}; new field Mode (numa|dax) replaces the fake type cxl-dax; Serial stays; NRI steering treats Mode == numa devices of type memdev or region as CXL nodes
+  localEnvPrefix, localDevicePrefix, modeNone, modeNUMADax, localSnapshot.Modes, localAllocator.modes/updateModes/Modes -> deleted (the snapshot keeps BlockSize; the publisher no longer needs modes)
+  nodeState.republish -> deleted (driver.go:309-311 too)
+  "pool helper" -> "pool driver" in every comment and log line
+  node_state.go:244 fmt.Printf -> deleted
+
+9. H. Room for extensions (where each one goes, without renames)
+-------------------------------------------------------------------
+1. CXL 3 dynamic capacity devices (DCD): a pool memdev whose capacity is
+   handed out in extents. Attributes: type memdev, shared as today, new
+   dynamicCapacity: true; capacity memory with allowMultipleAllocations
+   and a requestPolicy step = the extent granularity (the controller
+   publishes it); claim status data gains extent fields (the node plugin
+   ignores unknown data today); env keys <HEX>_2, <HEX>_3 already allow
+   several extents of one device; cxl-request --size on a DCD device
+   becomes a capacity request as on local memdevs. No rename.
+2. GFAM / fabric-attached shared memory: either a pool device with shared:
+   true (today's model) or a new source value fabric with its own driver
+   name; source is a string attribute and a CLI/protocol enum, so a third
+   value needs no rename; classes follow the cxl-<source>[-shared] scheme.
+3. Persistent memory: attribute persistent: true on memdevs and regions
+   with pmem capacity (reserved name); DeviceConfig mode gains fsdax (a
+   filesystem-dax namespace) next to numa and dax; env MODE=fsdax and a
+   PATH field. Volatile devices publish nothing (absent = volatile) so
+   that today's selectors keep working.
+4. Interleaved regions: a region device already covers several memdevs;
+   add serials (comma-separated string) and interleaveWays (int) when the
+   plugin or firmware creates one; for on-demand interleaving across
+   memdevs a DeviceConfig field interleave: N with a count: N request and
+   matchAttribute. The env key of an interleaved region is REGION<n>.
+5. Per-container NUMA isolation: if a kernel offers per-cgroup memory
+   partitions, mode numa stays the user's word; isolation becomes a
+   property documented under mode, or a DeviceConfig isolated: true.
+6. QoS, latency, bandwidth: attributes qosClass (int), latencyNs (int),
+   bandwidthMBps (int) from HMAT/CDAT on memdevs and regions; selectable
+   by CEL today; a cxl-request --selector CEL option passes an expression
+   into the companion claim's selectors without new flags per attribute.
+7. Composable infrastructure (CoHDI style): the pool controller role of
+   POOL.md is the composable-dra-driver plus dynamic-device-scaler of
+   CoHDI merged into one; a controller that fronts a ComposabilityRequest
+   API publishes the same attributes and conditions; node identity is the
+   Node's systemUUID or providerID; a failed device is kept off by a
+   DeviceTaintRule (DRADeviceTaints is beta in 1.37). Two pools under one
+   driver name need resourceslice.ReconcilePoolWithName in the controller.
+8. Steering of pool numa claims like local ones (Q1 of 04): the pool
+   driver's prepared claims become visible to the NRI handler; the claim
+   marker would then be injected for pool claims too; no API change.
+9. Leases of pre-created regions and joining an existing claim:
+   cxl-request request --type region and --claim NAME are new options of
+   the same operation; the companion claim references the class cxl-region
+   or the existing claim (plan-4 02 section 6.4).
+10. Device health (WatchHealthStatus) and nodeAllocatableResources for
+    pool devices: additive.
+
+10. Rename table (every old name disappears)
+--------------------------------------------
+10.1 Attributes and device names
+  cxl.generic attribute type value cxl-node   -> region
+  cxl.generic attribute type value cxl-memdev -> memdev
+  cxl.generic attribute type value dynamic    -> lease
+  attribute name (all devices)                -> (removed)
+  attribute mode (memdev)                     -> (removed)
+  attribute pool (pool devices)               -> (removed)
+  (new) attribute type: memdev on pool devices; source: local on region and dram; shared: false on local memdevs; nodeAffinity on regions when known
+  device cxl-<region>-node<N>                 -> <region>-node<N>      (region0-node2)
+  device system-dram                          -> dram
+  device dynamic                              -> lease
+  device cxlmem-<hex>                         -> memdev-<hex>
+10.2 DeviceClasses
+  cxl-local-memory, cxl-local-dax             -> cxl-local (+ DeviceConfig mode: dax)
+  cxl-pool-memory                             -> cxl-pool
+  cxl-shared-memory                           -> cxl-pool-shared
+  cxl-dynamic                                 -> cxl-lease
+  cxl.intel.com (base/device-class.yaml)      -> (removed)
+  (new) cxl-region, cxl-dram
+  demo classes cxl-memory-class / dram-memory-class (D/test/e2e/cxl/dra-demo-cxl.sh): keep their names, CEL type 'cxl-node' -> 'region'
+  files local/device-classes.yaml, pool/device-classes.yaml, pool/device-class-dynamic.yaml, base/device-class.yaml -> device-classes.yaml
+10.3 Opaque configs
+  PoolDeviceConfig, LocalDeviceConfig         -> DeviceConfig (fields mode, readOnly unchanged)
+  LendConfig                                  -> (removed; label cxl.generic/lease)
+  MemoryPolicyConfig                          -> unchanged (strict decoding)
+10.4 Environment and CDI
+  CXL_POOL_NODE_<HEX>, CXL_POOL_SIZE_<HEX>, CXL_POOL_SERIAL_<HEX>        -> CXL_<HEX>_NODE, _SIZE, _SERIAL (+ _MODE=numa, _SHARED=0)
+  CXL_POOL_DAX_<HEX>, CXL_SHARED_DAX_<HEX>, CXL_LOCAL_DAX_<HEX>          -> CXL_<HEX>_DAX
+  CXL_*_SIZE_<HEX>, CXL_*_SERIAL_<HEX>                                   -> CXL_<HEX>_SIZE, CXL_<HEX>_SERIAL
+  CXL_*_READONLY_<HEX>=1 (when read-only)                                -> CXL_<HEX>_READONLY=0|1 (dax, always)
+  (new) CXL_<HEX>_SHARED=0|1, CXL_<HEX>_MODE, CXL_REGION<n>_*, CXL_DRAM_*, numa slices of local memdevs
+  CXL_LEASE_FD, CXL_LEASE_DAX, CXL_LEASE_SIZE, CXL_LEASE_READONLY        -> CXL_<HEX>_FD, (none), CXL_<HEX>_SIZE, CXL_<HEX>_READONLY; CXL_LEASE stays
+  CXL_DEVICE=<name>                                                      -> (removed)
+  CDI spec cxl-local, devices local-<uid>[-n]                            -> folded into cxl-claims claim-<uid>
+  CDI devices pool-<hex>[-ro] (kind generic/cxl)                         -> claim-<uid> (kind generic/cxl-pool)
+  mount /usr/local/bin/cxl-release                                       -> (removed)
+10.5 Protocol and CLI
+  op lease                                    -> request
+  kind memory|shared                          -> (removed: shared bool + mode)
+  exclusive                                   -> (removed: shared=false is exclusive)
+  source any / ""                             -> omitted (local, then pool)
+  cxl-request memory SIZE [SOURCE] [--dax]    -> cxl-request request --size SIZE [--source S] [--mode dax]
+  cxl-request shared SERIAL                   -> cxl-request request --serial SERIAL --shared
+  cxl-request shared SERIAL --exclusive       -> cxl-request request --serial SERIAL
+  --local, --source any, --dax, --exclusive   -> (removed)
+  cxl-request fd LEASE --exec                 -> cxl-request fd --lease LEASE --exec
+  cxl-request release LEASE | --all           -> cxl-request release --lease LEASE | --all
+  cxl-release ...                             -> (removed)
+  (new) cxl-request env --lease ID [--exec]; --wait on fd and env; --exec on numa leases
+  labels cxl-pool.generic/lease, /requester-uid, /node, annotation cxl-pool.generic/requester -> cxl.generic/...
+10.6 Flags
+  --lend, --pool-lend, LEND, POOL_LEND        -> --leases, LEASES
+  --cxl-request-bin, CXL_REQUEST_BIN          -> --lease-cli, LEASE_CLI
+  --lease-wait-default, LEASE_WAIT_DEFAULT    -> --lease-wait, LEASE_WAIT
+  --companion-image, COMPANION_IMAGE          -> --lease-companion-image, LEASE_COMPANION_IMAGE
+  DriverConfig fields without json tags       -> lower-camel json tags
+10.7 memctl and fake-cxl-pool
+  memctl.ModeRAM "ram", memctl.ModeDevDax "devdax" -> memctl.ModeNUMA "numa", memctl.ModeDax "dax"
+  guest region create --mode devdax|ram       -> --mode numa|dax
+  memctl.CreateDaxDeviceAt                    -> (removed)
+  memctl.DaxDeviceResource, DaxRegionDir, Endpoint, HostBridgeUID, RootDecoder -> unexported
+  FormatSize "256M"                           -> "256Mi"
+10.8 Go identifiers (8.2, 8.6)
+
+11. Examples
+------------
+11.1 ResourceSlice excerpts: section 2.2 and 2.3.
+11.2 Pod that uses a claim "mem" (the same for every claim below)
+```yaml
+apiVersion: v1
+kind: Pod
+metadata: {name: consumer}
+spec:
+  resourceClaims:
+  - {name: mem, resourceClaimName: <claim>}       # or resourceClaimTemplateName
+  containers:
+  - name: app
+    image: docker.io/library/python:3-alpine
+    command: ["sh", "-c", "env | grep ^CXL_ | sort; sleep infinity"]
+    resources: {claims: [{name: mem}]}
+```
+11.3 Claims (spec.devices of a ResourceClaim) and the environment the
+container sees (serial 0xc100e2e1 local, 0xc1ee0001 pool, 0xc1ae0001
+shared; node numbers as in the e2e VMs)
+1. 128Mi of local CXL as RAM
+```yaml
+requests: [{name: mem, exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 128Mi}}}}]
+```
+   CXL_C100E2E1_SERIAL=0xc100e2e1 CXL_C100E2E1_SHARED=0 CXL_C100E2E1_MODE=numa
+   CXL_C100E2E1_SIZE=134217728 CXL_C100E2E1_NODE=2 (+ CXL_CLAIM_<uid>=1)
+2. a 64Mi read-only dax slice of a local memdev (128Mi with 128 MiB blocks)
+```yaml
+requests: [{name: mem, exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 64Mi}}}}]
+config:
+- opaque: {driver: cxl.generic, parameters: {apiVersion: cxl.generic/v1alpha1, kind: DeviceConfig, mode: dax, readOnly: true}}
+```
+   CXL_C100E2E1_SERIAL=0xc100e2e1 CXL_C100E2E1_SHARED=0 CXL_C100E2E1_MODE=dax
+   CXL_C100E2E1_SIZE=134217728 CXL_C100E2E1_DAX=/dev/dax0.1 CXL_C100E2E1_READONLY=1
+3. a specific local device: add to the request
+```yaml
+selectors: [{cel: {expression: 'device.attributes["cxl.generic"].serial == "0xc100e2e1"'}}]
+```
+4. 512Mi of pool memory as RAM (a whole exclusive device of at least 512Mi)
+```yaml
+requests: [{name: mem, exactly: {deviceClassName: cxl-pool, capacity: {requests: {memory: 512Mi}}}}]
+```
+   CXL_C1EE0001_SERIAL=0xc1ee0001 CXL_C1EE0001_SHARED=0 CXL_C1EE0001_MODE=numa
+   CXL_C1EE0001_SIZE=536870912 CXL_C1EE0001_NODE=3
+5. an exclusive pool device as dax: claim 4 plus
+```yaml
+config:
+- opaque: {driver: cxl-pool.generic, parameters: {apiVersion: cxl-pool.generic/v1alpha1, kind: DeviceConfig, mode: dax}}
+```
+   ... CXL_C1EE0001_MODE=dax CXL_C1EE0001_DAX=/dev/dax0.0 CXL_C1EE0001_READONLY=0
+6. join shared device 0xc1ae0001 (one of its hosts)
+```yaml
+requests: [{name: mem, exactly: {deviceClassName: cxl-pool-shared, selectors: [{cel: {expression: 'device.attributes["cxl-pool.generic"].serial == "0xc1ae0001"'}}]}}]
+```
+   CXL_C1AE0001_SERIAL=0xc1ae0001 CXL_C1AE0001_SHARED=1 CXL_C1AE0001_MODE=dax
+   CXL_C1AE0001_SIZE=268435456 CXL_C1AE0001_DAX=/dev/dax0.0 CXL_C1AE0001_READONLY=0
+7. the same device exclusively (the writer): claim 6 plus, in exactly,
+```yaml
+capacity: {requests: {hosts: "4"}}
+```
+8. the same device read-only (a reader): claim 6 plus
+```yaml
+config:
+- opaque: {driver: cxl-pool.generic, parameters: {apiVersion: cxl-pool.generic/v1alpha1, kind: DeviceConfig, readOnly: true}}
+```
+   ... CXL_C1AE0001_READONLY=1
+9. 256Mi as dax, local if a local memdev has room, else pool
+```yaml
+requests:
+- name: mem
+  firstAvailable:
+  - {name: local, deviceClassName: cxl-local, capacity: {requests: {memory: 256Mi}}}
+  - {name: pool,  deviceClassName: cxl-pool,  capacity: {requests: {memory: 256Mi}}}
+config:
+- opaque: {driver: cxl.generic,      parameters: {apiVersion: cxl.generic/v1alpha1,      kind: DeviceConfig, mode: dax}}
+- opaque: {driver: cxl-pool.generic, parameters: {apiVersion: cxl-pool.generic/v1alpha1, kind: DeviceConfig, mode: dax}}
+```
+10. steering to a pre-created CXL node after DRAM (the old demo)
+```yaml
+requests:
+- {name: dram, exactly: {deviceClassName: cxl-dram,   capacity: {requests: {memory: 64Mi}}}}
+- {name: cxl,  exactly: {deviceClassName: cxl-region, capacity: {requests: {memory: 64Mi}}}}
+config:
+- opaque: {driver: cxl.generic, parameters: {apiVersion: cxl.generic/v1alpha1, kind: MemoryPolicyConfig, memoryUseOrder: first-dram}}
+```
+   CXL_DRAM_MODE=numa CXL_DRAM_SIZE=67108864 CXL_DRAM_NODES=0-1
+   CXL_REGION0_MODE=numa CXL_REGION0_SIZE=67108864 CXL_REGION0_NODE=2
+11. a pod that may lease memory while it runs (template, so the claim follows the pod)
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata: {name: cxl-lease}
+spec: {spec: {devices: {requests: [{name: lease, exactly: {deviceClassName: cxl-lease}}]}}}
+```
+   CXL_LEASE_SOCKET=/run/cxl/cxl.sock, /usr/local/bin/cxl-request
+11.4 cxl-request command lines and what the program sees
+```
+cxl-request request --size 512Mi
+  -> {"lease":"1a2b3c4d","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,
+      "size":536870912,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa",...}}
+cxl-request request --source pool --size 512Mi --mode dax --exec python3 app.py
+  -> app.py sees CXL_C1EE0001_FD=3 CXL_C1EE0001_MODE=dax CXL_C1EE0001_SIZE=536870912
+     CXL_C1EE0001_SERIAL=0xc1ee0001 CXL_C1EE0001_SHARED=0 CXL_C1EE0001_READONLY=0 CXL_LEASE=1a2b3c4d
+cxl-request request --source local --size 64Mi --mode dax --read-only --exec prog
+cxl-request request --serial 0xc1ae0001                       # the shared device, exclusively (writer)
+cxl-request request --serial 0xc1ae0001 --shared --read-only --exec prog   # a reader
+cxl-request request --shared --size 256Mi                     # any shared device of 256Mi or more
+cxl-request request --size 1Gi --wait 0s --request-id r1      # asynchronous: Pending
+cxl-request env --lease 1a2b3c4d                              # KEY=VALUE lines (DAX, not FD)
+cxl-request fd --lease 1a2b3c4d --wait 60s --exec prog        # the fd again after a restart of prog
+cxl-request env --lease 1a2b3c4d --exec numactl --membind=2 prog   # a numa lease: CXL_C100E2E1_NODE=2
+cxl-request list
+cxl-request release --lease 1a2b3c4d
+cxl-request release --all
+```

@@ -237,6 +237,9 @@ func TestCreateDevice(t *testing.T) {
 	e := newTestEnv(t, "")
 	_, err := e.c.CreateDevice(ctx, api.DeviceCreate{Size: 100 << 20})
 	mustCode(t, err, api.CodeInvalidArgument)
+	if !strings.Contains(err.Error(), "size 100Mi is not a multiple of 256Mi") {
+		t.Fatalf("unexpected error text %q", err)
+	}
 	d, err := e.c.CreateDevice(ctx, api.DeviceCreate{Size: 256 << 20, Labels: map[string]string{"a": "b"}})
 	if err != nil {
 		t.Fatal(err)

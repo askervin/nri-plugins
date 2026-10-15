@@ -280,7 +280,7 @@ func (s *Server) addStaticDevice(dc DeviceConfig) error {
 		return fmt.Errorf("device %q: pool %q is not sharable", dc.Name, p.Name)
 	}
 	if int64(dc.Size)%CapacityMultiplier != 0 {
-		return fmt.Errorf("device %q: size must be a multiple of 256M", dc.Name)
+		return fmt.Errorf("device %q: size must be a multiple of %s", dc.Name, api.FormatSize(CapacityMultiplier))
 	}
 	path := dc.File
 	if path == "" {

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containers/nri-plugins/pkg/cxl/memctl"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/qemu"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/server"
@@ -90,8 +91,8 @@ func TestCLI(t *testing.T) {
 	if rc != 0 || !strings.Contains(out, "vm1") || !strings.Contains(out, "2/2") {
 		t.Fatalf("hosts: %d\n%s", rc, out)
 	}
-	rc, out, _ = runCLI(t, url, "create", "--size", "256M", "--shared", "--name", "s0", "--label", "a=b")
-	if rc != 0 || !strings.Contains(out, "s0") {
+	rc, out, _ = runCLI(t, url, "create", "--size", "256Mi", "--shared", "--name", "s0", "--label", "a=b")
+	if rc != 0 || !strings.Contains(out, "s0") || !strings.Contains(out, " 256Mi ") {
 		t.Fatalf("create: %d\n%s", rc, out)
 	}
 	rc, out, _ = runCLI(t, url, "-o", "json", "attach", "s0", "--host", "11111111-2222-3333-4444-555555555555")
@@ -127,8 +128,42 @@ func TestCLI(t *testing.T) {
 	if rc != 0 || strings.Count(out, "\n") != 1 {
 		t.Fatalf("attachments: %d\n%s", rc, out)
 	}
-	rc, _, errs = runCLI(t, url, "guest", "wait", "0xdeadbeef", "--timeout", "10ms")
-	if rc != exitConflict {
-		t.Fatalf("guest wait timeout: %d %s", rc, errs)
+	// a serial, hex or decimal, needs no server: the wait times out
+	for _, dev := range []string{"0xdeadbeef", "3735928559"} {
+		rc, _, errs = runCLI(t, "http://127.0.0.1:1", "guest", "wait", dev, "--timeout", "10ms")
+		if rc != exitConflict || !strings.Contains(errs, "serial 0xdeadbeef") {
+			t.Fatalf("guest wait %s timeout: %d %s", dev, rc, errs)
+		}
+	}
+}
+
+func TestGuestRegionMode(t *testing.T) {
+	_, out, _ := runCLI(t, "http://127.0.0.1:1", "--help")
+	if !strings.Contains(out, "guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]") ||
+		!strings.Contains(out, "create --size 256Mi ") {
+		t.Fatalf("usage:\n%s", out)
+	}
+	rc, _, errs := runCLI(t, "http://127.0.0.1:1", "guest", "region", "create", "0xdeadbeef")
+	if rc != exitUsage || !strings.Contains(errs, "error: guest region create DEVICE --mode numa|dax") {
+		t.Fatalf("region create without --mode: rc %d stderr %q", rc, errs)
+	}
+	// a wrong mode is a usage error before the device lookup: the server
+	// is unreachable and the device name unknown
+	for _, mode := range []string{"devdax", "ram"} {
+		rc, _, errs = runCLI(t, "http://127.0.0.1:1", "guest", "region", "create", "nosuchdevice", "--mode", mode)
+		if rc != exitUsage || !strings.HasPrefix(errs, `error: invalid mode "`+mode+`" (numa or dax)`) {
+			t.Fatalf("region create --mode %s: rc %d stderr %q", mode, rc, errs)
+		}
+	}
+	for _, mode := range []string{memctl.ModeNUMA, memctl.ModeDax} {
+		var out, errb bytes.Buffer
+		c := &cli{output: "json", stdout: &out, stderr: &errb}
+		if err := c.printRegionInfo(&memctl.RegionInfo{Memdev: "mem0", Region: "region0", Mode: mode, Node: 2}); err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil || got["mode"] != mode {
+			t.Fatalf("guest info JSON %q: %v", out.String(), err)
+		}
 	}
 }

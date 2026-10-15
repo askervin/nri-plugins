@@ -1,0 +1,798 @@
+e2e framework: reshaping Kubernetes clusters of existing VMs (vm-k8s-reinit)
+=============================================================================
+
+Written 2026-10-12 on the host that runs the VMs. Repository
+~/github.com/containers/nri-plugins, branch 5jQ-cxl. Nothing in the
+repository was changed for this design; the only file written is this one.
+Scratch files: ~/.claude/jobs/k8s-reinit/ (experiment script and its log).
+
+"measured" marks a fact checked with the command given; "assumption" marks
+one the implementing agent must verify (section 5 lists the experiments).
+
+
+0. Summary
+----------
+
+Goal: let a test turn the single-node clusters of e2e VMs into one
+multi-node cluster and back, during a test run, without recreating VMs.
+First user: test13-dra-shared-one-writer-many-readers under
+memory.test-suite/memory-policy/n4-cxl-shared-2/, which needs VM2
+(n4-cxl-shared-2-fedora-43-containerd) as control plane and VM1
+(n4-cxl-shared-1-fedora-43-containerd) as worker, pods on both.
+
+Recommendation in one paragraph: give every VM of a named VM network a
+second virtio NIC backed by a qemu multicast socket on the host loopback
+(-netdev socket,mcast=239.255.H.H:PORT,localaddr=127.0.0.1). It needs no
+host privileges, scales to N VMs, was measured to work between the two
+running VMs (ping 0.6 ms, TCP, 8 kB fragments), and leaks nothing to the LAN.
+New VMs get the NIC from the Vagrantfile; the two existing VMs get it by
+patching their Vagrantfile and restarting once (no reprovisioning). On top
+of that, a host-side bash function vm-k8s-reinit CLUSTER... (lib/k8s.bash,
+sourced by lib/test.bash) brings a set of VMs into the requested cluster
+shape with kubeadm reset/init/join, a per-node bridge CNI subnet with static
+host routes (hand-made host-gw), --node-ip on the inter-VM network, the
+control-plane taint removed, and the admin kubeconfig on every node. It is
+idempotent: when the clusters already have the requested shape it returns in
+a few seconds. Tests call it with the shape they need at their start; test13
+also restores the two single-node clusters at its end when it passes.
+
+The user's proposal "kubeadm reset all, init control planes, join workers" is
+right but not enough: without a second NIC the VMs cannot talk; without
+--node-ip and --apiserver-advertise-address both nodes register as
+192.168.76.9; without per-node CNI subnets and routes two nodes would hand
+out the same pod IPs; without extending NO_PROXY in the VMs kubectl would
+send API calls for the new subnet to the corporate proxy; and reset leaves
+CNI config, IPAM leases, cni0, iptables chains and ~/.kube/config behind.
+
+
+1. How the framework creates and uses VMs today
+-----------------------------------------------
+
+Files: test/e2e/run_tests.sh, run.sh, lib/{vm.bash,host.bash,command.bash,
+test.bash}, files/{Vagrantfile.in,env.in,10-bridge.conf.in,vagrant.ini.in},
+playbook/provision.yaml.
+
+1.1 Lifecycle (code read: run_tests.sh, run.sh, lib/vm.bash vm-setup)
+- run_tests.sh walks SUITE/POLICY/TOPOLOGY/TEST. For each topology it
+  derives vm_name = <topology dir basename>-<distro>-<runtime>
+  (vm-create-name), e.g. n4-cxl-shared-2-fedora-43-containerd, and
+  OUTPUT_DIR = test/e2e/<vm_name>. It exports every VAR.var.* file of the
+  suite, policy, topology and test dir as environment variables (so a
+  topology-level vm_network.var.sh would reach run.sh and vm-setup), builds
+  $code = lib/test.bash + all *.source.sh (suite -> test order) + code.var.sh,
+  and runs "run.sh test" per test with tee to <test out dir>/run.sh.output.
+  Verdict lines "Test verdict: PASS|FAIL|SKIP" become the summary.
+- run.sh: resolves versions, sources lib/vm.bash, sets SSH="ssh -F
+  $OUTPUT_DIR/.ssh-config ..." and VM_HOSTNAME=<vm_name>, calls
+  vm-setup OUTPUT_DIR VMNAME DISTRO TOPOLOGY_DIR TOPOLOGY, then
+  vm-nri-plugin-deploy (ansible playbook nri-<policy>-plugin-deploy.yaml:
+  rsync helm chart, import the plugin image, tag localhost/<plugin>:testing),
+  then evals $code (test-user-code), collects logs/coverage, prints the
+  verdict.
+- vm-setup (lib/vm.bash 391-670): on first use writes Vagrantfile.erb from
+  files/Vagrantfile.in (sed: SERVER_NAME, DISTRO, QEMU_MACHINE/CPU/SMP/MEM,
+  QEMU_EXTRA_ARGS from lib/topology2qemuopts.py plus -monitor, -qmp x2,
+  -uuid), Makefile, env (SSH_PORT random 50023-52071, proxy, CACHE_DIR,
+  E2E_NO_PROVISION, QEMU_BIN, VM_UUID = uuid5(vm name)), inventory/
+  vagrant.ini; "vagrant init --template Vagrantfile BOX" creates the
+  Vagrantfile; "vagrant up --provider qemu" boots and provisions (ansible
+  provision.yaml) unless the VM comes from a cached box; then it writes
+  .ssh-config (Host node <vmname>, 127.0.0.1:SSH_PORT, ControlMaster) and
+  waits for node and DNS readiness for cached boxes.
+- vagrant-qemu 0.3.12 (measured: vagrant plugin list) builds the qemu
+  command line on every start from provider_config (code read:
+  action/start_instance.rb -> driver.rb start): one "-device
+  <net_device>,netdev=net0" and one "-netdev user,id=net0,hostfwd=tcp::
+  <SSH_PORT>-:22,<extra_netdev_args>"; everything else comes from
+  extra_qemu_args. Consequence: editing extra_qemu_args in an existing VM's
+  Vagrantfile changes the qemu command line at the next vagrant up, the
+  disk is untouched; a VM does not need to be recreated for a new NIC.
+
+1.2 kubeadm init, CNI, join-command, kubeconfig (provision.yaml 412-565,
+    measured in the VMs)
+- provision.yaml: installs kubelet/kubeadm/kubectl, containerd (NRI enabled
+  by files/containerd-nri-enable, CNI binaries at /usr/libexec/cni), writes
+  /etc/cni/net.d/10-bridge.conf from files/10-bridge.conf.in with
+  CNI_NETWORK=10.217.0.0/16, runs "kubeadm init --pod-network-cidr=
+  10.217.0.0/16", copies admin.conf to /home/vagrant/.kube/config and
+  /root/.kube/config, removes the control-plane taint ("kubectl taint nodes
+  --all node-role.kubernetes.io/control-plane-"), runs "kubeadm token
+  create --print-join-command" and writes it to <outdir>/join-command.
+- join-command has no consumer in the repository (measured: grep -rn
+  join-command test/e2e --include=*.sh,*.bash,*.yaml,*.in,*.md: only
+  provision.yaml writes it). The 24 h token of both VMs expired on Oct 3.
+- measured, VM2 (ssh ... 'kubectl -n kube-system get cm kubeadm-config -o
+  yaml'): podSubnet 10.217.0.0/16, serviceSubnet 10.96.0.0/12, local etcd
+  /var/lib/etcd, kubernetesVersion v1.37.1, no apiServer/controllerManager/
+  scheduler extra args, no feature gates. kube-proxy cm: mode iptables,
+  clusterCIDR 10.217.0.0/16. kubelet-config cm: cgroupDriver systemd,
+  clusterDNS 10.96.0.10, no featureGates.
+- measured, both VMs: /var/lib/kubelet/kubeadm-flags.env is
+  KUBELET_KUBEADM_ARGS="" and /etc/sysconfig/kubelet is KUBELET_EXTRA_ARGS=
+  (empty). systemctl cat kubelet: the 10-kubeadm.conf drop-in loads both
+  files and runs kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS
+  $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS. kube-apiserver manifest has
+  --advertise-address=192.168.76.9, --etcd-servers=https://127.0.0.1:2379;
+  kubelet.conf server https://192.168.76.9:6443; /etc/kubernetes/pki has
+  ca.key (control plane); /var/lib/etcd/member exists.
+- measured, VM2 (sudo ls -la /etc/cni/net.d; sudo sh -c 'cat
+  /etc/cni/net.d/*'): one file 10-bridge.conf, type bridge, isGateway,
+  ipMasq, host-local subnet 10.217.0.0/16, route 0.0.0.0/0. cni0 has
+  10.217.0.1/16; /var/lib/cni/networks/demonet holds leases 10.217.0.2,
+  10.217.0.3 (the two coredns pods). Note that the node's podCIDR from the
+  controller-manager is 10.217.0.0/24 (kubectl get nodes -o json) while the
+  CNI hands out from the /16: fine for one node, wrong for two.
+- measured (kubectl get nodes -o wide on both): each VM is a Ready
+  single-node cluster, role control-plane, taints null, INTERNAL-IP
+  192.168.76.9 on both, v1.37.1, containerd://2.4.1, kernel 7.3.0-rc4.
+  kubectl get resourceslices,deviceclasses: none; helm list -A: empty;
+  no kubelet-cxl-plugin or fake-cxl-pool-controller units running.
+- measured: images present on both VMs (sudo crictl images): busybox:latest,
+  python:3-alpine, nri-memory-policy (localhost/memory-policy:testing),
+  coredns v1.14.6, etcd 3.7.0-0, kube-apiserver/-controller-manager/-proxy/
+  -scheduler v1.37.1, pause 3.10.2 (VM2 also pause 3.10). containerd
+  config.toml sandbox = registry.k8s.io/pause:3.10.2. So a re-init or a
+  join pulls nothing.
+
+1.3 How tests address VMs (code read: lib/vm.bash, pool.source.sh,
+    dra.source.sh)
+- vm-command CMD / vm-command-q: "$SSH $VM_HOSTNAME sudo bash -l <<<CMD";
+  the test VM is always the VM of the topology dir of the test. vm-put-file,
+  vm-monitor (socat on $OUTPUT_DIR/monitor.sock), vm-qmp ($OUTPUT_DIR/
+  qmp-e2e.sock), vm-reboot, vm-qemu-pid likewise target $OUTPUT_DIR.
+  Output of every command is logged to <test out dir>/commands/NNNN-vm.
+- Another VM is reached only by convention, in pool.source.sh of
+  n4-cxl-shared-2: POOL_VM1_DIR = $(dirname $OUTPUT_DIR)/n4-cxl-shared-1-
+  <distro>-<runtime>; other-vm-command VMDIR CMD runs "ssh -F
+  $VMDIR/.ssh-config node sudo bash -l" with command-start/-end logging
+  (label vm1 -> commands/NNNN-vm1); other-vm-command-q, other-vm-put-file,
+  pool-vm-qmp/-monitor, pool-vagrant-up (vagrant up --no-provision + ssh
+  wait), pool-host-wait (start VM1 if down, verify hostname),
+  pool-vm-restart. dra.source.sh dispatches dra-vm-command VMDIR to
+  pool-vm-command when it exists, else only $OUTPUT_DIR is allowed.
+- "sudo bash -l" matters: the login shell exports the proxy variables
+  (measured, VM2: sudo bash -l -c env | grep -i proxy -> HTTPS_PROXY=
+  http://proxy-chain.intel.com:916, NO_PROXY=localhost,127.0.0.1,
+  192.168.76.0/24,10.96.0.0/12,10.217.0.0/16; from /etc/profile.d/proxy.sh
+  and /etc/environment written by vagrant-proxyconf). kubectl honours them.
+
+
+2. Inter-VM networking
+----------------------
+
+2.1 Today (measured)
+- Vagrantfile: qemu.net_device = "virtio-net-pci",
+  qemu.extra_netdev_args = "net=192.168.76.0/24,dhcpstart=192.168.76.9".
+  qemu command line of VM2 (tr '\0' ' ' < /proc/1865502/cmdline):
+  -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp::
+  50479-:22,net=192.168.76.0/24,dhcpstart=192.168.76.9. All 8 qemus on the
+  host have the identical netdev (only the hostfwd port differs).
+- In both VMs (ip -br addr; ip route; ip -br link): enp0s1 192.168.76.9/24,
+  default via 192.168.76.2, MAC 52:54:00:12:34:56 on BOTH VMs (qemu default
+  MAC, no mac= given). HMP "info network": one nic, type user. Slirp VMs
+  cannot reach each other; they reach the host at 192.168.76.2.
+- PCI (HMP info pci / info qtree -b; lspci -t in the VM): pcie.0 holds
+  00:01.0 the slirp NIC, 00:02.0 pcie-root-port rp_disk (occupied by
+  virtio_disk0), 00:03.0/00:04.0 pxb-cxl cxlhb0/cxlhb1. The 8 cxl-downstream
+  ports cxlsw_ds{0..3}_usrp0hb{0,1} are empty, hotplug-capable PCIe buses.
+  Assumption (q35 semantics, not tested): pcie.0 itself does not accept
+  hotplug, so a hot-added NIC needs a free root or downstream port; the only
+  free ones are the CXL downstream ports.
+- Host (measured): sudo -n true -> rc 0 (passwordless sudo exists here);
+  /dev/net/tun is crw-rw-rw-; no qemu-bridge-helper; no bridges besides
+  docker0; qemu is the patched build 11.1.50 (v11.1.0-1741-gff076b1e6c);
+  "qemu-system-x86_64 -netdev help": socket stream dgram hubport tap passt
+  user l2tpv3 bridge vhost-user vhost-vdpa.
+- NetworkManager manages enp0s1 as the volatile profile "Wired connection 1"
+  (nmcli -t con show; /etc/NetworkManager/system-connections is empty), cni0
+  is "connected (externally)", veths unmanaged.
+
+2.2 Options
+a) qemu socket netdev, multicast (-netdev socket,id=X,mcast=G:P,localaddr=
+   127.0.0.1). Hub semantics: every qemu that joins G:P sees every frame.
+   No privileges. N VMs. Chosen.
+b) qemu socket listen/connect, or stream/dgram over unix or TCP: point to
+   point, exactly two VMs, start-order dependency. Rejected.
+c) tap + host bridge: best performance, but needs root at every VM start
+   (ip tuntap add ... user $USER; ip link set master; or qemu-bridge-helper,
+   which is not installed). Passwordless sudo exists on this host but cannot
+   be assumed elsewhere (CI). Keep as a possible later backend.
+d) multicast without localaddr: works, but the kernel routes the group via
+   the default interface (measured: ip route get 239.255.76.1 -> dev eth0
+   src 10.102.73.81; with "from 127.0.0.1 oif lo" -> dev lo). Frames would
+   reach the LAN, and two hosts on one LAN with the same group would bridge
+   their VMs. Rejected.
+e) slirp tricks (hostfwd of 6443 and reach the API server via 192.168.76.2):
+   no L2 between nodes, both nodes keep 192.168.76.9 as InternalIP, kube-
+   proxy/coredns/kubectl logs break. Rejected.
+f) hubport: joins netdevs inside one qemu only. Not applicable.
+
+2.3 Evidence for (a): measured with ~/.claude/jobs/k8s-reinit/
+    nic-mcast-experiment.sh (log: nic-mcast-experiment.log), both VMs
+    running their clusters, everything undone afterwards:
+- HMP "netdev_add socket,id=e2enet,mcast=239.255.76.1:17600,localaddr=
+  127.0.0.1" on both qemus: info network shows "e2enet: index=0,type=
+  socket,socket: mcast=239.255.76.1:17600". Host: ss -ulnp -> two UDP
+  sockets 239.255.76.1:17600 owned by qemu pids 1865502 and 1894118;
+  ip maddr show -> "1: lo  inet 239.255.76.1 users 2" and no membership on
+  eth0: the traffic stays on the loopback.
+- HMP "device_add virtio-net-pci,netdev=e2enet,id=e2enic,mac=52:54:00:76:
+  00:0N,bus=cxlsw_ds3_usrp0hb1": both guests got ens9 (lspci 1e:00.0 Virtio
+  1.0 network device) within 4 s; NetworkManager created a volatile "Wired
+  connection 2" trying DHCP.
+- nmcli dev set ens9 managed no; ip addr add 10.76.0.1/24 (VM1) and
+  10.76.0.2/24 (VM2): ping VM1->VM2 5/5, rtt 0.608/0.673/0.790 ms; ping
+  VM2->VM1 -s 1400 3/3 and -s 8000 (fragmented) 2/2; python3 -m http.server
+  on VM2 10.76.0.2:18080, curl from VM1: "http 200 in 0.0038s"; ip neigh
+  shows 52:54:00:76:00:02 REACHABLE.
+- Undo: device_del e2enic completed on both in 8 s (patched qemu, power
+  controller on the downstream ports), netdev_del e2enet; afterwards ip -br
+  link, nmcli con show (the volatile profile vanished with the device) and
+  info network are identical to the "before" output on both VMs; no UDP
+  socket on 17600 remains.
+- Consequence for the pool: a NIC hot-added into a cxl-downstream port
+  takes a pool slot. pkg/qemu/types.go IsSlot() is true for every
+  downstream port and Occupant() reports the first child whatever its
+  driver (code read), so the fake-cxl-pool-server would see an unknown
+  occupant there. Hot-add into a CXL slot is therefore only a diagnostic,
+  not the way to equip existing VMs.
+
+2.4 Choice and plan
+- A VM network is named by the variable vm_network (set per topology dir in
+  vm_network.var.sh, the same name "cxl-pool" in n4-cxl-shared-1 and -2;
+  unset for every other topology: no second NIC, nothing changes for them).
+- Group and port are derived, not configured: python3 sha256 of
+  "<uid>:<realpath of the output root (test/e2e)>:<vm_network>" ->
+  239.255.<b0>.<b1> and port 17600 + (b2*256+b3) % 2000. Including the uid
+  and the checkout path keeps two users, or two checkouts of one user (this
+  host runs VMs from ~/github.com/containers and ~/github.com/askervin), on
+  separate segments. Override: vm_network_mcast=GROUP:PORT. The derived
+  value is recorded in <vmdir>/env as VMNET_MCAST, with VMNET_NAME.
+- MAC: 52:54:00:<bytes 0-2 of VM_UUID>, VM_UUID being the uuid5 of the VM
+  name already recorded in env (lib/vm.bash 474-483). Distinct per VM
+  name; e.g. VM2 1b6d55a2-... -> 52:54:00:1b:6d:55, VM1 b6a78455-... ->
+  52:54:00:b6:a7:84. Recorded as VMNET_MAC.
+- IP: 10.76.<byte3>.<byte4>/16 of VM_UUID (map 0.0 and 255.255 away), e.g.
+  VM2 (..a2ae..) -> 10.76.162.174, VM1 (..55ed..) -> 10.76.85.237. Recorded
+  as VMNET_IP. 10.76.0.0/16 overlaps none of 192.168.76.0/24, 10.96.0.0/12,
+  10.217.0.0/16. vm-k8s-reinit fails if two VMs of one call share an IP
+  (negligible probability; the check costs nothing). Alternative: assign
+  10.76.0.<n> by position in the vm-k8s-reinit call; simpler, but the IP of
+  a VM would then depend on the caller.
+- qemu arguments (appended to QEMU_EXTRA_ARGS by vm-setup when vm_network
+  is set, so they end up in Vagrantfile.erb/Vagrantfile):
+    "-netdev", "socket,id=vmnet0,mcast=GROUP:PORT,localaddr=127.0.0.1",
+    "-device", "pcie-root-port,id=rp_vmnet,bus=pcie.0,port=0xa,chassis=6",
+    "-device", "virtio-net-pci,netdev=vmnet0,bus=rp_vmnet,mac=MAC"
+  A root port of its own, like rp_disk, keeps the NIC off the CXL slots and
+  makes it a hot-removable PCIe device. The guest interface name depends on
+  the PCI path; always find the interface by MAC.
+- Guest configuration, lazily and idempotently by the framework
+  (vm-vmnet-ensure VMDIR, section 3.3): a NetworkManager profile keyed by
+  MAC: nmcli con add type ethernet con-name e2e-vmnet 802-3-ethernet.
+  mac-address MAC ipv4.method manual ipv4.addresses IP/16 ipv6.method
+  disabled connection.autoconnect yes (persisted under /etc/NetworkManager/
+  system-connections, survives reboots; assumption: nmcli on Fedora 43
+  cloud image accepts this, measured only "nmcli dev set managed no" and
+  manual ip addr). Routes to other nodes' pod subnets are added to the same
+  profile (+ipv4.routes), so they survive a VM restart.
+- NO_PROXY: append 10.76.0.0/16 (idempotent sed) to /etc/environment,
+  /etc/profile.d/proxy.sh and /etc/systemd/system/containerd.service.d/
+  proxy.conf in every VM of a network, and to NO_PROXY in files/env.in for
+  new VMs. Without this, kubectl in a login shell would send
+  https://10.76.x.y:6443 to the proxy (section 1.3). Go's httpproxy
+  accepts CIDRs in NO_PROXY (the existing entries already rely on it).
+- Existing VMs: vm-vmnet-ensure patches Vagrantfile and Vagrantfile.erb
+  (insert the three argument pairs before the "-monitor" pair of
+  extra_qemu_args; idempotent on "id=vmnet0"), records VMNET_* in env, and
+  if the running qemu lacks the NIC (no interface with VMNET_MAC in the
+  guest) restarts the VM (vm-reboot for $OUTPUT_DIR, the pool-vm-restart
+  logic for others) and waits for ssh and the node. Cost: one restart per
+  VM, about 1-2 min each (assumption; vm-reboot timeout defaults 60 s,
+  pool-vm-restart waits up to 180 s for ssh), no provisioning. Recreating
+  the VMs instead would cost the kernel RPM install and a fresh test00-up
+  per VM (tens of minutes) and is not needed.
+- Box cache: files/Vagrantfile.in and files/env.in are in BOX_RECIPE_FILES;
+  changing them invalidates cached boxes once (re-provision on next use).
+  Acceptable; say so in the commit message.
+
+
+3. vm-k8s-reinit
+----------------
+
+3.1 Where
+- New file test/e2e/lib/k8s.bash, sourced at the end of lib/test.bash (the
+  test helper chain), documented in the "# script API" style and added to
+  script_source in run.sh so that "./run.sh help" lists it. lib/test.bash
+  gains the generic multi-VM primitives (3.3) that pool.source.sh then wraps
+  or drops.
+- VM-creation side (vmnet qemu args, env records, vm-vmnet-ensure) in
+  lib/vm.bash next to vm-setup, since it edits Vagrantfiles and env.
+
+3.2 API
+  vm-k8s-reinit [--force] [--timeout SECS] [--no-restore-check] CLUSTER...
+    CLUSTER: a string of VM names or VM output directories, separated by
+             spaces or commas. The first VM is the control plane, the rest
+             are workers. Names resolve to $(dirname "$OUTPUT_DIR")/NAME.
+    Examples:
+      vm-k8s-reinit "$OUTPUT_DIR"                      # test VM alone
+      vm-k8s-reinit "$POOL_VM2_DIR" "$POOL_VM1_DIR"    # two single-node clusters
+      vm-k8s-reinit "$POOL_VM2_DIR $POOL_VM1_DIR"      # one cluster: VM2 cp, VM1 worker
+    Fails the test (error) when a cluster cannot be brought into shape;
+    returns 0 and prints the shape otherwise. Prints "already in shape" and
+    returns in a few seconds when nothing has to change. --force rebuilds
+    even then (fresh etcd, no CRDs, no helm releases).
+  vm-k8s-shape VMDIR
+    Print the live shape of a VM in one line, read in the VM:
+      control-plane NAME=IP:Ready[:tainted] ...   (all nodes of its cluster)
+      worker SERVER-URL
+      none
+  vm-k8s-in-shape CLUSTER...
+    Return 0 if every cluster already has the requested shape (used by
+    vm-k8s-reinit; tests can use it to skip work).
+  vm-k8s-node-ip VMDIR
+    Print VMNET_IP of the VM from its env.
+  Variables: K8S_POD_CIDR=10.217.0.0/16 (as provision.yaml), K8S_VMNET_CIDR=
+  10.76.0.0/16, K8S_REINIT_TIMEOUT=600, K8S_CNI_TEMPLATE=files/10-bridge.
+  conf.in.
+  Shape definition that vm-k8s-in-shape checks (one ssh per VM):
+  - control plane: /etc/kubernetes/admin.conf exists; "kubectl get nodes"
+    lists exactly the cluster's VM names, all Ready=True; the control-plane
+    node has no node-role.kubernetes.io/control-plane taint; for a
+    multi-node cluster every node's InternalIP equals its VMNET_IP, for a
+    single-node cluster the InternalIP is anything (192.168.76.9 today).
+  - worker: no admin.conf of its own but /etc/kubernetes/kubelet.conf with
+    server https://<control plane VMNET_IP>:6443, and it is Ready in the
+    control plane's list. (A worker whose control plane was rebuilt keeps a
+    plausible kubelet.conf but is absent or NotReady there: mismatch.)
+  - a VM that is in no cluster of the call is not touched and not checked.
+
+3.3 Generic multi-VM primitives (lib/test.bash; today in pool.source.sh)
+  vmdir-of NAME, vmdir-label VMDIR (vm for $OUTPUT_DIR, else the topology
+  prefix, e.g. vm1 for n4-cxl-shared-1-...), vmdir-command VMDIR CMD
+  (vm-command for $OUTPUT_DIR, else ssh -F VMDIR/.ssh-config node sudo bash
+  -l with command-start/-end, label in commands/NNNN-<label>),
+  vmdir-command-q, vmdir-put-file VMDIR SRC DST, vmdir-up VMDIR (vagrant up
+  --no-provision, write .ssh-config if missing, wait for ssh; from
+  pool-vagrant-up), vmdir-restart VMDIR (vm-reboot for $OUTPUT_DIR, else
+  shutdown/halt/up as pool-vm-restart), vmdir-wait VMDIR HINT (from
+  pool-host-wait: start if down, verify hostname == basename). pool.source.sh
+  keeps its current names as one-line wrappers so test10-12 do not change.
+
+3.4 Semantics of vm-k8s-reinit, step by step
+  0. Parse clusters; resolve VM dirs; require Vagrantfile and .ssh-config
+     (else error with the "create it with test00-up" hint); vmdir-wait each
+     VM (starts VMs that are down); read VMNET_IP/VMNET_MAC from env for
+     multi-node clusters; check IP uniqueness within the call.
+  1. vm-k8s-in-shape: if every cluster matches and no --force, print and
+     return. Clusters that match are left alone even when others do not.
+  2. For every VM of a cluster to rebuild (the whole cluster is rebuilt as a
+     unit, a fresh CA cannot keep old workers), in the VM as root:
+       systemctl stop kubelet-cxl-plugin fake-cxl-pool-controller; systemctl
+         reset-failed ...; true          # DRA units of an earlier test
+       kubeadm reset -f --cleanup-tmp-dir --cri-socket unix://$k8scri_sock
+       iptables -F; iptables -t nat -F; iptables -t mangle -F; iptables -X
+         (and ip6tables, errors ignored; kube-proxy mode is iptables, measured)
+       ip link del cni0 2>/dev/null; rm -rf /var/lib/cni/networks/*
+       crictl rmp -fa 2>/dev/null; true  # leftover sandboxes, if any
+       rm -f /root/.kube/config /home/vagrant/.kube/config
+     Assumption (kubeadm documentation; verify with "kubeadm reset --dry-run
+     -f", section 5 step 0): reset removes /etc/kubernetes/{manifests,pki,
+     *.conf}, the contents of /var/lib/kubelet and /var/lib/etcd (local
+     etcd found through the manifest), stops kubelet and removes the pods
+     through CRI; it leaves CNI config, IPAM leases, cni0, iptables and
+     kubeconfigs, hence the lines above. Note /var/lib/kubelet/plugins/
+     cxl.generic and cxl-pool.generic (measured to exist on VM2) go with
+     it: the node plugin must be stopped first and dra-install re-creates
+     its state.
+  3. Multi-node clusters only: vm-vmnet-ensure on every VM (NIC present in
+     qemu and in the guest by MAC, NM profile with VMNET_IP, NO_PROXY
+     extended; may restart a VM once, section 2.4), then a connectivity check:
+     ping from the control plane to every worker's VMNET_IP (fail fast with
+     "inter-VM network" in the message). Both single-node and multi-node:
+     write /etc/sysconfig/kubelet with KUBELET_EXTRA_ARGS=--node-ip=VMNET_IP
+     for multi-node, KUBELET_EXTRA_ARGS= for single-node (the original
+     state, measured). The drop-in reads this file (measured), and it is
+     the file kubeadm leaves alone; the alternative is nodeRegistration.
+     kubeletExtraArgs in a --config file.
+  4. Control plane:
+       kubeadm init --pod-network-cidr=$K8S_POD_CIDR --node-name=$(hostname)
+         [--apiserver-advertise-address=VMNET_IP]        # multi-node only
+       install admin.conf to /root/.kube/config and /home/vagrant/.kube/
+         config (chown vagrant), as provision.yaml does
+       kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+       kubeadm token create --print-join-command  -> JOIN; also written to
+         <cpdir>/join-command on the host (same place provision.yaml uses)
+     CNI on the control plane: single-node: instantiate files/10-bridge.
+     conf.in with CNI_NETWORK=$K8S_POD_CIDR (exactly today's file).
+     Multi-node: wait for .spec.podCIDR of the node (kubectl get node NAME
+     -o jsonpath={.spec.podCIDR}; the controller-manager allocates /24s from
+     the /16, measured 10.217.0.0/24 for the first node) and instantiate the
+     template with that subnet. The node becomes Ready once the file exists.
+     Alternative to the taint command: nodeRegistration.taints: [] in an
+     InitConfiguration. Alternative to flags altogether: a kubeadm --config
+     file, needed only if feature gates or extra apiserver args are ever
+     required (none today, measured).
+  5. Workers, in order: "$JOIN --node-name=$(hostname)"; copy the control
+     plane's admin.conf to the worker's /root/.kube/config and /home/vagrant/
+     .kube/config through the host (vmdir-command-q cat on the cp, vmdir-
+     put-file on the worker), so kubectl and the DRA components work on
+     every node; wait for the worker's podCIDR; on every other node of the
+     cluster add the route "podCIDR via worker VMNET_IP" (ip route replace
+     for now, nmcli con modify e2e-vmnet +ipv4.routes for persistence; the
+     control plane's podCIDR route is added to each worker the same way);
+     then write the worker's 10-bridge.conf with its podCIDR. Order: routes
+     before the worker's CNI file, so that no pod starts on the worker
+     before the cluster can reach it (coredns may land there).
+     ipMasq stays true: cross-node pod traffic is SNATed to the node's VMNET
+     IP, which is fine for these tests and keeps pod-to-outside working.
+  6. Wait (kubectl on the control plane, timeouts from --timeout):
+       kubectl wait --for=condition=Ready node/NAME --timeout=180s  (each)
+       kubectl -n kube-system rollout status ds/kube-proxy --timeout=120s
+       kubectl -n kube-system wait deploy/coredns --for=condition=Available
+         --timeout=120s     (same check as wait-for-dns-ready)
+       verify each node's InternalIP (multi-node: == VMNET_IP) and that the
+         control plane has no control-plane taint
+     Optional, off by default (k8s_reinit_smoke=1): a cross-node smoke test,
+     one busybox pod per node (nodeSelector kubernetes.io/hostname) pinging
+     the other's pod IP and resolving kubernetes.default.
+  7. Report: print one line per cluster, "cluster <cp>: control plane <cp>
+     (<ip>), workers <w> (<ip>), ready in <n> s"; save "kubectl get nodes -o
+     wide" and "kubectl get pods -A -o wide" to $TEST_OUTPUT_DIR/k8s-
+     cluster.<cp label>.txt. Every VM command is already in commands/NNNN-*.
+
+3.5 Error handling and restoring
+- Any failed step calls error (fails the test) after printing diagnostics:
+  the kubeadm output is in the command log; add journalctl -u kubelet -n 50
+  of the failing VM and kubectl get nodes,pods -A -o wide of the control
+  plane when it answers. VMs are left as they are (the framework convention
+  is to leave failures for debugging); the next vm-k8s-reinit call repairs
+  them, because reset is idempotent on a half-initialized node and shape
+  detection sees the mismatch.
+- Restoring the original single-node clusters: it is the same call with a
+  different shape, vm-k8s-reinit "$VM2" "$VM1". Who calls it:
+  (a) every test that depends on a shape declares it at its start (test10,
+      test12: vm-k8s-reinit "$VM2"; test11: vm-k8s-reinit "$VM2" "$VM1";
+      test13: vm-k8s-reinit "$VM2 $VM1"), so that a failed test13 never
+      breaks the next test; this is cheap when the shape is right; and
+  (b) test13 restores the two single-node clusters at its end on success,
+      so that a human finds the VMs as before; not in its EXIT trap, to
+      leave a failure for debugging (set k8s_restore=no to skip even on
+      success while developing). Tests which do not use Kubernetes
+      (test00-up, test01-shared-cxl) need nothing.
+  Alternative considered: a topology-level *.source.sh hook enforcing a
+  default shape before every test. The *.source.sh chain runs before the
+  test code with all *.var.* exported, so a test-level k8s_clusters.var.sh
+  could override a default. It costs an ssh round trip per test everywhere
+  and hides a slow rebuild in test setup; explicit calls are preferred.
+  Decide before implementing (open question 1).
+- Idempotency: calling vm-k8s-reinit twice with the same clusters does the
+  work once; the second call returns after vm-k8s-in-shape (about one ssh
+  and one kubectl per VM, 2-5 s; assumption).
+- Timing (assumption, to be measured in step 0/3 of section 5): reset 10 s,
+  init 40-90 s with images present, join 20-40 s, nodes Ready plus DNS
+  30-60 s; a two-node reshaping about 3-5 min, the restore the same. A test
+  that flips the shape pays it once; two consecutive tests with the same
+  shape pay nothing.
+
+3.6 Interactions
+- Images: containerd keeps its image store across kubeadm reset; nothing is
+  pulled (measured image lists, section 1.2). The NRI plugin image is
+  imported only on the test VM by vm-nri-plugin-deploy; a DaemonSet of an
+  NRI plugin on a two-node cluster would need the image on the worker too
+  (imagePullPolicy Never). vm-play VMNAME PLAYBOOK VAGRANTDIR already takes
+  the VM dir, so a helper vmdir-nri-plugin-deploy VMDIR POLICY is one line
+  when a test needs it. test13 does not launch an NRI plugin.
+- Proxy cache: Vagrantfile.proxy.cache and the cached version variables are
+  untouched; the only proxy change is NO_PROXY += 10.76.0.0/16 (2.4).
+- containerd: kubeadm does not touch /etc/containerd; NRI stays enabled; the
+  systemd-cgroup drop-in stays. The containerd proxy.conf edit needs a
+  containerd restart only if a pull to 10.76.0.0/16 ever mattered; it does
+  not, so edit the file and skip the restart (it applies at the next boot).
+- NRI plugins deployed by tests, helm releases, CRDs (balloonspolicies...),
+  DeviceClasses, ResourceSlices, namespaces: all cluster state, all gone with
+  reset. Tests launch what they need after vm-k8s-reinit (they already do:
+  helm-launch, dra-install per test). The SKILL.md troubleshooting item
+  about stale CRDs becomes moot after a --force rebuild.
+- DRA units: kubelet-cxl-plugin and fake-cxl-pool-controller are transient
+  systemd units with Restart=no (dra.source.sh 258-260); reset wipes their
+  state under /var/lib/kubelet/plugins; vm-k8s-reinit stops them before
+  reset; dra-install starts them again.
+- vm-reboot / wait-for-node-ready (lib/vm.bash 1725) assume the test VM
+  runs kube-apiserver (crictl ps | grep kube-apiserver) and waits for
+  nodes/$VM_HOSTNAME: keep the VM of the test as the control plane of its
+  cluster (test13 does: VM2). run.sh test-user-code runs kubectl on the
+  test VM: fine on the control plane.
+- fake-cxl-pool: the server config lists both VM names (pool.source.sh
+  pool-server-start); the controller maps Nodes to pool hosts by systemUUID
+  (hosts.go mapHosts, code read), which both VMs expose (measured: VM1
+  /sys/class/dmi/id/product_uuid = b6a78455-edb1-558d-8cf1-01a259f76e97 ==
+  VM_UUID). One controller in a two-node cluster therefore maps both nodes
+  without changes.
+
+3.7 Is "kubeadm reset all, init, join" enough? What more is needed
+  needed: inter-VM NIC + addresses + NO_PROXY; --node-ip on every node of a
+    multi-node cluster (else both InternalIPs are 192.168.76.9 and the API
+    server reaches the wrong kubelet for logs/exec); --apiserver-advertise-
+    address on the control plane; per-node CNI subnet = node podCIDR plus
+    routes (bridge CNI has no cross-node awareness); cni0 and IPAM lease
+    cleanup; iptables flush; kubeconfig copies (root and vagrant, on every
+    node); stopping the DRA units before reset; waiting for Ready, kube-proxy
+    and coredns; restoring KUBELET_EXTRA_ARGS and the /16 CNI subnet when a
+    VM goes back to single-node.
+  not needed: etcd data handling (reset clears the local member), new
+    certificates (init regenerates), kubelet config.yaml (init/join write
+    it), containerd changes, image pulls, feature gates (none in use,
+    measured), the join-command file (no consumer; regenerate anyway).
+
+
+4. Effect on test structure
+---------------------------
+
+4.1 Declaring the shape
+  test13's code.var.sh (n4-cxl-shared-2/test13-dra-shared-one-writer-many-
+  readers/) states its needs the way test10-12 state theirs, in the
+  preconditions block:
+    pool-host-wait "$VM1" "create VM1 first: ... n4-cxl-shared-1/test00-up"
+    pool-vm-require "$VM2" ...; pool-vm-require "$VM1" n4-cxl-shared-1
+    pool-vm-tools-install / pool-vm-reset on both  (pool-vm-reset may restart
+      a VM: do it before vm-k8s-reinit, a restart does not change the shape
+      but costs the wait)
+    vm-k8s-reinit "$VM2 $VM1"            # VM2 control plane, VM1 worker
+    pool-server-start "<shared0 ...>"; pool-client-install "$VM2" "$VM1"
+    dra-build; dra-install "$VM2"; dra-install-node "$VM1"
+    dra-pull-images / dra-dax-tool-install (ConfigMap once: one cluster)
+    dra-trace-start "$VM2" "$VM1"
+  and at its end, after dra-cleanup and pool-cleanup:
+    [ "${k8s_restore:-yes}" == no ] || vm-k8s-reinit "$VM2" "$VM1"
+  test10 and test12 add vm-k8s-reinit "$VM2", test11 adds vm-k8s-reinit
+  "$VM2" "$VM1" after pool-host-wait, so that each is immune to the shape
+  the previous test left. The topology dirs n4-cxl-shared-1 and -2 get
+  vm_network.var.sh containing cxl-pool.
+
+4.2 Reaching the worker
+  The test uses VM dirs as today: $VM1 = $POOL_VM1_DIR, $VM2 = $OUTPUT_DIR;
+  dra-vm-command "$VM1" ... runs on the worker over its own ssh config, with
+  kubectl working there because vm-k8s-reinit installed the admin kubeconfig.
+  kubectl against the cluster can run on either VM; prefer the control plane
+  ($VM2, vm-command) for cluster-level queries and the worker for node-local
+  checks (cxl-dump, cgroups, journal of kubelet-cxl-plugin). Pods are pinned
+  with nodeSelector kubernetes.io/hostname: <VM name> (node names are the VM
+  names, measured).
+
+4.3 dra.source.sh changes for one cluster with two nodes
+- dra-install VMDIR stays as it is (controller + node plugin, DeviceClasses,
+  namespace reset, waits) for the control plane of a cluster; test11 keeps
+  calling it on both VMs because they are two clusters.
+- New dra-install-node VMDIR: node plugin only (same binaries and flags,
+  --node-name <VM name>, KUBECONFIG=/root/.kube/config), no controller, no
+  DeviceClasses, no namespace reset; waits for the cxl.generic slice of that
+  node and the cxl-pool.generic plugin socket; records DRA_INSTALLED_ROLE
+  [VMDIR]=node so that dra-uninstall on it only stops the unit and cleans
+  plugin state (the cluster-level deletion happens through the control
+  plane's dra-uninstall). Two controllers in one cluster would publish the
+  same pool ResourceSlice and fight over it; exactly one per cluster.
+- dra-trace-start: skip the kube-scheduler collector on a VM without a
+  kube-scheduler-<name> pod (workers) and count the collectors it started
+  instead of expecting 8.
+- dra-wait/dra-json/dra-apply take VMDIR and work unchanged on either node.
+
+4.4 test13 flow (sketch for the implementer)
+  A  cluster: kubectl get nodes shows both Ready; ResourceSlices: one pool
+     slice (allNodes), cxl.generic slices for both node names.
+  B  one exclusive writer: a pod on VM1 with a claim for shared0 writes TEXT
+     (dax-rw.py as in test11). "Exclusive" either by requesting the whole
+     hosts capacity of the device (capacity.requests.hosts: 4, if the
+     publisher's requestPolicy allows it; check deployments/cxl/pool/
+     device-classes.yaml and the controller publisher) or simply by being
+     the only claim at that time; assert the attachment list of shared0 is
+     exactly VM1 while it writes; delete the writer and its claim; wait
+     until shared0 has no attachments.
+  C  many readers at the same time: two reader pods, one per node (two
+     ResourceClaims for shared0, each requesting hosts: 1), both Running
+     concurrently, both logs equal TEXT; the server shows attachments on both
+     hosts owned by the two claims; pool-file-string on the backing file
+     equals TEXT; cxl-dump on both nodes shows one devdax region each,
+     OnlineSize 0.
+  D  release: delete both readers and claims; both nodes have no memdevs;
+     shared0 free; neither qemu has a cxl-type3; DEVICE_DELETED twice.
+  E  trace summary (dra-trace-stop/-summary), timings.
+  cleanup: dra-cleanup; pool-cleanup; trap - EXIT; restore (4.1).
+
+4.5 Reporting
+  Unchanged for run_tests.sh: PASS/FAIL/SKIP per test. New in the test
+  output dir: k8s-cluster.<label>.txt files from vm-k8s-reinit, the worker's
+  commands under commands/NNNN-vm1 as test11 already produces, and the
+  trace of both VMs. run.sh.output shows the "cluster ... ready in N s"
+  lines, so the cost of a reshaping is visible per test.
+
+
+5. Implementation plan
+----------------------
+
+Step 0, experiments first (read-only or reversible, in this order):
+  a. On VM2: sudo kubeadm reset --dry-run -f --cri-socket unix:///var/run/
+     containerd/containerd.sock. Record which directories it would delete
+     and the "does not clean" notes; adjust 3.4 step 2 if they differ.
+  b. Re-run ~/.claude/jobs/k8s-reinit/nic-mcast-experiment.sh if anything
+     about the host changed (it hot-adds and removes the NICs, ~1 min).
+  c. nmcli dry run in VM2 on a throwaway dummy interface or during (b):
+     nmcli con add type ethernet con-name e2e-vmnet-test 802-3-ethernet.
+     mac-address 52:54:00:76:00:02 ipv4.method manual ipv4.addresses
+     10.76.0.2/16 ipv6.method disabled; nmcli con show e2e-vmnet-test; nmcli
+     con delete e2e-vmnet-test. Confirms the profile syntax and that it is
+     written under /etc/NetworkManager/system-connections.
+  d. In the VM dir of VM1: copy Vagrantfile to /tmp, insert the three vmnet
+     argument pairs, run "vagrant validate" with VAGRANT_CWD pointing at a
+     temp copy of the dir (or just ruby -c on the file) to check syntax
+     before touching the real file.
+  Verify: the outputs are pasted into this file's "Measured in step 0"
+  section (append below) before coding.
+
+Step 1, lib/vm.bash and files/ (VM network):
+  - files/env.in: VMNET_NAME=, VMNET_MCAST=, VMNET_MAC=, VMNET_IP= and
+    NO_PROXY gains 10.76.0.0/16.
+  - lib/vm.bash: vm-vmnet-mcast NAME, vm-vmnet-mac UUID, vm-vmnet-ip UUID,
+    vm-vmnet-qemu-args (the three pairs), vm-setup: when vm_network is set,
+    append the pairs to EXTRA_ARGS and record VMNET_* in env (both the
+    "new env" branch and an "existing env without VMNET_*" branch, like
+    E2E_NO_PROVISION handling at 589-597); vm-vmnet-ensure VMDIR (Vagrantfile
+    and Vagrantfile.erb patch, NIC presence by MAC, restart if needed, NM
+    profile, NO_PROXY files); vm-vmnet-patch-vagrantfile FILE (idempotent).
+  - memory-policy/n4-cxl-shared-{1,2}/vm_network.var.sh = cxl-pool.
+  Verify: run vm-vmnet-ensure on both existing VMs (through a scratch test
+  or "run.sh" interactive breakpoint): Vagrantfiles contain id=vmnet0; after
+  the restart "ip -br link" in each guest shows an interface with VMNET_MAC
+  carrying VMNET_IP; ping between the two VMNET_IPs; "sudo bash -l -c 'echo
+  $NO_PROXY'" contains 10.76.0.0/16; test01-shared-cxl and test10 still PASS
+  (nothing else changed for them).
+
+Step 2, lib/test.bash primitives (3.3) and pool.source.sh wrappers.
+  Verify: ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/
+  test11-dra-sharing PASSes unchanged (it exercises other-vm-command,
+  pool-host-wait, pool-vm-restart paths).
+
+Step 3, lib/k8s.bash: vm-k8s-shape, vm-k8s-in-shape, vm-k8s-reinit, the
+  reset/init/join/CNI/route/wait pieces as separate small functions
+  (vm-k8s-reset-node VMDIR, vm-k8s-init-cp VMDIR [IP], vm-k8s-join-worker
+  VMDIR CPDIR JOIN IP, vm-k8s-cni-write VMDIR SUBNET, vm-k8s-routes CLUSTER,
+  vm-k8s-wait-cluster CPDIR NAMES...). Add k8s.bash to script_source in
+  run.sh.
+  Verify with a temporary test13 skeleton: vm-k8s-reinit "$VM2 $VM1";
+  kubectl get nodes -o wide shows two Ready nodes with VMNET IPs and no
+  taint on VM2; a 2-replica Deployment with pod anti-affinity gets one pod
+  per node; kubectl exec a pod on VM1 to ping the pod on VM2 and to resolve
+  kubernetes.default (coredns through kube-proxy); kubectl logs of the pod
+  on VM1 works from VM2. Then vm-k8s-reinit "$VM2 $VM1" again returns
+  "already in shape" in seconds. Then vm-k8s-reinit "$VM2" "$VM1" restores
+  two single-node clusters: both show one node each, InternalIP
+  192.168.76.9, /etc/sysconfig/kubelet empty, CNI subnet /16; test10 and
+  test11 PASS afterwards. Note the measured durations in this file.
+
+Step 4, dra.source.sh: dra-install-node, DRA_INSTALLED_ROLE, dra-uninstall
+  by role, dra-trace-start tolerance. Verify: test10, test11, test12 PASS
+  unchanged; in the skeleton of step 3, dra-install "$VM2" + dra-install-
+  node "$VM1" yields one pool slice and two cxl.generic slices, two plugin
+  sockets.
+
+Step 5, test13 (4.4) with vm-k8s-reinit at start and restore at end; then
+  run test13, test11, test13, test10 in that order to prove the shape flips
+  both ways and that a test following test13 is unaffected.
+
+Step 6, documentation: test/e2e/README.md section "Multi-node clusters"
+  (vm_network, vm-k8s-reinit, cost, how to restore by hand: run test11 or
+  call the function from a breakpoint), .github/skills/run-e2e-tests/
+  SKILL.md (VMNET_* in env, the two VMs may be one cluster after test13
+  fails; "./run.sh help vm-k8s-reinit"). Coding style per .github/skills/
+  coding-style/SKILL.md: ASCII, script API comment format, no sleep loops
+  (use retry-until / kubectl wait).
+
+
+6. Risks, open questions, effort
+--------------------------------
+
+Risks
+- R1 NO_PROXY: forgetting any of the three files in the VM makes kubectl
+  on the control plane fail through the proxy with a confusing error
+  (measured env, 1.3). vm-k8s-reinit verifies "sudo bash -l -c kubectl
+  get --raw /healthz" before declaring the control plane up.
+- R2 Loopback multicast is kernel/sysctl dependent; measured on this host
+  (kernel 7.0.7) only. Fallback documented: mcast without localaddr (LAN
+  leak) or the tap/bridge backend with sudo.
+- R3 Hub semantics: every VM of a network sees every frame; fine for 2-4
+  VMs, not for bulk traffic. The group is per uid+checkout+name (2.4).
+- R4 kubeadm reset wipes DRA plugin state and the lease sockets under
+  /var/lib/kubelet; a test must never reinit while dra-install'ed units
+  run (vm-k8s-reinit stops them, dra-install restarts them).
+- R5 Hand-made host-gw: pods on different nodes talk through static routes
+  on the vmnet; pod source IPs are masqueraded to node IPs; tests asserting
+  pod IPs across nodes would see node IPs. Restarting a VM keeps the routes
+  only if they are in the NM profile (3.4 step 5 uses nmcli for that).
+- R6 Each reshaping costs minutes (3.5); a suite that alternates shapes per
+  test pays it per flip. Order tests to minimise flips.
+- R7 Existing VMs must restart once for the NIC (2.4). pool-vm-reset also
+  restarts VMs when CXL devices are left; call it before vm-k8s-reinit.
+- R8 Both VMs share the slirp MAC 52:54:00:12:34:56; harmless on separate
+  slirp segments, but never reuse the default MAC on the vmnet.
+- R9 Box cache invalidation once (2.4).
+- R10 wait-for-node-ready assumes the test VM runs the API server: the
+  test VM must be a control plane (3.6).
+- R11 A NIC hot-added into a CXL downstream port is seen by the pool server
+  as an occupant and disappears at the next qemu restart; use it only for
+  diagnostics (2.3).
+
+Open questions (decide before implementing)
+- Q1 Shape enforcement: explicit calls in tests (recommended) or a
+  topology-level hook with a per-test override variable (3.5).
+- Q2 Restore at the end of test13 on success (recommended) or leave the
+  two-node cluster and rely on declarations only.
+- Q3 IP plan: deterministic from VM_UUID (recommended, 2.4) or positional.
+- Q4 Whether vm-vmnet-ensure may restart a VM on its own inside
+  vm-k8s-reinit (recommended, with a clear log line) or must error out
+  with instructions.
+- Q5 "Exclusive writer" semantics in test13 (4.4 B): hosts capacity or
+  sequential; depends on the driver's requestPolicy.
+- Q6 Whether to expose a cluster to the host (hostfwd of 6443 for host
+  kubectl): not needed by any test, skip unless debugging wants it.
+
+Effort (agent time, excluding waits): step 0 half a day; step 1 one day
+(vm.bash, Vagrantfile patching, restarts of both VMs); step 2 half a day;
+step 3 one to one and a half days (most of the logic and the waits); step 4
+half a day; step 5 one day; step 6 half a day. Total 4-5 days. Wall clock is
+dominated by VM restarts and reshapings (3-5 min each) and the DRA tests
+(test10 ~2 min, test11 ~3 min, test12 longer).
+
+
+Appendix A. Measured facts not quoted above
+- Hosts: ip -br addr on the host: eth0 10.102.73.81/24, eth3 192.168.180.50
+  /24, docker0 172.17.0.1/16 (DOWN); 8 qemu-system processes, two of them
+  the shared VMs (pids 1894118 VM1 ssh 50509, 1865502 VM2 ssh 50479).
+- VM ports (sudo ss -ltnp on VM2): 6443 kube-apiserver on *, 10250 kubelet
+  on *, 2379 etcd on 127.0.0.1 and 192.168.76.9, 10249/10257/10259 on
+  127.0.0.1, 10256 kube-proxy on *.
+- /var/lib/kubelet on VM2: config.yaml, kubeadm-flags.env, pki, plugins/
+  {cxl.generic,cxl-pool.generic}, plugins_registry (empty), pods, *_state.
+- kubeadm 1.37.1 flags available (kubeadm init/join/reset --help):
+  init: --apiserver-advertise-address, --pod-network-cidr, --node-name,
+  --cri-socket, --config, --skip-phases, --token-ttl, --feature-gates;
+  join: --node-name, --cri-socket, --config, --token, --discovery-token-ca-
+  cert-hash, --skip-phases; reset: -f, --cleanup-tmp-dir, --cri-socket,
+  --dry-run, --skip-phases; reset phases: preflight, remove-etcd-member,
+  cleanup-node. "kubeadm config print join-defaults" nodeRegistration:
+  criSocket unix:///var/run/containerd/containerd.sock, name = hostname.
+- NetworkManager is active, systemd-networkd and cloud-init inactive; the
+  CNI binaries bridge and host-local are in /usr/libexec/cni, /opt/cni/bin
+  does not exist.
+- The second checkout ~/github.com/askervin/nri-plugins runs VMs
+  n4c16-dra-fedora-43-containerd, n4c16-fedora-43-containerd and
+  n4-cxl-fedora-43-containerd from the same host: the reason the multicast
+  group includes the checkout path.
+
+Appendix B. Reference command sequences (for the implementer, to be turned
+into functions; all run as root in the VM through vmdir-command)
+  reset:
+    for u in kubelet-cxl-plugin fake-cxl-pool-controller; do systemctl stop $u 2>/dev/null; systemctl reset-failed $u 2>/dev/null; done
+    kubeadm reset -f --cleanup-tmp-dir --cri-socket unix:///var/run/containerd/containerd.sock
+    for t in filter nat mangle; do iptables -t $t -F; done; iptables -X; (ip6tables likewise || true)
+    ip link del cni0 2>/dev/null; rm -rf /var/lib/cni/networks/*; crictl rmp -fa 2>/dev/null; true
+    rm -f /root/.kube/config /home/vagrant/.kube/config
+  control plane (IP empty for single-node):
+    printf 'KUBELET_EXTRA_ARGS=%s\n' "${IP:+--node-ip=$IP}" > /etc/sysconfig/kubelet
+    kubeadm init --pod-network-cidr=10.217.0.0/16 --node-name=$(hostname) ${IP:+--apiserver-advertise-address=$IP}
+    mkdir -p /root/.kube /home/vagrant/.kube; cp /etc/kubernetes/admin.conf /root/.kube/config; cp /etc/kubernetes/admin.conf /home/vagrant/.kube/config; chown -R vagrant:vagrant /home/vagrant/.kube
+    kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+    kubeadm token create --print-join-command
+    (single-node) write /etc/cni/net.d/10-bridge.conf with subnet 10.217.0.0/16
+    (multi-node) SUBNET=$(kubectl get node $(hostname) -o jsonpath={.spec.podCIDR}); write 10-bridge.conf with $SUBNET
+  worker:
+    printf 'KUBELET_EXTRA_ARGS=--node-ip=%s\n' "$IP" > /etc/sysconfig/kubelet
+    $JOIN --node-name=$(hostname)
+    (host copies admin.conf from the control plane to /root/.kube/config and /home/vagrant/.kube/config)
+    on the control plane: SUBNET=$(kubectl get node WORKER -o jsonpath={.spec.podCIDR})  (retry until non-empty)
+    on every other node: ip route replace $SUBNET via $IP; nmcli con modify e2e-vmnet +ipv4.routes "$SUBNET $IP"
+    on the worker: write 10-bridge.conf with $SUBNET; ip route replace <cp podCIDR> via <cp IP>; nmcli ... +ipv4.routes
+  wait (control plane):
+    kubectl wait --for=condition=Ready node/NAME --timeout=180s
+    kubectl -n kube-system rollout status ds/kube-proxy --timeout=120s
+    kubectl -n kube-system wait deploy/coredns --for=condition=Available --timeout=120s
+    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.addresses[?(@.type=="InternalIP")].address}{" "}{.status.conditions[?(@.type=="Ready")].status}{" "}{.spec.taints[*].key}{"\n"}{end}'

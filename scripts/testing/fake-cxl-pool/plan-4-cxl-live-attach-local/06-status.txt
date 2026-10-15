@@ -2926,3 +2926,196 @@ Open items
   multiples everywhere (option B of 08, 2 MiB dax-only nodes, not done).
 - go.mod of the driver replaces nri-plugins with the local checkout:
   restore a pushed pseudo-version before committing.
+
+W5 Status (full CXL e2e rerun) (2026-10-14 20:55, W5)
+------------------------------------------------------
+Result: every e2e VM in test/e2e was destroyed and removed; the CXL VMs
+were created again from scratch with the patched qemu. All 12 listed CXL
+tests PASS on the first run (no reruns, no flakes, no failures). The extra
+n6-hbm-cxl tests of balloons and topology-aware PASS too. Nothing committed,
+no source or test file changed, nothing "fixed by W5". Logs:
+~/.claude/jobs/w5-e2e/NN-*.log (one per run_tests.sh call), old VM env
+files and qemu command lines in ~/.claude/jobs/w5-e2e/old-vms/.
+
+1. Repositories (HEADs at the start, the same at the end)
+ nri-plugins 5jQ-cxl 002f5ba35a66 "cxl: local memdev as numa and dax
+   support, live-container-attach" (2026-10-14 19:32). No tracked changes,
+   only the user's untracked files.
+ driver 5fC-cxl 04be861b1dae "cxl: local memdevs numa and dax support and
+   dynamic requests" (2026-10-14 19:27). NOT clean: go.mod and go.sum are
+   modified, not committed:
+     -replace github.com/containers/nri-plugins => github.com/askervin/nri-plugins v0.14.1-0.20261008075425-0e663b51c80c
+     +replace github.com/containers/nri-plugins => github.com/askervin/nri-plugins v0.14.1-0.20261014163234-002f5ba35a66
+   (plus the two matching go.sum lines). The new pseudo-version is the
+   nri-plugins HEAD above. The module is in the Go module cache, and its
+   pkg/cxl is the same as the checkout's (diff -r; only the git-ignored
+   testdata/ differs). I built the tree as I found it and changed nothing.
+   The committed go.mod still points to 0e663b51c, which does not have the
+   memctl changes, so the commit alone is probably not buildable or
+   testable: the user should commit this go.mod/go.sum change. Also
+   untracked: kubelet-cxl-plugin and cmd/kubelet-cxl-plugin/kubelet-cxl-plugin
+   (old binaries from 15:59 and 16:03).
+ Build: dra-build at the start of each DRA test (test10-15): go mod vendor,
+   static kubelet-cxl-plugin, cxl-request and fake-cxl-pool binaries.
+   md5 of cmd/kubelet-cxl-plugin/*.go concatenated is d105ea3caa9e, as in
+   "W4 Status (final)". memctl.go d457d3cdd7c5, devices.go fb232e3d8e4d.
+   Test files: dra.source.sh 389acc3706e5, n4-cxl/cxl.source.sh
+   47587d6299be, test14 3239604c4537, test15 4700c8640447 (all as in W4
+   final), test10 d009940a31d2, test11 48d46025807e, test12 6f7eab78c318,
+   test13 a92a137d4b09. None of them changed during the runs.
+
+2. qemu
+ /home/akervine/github.com/qemu/qemu/build/qemu-system-x86_64 (built Oct 2
+ 16:31): "QEMU emulator version 11.1.50 (v11.1.0-1741-gff076b1e6c)"; qemu
+ HEAD ff076b1e6c2d "cxl: fix hot-remove -> hotplug for a CXL device"
+ (2026-09-25). Every VM was created with qemu_bin set to it. Each new VM
+ has QEMU_BIN set to it in its env file, and readlink /proc/<pid>/exe of
+ every running VM is this binary. test00-up of VM1 and VM2: QMP
+ query-version 11.1.50, package v11.1.0-1741-gff076b1e6c.
+
+3. Preparation
+ No e2e test was running. No fake-cxl-pool-server was running ("SCREEN -S
+ fake-cxl-pool" is the user's editor/claude session, not a server). Port
+ 9909 was free. Proxy: the shell has https_proxy=http://proxy-chain.intel.com:916,
+ and run_tests.sh uses it. The new env files have the same PROXY and
+ NO_PROXY as the old ones (the vmnet VMs also get 10.76.0.0/16).
+
+4. Destroyed (vagrant destroy -f in each, then the directory removed;
+   test/e2e of nri-plugins, 19:45-19:48)
+   n4c128-fedora-43-containerd           (not running)
+   n4c128-fedora-43-crio                 (not running)
+   n4c16-fedora-43-containerd            (running, stock qemu)
+   n4c16-fedora-43-crio                  (running, stock qemu)
+   n4-cxl-fedora-43-containerd           (running, stock qemu, the old
+                                          10-device topology)
+   n4-cxl-fedora-43-crio                 (running, stock qemu)
+   n4-cxl-shared-1-fedora-43-containerd  (running, patched qemu)
+   n4-cxl-shared-2-fedora-43-containerd  (running, patched qemu)
+   n6-hbm-cxl-fedora-43-containerd       (not running)
+   s8c4k-fedora-43-containerd            (not running)
+ Leftover qemu: after vagrant destroy, the qemu of n4-cxl-fedora-43-crio
+   (pid 747642, up 19 days) and of n4-cxl-fedora-43-containerd (pid
+   1537140, up 12 days) were still running, on their already deleted
+   disk images. SIGTERM ended both.
+ Vagrant state: vagrant destroy removed the 10 index entries.
+   "vagrant global-status --prune" aborts with "Ports to forward must be 1
+   to 65535", from the Vagrantfile of
+   ~/delme/nri-plugins/test/e2e/n4c16-fedora-43-containerd (out of scope,
+   not touched). So I removed the only stale in-scope entry by hand from
+   ~/.vagrant.d/data/machine-index/index (backup in
+   ~/.claude/jobs/w5-e2e/old-vms/machine-index.backup): 797be0d
+   n4c16-fedora-43-containerd in
+   test/e2e/policies.test-suite/balloons/n4c16/test18-turbo-priority, a
+   test source directory with no Vagrantfile and no machine. The prune
+   attempt itself left a .vagrant/bundler directory in that test directory
+   and empty Vagrantfile.proxy.cache files in test/e2e and /tmp, written
+   when it loaded the delme Vagrantfile. I removed all three.
+   Not touched: 3 entries in ~/delme/nri-plugins and 3 in
+   ~/github.com/askervin/nri-plugins. Two of the askervin VMs are running
+   (n4c16-dra, n4c16).
+
+5. Verdicts (one at a time, containerd, qemu_bin exported in every run)
+   start-end           test                                       verdict  dur   VM
+   19:48:57-19:54:34   n4-cxl/test00-build-cxl-kernel             PASS     337s  n4-cxl created; kernel
+                       7.3.0-rc4 RPMs from the cache (kernel.getsource_vanilla.config_783f70a2...rpms.tar),
+                       no kernel build
+   19:55:46-19:57:23   n4-cxl/test01-pkg-cxl                      PASS      97s  n4-cxl; cxl-reset restarted
+                       qemu once (test00 had left devices plugged), as designed
+   19:58:32-20:04:06   n4-cxl-shared-1/test00-up                  PASS     334s  VM1 created
+   20:05:04-20:10:26   n4-cxl-shared-2/test00-up                  PASS     322s  VM2 created (dnf hit two
+                       "Curl error (56)" from a Fedora mirror and retried; no effect)
+   20:11:17-20:12:40   n4-cxl-shared-2/test01-shared-cxl          PASS      83s  VM2 + VM1
+   20:14:22-20:15:42   n4-cxl-shared-2/test10-dra-pooling         PASS      80s  VM2, build above
+   20:17:23-20:19:29   n4-cxl-shared-2/test11-dra-sharing         PASS     126s  VM2 + VM1
+   20:20:10-20:25:15   n4-cxl-shared-2/test12-dra-live-attach     PASS     305s  VM2
+   20:26:05-20:32:01   n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+                                                                  PASS     356s  VM2 + VM1, two-node cluster,
+                       restored to two single-node clusters at the end
+   20:33:09-20:36:00   n4-cxl-shared-2/test14-dra-local-memdev    PASS     171s  VM2
+   20:36:23-20:40:24   n4-cxl-shared-2/test15-dra-local-live-attach
+                                                                  PASS     241s  VM2
+   20:41:17-20:44:57   n6-hbm-cxl/test01-policies (memory-policy) PASS     220s  n6-hbm-cxl created; image
+                       build/images/nri-memory-policy-image-be75de5f21ed.tar (Sep 25)
+ Extra (not in the list): the other tests of the n6-hbm-cxl topology,
+ which emulates HBM and CXL as CPU-less NUMA nodes (no CXL devices). They
+ use the same VM.
+   20:46:35-20:47:53   balloons/n6-hbm-cxl/test01-memory-types, test04-nrt
+                                                                  PASS     78s   image balloons-07d07127362b
+   20:50:25-20:51:41   topology-aware/n6-hbm-cxl/test01-memory-types, test04-nrt
+                                                                  PASS     76s   image topology-aware-07e8711f61aa;
+                       test02-fuzz-memallocs SKIP (long test, skip_long_tests=yes by default)
+   memtierd/n6-hbm-cxl/test01-move-idle NOT RUN: there is no
+   build/images/nri-memtierd-image-*.tar, and
+   playbook/nri-memtierd-plugin-deploy.yaml fails without one. Building
+   images was out of scope.
+ Plugin sources (cmd/plugins/{memory-policy,balloons,topology-aware,memtierd},
+ pkg/resmgr, pkg/apis, their helm charts) have no commits since the Sep 25
+ images. Every CXL test directory that exists was run: the list matched
+ ls of memory.test-suite/memory-policy/{n4-cxl,n4-cxl-shared-1,
+ n4-cxl-shared-2,n6-hbm-cxl}.
+ Reruns: none. Failures: none. No FailedCreatePodSandBox, no OOM kill, no
+ panic, and no "placing it explicitly" or "rounded up to" in any DRA test
+ log.
+
+6. Timings (compared with W4 final)
+ test01-shared-cxl: detaches 6.39-6.55 s (W4 6.3-6.5).
+ test10: attached 1.2 s, pod Running 7.0 s after the claim, detached
+   8.4 s after the delete (W4 1.1 / 7.0 / 8.9).
+ test12: cxl-request memory to Ready 5.74-5.81 s (W4 5.72-5.80); release
+   until nothing left 9.2-10.0 s (W4 8.6-9.8); shared --exec write
+   5.68-5.96 s; pod deleted with 2 leases, clean after 14.6 s (W4 14.6).
+ test13: from writer exit until all readers hold the memory 9.3 s (W4 12.2).
+ test14: pod Running 2.5 s (numa-a, dax-1, numa-b), whole-device dax 3.9 s;
+   last claim deleted to initial state 4.8 s; MemTotal changes seen
+   3.0-5.4 s; plugin: created region 37-67 ms, released region 93-116 ms,
+   numa slice onlined 33-37 / offlined 14-68 / deleted 2.8-4.4 ms, dax
+   slice created 1.3-70 / deleted 43-74 ms, zeroed 171-187 ms per 128 MiB
+   and 1.13 s for 1 GiB (W4 final 85-89 ms and 563 ms; W4's first round
+   52-180 ms and 0.52-1.19 s, so within the range seen before).
+ test15: local NUMA lease Ready 0.60 s, local dax --exec 0.72 s, any to
+   local 0.84 s, any to pool 5.80 s; last NUMA lease given back until its
+   pages left the node 8.0 s; three dax leases released 4.8 s; pod deleted
+   with leases, clean after 11.7 s (W4 11.5).
+
+7. Final VM states (all running with the patched qemu, the new baseline)
+ n4-cxl-fedora-43-containerd: SSH 51151, kernel 7.3.0-rc4, k8s v1.37.1,
+   containerd 2.4.1; single node Ready; no cxl-type3 in qemu, no
+   memdevs/regions, has_memory 0-1; no DRA units.
+ n4-cxl-shared-1-fedora-43-containerd (VM1): SSH 51121, VM_UUID
+   b6a78455-edb1-558d-8cf1-01a259f76e97, VMNET_IP 10.76.85.237, maxmem 15G.
+   Static shared device sn 0xc1ae0000 (the old VM1 still had 0xc1f0ee00),
+   local device 256M.
+ n4-cxl-shared-2-fedora-43-containerd (VM2): SSH 51420, VM_UUID
+   1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1, VMNET_IP 10.76.162.174, maxmem 16G.
+   Static shared device sn 0xc1ae0000, local device 1G.
+ VM1 and VM2: kernel 7.3.0-rc4, k8s v1.37.1, containerd 2.4.1, helm
+   4.3.0. Each is a single-node cluster again (test13 restored them). No
+   kubelet-cxl-plugin or fake-cxl-pool-controller unit, no memdevs or
+   regions, has_memory 0-1, no cxl-type3 in qemu, no
+   /dev/.cxl-local-zero-*, no ResourceClaims or DeviceClasses, only the
+   default namespaces.
+ n6-hbm-cxl-fedora-43-containerd: SSH 50787, stock Fedora kernel
+   6.17.1-300.fc43; single node. The last test left the topology-aware
+   plugin running (helm release "test"), as e2e tests do; the next test's
+   helm-terminate removes it.
+ Host: no fake-cxl-pool-server and no e2e test running; port 9909 free.
+   /tmp/fake-cxl-pool/*.raw backing files kept.
+
+W5 Findings (2026-10-14 20:55, W5)
+----------------------------------
+F1 (driver repository, user to act) go.mod/go.sum of the driver are
+   modified and not committed: the nri-plugins replace points to
+   002f5ba35a66 (the nri-plugins HEAD) in the working tree, but to
+   0e663b51c80c in the commit 04be861. All results above are for the
+   working tree. Commit the go.mod/go.sum change to make the driver commit
+   match what was tested.
+F2 (environment) vagrant global-status --prune cannot run at all because
+   of the invalid Vagrantfile in ~/delme/nri-plugins/test/e2e/n4c16-fedora-
+   43-containerd (empty SSH port). Also, any vagrant command that loads
+   that Vagrantfile writes Vagrantfile.proxy.cache into its current
+   directory. Not touched, out of scope.
+F3 (environment) memtierd/n6-hbm-cxl/test01-move-idle cannot run without a
+   built nri-memtierd image in build/images.
+F4 (environment) vagrant destroy -f did not stop two old stock-qemu VMs
+   (n4-cxl-*, up 12 and 19 days); they needed a SIGTERM. Nothing like this
+   happened with the patched qemu.

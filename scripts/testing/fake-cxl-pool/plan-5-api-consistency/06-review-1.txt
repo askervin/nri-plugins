@@ -1,0 +1,342 @@
+plan-5-api-consistency: review R1 (code of S1 and S2 against 02-design.txt)
+==========================================================================
+Written 2026-10-15 12:10 by R1. D = intel-resource-drivers-for-kubernetes
+(git diff e1c7274 + untracked cmd/, pkg/cxl/, deployments/cxl/; cxl.mk),
+N = nri-plugins (git diff 002f5ba35), P = N/scripts/testing/fake-cxl-pool.
+The trees were read 11:53-12:09; no file of S1 or S2 changed in that time
+(find -newermt). Nothing was edited; baselines were git-archive copies in
+/tmp/r1 (no worktree, no change to either repository).
+
+Summary: no blocker. One bug (B1: unknown opaque config kinds are accepted
+silently, so a renamed-away PoolDeviceConfig with readOnly: true yields a
+read-write dax device). The rename gates are clean in all S1 and S2 files.
+Build, vet, unit tests (-race), gofmt -s and golangci-lint are green, with
+no lint finding that the base commits do not have.
+
+Findings
+--------
+
+BUG
+
+B1 D cmd/kubelet-cxl-plugin/lending.go:272-274 (parseConfig) - owner S1
+   What: if an opaque config of the driver has a kind other than the one
+   being parsed, the code skips it without an error
+   (`if head.Kind != kind { continue }`). No Prepare path checks
+   afterwards that every config of the driver had a known kind. Two tests
+   assert this skip: lending_test.go:307 ("other kinds and drivers") and
+   node_state_test.go:221 (TestParseMemoryPolicyFromClaim_WrongKindSkipped).
+   Why: after the renames, an old kind is the most likely user error. A
+   reader claim on cxl-pool-shared with {kind: PoolDeviceConfig, readOnly:
+   true} prepares without error. Its container gets a read-write
+   /dev/daxX.Y: the mode is dax by default for shared devices and readOnly
+   stays false. {kind: LocalDeviceConfig, mode: dax} silently gives a numa
+   slice. A wrong apiVersion fails the Prepare but a wrong kind does not.
+   So strict decoding (02 4.1, I6) has a hole exactly where the rename
+   table removed names.
+   Fix: fail the Prepare for an opaque config of the driver whose kind the
+   driver does not know. cxl.generic knows DeviceConfig and
+   MemoryPolicyConfig; cxl-pool.generic knows DeviceConfig. Example texts:
+   `unknown kind %q (DeviceConfig or MemoryPolicyConfig)`, and
+   `(DeviceConfig)` for the pool driver. Do it in one place: a per-driver
+   kind set checked in parseConfig, or validateConfigKinds(claim, driver,
+   kinds...) called once at the start of nodeState.prepare and
+   poolDriver.prepareClaim. Change the two tests to expect the error. Add a
+   test with kind PoolDeviceConfig and readOnly: true on a shared device.
+   The new text needs a line in 02 4.1 and in USAGE.md (S4).
+
+B2 D cmd/kubelet-cxl-plugin/broker.go:1324 (deleteOrphans) - owner S1; the
+   behaviour predates plan-5, but plan-5 moved the label into the
+   cxl.generic domain
+   What: the selector is only cxl.generic/node=<node>. A pod or
+   ResourceClaim in any namespace with that label is deleted on every
+   reconcile (60 s) unless its cxl.generic/lease value is a known lease. An
+   object with no lease label counts as unknown, because
+   Labels[LeaseLabel] == "" is never known.
+   Why: users associate cxl.generic/ with this driver. A workload labelled
+   cxl.generic/node for its own selection is deleted silently. Only the
+   objects of whoever set the label are affected; nothing crosses
+   namespaces.
+   Fix: select on both labels, LabelSelector
+   "cxl.generic/node=<node>,cxl.generic/lease", where the second term is an
+   existence check. Also require the name cxl-lease-<value> before
+   deleting. Add a test with a pod that has only the node label.
+
+INCONSISTENCY
+
+I-1 D cmd/kubelet-cxl-plugin/node_state.go:1059-1075 (preparedDeviceInfo,
+   region and dram cases) - owner S1, needs a 02 4.1 text
+   What: DeviceConfig is parsed only for memdev results. Take a claim on
+   cxl-region or cxl-dram with a cxl.generic DeviceConfig {mode: dax} or
+   {readOnly: true}. That includes a config without a requests list, which
+   "applies to all requests of its driver" (02 4.1). Such a claim is
+   prepared as numa without an error.
+   Why: 02 2.1 makes "the Prepare error with a clear message" the check for
+   a mode a device cannot do, and shared + numa does fail. For region and
+   DRAM the same kind of mismatch passes silently. So the one DeviceConfig
+   kind behaves differently per device type without telling the user.
+   Fix: parse the DeviceConfig of the request for region and dram results
+   as well. Fail when the effective mode is dax or readOnly is set, for
+   example "DeviceConfig: mode dax: a region is used as numa only" (and the
+   same for dram). Add the texts to 02 4.1 and USAGE.md (S4), with one test
+   per device type. A config without a requests list in a claim that mixes
+   memdev dax and region requests would then fail; the user lists
+   requests. If the user prefers silence, USAGE.md must say that
+   DeviceConfig applies to memdevs only.
+
+I-2 Stale document pointers in D - owner S1
+   cmd/kubelet-cxl-plugin/lending.go:41 cites POOL.md section "Lending to
+   running containers", which no longer exists.
+   cmd/kubelet-cxl-plugin/broker.go:59 says "See doc/cxl/POOL.md and
+   doc/cxl/LOCAL.md".
+   cmd/cxl-request/main.go:20 says "See doc/cxl/POOL.md".
+   pkg/cxl/api/api.go:21 says "doc/cxl/POOL.md and doc/cxl/USAGE.md".
+   Why: S4 moved lending, the protocol and the CLI to doc/cxl/LEASES.md.
+   POOL.md:357 "## Leases" is only a pointer.
+   Fix: point the first three at doc/cxl/LEASES.md. In api.go write
+   "doc/cxl/LEASES.md (protocol) and doc/cxl/USAGE.md (environment)".
+
+I-3 The claim-level CDI device loses DRA's per-request container scoping -
+   a consequence of 02 5.1, which S1 implemented as written
+   D node_state.go buildClaimsCDISpec and prepareAllocatedDevices: every
+   result lists claim-<uid>. pool.go:364 and buildCDISpec: every result
+   lists generic/cxl-pool=claim-<uid>.
+   What: take a container that references one request of a multi-request
+   claim (resources.claims[].request: r1). It gets claim-<uid>, which
+   carries the CXL_<KEY>_* of every device of the claim and the device node
+   of every dax slice. That includes r2's devices, and a read-write node
+   when only r1 is read-only. At e1c7274 local dax slices had one CDI
+   device per allocation result (local-<uid>-<n>), and pool devices had one
+   per serial, so this narrowing existed then.
+   Why: kubelet scopes a container to a request through the CDIDeviceIDs of
+   each result. One device per claim makes that scoping ineffective.
+   Fix (the user decides; it changes 02 5.1): keep claim-<uid> for the
+   marker only. Add claim-<uid>-<n> per allocation result, with api.Env of
+   that device and its device node. Each result lists claim-<uid> plus its
+   own device; the pool driver does the same with
+   generic/cxl-pool=claim-<uid>-<n>. Otherwise USAGE.md must say that a
+   container always gets the memory of the whole claim.
+
+I-4 P cmd/fake-cxl-pool-client/main.go:839 - owner S2 (S2 documents this
+   as F3, but the reason does not hold)
+   What: `guest region create DEVICE --mode devdax` is no longer a usage
+   error (exit 2). It now fails after the device lookup, with memctl's text
+   and exit 1.
+   Why: the client's exit code 2 means "usage". A script that passes an old
+   mode now gets the same exit code as a device error. Checking against
+   memctl.ModeNUMA/ModeDax would not copy the check, and the error text can
+   still come from memctl.
+   Fix: export the check from memctl, e.g. `func ValidMode(mode string)
+   error` returning "invalid mode %q (numa or dax)", and use it in
+   CreateRegion. Call it in the client before the lookup and turn its error
+   into a usage error. Test: --mode devdax exits 2 with that text.
+
+I-5 Two spellings of the env placeholder - owner S1 for the examples; S4
+   for the docs (for R2)
+   D deployments/cxl/examples/local-dax-readonly.yaml:5,
+   local-dax-shared-claim.yaml:5, local-numa.yaml:4 and pool-numa.yaml:4
+   write CXL_<SERIAL>_*.
+   What: 02 5.2, api.go, USAGE.md, LEASES.md and README.md write
+   CXL_<KEY>_*. In the docs, CXL_<SERIAL> appears in LOCAL.md (9) and
+   POOL.md (7).
+   Why: <SERIAL> reads as the 0x<lower hex> value of the vocabulary, not as
+   the upper-case key (which is also REGION<n> or DRAM).
+   Fix: use CXL_<KEY>_* everywhere.
+
+I-6 P pkg/server/ops.go:306 - owner S2
+   What: the exported doc comment says "DeleteDevice deletes a dynamic
+   device". S2 changed config.example.yaml:17 to "devices created over the
+   API".
+   Why: S2's own files use two words for one thing, and "dynamic" is on 02
+   section 1's list of words that disappear.
+   Fix: "DeleteDevice deletes a device created over the API ...". The
+   private field `dynamic` may stay (S2 F1).
+
+STYLE
+
+S-1 D cmd/kubelet-cxl-plugin/broker_test.go:508 ("the validation of
+   02-design.txt R1-R10") and cmd/cxl-request/main_test.go:59
+   ("// R1-R10") - owner S1. 02-design.txt is a plan file in the other
+   repository, and the R numbers mean nothing in D. Fix: "the request
+   validation (doc/cxl/LEASES.md)" or "validation errors".
+
+S-2 Reinvented wheels in files S1 touched (all older than plan-5) - owner S1
+   - D broker.go:1511 readDaxDevNumbers duplicates memctl.DaxDevNumbers
+     (N pkg/cxl/memctl/memctl.go:318).
+   - D broker.go:1524-1534 unixMajor/unixMinor/unixMkdev duplicate
+     golang.org/x/sys/unix Major/Minor/Mkdev; lease_claims.go already
+     imports x/sys/unix.
+   - D lease_store.go:154 leaseStore.save is writeJSONFile (local.go:1019)
+     line for line.
+   - D pool_slices.go:100: strconv.ParseUint(s, 0, 64) re-parses the string
+     that deviceSerial (broker.go) built with api.ParseSerial/FormatSerial.
+     Base 0 follows other rules than api.ParseSerial (octal "010",
+     underscores). Fix: have deviceSerial return the uint64, or use
+     api.ParseSerial.
+   None of these is new, but this review checks for one serial parser and
+   for reuse of memctl.
+
+S-3 D deployments/cxl/examples/lease.yaml:5 runs "python3 app.py", but the
+   python:3-alpine container has no app.py. Use a command that exists,
+   e.g. `--exec sh -c 'env | grep ^CXL_'`. - owner S1
+
+S-4 D cmd/cxl-request/main_test.go has no test of 02 6.2 "128+signal when
+   signaled", nor of signal forwarding (runCommand, main.go:411). Add
+   `--exec /bin/sh -c 'kill -TERM $$'`, which must exit 143. - owner S1
+
+S-5 D node_state.go:776 drops claim-<uid> from the results of a companion
+   claim, but pool.go:364 keeps generic/cxl-pool=claim-<uid> on companion
+   results. The companion pause container references no claim
+   (broker.go:872-876), so neither device is injected and the two drivers
+   differ for no reason. Remove the cxl.generic special case, or do the
+   same in pool.go. - owner S1
+
+S-6 S1 changed the signatures of these functions, and they still have no
+   doc comment (true before plan-5 too): broker.go:604 requestLease, :707
+   releaseOne, :718 releaseAll, :767 list; lease_store.go:51 hasPod;
+   cxl-request main.go:112 usageErr, :212 run. Add one line each, as the
+   coding-style skill asks. - owner S1
+
+Verified as correct
+-------------------
+- Builds and tests. D: go build, go vet and go test -race -count=1 of
+  cmd/kubelet-cxl-plugin, cmd/cxl-request, pkg/cxl/{api,device,
+  memorypolicy} all pass; CGO_ENABLED=0 cxl-request is statically linked.
+  N: go build, go vet and go test -race of pkg/cxl/... and P/... (client,
+  api, controller, pool, qemu, server) all pass. gofmt -s -l is empty for
+  every S1 and S2 file.
+- golangci-lint, run with --max-same-issues=0 --max-issues-per-linter=0 and
+  compared with the base commits. D: 13 issues now, 15 at e1c7274. They
+  are the same issues, two under new names (TestBrokerPoolNumaLease,
+  lease_claims.go); errcheck udev.go and unused cdihelpers are gone. N/P:
+  102 issues both before and after, identical. The default caps hide 61 of
+  them, which is why S2 counted 41.
+- Grep gates. I grepped every row of 02 section 10 and the 03 S1 step 14
+  list over D cmd/kubelet-cxl-plugin, cmd/cxl-request, pkg/cxl,
+  deployments/cxl, test/e2e/cxl/dra-demo-cxl.sh and cxl.mk, and over N
+  pkg/cxl/memctl and P cmd, pkg, deploy, config.example.yaml and Makefile.
+  Zero hits except these:
+  - new names that contain an old one: LEASE_COMPANION_IMAGE,
+    LeaseCompanionImage; and "republishes" in the rescanAndPublish doc
+  - FAKE_CXL_POOL_SERVER
+  - the external CLIs' own words: daxctl --mode=devdax, cxl create-region
+    -t ram
+  - negative tests: memctl_test.go:450 passes "devdax" and "ram", and
+    broker_test.go has raw "kind" and "exclusive" lines that must be
+    refused
+  - P server's private `dynamic` field (S2 F1), and local_test.go:53
+    "dynamic dax region" (daxctl's word)
+  - device.LeaseToken, the 02 8.2 name
+  There is no alias, deprecated spelling or compatibility path; the only
+  cli Aliases are -c and -f, unchanged per 02 7.1.
+- Attributes. I compared node_state.go (regionDevice, dramDevice,
+  localMemdevDevice, the lease device) and publisher.go convertDevice with
+  02 2.2 and 2.3 field by field:
+  - attributes: type, source, serial, shared, size, node, nodes,
+    nodeAffinity and memoryBlockSize. Regions get nodeAffinity only when
+    all their memdevs agree. There is no name, mode or pool attribute.
+  - device names: memdev-<hex>, region<N>-node<M>, dram, lease.
+  - controller_test asserts the exact attribute set of pool devices.
+- Classes. device-classes.yaml has the six classes with the CEL of 02
+  section 3 verbatim and no config. TestDeviceClassesMatchConstants compares
+  each expression exactly with the Class*, Attr* and DeviceType*
+  constants. kubectl kustomize deployments/cxl renders the base and the six
+  classes. The old class files and the five dead examples are deleted, and
+  the nine examples of 03 step 11 exist. D14 (the overlay deploys only the
+  base) is justified by kustomize's cycle check.
+- DeviceConfig. One struct with kind DeviceConfig and apiVersion
+  <driver>/v1alpha1, decoded strictly. The three texts of 02 4.1 are
+  verbatim in modeFor. One parseConfig decodes both DeviceConfig and
+  MemoryPolicyConfig, and MemoryPolicyConfig is now strict (I6). The one
+  gap is B1.
+- Environment. api.Env is the only producer: node_state
+  buildClaimsCDISpec, pool buildCDISpec and broker leaseInfo all call it.
+  api.ExecEnv builds the --exec environment and the env output. Names and
+  0|1 values follow 02 5.2; keys come from Key, RegionKey and DRAMKey, with
+  _<n> for repeats (D4). Tests cover every device kind and the second
+  slice.
+- CDI.
+  - generic/cxl claim-<uid> in spec cxl-claims.
+  - generic/cxl lease-<uid> in spec cxl-leases: rbind /run/cxl rw, a
+    read-only bind of --lease-cli at /usr/local/bin/cxl-request,
+    CXL_LEASE_SOCKET.
+  - generic/cxl-pool claim-<uid> in spec cxl-pool.
+  - Device nodes get permissions "r" when readOnly. Pool claims get no
+    marker. At start, removeCXLSpecs removes the specs of both kinds by base
+    name, before the three writers write theirs (newNodeState, newBroker,
+    poolDriver.start).
+- Protocol and CLI.
+  - The api.Request/Response json tags match 02 6.3. Requests are decoded
+    strictly, so an old client's "kind" is refused.
+  - The ops are request, release, list, fd and env.
+  - The synopsis and usage text are identical to 02 6.1.
+  - The R1-R10 texts are verbatim in one validator, api.Request.Validate,
+    shared by the CLI (exit 2) and the broker. R11, both texts of R12, and
+    R13 are verbatim too.
+  - "CXL_LEASE_SOCKET is not set (the pod needs a claim on DeviceClass
+    cxl-lease)" exits 1. Exit codes 0/1/2/3, the pass-through of CMD's code
+    and --opt=ARG follow 02. --exec ends the options. There is no
+    cxl-release.
+- Companion objects.
+  - Labels cxl.generic/lease, /requester-uid and /node; annotation
+    cxl.generic/requester.
+  - The request is named "lease": exactly for one source, else
+    firstAvailable [local, pool]. The local subrequest is left out for
+    --shared and for shared serials; the pool one when the pool driver is
+    disabled.
+  - Classes come from the device.Class* constants. Selectors cover the
+    serial, and size >= on shared devices. Capacity is memory, or
+    hosts = all for the writer.
+  - One DeviceConfig per driver is always written; there is no LendConfig.
+    TestBrokerCompanionClaims covers every source, shared and serial
+    combination.
+- Companion recognition is sound. Before any device is touched, OnLending
+  checks:
+  - the lease is in the table and is Creating or Pending (Lending or
+    Ready for a re-prepare);
+  - the claim's name is cxl-lease-<id>;
+  - its namespace is the requester's;
+  - it has an ownerReference whose UID is the requester pod's.
+  Tests: TestBrokerOnLending (wrong id, name, namespace, owner, no owner),
+  TestPoolCompanionRefused and TestPrepareLocalLendErrors (the device is
+  not touched).
+  Why a tenant cannot forge a companion:
+  - a tenant can set the label only on claims in its own namespace;
+  - the name cxl-lease-<id> exists once per namespace, and the broker
+    creates it right after storing the lease; if a claim of that name
+    already exists, the create fails and the lease fails;
+  - leases that are Releasing, Failed or gone refuse.
+  Not checked: the companion claim's UID. A same-namespace actor allowed to
+  delete and create ResourceClaims could replace the claim, but that gives
+  it nothing it could not claim in its namespace anyway.
+- Lease store. The fields match 02 6.6; leases.json is decoded strictly
+  and falls back to an empty table on failure (TestBrokerStrictStore).
+- Flags and config. Flags, env vars and CXLFlags fields match 02 7.1.
+  DriverConfig has lower-camel json tags and is read with UnmarshalStrict
+  (TestDriverConfigKeys); PublishLeaseDevice is json:"-". Go's
+  case-insensitive key matching (D13) is library behaviour, not an alias.
+- memctl.
+  - ModeNUMA "numa" and ModeDax "dax". CreateRegion validates the mode
+    before any side effect and fails with "invalid mode %q (numa or dax)"
+    (tested for bogus, devdax, ram and "").
+  - RegionInfo.Mode is numa, dax or "". CreateDaxDeviceAt is removed and
+    the five helpers are unexported. Neither tree calls the removed or
+    unexported names (only stale copies under N/.claude/worktrees do).
+  - D's vendored memctl.go is identical to N's. TestModesMatchMemctl in
+    D/pkg/cxl/api asserts that api and memctl modes match.
+- P.
+  - FormatSize and Size.String print Ki/Mi/Gi/Ti ("0" stays 0), and
+    ParseSize is unchanged; units_test.go covers both.
+  - qemu arguments use bytes (hmp.go:200 %d), so FormatSize does not
+    affect them.
+  - The client takes --mode numa|dax, shows 256Mi in its usage, and takes
+    guest DEVICE as a hex or decimal serial. guest info JSON has
+    "mode": numa|dax.
+  - The controller publishes type memdev and no pool attribute.
+- I1-I28. S1 and S2 code resolves I1-I21, I25 and I26; I6 has the B1 gap.
+  I22, I24, I27 and I28 are S4 (docs), I23 is S3.
+- Deviations. D1-D14 of S1 and D1 of S2 have reasons and keep the 02
+  vocabulary. S2 F3 is I-4.
+- Not to be committed as is: D go.mod (replace => local path) and go.sum
+  (lost the askervin lines), as S1's status says. The untracked
+  D/kubelet-cxl-plugin (rebuilt 11:21 by S1) and
+  D/cmd/kubelet-cxl-plugin/kubelet-cxl-plugin are build artifacts.
