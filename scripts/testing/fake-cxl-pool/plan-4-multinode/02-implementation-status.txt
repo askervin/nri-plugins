@@ -1,0 +1,209 @@
+plan-4-multinode: implementation status
+=======================================
+Written 2026-10-12, after implementing 01-e2e-cluster-reinit-design.txt
+and the driver changes it serves. Nothing is committed: the driver
+repository (~/github.com/intel/intel-resource-drivers-for-kubernetes,
+branch 5fC-cxl) and nri-plugins (branch 5jQ-cxl) have the changes in their
+working trees.
+
+The task had four parts:
+  T1 drop the dax-file prototype (plan-3-cxl-live-attach/cxl-request-daxfile,
+     see 00-STATUS.txt there): reverted in both repositories, a copy of
+     the changes is in ~/.claude/jobs/daxfile-dropped/;
+  T2 DAX devices for exclusive pool allocations;
+  T3 a read-only option for claims of DAX devices;
+  T4 test13-dra-shared-one-writer-many-readers: an exclusive writer, then
+     readers on two nodes of one cluster, with the e2e framework extension
+     designed in 01 (vm-k8s-reinit).
+
+1. Decisions on the open questions of 01
+----------------------------------------
+Q1 explicit shape calls in the tests (test10, test12: vm-k8s-reinit
+   "$VM2"; test11: vm-k8s-reinit "$VM2" "$VM1"; test13: "$VM2 $VM1").
+Q2 test13 restores the two single-node clusters at its end, on success
+   only, unless k8s_restore=no.
+Q3 addresses derived from VM_UUID (10.76.162.174 VM2, 10.76.85.237 VM1).
+Q4 vm-vmnet-ensure restarts a VM itself, with a log line.
+Q5 "exclusive" = all of the hosts capacity of the shared device (T2).
+Q6 no host access to the API servers.
+
+2. Step 0 of 01, measured
+-------------------------
+a. kubeadm reset --dry-run on VM2 (kubeadm 1.37.1): removes the etcd member
+   and /var/lib/etcd, stops kubelet, UNMOUNTS in /var/lib/kubelet (does
+   not delete it), removes the containers, the contents of
+   /etc/kubernetes/{manifests,pki} and the kubeconfigs in /etc/kubernetes.
+   So 01 3.4 step 2 was wrong about /var/lib/kubelet: pod, checkpoint and
+   DRA manager state of the old cluster would survive. vm-k8s-reset-node
+   deletes the contents of /var/lib/kubelet itself.
+b. The multicast NIC (01 2.3) works as measured there: after one restart
+   each VM has enp2s0 with its VM network address; ping between the VMs
+   1.2 ms.
+c. nmcli: the profile "e2e-vmnet" (ethernet, ifname, mac-address, manual
+   address /16, ipv6 disabled, autoconnect priority 10) is accepted and
+   persistent; it comes back after a restart.
+d. The patched Vagrantfile passes ruby -c (checked by
+   vm-vmnet-patch-vagrantfile whenever ruby is installed).
+e. kubeadm copies the proxy environment of the shell it runs in into the
+   static pod manifests of the control plane (NO_PROXY of
+   kube-apiserver.yaml = that of /etc/profile.d/proxy.sh). NO_PROXY must
+   have the VM network before kubeadm init, as 01 says.
+
+3. Framework (nri-plugins, test/e2e)
+------------------------------------
+New lib/k8s.bash (sourced by lib/test.bash, listed by ./run.sh help):
+  vmdir-of, vmdir-label, vmdir-command[-q], vmdir-put-file, vmdir-ssh-wait,
+  vmdir-up [HINT], vmdir-restart; vm-vmnet-ensure; vm-k8s-node-ip,
+  vm-k8s-shape, vm-k8s-in-shape, vm-k8s-reinit [--force] [--timeout S]
+  CLUSTER..., and the steps vm-k8s-rebuild, -reset-node,
+  -kubelet-node-ip, -cni-write, -node-cidr, -kubeconfig, -init-cp,
+  -join-worker, -routes, -wait-cluster.
+lib/vm.bash: vm-vmnet-values, vm-vmnet-get, vm-vmnet-record,
+  vm-vmnet-patch-vagrantfile; vm-setup records VMNET_* and patches the
+  Vagrantfile(.erb) when vm_network is set.
+vm_network.var.sh = cxl-pool in memory-policy/n4-cxl-shared-{1,2}.
+pool.source.sh: other-vm-*, pool-vm-command/-q/-put-file, pool-host-wait,
+  pool-vm-restart, pool-vm-ssh-wait wrap the vmdir-* functions (01 3.3);
+  pool-vagrant-up is gone (vmdir-up).
+dra.source.sh: dra-install-node (node plugin only, for workers), the
+  shared parts of dra-install split out (dra-install-files,
+  dra-start-plugin, dra-installed-add, dra-wait-node), DRA_NODE_ONLY;
+  dra-uninstall of a control plane waits for the detach of the devices of
+  its workers too, dra-cleanup uninstalls control planes first;
+  dra-trace-start starts only the node collectors (driver, udev, kubelet)
+  on workers.
+numa-touch.py: finds its mapping also when the kernel merged it with a
+  neighbour (test12 flake, section 5).
+pool-dax-rw.py: read/watch/check-ro open the device read-only; "watch"
+  holds a read-only mapping until a stop file, "check-ro" exits 0 if opening
+  for writing and a writable mapping are refused.
+Docs: test/e2e/README.md "Multi-node clusters" and the helper table;
+  .github/skills/run-e2e-tests/SKILL.md troubleshooting item.
+
+Deviations from 01:
+- files/Vagrantfile.in and files/env.in are unchanged: the NIC is added by
+  vm-vmnet-patch-vagrantfile, for new VMs (vm-setup, before vagrant init)
+  and existing ones alike, as one line
+  "qemu.extra_qemu_args += [...]" before qemu.disk_resize. So cached boxes
+  stay valid (01 2.4 expected one invalidation), and the NIC comes after
+  every device of the topology: no PCI address of a CXL host bridge moves.
+  NO_PROXY of the env file is extended by vm-vmnet-record.
+- The bridge CNI file is parked as 10-bridge.conf.off during the reset and
+  written back with the subnet of the node in the new cluster: no pod can
+  start with a subnet of the old cluster.
+- The shape probe prints a compact node list (jsonpath) instead of the
+  node JSON (01 3.2), to keep it short on the command line.
+- The optional cross-node smoke test of 01 3.4 step 6 (k8s_reinit_smoke)
+  is not implemented; the same checks ran once in a scratch test
+  (section 5), and test13 runs pods on both nodes anyway.
+
+4. Driver and fake pool
+-----------------------
+Driver (kubelet-cxl-plugin, cxl-request, doc/cxl/POOL.md, examples):
+- PoolDeviceConfig (apiVersion cxl-pool.generic/v1alpha1), from the claim
+  or the class, per request: mode numa|dax (numa only for exclusive
+  devices, their default; dax the only mode of shared devices), readOnly
+  (dax only). Strict decoding.
+- The pool helper prepares an exclusive device in mode dax as a devdax
+  region (no onlining, no lend), env CXL_POOL_DAX/SIZE/SERIAL_<SERIAL>;
+  a device prepared in one mode refuses claims of the other mode.
+- Read-only claims get the CDI device pool-<serial>-ro, device node
+  permissions "r" (device cgroup rule "r"), env *_READONLY_<SERIAL>=1.
+- Leases: request fields mode (memory: numa|dax), exclusive (shared),
+  readOnly (dax leases); response fields mode, exclusive, readOnly. The
+  broker validates the combinations, puts a PoolDeviceConfig into the
+  companion claim of a dax lease, requests all "hosts" of the device for
+  an exclusive lease (read from the pool ResourceSlice, filtered on the
+  client), and opens the fd O_RDONLY for a read-only lease. Any Ready dax
+  lease gets its fd (memory --dax too).
+- cxl-request: --dax, --exclusive, --read-only, --exec for memory --dax;
+  CXL_LEASE_READONLY in the environment of CMD.
+- Examples read-only-shared-memory-pod.yaml (writer with all hosts,
+  readers with readOnly) and pooled-dax-pod.yaml.
+fake-cxl-pool (nri-plugins):
+- AttachRequest.Exclusive, Attachment.Exclusive: an exclusive attach
+  conflicts (409) with an attachment to another host, any attach to another
+  host conflicts with an exclusive attachment, an attach of an attached
+  device sets the flag (fake-cxl-pool-client attach --exclusive).
+- Controller: shared devices publish hosts validValues ["1", N]; a result
+  that consumes all N hosts is attached exclusively; the flag of an
+  existing attachment follows its claims, and existing attachments are
+  updated before new ones are made (a reader on the writer's node drops
+  the flag before the readers of the other node attach); status data has
+  "exclusive". Attached is written only once the attachment is exclusive.
+
+Unit tests (all pass, also with -race for the driver): pool helper
+(exclusive dax, read-only CDI devices, config errors, config precedence
+and request matching, mode defaults and old state files), broker (lease
+options, exclusive read-only shared lease, memory dax lease, the existing
+fd test on the new opener), cxl-request (new flags and their errors,
+CXL_LEASE_READONLY), fake pool server (exclusive attach rules), controller
+(publish, exclusive attach and flag reconcile, conflict with another
+cluster). golangci-lint: driver 17 findings, 20 on the unchanged commit,
+none new; fake-cxl-pool: no findings on changed lines (--new-from-rev).
+
+5. e2e results
+--------------
+Scratch test of vm-k8s-reinit (removed again), both VMs from their
+single-node clusters, after one restart each for the NIC:
+| step | time |
+|---|---|
+| two-node cluster (reset, init, join, routes, Ready, DNS) | 33 s |
+| the same call again: in shape | 1 s |
+| two single-node clusters again | 113 s (58 + 54) |
+Checked: two Ready nodes with VM network addresses, no taint, a pod on
+each node, pings between the pods both ways, DNS from the worker's pod,
+kubectl logs of the worker's pod from the control plane, kubectl on the
+worker; after the restore both nodes at 192.168.76.9, KUBELET_EXTRA_ARGS
+empty, CNI subnet 10.217.0.0/16.
+
+test13-dra-shared-one-writer-many-readers: PASS (run 3; runs 1 and 2 failed
+on the test's own CDI check, wrong directory and grep exit status 2, both
+fixed). From the writer's exit until all three readers hold the memory:
+9.4 s (run 2: 13.3 s). The restore took 62 + 63 s.
+
+Regression (memory-policy/n4-cxl-shared-2/, all tests in order):
+| test | verdict | note |
+|---|---|---|
+| test00-up | FAIL | pre-existing: VM2 was created from an older topology.var.json (static device serial 0xc1f0ee00, the test wants 0xc1ae0000) and should be recreated; nothing of this work is involved |
+| test01-shared-cxl | PASS | |
+| test10-dra-pooling | PASS | its vm-k8s-reinit "$VM2": in shape |
+| test11-dra-sharing | PASS | two clusters: in shape; the pool.source.sh wrappers |
+| test12-dra-live-attach | FAIL, then PASS | cycle 3: numa-touch.py found no numa_maps line at the address of its mapping. The kernel had merged the mapping with an anonymous neighbour (the rerun shows N2=65538, two pages more than the 65536 it touched). numa-touch.py now looks up the VMA that contains the address (/proc/self/maps); the rerun passed |
+| test13-dra-shared-one-writer-many-readers | PASS | from two single-node clusters: two-node cluster in 37 s, readers held the memory 13.2 s after the writer's exit, restored at the end |
+
+6. Open points
+--------------
+- CRI-O VMs: vm-k8s-reinit passes the CRI socket of the run; untested.
+- Cilium or other CNIs: refused (bridge CNI only).
+- The VM network is per user and checkout; VMs of different networks
+  cannot be in one cluster (vm-vmnet-record refuses).
+- A VM that leaves a multi-node cluster keeps its NIC and its address,
+  which do nothing in a single-node cluster.
+
+7. Legacy programs that need a path: /proc/PID/fd/3 (2026-10-13)
+----------------------------------------------------------------
+Question: can a program that only opens paths use the dax fd of a lease
+through /proc/PID/fd/3, without a device node or device cgroup rule?
+Measured twice in the real containers of test13 (a scratch copy of it with
+a probe, ~/.claude/jobs/procfd/procfd-probe.py, logs run1.log and
+run2-kept.log there; the copy is removed): the exclusive writer on VM1 and
+the three read-only readers on VM2 and VM1, root with the runtime's default
+capabilities, device cgroup "deny all" plus the runtime defaults.
+| who | path | open | result |
+|---|---|---|---|
+| child of the holder (inherited fd 3) | /proc/self/fd/3 | O_RDWR (writer) | EPERM |
+| another process of the writer's container | /proc/HOLDER/fd/3 | O_RDWR | EPERM |
+| children of the readers' holders | /proc/self/fd/3 | O_RDONLY | EPERM |
+| other processes of the readers' containers | /proc/HOLDER/fd/3 | O_RDONLY | EPERM |
+readlink gives /dev/dax0.0 and stat gives the char device 252:0 (root,
+0600): only the open is refused, by the device cgroup of the container.
+Opening the magic link is a new open of the device inode, checked like a
+bind-mounted node (inode_permission -> devcgroup_inode_permission), so it
+fails for the same reason. Nothing reached the device. Not added to test13.
+A program that needs a path works with a claim of the pod from its creation
+(test13 F: the node and the rule come with the claim), or would need the fd
+without a new open, for instance an LD_PRELOAD shim that answers open() of
+a chosen path with dup(3).
+Kubernetes gotcha found on the way: "$$" in a container command becomes
+"$" (escape of $(VAR)); write "$$$$" for the shell's pid.

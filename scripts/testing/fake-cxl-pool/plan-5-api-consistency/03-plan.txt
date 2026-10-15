@@ -1,0 +1,342 @@
+plan-5-api-consistency: implementation plan
+===========================================
+Written 2026-10-15 (Fable). Contract: 02-design.txt (02 below). Ground
+rules: 00-README.txt. Four Opus work streams with disjoint files, then two
+review agents. Paths as in 01 (D, N, P, E).
+
+1. Streams, ownership, order
+----------------------------
+| stream | owns | starts after |
+|---|---|---|
+| S1 driver | D/cmd/kubelet-cxl-plugin/**, D/cmd/cxl-request/**, D/pkg/cxl/** (new api, device, memorypolicy; deletes discovery, cdihelpers), D/deployments/cxl/**, D/test/e2e/cxl/dra-demo-cxl.sh, D/go.mod, D/go.sum (replace directive only; vendor/ is gitignored) | S2 step 1 (memctl) is done |
+| S2 pool | N/pkg/cxl/memctl/**, P/cmd/**, P/pkg/**, P/deploy/**, P/config.example.yaml, P/Makefile | at once; step 1 first |
+| S3 e2e | E/dra.source.sh, E/n4-cxl/**, E/n4-cxl-shared-1/**, E/n4-cxl-shared-2/** (helpers, tests, tools); the VMs | S1 and S2 report "builds and unit tests pass" |
+| S4 docs | D/doc/cxl/*.md, P/README.md, P/plan-2-dra/10-contract.md, N/test/e2e/README.md (only a sentence if needed) | at once, from 02; final pass after S1-S3 |
+Each stream keeps plan-5-api-consistency/05-status-S<n>.txt (its own
+file): Status (what is done, verification output), Deviations (from 02,
+with reason), Requests to S<m>, Findings. S2 writes "memctl done" into
+05-status-S2.txt as its first status line; S1 polls that file before
+building (its own first task, the pkg/cxl/api package, needs no memctl).
+Sequence:
+  t0  S2 step 1 (memctl rename), S1 step 1-2 (api, device), S4 drafting
+  t1  S1 steps 3-14, S2 steps 2-5, in parallel
+  t2  review R1 (code vs 02) while S3 adapts helpers and tests
+  t3  S3 runs the e2e tests, one at a time (section 6)
+  t4  S4 final pass; review R2 (docs, e2e, leftovers)
+
+2. Contracts between streams (fixed by 02; listed here so nobody guesses)
+------------------------------------------------------------------------
+C1 memctl (S2 -> S1): memctl.ModeNUMA = "numa", memctl.ModeDax = "dax";
+   CreateRegion(ctx, memdev, mode, decoder) with mode numa|dax;
+   RegionInfo.Mode numa|dax; CreateDaxDeviceAt removed; the unexported
+   helpers of 02 8.4. Nothing else in memctl changes signature.
+C2 pool controller (S2 -> S1, S3): attributes type, source, serial,
+   shared, size; no pool attribute; capacities, conditions, status data
+   unchanged (02 2.3).
+C3 driver (S1 -> S3, S4): class names and CEL of 02 section 3; the one
+   class file D/deployments/cxl/device-classes.yaml; DeviceConfig fields
+   and error texts (02 4.1); env names (02 5.2); protocol and CLI (02
+   section 6, including the validation texts R1-R13 and exit codes);
+   flags (02 7.1); labels cxl.generic/*; device names (02 2.2); CDI
+   layout (02 5.1); state file names unchanged.
+C4 fake-cxl-pool client (S2 -> S3): guest region create --mode numa|dax;
+   guest info "mode": "numa"|"dax"; sizes printed as 256Mi.
+C5 e2e (S3 -> S1/S2 by request only): if a test cannot be written
+   against C3/C4 as specified, S3 writes a Request, not a workaround.
+
+3. S1: driver (D)
+-----------------
+Preparation: in D/go.mod replace github.com/containers/nri-plugins with
+the local path /home/akervine/github.com/containers/nri-plugins; run go
+mod tidy and go mod vendor (vendor/ is gitignored; cxl.mk builds with
+-mod vendor and dra-build of the e2e runs "go mod vendor" itself). Record
+in the status file that the user restores a pushed pseudo-version before
+committing.
+Steps (each ends with go build ./... and go test of the touched packages):
+ 1. D/pkg/cxl/api (new): types and functions of 02 8.1 with unit tests:
+    Request/Response round trip, Env for every device kind of 02 5.2
+    (memdev numa, memdev dax read-only, region, dram, second slice key),
+    ExecEnv (DAX -> FD, CXL_LEASE), Key/RegionKey, ParseSerial/FormatSerial.
+    A test asserts api.ModeNUMA == memctl.ModeNUMA and api.ModeDax ==
+    memctl.ModeDax (import memctl; compiles once S2 step 1 is done; until
+    then skip this one test).
+ 2. D/pkg/cxl/device/device.go: the constant set of 02 8.2, types Memdev
+    (without Mode), DRAM, LeaseToken; delete the symbols listed as
+    deleted. Delete D/pkg/cxl/discovery and D/pkg/cxl/cdihelpers (check
+    with grep that no other cmd/ imports them: the GPU/QAT/Gaudi drivers
+    import their own packages under pkg/<driver>/).
+ 3. node_state.go:
+    - GetResources per 02 2.2: attributes and device names (region
+      <name>-node<N>, dram, lease, memdev-<hex>); nodeAffinity of a region
+      when all its memdevs agree; no name, no mode attribute.
+    - PreparedDeviceInfo: DeviceType in memdev|region|dram|lease, new Mode;
+      prepareLocalMemdev sets DeviceType memdev and Mode; preparedDeviceInfo
+      sets Mode numa for region and dram.
+    - CDI: buildClaimMarkerSpec builds one device claim-<uid> per prepared
+      claim with the marker env, api.Env of every device (Memory from
+      PreparedDeviceInfo: Key by serial with the per-claim slice counter,
+      REGION<n> from the region name, DRAM) and the dax device nodes
+      (permissions r when ReadOnly). buildLocalCDISpec, LocalCDISpecName,
+      localCDIDeviceName, localEnvPrefix are deleted. prepareAllocatedDevices
+      references only claim-<uid> (and lease-<uid> for lease claims).
+    - removeCXLSpecs(cdiCache) at start deletes every spec of kinds
+      generic/cxl and generic/cxl-pool (replaces the
+      cdihelpers.AddDetectedDevicesToCDIRegistry call); delete the
+      fmt.Printf at :244.
+    - MemoryPolicyConfig through parseConfig (strict); error text
+      "MemoryPolicyConfig: ..." on unknown fields. parseConfig called with
+      an empty request matches configs whatever their requests list says
+      (a MemoryPolicyConfig is per claim); with a request it applies the
+      per-request rule of 02 4.1.
+    - delete republish and the republish calls; Unprepare returns only the
+      error.
+    - NRI steering (nri.go claimedMemory): CXL nodes are devices with Mode
+      numa and DeviceType memdev or region; DRAM as before.
+ 4. lending.go: companionLender (rename), leaseOf(claim) reads the label
+    device.LeaseLabel; check(id, claim) -> hooks.OnLending(id, claim);
+    parseConfig generic over kinds; deviceConfig kind DeviceConfig, modeFor
+    error texts of 02 4.1; delete lendConfig and parseLendConfig; lentDevice
+    unchanged.
+ 5. pool.go: parseConfig(DeviceConfig); CDI per claim in kind
+    generic/cxl-pool, spec cxl-pool, device claim-<uid>, env by api.Env,
+    device node for dax with permissions r when readOnly (delete
+    poolCDIDeviceName/poolCDIDeviceID per serial; CDIDeviceID of a prepared
+    device is the claim's); companion identification through the label as
+    in step 4. Comments: "pool driver".
+ 6. local.go: delete modes snapshot (modesMu stays for blockSize), Modes(),
+    modeAttribute, modeNone, modeNUMADax, localDevice.Mode and
+    slicesMode()/usesDax callers that only served the attribute; the state
+    file keeps "mode" per slice (needed for release). localSnapshot keeps
+    BlockSize only.
+ 7. broker.go, lease_store.go: api.Request/Response on the wire;
+    validation R1-R13 of 02 6.1 in one function with those texts;
+    companion request per 02 6.5 (classes device.Class*, selectors,
+    capacities, DeviceConfig per driver, labels cxl.generic/*); ops
+    request, release, list, fd, env (fd and env take wait; env returns the
+    lease info with env; fd additionally the fd; R13 for fd on numa);
+    responses carry env when Ready (api.Env of the lease's Memory);
+    OnLending(id, claim) with the three checks of 02 4.3; lease struct of
+    02 6.6; strict decoding of leases.json with the fallback described
+    there.
+ 8. dynamic.go: device lease (name, type), class name constant, mounts
+    without cxl-release, leaseClaims/leaseClaim renames, defaultLeaseCLI.
+ 9. main.go, driver.go: flags of 02 7.1 (names, env vars, CXLFlags
+    fields), DriverConfig json tags, PublishLeaseDevice; error text
+    "lending to running containers is disabled (--leases=false)".
+10. cmd/cxl-request/main.go: the CLI of 02 6.1-6.4 on api.Request/Response
+    and api.ExecEnv; parsing of --opt and --opt=ARG; validation R1-R10
+    client-side with exit 2; env output sorted KEY=VALUE; exit codes of
+    02 6.2. main_test.go: every synopsis line, every R rule, --exec env
+    for dax and numa, exit codes.
+11. deployments/cxl: device-classes.yaml with the six classes of 02
+    section 3 (comment per class: what it selects and gets, one
+    sentence); base/: delete device-class.yaml, kustomization lists
+    namespace.yaml, resource-driver.yaml; deployments/cxl/kustomization.yaml
+    lists base and device-classes.yaml; delete deployments/cxl/local and
+    deployments/cxl/pool and deployments/cxl/examples/* (the five dead
+    ones); new deployments/cxl/examples/: one file per claim of 02 11.3
+    (local-numa.yaml, local-dax-readonly.yaml, local-dax-shared-claim.yaml
+    (two pods, one claim), pool-numa.yaml, pool-dax.yaml,
+    pool-shared-writer-readers.yaml, local-then-pool-dax.yaml,
+    region-dram-policy.yaml, lease.yaml), each a complete claim+pod, with
+    a header comment of three to six lines; the overlays/nfd_labeled_nodes
+    directory stays.
+12. D/test/e2e/cxl/dra-demo-cxl.sh: 'cxl-node' -> 'region' in the two CEL
+    expressions; nothing else (its classes are the demo's own).
+13. Unit tests: update every test of cmd/kubelet-cxl-plugin for the new
+    names; add TestDeviceClassesMatchConstants (loads
+    deployments/cxl/device-classes.yaml, checks the six names exist and
+    that each CEL contains its driver name, type and, for the pool
+    classes, shared == false/true); broker tests for every R rule, for the
+    companion request of each source/shared/serial combination, for the
+    label checks of OnLending (wrong name, wrong namespace, wrong owner),
+    for env in responses; pool and node_state tests for the CDI devices
+    (names, env, permissions).
+14. Grep gate before "done" (zero hits outside plan-*/ and vendor/):
+    cxl-node cxl-memdev cxlmem- system-dram "dynamic" (as device/type)
+    cxl-local-memory cxl-local-dax cxl-pool-memory cxl-shared-memory
+    cxl-dynamic cxl.intel.com PoolDeviceConfig LocalDeviceConfig
+    LendConfig CXL_POOL_ CXL_SHARED_ CXL_LOCAL_ CXL_LEASE_FD CXL_LEASE_DAX
+    CXL_LEASE_SIZE CXL_LEASE_READONLY CXL_DEVICE cxl-release pool-lend
+    POOL_LEND cxl-request-bin lease-wait-default companion-image
+    cxl-pool.generic/lease "pool helper" leaseKind leaseSourceAny
+    DynamicToken PublishDynamicToken tokenClaim claimLender lendConfig
+    DeviceTypeCXL ModeDevDax ModeRAM.
+Verification (all in D): go build ./... ; go vet ./cmd/kubelet-cxl-plugin/...
+./cmd/cxl-request/... ./pkg/cxl/... ; go test -race ./cmd/kubelet-cxl-plugin/...
+./cmd/cxl-request/... ./pkg/cxl/... ; CGO_ENABLED=0 go build -o /tmp/cxl-request
+./cmd/cxl-request (static; the e2e copies it into containers); golangci-lint
+run ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/... compared
+with the same command in a baseline worktree of HEAD (git worktree add
+/tmp/plan5-baseline HEAD; git worktree remove /tmp/plan5-baseline when
+done; this does not touch the working tree): no new findings (the
+repository has pre-existing ones, plan-4 counted 17); gofmt -l on the
+touched files empty.
+
+4. S2: fake-cxl-pool and memctl (N, P)
+--------------------------------------
+ 1. FIRST: N/pkg/cxl/memctl: C1. Update memctl_test.go. go test -race
+    ./pkg/cxl/memctl/... in N. Write "memctl done" to 05-status-S2.txt.
+ 2. P/cmd/fake-cxl-pool-client: guest region create --mode numa|dax (error
+    text "invalid mode %q (numa or dax)" comes from memctl), usage text,
+    printRegionInfo; sizes in the usage text as 256Mi; main_test.go.
+ 3. P/pkg/controller/publisher.go: attribute type: memdev, delete pool;
+    controller_test.go expectations.
+ 4. P/pkg/api/units.go FormatSize -> Ki/Mi/Gi/Ti; tests; P/config.example.yaml
+    comments and values in Mi/Gi (ParseSize unchanged); P/deploy
+    unchanged unless a comment names an old class.
+ 5. Comments in P/pkg/** and P/cmd/** that name old classes, env names or
+    cxl-request syntax (grep the list of S1 step 14 plus devdax, "--mode
+    ram").
+Verification: make -C P (all three binaries, static client and
+controller); make -C P test; make -C P lint; in N: go test -race
+./pkg/cxl/...; make reformat and make golangci-lint of N for the touched
+packages (the coding-style skill; if golangci-lint only reports typecheck
+errors, fix those first).
+
+5. S3: e2e helpers and tests (E)
+--------------------------------
+Prerequisites: S1 and S2 status files say the trees build and unit tests
+pass. S3 never edits code or documentation outside E.
+ 1. E/dra.source.sh: DRA_DEVICE_CLASSES = D/deployments/cxl/device-classes.yaml
+    (one file; delete DRA_DYNAMIC_CLASS and DRA_LOCAL_CLASSES and the
+    three-file logic in dra-install/dra-uninstall; dra-uninstall deletes
+    the six classes by name as a fallback); dra-start-plugin passes
+    --lease-cli; dra-claim-yaml writes DeviceConfig; DRA_LOCAL_DEVICE
+    memdev-<hex>; delete dra-local-mode-wait and replace its uses with
+    sysfs checks (dra-local-slices-wait exists: numa slices bound to kmem
+    and online, dax slices bound to device_dax; add dra-local-slices-none
+    for "no slice, no region"); dra-local-slice-times parses the plugin
+    log (its format is unchanged: "slice daxX.Y mode numa"); dra-leases
+    unchanged; header comment: contract is doc/cxl/POOL.md.
+ 2. Tests, in this order of editing (small to large): test01-shared-cxl
+    (--mode dax, assertion "mode" == "dax"), test10 (class cxl-pool, env
+    CXL_<HEX>_NODE/_SIZE/_MODE/_SHARED), test11 (cxl-pool-shared,
+    CXL_<HEX>_DAX/_SIZE/_SHARED=1), test14 (cxl-local + DeviceConfig,
+    CXL_<HEX>_* for numa and dax slices, error text "DeviceConfig: readOnly
+    needs mode dax", attribute assertions type memdev / source local /
+    shared false / no mode, device memdev-<hex>, slice checks by sysfs),
+    test12 (cxl-lease, cxl-request request --size / --serial --shared /
+    fd --lease / release --lease / --all, lease JSON mode/shared instead of
+    kind/exclusive, companion label cxl.generic/lease instead of
+    LendConfig, CXL_<HEX>_FD in --exec), test13 (writer: request --serial S;
+    readers: request --serial S --shared --read-only; claims on
+    cxl-pool-shared with DeviceConfig readOnly and hosts: "4"; env names;
+    "cxl-request release --all"), test15 (request --source local --size
+    --mode dax --read-only, env --lease, fd --lease, the --source omitted
+    case for local-then-pool, DeviceConfig assertions on companion claims,
+    labels). Add to test12: "cxl-request env --lease ID" prints the same
+    KEY=VALUE pairs that a claim injects (compare with the env of a pod
+    that claims the same device in test10) and "env --exec" on a numa
+    lease. Add to test15: fd --wait after request --wait 0s.
+ 3. pool-dax-rw.py docstring (cxl-request syntax, CXL_<HEX>_FD,
+    CXL_<HEX>_SIZE; the --fd path reads the size from CXL_*_SIZE: make it
+    accept the first CXL_*_SIZE when CXL_LEASE_SIZE is gone); pool.source.sh
+    and test00-up comments.
+ 4. Grep gate of S1 step 14 over E, plus: LendConfig, 'kind' assertions on
+    leases, l.get('exclusive'), cxl-release, --exclusive (cxl-request;
+    fake-cxl-pool-client attach --exclusive stays), --dax, --local,
+    --source any, "cxl-request memory", "cxl-request shared".
+ 5. Run the tests (section 6).
+Verification: shellcheck is not in CI for these files; bash -n on every
+edited .sh; the e2e verdicts.
+
+6. e2e runs (S3 only; never two at a time)
+------------------------------------------
+VMs (all exist, clean, patched qemu; see plan-4 06-status "W5"):
+  n4-cxl-shared-2-fedora-43-containerd  (VM2; local device 1G, shared static 0xc1ae0000)
+  n4-cxl-shared-1-fedora-43-containerd  (VM1; used by test01, test11, test13)
+  n4-cxl-fedora-43-containerd           (test01-pkg-cxl; no API of this plan; not run)
+  n6-hbm-cxl-fedora-43-containerd       (memory-policy plugin only; not run)
+Before every run: no fake-cxl-pool-server on the host (pgrep), port 9909
+free, no other run_tests.sh. Export
+qemu_bin=/home/akervine/github.com/qemu/qemu/build/qemu-system-x86_64 (the
+VMs record QEMU_BIN in their env files; exporting keeps a recreated VM on
+the patched build). Commands, from N/test/e2e, in this order:
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test01-shared-cxl   # needs only S2 and the test01 edit of S3 step 2
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test10-dra-pooling
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test11-dra-sharing
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test14-dra-local-memdev
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test12-dra-live-attach
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test15-dra-local-live-attach
+  ./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+test13 last: it reshapes VM1+VM2 into one cluster and restores two
+single-node clusters when it passes (run-e2e-tests skill, troubleshooting).
+dra-build builds the driver from D with -mod vendor: S1's vendor refresh
+must be done. Outputs: N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/
+memory.test-suite/memory-policy/<test>/ (kubelet-cxl-plugin log in the
+trace directory). A failing test leaves the VM for debugging; fix, rerun
+the same test, then continue the order. Record every verdict with its
+duration in 05-status-S3.txt; a test that needed a rerun says why.
+
+7. S4: documentation (D/doc/cxl, P/README.md, 10-contract.md)
+-------------------------------------------------------------
+Write from 02 at t0; align with the code at t4 (read S1-S3 status files
+and the Deviations sections). Documents:
+ - D/doc/cxl/README.md: overview of the two drivers, the vocabulary table
+   of 02 section 1, the six classes with one line each, the document
+   index (USAGE, LOCAL, POOL, LEASES, BUILD, CLUSTER_SETUP). Keep the
+   CAUTION and the Kubernetes version table.
+ - D/doc/cxl/USAGE.md (today a placeholder): deploy (kustomize, the
+   DaemonSet limits: leases need a host process with NRI), the
+   ResourceSlice devices of cxl.generic (02 2.2), DeviceClasses (section
+   3), DeviceConfig and MemoryPolicyConfig (section 4), the environment
+   (02 5.2 with the table), "What the memory contains" (zeroed slices,
+   pool content retained, shared bytes), the claims of 02 11.3 (link each
+   to its example file), flags and the configuration file (02 7.1-7.2),
+   state files, requirements.
+ - D/doc/cxl/LOCAL.md: memdev devices, slicing and memory blocks (keep
+   the current technical content), updated names, no "Steering and
+   lending" chapter (moved to LEASES.md), no mode attribute.
+ - D/doc/cxl/POOL.md: the controller contract with type: memdev required,
+   no pool attribute, classes cxl-pool/cxl-pool-shared, DeviceConfig,
+   env; the "Lending to running containers" chapter is removed (LEASES.md);
+   the "??? TODO" sentence becomes a plain statement with a pointer to Q1.
+ - D/doc/cxl/LEASES.md (new): the lease mechanism for local and pool
+   memory: opting in (cxl-lease), flow, cxl-request CLI (02 6.1-6.2),
+   protocol (02 6.3-6.4), companion objects (02 6.5), life cycle,
+   limitations (moved from POOL.md, updated).
+ - P/README.md: controller section (attributes), client usage (--mode
+   numa|dax, sizes), REST unchanged; pointer to doc/cxl/POOL.md for the
+   contract.
+ - P/plan-2-dra/10-contract.md: replaced by a short note: "The contract is
+   doc/cxl/POOL.md in intel-resource-drivers-for-kubernetes; this file was
+   its first draft (git history)." (Q4 of 04 if the user prefers deletion.)
+ - N/test/e2e/README.md: only if it names a class or command of the old
+   API (it does not today).
+Rules: current state only, plain ASCII, every code name in backticks
+spelled as in 02, every example runnable. Grep gate of S1 step 14 over the
+documents.
+
+8. Review agents (edit nothing; write 06-review-1.txt and 06-review-2.txt)
+--------------------------------------------------------------------------
+R1 (after S1 and S2): for every row of the rename table (02 section 10)
+grep both trees (excluding plan-*/, vendor/, e2e output directories) for
+the old name: zero hits or a listed exception; compare the published
+attributes (node_state.go, publisher.go) with 02 2.2-2.3 field by field;
+the class YAML with 02 section 3; DeviceConfig errors with 02 4.1; the
+env builder with 02 5.2; the CLI usage text and the validation texts with
+02 6.1; flags with 02 7.1; the lease labels; the CDI kinds and device
+names; no alias anywhere (two spellings for one thing, a flag that only
+sets another flag, a "deprecated" comment); no reinvented wheel (a second
+size or serial parser next to api.ParseSerial / resource.ParseQuantity, a
+second env builder, a second protocol struct); coding-style skill
+(function comments say what, not how or who calls; no history in
+comments); go vet, go test, lint as in sections 3-4.
+R2 (after S3 and S4): documentation against the code (every command line
+and YAML in the docs exists in that spelling in code or deployments;
+every env name in docs is produced by api.Env); e2e tests assert the new
+names and only them; the status files list every deviation and each has a
+reason; the four grep gates are clean; style of the shell helpers (no
+"act; sleep N; verify" patterns added).
+Findings go to the owning stream as Requests; the stream fixes and
+re-verifies; R2 closes with a one-paragraph verdict in 06-review-2.txt.
+
+9. Done criteria
+----------------
+- Both trees build; unit tests, vet, lint green (sections 3-4).
+- The seven e2e tests of section 6 PASS in the given order, each once in
+  the final tree (a test edited after its run is rerun).
+- No hit for any old name in the grep gates.
+- 05-status-S1..S4.txt and 06-review-1/2.txt written; the user has the
+  list of go.mod/vendor steps to restore before committing.

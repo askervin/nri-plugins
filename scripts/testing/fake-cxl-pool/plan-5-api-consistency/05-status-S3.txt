@@ -1,0 +1,411 @@
+plan-5-api-consistency: status of stream S3 (e2e helpers, tests, runs)
+======================================================================
+E = N/test/e2e/memory.test-suite/memory-policy
+
+Status
+------
+done 12:53. Phase 1 (helpers and tests against 02, static checks only)
+done 11:28. Phase 2: pass 1 on the S1/S2 build of 11:52 (7/7 PASS),
+then the tests adapted to the amendments A1-A4 (O4) and to S1's answers,
+pass 2 on the build with the review fixes (S1 12:27, S2 12:16): 7/7 PASS,
+each test on its first run, on the final test files (the hashes in the
+pass-2 logs are those of the tree now). VMs left clean. No Requests open.
+
+Phase 1
+-------
+Edited (nothing else in E changed):
+  E/dra.source.sh
+  E/n4-cxl-shared-2/{test01,test10,test11,test12,test13,test14,test15}*/code.var.sh
+  E/n4-cxl-shared-2/pool-dax-rw.py
+Unchanged on purpose: pool.source.sh, test00-up of shared-1/-2 (no API
+names; "devdax" there is the kernel device type), numa-touch.py,
+n4-cxl/** (no API of this plan), topology.var.json files (qemu syntax).
+
+dra.source.sh
+- DRA_DEVICE_CLASSES = D/deployments/cxl/device-classes.yaml (one file),
+  DRA_CLASSES = the six class names; dra-install applies the file and
+  checks "kubectl get deviceclass <six>"; dra-uninstall deletes the file's
+  objects and the six classes by name. DRA_DYNAMIC_CLASS,
+  DRA_LOCAL_CLASSES and the three-file logic are gone.
+- DRA_LEASE_LABEL, DRA_REQUESTER_LABEL, DRA_NODE_LABEL (cxl.generic/*),
+  DRA_REQUESTER_ANNOTATION for the tests.
+- dra-start-plugin passes --lease-cli.
+- DRA_LOCAL_DEVICE = memdev-<hex>.
+- dra-claim-yaml/dra-claim-pod: CLASS SIZE [MODE [read-only]] write an
+  opaque DeviceConfig {mode, readOnly} for the driver of the class
+  (cxl-pool* -> cxl-pool.generic, else cxl.generic).
+- dra-local-mode-wait deleted. New: dra-local-slices-none (no region,
+  memdev enabled; cxl-dump and sysfs), dra-local-unchanged (the local
+  device is published exactly as when it appeared: the replacement of
+  the mode attribute checks, see "Assertions changed").
+  dra-local-device records DRA_LOCAL_PUBLISHED (the device JSON) and
+  waits until the device has type memdev and its serial.
+- dra-local-cdi-devices (local-<uid>) replaced by dra-cdi-device VMDIR
+  NAME (prints a device of the YAML CDI specs with its spec kind) and
+  dra-cdi-devices-with VMDIR TEXT (names of devices with a line TEXT).
+  dra-local-initial-state: no CDI device with CXL_<hex>_ of the local
+  device left (was: no local-<uid> device).
+- dra-env-assert LABEL TEXT KEY FIELD=VALUE...: the CXL_<KEY>_* lines of
+  TEXT are exactly the given fields (values are fnmatch patterns);
+  dra-env-value TEXT NAME.
+- dra-py: subrequests(claim) (exactly + firstAvailable, flattened) and
+  configs(kind, claim).
+- Trace summary pattern cxlmem -> memdev-; "pool helper" -> "pool driver";
+  header points to doc/cxl/POOL.md and doc/cxl/LEASES.md.
+- dra-local-slice-times, dra-leases, dra-local-slices-aligned: unchanged
+  (they parse plugin log lines and the list output, see Questions Q9).
+
+Tests (story unchanged in each; new assertions marked +)
+- test01: guest region create --mode dax, assertion mode == "dax"; sizes
+  in the server config and create --size as 256Mi/128Mi;
+  + the device table prints shared0 as "0xc1ae0001 256Mi true" (C4).
+- test10: class cxl-pool; + pool devices have type memdev, source pool
+  and exactly the attributes serial, shared, size, source, type (no
+  pool); + the dram device (name dram, type dram, source local, size,
+  nodes); region instead of cxl-node; the container env is exactly
+  CXL_C1EE0001_{SERIAL,SHARED=0,MODE=numa,SIZE,NODE} and no other CXL_
+  variable (was: CXL_POOL_NODE_/SIZE_ present).
+- test11: class cxl-pool-shared; + type memdev, source pool; writer env
+  exactly CXL_C1AE0001_{SERIAL,SHARED=1,MODE=dax,SIZE,DAX,READONLY=0}
+  and nothing else; readers use $CXL_C1AE0001_DAX.
+- test14: class cxl-local for all claims; numa-a without DeviceConfig
+  (default numa), numa-b with mode numa, dax claims with mode dax,
+  dax-ro with mode dax + readOnly; + attributes: type memdev, source
+  local, shared false, exactly memoryBlockSize, nodeAffinity, serial,
+  shared, size, source, type (no mode, no name); + the six classes exist
+  and carry no config, cxl-local's CEL names cxl.generic and "memdev";
+  + numa slices: env exactly SERIAL, SHARED=0, MODE=numa, SIZE, NODE and
+  the claim marker; dax slices: exactly SERIAL, SHARED=0, MODE=dax, SIZE,
+  DAX, READONLY=0|1 and the marker (was: CXL_LOCAL_DAX/SIZE/SERIAL, and
+  READONLY only when read-only); error text "DeviceConfig: readOnly needs
+  mode dax"; + a second refused claim (mode "memory") with "DeviceConfig:
+  invalid mode \"memory\" (numa or dax)"; read-only CDI device is
+  claim-<uid> of kind generic/cxl with permissions r and
+  CXL_<hex>_READONLY=1 (was local-<uid>).
+- test12: cxl-lease template/class, lease device "lease" with only the
+  type attribute; request --source pool --size 512Mi (the old "memory
+  512Mi" meant source pool); request --serial S --shared (was "shared
+  S"); fd --lease; release --lease / --all; lease list/response assert
+  source/mode/shared/readOnly/serial/size instead of kind; companion
+  pod and claim: labels exactly {cxl.generic/lease, /requester-uid,
+  /node}, annotation cxl.generic/requester = ns/borrower/main, class
+  cxl-pool or cxl-pool-shared, exactly one config DeviceConfig {mode,
+  readOnly false} of cxl-pool.generic (replaces the LendConfig asserts);
+  + response env == the five CXL_C1EE0001_* values; + "env --lease"
+  prints them sorted (only CXL_LEASE=<id> allowed besides, Q1);
+  + "env --lease --exec" gives the program NODE, SIZE, CXL_LEASE and no
+  FD; + "fd" on the numa lease exits 3 with "lease <id> is not a dax
+  lease; use env" (R13); + A2: R1-R10 refused with exit 2 and their
+  texts, R11 ("device 0xc1ee0001: not shareable") exit 1 (Q3), nothing
+  left; + C2: a pod with a cxl-pool claim of pooled0 has the same
+  CXL_C1EE0001_* lines as "env --lease" printed (NODE compared with each
+  one's own node); shared leases: + no hosts capacity request and
+  consumedCapacity hosts "1" (Q6); env --lease names the dax device
+  (DAX, READONLY=0, SHARED=1); fd --exec env has FD=3 instead of DAX,
+  CXL_LEASE, and fd 3 is that device (was CXL_LEASE_FD/SIZE/DAX).
+- test13: writer "request --serial S" (exclusive by default, Q3 of 04),
+  readers "request --serial S --shared --read-only", "cxl-request
+  release --all/--lease"; companion of the writer: one cxl-pool-shared
+  (sub)request with hosts "4" (Q5), DeviceConfig mode dax; lease JSON
+  mode/shared instead of kind/exclusive; + writer env READONLY=0,
+  SHARED=1 (Q2), FD=3; reader companion configs == [DeviceConfig dax
+  readOnly true], class cxl-pool-shared without capacity; read-only CDI
+  device is claim-<uid of the companion> of kind generic/cxl-pool (was
+  the per-serial pool-<hex>-ro); reader-d (cxl-pool-shared + DeviceConfig
+  readOnly) env exactly SERIAL, SHARED=1, MODE=dax, SIZE, DAX,
+  READONLY=1; H1 request --source pool --size 256Mi --mode dax, + its
+  READONLY=0; H2 cxl-pool + DeviceConfig mode dax, env exactly the dax
+  fields (no NODE: replaces "no CXL_POOL_NODE_"); the "sleep 10" while
+  the readers wait is now dra-stays 10 on all readers' companions.
+- test15: cxl-local + DeviceConfig per lease (numa or dax, readOnly);
+  request --source local / --source pool / no --source (was memory ...
+  --source any, --local, --dax, and "memory 64Mi --dax" whose default
+  source was pool: now explicit --source pool); companion labels,
+  annotation, exactly one DeviceConfig of cxl.generic (replaces
+  LendConfig + LocalDeviceConfig asserts); firstAvailable claims:
+  + subrequest classes cxl-local/cxl-pool with the size, DeviceConfig
+  numa per driver for its subrequest; dax leases: the exec env has one
+  CXL_<KEY>_FD=3 with exactly SERIAL, SHARED=0, MODE=dax, SIZE, FD,
+  READONLY and CXL_LEASE, + "env --lease" names the dax device (was
+  CXL_LEASE_DAX/SIZE/READONLY/FD); + "request --wait 0s" returns before
+  Ready (Creating, Pending or Lending; exit 0, Q4) and "fd --lease
+  --wait 60s --exec" waits and gets the fd; pool-not-local greps
+  "discovered local memory device memdev-c1ee0001" (Q9).
+- pool-dax-rw.py: docstring; --fd size from sysfs, else CXL_<KEY>_SIZE
+  of the KEY whose CXL_<KEY>_FD is the fd.
+
+Assertions changed and why
+- attribute mode (none|numa|dax|numa+dax) is gone (02 2.2, I5): every
+  "mode == X" check became dra-local-unchanged (the device JSON in the
+  ResourceSlice is identical to when it appeared: no republish, nothing
+  of the slices published) next to the existing sysfs checks of the
+  slices (dra-local-slices-wait / dra-local-slices-none).
+- LendConfig is gone (02 4.3): its lease/pod/container assertions became
+  the labels (lease id, requester uid, node) and the requester annotation
+  ns/pod/container on the companion pod and claim, plus "only one config,
+  a DeviceConfig".
+- lease kind memory|shared and exclusive are gone (02 6.3): replaced by
+  mode, shared, readOnly, source and serial of the response/list.
+- CXL_POOL_/CXL_SHARED_/CXL_LOCAL_/CXL_LEASE_* (02 5.2): replaced by the
+  CXL_<KEY>_* sets, asserted as exact field sets (stronger than the old
+  "has this variable" greps); "no READONLY without read-only" became
+  "READONLY=0" (always present for dax).
+- Per-serial pool CDI device pool-<hex>-ro and local-<uid> (02 5.1):
+  replaced by claim-<uid> in the spec of the right kind.
+None was dropped.
+
+Static checks (all green)
+- bash -n: dra.source.sh, pool.source.sh, cxl.source.sh, every
+  code.var.sh of n4-cxl-shared-1/-2.
+- shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016: clean on
+  dra.source.sh, test01, test10, test11, test13, test14, test15; test12
+  has only its old SC2015 note (mknod line, unchanged); test00-up keep
+  their old SC2086/SC2013 infos (unchanged files).
+- python3 -m py_compile pool-dax-rw.py numa-touch.py; env_size() tried
+  with a CXL_C1AE0001_FD/_SIZE environment.
+- Helper dry runs on the host: dra-cdi-device / dra-cdi-devices-with on
+  mock yaml.v3 CDI specs, dra-claim-yaml outputs, dra-py subrequests and
+  configs, dra-env-assert pass/fail.
+- Grep gate (S1 step 14 list + E list) over E: no hit, except
+  FAKE_CXL_POOL_PORT (pool.source.sh, dra.source.sh), which matches the
+  pattern CXL_POOL_ but is the fake-cxl-pool server port variable, and
+  c['parameters'].get('kind') (a config kind, DeviceConfig, not a lease
+  kind).
+
+Questions (02 leaves these open; the tests take the stated reading)
+Q1 "cxl-request env --lease ID": does it print CXL_LEASE=<id> too? 6.2
+   says "the environment", 11.4 "KEY=VALUE lines (DAX, not FD)", 6.4
+   adds CXL_LEASE for --exec only. test12 requires the exact CXL_<KEY>_
+   set, sorted, and allows CXL_LEASE=<id> as the only other line.
+Q2 CXL_<KEY>_SHARED for the exclusive use of a shared device (test13
+   writer: request --serial S without --shared; claim 7 of 02 11.3): the
+   device attribute (1) or the effective sharing (0)? test13 expects 1
+   (5.2 lists SHARED for memdevs; 11.3 claim 7 shows no env change).
+Q3 Exit status of a request the broker refuses before any lease exists
+   (R11): 02 6.2 has 1 for errors, 3 for a Failed lease. test12 expects 1.
+Q4 Exit status of "request --wait 0s" answered with a lease that is not
+   Ready: 0 ("0s = do not wait", the lease is kept) or 3 ("not Ready
+   within --wait")? test15 expects 0.
+Q5 Companion request of a lease without --source: with --shared the
+   local subrequest is left out; is the request then exactly or a
+   firstAvailable of one? test12/test13 accept both (subrequests()) and
+   require exactly one cxl-pool-shared (sub)request. For "--serial
+   <shared device>" without --shared (the writer), a cxl-local
+   subrequest is ignored by the assertion if present.
+Q6 consumedCapacity of a claim on cxl-pool-shared without a hosts
+   request: test12 expects hosts "1" (the requestPolicy default). This
+   is Kubernetes behaviour, checked in phase 2.
+Q7 Response/list fields that are false or empty may be omitted
+   (omitempty): the tests read shared/readOnly with bool(l.get(...)) and
+   dax/node with get().
+Q8 Where cxl-request prints R1-R13: the tests accept stdout or stderr.
+Q9 Plugin log lines the tests grep (not in 02; S1 please keep them or
+   tell S3): "discovered local memory device memdev-<hex>" (test15),
+   "cxl-pool.generic: claim .*: prepared pooled0" and "rescanAndPublish:
+   published updated resources" (test10), "local: ...
+   (created|onlined|offlined|zeroed|deleted) slice daxX.Y mode M ... in
+   T" and "created|released region" (dra-local-slice-times), "does not
+   start at a memory block boundary|placing it explicitly|rounded up to"
+   (dra-local-slices-aligned).
+
+Phase 2
+-------
+Runs: /tmp/s3/run-e2e.sh (a wrapper outside the trees: refuses to start
+if fake-cxl-pool-server runs, port 9909 is busy or another run_tests.sh
+runs; exports qemu_bin=/home/akervine/github.com/qemu/qemu/build/
+qemu-system-x86_64; writes the md5 (12 hex) of the sources under test into
+the first lines of the log). Logs: ~/.claude/jobs/plan5-e2e/NN-*.log.
+The existing VMs were used (no VM recreated); both run the patched qemu.
+
+Pass 1 (build of S1 "done 11:52" and S2 "done 11:14", before the O4
+amendments; counts as a first pass per O5)
+  build identity, the same in all seven logs:
+    driver cmd/kubelet-cxl-plugin 01f1b65a761a, cmd/cxl-request
+    96916b739389, pkg/cxl 538780c5d120, deployments/cxl/device-classes.yaml
+    4bb14fc7655e, go.mod 64641f5d172d (replace -> local nri-plugins);
+    nri-plugins pkg/cxl/memctl df32c159a8b8, fake-cxl-pool cmd+pkg
+    7c45bc348bc0; dra.source.sh 3b6a9f02deb4, pool.source.sh
+    b1a6a0c168c8, pool-dax-rw.py acaead03e840.
+  verdicts (each on its first run, no rerun):
+    01 test01-shared-cxl                           PASS   85 s
+    02 test10-dra-pooling                          PASS   74 s
+    03 test11-dra-sharing                          PASS  114 s
+    04 test14-dra-local-memdev                     PASS  165 s
+    05 test12-dra-live-attach                      PASS  329 s
+    06 test15-dra-local-live-attach                PASS  237 s
+    07 test13-dra-shared-one-writer-many-readers   PASS  346 s
+  Seen in the logs: R1-R10 on stderr with exit 2, R11 as a JSON line on
+  stdout with exit 1, R13 exit 3 with the text; env --lease prints the
+  five CXL_C1EE0001_* lines and CXL_LEASE, sorted; the claim of pooled0
+  (C2 of test12) has the same five lines; consumedCapacity hosts "1" for
+  a shared lease (Q6); --wait 0s answered Creating/Pending with exit 0
+  and fd --wait got the fd; both refused DeviceConfigs of test14 with
+  their texts; the CDI device of dax-ro claim-<uid> in cxl-claims.yaml;
+  the discovery log line matches the local memdev (23 times in test15),
+  so "pooled0 published 0 times" is meaningful.
+  After pass 1: both VMs single-node clusters again (test13 restore), no
+  DRA units, no CXL memdevs or regions, no cxl-type3 in qemu, no
+  DeviceClasses, port 9909 free, no fake-cxl-pool-server.
+
+Changes after pass 1 (each a reading of 02 that S1 fixed, or A1-A3)
+  - test12: "env --lease" must print CXL_LEASE=<id> and nothing but it
+    and the five CXL_C1EE0001_* lines (S1 answer to Q1; was: CXL_LEASE
+    allowed).
+  - test13 writer: the companion request is exactly one cxl-pool-shared
+    request "lease" with hosts "4" and exactly one DeviceConfig (S1 answer
+    to Q5; was: a cxl-local subrequest ignored if present).
+  - A3, claim marker in every CDI device of both drivers: test10 pod env
+    = the five CXL_C1EE0001_* lines and CXL_CLAIM_<uid>=1 (6 lines, was
+    5, no marker); test11 writer env = six CXL_C1AE0001_* lines and the
+    marker (7, was 6); test12 C2 claimer: marker checked, and the
+    comparison with the lease env is over the CXL_C1EE0001_* lines.
+  - A3, per-result CDI devices: test14 dax-ro: claim-<uid>-0 in
+    cxl-claims.yaml (kind generic/cxl) with permissions r, READONLY=1 and
+    the marker, and no other CDI device of the claim (was claim-<uid>).
+  - A3, companion claims get no CDI device: test13 reader-a's companion:
+    none (was: its read-only CDI device). The read-only CDI device check
+    moved to reader-d's own claim on VM1 (claim-<uid>-0 in cxl-pool.yaml,
+    kind generic/cxl-pool, permissions r, READONLY=1, the marker, no other
+    device of the claim): the read-only device node of a pool claim is
+    still checked, on the claim that a container uses. test12 and test15
+    companion-check: + no CDI device of the companion claim.
+  - A1: test14 + a third refused claim, an opaque config of kind
+    DaxConfig: 'unknown kind "DaxConfig" (DeviceConfig or
+    MemoryPolicyConfig)' in the pod's events, the pod stays
+    ContainerCreating (dra-stays covers all three), the device stays free.
+    DaxConfig rather than an old kind such as PoolDeviceConfig: the E
+    grep gate (03 S3 step 4) forbids the old names in E; S1's unit tests
+    cover the old kinds (TestCheckConfigKinds, TestPrepareLocalErrors).
+  - A2 (region/dram numa only) and A4 (orphan cleanup): no e2e test
+    claims a region or dram, or creates orphans; not exercised.
+  - S2 I-4 (guest region create --mode <bad> is exit 2 again): not used
+    by the e2e (test01 uses --mode dax only); covered by S2's unit tests.
+
+Pass 2 (build with the review fixes: S1 "Status (review fixes)" done
+12:27, S2 "Status (review fixes)" 12:16; no source of D, memctl or
+fake-cxl-pool changed after 12:26:30)
+  build identity, the same in all seven logs:
+    driver cmd/kubelet-cxl-plugin f456f1da55d0, cmd/cxl-request
+    b6f64ecf9415, pkg/cxl 2893f53c61af, device-classes.yaml 4bb14fc7655e,
+    go.mod 64641f5d172d (replace -> local nri-plugins); nri-plugins
+    pkg/cxl/memctl ef00ac915270, fake-cxl-pool cmd+pkg e9a63de733ff;
+    dra.source.sh 7d5fd97eab05, pool.source.sh b1a6a0c168c8,
+    pool-dax-rw.py acaead03e840.
+  verdicts (each on its first run, no rerun):
+    11 test01-shared-cxl                           PASS   77 s  (test 7ad2d9c9c640)
+    12 test10-dra-pooling                          PASS   74 s  (8648c2d86b79)
+    13 test11-dra-sharing                          PASS  114 s  (3c36876e68a8)
+    14 test14-dra-local-memdev                     PASS  167 s  (bab2f5204a6e)
+    15 test12-dra-live-attach                      PASS  331 s  (b4233298a61d)
+    16 test15-dra-local-live-attach                PASS  239 s  (238d80ab8bb3)
+    17 test13-dra-shared-one-writer-many-readers   PASS  338 s  (35a5b0a83c4b)
+  The test hashes are those of the files now (md5sum, 12 hex): the final
+  tree passed. Seen in pass 2: the marker CXL_CLAIM_<uid>=1 in the pool
+  claims of test10/11/12; bad-kind refused with the A1 text; claim-<uid>-0
+  of dax-ro in /etc/cdi/cxl-claims.yaml and of reader-d in VM1's
+  /etc/cdi/cxl-pool.yaml; no CDI device of any companion claim.
+  After pass 2: both VMs single-node clusters (test13 restored them), no
+  kubelet-cxl-plugin or fake-cxl-pool-controller unit, no CXL memdevs or
+  regions, no cxl-type3 device in either qemu, no DeviceClasses, no
+  namespace cxl-pool-demo, port 9909 free, no fake-cxl-pool-server.
+
+Final static checks (on the tree of pass 2): bash -n of every edited
+file; shellcheck -s bash -e SC2034,SC2154,SC1090,SC2016 clean except the
+old SC2015 info of test12 (mknod line, unchanged since plan-4); py_compile
+of both tools; grep gate over E (S1 step 14 list + the E list): no hit
+(FAKE_CXL_POOL_PORT excluded as above).
+
+Answers to the Phase 1 questions (S1, "Names S3 and S4 rely on")
+  Q1 env prints CXL_LEASE too.  Q2 SHARED is the device's: 1 for the
+  writer.  Q3 R11 exit 1, JSON line on stdout.  Q4 --wait 0s exit 0.
+  Q5 one source -> exactly; the writer's request has no local
+  subrequest.  Q6 consumedCapacity hosts "1" (seen in test12).  Q7
+  shared/readOnly always present.  Q8 R1-R10 on stderr.  Q9 log lines
+  kept.
+
+Requests to S1
+(none)
+
+Requests to S2
+(none)
+
+Findings
+F1 The grep gate pattern CXL_POOL_ matches FAKE_CXL_POOL_PORT (E) and
+   FAKE_CXL_POOL_SERVER (P, S2 F1): the fake-cxl-pool variables, not the
+   old env prefix. A reviewer's grep should use [^_]CXL_POOL_ or list them.
+F2 Left as they were (older than plan-5, not API): test12 touch-pages
+   still does "kill -USR1; sleep 1; cat" in the container (test15 uses
+   dra-touch-pages, which waits for the report), and its SC2015 note. The
+   one "sleep 10" of test13 (readers waiting) became dra-stays.
+F3 dra-build runs "go mod vendor" in D at each DRA test (as before), so
+   D/vendor (gitignored) follows the local nri-plugins checkout through
+   the replace directive of go.mod; the user's go.mod restore (S1 status)
+   applies.
+F4 The pass-1 logs (01-07) are of the pre-amendment build; the tests of
+   pass 1 differ from the final ones where "Changes after pass 1" says.
+
+S3 Status (remaining CXL tests)
+-------------------------------
+done 13:02. The CXL e2e tests that do not use the DRA driver but use
+memctl, the fake-cxl-pool tools or pkg/cxl, one at a time, on the
+existing VMs (all on the patched qemu; qemu_bin exported by the wrapper,
+no VM recreated), with the same wrapper and log directory as Phase 2.
+  build identity: the same as pass 2 in all four logs (driver
+  cmd/kubelet-cxl-plugin f456f1da55d0, cmd/cxl-request b6f64ecf9415,
+  pkg/cxl 2893f53c61af; nri-plugins pkg/cxl/memctl ef00ac915270,
+  fake-cxl-pool cmd+pkg e9a63de733ff); no source changed since pass 2.
+  verdicts (each on its first run, no rerun, none skipped):
+    21 n4-cxl/test01-pkg-cxl            PASS  65 s
+    22 n4-cxl-shared-1/test00-up        PASS  19 s
+    23 n4-cxl-shared-2/test00-up        PASS  19 s
+    24 n6-hbm-cxl/test01-policies       PASS  28 s
+  Logs: ~/.claude/jobs/plan5-e2e/21-24*.log. None of these test files was
+  edited by plan-5.
+  Afterwards: no cxl-type3 device in the qemu of n4-cxl, n6-hbm-cxl,
+  n4-cxl-shared-1 or -2, no CXL memdevs or regions, no DRA units, port
+  9909 free, the two shared VMs single-node clusters. test01-policies
+  leaves its pod0 and the helm release "test" (nri-memory-policy), as the
+  e2e framework does after a policy test; I deleted both (kubectl delete
+  pod pod0, helm uninstall test -n kube-system) so that the VM is clean.
+  No failure, so no Request to S1 or S2.
+
+S3 Status (R2 fixes)
+--------------------
+done 13:35. The three S3 items of 06-review-2.txt (O6):
+  S-2 env placeholder CXL_<KEY>_ instead of CXL_<serial>_/CXL_<hex>_:
+      test10:21, test11:18, test12:30, :34, :410 (a comment), test14:18,
+      :20, test15:21, :210 (an error text), :566, dra.source.sh:960.
+  S-3 test15 timings text: "the dax leases released until their slices
+      were gone" (four dax leases since the --wait 0s lease).
+  S-4 dra-companion-meta-check JSON LEASE REQUESTER_UID NODE
+      NS/POD/CONTAINER in dra.source.sh (exactly the three lease labels,
+      and the requester annotation); the copies companion-meta-check of
+      test12 and test15 are gone, their five calls use the helper with
+      "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main". The aliases
+      LEASE_LABEL and REQUESTER_LABEL of test12, test13 and test15 are
+      gone; $DRA_LEASE_LABEL and $DRA_REQUESTER_LABEL are used directly.
+Static checks: bash -n of dra.source.sh and every code.var.sh; shellcheck
+-s bash -e SC2034,SC2154,SC1090,SC2016 clean except the old SC2015 info
+of test12 (mknod line).
+File hashes (md5, 12 hex) after the fixes:
+  dra.source.sh c209852a136a (code: the new helper; comment: S-2)
+  test12 4fe1990f5851, test13 7081132ae852, test15 623c6ab9d903 (code)
+  test10 572ed904e7ce, test11 45abe8c23b7c, test14 75cbd122784c
+  (comments only: not rerun; the change in dra.source.sh is a new
+  function that only test12 and test15 call and a comment)
+  unchanged: test01 7ad2d9c9c640, pool.source.sh b1a6a0c168c8,
+  pool-dax-rw.py acaead03e840.
+Reruns, one at a time, on the existing VMs:
+  build identity (all three logs): driver cmd/kubelet-cxl-plugin
+  f456f1da55d0, cmd/cxl-request b6f64ecf9415 (both as in pass 2),
+  pkg/cxl cd5f3a2d7207 (pass 2: 2893f53c61af; the difference is S1's
+  comment in pkg/cxl/api/api.go, modified 13:18:15, before the first
+  rerun started at 13:19:26), device-classes.yaml 4bb14fc7655e, go.mod
+  64641f5d172d; memctl ef00ac915270, fake-cxl-pool e9a63de733ff.
+    31 test12-dra-live-attach                      PASS  329 s
+    32 test15-dra-local-live-attach                PASS  239 s
+    33 test13-dra-shared-one-writer-many-readers   PASS  337 s
+  Logs: ~/.claude/jobs/plan5-e2e/31-33*.log.
+Afterwards: both shared VMs single-node clusters (test13 restored them),
+no DRA units, no CXL memdevs or regions, no cxl-type3 in qemu, no
+DeviceClasses, port 9909 free. No Request to S1 or S2.

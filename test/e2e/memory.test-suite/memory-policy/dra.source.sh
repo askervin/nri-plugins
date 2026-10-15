@@ -5,9 +5,9 @@
 # scripts/testing/fake-cxl-pool) run in the VMs as transient systemd units,
 # fake-cxl-pool-server runs on the host (pool.source.sh).
 #
-# The contract between the controller and the node plugin is
-# scripts/testing/fake-cxl-pool/plan-2-dra/10-contract.md (doc/cxl/POOL.md in
-# the driver repository).
+# The contract between the controller and the node plugin is doc/cxl/POOL.md
+# in the driver repository, the lease protocol and cxl-request are
+# doc/cxl/LEASES.md there.
 #
 # This file is sourced for every topology of memory-policy, so it only
 # defines functions and variables. The helpers take VMDIR, the output
@@ -26,22 +26,26 @@
 
 DRA_DRIVER_SRC="${CXL_DRA_DRIVER_SRC:-$HOME/github.com/intel/intel-resource-drivers-for-kubernetes}"
 DRA_DRIVER_BIN="$DRA_DRIVER_SRC/bin/kubelet-cxl-plugin"
-DRA_DEVICE_CLASSES="$DRA_DRIVER_SRC/deployments/cxl/pool/device-classes.yaml"
-# Lending pool memory to running containers (plan-3-cxl-live-attach): the
-# CLI that the node plugin mounts into containers that claim the token
-# device "dynamic" (DeviceClass cxl-dynamic), and the directory of the
-# per-claim lease sockets in the VM. Both are optional: dra-build and
-# dra-install skip them when the driver sources do not have them.
+# The DeviceClasses of the driver, all in one file, and their names.
+DRA_DEVICE_CLASSES="$DRA_DRIVER_SRC/deployments/cxl/device-classes.yaml"
+DRA_CLASSES=(cxl-local cxl-pool cxl-pool-shared cxl-region cxl-dram cxl-lease)
+# Lending memory to running containers (doc/cxl/LEASES.md): the CLI that
+# the node plugin mounts into containers that claim the lease device
+# "lease" (DeviceClass cxl-lease), and the directory of the per-claim lease
+# sockets in the VM. The CLI is optional: dra-build and dra-install skip it
+# when the driver sources do not have it.
 DRA_REQUEST_BIN="$DRA_DRIVER_SRC/bin/cxl-request"
 DRA_REQUEST_VM_BIN=/usr/local/bin/cxl-request
-DRA_DYNAMIC_CLASS="$DRA_DRIVER_SRC/deployments/cxl/pool/device-class-dynamic.yaml"
 DRA_LEASE_DIR=/var/lib/kubelet/plugins/cxl.generic/leases
+# The labels of the companion pods and claims of leases.
+DRA_LEASE_LABEL=cxl.generic/lease
+DRA_REQUESTER_LABEL=cxl.generic/requester-uid
+DRA_NODE_LABEL=cxl.generic/node
+DRA_REQUESTER_ANNOTATION=cxl.generic/requester
 # Node-local CXL memory devices that the node plugin publishes whole and
-# partitions on demand (cxl.generic devices cxlmem-<serial>, doc/cxl/LOCAL.md
-# in the driver repository): the DeviceClasses cxl-local-memory and
-# cxl-local-dax, optional like the dynamic class, and the state file of the
-# regions and slices that the node plugin created.
-DRA_LOCAL_CLASSES="$DRA_DRIVER_SRC/deployments/cxl/local/device-classes.yaml"
+# partitions on demand (cxl.generic devices memdev-<serial>, DeviceClass
+# cxl-local, doc/cxl/LOCAL.md in the driver repository): the state file of
+# the regions and slices that the node plugin created.
 DRA_LOCAL_STATE=/var/lib/kubelet/plugins/cxl.generic/localDevices.json
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
 DRA_POOL_DRIVER=cxl-pool.generic   # pool devices, published by the controller
@@ -57,10 +61,11 @@ DRA_LOCAL_NAME=""                  # dra-local-device: the device in fake-cxl-po
 DRA_LOCAL_SERIAL=""                # its serial (0x<lower-case hex>),
 DRA_LOCAL_HEX=""                   # the serial in environment variable names (upper-case hex),
 DRA_LOCAL_SIZE=""                  # its size in bytes,
-DRA_LOCAL_DEVICE=""                # its device in the cxl.generic ResourceSlice (cxlmem-<hex>),
+DRA_LOCAL_DEVICE=""                # its device in the cxl.generic ResourceSlice (memdev-<hex>),
 DRA_LOCAL_BLOCK_SIZE=""            # the memory block size of the VM in bytes,
 DRA_LOCAL_LD=""                    # dra-py expression of its ResourceSlice device,
 DRA_LOCAL_REGIONS=""               # cxl-py expression of its regions in cxl-dump,
+DRA_LOCAL_PUBLISHED=""             # its ResourceSlice device as JSON,
 DRA_LOCAL_ATTACHMENT=""            # and the state of its attachment to the VM
 DRA_CLAIM_JSON=""                  # dra-local-claim-check: the claim
 DRA_CLAIM_UID=""                   # and its uid
@@ -221,7 +226,7 @@ dra-build() { # script API
     # static amd64 binaries that dra-install copies to the VMs. Build also
     # the lease CLI cxl-request when the driver sources have cmd/cxl-request.
     [ -d "$DRA_DRIVER_SRC/cmd/kubelet-cxl-plugin" ] ||
-        error "dra-build: no kubelet-cxl-plugin sources in $DRA_DRIVER_SRC. Clone https://github.com/intel/intel-resource-drivers-for-kubernetes there (a branch with the cxl-pool.generic helper), or point CXL_DRA_DRIVER_SRC to a clone"
+        error "dra-build: no kubelet-cxl-plugin sources in $DRA_DRIVER_SRC. Clone https://github.com/intel/intel-resource-drivers-for-kubernetes there (a branch with the pool driver cxl-pool.generic), or point CXL_DRA_DRIVER_SRC to a clone"
     host-command "cd \"$DRA_DRIVER_SRC\" && go mod vendor && CGO_ENABLED=0 GOARCH=amd64 go build -mod vendor -o bin/kubelet-cxl-plugin ./cmd/kubelet-cxl-plugin" ||
         command-error "cannot build kubelet-cxl-plugin in $DRA_DRIVER_SRC"
     if [ -d "$DRA_DRIVER_SRC/cmd/cxl-request" ]; then
@@ -240,11 +245,10 @@ dra-install() { # script API
     # Run kubelet-cxl-plugin and fake-cxl-pool-controller in the VM of
     # VMDIR as transient systemd units of the same names, with the admin
     # kubeconfig of the VM. Apply the DeviceClasses of the driver
-    # (cxl-pool-memory, cxl-shared-memory, and cxl-dynamic, cxl-local-memory
-    # and cxl-local-dax if the driver has them). If dra-build built
-    # cxl-request, install it as
-    # $DRA_REQUEST_VM_BIN and tell the node plugin (--cxl-request-bin) to
-    # mount it into the containers of lease claims. Create namespace $DRA_NS
+    # ($DRA_DEVICE_CLASSES: the classes of DRA_CLASSES) and check that the
+    # cluster has them. If dra-build built cxl-request, install it as
+    # $DRA_REQUEST_VM_BIN and tell the node plugin (--lease-cli) to mount
+    # it into the containers of lease claims. Create namespace $DRA_NS
     # empty (delete objects that an earlier run left). Wait until the
     # cluster has the pool ResourceSlice of the controller, the node's
     # cxl.generic ResourceSlice and the kubelet plugin socket of
@@ -261,27 +265,19 @@ dra-install() { # script API
 
     dra-install-files "$vmdir"
     dra-vm-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
-    dra-vm-put-file "$vmdir" "$DRA_DEVICE_CLASSES" /root/cxl-pool-device-classes.yaml
+    dra-vm-put-file "$vmdir" "$DRA_DEVICE_CLASSES" /root/cxl-device-classes.yaml
     dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
         command-error "cannot install fake-cxl-pool-controller in $label"
-    if [ -f "$DRA_DYNAMIC_CLASS" ]; then
-        dra-vm-put-file "$vmdir" "$DRA_DYNAMIC_CLASS" /root/cxl-dynamic-device-class.yaml
-    else
-        dra-vm-command "$vmdir" "rm -f /root/cxl-dynamic-device-class.yaml"
-    fi
-    if [ -f "$DRA_LOCAL_CLASSES" ]; then
-        dra-vm-put-file "$vmdir" "$DRA_LOCAL_CLASSES" /root/cxl-local-device-classes.yaml
-    else
-        dra-vm-command "$vmdir" "rm -f /root/cxl-local-device-classes.yaml"
-    fi
 
     echo "dra-install $label: starting kubelet-cxl-plugin and fake-cxl-pool-controller"
     dra-start-plugin "$vmdir"
     dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
         command-error "cannot start fake-cxl-pool-controller in $label"
     dra-installed-add "$vmdir" ""
-    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-pool-device-classes.yaml && for f in /root/cxl-dynamic-device-class.yaml /root/cxl-local-device-classes.yaml; do if [ -f \$f ]; then kubectl apply -f \$f || exit 1; fi; done" ||
+    dra-vm-command "$vmdir" "kubectl apply -f /root/cxl-device-classes.yaml" ||
         command-error "cannot create the DeviceClasses in $label"
+    dra-vm-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
+        command-error "$DRA_DEVICE_CLASSES does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
 
     dra-wait-node "$vmdir"
 
@@ -338,7 +334,7 @@ dra-state-cleanup() {
     # earlier VM boot. That is the prepared pool claims
     # (preparedPoolClaims.json), the regions and slices of local devices
     # (localDevices.json), the leases (leases.json) and the lease sockets of
-    # token claims (leases/).
+    # lease claims (leases/).
     dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the node plugin'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
@@ -348,10 +344,10 @@ dra-start-plugin() {
     # Start kubelet-cxl-plugin in the VM of VMDIR as a transient systemd
     # unit, with the admin kubeconfig of the VM and, if cxl-request is
     # installed, the flag that mounts it into the containers of lease
-    # claims.
+    # claims (--lease-cli).
     local vmdir="$1" name request_flag=""
     name=$(dra-vm-name "$vmdir")
-    [ ! -x "$DRA_REQUEST_BIN" ] || request_flag=" --cxl-request-bin $DRA_REQUEST_VM_BIN"
+    [ ! -x "$DRA_REQUEST_BIN" ] || request_flag=" --lease-cli $DRA_REQUEST_VM_BIN"
     dra-vm-command "$vmdir" "systemd-run --unit kubelet-cxl-plugin --property=Restart=no -E NODE_NAME=$name -E KUBECONFIG=/root/.kube/config /usr/local/bin/kubelet-cxl-plugin --node-name $name -f /etc/kubelet-cxl-plugin.yaml$request_flag -v 4" ||
         command-error "cannot start kubelet-cxl-plugin in $(dra-vm-label "$vmdir")"
 }
@@ -425,8 +421,8 @@ dra-uninstall() { # script API
     # controller detaches the devices when the claims are gone), wait until
     # the controller has detached the devices of the node, stop both
     # units, delete the pool ResourceSlices the controller left and the
-    # DeviceClasses (those of local devices too, if dra-install applied
-    # them). Never fails the test: it runs in the EXIT trap.
+    # DeviceClasses (by name if the class file is gone). Never fails the
+    # test: it runs in the EXIT trap.
     local vmdir="$1" name label left v host
     name=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
@@ -462,7 +458,7 @@ dra-uninstall() { # script API
     if [ -n "$left" ]; then
         dra-vm-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
     fi
-    dra-vm-command "$vmdir" "kubectl delete --ignore-not-found -f /root/cxl-pool-device-classes.yaml 2>/dev/null || kubectl delete deviceclass --ignore-not-found cxl-pool-memory cxl-shared-memory; kubectl delete deviceclass --ignore-not-found cxl-dynamic cxl-local-memory cxl-local-dax; if [ -f /root/cxl-local-device-classes.yaml ]; then kubectl delete --ignore-not-found -f /root/cxl-local-device-classes.yaml; fi"
+    dra-vm-command "$vmdir" "kubectl delete --ignore-not-found -f /root/cxl-device-classes.yaml 2>/dev/null; kubectl delete deviceclass --ignore-not-found ${DRA_CLASSES[*]}"
     dra-state-cleanup "$vmdir"
     dra-installed-remove "$vmdir"
     return 0
@@ -531,7 +527,7 @@ dra-local-find() {
         error "${FUNCNAME[1]}: expected one local, not shared device of $host in fake-cxl-pool-server, found: '$found'"
     read -r DRA_LOCAL_NAME DRA_LOCAL_SERIAL DRA_LOCAL_SIZE DRA_LOCAL_ATTACHMENT <<< "$found"
     DRA_LOCAL_HEX=${DRA_LOCAL_SERIAL#0x}
-    DRA_LOCAL_DEVICE="cxlmem-${DRA_LOCAL_HEX,,}"
+    DRA_LOCAL_DEVICE="memdev-${DRA_LOCAL_HEX,,}"
     DRA_LOCAL_HEX=${DRA_LOCAL_HEX^^}
 }
 
@@ -545,12 +541,14 @@ dra-local-device() { # script API
     # device. Print and set DRA_LOCAL_NAME (the device in the server),
     # DRA_LOCAL_SERIAL (0x<lower-case hex>), DRA_LOCAL_HEX (the serial in
     # environment variable names, upper-case hex), DRA_LOCAL_SIZE (bytes),
-    # DRA_LOCAL_DEVICE (cxlmem-<lower-case hex>, its device in the
+    # DRA_LOCAL_DEVICE (memdev-<lower-case hex>, its device in the
     # ResourceSlice), DRA_LOCAL_BLOCK_SIZE (the memory block size of the
     # VM in bytes, see dra-block-size), DRA_LOCAL_LD (its device in the
-    # ResourceSlices of dra-py) and DRA_LOCAL_REGIONS (its regions in
-    # cxl-dump of cxl-py). The attachment has the owner
-    # e2e:dra-local-device, not a k8s: owner of the pool controller.
+    # ResourceSlices of dra-py), DRA_LOCAL_REGIONS (its regions in cxl-dump
+    # of cxl-py) and, if dra-install runs in the VM, DRA_LOCAL_PUBLISHED
+    # (its device in the ResourceSlice as JSON, see dra-local-unchanged).
+    # The attachment has the owner e2e:dra-local-device, not a k8s: owner of
+    # the pool controller.
     local vmdir="$1" host label v installed=""
     host=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
@@ -568,12 +566,14 @@ dra-local-device() { # script API
     for v in "${DRA_INSTALLED_VMS[@]}"; do
         [ "$v" != "$vmdir" ] || installed=1
     done
+    DRA_LOCAL_LD="device('$DRA_LOCAL_DEVICE', '$DRA_LOCAL_DRIVER', '$host')"
+    DRA_LOCAL_PUBLISHED=""
     if [ -n "$installed" ]; then
-        dra-wait "$vmdir" local-device resourceslices "device('$DRA_LOCAL_DEVICE', '$DRA_LOCAL_DRIVER', '$host') is not None" 60
+        dra-wait "$vmdir" local-device resourceslices "$DRA_LOCAL_LD is not None and attr($DRA_LOCAL_LD, 'type') == 'memdev' and attr($DRA_LOCAL_LD, 'serial') == '$DRA_LOCAL_SERIAL'" 60
+        DRA_LOCAL_PUBLISHED=$(dra-value "$COMMAND_OUTPUT" "json.dumps($DRA_LOCAL_LD, sort_keys=True)")
     fi
     DRA_LOCAL_BLOCK_SIZE=$(dra-block-size "$vmdir") ||
         error "dra-local-device: cannot read the memory block size of $label"
-    DRA_LOCAL_LD="device('$DRA_LOCAL_DEVICE', '$DRA_LOCAL_DRIVER', '$host')"
     DRA_LOCAL_REGIONS="[r for r in regions if by_serial($DRA_LOCAL_SERIAL) is not None and names(r['Memories']) == [by_serial($DRA_LOCAL_SERIAL)['Name']]]"
     echo "dra-local-device $label: $DRA_LOCAL_NAME, serial $DRA_LOCAL_SERIAL ($DRA_LOCAL_HEX), $DRA_LOCAL_SIZE bytes, ResourceSlice device $DRA_LOCAL_DEVICE, memory block size $DRA_LOCAL_BLOCK_SIZE bytes"
 }
@@ -816,13 +816,29 @@ dra-local-node-size() { # script API
     pool-cxl-wait "$vmdir" "node-$label" "len($DRA_LOCAL_REGIONS) <= 1 and all(r['OnlineSize'] == $local_bytes for r in $DRA_LOCAL_REGIONS)" 10
 }
 
-dra-local-mode-wait() { # script API
-    # Usage: dra-local-mode-wait VMDIR LABEL MODE
+dra-local-slices-none() { # script API
+    # Usage: dra-local-slices-none VMDIR LABEL
     #
-    # Wait until the attribute mode of the local device of the VM of VMDIR
-    # (see dra-local-device) in its ResourceSlice is MODE. COMMAND_OUTPUT
-    # has the ResourceSlices.
-    dra-wait "$1" "$2" resourceslices "attr($DRA_LOCAL_LD, 'mode') == '$3'" 60
+    # Wait until the local device of the VM of VMDIR (see dra-local-device)
+    # has no slice and no region: its memdev enabled and no region of it,
+    # neither in pkg/cxl (cxl-dump) nor in sysfs. DRA_MEMDEV is the sysfs
+    # view of the device.
+    local vmdir="$1" label="$2"
+    pool-cxl-wait "$vmdir" "$label" "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and $DRA_LOCAL_REGIONS == []" 60
+    dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" "j['memdev'] and j['enabled'] and j['regions'] == []" 10
+}
+
+dra-local-unchanged() { # script API
+    # Usage: dra-local-unchanged VMDIR
+    #
+    # Fail the test unless the node's cxl.generic ResourceSlice publishes
+    # the local device of the VM of VMDIR exactly as dra-local-device saw
+    # it (DRA_LOCAL_PUBLISHED): the slices, regions and modes of its claims
+    # and leases are not published. COMMAND_OUTPUT has the ResourceSlices.
+    [ -n "$DRA_LOCAL_PUBLISHED" ] ||
+        error "dra-local-unchanged: no published device, call dra-local-device after dra-install"
+    dra-json "$1" resourceslices
+    dra-assert "$COMMAND_OUTPUT" "json.dumps($DRA_LOCAL_LD, sort_keys=True) == $(python3 -c 'import sys; print(repr(sys.argv[1]))' "$DRA_LOCAL_PUBLISHED")"
 }
 
 dra-local-claim-check() { # script API
@@ -868,12 +884,49 @@ dra-delete-pod() { # script API
     dra-delete "$1" pod "$2" --grace-period=2 --wait=true --timeout=60s
 }
 
-dra-local-cdi-devices() {
-    # Usage: dra-local-cdi-devices VMDIR
+dra-cdi-device() { # script API
+    # Usage: dra-cdi-device VMDIR NAME
     #
-    # Print the CDI devices of dax slices of local devices (local-<claim
-    # uid>) in the CDI spec directories of the VM of VMDIR, quietly.
-    dra-vm-command-q "$1" "cat /etc/cdi/* /var/run/cdi/* 2>/dev/null | grep -oE 'name\"?: *\"?local-[0-9a-f-]+' | sed 's/.*local-/local-/' | sort -u"
+    # Print CDI device NAME of the CDI spec files (YAML) of the VM of VMDIR,
+    # in /etc/cdi and /var/run/cdi, quietly: a line "file: FILE" and a line
+    # "kind: KIND" of its spec, then its own lines of the spec. Print
+    # nothing if there is no such device.
+    # Example: dra-cdi-device "$VM" "claim-$CLAIM_UID-0"
+    local script
+    script="want=$(printf %q "$2")
+$(cat <<'EOF2'
+for f in /etc/cdi/* /var/run/cdi/*; do
+    [ -f "$f" ] || continue
+    awk -v want="$want" '
+        /^kind:/ { kind = $2 }
+        /^[^ -]/ { p = 0 }
+        /^ *- name: / { n = $NF; gsub(/"/, "", n); p = (n == want); if (p) { print "file: " FILENAME; print "kind: " kind } }
+        p { print }' "$f"
+done
+EOF2
+)"
+    dra-vm-command-q "$1" "$script"
+}
+
+dra-cdi-devices-with() { # script API
+    # Usage: dra-cdi-devices-with VMDIR TEXT
+    #
+    # Print the names of the CDI devices of the CDI spec files (YAML) of the
+    # VM of VMDIR that have a line with TEXT (a fixed string, for instance
+    # an environment variable name), one per line, quietly.
+    local script
+    script="text=$(printf %q "$2")
+$(cat <<'EOF2'
+for f in /etc/cdi/* /var/run/cdi/*; do
+    [ -f "$f" ] || continue
+    awk -v t="$text" '
+        /^[^ -]/ { n = "" }
+        /^ *- name: / { n = $NF; gsub(/"/, "", n) }
+        n != "" && index($0, t) { print n }' "$f"
+done | sort -u
+EOF2
+)"
+    dra-vm-command-q "$1" "$script"
 }
 
 dra-local-state-claims() {
@@ -900,17 +953,17 @@ dra-local-initial-state() { # script API
     # Usage: dra-local-initial-state VMDIR LABEL [NODE]
     #
     # Wait until the local device of the VM of VMDIR (see dra-local-device)
-    # is in its initial state again: the memdev enabled, no region, mode
-    # none in the ResourceSlice, and no memory on its NUMA node NODE (if
-    # given). Check that nothing of its claims is left: no CDI devices of
-    # slices, no claims in the state of the node plugin, which must have
-    # its state file.
+    # is in its initial state again: the memdev enabled, no region (see
+    # dra-local-slices-none), the device published as it was
+    # (dra-local-unchanged), and no memory on its NUMA node NODE (if
+    # given). Check that nothing of its claims is left: no CDI device with
+    # an environment variable of the device (CXL_<KEY>_), no claims in the
+    # state of the node plugin, which must have its state file.
     local vmdir="$1" label="$2" node="$3"
-    pool-cxl-wait "$vmdir" "$label" "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and $DRA_LOCAL_REGIONS == []" 60
-    dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" "j['memdev'] and j['enabled'] and j['regions'] == []" 10
-    dra-local-mode-wait "$vmdir" "$label-mode" none
-    [ -z "$(dra-local-cdi-devices "$vmdir")" ] ||
-        error "$label: CDI devices of local slices are left: $(dra-local-cdi-devices "$vmdir")"
+    dra-local-slices-none "$vmdir" "$label"
+    dra-local-unchanged "$vmdir"
+    [ -z "$(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")" ] ||
+        error "$label: CDI devices of claims of the local device are left: $(dra-cdi-devices-with "$vmdir" "CXL_${DRA_LOCAL_HEX}_")"
     dra-vm-command-q "$vmdir" "test -s $DRA_LOCAL_STATE" ||
         error "$label: the node plugin has no $DRA_LOCAL_STATE"
     [ "$(dra-local-state-claims "$vmdir")" == 0 ] ||
@@ -976,14 +1029,19 @@ for key in sorted(times):
 }
 
 dra-claim-yaml() { # script API
-    # Usage: dra-claim-yaml claim|template NAME CLASS SIZE [read-only [MODE]]
+    # Usage: dra-claim-yaml claim|template NAME CLASS SIZE [MODE [read-only]]
     #
     # Print a ResourceClaim (claim) or a ResourceClaimTemplate (template)
     # NAME with one request "mem" of DeviceClass CLASS for SIZE of memory
-    # ("": no amount). With read-only the opaque LocalDeviceConfig of the
-    # claim asks the node plugin for a read-only device in MODE (default
-    # dax).
-    local kind="$1" name="$2" class="$3" size="$4" devices
+    # ("": no amount). With MODE (numa or dax, "": none) or read-only the
+    # claim has an opaque DeviceConfig with that mode and readOnly: true,
+    # for the driver of CLASS: $DRA_POOL_DRIVER for cxl-pool*, else
+    # $DRA_LOCAL_DRIVER.
+    # Example: dra-claim-yaml template dax-ro cxl-local 64Mi dax read-only
+    local kind="$1" name="$2" class="$3" size="$4" mode="$5" ro="$6" driver="$DRA_LOCAL_DRIVER" params="" devices
+    [[ "$class" != cxl-pool* ]] || driver="$DRA_POOL_DRIVER"
+    [ -z "$mode" ] || params+=", mode: $mode"
+    [ "$ro" != read-only ] || params+=", readOnly: true"
     devices="devices:
   requests:
   - name: mem
@@ -995,12 +1053,12 @@ dra-claim-yaml() { # script API
         requests:
           memory: $size"
     fi
-    if [ "$5" == read-only ]; then
+    if [ -n "$params" ]; then
         devices+="
   config:
   - opaque:
-      driver: $DRA_LOCAL_DRIVER
-      parameters: {apiVersion: $DRA_LOCAL_DRIVER/v1alpha1, kind: LocalDeviceConfig, mode: ${6:-dax}, readOnly: true}"
+      driver: $driver
+      parameters: {apiVersion: $driver/v1alpha1, kind: DeviceConfig$params}"
     fi
     # shellcheck disable=SC2001 # sed indents every line
     if [ "$kind" == claim ]; then
@@ -1064,10 +1122,11 @@ EOF
 }
 
 dra-claim-pod() { # script API
-    # Usage: dra-claim-pod VMDIR NAME CLASS SIZE [read-only [MODE]]
+    # Usage: dra-claim-pod VMDIR NAME CLASS SIZE [MODE [read-only]]
     #
     # Create pod NAME in the cluster of the VM of VMDIR with a claim of
-    # DeviceClass CLASS for SIZE (see dra-claim-yaml), made from a
+    # DeviceClass CLASS for SIZE, with MODE and read-only in its
+    # DeviceConfig (see dra-claim-yaml), made from a
     # ResourceClaimTemplate NAME of its own: the claim lives and dies with
     # the pod.
     dra-apply "$1" <<< "$(dra-claim-yaml template "$2" "$3" "$4" "$5" "$6")
@@ -1097,7 +1156,7 @@ dra-exec() { # script API
     # COMMAND_OUTPUT has what COMMAND printed to stdout, DRA_EXEC_STDERR what
     # it printed to stderr (both are shown), COMMAND_STATUS its exit status,
     # which is also returned.
-    # Example: dra-exec "$VM" borrower/main cxl-request memory 512Mi
+    # Example: dra-exec "$VM" borrower/main cxl-request request --size 512Mi
     local vmdir="$1" pod container cmd errfile
     read -r pod container <<< "$(dra-pod-container "$2")"
     shift 2
@@ -1118,8 +1177,8 @@ dra-last-json() { # script API
     # Usage: dra-last-json TEXT
     #
     # Print the last line of TEXT that is a JSON object, for instance the
-    # response of "cxl-request memory 512Mi" among other output. Return 1
-    # if there is none.
+    # response of "cxl-request request --size 512Mi" among other output.
+    # Return 1 if there is none.
     python3 -c '
 import json, sys
 last = None
@@ -1134,6 +1193,62 @@ for line in sys.stdin.read().splitlines():
 if last is None:
     sys.exit(1)
 print(json.dumps(last))' <<< "$1"
+}
+
+dra-env-assert() { # script API
+    # Usage: dra-env-assert LABEL TEXT KEY FIELD=VALUE...
+    #
+    # Fail the test unless the lines CXL_KEY_FIELD=VALUE of TEXT (what env
+    # or "cxl-request env" printed) are exactly the FIELD=VALUE pairs given,
+    # no field missing and none more, the environment of one memory device
+    # (doc/cxl/USAGE.md). KEY is the upper-case hex serial of a memdev,
+    # REGION<n> or DRAM. VALUE is a shell pattern, for instance
+    # DAX=/dev/dax*.
+    # Example: dra-env-assert consumer "$LOG" C1EE0001 SERIAL=0xc1ee0001 SHARED=0 MODE=numa SIZE=536870912 NODE=2
+    local label="$1" text="$2" key="$3"
+    shift 3
+    python3 -c '
+import fnmatch, sys
+text, key, want = sys.argv[1], sys.argv[2], sys.argv[3:]
+prefix = "CXL_%s_" % key
+got = {}
+for line in text.splitlines():
+    name, sep, value = line.strip().partition("=")
+    # A field is a word without "_": CXL_C100E2E1_2_SIZE is another key.
+    if sep and name.startswith(prefix) and "_" not in name[len(prefix):]:
+        got[name[len(prefix):]] = value
+want = dict(w.partition("=")[::2] for w in want)
+bad = sorted(set(got) ^ set(want)) + sorted(f for f in set(got) & set(want) if not fnmatch.fnmatchcase(got[f], want[f]))
+if bad:
+    print("got:  %s\nwant: %s\nfields that differ: %s" % (
+        " ".join("%s%s=%s" % (prefix, f, got[f]) for f in sorted(got)),
+        " ".join("%s%s=%s" % (prefix, f, want[f]) for f in sorted(want)), " ".join(bad)))
+    sys.exit(1)' "$text" "$key" "$@" ||
+        error "$label: the environment of CXL_${key}_ is not $*"
+    echo "env ok: $label: CXL_${key}_: $*"
+}
+
+dra-env-value() { # script API
+    # Usage: dra-env-value TEXT NAME
+    #
+    # Print the value of the line NAME=VALUE of TEXT (what env or
+    # "cxl-request env" printed). Return 1 if there is none.
+    local value
+    value=$(sed -n "s/^$2=//p" <<< "$1" | head -n 1)
+    [ -n "$value" ] || grep -q "^$2=" <<< "$1" || return 1
+    echo "$value"
+}
+
+dra-companion-meta-check() { # script API
+    # Usage: dra-companion-meta-check JSON LEASE REQUESTER_UID NODE NS/POD/CONTAINER
+    #
+    # Fail the test unless the companion pod or claim of lease LEASE in
+    # JSON has exactly the labels of the lease ($DRA_LEASE_LABEL=LEASE,
+    # $DRA_REQUESTER_LABEL=REQUESTER_UID, $DRA_NODE_LABEL=NODE) and the
+    # annotation $DRA_REQUESTER_ANNOTATION=NS/POD/CONTAINER, the requesting
+    # container.
+    dra-assert "$1" "j['metadata']['labels'] == {'$DRA_LEASE_LABEL': '$2', '$DRA_REQUESTER_LABEL': '$3', '$DRA_NODE_LABEL': '$4'}"
+    dra-assert "$1" "j['metadata']['annotations']['$DRA_REQUESTER_ANNOTATION'] == '$5'"
 }
 
 dra-leases() { # script API
@@ -1433,6 +1548,13 @@ dra-py() {
     #   allocated_node(claim)  node of the allocation's nodeSelector
     #   condition(type, claim) status of a condition in status.devices
     #   device_data(dev, claim) data of the status.devices entry of dev
+    #   subrequests(claim)     what the device requests of a ResourceClaim
+    #                          (j) ask for: the exactly part of a request,
+    #                          named like the request, and the subrequests
+    #                          of firstAvailable, named request/subrequest
+    #   configs(kind, claim)   the opaque configs of a ResourceClaim (j) of
+    #                          kind (all if None): {driver, parameters,
+    #                          requests}
     #   events(reason, name)   Events with reason, of object name
     #   dax_slices(driver)     dax devices with a size of a dra-memdev-sysfs
     #                          document (j), bound to driver if given
@@ -1524,6 +1646,21 @@ def condition(ctype, claim=None):
 
 def device_data(dev, claim=None):
     return next((d.get("data") for d in status_devices(claim) if d.get("device") == dev), None)
+
+def subrequests(claim=None):
+    claim = claim or j
+    out = []
+    for r in claim["spec"]["devices"].get("requests") or []:
+        if r.get("exactly"):
+            out.append(dict(r["exactly"], name=r["name"]))
+        for s in r.get("firstAvailable") or []:
+            out.append(dict(s, name=r["name"] + "/" + s["name"]))
+    return out
+
+def configs(kind=None, claim=None):
+    claim = claim or j
+    return [dict(c["opaque"], requests=c.get("requests")) for c in claim["spec"]["devices"].get("config") or []
+            if c.get("opaque") and (kind is None or c["opaque"]["parameters"].get("kind") == kind)]
 
 def events(reason=None, name=None):
     return [e for e in items
@@ -1886,12 +2023,12 @@ patterns = {
     "server": r"attachment \S+: (attaching|attached|detaching|detached|failed)|event DEVICE_DELETED|device \S+: (created|deleted)",
     # fake-cxl-pool-controller: what it attached, detached and wrote.
     "controller": r"(?i)attach|detach|condition|status|publish|slice|error|fail",
-    # kubelet-cxl-plugin: the pool helper (prepared, released, unprepared),
+    # kubelet-cxl-plugin: the pool driver (prepared, released, unprepared),
     # pool devices skipped by the cxl.generic publisher, the lease broker
     # (leases, companions, lends and revokes, fds sent), the local
-    # allocator (regions and slices of local memdevs) and the cxlmem
+    # allocator (regions and slices of local memdevs) and the memdev
     # devices it publishes, errors.
-    "driver": r"(?i)cxl-pool\.generic|pool device|rescanAndPublish|lease|companion|\blend|revok|local:|cxlmem|no room for the slice|error|fail",
+    "driver": r"(?i)cxl-pool\.generic|pool device|rescanAndPublish|lease|companion|\blend|revok|local:|memdev-|no room for the slice|error|fail",
     "scheduler": r"(?i)binding|resourceclaim|claim|bound|error",
     "events": r"",
     "claims": r"",

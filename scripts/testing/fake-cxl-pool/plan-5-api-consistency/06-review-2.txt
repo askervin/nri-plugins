@@ -1,0 +1,432 @@
+plan-5-api-consistency: review R2 (documentation, e2e tests, leftovers)
+=====================================================================
+Written 2026-10-15 13:20 by R2. D = intel-resource-drivers-for-kubernetes
+(branch 5fC-cxl, HEAD e1c7274, working tree), N = nri-plugins (branch
+5jQ-cxl, HEAD 002f5ba35, working tree), P = N/scripts/testing/fake-cxl-pool,
+E = N/test/e2e/memory.test-suite/memory-policy.
+
+R2 edited nothing in either repository. Binaries were built into /tmp/r2
+(cxl-request, kubelet-cxl-plugin, the three fake-cxl-pool binaries, a strict
+YAML checker); a git-archive copy of N HEAD is in /tmp/r2/narchive. One
+slip: "python3 -m py_compile E/n4-cxl-shared-2/pool-dax-rw.py" created
+E/n4-cxl-shared-2/__pycache__/ (gitignored) at 13:07:17; R2 removed it
+right away, and then parsed the file with ast instead. No VM was used.
+
+Summary: no blocker. One bug, which plan-5 did not cause: two committed
+unit tests read testdata that .gitignore excludes, so they fail on a clean
+checkout (B1). The documentation matches the code: every command line,
+flag, class, CEL expression, config kind and field, error text, env name,
+CDI name and protocol field. The remaining findings are wording
+inconsistencies, one of which (I-1) misstates an exit code. The e2e tests
+assert only the new names. Every removed assertion has a replacement that
+is at least as strict. No sleep was added: one sleep was removed. The
+final tree is the tree that passed.
+
+Findings
+--------
+
+BUG
+
+B1 N .gitignore:28 ("testdata/") - owner: user for pkg/cxl (no stream
+   owns it), S2 for P
+   What: two committed tests read files that git ignores:
+   - N pkg/cxl/devices_test.go:58 and :77 (committed in 002f5ba35) read
+     pkg/cxl/testdata/test14-node-four-claims/ and
+     test14-node-numa-b-deleted/{cxl-sysfs,memory,zoneinfo}.txt.
+   - P pkg/qemu/parse_test.go:28 and :181 (committed in 6b0e4c8b8) read
+     pkg/qemu/testdata/{cmdline-*,hmp-raw-*}.txt.
+   All of these files are untracked and ignored ("!!" in git status
+   --ignored), and the tests t.Fatal when a file is missing.
+   Verified in a git archive of HEAD (/tmp/r2/narchive): "go test
+   ./pkg/cxl/" fails TestRegionNodeOfOnlineSlices and the test that reads
+   test14-node-numa-b-deleted. "go test .../fake-cxl-pool/pkg/qemu" fails
+   TestParseInfoMemdev, TestParseCmdline and the HMP parser tests. In the
+   working tree everything passes, because the files exist locally.
+   Why: after the commit, CI and every other checkout fail "go test
+   ./pkg/cxl/..." and "make -C P test". The done criterion "unit tests
+   green" holds only on this machine.
+   Fix: before committing, "git add -f pkg/cxl/testdata
+   scripts/testing/fake-cxl-pool/pkg/qemu/testdata", or add the exceptions
+   "!pkg/cxl/testdata/" and "!scripts/testing/fake-cxl-pool/pkg/qemu/testdata/"
+   to .gitignore. This predates plan-5.
+
+INCONSISTENCY
+
+I-1 D doc/cxl/LEASES.md:229-230 - owner S4
+   What: the doc says "`request --wait 0s` exits with 0 whatever the state
+   of the lease, unless it is Failed". With --exec that is not true. In
+   cmd/cxl-request/main.go:270-273, execute() turns exitOK into 3 when the
+   lease is not Ready ("CMD needs the memory"), and CMD is not started. So
+   "cxl-request request --size 1Gi --wait 0s --exec prog" exits 3 and
+   keeps a Pending lease. The same paragraph says "3 ... not Ready within
+   --wait (request, fd, env; with --exec CMD is not started)", so the two
+   sentences contradict each other for --wait 0s --exec.
+   Fix: "Without --exec, `request --wait 0s` exits with 0 whatever the
+   state of the lease, unless it is Failed. With --exec it exits with 3
+   unless the lease is Ready at once."
+
+I-2 D doc/cxl/USAGE.md:413-420, 438-444, 469-476, 525-532 (examples 2,
+   4, 6 and 10) - owner S4
+   What: example 1 (USAGE.md:401) lists CXL_CLAIM_<uid>=1 in the
+   container's sorted environment. Examples 2, 4, 6 and 10 show complete,
+   sorted lists without it and without "...".
+   Why: since A3 every CDI device of both drivers carries the marker
+   (node_state.go buildClaimsCDISpec, pool.go buildCDISpec; USAGE.md:348
+   says so too), and the example pod prints "env | grep ^CXL_ | sort".
+   So these lists are not what the pod prints. The pool examples (4, 6)
+   copy 02 11.3, which A3 made out of date ("pool claims inject no claim
+   marker").
+   Fix: add the line CXL_CLAIM_<uid>=1 to examples 2, 4, 6 and 10, as in
+   example 1.
+
+I-3 D doc/cxl/LEASES.md:169, and the refusal table at :188-197 - owner S4
+   What: "Invalid command lines exit with code 2 before anything is sent".
+   But cxl-request does not check --size (api.Request.Validate has no
+   size rule, and 02 R1-R10 has none either). So "cxl-request request
+   --size foo" reaches the plugin, which answers `invalid size "foo"`
+   (broker.go:474), and the exit code is 1. Two broker texts are not in
+   either table: `invalid size "..."` and `device <name> (serial 0x..)
+   has no "hosts" capacity` (broker.go:505).
+   Fix: add both texts to the table of plugin refusals (LEASES.md:190).
+   Keep R1-R10 as they are: they are the CLI checks.
+
+I-4 Cross-repository links point at main branches that do not have the
+   target yet - owner S4 (or the user, at merge time)
+   - P README.md:187 and P plan-2-dra/10-contract.md:4 link to
+     github.com/intel/intel-resource-drivers-for-kubernetes/blob/main/doc/cxl/POOL.md.
+     doc/cxl/ exists neither on D's local main nor on askervin/main, only
+     on 5fC-cxl.
+   - D doc/cxl/POOL.md:26 (unchanged since HEAD) links to
+     github.com/containers/nri-plugins/tree/main/scripts/testing/fake-cxl-pool,
+     which is not on N's main.
+   These links resolve only after both branches are merged. Every relative
+   link and anchor resolves (see "Verified").
+   Fix: none if both branches are merged as they are. Otherwise, link to
+   the branches.
+
+I-5 N P/presentations/terminal/ (untracked, 2026-10-13) - owner: user
+   (no stream owns it)
+   What: scripts/PLAN.md, scripts/story.py and rendered/*.txt hold about
+   460 hits of the old names of 02 section 10. The largest counts:
+   "cxl-request shared" 79, CXL_POOL_ 50, cxl-release 43, "cxl-request
+   memory" 41, --exclusive 35, CXL_SHARED_ 34, PoolDeviceConfig 31,
+   cxl-pool-memory 19, LendConfig 18, cxl-shared-memory 15, cxl-dynamic
+   10. Less often: cxl-node, CXL_LEASE_FD, CXL_LEASE_SIZE,
+   CXL_LEASE_READONLY, "pool helper", lease-wait-default.
+   Why: the directory is outside plan-*/, so ground rule 5 applies to it.
+   It is untracked, so nothing in git is wrong today.
+   Fix: do not commit it as it is. Regenerate it against the new API, or
+   keep it out of the commit.
+
+STYLE
+
+S-1 D pkg/cxl/api/api.go:40-41 - owner S1
+   The comment "ClaimEnvPrefix is the prefix of the claim marker
+   CXL_CLAIM_<uid with underscores>=1 of cxl.generic claims" is out of
+   date after A3: pool claims carry the marker too. Fix: "... =1 of the
+   claims of both drivers".
+
+S-2 E: env placeholder spelled CXL_<serial>_ / CXL_<hex>_ instead of
+   CXL_<KEY>_ - owner S3 (R1 I-5 fixed the same thing in D)
+   n4-cxl-shared-2/test10-dra-pooling/code.var.sh:21,
+   test11-dra-sharing/code.var.sh:18, test12-dra-live-attach/code.var.sh:30,
+   :34, :421, test14-dra-local-memdev/code.var.sh:18, :20,
+   test15-dra-local-live-attach/code.var.sh:21, :211 (an error text), :577,
+   dra.source.sh:960. "<serial>" reads as the 0x<lower hex> serial, but
+   the key is upper-case hex without 0x. pool-dax-rw.py, the docs and
+   api.go write CXL_<KEY>_. Fix: CXL_<KEY>_ everywhere.
+
+S-3 E n4-cxl-shared-2/test15-dra-local-live-attach/code.var.sh:800 -
+   owner S3
+   The timings line says "three dax leases released until their slices
+   were gone". Since S3 added the --wait 0s lease (ASYNC_LEASE, :670),
+   "release --all" at :680 releases four: DAX1, DAX2, RO and ASYNC.
+   Fix: "the dax leases released".
+
+S-4 E: a duplicated helper and alias variables - owner S3
+   - companion-meta-check is defined twice, identically
+     (test12-dra-live-attach/code.var.sh:211 and
+     test15-dra-local-live-attach/code.var.sh:248; diff is empty).
+   - LEASE_LABEL="$DRA_LEASE_LABEL" is a second name for a dra.source.sh
+     variable: test12:72, test13:58, test15:62. So is
+     REQUESTER_LABEL="$DRA_REQUESTER_LABEL" at test13:59.
+   Fix: one dra-companion-meta-check JSON LEASE REQUESTER_UID NODE
+   NS/POD/CONTAINER in dra.source.sh; use $DRA_LEASE_LABEL and
+   $DRA_REQUESTER_LABEL directly.
+
+S-5 D doc/cxl/LEASES.md:166 - owner S4
+   "The defaults are the safe ones: exclusive, read-write, `numa`, any
+   source." "any source" echoes the removed `--source any` (02 10.5).
+   Fix: "... `numa`, local first, then pool."
+
+S-6 P README.md:276-294 ("Layout") - owner S4; predates plan-5
+   The Layout lists plan/ and plan-2-dra/ ("specs and findings").
+   plan-2-dra now holds history: the contract there is only a pointer.
+   The Layout leaves out the tracked plan-3-cxl-live-attach/ and
+   plan-4-cxl-live-attach-local/. Fix: "plan-*/  history of the
+   workstreams (design, findings, status)".
+
+Leftovers (not to be committed as they are)
+-------------------------------------------
+D:
+- go.mod: replace github.com/containers/nri-plugins =>
+  /home/akervine/github.com/containers/nri-plugins. go.sum lost the two
+  github.com/askervin/nri-plugins v0.14.1-0.20261014163234-002f5ba35a66
+  lines. This is known. 05-status-S1.txt "go.mod: BEFORE COMMITTING" lists
+  the restore steps: push N, set the pseudo-version replace, run "go mod
+  tidy && go mod vendor". vendor/ is gitignored, and its
+  pkg/cxl/memctl/memctl.go equals N's (diff -q).
+- Untracked, not ignored, 80 MB build artifacts: D/kubelet-cxl-plugin
+  (2026-10-15 11:21, S1 F2) and D/cmd/kubelet-cxl-plugin/kubelet-cxl-plugin
+  (2026-10-14). Delete them before "git add". Owner: S1 or the user.
+- Ignored, fine: bin/cxl-request, bin/kubelet-cxl-plugin,
+  test/e2e/cxl/output/.
+- Known exception O3: cxl-dra-driver.stage-2.architecture.md:227 names
+  cxl.intel.com.
+- Untracked files that the commit needs: cmd/kubelet-cxl-plugin/lease_claims.go,
+  deployments/cxl/device-classes.yaml, the nine deployments/cxl/examples/*.yaml,
+  doc/cxl/LEASES.md, pkg/cxl/api/{api.go,api_test.go} and
+  pkg/cxl/device/device_test.go. The commit also needs the deletions:
+  dynamic.go, pkg/cxl/cdihelpers, pkg/cxl/discovery, base/device-class.yaml,
+  local/, pool/, and the five old examples.
+N:
+- B1: the ignored testdata that must be committed.
+- An untracked file that the commit needs: P/pkg/api/units_test.go (S2).
+- Untracked e2e output directories, NOT gitignored:
+  test/e2e/{n4-cxl,n4-cxl-shared-1,n4-cxl-shared-2,n6-hbm-cxl}-fedora-43-containerd/.
+  About 1700 files, including .vagrant/, env, join-command, cxl-dump
+  binaries, test outputs and logs. Never use "git add -A".
+- Untracked under P, outside the plan: presentations/terminal/ (I-5);
+  "Maxview User Guide-2.0.pdf" (a vendor PDF); the task files
+  5jS/5jW/5jY/5je/5jf-task-*.txt (they contain old names; their *.txt~
+  backups are ignored); plan-4-multinode/; plan-5-api-consistency/;
+  plan-3-cxl-live-attach/cxl-request-daxfile/. Whether the plan and task
+  files are committed is the user's choice; they are history.
+- Ignored, fine: P/bin/fake-cxl-pool-{client,controller,server}.
+- Untracked and unrelated to plan-5, at the repository root and elsewhere:
+  - scratch files: 5i4-plan-fix-extres{,-v2}.txt,
+    copilot-5i9-balloons-podresources.txt, copilot-from-emr-1.source.bash,
+    plan-disable-irq.txt, repro-dup.sh,
+    "Intel Xeon 6 with PCT-Technical Brief.pdf", e2e-debug-crio/,
+    test/e2e/run_tests.5i1-cae4bd.log;
+  - binaries: deployment/operator/bin/kustomize, scripts/cxl-dump/cxl-dump,
+    scripts/testing/sleep-accuracy/sleep-accuracy;
+  - other work: .claude/ (worktrees), .github/skills/*,
+    cmd/plugins/balloons/policy/podresourcehints_test.go,
+    deployment/operator/config/manifests/bases/nri-plugins-operator.clusterserviceversion.yaml,
+    test/e2e/policies.test-suite/balloons/n4c16/test2{5,6}-*/code.var.sh.
+
+Done criteria (03 section 9)
+----------------------------
+1. Both trees build; unit tests, vet and lint green: MET in the working
+   trees. B1 is a caveat for the commit.
+   D:
+   - "go build ./..." fails only in pkg/fakehlml (hlml.h missing). It
+     fails at HEAD too.
+   - go vet of cmd/kubelet-cxl-plugin, cmd/cxl-request and pkg/cxl: ok.
+   - go test -count=1 of the same packages: all ok.
+   - gofmt -l: empty.
+   - golangci-lint (no caps): 13 issues (3 contextcheck, 9 cyclop, 1
+     staticcheck). These are the HEAD findings. S1 counted 14 at HEAD and
+     R1 counted 15; no finding is new.
+   - CGO_ENABLED=0 builds of cxl-request and kubelet-cxl-plugin into
+     /tmp/r2: both statically linked.
+   N:
+   - go vet ./pkg/cxl/... ./scripts/testing/fake-cxl-pool/...: ok.
+   - go test -count=1 of the same packages: all ok.
+   - gofmt -s -l: empty.
+   - golangci-lint (no caps) of memctl and P: 102 issues (101 errcheck,
+     1 unused), the same number as R1's baseline.
+2. The seven e2e tests PASS in the order of 03 section 6, each once in
+   the final tree: MET.
+   - Pass 2 (~/.claude/jobs/plan5-e2e/11-17) ran test01, test10, test11,
+     test14, test12, test15 and test13 in that order. All PASSed on
+     their first run.
+   - R2 recomputed S3's hashes with S3's own h() from /tmp/s3/run-e2e.sh.
+     They equal the pass-2 log headers:
+     - driver: cmd/kubelet-cxl-plugin f456f1da55d0, cmd/cxl-request
+       b6f64ecf9415, pkg/cxl 2893f53c61af, device-classes.yaml
+       4bb14fc7655e, go.mod 64641f5d172d;
+     - nri-plugins: memctl ef00ac915270, fake-cxl-pool e9a63de733ff;
+     - e2e: dra.source.sh 7d5fd97eab05, pool.source.sh b1a6a0c168c8,
+       pool-dax-rw.py acaead03e840;
+     - each code.var.sh: test01 7ad2d9c9c640, test10 8648c2d86b79,
+       test11 3c36876e68a8, test14 bab2f5204a6e, test12 b4233298a61d,
+       test15 238d80ab8bb3, test13 35a5b0a83c4b.
+     So no tested file changed after its run.
+   - S3's later runs 21-24 also PASSed: n4-cxl test01-pkg-cxl, test00-up
+     of shared-1 and shared-2, and n6-hbm-cxl test01-policies.
+3. No hit for any old name in the grep gates: MET, with the exceptions
+   below. R2 grepped the 03 S1 step 14 list, the E list of 03 S3 step 4,
+   and rows 10.1-10.7 of 02 (62 patterns, /tmp/r2/tools/gate.txt). The
+   scope was all of D except vendor/, .git and bin/, and all of N except
+   .git, .claude, plan-*/ and the e2e output directories. The hits:
+   - negative tests: lending_test.go:428-431, node_state_test.go:905-906,
+     pool_test.go:697-698, broker_test.go:546, cxl-request/main_test.go:80;
+   - new names that contain an old one: --lease-companion-image and
+     LEASE_COMPANION_IMAGE, T_LEND;
+   - names that are not lease names: FAKE_CXL_POOL_PORT and
+     FAKE_CXL_POOL_SERVER; config and ownerReferences 'kind' in E;
+   - fake-cxl-pool attach --exclusive and the REST field "exclusive"
+     (02 7.5);
+   - names from other code: topology2qemuopts.py cxlmemopts, and the
+     nightly runner's --local;
+   - O3: the D root architecture document.
+   Beyond these, only the untracked P/presentations/terminal/ (I-5) and
+   the P task files hit.
+4. 05-status-S1..S4.txt and 06-review-1/2.txt written, and the user has
+   the go.mod/vendor steps: MET (05-status-S1.txt "go.mod: BEFORE
+   COMMITTING"; this file).
+
+Verified as correct
+-------------------
+Doc checks against the code:
+- cxl-request help: identical to the synopsis of LEASES.md:133-142, to
+  02 6.1, and to the package doc of main.go.
+- Every cxl-request command line in D doc/cxl/*.md and in
+  deployments/cxl/examples/lease.yaml went through the /tmp/r2 binary
+  without a socket. All 20 pass the parser and stop with exit 1 and
+  "CXL_LEASE_SOCKET is not set (the pod needs a claim on DeviceClass
+  cxl-lease)". help, -h and --help exit 0.
+- Every row of the LEASES.md validation table gives exit 2 with its
+  documented text: R1-R10, "fd needs --lease ID" and "env needs --lease
+  ID". So do the other usage errors: no operation, unknown operation,
+  unknown option, an option of another operation, a missing value,
+  "--exec needs a command" and "--shared: invalid value".
+- The plugin refusal texts of LEASES.md:190-197 and :329-334 exist
+  verbatim in broker.go (:84 :82 :83 :497 :501 :693 :719 :799 :803
+  :1385 :1395), lending.go:135, lend.go:87 and lease_claims.go:221.
+- kubelet-cxl-plugin --help: the 15 flags of USAGE.md:549-565 and
+  POOL.md:292-295. Names, environment variables and defaults match;
+  2m0s is 120s.
+- DriverConfig json tags = the keys of USAGE.md:583-594, including
+  testability.fakeRegionDevices and testability.fakeUdevFifo. The
+  defaults are udevStableDuration 200ms and manageMemdevs true.
+- State file names: preparedClaimsInfo.json, localDevices.json,
+  leases.json, preparedPoolClaims.json, leases/<uid>/cxl.sock.
+- CDI names in all four docs: generic/cxl=claim-<uid>-<n> in cxl-claims,
+  generic/cxl=lease-<uid> in cxl-leases, generic/cxl-pool=claim-<uid>-<n>
+  in cxl-pool, a marker-only device for the lease result, and no device
+  for companion claims. They match node_state.go:1236-1300 and
+  pool.go:637-666.
+- DeviceConfig and MemoryPolicyConfig error texts of USAGE.md:221-241,
+  :283-285, POOL.md:189-190 and :297-299 match lending.go:272-338 and
+  node_state.go checkNUMAOnly (A1, A2).
+- Every env name in the docs and examples is SERIAL, SHARED, MODE, SIZE,
+  NODE, NODES, DAX or READONLY (produced by api.Env), FD (api.ExecEnv),
+  or CXL_LEASE, CXL_LEASE_SOCKET or CXL_CLAIM_<uid>. The other CXL_*
+  tokens are CONFIG_CXL_REGION, CXL_IMAGE_* and FAKE_CXL_POOL_SERVER.
+- The protocol fields of LEASES.md:266-313 equal the api.Request and
+  api.Response json tags. Response shared and readOnly have no
+  omitempty, as the doc says.
+- Classes: the six classes and their CEL in device-classes.yaml equal
+  the tables of README.md, USAGE.md and POOL.md. The DeviceClass YAML at
+  USAGE.md:184-191 is verbatim the cxl-pool class.
+- Attributes: the ResourceSlice excerpts in USAGE.md and LOCAL.md and the
+  attribute tables match regionDevice, dramDevice, localMemdevDevice and
+  the lease device of node_state.go, and publisher.go of P.
+- P README: it matches the usage of fake-cxl-pool-client (commands,
+  guest region create --mode numa|dax, the serial input, exit codes),
+  and the flags of fake-cxl-pool-controller and fake-cxl-pool-server
+  (/tmp/r2 builds).
+- 10-contract.md is the pointer of 03 S4 (O1/Q4).
+- Links: every relative link and #anchor in D doc/cxl/*.md, P README.md
+  and 10-contract.md resolves (/tmp/r2/tools/links.py, 0 bad). The only
+  external links are those of I-4. The doc/cxl/*.md files that code
+  comments in D, P, E and pkg/cxl cite all exist, and so does the POOL.md
+  heading "What the pool controller writes" that the deploy YAML cites.
+- Plain ASCII in all documents, examples and class files. No history
+  wording, except the sentence that 03 prescribes for 10-contract.md. No
+  plan, Q or R references in the docs.
+YAML checks:
+- The 27 objects of device-classes.yaml and the nine examples decode
+  strictly (sigs.k8s.io/yaml UnmarshalStrict) into the k8s.io/api v0.37.0
+  types resource.k8s.io/v1 DeviceClass, ResourceClaim and
+  ResourceClaimTemplate, and core/v1 Pod.
+- Every pod claim has exactly one source, and every container claim
+  names a pod claim.
+- Every request has exactly or firstAvailable, and every config
+  "requests" names an existing (sub)request.
+- Every opaque config has apiVersion <driver>/v1alpha1 and a kind that
+  its driver knows. DeviceConfig carries no fields besides mode and
+  readOnly.
+- The same strict decode passes for the 21 YAML snippets of the docs:
+  fragments wrapped into a ResourceClaim or ResourceSlice, with the
+  placeholders N, [...] and <now> of POOL.md filled in.
+- kustomize (S1, R1): deployments/cxl renders base and the six classes.
+e2e checks:
+- Names: they match the code. Classes (DRA_CLASSES), labels and
+  annotation (DRA_*_LABEL), device names (memdev-<hex>, lease, dram,
+  region type), and the exact attribute sets: pool devices
+  serial/shared/size/source/type; the local memdev with
+  memoryBlockSize/nodeAffinity added; the lease device type only.
+  Also the env field sets per kind, the CDI device names and kinds, the
+  error texts asserted in test12 (R1-R11, R13) and test14 (readOnly, an
+  invalid mode, an unknown kind), the --lease-cli flag, and the plugin
+  log lines (the "discovered local memory device memdev-" and "prepared
+  pooled0" lines, and the slice-times format of local.go:400).
+- No assertion weakened against 002f5ba35. Every removed assertion line
+  of "git diff 002f5ba35 -- E" has a replacement:
+  - kind and exclusive became exact tuples of
+    source/mode/shared/readOnly/serial;
+  - "size >=" became "size ==";
+  - the LendConfig asserts became exact label sets, the requester
+    annotation, and "exactly one DeviceConfig";
+  - presence greps of CXL_POOL_/CXL_SHARED_/CXL_LOCAL_/CXL_LEASE_* became
+    exact field sets (dra-env-assert) plus total CXL_ line counts;
+  - "no READONLY" became READONLY=0;
+  - mode-attribute waits became dra-local-unchanged plus the existing
+    sysfs slice checks;
+  - the per-serial pool-<hex>-ro CDI check became claim-<uid>-0 of
+    reader-d in VM1's cxl-pool.yaml;
+  - the file checks of the deleted class files became "kubectl get
+    deviceclass <six>" in dra-install.
+  New assertions: R1-R11 and R13 refusals, the env --lease output and
+  its equality with a claim's env, env --exec, fd --wait after
+  --wait 0s, the A1 unknown kind, and no CDI device for companion claims.
+- No sleep added: the diff adds none and removes "sleep 10" in test13,
+  now dra-stays 10 readers-pending.
+- Helpers: dra-env-assert, dra-env-value, dra-cdi-device,
+  dra-cdi-devices-with, dra-local-slices-none, dra-local-unchanged,
+  subrequests() and configs() are shared through dra.source.sh and used
+  by the tests. The one exception is S-4.
+- bash -n is ok for dra.source.sh, the *.source.sh files of
+  n4-cxl-shared-2 and every code.var.sh there. shellcheck -s bash
+  -e SC2034,SC2154,SC1090,SC2016 is clean except the SC2015 info at
+  test12:536, which is older than plan-5. pool-dax-rw.py parses.
+Leftovers and status:
+- Grep gate over the whole N/test/e2e tree (without output directories):
+  only the exceptions listed under done criterion 3. N/test/e2e/README.md
+  names nothing of the old API.
+- R1 findings: all fixed as O4 decided.
+  - A1-A4 (B1, B2, I-1, I-3).
+  - I-2: document pointers point at LEASES.md.
+  - I-4: memctl.ValidMode.
+  - I-5: CXL_<KEY> in the D examples.
+  - I-6: ops.go:306.
+  - S-1: no plan or R references in the D tests.
+  - S-2: no readDaxDevNumbers, unixMajor or second ParseUint left.
+  - S-3: lease.yaml uses sh -c env.
+  - S-4: TestRunExecSignaled and TestRunExecForwardsSignals.
+  - S-5: no CDI device for companions in either driver.
+  - S-6: the doc comments.
+- Status files: S1 D1-D14, S2 D1 and S4 D1-D3 each have a reason and keep
+  the 02 vocabulary. S3 has no "Deviations" heading; its changes (the
+  dra-local-unchanged replacement, DaxConfig as the A1 kind, the
+  read-only CDI check moved to reader-d) are explained under
+  "Assertions changed and why" and "Changes after pass 1".
+
+Verdict
+-------
+The plan-5 vocabulary is in place in the code, deployments, docs and e2e
+tests of both repositories. The seven e2e tests passed in order on exactly
+the files that are in the trees now. The grep gates are clean apart from
+the listed exceptions. One problem would fail CI once committed: two
+committed unit tests read testdata that .gitignore excludes (B1, older than
+plan-5). Four things must be done before committing: force-add that
+testdata, restore the pseudo-version replace in D/go.mod, delete D's two
+untracked kubelet-cxl-plugin binaries, and keep the e2e output
+directories, presentations/terminal/ and the scratch files out of
+"git add". I-1 to I-3 are document fixes for S4 of a sentence or a line
+each. I-4 resolves itself when both branches are merged. S-1 to S-6 are
+wording and helper cleanups.

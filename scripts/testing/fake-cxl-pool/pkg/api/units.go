@@ -24,8 +24,8 @@ import (
 )
 
 // Size is a byte count that unmarshals from a JSON number or from a string
-// like "256M", "1G", "1GiB" or "268435456". Suffixes are binary (K=1024).
-// It marshals as a JSON number.
+// like "256Mi", "256M", "1GiB" or "268435456". Suffixes are binary
+// (K=Ki=1024). It marshals as a JSON number.
 type Size int64
 
 // UnmarshalJSON implements json.Unmarshaler.
@@ -51,11 +51,11 @@ func (s *Size) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// String returns the size in the shortest exact binary unit.
+// String returns the size as FormatSize does.
 func (s Size) String() string { return FormatSize(int64(s)) }
 
 // ParseSize parses a size string: a decimal or 0x-hex number of bytes,
-// optionally followed by K, M, G, T (also KiB, MB, ...; all binary).
+// optionally followed by K, M, G, T (also Ki, KiB, MB, ...; all binary).
 func ParseSize(s string) (int64, error) {
 	str := strings.TrimSpace(s)
 	if str == "" {
@@ -97,12 +97,13 @@ func ParseSize(s string) (int64, error) {
 	return v * mult, nil
 }
 
-// FormatSize formats bytes using the largest binary unit that divides it.
+// FormatSize returns bytes in the largest binary unit that divides them,
+// as a Kubernetes quantity: "256Mi", "1Gi", "1536" ("0" for 0).
 func FormatSize(v int64) string {
 	units := []struct {
 		s string
 		m int64
-	}{{"T", 1 << 40}, {"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10}}
+	}{{"Ti", 1 << 40}, {"Gi", 1 << 30}, {"Mi", 1 << 20}, {"Ki", 1 << 10}}
 	if v == 0 {
 		return "0"
 	}

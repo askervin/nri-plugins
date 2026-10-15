@@ -1,0 +1,59 @@
+plan-5-api-consistency: orchestrator decisions
+==============================================
+
+O1 (2026-10-15, Opus orchestrator) The four open questions of
+   04-open-questions.txt go with Fable's recommendations, as 04 says the
+   plan does unless the user decides otherwise: Q1 pool numa claims stay
+   unsteered (documented); Q2 no union class; Q3 "request --serial <shared
+   device>" is exclusive unless --shared; Q4 plan-2-dra/10-contract.md
+   becomes a pointer to doc/cxl/POOL.md. The user is told in the final
+   report and can reverse any of them.
+O2 S3 starts at t0 with a phase 1 (helpers and tests rewritten against
+   02-design.txt, static checks only, no VM, no build of the driver) and
+   runs its phase 2 (section 6 of 03) when S1 and S2 have reported
+   "builds and unit tests pass". Its files are disjoint from S1, S2, S4.
+O3 (S1 request) cxl.mk CXL_COMMON_SRC listed the deleted pkg/cxl/cdihelpers
+   and pkg/cxl/discovery: changed by the orchestrator to pkg/cxl/api,
+   pkg/cxl/device, pkg/cxl/memorypolicy (`make -n bin/kubelet-cxl-plugin`
+   resolves). The repository-root cxl-dra-driver.stage-2.architecture.md is
+   a committed preliminary plan (history, like plan-*/): not edited; its
+   one "cxl.intel.com" mention is reported to the user.
+O4 (after review R1, 06-review-1.txt) Amendments to 02-design.txt; they
+   are part of the contract from now on:
+   A1 (R1 B1) An opaque config of the driver with an unknown kind fails
+      the Prepare: "unknown kind %q (DeviceConfig or MemoryPolicyConfig)"
+      in cxl.generic, "unknown kind %q (DeviceConfig)" in cxl-pool.generic.
+      A wrong kind is the most likely mistake after the renames, and it
+      must not silently give a read-write or numa device.
+   A2 (R1 I-1) DeviceConfig on a region or dram request fails the Prepare
+      when it asks for anything but numa: "DeviceConfig: mode dax: a
+      region is used as numa only" (and "... dram is used as numa only";
+      readOnly: "DeviceConfig: readOnly needs mode dax", as for memdevs).
+      The same mismatch is an error for every device type.
+   A3 (R1 I-3) CDI devices are per allocation result, not per claim:
+      kubelet injects only the CDI devices of the requests a container
+      references (resources.claims[].request), so one device per claim
+      would hand a container that references a read-only request the
+      read-write node of another request of the same claim. Name:
+      claim-<uid>-<n>, n = index of the result in the claim's allocation
+      (both drivers; kinds unchanged: generic/cxl and generic/cxl-pool);
+      every such device carries the claim marker CXL_CLAIM_<uid>=1 and
+      the env and device nodes of its own result only. Companion claims
+      are treated alike by both drivers (R1 S-5): their results get no
+      CDI device (the pause container references no claim).
+   A4 (R1 B2) deleteOrphans selects "cxl.generic/node=<node>,
+      cxl.generic/lease" and acts only on objects named cxl-lease-<value>.
+   Everything else of 06-review-1.txt is accepted as written: I-2, I-5,
+   I-6, S-1 to S-6 (S1 or S2 as the review says), I-4 (S2: memctl.ValidMode
+   used by CreateRegion and by the client before the lookup).
+O5 S3's e2e runs that started before the O4 fixes count as a first pass;
+   S3 reruns its whole sequence on the build with the O4 fixes.
+O6 (after review R2, 06-review-2.txt) Accepted: I-1, I-2, I-3, S-5, S-6
+   (S4, docs only); S-1 (S1, one comment); S-2, S-3, S-4 (S3; S3 reruns
+   the tests whose code, not only comments, changes: test12, test13,
+   test15). Not routed: B1 (ignored testdata of committed unit tests,
+   older than plan-5), I-4 (cross-repository links resolve after merge),
+   I-5 (untracked presentations/terminal/), and the leftovers list: all
+   are commit-time decisions of the user, reported in the final summary.
+   The two untracked kubelet-cxl-plugin binaries in the driver tree
+   existed before plan-5 started and are not deleted by an agent.

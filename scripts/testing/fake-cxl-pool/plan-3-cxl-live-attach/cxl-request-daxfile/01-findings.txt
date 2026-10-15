@@ -1,0 +1,198 @@
+cxl-request-daxfile: a shared CXL lease as a file in the borrower container
+===========================================================================
+Written 2026-10-12. Task: give a container that borrows a shared CXL device
+(test12 step D, `cxl-request shared SERIAL --exec CMD`) a file system object
+that legacy applications can open() and mmap(), and that stays usable after
+cxl-request has exited. Proposed approach: cxl-request turns the dax fd it
+received from kubelet-cxl-plugin into a detached mount with
+open_tree(fd, "", AT_EMPTY_PATH | OPEN_TREE_CLONE) and attaches it to a
+user-given path with move_mount().
+
+Test bed: VM2 = n4-cxl-shared-2-fedora-43-containerd, kernel 7.3.0-rc4,
+containerd 2.4.1, runc 1.5.2 (systemd cgroup driver), cgroup v2, dax char
+major 252 (CONFIG_DAX=y: the major exists with no dax device). shared0
+(256M, 0xc1ae0001) attached with fake-cxl-pool-client and created as
+devdax /dev/dax0.0 (252:0). Kernel source: ~/github.com/torvalds/linux
+v7.2-15794-g1b78070aaef6. Throwaway probe (not in any repository):
+~/.claude/jobs/daxfile/probe/main.go, logs ~/.claude/jobs/daxfile/exp*.log.
+
+SUPERSEDED IN PART (2026-10-12, 04-revision-plan.txt): what this file says
+about the device cgroup of the borrower (pre-authorizing the dax major at
+creation, so CAP_MKNOD and CAP_SYS_ADMIN must go) is replaced by
+per-device grants to the running container (04 sections 1.3 and 2.6),
+which work whatever capabilities the container has. The device cgroup CAN
+be changed for a running container, with runc's library plus the scope's
+DeviceAllow. The open_tree/move_mount findings and the life cycle stand.
+Superseded passages are marked [superseded].
+
+1. Verdict
+----------
+- The approach as proposed does NOT work, in any container:
+  - without CAP_SYS_ADMIN (every normal pod): open_tree(OPEN_TREE_CLONE)
+    fails with EPERM;
+  - with CAP_SYS_ADMIN or privileged: it fails with EINVAL, because the fd's
+    mount is the /dev mount of the plugin's (host) mount namespace, which
+    open_tree() refuses to copy.
+- The mechanism itself works when the plugin runs it: the plugin creates
+  the detached mount in its own mount namespace (open_tree on a path there),
+  enters the borrower's mount namespace and move_mount()s it onto the path.
+  The borrower needs no privilege for that.
+- But a device file in a container is only half of it: open() of any char
+  device inode is checked by the container's device cgroup, however the path
+  came there (mknod, bind mount, open_tree/move_mount). The default device
+  cgroup denies 252:*, and [superseded: it can, 04 1.3] it cannot be
+  changed for a running container
+  (plan-3 02-option-runtime-injection-mechanics.txt M5-M9). The container
+  must be pre-authorized for the dax major at creation (M10, NRI
+  CreateContainer adjustment "c 252:* rw"), which is safe only if the
+  container cannot mknod (CAP_MKNOD dropped) and cannot mount (no
+  CAP_SYS_ADMIN, not privileged).
+- Life cycle: releasing the region and detaching the device work with the
+  file mounted, also while it is mapped (the mapping user gets SIGBUS, as
+  with the fd). Deleting the pod removes the mount. One hazard: a mount that
+  outlives its lease opens whatever dax device gets the same minor next, so
+  the plugin must unmount before the region goes.
+=> Feasible as a plugin-side extension: `cxl-request shared SERIAL --file
+   PATH` asks kubelet-cxl-plugin to put the lease's dax device at PATH; the
+   plugin does open_tree/move_mount in the borrower's mount namespace, owns
+   the node, and unmounts it at release. Plan: 02-implementation-plan.txt.
+
+2. Why the proposed approach fails (kernel source)
+--------------------------------------------------
+- open_tree(OPEN_TREE_CLONE) requires may_mount(): CAP_SYS_ADMIN over the
+  user namespace that owns the caller's mount namespace
+  (fs/namespace.c:3231, may_mount at :2007-2010). Kubernetes containers
+  without user namespaces live in mount namespaces owned by the initial user
+  namespace, so this is real CAP_SYS_ADMIN.
+- The clone goes through __do_loopback() -> may_copy_tree() (:2960-2997): the
+  source mount must be in the caller's mount namespace (check_mnt), or be an
+  nsfs/pidfs dentry, or be in an anonymous mount namespace that was created
+  from the caller's namespace (check_anonymous_mnt, :952-961, seq_origin ==
+  the caller's ns id). The fd that kubelet-cxl-plugin sends was opened on
+  /dev/dax0.0 in the host's mount namespace: none of these -> EINVAL. A
+  detached mount made by the plugin and sent instead (an anonymous namespace
+  with the host's ns id as origin) fails the same check when the container
+  tries to clone it again.
+- move_mount() also requires may_mount() (:4595). For a source that is the
+  root of an anonymous namespace, do_move_mount() (:3639-3711) checks that
+  the target is in the caller's namespace (may_use_mount, :3623-3637) and
+  that source and target namespaces differ, but not where the anonymous
+  namespace came from. So a detached mount created by the plugin can be
+  attached by anybody who may mount in the target namespace: the container
+  itself with CAP_SYS_ADMIN, or the plugin after setns() into it.
+- open() of the mounted node: inode_permission() runs the DAC check, then
+  devcgroup_inode_permission() (fs/namei.c:657, include/linux/
+  device_cgroup.h:17-39) for every char/block inode with an rdev: the
+  container's device cgroup (eBPF in cgroup v2) decides by major:minor, not
+  by path. That is also why the SCM_RIGHTS fd works: an already open file is
+  never checked again (mmap of devdax checks only alignment and liveness).
+
+3. Experiments (VM2)
+--------------------
+Pods (python:3-alpine, hostPath /run/daxprobe -> /probe with the probe and a
+socket served by `daxprobe serve` on the VM host):
+  p-plain         root, containerd default capabilities (CapEff a80425fb)
+  p-sysadmin      + CAP_SYS_ADMIN (a82425fb)
+  p-priv          privileged (1ffffffffff)
+  p-preauth       root, MKNOD dropped (a00425fb), device cgroup pre-authorized
+                  "c 252:* rw" by an NRI CreateContainer adjustment
+                  (B's throwaway nri-lend, pod annotation)
+  p-preauth-user  uid 1000, all capabilities dropped, pre-authorized
+
+E1 the proposed approach: receive the dax fd, open_tree(fd, "",
+   AT_EMPTY_PATH|OPEN_TREE_CLONE), move_mount onto /tmp/daxfile-e1:
+     p-plain EPERM, p-sysadmin EINVAL, p-priv EINVAL, p-preauth EPERM,
+     p-preauth-user EPERM.
+E2 the host sends open_tree(/dev/dax0.0, OPEN_TREE_CLONE) instead; the
+   container move_mount()s it:
+     p-plain EPERM, p-sysadmin OK, p-priv OK, p-preauth EPERM, p-preauth-user EPERM.
+E3 open(O_RDWR) + mmap of the file the container mounted in E2:
+     p-sysadmin EPERM (device cgroup), p-priv OK (wrote at 4096; the host
+     read "e3-p-priv" from /dev/dax0.0).
+E4 the host clones /dev/dax0.0, enters the container's mount namespace
+   (locked thread, unshare(CLONE_FS), setns(/proc/PID/ns/mnt)) and
+   move_mount()s it onto /tmp/daxfile-e4: OK in all five pods. Then
+   open(O_RDWR) + mmap write/read in the container:
+     p-plain EPERM, p-sysadmin EPERM (device cgroup), p-priv OK,
+     p-preauth OK ("e4-p-preauth" written and read back, also by the host),
+     p-preauth-user EACCES: the clone shows the host's devtmpfs inode,
+     crw------- root root.
+E4u the same with a private node made on the host for this container:
+   mknod /var/lib/daxprobe/u1000 c 252 0, chown 1000:1000, chmod 0600, then
+   clone + move_mount: the container sees crw------- 1000 1000 252,0, and
+   uid 1000 with no capabilities wrote and read "e4u-p-preauth-user" through
+   open + mmap; the host read it from /dev/dax0.0.
+Mount details, from /proc/<pid>/mountinfo of the containers:
+  1203 1452 0:9 /dax0.0 /tmp/daxfile rw,nosuid shared:2 - devtmpfs ...
+  The clone keeps the flags (nosuid) and the PEER GROUP of its source:
+  shared:2 is the host's /dev. Mount events below that file would propagate
+  between the host and the container. With mount_setattr(propagation
+  MS_PRIVATE) on the detached mount before move_mount:
+  1204 1452 0:9 /dax0.0 /tmp/daxfile-priv rw,nosuid - devtmpfs ...
+  (no peer group; host /dev stays "shared:2"). The private node on btrfs
+  /var showed shared:62 before the fix, likewise.
+No mount appeared in the host's mount namespace in any experiment
+(grep -c daxfile /proc/self/mountinfo on the host: 0).
+mknod in p-preauth (pre-authorized, MKNOD dropped): mknod /tmp/other c 252 1
+-> Operation not permitted. Without CAP_MKNOD the plugin's node is the only
+dax node the container can reach. (runc's default rules allow "m" for every
+char and block device, so mknod is limited by CAP_MKNOD only; test12 shows
+mknod working in a container that keeps CAP_MKNOD.)
+
+Life cycle:
+L1 a holder in p-preauth mapped /tmp/daxfile (python mmap, fd closed,
+   reading once a second); the host unmounted it (umount2 MNT_DETACH) and
+   removed the file in the container's namespace: new open() -> ENOENT, the
+   holder kept reading ("tick 4/5 e4-p-preauth").
+L2 `fake-cxl-pool-client guest release shared0` (cxl disable-region,
+   destroy-region, disable-memdev) with the holder mapping it and 8 file
+   mounts in 5 pods: rc 0 in 0.23 s, /dev/dax0.0 gone on the host. The holder
+   ended at its next access (no tick after the release, process gone; B
+   measured exit 135 = SIGBUS for the same case with an fd).
+L2b open() of the stale mounts: ENXIO (p-priv, p-preauth).
+L3 the region created again: a new dax0.0 with the same 252:0. The stale
+   mounts in p-priv, p-preauth and the private node in p-preauth-user all
+   opened again and read the data: a node keeps its rdev, and the char
+   device lookup goes by rdev, so it reaches whatever device has that minor
+   now (here the same shared0; it could be another tenant's device).
+   => The plugin must unmount its files before the region is released, and
+   remove its private nodes. A container must not keep CAP_MKNOD if its
+   device cgroup allows the dax major. [superseded: with per-device grants
+   it never allows the major, only its own leases' devices until they are
+   released, 04 2.6]
+L4 kubectl delete pod p-preauth-user with two file mounts: deleted in
+   0.85 s; nothing in the host's mount table; the host-side private node
+   /var/lib/daxprobe/u1000 stayed (the plugin has to remove its nodes).
+L5 release + `fake-cxl-pool-client detach shared0 --self` with stale mounts
+   still in 4 pods: detached in 6.3 s, DEVICE_DELETED from qemu, 0 cxl-type3.
+L6 open() of a stale mount after the detach: ENXIO.
+
+4. Consequences for the design
+------------------------------
+- Who mounts: kubelet-cxl-plugin, not cxl-request. The plugin runs in the
+  host mount namespace, as root with CAP_SYS_ADMIN, and knows the borrower's
+  pid from NRI. It needs a goroutine on a locked OS thread with
+  unshare(CLONE_FS) before setns(CLONE_NEWNS) (setns refuses a mount
+  namespace change for a thread that shares its fs_struct, which every Go
+  thread does); the thread is discarded afterwards.
+- What it mounts: a private char device node per file, created by the
+  plugin in its data directory with the dax device's rdev, owned by the
+  requesting uid:gid (SO_PEERCRED), mode 0600. Not the host's /dev/daxX.Y:
+  it is root:root 0600 and shared with the host. The detached mount gets
+  MOUNT_ATTR_NODEV cleared and propagation MS_PRIVATE before move_mount.
+- Where: a path that does not exist yet, in a directory the requester could
+  create files in. The plugin creates the empty target file with the
+  requester's fsuid/fsgid (setfsuid/setfsgid on the same thread), so it can
+  only put files where the requester could, and the target is passed to
+  move_mount() by fd (no path re-resolution).
+- [superseded by 04 2.6: per-device grants, no opt-in, no capability
+  rule] Device cgroup: the borrower opts in at creation (token claim config
+  daxFiles: true); NodePrepare of that token claim refuses containers that
+  reference it and keep CAP_MKNOD, add CAP_SYS_ADMIN or are privileged;
+  the NRI CreateContainer adjustment then allows "c <dax major>:* rw" for
+  the containers of that claim. Containers without the opt-in are unchanged
+  (test12 step D still sees the device cgroup deny).
+- Release: unmount + remove before the companion claim is unprepared (the
+  broker's own release), or in the pool helper's OnReleasing hook (companion
+  deleted behind the broker's back) before the region is released; when the
+  container is gone, only the private node is removed.

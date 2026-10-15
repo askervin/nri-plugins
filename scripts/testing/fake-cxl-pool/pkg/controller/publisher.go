@@ -48,14 +48,15 @@ func DeviceName(name string) string {
 	return s
 }
 
-// convertDevice returns the ResourceSlice device of a pool device
-// (10-contract.md section 2).
+// convertDevice returns the ResourceSlice device of a pool device, as the
+// pool controller contract (doc/cxl/POOL.md of the CXL DRA driver) defines
+// it.
 func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device {
 	rd := resourceapi.Device{
 		Name: name,
 		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+			"type":   {StringValue: ptr.To("memdev")},
 			"source": {StringValue: ptr.To("pool")},
-			"pool":   {StringValue: ptr.To(d.Pool)},
 			"serial": {StringValue: ptr.To(strings.ToLower(d.Serial))},
 			"shared": {BoolValue: ptr.To(d.Shared)},
 			"size":   {IntValue: ptr.To(d.Size)},

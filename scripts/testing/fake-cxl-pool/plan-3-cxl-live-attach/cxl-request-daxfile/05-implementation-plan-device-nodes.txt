@@ -1,0 +1,339 @@
+cxl-request-daxfile: lease device nodes in /run/cxl/dev (implementation plan)
+==========================================================================
+Written 2026-10-13. Plan only: nothing of it is implemented. It replaces
+the dropped designs of 02 (a bind mount per lease file, open_tree +
+move_mount in the container's mount namespace) and 04 (per-device grants
+behind the runtime), see 00-STATUS.txt.
+
+Goal: a program that needs a path, not an fd, can open and mmap the dax
+device of a lease ("legacy application"): /run/cxl/dev/daxX.Y in the
+container, while the lease is Ready, and gone when it is released. It
+should work on OpenShift too, where pods run non-root, without
+capabilities and under enforcing SELinux by default.
+
+Accepted (the user, 2026-10-13): no isolation for privileged containers,
+containers with CAP_SYS_ADMIN or CAP_MKNOD, and containers that run as
+root. The option documents these limitations.
+
+1. Why this shape (findings that decide it)
+-------------------------------------------
+F1 A device node in a container is useless without a device cgroup rule
+   for its major:minor, however the node came there: bind mount, mknod,
+   or the magic link /proc/PID/fd/3 of a passed fd (measured in test13's
+   containers, plan-4-multinode/02 section 7: EPERM in every case).
+F2 Device cgroup rules of a running container cannot be changed through
+   the runtime (NRI UpdateContainers and runc update skip devices,
+   ../02-option-runtime-injection-mechanics.txt 2.5, 2.7). They can be
+   set when the container is created, by an NRI CreateContainer
+   adjustment (measured with containerd: M10 in
+   ../02-option-runtime-injection-mechanics.txt, and the 02 prototype
+   passed test12 step H with it).
+F3 At creation the device of a future lease is unknown, so the rule must
+   cover the dax major: "c <dax major>:* r" or "rw", for the lifetime of
+   the container. That rule alone allows every dax device of the node to
+   any process of the container that has a node for it.
+F4 The device cgroup checks numbers, not paths. What keeps a container to
+   its own leases is that it can only reach the nodes the plugin gives it:
+   true if it cannot mknod (no CAP_MKNOD), cannot mount (no CAP_SYS_ADMIN,
+   not privileged), and cannot open the host's /dev. Restricting access
+   to paths or named files whatever the capabilities needs an LSM
+   (SELinux labels, BPF LSM): out of scope here (section 9).
+F5 Mode bits restrict non-root users only: root has CAP_DAC_OVERRIDE
+   (measured, 04-revision-plan.txt 1.2: mode 0400 does not stop root).
+   A read-only mount does not stop opening a device node for writing
+   (same measurement). The device cgroup access type does: "r" refuses
+   O_RDWR even for root.
+F6 NRI (v0.12.2, vendored in the driver) can add mounts, device nodes
+   and device cgroup rules at CreateContainer, and shows the container's
+   env (with the CDI claim markers CXL_CLAIM_<uid>), its CDI devices and
+   its user (uid, gid). It shows neither capabilities nor SELinux labels.
+F7 The e2e VM kernel (test/e2e/playbook/files/qemu-cxl-kernel.config) has
+   no SELinux, no SECURITYFS, no BPF LSM, no Landlock; SELinux is off in
+   the VMs. OpenShift's SELinux behaviour cannot be measured there as is.
+
+2. User view
+------------
+Opt-in when the pod is created, in the config of its token claim (driver
+cxl.generic), with the access level of the paths:
+
+  apiVersion: resource.k8s.io/v1
+  kind: ResourceClaimTemplate
+  spec:
+    spec:
+      devices:
+        requests: [{name: token, exactly: {deviceClassName: cxl-dynamic}}]
+        config:
+        - opaque:
+            driver: cxl.generic
+            parameters: {apiVersion: cxl.generic/v1alpha1, kind: DynamicConfig, deviceNodes: rw}
+
+| deviceNodes | meaning |
+|---|---|
+| (absent) | today: dax leases as fds only |
+| r | paths of dax leases, readable only (device cgroup "r") |
+| rw | paths of dax leases, readable and writable as the lease allows (device cgroup "rw") |
+
+A cluster admin may put the config into a DeviceClass instead (for
+example cxl-dynamic-paths); the claim's config wins.
+
+In a container that references such a claim:
+- /run/cxl/dev is a read-only directory, empty until a dax lease is Ready.
+- A Ready dax lease (shared, or memory --dax) has the node
+  /run/cxl/dev/daxX.Y (X.Y the host's dax device name), owned by the uid
+  and gid of the process that requested it (SO_PEERCRED), mode 0600, or
+  0400 for a read-only lease or deviceNodes: r. The lease response and
+  "cxl-request list" show it as "path"; cxl-request --exec sets
+  CXL_LEASE_PATH. Any program of the container may open and mmap it,
+  also after cxl-request has exited.
+- Release removes the node before the memory goes. A process that still
+  maps the memory gets SIGBUS at its next access, as with an fd.
+- Example (deployments/cxl/pool/examples/legacy-borrower-pod.yaml):
+    cxl-request shared 0xc1ae0001 --read-only --wait 120s    # prints "path"
+    legacy-app --input /run/cxl/dev/dax0.0
+    cxl-release --all
+
+Isolation, to be documented in doc/cxl/POOL.md with the option:
+| container | what the paths give it |
+|---|---|
+| non-root, no CAP_MKNOD or CAP_SYS_ADMIN, not privileged (OpenShift restricted-v2) | its own leases only, read-only leases read-only |
+| runs as root, without CAP_MKNOD | its own leases only, but in a deviceNodes: rw container a read-only lease can be opened for writing through the path (mode bits do not bind root); the fd of the lease stays read-only |
+| CAP_MKNOD (containerd's default for root) | every dax device of the node, with the access of deviceNodes, including other tenants' leases and pod claims, also after its own lease ended |
+| CAP_SYS_ADMIN | the same, and it can remount /run/cxl/dev read-write or bind nodes elsewhere |
+| privileged | every device of the node, with or without this option |
+In every case: the device cgroup rule lasts for the life of the container,
+and a mapping or open fd made during a lease survives its release until
+munmap (as for fds today). The plugin logs a warning and emits a pod event
+"CXLDeviceNodesNotIsolated" for opted-in containers that are privileged,
+add CAP_MKNOD or CAP_SYS_ADMIN, keep the runtime's default capabilities as
+root, or run as uid 0; it does not refuse them.
+
+3. Design
+---------
+3.1 Directories (host side, in the cxl.generic plugin data directory,
+    /var/lib/kubelet/plugins/cxl.generic, a filesystem without nodev):
+    devnodes/<pod uid>/<container name>/   one per container of an opted-in
+                                           token claim, root:root 0755
+    The container name, not its id: a restarted container (leases are kept
+    for its restart) mounts the same directory and finds its nodes again.
+3.2 CreateContainer (nri.go), for a container whose env has the marker of
+    a token claim with deviceNodes (extractClaimUIDs + tokenClaims), before
+    the existing early returns:
+    - device cgroup rule {allow, c, <dax major from /proc/devices>, -1,
+      r|rw} (prototype: daxMajor, daxDeviceRule);
+    - mount {destination /run/cxl/dev, type bind, source
+      devnodes/<pod uid>/<container name>, options rbind, ro, nosuid,
+      noexec} (no nodev);
+    - create the source directory first; record (pod uid, container name,
+      access) in the lease store so a restart of the plugin knows it.
+    The mountpoint /run/cxl/dev lies inside the /run/cxl mount of the
+    token claim (leases/<claim uid>, CDI): create leases/<claim uid>/dev at
+    Prepare, so that the runtime needs no mkdir in it. Step 0 checks that
+    containerd and CRI-O mount /run/cxl before /run/cxl/dev; if a runtime
+    does not, the destination becomes /run/cxl-dev.
+    Why NRI, not CDI: CDI edits of a claim are the same for every container
+    that references it (no per-container directory), and a CDI device node
+    names one minor, not a whole major.
+3.3 Lease Ready (broker.go, OnPrepared and the fd paths), for a dax lease
+    of a container with a directory:
+    - mknod devnodes/.../daxX.Y with the rdev of
+      /sys/bus/dax/devices/daxX.Y/dev (prototype: newFileNode), chown
+      uid:gid of the requester (peerCred), chmod 0600, or 0400 if the lease
+      is read-only or the access is r;
+    - SELinux enabled (/sys/fs/selinux/enforce exists): label the
+      directory and the node like a file of the container: the type
+      container_file_t with the MCS level of the requester's context
+      (/proc/<pid>/attr/current, for example
+      system_u:system_r:container_t:s0:c12,c34 ->
+      system_u:object_r:container_file_t:s0:c12,c34), set with lsetxattr
+      security.selinux;
+    - record it with the lease (lease.Nodes: path, dax name, mode) and put
+      "path" into the response. Two leases of one dax device in one
+      container share the node: the widest mode, removed with the last.
+    The node is a new inode of the plugin, not the host's /dev/daxX.Y: its
+    owner, mode and label are the container's, nothing in the host /dev
+    changes.
+3.4 Release, in this order, everywhere a lease ends: remove the node
+    first, then revoke, then delete the companion (broker.release);
+    OnReleasing removes the nodes of the lease before the pool helper
+    releases the region, and an error fails the unprepare (prototype:
+    OnReleasing returning an error). So no path ever reaches a later device
+    with the same minor. An unlink that fails (it should not) keeps the
+    release retrying, as the 02 prototype did for an unmount.
+3.5 Life cycle:
+| event | nodes |
+|---|---|
+| container stops, will restart (lease kept) | kept: the new instance mounts the same directory |
+| container gone for good, pod deleted, token claim unprepared | its leases are released (nodes first), then the directory goes |
+| plugin restart | nodes and directories stay on disk; the store has them; reconcile removes nodes without a Ready lease and directories without a container of an opted-in claim |
+| node reboot | regions are gone; dra-install/plugin start drops stale state as today, plus devnodes/ |
+3.6 Fds on SELinux: under enforcing SELinux the fd that the broker passes
+    today refers to the host's /dev/daxX.Y (a device type the container
+    domain may not be allowed to read, write or map), and receiving it
+    needs fd use permission on the plugin's domain. If step S1 shows that
+    fd leases fail there, the broker opens the fd from a node labeled for
+    the container (3.3, also for containers without deviceNodes: a node in
+    a directory that is not mounted) instead of /dev/daxX.Y. Decided by
+    measurement, not now.
+
+4. OpenShift
+------------
+Assumptions to verify (marked V in section 6):
+O1 Runtime: CRI-O, with crun (the default of new installations since 4.18,
+   V) or runc. NRI has to be enabled in CRI-O ([crio.nri] enable_nri =
+   true through a MachineConfig, unless the release enables it, V), and
+   CRI-O has to apply NRI device cgroup rules and mounts at
+   CreateContainer and give CDI-injected env to NRI (V).
+O2 Pods under the default SCC restricted-v2 run with a uid of the
+   namespace range, runAsNonRoot, capabilities drop ALL, no privilege
+   escalation, seccomp RuntimeDefault, SELinux MustRunAs with the
+   namespace's MCS level. That is the first row of the isolation table:
+   per-lease isolation holds by default on OpenShift.
+O3 The SCC does not see the mount and the device rule: they come from NRI
+   (and the socket directory from CDI), not from pod volumes, so pods need
+   no hostPath permission. The cluster admin opts the cluster in by
+   installing the driver, the pod by its claim config.
+O4 SELinux: container_t may search directories and open, read, write and
+   map character devices labeled container_file_t with its own MCS level,
+   as for devices that the runtime creates in the container's /dev (V).
+   The lease socket needs the same (today "best effort, unverified"):
+   connectto from container_t to the plugin's domain (V).
+O5 The plugin runs as a privileged DaemonSet (privileged SCC, spc_t):
+   hostPID (SO_PEERCRED pids must be host pids), the NRI socket,
+   /var/lib/kubelet/plugins and plugins_registry, /dev, /sys; CAP_MKNOD and
+   relabelling of its own files. Prerequisites outside this plan: the pool
+   helper needs cxl and daxctl, which RHCOS does not have (the image must
+   bring them, or the planned sysfs-only implementation), and DRA with
+   device binding conditions and consumable capacity must be enabled in
+   the OpenShift release.
+O6 Random uids and the root group: the node is owned by the requester's
+   uid; other uids of the pod cannot open it (mode 06x0/04x0 has no group
+   bits). Pods with several uids that share a lease: out of scope.
+
+5. Implementation steps
+-----------------------
+Driver repository (kubelet-cxl-plugin, cxl-request, docs):
+ D1 dynamic.go, lease_store.go: DynamicConfig {apiVersion, kind,
+    deviceNodes: "" | r | rw}, strict decoding, claim over class, parsed at
+    the token claim's Prepare (prototype: parseDynamicConfig); create
+    leases/<claim uid>/dev; tokenClaim.DeviceNodes; store records of
+    container directories.
+ D2 devnodes.go (new): the directory and node manager behind an interface
+    (create dir, mknod, chown, chmod, label, unlink, remove dir) so that
+    tests use a fake; daxMajor; SELinux context mapping; refcounting of
+    nodes shared by two leases.
+ D3 nri.go: CreateContainer adjustment (3.2) and the isolation warning
+    (pod spec security context through the API as in the prototype's
+    daxFilesContainers, ctr.User.uid == 0 from NRI); RemoveContainer and
+    containerGone keep the directory for a restart, drop it when the
+    container will not come back.
+ D4 broker.go, pool.go: node at Ready (3.3), "path" in leaseInfo, removal
+    first in release and in OnReleasing (error fails the unprepare),
+    reconcile of nodes and directories (3.5), peerCred (uid, gid, pid)
+    instead of peerPid.
+ D5 cxl-request: "path" in the response struct, CXL_LEASE_PATH for
+    --exec, doc comment and usage.
+ D6 doc/cxl/POOL.md "Lease device nodes" with the user view, the isolation
+    table and the OpenShift notes; example legacy-borrower-pod.yaml.
+ D7 (only if S1 says so) fd from the labeled node (3.6).
+Unit tests: config parsing and precedence; the CreateContainer adjustment
+(rule and mount only for opted-in containers, r vs rw, directory created,
+no adjustment for other containers); nodes: mode by lease and access,
+owner from the peer, label from a context string, shared node refcount;
+removal before the companion goes and in OnReleasing, failure keeps the
+release; restart: records reloaded, stale nodes and directories removed;
+warning conditions; cxl-request path and CXL_LEASE_PATH.
+
+e2e (nri-plugins):
+ E1 pool-dax-rw.py: the size of a node that is not named after its dax
+    device from /sys/dev/char/MAJ:MIN/size (the dropped prototype had it).
+ E2 test13, new step "L: legacy programs through /run/cxl/dev" (the use
+    case of 2026-10-13), with two more token claim templates (deviceNodes
+    rw and r):
+    - writer-l on VM1: non-root (uid 1000, drop ALL),
+      "cxl-request shared S --exclusive" (no --exec, prints path), then a
+      plain program writes TEXT_L at offset 1M through the path after
+      cxl-request exited; the device rule of the container is "c 252:* rw"
+      (crictl inspect), /run/cxl/dev is read-only (touch: EROFS), mknod
+      fails (no CAP_MKNOD), the node is owned by uid 1000, mode 0600;
+      the writer releases and exits; the node is gone (ENOENT).
+    - reader-l1, reader-l2 on VM2 and reader-l3 on VM1: non-root,
+      deviceNodes: r, "cxl-request shared S --read-only", read TEXT_L
+      through the path at the same time; open O_RDWR: EPERM; mode 0400.
+    - one root container with the runtime's default capabilities and
+      deviceNodes: rw, as a check of the documented limitation: it can
+      mknod the minor of another container's lease and open it. Printed as
+      "limitation confirmed", not a failure if it cannot.
+    - pod deletion with a node in use cleans up everything; a plugin
+      restart in the middle keeps the nodes and the paths working.
+ E3 test12 and test11 unchanged, as regression.
+
+OpenShift-like validation (phases after E2):
+ S1 SELinux and CRI-O in an e2e VM: enable CONFIG_SECURITYFS and
+    CONFIG_SECURITY_SELINUX (+ CONFIG_SECURITY_NETWORK) in
+    qemu-cxl-kernel.config, build the kernel RPMs
+    (scripts/testing/fake-cxl-pool/proto/build-kernel-rpms.sh), a CRI-O VM
+    with the CXL topology (n4-cxl-fedora-43-crio exists; a single node is
+    enough), selinux-policy-targeted and container-selinux enforcing, CRI-O
+    with selinux = true and NRI enabled. Pods as restricted-v2 makes them:
+    runAsUser 1000650000, runAsNonRoot, drop ALL,
+    allowPrivilegeEscalation false, seccomp RuntimeDefault, seLinuxOptions
+    level s0:c26,c5. Measure: the lease socket connects; an fd lease can be
+    received and mapped (decides D7); the labeled node opens and maps,
+    read-only and read-write; a node labeled for another MCS level is
+    refused (an extra layer SELinux gives for free); AVC denials in the
+    audit log.
+ S2 A real OpenShift cluster, if one is available: the prerequisites of O5,
+    NRI enabled, the driver as a DaemonSet, the legacy writer and readers of
+    E2 as restricted-v2 pods.
+
+6. Verification items (V) and step 0
+-------------------------------------
+Before coding, on the containerd VMs (1-3) and in S1 (4-8):
+ 1 an NRI CreateContainer mount with destination /run/cxl/dev on top of
+   the CDI mount /run/cxl: order and visibility in the container (both
+   runtimes; else /run/cxl-dev);
+ 2 a node created on the host after the container started appears in the
+   read-only bind mount, opens with the device rule, and its unlink makes
+   it vanish in the container;
+ 3 a non-root container with the rule cannot mknod, cannot write the
+   directory, and opens only the nodes it is given;
+ 4 CRI-O applies NRI device rules and mounts, and NRI sees the CDI env;
+ 5 container_t opens and maps a node labeled container_file_t with its
+   level (O4);
+ 6 fd passing under enforcing SELinux (3.6, decides D7);
+ 7 the lease socket under enforcing SELinux;
+ 8 crun: device rules from NRI, as runc.
+
+7. Risks
+--------
+- Node-wide access for capable containers is by design (accepted); the
+  risk is that users miss it: the option is opt-in, documented, and warned
+  about per container.
+- The rule and the mount are fixed at creation: a container created before
+  the plugin ran, or without the claim config, cannot get paths later
+  (fds work).
+- Mount order of NRI and CDI mounts differs between runtimes (V1, V4).
+- SELinux policy details on OpenShift (O4, V5-V7) may need a policy module
+  or a different label; the VM test (S1) approximates OpenShift, it does
+  not prove it.
+- Mode bits are the only read-only protection of paths for rw containers;
+  root ignores them (documented).
+- One directory per container name: two pods cannot collide (pod uid in
+  the path); a container renamed by the pod spec is a new container.
+
+8. Effort
+---------
+Step 0 and V1-V3: half a day. D1-D6 with unit tests: two to three days.
+E1-E2: one to two days. S1 (kernel, CRI-O VM with SELinux, measurements):
+two to three days. S2: depends on cluster access, at least a day.
+
+9. Not in this plan
+-------------------
+- Isolation for capable or root containers: would need an LSM that checks
+  the inode or path at open (SELinux types for the plugin's nodes with a
+  policy that denies dax devices otherwise, or a BPF LSM file_open program
+  with the plugin's inodes in a map per cgroup). Neither is in the e2e VM
+  kernel (F7).
+- Per-device device cgroup rules at lease time (04, dropped).
+- Pods with several uids sharing one lease, user namespaces (hostUsers:
+  false): untested, documented as such.

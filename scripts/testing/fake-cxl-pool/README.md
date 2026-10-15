@@ -14,9 +14,9 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
   attaches and detaches them as the scheduler allocates and frees claims
   (see [fake-cxl-pool-controller](#fake-cxl-pool-controller)).
 
-A device may be *exclusive* (attached to one VM, used as system RAM there) or
-*shared* (the same backing file attached to several VMs, same serial in
-every VM, used as devdax).
+A device may be *exclusive* (attached to one VM at a time, used as system RAM
+or as devdax there) or *shared* (the same backing file attached to several
+VMs, same serial in every VM, used as devdax only).
 
 ## Build and test
 
@@ -41,7 +41,7 @@ bin/fake-cxl-pool-server [-config config.example.yaml] [-listen 127.0.0.1:9909] 
 ```
 
 Without a config file the server listens on 127.0.0.1:9909, has one pool
-`default` in /tmp/fake-cxl-pool (8G), discovers qemu processes every 10s
+`default` in /tmp/fake-cxl-pool (8Gi), discovers qemu processes every 10s
 and keeps its state in /tmp/fake-cxl-pool.state.json. `-v` logs every qemu
 command and HTTP request. See [config.example.yaml](config.example.yaml)
 for all keys (pools, static devices, static hosts, discovery filters,
@@ -83,7 +83,10 @@ The server scans `/proc/*/cmdline` for `qemu-system-*`:
 - pre-declared backends `beram_<memdev>__bus_<bus>__sn_<serial>` and
   `befile_...` (test/e2e/lib/topology2qemuopts.py) become *local* devices of
   that VM (`scope: local`): attach plugs them into their own bus with their
-  own serial and never object-adds or object-deletes them. A `befile_`
+  own serial and never object-adds or object-deletes them. A `scope: local`
+  device is what the DRA driver `cxl.generic` publishes as a device with
+  `source: local`; only `scope: pool` devices are published by
+  fake-cxl-pool-controller. A `befile_`
   backend whose file is declared in several VMs is one shared device bound to
   all of them (`localHosts`); if its file is a configured pool device, the
   pool device is bound to the VM.
@@ -104,18 +107,18 @@ use a known backend are *adopted* as attachments (`adopted: true`).
 fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
   status | pools [NAME] | hosts [NAME] | whoami | rescan
   devices [NAME] [--shared] [--free] [--host H]
-  create --size 256M [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]
+  create --size 256Mi [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
   delete NAME [--force]
-  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--force]
-  detach DEVICE (--self | --host HOST) [--timeout 15s] [--no-wait] [--owner O] [--force]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
+  detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
   attachments [--self | --host H] [--device D]
   allocate DEVICE --owner O [--note TEXT] ; release DEVICE [--owner O] [--force]
   events
   guest wait DEVICE [--timeout 30s]          # prints memN when the serial shows up
   guest memdev DEVICE
-  guest region create DEVICE --mode devdax|ram [--decoder decoderX.Y]
-  guest online DEVICE [--movable]
-  guest info DEVICE
+  guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]
+  guest online DEVICE [--movable]            # mode numa
+  guest info DEVICE                          # memdev, region, dax device, mode numa|dax, node
   guest release DEVICE
 ```
 
@@ -123,20 +126,29 @@ fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
 runs in from its hostname and system uuid (`/sys/class/dmi/id/product_uuid`,
 else `/etc/machine-id`; uuids are compared without dashes). `guest`
 commands take a device name (the serial is looked up from the server) or a
-serial (`0xc1ee0001`, no server needed) and must run as root. Exit codes: 0
-ok, 1 error, 2 usage, 3 conflict or timeout (the device is still held).
+serial (`0xc1ee0001` or decimal, no server needed) and must run as root.
+Sizes are printed in binary units (`256Mi`, `1Gi`); `--size` takes
+`256Mi`, `256M`, `256MiB`, bytes or `0x` hex. Serials are printed as `0x`
+and lower-case hex. Exit codes: 0 ok, 1 error, 2 usage, 3 conflict or
+timeout (the device is still held).
 
-### Sharing a device between two VMs (devdax)
+`attach --exclusive` makes an exclusive attachment: no other host can
+attach the device until it is detached, also a shared device. It is the
+pool side of the exclusive use of a shared device: fake-cxl-pool-controller
+attaches exclusively for a claim that requests all `hosts` of a shared
+device (`AttachRequest.exclusive` in the REST API).
+
+### Sharing a device between two VMs (mode dax)
 
 ```
 # anywhere (host or VM):
-fake-cxl-pool-client create --size 256M --shared --name shared0
+fake-cxl-pool-client create --size 256Mi --shared --name shared0
 fake-cxl-pool-client attach shared0 --host vm-a
 fake-cxl-pool-client attach shared0 --host vm-b
 # in each VM:
 sudo fake-cxl-pool-client guest wait shared0
-sudo fake-cxl-pool-client guest region create shared0 --mode devdax   # -> /dev/daxN.M
-#   apps: open /dev/daxN.M, mmap MAP_SHARED (length multiple of 2M)
+sudo fake-cxl-pool-client guest region create shared0 --mode dax   # -> /dev/daxN.M
+#   apps: open /dev/daxN.M, mmap MAP_SHARED (length multiple of 2Mi)
 # done, in each VM:
 sudo fake-cxl-pool-client guest release shared0
 fake-cxl-pool-client detach shared0 --self
@@ -146,12 +158,12 @@ Never online a shared device as system RAM in more than one VM: both
 kernels would use the same memory (silent corruption). devdax mmap needs a
 guest kernel with `CONFIG_FS_DAX=y`.
 
-### Pooling an exclusive device (system RAM)
+### Pooling an exclusive device (mode numa, system RAM)
 
 ```
 fake-cxl-pool-client attach pooled0 --self
 sudo fake-cxl-pool-client guest wait pooled0
-sudo fake-cxl-pool-client guest region create pooled0 --mode ram
+sudo fake-cxl-pool-client guest region create pooled0 --mode numa
 sudo fake-cxl-pool-client guest online pooled0 --movable   # a new NUMA node
 ...
 sudo fake-cxl-pool-client guest release pooled0            # offline, destroy region, disable memdev
@@ -170,14 +182,15 @@ attachment clears itself if qemu deletes the device later.
 ## fake-cxl-pool-controller
 
 The cluster side of the DRA driver `cxl-pool.generic`. The node side is the
-`cxl-pool.generic` helper of kubelet-cxl-plugin in
+pool driver `cxl-pool.generic` of kubelet-cxl-plugin in
 intel-resource-drivers-for-kubernetes; the contract between the two is
-[plan-2-dra/10-contract.md](plan-2-dra/10-contract.md), shipped as
-doc/cxl/POOL.md in the driver repository. The controller:
+[doc/cxl/POOL.md](https://github.com/intel/intel-resource-drivers-for-kubernetes/blob/main/doc/cxl/POOL.md)
+in the driver repository. The controller:
 
 - publishes the pool devices of the server (`GET /devices?scope=pool`) as one
-  cluster-scoped ResourceSlice (`allNodes`) of pool `fake-cxl-pool`.
-  Exclusive devices have `capacity.memory`, shared devices
+  cluster-scoped ResourceSlice (`allNodes`) of pool `fake-cxl-pool`. Every
+  device has the attributes `type: memdev`, `source: pool`, `serial`,
+  `shared` and `size` (bytes). Exclusive devices have `capacity.memory`, shared devices
   `allowMultipleAllocations` and `capacity.hosts` (how many nodes may attach
   them); all have `bindsToNode` and the binding conditions
   `cxl-pool.generic/Attached` / `cxl-pool.generic/AttachFailed`. Device
@@ -190,11 +203,14 @@ doc/cxl/POOL.md in the driver repository. The controller:
   uuid is the Node's `status.nodeInfo.systemUUID` (lower case, dashes
   ignored), else the host whose name is the node name. Then it writes
   `cxl-pool.generic/Attached=True` and the device data (serial, shared, size,
-  host, attachment) into `claim.status.devices[]`, which releases the
+  host, hostUUID, attachment, qemuDeviceId, exclusive) into
+  `claim.status.devices[]`, which releases the
   scheduler's binding wait and tells the node plugin which memdev to wait
   for. A node that is not a pool host, a 409 or another error gives
   `AttachFailed=True` (reason `NoHost`, `Conflict`, `Timeout`,
   `AttachError`), and the scheduler allocates again.
+- attaches exclusively (`AttachRequest.exclusive`) for a claim that
+  consumes all `hosts` of a shared device (`-shared-hosts`).
 - detaches a device when no allocated claim wants it on that node any more.
   The node plugin has released it in NodeUnprepare by then; if the guest
   still holds it, the attachment stays `detaching` (or `failed`) and the
@@ -272,7 +288,6 @@ pkg/qemu                   Monitor interface: QMP (persistent, events, QOM tree)
 pkg/pool                   pools, backing files, serials
 pkg/cxl/memctl in nri-plugins  guest side: sysfs + cxl/daxctl
 deploy/                    Kubernetes manifests (controller Deployment + RBAC)
-plan/                      design and findings of the workstreams
-plan-2-dra/                DRA driver extension, controller, e2e: specs and findings
+plan/, plan-*/             history of the workstreams (design, findings, status)
 proto/                     qemu prototyping scripts (WS3)
 ```
