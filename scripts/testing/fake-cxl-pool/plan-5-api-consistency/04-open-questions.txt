@@ -1,0 +1,41 @@
+plan-5-api-consistency: open questions
+======================================
+Written 2026-10-15 (Fable). Everything else in 02-design.txt is decided;
+these four I cannot settle from the material. The plan proceeds with the
+recommendation unless the user says otherwise.
+
+Q1 Pool numa claims are not steered (01 I28). A pod claim on cxl-pool in
+   mode numa gets CXL_<HEX>_NODE and must use numactl/mbind itself; the
+   node is not added to cpuset.mems by cgmpolmgr as it is for cxl-local
+   and cxl-region claims (POOL.md "??? TODO"). Making the pool driver's
+   prepared claims visible to the NRI steering (and injecting the claim
+   marker for pool claims) would make the two sources behave alike. It is
+   a behaviour change with a cgroup ownership question (a container is
+   steered or borrowing, never both), not an API rename.
+   Recommendation: not in plan-5; document the difference in USAGE.md and
+   POOL.md as it is; keep it as extension 8 of 02 section 9.
+
+Q2 A union class "cxl-memory" (exclusive memdevs of both drivers), so that
+   "local first, then pool" needs no firstAvailable. It works because the
+   scheduler tries pools without binding conditions first, but it is a
+   second way to say what firstAvailable says, cannot carry per-source
+   selectors, and a dax request on it still needs two per-driver configs.
+   Recommendation: no; the six classes of 02 section 3 only.
+
+Q3 Default sharing of "cxl-request request --serial <shared device>": 02
+   makes it exclusive (all hosts) unless --shared is given, so the writer
+   of single-writer sharing types nothing extra and a reader that forgets
+   --shared blocks instead of silently joining. The alternative (default
+   shared for a shared device, as today) mirrors the class default of
+   cxl-pool-shared. Both are consistent; 02 chose data safety over
+   availability.
+   Recommendation: exclusive by default, as in 02 6.1; the e2e test13
+   writer becomes "request --serial S", the readers "request --serial S
+   --shared --read-only".
+
+Q4 plan-2-dra/10-contract.md: replace by a pointer to doc/cxl/POOL.md (03
+   S4) or delete it. The plan-*/ directories are otherwise untouched
+   history; a stale second copy of a contract is the one kind of history
+   that misleads.
+   Recommendation: pointer (one paragraph), so that links in the other
+   plan-2 files keep resolving.

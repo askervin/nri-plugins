@@ -1,0 +1,162 @@
+memctl done 2026-10-15 11:03 EEST
+S2 done 2026-10-15 11:14 EEST: builds and unit tests pass (steps 1-5)
+
+plan-5-api-consistency: status of S2 (memctl, fake-cxl-pool)
+============================================================
+
+Status
+------
+Step 1 (C1, N/pkg/cxl/memctl), done 11:03, unchanged since (sha256
+memctl.go db79c5ca..., memctl_test.go 3b61ec40...; S1's go mod vendor of
+11:10 is current):
+  - ModeNUMA = "numa", ModeDax = "dax" (ModeRAM, ModeDevDax are gone).
+  - CreateRegion(ctx, memdev, mode, decoder): mode numa|dax, error
+    "invalid mode %q (numa or dax)"; RegionInfo.Mode numa | dax | "".
+  - CreateDaxDeviceAt removed; endpoint, hostBridgeUID, rootDecoder,
+    daxRegionDir, daxDeviceResource unexported. No other signature
+    changed. Neither repository calls the removed or unexported names.
+  - Comments: package doc, Online ("create the region in mode numa"),
+    SetDaxDriver. The daxctl arguments --mode=devdax/--mode=system-ram and
+    "cxl create-region -t ram" stay: they are the external CLIs' words.
+  - memctl_test.go: renamed tests (TestRegionNUMAOnlineRelease,
+    TestRegionDax, ...); TestCreateDaxDeviceAt -> TestCreateDaxDeviceRanges
+    (same placements through CreateDaxDeviceRanges); the invalid mode test
+    asserts the exact text for "bogus", "devdax", "ram" and "".
+Step 2 (C4, P/cmd/fake-cxl-pool-client): guest region create --mode
+  numa|dax (usage, flag help); a missing --mode is a usage error (exit 2),
+  a wrong value is rejected by memctl with its text (exit 1); guest online
+  says "(mode numa)"; guest info/region print memctl's mode (numa|dax);
+  usage and flag help use 256Mi; guest DEVICE takes a serial in 0x hex or
+  decimal (02 7.6) or a device name. main_test.go: create --size 256Mi and
+  the 256Mi table column, guest wait with hex and decimal serial without a
+  server, usage text, region create without --mode, guest info JSON
+  "mode" for numa and dax.
+Step 3 (C2, P/pkg/controller/publisher.go): attributes type: memdev,
+  source: pool, serial, shared, size; attribute pool removed; capacities,
+  binding conditions, status data unchanged. controller_test.go checks the
+  exact attribute set of both device kinds; test claim data names the
+  cxl.generic device region0-node2.
+Step 4 (P/pkg/api/units.go): FormatSize and Size.String print Ki/Mi/Gi/Ti
+  ("256Mi", "1Gi", "1536", "0"); ParseSize unchanged (256M, 256Mi, 256MiB,
+  268435456, 0x10000000). New pkg/api/units_test.go: FormatSize,
+  ParseSize (every spelling, round trip, bad input), Size JSON, serials.
+  Server error texts print the capacity unit through FormatSize ("size
+  100Mi is not a multiple of 256Mi (CXL capacity unit)", config: "size
+  must be a multiple of 256Mi"); server_test asserts the first one.
+  config.example.yaml: 256Mi, 512Mi, 8Gi; "devices created over the API"
+  instead of "dynamic devices"; scope local = what cxl.generic publishes
+  as source local (02 7.4).
+Step 5 (comments): pointers to plan-2-dra/10-contract.md in
+  pkg/controller/controller.go, publisher.go and
+  deploy/fake-cxl-pool-controller.yaml now name doc/cxl/POOL.md of the
+  driver (see Deviations). No other comment in P/cmd, P/pkg, P/deploy
+  names an old class, env name or cxl-request syntax.
+
+Verification (11:13, final tree):
+  make -C P                     server, client, controller built; client and
+                                controller "statically linked" (file)
+  make -C P test                go test -race P/...: all ok (client, api,
+                                controller, pool, qemu, server)
+  make -C P lint                go vet P/... ok, gofmt check ok
+  N: go vet ./pkg/cxl/...       ok
+  N: go test -race ./pkg/cxl/...  ok pkg/cxl, ok pkg/cxl/memctl
+  gofmt -s -l (memctl, P/cmd, P/pkg)  empty
+  golangci-lint run ./pkg/cxl/memctl/... ./scripts/testing/fake-cxl-pool/...
+                                41 issues (40 errcheck, 1 unused), the
+                                same 41 as in a baseline worktree of HEAD
+                                (compared with line numbers stripped; the
+                                worktree is removed); none in memctl; no
+                                new finding.
+  make reformat (N) was not run with -w: it would rewrite 12 files of
+  pkg/apis/** that gofmt -s flags at HEAD already (not S2 files); gofmt -s
+  on the S2 files is clean.
+  Grep gate (S1 step 14 list + devdax, "--mode ram", CreateDaxDeviceAt,
+  10-contract) over N/pkg/cxl/memctl, P/cmd, P/pkg, P/deploy,
+  P/config.example.yaml, P/Makefile: no hit except the exceptions under
+  Findings.
+
+Deviations from 02
+------------------
+D1 (from 03, not 02) 03 S2 step 4 says P/deploy stays unchanged unless a
+   comment names an old class. deploy/fake-cxl-pool-controller.yaml line 2
+   pointed to "plan-2-dra/10-contract.md section 5", which Q4/O1 turns into
+   a pointer without sections; it now says: doc/cxl/POOL.md of the CXL DRA
+   driver, "What the pool controller writes". Same for the package comment
+   of pkg/controller and convertDevice. Comment-only.
+
+Requests to S1
+--------------
+- memctl.ModeDevDax / memctl.ModeRAM no longer exist: use memctl.ModeDax /
+  memctl.ModeNUMA (pool.go:525 and :539, local.go:463 in
+  cmd/kubelet-cxl-plugin as of 11:14). The api == memctl mode test of your
+  step 1 can be enabled.
+- memctl has not changed since 11:03; no re-vendor needed for S2.
+
+Requests to S3
+--------------
+- C4 is in place: guest region create --mode numa|dax; guest info/region
+  JSON "mode": "numa"|"dax"; sizes in table output as 256Mi (devices SIZE,
+  pools CAPACITY/USED/FREE, host bridges FMW-SIZE/ATTACHED); JSON sizes
+  stay integers. C2: pool devices have type memdev, no pool attribute.
+- dra-build / pool.source.sh run make in P: nothing else to do. A
+  guest DEVICE of decimal digits only is now a serial (see Findings F2).
+
+Requests to S4
+--------------
+P/README.md lines that no longer match the code: 19 ("used as devdax"),
+44 ("(8G)" -> 8Gi as in config.example.yaml), 107 (create --size 256M ->
+256Mi), 116 (--mode devdax|ram -> --mode numa|dax), 125-126 (guest DEVICE:
+serial 0x hex or decimal), 129 and 138 (devdax -> --mode dax), 154 (--mode
+ram -> --mode numa), 175 (10-contract.md link -> doc/cxl/POOL.md), and the
+controller section's attribute list (type: memdev, no pool). The deploy
+YAML comment names the POOL.md section "What the pool controller writes":
+keep that heading or tell S2 the new one.
+
+Findings
+--------
+F1 Grep gate exceptions in S2 files (not old names of 02 section 10):
+   FAKE_CXL_POOL_SERVER (contains CXL_POOL_; the server URL variable);
+   daxctl --mode=devdax in memctl.go:816 and in the fake exec of
+   memctl_test.go (daxctl's own mode names); memctl_test.go:450 passes
+   "devdax" and "ram" to CreateRegion to assert they are rejected; the
+   server's private field dynamic and its comments (devices created over
+   the REST API, persisted in the state file; not the DRA device type).
+F2 guest DEVICE: a string of decimal digits only is taken as a serial
+   (02 7.6), so a server device whose name is all digits (pool.ValidName
+   allows "123") can be given to guest commands only by its serial.
+F3 guest region create with a wrong --mode value now fails with exit 1
+   after the device lookup (memctl's text) instead of exit 2 before it,
+   because the client no longer keeps its own copy of the mode check
+   (03 S2 step 2: the text comes from memctl). A missing --mode is still
+   exit 2.
+F4 bin/ of P was rebuilt by make (11:13) with the new client and
+   controller.
+
+S2 Status (review fixes)
+------------------------
+2026-10-15 12:16 EEST, review R1 items I-4 and I-6 (O4), done.
+I-4 memctl: new exported ValidMode(mode string) error, returning "invalid
+    mode %q (numa or dax)" for anything but ModeNUMA and ModeDax;
+    CreateRegion uses it. fake-cxl-pool-client guest region create calls
+    memctl.ValidMode before the device lookup and returns its error as a
+    usage error: exit 2 with "error: invalid mode \"devdax\" (numa or dax)"
+    and the usage text; a missing --mode is exit 2 as before. Tests:
+    memctl_test.go (ValidMode and CreateRegion reject "bogus", "devdax",
+    "ram", "" with the exact text, accept numa and dax); main_test.go
+    (--mode devdax and --mode ram exit 2 with that text, with an
+    unreachable server and an unknown device, so before any lookup).
+    This replaces F3 above: F3 no longer applies. C1 gains ValidMode;
+    nothing else in memctl changed (memctl.go sha256 6995ec2b...).
+    Vendoring: go mod vendor in intel-resource-drivers-for-kubernetes
+    (12:14); vendor/.../pkg/cxl/memctl/memctl.go equals the checkout;
+    go build ./cmd/kubelet-cxl-plugin ./cmd/cxl-request ./pkg/cxl/... and
+    go build -mod vendor ./cmd/kubelet-cxl-plugin ok. Nothing else in that
+    tree was touched (go.mod, go.sum unchanged since 11:06).
+I-6 pkg/server/ops.go DeleteDevice comment: "deletes a device created over
+    the API and its backing file". The private field dynamic stays (F1).
+Verification (12:15): make -C P (three binaries; bin/ rebuilt), make -C P
+    test and go test -race -count=1 P/... all ok, make -C P lint ok;
+    N: go vet ./pkg/cxl/... ok, go test -race ./pkg/cxl/... ok (pkg/cxl,
+    pkg/cxl/memctl); gofmt -s -l on the S2 files empty; golangci-lint on
+    memctl and P: the same 41 pre-existing findings as the HEAD baseline,
+    none new, none in memctl.

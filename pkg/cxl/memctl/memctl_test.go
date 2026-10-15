@@ -342,27 +342,27 @@ func TestFindAndWait(t *testing.T) {
 	if _, err := g.WaitMemdev(tctx, 0x1234); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected timeout, got %v", err)
 	}
-	if ep, err := g.Endpoint("mem0"); err != nil || ep != "endpoint4" {
+	if ep, err := g.endpoint("mem0"); err != nil || ep != "endpoint4" {
 		t.Fatalf("endpoint %q %v", ep, err)
 	}
-	if uid, err := g.HostBridgeUID("mem0"); err != nil || uid != 12 {
+	if uid, err := g.hostBridgeUID("mem0"); err != nil || uid != 12 {
 		t.Fatalf("uid %d %v", uid, err)
 	}
-	if d, err := g.RootDecoder("mem0"); err != nil || d != "decoder0.0" {
+	if d, err := g.rootDecoder("mem0"); err != nil || d != "decoder0.0" {
 		t.Fatalf("root decoder %q %v", d, err)
 	}
 }
 
-func TestRegionRAMOnlineRelease(t *testing.T) {
+func TestRegionNUMAOnlineRelease(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1f00001")
 	g := f.manager()
 	ctx := context.Background()
-	ri, err := g.CreateRegion(ctx, "mem0", ModeRAM, "")
+	ri, err := g.CreateRegion(ctx, "mem0", ModeNUMA, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ri.Region != "region0" || ri.Dax != "dax0.0" || ri.Driver != DriverKmem || ri.Mode != ModeRAM || ri.Node != 2 ||
+	if ri.Region != "region0" || ri.Dax != "dax0.0" || ri.Driver != DriverKmem || ri.Mode != ModeNUMA || ri.Node != 2 ||
 		len(ri.Blocks) != 2 || ri.Blocks[0] != 74 {
 		t.Fatalf("unexpected region info %+v", ri)
 	}
@@ -370,7 +370,7 @@ func TestRegionRAMOnlineRelease(t *testing.T) {
 		t.Fatalf("unexpected commands:\n%s", f.commands())
 	}
 	// idempotent
-	if _, err := g.CreateRegion(ctx, "mem0", ModeRAM, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeNUMA, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(f.commands(), "create-region"); n != 1 {
@@ -416,16 +416,16 @@ func TestRegionRAMOnlineRelease(t *testing.T) {
 	}
 }
 
-func TestRegionDevDax(t *testing.T) {
+func TestRegionDax(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1f00001")
 	_ = os.Remove(f.p(memPath + "/driver")) // disabled memdev gets enabled
 	g := f.manager()
-	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDevDax, "decoder0.0")
+	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDax, "decoder0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ri.Driver != DriverDeviceDax || ri.Mode != ModeDevDax || ri.Device != "/dev/dax0.0" {
+	if ri.Driver != DriverDeviceDax || ri.Mode != ModeDax || ri.Device != "/dev/dax0.0" {
 		t.Fatalf("unexpected region info %+v", ri)
 	}
 	_ = os.Remove(f.p(daxRegionPath + "/dax0.0/dev"))
@@ -445,18 +445,29 @@ func TestRegionDevDax(t *testing.T) {
 		t.Fatalf("unexpected commands:\n%s", cmds)
 	}
 	if _, err := g.Online("mem0", true); err == nil {
-		t.Fatal("online must fail in devdax mode")
+		t.Fatal("online must fail in mode dax")
 	}
-	if _, err := g.CreateRegion(context.Background(), "mem0", "bogus", ""); err == nil {
-		t.Fatal("expected invalid mode error")
+	for _, mode := range []string{"bogus", "devdax", "ram", ""} {
+		want := `invalid mode "` + mode + `" (numa or dax)`
+		if err := ValidMode(mode); err == nil || err.Error() != want {
+			t.Fatalf("ValidMode(%q): expected %q, got %v", mode, want, err)
+		}
+		if _, err := g.CreateRegion(context.Background(), "mem0", mode, ""); err == nil || err.Error() != want {
+			t.Fatalf("mode %q: expected %q, got %v", mode, want, err)
+		}
+	}
+	for _, mode := range []string{ModeNUMA, ModeDax} {
+		if err := ValidMode(mode); err != nil {
+			t.Fatalf("ValidMode(%q): %v", mode, err)
+		}
 	}
 }
 
-// The kernel binds the dax device of a ram region to kmem by itself, and
+// The kernel binds the dax device of a volatile region to kmem by itself, and
 // its driver link exists before dev_dax_kmem_probe has added the memory
 // blocks: CreateRegion must wait for the blocks (e2e test10-dra-pooling
 // failed its first NodePrepare with "no memory blocks found").
-func TestRegionRAMWaitsForBlocks(t *testing.T) {
+func TestRegionNUMAWaitsForBlocks(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1ee0001")
 	for _, b := range []int{74, 75} {
@@ -469,7 +480,7 @@ func TestRegionRAMWaitsForBlocks(t *testing.T) {
 			f.write("devices/system/memory/memory"+itoa(b)+"/state", "offline")
 		}
 	}()
-	ri, err := g.CreateRegion(context.Background(), "mem0", ModeRAM, "")
+	ri, err := g.CreateRegion(context.Background(), "mem0", ModeNUMA, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,9 +499,9 @@ func TestRegionRAMWaitsForBlocks(t *testing.T) {
 	}
 }
 
-// The same race for a shared (devdax) region: the switch from the kernel's
+// The same race for a region in mode dax: the switch from the kernel's
 // kmem binding to device_dax must wait for the kmem probe.
-func TestRegionDevDaxWaitsForKmemProbe(t *testing.T) {
+func TestRegionDaxWaitsForKmemProbe(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1ae0001")
 	for _, b := range []int{74, 75} {
@@ -504,7 +515,7 @@ func TestRegionDevDaxWaitsForKmemProbe(t *testing.T) {
 		}
 	}()
 	start := time.Now()
-	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDevDax, "")
+	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDax, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,17 +527,17 @@ func TestRegionDevDaxWaitsForKmemProbe(t *testing.T) {
 	}
 }
 
-// A devdax region is sliced into dax devices and released without
+// A region in mode dax is sliced into dax devices and released without
 // disabling the memdev.
 func TestDaxSlices(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc100e2e1")
 	g := f.manager()
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeDevDax, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
 		t.Fatal(err)
 	}
-	if dir := g.DaxRegionDir("region0"); dir != f.p(daxAttrsPath) {
+	if dir := g.daxRegionDir("region0"); dir != f.p(daxAttrsPath) {
 		t.Fatalf("dax region directory %q", dir)
 	}
 	avail, align, devs, err := g.DaxRegionInfo("region0")
@@ -536,7 +547,7 @@ func TestDaxSlices(t *testing.T) {
 	if _, _, _, err := g.DaxRegionInfo("region7"); err == nil {
 		t.Fatal("expected an error for a missing region")
 	}
-	if a, err := g.DaxDeviceResource("dax0.0"); err != nil || a != 0x250000000 {
+	if a, err := g.daxDeviceResource("dax0.0"); err != nil || a != 0x250000000 {
 		t.Fatalf("resource %x %v", a, err)
 	}
 
@@ -626,7 +637,7 @@ func TestDaxDriverSysfs(t *testing.T) {
 	g := f.manager()
 	g.LookPath = func(string) (string, error) { return "", errors.New("not found") }
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeDevDax, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
 		t.Fatal(err)
 	}
 	if g.DaxDriver("dax0.0") != DriverDeviceDax {
@@ -691,7 +702,7 @@ func TestBlocksNodeAndReleaseRegion(t *testing.T) {
 	if n := g.BlocksNode([]int{74, 75}); n != 3 {
 		t.Fatalf("node %d, expected 3", n)
 	}
-	if _, err := g.CreateRegion(ctx, "mem0", ModeRAM, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeNUMA, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.Online("mem0", true); err != nil {
@@ -769,7 +780,7 @@ func TestDaxDeviceRanges(t *testing.T) {
 	f.plug("0xc100e2e1")
 	g := f.manager()
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeDevDax, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
 		t.Fatal(err)
 	}
 	if r, err := g.RegionRange("region0"); err != nil || r != (Range{Start: 0x250000000, End: 0x25fffffff}) {
@@ -849,19 +860,19 @@ func TestDaxDeviceRanges(t *testing.T) {
 }
 
 // A dax device is placed explicitly, and the placement checked.
-func TestCreateDaxDeviceAt(t *testing.T) {
+func TestCreateDaxDeviceRanges(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc100e2e1")
 	g := f.manager()
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeDevDax, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.ResizeDaxDevice(ctx, "dax0.0", 64<<20); err != nil {
 		t.Fatal(err)
 	}
 	// the block-aligned second half of the region
-	dax, err := g.CreateDaxDeviceAt(ctx, "region0", 0x258000000, 128<<20)
+	dax, err := g.CreateDaxDeviceRanges(ctx, "region0", []Range{{Start: 0x258000000, End: 0x25fffffff}})
 	if err != nil || dax != "dax0.1" || f.daxBound(dax) || f.daxSize(dax) != 128<<20 {
 		t.Fatalf("created %q %v (bound %v, size %d)", dax, err, f.daxBound(dax), f.daxSize(dax))
 	}
@@ -872,16 +883,16 @@ func TestCreateDaxDeviceAt(t *testing.T) {
 	if err != nil || len(gaps) != 1 || gaps[0] != (Range{Start: 0x254000000, End: 0x257ffffff}) {
 		t.Fatalf("gaps %v %v", gaps, err)
 	}
-	// a taken range, a length the kernel ignores, size 0: no device left
+	// a taken range, a length the kernel ignores: no device left
 	for _, tc := range []struct {
 		start, size uint64
 		err         string
 	}{
 		{0x258000000, 64 << 20, "cannot allocate memory"},
 		{0x254000000, 1 << 20, "memory [] after mapping [0x254000000-0x2540fffff]"},
-		{0x254000000, 0, "size 0"},
 	} {
-		if _, err := g.CreateDaxDeviceAt(ctx, "region0", tc.start, tc.size); err == nil || !strings.Contains(err.Error(), tc.err) {
+		r := []Range{{Start: tc.start, End: tc.start + tc.size - 1}}
+		if _, err := g.CreateDaxDeviceRanges(ctx, "region0", r); err == nil || !strings.Contains(err.Error(), tc.err) {
 			t.Fatalf("placing %d bytes at 0x%x: %v, expected %q", tc.size, tc.start, err, tc.err)
 		}
 	}
@@ -925,7 +936,7 @@ func TestUnbindKmemOnline(t *testing.T) {
 	g := f.manager()
 	g.LookPath = func(string) (string, error) { return "", errors.New("not found") }
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeRAM, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeNUMA, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.Online("mem0", true); err != nil {
@@ -962,7 +973,7 @@ func TestSetDaxDriverSysfs(t *testing.T) {
 	f.plug("0xc100e2e1")
 	g := f.manager()
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeDevDax, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
 		t.Fatal(err)
 	}
 	ncmds := len(f.commands())
@@ -991,7 +1002,7 @@ func TestRegionBlocksMisaligned(t *testing.T) {
 	f.plug("0xc100e2e1")
 	g := f.manager()
 	ctx := context.Background()
-	if _, err := g.CreateRegion(ctx, "mem0", ModeRAM, ""); err != nil {
+	if _, err := g.CreateRegion(ctx, "mem0", ModeNUMA, ""); err != nil {
 		t.Fatal(err)
 	}
 	f.write("bus/cxl/devices/region0/resource", "0x24c000000")

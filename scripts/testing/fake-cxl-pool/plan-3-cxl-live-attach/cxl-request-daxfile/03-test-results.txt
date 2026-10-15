@@ -1,0 +1,119 @@
+cxl-request-daxfile: test results
+==================================
+Written 2026-10-12. Implementation: 02-implementation-plan.txt (and its
+"Status" section). Nothing is committed in either repository. Logs and
+traces: ~/.claude/jobs/daxfile/.
+
+1. Unit tests and lint (driver repository, branch 5fC-cxl on ae6a8eb)
+----------------------------------------------------------------------
+go vet -mod vendor ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/...   clean
+go test -mod vendor -race -count=1 ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...
+  ok  cmd/kubelet-cxl-plugin, ok cmd/cxl-request, ok pkg/cxl/memorypolicy
+  (the new lease file tests also with -count=3)
+New tests:
+  daxfile_test.go  TestParseDynamicConfig, TestMayMknodOrMount,
+                   TestDaxFilesContainers, TestDaxFilesHelpers (dax major,
+                   CapBnd, device rule, path rules), TestDaxFilesAdjustment
+                   (NRI CreateContainer rule, Synchronize after a restart),
+                   TestOpenClaimDaxFiles (refused pod, CDI env marker,
+                   allowed containers), TestBrokerLeaseFileRefused,
+                   TestBrokerLeaseFile, TestBrokerLeaseFileRelease (files
+                   survive a plugin restart; the release unmounts them
+                   before the companion pod is deleted),
+                   TestBrokerLeaseFileCleanup (OnReleasing fails and keeps
+                   the file while the unmount fails; container gone;
+                   reconcile of older instances and stray nodes)
+  cxl-request      TestParseArgs (--file, file command, errors), TestRunFile
+The real mounter (open_tree, mount_setattr, setns, move_mount) needs root
+and a container: it is covered by the e2e test, not by unit tests.
+golangci-lint (repository config): 16 findings, all in code that was there
+before; HEAD had 19 (the 3 that went: cyclop of openDaxDevice and of
+parseArgs, staticcheck QF1001 in openDaxDevice). No finding in the new code.
+gofmt: clean (cmd/kubelet-gpu-plugin/driver.go is unformatted at HEAD, not
+touched).
+
+2. e2e: test12-dra-live-attach with step H (VM2, kernel 7.3.0-rc4)
+------------------------------------------------------------------
+./run_tests.sh memory.test-suite/memory-policy/n4-cxl-shared-2/test12-dra-live-attach
+PASS on the first run (~7 min), log test12-run1.log, trace
+test12-run1.trace{,-summary}.txt. Steps A-G as before, then H:
+
+H, refused opt-in. Pod legacy-mknod (token template with DynamicConfig
+daxFiles: true, container root with the runtime's default capabilities)
+stays Pending; event FailedPrepareDynamicResources:
+  "... claim cxl-pool-demo/legacy-mknod-cxl-s7d7k: lease socket: daxFiles:
+  container app of pod cxl-pool-demo/legacy-mknod keeps capability MKNOD
+  (securityContext.capabilities.drop needs MKNOD or ALL); with
+  DynamicConfig daxFiles its device cgroup would allow every dax device of
+  the node"
+Deleted; its claim went away (it was never prepared, no broker state).
+
+H, opt-in. Pod legacy (uid 1000, capabilities drop ALL) Running in ~2 s;
+in container app: CXL_LEASE_DAX_FILES=1, uid 1000, CapBnd 0; plugin log
+"NRI CreateContainer: ctr=cxl-pool-demo/legacy/app: device cgroup allows c
+252:* rw (lease files)"; runtime spec device rules:
+  [{"access":"rwm","allow":false},{"access":"rw","allow":true,"major":252,"type":"c"}]
+
+H, cycles 1-3, `cxl-request shared 0xc1ae0001 --wait 120s --file /tmp/shared0-N.dax`:
+- response Ready, files ["/tmp/shared0-N.dax"]; companion pod and claim
+  owned by pod legacy, LendConfig container app, pool attachment owned by
+  the claim (companion-check).
+- stat in the container: "character special file 1000:1000 600 fc:0"
+  (252:0 = /sys/bus/dax/devices/dax0.0/dev).
+- mountinfo of the container (read from the VM):
+  1006 1111 0:30 /var/lib/kubelet/plugins/cxl.generic/daxfiles/0b4a7fe6-1 /tmp/shared0-1.dax rw,nosuid,noexec,relatime - btrfs ...
+  no peer group (no "shared:"/"master:"), nosuid, noexec.
+- the private node on the host: crw------- 1 1000 1000 252, 0 ... 0b4a7fe6-1
+- after cxl-request had exited: `python3 /tools/dax-rw.py write
+  /tmp/shared0-N.dax 0 TAG` (plain open + mmap) and `read` returned TAG;
+  the host found TAG at offset 0 of /tmp/fake-cxl-pool/shared0.raw; the fd
+  of the same lease (`cxl-request fd LEASE --exec dax-rw.py --fd 3 read 0`)
+  read TAG too.
+- `mknod /tmp/other-dax c 252 1` in the container: Operation not permitted
+  (no CAP_MKNOD: no node for another dax device).
+- `cxl-request release LEASE`: Released; the path is gone in the container,
+  no mount left in its mountinfo, no private node in daxfiles/, no
+  companions, claims, regions, pool attachments or qemu cxl-type3
+  (nothing-left).
+H, cycle 4, release while mapped: dax-rw.py hold mapped the file and read
+it twice a second ("hold 5: ... file cycle 4"); the release completed as
+in cycles 1-3; dax-rw.py hold ended with status 135 (SIGBUS) at its next
+access; nothing left.
+H, cycle 5, pod deleted with a file lease in use (mounted and mapped):
+everything cleaned up 8.5 s after the delete; the plugin logged "file
+/tmp/shared0-5.dax gone with container ..." (the mount namespace died with
+the container: only the private node was removed), then released the lease
+with the token claim; nothing left, token claim gone.
+
+Timings (s):
+| step | values |
+|---|---|
+| cxl-request shared --file until Ready | 5.80 5.65 5.70 5.57 5.58 |
+| release of a file lease until nothing is left | 9.63 9.14 9.65 8.23 |
+| pod legacy deleted with a file lease, clean after | 8.50 |
+| for comparison: cxl-request shared --exec write (step D) | 5.84 5.86 5.87 5.62 |
+| for comparison: memory release until nothing is left (step C/E) | 9.83 9.85 8.87 9.91 |
+A file adds no measurable time to a shared lease: the mount takes
+milliseconds next to the scheduler's 5 s binding poll.
+
+3. Regression (same VMs, after test12)
+--------------------------------------
+test10-dra-pooling PASS, test11-dra-sharing PASS (pool-dax-rw.py by
+device path, now also sized by device number), test01-shared-cxl PASS.
+Afterwards: 0 cxl-type3 in both qemus, no plugin units, no cxl-pool-demo
+namespace, port 9909 free.
+
+4. Life cycle requirements, as tested
+-------------------------------------
+| order | result |
+|---|---|
+| request, use by path, release, repeat (3x) | no leftovers after each release: file, mount, private node, companion, claim, region, attachment |
+| release while a program maps the file | release not blocked; program gets SIGBUS; no leftovers |
+| requester pod deleted with a file lease in use | file gone with the container; node removed; lease released with the token claim; no leftovers |
+| companion unprepared behind the broker (OnReleasing) | unit test: file removed before the device; an unmount error fails the unprepare and keeps the device |
+| plugin restart with files | unit test: files kept in leases.json, removed at release |
+| container instance ends, lease kept for a restart | unit test: file dropped, node removed, lease stays |
+Not tested on the VM: a plugin restart with a mounted file, a container
+restart with a file (the file is gone, the lease stays; request it again
+with `cxl-request file LEASE PATH`), CRI-O, SELinux enforcing (disabled in
+VM2), a user namespace pod.

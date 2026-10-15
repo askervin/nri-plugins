@@ -1,0 +1,29 @@
+cxl-request-daxfile: status
+===========================
+2026-10-12: DROPPED. Making the dax device of a lease a file in the
+borrower container (bind mount with open_tree/move_mount plus device
+cgroup grants) was judged too complicated to work properly. All code and
+e2e changes of 02/03 were reverted in the driver repository and in
+nri-plugins before anything was committed. A copy of the reverted changes:
+~/.claude/jobs/daxfile-dropped/ (driver.patch, driver-untracked/,
+nri-plugins-e2e.patch).
+
+Still valid and used by the follow-up work (exclusive DAX allocations and
+a read-only option for DAX claims):
+- 04-revision-plan.txt 1.1 (Maxview has no read-only attach) and 1.2
+  (guest-side read-only: an O_RDONLY fd and a device cgroup rule with
+  access "r" are kernel-enforced; read-only mounts and mode bits are not);
+- 04-revision-plan.txt 2.1-2.5 (the use/access/readOnly options, exclusive
+  access to a shared device by its whole "hosts" capacity, exclusive
+  devices as dax), minus everything about lease files.
+The rest of 01-04 (lease files, per-device grants) is history.
+
+2026-10-13: a new direction, plan only: 05-implementation-plan-device-nodes.txt.
+The plugin gives opted-in containers a read-only directory /run/cxl/dev,
+mounted and authorized (device cgroup rule for the dax major) when the
+container is created, and puts a node per Ready dax lease into it. No
+mounts or device rules change at lease time. Isolation is per lease for
+non-root containers without CAP_MKNOD/CAP_SYS_ADMIN (OpenShift's default),
+and accepted as lacking, documented, for the others. Measured on the way:
+/proc/PID/fd/3 of a passed fd cannot be opened (EPERM, device cgroup),
+see plan-4-multinode/02-implementation-status.txt section 7.

@@ -1,0 +1,243 @@
+cxl-request-daxfile: implementation plan
+=========================================
+Written 2026-10-12. Findings and evidence: 01-findings.txt. The proposed
+in-container open_tree/move_mount cannot work (EPERM/EINVAL, and the device
+cgroup), so the same mechanism runs in kubelet-cxl-plugin and cxl-request
+only names the path. Nothing is committed in either repository.
+
+SUPERSEDED IN PART (2026-10-12, 04-revision-plan.txt): the opt-in at
+creation (DynamicConfig daxFiles: true), the capability rule (drop MKNOD,
+no SYS_ADMIN, not privileged), the creation-time device rule "c <dax
+major>:* rw", the env CXL_LEASE_DAX_FILES and DaxAllowed are withdrawn
+(04 2.6, step D1): any container with the token claim may have lease
+files, and each file's device is granted to the container while the file
+lives. Lease files are no longer limited to shared leases (04 2.1).
+Superseded passages are marked [superseded].
+
+Repositories
+- Driver: ~/github.com/intel/intel-resource-drivers-for-kubernetes, branch
+  5fC-cxl on top of ae6a8eb. go.mod replace of nri-plugins points at a pushed
+  fork commit; vendor/ is gitignored: `go mod vendor` before
+  `CGO_ENABLED=0 go build -mod vendor`.
+- nri-plugins: ~/github.com/containers/nri-plugins, branch 5jQ-cxl on top of
+  97840f9ab (e2e only).
+
+User view
+---------
+[superseded: no opt-in, 04 2.6]
+The pod opts in when it is created, in the config of its token claim:
+
+  apiVersion: resource.k8s.io/v1
+  kind: ResourceClaimTemplate
+  spec:
+    spec:
+      devices:
+        requests: [{name: token, exactly: {deviceClassName: cxl-dynamic}}]
+        config:
+        - opaque:
+            driver: cxl.generic
+            parameters: {apiVersion: cxl.generic/v1alpha1, kind: DynamicConfig, daxFiles: true}
+
+Every container that references that claim must drop CAP_MKNOD (drop:
+[MKNOD] or [ALL]), must not add MKNOD or SYS_ADMIN, and must not be
+privileged; otherwise preparing the claim fails and the pod does not start
+(event FailedPrepareDynamicResources with the reason). Those containers get
+the device cgroup rule "c <dax major>:* rw" at creation and the env
+CXL_LEASE_DAX_FILES=1.
+
+In the running container:
+  cxl-request shared 0xc1ae0001 --file /tmp/shared0.dax [--wait D] [--exec CMD...]
+  cxl-request file <lease> /tmp/other.dax      (one more path for a Ready shared lease)
+  cxl-request release <lease>|--all            (also removes the files)
+  cxl-request list                             (leases with their "files")
+PATH must be absolute, must not exist, its directory must exist, and no
+component may be a symlink. The plugin creates PATH as the requesting
+uid:gid where that user could create it, and mounts there a char device
+node of the lease's dax device owned by that uid:gid, mode 0600. Any
+process of the container can then open(PATH, O_RDWR) and mmap it, also
+after cxl-request has exited.
+
+Components (driver repository)
+------------------------------
+1. cmd/cxl-request/main.go: option --file PATH for "shared" (request field
+   "file"), command "file <lease> PATH" (op "file"); --file and --exec
+   combine; usage, package doc; response field "files" ([]string). Unit
+   tests: parseArgs for the new forms and their errors, a fake server
+   receiving "file".
+2. [superseded, removed again in 04 D1] pkg/cxl/device/device.go:
+   DynamicConfigKind = "DynamicConfig".
+3. cmd/kubelet-cxl-plugin/daxfile.go (new):
+   - [superseded, 04 D1]
+     dynamicConfig {APIVersion, Kind, DaxFiles bool}; parseDynamicConfig
+     (claim) from the allocation's opaque config of driver cxl.generic, kind
+     DynamicConfig, strict decoding; claim source wins over class source.
+   - [superseded, 04 D1]
+     daxFilesSafe(pod, claimName) error: the containers and init containers
+     of the pod that reference the pod claim of this ResourceClaim (by
+     spec.resourceClaims[].resourceClaimName or
+     status.resourceClaimStatuses[].resourceClaimName) must not be
+     privileged, must drop MKNOD or ALL, must not add MKNOD, SYS_ADMIN or
+     ALL. Returns their names for the allowed set.
+   - daxMajor(): the "dax" line of /proc/devices.
+   - [superseded, 04 D1]
+     capBoundHas(pid, caps...): CapBnd of /proc/<pid>/status.
+   - validFilePath(p): absolute, clean, not "/", <= 4096 bytes, no NUL.
+   - daxFileMounter interface { Mount(req mountRequest) (string, error);
+     Unmount(pid int, path string) error } and the real mountNS:
+     Mount: mknod the private node <data dir>/daxfiles/<lease>-<n>
+     (S_IFCHR|0600, the rdev of /sys/bus/dax/devices/<dax>/dev), chown
+     uid:gid; open_tree(node, OPEN_TREE_CLONE|OPEN_TREE_CLOEXEC);
+     mount_setattr(clear NODEV, set NOSUID|NOEXEC, propagation MS_PRIVATE);
+     on a locked OS thread: unshare(CLONE_FS), open /proc/<pid>/ns/mnt,
+     re-check that pid is still the container (callback), setns(CLONE_NEWNS),
+     setfsgid/setfsuid(requester), openat2(dir of PATH, O_PATH|O_DIRECTORY,
+     RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS), openat(dirfd, base,
+     O_CREAT|O_EXCL|O_NOFOLLOW|O_WRONLY, 0600), setfsuid/setfsgid(0),
+     move_mount(clone, "", target fd, "", MOVE_MOUNT_F_EMPTY_PATH|
+     MOVE_MOUNT_T_EMPTY_PATH). The thread is never unlocked (it ends with the
+     goroutine). On any error: remove what was created.
+     Unmount: same thread setup, umount2(PATH, MNT_DETACH|UMOUNT_NOFOLLOW),
+     remove PATH if it is then an empty regular file.
+4. [superseded, 04 D1: no creation-time rule; grants at file time, 04 2.6]
+   lend.go / nri.go:
+   - containerRef.DaxAllowed: the container's device cgroup allows the dax
+     major (set at CreateContainer when the plugin added the rule; at
+     Synchronize from the container's device rules).
+   - CreateContainer: env CXL_LEASE_DAX_FILES=1 and the broker allows
+     (pod uid, container name) -> adjustment Linux.Resources.Devices
+     {allow, c, <dax major>, rw}; computed before the existing early returns.
+5. broker.go / dynamic.go / lease_store.go:
+   - [superseded, 04 D1]
+     tokenClaim.DaxFiles, tokenClaim.DaxContainers (pod uid -> container
+     names that passed daxFilesSafe); OpenClaim parses the config and runs
+     the check (API GET of each pod of reservedFor); failure fails Prepare.
+   - [superseded, 04 D1]
+     CDI lease device: env CXL_LEASE_DAX_FILES=1 when DaxFiles.
+   - [superseded, 04 D1]
+     DaxFilesAllowed(podUID, container) for nri.go (through tokenClaims).
+   - lease.Files []leaseFile{Path, Node, Container (id), UID, GID}; leaseInfo
+     lists paths in "files".
+   - request "lease" with File and op "file": after the lease is Ready and
+     belongs to the calling container: checks (shared lease, DaxAllowed,
+     CapBnd of the caller without MKNOD/SYS_ADMIN [superseded: any dax
+     lease, no capability check, a grant before the mount, 04 2.6 and
+     D3], valid path, at most 16
+     files per lease, path not used by the lease yet), then mounter.Mount
+     with the container's init pid and the caller's uid:gid (SO_PEERCRED),
+     record, save. A failed mount answers the lease state with an error;
+     the lease stays.
+   - unmountFiles(lease): for each file whose container instance is still
+     the running one: mounter.Unmount(pid, path); then remove the private
+     node; drop the record. Used by release() first (before the revoke and
+     the companion deletion; retried until it succeeds, so the region is
+     never released under a live mount), by OnReleasing (the pool helper
+     calls it before it releases the region; an error fails the unprepare,
+     kubelet retries), by containerGone (instance gone: nodes only), and by
+     the reconcile (records of instances that are gone, orphan nodes in
+     daxfiles/).
+6. pool.go: poolLeaseHooks.OnReleasing returns an error; unprepareClaim
+   fails on it before revoking and releasing.
+7. [config, daxFilesSafe, CDI env and CreateContainer cases superseded,
+   04 D1] Unit tests: config parsing; daxFilesSafe cases (drop ALL, drop MKNOD,
+   default caps, add SYS_ADMIN, privileged, init container, container
+   without the claim); CDI env; CreateContainer adjustment with and without
+   the marker and permission; broker file lease with a fake mounter (mount
+   recorded and listed, refused without DaxAllowed / for memory leases /
+   other container / bad path / existing path, unmounted at release before
+   the companion goes, at OnReleasing, nodes removed at containerGone,
+   reconcile drops stale records); path validation.
+8. doc/cxl/POOL.md: "A shared lease as a file", with the security model
+   (why CAP_MKNOD must go: pre-authorizing a major [superseded, 04 D6]),
+   the life cycle and the
+   limits. deployments/cxl/pool/examples/legacy-borrower-pod.yaml.
+
+e2e (nri-plugins)
+-----------------
+- n4-cxl-shared-2/pool-dax-rw.py: a DEV path whose name is not a dax
+  device (a file of the lease) gets its size from /sys/dev/char/MAJ:MIN.
+- dra.source.sh: dra-container-pid VMDIR POD CONTAINER.
+- test12: new step H "shared memory as a file for a legacy program":
+  [pod set-up, H1 and the mknod check of H3 superseded by 04 section 4:
+  root with MKNOD and SYS_ADMIN, no opt-in, isolation by grants]
+  pod "legacy" (token template with daxFiles: true; container app as uid
+  1000 with all capabilities dropped, and container idle without the claim):
+  H1 the opt-in: env marker, device rule "c <major>:* rw" in app's runtime
+     spec, CapBnd 0, idle unchanged.
+  H2 cxl-request shared --file /tmp/shared0-<cycle>.dax: the response has
+     the file; ls shows a char device MAJ:MIN of the dax device owned by
+     1000:1000, mode 0600; its mount is private (no "shared:" in
+     mountinfo); the private node is in the plugin's daxfiles dir.
+  H3 after cxl-request exited, a plain program (dax-rw.py with the path)
+     writes and reads; the host finds the bytes in shared0.raw; the passed
+     fd (cxl-request fd) reads the same; mknod of a dax node in app fails
+     (no CAP_MKNOD).
+  H4 release: the path is gone in the container, the node gone on the host,
+     nothing left (no companions, attachments, regions, cxl-type3).
+  H5 three cycles (H2-H4) with new leases and paths, nothing left.
+  H6 release while a program maps the file: the release completes, the
+     program dies with SIGBUS (135), nothing left.
+  H7 delete the pod with an active file lease (mounted and mapped):
+     everything is cleaned up, the node is removed.
+  Then: test10 and test01 once (no regression).
+
+Status (2026-10-12)
+-------------------
+Implemented and tested as planned; test results in 03-test-results.txt
+(unit tests, lint, test12 PASS with step H, test10/test11/test01 PASS).
+Nothing is committed.
+
+Driver repository (git status):
+  M cmd/cxl-request/main.go, main_test.go       --file, file command, files;
+                                                parseArgs split in
+                                                parseOptions/setCommand/
+                                                setRelease/checkCommand
+  A cmd/kubelet-cxl-plugin/daxfile.go           config, capability rule, mounter,
+                                                broker file ops, NRI adjustment
+  A cmd/kubelet-cxl-plugin/daxfile_test.go
+  M cmd/kubelet-cxl-plugin/broker.go            request field, peer credentials,
+                                                op file, release removes files
+                                                first, reconcile, OnReleasing
+                                                error; openDaxDevice split
+                                                (tryOpenDax, openPrivateDaxNode)
+  M cmd/kubelet-cxl-plugin/dynamic.go           OpenClaim check, CDI env marker,
+                                                DaxFilesAllowed in tokenClaims
+  M cmd/kubelet-cxl-plugin/lease_store.go       lease.Files, FileSeq;
+                                                tokenClaim.DaxFiles, DaxContainers
+  M cmd/kubelet-cxl-plugin/lend.go, nri.go      containerRef.DaxAllowed,
+                                                Synchronize, CreateContainer
+  M cmd/kubelet-cxl-plugin/pool.go              OnReleasing error fails Unprepare
+  M cmd/kubelet-cxl-plugin/broker_test.go       OnReleasing return value
+  M pkg/cxl/device/device.go                    DynamicConfigKind, -APIVersion
+  M doc/cxl/POOL.md                             "Shared leases as files"
+  A deployments/cxl/pool/examples/legacy-borrower-pod.yaml
+nri-plugins (git status):
+  M test/e2e/memory.test-suite/memory-policy/dra.source.sh   daxfiles/ cleanup,
+                                                             dra-container-pid
+  M .../n4-cxl-shared-2/pool-dax-rw.py                       size by device
+                                                             number, hold mode
+  M .../n4-cxl-shared-2/test12-dra-live-attach/code.var.sh   step H
+  A scripts/testing/fake-cxl-pool/plan-3-cxl-live-attach/cxl-request-daxfile/
+
+Deviations from the plan above:
+- createAs verifies that the file system ids took (setfsuid/setfsgid
+  return no error for a refused change) and restores them before
+  returning; a failure removes what was created.
+- newFileNode/mountFile and removeFilesOf split out to keep the functions
+  small; the behaviour is as planned.
+- Step H has no second container in pod legacy (the plan's "idle" check):
+  containers without the claim do not get the env marker or the rule by
+  construction (CDI device of the claim), and test12 step A already shows
+  that a container without the claim gets no lease socket.
+- The error of a refused token claim reads "claim ...: lease socket:
+  daxFiles: container app of pod ... keeps capability MKNOD ...": the
+  check runs where the claim's socket is opened.
+
+Not done (follow-ups):
+- No container user namespace support tested (hostUsers: false); the
+  capability rule assumes the initial user namespace. [the capability rule
+  is gone in 04; user namespaces remain untested]
+- A plugin restart while a file is mounted was tested only in unit tests.
+- The device rule is per dax major, as for any pre-authorization at
+  creation; a per-device rule would need the runtime to change device
+  rules of running containers (impossible today, see plan-3 option B).
+  [superseded: per-device grants without the runtime, 04 1.3 and 2.6]

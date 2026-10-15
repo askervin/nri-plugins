@@ -13,10 +13,11 @@
 // limitations under the License.
 
 // Package memctl makes hotplugged CXL memory devices usable and releases
-// them again: find a memdev by serial, create a region in devdax or
-// system-ram mode, online or offline its memory, slice the dax region of a
-// region into dax devices, destroy the region and disable the memdev. It
-// drives sysfs and the cxl and daxctl CLIs.
+// them again: find a memdev by serial, create a region in mode numa (system
+// RAM of a NUMA node) or dax (a dax character device), online or offline
+// its memory, slice the dax region of a region into dax devices, destroy
+// the region and disable the memdev. It drives sysfs and the cxl and
+// daxctl CLIs.
 package memctl
 
 import (
@@ -34,11 +35,21 @@ import (
 	"time"
 )
 
-// Region modes.
+// Region modes: how the memory of a region is used.
 const (
-	ModeDevDax = "devdax"
-	ModeRAM    = "ram"
+	// ModeNUMA is memory onlined as system RAM of a NUMA node (kmem).
+	ModeNUMA = "numa"
+	// ModeDax is memory used through a dax character device (device_dax).
+	ModeDax = "dax"
 )
+
+// ValidMode returns an error if mode is not ModeNUMA or ModeDax.
+func ValidMode(mode string) error {
+	if mode != ModeNUMA && mode != ModeDax {
+		return fmt.Errorf("invalid mode %q (numa or dax)", mode)
+	}
+	return nil
+}
 
 // Dax drivers.
 const (
@@ -200,8 +211,8 @@ func (mc *Manager) WaitMemdev(ctx context.Context, serial uint64) (string, error
 	}
 }
 
-// Endpoint returns the endpoint port (endpointN) of a memdev.
-func (mc *Manager) Endpoint(memdev string) (string, error) {
+// endpoint returns the endpoint port (endpointN) of a memdev.
+func (mc *Manager) endpoint(memdev string) (string, error) {
 	for _, ep := range mc.list("endpoint*") {
 		target, err := os.Readlink(mc.cxlDev(ep, "uport"))
 		if err == nil && filepath.Base(target) == memdev {
@@ -213,7 +224,7 @@ func (mc *Manager) Endpoint(memdev string) (string, error) {
 
 // Regions returns the regions that have a target decoder of the memdev.
 func (mc *Manager) Regions(memdev string) []string {
-	ep, err := mc.Endpoint(memdev)
+	ep, err := mc.endpoint(memdev)
 	if err != nil {
 		return nil
 	}
@@ -233,10 +244,10 @@ func (mc *Manager) Regions(memdev string) []string {
 
 var pciRootRe = regexp.MustCompile(`/pci([0-9a-f]{4}):([0-9a-f]{2})/`)
 
-// HostBridgeUID returns the uid of the host bridge of a memdev: the bus
+// hostBridgeUID returns the uid of the host bridge of a memdev: the bus
 // number of its PCI root (qemu pxb-cxl bus_nr), as root decoders list it in
 // target_list.
-func (mc *Manager) HostBridgeUID(memdev string) (int, error) {
+func (mc *Manager) hostBridgeUID(memdev string) (int, error) {
 	real, err := filepath.EvalSymlinks(mc.cxlDev(memdev))
 	if err != nil {
 		return 0, err
@@ -249,10 +260,10 @@ func (mc *Manager) HostBridgeUID(memdev string) (int, error) {
 	return int(v), nil
 }
 
-// RootDecoder returns the root decoder whose target list has the host
+// rootDecoder returns the root decoder whose target list has the host
 // bridge of the memdev and that can map volatile memory.
-func (mc *Manager) RootDecoder(memdev string) (string, error) {
-	uid, err := mc.HostBridgeUID(memdev)
+func (mc *Manager) rootDecoder(memdev string) (string, error) {
+	uid, err := mc.hostBridgeUID(memdev)
 	if err != nil {
 		return "", err
 	}
@@ -330,9 +341,9 @@ func (mc *Manager) DaxDevNumbers(dax string) (major, minor int, err error) {
 	return major, minor, nil
 }
 
-// DaxRegionDir returns the sysfs directory of the dax region attributes of
+// daxRegionDir returns the sysfs directory of the dax region attributes of
 // a region (regionN/dax_regionN/dax_region).
-func (mc *Manager) DaxRegionDir(region string) string {
+func (mc *Manager) daxRegionDir(region string) string {
 	if m, _ := filepath.Glob(mc.cxlDev(region, "dax_region*", "dax_region")); len(m) > 0 {
 		return m[0]
 	}
@@ -342,7 +353,7 @@ func (mc *Manager) DaxRegionDir(region string) string {
 // DaxRegionInfo returns the free bytes and the allocation alignment of the
 // dax region of a region, and the dax devices of the region.
 func (mc *Manager) DaxRegionInfo(region string) (available, align uint64, devices []string, err error) {
-	dir := mc.DaxRegionDir(region)
+	dir := mc.daxRegionDir(region)
 	if available, err = readUint(filepath.Join(dir, "available_size")); err != nil {
 		return 0, 0, nil, err
 	}
@@ -357,9 +368,9 @@ func (mc *Manager) DaxDeviceSize(dax string) (uint64, error) {
 	return readUint(mc.daxDev(dax, "size"))
 }
 
-// DaxDeviceResource returns the start address of the memory of a dax
+// daxDeviceResource returns the start address of the memory of a dax
 // device.
-func (mc *Manager) DaxDeviceResource(dax string) (uint64, error) {
+func (mc *Manager) daxDeviceResource(dax string) (uint64, error) {
 	return readUint(mc.daxDev(dax, "resource"))
 }
 
@@ -446,16 +457,6 @@ func (mc *Manager) CreateDaxDevice(ctx context.Context, region string, size uint
 	return dax, nil
 }
 
-// CreateDaxDeviceAt creates a dax device in the dax region of a region
-// with the size bytes of memory from the physical address start, and
-// returns its name (see CreateDaxDeviceRanges).
-func (mc *Manager) CreateDaxDeviceAt(ctx context.Context, region string, start, size uint64) (string, error) {
-	if size == 0 {
-		return "", fmt.Errorf("%s: a dax device of size 0", region)
-	}
-	return mc.CreateDaxDeviceRanges(ctx, region, []Range{{Start: start, End: start + size - 1}})
-}
-
 // CreateDaxDeviceRanges creates a dax device in the dax region of a region
 // with the memory of the ranges, and returns its name. The device is not
 // bound to a driver. When the dax region does not give the device exactly
@@ -498,7 +499,7 @@ func (mc *Manager) CreateDaxDeviceRanges(ctx context.Context, region string, ran
 // newDaxDevice creates a dax device of size 0 in the dax region of a
 // region and returns its name.
 func (mc *Manager) newDaxDevice(region string) (string, error) {
-	dir := mc.DaxRegionDir(region)
+	dir := mc.daxRegionDir(region)
 	if err := mc.writeFile(filepath.Join(dir, "create"), "1"); err != nil {
 		return "", fmt.Errorf("%s: create a dax device: %w", region, err)
 	}
@@ -528,7 +529,7 @@ func (mc *Manager) DeleteDaxDevice(ctx context.Context, region, dax string) erro
 	if strings.HasSuffix(dax, ".0") {
 		return nil
 	}
-	if err := mc.writeFile(filepath.Join(mc.DaxRegionDir(region), "delete"), dax); err != nil {
+	if err := mc.writeFile(filepath.Join(mc.daxRegionDir(region), "delete"), dax); err != nil {
 		return fmt.Errorf("%s: delete %s: %w", region, dax, err)
 	}
 	mc.logf("%s: deleted %s", region, dax)
@@ -638,7 +639,7 @@ func (mc *Manager) DaxDeviceRanges(dax string) ([]Range, error) {
 		if err != nil || size == 0 {
 			return nil, err
 		}
-		start, err := mc.DaxDeviceResource(dax)
+		start, err := mc.daxDeviceResource(dax)
 		if err != nil {
 			return nil, err
 		}
@@ -807,8 +808,8 @@ func (mc *Manager) has(cmd string) bool {
 	return err == nil
 }
 
-// SetDaxDriver binds a dax device to device_dax (devdax) or kmem
-// (system-ram), with daxctl when it is installed, else through sysfs (see
+// SetDaxDriver binds a dax device to device_dax or kmem, with daxctl
+// reconfigure-device when it is installed, else through sysfs (see
 // SetDaxDriverSysfs). Memory of kmem must be offline before switching
 // away.
 func (mc *Manager) SetDaxDriver(ctx context.Context, dax, driver string) error {
@@ -819,13 +820,10 @@ func (mc *Manager) SetDaxDriver(ctx context.Context, dax, driver string) error {
 	if !mc.has("daxctl") {
 		return mc.SetDaxDriverSysfs(ctx, dax, driver)
 	}
-	mode := "devdax"
+	// the daxctl modes of device_dax and kmem
+	args := []string{"reconfigure-device", "--mode=devdax", "--force", dax}
 	if driver == DriverKmem {
-		mode = "system-ram"
-	}
-	args := []string{"reconfigure-device", "--mode=" + mode, "--force", dax}
-	if driver == DriverKmem {
-		args = []string{"reconfigure-device", "--mode=" + mode, "--no-online", dax}
+		args = []string{"reconfigure-device", "--mode=system-ram", "--no-online", dax}
 	}
 	if _, err := mc.Exec(ctx, "daxctl", args...); err != nil {
 		return err
@@ -876,7 +874,8 @@ func (mc *Manager) checkDaxDriver(dax, driver string) error {
 	return nil
 }
 
-// RegionInfo describes a region of a memdev.
+// RegionInfo describes a region of a memdev. Mode is ModeNUMA (kmem),
+// ModeDax (device_dax) or "" (no or another driver).
 type RegionInfo struct {
 	Memdev string `json:"memdev"`
 	Region string `json:"region"`
@@ -884,7 +883,7 @@ type RegionInfo struct {
 	Driver string `json:"driver"`
 	Mode   string `json:"mode"`
 	Node   int    `json:"node"`
-	Device string `json:"device,omitempty"` // /dev/daxX.Y in devdax mode
+	Device string `json:"device,omitempty"` // /dev/daxX.Y in mode dax
 	Blocks []int  `json:"blocks,omitempty"`
 }
 
@@ -902,10 +901,10 @@ func (mc *Manager) Info(memdev string) (*RegionInfo, error) {
 	}
 	switch ri.Driver {
 	case DriverDeviceDax:
-		ri.Mode = ModeDevDax
+		ri.Mode = ModeDax
 		ri.Device = filepath.Join(mc.DevRoot, ri.Dax)
 	case DriverKmem:
-		ri.Mode = ModeRAM
+		ri.Mode = ModeNUMA
 	}
 	ri.Blocks, _ = mc.RegionBlocks(ri.Region)
 	return ri, nil
@@ -913,13 +912,13 @@ func (mc *Manager) Info(memdev string) (*RegionInfo, error) {
 
 var regionNameRe = regexp.MustCompile(`"region"\s*:\s*"(region\d+)"`)
 
-// CreateRegion creates a ram region on the memdev under the decoder (the
-// root decoder of its host bridge if ""), and binds its dax device for the
-// mode: device_dax for devdax (memory never onlined), kmem for ram (memory
-// left offline, see Online). An existing region is reused.
+// CreateRegion creates a volatile region on the memdev under the decoder
+// (the root decoder of its host bridge if ""), and binds its dax device for
+// the mode: device_dax for ModeDax (memory never onlined), kmem for
+// ModeNUMA (memory left offline, see Online). An existing region is reused.
 func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder string) (*RegionInfo, error) {
-	if mode != ModeDevDax && mode != ModeRAM {
-		return nil, fmt.Errorf("invalid mode %q (devdax or ram)", mode)
+	if err := ValidMode(mode); err != nil {
+		return nil, err
 	}
 	if _, err := os.Stat(mc.cxlDev(memdev, "driver")); err != nil {
 		if _, err := mc.Exec(ctx, "cxl", "enable-memdev", memdev); err != nil {
@@ -932,7 +931,7 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 		mc.logf("%s: reusing %s", memdev, region)
 	} else {
 		if decoder == "" {
-			d, err := mc.RootDecoder(memdev)
+			d, err := mc.rootDecoder(memdev)
 			if err != nil {
 				return nil, err
 			}
@@ -974,7 +973,7 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 	}
 	blocks, _ := mc.RegionBlocks(region)
 	switch mode {
-	case ModeDevDax:
+	case ModeDax:
 		if mc.DaxDriver(dax) == DriverKmem {
 			if err := mc.SetBlocksState(blocks, "offline"); err != nil {
 				return nil, err
@@ -983,7 +982,7 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 		if err := mc.SetDaxDriver(ctx, dax, DriverDeviceDax); err != nil {
 			return nil, err
 		}
-	case ModeRAM:
+	case ModeNUMA:
 		if err := mc.SetDaxDriver(ctx, dax, DriverKmem); err != nil {
 			return nil, err
 		}
@@ -997,8 +996,8 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 // waitRegionBlocks waits until every memory block of a kmem region exists.
 // The kernel creates the driver link of a dax device before it probes the
 // driver, so a dax device that the kernel binds to kmem by itself (the
-// default for a ram region) looks bound while dev_dax_kmem_probe is still
-// adding its memory.
+// default for a volatile region) looks bound while dev_dax_kmem_probe is
+// still adding its memory.
 func (mc *Manager) waitRegionBlocks(ctx context.Context, region string) error {
 	for {
 		blocks, want, err := mc.regionBlocks(region)
@@ -1017,14 +1016,14 @@ func (mc *Manager) waitRegionBlocks(ctx context.Context, region string) error {
 	}
 }
 
-// Online onlines the memory blocks of the memdev's region (mode ram).
+// Online onlines the memory blocks of the memdev's region (mode numa).
 func (mc *Manager) Online(memdev string, movable bool) (*RegionInfo, error) {
 	ri, err := mc.Info(memdev)
 	if err != nil {
 		return nil, err
 	}
 	if ri.Driver != DriverKmem {
-		return nil, fmt.Errorf("%s: %s is bound to %q, not kmem: create the region with --mode ram", memdev, ri.Dax, ri.Driver)
+		return nil, fmt.Errorf("%s: %s is bound to %q, not kmem: create the region in mode numa", memdev, ri.Dax, ri.Driver)
 	}
 	state := "online"
 	if movable {

@@ -69,7 +69,7 @@ done
 echo "### preconditions: fake-cxl-pool-server on the host, with the shared device shared0"
 pool-server-start "
   - name: shared0
-    size: 256M
+    size: 256Mi
     shared: true
     pool: default
     serial: $SHARED_SERIAL"
@@ -90,8 +90,11 @@ pool-assert "$COMMAND_OUTPUT" "j['name'] == '$VM2_NAME'"
 pool-client "$VM1" -o json whoami || command-error "VM1 cannot resolve itself"
 pool-assert "$COMMAND_OUTPUT" "j['name'] == '$VM1_NAME'"
 
-echo "### A: shared0 is a free, shared 256M device"
+echo "### A: shared0 is a free, shared 256Mi device"
 pool-client "$VM2" devices || command-error "cannot list devices"
+# The table prints sizes as quantities: NAME SERIAL SIZE SHARED ...
+[ "$(awk '$1 == "shared0" {print $2, $3, $4}' <<< "$COMMAND_OUTPUT")" == "$SHARED_SERIAL 256Mi true" ] ||
+    error "the device table does not have shared0 as '$SHARED_SERIAL 256Mi true'"
 pool-client "$VM2" -o json devices shared0 || command-error "cannot get device shared0"
 pool-assert "$COMMAND_OUTPUT" "j['shared'] and j['state'] == 'free' and j['attachments'] in (None, [])"
 pool-assert "$COMMAND_OUTPUT" "j['serial'] == '$SHARED_SERIAL' and j['size'] == $MEM_SIZE"
@@ -131,12 +134,12 @@ pool-client "$VM2" attachments || command-error "cannot list attachments"
 pool-snapshot shared0-attached
 
 echo "### D: an exclusive device cannot be attached to two VMs"
-# Device sizes are multiples of 256M, the capacity unit of CXL.
-pool-client "$VM2" create --size 128M --name excl0 &&
-    error "creating a device of 128M should have failed"
+# Device sizes are multiples of 256Mi, the capacity unit of CXL.
+pool-client "$VM2" create --size 128Mi --name excl0 &&
+    error "creating a device of 128Mi should have failed"
 [ "$COMMAND_STATUS" == "1" ] && [[ "$COMMAND_OUTPUT" == *InvalidArgument* ]] ||
-    command-error "expected exit status 1 and InvalidArgument for a 128M device"
-pool-client "$VM2" -o json create --size 256M --name excl0 || command-error "cannot create excl0"
+    command-error "expected exit status 1 and InvalidArgument for a 128Mi device"
+pool-client "$VM2" -o json create --size 256Mi --name excl0 || command-error "cannot create excl0"
 pool-assert "$COMMAND_OUTPUT" "not j['shared'] and j['state'] == 'free' and j['size'] == $MEM_SIZE"
 EXCL_SERIAL=$(pool-value "$COMMAND_OUTPUT" 'j["serial"]')
 [[ "$EXCL_SERIAL" == 0xc1ee* ]] ||
@@ -161,11 +164,11 @@ pool-client "$VM2" delete excl0 || command-error "cannot delete excl0"
 pool-cxl-dump "$VM1" excl0-deleted
 cxl-assert "by_serial($EXCL_SERIAL) is None and len(memdevs) == 1"
 
-echo "### E: shared0 as a devdax device in both VMs"
+echo "### E: shared0 as a devdax device in both VMs (mode dax)"
 for vm in "$VM2" "$VM1"; do
-    pool-client "$vm" -o json guest region create shared0 --mode devdax ||
-        command-error "cannot create a devdax region of shared0 in $(pool-vm-label "$vm")"
-    pool-assert "$COMMAND_OUTPUT" 'j["mode"] == "devdax" and j["driver"] == "device_dax" and j["device"].startswith("/dev/dax")'
+    pool-client "$vm" -o json guest region create shared0 --mode dax ||
+        command-error "cannot create a dax region of shared0 in $(pool-vm-label "$vm")"
+    pool-assert "$COMMAND_OUTPUT" 'j["mode"] == "dax" and j["driver"] == "device_dax" and j["device"].startswith("/dev/dax")'
     dax=$(pool-value "$COMMAND_OUTPUT" 'j["device"]')
     pool-vm-command "$vm" "ls -l $dax && daxctl list -d ${dax#/dev/}" ||
         command-error "devdax device $dax is missing in $(pool-vm-label "$vm")"

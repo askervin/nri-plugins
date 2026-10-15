@@ -13,10 +13,10 @@
 # fake-cxl-pool-controller and kubelet-cxl-plugin (see
 # test10-dra-pooling), and both controllers use the same
 # fake-cxl-pool-server on the host. A ResourceClaim of class
-# cxl-shared-memory gets the shared device: the node plugin creates a
+# cxl-pool-shared gets the shared device: the node plugin creates a
 # devdax region on it and gives the container the device node and its name
-# in CXL_SHARED_DAX_<serial>. Each cluster attaches and releases the device
-# independently.
+# in CXL_<KEY>_DAX, with CXL_<KEY>_SHARED=1 and _MODE=dax. Each
+# cluster attaches and releases the device independently.
 #
 # What you will see: the shared device in the ResourceSlices of both
 # clusters, a pod in cluster 1 writing a string to the shared memory, a pod
@@ -57,7 +57,7 @@ spec:
     requests:
     - name: mem
       exactly:
-        deviceClassName: cxl-shared-memory
+        deviceClassName: cxl-pool-shared
         selectors:
         - cel:
             expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$SHARED_SERIAL"'
@@ -128,7 +128,7 @@ done
 echo "### preconditions: fake-cxl-pool-server on the host, with the shared device shared0"
 pool-server-start "
   - name: shared0
-    size: 256M
+    size: 256Mi
     shared: true
     pool: default
     serial: $SHARED_SERIAL"
@@ -152,7 +152,7 @@ for vm in "$VM1" "$VM2"; do
     dra-kubectl "$vm" "get resourceslices"
     dra-json "$vm" resourceslices
     S0="device('shared0', '$DRA_POOL_DRIVER')"
-    dra-assert "$COMMAND_OUTPUT" "$S0 is not None and attr($S0, 'shared') == True and attr($S0, 'serial') == '$SHARED_SERIAL' and attr($S0, 'size') == $SHARED_SIZE"
+    dra-assert "$COMMAND_OUTPUT" "$S0 is not None and attr($S0, 'type') == 'memdev' and attr($S0, 'source') == 'pool' and attr($S0, 'shared') == True and attr($S0, 'serial') == '$SHARED_SERIAL' and attr($S0, 'size') == $SHARED_SIZE"
     dra-assert "$COMMAND_OUTPUT" "${S0}.get('allowMultipleAllocations') == True"
     dra-assert "$COMMAND_OUTPUT" "capacity($S0, 'hosts') == '4' and ${S0}['capacity']['hosts']['requestPolicy']['default'] == '1'"
     dra-assert "$COMMAND_OUTPUT" "${S0}['bindsToNode'] == True and ${S0}['bindingConditions'] == ['$DRA_POOL_DRIVER/Attached']"
@@ -161,7 +161,7 @@ done
 echo "### B: cluster 1 writes"
 dra-apply "$VM1" <<< "$(shared-claim-yaml)"
 dra-apply "$VM1" <<< "$(dax-pod-yaml writer "env | grep ^CXL_ | sort
-python3 /tools/dax-rw.py write \"\$CXL_SHARED_DAX_$SHARED_HEX\" 0 \"$TEXT\" || exit 1
+python3 /tools/dax-rw.py write \"\$CXL_${SHARED_HEX}_DAX\" 0 \"$TEXT\" || exit 1
 echo \"wrote at offset 0\"")"
 dra-wait "$VM1" attached "resourceclaim -n $DRA_NS shared-memory" \
     "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 60
@@ -174,10 +174,15 @@ retry-until --timeout 30 --message "writer has written" \
     error "the writer did not write, see: $(dra-vm-command-q "$VM1" "kubectl logs -n $DRA_NS writer")"
 dra-kubectl "$VM1" "logs -n $DRA_NS writer"
 WRITER_LOG="$COMMAND_OUTPUT"
-VM1_DAX=$(sed -n "s|^CXL_SHARED_DAX_$SHARED_HEX=||p" <<< "$WRITER_LOG")
-[[ "$VM1_DAX" == /dev/dax* ]] || error "writer has no CXL_SHARED_DAX_$SHARED_HEX=/dev/daxX.Y"
-grep -qx "CXL_SHARED_SIZE_$SHARED_HEX=$SHARED_SIZE" <<< "$WRITER_LOG" ||
-    error "writer has no CXL_SHARED_SIZE_$SHARED_HEX=$SHARED_SIZE"
+# The environment of the shared device, read-write, and the marker of the
+# claim, nothing else.
+dra-env-assert writer "$WRITER_LOG" "$SHARED_HEX" \
+    SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" "DAX=/dev/dax*" READONLY=0
+grep -qx "CXL_CLAIM_${VM1_CLAIM_UID//-/_}=1" <<< "$WRITER_LOG" ||
+    error "writer has no claim marker CXL_CLAIM_${VM1_CLAIM_UID//-/_}=1"
+[ "$(grep -c '^CXL_' <<< "$WRITER_LOG")" == 7 ] ||
+    error "writer has other CXL_ variables than the six of $SHARED_SERIAL and the claim marker: $(grep '^CXL_' <<< "$WRITER_LOG")"
+VM1_DAX=$(dra-env-value "$WRITER_LOG" "CXL_${SHARED_HEX}_DAX")
 # In VM1 the device is a devdax region, never system RAM.
 pool-cxl-wait "$VM1" shared0-writer \
     "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == 0"
@@ -188,7 +193,7 @@ pool-vm-command "$VM1" "ls -l $VM1_DAX && basename \$(readlink /sys/bus/dax/devi
 
 echo "### C: cluster 2 reads the same bytes"
 dra-apply "$VM2" <<< "$(shared-claim-yaml)"
-dra-apply "$VM2" <<< "$(dax-pod-yaml reader "python3 /tools/dax-rw.py read \"\$CXL_SHARED_DAX_$SHARED_HEX\" 0 || exit 1")"
+dra-apply "$VM2" <<< "$(dax-pod-yaml reader "python3 /tools/dax-rw.py read \"\$CXL_${SHARED_HEX}_DAX\" 0 || exit 1")"
 dra-wait "$VM2" attached "resourceclaim -n $DRA_NS shared-memory" \
     "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 60
 VM2_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
@@ -221,7 +226,7 @@ retry-until --timeout 30 --message "shared0 attached only to VM2" \
 # Cluster 2 still has the memory, and the bytes are still there.
 dra-json "$VM2" pod -n "$DRA_NS" reader
 dra-assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Running'"
-dra-kubectl "$VM2" "exec -n $DRA_NS reader -- sh -c 'python3 /tools/dax-rw.py read \"\$CXL_SHARED_DAX_$SHARED_HEX\" 0'" ||
+dra-kubectl "$VM2" "exec -n $DRA_NS reader -- sh -c 'python3 /tools/dax-rw.py read \"\$CXL_${SHARED_HEX}_DAX\" 0'" ||
     command-error "cannot read the shared memory in the reader"
 [ "$COMMAND_OUTPUT" == "$TEXT" ] ||
     error "after cluster 1 released shared0, cluster 2 read '$COMMAND_OUTPUT', expected '$TEXT'"
