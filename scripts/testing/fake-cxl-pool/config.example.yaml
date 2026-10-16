@@ -61,7 +61,7 @@ discovery:
   # Only VMs whose name matches one of these patterns (default: all).
   # names: ["n4-cxl-shared-*"]
   # Pre-declared beram_*/befile_* backends of qemu command lines become
-  # devices of scope "local": memdevs present at boot, which cxl.generic
+  # devices of scope "local": memdevs present at boot, which cxl.nri.io
   # publishes as source local.
   localDevices: true
 

@@ -322,7 +322,7 @@ func (e *env) createClaimHosts(name, device, nodeName string, shareID string, ho
 			Allocation: &resourceapi.AllocationResult{
 				Devices: resourceapi.DeviceAllocationResult{Results: []resourceapi.DeviceRequestAllocationResult{
 					// a result of another driver is ignored
-					{Request: "local", Driver: "cxl.generic", Pool: "node1", Device: "region0-node2"},
+					{Request: "local", Driver: "cxl.nri.io", Pool: "node1", Device: "region0-node2"},
 					r,
 				}},
 				NodeSelector: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
@@ -463,8 +463,8 @@ func TestPublish(t *testing.T) {
 		*p.Attributes["size"].IntValue != 512<<20 || len(p.Capacity) != 1 ||
 		!memory.Value.Equal(resource.MustParse("512Mi")) || p.AllowMultipleAllocations != nil ||
 		!ptr.Deref(p.BindsToNode, false) ||
-		strings.Join(p.BindingConditions, ",") != "cxl-pool.generic/Attached" ||
-		strings.Join(p.BindingFailureConditions, ",") != "cxl-pool.generic/AttachFailed" {
+		strings.Join(p.BindingConditions, ",") != "cxl-pool.nri.io/Attached" ||
+		strings.Join(p.BindingFailureConditions, ",") != "cxl-pool.nri.io/AttachFailed" {
 		t.Fatalf("unexpected exclusive device %+v", p)
 	}
 	sh := byName["shared0"]
@@ -544,7 +544,7 @@ func TestAttachAndStatus(t *testing.T) {
 	if len(att) != 1 || att[0] != "pooled0@vm1 k8s:resourceclaim/"+string(claim.UID) {
 		t.Fatalf("unexpected attach requests %v", att)
 	}
-	cond, st := e.condition("pooled-memory", "cxl-pool.generic/Attached")
+	cond, st := e.condition("pooled-memory", "cxl-pool.nri.io/Attached")
 	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "Attached" ||
 		cond.Message != "pooled0 attached to vm1 (slot ds1)" {
 		t.Fatalf("unexpected condition %+v", cond)
@@ -581,7 +581,7 @@ func TestNoHost(t *testing.T) {
 	if att, _ := e.pool.calls(); len(att) != 0 {
 		t.Fatalf("unexpected attach %v", att)
 	}
-	cond, _ := e.condition("c3", "cxl-pool.generic/AttachFailed")
+	cond, _ := e.condition("c3", "cxl-pool.nri.io/AttachFailed")
 	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonNoHost {
 		t.Fatalf("unexpected condition %+v", cond)
 	}
@@ -604,11 +604,11 @@ func TestAttachConflict(t *testing.T) {
 	e.pool.mu.Unlock()
 	e.createClaim("c4", "pooled0", "node2", "")
 	e.sync()
-	cond, _ := e.condition("c4", "cxl-pool.generic/AttachFailed")
+	cond, _ := e.condition("c4", "cxl-pool.nri.io/AttachFailed")
 	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonConflict || !strings.Contains(cond.Message, "injected Conflict") {
 		t.Fatalf("unexpected condition %+v", cond)
 	}
-	if c, _ := e.condition("c4", "cxl-pool.generic/Attached"); c != nil {
+	if c, _ := e.condition("c4", "cxl-pool.nri.io/Attached"); c != nil {
 		t.Fatalf("unexpected Attached condition %+v", c)
 	}
 	// the conflict goes away: Attached replaces AttachFailed
@@ -617,10 +617,10 @@ func TestAttachConflict(t *testing.T) {
 	e.pool.mu.Unlock()
 	e.waitStatus("c4", 1)
 	e.sync()
-	if c, _ := e.condition("c4", "cxl-pool.generic/Attached"); c == nil || c.Status != metav1.ConditionTrue {
+	if c, _ := e.condition("c4", "cxl-pool.nri.io/Attached"); c == nil || c.Status != metav1.ConditionTrue {
 		t.Fatalf("expected Attached, got %+v", c)
 	}
-	if c, _ := e.condition("c4", "cxl-pool.generic/AttachFailed"); c != nil {
+	if c, _ := e.condition("c4", "cxl-pool.nri.io/AttachFailed"); c != nil {
 		t.Fatalf("AttachFailed not cleared: %+v", c)
 	}
 }
@@ -671,7 +671,7 @@ func TestRestartWithExistingAttachment(t *testing.T) {
 	if att, det := e.pool.calls(); len(att) != 0 || len(det) != 0 {
 		t.Fatalf("unexpected requests %v %v", att, det)
 	}
-	cond, st := e.condition("c6", "cxl-pool.generic/Attached")
+	cond, st := e.condition("c6", "cxl-pool.nri.io/Attached")
 	if cond == nil || cond.Message != "shared0 attached to vm1 (slot ds9)" || st.ShareID == nil || *st.ShareID != "share-1" {
 		t.Fatalf("unexpected status %+v %+v", cond, st)
 	}
@@ -693,7 +693,7 @@ func TestSharedTwoClaimsOneNode(t *testing.T) {
 		t.Fatalf("unexpected attach requests %v", att)
 	}
 	for _, n := range []string{"a", "b"} {
-		if c, _ := e.condition(n, "cxl-pool.generic/Attached"); c == nil {
+		if c, _ := e.condition(n, "cxl-pool.nri.io/Attached"); c == nil {
 			t.Fatalf("claim %s: no Attached condition", n)
 		}
 	}
@@ -736,11 +736,11 @@ func TestExclusiveMovesBetweenNodes(t *testing.T) {
 	e.deleteClaim("m")
 	e.createClaim("m2", "pooled0", "node2", "")
 	e.sync()
-	if c, _ := e.condition("m2", "cxl-pool.generic/AttachFailed"); c != nil {
+	if c, _ := e.condition("m2", "cxl-pool.nri.io/AttachFailed"); c != nil {
 		t.Fatalf("unexpected AttachFailed %+v", c)
 	}
 	e.sync()
-	if c, _ := e.condition("m2", "cxl-pool.generic/Attached"); c == nil {
+	if c, _ := e.condition("m2", "cxl-pool.nri.io/Attached"); c == nil {
 		t.Fatal("not attached after the move")
 	}
 	if ids := e.pool.attachmentIDs(); len(ids) != 1 || ids[0] != "pooled0@node2" {
@@ -756,7 +756,7 @@ func TestExclusiveSharedClaim(t *testing.T) {
 	if att, _ := e.pool.calls(); len(att) != 1 || att[0] != "shared0@vm1 k8s:resourceclaim/uid-w exclusive" {
 		t.Fatalf("unexpected attach requests %v", att)
 	}
-	c, st := e.condition("w", "cxl-pool.generic/Attached")
+	c, st := e.condition("w", "cxl-pool.nri.io/Attached")
 	if c == nil || !strings.Contains(string(st.Data.Raw), `"exclusive":true`) {
 		t.Fatalf("claim w: condition %+v data %s", c, st.Data.Raw)
 	}
@@ -769,7 +769,7 @@ func TestExclusiveSharedClaim(t *testing.T) {
 	if len(det) != 0 || len(att) != 2 || att[1] != "shared0@vm1 k8s:resourceclaim/uid-r1" {
 		t.Fatalf("attach %v detach %v", att, det)
 	}
-	if c, _ := e.condition("r1", "cxl-pool.generic/Attached"); c == nil {
+	if c, _ := e.condition("r1", "cxl-pool.nri.io/Attached"); c == nil {
 		t.Fatal("claim r1: no Attached condition")
 	}
 	// and the other way round: an exclusive claim on the node of the
@@ -780,7 +780,7 @@ func TestExclusiveSharedClaim(t *testing.T) {
 	if att, _ = e.pool.calls(); len(att) != 3 || att[2] != "shared0@vm1 k8s:resourceclaim/uid-w2 exclusive" {
 		t.Fatalf("attach %v", att)
 	}
-	if c, _ := e.condition("w2", "cxl-pool.generic/Attached"); c == nil {
+	if c, _ := e.condition("w2", "cxl-pool.nri.io/Attached"); c == nil {
 		t.Fatal("claim w2: no Attached condition")
 	}
 }
@@ -791,11 +791,11 @@ func TestExclusiveSharedConflict(t *testing.T) {
 	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster"})
 	e.createClaimHosts("w", "shared0", "node1", "share-w", 4)
 	e.sync()
-	c, _ := e.condition("w", "cxl-pool.generic/AttachFailed")
+	c, _ := e.condition("w", "cxl-pool.nri.io/AttachFailed")
 	if c == nil || c.Reason != ReasonConflict {
 		t.Fatalf("claim w: AttachFailed %+v", c)
 	}
-	if c, _ := e.condition("w", "cxl-pool.generic/Attached"); c != nil {
+	if c, _ := e.condition("w", "cxl-pool.nri.io/Attached"); c != nil {
 		t.Fatalf("claim w: Attached %+v", c)
 	}
 	// a claim of one host is not exclusive

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// fake-cxl-pool-controller is the cluster side of the cxl-pool.generic DRA
+// fake-cxl-pool-controller is the cluster side of the cxl-pool.nri.io DRA
 // driver for a fake-cxl-pool server: it publishes the pool devices as a
 // ResourceSlice, attaches a device to the VM of the node that the
 // scheduler picked, writes the binding condition into the claim status,

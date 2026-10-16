@@ -1,6 +1,6 @@
 # fake-cxl-pool-controller as a Deployment with its own ServiceAccount and
-# RBAC (doc/cxl/POOL.md of the CXL DRA driver, "What the pool controller
-# writes").
+# RBAC (docs/memory/cxl/pool.md of the CXL DRA driver, "What the pool
+# controller writes").
 #
 # Not used by the e2e tests: they run the controller in the VM as a
 # transient systemd unit with the admin kubeconfig (plan-2-dra D26). This
@@ -40,7 +40,7 @@ rules:
 - apiGroups: [resource.k8s.io]
   resources: [resourceclaims/driver]
   verbs: ["arbitrary-node:patch", "arbitrary-node:update"]
-  resourceNames: ["cxl-pool.generic"]
+  resourceNames: ["cxl-pool.nri.io"]
 - apiGroups: [""]
   resources: [nodes]
   verbs: [get, list, watch]
@@ -96,7 +96,7 @@ spec:
         - -server
         - http://192.168.76.2:9909
         - -driver-name
-        - cxl-pool.generic
+        - cxl-pool.nri.io
         - -pool-name
         - fake-cxl-pool
         resources:

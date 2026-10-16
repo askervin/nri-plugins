@@ -573,7 +573,7 @@ failed test which left another shape does not break the next one.
 
 The VMs of a multi-node cluster need a VM network: their topologies set
 `vm_network` (`vm_network.var.sh`, for instance `cxl-pool` in
-`memory.test-suite/memory-policy/n4-cxl-shared-{1,2}`). Each such VM gets a
+`memory.test-suite/dra-driver-cxl/n4-cxl-shared-{1,2}`). Each such VM gets a
 second NIC on a qemu multicast socket of the host loopback, which needs no
 host privileges. The address and MAC of the VM and the multicast group of
 the network are derived and recorded as `VMNET_*` in the `env` file of the
@@ -585,5 +585,5 @@ Only the bridge CNI is supported.
 
 To bring the VMs back to single-node clusters by hand, run any test that
 declares that shape, for instance
-`memory.test-suite/memory-policy/n4-cxl-shared-2/test11-dra-sharing`.
+`memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test11-dra-sharing`.
 

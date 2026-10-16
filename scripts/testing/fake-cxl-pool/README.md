@@ -10,7 +10,7 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
   server's REST API. In a VM, the client also prepares hotplugged memory for
   use and releases it before detach (`guest` commands).
 - `fake-cxl-pool-controller` connects a Kubernetes cluster to the server:
-  it publishes the pool devices for DRA (driver `cxl-pool.generic`) and
+  it publishes the pool devices for DRA (driver `cxl-pool.nri.io`) and
   attaches and detaches them as the scheduler allocates and frees claims
   (see [fake-cxl-pool-controller](#fake-cxl-pool-controller)).
 
@@ -84,7 +84,7 @@ The server scans `/proc/*/cmdline` for `qemu-system-*`:
   `befile_...` (test/e2e/lib/topology2qemuopts.py) become *local* devices of
   that VM (`scope: local`): attach plugs them into their own bus with their
   own serial and never object-adds or object-deletes them. A `scope: local`
-  device is what the DRA driver `cxl.generic` publishes as a device with
+  device is what the DRA driver `cxl.nri.io` publishes as a device with
   `source: local`; only `scope: pool` devices are published by
   fake-cxl-pool-controller. A `befile_`
   backend whose file is declared in several VMs is one shared device bound to
@@ -181,11 +181,12 @@ attachment clears itself if qemu deletes the device later.
 
 ## fake-cxl-pool-controller
 
-The cluster side of the DRA driver `cxl-pool.generic`. The node side is the
-pool driver `cxl-pool.generic` of kubelet-cxl-plugin in
-intel-resource-drivers-for-kubernetes; the contract between the two is
-[doc/cxl/POOL.md](https://github.com/intel/intel-resource-drivers-for-kubernetes/blob/main/doc/cxl/POOL.md)
-in the driver repository. The controller:
+The cluster side of the DRA driver `cxl-pool.nri.io`. The node side is the
+pool driver `cxl-pool.nri.io` of nri-dra-driver-cxl, the CXL DRA driver of
+this repository (cmd/plugins/dra-driver-cxl); the contract between the two
+is [docs/memory/cxl/pool.md](../../../docs/memory/cxl/pool.md).
+[docs/memory/cxl/e2e.md](../../../docs/memory/cxl/e2e.md) shows how to run
+the server, the controller and the driver in the e2e VMs. The controller:
 
 - publishes the pool devices of the server (`GET /devices?scope=pool`) as one
   cluster-scoped ResourceSlice (`allNodes`) of pool `fake-cxl-pool`. Every
@@ -193,7 +194,7 @@ in the driver repository. The controller:
   `shared` and `size` (bytes). Exclusive devices have `capacity.memory`, shared devices
   `allowMultipleAllocations` and `capacity.hosts` (how many nodes may attach
   them); all have `bindsToNode` and the binding conditions
-  `cxl-pool.generic/Attached` / `cxl-pool.generic/AttachFailed`. Device
+  `cxl-pool.nri.io/Attached` / `cxl-pool.nri.io/AttachFailed`. Device
   names become DNS labels; devices in state `error` are not published. The
   slice is updated when the device list changes (server events, or every
   sync interval) and deleted when the controller stops (it has no owner,
@@ -202,7 +203,7 @@ in the driver repository. The controller:
   `allocation.nodeSelector` (`metadata.name`), host = the server host whose
   uuid is the Node's `status.nodeInfo.systemUUID` (lower case, dashes
   ignored), else the host whose name is the node name. Then it writes
-  `cxl-pool.generic/Attached=True` and the device data (serial, shared, size,
+  `cxl-pool.nri.io/Attached=True` and the device data (serial, shared, size,
   host, hostUUID, attachment, qemuDeviceId, exclusive) into
   `claim.status.devices[]`, which releases the
   scheduler's binding wait and tells the node plugin which memdev to wait
@@ -227,7 +228,7 @@ different clusters.
 
 ```
 fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
-    [-driver-name cxl-pool.generic] [-pool-name fake-cxl-pool]
+    [-driver-name cxl-pool.nri.io] [-pool-name fake-cxl-pool]
     [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
     [-shared-hosts 4] [-owner-prefix k8s:] [-v]
 ```
@@ -241,7 +242,7 @@ systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-control
 
 [deploy/fake-cxl-pool-controller.yaml](deploy/fake-cxl-pool-controller.yaml)
 runs it as a Deployment with a ServiceAccount and the RBAC it needs
-(`resourceclaims/driver` `arbitrary-node:update` for `cxl-pool.generic`,
+(`resourceclaims/driver` `arbitrary-node:update` for `cxl-pool.nri.io`,
 `resourceclaims/status`, `resourceslices`, nodes, events).
 
 ## REST API
@@ -278,7 +279,7 @@ device in time (attachment `failed`).
 ```
 cmd/fake-cxl-pool-server   server main
 cmd/fake-cxl-pool-client   CLI
-cmd/fake-cxl-pool-controller  DRA pool controller (cxl-pool.generic) main
+cmd/fake-cxl-pool-controller  DRA pool controller (cxl-pool.nri.io) main
 pkg/api                    JSON types, routes, errors, size/serial units
 pkg/client                 Go client library
 pkg/controller             DRA pool controller: ResourceSlice publisher, attach/detach reconciler
