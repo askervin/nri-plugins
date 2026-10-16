@@ -16,7 +16,7 @@ framework works on the host (see the `test/e2e` directory and its
 - [Example a: local CXL memory as RAM](#example-a-local-cxl-memory-as-ram)
 - [Example b: a local dax slice](#example-b-a-local-dax-slice)
 - [Example c: a pool device as RAM](#example-c-a-pool-device-as-ram)
-- [Example d: a shared pool device in two clusters](#example-d-a-shared-pool-device-in-two-clusters)
+- [Example d: a shared pool device on two nodes](#example-d-a-shared-pool-device-on-two-nodes)
 - [Example e: leasing memory in a running container](#example-e-leasing-memory-in-a-running-container)
 - [Example f: a shared file, one writer, three readers](#example-f-a-shared-file-one-writer-three-readers)
 - [Clean up](#clean-up)
@@ -25,28 +25,30 @@ framework works on the host (see the `test/e2e` directory and its
 ## The setup
 
 Two VMs of the e2e topologies `n4-cxl-shared-1` (VM1) and
-`n4-cxl-shared-2` (VM2), Fedora with containerd, each a single-node
-Kubernetes cluster. The VM name is also the host name and the node name:
+`n4-cxl-shared-2` (VM2), Fedora with containerd, the two nodes of one
+Kubernetes cluster: VM2 is the control plane, without the control-plane
+taint, so that pods run on it too, and VM1 is a worker. The VM name is
+also the host name and the node name:
 `n4-cxl-shared-1-fedora-43-containerd` and
 `n4-cxl-shared-2-fedora-43-containerd` (other distros and runtimes change
 the suffix; adjust the names below then).
 
 ```
  host
- +-------------------------------------------------------------------+
- | fake-cxl-pool-server 127.0.0.1:9909                               |
- |   pool devices: backing files /tmp/fake-cxl-pool/<device>.raw    |
- |   hotplugs and hot-removes cxl-type3 devices over QMP             |
- |                                                                   |
- |  qemu: VM1 n4-cxl-shared-1          qemu: VM2 n4-cxl-shared-2     |
- |  +---------------------------+      +---------------------------+ |
- |  | Kubernetes node           |      | Kubernetes node           | |
- |  | nri-dra-driver-cxl        |      | nri-dra-driver-cxl        | |
- |  |   (DaemonSet, helm)       |      |   (DaemonSet, helm)       | |
- |  | fake-cxl-pool-controller  |      | fake-cxl-pool-controller  | |
- |  |   -> 192.168.76.2:9909    |      |   -> 192.168.76.2:9909    | |
- |  +---------------------------+      +---------------------------+ |
- +-------------------------------------------------------------------+
+ +-----------------------------------------------------------------------+
+ | fake-cxl-pool-server 127.0.0.1:9909                                   |
+ |   pool devices: backing files /tmp/fake-cxl-pool/<device>.raw         |
+ |   hotplugs and hot-removes cxl-type3 devices over QMP                 |
+ |                                                                       |
+ |  qemu: VM1 n4-cxl-shared-1             qemu: VM2 n4-cxl-shared-2      |
+ |  +---------------------------+        +---------------------------+   |
+ |  | Kubernetes worker         |   VM   | Kubernetes control plane  |   |
+ |  | nri-dra-driver-cxl pod    |network | nri-dra-driver-cxl pod    |   |
+ |  |                           |<------>| fake-cxl-pool-controller  |   |
+ |  |                           |cxl-pool|   -> 192.168.76.2:9909    |   |
+ |  +---------------------------+        +---------------------------+   |
+ |    one cluster: one DaemonSet of the driver, one pool controller      |
+ +-----------------------------------------------------------------------+
 ```
 
 Each VM has two NUMA nodes of DRAM (0 and 1, 4G each), a memory block
@@ -65,15 +67,24 @@ The ports hold:
   test `test01-shared-cxl` uses without Kubernetes.
 
 The VMs reach the host at `192.168.76.2` (the slirp gateway), so
-fake-cxl-pool-controller in a VM talks to fake-cxl-pool-server on the
-host. The VMs of `n4-cxl-shared-1` and `n4-cxl-shared-2` also have a VM
-network of their own (`cxl-pool`), over which the e2e framework can make
-one cluster of the two (`vm-k8s-reinit` in `test/e2e/lib/k8s.bash`).
+fake-cxl-pool-controller on VM2 talks to fake-cxl-pool-server on the
+host. The nodes talk to each other over the VM network `cxl-pool` of the
+two topologies (node addresses `10.76.x.y`); the e2e framework made the
+cluster over it (`vm-k8s-reinit` in `test/e2e/lib/k8s.bash`, called by
+`n4-cxl-shared-2/test00-up`, see [Create the VMs](#create-the-vms)). That
+is the normal state of the VMs: the tests and the examples use the
+cluster as it is and never change its shape. `kubectl` works on both
+nodes (both have the admin kubeconfig); the examples run it on VM2.
 
-A device of the pool is attached to the VM where the scheduler puts its
-claim, by the pool controller of the cluster. Several clusters may use
-the same fake-cxl-pool-server: shared devices are attached to nodes of
-both clusters, an exclusive attachment keeps out every other host.
+The pool controller publishes the pool devices once, for all nodes. A
+device of the pool is attached to the node where the scheduler puts the
+pod of its claim; one claim covers one node, so a shared device used on
+both nodes needs a claim per node. Pods whose node matters get a
+`nodeSelector` on `kubernetes.io/hostname` (never `nodeName`, which would
+skip the scheduler and with it the allocation of the claims). Several
+clusters may also share one fake-cxl-pool-server, each with a pool
+controller of its own: an exclusive attachment keeps out every other
+host, of any cluster.
 
 ## Prerequisites
 
@@ -136,7 +147,9 @@ Rebuild the image after every change of the driver.
 
 `test00-up` of each topology creates its VM (or starts it), installs the
 CXL kernel and the `cxl` and `daxctl` tools in it, and checks the qemu
-devices and the kernel:
+devices and the kernel. `n4-cxl-shared-2/test00-up` then makes the
+cluster: VM2 the control plane, VM1 joined as a worker. So run VM1's
+first:
 
 ```bash
 cd test/e2e
@@ -144,6 +157,23 @@ qemu_bin=/path/to/patched/qemu-system-x86_64 \
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
 qemu_bin=/path/to/patched/qemu-system-x86_64 \
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
+```
+
+The cluster stays that way. A cluster that is in shape already is left
+alone; one in another shape is rebuilt (`kubeadm reset`, `init` and
+`join`, a minute or two, all cluster state is lost). The other tests of
+`n4-cxl-shared-2` only check the shape and fail at once, with "run
+memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up first", when it
+is not there. In VM2:
+
+```bash
+kubectl get nodes -o wide
+```
+
+```
+NAME                                   STATUS   ROLES           AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                          KERNEL-VERSION      CONTAINER-RUNTIME
+n4-cxl-shared-1-fedora-43-containerd   Ready    <none>          44m   v1.37.1   10.76.85.237    <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc7 (amd64)   containerd://2.4.2
+n4-cxl-shared-2-fedora-43-containerd   Ready    control-plane   44m   v1.37.1   10.76.162.174   <none>        Fedora Linux 43 (Cloud Edition)   7.3.0-rc7 (amd64)   containerd://2.4.2
 ```
 
 Kubernetes is the latest release (`k8s_release`), v1.37 or later is
@@ -166,29 +196,31 @@ ssh -F test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config node
 The tests of the driver are in
 [`test/e2e/memory.test-suite/dra-driver-cxl`](tree:/test/e2e/memory.test-suite/dra-driver-cxl).
 They install the driver with helm from `deployment/helm/dra-driver-cxl`
-and the image of `make images`, run fake-cxl-pool-server on the host and
-fake-cxl-pool-controller in the VMs, and clean up after themselves. Run
-them one at a time, from `test/e2e`:
+on both nodes (the image of `make images`, imported into VM1 too), run
+fake-cxl-pool-server on the host and fake-cxl-pool-controller once, on
+VM2, and clean up after themselves. Run them one at a time, from
+`test/e2e`:
 
 ```bash
 cd test/e2e
 ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
 ```
 
-or all of them in order:
+or the whole suite in order (`n4-cxl-shared-1/test00-up`, then
+`n4-cxl-shared-2/test00-up` and the tests of `n4-cxl-shared-2`):
 
 ```bash
-./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2
+./run_tests.sh memory.test-suite/dra-driver-cxl
 ```
 
 | test | |
 |:-----|:-|
-| `test00-up` | create and check the VM (of each topology) |
+| `test00-up` | create and check the VM of the topology; `n4-cxl-shared-2/test00-up` also makes the two-node cluster |
 | `test01-shared-cxl` | CXL memory shared by the two VMs through fake-cxl-pool, without Kubernetes |
 | `test10-dra-pooling` | pool devices for pods: exclusive devices as NUMA node and as dax device |
-| `test11-dra-sharing` | a shared device in the two single-node clusters at once |
+| `test11-dra-sharing` | a shared device claimed on the two nodes at once, one host each: VM1 writes, VM2 reads, VM1 lets go while VM2 still reads |
 | `test12-dra-live-attach` | leases of pool memory for running containers |
-| `test13-dra-shared-one-writer-many-readers` | single-writer sharing on the two nodes of one cluster |
+| `test13-dra-shared-one-writer-many-readers` | single-writer sharing on the two nodes: an exclusive writer, then read-only readers on both nodes |
 | `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
 | `test15-dra-local-live-attach` | leases of local memory for running containers |
 
@@ -300,8 +332,8 @@ pool devices
 
 ```
 NAME                                  STATE    CONTROL  PID     QEMU                              UUID                                  FREE-SLOTS  ATTACHMENTS  LOCAL-DEVICES
-n4-cxl-shared-1-fedora-43-containerd  running  qmp      40020   11.0.50 v11.0.0-2960-g1238677442  b6a78455-edb1-558d-8cf1-01a259f76e97  6/8         0            2
-n4-cxl-shared-2-fedora-43-containerd  running  qmp      331593  11.0.50 v11.0.0-2960-g1238677442  1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1  6/8         0            2
+n4-cxl-shared-1-fedora-43-containerd  running  qmp      396789  11.0.50 v11.0.0-2960-g1238677442  b6a78455-edb1-558d-8cf1-01a259f76e97  6/8         0            2
+n4-cxl-shared-2-fedora-43-containerd  running  qmp      398635  11.0.50 v11.0.0-2960-g1238677442  1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1  6/8         0            2
 NAME                                          SERIAL      SIZE   SHARED  SCOPE                                                                            STATE  ATTACHED-TO  OWNER
 n4-cxl-shared-1-fedora-43-containerd.memdev1  0xc100e2e1  256Mi  false   local:n4-cxl-shared-1-fedora-43-containerd                                       free   -            -
 n4-cxl-shared-2-fedora-43-containerd.memdev1  0xc100e2e1  1Gi    false   local:n4-cxl-shared-2-fedora-43-containerd                                       free   -            -
@@ -314,17 +346,20 @@ static-shared0                                0xc1ae0000  256Mi  true    local:n
 devices of the VMs (scope `local:<VM name>`), among them
 `n4-cxl-shared-2-fedora-43-containerd.memdev1`.
 
-Deploy the driver and the pool controller in the cluster of VM2:
+Deploy the driver in the cluster: its image into both nodes, then the
+chart, the pool controller and the helm release on VM2, the control
+plane. One `helm install` makes the DaemonSet run a driver pod on each
+node; `cxl-helm-install` waits for both:
 
 ```bash
+cxl-image-put "$VM1"
 cxl-image-put "$VM2"
+cxl-images-pull "$VM1"
+cxl-images-pull "$VM2"
 cxl-chart-put "$VM2"
 cxl-controller-start "$VM2"
 cxl-helm-install "$VM2"
-cxl-images-pull "$VM2"
 ```
-
-Example d uses the cluster of VM1 too: deploy the same there with `"$VM1"`.
 
 Then log in to VM2 (`vm "$VM2"`, or
 `ssh -F test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config node`)
@@ -339,35 +374,42 @@ cat /sys/devices/system/memory/auto_online_blocks
 
 ```
 NAME                       READY   STATUS    RESTARTS   AGE   IP            NODE                                   NOMINATED NODE   READINESS GATES
-nri-dra-driver-cxl-hjfmp   1/1     Running   0          11s   10.217.0.27   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+nri-dra-driver-cxl-8x6cz   1/1     Running   0          6s    10.217.0.96   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+nri-dra-driver-cxl-tnx6b   1/1     Running   0          6s    10.217.1.28   n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
 NAME              AGE
-cxl-dram          12s
-cxl-lease         12s
-cxl-local         12s
-cxl-pool          12s
-cxl-pool-shared   12s
-cxl-region        12s
+cxl-dram          6s
+cxl-lease         6s
+cxl-local         6s
+cxl-pool          6s
+cxl-pool-shared   6s
+cxl-region        6s
 DRIVER            NODE                                   POOL                                   DEVICES
 cxl-pool.nri.io   <none>                                 fake-cxl-pool                          pooled0,shared0
+cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   n4-cxl-shared-1-fedora-43-containerd   dram,lease
 cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   n4-cxl-shared-2-fedora-43-containerd   lease,dram
 offline
 ```
 
-The node publishes `dram` and `lease`; `memdev-c100e2e1` appears when the
-local device is attached (example a). The pool controller publishes the
-two pool devices for every node. `auto_online_blocks` is `offline` (the
-kernel configuration of the VMs): the driver onlines memory itself.
+Each node publishes `dram` and `lease` in a ResourceSlice of its own;
+`memdev-c100e2e1` appears on VM2 when its local device is attached
+(example a). The pool controller publishes the two pool devices once, for
+all nodes. `auto_online_blocks` is `offline` (the kernel configuration of
+the VMs): the driver onlines memory itself.
 
-The examples run `kubectl` in VM2 (and in VM1 for example d) as user
-`vagrant`, in the namespace `default`, and delete what they create.
+The examples run `kubectl` in VM2 as user `vagrant`, in the namespace
+`default`, and delete what they create. Their pods have a `nodeSelector`
+for the node where they belong: VM2 for the examples of one node, which
+also run their node-side commands (`cxl`, `daxctl`) in VM2.
 
 ## Example a: local CXL memory as RAM
 
 256Mi of the local CXL memory device of VM2 as system RAM: the driver
 creates a region on the device, onlines a slice of it as movable memory
-of the device's NUMA node, and steers the container to that node. In VM2,
-attach the local device (nothing happens if it is attached already) and
-wait until the driver publishes it:
+of the device's NUMA node, and steers the container to that node. Only
+VM2's local device is attached, so only VM2 can serve the claim; the pod
+says so with its `nodeSelector` all the same. In VM2, attach the local
+device (nothing happens if it is attached already) and wait until the
+driver publishes it:
 
 ```bash
 fake-cxl-pool-client attach "$(hostname).memdev1" --self
@@ -399,6 +441,8 @@ kind: Pod
 metadata:
   name: local-numa
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: n4-cxl-shared-2-fedora-43-containerd
   terminationGracePeriodSeconds: 2
   resourceClaims:
   - name: mem
@@ -442,7 +486,8 @@ and the state of the driver:
 sudo cxl list -R
 grep MemTotal /sys/devices/system/node/node2/meminfo
 sudo cat /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json; echo
-kubectl logs -n kube-system ds/nri-dra-driver-cxl | grep 'local: memdev'
+kubectl logs -n kube-system $(kubectl get pods -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl \
+    --field-selector spec.nodeName=$(hostname) -o name) | grep 'local: memdev'
 ```
 
 Delete the pod and the claim: the driver offlines and deletes the slice
@@ -490,6 +535,8 @@ kind: Pod
 metadata:
   name: local-dax
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: n4-cxl-shared-2-fedora-43-containerd
   terminationGracePeriodSeconds: 2
   resourceClaims:
   - name: mem
@@ -555,7 +602,10 @@ and waits for its binding condition, the pool controller attaches it to
 the node through fake-cxl-pool-server and sets
 `cxl-pool.nri.io/Attached`, and the driver onlines the hotplugged device
 as a new NUMA node. The container is not steered: it gets the node number
-and binds its memory there itself (`numactl --membind`, `mbind`). In VM2:
+and binds its memory there itself (`numactl --membind`, `mbind`). The pool
+device could go to either node; the pod's `nodeSelector` makes the
+scheduler allocate it for VM2, so the node-side commands below run in
+VM2. In VM2:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -578,6 +628,8 @@ kind: Pod
 metadata:
   name: pool-numa
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: n4-cxl-shared-2-fedora-43-containerd
   terminationGracePeriodSeconds: 2
   resourceClaims:
   - name: mem
@@ -643,69 +695,44 @@ sudo cxl list -M
 Never force-delete a pod that uses pool memory
 ([pool.md](pool.md#ordering-and-failure-semantics)).
 
-## Example d: a shared pool device in two clusters
+## Example d: a shared pool device on two nodes
 
-`shared0` attached to the single-node clusters of VM1 and VM2 at the same
-time, each with a claim of its own on `cxl-pool-shared` (one of the
-device's four `hosts`): a writer in cluster 2 and a reader in cluster 1
-see the same bytes. Both clusters need the driver and a pool controller:
-on the host, deploy them to VM1 as to VM2 in
-[Deploy by hand](#deploy-by-hand):
-
-```bash
-cxl-image-put "$VM1"
-cxl-chart-put "$VM1"
-cxl-controller-start "$VM1"
-cxl-helm-install "$VM1"
-cxl-images-pull "$VM1"
-```
-
-The claim, the same in both clusters:
-
-```yaml
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaim
-metadata:
-  name: shared-memory
-spec:
-  devices:
-    requests:
-    - name: mem
-      exactly:
-        deviceClassName: cxl-pool-shared
-        selectors:
-        - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
-```
-
-In VM2, the claim and a writer that writes a new message every two
-seconds:
+`shared0` attached to both nodes at the same time: a writer pod on VM2
+and a reader pod on VM1 see the same bytes. Each pod has a claim of its
+own on `cxl-pool-shared`, one of the device's four `hosts`: one claim
+covers one node, so the pods get their claims from a
+ResourceClaimTemplate, and a `nodeSelector` puts each pod on its node.
+The writer writes a new message every two seconds, the reader prints
+what it reads every two seconds. In VM2:
 
 ```bash
 kubectl apply -f - <<'EOF'
 apiVersion: resource.k8s.io/v1
-kind: ResourceClaim
+kind: ResourceClaimTemplate
 metadata:
   name: shared-memory
 spec:
-  devices:
-    requests:
-    - name: mem
-      exactly:
-        deviceClassName: cxl-pool-shared
-        selectors:
-        - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+  spec:
+    devices:
+      requests:
+      - name: mem
+        exactly:
+          deviceClassName: cxl-pool-shared
+          selectors:
+          - cel:
+              expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
 ---
 apiVersion: v1
 kind: Pod
 metadata:
   name: shared-writer
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: n4-cxl-shared-2-fedora-43-containerd
   terminationGracePeriodSeconds: 2
   resourceClaims:
   - name: mem
-    resourceClaimName: shared-memory
+    resourceClaimTemplateName: shared-memory
   containers:
   - name: writer
     image: docker.io/library/python:3-alpine
@@ -733,38 +760,18 @@ spec:
     resources:
       claims:
       - name: mem
-EOF
-kubectl wait --for=condition=Ready pod/shared-writer --timeout=180s
-kubectl logs shared-writer
-```
-
-In VM1 (`vm "$VM1"` on the host), the same claim and a reader:
-
-```bash
-kubectl apply -f - <<'EOF'
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaim
-metadata:
-  name: shared-memory
-spec:
-  devices:
-    requests:
-    - name: mem
-      exactly:
-        deviceClassName: cxl-pool-shared
-        selectors:
-        - cel:
-            expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
 ---
 apiVersion: v1
 kind: Pod
 metadata:
   name: shared-reader
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: n4-cxl-shared-1-fedora-43-containerd
   terminationGracePeriodSeconds: 2
   resourceClaims:
   - name: mem
-    resourceClaimName: shared-memory
+    resourceClaimTemplateName: shared-memory
   containers:
   - name: reader
     image: docker.io/library/python:3-alpine
@@ -784,13 +791,26 @@ spec:
       claims:
       - name: mem
 EOF
-kubectl wait --for=condition=Ready pod/shared-reader --timeout=180s
+kubectl wait --for=condition=Ready pod/shared-writer pod/shared-reader --timeout=180s
+kubectl get pods -o wide
+kubectl get resourceclaims -o custom-columns='NAME:.metadata.name,NODE:.status.allocation.nodeSelector.nodeSelectorTerms[0].matchFields[0].values[0],HOSTS:.status.allocation.devices.results[0].consumedCapacity.hosts'
 kubectl exec shared-reader -- sh -c 'env | grep ^CXL_ | sort'
-until [ "$(kubectl logs shared-reader | grep -c '^read:')" -ge 3 ]; do sleep 1; done
+until [ "$(kubectl logs shared-reader | grep -c '^read: message')" -ge 3 ]; do sleep 1; done
 kubectl logs --tail 3 shared-reader
 ```
 
 ```
+resourceclaimtemplate.resource.k8s.io/shared-memory created
+pod/shared-writer created
+pod/shared-reader created
+pod/shared-writer condition met
+pod/shared-reader condition met
+NAME            READY   STATUS    RESTARTS   AGE   IP             NODE                                   NOMINATED NODE   READINESS GATES
+shared-reader   1/1     Running   0          7s    10.217.1.29    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
+shared-writer   1/1     Running   0          7s    10.217.0.100   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+NAME                      NODE                                   HOSTS
+shared-reader-mem-4whx5   n4-cxl-shared-1-fedora-43-containerd   1
+shared-writer-mem-rf9kh   n4-cxl-shared-2-fedora-43-containerd   1
 CXL_C1AE0001_DAX=/dev/dax0.0
 CXL_C1AE0001_MODE=dax
 CXL_C1AE0001_READONLY=0
@@ -798,15 +818,18 @@ CXL_C1AE0001_SERIAL=0xc1ae0001
 CXL_C1AE0001_SHARED=1
 CXL_C1AE0001_SIZE=268435456
 CXL_CLAIM_<uid>=1
-read: message 4 from n4-cxl-shared-2-fedora-43-containerd
-read: message 5 from n4-cxl-shared-2-fedora-43-containerd
-read: message 6 from n4-cxl-shared-2-fedora-43-containerd
+read: message 1 from n4-cxl-shared-2-fedora-43-containerd
+read: message 2 from n4-cxl-shared-2-fedora-43-containerd
+read: message 3 from n4-cxl-shared-2-fedora-43-containerd
 ```
 
-The reader in cluster 1 reads what the writer in cluster 2 writes, with
-no network in between: the memory is the backing file of `shared0` on the
-host (with real hardware, the memory of the device behind the CXL
-switch). On the host, the device is attached to both VMs:
+Each pod got a claim of its own from the template, allocated for the
+node of the pod, with one of the four `hosts` of `shared0`.
+
+The reader on VM1 reads what the writer on VM2 writes, with no network
+in between: the memory is the backing file of `shared0` on the host (with
+real hardware, the memory of the device behind the CXL switch). On the
+host, the device is attached to both VMs:
 
 ```bash
 pool attachments --device shared0
@@ -818,24 +841,24 @@ shared0@n4-cxl-shared-1-fedora-43-containerd  cxlsw_ds0_usrp0hb0  0     fcp_shar
 shared0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds0_usrp0hb0  0     fcp_shared0.hp3  fcp_shared0.hp3  0xc1ae0001  attached  -
 ```
 
-Clean up in both VMs (cluster 2: `shared-writer`, cluster 1:
-`shared-reader`):
+Clean up in VM2:
 
 ```bash
-kubectl delete pod/shared-writer resourceclaim/shared-memory    # in VM2
-kubectl delete pod/shared-reader resourceclaim/shared-memory    # in VM1
+kubectl delete pod/shared-writer pod/shared-reader resourceclaimtemplate/shared-memory
 ```
 
-In one cluster of two nodes ([example f](#example-f-a-shared-file-one-writer-three-readers))
-the same is one ResourceClaimTemplate and two pods with a `nodeSelector`
-each: one claim covers one node.
+Several clusters that use one fake-cxl-pool-server share a device the
+same way, each with the driver and a pool controller of its own; the e2e
+VMs are one cluster, so this guide does not show it.
 
 ## Example e: leasing memory in a running container
 
 A pod with a claim on the lease device (`cxl-lease`) gets the lease socket
 and `cxl-request`, with which the running container asks for more memory
-([leases.md](leases.md)). In VM2, attach the local device (local memory
-first, then pool memory) and create the pod:
+([leases.md](leases.md)). Every node publishes a lease device, and the
+companion pods of the leases follow their requester to its node: the pod
+is pinned to VM2, whose local device it leases first (local memory first,
+then pool memory). In VM2, attach the local device and create the pod:
 
 ```bash
 fake-cxl-pool-client attach "$(hostname).memdev1" --self
@@ -857,6 +880,8 @@ kind: Pod
 metadata:
   name: borrower
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: n4-cxl-shared-2-fedora-43-containerd
   terminationGracePeriodSeconds: 2
   resourceClaims:
   - name: lease
@@ -875,7 +900,7 @@ kubectl exec borrower -- sh -c 'echo $CXL_LEASE_SOCKET; ls -l /usr/local/bin/cxl
 
 ```
 /run/cxl/cxl.sock
--rwxr-xr-x    1 root     root       3918324 Oct 16 12:23 /usr/local/bin/cxl-request
+-rwxr-xr-x    1 root     root       3918316 Oct 16 15:53 /usr/local/bin/cxl-request
 0-1
 ```
 
@@ -890,13 +915,13 @@ kubectl get pods,resourceclaims -l cxl.nri.io/lease
 ```
 
 ```
-{"lease":"1b7d6551","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
+{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa","shared":false,"readOnly":false,"size":134217728,"serial":"0xc100e2e1","node":2,"env":{"CXL_C100E2E1_MODE":"numa","CXL_C100E2E1_NODE":"2","CXL_C100E2E1_SERIAL":"0xc100e2e1","CXL_C100E2E1_SHARED":"0","CXL_C100E2E1_SIZE":"134217728"}}
 0-2
 NAME                     READY   STATUS              RESTARTS   AGE
-pod/cxl-lease-1b7d6551   0/1     ContainerCreating   0          0s
+pod/cxl-lease-319ab5d0   0/1     ContainerCreating   0          1s
 
 NAME                                               STATE                AGE
-resourceclaim.resource.k8s.io/cxl-lease-1b7d6551   allocated,reserved   0s
+resourceclaim.resource.k8s.io/cxl-lease-319ab5d0   allocated,reserved   1s
 ```
 
 The lease is Ready as soon as the companion claim is prepared and the
@@ -922,10 +947,10 @@ CXL_C1EE0001_SERIAL=0xc1ee0001
 CXL_C1EE0001_SHARED=0
 CXL_C1EE0001_SIZE=536870912
 CXL_CLAIM_<uid>=1
-CXL_LEASE=ca0ba3b1
+CXL_LEASE=11ff3fc6
 CXL_LEASE_SOCKET=/run/cxl/cxl.sock
 /dev/dax2.0
-{"shared":false,"readOnly":false,"leases":[{"lease":"1b7d6551","state":"Ready","source":"local","mode":"numa",...},{"lease":"ca0ba3b1","state":"Ready","source":"pool","mode":"dax","shared":false,"readOnly":false,"size":536870912,"serial":"0xc1ee0001","dax":"/dev/dax2.0","env":{...}}]}
+{"shared":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Ready","source":"pool","mode":"dax","shared":false,"readOnly":false,"size":536870912,"serial":"0xc1ee0001","dax":"/dev/dax2.0","env":{...}},{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa",...}]}
 ```
 
 `CXL_CLAIM_<uid>` is the marker of the pod's own lease claim. The whole
@@ -941,7 +966,7 @@ kubectl delete pod/borrower resourceclaimtemplate/cxl-lease
 ```
 
 ```
-{"shared":false,"readOnly":false,"leases":[{"lease":"1b7d6551","state":"Released","shared":false,"readOnly":false},{"lease":"ca0ba3b1","state":"Released","shared":false,"readOnly":false}]}
+{"shared":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Released","shared":false,"readOnly":false},{"lease":"319ab5d0","state":"Released","shared":false,"readOnly":false}]}
 0-1
 pod "borrower" deleted from default namespace
 resourceclaimtemplate.resource.k8s.io "cxl-lease" deleted from default namespace
@@ -975,62 +1000,8 @@ of a writer waits until the readers' claims are deallocated. Devdax
 needs `MAP_SHARED` and a mapping length that is a multiple of the device
 alignment (2 MiB); the tool maps the whole device, 256 MiB.
 
-The pods run on the two nodes of one cluster: VM2 the control plane, VM1
-a worker. `test13-dra-shared-one-writer-many-readers` makes that cluster
-of the two VMs (with `vm-k8s-reinit` of the e2e framework) and keeps it
-after a successful run with `k8s_restore=no`. The test rebuilds the
-clusters of both VMs and needs the port of fake-cxl-pool-server: remove
-first what the examples left (the driver and the pool controller in both
-VMs, the local device of VM2), stop the server of this guide, then run
-the test (about five minutes) and start the server again. On the host:
-
-```bash
-vm "$VM2" 'helm uninstall -n kube-system test --wait; sudo systemctl stop fake-cxl-pool-controller;
-    sudo fake-cxl-pool-client guest release 0xc100e2e1; fake-cxl-pool-client detach "$(hostname).memdev1" --self'
-vm "$VM1" 'helm uninstall -n kube-system test --wait; sudo systemctl stop fake-cxl-pool-controller'
-kill $POOL_SERVER_PID
-(cd test/e2e && k8s_restore=no ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers)
-"$P/bin/fake-cxl-pool-server" -config "$N/build/fake-cxl-pool-demo.yaml" -state - -v \
-    > "$N/build/fake-cxl-pool-demo.log" 2>&1 &
-POOL_SERVER_PID=$!
-until curl -sf http://127.0.0.1:9909/api/v1/status >/dev/null; do sleep 1; done
-```
-
-The test removes its driver and controller when it ends. Install the
-image on both nodes, and the chart and the pool controller on the control
-plane, which installs the DaemonSet on both nodes:
-
-```bash
-cxl-image-put "$VM1"
-cxl-images-pull "$VM1"
-cxl-image-put "$VM2"
-cxl-images-pull "$VM2"
-cxl-chart-put "$VM2"
-cxl-controller-start "$VM2"
-cxl-helm-install "$VM2"
-```
-
-In VM2, check the cluster: two nodes, a driver pod on each, one pool
-ResourceSlice:
-
-```bash
-kubectl get nodes
-kubectl get pods -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl -o wide
-kubectl get resourceslices -o custom-columns='DRIVER:.spec.driver,NODE:.spec.nodeName,DEVICES:.spec.devices[*].name'
-```
-
-```
-NAME                                   STATUS   ROLES           AGE     VERSION
-n4-cxl-shared-1-fedora-43-containerd   Ready    <none>          3m48s   v1.37.1
-n4-cxl-shared-2-fedora-43-containerd   Ready    control-plane   4m      v1.37.1
-NAME                       READY   STATUS    RESTARTS   AGE   IP            NODE                                   NOMINATED NODE   READINESS GATES
-nri-dra-driver-cxl-9zpkk   1/1     Running   0          6s    10.217.1.9    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
-nri-dra-driver-cxl-sms8v   1/1     Running   0          6s    10.217.0.10   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
-DRIVER            NODE                                   DEVICES
-cxl-pool.nri.io   <none>                                 pooled0,shared0
-cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   dram,lease
-cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   dram,lease
-```
+The pods run on both nodes of the cluster: the writer on VM1, two readers
+on VM2 and one on VM1. All commands of this example run in VM2.
 
 The tool, in a ConfigMap that the pods mount at `/tools`:
 
@@ -1270,16 +1241,16 @@ for r in reader-1 reader-2 reader-3; do echo "=== $r"; kubectl logs $r; done
 ```
 
 ```
-NAME       READY   STATUS    RESTARTS   AGE   IP            NODE                                   NOMINATED NODE   READINESS GATES
-reader-1   1/1     Running   0          12s   10.217.0.13   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
-reader-2   1/1     Running   0          12s   10.217.0.14   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
-reader-3   1/1     Running   0          12s   10.217.1.13   n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
+NAME       READY   STATUS    RESTARTS   AGE   IP             NODE                                   NOMINATED NODE   READINESS GATES
+reader-1   1/1     Running   0          13s   10.217.0.104   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+reader-2   1/1     Running   0          13s   10.217.0.105   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
+reader-3   1/1     Running   0          12s   10.217.1.31    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
 === reader-1
 archive in /dev/dax0.0 (268435456 bytes, read-only 1):
   d      0 notes
   -     89 notes/hello.txt
 notes/hello.txt, 89 bytes at offset 1024 of /dev/dax0.0:
-Hello from n4-cxl-shared-1-fedora-43-containerd, written at Fri Oct 16 12:42:47 UTC 2026.
+Hello from n4-cxl-shared-1-fedora-43-containerd, written at Fri Oct 16 15:56:13 UTC 2026.
 open for writing refused: EPERM
 holding the mapping
 === reader-2
@@ -1287,7 +1258,7 @@ archive in /dev/dax0.0 (268435456 bytes, read-only 1):
   d      0 notes
   -     89 notes/hello.txt
 notes/hello.txt, 89 bytes at offset 1024 of /dev/dax0.0:
-Hello from n4-cxl-shared-1-fedora-43-containerd, written at Fri Oct 16 12:42:47 UTC 2026.
+Hello from n4-cxl-shared-1-fedora-43-containerd, written at Fri Oct 16 15:56:13 UTC 2026.
 open for writing refused: EPERM
 holding the mapping
 === reader-3
@@ -1295,7 +1266,7 @@ archive in /dev/dax0.0 (268435456 bytes, read-only 1):
   d      0 notes
   -     89 notes/hello.txt
 notes/hello.txt, 89 bytes at offset 1024 of /dev/dax0.0:
-Hello from n4-cxl-shared-1-fedora-43-containerd, written at Fri Oct 16 12:42:47 UTC 2026.
+Hello from n4-cxl-shared-1-fedora-43-containerd, written at Fri Oct 16 15:56:13 UTC 2026.
 open for writing refused: EPERM
 holding the mapping
 ```
@@ -1313,8 +1284,8 @@ pool attachments --device shared0
 
 ```
 ID                                            SLOT                NUMA  QEMU-DEVICE      QEMU-OBJECT      SERIAL      STATE     ERROR
-shared0@n4-cxl-shared-1-fedora-43-containerd  cxlsw_ds0_usrp0hb0  0     fcp_shared0.hp2  fcp_shared0.hp2  0xc1ae0001  attached  -
-shared0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds0_usrp0hb0  0     fcp_shared0.hp1  fcp_shared0.hp1  0xc1ae0001  attached  -
+shared0@n4-cxl-shared-1-fedora-43-containerd  cxlsw_ds0_usrp0hb0  0     fcp_shared0.hp3  fcp_shared0.hp3  0xc1ae0001  attached  -
+shared0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds0_usrp0hb0  0     fcp_shared0.hp5  fcp_shared0.hp5  0xc1ae0001  attached  -
 ```
 
 Clean up in VM2; the controller detaches the device from both nodes:
@@ -1323,21 +1294,12 @@ Clean up in VM2; the controller detaches the device from both nodes:
 kubectl delete pod/reader-1 pod/reader-2 pod/reader-3 resourceclaimtemplate/fs-reader configmap/cxl-tar
 ```
 
-The same works across the two single-node clusters: run the writer in one
-cluster and readers in both, each cluster with the driver and a pool
-controller (as in example d). fake-cxl-pool-server keeps the writer's
-exclusive attachment from every other host, so readers of the other
-cluster wait (their claims fail to attach and are allocated again) until
-the writer's claim is deallocated.
-
-After example f the two VMs are one cluster; [Clean up](#clean-up) makes
-two single-node clusters of them again.
-
 ## Clean up
 
 Delete the pods with claims first: kubelet needs the running driver to
 unprepare their claims, and pool devices are detached only after that.
-Then, in each VM where you deployed (after example f: VM2):
+Then, in VM2, remove the driver from both nodes (one helm release) and
+stop the pool controller:
 
 ```bash
 helm uninstall -n kube-system test --wait
@@ -1353,43 +1315,51 @@ sudo fake-cxl-pool-client guest release 0xc100e2e1
 fake-cxl-pool-client detach "$(hostname).memdev1" --self
 ```
 
-On the host, check that nothing is attached any more, and stop the
-server:
+On the host, check that nothing is attached to either VM any more, and
+stop the server:
 
 ```bash
 pool attachments
 kill $POOL_SERVER_PID
 ```
 
-After example f, make two single-node clusters of the VMs again with a
-test that does it first, `test11-dra-sharing` (it needs the port of the
-server, and removes what it installs when it ends):
-
-```bash
-(cd test/e2e && ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test11-dra-sharing)
-```
+Leave the cluster as it is: the two-node cluster is the normal state of
+the VMs, the one that the tests expect. The image of the driver stays
+imported in both VMs (`localhost/dra-driver-cxl:testing`), as after the
+tests.
 
 ## Troubleshooting
 
-- The log of the driver: `kubectl logs -n kube-system ds/nri-dra-driver-cxl`
-  (one node), or the pod of the node:
+- The log of the driver on a node: the DaemonSet has a pod on each node,
+  so ask for the pod of the node (`kubectl logs ds/nri-dra-driver-cxl`
+  picks one of them):
   `kubectl logs -n kube-system $(kubectl get pods -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl --field-selector spec.nodeName=NODE -o name)`.
   The chart logs at verbosity 4 (`logLevel`).
 - The pool controller: `sudo journalctl -u fake-cxl-pool-controller` in
-  the VM. The server: `build/fake-cxl-pool-demo.log` on the host.
+  VM2. The server: `build/fake-cxl-pool-demo.log` on the host.
 - A pod that stays `Pending` or `ContainerCreating`:
   `kubectl describe pod NAME` (scheduling, `BindingConditionsPending`,
   errors of NodePrepareResources) and `kubectl describe resourceclaim NAME`
   (allocation, the `cxl-pool.nri.io/Attached` or `AttachFailed`
   condition).
+- A pod on the wrong node: pin it with a `nodeSelector` on
+  `kubernetes.io/hostname`. Do not set `nodeName`: it skips the scheduler,
+  and with it the allocation of the pod's claims.
 - CXL devices in a VM: `sudo cxl list -M -R`, `sudo daxctl list`,
-  `cat /sys/devices/system/node/online`. The driver's state is in
-  `/var/lib/kubelet/plugins/cxl.nri.io/` and
+  `cat /sys/devices/system/node/online` in the VM of the node. The
+  driver's state is in `/var/lib/kubelet/plugins/cxl.nri.io/` and
   `/var/lib/kubelet/plugins/cxl-pool.nri.io/`
   ([Files on the node](usage.md#files-on-the-node)), its CDI specs in
   `/etc/cdi/cxl-*.yaml`.
 - A device that stays in a VM after a force-deleted pod, or a zombie
-  device of a stock qemu: the e2e framework restarts the VM to get rid of
-  it; `test00-up` of the topology does it too.
+  device of a stock qemu: the tests of `n4-cxl-shared-2` from `test10`
+  on restart a VM that has CXL devices at their start and wait until its
+  node is Ready again. Restarting VM2 makes the API server of the whole
+  cluster unavailable for a while.
+- A test fails at once with "the cluster ... is not in shape ... run
+  memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up first": the
+  VMs are not the two-node cluster (for instance after a VM was
+  recreated). Run `n4-cxl-shared-1/test00-up` and then
+  `n4-cxl-shared-2/test00-up`.
 - `run_tests.sh` fails with `port 9909 is busy`: stop the
   fake-cxl-pool-server of this guide.

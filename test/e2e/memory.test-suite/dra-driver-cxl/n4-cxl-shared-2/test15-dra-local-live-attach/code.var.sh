@@ -41,9 +41,12 @@
 #
 # The local device is cxl_memdev1 of the topology (1G, 8 memory blocks of
 # 128M in the VM), attached through fake-cxl-pool-server as in test14.
-# Sizes are derived from the block size that the VM reports. Create the VM
-# first with test00-up of n4-cxl-shared-2. The DRA driver comes from its
-# image, which has cxl-request too, build it first:
+# Sizes are derived from the block size that the VM reports. The pods run
+# on this VM (VM2), the control plane of the cluster of the test, the
+# companions follow their requester; VM1 (n4-cxl-shared-1), its worker, has
+# no local device attached. Run test00-up of n4-cxl-shared-1 and -2 first:
+# they create the VMs and make them one cluster. The DRA driver comes from
+# its image, which has cxl-request too, build it first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 
 if [[ "$distro" != *"fedora"* ]]; then
@@ -51,7 +54,11 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-VM2="$OUTPUT_DIR"      # the VM and the cluster of this test
+echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+pool-cluster-require
+
+VM1="$POOL_VM1_DIR"    # the worker of the cluster
+VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
 POOLED0_SIZE=$(( 512 << 20 ))
@@ -68,10 +75,10 @@ declare -A NUMA_SLICES=()   # NUMA claims of the local device: LABEL -> "daxX.Y 
 borrower-yaml() {
     # Usage: borrower-yaml
     #
-    # Print pod "borrower" (test12): two idle python containers, "main"
-    # with the lease claim (it can ask for leases) and "idle" without. No
-    # memory limit: lent memory is charged to the container. The claim
-    # comes from a template, so it lives and dies with the pod.
+    # Print pod "borrower" (test12) on VM2: two idle python containers,
+    # "main" with the lease claim (it can ask for leases) and "idle"
+    # without. No memory limit: lent memory is charged to the container.
+    # The claim comes from a template, so it lives and dies with the pod.
     cat <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -90,6 +97,8 @@ kind: Pod
 metadata:
   name: borrower
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: $VM2_NAME
   terminationGracePeriodSeconds: 2
   restartPolicy: Never
   resourceClaims:
@@ -447,12 +456,10 @@ nothing-left() {
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
-echo "### preconditions: the VM is a single-node cluster (test13 makes a cluster of two)"
-vm-k8s-reinit "$VM2"
-
-echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices"
+echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in either node"
 pool-vm-tools-install "$VM2"
 pool-vm-reset "$VM2"
+pool-vm-reset "$VM1"
 pool-cxl-dump "$VM2" no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 CPU_NODES=$(cxl-value 'len(nodes)')
@@ -471,7 +478,7 @@ pool-client-install "$VM2"
 
 echo "### preconditions: the pool controller and the node plugin (with cxl-request) run in the cluster"
 dra-build
-dra-install "$VM2"
+dra-install
 dra-pull-images "$VM2" "$DRA_TOOLS_IMAGE" "$PAUSE_IMAGE"
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"

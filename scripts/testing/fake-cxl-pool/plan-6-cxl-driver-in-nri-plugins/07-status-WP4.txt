@@ -312,3 +312,140 @@ n4-cxl-shared-2-fedora-43-containerd:
 Host: no fake-cxl-pool-server process, nothing listens on port 9909.
 Qemu of both VMs was not restarted (same pids 40020 and 331593 as at the
 start).
+
+
+Two-node round (2026-10-16, 18:47-19:00)
+========================================
+Base: HEAD ba8c4638d plus the uncommitted two-node e2e change
+(09-status-two-node-cluster.txt, its "Requests to WP4" all handled).
+Image: build/images/nri-dra-driver-cxl-image-81308ad5dc0f.tar (newest,
+not rebuilt). Start state: one cluster, n4-cxl-shared-2 (VM2) Ready
+control-plane without taint, n4-cxl-shared-1 (VM1) Ready worker, no
+release, no controller, no CXL devices, no DeviceClasses.
+
+Changes to docs/memory/cxl/e2e.md
+---------------------------------
+The setup       the VMs are the two nodes of one cluster (VM2 control
+                plane without taint, VM1 worker) over the VM network
+                cxl-pool, made by n4-cxl-shared-2/test00-up and never
+                reshaped; new diagram (one DaemonSet, pool controller only
+                on VM2); one pool ResourceSlice for all nodes, one claim
+                per node, pods pinned with nodeSelector
+                kubernetes.io/hostname (not nodeName); several clusters on
+                one server only as a general note.
+Create the VMs  n4-cxl-shared-1/test00-up first, then
+                n4-cxl-shared-2/test00-up, which joins VM1 as worker; the
+                cluster stays; a cluster in shape is left alone, another
+                shape is rebuilt; the other tests check the shape and fail
+                with "run .../n4-cxl-shared-2/test00-up first"; actual
+                "kubectl get nodes -o wide".
+Run the tests   the driver on both nodes (image imported into VM1 too),
+                controller once on VM2; whole suite is
+                ./run_tests.sh memory.test-suite/dra-driver-cxl; table:
+                test00-up (n4-cxl-shared-2's makes the cluster), test11
+                (shared device on both nodes, VM1 writes, VM2 reads, VM1
+                lets go), test13 (no reshaping).
+Deploy by hand  one deployment for the cluster: cxl-image-put and
+                cxl-images-pull for VM1 and VM2, chart, controller and
+                helm install only on VM2; cxl-helm-install's rollout
+                status waits for the 2 driver pods. Check output: 2 driver
+                pods, cxl.nri.io slices of both nodes, one pool slice.
+                "Example d uses the cluster of VM1 too" removed.
+Example a, b    pod pinned to VM2 (nodeSelector); text says only VM2's
+                local device is attached; the driver log of the node is
+                read from the pod of VM2 (kubectl logs ds/... picks either
+                pod now).
+Example c       pod pinned to VM2: the scheduler allocates pooled0 for
+                VM2, the node-side commands run there.
+Example d       rewritten: "a shared pool device on two nodes": one
+                ResourceClaimTemplate (cxl-pool-shared, serial
+                0xc1ae0001), writer pod pinned to VM2, reader pod pinned
+                to VM1, all applied in VM2; shows the pods' nodes, the two
+                claims with their node and hosts 1, the reader's
+                environment and reads, shared0 attached to both VMs;
+                clean-up is one command in VM2.
+Example e       borrower pinned to VM2 (lease devices on both nodes,
+                companions follow the requester).
+Example f       no test13 run, no k8s_restore, no redeploy: it runs on the
+                cluster of "Deploy by hand"; the cluster check block moved
+                to Deploy by hand.
+Clean up        in VM2 only: helm uninstall (both nodes), controller stop,
+                release/detach of the local device if attached; on the
+                host: pool attachments, kill the server. No restore of
+                single-node clusters: "leave the cluster as it is"; the
+                image stays imported in both VMs, as after the tests.
+Troubleshooting driver log of a node via its pod; pod on the wrong node:
+                nodeSelector, not nodeName; stray devices: the tests from
+                test10 on restart a VM with CXL devices (restarting VM2
+                takes the API server away for a while); the "not in
+                shape ... test00-up first" error. The earlier claim that
+                test00-up restarts VMs with devices was wrong and is gone.
+Outputs         every expected output replaced with this round's
+                (driver pods, slices, qemu pids, lease ids and order of
+                "cxl-request list", reader output, attachment tables).
+Other pages     P/README.md: the e2e VMs are one two-node cluster with one
+                controller on n4-cxl-shared-2 (was "the single-node
+                clusters of n4-cxl-shared-1 and -2"); the systemd-run line
+                says "on the control plane". No other docs/memory/cxl
+                page described the VM shapes (pool.md's "other cluster
+                sharing the pool" is generic and stays).
+
+Verification in the VMs
+-----------------------
+Same method as the verification round: every block extracted from
+e2e.md and run unchanged (host blocks in one bash after the definitions
+of "Deploy by hand"; VM blocks piped into "ssh ... node 'bash -l -s'").
+No run_tests.sh, no vm-k8s-reinit, nothing that changes the cluster
+shape. Results:
+  Create the VMs (kubectl get nodes)  as written, output updated
+  Build (fake-cxl-pool), server       as written
+  Deploy by hand                      as written: both images imported,
+                                      rollout "1 of 2 ... successfully
+                                      rolled out", 2 driver pods, 3 slices
+  Example a                           as written (node 2, cpuset.mems 0-2,
+                                      log lines of VM2's driver pod)
+  Example b                           as written (dax0.0, zeroed True)
+  Example c                           as written, pod on VM2, node 2
+  Example d                           as written on the first run: claims
+                                      on VM1 and VM2 with hosts 1 each,
+                                      reader on VM1 reads "message N from
+                                      n4-cxl-shared-2...", shared0 attached
+                                      to both VMs, detached 14 s after the
+                                      clean-up
+  Example e                           as written; companions
+                                      cxl-lease-* ran on VM2
+  Example f                           as written on the existing cluster:
+                                      writer on VM1 (claim pending and
+                                      device detaching right after the
+                                      writer completed), reader-1/-2 on
+                                      VM2 and reader-3 on VM1 print the
+                                      89-byte file from the mapping, EPERM
+                                      for writing, shared0 on both VMs
+  Clean up                            as written
+No fixes were needed during the run; only outputs were updated after it.
+Docs: sphinx-build 0 warnings for docs/memory/**, 403 local and 18
+repository links resolve, 16 YAML documents of e2e.md parse, plain ASCII.
+
+End state (checked 18:58)
+-------------------------
+- One cluster: n4-cxl-shared-2 Ready control-plane (InternalIP
+  10.76.162.174, Taints <none>), n4-cxl-shared-1 Ready worker (10.76.85.237).
+- helm list -A empty; fake-cxl-pool-controller inactive in both VMs; no
+  driver pods.
+- DeviceClasses 0, ResourceSlices 0, ResourceClaims 0,
+  ResourceClaimTemplates 0, ConfigMaps of the examples 0; namespaces
+  default, kube-node-lease, kube-public, kube-system; no pods outside
+  kube-system.
+- Both VMs: no CXL memdev or region, no dax device, NUMA nodes online
+  0-1, auto_online_blocks offline; qemu "info qtree -b": 0 cxl-type3.
+- fake-cxl-pool-client attachments --host <vm>: empty for both hosts
+  (checked with a short-lived fake-cxl-pool-server, stopped again).
+- Host: no fake-cxl-pool process, nothing listens on port 9909.
+- localhost/dra-driver-cxl:testing stays imported in both VMs (as after
+  the tests).
+
+Requests
+--------
+None to other parts from this round. Still open: docs/conf.py
+exclude_patterns for scripts/testing/fake-cxl-pool/** (18 pre-existing
+toctree warnings fail make html with -W).

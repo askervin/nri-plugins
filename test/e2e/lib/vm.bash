@@ -1851,22 +1851,23 @@ wait-for-node-ready() {
     local now=$(date +%s)
     local deadline=$(($now + 5 * 60))
 
+    # The API server runs on the control plane of the cluster of the VM,
+    # which is another VM if this one is a worker: ask the API server
+    # itself instead of looking for its container in this VM.
     while true; do
-        vm-command "crictl ps | grep kube-apiserver | grep Running"
-        if ! grep -q Running <<< $COMMAND_OUTPUT; then
-            sleep 5
-        else
+        vm-command "kubectl get --raw=/readyz 2>&1"
+        if grep -q "^ok" <<< $COMMAND_OUTPUT; then
             vm-command "kubectl wait --for=condition=Ready=True nodes/$VM_HOSTNAME --timeout=15s"
             if grep -q "condition met" <<< $COMMAND_OUTPUT; then
                 break
             fi
-
-            sleep 1
-            now=$(date +%s)
-            if [ $now -gt $deadline ]; then
-                command-error "failed to wait for VM k8s node to get ready"
-            fi
         fi
+
+        now=$(date +%s)
+        if [ $now -gt $deadline ]; then
+            command-error "failed to wait for VM k8s node to get ready"
+        fi
+        sleep 1
     done
 }
 

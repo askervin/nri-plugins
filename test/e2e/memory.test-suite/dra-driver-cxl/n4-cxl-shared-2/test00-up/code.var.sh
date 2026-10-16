@@ -22,6 +22,15 @@
 # instance:
 #   qemu_bin=$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 \
 #     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
+#
+# Then make the Kubernetes cluster of the tests of n4-cxl-shared-2: this VM
+# (VM2) the control plane, the VM of n4-cxl-shared-1 (VM1) a worker, pods on
+# both nodes (no control-plane taint), over their VM network "cxl-pool"
+# (vm_network.var.sh). Create VM1 first with test00-up of n4-cxl-shared-1.
+# A cluster in this shape is left alone, otherwise it is rebuilt, which
+# takes minutes. This is the only test that changes the shape of a
+# cluster: the other tests of n4-cxl-shared-2 only check it
+# (pool-cluster-require) and fail at once if it is not there.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"
@@ -100,3 +109,12 @@ echo "### CXL memory devices in the VM"
 cxl-dump no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 cxl-assert 'len(nodes) == 2'
+
+echo "### the cluster: VM2 (this VM) control plane, VM1 worker"
+VM1="$POOL_VM1_DIR"
+VM2="$OUTPUT_DIR"
+pool-host-wait "$VM1" "create VM1 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up"
+vm-k8s-reinit "$VM2 $VM1"
+vm-k8s-in-shape "$VM2 $VM1" ||
+    error "the cluster is not in shape after vm-k8s-reinit: $(vm-k8s-cluster-in-shape "$VM2 $VM1")"
+vm-command "kubectl get nodes -o wide" || command-error "cannot list the nodes of the cluster"

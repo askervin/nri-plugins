@@ -466,8 +466,13 @@ The others are rebuilt with `kubeadm reset`, `kubeadm init` and `kubeadm
 join`, which loses all cluster state: deploy what the test needs after it.
 Pods run on every node, and every node has the admin kubeconfig. Rebuilding
 two nodes takes about half a minute, two single-node clusters about two
-minutes. Tests that need a shape declare it at their start, so that a
-failed test which left another shape does not break the next one.
+minutes. As that is slow, a test suite makes its shape once, in one test,
+and the other tests only check it. In `memory.test-suite/dra-driver-cxl`,
+`n4-cxl-shared-2/test00-up` makes one cluster of the VMs of
+`n4-cxl-shared-2` (control plane) and `n4-cxl-shared-1` (worker), and
+every other test of `n4-cxl-shared-2` checks that shape first
+(`pool-cluster-require`) and fails at once, pointing to `test00-up`, if the
+VMs have another shape.
 
 The VMs of a multi-node cluster need a VM network: their topologies set
 `vm_network` (`vm_network.var.sh`, for instance `cxl-pool` in
@@ -481,7 +486,8 @@ network addresses, and the bridge CNI of every node hands out addresses of
 the node's pod CIDR only, with routes to the pod CIDRs of the other nodes.
 Only the bridge CNI is supported.
 
-To bring the VMs back to single-node clusters by hand, run any test that
-declares that shape, for instance
-`memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test11-dra-sharing`.
+To bring the VMs back to single-node clusters by hand, call
+`vm-k8s-reinit` with one VM per cluster, for instance in the interactive
+mode of a test (`breakpoint`). `n4-cxl-shared-2/test00-up` makes the
+two-node cluster again.
 
