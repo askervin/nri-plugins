@@ -1,0 +1,141 @@
+plan-6-cxl-driver-in-nri-plugins: open questions
+================================================
+Written 2026-10-16. Each question has a recommendation; 03 assumes it
+unless the user decides otherwise.
+
+Q1 Do N's maintainers accept the driver?
+   It adds about 8.8k lines of code and 10.5k lines of tests (F2), two DRA
+   drivers, and a broker that creates and deletes Pods and ResourceClaims
+   in any namespace (F5). Ask before stage 1, with 03 sections 1 and 4 as
+   the pitch: the driver already depends on four N packages and on N's
+   e2e, and the cgroup ownership problem can only be solved in N.
+   Recommendation: ask; without consent fall back to option Z with tagged
+   N releases instead of fork pseudo-versions.
+
+   Answer: Let's keep the driver somewhat separate, that is, let's
+   avoid large changes into existing architecture and machinery in
+   N. We can choose B1 now and do study carefully how to do C to the
+   extent that is possible without radical changes into resmgr, or if
+   it is better to stick with B1 for now. It would be good enough for
+   me, if we can attach the driver to the build and deployment
+   infrastructure in N, so that our e2e tests could easily launch and
+   deploy the CXL driver with helm and using similar DaemonSet as is
+   used for other plugins. E2E tests of course will be moved from
+   memory-policy under the plugin directory, say
+   memory.test-suite/nri-dra-driver-cxl.
+
+Q2 Driver names and the label/CDI domain.
+   Today: cxl.generic, cxl-pool.generic, CDI vendor generic, labels
+   cxl.generic/lease etc. resmgr names its driver <policy>.nri.io (F32,
+   F52). "generic" was chosen in D to say "not Intel specific"; in N the
+   natural domain is nri.io. The pool driver name is also the contract with
+   third-party pool controllers (POOL.md), where a vendor-neutral name is
+   worth something, and it is a flag on both sides already.
+   a) keep cxl.generic and cxl-pool.generic;
+   b) rename to cxl.nri.io and cxl-pool.nri.io (CDI vendor nri.io, labels
+      cxl.nri.io/...), in stage 1, while the e2e is the only user.
+   Recommendation: b), done once in stage 1 with plan-5's rename rules
+   (no aliases). If the user prefers a), nothing in 03 changes but the
+   names.
+
+   Answer: B, as recommended.
+
+Q3 Binary and directory names.
+   Stage 1: nri-dra-driver-cxl from cmd/plugins/dra-driver-cxl (the
+   task's name; N's Makefile builds nri-<x> from cmd/plugins/<x>, F48).
+   Alternative: nri-cxl from cmd/plugins/cxl, which would collide with
+   the stage 3 policy binary nri-resource-policy-cxl, also built from
+   cmd/plugins/cxl.
+   Recommendation: nri-dra-driver-cxl now; nri-resource-policy-cxl for the
+   resmgr packaging of stage 3.
+
+   Answer: go with the recommendation.
+
+Q4 Keep the standalone host after stage 3?
+   It serves nodes without a resource policy and host-process installs,
+   but it is a second NRI and kubelet plugin path to maintain.
+   nri-resource-policy-cxl (resmgr + a policy that manages no CPUs + the
+   engine) covers the same nodes. A node switches hosts only drained or by
+   a state hand-over (03 4.9); both hosts never serve one driver name on a
+   node at the same time.
+   Recommendation: keep it until stage 3 has passed its e2e and one
+   release; then retire it unless a user needs it.
+
+   Answer: stop before Stage 3, and even before splitting the driver under pkg/cxl.
+   Details are in 03-recommendation.txt.
+
+Q5 History.
+   a) one import commit in N that names D's commit (79a85f3 or later);
+   b) keep the history with git filter-repo of the moved paths, merged into
+      N.
+   D's history of the driver has WIP commits ("publishing almost
+   works...") and paths that do not exist in N.
+   Recommendation: a), plus a pointer in D's README to the last D commit
+   with the driver.
+
+   Answer: make all changes in single commit in N without any
+   references to D. All CXL driver development in D will be silently
+   dropped, nothing of it has been merged to the main branch in D.
+
+
+Q6 The cxl and daxctl tools (F40).
+   a) an image with ndctl/daxctl (not distroless);
+   b) memctl creates, disables and destroys regions and enables/disables
+      memdevs through sysfs, as the cxl tool does, and switches dax
+      drivers through sysfs (it does for slices already);
+   c) host process only.
+   Recommendation: c) in stages 1-2 (as today), b) before stage 4; a) only
+   if b) turns out to need kernel interfaces that the tool hides.
+
+   Answer: ndctl/daxctl are used needed by the driver. Create the
+   driver image with them included. Study what is the best way to get
+   them to the image, for instancd, can we build static binaries in
+   some Dockerfile builder phase? We should try to use the same base
+   image as all other nri-plugins do, and we should avoid building
+   them on host, if it would add more dependencies to be installed on
+   the host.
+
+Q7 Where the documentation goes.
+   Recommendation: N/docs/memory/cxl/ (next to memory-qos, memtierd),
+   linked from docs/memory/index.md; doc/CLUSTER_SETUP.md of D, which
+   USAGE.md links for the feature gates, gets a short equivalent section
+   in USAGE.md.
+
+   Answer: go with the recommendation. Plan developer e2e
+   documentation with clean copy-paste examples with which local and
+   pooled/shared CXL device pods can be used. A cool example would
+   include a writer creating a file system on a CXL pool device with a
+   file in it. After that, three reader pods would share the same CXL
+   pool device, mount the file system, mmap the file and print the
+   contents. This can of course use fake-cxl-pool and the two-node
+   cluster from n4-cxl-shared-*.
+
+Q8 File headers of moved files.
+   D's files say "Copyright (c) 2025, Intel Corporation", N's "Copyright
+   The NRI Plugins Authors" (F9). Both Apache-2.0.
+   Recommendation: the author and N's maintainers decide; 03 needs only
+   the decision.
+
+   Answer: Change all copyrights to N's authors.
+
+Q9 D after the move.
+   The Kubernetes 1.37 commits in D's branch (d7190b7, 0b76910 "DO NOT
+   MERGE", 2966433) were made for the CXL driver (F8). With the driver
+   gone, D's other drivers need not follow.
+   Recommendation: the D branch keeps only the removal and the README
+   pointer; the 1.37 bump of D is decided by D's maintainers on its own.
+
+   Answer: do not touch D. Its CXL feature branch will be silently
+   dropped once the CXL driver works in N.
+
+Q10 Configuration of the resmgr-hosted engine (stage 3).
+   a) under the common DRA section: dra.cxl: {enabled, ignoreDevices,
+      manageMemdevs, leases, poolDriver: {...}, ...};
+   b) a top-level section cxl: of every policy CRD.
+   CXL needs DRA (no claims, no devices without it), and dra.enabled
+   already exists and cannot change at runtime (F32).
+   Recommendation: a), with the same "restart required" rule for
+   switching it on or off.
+
+   Answer: do not go to Stage 3 yet. Let's stop on 2.6 in
+   03-recommendations.txt.

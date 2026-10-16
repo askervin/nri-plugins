@@ -1,0 +1,466 @@
+plan-6-cxl-driver-in-nri-plugins: findings
+==========================================
+Written 2026-10-16. Facts only; options and judgement are in 02 and 03.
+State of the trees: D on branch 5fC-cxl (HEAD 79a85f3 "cxl: harmonizing
+APIs" plus the uncommitted go.mod replace), N on branch 5jQ-cxl (HEAD
+9ce64dc7d), that is, after plan-5-api-consistency.
+
+Paths:
+  D = ~/github.com/intel/intel-resource-drivers-for-kubernetes
+  N = ~/github.com/containers/nri-plugins
+  P = N/scripts/testing/fake-cxl-pool
+  E = N/test/e2e/memory.test-suite/memory-policy
+
+Contents
+  1. What the driver is (F1-F9)
+  2. How the driver is tied to N today (F10-F16)
+  3. How the driver is tied to D today (F17-F21)
+  4. Testing (F22-F27)
+  5. What N offers: pkg/resmgr, its NRI and DRA layers (F28-F40)
+  6. Ownership conflicts on a node (F41-F47)
+  7. Build, image and deployment (F48-F53)
+  8. Gaps of N for hosting the driver inside resmgr (G1-G15)
+
+
+1. What the driver is
+---------------------
+F1  One process, kubelet-cxl-plugin, contains:
+    - DRA driver cxl.generic (node-local: memdevs, regions, DRAM, the
+      lease device), with its own ResourceSlice publishing,
+      Prepare/Unprepare, CDI specs and health (D/cmd/kubelet-cxl-plugin/
+      driver.go:258-434 newDriver, :507 Prepare, :533 Unprepare,
+      :561 PublishResourceSlice, :647 WatchHealthStatus);
+    - DRA driver cxl-pool.generic, prepare-only: it never publishes a
+      ResourceSlice, a cluster-level pool controller does (pool.go:50-51,
+      :278 Prepare, :586 Unprepare, :737 health);
+    - an NRI plugin (stub of containerd/nri, name kubelet-cxl-plugin,
+      index 30; nri.go:86-123, main.go:63) for memory steering and
+      lending;
+    - the lease broker: per-claim unix sockets, companion ResourceClaims
+      and Pods created through the Kubernetes API, SCM_RIGHTS fd passing,
+      a lease table (broker.go, lease_claims.go, lease_store.go);
+    - a udev watcher with debounce and a rescan/republish loop (udev.go,
+      driver.go:574-609);
+    - the local allocator: regions and block-aligned dax slices of local
+      memdevs, onlining, zeroing, restart reconciliation (local.go).
+    Plus the static client cxl-request (D/cmd/cxl-request) and the
+    packages D/pkg/cxl/{api,device,memorypolicy}.
+
+F2  Size in lines (non-test / test):
+      cmd/kubelet-cxl-plugin            7780 / 9384  (13 / 10 files)
+      cmd/cxl-request                    454 /  373
+      pkg/cxl/{api,device,memorypolicy}  531 /  697
+      doc/cxl/*.md                      1965
+      deployments/cxl                   kustomize base (namespace,
+                                        DaemonSet, RBAC, VAP),
+                                        device-classes.yaml (6 classes),
+                                        9 examples
+    Largest files: broker.go 1524, node_state.go 1353, local.go 1033.
+
+F3  NRI usage (nri.go, lend.go):
+    - events: Synchronize, CreateContainer, StartContainer, StopContainer,
+      RemoveContainer;
+    - CreateContainer returns no adjustment. It finds the claims of the
+      container from the CDI-injected marker CXL_CLAIM_<uid>=1
+      (nri.go:138-201), builds a cgmpolmgr plan and keeps it pending;
+    - StartContainer resolves the cgroup and starts a cgmpolmgr.Manager
+      (nri.go:257), which writes cpuset.mems and memory.high directly in
+      cgroupfs and sets thread memory policies with mpolinject
+      (N/pkg/cgmpolmgr/manager.go:25-32). The cpuset.mems it writes is
+      the nodes that already hold memory of the cgroup plus the nodes the
+      plan has reached (manager.go:146-149, :306-323): steering restricts
+      where a container may allocate, it does not only add nodes;
+    - lending (leases in mode numa) changes cpuset.mems of one running
+      container with NRI UpdateContainers (lend.go:21-27, :99, :589).
+    The NRI side does not touch CPUs, env, mounts or devices.
+
+F4  DRA-to-NRI bridge: the prepared-claim state (nodeState, node_state.go)
+    is read in-process by the NRI handlers; the only contract between the
+    two halves is the claim marker env variable plus the shared memory
+    state. N's topology-aware policy uses the same marker pattern for its
+    own DRA claims (DRA_CPUSET_<uid>: N/cmd/plugins/topology-aware/policy/
+    dra.go:57, containerClaims :202).
+
+F5  Kubernetes API writes beyond a usual kubelet plugin: the broker
+    creates and deletes Pods and ResourceClaims in any namespace (lease
+    companions; LEASES.md "Companion objects" and "Limitations: RBAC"),
+    and the driver reads the pool controller's ResourceSlices
+    (pool_slices.go).
+
+F6  Blocking operations inside Prepare/Unprepare:
+    - pool Prepare waits up to --pool-prepare-timeout (30s) for the
+      hotplugged memdev (POOL.md "What the node plugin does", step 3);
+    - region creation about 0.1 s, a slice 0.05-0.15 s (plan-4 08 4.);
+    - dax slices are zeroed: about 30 ms per 64 MiB, 120 ms per 256 MiB
+      (LOCAL.md "What Prepare does" 5.), that is about 0.5 s per GiB;
+    - the offline of a numa slice can fail with EBUSY; kubelet retries
+      (LOCAL.md Unprepare);
+    - Unprepare of a lease claim waits up to 5 s for the revocation of
+      its leases (broker.go:70 leaseCloseTimeout), and a revocation is
+      itself an NRI UpdateContainers.
+    The driver runs these under its own locks. They are coarse (the pool
+    driver holds its mutex for a whole Prepare request, hotplug wait
+    included, pool.go:278-286; the local allocator serializes its work
+    likewise) but separate from the lock of its NRI handlers, so container
+    creation on the node is not blocked by them.
+
+F7  Runtime topology changes are the normal case: NUMA nodes of local
+    memdev slices grow and shrink with claims, pool devices appear as new
+    NUMA nodes, devices are hotplugged and hot-removed. The driver
+    republishes its ResourceSlice on udev events (driver.go:574-609).
+
+F8  Nothing is released: plan-5 README "Nothing of this is released".
+    Names (driver names, classes, CDI kinds, env, CLI) were harmonized in
+    plan-5 and can still change. The driver's branch in D also carries
+    commits that move all of D to Kubernetes 1.37 for the sake of this
+    driver (D log: d7190b7 "go.mod: bump to k8s 1.37", 0b76910 "DO NOT
+    MERGE: build gaudi, gpu and qat with k8s 0.37", 2966433).
+
+F9  Authorship: 37 of the 38 commits touching cmd/kubelet-cxl-plugin,
+    pkg/cxl and doc/cxl in D are by Antti Kervinen, one by Alexey Fomenko.
+    D and N are both Apache-2.0; D files carry "Copyright (c) 2025, Intel
+    Corporation", N files "Copyright The NRI Plugins Authors".
+
+
+2. How the driver is tied to N today
+------------------------------------
+F10 Production imports from N (in D/cmd and D/pkg):
+      pkg/cxl          7 files   discovery types
+      pkg/cxl/memctl   7 files   regions, dax, onlining, cxl/daxctl calls
+      pkg/cgmpolmgr    6 files   steering (and through it pkg/mpolinject,
+                                 pkg/cgmemnotify)
+      pkg/udev         3 files   udev monitor
+    D/pkg/cxl/memorypolicy wraps cgmpolmgr.Policy (types.go:27).
+
+F11 Version coupling: D/go.mod requires github.com/containers/nri-plugins
+    v0.12.1 but replaces it. Committed (HEAD): replace => github.com/
+    askervin/nri-plugins v0.14.1-0.20261014163234-002f5ba35a66, a pushed
+    fork pseudo-version. Working tree: replace => the local N checkout
+    (go.mod:164). Every memctl or cgmpolmgr change needs a push to the
+    fork and a go.mod bump in D before D can be committed (plan-5 README,
+    rule 8).
+
+F12 Duplicated constants because two modules cannot share them:
+    api.ModeNUMA/ModeDax in D and memctl.ModeNUMA/ModeDax in N, kept equal
+    by a unit test in D (plan-5 02-design 8.1).
+
+F13 The node side and the cluster side of the cxl-pool.generic contract
+    live in different repositories: the node plugin in D, the reference
+    controller fake-cxl-pool-controller in P. The contract text is
+    D/doc/cxl/POOL.md; P/README.md links to it on github.
+
+F14 The e2e harness in N builds the driver from D: E/dra.source.sh:27-37
+    (DRA_DRIVER_SRC=${CXL_DRA_DRIVER_SRC:-$HOME/github.com/intel/
+    intel-resource-drivers-for-kubernetes}; DeviceClasses from
+    D/deployments/cxl/device-classes.yaml) and dra-build (:218-240: go mod
+    vendor and a static go build in D, make in P).
+
+F15 fake-cxl-pool is part of N's root module (no go.mod of its own;
+    P/Makefile PKG := github.com/containers/nri-plugins/scripts/testing/
+    fake-cxl-pool).
+
+F16 D's own CXL demo (D/test/e2e/cxl/dra-demo-cxl.sh) runs on a VM made by
+    N's e2e framework ("./run_tests.sh memory.test-suite/memory-policy/
+    n4-cxl", header comment).
+
+
+3. How the driver is tied to D today
+------------------------------------
+F17 From D the driver uses only pkg/helpers (NewApp, Config, common flags,
+    kube client sets, logging flags, prepared-claims file helpers:
+    D/pkg/helpers/helpers.go:53, :118, node_state.go:53-94), pkg/version,
+    and its own pkg/cxl/*. No other D driver imports pkg/cxl, and the CXL
+    driver imports no other driver.
+
+F18 No other driver in D uses NRI (the task's premise; containerd/nri is
+    in D/go.mod for the CXL driver only).
+
+F19 D's CI (.github/workflows: build, devel-images, lint-and-test,
+    e2e-with-device-faker, publish-device-faker, push-helm-charts) has no
+    CXL test, and D has no fake CXL device (D/pkg/fakesysfs is PCI
+    oriented).
+
+F20 D packaging: cxl.mk, Dockerfile.cxl (image intel-cxl-resource-driver,
+    only the plugin binary), deployments/cxl (kustomize). The shipped
+    DaemonSet cannot steer or lend: it has no NRI socket, no host PID
+    namespace and no cxl/daxctl tools (USAGE.md "Deploy"); the full
+    feature set needs a host process (USAGE.md "As a host process").
+
+F21 Flags and logging come from D's framework: urfave/cli, klog,
+    --kube-api-qps, --kube-api-burst, --feature-gates (USAGE.md "flags").
+
+
+4. Testing
+----------
+F22 The six e2e tests that use the driver are all in N:
+    E/n4-cxl-shared-2/test10-dra-pooling, test11-dra-sharing,
+    test12-dra-live-attach, test13-dra-shared-one-writer-many-readers,
+    test14-dra-local-memdev, test15-dra-local-live-attach. The other CXL
+    tests (n4-cxl test00, test01; n4-cxl-shared-1/-2 test00-up;
+    n4-cxl-shared-2 test01-shared-cxl) exercise the kernel, pkg/cxl and
+    fake-cxl-pool.
+
+F23 What only N's framework provides: qemu CXL topologies with host
+    bridges, switches, type3 devices and empty hotplug slots
+    (N/test/e2e/lib/topology2qemuopts.py), file-backed devices shared by
+    several VMs, hotplug and hot-remove into running VMs (patched qemu),
+    a pool server and a pool controller (P), multi-node clusters reshaped
+    from VMs (vm-k8s-reinit, plan-4-multinode), CXL kernel builds.
+
+F24 The e2e installs the driver as a host process (systemd-run,
+    E/dra.source.sh:341-353) with a local configuration file '{}' and the
+    admin kubeconfig, not as an image.
+
+F25 No CXL e2e test runs an nri-resource-policy plugin or nri-memory-policy
+    next to the driver. Coexistence with topology-aware or balloons is
+    untested.
+
+F26 Unit tests of the driver fake sysfs/CXL (pool_test.go:59-161), NRI
+    (lend_test.go:35-60, a stub that records UpdateContainers), udev (a
+    fifo) and Kubernetes (fake clientset in the broker tests). They run
+    with plain go test; none depends on D's test infrastructure.
+
+F27 cxl-request must be static (it is bind-mounted into containers);
+    N builds such binaries already (BINARIES, N/Makefile:93-96).
+
+
+5. What N offers: pkg/resmgr, its NRI and DRA layers
+----------------------------------------------------
+F28 A resource policy binary is pkg/resmgr plus one policy backend
+    (cmd/plugins/<policy>; N/pkg/resmgr/resource-manager.go:286-313).
+    One process runs exactly one active policy. Default NRI identity:
+    name resource-manager, index 90 (N/pkg/resmgr/flags.go:25-26).
+
+F29 resmgr handles the NRI events Configure, Synchronize, RunPodSandbox,
+    StopPodSandbox, RemovePodSandbox, CreateContainer, StartContainer,
+    UpdateContainer, StopContainer and RemoveContainer (N/pkg/resmgr/
+    nri.go:206-679). Policies change containers through cache.Container
+    setters (e.g. SetCpusetMems, cache/container.go:833); resmgr turns the
+    changes into the adjustment of the current request and into updates
+    of other containers.
+
+F30 Unsolicited updates exist: a policy takes the owner lock itself and
+    calls Owner.UpdateContainers() (policy.go:65-78); topology-aware's
+    cold start timer does so (topology-aware/policy/coldstart.go). There
+    is no generic event ingress for a policy (HandleEvent was replaced by
+    ContainerStarted); a policy runs its own goroutines.
+
+F31 The resmgr lock is held for every NRI request except Synchronize,
+    every DRA claim request and reconfiguration (policy.go:65-71;
+    nri.go:371, :393, :438; dra/claim.go:39, :62). Synchronize runs
+    without it and opens the DRA claim gate as its last step (nri.go:
+    287-348, comment at :343-346).
+
+F32 DRA in resmgr (commits ab675a3b7 .. 5e8ce3ba3, 2026-09-16 .. 10-13):
+    - resmgr creates one kubelet plugin, owned by resmgr, only with
+      dra.enabled and a Kubernetes client (N/pkg/resmgr/dra.go:41-75).
+      This is a limit of resmgr, not of kubelet: the CXL process registers
+      two kubeletplugin helpers with distinct names and directories;
+    - driver name = <active policy> + ".nri.io" (dra.go:30, :64), for
+      example topology-aware.nri.io;
+    - devices come from the policy through Owner.PublishDRADevices
+      (dra.go:126-132) and are published as one pool named after the node,
+      chunked to ResourceSliceMaxDevices; with no devices an empty slice
+      is published (dra/plugin.go:295-311);
+    - Prepare/Unprepare take the owner lock for the whole request
+      (dra/claim.go:39, :62), call policy.AllocateClaim/ReleaseClaim,
+      commit (cache save + UpdateContainers), then write or remove one CDI
+      spec per claim (vendor = driver name, class "device"; dra/cdi.go);
+    - claims are refused until NRI Synchronize is done (AllowClaims,
+      dra/plugin.go:205);
+    - WatchHealthStatus declines (dra/plugin.go:261);
+    - AllocateClaim must return at least one CDI edit per allocation
+      result (policy.go:150-182);
+    - dra.enabled cannot change at runtime (dra.go:140-148).
+
+F33 DRA users in N: the template policy (example: CPUs as devices,
+    DRA_CPUSET env) and topology-aware (one device per NUMA node, capacity
+    dra.cpu/cpu, standard attribute resource.kubernetes.io/numaNode,
+    nodeAllocatableResources cpu; claims get exclusive CPUs and the
+    containers holding them are pinned to them). balloons returns
+    ErrNoDRAClaims.
+
+F34 N already has NRI plugins outside resmgr, each with its own stub:
+    nri-memory-policy (index 92), nri-memory-qos, nri-memtierd,
+    nri-sgx-epc, nri-resctrl-mon (N/Makefile:83-91). Precedent for a
+    standalone plugin binary in N.
+
+F35 N already hosts the CXL building blocks the driver uses (F10), plus
+    pkg/mempolicy, pkg/mpolinject, pkg/cgmemnotify and scripts/cxl-dump.
+
+F36 Kubernetes libraries: N/go.mod has k8s.io/{api,apimachinery,client-go,
+    dynamic-resource-allocation,kubelet} v0.37.0, containerd/nri v0.12.2
+    and go 1.26.0, the same as D. No version blocker.
+
+F37 Configuration: resmgr is configured by a CRD per policy
+    (pkg/apis/config/v1alpha1/*-policy.go) through pkg/agent, or by a
+    local file (-config-file). With a local file the agent creates no
+    Kubernetes client (N/pkg/agent/agent.go:336-339), and DRA stays off
+    (dra.go:51-58).
+
+F38 Topology in resmgr is static: pkg/sysfs discovers NUMA nodes and
+    memory types (DRAM, PMEM, HBM) once (sysfs/system.go:77-79,
+    :1490-1540); a CPU-less node is classified PMEM or HBM by its size.
+    libmem (pkg/resmgr/lib/memory) is built from those nodes
+    (WithSystemNodes) and cannot add nodes later. There is no CXL memory
+    type. Discovery runs when the policy is constructed
+    (policy/policy.go:302), before anything else could tell it which
+    nodes belong to CXL claims: after a restart, nodes that prepared
+    claims onlined are already in the snapshot.
+
+F39 resmgr DaemonSets (helm, e.g. deployment/helm/topology-aware/
+    templates/daemonset.yaml) already mount most of what a CXL node plugin
+    needs: /host/sys, /host/proc, the NRI socket and, with dra.enabled,
+    /var/lib/kubelet/plugins, plugins_registry and /var/run/cdi. Images
+    are distroless (cmd/plugins/*/Dockerfile): no cxl or daxctl tools.
+
+F40 pkg/cxl/memctl runs the cxl and daxctl CLIs for enable/disable-memdev,
+    create/disable/destroy-region and dax reconfiguration (memctl.go:820-
+    1092). daxctl is optional for local slices (LOCAL.md requirements).
+
+
+6. Ownership conflicts on a node
+--------------------------------
+F41 NRI refuses two plugins setting the same field of a container in one
+    request: "plugins %q and %q both tried to set %s" (containerd/nri
+    pkg/api/owners.go:186; ClaimCPUSetMems, owners_generated.go:504).
+    Unsolicited UpdateContainers are not arbitrated: the last writer wins.
+
+F42 cpuset.mems has two writers when the driver runs next to topology-aware
+    or balloons: the policy sets it at creation and in later updates; the
+    driver's cgmpolmgr writes cgroupfs directly at start and at every
+    steering step, and lending sets it with UpdateContainers. The next
+    write of either side reverts the other. This is documented as a
+    limitation (D/doc/cxl/LEASES.md:446 "cpuset.mems has one owner ...
+    nri-resource-policy or the kubelet memory manager would conflict the
+    same way"). The plugin index is an open TODO (D/cmd/kubelet-cxl-plugin/
+    main.go:106 "before or after resource mgmt plugins?").
+
+F43 memory.high has two writers when nri-memory-qos runs: it sets unified
+    memory.high (N/cmd/plugins/memory-qos/main.go:133-137); cgmpolmgr
+    throttles its steps with memory.high.
+
+F44 Thread memory policies: nri-memory-policy sets the memory policy of
+    containers through mpolset injection (its NRI memory policy adjustment
+    is not implemented, N/cmd/plugins/memory-policy/main.go:448-472); the
+    driver's cgmpolmgr sets thread policies again with mpolinject.
+    kubelet's Memory Manager (static policy) is another owner of
+    cpuset.mems outside NRI altogether.
+
+F45 Memory types: a pre-created CXL region online at boot is a CPU-less
+    NUMA node; resmgr policies classify it as PMEM or HBM (F38) and may
+    give it to containers that ask for those types, while cxl.generic
+    publishes the same node as a region device and accounts its capacity.
+
+F46 DRANodeAllocatableResources: kubelet adds claimed CXL memory to the
+    container's resources (LOCAL.md "Limitations": "a dax claim raises the
+    container's memory limit by the slice size"); reportedly only to an
+    explicit limit (an unlimited container stays unlimited), and the
+    mapping also affects requests, pod cgroups and QoS. resmgr derives
+    container requirements from the cgroup values it gets through NRI
+    (N/pkg/resmgr/cache/utils.go:39-81), so a policy that sizes DRAM
+    zones from container memory (topology-aware with libmem) may reserve
+    DRAM for memory that lives on CXL. To be verified per case (limit or
+    not, shared claims, numa vs dax); it applies whichever repository
+    hosts the driver.
+
+F47 Two DRA "node resource" drivers on one node: topology-aware publishes
+    NUMA nodes as CPU devices with resource.kubernetes.io/numaNode;
+    cxl.generic publishes memory devices with its own attribute
+    nodeAffinity. No double accounting (cpu vs memory), but no common
+    attribute either: a claim cannot matchAttribute CPUs and CXL memory of
+    the same NUMA node.
+
+
+7. Build, image and deployment
+------------------------------
+F48 N's Makefile builds nri-resource-policy-<x> and nri-<x> from
+    cmd/plugins/<x>, other binaries from cmd/<x>, one image per plugin from
+    its Dockerfile; helm charts are under deployment/helm/<x>, the
+    operator under deployment/operator.
+
+F49 Adding a policy touches: cmd/plugins/<x>/{main.go,policy/,Dockerfile},
+    Makefile, pkg/apis/config/v1alpha1/<x>-policy.go and its CRD
+    (config/crd), a helm chart, an operator sample,
+    docs/resource-policy/policy/<x>.md. Adding a standalone NRI plugin
+    touches: cmd/plugins/<x>, Makefile, Dockerfile, a helm chart, docs
+    (nri-memory-policy is the model).
+
+F50 Host requirements of the driver: cgroup v2, CONFIG_CXL_REGION,
+    DEV_DAX, DEV_DAX_KMEM, MEMORY_HOTREMOVE, FS_DAX,
+    auto_online_blocks=offline, the cxl tool (daxctl optional), write
+    access to /sys and /dev/dax*, and the host PID namespace: the broker
+    identifies callers by SO_PEERCRED (broker.go:274-277), whose pid is
+    translated into the receiver's PID namespace (0 when the caller is not
+    visible there), so mounting the host's /proc alone is not enough.
+    resmgr DaemonSets do not use hostPID (F39).
+
+F51 The six DeviceClasses are user API and name the drivers in CEL
+    (D/deployments/cxl/device-classes.yaml); a unit test in D checks them
+    against the constants of D/pkg/cxl/device.
+
+F52 Driver names: cxl.generic and cxl-pool.generic; CDI vendor generic,
+    classes cxl and cxl-pool; plugin data under /var/lib/kubelet/plugins/
+    <driver>/. A resmgr-hosted driver is named <policy>.nri.io (F32).
+
+F53 Kubernetes feature gates the driver needs (1.37):
+    DRANodeAllocatableResources (off by default), DRADeviceBinding
+    Conditions, DRAResourceClaimDeviceStatus, DRAConsumableCapacity,
+    DRAPrioritizedList (USAGE.md "Requirements"). DRA in resmgr is
+    optional (dra.enabled): hosting the driver does not raise N's minimum
+    Kubernetes version for anything else.
+
+
+8. Gaps of N for hosting the driver inside resmgr
+-------------------------------------------------
+None of these blocks moving the driver as a standalone binary (option B of
+02). They are what resmgr lacks to host it (options A and C).
+
+G1  One DRA driver per resmgr process (resource-manager.go:65 "dra
+    *dra.Plugin"); the CXL side needs two (F1), next to the policy's own.
+G2  The driver name is derived from the policy (F32); the CXL drivers need
+    names of their own.
+G3  dra.Plugin always publishes (an empty slice at least);
+    cxl-pool.generic must publish nothing on the node.
+G4  Prepare/Unprepare run with the resmgr lock held (F31, F32). The CXL
+    operations block for up to tens of seconds (F6), which would stop all
+    container creation on the node, and lease Unprepare waits for
+    revocations that need the same lock (deadlock). Merely running the
+    CXL handlers unlocked is not enough: the pool driver holds its own
+    mutex across the hotplug wait and the lend (F6), so a commit that
+    takes the resmgr lock from there orders engine -> resmgr, while NRI
+    callbacks into the engine order resmgr -> engine (ABBA).
+G5  Health reporting is declined (F32); the CXL drivers report health.
+G6  The CDI layout is fixed: one spec per claim, vendor = driver name,
+    class "device", at least one edit per result (F32). The CXL drivers
+    write shared spec files, lease devices with mounts, and no device for
+    companion claims (LEASES.md "Companion objects").
+G7  Nothing but the policy can contribute to a container's cpuset.mems;
+    steering steps (cgmpolmgr) and lends need to (F3, F42). Steering
+    restricts as well as adds (F3), so a plain union with the policy's
+    nodes is not its semantics; neither is a union with an empty policy
+    value, which means "inherit", not "no nodes". The same holds for
+    memory.high (F43) and thread policies (F44).
+G8  No hook into the container life cycle for anything but the policy
+    backend: the CXL side needs created (env with claim markers), started
+    (pid, cgroup), stopped, removed and Synchronize.
+G9  No home for the driver's options (DriverConfig, flags) in the common
+    configuration of the policy CRDs.
+G10 A local configuration file disables the Kubernetes client and so DRA
+    (F37); the e2e runs the driver with a local file (F24).
+G11 Static topology and memory types (F38, F45): no CXL memory type, no
+    NUMA node changes at runtime, and discovery runs before any component
+    could exclude its nodes.
+G12 Container memory requests inflated by claimed CXL memory (F46).
+G13 Claims wait for NRI Synchronize (F32); the driver prepares claims
+    without NRI today (USAGE.md:574). A behaviour change, acceptable.
+G14 No hand-off between two hosts of the same driver: a driver name can be
+    registered by one process only, and the driver's state (prepared
+    claims, local devices, leases, lease sockets) lives in /var/lib/
+    kubelet/plugins/<driver>/ and its CDI files (USAGE.md "Files on the
+    node"). Moving a node from a standalone host to resmgr, or renaming a
+    driver, needs a drain or a state hand-over.
+G15 Credentials: the broker needs create/delete of Pods and ResourceClaims
+    in any namespace (D/deployments/cxl/base/resource-driver.yaml:82-103,
+    F5). Inside a resmgr pod that right would come with every privileged
+    resource policy DaemonSet that enables the engine.

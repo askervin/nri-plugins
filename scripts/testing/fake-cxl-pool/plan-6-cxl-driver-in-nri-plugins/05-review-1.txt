@@ -1,0 +1,101 @@
+plan-6-cxl-driver-in-nri-plugins: review 1
+==========================================
+Written 2026-10-16. An independent review (rubber-duck agent) of 00-04
+against the sources of D and N. Its findings, each checked against the
+source, and what changed in the plan. Numbers are the review's.
+
+Blocking findings
+-----------------
+R1 "policy mems + grants" is not cgmpolmgr's semantics: steering writes
+   only the nodes that hold memory plus the nodes the plan reached
+   (N/pkg/cgmpolmgr/manager.go:146-149, :306-323), so it restricts; a
+   union with the policy's nodes defeats first-cxl; an empty policy value
+   means "inherit".
+   Checked: yes. Changed: F3, G7; 02 C "Memory composition" (base,
+   steering, leases; effective = (steering ? steering-allowed : base) +
+   leases; the policy's value kept, the effective one materialized in
+   every adjustment and update); 03 3.2, 4.5; e2e first-cxl case in 4.10.
+
+R2 K1 claimed one owner of memory.high and thread policies too, but C
+   composed only cpuset.mems; kubelet's Memory Manager is another owner.
+   Checked: yes (memory-qos sets unified memory.high; mpolset injects
+   thread policies). Changed: K1 narrowed and footnoted (***); F44; 02 C
+   rules for memory.high (lower bound wins, restore) and thread policies
+   (refuse mpolset on steered containers), detection of kubelet's Memory
+   Manager; 03 4.5.
+
+R3 "Prepare without the resmgr lock" still allows ABBA deadlocks: the pool
+   driver holds its mutex across the hotplug wait and the lend
+   (D/cmd/kubelet-cxl-plugin/pool.go:278-286), so a commit from there
+   orders engine -> resmgr while NRI callbacks order resmgr -> engine; and
+   crash consistency was not specified.
+   Checked: yes. Changed: F6 ("fine-grained" was wrong), G4; 02 C
+   "Claims without the resmgr lock" (intent persisted, hardware work
+   without locks NRI needs, Commit under the resmgr lock with a generation
+   check, lock order resmgr -> engine only, idempotent restart, bounded
+   callbacks); 03 3.3 (stage 2 already fixes the pool mutex), 4.2.
+
+R4 Excluding CXL nodes from the policy comes too late: system discovery
+   runs when the policy is constructed (N/pkg/resmgr/policy/policy.go:302),
+   so after a restart onlined claim nodes are already PMEM/HBM in the
+   snapshot.
+   Checked: yes. Changed: F38, G11; 02 C discovery overlay from the
+   component's state files before discovery; 03 4.4 and a restart e2e.
+
+R5 No hand-off from the standalone host to resmgr: one process per driver
+   name, state under /var/lib/kubelet/plugins/<driver>/ and CDI files;
+   renames without aliases strand state.
+   Checked: yes. Changed: G14; 02 C hand-off rule; 03 4.9 (drain or hand
+   over with the plugin stopped, rollback; renames happen before any
+   installation exists) and a hand-off e2e; 04 Q4.
+
+Non-blocking findings
+---------------------
+R6 Factual corrections: F6 locks are coarse; F31 Synchronize runs without
+   the resmgr lock (nri.go:343-346); F32 "one kubelet plugin" is a resmgr
+   limit, not kubelet's; F44 nri-memory-policy's NRI adjustment is not
+   implemented (memory-policy/main.go:448-472), it uses mpolset; F46
+   applies to explicit limits and also affects requests, pod cgroups and
+   QoS.
+   Checked: F6, F31, F32, F44 yes. F46: the "explicit limit only" detail
+   is the reviewer's reading of Kubernetes 1.37, not checked here; F46
+   says "reportedly" and keeps "to be verified". Changed: F6, F31, F32,
+   F44, F46.
+
+R7 A blanket subtraction of claimed memory (stage 3 G12) is imprecise:
+   resmgr estimates requirements from cgroup values
+   (N/pkg/resmgr/cache/utils.go:39-81) that may already include DRA
+   mappings; shared claims, unlimited containers, numa vs dax differ.
+   Changed: 02 C and 03 4.8 use the exact per-container claimed memory
+   from the claim status, with those cases tested.
+
+R8 Credentials come too late: the broker's cluster-wide Pod and
+   ResourceClaim rights (D/deployments/cxl/base/resource-driver.yaml:
+   82-103) would ride along with every resmgr DaemonSet.
+   Changed: G15; 02 A and C; 03 4.6 (leases opt-in, rights only with
+   leases, validated deletes, separate service account evaluated), risks
+   (part of the stage 1 proposal to N's maintainers).
+
+R9 Multi-driver invariants: unique names, directories and sockets; a
+   prepare-only driver must publish nothing (resmgr's empty slice is not
+   that).
+   Changed: 02 C, 03 4.1 with a test that the node plugin neither creates
+   node-owned cxl-pool.* slices nor touches the controller's slices.
+
+R10 The broker needs hostPID in a DaemonSet: SO_PEERCRED translates the
+   caller's pid into the receiver's PID namespace; /host/proc does not
+   help (D/cmd/kubelet-cxl-plugin/broker.go:274-277).
+   Changed: F50, K9 footnote, 03 5.2.
+
+Suggestion
+----------
+R11 Narrow the NUMA alignment claim: pool devices have no known node
+   before they are attached, interleaved regions may have none.
+   Changed: 02 C K10.
+
+Not changed
+-----------
+The recommendation itself (move; option D: B1 first, then C) stands. The
+review found the stage 1 rationale well supported and treated stage 3 as
+not yet fully designed; 02 C and 03 section 4 now carry the missing
+design rules, which stage 3 must turn into a reviewed design before code.
