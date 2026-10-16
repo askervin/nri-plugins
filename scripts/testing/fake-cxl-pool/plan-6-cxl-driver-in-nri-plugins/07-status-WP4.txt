@@ -1,0 +1,314 @@
+plan-6-cxl-driver-in-nri-plugins: status of WP4 (docs)
+======================================================
+Written 2026-10-16 by WP4. Contract: 06-contract.txt (sections A, B docs,
+C, D, E, F, G "WP4"). Nothing committed.
+
+Files
+-----
+New (docs/memory/cxl/, moved from D/doc/cxl, D not modified):
+  index.md    from README.md
+  usage.md    from USAGE.md, plus "Requirements/Feature gates" and
+              "Build and deploy" (replaces BUILD.md and the kustomize deploy)
+  local.md    from LOCAL.md
+  pool.md     from POOL.md
+  leases.md   from LEASES.md
+  e2e.md      new developer guide "Trying the CXL DRA driver in e2e VMs"
+Changed:
+  docs/memory/index.md                         toctree: cxl/index.md
+  P/README.md                                  names, link to docs/memory/cxl/pool.md
+                                               and e2e.md, node side is nri-dra-driver-cxl
+  P/deploy/fake-cxl-pool-controller.yaml       cxl-pool.nri.io (resourceNames, -driver-name),
+                                               comment points to docs/memory/cxl/pool.md
+  P/config.example.yaml                        comment: cxl.nri.io
+Not touched: files of WP1-WP3 (read only), D.
+
+What changed in the moved docs
+------------------------------
+- Section A renames everywhere: cxl.nri.io, cxl-pool.nri.io, apiVersions
+  <driver>/v1alpha1, CDI kinds nri.io/cxl and nri.io/cxl-pool, labels and
+  annotation cxl.nri.io/{lease,requester-uid,node,requester}, conditions
+  cxl-pool.nri.io/{Attached,AttachFailed}, binary nri-dra-driver-cxl, NRI
+  plugin name dra-driver-cxl, plugin dirs /var/lib/kubelet/plugins/
+  cxl.nri.io and cxl-pool.nri.io. Links between the docs use the new file
+  names (index/usage/local/pool/leases/e2e .md); anchors follow MyST slugs
+  (#devices-of-cxlnriio, #nri-dra-driver-cxl-flags, ...).
+- Removed: "Intel" naming, the kustomize deploy and NFD overlay, the link
+  to D's CLUSTER_SETUP.md, BUILD.md, the "Supported Kubernetes Versions"
+  branch table (one sentence instead), the statement that the DaemonSet
+  cannot steer or lend and the CONFIG_STR/POOL_DRIVER_NAME/LEASES
+  workaround, "--feature-gates ... common to the drivers of this repository".
+- usage.md Requirements: runtime needs CDI and NRI; the image has cxl and
+  daxctl (a host process needs them on the node). New "Feature gates"
+  subsection: table of DRADeviceBindingConditions,
+  DRAResourceClaimDeviceStatus, DRAConsumableCapacity, DRAPrioritizedList
+  (on in v1.37) and DRANodeAllocatableResources (off; what happens without
+  it), a kubeadm ClusterConfiguration/KubeletConfiguration example, and
+  the e2e variable k8s_feature_gates.
+- usage.md "Build and deploy": make PLUGINS=nri-dra-driver-cxl ... images,
+  IMAGE_REPO/IMAGE_VERSION, the image contents of contract D (table);
+  helm install of deployment/helm/dra-driver-cxl, what the chart creates
+  (DaemonSet, SA, ClusterRole(Binding), ValidatingAdmissionPolicy,
+  ConfigMap, DeviceClasses), pod properties (privileged, hostPID, the
+  hostPath mounts of contract E), "every feature works in the DaemonSet",
+  the main values (contract E, defaults taken from WP2's values.yaml),
+  a values-file example, --lease-cli/--lease-cli-source of the chart, how
+  to get the logs, uninstall order; "As a host process": make
+  ... build-plugins-static build-binaries-static (build/bin), systemd-run,
+  kubectl apply of templates/deviceclasses.yaml, --lease-cli-source.
+- Flags table per contract C (kube-api-qps/burst added, nri-name
+  dra-driver-cxl, pool-driver-name cxl-pool.nri.io, --lease-cli-source
+  NEW, both -flag and --flag, env defaults, klog flags, SIGTERM/SIGINT).
+- Files on the node: new dirs, CDI kinds nri.io/..., plus
+  /var/lib/kubelet/plugins/cxl.nri.io/cxl-request of the chart.
+- leases.md: leases need NRI and the host PID namespace, "the DaemonSet of
+  the Helm chart has both"; --lease-cli of the chart; RBAC points to the
+  chart's templates; Helm value names next to the flags.
+- pool.md: the reference controller is in this repository
+  (tree:/scripts/testing/fake-cxl-pool); node requirements: tools are in
+  the image; Helm value names next to the flags; a pointer to e2e.md
+  example f.
+- local.md: configuration file reference is -f / the chart's config value.
+- Repository links use N's MyST schemes blob:/... and tree:/...
+  (docs/conf.py), e.g. blob:/deployment/samples/dra-driver-cxl/*.yaml and
+  blob:/deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml.
+
+Deviations (with reasons)
+-------------------------
+1. Links to other documents were moved out of table cells (usage.md:
+   env var table, config table, Files on the node; leases.md: Response
+   table) into sentences next to the tables. Reason: N's Sphinx renders
+   pipe tables with sphinx_markdown_tables (python-markdown), which leaves
+   "x.md" links unresolved (dead links in the site). In-page "#anchor"
+   links in tables are kept (they work).
+2. The vocabulary and API descriptions are otherwise word for word, except
+   that some sentences name the Helm value next to a flag.
+3. e2e.md uses the e2e conventions instead of inventing new ones: release
+   "test" in kube-system, image localhost/dra-driver-cxl:testing imported
+   like playbook/dra-image-put (ctr import + tag by image id), chart copied
+   to ~vagrant/helm/dra-driver-cxl, controller as systemd-run unit. So the
+   e2e tests' dra-install removes what the guide installed.
+4. One cluster of two nodes for example f is made by running test13 with
+   k8s_restore=no (vm-k8s-reinit is a framework function, not callable by
+   hand). Two single-node clusters come back with test11 (or test13
+   without k8s_restore=no).
+5. Ground rule 8: I ran ONE read-only ssh command in VM2 (echo $PATH;
+   command -v kubectl helm ctr crictl) before noticing the "do not run
+   anything in the VMs" instruction of the task; nothing else touched the
+   VMs. No run_tests.sh.
+
+Verification
+------------
+- Docs build as `make html` does, in a venv (docs/requirements.txt) in the
+  session directory:
+    sphinx-build -q -c docs . <out> -w <warnings> -j 8
+  Result: 0 warnings for docs/memory/**, P/README.md and
+  docs/deployment/helm/dra-driver-cxl.md. 18 warnings remain, all
+  "document isn't included in any toctree" for P/README.md, P/plan/*.md,
+  P/plan-2-dra/*.md and P/5jg-task-*.md: they exist without this work
+  (P is already in git on this branch), and with SPHINXOPTS=-W they fail
+  `make html` / verify-docs. See Requests.
+- Link check of the generated HTML (script): 404 local links and anchors
+  of docs/memory/cxl/*.html, docs/memory/index.html, P/README.html all
+  resolve; the 18 blob:/tree: repository links point to existing files and
+  directories (samples, deviceclasses.yaml, Dockerfile, chart, e2e suite,
+  build-kernel-rpms.sh, qemu-cxl-kernel.config).
+- Plain ASCII: grep -P '[^\x00-\x7F]' over all my files: none.
+- No old names: grep -i 'generic|kubelet-cxl-plugin|intel|deployments/|
+  CLUSTER_SETUP|BUILD.md|USAGE.md|LOCAL.md|POOL.md|LEASES.md|kustom|nfd'
+  over my files: only the new lower-case file names.
+- e2e.md: all 17 YAML documents of the kubectl apply heredocs and all
+  standalone yaml blocks parse (PyYAML); every embedded Python program
+  compiles. The tar tool of example f (exactly the ConfigMap text) and
+  the Python of examples b and d ran in docker.io/library/python:3-alpine
+  (Python 3.15.0) against a regular file mapped MAP_SHARED: the writer
+  writes the archive into the mmap (89-byte file, 10240-byte archive,
+  data offset 1024), readers open it in place over stale bytes, print the
+  file from a memoryview, report the refused open for writing, hold the
+  mapping and exit at once on SIGTERM.
+
+Examples that need verification in the VMs (orchestrator)
+---------------------------------------------------------
+e2e.md has an HTML comment at the top saying so. Everything in "Deploy by
+hand" and examples a-f is unverified in VMs; specifically:
+- the local device name in fake-cxl-pool-server
+  (<VM name>.memdev1, derived from localDeviceName() of P/pkg/server) and
+  `fake-cxl-pool-client attach ... --self` exit 0 when already attached;
+- cxl-image-put: the image id of the tarball name appears in
+  `ctr images ls` (as the playbook and WP3's dra-image-put assume);
+- expected outputs: NUMA node numbers (2 for the local device, 3 for
+  pooled0), cpuset.mems values (example a "0-2", example e "0-1" -> "0-2"),
+  dax device names, MemTotal, the resourceslices custom-columns table,
+  the cxl-request JSON and kubectl get tables;
+- example a: steering puts the node into cpuset.mems at start (only CXL
+  quota, first-cxl);
+- example c: the jsonpath of status.devices[0].data output format;
+- example d: writer and reader in two clusters at once (as test11);
+- example e: local numa lease then pool dax lease with --exec
+  (readlink /proc/self/fd/3 prints /dev/daxX.Y);
+- example f: test13 with k8s_restore=no leaves the two-node cluster and
+  removes its driver; the DaemonSet runs on both nodes after one helm
+  install on VM2; the three readers (two on VM2) get the device at once;
+  "open for writing refused: EPERM".
+- Clean up: guest release + detach of the local device.
+
+Requests
+--------
+- Orchestrator (docs/conf.py is not owned by any WP): add
+  'scripts/testing/fake-cxl-pool/**' (or the P/plan* dirs and the task
+  file) to exclude_patterns, or put P/README.md into a toctree, so that
+  `make html` with -W passes; pre-existing, not caused by the move.
+- WP1: the docs describe the flags exactly as contract C (Go flag, env
+  defaults, -help, --lease-cli-source semantics, SIGTERM/SIGINT). Please
+  report any difference.
+- WP3: e2e.md relies on test13's k8s_restore=no, on the test paths
+  memory.test-suite/dra-driver-cxl/n4-cxl-shared-{1,2}/..., on the output
+  directory .../memory.test-suite/dra-driver-cxl/<test>/, and on
+  dra-install removing release "test" and the fake-cxl-pool-controller
+  unit before installing.
+
+Rebuilding the docs
+-------------------
+  python3 -m venv <dir>/docs-venv
+  <dir>/docs-venv/bin/pip install -r docs/requirements.txt
+  <dir>/docs-venv/bin/sphinx-build -q -c docs . <dir>/docs-out -w <dir>/warnings.txt -j 8
+(or `make site-build`, which needs docker and SPHINXOPTS=-W).
+
+
+Verification round (2026-10-16, 15:21-15:53)
+============================================
+Exclusive use of the e2e VMs. Start state as handed over: both VMs
+single-node clusters (Kubernetes v1.37.1, kernel 7.3.0-rc7, containerd
+2.4.1, patched qemu), no helm release, no controller unit, no CXL
+devices, no DeviceClasses. Image: build/images/nri-dra-driver-cxl-image-
+824fa1371dea.tar (newest; no source was newer than it).
+
+Method: every code block of e2e.md was extracted from the file by a
+script (session directory, not in the repository) and run as written:
+host blocks with bash in the repository root after the definitions of
+"Deploy by hand" in the same shell; VM blocks piped into
+"ssh -F <vm>/.ssh-config node 'bash -l -s'" as user vagrant. The server
+start ran in a persistent background shell. Outputs were compared with
+the text; the doc was fixed and the fixed part run again.
+
+Not re-run: "Create the VMs" and "Run the driver tests" (done by the e2e
+round), and "make ... images" of "Build": the Dockerfile copies the whole
+repository, so a rebuild after any doc edit would have made a new
+"newest" image different from the one the e2e round tested; the command
+itself is the one of that round. "make -C scripts/testing/fake-cxl-pool"
+and the ls of "Build" were run.
+
+Results per part
+----------------
+Deploy by hand  verified. Fixes: the expected output now is the actual
+                one (driver pod, six DeviceClasses, slices in the order
+                kubectl prints them: cxl-pool.nri.io first, devices
+                "lease,dram"), plus the actual "pool hosts"/"pool devices"
+                tables (local devices have scope local:<VM name>);
+                cxl-images-pull filters crictl's level=warning lines.
+                cxl-image-put tags the right image: its awk matches the
+                REF sha256:<image id> line, which is that image.
+Example a       verified as written (node 2, cpuset.mems 0-2, MemTotal
+                262144 kB, slice log lines, region destroyed). Fix: "; echo"
+                after cat of localDevices.json (no trailing newline).
+Example b       fixed: the log was read before the program printed
+                "zeroed"/"read back" -> added
+                "until kubectl logs local-dax | grep -q '^read back:'"
+                before kubectl logs; device is /dev/dax0.0 (the first slice
+                gets daxX.0), not dax0.1. Re-run: works copy-paste.
+Example c       fixed output: pooled0 is NUMA node 2, not 3 (its pool slot
+                is under host bridge 0, like the local device; one node per
+                host bridge), full Attached data line, the attachments
+                table; text: after the delete "cxl list -M" shows only the
+                local device if it is attached.
+Example d       fixed: the reader's log had 1 line when read -> added a
+                wait for 3 "read:" lines; output updated. Re-run in both
+                clusters: works copy-paste; shared0 attached to both VMs
+                (table added).
+Example e       verified as written (local numa lease: cpuset.mems 0-1 ->
+                0-2 -> 0-1; pool dax lease with --exec, fd 3 is
+                /dev/dax2.0; release --all). Outputs replaced with the
+                actual ones (lease ids, companion pod ContainerCreating at
+                Ready time, CXL_CLAIM_<uid> in the --exec environment,
+                list and release JSON).
+Example f       works end to end, actual reader output in the doc: the
+                writer on VM1 writes notes/hello.txt (89 bytes) into a
+                10240-byte tar archive at the start of /dev/dax0.0; the
+                three readers (reader-1, reader-2 on VM2, reader-3 on
+                VM1) list the archive, print the file from the mapping
+                (offset 1024), get "open for writing refused: EPERM" and
+                hold the mapping; shared0 attached to both VMs, CDI
+                permissions r (2 devices on VM2, 1 on VM1, one region per
+                VM). Fixes:
+                - before test13: remove the driver and controller in BOTH
+                  VMs and release/detach the local device of VM2 (the doc
+                  removed only VM1's), then stop the server; test13 with
+                  k8s_restore=no PASSed and left the two-node cluster.
+                - the writer's claim is deallocated as soon as its pod has
+                  finished (kubectl get resourceclaim fs-writer: pending,
+                  device detaching); the text said "its claim still holds
+                  all hosts". Rewritten; "until the writer's claim is
+                  gone" made precise ("deallocated ...") also in usage.md
+                  (example 8) and pool.md (single-writer sharing).
+                - readers: wait until each logged "holding the mapping"
+                  before reading the logs (reader-3 had printed nothing
+                  yet).
+                - output of the two-node check (nodes, two driver pods,
+                  slices) added.
+                Whole example re-run from the ConfigMap after the fixes.
+Clean up        restructured: restoring two single-node clusters needs
+                port 9909, so it comes after stopping the server and is a
+                step of Clean up: run test11-dra-sharing (it rebuilds the
+                clusters first and removes what it installs). Local device
+                release/detach only "if attached". Run: block by block,
+                test11 PASS ("rebuilding cluster ... ready in 53 s / 50 s").
+Prerequisites   text: the configuration was made on 7.3.0-rc4, the VMs run
+                7.3.0-rc7 with it (the cached RPMs are 7.3.0-rc7);
+                build-kernel-rpms.sh with another version changes the
+                configuration file (review it). Not run (VMs exist).
+HTML comment    removed from the top of e2e.md.
+
+Operator mistakes during the round (not doc errors, recovered)
+---------------------------------------------------------------
+- test13 first started from the repository root with ./test/e2e/
+  run_tests.sh instead of the doc's "(cd test/e2e && ...)": run_tests.sh
+  refused the path (bad TESTS_DIR) before touching anything; then run
+  as written.
+- During a re-run of example f I ran the Clean up block "pool attachments;
+  kill $POOL_SERVER_PID" instead of the check block, and had deleted the
+  ConfigMap (block of the readers' cleanup) without re-applying it: the
+  writer stayed ContainerCreating and readers Pending. Recovered: pods,
+  claims and template deleted, both VMs checked (no memdevs, no regions,
+  no cxl-type3 in qemu, preparedPoolClaims.json {}), server restarted,
+  example f re-run from the ConfigMap: works.
+
+Requests
+--------
+None to WP1-WP3 from this round: no bug in Go code, chart, run.sh or the
+tests. Still open from the first round: docs/conf.py exclude_patterns for
+scripts/testing/fake-cxl-pool/** (18 pre-existing toctree warnings fail
+make html with -W).
+
+Verification of the docs after the edits
+----------------------------------------
+sphinx-build (docs/requirements.txt): 0 warnings for docs/memory/**;
+link check of the HTML: 405 local links/anchors and 18 repository links
+resolve; 17 YAML documents of e2e.md parse; plain ASCII.
+
+Final state of the VMs (checked 2026-10-16 15:49)
+--------------------------------------------------
+Both VMs, n4-cxl-shared-1-fedora-43-containerd and
+n4-cxl-shared-2-fedora-43-containerd:
+- single-node cluster each: "kubectl get nodes" lists only the VM itself,
+  Ready, control-plane (restored by test11's vm-k8s-reinit);
+- helm list -A: empty; fake-cxl-pool-controller and kubelet-cxl-plugin
+  units inactive; no driver pods;
+- DeviceClasses 0, ResourceSlices 0, ResourceClaims 0, no ConfigMaps of
+  the examples, namespaces default, kube-node-lease, kube-public,
+  kube-system only, no pods outside kube-system;
+- no CXL memdevs or regions, no dax devices, NUMA nodes online 0-1;
+  qemu "info qtree -b": 0 cxl-type3 devices in both;
+- fake-cxl-pool-client attachments --host <vm>: empty for both hosts
+  (checked with a short-lived fake-cxl-pool-server, stopped afterwards);
+Host: no fake-cxl-pool-server process, nothing listens on port 9909.
+Qemu of both VMs was not restarted (same pids 40020 and 331593 as at the
+start).

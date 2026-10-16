@@ -1,0 +1,283 @@
+plan-6-cxl-driver-in-nri-plugins: status of WP2 (image)
+======================================================
+Written 2026-10-16. N = ~/github.com/containers/nri-plugins.
+
+1. What was done
+----------------
+Files (all owned by WP2, nothing committed):
+  new  cmd/plugins/dra-driver-cxl/Dockerfile
+  mod  Makefile                       (nri-dra-driver-cxl in default PLUGINS)
+  new  deployment/helm/dra-driver-cxl/Chart.yaml        (name nri-dra-driver-cxl)
+  new  deployment/helm/dra-driver-cxl/values.yaml
+  new  deployment/helm/dra-driver-cxl/values.schema.json
+  new  deployment/helm/dra-driver-cxl/README.md
+  new  deployment/helm/dra-driver-cxl/templates/_helpers.tpl
+  new  deployment/helm/dra-driver-cxl/templates/configmap.yaml
+  new  deployment/helm/dra-driver-cxl/templates/daemonset.yaml
+  new  deployment/helm/dra-driver-cxl/templates/serviceaccount.yaml
+  new  deployment/helm/dra-driver-cxl/templates/clusterrole.yaml
+  new  deployment/helm/dra-driver-cxl/templates/clusterrolebinding.yaml
+  new  deployment/helm/dra-driver-cxl/templates/validatingadmissionpolicy.yaml
+       (templates/deviceclasses.yaml is WP1's and is rendered as is)
+  new  test/e2e/playbook/nri-dra-driver-cxl-plugin-deploy.yaml
+  mod  test/e2e/run.sh                (helm-launch only)
+  new  docs/deployment/helm/dra-driver-cxl.md
+  mod  docs/deployment/helm/index.md  (toctree entry after memtierd.md)
+
+Image (cmd/plugins/dra-driver-cxl/Dockerfile), three stages:
+- builder: golang:${GO_VERSION}-bookworm, same layout as memory-policy;
+  make ... BINARIES=cxl-request PLUGINS=nri-dra-driver-cxl
+  clean build-plugins-static build-binaries-static licenses.
+- ndctl: debian:bookworm, apt build deps (gcc, meson, ninja, pkg-config,
+  libkmod-dev, libudev-dev, uuid-dev, libjson-c-dev, libiniparser-dev,
+  git), git clone --depth 1 --branch v85 https://github.com/pmem/ndctl,
+  meson setup with -Dversion-tag=85 -Ddocs=disabled -Dasciidoctor=disabled
+  -Dsystemd=disabled -Dlibtracefs=disabled -Dkeyutils=disabled
+  -Dfwctl=disabled -Dtest=disabled -Ddestructive=disabled -Dpoison=disabled
+  -Dbashcompletiondir=no, meson compile, DESTDIR=/ndctl meson install.
+  Then cxl and daxctl and their ldd closure (fails the build on "not
+  found" or a missing loader) are copied to /rootfs at canonical paths
+  (realpath of the directory: /usr/lib/x86_64-linux-gnu, /usr/lib64 for
+  ld-linux-x86-64.so.2, /usr/lib for libcxl/libdaxctl/libndctl), because
+  /lib, /lib64 and /bin are symbolic links in distroless/static. Closure:
+  libcxl.so.1 libdaxctl.so.1 libndctl.so.6 libc.so.6 libcrypto.so.3
+  libiniparser.so.1 libjson-c.so.5 libkmod.so.2 liblzma.so.5 libudev.so.1
+  libuuid.so.1 libzstd.so.1 ld-linux-x86-64.so.2. ld.so finds them in its
+  built-in search path (no ld.so.cache needed).
+  /rootfs/licenses/ndctl/ gets COPYING and LICENSES/ of ndctl, and
+  debian/<package>/copyright of every Debian package of the closure.
+- final: FROM gcr.io/distroless/static; /bin/nri-dra-driver-cxl,
+  /bin/cxl-request, /licenses/nri-dra-driver-cxl/, /licenses/cxl-request/,
+  then COPY --from=ndctl /rootfs/ / (gives /usr/bin/cxl, /usr/bin/daxctl,
+  libs, loader, /licenses/ndctl/). ENTRYPOINT ["/bin/nri-dra-driver-cxl"].
+  The image has no default arguments; the chart gives them.
+
+Chart interface (deployment/helm/dra-driver-cxl):
+- Objects: ServiceAccount, ConfigMap nri-dra-driver-cxl-config (key
+  config.yaml = toYaml .Values.config), ClusterRole and ClusterRoleBinding
+  nri-dra-driver-cxl, DaemonSet nri-dra-driver-cxl, the six DeviceClasses
+  (WP1's file), ValidatingAdmissionPolicy and Binding
+  resourceslices-policy-nri-dra-driver-cxl. Namespaced objects go to the
+  release namespace.
+- DaemonSet nri-dra-driver-cxl, container nri-dra-driver-cxl,
+  serviceAccountName nri-dra-driver-cxl, labels from the shared
+  nri-plugin.labels/nri-plugin.selectorLabels helpers
+  (app.kubernetes.io/name=nri-dra-driver-cxl,
+  app.kubernetes.io/instance=<release>), annotation checksum/config (pods
+  restart when .Values.config changes on helm upgrade, as the driver reads
+  the configuration only at start), hostPID: true, nodeSelector
+  kubernetes.io/os=linux plus .Values.nodeSelector, tolerations, affinity,
+  priorityClassName system-node-critical when podPriorityClassNodeCritical,
+  optional patch-runtime init container (nri.runtime.patchConfig, as in
+  the other charts).
+- Container: securityContext privileged: true, readOnlyRootFilesystem:
+  true; env NODE_NAME from spec.nodeName plus extraEnv (values quoted);
+  requests cpu/memory from resources.
+- Args (in this order):
+    --nri-idx "<nri.plugin.index as %02d>"   (default "30")
+    --pool-driver-name "<pool.driverName>"    (default cxl-pool.nri.io)
+    --pool-prepare-timeout "<pool.prepareTimeout>" (30s)
+    --leases=<leases.enabled>                 (true)
+    --lease-wait "<leases.wait>"              (120s)
+    --lease-companion-image "<leases.companionImage>" (registry.k8s.io/pause:3.10)
+    --lease-cli /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
+    --lease-cli-source /bin/cxl-request
+    -f /etc/nri/dra-driver-cxl/config.yaml
+    -v "<logLevel>"                           (4)
+- Mounts (hostPath, same path in the container):
+    /var/lib/kubelet/plugins          DirectoryOrCreate
+    /var/lib/kubelet/plugins_registry DirectoryOrCreate
+    /etc/cdi                          DirectoryOrCreate
+    /var/run/cdi                      DirectoryOrCreate
+    /var/run/nri                      DirectoryOrCreate, readOnly
+    /sys                              Directory
+    /dev                              Directory
+    /lib/modules                      Directory, readOnly
+  and the ConfigMap at /etc/nri/dra-driver-cxl.
+- values: image.{name (ghcr.io/containers/nri-plugins/nri-dra-driver-cxl),
+  tag (Chart.AppVersion when unset), pullPolicy (Always)},
+  resources.{cpu (10m), memory (128Mi)}, nri.plugin.index (30),
+  nri.runtime.{patchConfig (false), config.*}, pool.{driverName,
+  prepareTimeout}, leases.{enabled, wait, companionImage}, config ({}),
+  logLevel (4), extraEnv ({}), initContainerImage.*, tolerations ([]),
+  affinity ({}), nodeSelector ({}), podPriorityClassNodeCritical (true).
+  plugin.test.enableAPIs is accepted and ignored (the schema allows
+  unknown keys, as in the other charts).
+- values.schema.json checks types, pullPolicy enum, index 0-99, Go
+  duration patterns of pool.prepareTimeout and leases.wait, DNS-subdomain
+  or "" for pool.driverName, extraEnv values string/number/boolean.
+
+run.sh helm-launch: new case *dra-driver-cxl* (ds_name and ctr_name
+nri-dra-driver-cxl, no cfgresource); new optional variable
+launch_available (default 1, local "available") used in
+"kubectl wait ... --for=jsonpath='{.status.numberAvailable}'=$available";
+both documented in the function comment. Other plugins behave as before
+(default 1).
+
+Playbook: copy of nri-memory-policy-plugin-deploy.yaml with plugin_name
+"dra-driver-cxl" and the two task titles renamed.
+
+Docs: docs/deployment/helm/dra-driver-cxl.md includes the chart README
+(like memory-qos.md/memtierd.md) and adds a "Usage" section linking
+../../memory/cxl/usage.md. The README links usage.md with an absolute
+GitHub URL (works on GitHub, Artifact Hub and the site, like resctrl-mon).
+
+
+2. Deviations from the contract (with reasons)
+-----------------------------------------------
+D1 RBAC: the ClusterRole is exactly D's rules (nodes get; resourceslices
+   get/list/watch/create/update/patch/delete; resourceclaims
+   get/list/watch/create/delete; pods get/list/watch/create/delete;
+   events create in "" and events.k8s.io). Contract E's summary also
+   names "resourceclaims incl. status" and "deviceclasses": D's file
+   grants neither, and neither the driver (grep of
+   cmd/plugins/dra-driver-cxl, pkg/cxl) nor k8s.io/dynamic-resource-
+   allocation v0.37.0 kubeletplugin/resourceslice call DeviceClasses() or
+   UpdateStatus/ApplyStatus of claims. Least privilege, "what D grants".
+D2 Values beyond contract E's list, for parity with the other N charts:
+   nri.runtime.patchConfig (+ config.*) and initContainerImage (default
+   off). extraEnv values are quoted, so numbers and booleans become
+   strings.
+D3 Pod hardening from D kept: readOnlyRootFilesystem: true (D had it).
+   D's capabilities drop ALL and seccomp RuntimeDefault were dropped:
+   meaningless for a privileged container. D's env SYSFS_ROOT=/sys and
+   POD_NAMESPACE were dropped (default "" means /sys; POD_NAMESPACE is
+   not a flag of contract C).
+D4 Additional files under /licenses/ndctl/debian/<pkg>/copyright (the
+   image ships Debian's LGPL/MIT/BSD libraries, whose notices should
+   travel with them).
+D5 docs/deployment/helm/dra-driver-cxl.md has a short "Usage" section
+   after the README include (the contract asked for a link to usage.md).
+D6 Checksum annotation on the pod template (restart on config change).
+
+
+3. Verification (commands and results)
+--------------------------------------
+Scratch files lived in P/.wp2-scratch (removed at the end).
+V1 ndctl stage alone, empty build context:
+     docker buildx build --load --target ndctl -t wp2-ndctl:test \
+       -f cmd/plugins/dra-driver-cxl/Dockerfile <empty dir>
+   OK (apt 26 s, clone 1.5 s, meson compile+install 3 s). meson: libkmod
+   30, libudev 252, uuid 2.38.1, json-c 0.16, iniparser found, keyutils
+   skipped. Then FROM gcr.io/distroless/static + COPY --from=ndctl
+   /rootfs/ /:
+     cxl version -> 85, daxctl version -> 85,
+     cxl list -> "Warning: no matching devices found" + [] (exit 0),
+     daxctl list -> exit 0; also with --privileged -v /sys:/sys
+     -v /dev:/dev -v /lib/modules:/lib/modules:ro: exit 0.
+V2 WP1 code compiles (14:13): go build ./cmd/plugins/dra-driver-cxl/ and
+   go build ./cmd/cxl-request/ -> rc 0.
+V3 Full image:
+     make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= \
+       BINARIES= images            -> rc 0
+     make PLUGINS=nri-dra-driver-cxl OTHER_IMAGE_TARGETS= BINARIES= images
+                                   -> rc 0 (go-licenses: 224 entries in
+                                      /licenses/nri-dra-driver-cxl, 7 in
+                                      /licenses/cxl-request, 28 in
+                                      /licenses/ndctl)
+   Result: build/images/nri-dra-driver-cxl-image-3580925f440d.tar
+   (tag nri-dra-driver-cxl:v0.14.0-203-g9ce64dc7d-dirty). The earlier
+   SKIP_LICENSES tarball was deleted, so the playbook's "ls -1t" picks
+   this one.
+   In the image:
+     docker run IMG -h          -> all flags of contract C (node-name,
+       kubeconfig, kube-api-qps, kube-api-burst, cdi-root, sysfs,
+       config-str/c, config-file/f, nri-name (default dra-driver-cxl),
+       nri-idx (30), nri-socket, pool-driver-name (cxl-pool.nri.io),
+       pool-prepare-timeout (30s), leases (true), lease-cli,
+       lease-cli-source, lease-wait (2m0s), lease-companion-image
+       (registry.k8s.io/pause:3.10)) plus klog flags (-v ...) and -version;
+       exit 0
+     docker run IMG             -> "Error: --node-name or NODE_NAME is required"
+     /usr/bin/cxl version -> 85; /usr/bin/daxctl version -> 85;
+     /usr/bin/cxl list -> [] (exit 0)
+     /bin/cxl-request: "ELF 64-bit LSB executable, x86-64, statically
+       linked" (file(1)); /bin/cxl-request list -> "CXL_LEASE_SOCKET is
+       not set ..." (runs)
+     /bin/nri-dra-driver-cxl: statically linked.
+V4 Start smoke test (no cluster): docker run --read-only, scratch dirs at
+   /var/lib/kubelet/plugins, /var/lib/kubelet/plugins_registry, /etc/cdi,
+   a kubeconfig of an unreachable server, the chart's args. The driver
+   logged "Installed lease CLI /var/lib/kubelet/plugins/cxl.nri.io/
+   cxl-request from /bin/cxl-request", started both kubelet plugins
+   (cxl.nri.io and cxl-pool.nri.io sockets and registration sockets),
+   loaded leases.json, and kept retrying the API server. No read-only
+   file system error: readOnlyRootFilesystem is fine for start-up.
+V5 helm (v3.22.1 release binary):
+     helm lint deployment/helm/dra-driver-cxl            -> 0 failed
+     helm lint --strict ... <e2e --set args>             -> 0 failed
+     helm lint deployment/helm/*                         -> 10 charts, 0 failed
+     e2e args: --set image.name=localhost/dra-driver-cxl
+       --set image.tag=testing --set image.pullPolicy=Never
+       --set resources.cpu=50m --set resources.memory=256Mi
+       --set plugin.test.enableAPIs=true
+       --set extraEnv.GOCOVERDIR=/var/lib/nri-resource-policy/coverage
+     helm template -n kube-system test ... (defaults, e2e args, and
+       patchConfig=true + leases.enabled=false + pool.driverName= +
+       config JSON + extraEnv.NUM=5 + index 5 + tolerations +
+       nodeSelector) all rendered; kubeconform v0.8.0 -strict
+       (-kubernetes-version master and 1.34.0): 13 resources valid, 0
+       invalid, each time. Renders checked by eye: "--nri-idx" "05",
+       --pool-driver-name "", --leases=false, NUM "5", patch-runtime init
+       container.
+     Schema rejects image.pullPolicy=Bad, pool.prepareTimeout=30 (number),
+     leases.enabled=maybe.
+V6 bash -n test/e2e/run.sh -> OK; git diff reviewed.
+V7 Docs: make site-build SPHINXOPTS=--keep-going (site builder image):
+   no warning from dra-driver-cxl.md or index.md; the page renders the
+   README and links ../../memory/cxl/usage.html. With the default -W the
+   build fails now only on WP4's pending docs/memory/cxl/e2e.md (toctree
+   and links in index.md, pool.md, usage.md).
+V8 No non-ASCII characters and no old names (kubelet-cxl-plugin,
+   cxl.generic, generic/cxl, intel-resource-drivers) in WP2's files.
+
+Image size: 93.4 MB (docker image inspect; 92.9 MB with SKIP_LICENSES=1),
+tarball 94.7 MB. Of it: nri-dra-driver-cxl 76.8 MB (static, not stripped,
+like the other N plugins; topology-aware's image is 80 MB), cxl-request
+3.9 MB, ndctl tools + library closure + loader 9.8 MB (libcrypto 4.7 MB,
+libc 1.9 MB), distroless/static 2.4 MB.
+
+
+4. Open issues and notes
+------------------------
+O1 The image build needs network access to deb.debian.org and
+   github.com (pmem/ndctl tag v85, not pinned to a commit hash), like the
+   go module download of the builder stage.
+O2 distroless/static is now Debian 13 based; the ndctl closure comes from
+   bookworm with its own glibc and loader, so there is no mixing (the
+   base image has no libc).
+O3 The cluster-scoped objects have fixed names (ClusterRole/Binding
+   nri-dra-driver-cxl, VAP resourceslices-policy-nri-dra-driver-cxl, the
+   six DeviceClasses): one release per cluster, like the other N charts.
+O4 The VAP needs ServiceAccountTokenPodNodeInfo (GA since 1.32, default on
+   since 1.30); without it the driver cannot write any ResourceSlice.
+O5 Observation for WP1 (not a request): signal.Notify is called after
+   newDriver returns; while newDriver blocks (e.g. PublishResources waits
+   for the ResourceSlice informer of an unreachable API server) SIGTERM
+   kills the process with exit 2 and no Shutdown (seen in V4 with docker
+   stop). Harmless with a reachable API server.
+O6 Not run: e2e (contract rule 8), a real cluster install.
+
+
+5. Requests
+-----------
+R1 WP3: DeviceClasses cxl-local, cxl-pool, cxl-pool-shared, cxl-region,
+   cxl-dram and cxl-lease that exist in a VM cluster without helm
+   ownership (kubectl apply of the old deployment) make "helm install"
+   fail ("exists and cannot be imported into the current release");
+   delete them once before the first helm-launch dra-driver-cxl.
+R2 WP3: helm-launch passes --values=$(basename $helm_config), default
+   $TEST_DIR/helm-config.yaml; give it an existing file (e.g. one with
+   "config: {}" or the driver configuration of the test).
+R3 WP3: for a two-node cluster import the image on the worker before
+   helm-launch and call it with launch_available=2 (imagePullPolicy is
+   Never). helm-launch's log collection "kubectl logs ds/nri-dra-driver-cxl"
+   follows one pod; per-node logs need
+   kubectl get pod -n kube-system -l app.kubernetes.io/name=nri-dra-driver-cxl
+   --field-selector spec.nodeName=<node> -o name.
+R4 WP4: the deploy section can use
+   helm install -n kube-system <name> deployment/helm/dra-driver-cxl
+   and the values of section 1; the image build is
+   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images.
+R5 Orchestrator: .github/skills/build-nri-policy-images/SKILL.md lists the
+   available plugins; nri-dra-driver-cxl could be added (not a WP2 file).

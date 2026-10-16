@@ -1,0 +1,347 @@
+plan-6 WP3 (e2e): status
+========================
+Written 2026-10-16. Static round only: run_tests.sh was not run and no VM
+was touched (the image of the driver did not exist yet).
+
+E = test/e2e/memory.test-suite, N = the nri-plugins repository.
+
+
+1. What changed
+---------------
+
+Moves (git mv, staged, not committed):
+  E/memory-policy/dra.source.sh      -> E/dra-driver-cxl/dra.source.sh
+  E/memory-policy/n4-cxl-shared-1/   -> E/dra-driver-cxl/n4-cxl-shared-1/
+  E/memory-policy/n4-cxl-shared-2/   -> E/dra-driver-cxl/n4-cxl-shared-2/
+  The symlinks n4-cxl-shared-{1,2}/cxl.source.sh now point to
+  ../../memory-policy/n4-cxl/cxl.source.sh (they pointed to
+  ../n4-cxl/cxl.source.sh). E/memory-policy keeps n4-cxl and n6-hbm-cxl;
+  neither uses dra-* or pool-* helpers, nothing there sourced the moved
+  files.
+
+New file:
+  E/dra-driver-cxl/dra-driver-cxl.helm-values.yaml: the helm values of the
+  driver in the tests (logLevel: 4) on top of helm-set-args. helm-launch
+  needs a values file (helm_config), and VM1 gets the same file.
+
+E/dra-driver-cxl/dra.source.sh:
+- Header: the driver is the helm-installed DaemonSet of
+  deployment/helm/dra-driver-cxl, built with
+  "make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS=
+  BINARIES= images"; docs point to docs/memory/cxl/{pool,leases,local,
+  usage}.md. No DRA_DRIVER_SRC, DRA_DRIVER_BIN, DRA_DEVICE_CLASSES,
+  DRA_REQUEST_BIN any more.
+- New variables: DRA_CHART, DRA_CHART_DIR, DRA_HELM_RELEASE ("test"),
+  DRA_HELM_VALUES, DRA_IMAGE_DIR, DRA_TEST_IMAGE
+  (localhost/dra-driver-cxl:testing), DRA_DAEMONSET, DRA_CONTAINER
+  (nri-dra-driver-cxl), DRA_POD_LABEL
+  (app.kubernetes.io/name=nri-dra-driver-cxl), DRA_REQUEST_NODE_BIN
+  (/var/lib/kubelet/plugins/cxl.nri.io/cxl-request, where the driver puts
+  it on the node), DRA_REQUEST_CTR_BIN (/usr/local/bin/cxl-request, the
+  path in lease containers, was DRA_REQUEST_VM_BIN).
+- Renames of contract A: DRA_POOL_DRIVER=cxl-pool.nri.io,
+  DRA_LOCAL_DRIVER=cxl.nri.io, labels cxl.nri.io/{lease,requester-uid,
+  node,requester}, DRA_LEASE_DIR and DRA_LOCAL_STATE under
+  /var/lib/kubelet/plugins/cxl.nri.io, trace-summary pattern
+  cxl-pool\.nri\.io, texts kubelet-cxl-plugin -> nri-dra-driver-cxl.
+  The opaque configs of dra-claim-yaml use $DRA_*_DRIVER/v1alpha1, so
+  they are cxl.nri.io/v1alpha1 and cxl-pool.nri.io/v1alpha1 now.
+- dra-build: builds only fake-cxl-pool (make -C
+  scripts/testing/fake-cxl-pool), no driver build.
+- dra-chart-put VMDIR (new): tar of deployment/helm/dra-driver-cxl over
+  ssh to ~vagrant/helm/dra-driver-cxl of another VM (as vagrant, like the
+  playbook's synchronize).
+- dra-image-put VMDIR (new): newest build/images/nri-dra-driver-cxl-image-
+  *.tar (ls -1t, as the playbook), scp to the VM, "ctr -n k8s.io images
+  import" + "ctr images tag --force <ref of sha256:ID>
+  localhost/dra-driver-cxl:testing" (podman load + tag for cri-o, as the
+  playbook), tarball removed after the import. Skipped when the test tag
+  already has that digest.
+- dra-install VMDIR: chart+image to VMs other than the test VM;
+  dra-helm-uninstall (helm-terminate in the test VM, helm uninstall in
+  another VM) and wait until no driver pod is left in the cluster; stop
+  the controller unit; delete leftover DeviceClasses of DRA_CLASSES (not
+  owned by a release any more: they would make "helm install" fail on
+  ownership metadata, e.g. those applied by the old e2e); dra-state-cleanup
+  of the VM and of its recorded workers; install the controller binary;
+  dra-installed-add (EXIT trap) before the install; dra-helm-install; start
+  the controller unit; check the DeviceClasses; dra-wait-node of the VM and
+  of each recorded worker; recreate namespace $DRA_NS (as before).
+- dra-helm-install VMDIR (new): counts the nodes of the cluster; test VM:
+  helm_config=$DRA_HELM_VALUES launch_available=<nodes>
+  launch_timeout=120s helm-launch dra-driver-cxl (also gives the framework
+  log collection nri-resource-policy.output.txt); other VM: helm install
+  -n kube-system test ./helm/dra-driver-cxl --values=... $(helm-set-args
+  dra-driver-cxl), kubectl wait ds numberAvailable=<nodes>.
+- dra-install-node VMDIR [CPDIR] (changed): only dra-image-put and record
+  the VM as a worker of the cluster of CPDIR (default the test VM). The
+  DaemonSet of dra-install CPDIR starts the driver pod there at once.
+- dra-workers CPDIR (new): the recorded workers of a cluster.
+  DRA_NODE_ONLY maps VMDIR -> CPDIR (was VMDIR -> 1).
+- dra-wait-node: ResourceSlices of both drivers, kubelet plugin socket
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/dra.sock, and (new)
+  $DRA_REQUEST_NODE_BIN executable. On timeout shows the driver pods, the
+  last 40 log lines of the driver pod of the node, the controller unit
+  and journal, slices and plugin dirs.
+- dra-driver-pod VMDIR (new): the Running driver pod on the node of the VM
+  (kubectl get pods -l app.kubernetes.io/name=nri-dra-driver-cxl
+  --field-selector spec.nodeName=<vm>).
+- dra-plugin-log VMDIR: kubectl logs -n kube-system <pod> -c
+  nri-dra-driver-cxl (was the journal of the systemd invocation). Used by
+  dra-local-slices-aligned, dra-local-slice-times and the tests.
+- dra-plugin-log-save VMDIR (new): $TEST_OUTPUT_DIR/nri-dra-driver-cxl.
+  <vm>.log, written by dra-uninstall for every node before the uninstall.
+- dra-uninstall VMDIR: delete $DRA_NS (pods first, the running driver
+  unprepares), wait for no ResourceClaims, wait for pool detaches of the
+  VM and its workers, save driver logs, dra-helm-uninstall (DeviceClasses
+  go with the release), stop the controller unit, delete leftover pool
+  ResourceSlices, dra-state-cleanup. A worker: only dra-state-cleanup (the
+  control plane's uninstall removed its driver pod and waited for it).
+- dra-cleanup: unchanged order (control planes first), comments updated.
+- dra-local-detach: "is the driver running" is dra-driver-pod (was
+  systemctl is-active).
+- dra-trace-start: the <vm>.driver collector is "kubectl logs -n
+  kube-system -f --tail=0 -c nri-dra-driver-cxl <pod of the node>" (pod
+  resolved on the host first, error if none). Collector counts unchanged
+  (8 per control plane, 3 per worker).
+- Removed: dra-install-files, dra-start-plugin, the
+  /etc/kubelet-cxl-plugin.yaml config, /root/cxl-device-classes.yaml.
+
+E/dra-driver-cxl/n4-cxl-shared-2/pool.source.sh: recreate hint path
+memory.test-suite/dra-driver-cxl/$topology/test00-up.
+E/dra-driver-cxl/n4-cxl-shared-2/pool-dax-rw.py: docstring names
+nri-dra-driver-cxl.
+
+Per test (names and steps kept):
+- n4-cxl-shared-1/test00-up, n4-cxl-shared-2/test00-up: only the
+  run_tests.sh path hints (comment and recreate error message).
+- test01-shared-cxl: only the VM1 creation hint path.
+- test10-dra-pooling: header names (cxl-pool.nri.io, Attached condition,
+  nri-dra-driver-cxl), build hint instead of the other repository;
+  rescanned-after-prepare reads dra-plugin-log and matches
+  "$DRA_POOL_DRIVER: claim .*: prepared pooled0" (the driver logs
+  "<pool driver name>: claim ...: prepared ..."); the two journalctl
+  -u kubelet-cxl-plugin uses are dra-plugin-log | grep (the release check
+  now fails with error instead of command-error).
+- test11-dra-sharing: header names; note that dra-install copies image and
+  chart to VM1 and installs there with helm. dra-install "$VM1" now does
+  that (VM1 is a separate single-node cluster).
+- test12-dra-live-attach: header (docs/memory/cxl/leases.md, cxl.nri.io
+  slice and label, nri-dra-driver-cxl, build hint); DRA_REQUEST_BIN check
+  removed; journalctl at step F is dra-plugin-log | grep | tail.
+- test13-dra-shared-one-writer-many-readers: header; DRA_REQUEST_BIN check
+  removed; reordered "dra-install-node "$VM1" "$VM2"" BEFORE
+  "dra-install "$VM2"" (image on the worker before helm-launch with
+  launch_available=2); CDI kind check nri.io/cxl-pool.
+- test14-dra-local-memdev: header names and build hint; CDI kind check
+  nri.io/cxl. DeviceClass checks still use DRA_CLASSES (now created by
+  the chart).
+- test15-dra-local-live-attach: header; DRA_REQUEST_BIN check removed;
+  texts of pool-not-local name nri-dra-driver-cxl; comment cxl.nri.io.
+
+test/e2e/lib/k8s.bash (vm-k8s-reset-node): stops only the
+fake-cxl-pool-controller unit now. Decision on the helm release: not
+removed there. The old unit stop was needed because a systemd unit
+survives "kubeadm reset" and keeps state in /var/lib/kubelet/plugins; the
+driver pod does not: kubeadm reset removes all CRI containers (driver
+included) before the script wipes /var/lib/kubelet, and the release
+record (a Secret in kube-system) goes with the cluster state of the
+control plane. A comment in the function says so.
+
+test/e2e/README.md: the two paths of the multi-node section point to
+memory.test-suite/dra-driver-cxl/n4-cxl-shared-{1,2} and
+.../n4-cxl-shared-2/test11-dra-sharing.
+
+
+2. Deviations from the contract / task, with reasons
+---------------------------------------------------
+- dra-install-node takes an optional CPDIR (default the test VM) and must
+  be called before dra-install of the control plane; dra-install waits
+  for the recorded workers (dra-wait-node). The task allowed the reorder.
+- dra-wait-node also requires $DRA_REQUEST_NODE_BIN on the node: the
+  lease tests (12, 13, 15) need it, and a missing copy is easier to debug
+  there than in the middle of a test. DRA_REQUEST_BIN checks are gone.
+- dra-install deletes leftover DeviceClasses after the release is gone
+  (see above). dra-uninstall does not delete DeviceClasses (helm does).
+- New values file dra-driver-cxl.helm-values.yaml (helm-launch needs one).
+- dra-uninstall saves per-node driver logs to the test output (new).
+- dra-build keeps its name (tests call it) but builds only fake-cxl-pool.
+- Not done (not owned): run_tests.sh lines 229-232 comment explains the
+  exact-topology filter with "n4-cxl would select also n4-cxl-shared-1"; the
+  logic is generic and still right, the example is now historical.
+- Leftovers in existing VMs are not handled by code (rename rule: no old
+  names): a transient unit "kubelet-cxl-plugin" still running from an
+  old-framework run would compete with the pod (it does not survive a VM
+  restart). Before the first e2e run check in both VMs:
+    ssh -F test/e2e/n4-cxl-shared-{1,2}-fedora-43-containerd/.ssh-config \
+        vagrant@node "systemctl is-active kubelet-cxl-plugin"
+  and stop it if active. Old /var/lib/kubelet/plugins/cxl*.generic
+  directories and old binaries in /usr/local/bin are harmless.
+
+
+3. Static checks
+----------------
+- bash -n: dra.source.sh, pool.source.sh, all 10 code.var.sh, lib/k8s.bash:
+  ok. Each code.var.sh also concatenated after dra.source.sh,
+  pool.source.sh and cxl.source.sh: bash -n ok.
+- shellcheck 0.11.0 (shellcheck-py in a venv of the session directory,
+  -s bash -e SC2154,SC2034,SC1090,SC2148): code.var.sh findings per test
+  equal to HEAD (10: 1, 11: 4, 12: 4, 13: 7, 14: 0, 15: 7, all old);
+  k8s.bash 3 = HEAD; dra.source.sh: only SC2016 notes of single-quoted
+  retry-until snippets (intended, 12 at HEAD, 13 now). SC2209
+  (DRA_HELM_RELEASE=test) fixed by quoting, SC2012 (ls -1t of the
+  tarballs) disabled with a reason.
+- python3 -m py_compile pool-dax-rw.py: ok.
+- helm v3.16.2 (downloaded into the session directory) "helm template -n
+  kube-system test deployment/helm/dra-driver-cxl" with
+  dra-driver-cxl.helm-values.yaml and every --set of helm-set-args
+  (incl. plugin.test.enableAPIs, extraEnv.GOCOVERDIR): renders; DaemonSet
+  nri-dra-driver-cxl, container nri-dra-driver-cxl, pod label
+  app.kubernetes.io/name=nri-dra-driver-cxl, image
+  localhost/dra-driver-cxl:testing, -v "4", --lease-cli
+  /var/lib/kubelet/plugins/cxl.nri.io/cxl-request, six DeviceClasses, as
+  dra.source.sh expects.
+- WP2's run.sh helm-launch has launch_available and the *dra-driver-cxl*
+  case; playbook nri-dra-driver-cxl-plugin-deploy.yaml exists.
+- grep in test/e2e (without VM output dirs) for cxl.generic,
+  cxl-pool.generic, generic/cxl, kubelet-cxl-plugin,
+  intel-resource-drivers, CXL_DRA_DRIVER_SRC, doc/cxl,
+  memory-policy/n4-cxl-shared, DRA_REQUEST_BIN, DRA_DRIVER_SRC,
+  DRA_DEVICE_CLASSES: none. Non-ASCII in changed files: none.
+- The log line patterns used by the tests exist in
+  cmd/plugins/dra-driver-cxl: "%s: claim %s: prepared %s ..." (pool.go,
+  name = cxl-pool.nri.io), "rescanAndPublish: published updated
+  resources" (Info), "ignoring region" (V(4)), "discovered local memory
+  device" (V(3)), local: ... rounded up/placing/boundary (Warning).
+
+
+4. Requests
+-----------
+WP2: none required. Notes: helm-terminate runs "helm uninstall ... test"
+regardless of helm_name (pre-existing; the e2e release is "test").
+test/e2e/lib/test.bash plugin-daemonset/plugin-log do not know
+dra-driver-cxl (not needed by WP3, which has dra-plugin-log).
+WP4: docs/memory/cxl/e2e.md: suite paths memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-{1,2}, the image build command, the run order of section 5.
+P/README.md line 185 still names cxl-pool.generic / kubelet-cxl-plugin.
+
+
+5. Proposed e2e round (one at a time, from N/test/e2e)
+------------------------------------------------------
+Before: the image exists (make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1
+OTHER_IMAGE_TARGETS= BINARIES= images); both VMs exist
+(test/e2e/n4-cxl-shared-1-fedora-43-containerd first: VM1 is needed by
+test01, test11, test13); no old kubelet-cxl-plugin unit active in them.
+  1. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
+  2. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
+  3. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test01-shared-cxl
+  4. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
+  5. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test11-dra-sharing
+  6. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+  7. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+  8. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test14-dra-local-memdev
+  9. ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test15-dra-local-live-attach
+(1 deploys the image into VM1 through the playbook; 5 and 7 copy it there
+with dra-image-put if it changed. qemu_bin=... is needed only if a VM has
+to be recreated.)
+
+
+6. E2E round (2026-10-16, 14:28-15:20)
+--------------------------------------
+Image: build/images/nri-dra-driver-cxl-image-824fa1371dea.tar (the
+orchestrator's build of the final code; the newest tarball, imported by
+the playbook in every test and found in VM1 by dra-image-put). No Go
+code, Dockerfile or chart was changed in this round, so no rebuild.
+Every run: one run_tests.sh at a time from N/test/e2e, e.g.
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
+
+First pass:
+  test                                      verdict  run_tests.sh time
+  n4-cxl-shared-1/test00-up                 PASS      30 s
+  n4-cxl-shared-2/test00-up                 PASS      20 s
+  test01-shared-cxl                         PASS      84 s
+  test10-dra-pooling                        PASS      69 s
+  test11-dra-sharing                        PASS     110 s
+  test12-dra-live-attach                    PASS     299 s
+  test13-dra-shared-one-writer-many-readers PASS     334 s (2 cluster rebuilds)
+  test14-dra-local-memdev                   FAIL      55 s
+  -- VM2 fixed (see F2), then:
+  n4-cxl-shared-2/test00-up                 PASS      16 s
+  test14-dra-local-memdev                   PASS     144 s
+  test15-dra-local-live-attach              PASS     199 s
+
+Final pass, all nine in sequence on the final image and scripts:
+  test                                      verdict  time (Test duration)
+  n4-cxl-shared-1/test00-up                 PASS      16 s
+  n4-cxl-shared-2/test00-up                 PASS      16 s
+  test01-shared-cxl                         PASS      62 s
+  test10-dra-pooling                        PASS      64 s
+  test11-dra-sharing                        PASS     107 s
+  test12-dra-live-attach                    PASS     298 s
+  test13-dra-shared-one-writer-many-readers PASS     311 s
+  test14-dra-local-memdev                   PASS     145 s
+  test15-dra-local-live-attach              PASS     200 s
+After the final pass both VMs are single-node clusters (test13 restored
+them), with no helm release, no fake-cxl-pool-controller or
+kubelet-cxl-plugin unit active, no CXL memdevs or regions, no
+DeviceClasses and no namespace cxl-pool-demo.
+
+Failures found, root causes, fixes:
+
+F1 dra-image-put never skipped the copy (found in n4-cxl-shared-1/test00-up
+   output before test11; not a failure, a 95 MB copy per dra-install of
+   VM1). Root cause: the tarball name has the docker image ID (the config
+   digest), but "ctr images ls" shows the manifest digest in DIGEST; the
+   import names the image also by the ID ("sha256:824fa1371dea..." as a
+   REF). Fix: the skip check compares the DIGEST of
+   localhost/dra-driver-cxl:testing with that of the REF sha256:<ID>.
+   Checked against VM1's listing, then seen in test11 and test13:
+   "dra-image-put vm1: localhost/dra-driver-cxl:testing is
+   nri-dra-driver-cxl-image-824fa1371dea.tar already".
+   File: test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh.
+
+F2 test14: "the local device n4-cxl-shared-2-fedora-43-containerd.memdev1
+   has 268435456 bytes, the test needs 5 memory blocks of 134217728
+   bytes. The VM was created from an older topology.var.json". Root cause:
+   the VM of n4-cxl-shared-2 was created on 2026-10-13 (Vagrantfile),
+   before commit 00623dc36 (2026-10-14) made its local device cxl_memdev1
+   1G; test14 and test15 had never run on it (no output dirs). Not a code
+   problem. The qemu arguments that topology2qemuopts.py generates now
+   for n4-cxl-shared-2 differ from the VM's Vagrantfile only in
+   maxmem=15G -> 16G and size=256M -> 1G of
+   beram_cxl_memdev1__bus_cxlsw_ds3_usrp0hb0__sn_0xc100e2e1 (diffed
+   argument by argument), so instead of destroying and reprovisioning the
+   VM those two values were changed in
+   test/e2e/n4-cxl-shared-2-fedora-43-containerd/Vagrantfile and
+   Vagrantfile.erb (VM output dir, not in git) and qemu was restarted
+   (shutdown -h in the VM, vagrant up --no-provision --provider qemu; the
+   patched qemu comes first in PATH, as before). The guest and its cluster
+   are unchanged. n4-cxl-shared-2/test00-up passed again, then test14 and
+   test15 passed. VM1 (n4-cxl-shared-1) already matches its topology
+   (256M).
+
+Observations (no change made):
+- helm-launch waits 5 s in vm-port-forward-enable for a pod
+  "nri-resource-policy-*" that the driver does not have ("error: waiting
+  for command ... timed out after 5 s", harmless; memory-policy has the
+  same). A plugin case without port forwarding would save 5 s per
+  launch (WP2's helm-launch).
+- test00-up checks that cxl_memdev1 exists, not its size: a VM from an
+  older topology is found only by test14/test15 (F2). Comparing the
+  memory backends of qemu-cmdline.txt with what topology2qemuopts.py
+  generates for $topology would catch every such drift in test00-up.
+  Suggestion, not done (it would add a step to test00-up).
+- The trace summaries show the expected driver lines with the new names,
+  e.g. "cxl-pool.nri.io: claim cxl-pool-demo/pooled-memory: prepared
+  pooled0 ... node 2", "- ignoring region device "region0": pool device
+  (cxl-pool.nri.io)"; CDI kinds nri.io/cxl (test14) and nri.io/cxl-pool
+  (test13) as checked; "Installed lease CLI
+  /var/lib/kubelet/plugins/cxl.nri.io/cxl-request from /bin/cxl-request"
+  at every start.
+
+Files changed in this round:
+  test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh (F1, the
+    dra-image-put skip check; bash -n and shellcheck clean)
+  test/e2e/n4-cxl-shared-2-fedora-43-containerd/Vagrantfile and
+    Vagrantfile.erb (F2; VM state outside git)
+  No Go code, Dockerfile, chart, run.sh or playbook changes.

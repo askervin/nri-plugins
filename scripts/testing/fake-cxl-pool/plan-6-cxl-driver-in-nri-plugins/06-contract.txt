@@ -1,0 +1,255 @@
+plan-6-cxl-driver-in-nri-plugins: implementation contract (stage 1)
+===================================================================
+Written 2026-10-16 after the user's answers in 04 and the edits of 03
+(scope: stage 1 only, done when 03 section 2.6 holds). Every work
+package (WP) reads this file completely, then its own section.
+
+Paths: D = ~/github.com/intel/intel-resource-drivers-for-kubernetes
+(read-only source, never edited), N = ~/github.com/containers/nri-plugins
+(the target), P = N/scripts/testing/fake-cxl-pool,
+E = N/test/e2e/memory.test-suite.
+
+Ground rules for every agent
+----------------------------
+1. Read first: N/.github/skills/coding-style/SKILL.md,
+   N/.github/skills/build-nri-policy-images/SKILL.md,
+   N/.github/skills/run-e2e-tests/SKILL.md, then this file.
+2. D is never modified. Copy from D's working tree (it has uncommitted
+   files, e.g. cmd/kubelet-cxl-plugin/nri_test.go: take them too).
+3. Nothing is committed (no git commit/stash/checkout/reset). The
+   orchestrator makes one commit at the end. Nothing in N may refer to D
+   (no "intel-resource-drivers-for-kubernetes", no D paths, no D commit
+   ids) except the plan-*/ history directories, which are not edited.
+4. Edit only the files your WP owns (below). If you need a change in a
+   file of another WP, write it under "Requests" in your status file
+   plan-6-cxl-driver-in-nri-plugins/07-status-WP<n>.txt and continue.
+5. Rename rule (from plan-5): no aliases, no compatibility paths; every
+   old name of section A disappears from code, YAML, scripts, tests and
+   docs (except plan-*/ history).
+6. Plain ASCII in everything you write. Comments follow coding-style.
+7. Copyright: every moved or new Go file gets N's header, exactly as in
+   N/pkg/resmgr/dra.go ("Copyright The NRI Plugins Authors. All Rights
+   Reserved." + the Apache-2.0 block). No Intel copyright lines remain.
+8. VMs: only the agent that owns e2e runs (WP3, later) touches the e2e
+   VMs, and never two tests at a time. Other WPs may build images and run
+   docker, never run_tests.sh.
+9. Keep a status file 07-status-WP<n>.txt: what you did, deviations from
+   this contract (with reasons), verification commands and their results,
+   open issues, requests to other WPs.
+
+
+A. Names (old -> new)
+---------------------
+  DRA driver (node-local)      cxl.generic        -> cxl.nri.io
+  DRA driver (pool)            cxl-pool.generic   -> cxl-pool.nri.io
+  opaque config apiVersion     cxl.generic/v1alpha1 -> cxl.nri.io/v1alpha1
+                               cxl-pool.generic/v1alpha1 -> cxl-pool.nri.io/v1alpha1
+  CDI vendor                   generic            -> nri.io
+  CDI kinds                    generic/cxl, generic/cxl-pool
+                                                  -> nri.io/cxl, nri.io/cxl-pool
+  CDI classes, spec file names unchanged (cxl, cxl-pool; cxl-claims,
+                               cxl-leases, cxl-pool)
+  labels/annotations           cxl.generic/lease, /requester-uid, /node,
+                               /requester         -> cxl.nri.io/...
+  binding conditions           cxl-pool.generic/Attached, /AttachFailed
+                                                  -> cxl-pool.nri.io/...
+  binary                       kubelet-cxl-plugin -> nri-dra-driver-cxl
+  NRI plugin name (default)    kubelet-cxl-plugin -> dra-driver-cxl
+  NRI plugin index (default)   30 (unchanged)
+  plugin data dirs             /var/lib/kubelet/plugins/cxl.nri.io,
+                               /var/lib/kubelet/plugins/cxl-pool.nri.io
+  DeviceClass names            unchanged: cxl-local, cxl-pool,
+                               cxl-pool-shared, cxl-region, cxl-dram,
+                               cxl-lease (selectors use the new driver names)
+  Everything else of the plan-5 vocabulary (attributes, env CXL_<KEY>_*,
+  CXL_CLAIM_<uid>, CXL_LEASE_SOCKET, cxl-request CLI and protocol, state
+  file names) is unchanged.
+
+
+B. Where things go in N
+-----------------------
+  D/cmd/kubelet-cxl-plugin/*.go  -> cmd/plugins/dra-driver-cxl/*.go
+                                    (package main, binary nri-dra-driver-cxl)
+  D/cmd/cxl-request/*.go         -> cmd/cxl-request/*.go (static binary)
+  D/pkg/cxl/api                  -> pkg/cxl/api
+  D/pkg/cxl/device               -> pkg/cxl/device
+  D/pkg/cxl/memorypolicy         -> pkg/cxl/memorypolicy
+  D/deployments/cxl/device-classes.yaml
+                                 -> deployment/helm/dra-driver-cxl/templates/
+                                    deviceclasses.yaml (plain YAML, no template
+                                    directives, so that a unit test can load it)
+  D/deployments/cxl/examples/*.yaml
+                                 -> deployment/samples/dra-driver-cxl/*.yaml
+  D/deployments/cxl/base, overlays, kustomization
+                                 -> replaced by the helm chart (WP2)
+  D/doc/cxl/{README,USAGE,LOCAL,POOL,LEASES}.md
+                                 -> docs/memory/cxl/{index,usage,local,pool,
+                                    leases}.md; BUILD.md is replaced by build
+                                    and deploy sections; new e2e.md (WP4)
+  D/test/e2e/cxl, D/cxl.mk, D/Dockerfile.cxl, D/pkg/helpers: not moved.
+  E/memory-policy/dra.source.sh, E/memory-policy/n4-cxl-shared-1/,
+  E/memory-policy/n4-cxl-shared-2/
+                                 -> E/dra-driver-cxl/ (same names below it).
+                                    E/memory-policy keeps n4-cxl and n6-hbm-cxl.
+  The suite directory is "dra-driver-cxl" (not "nri-dra-driver-cxl"): the
+  e2e framework maps the directory name X to playbook
+  playbook/nri-X-plugin-deploy.yaml, chart deployment/helm/X, image
+  build/images/nri-X-image-*.tar and test image localhost/X:testing,
+  like memory-policy -> nri-memory-policy.
+
+
+C. The driver binary (WP1)
+--------------------------
+Flags (Go "flag" package; every flag with an environment variable takes
+its default from it when set; both -flag and --flag work):
+  --node-name             NODE_NAME             required
+  --kubeconfig            KUBECONFIG            "" = in-cluster config
+  --kube-api-qps          KUBE_API_QPS          5
+  --kube-api-burst        KUBE_API_BURST        10
+  --cdi-root              CDI_ROOT              /etc/cdi
+  --sysfs                 SYSFS_ROOT            "" (host /sys)
+  --config-str, -c        CONFIG_STR            ""
+  --config-file, -f                             ""
+  --nri-name              NRI_PLUGIN_NAME       dra-driver-cxl
+  --nri-idx               NRI_PLUGIN_IDX        30
+  --nri-socket            NRI_SOCKET            "" (runtime default)
+  --pool-driver-name      POOL_DRIVER_NAME      cxl-pool.nri.io ("" disables)
+  --pool-prepare-timeout  POOL_PREPARE_TIMEOUT  30s
+  --leases                LEASES                true
+  --lease-cli             LEASE_CLI             /usr/local/bin/cxl-request
+  --lease-cli-source      LEASE_CLI_SOURCE      ""  (NEW)
+  --lease-wait            LEASE_WAIT            120s
+  --lease-companion-image LEASE_COMPANION_IMAGE registry.k8s.io/pause:3.10
+  -v and the other klog flags (klog.InitFlags).
+--lease-cli-source PATH: at start, before any CDI spec is written, copy
+PATH to --lease-cli (mkdir -p the parent, write a temporary file in the
+same directory, chmod 0755, rename over the target; apply the same
+best-effort SELinux label as the lease socket directory). This is how a
+containerized plugin puts the static cxl-request on the host: the image
+has /bin/cxl-request, the chart passes
+  --lease-cli /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
+  --lease-cli-source /bin/cxl-request
+and mounts /var/lib/kubelet/plugins at the same path.
+Kubelet plugin directories: /var/lib/kubelet/plugins/<driver> and
+/var/lib/kubelet/plugins_registry, fixed (as in D's helpers).
+The process shuts down on SIGTERM/SIGINT as before (Shutdown of the driver).
+The main replaces D/pkg/helpers; urfave/cli is not used.
+One mode constant: pkg/cxl/memctl ModeNUMA/ModeDax are defined from
+pkg/cxl/api (memctl imports api, api stays stdlib-only), and D's test that
+compared the two goes.
+
+
+D. The image (WP2)
+------------------
+cmd/plugins/dra-driver-cxl/Dockerfile, built by
+  make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+- builder stage as in the other plugins (golang:${GO_VERSION}-bookworm):
+  make ... PLUGINS=nri-dra-driver-cxl BINARIES=cxl-request
+  clean build-plugins-static build-binaries-static licenses
+- ndctl stage: debian bookworm, build ndctl v85 (the version of the e2e
+  VMs, Fedora 43) from the upstream tag with meson, with the optional
+  features off (docs, asciidoctor, systemd, libtracefs, keyutils, fwctl,
+  tests as far as the build allows), install into a staging root, then
+  collect the binaries cxl and daxctl and their whole shared library
+  closure (ldd, including the dynamic loader) into one directory tree.
+  A fully static build was considered and rejected: Debian has no static
+  libudev, Alpine lacks static kmod, json-c and iniparser.
+- final stage FROM gcr.io/distroless/static (as every N plugin):
+  /bin/nri-dra-driver-cxl, /bin/cxl-request, /usr/bin/cxl, /usr/bin/daxctl
+  (and their libraries and loader), /licenses/nri-dra-driver-cxl/,
+  /licenses/cxl-request/, /licenses/ndctl/ (COPYING and LICENSES/ of
+  ndctl). ENTRYPOINT ["/bin/nri-dra-driver-cxl"].
+- Verify in the image: "cxl version" and "daxctl version" print 85.
+cxl-request is not added to the default BINARIES of the Makefile (it would
+need an image of its own); it is built by the driver's Dockerfile and by
+"make BINARIES=cxl-request build-binaries-static". nri-dra-driver-cxl is
+added to the default PLUGINS.
+
+
+E. The helm chart (WP2)
+-----------------------
+deployment/helm/dra-driver-cxl (chart name nri-dra-driver-cxl, like
+memory-policy's chart; Chart.yaml, values.yaml, values.schema.json,
+README.md, templates/). Interface used by the e2e (WP3) and docs (WP4):
+- Release namespace: any (e2e: kube-system, release name "test").
+- DaemonSet "nri-dra-driver-cxl", container "nri-dra-driver-cxl",
+  ServiceAccount "nri-dra-driver-cxl", pod label
+  app.kubernetes.io/name=nri-dra-driver-cxl (via the shared
+  "nri-plugin.labels"/"nri-plugin.selectorLabels" helpers of the other
+  charts, so selector labels match theirs).
+- Pod: hostPID true; privileged; NODE_NAME from spec.nodeName;
+  priorityClassName system-node-critical when podPriorityClassNodeCritical.
+- hostPath mounts at the same path in the container:
+    /var/lib/kubelet/plugins, /var/lib/kubelet/plugins_registry, /etc/cdi,
+    /var/run/cdi, /var/run/nri, /sys, /dev, /lib/modules (read-only).
+- Args: --lease-cli /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
+  --lease-cli-source /bin/cxl-request, --nri-idx from nri.plugin.index,
+  --pool-driver-name from pool.driverName, --pool-prepare-timeout,
+  --leases, --lease-wait, --lease-companion-image, -f
+  /etc/nri/dra-driver-cxl/config.yaml (ConfigMap from .Values.config,
+  default {}), -v from .Values.logLevel (default 4).
+- values: image.{name,tag,pullPolicy} (name
+  ghcr.io/containers/nri-plugins/nri-dra-driver-cxl), resources.{cpu,
+  memory}, nri.plugin.index (30), pool.{driverName (cxl-pool.nri.io),
+  prepareTimeout (30s)}, leases.{enabled (true), wait (120s),
+  companionImage}, config ({}), logLevel (4), extraEnv (map name ->
+  value, rendered as env), tolerations, affinity, nodeSelector,
+  podPriorityClassNodeCritical (true).
+  The values that the e2e passes to every plugin must be accepted:
+  image.name/tag/pullPolicy, resources.cpu/memory, plugin.test.enableAPIs
+  (ignored), extraEnv.GOCOVERDIR.
+- RBAC: ClusterRole + ClusterRoleBinding with what D's
+  deployments/cxl/base/resource-driver.yaml grants (resourceslices,
+  resourceclaims incl. status as there, pods for lease companions, nodes,
+  deviceclasses, events), and the ValidatingAdmissionPolicy of that file
+  if it applies unchanged with the new names.
+- templates/deviceclasses.yaml: owned by WP1 (section B), rendered as is.
+
+
+F. e2e (WP3)
+------------
+- test/e2e/playbook/nri-dra-driver-cxl-plugin-deploy.yaml: the
+  memory-policy playbook with plugin_name "dra-driver-cxl" (WP2 writes it).
+- test/e2e/run.sh helm-launch: a case for *dra-driver-cxl* (ds_name and
+  ctr_name nri-dra-driver-cxl), and an optional environment variable
+  launch_available (default 1): the numberAvailable to wait for, for
+  clusters with several nodes (WP2 writes it).
+- E/dra-driver-cxl/dra.source.sh: no build of the driver at all. The
+  driver comes from the image that the developer built (make ... images,
+  section D) and that the framework imports into the VM of the test.
+  dra-install of the VM of the test uses helm-terminate then helm-launch
+  dra-driver-cxl; other VMs get the image and the chart copied and imported
+  by a helper of dra.source.sh and their own "helm install" (separate
+  cluster) or only the image (worker of the test VM's cluster, imported
+  before helm-launch, which then waits for all nodes with
+  launch_available). The fake-cxl-pool controller stays a systemd unit
+  built from P. Logs of the driver come from kubectl logs of its pod on
+  that node (dra-plugin-log, the trace collector, the tests that used
+  journalctl -u kubelet-cxl-plugin). dra-uninstall: delete the test
+  namespace (the running driver unprepares), wait for detaches, then
+  helm uninstall, then state cleanup.
+- Tests keep their names and steps; only installation, logs and names
+  change. All of n4-cxl-shared-2 (test00-up, test01, test10-test15) and
+  n4-cxl-shared-1/test00-up must pass, one at a time.
+
+
+G. Ownership
+------------
+WP1 code      cmd/plugins/dra-driver-cxl/*.go (not the Dockerfile),
+              cmd/cxl-request/**, pkg/cxl/api/**, pkg/cxl/device/**,
+              pkg/cxl/memorypolicy/**, pkg/cxl/memctl/** (mode constants
+              and comments only), P/cmd/**, P/pkg/** (driver and condition
+              names), deployment/helm/dra-driver-cxl/templates/
+              deviceclasses.yaml, deployment/samples/dra-driver-cxl/**,
+              go.mod, go.sum.
+WP2 image     cmd/plugins/dra-driver-cxl/Dockerfile, Makefile,
+              deployment/helm/dra-driver-cxl/** (except deviceclasses.yaml),
+              test/e2e/playbook/nri-dra-driver-cxl-plugin-deploy.yaml,
+              test/e2e/run.sh (helm-launch only), docs/deployment/helm/
+              dra-driver-cxl.md and its entry in docs/deployment/helm/index.md.
+WP3 e2e       E/dra-driver-cxl/**, removal of the moved parts of
+              E/memory-policy, test/e2e/lib/k8s.bash (CXL unit cleanup only),
+              test/e2e/README.md (if it names the moved paths).
+WP4 docs      docs/memory/cxl/**, docs/memory/index.md, P/README.md,
+              P/deploy/** (names), P/config.example.yaml (names).
+Orchestrator  plan-6 files, the final commit.

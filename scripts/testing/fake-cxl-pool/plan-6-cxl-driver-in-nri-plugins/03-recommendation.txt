@@ -1,0 +1,277 @@
+plan-6-cxl-driver-in-nri-plugins: recommendation and staged plan
+===============================================================
+Written 2026-10-16. Options in 02-options.txt, facts in 01-findings.txt,
+decisions to confirm in 04-open-questions.txt.
+
+1. Recommendation
+-----------------
+Move the driver into nri-plugins. Do it as option D of 02: first as a
+standalone binary (B1), then make the CXL code an engine that resmgr can
+host next to any policy (C).
+
+Why move at all
+- The driver already lives on N: four N packages carry its hardware and
+  cgroup work (F10), all its e2e tests and the reference pool controller
+  are in N (F13-F16, F22), and the price is a fork pseudo-version per
+  change and constants duplicated across modules (F11, F12).
+- It is the only NRI user in D (F18) and the reason D moved to Kubernetes
+  1.37 (F8); D's CI cannot test it (F19).
+- The one problem the driver cannot solve where it is, a second owner of
+  cpuset.mems, memory.high and thread memory policies next to the resource
+  policies (F42-F44), can only be solved in the repository that owns the
+  other side.
+- Nothing is released (F8): driver names, paths and packaging can still
+  change for free.
+
+Why not nri-resource-policy-cxl (option A) as the architecture
+- One policy per node (F28): a CXL node could not run topology-aware or
+  balloons. CXL memory is a resource class of a node, not a node-wide
+  policy. The name is kept for packaging: resmgr + a policy that manages
+  no CPUs + the CXL engine (option C).
+
+Why not stop at nri-dra-driver-cxl (option B)
+- B fixes everything about where the code lives, nothing about two owners
+  of the same cgroup fields on a node with a resource policy (K1). It is
+  the right first step, and a fine end state only for nodes without a
+  resource policy.
+
+Why staged
+- Stage 1 is mechanical, keeps the six e2e tests green (F22, F24) and is
+  worth doing on its own. The resmgr work of option C (G1-G15) is the
+  risky part and is easier when both sides live in one tree and can change
+  in one commit.
+
+
+2. Stage 1: move (option B1)
+----------------------------
+Goal: the same behaviour, built and tested from N only. D no longer has a
+CXL driver.
+
+2.1 Where things go (names as proposed in 04 Q2-Q3)
+  D/cmd/kubelet-cxl-plugin/*.go     -> N/cmd/plugins/dra-driver-cxl/
+                                       (binary nri-dra-driver-cxl, PLUGINS)
+  D/cmd/cxl-request/                -> N/cmd/cxl-request/ (static, BINARIES)
+  D/pkg/cxl/api                     -> N/pkg/cxl/api
+  D/pkg/cxl/device                  -> N/pkg/cxl/device
+  D/pkg/cxl/memorypolicy            -> N/pkg/cxl/memorypolicy
+  D/deployments/cxl/device-classes.yaml, examples/
+                                    -> N/deployment/cxl/
+  D/deployments/cxl/base (DaemonSet, RBAC, VAP)
+                                    -> N/deployment/cxl/ as reference
+                                       manifests until stage 4 replaces them
+                                       with a helm chart
+  D/doc/cxl/*.md                    -> N/docs/memory/cxl/*.md
+  D/test/e2e/cxl (demo)             -> dropped (the e2e tests of N cover it)
+
+2.2 Changes that come with the move
+- Replace D/pkg/helpers (F17) with a small main: Go flag, klog, client-go
+  configuration (KUBECONFIG or in-cluster), the documented flags and
+  environment variables; drop urfave/cli (not in N's go.mod).
+- One mode constant: api.ModeNUMA/ModeDax and memctl.ModeNUMA/ModeDax
+  become one definition (F12), the equality test goes.
+- Driver names, CDI vendor, label domain: decide 04 Q2 here, not later.
+  Every rename follows plan-5's rule: no aliases, every old name
+  disappears.
+- P/README.md and the code comments that point to D's POOL.md point to
+  N/docs/memory/cxl/POOL.md.
+- File headers: as decided in 04 Q8.
+
+2.3 Build and CI
+- N/Makefile: PLUGINS += nri-dra-driver-cxl, BINARIES += cxl-request
+  (static, CGO_ENABLED=0).
+- Unit tests of the driver run with N's go test targets (they need nothing
+  but go test, F26).
+
+2.4 e2e
+  Recommended:
+- E/dra.source.sh: DRA_DRIVER_SRC defaults to $nri_resource_policy_src;
+  dra-build builds nri-dra-driver-cxl and cxl-request with N's make;
+  DRA_DEVICE_CLASSES = N/deployment/cxl/device-classes.yaml; the systemd
+  unit name follows the binary name (also N/test/e2e/lib/k8s.bash, which
+  stops the unit when VMs are cleaned).
+- Run test10-test15 of n4-cxl-shared-2 (one at a time, as in plan-5).
+
+  Updates to recommendations:
+- Drop building the driver in e2e tests completely.
+- The driver should be built by the developer similarly to any other plugin
+  (make PLUGINS=nri-dra-driver-cxl ... images, refer to skill files on building)
+- Can we launch the driver from the tests similarly to other plugins,
+  that is, with updated helm-launch e2e test function?
+
+2.5 D
+  Recommended:
+- Remove cmd/kubelet-cxl-plugin, cmd/cxl-request, pkg/cxl, deployments/cxl,
+  doc/cxl, cxl.mk, Dockerfile.cxl, test/e2e/cxl; a README line points to N.
+- Drop the requires of github.com/containers/nri-plugins and
+  containerd/nri, and reconsider the Kubernetes 1.37 commits that were
+  made for the CXL driver (F8, 04 Q9).
+
+  Updates to recommendations:
+- Leave project D unchanged. All CXL modifications in the project are in
+  their own feature branch, and we can simply drop the feature branch
+  instead of making edits into it.
+
+2.6 Done when
+- go test of the moved packages and cmd/cxl-request pass in N; make builds
+  both binaries; N's linters pass on the moved code;
+- test10-test15 pass with the driver built from N;
+- D builds and tests without any CXL code.
+
+
+Update to recommendations: STOP HERE. Now we have a buildable,
+deployable, e2e testable DRA CXL driver in N with zero dependencies to D.
+
+The remaining stages are only for the record in case we decide to go
+with tighter integration to N.
+
+--- End of plan --- the remainder of this document is for the record ---
+
+3. Stage 2: engine and host interface (still standalone)
+--------------------------------------------------------
+Goal: the CXL code no longer assumes that it owns the NRI connection and
+the kubelet plugins; the standalone binary becomes its first host.
+
+3.1 Extract the engine (pkg/cxl/driver or similar) from package main:
+    discovery, local allocator, pool preparer, CDI writers, lease broker
+    and store, steering plans, udev handling. The standalone main keeps
+    the NRI stub and the two kubeletplugin helpers and implements the host
+    interface of 02 C (KubeClient, NodeName, dirs, Publish per driver,
+    container lookup by id/pid/cgroup, SetMemory, Commit, life cycle
+    calls).
+3.2 Memory composition inside the standalone host (02 C "Memory
+    composition"): base (the container's cpuset.mems before the engine
+    touched it, today's lend.go "base"), steering (cgmpolmgr's allowed
+    set, computed from base and the claimed nodes), leases (lent nodes);
+    effective = (steering ? steering-allowed : base) + leases, written by
+    one path (NRI UpdateContainers). cgmpolmgr gets a base set as input and
+    a callback for its cpuset.mems steps (default: write cgroupfs as
+    today, so cgmpolmgr's other users do not change).
+    This alone lifts LEASES.md's "a steered container cannot take a numa
+    lease": steering and lending stop being two writers inside the
+    driver. It does not make the standalone host coexist with a resource
+    policy: the policy still writes cpuset.mems itself.
+3.3 Lock order and claim phases as in 02 C "Claims without the resmgr
+    lock", with the standalone host's NRI lock in the place of resmgr's:
+    no engine lock is held while a container update is sent, and the pool
+    driver no longer holds its mutex across the hotplug wait.
+3.4 Unit tests against a fake host; the existing tests keep passing.
+3.5 Done when: unit tests pass, test10-test15 pass, test12/test15 gain a
+    step that takes a numa lease in a steered container.
+
+
+4. Stage 3: resmgr hosts the engine (option C)
+----------------------------------------------
+Goal: one NRI plugin and one owner of cpuset.mems on a CXL node, whatever
+resource policy runs there. Each item below is a separate, reviewable
+series in N; the order follows the dependencies.
+
+4.1 pkg/resmgr/dra generalized (G1-G3, G5, G6): several kubelet plugins per
+    process, each with its own name, data directory and registration
+    socket; a true no-publisher mode for prepare-only drivers (tested: the
+    node plugin creates no node-owned slice of cxl-pool.* and never
+    adopts or deletes the pool controller's slices); a health hook; CDI
+    layout per driver (or the CXL drivers adopt resmgr's layout: the CDI
+    names are internal, only the documentation names them).
+4.2 Two-phase claims for components (G4) as in 02 C: intent persisted,
+    hardware work without locks that NRI callbacks need, Commit under the
+    resmgr lock with a generation check, lock order resmgr -> engine only,
+    idempotent restart. The policy's own driver keeps today's locked
+    path.
+4.3 Components in resmgr (G8, G9, G10): a registry, a configuration
+    section in the common configuration of every policy CRD (04 Q10),
+    life cycle fan-out (bounded callbacks under the lock), a Kubernetes
+    client also with a local configuration file.
+4.4 Discovery overlay (G11): the component reads its state files and
+    reports the nodes of prepared claims and pre-created regions before
+    system discovery; discovery excludes them from the policy's memory
+    types. Must work after a restart with claims online.
+4.5 Memory composition in the cache (G7): resmgr keeps the policy's
+    cpuset.mems as base and materializes the effective value (02 C) in
+    every adjustment and update. memory.high: combine steering bounds with
+    nri-memory-qos/kubelet MemoryQoS bounds or refuse the combination;
+    thread policies: refuse mpolset on steered containers; detect
+    kubelet's static Memory Manager.
+4.6 Credentials (G15): leases separately opt-in; the resmgr pod gets Pod
+    and ResourceClaim write rights only with leases on; deletes validated
+    by labels and owners; evaluate a separate service account for the
+    broker's API writes.
+4.7 The resmgr host of the engine; packaging nri-resource-policy-cxl
+    (resmgr + a policy that manages no CPUs + the engine) and the CXL
+    section for topology-aware and balloons.
+4.8 Memory requests (G12): verify F46 on a 1.37 cluster (with and without
+    a container memory limit, numa and dax, shared claims); if confirmed,
+    resmgr takes the exact per-container claimed memory from the claim
+    status and lets policies size their zones without it.
+4.9 Hand-off (G14): a node moves from the standalone host to resmgr only
+    drained (no prepared CXL claims) or by handing over the driver's
+    state directory and CDI files with the plugin stopped; one host per
+    driver name at a time; rollback documented. Driver renames (04 Q2)
+    happen before any installation exists, so they need no hand-off.
+4.10 e2e:
+    - test10-test15 with nri-resource-policy-cxl instead of the
+      standalone binary (host process with local configuration and
+      kubeconfig, or helm);
+    - topology-aware + CXL on one node: a pod with exclusive CPUs of
+      NUMA node 0 and local CXL memory near node 0; a numa lease in a
+      container that topology-aware moves between pools (the lent node
+      must survive the move); steering and a lease in one container;
+      first-cxl steering in a container whose base is node 0 only;
+    - balloons + CXL, the same checks for balloon containers;
+    - a pool claim that waits for its memdev while another pod is created
+      on the node (container creation must not wait);
+    - restart of the plugin with numa claims and leases online;
+    - hand-off from the standalone host.
+4.11 Done when: all of the above pass, and the limitations of LEASES.md
+    about cpuset.mems ownership are removed from the documentation.
+
+
+5. Stage 4: packaging and the standalone host
+---------------------------------------------
+5.1 Images: settle the cxl tool (04 Q6). A distroless image works once
+    memctl creates and destroys regions through sysfs (what the cxl tool
+    does itself); until then a separate base image with ndctl.
+5.2 Helm: the CXL section in the topology-aware and balloons charts (DRA
+    mounts exist already, F39) plus hostPID (the broker's SO_PEERCRED,
+    F50), /dev, write access to /sys, the lease socket directory, the
+    cxl-request binary, RBAC for companions only with leases on (4.6); a
+    chart for nri-resource-policy-cxl; the six DeviceClasses as chart
+    templates.
+5.3 Operator: the CXL section passes through like other common
+    configuration.
+5.4 The standalone nri-dra-driver-cxl: keep or retire (04 Q4).
+5.5 Documentation: docs/memory/cxl/ describes the deployments (resmgr
+    hosted, standalone), docs/resource-policy/policy/*.md mention the CXL
+    section.
+
+
+6. Risks and how the plan handles them
+--------------------------------------
+- N's maintainers do not want the driver, or not the broker's cluster-wide
+  Pod and ResourceClaim writes (F5, G15): ask before stage 1 (04 Q1), with
+  the credential plan of 4.6 as part of the proposal. Without consent,
+  option Z with tagged N releases is the fallback.
+- resmgr maintainers do not want components in resmgr: stop after stage 2.
+  The standalone binary then documents how it coexists with a resource
+  policy (plugin index, which fields each side owns), as today.
+- The memory composition changes what a steered container may allocate
+  from (02 C): the formula is specified before code, and the e2e of 4.10
+  covers first-dram, first-cxl and leases under a rebalancing policy.
+  The composition is empty unless a component is enabled; the policy e2e
+  suites run unchanged.
+- Blocking CXL operations or lock cycles under the resmgr lock: excluded
+  by the claim phases and the lock order of 02 C; 4.10 has a test that
+  creates a pod while a pool claim waits for its memdev.
+- Restarts and hand-off: discovery overlay (4.4), idempotent claim phases
+  (4.2), hand-off rule (4.9), each with an e2e.
+- Lost history: 04 Q5.
+
+
+7. What stays as it is
+----------------------
+- The user-facing API of plan-5 (vocabulary, DeviceClasses, opaque configs,
+  environment, the lease protocol, cxl-request), except renames decided in
+  04 Q2.
+- fake-cxl-pool (P) and the pool contract (POOL.md), except the driver name
+  if 04 Q2 renames it.
+- pkg/cxl and pkg/cxl/memctl APIs (stage 1); memctl may gain sysfs region
+  creation (5.1).

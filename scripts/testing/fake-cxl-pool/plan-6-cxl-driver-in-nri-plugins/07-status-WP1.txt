@@ -1,0 +1,265 @@
+plan-6-cxl-driver-in-nri-plugins: status of WP1 (code)
+======================================================
+Written 2026-10-16. Contract: 06-contract.txt sections A, B, C, G (WP1).
+State: done. Nothing committed.
+
+1. What was done
+----------------
+Copied from D's working tree (D not modified):
+  D/cmd/kubelet-cxl-plugin/*.go  -> cmd/plugins/dra-driver-cxl/*.go
+  D/cmd/cxl-request/*.go         -> cmd/cxl-request/*.go
+  D/pkg/cxl/{api,device,memorypolicy}/*.go
+                                 -> pkg/cxl/{api,device,memorypolicy}/*.go
+  D/deployments/cxl/device-classes.yaml
+                                 -> deployment/helm/dra-driver-cxl/templates/
+                                    deviceclasses.yaml (plain YAML)
+  D/deployments/cxl/examples/*.yaml
+                                 -> deployment/samples/dra-driver-cxl/*.yaml
+New files:
+  cmd/plugins/dra-driver-cxl/main.go (rewritten), prepared_claims.go,
+  main_test.go, nri_test.go (rewritten, see deviations).
+
+- Import paths: .../intel-resource-drivers-for-kubernetes/pkg/cxl/... ->
+  github.com/containers/nri-plugins/pkg/cxl/...
+- Copyright: every moved/new Go file has the header of pkg/resmgr/dra.go;
+  no Intel copyright lines in WP1 files.
+- Renames of section A in code, comments, log messages, tests and YAML:
+  cxl.nri.io, cxl-pool.nri.io, apiVersion cxl.nri.io/v1alpha1 and
+  cxl-pool.nri.io/v1alpha1, CDI vendor nri.io (device.CDIVendor; kinds
+  nri.io/cxl, nri.io/cxl-pool), labels cxl.nri.io/{lease,requester-uid,
+  node,requester}, NRI plugin name dra-driver-cxl, binary
+  nri-dra-driver-cxl (cxl-request doc comment). Doc pointers:
+  doc/cxl/X.md -> docs/memory/cxl/{index,usage,local,pool,leases}.md;
+  deployments/cxl/device-classes.yaml -> the chart template path.
+  A foreign CDI vendor in a test (intel.com/gpu) became example.com/gpu.
+- D/pkg/helpers, D/pkg/version, urfave/cli, component-base logging and
+  feature gates are gone. Local replacements in package main:
+    main.go: CXLFlags, pluginConfig (flags, client, plugin dirs),
+      parseFlags (Go "flag", env defaults), newKubeClient (--kubeconfig or
+      in-cluster, QPS/burst), ensureDir (CDI root), installLeaseCLI,
+      run (plugin dir 0750, CDI root, CLI install, newDriver, wait for
+      SIGHUP/SIGINT/SIGTERM/SIGQUIT as in D, driver.Shutdown), main
+      (klog.InitFlags(nil)). --version comes from N's pkg/version (it
+      registers -version on flag.CommandLine); the start log line has the
+      version, build, Go version and platform.
+    prepared_claims.go: baseState (was helpers.NodeState: mutex,
+      CdiCache, Allocatable, Prepared, PreparedClaimsFilePath, NodeName),
+      claimPreparations, getOrCreatePreparedClaims,
+      readPreparedClaimsFromFile, writePreparedClaimsToFile.
+    driver.go: newDriver(ctx, *pluginConfig) (*driver, error);
+      getCXLFlags removed.
+  Kubelet plugin dirs fixed: /var/lib/kubelet/plugins/cxl.nri.io,
+  /var/lib/kubelet/plugins/<--pool-driver-name>,
+  /var/lib/kubelet/plugins_registry.
+- pkg/cxl/device: removed the unused "From device-plugin" constants
+  (DefaultSysfsRoot, DefaultConfigStr, SysfsRootEnvVarName,
+  ConfigStrEnvVarName); the env names live in main.go's flag table.
+- One mode constant: pkg/cxl/memctl ModeNUMA = api.ModeNUMA, ModeDax =
+  api.ModeDax (memctl imports pkg/cxl/api; api imports the standard
+  library only, checked with go list -deps). TestModesMatchMemctl removed
+  from pkg/cxl/api/api_test.go.
+- device_test.go loads ../../../deployment/helm/dra-driver-cxl/templates/
+  deviceclasses.yaml (TestDeviceClassesMatchConstants passes).
+- fake-cxl-pool (P/cmd, P/pkg): DefaultDriverName cxl-pool.nri.io
+  (binding conditions follow: cxl-pool.nri.io/Attached, /AttachFailed),
+  test strings, comments; POOL.md pointers -> docs/memory/cxl/pool.md.
+- pkg/cxl/memctl comments: no old names were there.
+- go.mod/go.sum: unchanged. Everything the moved code needs is already
+  required by N (client-go incl. clientcmd, dynamic-resource-allocation,
+  CDI, containerd/nri, sigs.k8s.io/yaml, x/sys). "go mod tidy" only moves
+  gopkg.in/yaml.v3 from indirect to direct, because the tracked
+  scripts/cgmpold/main.go imports it: pre-existing, unrelated, reverted.
+
+2. Flags (contract C), all implemented
+--------------------------------------
+  --node-name             NODE_NAME             required (error, exit 2)
+  --kubeconfig            KUBECONFIG            "" = in-cluster
+  --kube-api-qps          KUBE_API_QPS          5
+  --kube-api-burst        KUBE_API_BURST        10
+  --cdi-root              CDI_ROOT              /etc/cdi
+  --sysfs                 SYSFS_ROOT            ""
+  --config-str, -c        CONFIG_STR            ""
+  --config-file, -f                             ""
+  --nri-name              NRI_PLUGIN_NAME       dra-driver-cxl
+  --nri-idx               NRI_PLUGIN_IDX        30
+  --nri-socket            NRI_SOCKET            ""
+  --pool-driver-name      POOL_DRIVER_NAME      cxl-pool.nri.io
+  --pool-prepare-timeout  POOL_PREPARE_TIMEOUT  30s
+  --leases                LEASES                true
+  --lease-cli             LEASE_CLI             /usr/local/bin/cxl-request
+  --lease-cli-source      LEASE_CLI_SOURCE      ""
+  --lease-wait            LEASE_WAIT            120s
+  --lease-companion-image LEASE_COMPANION_IMAGE registry.k8s.io/pause:3.10
+  -v and the other klog flags, -version.
+Semantics: the command line wins; a flag that is not on the command line
+takes the value of its environment variable when that is set (applied with
+flag.Set, so invalid values fail: "invalid LEASE_WAIT=..."). Usage texts
+name the variables. Positional arguments are an error. Bool flags need the
+"=" form: --leases=false (Go flag; the chart already does this).
+--lease-cli-source PATH: in run(), after the plugin dir and CDI root and
+before newDriver (so before any CDI spec): mkdir -p dir(--lease-cli)
+(0755), copy to a temporary file in that directory, chmod 0755,
+selinuxLabel (the label of the lease socket directories, best effort),
+rename over --lease-cli. Any failure stops the driver (exit 1). Done
+whenever --lease-cli-source is set, also with --leases=false (contract
+text). --lease-cli-source with an empty --lease-cli is a usage error.
+
+3. Deviations
+-------------
+- D's untracked cmd/kubelet-cxl-plugin/nri_test.go does not compile, in D
+  either: it tests validatePolicy, buildManagerConfig and formatNodeset,
+  which no longer exist (validation moved to memorypolicy Validate and
+  cgmpolmgr, both tested there); it also had non-ASCII characters. It was
+  replaced by a new nri_test.go with the same intent against the current
+  code: defaultPolicy (first-cxl / first-dram / start-interleaved),
+  claimedMemory (DRAM and numa CXL nodes and quotas, dax and lease devices
+  ignored, unknown claims skipped, one policy taken, two policies an
+  error), extractClaimUIDs, sortedNodes, formatBytes.
+- P/pkg/controller/publisher.go: the pool now sets AllNodes: true. With
+  k8s.io/dynamic-resource-allocation v0.37 (N's version) a Pool without
+  NodeSelector no longer becomes allNodes implicitly, so the published
+  slice had none of nodeName/nodeSelector/allNodes (rejected by an API
+  server) and TestPublish failed already at HEAD (checked with a copy of
+  HEAD's package). This is beyond "names" in P/pkg, but needed for make
+  test and for test10 (which checks allNodes == True).
+- golangci-lint findings in the moved code were fixed: unchecked Close/
+  Remove/RemoveAll/Fprint* results (errcheck; "_ =", "_, _ =" or
+  "defer func() { _ = x.Close() }()") and one De Morgan rewrite
+  (staticcheck QF1001) in broker.go openWait, same logic.
+- Log text "Starting DRA resource-driver kubelet-plugin" -> "Starting DRA
+  driver kubelet plugin", "failed to start kubelet-plugin" -> "... kubelet
+  plugin" (no e2e greps for them).
+
+4. Verification (all in N, go1.26.0)
+------------------------------------
+  go build ./...                                             OK
+  go vet ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/... \
+         ./pkg/cxl/... ./scripts/testing/fake-cxl-pool/...     OK
+  go test -race -count=1 ./cmd/plugins/dra-driver-cxl/... \
+         ./cmd/cxl-request/... ./pkg/cxl/...
+    ok cmd/plugins/dra-driver-cxl, cmd/cxl-request, pkg/cxl/api,
+       pkg/cxl/device, pkg/cxl/memctl, pkg/cxl/memorypolicy
+    FAIL pkg/cxl (pre-existing, not WP1 code): TestRegionNodeOfDaxSlices,
+       TestRegionNodeOfOnlineSlices open testdata/test14-*/cxl-sysfs.txt;
+       N/.gitignore ignores "testdata/", the files were never committed
+       and exist nowhere on this host.
+  make -C scripts/testing/fake-cxl-pool test
+    ok cmd/fake-cxl-pool-client, pkg/api, pkg/controller (after the
+       AllNodes fix), pkg/pool, pkg/server
+    FAIL pkg/qemu (pre-existing): TestHMPClient, TestCleanHMPOutput,
+       TestParseQtreeBrief, TestParseQtreeFull, TestParseInfoMemdev,
+       TestParseCmdline open testdata/*.txt: same gitignored, never
+       committed testdata.
+  make -C scripts/testing/fake-cxl-pool lint                  OK
+  gofmt -s -l on all WP1 Go files and P/cmd, P/pkg            empty
+  golangci-lint run (2.12.2, N has no config: defaults, like "make lint")
+    ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/... ./pkg/cxl/...
+                                                              0 issues
+    ./scripts/testing/fake-cxl-pool/...: 102 pre-existing findings
+    (errcheck in fake-cxl-pool-client, client, pool, qemu, server; unused
+    Server.stateFilePath), none in lines that WP1 changed; not fixed.
+    For comparison ./pkg/... ./cmd/plugins/memory-policy/...
+    ./cmd/plugins/topology-aware/...: 0 issues.
+  make PLUGINS=nri-dra-driver-cxl build-plugins-static        OK
+  make BINARIES=cxl-request build-binaries-static             OK
+    build/bin/nri-dra-driver-cxl, build/bin/cxl-request: statically linked
+  Smoke tests of build/bin/nri-dra-driver-cxl:
+    --version prints N's version info, exit 0; -h lists the flags with
+    their env variables; no NODE_NAME -> "--node-name or NODE_NAME is
+    required", exit 2; LEASE_WAIT=x -> invalid LEASE_WAIT, exit 2; extra
+    argument -> "arguments not supported", exit 2; NODE_NAME
+    set outside a cluster -> start log line, then "create client: create
+    in-cluster client configuration: ...", exit 1.
+  YAML: deviceclasses.yaml and the 9 samples load with python yaml
+    (DeviceClass x6; ResourceClaim/ResourceClaimTemplate/Pod docs).
+  ASCII: grep -P '[^\x00-\x7F]' over all WP1 files: none.
+  grep -rnI -E 'cxl\.generic|cxl-pool\.generic|kubelet-cxl-plugin|
+    generic/cxl|intel-resource-drivers|Intel Corporation' over N
+    (excluding P/plan*, test/e2e/*-fedora-*, build/, .git):
+    WP1 files: none.
+    "Intel Corporation" remains only in the copyright headers of N's own
+    pre-existing files (pkg/..., cmd/plugins/topology-aware/..., etc.,
+    and the untracked pkg/resmgr/control/cpu/cstates_overridefs.go~):
+    not moved files, out of scope.
+    Old names remain in (at the time of the check):
+      WP3: test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh (40),
+           .../n4-cxl-shared-2/test10-dra-pooling/code.var.sh (10),
+           .../test12-dra-live-attach/code.var.sh (5),
+           .../test14-dra-local-memdev/code.var.sh (4),
+           .../test15-dra-local-live-attach/code.var.sh (4),
+           .../test11-dra-sharing/code.var.sh (1),
+           .../test13-dra-shared-one-writer-many-readers/code.var.sh (1),
+           .../n4-cxl-shared-2/pool-dax-rw.py (1),
+           test/e2e/lib/k8s.bash (1)
+      WP4: scripts/testing/fake-cxl-pool/README.md (11),
+           scripts/testing/fake-cxl-pool/deploy/fake-cxl-pool-controller.yaml (2),
+           scripts/testing/fake-cxl-pool/config.example.yaml (1)
+      none: scripts/testing/fake-cxl-pool/5jg-task-cxl-driver-to-nri-plugins.md
+           (11; untracked task file of the user, owned by no WP)
+      WP2 (chart, Makefile): none found.
+
+5. Open issues
+--------------
+- Missing gitignored testdata of pkg/cxl and P/pkg/qemu (see 4): those
+  tests cannot pass in any checkout. Options for the orchestrator: commit
+  the testdata with "git add -f" if someone has it, or a .gitignore
+  exception; WP1 has neither the data nor ownership.
+- P lint findings (102, pre-existing) would fail N's CI golangci-lint if
+  CI lints the whole module (lint.yaml runs "golangci-lint run" on ./...).
+  Pre-existing at HEAD; not WP1's change.
+- "make verify-godeps" (go mod tidy && git diff --quiet) fails at HEAD
+  already because of gopkg.in/yaml.v3 (scripts/cgmpold). Not touched.
+
+6. Requests to other WPs
+------------------------
+WP2 (chart, Makefile, Dockerfile):
+- Bool flags only in the "=" form (--leases=true|false): already so in
+  templates/daemonset.yaml. --pool-driver-name "" disables the pool driver.
+- The driver creates /var/lib/kubelet/plugins/cxl.nri.io (0750) itself and
+  installs --lease-cli there before anything else; it needs
+  /var/lib/kubelet/plugins mounted read-write at the same path (as
+  planned).
+- The plugin image needs /bin/cxl-request (static) for
+  --lease-cli-source /bin/cxl-request; a missing source stops the driver.
+WP3 (e2e):
+- Replace the old names in the files listed in 4 (labels cxl.nri.io/...,
+  CDI kinds nri.io/cxl and nri.io/cxl-pool, driver names in CEL and
+  slices('...'), apiVersion cxl.nri.io/v1alpha1 and
+  cxl-pool.nri.io/v1alpha1, binding conditions cxl-pool.nri.io/Attached
+  and /AttachFailed, NRI plugin name dra-driver-cxl).
+- DeviceClasses: deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml
+  (installed by the chart). Samples: deployment/samples/dra-driver-cxl/.
+- The fake-cxl-pool-controller default -driver-name is now
+  cxl-pool.nri.io; rebuild it from P (its slice now has allNodes: true,
+  which test10 checks).
+WP4 (docs, P README/deploy/config):
+- P/README.md: line 13 `cxl-pool.generic` -> `cxl-pool.nri.io`; line 87
+  `cxl.generic` -> `cxl.nri.io`; lines 184-187 "pool driver
+  `cxl-pool.generic` of kubelet-cxl-plugin in
+  intel-resource-drivers-for-kubernetes; the contract ... [doc/cxl/POOL.md]
+  (https://github.com/intel/...)" -> pool driver `cxl-pool.nri.io` of
+  nri-dra-driver-cxl (cmd/plugins/dra-driver-cxl), contract
+  docs/memory/cxl/pool.md (relative link ../../../docs/memory/cxl/pool.md);
+  lines 196, 205 `cxl-pool.generic/Attached`, `/AttachFailed` ->
+  `cxl-pool.nri.io/...`; line 230 `[-driver-name cxl-pool.generic]` ->
+  `cxl-pool.nri.io`; line 244 `cxl-pool.generic` -> `cxl-pool.nri.io`;
+  line 281 `(cxl-pool.generic)` -> `(cxl-pool.nri.io)`.
+- P/deploy/fake-cxl-pool-controller.yaml: line 2 "doc/cxl/POOL.md of the
+  CXL DRA driver" -> docs/memory/cxl/pool.md; line 43 resourceNames
+  ["cxl-pool.generic"] -> ["cxl-pool.nri.io"]; line 99 cxl-pool.generic ->
+  cxl-pool.nri.io.
+- P/config.example.yaml line 64: cxl.generic -> cxl.nri.io.
+- docs/memory/cxl/usage.md flags table (from D's USAGE.md "kubelet-cxl-
+  plugin flags"): title -> nri-dra-driver-cxl flags; --nri-name default
+  dra-driver-cxl; --pool-driver-name default cxl-pool.nri.io; add
+  --lease-cli-source / LEASE_CLI_SOURCE / "" / "copied to --lease-cli at
+  start (atomic, 0755, SELinux label); the chart uses it to put the
+  image's /bin/cxl-request on the host"; add rows --kube-api-qps
+  KUBE_API_QPS 5 and --kube-api-burst KUBE_API_BURST 10; the closing
+  paragraph: --feature-gates no longer exists; the logging flags are
+  klog's (-v N, ...); --version prints the version; "nri-dra-driver-cxl
+  -h" lists all; bool flags as --leases=false. The command line example
+  "/usr/local/bin/kubelet-cxl-plugin --node-name ... -f
+  /etc/kubelet-cxl-plugin.yaml" needs the new binary/config names.
+- docs: the CDI vendor is nri.io (CDI device names nri.io/cxl=claim-...,
+  nri.io/cxl=lease-..., nri.io/cxl-pool=claim-...).

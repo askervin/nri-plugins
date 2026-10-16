@@ -1,0 +1,67 @@
+plan-6-cxl-driver-in-nri-plugins: stage 1 status (orchestrator)
+==============================================================
+Written 2026-10-16. Scope: 03-recommendation.txt section 2, stopping at
+2.6, with the user's answers in 04. Contract: 06-contract.txt. Work
+package reports: 07-status-WP1.txt (code), 07-status-WP2.txt (image,
+chart), 07-status-WP3.txt (e2e, incl. "E2E round"), 07-status-WP4.txt
+(docs, incl. "Verification round").
+
+Done (03 2.6)
+-------------
+- Code in N, no dependency on the old repository: cmd/plugins/dra-driver-cxl
+  (binary nri-dra-driver-cxl), cmd/cxl-request, pkg/cxl/{api,device,
+  memorypolicy}; one mode constant (memctl takes it from api); drivers
+  cxl.nri.io and cxl-pool.nri.io, CDI vendor nri.io, label domain
+  cxl.nri.io, conditions cxl-pool.nri.io/Attached|AttachFailed; N's
+  copyright headers; new --lease-cli-source.
+- go build ./..., go vet, go test of all moved packages and
+  fake-cxl-pool controller/client: pass. golangci-lint on the moved
+  packages: 0 issues. gofmt clean. Plain ASCII.
+- Image: make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1
+  OTHER_IMAGE_TARGETS= BINARIES= images. distroless/static with the
+  driver, static cxl-request, and cxl/daxctl of ndctl v85 built from source
+  in a Debian bookworm stage and copied with their library closure
+  (static ndctl rejected: no static libudev on Debian, no static kmod,
+  json-c, iniparser on Alpine). 93 MB.
+- Helm chart deployment/helm/dra-driver-cxl (DaemonSet with NRI, hostPID,
+  kubelet plugin dirs, CDI dirs, /sys, /dev, /lib/modules, RBAC, VAP, the
+  six DeviceClasses); the e2e deploys it with helm-launch.
+- e2e moved to test/e2e/memory.test-suite/dra-driver-cxl (suite directory
+  name maps to playbook/chart/image like memory-policy does), no driver
+  build in the tests. All 9 tests PASS on the final image, in one
+  sequential run: n4-cxl-shared-1/test00-up, n4-cxl-shared-2/test00-up,
+  test01, test10-test15.
+- Docs in docs/memory/cxl (index, usage, local, pool, leases) and the new
+  developer guide e2e.md; its examples a-f (local RAM, local dax, pool
+  RAM, shared device across clusters, leases, and the shared file: a tar
+  archive written into an exclusively claimed shared device, read in place
+  by three read-only readers on two nodes) were run copy-paste in the VMs
+  and their outputs are the real ones.
+
+Deviations from the contract
+----------------------------
+- cxl-request is not in the default BINARIES (it would need an image of
+  its own); the driver's Dockerfile builds it.
+- RBAC is exactly the old one (no resourceclaims/status, no deviceclasses:
+  unused).
+- fake-cxl-pool controller publishes its pool with AllNodes: true (the
+  contract said "allNodes"; the code had relied on a default the v0.37
+  library no longer applies).
+- The n4-cxl-shared-2 VM predated the 1G local device of its topology; its
+  Vagrantfile was updated in place (VM files, not in git).
+
+Open, outside this scope
+------------------------
+- docs: 18 pre-existing Sphinx "not in any toctree" warnings come from the
+  fake-cxl-pool markdown files; excluding scripts/testing/fake-cxl-pool/**
+  in docs/conf.py would silence them.
+- helm-launch waits 5 s for an nri-resource-policy pod for port
+  forwarding; harmless for plugins without one (pre-existing behaviour).
+- test00-up does not check the size of the local CXL device, so an
+  outdated VM shows only in test14/15.
+
+Commit
+------
+One commit in N with the code, chart, image, e2e and docs; without
+references to the old repository. The plan-6 directory and the task file
+stay uncommitted because they discuss the old repository.
