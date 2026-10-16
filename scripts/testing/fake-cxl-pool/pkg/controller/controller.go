@@ -13,14 +13,14 @@
 // limitations under the License.
 
 // Package controller implements fake-cxl-pool-controller: the cluster side
-// of the cxl-pool.generic DRA driver for the fake-cxl-pool server. It
+// of the cxl-pool.nri.io DRA driver for the fake-cxl-pool server. It
 // publishes the pool devices as one cluster-scoped ResourceSlice, attaches a
 // device to the VM of the node the scheduler picked, writes the binding
 // condition and the device data into the claim status, and detaches the
 // device when the claim is deallocated. The controller is a stateless,
 // level-triggered reconciler: desired attachments come from ResourceClaims,
 // actual ones from the server. The contract with the node plugin is
-// doc/cxl/POOL.md of the CXL DRA driver.
+// docs/memory/cxl/pool.md.
 package controller
 
 import (
@@ -45,7 +45,7 @@ import (
 
 // Defaults.
 const (
-	DefaultDriverName    = "cxl-pool.generic"
+	DefaultDriverName    = "cxl-pool.nri.io"
 	DefaultPoolName      = "fake-cxl-pool"
 	DefaultSyncInterval  = 10 * time.Second
 	DefaultAttachTimeout = 60 * time.Second

@@ -33,14 +33,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
 // Region modes: how the memory of a region is used.
 const (
 	// ModeNUMA is memory onlined as system RAM of a NUMA node (kmem).
-	ModeNUMA = "numa"
+	ModeNUMA = api.ModeNUMA
 	// ModeDax is memory used through a dax character device (device_dax).
-	ModeDax = "dax"
+	ModeDax = api.ModeDax
 )
 
 // ValidMode returns an error if mode is not ModeNUMA or ModeDax.

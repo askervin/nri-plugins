@@ -442,10 +442,13 @@ vm-k8s-reset-node() {
     # Remove the VM of VMDIR from its cluster and remove the cluster state
     # that kubeadm reset leaves: the kubelet state (kubeadm 1.37 only
     # unmounts in /var/lib/kubelet), iptables rules, the CNI bridge and IP
-    # leases, kubeconfigs. Stop the DRA components of the e2e tests first,
-    # they keep state in /var/lib/kubelet/plugins.
+    # leases, kubeconfigs. Stop the CXL pool controller of the e2e tests
+    # first, a systemd unit that uses the cluster.
     local vmdir="$1"
-    vmdir-command "$vmdir" "for u in kubelet-cxl-plugin fake-cxl-pool-controller; do systemctl stop \$u 2>/dev/null; systemctl reset-failed \$u 2>/dev/null; done
+    # The CXL DRA driver of the e2e tests runs in a pod: kubeadm reset
+    # removes its container before the kubelet state is removed, and its
+    # helm release goes with the cluster state.
+    vmdir-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null
 kubeadm reset -f --cleanup-tmp-dir --cri-socket unix://${k8scri_sock:-/var/run/containerd/containerd.sock} 2>&1 | grep -v '^W[0-9]' | tail -n 5
 rc=\${PIPESTATUS[0]}
 systemctl stop kubelet

@@ -49,8 +49,7 @@ func DeviceName(name string) string {
 }
 
 // convertDevice returns the ResourceSlice device of a pool device, as the
-// pool controller contract (doc/cxl/POOL.md of the CXL DRA driver) defines
-// it.
+// pool controller contract (docs/memory/cxl/pool.md) defines it.
 func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device {
 	rd := resourceapi.Device{
 		Name: name,
@@ -134,7 +133,7 @@ func (c *Controller) warnName(device, format string, args ...any) {
 func (c *Controller) driverResources(devs []resourceapi.Device) *resourceslice.DriverResources {
 	return &resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
-			c.cfg.PoolName: {Slices: []resourceslice.Slice{{Devices: devs}}},
+			c.cfg.PoolName: {AllNodes: true, Slices: []resourceslice.Slice{{Devices: devs}}},
 		},
 	}
 }

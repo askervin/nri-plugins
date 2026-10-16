@@ -1,0 +1,103 @@
+# Default values for dra-driver-cxl.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+---
+image:
+  name: ghcr.io/containers/nri-plugins/nri-dra-driver-cxl
+  # tag, if defined will use the given image tag, otherwise Chart.AppVersion will be used
+  #tag: unstable
+  pullPolicy: Always
+
+resources:
+  cpu: 10m
+  memory: 128Mi
+
+nri:
+  plugin:
+    # The driver steers containers to their claimed memory and lends
+    # memory to running containers through NRI.
+    index: 30
+  runtime:
+    patchConfig: false
+#   config:
+#     pluginRegistrationTimeout: 5s
+#     pluginRequestTimeout: 2s
+
+pool:
+  # DRA driver name of the CXL memory pool driver, "" disables it.
+  driverName: cxl-pool.nri.io
+  # How long the pool driver waits for a hotplugged CXL memory device.
+  prepareTimeout: 30s
+
+leases:
+  # Lend memory to running containers.
+  enabled: true
+  # How long a lease request waits for Ready when it does not say.
+  wait: 120s
+  # Image of the companion pods of leases.
+  companionImage: registry.k8s.io/pause:3.10
+
+# Driver configuration, see docs/memory/cxl/usage.md.
+config: {}
+#
+# Example:
+#
+# config:
+#   ignoreDevices: ["mem0"]
+#   manageMemdevs: true
+
+# Log verbosity (-v).
+logLevel: 4
+
+# Extra environment variables to inject.
+extraEnv: {}
+#
+# Example:
+#
+# extraEnv:
+#   VAR1: VAL1
+#   VAR2: VAL2
+
+initContainerImage:
+  name: ghcr.io/containers/nri-plugins/nri-config-manager
+  # If not defined Chart.AppVersion will be used
+  #tag: unstable
+  pullPolicy: Always
+
+tolerations: []
+#
+# Example:
+#
+# tolerations:
+# - key: "node-role.kubernetes.io/control-plane"
+#   operator: "Exists"
+#   effect: "NoSchedule"
+
+affinity: {}
+#
+# Example:
+#
+# affinity:
+#   nodeAffinity:
+#     requiredDuringSchedulingIgnoredDuringExecution:
+#       nodeSelectorTerms:
+#       - matchExpressions:
+#         - key: topology.kubernetes.io/disk
+#           operator: In
+#           values:
+#           - ssd
+
+nodeSelector: {}
+#
+# Example:
+#
+# nodeSelector:
+#  kubernetes.io/disk: "ssd"
+
+# NRI plugins should be considered as part of the container runtime.
+# By default we make them part of the system-node-critical priority
+# class. This should mitigate the potential risk of a plugin getting
+# evicted under heavy system load. It should also ensure that during
+# autoscaling enough new nodes are brought up to leave room for the
+# plugin on each new node.
+podPriorityClassNodeCritical: true
