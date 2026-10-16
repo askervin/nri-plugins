@@ -8,8 +8,10 @@
 # n4-cxl-shared-2 (vm-command, "VM2") and drives the VM of n4-cxl-shared-1
 # ("VM1") over ssh from the host: the VMs reach the host at 192.168.76.2,
 # the slirp gateway. They reach each other only over their VM network
-# "cxl-pool" (vm_network.var.sh), which vm-k8s-reinit uses to make one
-# cluster of them (test13).
+# "cxl-pool" (vm_network.var.sh), over which they are one Kubernetes
+# cluster: VM2 the control plane, VM1 a worker. test00-up of
+# n4-cxl-shared-2 makes that cluster (vm-k8s-reinit), the other tests only
+# check it (pool-cluster-require).
 #
 # The helpers that work on either VM take the output directory of the VM,
 # VMDIR: $OUTPUT_DIR for VM2, $POOL_VM1_DIR for VM1. The commands in other
@@ -192,13 +194,29 @@ pool-vm-tools-install() { # script API
             command-error "cannot install cxl, daxctl and numactl in $(basename "$vmdir")"
 }
 
+pool-cluster-require() { # script API
+    # Usage: pool-cluster-require [CLUSTER]
+    #
+    # Fail the test unless the VMs of CLUSTER are one Kubernetes cluster in
+    # shape (vm-k8s-cluster-in-shape), printing why not and that test00-up
+    # of n4-cxl-shared-2 makes it. CLUSTER is a cluster of vm-k8s-reinit,
+    # by default "$POOL_VM2_DIR $POOL_VM1_DIR": VM2 the control plane, VM1
+    # a worker.
+    local cluster="${1:-$POOL_VM2_DIR $POOL_VM1_DIR}" why
+    why=$(vm-k8s-cluster-in-shape "$cluster") ||
+        error "the cluster \"$(vm-k8s-cluster-names "$cluster")\" is not in shape: ${why:-no reason given}
+run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up first"
+    echo "pool-cluster-require: cluster \"$(vm-k8s-cluster-names "$cluster")\" is in shape"
+}
+
 pool-vm-reset() { # script API
     # Usage: pool-vm-reset VMDIR
     #
     # Make sure that the VM of VMDIR has no CXL memory devices, neither in
     # qemu nor in the kernel, and that hotplugged memory is not onlined
     # automatically: onlined shared memory would be system RAM of several
-    # VMs at once. Restart the VM if it has devices.
+    # VMs at once. Restart the VM if it has devices, and wait until its
+    # Kubernetes node is Ready again.
     local vmdir="$1" name plugged guest_devs
     name="$(basename "$vmdir")"
     plugged=$(pool-vm-monitor "$vmdir" "info qtree -b" | grep -c 'dev: cxl-type3')
@@ -208,6 +226,11 @@ pool-vm-reset() { # script API
         pool-vm-restart "$vmdir"
         plugged=$(pool-vm-monitor "$vmdir" "info qtree -b" | grep -c 'dev: cxl-type3')
         [ "$plugged" == "0" ] || error "pool-vm-reset: $name still has $plugged CXL memory devices after restart"
+        # The restart keeps the shape of the cluster, but the node, or the
+        # whole cluster if the VM is its control plane, needs a while.
+        retry-until --timeout 300 --interval 2 --message "node $name Ready after the restart" \
+            'pool-vm-command-q "$vmdir" "kubectl wait --for=condition=Ready node/$name --timeout=10s" >/dev/null 2>&1' ||
+            error "pool-vm-reset: node $name is not Ready after the restart of its VM"
     fi
     pool-vm-command "$vmdir" "echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks" ||
         command-error "cannot disable automatic onlining of hotplugged memory in $name"

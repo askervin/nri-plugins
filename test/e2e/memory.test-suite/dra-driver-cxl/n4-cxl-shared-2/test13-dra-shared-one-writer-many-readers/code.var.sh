@@ -23,12 +23,11 @@
 #   device node that the container can only open for reading.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
-# control plane, the VM of n4-cxl-shared-1 (VM1) a worker. vm-k8s-reinit
-# makes it from the two single-node clusters of the VMs, over the VM
-# network "cxl-pool" (vm_network.var.sh), and restores them at the end. The
-# pool controller runs once, on VM2, the driver on both: one DaemonSet,
-# installed with helm on VM2, whose pod on VM1 starts at once with the
-# image that dra-install-node imported there.
+# control plane, the VM of n4-cxl-shared-1 (VM1) a worker, over the VM
+# network "cxl-pool" (vm_network.var.sh); test00-up of n4-cxl-shared-2
+# makes it. The pool controller runs once, on VM2, the driver on both: one
+# DaemonSet, installed with helm on VM2, whose pod on VM1 starts at once
+# with the image that dra-install imported there.
 #
 # What you will see: the writer on VM1 holding shared0 exclusively, three
 # readers (two on VM2, one on VM1) asking meanwhile and waiting, the
@@ -39,15 +38,18 @@
 # exclusive device pooled0 used as a dax device too, through a lease and
 # through a claim; and the trace of both nodes.
 #
-# Create both VMs first with test00-up of n4-cxl-shared-1 and -2. The DRA
-# driver comes from its image, build it first:
+# Run test00-up of n4-cxl-shared-1 and -2 first: they create the VMs and
+# make them one cluster. The DRA driver comes from its image, build it
+# first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
-# Set k8s_restore=no to keep the two-node cluster after a successful run.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"
     exit 0
 fi
+
+echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+pool-cluster-require
 
 VM1="$POOL_VM1_DIR"    # worker
 VM2="$OUTPUT_DIR"      # control plane, the VM of this test
@@ -226,20 +228,13 @@ shared0-attachments() {
     pool-host-client -o json attachments --device shared0 || command-error "cannot list the attachments of shared0"
 }
 
-echo "### preconditions: both VMs up, patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX"
-pool-host-wait "$VM1" "create VM1 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up"
+echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
 
 echo "### preconditions: cxl, daxctl and cxl-dump in both VMs, no CXL memory devices"
 pool-vm-tools-install "$VM2"
 pool-vm-tools-install "$VM1"
-pool-vm-reset "$VM2"
-pool-vm-reset "$VM1"
-
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker"
-vm-k8s-reinit "$VM2 $VM1"
-# vm-k8s-reinit may restart the VMs for their VM network NIC
 pool-vm-reset "$VM2"
 pool-vm-reset "$VM1"
 for vm in "$VM2" "$VM1"; do
@@ -263,8 +258,7 @@ pool-client-install "$VM2" "$VM1"
 
 echo "### preconditions: the pool controller on the control plane, the node plugin on both nodes"
 dra-build
-dra-install-node "$VM1" "$VM2"
-dra-install "$VM2"
+dra-install
 for vm in "$VM2" "$VM1"; do
     dra-pull-images "$vm" "$PYTHON_IMAGE" "$PAUSE_IMAGE"
 done
@@ -570,8 +564,4 @@ dra-cleanup
 pool-cleanup
 trap - EXIT
 pool-port-busy && error "port $POOL_PORT is still busy after stopping the server"
-if [ "${k8s_restore:-yes}" != no ]; then
-    echo "### restore: two single-node clusters again"
-    vm-k8s-reinit "$VM2" "$VM1"
-fi
 echo "trace: $TEST_OUTPUT_DIR/trace.txt, summary: $TEST_OUTPUT_DIR/trace-summary.txt"

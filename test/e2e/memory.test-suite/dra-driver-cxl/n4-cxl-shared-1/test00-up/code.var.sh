@@ -22,6 +22,10 @@
 # instance:
 #   qemu_bin=$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 \
 #     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
+#
+# This VM (VM1) is the worker of the Kubernetes cluster of the tests of
+# n4-cxl-shared-2 once test00-up of n4-cxl-shared-2 has made it: this test
+# checks only the VM and leaves its cluster as it is.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"
@@ -100,3 +104,6 @@ echo "### CXL memory devices in the VM"
 cxl-dump no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 cxl-assert 'len(nodes) == 2'
+
+echo "### Kubernetes role of the VM, left as it is"
+echo "$(basename "$OUTPUT_DIR"): $(vm-k8s-shape "$OUTPUT_DIR")"

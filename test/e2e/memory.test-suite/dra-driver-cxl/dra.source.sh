@@ -1,17 +1,18 @@
 # Helpers for testing CXL memory pooling and sharing with Dynamic Resource
 # Allocation (DRA): nri-dra-driver-cxl (the CXL DRA driver, drivers
-# cxl.nri.io and cxl-pool.nri.io) runs in the clusters of the VMs as a
-# DaemonSet that helm installs from deployment/helm/dra-driver-cxl,
-# fake-cxl-pool-controller (the pool controller of fake-cxl-pool, see
-# scripts/testing/fake-cxl-pool) runs in the VMs as a transient systemd
-# unit, fake-cxl-pool-server runs on the host (pool.source.sh).
+# cxl.nri.io and cxl-pool.nri.io) runs on every node of the cluster of the
+# VM of the test as a DaemonSet that helm installs from
+# deployment/helm/dra-driver-cxl, fake-cxl-pool-controller (the pool
+# controller of fake-cxl-pool, see scripts/testing/fake-cxl-pool) runs in
+# the VM of the test as a transient systemd unit, fake-cxl-pool-server runs
+# on the host (pool.source.sh).
 #
 # The driver comes from its image, built like the images of the other
 # plugins:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 # The e2e framework imports the newest image into the VM of the test
-# (playbook/nri-dra-driver-cxl-plugin-deploy.yaml), dra-image-put into
-# other VMs.
+# (playbook/nri-dra-driver-cxl-plugin-deploy.yaml), dra-image-put into the
+# other nodes of its cluster.
 #
 # The contract between the controller and the driver is
 # docs/memory/cxl/pool.md, the lease protocol and cxl-request are
@@ -21,23 +22,22 @@
 # defines functions and variables. The helpers take VMDIR, the output
 # directory of a VM, first, like those of pool.source.sh: $OUTPUT_DIR for
 # the VM of the test. Other VMs work where pool.source.sh is sourced too
-# (n4-cxl-shared-2: $POOL_VM1_DIR).
+# (n4-cxl-shared-2: $POOL_VM1_DIR, the worker of the cluster).
 #
 # Typical use:
 #   pool-server-start "DEVICES"   # first: dra-install chains its EXIT trap
 #   dra-build
-#   dra-install "$VM"
+#   dra-install
 #   dra-trace-start "$VM"
 #   dra-apply "$VM" <<EOF ... EOF
 #   dra-wait "$VM" LABEL "resourceclaim -n $DRA_NS NAME" "condition('cxl-pool.nri.io/Attached') == 'True'"
 #   dra-trace-stop; dra-trace-summary
 
-# The driver in the clusters: its helm chart and release, the values that
+# The driver in the cluster: its helm chart and release, the values that
 # dra-install gives on top of helm-set-args, the directory of the image
 # tarballs of "make images", the image of helm-set-args, and the
 # DaemonSet, container and pod label of the chart.
 DRA_CHART=dra-driver-cxl
-DRA_CHART_DIR="$nri_resource_policy_src/deployment/helm/$DRA_CHART"
 DRA_HELM_RELEASE="test"
 DRA_HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
 DRA_HELM_VALUES="$DRA_HELPER_DIR/dra-driver-cxl.helm-values.yaml"
@@ -69,8 +69,8 @@ DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/f
 DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
 DRA_LOCAL_DRIVER=cxl.nri.io        # node-local CXL and DRAM, published by the driver
 DRA_NS=cxl-pool-demo               # namespace of the test objects
-DRA_INSTALLED_VMS=()               # VMDIRs where dra-install or dra-install-node ran
-declare -A DRA_NODE_ONLY=()        # VMDIR -> CPDIR: dra-install-node, a worker of the cluster of CPDIR
+DRA_INSTALLED_VMS=()               # dra-install: the VMDIRs of the nodes, the VM of the test first,
+declare -A DRA_WORKERS=()          # and VMDIR -> 1 of the other nodes, the workers
 DRA_DAX_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/pool-dax-rw.py"
 DRA_NUMA_TOOL="$DRA_HELPER_DIR/n4-cxl-shared-2/numa-touch.py"
 DRA_JSON=""                        # JSON of the last dra-json/dra-wait
@@ -245,17 +245,6 @@ dra-build() { # script API
         error "dra-build: make did not build $DRA_CONTROLLER_BIN"
 }
 
-dra-chart-put() { # script API
-    # Usage: dra-chart-put VMDIR
-    #
-    # Copy the helm chart of the driver to the VM of VMDIR as
-    # ~vagrant/helm/dra-driver-cxl, where the e2e framework puts it in the VM
-    # of the test.
-    local vmdir="$1"
-    host-command "tar -C \"$(dirname "$DRA_CHART_DIR")\" -cf - $DRA_CHART | ssh -F \"$vmdir/.ssh-config\" node 'rm -rf helm/$DRA_CHART && mkdir -p helm && tar -C helm -xf -'" ||
-        command-error "cannot copy the chart $DRA_CHART_DIR to $(dra-vm-label "$vmdir")"
-}
-
 dra-image-put() { # script API
     # Usage: dra-image-put VMDIR
     #
@@ -288,57 +277,79 @@ dra-image-put() { # script API
 }
 
 dra-install() { # script API
-    # Usage: dra-install VMDIR
+    # Usage: dra-install
     #
-    # Install the driver with helm in the cluster of the VM of VMDIR (see
-    # dra-helm-install), and run fake-cxl-pool-controller in the VM as a
-    # transient systemd unit of the same name, with the admin kubeconfig of
-    # the VM. The chart creates the DeviceClasses of the driver
-    # (DRA_CLASSES), and the driver puts cxl-request on its nodes
-    # ($DRA_REQUEST_NODE_BIN) for the containers of lease claims. A VM
-    # other than the VM of the test gets the chart and the image first
-    # (dra-chart-put, dra-image-put), the workers of the cluster get the
-    # image from dra-install-node. Remove what an earlier run left first: the
-    # release, the controller, DeviceClasses, and driver state that refers
-    # to CXL regions which are gone (dra-state-cleanup). Create namespace
-    # $DRA_NS empty (delete objects that an earlier run left). Wait until
-    # the cluster has the pool ResourceSlice of the controller and every
-    # node of it the driver up (dra-wait-node).
+    # Install the driver with helm in the cluster of the VM of the test,
+    # on every node of it (release $DRA_HELM_RELEASE in kube-system, with
+    # the values of helm-set-args and $DRA_HELM_VALUES), and run
+    # fake-cxl-pool-controller in the VM of the test as a transient systemd
+    # unit of the same name, with the admin kubeconfig of the VM. The chart
+    # creates the DeviceClasses of the driver (DRA_CLASSES), and the driver
+    # puts cxl-request on its nodes ($DRA_REQUEST_NODE_BIN) for the
+    # containers of lease claims. The other nodes get the image of the
+    # driver first (dra-image-put). Remove what an earlier run left first:
+    # the release, the controller, DeviceClasses, and driver state that
+    # refers to CXL regions which are gone (dra-state-cleanup). Create
+    # namespace $DRA_NS empty (delete objects that an earlier run left).
+    # Wait until the cluster has the pool ResourceSlice of the controller
+    # and the driver is up on every node (dra-wait-node).
     #
     # Call pool-server-start first: the controller needs the server, and
     # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup.
-    local vmdir="$1" label url v workers
+    local vmdir="$OUTPUT_DIR" label url names name v nodes
     label=$(dra-vm-label "$vmdir")
     [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
     [ -f "$DRA_HELM_VALUES" ] || error "dra-install: no helm values $DRA_HELM_VALUES"
     url="${POOL_GUEST_URL:-http://192.168.76.2:${FAKE_CXL_POOL_PORT:-9909}}"
-    mapfile -t workers < <(dra-workers "$vmdir")
-    if [ "$vmdir" != "$OUTPUT_DIR" ]; then
-        dra-chart-put "$vmdir"
-        dra-image-put "$vmdir"
-    fi
+    # The nodes of the cluster are VMs next to the VM of the test, named
+    # after their output directories, the VM of the test first.
+    names=$(dra-vm-command-q "$vmdir" "kubectl get nodes -o jsonpath='{.items[*].metadata.name}'") ||
+        error "dra-install: cannot list the nodes of the cluster of $label"
+    nodes=("$vmdir")
+    for name in $names; do
+        [ "$name" != "$(dra-vm-name "$vmdir")" ] || continue
+        v=$(vmdir-of "$name")
+        [ -f "$v/.ssh-config" ] || error "dra-install: node $name of the cluster of $label is not a VM in $v"
+        nodes+=("$v")
+    done
+    echo "dra-install: the cluster of $label has ${#nodes[@]} nodes: $names"
+    for v in "${nodes[@]:1}"; do
+        dra-image-put "$v"
+    done
 
-    echo "dra-install $label: removing components of an earlier run, if any"
-    dra-helm-uninstall "$vmdir" ||
-        error "dra-install: pods of $DRA_DAEMONSET of an earlier run are left in $label"
+    echo "dra-install: removing components of an earlier run, if any"
+    dra-helm-uninstall ||
+        error "dra-install: pods of $DRA_DAEMONSET of an earlier run are left in the cluster of $label"
     dra-vm-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null; kubectl delete deviceclass --ignore-not-found ${DRA_CLASSES[*]}" ||
         command-error "cannot remove the components of an earlier run in $label"
-    for v in "$vmdir" "${workers[@]}"; do
+    for v in "${nodes[@]}"; do
         dra-state-cleanup "$v"
     done
     dra-vm-put-file "$vmdir" "$DRA_CONTROLLER_BIN" /usr/local/bin/fake-cxl-pool-controller
     dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
         command-error "cannot install fake-cxl-pool-controller in $label"
 
-    echo "dra-install $label: installing $DRA_CHART with helm, starting fake-cxl-pool-controller"
-    dra-installed-add "$vmdir" ""
-    dra-helm-install "$vmdir"
+    echo "dra-install: installing $DRA_CHART with helm on ${#nodes[@]} nodes, starting fake-cxl-pool-controller in $label"
+    DRA_INSTALLED_VMS=("${nodes[@]}")
+    DRA_WORKERS=()
+    for v in "${nodes[@]:1}"; do
+        DRA_WORKERS["$v"]=1
+    done
+    if type -t pool-cleanup >/dev/null; then
+        trap 'dra-cleanup; pool-cleanup' EXIT
+    else
+        trap dra-cleanup EXIT
+    fi
+    # helm-launch also collects the log of the driver into the test output
+    # (nri-resource-policy.output.txt).
+    helm_config="$DRA_HELM_VALUES" helm_name="$DRA_HELM_RELEASE" launch_available="${#nodes[@]}" launch_timeout=120s \
+        helm-launch "$DRA_CHART"
     dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
         command-error "cannot start fake-cxl-pool-controller in $label"
     dra-vm-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
         command-error "the chart $DRA_CHART does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
 
-    for v in "$vmdir" "${workers[@]}"; do
+    for v in "${nodes[@]}"; do
         dra-wait-node "$v"
     done
 
@@ -346,76 +357,15 @@ dra-install() { # script API
         command-error "cannot create namespace $DRA_NS in $label"
 }
 
-dra-install-node() { # script API
-    # Usage: dra-install-node VMDIR [CPDIR]
-    #
-    # Import the image of the driver into the VM of VMDIR (dra-image-put)
-    # and record the VM as a worker of the cluster of the VM of CPDIR
-    # (default: the VM of the test): one pool controller and one release of
-    # the driver serve the whole cluster. dra-install CPDIR removes the
-    # driver state of its workers with its own, its DaemonSet starts the
-    # driver on them at once, and it waits for the driver on every one of
-    # them.
-    local vmdir="$1" cpdir="${2:-$OUTPUT_DIR}"
-    echo "dra-install-node $(dra-vm-label "$vmdir"): a worker of the cluster of $(dra-vm-label "$cpdir")"
-    dra-image-put "$vmdir"
-    dra-installed-add "$vmdir" "$cpdir"
-}
-
-dra-workers() {
-    # Usage: dra-workers CPDIR
-    #
-    # Print the VMDIRs that dra-install-node recorded as workers of the
-    # cluster of the VM of CPDIR, one per line.
-    local v
-    for v in "${!DRA_NODE_ONLY[@]}"; do
-        [ "${DRA_NODE_ONLY[$v]}" != "$1" ] || echo "$v"
-    done
-}
-
-dra-helm-install() {
-    # Usage: dra-helm-install VMDIR
-    #
-    # Install the driver with helm in the cluster of the VM of VMDIR,
-    # release $DRA_HELM_RELEASE in kube-system, with the values of
-    # helm-set-args and $DRA_HELM_VALUES, and wait until its DaemonSet has a
-    # pod available on every node of the cluster. In the VM of the test this
-    # is helm-launch, which also collects the log of the driver into the
-    # test output (nri-resource-policy.output.txt).
-    local vmdir="$1" label nodes values
-    label=$(dra-vm-label "$vmdir")
-    nodes=$(dra-vm-command-q "$vmdir" "kubectl get nodes -o name | wc -l")
-    [[ "$nodes" =~ ^[1-9][0-9]*$ ]] || error "dra-install: cannot count the nodes of the cluster of $label: '$nodes'"
-    if [ "$vmdir" == "$OUTPUT_DIR" ]; then
-        helm_config="$DRA_HELM_VALUES" helm_name="$DRA_HELM_RELEASE" launch_available="$nodes" launch_timeout=120s \
-            helm-launch "$DRA_CHART"
-        return 0
-    fi
-    values=$(basename "$DRA_HELM_VALUES")
-    dra-vm-put-file "$vmdir" "$DRA_HELM_VALUES" "$values"
-    dra-vm-command "$vmdir" "helm install -n kube-system $DRA_HELM_RELEASE ./helm/$DRA_CHART --values=$values $(helm-set-args "$DRA_CHART")" ||
-        command-error "cannot install $DRA_CHART with helm in $label"
-    dra-vm-command "$vmdir" "kubectl wait -n kube-system ds/$DRA_DAEMONSET --timeout=120s --for=jsonpath='{.status.numberAvailable}'=$nodes" || {
-        dra-vm-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide; kubectl describe ds -n kube-system $DRA_DAEMONSET | tail -n 20"
-        error "DaemonSet $DRA_DAEMONSET has not $nodes pods available in $label"
-    }
-}
-
 dra-helm-uninstall() {
-    # Usage: dra-helm-uninstall VMDIR
+    # Usage: dra-helm-uninstall
     #
-    # Uninstall release $DRA_HELM_RELEASE from the cluster of the VM of
-    # VMDIR, if it has one, and wait until no pod of the driver is left in
+    # Uninstall release $DRA_HELM_RELEASE from the cluster of the VM of the
+    # test, if it has one, and wait until no pod of the driver is left in
     # the cluster. Return non-zero if some are left.
-    local vmdir="$1" label
-    label=$(dra-vm-label "$vmdir")
-    if [ "$vmdir" == "$OUTPUT_DIR" ]; then
-        helm_name="$DRA_HELM_RELEASE" helm-terminate
-    elif dra-vm-command-q "$vmdir" "helm list -n kube-system -q | grep -qx $DRA_HELM_RELEASE"; then
-        dra-vm-command "$vmdir" "helm uninstall -n kube-system $DRA_HELM_RELEASE --wait --timeout 60s"
-    fi
-    retry-until --timeout 60 --interval 1 --message "$label: no pods of $DRA_DAEMONSET" \
-        '[ -z "$(dra-vm-command-q "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o name" 2>/dev/null)" ]'
+    helm_name="$DRA_HELM_RELEASE" helm-terminate
+    retry-until --timeout 60 --interval 1 --message "no pods of $DRA_DAEMONSET in the cluster" \
+        '[ -z "$(vm-command-q "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o name" 2>/dev/null)" ]'
 }
 
 dra-state-cleanup() {
@@ -427,24 +377,6 @@ dra-state-cleanup() {
     # the regions and slices of local devices (localDevices.json), the
     # leases (leases.json) and the lease sockets of lease claims (leases/).
     dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
-}
-
-dra-installed-add() {
-    # Usage: dra-installed-add VMDIR CPDIR
-    #
-    # Record that the driver runs in the VM of VMDIR (CPDIR not empty: as a
-    # worker of the cluster of the VM of CPDIR), for dra-cleanup, and chain
-    # the EXIT trap: dra-cleanup, then pool-cleanup.
-    dra-installed-remove "$1"
-    DRA_INSTALLED_VMS+=("$1")
-    if [ -n "$2" ]; then
-        DRA_NODE_ONLY["$1"]="$2"
-    fi
-    if type -t pool-cleanup >/dev/null; then
-        trap 'dra-cleanup; pool-cleanup' EXIT
-    else
-        trap dra-cleanup EXIT
-    fi
 }
 
 dra-wait-node() {
@@ -515,91 +447,63 @@ for a in atts:
 }
 
 dra-uninstall() { # script API
-    # Usage: dra-uninstall VMDIR
+    # Usage: dra-uninstall
     #
-    # Undo dra-install in the VM of VMDIR: delete namespace $DRA_NS (its
-    # pods first, gracefully: the driver unprepares their claims, and the
-    # controller detaches the devices when the claims are gone), wait until
-    # the controller has detached the devices of the nodes of the cluster,
-    # store the log of the driver of every node (dra-plugin-log-save),
-    # uninstall the driver and its DeviceClasses (dra-helm-uninstall), stop
-    # the controller, delete the pool ResourceSlices it left and remove the
-    # driver state in the VM (dra-state-cleanup). Of a worker of a cluster
-    # (dra-install-node) remove only the driver state: the driver goes with
-    # the release of the cluster. Never fails the test: it runs in the EXIT
-    # trap.
-    local vmdir="$1" label left v host workers
+    # Undo dra-install: delete namespace $DRA_NS (its pods first,
+    # gracefully: the driver unprepares their claims, and the controller
+    # detaches the devices when the claims are gone), wait until the
+    # controller has detached the devices of every node, store the log of
+    # the driver of every node (dra-plugin-log-save), uninstall the driver
+    # and its DeviceClasses (dra-helm-uninstall), stop the controller,
+    # delete the pool ResourceSlices it left and remove the driver state of
+    # every node (dra-state-cleanup). Never fails the test: it runs in the
+    # EXIT trap.
+    local vmdir="$OUTPUT_DIR" label left v host
+    [ "${#DRA_INSTALLED_VMS[@]}" -gt 0 ] || return 0
     label=$(dra-vm-label "$vmdir")
-    if [ -n "${DRA_NODE_ONLY[$vmdir]}" ]; then
-        # The dra-uninstall of the control plane deleted the objects,
-        # waited for the detach of the devices of this node and for the
-        # driver pod of this node to go.
-        echo "dra-uninstall $label (worker)"
-        dra-state-cleanup "$vmdir"
-        dra-installed-remove "$vmdir"
-        return 0
-    fi
-    mapfile -t workers < <(dra-workers "$vmdir")
-    echo "dra-uninstall $label"
+    echo "dra-uninstall: the cluster of $label"
     dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s"
-    retry-until --timeout 60 --interval 2 --message "$label: no ResourceClaims in $DRA_NS" \
+    retry-until --timeout 60 --interval 2 --message "no ResourceClaims in $DRA_NS" \
         '[ -z "$(dra-vm-command-q "$vmdir" "kubectl get resourceclaims -n $DRA_NS -o name 2>/dev/null")" ]' ||
-        echo "dra-uninstall $label: ResourceClaims remain in $DRA_NS"
-    # The controller of this cluster detaches the devices of every node of
-    # it: this one and its workers.
-    for v in "$vmdir" "${workers[@]}"; do
+        echo "dra-uninstall: ResourceClaims remain in $DRA_NS"
+    for v in "${DRA_INSTALLED_VMS[@]}"; do
         host=$(dra-vm-name "$v")
         if [ -n "$(dra-pool-attachments "$host")" ]; then
-            retry-until --timeout 60 --interval 2 --message "$label: the controller detaches the pool devices of $host" \
+            retry-until --timeout 60 --interval 2 --message "the controller detaches the pool devices of $host" \
                 '[ -z "$(dra-pool-attachments "$host")" ]' || {
-                echo "dra-uninstall $label: attachments left, pool-cleanup releases and detaches them:"
+                echo "dra-uninstall: attachments left, pool-cleanup releases and detaches them:"
                 dra-pool-attachments "$host"
             }
         fi
     done
-    for v in "$vmdir" "${workers[@]}"; do
+    for v in "${DRA_INSTALLED_VMS[@]}"; do
         dra-plugin-log-save "$v"
     done
-    dra-helm-uninstall "$vmdir" ||
-        echo "dra-uninstall $label: pods of $DRA_DAEMONSET are left"
+    dra-helm-uninstall ||
+        echo "dra-uninstall: pods of $DRA_DAEMONSET are left"
     dra-vm-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null; true"
     left=$(dra-vm-command-q "$vmdir" "kubectl get resourceslices -o jsonpath='{range .items[?(@.spec.driver==\"$DRA_POOL_DRIVER\")]}{.metadata.name}{\"\\n\"}{end}'")
     if [ -n "$left" ]; then
         dra-vm-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
     fi
-    dra-state-cleanup "$vmdir"
-    dra-installed-remove "$vmdir"
-    return 0
-}
-
-dra-installed-remove() {
-    # Usage: dra-installed-remove VMDIR
-    local v keep=()
     for v in "${DRA_INSTALLED_VMS[@]}"; do
-        [ "$v" == "$1" ] || keep+=("$v")
+        dra-state-cleanup "$v"
     done
-    DRA_INSTALLED_VMS=("${keep[@]}")
-    unset "DRA_NODE_ONLY[$1]"
+    DRA_INSTALLED_VMS=()
+    DRA_WORKERS=()
+    return 0
 }
 
 dra-cleanup() {
     # Usage: dra-cleanup
     #
-    # The EXIT trap of dra-install (before pool-cleanup): dra-uninstall in
-    # every VM where dra-install or dra-install-node ran, then stop the
-    # trace if it runs. Report CXL memory devices that are still in the
-    # VMs: pool-cleanup, which runs next, releases and detaches them.
+    # The EXIT trap of dra-install (before pool-cleanup): dra-uninstall,
+    # then stop the trace if it runs. Report CXL memory devices that are
+    # still in the nodes: pool-cleanup, which runs next, releases and
+    # detaches them.
     local vmdir vms memdevs
     vms=("${DRA_INSTALLED_VMS[@]}")
-    # Control planes first: they delete the objects of the whole cluster,
-    # wait for the detach of the devices of all its nodes while the driver
-    # still runs on them, and uninstall the driver of the whole cluster.
-    for vmdir in "${vms[@]}"; do
-        [ -n "${DRA_NODE_ONLY[$vmdir]}" ] || dra-uninstall "$vmdir"
-    done
-    for vmdir in "${vms[@]}"; do
-        [ -z "${DRA_NODE_ONLY[$vmdir]}" ] || dra-uninstall "$vmdir"
-    done
+    dra-uninstall
     dra-trace-stop
     for vmdir in "${vms[@]}"; do
         memdevs=$(dra-vm-command-q "$vmdir" "ls /sys/bus/cxl/devices/ | grep -E '^mem[0-9]'")
@@ -1192,20 +1096,24 @@ EOF
 }
 
 dra-claim-pod-yaml() { # script API
-    # Usage: dra-claim-pod-yaml NAME claim|template SOURCE
+    # Usage: dra-claim-pod-yaml NAME claim|template SOURCE NODE
     #
-    # Print pod NAME whose claim "mem" is the ResourceClaim SOURCE (claim)
-    # or is made from the ResourceClaimTemplate SOURCE (template): one idle
-    # container "main" of $DRA_TOOLS_IMAGE that uses the claim, the tools
-    # of dra-dax-tool-install in /tools, no memory limit.
+    # Print pod NAME on Kubernetes node NODE (nodeSelector
+    # kubernetes.io/hostname) whose claim "mem" is the ResourceClaim SOURCE
+    # (claim) or is made from the ResourceClaimTemplate SOURCE (template):
+    # one idle container "main" of $DRA_TOOLS_IMAGE that uses the claim, the
+    # tools of dra-dax-tool-install in /tools, no memory limit.
     local name="$1" ref=resourceClaimName
     [ "$2" == claim ] || ref=resourceClaimTemplateName
+    [ -n "$4" ] || error "dra-claim-pod-yaml: no node for pod $name"
     cat <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
   name: $name
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: $4
   terminationGracePeriodSeconds: 2
   restartPolicy: Never
   resourceClaims:
@@ -1232,14 +1140,14 @@ EOF
 dra-claim-pod() { # script API
     # Usage: dra-claim-pod VMDIR NAME CLASS SIZE [MODE [read-only]]
     #
-    # Create pod NAME in the cluster of the VM of VMDIR with a claim of
+    # Create pod NAME on the node of the VM of VMDIR with a claim of
     # DeviceClass CLASS for SIZE, with MODE and read-only in its
     # DeviceConfig (see dra-claim-yaml), made from a
     # ResourceClaimTemplate NAME of its own: the claim lives and dies with
     # the pod.
     dra-apply "$1" <<< "$(dra-claim-yaml template "$2" "$3" "$4" "$5" "$6")
 ---
-$(dra-claim-pod-yaml "$2" template "$2")"
+$(dra-claim-pod-yaml "$2" template "$2" "$(dra-vm-name "$1")")"
 }
 
 ###
@@ -1920,7 +1828,7 @@ dra-trace-start() { # script API
         dra-trace-collect-vm "$vmdir" "$label.udev" lines "stdbuf -oL udevadm monitor -k -u -s cxl -s dax -s memory -s node"
         dra-trace-collect-vm "$vmdir" "$label.kubelet" lines "journalctl -f -n0 -o cat -u kubelet | grep --line-buffered -iE 'dra|resourceclaim|cxl'"
         # The rest is of the cluster: once per cluster, on its control plane.
-        [ -z "${DRA_NODE_ONLY[$vmdir]}" ] || continue
+        [ -z "${DRA_WORKERS[$vmdir]}" ] || continue
         dra-trace-collect-vm "$vmdir" "$label.controller" lines "journalctl -f -n0 -o cat -u fake-cxl-pool-controller"
         dra-trace-collect-vm "$vmdir" "$label.scheduler" lines "kubectl -n kube-system logs -f --tail=0 kube-scheduler-$name"
         dra-trace-collect-vm "$vmdir" "$label.events" lines "kubectl get events -A --watch-only -o custom-columns=NS:.metadata.namespace,KIND:.involvedObject.kind,NAME:.involvedObject.name,REASON:.reason,MSG:.message --no-headers"
@@ -1930,7 +1838,7 @@ dra-trace-start() { # script API
     # Every remote collector writes its pid file just before it starts.
     for vmdir in "$@"; do
         n=8
-        [ -z "${DRA_NODE_ONLY[$vmdir]}" ] || n=3
+        [ -z "${DRA_WORKERS[$vmdir]}" ] || n=3
         retry-until --timeout 30 --message "trace collectors in $(dra-vm-label "$vmdir")" \
             '[ "$(dra-vm-command-q "$vmdir" "ls /run/dra-trace/ | grep -c .pid\$")" == "$n" ]' ||
             error "dra-trace-start: trace collectors did not start in $(dra-vm-label "$vmdir"), see $DRA_TRACE_DIR"

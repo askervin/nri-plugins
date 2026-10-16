@@ -16,13 +16,17 @@
 # completes that, the server reports the attachment failed, and the device
 # stays in qemu until the VM restarts (see plan/60-e2e-test.md).
 #
-# Create both VMs first with test00-up of n4-cxl-shared-1 and -2. This test
-# starts VM1 if it is not running.
+# Run test00-up of n4-cxl-shared-1 and -2 first: they create the VMs and
+# make them one Kubernetes cluster, which this test, like every test of
+# n4-cxl-shared-2, checks before anything else.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"
     exit 0
 fi
+
+echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+pool-cluster-require
 
 VM1="$POOL_VM1_DIR"    # the other VM, driven over ssh from the host
 VM2="$OUTPUT_DIR"      # the VM of this test
@@ -46,9 +50,6 @@ detach-timed() {
     pool-assert "$COMMAND_OUTPUT" 'j["state"] == "detached"'
     echo "detach $* took $(printf %.2f "$(echo "$end - $start" | bc)") s"
 }
-
-echo "### preconditions: VM1 is up"
-pool-host-wait "$VM1" "create VM1 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up"
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"

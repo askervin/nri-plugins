@@ -1,0 +1,282 @@
+plan-6: the tests of n4-cxl-shared-2 on one two-node cluster
+============================================================
+Written 2026-10-16 (base: HEAD ba8c4638d). Nothing committed.
+
+Task (the user): n4-cxl-shared-2/test00-up already sets up a two-node
+cluster (n4-cxl-shared-1 = VM1 the worker, n4-cxl-shared-2 = VM2 the
+control plane, no scheduling taints); every other test of n4-cxl-shared-2
+only checks that setup and never changes or restores a cluster shape,
+because rebuilding is slow.
+
+N = the nri-plugins checkout, E = N/test/e2e/memory.test-suite/dra-driver-cxl.
+
+
+1. Changes per file
+-------------------
+E/n4-cxl-shared-2/test00-up/code.var.sh
+- After the existing VM checks: pool-host-wait "$VM1" (with the "create
+  VM1 first: ... n4-cxl-shared-1/test00-up" pointer), vm-k8s-reinit
+  "$VM2 $VM1" (leaves an in-shape cluster alone, otherwise rebuilds it
+  without the control-plane taint), vm-k8s-in-shape "$VM2 $VM1" or fail
+  with what vm-k8s-cluster-in-shape says, kubectl get nodes -o wide.
+  This is the only place in E that changes a cluster shape.
+- Header comment: the cluster, and that the other tests only check it.
+
+E/n4-cxl-shared-1/test00-up/code.var.sh
+- Header comment: when VM1 is the worker of VM2's cluster this test
+  checks only the VM and leaves the cluster as it is.
+- New last step "Kubernetes role of the VM, left as it is": prints
+  vm-k8s-shape of the VM (read only; run 2 printed
+  "worker https://10.76.162.174:6443").
+- What the framework does on VM1 as a worker, checked:
+  vm-setup: vagrant up of a running VM is a no-op, no provisioning;
+    vm-vmnet-record/patch are idempotent. Only for a VM that came from a
+    cached box (e2e_vm_cache) it called wait-for-node-ready, which looped
+    forever on a worker (it waited for a kube-apiserver container in the
+    VM, with no deadline in that branch): fixed, see lib/vm.bash.
+  vm-nri-plugin-deploy: the playbook checks the kernel, copies the chart
+    and imports the image: harmless, and dra-image-put then finds the
+    image there.
+  test-user-code: "kubectl delete pods --all --now" if the default
+    namespace has pods. On a worker kubectl uses the admin kubeconfig of
+    VM2's cluster, so this is the default namespace of the shared cluster;
+    the tests use only namespace cxl-pool-demo, so it is harmless (the
+    same happens in every test of VM2).
+  vm-coverage-*, vm-pull-journal, the scp of the plugin log: harmless.
+  The test itself: vm-kernel-pkgs-install may reboot the VM once when it
+  installs new kernel packages; a worker rejoins by itself (node IP in
+  /etc/sysconfig/kubelet, pod routes in the NetworkManager profile).
+  Run 2 (VM1 a worker): PASS, no kubeadm, no vm-k8s-reinit.
+
+E/n4-cxl-shared-2/pool.source.sh
+- New pool-cluster-require [CLUSTER] (script API): fail the test unless
+  vm-k8s-cluster-in-shape "$POOL_VM2_DIR $POOL_VM1_DIR" (or CLUSTER),
+  printing why and "run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+  test00-up first"; prints "cluster ... is in shape" otherwise. Read only.
+- pool-vm-reset: after it restarts a VM that had devices (the existing
+  recovery), it waits until the node of the VM is Ready again (retry-until
+  300 s, kubectl wait node/NAME): a restart keeps the cluster shape, but
+  restarting VM2 takes the API server of both nodes away for a while.
+- Header comment: the one cluster over the VM network, made by test00-up.
+
+E/dra.source.sh
+- dra-install (no argument now): installs the driver in the cluster of the
+  VM of the test on every node of it. It lists the nodes (kubectl get
+  nodes), maps them to the VM directories next to $OUTPUT_DIR (vmdir-of),
+  imports the image into the other nodes (dra-image-put, skipped when the
+  same image is there), removes leftovers (release, controller,
+  DeviceClasses), cleans the driver state of every node, helm-launch with
+  launch_available = number of nodes, starts fake-cxl-pool-controller once
+  on VM2, checks the DeviceClasses, dra-wait-node for every node.
+  DRA_INSTALLED_VMS = the nodes (VM of the test first), DRA_WORKERS =
+  VMDIR -> 1 of the other nodes (used by dra-trace-start: 3 collectors on
+  a worker).
+- dra-uninstall (no argument): namespace, detach waits for every node,
+  driver logs of every node, helm uninstall, controller stop, pool slices,
+  dra-state-cleanup of every node.
+- dra-cleanup: dra-uninstall once (no control-plane/worker ordering any
+  more), trace stop, memdev report of every node.
+- Removed: dra-install-node, dra-workers, dra-installed-add,
+  dra-installed-remove, dra-chart-put and the separate-cluster paths of
+  dra-helm-install (gone, folded into dra-install) and dra-helm-uninstall
+  (now helm-terminate + wait for no driver pod), DRA_NODE_ONLY,
+  DRA_CHART_DIR.
+- dra-claim-pod-yaml NAME claim|template SOURCE NODE: the pod has a
+  nodeSelector kubernetes.io/hostname: NODE (required argument).
+  dra-claim-pod VMDIR ...: the pod goes to the node of the VM of VMDIR.
+- Header and comments: one cluster, the driver on every node.
+
+Tests (every one: pool-cluster-require as the first step after the
+fedora check; no vm-k8s-reinit, no pool-host-wait, no k8s_restore)
+- test01-shared-cxl: check added, pool-host-wait removed, header.
+- test10-dra-pooling: check; reinit removed; pool-vm-reset also of VM1
+  (the driver runs there too now); dra-install; pod pooled-consumer
+  pinned to VM2 (nodeSelector); header.
+- test11-dra-sharing: rewritten for the two nodes of one cluster, name
+  kept. One pool ResourceSlice for all nodes (allNodes) with shared0;
+  pod writer on VM1 with claim writer-memory, pod reader on VM2 with
+  claim reader-memory (cxl-pool-shared, one "hosts" each), both pinned
+  with nodeSelector; claims allocated to VM1 and VM2, shared0 attached to
+  both hosts at once, each attachment owned by its claim; VM1 writes, VM2
+  reads the same bytes, the host finds them in the backing file; VM1 lets
+  go while VM2 still reads; then shared0 is free, both qemus report
+  DEVICE_DELETED. One trace of both nodes. New small checks: the writer
+  pod runs on VM1 (spec.nodeName after scheduling), VM2 has no CXL device
+  before its own claim. Header rewritten.
+- test12-dra-live-attach: check; reinit removed; pool-vm-reset of VM1;
+  dra-install; borrower and claimer pinned to VM2 (companions follow the
+  requester: the test still asserts their nodeName/affinity VM2); header.
+- test13-dra-shared-one-writer-many-readers: check instead of
+  pool-host-wait; the reshaping block (reinit, second reset) and the
+  k8s_restore block at the end removed; dra-install-node + dra-install ->
+  dra-install; header (cluster made by test00-up, no k8s_restore). Steps
+  otherwise unchanged (its pods already used nodeSelector).
+- test14-dra-local-memdev: check; reinit removed; pool-vm-reset of VM1;
+  dra-install; all pods on VM2 (dra-claim-pod pins them; the direct
+  dra-claim-pod-yaml calls pass VM2's name); header.
+- test15-dra-local-live-attach: check; reinit removed; pool-vm-reset of
+  VM1; dra-install; borrower pinned to VM2 (static pods via
+  dra-claim-pod); header.
+
+N/test/e2e/README.md (Multi-node clusters): a suite makes its shape once;
+in dra-driver-cxl n4-cxl-shared-2/test00-up makes it, the other tests check
+it (pool-cluster-require) and fail at once with a pointer; going back to
+single-node clusters by hand is vm-k8s-reinit with one VM per cluster (the
+old pointer to test11 is gone).
+
+N/test/e2e/lib/vm.bash (wait-for-node-ready): asks the API server
+(kubectl get --raw=/readyz) instead of looking for a kube-apiserver
+container in the VM, and checks its 5 min deadline on every round. Same
+result on a control plane; on a worker it no longer loops forever.
+
+No driver, chart, Dockerfile, run.sh or lib/k8s.bash change: the image is
+the newest tarball built from HEAD
+(build/images/nri-dra-driver-cxl-image-81308ad5dc0f.tar), not rebuilt.
+
+Static checks: bash -n on every changed file and on every code.var.sh
+concatenated with dra.source.sh, pool.source.sh and cxl.source.sh: ok.
+shellcheck 0.11.0: dra.source.sh and pool.source.sh clean (with the usual
+exclusions SC2154,SC2034,SC1090,SC2148,SC2016); every code.var.sh and
+lib/vm.bash have the same number of findings as at HEAD. grep in E for
+vm-k8s-reinit, k8s_restore, dra-install-node, pool-host-wait,
+single-node, "two clusters", "both clusters": only test00-up of
+n4-cxl-shared-2 (and the pool.source.sh comments that name it).
+
+
+2. Fail fast with the pointer
+-----------------------------
+a) Real wrong shape, before run 1 (the VMs were two single-node clusters,
+   as test15 of the previous suite run had left them):
+     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test01-shared-cxl
+   FAIL after 13.4 s (framework setup included), at the first step:
+     ### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)
+     error: the cluster "n4-cxl-shared-2-fedora-43-containerd
+     n4-cxl-shared-1-fedora-43-containerd" is not in shape: nodes
+     ['n4-cxl-shared-2-fedora-43-containerd'], expected
+     ['n4-cxl-shared-1-fedora-43-containerd',
+     'n4-cxl-shared-2-fedora-43-containerd'];
+     n4-cxl-shared-2-fedora-43-containerd has InternalIP 192.168.76.9,
+     expected its VM network address 10.76.162.174
+     run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up first
+b) Unit level, after run 2, on the two-node cluster (host-side harness
+   sourcing lib/*.bash and pool.source.sh, nothing changed in the VMs):
+     pool-cluster-require                       -> "... is in shape", rc 0
+     pool-cluster-require "$POOL_VM1_DIR $POOL_VM2_DIR"
+       -> "... not in shape: n4-cxl-shared-1-fedora-43-containerd: not a
+          working control plane (worker https://10.76.162.174:6443)
+          run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
+          first", rc 1
+     pool-cluster-require "$POOL_VM2_DIR"
+       -> "... not in shape: nodes [VM1, VM2], expected [VM2] ...", rc 1
+
+
+3. Runs
+-------
+Both: cd N/test/e2e && ./run_tests.sh memory.test-suite/dra-driver-cxl
+(one run_tests.sh, which runs n4-cxl-shared-1/test00-up and then
+n4-cxl-shared-2 test00-up..test15, one test at a time).
+
+Run 1 (from two single-node clusters), 18:07-18:26, 1113 s wall, all PASS.
+Run 2 (from the state of run 1), 18:26-18:44, 1074 s wall, all PASS.
+"vm-k8s-reinit: rebuilding": run 1 once, in n4-cxl-shared-2/test00-up
+(the rebuild took 62 s: "ready in 62 s"); run 2 none (test00-up:
+"cluster ... is in shape already"), and no kubeadm reset/init/join in any
+test output of run 2.
+
+Durations ("Test duration" of run.sh.output, seconds; framework setup
+included). Previous = the from-scratch suite run of the user before this
+change (/tmp/dra-driver-cxl-e2e-full.log, VMs freshly recreated, so its
+test00-up times include first-time setup and do not compare).
+
+  test                                       previous   run 1   run 2
+  n4-cxl-shared-1/test00-up                    255 *     16      16
+  n4-cxl-shared-2/test00-up                    259 *     78 **   17
+  test01-shared-cxl                             73       62      62
+  test10-dra-pooling                            72       68      68
+  test11-dra-sharing                           122       89      91
+  test12-dra-live-attach                       304      296     299
+  test13-dra-shared-one-writer-many-readers    340      169     168
+  test14-dra-local-memdev                      151      139     148
+  test15-dra-local-live-attach                 209      196     204
+  sum of test01..test15                       1271     1019    1040
+  *  fresh VMs (first kernel install etc.)
+  ** includes the one rebuild of the cluster (62 s)
+
+test13 halves (340 -> 168 s): no rebuild into two nodes and no restore
+into two single-node clusters (each about a minute). test11 loses the
+second cluster (its separate helm install, controller and image copy to
+VM1): 122 -> 90 s. The others change little: they never rebuilt, they
+only paid the in-shape check of vm-k8s-reinit, now the same check in
+pool-cluster-require plus the second driver pod on VM1.
+
+Final state (checked after run 2): one cluster, n4-cxl-shared-2 Ready
+control-plane, n4-cxl-shared-1 Ready worker, both on their VM network
+addresses (10.76.162.174, 10.76.85.237); no helm release, no
+fake-cxl-pool-controller active, no CXL memdev or region in either VM,
+no cxl-type3 device in either qemu, auto_online_blocks offline, no
+namespace cxl-pool-demo, no DeviceClasses, no ResourceSlices, port 9909
+free.
+
+
+4. Notes
+--------
+- dra-install and dra-uninstall lost their VMDIR argument: there is one
+  cluster, the one of the VM of the test. Callers in E are updated; no
+  other users (grep of N).
+- The scheduler could place pods of claims of pool devices on either
+  node now: every test pins the pods whose node matters with nodeSelector
+  kubernetes.io/hostname (never spec.nodeName, which would skip the
+  scheduler and the DRA allocation). Companion pods of leases follow
+  their requester (the broker sets their node affinity), as test12/13/15
+  assert.
+- VM1 has no local CXL device attached (only dra-local-device attaches
+  VM2's), so cxl-local claims could only be allocated on VM2 anyway; the
+  test14/test15 pods are pinned explicitly all the same.
+- Still: helm-launch waits 5 s for a pod "nri-resource-policy-*" that the
+  driver does not have (vm-port-forward-enable), harmless.
+- Not exercised by the two runs (no VM had leftover devices, no VM comes
+  from a cached box): the node-Ready wait after a restart in
+  pool-vm-reset, and the changed wait-for-node-ready of lib/vm.bash (its
+  other callers, vm-restart-kubelet and the kernel cmdline reboot, are
+  not used by this suite). Both are checked with bash -n and shellcheck.
+
+
+5. Requests to WP4 (docs/memory/cxl/e2e.md, not edited here)
+-------------------------------------------------------------
+Line numbers as of now.
+- 27-29, 71: the e2e VMs are no longer each a single-node cluster:
+  n4-cxl-shared-2/test00-up makes them one cluster, VM2 (n4-cxl-shared-2)
+  the control plane without taint, VM1 (n4-cxl-shared-1) the worker, over
+  the VM network "cxl-pool"; that is their normal state. Every other test
+  of n4-cxl-shared-2 only checks it (pool-cluster-require) and fails at
+  once with "run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+  test00-up first". Run order: n4-cxl-shared-1/test00-up, then
+  n4-cxl-shared-2/test00-up, then any test; or the whole suite:
+  ./run_tests.sh memory.test-suite/dra-driver-cxl.
+- 74-76 (several clusters on one pool): still true of the pool, but no e2e
+  test shows two clusters any more.
+- 189 (test table): test11-dra-sharing is "a shared device claimed on the
+  two nodes of the cluster at once, one host each: write on VM1, read on
+  VM2, VM1 lets go while VM2 reads"; 191 test13: no reshaping, it runs on
+  the cluster of test00-up.
+- 317-327 (deploy): one deployment for the cluster: the image on VM1 too,
+  helm install on VM2 with the DaemonSet on both nodes (2 pods), the pool
+  controller once on VM2. "Example d uses the cluster of VM1 too" no
+  longer applies.
+- 646-830 (Example d, a shared pool device in two clusters): needs either
+  a rewrite to the two nodes of the one cluster (the shape of test11
+  now: two ResourceClaims of cxl-pool-shared, one pod per node with a
+  nodeSelector kubernetes.io/hostname) or an explicit note that it needs
+  two single-node clusters, made by hand with vm-k8s-reinit "$VM2" "$VM1"
+  and undone by n4-cxl-shared-2/test00-up.
+- 978-992 (example f): test13 no longer makes or restores the cluster and
+  k8s_restore is gone; the cluster is there after
+  n4-cxl-shared-2/test00-up.
+- 1326-1334 and 1364-1369 (clean up): "make two single-node clusters again
+  with test11-dra-sharing" no longer works (test11 does not reshape); the
+  two-node cluster is the state to leave. Back to single-node clusters
+  only by hand (vm-k8s-reinit "$VM2" "$VM1"), and
+  n4-cxl-shared-2/test00-up before the next test.
+- Mentions of dra-install "$VM"/dra-install-node (if any are added): now
+  dra-install without argument installs on every node of the cluster of
+  the VM of the test.

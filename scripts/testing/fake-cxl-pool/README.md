@@ -221,10 +221,11 @@ The attachment owner is `k8s:resourceclaim/<claim uid>` (`-owner-prefix`).
 The controller is stateless: it only touches attachments with its owner
 prefix on hosts that are Nodes of its cluster, never adopted ones or those
 made with the CLI, so a restart just re-confirms existing attachments.
-Each cluster runs one controller; several clusters (for instance the
-single-node clusters of n4-cxl-shared-1 and -2) may share one server, and
-then share its devices, including shared devices attached to nodes of
-different clusters.
+Each cluster runs one controller; several clusters may share one server,
+and then share its devices, including shared devices attached to nodes of
+different clusters. The e2e VMs of n4-cxl-shared-1 and -2 are one cluster
+of two nodes (n4-cxl-shared-2 the control plane, n4-cxl-shared-1 a
+worker) with one controller, on n4-cxl-shared-2.
 
 ```
 fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
@@ -234,7 +235,8 @@ fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
 ```
 
 `-server` defaults to `$FAKE_CXL_POOL_SERVER`, `-kubeconfig` to
-`$KUBECONFIG`, else the in-cluster config. In the e2e VMs:
+`$KUBECONFIG`, else the in-cluster config. In the e2e VMs, on the control
+plane:
 
 ```
 systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-controller -kubeconfig /root/.kube/config -v
