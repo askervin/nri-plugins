@@ -1,0 +1,65 @@
+plan-7-e2e-cxl-llm-share: orchestrator status
+=============================================
+2026-10-16: research A, B, C done (01-research-*.txt). Findings 02,
+decisions 03, plan 04 written. Streams F (driver mode file) and T (e2e)
+started. The emulated dax file /dev/shm/plan7A-fake-dax0.0 of research A
+(1 GiB of host RAM) was removed.
+2026-10-16 16:20: stream F done. Its R1 (the invalid mode text now ends
+"(numa, dax or file)", which breaks exact-substring asserts at
+n4-cxl-shared-2/test12:622 and test14:403) goes to stream T, which gets
+ownership of those two assertions for this change only. The new driver
+dependency github.com/hanwen/go-fuse/v2 v2.12.0 (BSD-3) is reported to
+the user.
+2026-10-16 (user): avoid the go-fuse dependency; asked whether losetup or
+another filesystem could work, with kernel config changes allowed; and
+test16 must assume the two VMs are always one two-node cluster (no
+reshaping, no restore). Actions: stream T told (two-node always, no
+restore, single-node regression deferred to the very end; cached runs
+paused, direct continues); review R-F stopped (FUSE code under
+reconsideration). Checked: loop accepts only regular files and block
+devices (drivers/block/loop.c:511 loop_validate_file), so no kernel
+config makes losetup take /dev/daxX.Y; nothing in drivers/dax or
+drivers/cxl creates a block disk from a volatile region. Options put to
+the user: NBD (CONFIG_BLK_DEV_NBD + a small in-tree NBD server in the
+plugin, stdlib only), CXL pmem (kernel-native, both modes with stock
+tools, new pool device kind), a minimal hand-written FUSE server.
+2026-10-16 17:40 (user decision: "Direct mode only"): the cached mode is
+dropped from this task. Driver: every change of stream F removed (the
+tracked files restored to HEAD 79a85f3, F's new files deleted); F's work
+is kept as dropped-mode-file/driver-tracked.patch and
+driver-new-files.tar.gz in this directory. go.mod: the committed replace
+pointed at nri-plugins 002f5ba35, which lacks plan-5's memctl names (the
+committed driver did not build from a clean checkout); it now points at
+the pushed nri-plugins plan-5 commit d2f6c1490
+(github.com/askervin/nri-plugins v0.14.1-0.20261015131252-d2f6c1490272),
+go.sum updated, vendor/ regenerated (memctl identical to the local
+checkout, no go-fuse). Build, vet and unit tests pass. Stream T removes
+the cached sections, the llm_access switch and the file-export helpers
+from test16 and restores the test12/test14 texts to "(numa or dax)".
+2026-10-16 (after review R-T, 06-review-T.txt): all findings accepted and
+sent to stream T: B1, B2 (assert on the llama.cpp model mapping alone:
+size == padded model, all pages present in the dax device's CXL window,
+and the reader's anonymous memory below half the model size, so that a
+copy of the weights fails the test), R1 (a reader tries to open the
+device for writing and is refused, as test13's check-ro), R2-R6, S1-S10.
+T reruns test16 once in the two-node cluster afterwards.
+
+Closing status (2026-10-16, orchestrator)
+-----------------------------------------
+test16-cxl-llm-share (direct mode, D10) PASS in the two-node cluster
+after the R-T fixes (141 s): one writer copies Qwen3-0.6B Q4_K_M (378 MiB)
+into a shared 512Mi pool device in ~0.5 s; three readers (two on VM2, one
+on VM1) answer "Hello! How can I assist you today?" from the same copy;
+each reader's llama.cpp model mapping has all 97280 pages in the CXL
+window, anonymous memory ~83 MB (< half the model, so a copy would fail),
+the node page cache grows < 1 MB, writes through the reader's node are
+refused. test13 PASS (k8s_restore=no) after the shared helper moves. The
+VMs stay one two-node cluster (D11). Not run in this task: the
+single-node tests test10-12, test14, test15 (their files equal HEAD; the
+driver equals HEAD except go.mod/go.sum).
+For the user: commit the driver's go.mod/go.sum (replace now points at
+the pushed nri-plugins d2f6c1490; the committed one pointed at 002f5ba35,
+which does not build); qemu keeps the backing file of the last
+hot-removed CXL device mapped until the next hot-remove or a restart
+(~512 MiB host RAM per qemu), a qemu/fake-cxl-pool issue outside this
+task; the dropped mode file is archived in dropped-mode-file/.

@@ -1134,6 +1134,111 @@ dra-claim-pod() { # script API
 $(dra-claim-pod-yaml "$2" template "$2")"
 }
 
+dra-shared-claim-yaml() { # script API
+    # Usage: dra-shared-claim-yaml NAME SERIAL [HOSTS [PARAMETERS]]
+    #
+    # Print ResourceClaim NAME with one request "mem" of DeviceClass
+    # cxl-pool-shared for the shared pool device SERIAL. HOSTS is the
+    # "hosts" capacity to request ("": the default, one host). PARAMETERS
+    # are the fields of its DeviceConfig of $DRA_POOL_DRIVER, for instance
+    # "mode: dax, readOnly: true" ("": no DeviceConfig).
+    # Example: dra-shared-claim-yaml writer 0xc1ae0001 4
+    local name="$1" serial="$2" hosts="$3" params="$4"
+    cat <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: $name
+spec:
+  devices:
+    requests:
+    - name: mem
+      exactly:
+        deviceClassName: cxl-pool-shared
+        selectors:
+        - cel:
+            expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$serial"'
+EOF
+    if [ -n "$hosts" ]; then
+        cat <<EOF
+        capacity:
+          requests:
+            hosts: "$hosts"
+EOF
+    fi
+    if [ -n "$params" ]; then
+        cat <<EOF
+    config:
+    - opaque:
+        driver: $DRA_POOL_DRIVER
+        parameters: {apiVersion: $DRA_POOL_DRIVER/v1alpha1, kind: DeviceConfig, $params}
+EOF
+    fi
+}
+
+# shellcheck disable=SC2001 # sed indents every line of SCRIPT
+dra-script-pod-yaml() { # script API
+    # Usage: dra-script-pod-yaml NAME VMDIR CLAIM SCRIPT [TYPE:PATH...]
+    #
+    # Print pod NAME on the node of VMDIR, restartPolicy Never, with
+    # ResourceClaim CLAIM as its claim "mem" and the tools of
+    # dra-dax-tool-install in /tools, running the shell SCRIPT in its
+    # container "main" (image $DRA_TOOLS_IMAGE), then idling until it is
+    # deleted. Every TYPE:PATH is a hostPath volume of the node, mounted
+    # read-only at the same path: TYPE is its hostPath type (File,
+    # Directory).
+    # Example: dra-script-pod-yaml reader "$VM" shared-ro 'ls /opt/x' Directory:/opt/x
+    local name="$1" node claim="$3" script="$4" volumes="" mounts="" n=0 spec
+    node=$(basename "$2")
+    shift 4
+    for spec in "$@"; do
+        volumes+="
+  - name: host$n
+    hostPath:
+      path: ${spec#*:}
+      type: ${spec%%:*}"
+        mounts+="
+    - name: host$n
+      mountPath: ${spec#*:}
+      readOnly: true"
+        n=$(( n + 1 ))
+    done
+    cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: $node
+  terminationGracePeriodSeconds: 2
+  restartPolicy: Never
+  resourceClaims:
+  - name: mem
+    resourceClaimName: $claim
+  volumes:
+  - name: tools
+    configMap:
+      name: dax-rw$volumes
+  containers:
+  - name: main
+    image: $DRA_TOOLS_IMAGE
+    imagePullPolicy: IfNotPresent
+    command:
+    - sh
+    - -c
+    - |
+$(sed 's/^/      /' <<< "$script")
+      trap "exit 0" TERM; sleep infinity & wait
+    volumeMounts:
+    - name: tools
+      mountPath: /tools$mounts
+    resources:
+      claims:
+      - name: mem
+EOF
+}
+
 ###
 ### Containers of pods, and leases of pool memory
 ###
@@ -1768,6 +1873,29 @@ dra-pod-wait() { # script API
         error "pod $pod in $(dra-vm-label "$vmdir") is not $phase after ${tmo}s"
     }
     dra-vm-command "$vmdir" "kubectl get pod -n $DRA_NS $pod -o wide"
+}
+
+dra-pod-log() { # script API
+    # Usage: dra-pod-log VMDIR POD
+    #
+    # Print the log of pod POD in $DRA_NS of the cluster of the VM of
+    # VMDIR, quietly.
+    dra-vm-command-q "$1" "kubectl logs -n $DRA_NS $2 2>/dev/null"
+}
+
+dra-wait-log() { # script API
+    # Usage: dra-wait-log VMDIR POD LINE [TIMEOUT]
+    #
+    # Wait until the log of pod POD in $DRA_NS of the cluster of the VM of
+    # VMDIR has the line LINE (a fixed string that matches the whole line),
+    # TIMEOUT seconds at most (default 120). Fail the test on timeout, and
+    # show the log and the end of the description of the pod.
+    local vmdir="$1" pod="$2" line="$3" tmo="${4:-120}"
+    retry-until --timeout "$tmo" --interval 1 --message "$pod: \"$line\"" \
+        'dra-pod-log "$vmdir" "$pod" | grep -qxF -- "$line"' || {
+        dra-vm-command "$vmdir" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
+        error "pod $pod did not log \"$line\" in ${tmo}s"
+    }
 }
 
 ###

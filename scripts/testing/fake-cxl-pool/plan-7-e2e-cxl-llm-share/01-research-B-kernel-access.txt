@@ -1,0 +1,547 @@
+plan-7-e2e-cxl-llm-share: research B, kernel mechanisms for direct and cached access
+====================================================================================
+Written 2026-10-16 (research agent B). Sources: linux ~/github.com/torvalds/linux
+1b78070aaef6 (v7.3-rc), qemu ~/github.com/qemu/qemu ff076b1e6c (the patched
+build the e2e VMs run), llama.cpp 25a1d63f4 (one grep). Measurements in VM1
+(n4-cxl-shared-1) and VM2 (n4-cxl-shared-2), kernel 7.3.0-rc4, with
+cxl-type3 devices hotplugged by hand over QMP into the free pool slots of
+host bridge 1 (cxlsw_ds0_usrp0hb1, cxlsw_ds1_usrp0hb1). Backing files were
+on the host's ext4 under /home/akervine/.claude/jobs/8211478b/tmp/plan7-B/.
+Helper scripts (not in the repo) are in
+/home/akervine/.claude/jobs/8211478b/tmp/plan7-B/{qmp.py,hmp.sh,guest/}:
+probe.py maps a path read-only, touches every 4 KiB page, and prints
+numa_maps, smaps, /proc/self/pagemap PFNs classified against /proc/iomem,
+kpageflags, mincore, and the deltas of /proc/meminfo and the per-node
+FilePages. The test data was 96 MiB of random bytes (model.bin,
+sha256 7196dd66...), standing in for a GGUF.
+
+0. Short answers
+----------------
+- Direct, today's devices: an mmap of /dev/daxX.Y is the CXL memory itself.
+  No page cache, MAP_SHARED only, offset and length aligned to 2 MiB, no
+  read()/write(), lseek(SEEK_END)=0, st_size=0. Measured in both VMs: PFNs
+  inside "CXL Window 1 > regionN > daxN.0", page cache +0. llama.cpp cannot
+  open it unmodified (agent A).
+- Direct with a regular file: works in v7.3, but only on CXL *persistent*
+  memory. A qemu cxl-type3 with persistent-memdev= (memory-backend-file
+  share=on, the same file in both VMs) and lsa= (also a shared file)
+  hotplugs like the volatile ones. Then cxl create-region -t pmem, an fsdax
+  namespace (map=mem), ext4, and mount -o ro,noload,dax=always. The file
+  maps straight to CXL (PFNs in namespace1.0, page cache +0). Measured in
+  both VMs.
+- Cached, kernel-native: the same pmem namespace mounted without dax
+  (ro,noload). The first touch copies into local DRAM page cache (+96 MiB
+  on node0, PFNs in System RAM); later touches stay local. One device
+  supports both mount styles at the same time in different VMs, measured
+  in both directions. squashfs on a raw pmem namespace also works
+  (readers mount ro, nothing written).
+- Cached on today's volatile devdax: a FUSE daemon whose read() copies from
+  the dax mapping. The reader mmaps a regular file; the page cache fills on
+  demand (+96 MiB in local DRAM, measured). FOPEN_DIRECT_IO breaks
+  MAP_SHARED (ENODEV). FUSE passthrough cannot use a char device. loop
+  cannot use a char device (EINVAL); it works over the FUSE file, and
+  squashfs on that loop device caches twice unless the loop uses
+  --direct-io=on. userfaultfd is not in the VM kernel
+  (CONFIG_USERFAULTFD off, ENOSYS).
+- famfs: the dax half (drivers/dax/fsdev.c, fsdev_dax driver, daxctl mode
+  "famfs") is in v7.1+. The FUSE half (FUSE_DAX_FMAP, GET_FMAP) is not in
+  v7.3. A devdax device bound to fsdev_dax has no mmap (ENODEV), so it is
+  useless without famfs.
+- Proof of CXL versus DRAM in a qemu guest: /proc/PID/pagemap PFN against
+  /proc/iomem (needs root on the node), page cache counters, and a canary
+  write under the readers. Timing proves nothing: CXL memory is host RAM
+  mapped straight into the guest (measured 5.0-5.1 GiB/s copy speed from
+  CXL against 4.6-4.9 GiB/s from anonymous DRAM).
+
+1. Direct access to volatile shared devdax
+------------------------------------------
+Source: drivers/dax/device.c. __check_vma (l.20-51) rejects a mapping
+without VMA_MAYSHARE ("attempted private mapping"), a start or end not
+aligned to dev_dax->align ("unaligned vma"), and a file that is not DAX
+capable (this check needs CONFIG_FS_DAX). dax_mmap_prepare (l.273) sets
+VM_HUGEPAGE. dax_fops (l.360) has llseek=noop_llseek, open, release,
+get_unmapped_area (it aligns the address to the region align) and
+mmap_prepare. There is no read, write or read_iter. The pgmap pages are
+ZONE_DEVICE, and their struct pages live in guest DRAM.
+Setup: a 512M volatile cxl-type3 on a memory-backend-file share=on file
+(vol0.raw), serial 0xc1b70002, plugged into HB1 ds1 of both VMs. Then
+cxl create-region -t ram, which gives dax2.0, target_node 3, align 2 MiB.
+NOTE: in VM1 the new dax2.0 was bound to kmem (mode system-ram, 0 of 4
+blocks online). In VM2 it was bound to device_dax. I fixed VM1 with
+`daxctl reconfigure-device -m devdax -f dax2.0`. Never rely on the default
+binding (plan-4 01 1.2 saw the same thing).
+Measured (VM1 wrote model.bin into dax2.0 through a MAP_SHARED rw mapping;
+VM2 read it back):
+  read(/dev/dax2.0)              -> EINVAL ("dd: error reading: Invalid argument")
+  mmap MAP_PRIVATE               -> EINVAL, dmesg "dax_mmap_prepare: fail, attempted private mapping"
+  mmap MAP_SHARED len 4 KiB      -> EINVAL, dmesg "fail, unaligned vma (... 0x1fffff)"
+  lseek(fd,0,SEEK_END) = 0, fstat st_size = 0; the size is only in
+  /sys/bus/dax/devices/dax2.0/size (536870912)
+  VM2: sha256 of the first 96 MiB of the mapping = the file VM1 wrote (shared, coherent)
+  MAP_SHARED 96 MiB, touch every page (VM2):
+    touch 0.003 s (PMD faults: 48 faults of 2 MiB)
+    numa_maps: "7f3831000000 default file=/dev/dax2.0"     <- no N<node>= counts at all
+    smaps: Rss 98304 kB, Private_Clean 98304 kB, FilePmdMapped 0, VmFlags rd mr me ms hg
+    pagemap 64/64 samples: "CXL Window 1 [0x890000000-] / region2 / dax2.0 [0x8b0000000-0x8cfffffff]"
+    kpageflags: none (PFN above max_pfn in VM2; 0 in VM1, where the kmem
+                binding had raised max_pfn)
+    meminfo: Cached +0, Buffers +0, Mapped +98380 kB; node FilePages +0
+Why numa_maps shows nothing: fs/proc/task_mmu.c can_gather_numa_stats
+(l.3375) skips ZONE_DEVICE pages at PTE level. Both the PTE and PMD paths
+require the node to be N_MEMORY, and the CXL node 3 is not (has_memory
+0-1). dax2.0 has numa_node -1 and target_node 3. "Mapped" in /proc/meminfo
+grows for devdax and fsdax mappings too, so it says nothing about page
+cache.
+
+2. How a test can prove where a page comes from (in qemu)
+---------------------------------------------------------
+Works (all measured):
+  a. /proc/PID/pagemap -> PFN -> /proc/iomem range. CXL pages fall in
+     "CXL Window N > regionM > daxM.0 | Persistent Memory > namespaceM.K".
+     Page cache pages fall in "System RAM". Needs CAP_SYS_ADMIN in the
+     initial namespace: without it the PFNs read as 0, as measured in a
+     userns. So the check runs as root on the node, against the container
+     process's PID; /proc/iomem also shows zeros to non-root.
+  b. Page cache counters. /proc/meminfo Cached (file page cache) or Buffers
+     (block device page cache), /sys/devices/system/node/nodeN/meminfo
+     FilePages (which node got the copy), and the memory.stat "file" of the
+     reader's cgroup. Measured in a systemd unit: cached mount
+     file=100671488, dax mount file=4096.
+  c. fincore as root (cachestat(2)): cached file 96M, DAX file 0B. As
+     non-root, cachestat fails with EPERM (mm/filemap.c can_do_cachestat)
+     and fincore falls back to mincore.
+  d. Canary, the functional proof. Change bytes in the shared memory under
+     the readers. The host wrote "CANARY-FROM-HOST" into pmem0.raw at the
+     file's data offset (namespace dataoff 2 MiB + block 4139 * 4096). The
+     dax reader then read the CANARY and the cached reader read the old
+     bytes (then I restored them). The same test with the writer VM
+     (O_DIRECT write to /dev/pmem1.1 at 200 MiB): the reader that held the
+     bdev open read "version-1" buffered and "version-2" with O_DIRECT.
+     A test can do this with a small canary file next to the model.
+Does not work:
+  - numa_maps: device pages produce no N counts. It only confirms
+    page-cache copies (N0=24576 on the cached mount).
+  - kpageflags: no data for device PFNs. Page cache pages show
+    UPTODATE,LRU,MMAP (sometimes COMPOUND_HEAD,THP: large folios).
+  - mincore(): present PTEs are always "resident", for DAX too. For files
+    the caller cannot open for writing, the kernel reports every page
+    resident (mm/mincore.c can_do_mincore l.217-259, the side-channel
+    rule). Useless as proof.
+  - Timing. qemu maps a committed, non-interleaved CXL decoder straight to
+    the backend RAM (hw/cxl/cxl-host.c cxl_fmws_direct_passthrough_setup,
+    commit 680935c9a6, "performant path for the non interleaved cases").
+    It applies no CXL latency. Copy speed best of 5 x 96 MiB: anonymous
+    DRAM 4.6-4.9 GiB/s, devdax 5.1, fsdax file 5.0, page cache 4.9. Only
+    page-fault counts differ (devdax PMD 0.003 s, fsdax 4K 0.05-0.12 s,
+    page cache first 0.09-0.18 s and then 0.005 s).
+
+3. Cached access, kernel-native: CXL persistent memory
+------------------------------------------------------
+3.1 qemu device. hw/mem/cxl_type3.c cxl_setup_memory (l.735-): a
+  persistent-memdev needs an lsa ("lsa property must be set for persistent
+  devices", l.753). The LSA is read and written by memcpy on the backend's
+  RAM pointer (get_lsa/set_lsa l.1397-1430), so a memory-backend-file
+  share=on LSA is shared byte for byte. The direct passthrough also covers
+  pmem (cxl-host.c l.340-347). Default cxl-fmw restrictions advertise
+  volatile and persistent (cxl-host.c l.90-95; guest: pmem_capable true on
+  both root decoders). Hotplug used exactly the fake-cxl-pool pattern:
+    object-add memory-backend-file id=b7_pmem0 mem-path=.../pmem0.raw size=512M share=on
+    object-add memory-backend-file id=b7_lsa0  mem-path=.../lsa0.raw  size=256K share=on
+    device_add cxl-type3,bus=cxlsw_ds0_usrp0hb1,persistent-memdev=b7_pmem0,lsa=b7_lsa0,id=b7pmem0,sn=0xc1b70001
+  Guest: mem0 pmem_size 512 MiB, nmem0 (id = serial), cxl_nvdimm pmem0. The
+  only complaint was "GPF: could not set dirty shutdown state" (harmless).
+  Hot-remove (release in the guest, then device_del) gave DEVICE_DELETED
+  after about 6 s in both VMs, as for volatile devices.
+
+3.2 Region, namespaces, labels (VM1 = writer):
+    cxl create-region -t pmem -m mem0 -d decoder0.1   -> region1, 0.075 s, iset_id 0x836e0002c1b70001
+    ndctl create-namespace -r region1 -m fsdax -M mem -s 256M -> namespace1.0 /dev/pmem1, 254 MiB, align 2 MiB
+    ndctl create-namespace -r region1 -m raw                  -> namespace1.1 /dev/pmem1.1, 256 MiB
+  ndctl wrote the label index itself (NAMESPACE_INDEX at LSA offset 0 and
+  0x100). The fsdax info block (NVDIMM_PFN_INFO, parent uuid ec0273d6...)
+  sits at data offset 4 KiB, and the file data starts at namespace + 2 MiB.
+  drivers/cxl/pmem.c: CXL nvdimms always set NDD_LABELING (l.154), so
+  namespaces exist only through labels. The interleave-set cookie is
+  fletcher64 over (serial, DPA offset) of the mappings (l.488-494), so it
+  is identical in every VM that sees the same serial at the same DPA. The
+  region itself is not stored in labels in v7.3 ("TODO enable CXL labels",
+  l.489): every VM runs cxl create-region on its own.
+  VM2 (reader), after VM1 had made the namespaces: device_add with the same
+  two files and serial, then cxl create-region -t pmem. BOTH namespaces
+  appeared without any command, with the same uuids and modes (fsdax
+  map=mem /dev/pmem1, raw /dev/pmem1.1). sha256 of lsa0.raw and of the
+  first 2 MiB of pmem0.raw were the same before and after VM2's probe:
+  readers write nothing.
+  Must the LSA be shared? Effectively yes. Test: I re-plugged VM2 with a
+  private, empty LSA (lsa1-vm2.raw). Its region came up with no namespaces.
+  I defined namespace1.0 by sysfs with the same uuid and size (uuid, size,
+  bind to nd_pmem; the kernel initialized the private label index itself)
+  and it came up in mode RAW: the fsdax info block was visible at 4 KiB of
+  /dev/pmem1 but was not claimed, also with holder_class=pfn. I did not
+  find the cause (the VM kernel has no dynamic debug; nd_pfn_validate
+  should have accepted it). A raw namespace with a private LSA does show
+  the same bytes, but fsdax needs the shared LSA in practice.
+  Rules that follow:
+   - Only the writer writes labels (create-namespace), and before the
+     readers attach. A reader reads labels once, at nvdimm probe (hotplug
+     time), and keeps them. Never run ndctl destroy-namespace,
+     create-namespace or init-labels in a reader: it would rewrite the
+     shared LSA from a stale copy. Release with cxl disable-region /
+     destroy-region / disable-memdev only. These do not touch labels or
+     media (sha256 checked).
+   - fsdax and devdax namespaces on shared pmem MUST use -M mem (map=mem).
+     map=dev (the default for fsdax) puts the struct pages in the namespace
+     itself: drivers/nvdimm/pfn_devs.c __nvdimm_setup_pfn, PFN_MODE_PMEM ->
+     vmem_altmap (l.700-709). Two kernels would then write their struct
+     pages into the same shared bytes.
+   - A raw namespace has no DAX: pmem.c sets BLK_FEAT_DAX only for pfn
+     namespaces or ND_REGION_PAGEMAP regions (l.515; CXL regions are not
+     PAGEMAP). Measured: queue/dax pmem1=1, pmem1.1=0.
+
+3.3 Filesystem, written by VM1 and read by both (results are probe.py
+  over the 96 MiB file):
+  writer: mkfs.ext4 -b 4096 /dev/pmem1; mount; cp; umount. Also tested
+  without any mount: `mke2fs -t ext4 -b 4096 -d STAGEDIR /dev/pmem1`
+  (0.8 s for 96 MiB), then mount -o dax: sha ok, PFNs in CXL. So a
+  writer container needs only the block device, not mount rights.
+  mke2fs -d placed the extent at block 4139, which is not 2 MiB aligned:
+  DAX then uses 4 KiB faults (correct, slower to fault in).
+    VM2 ro,noload (cached):  touch 0.180 s; numa_maps mapped=24576 N0=24576;
+      pagemap 64/64 System RAM; kpageflags UPTODATE,LRU,MMAP(,THP);
+      Cached +98176 kB, node0 FilePages +98180; fincore 96M.
+      Second mmap: touch 0.005 s, Cached +0.
+    VM1 ro,noload,dax=always (direct), mounted while VM2 had its cached
+      mount: touch 0.117 s; numa_maps "default file=..." with no counts;
+      smaps Rss 98304 kB, VmFlags ...hg; pagemap 64/64 "CXL Window 1 >
+      Persistent Memory > region1 > namespace1.0"; Cached -4, FilePages +0;
+      fincore (root) 0B; a read() of the whole file (sha256sum) also
+      Cached +0 (dax_iomap_rw copies from CXL).
+    Swapped (VM1 cached, VM2 dax): the same picture, 0.085 s/+98304 kB
+      node0 and 0.055 s/+0 with CXL PFNs. MAP_PRIVATE on the DAX file also
+      maps CXL pages (until written). So llama.cpp's MAP_SHARED and any
+      private mapping both work.
+    cgroup: cached reader memory.stat file=100671488 (charged to the
+      reader); dax reader file=4096.
+    Readers do not write: sha256 of the whole pmem0.raw was the same
+      before and after three ro,noload mounts (two cached, one dax) and a
+      squashfs mount with full reads.
+  Coherence rules. The writer finishes and unmounts (or never mounts:
+  mke2fs -d) before any reader mounts. Readers mount ro,noload: no journal
+  replay, no writes. Nothing invalidates a page cache across VMs. Cached
+  readers keep stale data until unmount (measured on the bdev). DAX readers
+  see data changes at once but still cache metadata (dentries, inodes,
+  extents). So the model must be immutable while anyone has it mounted;
+  replace it by detach/reattach or remount. Two rw mounts in two VMs means
+  corruption. Kernel-enforced read-only for a whole region:
+  `echo 1 > /sys/bus/nd/devices/regionN/read_only` made pmem1 and pmem1.1
+  read-only (blockdev --getro 1, O_DIRECT write EPERM). Root can undo it;
+  the device cgroup "r" on the bdev node in a container cannot be undone.
+
+3.4 squashfs and the raw block device:
+  - Writer: mksquashfs data sq.img -noD (uncompressed data: GGUF is
+    incompressible, and file pages then equal model bytes), then
+    dd ... of=/dev/pmem1.1 oflag=direct. Readers in both VMs:
+    mount -t squashfs -o ro /dev/pmem1.1. sha ok, touch 0.13-0.20 s, page
+    cache +98196 / +98400 kB, PFNs System RAM, bdev cache of pmem1.1 0B
+    (one copy only). The squashfs mapping address was not 2 MiB aligned.
+  - The raw bdev itself, with no filesystem: mmap(/dev/pmem1.1, MAP_SHARED)
+    works and goes through the bdev page cache. That is "Buffers" in
+    /proc/meminfo (+98432 kB), not "Cached", and FilePages grows on the
+    local node. lseek(SEEK_END) = 268435456 (namespace size, not the model
+    size). The bdev page cache is dropped at the LAST CLOSE of the device
+    (block/bdev.c blkdev_put_whole -> blkdev_flush_mapping -> kill_bdev,
+    l.753-764). Measured: held open, the second mmap was a hit (0.005 s);
+    after the last close fincore was 0B and Buffers went back to 2312 kB.
+    Mounted filesystems keep their bdev open, raw readers do not.
+
+3.5 Decoder ordering, a gotcha for pool and driver. I destroyed region1 in
+  VM2 while region2 (created later on the same host bridge and switch)
+  still existed. The next cxl create-region failed: "cxl_port endpoint4:
+  failed to attach decoder4.0 to region1: -16". It worked again once
+  region2 was destroyed too. Cause: HDM decoders commit in increasing
+  order. An out-of-order release pins the freed decoder until the highest
+  one goes: drivers/cxl/core/region.c match_free_decoder/check_commit_order
+  (l.875-916), core/hdm.c cxl_decoder_reset and cxl_port_commit_reap
+  (l.852-910). Release regions of one port in LIFO order, or give
+  long-lived devices their own host bridge. Also, decoderX.Y/size in sysfs
+  keeps the old HPA size after a correct reset (it shows cxld->hpa_range;
+  the hardware registers are zeroed), so a nonzero size with region=""
+  is not a stuck decoder.
+
+4. Cached access without pmem, on the volatile devdax
+-----------------------------------------------------
+4a FUSE. Prototype: daxfuse.py, a 50-line fusepy (python3-fusepy 3.0.1 on
+  libfuse 2.9.9, installed with dnf; pyfuse3 is not packaged for
+  Fedora 43). It is read-only; each file is an (offset, size) range of
+  /dev/dax2.0, and read() returns a slice of the MAP_SHARED dax mapping.
+  It ran as root in a systemd unit on VM2.
+    default (page cache, keep_cache): reader mmap MAP_SHARED: touch 0.105 s,
+      numa_maps N0=24576, pagemap 64/64 System RAM, Cached +98072 kB node0,
+      fincore 96M, sha ok. Second mmap 0.017 s, +0. The daemon served 768
+      read requests of 128 KiB for 96 MiB. Daemon RSS 115892 kB: that is
+      its dax mapping (device memory), not page cache.
+    FOPEN_DIRECT_IO (fi.direct_io=1): mmap MAP_SHARED -> ENODEV; MAP_PRIVATE
+      -> page cache again (+98072 kB); read() -> no page cache (+0).
+      Source: fs/fuse/file.c fuse_file_mmap l.2415-2427. MAP_SHARED needs
+      FUSE_DIRECT_IO_ALLOW_MMAP (libfuse 3.15+), and even then it maps the
+      page cache. So DIRECT_IO never gives CXL-direct mmap, and llama.cpp
+      (MAP_SHARED) fails with it.
+    passthrough (CONFIG_FUSE_PASSTHROUGH=y): fs/fuse/backing.c
+      fuse_backing_open l.92-109 needs CAP_SYS_ADMIN in the initial
+      namespace, and the backing file must be a regular file (d_is_reg)
+      -> /dev/daxX.Y is rejected. With a regular DAX file as backing it
+      would be direct, but then pmem exists and FUSE is not needed.
+    FUSE_DAX (=y) is only for virtio-fs (fs/fuse/Kconfig l.43, dax_dev
+      comes from virtio_fs); a /dev/fuse daemon cannot use it.
+  Privileges. /dev/fuse is crw-rw-rw-. mount(2) of fuse is allowed with
+  CAP_SYS_ADMIN in the user namespace that owns the mount namespace
+  (FS_USERNS_MOUNT). Measured: as user vagrant, `unshare -Urm` and then the
+  same daemon: mounted, served 768 reads, sha ok, the page cache filled.
+  So a container needs (1) the /dev/fuse device node (CDI device or
+  privileged) and (2) CAP_SYS_ADMIN, preferably in its own userns
+  (hostUsers: false). It does not need fusermount3, which is setuid and not
+  in containers. Not tested here: the container runtime's seccomp and
+  SELinux policy for fuse mounts. The daemon can also run on the node,
+  started by the DRA node plugin at Prepare, with the mount bind-mounted
+  into readers by CDI "mounts". Readers then need no privileges, all
+  containers of the node share ONE page cache (one superblock), and other
+  uids need allow_other (a root daemon may set it). The cost: if the daemon
+  dies, readers get ENOTCONN, and SIGBUS on faults of pages not yet cached.
+  Per-pod daemons each have their own superblock, so the page cache is
+  duplicated per pod. A daemon needs the model size: devdax has no size
+  per file, so the writer must store a header (magic, size, sha) or the
+  daemon must parse GGUF.
+  Note: llama.cpp maps with MAP_POPULATE when prefetch is on, otherwise
+  with POSIX_MADV_RANDOM (src/llama-mmap.cpp l.455-470). With FUSE,
+  MADV_RANDOM turns off readahead, so faults become page-sized FUSE
+  requests. Prefer the default prefetch.
+4b loop. drivers/block/loop.c loop_validate_file l.511: only S_ISREG or
+  S_ISBLK. Measured: `losetup -r -f /dev/dax2.0` -> "Invalid argument".
+  Over the FUSE file sq.img (squashfs image stored at dax offset 128 MiB):
+  losetup -r works and squashfs mounts, sha ok, but the page cache grows
+  +195412 kB (FUSE file cache + squashfs file cache, two copies). With
+  `losetup --direct-io=on` (dio=1) it grows +98444 kB (squashfs only).
+  This works but adds nothing over plain FUSE except a real fs image.
+4c userfaultfd: impossible in these VMs. CONFIG_USERFAULTFD is not set;
+  userfaultfd(UFFD_USER_MODE_ONLY) -> ENOSYS, no /dev/userfaultfd. Even
+  with it, a shim filling a private anonymous mapping gives a copy per
+  process (no shared page cache, charged as anon). llama.cpp would need an
+  LD_PRELOAD mmap hook. Sharing would need shmem plus UFFD minor faults
+  (UFFD_FEATURE_MINOR_SHMEM) and a node daemon. Not worth it.
+4d Other v7.3 mechanisms:
+  - fsdev_dax / famfs. drivers/dax/fsdev.c (John Groves, merged in
+    libnvdimm-for-7.1, bb0bc49a1cef: "adds DAX support required for the
+    upcoming fuse/famfs file system"). It binds only by new_id (bus.c
+    dax_match_type never matches DAXDRV_FSDEV_TYPE), and daxctl 85 can do
+    `reconfigure-device --mode=famfs`. No in-tree user of fs_dax_get()
+    exists. There is no FUSE_DAX_FMAP / GET_FMAP / CONFIG_FUSE_FAMFS_DAX
+    in fs/fuse or include/uapi/linux/fuse.h. Measured: dax2.0 bound to
+    fsdev_dax (daxctl shows mode "famfs"): read EINVAL, mmap ENODEV;
+    rebinding to device_dax kept the data. famfs userspace
+    (github.com/cxl-micron-reskit/famfs README and
+    markdown/famfs-fuse-design-notes.md, fetched through the proxy) needs a
+    famfs-enabled kernel: the standalone v2 patches
+    (github.com/cxl-micron-reskit/famfs-linux) or the "famfs: port into
+    fuse" series on lore (first posted 2025-04-21). famfs would be the
+    upstream way to direct, regular-file access on volatile shared devdax,
+    and it has no cached mode. Not usable in v7.3 without a patched kernel.
+  - dax_hmem (drivers/dax/hmem) only makes the same kind of devdax from
+    soft-reserved ranges. There is no "nvdimm on top of a dax device" (only
+    the reverse, dax_pmem). The legacy memmap=/e820 pmem (ND_REGION_PAGEMAP)
+    needs a boot-time range and conflicts with the CXL window. Not viable.
+  - kmem cannot be "read-only": onlining shared memory as system RAM in
+    two kernels corrupts it (known).
+  - A userspace block device over the dax mapping (ublk, nbd) would give a
+    real block device and so a page cache on volatile devdax, also on real
+    hardware. CONFIG_BLK_DEV_UBLK and CONFIG_BLK_DEV_NBD are off. Kernel
+    config change plus a daemon. Not measured.
+  - EROFS (off): file-backed mounts and on-demand fscache (Nydus style
+    lazy fetch). Too heavy for this demo.
+  - virtio-pmem (qemu virtio-pmem-pci on a shared file) gives /dev/pmem
+    and fsdax too, but it is not CXL. Out of scope.
+  - Copy to tmpfs: the last resort. dd/cp cannot read devdax, so the copy
+    goes through mmap (python, or a small static tool). The full size is
+    charged as shmem to the copying pod, and the copy happens before the
+    first token.
+
+5. What the engine sees, who sets it up (per mechanism)
+-------------------------------------------------------
+M1 devdax mmap (direct). The engine gets a char device path (CDI "r" node,
+   which the driver gives cxl-pool-shared claims today) or an fd (lease).
+   It needs: size from sysfs or env; mmap MAP_SHARED with offset and
+   length 2 MiB aligned; no fread/fseek, so the GGUF header is parsed from
+   the mapping. Setup: existing driver. Privileges: none. Changes: engine
+   only (agent A). Two VMs: any number of readers; the writer writes
+   through a rw mapping; read-only is enforced by cgroup "r". Measured.
+M2 pmem fsdax + ext4 -o dax (direct). The engine gets a regular file;
+   llama.cpp is unmodified. Setup: on the node at Prepare: cxl
+   create-region -t pmem; the namespace appears from labels; mount
+   ro,noload,dax=always; CDI bind mount (ro) into the container. Writer:
+   a pod with the /dev/pmemX bdev rw (CDI) runs mke2fs -d, so it needs no
+   mount; ndctl or sysfs creates the namespace -M mem, best done by the
+   driver. Privileges: readers none, writer a bdev node. Changes:
+   fake-cxl-pool persistent device kind (data file + shared LSA file,
+   device_add persistent-memdev=/lsa=); driver pmem path (region type
+   pmem, namespace wait/create, mount/umount, CDI mounts, LIFO release);
+   ndctl in the image if it creates namespaces; topology2qemuopts if
+   static. No kernel or qemu changes. Measured in both VMs.
+M3 pmem fsdax + ext4 without dax (cached). As M2, without dax=always. It
+   is the same device and namespace as M2, at the same time in other VMs
+   (measured). The page cache is per node, shared by every container that
+   bind-mounts the node's mount, and charged to the first toucher's
+   cgroup. Measured.
+M4 pmem raw namespace + squashfs (cached). A regular file. The writer
+   needs only the bdev (mksquashfs + dd); readers are as M3 with -t
+   squashfs. No DAX possible. Measured.
+M5 pmem raw bdev mmap, no filesystem (cached while open). The engine gets
+   a block device path (CDI "r" node); fopen/fread/mmap work; size =
+   namespace size (16 MiB region align), so the GGUF must start at offset
+   0 and the engine must tolerate trailing bytes (agent A). No mounts,
+   no privileges. The cache dies at the last close on the node. Measured.
+M6 FUSE over volatile devdax (cached). A regular file; llama.cpp is
+   unmodified. Setup: a daemon in the node plugin at Prepare with a CDI
+   bind mount (shared cache per node, readers unprivileged), or a daemon in
+   the reader pod (/dev/fuse + CAP_SYS_ADMIN in its userns; cache per
+   pod). Changes: a FUSE server (Go go-fuse or libfuse3 in the driver, or
+   a static helper), a size header written by the writer. No kernel,
+   qemu or pool changes. Measured with fusepy.
+M7 loop + squashfs over the FUSE file (cached). As M6 plus losetup
+   --direct-io=on and a node mount. Measured; no gain.
+M8 userfaultfd shim: needs a kernel config change, per-process copies.
+   Not measured (ENOSYS).
+M9 famfs (direct, regular file): needs a patched kernel and famfs
+   userspace. Only fsdev_dax binding measured.
+M10 tmpfs copy (eager cache): a regular file; the pod copies through
+   mmap. Not measured (trivial).
+
+6. Comparison table
+-------------------
+ mech | mode   | engine sees          | set up by             | privileges          | changes needed                         | measured
+ -----+--------+----------------------+-----------------------+---------------------+----------------------------------------+---------
+ M1   | direct | char dev, no read/   | driver (exists)       | none (CDI node "r") | engine (A)                             | yes
+      |        | size, mmap 2M SHARED |                       |                     |                                        |
+ M2   | direct | regular file         | node plugin: region,  | readers none;       | pool: pmem kind + shared LSA;          | yes, VM1+VM2
+      |        |                      | mount dax, CDI mount  | writer bdev rw      | driver: pmem/mount; ndctl or sysfs     |
+ M3   | cached | regular file         | as M2, no dax         | as M2               | as M2 (same device as M2)              | yes, VM1+VM2
+ M4   | cached | regular file         | node mount squashfs   | as M2               | as M2; mksquashfs in writer            | yes, VM1+VM2
+ M5   | cached*| block device         | driver (CDI bdev "r") | none                | pool pmem kind; engine tolerates size  | yes (*cache
+      |        |                      |                       |                     |                                        | until last close)
+ M6   | cached | regular file         | node plugin FUSE      | node: none; in pod: | FUSE server + size header; nothing in  | yes (fusepy)
+      |        |                      | daemon, or pod itself | /dev/fuse+SYS_ADMIN | kernel, qemu, pool                     |
+ M7   | cached | regular file         | M6 + losetup + mount  | node                | as M6                                  | yes, no gain
+ M8   | cached | (anon copy/process)  | LD_PRELOAD shim       | none                | CONFIG_USERFAULTFD + shim              | no (ENOSYS)
+ M9   | direct | regular file         | node (famfs)          | node                | patched kernel + famfs userspace       | no
+ M10  | eager  | regular file         | pod                   | none                | copier; memory = model size            | no
+
+7. Recommendation
+-----------------
+Direct: M1 (mmap of /dev/daxX.Y). It runs on the shared pool devices and
+  the cxl-pool-shared claims we have now, with no kernel, qemu, pool or
+  driver change, and every access goes to CXL (pagemap-proven). The cost
+  is all in the engine (agent A). If A finds the engine change too
+  invasive, M2 (fsdax ext4 -o dax) is the only v7.3 way to run an
+  unmodified llama.cpp directly on CXL. That needs the persistent pool
+  device kind.
+Cached: M6 (a FUSE file over the same volatile shared devdax), with the
+  daemon on the node, started by the node plugin at Prepare and
+  bind-mounted ro by CDI. It is the only on-demand page-cache mechanism in
+  v7.3 that works on the device type we have, and on real shared CXL
+  memory, which is volatile devdax (DCD or multi-headed): there is no CXL
+  pmem with a shared LSA in real pools. For the e2e test, a daemon in a
+  privileged reader pod is an acceptable shortcut, at the price of one
+  page cache per pod.
+Alternative for both (decide together): add a persistent device kind to
+  fake-cxl-pool (data file + shared LSA, device_add persistent-memdev=
+  lsa=). Then one pool device gives direct (M2) and cached (M3, or M4
+  squashfs) with an unmodified llama.cpp and no daemons, measured
+  end-to-end in both VMs. It is the most robust demo, but qemu-specific
+  and a larger driver change (pmem regions, namespaces, node mounts).
+Fallback for cached: M10 tmpfs copy.
+Proof in test16, all of them as root on the node: pagemap PFN of the
+  engine process against /proc/iomem (direct: CXL window; cached: System
+  RAM); node FilePages and the memory.stat "file" of the reader container
+  (cached: about the model size; direct: about 0); and a canary file in
+  the shared memory changed after the readers loaded it (direct readers
+  see the change, cached readers do not). Do not use timing, numa_maps
+  counts or mincore.
+
+8. Open points
+--------------
+For A (engine):
+  - devdax constraints: no read/write/fread, lseek(SEEK_END)=0, st_size=0.
+    Size from /sys/bus/dax/devices/daxX.Y/size (or /sys/dev/char/M:m/size,
+    or env from the driver). mmap MAP_SHARED only; offset and length must
+    be multiples of daxX.Y/align (2 MiB). The model needs a known offset
+    and size inside the device (header?).
+  - Block device (M5): llama.cpp's fseek(SEEK_END) returns the namespace
+    size. Does the loader accept trailing bytes after the GGUF?
+  - llama.cpp prefetch: MAP_POPULATE with prefetch, POSIX_MADV_RANDOM
+    without. For an LLM every token reads (nearly) all weights, so "cached
+    on first access" in practice copies the whole model at load or first
+    token. That is still per node and on demand, not lazy per page.
+    --mlock would pin the page cache.
+For C (integration):
+  - Persistent pool devices, if chosen: data file + LSA file (256 KiB was
+    enough), both share=on and the same in every VM; only the writer
+    creates namespaces (-M mem!) and before readers attach; readers get
+    them from labels at hotplug; never destroy-namespace in readers.
+    topology2qemuopts supports volatile only ("non-volatile to be added").
+  - Release regions LIFO per port, or give the shared model device its own
+    host bridge. Out-of-order release made the next create-region fail
+    with EBUSY (3.5).
+  - Bind new dax devices explicitly to device_dax (VM1 defaulted to kmem).
+  - Mounts happen on the node at Prepare (ext4/squashfs need init-ns
+    CAP_SYS_ADMIN) and reach containers as CDI bind mounts; the plugin
+    must mount in the host mount namespace. Writer: bdev rw via CDI plus
+    mke2fs -d or mksquashfs+dd, no mount needed. Read-only: device cgroup
+    "r" on the node in the container; regionN/read_only on the node.
+  - Page cache accounting: charged to the first reader's memcg (memory.stat
+    file), counted in its memory limit (reclaimable). If the limit is below
+    the model size it thrashes, re-reading from CXL. Other readers on the
+    node reuse the cache uncharged.
+  - FUSE daemon on the node: lifetime tied to the plugin (ENOTCONN or
+    SIGBUS if it dies), allow_other, unmount at Unprepare, one mount per
+    node and claim. In a pod: /dev/fuse via CDI, CAP_SYS_ADMIN (userns
+    preferred); seccomp and SELinux not checked.
+  - The proofs need root on the node (pagemap PFNs and /proc/iomem show
+    zeros to others; cachestat needs write access; mincore lies for
+    read-only files).
+  - The model must be immutable while mounted or mapped. Cached readers
+    never see later writes, DAX readers see torn updates and stale
+    metadata.
+
+9. Cleanup and final state
+--------------------------
+Found (2026-10-16 14:2x): no cxl-type3 devices in either qemu (qtree); only
+the pre-declared backends membuiltin_0/1, befile_cxl_memdev0 (static
+shared) and beram_cxl_memdev1; no memdevs, regions, dax or pmem devices in
+the guests; no fake-cxl-pool-server on the host; single-node clusters
+Ready with only kube-system pods; no modules loaded (all built in); guest
+sysfs had decoder2.0-2.3 of HB0 (with old sizes) and no decoder1.* (HB1).
+Done:
+  - guests: unmounted everything (/tmp/b7/{mnt,mnt-sq,mnt-sq2,fuse}),
+    detached loop devices, stopped the units b7-fuse and b7-hold, destroyed
+    region2 and then region1 (LIFO), and ran cxl disable-memdev mem1 mem0.
+    No ndctl destroy-namespace (the LSA files were deleted anyway).
+  - qemu (both VMs): device_del b7vol0 and b7pmem0, DEVICE_DELETED after
+    6.0-6.3 s each; object-del b7_vol0, b7_pmem0, b7_lsa0 (VM1) and
+    b7_vol0, b7_pmem0, b7_lsa1 (VM2; its b7_lsa0 had been object-deleted at
+    the private-LSA re-plug).
+  - guests: `dnf history undo 10` (removed ndctl, squashfs-tools,
+    python3-fusepy, fuse-libs); `rpm -qa` is identical to the baseline
+    taken first; rm -rf /tmp/b7 (data, scripts, baseline).
+  - host: deleted pmem0.raw, lsa0.raw, vol0.raw, lsa1-vm2.raw and the
+    backups in /home/akervine/.claude/jobs/8211478b/tmp/plan7-B/;
+    /tmp/fake-cxl-pool untouched (same 4 files); no pool server started.
+    Kept: the helper scripts and the downloaded famfs docs (dl/) in that
+    job directory.
+Final state (checked): qtree has 0 cxl-type3 in both VMs; query-memdev
+lists only the 4 original backends; guests: `cxl list` empty,
+/sys/bus/nd/devices = ndbus0 only, no /dev/dax* or /dev/pmem*, no
+fuse/squashfs/pmem mounts, no loop devices, no b7-* units, lsmod empty,
+nodes online 0-1, both clusters Ready with no new pods. Remaining traces:
+dnf history entries 10 and 11, dmesg lines, and the HB1 port decoders
+decoder1.0-1.3, which now exist in guest sysfs (enumerated at the first
+HB1 endpoint). decoder1.0 and decoder1.1 show size 0x20000000 with
+region "", like HB0's decoders did before; the hardware decoders were
+reset (3.5).

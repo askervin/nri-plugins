@@ -1,0 +1,447 @@
+plan-7-e2e-cxl-llm-share: stream T status (e2e, test16-cxl-llm-share)
+======================================================================
+Stream T agent (Opus), 2026-10-16. Run logs: ~/.claude/jobs/plan7-e2e/.
+
+CURRENT STATE: see "Final (17:4x, direct mode only)" at the end. The
+sections before it are the log of the work, including the cached mode
+that the user dropped at 17:40.
+
+Phase 1 (T1-T4): done, test16 llm_access=direct PASS. Phase 2 (T5):
+after "F done" (16:15): test16 llm_access=cached PASS, default (both)
+PASS; regression test10, test11, test12 PASS. Then (16:33) the
+coordinator's two changes, see "Changes of 16:33" below: test16 runs in
+the two-node cluster only and leaves it so; the cached mode is paused
+until the mechanism behind CXL_<KEY>_PATH is decided; the single-node
+regressions (test10-12, test14, test15) wait for the orchestrator.
+
+Files (nri-plugins, test/e2e/memory.test-suite/memory-policy/, uncommitted)
+---------------------------------------------------------------------------
+  n4-cxl-shared-2/cxl-llm/cxl-llm.cpp   the engine (T1), from research A's
+                                        prototype: -m PATH | --fd N (devdax,
+                                        block device or file), -t, -n,
+                                        --size, --hold FILE, --write SRC, -v
+  n4-cxl-shared-2/cxl-llm/build.sh      static build in fedora:43 (podman),
+                                        cached by hash in $CACHE_DIR/llm
+  n4-cxl-shared-2/llm.source.sh         helpers (T2)
+  n4-cxl-shared-2/cxl-where.py          page frames of a process's mappings
+                                        against /proc/iomem (all pages)
+  n4-cxl-shared-2/test16-cxl-llm-share/code.var.sh   the test (T3)
+  n4-cxl-shared-2/test12-dra-live-attach/code.var.sh:622 and
+  n4-cxl-shared-2/test14-dra-local-memdev/code.var.sh:403   F's R1 texts
+                                        (owned for this change, 16:20)
+  dra.source.sh                         + dra-pod-log, dra-wait-log (moved
+                                        from test13, with VMDIR)
+  test13-.../code.var.sh                uses dra-pod-log "$VM2" and
+                                        dra-wait-log "$VM2"; its own copies
+                                        removed (behaviour unchanged)
+
+Build identity (phase 1)
+------------------------
+  cxl-llm   $CACHE_DIR/llm/cxl-llm-e6ad3e58f480f93e/cxl-llm (removed at the end), 6680328 bytes,
+            sha256 f15ba1788d064fea75b7f0e3fbad9da017134f90cce1653a6575692e708ab4cb,
+            llama.cpp 25a1d63f4346b472e508c6dbd9ab2ed1d81ace2e fetched by
+            build.sh into $CACHE_DIR/llm/llama.cpp (depth 1), 46 s build
+  model     $CACHE_DIR/llm/Qwen3-0.6B-Q4_K_M.gguf, copied from research A's
+            download (sha256 ac2d9771... checked = D1); the pinned URL was
+            checked with a range request (GGUF magic)
+  driver    phase 1 runs use CXL_DRA_DRIVER_SRC=~/.claude/jobs/plan7-e2e/driver-head:
+            git archive of intel-resource-drivers HEAD 79a85f3 with the go.mod
+            replace of nri-plugins pointed at the local checkout (as in
+            plan-5 runs), because stream F edited the real tree meanwhile
+            (removed at the end: git archive HEAD | tar -x, sed the replace).
+  nri-plugins  5jQ-cxl d2f6c1490 + the working tree
+
+Runs
+----
+  P1-1 test16 llm_access=direct k8s_restore=no, driver-head: PASS, 179 s
+       (cluster reshaped, kept). Log test16-direct-run1.log.
+  P1-2 test13 (to check the move of pod-log/wait-log), driver-head: PASS,
+       307 s, clusters restored. Log test13-refactor-headdriver.log.
+  P1-3 test16 llm_access=direct (default restore), driver-head: PASS,
+       341 s. Log test16-direct-run2.log.
+  Also checked by hand: build.sh fetch path (clone at depth 1 into
+  $CACHE_DIR/llm/llama.cpp), llm-model-fetch download path (12.9 s through
+  the proxy, sha256 ok) and its two error messages, cxl-llm on the host
+  (same answer as research A), and the cached-mode proof machinery with a
+  stand-in: a pod on VM1 with the model file bind-mounted (hostPath) at
+  /run/cxl-files/C1AE0001/: /proc/PID/maps from the node shows the
+  container path, all 95399 present pages of the mapping in "System RAM",
+  node FilePages +407992 kB (the model is 387407 kB), memory.stat file of
+  the pod 404000768. The probe pod was deleted.
+
+Phase 1 measurements (test16 direct, P1-1 and P1-3)
+---------------------------------------------------
+  writer: pod created until the model is written 7.4-7.6 s; the copy into
+  the devdax device 521-557 ms (378 MiB); host sha256 of the first
+  396705472 bytes of /tmp/fake-cxl-pool/llm0.raw = the model, zeros to
+  398458880.
+  direct readers (reader-a, reader-b on VM2, reader-c on VM1, at once):
+  created until all three answered 13.2 s; load 252-305 ms, first token
+  165-315 ms, 28.2-32.6 tokens/s on 2 threads, RssAnon 82.9 MB, answer
+  "Hello! How can I assist you today?" in all.
+  frames (cxl-where.py, every page): the 398458880-byte model mapping of
+  llama.cpp has 97280/97280 pages present in "CXL Window 0 > region0 >
+  dax0.0"; the 512 MiB header mapping of cxl-llm 1536 pages, same window.
+  page cache: VM2 +780/+784 kB (two readers), VM1 +220/+544 kB, against
+  387407 kB of model (limit 5%). memory.stat file of a reader 4-8 kB.
+
+Phase 2 (T5), F's driver tree (default CXL_DRA_DRIVER_SRC)
+----------------------------------------------------------
+Build: intel-resource-drivers HEAD 79a85f3 + F's working tree (hash of
+the diff and new files d880cbfa6ce80364); dra-build of the e2e gives
+kubelet-cxl-plugin sha256 d9d5e1464457244c9b69f9b211369167e8811e3a76eb2007225fc2b69f592141
+and cxl-request 3cf63f32e9eea87fec1d682f0f05708fbf526f350d357acade173def49c79bd5,
+the same bytes as F's recorded static builds. cxl-llm and the model as in
+phase 1 (cxl-llm sha256 f15ba178..., rebuilt after a comment fix:
+byte-identical, the build is reproducible).
+
+Adaptation to F's names: none was needed for the env, the CDI mount or the
+paths (they are 04's contract). Added after reading 05-status-F.txt:
+  - the reader script of mode file logs "file: MODE SIZE UID:GID TYPE" and
+    an open for writing; test16 asserts "file: 444 536870912 0:0 regular
+    file" and "open for writing refused: EROFS" (R2 b);
+  - per node one FUSE mount, type fuse.cxl-file, at
+    /var/lib/kubelet/plugins/cxl.generic/files/daxN.M, with data 444,
+    536870912 bytes, root (R2 a);
+  - after the readers are gone: the "file export: ...: stopped at ..."
+    line of each node says the export read between 90% of the model and
+    105% of the device (one copy per node); no FUSE mount and nothing in
+    .../cxl.generic/files/ on either node (R2 d, e).
+R1 (routed to T by the orchestrator, 16:20): test12-dra-live-attach:622
+  and test14-dra-local-memdev:403 now expect, exactly,
+  'invalid mode "memory" (numa, dax or file)' and
+  'DeviceConfig: invalid mode "memory" (numa, dax or file)' (F's
+  api.InvalidModeError, checked in the driver source). Nothing else in
+  those files changed.
+
+Runs
+  P2-1 test16 llm_access=cached k8s_restore=no: PASS. Log test16-cached-run1.log.
+  P2-2 test16 (default, both modes, restore): PASS, 300 s (the cluster was
+       in shape: no reshape; restore included). Log test16-both-run1.log.
+
+Measurements (P2-1, P2-2)
+  writer: 7.5-7.6 s pod created until written; copy 628-863 ms.
+  direct (P2-2): 13.5 s until all three answered; load 257-266 ms, first
+    token 163-299 ms, 32.8-35.0 tokens/s (2 threads), RssAnon 82.9 MB;
+    frames 97280/97280 pages of the model mapping in "CXL Window 0 >
+    region0 > dax0.0"; page cache VM2 +780 kB, VM1 +216 kB.
+  cached: reader-a and reader-c (first on VM2 and VM1) at once 9.9 s until
+    both answered, load 1085-1262 ms (the FUSE export fills 512 MiB of page
+    cache: MAP_POPULATE of the whole device file), first token 168-178 ms,
+    31.7-35.6 tokens/s; reader-b (second on VM2) 7.6 s, load 343-378 ms;
+    page cache VM2 +524788 kB and VM1 +524528..524536 kB for the first
+    readers (the device is 524288 kB), VM2 +364..384 kB for the second;
+    frames: every present page of the model mapping in "System RAM"
+    (95399 pages = the mapping after llama.cpp unmapped the fragments
+    outside the tensors); the exports read 536870912 bytes in 4099 reads
+    on each node, also after reader-b; memory.stat file: reader-a and
+    reader-c 536903680, reader-b 28672 (the page cache is charged to the
+    first reader of a node, R2 f); answers identical in all six readers.
+
+Answers to F's R2 (VM checks)
+  a. yes: /proc/mounts "/var/lib/kubelet/plugins/cxl.generic/files/dax0.0
+     fuse.cxl-file" on each node while readers run; "file export: dax0.0:
+     started (/dev/dax0.0, 536870912 bytes) at .../files/dax0.0/data for
+     claim ... of cxl-pool.generic in 1.829ms" (VM2), "in 112.341ms" (VM1).
+  b. yes: containerd applies the CDI bind mount; in each reader
+     $CXL_C1AE0001_PATH=/run/cxl-files/C1AE0001/data is "444 536870912 0:0
+     regular file", cxl-llm reads its header and maps it MAP_SHARED
+     PROT_READ (llama.cpp, MAP_POPULATE), open O_WRONLY gives EROFS. The CDI
+     device has env MODE=file, PATH, READONLY=1, SERIAL, SHARED, SIZE and
+     the claim marker, a mount, no deviceNodes.
+  c. not applicable: getenforce is Disabled on both VMs (no
+     /sys/fs/selinux/enforce; containerd enable_selinux = false), so no
+     context= option; no SELinux warning in the plugin logs.
+  d. yes: first reader of a node +524.5-524.8 MB FilePages (the whole
+     device), second +364-384 kB; "claim ... holds it (claims: 2; 4099
+     reads, 536870912 bytes so far)" for reader-b's claim; "stopped ...
+     (... 4099 reads, 536870912 bytes) in 91.181ms" (VM2), "in 86.591ms"
+     (VM1): one copy per node.
+  e. yes: after the readers are deleted no fuse.cxl-file mount and an empty
+     .../cxl.generic/files/ on both nodes; no "device or resource busy" and
+     no "is in use after the unmount" in the plugin logs (trace.txt).
+  f. yes: the reader pods have no memory limit; the page cache is charged
+     to the first reader of a node (memory.stat file 536903680 vs 28672).
+  g, h (optional: a lease reader in mode file, plugin restart with a reader
+     running): not done.
+
+Regression on F's build (kubelet-cxl-plugin d9d5e146..., one at a time)
+  test10-dra-pooling      PASS   71 s   log regr-test10-dra-pooling.log
+  test11-dra-sharing      PASS  114 s   log regr-test11-dra-sharing.log
+  test12-dra-live-attach  PASS  330 s   log regr-test12-dra-live-attach.log
+                                        (covers the R1 text at :622)
+  test14, test15, test13  not run: the coordinator's change of 16:33
+                          arrived during test12; test12 was let finish
+                          (stopping a DRA test in the middle leaves
+                          devices and units behind), the loop that would
+                          have started test14 was stopped.
+  The single-node runs (test10, test11, test12) reshaped the VMs into two
+  single-node clusters; the next test16 reshapes them once into the
+  two-node cluster and leaves them so.
+
+Changes of 16:33 (coordinator: two-node always; cached paused)
+--------------------------------------------------------------
+  - test16 has no restore step and no k8s_restore any more: it checks the
+    shape with vm-k8s-reinit "$VM2 $VM1" (about 1 s when the VMs are one
+    cluster; it reshapes once otherwise) and leaves the two-node cluster.
+    Header updated.
+  - The cached sections are isolated: everything that depends on how the
+    node plugin exports the device for mode file is in the file-export-*
+    helpers of test16 (one block: file-export-mounts, -reader-check,
+    -cdi-check, -check, -read-check, -gone) and the variables
+    LLM_FILE_PATH, LLM_FILE_SOURCE, LLM_FILES_DIR, LLM_FUSE_TYPE. The rest
+    (claims with {mode: file, readOnly: true}, the engine on
+    CXL_<KEY>_PATH, page frames in System RAM, FilePages of the first and
+    the second reader of a node, memory.stat) holds for any page-cached
+    export, a file or a block device.
+  - cxl-llm reads a model from a block device too (source=block; the size
+    by lseek): checked by hand on VM1 with a read-only loop device over a
+    512 MiB image with the model at offset 0 (the GGUF must not be cut:
+    loop rounds a file down to 512-byte sectors, and the model is not a
+    multiple of 512): same answer, load 969 ms; the image and the loop
+    device were removed. The reader script of mode file logs stat and an
+    open for writing of CXL_<KEY>_PATH for any kind of path.
+  - The cached runs P2-1 and P2-2 above were made before the pause, with
+    F's FUSE export; no cached run since.
+
+Runs after 16:33 (F's build d9d5e146..., cxl-llm ef8b32c0... below)
+  P2-3 test16 llm_access=direct: PASS, 170 s, of it 36 s for the one
+       reshape from the single-node clusters that test10-12 left. Log
+       test16-direct-twonode-run1.log.
+  P2-4 test16 llm_access=direct, cluster in shape ("is in shape already"):
+       PASS, 135 s. Log test16-direct-twonode-run2.log.
+  P2-5 test13 k8s_restore=no (two-node, as allowed by the coordinator):
+       PASS, 190 s; writer exit until all readers hold 9.1 s. Log
+       regr-test13-twonode.log.
+  -> direct passes in the two-node cluster (P2-3, P2-4).
+  Engine now: $CACHE_DIR/llm/cxl-llm-c2b8fa3124dad82f/cxl-llm, sha256
+  ef8b32c02a012c283c262b7100bbe5f6296f6bd37c5a5bd0af760ae32b418cbd (block
+  device support); direct measurements unchanged: 13.2 s until three
+  answers, load 258-326 ms, 28.8-33.0 tokens/s, page cache +792/+212 kB.
+
+Final state (16:5x)
+-------------------
+  VMs: one two-node cluster (VM2 n4-cxl-shared-2 control plane at
+  10.76.162.174, VM1 worker 10.76.85.237, both Ready), as the coordinator
+  asked (this replaces "single-node clusters" of the task); no
+  kubelet-cxl-plugin or fake-cxl-pool-controller unit, no CXL memdevs or
+  regions, no /dev/dax*, no FUSE mounts, empty
+  /var/lib/kubelet/plugins/cxl.generic/files, no loop devices, no
+  cxl-type3 in either qemu, no pods outside kube-system, no cxl-pool-demo
+  namespace. /opt/cxl-llm/cxl-llm on both, the model in
+  /opt/cxl-llm/model only on VM1; /usr/local/bin/cxl-where.py on both
+  (next to the other e2e tools there).
+  Host: no fake-cxl-pool-server, port 9909 free; llm0.raw removed by
+  test16 (no qemu maps it any more), shared0.raw and pooled1.raw removed;
+  static-shared0.raw kept (a memory backend of both qemus from the
+  topology); pooled0.raw kept, see Findings T-1. Cache $CACHE_DIR/llm:
+  the model, the llama.cpp clone (depth 1) and the current engine build
+  (419 MB); older builds and the phase-1 driver export removed.
+
+Findings
+--------
+T-1 (fake-cxl-pool or qemu, not the driver) After the regressions
+    (test10, test13: pooled0 attached to VM2 and to VM1 and detached),
+    both qemus (pids 2707205 VM1, 2710024 VM2) still map
+    /tmp/fake-cxl-pool/pooled0.raw (rw-s, 512 MiB, same inode), although
+    "info memdev" no longer lists a backend of it and qtree has no
+    cxl-type3: the memory stays host RAM until the qemus restart. No
+    mapping of llm0.raw or shared0.raw is left, so test16 is not
+    affected. Not investigated further (fake-cxl-pool is not stream T's).
+T-2 In this e2e (2 threads, -n 32, n_ctx 45) a reader has 81-85 MB of
+    anonymous memory, not the 137 MB of research A (its larger context).
+T-3 Cached mode costs load time once per node: 1.1-1.3 s for the first
+    reader (the export reads 512 MiB through FUSE: MAP_POPULATE of the
+    whole device file), 0.34-0.38 s for the second, 0.26-0.33 s direct.
+
+Open (for the orchestrator)
+---------------------------
+  - Cached mode: paused since 16:33 until the mechanism behind
+    CXL_<KEY>_PATH is decided; then adapt only the file-export-* block and
+    LLM_FILE_* / LLM_FILES_DIR / LLM_FUSE_TYPE of test16 and run
+    llm_access=cached and the default.
+  - Single-node regressions on the final driver build: test10, test11,
+    test12 passed on F's FUSE build; test14 (its R1 text at :403 is
+    updated but not run yet) and test15 were not run; all of them are
+    to be run when the orchestrator asks, at the very end. test13 passed
+    in the two-node shape (P2-5).
+  - F's R2 g and h (lease in mode file, plugin restart with a reader)
+    were not checked.
+
+Final (17:4x, direct mode only)
+===============================
+User decision of 17:40: direct mode only (05-status-orchestrator.txt).
+The driver tree is back at HEAD 79a85f3 with only go.mod/go.sum changed
+(the replace now names the pushed nri-plugins d2f6c1490).
+
+Changes for it
+  - test16: the cached sections, llm_access and its default, the
+    file-export-* helpers and their variables, and every mention of the
+    cached mode are gone. Pods and claims are reader-a, reader-b, reader-c
+    and llm-writer. Two-node assumption kept (shape check only, no
+    restore).
+  - llm.source.sh: llm-reader-script KEY THREADS, devdax only (its file
+    branch, stat and the write probe, is gone).
+  - cxl-llm: the block-device input is gone; devdax input (path or fd),
+    --write, --hold and regular-file input (host checks) stay.
+    cxl-where.py unchanged (it only reads maps, pagemap and iomem).
+  - test12:622 and test14:403 restored: git diff of both files is empty.
+    Neither was run after that.
+
+Files (nri-plugins, test/e2e/memory.test-suite/memory-policy/, uncommitted)
+  n4-cxl-shared-2/cxl-llm/cxl-llm.cpp            the engine (493 lines)
+  n4-cxl-shared-2/cxl-llm/build.sh               static build, cached by hash
+  n4-cxl-shared-2/llm.source.sh                  helpers
+  n4-cxl-shared-2/cxl-where.py                   page frames vs /proc/iomem
+  n4-cxl-shared-2/test16-cxl-llm-share/code.var.sh   the test (321 lines)
+  dra.source.sh                                  + dra-pod-log, dra-wait-log
+  n4-cxl-shared-2/test13-.../code.var.sh         uses them (PASS earlier)
+  Checks: bash -n ok; shellcheck shows only the classes the existing files
+  have (SC2016 retry-until snippets, SC2034 in sourced files, SC2154
+  distro); build.sh shellcheck clean; cxl-llm.cpp g++ -Wall -Wextra clean.
+
+Verdict: test16-cxl-llm-share PASS, 171 s, two-node cluster in shape
+  (vm-k8s-reinit "is in shape already"); log test16-final-direct-only.log.
+  Build: kubelet-cxl-plugin sha256 5787c15c360717af04fa127c8fbf20abd4fe595995ca8d0374dee42d7d0ffe45,
+  cxl-request 55c11f015e43612d5909282cec7210b9ef3172fd9f94b294cf8a79efef6e3830
+  (dra-build: go mod vendor + static build of the reset tree);
+  cxl-llm $CACHE_DIR/llm/cxl-llm-e7539de63dc5897e/cxl-llm, sha256
+  4125f54578a30029f9b4e119ac7ab20520f7669ea55e80bba411963888a7685e
+  (built in this run, about 40 s of the 171 s), llama.cpp 25a1d63f4;
+  model Qwen3-0.6B Q4_K_M sha256 ac2d9771...
+
+Timings
+  writer pod created until the model is written 7.5 s; the copy of 378 MiB
+  into the devdax device 514 ms.
+  three readers created until all answered 13.1 s; load 251-269 ms, first
+  token 157-281 ms, 30.9-36.3 tokens/s on 2 threads, 82.9 MB anonymous
+  memory each.
+
+Proofs (all asserted by the test)
+  - answers: all three "Hello! How can I assist you today?" (= llm_expect).
+  - frames: 97280 of 97280 pages of llama.cpp's 398458880-byte mapping in
+    "CXL Window 0 > region0 > dax0.0" for each reader (cxl-where.py, every
+    page; the 512 MiB header mapping of cxl-llm: 1536 pages, same window).
+  - page cache: VM2 +592 kB (two readers), VM1 +216 kB; the model is
+    387407 kB, the limit 5%.
+  - writer: the first 396705472 bytes of the backing file have the model's
+    sha256 and are zero up to 398458880; exclusive attachment on VM1 only.
+  - claims: each reader consumes one host, gets CXL_C1AE0001_{SERIAL,
+    SHARED=1,MODE=dax,SIZE,DAX,READONLY=1} and a CDI device node with
+    permissions r; llm0 attached to both VMs, not exclusive, never onlined.
+  - nothing left: no pods or claims, no CDI devices of llm0, no memdevs or
+    regions, no cxl-type3 in either qemu; the backing file removed.
+
+Final state of the VMs and the host
+  One two-node cluster (VM2 control plane, VM1 worker, both Ready, no
+  pods outside kube-system); no DRA units, memdevs, regions, /dev/dax*,
+  FUSE mounts, loop devices or cxl-type3 devices; /opt/cxl-llm on both,
+  the model only on VM1. Port 9909 free, no pool server.
+  /tmp/fake-cxl-pool: only static-shared0.raw (a backend of both qemus);
+  llm0.raw removed by test16, pooled0.raw removed now.
+  pooled0.raw mapping (T-1): gone. During this run both qemus dropped it,
+  so it was removed. But each qemu now maps the deleted llm0.raw (rw-s,
+  512 MiB, inode 1962037). qemu keeps the mapping of the most recently
+  hot-removed device until the next hot-remove cycle or a restart: test13
+  left pooled0, this run left llm0. That is 512 MiB of host RAM per qemu
+  until then. It is fake-cxl-pool/qemu behaviour, not the driver's;
+  restarting the qemus would free it.
+
+T Status (R-T fixes)
+====================
+2026-10-16 18:2x. Every finding of 06-review-T.txt taken; nothing committed.
+
+Fixes
+  B1 build.sh creates $CACHE_DIR/llm first. Checked: a fresh CACHE_DIR with
+     LLAMA_CPP_SRC=~/github.com/ggml-org/llama.cpp builds, and the binary
+     is byte-identical to the build from the fetched clone.
+  B2 llm-where-assert VMDIR POD PATH SIZE CHAIN takes only the mapping of
+     SIZE bytes, llama.cpp's model mapping (cxl-llm's header mapping is
+     printed as "not counted"). It needs exactly one such mapping, every
+     page present, and every frame in a chain matching CHAIN. test16
+     asserts model_bytes == LLM_PADDED and CHAIN '^CXL Window [0-9]+ > .* >
+     dax0\.0$' (the dax name from the run-time path). It also asserts
+     rss_anon_kb * 1024 < model / 2 (82.9 MB measured; a copy is 520 MB
+     and repacking 349 MB in research A, both above the 194 MB limit).
+  R1 the reader runs dax-rw.py check-ro (the dra-dax-tool-install
+     ConfigMap at /tools, as in test13); test16 asserts "open for writing
+     refused: EPERM" and "writable mapping refused: EACCES" in each reader.
+  R2 curl --max-time 1800 --speed-limit 1048576 --speed-time 60; build.sh:
+     timeout 600 for git fetch and podman pull, 1800 for podman run, 900
+     for dnf in the container.
+  R3 the download's sha256 is checked before the move into the cache; on a
+     mismatch the part file is removed and both sums are named.
+  R4 the image digest is part of the cache hash (the image is pulled only
+     if missing); source.txt has the commit, the image and its digest, and
+     rpm -q of gcc-c++, glibc-static, libstdc++-static, cmake and
+     ninja-build.
+  R5 a failed build copies its log to $CACHE_DIR/llm/build-failed.log and
+     names it in the error.
+  R6 test16 traps EXIT with the backing file removal: after
+     pool-server-start ('pool-cleanup; rm -f ...') and after
+     dra-install-node ('dra-cleanup; pool-cleanup; rm -f ...').
+  S1 dra.source.sh: dra-shared-claim-yaml NAME SERIAL [HOSTS [PARAMETERS]]
+     and dra-script-pod-yaml NAME VMDIR CLAIM SCRIPT [TYPE:PATH...] (dax-rw
+     tools at /tools, plus read-only hostPath volumes). test13 uses them
+     for shared-read-only, reader-d and dax-claimer, and its claim-pod-yaml
+     is gone. Both render test13's YAML byte for byte (checked with a diff
+     of the old and new functions). llm-pod-yaml wraps
+     dra-script-pod-yaml, and llm-claim-yaml is gone.
+  S2 pool.source.sh: pool-attachments DEVICE and pool-device-free-wait
+     DEVICE VMDIR..., used by test13 (its shared0-attachments and shared0
+     free block, same commands, labels and timeouts) and test16. test16's
+     llm0-free keeps its regions == [] check with a dump of each VM.
+  S3 test16 deletes its pods with dra-delete-pod.
+  S4-S8 cxl-llm.cpp:
+     - S4: the glibc-only comment at _fileno, and a header line that it
+       builds with glibc only.
+     - S5: all 14 summary keys documented.
+     - S6: the writer's time is the copy itself (520 ms).
+     - S7: one-line comments on log_cb and the cookie functions.
+     - S8: strict options: "option -m needs a value"; "invalid value "x"
+       of --fd" for non-integers, -t/-n below 1, --fd below 0; all exit 2,
+       checked on the host.
+  S9 test16 header: why an engine of its own, why the answers are equal,
+     the proofs, "What you will see", host prerequisites (podman, git,
+     curl, the hosts through the proxy, the cache size and first-run
+     cost), and what stays in the VMs.
+  S10 llm0-free documents its failure. cxl-where.py --help prints to
+     stdout with exit 0, and a usage error exits 2. The writer logs the
+     device's sysfs align; test16 computes LLM_PADDED from it, so another
+     align is reported as such. The regular-file and --fd inputs of
+     cxl-llm are still not exercised by an e2e (host use only).
+  Checks: bash -n on all changed shell files; shellcheck reports only the
+  classes HEAD has (SC2016 retry-until snippets, SC2034 in sourced files,
+  SC2154 distro). The counts against HEAD are dra.source.sh SC2016 13->14,
+  pool.source.sh 4->5, test13 8->6, test16 SC2154 only. build.sh is
+  shellcheck-clean, and cxl-llm.cpp is clean with g++ -Wall -Wextra
+  -Wpedantic.
+
+Runs (two-node cluster, in shape; driver HEAD 79a85f3 + go.mod bump)
+  test16-cxl-llm-share: PASS, 141 s. Log test16-review-fixes.log.
+    Engine $CACHE_DIR/llm/cxl-llm-0180ef1d03868466/cxl-llm, sha256
+    a3694bec0bddd73e7f4652c778d4a75e1b3a599db5011c592cdda7e25ead78a5,
+    image fedora:43 sha256:56726116caa0..., gcc 15.3.1, glibc 2.42.
+    The device align is 2097152, so llama.cpp maps 398458880 bytes. In
+    each reader that mapping has 97280 of 97280 pages present, all in
+    "CXL Window 0 > region0 > dax0.0"; the 512 MiB header mapping is not
+    counted. Each reader has 82.9 MB of anonymous memory, and open for
+    writing / a writable mapping are refused (EPERM / EACCES). Page cache
+    +708 kB on VM2 and +268 kB on VM1. Writer 7.5 s, its copy 520 ms.
+    Readers answered within 13.3 s, load 255-271 ms, 31.5-32.9 tokens/s.
+    Answers identical, host sha256 of the model and zeros to 398458880,
+    nothing left.
+  test13-dra-shared-one-writer-many-readers, k8s_restore=no: PASS, 192 s
+    (its code changed for S1/S2). Log test13-review-fixes.log.
+
+Final state
+  VMs: one two-node cluster, both Ready, no pods outside kube-system. No
+  DRA units, memdevs, regions, /dev/dax*, FUSE mounts, loop devices or
+  cxl-type3 devices. /opt/cxl-llm on both, the model only on VM1,
+  cxl-where.py in /usr/local/bin.
+  Host: port 9909 free; llm0.raw and shared0.raw removed. pooled0.raw
+  stays: both qemus map it again, as the last device that test13
+  hot-removed (T-1: qemu keeps the backing file of the most recently
+  removed device mapped until the next hot-remove or a restart).
+  static-shared0.raw stays (a topology backend). The cache holds the
+  model, the llama.cpp clone and the current engine build.

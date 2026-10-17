@@ -1,0 +1,728 @@
+plan-7-e2e-cxl-llm-share: research C, integration
+=================================================
+2026-10-16, research agent C (Opus). Read-only research: code, documents
+and earlier e2e outputs on the host; no VM was touched, no e2e test was
+run, no repository file but this one was written.
+
+Topic: how test16-cxl-llm-share fits our stack: how the writer and the
+readers get the model through claims, leases and DeviceConfig, what each
+access path needs from the driver, fake-cxl-pool and the e2e framework,
+the resource and time budget, and the shape of the test.
+
+Abbreviations of paths:
+  D   = ~/github.com/intel/intel-resource-drivers-for-kubernetes
+  N   = ~/github.com/containers/nri-plugins
+  P   = N/scripts/testing/fake-cxl-pool
+  E   = N/test/e2e
+  M   = E/memory.test-suite/memory-policy
+  S2  = M/n4-cxl-shared-2
+  T13 = S2/test13-dra-shared-one-writer-many-readers/code.var.sh
+  O13 = E/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+        memory-policy/test13-dra-shared-one-writer-many-readers (outputs)
+  L   = ~/github.com/ggml-org/llama.cpp (25a1d63f4)
+  Q   = ~/github.com/qemu/qemu (ff076b1e6c, the patched qemu of the VMs)
+  K   = ~/github.com/torvalds/linux (v7.2-15794, 7.3 merge window)
+
+
+Part 1. Findings (with evidence)
+================================
+
+1.1 What our stack gives a writer and a reader today
+----------------------------------------------------
+- Classes select device kinds only; cxl-pool-shared = driver
+  cxl-pool.generic, type memdev, shared == true (D/deployments/cxl/
+  device-classes.yaml:27-36). mode and readOnly are a DeviceConfig of the
+  claim (D/doc/cxl/USAGE.md:193-217; plan-5 02-design.txt:265-283).
+- DeviceConfig has exactly two fields, decoded strictly (unknown fields
+  refused): mode numa|dax, readOnly bool (D/cmd/kubelet-cxl-plugin/
+  lending.go:235-243 struct, 322-341 modeFor: "" means dax for shared
+  devices, readOnly needs dax). Error texts are asserted by e2e tests
+  (02-design.txt:276-280).
+- A shared pool device has capacity hosts (4 in the reference
+  controller, validValues ["1","4"]); a claim takes one host by default,
+  all of them = exclusive (D/doc/cxl/POOL.md:75-87, 115-123; USAGE.md:
+  481-501 examples 7 and 8; examples/pool-shared-writer-readers.yaml:
+  7-22 writer with hosts "4", 51-71 reader template with readOnly: true).
+  "A reader that asks while the writer has the device waits (its pod
+  stays pending) until the writer's claim is gone" (USAGE.md:500-501,
+  POOL.md:218-221). The controller attaches exclusively for hosts=all
+  (P/README.md:135-139).
+- Prepare of a shared device: ram region, device_dax, never onlined; the
+  container gets /dev/daxX.Y with CDI permissions "r" for readOnly;
+  "Applications mmap the device (MAP_SHARED, aligned to the device
+  alignment, typically 2 MiB) and agree on the layout of the memory
+  themselves" (POOL.md:320-326; code: pool.go:535-549 CreateRegion
+  ModeDax, pool.go:648-669 buildCDISpec with daxDeviceNode only;
+  lending.go:345-356 daxDeviceNode type "c"). Regions are always created
+  with "cxl create-region -t ram" (N/pkg/cxl/memctl/memctl.go:940).
+- Read-only is kernel-enforced through the device cgroup, "except in
+  privileged containers (their device cgroup allows everything)"
+  (USAGE.md:253-256, POOL.md:209-216).
+- Environment per device: CXL_<KEY>_{SERIAL,SHARED,MODE,SIZE,DAX,
+  READONLY}, FD instead of DAX for leases with --exec (USAGE.md:312-334,
+  D/pkg/cxl/api/api.go:237-259). KEY = serial in upper-case hex. One CDI
+  device per allocation result, generic/cxl-pool=claim-<uid>-<n>
+  (USAGE.md:336-342; plan-5 05-status-orchestrator.txt O4 A3).
+- Leases: cxl-request request --serial S (exclusive unless --shared,
+  plan-5 05-status-orchestrator.txt O1 Q3; LEASES.md:113-119), --shared
+  --read-only for readers; the plugin passes an O_RDONLY fd, fd 3 of
+  --exec CMD; "reopening the fd through /proc/self/fd is refused by the
+  device cgroup" (LEASES.md:97-111). Release while mapped = SIGBUS
+  (LEASES.md:460-462). Pool request latency 5-7 s, release ~8 s
+  (LEASES.md:466-468). Companion pods: pause, 100m/16Mi (LEASES.md:
+  373-381).
+- What the memory contains: pool devices keep their content between
+  claims, nothing clears them (USAGE.md:355-364). Local dax slices are
+  zeroed (LOCAL.md:203-206): irrelevant here, the model sits in a pool
+  device.
+- The plugin already writes CDI bind mounts (lease socket directory rw,
+  cxl-request ro): D/cmd/kubelet-cxl-plugin/lease_claims.go:98-123. So a
+  CDI "Mounts" edit for a page-cached file or filesystem has a precedent
+  in the driver.
+- Room kept by plan-5 (02-design.txt:114-125 and 624-642): attribute
+  persistent (bool) reserved for memdevs with pmem capacity; "DeviceConfig
+  mode gains fsdax (a filesystem-dax namespace) next to numa and dax; env
+  MODE=fsdax and a PATH field. Volatile devices publish nothing (absent =
+  volatile) so that today's selectors keep working." GFAM: shared: true
+  pool devices are already the model (02-design.txt:634-637).
+- The pool driver refuses a second claim on the same node that wants the
+  device "in another mode" (pool.go:444-461 checkSamePreparation): any
+  new mode that reuses the dax region (see 2.2 P3) must be made
+  compatible with dax there.
+
+1.2 test13: the existing one-writer, many-readers test
+------------------------------------------------------
+- Shape: VM2 (n4-cxl-shared-2, the test's VM) control plane, VM1
+  (n4-cxl-shared-1) worker, made by vm-k8s-reinit "$VM2 $VM1" and
+  restored with vm-k8s-reinit "$VM2" "$VM1" unless k8s_restore=no
+  (T13:25-41, 236-244, 570-573; E/lib/k8s.bash:332-385).
+- Pool: fake-cxl-pool-server with shared0 (256Mi, shared, 0xc1ae0001)
+  and pooled0 (512Mi, exclusive, 0xc1ee0001) (T13:246-257); controller
+  only on VM2 (dra-install), node plugin on both (dra-install-node)
+  (T13:260-270).
+- Writer (VM1): a lease, "cxl-request request --serial $SHARED_SERIAL
+  --wait 120s --exec sh -c 'python3 /tools/dax-rw.py --fd 3 write 0
+  TEXT ...'" (T13:284-293): exclusive (companion claim hosts 4,
+  consumedCapacity 4, server attachment exclusive=True: T13:299-311),
+  writes a NUL-terminated string at offset 0 through fd 3 with a whole
+  device MAP_SHARED mapping (S2/pool-dax-rw.py:31-35, 143-149), waits for
+  /tmp/done, exits; restartPolicy Never releases the lease. The host
+  reads the backing file to prove the bytes are in the pool
+  (T13:312-316, pool.source.sh:490-500 pool-file-string).
+- Readers: three lease pods, reader-a, reader-b on VM2, reader-c on VM1
+  (T13:60-61), "--serial S --shared --read-only", created while the
+  writer holds the device: companions stay Pending (dra-stays 10 s,
+  T13:318-348); after the writer exits all three hold at once
+  (T13:350-363), read the same bytes, writable mapping refused EACCES
+  (T13:365-398); a late exclusive request times out (T13:400-412); a
+  fourth reader with a read-only claim from creation, CDI device
+  claim-<uid>-0 with permissions r (T13:414-463); release and "nothing
+  left": memdevs == [] on both, shared0 free, no cxl-type3 in qemu
+  (T13:465-484, 552-558).
+- Timings (O13/run.sh.output): reshaping to one cluster 34 s, writer
+  exit until all three readers hold 13.2 s (TIMING line), restore 53 +
+  54 s, whole test 336.5 s. The trace (O13/trace.txt) of the body A..I
+  runs from 13:30:34 to 13:32:44, about 130 s. Other DRA tests: test10
+  74 s, test11 114 s, test12 328 s, test14 167 s, test15 238 s.
+- Helpers local to T13 that test16 needs again: lease-pod-yaml,
+  claim-pod-yaml, pod-log, wait-log, lease-of, companions-of
+  (T13:63-223). They are not in dra.source.sh.
+
+1.3 fake-cxl-pool facts
+-----------------------
+- Devices are volatile cxl-type3 only: device_add has bus,
+  volatile-memdev, id, sn and nothing else (P/pkg/qemu/qmp.go:356-365,
+  hmp.go:212; type CXLType3 has only VolatileMemdev, P/pkg/qemu/
+  types.go:83-89). No persistent-memdev, no lsa.
+- Qemu requires an LSA for persistent devices: "lsa property must be set
+  for persistent devices" (Q/hw/mem/cxl_type3.c:753-754; properties
+  persistent-memdev and lsa at 1359-1363). The fixed memory windows allow
+  persistent memory by default (Q/hw/cxl/cxl-host.c:88-94), so a pmem
+  device needs no VM recreation, only fake-cxl-pool support.
+- Sizes: static devices in multiples of 256Mi (P/config.example.yaml:
+  29-31). The topology's "pool-slot": "1G" only sizes the CXL memory
+  windows (E/lib/topology2qemuopts.py:157-160, 421-430); the qemu of VM2
+  has cxl-fmw.0.size=8G and cxl-fmw.1.size=8G (test00-up
+  qemu-cmdline.txt), and the server only checks that a host bridge's
+  window has room (P/pkg/server/ops.go:547-563). A 512Mi, 768Mi or 1Gi
+  shared device fits; the 256M static-shared0 of the topology
+  (S2/topology.var.json) is too small for a model.
+- Backing files: pool-server-start configures pool default in
+  /tmp/fake-cxl-pool, capacity 8G (S2/pool.source.sh:22, 303-318).
+  /tmp on this host is a tmpfs (126G; host RAM 251 GiB): a device's
+  bytes are host RAM once touched. EnsureBackingFile keeps an existing
+  file and its content (P/pkg/pool/pool.go:107-131), and pool-cleanup
+  deletes only non-static devices (pool.source.sh:382-389): the file of
+  a static device survives the test with the last model in it.
+- Shared devices: the same backing file attached to many VMs, same
+  serial, devdax only (P/README.md:17-19, 141-159). Release in the guest
+  before detach (README.md:173-180).
+- Qemu maps non-interleaved CXL windows directly ("a performant (and
+  correct) path for the non interleaved cases", Q commit 680935c9a6;
+  Q/hw/cxl/cxl-host.c:398-480: an alias memory region per committed
+  decoder with interleave ways 0). Our regions are single-device, so in
+  the VMs CXL memory is accessed at host RAM speed through KVM, and the
+  hosts' caches are coherent. Consequence: neither "CXL traffic" nor a
+  latency difference between direct and cached is observable; proofs
+  must be structural and counter based (see 2.4).
+
+1.4 e2e framework facts
+-----------------------
+- Images get into the VMs by crictl pull in the VM (through the
+  containerd proxy): dra-pull-images (M/dra.source.sh:184-195), and in
+  create by run.sh (E/run.sh:792-829). Locally built images are imported
+  only for the policy plugins: a tarball of build/images copied to the
+  VM and "ctr -n k8s.io images import" + tag (E/playbook/
+  deploy-policy-plugin.yaml:30-54; E/lib/vm.bash:1880-1919
+  containerd-reimport-image). The "use_host_images" branch of run.sh:815
+  calls vm-put-docker-image, which no longer exists in lib/: dead path.
+- Small tools reach pods as ConfigMap dax-rw mounted at /tools
+  (dra-dax-tool-install, M/dra.source.sh:197-216); a ConfigMap is limited
+  to 1 MiB, so an inference engine binary (megabytes) cannot travel that
+  way. Files reach VMs with vmdir-put-file (scp, E/lib/k8s.bash:85-99)
+  and pool-vm-put-file.
+- Host cache directory of the framework: CACHE_DIR=~/.cache/
+  nri-plugins/e2e (VM env file; 1.4 GB today: containerd, cri-o, box).
+- Configuration of a test: lower-case environment variables with an
+  in-code default, documented in the test header: k8s_restore (T13:41,
+  570), keep_numa_disabled (policies .../test30-numa-disabled/
+  code.var.sh:4), qemu_bin (run-e2e-tests skill). *.var.sh files of a
+  test directory become variables too, and the environment wins over
+  them (E/run_tests.sh:41-77: "not overriding $var_name - variable is
+  not created from *.var.* files").
+- Tests whose directory name has fuzz, long or stress are skipped unless
+  skip_long_tests=no (run_tests.sh:274-288): test16-cxl-llm-share runs
+  by default with the n4-cxl-shared-2 directory.
+- Coding style for e2e: no "act; sleep; verify", use retry-until style
+  waits (.github/skills/coding-style/SKILL.md:41-47); never run tests in
+  parallel (run-e2e-tests skill).
+
+1.5 Kernel of the VMs (E/playbook/files/qemu-cxl-kernel.config)
+--------------------------------------------------------------
+  CONFIG_CXL_PMEM=y (1687), CONFIG_BLK_DEV_PMEM=y (2811), CONFIG_ND_PFN=y
+  (2815), CONFIG_FS_DAX=y (2895), CONFIG_FUSE_FS=y (2910): pmem block
+  devices, fsdax and FUSE are available.
+  # CONFIG_USERFAULTFD is not set (1064): no userfaultfd copy-on-fault
+  without a kernel rebuild and VM recreation.
+  # CONFIG_BLK_DEV_NBD, _UBLK (1899, 1906), # CONFIG_EROFS_FS (3032): no
+  user-space block devices, no erofs.
+  CONFIG_DEV_DAX_FSDEV=y (2822): K/drivers/dax/fsdev.c, "FS-DAX
+  compatible devdax driver ... for fs-dax filesystems like famfs ... No
+  mmap support - all access is through fs-dax/iomap". No filesystem in
+  the tree uses it (famfs is not merged): not usable by itself, but it is
+  the kernel half of famfs; noted for agent B.
+
+1.6 llama.cpp facts that matter for integration (details: agent A)
+------------------------------------------------------------------
+- A file larger than the GGUF content is accepted: the only bound check
+  is offs + nbytes > file->size() (L/src/llama-model-loader.h:45-47).
+  So a device or file of device size with the GGUF at offset 0 loads.
+- The loader maps the whole file MAP_SHARED and always prefetches: MAP_
+  POPULATE plus posix_madvise WILLNEED over the whole file
+  (L/src/llama-mmap.cpp:448-470; prefetch = true from
+  L/src/llama-model.cpp:1492). In a page-cached mode this reads the
+  whole file at load, trailing bytes included: the page cache grows by
+  the file size, not the model size, and it grows at load (first use),
+  not lazily per token. Inference touches all weights anyway (Qwen3 ties
+  the embedding and output matrix).
+
+
+Part 2. Answers
+===============
+
+2.1 The writer
+--------------
+How it gets the device exclusively and writable. Both work today:
+  W-claim: ResourceClaim on cxl-pool-shared, selector serial == S,
+    capacity.requests.hosts: "4", no DeviceConfig (mode dax is the
+    default and only mode of shared devices) -> /dev/daxX.Y read-write,
+    CXL_<KEY>_DAX, _SIZE, _READONLY=0, _SHARED=1 (USAGE.md:463-487,
+    example pool-shared-writer-readers.yaml:7-49). The test deletes the
+    pod and the claim after the copy to free the device.
+  W-lease: as T13:284-293, "cxl-request request --serial S --exec ..."
+    (exclusive without --shared), fd 3; released when the container
+    exits (restartPolicy Never).
+  Recommendation: W-claim. T13 already covers lease writers and readers
+  in depth; claims keep the demo YAML short, show the class/DeviceConfig
+  vocabulary, and give the writer a path it can open. Either way the
+  test asserts what T13 asserts (consumedCapacity hosts 4, server
+  attachment exclusive=True on VM1 only).
+
+Where the model comes from (it must reach the writer pod):
+  (a) image layer: build an OCI image with the model on the host
+      (podman/docker exist), save, scp, ctr import in VM1 (the playbook
+      way). ~0.6 GB more in containerd's content store plus snapshot,
+      a second import mechanism in the e2e for one test. Workable, the
+      heaviest. (Kubernetes image volumes would be the cloud-native way;
+      not used anywhere in the e2e: not now.)
+  (b) hostPath on the VM: download once on the host into
+      $CACHE_DIR/llm/<file>.gguf (curl through the host proxy, pinned
+      URL with revision, sha256 verified), copy to VM1 only when
+      sha256sum in the VM differs (vmdir-put-file, ~0.6 GB over ssh
+      once), writer mounts hostPath /var/cache/e2e-llm readOnly.
+      Fastest after the first run (a sha256sum of 0.6 GB), simple,
+      robust. RECOMMENDED.
+  (c) download inside the pod through the VM proxy: every run depends
+      on Hugging Face and the proxy, needs proxy env in the pod spec,
+      slowest. No.
+  (d) host writes the backing file directly: fastest (a copy into
+      tmpfs), but no writer pod, which is the first claim of the demo.
+      Use the host only to VERIFY: sha256 of the first L bytes of the
+      backing file == model sha256 after the writer, the same way T13
+      uses pool-file-string. Optionally a debug switch
+      (llm_writer=host) for iterating on readers.
+  The model must be only on the writer's node (VM1) and only in the
+  writer's pod: reader-c also runs on VM1, so readers mount no model
+  hostPath, and the test asserts that a reader sees the model only
+  through CXL.
+
+Copying: extend S2/pool-dax-rw.py (it is already the ConfigMap tool and
+supports --fd): "copy-in DEV|--fd N OFFSET FILE" (readinto chunks of
+e.g. 8 MiB straight into a memoryview of the MAP_SHARED mapping, print
+length and sha256) and "sha256 DEV|--fd N OFFSET LENGTH". The writer
+should posix_fadvise(DONTNEED) the source file afterwards: its page
+cache on VM1 would otherwise blur VM1's page cache numbers in the
+cached phase.
+
+Size limits: device size a multiple of 256Mi; FMW room 8G per host
+bridge (1.3), so the "1G pool slot" is not a hard limit. 2 MiB devdax
+alignment: offset and length of mmap multiples of 2 MiB (POOL.md:
+324-326, P/README.md:151); whole-device mappings of 256Mi multiples
+always satisfy it. Choose the device size as the smallest multiple of
+256Mi that holds the model plus a 4 KiB descriptor (a ~400 MiB model ->
+512Mi, a ~600 MiB model -> 768Mi): because of MAP_POPULATE (1.6) every
+byte of a file view is read at load in the cached modes, so trailing
+zeros cost page cache and time.
+
+Layout (recommended):
+  offset 0      raw GGUF, length L
+  size - 4 KiB  descriptor, written LAST as a commit record: magic
+                ("CXLLLM1\0"), L, sha256, model name, writer time
+GGUF at offset 0 lets every view present a valid model file to an
+unmodified loader: the FUSE file or the pmem block device of 2.2 and
+the tmpfs copy start with the GGUF magic, and a direct loader maps the
+device from offset 0 (aligned). A header at offset 0 with the GGUF at
+2 MiB would force every loader to know the offset. A filesystem image is
+needed only for pmem paths that mount a filesystem (P4 below); not for
+devdax. The descriptor is between writer, readers and the test, never
+interpreted by the driver (POOL.md:325-326: applications agree on the
+layout). The test passes L and the sha256 to readers in env as well.
+
+Today's equivalent in T13: a NUL-terminated string at offset 0 through a
+lease fd, host check of the backing file (1.2). test16 is the same
+pattern with a 0.4-0.6 GB payload.
+
+Caveat to write into the test header: in qemu the hosts' caches are
+coherent (1.3). On real multi-host CXL without hardware coherency
+(HDM-DB/back-invalidate) the writer must flush its CPU caches (clwb/
+clflushopt + sfence) after the copy and readers must not have stale
+lines; the test does not and cannot prove that part.
+
+2.2 The readers: access paths
+-----------------------------
+Common to all: three readers, reader-a and reader-b on VM2, reader-c on
+VM1 (as T13), each a pod with a read-only claim on llm0 (one host each;
+hosts 4 leaves one spare). Phases run one after another: three claims
+per phase. (Alternative: one ResourceClaim per node shared by the two
+VM2 readers, which DRA prepares once per node, USAGE.md:423-424 and
+LOCAL.md:169-174; it consumes two hosts per phase and makes "one copy
+per node" natural for P3.)
+
+P1 direct, devdax via the claim's /dev/daxX.Y (or a lease fd)
+  Today: everything on the driver side. Claim with DeviceConfig
+  readOnly: true -> /dev/daxX.Y with CDI permissions r, CXL_<KEY>_DAX,
+  _SIZE, _READONLY=1 (T13:414-463 proves it). sysfs size and align are
+  readable in pods (pool-dax-rw.py:54-56 works in test11 pods). A lease
+  gives fd 3 (O_RDONLY), no path; /proc/self/fd/3 cannot be reopened.
+  Missing: only the loader (agent A): stock llama.cpp cannot open a
+  devdax (no read(), no MAP_PRIVATE, size via fseek, 2 MiB alignment).
+  The claim path is the easier one for a loader (it has a path and
+  CXL_<KEY>_SIZE); the lease path needs an fd-aware loader.
+  Driver: none. fake-cxl-pool: none. e2e: engine delivery (hostPath,
+  2.3), dax-rw.py sha256 op, reader script. Effort: e2e ~1 day plus A's
+  loader. Vocabulary: unchanged (mode dax, readOnly).
+
+P2 cached through FUSE inside the reader container
+  A FUSE daemon in the reader maps the dax device read-only and serves
+  read() of one file (the device bytes, or L bytes from the
+  descriptor); the engine mmaps that file: first access of a page goes
+  through the daemon (a copy from CXL into the page cache), later
+  accesses hit the page cache; FOPEN_KEEP_CACHE keeps the cache across
+  opens, so a second run in the same container reads nothing from CXL.
+  Stock llama.cpp works (a regular file).
+  Needs: /dev/fuse and mount(2) in the container -> privileged (the
+  device cgroup must allow c 10:229, and CAP_SYS_ADMIN), which turns
+  off the kernel-enforced readOnly of the device node (1.1); the data
+  path stays read-only if the daemon gets the fd from a read-only lease
+  (O_RDONLY fd). One mount per container = one page cache copy per
+  reader (two on VM2). Daemon: a static Go binary (hanwen/go-fuse v2 is
+  pure Go and mounts with mount(2) as root; not in the host module cache
+  yet, fetched through the proxy) or C with libfuse3 linked statically,
+  delivered by hostPath with the engine.
+  Driver: none. fake-cxl-pool: none. e2e: daemon ~0.5-1 day, test ~0.5
+  day. Vocabulary: unchanged. Good as a prototype of P3, weak as a demo
+  of our stack (privileged).
+P2b variant: a per-node "exporter" pod (privileged, read-only claim)
+  runs the FUSE daemon on a hostPath directory with Bidirectional mount
+  propagation; readers mount that directory with HostToContainer: one
+  page cache copy per node, unprivileged readers. But the readers then
+  hold no CXL claim of their own (the scheduler does not know they need
+  the device). ~1-1.5 days, no driver change.
+
+P3 cached through a page-cached file made by the node plugin (new
+   DeviceConfig mode "file")
+  The node plugin prepares the dax region as today and exports the
+  device bytes as a read-only regular file through FUSE on the node, one
+  mount per (node, device), bind-mounted read-only into every container
+  of a claim with mode file (CDI Mounts, precedent lease_claims.go:
+  98-123). All containers of a node share one inode -> one page cache
+  copy per node, filled on first use: "on-demand transfer to the nodes
+  that use it" without privileges. Read-only by construction. Stock
+  llama.cpp works on CXL_<KEY>_PATH.
+  Leases (optional): "cxl-request request --serial S --shared --mode
+  file --exec CMD" passes an O_RDONLY fd of that file; for a regular
+  file /proc/self/fd/3 CAN be reopened (no device cgroup), so stock
+  "llama-cli -m /proc/self/fd/3" works.
+  Driver changes:
+  - api: ModeFile = "file"; Request/DeviceConfig validation ("invalid
+    mode %q (numa, dax or file)", api.go:178 and lending.go:322-341;
+    mode file is read-only: READONLY=1 always); api.Env adds PATH for
+    mode file (02 section 9.3 already reserves PATH).
+  - pool driver: Prepare = dax region + start a FUSE exporter for the
+    serial (first claim on the node) and wait until it is mounted
+    (a bind mount of an unmounted directory would hide it); CDI device
+    with Mounts {host dir -> e.g. /run/cxl-files/<HEX>, rbind, ro}, no
+    device node; state file fields; Unprepare of the last claim on the
+    node: stop the exporter (unmount) BEFORE the region release, since
+    the exporter keeps the dax device mapped; checkSamePreparation
+    (pool.go:444-461) treats file and dax claims of one device as the
+    same region preparation.
+  - exporter: a small static helper (e.g. cmd/cxl-file, go-fuse) run as
+    a transient systemd unit per device (systemd-run, as the e2e runs
+    the plugin), so that a plugin restart does not kill the mounts of
+    running containers (a dead FUSE connection gives EIO/SIGBUS on the
+    pages that are not cached yet); allow_other; FOPEN_KEEP_CACHE, long
+    attribute timeouts; a counter of bytes read from the device (a
+    status file or log line) for the test's proofs.
+  - docs USAGE/POOL/LEASES; unit tests.
+  fake-cxl-pool: none. e2e: ~0.5-1 day.
+  Effort: driver ~3-4 days for claims, +1 day for leases (fd of the
+  file). Vocabulary: one new value of mode (additive, no rename); PATH
+  reused with the meaning "a path in the container". Open: whether the
+  file is the whole device (size = device size; plugin stays content
+  agnostic, recommended) or L bytes from a descriptor (content aware).
+  A local dax slice could use the same mode later.
+
+P4 pmem: a persistent pool device, a pmem region and namespace, then
+   (cached) the block device /dev/pmemX, or (direct) a filesystem with
+   -o dax
+  Cached needs no filesystem: with the GGUF at offset 0 of a raw-mode
+  namespace, the reader opens /dev/pmemX as the model file (block
+  devices support read(), lseek(SEEK_END) and MAP_SHARED of the block
+  device page cache); one page cache per node (the bdev inode), and
+  /sys/block/pmemX/stat counts the sectors read from CXL. Direct needs
+  an fsdax namespace and ext4/xfs mounted -o dax (llama.cpp then works
+  unmodified on a regular file whose pages are the CXL memory) - a
+  mount by the plugin or a privileged reader, and a writer that makes
+  the filesystem.
+  Missing everywhere:
+  - fake-cxl-pool: device attribute persistent (config, REST, client
+    --persistent); a memory backend for the LSA per (device, host) -
+    readers must not share one LSA with the writer, each kernel keeps
+    its own labels; device_add with persistent-memdev= and lsa= instead
+    of volatile-memdev; qtree/discovery parsing and adoption of such
+    devices; hot-remove with the nvdimm stack bound. ~2 days.
+  - controller: publish persistent: true (and in the status data).
+    ~0.5 day.
+  - memctl/driver: cxl create-region -t pmem, ndctl create-namespace
+    (raw for cached on every host: writes nothing to the media; fsdax
+    writes a pfn info block into the media, which readers must not
+    redo), find /dev/pmemX, release (namespace, region); mode fsdax
+    with a block device CDI node (type "b", "r" for readOnly), env
+    MODE=fsdax, PATH=/dev/pmemX (02 section 9.3); for direct, a
+    DeviceConfig field for a plugin mount (name open, e.g. mount:
+    {fsType, dax}) giving PATH=<mount dir>. ndctl in the VMs. ~3-4 days.
+  Effort: 6-8 days plus kernel unknowns (pmem regions on hotplugged
+  qemu memdevs, labels and namespaces on several hosts: agent B).
+  Vocabulary: exactly what 02 section 9.3 reserved. Not for plan-7;
+  a later plan.
+
+P5 cached fallback: copy to tmpfs
+  The reader copies L bytes from its dax device (claim) or fd (lease)
+  into an emptyDir medium: Memory (sizeLimit) and runs the stock engine
+  on that file. Eager (all at start), one copy per pod, shmem charged to
+  the pod. Driver: none. fake-cxl-pool: none. e2e: ~0.5 day (reuse the
+  dax-rw.py copy op in reverse, "copy-out"). A node-wide variant (a
+  hostPath on a node tmpfs filled by the first reader) gives one copy
+  per node.
+
+Not available: userfaultfd (CONFIG_USERFAULTFD off), nbd/ublk (off),
+loop over devdax (loop needs a file with read_iter; devdax has none),
+onlining shared memory as RAM (forbidden: two kernels).
+
+Summary
+  path            stock engine  driver      pool    privileged  copies       effort
+  P1 direct dax   no (A)        none        none    no          none         1 d + A
+  P2 FUSE in pod  yes           none        none    yes         per reader   1-1.5 d
+  P2b exporter    yes           none        none    exporter    per node     1-1.5 d
+  P3 mode file    yes           3-5 d       none    no          per node     4-6 d
+  P4 pmem         yes           3-4 d+ctl   2 d     no (*)      per node     6-8 d + B
+  P5 tmpfs        yes           none        none    no          per pod      0.5 d
+  (*) direct on pmem needs a mount: by the plugin, or privileged.
+
+2.3 Resource budget
+-------------------
+- VMs: 8 vCPUs, 2 NUMA nodes of ~3.9 GiB each (O13/memory.no-devices.txt:
+  Node 0 MemTotal 4039616 kB, Node 1 4126860 kB), disk 30G
+  (VM_DISK_SIZE in the VM env). Free memory of VM2 (control plane) at
+  the start of test13: ~1.31 M free pages = ~5.0 GiB
+  (O13/zoneinfo.no-devices.txt: node 0 DMA32 500953 + Normal 189824,
+  node 1 Normal 623241); VM1 (worker) has more.
+- Model: Qwen3-0.6B, ~0.4 GB at Q4_K_M, ~0.6 GB at Q8_0 (agent A
+  decides). Device 512Mi or 768Mi (2.1).
+- Engine RSS per reader (CPU, -t 2): KV cache f16 of Qwen3-0.6B
+  (28 layers x 8 KV heads x 128 x K+V x 2 B) = 112 KiB per token:
+  56 MiB at n_ctx 512, 112 MiB at 1024; compute buffers ~0.1-0.3 GiB;
+  ~0.2-0.45 GiB anonymous per reader. Weights are mapped, not
+  anonymous: devdax pages (P1) are not charged to the cgroup; page cache
+  (P2-P4) is charged to the memcg that faulted it first; tmpfs (P5) is
+  shmem of the pod.
+- Page cache in the cached phase: P3/P4/P2b one file view per node (the
+  device size, because of MAP_POPULATE), P2/P5 one per reader. Worst
+  case VM2 with P2/P5 and a 768Mi device: 2 x (0.45 + 0.75) GiB = 2.4
+  GiB < 5 GiB free. VM1: the writer's source file page cache (~0.6 GB,
+  reclaimable; drop it with fadvise) and reader-c ~1.2 GiB.
+- Companion pods: none with claims; with leases 100m/16Mi each
+  (LEASES.md:373-381).
+- CPU: -t 2 per reader; two concurrent readers on VM2 use 4 of 8 vCPUs
+  next to the control plane. Use the same -t everywhere (output
+  determinism, 2.4).
+- Host: the device backing file in /tmp/fake-cxl-pool (tmpfs, 0.5-0.75
+  GiB of host RAM); model cache ~0.4-0.6 GB in $CACHE_DIR/llm; engine
+  build cache (agent A).
+- Time (estimate for later runs, both modes; first run adds the model
+  download through the proxy and the engine build or fetch):
+    preconditions (VM checks, tools, reset)          20-30 s
+    vm-k8s-reinit to one cluster                     ~35 s (0 if in shape)
+    model/engine sha256 checks (copies first run)    5-10 s (30+ s)
+    pool server, dra-build, dra-install x2           40-90 s
+    writer: attach + bind poll + copy + release      ~30 s
+    direct phase: 3 attach in parallel (~13 s as in test13), load and
+      answer 5-20 s, release ~15 s                   45-60 s
+    cached phase: the same plus a second run         60-75 s
+    nothing-left checks, trace                       20-30 s
+    restore two single-node clusters                 ~107 s
+    total                                            ~6-8 min (one mode ~5-6.5 min)
+  test13: 336 s for comparison.
+
+2.4 The shape of test16
+-----------------------
+Location: S2/test16-cxl-llm-share/code.var.sh (the topology directory
+already has the VM network, kernel config and pool.source.sh).
+
+Configuration (the task's "depending on test configuration"):
+  llm_access=direct|cached|both   default both; read as
+      LLM_ACCESS="${llm_access:-both}" and validated at the top, like
+      k8s_restore (T13:41, 570); documented in the header. A
+      llm_access.var.sh would also work (environment wins,
+      run_tests.sh:41-77), but switches of test behaviour are
+      environment variables with in-code defaults in this suite.
+  llm_cache=file|tmpfs            only if more than one cached
+      implementation exists (e.g. P3 and P5); default the best one.
+  llm_model_url, llm_model_sha256 to try another model; k8s_restore as
+      in test13.
+
+Sections and assertions:
+  ### preconditions
+    fedora only (SKIP otherwise); pool-host-wait VM1, pool-vm-require
+    both, pool-vm-tools-install, pool-vm-reset, vm-k8s-reinit "$VM2
+    $VM1", pool-cxl-dump no-devices (T13:225-244). Model in
+    $CACHE_DIR/llm (download + sha256), engine (agent A), copied into
+    the VMs when their sha256 differs: model to VM1 only, engine to
+    both (hostPath dirs). Remove the stale backing file of llm0 on the
+    host before the server starts, so that the device starts zeroed and
+    a writer that writes nothing cannot pass.
+  ### pool server: llm0 (shared, 512Mi or 768Mi, serial 0xc1ae0001)
+    pool-server-start; pool-client-install; dra-build, dra-install VM2,
+    dra-install-node VM1, dra-pull-images python:3-alpine (+ engine
+    image if A needs one), dra-dax-tool-install (extended dax-rw.py),
+    dra-trace-start (T13:246-270).
+    Asserts: two nodes, one pool slice with llm0 shared, size, hosts 4
+    (T13:272-282).
+  ### writer: VM1 takes llm0 exclusively and writes the model
+    Claim hosts "4" + pod (hostPath model ro, /tools). Asserts: env of
+    the device (dra-env-assert ... SHARED=1 MODE=dax READONLY=0
+    SIZE=...), consumedCapacity hosts 4, server attachment exclusive on
+    VM1 only, the writer's printed sha256 == model sha256, host sha256
+    of the backing file's first L bytes == model sha256, descriptor
+    present. Delete pod and claim; llm0 detached from VM1 (pool-cxl-wait
+    memdevs == []).
+  ### readers, direct (if direct or both)
+    Three pods with read-only claims, the engine via hostPath, env
+    LLM_LENGTH/LLM_SHA256. Each logs: its CXL_ env, sha256 of the first
+    L bytes, check-ro (writes refused), the answer to "hello" (greedy:
+    --temp 0, fixed seed, -n 16..32, -t 2), the node and memcg page
+    cache before and after, then holds until a stop file.
+    Asserts: same bytes (all sha256 == model sha256); an answer with
+    words in it, identical in all three (if that proves flaky: equal
+    to a reference run on the host, or only non-empty, see 2.5); all
+    three hold the device at once (T13:376-379 style); env READONLY=1
+    MODE=dax, CDI permissions r (dra-cdi-device); attachments VM1 and
+    VM2, not exclusive; cxl-dump regions OnlineSize 0 (never RAM);
+    "direct": /proc/<pid>/maps of the engine has /dev/daxX.Y mapped
+    over at least L, and the node's Cached and the container's
+    memory.stat file grow by far less than L (threshold e.g. 10%).
+    Release; llm0 free.
+  ### readers, cached (if cached or both)
+    Same pods with the cached view (P3 claim mode file, or P2/P5).
+    Asserts: same bytes (sha256 over the file view, taken after the
+    runs, so that it does not fill the cache first); before the first
+    run the page cache holds nothing of the view (fincore on the file
+    in the VM, or the container's memory.stat file); after run 1 it
+    holds about the file size, per node for P3/P4 (sum over the
+    readers of a node ~ one copy) or per reader for P2/P5; bytes read
+    from CXL (exporter counter for FUSE, /sys/block/pmemX/stat for
+    P4, the copy length for P5) ~ file size in run 1 and ~0 in run 2
+    (threshold e.g. 5%); run 2 gives the same answer; the answer equals
+    the direct phase's.
+  ### nothing left
+    Pods and claims gone (dra-delete with grace, never --force:
+    POOL.md:397-402), llm0 free, memdevs == [] in both VMs, no
+    cxl-type3 in qemu (T13:465-484, 552-558), no FUSE mounts or
+    exporter units (P2/P3), no pmem namespaces (P4), no copies (P5).
+    After the server stops: remove the backing file (it is host RAM and
+    holds the model; a static device's file is not removed by
+    pool-cleanup).
+  ### trace, TIMING lines (writer copy, direct load+answer, cached run 1
+    and run 2), cleanup, restore (T13:560-574).
+
+Helpers to reuse: pool-host-wait, pool-vm-require, pool-vm-tools-install,
+pool-vm-reset, pool-server-start, pool-client-install, pool-host-client,
+pool-assert, pool-value, pool-cxl-dump, pool-cxl-wait, pool-vm-monitor
+(pool.source.sh); dra-build, dra-install(-node), dra-pull-images,
+dra-dax-tool-install, dra-apply, dra-delete, dra-json, dra-assert,
+dra-wait, dra-pod-wait, dra-env-assert, dra-exec, dra-cdi-device,
+dra-cdi-devices-with, dra-container-cgroup/-read/-file (memory.stat),
+dra-stays, dra-trace-start/-stop/-summary, dra-cleanup (dra.source.sh).
+To add or move: pod-log, wait-log, claim-pod-yaml of T13 into
+dra.source.sh (test16 needs them again; dra-claim-yaml,
+dra.source.sh:1031-1084, has no selectors and no hosts request);
+pool-file-sha256 FILE LENGTH (next to pool-file-string); a cached copy
+helper for big files (sha256 compare, then vmdir-put-file); dax-rw.py
+copy-in, copy-out and sha256 ops; a page cache probe (fincore in the
+VM, memory.stat of the container); the engine fetch/build cache
+(agent A).
+
+2.5 Risks and unknowns for the orchestrator
+-------------------------------------------
+ 1. The direct path depends entirely on a devdax-capable loader (agent
+    A): no read(), size, MAP_SHARED only, 2 MiB alignment, fd input for
+    leases. Without it, "direct" exists only through P4 (-o dax).
+ 2. The cached path on volatile shared devices exists only through FUSE
+    (P2/P3) or a copy (P5) with this kernel; userfaultfd needs a kernel
+    rebuild (1.5). FUSE specifics to verify in the VMs (agent B):
+    MAP_SHARED of a FUSE file with page cache, FOPEN_KEEP_CACHE,
+    readahead sizes, page cache charged to the first faulting memcg.
+ 3. P3 is real driver work (a new mode value, an exporter process,
+    mount life cycle, restart behaviour, SELinux labels of the FUSE
+    mount in Fedora containers - unknown whether the e2e containerd
+    runs with SELinux labels), not just e2e work. P4 is larger still,
+    with kernel unknowns (labels and namespaces of one shared pmem
+    device on several hosts, pfn info blocks written by readers,
+    hot-remove of an nvdimm-bound device).
+ 4. Emulation realism (1.3): CXL is host RAM through KVM; no latency or
+    traffic difference is measurable; the proofs are structural
+    (what is mapped) and counters (page cache, bytes served). Cache
+    coherency of real multi-host CXL is not exercised.
+ 5. MAP_POPULATE (1.6): cached views read the whole file at load;
+    "on-demand" means per node and on first use, not per page; size the
+    device close to the model.
+ 6. Memory pressure on VM2 (control plane + two readers) can evict
+    cached pages between run 1 and run 2: keep n_ctx small, check
+    MemAvailable first, use thresholds, not equality.
+ 7. Inference determinism: greedy decoding with the same binary, model
+    and -t should give the same text on both VMs (same CPU model, -cpu
+    host), but floating point reduction order may differ with thread
+    counts; compare with equal -t, or assert only a non-empty answer
+    and report differences.
+ 8. Stale content: pool devices keep bytes (USAGE.md:355-364) and the
+    static device's backing file survives runs (1.3): remove it first,
+    verify sha256 after the writer.
+ 9. hosts capacity 4: phases must not overlap (3 + 3 > 4); sharing one
+    claim per node saves hosts.
+10. The writer's source file pages on VM1 and reader-c on VM1: measure
+    per file or per container, or drop caches between phases.
+11. Readers in privileged containers (P2) do not get kernel-enforced
+    read-only device nodes (USAGE.md:253-256).
+12. First run cost: model download through the proxy (pinned revision
+    and sha256; Hugging Face availability) and the engine build; cache
+    both under $CACHE_DIR. Decide whether the test fails or SKIPs when
+    they cannot be prepared offline.
+13. A failed run leaves the two-node cluster (as test13); the next tests
+    reshape it (run-e2e-tests skill troubleshooting). Never run in
+    parallel with other tests.
+14. Release while mapped is SIGBUS for leases (LEASES.md:460-462);
+    readers must exit before their pods and claims are deleted, and
+    pods must never be force-deleted (POOL.md:397-402).
+15. ConfigMap 1 MiB limit: engine binaries go by hostPath; the namespace
+    must allow hostPath (and privileged for P2): the e2e namespace has
+    no Pod Security labels today (dra-install creates it plain), to be
+    confirmed.
+
+
+Part 3. Recommendations
+=======================
+R1 Writer: a claim on cxl-pool-shared with hosts "4" on VM1, the model
+   from a hostPath that only VM1 has, copied from $CACHE_DIR/llm on the
+   host when its sha256 differs; dax-rw.py gets copy-in/sha256 ops. The
+   host verifies the backing file. Layout: GGUF at offset 0, a 4 KiB
+   descriptor at the end written last. Device 512Mi or 768Mi.
+R2 Readers: claims (not leases) with readOnly: true, three pods as in
+   test13 (two on VM2, one on VM1), one phase per access mode.
+R3 Direct: P1 (devdax through the claim's device node and agent A's
+   loader). No driver or pool change.
+R4 Cached: if the orchestrator accepts driver work, P3 (DeviceConfig
+   mode file, a node FUSE exporter, CDI ro bind mount, CXL_<KEY>_PATH):
+   unprivileged, one page cache copy per node, stock engine; prototype
+   it first as P2 in the e2e to settle the FUSE behaviour (agent B). If
+   not, P5 (tmpfs copy) as the documented fallback, selected by
+   llm_cache. Leave P4 (pmem, mode fsdax, attribute persistent) to a
+   later plan: it is what plan-5 section 9.3 reserved, and it is the
+   only way to "direct with a stock engine", but it costs fake-cxl-pool,
+   controller and driver work plus kernel unknowns.
+R5 Configuration: llm_access=direct|cached|both (default both) as an
+   environment variable with an in-code default, like k8s_restore.
+R6 Proofs: same bytes = sha256 in every reader and on the host;
+   inference = an answer with words, equal across readers (equal -t);
+   direct = the engine maps /dev/daxX.Y and page cache does not grow;
+   cached = page cache grows on the first run, bytes read from CXL ~0
+   on the second; nothing left = test13's checks plus mounts/units and
+   the host backing file.
+R7 Move test13's pod-log/wait-log/claim-pod-yaml into dra.source.sh
+   when test16 is written, rather than copying them a third time.
+
+
+Part 4. Open points for the orchestrator
+========================================
+O1 Driver work for the cached mode: P3 (new mode value "file") yes or
+   no? It is the only unprivileged per-node page cache on volatile
+   shared devices with this kernel. If yes: name of the value (file),
+   of the container path (CXL_<KEY>_PATH default /run/cxl-files/<HEX>?
+   it must not collide with the /run/cxl lease mount), whole-device file
+   or descriptor length, lease support (fd of the file) now or later.
+O2 Fallback policy: P5 tmpfs as llm_cache=tmpfs only, or also used
+   automatically when P3 is not available?
+O3 One ResourceClaim per node for the two VM2 readers (DRA-native
+   sharing, one prepare per node) or one per reader (as test13)?
+O4 Writer through a claim (recommended) or a lease (as test13)? Show the
+   "readers wait while the writer holds the device" step again (costs
+   ~15 s; test13 proves it already)?
+O5 Model and engine preparation offline: fail or SKIP when the model
+   cannot be downloaded or the engine built?
+O6 Device size: 512Mi/768Mi sized to the model (recommended because of
+   MAP_POPULATE) or a uniform 1Gi.
+O7 Thresholds and determinism: exact answer equality across readers,
+   or only "sensible and non-empty" with differences reported?
+O8 Whether agent B confirms: FUSE page cache behaviour for MAP_SHARED
+   mappings, the memcg charging of shared page cache, and (for a later
+   P4) pmem regions and per-host labels on hotplugged qemu memdevs.
