@@ -428,6 +428,31 @@ pool-host-client() { # script API
     host-command "$POOL_BIN_DIR/fake-cxl-pool-client --server $POOL_URL$(printf ' %q' "$@")"
 }
 
+pool-attachments() { # script API
+    # Usage: pool-attachments DEVICE
+    #
+    # Print the attachments of DEVICE on the server as JSON, and keep them
+    # in COMMAND_OUTPUT. Fail the test if the server does not answer.
+    pool-host-client -o json attachments --device "$1" || command-error "cannot list the attachments of $1"
+}
+
+pool-device-free-wait() { # script API
+    # Usage: pool-device-free-wait DEVICE VMDIR...
+    #
+    # Wait until the VMs of VMDIRs have no CXL memory devices, 60 s at most
+    # each (pool-cxl-wait, label DEVICE-released), then until DEVICE is
+    # free and attached nowhere in the server, 60 s at most. Fail the test
+    # on timeout.
+    local dev="$1" vmdir
+    shift
+    for vmdir in "$@"; do
+        pool-cxl-wait "$vmdir" "$dev-released" "memdevs == []" 60
+    done
+    retry-until --timeout 60 --message "$dev free" \
+        'pool-host-client -o json devices "$dev" >/dev/null && pool-py assert "$COMMAND_OUTPUT" "j[\"state\"] == \"free\" and j[\"attachments\"] in (None, [])"' ||
+        error "$dev is not free: $COMMAND_OUTPUT"
+}
+
 pool-snapshot() { # script API
     # Usage: pool-snapshot LABEL
     #

@@ -1,0 +1,456 @@
+plan-7 follow-up: research FS, filesystems on shared CXL memory (not famfs)
+=========================================================================
+Written 2026-10-17 (research FS). Desk research only: no VM was used,
+nothing was built or installed.
+Sources:
+- linux ~/github.com/torvalds/linux 1b78070aaef6 (v7.3-rc). Line numbers
+  below are from this tree.
+- The guest kernel config test/e2e/playbook/files/qemu-cxl-kernel.config
+  ("cfg:LINE" below).
+- What is queued for v7.4, read with curl from git.kernel.org on 2026-10-17:
+  cxl.git next (for-7.4/* merges up to 2026-09-29), nvdimm.git
+  libnvdimm-for-next (one pmem fix, 2026-10-01), linux-next log of
+  drivers/dax and drivers/nvdimm.
+- erofs-utils git (git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils,
+  master = v1.9.4 f36cadb, 2026-08-19), cloned into
+  /home/akervine/.claude/jobs/plan7-fs/FS/dl-erofs-utils/.
+- ublksrv e36fae3 (2026-09-24), rublk c1178a4 (2026-08-24), nbdkit 9af733d
+  (2026-10-06), shallow clones in .../FS/dl-{ublksrv,rublk,nbdkit}/; qemu
+  ~/github.com/qemu/qemu ff076b1e6c (block/file-posix.c).
+- The mkfs.xfs man page and log from git.kernel.org xfsprogs-dev.
+- Package versions: mdapi.fedoraproject.org (f43, f43-updates),
+  sources.debian.org API, Launchpad API (Ubuntu).
+- Measurements I build on: 01-research-B-kernel-access.txt sections 3 and 4
+  (ext4 and squashfs on CXL pmem, FUSE and loop on volatile devdax).
+
+0. Short answers
+----------------
+- Volatile CXL to a DAX-capable block device: there is NO upstream way in
+  v7.3, and nothing is queued for v7.4. A CXL RAM region always becomes a
+  dax_region, so a /dev/daxX.Y; only a CXL PMEM region becomes an nvdimm
+  region with /dev/pmemX. Only pmem, dm (stacked on a dax bdev) and s390
+  dcssblk create a dax_device for a bdev. fsdev_dax (famfs) has no
+  in-tree user. memmap=/e820 pmem and ramdax are boot-time carveouts.
+  Section 1.
+- erofs is a good fit for CXL *pmem* (fsdax namespace) and cannot run on
+  volatile devdax. It needs CONFIG_EROFS_FS=y (off today, cfg:3032), so a
+  kernel rebuild. DAX works only for plain (FLAT_PLAIN) and chunk-based
+  files, with block size == PAGE_SIZE. GOTCHA: mkfs.erofs inlines the file
+  tail by default (FLAT_INLINE), and such a file silently gets NO DAX. Our
+  GGUF (396705472 bytes, tail 3776 bytes) would be inlined.
+  Use mkfs.erofs -b 4096 -E^inline_data --dsunit=512: no compression (the
+  default), data aligned to 2 MiB, so PMD faults. erofs never writes, so
+  any number of kernels can mount the same bdev ro. It mounts a block
+  device, or (BACKED_BY_FILE) a regular file whose aops have read_folio:
+  FUSE files qualify, DAX files (ext4/xfs dax, virtiofs dax, famfs) do
+  not. fscache/ondemand was removed from erofs in v7.2. Section 2.
+- Other filesystems on pmem fsdax: ext4 (measured by B, needs no kernel
+  change) and xfs give DAX with dax=always|never|inode, but need care to
+  get 2 MiB aligned extents. squashfs has no DAX. cramfs's 16 MiB file
+  limit is too small for the model. Table in section 3.6.
+- Page cache on volatile devdax with upstream userspace only: none.
+  ublksrv/rublk loop, nbdkit file, qemu-storage-daemon host_device and
+  erofs-utils' NBD/FUSE helpers all read with read()/pread()/io_uring,
+  which devdax does not have. They also see size 0. phram + mtdblock_ro
+  fails on x86 while the device is bound to device_dax (memtype conflict),
+  and is unsafe and uncached if it is not bound. Section 4.
+- Recommendation (section 5): on CXL pmem, erofs on the fsdax namespace.
+  dax=always gives direct access, the default (no dax) gives the page
+  cache. Both modes on one node: a second bdev, losetup -r --direct-io=on
+  over /dev/pmemX. ext4 is the fallback with no kernel change. On volatile
+  devdax: direct = raw devdax mmap (today) or famfs (stream FA). Cached =
+  only with new code or a kernel option (NBD/ublk plus an mmap-backed
+  server), or a tmpfs copy.
+
+1. Volatile CXL to a DAX-capable block device or any fs-dax target
+-------------------------------------------------------------------
+1.1 Who makes a dax_device. alloc_dax() has exactly five callers:
+  drivers/dax/bus.c:1511 (devdax; ops NULL, so no fs use except fsdev),
+  drivers/nvdimm/pmem.c:571, drivers/s390/block/dcssblk.c:541,
+  drivers/md/dm.c:2375 and fs/fuse/virtio_fs.c:1085. BLK_FEAT_DAX is set
+  only by pmem.c:516, dcssblk.c:557 and dm-table.c:2062. dm only passes DAX
+  through from the bdevs below it (dm.c:769, fs_dax_get_by_bdev). Every
+  filesystem finds its dax_device by fs_dax_get_by_bdev(): ext4
+  super.c:4386, xfs_buf.c:1783, erofs super.c:159 and 710. So fs-dax on a
+  bdev means pmem (or dm over pmem).
+1.2 drivers/cxl. There are only two partition modes, CXL_PARTMODE_RAM and
+  _PMEM (include/cxl/cxl.h:134-135). The region probe
+  (core/region.c:4210-4234) sends PMEM to devm_cxl_add_pmem_region (nvdimm
+  bridge, region, namespaces) and RAM to devm_cxl_add_dax_region (devdax
+  or kmem). Nothing converts one into the other. There is no DCD support
+  in v7.3. cxl.git next for 7.4 has hardening, zero-size decoders and
+  fixes, and nothing new for regions or dax.
+1.3 drivers/dax. fsdev.c (DEV_DAX_FSDEV=y, cfg:2822) makes a
+  MEMORY_DEVICE_FS_DAX pgmap and a dax_device with ops for "fs-dax
+  filesystems like famfs" (fsdev.c:16-29). Its only consumer API is
+  fs_dax_get() (super.c:177), and nothing in v7.3 calls it
+  (grep: only include/linux/dax.h and super.c). It has no mmap or read.
+  linux-next drivers/dax for 7.4 holds only fsdev fixes (2026-07-14) and
+  kmem hotplug sysfs work (2026-08-06). dax_hmem (drivers/dax/hmem) makes
+  the same devdax kind from soft-reserved ranges. dax/pmem.c is the
+  reverse direction (devdax on top of an nvdimm namespace).
+1.4 drivers/nvdimm. Sources of pmem regions: CXL pmem (cxl/pmem.c),
+  ACPI NFIT, e820.c (memmap=nn!ss, needs X86_PMEM_LEGACY, off at cfg:427),
+  of_pmem.c (device tree, CONFIG_OF off at cfg:1864), virtio_pmem.c
+  (VIRTIO_PMEM off at cfg:2636; a qemu virtio device on a file, not CXL),
+  and ramdax.c (new in v6.19, 43bc0aa19a21, Kconfig l.100-117: it is
+  force-bound to an e820_pmem or pmem-region platform device and keeps a
+  128K label area at the END of the range). All of them are boot-time
+  physical ranges. A memmap= range over the CXL window HPA would be used
+  by pmem before the HDM decoders are committed, would collide with the
+  "CXL Window" resource cxl_acpi inserts, and two kernels would share
+  ramdax's label area. These are hacks, not mechanisms. libnvdimm-for-next
+  (7.4) has one pmem probe fix.
+1.5 Verdict: nothing upstream gives fs-dax on volatile CXL, besides famfs
+  (dax half in v7.1+; the FUSE half is not in v7.3, see stream FA). The
+  upstream fs-dax target for shared CXL is CXL pmem (research B section 3).
+
+2. erofs in depth
+-----------------
+2.1 What DAX needs (fs/erofs, v7.3):
+  - A bdev with a dax_device: super.c:710 (primary) and :159 (extra
+    devices). Otherwise dax=always is silently turned off, with "DAX
+    unsupported by block device. Turning off DAX." (super.c:206-209), and
+    the mount succeeds without DAX. Check dmesg or /proc/mounts: erofs
+    shows ",dax=always" only while it is in effect (super.c:1110).
+  - Block size == PAGE_SIZE (super.c:731-734, "unsupported blocksize for
+    DAX", turned off again).
+  - Per inode: S_DAX only for regular files with datalayout FLAT_PLAIN or
+    CHUNK_BASED (inode.c:214-218). FLAT_INLINE (tail packed into the
+    metadata block) and every compressed layout get no DAX.
+  - dax=always is incompatible with inode_share (super.c:666-669).
+    dax=never only clears ALWAYS. There is no per-inode DAX flag in erofs,
+    and no option means no DAX.
+  - mmap (data.c:484-495): DAX files reject MAP_SHARED with VM_MAYWRITE.
+    llama.cpp opens "rb" (O_RDONLY), so its MAP_SHARED PROT_READ has no
+    MAYWRITE. VM_HUGEPAGE is set. MAP_PRIVATE maps the same pages until
+    written.
+  - read() on a DAX file: dax_iomap_rw (data.c:443-444) copies from CXL.
+    So llama.cpp's fread of the header does not fill the page cache.
+2.2 PMD (2 MiB) faults. erofs has .huge_fault = erofs_dax_huge_fault ->
+  dax_iomap_fault(order) (data.c:467-482), and FS_DAX_PMD=y (cfg:2896).
+  fs/dax.c dax_iomap_pmd_fault falls back to 4 KiB faults unless all of
+  these hold:
+  a. The file offset and the virtual address have the same 2 MiB colour
+     (dax.c:1988). erofs sets .get_unmapped_area = thp_get_unmapped_area
+     (data.c:531), so a mapping of offset 0 is 2 MiB aligned.
+  b. The 2 MiB lies inside the VMA and inside i_size (dax.c:1999-2004).
+     The last partial 2 MiB of the file always uses 4 KiB faults.
+  c. iomap returns at least 2 MiB from that offset (dax.c:2068). A
+     FLAT_PLAIN file maps as one extent to EOF (data.c:163-169).
+     CHUNK_BASED maps one chunk at a time, so it needs chunks >= 2 MiB.
+  d. The PFN is 2 MiB aligned (dax_iomap_direct_access, dax.c:1296).
+     Physical address = namespace data start + erofs fsoff + blkaddr*4096
+     (data.c:325-328). The CXL region base is 256 MiB aligned, and B
+     measured the fsdax data start at namespace + 2 MiB (align 2M,
+     map=mem). So the file's first data block must be at a multiple of
+     512 blocks in the image (and fsoffset, if used, a multiple of 2 MiB).
+  The mkfs side: --dsunit=512 (with -b 4096) rounds the start of every
+  DATA buffer block up to a multiple of 512 blocks (lib/cache.c:397-400;
+  added in v1.8.6, 7579324). It costs up to 2 MiB of padding per file.
+  With --chunksize, use the same value (--chunksize=2097152), or dsunit is
+  ignored (mkfs/main.c:1582-1585).
+2.3 mkfs.erofs options that matter (man/mkfs.erofs.1, v1.9.4):
+  -b 4096        the default is getpagesize() (main.c:1624); must equal
+                 PAGE_SIZE for DAX.
+  (no -z)        no compression is the default. Keep it: GGUF does not
+                 compress, and compressed files never get DAX.
+  -E^inline_data (also -Enoinline_data) makes regular files FLAT_PLAIN
+                 (lib/inode.c:1014-1017). The default inlines a tail that
+                 fits in the inode's block (lib/inode.c:1046-1054), which
+                 makes FLAT_INLINE, i.e. no DAX for the whole model file.
+                 Not needed only if the file size is a multiple of 4096.
+  --dsunit=512   2 MiB data alignment (2.2d).
+  --tar=f        the source is a tarball; with no SOURCE argument mkfs
+                 reads the tar stream from stdin (main.c:1534-1549).
+  --offset=#     writes the image at a byte offset of the destination
+                 (since v1.8). The kernel side is mount -o fsoffset=#
+                 (v6.16+, super.c:554, must be block aligned, :727).
+  -T0 --all-root (optional) reproducible images, owned by root.
+  Destination: a regular file or a BLOCK DEVICE (lib/io.c:288-379). For a
+  bdev mkfs reads its size with BLKGETSIZE64 and issues BLKDISCARD. pmem
+  has no discard (no discard in drivers/nvdimm/pmem.c), so mkfs prints
+  "failed to erase block device" and goes on (io.c:323-326 only logs).
+  mkfs.erofs never calls fsync (erofs_io_fsync has no caller). The data
+  reaches pmem when the bdev is last closed: blkdev_put_whole ->
+  blkdev_flush_mapping (B 3.4). A writer should still run `sync` or
+  `blockdev --flushbufs` before it reports done.
+  Writer flow: mkfs.erofs -b 4096 -E^inline_data --dsunit=512 -T0
+  --all-root /dev/pmemX /stage-dir (or --tar=f /dev/pmemX < model.tar).
+  This needs only the bdev, opened rw (CDI), no mount and no
+  CAP_SYS_ADMIN. The source can also be a directory with the model.
+2.4 mkfs time for ~400 MB (estimate from the code path, not measured):
+  mkfs writes the file data with copy_file_range first
+  (lib/io.c:512-531). That fails for a bdev destination, so it falls back
+  to read+write into the bdev page cache, and the last close writes back
+  to pmem (memcpy). Metadata is a few blocks. Expect ~0.3-1 s (memory
+  bandwidth bound, two copies plus writeback; mke2fs -d took 0.8 s for
+  96 MiB in B, most of that is ext4 metadata init). This is far below
+  the model download or the llama.cpp load.
+2.5 Versions and packaging. Fedora 43: erofs-utils 1.9.4-1.fc43
+  (mkfs.erofs, fsck.erofs, dump.erofs, mount.erofs in /usr/bin) and
+  erofs-fuse 1.9.4. Its Requires pull libcurl, libxml2, openssl, libnl3,
+  liburing, qpl, lz4/xz/zstd/zlib/deflate. Debian: trixie 1.8.6-1 (has
+  --dsunit), bookworm 1.5-1 (no dsunit), forky/sid 1.9.4. Ubuntu: noble
+  1.7.1 (no dsunit), plucky 1.8.5 (no dsunit), questing 1.8.10, resolute
+  1.9.1. Base container images (fedora:43, debian, ubuntu) are minimal
+  and do not ship erofs-utils (not checked by pulling, they carry no
+  filesystem tools), so the writer image installs it (dnf install
+  erofs-utils). An image older than 1.8.6 cannot align the data. Without
+  --dsunit DAX still works, with 4 KiB faults only.
+  mount.erofs (v1.9+, "dedicated mount helper") is what mount(8) runs for
+  -t erofs once erofs-utils is installed. Its default subtype "local" is
+  a plain kernel mount.
+2.6 Several kernels mounting the same bdev read-only. erofs has no write
+  path: the superblock is forced SB_RDONLY at fill_super (super.c:658)
+  and at reconfigure (:853), and there is no bio write or buffer dirtying
+  in fs/erofs. One caveat: without -o ro, get_tree_bdev opens the bdev
+  for write (sb_open_mode, fs/super.c:1802) before erofs makes it ro. That
+  fails on a ro bdev (device cgroup "r", regionN/read_only), and mount(8)
+  then retries ro. Always pass -o ro. So two VMs and N containers can
+  mount the same image, provided it is immutable while mounted (same
+  coherence rules as B 3.3): a reflash needs every reader unmounted
+  first. erofs mounts need init-ns CAP_SYS_ADMIN (no FS_USERNS_MOUNT,
+  super.c:977), so the node mounts and CDI bind-mounts into containers.
+2.7 Metadata caching. The superblock, inodes and directories go through
+  the bdev page cache (erofs_init_metabuf: sb->s_bdev->bd_mapping,
+  data.c:71) in local DRAM, also with dax=always; the data does not. It is
+  a few KiB for one model. Each kernel caches its own copy, and nothing
+  invalidates it across VMs. Hence "immutable while mounted".
+2.8 One mode per device per kernel. A second mount of the same bdev
+  reuses the superblock and ignores the new options (fs/super.c:1877-1896
+  only checks RO). So on one node /dev/pmemX is either dax=always or
+  cached. To offer both on one node, mount the second mode from another
+  bdev: `losetup -r --direct-io=on -f /dev/pmemX` (loop takes S_ISBLK,
+  loop.c:511) and mount the loop device without dax. With direct I/O the
+  loop reads straight from pmem, so there is one page-cache copy
+  (B 4b measured the same effect with squashfs). Not measured with erofs.
+2.9 File-backed mounts (EROFS_FS_BACKED_BY_FILE, default y, Kconfig:98).
+  The source must be S_ISREG and its mapping must have a_ops->read_folio
+  (super.c:806-810 for an fd source, :826-828 for a path). Since v7.3
+  (058884d23488) the source may also be an fd passed through fsconfig.
+  Qualify: files on ext4/xfs/btrfs/tmpfs without DAX, and FUSE files
+  (fuse_file_aops .read_folio, fs/fuse/file.c:3100).
+  Do not qualify: DAX files, whose aops have no read_folio
+  (ext4_dax_aops inode.c:3996, xfs_dax_aops xfs_aops.c:876,
+  fuse_dax_file_aops dax.c:1293; famfs files are fuse DAX inodes, so very
+  likely the same, see FA). Also an erofs file on an erofs without bdev
+  (super.c:687-691), and any char device such as /dev/daxX.Y.
+  A file-backed mount has no DAX (dax_dev is set only for bdevs). It reads
+  the backing file with buffered I/O, so there are two copies (backing
+  file cache + erofs cache), unless -o directio and the backing file has
+  FMODE_CAN_ODIRECT (fileio.c:54-56; FUSE has direct_IO). Relevance:
+  erofs over a FUSE file over devdax would give a real fs image with one
+  cache copy, but it still needs a FUSE server (D10 dropped that). An
+  erofs image as a file inside famfs needs a loop device (cached only).
+2.10 fscache/ondemand: removed. "erofs: remove fscache backend entirely"
+  (c37460cd9b2f, v7.2-rc1). domain_id is now only for inode_share
+  (EROFS_FS_PAGE_CACHE_SHARE, experimental, page cache dedup between
+  inodes of identical content, not compatible with DAX). Not relevant to
+  us. FSCACHE is off (cfg:2930) and does not need to change.
+2.11 Kernel config for erofs: CONFIG_EROFS_FS=y (today "is not set",
+  cfg:3032). Its defaults are fine: EROFS_FS_XATTR=y, POSIX_ACL=y,
+  SECURITY=y, BACKED_BY_FILE=y, ZIP=y (LZ4; ZIP_LZMA default y; could be
+  n, we use no compression). Leave PAGE_CACHE_SHARE and ZIP_ACCEL n.
+  It selects FS_IOMAP, CRC32 and XXHASH. Already on: FS_DAX, FS_DAX_PMD
+  (cfg:2895-2896), BLK_DEV_PMEM, ND_PFN, NVDIMM_PFN, NVDIMM_DAX
+  (cfg:2810-2817), CXL_PMEM (cfg:1687), BLK_DEV_LOOP (cfg:1896),
+  TRANSPARENT_HUGEPAGE (cfg:1013), ZONE_DEVICE (cfg:1048).
+
+3. Other filesystems for read-only data on CXL pmem fsdax
+---------------------------------------------------------
+3.1 ext4 (EXT4_FS=y, cfg:2858; measured by B 3.3 in both VMs).
+  DAX: dax=always|never|inode (super.c:2389-2408). It needs block size ==
+  PAGE_SIZE (super.c:4805-4810). dax=always refuses a filesystem with the
+  inline_data feature (super.c:4812-4817). Per inode, DAX is off for
+  journalled-data, inline-data, encrypted and verity files
+  (inode.c:5117-5139). dax=inode uses the per-file FS_XFLAG_DAX (chattr
+  +x), which a ro mount cannot set, so it must be set at write time.
+  Readers: mount -o ro,noload[,dax=always] (B: no writes, sha256 of the
+  whole backing file unchanged after 3 mounts).
+  Writer: mke2fs -t ext4 -b 4096 -d STAGEDIR /dev/pmemX, no mount needed
+  (B: 0.8 s for 96 MiB), e2fsprogs 1.47.3 in Fedora 43.
+  2 MiB aligned extents: mke2fs -d allocates with libext2fs, which ignores
+  stripe hints. B got the extent at block 4139, so 4 KiB faults. Ways to
+  align (none measured):
+   a. bigalloc with 2 MiB clusters: mke2fs -O bigalloc -C 2097152. ext4
+      keeps the offset of a block inside its cluster the same logically
+      and physically (EXT4_LBLK_COFF/EXT4_PBLK_COFF, ext4.h:394-396), so
+      logical block 0 of a file is at a cluster boundary, which is 2 MiB
+      aligned. Nothing in v7.3 excludes bigalloc from DAX (no bigalloc
+      check in ext4_should_enable_dax). Cost: 2 MiB per file and
+      directory. Whether mke2fs -d honours bigalloc for data needs a test
+      (filefrag -v).
+   b. The writer mounts rw with -o stripe=512 (or mke2fs -E
+      stride=512,stripe_width=512) and copies the file in. mballoc aligns
+      stripe-multiple requests (mballoc.c:2681-2697,
+      ext4_mb_scan_aligned). This is likely but not guaranteed (goal
+      heuristics). It needs a mount in the writer.
+  Both modes per node: as 2.8 (one sb per bdev; a loop with --direct-io
+  for the second mode).
+3.2 xfs (XFS_FS=y, cfg:2871).
+  DAX: dax=always|never|inode (xfs_super.c:98-, 171-172). It needs block
+  size == PAGE_SIZE and a dax-capable data or rt device, otherwise DAX is
+  turned off with an alert (xfs_super.c:363-390). reflink plus DAX is
+  refused only on partitions (:378-383). Per inode: XFS_DIFLAG2_DAX
+  (xfs_iops.c:1363-1377); mkfs.xfs -d daxinherit=1 sets it on everything
+  mkfs creates.
+  Readers: ro,norecovery: no log replay, and no log writes on norecovery
+  or a ro target (xfs_log.c:291-300). Not measured.
+  Writer without a mount: mkfs.xfs -p protofile. Fedora 43 has xfsprogs
+  6.15.0. "Populate from a directory" (-p DIR) came 2025-09-08
+  ("proto: add ability to populate a filesystem from a directory", in
+  6.17). With 6.15 the writer writes a protofile that names the source
+  file. Alignment: -d extszinherit=512 (an extent size hint of 2 MiB on
+  every inode mkfs creates, inherited) and/or -d su=2m,sw=1. Whether the
+  proto file copy honours the hint needs a test (xfs_bmap -v). xfs has
+  more metadata, a log and AGs: a bigger image for nothing, since we never
+  write in place.
+3.3 squashfs (SQUASHFS=y, cfg:3000; measured by B 3.4): no DAX at all,
+  so page cache only. Its file_operations have no thp_get_unmapped_area
+  (B: mapping not 2 MiB aligned). Writer: mksquashfs DIR img -noD (or
+  -noI -noD -noF -noX) then dd oflag=direct to the bdev. squashfs-tools
+  4.6.1 in Fedora 43. It needs a bdev (a raw or fsdax namespace) and
+  works on loop. A cached-only alternative to erofs that needs no kernel
+  change.
+3.4 cramfs (CRAMFS off, cfg:2999): the only XIP filesystem, through
+  CRAMFS_MTD (direct mapping of an MTD that supports point(), e.g.
+  phram). Limits: 256 MB filesystem, 16 MB per file (Kconfig l.9;
+  CRAMFS_SIZE_WIDTH 24, include/uapi/linux/cramfs_fs.h:16). The 378 MiB
+  model does not fit. Rejected.
+3.5 Others: btrfs and f2fs have no DAX. virtiofs DAX is host-to-guest
+  only. A FUSE passthrough of a DAX file is direct, but then pmem exists
+  and FUSE adds nothing (B 4a). overlayfs maps the lower file's
+  vm_ops, so a DAX lower file stays DAX, but it is not needed.
+3.6 Comparison (pmem fsdax namespace map=mem, unless stated)
+
+ fs       | direct mmap         | page cache switch    | writer flow          | concurrent ro mounts  | tools in F43         | kernel cfg
+ ---------+---------------------+----------------------+----------------------+-----------------------+----------------------+-------------------
+ erofs    | yes; PMD with       | dax=always / default | image flash: mkfs    | safe: no write path,  | erofs-utils 1.9.4    | EROFS_FS off
+          | FLAT_PLAIN, -b 4096,| (no dax); per sb.    | .erofs to bdev from  | SB_RDONLY forced      | (dsunit since 1.8.6) | (cfg:3032) ->
+          | --dsunit=512,       | Both modes per node  | dir or tar; no mount;| (pass -o ro)          |                      | needs rebuild
+          | -E^inline_data      | via loop dio         | no in-place update   |                       |                      |
+ ext4     | yes; PMD only with  | dax=always|never|    | mke2fs -d (no mount),| safe with ro,noload   | e2fsprogs 1.47.3     | on (cfg:2858)
+          | aligned extents     | inode; per sb        | or rw mount + cp     | (measured, B 3.3)     |                      |
+          | (bigalloc 2M?)      |                      |                      |                       |                      |
+ xfs      | yes; PMD with       | dax=always|never|    | mkfs.xfs -p proto-   | ro,norecovery: no     | xfsprogs 6.15.0      | on (cfg:2871)
+          | extszinherit/su     | inode; daxinherit    | file (dir in 6.17+)  | writes (not measured) | (no -p DIR)          |
+ squashfs | no DAX              | always cached        | mksquashfs -noD + dd | safe (measured, B)    | squashfs-tools 4.6.1 | on (cfg:3000)
+ cramfs   | XIP via MTD only    | n/a                  | mkfs.cramfs          | -                     | -                    | off; 16 MB/file:
+          |                     |                      |                      |                       |                      | unusable
+ (volatile devdax: none of these mount; see sections 1 and 4)
+
+4. Page-cached access on volatile devdax with upstream userspace only
+---------------------------------------------------------------------
+What devdax offers (B 1, drivers/dax/device.c:360 dax_fops): open,
+mmap_prepare (MAP_SHARED only, 2 MiB aligned), get_unmapped_area,
+noop_llseek. There is no read, write, read_iter, BLKGETSIZE64 or st_size,
+so a server would have to mmap it and take the size from sysfs.
+4.1 ublk (BLK_DEV_UBLK off, cfg:1906):
+  - ublksrv (ublk-org/ublksrv) targets loop, null, nbd, nfs, iscsi, nvme.
+    The loop target treats a non-bdev, non-regular file as size 0
+    (targets/ublk.loop.cpp:199-217) and does its I/O with io_uring
+    read/write on the fd, which is EINVAL on devdax. Not packaged in
+    Fedora 43.
+  - rublk 0.2.10 (in Fedora 43): null, loop, zoned, qcow2, compress,
+    ramdisk, and vram (OpenCL, src/vram.rs). Its loop also uses buffered
+    or direct I/O on the backing file. No mmap backend for a file.
+4.2 NBD (BLK_DEV_NBD off, cfg:1899):
+  - nbdkit 1.46.2: the file plugin refuses anything that is neither
+    regular nor a block device ("file is not regular or block device",
+    plugins/file/file.c:718-724), and reads with pread. memory/data/
+    tmpdisk are private RAM. None maps a file. A 20-line nbdkit python or
+    sh plugin with mmap would work, but that is custom code.
+  - nbd-server 3.25: pread on the export file, same EINVAL.
+  - erofs-utils' mount.erofs -t erofs.nbd and erofsfuse read the image
+    with pread through erofs_io (lib/io.c), same EINVAL.
+4.3 qemu-storage-daemon: host_device accepts a char device
+  (block/file-posix.c:788-795, hdev_probe_device :4127), but its length
+  comes from lseek (0 on devdax) and its I/O is preadv
+  (file-posix.c:1744). Not usable.
+4.4 MTD phram + mtdblock_ro (MTD=y, MTD_PHRAM off cfg:1831, MTD_BLOCK_RO
+  off cfg:1793). phram=name,start,len maps the physical range with
+  ioremap (uncached) unless a DT node says otherwise
+  (drivers/mtd/devices/phram.c:85-99, :129). It does not request the
+  resource, so nothing stops it from overlapping the dax region. On x86,
+  while the dax device is bound, memremap_pages has registered the range
+  as WB (mm/memremap.c:188 pfnmap_track). ioremap's UC- request then gets
+  WB back and is refused (arch/x86/mm/ioremap.c:234-246,
+  is_new_memtype_allowed pgtable.h:887-889), so phram fails to register.
+  If the dax device is unbound first, phram works, uncached (slow reads
+  over CXL), from a physical address only root can read in /proc/iomem.
+  It holds no reference on the CXL region: destroying the region under it
+  gives garbage or machine checks. mtdblock_ro then gives a ro bdev with
+  a normal page cache, and erofs or squashfs mount on it. Unsafe; do not
+  use.
+4.5 Other v7.3 paths: FUSE (B M6, needs a server, D10 dropped it), loop
+  (no char devices, loop.c:511), userfaultfd (off, cfg:1064), kmem
+  (corrupts shared memory). The only no-code option left is the tmpfs
+  copy, and even that needs an mmap-capable copier (dd and cp cannot read
+  devdax).
+4.6 Answer: no upstream userspace program reads a devdax as is. Every
+  cached mode on volatile devdax needs new code (FUSE, NBD or ublk
+  server over mmap), or a kernel option plus such a server, or famfs.
+
+5. Recommendation
+-----------------
+(a) Volatile shared devdax (what real shared CXL appliances offer):
+  direct: 1. The raw devdax mmap (today's test16 engine, M1): upstream
+             kernel, no change, needs a devdax-aware engine.
+          2. famfs, when its FUSE half lands (stream FA's verdict). It is
+             the only upstream-track way to a regular file there.
+          No erofs, ext4 or xfs: no dax_device bdev exists (section 1).
+  cached: 1. None with upstream code only (section 4).
+          2. If needed: BLK_DEV_NBD=y or BLK_DEV_UBLK=y plus a small
+             mmap-backed server (nbdkit python plugin, or ublk/libublk),
+             then erofs or squashfs ro on /dev/nbdN. Custom code.
+          3. tmpfs copy (eager, per pod).
+(b) CXL pmem, fsdax namespace map=mem, shared LSA (B section 3):
+  direct: 1. erofs, mount -o ro,dax=always on /dev/pmemX, image made with
+             mkfs.erofs -b 4096 -E^inline_data --dsunit=512 -T0 --all-root
+             /dev/pmemX DIR. PMD faults, no page cache, no write path
+             (safe for N kernels), a natural "flash" writer that needs no
+             mount, mount points CDI-bind-mounted into readers. Cost:
+             CONFIG_EROFS_FS=y, a kernel rebuild.
+          2. ext4 ro,noload,dax=always with mke2fs -d. Works on today's
+             kernel (measured end to end). 4 KiB faults unless
+             bigalloc -C 2M aligns the data (to verify).
+          3. xfs ro,norecovery,dax=always: no gain over ext4 here.
+  cached: 1. The same erofs image mounted -o ro without dax (another VM,
+             or on the same node through losetup -r --direct-io=on
+             /dev/pmemX), so one device, one image, both modes.
+          2. ext4 ro,noload (measured), squashfs on a raw namespace
+             (measured; cached only).
+  Checks for P1 (12-proto-P1-erofs-pmem.txt): dmesg shows no "Turning off
+  DAX"; /proc/mounts shows dax=always; `dump.erofs --path=/MODEL`
+  shows the model as FLAT_PLAIN (datalayout 0); smaps FilePmdMapped > 0,
+  or the fault count (~190 PMD faults for 378 MiB); pagemap PFNs in the
+  namespace; FilePages +0 with dax and +model without.
+Kernel config the final guest kernel needs (qemu-cxl-kernel.config):
+  must change: CONFIG_EROFS_FS=y (cfg:3032, now "is not set"); defaults
+               for EROFS_FS_XATTR/POSIX_ACL/SECURITY/BACKED_BY_FILE/ZIP.
+  already on:  CONFIG_FS_DAX=y, CONFIG_FS_DAX_PMD=y (2895-2896),
+               CONFIG_LIBNVDIMM=y, BLK_DEV_PMEM=y, ND_CLAIM=y, ND_BTT=y,
+               ND_PFN=y, NVDIMM_PFN=y, NVDIMM_DAX=y (2810-2817), DAX=y,
+               DEV_DAX=y, DEV_DAX_PMEM=y, DEV_DAX_CXL=y, DEV_DAX_FSDEV=y,
+               DEV_DAX_KMEM=y (2818-2823), CXL_PMEM=y, CXL_REGION=y
+               (1687, 1691), BLK_DEV_LOOP=y (1896), EXT4_FS=y, XFS_FS=y,
+               SQUASHFS=y, TRANSPARENT_HUGEPAGE=y, ZONE_DEVICE=y.
+  only for a cached mode on volatile devdax with a custom server:
+               BLK_DEV_NBD (1899) or BLK_DEV_UBLK (1906), now off.
+  not needed:  FSCACHE/CACHEFILES (erofs fscache removed in v7.2),
+               MTD_PHRAM, MTD_BLOCK_RO, CRAMFS, VIRTIO_PMEM,
+               X86_PMEM_LEGACY/RAMDAX, USERFAULTFD.
+
+6. Open points
+--------------
+- Unmeasured here (P1 owns the VMs): erofs dax=always PMD faults on pmem
+  with --dsunit=512; the loop --direct-io second-mode trick with erofs;
+  ext4 bigalloc alignment from mke2fs -d; xfs protofile alignment.
+- erofs-utils prints "failed to erase block device" on pmem. It is
+  harmless, but a test that greps mkfs output for "err" will trip on it.
+- Writers of older distros: Debian bookworm and Ubuntu noble/plucky have
+  no --dsunit. Use a Fedora 43 writer image.
+- The cross-VM coherence rules of B 3.3 apply unchanged: flash before any
+  reader mounts, all readers unmount before a reflash, only the writer
+  writes labels (create-namespace -M mem).

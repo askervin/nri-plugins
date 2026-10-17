@@ -1,0 +1,250 @@
+plan-7-e2e-cxl-llm-share: stream F status (driver mode file)
+============================================================
+Stream F agent (Opus), 2026-10-16. Tree: ~/github.com/intel/intel-resource-drivers-for-kubernetes,
+branch 5fC-cxl, HEAD 79a85f3, uncommitted (nothing committed, stashed or reverted; the
+go.mod replace of nri-plugins to the local checkout is unchanged). D = that tree.
+
+Status: F1-F5 done, verified (below). No VM was used.
+
+Files
+-----
+  new  D/cmd/kubelet-cxl-plugin/file_export.go        export table: refcount by (driver, claim),
+                                                       mountpoints, start/stop/shutdown, CDI mount
+  new  D/cmd/kubelet-cxl-plugin/file_fuse.go          the go-fuse exporter (in-process, DirectMountStrict)
+  new  D/cmd/kubelet-cxl-plugin/file_export_test.go   fake exporter, table, read path, FUSE nodes,
+                                                       real mount (root/userns only)
+  new  D/deployments/cxl/examples/pool-shared-file-readers.yaml
+  mod  D/pkg/cxl/api/api.go (+test)                   ModeFile, ValidMode, InvalidModeError,
+                                                       ErrReadOnlyMode, ErrSharedNUMA, Memory.Path,
+                                                       Env PATH, ExecEnv PATH->FD, Response.Path
+  mod  D/cmd/kubelet-cxl-plugin/lending.go (+test)    DeviceConfig rules, devdaxMode, lentDevice.File
+  mod  D/cmd/kubelet-cxl-plugin/pool.go (+test)       file mode, export at prepare, restore at start,
+                                                       release before the device, CDI mount
+  mod  D/cmd/kubelet-cxl-plugin/node_state.go (+test) the same for local memdev slices
+  mod  D/cmd/kubelet-cxl-plugin/broker.go, lease_store.go (+test)   file leases (fd of the file)
+  mod  D/cmd/kubelet-cxl-plugin/driver.go             the export table of the node, shutdown
+  mod  D/cmd/cxl-request/main.go (+test)              --mode file, fd/exec for file leases
+  mod  D/doc/cxl/{README,USAGE,LEASES,POOL,LOCAL}.md, D/deployments/cxl/device-classes.yaml (comments)
+  mod  D/go.mod, D/go.sum                             + github.com/hanwen/go-fuse/v2 v2.12.0 (direct)
+  vendor/ regenerated with go mod vendor (gitignored): go-fuse fs, fuse, internal/*, splice only.
+
+Verification (2026-10-16 16:1x)
+-------------------------------
+  go vet ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/...     ok
+  go test -race -count=1 (same packages):
+    ok  .../cmd/kubelet-cxl-plugin     5.423s
+    ok  .../cmd/cxl-request            1.111s
+    ok  .../pkg/cxl/api                1.057s
+    ok  .../pkg/cxl/device             1.071s
+    ok  .../pkg/cxl/memorypolicy       1.058s
+  Real FUSE on the host kernel (7.0.7), no VM: the test binary run as root of a user namespace,
+    go test -race -c -o /tmp/F-plugin-race.test ./cmd/kubelet-cxl-plugin/
+    unshare -Urm /tmp/F-plugin-race.test -test.run 'TestFuseExport|TestReadMapping'   PASS
+  (TestFuseExportMount, -Copy, -Stale skip unless euid 0.)
+  gofmt -l cmd/kubelet-cxl-plugin cmd/cxl-request pkg/cxl                     clean
+  golangci-lint 2.12.2, --max-same-issues 0 --max-issues-per-linter 0:
+    ./... : 1 issue before and after, typecheck of pkg/fakehlml (cgo, hlml.h missing on the
+            host); it hides every other finding of the tree, so the CXL packages were linted
+            on their own:
+    ./cmd/kubelet-cxl-plugin/... ./cmd/cxl-request/... ./pkg/cxl/... :
+            baseline (untouched tree, recorded first) 13 issues (contextcheck 3, cyclop 9,
+            staticcheck 1); after 13 issues, identical messages (same functions, same
+            complexity numbers). No new findings.
+  Static builds (CGO_ENABLED=0 GOARCH=amd64 go build -mod vendor), "statically linked":
+    /tmp/F-kubelet-cxl-plugin  81246960 bytes  sha256 d9d5e1464457244c9b69f9b211369167e8811e3a76eb2007225fc2b69f592141
+    /tmp/F-cxl-request          3925967 bytes  sha256 3cf63f32e9eea87fec1d682f0f05708fbf526f350d357acade173def49c79bd5
+  (Rebuilt from the final tree at 16:15: the same sha256. dra-build of the e2e rebuilds from the
+  tree with go mod vendor anyway. The /proc/mounts line below was captured from a real mount in
+  the user namespace test.)
+
+Decisions
+---------
+DF1 One word, one validator per surface. ModeFile = "file" in pkg/cxl/api; api.ValidMode,
+    api.InvalidModeError and api.ErrReadOnlyMode are used by both the CLI/broker validator
+    (api.Request.Validate) and the DeviceConfig validator of both drivers (deviceConfig.modeFor,
+    numaOnly in lending.go), api.ErrSharedNUMA by the CLI and the broker. The texts that list the
+    valid modes now list file (fixed texts, plan-5: a text names the valid values):
+      invalid mode %q (numa, dax or file)                       (was "(numa or dax)")
+      readOnly needs mode dax or file                           (was "... dax"; old text is a prefix)
+      shared memory is never onlined as RAM: use mode dax or file   (old text is a prefix)
+      DeviceConfig: mode numa: a shared device is used as dax or file only   (old text not a prefix)
+    New: "DeviceConfig: mode file needs readOnly: true" and "mode file needs --read-only" (04 F1).
+DF2 readOnly is explicit: mode file without readOnly is an error, nothing implies it (a later
+    writable file mode can then be added without changing the meaning of a config).
+DF3 Region and dram: the numa-only check comes before the readOnly rule, so mode file on them
+    always gives "DeviceConfig: mode file: a region is used as numa only" (or "a dram"),
+    with or without readOnly.
+DF4 PATH: in a claim the container path /run/cxl-files/<KEY>/data; in a lease (env op,
+    response env) the path of the file on the node, informational, exactly as DAX of a dax
+    lease; --exec replaces DAX or PATH by FD=3 (api.ExecEnv). The protocol response gets a
+    field "path" next to "dax" (same rule: informational).
+DF5 One export table for the node, shared by both drivers, keyed by the dax device name;
+    holders are (driver, claim uid): one ResourceClaim can have results of both drivers, and
+    each driver releases only its own holds. No state file of its own: at start each driver
+    restarts the exports of its prepared file devices (pool in newPoolDriver, cxl.generic in
+    newNodeState, both before the kubelet plugins register); a device whose export does not
+    start gets no mount and no PATH in its CDI device (as a dax slice that is gone gets no node).
+DF6 The local allocator keeps its modes numa|dax (how a slice is bound); a claim in mode file
+    gets a dax slice (zeroed as every dax slice) and the claim info records mode file.
+DF7 checkSamePreparation compares numa against devdax (dax or file): dax and file claims of one
+    device share its region and dax device; read-only may differ as before.
+DF8 Export life cycle: Prepare = devdax as for dax, then Acquire (start on first holder);
+    Unprepare = release the exports first (the last holder unmounts; EBUSY fails the Unprepare,
+    the claim and the device stay, kubelet retries), then the device as today. After a
+    successful unmount the plugin waits up to 5 s for the FUSE connection to end; if a copy of
+    the mount in another mount namespace keeps it, the connection is aborted through fusectl
+    (/sys/fs/fuse/connections/<N>/abort) and waited for again (5 s); the dax mapping is unmapped
+    only after the server ended. Failed Prepares release the exports before the slices/devices.
+DF9 Plugin start detaches (MNT_DETACH) every mount under files/ and removes the directories
+    before any export starts; plugin shutdown (SIGTERM, driver.Shutdown) detaches the host mounts
+    of running exports. Containers that ran keep their (dead) copies: cached pages stay readable,
+    others fail (documented).
+DF10 FUSE settings: DirectMountStrict (no fusermount), flags MS_RDONLY|MS_NOSUID|MS_NODEV|
+    MS_NOEXEC, options allow_other, default_permissions, and context=system_u:object_r:
+    container_file_t:s0 when /sys/fs/selinux/enforce exists (if that mount fails it mounts
+    again without the context and logs a warning); FOPEN_KEEP_CACHE on open, ExplicitDataCacheControl,
+    attr/entry/negative timeouts 1 h, xattrs disabled; root 0555, file 0444, owner root, times =
+    export start. Read copies from a MAP_SHARED PROT_READ mapping with SetPanicOnFault: a fault of
+    a gone device is EIO for the reader, not a plugin crash. Opens for writing: EROFS.
+DF11 The file is the whole dax device (content agnostic), size = /sys/bus/dax/devices/<dax>/size
+    for pool devices, the slice size for local slices.
+DF12 fd on a numa lease keeps its text "lease <id> is not a dax lease; use env" (asserted by
+    test12; still true); fd works for dax and file leases.
+DF13 newFileExports never fails (it logs): a node where files/ cannot be used only loses mode
+    file, and newDriver keeps its complexity.
+
+Contract for stream T (exact names, texts, paths)
+-------------------------------------------------
+DeviceConfig (both drivers, apiVersion <driver>/v1alpha1, kind DeviceConfig):
+  {mode: file, readOnly: true}   valid on: cxl-pool-shared, cxl-pool, cxl-local devices
+  Prepare errors (substrings of the Prepare error, as before):
+    DeviceConfig: mode file needs readOnly: true
+    DeviceConfig: invalid mode "<x>" (numa, dax or file)
+    DeviceConfig: readOnly needs mode dax or file
+    DeviceConfig: mode numa: a shared device is used as dax or file only
+    DeviceConfig: mode file: a region is used as numa only      (dram: "a dram is used as numa only")
+    mode numa, but another claim prepared it in mode file       (pool, numa vs file on one node)
+    mode file is not available: no file exports on this node    (not reachable in the real plugin)
+    file export of daxX.Y: <cause>                               (export start failure)
+CLI / protocol (exit 2 in the CLI, {"error":...} from the broker):
+    mode file needs --read-only
+    invalid mode "<x>" (numa, dax or file)
+    readOnly needs mode dax or file
+    shared memory is never onlined as RAM: use mode dax or file
+  cxl-request request --serial S --shared --mode file --read-only [--exec CMD]
+  (--serial S --mode file --read-only without --shared: the device with all hosts, as dax)
+Environment of a claim device in mode file (CDI device claim-<uid>-<n>, as before):
+    CXL_<KEY>_MODE=file
+    CXL_<KEY>_PATH=/run/cxl-files/<KEY>/data
+    CXL_<KEY>_READONLY=1
+    CXL_<KEY>_SERIAL=0x<hex>   CXL_<KEY>_SHARED=0|1   CXL_<KEY>_SIZE=<device or slice bytes>
+    CXL_CLAIM_<uid>=1
+  no CXL_<KEY>_DAX, no device node. KEY = serial upper hex (C1AE0001), _2 for the second.
+CDI mount of that device (in the CDI spec file cxl-pool / cxl-claims, ContainerEdits.Mounts):
+    hostPath      /var/lib/kubelet/plugins/cxl.generic/files/<daxX.Y>
+    containerPath /run/cxl-files/<KEY>
+    type          bind
+    options       [rbind, ro, nosuid, nodev, noexec]
+On the node:
+    file          /var/lib/kubelet/plugins/cxl.generic/files/<daxX.Y>/data  (regular, 0444, root,
+                  size = dax device size: 536870912 for llm0 of 512Mi, not the model size)
+    mount         /proc/mounts: "cxl-file /var/lib/kubelet/plugins/cxl.generic/files/<daxX.Y>
+                  fuse.cxl-file ro,nosuid,nodev,noexec,...,user_id=0,group_id=0,
+                  default_permissions,allow_other,max_read=131072 0 0" (findmnt -t fuse.cxl-file)
+    one mount per dax device per node, whatever the number of claims; after the last Unprepare
+    no fuse.cxl-file mount and no entry under .../cxl.generic/files/.
+    state files: preparedPoolClaims.json and preparedClaimsInfo.json devices get "mode": "file"
+    and "export": "<mountpoint>"; leases.json leases get "path".
+Lease in mode file:
+    response {"mode":"file","readOnly":true,"path":"/var/lib/kubelet/plugins/cxl.generic/files/<dax>/data",
+              "env":{"CXL_<KEY>_PATH":"<that path>","CXL_<KEY>_MODE":"file","CXL_<KEY>_READONLY":"1",...}}
+    fd 3 under request/fd --exec: an O_RDONLY fd of the node-side file; CXL_<KEY>_FD=3 replaces PATH.
+    companion claim: DeviceConfig {mode: file, readOnly: true} for the pool driver (and cxl.generic).
+Log lines of kubelet-cxl-plugin (klog, prefix "file export: "):
+    file export: <dax>: started (<device>, <bytes> bytes) at <file> for claim <uid> of <driver> in <ms>ms
+    file export: <dax>: claim <uid> of <driver> holds it (claims: <n>; <reads> reads, <bytes> bytes so far)
+    file export: <dax>: claim <uid> of <driver> released it (claims: <n>; <reads> reads, <bytes> bytes so far)
+    file export: <dax>: stopped at <file> (claim <uid> of <driver> was the last holder; <reads> reads, <bytes> bytes) in <ms>ms
+    file export: <dax>: stopping it for claim <uid> of <driver>: unmounting <mountpoint>: device or resource busy (the file is open or mapped, or a container that has it still runs)
+    file export: <dax>: the FUSE connection <n> is in use after the unmount, aborting it      (warning)
+    file export: <dax>: mounting with SELinux context ...: <err>; mounting without it          (warning)
+    file export: detached <n> stale mounts at <mountpoint>                                    (start)
+    file export: <dax>: detached at <mountpoint> at shutdown (claims: <n>)
+  <bytes> counts the bytes the export read from the device: what the node copied into its
+  page cache (an exporter-side proof next to FilePages). <driver> is cxl-pool.generic or cxl.generic.
+  Broker: "lease broker: lease <id>: Ready (source <s>, serial <x>, mode <m>, node <n>, dax "<d>", path "<p>", <b> bytes)"
+  (mode and path are new in that line).
+
+Deviations from 04-plan
+-----------------------
+V1 Existing texts changed to name mode file (DF1). Two of them break exact-substring asserts of
+   regression tests that neither stream owns (see R1).
+V2 Holders are (driver, claim uid), not claim uids (DF5).
+V3 Additions not in 04: abort of a lingering connection (DF8), detach at shutdown (DF9),
+   SELinux context with fallback (DF10), protocol field "path" (DF4), read counters in the log
+   lines, EIO instead of a crash on a fault of the mapping.
+V4 The plugin-start restore is per driver at load time (no separate pass); documented as
+   "containers that ran before keep only the pages their node cached".
+V5 Local slices in mode file are implemented (symmetry, 04 F2) but read zeros: local slices are
+   zeroed and a read-only slice has no writer (documented in LOCAL.md, see Findings).
+
+Requests to T
+-------------
+R1 Regression texts (test files of neither stream; orchestrator to route): with this driver
+   test12-dra-live-attach/code.var.sh:622 expects 'invalid mode "memory" (numa or dax)' and
+   test14-dra-local-memdev/code.var.sh:403 expects 'DeviceConfig: invalid mode "memory" (numa or dax)';
+   the texts are now '(numa, dax or file)'. test12:623 and :625 and test14:400 still match
+   (old texts are prefixes of the new ones).
+R2 Verify in the VMs (kernel 7.3, Fedora 43, containerd, plugin as systemd-run unit):
+   a. the export mounts: findmnt -t fuse.cxl-file on the node after a claim in mode file;
+      the plugin log "file export: daxN.0: started (...)".
+   b. containerd applies the CDI bind mount: in the reader, ls -l /run/cxl-files/<KEY>/data
+      (0444, size = device size), a read and an mmap MAP_SHARED PROT_READ of the whole file
+      (cxl-llm -m $CXL_<KEY>_PATH), open for writing refused (EROFS).
+   c. SELinux: getenforce on both VMs; if Enforcing, ls -Z in the reader shows container_file_t,
+      and the log has no "mounting with SELinux context" warning (if it has, report it).
+   d. page cache: the first reader on a node grows FilePages by about the device size (512Mi,
+      the whole device because of MAP_POPULATE), the second by about 0; the "holds it" line of
+      the second claim shows the bytes read so far, and "stopped" the total per node.
+   e. Unprepare: after the readers are deleted, no fuse.cxl-file mount is left and
+      /var/lib/kubelet/plugins/cxl.generic/files/ is empty on both nodes; if an Unprepare logs
+      "device or resource busy" or "is in use after the unmount", send the log.
+   f. Reader pods in cached mode: the page cache is charged to the first reader of a node;
+      a memory limit below the device size plus the engine (about 0.7 GiB for llm0) makes it
+      read the device again; use no limit or a larger one.
+   g. Optional: a lease reader, cxl-request request --serial S --shared --mode file --read-only
+      --exec sh -c 'cmp /proc/self/fd/3 ...' or cxl-llm --fd 3 / -m /proc/self/fd/3 (reopening
+      /proc/self/fd/3 of a regular file is expected to work).
+   h. Optional: plugin restart with a reader running: log "detached 1 stale mounts", export
+      started again for later readers.
+R3 The device file is the whole device (536870912 bytes for llm0), GGUF at offset 0 and zeros
+   after it (D5 layout): stock loaders accept it (02 findings 1, research C 1.6).
+
+Findings
+--------
+F-1 go-fuse v2.12.0 DirectMountStrict works on the host kernel 7.0.7 as root of a user
+    namespace (unshare -Urm): mount, read, mmap MAP_SHARED, EROFS on write opens, EBUSY while
+    the file is open or mapped, unmount, stale detach, shutdown detach. Two reads and a mapping
+    of a 3 MiB file read the "device" exactly once (24 reads, 3145728 bytes): FOPEN_KEEP_CACHE
+    keeps the page cache across opens. Aborting a lingering connection through fusectl works for
+    the mounting user (the copy then reads ENOTCONN).
+F-2 New dependency github.com/hanwen/go-fuse/v2 v2.12.0 (BSD-3, pure Go; vendored packages fs,
+    fuse, internal/*, splice; no new transitive module in the build; go.sum also lists
+    github.com/moby/sys/mountinfo v0.7.2, required by go-fuse's tests only). Flag to the user
+    (D4 says so).
+F-3 Baseline of the tree: whole-tree golangci-lint reports only the cgo typecheck of
+    pkg/fakehlml (missing hlml.h), which hides all other findings; gofmt -l lists
+    cmd/kubelet-gpu-plugin/driver.go (pre-existing, untouched).
+F-4 The fd of a file lease is opened through the host mount, so it pins it: releasing a file
+    lease completes only after the holder closed the fd and unmapped the file (Unprepare EBUSY,
+    kubelet retries; documented in LEASES.md limitations). Containers of claims use their own
+    bind copies and do not pin the host mount.
+F-5 Mode file on local memdevs reads zeros (no claim can write a slice it reads read-only, and
+    slices are zeroed); it is there for symmetry and single-node testing (LOCAL.md says so).
+F-6 The republish hook of plan-4 no longer exists (plan-5 deleted nodeState.republish); no
+    export work happens under the nodeState table lock (prepareLocalMemdev and unprepare run under
+    the per-claim lock only; buildClaimsCDISpec reads only the recorded Export), the pool driver
+    does it under its own p.mu as all its device work, and the export table never calls back
+    into a driver.
+
+F done 2026-10-16 16:15 EEST

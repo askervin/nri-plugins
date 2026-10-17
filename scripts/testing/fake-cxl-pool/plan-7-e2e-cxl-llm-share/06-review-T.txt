@@ -1,0 +1,307 @@
+plan-7-e2e-cxl-llm-share: review R-T of stream T (e2e, test16-cxl-llm-share)
+===========================================================================
+Written 2026-10-16 (review agent R-T, read-only). Scope: nri-plugins 5jQ-cxl
+d2f6c1490 + working tree, test/e2e/memory.test-suite/memory-policy/:
+n4-cxl-shared-2/{cxl-llm/cxl-llm.cpp, cxl-llm/build.sh, llm.source.sh,
+cxl-where.py, test16-cxl-llm-share/code.var.sh}, and git diff HEAD of
+dra.source.sh and n4-cxl-shared-2/test13-.../code.var.sh. Measured against
+the task (../5jg-task-e2e-cxl-llm-share.txt, direct mode), 03 D1-D3, D5,
+D6, D8, D10, D11, 04 stream T, and the coding-style and run-e2e-tests
+skills. Paths below are relative to that memory-policy directory; "test16"
+is n4-cxl-shared-2/test16-cxl-llm-share/code.var.sh, "test13" is
+n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers/code.var.sh,
+"llm.source.sh", "build.sh", "cxl-llm.cpp" and "cxl-where.py" are under
+n4-cxl-shared-2/. No VM touched, no e2e test run, nothing edited but this
+file.
+
+Checks run
+  - bash -n on the five shell files: ok.
+  - shellcheck 0.11.0: build.sh clean; llm.source.sh SC2034
+    (LLM_MODEL_SIZE, used by test16) and 2x SC2016 (retry-until snippets);
+    test16 SC2154 (distro) and 1x SC2016; test13 7 -> 6 SC2016 and
+    dra.source.sh 12 -> 13 SC2016 against HEAD (the moved snippet). No new
+    class.
+  - g++ 15.2 -std=c++17 -fsyntax-only -Wall -Wextra -Wpedantic of
+    cxl-llm.cpp against the local llama.cpp 25a1d63f4 headers: clean
+    (-Wconversion adds only int64->double and size_t->int32 notes).
+  - cxl-where.py: ast parse; iomem_segments on a synthetic nested
+    /proc/iomem (System RAM with Kernel code children, CXL Window 0 >
+    region0 > dax0.0, a region with a partial dax child, gaps, addresses
+    outside every resource): every address resolves to the innermost
+    resource, gaps to their parent, outside to "(no resource)".
+  - glibc cookie FILE step, host test (glibc 2.43): after fp->_fileno = fd,
+    fileno() returns fd; fclose() calls only the cookie close and the fd
+    stays open.
+  - The final run log ~/.claude/jobs/plan7-e2e/test16-final-direct-only.log
+    (lines 705-819, 1209-1250) for what the assertions saw.
+
+Blockers
+--------
+None. test16 passes and demonstrates the direct mode of the task.
+
+Bugs
+----
+B1 build.sh:51 (with :41-49) and llm.source.sh:44-46: the build fails on a
+   fresh cache when LLAMA_CPP_SRC is given.
+   What: mktemp -d "$LLM_CACHE/build.XXXXXX" needs $CACHE_DIR/llm to exist.
+   Only the fetch branch of build.sh (mkdir -p "$repo", :45) and the
+   download branch of llm-model-fetch (:45) create it. With LLAMA_CPP_SRC
+   and llm_model=PATH both set (the two documented offline options,
+   test16:38-41), or build.sh run alone with LLAMA_CPP_SRC, nothing creates
+   it: "mktemp: failed to create directory via template ...: No such file
+   or directory" (checked: mktemp -d with a missing parent exits 1), then
+   "llm-build: cannot build cxl-llm, see above".
+   Why it matters: the documented ways to avoid the network break the first
+   run on a host.
+   Fix: mkdir -p "$LLM_CACHE" in build.sh before :51 (for instance right
+   after :27).
+
+B2 test16:141 and llm.source.sh:313-335 (llm-where-assert), against the
+   claims of test16:17-19 ("every access to the weights goes to the CXL
+   memory and nothing is copied") and :21-23 ("all page frames of the
+   model mapping ... are in a CXL window").
+   What: the assertion sums the present pages of every mapping of
+   $CXL_<KEY>_DAX in the engine and asks for at least 90% of the model
+   size. The engine has two mappings of the device: cxl-llm's own PROT_READ
+   mapping of the whole device (cxl-llm.cpp:240-241, 512 MiB, kept until
+   exit) and llama.cpp's model mapping (398458880 bytes). The log shows
+   "2 mappings, 404750336 bytes present" (97280 + 1536 pages).
+   A run in which llama.cpp copies the weights instead of mapping them
+   passes every assertion of test16. With use_mmap off, llama.cpp reads
+   every tensor through the cookie FILE, a memcpy from cxl-llm's mapping:
+   about 97000 pages of that mapping become present, all in the CXL window,
+   the page cache does not grow, the answer is the same; only the anonymous
+   memory differs (research A 3.6: 520888 kB for dax-copy, against 82872 kB
+   in this e2e). Weight repacking (use_extra_bufts, cxl-llm.cpp:466) is the
+   same case: the model mapping is fully present and 205 MiB of weights
+   are copied into anonymous memory; nothing in test16 sees it.
+   rss_anon_kb is logged (test16:143) but not asserted; model_bytes is not
+   asserted either.
+   Why it matters: "nothing is copied" and "repacking off" (D2, 02 section
+   1) are what the direct mode demonstrates. Today they hold because the
+   code is right, not because the test checks them.
+   Fix: (a) in llm-where-assert, or in readers-check, select the mapping
+   whose size equals model_bytes of the summary line; assert model_bytes
+   == LLM_PADDED, present == pages for that mapping, and every page of it
+   in a "where" chain that ends with "> $(basename "$path")" (the log
+   shows "CXL Window 0 > region0 > dax0.0"; the dax name comes from the
+   run-time path, so no probe-order name enters). (b) Assert
+   rss_anon_kb * 1024 < LLM_MODEL_SIZE / 2 (82872 kB measured; a copy is
+   at least the model, repacking adds 205 MiB), with its own message.
+
+Risks
+-----
+R1 llm.source.sh:208-223 and test16:127-139: the read-only device node is
+   proven by configuration only. test16 checks CXL_<KEY>_READONLY=1 and
+   "permissions: r" in the CDI device, but no reader tries to open the
+   device for writing; test13 does (dax-rw.py check-ro: "open for writing
+   refused: EPERM", "writable mapping refused: EACCES"). If the device
+   cgroup rule were missing, test16 would still pass.
+   Fix: add to llm-reader-script, before the engine,
+     if (exec 3<>"$CXL_<KEY>_DAX") 2>/dev/null; then echo "open for writing: allowed"; else echo "open for writing: refused"; fi
+   (busybox ash has <>) and assert the "refused" line in readers-check; or
+   mount the dax-rw ConfigMap (dra-dax-tool-install) and run check-ro as
+   test13 does.
+
+R2 llm.source.sh:47, build.sh:47 and :60-77: the download and the build
+   have no time limit. curl has --connect-timeout 30 only: a transfer that
+   stalls behind the proxy hangs test16 indefinitely; git fetch, the image
+   pull of podman run and dnf likewise.
+   Fix: curl --speed-limit 1048576 --speed-time 60 (or --max-time 1800);
+   timeout 600 around git fetch and timeout 1800 around podman run, into
+   the existing error messages.
+
+R3 llm.source.sh:51-57: the download is moved into the cache before its
+   sha256 is checked. A proxy error page served with status 200, or any
+   wrong file, becomes $CACHE_DIR/llm/Qwen3-0.6B-Q4_K_M.gguf, and every
+   later run fails with "Remove it to download it again" until someone
+   does.
+   Fix: check "$LLM_MODEL_SHA256  $part" before the mv; on mismatch remove
+   $part and fail with the URL and both sums.
+
+R4 build.sh:23, :34, :64, :85: the build is reproducible only for one state
+   of fedora:43. The image tag and the dnf packages move; the cache key is
+   cxl-llm.cpp + build.sh + the llama.cpp commit; source.txt records the
+   tag but not the image digest or the compiler and glibc versions. Two
+   hosts (or one host before and after a Fedora update) with the same key
+   can hold different binaries, and nothing tells.
+   Fix: pin BUILD_IMAGE by digest (registry.fedoraproject.org/fedora:43@sha256:...),
+   or at least write podman image inspect --format '{{.Digest}}' and
+   rpm -q gcc-c++ glibc-static libstdc++-static cmake into source.txt.
+
+R5 build.sh:51-52, :57, :77-80: on a failed build the EXIT trap removes
+   $work and with it the build.log that :57 announces; only the 40 lines
+   printed at :78 remain.
+   Fix: on failure copy the log to $LLM_CACHE/build-failed.log and name
+   that path in the die message (or keep $work on failure).
+
+R6 test16:211, :320: a failed run leaves $POOL_DIR/llm0.raw (512 MiB of the
+   host's tmpfs /tmp, with the model in it) until the next run of test16
+   removes it at :211; pool-cleanup, the EXIT trap, keeps the backing
+   files of static devices.
+   Fix: after dra-install-node (the last dra-installed-add sets the trap),
+   trap 'dra-cleanup; pool-cleanup; rm -f "$LLM_BACKING"' EXIT; or say in
+   the header that the file stays after a failure.
+
+Style and reuse
+---------------
+S1 Claim and pod YAML: llm-claim-yaml (llm.source.sh:115-153) is the YAML
+   that test13 writes inline for shared-read-only (test13:395-413) plus a
+   hosts request; llm-pod-yaml (llm.source.sh:155-206) is test13's
+   claim-pod-yaml (test13:126-168) with a hostPath volume in place of the
+   dax-rw ConfigMap. 04 T3 asked to move claim-pod-yaml into dra.source.sh
+   if test16 needs it. dra-claim-yaml (dra.source.sh:1031) has no serial
+   selector and no hosts request.
+   Fix: one dra-shared-claim-yaml NAME SERIAL [HOSTS] [PARAMS] in
+   dra.source.sh, used by test13 section F and test16; one pod helper in
+   dra.source.sh with the volume as a parameter, used by test13 and by
+   llm-pod-yaml.
+
+S2 test16:69-89: llm0-attachments and llm0-free copy test13's
+   shared0-attachments (test13:197-203) and its "shared0 free" block
+   (test13:459-464). Fix: pool-attachments DEVICE and pool-device-free-wait
+   DEVICE VMDIR... in pool.source.sh, used by both tests.
+
+S3 test16:161, :271: dra-delete "$VM2" pod X --grace-period=2 --wait=true
+   --timeout=60s is dra-delete-pod VMDIR POD (dra.source.sh:880).
+
+S4 cxl-llm.cpp:271-274: the comment of the only non-API step does not say
+   that it is glibc-only. Fix: "glibc only: _fileno is a field of glibc's
+   struct _IO_FILE; fileno() of a cookie FILE returns it, and fclose()
+   calls only mem_close, so the fd stays open." and one line in the file
+   header: builds with glibc only (build.sh links it statically).
+
+S5 cxl-llm.cpp:11-17: the documented summary line names 8 of its 14 keys;
+   test16:143 parses threads, which is not named. Fix: list
+   them as printed at :397-402: source path model_bytes threads load_ms
+   prompt_tokens ttft_ms gen_tokens gen_tps total_ms rss_kb rss_anon_kb
+   rss_file_kb rss_shmem_kb.
+
+S6 cxl-llm.cpp:195-196 prints "in N ms", the time since the program
+   started (ms_since(g_start_us)); test16:308 calls it "the copy in the
+   writer". Fix: time from before the read loop, or label it "the writer
+   process".
+
+S7 cxl-llm.cpp:75, :207, :218, :231: log_cb, mem_read, mem_seek and
+   mem_close have no one-line comment (coding style: simple functions get
+   one line that says what they return or do).
+
+S8 cxl-llm.cpp:94-119: an option without its value (a trailing -m) is
+   reported as "invalid option -m"; --fd, -t and -n use atoi, so "--fd x"
+   becomes fd 0 (stdin). Fix: "option -m needs a value"; strtol with an
+   end-pointer check.
+
+S9 test16:1-43, the header for a reader who has not seen the plan. It
+   explains the writer, the readers, the proofs and the cluster. Missing:
+   - why an engine of its own: stock llama.cpp cannot load /dev/daxX.Y (no
+     read(), size 0 by lseek, only 2 MiB aligned MAP_SHARED mappings);
+     cxl-llm reads the GGUF header from a mapping and gives llama.cpp a
+     FILE whose fd is the device, so llama.cpp maps the device itself;
+   - why the answers are identical: greedy decoding, empty think block;
+   - host prerequisites: podman, git, network through http_proxy and
+     https_proxy to huggingface.co, to github.com (without LLAMA_CPP_SRC)
+     and to registry.fedoraproject.org and the Fedora mirrors; about
+     420 MB in $CACHE_DIR/llm; the first run downloads 378 MiB and builds
+     for about 45 s;
+   - what stays in the VMs: /opt/cxl-llm on both, the model only on VM1,
+     /usr/local/bin/cxl-where.py.
+   A "What you will see" paragraph as in test13 would suit the demo.
+
+S10 Small items:
+   - test16:77-81: llm0-free does not say that it fails the test on
+     timeout.
+   - cxl-where.py:120-121: sys.exit(__doc__) prints the help to stderr with
+     status 1, also for --help.
+   - test16:61-62: LLM_ALIGN is a constant 2 MiB while cxl-llm takes the
+     sysfs align; with another align the writer check at :253 fails as
+     "did not write the N bytes", not as a different align.
+   - cxl-llm's regular-file and --fd inputs are not exercised by any e2e
+     (useful on the host; untested here).
+
+Notes (not findings)
+  - "They run at the same time" (test16:17) is asserted for the mappings:
+    every engine is alive and holding when it is inspected. Overlap of the
+    decode phases themselves (about 0.8 s each) is not asserted and not
+    needed for the demo.
+  - The canary proof of research B 2d (bytes changed under the readers) is
+    not in test16; D8 does not ask for it.
+
+Verified as correct
+-------------------
+- Task, direct mode: one writer (pod writer on VM1, claim llm-writer of
+  cxl-pool-shared with hosts 4: exclusive, writable; MODE=dax READONLY=0
+  asserted, exclusive attachment on VM1 only) writes the model to offset 0
+  of llm0 and exits; its claim is deleted and llm0 is free in both VMs and
+  in the server before the readers start. Three readers, reader-a and
+  reader-b on VM2 and reader-c on VM1, each with its own claim {mode: dax,
+  readOnly: true} (hosts 1, allocated on its node), are created together
+  and all hold the model mapped while the test inspects each live engine.
+  llm0 is attached, not exclusive, to both VMs and never onlined (one
+  region, OnlineSize 0). D3, D5, D6 hold.
+- Same copy: the backing file is removed before the server starts (a
+  writer that writes nothing cannot pass), its path is taken from the
+  server at run time, the host sha256 of its first 396705472 bytes is the
+  model's, and the bytes up to 398458880 are zero (llm-file-zero). VM2 has
+  no model file and each reader's /opt/cxl-llm holds only the engine (both
+  asserted). The frames of each reader are in "CXL Window 0 > region0 >
+  dax0.0" (log).
+- Answers: each reader's "cxl-llm: answer:" equals llm_expect, so all are
+  identical; source=dax asserted.
+- Page cache: FilePages of each node before the readers and after all hold,
+  less than 5% of the model on both nodes (592 kB and 216 kB measured).
+- Nothing left: pods and claims gone (deletes waited, then checked), no CDI
+  devices with CXL_C1AE0001_ on either node, no memdevs or regions in
+  either VM and llm0 free in the server (llm0-free), no cxl-type3 in either
+  qemu, server stopped and port free, backing file removed. D8 holds for
+  the direct mode, apart from B2.
+- No cached-mode leftovers: no llm_access, file-export, FUSE, _PATH or mode
+  file in any reviewed file; the page-cache wording that remains is the
+  negative proof of the direct mode.
+- Cluster: vm-k8s-reinit "$VM2 $VM1" only (left alone when in shape; the
+  final log says "is in shape already"); no single-node shape, no restore,
+  no k8s_restore (D11, and the shape convention of the run-e2e-tests
+  skill).
+- Waits: llm-wait-holding (180 s), llm-wait-exit (180 s writer, 30 s
+  readers), llm0-free (60 s per VM, 60 s server), dra-delete
+  --timeout=60s; each with a message, the engine waits with the pod log
+  and description on failure; llm-wait-holding returns at once when the
+  engine exits. No sleep in test16 or llm.source.sh except the idle
+  "sleep infinity & wait" of the pods, as in test13.
+- Run-time lookups: the dax path from CXL_<KEY>_DAX, the engine pid from
+  the container cgroup (crictl) and comm, the backing file from the
+  server, regions by count, the device by serial; "CXL Window " is a
+  resource name, not an index.
+- Model pin (D1): URL by commit 50968a4468ef..., sha256 checked for the
+  download and for llm_model=PATH, with distinct, clear messages.
+- build.sh (D2): llama.cpp 25a1d63f4 by full hash from LLAMA_CPP_SRC or
+  fetched at depth 1 into $CACHE_DIR/llm/llama.cpp; git archive of that
+  commit only (local changes of a checkout do not enter); static,
+  CPU-only, GGML_NATIVE=OFF with AVX/AVX2/FMA/F16C/BMI2; common, tools,
+  server and UI off (no network code, no download at configure time),
+  only the llama target; cache key cxl-llm.cpp + build.sh + commit; output
+  moved into place as a whole; only the binary path on stdout. The CMake
+  options used exist in that llama.cpp.
+- cxl-llm.cpp: the reader opens O_RDONLY|O_CLOEXEC and maps PROT_READ
+  MAP_SHARED; the writer opens O_RDWR; the header mapping is the device
+  size rounded down to the device align, the model length is rounded up
+  to it and checked against that mapping; the header is parsed by
+  gguf_init_from_buffer, bounded by the mapping; --write refuses a model
+  that does not fit, zero-fills from the end of the model to the align,
+  reports read errors and short files; size and align from
+  /sys/dev/char/MAJ:MIN (2 MiB default align, --size override); the
+  generation loop samples at most -n tokens within n_ctx = prompt + n;
+  use_mmap on, direct I/O off, repacking off; exit statuses as documented;
+  usage text covers every option. The glibc step behaves as its comment
+  says (host test above).
+- cxl-where.py: PFN bits 0-54, present bit 63, physical address = PFN *
+  4096; pagemap read for every page of a mapping in one pread; non-root
+  detected for pagemap (present pages without PFNs) and for /proc/iomem
+  (all-zero ranges); nested resources resolved to the innermost one
+  (synthetic test); anonymous mappings skipped (inode 0); non-zero exit if
+  PATH has no mapping.
+- test13: pod-log -> dra-pod-log "$VM2" and wait-log -> dra-wait-log "$VM2"
+  run the same commands with the same timeouts, messages and failure
+  output; every call site is converted and no old name is left; P1-2 and
+  P2-5 passed with them. test12 and test14 have no diff.
+- Style: plain ASCII in every reviewed file; no history wording; function
+  comments say what; shellcheck as listed above.

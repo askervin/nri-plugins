@@ -1,0 +1,465 @@
+plan-7 follow-up, research FA: famfs on the shared CXL devdax
+=============================================================
+Written 2026-10-17 (research FA). Desk research only: no VM was used, nothing
+was built. Git work in a scratch clone
+/home/akervine/.claude/jobs/plan7-fs/FA/linux (git clone --shared of
+~/github.com/torvalds/linux plus remotes fuse, torvalds, next); downloads in
+/home/akervine/.claude/jobs/plan7-fs/FA/{dl-*,lore2}/ (one subdir each,
+nothing executed).
+
+Sources (dates are of the source, all read 2026-10-17):
+- fuse.git for-next, git://git.kernel.org/pub/scm/linux/kernel/git/mszeredi/
+  fuse.git, tip 4dd8d3967401 (committed 2026-10-16 17:33 +0200).
+- linux-next next-20261016 (2efb7a11f1aa), Next/SHA1s "fuse f873d7bd15ba";
+  next-20261015, next-20261009, next-20261001 for comparison.
+- torvalds/linux master 58161ead29e5 (2026-10-16, v7.3-rc7-244), tag v7.3-rc4
+  93f51579e7df (2026-09-20).
+- lore: "[PATCH v5 00/10] fuse: DAX device based extent maps (famfs)",
+  Miklos Szeredi, 2026-10-16,
+  https://lore.kernel.org/all/20261016151638.2962413-1-mszeredi@redhat.com/
+  v1 (11 patches) 2026-09-22,
+  https://lore.kernel.org/all/20260922061019.3320196-1-mszeredi@redhat.com/
+  v3 2026-10-06,
+  https://lore.kernel.org/all/20261006180115.1425232-1-mszeredi@redhat.com/
+  John Groves "[PATCH V11 0/9] famfs: port into fuse" 2026-07-20 and his
+  reply 2026-07-22 https://lore.kernel.org/all/amFMUtTB4SmHdYZx@groves.net/
+  John Groves on v2, 2026-10-05
+  https://lore.kernel.org/all/asQcBebepPb9CXzS@groves.net/ and 2026-10-08
+  https://lore.kernel.org/all/asZcsPT-Q8qga0SU@groves.net/
+  (lore's bot wall answers 403 to curl/b4 user agents; "lei/2.0" works.)
+- LWN: "Famfs, FUSE, and BPF" 2026-04-23 https://lwn.net/Articles/1068686/ ;
+  "Merging famfs?" (LSFMM+BPF 2026) 2026-07-20
+  https://lwn.net/Articles/1082687/ ; earlier "A FUSE implementation for
+  famfs" 2025-05-08 https://lwn.net/Articles/1020170/ .
+- famfs userspace github.com/cxl-micron-reskit/famfs master d78e10f38c3b
+  (2026-10-09; same head as github.com/jagalactic/famfs master).
+- libfuse fork github.com/jagalactic/libfuse famfs.extmap = github.com/szmi/
+  libfuse extent-map-v3 = a6e314173360 (Miklos Szeredi 2026-09-10); upstream
+  github.com/libfuse/libfuse master fe66006 (2026-10-15), latest release
+  fuse-3.18.3; libfuse PR #1414 (draft, last activity 2026-01-14).
+- ndctl github.com/pmem/ndctl v85 15e932c (2026-06-29); Fedora bodhi:
+  ndctl-85-1.fc43 stable 2026-07-11, fuse3-3.16.2-6.fc43; repology: no famfs
+  package anywhere.
+
+0. Short answers
+----------------
+- Upstream: the dax half (drivers/dax/fsdev.c, fs_dax_get, dax_set_ops) is
+  in mainline since v7.1 (libnvdimm-for-7.1), with fixes in v7.3-rc1. The
+  FUSE half is no longer John Groves' famfs-specific GET_FMAP series (last
+  V11, 2026-07-20). The FUSE maintainer rewrote it himself as a generic
+  "DAX device based extent maps" facility (FUSE_PASSTHROUGH_V2,
+  FUSE_NOTIFY_BACKING_MAP, cyclic/striped maps). v5 was posted 2026-10-16
+  and on the same day it was committed to fuse.git for-next. It is in
+  linux-next from next-20261016; it was not in next-20261015. It targets
+  the v7.4 merge window, which opens about now (mainline is at
+  v7.3-rc7-244). It is late, so v7.5 is possible. Nobody has objected to
+  this version. John Groves wrote "go ahead and merge it". Amir Goldstein,
+  Dave Jiang and Gregory Price reviewed parts of it.
+- Maintenance: famfs userspace is very active. It had 135 commits in 2026
+  (117 by John Groves, the rest from Micron and one from Miklos Szeredi),
+  and the last commit is 2026-10-10. It has never had a tag or a release
+  and no distribution packages it. famfs needs a forked libfuse: upstream
+  libfuse has no extent-map support.
+- On v7.3-rc4: merging fuse/for-next into v7.3-rc4 is clean (52 commits,
+  36 files, +2773/-674). The v5 mbox alone does not apply: patch 04
+  conflicts without the earlier for-next commits. No kernel config change
+  is needed: qemu-cxl-kernel.config already has FUSE_FS=y,
+  FUSE_PASSTHROUGH=y, FS_DAX=y, FS_DAX_PMD=y, DEV_DAX_FSDEV=y.
+  Userspace is built in the VM: famfs with the libfuse fork, plus ndctl's
+  famfs branch or Fedora 43's daxctl 85, which has --mode=famfs.
+- Semantics: these fit our use well. Only the master (writer host) creates
+  files, with famfs cp/creat, preallocated in 2 MiB units. Plain cp and
+  creat() fail with ENOTSUP. Clients mount and replay the log, and their
+  files are 0444. read() goes through dax_iomap_rw, so fread works. mmap
+  takes DAX faults (huge_fault, VM_HUGEPAGE, PMD) straight to the CXL
+  frames. There is no page cache and no option for one. allow_other is on
+  by default, and one node mount can be bind-mounted read-only into any
+  number of containers. In-kernel extent maps keep open files working if
+  the daemon dies (from source, not measured).
+- Effort: about 1 day of VM work to a first llama.cpp answer, mostly the
+  famfs userspace build (6 git dependencies from personal GitHub repos)
+  and the daemon lifecycle. The kernel is an upstream maintainer branch
+  with no porting.
+- Verdict: GO for prototyping, by the fail-fast rule. famfs is maintained,
+  and its kernel half is being merged by the FUSE maintainer himself. On
+  v7.3-rc4 it is a clean merge of an upstream branch, not a port. The
+  conditions are in section 6: the userspace pins, and an erofs fallback
+  if the bind-mount or daemon experiments fail.
+
+1. Upstream status (2026-10-17)
+-------------------------------
+1.1 In mainline:
+- v7.1-rc1 merge "libnvdimm-for-7.1" (v7.1-rc1~55), Ira Weiny: "The series
+  adds DAX support required for the upcoming fuse/famfs file system".
+  Commits a73cc506ad9f..45df9111692c: dax_pgoff_to_phys to bus.c,
+  dax_folio_reset_order, d5406bd458b0 "dax: add fsdev.c driver for fs-dax on
+  character dax" (Suggested-by Dan Williams, Gregory Price; Reviewed-by
+  Jonathan Cameron), dax_operations/dax_set_ops, fs_dax_get, 2ae624d5a555
+  "dax: export dax_dev_get()".
+- v7.3-rc1 (v7.3-rc1~124^2): ten fsdev/dax fixes by John Groves, 2026-06-15
+  (holder_ops races, multi-range offset in memory_failure, probe failures).
+- Nothing on the FUSE side: v7.3-rc4 include/uapi/linux/fuse.h is
+  protocol 7.46 and has no extent maps.
+1.2 John Groves' series: "famfs: port into fuse", first posted 2025-04-21,
+  reached V10 at the end of March 2026 (LWN 2026-04-23) and V11 on
+  2026-07-20. At LSFMM+BPF 2026 (LWN 2026-07-20), Miklos Szeredi said he was
+  "not opposed to merging famfs as it stands" but wanted a non-famfs-specific
+  interface, and Christoph Hellwig objected to a mapping layer separate
+  from iomap. There was tentative agreement on a generic file-map
+  mechanism. On 2026-07-22 Groves wrote that the requested changes "push
+  famfs past the breaking point" and that he was considering a return to
+  standalone famfs.
+1.3 Miklos Szeredi's generic replacement, "fuse: DAX device based extent
+  maps (famfs)": v1 2026-09-22 (11 patches), v2 2026-10-01, v3 2026-10-06,
+  v4 2026-10-08, v5 2026-10-16 (10 patches, 17 files, +1044/-178, new
+  fs/fuse/ext_map.c). The cover letter says "This is the FUSIfication of the
+  famfs-fuse patchset ... Passes famfs smoke test on emulated dax device"
+  and points to the libfuse fork szmi/libfuse#extent-map-v3 and to
+  jagalactic/famfs#master. Each extent maps file range -> (dax backing id,
+  offset), and I/O goes through iomap/DAX (fs/fuse/ext_map.c
+  fuse_ext_map_iomap_begin, dax_iomap_fault, dax_iomap_rw), which answers
+  Hellwig's iomap point.
+  Reviews and tags in fuse/for-next:
+  - Amir Goldstein: Reviewed-by on 03, 05, 08 and 09 (e.g. 79cd42dd05a9).
+    The thread counts were 15 messages by him on v1 and 2 on v3.
+  - Dave Jiang (Intel) and Gregory Price (Meta): Reviewed-by on the dax
+    patches 5fda61d42e76 and d8c2fdff74b7.
+  - Alison Schofield (nvdimm/ndctl): process comments; on v1 she wrote
+    "we looked at this patch last merge window and decided to wait for fuse
+    to land before making further changes to DAX for FUSE". The dax patches
+    therefore travel through fuse.git.
+  - John Groves co-authored 01 and 10 (10 replaces the rbtree with O(1)
+    lookups). On v2 he wrote "If you're comfortable with this, go ahead and
+    merge it. We can fix bugs and performance problems, if any, in due
+    course." He had design remarks: he preferred chunk_size in the header
+    to the CYCLIC flag "on the honor system", and he found a bug in the
+    userspace port, which he has since fixed.
+  - No messages from Christian Brauner, Dan Williams, Christoph Hellwig,
+    Darrick Wong or Linus in these threads (they appear only on Cc). I
+    found no open objection to v5. The last discussion (Amir/Miklos on v4
+    8/9, 2026-10-14..16) is about inode locking in passthrough writes, not
+    a blocker.
+1.4 Where it is: fuse/for-next 5fda61d42e76..4dd8d3967401 (10 commits on top
+  of 42 other fuse commits, based on v7.3-rc1 cee9395acd80). linux-next:
+  next-20261016 has an earlier commit of the same series (fuse
+  f873d7bd15ba; range-diff against 4dd8d3967401 differs only in added
+  Reviewed-by tags and 2 lines in fs/fuse/file.c). next-20261015 and
+  next-20261009 have fuse b776cbe24cc1, without extent maps.
+  Mainline is at v7.3-rc7-244, so the v7.4 merge window opens around
+  2026-10-18. Entering linux-next two days before that window is late. The
+  likely outcomes are v7.4-rc1 (around 2026-11-01) or v7.5. The
+  "GIT PULL fuse update for 7.4" had not been sent when I looked.
+1.5 Standalone famfs (famfs.ko v1, famfs-linux) was never merged. The
+  famfs README calls it deprecated. It is irrelevant for us.
+
+2. Maintenance of famfs userspace
+---------------------------------
+- Repo: cxl-micron-reskit/famfs (Micron), mirrored as jagalactic/famfs. First
+  commit 2023-06-28. In 2026: 135 commits. Per month: Jan 24, Feb 7,
+  Mar 25, Apr 19, May 7, Jun 15, Jul 17, Aug 11, Sep 1, Oct 9.
+  Authors: John Groves 117, Aravind Ramesh (micron.com) 14, Srinivasulu
+  Thanneeru (micron.com) 3, Miklos Szeredi 1 (581e315 "famfs: use fuse
+  extent map support", 2026-09-04).
+- Recent work tracks the kernel. 630f9b0 (2026-10-09) detects the kernel's
+  fuse ABI at runtime ("extmap" if /proc/kallsyms has
+  fuse_backing_is_dax), and famfs_fused refuses a mismatched kernel.
+  c184b1c (2026-10-10) adds a smoke test that famfs mmaps are populated by
+  PMD faults.
+- No tags and no releases. Not packaged in Fedora, Debian or elsewhere
+  (repology: empty). It is installed with make; "Famfs does not have
+  packaged installation files yet" (markdown/getting-started.md).
+- Maintainer: John Groves (Micron). The kernel extent-map code is now
+  Miklos Szeredi's, in fs/fuse.
+
+3. What it takes on v7.3-rc4
+----------------------------
+3.1 Base. The checkout commit 1b78070aaef6 is NOT v7.3-rc4. It is
+  v7.2-15794-g1b78070aaef6 ("Merge tag 'net-7.3-rc1'", 2026-08-27), and its
+  Makefile says 7.2.0. The guest kernel 7.3.0-rc4 was built from
+  /home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src. Its fs/fuse,
+  drivers/dax, include/uapi/linux/fuse.h, include/linux/dax.h and Makefile
+  are identical (diff -rq) to tag v7.3-rc4 (93f51579e7df), so I tested on
+  v7.3-rc4.
+3.2 Apply results (scratch clone, nothing built):
+  - git am of the 10 v5 patches (lore mbox) onto v7.3-rc4, onto 1b78070aaef6
+    and onto v7.3-rc1: patches 01-03 apply, and 04 "fuse: support 64 bit,
+    server allocated backing ID" fails in fs/fuse/inode.c and
+    include/uapi/linux/fuse.h. It needs the 42 earlier for-next commits
+    (e.g. b6397651e5ef "use vdax naming", b776cbe24cc1, the 7.47 uapi
+    additions).
+  - git merge fuse/for-next (4dd8d3967401) into v7.3-rc4: clean, with
+    auto-merges in fs/fuse/file.c and readdir.c, 36 files, +2773/-674.
+    Merging the for-next prerequisites (bf4ccbaad8bd) into v7.3-rc4 and
+    then git am of v5 gives the same tree (tree 9c941e93b99c).
+  - Merging into 1b78070aaef6 is also clean, but it pulls in all of v7.3-rc1.
+  - Saved: /home/akervine/.claude/jobs/plan7-fs/FA/
+    fuse-for-next-4dd8d3967401-on-v7.3-rc4.diff (5813 lines, sha256
+    fc6edbf71a741ae8c08e14361a8343c3b6456eda6fc73dd82abacc6fac4d1edf) =
+    git diff v7.3-rc4 (v7.3-rc4 + merge fuse/for-next). It applies with
+    patch -p1 on a v7.3-rc4 tree. The patches-only mbox is lore2/
+    v5-patches.mbox.
+3.3 Kernel config (t-merge fs/fuse/Kconfig, Makefile, drivers/dax/Kconfig):
+  ext_map.o is built under CONFIG_FUSE_PASSTHROUGH. DAX I/O needs
+  CONFIG_FS_DAX, otherwise faults SIGBUS and reads EIO (ext_map.c
+  fuse_ext_map_huge_fault l.224, read_iter l.283). DEV_DAX_FSDEV is
+  "default DEV_DAX", depends on FS_DAX. CONFIG_FUSE_DAX becomes a
+  transitional symbol that sets the renamed FUSE_VDAX (virtiofs DAX).
+  test/e2e/playbook/files/qemu-cxl-kernel.config already has all of these:
+  FUSE_FS=y, FUSE_PASSTHROUGH=y, FUSE_DAX=y, FS_DAX=y, FS_DAX_PMD=y,
+  DEV_DAX=y, DEV_DAX_CXL=y, DEV_DAX_FSDEV=y, ZONE_DEVICE=y,
+  TRANSPARENT_HUGEPAGE=y. Keep FUSE_FS=y: v3 had a link error with
+  FUSE_FS=m (John Groves, 2026-10-06, fdget_raw), reported as fixed in v4.
+  Set a CONFIG_LOCALVERSION (e.g. "-famfs") so the RPMs do not collide with
+  the installed 7.3.0-rc4. The config file hash also changes the e2e cache
+  name in custom-kernel.yaml.
+3.4 libfuse: famfs needs the fork. Upstream libfuse (master 2026-10-15,
+  release 3.18.3) has no FUSE_PASSTHROUGH_V2 or extent maps, and PR #1414
+  (the old GET_FMAP ABI) has been a draft since 2026-01-14 ("until merged in
+  the kernel", Bernd Schubert). famfs/Makefile l.92-126 clones
+  https://github.com/jagalactic/libfuse.git and picks branch famfs.extmap
+  when the kernel speaks extmap. famfs.extmap = szmi/libfuse extent-map-v3
+  = a6e314173360 "libfuse: add fuse extent support" (Miklos, 2026-09-10), on
+  libfuse master 3.19.0-rc0 plus famfs commits. Its include/fuse_kernel.h
+  matches the kernel for-next uapi (protocol 7.47, FUSE_PASSTHROUGH_V2 bit
+  45, FUSE_NOTIFY_BACKING_MAP = 11, struct fuse_extent,
+  fuse_notify_backing_map_out, fuse_backing_create_in). The only diff is
+  one comment. famfs links the libfuse3.so it built (CMakeLists.txt
+  l.231-235), not Fedora's fuse3-libs 3.16.2.
+3.5 daxctl: `daxctl reconfigure-device --mode=famfs daxN.M` binds fsdev_dax.
+  This is upstream in ndctl v85 (2738397 "daxctl: Add support for famfs
+  mode", John Groves, 2026-05-26; Documentation/daxctl/
+  daxctl-reconfigure-device.txt l.21, l.132-142), and Fedora 43 ships
+  ndctl/daxctl 85-1.fc43 (stable 2026-07-11). The doc calls the
+  reconfiguration destructive ("Any data on the dax device *will* be
+  lost"), but research B measured that binding dax2.0 to fsdev_dax and back
+  keeps the data, and fsdev_dax_probe does not zero memory. famfs itself
+  switches the mode with --set-daxmode through libdaxctl
+  (src/famfs_dax.c l.144-236, daxctl_dev_enable_famfs). The Makefile's
+  "release" target still clones and builds jagalactic/ndctl branch famfs
+  (Makefile l.158-178). CMake uses the local static libdaxctl if it exists,
+  otherwise pkg-config libdaxctl (CMakeLists.txt l.204-212), so Fedora's
+  daxctl-devel 85 should also work.
+3.6 famfs build dependencies (markdown/getting-started.md, Makefile,
+  CMakeLists): gcc, g++, make, cmake, meson, ninja, git, libuuid-devel,
+  libyaml-devel, zlib-devel, libcurl-devel, daxctl-devel (or the ndctl
+  build deps kmod-devel json-c-devel libtraceevent-devel libtracefs-devel
+  keyutils-libs-devel iniparser-devel asciidoctor). The build clones
+  jagalactic/cmake-modules, jagalactic/C-Thread-Pool (master),
+  jagalactic/mongoose (famfs-7.19), jagalactic/ndctl (famfs),
+  jagalactic/libfuse (famfs.extmap) and google/googletest
+  (release-1.12.1). Outputs: release/{famfs,mkfs.famfs,famfs_fused} plus
+  release/libfuse/lib/libfuse3.so. Nothing is packaged, and there are no
+  container images.
+
+4. Semantics that matter for us (docs and source)
+-------------------------------------------------
+4.1 mkfs (master): `mkfs.famfs [--set-daxmode] [--loglen 8m] /dev/daxN.M`.
+  The superblock is at offset 0 and the log follows it (default log 8 MiB).
+  The default allocation unit is 2 MiB, configurable with --alloc-unit/--4k
+  (589a95e, 2026-08-08). With fsdev_dax bound, the char device has no mmap
+  ("No mmap support - all access is through fs-dax/iomap", fsdev.c l.28),
+  so mkfs and fsck work through a temporary "dummy mount" (famfs_lib.c
+  l.6025-6075, l.2432-2450).
+  The master is the host whose /opt/famfs/system_uuid equals the uuid in
+  the superblock (famfs_misc.c l.202-228, famfs_lib.c l.505-531). The file
+  is generated on first use, so the two VMs differ as long as /opt/famfs
+  is not copied between them.
+4.2 Creating and filling files: only `famfs cp SRC DST` and
+  `famfs creat -s SIZE` work. They allocate (2 MiB units, optional
+  interleave), append a log entry, create the shadow entry, then copy the
+  data in through the mounted file. famfs_fused's .create returns ENOTSUP
+  (famfs_fused.c l.963-975), so plain cp, creat() and O_CREAT fail. write()
+  past i_size returns ENOSPC (ext_map.c fuse_ext_map_write_iter), and
+  truncate and hole punch are refused on S_DAX inodes (commit f6593d899494).
+  The GGUF (396705472 bytes) gets 190 units = 380 MiB. Its i_size is the
+  exact byte length, so llama.cpp's fseek(SEEK_END) gives the true size
+  (the devdax problem in 02-findings 1 goes away). One contiguous
+  allocation is one extent, which is the O(1) lookup case.
+4.3 Mounting other hosts: `famfs mount /dev/daxN.M /mnt/famfs` (fuse mode is
+  chosen automatically, or with -f). It validates the superblock and log,
+  makes a shadow tree in /tmp/famfs_shadow_XXXXXX (tmpfs YAML per file),
+  starts famfs_fused (which does the kernel mount), and replays the log
+  (markdown/famfs-fuse-design-notes.md "famfs mount" steps 1-6). Files
+  created later by the master become visible only after `famfs logplay
+  /mnt/famfs`. Client files have mode 0444, the master's 0644
+  (famfs_lib.c l.1635). Coherence rule: famfs keeps its own metadata
+  coherent, with cache flush/invalidate around superblock and log access,
+  but not file data. The writer must finish (famfs cp returns) before
+  readers mount or replay the log; on hardware that is not cache-coherent,
+  `famfs flush` is also needed. In qemu the shared backing is host RAM and
+  coherent.
+4.4 read() and fread: fuse_file_read_iter -> fuse_passthrough_read_iter ->
+  fuse_ext_map_read_iter -> dax_iomap_rw (ext_map.c l.276-295;
+  passthrough.c l.51). This is a memcpy from the dax memory, with no
+  daemon round trip, so llama.cpp's fread of the GGUF header works.
+4.5 mmap: fuse_ext_map_mmap sets fuse_ext_map_vm_ops and VM_HUGEPAGE
+  (ext_map.c l.315-320). .huge_fault -> dax_iomap_fault(order), so PMD
+  faults are possible (CONFIG_FS_DAX_PMD=y, 2 MiB-aligned extents; famfs
+  smoke test c184b1c checks PMD population). The pages are fsdev_dax's
+  MEMORY_DEVICE_FS_DAX pages inside the CXL window (fsdev.c probe:
+  devm_memremap_pages of the dev_dax ranges), so pagemap and
+  /proc/iomem frame checks work as they do with devdax. MAP_POPULATE
+  pre-faults without copying. The inode is S_DAX: no page cache at all, and
+  famfs and FUSE offer no option to turn one on. A cached mode would need
+  something else (erofs/ext4 on pmem, research FS).
+4.6 After the mount, the daemon answers LOOKUP, GETATTR, READDIR and OPEN
+  from the shadow tree. On the first OPEN of an inode it pushes the extent
+  map with FUSE_NOTIFY_BACKING_MAP, keyed by a 64-bit backing id
+  (famfs_fused_extmap.c l.140-235). The dax device itself is registered
+  once with fuse_passthrough_v2_open(fd). After that, data access never
+  goes to the daemon. If famfs_fused dies, the connection aborts: new
+  lookups and opens fail (ENOTCONN). Already-open files and existing
+  mappings should keep working, because the inode holds its fuse_backing
+  (inode.c l.178) and the backings are freed only when the connection is
+  destroyed at unmount (fuse_backing_files_free, inode.c l.1039). The
+  read and fault paths check only fuse_is_bad(inode) and dax_error. This is
+  from source and not measured, so it is an experiment in 6.3. The daemon
+  must outlive the readers, which makes it node-level state (systemd unit
+  or host process). It cannot live in a pod that may restart.
+4.7 One mount, many containers: famfs mount passes allow_other and
+  default_permissions by default (famfs_cli.c l.278-279 useraccess=1,
+  default_perm=1; famfs_mount.c l.654-675), and client files are 0444, so
+  any container uid can read. A bind mount of the node mount (CDI mount or
+  hostPath with "ro") shares the same superblock and FUSE connection, which
+  is ordinary VFS. The kernel enforces MNT_READONLY on each bind mount, and
+  containers need neither /dev/fuse nor privileges. I found no FUSE
+  restriction on bind mounts across mount namespaces. The known FUSE
+  container problems are about running the daemon inside a userns, which
+  we do not do. The node mount must exist before the container starts, or
+  be propagated with rslave/HostToContainer.
+  One mount per dax device per host: the FUSE backing takes the dax holder
+  with fs_dax_get(daxdev, fb, &fuse_dax_holder_ops) (backing.c l.169), and
+  the holder is exclusive. A second famfs mount of the same daxdev on a
+  host fails, and while fsdev_dax is bound no process on that host can use
+  the raw /dev/daxN.M (no mmap). On a host, famfs and the current direct
+  dax mode exclude each other per device. Other hosts are independent:
+  each binds its own view.
+4.8 Which devdax: fsdev_dax binds to any dev_dax via daxctl
+  (reconfigure-device works on regions from cxl create-region in ram mode,
+  i.e. daxN.0) and handles multi-range devices. dev_dax->nr_range loop,
+  multi-range offsets fixed in e0cb40c3c676 (v7.3-rc1), so a slice daxN.M
+  of a dynamic region should work too. Research B measured the binding of
+  dax2.0. A slice is a prototype check (6.3 step 9). Size: 512 MiB holds
+  the superblock (2 MiB) + log (8 MiB) + 380 MiB model.
+
+5. Effort and risks
+-------------------
+Effort (VM time, no host builds):
+- Kernel: none to port. Merge fuse/for-next into a v7.3-rc4 checkout, or
+  apply the saved diff. Same config plus LOCALVERSION. One binrpm-pkg
+  build, cached like today's kernels (custom-kernel.yaml can take an
+  arbitrary kernel_getsource command).
+- Userspace: dnf install of about 15 -devel packages, then `make release`
+  in a famfs checkout (it clones 6 repos and builds ndctl, libfuse
+  (meson) and famfs (cmake)). Tens of minutes. Tar the release/ outputs
+  and cache them on the host.
+- Integration (later streams): node-level famfs mount and daemon life
+  cycle in the driver, fsdev_dax binding per host, famfs cp in the writer
+  step, CDI bind mounts to readers. With direct mmap through a regular
+  file, test16 loses cxl-llm and the dax-mapping hacks, and readers run
+  stock llama.cpp.
+Risks:
+- R1 Not merged yet: the FUSE uapi (7.47) could still change before or
+  during the v7.4 merge, or the series could slip to v7.5. Pin the
+  kernel to fuse for-next 4dd8d3967401 and libfuse a6e314173360 together,
+  since famfs_fused refuses mismatched pairs (630f9b0). Move to vanilla
+  v7.4-rc1 when it lands.
+- R2 Userspace has no upstream home besides Micron's repo: no releases,
+  a forked libfuse (until famfs support lands in libfuse), build-time
+  clones from personal GitHub repos (jagalactic). Pin every commit.
+  Installing the fork's libfuse3.so must not replace Fedora's fuse3-libs:
+  run famfs_fused from its build directory or set an rpath.
+- R3 Brand-new kernel code (v5 posted 2026-10-16, kernel test robot and
+  sashiko still reporting on v3/v4). Expect bugs. A crash in a VM costs a
+  VM reboot.
+- R4 The daemon is a single point of failure for new opens, and there is
+  one mount per daxdev per host. This forces a node-level design, and it
+  conflicts with raw devdax use of the same device on that host.
+- R5 No cached mode: if a page-cache variant is still wanted, famfs cannot
+  give it.
+- R6 Real-hardware coherence (famfs flush) does not show up in qemu.
+
+6. Verdict and prototyping recipe
+---------------------------------
+Verdict: GO, for a time-boxed prototype. Fail-fast checks:
+- Maintained: yes (135 commits in 2026, Micron plus the FUSE maintainer).
+- Going seriously upstream: yes. The dax half has been in mainline since
+  v7.1. The FUSE half is written by the FUSE maintainer and has been in
+  fuse.git for-next and linux-next since 2026-10-16, with reviews and no
+  open objection.
+- Too much hacking on up-to-date vanilla: no. A clean merge of an
+  upstream maintainer branch, no config change. The userspace fork of
+  libfuse is the only non-upstream piece.
+- FUSE problems with ro bind mounts into several containers: none
+  expected from source (4.7). Prove it in step 7 below, and return NO-GO
+  if it fails.
+Stop and fall back to erofs (research FS/P1) if any of steps 4-8 fails in a
+way that needs kernel changes beyond fuse/for-next.
+
+6.1 Kernel (in VM1, then install the RPMs on both VMs):
+  git clone --depth 1 -b v7.3-rc4 \
+    https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux
+  cd linux && patch -p1 < fuse-for-next-4dd8d3967401-on-v7.3-rc4.diff
+  (copy the diff from the FA scratch; check its sha256 first. The
+  alternative is a full clone of fuse.git, checkout 4dd8d3967401, which is
+  v7.3-rc1 based.)
+  cp qemu-cxl-kernel.config .config; set CONFIG_LOCALVERSION="-famfs";
+  make olddefconfig; check that grep shows FUSE_PASSTHROUGH=y FS_DAX=y
+  FS_DAX_PMD=y DEV_DAX_FSDEV=y FUSE_VDAX=y; make -j$(nproc) binrpm-pkg
+  (the same steps as custom-kernel-fedora.yaml). Cache
+  kernel-pkgs.tar on the host. Boot both VMs. Check: grep -w
+  fuse_backing_is_dax /proc/kallsyms.
+6.2 Userspace (in VM1; cache the result on the host, then install on both):
+  dnf install -y git gcc gcc-c++ make cmake meson ninja-build libuuid-devel \
+    libyaml-devel zlib-devel libcurl-devel daxctl daxctl-devel kmod-devel \
+    json-c-devel libtraceevent-devel libtracefs-devel keyutils-libs-devel \
+    iniparser-devel asciidoctor
+  git clone https://github.com/cxl-micron-reskit/famfs; checkout d78e10f38c3b;
+  git clone -b famfs.extmap https://github.com/jagalactic/libfuse famfs/libfuse
+  (pin a6e314173360); make release. Record the commits of ndctl, mongoose,
+  C-Thread-Pool and cmake-modules. Check that release/famfs_fused
+  --fuse-abi prints extmap. Tar release/ (binaries + libfuse/lib/
+  libfuse3.so*) to the host cache. Install it under /opt/famfs-bin on both
+  VMs.
+6.3 Experiments (two VMs, three readers, stock llama.cpp):
+  1. Shared device as today (cxl-pool-shared, 512Mi, daxN.0 on both VMs).
+     On both: daxctl reconfigure-device --mode=famfs daxN.0; daxctl
+     list shows mode famfs.
+  2. VM1 (master): mkfs.famfs /dev/daxN.0; famfs mount /dev/daxN.0
+     /mnt/famfs; famfs cp Qwen3-0.6B-Q4_K_M.gguf /mnt/famfs/; sha256sum
+     /mnt/famfs/Qwen3-0.6B-Q4_K_M.gguf equals ac2d9771...; check that
+     cp /etc/hosts /mnt/famfs/x fails (ENOTSUP), to document the writer
+     rule.
+  3. VM2 (client): famfs mount /dev/daxN.0 /mnt/famfs; ls -l shows the
+     GGUF with mode 0444 and the exact size; sha256sum matches;
+     touch/echo > fails.
+  4. read path: python3 -c 'open(p,"rb").read(64)' and dd bs=1M of the
+     whole file on VM2: no growth of FilePages in /proc/meminfo, no
+     growth of the reader cgroup's memory.stat file.
+  5. mmap path: llama-cli/llama-simple (stock build, repacking off as in
+     02-findings) -m /mnt/famfs/...gguf on VM2 answers "Hello! How can I
+     assist you today?". Frame proof: /usr/local/bin/cxl-where.py (or
+     /proc/PID/pagemap of the model VMA as root) shows every frame inside
+     the "CXL Window" of /proc/iomem. Node FilePages grows < 5% of the
+     model. PMD faults: the fs_dax tracepoint dax_pmd_fault_done
+     (tracefs events/fs_dax) fires for the model VMA with result NOPAGE,
+     not FALLBACK. A
+     canary byte changed by the master (famfs cp of a small file
+     overwritten via mmap on VM1) is seen by VM2 at once.
+  6. Containers: on VM2 create two pods and on VM1 one pod, all hostPath
+     /mnt/famfs readOnly (later CDI mounts), non-root uid, no privileges.
+     Run stock llama.cpp in all three at the same time: same answer, frames
+     in the CXL window, node FilePages stays flat. Check mountinfo in the
+     container: fuse.famfs, ro.
+  7. Bind-mount robustness: a container started before the node mount sees
+     nothing without propagation, so document the ordering. Umount while
+     a reader runs gives EBUSY. Remount after an unmount and logplay.
+  8. Daemon death: kill -9 famfs_fused on VM2 while a reader runs. The
+     running llama.cpp keeps generating, a new open gives ENOTCONN, and
+     fusermount -u -z plus remount recovers. Record dmesg.
+  9. Slices: repeat 1-3 with a daxN.M slice of a dynamic dax region and
+     with two famfs filesystems on two slices at once.
+  10. Unwind: famfs umount (fusermount -u), daxctl reconfigure-device
+     --mode=devdax, then the old direct test (cxl-llm) still reads the
+     same bytes. No leftovers.
+  Write the results to 12-proto-famfs.txt in the plan directory.

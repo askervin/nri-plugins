@@ -1,0 +1,65 @@
+plan-7-e2e-cxl-llm-share: findings (synthesis of 01-research-A/B/C)
+====================================================================
+Written 2026-10-16 (orchestrator). Evidence, commands and file:line
+references are in the three research reports; this is what they mean
+together.
+
+1. The model and the engine (A)
+- Qwen3-0.6B Q4_K_M, unsloth/Qwen3-0.6B-GGUF at commit
+  50968a4468ef4233ed78cd7c3de230dd1d61a56b, file Qwen3-0.6B-Q4_K_M.gguf,
+  396705472 bytes, sha256
+  ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a,
+  Apache-2.0. Greedy decoding with an empty <think> block answers "hello"
+  with "Hello! How can I assist you today?", identical over runs, thread
+  counts and load paths. 17/30/41 tokens/s on 1/2/4 threads of the host CPU
+  (the VMs use -cpu host); ~137 MB anonymous memory per process besides
+  the mapped model.
+- Stock llama.cpp cannot use /dev/daxX.Y or a dax fd: the size comes from
+  fseek(SEEK_END) (0 on devdax), the header from fread (no read on devdax),
+  and the mapping length is the file size (devdax wants 2 MiB multiples).
+- cxl-llm, a 439-line program on llama.cpp's public API (no patch), maps
+  the dax node or fd itself, parses the GGUF header from the mapping and
+  gives llama.cpp a FILE* whose fileno is the dax fd; llama.cpp then maps
+  the device: weights stay in CXL. The same program writes a model into a
+  dax device (--write) and runs on regular files. Weight repacking must be
+  off (it copies 205 MiB of weights into anonymous memory). One static
+  CPU-only build (AVX2 baseline, no AVX-512), 6.7 MB, built in a fedora:43
+  container in ~45 s.
+- llama.cpp maps with MAP_POPULATE (+ WILLNEED): a cached reader pulls the
+  whole model into its node's page cache at load, not page by page.
+
+2. Direct and cached access in the VMs (B, measured)
+- Direct: an mmap of the shared /dev/daxX.Y reaches CXL memory; the page
+  frames are inside the "CXL Window" of /proc/iomem; the page cache does
+  not grow. This works with today's pool devices, claims and leases.
+- Cached, on today's volatile devdax: a FUSE file whose read() copies from
+  the dax mapping is a regular file; mmap of it fills the local page cache
+  on first access (frames in System RAM) and later accesses stay local.
+  FOPEN_DIRECT_IO breaks MAP_SHARED, FUSE passthrough refuses a char
+  device, losetup refuses a char device, userfaultfd is not in the kernel,
+  famfs's FUSE half is not in v7.3.
+- Cached and direct with unmodified tools: CXL persistent memory (qemu
+  persistent-memdev + shared LSA) -> pmem region -> fsdax namespace ->
+  ext4 mounted ro,noload with or without dax. Works in both VMs at once,
+  but needs a new device kind in fake-cxl-pool, the controller and the
+  driver, and is a qemu-only model of hardware that real shared CXL
+  appliances (volatile) do not offer.
+- Proof, in a qemu guest: timing cannot distinguish CXL from DRAM (qemu
+  maps both as host RAM). Usable: page frames of the engine's mapping
+  against /proc/iomem (root), node FilePages and the reader cgroup's
+  memory.stat "file", and a canary byte changed under the readers.
+
+3. Our stack (C)
+- Writer and direct readers need no driver or pool change: a claim on
+  cxl-pool-shared with all hosts (exclusive, writable) for the writer,
+  claims with DeviceConfig {mode: dax, readOnly: true} for the readers.
+- A cached mode that gives readers a regular file without privileges is
+  not in the driver today: the node plugin would export the device through
+  FUSE and bind-mount the file into containers (CDI). plan-5's vocabulary
+  has room: mode is "how a container gets the memory"; PATH is a reserved
+  env field (plan-5 02 section 9.3).
+- Budget fits: VM2 has ~5 GiB free; per reader ~0.2-0.45 GiB anonymous;
+  one page-cache copy of the model per node in a node-level cached mode.
+  Host /tmp is tmpfs: the 512Mi backing file is host RAM.
+- test16 time: ~6-8 min for both modes once the model and the engine are
+  cached on the host.
