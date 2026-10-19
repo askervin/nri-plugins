@@ -1,0 +1,251 @@
+plan-7 erofs: status of stream P (fake-cxl-pool persistent devices)
+===================================================================
+Written 2026-10-19 (stream P). Contract: 22-erofs-design.txt section 3.
+Paths: N = nri-plugins, P = N/scripts/testing/fake-cxl-pool. No VM was
+used. Nothing committed. The persistent=false path is unchanged (same
+qemu commands, same JSON apart from the new field "persistent": false).
+
+1. What T relies on (exact names)
+---------------------------------
+Server config (DeviceConfig) key:    persistent: true      (default false)
+POST /api/v1/devices (DeviceCreate): "persistent": true    (default false)
+Client:                              create ... --persistent
+api.Device JSON:                     "persistent": <bool>  (always present)
+                                     "lsaPath": "<file>"   (persistent only;
+                                                            omitted otherwise)
+LSA file name rule (pool.LSAPath):   the data path with its extension
+  replaced by ".lsa": <pool dir>/llm0.raw -> <pool dir>/llm0.lsa; a data
+  file without extension gets ".lsa" appended (/x/llm0 -> /x/llm0.lsa).
+  Size 262144 bytes (256 KiB, sparse, all zeros when new). Created exactly
+  when the data file is (server start for config devices, create over the
+  API, state load, every attach if missing); removed exactly when the data
+  file is (DELETE of a device created over the API, only if the data file
+  is in the pool directory). Config devices keep both files, as before.
+qemu ids of an attach of device D on a host (counter N, as today):
+  data backend      fcp_D.hpN       memory-backend-file, mem-path=<data>,
+                                    size=<device size>, share=on
+  LSA backend       fcp_D.hpN-lsa   memory-backend-file, mem-path=<lsa>,
+                                    size=262144, share=on
+  cxl-type3 device  fcp_D.hpN       persistent-memdev=fcp_D.hpN,
+                                    lsa=fcp_D.hpN-lsa, sn=<serial>
+                                    (no volatile-memdev)
+  The attachment's qemuDeviceId and qemuObjectId are fcp_D.hpN as for
+  volatile devices; the attachment JSON also has "qemuLsaObjectId":
+  "fcp_D.hpN-lsa" for persistent devices (omitted for volatile ones; see
+  Review fixes).
+HMP commands, in order (QMP: the same arguments as object-add/device_add/
+device_del/object-del JSON):
+  object_add memory-backend-file,id=fcp_llm0.hp1,size=536870912,share=on,mem-path=<pool>/llm0.raw
+  object_add memory-backend-file,id=fcp_llm0.hp1-lsa,size=262144,share=on,mem-path=<pool>/llm0.lsa
+  device_add cxl-type3,bus=<slot>,persistent-memdev=fcp_llm0.hp1,lsa=fcp_llm0.hp1-lsa,id=fcp_llm0.hp1,sn=0xc1ae0001
+  detach: device_del fcp_llm0.hp1, then (qemu deleted it, nothing mapped)
+          object_del fcp_llm0.hp1, object_del fcp_llm0.hp1-lsa
+  failed device_add: object_del fcp_llm0.hp1, object_del fcp_llm0.hp1-lsa
+  failed object_add of the LSA: object_del fcp_llm0.hp1
+Every qemu that attaches the device maps the same two files (the same
+mem-paths in every VM), so the labels in the LSA are shared.
+ResourceSlice attribute (controller):  persistent (bool) on EVERY published
+  device, false for volatile devices (CEL: device.attributes["cxl-pool.nri.io"].persistent).
+Claim status data (claim.status.devices[].data):  "persistent": true for a
+  persistent device, the key omitted for volatile devices; next to
+  "serial", "shared", "size", "exclusive" (also "host", "hostUUID",
+  "attachment", "qemuDeviceId" as before).
+Client table columns: NAME SERIAL SIZE SHARED PERSISTENT SCOPE STATE
+  ATTACHED-TO OWNER (columns 1-4 unchanged; SCOPE and later moved one to
+  the right). "devices NAME" adds the lines "memory:   persistent|volatile"
+  and, for persistent devices, "lsa:      <file>".
+
+Example: server JSON of a persistent config device (fake-cxl-pool-client
+-o json devices llm0, server started on the host with qemu discovery off,
+config {name: llm0, size: 512Mi, shared: true, persistent: true,
+serial: 0xc1ae0001}):
+  {
+    "name": "llm0",
+    "serial": "0xc1ae0001",
+    "size": 536870912,
+    "shared": true,
+    "persistent": true,
+    "backend": "file",
+    "path": "/tmp/tmp.5W4NBDSKAV/pool/llm0.raw",
+    "lsaPath": "/tmp/tmp.5W4NBDSKAV/pool/llm0.lsa",
+    "pool": "default",
+    "scope": "pool",
+    "static": true,
+    "state": "free",
+    "allocation": null,
+    "attachments": [],
+    "created": "2026-10-19T08:15:35.993249903Z"
+  }
+  ls -ls of the pool dir: llm0.lsa 262144 bytes, llm0.raw 536870912 bytes,
+  both 0 blocks (sparse).
+  devices table:
+  NAME     SERIAL      SIZE   SHARED  PERSISTENT  SCOPE  STATE  ATTACHED-TO  OWNER
+  llm0     0xc1ae0001  512Mi  true    true        pool   free   -            -
+  pooled0  0xc1ee0001  256Mi  false   false       pool   free   -            -
+
+2. What changed, per file (all under P)
+---------------------------------------
+pkg/api/types.go         Device.Persistent (json "persistent"), Device.LSAPath
+                         (json "lsaPath,omitempty"), DeviceCreate.Persistent
+                         (json "persistent,omitempty").
+pkg/pool/pool.go         LSASize = 256 KiB, LSAPath(dataPath).
+pkg/qemu/types.go        LSASize, LSAObjectID(dataID) = dataID+"-lsa";
+                         CXLType3 and Type3Device gain PersistentMemdev and
+                         LSA; Memdev() returns the persistent memdev if set,
+                         else the volatile one.
+pkg/qemu/qmp.go          device_add arguments carry volatile-memdev or
+                         persistent-memdev + lsa (only the set ones); the
+                         QOM tree reads persistent-memdev and lsa.
+pkg/qemu/hmp.go          HMPDeviceAdd emits the same properties.
+pkg/qemu/qtree.go        info qtree parser reads persistent-memdev and lsa.
+pkg/qemu/fake.go         device_add checks: no memdev at all ("at least one
+                         memdev property must be set"), persistent without
+                         lsa ("lsa property must be set for persistent
+                         devices", qemu's text), unknown backend per
+                         property ("Property 'cxl-type3.persistent-memdev'
+                         can't find value 'X'", same for lsa), a backend
+                         used twice (busy, or the same id for memdev and
+                         lsa): "memory backend X can't be used multiple
+                         times."; all backends of a device are mapped and
+                         unmapped together; the tree reports both ids.
+pkg/server/config.go     DeviceConfig.Persistent; validation: the LSA of a
+                         persistent config device must not be its own data
+                         file (data file with extension .lsa) nor a data or
+                         LSA file of another config device.
+pkg/server/server.go     static devices: LSAPath, both files ensured;
+                         device.ensureFiles(); hotplug counter seeding also
+                         from fcp_*.hpN-lsa objects and the persistent and
+                         lsa ids of tree devices; adoption by the device's
+                         Memdev() (persistent attachments are recognized);
+                         finalizeDetach object-deletes the data backend,
+                         then the LSA backend of a persistent device (both
+                         only for server-made fcp_ ids, same error handling).
+pkg/server/ops.go        CreateDevice: persistent, LSA file, Conflict if a
+                         file of the new device is a file of another device;
+                         DeleteDevice removes both files; Attach adds the
+                         LSA backend and plugs persistent-memdev/lsa,
+                         deletes every added backend when an object_add or
+                         the device_add fails; a persistent device bound to
+                         a pre-declared befile_ backend is refused.
+pkg/server/state.go      persisted dynamic devices keep persistent; load
+                         sets LSAPath and recreates a missing LSA file.
+pkg/controller/publisher.go  attribute persistent on every device.
+pkg/controller/status.go     DeviceData.Persistent (json "persistent,omitempty").
+pkg/controller/reconciler.go fills it from the device.
+cmd/fake-cxl-pool-client/main.go  PERSISTENT column, memory:/lsa: lines,
+                         create --persistent.
+README.md                "Persistent devices" section (the field, the two
+                         files and their name rule, the qemu objects, that
+                         every qemu maps the same LSA so labels are shared,
+                         no pre-declared backends), client table columns,
+                         create --persistent, controller attribute and
+                         status data.
+config.example.yaml      the field, the two files, shared labels, an
+                         example device llm0 (512Mi, shared, persistent,
+                         0xc1ae0002).
+Tests (new or extended):
+  pkg/qemu/persistent_test.go  HMP/QMP command lines; fake checks (each
+      error text, busy backends, object_del while in use and after
+      device_del); qtree parse of a persistent device; QMP client sequence
+      (object-add x2, device_add args, QOM tree, device_del, object-del x2);
+      HMP client exact command sequence.
+  pkg/qemu/monitor_test.go     fake QMP server answers persistent-memdev
+      and lsa ("" when unset, as qemu does).
+  pkg/pool/pool_test.go        TestLSAPathRule (.raw, no extension, dotted
+      directory, double extension).
+  pkg/server/persistent_test.go config parsing and validation; static
+      persistent device files and sizes; JSON of persistent and volatile
+      devices; attach to two VMs (exact commands, same two files); detach
+      sequence; re-attach ids; failed device_add (both backends deleted,
+      device free, retry works); create/restart/delete over the API (LSA
+      recreated on load, both files removed on delete, volatile device has
+      no LSA); file clash on create; adoption of a persistent attachment
+      and its detach; counter seeded from a leftover -lsa object; a
+      pre-declared backend refused.
+  pkg/server/example_config_test.go  3 devices, llm0 persistent.
+  pkg/controller/controller_test.go  TestPublish's exact attribute set now
+      includes persistent (false on volatile devices);
+      TestPersistentAttributeAndStatus: attribute true/false, status data
+      "persistent": true (with serial, shared, size, exclusive) and absent
+      for a volatile claim.
+  cmd/fake-cxl-pool-client/main_test.go  TestCLIPersistent: create
+      --persistent, table column, JSON fields, detail lines.
+
+3. Verification (2026-10-19, in N)
+----------------------------------
+  go vet ./scripts/testing/fake-cxl-pool/...            no output, rc 0
+  go test -count=1 -race ./scripts/testing/fake-cxl-pool/...
+      ok cmd/fake-cxl-pool-client, pkg/api, pkg/controller, pkg/pool,
+      pkg/qemu, pkg/server (no test files: client, controller and server
+      mains, pkg/client)
+  gofmt -l scripts/testing/fake-cxl-pool/pkg scripts/testing/fake-cxl-pool/cmd
+                                                        no output
+  golangci-lint run ./scripts/testing/fake-cxl-pool/... (the linter of
+      make golangci-lint, on P only): 41 findings (errcheck 40, unused 1),
+      all pre-existing (Close/Fprintf/os.Remove in handlers.go, server.go,
+      state.go saveStateLocked, client, etc.; unused stateFilePath); none
+      on a changed or new line (checked against the hunks of git diff -U0;
+      the one new finding, an unchecked resp.Body.Close in a new test, was
+      fixed).
+  Host run of the server binary (discovery qemu: false, port 19909,
+  temp dir, removed afterwards): example JSON and table above.
+
+4. Deviations from 22 and additions, with reasons
+-------------------------------------------------
+- api.Attachment has "qemuLsaObjectId" (omitempty), added by review fix
+  R5; for attachments made by the server it equals qemuObjectId + "-lsa".
+- A persistent device whose data file a VM pre-declares on its command line
+  (befile_ binding) cannot be attached (InvalidArgument "... has no label
+  storage area"): such a backend has no LSA, and an LSA added next to it
+  would not be the command line's. Not used by test16.
+- Validation added (not in 22): a persistent config device whose data file
+  has the extension .lsa (its LSA would be the data file), or whose LSA is
+  a file of another config device, is a config error; a persistent device
+  created over the API whose files clash with another device's is a 409.
+- Client "devices NAME" shows "memory: persistent|volatile" instead of a
+  "persistent:" line: a longer key would change the column alignment of the
+  whole detail output, which an existing test (and possibly scripts)
+  match.
+- Client create --persistent added (22 lists only the table and JSON).
+- The "lsa property must be set" and "can't find value" texts of the fake
+  follow qemu's (hw/mem/cxl_type3.c, qdev link properties).
+- TestPublish's expected attribute set changed (persistent added), as the
+  contract changed.
+
+5. Requests
+-----------
+- D: none needed for the pool side. For reference: the claim status data
+  has "persistent": true only on persistent devices (absent = volatile),
+  the ResourceSlice attribute persistent is on every pool device.
+- T: the client in the VMs must be rebuilt (make -C
+  scripts/testing/fake-cxl-pool) for the PERSISTENT column and --persistent;
+  the server must be restarted with the new binary for persistent devices.
+  The data and LSA files of a config device are not removed by the server;
+  the test's EXIT trap removes <pool dir>/llm0.raw and <pool dir>/llm0.lsa
+  (22 section 8 E) after the server stops or the device is gone.
+
+6. Review fixes (25-erofs-review-D.txt)
+---------------------------------------
+- R5: the LSA backend id is recorded in the attachment, api.Attachment
+  QemuLSAObjectID (json "qemuLsaObjectId,omitempty", persisted in the
+  state file): at attach (t3.LSA) and at adoption (the tree's lsa).
+  finalizeDetach deletes exactly that id after the data backend (both only
+  when the data backend is a server-made fcp_ id), also when the device is
+  no longer known. An attachment recorded without it (state file of the
+  build before this fix) falls back to qemuObjectId + "-lsa" if its device
+  is persistent. Compatible: one added optional JSON field, same qemu
+  commands for attachments made by the server.
+  Tests: TestPersistentAttachDetach checks the recorded id;
+  TestPersistentAdopt checks it at adoption; TestPersistentAdoptOtherLSAName
+  (adopted LSA "fcp_llm0.labels" is the one deleted);
+  TestPersistentFinalizeWithoutDevice (device record gone, qemu deletes
+  the device, reconcile deletes both backends).
+- S2: one LSASize, pool.LSASize (qemu.LSASize removed; the server uses
+  pool.LSASize for the file and the backend).
+- S3: fake.go uses slices.Contains; its contains() is removed.
+Checks rerun 2026-10-19: go vet ./scripts/testing/fake-cxl-pool/... clean;
+go test -count=1 -race ./scripts/testing/fake-cxl-pool/... all ok; gofmt -l
+no output; golangci-lint run ./scripts/testing/fake-cxl-pool/... 41
+findings, the same pre-existing ones, none in changed lines.
+
+P done

@@ -342,6 +342,7 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	data := DeviceData{
 		Serial:       strings.ToLower(serial),
 		Shared:       d.Shared,
+		Persistent:   d.Persistent,
 		Size:         d.Size,
 		Host:         a.Host,
 		HostUUID:     w.host.UUID,

@@ -11,6 +11,12 @@ driver may change (fsdax, mounts into containers by claims and by
 cxl-request). Builds and tools run in the e2e VMs only, never on the host
 (no new host dependencies); results are cached on the host like kernels.
 
+Branch (2026-10-19): the work continues on nri-plugins branch 5jg-cxl,
+where the driver is dra-driver-cxl in nri-plugins itself (image, helm
+chart, e2e suite memory.test-suite/dra-driver-cxl). 14-branch-5jg-cxl.txt
+maps every old path and name of these files to the new ones and lists
+what a containerized driver changes for the filesystem work.
+
 Facts at the start (2026-10-17, orchestrator, from v7.3 sources at
 1b78070aaef6 and research B 01-research-B-kernel-access.txt):
 - erofs mounts only a block device (dax=always needs a bdev with a
@@ -49,6 +55,10 @@ Streams (Opus, medium effort; each writes only its own files):
       shared CXL pmem device hotplugged by hand: writer flashes an image,
       readers in both VMs mount dax=always and dax=never, containers bind
       mount it, stock llama.cpp answers. 12-proto-P1-erofs-pmem.txt
-Then (orchestrator): 13-fs-findings.txt, 14-fs-decisions.txt,
-15-fs-plan.txt, implementation streams, 16-status-*.txt.
+  P2  prototype famfs in the VMs after P1 (FA's recipe): kernel with
+      fuse/for-next, famfs userspace built in a VM, two hosts, three
+      pods, daemon death. 12-proto-P2-famfs.txt
+Then (orchestrator): 13-fs-findings.txt (done), 14-branch-5jg-cxl.txt
+(done). Decision (user, 2026-10-19): erofs first; its findings, design,
+plan and status are the 2x-erofs files, starting at 20-erofs-README.txt.
 Scratch space: /home/akervine/.claude/jobs/plan7-fs/<stream>/.

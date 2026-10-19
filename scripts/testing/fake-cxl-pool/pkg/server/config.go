@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
+	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/pool"
 )
 
 // Defaults.
@@ -70,13 +71,16 @@ type PoolConfig struct {
 
 // DeviceConfig configures a static pool device.
 type DeviceConfig struct {
-	Name   string            `json:"name"`
-	Size   api.Size          `json:"size"`
-	Shared bool              `json:"shared,omitempty"`
-	Pool   string            `json:"pool,omitempty"`
-	File   string            `json:"file,omitempty"`
-	Serial *api.Serial       `json:"serial,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Name   string   `json:"name"`
+	Size   api.Size `json:"size"`
+	Shared bool     `json:"shared,omitempty"`
+	// Persistent makes the device persistent memory with a label storage
+	// area file next to the data file (see pool.LSAPath).
+	Persistent bool              `json:"persistent,omitempty"`
+	Pool       string            `json:"pool,omitempty"`
+	File       string            `json:"file,omitempty"`
+	Serial     *api.Serial       `json:"serial,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 // HostConfig configures a static host.
@@ -98,6 +102,47 @@ type DiscoveryConfig struct {
 	Names        []string     `json:"names,omitempty"`
 	Interval     api.Duration `json:"interval,omitempty"`
 	LocalDevices *bool        `json:"localDevices,omitempty"`
+}
+
+// checkDeviceFiles returns an error if the label storage area file of a
+// persistent config device is its own data file or a file of another
+// config device.
+func (c *Config) checkDeviceFiles() error {
+	poolDir := map[string]string{}
+	for _, p := range c.Pools {
+		poolDir[p.Name] = p.Dir
+	}
+	data := map[string]string{}  // config device -> data file
+	owner := map[string]string{} // file -> config device
+	for _, d := range c.Devices {
+		dir, ok := poolDir[d.Pool]
+		if !ok {
+			continue // reported as an unknown pool
+		}
+		path := d.File
+		if path == "" {
+			path = pool.New(d.Pool, dir, 0, false).FilePath(d.Name)
+		}
+		data[d.Name] = filepath.Clean(path)
+		if _, ok := owner[data[d.Name]]; !ok {
+			owner[data[d.Name]] = d.Name
+		}
+	}
+	for _, d := range c.Devices {
+		path, ok := data[d.Name]
+		if !ok || !d.Persistent {
+			continue
+		}
+		lsa := pool.LSAPath(path)
+		if lsa == path {
+			return fmt.Errorf("device %q: the label storage area file of %s would be the data file itself (extension .lsa)", d.Name, path)
+		}
+		if other, ok := owner[lsa]; ok {
+			return fmt.Errorf("device %q: label storage area file %s is also a file of device %q", d.Name, lsa, other)
+		}
+		owner[lsa] = d.Name
+	}
+	return nil
 }
 
 // QemuEnabled returns true if /proc scanning is enabled (default true).
@@ -191,6 +236,9 @@ func (c *Config) Complete() error {
 		if d.Pool == "" {
 			d.Pool = c.Pools[0].Name
 		}
+	}
+	if err := c.checkDeviceFiles(); err != nil {
+		return err
 	}
 	seen = map[string]bool{}
 	for i := range c.Hosts {

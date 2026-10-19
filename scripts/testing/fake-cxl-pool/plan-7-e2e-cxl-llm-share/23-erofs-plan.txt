@@ -1,0 +1,106 @@
+plan-7 erofs: implementation plan
+=================================
+Written 2026-10-19 (orchestrator). Contract: 22-erofs-design.txt. Four
+Opus streams with disjoint files, medium effort; then reviews and the
+regression of the whole suite. Paths as in 22.
+
+Rules for every stream
+- Read first: N/.github/skills/coding-style/SKILL.md,
+  N/.github/skills/build-nri-policy-images/SKILL.md,
+  N/.github/skills/run-e2e-tests/SKILL.md, then 20, 21, 22, this file,
+  then the sources your section names.
+- Nothing is committed (no git commit, stash, checkout, reset, rebase).
+- Edit only the files your stream owns. A change you need elsewhere is a
+  Request in your status file 24-erofs-status-<S>.txt; the orchestrator
+  relays it. Plain ASCII; comments what-not-how (coding-style).
+- No new host dependencies: nothing installed on the host, no native
+  builds on the host except the project's own make targets (go build/test,
+  make images, make golangci-lint). Kernel and other builds for the VMs
+  happen inside a VM.
+- VMs: one stream at a time, in the order K -> D -> T; the orchestrator
+  says when a stream gets them. Never two run_tests.sh at a time. Never
+  device_del a CXL device that a guest still uses; never umount -l a DAX
+  filesystem; release regions of a port in LIFO order.
+- Status file: what you did, deviations from 22 with reasons, the exact
+  verification commands and their results, open issues, Requests. End it
+  with "<S> done" when your done-criteria hold.
+
+Stream K: kernel (VMs first)
+  Owns: test/e2e/playbook/files/qemu-cxl-kernel.config, the cached kernel
+  tarball, the kernels of both VMs, E/n4-cxl-shared-1/test00-up/code.var.sh
+  and E/n4-cxl-shared-2/test00-up/code.var.sh (the EROFS check only).
+  Do: 22 section 2. Build in VM1 (P1's recipe in 12-proto-P1 1 and
+  /home/akervine/.claude/jobs/plan7-fs/P1/kconfig.sh; VM1 has
+  ~/fsexp/linux, a copy of the guest source, and the build deps).
+  Done when: the config file has CONFIG_EROFS_FS=y and equals the .config
+  of the RPMs; the tarball is in the cache under the computed name;
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
+  and .../n4-cxl-shared-2/test00-up PASS (in that order); both VMs run
+  7.3.0-rc4 with CONFIG_EROFS_FS=y in /boot/config-$(uname -r); the
+  cluster is in shape (both nodes Ready). Then say "K done": the VMs go
+  to D.
+
+Stream P: fake-cxl-pool persistent devices (no VMs)
+  Owns: P/pkg/**, P/cmd/**, P/README.md, P/config.example.yaml, P/deploy/**.
+  Do: 22 section 3. Unit tests: config parsing, file life cycle (LSA
+  created/removed with the data file, its name), the QMP and HMP command
+  sequences of attach and detach for persistent devices (fake qemu),
+  discovery of a persistent attachment, the published attribute
+  persistent on volatile and persistent devices, the status data.
+  Checks: go vet and go test ./scripts/testing/fake-cxl-pool/...; gofmt;
+  make golangci-lint with no new findings in P.
+  Done when: the checks pass and 24-erofs-status-P.txt lists the exact
+  JSON field names, file names and qemu ids that T relies on.
+
+Stream D: driver (desk first, then the VMs after K)
+  Owns: pkg/cxl/** , D/** (incl. Dockerfile),
+  deployment/helm/dra-driver-cxl/**, deployment/samples/dra-driver-cxl/**,
+  docs/memory/cxl/** except e2e.md, docs/deployment/helm/dra-driver-cxl.md,
+  go.mod, go.sum.
+  Do: 22 sections 4-7. Unit tests with fakes: every text T1-T14 and its
+  order, env and CDI of block and fs devices, the node mount table
+  (shared by claims, kept for the other access, unmounted with the last
+  claim, EBUSY fails Unprepare, never detach), the holder wait before
+  Release, restart (state load, missing mount re-created), memctl pmem
+  region and namespace parsing against a fake sysfs and fake ndctl output
+  taken from the VMs, the classes YAML (the loader test). Then, with the
+  VMs (after K): check memctl's pmem path by hand against a persistent
+  device hotplugged as P1 did (P1/plug-pmem.sh) or through P's server if
+  P is done, and record the sysfs paths and ndctl JSON that the fakes
+  use; build the image (make PLUGINS=nri-dra-driver-cxl
+  SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images) and check
+  ndctl/cxl/daxctl version in it. Release the VMs clean (no devices, no
+  regions, cluster Ready).
+  Checks: go vet, go test -race ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/...
+  ./cmd/cxl-request/..., gofmt, make golangci-lint with no new findings,
+  helm template of the chart renders, the image builds.
+  Done when: the checks pass and "D done" is in 24-erofs-status-D.txt
+  with the image tarball name; the VMs go to T.
+
+Stream T: e2e (desk first, then the VMs after D)
+  Owns: E/dra.source.sh, E/n4-cxl-shared-2/{llm.source.sh,pool.source.sh,
+  cxl.source.sh,cxl-where.py,test16-cxl-llm-share/**,cxl-llm/**},
+  docs/memory/cxl/e2e.md.
+  Do: 22 section 8 and the e2e parts of 7. Desk phase: write the test and
+  helpers against 22 (and P's/D's status files as they appear), bash -n,
+  shellcheck as plan-6 did (SC2154,SC2034,SC1090,SC2148,SC2016 excluded,
+  no findings in the changed files). VM phase: run test16 until it PASSES;
+  failures in P or D code are Requests with evidence (logs, commands);
+  never weaken an assertion of 22 without writing why. Then the
+  regression, one test at a time: n4-cxl-shared-1/test00-up,
+  n4-cxl-shared-2/test00-up, test01, test10-test16 (or
+  ./run_tests.sh memory.test-suite/dra-driver-cxl once).
+  Done when: test16 PASSES twice in a row and the regression passes;
+  24-erofs-status-T.txt has the verdicts, durations, the measured proofs
+  (frames, page cache deltas, answers, tokens/s) and the final VM state.
+
+Reviews (after D and T are done)
+  R-D: the driver and pool diff against 22 (texts, order of checks,
+  mount life cycle and the holder wait, locks, state and restart, the
+  CDI shapes, docs). R-T: test16 and helpers against 22 section 8 (exact
+  proofs, no sleeps, cleanup on failure, no leftovers). Findings go to
+  25-erofs-review-D.txt and 25-erofs-review-T.txt; accepted ones are
+  fixed by the owning stream, then test16 runs once more.
+
+Orchestrator: 29-erofs-status.txt, the relays between streams, the VM
+hand-overs, the final state.

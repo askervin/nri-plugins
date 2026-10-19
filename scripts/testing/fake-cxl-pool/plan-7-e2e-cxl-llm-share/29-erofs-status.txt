@@ -1,0 +1,159 @@
+plan-7 erofs: orchestrator status
+=================================
+2026-10-19: the user chose erofs ("make all necessary changes to our
+custom CXL kernel configuration and update test16 accordingly"). Written:
+20-erofs-README, 21-erofs-findings, 22-erofs-design (the contract),
+23-erofs-plan. Started: K (kernel; owns the VMs), P (fake-cxl-pool
+persistent devices), D phase 1 (driver, desk and unit tests), T phase 1
+(test16, desk). VM order: K -> D phase 2 -> T phase 2.
+Scope decisions of the orchestrator (in 20 and 22 section 9): claims
+only in this step (cxl-request leases with erofs later), erofs only (no
+fsType field yet), a new DeviceClass cxl-pool-persistent with persistent
+published on every pool device, cached readers always on a loop device
+(so both accesses coexist on a node), llama-server (not llama-completion)
+as the reader so that the model stays mapped while the test inspects it.
+2026-10-19: K done (24-erofs-status-K.txt): qemu-cxl-kernel.config has
+EROFS_FS=y (+ the EROFS defaults and XZ_DEC_MICROLZMA), tarball
+kernel.getsource_vanilla.config_b71a627c...rpms.tar in the e2e cache, both
+VMs on 7.3.0-rc4 with EROFS via test00-up (PASS 80 s and 123 s), -fsexp
+and -famfs2 removed. K's R1 done by the orchestrator: the kernel_error
+text of both test00-up files now says to rpm -e the installed kernel of
+the same version too (reinstalling over it removes the kernel from
+/boot). VMs handed to D for its phase 2.
+2026-10-19: P done (24-erofs-status-P.txt): persistent devices in
+fake-cxl-pool (config/POST persistent, JSON persistent + lsaPath, LSA
+<data without ext>.lsa 256 KiB sparse, backends fcp_D.hpN and
+fcp_D.hpN-lsa, attribute persistent on every device, status data
+persistent: true). Unit tests and vet pass; golangci-lint on P has only
+pre-existing findings. Extras beyond 22: LSA name clash checks, client
+create --persistent, "memory: persistent|volatile" in devices NAME.
+Relayed to T (names) and D (server usable in its phase 2).
+2026-10-19: T phase 1 done (24-erofs-status-T.txt): test16 rewritten per
+22 section 8 (static checks only, not run). Reader image
+ghcr.io/ggml-org/llama.cpp:server-b11681 checked through the registry API
+(Ubuntu 24.04, sh and curl, /app/llama-server on 0.0.0.0:8080); reader
+command llama-server -m $CXL_C1AE0001_PATH/<model> -nr -t 2 -c 512 -np 1
+(-c 512: the default context needs a 4.7 GB KV cache). Accepted
+additions: a warm-up pod per node that reads the image's files before the
+page cache is measured (library reads of a first container would exceed
+the 5% limit), direct readers measured one by one too, "every page
+present" per mapping with all mappings of the model covering >= 90% of
+it (llama.cpp unmaps the header part), device sha256 equals the image's,
+readers change neither backing file. Waiting for D phase 2 before T gets
+the VMs.
+2026-10-19: D done (24-erofs-status-D.txt), phase 2 on the VMs right
+after phase 1: modes block and fs, T1-T14, node mounts and loop, holder
+wait, never MNT_DETACH, state and restart, Bidirectional, ndctl in the
+image (85), cxl-pool-persistent, docs, sample; real sysfs and ndctl JSON
+matched the fakes; image nri-dra-driver-cxl-image-510fb487cbdb.tar.
+Deviations D1-D5 accepted (decoder attributes cap_ram/cap_pmem; SIZE =
+block device bytes, 534773760 for 512Mi; namespaces from sysfs; unused
+mounts under mounts/ unmounted at start; the local driver refuses access
+and path with the fs texts). Not proven yet: Bidirectional propagation
+under the real DaemonSet (test16 is the first check). D's R2 (make
+golangci-lint stops at a typecheck error of the user's untracked
+cmd/plugins/balloons/policy/podresourcehints_test.go) goes to the user;
+the CXL packages lint clean. VMs handed to T for phase 2.
+2026-10-19: review R-D (25-erofs-review-D.txt): B1 (rollback of a failed
+persistent Prepare releases the region without the holder wait), R1
+(reuse of a foreign mount at the node mount path), R2 (restart trusts the
+recorded /dev/pmemK), R3 (10 s holder wait per serial under p.mu), R4
+(missing error-path tests), R5 (fake-cxl-pool leaks an adopted LSA backend
+with another id), S1-S9. Accepted: B1, R1-R5, S1-S7 (S8, S9 no change).
+Sent to D (B1, R1-R4, S1, S4-S7; new image when done) and P (R5, S2, S3),
+neither touches the VMs; T keeps running test16 meanwhile and gets the
+new image for its final runs.
+2026-10-19: test16 run 1 (T, 8 min 11 s) FAIL at D: the claim of the
+fifth reader cannot be allocated: llm0's "hosts" capacity is 4 (the
+controller's -shared-hosts default) and every claim takes one host,
+whatever its node. Everything before passed: preconditions, A, B (dd
+1151 ms, device sha256 = image, LSA has labels, model at 4 MiB of
+llm0.raw), C (three direct readers answered, 95399 pages all in "CXL
+Window N > Persistent Memory > regionM > namespaceM.0", page cache
++14044/+720/+2632 kB < 19370 kB, one dax=always mount per node), D for
+cached-a (+388772 kB for a 387407 kB model). So Bidirectional carries the
+driver's mounts to the host and into containers. Decision (a): an
+optional DRA_CONTROLLER_ARGS for dra-install, test16 runs the controller
+with -shared-hosts 6 (accepted deviation from 22 section 8 B: hosts 6).
+2026-10-19: P review fixes done (24-erofs-status-P.txt section 6): R5
+(attachments record qemuLsaObjectId, set at attach and adoption,
+finalizeDetach deletes exactly it, fallback for old state), S2, S3; vet,
+test -race, gofmt clean; qemu commands unchanged.
+2026-10-19: D review fixes done (24-erofs-status-D.txt section 11): B1,
+R1 (new text "device 0x<serial>: <mnt> is a <type> mount of <source>, not
+of /dev/pmemK"), R2, R3 (one 10 s deadline per call, kept under p.mu),
+R4, S1, S4 (T5 now also forbids /var/run/cxl), S5-S7, a map-order flaky
+test fixed; image nri-dra-driver-cxl-image-814cfbfb2572.tar. T told to
+make the two consecutive PASS runs and the regression with it.
+2026-10-19: T (24-erofs-status-T.txt 10-14): test16 PASS twice on image
+814cfbfb2572 (3 min 45 s, 3 min 41 s): answers "Hello! How can I assist
+you today?" at 37-42 tok/s, anon ~134 MB per reader, direct readers all
+95399 pages in the CXL namespace and page cache +312/+284/+3116 kB, first
+cached reader per node +388348/+388288 kB (model 387407 kB), second on
+VM2 +280 kB, both mounts (dax=always on /dev/pmem0, cached on a dio
+loop) per node. Suite run: all PASS but test10 (R2: its exact attribute
+list lacks persistent) and test16 (cached-b +59 MB on VM2 node total,
+not reproducible right after). R2 fixed by the orchestrator in test10
+(persistent == False, list with persistent). R3 decision: the "< 5%"
+proofs use the reader pod's own memory.stat file, the node total stays
+as a coarse bound (< 50% for no second copy; >= 90% for the first cached
+reader of a node). T reruns the suite and test16 once more.
+2026-10-19: T done (24-erofs-status-T.txt): with the R3 proofs, the whole
+suite (./run_tests.sh memory.test-suite/dra-driver-cxl, 25 min 5 s) PASS:
+both test00-up, test01, test10-test16; then test16 alone PASS (3 min
+50 s). Image nri-dra-driver-cxl-image-814cfbfb2572. Page cache in the
+suite run (model 387407 kB): direct readers pod 4/0/4 kB, node
++328/+292/+224 kB; cached-a and cached-c pod 387412 kB, node +388344 and
++388268 kB; cached-b pod 0 kB, node +280 kB. Readers serve 8.2-8.5 s
+after pod creation, 37.6-42.1 tok/s on 2 threads, anon 133992 kB; writer
+dd 1072 ms. Final VM state clean, nodes Ready, port 9909 free. Review
+R-T started.
+2026-10-19: review R-T (25-erofs-review-T.txt): no B findings; every
+proof of 22 section 8 with section 10 ran on real values in the last run.
+Accepted: R1 (E's probes must check their exit status), R2 (dra-fs-mounts
+fails on unparsable findmnt lines), R3 (EXIT trap never releases llm0
+while an erofs mount or a loop over pmem remains: leave for debugging),
+R4 (the no-match proof asserts the scheduler's "cannot allocate all
+claims"), S1-S9. Sent to T with two more test16 runs.
+2026-10-19: T review fixes done (24-erofs-status-T.txt "Review fixes"):
+R1-R4, S1-S8 (S6: first cached reader also node growth < 150%); the new
+EXIT trap refused, correctly, to release llm0 once while mounts remained.
+test16 PASS twice in a row after the fixes (233 s, 234 s); test10-test15
+PASS once each (83, 105, 341, 196, 182, 253 s) because dra-install and
+dra-cdi-devices-with changed.
+
+Closing status (2026-10-19, orchestrator)
+-----------------------------------------
+Done, nothing committed (branch 5jg-cxl, working tree):
+- Kernel: qemu-cxl-kernel.config with CONFIG_EROFS_FS=y (+ defaults and
+  XZ_DEC_MICROLZMA); tarball kernel.getsource_vanilla.config_b71a627c...
+  .rpms.tar in ~/.cache/nri-plugins/e2e, built in VM1; both VMs on it;
+  test00-up of both topologies checks EROFS and tells how to replace a
+  kernel RPM of the same version.
+- fake-cxl-pool: persistent devices (data + shared LSA file, cxl-type3
+  persistent-memdev/lsa, attribute persistent on every device, status
+  data persistent, LSA backend id recorded in attachments).
+- Driver dra-driver-cxl: pool modes block and fs, DeviceConfig access
+  (direct|cached) and path, env PATH and ACCESS, node erofs mounts per
+  (device, access) with dax=always or a read-only direct-I/O loop, the
+  holder wait before any region release, restart handling, class
+  cxl-pool-persistent, chart mountPropagation Bidirectional, ndctl in
+  the image (image nri-dra-driver-cxl-image-814cfbfb2572.tar), docs and
+  sample. Local driver and lease protocol unchanged.
+- test16-cxl-llm-share: the writer flashes an erofs image of Qwen3-0.6B
+  into the persistent shared device; three direct and three cached
+  llama-server readers (stock ghcr.io/ggml-org/llama.cpp:server-b11681)
+  on both nodes answer "Hello! How can I assist you today?"; frames in
+  the CXL pmem namespace (direct) or System RAM (cached); one page cache
+  copy per node for cached readers, none for direct; cxl-llm and its host
+  build deleted. test10 asserts the new attribute.
+- Verification: unit tests, vet, gofmt clean on the final tree
+  (orchestrator rerun); shellcheck/bash -n clean; the whole suite PASS
+  once with the R3 proofs, test16 PASS twice after every later change,
+  test10-test15 PASS after the last helper change.
+For the user: make golangci-lint of the whole tree stops at the user's
+untracked cmd/plugins/balloons/policy/podresourcehints_test.go (typecheck
+error, D's R2); ~/.cache/nri-plugins/e2e/llm keeps the unused llama.cpp
+clone and the old cxl-llm build; each qemu may map a deleted backing file
+until its next hot-remove (known); not in this step: erofs through
+cxl-request leases, fsType ext4/famfs, a write mount (22 section 9).

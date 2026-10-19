@@ -33,18 +33,26 @@ described in the
       detailed instructions, or set `nri.runtime.patchConfig` (see below).
 - cgroup v2 and a kernel with CXL regions (`CONFIG_CXL_REGION`),
   `CONFIG_DEV_DAX`, `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE` and
-  `CONFIG_FS_DAX`.
+  `CONFIG_FS_DAX`; for pool devices of persistent memory also
+  `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
+  `CONFIG_ND_PFN`, `CONFIG_EROFS_FS` and `CONFIG_BLK_DEV_LOOP`.
 - `/sys/devices/system/memory/auto_online_blocks` set to `offline`.
 
-The image contains the `cxl` and `daxctl` tools of ndctl and the static
-`cxl-request` command line tool of leases. The pod runs privileged in the
-host PID namespace, and mounts from the host `/sys`, `/dev`, `/lib/modules`
-(read-only), the NRI socket directory `/var/run/nri`, the CDI directories
-`/etc/cdi` and `/var/run/cdi`, and the kubelet directories
+The image contains the `cxl`, `daxctl` and `ndctl` tools of ndctl and the
+static `cxl-request` command line tool of leases. The pod runs privileged
+in the host PID namespace, and mounts from the host `/sys`, `/dev`,
+`/lib/modules` (read-only), the NRI socket directory `/var/run/nri`, the
+CDI directories `/etc/cdi` and `/var/run/cdi`, and the kubelet directories
 `/var/lib/kubelet/plugins` and `/var/lib/kubelet/plugins_registry`. At start
 the driver copies `cxl-request` to
 `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` on the host, from where
-lease claims mount it into containers.
+lease claims mount it into containers. `/var/lib/kubelet/plugins` is
+mounted with `mountPropagation: Bidirectional`: the erofs filesystems
+that the pool driver mounts under
+`/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts` for claims in mode `fs`
+must reach the host, where the container runtime binds them into
+containers (kubelet makes `/var/lib/kubelet` a shared mount, and
+Bidirectional needs a privileged container).
 
 ## Installing the Chart
 
@@ -58,7 +66,8 @@ helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-s
 The command above deploys the driver on the Kubernetes cluster within the
 `kube-system` namespace with default configuration. Besides the DaemonSet
 the chart installs the DeviceClasses `cxl-local`, `cxl-pool`,
-`cxl-pool-shared`, `cxl-region`, `cxl-dram` and `cxl-lease`, a ClusterRole
+`cxl-pool-shared`, `cxl-pool-persistent`, `cxl-region`, `cxl-dram` and
+`cxl-lease`, a ClusterRole
 and a ValidatingAdmissionPolicy that lets the driver modify only the
 ResourceSlices of its own node. To customize the available parameters as
 described in the [Configuration options](#configuration-options) below, you

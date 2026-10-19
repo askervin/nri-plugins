@@ -1,0 +1,512 @@
+plan-7 erofs: stream T (e2e) status
+==================================
+Phase 1 (desk) written 2026-10-19. No VM access, no run_tests.sh, nothing
+committed. Paths: N = nri-plugins, E = N/test/e2e/memory.test-suite/dra-driver-cxl,
+S = E/n4-cxl-shared-2.
+
+1. Files
+--------
+Changed: E/dra.source.sh, S/llm.source.sh (rewritten), S/pool.source.sh,
+S/test16-cxl-llm-share/code.var.sh (rewritten), N/docs/memory/cxl/e2e.md.
+Deleted: S/cxl-llm/ (build.sh, cxl-llm.cpp).
+Unchanged: S/cxl.source.sh, S/cxl-where.py (it already filters by the
+path as /proc/PID/maps shows it, which is the container path).
+
+2. The reader image (checked from the host, registry API with curl; no pull)
+---------------------------------------------------------------------------
+ghcr.io/ggml-org/llama.cpp:server-b11681 exists: index
+sha256:e83cbdc66e692129e17aad70293366cb00e3acca94b9f197c91a8a56e92201c3,
+amd64 manifest sha256:d80bf15ecdb294fa80d3822b783c64bc72e61e2f1b9200e87b1db9c276224707,
+about 311 MB compressed, revision 5e03a1ff450c (the build P1 measured,
+version b11681). Ubuntu 24.04 base (so /bin/sh, bash, ldd, coreutils),
+apt adds curl, libgomp1, ffmpeg. Entrypoint ["/app/llama-server"], workdir
+/app, env LLAMA_ARG_HOST=0.0.0.0, LLAMA_ARG_PORT=8080, healthcheck curl
+http://localhost:8080/health; no USER (root). From the source at that
+commit: -nr/--no-repack applies to every tool (common/arg.cpp:2427),
+-np, -c, --host, --port exist; /completion takes prompt, n_predict,
+temperature, top_k, tokenizes with parse_special=true
+(tools/server/server-context.cpp:4926), answers content, tokens_predicted,
+timings.prompt_per_second and predicted_per_second.
+dump.erofs output (erofs-utils dump/main.c): "Layout: %d" and with -e one
+line per extent "%4d: %8u..%8u | %7u : %10u..%10u | %7u" and "PATH: N
+extents found".
+
+3. test16 as implemented (22 section 8)
+---------------------------------------
+Device llm0: 512Mi, shared, persistent, serial 0xc1ae0001, KEY C1AE0001,
+mount id c1ae0001. Readers: direct-a (VM2), direct-b (VM2, path /models),
+direct-c (VM1); cached-a (VM2), cached-b (VM2, path /models), cached-c
+(VM1). Reader command:
+  /app/llama-server -m $CXL_C1AE0001_PATH/Qwen3-0.6B-Q4_K_M.gguf -nr -t 2 -c 512 -np 1 --host 0.0.0.0 --port 8080
+(-c 512: the default context of Qwen3 is 40960 tokens, a KV cache of
+about 4.7 GB; -np 1: one slot.) Writer image $DRA_TOOLS_IMAGE.
+Preconditions, in order:
+- pool-cluster-require; pool-vm-require on both VMs; llm-kernel-require
+  on both: grep -x CONFIG_EROFS_FS=y /boot/config-$(uname -r), else
+  "kernel of NAME lacks CONFIG_EROFS_FS=y: run
+  memory.test-suite/dra-driver-cxl/<topology>/test00-up: ...".
+- llm-model-fetch (unchanged); tools, pool-vm-reset, no devices.
+- llm-install VM1 model: cxl-where.py, the model in /opt/cxl-llm/model
+  (the only file there, /opt/cxl-llm holds nothing but model/, llm.erofs
+  and its stamp; this also removes the old engine binary); llm-install
+  VM2: cxl-where.py, /opt/cxl-llm emptied.
+- llm-image-build VM1: dnf install -y erofs-utils if mkfs.erofs or
+  dump.erofs is missing; /opt/cxl-llm/llm.erofs built with exactly
+    mkfs.erofs -b4096 --dsunit=512 -Enoinline_data /opt/cxl-llm/llm.erofs /opt/cxl-llm/model
+  unless /opt/cxl-llm/llm.erofs.stamp is "model sha256 <sha>,
+  mkfs.erofs -b4096 --dsunit=512 -Enoinline_data"; then dump.erofs -e
+  --path=/Qwen3-0.6B-Q4_K_M.gguf must show Layout: 0, exactly one extent
+  starting at logical 0 covering the model, physical start a multiple of
+  2 MiB. Image size and sha256 recorded; the image must fit in 512 MiB.
+- rm -f /tmp/fake-cxl-pool/llm0.raw llm0.lsa; pool-server-start with
+  "persistent: true"; EXIT trap removes both files (later chained after
+  dra-cleanup; pool-cleanup). pool-device-files llm0: path ==
+  .../llm0.raw, lsaPath == .../llm0.lsa, persistent and shared true; the
+  LSA file is 262144 bytes, all zeros.
+- dra-build, dra-install, images pulled on both VMs ($DRA_TOOLS_IMAGE and
+  the server image), dra-dax-tool-install, llm-warm on both nodes (see
+  4.), dra-trace-start.
+A  two nodes; one pool slice; llm0 attributes persistent == True, shared,
+   serial, size; hosts capacity 4 with validValues ['1', '4'];
+   DeviceClasses cxl-pool-persistent and cxl-pool-shared exist;
+   cxl-pool-shared does not match llm0, proven by behaviour: pod
+   "unmatched" with a cxl-pool-shared claim for the serial gets
+   PodScheduled False reason Unschedulable within 60 s and its claim no
+   allocation; both deleted. VM2 has neither the model nor the image.
+B  writer on VM1: claim cxl-pool-persistent, hosts 4, {mode: block}; the
+   container prints its env, checks image size <= CXL_<KEY>_SIZE, runs
+   dd if=IMAGE of=$CXL_<KEY>_PATH bs=2M conv=fsync, prints the sha256 of
+   the first image-size bytes of the device and "writer exit 0".
+   Asserted: env exactly SERIAL, SHARED=1, MODE=block, SIZE (a number,
+   image size <= SIZE <= 512 MiB, kept as the namespace size), PATH=/dev/pmem*,
+   READONLY=0; the path is a block device in the container; dd exit 0;
+   device sha256 == image sha256; claim on VM1 with hosts '4'; status
+   data exclusive True and persistent True; CDI device claim-<uid>-0 of
+   kind nri.io/cxl-pool with a device node path /dev/pmemK of type b;
+   pool attachment [(VM1, exclusive)]; host: the LSA file is no longer all
+   zeros, the model (by sha256) is at a 2 MiB-aligned offset of the data
+   file (printed; expected 4 MiB). Writer pod and claim deleted, llm0
+   free (memdevs gone in both VMs, device free in the server, no regions
+   in cxl-dump nor in /sys/bus/cxl/devices). sha256 of the data and the
+   LSA file recorded.
+C  direct readers one by one (claim cxl-pool-persistent, one host,
+   {mode: fs, readOnly: true, access: direct[, path: /models]}); page
+   cache (sum of FilePages of the node) measured around each start (pod
+   created until /health is 200 from the node on the pod IP); each delta
+   < 5% of the model. Then per reader (reader-check): env exactly SERIAL,
+   SHARED=1, MODE=fs, SIZE == the writer's SIZE, PATH (/run/cxl-fs/C1AE0001
+   or /models), ACCESS=direct, READONLY=1; log "no pmem devices"; "write
+   under PATH refused: ...Read-only file system"; the container's
+   mountinfo has PATH as a ro erofs mount; the answer of POST
+   /completion {"prompt": <21 F16 raw prompt>, "n_predict": 32,
+   "temperature": 0, "top_k": 1}, curl from the reader's node to the pod
+   IP, content stripped == "Hello! How can I assist you today?"; claim on
+   the reader's node with hosts '1'; status data persistent True and not
+   exclusive; CDI device of kind nri.io/cxl-pool without deviceNodes, a
+   mount with hostPath <mounts dir>/c1ae0001-direct, containerPath PATH,
+   type bind, option ro; all llama-server mappings of PATH/<model> (cxl-where.py)
+   >= 90% of the model in all, every page present, every frame in
+   "^CXL Window [0-9]+ > Persistent Memory > region[0-9]+ > namespace[0-9]+\.[0-9]+$";
+   RssAnon of llama-server < half the model. Then on each node the mounts
+   under the mounts directory are exactly c1ae0001-direct, erofs on
+   /dev/pmemK with dax=always in the superblock options (findmnt
+   FS-OPTIONS). Pool attachments: VM1 and VM2, attached, not exclusive.
+D  cached readers one by one while the direct ones run, {..., access:
+   cached}; page cache around each: cached-a (first on VM2) >= 90% of the
+   model, cached-b (second on VM2) < 5%, cached-c (first on VM1) >= 90%.
+   reader-check as in C with ACCESS=cached, hostPath .../c1ae0001-cached
+   and every frame in "^System RAM$"; then on each node exactly two mounts:
+   c1ae0001-direct as in C and c1ae0001-cached, erofs on /dev/loopN whose
+   backing_file is the same /dev/pmemK, loop/dio 1, ro 1, no dax=always.
+E  all six pods deleted in one kubectl delete, then their claims; llm0
+   free (as in B); no pods or claims in the namespace; on each node no
+   mounts under the mounts directory, no loop device whose backing file
+   is a pmem device, no CDI device with CXL_C1AE0001_, no cxl-type3 in
+   qemu; the data and LSA files have the sha256 recorded after the writer
+   (the readers wrote nothing, also not the labels: P1 3.4). Then trace,
+   timings (writer, dd ms, per reader: start to serve, page cache delta,
+   tokens, prompt and generation tokens/s, RssAnon), dra-cleanup,
+   pool-cleanup, trap removed, port free, both files removed.
+
+4. Deviations and choices (none weakens a 22 assertion)
+-------------------------------------------------------
+- Warm-up pod llm-warm per node (no claim, the server image, reads every
+  file of /app and the ldd libraries of llama-server and /app/*.so, then
+  exits): the first container of an image on a node reads ~50 MB of image
+  files into the page cache (P1 4.3 round B: model + ~47 MB), which alone
+  is more than 5% of the model (19.8 MB). The warm-up removes that
+  non-model noise; the 5% and 90% limits are as in 22.
+- Direct readers are also started one by one with the page cache measured
+  around each (22 asks it for the cached ones only): stricter, per node.
+- Mapping size: llama.cpp unmaps the GGUF header part of its whole-file
+  mapping (P1 4.3: 98.5% of the file stays mapped), so llm-where-assert
+  takes every mapping of the model path, requires >= 90% of the model in
+  all and every page of each present and in CHAIN. 22 says "has every
+  page present": that holds per mapping.
+- "the CDI device has a block node": checked as a "path: /dev/pmemN" line
+  and a "type: b" line in the device's CDI YAML lines (dra-cdi-device);
+  the env line CXL_..._PATH=/dev/pmemN does not match "path:".
+- Extra proofs beyond 22: writer's device sha256 == image sha256; the
+  container sees PATH as a ro erofs in its mountinfo; status data
+  persistent True for writer and readers; data and LSA files unchanged by
+  the readers; dump.erofs physical offset 2 MiB-aligned.
+- The writer uses dd bs=2M conv=fsync (busybox dd of python:3-alpine;
+  oflag=direct is not used: busybox support uncertain, conv=fsync is 22's
+  text).
+
+5. Helper changes
+-----------------
+E/dra.source.sh:
+- DRA_CLASSES gains cxl-pool-persistent (dra-install's "kubectl get
+  deviceclass" checks it for every test; D's chart has it already:
+  deviceclasses.yaml line 47).
+- DRA_POOL_MOUNT_DIR=/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts.
+- dra-shared-claim-yaml NAME SERIAL [HOSTS [PARAMETERS [CLASS]]]: CLASS
+  defaults to cxl-pool-shared, so test10-test15 render the same YAML.
+- New: dra-fs-mounts VMDIR (JSON of the mounts under the mounts dir with
+  loop backing_file, dio, ro), dra-pmem-loops VMDIR.
+S/pool.source.sh: new pool-device-files DEVICE (POOL_DEVICE_DATA from
+  "path", POOL_DEVICE_LSA from "lsaPath"; a persistent device without
+  lsaPath fails; COMMAND_OUTPUT keeps the device JSON).
+S/llm.source.sh: kept llm-model-fetch, llm-vm-put (now mkdir -p of the
+  target dir), llm-page-cache, llm-where, llm-file-zero (streams now),
+  llm-file-sha256 (LENGTH optional). New: llm-kernel-require,
+  llm-image-build, llm-writer-script, llm-writer-wait, llm-reader-script,
+  llm-server-pod-yaml, llm-warm, llm-pod-ip, llm-server-ready,
+  llm-server-wait, llm-ask (LLM_ANSWER, LLM_CONTENT), llm-answer-value,
+  llm-server-pid, llm-rss-anon, llm-file-find. llm-install now installs
+  cxl-where.py and the model only. Removed: llm-build, llm-pod-yaml, the
+  old llm-reader-script, llm-wait-holding, llm-wait-exit, llm-log-answer,
+  llm-log-value, llm-engine-pid.
+No helper used by test10-test15 changed behaviour.
+
+6. What T assumes from P and D, and where it came from
+------------------------------------------------------
+P: 24-erofs-status-P.txt ("P done", relayed by the orchestrator) confirms
+every P name below: config key and POST field "persistent"; device JSON
+always has "persistent", "lsaPath" only on persistent devices; LSA file =
+data file with ".lsa" (llm0.lsa), 256 KiB sparse; the server never
+deletes a config device's files (test16's EXIT trap removes both);
+status data "persistent": true on persistent devices only; attribute
+persistent on every published device. D: no 24-erofs-status-D.txt yet;
+22 is the contract, cross-checked against the code in the tree:
+- P: server config device field "persistent: true"; device JSON fields
+  persistent (bool), path, lsaPath (pkg/api/types.go:146-149, as 22 s3);
+  LSA file = data path with ".lsa": /tmp/fake-cxl-pool/llm0.lsa, 262144
+  bytes, created with the data file (22 s3); the files are new (zeros)
+  after rm before the server starts; static devices are not deleted by
+  pool-cleanup, so the test removes the files itself. Status data
+  "persistent": true (pkg/controller/status.go:51), "exclusive": true for
+  all hosts. ResourceSlice attribute persistent on every pool device
+  (pkg/controller/publisher.go:61).
+- D: class cxl-pool-persistent (deviceclasses.yaml, present); env of
+  block: SERIAL, SHARED, MODE, SIZE, PATH, READONLY; of fs: the same plus
+  ACCESS (22 s4; pkg/cxl/api/api.go:273-276 sets PATH); default path
+  /run/cxl-fs/<KEY> (22 s4, lending.go:246); node mounts at
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-{direct,cached}
+  (22 s5); CDI: block = deviceNode path /dev/pmemK type b; fs = Mount
+  {hostPath node mount, containerPath path, type bind, options [bind, ro,
+  nosuid, nodev]}, no device node; the CDI spec is YAML with "- name:"
+  first in each device (as dra-cdi-device expects today); direct mount
+  superblock options contain dax=always; cached loop with dio 1, ro 1,
+  autoclear (so no loop is left after the unmount); Unprepare unmounts and
+  releases the region before the claim is gone.
+If P or D record other names, these are the places to change:
+DRA_POOL_MOUNT_DIR and LLM_MOUNT_ID (mount names), LLM_DEFAULT_PATH,
+pool-device-files (JSON names), mounts-assert and reader-check (CDI and
+mount shapes).
+
+7. Static checks (all from E)
+-----------------------------
+  bash -n dra.source.sh n4-cxl-shared-2/{llm,pool,cxl}.source.sh
+          n4-cxl-shared-2/test16-cxl-llm-share/code.var.sh          ok
+  cat dra.source.sh n4-cxl-shared-2/{pool,cxl,llm}.source.sh test16 | bash -n   ok
+  the same concatenation with each of test10..test15                  ok
+  shellcheck -s bash -e SC2154,SC2034,SC1090,SC2148,SC2016 on the five
+    files and on the test16 concatenation                              0 findings
+  python3 -m py_compile n4-cxl-shared-2/cxl-where.py                   ok
+  grep -rnE 'cxl-llm([^-]|$)|llm-build|LLAMA_CPP_SRC|podman' E docs/memory/cxl/e2e.md,
+    test16-cxl-llm-share excluded: only LLM_VM_DIR=/opt/cxl-llm (the VM
+    directory, kept so the model copy on VM1 is reused), the crio branch
+    of dra-image-put (podman in the VM, not the host) and e2e.md's
+    paragraph on proto/build-kernel-rpms.sh (podman on the host for the
+    kernel build script, not test16). The test name itself contains
+    "cxl-llm".
+Desk tests (host, synthetic data): llm-file-find finds a 300000-byte file
+at 4 MiB of an 8 MiB file; llm-file-zero on a zero and a dirtied LSA;
+the dump.erofs parser accepts a P1-like extent line and rejects layout 2
+and a 4096 offset; dra-fs-mounts' remote snippet and parser, and
+mounts-assert accept direct and direct+cached and reject a missing
+access and dio 0; the rendered claim and pod YAML parse (python yaml);
+llm-ask sends JSON whose prompt has real newlines.
+
+8. Open questions (to settle in phase 2)
+----------------------------------------
+- Does the node see each driver mount once in findmnt (Bidirectional
+  propagation could show duplicates)? mounts-assert wants exactly one per
+  access.
+- Is the 5% limit met for direct readers with the warm-up (container
+  start noise, logs)? P1 4.3 round A saw +25..37 MB without warm-up.
+- cxl-where.py chains of page cache frames: exactly "System RAM" (P1
+  says so), checked with ^System RAM$.
+- llama-server's RssAnon with -c 512 -np 1 (P1: ~128 MB with
+  llama-completion) stays below half the model (198 MB)?
+- cxl-dump (pkg/cxl) may not list pmem regions; llm0-free also checks
+  /sys/bus/cxl/devices for region*.
+
+9. Requests (phase 1)
+---------------------
+None.
+
+T phase 1 done
+
+10. Phase 2 (VMs), run 1 (2026-10-19)
+-------------------------------------
+Driver image build/images/nri-dra-driver-cxl-image-510fb487cbdb.tar (D's
+final). D's names (24-erofs-status-D sections 2-4, 7, 9) equal what test16
+does, including SIZE = 534773760 (the test takes SIZE from the writer and
+requires it in every reader). No test change was needed for them.
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+  FAIL, 8 min 11 s: "error: llama-server in pod cached-b did not serve in 180s"
+Passed before that: every precondition (EROFS kernels, erofs-utils, image
+built, dump.erofs one plain 2 MiB-aligned extent, LSA new and zero), A
+(including the Unschedulable proof for cxl-pool-shared), B (dd 1151 ms,
+device sha256 == image sha256, block CDI node, exclusive and persistent
+status data; host: labels in llm0.lsa, the model at offset 4194304 of
+llm0.raw), all of C and the first cached reader:
+  page cache around direct-a (VM2) +14044 kB, direct-b (VM2) +720 kB,
+  direct-c (VM1) +2632 kB (limit 5% = 19370 kB); cached-a (VM2) +388772 kB
+  (the model is 387407 kB; limit 90%).
+  direct-a/-b/-c: "Hello! How can I assist you today?" (10 tokens, 13
+  prompt tokens); mappings 390754304 bytes = 95399 pages, every page
+  present, all in "CXL Window N > Persistent Memory > regionM >
+  namespaceM.0"; one erofs dax=always mount per node; pool attachments
+  VM1 and VM2, not exclusive. So mountPropagation Bidirectional carries
+  the driver's mounts to the host and into the containers.
+Cause of the failure (not a driver bug): the scheduler cannot allocate
+the claim of cached-b: "0/2 nodes are available: 1 cannot allocate all
+claims, 1 node(s) didn't match Pod's node affinity/selector". The "hosts"
+capacity of a shared pool device is 4 (fake-cxl-pool-controller
+-shared-hosts, default 4; ResourceSlice capacity hosts 4, validValues
+['1', '4']), and every claim consumes 1 whatever its node: direct-a,
+direct-b, direct-c and cached-a hold all 4. 22 section 8 asks for six
+reader claims at once (three direct still running while three cached
+start), which needs a capacity of 6 at least.
+Cleanup after the failure worked: both VMs no CXL memdevs or regions, no
+mounts under mounts/, no loop devices, nodes Ready, llm0.raw and llm0.lsa
+removed, port 9909 free.
+
+11. Requests
+------------
+R1 (to the orchestrator, decision needed; blocks test16): six reader
+   claims of llm0 at once exceed its "hosts" capacity 4. Options:
+   (a) recommended: dra-install starts the controller with extra
+       arguments from a variable (DRA_CONTROLLER_ARGS, default empty, so
+       test10-test15 are unchanged); test16 sets "-shared-hosts 6" and its
+       assertions become hosts '6', validValues ['1', '6'], writer hosts
+       6. All proofs of 22 stay; only the number 4 of 22 section 8 B
+       ("hosts 4") changes to 6. Files: E/dra.source.sh and test16 (mine).
+   (b) keep capacity 4 and four readers: direct-a (VM2), direct-c (VM1),
+       cached-a (VM2), cached-b (VM2). Loses the cached reader on VM1 and
+       the second direct reader on VM2 (weakens 22 C and D).
+   (c) stop the direct readers before the cached ones: contradicts 22 D
+       ("while the direct readers still run"), loses the proof that both
+       mounts coexist on a node.
+   Decision (orchestrator): option (a). Done: E/dra.source.sh
+   DRA_CONTROLLER_ARGS (empty by default, appended to the controller's
+   command line in dra-install; test10-test15 unchanged); test16 sets
+   LLM_HOSTS=6, DRA_CONTROLLER_ARGS="-shared-hosts 6", asserts capacity
+   hosts '6' with validValues ['1', '6'], the writer claims and gets hosts
+   6; the header says why. Accepted deviation from 22 section 8 B: "hosts
+   4" -> 6 (each claim of a shared device takes one host of the capacity
+   whatever its node, and test16 holds six reader claims at once).
+   bash -n and shellcheck (same exclusions) clean again.
+
+12. Phase 2, final runs (2026-10-19)
+------------------------------------
+Image build/images/nri-dra-driver-cxl-image-814cfbfb2572.tar (D's final,
+the newest by ls -t at every run), P's final source (qemuLsaObjectId).
+Runs before the final sources (image 510fb487cbdb): run 2 PASS 3 min 48 s,
+run 3 PASS 3 min 41 s (after the hosts 6 change).
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+    final A  PASS  3 min 45 s
+    final B  PASS  3 min 41 s      (two in a row, as required)
+Measured in final B (final A the same within noise):
+  writer: pod created until written 11.5 s, dd of 398802944 bytes 1376 ms;
+    device sha256 == image sha256; model at offset 4194304 of llm0.raw.
+  every reader: pod created until llama-server serves 8.2-8.5 s; answer
+    "Hello! How can I assist you today?" (10 tokens, 13 prompt tokens);
+    prompt 63-81 tokens/s, generation 37-42 tokens/s on 2 threads;
+    RssAnon 133924-133928 kB (half the model is 198704 kB).
+  direct: mappings 390754304 bytes = 95399 pages, all present, all in
+    "CXL Window N > Persistent Memory > regionM > namespaceM.0";
+    page cache +312, +284 kB (VM2), +3116 kB (VM1); limit 19370 kB.
+  cached: all pages in "System RAM"; page cache cached-a (VM2) +388348 kB,
+    cached-b (VM2) +280 kB, cached-c (VM1) +388288 kB (model 387407 kB).
+  mounts per node: c1ae0001-direct on /dev/pmem0 (dax=always) and
+    c1ae0001-cached on /dev/loop0 over /dev/pmem0 (dio 1, ro 1).
+  E: nothing left; data and LSA unchanged by the readers.
+
+13. Regression (one run of the suite, one test at a time)
+---------------------------------------------------------
+  ./run_tests.sh memory.test-suite/dra-driver-cxl     23 min 59 s, image 814cfbfb2572
+    PASS n4-cxl-shared-1/test00-up
+    PASS n4-cxl-shared-2/test00-up
+    PASS n4-cxl-shared-2/test01-shared-cxl
+    FAIL n4-cxl-shared-2/test10-dra-pooling
+    PASS n4-cxl-shared-2/test11-dra-sharing
+    PASS n4-cxl-shared-2/test12-dra-live-attach
+    PASS n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+    PASS n4-cxl-shared-2/test14-dra-local-memdev
+    PASS n4-cxl-shared-2/test15-dra-local-live-attach
+    FAIL n4-cxl-shared-2/test16-cxl-llm-share
+test10 (not a T file): test10-dra-pooling/code.var.sh:100
+    dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${P0}['attributes']) == ['serial', 'shared', 'size', 'source', 'type']"
+  fails because every pool device now has the attribute persistent (22
+  section 3 and F14, P's publisher.go:61). Expected, not a P bug: see R2.
+test16 in the suite: "error: cached-b: the page cache of vm grew by
+  61067264 bytes, not less than 5% of the model (19835273): a second copy".
+  cached-a had grown it by 388356 kB just before (its copy was complete),
+  VM2 never reclaimed (pgsteal_* 0, workingset_refault_file 0, MemAvailable
+  7.0 GB), and a second copy of the model would be 387 MB, not 59 MB: so
+  59 MB of other file reads on VM2 within those 8 s, not attributable
+  with node FilePages, and nothing in the journal. Not reproduced: test16
+  right after the suite on the same VMs PASSED (run 4, 3 min 40 s,
+  cached-b +276 kB). Added diagnostics only (no assertion changed):
+  llm-file-charges / llm-file-charges-delta in llm.source.sh, and
+  reader-start prints the five cgroups whose page cache charge grew
+  around each reader (run 4: the model, +387412 kB, charged to the pod of
+  the first cached reader of each node; everything else a few hundred
+  kB). A repeat will name the cgroup that read the 59 MB.
+Final state: both VMs 7.3.0-rc4, no CXL memdevs or regions, no mounts
+under mounts/, no loop devices, no helm release, no namespace
+cxl-pool-demo, both nodes Ready; llm0.raw and llm0.lsa removed; port
+9909 free.
+
+14. Requests (phase 2)
+----------------------
+R2 (to the owner of test10, via the orchestrator; blocks a green
+   regression): test10-dra-pooling/code.var.sh:100 must expect
+   'persistent' among the attributes of a pool device:
+     == ['persistent', 'serial', 'shared', 'size', 'source', 'type']
+   and may assert attr(P0, 'persistent') == False next to line 99.
+R3 (to the orchestrator, decision): after R2, rerun the regression once
+   (24 min). If test16's cached-b noise recurs, the new diagnostics name
+   its source; then either remove the source in the test (if it is the
+   test's own) or decide whether the "second cached reader < 5%" proof
+   may be taken from the reader's own cgroup charge (memory.stat file of
+   its pod, P1 4.3: 24576 bytes for a second pod) instead of node
+   FilePages. Not changed without a decision.
+
+R2: done by the orchestrator (test10 expects 'persistent' and asserts it
+False). R3: decided by the orchestrator, implemented (15.).
+
+15. Accepted change of 22 section 8 C/D (R3)
+--------------------------------------------
+Every "< 5% of the model" page cache proof uses the page cache charged to
+the reader's own pod (memory.stat "file" of the pod cgroup, the parent of
+the container's cgroup, read after the reader answered: llm-pod-file);
+the node total (FilePages) stays as a coarse bound:
+  direct readers:                   pod file < 5%  and node growth < 50%
+  first cached reader of a node:    pod file >= 90% and node growth >= 90%
+  second cached reader (VM2):       pod file < 5%  and node growth < 50%
+Why (also in the test's comments): the node total moves by tens of MB
+from things outside the test (59 MB once in the suite, 13.), a copy of
+the model is at least 90% of it, so < 50% still proves one copy per
+node; the first toucher of a page is charged for it and the warm-up pod
+already holds the image's files, so the pod's own counter is the exact
+per-reader measure. reader-start now also asks the answer (llm-ask)
+before reading the pod counter; reader-check asks again. Helpers:
+llm-pod-file (llm.source.sh), cache-cmp and cache-assert (test16). The
+attribution diagnostics stay. bash -n and shellcheck clean.
+
+16. Final verdicts (2026-10-19, image nri-dra-driver-cxl-image-814cfbfb2572,
+    P's and D's final sources, test10 as fixed by the orchestrator)
+---------------------------------------------------------------------------
+  ./run_tests.sh memory.test-suite/dra-driver-cxl          25 min 5 s
+    PASS n4-cxl-shared-1/test00-up
+    PASS n4-cxl-shared-2/test00-up
+    PASS n4-cxl-shared-2/test01-shared-cxl
+    PASS n4-cxl-shared-2/test10-dra-pooling
+    PASS n4-cxl-shared-2/test11-dra-sharing
+    PASS n4-cxl-shared-2/test12-dra-live-attach
+    PASS n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+    PASS n4-cxl-shared-2/test14-dra-local-memdev
+    PASS n4-cxl-shared-2/test15-dra-local-live-attach
+    PASS n4-cxl-shared-2/test16-cxl-llm-share
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+    PASS 3 min 50 s     (test16 twice in a row with the final assertions)
+Page cache, pod / node growth (suite run; the solo run within 30 kB):
+  direct-a (VM2)  4 kB / 328 kB      limits pod < 19370 kB, node < 193704 kB
+  direct-b (VM2)  0 kB / 292 kB
+  direct-c (VM1)  4 kB / 224 kB
+  cached-a (VM2)  387412 kB / 388344 kB   limits pod and node >= 348667 kB
+  cached-b (VM2)  0 kB / 280 kB      limits pod < 19370 kB, node < 193704 kB
+  cached-c (VM1)  387412 kB / 388268 kB
+  (the model is 387407 kB; the pods are charged exactly the model's pages)
+Other values (solo run): writer 10.1 s pod to written, dd 1072 ms; every
+reader serves 8.2-8.5 s after its pod is created and answers "Hello! How
+can I assist you today?" (10 tokens), generation 37.6-42.1 tokens/s on 2
+threads (the prompt rate of the TIMING lines, 18-26 tokens/s, is of the
+second request of each reader, after the prompt cache); RssAnon 133992 kB
+each; direct mappings all in the CXL pmem namespace, cached all in System
+RAM; mounts direct on /dev/pmem0 and cached on /dev/loop0 over it.
+Final state: both VMs 7.3.0-rc4, no CXL memdevs or regions, no mounts
+under mounts/, no loop devices, no helm release, no namespace
+cxl-pool-demo, both nodes Ready; llm0.raw and llm0.lsa removed; port 9909
+free. Nothing committed.
+
+
+17. Review fixes (25-erofs-review-T.txt, all accepted items)
+------------------------------------------------------------
+R1 E and llm0-free check the probe's exit status before its output:
+   kubectl get pods,resourceclaims (no 2>/dev/null), dra-pmem-loops and
+   dra-cdi-devices-with (now return non-zero when /sys/block or both CDI
+   directories cannot be read; their output is unchanged, so test12-15
+   behave the same), the qemu device tree (must have a "bus:" line), the
+   region listing of llm0-free.
+R2 dra-fs-mounts fails ("dra-fs-mounts: cannot parse: LINE") on a findmnt
+   line that does not give 7 fields; an empty FS-OPTIONS becomes "-";
+   empty input is no mounts. (The first rerun failed in E on an empty
+   line before that last part: the new trap then refused to release
+   llm0, as R3 wants; fixed, desk-tested.)
+R3 trap exit-cleanup (test16, after dra-install, also at the normal end):
+   dra-cleanup, then on both VMs dra-fs-mounts and dra-pmem-loops; only
+   if both show nothing (and could be read) pool-cleanup and removal of
+   llm0.raw and llm0.lsa. Else: server stopped, nothing released or
+   detached, files and VMs left, the holders printed with how to clean up
+   by hand (stop the users, umount without -l, check loops, guest release;
+   or rerun: pool-vm-reset restarts a VM with CXL devices).
+R4 A asserts "cannot allocate all claims" in the PodScheduled message.
+S1 no history in the page cache comment. S2 llm-install and llm-warm docs
+   say what only; the why is at the call sites. S3 the real dump.erofs
+   extent line in the comment. S4 hostPath matched as a whole line with
+   escaped dots. S5 the writer's CDI deviceNode path equals its
+   CXL_C1AE0001_PATH. S6 first cached reader of a node: node growth also
+   < 150% of the model (no double caching). S7 mounts-assert prints the VM
+   label. S8 DRA_CONTROLLER_ARGS="" unconditionally in dra.source.sh (no
+   environment knob). S9 not done in files: ~/.cache/nri-plugins/e2e/llm
+   still has llama.cpp/ (source clone) and cxl-llm-0180ef1d03868466 (old
+   engine build), unused now and removable; the model file next to them
+   stays (the orchestrator tells the user; not touched).
+Checks: bash -n of every changed file and of test16 and test10-15 each
+concatenated with dra, pool, cxl and llm sources; shellcheck -e
+SC2154,SC2034,SC1090,SC2148,SC2016: 0 findings in dra.source.sh,
+llm.source.sh, pool.source.sh, cxl.source.sh, test16 and the test16
+concatenation.
+Runs (image nri-dra-driver-cxl-image-814cfbfb2572), one at a time:
+  test16  PASS 233 s
+  test16  PASS 234 s      (twice in a row)
+  test10  PASS 83 s, test11 PASS 105 s, test12 PASS 341 s,
+  test13  PASS 196 s, test14 PASS 182 s, test15 PASS 253 s
+  (dra-install and dra-cdi-devices-with changed: run once each)
+test16 values of the second run: pod / node page cache direct 4/0/4 kB,
++316/+284/+224 kB; cached-a and cached-c pod 387412 kB, node +388348 and
++388268 kB; cached-b pod 0 kB, node +292 kB; unmatched pod "cannot
+allocate all claims"; mounts as before; nothing left.
+Final state: both VMs 7.3.0-rc4, no CXL memdevs or regions, no mounts
+under mounts/, no loop devices, no helm release, no namespace
+cxl-pool-demo, both nodes Ready; llm0.raw and llm0.lsa removed; port
+9909 free. Nothing committed.
+
+T done

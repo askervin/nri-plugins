@@ -54,11 +54,12 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 	rd := resourceapi.Device{
 		Name: name,
 		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
-			"type":   {StringValue: ptr.To("memdev")},
-			"source": {StringValue: ptr.To("pool")},
-			"serial": {StringValue: ptr.To(strings.ToLower(d.Serial))},
-			"shared": {BoolValue: ptr.To(d.Shared)},
-			"size":   {IntValue: ptr.To(d.Size)},
+			"type":       {StringValue: ptr.To("memdev")},
+			"source":     {StringValue: ptr.To("pool")},
+			"serial":     {StringValue: ptr.To(strings.ToLower(d.Serial))},
+			"shared":     {BoolValue: ptr.To(d.Shared)},
+			"persistent": {BoolValue: ptr.To(d.Persistent)},
+			"size":       {IntValue: ptr.To(d.Size)},
 		},
 		BindsToNode:              ptr.To(true),
 		BindingConditions:        []string{c.condAttached()},

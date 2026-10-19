@@ -336,8 +336,13 @@ func (s *fakeQMPServer) serve(c net.Conn) {
 				ret("/machine/peripheral/" + da["bus"].(string) + "/" + da["bus"].(string))
 			case "sn":
 				ret(da["sn"])
-			case "volatile-memdev":
-				ret("/objects/" + da["volatile-memdev"].(string))
+			case "volatile-memdev", "persistent-memdev", "lsa":
+				// an unset link property reads as ""
+				if v, ok := da[prop].(string); ok {
+					ret("/objects/" + v)
+				} else {
+					ret("")
+				}
 			default:
 				fail("GenericError", "Property '"+prop+"' not found")
 			}

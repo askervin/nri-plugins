@@ -47,7 +47,7 @@ DRA_DAEMONSET=nri-dra-driver-cxl
 DRA_CONTAINER=nri-dra-driver-cxl
 DRA_POD_LABEL=app.kubernetes.io/name=nri-dra-driver-cxl
 # The DeviceClasses that the chart creates.
-DRA_CLASSES=(cxl-local cxl-pool cxl-pool-shared cxl-region cxl-dram cxl-lease)
+DRA_CLASSES=(cxl-local cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease)
 # Lending memory to running containers (docs/memory/cxl/leases.md): the CLI
 # that the driver puts on the node and mounts into containers that claim
 # the lease device "lease" (DeviceClass cxl-lease), there and in the
@@ -67,6 +67,10 @@ DRA_REQUESTER_ANNOTATION=cxl.nri.io/requester
 DRA_LOCAL_STATE=/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
 DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
+DRA_CONTROLLER_ARGS=""             # dra-install: more arguments of fake-cxl-pool-controller, set by a test
+# The node mounts of the file systems of persistent pool devices (mode fs),
+# one per device and access: <serial hex without 0x>-<direct|cached>.
+DRA_POOL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_POOL_DRIVER/mounts
 DRA_LOCAL_DRIVER=cxl.nri.io        # node-local CXL and DRAM, published by the driver
 DRA_NS=cxl-pool-demo               # namespace of the test objects
 DRA_INSTALLED_VMS=()               # dra-install: the VMDIRs of the nodes, the VM of the test first,
@@ -283,7 +287,8 @@ dra-install() { # script API
     # on every node of it (release $DRA_HELM_RELEASE in kube-system, with
     # the values of helm-set-args and $DRA_HELM_VALUES), and run
     # fake-cxl-pool-controller in the VM of the test as a transient systemd
-    # unit of the same name, with the admin kubeconfig of the VM. The chart
+    # unit of the same name, with the admin kubeconfig of the VM and the
+    # arguments $DRA_CONTROLLER_ARGS (for instance "-shared-hosts 6"). The chart
     # creates the DeviceClasses of the driver (DRA_CLASSES), and the driver
     # puts cxl-request on its nodes ($DRA_REQUEST_NODE_BIN) for the
     # containers of lease claims. The other nodes get the image of the
@@ -344,7 +349,7 @@ dra-install() { # script API
     # (nri-resource-policy.output.txt).
     helm_config="$DRA_HELM_VALUES" helm_name="$DRA_HELM_RELEASE" launch_available="${#nodes[@]}" launch_timeout=120s \
         helm-launch "$DRA_CHART"
-    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
+    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v${DRA_CONTROLLER_ARGS:+ $DRA_CONTROLLER_ARGS}" ||
         command-error "cannot start fake-cxl-pool-controller in $label"
     dra-vm-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
         command-error "the chart $DRA_CHART does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
@@ -925,10 +930,12 @@ dra-cdi-devices-with() { # script API
     #
     # Print the names of the CDI devices of the CDI spec files (YAML) of the
     # VM of VMDIR that have a line with TEXT (a fixed string, for instance
-    # an environment variable name), one per line, quietly.
+    # an environment variable name), one per line, quietly. Return
+    # non-zero if neither CDI spec directory can be read.
     local script
     script="text=$(printf %q "$2")
 $(cat <<'EOF2'
+[ -r /etc/cdi ] || [ -r /var/run/cdi ] || exit 1
 for f in /etc/cdi/* /var/run/cdi/*; do
     [ -f "$f" ] || continue
     awk -v t="$text" '
@@ -936,9 +943,51 @@ for f in /etc/cdi/* /var/run/cdi/*; do
         /^ *- name: / { n = $NF; gsub(/"/, "", n) }
         n != "" && index($0, t) { print n }' "$f"
 done | sort -u
+exit "${PIPESTATUS[0]}"
 EOF2
 )"
     dra-vm-command-q "$1" "$script"
+}
+
+dra-fs-mounts() { # script API
+    # Usage: dra-fs-mounts VMDIR
+    #
+    # Print the mounts under $DRA_POOL_MOUNT_DIR in the mount namespace of
+    # the VM of VMDIR as a JSON list, quietly, one object per mount:
+    # target, source, fstype, options (the superblock options), and for a
+    # loop device source its backing file (backing), direct I/O (dio) and
+    # read-only (ro) flags ("" for other sources). COMMAND_OUTPUT has the
+    # list. Return non-zero if the mounts cannot be read or a line of
+    # findmnt cannot be parsed.
+    local lines
+    lines=$(dra-vm-command-q "$1" "findmnt -rn -o TARGET,SOURCE,FSTYPE,FS-OPTIONS | while read -r t s f o; do
+    case \"\$t\" in $DRA_POOL_MOUNT_DIR/*) ;; *) continue;; esac
+    o=\${o:--} b=- d=- r=-
+    case \"\$s\" in /dev/loop[0-9]*) l=/sys/block/\${s#/dev/}; b=\$(cat \$l/loop/backing_file); d=\$(cat \$l/loop/dio); r=\$(cat \$l/ro);; esac
+    echo \"\$t \$s \$f \$o \$b \$d \$r\"
+done") || return 1
+    COMMAND_OUTPUT=$(python3 -c '
+import json, sys
+keys = ["target", "source", "fstype", "options", "backing", "dio", "ro"]
+out = []
+for line in sys.stdin.read().splitlines():
+    fields = line.split()
+    if not fields:
+        continue
+    if len(fields) != len(keys):
+        sys.exit("dra-fs-mounts: cannot parse: %r" % line)
+    out.append({k: ("" if v == "-" else v) for k, v in zip(keys, fields)})
+print(json.dumps(out, sort_keys=True))' <<< "$lines") || return 1
+    echo "$COMMAND_OUTPUT"
+}
+
+dra-pmem-loops() { # script API
+    # Usage: dra-pmem-loops VMDIR
+    #
+    # Print the loop devices of the VM of VMDIR whose backing file is a
+    # pmem block device, one "loopN /dev/pmemK" per line, quietly. Return
+    # non-zero if the loop devices cannot be listed.
+    dra-vm-command-q "$1" "test -d /sys/block || exit 1; for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$(cat \"\$f\") || exit 1; case \"\$b\" in /dev/pmem*) n=\${f#/sys/block/}; echo \"\${n%%/*} \$b\";; esac; done; exit 0"
 }
 
 dra-local-state-claims() {
@@ -1151,15 +1200,15 @@ $(dra-claim-pod-yaml "$2" template "$2" "$(dra-vm-name "$1")")"
 }
 
 dra-shared-claim-yaml() { # script API
-    # Usage: dra-shared-claim-yaml NAME SERIAL [HOSTS [PARAMETERS]]
+    # Usage: dra-shared-claim-yaml NAME SERIAL [HOSTS [PARAMETERS [CLASS]]]
     #
-    # Print ResourceClaim NAME with one request "mem" of DeviceClass
-    # cxl-pool-shared for the shared pool device SERIAL. HOSTS is the
-    # "hosts" capacity to request ("": the default, one host). PARAMETERS
-    # are the fields of its DeviceConfig of $DRA_POOL_DRIVER, for instance
-    # "mode: dax, readOnly: true" ("": no DeviceConfig).
-    # Example: dra-shared-claim-yaml writer 0xc1ae0001 4
-    local name="$1" serial="$2" hosts="$3" params="$4"
+    # Print ResourceClaim NAME with one request "mem" of DeviceClass CLASS
+    # (default cxl-pool-shared) for the shared pool device SERIAL. HOSTS is
+    # the "hosts" capacity to request ("": the default, one host).
+    # PARAMETERS are the fields of its DeviceConfig of $DRA_POOL_DRIVER, for
+    # instance "mode: dax, readOnly: true" ("": no DeviceConfig).
+    # Example: dra-shared-claim-yaml writer 0xc1ae0001 4 "mode: block" cxl-pool-persistent
+    local name="$1" serial="$2" hosts="$3" params="$4" class="${5:-cxl-pool-shared}"
     cat <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -1170,7 +1219,7 @@ spec:
     requests:
     - name: mem
       exactly:
-        deviceClassName: cxl-pool-shared
+        deviceClassName: $class
         selectors:
         - cel:
             expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$serial"'

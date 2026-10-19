@@ -16,7 +16,9 @@ A fake CXL memory pooling and sharing appliance for testing on one host:
 
 A device may be *exclusive* (attached to one VM at a time, used as system RAM
 or as devdax there) or *shared* (the same backing file attached to several
-VMs, same serial in every VM, used as devdax only).
+VMs, same serial in every VM, used as devdax only). Independently of that, a
+device is *volatile* (default) or *persistent* (persistent memory with a
+label storage area, see [Persistent devices](#persistent-devices)).
 
 ## Build and test
 
@@ -57,6 +59,32 @@ are `0xc100e2e0+i`), `ae` = shared pool devices (`sharedSerialBase`,
 default `0xc1ae0000`: `0xc1ae0001`, ...), `ee` = exclusive pool devices
 (`exclusiveSerialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...). The kind
 is decided when the serial is assigned; a later `PATCH shared` keeps it.
+
+### Persistent devices
+
+A device with `persistent: true` (config, or `"persistent": true` in
+`POST /devices`, or `create --persistent`) is CXL persistent memory. It has
+two files:
+
+- the data file (`<pool dir>/<device>.raw`, or `file:`), of the device size;
+- the label storage area (LSA) file, 256 KiB: the data file with its
+  extension replaced by `.lsa` (`llm0.raw` -> `llm0.lsa`; a file without
+  extension gets `.lsa` appended).
+
+Both are created and removed together (a missing one is created again at
+startup and at attach; deleting a device created over the API removes both).
+The device JSON has `"persistent": true` and `"lsaPath"`; volatile devices
+have `"persistent": false` and no `lsaPath`. Attach adds two
+`memory-backend-file` objects, `share=on`: the data `fcp_<device>.hp<N>` and
+the LSA `fcp_<device>.hp<N>-lsa` (`size=262144`), and plugs
+`cxl-type3,persistent-memdev=fcp_<device>.hp<N>,lsa=fcp_<device>.hp<N>-lsa`
+instead of `volatile-memdev=`. Detach deletes both objects after
+`device_del`, as does a failed `device_add`. Every qemu that attaches a
+persistent device maps the same two files, so the namespace labels in the
+LSA are shared by all VMs: a namespace created in one VM appears in the
+others from the labels. A persistent device cannot use a backend
+pre-declared on a qemu command line (`befile_...`): such a backend has no
+LSA.
 
 VMs with slirp networking (the e2e VMs) reach the host loopback at
 192.168.76.2, which is the client's default server:
@@ -107,7 +135,7 @@ use a known backend are *adopted* as attachments (`adopted: true`).
 fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
   status | pools [NAME] | hosts [NAME] | whoami | rescan
   devices [NAME] [--shared] [--free] [--host H]
-  create --size 256Mi [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
+  create --size 256Mi [--shared] [--persistent] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
   delete NAME [--force]
   attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
@@ -131,6 +159,10 @@ Sizes are printed in binary units (`256Mi`, `1Gi`); `--size` takes
 `256Mi`, `256M`, `256MiB`, bytes or `0x` hex. Serials are printed as `0x`
 and lower-case hex. Exit codes: 0 ok, 1 error, 2 usage, 3 conflict or
 timeout (the device is still held).
+
+The `devices` table has the columns `NAME SERIAL SIZE SHARED PERSISTENT
+SCOPE STATE ATTACHED-TO OWNER`; `devices NAME` prints `memory: persistent`
+(or `volatile`) and, for a persistent device, `lsa: <file>`.
 
 `attach --exclusive` makes an exclusive attachment: no other host can
 attach the device until it is detached, also a shared device. It is the
@@ -191,7 +223,8 @@ the server, the controller and the driver in the e2e VMs. The controller:
 - publishes the pool devices of the server (`GET /devices?scope=pool`) as one
   cluster-scoped ResourceSlice (`allNodes`) of pool `fake-cxl-pool`. Every
   device has the attributes `type: memdev`, `source: pool`, `serial`,
-  `shared` and `size` (bytes). Exclusive devices have `capacity.memory`, shared devices
+  `shared`, `persistent` (bool, false for volatile devices) and `size`
+  (bytes). Exclusive devices have `capacity.memory`, shared devices
   `allowMultipleAllocations` and `capacity.hosts` (how many nodes may attach
   them); all have `bindsToNode` and the binding conditions
   `cxl-pool.nri.io/Attached` / `cxl-pool.nri.io/AttachFailed`. Device
@@ -203,8 +236,9 @@ the server, the controller and the driver in the e2e VMs. The controller:
   `allocation.nodeSelector` (`metadata.name`), host = the server host whose
   uuid is the Node's `status.nodeInfo.systemUUID` (lower case, dashes
   ignored), else the host whose name is the node name. Then it writes
-  `cxl-pool.nri.io/Attached=True` and the device data (serial, shared, size,
-  host, hostUUID, attachment, qemuDeviceId, exclusive) into
+  `cxl-pool.nri.io/Attached=True` and the device data (serial, shared,
+  persistent (only when true), size, host, hostUUID, attachment,
+  qemuDeviceId, exclusive) into
   `claim.status.devices[]`, which releases the
   scheduler's binding wait and tells the node plugin which memdev to wait
   for. A node that is not a pool host, a 409 or another error gives

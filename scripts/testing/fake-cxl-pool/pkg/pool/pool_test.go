@@ -114,3 +114,16 @@ func TestValidName(t *testing.T) {
 		}
 	}
 }
+
+func TestLSAPathRule(t *testing.T) {
+	for in, want := range map[string]string{
+		"/pool/llm0.raw":     "/pool/llm0.lsa",
+		"/pool/llm0":         "/pool/llm0.lsa",
+		"/pool/a.b/llm0.img": "/pool/a.b/llm0.lsa",
+		"/pool/llm0.x.raw":   "/pool/llm0.x.lsa",
+	} {
+		if got := LSAPath(in); got != want {
+			t.Errorf("LSAPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

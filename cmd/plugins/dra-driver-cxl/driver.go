@@ -407,7 +407,8 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string) 
 	if err := os.MkdirAll(poolDataDir, 0750); err != nil {
 		return nil, fmt.Errorf("pool driver data directory: %w", err)
 	}
-	pool, err := newPoolDriver(cxlFlags.PoolDriverName, newMemctl(sysfsRoot), filepath.Join(poolDataDir, poolStateFileName), cxlFlags.PoolPrepareTimeout)
+	mem := newMemctl(sysfsRoot)
+	pool, err := newPoolDriver(cxlFlags.PoolDriverName, mem, newSysMounter(mem.SysRoot), filepath.Join(poolDataDir, poolStateFileName), cxlFlags.PoolPrepareTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("pool driver: %w", err)
 	}

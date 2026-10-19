@@ -48,3 +48,11 @@ Research streams (01-research-*.txt, one Opus agent each):
      budget, and the shape of test16. Reads code and docs only.
 Then: 02-findings.txt (synthesis), 03-decisions.txt, 04-plan.txt,
 05-status.txt, written by the orchestrator and the implementation agents.
+
+Later files: 10-fs-README.txt (2026-10-17, the follow-up task: a
+filesystem on the shared device instead of cxl-llm) and
+14-branch-5jg-cxl.txt (2026-10-19: plan-7 moved to branch 5jg-cxl, where
+the driver is dra-driver-cxl in nri-plugins and test16 is
+test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+test16-cxl-llm-share; the old paths and names of files 01-13 are mapped
+there).

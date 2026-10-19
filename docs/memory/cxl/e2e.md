@@ -105,7 +105,8 @@ host, of any cluster.
   with
   [`test/e2e/playbook/files/qemu-cxl-kernel.config`](blob:/test/e2e/playbook/files/qemu-cxl-kernel.config)
   (CXL regions, devdax, kmem, memory hot-remove, `CONFIG_FS_DAX` for
-  devdax `mmap`, DMI for the VM's uuid). The configuration was made on
+  devdax `mmap` and fsdax pmem namespaces, `CONFIG_EROFS_FS`, DMI for
+  the VM's uuid). The configuration was made on
   7.3.0-rc4; the VMs of the examples below run 7.3.0-rc7 with it.
   Without a cached build the e2e framework clones and builds the kernel
   inside the VM, which takes long.
@@ -127,6 +128,14 @@ host, of any cluster.
   (`~/.cache/nri-plugins/e2e/kernel.getsource_vanilla.config_<sha256>.rpms.tar`).
   `test00-up` fails with a pointer to this script if the VM runs another
   kernel.
+
+- For `test16-cxl-llm-share` only: curl on the host and, through
+  `http_proxy` and `https_proxy`, huggingface.co. The first run downloads
+  the model (Qwen3-0.6B Q4_K_M, 378 MiB) into
+  `~/.cache/nri-plugins/e2e/llm` (or give a copy with `llm_model=PATH`).
+  The VMs pull `ghcr.io/ggml-org/llama.cpp:server-b11681` and VM1
+  installs `erofs-utils` with dnf, through their own proxies. The guest
+  kernel needs `CONFIG_EROFS_FS=y` (the configuration above has it).
 
 ## Build
 
@@ -223,6 +232,7 @@ or the whole suite in order (`n4-cxl-shared-1/test00-up`, then
 | `test13-dra-shared-one-writer-many-readers` | single-writer sharing on the two nodes: an exclusive writer, then read-only readers on both nodes |
 | `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
 | `test15-dra-local-live-attach` | leases of local memory for running containers |
+| `test16-cxl-llm-share` | an LLM on a shared persistent pool device: a writer flashes an erofs image of the model into it (mode `block`), stock llama.cpp servers on both nodes answer from the erofs that the driver mounts (mode `fs`), direct from CXL memory and through the page cache of the node |
 
 The tests need the port 9909 of the host for their own
 fake-cxl-pool-server: stop the server of [Deploy by hand](#deploy-by-hand)

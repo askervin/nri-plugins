@@ -94,10 +94,11 @@ dra-assert "$SLICES" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$DRA_POOL
 dra-assert "$SLICES" "sorted(d['name'] for d in devices('$DRA_POOL_DRIVER')) == ['pooled0', 'pooled1']"
 P0="device('pooled0', '$DRA_POOL_DRIVER')"
 P1="device('pooled1', '$DRA_POOL_DRIVER')"
-# Every pool device is a memdev of source pool, with its serial, size and
-# whether hosts may share it: the attributes of a local memdev too.
-dra-assert "$SLICES" "attr($P0, 'type') == 'memdev' and attr($P0, 'source') == 'pool' and attr($P0, 'shared') == False and attr($P0, 'size') == $POOLED0_SIZE and attr($P0, 'serial') == '$POOLED0_SERIAL'"
-dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${P0}['attributes']) == ['serial', 'shared', 'size', 'source', 'type']"
+# Every pool device is a memdev of source pool, with its serial, size,
+# whether hosts may share it (the attributes of a local memdev too) and
+# whether its memory is persistent.
+dra-assert "$SLICES" "attr($P0, 'type') == 'memdev' and attr($P0, 'source') == 'pool' and attr($P0, 'shared') == False and attr($P0, 'persistent') == False and attr($P0, 'size') == $POOLED0_SIZE and attr($P0, 'serial') == '$POOLED0_SERIAL'"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${P0}['attributes']) == ['persistent', 'serial', 'shared', 'size', 'source', 'type']"
 dra-assert "$SLICES" "capacity($P0, 'memory') == '512Mi'"
 dra-assert "$SLICES" "attr($P1, 'type') == 'memdev' and attr($P1, 'shared') == False and attr($P1, 'size') == $POOLED1_SIZE and capacity($P1, 'memory') == '256Mi'"
 # The device is not on any node yet: the scheduler picks the node

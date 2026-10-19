@@ -29,6 +29,12 @@ pools:
 # Static inventory: created at startup (backing files too) if missing.
 # Sizes must be multiples of 256Mi (CXL capacity unit); 256M and 268435456
 # are accepted, too.
+# persistent: true makes a persistent memory device (default: volatile).
+# It has two files: the data file and a 256 KiB label storage area (LSA)
+# file, the data file with its extension replaced by .lsa (llm0.raw ->
+# llm0.lsa; a file without extension gets .lsa appended). Both are created
+# and removed together. Every qemu that attaches the device maps the same
+# two files, so the namespace labels in the LSA are shared by all VMs.
 devices:
   - name: shared0
     size: 256Mi
@@ -40,6 +46,11 @@ devices:
     file: /tmp/fake-cxl-pool/pooled0.raw   # explicit path allowed
     labels:
       tier: slow
+  - name: llm0
+    size: 512Mi
+    shared: true
+    persistent: true               # files: llm0.raw (data) and llm0.lsa (labels)
+    serial: 0xc1ae0002
 
 # Static hosts. Discovery finds running e2e VMs without this; a config
 # host with the same name as a discovered VM overrides its sockets.

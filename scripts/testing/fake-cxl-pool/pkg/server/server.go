@@ -297,28 +297,45 @@ func (s *Server) addStaticDevice(dc DeviceConfig) error {
 	if err := p.Reserve(dc.Name, int64(dc.Size)); err != nil {
 		return fmt.Errorf("device %q: %w", dc.Name, err)
 	}
-	if err := pool.EnsureBackingFile(path, int64(dc.Size)); err != nil {
-		return fmt.Errorf("device %q: %w", dc.Name, err)
-	}
 	d := &device{
 		Device: api.Device{
-			Name:    dc.Name,
-			Serial:  api.FormatSerial(sn),
-			Size:    int64(dc.Size),
-			Shared:  dc.Shared,
-			Backend: api.BackendFile,
-			Path:    path,
-			Pool:    p.Name,
-			Scope:   api.ScopePool,
-			Static:  true,
-			Labels:  dc.Labels,
-			Created: time.Now().UTC(),
+			Name:       dc.Name,
+			Serial:     api.FormatSerial(sn),
+			Size:       int64(dc.Size),
+			Shared:     dc.Shared,
+			Persistent: dc.Persistent,
+			Backend:    api.BackendFile,
+			Path:       path,
+			Pool:       p.Name,
+			Scope:      api.ScopePool,
+			Static:     true,
+			Labels:     dc.Labels,
+			Created:    time.Now().UTC(),
 		},
 		serial:     sn,
 		needSerial: needSerial,
 		bindings:   map[string]*binding{},
 	}
+	if dc.Persistent {
+		d.LSAPath = pool.LSAPath(path)
+	}
+	if err := d.ensureFiles(); err != nil {
+		return fmt.Errorf("device %q: %w", dc.Name, err)
+	}
 	s.devices[d.Name] = d
+	return nil
+}
+
+// ensureFiles creates the backing files of a file device if they are
+// missing: the data file and, of a persistent device, its label storage
+// area file.
+func (d *device) ensureFiles() error {
+	if err := pool.EnsureBackingFile(d.Path, d.Size); err != nil {
+		return err
+	}
+	if d.LSAPath != "" {
+		return pool.EnsureBackingFile(d.LSAPath, pool.LSASize)
+	}
 	return nil
 }
 
@@ -528,10 +545,11 @@ func (s *Server) queryHosts(ctx context.Context, hs []*host) {
 	wg.Wait()
 }
 
-var fcpIDRe = regexp.MustCompile(`^fcp_.+\.hp([0-9]+)$`)
+var fcpIDRe = regexp.MustCompile(`^fcp_.+\.hp([0-9]+)(-lsa)?$`)
 
 // seedCounterLocked raises the hotplug counter of a host above the N of a
-// qemu id fcp_<device>.hp<N> that exists in qemu, so that a new attachment
+// qemu id fcp_<device>.hp<N> (or its label storage area backend
+// fcp_<device>.hp<N>-lsa) that exists in qemu, so that a new attachment
 // never reuses an id (state file lost or disabled, stock qemu zombies,
 // objects whose object-del failed).
 func (s *Server) seedCounterLocked(h *host, id string) {
@@ -552,6 +570,8 @@ func (s *Server) storeTreeLocked(h *host, tree *qemu.Tree, gen uint64, force boo
 	for _, t3 := range tree.Type3 {
 		s.seedCounterLocked(h, t3.ID)
 		s.seedCounterLocked(h, t3.VolatileMemdev)
+		s.seedCounterLocked(h, t3.PersistentMemdev)
+		s.seedCounterLocked(h, t3.LSA)
 	}
 	if gen != h.gen && !force {
 		s.debugf("host %s: attachments changed while the device tree was read, tree not used", h.name)
@@ -940,7 +960,7 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 			if byQemuID[t3.ID] != nil || h.unplugged[t3.ID] {
 				continue
 			}
-			d := s.deviceForObjectLocked(h.name, t3.VolatileMemdev)
+			d := s.deviceForObjectLocked(h.name, t3.Memdev())
 			if d == nil {
 				continue
 			}
@@ -961,24 +981,25 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 			}
 			now := time.Now().UTC()
 			a := &attachment{Attachment: api.Attachment{
-				ID:           id,
-				Device:       d.Name,
-				Host:         h.name,
-				Serial:       api.FormatSerial(t3.Serial),
-				Slot:         s.slotLocked(h, t3.Bus),
-				QemuDeviceID: t3.ID,
-				QemuObjectID: t3.VolatileMemdev,
-				State:        api.AttachmentAttached,
-				Adopted:      true,
-				Created:      now,
-				Updated:      now,
+				ID:              id,
+				Device:          d.Name,
+				Host:            h.name,
+				Serial:          api.FormatSerial(t3.Serial),
+				Slot:            s.slotLocked(h, t3.Bus),
+				QemuDeviceID:    t3.ID,
+				QemuObjectID:    t3.Memdev(),
+				QemuLSAObjectID: t3.LSA,
+				State:           api.AttachmentAttached,
+				Adopted:         true,
+				Created:         now,
+				Updated:         now,
 			}}
 			if !t3.HasSerial {
 				a.Serial = d.Serial
 			}
 			s.atts[id] = a
 			changed = true
-			s.logf("attachment %s: adopted qemu device %s (bus %s, backend %s)", id, t3.ID, t3.Bus, t3.VolatileMemdev)
+			s.logf("attachment %s: adopted qemu device %s (bus %s, backend %s)", id, t3.ID, t3.Bus, t3.Memdev())
 			s.publishAttachmentLocked(a)
 		}
 	}
@@ -1111,7 +1132,7 @@ func (s *Server) markTimedOutLocked(a *attachment, timeout time.Duration) {
 }
 
 // finalizeDetach completes a detach whose qemu device is gone: deletes the
-// backend object (unless pre-declared) and removes the attachment.
+// backend objects (unless pre-declared) and removes the attachment.
 func (s *Server) finalizeDetach(ctx context.Context, a *attachment) {
 	s.mu.Lock()
 	if a.finalizing || s.atts[a.ID] != a {
@@ -1121,21 +1142,34 @@ func (s *Server) finalizeDetach(ctx context.Context, a *attachment) {
 	a.finalizing = true
 	h := s.hosts[a.Host]
 	var mon qemu.Monitor
-	objDel := strings.HasPrefix(a.QemuObjectID, "fcp_")
+	var objIDs []string
+	if strings.HasPrefix(a.QemuObjectID, "fcp_") {
+		objIDs = append(objIDs, a.QemuObjectID)
+		lsa := a.QemuLSAObjectID
+		if d := s.devices[a.Device]; lsa == "" && d != nil && d.Persistent {
+			// an attachment recorded without its LSA backend id
+			lsa = qemu.LSAObjectID(a.QemuObjectID)
+		}
+		if lsa != "" {
+			objIDs = append(objIDs, lsa)
+		}
+	}
 	if h != nil {
 		mon = h.mon
 	}
 	s.mu.Unlock()
-	if objDel && mon != nil {
+	if len(objIDs) > 0 && mon != nil {
 		h.opMu.Lock()
-		octx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := mon.ObjectDel(octx, a.QemuObjectID)
-		cancel()
-		h.opMu.Unlock()
-		if err != nil && !qemu.IsNotFound(err) {
-			// stock qemu keeps the backend mapped after unplug
-			s.logf("attachment %s: object-del %s failed (left in qemu): %v", a.ID, a.QemuObjectID, err)
+		for _, id := range objIDs {
+			octx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := mon.ObjectDel(octx, id)
+			cancel()
+			if err != nil && !qemu.IsNotFound(err) {
+				// stock qemu keeps the backend mapped after unplug
+				s.logf("attachment %s: object-del %s failed (left in qemu): %v", a.ID, id, err)
+			}
 		}
+		h.opMu.Unlock()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

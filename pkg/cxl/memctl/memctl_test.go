@@ -348,7 +348,7 @@ func TestFindAndWait(t *testing.T) {
 	if uid, err := g.hostBridgeUID("mem0"); err != nil || uid != 12 {
 		t.Fatalf("uid %d %v", uid, err)
 	}
-	if d, err := g.rootDecoder("mem0"); err != nil || d != "decoder0.0" {
+	if d, err := g.RootDecoder("mem0", RegionRAM); err != nil || d != "decoder0.0" {
 		t.Fatalf("root decoder %q %v", d, err)
 	}
 }

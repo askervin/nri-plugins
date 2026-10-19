@@ -54,7 +54,7 @@ Commands:
   whoami                                  resolve this VM (uuid, hostname) to a host
   rescan                                  rediscover qemu processes
   devices [NAME] [--shared] [--free] [--host H]
-  create --size 256Mi [--shared] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
+  create --size 256Mi [--shared] [--persistent] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
   delete NAME [--force]
   attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
   detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
@@ -451,7 +451,7 @@ func attachedTo(d api.Device) string {
 
 func (c *cli) printDevices(ds []api.Device) error {
 	w := c.table()
-	fmt.Fprintln(w, "NAME\tSERIAL\tSIZE\tSHARED\tSCOPE\tSTATE\tATTACHED-TO\tOWNER")
+	fmt.Fprintln(w, "NAME\tSERIAL\tSIZE\tSHARED\tPERSISTENT\tSCOPE\tSTATE\tATTACHED-TO\tOWNER")
 	for _, d := range ds {
 		owner := ""
 		if d.Allocation != nil {
@@ -465,7 +465,7 @@ func (c *cli) printDevices(ds []api.Device) error {
 			}
 			scope += ":" + lh
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\t%s\t%s\t%s\n", d.Name, d.Serial, api.FormatSize(d.Size), d.Shared, scope, d.State, dash(attachedTo(d)), dash(owner))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%v\t%s\t%s\t%s\t%s\n", d.Name, d.Serial, api.FormatSize(d.Size), d.Shared, d.Persistent, scope, d.State, dash(attachedTo(d)), dash(owner))
 	}
 	return w.Flush()
 }
@@ -479,7 +479,15 @@ func (c *cli) printDevice(d api.Device) error {
 	fmt.Fprintf(w, "serial:\t%s\n", d.Serial)
 	fmt.Fprintf(w, "size:\t%s\n", api.FormatSize(d.Size))
 	fmt.Fprintf(w, "shared:\t%v\n", d.Shared)
+	memory := "volatile"
+	if d.Persistent {
+		memory = "persistent"
+	}
+	fmt.Fprintf(w, "memory:\t%s\n", memory)
 	fmt.Fprintf(w, "backend:\t%s %s\n", d.Backend, d.Path)
+	if d.LSAPath != "" {
+		fmt.Fprintf(w, "lsa:\t%s\n", d.LSAPath)
+	}
 	fmt.Fprintf(w, "pool:\t%s\n", dash(d.Pool))
 	scope := d.Scope
 	if d.Scope == api.ScopeLocal {
@@ -533,6 +541,7 @@ func (c *cli) cmdCreate(ctx context.Context, args []string) error {
 	fs := c.flagSet("create")
 	size := fs.String("size", "", "device size, e.g. 256Mi")
 	shared := fs.Bool("shared", false, "shared device")
+	persistent := fs.Bool("persistent", false, "persistent memory device with a label storage area file")
 	name := fs.String("name", "", "device name (default: generated)")
 	poolName := fs.String("pool", "", "pool name")
 	serial := fs.String("serial", "", "serial number (default: allocated)")
@@ -540,13 +549,13 @@ func (c *cli) cmdCreate(ctx context.Context, args []string) error {
 	fs.Var(labels, "label", "KEY=VALUE label (repeatable)")
 	pos, err := parse(fs, args)
 	if err != nil || len(pos) > 0 || *size == "" {
-		return firstErr(err, usagef("create --size SIZE [--shared] [--name N] [--pool P] [--serial S]"))
+		return firstErr(err, usagef("create --size SIZE [--shared] [--persistent] [--name N] [--pool P] [--serial S]"))
 	}
 	sz, err := api.ParseSize(*size)
 	if err != nil {
 		return usagef("%v", err)
 	}
-	req := api.DeviceCreate{Name: *name, Size: api.Size(sz), Shared: *shared, Pool: *poolName, Serial: *serial}
+	req := api.DeviceCreate{Name: *name, Size: api.Size(sz), Shared: *shared, Persistent: *persistent, Pool: *poolName, Serial: *serial}
 	if len(labels) > 0 {
 		req.Labels = labels
 	}

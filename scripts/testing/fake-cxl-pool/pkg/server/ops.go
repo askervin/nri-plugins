@@ -246,34 +246,77 @@ func (s *Server) CreateDevice(req api.DeviceCreate) (api.Device, error) {
 		return api.Device{}, api.Conflict("%v", err)
 	}
 	path := p.FilePath(name)
-	if err := pool.EnsureBackingFile(path, size); err != nil {
-		p.Unreserve(name)
-		s.serials.Release(sn)
-		return api.Device{}, api.Internal("cannot create backing file: %v", err)
-	}
 	d := &device{
 		Device: api.Device{
-			Name:    name,
-			Serial:  api.FormatSerial(sn),
-			Size:    size,
-			Shared:  req.Shared,
-			Backend: api.BackendFile,
-			Path:    path,
-			Pool:    p.Name,
-			Scope:   api.ScopePool,
-			Labels:  req.Labels,
-			Created: time.Now().UTC(),
+			Name:       name,
+			Serial:     api.FormatSerial(sn),
+			Size:       size,
+			Shared:     req.Shared,
+			Persistent: req.Persistent,
+			Backend:    api.BackendFile,
+			Path:       path,
+			Pool:       p.Name,
+			Scope:      api.ScopePool,
+			Labels:     req.Labels,
+			Created:    time.Now().UTC(),
 		},
 		serial:   sn,
 		dynamic:  true,
 		bindings: map[string]*binding{},
 	}
+	if req.Persistent {
+		d.LSAPath = pool.LSAPath(path)
+	}
+	if other := s.deviceWithFilesLocked(d); other != nil {
+		p.Unreserve(name)
+		s.serials.Release(sn)
+		return api.Device{}, api.Conflict("a file of device %q would be a file of device %q", name, other.Name)
+	}
+	if err := d.ensureFiles(); err != nil {
+		p.Unreserve(name)
+		s.serials.Release(sn)
+		removeDeviceFiles(d, s.logf)
+		return api.Device{}, api.Internal("cannot create backing file: %v", err)
+	}
 	s.devices[name] = d
-	s.logf("device %s: created %s shared=%v serial %s file %s", name, api.FormatSize(size), req.Shared, d.Serial, path)
+	if d.Persistent {
+		s.logf("device %s: created %s shared=%v persistent serial %s file %s lsa %s", name, api.FormatSize(size), req.Shared, d.Serial, path, d.LSAPath)
+	} else {
+		s.logf("device %s: created %s shared=%v serial %s file %s", name, api.FormatSize(size), req.Shared, d.Serial, path)
+	}
 	s.saveStateLocked()
 	v := s.deviceViewLocked(d)
 	s.events.publish(api.EventDeviceUpdated, v)
 	return v, nil
+}
+
+// deviceWithFilesLocked returns a device other than d that has a file
+// (data or label storage area) of d.
+func (s *Server) deviceWithFilesLocked(d *device) *device {
+	for _, o := range sortedDevices(s.devices) {
+		if o == d || o.Backend != api.BackendFile {
+			continue
+		}
+		for _, f := range []string{d.Path, d.LSAPath} {
+			if f != "" && ((o.Path != "" && samePath(f, o.Path)) || (o.LSAPath != "" && samePath(f, o.LSAPath))) {
+				return o
+			}
+		}
+	}
+	return nil
+}
+
+// removeDeviceFiles removes the backing files of a device: the data file
+// and the label storage area file.
+func removeDeviceFiles(d *device, logf func(string, ...any)) {
+	for _, f := range []string{d.Path, d.LSAPath} {
+		if f == "" {
+			continue
+		}
+		if err := pool.RemoveBackingFile(f); err != nil {
+			logf("device %s: cannot remove %s: %v", d.Name, f, err)
+		}
+	}
 }
 
 // PatchDevice updates shared and labels of a device that is not attached.
@@ -303,7 +346,7 @@ func (s *Server) PatchDevice(name string, patch api.DevicePatch) (api.Device, er
 	return v, nil
 }
 
-// DeleteDevice deletes a device created over the API and its backing file.
+// DeleteDevice deletes a device created over the API and its backing files.
 // With force, attachments are detached first.
 func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) error {
 	s.mu.RLock()
@@ -348,9 +391,7 @@ func (s *Server) DeleteDevice(ctx context.Context, name string, force bool) erro
 	if p := s.pools[d.Pool]; p != nil {
 		p.Unreserve(name)
 		if filepath.Dir(d.Path) == filepath.Clean(p.Dir) {
-			if err := pool.RemoveBackingFile(d.Path); err != nil {
-				s.logf("device %s: cannot remove %s: %v", name, d.Path, err)
-			}
+			removeDeviceFiles(d, s.logf)
 		}
 	}
 	s.serials.Release(d.serial)
@@ -722,6 +763,11 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		return api.Attachment{}, 0, err
 	}
 	b := d.bindings[h.name]
+	if b != nil && d.Persistent {
+		s.mu.Unlock()
+		h.opMu.Unlock()
+		return api.Attachment{}, 0, api.InvalidArgument("device %q is persistent: host %q pre-declares backend %s for it, which has no label storage area", d.Name, h.name, b.ObjectID)
+	}
 	bus, err := s.chooseSlotLocked(h, b, req, d.Size)
 	if err != nil {
 		s.mu.Unlock()
@@ -731,37 +777,52 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	h.counter++
 	qemuID := fmt.Sprintf("fcp_%s.hp%d", d.Name, h.counter)
 	objID, serial := qemuID, d.serial
-	var backend *qemu.MemoryBackend
+	// backends are the objects to add: the data, and of a persistent
+	// device its label storage area
+	var backends []qemu.MemoryBackend
 	if b != nil {
 		objID, serial = b.ObjectID, b.Serial
 	} else {
-		backend = &qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: objID, Size: uint64(d.Size), MemPath: d.Path, Share: true}
+		backends = append(backends, qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: objID, Size: uint64(d.Size), MemPath: d.Path, Share: true})
+	}
+	t3 := qemu.CXLType3{ID: qemuID, Bus: bus, Serial: serial}
+	if d.Persistent {
+		lsa := qemu.MemoryBackend{QomType: qemu.MemoryBackendFile, ID: qemu.LSAObjectID(objID), Size: pool.LSASize, MemPath: d.LSAPath, Share: true}
+		backends = append(backends, lsa)
+		t3.PersistentMemdev, t3.LSA = objID, lsa.ID
+	} else {
+		t3.VolatileMemdev = objID
 	}
 	now := time.Now().UTC()
 	a := &attachment{
 		Attachment: api.Attachment{
-			ID:           api.AttachmentID(d.Name, h.name),
-			Device:       d.Name,
-			Host:         h.name,
-			Serial:       api.FormatSerial(serial),
-			Slot:         s.slotLocked(h, bus),
-			QemuDeviceID: qemuID,
-			QemuObjectID: objID,
-			State:        api.AttachmentAttaching,
-			Owner:        req.Owner,
-			Exclusive:    req.Exclusive,
-			Created:      now,
-			Updated:      now,
+			ID:              api.AttachmentID(d.Name, h.name),
+			Device:          d.Name,
+			Host:            h.name,
+			Serial:          api.FormatSerial(serial),
+			Slot:            s.slotLocked(h, bus),
+			QemuDeviceID:    qemuID,
+			QemuObjectID:    objID,
+			QemuLSAObjectID: t3.LSA,
+			State:           api.AttachmentAttaching,
+			Owner:           req.Owner,
+			Exclusive:       req.Exclusive,
+			Created:         now,
+			Updated:         now,
 		},
 		done: make(chan struct{}),
 	}
 	s.atts[a.ID] = a
 	a.Slot.Attachment = a.ID
 	a.Slot.Device = qemuID
-	s.logf("attachment %s: attaching to slot %s as %s (backend %s, serial %s)", a.ID, bus, qemuID, objID, a.Serial)
+	if t3.LSA != "" {
+		s.logf("attachment %s: attaching to slot %s as %s (persistent backend %s, lsa %s, serial %s)", a.ID, bus, qemuID, objID, t3.LSA, a.Serial)
+	} else {
+		s.logf("attachment %s: attaching to slot %s as %s (backend %s, serial %s)", a.ID, bus, qemuID, objID, a.Serial)
+	}
 	s.saveStateLocked()
 	s.publishAttachmentLocked(a)
-	path, size := d.Path, d.Size
+	files := device{Device: api.Device{Name: d.Name, Size: d.Size, Path: d.Path, LSAPath: d.LSAPath}}
 	s.mu.Unlock()
 	h.opMu.Unlock()
 
@@ -770,16 +831,25 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		h.opMu.Lock()
 		defer h.opMu.Unlock()
 		var err error
-		if backend != nil {
-			if err = pool.EnsureBackingFile(path, size); err == nil {
-				err = mon.ObjectAdd(ctx, *backend)
+		if len(backends) > 0 {
+			err = files.ensureFiles()
+		}
+		var added []string
+		for _, be := range backends {
+			if err != nil {
+				break
+			}
+			if err = mon.ObjectAdd(ctx, be); err == nil {
+				added = append(added, be.ID)
 			}
 		}
 		if err == nil {
-			err = mon.DeviceAdd(ctx, qemu.CXLType3{ID: qemuID, Bus: bus, VolatileMemdev: objID, Serial: serial})
-			if err != nil && backend != nil {
-				if derr := mon.ObjectDel(context.WithoutCancel(ctx), objID); derr != nil {
-					s.logf("attachment %s: object-del %s after failed device_add: %v", a.ID, objID, derr)
+			err = mon.DeviceAdd(ctx, t3)
+		}
+		if err != nil {
+			for _, id := range added {
+				if derr := mon.ObjectDel(context.WithoutCancel(ctx), id); derr != nil {
+					s.logf("attachment %s: object-del %s after failed device_add: %v", a.ID, id, derr)
 				}
 			}
 		}

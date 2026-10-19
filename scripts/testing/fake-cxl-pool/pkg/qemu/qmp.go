@@ -355,13 +355,22 @@ func QMPObjectAddArgs(b MemoryBackend) map[string]any {
 // QMPDeviceAddArgs returns the arguments of QMP device_add for the device.
 // The sn property is a uint64 qdev property: QMP wants a JSON number.
 func QMPDeviceAddArgs(d CXLType3) map[string]any {
-	return map[string]any{
-		"driver":          "cxl-type3",
-		"bus":             d.Bus,
-		"volatile-memdev": d.VolatileMemdev,
-		"id":              d.ID,
-		"sn":              d.Serial,
+	args := map[string]any{
+		"driver": "cxl-type3",
+		"bus":    d.Bus,
+		"id":     d.ID,
+		"sn":     d.Serial,
 	}
+	if d.VolatileMemdev != "" {
+		args["volatile-memdev"] = d.VolatileMemdev
+	}
+	if d.PersistentMemdev != "" {
+		args["persistent-memdev"] = d.PersistentMemdev
+	}
+	if d.LSA != "" {
+		args["lsa"] = d.LSA
+	}
+	return args
 }
 
 // ObjectAdd implements Monitor.
@@ -437,7 +446,8 @@ type qomItem struct {
 var cxlDrivers = map[string]bool{"pxb-cxl": true, "cxl-rp": true, "cxl-upstream": true, "cxl-downstream": true, "cxl-type3": true}
 
 // queryTreeQOM builds the Tree from qom-list /machine/peripheral and the
-// parent_bus, sn, volatile-memdev and numa_node properties. The bus a port
+// parent_bus, sn, volatile-memdev, persistent-memdev, lsa and numa_node
+// properties. The bus a port
 // provides has the port's id, the bus of a pxb-cxl has the pxb-cxl's id.
 func (q *QMP) queryTreeQOM(ctx context.Context) (*Tree, error) {
 	driver := map[string]string{} // device path -> driver
@@ -529,6 +539,12 @@ func (q *QMP) queryTreeQOM(ctx context.Context) (*Tree, error) {
 			}
 			if v, err := getString(p, "volatile-memdev"); err == nil {
 				d.VolatileMemdev = strings.TrimPrefix(v, "/objects/")
+			}
+			if v, err := getString(p, "persistent-memdev"); err == nil {
+				d.PersistentMemdev = strings.TrimPrefix(v, "/objects/")
+			}
+			if v, err := getString(p, "lsa"); err == nil {
+				d.LSA = strings.TrimPrefix(v, "/objects/")
 			}
 			if d.ID != "" {
 				t.Type3 = append(t.Type3, d)

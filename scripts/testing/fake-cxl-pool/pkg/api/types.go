@@ -137,12 +137,16 @@ const (
 
 // Device is a pool memory device: a backing file or a ram object.
 type Device struct {
-	Name        string            `json:"name"`
-	Serial      string            `json:"serial"`
-	Size        int64             `json:"size"`
-	Shared      bool              `json:"shared"`
+	Name   string `json:"name"`
+	Serial string `json:"serial"`
+	Size   int64  `json:"size"`
+	Shared bool   `json:"shared"`
+	// Persistent devices are persistent memory with a label storage
+	// area (LSA) file at LSAPath; others are volatile memory.
+	Persistent  bool              `json:"persistent"`
 	Backend     string            `json:"backend"`
 	Path        string            `json:"path,omitempty"`
+	LSAPath     string            `json:"lsaPath,omitempty"`
 	Pool        string            `json:"pool"`
 	Scope       string            `json:"scope"`
 	LocalHost   string            `json:"localHost,omitempty"`
@@ -157,12 +161,13 @@ type Device struct {
 
 // DeviceCreate is the body of POST /api/v1/devices.
 type DeviceCreate struct {
-	Name   string            `json:"name,omitempty"`
-	Size   Size              `json:"size"`
-	Shared bool              `json:"shared,omitempty"`
-	Pool   string            `json:"pool,omitempty"`
-	Serial string            `json:"serial,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	Size       Size              `json:"size"`
+	Shared     bool              `json:"shared,omitempty"`
+	Persistent bool              `json:"persistent,omitempty"`
+	Pool       string            `json:"pool,omitempty"`
+	Serial     string            `json:"serial,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 // DevicePatch is the body of PATCH /api/v1/devices/{name}. Labels, when
@@ -219,8 +224,11 @@ type Attachment struct {
 	Slot         Slot   `json:"slot"`
 	QemuDeviceID string `json:"qemuDeviceId"`
 	QemuObjectID string `json:"qemuObjectId"`
-	State        string `json:"state"`
-	Error        string `json:"error,omitempty"`
+	// QemuLSAObjectID is the label storage area backend of a persistent
+	// device, "" for volatile devices.
+	QemuLSAObjectID string `json:"qemuLsaObjectId,omitempty"`
+	State           string `json:"state"`
+	Error           string `json:"error,omitempty"`
 	// Owner is the owner given in the attach request that created the
 	// attachment ("" if none, or adopted).
 	Owner string `json:"owner,omitempty"`

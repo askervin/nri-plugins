@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -109,7 +110,7 @@ func (f *Fake) Release(id string) {
 	delete(f.held, id)
 	if f.pendingDel[id] {
 		if f.LeakOnRelease {
-			f.leaked[f.devices[id].VolatileMemdev] = true
+			f.leaked[f.devices[id].Memdev()] = true
 		}
 		f.completeDelLocked(id)
 	}
@@ -228,18 +229,47 @@ func (f *Fake) DeviceAdd(ctx context.Context, d CXLType3) error {
 	if len(port.Children) > 0 {
 		return &Error{Command: "device_add", Desc: "PCI: slot 0 function 0 already occupied by cxl-type3, new func cxl-type3 cannot be exposed to guest."}
 	}
-	if _, ok := f.objects[d.VolatileMemdev]; !ok {
-		return &Error{Command: "device_add", Desc: fmt.Sprintf("Property 'cxl-type3.volatile-memdev' can't find value '%s'", d.VolatileMemdev)}
-	}
-	if f.mapped[d.VolatileMemdev] {
-		return &Error{Command: "device_add", Desc: fmt.Sprintf("memory backend %s can't be used multiple times.", d.VolatileMemdev)}
+	backends, err := f.checkBackendsLocked(d)
+	if err != nil {
+		return err
 	}
 	f.usedIDs[d.ID] = true
-	f.mapped[d.VolatileMemdev] = true
+	for _, b := range backends {
+		f.mapped[b] = true
+	}
 	f.devices[d.ID] = d
 	port.Children = []TreeDevice{{Driver: "cxl-type3", ID: d.ID}}
 	f.deletedCh[d.ID] = make(chan struct{})
 	return nil
+}
+
+// checkBackendsLocked returns the backend object ids of a cxl-type3, or
+// the error qemu gives for missing, unknown or busy backends.
+func (f *Fake) checkBackendsLocked(d CXLType3) ([]string, error) {
+	if d.VolatileMemdev == "" && d.PersistentMemdev == "" {
+		return nil, &Error{Command: "device_add", Desc: "at least one memdev property must be set"}
+	}
+	if d.PersistentMemdev != "" && d.LSA == "" {
+		return nil, &Error{Command: "device_add", Desc: "lsa property must be set for persistent devices"}
+	}
+	var backends []string
+	for _, p := range []struct{ prop, id string }{
+		{"volatile-memdev", d.VolatileMemdev},
+		{"persistent-memdev", d.PersistentMemdev},
+		{"lsa", d.LSA},
+	} {
+		if p.id == "" {
+			continue
+		}
+		if _, ok := f.objects[p.id]; !ok {
+			return nil, &Error{Command: "device_add", Desc: fmt.Sprintf("Property 'cxl-type3.%s' can't find value '%s'", p.prop, p.id)}
+		}
+		if f.mapped[p.id] || slices.Contains(backends, p.id) {
+			return nil, &Error{Command: "device_add", Desc: fmt.Sprintf("memory backend %s can't be used multiple times.", p.id)}
+		}
+		backends = append(backends, p.id)
+	}
+	return backends, nil
 }
 
 // DeviceDel implements Monitor.
@@ -271,8 +301,10 @@ func (f *Fake) completeDelLocked(id string) {
 	d := f.devices[id]
 	delete(f.devices, id)
 	delete(f.pendingDel, id)
-	if !f.leaked[d.VolatileMemdev] {
-		delete(f.mapped, d.VolatileMemdev)
+	for _, b := range []string{d.VolatileMemdev, d.PersistentMemdev, d.LSA} {
+		if b != "" && !f.leaked[b] {
+			delete(f.mapped, b)
+		}
 	}
 	for i := range f.ports {
 		if f.ports[i].Bus == d.Bus {
@@ -362,7 +394,8 @@ func (f *Fake) QueryTree(ctx context.Context) (*Tree, error) {
 		t.Ports = append(t.Ports, p)
 	}
 	for _, d := range f.devices {
-		t.Type3 = append(t.Type3, Type3Device{ID: d.ID, Bus: d.Bus, VolatileMemdev: d.VolatileMemdev, Serial: d.Serial, HasSerial: true})
+		t.Type3 = append(t.Type3, Type3Device{ID: d.ID, Bus: d.Bus, VolatileMemdev: d.VolatileMemdev,
+			PersistentMemdev: d.PersistentMemdev, LSA: d.LSA, Serial: d.Serial, HasSerial: true})
 	}
 	sort.Slice(t.Type3, func(i, j int) bool { return t.Type3[i].ID < t.Type3[j].ID })
 	return t, nil

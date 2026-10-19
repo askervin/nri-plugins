@@ -209,8 +209,19 @@ func HMPObjectAdd(b MemoryBackend) string {
 
 // HMPDeviceAdd returns the HMP device_add command line for the device.
 func HMPDeviceAdd(d CXLType3) string {
-	return fmt.Sprintf("device_add cxl-type3,bus=%s,volatile-memdev=%s,id=%s,sn=0x%x",
-		EscapeOptValue(d.Bus), EscapeOptValue(d.VolatileMemdev), EscapeOptValue(d.ID), d.Serial)
+	var sb strings.Builder
+	sb.WriteString("device_add cxl-type3,bus=" + EscapeOptValue(d.Bus))
+	if d.VolatileMemdev != "" {
+		sb.WriteString(",volatile-memdev=" + EscapeOptValue(d.VolatileMemdev))
+	}
+	if d.PersistentMemdev != "" {
+		sb.WriteString(",persistent-memdev=" + EscapeOptValue(d.PersistentMemdev))
+	}
+	if d.LSA != "" {
+		sb.WriteString(",lsa=" + EscapeOptValue(d.LSA))
+	}
+	fmt.Fprintf(&sb, ",id=%s,sn=0x%x", EscapeOptValue(d.ID), d.Serial)
+	return sb.String()
 }
 
 // ObjectAdd implements Monitor.

@@ -383,6 +383,11 @@ func TestDeviceConfigModeFor(t *testing.T) {
 		{cfg: deviceConfig{Mode: "numa"}, shared: true, err: "DeviceConfig: mode numa: a shared device is used as dax only"},
 		{cfg: deviceConfig{ReadOnly: true}, err: "DeviceConfig: readOnly needs mode dax"},
 		{cfg: deviceConfig{Mode: "kmem"}, err: `DeviceConfig: invalid mode "kmem" (numa or dax)`},
+		// the local driver has no modes block and fs
+		{cfg: deviceConfig{Mode: "fs", ReadOnly: true, Access: "direct"}, err: `DeviceConfig: invalid mode "fs" (numa or dax)`},
+		{cfg: deviceConfig{Mode: "block"}, err: `DeviceConfig: invalid mode "block" (numa or dax)`},
+		{cfg: deviceConfig{Access: "direct"}, err: "DeviceConfig: access needs mode fs"},
+		{cfg: deviceConfig{Mode: "dax", Path: "/models"}, err: "DeviceConfig: path needs mode fs"},
 	} {
 		got, err := tc.cfg.modeFor(tc.shared)
 		if (tc.err == "" && (err != nil || got != tc.want)) || (tc.err != "" && (err == nil || err.Error() != tc.err)) {

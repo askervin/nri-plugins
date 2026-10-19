@@ -15,9 +15,10 @@
 // Package memctl makes hotplugged CXL memory devices usable and releases
 // them again: find a memdev by serial, create a region in mode numa (system
 // RAM of a NUMA node) or dax (a dax character device), online or offline
-// its memory, slice the dax region of a region into dax devices, destroy
-// the region and disable the memdev. It drives sysfs and the cxl and
-// daxctl CLIs.
+// its memory, slice the dax region of a region into dax devices, create a
+// region of persistent memory and an fsdax namespace in it, destroy the
+// region and disable the memdev. It drives sysfs and the cxl, daxctl and
+// ndctl CLIs.
 package memctl
 
 import (
@@ -260,30 +261,6 @@ func (mc *Manager) hostBridgeUID(memdev string) (int, error) {
 	}
 	v, _ := strconv.ParseInt(m[2], 16, 32)
 	return int(v), nil
-}
-
-// rootDecoder returns the root decoder whose target list has the host
-// bridge of the memdev and that can map volatile memory.
-func (mc *Manager) rootDecoder(memdev string) (string, error) {
-	uid, err := mc.hostBridgeUID(memdev)
-	if err != nil {
-		return "", err
-	}
-	for _, d := range mc.list("decoder*") {
-		if t, _ := readTrim(mc.cxlDev(d, "devtype")); t != "cxl_decoder_root" {
-			continue
-		}
-		if v, err := readTrim(mc.cxlDev(d, "cap_type3_volatile")); err == nil && v != "1" {
-			continue
-		}
-		tl, _ := readTrim(mc.cxlDev(d, "target_list"))
-		for _, t := range strings.Split(tl, ",") {
-			if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil && n == uid {
-				return d, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("no root decoder targets host bridge %d of %s", uid, memdev)
 }
 
 // DaxDevices returns the dax devices of a region.
@@ -933,7 +910,7 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 		mc.logf("%s: reusing %s", memdev, region)
 	} else {
 		if decoder == "" {
-			d, err := mc.rootDecoder(memdev)
+			d, err := mc.RootDecoder(memdev, RegionRAM)
 			if err != nil {
 				return nil, err
 			}
@@ -1074,7 +1051,8 @@ func (mc *Manager) ReleaseRegions(ctx context.Context, memdev string) error {
 }
 
 // ReleaseRegion offlines the memory of a region, and disables and destroys
-// the region. A missing region is not an error.
+// the region. Namespaces and labels of a region of persistent memory are
+// not touched. A missing region is not an error.
 func (mc *Manager) ReleaseRegion(ctx context.Context, region string) error {
 	if _, err := os.Stat(mc.cxlDev(region)); err != nil {
 		return nil

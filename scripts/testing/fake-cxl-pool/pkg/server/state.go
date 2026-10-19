@@ -44,6 +44,7 @@ type persistedDevice struct {
 	Serial     string            `json:"serial"`
 	Size       int64             `json:"size"`
 	Shared     bool              `json:"shared,omitempty"`
+	Persistent bool              `json:"persistent,omitempty"`
 	Path       string            `json:"path"`
 	Pool       string            `json:"pool"`
 	Labels     map[string]string `json:"labels,omitempty"`
@@ -140,15 +141,13 @@ func (s *Server) loadState() (map[string]uint64, error) {
 		} else if err := p.Reserve(pd.Name, pd.Size); err != nil {
 			s.logf("state: device %s: %v", pd.Name, err)
 		}
-		if err := pool.EnsureBackingFile(pd.Path, pd.Size); err != nil {
-			s.logf("state: device %s: %v", pd.Name, err)
-		}
-		s.devices[pd.Name] = &device{
+		d := &device{
 			Device: api.Device{
 				Name:       pd.Name,
 				Serial:     api.FormatSerial(sn),
 				Size:       pd.Size,
 				Shared:     pd.Shared,
+				Persistent: pd.Persistent,
 				Backend:    api.BackendFile,
 				Path:       pd.Path,
 				Pool:       pd.Pool,
@@ -161,6 +160,13 @@ func (s *Server) loadState() (map[string]uint64, error) {
 			dynamic:  true,
 			bindings: map[string]*binding{},
 		}
+		if pd.Persistent {
+			d.LSAPath = pool.LSAPath(pd.Path)
+		}
+		if err := d.ensureFiles(); err != nil {
+			s.logf("state: device %s: %v", pd.Name, err)
+		}
+		s.devices[pd.Name] = d
 	}
 	for name, ov := range st.Overrides {
 		if d := s.devices[name]; d != nil {
@@ -216,7 +222,7 @@ func (s *Server) saveStateLocked() {
 	for _, d := range sortedDevices(s.devices) {
 		if d.dynamic {
 			st.Devices = append(st.Devices, persistedDevice{
-				Name: d.Name, Serial: d.Serial, Size: d.Size, Shared: d.Shared, Path: d.Path,
+				Name: d.Name, Serial: d.Serial, Size: d.Size, Shared: d.Shared, Persistent: d.Persistent, Path: d.Path,
 				Pool: d.Pool, Labels: d.Labels, Allocation: d.Allocation, Created: d.Created,
 			})
 			continue

@@ -48,6 +48,7 @@ func (c *Controller) condFailed() string   { return c.cfg.DriverName + "/AttachF
 type DeviceData struct {
 	Serial       string `json:"serial"`
 	Shared       bool   `json:"shared"`
+	Persistent   bool   `json:"persistent,omitempty"`
 	Size         int64  `json:"size"`
 	Host         string `json:"host"`
 	HostUUID     string `json:"hostUUID,omitempty"`

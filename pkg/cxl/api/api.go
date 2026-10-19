@@ -50,6 +50,19 @@ const (
 	// ModeDax gives memory as a devdax device (claims) or its fd
 	// (leases).
 	ModeDax = "dax"
+	// ModeBlock gives persistent memory as the block device of its fsdax
+	// namespace (claims of pool devices only).
+	ModeBlock = "block"
+	// ModeFs gives persistent memory as a read-only filesystem mounted
+	// from its fsdax namespace (claims of pool devices only).
+	ModeFs = "fs"
+
+	// AccessDirect is a mode fs mount whose file pages are the device's
+	// memory (dax=always).
+	AccessDirect = "direct"
+	// AccessCached is a mode fs mount whose file pages are in the page
+	// cache of the node (dax=never).
+	AccessCached = "cached"
 
 	// Operations of a request.
 	OpRequest = "request"
@@ -183,12 +196,16 @@ func (r *Request) validateValues() error {
 //   - Key: the env key (Key, RegionKey, DRAMKey)
 //   - Serial: 0x<hex> of a memdev, "" for regions and DRAM
 //   - Shared: the memdev may be mapped by several hosts at a time
-//   - Mode: ModeNUMA or ModeDax
-//   - Size: bytes that the claim or lease got
+//   - Mode: ModeNUMA, ModeDax, ModeBlock or ModeFs
+//   - Size: bytes that the claim or lease got; of block and fs memory the
+//     size of the fsdax namespace
 //   - Node: NUMA node of numa memory without Nodes
 //   - Nodes: NUMA nodes of DRAM (cpuset syntax)
 //   - Dax: /dev/daxX.Y of dax memory
-//   - ReadOnly: dax memory allows reads only
+//   - Path: the device node (/dev/pmemK) of block memory, the directory in
+//     the container of fs memory
+//   - Access: AccessDirect or AccessCached of fs memory
+//   - ReadOnly: dax and block memory allows reads only; fs memory always
 type Memory struct {
 	Key      string
 	Serial   string
@@ -198,6 +215,8 @@ type Memory struct {
 	Node     int
 	Nodes    string
 	Dax      string
+	Path     string
+	Access   string
 	ReadOnly bool
 }
 
@@ -232,7 +251,8 @@ func Nth(key string, n int) string {
 
 // Env returns the environment variables CXL_<KEY>_<FIELD> of a memory:
 // SERIAL and SHARED of memdevs, MODE and SIZE always, NODE or NODES of
-// numa memory, DAX and READONLY of dax memory.
+// numa memory, DAX and READONLY of dax memory, PATH and READONLY of block
+// memory, PATH, ACCESS and READONLY of fs memory.
 func Env(m Memory) map[string]string {
 	p := "CXL_" + m.Key + "_"
 	env := map[string]string{
@@ -248,6 +268,13 @@ func Env(m Memory) map[string]string {
 		if m.Dax != "" {
 			env[p+"DAX"] = m.Dax
 		}
+		env[p+"READONLY"] = boolEnv(m.ReadOnly)
+	case m.Mode == ModeBlock:
+		env[p+"PATH"] = m.Path
+		env[p+"READONLY"] = boolEnv(m.ReadOnly)
+	case m.Mode == ModeFs:
+		env[p+"PATH"] = m.Path
+		env[p+"ACCESS"] = m.Access
 		env[p+"READONLY"] = boolEnv(m.ReadOnly)
 	case m.Nodes != "":
 		env[p+"NODES"] = m.Nodes

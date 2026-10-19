@@ -443,17 +443,18 @@ func TestPublish(t *testing.T) {
 		t.Fatal("device in state error published")
 	}
 	// exactly the attributes of the contract: type, source, serial,
-	// shared, size
+	// shared, persistent, size
 	for _, name := range []string{"pooled0", "shared0"} {
 		var keys []string
 		for k := range byName[name].Attributes {
 			keys = append(keys, string(k))
 		}
 		sort.Strings(keys)
-		if got := strings.Join(keys, ","); got != "serial,shared,size,source,type" {
+		if got := strings.Join(keys, ","); got != "persistent,serial,shared,size,source,type" {
 			t.Fatalf("%s: attributes %s", name, got)
 		}
-		if a := byName[name].Attributes; *a["type"].StringValue != "memdev" || *a["source"].StringValue != "pool" {
+		if a := byName[name].Attributes; *a["type"].StringValue != "memdev" || *a["source"].StringValue != "pool" ||
+			a["persistent"].BoolValue == nil || *a["persistent"].BoolValue {
 			t.Fatalf("%s: type %q source %q", name, *a["type"].StringValue, *a["source"].StringValue)
 		}
 	}
@@ -807,5 +808,44 @@ func TestExclusiveSharedConflict(t *testing.T) {
 	if e.c.exclusiveResult(&resourceapi.DeviceRequestAllocationResult{Device: "pooled0",
 		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: resource.MustParse("4")}}) {
 		t.Fatal("pooled0 is exclusive")
+	}
+}
+
+func TestPersistentAttributeAndStatus(t *testing.T) {
+	e := newEnv(t)
+	e.pool.mu.Lock()
+	e.pool.devices["llm0"] = api.Device{Name: "llm0", Serial: "0xc1ae0002", Size: 512 << 20, Shared: true, Persistent: true,
+		Pool: "default", Scope: api.ScopePool, State: api.DeviceFree}
+	e.pool.mu.Unlock()
+	e.sync()
+	e.eventually("ResourceSlice", func() bool { return len(e.slices()) == 1 })
+	attrs := map[string]map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{}
+	for _, d := range e.slices()[0].Spec.Devices {
+		attrs[d.Name] = d.Attributes
+	}
+	for name, want := range map[string]bool{"llm0": true, "shared0": false, "pooled0": false} {
+		if a := attrs[name]["persistent"]; a.BoolValue == nil || *a.BoolValue != want {
+			t.Fatalf("%s: attribute persistent %+v, want %v", name, a, want)
+		}
+	}
+	// status data: persistent true for llm0, omitted for volatile devices
+	e.createClaimHosts("w", "llm0", "node1", "share-w", 4)
+	e.createClaim("p", "pooled0", "node1", "")
+	e.sync()
+	for claim, want := range map[string]any{"w": true, "p": nil} {
+		c, st := e.condition(claim, "cxl-pool.nri.io/Attached")
+		if c == nil {
+			t.Fatalf("claim %s: no Attached condition", claim)
+		}
+		var data map[string]any
+		if err := json.Unmarshal(st.Data.Raw, &data); err != nil {
+			t.Fatal(err)
+		}
+		if data["persistent"] != want {
+			t.Fatalf("claim %s: data %s, want persistent %v", claim, st.Data.Raw, want)
+		}
+		if claim == "w" && (data["serial"] != "0xc1ae0002" || data["shared"] != true || data["size"] != float64(512<<20) || data["exclusive"] != true) {
+			t.Fatalf("claim w: unexpected data %s", st.Data.Raw)
+		}
 	}
 }

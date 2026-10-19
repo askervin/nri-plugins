@@ -27,7 +27,7 @@ import (
 
 // TestDeviceClassesMatchConstants checks that the DeviceClasses of the
 // helm chart (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
-// are the six classes of the Class* constants, each selecting the driver,
+// are the seven classes of the Class* constants, each selecting the driver,
 // type and sharing that the constant stands for, and no config.
 func TestDeviceClassesMatchConstants(t *testing.T) {
 	data, err := os.ReadFile("../../../deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml")
@@ -49,12 +49,15 @@ func TestDeviceClassesMatchConstants(t *testing.T) {
 		return fmt.Sprintf(`device.driver == %q && device.attributes[%q].%s == %q`, driver, driver, AttrType, typ)
 	}
 	want := map[string]string{
-		ClassLocal:      selects(DriverName, DeviceTypeMemdev),
-		ClassPool:       selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrShared),
-		ClassPoolShared: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, PoolDriverName, AttrShared),
-		ClassRegion:     selects(DriverName, DeviceTypeRegion),
-		ClassDRAM:       selects(DriverName, DeviceTypeDRAM),
-		ClassLease:      selects(DriverName, DeviceTypeLease),
+		ClassLocal: selects(DriverName, DeviceTypeMemdev),
+		ClassPool: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrShared) +
+			fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrPersistent),
+		ClassPoolShared: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, PoolDriverName, AttrShared) +
+			fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrPersistent),
+		ClassPoolPersistent: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, PoolDriverName, AttrPersistent),
+		ClassRegion:         selects(DriverName, DeviceTypeRegion),
+		ClassDRAM:           selects(DriverName, DeviceTypeDRAM),
+		ClassLease:          selects(DriverName, DeviceTypeLease),
 	}
 	if len(classes) != len(want) {
 		names := make([]string, 0, len(classes))

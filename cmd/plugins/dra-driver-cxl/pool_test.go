@@ -46,10 +46,11 @@ import (
 // host bridge 12, with the cxl and daxctl CLIs faked on top of it, like
 // the tests of nri-plugins pkg/cxl/memctl.
 type fakePoolSys struct {
-	t    *testing.T
-	root string
-	mu   sync.Mutex
-	cmds []string
+	t      *testing.T
+	root   string
+	mu     sync.Mutex
+	cmds   []string
+	labels bool // the LSA of a persistent mem0 has an fsdax namespace
 }
 
 const fakeMemPath = "devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0"
@@ -122,6 +123,9 @@ func (f *fakePoolSys) exec(ctx context.Context, name string, args ...string) (st
 	f.mu.Lock()
 	f.cmds = append(f.cmds, name+" "+strings.Join(args, " "))
 	f.mu.Unlock()
+	if out, ok := f.execPmem(name, args...); ok {
+		return out, nil
+	}
 	switch name + " " + args[0] {
 	case "cxl create-region":
 		f.write("bus/cxl/devices/region0/target0", "decoder4.0")
@@ -141,6 +145,7 @@ func (f *fakePoolSys) exec(ctx context.Context, name string, args ...string) (st
 	case "cxl destroy-region":
 		_ = os.RemoveAll(f.p("bus/cxl/devices/region0"))
 		_ = os.Remove(f.p("bus/dax/devices/dax0.0"))
+		f.removeNdRegion()
 		return "", nil
 	case "cxl disable-memdev":
 		_ = os.Remove(f.p(fakeMemPath + "/driver"))
@@ -175,6 +180,7 @@ func (f *fakePoolSys) manager() *memctl.Manager {
 
 type poolTestEnv struct {
 	f         *fakePoolSys
+	m         *fakeMounter // the mounts of the node outlive driver restarts
 	cdiDir    string
 	stateFile string
 }
@@ -183,6 +189,7 @@ func newPoolTestEnv(t *testing.T) *poolTestEnv {
 	dir := t.TempDir()
 	return &poolTestEnv{
 		f:         newFakePoolSys(t),
+		m:         newFakeMounter(),
 		cdiDir:    filepath.Join(dir, "cdi"),
 		stateFile: filepath.Join(dir, poolStateFileName),
 	}
@@ -199,11 +206,12 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.stateFile, 200*time.Millisecond)
+	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.probeGrace = 20 * time.Millisecond
+	p.holderWait = 50 * time.Millisecond
 	p.cdi = cache
 	if err := p.writeCDISpec(); err != nil {
 		t.Fatal(err)
@@ -687,9 +695,12 @@ func TestPoolConfigErrors(t *testing.T) {
 		data, params, err string
 	}{
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`, "DeviceConfig: mode numa: a shared device is used as dax only"},
-		{exclusiveData, roConfig, "DeviceConfig: readOnly needs mode dax"},
-		{exclusiveData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ram"}`, `DeviceConfig: invalid mode "ram" (numa or dax)`},
-		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","access":"ro"}`, `unknown field "access"`},
+		{exclusiveData, roConfig, "DeviceConfig: readOnly needs mode dax, block or fs"},
+		{exclusiveData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ram"}`, `DeviceConfig: invalid mode "ram" (numa, dax, block or fs)`},
+		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","access":"cached"}`, "DeviceConfig: access needs mode fs"},
+		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","fsType":"erofs"}`, `unknown field "fsType"`},
+		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block"}`, "DeviceConfig: mode block needs a persistent device"},
+		{exclusiveData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true}`, "DeviceConfig: mode fs needs a persistent device"},
 		{sharedData, `{"apiVersion":"v1","kind":"DeviceConfig"}`, `DeviceConfig: apiVersion "v1", expected "cxl-pool.nri.io/v1alpha1"`},
 		// an old kind would give a read-write device of a reader
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"PoolDeviceConfig","readOnly":true}`,

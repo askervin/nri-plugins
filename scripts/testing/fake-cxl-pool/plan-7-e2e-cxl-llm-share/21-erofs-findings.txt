@@ -1,0 +1,109 @@
+plan-7 erofs: the facts the design rests on
+===========================================
+Written 2026-10-19 (orchestrator). Sources in parentheses: B =
+01-research-B-kernel-access.txt, FS = 11-research-FS-filesystems.txt,
+IN = 11-research-IN-integration.txt, P1 = 12-proto-P1-erofs-pmem.txt,
+P2 = 12-proto-P2-famfs.txt, BR = 14-branch-5jg-cxl.txt. N = nri-plugins.
+
+Kernel
+F1  erofs mounts a block device (dax=always needs a bdev with a dax
+    device) or a regular file; /dev/daxN.0 is neither: mount gives
+    ENOTBLK, mount.erofs reports "[Error 22] Invalid argument". Volatile
+    CXL memory never becomes a DAX block device in v7.3; CXL persistent
+    memory does, through an fsdax namespace (13 section 1, P1 2).
+F2  Only CONFIG_EROFS_FS=y is missing from qemu-cxl-kernel.config; FS_DAX,
+    FS_DAX_PMD, LIBNVDIMM, BLK_DEV_PMEM, ND_PFN, CXL_PMEM and
+    BLK_DEV_LOOP are on (FS 5). Both VMs boot 7.3.0-rc4-famfs2 today (P2's
+    experiment, EROFS included); the official config and its cached
+    tarball have no EROFS (BR 5). The guest kernel source is
+    /home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src (v7.3-rc4, no
+    git); P1 built from it in VM1 with make binrpm-pkg in 231 s.
+F3  vm-kernel-pkgs-install (test/e2e/lib/vm.bash) skips the install when
+    the file names in the tarball equal ~vagrant/.vm-kernel-pkgs.installed_packages,
+    and installs with rpm -Uvh --force, which replaces every other version
+    of package "kernel" (the -fsexp and -famfs2 experiments).
+
+Device and namespace
+F4  A persistent cxl-type3 needs persistent-memdev= and lsa= (qemu refuses
+    a persistent device without an LSA); both memory-backend-file
+    share=on, the same two files and serial in every VM that attaches it;
+    512M data + 256K LSA worked; hotplug and hot-remove behave like the
+    volatile devices (B 3.1, P1 3).
+F5  cxl create-region -t pmem -m memX -d <root decoder> gives a CXL region
+    and an nvdimm region regionK; ndctl create-namespace -r regionK
+    -m fsdax -M mem gives namespaceK.0 and /dev/pmemK (0.12 s). -M mem is
+    mandatory on shared pmem (map=dev puts struct pages into the shared
+    bytes). Labels live in the shared LSA: only the writer creates a
+    namespace, before readers attach; a reader's namespace appears by
+    itself from the labels when its region is created; readers never run
+    create-namespace, destroy-namespace or init-labels. Releasing (cxl
+    disable-region, destroy-region, disable-memdev) touches neither labels
+    nor data (sha256 checked) (B 3.2, P1 3).
+F6  HDM decoders commit in order: release the regions of a port in LIFO
+    order (B 3.5).
+
+erofs
+F7  mkfs.erofs -b4096 --dsunit=512 -Enoinline_data DIR puts the file in one
+    plain extent at a 2 MiB-aligned offset. Without -Enoinline_data the
+    file silently gets no DAX (mount says dax=always, nothing is logged,
+    pages land in System RAM). erofs-utils 1.9.4 in Fedora 43 (--dsunit
+    needs >= 1.8.6). The writer needs only the block device: mkfs.erofs
+    onto /dev/pmemK (0.66 s) or dd of an image with oflag=direct (0.10 s)
+    (P1 3).
+F8  dax=always: every page of a reader's mapping in "CXL Window N >
+    Persistent Memory > regionK > namespaceK.0", page cache +0, read()
+    +0, 2 MiB PMD faults (273 faults for 96852 pages). dax=never: System
+    RAM, the node's page cache grows by the model once, a second reader
+    adds 0. erofs never writes the device; writes and remount rw give
+    EROFS (P1 3).
+F9  One block device is one superblock per kernel: a second mount with
+    other options silently reuses the first. Both modes on one node: the
+    cached mount on a loop device (read-only, direct I/O) over the same
+    /dev/pmemK: one page cache copy, Buffers +0 (P1 3.5).
+F10 Teardown hazard: umount -l followed by cxl disable-region under a live
+    DAX mapping oopses the guest when the mapping goes (P1 6). And a CDI
+    bind mount is private in its container: unmounting the node mount
+    succeeds while a container still holds its bind, and the superblock
+    lives on (P2 3.5 measured it on famfs). So the region may be released
+    only when the block device has no holder: an O_EXCL open of
+    /dev/pmemK fails with EBUSY while a filesystem holds it, and a loop
+    device over it shows it in /sys/block/loopN/loop/backing_file.
+
+Containers and the driver
+F11 CDI mounts reach the OCI spec verbatim, runc applies their options
+    (IN 3.1). A readOnly bind of the node mount works for stock llama.cpp
+    in non-root pods without capabilities; the container sees a ro mount
+    (P1 4, P2 3.5).
+F12 The driver is a privileged DaemonSet (BR 3). Its mounts must reach the
+    host mount namespace, where containerd and runc resolve CDI mounts:
+    the chart's /var/lib/kubelet/plugins volume has no mountPropagation
+    and needs Bidirectional (kubelet makes /var/lib/kubelet rshared). The
+    image has cxl and daxctl but no ndctl, no shell, no mount or losetup:
+    mounts and loop devices are syscalls (golang.org/x/sys/unix Mount,
+    Unmount, LOOP_CTL_GET_FREE, LOOP_CONFIGURE).
+F13 The pool controller writes "exclusive": true into the claim status data
+    of a shared device allocated with all of its hosts
+    (fake-cxl-pool/pkg/controller/status.go:56); the driver ignores it
+    today (IN 1.1).
+F14 DeviceClasses select pool devices by type and shared
+    (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml). A CEL
+    access of an attribute a device lacks is an error, so an attribute
+    that classes test must be on every pool device.
+F15 Texts that tests assert: test14:408 the local driver's "DeviceConfig:
+    invalid mode \"memory\" (numa or dax)", test12:629 the lease CLI's
+    "invalid mode \"memory\" (numa or dax)"; usage.md and leases.md list
+    them. Unchanged mode sets for the local driver and the lease protocol
+    keep them.
+
+Reader and writer of test16
+F16 Stock llama.cpp, ghcr.io/ggml-org/llama.cpp build b11681: llama-completion
+    exits after its answer; llama-server keeps the model mapped while the
+    test inspects it. -nr keeps the weights mapped (no CPU_REPACK copy);
+    greedy sampling (temperature 0, top_k 1) on the raw prompt
+    "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    answers "Hello! How can I assist you today?" (P1 4). llama.cpp maps
+    the whole file MAP_SHARED with MAP_POPULATE and calls posix_fadvise
+    (P2 3.4).
+F17 The fsdax namespace data and the erofs file data are both 2 MiB
+    aligned in the device, so the model is at a 2 MiB-aligned offset of
+    the host backing file: the host can find and check it there.

@@ -81,12 +81,28 @@ type MemoryBackend struct {
 	Share   bool
 }
 
-// CXLType3 is a cxl-type3 device to be hotplugged with DeviceAdd.
+// LSAObjectID returns the id of the label storage area backend that
+// belongs to the memory backend dataID of a persistent device.
+func LSAObjectID(dataID string) string { return dataID + "-lsa" }
+
+// CXLType3 is a cxl-type3 device to be hotplugged with DeviceAdd. A
+// volatile device has VolatileMemdev, a persistent device PersistentMemdev
+// and LSA.
 type CXLType3 struct {
-	ID             string
-	Bus            string
-	VolatileMemdev string // memory backend object id
-	Serial         uint64
+	ID               string
+	Bus              string
+	VolatileMemdev   string // memory backend object id
+	PersistentMemdev string // memory backend object id
+	LSA              string // label storage area backend object id
+	Serial           uint64
+}
+
+// Memdev returns the memory backend object id of the device memory.
+func (d CXLType3) Memdev() string {
+	if d.PersistentMemdev != "" {
+		return d.PersistentMemdev
+	}
+	return d.VolatileMemdev
 }
 
 // Memdev is a memory backend object as reported by query-memdev.
@@ -157,13 +173,25 @@ func (p *Port) Occupant() string {
 	return c.ID
 }
 
-// Type3Device is a cxl-type3 device in the tree.
+// Type3Device is a cxl-type3 device in the tree. Object ids are without
+// /objects/, "" if unknown or not set.
 type Type3Device struct {
-	ID             string
-	Bus            string
-	VolatileMemdev string // object id (without /objects/), "" if unknown
-	Serial         uint64
-	HasSerial      bool
+	ID               string
+	Bus              string
+	VolatileMemdev   string
+	PersistentMemdev string
+	LSA              string
+	Serial           uint64
+	HasSerial        bool
+}
+
+// Memdev returns the memory backend object id of the device memory: the
+// persistent memdev if set, else the volatile memdev.
+func (d *Type3Device) Memdev() string {
+	if d.PersistentMemdev != "" {
+		return d.PersistentMemdev
+	}
+	return d.VolatileMemdev
 }
 
 // Port returns the port by bus name, nil if not found.

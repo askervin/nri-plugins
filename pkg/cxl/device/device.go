@@ -65,6 +65,7 @@ const (
 	AttrSource          resourcev1.QualifiedName = "source"
 	AttrSerial          resourcev1.QualifiedName = "serial"
 	AttrShared          resourcev1.QualifiedName = "shared"
+	AttrPersistent      resourcev1.QualifiedName = "persistent"
 	AttrSize            resourcev1.QualifiedName = "size"
 	AttrNode            resourcev1.QualifiedName = "node"
 	AttrNodes           resourcev1.QualifiedName = "nodes"
@@ -82,12 +83,15 @@ const (
 	ClassLocal      = "cxl-local"
 	ClassPool       = "cxl-pool"
 	ClassPoolShared = "cxl-pool-shared"
-	ClassRegion     = "cxl-region"
-	ClassDRAM       = "cxl-dram"
-	ClassLease      = "cxl-lease"
+	// ClassPoolPersistent selects pool devices with persistent memory.
+	ClassPoolPersistent = "cxl-pool-persistent"
+	ClassRegion         = "cxl-region"
+	ClassDRAM           = "cxl-dram"
+	ClassLease          = "cxl-lease"
 
 	// DeviceConfigKind is the kind of the opaque configuration of how a
-	// device is prepared (mode, readOnly), apiVersion <driver>/v1alpha1.
+	// device is prepared (mode, readOnly, access, path), apiVersion
+	// <driver>/v1alpha1.
 	DeviceConfigKind = "DeviceConfig"
 
 	// LeaseDeviceName is the name of the lease device.

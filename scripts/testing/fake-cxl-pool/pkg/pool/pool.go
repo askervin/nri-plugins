@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -97,6 +98,17 @@ func (p *Pool) Devices() []string {
 // FilePath returns the default backing file path of a device.
 func (p *Pool) FilePath(device string) string {
 	return filepath.Join(p.Dir, device+".raw")
+}
+
+// LSASize is the size of the label storage area file of a persistent
+// device.
+const LSASize = 256 << 10
+
+// LSAPath returns the label storage area file of a persistent device whose
+// data file is dataPath: the extension of dataPath replaced by ".lsa", or
+// ".lsa" appended if dataPath has no extension.
+func LSAPath(dataPath string) string {
+	return strings.TrimSuffix(dataPath, filepath.Ext(dataPath)) + ".lsa"
 }
 
 // EnsureDir creates the pool directory.

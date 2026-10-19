@@ -233,11 +233,18 @@ func (c *companionLender) name() string {
 type deviceConfig struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
-	// Mode is "numa" or "dax"; "" is numa for exclusive devices and dax
-	// for shared devices.
+	// Mode is "numa", "dax", "block" or "fs" (pool devices of persistent
+	// memory); "" is numa for exclusive devices and dax for shared
+	// devices of volatile memory.
 	Mode string `json:"mode,omitempty"`
-	// ReadOnly makes the dax device node of the container read-only.
+	// ReadOnly makes the dax or block device node of the container
+	// read-only; mode fs needs it.
 	ReadOnly bool `json:"readOnly,omitempty"`
+	// Access is "direct" or "cached" of mode fs; "" is direct.
+	Access string `json:"access,omitempty"`
+	// Path is the directory of the filesystem of mode fs in the
+	// container; "" is /run/cxl-fs/<KEY>.
+	Path string `json:"path,omitempty"`
 }
 
 // parseConfig decodes into out the opaque config of kind for driver that
@@ -314,9 +321,11 @@ func (cfg *deviceConfig) numaOnly(what string) error {
 	return err
 }
 
-// modeFor returns the mode of a device with the config: shared devices are
-// dax only (two kernels must never online the same memory), and read-only
-// is a property of a dax device node.
+// modeFor returns the mode of a device of volatile memory of the local
+// driver with the config: shared devices are dax only (two kernels must
+// never online the same memory), read-only is a property of a dax device
+// node, and access and path are of mode fs, which the local driver does
+// not have.
 func (cfg *deviceConfig) modeFor(shared bool) (string, error) {
 	mode := cfg.Mode
 	switch {
@@ -332,6 +341,10 @@ func (cfg *deviceConfig) modeFor(shared bool) (string, error) {
 		return "", fmt.Errorf("%s: mode %s: a shared device is used as %s only", device.DeviceConfigKind, mode, api.ModeDax)
 	case cfg.ReadOnly && mode != api.ModeDax:
 		return "", fmt.Errorf("%s: readOnly needs mode %s", device.DeviceConfigKind, api.ModeDax)
+	case cfg.Access != "":
+		return "", fmt.Errorf("%s: access needs mode %s", device.DeviceConfigKind, api.ModeFs)
+	case cfg.Path != "":
+		return "", fmt.Errorf("%s: path needs mode %s", device.DeviceConfigKind, api.ModeFs)
 	}
 	return mode, nil
 }

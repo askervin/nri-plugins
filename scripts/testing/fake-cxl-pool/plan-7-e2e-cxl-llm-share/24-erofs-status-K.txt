@@ -1,0 +1,171 @@
+plan-7 erofs: status of stream K (kernel)
+=========================================
+Written 2026-10-19 (stream K). Paths as in 22. VM1 = n4-cxl-shared-1,
+VM2 = n4-cxl-shared-2, S1/S2 = ssh -F E2E/n4-cxl-shared-{1,2}-fedora-43-containerd/.ssh-config
+vagrant@node, E2E = N/test/e2e. Scratch: /home/akervine/.claude/jobs/plan7-fs/K/.
+
+1. Result
+---------
+- N/test/e2e/playbook/files/qemu-cxl-kernel.config: CONFIG_EROFS_FS=y with
+  the olddefconfig defaults; the file is byte for byte the .config of the
+  RPMs (cmp against /lib/modules/7.3.0-rc4/config inside the kernel RPM and
+  against /boot/config-7.3.0-rc4 in both VMs: equal).
+- Tarball:
+    ~/.cache/nri-plugins/e2e/kernel.getsource_vanilla.config_b71a627c295f783edd6fceb77b40d2611ed96951f850fbb7e4098b94d9f5306a.rpms.tar
+    20531200 bytes, sha256 dd74559c59133ca9f8aa13785fc7718c79c5ee791da9f4c8ea7aa1ce467e9460
+    kernel-7.3.0_rc4-1.fc43.x86_64.rpm         8029379
+    kernel-devel-7.3.0_rc4-1.fc43.x86_64.rpm  10820499
+    kernel-headers-7.3.0_rc4-1.fc43.x86_64.rpm 1676763
+  Copy: K/kernel-pkgs-erofs.tar (same sha256). The older tarballs (366cbf...,
+  783f70... = the previous config, 9a8107..., d5e425...) are untouched.
+- Build time: make -j8 binrpm-pkg 237 s in VM1 (8 vCPUs).
+- test00-up: n4-cxl-shared-1 PASS (80 s), n4-cxl-shared-2 PASS (123 s),
+  in that order, one at a time. Logs: K/run-shared-{1,2}-test00-up.log.
+- E/n4-cxl-shared-{1,2}/test00-up/code.var.sh: the EROFS check.
+
+2. Config diff (git diff of qemu-cxl-kernel.config, 3480 -> 3493 lines)
+------------------------------------------------------------------------
+  -# CONFIG_EROFS_FS is not set
+  +CONFIG_EROFS_FS=y
+  +# CONFIG_EROFS_FS_DEBUG is not set
+  +CONFIG_EROFS_FS_XATTR=y
+  +CONFIG_EROFS_FS_POSIX_ACL=y
+  +CONFIG_EROFS_FS_SECURITY=y
+  +CONFIG_EROFS_FS_BACKED_BY_FILE=y
+  +CONFIG_EROFS_FS_ZIP=y
+  +CONFIG_EROFS_FS_ZIP_LZMA=y
+  +CONFIG_EROFS_FS_ZIP_LZMA_DEFAULT_MAX_STREAMS=16
+  +# CONFIG_EROFS_FS_ZIP_DEFLATE is not set
+  +# CONFIG_EROFS_FS_ZIP_ZSTD is not set
+  +# CONFIG_EROFS_FS_ZIP_ACCEL is not set
+  +# CONFIG_EROFS_FS_PCPU_KTHREAD is not set
+  +# CONFIG_EROFS_FS_PAGE_CACHE_SHARE is not set
+  and, at line 3409:
+  -# CONFIG_XZ_DEC_MICROLZMA is not set
+  +CONFIG_XZ_DEC_MICROLZMA=y
+  XZ_DEC_MICROLZMA is the one non-EROFS line: EROFS_FS_ZIP_LZMA selects it
+  (P1 saw the same). Nothing else changed: same toolchain lines
+  (CC_VERSION_TEXT "gcc (GCC) 15.3.1 20260722 (Red Hat 15.3.1-1)",
+  GCC_VERSION 150301, LD/AS 24501, PAHOLE 132; VM1 has exactly these).
+  Saved: K/config-orig, K/config-erofs, K/config.diff.
+
+3. Exact commands
+-----------------
+Build (VM1). ~/fsexp/linux is an in-tree build of P1 (dirty, cannot be
+used with O=), so a fresh copy of the pristine host source tree
+(/home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src, no .config, no
+objects) was rsynced into VM1 (19 s), build directory separate:
+  host: S1 mkdir -p kbuild
+  host: rsync -a -e "ssh -F .../n4-cxl-shared-1-fedora-43-containerd/.ssh-config" \
+          /home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src/ vagrant@node:kbuild/src/
+  host: scp E2E/playbook/files/qemu-cxl-kernel.config VM1:kbuild/config.orig
+  VM1:  mkdir kbuild/build; cp kbuild/config.orig kbuild/build/.config
+        kbuild/src/scripts/config --file kbuild/build/.config --enable EROFS_FS
+        make -C kbuild/src O=$HOME/kbuild/build olddefconfig
+        cp kbuild/build/.config kbuild/config.olddefconfig
+        systemd-run --user --unit=kbuild-erofs ... \
+          make -C $HOME/kbuild/src O=$HOME/kbuild/build -j$(nproc) binrpm-pkg
+          (linger on; rc 0; start/end stamps 237 s apart)
+        cmp kbuild/build/.config kbuild/config.olddefconfig      -> equal
+        cd kbuild/build/rpmbuild/RPMS/x86_64; tar cf ~/kbuild/kernel-pkgs.tar kernel-*.rpm
+        rpm2cpio kernel-7.3.0_rc4-1.fc43.x86_64.rpm | cpio -id '*config*'
+          ./lib/modules/7.3.0-rc4/config == kbuild/build/.config -> equal
+  No LOCALVERSION: uname -r 7.3.0-rc4, RPM file names equal the old ones.
+Into the repo and the cache (host):
+  scp VM1:kbuild/build/.config -> E2E/playbook/files/qemu-cxl-kernel.config
+  sha = python3 hashlib.sha256(open(f).read().rstrip().encode())  (as test00-up
+        and custom-kernel.yaml's lookup('file') | hash('sha256'))
+      = b71a627c295f783edd6fceb77b40d2611ed96951f850fbb7e4098b94d9f5306a
+  cp K/kernel-pkgs-erofs.tar ~/.cache/nri-plugins/e2e/kernel.getsource_vanilla.config_<sha>.rpms.tar
+
+How the tarball reaches the VM: run.sh runs vm-nri-plugin-deploy before
+the test code, i.e. playbook/nri-dra-driver-cxl-plugin-deploy.yaml, which
+imports custom-kernel.yaml: it computes the name above from
+kernel_config (n4-cxl-shared-*/kernel_config.var.sh =
+qemu-cxl-kernel.config) and, if the file exists, synchronizes it to
+/home/vagrant/kernel-pkgs.tar. Both logs show "Lookup cached kernel:
+.../config_b71a627c....rpms.tar" and "push it to the vm: changed"; the VMs'
+~/kernel-pkgs.tar has sha256 dd74559c... afterwards.
+
+Install, per VM (VM1 first, then VM2), before its test00-up:
+  sudo rpm -e kernel-7.3.0_rc4-1.fc43.x86_64        (deviation, see 5)
+  rm ~/.vm-kernel-pkgs.installed_packages
+  grubby --default-kernel -> /boot/vmlinuz-7.3.0-rc4-famfs2 (running kernel)
+Then test00-up (vm-kernel-pkgs-install):
+  rpm -Uvh --force vm-kernel-pkgs/*.rpm: installs kernel, kernel-devel,
+  kernel-headers 7.3.0_rc4-1.fc43, removes kernel-7.3.0_rc4_famfs2-2 and
+  kernel-7.3.0_rc4_fsexp-1 (and the old -devel/-headers of the same NVR);
+  the %post kernel-install add sets saved_entry to 7.3.0-rc4; reboot;
+  uname -a: "7.3.0-rc4 #1.fc43 SMP PREEMPT Mon Oct 19 08:05:57 UTC 2026".
+  test00-up output: CONFIG_DMIID=y CONFIG_INPUT_EVDEV=y CONFIG_FS_DAX=y
+  CONFIG_EROFS_FS=y.
+Runs (host, E2E, one at a time):
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up   PASS  80 s
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up   PASS 123 s
+
+4. Final state (checked after both runs)
+-----------------------------------------
+- Both VMs: uname -r 7.3.0-rc4; /boot/config-7.3.0-rc4 has CONFIG_EROFS_FS=y
+  and equals the repo config byte for byte (cmp); /proc/filesystems lists
+  erofs (VM1 checked); rpm -q kernel = kernel-7.3.0_rc4-1.fc43 only (plus
+  6.17.1-300.fc43 of the image, boot entries 6.17.1 and 7.3.0-rc4);
+  grubby --default-kernel /boot/vmlinuz-7.3.0-rc4;
+  ~/.vm-kernel-pkgs.installed_packages lists the three RPMs (so the next
+  test00-up skips the install).
+- Cluster: kubectl get nodes (VM2): n4-cxl-shared-2 Ready control-plane,
+  n4-cxl-shared-1 Ready worker, both KERNEL-VERSION 7.3.0-rc4; no pods
+  outside kube-system.
+- qemu: echo "info qtree -b" | socat - unix-connect:<vm dir>/monitor.sock:
+  0 "dev: cxl-type3" in both. VM /sys/bus/cxl/devices: root0, port1,
+  port2, decoder0.0, decoder0.1, nvdimm-bridge0 only (no memdevs).
+- Port 9909 free on the host; no run_tests.sh running.
+- VM1 keeps ~/kbuild (2.3 GB: src, build, kernel-pkgs.tar, build.log;
+  /home 21 GB free) and ~/fsexp; VM1 and VM2 keep ~/famfs, ~/fsexp
+  (scratch of P1/P2, untouched). The kbuild-erofs user unit is inactive.
+- Host scratch K/: config-orig, config-erofs, config.diff, build.log,
+  kernel-pkgs-erofs.tar, run-shared-{1,2}-test00-up.log.
+
+5. Deviations and open issues
+-----------------------------
+D1 rpm -e of the old kernel-7.3.0_rc4 before the framework install (both
+   VMs). Reason: rpm -Uvh --force over an installed package of the same
+   NVR is a reinstall: rpm runs the new %post (kernel-install add
+   7.3.0-rc4) and THEN the old %preun (kernel-install remove 7.3.0-rc4),
+   and 20-grub.install remove deletes /boot/vmlinuz-7.3.0-rc4, its
+   System.map, config and BLS entry. The VM would have rebooted into
+   6.17.1 (or whatever grub falls back to). Measured in VM1 with a
+   throwaway noarch RPM: install, rpm -Uvh --force of the same file
+   logged "post 1, post 2, preun 1, postun 1"; and rpm -Uvh --force of
+   an older version erased the newer one after the new %post (so the
+   -famfs2/-fsexp removal is harmless to the new entry, as seen in the
+   logs). Erasing the old package first makes the framework's install a
+   plain upgrade. The test00-up error text ("remove
+   ~vagrant/.vm-kernel-pkgs.installed_packages in it and run this test
+   again") is therefore incomplete for Fedora: it must also say
+   "sudo rpm -e kernel-<same NVR>" (or recreate the VM). Not changed
+   (only the EROFS check is K's in that file); a Request below.
+D2 grubby --default-kernel could not be checked between the install and
+   the reboot (vm-kernel-pkgs-install reboots at once). It was checked
+   before the test (the running -famfs2) and the outcome after
+   (7.3.0-rc4 default, booted); add's tmp_saved_entry/55-set-boot-entry
+   path is what set it.
+D3 Fresh source copy ~/kbuild/src instead of ~/fsexp/linux (that tree was
+   built in-tree by P1; make O= refuses a dirty source tree). Same
+   v7.3-rc4 source the cached tarballs come from.
+D4 test00-up header comment also mentions CONFIG_EROFS_FS (two lines).
+O1 ~/.vm-kernel-pkgs.default-kernel in both VMs now says
+   /boot/vmlinuz-7.3.0-rc4-famfs2, a kernel that no longer exists.
+   vm-kernel-pkgs-uninstall would try grubby --set-default to it and then
+   rpm -e the three packages. No test of this suite calls it; harmless
+   unless someone runs it.
+
+Requests
+--------
+R1 (to the owner of E/n4-cxl-shared-{1,2}/test00-up kernel_error text, or
+   lib/vm.bash): see D1. Either kernel_error says "remove
+   ~vagrant/.vm-kernel-pkgs.installed_packages and the installed RPM of the
+   same name (sudo rpm -e kernel-7.3.0_rc4-1.fc43.x86_64)", or
+   vm-kernel-pkgs-install erases installed packages whose NVR equals one
+   it is about to install before rpm -U. Not blocking D or T.
+
+K done

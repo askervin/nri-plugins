@@ -1,0 +1,546 @@
+plan-7 erofs: status of stream D (driver)
+==========================================
+Written 2026-10-19 by stream D. Contract: 22-erofs-design.txt sections
+4-7. Paths: N = nri-plugins, D = N/cmd/plugins/dra-driver-cxl. Nothing is
+committed.
+
+1. Changes per file
+-------------------
+pkg/cxl/api/api.go          ModeBlock "block", ModeFs "fs", AccessDirect
+                            "direct", AccessCached "cached"; Memory.Path,
+                            Memory.Access; Env: block -> PATH, READONLY;
+                            fs -> PATH, ACCESS, READONLY. Lease protocol
+                            (Request.Validate, texts) unchanged.
+pkg/cxl/api/api_test.go     env of block and fs; lease modes block/fs
+                            refused with `invalid mode "fs" (numa or dax)`.
+pkg/cxl/device/device.go    AttrPersistent "persistent",
+                            ClassPoolPersistent "cxl-pool-persistent".
+pkg/cxl/device/device_test.go  the loader test of deviceclasses.yaml: seven
+                            classes, the exact CEL of 22 section 5.
+pkg/cxl/memctl/pmem.go      (new) pmem regions, nvdimm regions, namespaces,
+                            fsdax namespace creation, root decoder by type.
+pkg/cxl/memctl/pmem_test.go (new) fake sysfs of a pmem region (from the
+                            kernel sources and P1's report) and fake ndctl.
+pkg/cxl/memctl/memctl.go    rootDecoder(memdev) replaced by
+                            RootDecoder(memdev, RegionRAM); package doc;
+                            ReleaseRegion doc (pmem: no namespace or label
+                            operation).
+pkg/cxl/memctl/memctl_test.go  RootDecoder call.
+D/lending.go                deviceConfig.Access, deviceConfig.Path (json
+                            "access", "path", omitempty); local modeFor
+                            refuses access and path after its unchanged
+                            mode checks.
+D/lending_test.go           local texts unchanged for fs/block, access and
+                            path texts.
+D/pool.go                   status data exclusive and persistent;
+                            poolDevice/preparedPoolDevice fields; poolModeFor
+                            instead of modeFor; env key and default path in
+                            prepareClaim; prepareDevice -> preparePersistent;
+                            checkSamePreparation; rollback and Unprepare
+                            through releaseDevices; CDI device node "b" and
+                            CDI mount; Prepare log line; newPoolDriver takes
+                            a nodeMounter and restores mounts after load.
+D/pool_persistent.go        (new) texts T1-T14, node mounts, loop setup,
+                            holder wait, release order, restart restore.
+D/pool_persistent_test.go   (new) fake mounter, fake pmem sysfs, the tests
+                            of section 6.
+D/mount.go                  (new) nodeMounter interface, sysMounter (x/sys
+                            unix: Mount, Unmount(.., 0), LOOP_CTL_GET_FREE,
+                            LOOP_CONFIGURE, LOOP_CLR_FD,
+                            LOOP_GET_STATUS64, O_EXCL open), mountinfo
+                            parser.
+D/mount_test.go             (new) mountinfo parsing.
+D/pool_test.go              env with a fake mounter, holderWait 50 ms, new
+                            config texts, pmem hooks of the fake sysfs.
+D/driver.go                 newPoolDriver(..., newSysMounter(mem.SysRoot), ...).
+D/Dockerfile                ndctl joins cxl and daxctl (same ndctl v85
+                            stage, its ldd closure).
+deployment/helm/dra-driver-cxl/templates/daemonset.yaml
+                            kubelet-plugins volumeMount: mountPropagation:
+                            Bidirectional; securityContext comment.
+deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml
+                            cxl-pool and cxl-pool-shared: && persistent ==
+                            false; new cxl-pool-persistent.
+deployment/helm/dra-driver-cxl/README.md
+                            ndctl, Bidirectional, kernel options, the seven
+                            classes (docs/deployment/helm/dra-driver-cxl.md
+                            includes this README: it is not edited itself).
+deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml (new)
+                            writer (mode block, hosts 4, mkfs.erofs exact
+                            options, dd oflag=direct conv=fsync) and two
+                            readers (fs direct and cached at /data).
+docs/memory/cxl/usage.md    vocabulary words, requirements (kernel, ndctl),
+                            image table, Helm (seven classes,
+                            Bidirectional), DeviceConfig table (mode, readOnly,
+                            access, path), the texts of both drivers in
+                            order, new section "Persistent memory" (what the
+                            container gets, node mounts, Unprepare, restart,
+                            T11-T14 and the Unprepare texts, the mkfs.erofs
+                            inline-data gotcha with the exact command),
+                            env PATH/ACCESS/READONLY/MODE/SIZE, "what the
+                            memory contains", example 12, files on the node.
+docs/memory/cxl/pool.md     attribute persistent on every device (example
+                            llm0), persistent devices need a shared LSA,
+                            three pool classes, options table, status data
+                            persistent (and exclusive) read by the plugin,
+                            prepare/unprepare steps, node requirements.
+docs/memory/cxl/index.md    vocabulary persistent, mode (block, fs),
+                            readOnly, access; class cxl-pool-persistent;
+                            seven classes.
+docs/memory/cxl/leases.md   Limitations: modes block and fs are not
+                            available for leases.
+go.mod, go.sum              unchanged: golang.org/x/sys v0.49.0 already has
+                            LoopConfig, IoctlLoopConfigure, LOOP_CONFIGURE,
+                            LOOP_CTL_GET_FREE, LOOP_CLR_FD, LO_FLAGS_*.
+
+2. Final names
+--------------
+memctl (pkg/cxl/memctl/pmem.go):
+  const RegionRAM = "ram", RegionPmem = "pmem"
+  const NamespaceFsdax "fsdax", NamespaceRaw "raw", NamespaceDevdax
+        "devdax", NamespaceSector "sector", MapMem "mem", MapDev "dev"
+  type Namespace {Name, Mode, Map, Size, BlockDevice (/dev/pmemK), Major, Minor}
+  type PmemRegion {Memdev, Region, NdRegion, Namespaces}
+  func FsdaxNamespace([]Namespace) *Namespace      first fsdax, map mem, with a block device
+  func (*Manager) Persistent(memdev) (bool, error)  memN/pmem/size > 0
+  func (*Manager) RootDecoder(memdev, regionType) (string, error)
+  func (*Manager) NdRegion(region) (string, error) nvdimm region of the same id
+  func (*Manager) Namespaces(ctx, ndregion) ([]Namespace, error)
+                                                    waits until probed
+  func (*Manager) BlockDeviceInfo(name) (major, minor, size, err)
+  func (*Manager) CreatePmemRegion(ctx, memdev, decoder) (*PmemRegion, error)
+  func (*Manager) CreateFsdaxNamespace(ctx, ndregion, existing) (*Namespace, error)
+  Release, ReleaseRegions, ReleaseRegion: unchanged; for a pmem region
+  they run cxl disable-region, cxl destroy-region, cxl disable-memdev
+  (the region has no dax devices), never ndctl.
+Commands: cxl create-region -t pmem -d <decoder> -m <memdev>;
+  ndctl create-namespace -f -r <ndregion> -m fsdax -M mem [-e <namespace>].
+  -e is given when the region already has a namespace with memory that
+  is not fsdax/map mem (the first such one).
+
+State file preparedPoolClaims.json, per device (new fields, all
+omitempty): persistent, ndRegion, namespace, blockDevice, blockMajor,
+blockMinor, access, path, nodeMount, loopDevice. size is the namespace
+size for block and fs. Old state files load unchanged.
+
+Status data read by the pool driver: serial, shared, size (required),
+exclusive, persistent (bools, false when missing).
+
+Driver (D/pool_persistent.go): persistentMode, validFsPath,
+defaultFsPath ("/run/cxl-fs/" + KEY), (*deviceConfig).poolModeFor,
+nodeMountPath, mountsDir, preparePersistent, ensureNodeMount,
+unmountNode, mountUsed, waitNoHolder, releaseDevices, restoreMounts,
+blockDeviceNode, fsMount; constants mountsDirName "mounts",
+defaultHolderWait 10 s, holderPoll 100 ms, fsType "erofs",
+fsMountFlags MS_RDONLY|MS_NOSUID|MS_NODEV, daxAlways "dax=always",
+daxNever "dax=never". D/mount.go: nodeMounter {Mount, Unmount, Mounted,
+Mounts, AttachLoop, Holder}, loopDevice {Path, Release(detach)},
+sysMounter, mountInfo, parseMountInfo, findMount.
+
+3. User-visible texts (exact)
+-----------------------------
+Pool driver (cxl-pool.nri.io), in this order; X = the configured value:
+  T1  DeviceConfig: invalid mode "X" (numa, dax, block or fs)
+  T2  DeviceConfig: access needs mode fs
+  T3  DeviceConfig: path needs mode fs
+  T4  DeviceConfig: invalid access "X" (direct or cached)
+  T5  DeviceConfig: invalid path "X" (an absolute path outside /dev, /proc, /sys and /run/cxl)
+  T6  DeviceConfig: mode fs is read-only: set readOnly: true (write the device with mode block)
+  T7  DeviceConfig: readOnly needs mode dax, block or fs
+      (config stage: readOnly with mode numa; again after the volatile
+      default: readOnly with no mode on an exclusive volatile device)
+  T8  DeviceConfig: mode block needs a persistent device
+      DeviceConfig: mode fs needs a persistent device
+  T9  DeviceConfig: a persistent device needs mode block or fs
+  T10 DeviceConfig: mode block: a shared device is writable only with all of its hosts
+      DeviceConfig: mode numa: a shared device is used as dax only
+      (volatile shared devices only, unchanged)
+  T11 device 0x<serial>: <memN> has no persistent memory
+  T12 device 0x<serial>: no fsdax namespace in <regionK>: has a writer written the device?
+  T13 device 0x<serial>: /dev/pmemK has no erofs filesystem: <mount error>
+      (also for access cached: the block device is named, not the loop)
+  T14 device 0x<serial>: erofs on /dev/pmemK was mounted without DAX
+Unprepare:
+  device 0x<serial>: unmounting <node mount>: device or resource busy
+  device 0x<serial>: /dev/pmemK is still in use
+Prepare wraps T1-T14 as before: "cxl-pool.nri.io: preparing claim
+<ns>/<name>: device <dev> serial 0x<serial>: <text>"; Unprepare:
+"cxl-pool.nri.io: unpreparing claim <ns>/<name>: releasing <dev> (serial
+0x<serial>): <text>" (unmount) or "...: releasing serial 0x<serial>:
+<text>" (holder wait).
+Local driver (cxl.nri.io): unchanged texts, mode checks first:
+  DeviceConfig: invalid mode "X" (numa or dax)   (also for block and fs)
+  DeviceConfig: readOnly needs mode dax
+  then DeviceConfig: access needs mode fs, DeviceConfig: path needs mode fs
+Lease protocol / cxl-request: unchanged (invalid mode "X" (numa or dax)).
+Env (KEY = serial upper-case hex, _2... for further results):
+  block: CXL_<KEY>_MODE=block, _PATH=/dev/pmemK, _READONLY=0|1, _SERIAL,
+         _SHARED, _SIZE=<namespace bytes>
+  fs:    CXL_<KEY>_MODE=fs, _PATH=<path, default /run/cxl-fs/<KEY>>,
+         _ACCESS=direct|cached, _READONLY=1, _SERIAL, _SHARED, _SIZE
+CDI (kind nri.io/cxl-pool, device claim-<uid>-<n>):
+  block: DeviceNodes [{path: /dev/pmemK, type: b, major, minor,
+         permissions: r (readOnly only)}]
+  fs:    Mounts [{hostPath: <node mount>, containerPath: <path>, type:
+         bind, options: [bind, ro, nosuid, nodev]}], no device node
+Prepare log line (persistent): "cxl-pool.nri.io: claim <ns/name>: prepared
+<dev> (serial 0x.., shared .., mode block|fs, read-only ..) as memN
+regionN namespace namespaceK.M block /dev/pmemK access "<a>" mount "<m>"
+loop "<l>"".
+
+4. Node mounts and loop devices
+-------------------------------
+Node mount: <pool data dir>/mounts/<serial hex>-<access>, e.g.
+/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct, created
+0755, removed after the unmount. One per (serial, access) on the node,
+shared by its claims (a claim reuses it when /proc/self/mountinfo has an
+erofs mount there).
+  direct: mount("/dev/pmemK", mnt, "erofs", MS_RDONLY|MS_NOSUID|MS_NODEV,
+          "dax=always"); then the super options of mountinfo must have
+          dax=always, else umount2(mnt, 0) and T14.
+  cached: open /dev/pmemK O_RDONLY; LOOP_CTL_GET_FREE on
+          /dev/loop-control; open /dev/loopN O_RDONLY; LOOP_CONFIGURE
+          {fd, lo_flags READ_ONLY|DIRECT_IO|AUTOCLEAR, lo_file_name}
+          (EBUSY: next free device, up to 5 tries); a warning if
+          LOOP_GET_STATUS64 shows no DIRECT_IO; mount("/dev/loopN", mnt,
+          "erofs", same flags, "dax=never"); the loop fd is closed after
+          the mount (autoclear: the loop goes with the unmount); on a mount
+          error LOOP_CLR_FD, close, T13.
+Unprepare: first, for each node mount of the claim that no other prepared
+claim uses: umount2(mnt, 0) if mounted (never MNT_DETACH; an error, EBUSY,
+fails the Unprepare and the serial is not released); then for each serial
+of the claim that no other prepared claim uses: wait up to 10 s (poll
+100 ms) until Holder(/dev/pmemK) is "" (no /sys/block/loop*/loop/
+backing_file names it, and open(O_RDONLY|O_EXCL) succeeds and is closed;
+ENOENT/ENXIO/ENODEV = gone = free), else "still in use"; then
+memctl.Release. Rollback of a failed Prepare does the same for what it
+prepared.
+Restart (newPoolDriver after load): every prepared fs device whose node
+mount is missing is mounted again (logged "... is not mounted, mounting it
+again"; a new loop device is saved in the state); entries of mounts/ that
+no prepared claim uses are unmounted (umount2 0, logged) and removed.
+
+5. Test coverage (unit, fakes)
+------------------------------
+pkg/cxl/memctl/pmem_test.go: TestPersistent (pmem size >0, 0, missing,
+bogus), TestRootDecoderByType (cap_ram/cap_pmem, none, bad type),
+TestPmemWriterThenReader (create-region -t pmem under the pmem decoder,
+seed only, ndctl create-namespace, the Namespace struct, region reuse,
+Release commands, reader gets the namespace from the labels after an
+asynchronous probe, no namespace/label operation), TestNamespacesWaitForProbe
+(unbound region, unregistered namespace, nd_pmem probing, pfn without
+driver, fsdax map mem/dev, raw with its block device, devdax, timeout),
+TestCreatePmemRegionErrors (ram region not reused, no nvdimm region,
+bad name, ndctl output without a namespace), TestCreateFsdaxNamespaceReconfigures (-e).
+D/pool_persistent_test.go: TestPoolModeFor (every text T1-T10 and the
+order: each case sets later errors too), TestValidFsPath,
+TestPoolPersistentWriter (commands, env, CDI block node "b" 259:0, state
+fields, release, namespace reused, read-only block "r" without ndctl),
+TestPoolPersistentReaders (two direct and two cached claims: exactly one
+mount each, the loop over /dev/pmem0, flags, env and CDI mounts with the
+default path and /models, mounts kept for the other access, unmounted
+with the last claim, EBUSY fails Unprepare and keeps the claim, a held
+block device fails it with "still in use", then release),
+TestPoolPersistentSamePreparation (block + fs cached + fs direct on one
+node, volatile refused, two results of one claim: key _2, default path
+/run/cxl-fs/C1AE0001_2, one mount), TestPoolPersistentErrors (T12 fs and
+read-only block without ndctl, T13 direct and cached with loop detach,
+T14 with an unmount, T11; each rolled back: no region, mount, loop or
+directory left), TestPoolPersistentRestart (mounts kept, missing ones
+re-mounted, new loop device saved, stale mount unmounted and removed).
+D/mount_test.go: mountinfo (super options, escapes, stacked mounts,
+invalid lines). D/pool_test.go TestPoolConfigErrors: new pool texts,
+unknown field fsType. D/lending_test.go: local texts. pkg/cxl/device:
+classes YAML. pkg/cxl/api: env and lease modes.
+Not unit-tested: sysMounter's syscalls (need root and a kernel): phase 2.
+
+6. Verification (phase 1, host, 2026-10-19)
+-------------------------------------------
+cd N
+gofmt -l pkg/cxl cmd/plugins/dra-driver-cxl cmd/cxl-request      -> (none)
+go vet ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/...  -> ok
+go test -race ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/...
+  -> ok for pkg/cxl, api, device, memctl, memorypolicy,
+     cmd/plugins/dra-driver-cxl, cmd/cxl-request
+make golangci-lint -> 1 issue, typecheck of
+  cmd/plugins/balloons/policy/podresourcehints_test.go (an untracked file
+  not of this stream: functions redeclared), which hides all other
+  findings (coding-style skill). So, on the packages of this stream:
+golangci-lint run ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/...
+  -> 0 issues (after fixing 4 errcheck and 1 staticcheck QF1001 of the
+     new code)
+helm template deployment/helm/dra-driver-cxl -> renders; kubelet-plugins
+  has mountPropagation: Bidirectional; classes cxl-pool, cxl-pool-shared,
+  cxl-pool-persistent present.
+make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+  -> exit 0, build/images/nri-dra-driver-cxl-image-60aa05551b9d.tar
+     (phase 1; replaced by the final image of 10)
+docker run --rm --entrypoint /usr/bin/ndctl <image> --version  -> 85
+docker run --rm --entrypoint /usr/bin/cxl <image> --version    -> 85
+docker run --rm --entrypoint /usr/bin/daxctl <image> --version -> 85
+
+7. Deviations from 22, with reasons
+-----------------------------------
+D1 Root decoder capability: 22 says cap_type3_volatile/cap_type3_pmem; the
+   v7.3 kernel has cap_ram and cap_pmem (drivers/cxl/core/port.c
+   CXL_DECODER_FLAG_ATTR). RootDecoder(memdev, RegionRAM|RegionPmem) reads
+   those; a decoder without the attribute is accepted (as before). The
+   old code read cap_type3_volatile, which never existed (a no-op).
+D2 SIZE of block and fs is the byte size of the block device of the fsdax
+   namespace (sysfs class/block/pmemK/size * 512 = ndctl list "size",
+   534773760 for 512 MiB with map mem), not the raw namespace size
+   (536870912): that is what fits an image.
+D3 Namespaces are read from sysfs (22 allowed ndctl list -N -r or sysfs):
+   no exec, the probing state is visible (nd probes asynchronously).
+D4 Extra state field ndRegion; the Prepare log line also names the loop
+   device.
+D5 At start, mounts under mounts/ that no prepared claim uses are
+   unmounted (plain umount2 0, failure logged) and their directories
+   removed (IN 4.1 "umount the stale ones"); 22 names only the re-mount.
+   A re-mount needs /dev/pmemK: after a node reboot (region gone) it fails
+   and is logged; the region is not re-created at start.
+D6 The local driver refuses access and path ("access needs mode fs",
+   "path needs mode fs", after its unchanged mode texts): deviceConfig is
+   shared, so the strict decoder no longer refuses them as unknown fields.
+D7 Order consequence: readOnly with mode numa on a shared volatile device
+   now gives T7 (config stage) instead of "a shared device is used as dax
+   only".
+D8 docs/deployment/helm/dra-driver-cxl.md is not edited: it includes the
+   chart README, where Bidirectional and ndctl are documented.
+
+8. To verify in phase 2 (VMs) - all verified, see 10
+-----------------------------------------------------
+V1 sysfs of a CXL pmem region on 7.3.0-rc4: regionN/pmem_regionN; the
+   nvdimm region at /sys/bus/nd/devices/region<same id>, its driver link,
+   init_namespaces "a/c"; namespaceN.M directories in the region
+   directory with size, holder; pfnN.M with mode "ram", driver, and
+   block/pmemK; /sys/class/block/pmemK/{dev,size}.
+V2 memN/pmem/size format; the root decoders of the VMs have cap_pmem=1
+   for the host bridge P1 used (decoder0.1) and the RAM decoder cap_ram=1.
+V3 JSON of cxl create-region -t pmem (region name) and of ndctl
+   create-namespace in the image (the "dev" field); ndctl in the
+   distroless image (config dir, /run, kmod).
+V4 mountinfo of the erofs mounts: super options with dax=always /
+   dax=never; source /dev/pmemK and /dev/loopN.
+V5 LOOP_CONFIGURE over /dev/pmemK with DIRECT_IO honoured
+   (/sys/block/loopN/loop/dio = 1), read-only, autoclear on umount; the
+   backing_file text.
+V6 O_EXCL open of /dev/pmemK gives EBUSY while mounted and while a loop
+   device uses it.
+V7 Release of a pmem region leaves labels and data (cxl disable-region,
+   destroy-region, disable-memdev).
+
+9. Requests
+-----------
+R1 (to T) the names in 3 and 4 are final: class cxl-pool-persistent,
+   node mounts /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct
+   and -cached, env CXL_C1AE0001_{MODE,PATH,ACCESS,READONLY,SIZE,SERIAL,
+   SHARED}, SIZE = 534773760 for a 512Mi device (block device bytes).
+R2 (to the orchestrator) the untracked
+   cmd/plugins/balloons/policy/podresourcehints_test.go breaks the
+   typecheck of make golangci-lint for the whole tree (not D's file).
+
+D phase 1 done
+
+10. Phase 2 on the VMs (2026-10-19, after "K done")
+---------------------------------------------------
+Device: one shared persistent cxl-type3 hotplugged by hand as P1 did
+(not through the pool server): backing files
+/home/akervine/.claude/jobs/plan7-fs/D/backing/d0.raw (512M) and d0.lsa
+(256K), both share=on, ids d_pmem0, d_lsa0, device dpmem0, sn 0xd5e00001,
+bus cxlsw_ds0_usrp0hb1 (helper .../plan7-fs/D/plug.sh plug|unplug N).
+Code under test: the real pool driver (newPoolDriver, Prepare/Unprepare,
+memctl, sysMounter) through a throwaway test binary (build tag, CGO off,
+built from D with the phase-1 test helpers; the file is deleted from the
+tree), run as root on the VM, and on VM1 also inside the driver image
+(ctr run --privileged, /sys and /dev bound) so that the image's own cxl and
+ndctl ran create-region, create-namespace, disable/destroy-region and
+disable-memdev.
+Results (V1-V7 of 8):
+ - memdev (V2): mem0/serial 0xd5e00001, pmem/size 0x20000000, ram/size
+   0x0; root decoders decoder0.0 (target 12) and decoder0.1 (target 24),
+   both cap_ram=1 cap_pmem=1; RootDecoder(mem0, pmem) = decoder0.1.
+ - writer, VM1, in the image: Prepare 100 ms; "memctl: mem0: created
+   region1 (pmem) under decoder0.1", "region1: created namespace1.0
+   (fsdax, map mem, /dev/pmem1, 534773760 bytes)"; CDI env
+   CXL_D5E00001_{MODE=block,PATH=/dev/pmem1,READONLY=0,SERIAL=0xd5e00001,
+   SHARED=1,SIZE=534773760}, deviceNode {path /dev/pmem1, type b, major
+   259} (minor 0 omitted by CDI); state fields as in 2.
+ - sysfs (V1), exactly the shape of the fakes:
+     /sys/bus/cxl/devices/region1 -> .../ACPI0017:00/root0/decoder0.1/region1,
+       mode "pmem", child pmem_region1
+     /sys/bus/nd/devices/region1 -> /sys/devices/platform/ACPI0017:00/root0/nvdimm-bridge0/ndbus0/region1
+       driver -> nd_region, init_namespaces 1/1, size 536870912,
+       namespace_seed namespace1.1, pfn_seed pfn1.1
+     namespace1.0 size=536870912 holder=pfn1.0 mode=memory (no driver)
+     namespace1.1 size=0 holder= mode=raw (the seed)
+     pfn1.0 mode=ram driver=nd_pmem namespace=namespace1.0 block/pmem1 size=534773760
+     pfn1.1 mode=none (seed); btt1.0, dax1.0 seeds
+     /sys/class/block/pmem1 -> .../region1/pfn1.0/block/pmem1, dev 259:0,
+       size 1044480 (x512 = 534773760), queue/dax 1
+ - JSON (V3): ndctl list -N -r region1 -> [{"dev":"namespace1.0",
+   "mode":"fsdax","map":"mem","size":534773760,"uuid":"6ea91d32-...",
+   "sector_size":512,"align":2097152,"blockdev":"pmem1"}];
+   cxl list -R -> [{"region":"region1","resource":35701915648,
+   "size":536870912,"type":"pmem","interleave_ways":1,
+   "interleave_granularity":256,"decode_state":"commit",...}]. memctl
+   parsed the create-region and create-namespace output of the image's
+   tools (region1, namespace1.0). ndctl 85 of the image works in the
+   container (no config dir needed).
+ - erofs image: mkfs.erofs -b4096 --dsunit=512 -Enoinline_data of a 64 MiB
+   random file -> 69206016 bytes, dump.erofs Layout 0; dd ... oflag=direct
+   conv=fsync into /dev/pmem1 (0.44 s).
+ - writer Unprepare (in the image): holder wait passed, "destroyed
+   region1", "mem0: disabled", 239 ms.
+ - readers, VM1: two direct (default path, /models) and two cached
+   claims: one cxl create-region, no ndctl, namespace1.0 from the labels;
+   mountinfo (V4) "erofs /dev/pmem1 ro,user_xattr,acl,dax=always" and
+   "erofs /dev/loop0 ro,user_xattr,acl,dax=never", mount flags
+   ro,nosuid,nodev,relatime; loop0 (V5) dio=1 ro=1 autoclear=1
+   backing_file=/dev/pmem1; Holder(/dev/pmem1) = "loop0", with only the
+   direct mount "in use" (O_EXCL EBUSY, V6), with nothing "" ; sha256 of
+   the file equal through both mounts; page cache after drop_caches:
+   direct read +1172 kB (noise), cached read +65740 kB (the 64 MiB file);
+   touch: "Read-only file system" on both.
+ - restart (real kernel): mounts made inside the ctr container were gone
+   with its mount namespace (ctr leaves rootfs propagation private;
+   containerd's CRI sets rootfsPropagation rshared for Bidirectional), the
+   autoclear loop went with them; the next driver start logged
+   "/var/tmp/dprobe/state/mounts/d5e00001-cached is not mounted, mounting
+   it again" (and -direct), mounted /dev/loop0 and /dev/pmem1 again, saved
+   the loop device.
+ - busy: a process with the cached file open: Unprepare of the last cached
+   claim -> "device 0xd5e00001: unmounting /var/tmp/dprobe/state/mounts/
+   d5e00001-cached: device or resource busy", claim kept; after the process
+   ended: unmounted, both propagated copies of the mount gone (the
+   directory was a shared self-bind, as kubelet's rshared
+   /var/lib/kubelet is: each node mount shows twice in mountinfo, one
+   umount2 removes both, checked with tmpfs too), loop0 autocleared.
+ - held: a private bind of the direct node mount (a container's CDI
+   bind): Unprepare of the last claim unmounted the node mount, waited
+   (3 s in the probe, 10 s default), "device 0xd5e00001: /dev/pmem1 is
+   still in use", region kept; after the bind was unmounted: the next
+   start re-mounted the node mount of the still prepared claim (as
+   designed), its Unprepare unmounted it and released the region.
+ - reader VM2 (never wrote labels): direct, cached and read-only block
+   claims, region1 + namespace1.0 from the shared LSA without ndctl,
+   CDI "type: b" with "permissions: r" for the block reader, two "type:
+   bind" mounts, same sha256; T14 on the real kernel: with a hand mount
+   "mount -t erofs -o ro,dax=never /dev/pmem1" a direct claim failed
+   "device 0xd5e00001: erofs on /dev/pmem1 was mounted without DAX", its
+   node mount was unmounted and removed, the region stayed for the other
+   claims; then all released.
+ - data and labels (V7, F17): after all releases on both VMs the host's
+   d0.raw bytes [2 MiB, 2 MiB + 69206016) have the sha256 of the image
+   (cd30caed...); the file data is at 4 MiB; d0.lsa has 416 non-zero
+   bytes (the labels). No namespace or label operation besides the
+   writer's create-namespace.
+Fakes: nothing to correct; the comments of the fakes now say they are the
+VMs' layout. T13 was not provoked on the real kernel (it needs a device
+without erofs); mount propagation through the chart's Bidirectional was
+not tested with the DaemonSet (T's test16 does that); the in-image run
+could not show it (ctr, above).
+
+Cleanup and final state (checked):
+ - both guests: no erofs mounts, no loop devices, no /dev/pmem* or
+   /dev/dax*, no regions, mem0 disabled before the hot-remove; scratch
+   /var/tmp/dprobe (self-bind unmounted), /var/tmp/dstage, /tmp/probe*
+   removed; VM1: the imported -dirty driver image removed from containerd.
+ - qemu, both VMs: device_del dpmem0 -> DEVICE_DELETED after 6.1 s and
+   6.2 s, object-del d_pmem0 and d_lsa0; qtree 0 cxl-type3; query-memdev
+   only the original backends.
+ - host: d0.raw and d0.lsa deleted. Both qemus still map the deleted
+   d0.raw (the last hot-removed backend stays mapped, as P1 saw): up to
+   ~68 MB of disk until the next hot-remove in each VM; harmless.
+ - both nodes Ready (kubectl get nodes), kernel 7.3.0-rc4; port 9909
+   free. Scripts kept: /home/akervine/.claude/jobs/plan7-fs/D/{plug.sh,
+   probe.sh, probe-in-image.sh}; logs /tmp/d-stream/p2-*.
+Final checks after phase 2 (probe file removed): gofmt clean; go vet ok;
+go test -race -count=1 ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/...
+./cmd/cxl-request/... ok; golangci-lint on those packages 0 issues;
+make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+exit 0 -> build/images/nri-dra-driver-cxl-image-510fb487cbdb.tar
+(nri-dra-driver-cxl:v0.14.0-207-g083bd0fb8-dirty, image id 510fb487cbdb);
+ndctl, cxl and daxctl --version in it: 85, 85, 85.
+
+D done: build/images/nri-dra-driver-cxl-image-510fb487cbdb.tar
+
+11. Review fixes (25-erofs-review-D.txt, accepted items; no VM used)
+--------------------------------------------------------------------
+B1 Rollback of a failed persistent Prepare runs the holder wait for the
+   failing device: prepareDevice returns the partly prepared device with
+   the error (block device set once found; NodeMount set only when the
+   mount succeeded), prepareClaim passes it to rollback with pc.Devices,
+   releaseDevices waits for every serial with a known block device. A
+   held device (foreign mount, a T14 mount that could not be unmounted, a
+   loop device that could not be detached) keeps its region; logged
+   "rollback: releasing serial 0x..: device 0x..: /dev/pmemK is still in
+   use".
+R1 ensureNodeMount reuses an existing mount at the node mount only if it
+   is erofs from /dev/pmemK (direct; then it also needs dax=always, else
+   T14 without unmounting it) or from a loop device whose backing file is
+   /dev/pmemK (cached). Otherwise it fails, never using or unmounting the
+   mount, with the new text (in usage.md):
+     device 0x<serial>: <node mount> is a <fstype> mount of <source>, not of /dev/pmemK
+     device 0x<serial>: <node mount> is a <fstype> mount of <source>, not of a loop device over /dev/pmemK
+   nodeMounter gains LoopBackingFile(loop) (sysfs
+   block/loopN/loop/backing_file); Holder uses it.
+R2 restoreMounts re-mounts a missing node mount only after
+   checkBlockDevice: FindMemdev(serial) -> its first region -> nvdimm
+   region -> FsdaxNamespace (namespace probe wait at most 5 s) must have
+   the recorded namespace, block device name and major:minor; else it
+   logs "claim ..: not mounting <mnt> again: <reason>", removes the empty
+   mount directory and leaves the state unchanged. An existing mount is
+   checked as in R1.
+R3 One deadline per releaseDevices call (one Unprepare of a claim, or
+   one rollback): holderWait (10 s) for all its serials together; after
+   the deadline each further serial gets one check, no wait. The wait
+   stays under p.mu (the simple option): at most 10 s per claim per call.
+R4 Tests added (D/pool_persistent_test.go, D/mount_test.go):
+   TestPoolPersistentRollbackMultiDevice (second result fails: the first
+   result's own mount goes with the region; a mount shared with another
+   claim stays, region stays), TestPoolPersistentRollbackHolder (B1:
+   T14 with a foreign holder, T14 unmount failure, T13 loop-detach
+   failure: no disable-region; then a clean failure releases),
+   TestPoolPersistentForeignNodeMount (tmpfs, erofs of another device,
+   erofs without dax=always, cached on the block device itself, cached on
+   a loop over another device: refused, untouched; a loop over the
+   device is reused), TestPoolPersistentRestoreChecks (changed device
+   numbers, region gone: not mounted, directory removed, state
+   unchanged), TestWaitNoHolder (cancelled context, passed deadline: no
+   wait, Holder error), TestPoolPersistentSyncFailure (state dir not
+   writable: rollback unmounts and releases), TestSysMounterHolder (temp
+   sysfs: backing_file matching, missing device -> "", LoopBackingFile).
+S1 nodeMounter.Mounts removed from the interface (sysMounter keeps the
+   method for Mounted).
+S4 forbiddenPathDirs adds /var/run/cxl; T5 is now
+     DeviceConfig: invalid path "X" (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)
+   (usage.md text and the path row updated; /var/run/cxl-fs is fine).
+S5 ensureNodeMount and releaseDevices docs say what, not why.
+S6 usage.md lists "readOnly needs mode dax, block or fs" also after the
+   volatile default.
+S7 backing_file matching: the path equals the device, or is in /dev
+   itself with the same name (sameDevice).
+S2, S3 (fake-cxl-pool): left to stream P. S8, S9: no change.
+Also fixed: TestPoolPersistentSamePreparation asserted which of two other
+claims checkSamePreparation names (map order); it now asserts the text
+up to the mode.
+usage.md also says: a failed Prepare releases the region only when
+nothing holds /dev/pmemK; the holder wait is 10 s for all devices of a
+claim; the restart re-mount needs the recorded block device.
+
+Checks after the fixes (host only):
+  gofmt -l pkg/cxl cmd/plugins/dra-driver-cxl cmd/cxl-request -> none
+  go vet ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/... -> ok
+  go test -race -count=1 (same), three runs -> all ok
+  golangci-lint run (same packages) -> 0 issues
+  helm template deployment/helm/dra-driver-cxl -> renders
+  make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+    -> exit 0, build/images/nri-dra-driver-cxl-image-814cfbfb2572.tar;
+       ndctl, cxl, daxctl --version: 85, 85, 85
+The phase-2 VM results of 10 were taken with the code before these fixes;
+the fixes change only error paths, the reuse check of existing node mounts
+and the restart check, which unit tests cover; T's test16 runs the new
+image.
+
+D done: build/images/nri-dra-driver-cxl-image-814cfbfb2572.tar

@@ -1,0 +1,158 @@
+plan-7 on branch 5jg-cxl: the driver is dra-driver-cxl in nri-plugins
+======================================================================
+Written 2026-10-19 (orchestrator). From now on plan-7 continues on the
+nri-plugins branch 5jg-cxl. The CXL DRA driver, its libraries, cxl-request,
+fake-cxl-pool and the e2e tests are all in nri-plugins; the driver
+repository intel-resource-drivers-for-kubernetes is no longer used for
+anything (plan-6-cxl-driver-in-nri-plugins: 03-recommendation section 2,
+06-contract, 08-status-stage1, 09-status-two-node-cluster).
+
+1. The move of plan-7 itself
+----------------------------
+- 5jQ-cxl f7000039 (the plan-7 work: test16 with cxl-llm, its helpers,
+  the plan files up to 13-fs-findings.txt) is on 5jg-cxl as 083bd0fb8,
+  on top of 67b3b9f6b (the two-node cluster commit of plan-6).
+- Conflict and its resolution: test13-dra-shared-one-writer-many-readers
+  (5jg-cxl had dropped pool-host-wait from its preconditions; f7000039 had
+  moved shared0-attachments into pool.source.sh as pool-attachments): the
+  5jg-cxl preconditions, no shared0-attachments.
+- Ported in the same commit, test16-cxl-llm-share: pool-cluster-require
+  first (no vm-k8s-reinit, no pool-host-wait, no second pool-vm-reset),
+  dra-install without arguments instead of dra-install "$VM2" plus
+  dra-install-node "$VM1", CDI kind nri.io/cxl-pool, the header's cluster
+  paragraph and "build the driver image first" as in test13.
+- The new helpers of f7000039 (dra.source.sh: dra-shared-claim-yaml,
+  dra-script-pod-yaml, dra-pod-log, dra-wait-log; pool.source.sh:
+  pool-attachments, pool-device-free-wait) merged without conflicts and
+  are defined once. bash -n of every changed file and of each test
+  concatenated with its sources: ok; shellcheck (SC2154, SC2034, SC1090,
+  SC2148, SC2016 excluded): 0 findings in dra.source.sh, pool.source.sh,
+  llm.source.sh, test13 and test16.
+- Run on the VMs: section 5.
+
+2. Names and paths: old (plan-7 files 00-13) -> now
+---------------------------------------------------
+  D = the old driver repository; N = nri-plugins;
+  E = N/test/e2e/memory.test-suite/dra-driver-cxl
+  D/cmd/kubelet-cxl-plugin/*.go     -> N/cmd/plugins/dra-driver-cxl/*.go
+                                       (same file names; binary
+                                       nri-dra-driver-cxl)
+  D/cmd/cxl-request                 -> N/cmd/cxl-request
+  D/pkg/cxl/{api,device,memorypolicy} -> N/pkg/cxl/{api,device,memorypolicy}
+  D/deployments/cxl/device-classes.yaml
+                                    -> N/deployment/helm/dra-driver-cxl/
+                                       templates/deviceclasses.yaml
+  D/deployments/cxl/examples        -> N/deployment/samples/dra-driver-cxl
+  D/deployments/cxl/base            -> the helm chart
+                                       N/deployment/helm/dra-driver-cxl
+  D/doc/cxl/{README,USAGE,LOCAL,POOL,LEASES}.md
+                                    -> N/docs/memory/cxl/{index,usage,local,
+                                       pool,leases}.md, plus e2e.md
+  N/test/e2e/memory.test-suite/memory-policy/{dra.source.sh,
+    n4-cxl-shared-1,n4-cxl-shared-2} -> E/ (memory-policy keeps n4-cxl and
+                                       n6-hbm-cxl); test16 is
+                                       E/n4-cxl-shared-2/test16-cxl-llm-share
+  drivers cxl.generic, cxl-pool.generic -> cxl.nri.io, cxl-pool.nri.io
+                                       (opaque configs
+                                       cxl-pool.nri.io/v1alpha1, plugin dirs
+                                       /var/lib/kubelet/plugins/<driver>)
+  CDI vendor/kinds generic, generic/cxl(-pool) -> nri.io, nri.io/cxl(-pool)
+  labels cxl.generic/lease ...      -> cxl.nri.io/lease ...
+  conditions cxl-pool.generic/Attached -> cxl-pool.nri.io/Attached
+  The plan-5 vocabulary (DeviceClasses, DeviceConfig {mode, readOnly},
+  env CXL_<KEY>_<FIELD>, cxl-request and its protocol) is unchanged.
+File:line references into D in 01-research-C, 05-status-F,
+11-research-IN and dropped-mode-file/driver-tracked.patch (a patch of D
+paths) point at the same code under the new paths; line numbers moved.
+
+3. How the driver is built, deployed and tested now
+---------------------------------------------------
+- Build: the image, like any other plugin,
+    make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+  (build/images/nri-dra-driver-cxl-image-<id>.tar). Tests do not build
+  the driver: dra-build builds only fake-cxl-pool. No go.mod replace, no
+  pseudo-version of nri-plugins, no second repository to commit to (the
+  "for the user: commit the driver's go.mod" item of
+  05-status-orchestrator is void).
+- Image: gcr.io/distroless/static with /bin/nri-dra-driver-cxl,
+  /bin/cxl-request and cxl and daxctl of ndctl v85 with their libraries
+  (cmd/plugins/dra-driver-cxl/Dockerfile). No ndctl, no shell, no
+  mount/losetup tools.
+- Deployment: a DaemonSet of the chart, privileged, hostPID, hostPath
+  mounts of /var/lib/kubelet/plugins, plugins_registry, /etc/cdi,
+  /var/run/cdi, /var/run/nri, /sys, /dev, /lib/modules; NODE_NAME from the
+  pod. The e2e installs it with helm-launch through dra-install (on every
+  node of the cluster; e2e values E/dra-driver-cxl.helm-values.yaml); the
+  driver's log is kubectl logs of its pod on a node (dra-plugin-log).
+  fake-cxl-pool-controller still runs on VM2 as a transient systemd unit.
+- Cluster: n4-cxl-shared-2/test00-up makes the two VMs one cluster (VM2
+  control plane, VM1 worker); every other test only checks it with
+  pool-cluster-require. Run order: n4-cxl-shared-1/test00-up,
+  n4-cxl-shared-2/test00-up, then any test. D11 of 03-decisions is now
+  the rule of the whole suite; vm-k8s-reinit and k8s_restore appear only
+  in test00-up.
+
+4. What this changes for the erofs/famfs work (13-fs-findings, 11-IN)
+---------------------------------------------------------------------
+Superseded statements:
+- 11-IN 0 and 1.3 ("the plugin image is FROM scratch, no cxl, daxctl or
+  ndctl, so pool devices need the host-process plugin"): the plugin is a
+  container with cxl and daxctl; there is no host-process plugin.
+- 11-IN 7 risk 8 (memctl and the go.mod replace): gone.
+- 11-IN 4.1 "ndctl joins the VM tools": for pmem it must join the image
+  (ndctl create-namespace for the writer's fsdax namespace), or memctl
+  does that step through sysfs.
+New consequences of a containerized driver, to design for:
+- Mounts made by the driver must reach the host's mount namespace,
+  because containerd/runc resolve CDI mounts there. The chart's
+  /var/lib/kubelet/plugins volume has no mountPropagation today: the node
+  mounts (erofs per device and access, famfs per device) and the lease
+  mount points (11-IN 3.1, propagated into running containers with
+  rslave) need mountPropagation: Bidirectional on the volume that holds
+  them (allowed for privileged containers; kubelet makes /var/lib/kubelet
+  rshared). Mounting itself is a syscall (golang.org/x/sys/unix Mount,
+  the loop ioctls for the "both modes on one node" case of 12-P1 3.5): no
+  tools needed in the image for erofs.
+- The driver pod is restarted on upgrades and crashes. Kernel mounts
+  (erofs) survive that and are found again from the plugin state; the
+  restart must not unmount anything that containers use (12-P1 6: never
+  lazy-unmount, never release a region under a live superblock).
+- famfs: its FUSE daemon would run in the driver pod (needs /dev/fuse,
+  present through the /dev mount, and famfs userspace with the forked
+  libfuse in the image). A driver restart kills the daemon: existing
+  mappings keep working, new opens get ENOTCONN (12-P2), and the device
+  cannot be mounted again while containers keep the old superblock (one
+  famfs mount per device per host). A daemon that outlives the driver pod
+  needs its own pod or a host unit. This weighs against famfs beyond what
+  13-fs-findings section 3 says.
+Unchanged: the API proposal of 11-IN 2 (modes block and fs, fsType,
+access, path, PATH env), the lease mount through propagation, the stock
+llama.cpp reader, the shape of the new test16 (11-IN 6), the kernel facts
+and prototypes (11-FA, 11-FS, 12-P1, 12-P2, 13).
+
+5. State and verification on 5jg-cxl (2026-10-19)
+-------------------------------------------------
+- VMs: both boot 7.3.0-rc4-famfs2 (12-P2: P1's -fsexp config with EROFS,
+  plus fuse/for-next and the fadvise fix); 7.3.0-rc4 and -fsexp are still
+  installed. qemu-cxl-kernel.config and the cached kernel tarball are
+  unchanged (no EROFS): the erofs work changes that file and builds its
+  tarball inside a VM. One two-node cluster, Ready.
+- docs/memory/cxl/e2e.md lists test00-test15; test16 gets its row when
+  it is rewritten for the filesystem.
+- Runs on 083bd0fb8 with the image nri-dra-driver-cxl-image-aa02457512f8
+  (make ... images, 51 s), one at a time, on the cluster as test00-up
+  left it (no test00-up run before them):
+    ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+      PASS, 187 s. Writer: model copied in 563 ms (pod created to
+      written 7.5 s); readers created to all three answered 13.5 s; every
+      page of the 398458880-byte model mapping of reader-a, -b (VM2) and
+      -c (VM1) in "CXL Window N > ... > dax0.0"; anonymous memory 82868-
+      82872 kB per reader; page cache +2604 kB on VM2, +344 kB on VM1;
+      27.3-32.5 tokens/s on 2 threads.
+    ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+      PASS, 194 s.
+  Both logs have the known harmless 5 s timeout of helm-launch waiting
+  for an nri-resource-policy pod (08-status-stage1 "Open").
+- State after the runs: both nodes Ready, no helm release, no namespace
+  cxl-pool-demo, no CXL memdevs or regions in either VM, no cxl-type3 in
+  either qemu, port 9909 free.

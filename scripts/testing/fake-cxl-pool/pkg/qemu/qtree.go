@@ -90,8 +90,8 @@ func parseQtreeNodes(text string) []*qtreeNode {
 // ParseQtree extracts the CXL topology from "info qtree" (full or brief)
 // output: host bridges (pxb-cxl-host buses), cxl-downstream and cxl-rp
 // ports, and cxl-type3 devices. With full output, host bridge NUMA nodes,
-// and the volatile-memdev and sn properties of cxl-type3 devices are
-// filled in too.
+// and the volatile-memdev, persistent-memdev, lsa and sn properties of
+// cxl-type3 devices are filled in too.
 func ParseQtree(text string) *Tree {
 	t := &Tree{}
 	roots := parseQtreeNodes(text)
@@ -138,10 +138,13 @@ func ParseQtree(text string) *Tree {
 				if n.parent != nil {
 					d.Bus = n.parent.name
 				}
-				if v, ok := n.props["volatile-memdev"]; ok {
-					v = strings.Trim(v, `"`)
-					d.VolatileMemdev = strings.TrimPrefix(v, "/objects/")
+				objProp := func(name string) string {
+					v := strings.Trim(n.props[name], `"`)
+					return strings.TrimPrefix(v, "/objects/")
 				}
+				d.VolatileMemdev = objProp("volatile-memdev")
+				d.PersistentMemdev = objProp("persistent-memdev")
+				d.LSA = objProp("lsa")
 				if v, ok := n.props["sn"]; ok {
 					if sn, err := strconv.ParseUint(strings.Fields(v)[0], 10, 64); err == nil {
 						d.Serial, d.HasSerial = sn, true

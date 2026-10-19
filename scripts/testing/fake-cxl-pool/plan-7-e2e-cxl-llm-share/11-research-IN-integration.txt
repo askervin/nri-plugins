@@ -4,6 +4,11 @@ Written 2026-10-17 (research IN). Desk research: code and documents only,
 no VM touched, nothing built, nothing committed. Downloads (runc sources,
 ghcr manifests) are in /home/akervine/.claude/jobs/plan7-fs/IN/dl-*.
 
+Note 2026-10-19: the driver is now dra-driver-cxl in nri-plugins (branch
+5jg-cxl). D paths below map to N paths as listed in 14-branch-5jg-cxl.txt
+section 2 (line numbers moved), and its section 4 lists the statements of
+this report that the containerized driver supersedes.
+
 Abbreviations of paths:
   D   = ~/github.com/intel/intel-resource-drivers-for-kubernetes (79a85f3)
   N   = ~/github.com/containers/nri-plugins

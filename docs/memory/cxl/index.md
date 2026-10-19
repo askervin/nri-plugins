@@ -41,8 +41,10 @@ its protocol.
 | `source` | `local`, `pool` | who provides the memory: `local` a device attached to the node, managed by `cxl.nri.io`; `pool` a device of a memory pool, attached by a pool controller, prepared by `cxl-pool.nri.io` |
 | `type` | `memdev`, `region`, `dram`, `lease` | what a published device is: `memdev` a CXL memory device whose region the plugin creates when a claim needs it; `region` a region that existed before the plugin, online as a NUMA node; `dram` the DRAM nodes of the system; `lease` the device whose claim lets a container request memory while it runs |
 | `shared` | `true`, `false` | `true`: several hosts may map the same bytes at a time (a pool device with a `hosts` capacity); such memory is never onlined as RAM. `false`: one host at a time |
-| `mode` | `numa`, `dax` | how a container gets the memory: `numa` as system RAM of a NUMA node; `dax` as a devdax device of its own (claims) or an open file descriptor (leases). Default `numa`; shared memory is `dax` only |
-| `readOnly` | `true`, `false` | `dax` only: the device node (claims) or the file descriptor (leases) allows reads only |
+| `persistent` | `true`, `false` | `true`: a pool device of persistent memory, whose data and namespace labels outlive the claims; it is used in modes `block` and `fs` only |
+| `mode` | `numa`, `dax`, `block`, `fs` | how a container gets the memory: `numa` as system RAM of a NUMA node; `dax` as a devdax device of its own (claims) or an open file descriptor (leases); `block` as the block device of the fsdax namespace of a persistent pool device; `fs` as a read-only erofs filesystem on it, mounted at a path of the container. Default `numa`; shared volatile memory is `dax` only; `block` and `fs` are for claims of persistent pool devices only |
+| `readOnly` | `true`, `false` | `dax`, `block`: the device node (claims) or the file descriptor (leases) allows reads only; `fs` is always read-only |
+| `access` | `direct`, `cached` | mode `fs`: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node |
 | `serial` | `0x` and lower-case hex | `/sys/bus/cxl/devices/memN/serial`, the identity of a memdev in both drivers; upper-case hex without `0x` in environment variable names |
 | `size` | bytes, or a quantity such as `512Mi` | attribute `size` and `CXL_<KEY>_SIZE` are bytes; requests and the `--size` of `cxl-request` take a quantity, "at least this much" |
 | `hosts` | integer | capacity of a shared pool device: how many nodes may have it attached at a time. A claim consumes 1 by default; all of them is exclusive use |
@@ -50,16 +52,18 @@ its protocol.
 
 ## DeviceClasses
 
-The Helm chart installs six DeviceClasses,
+The Helm chart installs seven DeviceClasses,
 [`templates/deviceclasses.yaml`](blob:/deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml).
-They select device kinds only; `mode` and `readOnly` are set with a
-`DeviceConfig` (see [Opaque configurations](usage.md#opaque-configurations)).
+They select device kinds only; `mode`, `readOnly`, `access` and `path`
+are set with a `DeviceConfig` (see
+[Opaque configurations](usage.md#opaque-configurations)).
 
 | class | gets |
 |:------|:-----|
 | `cxl-local` | a slice of a local memdev: RAM of its NUMA node (default) or a devdax device (`mode: dax`) |
-| `cxl-pool` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
-| `cxl-pool-shared` | a shared pool device as devdax; one of its `hosts` by default, all of them (exclusive) with `capacity.requests.hosts` |
+| `cxl-pool` | a whole exclusive pool device of volatile memory: a new NUMA node (default) or a devdax device (`mode: dax`) |
+| `cxl-pool-shared` | a shared pool device of volatile memory as devdax; one of its `hosts` by default, all of them (exclusive) with `capacity.requests.hosts` |
+| `cxl-pool-persistent` | a pool device of persistent memory, shared or not: its block device (`mode: block`, the writer) or a read-only erofs filesystem on it (`mode: fs`, the readers) |
 | `cxl-region` | capacity of a pre-created CXL NUMA node; the container is steered to it |
 | `cxl-dram` | DRAM capacity for steering |
 | `cxl-lease` | the lease socket and `cxl-request` in the container |

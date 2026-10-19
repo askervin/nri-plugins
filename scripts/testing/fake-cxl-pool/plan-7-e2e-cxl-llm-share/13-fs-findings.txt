@@ -141,3 +141,9 @@ references are in the reports named in each section.
   fsdev_dax, runs mkfs/mount for the writer, mounts for readers, and owns
   a FUSE daemon per mount that must outlive the readers and plugin
   restarts; famfs userspace and the forked libfuse on every node.
+- Since 2026-10-19 the driver is the containerized dra-driver-cxl of
+  nri-plugins (14-branch-5jg-cxl.txt): its mounts need mountPropagation
+  Bidirectional on the chart's volume that holds them, ndctl (pmem) or
+  famfs userspace go into its image, and a famfs daemon inside the driver
+  pod dies with every driver restart (new opens ENOTCONN, no remount
+  while containers hold the old superblock).

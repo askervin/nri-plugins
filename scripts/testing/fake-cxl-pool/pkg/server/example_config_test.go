@@ -24,10 +24,11 @@ func TestExampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:9909" || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 || uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || len(cfg.Devices) != 2 ||
+	if cfg.Listen != "127.0.0.1:9909" || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 || uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || len(cfg.Devices) != 3 ||
 		uint64(*cfg.Devices[0].Serial) != 0xc1ae0001 || cfg.Devices[1].Size != 512<<20 || cfg.Devices[1].Pool != "default" ||
 		time.Duration(cfg.DetachTimeout) != 15*time.Second || time.Duration(cfg.Discovery.Interval) != 10*time.Second ||
-		cfg.Pools[0].Capacity != 8<<30 || !*cfg.Pools[0].Sharable {
+		cfg.Pools[0].Capacity != 8<<30 || !*cfg.Pools[0].Sharable ||
+		cfg.Devices[1].Persistent || !cfg.Devices[2].Persistent || !cfg.Devices[2].Shared {
 		t.Fatalf("unexpected config %+v", cfg)
 	}
 }

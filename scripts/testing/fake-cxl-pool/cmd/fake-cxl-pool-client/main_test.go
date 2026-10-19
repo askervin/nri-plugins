@@ -22,6 +22,7 @@ import (
 	"log"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -165,5 +166,49 @@ func TestGuestRegionMode(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &got); err != nil || got["mode"] != mode {
 			t.Fatalf("guest info JSON %q: %v", out.String(), err)
 		}
+	}
+}
+
+func TestCLIPersistent(t *testing.T) {
+	url, _ := newTestServer(t)
+	rc, out, errs := runCLI(t, url, "create", "--size", "256Mi", "--shared", "--persistent", "--name", "p0")
+	if rc != 0 || !strings.Contains(out, "PERSISTENT") {
+		t.Fatalf("create --persistent: %d\n%s\n%s", rc, out, errs)
+	}
+	if rc, _, errs := runCLI(t, url, "create", "--size", "256Mi", "--name", "v0"); rc != 0 {
+		t.Fatalf("create: %d %s", rc, errs)
+	}
+	rc, out, _ = runCLI(t, url, "devices")
+	cols := map[string][]string{}
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(l)
+		cols[f[0]] = f
+	}
+	if h := cols["NAME"]; rc != 0 || len(h) < 5 || h[3] != "SHARED" || h[4] != "PERSISTENT" ||
+		cols["p0"][4] != "true" || cols["v0"][4] != "false" {
+		t.Fatalf("devices table: %d\n%s", rc, out)
+	}
+	rc, out, _ = runCLI(t, url, "-o", "json", "devices")
+	var ds []map[string]any
+	if rc != 0 || json.Unmarshal([]byte(out), &ds) != nil || len(ds) != 2 {
+		t.Fatalf("devices JSON: %d\n%s", rc, out)
+	}
+	for _, d := range ds {
+		lsa, hasLSA := d["lsaPath"].(string)
+		switch d["name"] {
+		case "p0":
+			if d["persistent"] != true || !hasLSA || filepath.Base(lsa) != "p0.lsa" {
+				t.Fatalf("p0 JSON %v", d)
+			}
+		case "v0":
+			if d["persistent"] != false || hasLSA {
+				t.Fatalf("v0 JSON %v", d)
+			}
+		}
+	}
+	rc, out, _ = runCLI(t, url, "devices", "p0")
+	if rc != 0 || !strings.Contains(out, "memory:   persistent\n") ||
+		!regexp.MustCompile(`\nlsa: +/\S+/p0\.lsa\n`).MatchString(out) {
+		t.Fatalf("devices p0: %d\n%s", rc, out)
 	}
 }

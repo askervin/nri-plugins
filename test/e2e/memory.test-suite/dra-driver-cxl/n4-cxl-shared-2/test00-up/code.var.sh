@@ -1,8 +1,9 @@
 # Bring up a VM for testing CXL memory that is shared by VMs or pooled with
 # fake-cxl-pool (scripts/testing/fake-cxl-pool), and check that it is ready:
 # - The CXL kernel and the cxl, daxctl and cxl-dump tools are installed.
-#   The kernel has CONFIG_FS_DAX (devdax mmap, the way to share CXL memory)
-#   and DMI (the VM sees its UUID in /sys/class/dmi/id/product_uuid).
+#   The kernel has CONFIG_FS_DAX (devdax mmap, the way to share CXL memory),
+#   CONFIG_EROFS_FS (erofs on shared CXL persistent memory) and DMI (the VM
+#   sees its UUID in /sys/class/dmi/id/product_uuid).
 # - Qemu answers on QMP, and host bridges have HDM decoders
 #   (hdm_for_passthrough=on) for more than one region per host bridge.
 # - Qemu has the statically shared, file-backed CXL memory device of the
@@ -53,10 +54,12 @@ getsource, config_file, cache_dir = sys.argv[1:4]
 sha = hashlib.sha256(open(config_file).read().rstrip().encode()).hexdigest()
 print("%s/kernel.getsource_%s.config_%s.rpms.tar" % (cache_dir, re.sub("[^a-zA-Z0-9-]+", "_", getsource), sha))
 ' "$kernel_getsource" "$nri_resource_policy_src/test/e2e/playbook/files/$kernel_config" "$CACHE_DIR")
-kernel_error="the VM does not run the kernel of $kernel_tarball. Build it with scripts/testing/fake-cxl-pool/proto/build-kernel-rpms.sh. If the VM had installed older RPMs of the same name, recreate the VM, or remove ~vagrant/.vm-kernel-pkgs.installed_packages in it and run this test again"
-vm-command "uname -r; grep -E '^CONFIG_(FS_DAX|DMIID|INPUT_EVDEV)=' /boot/config-\$(uname -r)"
+kernel_error="the VM does not run the kernel of $kernel_tarball. Build it with scripts/testing/fake-cxl-pool/proto/build-kernel-rpms.sh. If the VM had installed older RPMs of the same name, recreate the VM, or remove ~vagrant/.vm-kernel-pkgs.installed_packages and the installed kernel RPM of the same version (sudo rpm -e kernel-<version>; reinstalling over it removes the kernel from /boot) in it and run this test again"
+vm-command "uname -r; grep -E '^CONFIG_(FS_DAX|EROFS_FS|DMIID|INPUT_EVDEV)=' /boot/config-\$(uname -r)"
 vm-command-q 'grep -q ^CONFIG_FS_DAX=y /boot/config-$(uname -r)' ||
     error "kernel lacks CONFIG_FS_DAX=y: $kernel_error"
+vm-command-q 'grep -q ^CONFIG_EROFS_FS=y /boot/config-$(uname -r)' ||
+    error "kernel lacks CONFIG_EROFS_FS=y: $kernel_error"
 vm_uuid=$(sed -n 's/^VM_UUID=//p' "$OUTPUT_DIR/env")
 product_uuid=$(vm-command-q "cat /sys/class/dmi/id/product_uuid")
 echo "VM_UUID: $vm_uuid, product_uuid in the VM: $product_uuid"

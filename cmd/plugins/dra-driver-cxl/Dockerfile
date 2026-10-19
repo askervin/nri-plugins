@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
          PLUGINS=nri-dra-driver-cxl \
          clean build-plugins-static build-binaries-static licenses
 
-# Build the cxl and daxctl tools of ndctl. They are dynamically linked
+# Build the cxl, daxctl and ndctl tools of ndctl. They are dynamically linked
 # (Debian has no static libudev), so collect them with their whole shared
 # library closure, including the dynamic loader, into /rootfs. Paths in
 # /rootfs are canonical (/usr/lib, not /lib) as /lib, /lib64 and /bin are
@@ -71,17 +71,18 @@ RUN meson setup build \
     meson compile -C build && \
     DESTDIR=/ndctl meson install -C build
 
-# Copy cxl, daxctl and their libraries to /rootfs, with the license files of
-# ndctl and the copyright file of the Debian package of every library.
+# Copy cxl, daxctl, ndctl and their libraries to /rootfs, with the license
+# files of ndctl and the copyright file of the Debian package of every
+# library.
 RUN set -e; \
     mkdir -p /rootfs/usr/bin /rootfs/licenses/ndctl/debian; \
-    for bin in cxl daxctl; do \
+    for bin in cxl daxctl ndctl; do \
         cp /ndctl/usr/bin/$bin /rootfs/usr/bin/$bin; \
         LD_LIBRARY_PATH=/ndctl/usr/lib ldd /ndctl/usr/bin/$bin > /ldd.$bin; \
         if grep -q "not found" /ldd.$bin; then cat /ldd.$bin; exit 1; fi; \
     done; \
     sed -n -e 's:.* => \(/[^ ]*\) .*:\1:p' -e 's:^[[:space:]]*\(/[^ ]*\) .*:\1:p' \
-        /ldd.cxl /ldd.daxctl | sort -u > /libs.txt; \
+        /ldd.cxl /ldd.daxctl /ldd.ndctl | sort -u > /libs.txt; \
     grep -q "/ld-linux" /libs.txt; \
     while read -r lib; do \
         dir=$(realpath "$(dirname "$lib")"); \

@@ -32,6 +32,8 @@ POOL_VM1_DIR="${POOL_VM1_DIR:-$(dirname "$OUTPUT_DIR")/n4-cxl-shared-1${VM_HOSTN
 POOL_VM1_NAME="$(basename "$POOL_VM1_DIR")"
 POOL_SERVER_PID=""
 POOL_SERVER_LOG=""
+POOL_DEVICE_DATA=""                             # pool-device-files: the backing file of a device
+POOL_DEVICE_LSA=""                              # and its label storage area file
 
 pool-vm-label() {
     # Usage: pool-vm-label VMDIR
@@ -457,6 +459,25 @@ pool-attachments() { # script API
     # Print the attachments of DEVICE on the server as JSON, and keep them
     # in COMMAND_OUTPUT. Fail the test if the server does not answer.
     pool-host-client -o json attachments --device "$1" || command-error "cannot list the attachments of $1"
+}
+
+pool-device-files() { # script API
+    # Usage: pool-device-files DEVICE
+    #
+    # Set POOL_DEVICE_DATA to the backing file of DEVICE on the host (path
+    # in the server's JSON of the device) and POOL_DEVICE_LSA to its label
+    # storage area file (lsaPath; "" for a volatile device). COMMAND_OUTPUT
+    # has the JSON of the device. Fail the test if the server does not know
+    # DEVICE, or if a persistent device has no LSA file.
+    local dev="$1"
+    pool-host-client -o json devices "$dev" || command-error "cannot get $dev"
+    POOL_DEVICE_DATA=$(pool-value "$COMMAND_OUTPUT" 'j.get("path") or ""')
+    POOL_DEVICE_LSA=$(pool-value "$COMMAND_OUTPUT" 'j.get("lsaPath") or ""')
+    [ -n "$POOL_DEVICE_DATA" ] || error "pool-device-files: $dev has no backing file"
+    if [ "$(pool-value "$COMMAND_OUTPUT" 'j.get("persistent") is True')" == True ]; then
+        [ -n "$POOL_DEVICE_LSA" ] || error "pool-device-files: the persistent device $dev has no lsaPath"
+    fi
+    echo "pool-device-files: $dev: data $POOL_DEVICE_DATA, LSA ${POOL_DEVICE_LSA:-none}"
 }
 
 pool-device-free-wait() { # script API

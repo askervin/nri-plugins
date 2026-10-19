@@ -45,8 +45,10 @@ import (
 // prepares CXL memory devices that a pool controller has hotplugged into
 // this node for a claim (contract: docs/memory/cxl/pool.md): it finds the memdev
 // by the serial that the controller wrote into the claim status, creates
-// a region on it and returns CDI edits; Unprepare releases the device so
-// that the pool can hot-remove it. It never publishes ResourceSlices.
+// a region on it (and for persistent memory an fsdax namespace and a node
+// mount, see pool_persistent.go) and returns CDI edits; Unprepare releases
+// the device so that the pool can hot-remove it. It never publishes
+// ResourceSlices.
 
 const (
 	// poolStateFileName is the prepared pool claims file in the plugin
@@ -78,6 +80,8 @@ type poolDriver struct {
 	inflight   map[uint64]int                // serials being prepared -> count
 	lender     *companionLender              // lends companion claims
 	retryDelay time.Duration
+	mounter    nodeMounter   // node mounts and loop devices of mode fs
+	holderWait time.Duration // how long Unprepare waits for a held block device
 
 	// serials is a snapshot of the serials of prepared and inflight
 	// devices for the cxl.nri.io publisher (D29). It has its own lock
@@ -96,8 +100,8 @@ type preparedPoolDevice struct {
 	Serial    uint64 `json:"serial"`
 	Shared    bool   `json:"shared"`
 	Size      uint64 `json:"size"`
-	Mode      string `json:"mode"`               // api.ModeNUMA or api.ModeDax
-	ReadOnly  bool   `json:"readOnly,omitempty"` // dax: the CDI device node allows reads only
+	Mode      string `json:"mode"`               // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
+	ReadOnly  bool   `json:"readOnly,omitempty"` // dax, block: the CDI device node allows reads only; fs: always
 	Memdev    string `json:"memdev"`
 	Region    string `json:"region"`
 	Dax       string `json:"dax"`
@@ -105,6 +109,17 @@ type preparedPoolDevice struct {
 	DaxMajor  int    `json:"daxMajor,omitempty"`
 	DaxMinor  int    `json:"daxMinor,omitempty"`
 	Node      int    `json:"node"` // NUMA node of the memory (numa mode), -1 if none
+	// Devices of persistent memory (modes block and fs).
+	Persistent  bool   `json:"persistent,omitempty"`
+	NdRegion    string `json:"ndRegion,omitempty"`    // nvdimm region of Region
+	Namespace   string `json:"namespace,omitempty"`   // fsdax namespace, namespaceK.M
+	BlockDevice string `json:"blockDevice,omitempty"` // its block device, /dev/pmemK
+	BlockMajor  int    `json:"blockMajor,omitempty"`
+	BlockMinor  int    `json:"blockMinor,omitempty"`
+	Access      string `json:"access,omitempty"`     // fs: api.AccessDirect or api.AccessCached
+	Path        string `json:"path,omitempty"`       // fs: the directory in the container
+	NodeMount   string `json:"nodeMount,omitempty"`  // fs: the node mount of the serial and access
+	LoopDevice  string `json:"loopDevice,omitempty"` // fs, cached: the loop device of the node mount
 }
 
 // lent returns the device as the lease broker sees it.
@@ -136,8 +151,22 @@ func (d *preparedPoolDevice) memory(key string) api.Memory {
 		Size:     d.Size,
 		Node:     d.Node,
 		Dax:      d.DaxDevice,
+		Path:     d.memoryPath(),
+		Access:   d.Access,
 		ReadOnly: d.ReadOnly,
 	}
+}
+
+// memoryPath returns the PATH of a prepared device: the block device of
+// mode block, the directory in the container of mode fs.
+func (d *preparedPoolDevice) memoryPath() string {
+	switch d.Mode {
+	case api.ModeBlock:
+		return d.BlockDevice
+	case api.ModeFs:
+		return d.Path
+	}
+	return ""
 }
 
 // lentDevices returns the devices of a prepared claim as the lease
@@ -158,26 +187,35 @@ type preparedPoolClaim struct {
 }
 
 // poolDeviceData is claim.status.devices[].data written by the pool
-// controller. Serial, shared and size are required.
+// controller. Serial, shared and size are required; exclusive (a shared
+// device attached with all of its hosts) and persistent are false when
+// missing.
 type poolDeviceData struct {
-	Serial string  `json:"serial"`
-	Shared *bool   `json:"shared"`
-	Size   *uint64 `json:"size"`
+	Serial     string  `json:"serial"`
+	Shared     *bool   `json:"shared"`
+	Size       *uint64 `json:"size"`
+	Exclusive  bool    `json:"exclusive"`
+	Persistent bool    `json:"persistent"`
 }
 
 // poolDevice is the parsed poolDeviceData of an allocation result, with
-// the mode and read-only setting of its DeviceConfig.
+// the mode, read-only setting, access and path of its DeviceConfig.
 type poolDevice struct {
-	Serial   uint64
-	Shared   bool
-	Size     uint64
-	Mode     string
-	ReadOnly bool
+	Serial     uint64
+	Shared     bool
+	Size       uint64
+	Exclusive  bool
+	Persistent bool
+	Mode       string
+	ReadOnly   bool
+	Access     string // fs: api.AccessDirect or api.AccessCached
+	Path       string // fs: the directory in the container
 }
 
 // newPoolDriver returns a pool driver whose prepared claims are loaded
-// from stateFile. The kubelet plugin is started separately (start).
-func newPoolDriver(name string, mem *memctl.Manager, stateFile string, timeout time.Duration) (*poolDriver, error) {
+// from stateFile, with their missing node mounts mounted again. The
+// kubelet plugin is started separately (start).
+func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration) (*poolDriver, error) {
 	if timeout <= 0 {
 		timeout = defaultPoolPrepareTimeout
 	}
@@ -188,6 +226,8 @@ func newPoolDriver(name string, mem *memctl.Manager, stateFile string, timeout t
 		timeout:    timeout,
 		probeGrace: defaultMemdevProbeGrace,
 		retryDelay: defaultRegionRetryDelay,
+		mounter:    mounter,
+		holderWait: defaultHolderWait,
 		lender:     newCompanionLender(name),
 		prepared:   map[string]*preparedPoolClaim{},
 		inflight:   map[uint64]int{},
@@ -195,6 +235,7 @@ func newPoolDriver(name string, mem *memctl.Manager, stateFile string, timeout t
 	if err := p.load(); err != nil {
 		return nil, err
 	}
+	p.restoreMounts()
 	p.updateSerials()
 	return p, nil
 }
@@ -319,12 +360,15 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		}
 		p.updateSerials()
 	}()
+	// the device that failed to prepare, for the holder wait of the rollback
+	var failed []preparedPoolDevice
 	fail := func(err error) kubeletplugin.PrepareResult {
 		err = fmt.Errorf("%s: preparing claim %s: %w", p.name, claimName, err)
 		klog.Error(err)
-		p.rollback(ctx, uid, touched)
+		p.rollback(ctx, uid, append(slices.Clone(pc.Devices), failed...), touched)
 		return kubeletplugin.PrepareResult{Err: err}
 	}
+	keys := envKeys{}
 	for n, r := range claim.Status.Allocation.Devices.Results {
 		if r.Driver != p.name {
 			continue
@@ -337,10 +381,21 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		if _, err := parseConfig(claim, p.name, device.DeviceConfigKind, r.Request, cfg); err != nil {
 			return fail(fmt.Errorf("request %s: %w", r.Request, err))
 		}
-		if data.Mode, err = cfg.modeFor(data.Shared); err != nil {
+		if data.Mode, err = cfg.poolModeFor(data); err != nil {
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
 		data.ReadOnly = cfg.ReadOnly
+		// the env key of the device, as buildCDISpec counts them
+		key := keys.next(api.Key(data.Serial, 1))
+		if data.Mode == api.ModeFs {
+			data.Access, data.Path = cfg.Access, cfg.Path
+			if data.Access == "" {
+				data.Access = api.AccessDirect
+			}
+			if data.Path == "" {
+				data.Path = defaultFsPath(key)
+			}
+		}
 		if err := p.checkSamePreparation(data, uid); err != nil {
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
@@ -357,6 +412,9 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 			}
 		}
 		if err != nil {
+			if dev != nil {
+				failed = append(failed, *dev)
+			}
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
 		dev.Result = n
@@ -368,6 +426,12 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 			CDIDeviceIDs: []string{poolCDIDeviceID(uid, n)},
 			ShareID:      r.ShareID,
 		})
+		if dev.Persistent {
+			klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s namespace %s block %s access %q mount %q loop %q",
+				p.name, claimName, r.Device, data.Serial, data.Shared, dev.Mode, dev.ReadOnly, dev.Memdev, dev.Region,
+				dev.Namespace, dev.BlockDevice, dev.Access, dev.NodeMount, dev.LoopDevice)
+			continue
+		}
 		klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s dax %s node %d",
 			p.name, claimName, r.Device, data.Serial, data.Shared, dev.Mode, dev.ReadOnly, dev.Memdev, dev.Region, dev.Dax, dev.Node)
 	}
@@ -439,6 +503,8 @@ func (p *poolDriver) preparedDevice(serial uint64, exceptUID string) *preparedPo
 // checkSamePreparation refuses a device that another claim prepared
 // differently: as shared or exclusive, or in another mode. Read-only may
 // differ: it is a property of the CDI device node, not of the region.
+// Modes block and fs, and fs with either access, are compatible: they
+// share one pmem region.
 func (p *poolDriver) checkSamePreparation(data *poolDevice, exceptUID string) error {
 	other := p.preparedDevice(data.Serial, exceptUID)
 	switch {
@@ -446,24 +512,17 @@ func (p *poolDriver) checkSamePreparation(data *poolDevice, exceptUID string) er
 		return nil
 	case other.Shared != data.Shared:
 		return fmt.Errorf("shared=%v, but another claim prepared it with shared=%v", data.Shared, other.Shared)
-	case other.Mode != data.Mode:
+	case other.Mode != data.Mode && (!persistentMode(other.Mode) || !persistentMode(data.Mode)):
 		return fmt.Errorf("mode %s, but another claim prepared it in mode %s", data.Mode, other.Mode)
 	}
 	return nil
 }
 
-// rollback releases the serials that a failed Prepare touched, unless
-// another prepared claim uses them.
-func (p *poolDriver) rollback(ctx context.Context, uid string, serials []uint64) {
-	done := map[uint64]bool{}
-	for _, serial := range serials {
-		if done[serial] || p.preparedDevice(serial, uid) != nil {
-			continue
-		}
-		done[serial] = true
-		if err := p.release(ctx, serial); err != nil {
-			klog.Errorf("%s: rollback of serial 0x%x: %v", p.name, serial, err)
-		}
+// rollback releases what a failed Prepare of a claim prepared, devs, and
+// the serials that it touched, unless another prepared claim uses them.
+func (p *poolDriver) rollback(ctx context.Context, uid string, devs []preparedPoolDevice, serials []uint64) {
+	for _, err := range p.releaseDevices(ctx, uid, devs, serials) {
+		klog.Errorf("%s: rollback: %v", p.name, err)
 	}
 }
 
@@ -494,7 +553,7 @@ func parsePoolDeviceData(raw []byte) (*poolDevice, error) {
 	if err != nil {
 		return nil, fmt.Errorf("device data: %w", err)
 	}
-	return &poolDevice{Serial: serial, Shared: *d.Shared, Size: *d.Size}, nil
+	return &poolDevice{Serial: serial, Shared: *d.Shared, Size: *d.Size, Exclusive: d.Exclusive, Persistent: d.Persistent}, nil
 }
 
 // waitMemdev returns the memdev with the serial, waiting up to the
@@ -513,6 +572,9 @@ func (p *poolDriver) waitMemdev(ctx context.Context, serial uint64) (string, err
 	return p.mem.WaitMemdev(wctx, serial)
 }
 
+// prepareDevice returns the device of an allocation result prepared as
+// data says; with an error of a device of persistent memory, the device as
+// far as it was prepared.
 func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice) (*preparedPoolDevice, error) {
 	memdev, err := p.waitMemdev(ctx, data.Serial)
 	if err != nil {
@@ -529,6 +591,13 @@ func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceReq
 		ReadOnly: data.ReadOnly,
 		Memdev:   memdev,
 		Node:     -1,
+	}
+	if data.Persistent {
+		dev.Persistent = true
+		if err := p.preparePersistent(ctx, memdev, data, dev); err != nil {
+			return dev, err
+		}
+		return dev, nil
 	}
 	if data.Mode == api.ModeDax {
 		// device_dax: never onlined as RAM (shared memory must never be).
@@ -606,17 +675,7 @@ func (p *poolDriver) unprepareClaim(ctx context.Context, uid string) error {
 			return err
 		}
 	}
-	var errs []error
-	for _, d := range pc.Devices {
-		if p.preparedDevice(d.Serial, uid) != nil {
-			klog.Infof("%s: claim %s: serial 0x%x is still used by another claim", p.name, pc.ClaimName, d.Serial)
-			continue
-		}
-		if err := p.release(ctx, d.Serial); err != nil {
-			errs = append(errs, fmt.Errorf("releasing %s (serial 0x%x): %w", d.Device, d.Serial, err))
-		}
-	}
-	if len(errs) > 0 {
+	if errs := p.releaseDevices(ctx, uid, pc.Devices, nil); len(errs) > 0 {
 		err := fmt.Errorf("%s: unpreparing claim %s: %w", p.name, pc.ClaimName, errors.Join(errs...))
 		klog.Error(err)
 		return err
@@ -641,8 +700,9 @@ func poolCDIDeviceID(claimUID string, n int) string {
 
 // buildCDISpec builds the CDI spec of all prepared pool claims but
 // companion claims: one device claim-<uid>-<n> per allocation result n with
-// the claim marker, the environment of the result's device (api.Env) and
-// the device node of a dax device.
+// the claim marker, the environment of the result's device (api.Env), the
+// device node of a dax or block device and the bind mount of the node
+// mount of an fs device.
 func (p *poolDriver) buildCDISpec() *cdiSpecs.Spec {
 	spec := &cdiSpecs.Spec{Kind: device.PoolCDIKind}
 	for _, uid := range slices.Sorted(maps.Keys(p.prepared)) {
@@ -656,8 +716,13 @@ func (p *poolDriver) buildCDISpec() *cdiSpecs.Spec {
 			env := map[string]string{claimEnvVarName(uid): "1"}
 			maps.Copy(env, api.Env(d.memory(keys.next(api.Key(d.Serial, 1)))))
 			edits := cdiSpecs.ContainerEdits{Env: api.EnvList(env)}
-			if d.Mode == api.ModeDax {
+			switch d.Mode {
+			case api.ModeDax:
 				edits.DeviceNodes = []*cdiSpecs.DeviceNode{daxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
+			case api.ModeBlock:
+				edits.DeviceNodes = []*cdiSpecs.DeviceNode{blockDeviceNode(d)}
+			case api.ModeFs:
+				edits.Mounts = []*cdiSpecs.Mount{fsMount(d)}
 			}
 			spec.Devices = append(spec.Devices, cdiSpecs.Device{Name: claimCDIDeviceName(uid, d.Result), ContainerEdits: edits})
 		}

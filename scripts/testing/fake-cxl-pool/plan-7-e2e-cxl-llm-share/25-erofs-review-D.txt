@@ -1,0 +1,245 @@
+plan-7 erofs: review R-D (driver, memctl, chart, image, docs, fake-cxl-pool)
+===========================================================================
+Written 2026-10-19 by reviewer R-D. Review only, nothing edited but this
+file, no VM used. Against 22-erofs-design.txt and the accepted deviations
+of 24-erofs-status-D.txt (it lists D1-D8, not D1-D5) and 24-erofs-status-P.txt.
+Paths: N = nri-plugins, D = N/cmd/plugins/dra-driver-cxl,
+P = N/scripts/testing/fake-cxl-pool. Line numbers are of the working tree.
+
+Checks run (in N)
+  gofmt -l pkg/cxl cmd/plugins/dra-driver-cxl cmd/cxl-request P/pkg P/cmd   -> none
+  go vet ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/... ./scripts/testing/fake-cxl-pool/...  -> rc 0
+  go test -race -count=1 (same packages)                                   -> all ok
+  golangci-lint run ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/... ./cmd/cxl-request/...  -> 0 issues
+  golangci-lint run ./scripts/testing/fake-cxl-pool/...  -> the pre-existing
+      errcheck/unused findings only; none on a changed line (checked against
+      git diff -U0 of the client and the changed files)
+  helm template deployment/helm/dra-driver-cxl -> renders; Bidirectional on
+      kubelet-plugins; the three pool classes with the CEL of 22
+  non-ASCII scan of every changed/new file in scope -> none
+
+
+Bugs (must fix)
+---------------
+
+B1 D/pool_persistent.go:345-386 (releaseDevices), D/pool.go:366 (fail ->
+   rollback), D/pool.go:587-590 (prepareDevice returns nil dev on error)
+   Rollback of a failed persistent Prepare releases the region of the
+   device that failed without the holder wait. releaseDevices fills
+   blockDevs only from devs (pc.Devices = the devices already prepared);
+   the device whose preparePersistent failed is only in `touched`, so its
+   serial goes straight to p.release (cxl disable-region, destroy-region,
+   disable-memdev). This breaks the rule of 22 section 5 ("only when
+   nothing holds the block device any more", 21 F10). Status D 4 even says
+   "Rollback of a failed Prepare does the same", which it does not.
+   Failure scenario (T14, the case T14 exists for): someone mounted
+   /dev/pmem1 by hand on the node with dax=never (or any other non-plugin
+   user holds it). A direct fs claim is the only claim of the device on
+   the node: the plugin's mount gets the foreign superblock, T14 fires,
+   the plugin unmounts its own mount, and rollback destroys the region
+   under the foreign mount (the erofs of the other user loses its block
+   device; with a live DAX mapping this is the oops of F10). Same when
+   the T14 unmount itself fails (pool_persistent.go:243-249 logs and
+   keeps the mount) or loop.Release(true) fails on T13 cached
+   (pool_persistent.go:260-262): the plugin's own mount or loop is left
+   and the region is destroyed under it.
+   Fix: give rollback the block device of the failing device too, e.g.
+   prepareDevice returns the partly filled dev with the error (or
+   preparePersistent records serial -> BlockDevice in a map that
+   prepareClaim passes to rollback), and releaseDevices runs waitNoHolder
+   for every serial with a known block device; on "still in use" the
+   region stays (logged), as in Unprepare. Add a test: T14 with a foreign
+   holder (fakeMounter.holders) must not run disable-region.
+
+
+Should fix
+----------
+
+R1 D/pool_persistent.go:216-228 (ensureNodeMount, existing mount)
+   An existing mount at the node mount path is reused after checking only
+   FsType == erofs: not its source (/dev/pmemK for direct, a loop over
+   /dev/pmemK for cached) and, for direct, not dax=always. Scenario: the
+   T14 path fails to unmount (only logged, line 244-245) and leaves a
+   non-DAX erofs at mounts/c1ae0001-direct; the next direct claim on the
+   node reuses it silently, and the reader gets page-cache access while
+   the claim says direct (test16 D/C proofs would catch it, a user would
+   not). Same in restoreMounts (it calls ensureNodeMount). Fix: on reuse,
+   for direct require mi.Source == blockDev and hasSuperOpt(daxAlways)
+   (else T14), for cached require the loop's backing_file to be blockDev;
+   else fail with "<mnt> is a mount of <source>".
+
+R2 D/pool_persistent.go:391-421 (restoreMounts) with D5
+   At start, a prepared fs device whose node mount is missing is mounted
+   from the recorded d.BlockDevice without checking that /dev/pmemK is
+   still the namespace of that device. After a node reboot (the state file
+   under /var/lib/kubelet/plugins survives, the regions do not), pmemK may
+   be another device: a local NVDIMM/memmap pmem, or another persistent
+   device whose region was created first. Scenario: two persistent devices
+   A (pmem0) and B (pmem1) prepared; reboot; B's region comes back first as
+   pmem0 (or a platform pmem0 exists): restoreMounts mounts B's (or a
+   foreign) erofs at mounts/<A>-direct and the restarted pods of A read B's
+   data. Fix: before re-mounting, check that d.BlockDevice still belongs to
+   d.Namespace of d.NdRegion of the memdev with d.Serial (e.g.
+   /sys/class/block/pmemK resolves under bus/nd/devices/<ndRegion> and its
+   dev is BlockMajor:BlockMinor, and FindMemdev(serial) has d.Region), else
+   log and skip. (D5 accepted that the region is not re-created; this is
+   only about not mounting the wrong device.)
+
+R3 D/pool_persistent.go:318-338 (waitNoHolder) under D/pool.go:646-647
+   (UnprepareResourceClaims holds p.mu)
+   The holder wait (up to 10 s per serial, in turn per serial of the
+   claim, and per claim of the batch) runs with p.mu held, so every
+   Prepare and Unprepare of the pool driver on the node waits behind it.
+   The old code also held p.mu over release and over the memdev wait, so
+   this is the existing pattern, but the new wait is the one that is
+   expected to time out (a lingering container bind): a pod with N
+   persistent devices on a node with a stuck holder blocks the node's pool
+   claims for N x 10 s per kubelet retry, and N x 10 s may exceed
+   kubelet's DRA call timeout (45 s, if I remember kubelet's
+   draplugin default right), so the retries never finish. Fix (cheap):
+   one shared deadline for all serials of a releaseDevices call; or
+   (better) wait without p.mu: mark the serial "releasing" (like inflight),
+   unlock, wait, relock and re-check preparedDevice before p.release.
+
+R4 Tests, D/pool_persistent_test.go
+   Error paths and the life cycle are covered well for single-device
+   claims (T1-T14 texts and order, shared mount table, EBUSY, holder,
+   restart). Missing:
+   - rollback of a claim whose first result mounted (and/or shares a
+     mount with another claim) and whose second result fails: the first
+     mount must go, the shared one must stay;
+   - the B1 case (failing device with a holder: no disable-region);
+   - the T14 unmount failure and the T13 loop-detach failure;
+   - ensureNodeMount over an existing non-erofs mount and (with R1) a
+     wrong-source mount;
+   - restoreMounts when the re-mount fails (block device gone): logged,
+     state unchanged, mount dir removed;
+   - waitNoHolder with ctx cancelled and with a Holder error;
+   - p.sync failure after a persistent Prepare (rollback unmounts).
+   sysMounter.Holder's backing_file matching (mount.go:241-251) is pure
+   sysfs reading and testable with a temp sysRoot and a missing device
+   (ENOENT -> ""); only the O_EXCL/LOOP_* syscalls need root.
+
+R5 P/pkg/server/server.go:1144-1150 (finalizeDetach)
+   The LSA backend is object-deleted only if s.devices[a.Device] still
+   exists and is persistent, and its id is derived as objID+"-lsa", not
+   taken from what was plugged. An adopted attachment whose tree LSA id is
+   different (another server version, a hand hotplug with an fcp_ data
+   id) leaves its LSA backend mapped in qemu; a device removed from the
+   map before finalize (config reload) leaves it too. Not hit by test16.
+   Fix: record the LSA object id in the attachment (unexported field, or
+   from t3.LSA at adoption) and delete what was recorded.
+
+
+Style and nice to have
+----------------------
+
+S1 D/mount.go:70-71: nodeMounter.Mounts is used by no driver code (only
+   by sysMounter.Mounted itself and the tests); drop it from the
+   interface or use it.
+S2 P/pkg/qemu/types.go:84-86 and P/pkg/pool/pool.go:103-105: LSASize
+   defined twice; qemu.LSASize is used by tests only. Keep one.
+S3 P/pkg/qemu/fake.go: contains() duplicates slices.Contains.
+S4 D/pool_persistent.go:79-89 validFsPath: /var/run/cxl/... passes T5,
+   and in most images /var/run -> /run, so the bind lands in /run/cxl
+   (the lease area T5 protects; runc follows symlinks inside the rootfs).
+   Add /var/run/cxl to forbiddenPathDirs, or document it.
+S5 D/pool_persistent.go:209-213 ensureNodeMount doc: "so that the two
+   have separate superblocks" is a why/how; coding-style wants what.
+   Similar: releaseDevices doc names the order of steps (fine as "what"
+   if kept to one sentence).
+S6 docs/memory/cxl/usage.md (pool driver texts): "readOnly needs mode dax,
+   block or fs" is listed only with the config checks; the code also
+   gives it after the volatile default (readOnly, no mode, exclusive
+   volatile device; status D 3 says so). One line in the doc.
+S7 D/mount.go:248: the backing_file match by basename for any /dev/...
+   path also matches /dev/<subdir>/pmemK; harmless, but v == dev or
+   filepath.Base(v) == filepath.Base(dev) && filepath.Dir(v) == "/dev"
+   says what is meant.
+S8 Two fs results of one claim with the same user path give two CDI
+   mounts at one container path (the later wins); a config check
+   ("path X used twice") would be clearer. Not in 22.
+S9 P/pkg/qemu/persistent_test.go tests the fake qemu's own error texts;
+   fine as a check of the test double, but those tests do not exercise
+   server code.
+
+
+Checked and found fine
+----------------------
+Texts and order (pool_persistent.go:100-147): T1-T7 config-only in the
+  order of 22 (T2/T3 before T4/T5, T6 before T7, T7 at config stage for
+  numa), then T8, T9 (no default for persistent devices), T10 (shared, not
+  exclusive, not readOnly), then the volatile defaults with the unchanged
+  "a shared device is used as dax only". Exact texts equal 22, T5 text
+  built from forbiddenPathDirs gives the exact string. T11-T14 texts
+  exact; Unprepare texts exact (EBUSY renders "device or resource busy").
+  Local driver texts unchanged, access/path refused after them (D6).
+Readers never create or change a namespace: CreateFsdaxNamespace only for
+  mode block without readOnly (pool_persistent.go:186-197); release is
+  cxl disable/destroy-region + disable-memdev only (memctl.go Release,
+  ReleaseRegion; no ndctl). Writer reuses an fsdax/map mem namespace, -e
+  only for a non-fsdax-mem namespace with memory (seeds of size 0 are
+  filtered in namespaces()).
+Node mount table: path <state dir>/mounts/<serial hex>-<access>; shared by
+  (serial, access); mountUsed excludes only the claim being released;
+  last claim unmounts with umount2(mnt, 0), never MNT_DETACH; EBUSY fails
+  the Unprepare, the serial is then not released and the claim stays;
+  partial Unprepare retries converge (unmountNode is idempotent).
+Holder wait (Unprepare path): after the unmounts, only for serials no
+  other claim uses, loop backing_file then O_RDONLY|O_EXCL|O_CLOEXEC open,
+  closed at once, ENOENT/ENXIO/ENODEV = gone; 10 s, 100 ms poll; timeout
+  -> "still in use", region kept, claim kept.
+Loop setup (mount.go:198-238): backing opened O_RDONLY and closed by
+  defer; loop-control closed; LOOP_CTL_GET_FREE, LOOP_CONFIGURE with
+  READ_ONLY|DIRECT_IO|AUTOCLEAR and a NUL-terminated file name; EBUSY
+  retries close the loop fd; no fd leak on error paths; loop fd closed
+  after the mount (autoclear goes with the umount), LOOP_CLR_FD + close
+  when the mount fails; a crash before the mount autoclears on exit.
+Mount flags MS_RDONLY|MS_NOSUID|MS_NODEV, data dax=always / dax=never;
+  T14 reads the super options of the topmost mount at the target and
+  unmounts on failure (see B1/R1 for the failure of that unmount).
+Restart: load, then restoreMounts before start(); stale mounts are only
+  entries of our own mounts/ dir not referenced by any prepared claim, so
+  nothing a prepared claim uses and nothing outside the dir is unmounted;
+  a new loop device is saved.
+checkSamePreparation: block/fs and both accesses compatible, persistent vs
+  volatile refused, shared mismatch refused.
+Env: block PATH/READONLY, fs PATH/ACCESS/READONLY=1, SIZE = block device
+  bytes (D2); the env key in prepareClaim (keys.next per pool result)
+  matches buildCDISpec's count, so the default path /run/cxl-fs/<KEY>_2
+  matches the env of a second result.
+CDI: block node {Path /dev/pmemK, Type "b", Major, Minor, Permissions "r"
+  only when readOnly}; fs Mount {HostPath node mount, ContainerPath path,
+  Type bind, Options bind,ro,nosuid,nodev}, no device node.
+Classes YAML: CEL exactly as 22; every pool device gets persistent
+  (publisher.go, false on volatile), so no CEL attribute-missing error;
+  loader test checks all seven classes.
+Chart: kubelet-plugins volumeMount mountPropagation: Bidirectional, the
+  container is privileged (required for Bidirectional). Dockerfile: ndctl
+  from the same v85 stage, its ldd closure merged into /libs.txt with cxl
+  and daxctl, copyright files collected; status D shows version 85 in the
+  image.
+memctl pmem: Persistent from memN/pmem/size, RootDecoder by cap_ram /
+  cap_pmem (D1), NdRegion by id, namespaces settle on init_namespaces and
+  probed holders, BlockDeviceInfo x512; CreatePmemRegion reuses only a
+  pmem region of the memdev.
+fake-cxl-pool: LSA name rule (pool.LSAPath), 256 KiB, created with the
+  data file (static, API create, state load, attach), removed with it on
+  DELETE (pool dir only); config validation of LSA clashes; attach order
+  object-add data, object-add lsa, device_add persistent-memdev+lsa; a
+  failed object-add of the LSA deletes the data backend, a failed
+  device_add deletes both, in add order; detach object-dels data then
+  LSA (fcp_ ids only), QMP and HMP alike (HMP builds only the set
+  properties, QMP omits unset ones); prebound befile_ backends refused for
+  persistent devices; discovery reads persistent-memdev and lsa from QOM
+  and qtree, adoption by Memdev(), counter seeded from -lsa ids. Published
+  attribute persistent on every device; status data persistent only when
+  true (omitempty) next to serial/shared/size/exclusive. Client column
+  and --persistent; README and config.example.yaml agree with the code.
+Docs: usage.md, pool.md, index.md, leases.md and the chart README match
+  the code (texts, defaults, paths, Bidirectional, ndctl, classes), apart
+  from S6. docs/deployment/helm/dra-driver-cxl.md includes the chart
+  README (D8). The sample pool-persistent-erofs.yaml uses the exact mkfs
+  options and checks the image fits CXL_<KEY>_SIZE.
+
+R-D done

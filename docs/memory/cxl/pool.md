@@ -68,6 +68,7 @@ spec:
       source: {string: pool}
       serial: {string: "0xc1ee0001"}       # /sys/bus/cxl/devices/memN/serial, lower-case hex
       shared: {bool: false}
+      persistent: {bool: false}
       size:   {int: 536870912}             # bytes
     capacity:
       memory: {value: 512Mi}               # exclusive devices only
@@ -80,10 +81,25 @@ spec:
       source: {string: pool}
       serial: {string: "0xc1ae0001"}
       shared: {bool: true}
+      persistent: {bool: false}
       size:   {int: 268435456}
     allowMultipleAllocations: true
     capacity:
       hosts: {value: "4", requestPolicy: {default: "1", validValues: ["1", "4"]}}  # max attached nodes
+    bindsToNode: true
+    bindingConditions: ["cxl-pool.nri.io/Attached"]
+    bindingFailureConditions: ["cxl-pool.nri.io/AttachFailed"]
+  - name: llm0                   # a shared device of persistent memory
+    attributes:
+      type:   {string: memdev}
+      source: {string: pool}
+      serial: {string: "0xc1ae0002"}
+      shared: {bool: true}
+      persistent: {bool: true}
+      size:   {int: 536870912}
+    allowMultipleAllocations: true
+    capacity:
+      hosts: {value: "4", requestPolicy: {default: "1", validValues: ["1", "4"]}}
     bindsToNode: true
     bindingConditions: ["cxl-pool.nri.io/Attached"]
     bindingFailureConditions: ["cxl-pool.nri.io/AttachFailed"]
@@ -95,12 +111,14 @@ spec:
 | `source` | `pool` | required |
 | `serial` | `0x` and lower-case hex | required: `/sys/bus/cxl/devices/memN/serial` of the device on the hosts |
 | `shared` | bool | required: whether several hosts may have the device attached at a time |
+| `persistent` | bool | required on every device: whether the device is persistent memory (the DeviceClasses test it, and a CEL selector that reads an attribute a device lacks fails) |
 | `size` | bytes | required |
 
 These are the attributes that `cxl.nri.io` publishes for local memdevs
 too ([usage.md](usage.md#devices-of-cxlnriio)), so that selectors and
-environment variables are the same for both sources. The DeviceClasses
-select pool devices by `type` and `shared`, the lease broker finds a
+environment variables are the same for both sources, plus `persistent`.
+The DeviceClasses select pool devices by `type`, `shared` and
+`persistent`, the lease broker finds a
 device by `serial` and reads its `shared` and `hosts`, and `cxl.nri.io`
 never publishes a memdev whose serial a pool device has. A controller may
 publish further attributes under a domain of its own (for example
@@ -123,17 +141,25 @@ publish further attributes under a domain of its own (for example
   (the reference controller makes an exclusive attachment of
   fake-cxl-pool). That is the writer of single-writer data sharing, see
   [Options of pool devices](#options-of-pool-devices).
+- *Persistent* devices (`persistent: true`), shared or not, keep their
+  data and their namespace labels while no host has them attached. Every
+  host that attaches a persistent device must see the same label storage
+  area (LSA) as well as the same data: a host with a label storage of its
+  own sees no namespace, or another one. fake-cxl-pool gives a persistent
+  device a data file and an LSA file, both shared by every qemu that
+  attaches it (`cxl-type3` with `persistent-memdev=` and `lsa=`).
 
 ## DeviceClasses and claims
 
-Two classes of
+Three classes of
 [`templates/deviceclasses.yaml`](blob:/deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
 of the Helm chart select pool devices:
 
 | class | selects | gets |
 |:------|:--------|:-----|
-| `cxl-pool` | `type == "memdev"`, `shared == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
-| `cxl-pool-shared` | `type == "memdev"`, `shared == true` | a shared pool device as devdax; one of its `hosts` by default, all of them with `capacity.requests.hosts` |
+| `cxl-pool` | `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
+| `cxl-pool-shared` | `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax; one of its `hosts` by default, all of them with `capacity.requests.hosts` |
+| `cxl-pool-persistent` | `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: its block device (`mode: block`) or a read-only erofs filesystem (`mode: fs`), see [usage.md](usage.md#persistent-memory) |
 
 Claims:
 
@@ -166,6 +192,7 @@ Complete examples with pods:
 [pool-numa.yaml](blob:/deployment/samples/dra-driver-cxl/pool-numa.yaml),
 [pool-dax.yaml](blob:/deployment/samples/dra-driver-cxl/pool-dax.yaml),
 [pool-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/pool-shared-writer-readers.yaml),
+[pool-persistent-erofs.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml),
 [local-then-pool-dax.yaml](blob:/deployment/samples/dra-driver-cxl/local-then-pool-dax.yaml)
 (local memory if a local memdev has room, else pool memory).
 
@@ -193,8 +220,10 @@ Prepare with `unknown kind "..." (DeviceConfig)`.
 
 | field | values | |
 |---|---|---|
-| `mode` | `numa`, `dax` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). |
-| `readOnly` | `false`, `true` | `dax` only: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only. |
+| `mode` | `numa`, `dax`, `block`, `fs` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). Devices of persistent memory have `block` and `fs` only, and no default ([usage.md](usage.md#persistent-memory)). |
+| `readOnly` | `false`, `true` | `dax`, `block`: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only. `fs`: required. |
+| `access` | `direct`, `cached` | `fs` only, default `direct`: file pages in the device (DAX) or in the page cache of the node |
+| `path` | absolute path | `fs` only, default `/run/cxl-fs/<KEY>`: where the filesystem is in the container |
 
 So every pool device can be used as a dax device: shared devices always,
 exclusive devices with `mode: dax`. Exclusive access to a shared device is
@@ -266,10 +295,14 @@ status:
       attachment: shared0@node1
       qemuDeviceId: <qemu device id>
       exclusive: true            # only for an exclusive attachment of a shared device
+      persistent: true           # only for a device of persistent memory
 ```
 
 The node plugin matches the entry by (driver, pool, device) and reads
-only `serial`, `shared` and `size` from `data`.
+only `serial`, `shared`, `size`, `exclusive` and `persistent` from
+`data`; a missing `exclusive` or `persistent` is `false`. `exclusive`
+lets a `block` claim of a shared persistent device write; `persistent`
+selects modes `block` and `fs`.
 
 On failure the controller sets `cxl-pool.nri.io/AttachFailed` to True
 instead (reasons used by the reference controller: `NoHost`,
@@ -305,8 +338,9 @@ the driver in the claim and its classes is a `DeviceConfig`
 (`unknown kind "..." (DeviceConfig)` otherwise), then, for each allocated
 device of the driver:
 
-1. Read `serial`, `shared` and `size` from the claim status entry. A
-   missing entry or missing data is an error; kubelet retries.
+1. Read `serial`, `shared`, `size`, `exclusive` and `persistent` from
+   the claim status entry. A missing entry or missing data is an error;
+   kubelet retries.
 2. Read the `DeviceConfig` of the request; an invalid one fails the
    Prepare ([usage.md](usage.md#deviceconfig)).
 3. Wait until a CXL memory device with the serial appears
@@ -330,6 +364,13 @@ device of the driver:
    permissions `r` for a read-only claim. Applications `mmap` the device
    (`MAP_SHARED`, aligned to the device alignment, typically 2 MiB) and
    agree on the layout of the memory themselves.
+
+   Modes `block` and `fs` (devices of persistent memory): create a pmem
+   region under a root decoder for persistent memory, find the fsdax
+   namespace with map `mem` of its nvdimm region (a writable `block` claim
+   creates it if there is none), and give the container its block device
+   or the read-only bind of the node mount of its erofs, see
+   [usage.md](usage.md#persistent-memory).
 5. Return the device's CDI device `nri.io/cxl-pool=claim-<claim uid>-<n>`
    (spec file `cxl-pool`, n the index of the allocation result in the
    claim) with the claim marker `CXL_CLAIM_<uid>=1`, the device node of a
@@ -343,7 +384,9 @@ device of the driver:
    CXL_<KEY>_SIZE=<bytes>
    CXL_<KEY>_NODE=<N>                 (numa)
    CXL_<KEY>_DAX=/dev/daxX.Y          (dax)
-   CXL_<KEY>_READONLY=0|1             (dax)
+   CXL_<KEY>_PATH=/dev/pmemK|<dir>    (block, fs)
+   CXL_<KEY>_ACCESS=direct|cached     (fs)
+   CXL_<KEY>_READONLY=0|1             (dax, block, fs)
    ```
 
    `<KEY>` is the serial in upper-case hex without `0x` (`<KEY>_2`, ...
@@ -362,9 +405,12 @@ device of the driver:
    device of a claim fails, the devices prepared for it are released
    again.
 
-NodeUnprepareResources: when no other prepared claim on the node uses the
-device, offline its memory (mode `numa`), disable and destroy its region
-and disable the memory device. This is what lets the pool hot-remove it.
+NodeUnprepareResources: unmount the node mount of mode `fs` that no other
+prepared claim on the node uses (a busy mount fails, kubelet retries);
+when no other prepared claim on the node uses the device, wait until
+nothing holds the block device of a persistent device, offline its
+memory (mode `numa`), disable and destroy its region and disable the
+memory device. This is what lets the pool hot-remove it.
 A device that is already gone is not an error.
 
 The `cxl.nri.io` driver publishes neither a memory device that the pool
@@ -382,13 +428,16 @@ dax file descriptor. See [leases.md](leases.md).
 
 ## Node requirements
 
-- `cxl` (ndctl) and `daxctl` command line tools. The container image of
-  the driver includes them; a host process
+- `cxl` (ndctl) and `daxctl` command line tools, and `ndctl` for devices
+  of persistent memory. The container image of the driver includes them;
+  a host process
   ([usage.md](usage.md#as-a-host-process)) needs them installed on the
   node.
 - Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
   `CONFIG_DEV_DAX_KMEM`, `CONFIG_FS_DAX` (devdax mmap) and
-  `CONFIG_MEMORY_HOTREMOVE`.
+  `CONFIG_MEMORY_HOTREMOVE`; for devices of persistent memory
+  `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
+  `CONFIG_ND_PFN`, `CONFIG_EROFS_FS` and `CONFIG_BLK_DEV_LOOP`.
 - `/sys/devices/system/memory/auto_online_blocks` should be `offline`,
   so that the kernel never onlines shared devices as RAM on its own.
 

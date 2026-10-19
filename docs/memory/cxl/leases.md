@@ -445,6 +445,13 @@ and cannot make it the companion of a lease it did not request.
 
 ## Limitations
 
+- Leases have modes `numa` and `dax` only. Modes `block` and `fs` of pool
+  devices of persistent memory are for claims
+  ([usage.md](usage.md#persistent-memory)): `cxl-request --mode block` or
+  `--mode fs` is refused with `invalid mode "..." (numa or dax)`, and the
+  companion claims of leases use the classes `cxl-pool` and
+  `cxl-pool-shared`, which select no device of persistent memory.
+
 - Memory limits: lent memory counts against the container's `memory.max`
   and the pod cgroup. Without a raise the extra node adds locality, not
   room. Use requester pods without a memory limit, or raise it with

@@ -1,0 +1,321 @@
+plan-7 erofs: design and contract
+=================================
+Written 2026-10-19 (orchestrator) from 21-erofs-findings.txt and the
+alternative A of 11-research-IN-integration.txt section 2.1, narrowed to
+what this step needs. Every stream implements exactly these names, texts
+and paths; a stream that needs a change writes a Request in its status
+file and continues. Paths: N = nri-plugins, P = N/scripts/testing/fake-cxl-pool,
+D = N/cmd/plugins/dra-driver-cxl, E = N/test/e2e/memory.test-suite/dra-driver-cxl.
+
+1. The flow
+-----------
+  host: fake-cxl-pool-server, device llm0 {shared, persistent, 512Mi}:
+        files llm0.raw (data) and llm0.lsa (labels), both shared by every
+        qemu that attaches the device
+  writer (VM1): claim of class cxl-pool-persistent with all hosts,
+        DeviceConfig {mode: block}. The driver creates a pmem region, an
+        fsdax namespace (map mem) if there is none, and gives the
+        container /dev/pmemK (CDI block node, rw). The container writes
+        an erofs image of the model into it and exits; Unprepare releases
+        the region (labels and data stay in the files).
+  readers (VM1, VM2): claims of class cxl-pool-persistent, one host each,
+        DeviceConfig {mode: fs, readOnly: true, access: direct|cached}.
+        The driver creates the pmem region (the namespace appears from
+        the shared labels), mounts the erofs on the node once per
+        (device, access): direct on /dev/pmemK with dax=always, cached on a
+        read-only direct-I/O loop device over /dev/pmemK; the container
+        gets that mount as a read-only bind at $CXL_<KEY>_PATH, no device
+        node. Stock llama.cpp maps $CXL_<KEY>_PATH/<model>.gguf.
+  Unprepare of the last claim of a (device, access) on a node unmounts it;
+  of the last claim of the device on the node releases the region, only
+  when nothing holds the block device any more.
+
+2. Kernel (stream K)
+--------------------
+- test/e2e/playbook/files/qemu-cxl-kernel.config: CONFIG_EROFS_FS=y with
+  the defaults olddefconfig gives (EROFS_FS_XATTR, POSIX_ACL, SECURITY,
+  BACKED_BY_FILE, ZIP, ZIP_LZMA as P1 saw); nothing else changes. The file
+  is the effective .config of the build (as proto/build-kernel-rpms.sh
+  writes it back).
+- RPMs built inside a VM from the guest source (21 F2) with make
+  olddefconfig and make -j$(nproc) binrpm-pkg, no LOCALVERSION; the
+  tarball of the three RPMs stored on the host as
+  ~/.cache/nri-plugins/e2e/kernel.getsource_vanilla.config_<sha>.rpms.tar,
+  <sha> computed as test/e2e/playbook/custom-kernel.yaml does (sha256 of
+  the file content without trailing newlines, see
+  proto/build-kernel-rpms.sh).
+- Both VMs boot it, installed by the framework (test00-up's
+  vm-kernel-pkgs-install; 21 F3: the file names equal the old tarball's,
+  so remove ~vagrant/.vm-kernel-pkgs.installed_packages in each VM once,
+  as test00-up's own error text says). The -fsexp and -famfs2 kernels go
+  with rpm -U; their tarballs stay in the plan7-fs scratch.
+- E/n4-cxl-shared-1/test00-up and E/n4-cxl-shared-2/test00-up check
+  ^CONFIG_EROFS_FS=y next to ^CONFIG_FS_DAX=y, with the same
+  kernel_error text: "kernel lacks CONFIG_EROFS_FS=y: $kernel_error".
+
+3. fake-cxl-pool: persistent devices (stream P)
+-----------------------------------------------
+- Server config (DeviceConfig of P/pkg/server/config.go) and POST
+  /api/v1/devices (api.DeviceCreate): field persistent (bool, default
+  false). A persistent device must be a 256Mi multiple like every device.
+- api.Device: persistent (bool, always in JSON) and lsaPath (string,
+  "omitempty"): the LSA file. The LSA file is the data path with its
+  extension replaced by ".lsa" (llm0.raw -> llm0.lsa; a configured file
+  without extension gets ".lsa" appended), size 256 KiB, created and
+  removed exactly when the data file is (same life cycle and ownership
+  rules as the data file today).
+- Attach: object-add memory-backend-file id=<backend id of the data>,
+  mem-path=<data>, size, share=on; object-add memory-backend-file
+  id=<data id>-lsa, mem-path=<lsa>, size=262144, share=on; device_add
+  cxl-type3 bus=..., persistent-memdev=<data id>, lsa=<lsa id>, id=...,
+  sn=<serial>. Detach: device_del, then object-del of both backends (the
+  order and error handling of today's volatile path). QMP and HMP. The
+  fake qemu (pkg/qemu/fake.go) accepts and checks both properties.
+  Discovery of existing attachments recognizes persistent-memdev and lsa.
+- Client: devices output shows persistent (table column and JSON).
+- Controller: every published pool device has the attribute persistent
+  (bool, false for volatile devices, 21 F14); the claim status data of a
+  persistent device has "persistent": true (omitted for volatile), next
+  to serial, shared, size, exclusive.
+- P/README.md and P/config.example.yaml document the field and the two
+  files.
+
+4. API and DeviceConfig (stream D)
+----------------------------------
+pkg/cxl/api: ModeBlock = "block", ModeFs = "fs", AccessDirect = "direct",
+AccessCached = "cached"; Memory gains Path and Access; Env adds, for
+ModeBlock: PATH (the device node), READONLY; for ModeFs: PATH (the
+directory in the container), ACCESS, READONLY ("1"). SERIAL, SHARED,
+MODE, SIZE as for the other modes; SIZE of block and fs is the size of
+the fsdax namespace in bytes. The lease protocol (Request validation,
+cxl-request) is unchanged: modes numa and dax only, texts unchanged.
+
+DeviceConfig (the struct both drivers decode) gains:
+  access  "" | direct | cached    mode fs only; "" = direct
+  path    absolute path           mode fs only; "" = /run/cxl-fs/<KEY>
+The local driver (cxl.nri.io) keeps modes numa and dax and every text
+(21 F15). The pool driver (cxl-pool.nri.io) accepts numa, dax, block, fs.
+
+Pool driver texts, all prefixed "DeviceConfig: " as today; checked in
+this order. Config only (before the device is waited for):
+  T1 invalid mode "X" (numa, dax, block or fs)
+  T2 access needs mode fs            T3 path needs mode fs
+  T4 invalid access "X" (direct or cached)
+  T5 invalid path "X" (an absolute path outside /dev, /proc, /sys and /run/cxl)
+     (absolute, filepath.Clean(p) == p, not "/", and neither equal to
+     nor under /dev, /proc, /sys or /run/cxl, compared by path
+     components: /run/cxl-fs is fine)
+  T6 mode fs is read-only: set readOnly: true (write the device with mode block)
+  T7 readOnly needs mode dax, block or fs     (replaces "readOnly needs
+     mode dax" in the pool driver; the local driver keeps its text)
+From the claim status data (persistent, shared, exclusive), before the
+device is waited for:
+  T8 mode X needs a persistent device           (block, fs on volatile)
+  T9 a persistent device needs mode block or fs (mode "", numa or dax on
+     a persistent device; "" is never defaulted for persistent devices)
+  T10 mode block: a shared device is writable only with all of its hosts
+     (shared, not exclusive, readOnly false)
+  The existing "mode %s: a shared device is used as dax only" applies to
+  volatile shared devices only.
+At Prepare, after the memdev appeared (device errors, no prefix change):
+  T11 device 0x<serial>: <memdev> has no persistent memory   (status data
+     said persistent, the memdev has no pmem capacity)
+  T12 device 0x<serial>: no fsdax namespace in <ndregion>: has a writer written the device?
+     (mode fs, or readOnly block, and the region has no fsdax namespace
+     with map mem)
+  T13 device 0x<serial>: /dev/pmemK has no erofs filesystem: <mount error>
+  T14 device 0x<serial>: erofs on /dev/pmemK was mounted without DAX
+     (direct: the super options lack dax=always; it is unmounted again)
+
+5. Driver behaviour (stream D)
+------------------------------
+Prepare of a persistent device (pool driver):
+- memctl.CreatePmemRegion (section 6): region reused if the memdev has one.
+- mode block: the fsdax namespace with map mem of the region if there is
+  one; else, writable only: memctl.CreateFsdaxNamespace (the writer is
+  the only creator of labels, 21 F5); readOnly: T12. The container gets
+  CDI DeviceNode {Path /dev/pmemK, Type "b", Major, Minor, Permissions "r"
+  when readOnly} and the env of section 4.
+- mode fs: the fsdax namespace (T12 if none, never created). Node mount
+  per (serial, access) at <pool driver data dir>/mounts/<serial hex
+  without 0x>-<access>, e.g.
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct, made
+  once and shared by the claims on the node:
+    direct: mount /dev/pmemK, type erofs, flags MS_RDONLY|MS_NOSUID|MS_NODEV,
+            data "dax=always"; then T14 if the mount's super options lack
+            dax=always
+    cached: a loop device: LOOP_CTL_GET_FREE on /dev/loop-control, then
+            LOOP_CONFIGURE of /dev/loopN with the fd of /dev/pmemK opened
+            O_RDONLY and flags LO_FLAGS_READ_ONLY|LO_FLAGS_DIRECT_IO|
+            LO_FLAGS_AUTOCLEAR; mount /dev/loopN, type erofs, the same
+            flags, data "dax=never"
+  The container gets CDI Mount {HostPath the node mount, ContainerPath
+  path, Type "bind", Options [bind, ro, nosuid, nodev]}, no device node,
+  and the env of section 4. Direct and cached mounts of one device on
+  one node coexist (separate superblocks, 21 F9).
+- Mounting and loop setup are syscalls behind a small interface (unit
+  tests use a fake); no tools in the image for them.
+- The state file records per device: persistent, namespace, block device
+  and its numbers, access, path, node mount, loop device. At start, a
+  prepared fs device whose node mount is missing is mounted again (logged).
+- checkSamePreparation: on one node, block and fs claims of a device and
+  fs claims with either access are compatible (one pmem region);
+  persistent and volatile preparations never meet (T8, T9).
+- The Prepare log line names, for block and fs, the namespace, the block
+  device, the access and the node mount.
+Unprepare:
+- fs: when no other prepared claim on the node uses the same (serial,
+  access) node mount, unmount it with umount2(mount, 0); EBUSY fails the
+  Unprepare ("device 0x<serial>: unmounting <mount>: device or resource
+  busy"), kubelet retries. Never MNT_DETACH.
+- Then, when no other prepared claim on the node uses the serial: wait up
+  to 10 s until nothing holds /dev/pmemK (no /sys/block/loop*/loop/
+  backing_file names it, and an O_RDONLY|O_EXCL open of it succeeds and
+  is closed at once); else fail the Unprepare ("device 0x<serial>:
+  /dev/pmemK is still in use"), kubelet retries (21 F10). Only then
+  memctl.Release (disable and destroy the region, disable the memdev;
+  never a namespace or label operation).
+Chart, image, classes:
+- deployment/helm/dra-driver-cxl/templates/daemonset.yaml: the
+  kubelet-plugins volumeMount (/var/lib/kubelet/plugins) gets
+  mountPropagation: Bidirectional (21 F12).
+- D/Dockerfile: ndctl joins cxl and daxctl in the image (built from the
+  same ndctl v85 stage, with its library closure); verify ndctl version
+  in the image prints 85.
+- deviceclasses.yaml: cxl-pool and cxl-pool-shared add
+  && device.attributes["cxl-pool.nri.io"].persistent == false; new class
+  cxl-pool-persistent:
+    device.driver == "cxl-pool.nri.io" &&
+    device.attributes["cxl-pool.nri.io"].type == "memdev" &&
+    device.attributes["cxl-pool.nri.io"].persistent == true
+  (shared or not; "hosts" capacity as for every shared device).
+
+6. memctl additions (stream D)
+------------------------------
+In pkg/cxl/memctl, names may differ if documented in 24-erofs-status-D:
+- Persistent(memdev) (bool, error): the memdev has pmem capacity.
+- CreatePmemRegion(ctx, memdev, decoder): enable the memdev, reuse its
+  region or cxl create-region -t pmem -d <root decoder with
+  cap_type3_pmem> -m <memdev>; wait for the nvdimm region; returns the
+  CXL region, the nvdimm region and its namespaces.
+- Namespaces(ctx, ndregion): name, mode (fsdax, raw, devdax, sector),
+  map (mem, dev), size, block device (/dev/pmemK). ndctl list -N -r
+  or sysfs.
+- CreateFsdaxNamespace(ctx, ndregion): ndctl create-namespace -f -r
+  <ndregion> -m fsdax -M mem (with -e <existing namespace> to reconfigure
+  one), waits for the block device.
+- Release and ReleaseRegion work for pmem regions (verify; no namespace
+  operations).
+- A root decoder lookup that takes the region type (cap_type3_volatile or
+  cap_type3_pmem).
+
+7. Documentation (stream D, P, T)
+---------------------------------
+D: docs/memory/cxl/usage.md (modes block and fs, access, path, env PATH
+and ACCESS, what the container gets, texts T1-T14, "what the memory
+contains" for persistent devices, the inline-data gotcha of mkfs.erofs
+with the exact mkfs command), pool.md (attribute persistent on every
+device, status data persistent, a pool's persistent device needs a
+shared LSA), index.md (vocabulary: modes, class cxl-pool-persistent),
+leases.md (modes block and fs are not available for leases),
+docs/deployment/helm/dra-driver-cxl.md (Bidirectional, ndctl), a sample
+deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml (writer and
+reader). P: P/README.md, P/config.example.yaml. T: docs/memory/cxl/e2e.md
+(test16 row, host prerequisites).
+
+8. test16-cxl-llm-share (stream T)
+----------------------------------
+Device: llm0, 512Mi, shared, persistent, serial 0xc1ae0001 (KEY
+C1AE0001). Reader image ghcr.io/ggml-org/llama.cpp:server-b11681 (the
+build P1 measured; T checks the tag and its sh and the listen address),
+pulled in both VMs. The writer image stays $DRA_TOOLS_IMAGE.
+Preconditions: pool-cluster-require; both VMs' kernels have
+CONFIG_EROFS_FS=y (else "run n4-cxl-shared-*/test00-up: ..."); the model
+on the host (llm-model-fetch as today) and on VM1 only; erofs-utils in
+VM1 (dnf install if missing); the erofs image $LLM_VM_DIR/llm.erofs built
+in VM1 with exactly
+  mkfs.erofs -b4096 --dsunit=512 -Enoinline_data <image> <dir with the gguf only>
+(reused when the stamp of model sha256 + command matches);
+dump.erofs --path=/<model file> shows a plain layout; cxl-where.py in
+both VMs; the pool server with llm0 (both files new: all zeros);
+dra-install; images pulled.
+A  cluster, pool and class: one pool slice, llm0 persistent == true,
+   class cxl-pool-persistent present, cxl-pool-shared does not match llm0.
+B  writer on VM1: claim (cxl-pool-persistent, hosts 4, {mode: block});
+   the container checks the image fits $CXL_<KEY>_SIZE, writes it with
+   dd ... conv=fsync into $CXL_<KEY>_PATH and exits. Assert env (MODE=block,
+   PATH=/dev/pmem*, READONLY=0, SHARED=1, SERIAL), the CDI device has a
+   block node, the claim got all hosts and the attachment is exclusive;
+   host: the LSA file is no longer all zeros, and the model (sha256) is at
+   a 2 MiB-aligned offset of the data file. Writer gone, device free.
+C  three direct readers (two VM2, one VM1), {mode: fs, readOnly: true,
+   access: direct} (one with path: /models, the others the default),
+   llama-server -m $CXL_<KEY>_PATH/<model> -nr, then the test asks each
+   one (from its node, the pod IP) for the greedy completion of the raw
+   prompt (21 F16) and expects the answer. Proofs per reader: env
+   (MODE=fs, PATH, ACCESS=direct, READONLY=1), CDI device has a bind
+   mount and no device node, no /dev/pmem* in the container, a write
+   under PATH fails "Read-only file system"; the llama-server mapping of
+   the model has every page present in "^CXL Window [0-9]+ > Persistent
+   Memory > region[0-9]+ > namespace[0-9]+\.[0-9]+$"; anonymous memory of
+   the reader below half the model; the node's page cache grows by less
+   than 5% of the model; on each node one erofs mount of /dev/pmemK with
+   dax=always at the mounts directory of section 5.
+D  three cached readers (two VM2, one VM1) {..., access: cached}, while
+   the direct readers still run, started one by one with the page cache
+   measured around each: the first cached reader of a node grows that
+   node's page cache by at least 90% of the model, the second on VM2 by
+   less than 5%; every page of their model mapping in System RAM; same
+   answer; on each node a second erofs mount, on a loop device over
+   /dev/pmemK with direct I/O.
+E  stop: all readers deleted with their claims; no erofs mounts under
+   the mounts directory and no loop device over a pmem device on either
+   node; no regions; llm0 free; the backing data and LSA files removed at
+   the end (also on failure, EXIT trap).
+Deleted: E/n4-cxl-shared-2/cxl-llm/ (cxl-llm.cpp, build.sh), llm-build
+and the engine install; the header no longer asks for podman or git on
+the host. DRA_CLASSES in E/dra.source.sh gains cxl-pool-persistent.
+
+9. Later (not in this step)
+---------------------------
+- Leases: cxl-request request --serial S --shared --read-only --mode fs
+  [--access cached] [--name NAME], the mount at /run/cxl/fs/NAME through
+  a lease CDI mount of a plugin-owned host directory with [rbind, ro,
+  rslave] (IN 2.4 and 3.1, measured by P1 5); protocol fields access,
+  name; response path.
+- fsType (ext4; famfs on volatile devdax once its FUSE half is in
+  mainline), a write mount (ext4 on all hosts).
+- Persistent local memdevs (cxl.nri.io).
+
+10. Amendments (accepted during the implementation, 2026-10-19)
+---------------------------------------------------------------
+- Root decoders: the v7.3 attributes are cap_ram and cap_pmem (not
+  cap_type3_*; status D, D1).
+- SIZE of block and fs is the byte size of the fsdax namespace's block
+  device (534773760 for a 512Mi device), what an image must fit (D2).
+- Namespaces are read from sysfs (D3); unused mounts under mounts/ are
+  unmounted at driver start (D5); the local driver refuses access and path
+  with T2/T3 (D6).
+- T5 also forbids /var/run/cxl: "invalid path "X" (an absolute path
+  outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)" (review S4).
+- An existing mount at a node mount path is reused only if it is erofs
+  from /dev/pmemK (direct, dax=always) or from a loop device over it
+  (cached); else "device 0x<serial>: <mnt> is a <type> mount of <source>,
+  not of /dev/pmemK" (or "... not of a loop device over /dev/pmemK"), and
+  it is neither used nor unmounted (review R1). A restart re-mounts only
+  when the device's current fsdax namespace has the recorded block device
+  name and numbers (R2). One 10 s holder deadline per Unprepare or
+  rollback call, also for a failed Prepare (B1, R3).
+- fake-cxl-pool: attachments record their LSA backend id
+  (qemuLsaObjectId) and detach deletes exactly that one (R5).
+- test16 (section 8): the controller runs with -shared-hosts 6
+  (DRA_CONTROLLER_ARGS of dra-install), because every claim of a shared
+  device takes one host of its capacity whatever its node and test16
+  holds six reader claims at once: hosts '6', validValues ['1', '6'], the
+  writer claims 6. A warm-up pod per node reads the reader image's files
+  before the page cache is measured. The "< 5% of the model" page cache
+  proofs use the reader pod's own memory.stat file; the node total is a
+  coarse bound (< 50%: no second copy; >= 90% for the first cached reader
+  of a node, whose pod is also charged >= 90%). The frame proof covers all
+  mappings of the model (llama.cpp unmaps the header part): every page
+  present, together >= 90% of the model.

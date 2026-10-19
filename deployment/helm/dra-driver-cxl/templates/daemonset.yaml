@@ -92,8 +92,9 @@ spec:
           image: {{ .Values.image.name }}:{{ .Values.image.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
-            # The driver writes sysfs and cgroupfs, onlines memory and runs
-            # the cxl and daxctl tools.
+            # The driver writes sysfs and cgroupfs, onlines memory, runs the
+            # cxl, daxctl and ndctl tools, and mounts filesystems of
+            # persistent memory.
             privileged: true
             readOnlyRootFilesystem: true
           resources:
@@ -104,8 +105,11 @@ spec:
           - name: dra-driver-cxl-config-vol
             mountPath: /etc/nri/dra-driver-cxl
           # Sockets and data of the DRA drivers, and cxl-request for leases.
+          # The node mounts of mode fs under cxl-pool.nri.io/mounts must
+          # reach the host, where the runtime binds them into containers.
           - name: kubelet-plugins
             mountPath: /var/lib/kubelet/plugins
+            mountPropagation: Bidirectional
           - name: kubelet-plugins-registry
             mountPath: /var/lib/kubelet/plugins_registry
           # CDI specs of prepared claims.

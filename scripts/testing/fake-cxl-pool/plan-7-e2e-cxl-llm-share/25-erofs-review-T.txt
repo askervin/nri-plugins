@@ -1,0 +1,266 @@
+plan-7 erofs: review R-T (test16-cxl-llm-share and its helpers)
+===============================================================
+Written 2026-10-19 by reviewer R-T. Review only: nothing edited except
+this file, no VM used, run_tests.sh not run. Paths: N = nri-plugins,
+E = N/test/e2e/memory.test-suite/dra-driver-cxl, S = E/n4-cxl-shared-2,
+T16 = S/test16-cxl-llm-share/code.var.sh, LLM = S/llm.source.sh,
+DRA = E/dra.source.sh. Line numbers are the working tree (git diff HEAD).
+Evidence for "ran": the last solo run,
+N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+dra-driver-cxl/test16-cxl-llm-share/run.sh.output (PASS, 229.8 s), and its
+trace.txt.
+
+Verdict: no must-fix finding. Every proof of 22 section 8 A-E, with the
+section 10 amendments, is present, and the log shows each one ran on real
+values. The should-fix items are checks that pass when their probe command
+fails, and a cleanup path on failure.
+
+
+B (must fix)
+------------
+None.
+
+
+R (should fix)
+--------------
+R1 T16:145, T16:508, T16:513, T16:514-515, T16:516: the "nothing left"
+   checks of E (and the region check of llm0-free) ignore whether their
+   probe command worked. Each one tests only that the output is empty, or
+   pipes into grep:
+     145  pool-vm-command "$vm" "ls ... | grep '^region[0-9]'" && error ...
+     508  left=$(dra-vm-command-q ... "kubectl get pods,resourceclaims ... 2>/dev/null")
+     513  [ -z "$(dra-pmem-loops "$vm")" ]
+     514  [ -z "$(dra-cdi-devices-with "$vm" "CXL_${LLM_HEX}_")" ]
+     516  pool-vm-monitor "$vm" "info qtree -b" | grep -q 'dev: cxl-type3' && error
+   How it misleads: an ssh failure, a kubectl error (apiserver briefly
+   unavailable, a stray kubeconfig) or an unreadable monitor gives empty
+   output, and the test prints "no pods, claims, mounts, loop devices, CDI
+   devices, memory devices or regions of llm0 left" without having looked.
+   (145 is covered by cxl-assert 'regions == []' just before it, so it is
+   the mildest.) Fix: capture output and status separately and fail on a
+   non-zero status, e.g.
+     out=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of ..."
+     [ -z "$out" ] || error "... still has loop devices over pmem: $out"
+   and the same for 508 (no 2>/dev/null, check the status), 514 (the awk
+   loop: return 1 if neither /etc/cdi nor /var/run/cdi was readable), 516
+   (qtree=$(pool-vm-monitor ...) || error; then grep the variable). The
+   helpers dra-pmem-loops and dra-cdi-devices-with should return the
+   status of the remote command, which dra-vm-command-q already gives.
+
+R2 DRA:959-973 (dra-fs-mounts): a findmnt line that does not split into
+   exactly 7 fields is dropped silently (if len(fields) == len(keys)).
+   C and D are safe (mounts-assert compares the exact target list, so a
+   dropped mount fails), but E (T16:511-512) only checks that the list is
+   "[]": a mount under the mounts directory whose line does not parse (an
+   empty FS-OPTIONS column, which "read -r t s f o" collapses, or a future
+   column change) makes E pass with the mount still there. Fix: in the
+   Python part, exit non-zero on any line with another field count
+   (sys.exit("dra-fs-mounts: cannot parse: %r" % line)), so the caller's
+   "|| error" fires; also print "-" for an empty FS-OPTIONS in the remote
+   snippet (o=${o:--}).
+
+R3 T16:374 (the EXIT trap dra-cleanup; pool-cleanup) on a failure where
+   the driver could not unprepare: dra-uninstall waits 60 s for the claims
+   and then goes on, and pool-cleanup (S/pool.source.sh:382-417) runs
+   "fake-cxl-pool-client guest release" (cxl disable-region,
+   destroy-region, disable-memdev) and then detaches the device in qemu,
+   without looking at erofs mounts or loop devices over /dev/pmemK. That
+   is exactly the state the driver's holder wait refuses to release (21
+   F10: a region released under a live erofs/DAX user can oops the guest),
+   and the plan rule "never device_del a CXL device that a guest still
+   uses". With volatile devices nothing on the node could hold the device
+   once the pods were gone; with mode fs a node mount or a container bind
+   can. How it fails: a run that fails in C or D with an Unprepare stuck at
+   "unmounting ...: device or resource busy" or "/dev/pmemK is still in
+   use" ends in a guest oops or a hung VM, and the next run pays a VM
+   restart or worse. Fix (test16 only, no helper change needed): put a
+   function in the trap between dra-cleanup and pool-cleanup that runs
+   dra-fs-mounts and dra-pmem-loops on both VMs and, if either shows
+   something, says so and restarts that VM (pool-vm-restart, as
+   pool-vm-reset does) instead of letting pool-cleanup release the device
+   under it; or, more conservatively, skip pool-cleanup's release for llm0
+   and leave the VMs for debugging with a clear message (the
+   run-e2e-tests skill already says failed tests leave state behind). A
+   rerun is then safe anyway: pool-vm-reset at T16:335-336 restarts a VM
+   that still has CXL devices before anything else.
+
+R4 T16:398-407 (A, "cxl-pool-shared does not match llm0"): the proof is
+   "the pod is Unschedulable within 60 s and its claim has no allocation".
+   Unschedulable has many causes; the log shows the scheduler's message
+   (T16:405 prints it: "0/2 nodes are available: 1 cannot allocate all
+   claims, 1 node(s) didn't match Pod's node affinity/selector") but the
+   test does not assert it. How it misleads: if VM2 is momentarily
+   NotReady or tainted (the cluster was just rebuilt by test00-up; the
+   message would then be "1 node(s) had untolerated taint ..."), the pod is
+   Unschedulable although the class would match, and A passes. Fix: assert
+   the PodScheduled message of the same JSON in the dra-wait expression,
+   e.g. "... and 'cannot allocate all claims' in c.get('message', '')".
+
+
+S (style and small strengthenings)
+----------------------------------
+S1 T16:460-466: "(59 MB once in a run of the whole suite)" documents a past
+   event (coding-style: no history in comments). Say what holds now: "the
+   node total moves by tens of MB from things outside the test".
+S2 LLM:300-306 (llm-warm) "so that their page cache is there before the
+   readers start and a page cache delta around a reader counts the model
+   only", LLM:118-119 (llm-install) "so that only the VM of the writer has
+   the model and its image": why/how the caller uses it, not what the
+   function does (coding-style). Keep the what; move the why to the call
+   site in T16 (T16:379-381 already has it for llm-warm).
+S3 LLM:159: the example extent line does not match what dump.erofs
+   prints for this model (run.sh.output: "0:        0..396705792 |
+   396705792 :    2097152.. 398802944 | 396705792": the logical length is
+   rounded up to 4 KiB). Use the real line; the parser accepts it because
+   it checks end >= size.
+S4 T16:252: $DRA_POOL_MOUNT_DIR goes into an ERE unescaped (the dots of
+   cxl-pool.nri.io match any character). Harmless here; grep -F on the
+   exact "hostPath: <path>" line, or escape the dots, is exact.
+S5 T16:421-441 (B): the env PATH (/dev/pmem*) and the CDI deviceNode path
+   (/dev/pmem[0-9]+) are checked separately, not that they are the same
+   node. Compare them: the CDI line must be "path: $(dra-env-value "$LLM_LOG"
+   CXL_${LLM_HEX}_PATH)".
+S6 T16:493 (D, first cached reader of a node): only a lower bound (>= 90%)
+   on the node growth. The single page cache copy of the cached access
+   (21 F9, loop with direct I/O) is proven by the sysfs dio flag in
+   mounts-assert alone; an upper bound (node growth < 150% of the model)
+   would also catch double caching (erofs page cache plus the page cache
+   of /dev/pmemK) if the dio flag lied or the driver fell back. Cheap,
+   optional.
+S7 T16:304: mounts-assert prints "mounts: ..." without the VM, so the
+   log shows two identical lines (run.sh.output 1034, 1036, 1415, 1417).
+   Prefix the label: "$label: mounts: ...".
+S8 DRA:70: DRA_CONTROLLER_ARGS="${DRA_CONTROLLER_ARGS:-}" takes a value
+   from the environment, which then reaches test10-test15 too (where
+   "-shared-hosts 6" would break their hosts '4' assertions); test16
+   overrides it anyway (T16:109). Initialise it to "" unconditionally,
+   or document it as a knob in e2e.md. Optional.
+S9 Host leftovers of the deleted engine: ~/.cache/nri-plugins/e2e/llm
+   still holds llama.cpp/ (the source clone) and cxl-llm-0180ef1d03868466
+   (the old host build); nothing uses them now. Mention in e2e.md (or the
+   status) that they can be removed; the model file next to them stays.
+
+
+What I checked and found fine
+-----------------------------
+22 section 8, against T16 and the log (each item ran; values from
+run.sh.output):
+- Preconditions: pool-cluster-require; pool-vm-require both; llm-kernel-
+  require both (grep -x CONFIG_EROFS_FS=y /boot/config-$(uname -r), the
+  text names test00-up of the topology); llm-model-fetch; tools; pool-vm-
+  reset before the files are removed (so a VM that still maps the old
+  files is restarted first); "no devices" cxl-assert; model and image only
+  on VM1 (A also checks VM2 has neither); erofs-utils by dnf if mkfs.erofs
+  or dump.erofs is missing; mkfs exactly "mkfs.erofs -b4096 --dsunit=512
+  -Enoinline_data IMAGE DIR" with DIR holding the gguf only (llm-install
+  deletes everything else); dump.erofs: Layout 0, exactly one extent from
+  logical 0 covering the model, physical start 2097152 (2 MiB multiple);
+  image 398802944 bytes; cxl-where.py on both; llm0 config persistent,
+  shared, 512Mi, serial 0xc1ae0001; data and LSA paths from the server
+  JSON equal the expected ones; LSA 262144 bytes, all zeros; dra-install;
+  both images pulled on both VMs; warm-up pod per node (43M read).
+- Image cache stamp: written only after a successful mkfs (rm stamp and
+  image first, "&&" chain); compared with "cat stamp && test -f image";
+  includes the model sha256 and the exact command. A stale or corrupt
+  image cannot pass: dump.erofs re-checks the layout every run, B compares
+  the device sha256 with the image sha256 and finds the model by sha256
+  in the host data file.
+- A: two nodes; one pool slice; persistent, shared, serial, size; hosts 6,
+  validValues ['1', '6'] (amendment); both classes exist; unmatched pod
+  Unschedulable, claim unallocated (see R4).
+- B: env exactly SERIAL, SHARED=1, MODE=block, SIZE (534773760, between
+  image size and 512 MiB, kept), PATH=/dev/pmem0, READONLY=0 (dra-env-
+  assert checks the set exactly, no extra fields); "block device:
+  /dev/pmem0" from [ -b ]; dd exit 0 (1072 ms); device sha256 == image
+  sha256; claim on VM1 with hosts '6'; status data exclusive and
+  persistent; CDI device of kind nri.io/cxl-pool with deviceNodes path
+  /dev/pmem0 type b; pool attachment [(VM1, exclusive)]; LSA no longer
+  zero; the model at offset 4194304 of llm0.raw (llm-file-find compares a
+  64 KiB head, then the full sha256, at every 2 MiB offset: exact). The
+  host checks run after "writer exit 0", which follows dd conv=fsync and
+  the read-back: no race. Writer deleted, then the claim, then llm0-free
+  (memdevs gone in both VMs, device free in the server, no regions).
+- C: each reader started alone, page cache measured before the claim and
+  after /health is 200 (llama-server answers 200 only after the model is
+  loaded, MAP_POPULATE), then the answer, then the pod's memory.stat
+  "file" (the pod cgroup = parent of the container cgroup; hierarchical).
+  Pod 4/0/4 kB < 19835273 B, node +312/+288/+224 kB < 50% (amendment).
+  The pod counter is not vacuous: the same helper reads 387412 kB for the
+  first cached readers. reader-check: env exactly as 22 with SIZE equal
+  to the writer's; "no pmem devices"; "write under PATH refused: ...
+  Read-only file system"; container mountinfo shows PATH ro erofs on
+  /dev/pmem0 with dax=always; answer exactly "Hello! How can I assist you
+  today?" from the reader's node on the pod IP (the curl runs in the VM of
+  the reader); claim on the reader's node with hosts '1'; status data
+  persistent and not exclusive; CDI: kind, no deviceNodes, hostPath
+  .../mounts/c1ae0001-direct, containerPath PATH, type bind, option ro;
+  cxl-where.py on the llama-server pid: 390754304 bytes (>= 90% of the
+  model, amendment), 95399 of 95399 pages present, all in "CXL Window 0 >
+  Persistent Memory > region0 > namespace0.0" (unknown frames become
+  "(no resource)" and fail the regex); RssAnon 133992 kB < half the
+  model. mounts-assert: exactly one mount per node, erofs on /dev/pmem0
+  with dax=always in the superblock options. Attachments: VM1 and VM2,
+  attached, not exclusive.
+- D: one by one while the direct readers run; first-of-node detection is
+  right (cached-a, cached-c first; cached-b second on VM2); pod and node
+  >= 90% for the first (387412 kB pod, +388348/+388268 kB node), pod < 5%
+  and node < 50% for cached-b (0 kB / +288 kB); every page in "^System
+  RAM$"; same answer; mounts-assert: exactly direct and cached, cached on
+  /dev/loop0 with backing_file /dev/pmem0 (the same pmem as direct,
+  checked), dio 1, ro 1, no dax=always (dax=never seen).
+- E: one delete of all six pods, then the claims, llm0-free; no pods or
+  claims; dra-fs-mounts "[]" on both; no pmem loops; no CDI device with
+  CXL_C1AE0001_; no cxl-type3 in qemu; data and LSA sha256 unchanged since
+  the writer; timings; dra-cleanup, pool-cleanup, trap removed, port free,
+  both files removed (see R1, R2 for the probe robustness).
+- Units: POD_FILE and CACHE_DELTA in bytes (FilePages kB * 1024), limits
+  in bytes from LLM_MODEL_SIZE (396705472, a constant that the sha256
+  check pins); RssAnon kB * 1024 against bytes. Right everywhere.
+- Waits: no sleep added anywhere in the diff; every wait is retry-until
+  or dra-wait with a timeout (writer 180 s, server 180 s, warm-up 120 s,
+  unmatched 60 s, free 60 s, kubectl delete --timeout). The only fixed
+  delays are pre-existing (pool-server-stop's kill loop).
+- Cleanup on failure: pool-server-start sets pool-cleanup, T16 replaces it
+  at 361 with file removal and at 374 with dra-cleanup first; before 361
+  the files are sparse zeros only. dra-uninstall deletes the pods
+  gracefully and waits for the claims, so the driver unmounts and
+  releases in the normal failure case (see R3 for the abnormal one).
+  Reruns: pool-vm-reset restarts a VM that kept devices; the server state
+  is removed by pool-server-start; the files are recreated; the driver
+  unmounts unused node mounts at start (D5).
+- test10-test15 side effects: dra-shared-claim-yaml keeps its first four
+  arguments and defaults CLASS to cxl-pool-shared (the only other caller,
+  test13:339, renders the same YAML); DRA_CONTROLLER_ARGS empty by default
+  appends nothing ("${X:+ $X}"); DRA_CLASSES gains cxl-pool-persistent,
+  which the chart creates and test14:257-259 compares against the cxl-*
+  classes of the cluster (consistent); llm.source.sh is sourced for every
+  test of the topology but only defines constants at top level; tests run
+  in separate processes, so test16's DRA_CONTROLLER_ARGS does not leak.
+  test10 now expects 'persistent' (False) among the pool attributes.
+  Nothing outside E sources dra.source.sh or pool.source.sh. The suite run
+  with the final assertions passed (24-erofs-status-T section 16).
+- test00-up (both): ^CONFIG_EROFS_FS=y checked next to FS_DAX with the
+  agreed text; the extended kernel_error text (rpm -e) is accurate to
+  21 F3.
+- Leftovers: S/cxl-llm/ deleted (directory gone); no reference to
+  llm-build, LLAMA_CPP_SRC, cxl-llm.cpp, the engine binary, --hold, or the
+  removed helpers in E or docs/memory/cxl; the remaining "podman" hits
+  are dra-image-put (crio in the VM) and e2e.md's kernel build script;
+  LLM_VM_DIR=/opt/cxl-llm is the VM directory and llm-install removes the
+  old engine from it. The header no longer asks for podman or git; its
+  prerequisites (curl, huggingface.co via proxies, image pull and dnf in
+  the VMs), what the user sees, the hosts-6 reason and the three
+  configuration variables match the code. e2e.md: kernel options, the
+  test16 prerequisites paragraph and the table row are accurate (the
+  rc7 sentence refers to the example output further down, fine).
+- Style: plain ASCII in every changed file (grep -P '[^\x00-\x7F]'); function
+  docs say what (apart from S2); bash -n ok on all eight changed shell
+  files and on the concatenation dra+pool+cxl+llm+test16; shellcheck -s
+  bash -e SC2154,SC2034,SC1090,SC2148,SC2016: 0 findings in dra.source.sh,
+  llm.source.sh, pool.source.sh, cxl.source.sh, test16, test10 and the
+  concatenation; test00-up (both) has only pre-existing info-level
+  SC2013/SC2086 on lines the diff does not touch; cxl-where.py compiles
+  (unchanged; its maps-path filter matches the container path, as the
+  log shows).
+
+R-T done
