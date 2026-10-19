@@ -1,0 +1,143 @@
+plan-7 follow-up: findings (synthesis of 11-research-FA/FS/IN, 12-proto-P1/P2)
+==============================================================================
+Written 2026-10-17 (orchestrator). Evidence, commands and file:line
+references are in the reports named in each section.
+
+1. What the kernel offers on each kind of shared CXL memory (FS, P1)
+- Volatile CXL memory (today's pool devices, and real shared CXL memory)
+  is always a devdax char device or system-ram: no block device with DAX
+  exists for it in v7.3, and nothing for it is queued in cxl/next,
+  libnvdimm-for-next or linux-next. erofs, ext4 and xfs therefore cannot
+  use it: mount -t erofs /dev/daxN.0 is ENOTBLK in the kernel (the
+  mount.erofs helper reports it as "[Error 22] Invalid argument").
+  Upstream block servers (ublk, nbdkit, nbd-server, qemu-storage-daemon)
+  all need read()/pread(), which devdax lacks; phram is refused while
+  device_dax owns the range. famfs is the only filesystem for it.
+- daxctl cannot turn a devdax into a block device: reconfigure-device
+  knows only system-ram, devdax and famfs (ndctl 85 daxctl/device.c
+  l.466-481; an unknown mode such as fsdax fails per device with
+  "unknown mode requested", l.949-952, and with no devices prints
+  "reconfigured 0 devices" and exits 0, checked in VM2). The dax bus has
+  only three drivers for a dev_dax: device_dax (char device), kmem
+  (system-ram) and fsdev_dax (famfs; no mmap, no bdev); block devices with
+  DAX come only from nvdimm namespaces (drivers/nvdimm/pmem.c l.524). fsdax
+  is an ndctl namespace mode: on CXL pmem a namespace can be switched
+  between devdax and fsdax (ndctl create-namespace -f -e namespaceN.M
+  -m fsdax -M mem, on the writer's node before readers attach, since it
+  rewrites the shared labels); a volatile ram region has no namespaces.
+- CXL persistent memory (qemu persistent-memdev + a shared LSA file) is an
+  nvdimm region: an fsdax namespace (-M mem, mandatory on shared pmem) is a
+  block device with DAX, so every DAX filesystem works on it. Real shared
+  CXL appliances offer no shared pmem: this is a qemu model.
+
+2. erofs on shared CXL pmem (FS, P1 measured in both VMs)
+- Kernel: CONFIG_EROFS_FS=y is the only change (FS_DAX, FS_DAX_PMD,
+  LIBNVDIMM, BLK_DEV_PMEM, ND_PFN, CXL_PMEM, LOOP are on). 7.3.0-rc4-fsexp
+  built in VM1 in 231 s, RPMs in /home/akervine/.claude/jobs/plan7-fs/P1/kernel/.
+- Writer: needs only the block device of the namespace, no mount:
+  mkfs.erofs -b4096 --dsunit=512 -Enoinline_data /dev/pmemX DIR (0.66 s)
+  or dd of an image with oflag=direct (0.10 s); erofs-utils 1.9.4 of
+  Fedora 43 (--dsunit needs >= 1.8.6; Debian bookworm and Ubuntu
+  noble/plucky are too old). Without -Enoinline_data the file silently
+  gets no DAX: the mount says dax=always, nothing is logged, pages land in
+  System RAM.
+- Readers on both VMs at once, both directions, the namespace coming from
+  the shared labels: dax=always maps every page from "CXL Window 1 >
+  Persistent Memory > region1 > namespace1.0", page cache +0, read() +0,
+  2 MiB PMD faults (273 faults for 96852 pages); dax=never maps System
+  RAM, the node's page cache grows by the model once and a second reader
+  adds 0. erofs never writes (host sha256 of both backing files unchanged
+  by every mount), writes and remount rw give EROFS.
+- One block device is one superblock per kernel: a second mount with
+  other dax options silently reuses the first. Both modes on one node: a
+  losetup -r --direct-io=on loop device mounted without dax (one page
+  cache copy, Buffers +0).
+- ext4 (mke2fs -d, ro,noload) works too; it needs bigalloc -C 2M for PMD
+  faults (273 faults vs 96852 without). xfs not measured. squashfs has no
+  DAX, cramfs cannot hold a file over 16 MB.
+
+3. famfs on volatile devdax (FA desk, P2 prototype)
+- Upstream: the dax half (fsdev_dax) is in mainline since v7.1. The FUSE
+  half was rewritten by the FUSE maintainer as generic "DAX device based
+  extent maps"; v5 is in fuse.git for-next and linux-next since
+  2026-10-16, reviewed, no open objection; aimed at v7.4, maybe v7.5.
+  famfs userspace: 135 commits in 2026 (Micron), never released, not
+  packaged, needs a forked libfuse (jagalactic/libfuse famfs.extmap).
+- On v7.3-rc4: a clean merge of fuse/for-next (36 files), no port, no
+  config change; famfs userspace detects the kernel by kallsyms "[fuse]"
+  lines, so with FUSE built in it must be told (famfs mount -f).
+- Semantics: only the master host creates files (famfs cp/creat,
+  preallocated in 2 MiB units; plain cp fails); clients replay the log
+  and see 0444 files; read() works, mmap is DAX with PMD faults; no page
+  cache and no option for one; one famfs mount per device per host, and
+  the raw /dev/daxN.M is unusable on that host meanwhile; the FUSE daemon
+  is node-level state.
+- Measured (P2, both VMs, 12-proto-P2-famfs.txt): works end to end, but
+  NOT on unmodified fuse/for-next 4dd8d3967401 (the tip on 2026-10-17):
+  any posix_fadvise() on a famfs file oopses the kernel (NULL backing
+  file in fuse_passthrough_fadvise), and stock llama.cpp and sha256sum
+  both call it. A 1-line fix (P2/kernel/fix-fadvise-extmap.patch) makes
+  it work: kernel 7.3.0-rc4-famfs2 (EROFS included), the default boot
+  entry of both VMs now.
+- With the fix: mkfs.famfs + famfs cp on VM1, famfs mount -f on VM2;
+  every page of a reader's mapping in "CXL Window 1 > region1 > dax1.0",
+  page cache +0, 2 MiB PMD faults (189 dax_pmd_fault_done NOPAGE of 273
+  faults); three non-root pods without capabilities (two on VM2, one on
+  VM1) on a readOnly hostPath answer the expected text at once. A daemon
+  killed with -9 leaves existing mappings working (refaults served from
+  the in-kernel extent map); new opens get ENOTCONN until the readers
+  stop and the node remounts.
+- Quirks: mkfs.famfs refuses devices under 4 GiB (hard-coded); data files
+  keep mode 0644 on clients and a client's root can write them in place,
+  and a propagated submount arrives rw: the node mount must be remounted
+  ro (bind,ro) to make readers read-only; one famfs mount per device per
+  host (the dax holder is exclusive, a second mount fails after 45 s).
+
+4. Stock llama.cpp (IN, P1 measured)
+- ghcr.io/ggml-org/llama.cpp:light-b11681 (312 MB, ~20 s pull, haswell
+  CPU backend chosen at run time):
+    /app/llama-completion -m $M -t 2 -c 512 -n 32 --temp 0 --top-k 1 -nr
+      -no-cnv --no-warmup --no-display-prompt
+      -p '<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
+  answers "Hello! How can I assist you today?" in every run, load
+  170-350 ms, 34-41 tokens/s; -nr keeps the weights mapped (no
+  CPU_REPACK buffer). Three pods on a readOnly hostPath of the node mount
+  (two on VM2, one on VM1): dax=always 95399/95399 mapped pages in the CXL
+  namespace, pod file ~25 kB; dax=never all System RAM, the first pod of
+  a node is charged the model, the second 24 kB. cxl-llm, its build and
+  podman on the host are no longer needed.
+
+5. Mounts into containers (IN, P1 measured)
+- Claims: a CDI mount of the node's mount point, ro. Running containers
+  (cxl-request leases): mount propagation. A hostPath with
+  mountPropagation HostToContainer became OCI options [rbind, rslave, ro]
+  (rootfsPropagation rslave); a node mount made after the pod started was
+  visible at once and llama.cpp mapped it from CXL; without propagation
+  it was not visible. CDI copies mount options verbatim and runc 1.5.2
+  applies rslave, so a lease's CDI mount of a plugin-owned directory with
+  [rbind, ro, rslave] gives "a mount point nearby where cxl-request is",
+  with no setns, pid or privileges. containerd 2.4.1; SELinux is disabled
+  in the VMs (context= not tested).
+- Device rules: a writer with "rwm" opens /dev/pmemX O_RDWR, a reader
+  with "r" gets EPERM.
+
+6. Teardown hazard (P1, reproduced twice)
+- umount of a DAX filesystem that a container maps is EBUSY; umount -l
+  succeeds, and then cxl disable-region does NOT refuse: the struct pages
+  are freed under the live mapping and the guest oopses and panics when
+  the mapping goes away (VM2 serial log P1/vm2-serial.log). The node
+  plugin must never lazy-unmount and must never release a region while a
+  superblock on it lives: Unprepare fails on EBUSY and kubelet retries.
+  After such a crash the guest cannot probe the device again until qemu
+  removes and re-plugs it.
+
+7. Driver and pool cost (IN)
+- erofs/ext4 on pmem: fake-cxl-pool persistent device kind (data + shared
+  LSA, ~300 lines), memctl pmem regions and fsdax namespaces (~350), pool
+  driver modes block and fs with a refcounted node mount table (~800),
+  leases (~350), cxl-request (~100), docs (~250): 6-8 days. Kernel mounts
+  survive plugin restarts. ndctl joins the node tools.
+- famfs: no fake-cxl-pool change; the plugin binds the device to
+  fsdev_dax, runs mkfs/mount for the writer, mounts for readers, and owns
+  a FUSE daemon per mount that must outlive the readers and plugin
+  restarts; famfs userspace and the forked libfuse on every node.

@@ -129,76 +129,11 @@ $(sed 's/^/      /' <<< "$script")
 EOF
 }
 
-# shellcheck disable=SC2001 # sed indents every line of SCRIPT
-claim-pod-yaml() {
-    # Usage: claim-pod-yaml NAME VMDIR CLAIM SCRIPT
-    #
-    # Pod NAME on the node of VMDIR with ResourceClaim CLAIM from its
-    # creation (test10, test11) and the dax-rw tool in /tools, running the
-    # shell SCRIPT, then sleeping.
-    local name="$1" node claim="$3" script="$4"
-    node=$(basename "$2")
-    cat <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: $name
-spec:
-  nodeSelector:
-    kubernetes.io/hostname: $node
-  terminationGracePeriodSeconds: 2
-  restartPolicy: Never
-  resourceClaims:
-  - name: mem
-    resourceClaimName: $claim
-  volumes:
-  - name: tools
-    configMap:
-      name: dax-rw
-  containers:
-  - name: main
-    image: $PYTHON_IMAGE
-    imagePullPolicy: IfNotPresent
-    command:
-    - sh
-    - -c
-    - |
-$(sed 's/^/      /' <<< "$script")
-      trap "exit 0" TERM; sleep infinity & wait
-    volumeMounts:
-    - name: tools
-      mountPath: /tools
-    resources:
-      claims:
-      - name: mem
-EOF
-}
-
-pod-log() {
-    # Usage: pod-log POD
-    #
-    # Print the log of pod POD (quietly).
-    dra-vm-command-q "$VM2" "kubectl logs -n $DRA_NS $1 2>/dev/null"
-}
-
-wait-log() {
-    # Usage: wait-log POD LINE [TIMEOUT]
-    #
-    # Wait until the log of pod POD has the line LINE (a fixed string that
-    # matches the whole line), TIMEOUT seconds at most (default 120).
-    local pod="$1" line="$2" tmo="${3:-120}"
-    retry-until --timeout "$tmo" --interval 1 --message "$pod: \"$line\"" \
-        'pod-log "$pod" | grep -qxF -- "$line"' || {
-        dra-vm-command "$VM2" "kubectl logs -n $DRA_NS $pod; kubectl describe pod -n $DRA_NS $pod | tail -n 20"
-        error "pod $pod did not log \"$line\" in ${tmo}s"
-    }
-}
-
 lease-of() {
     # Usage: lease-of POD
     #
     # Print the lease id that pod POD logged ("lease ID ...").
-    pod-log "$1" | sed -n 's/^lease \([0-9a-f]\{8\}\) .*/\1/p' | tail -n 1
+    dra-pod-log "$VM2" "$1" | sed -n 's/^lease \([0-9a-f]\{8\}\) .*/\1/p' | tail -n 1
 }
 
 companions-of() {
@@ -218,14 +153,6 @@ readers-pending() {
     for r in "${READERS[@]}"; do
         [ "$(companions-of "$r" | awk '{print $2}')" == Pending ] || return 1
     done
-}
-
-shared0-attachments() {
-    # Usage: shared0-attachments
-    #
-    # Print the attachments of shared0 on the server as JSON, and keep them
-    # in COMMAND_OUTPUT.
-    pool-host-client -o json attachments --device shared0 || command-error "cannot list the attachments of shared0"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX"
@@ -288,10 +215,10 @@ echo \"written\"
 while [ ! -f /tmp/done ]; do sleep 0.2; done
 echo \"writer done\"' sh \"$TEXT\"
 echo \"cxl-request exit \$?\"")"
-wait-log writer written 120
+dra-wait-log "$VM2" writer written 120
 WRITER_LEASE=$(lease-of writer)
 [ -n "$WRITER_LEASE" ] || error "the writer logged no lease id"
-pod-log writer | grep -qx "lease $WRITER_LEASE read-only 0 shared 1 fd 3" ||
+dra-pod-log "$VM2" writer | grep -qx "lease $WRITER_LEASE read-only 0 shared 1 fd 3" ||
     error "the writer has not CXL_${SHARED_HEX}_READONLY=0, _SHARED=1 and _FD=3"
 dra-wait "$VM2" writer-companion "resourceclaim -n $DRA_NS cxl-lease-$WRITER_LEASE" \
     "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 30
@@ -304,7 +231,7 @@ dra-assert "$COMMAND_OUTPUT" "device_data('shared0')['exclusive'] == True"
 dra-assert "$COMMAND_OUTPUT" "[(c['driver'], c['parameters']['kind'], c['parameters'].get('mode'), bool(c['parameters'].get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', 'DeviceConfig', 'dax', False)]"
 dra-assert "$COMMAND_OUTPUT" "j['metadata']['labels']['$DRA_LEASE_LABEL'] == '$WRITER_LEASE' and j['metadata']['annotations']['$DRA_REQUESTER_ANNOTATION'] == '$DRA_NS/writer/main'"
 dra-claim-conditions "$VM2" "cxl-lease-$WRITER_LEASE"
-shared0-attachments
+pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
 pool-host-client -o json devices shared0 || command-error "cannot get shared0"
 SHARED_FILE=$(pool-value "$COMMAND_OUTPUT" 'j["path"]')
@@ -341,16 +268,16 @@ for r in "${READERS[@]}"; do
 done
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "${companion}"
 dra-assert "$COMMAND_OUTPUT" "j['status'].get('allocation') is None"
-shared0-attachments
+pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('exclusive', False)) for a in j] == [('$VM1_NAME', True)]"
 
 echo "### D: the writer exits, the readers get the device"
 t0=$(date +%s.%N)
 dra-exec "$VM1" writer touch /tmp/done || command-error "cannot tell the writer to finish"
 dra-pod-wait "$VM2" writer Succeeded 60
-wait-log writer "cxl-request exit 0" 10
+dra-wait-log "$VM2" writer "cxl-request exit 0" 10
 for r in "${READERS[@]}"; do
-    wait-log "$r" holding 120
+    dra-wait-log "$VM2" "$r" holding 120
 done
 t1=$(date +%s.%N)
 T_READERS=$(echo "$t1 - $t0" | bc)
@@ -372,9 +299,9 @@ for r in "${READERS[@]}"; do
 done
 # All three hold their mapping now: none has its stop file yet.
 for r in "${READERS[@]}"; do
-    pod-log "$r" | grep -q '^final: ' && error "$r stopped holding before the others read"
+    dra-pod-log "$VM2" "$r" | grep -q '^final: ' && error "$r stopped holding before the others read"
 done
-shared0-attachments
+pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
 # The companion claims of the readers ask for read-only devices, one host
 # of shared0 each. The readers get read-only fds from the node plugin
@@ -405,34 +332,16 @@ retry-until --timeout 60 --interval 1 --message "nothing left of the late exclus
     '[ -z "$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$LATE_LEASE -o name")" ]' ||
     error "the late exclusive lease left objects behind"
 for r in "${READERS[@]}"; do
-    pod-log "$r" | grep -q '^final: ' && error "$r lost its memory to the late exclusive request"
+    dra-pod-log "$VM2" "$r" | grep -q '^final: ' && error "$r lost its memory to the late exclusive request"
 done
 
 echo "### F: a fourth reader, on VM1, with a read-only claim from its creation"
-dra-apply "$VM2" <<EOF
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaim
-metadata:
-  name: shared-read-only
-spec:
-  devices:
-    requests:
-    - name: mem
-      exactly:
-        deviceClassName: cxl-pool-shared
-        selectors:
-        - cel:
-            expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$SHARED_SERIAL"'
-    config:
-    - opaque:
-        driver: $DRA_POOL_DRIVER
-        parameters: {apiVersion: $DRA_POOL_DRIVER/v1alpha1, kind: DeviceConfig, readOnly: true}
-EOF
-dra-apply "$VM2" <<< "$(claim-pod-yaml reader-d "$VM1" shared-read-only "env | grep ^CXL_${SHARED_HEX}_ | sort
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml shared-read-only "$SHARED_SERIAL" "" "readOnly: true")"
+dra-apply "$VM2" <<< "$(dra-script-pod-yaml reader-d "$VM1" shared-read-only "env | grep ^CXL_${SHARED_HEX}_ | sort
 python3 /tools/dax-rw.py check-ro \"\$CXL_${SHARED_HEX}_DAX\" 0 || exit 1
 echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${SHARED_HEX}_DAX\" 0)\"")"
 dra-pod-wait "$VM2" reader-d Running 120
-wait-log reader-d "read: $TEXT" 60
+dra-wait-log "$VM2" reader-d "read: $TEXT" 60
 dra-kubectl "$VM2" "logs -n $DRA_NS reader-d"
 # readOnly without a mode: mode dax, the only mode of a shared device.
 dra-env-assert reader-d "$COMMAND_OUTPUT" "$SHARED_HEX" \
@@ -455,7 +364,7 @@ grep -qF -- "- CXL_CLAIM_${RO_CLAIM_UID//-/_}=1" <<< "$cdi" || error "the CDI de
 [ "$(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")" == "claim-$RO_CLAIM_UID-0" ] ||
     error "the claim of reader-d has other CDI devices than claim-$RO_CLAIM_UID-0: $(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")"
 for r in "${READERS[@]}"; do
-    pod-log "$r" | grep -q '^final: ' && error "$r stopped holding before reader-d read"
+    dra-pod-log "$VM2" "$r" | grep -q '^final: ' && error "$r stopped holding before reader-d read"
 done
 echo "four readers, two on each node, read '$TEXT' at the same time"
 
@@ -464,8 +373,8 @@ for r in "${READERS[@]}"; do
     dra-exec "${READER_VM[$r]}" "$r" touch /tmp/stop || command-error "cannot stop $r"
 done
 for r in "${READERS[@]}"; do
-    wait-log "$r" "final: $TEXT" 30
-    wait-log "$r" "cxl-request exit 0" 30
+    dra-wait-log "$VM2" "$r" "final: $TEXT" 30
+    dra-wait-log "$VM2" "$r" "cxl-request exit 0" 30
 done
 dra-delete "$VM2" pod reader-d --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim shared-read-only --wait=true --timeout=60s
@@ -473,12 +382,7 @@ for r in "${READERS[@]}"; do
     retry-until --timeout 60 --interval 1 --message "$r has no leases" \
         '[ -z "$(companions-of "$r")" ]' || error "$r still has companions: $(companions-of "$r")"
 done
-for vm in "$VM2" "$VM1"; do
-    pool-cxl-wait "$vm" shared0-released "memdevs == []" 60
-done
-retry-until --timeout 60 --message "shared0 free" \
-    'pool-host-client -o json devices shared0 >/dev/null && pool-py assert "$COMMAND_OUTPUT" "j[\"state\"] == \"free\" and j[\"attachments\"] in (None, [])"' ||
-    error "shared0 is not free: $COMMAND_OUTPUT"
+pool-device-free-wait shared0 "$VM2" "$VM1"
 
 echo "### H1: the exclusive device pooled0 as a dax device, through a lease"
 TEXT2="$TAG: pooled0 through a dax lease on VM2"
@@ -526,12 +430,12 @@ spec:
         driver: $DRA_POOL_DRIVER
         parameters: {apiVersion: $DRA_POOL_DRIVER/v1alpha1, kind: DeviceConfig, mode: dax}
 EOF
-dra-apply "$VM2" <<< "$(claim-pod-yaml dax-claimer "$VM1" pooled-dax "env | grep ^CXL_${POOLED0_HEX}_ | sort
+dra-apply "$VM2" <<< "$(dra-script-pod-yaml dax-claimer "$VM1" pooled-dax "env | grep ^CXL_${POOLED0_HEX}_ | sort
 echo \"before: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"
 python3 /tools/dax-rw.py write \"\$CXL_${POOLED0_HEX}_DAX\" 0 \"$TEXT3\" || exit 1
 echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"")"
 dra-pod-wait "$VM2" dax-claimer Running 120
-wait-log dax-claimer "read: $TEXT3" 60
+dra-wait-log "$VM2" dax-claimer "read: $TEXT3" 60
 dra-kubectl "$VM2" "logs -n $DRA_NS dax-claimer"
 # A dax device of its own, read-write, and no NUMA node.
 dra-env-assert dax-claimer "$COMMAND_OUTPUT" "$POOLED0_HEX" \

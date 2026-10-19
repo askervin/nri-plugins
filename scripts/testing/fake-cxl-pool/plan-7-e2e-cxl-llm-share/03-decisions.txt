@@ -1,0 +1,74 @@
+plan-7-e2e-cxl-llm-share: decisions
+===================================
+Written 2026-10-16 (orchestrator, Opus). Reasons in 02-findings.txt.
+
+D1 Model: Qwen3-0.6B Q4_K_M as pinned in 02-findings 1 (URL by commit,
+   sha256 checked), cached on the host in $CACHE_DIR/llm/ (CACHE_DIR of the
+   e2e env, ~/.cache/nri-plugins/e2e). A missing model that cannot be
+   downloaded fails the test with a clear message; llm_model=PATH points
+   at a local copy (checked against the same sha256).
+D2 Engine: cxl-llm (research A) moves into the e2e tree with a build script
+   that builds it and a pinned llama.cpp (25a1d63f4, fetched into
+   $CACHE_DIR/llm/ if no local checkout is given) statically in a fedora:43
+   container (podman), cached by source hash. Delivered to the VMs as
+   /opt/cxl-llm/cxl-llm and mounted read-only into the test pods
+   (hostPath; test tooling, like the dax tools ConfigMap). Repacking off.
+D3 Direct mode: readers claim the shared device with DeviceConfig
+   {mode: dax, readOnly: true} and run cxl-llm -m $CXL_<KEY>_DAX. No
+   driver change.
+D4 (SUPERSEDED 2026-10-16 by D10) Cached mode: a new DeviceConfig and lease mode, file, in the driver
+   (both drivers, every dax-capable memdev, plan-5 vocabulary):
+   - mode file means: the container gets the memory as a read-only regular
+     file at CXL_<KEY>_PATH, read through the node's page cache: the first
+     access to a page copies it from the device into local DRAM, later
+     accesses and other containers on the node read the local copy.
+   - The node plugin prepares the device as for dax and exports it through
+     an in-process FUSE file (one export per dax device per node,
+     refcounted by claims), and bind-mounts the export's directory
+     read-only into containers (CDI mount); no device node, no device
+     cgroup rule, no privileges in the container.
+   - mode file needs readOnly: true in this version (writes through a page
+     cache would not be visible to other hosts); region and dram refuse it
+     like dax.
+   - Leases: cxl-request request --mode file --read-only gets an fd of the
+     node-side file (fd 3 under --exec), mmap'able, page-cached.
+   - New dependency of the driver: github.com/hanwen/go-fuse/v2 (pure Go,
+     BSD-3). Flagged to the user.
+   Not chosen: pmem (a second device kind only qemu offers; recorded in 02
+   as the alternative), FUSE inside reader pods (privileges, a cache per
+   pod, kernel-enforced read-only lost), tmpfs copy (not on demand).
+D5 Writer: one writer pod on VM1 with a claim on cxl-pool-shared for all
+   hosts (exclusive, writable, mode dax), cxl-llm --write from a read-only
+   hostPath that holds the model on VM1 only; the host checks the sha256 of
+   the model-length prefix of the pool backing file afterwards. Layout:
+   the GGUF at offset 0, zero padding to 2 MiB (cxl-llm --write).
+D6 Readers: three per mode, two on VM2 and one on VM1 (as test13), each
+   with its own claim. Device size 512Mi.
+D7 Configuration: llm_access=direct|cached|both (default both), read with
+   an in-code default like k8s_restore; llm_threads (default 2).
+D8 Assertions: every reader prints the same answer, equal to the expected
+   answer (llm_expect, default "Hello! How can I assist you today?");
+   direct: the reader's model mapping has its frames in a CXL window and
+   the node's FilePages grows by less than 5% of the model; cached: frames
+   in System RAM, the first cached reader on a node grows FilePages by at
+   least 90% of the model size, the second cached reader on the same node
+   by less than 5%; the writer's bytes equal the model (host sha256);
+   nothing left at the end (no FUSE mounts on the nodes, no claims, regions,
+   attachments, backing file removed).
+D9 Phases: the e2e work starts at once with the direct mode (no driver
+   change needed); the cached mode follows the driver work. Regression after
+   the driver change: test10-test15 on the same build.
+
+D10 (2026-10-16, user) Direct mode only. The user does not want the
+    go-fuse dependency; loop cannot take a character device
+    (drivers/block/loop.c:511, no kernel option changes that) and nothing
+    in v7.3 makes a block device of a volatile dax region, so the
+    remaining kernel-native options were NBD (kernel config + an in-tree
+    NBD server), CXL persistent memory (new pool device kind) or a
+    hand-written FUSE server. The user chose to drop the cached mode:
+    test16 demonstrates direct mmap from the shared CXL device. The
+    driver's mode file (stream F) is removed; its patch is kept in
+    dropped-mode-file/ for reference. D7's llm_access switch is dropped.
+D11 (2026-10-16, user) test16 assumes the two VMs are always one
+    two-node cluster: a shape check at the start, no restore at the end;
+    tests that reshape to single-node clusters are not run in this task.

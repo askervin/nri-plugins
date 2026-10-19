@@ -1,0 +1,521 @@
+plan-7 follow-up, prototype P1: erofs on shared CXL pmem, stock llama.cpp
+==========================================================================
+Written 2026-10-17 (prototype P1)
+
+VM1 = n4-cxl-shared-1 (worker, writer), VM2 = n4-cxl-shared-2 (control
+plane). One two-node cluster throughout. Scratch (scripts, logs, kernel):
+/home/akervine/.claude/jobs/plan7-fs/P1/ (guest/ = helpers copied into the
+VMs as /var/tmp/p1/). E = test/e2e, S1/S2 = ssh -F
+E/n4-cxl-shared-{1,2}-fedora-43-containerd/.ssh-config vagrant@node.
+
+0. Short answers
+----------------
+- Kernel: 7.3.0-rc4-fsexp = the running config + EROFS_FS (+XATTR,
+  BACKED_BY_FILE, ZIP, LZMA defaults), BLK_DEV_UBLK, BLK_DEV_NBD,
+  MTD_PHRAM, MTD_BLOCK, USERFAULTFD (XFS_FS, FS_DAX, FS_DAX_PMD, MTD were
+  already on). Built in VM1 with binrpm-pkg in 231 s; installed next to
+  7.3.0-rc4 with rpm -ivh (not -Uvh), default in both VMs. Tarball and
+  .config: /home/akervine/.claude/jobs/plan7-fs/P1/kernel/.
+- erofs on volatile devdax: impossible. Kernel: ENOTBLK ("not a block
+  device"); the mount.erofs helper of erofs-utils hides it behind a loop
+  fallback and "[Error 22] Invalid argument".
+- erofs on shared CXL pmem works end to end with stock tools: writer VM1
+  needs only /dev/pmemX (mkfs.erofs straight onto the bdev, 0.66 s, or
+  dd of an image, 0.10 s); VM2 attaches later, its namespace comes from
+  the shared labels; both VMs mount ro at the same time, dax=always and
+  dax=never, in both directions. Image options that matter:
+  mkfs.erofs -b4096 --dsunit=512 -Enoinline_data (file data at device
+  offset 2 MiB, one plain extent). Without -Enoinline_data the file
+  silently gets no DAX.
+- dax=always: every page of a reader's mapping is in "CXL Window 1 >
+  Persistent Memory > region1 > namespace1.0", page cache +0, read()
+  also +0; 2 MiB PMD faults (273 faults for 96852 pages = 189 PMD + 84
+  PTE for the last partial 2 MiB; VmFlags hg). dax=never: System RAM
+  frames, page cache +388 MB on the reader's node once, a second reader
+  +0. Nothing writes the device (host sha256 of both backing files
+  unchanged by every reader mount); writes give EROFS.
+- One bdev = one superblock per VM: a second mount with other dax
+  options silently reuses the first. Both modes on one node: a
+  losetup -r --direct-io=on loop device mounted without dax (one page
+  cache copy, Buffers +0).
+- Stock llama.cpp, image ghcr.io/ggml-org/llama.cpp:light-b11681 (312 MB,
+  pull ~20 s), no custom binary:
+    /app/llama-completion -m $M -t 2 -c 512 -n 32 --temp 0 --top-k 1 -nr
+      -no-cnv --no-warmup --no-display-prompt
+      -p '<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
+  -> "Hello! How can I assist you today? [end of text]" in all runs;
+  load 170-350 ms, 34-41 tok/s; no CPU_REPACK buffer. Three pods (two on
+  VM2, one on VM1) on a readOnly hostPath of the node mount: dax=always
+  -> 95399/95399 mapped pages in the CXL namespace, pod file ~25 kB;
+  dax=never -> all System RAM, the first pod per node is charged the
+  model (file 444 MB incl. libs), the second pod 24 kB.
+- Mount into a running container: hostPath + mountPropagation:
+  HostToContainer (OCI options rbind, rslave, ro) shows a later node
+  mount at once and llama.cpp maps it from CXL; without propagation the
+  mount is not visible. containerd 2.4.1, runc 1.5.2, SELinux disabled.
+- Teardown: plain umount of the node mount gives EBUSY while a container
+  maps the file; umount -l succeeds (also in the container), and then
+  cxl disable-region does NOT refuse: it frees the struct pages under the
+  live DAX mapping and the guest oopses/panics when the mapping is torn
+  down (reproduced, trace captured). Never lazy-unmount; never release a
+  region while its superblock lives.
+
+1. Experimental guest kernel 7.3.0-rc4-fsexp
+--------------------------------------------
+Start state (checked): both VMs 7.3.0-rc4, cluster Ready (2 nodes, no pods
+outside kube-system), port 9909 free on the host, `info qtree -b` has 0
+cxl-type3 in both qemus. The running /boot/config-7.3.0-rc4 equals
+E/playbook/files/qemu-cxl-kernel.config byte for byte (diff rc=0).
+
+Build in VM1 (8 vCPUs, 7.6 GiB):
+  sudo dnf install -y fedpkg fedora-packager rpmdevtools ncurses-devel pesign \
+    grubby make gcc flex bison elfutils-devel elfutils-libelf-devel dwarves \
+    openssl openssl-devel perl bc rsync                          (45 s)
+  rsync -a host:/home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src/ \
+    VM1:~/fsexp/linux/                                           (19 s, 1.6 GB)
+  P1/kconfig.sh (in VM1): cp /boot/config-$(uname -r) .config;
+    scripts/config --enable X for X in EROFS_FS EROFS_FS_BACKED_BY_FILE
+    EROFS_FS_XATTR EROFS_FS_ZIP XFS_FS FS_DAX FS_DAX_PMD BLK_DEV_UBLK
+    BLK_DEV_NBD MTD MTD_PHRAM MTD_BLOCK USERFAULTFD;
+    scripts/config --set-str LOCALVERSION "-fsexp"; make olddefconfig;
+    then checks that every X is =y (all stuck).
+  Resulting change against the running config (22 lines, all additions
+  except LOCALVERSION):
+    CONFIG_BLK_DEV_NBD=y CONFIG_BLK_DEV_UBLK=y CONFIG_BLKDEV_UBLK_LEGACY_OPCODES=y
+    CONFIG_EROFS_FS=y CONFIG_EROFS_FS_XATTR=y CONFIG_EROFS_FS_POSIX_ACL=y
+    CONFIG_EROFS_FS_SECURITY=y CONFIG_EROFS_FS_BACKED_BY_FILE=y
+    CONFIG_EROFS_FS_ZIP=y CONFIG_EROFS_FS_ZIP_LZMA=y
+    CONFIG_EROFS_FS_ZIP_LZMA_DEFAULT_MAX_STREAMS=16 CONFIG_XZ_DEC_MICROLZMA=y
+    CONFIG_MTD_BLKDEVS=y CONFIG_MTD_BLOCK=y CONFIG_MTD_PHRAM=y
+    CONFIG_USERFAULTFD=y CONFIG_USERFAULTFD_RWP=y CONFIG_PTE_MARKER_UFFD_WP=y
+    CONFIG_HAVE_ARCH_USERFAULTFD_MINOR=y CONFIG_HAVE_ARCH_USERFAULTFD_WP=y
+    CONFIG_LOCALVERSION="-fsexp"
+  Already on before: XFS_FS=y, FS_DAX=y, FS_DAX_PMD=y, MTD=y (XFS has no
+  separate dax option; XFS and erofs DAX are compiled in with FS_DAX).
+  Left at their defaults (off): EROFS_FS_ZIP_DEFLATE/ZSTD/ACCEL,
+  EROFS_FS_PAGE_CACHE_SHARE (experimental), EROFS_FS_DEBUG. Note: the
+  kernel has no tracing (no fs_dax tracepoints); see 3.6 for how PMD
+  faults were determined without them.
+  make -j$(nproc) binrpm-pkg (as E/playbook/custom-kernel-fedora.yaml),
+  run as a systemd --user unit with linger enabled:  231 s (3 min 51 s).
+  RPMs: kernel-7.3.0_rc4_fsexp-1.fc43.x86_64.rpm (8.1 MB), kernel-devel
+  (10.8 MB), kernel-headers (1.7 MB).
+  On the host (scratch only, not in ~/.cache/nri-plugins/e2e):
+    /home/akervine/.claude/jobs/plan7-fs/P1/kernel/kernel-pkgs-fsexp.tar
+      (20623360 bytes, sha256 e4030b685318b80c5c2b3c3ab5faa0527447ccbad5b8ae35617f6549f6ce9b17,
+       the three RPMs, as the e2e kernel tarballs)
+    /home/akervine/.claude/jobs/plan7-fs/P1/kernel/config-7.3.0-rc4-fsexp
+Install (both VMs), next to the old kernel:
+  sudo rpm -ivh kernel-7.3.0_rc4_fsexp-1.fc43.x86_64.rpm
+  (only the kernel package. NOT rpm -Uvh as lib/vm.bash
+  vm-kernel-pkgs-install does: -U would replace the installed package
+  kernel-7.3.0_rc4, and kernel-headers would replace the headers package.)
+  The %post made initramfs-7.3.0-rc4-fsexp.img and a BLS entry.
+  sudo grubby --set-default=/boot/vmlinuz-7.3.0-rc4-fsexp
+  sudo grubby --default-kernel  -> /boot/vmlinuz-7.3.0-rc4-fsexp
+  grub2-editenv list: saved_entry=<machine-id>-7.3.0-rc4-fsexp
+  reboot (P1/reboot-vm.sh, polls the boot id): VM1 up after 19 s, VM2 24 s.
+Verified: uname -r = 7.3.0-rc4-fsexp in both; both nodes Ready
+(KERNEL-VERSION 7.3.0-rc4-fsexp); /boot/config-7.3.0-rc4-fsexp has all 13
+options =y; /proc/filesystems lists erofs and xfs; /dev/nbd0,
+/dev/ublk-control and /dev/userfaultfd exist. Boot entries now: 0 =
+6.17.1-300.fc43, 1 = 7.3.0-rc4-fsexp (default), 2 = 7.3.0-rc4.
+
+2. erofs on volatile devdax: fails (as expected)
+-----------------------------------------------
+VM1, backing file P1/backing/vol0.raw (512M, sparse, host ext4):
+  QMP object-add memory-backend-file id=p1_vol0 mem-path=.../vol0.raw size=512M share=on
+  QMP device_add cxl-type3 bus=cxlsw_ds1_usrp0hb1 volatile-memdev=p1_vol0 id=p1vol0 sn=0xf5e00002
+  guest: mem0 ram_size 512 MiB; HB1 (pci0000:18) is root decoder0.1
+    (decoder0.1/target_list = 24 = 0x18).
+  sudo cxl create-region -t ram -m mem0 -d decoder0.1   -> region1, dax1.0
+  dax1.0 came up bound to kmem (mode system-ram, 0/4 blocks online), as
+  research B saw: sudo daxctl reconfigure-device -m devdax -f dax1.0.
+Mount attempts on /dev/dax1.0:
+  mount -t erofs -o ro /dev/dax1.0 M (and -o ro,dax=always, no options):
+    "Failed to mount erofs: [Error 22] Invalid argument". This message
+    is from the helper /usr/sbin/mount.erofs of erofs-utils 1.9.4, which
+    mount(8) runs for -t erofs: strace shows it tries mount(2) ->
+    ENOTBLK, then falls back to a loop device: LOOP_SET_FD on the char
+    device -> EINVAL, and reports that EINVAL.
+  mount -i -t erofs -o ro /dev/dax1.0 M (the kernel's own answer):
+    fsconfig(3, FSCONFIG_CMD_CREATE) = -1 ENOTBLK (Block device required)
+    mount: /var/tmp/p1/mnt: /dev/dax1.0 is not a block device.  (rc 32)
+    The same with -o ro,dax=always. dmesg prints nothing.
+  So: erofs needs a block device (or, with EROFS_FS_BACKED_BY_FILE, a
+  regular file); a devdax char device is neither, and loop cannot wrap
+  it. Note for the driver: the erofs-utils mount helper hides the real
+  errno; mount -i (or mount(2) directly) shows it.
+Released: cxl disable-region region1; cxl destroy-region region1; cxl
+disable-memdev mem0; QMP device_del p1vol0 -> DEVICE_DELETED after 6.2 s;
+object-del p1_vol0; qtree 0 cxl-type3; vol0.raw deleted.
+
+3. Shared CXL pmem with erofs, writer VM1, readers VM1 and VM2
+--------------------------------------------------------------
+3.1 Device (both VMs, the same two files, P1/plug-pmem.sh N). Backing files
+  on the host's ext4: P1/backing/pmem0.raw (512M), P1/backing/lsa0.raw
+  (256K), both created by truncate (sparse).
+    object-add memory-backend-file id=p1_pmem0 mem-path=.../pmem0.raw size=512M share=on
+    object-add memory-backend-file id=p1_lsa0  mem-path=.../lsa0.raw  size=256K share=on
+    device_add cxl-type3 bus=cxlsw_ds0_usrp0hb1 persistent-memdev=p1_pmem0 lsa=p1_lsa0 id=p1pmem0 sn=0xf5e00001
+  Guest: mem0 pmem_size 512 MiB, nmem0 id 4125097985 (= serial).
+  ndctl is not in the VMs by default: sudo dnf install -y ndctl (both).
+
+3.2 Writer, VM1 (block device only, never mounted rw):
+    sudo cxl create-region -t pmem -m mem0 -d decoder0.1    -> region1 (0.10 s),
+        size 512 MiB, align 16 MiB, iset_id 0xebc00002f5e00001
+    sudo ndctl create-namespace -r region1 -m fsdax -M mem   -> namespace1.0 (0.12 s),
+        /dev/pmem1, map mem, size 534773760 (510 MiB), align 2 MiB,
+        uuid ac26f016-7aa3-446c-8719-78f2d546ebed; queue/dax = 1
+    sudo dnf install -y erofs-utils   (1.9.4, also brings erofs-fuse and the
+        /usr/sbin/mount.erofs helper)
+  Image options and data alignment (staged dir /var/tmp/p1/stage holds
+  only the model, sha256 ac2d9771...524a checked):
+    mkfs.erofs -b4096 IMG stage/                       : file data at byte 4096,
+        tail (3776 B) inline after it, Layout 2 (FLAT_INLINE)
+    mkfs.erofs -b4096 --dsunit=512 IMG stage/          : data at 2097152, tail
+        still inline, Layout 2
+    mkfs.erofs -b4096 --dsunit=512 -Enoinline_data IMG stage/ : ONE extent,
+        logical 0..396705792 -> physical 2097152..398802944, Layout 0
+        (FLAT_PLAIN). This is the one to use (3.5: inline means no DAX).
+    (dump.erofs -e --path=/Qwen3-0.6B-Q4_K_M.gguf IMG shows the layout and
+    the extents; dump.erofs -s the superblock: 97364 blocks of 4096, root
+    nid 36, model nid 39.)
+  Final command (-T0 --all-root -U fixed: reproducible bytes):
+    O="-b4096 -T0 --all-root -U 5e1f0000-0000-4000-8000-00000000e10f --dsunit=512 -Enoinline_data"
+    mkfs.erofs --quiet $O model.erofs stage/       0.02-0.07 s (the stage dir
+        is on the VM's btrfs and was in page cache), image 398802944 bytes
+        (190.2 x 2 MiB), sha256 b48892b7ebf861f2b7ec5891f729a7c7ba55e6bae67084e809fa75fde741712a
+  Flashing, both work and give identical bytes (sha256 of the first
+  398802944 bytes of /dev/pmem1, buffered and O_DIRECT, = b48892b7...):
+    B. mkfs.erofs --quiet $O /dev/pmem1 stage/     0.66 s. Prints
+       "<E> erofs_io: failed to erase block device(/dev/pmem1): [Error 1]
+       Operation not permitted" (BLKDISCARD; pmem has discard_max_bytes 0)
+       but exits 0 and the image is complete. Needs only the bdev, no mount.
+    A. dd if=model.erofs of=/dev/pmem1 bs=2M oflag=direct   0.10 s, rc 0.
+  fsck.erofs --extract=DIR /dev/pmem1: 0.92 s, extracted model sha256 ok.
+  Host check (no guest involved): pmem0.raw bytes [2 MiB, 2 MiB + 398802944)
+  have sha256 b48892b7... = the image. The fsdax namespace data starts at
+  DPA 2 MiB (info block at 4 KiB), so model data = pmem0.raw offset 4 MiB.
+
+3.3 Reader VM2 attaches after the writer is done: plug-pmem.sh 2, then
+    sudo cxl create-region -t pmem -m mem0 -d decoder0.1   -> region1
+  namespace1.0 appeared by itself from the shared labels: fsdax, map mem,
+  510 MiB, the same uuid ac26f016..., /dev/pmem1 with queue/dax 1, first
+  398802944 bytes sha256 b48892b7... VM2 never ran ndctl create/destroy.
+
+3.4 Measurements. Helper P1/guest/measure.sh DAXMODE MNT: mount -t erofs
+  -o ro,dax=DAXMODE /dev/pmem1 MNT, then two readers one after the other
+  (P1/guest/maptouch.py: open O_RDONLY, mmap whole file MAP_SHARED
+  PROT_READ, read one byte per 4 KiB page, print getrusage fault counts,
+  smaps, meminfo and per-node FilePages deltas, then hold), cxl-where.py
+  on each reader's pid and path, then sha256sum (read()) through the
+  mount, then write attempts. Page cache dropped before each phase.
+  Phase 1 at the same time: VM1 dax=always, VM2 dax=never. Phase 2 swapped.
+  Model file 396705472 B = 96852 pages of 4 KiB, mapping 396705792 B.
+
+  dax=always (VM1 phase 1, VM2 phase 2; identical results):
+    findmnt: ro,relatime,user_xattr,acl,dax=always; dmesg only "mounted with
+      root inode @ nid 36" (no "Turning off DAX").
+    reader 1: touch 0.24 s (VM1) / 0.02 s (VM2), minflt 273, majflt 0
+      smaps Rss 387408 kB, Anonymous 0, FilePmdMapped 0, VmFlags rd mr me ms hg
+      meminfo Cached +0 (VM2; VM1 +780 kB of python noise), node FilePages +0,
+      Mapped +387 MB
+      cxl-where.py: present 96852/96852, all "CXL Window 1 > Persistent
+      Memory > region1 > namespace1.0"
+    reader 2: the same, touch 0.01-0.02 s, Cached +0, FilePages +0.
+    sha256sum through the mount (read() = dax_iomap_rw): ac2d9771...524a,
+      0.31 s, Cached +0 (VM1), +164 kB (VM2, sha256sum binary/noise).
+  dax=never (VM2 phase 1, VM1 phase 2):
+    findmnt: ...,dax=never
+    reader 1: touch 0.38-0.47 s, minflt 3031, majflt 1; VmFlags rd mr me ms
+      (no hg); Cached +388016 kB; node FilePages +387944 kB on node0 (VM2)
+      / +387784 kB on node1 (VM1): one copy of the model, on the reader's
+      node; cxl-where.py: 96852/96852 "System RAM".
+    reader 2: touch 0.02-0.14 s, minflt 3031, Cached +0, FilePages +0,
+      System RAM 96852: the same page cache copy.
+    sha256sum through the mount: ok, 0.31 s, Cached +84..+1152 kB (noise).
+  PMD faults, how determined: the kernel has no tracing (no fs_dax
+  tracepoints) and smaps FilePmdMapped counts only page-cache THPs (0 for
+  DAX), so I used the fault count of the touch loop (getrusage minflt,
+  one fault per 4 KiB page in the worst case; a 4 KiB file costs 1):
+  dax=always gives 273 faults for 96852 pages = 189 PMD faults for the 189
+  whole 2 MiB pieces + 84 PTE faults for the last 344 KiB (the VMA ends
+  there, so no PMD fits; 396705792 - 189*2 MiB = 344064 B = 84 pages).
+  Requirements met: mapping start 2 MiB aligned (start_2M_aligned=True,
+  thanks to dax get_unmapped_area / THP alignment), file data at device
+  offset 2 MiB (--dsunit=512), namespace align 2 MiB, VmFlags "hg". The
+  page cache mount needs 3031 faults (fault-around of 32 pages / large
+  folios). ext4 without bigalloc for comparison (3.6) needs 96852 (3.6).
+  Writes (both modes, both VMs): touch MNT/newfile -> "Read-only file
+  system"; open(MODEL, O_RDWR) -> EROFS (errno 30); dd conv=notrunc into
+  the model -> "Read-only file system"; mount -i -o remount,rw MNT -> rc 0
+  but the mount stays ro (erofs keeps SB_RDONLY; no error).
+  Nothing writes the device: host sha256 of pmem0.raw 6e41690d... and
+  lsa0.raw 5c61a4fe... equal before the readers, after phase 1 and after
+  phase 2.
+
+3.5 Pitfalls measured
+  a. Inline tail = no DAX, silently. Image with --dsunit=512 but without
+     -Enoinline_data (Layout 2) flashed, mounted alone in VM1 with
+     ro,dax=always: rc 0, findmnt says dax=always, dmesg has nothing, but
+     the reader gets minflt 3031, VmFlags without hg, Cached +387864 kB,
+     96852 pages "System RAM". Source: fs/erofs/inode.c:214-218 sets S_DAX
+     only for FLAT_PLAIN and CHUNK_BASED. A test must check frames (or
+     the layout), not the mount option.
+  b. Second mount of the same bdev in one VM reuses the superblock: with
+     dax=always mounted on mnt-dax, mount -t erofs -o ro,dax=never
+     /dev/pmem1 mnt-second -> rc 0, findmnt shows BOTH with dax=always,
+     reader through mnt-second: 273 faults, CXL frames, Cached +0. The
+     second mount's options are ignored silently (one sb per bdev).
+     Also seen by accident: an image rewritten under a mounted (dax=never)
+     VM1 and mounted again kept the old superblock and its metadata.
+  c. Both modes on one node: losetup -f -r --direct-io=on --show /dev/pmem1
+     -> /dev/loop0 (DIO 1, RO 1, queue/dax 0); mount -t erofs -o ro
+     /dev/loop0 MNT next to the dax=always mount of /dev/pmem1: reader 1
+     minflt 3031, Cached +387688 kB, Buffers +0, node0 FilePages +387492,
+     96852 "System RAM"; reader 2 Cached +0. So one page-cache copy and no
+     double caching in Buffers. mount -o ro,dax=always on a loop device as
+     the first mount: rc 0 with dmesg "erofs (device loop0): DAX
+     unsupported by block device. Turning off DAX." (on a second mount of
+     the same loop: silently reused, as b).
+  d. mount -t erofs goes through /usr/sbin/mount.erofs (erofs-utils 1.9.4)
+     which falls back to loop and hides the kernel errno (section 2).
+
+3.6 ext4 comparison (optional, VM1, nothing else mounted; mke2fs -d onto
+  /dev/pmem1, mount -o ro,noload,dax=always, then the erofs image flashed
+  back with dd):
+    mke2fs -q -F -t ext4 -b 4096 -O ^has_journal -d stage /dev/pmem1   1.03 s
+      extents start at block 8239 (not a multiple of 512): reader minflt
+      96852 (4 KiB faults only), frames 96852 CXL namespace1.0, Cached +0.
+    mke2fs -q -F -t ext4 -b 4096 -O ^has_journal,bigalloc -C 2M -d stage /dev/pmem1  0.89 s
+      extents start at block 2048 (8 MiB, aligned): minflt 273 (PMD as
+      erofs), frames CXL, Cached +0.
+  ext4 writes outside the erofs image range, so after this pmem0.raw has
+  sha256 bef7cf4bc1241978d2a7785c15560cc9ff47a1b626e4d4c5318509ec4fbf4c3a
+  (image range still b48892b7..., LSA unchanged 5c61a4fe...). That is the
+  baseline for the later "nothing writes" checks.
+
+4. Pods with stock llama.cpp on the erofs mount
+-----------------------------------------------
+4.1 Image: ghcr.io/ggml-org/llama.cpp:light-b11681 (= :light on
+  2026-10-17), index digest
+  sha256:3d3afaa7c47d94878d97a720a35e8d268015b8e3c9d672a55a04a43077bddbf4,
+  image id bc1a8004cde9, 312151174 bytes (crictl "312MB"). Pull time
+  (crictl pull through the VM's proxy): 22.0 s on VM2 (first, tag light),
+  19.6 s on VM1 (first); 0.9 s on VM2 for light-b11681 (same digest
+  already there). Entrypoint /app/llama-cli, workdir /app. Binaries in
+  /app: llama, llama-cli, llama-completion (no llama-simple, no
+  llama-server: that is the :server image), plus libllama*, libggml-base
+  and 17 libggml-cpu-<variant>.so; the haswell variant is loaded on the
+  VMs (load_backend: loaded CPU backend from /app/libggml-cpu-haswell.so;
+  also seen in /proc/PID/maps). Version 0.7.0-dev, build 11681, commit
+  5e03a1ff4. The light image was enough: no full/server image needed.
+4.2 Command (exact; inside the container, M=/models/Qwen3-0.6B-Q4_K_M.gguf):
+    /app/llama-completion -m $M -t 2 -c 512 -n 32 --temp 0 --top-k 1 -nr \
+      -no-cnv --no-warmup --no-display-prompt \
+      -p '<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n' \
+      </dev/null >answer.txt 2>log.txt
+  stdout: "Hello! How can I assist you today? [end of text]" (the answer
+  of research A plus llama-completion's end marker; the \n escapes are
+  turned into newlines by llama.cpp's default -e, the prompt has 13
+  tokens as in research A). rc 0. Identical in all 6 pod runs and the
+  ctr runs, dax and page cache.
+  Tried and rejected:
+    llama-completion ... --chat-template-kwargs '{"enable_thinking":false}'
+      -> "error: invalid argument: --chat-template-kwargs" (llama-cli only)
+    llama-completion -st --jinja -rea off -p hello -> the model thinks
+      ("<think> Okay, the user just said ..."): -rea off does not reach
+      completion's template (research A 1.4, IN 5).
+    llama-cli -m $M -nr -t 2 --temp 0 --top-k 1 -n 32 -st --jinja
+      --chat-template-kwargs '{"enable_thinking":false}' -p hello
+      -> works ("> hello" / "Hello! How can I assist you today?" /
+      "[ Prompt: 76.3 t/s | Generation: 36.3 t/s ]") but prints a spinner,
+      banner and command help on stdout: harder to assert on.
+  Repack: -nr gives "load_tensors: CPU_Mapped model buffer size =
+  372.65 MiB" and no CPU_REPACK buffer (from a -v run). Without -nr:
+  "CPU_REPACK model buffer size" with 204 MiB in the memory breakdown and
+  only 121.72 MiB CPU_Mapped. Other buffers: KV 56 MiB, compute 307.27
+  MiB (reserved; RssAnon stays ~128 MB).
+4.3 Pods (namespace p1-erofs, ConfigMap p1-llm with P1/guest/llm-pod.sh,
+  manifests by P1/k8s/gen-pod.sh, runner P1/k8s/round.sh): nodeName fixed,
+  restartPolicy Never, image as 4.1, volumes: hostPath /mnt/p1-model
+  (type Directory) mounted readOnly at /models, ConfigMap at /p1. The
+  node mounts /dev/pmem1 at /mnt/p1-model. The container runs the
+  command once (answer + timings to the pod log), then the same command
+  with -i and stdin from "sleep infinity |", which keeps the model mapped
+  for the node-side checks (P1/guest/llm-where.sh: finds the
+  /app/llama-completion process with -i, prints its maps line,
+  cxl-where.py, VmRSS/RssAnon, and memory.stat of container and pod).
+  Pods started one after the other: llm-vm2-a, llm-vm2-b (VM2), llm-vm1-a
+  (VM1). /proc/PID/maps on the node shows the CONTAINER path:
+    7f5fa49ad000-7f5fbbe54000 r--s 005ad000 103:00 39   /models/Qwen3-0.6B-Q4_K_M.gguf
+  (offset 0x5ad000: llama.cpp unmapped the header fragment, 2.2f of
+  research A; 390754304 bytes = 95399 pages stay mapped = 98.5% of the
+  file), so cxl-where.py PID /models/Qwen3-0.6B-Q4_K_M.gguf matches it.
+  Round A, both nodes dax=always:
+    pod        apply->answer  load   prompt eval     eval            frames (95399 present)
+    llm-vm2-a  3.4 s         180 ms  72.3 tok/s      37.3 tok/s      all CXL Window 1 > Persistent Memory > region1 > namespace1.0
+    llm-vm2-b  3.3 s         185 ms  70.2 tok/s      34.0 tok/s      all CXL ... namespace1.0
+    llm-vm1-a  4.2 s         348 ms  37.4 tok/s      38.9 tok/s      all CXL ... namespace1.0
+    memory.stat of the pods: anon 131.8 MB, file 24-127 kB, file_mapped 0;
+    RssAnon 128476 kB, RssFile ~395800 kB. Node Cached +25 MB (VM2, two
+    pods: container start noise), +37 MB (VM1).
+  Round B, both nodes remounted dax=never, page cache dropped first:
+    pod        apply->answer  load   prompt eval     eval            frames (95399 present)
+    llm-vm2-a  4.2 s         189 ms  68.9 tok/s      35.6 tok/s      all System RAM
+    llm-vm2-b  3.4 s         171 ms  76.0 tok/s      35.2 tok/s      all System RAM
+    llm-vm1-a  4.8 s         195 ms  66.9 tok/s      39.2 tok/s      all System RAM
+    memory.stat: llm-vm2-a file 444076032 (model 396705472 + ~47 MB of
+    image libraries, all read first by this pod after the cache drop),
+    file_mapped 405680128, anon 131.8 MB; llm-vm2-b file 24576,
+    file_mapped 0 (its mapped pages are the first pod's page cache, charged
+    there); llm-vm1-a file 444076032. Node Cached: VM2 484272 -> 1024684
+    kB after pod a, -> 1033900 kB after pod b (+9 MB); VM1 220500 ->
+    697516 kB.
+  "Load time" is llama.cpp's common_perf_print line; the whole first run
+  inside the container (date before/after) took 1.2-1.9 s.
+
+5. Mounting into a running container; teardown
+----------------------------------------------
+5.1 Versions (both VMs, identical): containerd v2.4.1 (f2551031d727),
+  runc 1.5.2 (Fedora 1.5.2-3.fc43, spec 1.3.0, libpathrs 0.2.6),
+  /usr/bin/runc. SELinux disabled (getenforce Disabled, containerd
+  enable_selinux = false): no context= option needed here, and IN's M4
+  cannot be tested on these VMs (the labels question stays open for
+  SELinux-enforcing hosts).
+5.2 Test (VM2; /mnt/p1-model unmounted first so the new mount is the only
+  superblock of /dev/pmem1): node dir /mnt/p1-prop, empty, on the root
+  btrfs; findmnt -T /mnt/p1-prop: "/" PROPAGATION shared. Two pods
+  (P1/k8s/prop-{h2c,none}.yaml) with hostPath /mnt/p1-prop
+  (DirectoryOrCreate) readOnly at /models; prop-h2c adds mountPropagation:
+  HostToContainer. Both wait for /models/erofs/Qwen3-0.6B-Q4_K_M.gguf and
+  then run llm-pod.sh on it (MODEL=...).
+  config.json (/run/containerd/io.containerd.runtime.v2.task/k8s.io/<id>/):
+    prop-h2c:  rootfsPropagation "rslave";
+               /models {"type":"bind","source":"/mnt/p1-prop","options":["rbind","rslave","ro"]}
+    prop-none: rootfsPropagation unset;
+               /models {"type":"bind","source":"/mnt/p1-prop","options":["rbind","rprivate","ro"]}
+    (ConfigMap volume /p1: ["rbind","rprivate","ro"] in both.)
+  Container mountinfo before the node mount: prop-h2c "/models ro,relatime
+  master:1" (slave of the host's root peer group), prop-none "/models
+  ro,relatime" with no propagation tag (private).
+  After the pods were Ready, on the node:
+    mkdir /mnt/p1-prop/erofs; mount -t erofs -o ro,dax=always /dev/pmem1 /mnt/p1-prop/erofs
+  prop-h2c: sees it at once ("983 1212 259:0 / /models/erofs ro,relatime
+    master:544 - erofs /dev/pmem1 ro,user_xattr,acl,dax=always"), lists
+    the model, llama-completion answers "Hello! How can I assist you
+    today?" (load 167 ms, 41.4 tok/s), its mapping
+    /models/erofs/Qwen3-0.6B-Q4_K_M.gguf has 95399/95399 pages in "CXL
+    Window 1 > Persistent Memory > region1 > namespace1.0", pod
+    memory.stat file 20480. touch /models/erofs/x and /models/x ->
+    "Read-only file system".
+  prop-none: sees the new empty directory /models/erofs (same btrfs) but
+    not the mount: /models/erofs is empty, no erofs line in mountinfo; the
+    pod never found the model. As expected.
+  So a hostPath with HostToContainer is exactly IN's CDI mount with
+  options [rbind, ro, rslave] (same OCI options; rootfsPropagation rslave
+  is extra, set by containerd for CRI mounts only). I did not test a
+  hand-made CDI spec.
+5.3 Teardown with a reader holding the model mapped (prop-h2c, llama
+  -i process mapping /models/erofs/... from CXL):
+    umount /mnt/p1-prop/erofs        -> "target is busy", rc 32 (EBUSY: the
+        container's slave copy is in use; the node mount stays)
+    umount -l /mnt/p1-prop/erofs     -> rc 0; the mount is gone on the node
+        (findmnt -S /dev/pmem1 empty) AND in the container (lazy umount
+        propagates); the process keeps its mapping, now shown in maps as
+        "/Qwen3-0.6B-Q4_K_M.gguf" (detached), 95399 pages still CXL
+        namespace1.0; fuser -m /dev/pmem1 lists only that process.
+    cxl disable-region region1       -> "disabled 1 region", rc 0. It does
+        NOT refuse; /dev/pmem1 disappears.
+  Then VM2 crashed: oops -> panic (panic_on_oops=1, panic=10) -> reboot.
+  The first time it happened while I read the process's pagemap; I
+  reproduced it with a plain holder (P1/guest/crash.sh: maptouch on a
+  dax=always mount, umount -l, cxl disable-region, sleep 20) and the
+  serial console captured (socat on vagrant's qemu_socket_serial,
+  P1/vm2-serial.log): the system stayed up for 20 s after disable-region
+  ("CRASHTEST still alive 20 s after disable-region; reader: 1"), then,
+  when the unit ended and the holder (python3, PID 2587) exited and its
+  VMA was torn down:
+    BUG: unable to handle page fault for address: ffffea0022410008
+    #PF: supervisor read access in kernel mode / not-present page
+    Oops: 0000 [#1] SMP NOPTI ... Comm: python3 ... 7.3.0-rc4-fsexp
+    R14: 80000008904000a5 (a huge PMD entry, phys 0x890400000 = CXL
+    window), CR2 in the vmemmap (struct pages of the removed pgmap)
+    Kernel panic - not syncing: Fatal exception
+  (No symbols: the kernel has no kallsyms in the trace.) Conclusion for
+  the driver: the kernel does not protect a pmem region whose fsdax
+  superblock still lives after a lazy umount; releasing it frees the
+  struct pages under a live DAX mapping. The plugin must use plain umount
+  (EBUSY means busy: retry later) and never umount -l, and must not
+  disable/destroy the region while any mount of the superblock exists.
+  After each crash VM2's guest could not use the device again: at boot
+  "cxl_pci 0000:1b:00.0: Range register decodes outside platform defined
+  CXL ranges" and "cxl_mem mem0: endpoint4 failed probe" (mem0 state
+  disabled; cxl enable-memdev mem0 fails). The qemu device keeps the HDM
+  decoder committed by the crashed boot. Recovery: device_del (safe: the
+  guest has no region and no memdev driver bound; DEVICE_DELETED after
+  6.1 s), object-del of both backends, plug-pmem.sh 2, cxl create-region
+  -t pmem: namespace1.0 came back from the labels, sha ok. Host
+  pmem0.raw/lsa0.raw sha256 unchanged by the crash.
+5.4 Writer and reader device rules (IN M7, VM1, ctr, P1/guest/m7.sh):
+  writer: ctr -n k8s.io run --rm --device /dev/pmem1 IMAGE (OCI rule
+    b 259:0 rwm): open O_RDWR ok, O_RDONLY ok.
+  reader: the same spec with the rule changed to b 259:0 "r" (ctr run
+    --config with the image mounted by ctr image mount): open O_RDWR ->
+    "Operation not permitted" (EPERM from the device cgroup), O_RDONLY ok,
+    bytes at 1024 = e2 e1 f5 e0 (erofs magic).
+  Not done (lowest priority): IN M5 (open_tree clone fd) and M8
+  (hostUsers: false).
+
+6. Cleanup and final state
+--------------------------
+Done (in this order):
+  - kubectl delete namespace p1-erofs (pods, ConfigMap); no pods left
+    outside kube-system. ctr dry-run containers removed; the snapshot
+    left by "ctr image mount" (/var/tmp/p1/m7root) removed with ctr
+    snapshot rm.
+  - Unmounted /mnt/p1-model in VM1 (VM2 had nothing mounted after its
+    crash reboot); no erofs mounts, no loop devices in either VM.
+  - VM1: cxl disable-region region1; cxl destroy-region region1; cxl
+    disable-memdev mem0. VM2: no region (lost in the crash reboot), mem0
+    already disabled (failed probe); cxl disable-memdev mem0. No ndctl
+    destroy-namespace anywhere (the LSA file is deleted anyway).
+  - qemu, both VMs: device_del p1pmem0 -> DEVICE_DELETED after 6.1 s
+    (VM1) and 6.0 s (VM2); object-del p1_pmem0 and p1_lsa0. Earlier:
+    p1vol0/p1_vol0 (VM1, section 2) and VM2's two crash re-plugs.
+  - Host: pmem0.raw and lsa0.raw deleted. Both qemus still mapped the
+    deleted pmem0.raw (the last hot-removed backend stays mapped, a known
+    qemu behaviour, 05-status-orchestrator); to release it I plugged and
+    removed one dummy volatile cxl-type3 per VM (sparse 256M file
+    P1/backing/dummyN.raw, id p1dummy, sn 0xf5e00003, never given a region,
+    memdev disabled before device_del), then deleted the dummy files. Now
+    each qemu maps only its deleted, 0-byte dummy file (no disk, no RAM)
+    until the next hot-remove or restart.
+  - Guests: rm -rf /var/tmp/p1 (stage copy, model.erofs, helpers),
+    /var/tmp/p1model (VM2's model copy), /mnt/p1-model, /mnt/p1-prop;
+    loginctl disable-linger vagrant in VM1 (I had enabled it for the build).
+Final state (checked):
+  - Both VMs run 7.3.0-rc4-fsexp, grubby --default-kernel
+    /boot/vmlinuz-7.3.0-rc4-fsexp; the old 7.3.0-rc4 and 6.17.1 entries
+    are still installed. Both nodes Ready (one two-node cluster, VM2
+    control plane); namespaces default/kube-*, no extra pods.
+  - qtree: 0 cxl-type3 in both qemus; query-memdev lists only the 4
+    original backends. Guests: cxl list empty, no /dev/pmem* or /dev/dax*.
+  - Host: port 9909 free, no fake-cxl-pool server (a pre-existing screen
+    session named fake-cxl-pool, not mine, is untouched);
+    ~/.cache/nri-plugins/e2e untouched.
+  - Left on purpose: erofs-utils 1.9.4 (VM1; also erofs-fuse), ndctl 85
+    (both), strace (VM1), the kernel build deps in VM1 (fedpkg,
+    fedora-packager, rpmdevtools, gcc, make, ... as custom-kernel-fedora.yaml
+    plus bc), the image ghcr.io/ggml-org/llama.cpp:light-b11681 (and
+    :light on VM2) in containerd of both VMs, VM1 ~/fsexp (2.3 GB: source
+    tree with build objects for incremental rebuilds, build.log, the RPM
+    tarball, config.diff), VM2 ~/fsexp (40 MB: tarball and RPMs). Both VMs
+    have 24-25 GB free.
+  - Scratch on the host: /home/akervine/.claude/jobs/plan7-fs/P1/
+    (kernel/ = tarball + config, guest/ and k8s/ = scripts, phase*/round*
+    logs, vm2-serial.log = the oops).
+  - Traces: dnf history entries in both VMs, dmesg/journal, two crash
+    boots of VM2 in its journal (boot -1 and -2 of today), HB1 decoders
+    decoder1.0-1.3 in guest sysfs (as after research B).

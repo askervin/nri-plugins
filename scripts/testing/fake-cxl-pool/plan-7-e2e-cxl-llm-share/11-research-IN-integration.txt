@@ -1,0 +1,646 @@
+plan-7 follow-up: research IN, integration of a filesystem on shared CXL
+======================================================================
+Written 2026-10-17 (research IN). Desk research: code and documents only,
+no VM touched, nothing built, nothing committed. Downloads (runc sources,
+ghcr manifests) are in /home/akervine/.claude/jobs/plan7-fs/IN/dl-*.
+
+Abbreviations of paths:
+  D   = ~/github.com/intel/intel-resource-drivers-for-kubernetes (79a85f3)
+  N   = ~/github.com/containers/nri-plugins
+  P   = N/scripts/testing/fake-cxl-pool
+  S2  = N/test/e2e/memory.test-suite/memory-policy/n4-cxl-shared-2
+  T16 = S2/test16-cxl-llm-share/code.var.sh
+  DRA = N/test/e2e/memory.test-suite/memory-policy/dra.source.sh
+  MF  = PLAN/dropped-mode-file (file_export.go from driver-new-files.tar.gz)
+  LF  = ~/.claude/jobs/daxfile-dropped/driver-untracked/daxfile.go
+  L   = ~/github.com/ggml-org/llama.cpp (25a1d63f4)
+  CD  = ~/github.com/containerd/containerd (v2.3.0-266)
+  CDI = ~/go/pkg/mod/tags.cncf.io/container-device-interface@v1.1.0
+  RC  = runc v1.3.0 (IN/dl-runc/{rootfs_linux.go,spec_linux.go})
+  K8S = ~/github.com/kubernetes/kubernetes (v1.37.1)
+
+
+0. Short answers
+----------------
+- Driver today: a shared pool device is a "cxl create-region -t ram"
+  region bound to device_dax; a claim gets the char node /dev/daxX.Y
+  (CDI, "r" when readOnly) and CXL_<KEY>_* env; a lease gets an open fd
+  over SCM_RIGHTS, fd 3 of --exec. The refcount is implicit (a scan of
+  the other prepared claims); checkSamePreparation is the only
+  cross-claim rule. The plugin image is FROM scratch (kubelet-cxl-plugin
+  only): no cxl, daxctl or ndctl, so pool devices need the host-process
+  plugin, which is what the e2e runs (systemd-run).
+- API (recommended, alternative A): two new values of mode, block (the
+  block device of a persistent device: the writer) and fs (a filesystem
+  the node plugin mounts: the readers), and three DeviceConfig fields that
+  apply to mode fs only: fsType (erofs|ext4, "" = detect), access
+  (direct = dax=always, cached = dax=never; default direct) and path
+  (container path, default /run/cxl-fs/<KEY>). Env CXL_<KEY>_PATH (the
+  name plan-5 reserved) plus CXL_<KEY>_ACCESS. Leases: cxl-request
+  --mode fs --access ... --name NAME, protocol fields fsType, access,
+  name; the mount appears at /run/cxl/fs/NAME. Phase 1: mode fs is
+  read-only; writing is mode block on all hosts of the device ("flash").
+- Running containers: (a) mount propagation is the fit. CDI copies mount
+  options verbatim (CDI oci.go:34-41), runc applies "rslave" of a bind
+  mount (RC spec_linux.go:1105-1107, rootfs_linux.go:1291-1298) and its
+  default root propagation is already rslave (RC rootfs_linux.go:1023-
+  1026; containerd sets nothing for CDI mounts); kubelet makes
+  /var/lib/kubelet rshared (K8S pkg/kubelet/kubelet.go:1685). So a lease
+  claim gets one more CDI mount, a plugin-owned host directory bound ro,
+  rslave at /run/cxl/fs, and a later plugin mount under that directory
+  shows up in the running container. No setns, no pid, no privileges.
+  (b) a directory fd works but gives no mount point and must be a
+  detached clone to avoid ".." escapes; (c) setns+move_mount is the
+  dropped lease-file machinery, smaller without device nodes but still
+  the most complex. P1 measurements: section 3.4.
+- Node plugin work, candidate (i) erofs/ext4 on CXL pmem fsdax:
+  fake-cxl-pool persistent kind ~300 lines (incl. tests), memctl pmem
+  region and namespace ~350, pool driver modes block/fs with a node mount
+  table ~800, leases ~350, cxl-request ~100, docs ~250: 6-8 days. (ii)
+  famfs: no fake-cxl-pool change, but a patched kernel, famfs userspace
+  on every node, a FUSE daemon per mount kept alive across plugin
+  restarts: only if stream FA says go.
+- Reader engine: ghcr.io/ggml-org/llama.cpp:light (today b11681,
+  2026-10-16, amd64 ~312 MB compressed; /app/llama-cli,
+  /app/llama-completion, CPU backend variants loaded at run time, haswell
+  on the e2e EPYC). -nr/--no-repack exists (L common/arg.cpp:2158).
+  Candidate command (raw chat prompt, no template dependency):
+    /app/llama-completion -m "$M" -t 2 -c 512 -n 32 --temp 0 --top-k 1 \
+      -nr -no-cnv --no-warmup --no-display-prompt \
+      -p '<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n' </dev/null
+  Load and tokens/s come from llama_perf_context_print (stderr).
+- test16: writer pod (python:3-alpine) flashes an erofs image built in
+  VM1 (erofs-utils in the VM, cached) into /dev/pmemX of a mode block
+  claim with all hosts; readers use the stock light image with claims
+  {mode: fs, readOnly: true, access: direct|cached}. Deleted: cxl-llm/,
+  build.sh, llm-build, podman/git on the host. ~4-6 min.
+
+
+1. The driver today
+-------------------
+1.1 Claim on a shared pool device (D/cmd/kubelet-cxl-plugin/pool.go)
+- Prepare per allocation result: poolDataFor parses the controller's
+  status data, only serial, shared, size (pool.go:164-168, 487-500); the
+  controller also writes exclusive (P/pkg/controller/status.go:56), the
+  plugin ignores it today.
+- DeviceConfig {apiVersion, kind, mode, readOnly}, strict decode
+  (lending.go:233-243, parseConfig 253-287); modeFor: "" = dax for shared,
+  shared refuses numa, readOnly needs dax (lending.go:322-339).
+- prepareDevice: waitMemdev, then mode dax = memctl.CreateRegion(memdev,
+  dax) and DaxDevNumbers (pool.go:518-550); CreateRegion reuses an
+  existing region (N/pkg/cxl/memctl/memctl.go:928-931) and always runs
+  "cxl create-region -t ram" (memctl.go:940), then binds device_dax
+  (982). memctl execs cxl and, when installed, daxctl (memctl.go:88,
+  820-831), else binds through sysfs.
+- CDI: one device claim-<uid>-<n> per result: env from api.Env plus the
+  claim marker, and for dax a DeviceNode type "c", permissions "r" when
+  readOnly (pool.go:648-668, lending.go:345-356). Spec kind
+  generic/cxl-pool, file cxl-pool (pool.go:672-693).
+- Env: CXL_<KEY>_{MODE,SIZE,SERIAL,SHARED,DAX|NODE,READONLY}
+  (D/pkg/cxl/api/api.go:237-259); KEY = serial in upper-case hex.
+- Cross-claim rules and refcounts: checkSamePreparation refuses another
+  shared/exclusive or another mode on the same serial on this node,
+  readOnly may differ (pool.go:441-455). The refcount is implicit:
+  preparedDevice scans the other prepared claims (pool.go:425-439);
+  unprepare releases the serial only if no other claim has it (612-616),
+  rollback the same (459-470). State: preparedPoolClaims.json in the
+  pool driver's data dir, reloaded at start (695-723; dir from
+  driver.go:423-427).
+1.2 Lease of a shared device (broker.go, lease_claims.go, cxl-request)
+- A claim on the lease device: Prepare makes <cxl.generic data dir>/
+  leases/<uid>/cxl.sock (0666) and a CDI device lease-<uid>: rbind rw of
+  that directory at /run/cxl, bind ro of the host's cxl-request at
+  /usr/local/bin/cxl-request, env CXL_LEASE_SOCKET=/run/cxl/cxl.sock
+  (lease_claims.go:47-61, 98-124, listen 241-270, SELinux label
+  container_file_t 272-283). The directory is mounted so that a
+  restarted plugin can make a new socket in it (LEASES.md "Only
+  containers that list the claim ...").
+- Authentication: SO_PEERCRED pid (broker.go:269-285) mapped to a
+  container by NRI (ContainerByPid, lend.go:394; broker.go:383-406). So
+  the plugin knows the caller's pid, pod and container.
+- Protocol: one JSON line each way, strict decode (broker.go:288-327,
+  api.go:75-107); a Ready dax lease's response carries the open device
+  (O_RDONLY for readOnly) as SCM_RIGHTS (broker.go:349-380, openDaxDevice
+  1472-1524). fdOf picks Dax of a Ready lease (599-604).
+- cxl-request: reads $CXL_LEASE_SOCKET, takes the first SCM_RIGHTS fd
+  (main.go:353-403), --exec forks CMD with the fd as fd 3 (ExtraFiles,
+  main.go:411-423) and api.ExecEnv, which turns CXL_<KEY>_DAX into
+  CXL_<KEY>_FD=3 and adds CXL_LEASE (api.go:274-285).
+1.3 What the node plugin image contains
+- D/Dockerfile.cxl: build stage, then FROM scratch with only
+  /kubelet-cxl-plugin and licenses. No shell, no cxl, daxctl, ndctl,
+  mount, mkfs. USAGE.md:67-74 and POOL.md:379-382: pool devices need the
+  plugin as a host process; the DaemonSet is for regions and DRAM only.
+- The e2e installs the binary and runs it as the transient unit
+  kubelet-cxl-plugin (DRA:242-327); the VM gets /usr/bin/cxl, daxctl and
+  numactl from dnf (S2/pool.source.sh:177-193). For fsdax, ndctl joins
+  that list (the same ndctl source package on Fedora).
+1.4 Reusable parts of the dropped work
+- MF file_export.go: holders = (driver, claim uid) refcount per device
+  (99-118), Acquire/Release with "stop fails EBUSY, keep the holder"
+  (210-318), stale mounts at start detached and their dirs removed
+  (133-154), CDI ro bind {rbind, ro, nosuid, nodev, noexec} at
+  /run/cxl-files/<KEY> (175-184); pool.go diff: restoreExports after load,
+  export before CDI, release exports before the region (patch lines
+  1271-1537), devdaxMode in checkSamePreparation. The broker diff turns
+  daxFd into leaseFd {path, file} (patch 171-455). With kernel mounts the
+  FUSE half (file_fuse.go) goes away and the restart story improves:
+  mounts outlive the plugin.
+- LF: inMountNS (setns on a locked thread after unshare(CLONE_FS),
+  daxfile.go:370-401), createAs with setfsuid/openat2 RESOLVE_NO_SYMLINKS
+  (403-452), open_tree(OPEN_TREE_CLONE) + mount_setattr(MS_PRIVATE) +
+  move_mount (310-353). Most of LF's weight was device-node specific:
+  mknod, the device cgroup rule added at container creation by NRI, the
+  capability checks (mayMknodOrMount, capBoundHas). A filesystem mount
+  needs none of these.
+
+
+2. API proposals (plan-5 vocabulary)
+------------------------------------
+Words kept: source, type, shared, mode ("how a container gets the
+memory"), readOnly, serial, size; env CXL_<KEY>_<FIELD>; PATH reserved for
+this (plan-5 02-design 9.3). "dax" is taken (mode dax, env DAX =
+/dev/daxX.Y), so the page-cache switch must not be called dax: it is
+called access, with the two words plan-7 already uses, direct and cached.
+New device attribute persistent: true (plan-5 reserved it) on pool
+memdevs with pmem capacity.
+
+2.1 Alternative A (recommended): modes block and fs
+  DeviceConfig
+    mode:     numa | dax | block | fs
+    readOnly: bool              dax, block, fs
+    fsType:   "" | erofs | ext4 fs only; "" = what the superblock says
+    access:   "" | direct | cached   fs only; "" = direct
+    path:     absolute path     fs only; default /run/cxl-fs/<KEY>
+  What the container gets
+    block: the block device of the device's fsdax namespace, /dev/pmemX,
+           CDI DeviceNode type "b" ("r" when readOnly; CDI accepts "b",
+           CDI container-edits.go:107). Env MODE=block, PATH=/dev/pmemX,
+           READONLY, SIZE (namespace bytes), SERIAL, SHARED.
+    fs:    a directory: the node mount of the filesystem, CDI Mount
+           {HostPath: node mount, ContainerPath: path, type bind,
+           options [bind, ro, nosuid, nodev]}. Env MODE=fs, PATH=path,
+           ACCESS=direct|cached, READONLY=1, SIZE, SERIAL, SHARED. No
+           device node: the container cannot reach the block device.
+  Leases
+    cxl-request request --serial S --shared --read-only --mode fs
+                        [--fs-type erofs] [--access cached] [--name NAME]
+                        [--exec CMD...]
+    protocol request fields: fsType, access, name (plus mode, readOnly,
+    shared, serial as today); response field path; env as for claims with
+    PATH=/run/cxl/fs/NAME (NAME default: KEY). --exec passes no fd for
+    fs (the program opens files under PATH); a block lease passes the
+    device fd as fd 3 and ExecEnv turns PATH into FD as it turns DAX.
+  Validation (DeviceConfig texts in the style of lending.go:330-336;
+  the CLI and broker texts in the style of api.go:149-181):
+    V1  "DeviceConfig: invalid mode %q (numa, dax, block or fs)" and
+        "invalid mode %q (numa, dax, block or fs)" - this changes the
+        texts that n4-cxl-shared-2/test12:622 and test14:403 assert.
+    V2  block, fs on a device without persistent memory: "DeviceConfig:
+        mode %s needs a persistent device". dax and numa on a persistent
+        device: "DeviceConfig: mode %s: a persistent device is used as
+        block or fs" (devdax namespaces later if wanted).
+    V3  "DeviceConfig: readOnly needs mode dax, block or fs".
+    V4  writable block on a shared device needs the exclusive attachment
+        (status data exclusive, which the controller writes for all
+        hosts): "DeviceConfig: mode block: a shared device is writable
+        only with all of its hosts". The same rule for leases (--shared
+        without --read-only on mode block or fs is refused).
+    V5  phase 1: mode fs is read-only: "DeviceConfig: mode fs is
+        read-only: set readOnly: true, write with mode block". (A later
+        ext4 write mount on all hosts relaxes this.)
+    V6  "DeviceConfig: fsType needs mode fs", the same for access and
+        path; "invalid fsType %q (erofs or ext4)", "invalid access %q
+        (direct or cached)", "invalid path %q" (absolute, clean, not /,
+        not under /dev, /proc, /sys, /run/cxl). CLI: "--name needs --mode
+        fs", "invalid name %q" ([A-Za-z0-9._-]{1,64}, not . or ..), name
+        in use by another lease of the claim: "name %q is in use".
+    V7  same node, same device (checkSamePreparation): block and fs may
+        not meet in practice (a writer has all hosts), but are
+        compatible preparations of one pmem region; two fs claims must
+        agree on fsType and access: "access %s, but another claim mounted
+        it with access %s" (one superblock per block device per node:
+        ext4/erofs return the existing superblock, the second mount's
+        dax option cannot differ).
+    V8  a reader node never creates labels: mode fs on a region without
+        an fsdax namespace fails "device 0x..: no fsdax namespace (has the
+        writer written it?)"; no filesystem: "device 0x..: no erofs or
+        ext4 filesystem".
+  Why: each mode names what the container receives (a NUMA node, a char
+  device, a block device, a filesystem), so the existing rule "mode = how
+  a container gets the memory" holds; access is orthogonal and only
+  meaningful for fs; nothing renames.
+
+2.2 Alternative B: plan-5's reserved mode fsdax plus a mount object
+    mode: fsdax, readOnly, mount: {fsType, access, path}
+  mode fsdax without mount = the block device (writer); with mount = the
+  plugin's mount (readers). Matches the reservation word for word and
+  keeps one mode. Against: "fsdax" is wrong for access cached (no dax at
+  all) and for famfs (devdax, not an fsdax namespace); a nested object in
+  an otherwise flat config; MODE=fsdax does not tell a program whether
+  PATH is a device or a directory.
+
+2.3 Alternative C: mode fs only, write mounts, plugin formats
+    mode: fs, readOnly: false, fsType: ext4, format: true (writer)
+  The writer copies files into a rw ext4 mount on all hosts; Unprepare
+  unmounts (syncs) before the controller detaches; readers mount ro.
+  Simplest for users (no images), but rules out erofs (no write mount),
+  puts mkfs (e2fsprogs) into the node plugin's dependencies and makes the
+  plugin decide when to format shared bytes. Worth adding later as the
+  "write mount" of the task (ext4 only, V5 relaxed), not as the base.
+
+2.4 Leases in A: the mount point
+  /run/cxl/fs/NAME: next to the socket directory /run/cxl that every
+  lease container already has, and next to the CLI's world. Host side:
+  <cxl.generic data dir>/lease-fs/<claim uid>/ (root 0755, written only
+  by the plugin), CDI mount of the lease device {HostPath that dir,
+  ContainerPath /run/cxl/fs, options [rbind, ro, rslave]} added in
+  leaseCDIDevice (lease_claims.go:99-123), created in OpenClaim, removed
+  in CloseClaim. A separate ro host directory, not a subdirectory of the
+  rw socket directory: a container could plant a symlink in the rw one
+  and make the plugin mount over a host path. The mountpoint /run/cxl/fs
+  itself is created by runc inside the rw /run/cxl bind (host side:
+  leases/<uid>/fs, made by the plugin first). Claims use /run/cxl-fs
+  (not nested in a ro lease directory, where runc could not create a
+  mountpoint).
+
+
+3. Mounting into a running container (leases)
+---------------------------------------------
+3.1 (a) Mount propagation through a CDI mount
+- CDI: Mount.toOCI copies HostPath, ContainerPath, Type and Options as
+  given (CDI pkg/cdi/oci.go:34-41; applied in container-edits.go:124-129,
+  sorted by depth 432-470).
+- containerd 2.x: CDI devices of the CRI request are injected by
+  WithCDI (CD internal/cri/server/container_create_linux.go:104,
+  internal/cri/opts/spec_linux.go:138-177, pkg/cdi/oci_opt.go:31-55).
+  Propagation and RootfsPropagation are handled only for CRI mounts
+  (spec_linux_opts.go:155-178: rprivate default, rslave + rootfs rslave
+  for HostToContainer, ensureSharedOrSlave check); a CDI mount's options
+  reach the OCI spec untouched and RootfsPropagation stays unset.
+  (containerd's comment "default root propagation in runc is rprivate",
+  line 158, does not match runc 1.3.)
+- runc: options rslave/rshared/... go to Mount.PropagationFlags (RC
+  spec_linux.go:57-66 mapping, 1105-1107 parse); after the bind mount,
+  mountPropagate applies them (rootfs_linux.go:1269-1300). Without
+  rootfsPropagation the container's root is made MS_SLAVE|MS_REC
+  (rootfs_linux.go:1023-1026), only the rootfs' parent is made private
+  (994-1016). So even today's lease mount without a propagation option is
+  probably a slave of the host mount it came from; "rslave" makes it
+  explicit and independent of runc's default.
+- Host side: the source must be shared. kubelet makes its root dir
+  rshared (K8S pkg/kubelet/kubelet.go:1685), and systemd makes / shared on
+  Fedora.
+- Flow: OpenClaim makes lease-fs/<uid>; at Ready the plugin bind-mounts
+  the node mount (or a subdirectory of it) ro,nosuid,nodev at
+  lease-fs/<uid>/NAME; the mount propagates into every container of that
+  claim at /run/cxl/fs/NAME. Release: plain umount (no MNT_DETACH); an
+  EBUSY propagates back (a busy slave makes the umount fail), the lease
+  stays Releasing and is retried; never destroy the region while any
+  mount of the superblock exists (3.4 M3).
+- Limits: the place is fixed when the container is created (under
+  /run/cxl/fs); all containers of the lease claim see the mount (as they
+  share the socket); idmapped (user-namespaced) pods: runc may use a
+  detached mount source (srcFile, rootfs_linux.go:131-157) whose
+  propagation is private - to check (M8).
+3.2 (b) A directory fd over the lease socket
+- The broker passes an fd of the filesystem root; the program opens
+  /proc/self/fd/3/<file> (magic link walk, no privileges, no device
+  cgroup for regular files). Stock llama.cpp takes "-m
+  /proc/self/fd/3/model.gguf".
+- Danger: openat(fd, "..") and fchdir(fd) walk out of the container's
+  root into the host tree (the CVE-2024-21626 class). Needs an fd of a
+  detached clone (open_tree(OPEN_TREE_CLONE|AT_RECURSIVE), mount_setattr
+  MS_PRIVATE and RDONLY, as LF 326-339) whose root has no parent mount;
+  ".." at its root must stay put (measure, M5).
+- No mount point at all: the fd lives only in the --exec child; "a name
+  given in cxl-request" means nothing. Simple in the plugin (~60 lines),
+  awkward for users and for anything that wants a path.
+3.3 (c) setns + move_mount by the plugin
+- LF's inMountNS/createAs/move_mount, minus mknod, device cgroup and
+  capability checks: mount anywhere the requester names (a path next to
+  its cwd), created with the requester's fsuid. Release: enter the
+  namespace again and umount, or let the namespace die with the
+  container. Per-container state, a thread in another mount namespace,
+  read-only rootfs and missing target directories, user namespaces,
+  crash recovery (mounts left in a namespace the plugin no longer
+  tracks). ~300 lines plus tests, and the user already judged this
+  family too complicated (2026-10-12).
+3.4 Choice and what P1 should measure
+  (a): no privileges in the container, no per-container work in the
+  plugin, one more CDI mount per lease claim, host-only mount and umount.
+  It fits "a mount point nearby", the name travels as protocol field
+  name. (b) only as a fallback; (c) only if a free choice of the path
+  becomes a requirement.
+  P1, in a VM (both VMs not needed):
+   M1 runc and containerd versions (runc --version, containerd --version)
+      and the config.json of a lease container
+      (/run/containerd/io.containerd.runtime.v2.task/k8s.io/<id>/
+      config.json): rootfsPropagation, and the options of the /run/cxl
+      mount.
+   M2 Today's lease pod (claim on cxl-lease): on the host, mkdir and
+      "mount -t tmpfs x /var/lib/kubelet/plugins/cxl.generic/leases/
+      <uid>/t" - does it appear in the container's /run/cxl/t
+      (propagation without any option)? findmnt -o TARGET,PROPAGATION in
+      the container.
+   M3 A hand-made CDI spec in /etc/cdi with a mount {HostPath D,
+      ContainerPath /run/x, options [rbind, ro, rslave]}, used with
+      "ctr -n k8s.io run --device <vendor/class=name> ..." (or by editing
+      the plugin's spec): a later "mount --bind -o ro" of the erofs node
+      mount under D appears in the container, read-only; with a process
+      in the container that mmaps a file of it, "umount" on the host
+      gives EBUSY, "umount -l" succeeds and the process keeps reading;
+      then "cxl disable-region" must fail while the superblock lives
+      (else the plugin must track it).
+   M4 SELinux: getenforce in the VMs, containerd's enable_selinux; can a
+      container read files of an erofs/ext4 mount as is, or does it need
+      -o context=system_u:object_r:container_file_t:s0?
+   M5 (b): send an fd of open_tree(OPEN_TREE_CLONE) of the node mount
+      into a container (python3 socket.send_fds), open
+      /proc/self/fd/N/model.gguf; openat(N, "..") must give the same
+      inode as N; for comparison a plain O_PATH fd of the mount
+      directory (expected to escape).
+   M6 stock llama.cpp (section 5) on the mount, dax=always and
+      dax=never: answer, "where" chain of the mapping, FilePages and
+      memory.stat file; what path /proc/PID/maps shows when read from
+      the host for a file of a bind mount in the container (container
+      path or mount-relative): cxl-where.py matches maps by path today.
+   M7 a "b" CDI device node rw for the writer, "r" for a reader: open
+      O_RDWR refused in the reader.
+   M8 optional: a pod with hostUsers: false and M3's mount.
+
+
+4. Node plugin work per candidate
+---------------------------------
+4.1 (i) erofs or ext4 on CXL pmem in fsdax mode
+fake-cxl-pool, the persistent device kind (research B 3.1 measured it by
+hand):
+- api.Device/DeviceCreate gain persistent (P/pkg/api/types.go:139-168),
+  config devices and REST accept it, client --persistent (P/cmd/
+  fake-cxl-pool-client/main.go).
+- server: a second backing file <name>.lsa (256K, share=on, EnsureBacking
+  File like the data file, ops.go:249, 774), object-add of both backends,
+  device_add with persistent-memdev= and lsa= instead of volatile-memdev
+  (ops.go:769-787; qemu CXLType3 types.go:84-90, QMPDeviceAddArgs
+  qmp.go:357-365, HMP hmp.go:212); object-del of both after the detach;
+  qtree/QOM discovery and adoption read persistent-memdev and lsa
+  (qmp.go:442-540); the LSA file lives and dies with the device (it holds
+  the namespace labels the writer made; a new device starts empty).
+- One LSA shared by all hosts (research B 3.2: a private LSA brings the
+  namespace up raw). Slots unchanged (one per device); the fixed memory
+  windows already allow pmem (qemu cxl-host.c:88-94); no VM recreation.
+- controller publisher: attribute persistent: true (publisher.go:57-61),
+  status data persistent (optional: the plugin can read memN pmem size).
+  Size: ~150 lines + ~150 test lines, 1.5-2 days.
+memctl (N/pkg/cxl/memctl, vendored into D through the go.mod replace):
+- CreateRegion with a region type: "cxl create-region -t pmem" for
+  persistent memdevs (today hard-wired ram, memctl.go:940).
+- NdRegion(cxl region) via sysfs (regionN/pmem_regionN/ndbusX/regionY),
+  Namespaces(ndRegion), CreateFsdaxNamespace(ndRegion) = "ndctl
+  create-namespace -r regionY -m fsdax -M mem -a 2M" (map=mem is
+  mandatory on shared pmem: research B 3.2), BlockDevice(namespace) =
+  /dev/pmemY, SetNdRegionReadOnly.
+- Release unchanged (disable-region, destroy-region, disable-memdev); it
+  must never destroy or create namespaces on a reader; regions of one
+  port in LIFO order (research B 3.5).
+  Size: ~200 lines + ~200 test lines (the fake sysfs of memctl_test.go
+  grows an nd bus), 1.5 days.
+pool driver (D/cmd/kubelet-cxl-plugin):
+- api: ModeBlock, ModeFS, Access values, Memory.Path/Access, Env PATH and
+  ACCESS, Request fsType/access/name, Response path, validation V1-V8
+  (~120 + ~120 test lines).
+- pool.go: parse exclusive from status data; prepareDevice branch for
+  persistent devices: pmem region; writer (block, exclusive): the fsdax
+  namespace, created only if the region has none (labels survive in the
+  LSA, so a second writer reuses it); reader (fs): wait briefly for the
+  namespace from labels (it appears at region creation, research B 3.2),
+  set the nd region read_only when every claim of the node is readOnly
+  (B 3.3), then the node mount; CDI "b" node or ro bind; state fields
+  Namespace, Block, Mount, FsType, Access (~250 lines).
+- node mount table (new file, shape of MF file_export.go): one mount per
+  (device, node) at <pool data dir>/fs/<HEX>, holders (driver, claim
+  uid), mount(2) from Go: erofs "ro" + dax=always|never, ext4
+  "ro,noload" + dax=always|never, MS_RDONLY|MS_NOSUID|MS_NODEV; fsType ""
+  read from the superblock magic (erofs 0xE0F5E1E2 at 1024, ext4 0xEF53
+  at 1024+56); the last holder umounts without MNT_DETACH (EBUSY = the
+  Unprepare fails and kubelet retries; release of the region only after
+  the umount); at start: compare the state file with /proc/self/
+  mountinfo, keep the mounts of prepared claims (they outlive the
+  plugin: no FUSE), remount the missing ones, umount the stale ones
+  (~300 + ~300 test lines).
+- leases: lease modes block (fd of /dev/pmemX) and fs; lease-fs/<uid>
+  directory and CDI mount (2.4); bind at Ready, umount at release with
+  EBUSY retry in the Releasing state; name uniqueness per claim; restart:
+  the bind mounts survive, the lease store records them (~300 + ~250).
+- cxl-request: --fs-type, --access, --name, usage text, ExecEnv for block
+  (~60 + ~60).
+- docs USAGE/POOL/LEASES: modes, env, examples (~250).
+  Total ~1000 lines of code, ~900 of tests, 4-5 days for the driver.
+Node dependencies: ndctl next to cxl and daxctl (pool-vm-tools-install);
+the kernel needs CONFIG_EROFS_FS (P1's kernel); nothing in containers.
+4.2 (ii) famfs on volatile devdax (only if stream FA says go)
+- No fake-cxl-pool or controller change: today's shared devices.
+- memctl: bind the dax device to fsdev_dax (daxctl reconfigure-device
+  --mode=famfs, or sysfs as SetDaxDriverSysfs does; memctl.go:837-865)
+  instead of device_dax (~40 lines).
+- Writer: famfs mkfs and famfs cp of the model into its devdax device:
+  famfs userspace in the writer's image (no upstream image: built in the
+  VM and delivered by hostPath), or by the plugin (another dependency).
+- Readers: "famfs mount" on the node starts a FUSE daemon per mount; it
+  must outlive plugin restarts (a transient systemd unit per device, as
+  research C P3 planned for the FUSE exporter), its death fails file
+  lookups; the mount table above with a famfs mounter (~200 lines).
+- Kernel: the FUSE GET_FMAP half is not in v7.3 (10-fs-README): patched
+  kernel in the VMs. access cached does not exist (famfs is DAX only).
+  The upside: it is the model of real (volatile) shared CXL memory.
+  Size: ~400 driver lines plus kernel and famfs builds in the VMs.
+
+
+5. The reader engine: stock llama.cpp
+-------------------------------------
+- Images (L docs/docker.md:8-12, .devops/cpu.Dockerfile, .github/
+  workflows/docker.yml): full (tools.sh entrypoint, Python conversion
+  tools), light (/app/llama, /app/llama-cli, /app/llama-completion,
+  entrypoint llama-cli; cpu.Dockerfile:105-111), server (/app/llama-
+  server; 114-124). Base ubuntu 24.04 with libgomp1, curl and ffmpeg
+  (72). Tags: light, light-b<build>; today light = light-b11681, created
+  2026-10-16, revision 5e03a1ff (ghcr index annotations); amd64 manifest
+  sha256:75758a3a5e3027776961354a4671bfad49924480881e4122ea24dfff147e4ef0,
+  5 layers, ~312 MB compressed. Pin "light-b11681@sha256:<index
+  digest>" in the test (or the amd64 digest above), pull once per VM
+  with dra-pull-images.
+- Build: GGML_NATIVE=OFF, GGML_BACKEND_DL=ON, GGML_CPU_ALL_VARIANTS=ON
+  (cpu.Dockerfile:36): x64, sse42, sandybridge, ivybridge, piledriver,
+  haswell (AVX2 FMA F16C BMI2), skylakex and newer AVX-512 variants (L
+  ggml/src/CMakeLists.txt:377-395); the best one is loaded at run time:
+  haswell on the e2e EPYC 7662 (no AVX-512), the same ISA as research A's
+  build. OpenMP is on (A's build had it off): same greedy answer
+  expected, to confirm.
+- Flags (L common/arg.cpp): -nr/--no-repack (2158; repacking would copy
+  205 MiB of Q4_K weights into anonymous memory, research A 2.2e),
+  --mmap default on (2391), -no-cnv (1652), -st (1662), --no-warmup
+  (1717), --temp (1764), -rea/--reasoning on|off|auto (3267),
+  --reasoning-budget (3285), --no-display-prompt (1250). use_jinja is on
+  by default (common/common.h:631).
+- Thinking off: llama-completion's conversation mode builds the chat
+  prompt without the template kwargs (tools/completion/completion.cpp:
+  291-311: inputs get messages, add_generation_prompt, use_jinja, no
+  enable_thinking), which is why "-rea off" did not stop thinking there
+  (research A 1.4). llama-cli passes enable_thinking (tools/cli/cli.cpp:
+  237), so "-rea off" works there, but llama-cli is an interactive UI
+  (spinner, banner). For a fixed test the raw prompt with the empty think
+  block (research A 1.4, 13 tokens) avoids every template question;
+  completion tokenizes it with special tokens parsed (completion.cpp:320)
+  and -e (escape, default on, common.h:562) turns \n into newlines.
+- Candidate 1 (preferred):
+    M="$CXL_C1AE0001_PATH/Qwen3-0.6B-Q4_K_M.gguf"
+    /app/llama-completion -m "$M" -t 2 -c 512 -n 32 --temp 0 --top-k 1 \
+      -nr -no-cnv --no-warmup --no-display-prompt \
+      -p '<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n' \
+      </dev/null >answer.txt 2>log.txt
+  stdout: "Hello! How can I assist you today?" then " [end of text]"
+  at the end-of-generation token; stderr has the loader log.
+- Candidate 2:
+    /app/llama-cli -m "$M" -t 2 -c 512 -n 32 --temp 0 --top-k 1 -nr \
+      -rea off -st --no-warmup -p hello </dev/null
+  (UI output; parse the text between the prompt and "[ Prompt: ...").
+- Timings: llama_perf_context_print (L src/llama-context.cpp:4085-4096,
+  called by common_perf_print at completion.cpp:992): "load time = X ms",
+  "prompt eval time = ... tokens per second", "eval time = ... (N ms per
+  token, T tokens per second)", "total time". The loader also logs
+  "load_tensors: CPU_Mapped model buffer size = ... MiB" (mmap'd weights)
+  and, with repacking, a CPU_REPACK buffer - the test can assert that the
+  latter is absent.
+- Mapping: MAP_SHARED|MAP_POPULATE of the whole file plus WILLNEED
+  (research A 2.2d); the head and tail fragments are unmapped after load
+  (2.2f), so the mapping is a little shorter than the file: assert "every
+  present page of the model file's mappings in the CXL window and at
+  least 95% of the file mapped", not a size equality as T16 does for
+  cxl-llm.
+
+
+6. The new test16
+-----------------
+6.1 Phases
+  preconditions  as T16 (VMs, one cluster, tools + ndctl, pool-vm-reset),
+                 model fetch (llm-model-fetch stays), erofs image in VM1:
+                 dnf install erofs-utils in the VM, model copied to VM1
+                 only, "mkfs.erofs model.erofs /opt/cxl-llm/model/"
+                 (uncompressed: no -z; options from stream FS), cached by
+                 the model's sha256; llama.cpp light image pulled on both.
+  pool server    llm0: shared, persistent, 512Mi (an erofs image of the
+                 378 MiB model fits a ~510 MiB fsdax namespace: data from
+                 namespace + 2 MiB, research B 3.2); backing and LSA
+                 files removed first.
+  A              slices: persistent: true, shared, hosts 4.
+  B writer       claim hosts 4, {mode: block}; pod python:3-alpine with
+                 hostPath /opt/cxl-llm (VM1): copy model.erofs into
+                 $CXL_<KEY>_PATH (python open(O_WRONLY), write, fsync)
+                 and print its sha256. Asserts: env MODE=block,
+                 READONLY=0, CDI "b" node; attachment exclusive on VM1;
+                 the plugin log "created fsdax namespace"; host: find the
+                 erofs superblock magic in the backing file (4 KiB steps
+                 in the first 16 MiB) and check the image's sha256 at
+                 that offset. Delete pod and claim; llm0 free.
+  C direct       three readers (reader-a, reader-b on VM2, reader-c on
+                 VM1), claims {mode: fs, readOnly: true, access: direct},
+                 image llama.cpp light, candidate 1 command, then hold
+                 (sleep until $LLM_STOP). Asserts below. Release.
+  D cached       the same with access: cached. Release.
+  E nothing left as T16 D, plus: no mounts under the pool data dir fs/
+                 on both VMs, no pmem namespaces visible without the
+                 device (memdevs == []).
+  F trace, TIMING (writer flash, per reader load ms and tokens/s from the
+                 perf lines), cleanup; backing and LSA files removed.
+  The test keeps D11 (one two-node cluster, no restore).
+6.2 Assertions that stay or change
+- Answer: every reader's stdout equals llm_expect ("Hello! How can I
+  assist you today?"; the reference is the stock binary now, to be
+  confirmed by P1 on the image).
+- Where (direct): cxl-where.py over the engine's mappings of the model
+  file: all present pages in "CXL Window N > Persistent Memory > regionM >
+  namespaceM.0" (research B 3.3 chain); cached: all in System RAM.
+  cxl-where.py should match mappings by dev:inode (/proc/PID/maps has
+  them) of the model file on the node mount instead of by path (M6).
+- Page cache: direct: node FilePages and the container's memory.stat file
+  grow < 5% of the model; cached: the first reader of a node grows
+  FilePages by >= 90% of the model and its memory.stat file by about the
+  model; the second reader of VM2 grows FilePages < 5% (the one node
+  mount = one superblock = one page cache per node, charged to the first
+  toucher); VM1's reader-c its own copy.
+- No copy in the process: anonymous memory < half the model (stays), no
+  CPU_REPACK buffer in the log.
+- Read-only: in every reader "touch $PATH/x" and an O_RDWR open of the
+  model fail with EROFS; no /dev/pmem* in the container (the reader has
+  no block device); the plugin set the nd region read_only on reader
+  nodes (sysfs check from the host).
+- CDI: claim-<uid>-0 of kind generic/cxl-pool has a mount at
+  $CXL_<KEY>_PATH with option ro and no device node (dra-cdi-device);
+  env MODE=fs ACCESS=direct|cached READONLY=1 PATH=/run/cxl-fs/<KEY>.
+- Kept from T16: attachments, consumedCapacity hosts 1/4, slices, the
+  nothing-left checks, trace.
+6.3 Deleted
+  S2/cxl-llm/ (cxl-llm.cpp 526 lines, build.sh 108), llm-build,
+  LLAMA_CPP_SRC, the host prerequisites podman and git (curl stays for the
+  model), llm-install of the engine (the image replaces it), the
+  cxl-llm-specific log parsers (llm-log-answer/llm-log-value become
+  parsers of the llama.cpp perf lines and stdout), the devdax
+  check-ro step of the readers, the zero-padding check. T16 shrinks by
+  about a third; llm.source.sh by about half.
+6.4 Helper reuse and additions
+  Reuse: pool-* (server, attachments, device-free-wait, cxl-dump),
+  dra-build/install/install-node, dra-pull-images (add the llama.cpp
+  image), dra-shared-claim-yaml (params "mode: fs, readOnly: true,
+  access: cached"), dra-env-assert, dra-cdi-device, dra-container-read,
+  dra-delete(-pod), llm-model-fetch, llm-vm-put, llm-page-cache,
+  llm-where(-assert), llm-wait-holding/-exit (new marker lines),
+  llm-file-sha256.
+  Add: an IMAGE argument (or env) to dra-script-pod-yaml (today fixed
+  $DRA_TOOLS_IMAGE, DRA:1180-1244); the light image has /bin/sh
+  (ubuntu), so the "sh -c" pod form works; llm-erofs-image VMDIR (dnf,
+  mkfs.erofs, sha cache); pool-file-find-magic for the host check;
+  ndctl in pool-vm-tools-install.
+6.5 Writer alternatives considered
+  - mkfs inside the writer pod: no stock image has erofs-utils; dnf/apk
+    in a pod needs proxy env and network on every run. No.
+  - The plugin formats (2.3): later, ext4 only.
+  - Flash an image built in VM1 (recommended): the pod needs only write();
+    the image tooling is a VM dependency like cxl and daxctl, never the
+    host's; the same pod can flash an ext4 image (mke2fs -d to a file in
+    the VM) if FS/P1 prefer ext4.
+6.6 Time budget (later runs; first run adds the image pulls, ~312 MB per
+  VM through the proxy, and mkfs.erofs ~5 s)
+    preconditions, cluster check, tools               30-40 s
+    pool server, dra-build, dra-install x2            40-90 s
+    writer: attach, region, namespace, flash, release ~25 s
+    direct phase: 3 attaches (~13 s), mount, load and
+      answer (~1-3 s each), checks, release (~15 s)   45-60 s
+    cached phase: the same                            45-60 s
+    nothing left, trace                               20-30 s
+    total                                             ~4-5 min (T16 today 141 s
+                                                      for one phase + writer)
+
+
+7. Risks and open points
+------------------------
+1. The persistent device kind is a qemu model; real shared CXL memory
+   is volatile. famfs (4.2) would be the realistic path if FA allows.
+2. Labels: only the writer's node creates namespaces, before any reader
+   attaches; a reader reads labels at hotplug (research B 3.2). If a
+   reader was attached before the writer made the namespace, it has none
+   (V8 message); the test orders writer first by exclusivity anyway.
+3. Coherence: readers must never mount while a writer writes; the
+   exclusive attachment of the writer ensures it in the pool, and
+   cached readers keep stale pages until umount (research B 3.3).
+4. Teardown safety: the region must not be released while a superblock
+   of it lives (lazy umounts, a container still mapping). The plugin
+   uses plain umount and fails Unprepare on EBUSY (M3 confirms what
+   disable-region does otherwise).
+5. The new mode texts break test12/test14 substring asserts (V1).
+6. SELinux labels of the mounted filesystem (M4) may need a context=
+   mount option in the plugin.
+7. erofs DAX needs uncompressed, block-aligned data; 2 MiB alignment of
+   the model's extent decides PMD vs 4 KiB DAX faults (FS's topic; 4 KiB
+   works, research B 3.3).
+8. memctl lives in nri-plugins: the driver's go.mod replace must move
+   again with the memctl change.

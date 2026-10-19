@@ -1,0 +1,350 @@
+plan-7 follow-up, prototype P2: famfs on shared volatile CXL devdax
+===================================================================
+Written 2026-10-17 (prototype P2)
+
+VM1 = n4-cxl-shared-1 (worker, famfs master), VM2 = n4-cxl-shared-2
+(control plane, famfs client). One two-node cluster throughout. Recipe:
+11-research-FA-famfs.txt section 6, with the changes below. Scratch:
+/home/akervine/.claude/jobs/plan7-fs/P2/ (= P2 below; host/ = host-side
+helpers, guest/ + k8s/ = copied into the VMs as /var/tmp/p2/, kernel/ =
+patched source and config, src/ = pinned userspace clones, backing/ = the
+shared device file, logs/). E = test/e2e, S1/S2 = ssh -F
+E/n4-cxl-shared-{1,2}-fedora-43-containerd/.ssh-config vagrant@node.
+
+0. Short answers
+----------------
+(phase B ran 2026-10-17 10:33-11:25 local; details in section 3)
+- Verdict: conditional GO. famfs works end to end in both VMs: a 4 GiB
+  shared device, the master on VM1, a client on VM2, and three non-root
+  pods running stock llama.cpp at the same time. It does NOT work on
+  unmodified fuse/for-next 4dd8d3967401, and that is still the for-next
+  tip on 2026-10-17. Any posix_fadvise() on a famfs file oopses the
+  kernel: a NULL backing file in fuse_passthrough_fadvise. Stock
+  llama.cpp always calls posix_fadvise(SEQUENTIAL) before it maps the
+  model (llama-mmap.cpp l.530), and so does sha256sum. A 1-line fix
+  (kernel/fix-fadvise-extmap.patch) makes it work. That is a bug fix for
+  an upstream branch, not a port, so the "too much hacking" rule is not
+  hit. Still, it shows that the unmerged code is not ready yet. FUSE has
+  no problem with read-only bind mounts of one node mount into many
+  containers (NO-GO rule 2 not hit).
+- Kernel: 7.3.0-rc4-famfs2 = P1's fsexp config + KALLSYMS + FTRACE event
+  tracing + the FA diff + the fadvise fix. binrpm-pkg built in 267 s
+  (the first build) and 72 s (incremental). The kernel has
+  fuse_backing_is_dax in kallsyms, the fsdev_dax driver,
+  events/fs_dax, and still EROFS.
+- Userspace: make release in 47 s, offline, from the pinned clones;
+  famfs_fused --fuse-abi = extmap. Quirks:
+  - mkfs.famfs refuses devices smaller than 4 GiB (hard-coded,
+    famfs_lib.c l.5965), so the 512M pool size does not work.
+  - famfs mount needs -f (or FAMFS_MODE=fuse) when fuse is built in
+    (the kernel ABI is detected only from "[fuse]" module symbols).
+  - The mount shows FSTYPE "fuse", not "fuse.famfs".
+  - Files keep the creator's mode (0644). Only the log is 0444 on
+    clients. A client's root CAN write file data in place: no read-only
+    enforcement unless the node mount is remounted with
+    "mount -o remount,bind,ro" (works: writes then give EROFS).
+- Frames / page cache / PMD (VM2 client, model 396705472 B):
+  - mmap touch: minflt 273. The fs_dax tracepoints show 189
+    dax_pmd_fault_done NOPAGE, 2 FALLBACK (tail) and 84
+    dax_pte_fault_done (tail); famfs pmd_fault_check PASS.
+  - Frames: 96852/96852 in "CXL Window 1 > region1 > dax1.0".
+    smaps VmFlags hg; Cached +0, node FilePages +0.
+  - read() sha256 0.29 s, Cached +2.7 MB (noise after drop_caches).
+  - Canary: in-place writes by one host are seen at once by the other
+    (after a famfs logplay for new files).
+- Pods: llm-vm2-a, llm-vm2-b (VM2) and llm-vm1-a (VM1), uid 1000,
+  CapEff 0, NoNewPrivs 1, hostPath /mnt/famfs readOnly, started at once.
+  - All three answered "Hello! How can I assist you today? [end of
+    text]" in about 1.3 s.
+  - Every present page of the model mapping (95399/95399 pages in each
+    pod) is in the CXL window. The pod cgroup file is 23-47 MB:
+    binaries, not the model.
+  - mountinfo in the container: "/models ro,relatime - fuse /dev/dax1.0";
+    touch gives "Read-only file system".
+- Propagation:
+  - A pod started before the node mount does not see a mount below its
+    hostPath without mountPropagation.
+  - With HostToContainer it sees it and llama.cpp answers. But the
+    propagated submount arrives rw (the volume's readOnly covers only
+    the top bind), so the node mount must be ro itself.
+- umount:
+  - A plain umount of the node mount fails with EBUSY while a host
+    process maps the file.
+  - It succeeds while only containers use it (their bind mounts keep the
+    superblock and the daemon alive, and new opens keep working). A
+    second famfs mount of the same daxdev then fails after 45 s (the dax
+    holder is exclusive).
+  - Deleting the pods releases everything; famfs_fused exits by itself.
+- Daemon kill -9 (VM2, two pods + a host mapping holder):
+  - The existing mapping keeps working. MADV_DONTNEED then a re-read
+    took 273 faults again and gave the correct sha256; the faults are
+    served from the in-kernel extent map.
+  - Every new lookup or open on the node and in the containers gives
+    ENOTCONN. The host mapping holder makes umount EBUSY.
+  - Recovery: stop the readers, plain umount, famfs mount -f; the sha256
+    is correct again. No dmesg errors.
+- Slices: not done. The 4 GiB minimum per famfs device and the 8 GiB
+  HB1 window leave room for only two exact 4 GiB slices on an 8 GiB
+  device; skipped for time.
+- Unwind: daxctl reconfigure-device -m devdax dax1.0 on VM2. The model
+  read through /dev/dax1.0 at offset 0xa00000 has sha256 ac2d9771...524a,
+  and the same bytes are in the host backing file.
+- Artifacts:
+  - P2/kernel/kernel-pkgs-famfs2.tar (sha256 38224c8c...379b) and its
+    config, config-7.3.0-rc4-famfs2.
+  - P2/kernel/kernel-pkgs-famfs-unfixed.tar (b85ad1d9...df36, oopses;
+    kept as evidence).
+  - P2/userspace/famfs-bin.tar (f60aca7b...d7ed, /opt/famfs-bin plus
+    PINS).
+- Leftovers:
+  - Both VMs boot 7.3.0-rc4-famfs2 (default; EROFS included). -fsexp and
+    7.3.0-rc4 are still installed; the unfixed -famfs kernel is removed.
+  - /opt/famfs-bin and /opt/famfs/system_uuid on both VMs.
+  - dnf packages: famfs build deps on VM1; daxctl, fuse3 etc. on both.
+  - VM1 ~/famfs (build trees).
+  - Two unplanned VM1 crash reboots (oops logs in P2/logs/).
+  - No CXL devices, pods, mounts or backing files are left; both nodes
+    are Ready; port 9909 is free.
+
+1. Phase A: preparation on the host (done, no VM access)
+--------------------------------------------------------
+1.1 Kernel source. P2/kernel/linux = cp -a of
+  /home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src (7.3.0-rc4, no git,
+  no build outputs). The host has no patch(1), so the FA diff
+  (fuse-for-next-4dd8d3967401-on-v7.3-rc4.diff, sha256 fc6edbf7...1edf,
+  checked) was applied with git apply outside any git repo, which is a
+  plain patch tool there: git apply --check -v -p1 -> rc 0, no
+  errors/fuzz (kernel/apply-check.log); then git apply -v -p1 -> rc 0,
+  "Applied patch" for all 36 files (kernel/apply.log). Result: fs/fuse/
+  ext_map.c exists, fs/fuse/backing.c:291 defines fuse_backing_is_dax,
+  fs/fuse/Makefile builds passthrough.o backing.o ext_map.o under
+  CONFIG_FUSE_PASSTHROUGH. Tree hash (sha256 of the sorted per-file
+  sha256 list): 9d0463a7...0759f (kernel/tree-sha256.txt).
+1.2 Kconfig, from the diff and the patched tree:
+  - FUSE_DAX is renamed FUSE_VDAX ("default FUSE_DAX"); FUSE_DAX stays as
+    a "transitional" symbol (scripts/kconfig of this tree supports it), so
+    the old FUSE_DAX=y gives FUSE_VDAX=y. No other new symbol.
+  - DEV_DAX_FSDEV: tristate, depends DEV_DAX && FS_DAX, default DEV_DAX.
+  - P1's fsexp config already has FUSE_FS=y FUSE_PASSTHROUGH=y FS_DAX=y
+    FS_DAX_PMD=y DEV_DAX=y DEV_DAX_CXL=y DEV_DAX_FSDEV=y ZONE_DEVICE=y
+    TRANSPARENT_HUGEPAGE=y FS_IOMAP=y plus EROFS (P1).
+  - NEW finding, not in FA 3.3: CONFIG_KALLSYMS is off (also in
+    E/playbook/files/qemu-cxl-kernel.config). famfs detects the kernel
+    ABI from /proc/kallsyms (famfs_misc.c famfs_get_kernel_fuse_abi), so
+    without KALLSYMS it finds nothing. Moreover kernel_symbol_exists()
+    (famfs_misc.c l.361-414) matches only lines with a module tag
+    "[fuse]": with FUSE_FS=y (built in) the symbol is present but never
+    matched either. Consequence: famfs mount must be given -f (--fuse) or
+    FAMFS_MODE=fuse, otherwise "kernel not famfs-enabled"; mkfs.famfs and
+    famfs cp only test "== V1" and are not affected; famfs_fused and
+    famfs_check_fused_abi skip the ABI check when the kernel ABI is
+    "none". famfs's own kconfig files (kconfig/famfs-config-6.14) use
+    FUSE_FS=m and KALLSYMS=y. Decision: keep FUSE_FS=y (as e2e and FA),
+    enable KALLSYMS (cheap, lets us grep fuse_backing_is_dax), and always
+    pass -f / FAMFS_MODE=fuse. Fallback if that is not enough: FUSE_FS=m
+    (FA: the v3 link error with =m is fixed since v4).
+  - Tracing for the PMD proof: fs/dax.c dax_iomap_pmd_fault l.2087 calls
+    trace_dax_pmd_fault_done, and fuse_ext_map_huge_fault (ext_map.c
+    l.217-237) goes through dax_iomap_fault. Cheap set: FTRACE=y +
+    ENABLE_DEFAULT_TRACERS=y (selects TRACING -> EVENT_TRACING,
+    TRACEPOINTS, RING_BUFFER) with FUNCTION_TRACER explicitly off (no
+    fentry patching; FUNCTION_GRAPH_TRACER depends on it; KPROBE_EVENTS
+    stays off with KPROBES off; UPROBE_EVENTS/BPF_EVENTS default y,
+    small).
+  Seed: P2/kernel/config-seed-famfs = P1/kernel/config-7.3.0-rc4-fsexp
+  with exactly LOCALVERSION="-famfs", KALLSYMS=y, FTRACE=y,
+  ENABLE_DEFAULT_TRACERS=y, "# CONFIG_FUNCTION_TRACER is not set". No
+  olddefconfig on the host (that compiles scripts/kconfig): it runs in
+  VM1 (guest/kconfig-famfs.sh, which checks 19 options =y and
+  LOCALVERSION, and records the olddefconfig diff).
+1.3 Userspace sources, git clones in P2/src/ (full history, so the VM
+  build needs no network):
+    famfs         https://github.com/cxl-micron-reskit/famfs   d78e10f38c3bbe699e864dfb3e9bc81f47c4de37 (2026-10-12 commit date)
+    libfuse       https://github.com/jagalactic/libfuse.git    famfs.extmap a6e3141733601eac95f8ac9325366deb76f950b6
+    cmake-modules https://github.com/jagalactic/cmake-modules.git master 8162dcae7b0b0ff897da1cfdb072a19460643c5b
+    C-Thread-Pool https://github.com/jagalactic/C-Thread-Pool.git master 2b56942a7347280ea4d0ede238cefacef96db4bb
+    mongoose      https://github.com/jagalactic/mongoose.git   famfs-7.19 739d78a45a8fa6595498df67d11cac3e39af8c0e
+    ndctl         https://github.com/jagalactic/ndctl.git      famfs 43d63362ffb3c588e8b24d7db7d5daa15d686f94
+    multichase    https://github.com/jagalactic/multichase.git dax c7931f82d88864af9b9bfdb9ce9adf39d2aeff8b (cmake ExternalProject, famfs CMakeLists.txt l.262)
+    googletest    https://github.com/google/googletest.git    release-1.12.1 58d77fa8070e8cec2dc1ed015d66b454c8d78850 (configure-time ExternalProject, CMakeLists.txt.in)
+  The first five are the Makefile's "outlaw subrepos" (cloned only if
+  the directory is missing, so copies in famfs/ stop the clones); the
+  last two are fetched by cmake, redirected to the local clones with git
+  url.<file://...>.insteadOf (guest/build-famfs.sh).
+  Build facts (Makefile, CMakeLists.txt, libfuse and ndctl meson.build):
+  "make release" = ndctl (meson, --default-library=both; famfs links the
+  static libdaxctl.a + uuid + kmod), libfuse (meson -Dexamples=false,
+  release/libfuse), cmake release/: famfs, mkfs.famfs, famfs_fused, pcq,
+  pmd_fault_check (famfs's own PMD-fault checker, test/pmd_fault_check.c),
+  multichase. LIBFUSE_BRANCH=famfs.extmap passed explicitly (the auto
+  choice greps /proc/kallsyms or /usr/include/linux/fuse.h of the build
+  VM). famfs_fused links release/libfuse/lib/libfuse3.so (soversion 4,
+  3.19.0-rc0) with a build-tree rpath, and famfs execs famfs_fused from
+  its own directory (famfs_mount.c famfs_fused_path): install all in
+  /opt/famfs-bin with patchelf --set-rpath '$ORIGIN' on famfs_fused.
+  ndctl docs disabled (-Ddocs=disabled, no asciidoctor) by a meson setup
+  before make (the Makefile keeps an existing ndctl/build).
+  VM build deps (guest/deps-famfs.sh build): git gcc gcc-c++ make cmake
+  meson ninja-build pkgconf-pkg-config patchelf libuuid-devel
+  libyaml-devel zlib-devel libcurl-devel systemd-devel (famfs_fused links
+  systemd; ndctl needs libudev, systemd and udev .pc) kmod-devel
+  json-c-devel libtraceevent-devel libtracefs-devel keyutils-libs-devel
+  iniparser-devel, optional liburing-devel numactl-devel (libfuse
+  io_uring). Kernel build deps are P1's list (vm1-dnf-builddeps.log;
+  already installed in VM1). Run deps on both VMs (deps-famfs.sh run):
+  daxctl cxl-cli libyaml libcurl json-c iniparser fuse3.
+1.4 Scripts (P2/):
+  host/qmp.py, host/reboot-vm.sh (copies of P1's), host/hmp.sh (P1's,
+  pointing at P2's qmp.py), host/push.sh N tools|kernel|src (rsync),
+  host/plug-vol.sh N / host/unplug-vol.sh N (memory-backend-file
+  p2_vol0 = backing/vol0.raw 512M share=on, cxl-type3 p2vol0
+  volatile-memdev on cxlsw_ds1_usrp0hb1, sn 0xf5e00003 = 4125097987,
+  the same in both qemus; unplug waits for DEVICE_DELETED, then
+  object-del).
+  guest/kconfig-famfs.sh, guest/build-kernel.sh (binrpm-pkg ->
+  ~/famfs/kernel-pkgs-famfs.tar), guest/deps-famfs.sh,
+  guest/build-famfs.sh (-> ~/famfs/famfs-bin.tar with PINS),
+  guest/install-famfs.sh, guest/vol-up.sh (memdev by serial, ram region
+  on decoder0.1, force devdax), guest/vol-down.sh, guest/trace-dax.sh
+  start|stop [INO] (fs_dax dax_pmd_fault_done / dax_pte_fault_done
+  counts per result), guest/maptouch.py, llm-pod.sh, llm-where.sh,
+  state.sh (copies of P1's), k8s/gen-pod.sh NAME NODE [HOSTPATH [MODEL
+  [PROPAGATION]]] (namespace p2-famfs, uid 1000, no privileges, caps
+  dropped, hostPath readOnly, waits for the model and says VISIBLE or
+  NOT-VISIBLE, then the P1 llama-completion command).
+
+2. Phase B plan (in the VMs, time box about 2 h to a working famfs)
+-------------------------------------------------------------------
+B0 Start state: both VMs uname, nodes Ready, qtree 0 cxl-type3, port
+   9909 free, P1 leftovers none; dnf history baseline.
+B1 Kernel (VM1): push.sh 1 kernel tools; kconfig-famfs.sh;
+   build-kernel.sh (systemd --user unit, linger, as P1). scp tarball and
+   .config to P2/kernel/. Both VMs: rpm -ivh only the kernel RPM (not
+   -U, not headers), grubby --set-default, reboot-vm.sh, check uname
+   -famfs, both nodes Ready, grep -w fuse_backing_is_dax /proc/kallsyms,
+   /proc/filesystems has fuseblk/fuse and erofs, /sys/kernel/tracing/
+   events/fs_dax exists, /sys/bus/dax/drivers has fsdev_dax.
+B2 Userspace (VM1): deps-famfs.sh build; push.sh 1 src; build-famfs.sh;
+   famfs_fused --fuse-abi = extmap; scp famfs-bin.tar to P2/userspace/.
+   Both VMs: deps-famfs.sh run; install-famfs.sh.
+B3 Device: plug-vol.sh 1 and 2 (same file and serial); vol-up.sh in both
+   -> daxN.0 devdax 512M.
+B4 Master VM1: famfs mkfs (mkfs.famfs --set-daxmode /dev/daxN.0; daxctl
+   list shows famfs), famfs mount -f, famfs cp of the GGUF (scp from
+   ~/.cache/nri-plugins/e2e/llm), sha256 ac2d9771...524a, cp /etc/hosts
+   into it fails ENOTSUP, ls -l size 396705472.
+B5 Client VM2: daxctl famfs mode, famfs mount -f /dev/daxN.0 /mnt/famfs;
+   0444 and exact size, sha256, writes fail. Also VM1 /mnt/famfs is the
+   master mount.
+B6 Read path (VM2): head/dd/sha256 with meminfo Cached, node FilePages,
+   cgroup memory.stat file before/after (flat).
+B7 mmap path: maptouch.py under trace-dax.sh (PMD NOPAGE vs FALLBACK,
+   minflt ~ 190), pmd_fault_check -e pmd, cxl-where.py all frames in
+   "CXL Window", Cached flat. Canary: famfs cp a small file on VM1, change
+   it through a MAP_SHARED rw mapping on the master, VM2 logplay and read.
+B8 Pods: ConfigMap p2-llm from llm-pod.sh; gen-pod.sh for llm-vm2-a,
+   llm-vm2-b (VM2) and llm-vm1-a (VM1), all at once; same answer "Hello!
+   How can I assist you today?", llm-where.sh frames in the CXL window,
+   FilePages flat; kubectl exec cat /proc/self/mountinfo (fuse.famfs, ro).
+   NO-GO if a ro bind of the FUSE mount fails in any container.
+B9 Propagation: /mnt/p2-prop parent dir; pods started before mounting
+   /mnt/p2-prop/famfs, with None and HostToContainer (MODEL
+   /models/famfs/...). Umount while a reader runs (EBUSY or lazy), then
+   remount + logplay.
+B10 Daemon death (VM2): kill -9 famfs_fused while llm-vm2-a holds the
+   model: holder keeps answering?, new open/stat -> ENOTCONN?, dmesg;
+   recovery fusermount3 -u -z (or umount -l) + famfs mount -f.
+B11 Slices (if quick): a daxN.M on a dynamic region, mkfs + mount there.
+B12 Unwind: famfs umount, daxctl reconfigure-device -m devdax, read the
+   bytes of the model extent from the raw device (or the backing file on
+   the host) and compare with the GGUF.
+B13 Cleanup: pods and namespace deleted, unmounts, vol-down.sh in both
+   guests, unplug-vol.sh 2 and 1, vol0.raw removed; boot -famfs if it
+   works and has EROFS, else set -fsexp back; both Ready, 9909 free.
+
+3. Phase B: what happened (2026-10-17, 10:33-11:25 local)
+-----------------------------------------------------------
+3.1 Kernel. In VM1, kconfig-famfs.sh: all 19 options =y. olddefconfig
+  added 21 lines, all tracing infrastructure: TRACING, EVENT_TRACING,
+  TRACEPOINTS, RING_BUFFER, UPROBE_EVENTS, BPF_EVENTS, STACKTRACE and
+  FUSE_DAX -> FUSE_VDAX. binrpm-pkg: 267 s.
+  Install pitfall: "rpm -ivh" refused with "package
+  kernel-7.3.0_rc4_fsexp ... is newer than kernel-7.3.0_rc4_famfs". rpm
+  compares the release strings, and "fsexp" sorts after "famfs".
+  "rpm -ivh --oldpackage" installs it side by side.
+  After the reboots: uname 7.3.0-rc4-famfs; "T fuse_backing_is_dax" in
+  /proc/kallsyms; /proc/filesystems has fuse, fuseblk and erofs; the
+  fsdev_dax driver exists; tracefs has events/fs_dax/*.
+3.2 Userspace: build-famfs.sh ran offline in 47 s; famfs_fused
+  --fuse-abi prints extmap; libfuse3.so.4 resolves via $ORIGIN to
+  /opt/famfs-bin. Installed on both VMs with the run deps.
+3.3 Device. 512M volatile cxl-type3: mkfs.famfs exits 2 with
+  "famfs_mkfs_allowed: unsupported memory device size (<4GiB)". The
+  minimum is hard-coded in famfs_lib.c l.5965, with no option to change
+  it. I replaced the device with a 4G one (SZ=4G host/plug-vol.sh; the
+  HB1 window is 8G). The sparse backing file grew to 390 MB on disk.
+  vol-up.sh gives dax1.0 (4 GiB); on VM1 it came up bound to kmem again,
+  so it is forced to devdax.
+  mkfs.famfs --set-daxmode: 0.5 s; log 8 MiB; alloc unit 2 MiB; daxctl
+  shows mode famfs. famfs mount -f: fuse,
+  "default_permissions,allow_other". famfs cp of the model: 1.9 s.
+  Plain cp/touch of a new file fails with ENOTSUP; an append fails with
+  ENOSPC.
+3.4 Crash 1 and 2 (VM1, kernel -famfs). sha256sum of the model through
+  the mount oopsed the kernel: panic_on_oops=1, reboot after 10 s. The
+  first time the oops was lost with the journal; the second time it was
+  caught on the serial console (host/serial-log.py,
+  logs/serial-vm1-oops1.txt):
+    BUG: kernel NULL pointer dereference, address: 0000000000000008
+    CPU: 6 UID: 1000 PID: 1563 Comm: sha256sum
+    RIP: 0010:vfs_fadvise+0x4/0x20
+    Call Trace: fuse_passthrough_fadvise+0x32/0x40, __x64_sys_fadvise64
+  The cause: fuse/for-next has both fadvise passthrough
+  (fuse_file_fadvise -> fuse_passthrough_fadvise) and extent maps. For
+  extent-map files ff->passthrough and ff->cred are NULL. read_iter,
+  write_iter, splice and mmap check this; fadvise does not. Any user
+  who can open a famfs file can crash the host. The fix (P2/kernel/
+  fix-fadvise-extmap.patch, 1 line in fs/fuse/file.c): use the
+  passthrough path only if ff->passthrough is set, else
+  generic_fadvise, which for DAX inodes accepts the advice and does
+  nothing. Rebuilt as -famfs2 (72 s), installed with --oldpackage on
+  both VMs, rebooted.
+  After every reboot the guests did not see the memdev again. A qemu
+  re-plug (device_del/device_add, safe with no region in the guest)
+  fixed it, as P1 saw.
+  With the fix, sha256sum through the mount works on both VMs (0.5 s,
+  correct hash).
+3.5 Measurements (logs/: vm2-readpath.txt, pods-where.txt,
+  vm2-daemon-kill.txt, vm2-umount.txt), summarised in 0. Short answers.
+  Bind-mount detail: in the containers the mount is
+  "/models ro,relatime - fuse /dev/dax1.0 rw,user_id=0,...,allow_other".
+  The per-mount ro comes from the CRI bind; the superblock stays rw.
+  The propagated submount (HostToContainer) has no per-mount ro:
+  "/models/famfs rw,nosuid,nodev,relatime master:283". It was protected
+  only by file mode 0644 root:root against uid 1000 (Permission denied).
+3.6 What the driver must do (famfs in 11-research-IN 4.2), beyond FA:
+  - the kernel fix above;
+  - pool devices >= 4 GiB, or a 1-line famfs patch;
+  - famfs mount -f;
+  - after mounting a reader's node mount, "mount -o remount,bind,ro".
+    Otherwise a client root, or a root container through a propagated
+    mount, can write the shared model in place;
+  - one famfs_fused per device per node that outlives the readers. Its
+    death breaks only new opens; recovery needs all readers stopped
+    first;
+  - order: the node mount exists before the containers start, or use
+    HostToContainer on a parent directory;
+  - never a second famfs mount of the same device on a node while
+    container bind mounts of the old one exist (it hangs for 45 s, then
+    fails).
+3.7 Cleanup (done, verified):
+  - namespace p2-famfs deleted, 0 pods outside kube-system;
+  - VM1: umount; famfs_fused exited; daxctl devdax; vol-down;
+  - VM2: already devdax and unmounted; vol-down;
+  - device_del p2vol0 (DEVICE_DELETED in both) and object-del; vol0.raw
+    removed; qtree 0 cxl-type3 in both;
+  - the guests have no memdevs, no /dev/dax*, no fuse mounts, no new
+    BUG/WARNING in dmesg;
+  - rpm -e of the unfixed -famfs kernel in both VMs; the default is
+    /boot/vmlinuz-7.3.0-rc4-famfs2;
+  - both nodes Ready; port 9909 free; serial loggers stopped.

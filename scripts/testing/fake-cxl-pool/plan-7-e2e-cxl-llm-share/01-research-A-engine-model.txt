@@ -1,0 +1,595 @@
+plan-7 research A: inference engine and model
+=============================================
+2026-10-16, research agent A (Opus). Host only: no VM was touched.
+
+Sources (file:line references below are relative to these):
+  L = ~/github.com/ggml-org/llama.cpp at 25a1d63f4 (2026-06-29)
+  K = ~/github.com/torvalds/linux at 1b78070aaef6 (net-7.3-rc1 merge,
+      2026-08-27; the VMs run 7.3.0-rc4)
+  E = ~/github.com/containers/nri-plugins/test/e2e
+Scratch (builds, downloads, prototype; not in git):
+  W = /home/akervine/.claude/jobs/8211478b/tmp/plan7-A
+  W/src/cxl-llm.cpp    the prototype reader/writer (439 lines)
+  W/src/fake-dax.c     LD_PRELOAD devdax emulator used for the tests
+  W/llama-dax-fd.patch the alternative llama.cpp patch (option 3b)
+  W/static-out/cxl-llm.stripped  static binary (sha256 f278430e...aa8b)
+  W/dl/<model>/        downloaded models, one directory each
+  W/bench1.txt, W/bench2.txt, *.answers  raw benchmark lines
+
+Summary
+-------
+- Model: Qwen3-0.6B Q4_K_M (unsloth/Qwen3-0.6B-GGUF, 396705472 bytes =
+  378.3 MiB, Apache-2.0). Answers "hello" with "Hello! How can I assist
+  you today?" (greedy, 9 tokens), identical over 3 runs x 1/2/4 threads
+  and over all load paths. 17 / 30 / 41 tokens/s on 1 / 2 / 4 threads of
+  the e2e host CPU, max RSS 514 MB of which ~137 MB is anonymous.
+  Smaller alternative with the same "hello" quality: SmolLM2-360M-Instruct
+  Q4_K_M (258.1 MiB).
+- Stock llama.cpp cannot load /dev/daxX.Y nor an fd: it learns the size
+  with fseeko(SEEK_END)/ftello (devdax: noop_llseek -> 0), reads the header
+  with fread (devdax: no .read -> EINVAL) and maps file-size bytes (devdax:
+  must be a 2 MiB multiple). The CLI takes paths only.
+- Zero-patch solution, prototyped and working: a ~440-line program
+  (cxl-llm) on the public API: mmap the dax fd, parse the GGUF header with
+  gguf_init_from_buffer(), give llama_model_load_from_file_ptr() a
+  fopencookie() FILE* that reads from the mapping, reports the model
+  length rounded up to 2 MiB as its size, and whose fileno() is the dax fd
+  (one glibc FILE field). llama.cpp then maps the device itself
+  (MAP_SHARED|MAP_POPULATE, 2 MiB multiple, offset 0) and the weights stay
+  in the device ("direct"). The same binary does "copy" (weights copied
+  into process memory), plain files (the "cached" mode on any filesystem),
+  the writer (--write) and the tmpfs fallback (--extract). Verified on the
+  host against an emulated devdax (LD_PRELOAD shim enforcing the kernel's
+  rules, plus strace): same answer as the plain file in every mode.
+- Repacking must be off (llama.cpp default is on): for Q4_K on AVX2 it
+  copies 205 MiB of the weights into anonymous memory at load, which
+  defeats both "direct" and "cached", and it changes long answers.
+- Delivery: one static, CPU-only, x86-64-v3 binary, 6.7 MB stripped,
+  built in a fedora:43 container. Recommended: copy it (and the model, to
+  the writer's VM only) into the VMs with dra-vm-put-file and mount a
+  hostPath directory read-only into the test pods (python:3-alpine, as
+  today).
+
+1. Model
+--------
+1.1 Candidates (downloaded through the proxy, ~80 MB/s; sha256 of every
+file equals the LFS oid in the Hugging Face API; all Apache-2.0 per the
+model cards, base models too):
+
+  repo @ commit                                  file                                 bytes      MiB    sha256
+  unsloth/Qwen3-0.6B-GGUF @ 50968a44...          Qwen3-0.6B-Q4_K_M.gguf               396705472  378.3  ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a
+  Qwen/Qwen3-0.6B-GGUF @ 23749fef...             Qwen3-0.6B-Q8_0.gguf                 639446688  609.8  9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031
+  HuggingFaceTB/SmolLM2-360M-Instruct-GGUF @ 593b5a2e...  smollm2-360m-instruct-q8_0.gguf  386404992  368.5  48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201
+  bartowski/SmolLM2-360M-Instruct-GGUF @ 7be6f65f...      SmolLM2-360M-Instruct-Q4_K_M.gguf  270590880  258.1  2fa3f013dcdd7b99f9b237717fa0b12d75bbb89984cc1274be1471a465bac9c2
+  bartowski/SmolLM2-135M-Instruct-GGUF @ 09816acd...      SmolLM2-135M-Instruct-Q8_0.gguf    144811360  138.1  5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83
+  Qwen/Qwen2.5-0.5B-Instruct-GGUF @ 9217f5db...  qwen2.5-0.5b-instruct-q4_k_m.gguf    491400032  468.6  74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
+  Full commits: unsloth 50968a4468ef4233ed78cd7c3de230dd1d61a56b, Qwen3
+  23749fefcc72300e3a2ad315e1317431b06b590a, HuggingFaceTB
+  593b5a2e04c8f3e4ee880263f93e0bd2901ad47f, bartowski-360M
+  7be6f65f1db715fe5dc5a4634c0d459b4eed42ec, bartowski-135M
+  09816acd5d99df7be770d85ea30822623dab342c, Qwen2.5
+  9217f5db79a29953eb74d5343926648285ec7e67.
+  The official Qwen repo has only Q8_0 (and the Qwen org GGUF is 610 MiB,
+  over the ~600 MiB budget); Q4_K_M comes from unsloth. A pinned URL works
+  (HTTP 206 checked):
+  https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/50968a4468ef4233ed78cd7c3de230dd1d61a56b/Qwen3-0.6B-Q4_K_M.gguf
+  Other small candidates seen, not tested: gemma-3-270m-it (Q4_K_M 241
+  MiB, Gemma terms of use, not Apache), Qwen3-0.6B Q3/Q2 quants (282-331
+  MiB, lower quality for little gain).
+
+1.2 Method. Host CPU AMD EPYC 7662 (Zen 2), the CPU the e2e VMs get
+("-cpu host,x2apic=on", E/lib/topology2qemuopts.py:485, also seen in the
+running qemu command lines). Build: llama.cpp 25a1d63f4, CPU only,
+GGML_NATIVE=OFF with AVX/AVX2/FMA/F16C/BMI2 (section 4), no OpenMP, no
+repacking. Program: W/bin/cxl-llm (chat template applied with
+llama_chat_apply_template, greedy sampler, n_ctx = prompt + n), pinned
+with "taskset -c 40-43", 3 runs per row, medians. W/scripts/bench.sh,
+summary by W/scripts/summ.py. load_ms = llama_model_load_from_file_ptr()
+(includes mmap+MAP_POPULATE of a page-cached file and vocab setup),
+ttft_ms = prompt decode + first sample, gen_tps = tokens after the first
+token per second, maxrss = /usr/bin/time %M (includes the mapped model).
+
+  model               prompt   t  load_ms ttft_ms gen_n gen_tps maxrss_MB answer sha (3 runs x 3 thread counts)
+  Qwen3-0.6B Q4_K_M   hello    1   288     272      9    16.9    514    cd153d3c18e7 (all 9 identical)
+                      hello    2   289     142      9    29.6    514
+                      hello    4   290      78      9    41.2    514
+                      explain  1   290     438     57    18.3    519    8948f003424b (all identical)
+                      explain  2   290     224     57    32.1    519
+                      explain  4   289     118     57    42.4    519
+  Qwen3-0.6B Q8_0     hello    1   307     282      9    11.9    745    cd153d3c18e7
+                      hello    2   307     146      9    22.0    745
+                      hello    4   309      80      9    28.5    745
+  SmolLM2-360M Q4_K_M hello    1   118     193      9    22.3    340    fda564ba3f7a
+                      hello    2   117     101      9    39.7    340
+                      hello    4   117      54      9    58.1    340
+                      explain  1   119     314     64    24.3    340    1d2a4cdc63ab
+  SmolLM2-360M Q8_0   hello    1   130     160      9    20.4    452    fda564ba3f7a
+                      hello    2   129      83      9    36.1    452
+  Qwen2.5-0.5B Q4_K_M hello    1   288     202      9    17.1    573    cd153d3c18e7
+                      hello    2   288     106      9    31.1    573
+  SmolLM2-135M Q8_0   hello    1   105      64     32    53.4    212    4039013812f5
+                      hello    2   105      34     32    91.4    212
+  ("explain" = "Explain in three sentences what computer memory is.",
+  n=64; full table with all rows: W/bench1.txt, W/bench2.txt.)
+
+1.3 Answers (1 thread; identical on 2 and 4):
+  Qwen3-0.6B Q4_K_M, Q8_0 and Qwen2.5-0.5B: "Hello! How can I assist you
+  today?"
+  SmolLM2-360M (Q8_0 and Q4_K_M): "Hello! How can I help you today?"
+  SmolLM2-135M: "Hello. I'm here to help you with any questions or
+  concerns you may have about your new puppy. ..." (not sensible: drop)
+  Qwen3-0.6B Q4_K_M, "explain": "Computer memory is a type of storage that
+  holds data temporarily, allowing programs and data to be accessed
+  quickly. It stores information such as text, images, and program
+  instructions, enabling efficient processing and execution of tasks.
+  Memory is crucial for running applications and responding to user
+  input in real time." (SmolLM2-360M repeats itself on this prompt.)
+  Raw: W/bench1.txt.answers, W/bench2.txt.answers.
+
+1.4 Qwen3 thinks by default. Its template has enable_thinking; without
+it the model writes a <think>...</think> block first (100 tokens for
+"hello", ending with an emoji: 3.8 s instead of 0.8 s). llama-completion
+"-rea off" did not stop it at this commit. cxl-llm appends the empty
+think block that the template emits for enable_thinking=false
+("<think>\n\n</think>\n\n") when the model template contains
+"enable_thinking" (--think disables that). The legacy
+llama_chat_apply_template recognizes Qwen3's template as chatml, so the
+prompt is "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n"
++ the empty think block (13 tokens).
+
+1.5 Pick: Qwen3-0.6B Q4_K_M.
+  - It is the model the task names, it gives the best answers (also for
+    a longer question), and it fits easily: 378.3 MiB file; model
+    mapping 380 MiB (190 x 2 MiB); ~137 MB anonymous memory per reader
+    (KV 28 MiB, compute buffers, vocab tables); fits a 512 MiB shared
+    device (smallest 256 MiB multiple, research C) or a 1 GiB slot.
+  - 1-2 threads are enough: whole run (load + answer) 0.8 s on 2 threads
+    on the host.
+  - SmolLM2-360M-Instruct Q4_K_M is the fallback if time or RAM gets
+    tight: 258 MiB, 2.5x faster load (smaller vocab: 49152 vs 151936),
+    ~80 MB anonymous, no thinking trick needed; weaker on longer prompts.
+  - Q8_0 of Qwen3 is the official file but 610 MiB and 30-40% slower.
+1.6 Determinism: greedy sampling uses no RNG (seed irrelevant). The answer
+was identical over 3 runs x 1, 2, 4 threads, and over file, dax-direct,
+dax-copy and the patched llama-completion (section 3). It changes with
+the CPU kernels: with repacking on, the "explain" answer differs
+(sha eaeef3f2 vs 6dbcab27) while "hello" stays the same. So the test may
+assert on the exact "hello" answer when every reader runs the same
+binary with the same flags on the same CPU type; more robust: all
+readers' answers are identical to each other and to a reference run of
+the same binary on the plain file, and contain "Hello".
+
+2. llama.cpp model loading in detail
+------------------------------------
+2.1 Entry points (L/include/llama.h): llama_model_load_from_file(path)
+489-491, llama_model_load_from_file_ptr(FILE *) 494-496,
+llama_model_load_from_splits 500-503, llama_model_init_from_user(gguf
+metadata, set_tensor_data callback) 470-479. All go to
+llama_model_load_from_file_impl (L/src/llama.cpp:341-405) ->
+llama_model_load (279-339) -> llama_model_loader (L/src/llama-model-
+loader.cpp:515). The tools use paths only: common_init_from_params ->
+llama_model_load_from_file(params.model.path) (L/common/common.cpp:1212,
+again in the fit step L/common/fit.cpp:60, so llama-cli/-completion open
+and map the model twice at start); "-m FNAME" is a path
+(L/common/arg.cpp:2726-2733). No tool uses the FILE* entry point and no
+option takes an fd.
+
+2.2 Path load, step by step:
+  a. Header: gguf_init_from_file(fname) (loader:550) = ggml_fopen(fname,
+     "rb") (L/ggml/src/gguf.cpp:980) + gguf_init_from_file_ptr (928-944):
+     ftello for the start, gguf_reader::file_remain (246-264) does
+     fseeko(SEEK_END)/ftello/fseeko back to get the byte count; reads go
+     through gguf_file_reader_callback = fseeko + fread (910-926).
+     gguf_init_from_reader (451...) reads magic, version, KVs, tensor
+     infos; every read is bounded by nbytes_remain (357-362); "failed to
+     read magic" (462) when the size is 0. Tensor data must be packed in
+     order and padded to general.alignment (751-782), data offset
+     = header padded to the alignment. no_alloc=true: tensor data is not
+     read here. The FILE is closed (988).
+  b. llama_file(fname, "rb", use_direct_io) (loader:559,
+     L/src/llama-mmap.cpp:183-195): with -dio, open(O_RDONLY|O_DIRECT),
+     size = fstat st_size, alignment = st_blksize (198-215); otherwise
+     init_fp: ggml_fopen, seek(0, SEEK_END), size = tell(), seek(0,
+     SEEK_SET) (218-226), tell = ftello (235-250), seek = fseeko
+     (252-262). Reads: read_raw_unsafe = fread of min(len, size - pos)
+     (264-279), or read() loops for O_DIRECT (280-316). file_id() =
+     fileno(fp) (411-424).
+  c. FILE* load: gguf_init_from_file_ptr(file) (loader:676), then
+     llama_file(FILE *) (685; L/src/llama-mmap.cpp:228-233: fseeko END,
+     ftello = size, fseeko 0, owns_fp=false). Everything else is the
+     same as for a path: fileno(fp) is what gets mapped.
+  d. Mapping: llama_model::load_tensors calls ml.init_mappings(true,
+     mlock ? ... : nullptr) (L/src/llama-model.cpp:1492; prefetch is
+     hard-wired true) -> llama_mmap(file, prefetch ? -1 : 0, is_numa)
+     (loader:1338-1362). llama_mmap::impl (L/src/llama-mmap.cpp:445-476):
+       posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL)        451
+       flags = MAP_SHARED | MAP_POPULATE (prefetch != 0)     448, 455
+       mmap(NULL, file->size(), PROT_READ, flags, fd, 0)     457
+       posix_madvise(addr, min(size, prefetch), WILLNEED)    462-467
+       numa: prefetch = 0 (no MAP_POPULATE) and MADV_RANDOM  449, 468-473
+     Length = the file size exactly, offset 0, always MAP_SHARED.
+  e. Buffers: weights of the default CPU buffer type are wrapped in place
+     (ggml_backend_dev_buffer_from_host_ptr over [first, last) of the
+     mapping, llama-model.cpp:1529-1549) and every tensor's data is
+     set to mapping + offset (ggml_backend_tensor_alloc(buf_mmap, cur,
+     data), loader:1541-1565). Tensors that go to another buffer type
+     are copied (ggml_backend_tensor_set, loader:1567). The CPU "extra"
+     buffer type CPU_REPACK (use_extra_bufts, default true:
+     llama-model.cpp:2299, make_cpu_buft_list 872/904; CLI -nr/--no-repack
+     L/common/arg.cpp:2158, common.cpp:1545) repacks Q4_0 and Q4_K (AVX2,
+     L/ggml/src/ggml-cpu/repack.cpp:4573-4574, 4600-4601), Q2_K
+     (AVX512), IQ4_NL...: measured 204.75 MiB of Qwen3 Q4_K_M copied into
+     anonymous memory, 21 MiB of SmolLM2-360M Q4_K_M, 0 for Q8_0.
+  f. After loading, the parts of the mapping before the first and after
+     the last tensor are unmapped, rounded to 4 KiB pages (loader:
+     1673-1684, unmap_fragment llama-mmap.cpp:478-524, page_size 491); the
+     destructor unmaps the remaining fragments (526-532). munmap failures
+     are warnings only (506, 529).
+  g. --no-mmap: use_mmap=false; tensors are allocated in backend buffers
+     and filled with file->seek + read_raw (loader:1569-1574, also
+     load_data_for 1398-1404). --mlock: mlock() of the mapping as it
+     grows (llama-mmap.cpp:636-763, grow_to 743-757). --numa: see d.
+     llama_model_init_from_user forces use_mmap=false (src/llama.cpp:415)
+     and is meant for synthetic models (creates absent tensors as F32,
+     loader:1218-1226).
+
+2.3 What exactly fails with /dev/daxX.Y (K/drivers/dax/device.c):
+  dax_fops (360-368) has .open, .release, .llseek = noop_llseek,
+  .get_unmapped_area, .mmap_prepare, and no .read/.write/.read_iter.
+  - open(O_RDONLY): allowed (device cgroup "r" is enough). No
+    FMODE_CAN_READ is set (K/fs/open.c:1001-1003). O_DIRECT: EINVAL
+    (K/fs/open.c:1017), llama.cpp falls back to buffered (llama-mmap.cpp:
+    186-194).
+  - lseek/fseeko/ftello: noop_llseek returns f_pos (K/fs/read_write.c:
+    326-329), so SEEK_END "succeeds" with 0: size = 0, fstat st_size = 0.
+  - read()/pread(): vfs_read returns -EINVAL without FMODE_CAN_READ
+    (K/fs/read_write.c:560-561, 571-576); fread fails, ferror set.
+  - mmap: __check_vma (16-51), called from dax_mmap_prepare (273-295) and
+    at every fault (94, 130, 176): EINVAL unless VM_MAYSHARE (27-32: no
+    MAP_PRIVATE, dmesg "attempted private mapping"), EINVAL if vm_start
+    or vm_end is not a multiple of dev_dax->align (34-41, dmesg
+    "unaligned vma"). do_mmap first rounds the length up to 4 KiB
+    (K/mm/mmap.c:372) and rejects 0 (373); dax_get_unmapped_area
+    (298-327) picks a start aligned to align (offset congruent), so an
+    unaligned offset gives an unaligned start: EINVAL. A length that is
+    not a multiple of 2 MiB, like the 396705472 bytes of the model, makes
+    vm_end unaligned: EINVAL. Nothing is rounded up for the caller. The
+    alignment of CXL dax regions is PMD_SIZE (K/drivers/dax/cxl.c:20-21,
+    inherited by the device, K/drivers/dax/bus.c:1525); sysfs shows it
+    (align, bus.c:1213-1219, 1282) next to size (942...), reachable as
+    /sys/dev/char/MAJ:MIN/{size,align} from fstat st_rdev.
+  - A mapping longer than the device is not refused; touching beyond the
+    end gives SIGBUS (pgoff_to_phys fails, device.c:149-154).
+  - munmap of part of a dax VMA: may_split (248-256, called from
+    K/mm/vma.c:554-555) refuses unaligned split points: EINVAL.
+  - posix_fadvise and madvise(WILLNEED) are accepted and ignored for DAX
+    inodes (K/mm/fadvise.c:51-65, K/mm/madvise.c:308-311; dax_open sets
+    S_DAX, device.c:347). VMAs get VM_HUGEPAGE and PMD faults
+    (device.c:293, 160).
+  So with "-m /dev/dax0.0" stock llama.cpp stops at step 2.2a: size 0,
+  "gguf_init_from_reader: failed to read magic", then "llama_model_loader:
+  failed to load model from /dev/dax0.0" (loader:553). Same messages on
+  the host with -m /dev/zero (its lseek also returns 0; drivers/char/
+  mem.c:564-567). Were the size known: fread -> EINVAL ("read error:
+  Invalid argument", llama-mmap.cpp:275); mmap of the exact file size ->
+  EINVAL; the 4 KiB fragment unmaps -> EINVAL warnings. --no-mmap: read
+  errors.
+2.4 An already open fd: not in the tools. /dev/fd/3 is a symlink to
+/proc/self/fd/3 and opening it reopens the device inode, which the device
+cgroup refuses in our containers. In the API, llama_model_load_from_file_
+ptr(fdopen(3, "rb")) works for a regular file fd (tested: cxl-llm --fd 3
+on the model file), but a dax fd fails the same way as the path (reads
+and size). It works with the FILE* of 3.1.
+
+3. Ways to run a model that lives in a devdax device (ranked)
+--------------------------------------------------------------
+3.1 (a, best) No patch: a small program on the public API (cxl-llm).
+  Reader, devdax (S_ISCHR, or --dax):
+    1. fd = the inherited fd (--fd 3, the lease) or open(path, O_RDONLY)
+       (claim /dev/daxX.Y). size/align from /sys/dev/char/MAJ:MIN or
+       --size/--align (the container also has CXL_<KEY>_SIZE).
+    2. base = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0) (whole
+       device, address space only).
+    3. gguf_init_from_buffer(base, size, {no_alloc}) (gguf.cpp:966-977),
+       end = data_offset + max(tensor offset + size); len = end rounded
+       up to align (Qwen3: 398458880 = 190 x 2 MiB). len <= size.
+    4. fp = fopencookie(cookie{base, len}, "rb", {read: memcpy from base,
+       seek: SET/CUR/END over len}); for direct: fp->_fileno = fd.
+       glibc's fileno() returns _fileno when _IO_IS_FILEBUF is set, which
+       the cookie init sets; it is -2 for cookie FILEs otherwise. This is
+       the only non-API step (struct _IO_FILE is in glibc's public
+       bits/types/struct_FILE.h; glibc only).
+    5. llama_model_load_from_file_ptr(fp, params{use_mmap = true
+       (direct) / false (copy), use_extra_bufts = false, use_direct_io =
+       false, n_gpu_layers = 0}). llama.cpp reads the header through the
+       cookie (2.2c), takes size = len from SEEK_END, and maps fileno(fp)
+       = the dax fd: mmap(NULL, len, PROT_READ, MAP_SHARED|MAP_POPULATE,
+       fd, 0): MAP_SHARED, offset 0, 2 MiB multiple: valid for devdax.
+       Weights point into that mapping ("CPU_Mapped model buffer size =
+       372.65 MiB", no CPU_REPACK buffer).
+    Side effects: the three unmap_fragment munmaps split the VMA at 4 KiB
+    boundaries and get EINVAL (llama.cpp warns "munmap failed: Invalid
+    argument" at log level WARN; cxl-llm shows them with -v only); the
+    mapping lives until exit. Harmless.
+  Copy (--mode copy): use_mmap=false; llama.cpp reads every tensor
+    through the cookie into its own buffers: a private DRAM copy per
+    process, fd never mapped by llama.cpp, no glibc field touched.
+  Regular file (path or --fd): fdopen + the same entry point: llama.cpp
+    maps the file (page cache): the "cached" mode, whatever filesystem
+    research B provides.
+  Writer (--write SRC): devdax has no write() either: map
+    round_up(SRC size, align) PROT_READ|PROT_WRITE MAP_SHARED, read()
+    SRC into the mapping, zero the tail. --extract DST: write the GGUF
+    (exact length from the header) from the device to a file: the tmpfs
+    fallback (cp/dd cannot read devdax).
+  Output: the answer on stdout, one "cxl-llm: key=value" line on stderr
+  (source, model_bytes, load_ms, ttft_ms, gen_tokens, gen_tps, rss_kb,
+  rss_anon_kb, rss_file_kb, rss_shmem_kb).
+  Code: W/src/cxl-llm.cpp (core in appendix A).
+
+3.2 (b) Patch llama.cpp: W/llama-dax-fd.patch, tested (scratch copy
+  W/llama-patched, build W/build-patched). 3 files, +92/-4:
+  src/llama-mmap.cpp +85: llama_file::impl::init_map() for "fd:N" names
+  (F_DUPFD_CLOEXEC of N) and character devices: size/align from sysfs,
+  mmap MAP_SHARED of the device, tell/seek/read_raw_unsafe served from
+  the mapping, file_id() = the mapped fd; llama_mmap unmaps fragments at
+  the file's map alignment (no EINVAL warnings). src/llama-mmap.h +2
+  (map_data(), map_alignment()). src/llama-model-loader.cpp +9/-4: open
+  the llama_file first and, if it is mapped, gguf_init_from_buffer on
+  the mapping instead of gguf_init_from_file (loader:550-560). Then stock
+  tools work: "llama-completion -m fd:3 -nr ..." or "-m /dev/dax0.0".
+  Tested: plain file, fd:3 of the file, fake dax fd:3 and path: same
+  answer, no refused call. Weak points: it maps and MAP_POPULATEs the
+  whole device (size from sysfs; would need GGUF-length logic as in
+  3.1), split files are not covered, it is a fork to rebase, and the
+  tools still need -nr and a prompt with the template/no-think by hand.
+3.3 Other existing APIs, not enough alone:
+  gguf_init_from_buffer / gguf_init_from_callback (gguf.h:79-88): header
+  only; llama_model_init_from_user: copies (use_mmap forced false) and is
+  for synthetic models (2.2g); fdopen(daxfd) FILE*: reads fail (2.4);
+  fmemopen/fopencookie without the fileno step: no fd to map, so copy
+  only (that is --mode copy).
+3.4 (c) LD_PRELOAD shim for stock binaries: feasible but the weakest.
+  It must interpose fopen/fopen64 (ggml_fopen calls the exported fopen)
+  and hand out the same cookie FILE with _fileno = dax fd as 3.1, size
+  rounded to 2 MiB, also for "fd:N" names; read()/fstat() interposition
+  is useless because fread calls glibc-internal __read, not the exported
+  read. Pitfalls: needs a dynamically linked llama binary and a matching
+  glibc/libstdc++ in the image (no static build), fopen is called twice
+  (header, then llama_file) and fclose of the first must not close the
+  shared fd, the 4 KiB fragment munmaps fail (or the shim rounds them),
+  -dio opens with open() and must be avoided, tools still need -nr.
+3.5 (d) Format: needed by 3.1 and 3.2 and sufficient as is: the raw GGUF
+  at offset 0 of the device (mapping offset 0 is aligned), padding to
+  the next 2 MiB with zeros (cxl-llm --write does it). The length needs
+  no extra field: it follows from the header (data offset + packed,
+  aligned tensor sizes, gguf.cpp:751-782). Research C's commit record
+  at size - 4 KiB (magic, L, sha256) is compatible and still useful as
+  "the writer is done" marker and for the host check; cxl-llm could
+  check it if C keeps it. No format trick makes read()/lseek() work, so a
+  format alone does not help stock llama.cpp.
+
+3.6 Prototype evidence (host, no dax device). Emulation: a 1 GiB file in
+/dev/shm holding the model at offset 0, opened as fd 3 by the shell
+("exec 3<FILE", O_RDONLY like a read-only lease) and W/bin/fake-dax.so
+(LD_PRELOAD, W/src/fake-dax.c) that follows device.c: fstat S_IFCHR
+size 0, read/pread/readv EINVAL, lseek returns 0, mmap refused unless
+MAP_SHARED with offset and page-rounded length multiples of 2 MiB,
+mappings placed at 2 MiB aligned addresses, munmap that splits a dax
+mapping at an unaligned address refused, dup/F_DUPFD tracked, fake
+sysfs size/align. Qwen3-0.6B Q4_K_M, 2 threads, "hello":
+  source              answer                               load_ms rss_anon_kb rss_file/shmem_kb
+  plain file          Hello! How can I assist you today?   296     136908      389084 file
+  dax-direct fd 3     Hello! How can I assist you today?   320     139292      394944 shmem (=device)
+  dax-direct path     Hello! How can I assist you today?   298     139292      394944 shmem
+  dax-copy fd 3       Hello! How can I assist you today?   546     520888      387456 shmem
+  dax-direct --repack Hello! How can I assist you today?   516     349092      394944 shmem
+  "explain" (n=64) sha256 of the answer: file, dax-direct (2 and 4
+  threads), dax-copy: 6dbcab27c85c2241; with --repack eaeef3f27fbe6770.
+  Shim log of a direct run: "mmap fd 3 len 0x40000000 flags 0x1" (the
+  header mapping), "mmap fd 3 len 0x17c00000 flags 0x8001" (llama.cpp:
+  MAP_SHARED|MAP_POPULATE, 380 MiB), then three "refused munmap ...
+  split of a dax mapping at an unaligned address" = llama.cpp's fragment
+  unmaps (warnings, run unaffected).
+  strace of a direct run without the shim (--dax forces the path), every
+  syscall on fd 3 (W/strace-direct.txt):
+    fstat(3, ...) = 0
+    mmap(NULL, 1073741824, PROT_READ, MAP_SHARED, 3, 0)
+    fadvise64(3, 0, 0, POSIX_FADV_SEQUENTIAL) = 0
+    mmap(NULL, 398458880, PROT_READ, MAP_SHARED|MAP_POPULATE, 3, 0)
+  plus madvise(model mapping, 398458880, MADV_WILLNEED): no read, pread,
+  lseek or close of fd 3. Same with the static binary.
+  Writer/reader round trip: cxl-llm --write into the fake device (378 MiB
+  in 383 ms), cmp equal to the file, a reader answers the same; --extract
+  gives back a file with the original sha256 (ac2d9771...); SmolLM2-360M
+  through a 512 MiB fake device works as well.
+  Patched llama-completion (3.2) with the shim: "fd 4 is a dup of fd 3",
+  mmaps of 0x17e00000 bytes, no refused call, same answer.
+3.7 Still to verify on a real devdax in a container (research B /
+implementation):
+  - mmap(MAP_SHARED, PROT_READ) of the whole device and of the 2 MiB
+    rounded model length through a read-only lease fd and through a
+    claim's "r" device node; PROT_WRITE refused on those (the reader
+    never asks for it: a PROT_READ mapping, no writes by llama.cpp).
+  - /sys/dev/char/MAJ:MIN/size and align readable inside the container
+    (else pass --size $CXL_<KEY>_SIZE).
+  - MAP_POPULATE time of 380 MiB devdax (PMD faults), load_ms, ttft and
+    tokens/s with the weights in the qemu CXL memory (memory notes say
+    shared memory-backend-file devdax runs at RAM speed).
+  - where the RSS of a devdax mapping is accounted (folio PMD mappings,
+    device.c:160: RssFile?), so the test knows what "direct" looks like
+    in /proc/PID/status, numa_maps and node meminfo; anonymous memory
+    should stay ~140 MB per reader.
+  - the dmesg lines of the three refused munmaps should not appear (they
+    are may_split refusals, not __check_vma), to be confirmed.
+  - glibc static: the _fileno step was tested with the static glibc
+    2.42 binary on the host kernel; nothing kernel-specific there.
+
+4. Build and delivery
+---------------------
+4.1 CPU baseline: VMs run "-cpu host,x2apic=on" (E/lib/topology2qemuopts
+.py:485) on the e2e host, an AMD EPYC 7662: avx avx2 bmi2 f16c fma
+sha_ni, no AVX-512. Build GGML_NATIVE=OFF with GGML_AVX, GGML_AVX2,
+GGML_FMA, GGML_F16C, GGML_BMI2 = ON ("Adding CPU backend variant
+ggml-cpu: -msse4.2;-mf16c;-mfma;-mbmi2;-mavx;-mavx2"). objdump: no zmm
+in ggml code, only in glibc's ifunc memcpy/memset variants (selected at
+run time). A CPU without AVX2 would get SIGILL: rebuild then.
+4.2 Static build, in a container because the host has no libc.a
+(W/scripts/build-static.sh, ~45 s on this host):
+  podman run --rm --security-opt label=disable -e http_proxy -e https_proxy \
+    -v L:/src/llama.cpp:ro -v W/src:/src/cxl-llm:ro -v W/scripts:/scripts:ro \
+    -v W/static-out:/out registry.fedoraproject.org/fedora:43 bash /scripts/build-static.sh
+  inside: dnf install gcc-c++ cmake ninja-build glibc-static
+  libstdc++-static; cmake -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON
+  -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON
+  -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_OPENMP=OFF -DGGML_BLAS=OFF
+  -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF
+  (LLAMA_CURL is deprecated, L/CMakeLists.txt:170, and not linked;
+  LLAMA_OPENSSL=OFF drops HTTPS; no GPU backend is on by default); ninja llama-completion llama-simple (for
+  the libs); g++ -O2 -static cxl-llm.cpp + libllama.a libggml.a
+  libggml-cpu.a libggml-base.a -lpthread -lm; strip.
+  ("--security-opt label=disable": SELinux refused the bind mounts.)
+  Result: cxl-llm 23 MB, stripped 6.7 MB (6680168 bytes, gzip 2.7 MB),
+  "statically linked", runs on the host and in a FROM scratch image
+  (OCI archive 2.8 MB). GGML_STATIC links only ggml's own targets
+  statically: llama-completion stays dynamic; for a static
+  llama-completion (option 3.2) add -DCMAKE_EXE_LINKER_FLAGS=-static.
+  The dlopen warning of ggml-backend-dl.cpp at link time is harmless
+  (cxl-llm does not call ggml_backend_load_all(); the CPU backend is
+  built in). Pin llama.cpp at 25a1d63f4 (or one tested commit): both the
+  answer text and the FILE* entry point depend on it.
+4.3 Delivery options:
+  - Image imported into containerd: the e2e does this only for the policy
+    plugins (build/images/*-image-*.tar copied by ansible, "ctr -n k8s.io
+    images import" + tag, E/playbook/nri-memory-policy-plugin-deploy.yaml:
+    31-55, E/lib/vm.bash:1880-1906); run.sh:815 calls
+    vm-put-docker-image, which no longer exists. A FROM scratch image is
+    2.8 MB and works, but has no shell: the pods would need exec-form
+    commands, "cxl-request ... --exec /cxl-llm --fd 3" included.
+  - Bind mount from the driver (CDI, like cxl-request): needs a driver
+    change for a test tool. No.
+  - ConfigMap (how dax-rw.py travels today): 1 MiB limit, too small.
+  - hostPath: dra-vm-put-file the binary into each VM (as kubelet-cxl-
+    plugin and cxl-request are installed, dra.source.sh:310-325), mount
+    the directory readOnly into the python:3-alpine pods that the tests
+    already pull (a static binary runs on musl images). Recommended:
+    /opt/cxl-llm/cxl-llm on both VMs, the model file only in the
+    writer's VM (/opt/cxl-llm/model/... or research C's /var/cache/
+    e2e-llm), mounted only into the writer pod. The host downloads the
+    model once, pinned by commit URL and sha256, into a cache directory
+    outside the test output.
+
+5. Inference engine alternatives
+--------------------------------
+Not needed: llama.cpp works through its public API. Briefly: llamafile
+and ollama embed the same loader (same limits); engines on safetensors
+(candle, ONNX Runtime, PyTorch) also read and mmap files, are far bigger,
+and would need the same mapping trick; a tiny single-file engine (e.g.
+llama2.c-style) maps a checkpoint with one mmap() call and would be a
+10-line change, but no tiny engine runs Qwen3 GGUF as well as llama.cpp.
+
+6. Recommendation
+-----------------
+- Engine: llama.cpp 25a1d63f4, unpatched, static CPU-only x86-64-v3
+  build, with the program cxl-llm (W/src/cxl-llm.cpp) as the only binary
+  of the test: writer (--write), direct and copy readers on the dax fd or
+  node, cached readers on a file path, tmpfs fallback (--extract), and a
+  machine-readable stderr summary. Always use_extra_bufts=false (built in;
+  for stock tools -nr), greedy, -n 32, 2 threads.
+- Model: Qwen3-0.6B Q4_K_M, sha256 ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a,
+  empty think block; device 512 MiB (or a 1 GiB slot); expected answer
+  "Hello! How can I assist you today?". Fallback SmolLM2-360M-Instruct
+  Q4_K_M ("Hello! How can I help you today?").
+- Delivery: hostPath /opt/cxl-llm read-only, filled by dra-vm-put-file.
+- Keep the llama.cpp patch (3.2) as plan B if the glibc FILE step is
+  judged too hacky; LD_PRELOAD (3.4) only as a last resort.
+
+7. Open points
+--------------
+For B (real devdax, VMs):
+  B1. Run W/static-out/cxl-llm.stripped in a VM on a shared device:
+      "cxl-llm --write MODEL -m /dev/daxX.Y" (writer, rw node or fd), then
+      "cxl-llm -m /dev/daxX.Y" and "cxl-request ... --exec cxl-llm --fd 3"
+      on readers; check 3.7 (mappings, sysfs, populate time, RSS
+      accounting, dmesg, tokens/s).
+  B2. For "cached" over a file view (pmem block device + filesystem,
+      FUSE, loop): llama.cpp maps the file with MAP_POPULATE and
+      MADV_WILLNEED (2.2d), so the whole model enters the page cache at
+      load, not page by page; only --numa (llama_numa_init) turns that
+      off and it also sets MADV_RANDOM and thread placement. Since every
+      token reads all weights anyway, the measurable difference is "all
+      at load" vs "all at first token". Repacking off is required for the
+      readers on one node to share the page cache copy.
+  B3. If fs-dax on /dev/pmem works, stock llama.cpp needs nothing there
+      (regular file, direct access) and cxl-llm's file path covers it.
+For C (integration, test shape):
+  C1. Interfaces of cxl-llm: -m PATH | --fd N; --mode direct|copy;
+      --size/--align (default sysfs); --write SRC; --extract DST; -t, -n,
+      --raw, --think, --repack, -v; prompt = remaining args (default
+      "hello"). stdout = answer, stderr = "cxl-llm: source=... load_ms=...
+      ttft_ms=... gen_tokens=... gen_tps=... rss_kb=... rss_anon_kb=...
+      rss_file_kb=... rss_shmem_kb=...". Exit 0/1/2. Tell A or the
+      implementation what to add (descriptor check, sha256, a loop of N
+      prompts to keep readers alive while the test inspects them).
+  C2. The writer needs no read()/write() on the device: cxl-llm --write
+      maps it; the model file must be readable in the writer pod
+      (hostPath). After writing, drop the source's page cache
+      (posix_fadvise DONTNEED, or keep the model file off VM1 if a VM1
+      reader measures page cache) as C noted.
+  C3. Assertions: identical answers of all readers (and equal to a
+      reference run of the same binary on the plain model file), answer
+      contains "Hello"; direct readers: rss_anon_kb ~140 MB (no copy),
+      source=dax-direct; copy readers: rss_anon_kb ~520 MB.
+  C4. Budget per reader (Qwen3 Q4_K_M, 2 threads, host speed): load
+      ~0.3 s, ttft ~0.15 s, ~30 tokens/s, whole run < 1 s; RAM ~140 MB
+      anonymous (+380 MB page cache per node in cached mode, +380 MB per
+      reader in copy mode). Model download ~5 s, copy into a VM a few
+      seconds.
+  C5. The answer depends on the binary (CPU kernels, repacking): build
+      once on the host, pin llama.cpp and the model sha256.
+
+Appendix A: the core of cxl-llm (dax branch), W/src/cxl-llm.cpp
+----------------------------------------------------------------
+    // size/align: /sys/dev/char/MAJ:MIN/{size,align} unless given
+    const size_t map_len = (size_t) dev_size & ~((size_t) align - 1);
+    void * base = mmap(NULL, map_len, PROT_READ, MAP_SHARED, fd, 0);
+    gguf_init_params gparams = { /*.no_alloc =*/ true, /*.ctx =*/ NULL };
+    gguf_context * gctx = gguf_init_from_buffer(base, map_len, gparams);
+    size_t end = gguf_get_data_offset(gctx);
+    for (int64_t t = 0; t < gguf_get_n_tensors(gctx); t++) {
+        size_t e = gguf_get_data_offset(gctx) + gguf_get_tensor_offset(gctx, t)
+                 + gguf_get_tensor_size(gctx, t);
+        if (e > end) end = e;
+    }
+    gguf_free(gctx);
+    model_len = (end + align - 1) & ~((size_t) align - 1);  // <= map_len
+    mem_cookie * ck = new mem_cookie{ (const char *) base, model_len, 0 };
+    cookie_io_functions_t io = { mem_read, NULL, mem_seek, mem_close };
+    fp = fopencookie(ck, "rb", io);    // read = memcpy, seek over model_len
+    if (mode == "direct") {
+        fp->_fileno = fd;              // llama_mmap maps fileno(fp)
+    } else {
+        mparams.use_mmap = false;      // copy through the cookie
+    }
+    mparams.use_extra_bufts = false;   // no repacking: weights stay mapped
+    llama_model * model = llama_model_load_from_file_ptr(fp, mparams);
+
+Appendix B: files and commands
+------------------------------
+  W/build-host     host build (dynamic glibc, static llama libs) used for
+                   the measurements; W/bin/cxl-llm built from it with
+                   g++ -O2 -std=c++17 -I L/include -I L/ggml/include
+                   W/src/cxl-llm.cpp W/build-host/{src/libllama.a,
+                   ggml/src/libggml.a,ggml/src/libggml-cpu.a,
+                   ggml/src/libggml-base.a} -lpthread -lm
+  W/static-out     static build (4.2), W/image: FROM scratch image test
+  W/bin/fake-dax.so  gcc -O2 -shared -fPIC W/src/fake-dax.c -ldl
+  Emulated device runs, e.g.:
+    truncate -s 1G /dev/shm/plan7A-fake-dax0.0
+    dd if=MODEL of=/dev/shm/plan7A-fake-dax0.0 bs=2M conv=notrunc
+    ( exec 3</dev/shm/plan7A-fake-dax0.0; FAKE_DAX_FD=3 \
+      LD_PRELOAD=W/bin/fake-dax.so W/bin/cxl-llm --fd 3 --size 1073741824 hello )
+  Left on the host: /dev/shm/plan7A-fake-dax0.0 (1 GiB sparse, 378 MiB
+  used, the Qwen3 model at offset 0); delete it when no longer needed.
+  The podman image of 4.2 was removed again (W/image/cxl-llm-image.tar
+  keeps it).

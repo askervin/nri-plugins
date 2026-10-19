@@ -1,0 +1,132 @@
+plan-7-e2e-cxl-llm-share: implementation plan
+=============================================
+NOTE 2026-10-16: stream F (mode file) was implemented and then removed by
+the user's decision D10 (03-decisions.txt); stream T's cached-mode and
+regression items are superseded by D10 and D11.
+Written 2026-10-16 (orchestrator). Decisions: 03-decisions.txt. Two Opus
+streams with disjoint files, then reviews. Nothing is committed by agents.
+Every agent first reads, in this order:
+  /home/akervine/github.com/containers/nri-plugins/.github/skills/coding-style/SKILL.md
+  /home/akervine/github.com/containers/nri-plugins/.github/skills/run-e2e-tests/SKILL.md
+  00-README.txt, 02-findings.txt, 03-decisions.txt, this file, and the
+  research report(s) named for its stream.
+Status files: 05-status-F.txt (stream F), 05-status-T.txt (stream T),
+05-status-orchestrator.txt. Requests between streams go there, never as
+edits of the other stream's files.
+
+Stream F: driver mode file (~/github.com/intel/intel-resource-drivers-for-kubernetes)
+------------------------------------------------------------------------------
+Owns: cmd/kubelet-cxl-plugin/**, cmd/cxl-request/**, pkg/cxl/**,
+deployments/cxl/**, doc/cxl/**, go.mod, go.sum (vendor/ is gitignored).
+Reads: 01-research-B-kernel-access.txt (sections on FUSE, page cache
+proof), 01-research-C-integration.txt (P3, checkSamePreparation), the
+plan-5 contract ../plan-5-api-consistency/02-design.txt and its
+amendments (05-status-orchestrator.txt O4).
+F1 Vocabulary: mode numa|dax|file in pkg/cxl/api (api.ModeFile), in
+   DeviceConfig of both drivers, in the lease protocol and cxl-request
+   (--mode file). Rules and texts (add them to the shared validator):
+   "mode file needs readOnly: true" for DeviceConfig ("mode file needs
+   --read-only" in the CLI); shared devices accept dax and file; region
+   and dram refuse file like dax ("DeviceConfig: mode file: a region is
+   used as numa only"). Env of a file device: CXL_<KEY>_{SERIAL,SHARED,
+   MODE=file,SIZE,PATH,READONLY=1}; no DAX, no device node. api.Env
+   produces PATH. A lease in mode file gets FD under --exec (as dax).
+F2 Export: a node-wide FUSE export per prepared dax device in mode file,
+   refcounted by the claims that use it, in both drivers (local memdev
+   slices and pool devices). Mountpoint <cxl.generic plugin data
+   dir>/files/<dax name>/ with one regular file "data", size = the dax
+   device size, mode 0444, read-only filesystem; served in-process with
+   github.com/hanwen/go-fuse/v2 (vendored; DirectMount as root, no
+   fusermount3 needed; allow_other; FOPEN_KEEP_CACHE, long attr/entry
+   timeouts: the content is immutable while exported); Read copies from a
+   MAP_SHARED, PROT_READ mapping of /dev/daxX.Y. Prepare: device as for dax
+   (region, devdax; zeroing only for exclusive/local slices as today),
+   then the export, then the CDI device of the result with a mount
+   {hostPath: mountpoint, containerPath: /run/cxl-files/<KEY>, options:
+   [rbind, ro, nosuid, nodev, noexec]} and the env of F1;
+   PATH=/run/cxl-files/<KEY>/data. Unprepare: refcount down; the last one
+   unmounts (fail the Unprepare on EBUSY, kubelet retries) and unmaps,
+   then the device is released as today. checkSamePreparation: dax and
+   file on the same device are compatible (both are a devdax region).
+   Plugin start: exports of prepared file-mode claims are re-created (a
+   stale mount at the mountpoint is detached first); document that
+   containers that were running keep the old connection (pages already in
+   the page cache stay readable; others fail) as a limitation.
+F3 Leases: the broker's companion claim carries DeviceConfig {mode: file,
+   readOnly: true}; for Ready file leases the broker opens the node-side
+   file O_RDONLY and passes that fd (as for dax); fd and env ops work.
+F4 Docs: USAGE.md (DeviceConfig mode file, env PATH, the CDI mount, what
+   "cached" means and how it differs from dax, limitations: read-only,
+   whole-model populate by mmap'ing engines, plugin restart), LEASES.md
+   (--mode file), POOL.md and LOCAL.md (mode file applies), README.md
+   vocabulary table (mode numa|dax|file). Example
+   deployments/cxl/examples/pool-shared-file-readers.yaml.
+F5 Tests: unit tests for the config rules and texts, env and CDI of file
+   devices, export refcounting and life cycle (an exporter interface with
+   a fake in tests; the FUSE wiring itself is exercised by the e2e), the
+   Read path over a fake mapping (bounds, EOF, sizes not multiple of the
+   page), lease mode file, CLI validation. go vet, go test -race, gofmt,
+   golangci-lint with no new findings vs HEAD, static builds.
+   golang.org/x/sys is already vendored; add go-fuse with go get and
+   go mod tidy && go mod vendor (the go.mod replace of nri-plugins stays
+   as it is).
+F6 Status: 05-status-F.txt with the exact names, texts and paths stream T
+   asserts on, and "F done" when F1-F5 pass. No VM use (stream T owns the
+   VMs); if a VM check is needed, write a Request to T.
+
+Stream T: e2e (~/github.com/containers/nri-plugins, test/e2e)
+-------------------------------------------------------------
+Owns: test/e2e/memory.test-suite/memory-policy/n4-cxl-shared-2/
+{cxl-llm/**, llm.source.sh, cxl-where.py, test16-cxl-llm-share/**},
+additions to memory-policy/dra.source.sh (shared helpers only, no
+behaviour change for test10-15), the VMs of n4-cxl-shared-1 and -2.
+Reads: 01-research-A-engine-model.txt (cxl-llm, build, delivery,
+expected answers), 01-research-B-kernel-access.txt (proof methods,
+probe.py, gotchas), 01-research-C-integration.txt (test16 shape,
+helpers, budget), test13 and dra.source.sh.
+T1 cxl-llm into the tree: n4-cxl-shared-2/cxl-llm/cxl-llm.cpp from
+   /home/akervine/.claude/jobs/8211478b/tmp/plan7-A/src/cxl-llm.cpp
+   (cleaned to the coding style: what-not-how comments, plain ASCII, usage
+   text), cxl-llm/build.sh (podman fedora:43, static, GGML_NATIVE=OFF with
+   AVX/AVX2/FMA/F16C/BMI2, no CURL, the pinned llama.cpp commit taken from
+   LLAMA_CPP_SRC or fetched into $CACHE_DIR/llm/llama.cpp; output cached
+   by the hash of cxl-llm.cpp + commit + build.sh). The research A build
+   recipe is in its report section 4 and in plan7-A/scripts.
+T2 llm.source.sh: llm-model-fetch (D1), llm-build (T1), llm-install
+   VMDIR (/opt/cxl-llm/cxl-llm on both VMs, the model only on the writer's
+   VM under /opt/cxl-llm/model/), llm-pod-yaml helpers (reader and writer
+   pods with the hostPath mounts), llm-page-cache VMDIR (node FilePages),
+   llm-where VMDIR POD (cxl-where.py through crictl inspect pid: frames of
+   the model mapping in CXL windows vs System RAM, from research B's
+   probe.py in plan7-B/), llm-answer.
+T3 test16-cxl-llm-share/code.var.sh per 01-research-C section 4 and
+   03-decisions D5-D8: preconditions (pool-vm-require on both VMs,
+   vm-k8s-reinit "$VM2 $VM1" as test13, pool server with llm0 512Mi shared,
+   dra-install, images), writer (claim, write, host sha256), readers
+   direct (three, concurrently), readers cached (three; first and second
+   on VM2 measured separately for the page cache), answers, nothing left,
+   trace summary, timings, restore the clusters as test13 does. Move
+   test13's pod-log, wait-log and claim-pod-yaml helpers into
+   dra.source.sh if test16 needs them, and make test13 use them (behaviour
+   unchanged).
+T4 Phase 1 (now): T1, T2, T3 with llm_access=direct only working; run
+   test16 with llm_access=direct on the VMs until it passes. The cached
+   sections are written against F's contract (03 D4, F1-F2 above) and
+   statically checked, not run.
+T5 Phase 2 (after "F done" in 05-status-F.txt): adapt to F's recorded
+   names, run test16 with llm_access=cached, then both; then the
+   regression test10, test11, test12, test13, test14, test15 (one at a
+   time, test13 last) on that build. Failures in the driver are Requests to
+   F with evidence; never weaken an assertion without recording why.
+T6 Status: 05-status-T.txt with verdicts per run and build identity,
+   timings (write, load, tokens/s per mode, page cache deltas), the
+   measured frames per mode, and the final VM state (clean, single-node
+   clusters, port 9909 free, /opt/cxl-llm may stay).
+
+Reviews (after both streams report done)
+----------------------------------------
+R-F: driver diff against 03 D4 and F1-F5 and plan-5's vocabulary (no
+aliases, symmetric in both drivers, one validator, life cycle and locks:
+no export work under the nodeState table lock), the go-fuse use.
+R-T: cxl-llm source and build, helpers and test16 against D5-D8, reuse of
+dra/pool helpers, no sleeps, exact proofs, clean start and end.
