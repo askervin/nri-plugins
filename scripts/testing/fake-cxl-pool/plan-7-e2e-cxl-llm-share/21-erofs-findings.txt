@@ -107,3 +107,22 @@ F16 Stock llama.cpp, ghcr.io/ggml-org/llama.cpp build b11681: llama-completion
 F17 The fsdax namespace data and the erofs file data are both 2 MiB
     aligned in the device, so the model is at a 2 MiB-aligned offset of
     the host backing file: the host can find and check it there.
+
+Found after the implementation (2026-10-19, orchestrator)
+F18 khugepaged unmaps parts of a cached reader's model mapping. erofs gives
+    regular files large-folio support (fs/erofs/inode.c:258), so with THP
+    "always" (the guests' setting) file_thp_enabled() admits their
+    mappings (mm/huge_memory.c:95-111) and khugepaged collapses the
+    page cache into 2 MiB folios: collapse_file() replaces the small
+    folios and retract_page_tables() drops the PTE tables of every mapping
+    of the range (mm/khugepaged.c:2139). The pages stay in the page cache
+    (System RAM, no reclaim), but are not mapped until the process touches
+    them again, then through a PMD (thp_file_mapped). With the default
+    pages_to_scan 4096 and scan_sleep_millisecs 10000 this is 8 ranges, 4096
+    pages, per khugepaged round. Measured on VM1 with the test's erofs
+    image on a loop device and a process holding the model mapped
+    (MAP_POPULATE, never touched): present pages 95828, 91732, 87636 ...
+    67156 of 96852 at 0, 10, 20 ... 70 s, pages_collapsed +8 and
+    FileHugePages +16 MiB per 10 s, every present frame in System RAM.
+    DAX mappings (direct readers) are not affected. So "every page of the
+    mapping present" is not a stable property of a page-cached mapping.

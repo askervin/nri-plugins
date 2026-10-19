@@ -319,3 +319,15 @@ the host. DRA_CLASSES in E/dra.source.sh gains cxl-pool-persistent.
   of a node, whose pod is also charged >= 90%). The frame proof covers all
   mappings of the model (llama.cpp unmaps the header part): every page
   present, together >= 90% of the model.
+- Cached readers (after 21 F18, user: "no race, no dependency on linux
+  internal logic"): no "every page present" proof for page-cached
+  mappings. Instead: every present page of llama-server's model mappings
+  in System RAM (>= 1 present; mappings cover >= 90% of the model);
+  fincore on the node mount shows the model >= 90% resident; the read
+  counter of the loop device over /dev/pmemK (the only path from the
+  cached mount to CXL memory; /sys/block/loopN/stat) has read >= 90% of
+  the model after the first cached reader of a node and grows < 5% for
+  the second; during a 128-token completion of each cached reader the
+  loop device reads < 1 MiB while frames sampled meanwhile are all System
+  RAM. Direct readers keep "every page present in the CXL namespace"
+  (DAX mappings are neither reclaimed nor collapsed).

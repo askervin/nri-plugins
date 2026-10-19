@@ -44,7 +44,9 @@ LLM_IMAGE_SIZE=""                  # llm-image-build: the size of $LLM_VM_IMAGE 
 LLM_IMAGE_SHA256=""                # and its sha256
 LLM_WHERE=""                       # llm-where: the mappings of the model, a JSON list
 LLM_LOG=""                         # llm-server-wait, llm-writer-wait: the log of the pod
-LLM_ANSWER=""                      # llm-ask: the response of the server, JSON,
+LLM_ANSWER=""                      # llm-ask, llm-serve-sampled: the response of the server, JSON,
+LLM_SAMPLES=""                     # llm-serve-sampled: where the model was while it served,
+LLM_LOOP_READ=""                   # and the bytes read through the loop device meanwhile
 LLM_CONTENT=""                     # and the completion in it
 
 llm-model-fetch() { # script API
@@ -460,31 +462,119 @@ llm-where() { # script API
     LLM_WHERE=$(python3 -c 'import json, sys; print(json.dumps([json.loads(l) for l in sys.stdin if l.startswith("{")]))' <<< "$COMMAND_OUTPUT")
 }
 
-llm-where-assert() { # script API
-    # Usage: llm-where-assert VMDIR POD PATH MIN-BYTES CHAIN
+llm-where-check() {
+    # Usage: llm-where-check WHERE MIN-BYTES CHAIN all|present
     #
-    # Fail the test unless llama-server in pod POD (llm-where) maps the
-    # file PATH with MIN-BYTES bytes at least in all, every page of its
-    # mappings of PATH has a page frame, and the frames of all of them are
-    # in resources of /proc/iomem whose chain (cxl-where.py "where", for
-    # instance "CXL Window 0 > Persistent Memory > region0 >
-    # namespace0.0") matches the Python regular expression CHAIN.
-    local vmdir="$1" pod="$2" path="$3" min="$4" chain="$5"
-    llm-where "$vmdir" "$pod" "$path"
+    # Return 0 if WHERE, the mappings of llm-where, are MIN-BYTES bytes at
+    # least in all and the frames of their present pages are all in
+    # resources whose chain matches the Python regular expression CHAIN;
+    # with "all" every page must be present, with "present" one at least.
+    # Print the mappings and what is wrong.
     python3 -c '
 import json, re, sys
-maps, least, chain = json.loads(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+maps, least, chain, mode = json.loads(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
 print("mappings of the model: %s" % json.dumps(maps))
 size = sum(m["size"] for m in maps)
 if size < least:
     sys.exit("%d bytes mapped, less than %d" % (size, least))
+present = sum(m["present"] for m in maps)
+if mode == "present" and not present:
+    sys.exit("no page of the mappings is present")
 for m in maps:
     bad = sorted(k for k in m["where"] if not re.search(chain, k))
-    if m["present"] != m["pages"] or bad:
-        sys.exit("mapping at %s: %d of %d pages present, frames outside %r: %s" % (m["start"], m["present"], m["pages"], chain, bad))' "$LLM_WHERE" "$min" "$chain" ||
-        error "the model mappings of llama-server in pod $pod are not $min bytes at least with all pages in '$chain'"
-    echo "where ok: $pod: the mappings of $path: $(python3 -c 'import json, sys; m = json.loads(sys.argv[1]); print("%d bytes, %d pages" % (sum(x["size"] for x in m), sum(x["pages"] for x in m)))' "$LLM_WHERE"), every page present, all in '$chain'"
+    if bad or (mode == "all" and m["present"] != m["pages"]):
+        sys.exit("mapping at %s: %d of %d pages present, frames outside %r: %s" % (m["start"], m["present"], m["pages"], chain, bad))
+print("%d bytes mapped, %d of %d pages present, all in %r" % (size, present, sum(m["pages"] for m in maps), chain))' "$@"
 }
+
+llm-where-assert() { # script API
+    # Usage: llm-where-assert VMDIR POD PATH MIN-BYTES CHAIN [all|present]
+    #
+    # Fail the test unless llama-server in pod POD (llm-where) maps the
+    # file PATH with MIN-BYTES bytes at least in all, and the page frames
+    # of its mappings of PATH are in resources of /proc/iomem whose chain
+    # (cxl-where.py "where", for instance "CXL Window 0 > Persistent Memory
+    # > region0 > namespace0.0") matches the Python regular expression
+    # CHAIN: of every page ("all", the default), or of the present pages,
+    # one at least ("present").
+    local vmdir="$1" pod="$2" path="$3" min="$4" chain="$5" mode="${6:-all}"
+    llm-where "$vmdir" "$pod" "$path"
+    llm-where-check "$LLM_WHERE" "$min" "$chain" "$mode" ||
+        error "the model mappings of llama-server in pod $pod are not $min bytes at least with $mode pages in '$chain'"
+    echo "where ok: $pod: the mappings of $path, $mode pages in '$chain'"
+}
+
+llm-loop-reads() { # script API
+    # Usage: llm-loop-reads VMDIR [LOOP]
+    #
+    # Print the bytes read through every loop device of the VM of VMDIR
+    # since it was created, or through LOOP (loopN) only, "loopN BYTES"
+    # per line (sectors read of /sys/block/loopN/stat, 512 bytes each),
+    # quietly. Return non-zero if they cannot be read.
+    pool-vm-command-q "$1" "test -d /sys/block || exit 1; for d in /sys/block/${2:-loop[0-9]*}; do [ -f \$d/stat ] || continue; echo \"\${d#/sys/block/} \$(( \$(awk '{print \$3}' \$d/stat) * 512 ))\"; done"
+}
+
+llm-fincore() { # script API
+    # Usage: llm-fincore VMDIR FILE
+    #
+    # Print how many bytes of FILE in the VM of VMDIR are in its page
+    # cache (fincore RES), quietly. Return non-zero if fincore fails.
+    local res
+    res=$(pool-vm-command-q "$1" "fincore -b -n -o RES $2") || return 1
+    [[ "$res" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || return 1
+    echo $(( res ))
+}
+
+llm-serve-sampled() { # script API
+    # Usage: llm-serve-sampled VMDIR POD PATH LOOP N-PREDICT
+    #
+    # Ask llama-server in pod POD, from the VM of VMDIR, for N-PREDICT
+    # tokens of $LLM_PROMPT (greedy, ignore_eos), and while it generates
+    # take up to three samples of where the page frames of its mappings of
+    # the file PATH are (cxl-where.py), each sample started and finished
+    # while the request runs. Wait for the response. Set LLM_ANSWER to
+    # the response, LLM_SAMPLES to the samples (a JSON list of llm-where
+    # lists) and LLM_LOOP_READ to the bytes read through the loop device
+    # LOOP (loopN) during the request. Fail the test if the request fails.
+    local vmdir="$1" pod="$2" path="$3" loop="$4" n="$5" ip pid out
+    ip=$(llm-pod-ip "$pod") || error "llm-serve-sampled: pod $pod has no IP"
+    pid=$(llm-server-pid "$vmdir" "$pod") || error "llm-serve-sampled: no llama-server runs in pod $pod"
+    pool-vm-command "$vmdir" "req=/tmp/llm-serve-$pod.json; res=/tmp/llm-serve-$pod.out
+cat > \$req <<'LLM_SERVE_EOF'
+{\"prompt\": \"$LLM_PROMPT\", \"n_predict\": $n, \"ignore_eos\": true, \"temperature\": 0, \"top_k\": 1}
+LLM_SERVE_EOF
+r0=\$(awk '{print \$3}' /sys/block/$loop/stat)
+curl -sS --max-time 300 -H 'Content-Type: application/json' http://$ip:$LLM_SERVER_PORT/completion -d @\$req > \$res 2>&1 &
+c=\$!
+trap 'kill \$c 2>/dev/null; rm -f \$req \$res' EXIT
+i=0
+while [ \$i -lt 3 ] && kill -0 \$c 2>/dev/null; do
+    s=\$($LLM_VM_WHERE $pid $path) || break
+    kill -0 \$c 2>/dev/null || break
+    i=\$(( i + 1 ))
+    echo \"\$s\" | sed \"s/^/sample \$i: /\"
+done
+wait \$c
+echo \"curl exit \$?\"
+r1=\$(awk '{print \$3}' /sys/block/$loop/stat)
+echo \"loop $loop read \$(( (r1 - r0) * 512 ))\"
+echo \"response: \$(cat \$res)\"" >/dev/null ||
+        command-error "llm-serve-sampled: the request to llama-server in pod $pod failed"
+    out="$COMMAND_OUTPUT"
+    grep -qx "curl exit 0" <<< "$out" || error "llm-serve-sampled: the request to $pod failed: $(grep -E '^(curl exit|response:)' <<< "$out")"
+    LLM_ANSWER=$(sed -n 's/^response: //p' <<< "$out")
+    LLM_LOOP_READ=$(sed -n "s/^loop $loop read \([0-9]*\)$/\1/p" <<< "$out")
+    [ -n "$LLM_LOOP_READ" ] || error "llm-serve-sampled: no read counter of $loop"
+    LLM_SAMPLES=$(python3 -c '
+import json, sys
+samples = {}
+for line in sys.stdin:
+    head, sep, rest = line.partition(": ")
+    if sep and head.startswith("sample ") and rest.startswith("{"):
+        samples.setdefault(int(head.split()[1]), []).append(json.loads(rest))
+print(json.dumps([samples[k] for k in sorted(samples)]))' <<< "$out")
+}
+
 
 llm-file-sha256() { # script API
     # Usage: llm-file-sha256 FILE [LENGTH]

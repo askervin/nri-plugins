@@ -509,4 +509,60 @@ under mounts/, no loop devices, no helm release, no namespace
 cxl-pool-demo, both nodes Ready; llm0.raw and llm0.lsa removed; port
 9909 free. Nothing committed.
 
+
+18. khugepaged fix (21 F18)
+---------------------------
+Failure in the user's run: cached-a had 91303 of 95399 pages present
+(all System RAM): khugepaged collapses the erofs page cache into 2 MiB
+folios and drops the PTEs of the range in every mapping until the next
+touch. Presence of every page is therefore not asserted for cached
+readers any more; direct (DAX) readers keep "every page present".
+Cached-reader proofs now (test16, helpers in llm.source.sh):
+1. Frames: every present page of llama-server's mappings of the model in
+   ^System RAM$, one present at least, VMA sizes >= 90% of the model
+   (llm-where-assert ... present, llm-where-check).
+2. Residency: fincore -b -n -o RES (util-linux 2.41.5 in the VMs) of
+   <mounts>/c1ae0001-cached/<model> on the node >= 90% (llm-fincore).
+3. Pulled from CXL once per node: bytes read through the loop device over
+   /dev/pmemK (sectors read of /sys/block/loopN/stat x 512). Deviation
+   from the instruction "else take 0": loop devices are pre-created and
+   keep their counters when they are reused (VM1's unbound loop0 showed
+   9447144 sectors from earlier runs), so reader-start takes the counters
+   of every loop device before the pod and subtracts the baseline of the
+   loop that ends up over pmem (0 only if it did not exist). First cached
+   reader of a node >= 90% of the model, the second on VM2 < 5%.
+4. Served from the page cache: llm-serve-sampled runs on the node a
+   request of 128 tokens (same prompt, ignore_eos, temperature 0, top_k
+   1) in the background of one remote script, takes up to three
+   cxl-where samples back to back (counted only if the request still runs
+   when the sample is done; no sleeps), waits for the request (an EXIT
+   trap of the remote script kills it on failure) and reads the loop
+   counter before and after. Asserted: 128 tokens, >= 2 samples, each
+   with present pages all in System RAM, loop read < 1 MiB.
+5. Pod/node page cache proofs and the answers unchanged.
+Measured (identical in both solo runs and the directory run):
+  loop0 read around cached-a (VM2): 397373440 bytes; around cached-b
+  (VM2): 0 bytes; around cached-c (VM1): 397373440 bytes (the model is
+  396705472).
+  fincore: 396705792 bytes of the model resident on both nodes, every
+  cached reader.
+  present pages, check after start: 95399 of 95399 (390754304 bytes
+  mapped), all System RAM; in the 3 samples during each 128-token serve:
+  95399 of 95399 each, all System RAM.
+  each cached reader: 128 tokens, ~50.7 GB of weights read, 0 bytes from
+  CXL (loop0).
+Static checks: bash -n and shellcheck (agreed exclusions) 0 findings on
+dra/llm/pool/cxl sources, test16 and the concatenation. e2e.md does not
+describe the proofs; unchanged.
+Runs, image nri-dra-driver-cxl-image-f13722a3b92c (the newest by ls -t,
+17:18; built after 814cfbfb2572):
+  test16 PASS 278 s; test16 PASS 268 s (twice in a row)
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2   1509 s
+    PASS test00-up, test01, test10, test11, test12, test13, test14,
+    test15, test16
+Final state: both VMs 7.3.0-rc4, no CXL memdevs or regions, no mounts
+under mounts/, no loop devices, no helm release, no namespace
+cxl-pool-demo, both nodes Ready; llm0 files removed; port 9909 free.
+Nothing committed.
+
 T done

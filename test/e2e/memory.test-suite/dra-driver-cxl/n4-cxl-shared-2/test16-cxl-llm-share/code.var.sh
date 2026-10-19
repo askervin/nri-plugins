@@ -35,9 +35,17 @@
 # cache charged to its pod is less than 5% of the model and that of the
 # node grows by less than half of it: no copy of the weights exists.
 # Cached readers: the first one on a node is charged the model (90% at
-# least) and grows the page cache of its node by it, the second one on VM2
-# is charged less than 5% and grows it by less than half the model (one
-# copy per node), every page of their mappings in System RAM. The
+# least), grows the page cache of its node by it and pulls it from CXL
+# through the loop device (90% at least of its block reads), the second
+# one on VM2 is charged less than 5%, grows the page cache by less than
+# half the model and reads less than 5% from CXL (one copy per node); the
+# model is resident in the page cache of the node (fincore), and while a
+# cached reader generates 128 tokens the present pages of its mappings are
+# all in System RAM and its loop device reads less than 1 MiB: inference
+# is served from the page cache of the node, not from CXL. (Presence of
+# every page is not asserted for cached readers: khugepaged may unmap
+# page-cached ranges at any time; block reads of the only path to CXL are
+# the measure.) The
 # mounts, loop devices, environment and CDI devices are what the driver
 # promises, writes under the mount fail, the readers change neither the
 # data nor the labels of the device, and nothing is left at the end. In
@@ -129,7 +137,11 @@ declare -A READER_ACCESS=([direct-a]=direct [direct-b]=direct [direct-c]=direct
                           [cached-a]=cached [cached-b]=cached [cached-c]=cached)
 declare -A READER_PATH=([direct-b]=/models [cached-b]=/models)
 CACHE_DELTA=""            # reader-start: the growth of the page cache of the node in bytes,
-POD_FILE=""               # and the page cache charged to the pod of the reader in bytes
+POD_FILE=""               # and the page cache charged to the pod of the reader in bytes,
+LOOP_READ=""              # and, for a cached reader, the bytes read meanwhile through the loop device
+declare -A READER_LOOP=() # cached reader -> the loop device (loopN) over pmem on its node
+LLM_SERVE_TOKENS=128      # the tokens of the long request to each cached reader
+LLM_MIB=$(( 1 << 20 ))
 TIMINGS=()
 
 llm0-free() {
@@ -209,11 +221,18 @@ reader-start() {
     # until llama-server serves. Print the page cache of the node before
     # and after and the cgroups it was charged to meanwhile, and set
     # CACHE_DELTA to its growth in bytes. Ask the reader for its answer,
-    # then set POD_FILE to the page cache charged to its pod.
-    local r="$1" vm="${READER_VM[$1]}" params before after t0 charges
+    # then set POD_FILE to the page cache charged to its pod. For a cached
+    # reader set READER_LOOP to the loop device over pmem on its node and
+    # LOOP_READ to the bytes read through it meanwhile.
+    local r="$1" vm="${READER_VM[$1]}" params before after t0 charges loops0="" loop now base
     params="mode: fs, readOnly: true, access: ${READER_ACCESS[$r]}"
     [ -z "${READER_PATH[$r]}" ] || params+=", path: ${READER_PATH[$r]}"
     charges=$(llm-file-charges "$vm")
+    if [ "${READER_ACCESS[$r]}" == cached ]; then
+        # Loop devices keep their counters when they are reused: the
+        # baseline is that of every loop device now.
+        loops0=$(llm-loop-reads "$vm") || error "cannot read the loop devices of $(pool-vm-label "$vm")"
+    fi
     before=$(llm-page-cache "$vm")
     t0=$(date +%s.%N)
     dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$r" "$LLM_SERIAL" "" "$params" cxl-pool-persistent)
@@ -229,6 +248,16 @@ $(llm-server-pod-yaml "$r" "$vm" "$r" "$(llm-reader-script "$LLM_HEX" "$LLM_THRE
     POD_FILE=$(llm-pod-file "$vm" "$r") || error "$r: no page cache counter of its pod"
     echo "page cache charged to the pod $r: $(( POD_FILE >> 10 )) kB"
     TIMINGS+=("page cache of $(pool-vm-label "$vm") around $r (${READER_ACCESS[$r]}): $(( CACHE_DELTA >> 10 )) kB, of the pod $(( POD_FILE >> 10 )) kB")
+    [ "${READER_ACCESS[$r]}" == cached ] || return 0
+    loop=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of $(pool-vm-label "$vm")"
+    [ "$(wc -l <<< "$loop")" == 1 ] && [ -n "$loop" ] || error "$(pool-vm-label "$vm") has not one loop device over pmem: $loop"
+    loop=${loop%% *}
+    READER_LOOP[$r]=$loop
+    now=$(llm-loop-reads "$vm" "$loop") || error "cannot read $loop of $(pool-vm-label "$vm")"
+    base=$(awk -v l="$loop" '$1 == l {print $2}' <<< "$loops0")
+    LOOP_READ=$(( ${now#* } - ${base:-0} ))
+    echo "read through $loop of $(pool-vm-label "$vm") (from CXL) around $r: $LOOP_READ bytes, the model $LLM_MODEL_SIZE"
+    TIMINGS+=("$r: read from CXL through $loop of $(pool-vm-label "$vm") until it answered: $(( LOOP_READ >> 10 )) kB")
 }
 
 cache-cmp() {
@@ -300,8 +329,18 @@ reader-check() {
     grep -qE "^ *(- )?containerPath: \"?$path\"?$" <<< "$cdi" || error "the CDI device of $r does not mount at $path"
     grep -qE '^ *(- )?type: "?bind"?$' <<< "$cdi" || error "the CDI mount of $r is not a bind mount"
     grep -qE '^ *- "?ro"?$' <<< "$cdi" || error "the CDI mount of $r is not read-only"
-    # Where the weights are: every page of the model mappings.
-    llm-where-assert "$vm" "$r" "$path/$LLM_MODEL_FILE" "$LLM_MAPPED_MIN" "$chain"
+    # Where the weights are. Direct: every page of the model mappings in
+    # the CXL window. Cached: the present pages in System RAM; khugepaged
+    # may unmap page-cached ranges of a mapping at any time (until the
+    # process touches them again), so presence is not a property to assert
+    # there: residency in the page cache and the block reads of the loop
+    # device, the only path to CXL, are (cached-serve-check).
+    if [ "$access" == direct ]; then
+        llm-where-assert "$vm" "$r" "$path/$LLM_MODEL_FILE" "$LLM_MAPPED_MIN" "$chain" all
+    else
+        llm-where-assert "$vm" "$r" "$path/$LLM_MODEL_FILE" "$LLM_MAPPED_MIN" "$chain" present
+        cached-serve-check "$r" "$path"
+    fi
     # No copy of the weights in the process: a copy (llama.cpp reading the
     # tensors instead of mapping them, or repacking them) is at least the
     # model, or 205 MiB more for repacking.
@@ -310,6 +349,41 @@ reader-check() {
         error "$r has $anon kB of anonymous memory, not less than half the model ($(( LLM_MODEL_SIZE / 2048 )) kB): the weights were copied into the process"
     echo "memory.stat of $r: $(dra-container-read "$vm" "$r" main memory.stat | grep -E '^(anon|file|file_mapped|shmem) ' | tr '\n' ' ')"
     TIMINGS+=("$r: anonymous memory of llama-server $anon kB")
+}
+
+cached-serve-check() {
+    # Usage: cached-serve-check READER PATH
+    #
+    # Fail the test unless, on the node of the cached READER, the model in
+    # the cached node mount is resident in the page cache (90% at least,
+    # fincore), and a request of $LLM_SERVE_TOKENS tokens to READER
+    # (llm-serve-sampled) gives that many tokens while two samples at least
+    # of its mappings of PATH/<model> have present pages, all in System
+    # RAM, and its loop device over pmem reads less than 1 MiB from CXL.
+    local r="$1" path="$2" vm="${READER_VM[$1]}" label res tokens weights
+    label=$(pool-vm-label "$vm")
+    res=$(llm-fincore "$vm" "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-cached/$LLM_MODEL_FILE") ||
+        error "$r: fincore of the model in the cached node mount of $label failed"
+    echo "$r: page cache of $label holds $res bytes of the model (fincore), the model $LLM_MODEL_SIZE"
+    cache-cmp "$res" -ge "$LLM_NINETY_PCT" ||
+        error "$r: only $res bytes of the model are in the page cache of $label, less than 90% ($LLM_NINETY_PCT)"
+    llm-serve-sampled "$vm" "$r" "$path/$LLM_MODEL_FILE" "${READER_LOOP[$r]}" "$LLM_SERVE_TOKENS"
+    tokens=$(llm-answer-value 'j["tokens_predicted"]')
+    [ "$tokens" == "$LLM_SERVE_TOKENS" ] || error "$r: the long request gave $tokens tokens, not $LLM_SERVE_TOKENS"
+    python3 -c '
+import json, sys
+print("%d samples while it served: %s" % (len(json.loads(sys.argv[1])), "; ".join(
+    "%d of %d pages present" % (sum(m["present"] for m in s), sum(m["pages"] for m in s)) for s in json.loads(sys.argv[1]))))' "$LLM_SAMPLES"
+    [ "$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])))' "$LLM_SAMPLES")" -ge 2 ] ||
+        error "$r: fewer than two samples of its mappings while it served $LLM_SERVE_TOKENS tokens"
+    python3 -c 'import json, sys; [print(json.dumps(s)) for s in json.loads(sys.argv[1])]' "$LLM_SAMPLES" | while read -r sample; do
+        llm-where-check "$sample" "$LLM_MAPPED_MIN" "$CHAIN_RAM" present >/dev/null || exit 1
+    done || error "$r: a sample while it served has no present page, or frames outside System RAM: $LLM_SAMPLES"
+    cache-cmp "$LLM_LOOP_READ" -lt "$LLM_MIB" ||
+        error "$r: ${READER_LOOP[$r]} read $LLM_LOOP_READ bytes from CXL while it served, not less than 1 MiB"
+    weights=$(( tokens * LLM_MODEL_SIZE ))
+    echo "$r on $label: $tokens tokens, ~$(( weights / 1000000000 )).$(( weights / 100000000 % 10 )) GB of weights read, $LLM_LOOP_READ bytes from CXL (${READER_LOOP[$r]})"
+    TIMINGS+=("$r: $tokens tokens served, ~$(( weights / 1000000000 )).$(( weights / 100000000 % 10 )) GB of weights read, $LLM_LOOP_READ bytes from CXL, generation $(llm-answer-value 'round(j["timings"]["predicted_per_second"], 1)') tokens/s")
 }
 
 mounts-assert() {
@@ -543,9 +617,14 @@ for r in "${CACHED[@]}"; do
         # device under the loop device (direct I/O).
         cache-cmp "$CACHE_DELTA" -lt "$LLM_ONE_HALF" ||
             error "$r: the page cache of $(pool-vm-label "$vm") grew by $CACHE_DELTA bytes, not less than 150% of the model ($LLM_ONE_HALF): the model is cached twice"
+        # It pulled the model from CXL: the loop device is the only path.
+        cache-cmp "$LOOP_READ" -ge "$LLM_NINETY_PCT" ||
+            error "$r: ${READER_LOOP[$r]} read $LOOP_READ bytes from CXL, less than 90% of the model ($LLM_NINETY_PCT)"
     else
-        # The others of the node share that copy.
+        # The others of the node share that copy and read nothing from CXL.
         cache-assert "$r" -lt "$LLM_FIVE_PCT" -lt "$LLM_HALF" "a second copy of the model in the page cache of the node"
+        cache-cmp "$LOOP_READ" -lt "$LLM_FIVE_PCT" ||
+            error "$r: ${READER_LOOP[$r]} read $LOOP_READ bytes from CXL, not less than 5% of the model ($LLM_FIVE_PCT)"
     fi
 done
 for r in "${CACHED[@]}"; do

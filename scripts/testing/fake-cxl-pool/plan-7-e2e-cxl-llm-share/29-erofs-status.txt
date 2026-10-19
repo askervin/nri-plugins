@@ -157,3 +157,37 @@ error, D's R2); ~/.cache/nri-plugins/e2e/llm keeps the unused llama.cpp
 clone and the old cxl-llm build; each qemu may map a deleted backing file
 until its next hot-remove (known); not in this step: erofs through
 cxl-request leases, fsType ext4/famfs, a write mount (22 section 9).
+
+2026-10-19 (after the closing status): the user's run of
+memory.test-suite/dra-driver-cxl/n4-cxl-shared-2: everything PASS but
+test16 (235 s): "the model mappings of llama-server in pod cached-a are
+not 357034924 bytes at least with all pages in '^System RAM$'": 91303 of
+95399 pages present, all in System RAM, exactly 4096 pages (8 x 2 MiB)
+missing. Cause: khugepaged collapsing the cached erofs page cache into
+THPs and retracting the PTE tables of the readers' mappings (21 F18,
+reproduced on VM1); no reclaim on VM2 (pgscan/pgsteal 0), the page cache
+did not shrink. The test's cached-reader frame proof (llm-where-assert:
+"every page present") races with khugepaged; earlier passes were timing.
+Not a driver or kernel config bug.
+Decision (user): fix it without races or dependence on kernel internals,
+and if possible check while inference runs that cached readers are served
+from the node's cache. Design amended (22 section 10, last item): frames
+of present pages, fincore residency, loop device read counters at start
+and during a 128-token serve. Sent to T with two test16 runs and a rerun
+of the n4-cxl-shared-2 directory.
+2026-10-19: khugepaged fix done (24-erofs-status-T.txt "khugepaged fix"),
+on the user's commit 33e85f71a and its image nri-dra-driver-cxl-image-
+f13722a3b92c (v0.14.0-208-g33e85f71a; driver sources unchanged since).
+test16 PASS twice (278 s, 268 s), then ./run_tests.sh
+memory.test-suite/dra-driver-cxl/n4-cxl-shared-2 PASS (1509 s; test00-up,
+test01, test10-test16). Cached-reader numbers (identical in all three
+test16 runs; model 396705472 bytes): read through loop0 (the only path
+from the cached mount to CXL) 397373440 bytes for the first cached
+reader of each node, 0 for the second on VM2; fincore 396705792 bytes
+resident on both nodes; every present page in System RAM (95399 of 95399
+present in these runs, no longer required); during each 128-token serve
+"128 tokens, ~50.7 GB of weights read, 0 bytes from CXL (loop0)" (the GB
+figure is tokens x model size, an estimate). Deviation: loop devices are
+pre-created and keep their counters when reused, so the test subtracts a
+per-loop baseline taken before the pod. Uncommitted: test16,
+llm.source.sh and the plan files.
