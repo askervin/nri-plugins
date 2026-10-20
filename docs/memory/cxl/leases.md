@@ -7,9 +7,9 @@ get more memory through its own claims. It can *lease* memory instead: the
 node plugin allocates a device for a *companion pod* and lends it to the
 container, as a NUMA node added to the container's `cpuset.mems` (mode
 `numa`) or as an open file descriptor of a devdax device (mode `dax`). The
-memory is a slice of a local memdev (`cxl.nri.io`, [local.md](local.md))
-or a pool device (`cxl-pool.nri.io`, [pool.md](pool.md)), local first
-unless the request names a source.
+memory is a slice of a local memdev or a shared local device
+(`cxl.nri.io`, [local.md](local.md)) or a pool device (`cxl-pool.nri.io`,
+[pool.md](pool.md)), local first unless the request names a source.
 
 - [Opting in](#opting-in)
 - [Flow](#flow)
@@ -104,8 +104,8 @@ socket (SCM_RIGHTS). The container needs no device node and no device
 cgroup rule; the device cgroup is checked only at open().
 `cxl-request request --exec CMD` (and `cxl-request fd --exec CMD`) runs
 CMD with the fd as fd 3. A local `dax` lease gets a devdax slice of a
-local memdev of its own, a pool one a whole exclusive device or a shared
-device.
+local memdev of its own or a shared local device, a pool one a whole
+exclusive device or a shared device.
 
 A read-only lease's fd allows mappings for reading only: a writable
 mapping (`mmap` with `PROT_WRITE`, or `mprotect` to it) fails with EACCES,
@@ -113,12 +113,11 @@ a store into the mapping raises SIGSEGV, and reopening the fd through
 `/proc/self/fd` is refused by the device cgroup, whatever the
 capabilities of the container.
 
-A shared pool device is `dax` only. `--shared` takes one of its `hosts`;
-a request that names a shared device by `--serial` without `--shared`
-takes all of them, so that nobody else has the device meanwhile (the
-writer of single-writer sharing; the plugin reads the number of hosts
-from the pool's ResourceSlice). A local slice is never shared through a
-lease: several pods share it by referencing one ResourceClaim
+A shared device, local or pool, is `dax` only. `--shared` takes one
+share of it; a request that names a shared device by `--serial` without
+`--shared` takes the whole device (the writer of single-writer sharing).
+A local memdev that is not configured shared is never shared through a
+lease; several pods share its slice by referencing one ResourceClaim
 ([local.md](local.md#claims)).
 
 A local lease waits for no attach and no binding condition: it is Ready a
@@ -157,7 +156,7 @@ cxl-request help
 |:-------|:----------------|:-|
 | `--source` | `local`, `pool`; omitted: local first, then pool | which devices |
 | `--mode` | `numa`, `dax`; omitted: `numa`, or `dax` for a shared device | how the memory is given |
-| `--shared` | default off | take one host of a shared pool device; without it a lease uses its device exclusively (all hosts of a shared device, or an exclusive device) |
+| `--shared` | default off | one share of a shared device (default: the whole device, exclusive) |
 | `--read-only` | default off | `dax`: the fd allows reads only |
 | `--size` | quantity, for example `512Mi` | at least this much: a capacity request on exclusive devices, a size selector on shared devices |
 | `--serial` | `0x` hex or decimal | this device |
@@ -180,7 +179,6 @@ way and answers `{"error": ...}`:
 | `--source` other than `local`, `pool` | `invalid source "..." (local or pool)` |
 | `--mode` other than `numa`, `dax` | `invalid mode "..." (numa or dax)` |
 | `--shared` with `--mode numa` | `shared memory is never onlined as RAM: use mode dax` |
-| `--shared` with `--source local` | `local devices are not shareable; share a ResourceClaim between pods instead` |
 | `--read-only` without `--mode dax` or `--shared` | `readOnly needs mode dax` |
 | `request` without `--shared`, `--serial` and `--size` | `size or serial is required` |
 | `--serial` not a number | `invalid serial "..."` |
@@ -195,11 +193,12 @@ The plugin refuses further requests that only it can judge:
 | case | message |
 |:-----|:--------|
 | `--size` not a positive quantity | `invalid size "..."` |
-| `--shared` with the serial of a device that is not shared (an exclusive pool device, a local memdev) | `device 0x...: not shareable` |
-| `--source local` with the serial of a shared device | `device 0x...: not a local device` |
+| `--shared` with the serial of a device that is not shared (an exclusive pool device, a local memdev that is not configured shared) | `device 0x...: not shareable` |
+| `--source local` with the serial of a pool device | `device 0x...: not a local device` |
+| `--source pool` with the serial of a local device | `device 0x...: not a pool device` |
+| the serial of a local device of another node | `device 0x...: a local device of node <X>, not of this node` |
 | `--mode numa` with the serial of a shared device | `shared memory is never onlined as RAM: use mode dax` |
-| the serial of a shared device without `--shared` (all its hosts), when its ResourceSlice has no `hosts` capacity | `device <name> (serial 0x...) has no "hosts" capacity` |
-| a pool request (`--source pool` or `--shared`) while the pool driver is disabled | `pool driver disabled (--pool-driver-name)` |
+| `--source pool` while the pool driver is disabled (a `--shared` request without `--source` is served by shared local devices then) | `pool driver disabled (--pool-driver-name)` |
 | any request while NRI is not connected | `lending unavailable: NRI not connected` |
 | `fd` on a lease in mode `numa` | `lease <id> is not a dax lease; use env` |
 
@@ -240,8 +239,9 @@ once. Without
 `$CXL_LEASE_SOCKET`, `cxl-request` exits with 1 and
 `CXL_LEASE_SOCKET is not set (the pod needs a claim on DeviceClass cxl-lease)`.
 
-Examples, with the local memdev `0xc100e2e1`, the exclusive pool device
-`0xc1ee0001` and the shared pool device `0xc1ae0001`:
+Examples, with the local memdev `0xc100e2e1`, the shared local device
+`0xc100e2e2`, the exclusive pool device `0xc1ee0001` and the shared pool
+device `0xc1ae0001`:
 
 ```
 cxl-request request --size 512Mi
@@ -253,7 +253,10 @@ cxl-request request --source pool --size 512Mi --mode dax --exec python3 app.py
 cxl-request request --source local --size 64Mi --mode dax --read-only --exec prog
 cxl-request request --serial 0xc1ae0001                       # the shared device, exclusively (writer)
 cxl-request request --serial 0xc1ae0001 --shared --read-only --exec prog   # a reader
-cxl-request request --shared --size 256Mi                     # any shared device of 256Mi or more
+cxl-request request --serial 0xc100e2e2                       # the shared local device, exclusively
+cxl-request request --serial 0xc100e2e2 --shared --read-only  # one read-only share of it
+cxl-request request --shared --size 256Mi                     # one share of any shared device of 256Mi or more, local first, then pool
+cxl-request request --source local --shared --size 64Mi       # one share of a shared local device
 cxl-request request --size 1Gi --wait 0s --request-id r1      # asynchronous: Pending
 cxl-request env --lease 1a2b3c4d                              # KEY=VALUE lines (DAX, not FD)
 cxl-request fd --lease 1a2b3c4d --wait 60s --exec prog        # the fd again after a restart of prog
@@ -294,7 +297,7 @@ For example:
 | `{"op":"request","source":"pool","size":"512Mi","mode":"dax","readOnly":true}` | an exclusive pool device as dax, read-only fd passed |
 | `{"op":"request","source":"local","size":"64Mi","mode":"dax"}` | a dax slice of a local memdev, fd passed |
 | `{"op":"request","source":"local","size":"64Mi","serial":"0xc100e2e1"}` | memory of the device with the serial |
-| `{"op":"request","serial":"0xc1ae0001","shared":true}` | one host of a shared device, fd passed |
+| `{"op":"request","serial":"0xc1ae0001","shared":true}` | one share of a shared device, fd passed |
 | `{"op":"request","serial":"0xc1ae0001"}` | the shared device, nobody else meanwhile, fd passed |
 | `{"op":"release","lease":"1a2b3c4d","wait":"120s"}` | release one lease of the pod |
 | `{"op":"release","all":true}` | release all leases of the pod |
@@ -356,21 +359,37 @@ container of the same pod with the socket may list and release it.
 The companion objects of lease `<id>` live in the requester's namespace:
 
 - ResourceClaim `cxl-lease-<id>` with one request `lease`:
-  - one source: `exactly` with the class of the source;
-  - no `source`: `firstAvailable: [{name: local, ...}, {name: pool, ...}]`,
-    without `local` for a shared device (`--shared`, or a `--serial` of a
-    shared device: `cxl.nri.io` publishes no shared device) and without
-    `pool` when the pool driver is disabled; a single source left is an
-    `exactly` request.
+  - a `--serial` that a ResourceSlice of `cxl.nri.io` or of the pool
+    driver has: `exactly` with the source and class of that device,
+    with or without `--source`;
+  - else one source: `exactly` with the class of the source;
+  - else `firstAvailable: [{name: local, ...}, {name: pool, ...}]`,
+    without `pool` when the pool driver is disabled; a single source left
+    is an `exactly` request.
 
-  The class is `cxl-local` for local memory, `cxl-pool` for an exclusive
-  pool device and `cxl-pool-shared` for a shared one (when `--serial` names
-  a device, the plugin reads from the ResourceSlices whether it is shared
-  and how many hosts it has). The selectors are
-  `serial == "0x..."` when a serial is given and `size >= <bytes>` for a
-  shared device when a size is given. The capacity request is `memory:
-  <size>` on exclusive devices, `hosts: <all>` when a shared device is
-  taken exclusively, and none for a shared lease (one host). Every source
+  The class is `cxl-local` for a local slice, `cxl-local-shared` for a
+  shared local device, `cxl-pool` for an exclusive pool device and
+  `cxl-pool-shared` for a shared one; a shared lease (`--shared`) asks the
+  shared classes only. The selectors are
+  `device.attributes["<driver>"].serial == "0x<hex>"` when a serial is
+  given and `device.attributes["<driver>"].size >= <bytes>` on a shared
+  class when a size is given. The capacity request is `memory: <size>` on
+  a slice or an exclusive pool device, `shares: "1"` for a share
+  (`--shared`), and none when a shared device is taken whole
+  (exclusively). For example:
+
+  | request | `spec.devices.requests` of the companion claim |
+  |:--------|:-----------------------------------------------|
+  | `--serial S`, S a shared local device (the writer) | `exactly`: `cxl-local-shared`, serial selector, no capacity |
+  | `--serial S --shared --read-only`, S a shared local device (a reader) | `exactly`: `cxl-local-shared`, serial selector, `shares: "1"`, `readOnly: true` |
+  | `--serial S`, S a shared pool device | `exactly`: `cxl-pool-shared`, serial selector, no capacity |
+  | `--serial S --size N`, S an exclusive local or pool device | `exactly`: `cxl-local` or `cxl-pool`, serial selector, `memory: N` |
+  | `--serial S --shared`, S in no ResourceSlice | `firstAvailable`: `cxl-local-shared`, then `cxl-pool-shared`, serial selector and `shares: "1"` each |
+  | `--shared --size 64Mi` | `firstAvailable`: `cxl-local-shared`, then `cxl-pool-shared`, `size >= 67108864` and `shares: "1"` each |
+  | `--source local --shared --size 64Mi` | `exactly`: `cxl-local-shared`, `size >= 67108864`, `shares: "1"` |
+  | `--size 512Mi` | `firstAvailable`: `cxl-local`, then `cxl-pool`, `memory: 512Mi` each |
+
+  Every source
   driver gets a `DeviceConfig` with the effective `mode` and `readOnly`,
   so that the claim shows what was asked; in a `firstAvailable` request
   each applies to its subrequest (`requests: [lease/local]`,
@@ -449,8 +468,9 @@ and cannot make it the companion of a lease it did not request.
   devices of persistent memory are for claims
   ([usage.md](usage.md#persistent-memory)): `cxl-request --mode block` or
   `--mode fs` is refused with `invalid mode "..." (numa or dax)`, and the
-  companion claims of leases use the classes `cxl-pool` and
-  `cxl-pool-shared`, which select no device of persistent memory.
+  companion claims of leases use the classes `cxl-local`,
+  `cxl-local-shared`, `cxl-pool` and `cxl-pool-shared`, which select no
+  device of persistent memory.
 
 - Memory limits: lent memory counts against the container's `memory.max`
   and the pod cgroup. Without a raise the extra node adds locality, not

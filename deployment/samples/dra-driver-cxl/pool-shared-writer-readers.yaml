@@ -1,9 +1,9 @@
 # Single-writer data sharing with a shared device of a memory pool
-# (DeviceClass cxl-pool-shared): the writer's claim requests all hosts of
-# the device (4 in the ResourceSlice of the reference pool controller), so
-# that no other claim gets the device while it exists; readers created
-# meanwhile stay pending. The readers join with one host each and
-# DeviceConfig readOnly: true: their device node allows reads only.
+# (DeviceClass cxl-pool-shared): the writer's claim requests no shares, so
+# it has the device exclusively and no other claim gets the device while
+# it exists; readers created meanwhile stay pending. The readers join with
+# one share each (capacity.requests.shares: "1") and DeviceConfig
+# readOnly: true: their device node allows reads only.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -17,9 +17,7 @@ spec:
         selectors:
         - cel:
             expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
-        capacity:
-          requests:
-            hosts: "4"     # all of them: exclusive
+        # no capacity request: the whole device, exclusive
 ---
 apiVersion: v1
 kind: Pod
@@ -62,6 +60,9 @@ spec:
           selectors:
           - cel:
               expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+          capacity:
+            requests:
+              shares: "1"  # one share
       config:
       - opaque:
           driver: cxl-pool.nri.io

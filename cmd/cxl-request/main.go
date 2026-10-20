@@ -77,7 +77,7 @@ request: memory for this container, exclusive unless --shared:
   --source    local (a memdev of this node) or pool; default local, then pool
   --mode      numa (lent as a NUMA node) or dax (a devdax fd); default numa,
               dax with --shared or for a shared device
-  --shared    one host of a shared pool device (default: all of its hosts)
+  --shared    one share of a shared device (default: the whole device, exclusive)
   --read-only a dax fd that allows reads only
   --size      at least this much, a quantity such as 512Mi
   --serial    this device (0x hex or decimal)

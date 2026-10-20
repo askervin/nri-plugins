@@ -6,7 +6,7 @@ CAUTION: experimental. Interfaces may change.
 the memory of the node (local CXL memory devices, CXL regions, DRAM, the
 lease device) and `cxl-pool.nri.io` for the devices of a CXL memory pool.
 The words used below (`source`, `type`, `shared`, `persistent`, `mode`,
-`readOnly`, `access`, `serial`, `size`, `hosts`) are defined in the
+`readOnly`, `access`, `serial`, `size`, `shares`) are defined in the
 [Vocabulary](index.md#vocabulary).
 
 - [Requirements](#requirements)
@@ -58,7 +58,7 @@ The driver uses these Kubernetes features:
 |:-------------|:---------|:-----------------|
 | `DRADeviceBindingConditions` | pool devices: the scheduler waits until the pool controller has attached the device | on |
 | `DRAResourceClaimDeviceStatus` | pool devices: the pool controller writes the device serial into the claim status | on |
-| `DRAConsumableCapacity` | many claims share one device: slices of a local memdev, regions, DRAM, `hosts` of a shared pool device | on |
+| `DRAConsumableCapacity` | many claims share one device: slices of a local memdev, regions, DRAM, `shares` of a shared device | on |
 | `DRAPrioritizedList` | `firstAvailable` requests, for instance local memory first, then pool memory | on |
 | `DRANodeAllocatableResources` | claimed memory is accounted against the node's allocatable memory | off |
 
@@ -135,7 +135,7 @@ creates the DaemonSet `nri-dra-driver-cxl` with its ServiceAccount, the
 ClusterRole and ClusterRoleBinding of the driver, a
 ValidatingAdmissionPolicy that lets the driver's ServiceAccount change only
 the ResourceSlices of its own node, a ConfigMap with the
-[configuration file](#configuration-file), and the seven
+[configuration file](#configuration-file), and the eight
 [DeviceClasses](#deviceclasses). The pod of the DaemonSet is privileged,
 runs in the host PID namespace (the lease broker maps the process ids of
 its callers to containers), and mounts `/var/lib/kubelet/plugins`,
@@ -169,13 +169,14 @@ The main values of the chart:
 | `tolerations`, `affinity`, `nodeSelector` | | where the DaemonSet runs |
 | `podPriorityClassNodeCritical` | `true` | priority class `system-node-critical` |
 
-For example, a configuration that leaves one device alone, and the
-DaemonSet only on the nodes that have CXL memory:
+For example, a configuration that leaves one device alone and shares
+another one, and the DaemonSet only on the nodes that have CXL memory:
 
 ```bash
 cat > cxl-values.yaml <<'EOF'
 config:
   ignoreDevices: ["0xc100e2e0"]
+  sharedDevices: ["0xc100e2e2"]
 nodeSelector:
   example.com/cxl: "true"
 EOF
@@ -242,6 +243,17 @@ under the driver `cxl.nri.io`:
     memory: {value: 1Gi, requestPolicy: {default: 1Gi, validRange: {min: 128Mi, step: 128Mi}}}
   allowMultipleAllocations: true
   nodeAllocatableResources: {memory: {mapping: {capacityKey: memory, capacityMultiplier: "1"}}}
+- name: memdev-c100e2e2              # a shared local device (sharedDevices)
+  attributes:
+    type:            {string: memdev}
+    source:          {string: local}
+    serial:          {string: "0xc100e2e2"}
+    shared:          {bool: true}
+    size:            {int: 1073741824}
+    nodeAffinity:    {int: 0}
+  capacity:
+    shares: {value: 1M}                         # no requestPolicy
+  allowMultipleAllocations: true
 - name: region0-node2                # region0, online as NUMA node 2
   attributes:
     type:            {string: region}
@@ -273,15 +285,18 @@ under the driver `cxl.nri.io`:
 | `source` | `memdev`, `region`, `dram` | `local` (pool devices have `pool`) |
 | `size` | `memdev`, `region`, `dram` | bytes: the RAM capacity of a memdev, the size of a region, the DRAM of the nodes |
 | `serial` | `memdev` | `0x` and lower-case hex |
-| `shared` | `memdev` | `false`: `cxl.nri.io` publishes no device that several hosts share |
+| `shared` | `memdev` | `false`: every claim gets a slice of its own; `true`: a shared local device, whose claims map the same bytes |
 | `node` | `region` | the NUMA node of the region |
 | `nodes` | `dram` | the DRAM NUMA nodes, cpuset syntax |
 | `nodeAffinity` | `memdev`, `region` | the CPU NUMA node of the device; absent if unknown (for a region: unless all its memdevs agree) |
-| `memoryBlockSize` | `memdev` | the memory block size of the node in bytes |
+| `memoryBlockSize` | `memdev`, not shared | the memory block size of the node in bytes |
 
 - `memdev-<serial hex>`, type `memdev`: a CXL memory device without a
   region; every claim gets a slice of it, created when the claim is
-  prepared ([local.md](local.md)).
+  prepared ([local.md](local.md)). A device listed in `sharedDevices` of
+  the [configuration file](#configuration-file) has `shared: true` and a
+  `shares` capacity instead: every claim maps the whole device as devdax
+  ([local.md](local.md#shared-local-devices)).
 - `<region>-node<N>`, type `region`: a region that exists already
   (created by the BIOS or an admin) and is online as NUMA node N; claims
   consume its capacity and their containers are steered to N.
@@ -290,10 +305,10 @@ under the driver `cxl.nri.io`:
 - `lease`, type `lease`: the device of lease claims
   ([leases.md](leases.md)); absent with `--leases=false`.
 
-Every memory device has `capacity.memory` and `allowMultipleAllocations`,
-so that many claims share it; with `DRANodeAllocatableResources`,
-`nodeAllocatableResources` maps the claimed memory to the node's
-allocatable memory. Pool devices are published by the pool controller
+Every memory device has `allowMultipleAllocations` and `capacity.memory`
+(`capacity.shares` for a shared device), so that many claims share it;
+with `DRANodeAllocatableResources`, `nodeAllocatableResources` maps the
+claimed memory to the node's allocatable memory. Pool devices are published by the pool controller
 under `cxl-pool.nri.io` with the same memdev attributes (`type`, `source`,
 `serial`, `shared`, `size`) and `persistent`, see
 [pool.md](pool.md#what-the-pool-controller-publishes).
@@ -312,10 +327,11 @@ of the Helm chart:
 
 | class | selects | gets |
 |:------|:--------|:-----|
-| `cxl-local` | `cxl.nri.io`, `type == "memdev"` | a slice of a local memdev: RAM of its NUMA node (mode `numa`, default) or a devdax device (`DeviceConfig` `mode: dax`) |
+| `cxl-local` | `cxl.nri.io`, `type == "memdev"`, `shared == false` | a slice of a local memdev: RAM of its NUMA node (mode `numa`, default) or a devdax device (`DeviceConfig` `mode: dax`) |
+| `cxl-local-shared` | `cxl.nri.io`, `type == "memdev"`, `shared == true` | a shared local device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
 | `cxl-pool` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
-| `cxl-pool-shared` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax; one of its `hosts` by default, all of them (exclusive) with `capacity.requests.hosts` |
-| `cxl-pool-persistent` | `cxl-pool.nri.io`, `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: the block device of its fsdax namespace (`mode: block`) or a read-only erofs filesystem on it (`mode: fs`); a shared device has one of its `hosts` by default, all of them with `capacity.requests.hosts` |
+| `cxl-pool-shared` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
+| `cxl-pool-persistent` | `cxl-pool.nri.io`, `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: the block device of its fsdax namespace (`mode: block`) or a read-only erofs filesystem on it (`mode: fs`); a shared device exclusively without a capacity request, one share with `capacity.requests.shares: "1"` |
 | `cxl-region` | `cxl.nri.io`, `type == "region"` | capacity of a pre-created CXL NUMA node; the container is steered to it |
 | `cxl-dram` | `cxl.nri.io`, `type == "dram"` | DRAM capacity for steering |
 | `cxl-lease` | `cxl.nri.io`, `type == "lease"` | the lease socket and `cxl-request` |
@@ -399,13 +415,18 @@ config:
   - `DeviceConfig: mode block needs a persistent device` (or `mode fs`)
   - `DeviceConfig: a persistent device needs mode block or fs` (no mode,
     `numa` or `dax` on a persistent device)
-  - `DeviceConfig: mode block: a shared device is writable only with all of its hosts`
-  - `DeviceConfig: mode numa: a shared device is used as dax only`
-    (volatile devices)
+  - `DeviceConfig: mode block: a shared device is writable only exclusively (no shares request)`
   - `DeviceConfig: readOnly needs mode dax, block or fs` (readOnly without
     a mode on an exclusive volatile device, which is `numa` by default)
 
   and for both drivers:
+  - `DeviceConfig: mode numa: a shared device is used as dax only`
+    (shared local devices and shared volatile pool devices)
+  - `device 0x<serial>: consumed shares "<q>" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
+    (an allocation of a shared device whose `consumedCapacity` has less
+    than one share, for instance of a claim with `shares: "0"`; `<q>` is
+    the consumed quantity, `""` when there is none; checked before any
+    device is touched)
   - `DeviceConfig: apiVersion "...", expected "<driver>/v1alpha1"`
   - `DeviceConfig: invalid FromClaim config: json: unknown field "..."`
     (`FromClass` for a config of the DeviceClass)
@@ -414,12 +435,14 @@ config:
 |:-------|:-------------|:-------------------|
 | local memdev (`cxl-local`) | none | a slice online as RAM of the memdev's NUMA node |
 | local memdev | `mode: dax` | a devdax slice of its own |
+| shared local device (`cxl-local-shared`), `capacity.requests.shares: "1"` | none | the device as devdax, shared with the other claims of the device |
+| shared local device, no capacity request | none | the device as devdax, no other claim has it meanwhile |
 | exclusive pool device (`cxl-pool`) | none | the device online as a new NUMA node |
 | exclusive pool device | `mode: dax` | the device as devdax |
-| shared pool device (`cxl-pool-shared`) | none | the device as devdax, shared with the other claims of the device |
-| shared pool device, `capacity.requests.hosts` = all | none | the device as devdax, no other claim has it meanwhile |
+| shared pool device (`cxl-pool-shared`), `capacity.requests.shares: "1"` | none | the device as devdax, shared with the other claims of the device |
+| shared pool device, no capacity request | none | the device as devdax, no other claim has it meanwhile |
 | any of the `dax` rows | `readOnly: true` | the same, the device node read-only |
-| persistent pool device (`cxl-pool-persistent`), shared with all `hosts` or not shared | `mode: block` | the block device of its fsdax namespace, writable; the namespace is created if there is none |
+| persistent pool device (`cxl-pool-persistent`), exclusively (no capacity request) | `mode: block` | the block device of its fsdax namespace, writable; the namespace is created if there is none |
 | persistent pool device | `mode: block`, `readOnly: true` | the block device, read-only |
 | persistent pool device | `mode: fs`, `readOnly: true` | the erofs filesystem on it at `path`, `access: direct` (default) or `cached` |
 
@@ -442,7 +465,8 @@ has the namespaces of the labels of the device.
   `b`, permissions `r` when `readOnly`. A writable block claim on a region
   without such a namespace creates it (`ndctl create-namespace -f -r
   regionK -m fsdax -M mem`), which writes the labels of the device; a
-  shared device is writable only with all of its `hosts`. A read-only
+  shared device is writable only by a claim that has it exclusively,
+  without a `shares` request. A read-only
   claim never creates a namespace. `CXL_<KEY>_PATH` is the device node,
   `CXL_<KEY>_SIZE` the size of the namespace.
 - `mode: fs` gives the container a read-only erofs filesystem of the
@@ -632,6 +656,11 @@ one value of each.
 - Exclusive pool devices in mode `dax`: the content is kept. Nothing
   clears the device between claims, so a claim, maybe on another node,
   reads what the previous one wrote.
+- Shared local devices: the same bytes for every claim and lease of the
+  device on the node, zeroed only when the plugin creates its region: a
+  claim reads what the last writer left, also after the device was idle,
+  until the node reboots
+  ([local.md](local.md#shared-local-devices)).
 - Shared pool devices: the same bytes for every host that has the device
   attached, as long as the pool keeps the device.
 - Pool devices of persistent memory: the data and the namespace labels
@@ -644,8 +673,8 @@ one value of each.
 ## Example claims
 
 [`deployment/samples/dra-driver-cxl`](tree:/deployment/samples/dra-driver-cxl)
-has a complete claim and pod for each case. The pods of claims 1-10 use
-their claim as `mem` the same way:
+has a complete claim and pod for each case. The pods of claims 1-10 and
+13-15 use their claim as `mem` the same way:
 
 ```yaml
 apiVersion: v1
@@ -662,8 +691,9 @@ spec:
 ```
 
 The claims show `spec.devices` and the environment the container sees,
-with the local memdev `0xc100e2e1`, the exclusive pool device
-`0xc1ee0001` and the shared pool device `0xc1ae0001`.
+with the local memdev `0xc100e2e1`, the shared local device `0xc100e2e2`
+(listed in `sharedDevices`), the exclusive pool device `0xc1ee0001` and
+the shared pool device `0xc1ae0001`.
 
 1. 128Mi of local CXL memory as RAM
    ([local-numa.yaml](blob:/deployment/samples/dra-driver-cxl/local-numa.yaml)):
@@ -742,9 +772,10 @@ with the local memdev `0xc100e2e1`, the exclusive pool device
    ...
    ```
 
-6. The shared device `0xc1ae0001`, one of its hosts
+6. The shared pool device `0xc1ae0001` exclusively (the writer of
+   single-writer sharing): no capacity request
    ([pool-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/pool-shared-writer-readers.yaml)
-   has the writer of 7 and the readers of 8):
+   has the writer of 6 and the readers of 8):
 
    ```yaml
    requests: [{name: mem, exactly: {deviceClassName: cxl-pool-shared, selectors: [{cel: {expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'}}]}}]
@@ -760,14 +791,13 @@ with the local memdev `0xc100e2e1`, the exclusive pool device
    CXL_CLAIM_<uid>=1
    ```
 
-7. The same device exclusively (the writer of single-writer sharing):
-   claim 6 plus, in `exactly`,
+7. One share of the same device: claim 6 plus, in `exactly`,
 
    ```yaml
-   capacity: {requests: {hosts: "4"}}
+   capacity: {requests: {shares: "1"}}
    ```
 
-8. The same device read-only (a reader): claim 6 plus
+8. One share, read-only (a reader): claim 7 plus
 
    ```yaml
    config:
@@ -835,10 +865,11 @@ with the local memdev `0xc100e2e1`, the exclusive pool device
 
 12. A writer of a persistent pool device and its readers
     ([pool-persistent-erofs.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml)).
-    The writer claims the device with all of its hosts, in mode `block`:
+    The writer claims the device exclusively (no capacity request), in
+    mode `block`:
 
     ```yaml
-    requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent, capacity: {requests: {hosts: "4"}}}}]
+    requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent}}]
     config:
     - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: block}}
     ```
@@ -853,10 +884,10 @@ with the local memdev `0xc100e2e1`, the exclusive pool device
     CXL_CLAIM_<uid>=1
     ```
 
-    A reader, after the writer is done, in mode `fs`:
+    A reader, after the writer is done, with one share in mode `fs`:
 
     ```yaml
-    requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent}}]
+    requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent, capacity: {requests: {shares: "1"}}}}]
     config:
     - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: fs, readOnly: true, path: /models}}
     ```
@@ -868,6 +899,47 @@ with the local memdev `0xc100e2e1`, the exclusive pool device
     CXL_C1AE0001_READONLY=1
     ...
     ```
+
+13. The shared local device `0xc100e2e2` exclusively (the writer): no
+    capacity request
+    ([local-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/local-shared-writer-readers.yaml)
+    has the writer of 13 and the readers of 15,
+    [local.md](local.md#shared-local-devices)):
+
+    ```yaml
+    requests: [{name: mem, exactly: {deviceClassName: cxl-local-shared, selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100e2e2"'}}]}}]
+    ```
+
+    ```
+    CXL_C100E2E2_DAX=/dev/dax0.0
+    CXL_C100E2E2_MODE=dax
+    CXL_C100E2E2_READONLY=0
+    CXL_C100E2E2_SERIAL=0xc100e2e2
+    CXL_C100E2E2_SHARED=1
+    CXL_C100E2E2_SIZE=1073741824
+    CXL_CLAIM_<uid>=1
+    ```
+
+14. One share of the same device: claim 13 plus, in `exactly`,
+
+    ```yaml
+    capacity: {requests: {shares: "1"}}
+    ```
+
+15. One share, read-only (a reader): claim 14 plus
+
+    ```yaml
+    config:
+    - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: DeviceConfig, readOnly: true}}
+    ```
+
+    ```
+    CXL_C100E2E2_READONLY=1
+    ...
+    ```
+
+    As with a shared pool device, a reader that asks while the writer has
+    the device waits until the writer's claim is deallocated.
 
 ## nri-dra-driver-cxl flags
 
@@ -910,6 +982,7 @@ YAML; unknown keys are refused. All keys are optional:
 
 ```yaml
 ignoreDevices: ["mem0", "0xc100e2e0"]
+sharedDevices: ["0xc100e2e2"]
 manageMemdevs: true
 udevStableDuration: 200ms
 ```
@@ -917,6 +990,7 @@ udevStableDuration: 200ms
 | key | type | default | |
 |:----|:-----|:--------|:-|
 | `ignoreDevices` | list of strings | | CXL memory devices to leave alone: device name (`mem0`, `cxl/mem0`), `major:minor` (`251:0`), or serial in decimal or `0x` hex |
+| `sharedDevices` | list of strings | | local CXL memory devices to publish as shared devices, matched as `ignoreDevices`: claims and leases of such a device map the whole device as devdax ([local.md](local.md#shared-local-devices)) |
 | `ignoreRegions` | list of strings | | CXL regions to leave alone (`region0`) |
 | `ignoreNodes` | list of integers | | NUMA nodes to leave alone |
 | `ignoreNewMemoryDevices` | bool | `false` | ignore memdevs that are hotplugged after the start |
@@ -928,6 +1002,8 @@ udevStableDuration: 200ms
 | `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo` |
 
 [local.md](local.md#what-the-plugin-publishes) describes `manageMemdevs`.
+The configuration is read at start: a change of `sharedDevices`, or of
+any other key, takes effect when the plugin restarts.
 
 ## Files on the node
 
@@ -935,7 +1011,7 @@ udevStableDuration: 200ms
 |:-----|:-|
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices, memory policy and lend of every prepared claim of `cxl.nri.io` |
-| `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs |
+| `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, and the claims of shared local devices |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |
 | `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |

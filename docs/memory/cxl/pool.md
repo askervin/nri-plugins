@@ -85,7 +85,7 @@ spec:
       size:   {int: 268435456}
     allowMultipleAllocations: true
     capacity:
-      hosts: {value: "4", requestPolicy: {default: "1", validValues: ["1", "4"]}}  # max attached nodes
+      shares: {value: 1M}                  # no requestPolicy
     bindsToNode: true
     bindingConditions: ["cxl-pool.nri.io/Attached"]
     bindingFailureConditions: ["cxl-pool.nri.io/AttachFailed"]
@@ -99,7 +99,7 @@ spec:
       size:   {int: 536870912}
     allowMultipleAllocations: true
     capacity:
-      hosts: {value: "4", requestPolicy: {default: "1", validValues: ["1", "4"]}}
+      shares: {value: 1M}
     bindsToNode: true
     bindingConditions: ["cxl-pool.nri.io/Attached"]
     bindingFailureConditions: ["cxl-pool.nri.io/AttachFailed"]
@@ -110,7 +110,7 @@ spec:
 | `type` | `memdev` | required |
 | `source` | `pool` | required |
 | `serial` | `0x` and lower-case hex | required: `/sys/bus/cxl/devices/memN/serial` of the device on the hosts |
-| `shared` | bool | required: whether several hosts may have the device attached at a time |
+| `shared` | bool | required: whether several hosts may have the device attached at a time; a shared device has a `shares` capacity |
 | `persistent` | bool | required on every device: whether the device is persistent memory (the DeviceClasses test it, and a CEL selector that reads an attribute a device lacks fails) |
 | `size` | bytes | required |
 
@@ -119,7 +119,7 @@ too ([usage.md](usage.md#devices-of-cxlnriio)), so that selectors and
 environment variables are the same for both sources, plus `persistent`.
 The DeviceClasses select pool devices by `type`, `shared` and
 `persistent`, the lease broker finds a
-device by `serial` and reads its `shared` and `hosts`, and `cxl.nri.io`
+device by `serial` and reads its `shared`, and `cxl.nri.io`
 never publishes a memdev whose serial a pool device has. A controller may
 publish further attributes under a domain of its own (for example
 `pool.example.com/model`); the reference controller publishes none.
@@ -130,17 +130,20 @@ publish further attributes under a domain of its own (for example
 - *Shared* devices (`shared: true`) can be attached to several nodes at
   once; all of them see the same bytes. Never put the size of a shared
   device into `capacity`: every allocation would consume it. The size is
-  an attribute; `hosts` limits how many nodes may attach it.
+  an attribute. The capacity is `shares` without a `requestPolicy`, with
+  the value 1M (`1000000`) when the pool has no limit of its own; a
+  controller for devices with a head limit publishes the number of heads.
 - `bindsToNode` makes the scheduler pin the claim to the node it picked.
   One claim covers one node, so N nodes sharing a device means N claims.
-- A claim of a shared device consumes one of its `hosts` by default. A
-  claim that requests all of them (`validValues` has the value of `hosts`)
-  has the device exclusively: the scheduler allocates the device to no
-  other claim until it is deallocated, and the controller attaches it
-  exclusively, so that no other cluster sharing the pool gets it either
-  (the reference controller makes an exclusive attachment of
+- A claim of a shared device without a `shares` request consumes the
+  whole value and has the device exclusively: the scheduler allocates the
+  device to no other claim until it is deallocated, and the controller
+  attaches it exclusively, so that no other cluster sharing the pool gets
+  it either (the reference controller makes an exclusive attachment of
   fake-cxl-pool). That is the writer of single-writer data sharing, see
-  [Options of pool devices](#options-of-pool-devices).
+  [Options of pool devices](#options-of-pool-devices). A claim with
+  `capacity.requests.shares: "1"` is one host's share; nobody needs to
+  know the value.
 - *Persistent* devices (`persistent: true`), shared or not, keep their
   data and their namespace labels while no host has them attached. Every
   host that attaches a persistent device must see the same label storage
@@ -158,7 +161,7 @@ of the Helm chart select pool devices:
 | class | selects | gets |
 |:------|:--------|:-----|
 | `cxl-pool` | `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
-| `cxl-pool-shared` | `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax; one of its `hosts` by default, all of them with `capacity.requests.hosts` |
+| `cxl-pool-shared` | `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
 | `cxl-pool-persistent` | `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: its block device (`mode: block`) or a read-only erofs filesystem (`mode: fs`), see [usage.md](usage.md#persistent-memory) |
 
 Claims:
@@ -186,6 +189,7 @@ spec:
         deviceClassName: cxl-pool-shared
         selectors:
         - cel: {expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'}
+        capacity: {requests: {shares: "1"}}       # one share; without it: exclusive
 ```
 
 Complete examples with pods:
@@ -226,15 +230,15 @@ Prepare with `unknown kind "..." (DeviceConfig)`.
 | `path` | absolute path | `fs` only, default `/run/cxl-fs/<KEY>`: where the filesystem is in the container |
 
 So every pool device can be used as a dax device: shared devices always,
-exclusive devices with `mode: dax`. Exclusive access to a shared device is
-a capacity request of all its `hosts`:
+exclusive devices with `mode: dax`. A claim of a shared device without a
+capacity request has it exclusively; a share is `shares: "1"`:
 
 | pool device | claim | gets |
 |---|---|---|
 | exclusive | (nothing) | a NUMA node |
 | exclusive | `mode: dax` | a dax device of its own |
-| shared | (nothing) | a dax device, shared with the other claims of the device |
-| shared | `capacity.requests.hosts: "4"` | a dax device, nobody else has the device meanwhile |
+| shared | `capacity.requests.shares: "1"` | a dax device, shared with the other claims of the device |
+| shared | (nothing) | a dax device, nobody else has the device meanwhile |
 | shared or exclusive dax | `readOnly: true` | the dax device, read-only |
 
 Read-only is enforced by the kernel for every process of the container,
@@ -246,8 +250,9 @@ the job of exclusive access. Pool appliances have no read-only attach
 either (UnifabriX Maxview 2.0 has none): whatever a host attaches, it can
 write.
 
-Single-writer data sharing: the writer claims the shared device with all
-of its `hosts` and writes; the readers claim it with `readOnly: true`. A
+Single-writer data sharing: the writer claims the shared device without
+a capacity request (exclusively) and writes; the readers claim one share
+each (`shares: "1"`) with `readOnly: true`. A
 reader that asks while the writer has the device waits (its pod or lease
 stays pending) until the writer's claim is deallocated: the writer's pod
 has finished or is deleted, or its lease is released.
@@ -294,7 +299,7 @@ status:
       hostUUID: <the host's uuid>
       attachment: shared0@node1
       qemuDeviceId: <qemu device id>
-      exclusive: true            # only for an exclusive attachment of a shared device
+      exclusive: true            # only when the allocation consumed the whole shares value
       persistent: true           # only for a device of persistent memory
 ```
 
@@ -340,7 +345,8 @@ device of the driver:
 
 1. Read `serial`, `shared`, `size`, `exclusive` and `persistent` from
    the claim status entry. A missing entry or missing data is an error;
-   kubelet retries.
+   kubelet retries. An allocation of a shared device that consumed less
+   than one share fails ([usage.md](usage.md#deviceconfig)).
 2. Read the `DeviceConfig` of the request; an invalid one fails the
    Prepare ([usage.md](usage.md#deviceconfig)).
 3. Wait until a CXL memory device with the serial appears

@@ -271,7 +271,7 @@ func (f *fakePoolSys) removeNdRegion() {
 
 const (
 	persistentSerial = "0xc1ae0001"
-	// a shared persistent device with one host, and with all of them
+	// a shared persistent device with one share, and exclusive
 	persistentData = `{"serial":"0xc1ae0001","shared":true,"size":536870912,"persistent":true}`
 	writerData     = `{"serial":"0xc1ae0001","shared":true,"size":536870912,"persistent":true,"exclusive":true}`
 	blockConfig    = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block"}`
@@ -324,7 +324,7 @@ func TestPoolModeFor(t *testing.T) {
 		{cfg: deviceConfig{ReadOnly: true}, dev: private, err: "DeviceConfig: a persistent device needs mode block or fs"},
 		{cfg: deviceConfig{Mode: "dax"}, dev: writer, err: "DeviceConfig: a persistent device needs mode block or fs"},
 		{cfg: deviceConfig{Mode: "numa"}, dev: private, err: "DeviceConfig: a persistent device needs mode block or fs"},
-		{cfg: deviceConfig{Mode: "block"}, dev: reader, err: "DeviceConfig: mode block: a shared device is writable only with all of its hosts"},
+		{cfg: deviceConfig{Mode: "block"}, dev: reader, err: "DeviceConfig: mode block: a shared device is writable only exclusively (no shares request)"},
 		// volatile devices as before
 		{cfg: deviceConfig{Mode: "numa"}, dev: shared, err: "DeviceConfig: mode numa: a shared device is used as dax only"},
 		{cfg: deviceConfig{ReadOnly: true}, dev: volatile, err: "DeviceConfig: readOnly needs mode dax, block or fs"},
@@ -502,7 +502,7 @@ func TestPoolPersistentSamePreparation(t *testing.T) {
 	// two results of one claim on the serial: one mount, unmounted with it
 	claim := persistentClaim("r3", persistentData, fsConfig("direct", ""))
 	claim.Status.Allocation.Devices.Results = append(claim.Status.Allocation.Devices.Results,
-		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0"})
+		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
 	noErr(t, prepare(t, p, claim).Err)
 	e.wantCDIDevice(t, "claim-r3-2", []string{"CXL_C1AE0001_2_ACCESS=direct", "CXL_C1AE0001_2_MODE=fs", "CXL_C1AE0001_2_PATH=/run/cxl-fs/C1AE0001_2",
 		"CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001", "CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=534773760", "CXL_CLAIM_r3=1"})
@@ -641,7 +641,7 @@ func TestPoolPersistentRollbackMultiDevice(t *testing.T) {
 	twoResults := func(uid string) *resourceapi.ResourceClaim {
 		c := persistentClaim(uid, persistentData, fsConfig("direct", ""))
 		c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
-			resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0"})
+			resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
 		return withConfig(c, resourceapi.AllocationConfigSourceClaim, []string{"mem2"}, fsConfig("cached", "/cache"))
 	}
 	e.m.mountErr["/dev/loop0"] = unix.EINVAL

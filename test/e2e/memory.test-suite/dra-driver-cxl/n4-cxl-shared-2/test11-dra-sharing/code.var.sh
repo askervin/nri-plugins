@@ -13,11 +13,12 @@
 # of fake-cxl-pool-server once, for every node, and nri-dra-driver-cxl
 # runs on both nodes (see test10-dra-pooling). A pod on VM1 and a pod on
 # VM2 have a ResourceClaim of class cxl-pool-shared each, both for the
-# same shared device: each claim takes one of its "hosts", and the
-# controller attaches the device to both nodes at once. The node plugin of
-# each node creates a devdax region on it and gives the container the
-# device node and its name in CXL_<KEY>_DAX, with CXL_<KEY>_SHARED=1 and
-# _MODE=dax. Each node attaches and releases the device independently.
+# same shared device: each claim takes one share of it (shares: "1"),
+# and the controller attaches the device to both nodes at once. The node
+# plugin of each node creates a devdax region on it and gives the
+# container the device node and its name in CXL_<KEY>_DAX, with
+# CXL_<KEY>_SHARED=1 and _MODE=dax. Each node attaches and releases the
+# device independently.
 #
 # What you will see: the shared device in the ResourceSlice of the pool,
 # a pod on VM1 writing a string to the shared memory, a pod on VM2 reading
@@ -52,7 +53,7 @@ TEXT="$TAG from VM1"
 shared-claim-yaml() {
     # Usage: shared-claim-yaml NAME
     #
-    # The ResourceClaim NAME for one host of the shared device.
+    # The ResourceClaim NAME for one share of the shared device.
     cat <<EOT
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -67,6 +68,9 @@ spec:
         selectors:
         - cel:
             expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$SHARED_SERIAL"'
+        capacity:
+          requests:
+            shares: "1"
 EOT
 }
 
@@ -148,8 +152,9 @@ dra-trace-start "$VM2" "$VM1"
 
 echo "### A: the shared device is published once, for both nodes"
 # A shared device has no memory capacity to consume: every node gets all
-# of it. What it has is "hosts": how many nodes may attach it at once, one
-# per claim.
+# of it. What it has is "shares", 1M without a requestPolicy: a claim
+# without a shares request takes all of them (exclusive), a claim with
+# shares: "1" one of them.
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 S0="device('shared0', '$DRA_POOL_DRIVER')"
@@ -157,7 +162,7 @@ dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$
 dra-assert "$COMMAND_OUTPUT" "slices('$DRA_LOCAL_DRIVER', '$VM1_NAME') and slices('$DRA_LOCAL_DRIVER', '$VM2_NAME')"
 dra-assert "$COMMAND_OUTPUT" "$S0 is not None and attr($S0, 'type') == 'memdev' and attr($S0, 'source') == 'pool' and attr($S0, 'shared') == True and attr($S0, 'serial') == '$SHARED_SERIAL' and attr($S0, 'size') == $SHARED_SIZE"
 dra-assert "$COMMAND_OUTPUT" "${S0}.get('allowMultipleAllocations') == True"
-dra-assert "$COMMAND_OUTPUT" "capacity($S0, 'hosts') == '4' and ${S0}['capacity']['hosts']['requestPolicy']['default'] == '1'"
+dra-assert "$COMMAND_OUTPUT" "sorted(${S0}['capacity']) == ['shares'] and quantity(capacity($S0, 'shares')) == $DRA_SHARES and request_policy($S0, 'shares') is None"
 dra-assert "$COMMAND_OUTPUT" "${S0}['bindsToNode'] == True and ${S0}['bindingConditions'] == ['$DRA_POOL_DRIVER/Attached']"
 
 echo "### B: a pod on VM1 writes"

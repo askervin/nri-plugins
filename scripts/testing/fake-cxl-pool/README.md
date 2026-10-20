@@ -167,7 +167,7 @@ SCOPE STATE ATTACHED-TO OWNER`; `devices NAME` prints `memory: persistent`
 `attach --exclusive` makes an exclusive attachment: no other host can
 attach the device until it is detached, also a shared device. It is the
 pool side of the exclusive use of a shared device: fake-cxl-pool-controller
-attaches exclusively for a claim that requests all `hosts` of a shared
+attaches exclusively for a claim that requests no `shares` of a shared
 device (`AttachRequest.exclusive` in the REST API).
 
 ### Sharing a device between two VMs (mode dax)
@@ -225,8 +225,10 @@ the server, the controller and the driver in the e2e VMs. The controller:
   device has the attributes `type: memdev`, `source: pool`, `serial`,
   `shared`, `persistent` (bool, false for volatile devices) and `size`
   (bytes). Exclusive devices have `capacity.memory`, shared devices
-  `allowMultipleAllocations` and `capacity.hosts` (how many nodes may attach
-  them); all have `bindsToNode` and the binding conditions
+  `allowMultipleAllocations` and `capacity.shares` with value `1M`
+  (1000000) and no `requestPolicy`: a claim that requests no shares
+  consumes all of them and has the device exclusively, `shares: "1"` is
+  one share; all have `bindsToNode` and the binding conditions
   `cxl-pool.nri.io/Attached` / `cxl-pool.nri.io/AttachFailed`. Device
   names become DNS labels; devices in state `error` are not published. The
   slice is updated when the device list changes (server events, or every
@@ -245,7 +247,8 @@ the server, the controller and the driver in the e2e VMs. The controller:
   `AttachFailed=True` (reason `NoHost`, `Conflict`, `Timeout`,
   `AttachError`), and the scheduler allocates again.
 - attaches exclusively (`AttachRequest.exclusive`) for a claim that
-  consumes all `hosts` of a shared device (`-shared-hosts`).
+  consumes all `shares` of a shared device (`exclusive: true` in its
+  device data).
 - detaches a device when no allocated claim wants it on that node any more.
   The node plugin has released it in NodeUnprepare by then; if the guest
   still holds it, the attachment stays `detaching` (or `failed`) and the
@@ -265,7 +268,7 @@ worker) with one controller, on n4-cxl-shared-2.
 fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
     [-driver-name cxl-pool.nri.io] [-pool-name fake-cxl-pool]
     [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
-    [-shared-hosts 4] [-owner-prefix k8s:] [-v]
+    [-owner-prefix k8s:] [-v]
 ```
 
 `-server` defaults to `$FAKE_CXL_POOL_SERVER`, `-kubeconfig` to

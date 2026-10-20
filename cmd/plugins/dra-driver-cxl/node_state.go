@@ -81,6 +81,9 @@ type PreparedDeviceInfo struct {
 	DaxMajor  int    `json:"daxMajor,omitempty"`
 	DaxMinor  int    `json:"daxMinor,omitempty"`
 	ReadOnly  bool   `json:"readOnly,omitempty"` // dax slice: the device node is read-only
+	// Shared is true for a shared local memdev: the dax device is the
+	// whole device, which other claims may have too.
+	Shared bool `json:"shared,omitempty"`
 }
 
 // PreparedClaimInfo captures all relevant information about a prepared
@@ -390,7 +393,15 @@ func localIgnoreReason(regDev *nricxl.RegionDevice, local *localSnapshot) string
 // memdevIgnoreReason returns why IgnoreDevices of the configuration
 // ignores a memdev, "" if it does not.
 func memdevIgnoreReason(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice) string {
-	for _, spec := range driverConfig.IgnoreDevices {
+	return memdevMatches(driverConfig.IgnoreDevices, memDev)
+}
+
+// memdevMatches returns which spec of specs matches a memdev, described,
+// "" if none does. A spec matches the memdev name (mem0), the uevent device
+// name (cxl/mem0), <major>:<minor> or the serial in decimal, 0x<hex> or
+// <hex>.
+func memdevMatches(specs []string, memDev *nricxl.MemoryDevice) string {
+	for _, spec := range specs {
 		switch spec {
 		case memDev.Name:
 			return fmt.Sprintf("memory device name %q", spec)
@@ -405,10 +416,62 @@ func memdevIgnoreReason(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice)
 	return ""
 }
 
+// sharedListing tells whether SharedDevices of the configuration lists a
+// memdev, and why a listed memdev is not a shared local device: it is
+// ignored or a pool device ("" if it is one).
+func sharedListing(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, poolSerials map[uint64]bool) (bool, string) {
+	if memdevMatches(driverConfig.SharedDevices, memDev) == "" {
+		return false, ""
+	}
+	if reason := memdevIgnoreReason(driverConfig, memDev); reason != "" {
+		return true, "ignored by " + reason
+	}
+	if poolSerials[memDev.Serial] {
+		return true, "pool device"
+	}
+	return true, ""
+}
+
+// configuredShared tells whether a memdev is a shared local device of the
+// configuration: SharedDevices lists it, and it is neither ignored nor a
+// pool device.
+func configuredShared(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, poolSerials map[uint64]bool) bool {
+	listed, refusal := sharedListing(driverConfig, memDev, poolSerials)
+	return listed && refusal == ""
+}
+
+// sharedSerials returns the serials of the memdevs that are shared local
+// devices of the configuration.
+func sharedSerials(driverConfig *DriverConfig, memDevs []*nricxl.MemoryDevice, poolSerials map[uint64]bool) map[uint64]bool {
+	out := map[uint64]bool{}
+	for _, memDev := range memDevs {
+		if configuredShared(driverConfig, memDev, poolSerials) {
+			out[memDev.Serial] = true
+		}
+	}
+	return out
+}
+
+// sharedRefusalsLogged has the refusals of shared local devices that are
+// logged already, so that each is logged once.
+var sharedRefusalsLogged sync.Map
+
+// logSharedRefusal logs once why a memdev of SharedDevices is not
+// published as a shared local device.
+func logSharedRefusal(memDev *nricxl.MemoryDevice, reason string) {
+	if _, logged := sharedRefusalsLogged.LoadOrStore(memDev.Name+"\x00"+reason, true); !logged {
+		klog.Infof("- not publishing memory device %q as a shared local device: %s", memDev.Name, reason)
+	}
+}
+
 // addLocalMemdevs adds the local memdevs that the local allocator can use
-// to devInfos: enabled memdevs whose RAM capacity is sure to hold a whole
-// memory block, that are neither pool devices nor ignored, and have no
-// regions but the allocator's.
+// to devInfos. Per memdev, ignoreDevices takes precedence over pool
+// devices, pool devices over sharedDevices, and sharedDevices over sliced
+// memdevs. A shared memdev is published when it is enabled, has RAM
+// capacity, no regions but the allocator's and no claims of slices. A
+// sliced memdev is published when it is enabled, its RAM capacity is sure
+// to hold a whole memory block, it has no regions but the allocator's and
+// no claims that use it shared.
 func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials map[uint64]bool, local *localSnapshot) {
 	bs := uint64(0)
 	if local != nil {
@@ -421,7 +484,15 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 		}
 	}
 	for _, memDev := range detectedDevices.MemoryDevices {
-		used := local.uses(memDev.Serial)
+		listed, refusal := sharedListing(driverConfig, memDev, poolSerials)
+		if refusal != "" {
+			logSharedRefusal(memDev, refusal)
+		}
+		if listed && refusal == "" {
+			addSharedMemdev(devInfos, memDev, regions[memDev.Serial], local, bs)
+			continue
+		}
+		use, used := local.use(memDev.Serial)
 		reason := ""
 		switch {
 		case memDev.RamSize == 0:
@@ -436,6 +507,8 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 			reason = "pool device"
 		case len(regions[memDev.Serial]) > 0 && !used:
 			reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions[memDev.Serial])
+		case use.Shared && len(use.Claims) > 0:
+			reason = fmt.Sprintf("used shared by claims %v", use.Claims)
 		default:
 			reason = memdevIgnoreReason(driverConfig, memDev)
 		}
@@ -457,6 +530,44 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 		}
 		klog.V(3).Infof("discovered local memory device %s: %s serial 0x%x size %d memory block size %d", name, memDev.Name, memDev.Serial, memDev.RamSize, bs)
 	}
+}
+
+// addSharedMemdev adds a memdev of sharedDevices to devInfos as a shared
+// local device, unless it is disabled, has no RAM capacity, has regions
+// that the allocator did not create or claims that use it as slices.
+//   - regions: the regions on the memdev
+//   - bs: the memory block size, 0 if unknown
+func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, regions []string, local *localSnapshot, bs uint64) {
+	use, used := local.use(memDev.Serial)
+	reason := ""
+	switch {
+	case memDev.RamSize == 0:
+		reason = "no RAM capacity"
+	case !memDev.Enabled:
+		reason = "memory device is disabled"
+	case len(regions) > 0 && !used:
+		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
+	case !use.Shared && len(use.Claims) > 0:
+		reason = fmt.Sprintf("used as slices by claims %v", use.Claims)
+	}
+	if reason != "" {
+		klog.V(4).Infof("- not publishing memory device %q as a shared local device: %s", memDev.Name, reason)
+		return
+	}
+	name := memdevDeviceName(memDev.Serial)
+	devInfos[name] = &device.DeviceInfo{
+		Name: name,
+		Dev: &device.Memdev{
+			Name:         memDev.Name,
+			Serial:       memDev.Serial,
+			Size:         memDev.RamSize,
+			NodeAffinity: memDev.NodeAffinity,
+			BlockSize:    bs,
+			Shared:       true,
+		},
+		SysfsPath: memDev.SysfsPath,
+	}
+	klog.V(3).Infof("discovered shared local memory device %s: %s serial 0x%x size %d", name, memDev.Name, memDev.Serial, memDev.RamSize)
 }
 
 // memdevDeviceName returns the device name of a local memdev:
@@ -581,6 +692,9 @@ func dramDevice(name string, dev *device.DRAM) resourcev1.Device {
 
 // localMemdevDevice returns the ResourceSlice device of a local memdev.
 func localMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
+	if dev.Shared {
+		return sharedMemdevDevice(name, dev)
+	}
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
 		device.AttrType:   {StringValue: ptr(device.DeviceTypeMemdev)},
 		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
@@ -604,6 +718,31 @@ func localMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
 			},
 		},
 		NodeAllocatableResources: memoryNodeAllocatableResources(),
+		AllowMultipleAllocations: ptr(true),
+	}
+}
+
+// sharedMemdevDevice returns the ResourceSlice device of a shared local
+// memdev: a shares capacity without a request policy, so that a claim that
+// requests no shares has the device exclusively; no memory capacity and
+// nothing node allocatable, as its memory is never onlined.
+func sharedMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
+	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
+		device.AttrType:   {StringValue: ptr(device.DeviceTypeMemdev)},
+		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
+		device.AttrSerial: {StringValue: ptr(api.FormatSerial(dev.Serial))},
+		device.AttrShared: {BoolValue: ptr(true)},
+		device.AttrSize:   {IntValue: ptr(int64(dev.Size))},
+	}
+	if dev.NodeAffinity >= 0 {
+		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NodeAffinity))}
+	}
+	return resourcev1.Device{
+		Name:       name,
+		Attributes: attrs,
+		Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
+			device.CapacityShares: {Value: *resource.NewQuantity(device.SharesUnlimited, resource.DecimalSI)},
+		},
 		AllowMultipleAllocations: ptr(true),
 	}
 }
@@ -950,6 +1089,7 @@ func (s *nodeState) lentDevices(info *PreparedClaimInfo) []lentDevice {
 			Size:     d.TotalBytes,
 			Mode:     d.Mode,
 			ReadOnly: d.ReadOnly,
+			Shared:   d.Shared,
 			Node:     -1,
 		}
 		if d.Mode == api.ModeDax {
@@ -1107,14 +1247,27 @@ func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.Re
 // DeviceConfig of the request, and describes it in devInfo: the slice size
 // is its total and consumed bytes.
 func (s *nodeState) prepareLocalMemdev(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, dev *device.Memdev, devInfo *PreparedDeviceInfo) error {
+	shares := int64(0)
+	var err error
+	if dev.Shared {
+		shares, err = consumedShares(dev.Serial, r)
+	}
 	cfg := &deviceConfig{}
-	_, err := parseConfig(claim, device.DriverName, device.DeviceConfigKind, r.Request, cfg)
+	if err == nil {
+		_, err = parseConfig(claim, device.DriverName, device.DeviceConfigKind, r.Request, cfg)
+	}
 	mode := ""
 	if err == nil {
-		mode, err = cfg.modeFor(false)
+		mode, err = cfg.modeFor(dev.Shared)
 	}
 	if err != nil {
 		return fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
+	}
+	if dev.Shared {
+		return s.prepareSharedMemdev(ctx, claim, r, dev, cfg.ReadOnly, shareUse(shares, device.SharesUnlimited), devInfo)
+	}
+	if _, ok := r.ConsumedCapacity[device.CapacityShares]; ok {
+		return fmt.Errorf("claim %v/%v: request %s: device %s: allocated as a shared device, which it is not any more", claim.Namespace, claim.Name, r.Request, api.FormatSerial(dev.Serial))
 	}
 	size := dev.Size
 	if dev.BlockSize > 0 {
@@ -1139,6 +1292,30 @@ func (s *nodeState) prepareLocalMemdev(ctx context.Context, claim *resourcev1.Re
 	if mode == api.ModeNUMA {
 		devInfo.NUMANodes = []int{node}
 		return nil
+	}
+	devInfo.DaxDevice, devInfo.DaxMajor, devInfo.DaxMinor, devInfo.ReadOnly = slice.DaxDevice, slice.Major, slice.Minor, slice.ReadOnly
+	return nil
+}
+
+// prepareSharedMemdev gives the dax device of a shared local memdev to an
+// allocation result, and describes it in devInfo: the whole device is its
+// total and consumed bytes.
+//   - readOnly: the device node of the claim is read-only
+//   - use: "exclusive" or the shares that the result consumed, for the log
+func (s *nodeState) prepareSharedMemdev(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, dev *device.Memdev, readOnly bool, use string, devInfo *PreparedDeviceInfo) error {
+	slice, err := s.local.AcquireShared(ctx, string(claim.UID), r.Request, dev.Serial, readOnly, use)
+	if err != nil {
+		return fmt.Errorf("claim %v/%v: device %s: %w", claim.Namespace, claim.Name, r.Device, err)
+	}
+	devInfo.DeviceType = device.DeviceTypeMemdev
+	devInfo.Mode = api.ModeDax
+	devInfo.Shared = true
+	devInfo.Serial = api.FormatSerial(dev.Serial)
+	devInfo.SysfsPath = s.local.regionPath(slice.Region)
+	devInfo.TotalBytes = slice.Size
+	devInfo.ConsumedBytes = int64(slice.Size)
+	if dev.NodeAffinity >= 0 {
+		devInfo.NodeAffinities = []int{dev.NodeAffinity}
 	}
 	devInfo.DaxDevice, devInfo.DaxMajor, devInfo.DaxMinor, devInfo.ReadOnly = slice.DaxDevice, slice.Major, slice.Minor, slice.ReadOnly
 	return nil
@@ -1313,7 +1490,7 @@ func (d *PreparedDeviceInfo) memory(keys envKeys) (api.Memory, bool) {
 			return m, false
 		}
 		m.Key, m.Serial, m.Size = keys.next(api.Key(serial, 1)), d.Serial, d.TotalBytes
-		m.Dax, m.ReadOnly = d.DaxDevice, d.ReadOnly
+		m.Dax, m.ReadOnly, m.Shared = d.DaxDevice, d.ReadOnly, d.Shared
 	case device.DeviceTypeRegion:
 		m.Key = keys.next(api.RegionKey(d.Region))
 	case device.DeviceTypeDRAM:

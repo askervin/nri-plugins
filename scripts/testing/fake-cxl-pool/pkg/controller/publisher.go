@@ -27,6 +27,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/utils/ptr"
 
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
@@ -68,23 +69,12 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 	if d.Shared {
 		// the size of a shared device is never a capacity: every
 		// allocation would consume it
-		one := resource.MustParse("1")
-		all := *resource.NewQuantity(int64(c.cfg.SharedHosts), resource.DecimalSI)
-		valid := []resource.Quantity{one}
-		if c.cfg.SharedHosts > 1 {
-			// all of it: an exclusive claim keeps every other claim off
-			// the device (attached with AttachRequest.Exclusive)
-			valid = append(valid, all)
-		}
+		// no requestPolicy: a claim without a shares request consumes
+		// the whole value and has the device exclusively (attached with
+		// AttachRequest.Exclusive), shares: "1" is one sharer
 		rd.AllowMultipleAllocations = ptr.To(true)
 		rd.Capacity = map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
-			hostsCapacity: {
-				Value: all,
-				RequestPolicy: &resourceapi.CapacityRequestPolicy{
-					Default:     &one,
-					ValidValues: valid,
-				},
-			},
+			device.CapacityShares: {Value: *resource.NewQuantity(device.SharesUnlimited, resource.DecimalSI)},
 		}
 	} else {
 		rd.Capacity = map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{

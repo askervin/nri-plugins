@@ -27,6 +27,7 @@ import (
 	"time"
 
 	resourceapi "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -249,8 +250,23 @@ func cdiDeviceByName(spec *cdiSpecs.Spec, name string) *cdiSpecs.Device {
 	return nil
 }
 
+// poolConsumed returns the consumed capacity of an allocation result of
+// a pool device with the status data: of a shared device all of its
+// shares (exclusive) or one, nil otherwise.
+func poolConsumed(data string) map[resourceapi.QualifiedName]resource.Quantity {
+	d, err := parsePoolDeviceData([]byte(data))
+	switch {
+	case err != nil || !d.Shared:
+		return nil
+	case d.Exclusive:
+		return map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: *resource.NewQuantity(device.SharesUnlimited, resource.DecimalSI)}
+	}
+	return map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}
+}
+
 // poolClaim returns a claim allocated a pool device, with the status
-// entry written by the pool controller (data "" for none).
+// entry written by the pool controller (data "" for none) and the shares
+// that the scheduler counts for a shared device (poolConsumed).
 func poolClaim(uid, name, dev, data string) *resourceapi.ResourceClaim {
 	c := &resourceapi.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{UID: types.UID(uid), Name: name, Namespace: "default"},
@@ -258,7 +274,7 @@ func poolClaim(uid, name, dev, data string) *resourceapi.ResourceClaim {
 			Allocation: &resourceapi.AllocationResult{
 				Devices: resourceapi.DeviceAllocationResult{
 					Results: []resourceapi.DeviceRequestAllocationResult{
-						{Request: "mem", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev},
+						{Request: "mem", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, ConsumedCapacity: poolConsumed(data)},
 						{Request: "local", Driver: device.DriverName, Pool: "node1", Device: "dram"},
 					},
 				},
@@ -751,4 +767,36 @@ func TestPoolCDISpecKeys(t *testing.T) {
 	if spec.Kind != device.PoolCDIKind || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
 	}
+}
+
+// A shared pool device needs at least one consumed share, checked before
+// the device is touched: a claim of shares "0" fits next to an exclusive
+// holder.
+func TestPoolSharesGuard(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ae0001")
+	p := e.driver(t)
+	withShares := func(uid, shares string) *resourceapi.ResourceClaim {
+		c := poolClaim(uid, "c-"+uid, "shared0", sharedData)
+		c.Status.Allocation.Devices.Results[0].ConsumedCapacity = nil
+		if shares != "" {
+			c.Status.Allocation.Devices.Results[0].ConsumedCapacity = map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse(shares)}
+		}
+		return c
+	}
+	for _, tc := range []struct{ shares, text string }{{"0", `"0"`}, {"", `""`}} {
+		wantErr(t, prepare(t, p, withShares("u0", tc.shares)).Err,
+			"cxl-pool.nri.io: preparing claim default/c-u0: device 0xc1ae0001: consumed shares "+tc.text+" is less than 1: request shares: 1 (a share) or no shares (exclusive)")
+	}
+	if strings.Contains(e.f.commands(), "create-region") {
+		t.Fatalf("a refused claim touched the device:\n%s", e.f.commands())
+	}
+	noErr(t, prepare(t, p, withShares("u1", "1")).Err)
+	noErr(t, unprepare(t, p, "u1"))
+	noErr(t, prepare(t, p, withShares("u2", "1M")).Err)
+	noErr(t, unprepare(t, p, "u2"))
+	// a device that is not shared has no shares
+	e.f.plug("0xc1ee0001")
+	noErr(t, prepare(t, p, poolClaim("u3", "c3", "pooled0", exclusiveData)).Err)
+	noErr(t, unprepare(t, p, "u3"))
 }

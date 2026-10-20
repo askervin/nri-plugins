@@ -49,7 +49,6 @@ func main() {
 	flag.DurationVar(&cfg.SyncInterval, "sync-interval", controller.DefaultSyncInterval, "interval of full reconciles")
 	flag.DurationVar(&cfg.AttachTimeout, "attach-timeout", controller.DefaultAttachTimeout, "attach request timeout")
 	flag.DurationVar(&cfg.DetachTimeout, "detach-timeout", controller.DefaultDetachTimeout, "detach request timeout")
-	flag.IntVar(&cfg.SharedHosts, "shared-hosts", controller.DefaultSharedHosts, "\"hosts\" capacity of shared devices: max nodes attached at a time")
 	flag.StringVar(&cfg.OwnerPrefix, "owner-prefix", controller.DefaultOwnerPrefix, "prefix of the attachment owners of this controller")
 	flag.BoolVar(&cfg.Verbose, "v", false, "log reconcile details")
 	flag.Usage = func() {

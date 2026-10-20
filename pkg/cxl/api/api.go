@@ -165,8 +165,6 @@ func (r *Request) validateRequest() error {
 	switch {
 	case r.Shared && r.Mode == ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
-	case r.Shared && r.Source == SourceLocal:
-		return errors.New("local devices are not shareable; share a ResourceClaim between pods instead")
 	case r.ReadOnly && r.EffectiveMode() != ModeDax:
 		return errors.New("readOnly needs mode dax")
 	case !r.Shared && r.Serial == "" && r.Size == "":
@@ -195,7 +193,8 @@ func (r *Request) validateValues() error {
 // Memory is what a claim or a lease gives a container of one device:
 //   - Key: the env key (Key, RegionKey, DRAMKey)
 //   - Serial: 0x<hex> of a memdev, "" for regions and DRAM
-//   - Shared: the memdev may be mapped by several hosts at a time
+//   - Shared: the memdev is a shared device, which several claims may map
+//     at a time
 //   - Mode: ModeNUMA, ModeDax, ModeBlock or ModeFs
 //   - Size: bytes that the claim or lease got; of block and fs memory the
 //     size of the fsdax namespace

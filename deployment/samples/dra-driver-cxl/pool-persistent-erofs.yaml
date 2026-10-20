@@ -1,10 +1,10 @@
 # A read-only filesystem on a device of persistent memory of a memory
 # pool (DeviceClass cxl-pool-persistent), written once, read in place on
-# many nodes. The writer's claim requests all hosts of the device (4 in the
-# ResourceSlice of the reference pool controller) and DeviceConfig mode:
-# block: its container gets the block device of the fsdax namespace of the
-# device and writes an erofs image into it. Readers join after the writer
-# is done, with one host each and mode: fs: their containers get the erofs
+# many nodes. The writer's claim requests no shares (the whole device,
+# exclusive) and DeviceConfig mode: block: its container gets the block
+# device of the fsdax namespace of the device and writes an erofs image
+# into it. Readers join after the writer is done, with one share each
+# (capacity.requests.shares: "1") and mode: fs: their containers get the erofs
 # mounted read-only at a path, access direct (the file pages are the memory
 # of the device) or cached (the file pages are in the page cache of the
 # node). The image must be built with -Enoinline_data, else access direct
@@ -22,9 +22,7 @@ spec:
         selectors:
         - cel:
             expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
-        capacity:
-          requests:
-            hosts: "4"     # all of them: the only claim of the device
+        # no capacity request: the whole device, the only claim of it
     config:
     - opaque:
         driver: cxl-pool.nri.io
@@ -76,6 +74,9 @@ spec:
           selectors:
           - cel:
               expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+          capacity:
+            requests:
+              shares: "1"  # one share
       config:
       - opaque:
           driver: cxl-pool.nri.io
@@ -100,6 +101,9 @@ spec:
           selectors:
           - cel:
               expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+          capacity:
+            requests:
+              shares: "1"  # one share
       config:
       - opaque:
           driver: cxl-pool.nri.io

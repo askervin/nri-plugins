@@ -75,14 +75,23 @@ const (
 	// CapacityMemory is the memory capacity of a device in bytes.
 	// Matches v1.ResourceMemory.
 	CapacityMemory resourcev1.QualifiedName = "memory"
-	// CapacityHosts is the capacity of a shared pool device: how many
-	// nodes may have it attached at a time.
-	CapacityHosts resourcev1.QualifiedName = "hosts"
+	// CapacityShares is the capacity of a shared device, local or pool,
+	// published without a requestPolicy: a claim that requests none
+	// consumes the whole value (exclusive use), a claim that requests 1
+	// is one share.
+	CapacityShares resourcev1.QualifiedName = "shares"
+	// SharesUnlimited is the shares value of local shared devices and of
+	// the reference pool: the most claims that may hold a device at a
+	// time, a bound of the model rather than a limit.
+	SharesUnlimited = 1000000
 
 	// DeviceClasses (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml).
-	ClassLocal      = "cxl-local"
-	ClassPool       = "cxl-pool"
-	ClassPoolShared = "cxl-pool-shared"
+	ClassLocal = "cxl-local"
+	// ClassLocalShared selects local memdevs that the driver
+	// configuration declares shared.
+	ClassLocalShared = "cxl-local-shared"
+	ClassPool        = "cxl-pool"
+	ClassPoolShared  = "cxl-pool-shared"
 	// ClassPoolPersistent selects pool devices with persistent memory.
 	ClassPoolPersistent = "cxl-pool-persistent"
 	ClassRegion         = "cxl-region"
@@ -135,6 +144,7 @@ type Memdev struct {
 	Size         uint64 // RAM capacity, bytes
 	NodeAffinity int    // CPU NUMA node of the memdev, -1 if unknown
 	BlockSize    uint64 // memory block size, bytes: slices are multiples of it
+	Shared       bool   // published shared: one devdax device for all claims
 }
 
 // LeaseToken is the Dev of the lease device: it has no hardware, no

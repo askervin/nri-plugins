@@ -22,12 +22,13 @@ import (
 	"testing"
 
 	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 )
 
 // TestDeviceClassesMatchConstants checks that the DeviceClasses of the
 // helm chart (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
-// are the seven classes of the Class* constants, each selecting the driver,
+// are the eight classes of the Class* constants, each selecting the driver,
 // type and sharing that the constant stands for, and no config.
 func TestDeviceClassesMatchConstants(t *testing.T) {
 	data, err := os.ReadFile("../../../deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml")
@@ -49,7 +50,8 @@ func TestDeviceClassesMatchConstants(t *testing.T) {
 		return fmt.Sprintf(`device.driver == %q && device.attributes[%q].%s == %q`, driver, driver, AttrType, typ)
 	}
 	want := map[string]string{
-		ClassLocal: selects(DriverName, DeviceTypeMemdev),
+		ClassLocal:       selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, DriverName, AttrShared),
+		ClassLocalShared: selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, DriverName, AttrShared),
 		ClassPool: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrShared) +
 			fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrPersistent),
 		ClassPoolShared: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, PoolDriverName, AttrShared) +
@@ -77,5 +79,16 @@ func TestDeviceClassesMatchConstants(t *testing.T) {
 		case len(c.Spec.Config) != 0 || c.Spec.ExtendedResourceName != nil:
 			t.Errorf("class %s has a config or an extended resource: %+v", name, c.Spec)
 		}
+	}
+}
+
+// TestSharesUnlimited checks how the shares value prints in ResourceSlices
+// and allocation results.
+func TestSharesUnlimited(t *testing.T) {
+	if q := resource.NewQuantity(SharesUnlimited, resource.DecimalSI); q.String() != "1M" || q.Value() != 1000000 {
+		t.Fatalf("shares %s (%d)", q.String(), q.Value())
+	}
+	if CapacityShares != "shares" || ClassLocalShared != "cxl-local-shared" {
+		t.Fatalf("names %s %s", CapacityShares, ClassLocalShared)
 	}
 }

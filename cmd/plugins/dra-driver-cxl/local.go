@@ -43,7 +43,11 @@ import (
 // a multiple of the memory block size. A numa slice is bound to kmem and
 // onlined movable, its memory belongs to the NUMA node of the region that
 // all numa slices of the memdev share; a dax slice is a devdax device of
-// its own. Slices of both modes share a region. See docs/memory/cxl/local.md.
+// its own. Slices of both modes share a region. A shared memdev (listed in
+// sharedDevices) is never sliced: all its claims get the first dax device
+// of its region, whose content is zeroed once when the region is created and
+// never while it exists, and its region stays while
+// the memdev is configured shared. See docs/memory/cxl/local.md.
 
 const (
 	// localStateFileName is the state file of the local allocator in the
@@ -98,9 +102,24 @@ type localDevice struct {
 	Region string `json:"region,omitempty"`
 	Node   int    `json:"node"`          // NUMA node of the memory of the region, -1 if unknown
 	Dax    string `json:"dax,omitempty"` // first dax device of the region
+	// Shared is true for a shared memdev: every claim has the whole dax
+	// device Dax.
+	Shared bool `json:"shared,omitempty"`
 	// Claims are the slices of the claims that use the memdev, by claim
 	// UID.
 	Claims map[string][]*localSlice `json:"claims"`
+}
+
+// claimUIDs returns the UIDs of the claims of the device, without
+// orphanOwner, in ascending order.
+func (d *localDevice) claimUIDs() []string {
+	uids := []string{}
+	for _, uid := range slices.Sorted(maps.Keys(d.Claims)) {
+		if uid != orphanOwner {
+			uids = append(uids, uid)
+		}
+	}
+	return uids
 }
 
 // localState is the content of the state file: the devices the allocator
@@ -122,29 +141,55 @@ type localAllocator struct {
 	zero    func(major, minor int, size, align uint64) error
 	mu      sync.Mutex
 	devices map[uint64]*localDevice // by serial
+	// shared has the serials of the memdevs that the configuration
+	// declares shared: their idle regions are kept.
+	shared map[uint64]bool
 
-	// serialsSnap is a snapshot of the serials of the devices, and
-	// blockSize the memory block size in bytes (0 if unknown), for the
-	// publisher. They have their own lock so that a rescan never waits
-	// for a Prepare.
-	snapMu      sync.Mutex
-	serialsSnap map[uint64]bool
-	blockSize   uint64
+	// usesSnap is a snapshot of the use of the devices, and blockSize
+	// the memory block size in bytes (0 if unknown), for the publisher.
+	// They have their own lock so that a rescan never waits for a
+	// Prepare.
+	snapMu    sync.Mutex
+	usesSnap  map[uint64]localUse
+	blockSize uint64
+}
+
+// localUse is how the allocator uses a memdev.
+type localUse struct {
+	// Shared is true when the memdev is used as a shared device, false
+	// when it is sliced.
+	Shared bool
+	// Claims are the UIDs of the claims that use the memdev.
+	Claims []string
 }
 
 // localSnapshot is what the publisher of local memdevs needs from the
 // local allocator.
 type localSnapshot struct {
-	// Serials are the serials of the memdevs that the allocator uses or
-	// is preparing.
-	Serials map[uint64]bool
+	// Uses are the uses of the memdevs that the allocator uses or is
+	// preparing, by serial.
+	Uses map[uint64]localUse
 	// BlockSize is the memory block size in bytes, 0 if unknown.
 	BlockSize uint64
 }
 
 // uses tells whether the allocator uses the memdev with the serial.
 func (l *localSnapshot) uses(serial uint64) bool {
-	return l != nil && l.Serials[serial]
+	if l == nil {
+		return false
+	}
+	_, ok := l.Uses[serial]
+	return ok
+}
+
+// use returns how the allocator uses the memdev with the serial, and
+// whether it uses it.
+func (l *localSnapshot) use(serial uint64) (localUse, bool) {
+	if l == nil {
+		return localUse{}, false
+	}
+	u, ok := l.Uses[serial]
+	return u, ok
 }
 
 // newLocalAllocator returns a local allocator with its state loaded from
@@ -161,6 +206,7 @@ func newLocalAllocator(mem *memctl.Manager, stateFile, bootID string) (*localAll
 			return zeroDax(mem.DevRoot, major, minor, size, align)
 		},
 		devices: map[uint64]*localDevice{},
+		shared:  map[uint64]bool{},
 	}
 	if err := a.load(); err != nil {
 		return nil, err
@@ -202,15 +248,15 @@ func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 }
 
-// Snapshot returns the serials of the memdevs that the allocator uses or
-// is preparing, and the memory block size. Nil for a nil (disabled)
+// Snapshot returns the uses of the memdevs that the allocator uses or is
+// preparing, and the memory block size. Nil for a nil (disabled)
 // allocator.
 func (a *localAllocator) Snapshot() *localSnapshot {
 	if a == nil {
 		return nil
 	}
 	a.snapMu.Lock()
-	snap := &localSnapshot{Serials: maps.Clone(a.serialsSnap), BlockSize: a.blockSize}
+	snap := &localSnapshot{Uses: maps.Clone(a.usesSnap), BlockSize: a.blockSize}
 	a.snapMu.Unlock()
 	if snap.BlockSize == 0 {
 		snap.BlockSize, _ = a.readBlockSize()
@@ -218,16 +264,30 @@ func (a *localAllocator) Snapshot() *localSnapshot {
 	return snap
 }
 
-// updateSnapshot refreshes the snapshot of the serials of the devices.
+// updateSnapshot refreshes the snapshot of the uses of the devices.
 // Called with a.mu held.
 func (a *localAllocator) updateSnapshot() {
-	m := make(map[uint64]bool, len(a.devices))
-	for serial := range a.devices {
-		m[serial] = true
+	m := make(map[uint64]localUse, len(a.devices))
+	for serial, d := range a.devices {
+		m[serial] = localUse{Shared: d.Shared, Claims: d.claimUIDs()}
 	}
 	a.snapMu.Lock()
-	a.serialsSnap = m
+	a.usesSnap = m
 	a.snapMu.Unlock()
+}
+
+// SetShared sets the serials of the memdevs that the configuration
+// declares shared.
+func (a *localAllocator) SetShared(serials map[uint64]bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.shared = maps.Clone(serials)
+	if a.shared == nil {
+		a.shared = map[uint64]bool{}
+	}
 }
 
 // Acquire gives a slice of the local memdev with the serial to an
@@ -279,6 +339,153 @@ func (a *localAllocator) Acquire(ctx context.Context, claimUID, request string, 
 	return s, node, nil
 }
 
+// AcquireShared gives the shared local memdev with the serial to an
+// allocation result of a claim: the first dax device of its region, bound
+// to device_dax and never resized. A region is created and its dax device
+// zeroed if the memdev has none; a kept region is reused as it is. The
+// slice is the whole dax device. The memdev counts as configured shared
+// from then on (SetShared), also when it appeared after the start.
+//   - claimUID, request: the claim and the request of the allocation result
+//   - serial: the serial of the memdev
+//   - readOnly: the device node of the claim is for reading only
+//   - use: "exclusive" or the shares of the claim ("1 share"), for the log
+func (a *localAllocator) AcquireShared(ctx context.Context, claimUID, request string, serial uint64, readOnly bool, use string) (*localSlice, error) {
+	if a == nil {
+		return nil, errors.New("local memdevs are not managed (manageMemdevs: false)")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.shared[serial] = true
+	d, err := a.sharedDevice(ctx, serial)
+	if err != nil {
+		return nil, err
+	}
+	s := &localSlice{Request: request, Region: d.Region, Mode: api.ModeDax, Dax: d.Dax, ReadOnly: readOnly}
+	err = a.mem.SetDaxDriver(ctx, d.Dax, memctl.DriverDeviceDax)
+	if err == nil {
+		s.Size, err = a.mem.DaxDeviceSize(d.Dax)
+	}
+	if err == nil {
+		s.Major, s.Minor, err = a.mem.DaxDevNumbers(d.Dax)
+	}
+	if err != nil {
+		a.persist()
+		return nil, fmt.Errorf("memdev %s (serial 0x%x): %s: %w", d.Memdev, serial, d.Dax, err)
+	}
+	s.DaxDevice = filepath.Join(a.mem.DevRoot, d.Dax)
+	d.Claims[claimUID] = append(d.Claims[claimUID], s)
+	klog.Infof("local: memdev %s (serial 0x%x): claim %s request %s: shared %s size %d read-only %v %s",
+		d.Memdev, serial, claimUID, request, s.Dax, s.Size, readOnly, use)
+	a.updateSnapshot()
+	if err := a.save(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// sharedDevice returns the shared device with the serial, with its devdax
+// region created if it has none. A device that is used as slices by claims
+// is refused; one that is sliced without claims is released first.
+func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64) (*localDevice, error) {
+	memdev, err := a.mem.FindMemdev(serial)
+	if err != nil {
+		return nil, err
+	}
+	d := a.devices[serial]
+	if d != nil {
+		d.Memdev = memdev
+	}
+	if d != nil && !d.Shared {
+		if uids := d.claimUIDs(); len(uids) > 0 {
+			return nil, fmt.Errorf("memdev %s (serial 0x%x): used as slices by claims %v; a shared device cannot be sliced", memdev, serial, uids)
+		}
+		if err := a.releaseOrphans(ctx, d); err != nil {
+			a.persist()
+			return nil, err
+		}
+		if err := a.releaseRegion(ctx, d); err != nil {
+			return nil, err
+		}
+		d = nil
+	}
+	if d != nil && d.Region != "" && !slices.Contains(a.mem.Regions(memdev), d.Region) {
+		klog.Warningf("local: memdev %s (serial 0x%x): %s of the shared device is gone, forgetting it and its claims %v", memdev, serial, d.Region, d.claimUIDs())
+		delete(a.devices, serial)
+		a.updateSnapshot()
+		d = nil
+	}
+	if d != nil && (d.Region == "" || d.Dax == "") {
+		// leftovers of a failed creation
+		if err := a.releaseRegion(ctx, d); err != nil {
+			return nil, err
+		}
+		d = nil
+	}
+	if err := a.checkRegions(memdev, d); err != nil {
+		return nil, err
+	}
+	if d != nil {
+		return d, nil
+	}
+	d = &localDevice{
+		Serial:    serial,
+		SerialHex: fmt.Sprintf("%x", serial),
+		Memdev:    memdev,
+		Node:      -1,
+		Shared:    true,
+		Claims:    map[string][]*localSlice{},
+	}
+	a.devices[serial] = d
+	a.updateSnapshot()
+	err = a.save()
+	if err == nil {
+		bs, berr := a.readBlockSize()
+		if berr != nil {
+			// the block size only checks the alignment of the region
+			bs = cxlRegionAlign
+		}
+		err = a.createRegion(ctx, d, bs)
+	}
+	if err == nil {
+		err = a.zeroShared(ctx, d)
+	}
+	if err == nil {
+		err = a.save()
+	}
+	if err != nil {
+		a.dropUnused(ctx, d)
+		return nil, err
+	}
+	return d, nil
+}
+
+// zeroShared writes zeros to the whole dax device of the new region of a
+// shared device, so that its first claim never sees what earlier users of
+// the memory left there.
+func (a *localAllocator) zeroShared(ctx context.Context, d *localDevice) error {
+	start := time.Now()
+	err := a.mem.SetDaxDriver(ctx, d.Dax, memctl.DriverDeviceDax)
+	var size, align uint64
+	var major, minor int
+	if err == nil {
+		_, align, _, err = a.mem.DaxRegionInfo(d.Region)
+	}
+	if err == nil {
+		size, err = a.mem.DaxDeviceSize(d.Dax)
+	}
+	if err == nil {
+		major, minor, err = a.mem.DaxDevNumbers(d.Dax)
+	}
+	if err == nil {
+		err = a.zero(major, minor, size, align)
+	}
+	if err != nil {
+		return fmt.Errorf("memdev %s (serial 0x%x): zeroing new shared %s: %w", d.Memdev, d.Serial, d.Dax, err)
+	}
+	klog.Infof("local: memdev %s (serial 0x%x): zeroed new shared %s size %d in %s", d.Memdev, d.Serial, d.Dax, size, since(start))
+	return nil
+}
+
 // device returns the device with the serial, with its region created
 // (memory blocks of bs bytes) and the slices of failed releases released.
 func (a *localAllocator) device(ctx context.Context, serial, bs uint64) (*localDevice, error) {
@@ -287,6 +494,12 @@ func (a *localAllocator) device(ctx context.Context, serial, bs uint64) (*localD
 		return nil, err
 	}
 	d := a.devices[serial]
+	if d != nil && d.Shared {
+		d.Memdev = memdev
+		if uids := d.claimUIDs(); len(uids) > 0 {
+			return nil, fmt.Errorf("memdev %s (serial 0x%x): used shared by claims %v; a sliced device cannot be shared", memdev, serial, uids)
+		}
+	}
 	if d != nil {
 		d.Memdev = memdev
 		if err := a.releaseOrphans(ctx, d); err != nil {
@@ -697,8 +910,10 @@ func (d *localDevice) usesDax(dax string) bool {
 }
 
 // Release releases the slices of a claim (numa slices are offlined), and
-// the region of a memdev whose last slice they were. The memdev stays
-// enabled. Nothing to release is not an error.
+// the region of a memdev whose last slice they were. The claims of a
+// shared memdev are dropped; its region stays while the memdev is
+// configured shared. The memdev stays enabled. Nothing to release is not
+// an error.
 func (a *localAllocator) Release(ctx context.Context, claimUID string) error {
 	if a == nil {
 		return nil
@@ -728,6 +943,9 @@ func (a *localAllocator) Release(ctx context.Context, claimUID string) error {
 // of the device if the claim was its last one. On error the claim keeps
 // what is not released yet.
 func (a *localAllocator) releaseClaim(ctx context.Context, d *localDevice, claimUID string) error {
+	if d.Shared {
+		return a.releaseShared(ctx, d, claimUID)
+	}
 	if err := a.deleteSlices(ctx, d, claimUID); err != nil {
 		return err
 	}
@@ -743,6 +961,22 @@ func (a *localAllocator) releaseClaim(ctx context.Context, d *localDevice, claim
 		// the region stays for the slices that cannot be released
 		delete(d.Claims, claimUID)
 		klog.Errorf("local: %v", err)
+		return nil
+	}
+	return a.releaseRegion(ctx, d)
+}
+
+// releaseShared drops a claim of a shared device, and releases the region
+// of the device if it has no claims left and is not configured shared.
+func (a *localAllocator) releaseShared(ctx context.Context, d *localDevice, claimUID string) error {
+	delete(d.Claims, claimUID)
+	uids := d.claimUIDs()
+	klog.Infof("local: memdev %s (serial 0x%x): claim %s: released shared %s, claims left %v", d.Memdev, d.Serial, claimUID, d.Dax, uids)
+	if len(uids) > 0 {
+		return nil
+	}
+	if a.shared[d.Serial] {
+		klog.Infof("local: memdev %s (serial 0x%x): keeping %s and %s of the idle shared device", d.Memdev, d.Serial, d.Region, d.Dax)
 		return nil
 	}
 	return a.releaseRegion(ctx, d)
@@ -861,7 +1095,8 @@ func (a *localAllocator) persist() {
 // gone are dropped, claims that are not in prepared are released (numa
 // slices offlined), and so are the slices of failed releases, devices
 // without claims and dax devices that belong to no slice. A slice whose
-// release fails is kept for orphanOwner.
+// release fails is kept for orphanOwner. A shared device without claims
+// keeps its region while it is configured shared (SetShared).
 func (a *localAllocator) Reconcile(ctx context.Context, prepared map[string]bool) {
 	if a == nil {
 		return
@@ -897,6 +1132,10 @@ func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, pr
 		delete(a.devices, d.Serial)
 		return
 	}
+	if d.Shared {
+		a.reconcileShared(ctx, d, prepared)
+		return
+	}
 	for _, uid := range slices.Sorted(maps.Keys(d.Claims)) {
 		switch {
 		case uid == orphanOwner:
@@ -924,6 +1163,32 @@ func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, pr
 		}
 	default:
 		a.deleteOrphans(ctx, d)
+	}
+}
+
+// reconcileShared reconciles a shared device whose region exists: claims
+// that are not prepared are dropped, and the region of a device without
+// claims is released unless the device is configured shared.
+func (a *localAllocator) reconcileShared(ctx context.Context, d *localDevice, prepared map[string]bool) {
+	for _, uid := range slices.Sorted(maps.Keys(d.Claims)) {
+		if !prepared[uid] {
+			klog.Infof("local: memdev %s (serial 0x%x): claim %s of the shared device is not prepared, dropping it", d.Memdev, d.Serial, uid)
+			delete(d.Claims, uid)
+			continue
+		}
+		a.dropGoneSlices(d, uid)
+	}
+	uids := d.claimUIDs()
+	switch {
+	case a.shared[d.Serial]:
+		klog.Infof("local: memdev %s (serial 0x%x): keeping shared %s and %s, claims %v", d.Memdev, d.Serial, d.Region, d.Dax, uids)
+	case len(uids) > 0:
+		klog.Warningf("local: memdev %s (serial 0x%x): not configured shared any more: keeping %s for claims %v, not publishing the memdev until they are gone", d.Memdev, d.Serial, d.Region, uids)
+	default:
+		klog.Infof("local: memdev %s (serial 0x%x): not configured shared any more, releasing its region", d.Memdev, d.Serial)
+		if err := a.releaseRegion(ctx, d); err != nil {
+			klog.Errorf("local: %v", err)
+		}
 	}
 }
 

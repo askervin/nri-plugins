@@ -68,12 +68,15 @@ type lease struct {
 	// source of the device once Ready.
 	Source string `json:"source,omitempty"`
 	Mode   string `json:"mode"`   // effective: api.ModeNUMA or api.ModeDax
-	Shared bool   `json:"shared"` // one host of a shared device
-	// Hosts is the hosts capacity requested when a shared device is taken
-	// exclusively (all of it), "" otherwise.
-	Hosts    string `json:"hosts,omitempty"`
-	ReadOnly bool   `json:"readOnly,omitempty"` // dax: the fd is opened read-only
-	Size     string `json:"size,omitempty"`     // requested quantity
+	Shared bool   `json:"shared"` // one share of a shared device
+	// SharedDevice is true when the device of the lease is a shared
+	// device: one share of it when Shared, the whole device otherwise.
+	SharedDevice bool `json:"sharedDevice,omitempty"`
+	// DeviceSource is the source of the device that Serial names when
+	// a ResourceSlice has it and no source was requested, "" otherwise.
+	DeviceSource string `json:"deviceSource,omitempty"`
+	ReadOnly     bool   `json:"readOnly,omitempty"` // dax: the fd is opened read-only
+	Size         string `json:"size,omitempty"`     // requested quantity
 	// Serial is 0x<lower-case hex>: the requested device, or the device
 	// of a Ready lease.
 	Serial    string    `json:"serial,omitempty"`
@@ -88,9 +91,9 @@ type lease struct {
 }
 
 // deviceShared tells whether the device of a lease is a shared device:
-// one of its hosts, or all of them.
+// one share of it, or the whole device.
 func (l *lease) deviceShared() bool {
-	return l.Shared || l.Hosts != ""
+	return l.Shared || l.SharedDevice
 }
 
 // memory returns what a Ready lease gives its container, false before.

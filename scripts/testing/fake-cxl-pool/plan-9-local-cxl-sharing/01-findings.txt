@@ -1,0 +1,309 @@
+plan-9-local-cxl-sharing: findings
+==================================
+Written 2026-10-19 (Fable). Read in the tree of 5jg-cxl at 7fd7aecda with
+the uncommitted plan-7/plan-8 files; line numbers are of that tree. Paths
+as in 00-README (D = cmd/plugins/dra-driver-cxl, A = pkg/cxl/api/api.go,
+E = test/e2e/memory.test-suite/dra-driver-cxl, P = fake-cxl-pool).
+
+1. Vocabulary and classes (plan-5, in force)
+--------------------------------------------
+F1  shared is "the same bytes may be mapped by several hosts at a time (a
+    pool device with a hosts capacity); such memory is never onlined as
+    RAM" (docs/index.md:43, plan-5 02-design.txt:60-67). cxl.nri.io
+    publishes shared: false on every local memdev (D/node_state.go:588;
+    docs/usage.md:276 "cxl.nri.io publishes no device that several hosts
+    share").
+F2  hosts is "capacity of a shared pool device: how many nodes may have it
+    attached at a time. A claim consumes 1 by default; all of them is
+    exclusive use" (index.md:50, plan-5 02:84-86). Constant
+    device.CapacityHosts (pkg/cxl/device/device.go:78-80).
+F3  Class names follow cxl-<source>[-shared]; plan-5 reserved the twin:
+    "the day a multi-headed local device is published as shared: true,
+    cxl-local-shared is its name" (plan-5 02-design.txt:242-246). Seven
+    classes exist (deployment/helm/dra-driver-cxl/templates/
+    deviceclasses.yaml): cxl-local selects type == "memdev" only (:14),
+    cxl-pool adds shared == false && persistent == false (:25),
+    cxl-pool-shared shared == true && persistent == false (:37),
+    cxl-pool-persistent persistent == true (:51). The unit test
+    pkg/cxl/device/device_test.go:32 TestDeviceClassesMatchConstants
+    asserts the exact CEL of every class and that the file has exactly
+    the classes of the constants.
+F4  DeviceConfig {mode, readOnly, access, path} is decoded by both drivers
+    (D/lending.go:231-248). The local driver's mode rule already takes a
+    shared flag: modeFor(shared) defaults to dax for shared devices and
+    refuses numa with "DeviceConfig: mode numa: a shared device is used
+    as dax only" (D/lending.go:329-350, text at :341); prepareLocalMemdev
+    calls it with false (D/node_state.go:1114). The pool driver's rule
+    for volatile shared devices is the same text (D/pool_persistent.go:
+    139-146).
+F5  Environment: CXL_<KEY>_SHARED is "1 for a shared device, also when the
+    claim or lease uses it exclusively" (usage.md:579); api.Env emits
+    SERIAL and SHARED for memdevs, DAX and READONLY for dax (A:252-285).
+    The local driver never sets Memory.Shared (D/node_state.go:1301-1325,
+    PreparedDeviceInfo has no Shared field, :57-84); the pool driver does
+    (D/pool.go:143-158); a lease does through deviceShared()
+    (D/lease_store.go:92-112).
+F6  Reserved names: persistent (attribute, bool) and modes block, fs are
+    pool-only today: cxl-pool-persistent, docs/usage.md:432-515; plan-7
+    22-erofs-design.txt section 9 lists "Persistent local memdevs
+    (cxl.nri.io)" and leases with mode fs as later work.
+
+2. Local devices today (slices)
+-------------------------------
+F7  A local memdev is published when it has RAM capacity, the block size
+    is known, its RAM holds a whole memory block, it is enabled, not a
+    pool device, has no foreign regions and is not ignored
+    (D/node_state.go:423-441). Published: type, source, serial, shared
+    false, size, nodeAffinity, memoryBlockSize; capacity memory with
+    requestPolicy {default: whole, validRange min = step = block size};
+    allowMultipleAllocations; nodeAllocatableResources (D/node_state.go:
+    582-633; docs/local.md:44-62). test14:241 asserts exactly this
+    attribute list.
+F8  ignoreDevices matches name (memN), uevent name (cxl/memN), major:minor
+    and the serial in decimal, 0x hex or bare hex (D/node_state.go:
+    390-406; docs/usage.md:919). DriverConfig is strict YAML, read once at
+    start (D/driver.go:78-119, :145-151, :251-259); the chart passes
+    .Values.config as a ConfigMap and restarts the DaemonSet on a change
+    through a checksum annotation ("The driver reads its configuration
+    only when it starts", templates/daemonset.yaml:17-18,
+    templates/configmap.yaml, values.yaml:41).
+F9  Every claim gets a slice: Acquire(claimUID, request, serial, mode,
+    size, readOnly) (D/local.go:233-280); the first claim creates one
+    devdax region (D/local.go:344-389: CreateRegion(ModeDax), dax device
+    must be bound to device_dax), later claims get dax devices of the dax
+    region (D/local.go:410-466). A dax slice is bound to device_dax and
+    ZEROED (D/local.go:447-453, :592-645) "so that a claim never sees what
+    an earlier one left there" (docs/local.md:206-209). numa slices are
+    kmem-bound and onlined movable (:538-564).
+F10 Release deletes the claim's slices and destroys the region with the
+    last claim; the memdev stays enabled (D/local.go:699-749, :824-836;
+    docs/local.md:241-246). Reconcile at start releases claims that are
+    not prepared, destroys regions without claims, drops the state of
+    another boot (D/local.go:859-928, :985-1014; D/driver.go:451-473).
+F11 Sharing a local slice today is DRA's own sharing: one ResourceClaim
+    (not a template) referenced by several pods; kubelet prepares a claim
+    once per node (plan-4 01-findings.txt:77-83 and :140-142, citing
+    kubelet pkg/kubelet/cm/dra/manager.go:386-390), so all pods get the
+    same /dev/daxX.Y (docs/local.md:172-177; sample
+    deployment/samples/dra-driver-cxl/local-dax-shared-claim.yaml;
+    test14:322-347). One DeviceConfig per request: all sharers of the
+    claim are read-write or all read-only; no waiting, no exclusive
+    writer, no reader joining later with its own claim.
+F12 numa "sharing": every numa slice of a device, and of every device
+    under one host bridge, is onlined into the one NUMA node of the
+    window; containers share the node through cpuset.mems; a slice bounds
+    online capacity, not placement; pages are private and zero-filled by
+    the kernel (docs/local.md:100-109, :149-161, :290-292; plan-4
+    07-analysis-numa-slices.txt sections 1-2). NUMA nodes cannot be
+    created at run time (07 section 1).
+F13 docs/local.md:316-318: "A memdev that is shared with other hosts but
+    not managed by a pool controller looks like a local device. Onlining
+    it as RAM corrupts the other hosts' data: exclude it with
+    ignoreDevices." The e2e topology has such a device: the static shared
+    file device 0xc1ae0000 (256M, present: false) of both
+    n4-cxl-shared-1 and -2 (E/n4-cxl-shared-{1,2}/topology.var.json);
+    plan-4 02-design.txt:339-343 says the same.
+
+3. Shared pool devices and exclusivity (the model to copy)
+----------------------------------------------------------
+F14 The controller publishes a shared device without a memory capacity
+    ("every allocation would consume it") and with capacity hosts {value
+    N, requestPolicy {default 1, validValues [1, N]}} and
+    allowMultipleAllocations (P/pkg/controller/publisher.go:68-88;
+    docs/pool.md:78-91, :127-143). N is -shared-hosts, default 4
+    (P/pkg/controller/controller.go:53, :67-69). An allocation that
+    consumes all N hosts is exclusive (reconciler.go:59-68) and the
+    status data says exclusive: true (status.go:57).
+F15 hosts counts CLAIMS, whatever their node: test16 run 1 failed to
+    allocate a fifth reader claim with hosts 4 on two nodes; the test now
+    runs the controller with -shared-hosts 6 (plan-7 29-erofs-status.txt
+    "test16 run 1"; plan-7 22 section 10). plan-8 01-findings F3 draws
+    the same conclusion.
+F16 The pool driver prepares a shared device as a whole devdax region
+    (CreateRegion(ModeDax), the region's dax device, DaxDevNumbers;
+    D/pool.go:602-616), reuses the region for the next claim of the same
+    device on the node (docs/pool.md:400-406) and refuses a claim that
+    prepared it differently (shared vs exclusive, another mode;
+    D/pool.go:503-519). Every claim gets its own CDI device
+    claim-<uid>-<n> with the same device node, permissions r when
+    readOnly (D/pool.go:701-731; D/lending.go:352-367). Content is kept:
+    "Nothing clears the device between claims" (usage.md:632-636).
+    Release disables region and memdev so the pool can hot-remove it
+    (D/pool.go:635-651).
+F17 The single-writer protocol: the writer claims all hosts, the readers
+    one host each with readOnly; a reader that asks while the writer has
+    the device waits until the writer's claim is deallocated
+    (docs/pool.md:249-257). Read-only "is a property of the claim, not of
+    the device: another claim of the same device may write" (pool.md:
+    240-247, usage.md:426-430).
+
+4. Leases
+---------
+F18 The protocol refuses --shared with --source local: "local devices are
+    not shareable; share a ResourceClaim between pods instead"
+    (A:168-169, in validateRequest; documented docs/leases.md:183 and
+    :120-122 "A local slice is never shared through a lease"). test12:631
+    asserts the text (exit 2). The CLI runs the same Validate
+    (cmd/cxl-request/main.go:157) and its usage says "--shared one host
+    of a shared pool device (default: all of its hosts)" (main.go:80).
+F19 The broker treats --shared as a pool request: requestOptions returns
+    errPoolDisabled when the pool driver is off and the request is
+    --source pool OR --shared (D/broker.go:464-466); companionSources
+    drops the local source when the device is shared ("Shared devices are
+    pool devices only", D/broker.go:890-908, case at :898).
+F20 serialOptions (D/broker.go:482-509): deviceBySerial lists the
+    ResourceSlices of cxl.nri.io and the pool driver (:521-552, driver
+    filter :533, shared attribute :542, hosts capacity :545) but does not
+    return the driver or node of the device; a shared device with
+    --source local is refused as "device 0x..: not a local device"
+    (:498-499); mode numa refused (:500-501); without --shared the lease
+    takes all hosts (:502-506, l.Hosts) and mode becomes dax (:507).
+F21 companionDevices (D/broker.go:961-1012): class cxl-local for source
+    local always (:968), cxl-pool or cxl-pool-shared for pool (:969-974);
+    a serial becomes a CEL selector (:977); on cxl-pool-shared a size is
+    a "size >= N" selector and l.Hosts a hosts capacity request
+    (:994-1007); every source gets a DeviceConfig {mode, readOnly}
+    (:939-956). OnPrepared takes serial, size, source, node or dax of the
+    first lent device (:1409-1428); the lentDevice of a local slice has
+    Shared unset (D/node_state.go:934-963; D/lending.go:43-56 field :50).
+F22 checkLend requires that every result of a companion claim is a local
+    memdev (*device.Memdev) (D/node_state.go:885-918, text :911); the
+    companion of a local lease gets no CDI device (D/node_state.go:
+    775-780). test13 shows the whole dynamic protocol on a pool device:
+    writer "request --serial S" (hosts 4 consumed, exclusive attach,
+    test13:208-240), readers "--serial S --shared --read-only" Pending
+    with Unschedulable companions (:242-272), writer exits and readers
+    read the bytes and get EACCES on a writable mapping (:274-323), a
+    late exclusive request times out without leftovers (E2, :324-337), a
+    static read-only claim (F, :338-370).
+
+5. Scheduler facts (kubernetes v1.37.1-1-g8aaeb4e53d1, local checkout)
+----------------------------------------------------------------------
+F23 A capacity request for a capacity that a device does not define makes
+    the scheduler skip that device ("not satisfiable rather than a fatal
+    error"; staging/src/k8s.io/dynamic-resource-allocation/structured/
+    internal/experimental/consumable_capacity.go:46-51). A request without
+    an amount consumes requestPolicy.default, else the whole capacity
+    (plan-4 01-findings.txt:143-148). So a cxl-local request with
+    capacity memory skips a device that has only hosts, but a cxl-local
+    request without a capacity request would take one host of it: the
+    class, not the scheduler, must keep slice claims off shared devices.
+F24 A CEL selector that reads an attribute a device lacks fails the
+    allocation of the claim (plan-5 02-design.txt:174-180; usage.md:
+    301-306): attributes that classes test must be on every device they
+    may see, which is why persistent is on every pool device (pool.md:114).
+
+6. e2e and demo facts
+---------------------
+F25 Tests that define today's behaviour: test12:631 (F18); test14:241
+    (exact attribute list of memdev-c100e2e1, F7) and :322-347 (shared
+    slice through one claim, F11); test15 (local leases, numa and dax
+    slices; header :1-45); test13 (pool one writer many readers, F22);
+    test11 (two claims of one shared pool device on two nodes); test16
+    (erofs on a persistent pool device). docs/e2e.md:229-235 lists them.
+F26 E/dra.source.sh: dra-install installs the chart with the fixed values
+    file $DRA_HELM_VALUES (E/dra-driver-cxl.helm-values.yaml: logLevel 4
+    only; dra.source.sh:43, :307, :350) and the controller with
+    $DRA_CONTROLLER_ARGS (:70, :352); a driver configuration (sharedDevices)
+    has no plumbing yet. dra-local-device attaches VM2's local device
+    (cxl_memdev1, 1G, serial 0xc100e2e1) through fake-cxl-pool-server as a
+    scope "local" device and sets DRA_LOCAL_* (:551-595); VM1's local
+    device is 256M (E/n4-cxl-shared-1/topology.var.json; test00-up:88).
+    dra-shared-claim-yaml hard-codes $DRA_POOL_DRIVER in its selector and
+    DeviceConfig (:1202-1243); dra-script-pod-yaml and the dax-rw tool
+    (write, read, watch, check-ro, --fd) serve any dax device (:1245;
+    E/n4-cxl-shared-2/pool-dax-rw.py:7-16).
+F27 The demo script (plan-8 03-demo-design.txt section 5, L1-L9): four
+    pods with lease claims on VM2; writer "cxl-request request --serial S
+    --mode dax" then writes; readers "request --serial S --shared
+    --read-only --wait 0s" and wait; "release --all" by the writer; the
+    readers read, a reader's write is refused; delete all. Its views
+    assume a device "with a serial, shared, a hosts capacity, claims that
+    take hosts" (03:4-7) and show "hosts U/4" (03 T3).
+F28 Pool driver and controller publish type memdev, source pool, serial,
+    shared, persistent, size and the hosts capacity (publisher.go:53-95);
+    the pool driver reads serial, shared, size, exclusive, persistent from
+    the claim status (D/pool.go:189-199, :544-557). Nothing of the pool
+    contract depends on how cxl.nri.io publishes its own devices.
+F29 lentDevice/lend of numa leases is per node with holders (D/lend.go:
+    111-156); dax leases lend no node: the broker opens /dev/daxX.Y
+    (O_RDONLY for readOnly) and passes the fd (D/broker.go:345-378,
+    :595-602, :1461-1522). A steered container cannot take a numa lease
+    (D/lend.go:83-85); dax leases are not affected (leases.md:459-468).
+F30 plan-4 designed but did not build "kind claim": a lease that joins an
+    existing ResourceClaim of the namespace (plan-4 02-design.txt:
+    256-268); plan-5 keeps it as extension H9 "--claim NAME" (plan-5
+    02:665-668). kubelet does not Prepare again for a joiner, so the
+    broker would have to lend from its own prepared-claim info instead
+    of the hooks (plan-4 02:261-266).
+
+7. Verified for the user's decisions (2026-10-20): capacity without a
+   requestPolicy. Sources: ~/github.com/kubernetes/kubernetes at
+   v1.37.1-1-g8aaeb4e53d1 (the scheduler of the VMs); the vendored
+   k8s.io/dynamic-resource-allocation@v0.37.0 that nri-plugins builds
+   against (go.mod:45) has an identical consumable_capacity.go (diff -q).
+---------------------------------------------------------------------------
+F31 API contract (k8s.io/api resource/v1/types.go:702-711): "If unset,
+    capacity requests are unconstrained: requests can consume any amount
+    of capacity, as long as the total consumed across all allocations
+    does not exceed the device's defined capacity. If request is also
+    unset, default is the full capacity value." DeviceRequest.Capacity
+    (types.go:1434-1438, :1579-1583): "For the capacity that has no
+    requestPolicy, default is the full capacity value."
+F32 Allocator (staging/src/k8s.io/dynamic-resource-allocation/structured/
+    internal/experimental/consumable_capacity.go): calculateConsumedCapacity
+    :127-133: request absent -> fillEmptyRequest (:146-150: policy nil ->
+    capacity.Value, the whole), request present and policy nil -> the
+    request as given. CmpRequestOverCapacity :96-103: the device is skipped
+    when consumed so far + this request > value; :264-268 a nil policy is
+    never violated; :85-92 a negative consumed value aborts the allocation
+    of the claim (fatal, not a skip); :46-51 a request of a capacity the
+    device lacks skips the device (F23).
+    So with capacity shares {value: V} and no policy: a request without
+    shares consumes V (exclusive: it fits only when nothing is consumed,
+    and nothing else fits while it holds); shares: "1" consumes 1 (up to V
+    sharers); shares: "0" consumes 0 and FITS NEXT TO AN EXCLUSIVE HOLDER.
+F33 API validation (pkg/apis/resource/validation/validation.go):
+    validateExactDeviceRequest :336-346 and validateDeviceSubRequest :324
+    validate class, selectors, derived attributes, allocation mode and
+    tolerations; a request's capacity values are not validated (no sign
+    check: validateInt64Range :1575-1587 serves request policies only). A
+    claim with shares: "0" (or "0.5") is accepted by the API server. The
+    drivers must refuse such an allocation at Prepare (03 section 5).
+F34 Slice validation: validateMultiAllocatableDeviceCapacity :1350-1357
+    validates the requestPolicy only when there is one; a device with
+    allowMultipleAllocations and a capacity without a policy is valid. A
+    policy on a single-allocatable device is forbidden (:1360-1367).
+F35 The e2e asserts and texts that say "hosts" or depend on the policy
+    (rename list, both sources): test11:160 (capacity hosts '4', default
+    '1'); test12:466, :484-485 (shared lease: capacity None, consumed
+    hosts '1'); test13:12, :205-206 (validValues ['1','4']), :209,
+    :225-229 (writer subrequest capacity hosts '4', consumed hosts '4'),
+    :313 (readers: no capacity), :338-341 (F: dra-shared-claim-yaml with
+    "" = one host); test16:15, :63-64, :116-117 (DRA_CONTROLLER_ARGS
+    "-shared-hosts 6"), :320 (consumed hosts '1'), :517 (value and
+    validValues), :555 (consumed hosts == 6) and its writer and reader
+    claims; dra.source.sh:291, :1202-1243 (dra-shared-claim-yaml HOSTS:
+    "" = the default one host); the demo view T3 "hosts U/N", "writer rw
+    x4", "hosts 4/4|3/4|0/4" (plan-8 03-demo-design.txt T3, L2, L6, L9).
+F36 Code and docs that say "hosts" (rename list): pkg/cxl/device/device.go:
+    78-80 CapacityHosts; D/broker.go:482-509 (serialOptions: hosts read
+    from the slice, "has no hosts capacity" text :503), :511-516
+    (sliceDevice.hosts), :545-546, :644-645 (log), :961-1012
+    (companionDevices: hosts capacity :998-1006); D/lease_store.go:72-74
+    (lease.Hosts), :90-94 (deviceShared); D/pool_persistent.go:133
+    ("writable only with all of its hosts"); D/pool.go:191 (comment);
+    cmd/cxl-request/main.go:80 (usage); pkg/cxl/api/api.go:198 (comment);
+    P/pkg/controller/publisher.go:68-88 (SharedHosts, validValues,
+    hostsCapacity), reconciler.go:50-68 (hostsCapacity, exclusiveResult
+    >= SharedHosts), controller.go:53, :67-69, :95-96 (DefaultSharedHosts
+    4), P/cmd/fake-cxl-pool-controller/main.go:52 (-shared-hosts),
+    P/README.md:170, :228, :248, :268; unit tests: D/broker_test.go (11
+    lines), P/pkg/controller/controller_test.go (24), D/pool_persistent_test.go
+    (1); docs: index.md:43, :50, :65; usage.md:9, :61, :276, :317-318,
+    :402, :420, :422, :445, :745, :767, :838, :841; pool.md:88, :102,
+    :113, :122, :133, :136-143, :161, :230-238, :250; leases.md:116-122,
+    :160, :201, :369, :372; e2e.md:712, :806, :837, :1110, :1131;
+    deployment/samples/dra-driver-cxl/pool-shared-writer-readers.yaml:2,
+    :22, pool-persistent-erofs.yaml:3, :27; templates/deviceclasses.yaml:
+    28-29, :42-43.

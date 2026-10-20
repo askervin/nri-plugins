@@ -38,6 +38,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
@@ -294,27 +295,27 @@ func (e *env) sync() {
 	}
 }
 
-// createClaim creates a claim allocated with device on node and waits
+// createClaim creates a claim allocated with devName on node and waits
 // until the lister has it.
-func (e *env) createClaim(name, device, nodeName string, shareID string) *resourceapi.ResourceClaim {
+func (e *env) createClaim(name, devName, nodeName string, shareID string) *resourceapi.ResourceClaim {
 	e.t.Helper()
-	return e.createClaimHosts(name, device, nodeName, shareID, 0)
+	return e.createClaimShares(name, devName, nodeName, shareID, 0)
 }
 
-// createClaimHosts is createClaim with the hosts capacity consumed by a
-// shared device (0: none).
-func (e *env) createClaimHosts(name, device, nodeName string, shareID string, hosts int64) *resourceapi.ResourceClaim {
+// createClaimShares is createClaim with the shares capacity consumed by a
+// shared device (0: no consumed capacity in the result).
+func (e *env) createClaimShares(name, devName, nodeName string, shareID string, shares int64) *resourceapi.ResourceClaim {
 	e.t.Helper()
 	r := resourceapi.DeviceRequestAllocationResult{
-		Request: "mem", Driver: DefaultDriverName, Pool: DefaultPoolName, Device: device,
+		Request: "mem", Driver: DefaultDriverName, Pool: DefaultPoolName, Device: devName,
 		BindingConditions:        []string{DefaultDriverName + "/Attached"},
 		BindingFailureConditions: []string{DefaultDriverName + "/AttachFailed"},
 	}
 	if shareID != "" {
 		r.ShareID = ptr.To(types.UID(shareID))
 	}
-	if hosts > 0 {
-		r.ConsumedCapacity = map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: *resource.NewQuantity(hosts, resource.DecimalSI)}
+	if shares > 0 {
+		r.ConsumedCapacity = map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: *resource.NewQuantity(shares, resource.DecimalSI)}
 	}
 	claim := &resourceapi.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name, UID: types.UID("uid-" + name)},
@@ -469,14 +470,15 @@ func TestPublish(t *testing.T) {
 		t.Fatalf("unexpected exclusive device %+v", p)
 	}
 	sh := byName["shared0"]
-	hosts := sh.Capacity["hosts"]
+	// shares 1M without a requestPolicy: no request is exclusive
+	shares, ok := sh.Capacity["shares"]
 	if *sh.Attributes["serial"].StringValue != "0xc1ae0001" ||
 		!*sh.Attributes["shared"].BoolValue || *sh.Attributes["size"].IntValue != 256<<20 ||
-		!ptr.Deref(sh.AllowMultipleAllocations, false) || len(sh.Capacity) != 1 ||
-		hosts.Value.Value() != 4 || hosts.RequestPolicy == nil || hosts.RequestPolicy.Default.Value() != 1 ||
-		len(hosts.RequestPolicy.ValidValues) != 2 || hosts.RequestPolicy.ValidValues[0].Value() != 1 ||
-		hosts.RequestPolicy.ValidValues[1].Value() != 4 ||
-		!ptr.Deref(sh.BindsToNode, false) {
+		!ptr.Deref(sh.AllowMultipleAllocations, false) || len(sh.Capacity) != 1 || !ok ||
+		shares.Value.Value() != 1000000 || shares.Value.String() != "1M" || shares.RequestPolicy != nil ||
+		!ptr.Deref(sh.BindsToNode, false) ||
+		strings.Join(sh.BindingConditions, ",") != "cxl-pool.nri.io/Attached" ||
+		strings.Join(sh.BindingFailureConditions, ",") != "cxl-pool.nri.io/AttachFailed" {
 		t.Fatalf("unexpected shared device %+v", sh)
 	}
 	if _, ok := byName["weird-name"]; !ok {
@@ -665,7 +667,7 @@ func TestDetachOnDeallocation(t *testing.T) {
 // (6) restart: the attachment exists, the status is missing
 func TestRestartWithExistingAttachment(t *testing.T) {
 	e := newEnv(t)
-	claim := e.createClaim("c6", "shared0", "node1", "share-1")
+	claim := e.createClaimShares("c6", "shared0", "node1", "share-1", 1)
 	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "vm1", Serial: "0xc1ae0001", Owner: e.c.Owner(claim.UID),
 		Slot: api.Slot{Bus: "ds9"}, QemuDeviceID: "fcp_shared0.hp7"})
 	e.sync()
@@ -686,16 +688,22 @@ func TestRestartWithExistingAttachment(t *testing.T) {
 // (7) two claims, same shared device, same node
 func TestSharedTwoClaimsOneNode(t *testing.T) {
 	e := newEnv(t)
-	e.createClaim("a", "shared0", "node1", "share-a")
-	e.createClaim("b", "shared0", "node1", "share-b")
+	e.createClaimShares("a", "shared0", "node1", "share-a", 1)
+	e.createClaimShares("b", "shared0", "node1", "share-b", 1)
 	e.sync()
 	att, _ := e.pool.calls()
-	if len(att) != 1 || !strings.HasPrefix(att[0], "shared0@vm1 ") {
+	if len(att) != 1 || att[0] != "shared0@vm1 k8s:resourceclaim/uid-a" {
 		t.Fatalf("unexpected attach requests %v", att)
 	}
 	for _, n := range []string{"a", "b"} {
-		if c, _ := e.condition(n, "cxl-pool.nri.io/Attached"); c == nil {
+		c, st := e.condition(n, "cxl-pool.nri.io/Attached")
+		if c == nil {
 			t.Fatalf("claim %s: no Attached condition", n)
+		}
+		// one share each: not exclusive
+		var data DeviceData
+		if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data.Exclusive {
+			t.Fatalf("claim %s: data %s %v", n, st.Data.Raw, err)
 		}
 	}
 	// the claim that owns the attachment goes first: still attached
@@ -751,8 +759,8 @@ func TestExclusiveMovesBetweenNodes(t *testing.T) {
 
 func TestExclusiveSharedClaim(t *testing.T) {
 	e := newEnv(t)
-	// all of the hosts capacity: attached exclusively
-	e.createClaimHosts("w", "shared0", "node1", "share-w", 4)
+	// all of the shares: attached exclusively
+	e.createClaimShares("w", "shared0", "node1", "share-w", device.SharesUnlimited)
 	e.sync()
 	if att, _ := e.pool.calls(); len(att) != 1 || att[0] != "shared0@vm1 k8s:resourceclaim/uid-w exclusive" {
 		t.Fatalf("unexpected attach requests %v", att)
@@ -764,19 +772,20 @@ func TestExclusiveSharedClaim(t *testing.T) {
 	// readers on the same node right after the writer: the attachment
 	// stays, its flag is dropped
 	e.deallocate("w")
-	e.createClaimHosts("r1", "shared0", "node1", "share-r1", 1)
+	e.createClaimShares("r1", "shared0", "node1", "share-r1", 1)
 	e.sync()
 	att, det := e.pool.calls()
 	if len(det) != 0 || len(att) != 2 || att[1] != "shared0@vm1 k8s:resourceclaim/uid-r1" {
 		t.Fatalf("attach %v detach %v", att, det)
 	}
-	if c, _ := e.condition("r1", "cxl-pool.nri.io/Attached"); c == nil {
-		t.Fatal("claim r1: no Attached condition")
+	if c, st := e.condition("r1", "cxl-pool.nri.io/Attached"); c == nil || strings.Contains(string(st.Data.Raw), `"exclusive"`) {
+		t.Fatalf("claim r1: condition %+v data %s", c, st.Data.Raw)
 	}
-	// and the other way round: an exclusive claim on the node of the
-	// reader sets the flag before it is Attached
+	// and the other way round: an exclusive claim (no shares consumed
+	// in the result) on the node of the reader sets the flag before it
+	// is Attached
 	e.deallocate("r1")
-	e.createClaimHosts("w2", "shared0", "node1", "share-w2", 4)
+	e.createClaimShares("w2", "shared0", "node1", "share-w2", 0)
 	e.sync()
 	if att, _ = e.pool.calls(); len(att) != 3 || att[2] != "shared0@vm1 k8s:resourceclaim/uid-w2 exclusive" {
 		t.Fatalf("attach %v", att)
@@ -790,7 +799,7 @@ func TestExclusiveSharedConflict(t *testing.T) {
 	e := newEnv(t)
 	// another cluster has the device: an exclusive attach conflicts
 	e.pool.addAttachment(api.Attachment{Device: "shared0", Host: "foreign", Owner: "k8s:resourceclaim/other-cluster"})
-	e.createClaimHosts("w", "shared0", "node1", "share-w", 4)
+	e.createClaimShares("w", "shared0", "node1", "share-w", device.SharesUnlimited)
 	e.sync()
 	c, _ := e.condition("w", "cxl-pool.nri.io/AttachFailed")
 	if c == nil || c.Reason != ReasonConflict {
@@ -799,15 +808,30 @@ func TestExclusiveSharedConflict(t *testing.T) {
 	if c, _ := e.condition("w", "cxl-pool.nri.io/Attached"); c != nil {
 		t.Fatalf("claim w: Attached %+v", c)
 	}
-	// a claim of one host is not exclusive
-	if e.c.exclusiveResult(&resourceapi.DeviceRequestAllocationResult{Device: "shared0",
-		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: resource.MustParse("1")}}) {
-		t.Fatal("one host is exclusive")
-	}
 	// an exclusive device is never attached with the flag
 	if e.c.exclusiveResult(&resourceapi.DeviceRequestAllocationResult{Device: "pooled0",
-		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{hostsCapacity: resource.MustParse("4")}}) {
+		ConsumedCapacity: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1M")}}) {
 		t.Fatal("pooled0 is exclusive")
+	}
+}
+
+func TestExclusiveResult(t *testing.T) {
+	e := newEnv(t)
+	e.sync()
+	for _, tc := range []struct {
+		name     string
+		consumed map[resourceapi.QualifiedName]resource.Quantity
+		want     bool
+	}{
+		{"all shares", map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1M")}, true},
+		{"one share", map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}, false},
+		{"shares missing", nil, true},
+		{"other capacity only", map[resourceapi.QualifiedName]resource.Quantity{"memory": resource.MustParse("1Gi")}, true},
+	} {
+		r := &resourceapi.DeviceRequestAllocationResult{Device: "shared0", ConsumedCapacity: tc.consumed}
+		if got := e.c.exclusiveResult(r); got != tc.want {
+			t.Errorf("%s: exclusive %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -829,7 +853,7 @@ func TestPersistentAttributeAndStatus(t *testing.T) {
 		}
 	}
 	// status data: persistent true for llm0, omitted for volatile devices
-	e.createClaimHosts("w", "llm0", "node1", "share-w", 4)
+	e.createClaimShares("w", "llm0", "node1", "share-w", device.SharesUnlimited)
 	e.createClaim("p", "pooled0", "node1", "")
 	e.sync()
 	for claim, want := range map[string]any{"w": true, "p": nil} {

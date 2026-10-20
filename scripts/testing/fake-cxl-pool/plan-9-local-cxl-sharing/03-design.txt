@@ -1,0 +1,406 @@
+plan-9-local-cxl-sharing: the contract
+======================================
+Written 2026-10-19, revised 2026-10-20 (Fable) after the user's decisions
+(02-options section 4). Facts: 01-findings.txt (F1-F36). Every name, text
+and behaviour below is the contract for plan-8's implementation; a stream
+that needs a change writes a Request in its status file. Paths as in
+00-README.
+
+0. Decisions in one screen
+--------------------------
+D1  A shared local device is a whole memdev that the driver configuration
+    lists: sharedDevices, a plain list matched like ignoreDevices.
+    cxl.nri.io publishes it as type memdev, source local, shared: true
+    with a shares capacity and no memory capacity. The DeviceClass is
+    cxl-local-shared; cxl-local stops matching shared devices.
+D2  The count capacity of every shared device, local or pool, is named
+    shares and has NO requestPolicy. A claim that requests no shares
+    consumes the whole value: exclusive use. A claim that requests
+    shares: "1" is one sharer. The value is device.SharesUnlimited
+    (1000000, printed 1M): a bound of the model, not a limit; a pool
+    controller for devices with a head limit publishes its heads. Both
+    drivers refuse an allocation of a shared device whose consumed shares
+    is below 1 (the API accepts shares: "0").
+D3  dax only, like every shared device: one devdax device for all claims
+    of the node; a numa DeviceConfig fails with the pool text. Content is
+    kept: the driver zeroes the dax device once, when it creates the
+    region (review R-D B1, 2026-10-20: earlier tenants' bytes), never
+    between claims or while idle. readOnly is per claim (CDI
+    permissions r) or per lease (fd O_RDONLY).
+D4  The region of a shared local device is created by its first claim and
+    kept while the device is configured shared, also with no claims; it
+    is destroyed only when the device is no longer configured shared and
+    has no claims. The memdev stays enabled.
+D5  Leases: the refusal of --shared with --source local goes; --shared no
+    longer implies the pool; the companion claim asks cxl-local-shared
+    before cxl-pool-shared; exclusive is a companion claim without a
+    shares request, a share is shares: "1"; the serial checks know both
+    sources and no longer read a capacity value. The writer and reader
+    command lines of test13 work on a local device unchanged.
+D6  A device switches between shared and sliced use by configuration and
+    plugin restart; while claims of the old use exist it is not published
+    at all; its state file wins over the configuration until it is idle.
+D7  Sharers are whoever may create a claim of the class on the node;
+    readOnly guards against writes, not reads. Slices keep their zeroing;
+    a shared device is never sliced.
+D8  Changed for the pool too: the capacity is shares without a policy, so
+    a claim on cxl-pool-shared or cxl-pool-persistent without a capacity
+    request is now exclusive (it was one host); readers add shares: "1".
+    The controller's -shared-hosts flag goes; exclusive in its status
+    data means consumed shares equals the published value.
+D9  Not now: persistent local devices, shared slices, zero-when-idle,
+    leases that join a claim (section 10).
+
+1. What sharing means, precisely
+--------------------------------
+- Who: containers of one node. A share is a claim: several pods of one
+  claim are one share (kubelet prepares once, F11); several claims of
+  one device are several shares. A lease is one claim (its companion).
+- Exclusive vs shared: a claim without a shares request consumes the
+  whole value and is the only holder while it lasts; a claim with
+  shares: "1" is one of the holders. The scheduler enforces it
+  (F31-F32); readers wait as pods Pending (their companions
+  Unschedulable), exactly as with a pool device (F17, F22). The number of
+  concurrent sharers is bounded by the value only (1M: none in practice).
+- Content: a shared device is zeroed only when its region is created;
+  a claim reads what the last writer left, across claims and idle
+  periods (the region stays, D4), not
+  across a node reboot (volatile). The zeroing of slices exists because
+  one physical range serves tenants in turn (F9); a shared device serves
+  one admitted group, and admission to the class is the control (D7).
+- Whole device, not slices: one shared device, one devdax node, one env
+  key; applications agree on the layout by offset (local.md:210-213).
+- numa: there is no numa sharing of content. numa slices share a NUMA
+  node (F12); that is what mode numa already is, unchanged.
+- Persistent local devices: later (section 10); the published device and
+  the class scheme leave room (persistent attribute, modes block/fs).
+- The scheduler: capacity shares {value: 1M}, no policy, on one device
+  (F14, F31-F32), per node because the device is in the node's slice.
+  The lease protocol's words stay: --shared is one share, a serial
+  without --shared is all of them (F20).
+
+2. Configuration (DriverConfig, docs/usage.md "Configuration file")
+-------------------------------------------------------------------
+```yaml
+sharedDevices: ["0xc100e2e1"]   # as ignoreDevices: memN, cxl/memN, major:minor, serial
+```
+- Go: DriverConfig.SharedDevices []string `json:"sharedDevices,omitempty"`;
+  strict decoding as today. Matching: the matcher of ignoreDevices
+  (memdevIgnoreReason becomes a shared memdevMatches(spec, memdev)).
+  Serial is the stable form; memN changes with probe order (documented).
+- Precedence per memdev: ignoreDevices > pool device (serial in a pool
+  ResourceSlice or prepared by the pool driver) > sharedDevices > sliced
+  memdev. A shared device that is also ignored or a pool device is logged
+  once: "- not publishing memory device %q as a shared local device: %s".
+- The configuration is read at start (F8); the chart's checksum
+  annotation restarts the DaemonSet on a change. Documented: a change of
+  sharedDevices is a restart of the plugin.
+- The multi-headed device without a controller (F13) is the other reason
+  to list a device here: local.md's limitation gains "or declare it in
+  sharedDevices: the plugin then never onlines it and shares it dax only;
+  exclusivity across hosts is not coordinated by one node's plugin".
+
+3. The published device (cxl.nri.io ResourceSlice of the node)
+--------------------------------------------------------------
+```yaml
+- name: memdev-c100e2e1               # "memdev-" + serial, as every memdev
+  attributes:
+    type:         {string: memdev}
+    source:       {string: local}
+    serial:       {string: "0xc100e2e1"}
+    shared:       {bool: true}
+    size:         {int: 1073741824}   # RAM capacity of the memdev
+    nodeAffinity: {int: 0}            # absent if unknown
+  allowMultipleAllocations: true
+  capacity:
+    shares: {value: 1M}               # no requestPolicy: no request = all, "1" = one share
+```
+- No memory capacity (every allocation would consume it, F14), no
+  memoryBlockSize (no slices), no nodeAllocatableResources (nothing is
+  onlined). Valid without a policy (F34).
+- Published when: enabled, RAM capacity > 0, not a pool device, not
+  ignored, no foreign region (the plugin's own shared region is the
+  plugin's), and the device has no slices of prepared claims (D6). The
+  block size is not needed: a shared device is published while the block
+  size is unknown and whatever its size.
+- Go: device.CapacityShares = "shares" (replaces CapacityHosts, F36);
+  device.SharesUnlimited = 1000000 (one constant for both drivers and
+  the fake pool controller: P imports pkg/cxl/device already? If not, a
+  copy with a unit test that the two are equal, as api/memctl do for the
+  modes); device.Memdev gains Shared bool; localMemdevDevice branches on
+  it; addLocalMemdevs applies the precedence of section 2; the local
+  allocator's snapshot carries, per serial, whether the device is used
+  shared or sliced (for D6).
+- Vocabulary (index.md): shared = "true: the same bytes may be mapped by
+  several claims at a time: a pool device attached to several hosts, or a
+  local device that the node's configuration declares shared (both with a
+  shares capacity); such memory is never onlined as RAM". shares =
+  "capacity of a shared device. A claim that requests none has the device
+  exclusively; a claim that requests shares: 1 shares it. The value (1M
+  for local devices and the reference pool) is the most claims that may
+  hold the device at a time; a pool whose devices have a head limit
+  publishes its heads". hosts disappears from the vocabulary.
+
+4. DeviceClasses (templates/deviceclasses.yaml, device.go, device_test.go)
+--------------------------------------------------------------------------
+| class | selector | gets |
+|---|---|---|
+| cxl-local | cxl.nri.io && type == "memdev" && shared == false | a slice of a local memdev (unchanged otherwise) |
+| cxl-local-shared | cxl.nri.io && type == "memdev" && shared == true | a shared local device as devdax: exclusively, or one share with capacity.requests.shares: "1" |
+The other five classes keep their selectors; the comments of
+cxl-pool-shared and cxl-pool-persistent say the same as cxl-local-shared
+(exclusive by default, shares: "1" to share). Constant
+device.ClassLocalShared = "cxl-local-shared"; TestDeviceClassesMatchConstants
+gains the class and the shared == false term of cxl-local (eight
+classes). DRA_CLASSES of E/dra.source.sh gains cxl-local-shared. Why
+cxl-local must exclude shared devices: a cxl-local request without a
+capacity request would take the whole shares value of a shared device and
+fail at Prepare (F23); with the term the scheduler never offers it.
+
+5. Claims (static path)
+-----------------------
+Claims on cxl-local-shared, with the local memdev 0xc100e2e1 (KEY
+C100E2E1, size 1 GiB):
+13. the shared local device exclusively (the writer): no capacity request
+```yaml
+requests: [{name: mem, exactly: {deviceClassName: cxl-local-shared, selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100e2e1"'}}]}}]
+```
+    CXL_C100E2E1_SERIAL=0xc100e2e1 CXL_C100E2E1_SHARED=1 CXL_C100E2E1_MODE=dax
+    CXL_C100E2E1_SIZE=1073741824 CXL_C100E2E1_DAX=/dev/dax0.0 CXL_C100E2E1_READONLY=0
+14. one share of the device: claim 13 plus, in exactly,
+    capacity: {requests: {shares: "1"}}
+15. one share, read-only (a reader): claim 14 plus
+```yaml
+config:
+- opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: DeviceConfig, readOnly: true}}
+```
+    ... CXL_C100E2E1_READONLY=1
+The same three shapes with cxl-pool-shared and cxl-pool.nri.io are the
+pool's (usage.md examples 6-8 and 12 change accordingly, D8).
+- DeviceConfig: mode "" or dax; readOnly; the same decoder (F4).
+  prepareLocalMemdev calls cfg.modeFor(dev.Shared): the texts of
+  cxl.nri.io gain "DeviceConfig: mode numa: a shared device is used as
+  dax only" (lending.go:341, already written for this).
+- Shares guard (both drivers, before any device is touched): for an
+  allocation result of a shared device, consumedCapacity["shares"] must
+  be present and >= 1, else the Prepare fails with
+  "device 0x<serial>: consumed shares %q is less than 1: request shares: 1 (a share) or no shares (exclusive)"
+  (%q is the quantity, or "" when missing). consumed == the published
+  value is logged as exclusive. The broker never produces such a claim;
+  a hand-written claim with shares: "0" is the case (F32-F33).
+- Prepare of a shared device (the local allocator's shared path):
+  1. mode and readOnly from the DeviceConfig; the size is the device.
+  2. the first claim of the device creates its devdax region (as today,
+     local.go:379-389); the region's dax device daxX.0 is the shared
+     device: bound to device_dax, its size the region, never resized,
+     zeroed once when the region is created (not when it is reused);
+     DaxDevNumbers for the CDI node. A region that exists
+     already (kept from earlier claims, D4) is reused.
+  3. the claim is recorded on the device with the dax device, mode dax,
+     size, readOnly (a localSlice without a slice of its own; the state
+     file gains a per-device "shared": true).
+  4. PreparedDeviceInfo: DeviceType memdev, Mode dax, Shared true (new
+     field), Serial, SysfsPath of the region, TotalBytes = ConsumedBytes
+     = device size, DaxDevice, major, minor, ReadOnly.
+  5. CDI device claim-<uid>-<n> (spec cxl-claims): the claim marker, the
+     env of 13 above (api.Memory.Shared set from the info), the device
+     node of /dev/daxX.0 with permissions r when readOnly. Several claims
+     of the node reference the same node through their own CDI devices,
+     as pool claims do (F16).
+  A claim of a device that the state file holds as sliced (or the other
+  way round) fails with "memdev %s (serial 0x%x): used as slices by
+  claims %v; a shared device cannot be sliced" (and "... used shared by
+  claims %v; a sliced device cannot be shared"); it cannot happen through
+  the scheduler because the device is not published meanwhile (D6), only
+  through a stale allocation.
+- Unprepare: drop the claim. The region stays (D4). No offline, no
+  delete of a slice.
+- Several pods of one claim: unchanged (F11). Several claims on one
+  device: each its own share, CDI device and readOnly.
+- NRI steering ignores dax devices (unchanged).
+
+6. Leases (dynamic path)
+------------------------
+Commands (unchanged syntax; S = 0xc100e2e1):
+  cxl-request request --serial S                       # exclusive: the writer
+  cxl-request request --serial S --shared --read-only  # one share, read-only: a reader
+  cxl-request request --shared --size 256Mi            # one share of any shared device of 256Mi or more, local first, then pool
+  cxl-request request --source local --shared --size 64Mi
+Protocol fields unchanged. Validation (A, cxl-request, leases.md):
+- R4 "local devices are not shareable; share a ResourceClaim between pods
+  instead" is removed (api.go:168-169; test12:631).
+- Unchanged: R3 "shared memory is never onlined as RAM: use mode dax",
+  R5 "readOnly needs mode dax", R6 "size or serial is required".
+Broker:
+- lease: the field Hosts (lease_store.go:72-74) becomes SharedDevice bool
+  (json sharedDevice): the lease's device is a shared device, taken as
+  one share when Shared, exclusively otherwise; deviceShared() returns
+  it. A leases.json with "hosts" fails the strict decode and the plugin
+  starts with an empty table (as plan-5 accepted; the e2e VMs are clean).
+- requestOptions (broker.go:464-466): errPoolDisabled only for --source
+  pool; --shared alone is served by local shared devices when the pool
+  driver is off; --shared sets SharedDevice.
+- companionSources (:893-908): the local source is kept for shared
+  leases; the comment "Shared devices are pool devices only" goes. Order
+  stays local, then pool: firstAvailable [{name: local, cxl-local-shared},
+  {name: pool, cxl-pool-shared}] for a shared lease without --source;
+  one exactly request with one source.
+- companionDevices (:966-1012): class *-shared when SharedDevice (local:
+  device.ClassLocalShared); on a shared device a size is a "size >= N"
+  selector; capacity shares: "1" when l.Shared, no capacity when
+  exclusive (the full value, F31); the DeviceConfig of the source's
+  driver gets {mode: dax, readOnly} as today. The hosts capacity request
+  (:998-1006) goes.
+- deviceBySerial (:521-552) returns the device's shared attribute, its
+  driver and, for cxl.nri.io slices, the node name; it no longer reads a
+  capacity. serialOptions (:485-509) decides:
+    !dev.shared && l.Shared           -> "device 0x..: not shareable" (unchanged)
+    !dev.shared                       -> ok (exclusive device, unchanged)
+    source local && driver is pool    -> "device 0x..: not a local device" (unchanged text, new condition)
+    source pool && driver is local    -> "device 0x..: not a pool device" (new)
+    local device of another node      -> "device 0x..: a local device of node X, not of this node" (new)
+    mode numa                         -> "shared memory is never onlined as RAM: use mode dax" (unchanged)
+    else                              -> SharedDevice = true, mode dax
+  The case "has no hosts capacity" (:502-503) and its text go.
+- lentDevices of cxl.nri.io (node_state.go:934-963) set Shared from the
+  device so that a lease of a local shared device reports shared and env
+  SHARED=1 (lease.memory uses deviceShared()).
+- OnPrepared, release, fd passing, read-only fd: unchanged (F29). A local
+  shared lease is Ready a few seconds after the request (no attach).
+cxl-request usage text (main.go:76-83): "request: memory for this
+container, exclusive unless --shared", "--shared    one share of a shared
+device (default: the whole device, exclusive)", "--mode ... default numa,
+dax with --shared or for a shared device" (unchanged). leases.md:116-122
+becomes: "A shared device, local or pool, is dax only. --shared takes one
+share of it; a request that names a shared device by --serial without
+--shared takes the whole device (the writer of single-writer sharing). A
+local memdev that is not configured shared is never shared through a
+lease; several pods share its slice by referencing one ResourceClaim."
+
+7. Life cycle of a shared local device
+--------------------------------------
+device appears, listed in sharedDevices .. published shared (no region yet)
+first claim or lease ..................... region created (devdax), daxX.0 device_dax,
+                                            zeroed once; mapped by the claim's containers
+                                            or passed as an fd
+more claims .............................. same daxX.0, own CDI device or fd, own readOnly
+exclusive claim (no shares request) ...... no other claim is allocated until it is gone;
+                                            waiting claims are Pending (Unschedulable)
+last claim gone .......................... claim dropped; REGION AND daxX.0 STAY (D4); the
+                                            bytes stay; the slice is unchanged; cxl list
+                                            shows the region on an idle node (documented)
+plugin start, device in sharedDevices .... state file (same boot id) names the device
+                                            shared with its region: region found by serial,
+                                            daxX.0 by name, kept, claims not prepared
+                                            dropped; no state: nothing to do until the
+                                            first claim
+plugin start, device NOT in sharedDevices  state says shared: claims prepared -> kept and
+                                            served, device not published (D6); no claims
+                                            -> region destroyed, state entry dropped, the
+                                            device is published as a sliced memdev on the
+                                            next scan
+plugin restart ........................... as plugin start (same boot id)
+node reboot .............................. region and bytes gone (volatile); the state of
+                                            another boot is dropped without touching any
+                                            region (as today); the first claim creates the
+                                            region again
+hot-remove ............................... not possible while the region exists (the kernel
+                                            refuses): remove the device from sharedDevices
+                                            and restart the plugin first; a device that is
+                                            gone anyway is forgotten by Reconcile (as today)
+device joins sharedDevices ............... after the restart: not published while slices
+                                            of prepared claims exist; published shared
+                                            when idle (no region until the first claim)
+Memory blocks and alignment: none. The shared device is the whole region
+as one device_dax device (2 MiB align for mappings, as pool devices);
+localUsableSize and the block size do not apply. P1 of plan-4 ("the
+device returns to its initial state when idle") no longer holds for
+shared devices, by the user's choice (Q3).
+
+8. User-visible texts (complete list of changes)
+------------------------------------------------
+New:
+  "device 0x<serial>: consumed shares %q is less than 1: request shares: 1 (a share) or no shares (exclusive)"  (both drivers, Prepare)
+  "device 0x<serial>: not a pool device"                                 (broker, --source pool with a local serial)
+  "device 0x<serial>: a local device of node <X>, not of this node"      (broker)
+  "DeviceConfig: mode numa: a shared device is used as dax only"         (cxl.nri.io Prepare; the pool text, now reachable)
+  "memdev <memN> (serial 0x<serial>): used as slices by claims [...]; a shared device cannot be sliced"
+  "memdev <memN> (serial 0x<serial>): used shared by claims [...]; a sliced device cannot be shared"
+  "- not publishing memory device %q as a shared local device: %s"       (log)
+  log: "local: memdev mem1 (serial 0xc100e2e1): claim <uid> request mem: shared dax0.0 size 1073741824 read-only false exclusive"  (or "1 share")
+Removed:
+  "local devices are not shareable; share a ResourceClaim between pods instead"  (api.go, cxl-request, leases.md table, test12:631)
+  "device <name> (serial 0x..) has no \"hosts\" capacity"                 (broker.go:503, leases.md:201)
+Renamed or reworded (hosts -> shares, exclusive = no request):
+  pool driver: "DeviceConfig: mode block: a shared device is writable only with all of its hosts"
+    -> "DeviceConfig: mode block: a shared device is writable only exclusively (no shares request)"  (pool_persistent.go:133, usage.md:402, :445)
+  cxl-request --shared usage (main.go:80); the broker's request log line (:644-645)
+  capacity key "hosts" -> "shares" in ResourceSlices, allocation results (consumedCapacity) and claim YAML
+Changed meaning, same words: shared (section 3 vocabulary); "device
+0x..: not a local device" now means the serial is a pool device's; a
+claim on a *-shared class without a capacity request is exclusive (D8).
+Unchanged, now also for local shared devices: "device 0x..: not
+shareable", "shared memory is never onlined as RAM: use mode dax",
+"readOnly needs mode dax", "size or serial is required", the lease
+states, "timeout: not Ready after D".
+
+9. The pool side (the same model, D8)
+-------------------------------------
+Contract (docs/pool.md): a shared device publishes
+  allowMultipleAllocations: true
+  capacity: {shares: {value: 1M}}      # no requestPolicy
+(a controller for devices with a head limit publishes {value: <heads>});
+"a claim without a shares request has the device exclusively; shares: 1
+is one host's share"; status data exclusive: true when the allocation
+consumed the whole value. Reference controller (P/pkg/controller):
+publisher.go:68-88 publishes the constant without a policy; reconciler.go
+:55-68 sharesCapacity and exclusiveResult = consumed shares >= the
+published value; controller.go:53, :67-69, :95-96 and
+cmd/fake-cxl-pool-controller/main.go:52 lose SharedHosts/-shared-hosts;
+status.go unchanged (exclusive stays); README.md:170, :228, :248, :268.
+Pool driver (D/pool.go, pool_persistent.go): the shares guard of section
+5 for data.Shared devices; the block text of section 8; checkSamePreparation
+unchanged (shared vs exclusive on one node is decided by the scheduler
+and reported by the controller's exclusive, as today).
+
+10. Room kept, not built now
+----------------------------
+- Persistent local devices: a memdev with pmem capacity in sharedDevices
+  publishes persistent: true (then on every local memdev, as pool.md:114
+  requires, with persistent == false added to cxl-local and
+  cxl-local-shared) and gets modes block and fs through the node-mount
+  code of pool_persistent.go/mount.go moved to a shared helper; class
+  cxl-local-persistent.
+- Shared slices: a per-device "sharedSlices: N" publishing N sub-devices
+  memdev-<hex>-<i> with shares each; no rename.
+- zeroWhenIdle: true per shared device.
+- Leases joining a claim (plan-5 H9, F30).
+- Cross-host coordination of a multi-headed local device without a
+  controller: out of scope; documented.
+
+11. Rename table (hosts -> shares; exclusive = no request)
+----------------------------------------------------------
+Code (F36): device.go:78-80 CapacityHosts -> CapacityShares, new
+SharesUnlimited; broker.go:482-509, :511-516, :545-546, :644-645,
+:961-1012; lease_store.go:72-74, :90-94; pool_persistent.go:133; pool.go:
+191; cxl-request main.go:80; api.go:198 (comment); P publisher.go:68-88,
+reconciler.go:50-68, controller.go:53, :67-69, :95-96, P/cmd/
+fake-cxl-pool-controller/main.go:52; unit tests broker_test.go,
+controller_test.go, pool_persistent_test.go.
+Docs (F36): index.md:43, :50, :65; usage.md:9, :61, :276, :317-318, :402,
+:420, :422, :445, :745, :767, :838, :841 (examples 6-8, 12: the writer
+loses its capacity, the readers gain shares: "1"); pool.md:88, :102,
+:113, :122, :133, :136-143, :161, :230-238, :250; leases.md:116-122,
+:160, :201, :369, :372; e2e.md:712, :806, :837, :1110, :1131; samples
+pool-shared-writer-readers.yaml:2, :22 and pool-persistent-erofs.yaml:3,
+:27; deviceclasses.yaml:28-29, :42-43; P/README.md:170, :228, :248, :268.
+e2e (F35): test11:160 and its two claims (each shares: "1"); test12:466,
+:484-485; test13:12, :205-206, :209, :225-229, :313, :338-341; test16:15,
+:63-64, :116-117 (DRA_CONTROLLER_ARGS line deleted), :320, :517, :555 and
+its writer and reader claims; dra.source.sh:291, :1202-1243
+(dra-shared-claim-yaml: parameter SHARES, "1" = a share, "" = exclusive;
+every caller updated); 04 lists the new asserts.
+Demo (plan-8 03-demo-design.txt): T3 shows per device "exclusive: writer"
+or "shared: reader-a reader-b reader-c" and "waiting: ...", no counts; L2,
+L6 and L9 captions follow; the zoom "slice" shows shares 1M without a
+policy.

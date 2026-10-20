@@ -37,7 +37,8 @@ leases:
   # Image of the companion pods of leases.
   companionImage: registry.k8s.io/pause:3.10
 
-# Driver configuration, see docs/memory/cxl/usage.md.
+# Driver configuration, see docs/memory/cxl/usage.md. The driver reads it
+# only when it starts; a change restarts the DaemonSet.
 config: {}
 #
 # Example:
@@ -45,6 +46,8 @@ config: {}
 # config:
 #   ignoreDevices: ["mem0"]
 #   manageMemdevs: true
+#   # local devices shared by the claims of class cxl-local-shared
+#   sharedDevices: ["0xc100e2e1"]
 
 # Log verbosity (-v).
 logLevel: 4

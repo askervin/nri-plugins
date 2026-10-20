@@ -81,6 +81,12 @@ type DriverConfig struct {
 	// decimal format, or 0x<hex>. Example: ["mem0", "cxl/mem0",
 	// "251:0", "3238060771", "0xc100e2e0"]
 	IgnoreDevices []string `json:"ignoreDevices,omitempty"`
+	// SharedDevices is a list of local CXL memory devices that are
+	// published as shared devices (class cxl-local-shared): one devdax
+	// device for all claims, never sliced, onlined or zeroed. Matched
+	// like IgnoreDevices; IgnoreDevices and pool devices take
+	// precedence. Example: ["0xc100e2e1"]
+	SharedDevices []string `json:"sharedDevices,omitempty"`
 	// IgnoreRegions is a list of CXL memory regions ["region0"]
 	// to be ignored by the driver.
 	IgnoreRegions []string `json:"ignoreRegions,omitempty"`
@@ -421,12 +427,12 @@ func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	// The local allocator's state is reconciled before the first scan,
 	// so that the regions it created are never published as region
 	// devices.
-	local, err := newLocalHelper(ctx, config, driverConfig, sysfsRoot)
+	scanConfig, poolSerials := scanInput(ctx, driverConfig, pool, poolSlices)
+	local, err := newLocalHelper(ctx, config, driverConfig, sysfsRoot, poolSerials)
 	if err != nil {
 		return nil, err
 	}
 
-	scanConfig, poolSerials := scanInput(ctx, driverConfig, pool, poolSlices)
 	devInfos, err := scanDevices(sysfsRoot, scanConfig, poolSerials, local.Snapshot())
 	if err != nil {
 		return nil, err
@@ -449,9 +455,12 @@ func newMemctl(sysfsRoot string) *memctl.Manager {
 }
 
 // newLocalHelper returns the local allocator with its state loaded and
-// reconciled with the prepared claims, or nil if local memdevs are not
-// managed (manageMemdevs: false).
-func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot string) (*localAllocator, error) {
+// reconciled with the prepared claims and the shared local devices of the
+// configuration, or nil if local memdevs are not managed (manageMemdevs:
+// false).
+//   - poolSerials: the serials of pool devices, which are never shared
+//     local devices
+func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot string, poolSerials map[uint64]bool) (*localAllocator, error) {
 	if !driverConfig.manageMemdevs() {
 		return nil, nil
 	}
@@ -468,6 +477,14 @@ func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	for uid := range claims {
 		prepared[uid] = true
 	}
+	detected, err := nricxl.DevicesFromSysfs(sysfsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("local allocator: failed to detect devices: %v", err)
+	}
+	if driverConfig.Testability != nil {
+		injectFakeDevices(driverConfig.Testability, detected)
+	}
+	local.SetShared(sharedSerials(driverConfig, detected.MemoryDevices, poolSerials))
 	local.Reconcile(ctx, prepared)
 	return local, nil
 }

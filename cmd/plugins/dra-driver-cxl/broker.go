@@ -462,10 +462,11 @@ func (b *broker) parseWait(s string) time.Duration {
 // requestOptions sets the source, mode, sharing, size and device of a
 // validated request on the lease.
 func (b *broker) requestOptions(l *lease, req *api.Request) error {
-	if b.cfg.PoolDriver == "" && (req.Source == api.SourcePool || req.Shared) {
+	if b.cfg.PoolDriver == "" && req.Source == api.SourcePool {
 		return errPoolDisabled
 	}
 	l.Source, l.Shared, l.ReadOnly, l.Mode = req.Source, req.Shared, req.ReadOnly, req.EffectiveMode()
+	l.SharedDevice = req.Shared
 	if req.Size != "" {
 		q, err := resource.ParseQuantity(req.Size)
 		if err != nil || q.Sign() <= 0 {
@@ -480,8 +481,7 @@ func (b *broker) requestOptions(l *lease, req *api.Request) error {
 }
 
 // serialOptions sets the serial of a validated request on the lease and,
-// when it names a shared device, mode dax and the hosts to request when
-// the lease takes the device exclusively.
+// when it names a shared device, mode dax and that the device is shared.
 func (b *broker) serialOptions(l *lease, req *api.Request) error {
 	serial, _ := api.ParseSerial(req.Serial)
 	l.Serial = api.FormatSerial(serial)
@@ -494,30 +494,46 @@ func (b *broker) serialOptions(l *lease, req *api.Request) error {
 	case !dev.shared && l.Shared:
 		return fmt.Errorf("device %s: not shareable", l.Serial)
 	case !dev.shared:
+		l.DeviceSource = deviceSourceOf(dev, req)
 		return nil
-	case req.Source == api.SourceLocal:
+	case req.Source == api.SourceLocal && dev.driver != device.DriverName:
 		return fmt.Errorf("device %s: not a local device", l.Serial)
+	case req.Source == api.SourcePool && dev.driver == device.DriverName:
+		return fmt.Errorf("device %s: not a pool device", l.Serial)
+	case dev.driver == device.DriverName && dev.node != b.cfg.NodeName:
+		return fmt.Errorf("device %s: a local device of node %s, not of this node", l.Serial, dev.node)
 	case req.Mode == api.ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
-	case !l.Shared && dev.hosts == nil:
-		return fmt.Errorf("device %s (serial %s) has no %q capacity", dev.name, l.Serial, device.CapacityHosts)
-	case !l.Shared:
-		l.Hosts = dev.hosts.String()
 	}
-	l.Mode = api.ModeDax
+	l.SharedDevice, l.Mode = true, api.ModeDax
+	l.DeviceSource = deviceSourceOf(dev, req)
 	return nil
+}
+
+// deviceSourceOf returns the source of a device in a ResourceSlice when
+// the request names no source, "" otherwise.
+func deviceSourceOf(dev *sliceDevice, req *api.Request) string {
+	switch {
+	case req.Source != "":
+		return ""
+	case dev.driver == device.DriverName:
+		return api.SourceLocal
+	}
+	return api.SourcePool
 }
 
 // sliceDevice is a device with a serial in a ResourceSlice.
 type sliceDevice struct {
 	name   string
 	shared bool
-	hosts  *resource.Quantity // capacity of a shared device, nil if none
+	driver string // the driver of the ResourceSlice
+	node   string // the node of a ResourceSlice of cxl.nri.io
 }
 
 // deviceBySerial returns the device with the serial in the ResourceSlices
 // of cxl.nri.io and the pool driver, nil if there is none or no
-// Kubernetes client.
+// Kubernetes client: the local device of this node first, then a pool
+// device, then a local device of another node.
 func (b *broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 	if b.cfg.Client == nil {
 		return nil, nil
@@ -528,6 +544,7 @@ func (b *broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing ResourceSlices: %w", err)
 	}
+	var pool, other *sliceDevice
 	for i := range list.Items {
 		rs := &list.Items[i]
 		if rs.Spec.Driver != device.DriverName && (b.cfg.PoolDriver == "" || rs.Spec.Driver != b.cfg.PoolDriver) {
@@ -538,17 +555,27 @@ func (b *broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 			if s, ok := deviceSerial(d, rs.Spec.Driver); !ok || s != serial {
 				continue
 			}
-			dev := &sliceDevice{name: d.Name}
+			dev := &sliceDevice{name: d.Name, driver: rs.Spec.Driver}
 			if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrShared); ok && a.BoolValue != nil {
 				dev.shared = *a.BoolValue
 			}
-			if c, ok := d.Capacity[device.CapacityHosts]; ok {
-				dev.hosts = &c.Value
+			if rs.Spec.Driver == device.DriverName && rs.Spec.NodeName != nil {
+				dev.node = *rs.Spec.NodeName
 			}
-			return dev, nil
+			switch {
+			case dev.driver == device.DriverName && dev.node == b.cfg.NodeName:
+				return dev, nil
+			case dev.driver != device.DriverName && pool == nil:
+				pool = dev
+			case dev.driver == device.DriverName && other == nil:
+				other = dev
+			}
 		}
 	}
-	return nil, nil
+	if pool != nil {
+		return pool, nil
+	}
+	return other, nil
 }
 
 // deviceAttribute returns the attribute of a device of driver, unqualified
@@ -641,8 +668,8 @@ func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Reques
 	}
 	b.notify()
 	b.mu.Unlock()
-	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, hosts %q, read-only %v)",
-		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, l.Size, l.Serial, l.Source, l.Mode, l.Shared, l.Hosts, l.ReadOnly)
+	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, shared device %v, read-only %v)",
+		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, l.Size, l.Serial, l.Source, l.Mode, l.Shared, l.SharedDevice, l.ReadOnly)
 
 	if err := b.createCompanion(l); err != nil {
 		klog.Errorf("lease broker: lease %s: %v", l.ID, err)
@@ -888,14 +915,14 @@ func (b *broker) companionObjects(l *lease) (*resourceapi.ResourceClaim, *corev1
 }
 
 // companionSources returns the sources of the devices that the companion
-// claim of a lease accepts, the preferred one first: the requested one, or
-// local, then pool. Shared devices are pool devices only.
+// claim of a lease accepts, the preferred one first: the requested one,
+// that of the device of the serial, or local, then pool.
 func (b *broker) companionSources(l *lease) ([]string, error) {
 	var sources []string
 	for _, s := range []string{api.SourceLocal, api.SourcePool} {
 		switch {
 		case l.Source != "" && l.Source != s:
-		case s == api.SourceLocal && l.deviceShared():
+		case l.DeviceSource != "" && l.DeviceSource != s:
 		case s == api.SourcePool && b.cfg.PoolDriver == "":
 		default:
 			sources = append(sources, s)
@@ -961,11 +988,15 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 // companionDevices returns what the companion claim of a lease requests
 // from one source, and the driver of its devices: the DeviceClass, the
 // selectors of the serial and, on shared devices, of the size, and the
-// capacity: memory on exclusive devices, all hosts when a shared device is
-// taken exclusively.
+// capacity: memory on devices that are not shared, one share when the
+// lease shares a shared device, none (the whole device) when it takes a
+// shared device exclusively.
 func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDeviceRequest, string, error) {
 	driver := device.DriverName
 	exact := &resourceapi.ExactDeviceRequest{DeviceClassName: device.ClassLocal}
+	if l.deviceShared() {
+		exact.DeviceClassName = device.ClassLocalShared
+	}
 	if source == api.SourcePool {
 		driver, exact.DeviceClassName = b.cfg.PoolDriver, device.ClassPool
 		if l.deviceShared() {
@@ -985,7 +1016,7 @@ func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDe
 		size = q
 	}
 	switch {
-	case exact.DeviceClassName != device.ClassPoolShared:
+	case !l.deviceShared():
 		if l.Size != "" {
 			exact.Capacity = &resourceapi.CapacityRequirements{
 				Requests: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityMemory: size},
@@ -995,13 +1026,9 @@ func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDe
 		if l.Size != "" {
 			cel = append(cel, fmt.Sprintf(`device.attributes[%q].%s >= %d`, driver, device.AttrSize, size.Value()))
 		}
-		if l.Hosts != "" {
-			hosts, err := resource.ParseQuantity(l.Hosts)
-			if err != nil {
-				return nil, "", fmt.Errorf("hosts %q: %w", l.Hosts, err)
-			}
+		if l.Shared {
 			exact.Capacity = &resourceapi.CapacityRequirements{
-				Requests: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityHosts: hosts},
+				Requests: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")},
 			}
 		}
 	}
@@ -1417,6 +1444,7 @@ func (b *broker) OnPrepared(id string, devs []lentDevice) {
 	l.Serial = api.FormatSerial(d.Serial)
 	l.Bytes = d.Size
 	l.Source = d.Source
+	l.SharedDevice = l.SharedDevice || d.Shared
 	if d.Mode == api.ModeDax {
 		l.Node, l.Dax = -1, d.DaxDevice
 	} else {

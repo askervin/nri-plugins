@@ -227,12 +227,14 @@ or the whole suite in order (`n4-cxl-shared-1/test00-up`, then
 | `test00-up` | create and check the VM of the topology; `n4-cxl-shared-2/test00-up` also makes the two-node cluster |
 | `test01-shared-cxl` | CXL memory shared by the two VMs through fake-cxl-pool, without Kubernetes |
 | `test10-dra-pooling` | pool devices for pods: exclusive devices as NUMA node and as dax device |
-| `test11-dra-sharing` | a shared device claimed on the two nodes at once, one host each: VM1 writes, VM2 reads, VM1 lets go while VM2 still reads |
+| `test11-dra-sharing` | a shared device claimed on the two nodes at once, one share each: VM1 writes, VM2 reads, VM1 lets go while VM2 still reads |
 | `test12-dra-live-attach` | leases of pool memory for running containers |
 | `test13-dra-shared-one-writer-many-readers` | single-writer sharing on the two nodes: an exclusive writer, then read-only readers on both nodes |
 | `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
 | `test15-dra-local-live-attach` | leases of local memory for running containers |
 | `test16-cxl-llm-share` | an LLM on a shared persistent pool device: a writer flashes an erofs image of the model into it (mode `block`), stock llama.cpp servers on both nodes answer from the erofs that the driver mounts (mode `fs`), direct from CXL memory and through the page cache of the node |
+| `test17-dra-local-shared` | the local memdev of VM2 configured shared (`sharedDevices`), through claims of `cxl-local-shared`: an exclusive writer, read-only readers that wait for it and then share it, refused configurations and `shares: "0"`, the region and the bytes kept with no claims and across driver restarts, gone without the configuration |
+| `test18-dra-local-shared-one-writer-many-readers` | single-writer sharing of the local shared memdev of VM2 with leases, the steps of the local demo: an exclusive writer lease, three read-only reader leases that wait and then hold it at once, a refused write, a late exclusive request, requests by size, nothing left after the pods go |
 
 The tests need the port 9909 of the host for their own
 fake-cxl-pool-server: stop the server of [Deploy by hand](#deploy-by-hand)
@@ -709,8 +711,9 @@ Never force-delete a pod that uses pool memory
 
 `shared0` attached to both nodes at the same time: a writer pod on VM2
 and a reader pod on VM1 see the same bytes. Each pod has a claim of its
-own on `cxl-pool-shared`, one of the device's four `hosts`: one claim
-covers one node, so the pods get their claims from a
+own on `cxl-pool-shared` for one share of the device (`shares: "1"`;
+a claim without a shares request would take the device exclusively):
+one claim covers one node, so the pods get their claims from a
 ResourceClaimTemplate, and a `nodeSelector` puts each pod on its node.
 The writer writes a new message every two seconds, the reader prints
 what it reads every two seconds. In VM2:
@@ -731,6 +734,9 @@ spec:
           selectors:
           - cel:
               expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+          capacity:
+            requests:
+              shares: "1"
 ---
 apiVersion: v1
 kind: Pod
@@ -803,7 +809,7 @@ spec:
 EOF
 kubectl wait --for=condition=Ready pod/shared-writer pod/shared-reader --timeout=180s
 kubectl get pods -o wide
-kubectl get resourceclaims -o custom-columns='NAME:.metadata.name,NODE:.status.allocation.nodeSelector.nodeSelectorTerms[0].matchFields[0].values[0],HOSTS:.status.allocation.devices.results[0].consumedCapacity.hosts'
+kubectl get resourceclaims -o custom-columns='NAME:.metadata.name,NODE:.status.allocation.nodeSelector.nodeSelectorTerms[0].matchFields[0].values[0],SHARES:.status.allocation.devices.results[0].consumedCapacity.shares'
 kubectl exec shared-reader -- sh -c 'env | grep ^CXL_ | sort'
 until [ "$(kubectl logs shared-reader | grep -c '^read: message')" -ge 3 ]; do sleep 1; done
 kubectl logs --tail 3 shared-reader
@@ -818,7 +824,7 @@ pod/shared-reader condition met
 NAME            READY   STATUS    RESTARTS   AGE   IP             NODE                                   NOMINATED NODE   READINESS GATES
 shared-reader   1/1     Running   0          7s    10.217.1.29    n4-cxl-shared-1-fedora-43-containerd   <none>           <none>
 shared-writer   1/1     Running   0          7s    10.217.0.100   n4-cxl-shared-2-fedora-43-containerd   <none>           <none>
-NAME                      NODE                                   HOSTS
+NAME                      NODE                                   SHARES
 shared-reader-mem-4whx5   n4-cxl-shared-1-fedora-43-containerd   1
 shared-writer-mem-rf9kh   n4-cxl-shared-2-fedora-43-containerd   1
 CXL_C1AE0001_DAX=/dev/dax0.0
@@ -834,7 +840,7 @@ read: message 3 from n4-cxl-shared-2-fedora-43-containerd
 ```
 
 Each pod got a claim of its own from the template, allocated for the
-node of the pod, with one of the four `hosts` of `shared0`.
+node of the pod, with one share of `shared0`.
 
 The reader on VM1 reads what the writer on VM2 writes, with no network
 in between: the memory is the backing file of `shared0` on the host (with
@@ -1107,9 +1113,10 @@ data:
 EOF
 ```
 
-The writer, on VM1: its claim requests all four `hosts` of `shared0`, so
-that the scheduler allocates the device to no other claim and the pool
-controller attaches it exclusively, until the claim is deallocated:
+The writer, on VM1: its claim requests no shares of `shared0`, which takes
+all of them (1M), so that the scheduler allocates the device to no other
+claim and the pool controller attaches it exclusively, until the claim is
+deallocated:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -1126,9 +1133,6 @@ spec:
         selectors:
         - cel:
             expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
-        capacity:
-          requests:
-            hosts: "4"
 ---
 apiVersion: v1
 kind: Pod
@@ -1184,7 +1188,7 @@ kubectl delete pod/fs-writer resourceclaim/fs-writer
 ```
 
 The readers: a ResourceClaimTemplate, so that each reader gets a claim of
-its own (one host of the device each) with a `DeviceConfig`
+its own (one share of the device each, `shares: "1"`) with a `DeviceConfig`
 `readOnly: true`, and three pods, two on VM2 and one on VM1:
 
 ```bash
@@ -1203,6 +1207,9 @@ spec:
           selectors:
           - cel:
               expression: 'device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"'
+          capacity:
+            requests:
+              shares: "1"
       config:
       - opaque:
           driver: cxl-pool.nri.io

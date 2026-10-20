@@ -130,7 +130,7 @@ func (cfg *deviceConfig) poolModeFor(d *poolDevice) (string, error) {
 	case d.Persistent && !persistentMode(mode):
 		return "", fmt.Errorf("%s: a persistent device needs mode %s or %s", k, api.ModeBlock, api.ModeFs)
 	case mode == api.ModeBlock && d.Shared && !d.Exclusive && !cfg.ReadOnly:
-		return "", fmt.Errorf("%s: mode %s: a shared device is writable only with all of its hosts", k, api.ModeBlock)
+		return "", fmt.Errorf("%s: mode %s: a shared device is writable only exclusively (no %s request)", k, api.ModeBlock, device.CapacityShares)
 	case d.Persistent:
 		return mode, nil
 	}

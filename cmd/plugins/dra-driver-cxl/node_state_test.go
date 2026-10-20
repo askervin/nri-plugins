@@ -437,7 +437,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 		MemoryNodes:   []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 30}},
 	}
 	cfg := &DriverConfig{IgnoreDevices: []string{"0xa4"}}
-	local := &localSnapshot{Serials: map[uint64]bool{0xa5: true}, BlockSize: localBlockSize}
+	local := &localSnapshot{Uses: map[uint64]localUse{0xa5: {}}, BlockSize: localBlockSize}
 	devInfos, err := buildDevInfos(cfg, devices, map[uint64]bool{0xa3: true}, local)
 	noErr(t, err)
 	got := slices.Sorted(maps.Keys(devInfos))
@@ -465,7 +465,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	}
 	free.RamSize = localBlockSize
 	// a block of 512 MiB is not sure to fit 512 MiB
-	devInfos, err = buildDevInfos(cfg, devices, map[uint64]bool{0xa3: true}, &localSnapshot{Serials: local.Serials, BlockSize: localBlockSize * 4})
+	devInfos, err = buildDevInfos(cfg, devices, map[uint64]bool{0xa3: true}, &localSnapshot{Uses: local.Uses, BlockSize: localBlockSize * 4})
 	noErr(t, err)
 	if _, ok := devInfos["memdev-a1"]; ok {
 		t.Fatal("a memdev of one large block published")
@@ -477,7 +477,7 @@ func TestBuildDevInfosLocalMemdevs(t *testing.T) {
 	if c := localMemdevDevice("x", m).Capacity["memory"]; c.Value.Value() != 512*mib {
 		t.Fatalf("capacity %v of a 1 GiB memdev with 512 MiB blocks", c.Value)
 	}
-	devInfos, err = buildDevInfos(cfg, devices, map[uint64]bool{0xa3: true}, &localSnapshot{Serials: local.Serials})
+	devInfos, err = buildDevInfos(cfg, devices, map[uint64]bool{0xa3: true}, &localSnapshot{Uses: local.Uses})
 	noErr(t, err)
 	if got := slices.Sorted(maps.Keys(devInfos)); !slices.Equal(got, []string{"dram", "region0-node2"}) {
 		t.Fatalf("published %v without a block size", got)

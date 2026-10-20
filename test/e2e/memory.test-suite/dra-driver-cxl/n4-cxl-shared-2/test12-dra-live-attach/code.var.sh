@@ -463,7 +463,7 @@ give-back() {
 share() {
     # Usage: share CYCLE
     #
-    # Container main joins the shared device (one of its hosts) and writes
+    # Container main joins the shared device (one share of it) and writes
     # a string to it through the fd that the node plugin passed it, reads
     # it back through the fd again, and releases. No /dev/dax device in the
     # container, no change in its device cgroup.
@@ -481,8 +481,9 @@ share() {
     new-lease "$lease"
     echo "cycle $cycle: lease $lease"
     companion-check "$lease" shared0 cxl-pool-shared dax
-    # One host of the device: no capacity request, the default of the class.
-    dra-assert "$CLAIM_JSON" "[s.get('capacity') for s in subrequests()] == [None] and j['status']['allocation']['devices']['results'][0].get('consumedCapacity', {}).get('hosts') == '1'"
+    # One share of the device: --shared requests shares: "1" (without it
+    # the claim would take all shares, the device exclusively).
+    dra-assert "$CLAIM_JSON" "[s.get('capacity') for s in subrequests()] == [{'requests': {'shares': '1'}}] and quantity(j['status']['allocation']['devices']['results'][0].get('consumedCapacity', {}).get('shares', 0)) == 1"
     # In the VM the device is a devdax region, never system RAM.
     pool-cxl-wait "$VM2" "shared-$cycle" \
         "by_serial($SHARED_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == 0"
@@ -628,7 +629,6 @@ refused 2 "size or serial is required" request
 refused 2 'invalid source "remote" (local or pool)' request --source remote --size 64Mi
 refused 2 'invalid mode "memory" (numa or dax)' request --mode memory --size 64Mi
 refused 2 "shared memory is never onlined as RAM: use mode dax" request --shared --mode numa --size 64Mi
-refused 2 "local devices are not shareable; share a ResourceClaim between pods instead" request --shared --source local --size 64Mi
 refused 2 "readOnly needs mode dax" request --size 64Mi --read-only
 refused 2 'invalid serial "pooled0"' request --serial pooled0
 refused 2 "--exec is for request, fd and env" list --exec true

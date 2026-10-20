@@ -26,6 +26,7 @@ import (
 	"sync"
 
 	resourceapi "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
@@ -337,16 +338,45 @@ func (cfg *deviceConfig) modeFor(shared bool) (string, error) {
 		return "", fmt.Errorf("%s: invalid mode %q (%s or %s)", device.DeviceConfigKind, cfg.Mode, api.ModeNUMA, api.ModeDax)
 	}
 	switch {
-	case shared && mode != api.ModeDax:
-		return "", fmt.Errorf("%s: mode %s: a shared device is used as %s only", device.DeviceConfigKind, mode, api.ModeDax)
 	case cfg.ReadOnly && mode != api.ModeDax:
 		return "", fmt.Errorf("%s: readOnly needs mode %s", device.DeviceConfigKind, api.ModeDax)
+	case shared && mode != api.ModeDax:
+		return "", fmt.Errorf("%s: mode %s: a shared device is used as %s only", device.DeviceConfigKind, mode, api.ModeDax)
 	case cfg.Access != "":
 		return "", fmt.Errorf("%s: access needs mode %s", device.DeviceConfigKind, api.ModeFs)
 	case cfg.Path != "":
 		return "", fmt.Errorf("%s: path needs mode %s", device.DeviceConfigKind, api.ModeFs)
 	}
 	return mode, nil
+}
+
+// consumedShares returns the shares that an allocation result of the
+// shared device with the serial consumed, and an error if it consumed less
+// than one share or has no shares in its consumed capacity.
+func consumedShares(serial uint64, r *resourceapi.DeviceRequestAllocationResult) (int64, error) {
+	q, ok := r.ConsumedCapacity[device.CapacityShares]
+	if !ok || q.Cmp(*resource.NewQuantity(1, resource.DecimalSI)) < 0 {
+		got := ""
+		if ok {
+			got = q.String()
+		}
+		return 0, fmt.Errorf("device %s: consumed %s %q is less than 1: request %s: 1 (a share) or no %s (exclusive)",
+			api.FormatSerial(serial), device.CapacityShares, got, device.CapacityShares, device.CapacityShares)
+	}
+	return q.Value(), nil
+}
+
+// shareUse returns how an allocation result that consumed shares of a
+// device of total shares uses it: "exclusive" when it consumed all of
+// them, else "1 share" or "<n> shares".
+func shareUse(shares, total int64) string {
+	switch {
+	case shares >= total:
+		return "exclusive"
+	case shares == 1:
+		return "1 share"
+	}
+	return fmt.Sprintf("%d shares", shares)
 }
 
 // daxDeviceNode returns the CDI device node of a devdax device. A

@@ -47,7 +47,17 @@ DRA_DAEMONSET=nri-dra-driver-cxl
 DRA_CONTAINER=nri-dra-driver-cxl
 DRA_POD_LABEL=app.kubernetes.io/name=nri-dra-driver-cxl
 # The DeviceClasses that the chart creates.
-DRA_CLASSES=(cxl-local cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease)
+DRA_CLASSES=(cxl-local cxl-local-shared cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease)
+# The "shares" capacity of every shared device, local or pool
+# (device.SharesUnlimited, printed 1M). A claim that requests no shares
+# consumes all of them, the device exclusively; shares: "1" is one share.
+DRA_SHARES=1000000
+# The configuration file of the driver (YAML, .Values.config of the chart,
+# docs/memory/cxl/usage.md), "" for none: dra-install gives it to the chart.
+# Example: DRA_DRIVER_CONFIG="sharedDevices: [\"$DRA_LOCAL_SERIAL\"]"
+DRA_DRIVER_CONFIG=""
+# The EXIT trap that dra-install sets, "" for "dra-cleanup; pool-cleanup".
+DRA_EXIT_TRAP=""
 # Lending memory to running containers (docs/memory/cxl/leases.md): the CLI
 # that the driver puts on the node and mounts into containers that claim
 # the lease device "lease" (DeviceClass cxl-lease), there and in the
@@ -67,7 +77,6 @@ DRA_REQUESTER_ANNOTATION=cxl.nri.io/requester
 DRA_LOCAL_STATE=/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
 DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
-DRA_CONTROLLER_ARGS=""             # dra-install: more arguments of fake-cxl-pool-controller, set by a test
 # The node mounts of the file systems of persistent pool devices (mode fs),
 # one per device and access: <serial hex without 0x>-<direct|cached>.
 DRA_POOL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_POOL_DRIVER/mounts
@@ -88,6 +97,10 @@ DRA_LOCAL_LD=""                    # dra-py expression of its ResourceSlice devi
 DRA_LOCAL_REGIONS=""               # cxl-py expression of its regions in cxl-dump,
 DRA_LOCAL_PUBLISHED=""             # its ResourceSlice device as JSON,
 DRA_LOCAL_ATTACHMENT=""            # and the state of its attachment to the VM
+DRA_LOCAL_STATE_JSON=""            # dra-local-state-shared: the state file of the node plugin
+DRA_LOCAL_SHARED_REGION=""         # dra-local-shared-wait: the region of the shared local device
+DRA_LOCAL_SHARED_DAX=""            # and its dax device (daxX.Y)
+DRA_DRIVER_POD=""                  # dra-driver-restart: the new pod of the driver
 DRA_CLAIM_JSON=""                  # dra-local-claim-check: the claim
 DRA_CLAIM_UID=""                   # and its uid
 DRA_NODE_KB=""                     # dra-node-wait: the last MemTotal of the node in kB
@@ -285,10 +298,11 @@ dra-install() { # script API
     #
     # Install the driver with helm in the cluster of the VM of the test,
     # on every node of it (release $DRA_HELM_RELEASE in kube-system, with
-    # the values of helm-set-args and $DRA_HELM_VALUES), and run
-    # fake-cxl-pool-controller in the VM of the test as a transient systemd
-    # unit of the same name, with the admin kubeconfig of the VM and the
-    # arguments $DRA_CONTROLLER_ARGS (for instance "-shared-hosts 6"). The chart
+    # the values of helm-set-args and $DRA_HELM_VALUES, and with the driver
+    # configuration $DRA_DRIVER_CONFIG unless it is empty, see
+    # dra-helm-values), and run fake-cxl-pool-controller in the VM of the
+    # test as a transient systemd unit of the same name, with the admin
+    # kubeconfig of the VM. The chart
     # creates the DeviceClasses of the driver (DRA_CLASSES), and the driver
     # puts cxl-request on its nodes ($DRA_REQUEST_NODE_BIN) for the
     # containers of lease claims. The other nodes get the image of the
@@ -300,11 +314,12 @@ dra-install() { # script API
     # and the driver is up on every node (dra-wait-node).
     #
     # Call pool-server-start first: the controller needs the server, and
-    # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup.
-    local vmdir="$OUTPUT_DIR" label url names name v nodes
+    # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup, or
+    # $DRA_EXIT_TRAP if it is set.
+    local vmdir="$OUTPUT_DIR" label url names name v nodes values
     label=$(dra-vm-label "$vmdir")
     [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
-    [ -f "$DRA_HELM_VALUES" ] || error "dra-install: no helm values $DRA_HELM_VALUES"
+    values=$(dra-helm-values) || error "dra-install: no helm values file, see above"
     url="${POOL_GUEST_URL:-http://192.168.76.2:${FAKE_CXL_POOL_PORT:-9909}}"
     # The nodes of the cluster are VMs next to the VM of the test, named
     # after their output directories, the VM of the test first.
@@ -340,16 +355,19 @@ dra-install() { # script API
     for v in "${nodes[@]:1}"; do
         DRA_WORKERS["$v"]=1
     done
-    if type -t pool-cleanup >/dev/null; then
+    if [ -n "$DRA_EXIT_TRAP" ]; then
+        # shellcheck disable=SC2064 # the value is the trap command itself
+        trap "$DRA_EXIT_TRAP" EXIT
+    elif type -t pool-cleanup >/dev/null; then
         trap 'dra-cleanup; pool-cleanup' EXIT
     else
         trap dra-cleanup EXIT
     fi
     # helm-launch also collects the log of the driver into the test output
     # (nri-resource-policy.output.txt).
-    helm_config="$DRA_HELM_VALUES" helm_name="$DRA_HELM_RELEASE" launch_available="${#nodes[@]}" launch_timeout=120s \
+    helm_config="$values" helm_name="$DRA_HELM_RELEASE" launch_available="${#nodes[@]}" launch_timeout=120s \
         helm-launch "$DRA_CHART"
-    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v${DRA_CONTROLLER_ARGS:+ $DRA_CONTROLLER_ARGS}" ||
+    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
         command-error "cannot start fake-cxl-pool-controller in $label"
     dra-vm-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
         command-error "the chart $DRA_CHART does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
@@ -360,6 +378,35 @@ dra-install() { # script API
 
     dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
         command-error "cannot create namespace $DRA_NS in $label"
+}
+
+dra-helm-values() {
+    # Usage: dra-helm-values
+    #
+    # Print the path of the helm values file of dra-install: $DRA_HELM_VALUES
+    # when DRA_DRIVER_CONFIG is empty, else
+    # $TEST_OUTPUT_DIR/dra-driver-cxl.helm-values.yaml, written now: the
+    # values of $DRA_HELM_VALUES and "config:" with DRA_DRIVER_CONFIG, the
+    # configuration file of the driver. Show the file. Fail the test if
+    # $DRA_HELM_VALUES is missing or has a config already.
+    local file="$TEST_OUTPUT_DIR/dra-driver-cxl.helm-values.yaml"
+    [ -f "$DRA_HELM_VALUES" ] || error "dra-install: no helm values $DRA_HELM_VALUES"
+    if [ -z "$DRA_DRIVER_CONFIG" ]; then
+        echo "$DRA_HELM_VALUES"
+        return 0
+    fi
+    ! grep -q '^config:' "$DRA_HELM_VALUES" ||
+        error "dra-install: $DRA_HELM_VALUES has a config, DRA_DRIVER_CONFIG cannot be added to it"
+    # shellcheck disable=SC2001 # sed indents every line of the configuration
+    { cat "$DRA_HELM_VALUES"
+      echo ""
+      echo "# DRA_DRIVER_CONFIG of $(basename "${TEST_DIR:-test}"), written by dra-install"
+      echo "config:"
+      sed 's/^/  /' <<< "$DRA_DRIVER_CONFIG"
+    } > "$file" || error "dra-install: cannot write $file"
+    echo "dra-install: helm values with the driver configuration, $file:" >&2
+    cat "$file" >&2
+    echo "$file"
 }
 
 dra-helm-uninstall() {
@@ -1033,6 +1080,155 @@ dra-local-initial-state() { # script API
     echo "$label: the local device is in its initial state"
 }
 
+dra-local-state-shared() {
+    # Usage: dra-local-state-shared VMDIR CLAIM-UID...
+    #
+    # Return 0 if the state file of the node plugin in the VM of VMDIR
+    # ($DRA_LOCAL_STATE) has the local device (DRA_LOCAL_SERIAL) with
+    # "shared": true and exactly the claims CLAIM-UID (none: no claims).
+    # DRA_LOCAL_STATE_JSON is the state file as it was read.
+    local vmdir="$1"
+    shift
+    DRA_LOCAL_STATE_JSON=$(dra-vm-command-q "$vmdir" "cat $DRA_LOCAL_STATE 2>/dev/null || echo '{}'") || return 1
+    python3 -c '
+import json, sys
+serial, want = int(sys.argv[1], 16), sorted(sys.argv[2:])
+for d in json.loads(sys.stdin.read().strip() or "{}").get("devices") or []:
+    hexs = str(d.get("serialHex") or "").lower()
+    if d.get("serial") == serial or (hexs and int(hexs, 16) == serial):
+        sys.exit(0 if d.get("shared") is True and sorted((d.get("claims") or {}).keys()) == want else 1)
+sys.exit(1)' "$DRA_LOCAL_SERIAL" "$@" <<< "$DRA_LOCAL_STATE_JSON"
+}
+
+dra-local-shared-wait() { # script API
+    # Usage: dra-local-shared-wait VMDIR LABEL [CLAIM-UID...]
+    #
+    # Wait until the local device of the VM of VMDIR (see dra-local-device)
+    # is a shared device that exactly the claims CLAIM-UID use (none: an
+    # idle shared device, which keeps its region): the state file of the
+    # node plugin has the device with "shared": true and these claims;
+    # pkg/cxl (cxl-dump) sees one region of the device, enabled, nothing of
+    # it online; in sysfs the memdev is enabled and its one region is the
+    # whole device, with one dax device of that size bound to device_dax.
+    # DRA_LOCAL_SHARED_REGION and DRA_LOCAL_SHARED_DAX are the region
+    # (regionN) and its dax device (daxX.Y), DRA_MEMDEV the sysfs view.
+    local vmdir="$1" label="$2" vmlabel claims
+    shift 2
+    claims=("$@")
+    vmlabel=$(dra-vm-label "$vmdir")
+    retry-until --timeout 60 --interval 1 --message "$vmlabel: $DRA_LOCAL_STATE has $DRA_LOCAL_SERIAL shared, with claims [$*]" \
+        'dra-local-state-shared "$vmdir" "${claims[@]}"' ||
+        error "$vmlabel: $DRA_LOCAL_STATE does not have $DRA_LOCAL_SERIAL shared with claims [$*]: $DRA_LOCAL_STATE_JSON"
+    echo "$vmlabel: $DRA_LOCAL_STATE: $DRA_LOCAL_SERIAL shared, claims [$*]"
+    pool-cxl-wait "$vmdir" "$label" "len($DRA_LOCAL_REGIONS) == 1 and ${DRA_LOCAL_REGIONS}[0]['Enabled'] and ${DRA_LOCAL_REGIONS}[0]['OnlineSize'] == 0" 30
+    dra-memdev-wait "$vmdir" "$label" "$DRA_LOCAL_SERIAL" \
+        "j['enabled'] and len(j['regions']) == 1 and j['regions'][0]['size'] == $DRA_LOCAL_SIZE and [(d['size'], d['driver']) for d in dax_slices()] == [($DRA_LOCAL_SIZE, 'device_dax')]" 30
+    DRA_LOCAL_SHARED_REGION=$(dra-value "$DRA_MEMDEV" "j['regions'][0]['name']")
+    DRA_LOCAL_SHARED_DAX=$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['name']")
+    echo "$vmlabel: the shared local device is $DRA_LOCAL_SHARED_REGION, /dev/$DRA_LOCAL_SHARED_DAX"
+}
+
+dra-local-seed() { # script API
+    # Usage: dra-local-seed VMDIR TEXT OFFSET...
+    #
+    # Write TEXT at every OFFSET of the local CXL memory device of the VM
+    # of VMDIR (see dra-local-device) and read it back, through a devdax
+    # region that fake-cxl-pool-client creates in the VM, then destroy the
+    # region, leaving the memdev enabled and without regions. Fail the
+    # test if any step fails.
+    local vmdir="$1" text="$2" label region dax off
+    shift 2
+    label=$(dra-vm-label "$vmdir")
+    pool-client "$vmdir" guest region create "$DRA_LOCAL_SERIAL" --mode dax ||
+        command-error "cannot create a devdax region of the local device in $label"
+    dra-memdev-wait "$vmdir" seed-region "$DRA_LOCAL_SERIAL" "len(j['regions']) == 1 and len(dax_slices()) == 1" 30
+    region=$(dra-value "$DRA_MEMDEV" "j['regions'][0]['name']")
+    dax=/dev/$(dra-value "$DRA_MEMDEV" "dax_slices()[0]['name']")
+    for off in "$@"; do
+        dra-vm-command "$vmdir" "pool-dax-rw.py write $dax $off $(printf %q "$text") && pool-dax-rw.py read $dax $off" ||
+            command-error "cannot write to $dax at $off in $label"
+        [ "$(tail -n 1 <<< "$COMMAND_OUTPUT")" == "$text" ] ||
+            error "read '$(tail -n 1 <<< "$COMMAND_OUTPUT")' at $off of $dax in $label, expected '$text'"
+    done
+    dra-vm-command "$vmdir" "cxl destroy-region -f $region" ||
+        command-error "cannot destroy $region in $label"
+    dra-memdev-wait "$vmdir" seed-gone "$DRA_LOCAL_SERIAL" "j['memdev'] and j['enabled'] and j['regions'] == []" 30
+    echo "dra-local-seed $label: '$text' at $* of the local device, $region destroyed"
+}
+
+dra-plugin-log-wait() { # script API
+    # Usage: dra-plugin-log-wait VMDIR TEXT [TIMEOUT]
+    #
+    # Wait until the log of the driver on the node of the VM of VMDIR (see
+    # dra-plugin-log) has a line with the fixed string TEXT, TIMEOUT
+    # seconds at most (default 30), and print the line. Fail the test on
+    # timeout.
+    local vmdir="$1" text="$2" tmo="${3:-30}"
+    retry-until --timeout "$tmo" --interval 1 --message "$(dra-vm-label "$vmdir"): the log of $DRA_CONTAINER has '$text'" \
+        'dra-plugin-log "$vmdir" | grep -qF -- "$text"' ||
+        error "the log of $DRA_CONTAINER in $(dra-vm-label "$vmdir") has no line with '$text'"
+    dra-plugin-log "$vmdir" | grep -F -- "$text"
+}
+
+dra-local-shared-cleanup() { # script API
+    # Usage: dra-local-shared-cleanup VMDIR
+    #
+    # The EXIT trap of a test that configures the local device of the VM of
+    # VMDIR shared (DRA_DRIVER_CONFIG sharedDevices): such a device keeps
+    # its region while the driver runs. dra-cleanup, then, with the driver
+    # gone, release the regions of the device in the VM (fake-cxl-pool-client
+    # guest release) and wait until none is left, then pool-cleanup, which
+    # detaches the device. If a region is left, or the device cannot be
+    # read, stop the server only and leave the device attached: a detach
+    # cannot hot-remove it, and pool-vm-reset of the next test restarts the
+    # VM. Never fails the test.
+    local vmdir="$1" label
+    label=$(dra-vm-label "$vmdir")
+    dra-cleanup
+    if [ -n "$DRA_LOCAL_SERIAL" ] && dra-memdev-sysfs "$vmdir" "$DRA_LOCAL_SERIAL" &&
+           dra-py assert "$DRA_MEMDEV" "j['memdev'] and j['regions']"; then
+        echo "dra-local-shared-cleanup: $label: the local device $DRA_LOCAL_SERIAL has regions, releasing them"
+        pool-client "$vmdir" guest release "$DRA_LOCAL_SERIAL"
+    fi
+    if [ -n "$DRA_LOCAL_SERIAL" ] && ! retry-until --timeout 60 --interval 1 --message "$label: no region of the local device $DRA_LOCAL_SERIAL" \
+           'dra-memdev-sysfs "$vmdir" "$DRA_LOCAL_SERIAL" && dra-py assert "$DRA_MEMDEV" "j[\"regions\"] == []"'; then
+        echo "dra-local-shared-cleanup: $label: the local device $DRA_LOCAL_SERIAL still has regions or cannot be read, not detaching it: $DRA_MEMDEV
+  The next test restarts the VM (pool-vm-reset), or by hand in the VM: fake-cxl-pool-client guest release $DRA_LOCAL_SERIAL"
+        pool-server-stop
+        return 0
+    fi
+    pool-cleanup
+    return 0
+}
+
+dra-driver-restart() { # script API
+    # Usage: dra-driver-restart VMDIR
+    #
+    # Restart the driver on the node of the VM of VMDIR: store the log of
+    # its pod as $TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.<pod>.log, delete
+    # the pod, and wait until the DaemonSet runs a new pod there that is
+    # Ready, and the node has what dra-wait-node waits for. A running trace
+    # follows the log of the new pod (dra-trace-driver-follow).
+    # DRA_DRIVER_POD is the new pod.
+    local vmdir="$1" label old
+    label=$(dra-vm-label "$vmdir")
+    old=$(dra-driver-pod "$vmdir") ||
+        error "dra-driver-restart: $DRA_DAEMONSET does not run on $(dra-vm-name "$vmdir")"
+    dra-vm-command-q "$vmdir" "kubectl logs -n kube-system $old -c $DRA_CONTAINER" > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log" 2>&1
+    echo "dra-driver-restart $label: log of $old in $TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$old.log"
+    dra-vm-command "$vmdir" "kubectl delete pod -n kube-system $old --wait=true --timeout=60s" ||
+        command-error "cannot delete the pod $old of $DRA_DAEMONSET in $label"
+    DRA_DRIVER_POD=""
+    retry-until --timeout 120 --interval 1 --message "$label: a new Ready pod of $DRA_DAEMONSET" \
+        'DRA_DRIVER_POD=$(dra-driver-pod "$vmdir") && [ "$DRA_DRIVER_POD" != "$old" ] && dra-vm-command-q "$vmdir" "kubectl wait -n kube-system --for=condition=Ready pod/$DRA_DRIVER_POD --timeout=1s" >/dev/null 2>&1' || {
+        dra-vm-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide"
+        error "dra-driver-restart: no new Ready pod of $DRA_DAEMONSET in $label"
+    }
+    echo "dra-driver-restart $label: $old replaced by $DRA_DRIVER_POD"
+    dra-wait-node "$vmdir"
+    dra-trace-driver-follow "$vmdir"
+}
+
 dra-plugin-log() { # script API
     # Usage: dra-plugin-log VMDIR
     #
@@ -1200,15 +1396,19 @@ $(dra-claim-pod-yaml "$2" template "$2" "$(dra-vm-name "$1")")"
 }
 
 dra-shared-claim-yaml() { # script API
-    # Usage: dra-shared-claim-yaml NAME SERIAL [HOSTS [PARAMETERS [CLASS]]]
+    # Usage: dra-shared-claim-yaml NAME SERIAL [SHARES [PARAMETERS [CLASS]]]
     #
     # Print ResourceClaim NAME with one request "mem" of DeviceClass CLASS
-    # (default cxl-pool-shared) for the shared pool device SERIAL. HOSTS is
-    # the "hosts" capacity to request ("": the default, one host).
-    # PARAMETERS are the fields of its DeviceConfig of $DRA_POOL_DRIVER, for
-    # instance "mode: dax, readOnly: true" ("": no DeviceConfig).
-    # Example: dra-shared-claim-yaml writer 0xc1ae0001 4 "mode: block" cxl-pool-persistent
-    local name="$1" serial="$2" hosts="$3" params="$4" class="${5:-cxl-pool-shared}"
+    # (default cxl-pool-shared) for the shared device SERIAL. SHARES is the
+    # "shares" capacity to request: "1" for one share of the device, ""
+    # for none, which is the device exclusively (the request consumes all
+    # of its shares). PARAMETERS are the fields of its DeviceConfig, for
+    # instance "mode: dax, readOnly: true" ("": no DeviceConfig). The
+    # selector and the DeviceConfig are of the driver of CLASS:
+    # $DRA_LOCAL_DRIVER for cxl-local*, else $DRA_POOL_DRIVER.
+    # Example: dra-shared-claim-yaml writer 0xc1ae0001 "" "mode: block" cxl-pool-persistent
+    local name="$1" serial="$2" shares="$3" params="$4" class="${5:-cxl-pool-shared}" driver="$DRA_POOL_DRIVER"
+    [[ "$class" != cxl-local* ]] || driver="$DRA_LOCAL_DRIVER"
     cat <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -1222,21 +1422,21 @@ spec:
         deviceClassName: $class
         selectors:
         - cel:
-            expression: 'device.attributes["$DRA_POOL_DRIVER"].serial == "$serial"'
+            expression: 'device.attributes["$driver"].serial == "$serial"'
 EOF
-    if [ -n "$hosts" ]; then
+    if [ -n "$shares" ]; then
         cat <<EOF
         capacity:
           requests:
-            hosts: "$hosts"
+            shares: "$shares"
 EOF
     fi
     if [ -n "$params" ]; then
         cat <<EOF
     config:
     - opaque:
-        driver: $DRA_POOL_DRIVER
-        parameters: {apiVersion: $DRA_POOL_DRIVER/v1alpha1, kind: DeviceConfig, $params}
+        driver: $driver
+        parameters: {apiVersion: $driver/v1alpha1, kind: DeviceConfig, $params}
 EOF
     fi
 }
@@ -2041,6 +2241,20 @@ dra-trace-collect() {
     fi
     setsid bash -c "$cmd 2>$err | python3 -u $(printf %q "$DRA_TRACE_DIR/stamp.py") $(printf %q "$tag") $mode >> $(printf %q "$log")" </dev/null >/dev/null 2>&1 &
     echo "$! $tag" >> "$DRA_TRACE_DIR/pids"
+}
+
+dra-trace-driver-follow() { # script API
+    # Usage: dra-trace-driver-follow VMDIR
+    #
+    # Add the log of the pod of the driver that runs now on the node of the
+    # VM of VMDIR to the running trace, from the start of the pod, with the
+    # tag <vm>.<pod name suffix>.driver. Nothing if no trace runs.
+    local vmdir="$1" pod
+    [ -n "$DRA_TRACE_RUNNING" ] || return 0
+    pod=$(dra-driver-pod "$vmdir") ||
+        error "dra-trace-driver-follow: $DRA_DAEMONSET does not run on $(dra-vm-name "$vmdir")"
+    dra-trace-collect-vm "$vmdir" "$(dra-vm-label "$vmdir").${pod##*-}.driver" lines "kubectl logs -n kube-system -f --tail=-1 -c $DRA_CONTAINER $pod"
+    echo "dra-trace-driver-follow: the trace follows the log of $pod"
 }
 
 dra-trace-collect-vm() {

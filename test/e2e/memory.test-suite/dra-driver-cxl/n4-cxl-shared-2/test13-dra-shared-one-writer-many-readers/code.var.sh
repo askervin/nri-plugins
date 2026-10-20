@@ -9,18 +9,20 @@
 # device fd.
 #
 # - Exclusive: "cxl-request request --serial SERIAL" without --shared asks
-#   for all of the device's "hosts" capacity (4 in the pool ResourceSlice).
+#   for no "shares" of the device, which takes all of them (1M in the pool
+#   ResourceSlice, without a requestPolicy): the device exclusively.
 #   While the writer has it, the scheduler cannot allocate the device to
 #   any other claim: the readers' requests stay Pending, and
 #   fake-cxl-pool-server refuses to attach the device to any other host
 #   (the attachment is exclusive, which also keeps out other clusters
 #   sharing the pool).
 # - Read-only: "cxl-request request --serial SERIAL --shared --read-only"
-#   takes one host of the device and gets an fd opened O_RDONLY: the
-#   reader can map the memory for reading only, a writable mapping is
-#   refused (EACCES) whatever the capabilities of the container. A claim
-#   of a pod with the opaque config DeviceConfig readOnly: true gets a
-#   device node that the container can only open for reading.
+#   takes one share of the device (shares: "1") and gets an fd opened
+#   O_RDONLY: the reader can map the memory for reading only, a writable
+#   mapping is refused (EACCES) whatever the capabilities of the
+#   container. A claim of a pod with the opaque config DeviceConfig
+#   readOnly: true gets a device node that the container can only open
+#   for reading.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
 # control plane, the VM of n4-cxl-shared-1 (VM1) a worker, over the VM
@@ -202,11 +204,12 @@ dra-json "$VM2" resourceslices
 S0="device('shared0', '$DRA_POOL_DRIVER')"
 dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$DRA_LOCAL_DRIVER', '$VM1_NAME') and slices('$DRA_LOCAL_DRIVER', '$VM2_NAME')"
 dra-assert "$COMMAND_OUTPUT" "all(attr(device('lease', '$DRA_LOCAL_DRIVER', n), 'type') == 'lease' for n in ['$VM1_NAME', '$VM2_NAME'])"
-# "hosts" may be requested as 1 (a share) or as all of it (exclusive).
-dra-assert "$COMMAND_OUTPUT" "capacity($S0, 'hosts') == '4' and ${S0}['capacity']['hosts']['requestPolicy']['validValues'] == ['1', '4']"
+# "shares" without a requestPolicy: a claim takes one share ("1") or, with
+# no shares request, all of them (exclusive).
+dra-assert "$COMMAND_OUTPUT" "sorted(${S0}.get('capacity') or {}) == ['shares'] and quantity(capacity($S0, 'shares')) == $DRA_SHARES and request_policy($S0, 'shares') is None"
 
 echo "### B: the writer on VM1 gets shared0 exclusively and writes"
-# Without --shared, a request of a shared device takes all of its hosts.
+# Without --shared, a request of a shared device takes all of its shares.
 dra-apply "$VM2" <<< "$(lease-pod-yaml writer "$VM1" "echo \"writer: cxl-request request --serial $SHARED_SERIAL\"
 cxl-request request --serial $SHARED_SERIAL --wait 120s --exec sh -c '
 echo \"lease \$CXL_LEASE read-only \$CXL_${SHARED_HEX}_READONLY shared \$CXL_${SHARED_HEX}_SHARED fd \$CXL_${SHARED_HEX}_FD\"
@@ -222,11 +225,12 @@ dra-pod-log "$VM2" writer | grep -qx "lease $WRITER_LEASE read-only 0 shared 1 f
     error "the writer has not CXL_${SHARED_HEX}_READONLY=0, _SHARED=1 and _FD=3"
 dra-wait "$VM2" writer-companion "resourceclaim -n $DRA_NS cxl-lease-$WRITER_LEASE" \
     "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 30
-# The companion asks for all hosts of the shared device: one request of
-# class cxl-pool-shared with capacity hosts 4 (the serial is that of a
-# shared pool device: no local subrequest).
-dra-assert "$COMMAND_OUTPUT" "[(s['name'], s['deviceClassName'], s['capacity']['requests']['hosts']) for s in subrequests()] == [('lease', 'cxl-pool-shared', '4')] and j['spec']['devices']['requests'][0].get('exactly')"
-dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME' and j['status']['allocation']['devices']['results'][0]['consumedCapacity']['hosts'] == '4'"
+# The companion asks for the shared device exclusively: one request of
+# class cxl-pool-shared without a capacity request, which consumes all
+# shares (the serial is that of a shared pool device: no local
+# subrequest).
+dra-assert "$COMMAND_OUTPUT" "[(s['name'], s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('lease', 'cxl-pool-shared', None)] and j['spec']['devices']['requests'][0].get('exactly')"
+dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == $DRA_SHARES"
 dra-assert "$COMMAND_OUTPUT" "device_data('shared0')['exclusive'] == True"
 dra-assert "$COMMAND_OUTPUT" "[(c['driver'], c['parameters']['kind'], c['parameters'].get('mode'), bool(c['parameters'].get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', 'DeviceConfig', 'dax', False)]"
 dra-assert "$COMMAND_OUTPUT" "j['metadata']['labels']['$DRA_LEASE_LABEL'] == '$WRITER_LEASE' and j['metadata']['annotations']['$DRA_REQUESTER_ANNOTATION'] == '$DRA_NS/writer/main'"
@@ -303,14 +307,14 @@ for r in "${READERS[@]}"; do
 done
 pool-attachments shared0
 pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
-# The companion claims of the readers ask for read-only devices, one host
+# The companion claims of the readers ask for read-only devices, one share
 # of shared0 each. The readers get read-only fds from the node plugin
 # (check-ro above); the companion pods use nothing of their claims, which
 # get no CDI device.
 READER_A_LEASE=$(lease-of reader-a)
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$READER_A_LEASE"
 dra-assert "$COMMAND_OUTPUT" "[c['parameters'] for c in configs()] == [{'apiVersion': '$DRA_POOL_DRIVER/v1alpha1', 'kind': 'DeviceConfig', 'mode': 'dax', 'readOnly': True}]"
-dra-assert "$COMMAND_OUTPUT" "[s['deviceClassName'] for s in subrequests()] == ['cxl-pool-shared'] and not any(s.get('capacity') for s in subrequests())"
+dra-assert "$COMMAND_OUTPUT" "[(s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('cxl-pool-shared', {'requests': {'shares': '1'}})]"
 READER_A_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 [ -z "$(dra-cdi-devices-with "$VM2" "$READER_A_UID")" ] ||
     error "the companion claim of reader-a has CDI devices: $(dra-cdi-devices-with "$VM2" "$READER_A_UID")"
@@ -336,7 +340,7 @@ for r in "${READERS[@]}"; do
 done
 
 echo "### F: a fourth reader, on VM1, with a read-only claim from its creation"
-dra-apply "$VM2" <<< "$(dra-shared-claim-yaml shared-read-only "$SHARED_SERIAL" "" "readOnly: true")"
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml shared-read-only "$SHARED_SERIAL" 1 "readOnly: true")"
 dra-apply "$VM2" <<< "$(dra-script-pod-yaml reader-d "$VM1" shared-read-only "env | grep ^CXL_${SHARED_HEX}_ | sort
 python3 /tools/dax-rw.py check-ro \"\$CXL_${SHARED_HEX}_DAX\" 0 || exit 1
 echo \"read: \$(python3 /tools/dax-rw.py read \"\$CXL_${SHARED_HEX}_DAX\" 0)\"")"

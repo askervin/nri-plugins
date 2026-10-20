@@ -1,0 +1,177 @@
+plan-9-local-cxl-sharing: alternatives and criteria
+===================================================
+Written 2026-10-19 (Fable). Facts: 01-findings.txt (F1-F30).
+
+1. What "sharing a local device" has to mean
+--------------------------------------------
+Sharing capacity exists: numa slices of one device share its NUMA node
+(F12) and several pods share one claim's slice (F11). What is missing is
+sharing CONTENT with the protocol of test13: an exclusive writer, readers
+that are read-only and wait, a release that lets them in, each sharer
+with a claim or lease of its own, and the same commands as for a pool
+device. Content sharing is a dax property (the same bytes mapped by
+several processes; numa pages are private and zero-filled, F12), so a
+shared local device is dax only, as shared pool devices are (F4, F16).
+Who shares: containers of one node (the device is in the node's
+ResourceSlice); claims from several pods, several claims of one device,
+or several pods of one claim (F11 keeps working inside the new model).
+
+2. Criteria
+-----------
+C1 Vocabulary: no new word where source, type, shared, mode, readOnly,
+   serial, size, hosts and the classes cxl-<source>[-shared] already say
+   it (F1-F3). Same commands and YAML shapes for local and pool.
+C2 Scheduler semantics: exclusive writer, waiting readers, N sharers,
+   expressed in the ResourceSlice so that kube-scheduler decides (F14,
+   F17, F23), not a Prepare error loop.
+C3 Lease protocol unchanged for users: "request --serial S" exclusive,
+   "--serial S --shared --read-only" a share (F22).
+C4 Security story: who sees which bytes is decided by admission to a
+   device, not by luck; slices keep their zeroing (F9).
+C5 Life cycle as simple as the existing ones (region per use, state file,
+   restart, reboot; F10).
+C6 Implementation size and risk; no churn in the pool contract (F28).
+C7 Room for pmem (block, fs), multi-headed local devices (F13) and
+   shared slices later without renames.
+
+3. Alternatives
+---------------
+A. Configuration-listed shared whole devices (the sketch).
+   A memdev listed in the driver configuration is published by cxl.nri.io
+   as a shared device: shared: true, capacity hosts [1, N], no memory
+   capacity, class cxl-local-shared; prepared as one devdax device for
+   every claim; content kept; readOnly per claim/lease; leases through
+   the existing --shared/--serial options.
+   + C1: every name exists (F1-F3, F5); the local memdev attribute set
+     becomes the pool's attribute set with source local.
+   + C2: the pool's scheduler model, proven by test11/13/16 (F14-F17).
+   + C3: the broker's shared path is the pool path with another class
+     (F20-F21); the users' commands are test13's.
+   + C4: the admin decides which device is shared; a shared device is
+     never sliced, so its content never leaks into a slice tenant, and
+     slices stay zeroed. Sharers are whoever may claim the class (as for
+     pool devices).
+   + C5: one region per use, created by the first claim, destroyed by the
+     last, as slices and pool devices (F10, F16).
+   + C7: a multi-headed device without a controller (F13) is exactly a
+     device the admin must declare shared; persistent local devices add
+     modes block/fs on the same published device later.
+   - A configuration change is a plugin restart (F8). The admin decides
+     per device, not per claim: a device is shared or sliced, not both.
+   - "hosts" is the word for the count (F2); for local sharers it is a
+     misnomer that is already a misnomer for pool devices (F15). See
+     section 4.
+
+B. A shared dax slice named by the first claim.
+   A slice of a slicing device becomes shared when its claim says so
+   (DeviceConfig shared: true, name: X); the driver publishes it as a
+   sub-device memdev-<hex>-X with a hosts capacity; readers select the
+   name.
+   - C2: the readers' claims cannot be allocated before the writer's
+     Prepare published the sub-device; they fail instead of waiting, and
+     an exclusive writer cannot be expressed for a device that does not
+     exist yet. A device that appears and disappears with a claim is a
+     race against the scheduler's informers.
+   - C1: a second identity (name) next to serial; a new config field; a
+     device-name scheme nobody else has.
+   - C4: shared and zeroed slices on one region; the zeroing rule gets a
+     per-slice exception.
+   - C6: the largest change (publisher driven by Prepare, slices with
+     refcounts, name registry in the state file).
+   + Fine granularity (a 1G device can hold several shared sets).
+   Verdict: no. Applications already agree on the layout of a shared
+   device by offset (local.md:210-213); a node with several memdevs has
+   several shared devices; if finer sharing is ever needed, a per-device
+   configuration "sharedSlices: N" publishing N fixed sub-devices is the
+   path, without renames (03 section 10).
+
+C. One claim plus leases that join it ("--claim NAME", F30).
+   The writer's pod owns a ResourceClaim of a dax slice; readers lease
+   into it read-only; the broker lends from its prepared-claim info.
+   - C2/C3: no exclusive-then-release protocol: the claim lives with its
+     pods, nobody waits for a writer, the joiners need the claim to exist
+     first; not the test13 flow and not what the demo shows.
+   - C6: a second lending path without hooks (kubelet does not Prepare
+     for a joiner, F30), per-joiner read-only only for fds.
+   + No new device kind; slices and zeroing untouched.
+   Verdict: not as the sharing mechanism; keep as plan-5 H9 for "lend me
+   what that pod has", which is a different wish.
+
+D. A separate source "local-shared" or a third driver.
+   - C1: source has two values with one meaning each (F1); the sharing
+     dimension is the shared attribute and the -shared class suffix.
+     A third driver name would duplicate CDI kinds, labels, chart and
+     RBAC for no new information (plan-4 01 section 3 made this argument
+     for cxl-local.generic).
+   Verdict: no.
+
+E. Sharing decided per request (DeviceConfig shared: true) on a slicing
+   device, whole device taken exclusively by capacity memory.
+   - C2: readers cannot wait on "the same bytes": memory capacity counts
+     bytes, two readers of one slice need zero bytes each; the scheduler
+     has nothing to allocate. Would end in Prepare-time coordination.
+   Verdict: no.
+
+F. Register the local device as a pool device (fake-cxl-pool scope pool,
+   nodeSelector of one node) and use cxl-pool-shared.
+   + Zero driver change; the e2e already attaches VM2's local device
+     through the pool server (F26).
+   - It is not local sharing: it needs the controller, binding
+     conditions, a status-data round trip and hot-plug; real local devices
+     have no controller; the device would be hidden from cxl.nri.io as a
+     pool device. The demo would show the pool path on one node.
+   Verdict: no for the product; a rehearsal fallback for the demo if A is
+   late.
+
+4. The open questions, decided by the user (2026-10-20)
+--------------------------------------------------------
+The first version of this file asked Q1-Q5; the plan directory is not in
+git, so this section is the record. The user's answers, verbatim where
+given, and what follows from them:
+
+Q1 (name of the count capacity) -- "Rename both to shares, but consider
+   if there would be better user configuration for requesting an
+   exclusive allocation than guessing what number of shares (or hosts)
+   should be claimed to claim all of them."
+Q2 (the value) -- "I do not think there is a reasonable default for such
+   a thing. Why would there be a practical limit? I am a bit doubtful if
+   the hosts limit makes much sense in the pool, either. The most
+   essential thing is that if a writer (or someone else) wants exclusive
+   access to a pooled or local shared memory device, it should get it in
+   a more convenient way than requesting the number of all shares. There
+   should be direct support for an exclusive request or at least for
+   requesting all shares without knowing the maximum. Can we proceed with
+   local devices without an artificial limit, and only support exclusive
+   (writer) and shared (reader) requests?"
+   Decision (verified in the sources, 01 F31-F34): the capacity is named
+   shares and published WITHOUT a requestPolicy. Then a claim that
+   requests no shares consumes the full value (the API contract and the
+   allocator say so: types.go:702-711, consumable_capacity.go:127-133,
+   :146-150), which is exclusive use; a claim that requests shares: "1"
+   is one sharer. Nobody has to know the value, so the value is a bound
+   of the model, not a policy: device.SharesUnlimited = 1000000 (the
+   quantity prints as 1M) for local shared devices and for the devices
+   of the reference pool controller; a product controller with a real
+   head limit publishes its heads instead and the model is the same. The
+   cxl-request defaults already are exclusive-unless---shared (plan-5
+   Q3); claims now agree with them: a claim on a *-shared class without a
+   capacity request is exclusive, a reader adds shares: "1". The one
+   hole the sources show: the API does not validate request capacity
+   values (F33), so shares: "0" is accepted and consumes nothing (F32);
+   both drivers refuse a shared-device allocation whose consumed shares
+   is below 1 at Prepare (03 section 5). The -shared-hosts flag of the
+   fake pool controller and test16's "-shared-hosts 6" disappear; the
+   broker no longer reads the capacity value from the slice.
+Q3 (region life) -- "Keep while shared": created by the first claim, kept
+   while the device is configured shared, also with no claims; destroyed
+   only when the device is no longer configured shared and has no claims
+   (03 section 7).
+Q4 (zero when idle) -- not answered; the recommendation stands: not
+   offered.
+Q5 (tests) -- "Two tests": test17 static (claims), test18 dynamic (leases,
+   the demo's L1-L9).
+What the user did not ask for but follows: the rename and the flipped
+class default touch the pool contract, the controller, the pool driver's
+texts, test11/12/13/16 and the pool documentation (01 F35-F36; 03
+sections 9 and 11; 04 stream S5). Nothing is released, so now is the
+cheapest moment.

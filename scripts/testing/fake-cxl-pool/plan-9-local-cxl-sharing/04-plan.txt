@@ -1,0 +1,310 @@
+plan-9-local-cxl-sharing: implementation plan
+=============================================
+Written 2026-10-19, revised 2026-10-20 (Fable). Contract: 03-design.txt.
+Five streams with disjoint files; S1, S2 and S5 in parallel from t0, S3
+desk-only from t0, S4 desk first and the VMs after S1+S2+S5 built an
+image. Rules of plan-7 23-erofs-plan.txt apply (skills first, nothing
+committed, plain ASCII, one run_tests.sh at a time, Requests in status
+files). plan-8's orchestrator owns the stream files and the demo streams.
+
+Sizes are rough: S = under 150 lines, M = 150-400, L = over 400,
+including unit tests.
+
+S1  Driver: shared local devices (L: ~400 Go, ~400 test)
+    Owns: pkg/cxl/device/device.go, device_test.go; D/driver.go,
+    D/node_state.go, D/local.go and their tests;
+    deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml,
+    values.yaml (comment).
+    Do (03 sections 2-5, 7):
+    a. device.CapacityShares ("shares"), device.SharesUnlimited (1000000),
+       device.Memdev.Shared, device.ClassLocalShared; CapacityHosts goes.
+       deviceclasses.yaml: cxl-local gains shared == false, cxl-local-shared
+       added, the comments of the three shared classes say "exclusive
+       unless capacity.requests.shares: 1"; device_test expects eight
+       classes. Do this first and tell S2 and S5.
+    b. DriverConfig.SharedDevices []string, strict; the matcher of
+       ignoreDevices shared.
+    c. node_state: addLocalMemdevs with the precedence of 03 section 2
+       and the D6 hiding rule from the allocator snapshot; localMemdevDevice
+       publishes the shared shape of 03 section 3 (shares 1M, no policy,
+       no memory, no nodeAllocatableResources); PreparedDeviceInfo.Shared;
+       memory() and lentDevices set Shared; prepareLocalMemdev calls
+       modeFor(dev.Shared), applies the shares guard of 03 section 5 and
+       the allocator's shared path with the device size.
+    d. local.go: localDevice{Shared bool} in the state file (absent =
+       sliced, old files load); Acquire with a shared flag: creates the
+       region if there is none and takes daxX.0 as the device
+       (device_dax, numbers), no resize, no zeroing; later claims are
+       recorded only; the mismatch errors of 03 section 5; Release drops
+       the claim and keeps the region of a shared device (D4); Reconcile
+       at start: a shared device without claims keeps its region while
+       the configuration lists it, destroys it when it does not (03
+       section 7); Snapshot reports per serial sliced or shared.
+    e. Unit tests with the fake sysfs of local_test: publish shape
+       (shares 1M, no policy), precedence (ignored, pool, shared,
+       sliced), hiding while the other use has claims, two claims one dax
+       device, exclusive and share detection from consumedCapacity, the
+       guard for shares 0 and missing, read-only CDI node per claim,
+       release keeps the region, restart with and without claims and with
+       the device removed from the configuration, old state file, config
+       validation, the texts of 03 section 8.
+    Checks: go vet, go test -race ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/...,
+    gofmt, make golangci-lint (no new findings), helm template renders,
+    make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS=
+    BINARIES= images builds (after S2 and S5 too; one image for S4).
+    Done when: checks pass; status lists the attribute set, the log lines
+    S4 may grep ("shared dax0.0", "exclusive", "1 share"), the config key.
+
+S2  Lease path (M: ~150 Go, ~250 test)
+    Owns: pkg/cxl/api/api.go, api_test.go; cmd/cxl-request/main.go,
+    main_test.go; D/broker.go, broker_test.go, D/lease_store.go.
+    Do (03 section 6): remove R4 and its tests; usage text of --shared;
+    lease.Hosts -> SharedDevice; requestOptions (errPoolDisabled only for
+    --source pool); companionSources keeps local for shared leases;
+    companionDevices: *-shared class when SharedDevice, shares: "1" when
+    Shared, no capacity when exclusive, no hosts; deviceBySerial returns
+    shared, driver and node, no capacity; serialOptions with the texts of
+    03 section 8 in the order given, the "has no hosts capacity" case
+    removed. Until S1's constants land, use local consts with a TODO that
+    the orchestrator removes.
+    Unit tests: companion claim shapes for (shared, source in {"", local,
+    pool}, serial in {none, local shared, pool shared, local sliced},
+    size), each refusal text, pool disabled with --shared, the env of a
+    Ready local shared lease (SHARED=1), an old leases.json with hosts
+    (empty table, logged).
+    Checks: as S1 for the owned packages; cxl-request builds static.
+    Done when: checks pass; status lists the texts and the companion
+    claim shapes S4 asserts on.
+
+S5  Pool side: shares and exclusive-by-default (M: ~120 Go, ~250 test)
+    Owns: P/pkg/controller/**, P/cmd/fake-cxl-pool-controller/main.go,
+    P/README.md; D/pool.go, D/pool_persistent.go and their tests.
+    Do (03 section 9): publisher publishes shares {value:
+    SharesUnlimited} without a policy; reconciler's exclusiveResult =
+    consumed shares >= the published value; SharedHosts, DefaultSharedHosts
+    and -shared-hosts removed (README too); the pool driver's shares
+    guard for shared devices (03 section 5 text) and the block text of
+    section 8. Unit tests: published shape, exclusive detection with
+    consumed 1M and 1, the guard (0, missing, 1, 1M), the block text.
+    Checks: go vet, go test -race ./scripts/testing/fake-cxl-pool/...
+    ./cmd/plugins/dra-driver-cxl/..., gofmt, make golangci-lint (no new
+    findings in P and D).
+    Done when: checks pass; status lists the published shape and the
+    texts S3 and S4 use.
+
+S3  Documentation and samples (M: ~300 lines)
+    Owns: docs/memory/cxl/{index,usage,local,leases,pool}.md,
+    docs/deployment/helm/dra-driver-cxl.md, deployment/samples/
+    dra-driver-cxl/{local-shared-writer-readers.yaml (new),
+    pool-shared-writer-readers.yaml, pool-persistent-erofs.yaml}.
+    Do: 03 sections 9 and 11 (the docs rows), texts of section 8,
+    examples 13-15 of section 5 with the environment lines and the pool
+    examples 6-8 and 12 reshaped (writer without capacity, readers with
+    shares: "1"), the life cycle table of section 7 in local.md, the
+    vocabulary of section 3. Every text copied from S1/S2/S5 status files
+    once they exist (do not invent). e2e.md rows are S4's.
+    Done when: no "hosts" is left in docs/memory/cxl and the samples
+    except in prose about pool hosts (attachments); every text of section
+    8 appears exactly once in the right table; links resolve.
+
+S4  e2e (L: ~1300 bash)
+    Owns: E/dra.source.sh, E/n4-cxl-shared-2/{test11-dra-sharing,
+    test12-dra-live-attach, test13-dra-shared-one-writer-many-readers,
+    test16-cxl-llm-share}/code.var.sh (the asserts of 01 F35 only),
+    E/n4-cxl-shared-2/test17-dra-local-shared/**,
+    E/n4-cxl-shared-2/test18-dra-local-shared-one-writer-many-readers/**,
+    docs/memory/cxl/e2e.md.
+    Desk phase (t0): helpers, the rename asserts, then the new tests
+    against 03 and the status files; bash -n, shellcheck as plan-6/7
+    (SC2154, SC2034, SC1090, SC2148, SC2016 excluded; 0 findings in
+    changed files).
+    VM phase (after the S1+S2+S5 image): test17 and test18 until PASS
+    twice each; then the regression one at a time: n4-cxl-shared-1/
+    test00-up, n4-cxl-shared-2/test00-up, test01, test10-test18 (or
+    ./run_tests.sh memory.test-suite/dra-driver-cxl once). Failures in
+    S1/S2/S5 code are Requests with evidence; never weaken an assertion of
+    03 without writing why.
+    Helpers (dra.source.sh):
+    - DRA_CLASSES gains cxl-local-shared (dra-wait-node waits for it).
+    - A driver configuration for dra-install: DRA_DRIVER_CONFIG (YAML of
+      the config file, "" = none); dra-install writes a values file in the
+      test's output directory from $DRA_HELM_VALUES plus "config:" and
+      passes it as helm_config. Tests set it before dra-install:
+        DRA_DRIVER_CONFIG="sharedDevices: [\"$DRA_LOCAL_SERIAL\"]"
+      (dra-local-find before dra-install gives the serial without the
+      driver running; check the order in dra-local-device).
+    - dra-shared-claim-yaml NAME SERIAL [SHARES [PARAMETERS [CLASS]]]:
+      SHARES "1" = one share, "" = exclusive (no capacity; the meaning of
+      "" inverts, so every caller is updated: test13:338-341, test16's
+      writer and readers); the driver of selector and DeviceConfig follows
+      the class (cxl-local-shared -> $DRA_LOCAL_DRIVER).
+    - dra-local-shared-wait VMDIR LABEL CLAIMS: localDevices.json shows
+      the device shared with these claims; region count and dax driver
+      through cxl-dump as test14 does.
+    Rename asserts (01 F35): test11:160 -> capacity shares == '1M' and no
+    requestPolicy, both claims with shares: "1"; test12:485 -> capacity
+    {'shares': '1'} and consumed shares '1' (comments :466, :484);
+    test13:206 -> shares '1M' without policy, :228 -> the writer's
+    subrequest has no capacity, :229 -> consumed shares == '1M', :313 ->
+    the readers' subrequests have capacity shares '1', :338-341 ->
+    dra-shared-claim-yaml ... "1" "readOnly: true"; test16:116-117
+    deleted, :320 -> consumed shares '1', :517 -> shares '1M' without
+    policy, :555 -> consumed shares '1M', writer claim without capacity,
+    reader claims shares "1"; test12:631 deleted (the CLI accepts
+    --shared --source local); lines 630 and 639 stay.
+    test17-dra-local-shared (static; the local twin of test11 and
+    test13 F; VM2 only, device cxl_memdev1 in sharedDevices):
+      A  the ResourceSlice device: attributes exactly [nodeAffinity,
+         serial, shared, size, source, type], shared True, capacity
+         shares '1M' and no requestPolicy, no memory capacity, no
+         nodeAllocatableResources; no region; a cxl-local claim stays
+         unallocated with the scheduler's "cannot allocate all claims"
+         (as test16 R4 asserts), then deleted.
+      B  writer claim (no capacity, no DeviceConfig) and pod: env SERIAL,
+         SHARED=1, MODE=dax, SIZE=<device size>, DAX=/dev/dax*,
+         READONLY=0; consumedCapacity shares '1M'; CDI device claim-<uid>-0
+         with a device node without permissions r and the marker; one
+         region, OnlineSize 0, one dax device bound to device_dax
+         (cxl-dump); localDevices.json holds the claim; the writer writes
+         TAG at 0 and at 1M.
+      C  two reader claims (shares "1", DeviceConfig readOnly: true) and
+         pods while the writer runs: claims without allocation, pods
+         Pending Unschedulable, dra-stays 10 s.
+      D  delete the writer pod and claim: both readers allocated and
+         Running within 60 s, consumed shares '1' each, read TAG, check-ro
+         refuses open for writing (EPERM) and a writable mapping (EACCES),
+         CDI permissions r, READONLY=1, both CDI devices name the same
+         /dev/daxX.0; a third reader claim shares; an exclusive claim
+         meanwhile stays unallocated; the region is the one of B.
+      E  one claim referenced by two pods: both read TAG; one share.
+      F  refused configs and requests: mode numa -> event text
+         "DeviceConfig: mode numa: a shared device is used as dax only";
+         readOnly with mode numa -> "DeviceConfig: readOnly needs mode
+         dax"; a claim with shares: "0" is allocated by the scheduler next
+         to a reader (prove F32) and its Prepare fails with the shares
+         guard text in the pod's events; cleanup.
+      G  all claims gone: region and dax0.0 stay (D4), memdev enabled,
+         device published as in A; a new exclusive claim reads TAG at 0
+         and 1M: the bytes survived the idle period.
+      H  plugin restart while a reader holds the device: the reader keeps
+         reading, the CDI spec is rewritten with the same node, the
+         region stays; then the reader is deleted and the plugin is
+         restarted again with the device still configured: the region
+         stays with no claims; finally dra-install without the
+         configuration (or a restart with the device removed): the region
+         is destroyed within 60 s and the device is published as a sliced
+         memdev (attributes as test14 A).
+      I  trace summary; cleanup: dra-cleanup, dra-local-detach (the
+         region must be gone before the detach: H's last step ensures it;
+         the EXIT trap checks).
+    test18-dra-local-shared-one-writer-many-readers (dynamic; the demo's
+    L1-L9, plan-8 03 section 5; VM2 only; the local twin of test13):
+      A  cluster, the shared local device (as test17 A, short), the lease
+         device; pool server only for attaching the local device.
+      B  writer pod with a lease claim: "cxl-request request --serial S
+         --wait 120s --exec ..." writes TAG and waits for /tmp/done; lease
+         Ready, source local, mode dax, shared false, serial S; its
+         companion claim: one exactly request of class cxl-local-shared,
+         no capacity, DeviceConfig cxl.nri.io {mode dax, readOnly false},
+         consumedCapacity shares '1M', allocated on VM2; no CDI device
+         for the companion; one region, OnlineSize 0; time from request
+         to Ready.
+      C  three readers "request --serial S --shared --read-only --wait
+         300s --exec check-ro; watch": leases Pending, companions Pending
+         Unschedulable, claims unallocated, dra-stays 10 s.
+      D  touch /tmp/done: the writer exits 0, every reader logs holding
+         within 120 s; time measured and printed.
+      E  readers read TAG, "writable mapping refused: EACCES", leases
+         Ready dax shared true readOnly true serial S source local;
+         companion claims: class cxl-local-shared, capacity shares "1",
+         consumed shares '1', DeviceConfig {mode dax, readOnly true};
+         still one region, the same dax device.
+      E2 a late exclusive request (--wait 15s) exits 3 Failed timeout,
+         leaves nothing, the readers keep their memory.
+      E3 "request --source local --shared --size 64Mi" from a reader is
+         Ready on S (the size selector), and "request --shared --size
+         64Mi" without --source gets a firstAvailable claim with
+         subrequests lease/local (cxl-local-shared) and lease/pool
+         (cxl-pool-shared), both with shares "1", and lands on S; both
+         released.
+      E4 refusals: "request --serial S --source pool" exit 1 "device S:
+         not a pool device"; "request --serial S --shared --mode numa"
+         exit 2 "shared memory is never onlined as RAM: use mode dax".
+      F  the demo's shape: a reader asks with --wait 0s (Pending returned
+         at once, lease kept) and gets its fd later with "cxl-request fd
+         --lease ID --wait 120s --exec read" once the holders release.
+      G  readers release (touch /tmp/stop; release --all): the region
+         stays (D4), device idle; a new exclusive lease reads TAG: the
+         bytes survived; released.
+      H  delete a borrower with a lease active: companions and claims
+         gone within 60 s, nothing in the lease table, the region stays.
+      I  trace summary; cleanup: dra-install without the configuration
+         (region destroyed) or dra-cleanup, then dra-local-detach as
+         test17 I.
+    Both tests: no sleeps (retry-until, dra-wait, dra-stays), sizes and
+    serials from DRA_LOCAL_*, cleanup in an EXIT trap that never detaches
+    the device while a region exists.
+    docs/e2e.md: two rows; the hosts lines of 01 F36 reworded.
+    Done when: test17 and test18 PASS twice in a row and the regression
+    passes; status has verdicts, durations, the measured request-to-Ready
+    and release-to-readers times, and the final VM state.
+
+Reviews (after S1-S5 report done): R-D (S1+S2+S5 diff against 03: texts
+and their order, publish precedence and D6, the shares guard in both
+drivers, no zeroing on shared devices, region life per section 7, state
+file compatibility, broker shapes, controller exclusive detection, docs),
+R-T (the tests against 04: exact proofs, no sleeps, cleanup). Accepted
+findings fixed by the owner; test17 and test18 once more.
+
+Order and hand-overs
+  t0   S1 (a first), S2, S5, S3 desk, S4 desk
+  t1   S1, S2 and S5 done: image built (S1), VMs to S4
+  t2   S4 done: reviews; fixes; final runs
+  plan-8's demo streams start their VM work after S4's final runs; the
+  demo setup installs the driver with the sharedDevices configuration
+  (plan-8 03 section 8) and its T3 view shows exclusive/shared/waiting
+  holders (03 section 11).
+
+Risks and mitigations
+R1 A request of shares: "0" (or a fraction) passes the API (F33) and fits
+   next to an exclusive holder (F32): the guard of 03 section 5 in both
+   drivers keeps such a pod from starting (its Prepare fails, kubelet
+   retries); the readers' pods in test17 F prove the scheduler side and
+   the guard. A hand-written claim remains able to be scheduled; this is
+   a Kubernetes validation gap worth an upstream issue (the orchestrator
+   decides).
+R2 D6 (hide a device while the other use has claims) and D4 (keep the
+   region) are the new state logic; an old localDevices.json has no
+   "shared": it loads as sliced, which is what it was. Unit-tested in S1 e.
+R3 A chart and driver of different versions: an old cxl-local class
+   (type only) with a new driver lets a cxl-local claim without a
+   capacity request take the whole shares value of a shared device and
+   fail at Prepare with the dax-only text. The chart and the driver ship
+   together (helm); documented in usage.md "DeviceClasses".
+R4 Readers are admitted only after the writer's claim is deallocated,
+   which is after its pod object is gone: a writer pod that lingers
+   delays the readers; test13 lives with it. The region is not touched
+   in between any more (D4).
+R5 The flipped class default (D8) breaks any user claim on
+   cxl-pool-shared that relied on "no capacity = one host": nothing is
+   released; test11/13/16 and the samples are the only users and are
+   updated by S4 and S3.
+R6 The scheduler fact F23 (device without the requested capacity is
+   skipped) is read in v1.37.1; a future release could make it fatal.
+   The class term shared == false keeps slice claims off shared devices
+   independent of that.
+R7 S2 and S5 before S1: the constants live in S1's file; temporary local
+   consts avoid a merge wait (the orchestrator removes them).
+R8 E/dra-install's values plumbing is new; a mistake hides as "the
+   device is published sliced" in test17 A. test17 A asserts the shared
+   shape first, so the failure is explicit.
+R9 The demo and test18 use VM2's only local device, the same one test14
+   and test15 slice; each test installs the driver with its own
+   configuration, and a shared device keeps its region while configured
+   (D4): a test must leave the device unconfigured (region destroyed)
+   before detaching it, else fake-cxl-pool cannot hot-remove it. test17 I
+   and test18 I do that; the EXIT traps check it.
+R10 The quantity 1000000 prints as 1M in ResourceSlices and
+   consumedCapacity; tests compare quantities, not strings, where a
+   helper (quantity()) exists, and the string '1M' where not; S1 writes
+   the exact string in its status.

@@ -11,7 +11,19 @@ metadata:
 spec:
   selectors:
   - cel:
-      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev"'
+      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == false'
+---
+# cxl-local-shared: a whole CXL memory device attached to the node that the
+# driver configuration declares shared (sharedDevices), as a devdax device;
+# exclusive unless capacity.requests.shares: 1.
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: cxl-local-shared
+spec:
+  selectors:
+  - cel:
+      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == true'
 ---
 # cxl-pool: a whole exclusive device of volatile memory of a memory pool,
 # as a new NUMA node (default) or as a devdax device (DeviceConfig mode: dax).
@@ -25,8 +37,7 @@ spec:
       expression: 'device.driver == "cxl-pool.nri.io" && device.attributes["cxl-pool.nri.io"].type == "memdev" && device.attributes["cxl-pool.nri.io"].shared == false && device.attributes["cxl-pool.nri.io"].persistent == false'
 ---
 # cxl-pool-shared: a shared device of volatile memory of a memory pool as a
-# devdax device; one of its hosts by default, all of them (exclusive) with
-# capacity.requests.hosts.
+# devdax device; exclusive unless capacity.requests.shares: 1.
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass
 metadata:
@@ -39,8 +50,7 @@ spec:
 # cxl-pool-persistent: a device of persistent memory of a memory pool,
 # shared or not, as the block device of its fsdax namespace (DeviceConfig
 # mode: block) or as a read-only filesystem on it (mode: fs). A shared
-# device has one of its hosts by default, all of them (exclusive) with
-# capacity.requests.hosts.
+# device is exclusive unless capacity.requests.shares: 1.
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass
 metadata:

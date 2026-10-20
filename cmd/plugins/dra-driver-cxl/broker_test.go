@@ -413,8 +413,12 @@ func allocated(c *resourceapi.ResourceClaim, dev, data string) *resourceapi.Reso
 	for _, sc := range c.Spec.Devices.Config {
 		cfgs = append(cfgs, resourceapi.DeviceAllocationConfiguration{Source: resourceapi.AllocationConfigSourceClaim, Requests: sc.Requests, DeviceConfiguration: sc.DeviceConfiguration})
 	}
+	request := companionClaimRef
+	if len(c.Spec.Devices.Requests) > 0 && len(c.Spec.Devices.Requests[0].FirstAvailable) > 0 {
+		request += "/" + api.SourcePool
+	}
 	c.Status.Allocation = &resourceapi.AllocationResult{Devices: resourceapi.DeviceAllocationResult{
-		Results: []resourceapi.DeviceRequestAllocationResult{{Request: companionClaimRef, Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev}},
+		Results: []resourceapi.DeviceRequestAllocationResult{{Request: request, Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, ConsumedCapacity: poolConsumed(data)}},
 		Config:  cfgs,
 	}}
 	c.Status.Devices = []resourceapi.AllocatedDeviceStatus{{Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, Data: &runtime.RawExtension{Raw: []byte(data)}}}
@@ -522,7 +526,6 @@ func TestBrokerAuthRejection(t *testing.T) {
 		{api.Request{Op: "request", Size: "1Gi", Source: "any"}, `invalid source "any" (local or pool)`},
 		{api.Request{Op: "request", Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa or dax)`},
 		{api.Request{Op: "request", Shared: true, Mode: "numa"}, "shared memory is never onlined as RAM: use mode dax"},
-		{api.Request{Op: "request", Shared: true, Source: "local"}, "local devices are not shareable; share a ResourceClaim between pods instead"},
 		{api.Request{Op: "request", Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax"},
 		{api.Request{Op: "request"}, "size or serial is required"},
 		{api.Request{Op: "request", Serial: "xyz"}, `invalid serial "xyz"`},
@@ -690,10 +693,11 @@ func TestBrokerPoolNumaLease(t *testing.T) {
 
 func TestBrokerSharedLeaseFd(t *testing.T) {
 	e := newLeaseFdEnv(t, "0xc1ae0001")
-	claim, resp, fd := e.prepareLease(api.Request{Op: "request", Serial: "0xC1AE0001", Shared: true}, "shared0", sharedData)
+	claim, resp, fd := e.prepareLease(api.Request{Op: "request", Serial: "0xC1AE0001", Shared: true, Source: "pool"}, "shared0", sharedData)
 	want := resourceapi.ExactDeviceRequest{
 		DeviceClassName: "cxl-pool-shared",
 		Selectors:       []resourceapi.DeviceSelector{{CEL: &resourceapi.CELDeviceSelector{Expression: `device.attributes["cxl-pool.nri.io"].serial == "0xc1ae0001"`}}},
+		Capacity:        &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}},
 	}
 	if !reflect.DeepEqual(*claim.Spec.Devices.Requests[0].Exactly, want) {
 		t.Fatalf("shared request %+v", claim.Spec.Devices.Requests[0].Exactly)
@@ -1073,8 +1077,7 @@ func TestLeaseDevice(t *testing.T) {
 }
 
 // poolSlice is the pool controller's ResourceSlice with an exclusive
-// device pooled0, a shared device shared0 (hosts 4) and a shared device
-// shared1 without a hosts capacity.
+// device pooled0 and the shared devices shared0 and shared1.
 func poolSlice() *resourceapi.ResourceSlice {
 	attrs := func(serial string, shared bool) map[resourceapi.QualifiedName]resourceapi.DeviceAttribute {
 		return map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
@@ -1092,7 +1095,7 @@ func poolSlice() *resourceapi.ResourceSlice {
 				{Name: "pooled0", Attributes: attrs("0xc1ee0001", false),
 					Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{"memory": {Value: resource.MustParse("512Mi")}}},
 				{Name: "shared0", Attributes: attrs("0xC1AE0001", true),
-					Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{"hosts": {Value: resource.MustParse("4")}}},
+					Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{"shares": {Value: resource.MustParse("1M")}}},
 				{Name: "shared1", Attributes: attrs("0xc1ae0002", true)},
 			},
 		},
@@ -1100,24 +1103,34 @@ func poolSlice() *resourceapi.ResourceSlice {
 }
 
 // localResourceSlice is the cxl.nri.io ResourceSlice of node1 with the local
-// memdev 0xc100e2e1.
+// memdev 0xc100e2e1 and the shared local memdev 0xc100e2e2.
 func localResourceSlice() *resourceapi.ResourceSlice {
+	return nodeResourceSlice(testNode,
+		localMemdevDevice(localDeviceName, &device.Memdev{Serial: localSerial, Size: localRegionSize, NodeAffinity: 0, BlockSize: localBlockSize}),
+		localMemdevDevice("memdev-c100e2e2", &device.Memdev{Serial: 0xc100e2e2, Size: localRegionSize, NodeAffinity: 0, Shared: true}))
+}
+
+// nodeResourceSlice returns the cxl.nri.io ResourceSlice of a node with the
+// devices.
+func nodeResourceSlice(node string, devs ...resourceapi.Device) *resourceapi.ResourceSlice {
 	return &resourceapi.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: "node1-cxl"},
+		ObjectMeta: metav1.ObjectMeta{Name: node + "-cxl"},
 		Spec: resourceapi.ResourceSliceSpec{
 			Driver:   device.DriverName,
-			Pool:     resourceapi.ResourcePool{Name: testNode, ResourceSliceCount: 1},
-			NodeName: ptr(testNode),
-			Devices:  []resourceapi.Device{localMemdevDevice(localDeviceName, &device.Memdev{Serial: localSerial, Size: localRegionSize, NodeAffinity: 0, BlockSize: localBlockSize})},
+			Pool:     resourceapi.ResourcePool{Name: node, ResourceSliceCount: 1},
+			NodeName: ptr(node),
+			Devices:  devs,
 		},
 	}
 }
 
 // newSlicesBrokerEnv returns a broker env whose client has the pool and
-// the local ResourceSlices.
+// the local ResourceSlices, and that of node2 with the shared local memdev
+// 0xc100e2e3.
 func newSlicesBrokerEnv(t *testing.T) *brokerEnv {
 	e := newBrokerEnv(t)
-	for _, s := range []*resourceapi.ResourceSlice{poolSlice(), localResourceSlice()} {
+	node2 := nodeResourceSlice("node2", localMemdevDevice("memdev-c100e2e3", &device.Memdev{Serial: 0xc100e2e3, Size: localRegionSize, NodeAffinity: -1, Shared: true}))
+	for _, s := range []*resourceapi.ResourceSlice{poolSlice(), localResourceSlice(), node2} {
 		_, err := e.client.ResourceV1().ResourceSlices().Create(context.Background(), s, metav1.CreateOptions{})
 		noErr(t, err)
 	}
@@ -1133,22 +1146,34 @@ func TestBrokerRequestOptions(t *testing.T) {
 	}{
 		{req: api.Request{Size: "1Gi"}, want: lease{Size: "1Gi", Mode: "numa"}},
 		{req: api.Request{Size: "1024Mi", Mode: "dax", ReadOnly: true}, want: lease{Size: "1Gi", Mode: "dax", ReadOnly: true}},
-		{req: api.Request{Shared: true, Size: "256Mi"}, want: lease{Shared: true, Size: "256Mi", Mode: "dax"}},
+		{req: api.Request{Shared: true, Size: "256Mi"}, want: lease{Shared: true, SharedDevice: true, Size: "256Mi", Mode: "dax"}},
 		// a reader and the writer of a shared device
-		{req: api.Request{Serial: "0xC1AE0001", Shared: true, ReadOnly: true}, want: lease{Serial: "0xc1ae0001", Shared: true, Mode: "dax", ReadOnly: true}},
-		{req: api.Request{Serial: "3249405953"}, want: lease{Serial: "0xc1ae0001", Mode: "dax", Hosts: "4"}},
-		{req: api.Request{Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, Source: "pool"}, want: lease{Source: "pool", Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, Hosts: "4"}},
+		{req: api.Request{Serial: "0xC1AE0001", Shared: true, ReadOnly: true}, want: lease{Serial: "0xc1ae0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "dax", ReadOnly: true}},
+		{req: api.Request{Serial: "3249405953"}, want: lease{Serial: "0xc1ae0001", Mode: "dax", SharedDevice: true, DeviceSource: "pool"}},
+		{req: api.Request{Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, Source: "pool"}, want: lease{Source: "pool", Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true, SharedDevice: true}},
+		// a shared device has no capacity that the broker reads
+		{req: api.Request{Serial: "0xc1ae0002"}, want: lease{Serial: "0xc1ae0002", Mode: "dax", SharedDevice: true, DeviceSource: "pool"}},
+		// a reader and the writer of a shared local device
+		{req: api.Request{Serial: "0xc100e2e2", Shared: true, ReadOnly: true}, want: lease{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax", ReadOnly: true}},
+		{req: api.Request{Serial: "0xc100e2e2", Source: "local"}, want: lease{Source: "local", Serial: "0xc100e2e2", Mode: "dax", SharedDevice: true}},
+		{req: api.Request{Source: "local", Shared: true, Size: "64Mi"}, want: lease{Source: "local", Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
 		{req: api.Request{Size: "64Mi", Source: "local"}, want: lease{Source: "local", Size: "64Mi", Mode: "numa"}},
 		{req: api.Request{Size: "64Mi", Source: "local", Mode: "dax", ReadOnly: true, Serial: "0xC100E2E1"},
 			want: lease{Source: "local", Size: "64Mi", Mode: "dax", ReadOnly: true, Serial: "0xc100e2e1"}},
 		{req: api.Request{Size: "64Mi", Source: "pool", Serial: "0xc1ee0001"}, want: lease{Source: "pool", Size: "64Mi", Mode: "numa", Serial: "0xc1ee0001"}},
 		// a serial of no published device
-		{req: api.Request{Serial: "0x1234", Shared: true}, want: lease{Serial: "0x1234", Shared: true, Mode: "dax"}},
+		{req: api.Request{Serial: "0x1234", Shared: true}, want: lease{Serial: "0x1234", Shared: true, SharedDevice: true, Mode: "dax"}},
 		{req: api.Request{Serial: "0xc1ee0001", Shared: true}, err: "device 0xc1ee0001: not shareable"},
 		{req: api.Request{Serial: "0xc100e2e1", Shared: true}, err: "device 0xc100e2e1: not shareable"},
 		{req: api.Request{Serial: "0xc1ae0001", Mode: "numa"}, err: "shared memory is never onlined as RAM: use mode dax"},
-		{req: api.Request{Serial: "0xc1ae0002"}, err: `device shared1 (serial 0xc1ae0002) has no "hosts" capacity`},
 		{req: api.Request{Serial: "0xc1ae0001", Source: "local"}, err: "device 0xc1ae0001: not a local device"},
+		{req: api.Request{Serial: "0xc100e2e2", Source: "pool"}, err: "device 0xc100e2e2: not a pool device"},
+		{req: api.Request{Serial: "0xc100e2e3", Shared: true}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
+		{req: api.Request{Serial: "0xc100e2e2", Mode: "numa"}, err: "shared memory is never onlined as RAM: use mode dax"},
+		// the refusals in their order
+		{req: api.Request{Serial: "0xc100e2e2", Source: "pool", Mode: "numa"}, err: "device 0xc100e2e2: not a pool device"},
+		{req: api.Request{Serial: "0xc100e2e3", Mode: "numa"}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
+		{req: api.Request{Serial: "0xc1ae0001", Source: "local", Mode: "numa"}, err: "device 0xc1ae0001: not a local device"},
 		{req: api.Request{Size: "lots"}, err: `invalid size "lots"`},
 	} {
 		var l lease
@@ -1171,7 +1196,10 @@ func TestBrokerRequestOptions(t *testing.T) {
 		err  string
 	}{
 		{req: api.Request{Size: "1Gi", Source: "pool"}, err: "pool driver disabled (--pool-driver-name)"},
-		{req: api.Request{Serial: "0xc1ae0001", Shared: true}, err: "pool driver disabled (--pool-driver-name)"},
+		{req: api.Request{Size: "1Gi", Source: "pool", Shared: true}, err: "pool driver disabled (--pool-driver-name)"},
+		// shared local devices serve --shared
+		{req: api.Request{Shared: true, Size: "64Mi"}, want: lease{Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
+		{req: api.Request{Serial: "0xc100e2e2", Shared: true}, want: lease{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax"}},
 		{req: api.Request{Size: "1Gi"}, want: lease{Size: "1Gi", Mode: "numa"}},
 		{req: api.Request{Size: "1Gi", Source: "local"}, want: lease{Source: "local", Size: "1Gi", Mode: "numa"}},
 	} {
@@ -1261,13 +1289,10 @@ func (e *leaseFdEnv) prepareLease(req api.Request, dev, data string) (*resourcea
 func TestBrokerExclusiveReadOnlySharedLease(t *testing.T) {
 	e := newLeaseFdEnv(t, "0xc1ae0001")
 	claim, resp, fd := e.prepareLease(api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "dax", ReadOnly: true}, "shared0", sharedData)
-	// all of the device's hosts capacity, so that nothing else gets it
+	// no shares request: the whole device, so that nothing else gets it
 	ex := claim.Spec.Devices.Requests[0].Exactly
-	if ex == nil || ex.DeviceClassName != "cxl-pool-shared" || ex.Capacity == nil {
+	if ex == nil || ex.DeviceClassName != "cxl-pool-shared" || ex.Capacity != nil {
 		t.Fatalf("exclusive request %+v", claim.Spec.Devices.Requests[0])
-	}
-	if hosts := ex.Capacity.Requests[device.CapacityHosts]; hosts.Cmp(resource.MustParse("4")) != 0 {
-		t.Fatalf("exclusive capacity request %+v", ex.Capacity)
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || !dc.ReadOnly {
 		t.Fatalf("companion DeviceConfig %+v", dc)
@@ -1377,9 +1402,7 @@ func TestBrokerCompanionClaims(t *testing.T) {
 	memory := func(q string) *resourceapi.CapacityRequirements {
 		return &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{"memory": resource.MustParse(q)}}
 	}
-	hosts := func(q string) *resourceapi.CapacityRequirements {
-		return &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{"hosts": resource.MustParse(q)}}
-	}
+	share := &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{"shares": resource.MustParse("1")}}
 	sel := func(exprs ...string) []resourceapi.DeviceSelector {
 		var out []resourceapi.DeviceSelector
 		for _, e := range exprs {
@@ -1431,15 +1454,41 @@ func TestBrokerCompanionClaims(t *testing.T) {
 			},
 		},
 		{
-			name: "local, then pool, numa of a device",
+			name: "numa of a local device: its source only",
 			req:  api.Request{Size: "64Mi", Serial: "0xc100e2e1"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local", Capacity: memory("64Mi"), Selectors: sel(serial("cxl.nri.io", "0xc100e2e1"))}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localNUMA}},
+		},
+		{
+			name: "numa of a pool device: its source only",
+			req:  api.Request{Size: "64Mi", Serial: "0xc1ee0001"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-pool", Capacity: memory("64Mi"), Selectors: sel(serial("cxl-pool.nri.io", "0xc1ee0001"))}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolNUMA}},
+		},
+		{
+			name: "local, then pool, numa of a serial that no slice has",
+			req:  api.Request{Size: "64Mi", Serial: "0x1234"},
 			want: resourceapi.DeviceRequest{Name: "lease", FirstAvailable: []resourceapi.DeviceSubRequest{
-				{Name: "local", DeviceClassName: "cxl-local", Capacity: memory("64Mi"), Selectors: sel(serial("cxl.nri.io", "0xc100e2e1"))},
-				{Name: "pool", DeviceClassName: "cxl-pool", Capacity: memory("64Mi"), Selectors: sel(serial("cxl-pool.nri.io", "0xc100e2e1"))},
+				{Name: "local", DeviceClassName: "cxl-local", Capacity: memory("64Mi"), Selectors: sel(serial("cxl.nri.io", "0x1234"))},
+				{Name: "pool", DeviceClassName: "cxl-pool", Capacity: memory("64Mi"), Selectors: sel(serial("cxl-pool.nri.io", "0x1234"))},
 			}},
 			configs: []opaqueConfig{
 				{driver: "cxl.nri.io", requests: []string{"lease/local"}, params: localNUMA},
 				{driver: "cxl-pool.nri.io", requests: []string{"lease/pool"}, params: poolNUMA},
+			},
+		},
+		{
+			name: "a share of a serial that no slice has, local then pool",
+			req:  api.Request{Serial: "0x1234", Shared: true},
+			want: resourceapi.DeviceRequest{Name: "lease", FirstAvailable: []resourceapi.DeviceSubRequest{
+				{Name: "local", DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(serial("cxl.nri.io", "0x1234"))},
+				{Name: "pool", DeviceClassName: "cxl-pool-shared", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0x1234"))},
+			}},
+			configs: []opaqueConfig{
+				{driver: "cxl.nri.io", requests: []string{"lease/local"}, params: localDax},
+				{driver: "cxl-pool.nri.io", requests: []string{"lease/pool"}, params: poolDax},
 			},
 		},
 		{
@@ -1451,33 +1500,88 @@ func TestBrokerCompanionClaims(t *testing.T) {
 			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localNUMA}},
 		},
 		{
-			name: "join a shared device",
-			req:  api.Request{Serial: "0xc1ae0001", Shared: true},
+			name: "join a shared pool device",
+			req:  api.Request{Serial: "0xc1ae0001", Shared: true, Source: "pool"},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
-				DeviceClassName: "cxl-pool-shared", Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"))}},
+				DeviceClassName: "cxl-pool-shared", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolDax}},
 		},
 		{
-			name: "a reader of a shared device",
+			name: "a reader of a shared pool device without --source",
 			req:  api.Request{Serial: "0xc1ae0001", Shared: true, ReadOnly: true},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
-				DeviceClassName: "cxl-pool-shared", Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"))}},
+				DeviceClassName: "cxl-pool-shared", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolRO}},
 		},
 		{
-			name: "any shared device of a size",
-			req:  api.Request{Shared: true, Size: "256Mi"},
+			name: "a reader of a shared local device without --source",
+			req:  api.Request{Serial: "0xc100e2e2", Shared: true, ReadOnly: true},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
-				DeviceClassName: "cxl-pool-shared", Selectors: sel(`device.attributes["cxl-pool.nri.io"].size >= 268435456`)}},
+				DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(serial("cxl.nri.io", "0xc100e2e2"))}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localRO}},
+		},
+		{
+			name: "a shared local device exclusively without --source",
+			req:  api.Request{Serial: "0xc100e2e2"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-shared", Selectors: sel(serial("cxl.nri.io", "0xc100e2e2"))}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localDax}},
+		},
+		{
+			name: "any shared device of a size, local then pool",
+			req:  api.Request{Shared: true, Size: "256Mi"},
+			want: resourceapi.DeviceRequest{Name: "lease", FirstAvailable: []resourceapi.DeviceSubRequest{
+				{Name: "local", DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(`device.attributes["cxl.nri.io"].size >= 268435456`)},
+				{Name: "pool", DeviceClassName: "cxl-pool-shared", Capacity: share, Selectors: sel(`device.attributes["cxl-pool.nri.io"].size >= 268435456`)},
+			}},
+			configs: []opaqueConfig{
+				{driver: "cxl.nri.io", requests: []string{"lease/local"}, params: localDax},
+				{driver: "cxl-pool.nri.io", requests: []string{"lease/pool"}, params: poolDax},
+			},
+		},
+		{
+			name: "a shared pool device exclusively (the writer)",
+			req:  api.Request{Serial: "0xc1ae0001", Size: "128Mi", Source: "pool"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-pool-shared",
+				Selectors:       sel(serial("cxl-pool.nri.io", "0xc1ae0001"), `device.attributes["cxl-pool.nri.io"].size >= 134217728`)}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolDax}},
 		},
 		{
-			name: "a shared device exclusively (the writer)",
-			req:  api.Request{Serial: "0xc1ae0001", Size: "128Mi"},
+			name: "a shared pool device exclusively without --source",
+			req:  api.Request{Serial: "0xc1ae0001"},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
-				DeviceClassName: "cxl-pool-shared", Capacity: hosts("4"),
-				Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"), `device.attributes["cxl-pool.nri.io"].size >= 134217728`)}},
+				DeviceClassName: "cxl-pool-shared", Selectors: sel(serial("cxl-pool.nri.io", "0xc1ae0001"))}},
 			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolDax}},
+		},
+		{
+			name: "a shared local device exclusively (the writer)",
+			req:  api.Request{Serial: "0xc100e2e2", Source: "local"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-shared", Selectors: sel(serial("cxl.nri.io", "0xc100e2e2"))}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localDax}},
+		},
+		{
+			name: "a reader of a shared local device",
+			req:  api.Request{Serial: "0xc100e2e2", Shared: true, ReadOnly: true, Source: "local"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(serial("cxl.nri.io", "0xc100e2e2"))}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localRO}},
+		},
+		{
+			name: "a share of any shared local device of a size",
+			req:  api.Request{Shared: true, Size: "64Mi", Source: "local"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(`device.attributes["cxl.nri.io"].size >= 67108864`)}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localDax}},
+		},
+		{
+			name:   "a share without the pool driver",
+			req:    api.Request{Shared: true, Size: "64Mi"},
+			noPool: true,
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-shared", Capacity: share, Selectors: sel(`device.attributes["cxl.nri.io"].size >= 67108864`)}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localDax}},
 		},
 	} {
 		e.b.cfg.PoolDriver = device.PoolDriverName
@@ -1502,9 +1606,9 @@ func TestBrokerCompanionClaims(t *testing.T) {
 			t.Errorf("%s: labels %v", tc.name, claim.Labels)
 		}
 	}
-	// shared memory without the pool driver
+	// pool memory without the pool driver
 	e.b.cfg.PoolDriver = ""
-	_, _, err := e.b.companionObjects(&lease{ID: "x", Shared: true, Mode: api.ModeDax, Pod: pod})
+	_, _, err := e.b.companionObjects(&lease{ID: "x", Source: api.SourcePool, Shared: true, Mode: api.ModeDax, Pod: pod})
 	wantErr(t, err, "pool driver disabled (--pool-driver-name)")
 }
 

@@ -65,9 +65,9 @@ helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-s
 
 The command above deploys the driver on the Kubernetes cluster within the
 `kube-system` namespace with default configuration. Besides the DaemonSet
-the chart installs the DeviceClasses `cxl-local`, `cxl-pool`,
-`cxl-pool-shared`, `cxl-pool-persistent`, `cxl-region`, `cxl-dram` and
-`cxl-lease`, a ClusterRole
+the chart installs the DeviceClasses `cxl-local`, `cxl-local-shared`,
+`cxl-pool`, `cxl-pool-shared`, `cxl-pool-persistent`, `cxl-region`,
+`cxl-dram` and `cxl-lease`, a ClusterRole
 and a ValidatingAdmissionPolicy that lets the driver modify only the
 ResourceSlices of its own node. To customize the available parameters as
 described in the [Configuration options](#configuration-options) below, you
@@ -79,6 +79,8 @@ values.yaml file and provide it using the `-f` flag. For example:
 cat <<EOF > myPath/values.yaml
 config:
   ignoreDevices: ["mem0"]
+  # local devices shared by the claims of class cxl-local-shared
+  sharedDevices: ["0xc100e2e1"]
 
 leases:
   enabled: false

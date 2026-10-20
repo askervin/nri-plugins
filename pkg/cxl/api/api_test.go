@@ -81,7 +81,9 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs}, `invalid mode "fs" (numa or dax)`},
 		{Request{Op: OpRequest, Size: "1Gi", Mode: ModeBlock}, `invalid mode "block" (numa or dax)`},
 		{Request{Op: OpRequest, Shared: true, Mode: ModeNUMA}, "shared memory is never onlined as RAM: use mode dax"},
-		{Request{Op: OpRequest, Shared: true, Source: SourceLocal}, "local devices are not shareable; share a ResourceClaim between pods instead"},
+		// a share of a shared local device
+		{Request{Op: OpRequest, Shared: true, Source: SourceLocal}, ""},
+		{Request{Op: OpRequest, Shared: true, Source: SourceLocal, ReadOnly: true, Serial: "0xc100e2e1"}, ""},
 		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax"},
 		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true, Mode: ModeNUMA}, "readOnly needs mode dax"},
 		{Request{Op: OpRequest}, "size or serial is required"},

@@ -188,8 +188,8 @@ type preparedPoolClaim struct {
 
 // poolDeviceData is claim.status.devices[].data written by the pool
 // controller. Serial, shared and size are required; exclusive (a shared
-// device attached with all of its hosts) and persistent are false when
-// missing.
+// device whose claim consumed all of its shares) and persistent are false
+// when missing.
 type poolDeviceData struct {
 	Serial     string  `json:"serial"`
 	Shared     *bool   `json:"shared"`
@@ -376,6 +376,13 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		data, err := poolDataFor(claim, &r)
 		if err != nil {
 			return fail(err)
+		}
+		if data.Shared {
+			// before the device is touched: shares "0" fits next to an
+			// exclusive holder
+			if _, err := consumedShares(data.Serial, &r); err != nil {
+				return fail(err)
+			}
 		}
 		cfg := &deviceConfig{}
 		if _, err := parseConfig(claim, p.name, device.DeviceConfigKind, r.Request, cfg); err != nil {

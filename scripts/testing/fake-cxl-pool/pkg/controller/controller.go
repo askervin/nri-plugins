@@ -50,7 +50,6 @@ const (
 	DefaultSyncInterval  = 10 * time.Second
 	DefaultAttachTimeout = 60 * time.Second
 	DefaultDetachTimeout = 60 * time.Second
-	DefaultSharedHosts   = 4
 	DefaultOwnerPrefix   = "k8s:"
 	DefaultDebounce      = 500 * time.Millisecond
 	// Component is the event source component.
@@ -64,9 +63,6 @@ type Config struct {
 	SyncInterval  time.Duration
 	AttachTimeout time.Duration
 	DetachTimeout time.Duration
-	// SharedHosts is the "hosts" capacity of shared devices: how many
-	// nodes may have a shared device attached at the same time.
-	SharedHosts int
 	// OwnerPrefix is the prefix of the attachment owners of this
 	// controller: "<prefix>resourceclaim/<claim uid>".
 	OwnerPrefix string
@@ -91,9 +87,6 @@ func (c *Config) complete() {
 	}
 	if c.DetachTimeout <= 0 {
 		c.DetachTimeout = DefaultDetachTimeout
-	}
-	if c.SharedHosts <= 0 {
-		c.SharedHosts = DefaultSharedHosts
 	}
 	if c.OwnerPrefix == "" {
 		// never "": that would claim the attachments of every owner

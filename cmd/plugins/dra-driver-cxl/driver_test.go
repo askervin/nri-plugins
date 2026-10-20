@@ -609,9 +609,12 @@ func TestDriverConfigManageMemdevs(t *testing.T) {
 
 func TestNewLocalHelper(t *testing.T) {
 	dir := t.TempDir()
+	for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node"} {
+		noErr(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+	}
 	config := &pluginConfig{Flags: &CXLFlags{}, KubeletPluginDir: dir}
 	off := &DriverConfig{ManageMemdevs: ptr(false)}
-	if local, err := newLocalHelper(context.Background(), config, off, dir); err != nil || local != nil {
+	if local, err := newLocalHelper(context.Background(), config, off, dir, nil); err != nil || local != nil {
 		t.Fatalf("unmanaged memdevs: %v %v", local, err)
 	}
 	// the state of a memdev that is gone is dropped at start
@@ -619,12 +622,12 @@ func TestNewLocalHelper(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, localStateFileName), []byte(state), 0600); err != nil {
 		t.Fatal(err)
 	}
-	local, err := newLocalHelper(context.Background(), config, &DriverConfig{}, dir)
+	local, err := newLocalHelper(context.Background(), config, &DriverConfig{}, dir, nil)
 	if err != nil || local == nil {
 		t.Fatalf("local helper: %v %v", local, err)
 	}
-	if m := local.Snapshot().Serials; len(m) != 0 {
-		t.Fatalf("serials %v of a gone memdev", m)
+	if m := local.Snapshot().Uses; len(m) != 0 {
+		t.Fatalf("uses %v of a gone memdev", m)
 	}
 	if local.mem.SysRoot != dir+"/sys" || local.stateFile != filepath.Join(dir, localStateFileName) {
 		t.Fatalf("local helper %+v", local)

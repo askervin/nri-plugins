@@ -12,20 +12,22 @@
 #   and a label storage area (LSA) file on the host, shared by the qemu of
 #   both VMs. Class cxl-pool-persistent selects it, cxl-pool-shared does
 #   not.
-# - The writer claims it with all of its "hosts" (exclusive, writable),
-#   DeviceConfig {mode: block}: the driver creates a pmem region and an
-#   fsdax namespace and gives the container the block device /dev/pmemK.
+# - The writer claims it without a "shares" request, which takes all of
+#   them (exclusive, writable), DeviceConfig {mode: block}: the driver
+#   creates a pmem region and an fsdax namespace and gives the container
+#   the block device /dev/pmemK.
 #   The writer runs on VM1, the only node with the model; VM1 builds the
 #   erofs image with "mkfs.erofs -b4096 --dsunit=512 -Enoinline_data", the
 #   writer writes it with dd and exits. The host finds the model in the data
 #   file at a 2 MiB-aligned offset, and labels in the LSA file.
-# - The readers claim it with one host each, DeviceConfig {mode: fs,
-#   readOnly: true, access: direct|cached}: the driver mounts the erofs on
-#   the node once per access (direct: the pmem block device with dax=always;
-#   cached: a read-only direct-I/O loop device over it) and binds the mount
-#   read-only into the container, with no device node. Three direct readers
-#   (two on VM2, one on VM1) start first, then three cached readers in the
-#   same places, one at a time, while the direct ones still run.
+# - The readers claim it with one share each (shares: "1"), DeviceConfig
+#   {mode: fs, readOnly: true, access: direct|cached}: the driver mounts
+#   the erofs on the node once per access (direct: the pmem block device
+#   with dax=always; cached: a read-only direct-I/O loop device over it)
+#   and binds the mount read-only into the container, with no device
+#   node. Three direct readers (two on VM2, one on VM1) start first, then
+#   three cached readers in the same places, one at a time, while the
+#   direct ones still run.
 #
 # Proofs: every reader answers "hello" with the expected text, asked from
 # its node on its pod IP. Direct readers: every page of llama-server's
@@ -60,10 +62,9 @@
 # the page cache deltas, the tokens per second, and the trace of both
 # nodes.
 #
-# The "hosts" capacity of llm0 is 6, not the controller's default 4
-# (-shared-hosts 6): every claim of a shared device takes one host of that
-# capacity, whatever its node, and this test holds six reader claims at
-# once. The writer takes all 6.
+# The "shares" capacity of llm0 is 1M without a requestPolicy: every reader
+# claim takes one share of it, whatever its node, so the six reader claims
+# fit at once; the writer, with no shares request, takes all of them.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
 # control plane, the VM of n4-cxl-shared-1 (VM1) a worker, over the VM
@@ -113,8 +114,6 @@ LLM_SERIAL=0xc1ae0001   # 0xc1ae....: shared pool devices
 LLM_HEX=C1AE0001        # the serial in environment variable names
 LLM_MOUNT_ID=c1ae0001   # the serial in the names of the node mounts
 LLM_DEV_SIZE=$(( 512 << 20 ))
-LLM_HOSTS=6             # the "hosts" capacity of llm0: six reader claims at once
-DRA_CONTROLLER_ARGS="-shared-hosts $LLM_HOSTS"
 LLM_DATA="$POOL_DIR/$LLM_DEVICE.raw"   # the files of the device on the host
 LLM_LSA="$POOL_DIR/$LLM_DEVICE.lsa"
 LLM_LSA_SIZE=262144
@@ -235,7 +234,7 @@ reader-start() {
     fi
     before=$(llm-page-cache "$vm")
     t0=$(date +%s.%N)
-    dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$r" "$LLM_SERIAL" "" "$params" cxl-pool-persistent)
+    dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$r" "$LLM_SERIAL" 1 "$params" cxl-pool-persistent)
 ---
 $(llm-server-pod-yaml "$r" "$vm" "$r" "$(llm-reader-script "$LLM_HEX" "$LLM_THREADS")")"
     llm-server-wait "$vm" "$r"
@@ -313,11 +312,11 @@ reader-check() {
     llm-ask "$vm" "$r"
     [ "$LLM_CONTENT" == "$LLM_EXPECT" ] || error "$r answered '$LLM_CONTENT', expected '$LLM_EXPECT'"
     TIMINGS+=("$r on $(pool-vm-label "$vm"): $(llm-answer-value 'j["tokens_predicted"]') tokens, prompt $(llm-answer-value 'round(j["timings"]["prompt_per_second"], 1)') tokens/s, generation $(llm-answer-value 'round(j["timings"]["predicted_per_second"], 1)') tokens/s on $LLM_THREADS threads")
-    # One host of the device on the node of the reader, and the CDI device
+    # One share of the device on the node of the reader, and the CDI device
     # of the claim, claim-<uid>-0 of the pool driver: a read-only bind of
     # the node mount of its access at its path, no device node.
     dra-json "$VM2" resourceclaim -n "$DRA_NS" "$r"
-    dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$(basename "$vm")' and j['status']['allocation']['devices']['results'][0]['consumedCapacity']['hosts'] == '1'"
+    dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$(basename "$vm")' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == 1"
     dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"
     uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
     cdi=$(dra-cdi-device "$vm" "claim-$uid-0")
@@ -514,7 +513,7 @@ dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 D0="device('$LLM_DEVICE', '$DRA_POOL_DRIVER')"
 dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and attr($D0, 'persistent') == True and attr($D0, 'shared') == True and attr($D0, 'serial') == '$LLM_SERIAL' and attr($D0, 'size') == $LLM_DEV_SIZE"
-dra-assert "$COMMAND_OUTPUT" "capacity($D0, 'hosts') == '$LLM_HOSTS' and ${D0}['capacity']['hosts']['requestPolicy']['validValues'] == ['1', '$LLM_HOSTS']"
+dra-assert "$COMMAND_OUTPUT" "sorted(${D0}.get('capacity') or {}) == ['shares'] and quantity(capacity($D0, 'shares')) == $DRA_SHARES and request_policy($D0, 'shares') is None"
 dra-json "$VM2" deviceclass cxl-pool-persistent cxl-pool-shared
 dra-assert "$COMMAND_OUTPUT" "names() == ['cxl-pool-persistent', 'cxl-pool-shared']"
 # cxl-pool-shared does not match llm0: a pod with a claim of that class for
@@ -534,7 +533,7 @@ pool-vm-command "$VM2" "test ! -e $LLM_VM_MODEL_DIR && test ! -e $LLM_VM_IMAGE &
 
 echo "### B: the writer on VM1 takes $LLM_DEVICE exclusively and flashes the erofs image into it"
 t0=$(date +%s.%N)
-dra-apply "$VM2" <<< "$(dra-shared-claim-yaml llm-writer "$LLM_SERIAL" "$LLM_HOSTS" "mode: block" cxl-pool-persistent)
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml llm-writer "$LLM_SERIAL" "" "mode: block" cxl-pool-persistent)
 ---
 $(dra-script-pod-yaml writer "$VM1" llm-writer "$(llm-writer-script "$LLM_HEX")" "File:$LLM_VM_IMAGE")"
 llm-writer-wait "$VM2" writer 180
@@ -552,7 +551,7 @@ T_WRITE_MS="${T_WRITE_MS% ms}"
 grep -qx "device sha256: $LLM_IMAGE_SHA256" <<< "$LLM_LOG" ||
     error "the device of the writer does not have the image (sha256 $LLM_IMAGE_SHA256): $(grep '^device sha256:' <<< "$LLM_LOG")"
 dra-json "$VM2" resourceclaim -n "$DRA_NS" llm-writer
-dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME' and j['status']['allocation']['devices']['results'][0]['consumedCapacity']['hosts'] == '$LLM_HOSTS'"
+dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == $DRA_SHARES"
 dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE')['exclusive'] == True and device_data('$LLM_DEVICE').get('persistent') == True"
 uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 cdi=$(dra-cdi-device "$VM1" "claim-$uid-0")

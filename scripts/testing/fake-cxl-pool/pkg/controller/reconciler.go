@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
+	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
 )
@@ -47,25 +48,22 @@ type want struct {
 	device string // server device name, "" if not in the pool
 	node   string
 	host   *api.Host // nil: the node is not a pool host
-	// exclusive: a shared device allocated with all of its hosts capacity,
-	// attached with AttachRequest.Exclusive
+	// exclusive: a shared device allocated with all of its shares
+	// capacity, attached with AttachRequest.Exclusive
 	exclusive bool
 }
 
-// hostsCapacity is the capacity of a shared device: the number of nodes
-// that may attach it at a time.
-const hostsCapacity resourceapi.QualifiedName = "hosts"
-
 // exclusiveResult reports whether an allocation result of a shared device
-// consumes all of its hosts capacity: then no other host may attach the
-// device while it is attached for the claim.
+// consumes all of its shares, or none is recorded (no shares request):
+// then no other host may attach the device while it is attached for the
+// claim.
 func (c *Controller) exclusiveResult(r *resourceapi.DeviceRequestAllocationResult) bool {
 	d, ok := c.devices[r.Device]
 	if !ok || !d.Shared {
 		return false
 	}
-	q, ok := r.ConsumedCapacity[hostsCapacity]
-	return ok && q.Value() >= int64(c.cfg.SharedHosts)
+	q, ok := r.ConsumedCapacity[device.CapacityShares]
+	return !ok || q.Value() >= device.SharesUnlimited
 }
 
 // anyExclusive reports whether one of the wants of an attachment is
