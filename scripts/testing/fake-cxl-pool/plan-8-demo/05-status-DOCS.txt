@@ -1,0 +1,133 @@
+plan-8-demo: status of stream DOCS (plan-9 S3)
+==============================================
+Written 2026-10-20. Nothing committed. No VM used. Paths: N as in
+00-README. Texts copied from 05-status-DRV.txt (section 3, 4, 5, 6, 7)
+and 05-status-PCTL.txt (shape, exclusive rule) after both were final.
+
+Changes per file
+----------------
+N/docs/memory/cxl/index.md
+  driver intro: memdevs "sliced or shared". Vocabulary: shared reworded
+  (03 section 3), hosts row replaced by shares. DeviceClasses: eight,
+  new cxl-local-shared row, cxl-pool-shared and cxl-pool-persistent
+  rows: exclusive without a capacity request, shares: "1" for a share.
+N/docs/memory/cxl/local.md
+  intro and "What the plugin publishes" point to shared devices;
+  attribute shared reworded; cxl-local selects shared == false only.
+  New section "Shared local devices": configuration (sharedDevices,
+  matching, precedence, the "- not publishing ... as a shared local
+  device" log with DRV's reasons and verbosity, read at start), the
+  published device (DRV section 2 shape), claims on cxl-local-shared
+  (table: exclusive, one share, read-only share, one claim for several
+  pods; links to usage.md examples 13-15, the new sample and leases),
+  what Prepare does (SIZE = size of daxX.0, DRV deviation), the log
+  lines of DRV section 5 (claim, release, idle keep, start), the two
+  used-as-slices / used-shared texts in an error table with the Prepare
+  wrapper, the life cycle table of plan-9 03 section 7.
+  Limitations: sharedDevices for a multi-headed device without a
+  controller; a shared-device bullet (sharers = who may claim the
+  class, readOnly guards writes, never zeroed, region kept while
+  configured, dax only, volatile).
+N/docs/memory/cxl/usage.md
+  vocabulary list, feature gate row (shares); Helm: eight classes,
+  values example with sharedDevices; Devices of cxl.nri.io: a shared
+  memdev in the slice listing (0xc100e2e2), shared attribute row,
+  memoryBlockSize not on shared devices, capacity.shares; DeviceClasses
+  table: cxl-local shared == false, cxl-local-shared row, pool rows
+  reworded; DeviceConfig errors: block text reworded, "mode numa: a
+  shared device is used as dax only" moved to the both-drivers list
+  with the shares guard text; device/DeviceConfig table rows for shared
+  local devices, pool shared rows flipped (shares "1" = shared, nothing
+  = exclusive); persistent block prose; What the memory contains: shared
+  local devices; examples 6-8 reshaped (6 writer without capacity, 7 one
+  share, 8 read-only share), 12 (writer without capacity, reader with
+  shares "1"), new 13-15 (shared local device 0xc100e2e2 with
+  environment); Configuration file: sharedDevices key and example, read
+  at start; Files: localDevices.json holds shared claims.
+  Serial choice: usage.md and leases.md use 0xc100e2e2 for the shared
+  local device because 0xc100e2e1 is their sliced memdev of examples 1-3;
+  local.md uses 0xc100e2e1 as plan-9 03 does.
+N/docs/memory/cxl/leases.md
+  intro and dax paragraph: shared local devices; the plan-9 03 section 6
+  paragraph on shared devices (local or pool); --shared option text
+  (DRV); validation table: R4 row removed; plugin table: not shareable
+  (local memdev not configured shared), not a local device (serial of a
+  pool device), new "not a pool device" and "a local device of node
+  <X>, not of this node", hosts-capacity row removed, pool-disabled row
+  only for --source pool; examples with the shared local device;
+  protocol example "one share"; Companion objects: DRV section 4 (a
+  --serial in a slice narrows to one exactly request of its source and
+  class, firstAvailable otherwise, shared classes for --shared,
+  selectors, capacities) with a table of the shapes; Limitations: the
+  four companion classes.
+N/docs/memory/cxl/pool.md
+  published shape shares {value: 1M} without a policy (PCTL); shared
+  attribute row; the broker reads shared only; shared/exclusive bullets:
+  no request = exclusive, shares "1" = one host's share, head-limited
+  pools publish their heads; class row; the shared claim example gains
+  shares "1"; options table flipped; single-writer paragraph; status
+  data exclusive: true when the allocation consumed the whole value
+  (PCTL rule); node plugin step 1 mentions the shares guard (link, no
+  copy of the text).
+N/docs/deployment/helm/dra-driver-cxl.md
+  unchanged: it includes the chart README (DRV's); no hosts in it.
+N/deployment/samples/dra-driver-cxl/local-shared-writer-readers.yaml (new)
+  ResourceClaim of the writer (cxl-local-shared, serial 0xc100e2e2, no
+  capacity, restartPolicy Never pod writes a message), template of the
+  readers (shares "1", readOnly true), three reader pods.
+N/deployment/samples/dra-driver-cxl/pool-shared-writer-readers.yaml
+  writer without capacity (exclusive), readers shares "1"; header.
+N/deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml
+  writer without capacity, both reader templates shares "1"; header.
+
+Checks
+------
+- "hosts" left in docs/memory/cxl (without e2e.md) and the samples:
+  pool.md:112-113, local.md:486-490, index.md:43 only, all prose about
+  hosts that a device is attached to. No `hosts` key or capacity left.
+- Every text of plan-9 03 section 8 as DRV recorded it, counted over
+  index, usage, local, leases, pool and the helm doc
+  (/tmp/docs-check/once.py): exactly once each: shares guard (usage.md
+  both-drivers list), not a pool device and not of this node (leases.md
+  plugin table), mode numa dax only (usage.md both-drivers list), used
+  as slices / used shared (local.md error table), not publishing as a
+  shared local device and the claim log line (local.md), block text
+  (usage.md pool list), --shared usage (leases.md option table). The
+  removed texts (R4, no "hosts" capacity, writable only with all of its
+  hosts) appear nowhere.
+- Relative links and anchors of the six docs, and blob:/ tree:/ paths:
+  /tmp/docs-check/links.py: 0 bad.
+- YAML: python3 -I with yaml.safe_load_all on every sample: all parse
+  (local-shared-writer-readers.yaml: 6 documents).
+- Plain ASCII in all owned files; no TO VERIFY left.
+
+Follow-up: DRV section 9 (review fixes)
+---------------------------------------
+- The coordinator's rewording (zeroed once when the region is created,
+  never while it exists) in local.md (intro, Prepare step 2, life cycle,
+  limitations) and usage.md (What the memory contains) checked against
+  B1: consistent. Added in local.md: step 2 says the zeroing slows the
+  first claim of a large device and that a failure releases the new
+  region; the node reboot row says the new region is zeroed.
+- New texts, once each, in local.md: the B1 log "zeroed new shared
+  dax0.0 size ..." and the R4 log "region0 of the shared device is gone,
+  forgetting it and its claims [<uids>]" (log block); the B1 error
+  "zeroing new shared dax0.0: <cause>" and the R2 error "... allocated
+  as a shared device, which it is not any more" (Prepare error table,
+  intro reworded for all four rows); R4's behaviour as a life cycle row
+  ("the region disappears while the plugin runs": forgotten, the next
+  claim creates and zeroes a new region).
+- local-shared-writer-readers.yaml header: "never zeroes it" reworded to
+  the B1 contract; parses.
+- Checks rerun: links 0 bad, the four texts once each, plain ASCII.
+
+Not documented (deliberately)
+-----------------------------
+- The broker's request log line (DRV section 5): the docs have no table
+  of broker log lines; e2e.md (E2E) is where tests' greps are listed.
+
+Open TO VERIFY items: none.
+
+Requests: none.
+
+DOCS done

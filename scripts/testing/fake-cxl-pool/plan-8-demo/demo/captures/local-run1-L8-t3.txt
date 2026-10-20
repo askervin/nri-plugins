@@ -1,0 +1,4 @@
+SCHEDULER: DEVICES AND CLAIMS             08:46:21
+drivers: vm2 ok  vm1 ok
+memdev-c100e2e1 @vm2 1Gi shared
+  shared: reader-b ro, reader-c ro, reader-a ro

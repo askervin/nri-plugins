@@ -1,0 +1,6 @@
+POOL: fake-cxl-pool-server                08:59:49
+shared0 256Mi shared  attached
+  attached: vm1 exclusive
+at 0: "Hello from the writer, 08:59:32"
+0000: 48656c6c 6f206672 6f6d2074 68652077
+file /tmp/fake-cxl-pool/shared0.raw

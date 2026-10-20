@@ -1,0 +1,10 @@
+TRACE                                     08:56:33
+08:56:23 sched reader-a: lease scheduled on vm2
+08:56:23 kern  vm2 add region0 dax0.0
+08:56:23 drv   vm2 reader-a: prepared dax0.0 ro
+08:56:23 drv   vm2 reader-a: lease Ready dax0.0
+08:56:23 drv   vm2 reader-b: prepared dax0.0 ro
+08:56:23 drv   vm2 reader-b: lease Ready dax0.0
+08:56:25 kern  vm1 add region0 dax0.0
+08:56:25 drv   vm1 reader-c: prepared dax0.0 ro
+08:56:25 drv   vm1 reader-c: lease Ready dax0.0

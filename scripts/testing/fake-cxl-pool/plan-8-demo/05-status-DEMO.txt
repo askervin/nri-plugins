@@ -1,0 +1,294 @@
+plan-8-demo: status of stream DEMO (the demo itself)
+===================================================
+Written 2026-10-20 (DEMO). Nothing committed. Edited only demo/**
+(and this file). Paths: N, P as in 00-README; DEMO = P/plan-8-demo/demo.
+
+Phase 1 (desk)
+==============
+
+What exists
+-----------
+DEMO/README.txt   the presenter's guide: prerequisites (test00-up of
+                  both VMs, the driver image), setup/teardown/reset, the
+                  2 x 3 layout with the command of each 50 x 10 terminal,
+                  both scripts step by step with what to point at in which
+                  terminal (03 sections 5-6), the zooms, what to do when
+                  something hangs, the files.
+DEMO/bin/demo     the entry point (bash): setup local|pool, teardown,
+                  reset local|pool, commands, view t2..t6 [local|pool],
+                  local|pool [N|N-|--auto], zoom ..., selftest.
+DEMO/bin/common.py  state (run/state.env), ssh (ssh -F <vm>/.ssh-config
+                  node: ControlMaster auto of the e2e .ssh-config), the
+                  probe call, the claim/slice helpers (requester, lease,
+                  holders exclusive/share by consumed shares vs the
+                  published value, lease memory words), 50-column
+                  formatting, color.
+DEMO/bin/probe.py   runs as root in a VM, sent over ssh stdin (nothing
+                  installed): kubectl (pods, claims, slices, driver pods,
+                  in threads), sysfs (memdevs, regions -> memdev through
+                  target decoder -> endpoint uport, dax devices and their
+                  driver), /proc/*/maps of pod processes (dax mappings,
+                  r--s/rw-s, pod uid from the cgroup), the first bytes of
+                  the dax device of a serial (mmap 2 MiB read-only). One
+                  call per node per refresh.
+DEMO/bin/views.py   T2 PODS & LEASES, T3 SCHEDULER, T4 NODES, T5 TRACE, T6
+                  MEMORY (local) / POOL (pool), 1 s refresh, title with
+                  clock, <= 9 lines ("... N more"), cut to 50, "stale" on a
+                  failed refresh (last good rendering kept), color (on in a
+                  tty, --no-color/NO_COLOR off), --once (plain, captures),
+                  --sample DIR (test data). T5 reads the host-side streams
+                  of dra-trace-start (no ssh) and translates them to one
+                  line per event (sched, api, drv, kern, pool, ctrl, kube);
+                  lease ids resolve to requester pods when shown.
+DEMO/bin/steps.py   the step runner (T1): caption, command as typed, Enter
+                  run / s skip / z zoom / q quit, the command in VM2
+                  (cd /root/demo, KUBECONFIG with the demo namespace), a
+                  1-2 line result from looking at the cluster afterwards,
+                  the time; N, N-, --auto (pauses DEMO_AUTO_PAUSE=2 s,
+                  timings appended to run/timings.txt); full outputs in
+                  run/steps.log.
+DEMO/bin/zoom.py    slice, claim, pod, env, cdi, driver, kernel, cxl,
+                  pool, bytes, last (03 section 7); "demo zoom" pages with
+                  less -FRX when there is a tty.
+DEMO/bin/tools/   cxl-demo.py + wrappers write, read, hold, env: the
+                  ConfigMap demo-tools at /demo in the pods; they use the
+                  lease's fd through "cxl-request fd --lease ID --exec"
+                  (newest dax lease of the container, or DEMO_LEASE);
+                  write keeps its mapping DEMO_HOLD=3 s (so T4 shows
+                  "mapped: writer rw"), a read-only fd gives "refused:
+                  read-only (EACCES)" and exit 1; hold maps read-only in
+                  the background until "hold --stop" or the pod ends.
+DEMO/bin/selftest.py  the desk check (below).
+DEMO/manifests/{local,pool}/{writer,readers}.yaml  the pods (python:3-alpine,
+                  sleep, demo-tools at /demo, one lease claim each) and,
+                  in writer.yaml, the ResourceClaimTemplate cxl-lease;
+                  placement by the node label cxl-demo/node=vm1|vm2 that
+                  setup sets (local: all vm2; pool: writer vm1, reader-a/b
+                  vm2, reader-c vm1).
+DEMO/e2e/          a test suite for the e2e framework: demo.test-suite/
+                  dra-driver-cxl/{dra.source.sh, helm values} and
+                  n4-cxl-shared-2/{every non-test file} are links to
+                  E (refreshed by every "demo setup"/"teardown"), lib a
+                  link to N/test/e2e/lib; test90-demo-setup and
+                  test91-demo-teardown are the setup and teardown code.
+DEMO/testdata/     make-samples.py (writes the scenarios), scenarios
+                  local-L1..L9, local-L5-stale, local-overflow (12 readers,
+                  driver restarting/down), pool-L1..L9, trace-local
+                  (hand-made streams of L1-L9 with DRV's log lines),
+                  captured-test13 (the real trace streams of an earlier
+                  test13 run and two real objects: the writer's companion
+                  claim of test13, the ResourceSlices of test14, both of
+                  the pre-plan-9 shapes), renderings.txt (every rendering).
+
+Setup and teardown (through the e2e framework)
+-----------------------------------------------
+"demo setup CASE" refreshes the links and runs, in N/test/e2e,
+./run_tests.sh DEMO/e2e/demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+test90-demo-setup with DEMO_CASE and DEMO_DIR in the environment: the
+same VM (n4-cxl-shared-2-fedora-43-containerd), the same vm-setup and
+image import (vm-nri-plugin-deploy) as every e2e test, and the existing
+helpers: pool-cluster-require, pool-vm-require, pool-vm-reset,
+pool-server-start (local: no pool devices, the local device discovered;
+pool: shared0 256Mi shared 0xc1ae0001), pool-client-install, dra-build,
+dra-local-find (the serial before the driver runs), DRA_DRIVER_CONFIG=
+'sharedDevices: ["<serial>"]' (E2E's, when dra.source.sh has it; else
+the same values file written by the test), dra-install, dra-local-device
+(plus a check that the device is published shared: true),
+dra-pull-images (python, pause) on both nodes, dra-vm-put-file, the
+ConfigMap demo-tools, /root/demo (manifests, kubeconfig with namespace
+cxl-demo), node labels, dra-trace-start. Then "trap - EXIT" keeps it all
+running and run/state.env records it (VM dirs and node names, NS,
+SERIAL, POOL_URL, server pid and log, TRACE_DIR).
+Not reused, and why: cxl-tools-install (it finds the source tree from
+the test's path, which is under DEMO here): setup requires cxl, daxctl,
+cxl-dump in both VMs (test00-up installs them) and says so if missing.
+"demo teardown" runs test91-demo-teardown: state moved away first (the
+views stop probing), dra-trace-stop + dra-trace-summary into its output,
+demo pods deleted and companions waited for, then plan-9 R9: if the
+local device is attached and has a region, helm-reconfigure with the
+values without sharedDevices, rollout status, and a wait (90 s) until
+the region is gone (a warning if not: the guest release of
+dra-local-detach destroys it), then dra-uninstall, dra-local-detach,
+dra-state-cleanup of both, pool-cleanup (server pid from the state, or
+found on the port), labels and /root/demo removed, and both VMs checked
+to have no memdevs and no regions (cxl-assert). It runs without a state
+file too (cleans what it finds) and can be run again.
+"demo reset CASE": kubectl delete -f CASE/ in /root/demo, then a wait
+until no companion pod or claim is left (90 s).
+
+How it was checked (all on the host, desk)
+------------------------------------------
+- bash -n of bin/demo, bin/tools/{write,read,hold,env}, test90 and test91
+  code.var.sh: ok.
+- shellcheck -e SC2154,SC2034,SC1090,SC2148,SC2016 on the same files:
+  clean (one SC2087 in cmd-reset fixed: the case goes as $1 of a quoted
+  here-document).
+- python3 -m py_compile of bin/*.py, bin/tools/cxl-demo.py,
+  testdata/make-samples.py: ok.
+- demo selftest: "selftest: ok, 92 renderings fit 50 x 10": T2, T3, T4,
+  T6 of the 16 scenarios with objects; T5 of trace-local and
+  captured-test13 at four points of time each; T4 and T6 from probe.py run
+  on a fake /sys, /proc, /dev tree (memdev, endpoint uport link, region,
+  dax device with driver link, a reader r--s, a writer rw-s, a non-pod
+  process that is ignored, the bytes in a regular file); T1 of all 18
+  steps with two full result lines and the timing line (max 9 rows: L5
+  and L7 commands wrap to 4 lines); helper checks (quantities, wrapping,
+  sizes, title width). Every line printable ASCII. All renderings are in
+  testdata/renderings.txt (TZ=UTC).
+- The views' live loop with a state of VM dirs that do not exist: each
+  view says "stale" / "no data yet: <ssh error>" in 0.1 s and goes on;
+  without a state: "demo not set up". T5 live loop on trace-local.
+- The container tool against a fake cxl-request (regular file as the
+  memory): write, read, the read-only write refusal "refused: read-only
+  (EACCES)" with exit 1, hold in the background and hold --stop, env.
+- steps.py result functions on sample outputs (lease JSON, three Pending
+  JSON lines, reads and holds, kubectl's "command terminated with exit
+  code 1" ignored).
+- The link refresh of the demo suite (13 links, none broken).
+- Not checked at the desk (needs the VMs, phase 2): setup, teardown,
+  reset, every step, the zooms, ssh speed of the views.
+
+Assumptions about names, and where they come from
+--------------------------------------------------
+- sharedDevices (config key, plain list, serial 0x<hex>): 02, plan-9
+  section 2; confirmed by 05-status-DRV section 6.
+- DRA_DRIVER_CONFIG of dra-install: 05-status-E2E (the setup falls back
+  to its own values file when dra.source.sh lacks it).
+- Published device memdev-<hex>, attribute shared true, capacity shares
+  "1M" without policy, consumed "1M" (exclusive) / "1" (share), class
+  cxl-local-shared: 05-status-DRV sections 2, 4; the pool device shared0
+  with shares 1M: 05-status-PCTL via 05-status-E2E.
+- Companion claims: one exactly request "lease" of class
+  cxl-local-shared / cxl-pool-shared with the serial selector, shares
+  "1" for a share, none for exclusive, DeviceConfig {mode dax, readOnly}
+  (05-status-DRV section 4); labels cxl.nri.io/lease, requester-uid,
+  node and the annotation cxl.nri.io/requester=<ns>/<pod>/<ctr>
+  (E/dra.source.sh DRA_*_LABEL, leases.md "Companion objects").
+- Lease response fields (lease, state, mode, shared = the --shared flag,
+  readOnly, dax) and "cxl-request list" {"leases": [...]}: leases.md,
+  05-status-DRV section 4 (shared false for the writer).
+- Log lines used by T5: lease broker "requests ... (source .., mode ..,
+  shared .., shared device .., read-only ..)", "Ready (... dax ...)",
+  "releasing (...)", "released"; local "claim <uid> request ...: shared
+  daxX.Y size N read-only B exclusive|1 share", "created regionN (devdax,
+  dax daxX.Y, ...)", "claim <uid>: released shared daxX.Y, claims left
+  [...]", "keeping ... of the idle shared device", "released regionN";
+  pool driver "claim ns/name: prepared ... as memN regionN dax daxX.Y",
+  "unprepared claim"; controller "attached|detached DEV to|from NODE ...
+  for ns/name"; server "attachment DEV@HOST: attached|detached|failed|
+  exclusive B"; udev "KERNEL[..] add|remove PATH (cxl|dax)"; events
+  Scheduled, FailedScheduling, BindingConditionsPending, Attached;
+  claims watch lines of dra-trace-start's stamper. Sources:
+  05-status-DRV section 5 and the captured streams of test13. Unmatched
+  lines are dropped, so a changed text loses a trace line, not a view.
+- test18's steps (05-status-E2E): the same command shapes as the demo
+  (writer without --exec, fd --lease --exec, release --all, readers
+  --wait 0s then fd). The demo keeps them.
+- The namespace cxl-demo, the node label cxl-demo/node, /root/demo in
+  VM2, ConfigMap demo-tools: the demo's own.
+
+Deviations from 03-demo-design, with reasons
+--------------------------------------------
+- T3: the driver states are the first content line ("drivers: vm2 ok
+  vm1 ok  pool ok"), the title keeps the clock that every view has.
+- T5 repaints the newest 9 events under its title instead of letting the
+  terminal scroll: same content, and the title/clock stays.
+- T5 says "reader-a waits: cannot allocate" (the scheduler's own reason,
+  "cannot allocate all claims") rather than "no free hosts".
+- T6 local adds one hex line (16 bytes at 0) and "used by"/"shared by"
+  and "waiting" from the claims; T6 pool shows the device, attachments
+  (exclusive), owner, the text and hex at 0 and the backing file, from
+  the server's REST API and the file on the host (no ssh).
+- Captions shortened to fit one 50-column line: L1 "a writer starts on
+  vm2; it has no CXL memory yet", L5 "readers ask for a read-only share:
+  they must wait", L7 "each reader reads the line and keeps it mapped"
+  (/demo/read and /demo/hold in the one command of L7).
+- zoom cxl runs "cxl list -M -R -X -u" (memdevs, regions, dax devices):
+  -D (decoders) shows a dozen decoders that tell the audience nothing.
+- zoom last (the full output of the last step) is extra.
+
+VM use in phase 1
+-----------------
+None intended. Two contacts happened, both read-only: early on one
+"ssh -F N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config node
+'command -v python3; python3 --version'" (to learn that the VM has
+python3 3.14 for the probe; it should have waited for phase 2), and in
+the desk test of the T6 pool view a GET of /api/v1/devices/shared0 on
+127.0.0.1:9909, which answered 404: a fake-cxl-pool-server was running
+on the host at that time (E2E's, presumably). Nothing was changed.
+
+Open items (phase 2)
+--------------------
+- Rehearse both scripts with --auto twice each, run all views meanwhile,
+  capture the six views at L2, L5, L6, L8 (views.py --once) into
+  DEMO/captures/, measure step timings (run/timings.txt), leave the VMs
+  clean.
+- Load: four ssh views each start kubectl 1-3 times a second in VM2;
+  measure the refresh time and VM2's CPU; if it is too much, raise
+  --interval of T3/T6 or share one probe between views.
+- The pool server started by test90 is a child of run_tests.sh that
+  outlives it (stdin /dev/null, output to its log): verify it survives
+  the end of setup and the closing of the terminal that ran it.
+- T5 follows the driver pods that ran at setup (dra-trace-start); after
+  a driver restart, E2E's dra-trace-driver-follow could be added as
+  "demo trace-follow vm1|vm2".
+- The R9 path of teardown (helm-reconfigure without sharedDevices
+  destroys the region) runs for the first time on the VMs; E2E's
+  dra-local-shared-cleanup (guest release with the driver gone) is the
+  alternative if it does not.
+- The trace regexes against the real lines of the new driver.
+
+DEMO phase 1 done
+
+Phase 2 (VMs, 2026-10-20)
+=========================
+Image: build/images/nri-dra-driver-cxl-image-1c361fc62a4d.tar (the
+newest; setup imported it, checked in run/test90-demo-setup.log).
+Runs (all PASS): setup local 59 s; local --auto twice (63 s each);
+teardown 47 s; setup pool 56 s; pool --auto twice (67 s each);
+teardown 34 s. All six views ran live during every rehearsal: no
+refresh went stale (0 "stale" in their outputs).
+Step timings (run/timings.txt, s):
+  local L1-L9: 2.2/2.2 1.1/0.4 3.9/3.8 2.0/2.0 0.7/0.8 2.2/2.2 2.9/3.1 0.5/0.5 2.4/3.1
+  pool  L1-L9: 2.0/2.2 5.6/5.6 4.0/3.9 2.0/2.0 0.7/0.7 2.3*/10.3 3.2/3.2 0.5/0.5 2.0/1.6
+  (L3 has the writer's 3 s hold; local L2 1.1 s on the first run: the
+  driver created and zeroed the region; * pool run 1 L6 waited only for
+  the allocation, run 2 waits until the readers' leases are Ready.)
+Load on VM2 (8 CPUs, /proc/stat over 60 s): idle 0.08 CPUs; the four
+ssh views at 1 s 1.31 CPUs with one kubectl call per kind, 1.10 CPUs
+after merging them into one call per refresh. One probe costs 0.05-0.28
+CPU-s, mostly kubectl. Kept at 1 s; --interval is the knob.
+Captures: DEMO/captures/<case>-run<1|2>-L<2|5|6|8>-t<1..6>.txt, 96
+files (T1 cut from the runner's output, T2-T6 by "demo capture"), all
+within 50 x 10.
+Changes in phase 2:
+- T5: "zeroed new daxX.Y (once)" (DRV 9 B1); the attach shown once (the
+  controller's log, not also the claim's Attached event); a demo pod's
+  own lease claim no longer shows "claim created".
+- T3/T6: holders and waiting pods sorted.
+- probe.py: one kubectl call for all kinds of a view (-n NS or -A).
+- steps.py: the VM commands get the host's TZ (the writer's line showed
+  UTC); L6 waits for the readers' companion pods Running ("leases Ready
+  after N s") instead of their allocation; a newline after --auto steps.
+- zoom: kernel without cxl_pci config/PCI chatter, driver without
+  client-go chatter, cdi says when there are no specs.
+- demo: "capture LABEL"; the run_tests.sh check uses pgrep -x (pgrep -f
+  matched the caller's own command line).
+- README: zeroing once, timings and load, captures.
+Not changed, as the coordinator wrote: the lease list's shared false for
+the writer is what the demo shows ("(exclusive)" from shared false); the
+--serial narrowing is what the T3 / zoom claim code reads (one exactly
+request). E2E's later dra.source.sh changes (DRA_EXIT_TRAP empty by
+default) did not affect setup or teardown (pool setup and both teardowns
+ran after them).
+Teardown checked: helm upgrade without sharedDevices made the driver
+destroy region0 (no warning), the device detached, both VMs: 0 memdevs,
+0 regions (cxl-assert), both nodes Ready, no pod not Running, no
+namespace cxl-demo, no cxl-demo labels, no /root/demo, port 9909 free,
+no trace collector or server left on the host. The VMs are as E2E left
+them.
+Open: none blocking. The T5 driver stream still follows the pod of setup
+(E2E's dra-trace-driver-follow could be wired in if a driver restart
+during a talk matters).
+
+DEMO phase 2 done

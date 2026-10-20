@@ -1,0 +1,103 @@
+plan-8-demo: orchestrator status
+================================
+2026-10-19: task received; F1 found (local devices not shareable through
+leases); user: add shared local devices; then: consult Fable first.
+00-README, 01-findings, 03-demo-design (layout 2 x 3, views T1-T6,
+scripts L1-L9 local and pool, zooms) written while Fable worked.
+2026-10-20: Fable's plan-9-local-cxl-sharing (00-04) written; the user
+answered its questions: rename hosts -> shares for both sources, no
+artificial limit, exclusive without knowing the number of shares, region
+kept while shared, no zeroing when idle (Fable's recommendation), two
+tests. Fable verified in the v1.37 allocator that a capacity without a
+requestPolicy is consumed in full by a request that omits it (exclusive)
+and exactly by "1" (a share); claim capacity values are not validated,
+so the drivers refuse shares < 1 at Prepare. plan-9 revised (F30-F36, 03,
+04). 02-shared-local-design (decisions, orchestrator choices:
+SharesUnlimited 1000000, no upstream issue filed, sharedDevices plain
+list, class cxl-local-shared) and 04-plan (streams DRV = plan-9 S1+S2+
+S5's driver half, so that one stream owns package main of the driver;
+PCTL, DOCS, E2E, DEMO) written; 03-demo-design fitted (T3 shows
+exclusive/shared/waiting holders, region kept while shared).
+Started: DRV, PCTL, DOCS (desk), E2E phase 1 (desk), DEMO phase 1 (desk).
+VM order: E2E phase 2 after DRV and PCTL, then DEMO phase 2.
+2026-10-20: PCTL done (05-status-PCTL.txt): shares {1M, no policy},
+exclusive = consumed shares >= SharesUnlimited (or none recorded),
+-shared-hosts removed, uses DRV's constants; tests pass, no new lint
+findings. Its request (test16 still passes -shared-hosts) relayed to E2E.
+2026-10-20: E2E phase 1 done (05-status-E2E.txt): helpers (DRA_SHARES,
+DRA_DRIVER_CONFIG, DRA_CONTROLLER_ARGS removed, dra-shared-claim-yaml
+SHARES, dra-local-shared-wait/-cleanup, dra-driver-restart), renamed
+asserts in test11/12/13/16, test17 and test18 written; static checks
+clean but a pre-existing SC2015 (info) at test12:536, accepted. Deviations
+accepted (test17 F texts, test18 follows the demo's commands, shared0 in
+test18's pool for E3).
+2026-10-20: DRV done (05-status-DRV.txt), image 7da3ee064740: all of
+plan-9 S1+S2+S5-driver; deviations accepted (AcquireShared, SIZE = dax
+device size, modeFor checks readOnly before the shared rule) but one:
+"a serial does not narrow the sources" -> orchestrator asked DRV to
+narrow (one exactly request for the named device's source and class;
+firstAvailable only without --serial) and rebuild.
+2026-10-20: DRV narrowed the sources by serial (one exactly request of the
+named device's source and class; firstAvailable only without --serial or
+for an unknown serial; lease field deviceSource); image
+nri-dra-driver-cxl-image-0cb2dd6a9daa.tar. VMs handed to E2E phase 2;
+DOCS told to copy the final texts.
+2026-10-20: DOCS done (05-status-DOCS.txt): local.md "Shared local
+devices" section, usage/leases/pool/index reshaped to shares and
+exclusive-by-default, sample local-shared-writer-readers.yaml, pool
+samples reshaped; every recorded text once, links resolve, samples parse.
+Accepted: usage.md/leases.md use 0xc100e2e2 for the shared local device
+(0xc100e2e1 is their sliced memdev).
+2026-10-20: DEMO phase 1 done (05-status-DEMO.txt): demo/README.txt,
+bin/demo (setup/teardown/reset, views t2-t6, local|pool steps, zoom,
+selftest), probe.py, pod tools, manifests; setup and teardown run through
+the e2e framework from demo/e2e/demo.test-suite (links to the
+dra-driver-cxl helpers; test90 setup, test91 teardown that unconfigures
+the shared device before detaching); selftest: 92 renderings fit 50 x 10.
+Deviations accepted (T3 driver states on the first content line, T5
+repaints the newest 9 events, shortened captions, zoom cxl -X). Waits for
+E2E phase 2 before its VM rehearsals.
+2026-10-20: review R-D (06-review-D.txt): B1 a new shared region is not
+zeroed (the first sharer reads earlier tenants' bytes: old slices,
+memory across a reboot), R1 deviceBySerial takes another node's slice
+with the same serial, R2 the sliced path accepts a stale shares
+allocation, R3 missing error-path tests, R4 a kept shared device whose
+region vanished fails until restart; S1-S6. Accepted all. Decision on
+B1 (orchestrator): zero the dax device once when its shared region is
+created (not on reuse of a kept region, not between sharers, not idle):
+tenant isolation as for slices, and the single-writer flow keeps its
+bytes (the writer writes after the creation; the region is kept while
+shared). plan-9 03 D3 and the docs amended accordingly. Sent to DRV.
+2026-10-20: DRV review fixes done (05-status-DRV.txt section 9): B1
+(zeroed new shared dax0.0, logged), R1, R2 (new refusal text), R3, R4,
+S1-S3, S5 (S4 skipped: E2E greps the line; S6 is PCTL's comment, left);
+image nri-dra-driver-cxl-image-1c361fc62a4d.tar given to E2E for the final
+runs; DOCS asked to add the new texts.
+2026-10-20: E2E phase 2 done (05-status-E2E.txt) on image
+1c361fc62a4d: test17 PASS 254 s, 255 s; test18 PASS 212 s, 216 s; the
+whole suite (12 tests) PASS in 1994 s. Timings: test17 writer claim to
+Running incl. region creation and zeroing 2.5/3.8 s, writer deleted to
+both readers Running 2.6/2.9 s; test18 writer request to Ready 1.35/1.15
+s, release --all to three readers holding 3.17/3.18 s. No driver bugs
+found; test bugs fixed. SC2015 at test12:536 (pre-existing, info): left
+as is. VMs handed to DEMO phase 2; review R-T started.
+2026-10-20: review R-T (06-review-T.txt): B1 the zeros-before-write
+check is vacuous (the device's backing may be zero already), R1 a failing
+second dra-install swaps the test's trap, R2 dra-helm-values errors lost
+in a subshell, R3 timing-based restart checks, R4 test18 L9 differs from
+the demo's (pods deleted with leases held); S1-S7. All accepted; E2E fixes
+them on the desk while DEMO has the VMs, reruns afterwards.
+2026-10-20: E2E R-T fixes ready (desk): dra-local-seed (junk at 0, 1M,
+size-4096 through a guest-made region, destroyed before dra-install),
+DRA_EXIT_TRAP for dra-install, dra-helm-values || error,
+dra-plugin-log-wait with the driver's keeping/releasing lines, test18 L9
+before G as the demo does, S1-S6. Waits for the VMs (DEMO first); then
+test17/test18 twice each and the whole suite once.
+2026-10-20: DEMO phase 2 done (05-status-DEMO.txt): both demos rehearsed
+--auto twice each on image 1c361fc62a4d, all six views live, no refresh
+failure; setup 59/56 s, --auto 63/67 s, teardown 47/34 s (local/pool);
+the slowest steps pool L2 5.6 s (attach) and pool L6 10.3 s (readers
+Ready after the writer's release); four ssh views cost VM2 1.1 CPUs at a
+1 s refresh; 96 captures within 50 x 10 in demo/captures/; fixes: T5
+zeroing/attach lines, sorted names, host time zone, L6 waits for Ready,
+zoom noise, pgrep -x. VMs handed back to E2E for its reruns.

@@ -1,0 +1,39 @@
+plan-8-demo: findings
+=====================
+Written 2026-10-19 (orchestrator), branch 5jg-cxl at 33e85f71a + the
+uncommitted test16 khugepaged fix.
+
+F1 Local memory could not be shared through leases, by design:
+   - docs/memory/cxl/leases.md:120-122 "A local slice is never shared
+     through a lease"; pkg/cxl/api/api.go:169 refuses --shared with
+     --source local ("local devices are not shareable; share a
+     ResourceClaim between pods instead"); broker.go companionSources
+     "Shared devices are pool devices only" (l.898).
+   - every local dax slice is zeroed at Prepare (local.md "What Prepare
+     does" 5), so a reader after the writer would read zeros;
+   - the only local sharing was one ResourceClaim referenced by several
+     pods (one slice, one DeviceConfig: no read-only readers, no waiting).
+   The user chose to add shared local devices (00-README).
+F2 Pool sharing exists and is tested: test13-dra-shared-one-writer-many-
+   readers: writer lease without --shared takes all "hosts" of the shared
+   pool device (exclusive), readers lease --shared --read-only and wait
+   (companion pods Pending, Unschedulable), the writer exits, the readers
+   get the device at once and read the writer's bytes; the fd of a
+   read-only lease refuses a writable mapping (EACCES).
+F3 The "hosts" capacity of a shared device counts claims, whatever their
+   node (plan-7 29-erofs-status, test16 run 1): it is the right model for
+   containers sharing a local device on one node too.
+F4 The local device of VM2 (n4-cxl-shared-2) is attached through
+   fake-cxl-pool-server (dra-local-device in E/dra.source.sh sets
+   DRA_LOCAL_SERIAL etc.); VM1 has none.
+F5 The driver configuration (DriverConfig in D/driver.go) has
+   ignoreDevices with matching by name, cxl/memN, major:minor or serial
+   (node_state.go memdevIgnoreReason); a shared-device list fits next to
+   it. The chart passes .Values.config as the driver's config file.
+F6 Texts that tests assert and that the change touches: test12:631
+   ('local devices are not shareable; share a ResourceClaim between pods
+   instead', request --shared --source local --size 64Mi).
+F7 Demo constraints: 6 terminals of 50 x 10, visible together; kubectl,
+   helm and the cluster live in the VMs (reached with ssh -F
+   <vm dir>/.ssh-config vagrant@node), the pool server on the host; no new
+   host dependencies (bash, python3, ssh, curl are there).

@@ -1,0 +1,10 @@
+TRACE                                     08:45:39
+08:45:37 drv   vm2 writer asks dax rw excl
+08:45:37 api   writer: claim created
+08:45:37 api   writer: allocated memdev-c100e2e1
+08:45:37 sched writer: lease scheduled on vm2
+08:45:37 kern  vm2 add region0 dax0.0
+08:45:37 drv   vm2 created region0 dax0.0
+08:45:38 drv   vm2 zeroed new dax0.0 (once)
+08:45:38 drv   vm2 writer: dax0.0 rw excl
+08:45:38 drv   vm2 writer: lease Ready dax0.0

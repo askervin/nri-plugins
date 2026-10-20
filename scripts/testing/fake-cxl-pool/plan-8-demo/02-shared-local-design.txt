@@ -1,0 +1,32 @@
+plan-8-demo: shared local devices (the contract)
+================================================
+Written 2026-10-20 (orchestrator). The contract is
+../plan-9-local-cxl-sharing/03-design.txt (Fable, revised 2026-10-20 to
+the user's answers); this file records the decisions and how plan-8 uses
+it.
+Decisions (user, 2026-10-20, plan-9 02-options section 4):
+- Q1/Q2: the count capacity is renamed "shares" for local and pool shared
+  devices, published without a requestPolicy and practically unlimited
+  (device.SharesUnlimited = 1000000, prints 1M); EXCLUSIVE = a claim (or a
+  lease's companion claim) that requests no shares, which the scheduler
+  counts as the full value (k8s.io/api v0.37 resource/v1 types.go:702-711,
+  allocator consumable_capacity.go:127-150, plan-9 F30-F33); a SHARE =
+  capacity.requests.shares: "1" (cxl-request --shared). Both drivers
+  refuse a claim that consumed less than 1 share at Prepare (Kubernetes
+  does not validate claim capacity values: shares "0" would fit next to an
+  exclusive holder).
+- Q3: a shared local device keeps its region and dax device while it is
+  configured shared, also when idle.
+- Q4: no zeroing when idle.
+- Q5: two new e2e tests: test17-dra-local-shared (claims) and
+  test18-dra-local-shared-one-writer-many-readers (leases, the demo's
+  local script L1-L9 of 03-demo-design section 5).
+- Orchestrator: SharesUnlimited 1000000 as plan-9 proposes; no upstream
+  issue filed (the user may decide); configuration
+  sharedDevices: ["<serial or name>"] (matched like ignoreDevices); class
+  cxl-local-shared.
+Used by the demo: the setup installs the driver with
+sharedDevices: [<VM2's local device>]; the writer types
+"cxl-request request --serial S --mode dax", the readers
+"cxl-request request --serial S --shared --read-only"; the T3 view shows
+"exclusive: <pod>", "shared: <pods>", "waiting: <pods>" per device.

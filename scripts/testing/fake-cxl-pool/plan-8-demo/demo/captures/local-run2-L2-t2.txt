@@ -1,0 +1,3 @@
+PODS & LEASES                             08:47:19
+POD       NODE STATE   LEASE    MEMORY
+writer    vm2  Running 17e76e97 dax rw excl

@@ -1,0 +1,87 @@
+plan-8-demo: implementation plan
+================================
+Written 2026-10-20 (orchestrator). Contracts: ../plan-9-local-cxl-sharing/
+03-design.txt (shared local devices, shares, exclusive by default) and
+03-demo-design.txt (the demo). plan-9's 04-plan.txt streams, regrouped so
+that no two streams edit the same Go package at a time: plan-9 S1, S2 and
+the driver half of S5 all live in package main of D, so one stream (DRV)
+does them.
+
+Rules for every stream (as plan-7 23-erofs-plan.txt)
+- Read first: N/.github/skills/*/SKILL.md (coding style, e2e tests,
+  images), ../plan-9-local-cxl-sharing/00-README.txt, 03-design.txt and
+  04-plan.txt (your plan-9 streams), this directory's 00-04, then the
+  sources your section names.
+- Nothing committed; edit only the files your stream owns; a change
+  elsewhere is a Request in your status file 05-status-<S>.txt.
+- No host installs or native builds besides the project's make targets.
+- VMs: one stream at a time: E2E, then DEMO; the orchestrator hands them
+  over. One run_tests.sh at a time. Never device_del a device a guest
+  uses; a shared local device keeps its region while configured, so
+  unconfigure it before detaching (plan-9 R9).
+- Status file with what you did, deviations with reasons, verification
+  commands and results, Requests; end with "<S> done".
+
+DRV  plan-9 S1 + S2 + S5's driver half
+  Owns: pkg/cxl/device/**, pkg/cxl/api/**, cmd/cxl-request/**, D/**,
+  deployment/helm/dra-driver-cxl/** (deviceclasses.yaml, values.yaml
+  comment, chart README if it names hosts).
+  Do: plan-9 03 sections 2-9 for D, the api and cxl-request: constants
+  (CapacityShares, SharesUnlimited, ClassLocalShared), config
+  sharedDevices, publishing, prepare/unprepare of shared local devices
+  (no zeroing, region kept while configured shared), the shares guard in
+  both drivers, the lease path (R4 removed, companion shapes, refusal
+  texts), the pool driver's texts; unit tests of plan-9 04 S1 e, S2 and
+  S5's driver part. Build the image at the end.
+  Checks: gofmt, go vet, go test -race ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/...
+  ./cmd/cxl-request/..., golangci-lint on the changed packages (the whole
+  tree stops at the user's untracked
+  cmd/plugins/balloons/policy/podresourcehints_test.go: say so), helm
+  template, make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1
+  OTHER_IMAGE_TARGETS= BINARIES= images.
+  Done: status lists the attribute set, every text, the companion claim
+  shapes, log lines tests may grep, the image tarball.
+
+PCTL plan-9 S5's fake-cxl-pool half
+  Owns: P/pkg/controller/**, P/cmd/fake-cxl-pool-controller/**,
+  P/README.md, P/config.example.yaml if it names hosts.
+  Do: publisher publishes shares {value: SharesUnlimited} without a
+  policy (import the constant from pkg/cxl/device once DRV has it, else a
+  local const with a TODO), exclusiveResult = consumed shares >= the
+  published value, SharedHosts/-shared-hosts removed, README. Unit tests.
+  Checks: go vet, go test -race ./scripts/testing/fake-cxl-pool/..., gofmt,
+  golangci-lint on P (no new findings).
+
+DOCS plan-9 S3
+  Owns: docs/memory/cxl/** except e2e.md, docs/deployment/helm/dra-driver-cxl.md,
+  deployment/samples/dra-driver-cxl/**.
+  Do: plan-9 03 sections 3-11 docs rows, examples, samples (new
+  local-shared-writer-readers.yaml), texts copied from DRV's status (wait
+  for it; do not invent). Done when no "hosts" remains but in prose about
+  pool attachments, every text appears once in its table, links resolve.
+
+E2E  plan-9 S4
+  Owns: E/dra.source.sh, E/n4-cxl-shared-2/{test11,test12,test13,test16}
+  code.var.sh (the asserts of plan-9 F35 only), E/n4-cxl-shared-2/
+  test17-dra-local-shared/**, test18-dra-local-shared-one-writer-many-
+  readers/**, docs/memory/cxl/e2e.md.
+  Desk now; VMs after DRV and PCTL are done (the orchestrator says so).
+  test18 follows 03-demo-design section 5 (L1-L9) step for step, with
+  plan-9 04 S4's assertions. Done: test17 and test18 PASS twice in a row,
+  then the regression (./run_tests.sh memory.test-suite/dra-driver-cxl)
+  passes; status with verdicts, durations, timings, final VM state.
+
+DEMO the demo itself
+  Owns: plan-8-demo/demo/** (README.txt for the presenter, bin/, manifests).
+  Desk now (views, step runners, zooms, setup/teardown against the
+  contracts; dry-run the renderers on captured JSON); VMs after E2E's
+  final runs: rehearse both scripts with --auto twice each, fit every
+  view to 50 x 10, measure step timings, leave the VMs clean.
+  Done: demo/README.txt says how to start each terminal and run each
+  step; both rehearsals pass; screenshots (text captures of the six
+  views at the key steps L2, L5, L6, L8) in demo/captures/.
+
+Reviews (after DRV, PCTL, E2E done): R-D (DRV+PCTL against plan-9 03),
+R-T (test17/18 and the changed asserts against plan-9 04); after DEMO: a
+usability read of demo/README.txt against 03-demo-design. Accepted
+findings fixed by the owner; final runs.

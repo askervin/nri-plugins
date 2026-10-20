@@ -1,0 +1,221 @@
+plan-8-demo: review R-T (test17, test18, dra.source.sh, the F35 asserts)
+========================================================================
+Written 2026-10-20 (R-T). Desk review only: no VM, no run_tests.sh.
+Paths: N = ~/github.com/containers/nri-plugins, E = N/test/e2e/
+memory.test-suite/dra-driver-cxl, T17 = E/n4-cxl-shared-2/
+test17-dra-local-shared/code.var.sh, T18 = E/n4-cxl-shared-2/
+test18-dra-local-shared-one-writer-many-readers/code.var.sh, L = the logs
+of the last runs under N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/
+memory.test-suite/dra-driver-cxl/test1{7,8}-*/ (08:33-08:41, PASS).
+Against: plan-9 03 (D3 as amended by R-D B1), plan-9 04 S4, plan-8 03
+section 5, 05-status-DRV.txt, 05-status-E2E.txt.
+
+Must fix
+--------
+B1  T17:332-337 and T18:407-412: the "reads zeros before the first write"
+    proof of zeroing at region creation (R-D B1) can pass with the
+    zeroing broken. The local device's memory is the qemu backend that
+    the topology pre-declares (fake-cxl-pool server ops.go:783-784: a
+    local device with a binding reuses b.ObjectID, no object-add), so its
+    bytes are whatever was written since qemu started: zeros on a fresh
+    qemu, an earlier test's leftovers otherwise. In a first run after a
+    VM start, or after any test that left zeros at 0 and 1M, the read of
+    zeros is true whether or not the driver zeroed. In the logged
+    regression it only happened to be meaningful (test17 H leaves TEXT0
+    at 0 for test18; test17 run 2 sees run 1's text). What remains is
+    the grep of "zeroed new shared dax0.0 size N in", which proves the
+    routine ran, not that the bytes are zero (a wrong range or window in
+    zeroDax passes).
+    Misleads: the comments say "the writer finds zeros where it writes";
+    the reader takes it as proof of B1.
+    Fix: seed non-zero bytes before the first claim, in both tests, before
+    dra-install (the device can be attached first: dra-local-device works
+    without the driver):
+      dra-local-device "$VM2"
+      pool-client "$VM2" guest region create "$DRA_LOCAL_SERIAL" --mode dax
+      # write "stale $TAG" with pool-dax-rw.py write /dev/daxN.M at 0 and 1M
+      # (and e.g. at size-4K), read it back
+      # destroy the region but keep the memdev enabled (cxl destroy-region -f
+      # regionN; or guest release + cxl enable-memdev memN)
+      pool-cxl-dump ...; cxl-assert "regions == []"
+    then dra-install with DRA_DRIVER_CONFIG and keep the zero reads of B
+    and L3 as they are (they now fail if zeroing is skipped or partial).
+    Seed and read an offset near the end too: a zeroing that stops after
+    the first window is the likeliest bug. Keep the log grep.
+
+Should fix
+----------
+R1  E/dra.source.sh:356 with T17:494-497 and T18:588-591: the second
+    dra-install (without sharedDevices) runs while the shared region
+    exists, and replaces the test's EXIT trap with its own 'dra-cleanup;
+    pool-cleanup' before helm-launch; the test re-sets
+    dra-local-shared-cleanup only after dra-install returns. A failure
+    inside dra-install (helm-launch timeout, dra-wait-node) runs
+    pool-cleanup, which does guest release and then detaches whatever the
+    release did (pool.source.sh:401-402, exit status ignored): exactly the
+    detach-with-a-region of plan-9 R9 if the release fails (a pod or the
+    driver still holding dax0.0). Fix: let dra-install keep a test's trap,
+    e.g. DRA_EXIT_TRAP="${DRA_EXIT_TRAP:-dra-cleanup; pool-cleanup}" used
+    by dra-install, set by test17/18 to 'dra-local-shared-cleanup "$VM2"'
+    before the first dra-install (then the two trap lines after dra-install
+    go); or make pool-cleanup skip the detach when guest release fails.
+R2  E/dra.source.sh:319 values=$(dra-helm-values): error inside a command
+    substitution exits only the subshell (lib/vm.bash:50 error is
+    "exit 1"), so a missing $DRA_HELM_VALUES, a values file with config:
+    or an unwritable file no longer stops dra-install there; values is ""
+    and the test fails later in helm-launch with "copying "" to VM
+    failed", hiding the cause (the message went to stderr). Fix:
+    values=$(dra-helm-values) || error "dra-install: no helm values file".
+R3  T17:472-490 (H) and T17:494-502, T18:588-595 (I): the restart and
+    unconfigure proofs rest on timing, not on the driver's own record.
+    After the idle restart the test watches same-region for 10 s and then
+    reinstalls without the configuration, which destroys the region
+    anyway: a configured plugin that destroyed the idle region after
+    11 s, or a region destroyed by anything but the unconfigured plugin,
+    passes. The logs have the decisive lines (L test17 trace: "keeping
+    shared region0 and dax0.0, claims [42aade99-...]", "... claims []",
+    "not configured shared any more, releasing its region"). Fix: after
+    each dra-driver-restart grep the new pod's log (dra-plugin-log) for
+    "keeping shared $SHARED_REGION and $SHARED_DAX, claims [<uids>]" and
+    for no "zeroed new shared" and no "releasing its region"; after the
+    unconfigured dra-install grep "not configured shared any more,
+    releasing its region" (DRV status section 5 has the texts).
+R4  T18:548-585 vs plan-8 03 section 5 L7/L9 and demo/bin/steps.py:54-58:
+    test18 does not reach the demo's end state. In the demo the readers
+    run /demo/read and /demo/hold after L6 and L9 is "kubectl delete -f
+    local/" with three Ready read-only leases still mapped (T4 "mapped:
+    reader-a ro, ..."). test18 starts the holds before the release (an
+    accepted deviation, it times the release), but then G releases every
+    lease and only after that L9/H deletes the pods with one fresh,
+    unmapped lease. Deleting pods whose leases are held and mapped (the
+    unprepare of three shares with live fds, the lease table emptied, the
+    region kept) is the demo's last step and is not tested. Fix: run L9
+    before G as the demo does: delete writer and readers (and the
+    template, as "delete -f" does) while the three holds run; assert
+    no pods/claims in 60 s, empty lease table, dra-local-shared-wait
+    idle, same-region; then G's "a new exclusive lease reads TEXT" from a
+    new lease pod, and the zeroed count.
+
+Style
+-----
+S1  T17:146 "has not the six variables" -> "does not have the six
+    variables".
+S2  T18:163 documents REQ_SECONDS but the globals block (T18:78-84) does
+    not declare it as it does REQ_JSON, REQ_STATUS, REQ_OUT.
+S3  T18:26-30 header bullet wraps mid-sentence ("shared), and deleting
+    the pods with a / lease active ..."); E/n4-cxl-shared-2/test11-
+    dra-sharing/code.var.sh:17 is 84 columns ("The node plugin of"):
+    rewrap both.
+S4  E/dra.source.sh:2205-2206 (dra-trace-driver-follow: "dra-trace-start
+    follows the pod that ran then, which a restart or a new dra-install
+    replaces") and :649-650 (dra-local-detach: "install the driver
+    without that configuration first, or call this after dra-cleanup")
+    tell why or how a caller uses the function, which coding-style asks
+    to leave out of function docs. Say what it does; the R9 rule belongs
+    in the tests' comments (T17/T18 I already say it).
+S5  T18:245 "! hold-log "$r" | grep -qx holding || return 1" reads as a
+    negated pipeline by accident; holding() of the same file already
+    does the check: "! holding "$r" || return 1" is clearer.
+S6  E/n4-cxl-shared-2/test13-...code.var.sh:209 and test16:517 assert
+    shares 1M and no policy but not that shares is the only capacity, as
+    test11:164, T17:296 and T18:361 do (sorted(capacity) == ['shares']);
+    add it for symmetry (not required by F35).
+S7  T17:469-480 "the CDI spec is rewritten with the same node" (plan-9 04
+    test17 H) is proven only as "the same node lines after the restart",
+    which an untouched old file also satisfies; optional: compare the
+    spec file's mtime or the driver's write log line.
+
+What I checked and found fine
+-----------------------------
+Proofs (1):
+- Published shape (T17 A): exact attribute set, shared True, only
+  capacity shares, quantity == DRA_SHARES (1000000, R10 via quantity()),
+  request_policy None, allowMultipleAllocations; the class selectors of
+  cxl-local-shared and cxl-local. The "sliced" cxl-local claim has no
+  capacity request (dra-claim-yaml "" = no amount), so it would be
+  allocated if cxl-local matched the shared device: its Unschedulable
+  "cannot allocate all claims" (L: "1 cannot allocate all claims, 1
+  node(s) didn't match") is a real proof of the shared == false term.
+  "no nodeAllocatableResources" cannot fail on these VMs (accepted,
+  documented in 05-status-E2E).
+- Exclusive vs share: claim-check compares consumed shares with 1M /
+  1 / 0 (default 0 makes 1M and 1 non-vacuous; for "0" the guard text
+  with the quoted "0" proves the driver saw 0). Readers wait while the
+  writer holds (unschedulable-wait + dra-stays 10 on pod Pending and
+  claim unallocated), the late exclusive claim waits while readers hold
+  (dra-stays with holding), test18 E2 exits 3 "timeout" with nothing
+  left. Readers/writer/after-idle on the right node and device (results
+  driver+device, allocated_node VM2); test18 companions likewise, with no
+  CDI device and no pool attachment.
+- State: dra-local-state-shared compares the exact sorted claim uid set
+  with "shared": true (L: "0xc100e2e1 shared, claims [62b39ae1-...]");
+  E's one claim for two pods is one uid; refused claims are gone from it.
+- Read-only: EPERM on open for writing and EACCES on a writable mapping
+  (T17, static path), CDI "permissions: r" only for readers and absent
+  for the writer, READONLY env in CDI and container; test18 EACCES on
+  the O_RDONLY fd and "[Errno 13]" on the write, readers see no change.
+- Once-only zeroing: G of both tests reads the writer's text after the
+  idle period (written after the zeroing, so any re-zeroing would lose
+  it) and counts exactly one "zeroed new shared" line in the same pod's
+  log (no restart before). Sound; only the before-write half is B1.
+- Region kept while configured: same-region by names plus the bytes and
+  the zeroing count; destroyed when unconfigured: dra-local-slices-none
+  within 60 s and the sliced shape published again. dra-install's
+  dra-state-cleanup keeps localDevices.json while a region exists, so the
+  destroy is the new driver's Reconcile (L: "not configured shared any
+  more, releasing its region"), not the harness; R3 asks to assert it.
+- Restart with a holder: holding and same-region for 10 s after the new
+  pod is Ready, the state still has the holder, CDI node lines equal, a
+  fresh read of TEXT0 (a re-zeroing would fail it).
+- Refusals: the four texts of F match DRV section 3 (mode numa, readOnly
+  needs mode dax, access needs mode fs, consumed shares "0"); E4 texts
+  and exit codes; E3 one exactly request with shares "1" and a size
+  selector, then firstAvailable lease/local + lease/pool both shares "1",
+  allocated lease/local on S, nothing attached by the pool.
+- Real values in L: SIZE 1073741824, DAX /dev/dax0.0, region0, dev
+  252:0 device_dax, zeroed in 531/602 ms, "exclusive" / "1 share" lines
+  with the right uids, lease ids, Pending in 0.4 s, Ready in 1.35 s,
+  readers holding 3.5 s after the release, both PASS.
+Robustness (2):
+- No sleeps: retry-until, dra-wait, dra-wait-log, dra-stays only; the
+  pods' "sleep infinity" is the idle container.
+- EXIT traps: dra-local-shared-cleanup runs dra-cleanup, guest release,
+  waits 60 s for no region and only then pool-cleanup; otherwise stops
+  the server and leaves the device attached; never errors. The success
+  path detaches after the unconfigured driver destroyed the region and
+  clears the trap. Only the dra-install window of R1 is open.
+- Reruns after a failed run: pool-vm-reset restarts a VM that has a
+  device or region; dra-state-cleanup then drops the old state; the
+  namespace is recreated.
+- Other tests: DRA_DRIVER_CONFIG defaults to "" at source time and only
+  test17/18 set it; dra-helm-values returns $DRA_HELM_VALUES unchanged
+  then. DRA_CLASSES +cxl-local-shared is what test14 A compares with.
+  DRA_CONTROLLER_ARGS has no user left. dra-shared-claim-yaml's inverted
+  "": every caller checked (test13:343 "1", test16:237 "1", :536 "" for
+  the exclusive writer, :521 "" for the class-mismatch claim, which is
+  now exclusive and still cannot match, T17:83 passes its SHARES); the
+  selector/config driver follows the class (cxl-pool-persistent -> pool
+  driver).
+F35 (3): test11 A shares 1M no policy only capacity, both claims
+  shares "1"; test12 share() subrequest {'requests': {'shares': '1'}} and
+  consumed 1, the "local devices are not shareable" refusal removed,
+  :630/:639 kept; test13 A, B writer subrequest None + consumed 1M +
+  exclusive, E readers' shares "1", F "1" "readOnly: true"; test16
+  LLM_HOSTS/DRA_CONTROLLER_ARGS gone, readers consumed 1, A shares 1M no
+  policy, writer "" + consumed 1M. All match PCTL/DRV shapes. No "hosts"
+  left in the changed tests but prose about attachments.
+Demo (4): L1-L8 commands match steps.py and 03 section 5 (request
+  --serial S --mode dax; --shared --read-only --wait 0s; release --all;
+  fd --lease reads and writes as /demo/read and /demo/write do; the
+  lease template is the demo's cxl-lease). Deviations documented in
+  05-status-E2E (holds started before the release, dax-rw.py instead of
+  /demo tools, kubernetes.io/hostname instead of the demo label, shared0
+  for E3) are reasonable; R4 is the one that changes what is proven.
+Style (5): bash -n ok on all seven files; shellcheck -e
+  SC2154,SC2034,SC1090,SC2148,SC2016: only the pre-existing SC2015 info
+  at test12:536 (not in the F35 lines). Plain ASCII in all changed files
+  and e2e.md. docs/memory/cxl/e2e.md: rows test17/test18, test11 "one
+  share each", examples d and f with shares "1" / no capacity, SHARES
+  column; consistent with the tests.
+
+R-T done

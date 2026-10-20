@@ -1,0 +1,4 @@
+SCHEDULER: DEVICES AND CLAIMS             09:00:04
+drivers: vm2 ok  vm1 ok  pool ok
+shared0 @pool 256Mi shared
+  shared: reader-a ro, reader-b ro, reader-c ro

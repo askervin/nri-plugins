@@ -1,0 +1,5 @@
+PRESENTER local L8/9                      08:46:18
+a reader tries to write: the kernel refuses
+$ kubectl exec reader-a -- /demo/write "overwrite"
+-> refused: read-only (EACCES)
+   0.5 s (command 0.5 s)

@@ -1,0 +1,4 @@
+SCHEDULER: DEVICES AND CLAIMS             08:45:39
+drivers: vm2 ok  vm1 ok
+memdev-c100e2e1 @vm2 1Gi shared
+  exclusive: writer rw

@@ -1,0 +1,10 @@
+TRACE                                     08:59:27
+08:59:22 api   writer: allocated shared0
+08:59:22 sched writer: waits for the attach
+08:59:22 pool  shared0 attached to vm1
+08:59:22 ctrl  writer: attach shared0 to vm1 excl
+08:59:22 kern  vm1 add mem0
+08:59:27 sched writer: lease scheduled on vm1
+08:59:27 kern  vm1 add region0 dax0.0
+08:59:27 drv   vm1 writer: prepared dax0.0 rw
+08:59:27 drv   vm1 writer: lease Ready dax0.0

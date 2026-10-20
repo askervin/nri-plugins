@@ -1,0 +1,111 @@
+plan-8-demo: status of stream PCTL (plan-9 S5, fake-cxl-pool half)
+==================================================================
+Written 2026-10-20. Nothing committed. Paths: N, P as in 00-README.
+
+Changes
+-------
+P/pkg/controller/publisher.go
+  convertDevice: a shared device publishes allowMultipleAllocations: true
+  and one capacity, shares {value: device.SharesUnlimited}, without a
+  requestPolicy (was hosts {value: SharedHosts, requestPolicy default 1,
+  validValues [1, SharedHosts]}). Attributes, bindsToNode and binding
+  conditions unchanged; exclusive devices keep capacity.memory.
+P/pkg/controller/reconciler.go
+  hostsCapacity removed; exclusiveResult uses device.CapacityShares and
+  device.SharesUnlimited (see the rule below).
+P/pkg/controller/controller.go
+  DefaultSharedHosts, Config.SharedHosts and its default removed.
+P/cmd/fake-cxl-pool-controller/main.go
+  -shared-hosts flag removed (an unknown flag now: the controller exits
+  with a usage error if it is given).
+P/pkg/controller/status.go
+  unchanged (DeviceData.Exclusive, json "exclusive,omitempty", stays).
+P/README.md
+  the attach --exclusive paragraph, the published shape, the exclusive
+  attach bullet and the usage line (no -shared-hosts).
+P/config.example.yaml
+  unchanged: its "hosts" are the server's static pool hosts, not the
+  capacity.
+Constants: device.CapacityShares and device.SharesUnlimited from
+N/pkg/cxl/device (DRV had added them by the time the code was switched
+over); no local constants, no TODO left.
+
+The published shape (a shared pool device)
+------------------------------------------
+  - name: shared0
+    attributes: {type: memdev, source: pool, serial: "0x...", shared: true,
+                 persistent: <bool>, size: <bytes>}
+    allowMultipleAllocations: true
+    capacity:
+      shares: {value: 1M}            # no requestPolicy
+    bindsToNode: true
+    bindingConditions: [cxl-pool.nri.io/Attached]
+    bindingFailureConditions: [cxl-pool.nri.io/AttachFailed]
+Exclusive (non-shared) devices: unchanged, capacity memory: <size>.
+
+Exclusive rule (exclusiveResult)
+--------------------------------
+For an allocation result of a published shared device:
+  exclusive = consumedCapacity has no "shares" entry
+              OR consumedCapacity.shares >= device.SharesUnlimited
+Non-shared and unknown devices are never exclusive. The scheduler fills
+consumedCapacity of a multi-allocatable device with the full value when
+a claim requests no shares (allocator consumable_capacity.go:127-150), so
+"no request" arrives as shares 1M; the missing case is treated the same
+way (no shares consumed means no request: exclusive). An exclusive want
+is attached with AttachRequest.Exclusive and its status data has
+"exclusive": true; a share (shares: "1") has no "exclusive" key
+(omitempty, false). The controller does not refuse shares below 1: that
+guard is the drivers' (plan-9 D2, DRV).
+
+Unit tests (P/pkg/controller/controller_test.go)
+------------------------------------------------
+- TestPublish: shared0 has exactly one capacity, shares, value 1000000,
+  printed "1M", RequestPolicy nil, allowMultipleAllocations, bindsToNode
+  and both binding conditions; attributes unchanged (the existing check
+  of exactly persistent,serial,shared,size,source,type).
+- TestExclusiveResult (new): consumed shares 1M -> true, 1 -> false,
+  missing (nil map) -> true, only another capacity -> true.
+- TestExclusiveSharedClaim: writer consuming 1M attaches exclusive with
+  data exclusive true; reader with 1 share drops the flag, no "exclusive"
+  in its data; writer with no consumed shares (missing) attaches
+  exclusive again.
+- TestSharedTwoClaimsOneNode: two claims of 1 share each: one
+  non-exclusive attach, data exclusive false for both.
+- TestExclusiveSharedConflict, TestPersistentAttributeAndStatus,
+  TestRestartWithExistingAttachment: hosts 4 / no capacity replaced by
+  shares 1M (writers) or 1 (sharers). Helper createClaimHosts renamed
+  createClaimShares (0: no consumed capacity).
+
+Check results
+-------------
+gofmt -l scripts/testing/fake-cxl-pool: empty.
+go vet ./scripts/testing/fake-cxl-pool/...: clean.
+go test -race -count=1 ./scripts/testing/fake-cxl-pool/...: all ok
+  (controller 17.7s).
+golangci-lint run ./scripts/testing/fake-cxl-pool/...: 41 findings (40
+  errcheck, 1 unused), all in pkg/server and other packages not touched;
+  0 in pkg/controller or cmd/fake-cxl-pool-controller;
+  --new-from-rev=HEAD: 0 issues.
+
+Deviations
+----------
+- None from plan-9 section 9. Interpretation recorded: a result without
+  consumed shares is exclusive (see the rule).
+- Started with local constants (DRV's were not there yet); switched to
+  pkg/cxl/device once they appeared, before the checks.
+
+Requests
+--------
+- E2E: test16-cxl-llm-share/code.var.sh:117 sets
+  DRA_CONTROLLER_ARGS="-shared-hosts $LLM_HOSTS" and :64 describes it;
+  dra.source.sh:291 gives "-shared-hosts 6" as the example. The flag is
+  gone: the controller would exit with a usage error. Delete the line
+  and reword the comments (plan-9 F35 lists it).
+- DOCS: README texts usable as is: "capacity.shares with value 1M
+  (1000000) and no requestPolicy: a claim that requests no shares
+  consumes all of them and has the device exclusively, shares: "1" is
+  one share"; status data exclusive: true when the allocation consumed
+  all shares.
+
+PCTL done

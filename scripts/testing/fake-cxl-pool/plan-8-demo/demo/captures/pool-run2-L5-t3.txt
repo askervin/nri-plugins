@@ -1,0 +1,5 @@
+SCHEDULER: DEVICES AND CLAIMS             08:59:49
+drivers: vm2 ok  vm1 ok  pool ok
+shared0 @pool 256Mi shared
+  exclusive: writer rw
+  waiting: reader-a reader-b reader-c

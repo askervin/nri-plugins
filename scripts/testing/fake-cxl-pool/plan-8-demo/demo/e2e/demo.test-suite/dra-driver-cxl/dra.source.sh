@@ -1,0 +1,1 @@
+../../../../../../../../test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh

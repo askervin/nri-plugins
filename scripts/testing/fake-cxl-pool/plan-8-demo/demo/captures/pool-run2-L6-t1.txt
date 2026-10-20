@@ -1,0 +1,6 @@
+PRESENTER pool L6/9                       08:59:52
+the writer is done and releases the device
+$ kubectl exec writer -- cxl-request release --all
+-> released: 965a0ecc Released
+-> readers' leases Ready after 8.3 s
+   10.3 s (command 1.9 s)

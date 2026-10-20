@@ -1,0 +1,5 @@
+NODES: CXL IN THE KERNEL                  08:46:08
+vm2 mem0 c100e2e1 1.0G  region0 1.0G
+    dax0.0 1.0G device_dax
+    mapped: -
+vm1 no CXL memory

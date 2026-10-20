@@ -1,0 +1,7 @@
+NODES: CXL IN THE KERNEL                  08:56:33
+vm1 mem0 c1ae0001 256M  region0 256M
+    dax0.0 256M device_dax
+    mapped: reader-c ro
+vm2 mem0 c1ae0001 256M  region0 256M
+    dax0.0 256M device_dax
+    mapped: reader-a ro, reader-b ro

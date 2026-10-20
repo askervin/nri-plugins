@@ -1,0 +1,213 @@
+plan-8-demo: the demo design
+============================
+Written 2026-10-19 (orchestrator). What the audience should see, where,
+and why; the two scripts step by step; the questions it should be easy to
+answer. Names of the shared local device follow
+../plan-9-local-cxl-sharing/03-design.txt (02-shared-local-design.txt):
+a shared device has capacity "shares" without a limit; a claim takes it
+exclusively (no shares request) or one share (shares: "1").
+
+1. What the audience must understand, and what shows it
+-------------------------------------------------------
+The story of both demos is one sentence: "a container asks for CXL memory
+while it runs; the scheduler gives it a share of a device only when the
+rules allow; the node maps the device into the container; every sharer
+sees the same bytes; readers cannot write". Each part of that sentence has
+one terminal that proves it:
+  who wants memory, who has it       -> the pods and their leases
+  the rules (capacity, waiting)      -> the scheduler's view: devices x claims
+  the node maps the device           -> the node's kernel: memdev, region, dax,
+                                        which processes map it, ro or rw
+  the same bytes                     -> the memory itself (and, for the pool,
+                                        the pool server that hands it out)
+  why something happens or waits     -> one merged trace of scheduler,
+                                        API server, driver, kernel, pool
+  what the presenter does            -> a command terminal
+Attributes were chosen by "would the audience miss it if it were gone":
+  - ResourceSlice device: name, where (node or pool), size, shared. Not
+    shown: the shares value (1M, unlimited), memory block size, node
+    affinity (zoom instead).
+  - ResourceClaim (the lease's companion claim): who asked (the requester
+    pod, not the claim name), allocated or waiting, on which node,
+    exclusive (no shares requested) or a share, mode and read-only. Not
+    shown: UIDs, selectors, the CEL text (zoom).
+  - Pod: name, node, phase; the lease id and state of its lease. Companion
+    pods are summarized (they are an implementation detail the audience
+    meets only as "waiting"): their Pending/Unschedulable state is shown as
+    the lease being "waiting".
+  - Node drivers: Ready or not, per node, one word in a header; the pool
+    controller and server likewise.
+  - Kernel: memdev (serial), region (mode, size), dax device (size,
+    driver), and who maps it with which permissions (r--s / rw-s of
+    /proc/PID/maps, translated to the pod name). That last line is the
+    most convincing one: it changes the moment cxl-request hands the fd.
+  - Memory: the first bytes at offset 0 as text: the writer's line stays
+    there while readers come and go, and across the release.
+  - Trace: one line per meaningful event, short tags: sched (Scheduled,
+    FailedScheduling of companions with the reason), api (claim allocated,
+    deallocated, deleted), drv (prepare, unprepare, lease state changes),
+    kern (region, dax, memdev add/remove), pool (attach, detach), ctrl
+    (controller decisions).
+
+2. Layout: 2 columns x 3 rows, each 50 x 10
+-------------------------------------------
+  +-------------- T1 ---------------+  +-------------- T2 ---------------+
+  | PRESENTER: the next step and    |  | PODS & LEASES: who wants CXL     |
+  | its command, the short result   |  | memory, who has it               |
+  +-------------- T3 ---------------+  +-------------- T4 ---------------+
+  | SCHEDULER: devices (slices) and |  | NODES: CXL in each node's kernel |
+  | claims, hosts used, waiting     |  | memdev/region/dax, mapped by     |
+  +-------------- T5 ---------------+  +-------------- T6 ---------------+
+  | TRACE: scheduler, API, driver,  |  | MEMORY: the bytes; for the pool  |
+  | kernel, pool, one line each     |  | demo the pool server too         |
+  +---------------------------------+  +---------------------------------+
+Reading order: the right column goes from the application down to the
+hardware (pods -> kernel -> memory); the left column from the action down
+to its explanation (command -> scheduler decision -> log). Every view has a
+one-line title with a clock (HH:MM:SS) so the audience sees it is live.
+The same layout serves both demos; only T6 changes its content. Fallback
+for a small screen, 2 x 2: T1, T2, T3 and T4+T6 (memory as the last lines
+of the node view); the trace is dropped (zoom it on demand).
+Every view: refreshes once a second, never wraps (lines cut to 50), at
+most 9 content lines (overflow: "... N more"), plain ASCII, optional color
+(green Ready/allocated, yellow waiting, red refused).
+
+3. The views (example renderings are 50 columns)
+------------------------------------------------
+T2 PODS & LEASES (kubectl get pods + companion claims, from VM2):
+  PODS & LEASES                          12:01:07
+  POD       NODE STATE   LEASE    MEMORY
+  writer    vm2  Running 3f2a91c0 dax rw excl
+  reader-a  vm2  Running 8c1d02e4 waiting
+  reader-b  vm2  Running 51aa7b09 waiting
+  reader-c  vm2  Running e0c4d3f1 waiting
+  MEMORY: "dax rw excl" (allocated, all hosts), "dax ro share" (1 host),
+  "waiting" (companion claim not allocated), "releasing", "-" (no lease).
+T3 SCHEDULER (ResourceSlices x ResourceClaims, driver pods):
+  SCHEDULER: DEVICES AND CLAIMS  drivers vm2 vm1 ok
+  cxlmem-c100e2e1 @vm2 1Gi shared
+    exclusive: writer rw
+    waiting: reader-a reader-b reader-c
+  One block per shared device of the demo (local on its node, pool devices
+  "@pool"); its allocated claims as "exclusive: POD rw|ro" or
+  "shared: POD ro, POD ro, ..." and the unallocated ones as "waiting:".
+T4 NODES (sysfs and /proc of each node, pod names from cgroup paths):
+  NODES: CXL IN THE KERNEL               12:01:07
+  vm2 mem0 c100e2e1 1.0G  region0 1.0G
+      dax0.0 1.0G device_dax
+      mapped: writer rw
+  vm1 no CXL memory
+T5 TRACE (merged, newest at the bottom, the terminal scrolls):
+  12:01:05 sched writer: lease allocated on vm2
+  12:01:05 drv   vm2 prepared dax0.0 rw for writer
+  12:01:05 kern  vm2 region0 created, dax0.0
+  12:01:21 sched reader-a: waits: no free hosts
+T6 MEMORY, local demo (root mmap of the dax device on the node, read
+only):
+  MEMORY: dax0.0 on vm2                  12:01:07
+  at 0: "Hello from the writer, 12:01:12"
+  used by: writer (exclusive)
+T6 MEMORY + POOL, pool demo (pool client and the backing file on the host,
+which is the device's memory as the "appliance" holds it):
+  POOL: fake-cxl-pool-server             12:01:07
+  shared0 256Mi shared  allocated
+    attached: vm1 exclusive
+  at 0: "Hello from the writer, 12:01:12"
+
+4. The presenter terminal (T1)
+------------------------------
+One step at a time: the step runner prints the step's caption (one line
+of what will happen), the command as typed, waits for Enter (or "s" to
+skip, "z" to zoom, "q" to stop), runs it and prints a short result (one
+or two lines, e.g. "lease 3f2a91c0 Ready dax rw (exclusive)"). The
+commands are the real ones (kubectl apply/exec ... cxl-request ...), run
+in VM2 over ssh; the runner never hides a command. Steps can be re-run;
+"demo <case> N" runs step N alone; "--auto" runs them all with pauses (a
+rehearsal, and the basis of the e2e test).
+
+5. Script 1: local (one node, its local CXL device, shared)
+-----------------------------------------------------------
+All four pods on vm2, each with a lease claim (DeviceClass cxl-lease), the
+image python:3-alpine with the demo tools (/demo/write, /demo/read,
+/demo/hold) from a ConfigMap. S = the serial of VM2's local device.
+L1 caption "a writer pod starts; it has no CXL memory yet"
+   kubectl apply -f local/writer.yaml
+   T2 writer Running, lease "-"; T3 the device without holders; T4 vm2
+   mem0 (region0/dax0.0 if an earlier run left them: kept while shared);
+   T6 the bytes there, if any.
+L2 "the writer asks for the whole device, exclusively"
+   kubectl exec writer -- cxl-request request --serial S --mode dax
+   T2 writer "dax rw excl"; T3 "exclusive: writer rw"; T4 region0, dax0.0;
+   T5 sched/api/drv/kern lines; T6 the old bytes (zeros on a fresh
+   device). Talk: the lease became a claim that the scheduler allocated.
+L3 "the writer writes a line into the device"
+   kubectl exec writer -- /demo/write "Hello from the writer, <time>"
+   T6 the line appears; T4 "mapped: writer rw" while it writes.
+L4 "three readers start"
+   kubectl apply -f local/readers.yaml
+L5 "the readers ask for a read-only share: they must wait"
+   for r in reader-a reader-b reader-c; do
+     kubectl exec $r -- cxl-request request --serial S --shared \
+       --read-only --wait 0s; done
+   T2 three "waiting"; T3 "waiting: reader-a reader-b reader-c"; T5 sched
+   "waits: no free hosts" three times. Pause: the writer holds all hosts;
+   nothing moves however long we wait.
+L6 "the writer is done and releases the device"
+   kubectl exec writer -- cxl-request release --all
+   T3 "shared: reader-a ro, reader-b ro, reader-c ro"; T2 three "dax ro
+   share"; T4 dax0.0 stays (the region is kept while the device is
+   shared); T6 the line is still there.
+L7 "each reader reads the writer's line"
+   kubectl exec reader-a -- /demo/read   (b, c alike; /demo/hold keeps a
+   mapping so that T4 shows "mapped: reader-a ro, reader-b ro, ...")
+L8 "a reader tries to write: the kernel refuses"
+   kubectl exec reader-a -- /demo/write "overwrite"
+   -> "refused: read-only (EACCES)"; T6 unchanged.
+L9 "everything goes away"
+   kubectl delete -f local/
+   T3 the device without holders; T4 region0 and dax0.0 stay (kept while
+   shared), "mapped: -"; T2 empty.
+
+6. Script 2: pool (a shared device of the pool, two nodes)
+----------------------------------------------------------
+The same steps with the pool device shared0 (256Mi, shared, serial
+0xc1ae0001): the writer on vm1, reader-a and reader-b on vm2, reader-c on
+vm1. What is new for the audience: in L2 the device is hot-plugged into
+vm1 (T4 mem appears, T6 "attached: vm1 exclusive", T5 pool/ctrl/kern
+lines); in L6 it is detached from nowhere but attached to vm2 as well
+("attached: vm1, vm2"), and T6 shows the bytes from the host's side; in
+L9 it is detached from both and the pool shows it free.
+
+7. Zooms for questions (in T1, paged)
+-------------------------------------
+  demo zoom slice [DEVICE]   the ResourceSlice entry: attributes, the
+                             shares capacity (1M, no request policy)
+  demo zoom claim POD        the companion claim of POD's lease: request
+                             (class, selectors, capacity), allocation
+                             (device, node, consumed hosts), config
+  demo zoom pod POD          why a companion waits (PodScheduled message)
+  demo zoom env POD          the CXL_* variables of POD's lease
+  demo zoom cdi NODE         the CDI spec of the node's claims and leases
+  demo zoom driver NODE [N]  the last N lines of the driver's log
+  demo zoom kernel NODE      dmesg lines of cxl, dax, memory
+  demo zoom cxl NODE         cxl list -M -R -D (the cxl tool)
+  demo zoom pool             the pool server's devices and attachments
+  demo zoom bytes            a hex dump of the first 256 bytes
+
+8. Setup, teardown, robustness
+------------------------------
+- demo setup local|pool: one command before the talk: checks the cluster
+  shape, installs the driver (with the local device shared, per plan-9),
+  starts the pool server (the local device of VM2; shared0 for the pool
+  demo) and the controller, the demo ConfigMap, pulls the image; prints
+  the six commands to start the views. demo teardown: removes all of it,
+  leaves the VMs clean. Reuse the e2e helpers where they fit; no new host
+  dependencies.
+- demo reset <case>: deletes the demo pods and leases, so a step sequence
+  can start over in front of the audience.
+- Views survive restarts of what they watch (a driver pod restart shows
+  as "drivers vm2 restarting"), never block on a slow ssh (timeouts), and
+  keep the last good rendering with a "stale" mark.
+- The e2e test of the local script (04-plan, stream E) runs the steps of
+  section 5 with assertions; the demo's "--auto" rehearsal runs the same
+  steps without them.

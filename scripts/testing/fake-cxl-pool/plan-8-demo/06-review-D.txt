@@ -1,0 +1,229 @@
+plan-8-demo: review R-D (DRV + PCTL against plan-9 03-design.txt)
+=================================================================
+Written 2026-10-20 (reviewer R-D). Tree: 5jg-cxl at 7fd7aecda plus the
+uncommitted work (git diff HEAD, local_shared_test.go new). Review only:
+nothing but this file was edited, no VM was used, run_tests.sh not run.
+Paths: N = ~/github.com/containers/nri-plugins, D = N/cmd/plugins/dra-driver-cxl,
+P = N/scripts/testing/fake-cxl-pool. Line numbers are of the working tree.
+
+Checks run
+----------
+  gofmt -l pkg/cxl cmd/cxl-request D P/pkg P/cmd ............ empty
+  go vet (pkg/cxl, D, cmd/cxl-request, P controller + cmd) .... clean
+  go test -race -count=1 (same, plus P/pkg/controller) ........ all ok
+  golangci-lint run (same packages) ........................... 0 issues
+  helm template deployment/helm/dra-driver-cxl
+    --set-json 'config={"sharedDevices":["0xc100e2e1"]}' ...... renders,
+    8 DeviceClasses, config.yaml has sharedDevices; checksum/config
+    annotation present (values.yaml "a change restarts" is true)
+
+Bugs (must fix)
+---------------
+B1  D/local.go:438 (sharedDevice -> createRegion), no zeroing of a newly
+    created shared region.
+    Problem: the content of a shared device is "never zeroed" (03 D3), but
+    the region a first shared claim creates is new: its bytes are whatever
+    the previous users of the physical memory left. The sliced allocator
+    zeroes a dax slice when it gives it out (local.go:626) and never when
+    it takes it back, and numa slices are system RAM whose frames keep
+    their content after offlining (the kernel clears pages on allocation,
+    not on free or offline). So the first shared claim reads what earlier
+    tenants left: the guarantee of zeroSlice ("a claim never sees what an
+    earlier one left there") breaks at the sliced -> shared switch, and
+    after a reboot (the state of another boot is dropped; RAM-backed CXL
+    memory and qemu memory-backend-ram keep their content across a warm
+    or guest reboot).
+    Failure: mem1 is sliced; claim A gets a numa slice, the kernel puts
+    page cache and anonymous memory of arbitrary node processes there;
+    A goes, the region is released. The admin adds mem1 to
+    sharedDevices and restarts the plugin (03 section 7 "device joins
+    sharedDevices"). A reader claim (shares: "1", readOnly) creates the
+    region and mmaps /dev/dax0.0: it reads those pages. Same with dax
+    slices (the last tenant's bytes) and after a reboot of the node.
+    Fix: in sharedDevice, after createRegion succeeds for a NEW region
+    (not for a kept one), bind dax0.0 to device_dax, read its numbers and
+    a.zero(major, minor, size, align) the whole device before returning;
+    on failure dropUnused as for the other creation errors. This keeps D4
+    (content kept while the region exists) and Q4 (no zeroing when idle):
+    the bytes are zeroed once, before anybody can map them. Log it like
+    zeroSlice ("zeroed dax0.0 in <t>"); it runs under a.mu (1 GiB is well
+    under a second; document that big devices make the first claim slow).
+    TestLocalSharedClaims then expects one zeroing at creation and none
+    for later claims or reuse. Contract wording: 03 D3/section 5 step 2
+    "never zeroed" -> "zeroed once when its region is created, never
+    while it exists" (an orchestrator/user decision, a Request to DOCS).
+
+Should fix
+----------
+R1  D/broker.go:536-566 deviceBySerial returns the first device with the
+    serial in any ResourceSlice, and serialOptions (:503) then refuses
+    "a local device of node X, not of this node".
+    Problem: the same serial is legitimately in the cxl.nri.io slices of
+    several nodes: the multi-headed local device that 03 section 2 names
+    as a reason for sharedDevices, and every qemu VM whose local devices
+    get the default serials (test/e2e/lib/topology2qemuopts.py: 0xc100e2e0
+    + index per VM; n4-cxl-shared-1's 256M and n4-cxl-shared-2's 1G
+    device are both 0xc100e2e1). sharedDevices is one cluster-wide helm
+    config, so every node that has the serial publishes it shared.
+    Failure: in the two-node cluster of test17/test18, VM1's 256M device
+    is hot-plugged (as the pool tests do with slots) and published as
+    memdev-c100e2e1 (shared) by VM1; ResourceSlices list by name, VM1's
+    slice comes first; a reader on VM2 types
+    "cxl-request request --serial 0xc100e2e1 --shared --read-only" and
+    gets "device 0xc100e2e1: a local device of node <vm1>, not of this
+    node" although VM2 has the device.
+    Fix: in deviceBySerial prefer a cxl.nri.io match whose NodeName is
+    b.cfg.NodeName (return it at once), then a pool driver match, and
+    return another node's local device only when nothing else has the
+    serial. Unit test: two node slices with the same shared serial, this
+    node's listed second.
+
+R2  D/node_state.go:1268-1275 (prepareLocalMemdev, sliced path) accepts an
+    allocation result of the shared shape.
+    Problem: both shapes are named memdev-<serial>. The guard refuses a
+    result without shares on a shared device, but nothing refuses a result
+    WITH shares on a sliced device: it gets size = the whole usable size
+    (no memory consumed), and the scheduler, which counted shares and no
+    memory, keeps allocating the memory capacity to other claims.
+    Failure: a claim is allocated memdev-c100e2e1 (shared, consumed shares
+    1M), the admin removes the serial from sharedDevices and restarts the
+    plugin before kubelet prepares it (03 section 7 calls this a stale
+    allocation). The device is idle, published sliced; the stale claim
+    takes the whole device as a numa slice; the next cxl-local claims fail
+    at Prepare with errNoRoom until it is gone.
+    Fix: in prepareLocalMemdev, when !dev.Shared and r.ConsumedCapacity
+    has device.CapacityShares, fail with e.g. "device 0x<serial>: allocated
+    as a shared device, which it is not any more" (the symmetric case is
+    already refused by consumedShares). Unit test next to the guard.
+
+R3  Missing error-path unit tests (D/local_shared_test.go). The happy
+    paths, the guard and the D6 hiding are tested against the fake sysfs
+    (they test the code, not the fakes), but none of these failures is:
+    - AcquireShared when cxl create-region fails: no device left in the
+      state, no claim, region released (dropUnused);
+    - when SetDaxDriver / DaxDevNumbers fail after the region exists: no
+      claim recorded, the region kept (configured shared);
+    - when save fails after the claim is recorded, then the Prepare
+      rollback (releaseLocal) drops the claim and keeps the region;
+    - a claim with two results whose second fails after the shared
+      acquire (prepareAllocatedDevices -> releaseLocal);
+    - Reconcile of a shared state entry of another boot (dropped, no
+      region touched) and of a half-made one (Region set, Dax "": kept
+      when configured, the next AcquireShared rebuilds it);
+    - consumed shares "-1" (only 0, "", 500m are in TestConsumedShares).
+    Fix: add them; the fake sysfs of local_test.go already has failure
+    hooks for create-region and the dax driver.
+
+R4  D/local.go:386-419 sharedDevice trusts a kept shared device whose
+    region vanished at runtime (destroyed by hand, or a failed release
+    that did destroy it): checkRegions passes when the memdev has no
+    region, d is returned, SetDaxDriver(d.Dax) fails, and every later
+    claim of the device fails until the plugin restarts (Reconcile then
+    forgets it). Failure: "cxl destroy-region region0" on an idle shared
+    device, then every reader Prepare fails with a dax error. Fix: when
+    d.Region is not in a.mem.Regions(memdev), log and forget d (as
+    reconcileDevice does) and create the region again. (The sliced path
+    has the same weakness; fixing the shared one is enough here.)
+
+Style
+-----
+S1  D/node_state.go:493-494: "used := local.uses(...)" and "use, _ :=
+    local.use(...)" read the snapshot twice; "use, used := local.use(...)".
+S2  D/node_state.go:422-440: configuredShared calls memdevMatches and then
+    sharedRefusal, which calls memdevMatches again (and memdevIgnoreReason);
+    addLocalMemdevs calls both per memdev per scan. One helper returning
+    (listed bool, refusal string) would match once.
+S3  D/local.go:355 AcquireShared sets a.shared[serial] = true (marks the
+    device configured shared, for memdevs that appear after the start).
+    That side effect is not in the function comment; say it there.
+S4  D/local.go:349 AcquireShared takes "use" only for its log line: the
+    allocator logs a node-state notion. Optional: log the use in
+    prepareSharedMemdev instead (the grep-able line would change: E2E).
+S5  D/pool_persistent_test.go:274 comment "a shared persistent device with
+    one host, and with all of them": hosts wording; "one share, and
+    exclusive".
+S6  P/pkg/controller/reconciler.go:57 exclusiveResult comment "or none is
+    recorded (no shares request)": a claim without a shares request has
+    the full value recorded; "none recorded" is a result without consumed
+    capacity (feature gate off or a hand-made status). Reword.
+
+Checked and fine
+----------------
+- Shares guard, cxl.nri.io (node_state.go prepareLocalMemdev): runs for
+  dev.Shared before parseConfig, modeFor and the allocator; missing,
+  "0", fractions below 1 and negatives refused (Quantity.Cmp with 1),
+  fractions >= 1 accepted (">= 1" as 03 says); the text matches 03
+  section 8 exactly, wrapped "claim ns/name: request R: ". Pool driver
+  (pool.go:380): data.Shared results checked right after poolDataFor,
+  before parseConfig, checkSamePreparation, inflight and any device work;
+  failure goes through fail() (rollback of earlier results).
+- Exclusive detection: controller exclusiveResult = shares missing or >=
+  device.SharesUnlimited, never for non-shared/unknown devices; the
+  driver's shareUse "exclusive" at >= 1M, "1 share", "N shares"; both use
+  the one constant of pkg/cxl/device; no local copy left in P.
+- Zeroing: the shared path never calls zero, resize or online (tested);
+  slices keep zeroSlice in addSlice (see B1 for the creation case).
+- Region life: created by the first claim (sharedDevice), reused while
+  kept; releaseShared drops the claim and keeps the region while
+  a.shared[serial]; releases it when unconfigured and idle; Reconcile at
+  start (reconcileShared) drops unprepared claims, keeps configured ones,
+  keeps unconfigured ones with claims (warning), releases unconfigured
+  idle ones; SetShared runs before Reconcile in newLocalHelper with the
+  pool serials (scanInput moved before it, no dependency on local);
+  boot-id rule unchanged (load drops another boot's state untouched).
+- Hiding (D6): addSharedMemdev hides a configured device with sliced
+  claims; the sliced path hides a device with shared claims; orphanOwner
+  is not a claim (claimUIDs); idle state of the other use does not hide;
+  the plugin's kept region is not published as a cxl-region (uses()).
+- Precedence ignoreDevices > pool serials > sharedDevices > sliced, logged
+  once per memdev and reason at Info, other reasons at V(4); matcher is
+  the one of ignoreDevices (memdevMatches).
+- One dax device per node for all claims; per-claim CDI device with
+  permissions "r" for readOnly (tested); PreparedDeviceInfo.Shared,
+  memory() and lentDevices set Shared; env SHARED=1 for claims and leases.
+- State compatibility: localDevice.Shared omitempty (an old file loads as
+  sliced, tested); PreparedDeviceInfo.shared omitempty; leases.json:
+  "hosts" was omitempty, so only old files with a hosts value fail the
+  strict decode (empty table, logged, tested); sharedDevice and
+  deviceSource omitempty.
+- Locks: AcquireShared holds a.mu over region creation like Acquire; the
+  publisher reads the snapshot under snapMu only; SetDaxDriver is a no-op
+  when the device is already device_dax, so later claims never rebind a
+  mapped device.
+- Rollbacks: a failed creation leaves no device (dropUnused) or, if the
+  release fails too, an entry without Dax that the next claim rebuilds;
+  a dax failure after creation records no claim; a save failure or any
+  later Prepare failure is undone by releaseLocal -> releaseShared; no
+  claim is left recorded on any error path I traced.
+- Lease path: R4 removed from api.go and cxl-request (tests updated);
+  errPoolDisabled only for --source pool; refusal order in serialOptions
+  is 03 section 6's (not shareable, ok, not a local device, not a pool
+  device, other node, mode numa); the hosts capacity and its text are
+  gone; companionSources honours Source, then DeviceSource, then the pool
+  driver; companion shapes match 05-status-DRV section 4 (cxl-local-shared
+  first, shares "1" for a share, no capacity for exclusive, size >= N on
+  shared classes, memory capacity otherwise); firstAvailable configs are
+  per subrequest ("lease/local", "lease/pool"), exactly has configs for
+  all; the --serial narrowing to one exactly request is as accepted;
+  OnPrepared ORs SharedDevice from the lent device; usage text as 03.
+- Published shape: exactly type, source, serial, shared true, size,
+  nodeAffinity (absent when unknown); shares {value: 1M} without
+  requestPolicy; no memory capacity, memoryBlockSize or
+  nodeAllocatableResources; allowMultipleAllocations (exact DeepEqual
+  test and JSON "1M"). Sliced memdevs keep shared: false, so every local
+  memdev has the attribute the CEL needs. Pool controller publishes the
+  same shares capacity, unchanged attributes and binding conditions.
+- Classes: cxl-local gains shared == false, cxl-local-shared added,
+  comments of the three shared classes "exclusive unless
+  capacity.requests.shares: 1"; TestDeviceClassesMatchConstants checks
+  eight classes against the constants.
+- PCTL: SharedHosts, DefaultSharedHosts and -shared-hosts removed; no
+  "hosts" capacity left in Go, chart or controller (only pool-host
+  prose and a .claude worktree copy); controller tests cover 1M, 1,
+  missing and another capacity.
+- Unit tests: they drive the real allocator and node state on the fake
+  sysfs, the real broker with a fake client; TestBrokerLocalSharedLease
+  hand-builds the lent devices, which TestPrepareSharedLocalLend covers
+  from the node state side.
+
+R-D done
