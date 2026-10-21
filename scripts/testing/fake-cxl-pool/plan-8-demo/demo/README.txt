@@ -77,6 +77,22 @@ Reading order: the right column from the application down to the memory
 (T2 -> T4 -> T6), the left column from the action down to why (T1 -> T3
 -> T5). Small screen (2 x 2): T1, T2, T3 and T4; zoom the rest.
 
+Emacs alternative (requires installed multi-vterm and a working vterm):
+from this demo directory, launch
+  emacs --geometry 106x40 -l bin/demo-terminals.el -f cxl-demo-terminals
+or M-x load-file bin/demo-terminals.el, then M-x cxl-demo-terminals in
+an existing Emacs. For terminal Emacs (-nw), enlarge the outer terminal
+first; each pane needs at least 50 columns x 10 content rows, plus Emacs
+mode lines and window separators. Larger frames give larger panes.
+The command replaces the selected frame's window layout, not its other
+buffers. It creates *T1 PRESENTER*, *T2 PODS & LEASES*, *T3 SCHEDULER*,
+*T4 NODES*, *T5 TRACE* and *T6 MEMORY / POOL* in the layout above, leaving
+T1 selected. Running it again reuses those terminal buffers. New shells
+start in this demo directory; run ./bin/demo local (or pool) in T1 and
+./bin/demo view t2 through ./bin/demo view t6 in T2-T6. Nothing starts
+automatically, so setup and the presenter's steps remain under your
+control.
+
 4. T1: running the steps
 ------------------------
 Each step shows its caption and the real command (it runs in vm2, in
@@ -217,6 +233,7 @@ L9 the device is detached from both nodes: T6 "attached: nowhere",
 10. Files
 ---------
   bin/demo            the entry point (bash)
+  bin/demo-terminals.el  the Emacs multi-vterm layout
   bin/views.py        the views T2-T6; bin/probe.py runs in the VMs (sent
                       over ssh stdin, one call per node per refresh)
   bin/steps.py        the step runner (T1), bin/zoom.py the zooms

@@ -8,6 +8,7 @@ ControlMaster auto, so repeated calls reuse one connection.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -18,8 +19,9 @@ STATE_DIR = os.environ.get("DEMO_STATE_DIR", os.path.join(DEMO_DIR, "run"))
 STATE_FILE = os.path.join(STATE_DIR, "state.env")
 PROBE = os.path.join(BIN_DIR, "probe.py")
 
-WIDTH = 50
-ROWS = 10
+terminal_size = shutil.get_terminal_size()
+WIDTH = terminal_size.columns
+ROWS = terminal_size.lines
 CONTENT_ROWS = ROWS - 1
 
 LEASE_LABEL = "cxl.nri.io/lease"
