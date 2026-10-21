@@ -1,0 +1,172 @@
+#!/bin/bash
+# demo: the live demo of CXL memory sharing (plan-8-demo/demo/README.txt).
+
+DEMO_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEMO_DIR="$(dirname "$DEMO_BIN")"
+NRI_SRC="${NRI_PLUGINS_SRC:-$(cd "$DEMO_DIR/../../../../.." && pwd)}"
+E2E_DIR="$NRI_SRC/test/e2e"
+E2E_SUITE="$E2E_DIR/memory.test-suite/dra-driver-cxl"
+DEMO_SUITE="$DEMO_DIR/e2e/demo.test-suite/dra-driver-cxl"
+export DEMO_DIR
+export DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
+STATE="$DEMO_STATE_DIR/state.env"
+
+usage() {
+    cat <<EOF
+usage: demo COMMAND
+  setup local|pool         set up the cluster for a demo (minutes)
+  teardown                 remove all of it, leave the VMs clean
+  reset local|pool         delete the demo pods and leases, start over
+  commands                 print the commands of the six terminals
+  view t2|t3|t4|t5|t6 [local|pool] [--once] [--no-color]
+                           a live view: t2 pods and leases, t3 scheduler,
+                           t4 nodes, t5 trace, t6 memory (pool server)
+  local [N|N-|--auto]      the steps of the local demo (T1)
+  pool [N|N-|--auto]       the steps of the pool demo (T1)
+  zoom WHAT [ARGS]         details for questions, "demo zoom help"
+  capture LABEL            the views T2-T6 once, to captures/CASE-LABEL-tN.txt
+  selftest                 render every view from testdata/, check 50 x 10
+EOF
+}
+
+die() {
+    echo "demo: $*" >&2
+    exit 1
+}
+
+state-get() {
+    # Usage: state-get KEY
+    sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1
+}
+
+e2e-links() {
+    # Usage: e2e-links
+    #
+    # Link the helpers of the dra-driver-cxl e2e suite into the demo suite
+    # again: the policy level (dra.source.sh, helm values) and every file
+    # of the topology n4-cxl-shared-2 (sources, vars, tools).
+    local f rel
+    [ -f "$E2E_SUITE/dra.source.sh" ] || die "no e2e suite in $E2E_SUITE"
+    find "$DEMO_SUITE" -maxdepth 2 -type l -delete
+    rel="../../../../../../../../test/e2e/memory.test-suite/dra-driver-cxl"
+    for f in "$E2E_SUITE"/*; do
+        [ -f "$f" ] && ln -s "$rel/${f##*/}" "$DEMO_SUITE/${f##*/}"
+    done
+    for f in "$E2E_SUITE"/n4-cxl-shared-2/*; do
+        [ -f "$f" ] && ln -s "../$rel/n4-cxl-shared-2/${f##*/}" "$DEMO_SUITE/n4-cxl-shared-2/${f##*/}"
+    done
+    for f in "$DEMO_SUITE"/* "$DEMO_SUITE"/n4-cxl-shared-2/*; do
+        [ -e "$f" ] || die "broken link $f"
+    done
+}
+
+e2e-run() {
+    # Usage: e2e-run TEST
+    #
+    # Run the test TEST of the demo suite with run_tests.sh, the way the
+    # e2e tests run (one at a time: no other run_tests.sh may run).
+    local out
+    if command -v pgrep >/dev/null && pgrep -x run_tests.sh >/dev/null; then
+        die "run_tests.sh runs already: wait until it is done (the VMs serve one run at a time)"
+    fi
+    e2e-links
+    out="$DEMO_STATE_DIR/$1.log"
+    mkdir -p "$DEMO_STATE_DIR"
+    echo "demo: running $1 through the e2e framework, log $out"
+    (cd "$E2E_DIR" && ./run_tests.sh "$DEMO_SUITE/n4-cxl-shared-2/$1") 2>&1 | tee "$out"
+    grep -q "^PASS " "$out"
+}
+
+print-commands() {
+    local case="${1:-local|pool}"
+    cat <<EOF
+Six terminals of 50 x 10, two columns, three rows:
+  T1 (left top)     $DEMO_BIN/demo $case
+  T2 (right top)    $DEMO_BIN/demo view t2
+  T3 (left middle)  $DEMO_BIN/demo view t3
+  T4 (right middle) $DEMO_BIN/demo view t4
+  T5 (left bottom)  $DEMO_BIN/demo view t5
+  T6 (right bottom) $DEMO_BIN/demo view t6
+EOF
+}
+
+cmd-setup() {
+    local case="$1" tar
+    [ "$case" == local ] || [ "$case" == pool ] || die "setup local|pool"
+    [ ! -f "$STATE" ] || die "a demo ($(state-get DEMO_CASE)) is set up already: demo teardown first"
+    # shellcheck disable=SC2012 # the newest by mtime, like the e2e framework
+    tar=$(ls -1t "$NRI_SRC"/build/images/nri-dra-driver-cxl-image-*.tar 2>/dev/null | head -n 1)
+    [ -n "$tar" ] || die "no image of the driver, build it: make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images"
+    echo "demo setup $case: driver image $tar"
+    DEMO_CASE="$case" e2e-run test90-demo-setup || die "setup failed, see $DEMO_STATE_DIR/test90-demo-setup.log (its EXIT trap cleaned up)"
+    echo
+    print-commands "$case"
+}
+
+cmd-teardown() {
+    e2e-run test91-demo-teardown || die "teardown failed, see $DEMO_STATE_DIR/test91-demo-teardown.log; run it again"
+    echo "demo teardown: done, the VMs are clean"
+}
+
+cmd-reset() {
+    local case="$1" vm2
+    [ -f "$STATE" ] || die "demo not set up"
+    [ "$case" == "$(state-get DEMO_CASE)" ] || die "the demo is set up for $(state-get DEMO_CASE), not '$case'"
+    vm2="$(state-get VM2_DIR)"
+    echo "demo reset $case: deleting the demo pods and their leases"
+    ssh -F "$vm2/.ssh-config" node sudo bash -l -s -- "$case" <<'EOF'
+cd /root/demo && export KUBECONFIG=/root/demo/kubeconfig
+kubectl delete -f "$1/" --ignore-not-found --wait=true --timeout=90s
+for i in $(seq 90); do
+    left=$(kubectl get pods,resourceclaims -l cxl.nri.io/lease -o name 2>/dev/null)
+    [ -z "$left" ] && { echo "no leases left"; exit 0; }
+    sleep 1
+done
+echo "still there: $left"
+exit 1
+EOF
+}
+
+cmd-capture() {
+    # Usage: cmd-capture LABEL
+    #
+    # Write one plain rendering of each view T2-T6 to
+    # captures/<case>-LABEL-tN.txt, taken in parallel.
+    local label="$1" case t
+    [ -n "$label" ] || die "capture LABEL"
+    case="$(state-get DEMO_CASE)"
+    [ -n "$case" ] || die "demo not set up"
+    mkdir -p "$DEMO_DIR/captures"
+    for t in t2 t3 t4 t5 t6; do
+        python3 "$DEMO_BIN/views.py" "$t" --once > "$DEMO_DIR/captures/$case-$label-$t.txt" &
+    done
+    wait
+}
+
+cmd-zoom() {
+    if [ -t 1 ] && command -v less >/dev/null; then
+        python3 "$DEMO_BIN/zoom.py" "$@" 2>&1 | less -FRX
+    else
+        python3 "$DEMO_BIN/zoom.py" "$@"
+    fi
+}
+
+main() {
+    local cmd="$1"
+    shift
+    case "$cmd" in
+        setup) cmd-setup "$@";;
+        teardown) cmd-teardown;;
+        reset) cmd-reset "$@";;
+        commands) print-commands "$(state-get DEMO_CASE)";;
+        view) exec python3 "$DEMO_BIN/views.py" "$@";;
+        local|pool) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
+        zoom) cmd-zoom "$@";;
+        capture) cmd-capture "$@";;
+        selftest) exec python3 "$DEMO_BIN/selftest.py" "$@";;
+        ""|-h|--help|help) usage;;
+        *) usage; exit 2;;
+    esac
+}
+
+main "$@"
