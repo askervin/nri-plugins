@@ -8,7 +8,8 @@
 # Here the pool is fake-cxl-pool-server on the host. It hotplugs CXL
 # memory devices into the qemu of this VM (n4-cxl-shared-2, VM2), the
 # control plane of the Kubernetes cluster of the test, where the pod runs.
-# (VM1, the VM of n4-cxl-shared-1, is the other node of the cluster.)
+# (VM1 and VM0, the VMs of n4-cxl-shared-1 and -0, are the other nodes of
+# the cluster. The pool is cabled to VM1 and VM2 only.)
 # Kubernetes asks for the memory with DRA:
 # - fake-cxl-pool-controller (in the VM) publishes the devices of the pool
 #   in a ResourceSlice of driver cxl-pool.nri.io, attaches the device that
@@ -30,9 +31,9 @@
 # pod, the memory going back to the pool, and at the end the trace summary
 # of what every component did, in order.
 #
-# Run test00-up of n4-cxl-shared-1 and -2 first (see there for the patched
-# qemu): they create the VMs and make them one cluster. The DRA driver comes
-# from its image, build it first:
+# Run test00-up of n4-cxl-shared-1, -0 and -2 first (see there for the
+# patched qemu): they create the VMs and make them one cluster. The DRA
+# driver comes from its image, build it first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 
 if [[ "$distro" != *"fedora"* ]]; then
@@ -40,11 +41,12 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
-VM1="$POOL_VM1_DIR"    # the worker of the cluster
+VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
+VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
 POOLED0_HEX=C1EE0001        # the serial in environment variable names
@@ -55,7 +57,7 @@ POOLED1_SIZE=$(( 256 << 20 ))
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
-echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in either node"
+echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in VM2 and VM1"
 pool-vm-tools-install "$VM2"
 pool-vm-reset "$VM2"
 pool-vm-reset "$VM1"
@@ -85,12 +87,15 @@ dra-trace-start "$VM2"
 
 echo "### A: the pool is visible in Kubernetes"
 # The controller publishes the devices of the pool in one ResourceSlice
-# for all nodes. The node plugin publishes the memory of the node (DRAM,
-# and CXL memory that is already in the node) in a slice of its own.
+# for the nodes that the pool can reach: a nodeSelector of their
+# kubernetes.io/hostname, VM1 and VM2, not VM0 and never all nodes. The
+# node plugin publishes the memory of the node (DRAM, and CXL memory that
+# is already in the node) in a slice of its own.
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 SLICES="$COMMAND_OUTPUT"
-dra-assert "$SLICES" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$DRA_POOL_DRIVER')[0]['spec'].get('allNodes') == True"
+dra-assert "$SLICES" "len(slices('$DRA_POOL_DRIVER')) == 1 and not slices('$DRA_POOL_DRIVER')[0]['spec'].get('allNodes')"
+dra-assert "$SLICES" "slices('$DRA_POOL_DRIVER')[0]['spec'].get('nodeSelector') == {'nodeSelectorTerms': [{'matchExpressions': [{'key': 'kubernetes.io/hostname', 'operator': 'In', 'values': sorted(['$VM1_NAME', '$VM2_NAME'])}]}]}"
 dra-assert "$SLICES" "sorted(d['name'] for d in devices('$DRA_POOL_DRIVER')) == ['pooled0', 'pooled1']"
 P0="device('pooled0', '$DRA_POOL_DRIVER')"
 P1="device('pooled1', '$DRA_POOL_DRIVER')"

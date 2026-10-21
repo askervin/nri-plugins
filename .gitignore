@@ -26,3 +26,4 @@ test/statistics-analysis/output
 
 *.test
 testdata/
+/scripts/cxl-dump/cxl-dump

@@ -243,6 +243,7 @@ func (c *cli) cmdStatus(ctx context.Context, args []string) error {
 		return c.printJSON(st)
 	}
 	w := c.table()
+	fmt.Fprintf(w, "name:\t%s\n", dash(st.Name))
 	fmt.Fprintf(w, "server:\t%s\n", c.client().BaseURL)
 	fmt.Fprintf(w, "version:\t%s\n", st.Version)
 	fmt.Fprintf(w, "uptime:\t%s\n", st.Uptime)

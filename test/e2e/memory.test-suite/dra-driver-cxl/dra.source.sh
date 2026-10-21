@@ -4,8 +4,8 @@
 # VM of the test as a DaemonSet that helm installs from
 # deployment/helm/dra-driver-cxl, fake-cxl-pool-controller (the pool
 # controller of fake-cxl-pool, see scripts/testing/fake-cxl-pool) runs in
-# the VM of the test as a transient systemd unit, fake-cxl-pool-server runs
-# on the host (pool.source.sh).
+# the VM of the test as a transient systemd unit, one per pool server,
+# fake-cxl-pool-server runs on the host (pool.source.sh), once per pool.
 #
 # The driver comes from its image, built like the images of the other
 # plugins:
@@ -22,7 +22,8 @@
 # defines functions and variables. The helpers take VMDIR, the output
 # directory of a VM, first, like those of pool.source.sh: $OUTPUT_DIR for
 # the VM of the test. Other VMs work where pool.source.sh is sourced too
-# (n4-cxl-shared-2: $POOL_VM1_DIR, the worker of the cluster).
+# (n4-cxl-shared-2: $POOL_VM1_DIR and $POOL_VM0_DIR, the workers of the
+# cluster).
 #
 # Typical use:
 #   pool-server-start "DEVICES"   # first: dra-install chains its EXIT trap
@@ -76,6 +77,13 @@ DRA_REQUESTER_ANNOTATION=cxl.nri.io/requester
 # slices that the driver created.
 DRA_LOCAL_STATE=/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json
 DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller"
+# The systemd units of the pool controllers in the VM of the test:
+# fake-cxl-pool-controller for the first pool server, and
+# fake-cxl-pool-controller-<name> for every other server of
+# pool.source.sh; the units that dra-install started.
+DRA_CONTROLLER_UNIT=fake-cxl-pool-controller
+DRA_CONTROLLER_UNITS_GLOB="$DRA_CONTROLLER_UNIT*"
+DRA_CONTROLLER_UNITS=()
 DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
 # The node mounts of the file systems of persistent pool devices (mode fs),
 # one per device and access: <serial hex without 0x>-<direct|cached>.
@@ -302,7 +310,11 @@ dra-install() { # script API
     # configuration $DRA_DRIVER_CONFIG unless it is empty, see
     # dra-helm-values), and run fake-cxl-pool-controller in the VM of the
     # test as a transient systemd unit of the same name, with the admin
-    # kubeconfig of the VM. The chart
+    # kubeconfig of the VM: one per pool server that pool-server-start
+    # started, unit fake-cxl-pool-controller for the first one and
+    # fake-cxl-pool-controller-<name> for the others, each with the URL of
+    # its server; the controller names its DRA pool after its server. The
+    # chart
     # creates the DeviceClasses of the driver (DRA_CLASSES), and the driver
     # puts cxl-request on its nodes ($DRA_REQUEST_NODE_BIN) for the
     # containers of lease claims. The other nodes get the image of the
@@ -310,17 +322,25 @@ dra-install() { # script API
     # the release, the controller, DeviceClasses, and driver state that
     # refers to CXL regions which are gone (dra-state-cleanup). Create
     # namespace $DRA_NS empty (delete objects that an earlier run left).
-    # Wait until the cluster has the pool ResourceSlice of the controller
+    # Wait until the cluster has the pool ResourceSlices of the controllers
     # and the driver is up on every node (dra-wait-node).
     #
     # Call pool-server-start first: the controller needs the server, and
     # dra-install chains its EXIT trap: dra-cleanup, then pool-cleanup, or
     # $DRA_EXIT_TRAP if it is set.
-    local vmdir="$OUTPUT_DIR" label url names name v nodes values
+    local vmdir="$OUTPUT_DIR" label url names name v nodes values i units=() urls=()
     label=$(dra-vm-label "$vmdir")
     [ -x "$DRA_CONTROLLER_BIN" ] || error "dra-install: no $DRA_CONTROLLER_BIN, run dra-build first"
     values=$(dra-helm-values) || error "dra-install: no helm values file, see above"
     url="${POOL_GUEST_URL:-http://192.168.76.2:${FAKE_CXL_POOL_PORT:-9909}}"
+    # One controller per pool server, the first one with the URL above.
+    units=("$DRA_CONTROLLER_UNIT")
+    urls=("$url")
+    for name in "${POOL_SERVERS[@]:1}"; do
+        v=$(pool-guest-url "$name") || error "dra-install: no URL of the pool server $name"
+        units+=("$DRA_CONTROLLER_UNIT-$name")
+        urls+=("$v")
+    done
     # The nodes of the cluster are VMs next to the VM of the test, named
     # after their output directories, the VM of the test first.
     names=$(dra-vm-command-q "$vmdir" "kubectl get nodes -o jsonpath='{.items[*].metadata.name}'") ||
@@ -340,7 +360,7 @@ dra-install() { # script API
     echo "dra-install: removing components of an earlier run, if any"
     dra-helm-uninstall ||
         error "dra-install: pods of $DRA_DAEMONSET of an earlier run are left in the cluster of $label"
-    dra-vm-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null; kubectl delete deviceclass --ignore-not-found ${DRA_CLASSES[*]}" ||
+    dra-vm-command "$vmdir" "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; kubectl delete deviceclass --ignore-not-found ${DRA_CLASSES[*]}" ||
         command-error "cannot remove the components of an earlier run in $label"
     for v in "${nodes[@]}"; do
         dra-state-cleanup "$v"
@@ -349,7 +369,7 @@ dra-install() { # script API
     dra-vm-command "$vmdir" "chmod 755 /usr/local/bin/fake-cxl-pool-controller" ||
         command-error "cannot install fake-cxl-pool-controller in $label"
 
-    echo "dra-install: installing $DRA_CHART with helm on ${#nodes[@]} nodes, starting fake-cxl-pool-controller in $label"
+    echo "dra-install: installing $DRA_CHART with helm on ${#nodes[@]} nodes, starting ${units[*]} in $label"
     DRA_INSTALLED_VMS=("${nodes[@]}")
     DRA_WORKERS=()
     for v in "${nodes[@]:1}"; do
@@ -367,8 +387,12 @@ dra-install() { # script API
     # (nri-resource-policy.output.txt).
     helm_config="$values" helm_name="$DRA_HELM_RELEASE" launch_available="${#nodes[@]}" launch_timeout=120s \
         helm-launch "$DRA_CHART"
-    dra-vm-command "$vmdir" "systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v" ||
-        command-error "cannot start fake-cxl-pool-controller in $label"
+    DRA_CONTROLLER_UNITS=()
+    for i in "${!units[@]}"; do
+        dra-vm-command "$vmdir" "systemd-run --unit ${units[$i]} --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server ${urls[$i]} -v" ||
+            command-error "cannot start ${units[$i]} in $label"
+        DRA_CONTROLLER_UNITS+=("${units[$i]}")
+    done
     dra-vm-command "$vmdir" "kubectl get deviceclass ${DRA_CLASSES[*]}" ||
         command-error "the chart $DRA_CHART does not create the DeviceClasses ${DRA_CLASSES[*]} in $label"
 
@@ -434,16 +458,17 @@ dra-state-cleanup() {
 dra-wait-node() {
     # Usage: dra-wait-node VMDIR
     #
-    # Wait until the cluster of the VM of VMDIR has the pool ResourceSlice
-    # and the cxl.nri.io ResourceSlice of the node, and the node has the
-    # kubelet plugin socket of cxl-pool.nri.io and the cxl-request of the
-    # driver.
-    local vmdir="$1" name label
+    # Wait until the cluster of the VM of VMDIR has a pool ResourceSlice of
+    # every started pool server (dra-pool-names) and the cxl.nri.io
+    # ResourceSlice of the node, and the node has the kubelet plugin socket
+    # of cxl-pool.nri.io and the cxl-request of the driver.
+    local vmdir="$1" name label pools
     name=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
-    retry-until --timeout 60 --interval 2 --message "$label: ResourceSlices of $DRA_POOL_DRIVER and $DRA_LOCAL_DRIVER on $name, $DRA_POOL_DRIVER kubelet plugin socket, $DRA_REQUEST_NODE_BIN" \
+    pools=$(dra-pool-names | tr '\n' ' ')
+    retry-until --timeout 60 --interval 2 --message "$label: ResourceSlices of $DRA_POOL_DRIVER${pools:+ (pools ${pools% })} and $DRA_LOCAL_DRIVER on $name, $DRA_POOL_DRIVER kubelet plugin socket, $DRA_REQUEST_NODE_BIN" \
         'dra-install-ready "$vmdir" "$name"' || {
-        dra-vm-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide; kubectl logs -n kube-system --tail=40 -c $DRA_CONTAINER \$(kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$name -o name | head -n 1); systemctl status --no-pager fake-cxl-pool-controller; journalctl --no-pager -n 40 -u fake-cxl-pool-controller; kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/*"
+        dra-vm-command "$vmdir" "kubectl get pods -n kube-system -l $DRA_POD_LABEL -o wide; kubectl logs -n kube-system --tail=40 -c $DRA_CONTAINER \$(kubectl get pods -n kube-system -l $DRA_POD_LABEL --field-selector spec.nodeName=$name -o name | head -n 1); systemctl status --no-pager '$DRA_CONTROLLER_UNITS_GLOB'; journalctl --no-pager -n 40 -u '$DRA_CONTROLLER_UNITS_GLOB'; kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/*"
         error "dra-install: the DRA components did not come up in $label"
     }
     dra-vm-command "$vmdir" "kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/ $DRA_REQUEST_NODE_BIN"
@@ -451,9 +476,12 @@ dra-wait-node() {
 
 dra-install-ready() {
     # Usage: dra-install-ready VMDIR NODENAME
-    local vmdir="$1" name="$2" json
+    local vmdir="$1" name="$2" json pools="" pool
     json=$(dra-vm-command-q "$vmdir" "kubectl get resourceslices -o json") || return 1
-    dra-py assert "$json" "slices(\"$DRA_POOL_DRIVER\") and slices(\"$DRA_LOCAL_DRIVER\", \"$name\")" || return 1
+    for pool in $(dra-pool-names); do
+        pools+="'$pool', "
+    done
+    dra-py assert "$json" "slices(\"$DRA_POOL_DRIVER\") and set([$pools]) <= set(s['spec']['pool']['name'] for s in slices(\"$DRA_POOL_DRIVER\")) and slices(\"$DRA_LOCAL_DRIVER\", \"$name\")" || return 1
     dra-vm-command-q "$vmdir" "test -S /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/dra.sock && test -x $DRA_REQUEST_NODE_BIN"
 }
 
@@ -480,14 +508,43 @@ dra-plugin-log-save() {
     echo "log of $DRA_CONTAINER in $(dra-vm-label "$1"): $file"
 }
 
-dra-pool-attachments() {
-    # Usage: dra-pool-attachments HOST
+dra-pool-names() {
+    # Usage: dra-pool-names
     #
-    # Print the attachments of the server on HOST that a pool controller
-    # owns (owner k8s:...), one "device@host owner state" per line. Print
-    # nothing if there is no server.
-    [ -n "$POOL_URL" ] || return 0
-    curl -s --max-time 10 "$POOL_URL/api/v1/attachments" 2>/dev/null | python3 -c '
+    # Print the DRA pool names of the pool servers that pool-server-start
+    # started, one per line: their names. Print nothing if there are none.
+    local name
+    for name in "${POOL_SERVERS[@]}"; do
+        echo "$name"
+    done
+}
+
+dra-pool-urls() {
+    # Usage: dra-pool-urls
+    #
+    # Print the URLs on the host of the pool servers that pool-server-start
+    # started, one per line, or $POOL_URL if it started none. Print nothing
+    # if there is no server.
+    local name
+    if [ "${#POOL_SERVERS[@]}" -gt 0 ]; then
+        for name in "${POOL_SERVERS[@]}"; do
+            pool-url "$name"
+        done
+    elif [ -n "$POOL_URL" ]; then
+        echo "$POOL_URL"
+    fi
+}
+
+dra-pool-attachments() {
+    # Usage: dra-pool-attachments HOST [URL]
+    #
+    # Print the attachments on HOST of the server at URL (default:
+    # $POOL_URL) that a pool controller owns (owner k8s:...), one
+    # "device@host owner state" per line. Print nothing if there is no
+    # server.
+    local url="${2:-$POOL_URL}"
+    [ -n "$url" ] || return 0
+    curl -s --max-time 10 "$url/api/v1/attachments" 2>/dev/null | python3 -c '
 import json, sys
 try:
     atts = json.load(sys.stdin) or []
@@ -502,15 +559,16 @@ dra-uninstall() { # script API
     # Usage: dra-uninstall
     #
     # Undo dra-install: delete namespace $DRA_NS (its pods first,
-    # gracefully: the driver unprepares their claims, and the controller
-    # detaches the devices when the claims are gone), wait until the
-    # controller has detached the devices of every node, store the log of
-    # the driver of every node (dra-plugin-log-save), uninstall the driver
-    # and its DeviceClasses (dra-helm-uninstall), stop the controller,
-    # delete the pool ResourceSlices it left and remove the driver state of
-    # every node (dra-state-cleanup). Never fails the test: it runs in the
-    # EXIT trap.
-    local vmdir="$OUTPUT_DIR" label left v host
+    # gracefully: the driver unprepares their claims, and the controllers
+    # detach the devices when the claims are gone), wait until the
+    # controllers have detached the devices of every node on every pool
+    # server, store the log of the driver of every node
+    # (dra-plugin-log-save), uninstall the driver and its DeviceClasses
+    # (dra-helm-uninstall), stop the controllers (every unit
+    # fake-cxl-pool-controller*), delete the pool ResourceSlices they left
+    # and remove the driver state of every node (dra-state-cleanup). Never
+    # fails the test: it runs in the EXIT trap.
+    local vmdir="$OUTPUT_DIR" label left v host url urls
     [ "${#DRA_INSTALLED_VMS[@]}" -gt 0 ] || return 0
     label=$(dra-vm-label "$vmdir")
     echo "dra-uninstall: the cluster of $label"
@@ -518,22 +576,26 @@ dra-uninstall() { # script API
     retry-until --timeout 60 --interval 2 --message "no ResourceClaims in $DRA_NS" \
         '[ -z "$(dra-vm-command-q "$vmdir" "kubectl get resourceclaims -n $DRA_NS -o name 2>/dev/null")" ]' ||
         echo "dra-uninstall: ResourceClaims remain in $DRA_NS"
+    urls=$(dra-pool-urls)
     for v in "${DRA_INSTALLED_VMS[@]}"; do
         host=$(dra-vm-name "$v")
-        if [ -n "$(dra-pool-attachments "$host")" ]; then
-            retry-until --timeout 60 --interval 2 --message "the controller detaches the pool devices of $host" \
-                '[ -z "$(dra-pool-attachments "$host")" ]' || {
-                echo "dra-uninstall: attachments left, pool-cleanup releases and detaches them:"
-                dra-pool-attachments "$host"
-            }
-        fi
+        for url in $urls; do
+            if [ -n "$(dra-pool-attachments "$host" "$url")" ]; then
+                retry-until --timeout 60 --interval 2 --message "the controller of $url detaches the pool devices of $host" \
+                    '[ -z "$(dra-pool-attachments "$host" "$url")" ]' || {
+                    echo "dra-uninstall: attachments left on $url, pool-cleanup releases and detaches them:"
+                    dra-pool-attachments "$host" "$url"
+                }
+            fi
+        done
     done
     for v in "${DRA_INSTALLED_VMS[@]}"; do
         dra-plugin-log-save "$v"
     done
     dra-helm-uninstall ||
         echo "dra-uninstall: pods of $DRA_DAEMONSET are left"
-    dra-vm-command "$vmdir" "systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null; true"
+    dra-vm-command "$vmdir" "systemctl stop '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; systemctl reset-failed '$DRA_CONTROLLER_UNITS_GLOB' 2>/dev/null; true"
+    DRA_CONTROLLER_UNITS=()
     left=$(dra-vm-command-q "$vmdir" "kubectl get resourceslices -o jsonpath='{range .items[?(@.spec.driver==\"$DRA_POOL_DRIVER\")]}{.metadata.name}{\"\\n\"}{end}'")
     if [ -n "$left" ]; then
         dra-vm-command "$vmdir" "kubectl delete resourceslices $(tr "\n" " " <<< "$left")"
@@ -1904,6 +1966,13 @@ dra-py() {
     #   names()                sorted metadata.name of items
     #   by_name(name)          the item called name, None if not found
     #   slices(driver, node)   ResourceSlices of driver (and node, if given)
+    #   pool_slices(pool, driver)  ResourceSlices of driver (default
+    #                          cxl-pool.nri.io) of DRA pool pool
+    #   pool_nodes(pool, driver)   sorted kubernetes.io/hostname values of
+    #                          the nodeSelector of the pool_slices if they
+    #                          all have the same selector of exactly one
+    #                          term with exactly that one In expression,
+    #                          and no allNodes; None otherwise
     #   devices(driver, node)  devices of those slices
     #   device(name, driver, node)  the device called name (of driver, in
     #                          the slice of node, if given), None if not found
@@ -1951,6 +2020,21 @@ def slices(driver=None, node=None):
     return [s for s in items
             if (driver is None or s["spec"].get("driver") == driver)
             and (node is None or s["spec"].get("nodeName") == node)]
+
+def pool_slices(pool, driver="cxl-pool.nri.io"):
+    return [s for s in slices(driver) if (s["spec"].get("pool") or {}).get("name") == pool]
+
+def pool_nodes(pool, driver="cxl-pool.nri.io"):
+    sels = [s["spec"].get("nodeSelector") for s in pool_slices(pool, driver) if not s["spec"].get("allNodes")]
+    if not sels or len(sels) != len(pool_slices(pool, driver)) or any(sel != sels[0] for sel in sels):
+        return None
+    terms = (sels[0] or {}).get("nodeSelectorTerms") or []
+    if len(terms) != 1 or sorted(terms[0]) != ["matchExpressions"] or len(terms[0]["matchExpressions"]) != 1:
+        return None
+    e = terms[0]["matchExpressions"][0]
+    if e.get("key") != "kubernetes.io/hostname" or e.get("operator") != "In":
+        return None
+    return sorted(e.get("values") or [])
 
 def devices(driver=None, node=None):
     return [d for s in slices(driver, node) for d in s["spec"].get("devices") or []]
@@ -2171,17 +2255,19 @@ dra-trace-start() { # script API
     # Usage: dra-trace-start [VMDIR...]
     #
     # Start collecting what every component does, in the background on the
-    # host, until dra-trace-stop: the log of fake-cxl-pool-server, and in
-    # each VM (default: the VM of the test) the logs of
-    # fake-cxl-pool-controller, the driver (its pod on the node),
+    # host, until dra-trace-stop: the logs of the fake-cxl-pool-servers, and
+    # in each VM (default: the VM of the test) the logs of the
+    # fake-cxl-pool-controllers, the driver (its pod on the node),
     # kube-scheduler and kubelet (DRA lines), Events, ResourceClaim and Pod
     # watches and udev
     # events of cxl, dax, memory and node devices. Every line is stamped
     # with the host clock when it arrives on the host, so the streams of
     # all VMs merge into one timeline without VM clock skew; ssh adds a few
     # ms. The streams go to $TEST_OUTPUT_DIR/trace/<tag>.log, tag
-    # <vm>.<component>, for instance vm.controller or vm1.udev.
-    local vmdir label name n pod
+    # <vm>.<component>, for instance vm.controller or vm1.udev; the first
+    # pool server is "server", the others <name>.server. The controllers
+    # share the tag <vm>.controller: their lines name their pools.
+    local vmdir label name n pod journal_units=""
     [ -z "$DRA_TRACE_RUNNING" ] || error "dra-trace-start: a trace is running already"
     [ $# -gt 0 ] || set -- "$OUTPUT_DIR"
     DRA_TRACE_DIR="$TEST_OUTPUT_DIR/trace"
@@ -2194,6 +2280,16 @@ dra-trace-start() { # script API
     if [ -n "$POOL_SERVER_LOG" ] && [ -f "$POOL_SERVER_LOG" ]; then
         dra-trace-collect server lines "tail -n0 -F $(printf %q "$POOL_SERVER_LOG")"
     fi
+    for name in "${POOL_SERVERS[@]:1}"; do
+        # shellcheck disable=SC2153 # POOL_SERVER_LOGS is of pool.source.sh
+        dra-trace-collect "$name.server" lines "tail -n0 -F $(printf %q "${POOL_SERVER_LOGS[$name]}")"
+    done
+    # journalctl -f resolves a unit pattern only once, to the units that
+    # have logged already: name the units that dra-install started.
+    for name in "${DRA_CONTROLLER_UNITS[@]}"; do
+        journal_units+=" -u $name"
+    done
+    [ -n "$journal_units" ] || journal_units=" -u '$DRA_CONTROLLER_UNITS_GLOB'"
     for vmdir in "$@"; do
         label=$(dra-vm-label "$vmdir")
         name=$(dra-vm-name "$vmdir")
@@ -2206,7 +2302,7 @@ dra-trace-start() { # script API
         dra-trace-collect-vm "$vmdir" "$label.kubelet" lines "journalctl -f -n0 -o cat -u kubelet | grep --line-buffered -iE 'dra|resourceclaim|cxl'"
         # The rest is of the cluster: once per cluster, on its control plane.
         [ -z "${DRA_WORKERS[$vmdir]}" ] || continue
-        dra-trace-collect-vm "$vmdir" "$label.controller" lines "journalctl -f -n0 -o cat -u fake-cxl-pool-controller"
+        dra-trace-collect-vm "$vmdir" "$label.controller" lines "journalctl -f -n0 -o cat$journal_units"
         dra-trace-collect-vm "$vmdir" "$label.scheduler" lines "kubectl -n kube-system logs -f --tail=0 kube-scheduler-$name"
         dra-trace-collect-vm "$vmdir" "$label.events" lines "kubectl get events -A --watch-only -o custom-columns=NS:.metadata.namespace,KIND:.involvedObject.kind,NAME:.involvedObject.name,REASON:.reason,MSG:.message --no-headers"
         dra-trace-collect-vm "$vmdir" "$label.claims" claims "kubectl get resourceclaims -A -w --output-watch-events -o json"
@@ -2380,7 +2476,7 @@ dra-trace-stop() { # script API
     done
     # tail of the server log: the stamper reads to the end and exits.
     while read -r pid tag; do
-        [ "$tag" == "server" ] && pkill -TERM -g "$pid" -x tail
+        [[ "$tag" == server || "$tag" == *.server ]] && pkill -TERM -g "$pid" -x tail
     done < "$DRA_TRACE_DIR/pids"
     # With the remote commands gone, ssh exits and the stampers flush.
     for i in $(seq 10); do
@@ -2482,8 +2578,9 @@ with open(out_path, "w") as out:
     out.write("# Times are host clock receipt times: the host stamped each line when it\n")
     out.write("# arrived. Lines from the VMs come over ssh, which adds a few ms; there is\n")
     out.write("# no VM clock skew. +s is seconds since the first line below.\n")
-    out.write("# Tags: server = fake-cxl-pool-server on the host; <vm>.controller =\n")
-    out.write("# fake-cxl-pool-controller, <vm>.driver = nri-dra-driver-cxl, <vm>.scheduler,\n")
+    out.write("# Tags: server = fake-cxl-pool-server on the host (<name>.server: the pool\n")
+    out.write("# server <name> of several); <vm>.controller = the fake-cxl-pool-controllers,\n")
+    out.write("# <vm>.driver = nri-dra-driver-cxl, <vm>.scheduler,\n")
     out.write("# <vm>.kubelet, <vm>.events, <vm>.claims (ResourceClaim changes), <vm>.pods,\n")
     out.write("# <vm>.udev (kernel uevents) of the VMs: %s.\n" % vms)
     out.write("# cxl-lease-<id> are the companion pods and claims of leases.\n")

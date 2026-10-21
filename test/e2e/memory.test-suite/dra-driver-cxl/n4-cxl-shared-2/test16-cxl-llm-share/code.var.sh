@@ -67,10 +67,12 @@
 # fit at once; the writer, with no shares request, takes all of them.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
-# control plane, the VM of n4-cxl-shared-1 (VM1) a worker, over the VM
-# network "cxl-pool" (vm_network.var.sh); test00-up of n4-cxl-shared-2
-# makes it. The pool controller runs once, on VM2, the driver on both: one
-# DaemonSet, installed with helm on VM2.
+# control plane, the VMs of n4-cxl-shared-1 (VM1) and n4-cxl-shared-0
+# (VM0) workers, over the VM network "cxl-pool" (vm_network.var.sh);
+# test00-up of n4-cxl-shared-2 makes it. The pool is cabled to VM1 and VM2
+# only, and the test uses those two nodes. The pool controller runs once,
+# on VM2, the driver on every node: one DaemonSet, installed with helm on
+# VM2.
 #
 # Host prerequisites: curl, and through http_proxy and https_proxy
 # huggingface.co (the model). The first run downloads the model (378 MiB)
@@ -89,9 +91,9 @@
 #   llm_model=PATH     a local copy of the model instead of the download
 #                      into $CACHE_DIR/llm
 #
-# Run test00-up of n4-cxl-shared-1 and -2 first: they create the VMs, boot
-# them on the CXL kernel (with CONFIG_EROFS_FS) and make them one cluster.
-# The DRA driver comes from its image, build it first:
+# Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs,
+# boot them on the CXL kernel (with CONFIG_EROFS_FS) and make them one
+# cluster. The DRA driver comes from its image, build it first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 
 if [[ "$distro" != *"fedora"* ]]; then
@@ -99,7 +101,7 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
 LLM_THREADS="${llm_threads:-2}"
@@ -107,6 +109,7 @@ LLM_EXPECT="${llm_expect:-Hello! How can I assist you today?}"
 
 VM1="$POOL_VM1_DIR"    # worker, the node of the writer
 VM2="$OUTPUT_DIR"      # control plane, the VM of this test
+VM0_NAME="$POOL_VM0_NAME"   # the other worker, not cabled to the pool
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
 LLM_DEVICE=llm0
@@ -489,7 +492,7 @@ pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True and j['shared'] == True"
 llm-file-zero "$LLM_LSA" 0 "$LLM_LSA_SIZE" || error "the new LSA file $LLM_LSA is not all zeros"
 echo "host: $LLM_DATA and $LLM_LSA ($LLM_LSA_SIZE bytes, all zeros)"
 
-echo "### preconditions: the pool controller on the control plane, the node plugin on both nodes"
+echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
 dra-build
 dra-install
 trap exit-cleanup EXIT
@@ -505,10 +508,10 @@ for vm in "$VM2" "$VM1"; do
 done
 dra-trace-start "$VM2" "$VM1"
 
-echo "### A: one cluster of two nodes, one pool with the persistent device $LLM_DEVICE, its class"
+echo "### A: one cluster of three nodes, one pool with the persistent device $LLM_DEVICE, its class"
 dra-kubectl "$VM2" "get nodes -o wide"
 dra-json "$VM2" nodes
-dra-assert "$COMMAND_OUTPUT" "sorted(n['metadata']['name'] for n in j['items']) == sorted(['$VM1_NAME', '$VM2_NAME'])"
+dra-assert "$COMMAND_OUTPUT" "sorted(n['metadata']['name'] for n in j['items']) == sorted(['$VM0_NAME', '$VM1_NAME', '$VM2_NAME'])"
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 D0="device('$LLM_DEVICE', '$DRA_POOL_DRIVER')"
@@ -655,7 +658,7 @@ done
 [ "$(llm-file-sha256 "$LLM_LSA")" == "$SHA_LSA" ] || error "host: the readers changed $LLM_LSA"
 echo "no pods, claims, mounts, loop devices, CDI devices, memory devices or regions of $LLM_DEVICE left; its data and labels are as the writer left them"
 
-echo "### what every component of both nodes did, in order"
+echo "### what every component of VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary
 echo "TIMING: writer pod created until the image is written: $T_WRITER s (dd of $LLM_IMAGE_SIZE bytes: $T_WRITE_MS ms)"

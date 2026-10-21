@@ -49,9 +49,10 @@
 # attached through fake-cxl-pool-server as in test14; the pool has the
 # shared device shared0 for the alternative of requests by size. All
 # pods run on this VM (VM2), the control plane of the cluster of the
-# test, the companions follow their requesters; VM1 (n4-cxl-shared-1), its
-# worker, has no local device attached. Run test00-up of n4-cxl-shared-1
-# and -2 first: they create the VMs and make them one cluster. The DRA
+# test, the companions follow their requesters; VM1 (n4-cxl-shared-1) and
+# VM0 (n4-cxl-shared-0), its workers, have no local device attached. Run
+# test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
+# make them one cluster. The DRA
 # driver comes from its image, which has cxl-request too, build it first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
 
@@ -60,10 +61,10 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
-VM1="$POOL_VM1_DIR"    # the worker of the cluster
+VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 SHARED0_SERIAL=0xc1ae0001   # 0xc1ae....: shared pool devices
@@ -327,7 +328,7 @@ print(len(leases or []))' <<< "$json"
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
-echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in either node"
+echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in VM2 and VM1"
 pool-vm-tools-install "$VM2"
 pool-vm-reset "$VM2"
 pool-vm-reset "$VM1"

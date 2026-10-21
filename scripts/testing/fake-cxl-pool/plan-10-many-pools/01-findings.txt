@@ -1,0 +1,216 @@
+plan-10: findings
+=================
+Written 2026-10-21 (orchestrator). "read" = read in the code, with the
+file; "measured" = checked on this host; "assumption" = to be verified by
+the implementing stream (03-plan says who). Paths as in 00-README.
+
+1. What exists today (one pool)
+-------------------------------
+F1  Server connectivity is configurable already. fake-cxl-pool-server
+    discovers qemu processes and keeps the VMs whose name matches
+    discovery.names (path.Match patterns; P/pkg/server/server.go
+    filterProcs, config.go DiscoveryConfig.Names). pool-server-start of
+    E/n4-cxl-shared-2/pool.source.sh writes names: [VM1, VM2]. A second
+    server with names: [VM0], another listen port, pool dir and state
+    file is a second pool appliance with no code change. (read)
+F2  Each server keeps one persistent QMP connection per VM on qmp.sock
+    (never qmp-e2e.sock: reservedSockets, server.go:792). A QMP socket
+    serves one client at a time (L/vm.bash:466 comment, P/README). So two
+    servers cannot both use QMP on one VM. The server also has an HMP
+    path (monitor.sock, a new connection per command, DEVICE_DELETED
+    polled: pkg/qemu/hmp.go pollDeviceDeleted) and a per-host override
+    hosts[].control: qmp|hmp (config.go HostConfig.Control,
+    server.go setMonitorLocked: force). A config host with the name of a
+    discovered VM is merged with it (updateHostsLocked: h.cfg = hc). There
+    is no discovery-level default protocol. (read)
+F3  The controller (P/pkg/controller) publishes one cluster-scoped
+    ResourceSlice with AllNodes: true (publisher.go driverResources),
+    pool name -pool-name (default fake-cxl-pool), driver -driver-name
+    (default cxl-pool.nri.io). It maps Nodes to hosts by systemUUID,
+    else by name (hosts.go mapHosts), in reconcile only; publish does not
+    know the map. A claim allocated to a node that is not a host gets
+    AttachFailed reason NoHost (reconciler.go writeStatus) and the
+    scheduler allocates again, possibly on the same node. (read)
+F4  Two controllers of one driver would fight. The k8s library
+    resourceslice.Controller (k8s.io/dynamic-resource-allocation v0.37.0,
+    resourceslicecontroller.go) watches all slices of its driver (field
+    selector spec.driver only, initInformer), queues the pool name of
+    every slice event (AddFunc/UpdateFunc/DeleteFunc), and syncPool of a
+    pool name that is not in its Resources removes those slices ("All are
+    obsolete, pool does not exist anymore", line 750-757). Controller A
+    (pool a) would delete pool b's slice and vice versa. The same library
+    has Options.ReconcilePoolWithName (line 302-315): "limits
+    reconciliation to a single pool. If set, the controller enqueues only
+    ResourceSlices with a matching Spec.Pool.Name" (field selector
+    spec.pool.name, with a fallback that filters in code when the API
+    server rejects the selector, lines 576-592). Update() with more than
+    that one pool is an error (lines 437-447). This is the fix. (read)
+F5  ResourceSlice.spec.nodeSelector must have exactly one term
+    (k8s.io/kubernetes v1.37.0 pkg/apis/resource/validation/validation.go:826
+    "must have exactly one node selector term"). A matchFields
+    metadata.name requirement takes exactly one value (core node selector
+    validation), so several nodes need matchExpressions on a label:
+    kubernetes.io/hostname In [names], the label the tests pin pods with.
+    The allocator filters devices of a slice by NodeMatches(node,
+    nodeName, allNodes, nodeSelector) (allocator_experimental.go:1490)
+    and, for a bindsToNode device, pins the allocation to the picked node
+    (createNodeSelector, line 2136), whatever the slice's selector. The
+    library's resourceslice.Pool has NodeSelector and AllNodes fields
+    (line 154-160). (read)
+F6  The node plugin needs no change: cxl.nri.io hides memdevs whose
+    serial any slice of another driver publishes (D/pool_slices.go
+    Serials: every ResourceSlice with Spec.Driver != cxl.nri.io, any pool
+    name); the pool driver matches the claim status entry by (driver,
+    pool, device) with the pool name of the allocation result
+    (D/pool.go poolDataFor:538); the lease broker finds a device by serial
+    in every slice of the pool driver (D/broker.go deviceBySerial). The
+    CDI device and the environment are keyed by serial. (read)
+F7  Serials. Devices without a serial get the next free one above the
+    base of their kind: sharedSerialBase 0xc1ae0000, exclusiveSerialBase
+    0xc1ee0000 (config.go), and the tests give serials explicitly
+    (0xc1ae0001, 0xc1ee0001, ...). Two servers with the defaults hand out
+    the same serials to different devices. A guest finds a device by its
+    serial, cxl.nri.io and the broker key by serial cluster-wide, so
+    serials must be unique over all pools of a cluster. The bases are
+    configuration; no code is needed, only a convention. (read)
+F8  qemu ids. An attachment plugs cxl-type3 id fcp_<device>.hp<N> with
+    backend object of the same id (ops.go:778); N is a per-host counter
+    seeded from ids in the tree (server.go seedCounterLocked). reconcile
+    adopts a cxl-type3 device whose backend id is fcp_<name>.hp<N> and
+    <name> is one of its devices (deviceForObjectLocked:1032), without
+    checking the serial. Two servers on one VM with a device of the same
+    name would (a) collide on device_add ("Duplicate ID", clear failure)
+    and (b) make the other server adopt a foreign device as its own.
+    Serial checking in adoption closes (b); (a) is a naming convention.
+    (read)
+F9  Slots. chooseSlotLocked (ops.go:589) takes free ports from the live
+    tree of the host (p.Occupant() == "", nothing attached there by this
+    server), prefers ports that are not the default slot of a local
+    device and ports on the requested NUMA node. Two servers see the same
+    tree, so they could pick the same free port within the window between
+    reading the tree and device_add; the loser gets a qemu error (503),
+    the controller writes AttachFailed, the scheduler retries. There is
+    no way to confine a server to some ports. Each e2e VM has two host
+    bridges cxlhb0 and cxlhb1, each with a four-port switch: ports
+    cxlsw_ds<i>_usrp0hb<h>, the local device and the static shared device
+    under hb0 (E/n4-cxl-shared-*/topology.var.json). (read)
+F10 Host.Slots in the API lists every slot of the VM (views.go
+    slotsLocked), the CLI "hosts NAME" prints them. (read)
+F11 The e2e cluster is two nodes: n4-cxl-shared-2/test00-up calls
+    vm-k8s-reinit "$VM2 $VM1" (control plane first, then workers; any
+    number of workers, L/k8s.bash vm-k8s-rebuild loops over dirs), the
+    other tests call pool-cluster-require, whose default cluster is
+    "$POOL_VM2_DIR $POOL_VM1_DIR" (pool.source.sh). vm-k8s-cluster-in-shape
+    demands exactly the listed nodes. VMs of one network find each other
+    over the multicast socket NIC (vm_network.var.sh: cxl-pool; L/vm.bash
+    vm-vmnet-*), addresses derived from VM_UUID. Topology dirs of a suite
+    are siblings; a VM's output dir is next to $OUTPUT_DIR
+    (L/k8s.bash vmdir-of). n4-cxl-shared-1 and -2 have identical
+    cxl.source.sh and kernel files (measured: diff). (read, measured)
+F12 dra-install (E/dra.source.sh:296) lists the nodes of the cluster,
+    imports the driver image into the other nodes, helm-installs the
+    DaemonSet on all nodes, and starts ONE controller on the VM of the
+    test: systemd-run --unit fake-cxl-pool-controller ... -server
+    $POOL_GUEST_URL -v. dra-uninstall stops that unit, deletes leftover
+    slices of the driver, and waits for the attachments of every node on
+    the one server ($POOL_URL via dra-pool-attachments). dra-wait-node
+    waits until slices(cxl-pool.nri.io) is non-empty. dra-trace-start
+    collects journalctl -u fake-cxl-pool-controller. (read)
+F13 pool.source.sh has one server: POOL_PORT (9909 or
+    $FAKE_CXL_POOL_PORT), POOL_URL, POOL_GUEST_URL, POOL_SERVER_PID,
+    POOL_SERVER_LOG, POOL_DIR (/tmp/fake-cxl-pool, also where the
+    topology's static-shared0.raw lives), pool-server-start [DEVICES]
+    writes a fixed config (names: VM1, VM2), pool-cleanup detaches what
+    is left and stops it, pool-client VMDIR ... and pool-host-client talk
+    to it. Eleven tests and the demo call pool-server-start "DEVICES".
+    (read)
+F14 Tests that assert the cluster or the slice shape: test10 asserts
+    the pool slice has allNodes == True (test10:93), test11 asserts
+    len(slices(pool driver)) == 1 (test11:161), test13 asserts the node
+    list is exactly [VM1, VM2] (test13:201) and the lease device on both
+    (206). Others pin pods with nodeSelector kubernetes.io/hostname and
+    count nothing cluster-wide. (read: grep allNodes, "== sorted",
+    len(nodes))
+F15 Host resources: 251 GiB RAM, 256 CPUs, 7 qemu VMs running, 39 GiB
+    free + 164 GiB cache; a third 8 GiB e2e VM fits. The patched qemu
+    (QEMU_BIN in VM2's env: ~/github.com/qemu/qemu/build/qemu-system-
+    x86_64) exists. A fake-cxl-pool-server (pid 2484219) listens on
+    127.0.0.1:9909 right now (from an earlier session or the demo): the
+    tests fail fast on a busy port; whoever runs test19 stops it first
+    after checking what it is. (measured)
+F16 Documentation that describes the two-node setup: docs/e2e.md (the
+    diagram, "Create the VMs", the test table, Deploy by hand with VM1
+    and VM2), P/README.md (fake-cxl-pool-controller section: allNodes,
+    "Each cluster runs one controller"), docs/pool.md (the example slice
+    "allNodes: true # or a nodeSelector of the nodes the pool can
+    reach"), .github/skills/run-e2e-tests/SKILL.md troubleshooting (two-
+    node cluster). (read)
+
+2. Constraints and consequences
+-------------------------------
+C1  One controller per server, same driver name: needs
+    ReconcilePoolWithName (F4) and distinct pool names. The pool name
+    should follow the server, not a flag someone forgets: give the
+    server a name (config "name", in GET /status) and let the controller
+    default to it.
+C2  Devices reachable from some nodes only: nodeSelector per pool (F5),
+    computed from the node->host map, republished when it changes; with
+    no reachable node nothing is published (an empty Pools map makes the
+    library remove the slices). The NoHost failure path stays for races
+    (node removed after allocation).
+C3  Pool C on VMs that pool A or B hold over QMP: HMP (F2). A
+    discovery-level default (discovery.control: hmp) spares per-host
+    entries. HMP shares monitor.sock with vm-monitor of the tests; both
+    connect per command, qemu accepts one connection at a time and the
+    other waits in the backlog (assumption: no refused connections; E2E
+    verifies in test19 by running pool-vm-monitor while pool C attaches).
+C4  Two servers on one VM should not race for ports (F9) and should
+    model "cabled to a port": slot patterns per server (discovery.slots)
+    and per host (hosts[].slots), path.Match on the slot bus name; the
+    server knows and uses only matching slots (Host.Slots too, F10).
+    Pool C: ["*hb1"]; pools A and B: ["*hb0"] in test19 (the local and
+    the static shared devices of the VMs are under hb0, their reserved
+    slots stay reachable for pool A, whose server also knows the local
+    devices).
+C5  Names and serials unique across servers that share a VM (F7, F8):
+    a convention, documented; adoption checks the serial. Serial scheme
+    for several pools: pool index P (one hex digit) in the fifth digit:
+    shared 0xc1aeP000 + n, exclusive 0xc1eeP000 + n; pool A keeps P = 0
+    (the defaults and every existing test), B is 1, C is 2.
+    pool-server-start takes --index P and sets both bases.
+C6  The permanent cluster grows to three nodes (F11): test00-up of VM2
+    reinit "$VM2 $VM1 $VM0", pool-cluster-require's default includes
+    VM0, pool-host-wait for VM0 with the pointer to its test00-up. The
+    tests of F14 are updated: test10 asserts the nodeSelector of pool A
+    (VM1 and VM2, not VM0), test13 the three nodes.
+C7  Several servers in the test helpers (F12, F13): pool-server-start
+    with options and a registry of started servers; one controller unit
+    per server (fake-cxl-pool-controller for the default server, so that
+    every existing grep, stop and journalctl keeps working, and
+    fake-cxl-pool-controller-<name> for the others; patterns for stop
+    and journalctl); dra-wait-node waits for a slice of every started
+    pool; dra-uninstall waits for the attachments of every server.
+C8  The driver: no change (F6). test19 verifies it: CDI, environment
+    and release with devices of two pools in one pod.
+C9  Pool C's shared device on VM0 and VM2 at once shows what a pool that
+    spans racks gives: data shared by every node of the cluster, while
+    the rack pools A and B give capacity. One pod on VM0 claiming from B
+    and C shows two pools in one pod.
+
+3. Open points settled by the orchestrator
+------------------------------------------
+O1  Separate server processes, not pools inside one server: the user
+    asked for another fake-cxl-pool-server instance; it is the realistic
+    shape; nothing is shared between appliances by accident.
+O2  HMP for pool C rather than a third QMP socket per VM: a third socket
+    would change L/vm.bash for every topology and need a Vagrantfile
+    patch and a restart of VM1 and VM2; HMP exists, is tested with the
+    fake monitor, and models a second fabric manager's own control path.
+    Its cost is polling instead of events (DEVICE_DELETED after a detach
+    is seen within the poll interval). If test19 shows HMP unfit (C3),
+    the fallback is the third QMP socket, as a follow-up.
+O3  No new device attribute for the pool: CEL selects by serial or by
+    size, the pool name is spec.pool.name of the slice and the
+    allocation result; the contract (docs pool.md) does not grow.
+O4  Pool names in test19: pool-a, pool-b, pool-c (the default server
+    name fake-cxl-pool stays for every other test).

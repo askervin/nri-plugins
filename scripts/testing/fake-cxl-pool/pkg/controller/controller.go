@@ -14,10 +14,12 @@
 
 // Package controller implements fake-cxl-pool-controller: the cluster side
 // of the cxl-pool.nri.io DRA driver for the fake-cxl-pool server. It
-// publishes the pool devices as one cluster-scoped ResourceSlice, attaches a
-// device to the VM of the node the scheduler picked, writes the binding
-// condition and the device data into the claim status, and detaches the
-// device when the claim is deallocated. The controller is a stateless,
+// publishes the pool devices as one cluster-scoped ResourceSlice for the
+// nodes whose VMs the server reaches, under the name of the server as the
+// pool name, attaches a device to the VM of the node the scheduler picked,
+// writes the binding condition and the device data into the claim status,
+// and detaches the device when the claim is deallocated. Each server has a
+// controller of its own. The controller is a stateless,
 // level-triggered reconciler: desired attachments come from ResourceClaims,
 // actual ones from the server. The contract with the node plugin is
 // docs/memory/cxl/pool.md.
@@ -30,7 +32,6 @@ import (
 	"os"
 	"time"
 
-	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -56,7 +57,8 @@ const (
 	Component = "fake-cxl-pool-controller"
 )
 
-// Config configures the controller.
+// Config configures the controller. PoolName "" is the name of the server
+// (GET /status), DefaultPoolName for a server without a name.
 type Config struct {
 	DriverName    string
 	PoolName      string
@@ -75,9 +77,6 @@ type Config struct {
 func (c *Config) complete() {
 	if c.DriverName == "" {
 		c.DriverName = DefaultDriverName
-	}
-	if c.PoolName == "" {
-		c.PoolName = DefaultPoolName
 	}
 	if c.SyncInterval <= 0 {
 		c.SyncInterval = DefaultSyncInterval
@@ -117,9 +116,10 @@ type Controller struct {
 
 	// Owned by the goroutine of Run.
 	slices     *resourceslice.Controller
-	published  []resourceapi.Device
-	devices    map[string]api.Device // published device name -> server device
+	published  *resourceslice.DriverResources // last given to slices
+	devices    map[string]api.Device          // published device name -> server device
 	nameWarned map[string]bool
+	noLabel    map[string]bool // nodes without a hostname label (warned once)
 	hostMapStr string
 	attLogged  map[string]string // attachment id -> last logged state of undesired attachments
 }
@@ -140,6 +140,7 @@ func New(cfg Config, kube kubernetes.Interface, pool *client.Client, recorder re
 		trigger:    make(chan struct{}, 1),
 		devices:    map[string]api.Device{},
 		nameWarned: map[string]bool{},
+		noLabel:    map[string]bool{},
 		attLogged:  map[string]string{},
 	}
 	handler := cache.ResourceEventHandlerFuncs{
@@ -185,10 +186,44 @@ func (c *Controller) start(ctx context.Context) error {
 	return nil
 }
 
+// resolvePoolName sets the pool name to the name of the server unless one
+// is configured. It returns true if the name came from the server.
+func (c *Controller) resolvePoolName(ctx context.Context) (bool, error) {
+	if c.cfg.PoolName != "" {
+		return false, nil
+	}
+	st, err := c.pool.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	c.cfg.PoolName = st.Name
+	if c.cfg.PoolName == "" {
+		c.cfg.PoolName = DefaultPoolName
+	}
+	return true, nil
+}
+
 // Run runs the controller until ctx is done. On return the pool
 // ResourceSlices of the controller are deleted.
 func (c *Controller) Run(ctx context.Context) error {
-	c.logf("driver %s, pool %s, server %s, sync interval %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval)
+	fromServer, err := c.resolvePoolName(ctx)
+	for err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		c.logf("ERROR: pool name: server status: %v (retrying in %s)", err, c.cfg.SyncInterval)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(c.cfg.SyncInterval):
+		}
+		fromServer, err = c.resolvePoolName(ctx)
+	}
+	if fromServer {
+		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval)
+	} else {
+		c.logf("driver %s, pool %s, server %s, sync interval %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval)
+	}
 	if err := c.start(ctx); err != nil {
 		return err
 	}
@@ -220,13 +255,19 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 }
 
-// sync publishes the pool devices and reconciles attachments.
+// sync maps the nodes to the hosts of the server, publishes the pool
+// devices for those nodes and reconciles attachments.
 func (c *Controller) sync(ctx context.Context) {
-	if err := c.publish(ctx); err != nil {
+	hm, err := c.mapNodes(ctx)
+	if err != nil {
+		c.logf("ERROR: sync: %v", err)
+		return
+	}
+	if err := c.publish(ctx, hm); err != nil {
 		c.logf("ERROR: publish: %v", err)
 		return
 	}
-	if err := c.reconcile(ctx); err != nil {
+	if err := c.reconcile(ctx, hm); err != nil {
 		c.logf("ERROR: reconcile: %v", err)
 	}
 }

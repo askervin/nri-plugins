@@ -1,0 +1,417 @@
+plan-10: status of stream E2E
+=============================
+Written 2026-10-21 by stream E2E. Paths as in 00-README. Nothing
+committed. Phase 1 edits are done; every step that needs VM1, VM2 or
+port 9909 waits for the user's answer about the demo (section 1).
+
+1. Demo on port 9909 (found before any run; left exactly as it is)
+------------------------------------------------------------------
+pid 2484219, started Tue Oct 20 15:46:34 2026:
+  P/bin/fake-cxl-pool-server
+    -config N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/
+            dra-driver-cxl/test90-demo-setup/fake-cxl-pool.yaml
+    -state  .../test90-demo-setup/fake-cxl-pool.state.json -v
+Config: one device shared0 (256Mi, shared, 0xc1ae0001), names: [VM1, VM2].
+It holds ONE attachment (GET /api/v1/attachments):
+  shared0@n4-cxl-shared-1-fedora-43-containerd, state attached,
+  slot cxlsw_ds0_usrp0hb0, qemu id fcp_shared0.hp1,
+  owner k8s:resourceclaim/e3975c65-d00e-4ccc-b0f4-0d63fd743b8e,
+  created 2026-10-20T12:51:42Z
+The cluster (VM2, read-only kubectl) still runs the demo's pool case:
+  cxl-demo/writer              Running 16h on n4-cxl-shared-1
+  cxl-demo/cxl-lease-d9caec78  Running 16h on n4-cxl-shared-1
+  resourceclaims cxl-lease-d9caec78, writer-cxl-47lh4: allocated,reserved
+  fake-cxl-pool-controller on VM2: active
+P/plan-8-demo/demo/run/state.env: DEMO_CASE=pool, POOL_SERVER_PID=2484219
+(setup 2026-10-20 15:47:11); steps.log ends with pool L2 (15:51:46, lease
+d9caec78 Ready dax rw on 0xc1ae0001); no teardown after it.
+This is not a leftover: the demo's pool case was set up and left after
+step L2. Not stopped. Question (with the user now): may stream E2E tear
+the demo down (test91-demo-teardown: deletes the pods and claims,
+detaches shared0, stops the server), or is it still needed?
+Checked again at the end of phase 1: pid 2484219 still runs, its one
+attachment is still attached, the demo's trace collectors (pids 2486552,
+2486563) still run.
+
+Incident (no effect on the demo): my first host-only smoke run of the
+helpers (section 6) started a server without --name, whose pool dir is
+POOL_DIR = /tmp/fake-cxl-pool, the demo's dir. It created
+/tmp/fake-cxl-pool/a-pooled0.raw (a new file, removed right after). The
+demo's shared0.raw kept its mtime (2026-10-20 12:23:29), the demo server
+its attachment. The rerun redirected POOL_DIR to a temp dir.
+
+2. What changed, per file
+-------------------------
+E/n4-cxl-shared-0/ (new, D18)
+  topology.var.json, vm_network.var.sh (cxl-pool), kernel_config.var.sh,
+  kernel_getsource.var.sh: copies of n4-cxl-shared-1's (256M local
+  device). cxl.source.sh: the same symlink as in -1 and -2
+  (-> ../../memory-policy/n4-cxl/cxl.source.sh).
+  test00-up/code.var.sh: -1's with the header for VM0 (second worker of
+  the cluster of n4-cxl-shared-2/test00-up; pool A reaches VM1 and VM2
+  only; test19 cables VM0 to pool B and C).
+E/n4-cxl-shared-1/test00-up/code.var.sh
+  header only: the three topologies, "a worker", pool A reaches VM1, VM2.
+E/n4-cxl-shared-2/test00-up/code.var.sh (D19)
+  header: three nodes, create VM1 and VM0 first; pool-host-wait "$VM0"
+  with "create VM0 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/
+  n4-cxl-shared-0/test00-up"; vm-k8s-reinit/vm-k8s-in-shape
+  "$VM2 $VM1 $VM0".
+E/n4-cxl-shared-2/pool.source.sh (D20)
+  header: three VMs, what a pool server is, pool A = VM1 and VM2.
+  POOL_VM0_DIR/POOL_VM0_NAME; pool-vm-label vm0; pool-vm-dir knows VM0;
+  pool-cluster-require default "$POOL_VM2_DIR $POOL_VM1_DIR $POOL_VM0_DIR".
+  Registry POOL_SERVERS, POOL_SERVER_PIDS/PORTS/LOGS/HOSTS,
+  POOL_DEFAULT_NAME=fake-cxl-pool; the scalars POOL_SERVER_PID,
+  POOL_SERVER_LOG, POOL_URL, POOL_GUEST_URL follow the first started
+  server (pool-server-first). pool-server-start options, pool-url,
+  pool-guest-url, pool-server-stop [NAME], pool-cleanup over all servers
+  (pool-cleanup-server per server), --pool on pool-client,
+  pool-host-client, pool-attachments, pool-device-files,
+  pool-device-free-wait; pool-snapshot of every server; pool-port-busy
+  [PORT]. A server that the test did not start (test91 sets
+  POOL_SERVER_PID itself, registry empty) is handled as before by
+  pool-cleanup, pool-server-stop, pool-snapshot and pool-*-client.
+E/dra.source.sh (D21)
+  DRA_CONTROLLER_UNIT, DRA_CONTROLLER_UNITS_GLOB ('fake-cxl-pool-
+  controller*'), DRA_CONTROLLER_UNITS (started by dra-install).
+  dra-install: one unit per started server (fake-cxl-pool-controller for
+  the first with the unchanged "-server $url -v" line,
+  fake-cxl-pool-controller-<name> for the others, no -pool-name); the
+  removal of an earlier run stops and reset-fails the glob.
+  dra-install-ready: the pool names of the slices of cxl-pool.nri.io are
+  a superset of dra-pool-names (as before when no server was started).
+  dra-wait-node: message names the pools; diagnostics with the glob.
+  dra-pool-names, dra-pool-urls (new); dra-pool-attachments HOST [URL];
+  dra-uninstall waits for the attachments of every node on every server,
+  stops and reset-fails the glob. dra-trace-start: one tail per server
+  (tag "server" for the first, "<name>.server" for the others) and
+  journalctl -f with "-u <unit>" for every unit of DRA_CONTROLLER_UNITS
+  (glob if none); dra-trace-stop stops the tails of every server tag;
+  the summary header names the <name>.server tags. dra-py: pool_slices,
+  pool_nodes (strict selector shape, else None). Header comments.
+E/n4-cxl-shared-2/test10-dra-pooling (D22)
+  A: no allNodes and nodeSelector == {'nodeSelectorTerms':
+  [{'matchExpressions': [{'key': 'kubernetes.io/hostname', 'operator':
+  'In', 'values': sorted([VM1, VM2])}]}]} (exact: one term, nothing
+  else); VM1_NAME; header and comments.
+E/n4-cxl-shared-2/test11-dra-sharing
+  len(slices(pool driver)) == 1 kept; its allNodes == True part replaced
+  by pool_nodes('fake-cxl-pool') == sorted([VM1, VM2]) (the allNodes part
+  fails with the new controller); header (two of three nodes), steps.
+E/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+  A: nodes == sorted([VM0, VM1, VM2]), local slices and the lease device
+  on all three; header (cluster paragraph), step titles.
+E/n4-cxl-shared-2/test16-cxl-llm-share
+  A: nodes == the three (found by the D22 grep); header, step titles.
+E/n4-cxl-shared-2/test01, test12, test14, test15, test17, test18
+  comments only: "VM1 and VM0 workers", "Run test00-up of
+  n4-cxl-shared-1, -0 and -2 first", "no CXL memory devices in VM2 and
+  VM1" (they reset exactly those), "VM1 and VM0, its workers, have no
+  local device attached".
+E/n4-cxl-shared-2/test19-many-pools/code.var.sh (new, D23)
+  pools pool-a (9909, VM1 VM2, index 0, *hb0), pool-b (9910, VM0, index
+  1, *hb0), pool-c (9911, all, index 2, hmp, *hb1, no local devices) with
+  the devices/serials of D23; steps 0, A-H as designed:
+  0  cluster, pool-vm-require/tools/reset of the three VMs, no devices,
+     three servers; per server: hosts == its VMs, control qmp/hmp, state
+     running, 4 slots each, all under its host bridge; dra-install starts
+     exactly the three units, each logs "pool <name> (from the server)";
+     trace of the three VMs.
+  A  three slices, pool names, no allNodes, pool_nodes a/b/c, device
+     (name, serial, shared) per pool, local slices of the three nodes;
+     the (pool, slice uid) pairs are recorded.
+  B  unpinned pod, claim by serial of b-pooled0: result (driver, pool-b,
+     b-pooled0), allocated_node and nodeName VM0, pool-b attachment owned
+     by the claim, qemu id fcp_b-pooled0.hp*, cxlhb0; pool-a and pool-c
+     empty; region online, NUMA node >= the CPU nodes of VM0, env
+     SERIAL/SHARED=0/MODE=numa/SIZE/NODE.
+  C  unpinned pod, claim of a-pooled0: allocated_node in [VM1, VM2], pod
+     there, pool-a attachment there.
+  D  b-consumer deleted, b-pooled0 free; "memory: 512Mi" of class
+     cxl-pool, no selector, a-pooled0 still held: result (pool-b,
+     b-pooled0) on VM0 (arithmetic in the comment); then D and C deleted.
+  E  pod pinned to VM0, claim of one share of a-shared0: FailedScheduling
+     "0/3 nodes are available...", Pending/Unschedulable for 5 s
+     (dra-stays), claim never allocated, no attachment, no "NoHost" in
+     the journal of pool-a's unit.
+  F  one pod on VM0, claims b-shared0 and c-shared0 (one share, dax):
+     both allocated to VM0, two env sets, two different dax devices, tags
+     written; pool-b on cxlhb0, pool-c on cxlhb1; two devdax regions; the
+     host finds both tags in the backing files.
+  G  pod on VM2 with one share of c-shared0 reads TEXT_C; while pool-c
+     attaches, "info qtree -b" on the monitors of VM2 and VM0 must answer
+     (fatal otherwise, counted); c-shared0 attached to VM0 and VM2.
+  H  pods and claims deleted, every VM without memdevs/regions, every
+     server without attachments, no cxl-type3 in any qemu, pool-c logged
+     attach/detach, pool-snapshot end, the three slices kept their uids
+     (no controller removed another's: F4), trace stop/summary,
+     dra-cleanup, pool-cleanup, ports 9909/9910/9911 free.
+  No sleeps: dra-wait, dra-pod-wait, dra-wait-log, pool-cxl-wait,
+  retry-until (timeouts 60/120 s as test10/test11), dra-stays 5 in E.
+N/docs/memory/cxl/e2e.md (D24)
+  The setup: three VMs, pool A on VM1 and VM2, test19 adds B and C; new
+  diagram; the nodeSelector paragraph. Create the VMs: VM1, VM0, then
+  VM2's test00-up. The kubectl get nodes example: a marked PLACEHOLDER
+  (to be filled from the real cluster). Run the driver tests: every node,
+  one controller per server, suite order -0, -1, -2; table: test00-up
+  three-node cluster, test10 selector note, test19 row, wording of
+  test01/11/13/16; ports 9910/9911. Deploy by hand: pool A only, VM0
+  idle; VM0=..., cxl-image-put/cxl-images-pull "$VM0" (needed: the
+  DaemonSet runs on VM0 with pullPolicy Never, cxl-helm-install waits for
+  its rollout); the pods/slices sample output marked PLACEHOLDER; the
+  pool slice is for VM1 and VM2. Clean up and Troubleshooting: three-node
+  cluster, controller units of several pools, "0/3 nodes are available".
+N/.github/skills/run-e2e-tests/SKILL.md
+  The troubleshooting bullet: the three-node cluster, how it is made,
+  pool A reaches VM1 and VM2, test19's ports (the old bullet described
+  test13 restoring single-node clusters, which it no longer does).
+
+3. Deviations from 02-design, with reasons
+------------------------------------------
+V1  dra-trace-start follows the controllers with "-u <unit>" per unit of
+    DRA_CONTROLLER_UNITS, not with -u 'fake-cxl-pool-controller*' (the
+    glob only when dra-install started none, as in test91). Reason:
+    measured in VM0 (section 5), journalctl -f resolves the glob once, at
+    start, against units that have logged already; a unit that logs
+    first later is never followed.
+V2  Servers other than the first get trace tags "<name>.server" (the
+    design does not say); the summary filters them as "server".
+V3  An explicit --index 0 writes the bases 0xc1ae0000/0xc1ee0000 (equal
+    to the defaults); without --index nothing is written, as designed.
+V4  pool-snapshot: pool.LABEL.json for the server of the default name (or
+    a server the test did not start), pool.LABEL.NAME.json for others
+    (my reading of "suffix .<name> for the others", consistent with the
+    config/state/log file names).
+V5  Additions: pool-device-free-wait [--pool NAME]; dra-pool-names,
+    dra-pool-urls; dra-py pool_slices/pool_nodes; pool-server-start
+    builds fake-cxl-pool once per test (POOL_BUILT), validates --name (DNS
+    label), --port, --control, --local-devices; it sets the EXIT trap only
+    when it starts the first server (so a later start does not drop the
+    'dra-cleanup; pool-cleanup' trap of dra-install).
+V6  test11: the allNodes part of its assertion is replaced (D22 said keep
+    len == 1; kept, but allNodes == True would fail with the new
+    controller). test16: node list, found by the D22 grep.
+V7  Deploy by hand: VM0 gets the image and the pulled images, not just a
+    sentence (else the hand install never completes, see section 2); the
+    two sample outputs that depend on the node count are marked
+    placeholders until they can be taken from the cluster.
+V8  D22's demo suite (P/plan-8-demo/demo/e2e) is not mine (P/**) and is
+    live: findings are Requests R2/R3, no edits.
+
+4. Helper API (usage lines; ./run.sh help cannot show them, see R1: the
+   same awk as run.sh's help over the two files prints exactly these)
+------------------------------------------------------------------
+  pool-server-start [OPTIONS] [DEVICES]
+      --name NAME --port PORT --hosts "VMDIR..." --index P
+      --control qmp|hmp --slots "PAT..." --local-devices yes|no
+  pool-server-stop [NAME]
+  pool-url [NAME]
+  pool-guest-url [NAME]
+  pool-client [--pool NAME] VMDIR [-o json] COMMAND [ARGS...]
+  pool-host-client [--pool NAME] [-o json] COMMAND [ARGS...]
+  pool-attachments [--pool NAME] DEVICE
+  pool-device-files [--pool NAME] DEVICE
+  pool-device-free-wait [--pool NAME] DEVICE VMDIR...
+  pool-snapshot LABEL
+  pool-port-busy [PORT]
+  pool-cluster-require [CLUSTER]   (default: VM2 VM1 VM0)
+  dra-pool-attachments HOST [URL]; dra-pool-names; dra-pool-urls
+  dra-py: pool_slices(pool, driver), pool_nodes(pool, driver)
+  Variables: POOL_VM0_DIR, POOL_VM0_NAME, POOL_DEFAULT_NAME, POOL_SERVERS,
+  POOL_SERVER_PIDS, POOL_SERVER_PORTS, POOL_SERVER_LOGS,
+  POOL_SERVER_HOSTS; DRA_CONTROLLER_UNIT, DRA_CONTROLLER_UNITS_GLOB,
+  DRA_CONTROLLER_UNITS.
+Files of a server NAME (not the default): $TEST_OUTPUT_DIR/
+fake-cxl-pool-NAME.yaml, fake-cxl-pool-NAME.state.json,
+fake-cxl-pool-server-NAME.log; pool dir /tmp/fake-cxl-pool-NAME.
+
+5. systemctl / journalctl glob patterns (measured in VM0, systemd 258
+   258.11-1.fc43; three throwaway systemd-run units, removed after)
+-----------------------------------------------------------------------
+  units fake-cxl-pool-controller (running), fake-cxl-pool-controller-
+  pool-b (running), fake-cxl-pool-controller-pool-c (exit 3, failed)
+  systemctl list-units --all 'fake-cxl-pool-controller*' --plain
+    --no-legend                    lists all three
+  journalctl -u 'fake-cxl-pool-controller*'   lines of all three
+  systemctl status 'fake-cxl-pool-controller*'  all three
+  systemctl stop 'fake-cxl-pool-controller*'   rc 0, both running units
+    stopped; the failed one stays listed "loaded failed failed"
+  systemctl reset-failed 'fake-cxl-pool-controller*'  rc 0, it is gone
+  stop and reset-failed with no matching unit: rc 0
+  journalctl -f -n0 -u 'fake-cxl-pool-controller*': follows only units
+    that had logged before it started; a unit started afterwards
+    (fake-cxl-pool-controller-new-zz, "brand-new-unit") was not followed
+    -> V1.
+  VM0 afterwards: list-units of the pattern is empty.
+
+6. Verification
+---------------
+VM0 (phase 1 step 1), run_tests.sh memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-0/test00-up with qemu_bin=$HOME/github.com/qemu/qemu/build/
+qemu-system-x86_64, 07:59:43 - 08:10:38 (11 min), PASS. Started before the
+question came up; it cannot touch the demo (the demo's server discovers
+VM1 and VM2 only). Output N/test/e2e/n4-cxl-shared-0-fedora-43-containerd/
+memory.test-suite/dra-driver-cxl/test00-up/run.sh.output:
+  7.3.0-rc4 / CONFIG_DMIID=y CONFIG_INPUT_EVDEV=y CONFIG_FS_DAX=y
+  CONFIG_EROFS_FS=y
+  VM_UUID: 140edfaa-e57c-5e4c-9fb4-84744231dcad, product_uuid in the VM:
+  140edfaa-e57c-5e4c-9fb4-84744231dcad
+  qemu binary:  /home/akervine/github.com/qemu/qemu/build/qemu-system-x86_64
+  11.1.50 v11.1.0-1741-gff076b1e6c
+  cxl_memdev0 sn=0xc1ae0000 volatile-memdev=befile_cxl_memdev0__bus_cxlsw_ds2_usrp0hb0__sn_0xc1ae0000
+  cxl_memdev1 sn=0xc100e2e1 volatile-memdev=beram_cxl_memdev1__bus_cxlsw_ds3_usrp0hb0__sn_0xc100e2e1
+  (8 cxl-downstream ports and no cxl-type3: checked, else error)
+  n4-cxl-shared-0-fedora-43-containerd: control-plane unreachable
+  Test verdict: PASS
+VM0 facts
+  name       n4-cxl-shared-0-fedora-43-containerd
+  VM_UUID    140edfaa-e57c-5e4c-9fb4-84744231dcad (== product_uuid)
+  VMNET_IP   10.76.170.229 (VM1 10.76.85.237, VM2 10.76.162.174)
+  VMNET_MAC  52:54:00:14:0e:df, VMNET_MCAST 239.255.40.124:18605
+  kernel     7.3.0-rc4; QEMU_BIN as above in its env
+Static checks
+  bash -n: every changed .sh file OK.
+  shellcheck -s bash, compared with the files before the change:
+  pool.source.sh only the old SC2154 nri_resource_policy_src (old
+  SC2034 "i" gone; justified disables for POOL_SERVER_LOG,
+  POOL_SERVER_HOSTS (SC2034) and pool-server-stop (SC2120)); dra.source.sh
+  one finding fewer than before (old SC2034 "i" gone), nothing new
+  (SC2153 disable for POOL_SERVER_LOGS of pool.source.sh); the tests:
+  nothing new; test19: only SC2016 (retry-until snippets) and SC2154
+  distro, as every test. n4-cxl-shared-0/-1 test00-up: the same 7
+  findings as -1 had.
+  dra-py pool_nodes on sample JSON: (['vm1', 'vm2'], None for allNodes,
+  None for an extra matchFields, None for an unknown pool); test19's
+  pool-devices expression and its YAML helpers (rendered, parsed with
+  python yaml) checked the same way.
+Host-only smoke run of pool.source.sh + dra.source.sh (stubs for
+host-command/error/retry-until; FAKE_CXL_POOL_PORT=9931, servers on
+9931/9932/9933 cabled to names that match no qemu; P binaries of 08:21):
+  config of smoke-b: name, listen :9932, sharedSerialBase 0xc1ae1000,
+  exclusiveSerialBase 0xc1ee1000, dir /tmp/fake-cxl-pool-smoke-b,
+  names ["nomatch-b"], control: hmp, slots ["*hb1",
+  "cxlsw_ds[01]_usrp0hb0"], localDevices: false; server log
+  "fake-cxl-pool-server smoke-b listening on http://127.0.0.1:9932 (...,
+  discovery names [nomatch-b], discovery control hmp, discovery slots
+  [*hb1 cxlsw_ds[01]_usrp0hb0])"; b-pooled0 got serial 0xc1ee1001.
+  SERVERS=fake-cxl-pool smoke-b, POOL_URL :9931 (the first), pool-url
+  smoke-b :9932, pool-url nosuch rc 1; pool-host-client --pool smoke-b
+  status "name: smoke-b"; pool-device-files --pool smoke-b; pool-snapshot
+  -> pool.s1.json and pool.s1.smoke-b.json; dra-pool-urls :9931 :9932,
+  dra-pool-names fake-cxl-pool smoke-b; errors: duplicate name, --index
+  zz, --name Pool_C, busy port: all rc 1 with their messages; the EXIT
+  trap pool-cleanup set once; pool-server-stop smoke-b frees :9932 and
+  keeps the first; pool-cleanup stops all, POOL_SERVER_PID ''. Legacy
+  (test91 style: POOL_SERVER_PID and POOL_URL of a server started
+  outside): pool-snapshot -> pool.legacy.json, pool-cleanup stops it.
+  All ports free afterwards, temp dirs removed.
+Not run (wait for the answer): n4-cxl-shared-2/test00-up, test10,
+test11, test13, test19.
+
+7. Waits for the user's answer (section 1)
+------------------------------------------
+- Step 2: n4-cxl-shared-2/test00-up (vm-k8s-reinit "$VM2 $VM1 $VM0":
+  rebuilds the two-node cluster of the demo into three nodes), then
+  kubectl get nodes -o wide into e2e.md (its PLACEHOLDER) and the
+  Deploy-by-hand sample output (PLACEHOLDER).
+- Step 4 run: test13 (and test10, test11). POOL is done already
+  (04-status-POOL.txt ends with "POOL done"; P/bin built 08:21), so the
+  runs will be with the new controller, i.e. phase 2's regression runs;
+  test10's nodeSelector assertion is expected to pass.
+- Phase 2: make -C P; test10, test11, test13, test19 until it passes,
+  twice in a row, then test10, test11, test13 again; run times.
+  Assertions of test19 that only a run can confirm: the FailedScheduling
+  text "0/3 nodes are available", host 'state' 'running' of HMP hosts,
+  4 slots per host of a server, the monitor sharing of G (C3).
+
+8. Open points
+--------------
+O1  Existing tests do not reset VM0 (only VM2 and VM1); a VM0 left with
+    devices by a failed test19 does not affect them (pool A cannot reach
+    VM0), test19 resets it.
+O2  pool-server-start without --hosts still cables to VM1 and VM2; a test
+    that wants VM0 in pool A must say --hosts.
+O3  The demo setup (test90) calls pool-cluster-require, whose default is
+    now the three-node cluster: the demo can be set up again only after
+    n4-cxl-shared-2/test00-up made the three-node cluster (R2).
+
+9. Requests
+-----------
+R1  (N/test/e2e/run.sh, framework) "./run.sh help FUNCTION" ignores
+    FUNCTION: run.sh:273-274 calls "help" without "$2", so it prints the
+    summary of every function; and help() reads only run.sh, lib/vm.bash,
+    lib/test.bash, lib/k8s.bash (run.sh:261 script_source), so no
+    function of a suite's *.source.sh is shown, e.g.
+    "./run.sh help pool-cluster-require" prints the list without it.
+    Suggest: "help "$2"" and add the *.source.sh of the suite (or of
+    $TOPOLOGY_DIR) to script_source.
+R2  (P/plan-8-demo, demo owner; not done, the demo is live)
+    - demo/bin/views.py:130 selects the pool slices by spec.allNodes:
+      pool_slices = [s for s in ... if (s.get("spec") or
+      {}).get("allNodes")]; the new controller never sets allNodes
+      (nodeSelector), so the pool views find no pool slice. Select by
+      spec.driver == "cxl-pool.nri.io" and spec.nodeName unset instead.
+      The samples in demo/testdata/*/vm2.json and make-samples.py:109
+      have allNodes: true.
+    - test90-demo-setup needs the three-node cluster (O3); its texts and
+      demo/README.txt say "the two VMs", "both nodes".
+    - test91-demo-teardown sets DRA_INSTALLED_VMS=("$VM2" "$VM1"): on the
+      three-node cluster dra-uninstall then neither saves VM0's driver
+      log nor cleans VM0's driver state (dra-state-cleanup); harmless for
+      pool A, which never attaches to VM0.
+R3  (orchestrator) After the user's answer: if the demo may go, the
+    teardown with the new helpers works the way test91 expects (smoke
+    "legacy" case, section 6); I would run it myself only if told so.
+
+10. Review fixes (05-review.txt, stream E2E)
+-------------------------------------------
+E1  MAJOR, the demo suite (confirms R2): not changed yet. The demo files
+    (P/plan-8-demo/demo/**) are mine for this task now, but they are
+    edited only after the user's decision about the live demo: views.py
+    :130 pool slice selection (and the allNodes samples in testdata/ and
+    make-samples.py:109), test90's three-node requirement, test91's
+    DRA_INSTALLED_VMS with "$POOL_VM0_DIR", the "two VMs"/"both nodes"
+    texts.
+E2  --slots words were glob-expanded -> pool.source.sh:477 and :481 split
+    --hosts and --slots with "read -r -a" (no globbing) and loop over the
+    arrays. Smoke run from a directory holding a file "zzhb1": the config
+    still has slots: ["*hb1", "cxlsw_ds[01]_usrp0hb0"].
+E3  the NoHost check passed when the journal could not be read ->
+    test19:391-401: the count comes from one remote script that exits 2
+    if journalctl fails and 3 if the journal lacks "pool pool-a (from the
+    server)" (a wrong unit), else prints grep -c and exits 0; a failure
+    is an error, the count must be a number and 0. Simulated with a fake
+    journalctl: out 0 rc 0, out 1 rc 0 (one NoHost), out '' rc 2.
+E4  pool-server-stop NAME kept the port/log/hosts entries ->
+    pool.source.sh:583 unsets all four entries of NAME. Smoke run: after
+    pool-server-stop smoke-b, "pool-url smoke-b" prints "no server
+    smoke-b, started: fake-cxl-pool", rc 1; the registries hold only
+    fake-cxl-pool.
+E5  step G only printed MONITOR_ANSWERS -> test19:456-461 fails unless
+    the monitors of VM2 and VM0 answered at least 4 times (two rounds)
+    before g-claim was attached.
+E6  header wrapping -> test11:15-22 re-wrapped (no orphan line);
+    test17:42-44 re-wrapped (was 89 columns). Every comment line this
+    stream added is <= 78 columns, except the unchanged command lines
+    "#   make PLUGINS=..." and "#     ./run_tests.sh ...".
+E7  non-ASCII in SKILL.md -> the whole directory tree (lines 41-64) now
+    uses "|--", "`--" and "|" (same columns), and the four " -- " em
+    dashes of lines 70-92 are " - ": no non-ASCII character is left in
+    the file.
+Review note on test10: the selector values are the kubernetes.io/hostname
+labels; test10 compares with the node names, which are equal in these
+kubeadm clusters (vm-k8s-reinit), so no change.
+POOL's review fixes (04-status-POOL section 10) change nothing here: the
+helpers write only discovery.slots (P1 is about hosts[].slots), and the
+texts that test19 greps ("pool <name> (from the server)", "attachment
+<dev>@...: attached|detached", NoHost) are those of section 4.
+Checks after the fixes: bash -n on every changed .sh file OK; shellcheck
+-s bash compared with the files before this stream: nothing new in
+pool.source.sh, dra.source.sh and the tests; test19 only SC2016
+(retry-until snippets) and SC2154 distro. Smoke run of the helpers again
+(ports 9931-9933, POOL_DIR redirected, names that match no qemu): rc 0,
+all ports free afterwards; /tmp/fake-cxl-pool unchanged. Nothing touched
+the demo, VM1, VM2 or port 9909.
+
+E2E phase 1 edits done; cluster steps wait for the user

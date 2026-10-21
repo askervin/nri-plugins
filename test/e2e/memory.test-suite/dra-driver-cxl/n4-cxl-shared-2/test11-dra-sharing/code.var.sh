@@ -8,15 +8,16 @@
 # it.
 #
 # Here the servers are the VMs of n4-cxl-shared-2 (VM2, the VM of the test,
-# the control plane) and n4-cxl-shared-1 (VM1, the worker): the two nodes
-# of one Kubernetes cluster. fake-cxl-pool-controller publishes the devices
-# of fake-cxl-pool-server once, for every node, and nri-dra-driver-cxl
-# runs on both nodes (see test10-dra-pooling). A pod on VM1 and a pod on
-# VM2 have a ResourceClaim of class cxl-pool-shared each, both for the
-# same shared device: each claim takes one share of it (shares: "1"),
-# and the controller attaches the device to both nodes at once. The node
-# plugin of each node creates a devdax region on it and gives the
-# container the device node and its name in CXL_<KEY>_DAX, with
+# the control plane) and n4-cxl-shared-1 (VM1, a worker): two nodes of one
+# Kubernetes cluster, the two that the pool is cabled to (VM0, the third
+# node, is not). fake-cxl-pool-controller publishes the devices of
+# fake-cxl-pool-server once, for the nodes the pool reaches, and
+# nri-dra-driver-cxl runs on every node (see test10-dra-pooling). A pod on
+# VM1 and a pod on VM2 have a ResourceClaim of class cxl-pool-shared each,
+# both for the same shared device: each claim takes one share of it
+# (shares: "1"), and the controller attaches the device to both nodes at
+# once. The node plugin of each node creates a devdax region on it and
+# gives the container the device node and its name in CXL_<KEY>_DAX, with
 # CXL_<KEY>_SHARED=1 and _MODE=dax. Each node attaches and releases the
 # device independently.
 #
@@ -26,7 +27,7 @@
 # VM1 letting go while VM2 still reads, and at the end one trace of both
 # nodes, in order.
 #
-# Run test00-up of n4-cxl-shared-1 and -2 first: they create the VMs and
+# Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
 # make them one cluster. The DRA driver comes from its image, build it
 # first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
@@ -36,10 +37,10 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
-VM1="$POOL_VM1_DIR"    # the worker, driven over ssh from the host
+VM1="$POOL_VM1_DIR"    # a worker, driven over ssh from the host
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
@@ -141,7 +142,7 @@ pool-server-start "
     serial: $SHARED_SERIAL"
 pool-client-install "$VM2" "$VM1"
 
-echo "### preconditions: the pool controller on the control plane, the node plugin on both nodes"
+echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
 dra-build
 dra-install
 for vm in "$VM2" "$VM1"; do
@@ -150,7 +151,7 @@ done
 dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2" "$VM1"
 
-echo "### A: the shared device is published once, for both nodes"
+echo "### A: the shared device is published once, for VM1 and VM2"
 # A shared device has no memory capacity to consume: every node gets all
 # of it. What it has is "shares", 1M without a requestPolicy: a claim
 # without a shares request takes all of them (exclusive), a claim with
@@ -158,7 +159,7 @@ echo "### A: the shared device is published once, for both nodes"
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 S0="device('shared0', '$DRA_POOL_DRIVER')"
-dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$DRA_POOL_DRIVER')[0]['spec'].get('allNodes') == True"
+dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and pool_nodes('$POOL_DEFAULT_NAME') == sorted(['$VM1_NAME', '$VM2_NAME'])"
 dra-assert "$COMMAND_OUTPUT" "slices('$DRA_LOCAL_DRIVER', '$VM1_NAME') and slices('$DRA_LOCAL_DRIVER', '$VM2_NAME')"
 dra-assert "$COMMAND_OUTPUT" "$S0 is not None and attr($S0, 'type') == 'memdev' and attr($S0, 'source') == 'pool' and attr($S0, 'shared') == True and attr($S0, 'serial') == '$SHARED_SERIAL' and attr($S0, 'size') == $SHARED_SIZE"
 dra-assert "$COMMAND_OUTPUT" "${S0}.get('allowMultipleAllocations') == True"
@@ -255,7 +256,7 @@ deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")
 [ "$deleted" -ge 2 ] || error "expected DEVICE_DELETED from both qemus, see $POOL_SERVER_LOG"
 grep -E 'attachment shared0@.*: (attached|detached)|event DEVICE_DELETED' "$POOL_SERVER_LOG"
 
-echo "### E: what every component on both nodes did, in order"
+echo "### E: what every component on VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary
 

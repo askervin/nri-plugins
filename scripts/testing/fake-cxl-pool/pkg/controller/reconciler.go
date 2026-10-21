@@ -115,25 +115,11 @@ func allocationNode(a *resourceapi.AllocationResult) string {
 }
 
 // reconcile computes desired attachments from the claims and actual ones
-// from the server, attaches missing ones, writes the claim status, and
-// detaches attachments that no claim wants any more.
-func (c *Controller) reconcile(ctx context.Context) error {
-	// 1. hosts
-	hosts, err := c.pool.Hosts(ctx)
-	if err != nil {
-		return fmt.Errorf("list hosts: %w", err)
-	}
-	nodes, err := c.nodes.List(labels.Everything())
-	if err != nil {
-		return err
-	}
-	hm := mapHosts(hosts, nodes)
-	if s := hm.String(); s != c.hostMapStr {
-		c.logf("pool hosts of nodes: %s", s)
-		c.hostMapStr = s
-	}
-
-	// 2. desired
+// from the server, attaches missing ones to the hosts of the nodes in hm,
+// writes the claim status, and detaches attachments that no claim wants
+// any more.
+func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
+	// 1. desired
 	claims, err := c.claims.List(labels.Everything())
 	if err != nil {
 		return err
@@ -169,7 +155,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// 3. actual
+	// 2. actual
 	atts, err := c.pool.Attachments(ctx, "", "")
 	if err != nil {
 		return fmt.Errorf("list attachments: %w", err)
@@ -185,7 +171,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		actual[attKey{a.Device, a.Host}] = a
 	}
 
-	// 4. attach, or set the exclusive flag of an attachment to that of
+	// 3. attach, or set the exclusive flag of an attachment to that of
 	// its claims (an attachment serves all claims of the node)
 	// Attachments that exist come first: dropping the exclusive flag of
 	// the attachment of one node lets the new attachments of the other
@@ -212,12 +198,12 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// 5. status
+	// 4. status
 	for _, w := range wants {
 		c.writeStatus(ctx, w, actual, failures)
 	}
 
-	// 6. detach
+	// 5. detach
 	seen := map[string]bool{}
 	for _, k := range sortedKeys(actual) {
 		a := actual[k]

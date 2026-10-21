@@ -40,7 +40,7 @@ if [ -z "$POOL_SERVER_PID" ] && pool-port-busy; then
     POOL_SERVER_PID=$(ss -ltnpH "sport = :$POOL_PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -n 1)
     echo "demo teardown: fake-cxl-pool-server on port $POOL_PORT: pid ${POOL_SERVER_PID:-unknown}"
 fi
-DRA_INSTALLED_VMS=("$VM2" "$VM1")
+DRA_INSTALLED_VMS=("$VM2" "$VM1" "$POOL_VM0_DIR")
 
 echo "### demo teardown: the trace"
 if [ -n "$TRACE_DIR" ] && [ -f "$TRACE_DIR/pids" ]; then

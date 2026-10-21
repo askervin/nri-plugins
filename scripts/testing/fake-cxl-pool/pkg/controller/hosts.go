@@ -15,10 +15,13 @@
 package controller
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 )
@@ -27,6 +30,9 @@ import (
 type hostMap struct {
 	nodeHost map[string]api.Host // node name -> host
 	hostNode map[string]string   // host name -> node name
+	// hostnames: node name -> kubernetes.io/hostname label of the nodes
+	// in nodeHost that have one
+	hostnames map[string]string
 }
 
 // normUUID returns a uuid in lower case without dashes.
@@ -39,7 +45,7 @@ func normUUID(u string) string {
 // is the node name. A host maps to one node at most; a node without a host
 // is not a pool host.
 func mapHosts(hosts []api.Host, nodes []*corev1.Node) hostMap {
-	hm := hostMap{nodeHost: map[string]api.Host{}, hostNode: map[string]string{}}
+	hm := hostMap{nodeHost: map[string]api.Host{}, hostNode: map[string]string{}, hostnames: map[string]string{}}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	for _, n := range nodes {
 		uuid := normUUID(n.Status.NodeInfo.SystemUUID)
@@ -68,8 +74,30 @@ func mapHosts(hosts []api.Host, nodes []*corev1.Node) hostMap {
 		}
 		hm.nodeHost[n.Name] = *found
 		hm.hostNode[found.Name] = n.Name
+		if v := n.Labels[corev1.LabelHostname]; v != "" {
+			hm.hostnames[n.Name] = v
+		}
 	}
 	return hm
+}
+
+// mapNodes returns the map of the Nodes of the cluster to the hosts of the
+// server, and logs it when it changed.
+func (c *Controller) mapNodes(ctx context.Context) (hostMap, error) {
+	hosts, err := c.pool.Hosts(ctx)
+	if err != nil {
+		return hostMap{}, fmt.Errorf("list hosts: %w", err)
+	}
+	nodes, err := c.nodes.List(labels.Everything())
+	if err != nil {
+		return hostMap{}, err
+	}
+	hm := mapHosts(hosts, nodes)
+	if s := hm.String(); s != c.hostMapStr {
+		c.logf("pool hosts of nodes: %s", s)
+		c.hostMapStr = s
+	}
+	return hm, nil
 }
 
 // String lists the mapping, sorted by node name.

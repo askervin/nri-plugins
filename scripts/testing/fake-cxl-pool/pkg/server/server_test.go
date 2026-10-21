@@ -42,7 +42,27 @@ type testEnv struct {
 	fakes  map[string]*qemu.Fake // by monitor socket path
 	procs  []*qemu.Process
 	alive  map[int]bool
-	logbuf *strings.Builder
+	logbuf *lockedBuf
+	// hmpSockets: the monitor.sock of every VM exists, too
+	hmpSockets bool
+}
+
+// lockedBuf is a log buffer that tests read while the server writes.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(b)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 func vmCmdline(name string, pid int, extra ...string) *qemu.Process {
@@ -80,7 +100,7 @@ const localObj = "beram_cxl_memdev0__bus_ds1_hb1__sn_0xc100e2e0"
 func newTestEnv(t *testing.T, extraConfig string) *testEnv {
 	t.Helper()
 	dir := t.TempDir()
-	e := &testEnv{t: t, dir: dir, fakes: map[string]*qemu.Fake{}, alive: map[int]bool{}, logbuf: &strings.Builder{}}
+	e := &testEnv{t: t, dir: dir, fakes: map[string]*qemu.Fake{}, alive: map[int]bool{}, logbuf: &lockedBuf{}}
 	vm1 := vmCmdline("vm1", 101, "-uuid", "6BA7B810-9DAD-11D1-80B4-00C04FD430C8",
 		"-object", "memory-backend-ram,id="+localObj+",share=on,size=256M")
 	vm2 := vmCmdline("vm2", 102)
@@ -118,8 +138,11 @@ devices:
 
 func (e *testEnv) start() {
 	e.t.Helper()
+	if e.logbuf == nil {
+		e.logbuf = &lockedBuf{}
+	}
 	opts := Options{
-		Logger:  log.New(io.MultiWriter(testWriter{e.t}), "", 0),
+		Logger:  log.New(io.MultiWriter(testWriter{e.t}, e.logbuf), "", 0),
 		Verbose: true,
 		Discover: func() ([]*qemu.Process, error) {
 			e.mu.Lock()
@@ -141,7 +164,11 @@ func (e *testEnv) start() {
 			f.Unreachable = true
 			return f
 		},
-		SocketExists:   func(path string) bool { return strings.HasSuffix(path, "qmp.sock") },
+		SocketExists: func(path string) bool {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			return strings.HasSuffix(path, "qmp.sock") || (e.hmpSockets && strings.HasSuffix(path, "monitor.sock"))
+		},
 		BackgroundPoll: 20 * time.Millisecond,
 	}
 	srv, err := New(e.cfg, opts)
@@ -809,6 +836,10 @@ func TestConfigErrors(t *testing.T) {
 		"hosts: [{qmp: /x}]",
 		"discovery: {interval: -1s}",
 		"detachTimeout: -5s",
+		"name: Pool",
+		"discovery: {control: x}",
+		"hosts: [{name: h, control: x}]",
+		`discovery: {slots: ["["]}`,
 	} {
 		if _, err := ParseConfig([]byte(bad)); err == nil {
 			t.Errorf("expected error for %q", bad)
@@ -816,7 +847,8 @@ func TestConfigErrors(t *testing.T) {
 	}
 	cfg := DefaultConfig()
 	if cfg.Listen != "127.0.0.1:9909" || cfg.Pools[0].Dir != "/tmp/fake-cxl-pool" || cfg.StateFile != "/tmp/fake-cxl-pool.state.json" ||
-		uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 || !cfg.Discovery.QemuEnabled() {
+		uint64(*cfg.ExclusiveSerialBase) != 0xc1ee0000 || uint64(*cfg.SharedSerialBase) != 0xc1ae0000 || !cfg.Discovery.QemuEnabled() ||
+		cfg.Name != "fake-cxl-pool" || cfg.Discovery.Control != "" || cfg.Discovery.Slots != nil {
 		t.Fatalf("unexpected defaults %+v", cfg)
 	}
 }

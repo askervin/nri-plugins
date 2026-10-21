@@ -14,24 +14,25 @@
 #   0xc1f0ee00 here: recreate them (see the error message).
 # - The VM sees no CXL memory devices.
 #
-# The topologies n4-cxl-shared-1 and n4-cxl-shared-2 have the same pool
-# slots and the same statically shared device, so their VMs can share the
-# same CXL memory devices. They differ only in the size of the local device:
-# 256M in n4-cxl-shared-1, 1G in n4-cxl-shared-2. Hot-removing and
-# hotplugging a device again needs a patched qemu. Give it when creating
-# the VM, see qemu_bin in .github/skills/run-e2e-tests/SKILL.md, for
-# instance:
+# The topologies n4-cxl-shared-0, n4-cxl-shared-1 and n4-cxl-shared-2 have
+# the same pool slots and the same statically shared device, so their VMs
+# can share the same CXL memory devices. They differ only in the size of the
+# local device: 256M in n4-cxl-shared-0 and n4-cxl-shared-1, 1G in
+# n4-cxl-shared-2. Hot-removing and hotplugging a device again needs a
+# patched qemu. Give it when creating the VM, see qemu_bin in
+# .github/skills/run-e2e-tests/SKILL.md, for instance:
 #   qemu_bin=$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 \
 #     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
 #
-# Then make the Kubernetes cluster of the tests of n4-cxl-shared-2: this VM
-# (VM2) the control plane, the VM of n4-cxl-shared-1 (VM1) a worker, pods on
-# both nodes (no control-plane taint), over their VM network "cxl-pool"
-# (vm_network.var.sh). Create VM1 first with test00-up of n4-cxl-shared-1.
-# A cluster in this shape is left alone, otherwise it is rebuilt, which
-# takes minutes. This is the only test that changes the shape of a
-# cluster: the other tests of n4-cxl-shared-2 only check it
-# (pool-cluster-require) and fail at once if it is not there.
+# Then make the Kubernetes cluster of the tests of n4-cxl-shared-2, three
+# nodes: this VM (VM2) the control plane, the VMs of n4-cxl-shared-1 (VM1)
+# and n4-cxl-shared-0 (VM0) workers, pods on every node (no control-plane
+# taint), over their VM network "cxl-pool" (vm_network.var.sh). Create VM1
+# and VM0 first with test00-up of n4-cxl-shared-1 and n4-cxl-shared-0. A
+# cluster in this shape is left alone, otherwise it is rebuilt, which takes
+# minutes. This is the only test that changes the shape of a cluster: the
+# other tests of n4-cxl-shared-2 only check it (pool-cluster-require) and
+# fail at once if it is not there.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"
@@ -113,11 +114,13 @@ cxl-dump no-devices
 cxl-assert 'memdevs == [] and regions == [] and endpoints == []'
 cxl-assert 'len(nodes) == 2'
 
-echo "### the cluster: VM2 (this VM) control plane, VM1 worker"
+echo "### the cluster: VM2 (this VM) control plane, VM1 and VM0 workers"
+VM0="$POOL_VM0_DIR"
 VM1="$POOL_VM1_DIR"
 VM2="$OUTPUT_DIR"
 pool-host-wait "$VM1" "create VM1 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up"
-vm-k8s-reinit "$VM2 $VM1"
-vm-k8s-in-shape "$VM2 $VM1" ||
-    error "the cluster is not in shape after vm-k8s-reinit: $(vm-k8s-cluster-in-shape "$VM2 $VM1")"
+pool-host-wait "$VM0" "create VM0 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-0/test00-up"
+vm-k8s-reinit "$VM2 $VM1 $VM0"
+vm-k8s-in-shape "$VM2 $VM1 $VM0" ||
+    error "the cluster is not in shape after vm-k8s-reinit: $(vm-k8s-cluster-in-shape "$VM2 $VM1 $VM0")"
 vm-command "kubectl get nodes -o wide" || command-error "cannot list the nodes of the cluster"

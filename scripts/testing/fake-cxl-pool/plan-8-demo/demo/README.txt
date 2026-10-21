@@ -13,10 +13,13 @@ The design is ../03-demo-design.txt; this file says how to run it.
 
 1. Prerequisites (once, before the day)
 ---------------------------------------
-- The two VMs, one cluster (vm2 = n4-cxl-shared-2, control plane; vm1 =
-  n4-cxl-shared-1, worker), in N/test/e2e (N = the nri-plugins tree):
+- The three VMs, one cluster (vm2 = n4-cxl-shared-2, control plane; vm1 =
+  n4-cxl-shared-1 and vm0 = n4-cxl-shared-0, workers), in N/test/e2e
+  (N = the nri-plugins tree). vm0 is the second worker; the demo's pool
+  (pool A) is cabled to vm1 and vm2 only, vm0 stays idle for it:
     cd N/test/e2e
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
+    ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-0/test00-up
     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
   (the patched qemu, see .github/skills/run-e2e-tests/SKILL.md, qemu_bin).
 - The driver image with shared local devices (sharedDevices, plan-9):
@@ -31,15 +34,16 @@ The design is ../03-demo-design.txt; this file says how to run it.
 2. Setup, teardown, reset
 -------------------------
   demo setup local      (or: demo setup pool) about 2-4 minutes
-  demo teardown         about 1-2 minutes; leaves both VMs clean
+  demo teardown         about 1-2 minutes; leaves all VMs clean
   demo reset local      (or pool) deletes the demo pods and their leases:
                         start the script again from step 1
 Setup runs the e2e framework (run_tests.sh on e2e/demo.test-suite, whose
 helper files are links to memory.test-suite/dra-driver-cxl): it checks
-the cluster shape, starts fake-cxl-pool-server on the host (local: vm2's
-local device attached; pool: the device shared0), installs the driver on
-both nodes with helm (local: sharedDevices: [<the serial of vm2's
-device>]), starts the pool controller, pulls the images, creates the
+the cluster shape (now three nodes; vm0 is the second worker, pool A
+reaches vm1 and vm2 only), starts fake-cxl-pool-server on the host
+(local: vm2's local device attached; pool: the device shared0), installs
+the driver on every node with helm (local: sharedDevices: [<the serial
+of vm2's device>]), starts the pool controller, pulls the images, creates the
 ConfigMap demo-tools (/demo/write, /demo/read, /demo/hold, /demo/env in
 the pods), copies the manifests to /root/demo in vm2, labels the nodes
 cxl-demo/node=vm1|vm2 and starts the trace. Everything stays up until

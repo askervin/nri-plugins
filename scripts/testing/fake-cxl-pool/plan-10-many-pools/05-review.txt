@@ -1,0 +1,478 @@
+plan-10: review of stream POOL
+==============================
+Written 2026-10-21 by the reviewer (Fable). Paths as in 00-README; P =
+scripts/testing/fake-cxl-pool, N = the repository root. Read-only review
+of the uncommitted working tree (branch 5jg-cxl) against 02-design D4-D17
+and docs/memory/cxl/pool.md; claims of 04-status-POOL verified in the
+code and by running the build, the unit tests and the linters myself.
+
+Verdict: no BLOCKER, no MAJOR. The contract (selector shape, nothing
+published without a reachable node, pool name from the server, one pool
+per controller, status data unchanged) is implemented as designed and
+the tests would catch a wrong selector, allNodes, a wrong pool name or a
+wrong slot. Eight MINOR findings follow, most severe first.
+
+Findings
+--------
+P1  MINOR  hosts[].slots: an empty list cannot give one host every slot
+    P/pkg/server/views.go:217-223 (slotPatternsLocked), config.go:104-107,
+    README.md:62-64.
+    What: slotPatternsLocked falls back to discovery.slots whenever
+    len(h.cfg.Slots) == 0, so `slots: []` on a host means "discovery's
+    patterns", never "every slot". D7 says "a host's patterns override the
+    discovery ones; empty = every slot", which also reads as "an empty
+    host list = every slot of that host". The status file records the
+    chosen meaning (default: discovery.slots) but no doc tells the user
+    how to widen one host.
+    Why: a server with discovery.slots ["*hb1"] that is cabled to every
+    port of one VM has no documented way to say so; `slots: ["*"]` works
+    but nobody would guess it.
+    Fix: add "slots: ["*"] gives this host every slot" to the README
+    bullet and the hosts[] comment of config.example.yaml, or make
+    HostConfig.Slots distinguish absent (nil) from an empty list.
+
+P2  MINOR  Run logs an ERROR when stopped while waiting for the server
+    P/pkg/controller/controller.go:209-218.
+    What: c.pool.Status(ctx) returns the context error on cancel; the
+    loop logs "ERROR: pool name: server status: context canceled
+    (retrying in 10s)" and then sees ctx.Done and returns nil.
+    Why: a controller unit started before its server (V4 makes this a
+    supported order) and stopped by systemd ends with a misleading ERROR
+    line; dra-wait-node diagnostics and test19 traces show controller
+    journals, and "ERROR" is what a reader greps for.
+    Fix: `if ctx.Err() != nil { return nil }` before the logf.
+
+P3  MINOR  A failed host or node listing is logged as a reconcile error
+    P/pkg/controller/controller.go:258-261.
+    What: sync logs the mapNodes failure as "ERROR: reconcile: list
+    hosts: ...". Since D13 the same failure also skips publish (V5), so
+    the stale slice has no "publish" error anywhere in the log.
+    Why: README documents the publish log lines; someone asking "why did
+    the slice not change" finds only reconcile errors.
+    Fix: "ERROR: sync: %v" (or "ERROR: list hosts: %v") for the mapNodes
+    branch; keep the publish and reconcile prefixes for their own steps.
+
+P4  MINOR  adoptWarned grows by one key per foreign hotplug, never shrinks
+    P/pkg/server/server.go:972-980.
+    What: the warn-once key is host/qemu-id, and the id fcp_<name>.hp<N>
+    carries the other server's hotplug counter, so every device_add of a
+    same-named device on a shared VM adds a key that stays after the
+    device is gone. Same pattern as the existing exclusive warning, so
+    not new, but D8 doubles the sources.
+    Why: bytes per plug for the uptime of the server; no correctness
+    issue, and the per-plug key also re-warns after each re-plug of the
+    same foreign device, which is probably wanted.
+    Fix: at the end of reconcile for a host, drop its adoptWarned keys
+    whose qemu id is no longer in h.tree.Type3 (or key by host/device
+    name if once per device is enough).
+
+P5  MINOR  D8's "tree device without serial is still adopted" is untested
+    P/pkg/server/multipool_test.go:150-178, P/pkg/qemu/fake.go:398.
+    What: TestAdoptionChecksSerial covers mismatch (skipped, warned once)
+    and match (adopted). The guard `t3.HasSerial &&` at server.go:972 and
+    the fallback a.Serial = d.Serial at server.go:1008 run only for a
+    tree device without a serial, and qemu.Fake.PlugDevice always sets
+    HasSerial, so no test reaches them.
+    Why: devices plugged by vm-cxl-hotplug without serial= would stop
+    being adopted if a refactor dropped the guard, and nothing would
+    notice until an e2e run.
+    Fix: a Fake knob (PlugDevice with HasSerial false, or a field) and a
+    third case: plugged without serial -> adopted, Serial == d.Serial.
+
+P6  MINOR  Unwrapped lines in the docs
+    N/docs/memory/cxl/pool.md:67 (97 columns) and the "What the scheduler
+    does" paragraph (the inserted sentence left a 112-column line:
+    "...with a free device. It writes `status.allocation` (results with
+    driver,"); P/config.example.yaml:69 (103 columns, the hosts[].slots
+    comment). Both files are otherwise wrapped at about 78.
+    Fix: re-wrap the paragraph; shorten the comments, e.g. "# the nodes
+    the pool can reach (or allNodes: true)" and "# CXL slots of this host
+    (default: discovery.slots)".
+
+P7  MINOR  discoveryInfo's doc comment names its caller
+    P/cmd/fake-cxl-pool-server/main.go:36-37: "..., for the start log
+    line." The coding-style skill forbids documenting where a function
+    is used.
+    Fix: "discoveryInfo returns the discovery names, control and slots
+    that are set, as ', discovery ...' clauses."
+
+P8  MINOR  errcheck on the new status line
+    P/cmd/fake-cxl-pool-client/main.go:246: golangci-lint
+    --new-from-rev=HEAD reports the unchecked fmt.Fprintf (status 7 says
+    so too). The eight neighbouring lines have the same form and
+    w.Flush() returns the error, so this is consistent, not wrong; if the
+    repository's CI lints new lines only, `_, _ = fmt.Fprintf(...)` on
+    this one line avoids a red check.
+
+Checked and correct
+-------------------
+Controller (P/pkg/controller)
+- Selector shape, publisher.go nodeSelector: one NodeSelectorTerm, one
+  MatchExpressions requirement, Key kubernetes.io/hostname, Operator In,
+  Values sorted (sort.Strings) and unique (slices.Compact after the
+  sort), no MatchFields; AllNodes is never set anywhere. A node without
+  the label contributes its name and is warned once (noLabel).
+- No reachable node: nodeSelector returns nil, driverResources gives an
+  empty Pools map, publish passes it to StartController or Update. The
+  library (resourceslicecontroller.go v0.37.0) accepts it: Update's
+  comment and check at 437-447 allow an empty pool list with
+  ReconcilePoolWithName, it queues the old pool name (428-431), syncPool
+  removes the slices of a pool not in Resources (745-757), and a later
+  Update with the pool re-adds and recreates it. validateDriverResources
+  (validation.go:31) iterates Pools only, so empty is fine on the first
+  StartController too. Stale slices of a crashed predecessor are queued
+  by the informer's AddFunc and removed the same way.
+- Republish: reflect.DeepEqual on the whole *DriverResources compares
+  pointer fields (NodeSelector, the ptr.To attributes, Quantity) by
+  value, so a fresh selector every sync is equal when its content is;
+  the library DeepCopies on Update (451) and never writes into the
+  caller's struct, so c.published stays pristine; Update is called only
+  on a change; the "publishing nothing" line is logged once per
+  transition (TestPublishNodeSelector counts it).
+- Pool name: resolvePoolName in Run before start and before the first
+  sync; the flag wins and the server is not asked (TestPoolNameFromServer
+  checks statuses == 0); "" from the server gives fake-cxl-pool; the
+  retry waits SyncInterval between attempts (no tight loop) and exits on
+  ctx; the two log texts match D10.
+- ReconcilePoolWithName = pool name, Owner nil (publisher.go:180-190).
+  Library: field selector spec.pool.name in initInformer (546-559) with
+  the in-code fallback (576-592, 600-610); Update rejects any other pool.
+  TestRunPoolName asserts the list restriction "spec.pool.name=pool-x"
+  on the fake clientset's actions.
+- sync order (controller.go:257-270): mapNodes lists hosts and nodes
+  once, then publish(ctx, hm), then reconcile(ctx, hm) with the same
+  map; the "pool hosts of nodes" line moved to mapNodes unchanged. The
+  reconciler diff is the parameter and step renumbering only: status
+  data, events, NoHost and deleteSlices (driver field selector, own pool
+  name, no nodeName) are untouched.
+- Shutdown: slices.Stop(), then deleteSlices of the own pool with a 10 s
+  background context; factory.Shutdown deferred.
+- Node-name vs label: the slice selects by label value, the allocation
+  result names the node (metadata.name) and the reconciler maps it by
+  node name (hm.nodeHost): consistent on both ends.
+
+Server (P/pkg/server)
+- Name: default fake-cxl-pool, regex ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
+  (1..63, no leading or trailing '-'), error text verbatim D4, checked
+  first in Complete; Status.Name (ops.go:35); CLI first line "name:" and
+  JSON; start log line with names/control/slots when set (V1).
+- discovery.control: validated ("must be qmp or hmp"); precedence
+  hosts[].control > discovery.control > QMP if socket > HMP
+  (setMonitorLocked:727-731); "no monitor socket" for hmp without a
+  socket, as before for the force path.
+- Slot patterns: checkPatterns rejects malformed patterns via
+  path.Match's ErrBadPattern; slotsLocked filters, so Host.Slots, "hosts
+  NAME" and the automatic choice see matching slots only; explicit --slot
+  and the reserved slot of a local device outside the patterns fail with
+  the existing InvalidArgument texts; reserved-slot and NUMA scoring are
+  untouched and iterate only known slots; attachedBytesLocked and
+  fmwSizeLocked unchanged (D7). slotLocked (attachment views, Conflict
+  messages, adoption) reads the tree directly, so attachments on buses
+  outside the patterns, adopted or loaded from an older state file, keep
+  full slot data.
+- Adoption (server.go:972-980): the serial check comes after the
+  own-attachment check, applies to fcp_* backends only (V7), both serials
+  are printed as 0x lower-case hex (api.FormatSerial, device.Serial is
+  FormatSerial'd at creation), text verbatim D8, warn once per host and
+  qemu id.
+- State file: persistedState/persistedDevice/persistedHost unchanged;
+  nothing new is persisted (name, control and slots are configuration);
+  old state files load.
+
+Tests
+- make -C P builds the three binaries; make -C P test (go test -race)
+  passes with -count=1 (controller 21.5 s, server 5.8 s, client, api);
+  the new tests pass three runs in a row; go vet and gofmt -l clean.
+- TestPublish fails on any other selector string (selectorString), on
+  AllNodes != nil, on a wrong pool name; TestPublishNodeSelector covers a
+  host appearing, a node appearing without the label (warned once), no
+  reachable node (slice gone, logged once), nodes again (publishing
+  line); TestPoolNameFromServer the three name sources; TestRunPoolName
+  the Run lifecycle including slices deleted after Run.
+- TestSlotPatterns is strong: the fake has cxlhb0 = NUMA 0 and cxlhb1 =
+  NUMA 1, NumaNode 1 is requested with "*_hb0" and hb0 wins; a third
+  device gets Conflict although two hb1 slots are free; the host override
+  lands on ds0_hb1; both InvalidArgument texts asserted.
+- TestAdoptionRespectsExclusive: the new 0xc1ae0001 is s0's real serial
+  (shared base + 1); the old 0xc1ee0001 was simply a wrong constant that
+  nothing checked before and that D8 now rightly refuses. The assertion
+  (a shared device adopted on a second host) is unchanged and meaningful.
+- Timing: eventually is 10 s with 10 ms polling; Update-driven library
+  syncs use queue.Add (immediate), only informer-event syncs are delayed
+  by DefaultSyncDelay 30 s and gate no assertion; a race between the
+  test's Update and the informer's delete event self-heals through the
+  rate-limited retry. No sleeps.
+
+Docs
+- README.md, pool.md, config.example.yaml, deploy header: flag default,
+  log and error texts, defaults and key names match the code; plain
+  ASCII (grep); no allNodes or two-node leftovers (grep); every YAML
+  block of pool.md parses (PyYAML) and the slice example has one
+  nodeSelector term and no allNodes; TestExampleConfigSecondServer parses
+  the commented block; the Deployment does pass -pool-name, so its header
+  note applies. Nothing in E or P greps the old "listening on" line.
+- Note for stream E2E: the selector values are kubernetes.io/hostname
+  labels (node names only when the label is missing); test10's D22
+  assertion should compare with the labels, which equal the node names
+  in kubeadm clusters. The README already describes the three-node
+  cluster and the unit names fake-cxl-pool-controller[-<name>] that D21
+  defines.
+- Observed, by design (D12), not a finding: a controller that starts
+  before its server's first discovery round publishes nothing, then the
+  pool one sync later (slice created, generation 1), with both log
+  lines; dra-install-ready waiting for the slices covers it.
+
+----------------------------------------------------------------------------
+
+stream E2E
+==========
+Written 2026-10-21 by the reviewer (Fable). Read-only review of the
+uncommitted e2e changes (E = test/e2e/memory.test-suite/dra-driver-cxl,
+docs/memory/cxl/e2e.md, .github/skills/run-e2e-tests/SKILL.md) against
+02-design D18-D24, 03-plan's E2E section, 04-status-E2E and the texts and
+shapes of 04-status-POOL sections 4-5. Nothing was run against the VMs,
+port 9909 or run_tests.sh; bash -n and shellcheck were run on the host.
+
+Verdict: no BLOCKER. One MAJOR, which is in the demo suite (not in the
+stream's files) and confirms Request R2 of 04-status-E2E. test19's
+assertions catch every wrong outcome the coordinator listed; the helpers
+keep every existing caller working. Six MINOR findings.
+
+Findings
+--------
+E1  MAJOR  The live demo's pool view breaks with the new controller
+    (owner: the demo, P/plan-8-demo; confirms 04-status-E2E R2)
+    P/plan-8-demo/demo/bin/views.py:130 selects the pool slices with
+    (s.get("spec") or {}).get("allNodes"). The new controller never sets
+    allNodes (D12: nodeSelector only), so render_t3 shows "pool down" in
+    the pool case although the slice is there. What must change there,
+    once the user releases the demo:
+    - views.py:130: select by spec.driver == "cxl-pool.nri.io" and no
+      spec.nodeName (or by spec.pool.name); keep the allNodes samples in
+      demo/testdata/*/vm2.json and make-samples.py:109 working too, or
+      regenerate them from the three-node cluster.
+    - test90-demo-setup calls pool-cluster-require, whose default is now
+      "$VM2 $VM1 $VM0": the demo can be set up only after
+      n4-cxl-shared-2/test00-up made the three-node cluster (O3). Its
+      texts and demo/README.txt say "the two VMs", "both nodes".
+    - test91-demo-teardown:43 DRA_INSTALLED_VMS=("$VM2" "$VM1"): add
+      "$POOL_VM0_DIR", else dra-uninstall neither saves VM0's driver log
+      nor runs dra-state-cleanup there (harmless for pool A, which never
+      reaches VM0, but the DaemonSet runs on VM0 too).
+    The teardown itself works with the new helpers: test91 sets
+    POOL_SERVER_PID and POOL_URL with an empty registry, and
+    pool-cleanup, pool-server-stop, pool-snapshot and dra-pool-urls keep
+    that legacy path (pool.source.sh:597-601, 567-572, 759-767;
+    dra.source.sh:533-535).
+
+E2  MINOR  Slot patterns are glob-expanded by the shell
+    E/n4-cxl-shared-2/pool.source.sh:478: `for pat in $slots` expands
+    the unquoted --slots value, and every slot pattern is a shell glob
+    too ("*hb0", "cxlsw_ds[01]_usrp0hb0"). With no matching file in the
+    current directory bash keeps the word, which is why it works today.
+    Scenario: a file whose name ends in hb0 in the directory run.sh runs
+    in turns the config into slots: ["<that file>"], the server knows no
+    slot, and every attach of that pool fails Conflict "host ... has no
+    free CXL slot" with nothing pointing at the cause.
+    Fix: `read -r -a pats <<< "$slots"` and loop over "${pats[@]}" (read
+    does not glob), or `set -f` around the loop.
+
+E3  MINOR  The NoHost check of step E passes when the journal cannot be
+    read
+    E/n4-cxl-shared-2/test19-many-pools/code.var.sh:391-392:
+    `dra-vm-command "$VM2" "journalctl ... | grep -c NoHost" && error`
+    treats every non-zero status as "no NoHost": an ssh or journalctl
+    failure (VM2 unreachable for a moment, unit name wrong) passes the
+    check silently, and `grep -c` prints a count the test does not use.
+    Fix: `n=$(dra-vm-command-q "$VM2" "journalctl --no-pager -o cat -u
+    ${POOL_UNIT[pool-a]} | grep -c NoHost; true") || command-error ...;
+    [ "$n" == 0 ] || error ...`.
+
+E4  MINOR  pool-server-stop NAME leaves the stopped server in the
+    port/log/host registries
+    E/n4-cxl-shared-2/pool.source.sh:577-580 unsets only
+    POOL_SERVER_PIDS[$name]; POOL_SERVER_PORTS, _LOGS and _HOSTS keep the
+    entry, so pool-url NAME and pool-guest-url NAME print the URL of a
+    server that is gone (rc 0) instead of "no server NAME" (rc 1), and a
+    later pool-server-start of the same name silently overwrites them.
+    dra-install and pool-cleanup are not affected (they iterate
+    POOL_SERVERS, which is rebuilt from the pids).
+    Fix: unset the four entries together in pool-server-stop.
+
+E5  MINOR  Step G counts the monitor answers but asserts nothing on them
+    E/n4-cxl-shared-2/test19-many-pools/code.var.sh:441-448: the
+    retry-until snippet polls "info qtree -b" on VM2 and VM0 before each
+    check of g-claim, so the monitors are exercised while pool-c attaches
+    over HMP (C3), and a failing monitor is fatal (error inside the
+    snippet exits the test). But MONITOR_ANSWERS is only printed: a run
+    in which the claim was already attached at the first iteration polls
+    once, before pool-c touched the socket, and still passes.
+    Fix: after the loop, `[ "$MONITOR_ANSWERS" -ge 4 ] || error ...` (two
+    iterations of two VMs: the attach over HMP takes several seconds), so
+    that C3 is asserted, not just observed.
+
+E6  MINOR  Header wrapping
+    E/n4-cxl-shared-2/test11-dra-sharing/code.var.sh:16-17: the re-wrap
+    left an orphan line "# VM1 and a pod on" / "# VM2 have a
+    ResourceClaim ..."; E/n4-cxl-shared-2/test17-dra-local-shared/
+    code.var.sh:42 is 89 columns. Re-wrap both paragraphs.
+
+E7  MINOR  Non-ASCII in a file the stream edited
+    N/.github/skills/run-e2e-tests/SKILL.md:42-43 have box-drawing
+    characters in the directory tree (pre-existing lines; the file is
+    untracked, so the diff is invisible to git). The coding-style skill
+    asks for plain ASCII in documentation too: replace them with "|--"
+    when the file is touched anyway.
+
+Checked and correct
+-------------------
+test19-many-pools (E/n4-cxl-shared-2/test19-many-pools/code.var.sh)
+- A wrong pool name fails step A (sorted names == [pool-a, pool-b,
+  pool-c]) and B, C, D, G (results() pool per claim). A wrong node
+  selector fails A: pool_nodes() returns None for allNodes, for more
+  than one term, for anything but one matchExpressions requirement
+  kubernetes.io/hostname In, and for other values; and E (the pinned pod
+  would schedule). A device attached by the wrong server fails B
+  (pool-a and pool-c must have no attachments; pool-b's attachment has
+  the claim's owner and VM0) and F (hostBridge cxlhb0 for pool-b,
+  cxlhb1 for pool-c). A pod on the wrong node fails B, C, D
+  (allocated_node() and spec.nodeName compared). A missing second
+  device fails F (two complete env sets, distinct DAX paths, two regions
+  in VM0, both backing files carry their tag, read on the host). A
+  leaked attachment fails H (pool-free-wait on every server, no memdevs
+  or regions in any VM, no cxl-type3 in any qemu). A controller that
+  removed another's slice fails H (the (pool, uid) pairs recorded in A
+  are unchanged: the library would recreate a slice with a new uid).
+- Texts and shapes match 04-status-POOL: "pool <name> (from the
+  server)" grepped with -F per unit; the strict selector shape; the
+  hosts view fields control, state, slots[].hostBridge and the
+  attachment fields host, owner, state, qemuDeviceId, slot.hostBridge
+  (JSON tags verified in P/pkg/api/types.go); qemu ids fcp_<device>.hp.
+- D3 and the cabling: serials 0xc1ee0001/0xc1ae0001 (P=0),
+  0xc1ee1001/0xc1ae1001 (P=1), 0xc1ae2001/0xc1ee2001 (P=2), none equal
+  to the VMs' 0xc1ae0000 and 0xc100e2e1; device names unique per VM
+  (a-*, c-* on VM1 and VM2; b-*, c-* on VM0); ports 9909/9910/9911;
+  pool-a and pool-b on "*hb0" where the static shared and local devices
+  live (pool-a keeps local devices), pool-c on "*hb1" over HMP without
+  local devices; 4 slots per host bridge in the topology.
+- Step D's arithmetic holds: class cxl-pool selects shared == false, so
+  the shared devices and their shares do not count; the 512Mi devices
+  are a-pooled0 (held by a-consumer) and b-pooled0 (freed and waited for
+  with pool-device-free-wait first); c-pooled0 is 256Mi. The comment in
+  the test says so.
+- Step E: FailedScheduling event waited for, "0/3 nodes are available"
+  prefix on every such event, Pending/Unschedulable held for 5 s
+  (dra-stays), status.allocation None, no attachment of a-shared0.
+- Step 0 and preconditions: pool-cluster-require (three nodes),
+  pool-vm-require/tools/reset of all three VMs, no devices anywhere,
+  VM0_CPU_NODES from the last dump (VM0, loop order), exactly the three
+  units in DRA_CONTROLLER_UNITS and all active, image pulls on every
+  node, trace of the three VMs.
+- Teardown: pods and claims deleted, every VM and every server empty,
+  pool-c's attach/detach lines in its own log (POOL_SERVER_LOGS[pool-c]),
+  pool-snapshot of all servers, trace stop and summary, dra-cleanup,
+  pool-cleanup, trap - EXIT, three ports asserted free: the same shape
+  as test10/test11/test13.
+- No sleeps (dra-stays sleeps by design); timeouts 60/120 s as in
+  test10/test11. The EXIT trap is armed by the first pool-server-start
+  only, the two later starts leave it, dra-install chains
+  'dra-cleanup; pool-cleanup'.
+- To be confirmed by the first run, as 04-status-E2E 7 says: 4 slots per
+  host in the server's view, state running for HMP hosts, the scheduler
+  text, the monitor sharing of G.
+
+pool.source.sh (E/n4-cxl-shared-2)
+- pool-server-start: every option validated (name a DNS label, port
+  digits, index one hex digit and lower-cased in the bases, control
+  qmp|hmp, local-devices yes|no, hosts non-empty), unknown --option
+  fails, DEVICES is the positional with " []" default and the same
+  indentation as HEAD; control and slots are written only when given;
+  localDevices is written as before (true by default). The default
+  server's config is the same as HEAD's in substance (names from the
+  basenames of "$POOL_VM1_DIR $POOL_VM2_DIR"); the state file is removed
+  first as before; the busy-port message of the default port is the old
+  one.
+- Registry: declare -A at the top level of the sourced file (global),
+  keys with '-' work, unset is quoted; the scalars follow the first
+  started server (pool-server-first); duplicate name and a legacy
+  POOL_SERVER_PID are refused; build once per test (POOL_BUILT).
+- pool-server-stop: NAME or all, last started first; legacy path kept.
+- pool-cleanup: per running server, attachments released in the VM of
+  pool-vm-dir (VM0 known) and detached on the owning server with
+  --pool, dynamic devices deleted per server, then every server stopped.
+  "guest release" is a local operation of the client (offline, destroy
+  regions, disable memdev), so it needs no --server.
+- pool-client/pool-host-client: --pool must come first, the rest is
+  passed with printf %q, so `pool-client VMDIR -o json ...` is unchanged;
+  --server is omitted for the default guest URL as before.
+  pool-attachments, pool-device-files, pool-device-free-wait take --pool;
+  pool-snapshot writes one file per server (V4); pool-port-busy [PORT];
+  pool-url/pool-guest-url fall back to POOL_URL/POOL_GUEST_URL when
+  nothing was started.
+- pool-cluster-require default "$VM2 $VM1 $VM0"; pool-vm-label vm0;
+  pool-vm-dir knows VM0; POOL_VM0_DIR derived like POOL_VM1_DIR.
+
+dra.source.sh (E)
+- dra-install: unit fake-cxl-pool-controller with the unchanged
+  "-server $url -v" for the first server, fake-cxl-pool-controller-<name>
+  with pool-guest-url for the others, no -pool-name anywhere (D21: the
+  name comes from the server); the earlier run is stopped and
+  reset-failed by the glob; dra-wait-node runs for every node, so the
+  step-A local-slice assertions of test13, test16 and test19 are safe.
+- dra-install-ready: the started pool names (dra-pool-names =
+  POOL_SERVERS; a server without --name is "fake-cxl-pool" because
+  pool-server-start writes no name: and the server defaults to it) must
+  be a subset of the slices' pool names; with no started server the old
+  check remains.
+- dra-uninstall waits for the attachments of every node on every server
+  (dra-pool-urls), stops the glob, clears DRA_CONTROLLER_UNITS.
+- dra-trace-start: -u per unit of DRA_CONTROLLER_UNITS (V1, justified by
+  the journalctl -f measurement of 04-status-E2E 5), the glob only when
+  none was started; the other servers' logs tagged <name>.server; the
+  summary maps tags by tag.split(".")[-1], so "server" applies (V2);
+  dra-trace-stop kills the *.server tails.
+- Backward compatibility: without pool.source.sh, "${POOL_SERVERS[@]}"
+  and "${POOL_SERVERS[@]:1}" expand to nothing (the framework does not
+  set -u) and the URL default applies; with a server started outside the
+  test (test91), the legacy paths apply.
+
+Existing tests
+- test10: the selector asserted as the exact dict with one term, one
+  matchExpressions requirement, sorted([VM1, VM2]), and no allNodes;
+  test11: len == 1 kept, allNodes replaced by pool_nodes(default) ==
+  sorted([VM1, VM2]) (V6, right: the old assertion would fail); test13
+  and test16: the three node names, local slices and the lease device of
+  all three; test01/12/14/15/17/18: comments only. No test stops and
+  restarts the server after dra-install, so the trap re-arming of
+  pool-server-start changes nothing for them. The remaining "two nodes"
+  and "two VMs" texts (test01, test16, e2e.md example d) describe tests
+  that use two nodes by design.
+
+n4-cxl-shared-0 and test00-up
+- topology.var.json, vm_network.var.sh, kernel_config.var.sh and
+  kernel_getsource.var.sh are byte-identical to n4-cxl-shared-1's (diff);
+  cxl.source.sh is the same symlink as in -1 and -2; test00-up differs
+  from -1's only in the header (second worker; pool A reaches VM1 and
+  VM2; test19 cables VM0 to B and C). n4-cxl-shared-2/test00-up:
+  pool-host-wait for VM1 and then VM0 with the D19 pointer,
+  vm-k8s-reinit and vm-k8s-in-shape "$VM2 $VM1 $VM0", header three nodes.
+
+Docs
+- e2e.md: setup with three VMs, the diagram (77 columns, ASCII), the
+  nodeSelector paragraph, "Create the VMs" (VM1, VM0, VM2; the suite's
+  own order -0, -1, -2 is equivalent since both workers precede VM2), the
+  test table with test19 and the ports 9910/9911, Deploy by hand with
+  cxl-image-put/cxl-images-pull "$VM0" (V7 is right: the DaemonSet pod on
+  VM0 needs the image before cxl-helm-install's rollout wait returns),
+  cleanup and troubleshooting. The two PLACEHOLDER spots are marked by an
+  HTML comment and an in-block line each. SKILL.md has the three-node
+  bullet. All changed e2e files are plain ASCII except E7.
+
+Shell
+- bash -n passes on every changed .sh file. shellcheck of the working
+  copies against `git show HEAD:... | shellcheck -`: pool.source.sh one
+  SC2034 fewer, dra.source.sh one SC2034 fewer, test00-up/10/11/13/16
+  unchanged; test19 has only SC2016 (retry snippets) and SC2154 (distro)
+  like every test; n4-cxl-shared-0/test00-up has -1's seven findings.
+
+----------------------------------------------------------------------------

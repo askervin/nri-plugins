@@ -56,10 +56,14 @@ type fakePool struct {
 	attaches   []string // "device@host owner"
 	detaches   []string // "device@host"
 	counter    int
+	// name is the name in GET /status, statuses counts the requests
+	name     string
+	statuses int
 }
 
 func newFakePool() *fakePool {
 	return &fakePool{
+		name: "fake-cxl-pool",
 		hosts: []api.Host{
 			{Name: "vm1", UUID: "b6a78455-edb1-558d-8cf1-01a259f76e97", State: api.HostRunning},
 			{Name: "node2", UUID: "", State: api.HostRunning},
@@ -89,6 +93,12 @@ func writeErr(w http.ResponseWriter, e *api.Error) {
 
 func (p *fakePool) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc(api.RouteStatus, func(w http.ResponseWriter, r *http.Request) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.statuses++
+		writeJSON(w, 200, api.Status{Name: p.name})
+	})
 	mux.HandleFunc(api.RouteHosts, func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -226,16 +236,43 @@ type env struct {
 	kube *fake.Clientset
 	rec  *record.FakeRecorder
 	c    *Controller
+	logs *lockedBuf
 }
 
+// lockedBuf is a log buffer that tests read while the controller writes.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(b)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// node returns a Node whose kubernetes.io/hostname label is "h-<name>".
 func node(name, uuid string) *corev1.Node {
 	return &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("uid-" + name)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("uid-" + name), Labels: map[string]string{corev1.LabelHostname: "h-" + name}},
 		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{SystemUUID: uuid}},
 	}
 }
 
 func newEnv(t *testing.T) *env {
+	t.Helper()
+	return newEnvWith(t, nil)
+}
+
+// newEnvWith is newEnv with the fake pool and the controller config
+// modified by setup before the controller resolves its pool name.
+func newEnvWith(t *testing.T, setup func(*fakePool, *Config)) *env {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -249,10 +286,18 @@ func newEnv(t *testing.T) *env {
 		node("node3", "00000000-0000-0000-0000-000000000003"),
 	)
 	rec := record.NewFakeRecorder(100)
-	c := New(Config{
-		Logger:  log.New(testWriter{t}, "controller: ", 0),
+	logs := &lockedBuf{}
+	cfg := Config{
+		Logger:  log.New(io.MultiWriter(testWriter{t}, logs), "controller: ", 0),
 		Verbose: true,
-	}, kube, client.New(hs.URL), rec)
+	}
+	if setup != nil {
+		setup(p, &cfg)
+	}
+	c := New(cfg, kube, client.New(hs.URL), rec)
+	if _, err := c.resolvePoolName(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +308,7 @@ func newEnv(t *testing.T) *env {
 		cancel()
 		c.factory.Shutdown()
 	})
-	return &env{t: t, ctx: ctx, pool: p, kube: kube, rec: rec, c: c}
+	return &env{t: t, ctx: ctx, pool: p, kube: kube, rec: rec, c: c, logs: logs}
 }
 
 type testWriter struct{ t *testing.T }
@@ -284,13 +329,17 @@ func (e *env) eventually(what string, f func() bool) {
 	}
 }
 
-// sync runs one publish + reconcile.
+// sync runs one mapNodes + publish + reconcile.
 func (e *env) sync() {
 	e.t.Helper()
-	if err := e.c.publish(e.ctx); err != nil {
+	hm, err := e.c.mapNodes(e.ctx)
+	if err != nil {
 		e.t.Fatal(err)
 	}
-	if err := e.c.reconcile(e.ctx); err != nil {
+	if err := e.c.publish(e.ctx, hm); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := e.c.reconcile(e.ctx, hm); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -430,8 +479,13 @@ func TestPublish(t *testing.T) {
 	slice := e.slices()[0]
 	s := slice.Spec
 	if s.Driver != DefaultDriverName || s.Pool.Name != DefaultPoolName || s.Pool.ResourceSliceCount != 1 ||
-		!ptr.Deref(s.AllNodes, false) || s.NodeName != nil || s.NodeSelector != nil {
+		s.AllNodes != nil || s.NodeName != nil || s.PerDeviceNodeSelection != nil {
 		t.Fatalf("unexpected slice spec %+v", s)
+	}
+	// the nodes that are hosts of the server, by their hostname labels:
+	// node1 (vm1 by uuid) and node2 (by name), not node3
+	if got := selectorString(s.NodeSelector); got != "kubernetes.io/hostname In [h-node1 h-node2]" {
+		t.Fatalf("node selector %s", got)
 	}
 	byName := map[string]resourceapi.Device{}
 	for _, d := range s.Devices {

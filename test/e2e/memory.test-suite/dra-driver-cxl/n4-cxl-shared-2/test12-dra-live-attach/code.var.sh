@@ -51,7 +51,7 @@
 # Everything happens on VM2, the VM of the test (n4-cxl-shared-2), the
 # control plane of the cluster of VM2 and VM1 (n4-cxl-shared-1): the pods
 # are pinned to it, the companions follow their requester. Run test00-up of
-# n4-cxl-shared-1 and -2 first: they create the VMs and make them one
+# n4-cxl-shared-1, -0 and -2 first: they create the VMs and make them one
 # cluster. The DRA driver comes from its image, which has cxl-request too,
 # build it first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
@@ -61,10 +61,10 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
-VM1="$POOL_VM1_DIR"    # the worker of the cluster
+VM1="$POOL_VM1_DIR"    # a worker of the cluster
 VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
@@ -545,7 +545,7 @@ share() {
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 
-echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in either node"
+echo "### preconditions: cxl, daxctl and cxl-dump in the VM, no CXL memory devices in VM2 and VM1"
 pool-vm-tools-install "$VM2"
 pool-vm-reset "$VM2"
 pool-vm-reset "$VM1"

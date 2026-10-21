@@ -154,7 +154,7 @@ skipping: [n4-cxl-shared-2-fedora-43-containerd]
 PLAY RECAP *********************************************************************
 n4-cxl-shared-2-fedora-43-containerd : ok=13   changed=3    unreachable=0    failed=0    skipped=9    rescued=0    ignored=0   
 
-### demo setup local: the cluster and the VMs
+### demo setup pool: the cluster and the VMs
 pool-cluster-require: cluster "n4-cxl-shared-2-fedora-43-containerd n4-cxl-shared-1-fedora-43-containerd" is in shape
 n4-cxl-shared-2-fedora-43-containerd: qemu /home/akervine/github.com/qemu/qemu/build/qemu-system-x86_64: {"return": {"qemu": {"micro": 50, "minor": 1, "major": 11}, "package": "v11.1.0-1741-gff076b1e6c"}}
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m uname -r; grep -x CONFIG_FS_DAX=y /boot/config-$(uname -r)
@@ -170,7 +170,7 @@ n4-cxl-shared-1-fedora-43-containerd: patched qemu, hdm_for_passthrough=on, CONF
 offline
 [38;5;13mroot@vm1>[0m echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks
 offline
-### demo setup local: fake-cxl-pool-server on the host
+### demo setup pool: fake-cxl-pool-server on the host
 [38;5;11mhost>[0m make -C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool"
 make: Entering directory '/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool'
 go build -o bin/fake-cxl-pool-server github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/cmd/fake-cxl-pool-server
@@ -185,14 +185,19 @@ pools:
     dir: /tmp/fake-cxl-pool
     capacity: 8G
     sharable: true
-devices: []
+devices:
+  - name: shared0
+    size: 256Mi
+    shared: true
+    pool: default
+    serial: 0xc1ae0001
 discovery:
   qemu: true
   interval: 10s
   names: ["n4-cxl-shared-1-fedora-43-containerd", "n4-cxl-shared-2-fedora-43-containerd"]
   localDevices: true
 detachTimeout: 15s
-pool-server-start: fake-cxl-pool-server pid 2304662, log /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/fake-cxl-pool-server.log
+pool-server-start: fake-cxl-pool-server pid 2484219, log /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/fake-cxl-pool-server.log
 waiting for: fake-cxl-pool-server on http://127.0.0.1:9909
 [38;5;11mhost>[0m curl -sS --max-time 30 http://127.0.0.1:9909/api/v1/status
 {
@@ -205,10 +210,10 @@ waiting for: fake-cxl-pool-server on http://127.0.0.1:9909
     }
   },
   "hosts": 2,
-  "devices": 3,
+  "devices": 4,
   "attachments": 0,
   "uptime": "1s",
-  "started": "2026-10-20T07:15:32.458648184Z",
+  "started": "2026-10-20T12:46:34.595917918Z",
   "stateFile": "/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/fake-cxl-pool.state.json"
 }
 [38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.fake-cxl-pool-client"
@@ -229,74 +234,7 @@ go build -o bin/fake-cxl-pool-server github.com/containers/nri-plugins/scripts/t
 CGO_ENABLED=0 GOARCH=amd64 go build -o bin/fake-cxl-pool-client github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/cmd/fake-cxl-pool-client
 CGO_ENABLED=0 GOARCH=amd64 go build -o bin/fake-cxl-pool-controller github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/cmd/fake-cxl-pool-controller
 make: Leaving directory '/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool'
-[38;5;11mhost>[0m /home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9909 -o json devices
-[
-  {
-    "name": "n4-cxl-shared-1-fedora-43-containerd.memdev1",
-    "serial": "0xc100e2e1",
-    "size": 268435456,
-    "shared": false,
-    "persistent": false,
-    "backend": "ram",
-    "pool": "",
-    "scope": "local",
-    "localHost": "n4-cxl-shared-1-fedora-43-containerd",
-    "state": "free",
-    "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T07:15:32.491751572Z"
-  },
-  {
-    "name": "n4-cxl-shared-2-fedora-43-containerd.memdev1",
-    "serial": "0xc100e2e1",
-    "size": 1073741824,
-    "shared": false,
-    "persistent": false,
-    "backend": "ram",
-    "pool": "",
-    "scope": "local",
-    "localHost": "n4-cxl-shared-2-fedora-43-containerd",
-    "state": "free",
-    "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T07:15:32.491836552Z"
-  },
-  {
-    "name": "static-shared0",
-    "serial": "0xc1ae0000",
-    "size": 268435456,
-    "shared": true,
-    "persistent": false,
-    "backend": "file",
-    "path": "/tmp/fake-cxl-pool/static-shared0.raw",
-    "pool": "",
-    "scope": "local",
-    "localHost": "n4-cxl-shared-1-fedora-43-containerd",
-    "localHosts": [
-      "n4-cxl-shared-1-fedora-43-containerd",
-      "n4-cxl-shared-2-fedora-43-containerd"
-    ],
-    "state": "free",
-    "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T07:15:32.491716246Z"
-  }
-]
-demo setup: driver configuration sharedDevices: ["0xc100e2e1"]
-### demo setup local: the driver on both nodes, the pool controller on VM2
-dra-install: helm values with the driver configuration, /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/dra-driver-cxl.helm-values.yaml:
-# Helm values of nri-dra-driver-cxl in the e2e tests of dra-driver-cxl, on
-# top of the values that the e2e framework gives every plugin
-# (helm-set-args). dra-install of dra.source.sh installs the driver with
-# these in every cluster of a test.
-
-# The tests read the log of the driver: verbosity 4 has the lines they
-# look for.
-logLevel: 4
-
-# DRA_DRIVER_CONFIG of test90-demo-setup, written by dra-install
-config:
-  sharedDevices: ["0xc100e2e1"]
+### demo setup pool: the driver on both nodes, the pool controller on VM2
 dra-install: the cluster of vm has 2 nodes: n4-cxl-shared-1-fedora-43-containerd n4-cxl-shared-2-fedora-43-containerd
 [38;5;11mhost>[0m scp -F "/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-1-fedora-43-containerd/.ssh-config" "/home/akervine/github.com/containers/nri-plugins/build/images/nri-dra-driver-cxl-image-1c361fc62a4d.tar" node:"nri-dra-driver-cxl-image-1c361fc62a4d.tar"
 [38;5;13mroot@vm1>[0m ctr -n k8s.io images import nri-dra-driver-cxl-image-1c361fc62a4d.tar && ref=$(ctr -n k8s.io images ls | grep sha256:1c361fc62a4d | tr -s '\t' ' ' | cut -d ' ' -f1 | head -n 1) && [ -n "$ref" ] && ctr -n k8s.io images tag --force $ref localhost/dra-driver-cxl:testing; rc=$?; rm -f nri-dra-driver-cxl-image-1c361fc62a4d.tar; exit $rc
@@ -309,19 +247,15 @@ dra-install: removing components of an earlier run, if any
 waiting for: no pods of nri-dra-driver-cxl in the cluster
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null; kubectl delete deviceclass --ignore-not-found cxl-local cxl-local-shared cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json /var/lib/kubelet/plugins/cxl.nri.io/leases.json; rm -rfv /var/lib/kubelet/plugins/cxl.nri.io/leases; fi
-removed '/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json'
-removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
 [38;5;13mroot@vm1>[0m if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json /var/lib/kubelet/plugins/cxl.nri.io/leases.json; rm -rfv /var/lib/kubelet/plugins/cxl.nri.io/leases; fi
-removed '/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json'
-removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
 [38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-controller" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.fake-cxl-pool-controller"
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.fake-cxl-pool-controller" "/usr/local/bin/fake-cxl-pool-controller"
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m chmod 755 /usr/local/bin/fake-cxl-pool-controller
 dra-install: installing dra-driver-cxl with helm on 2 nodes, starting fake-cxl-pool-controller in vm
-[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/dra-driver-cxl.helm-values.yaml" n4-cxl-shared-2-fedora-43-containerd:
+[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/e2e/demo.test-suite/dra-driver-cxl/dra-driver-cxl.helm-values.yaml" n4-cxl-shared-2-fedora-43-containerd:
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m helm install --rollback-on-failure -n kube-system test ./helm/dra-driver-cxl              --values=dra-driver-cxl.helm-values.yaml              --set image.name=localhost/dra-driver-cxl           --set image.tag=testing           --set image.pullPolicy=Never           --set resources.cpu=50m           --set resources.memory=256Mi           --set plugin.test.enableAPIs=true           --set extraEnv.GOCOVERDIR=/var/lib/nri-resource-policy/coverage
 NAME: test
-LAST DEPLOYED: Tue Oct 20 07:15:43 2026
+LAST DEPLOYED: Tue Oct 20 12:46:45 2026
 NAMESPACE: kube-system
 STATUS: deployed
 REVISION: 1
@@ -336,7 +270,7 @@ error: waiting for command "kubectl get pods -n kube-system | grep -q nri-resour
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m fuser --kill /tmp/nri-resource-policy-port-forward 2>/dev/null || :
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m kubectl port-forward  8891:8891 -n kube-system > /tmp/nri-resource-policy-port-forward 2>&1 &
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m systemd-run --unit fake-cxl-pool-controller --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server http://192.168.76.2:9909 -v
-Running as unit: fake-cxl-pool-controller.service; invocation ID: fd5497436c5c4802b456e7e9e0b5fb8a
+Running as unit: fake-cxl-pool-controller.service; invocation ID: beecab774d8746c0abfefe844051104a
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m kubectl get deviceclass cxl-local cxl-local-shared cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease
 NAME                  AGE
 cxl-local             8s
@@ -350,110 +284,30 @@ cxl-lease             8s
 waiting for: vm: ResourceSlices of cxl-pool.nri.io and cxl.nri.io on n4-cxl-shared-2-fedora-43-containerd, cxl-pool.nri.io kubelet plugin socket, /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/cxl-pool.nri.io/ /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 NAME                                                          NODE                                   DRIVER            POOL                                   AGE
-00000-cxl-pool.nri.io-hz6zh                                                                          cxl-pool.nri.io   fake-cxl-pool                          3s
-00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-vftsj   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   9s
-00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-spdqx   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   9s
--rwxr-xr-x 1 root root 3914164 Oct 20 07:15 /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
+00000-cxl-pool.nri.io-j84wl                                                                          cxl-pool.nri.io   fake-cxl-pool                          2s
+00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-ff4hp   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   9s
+00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-n4xzp   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   9s
+-rwxr-xr-x 1 root root 3914164 Oct 20 12:46 /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 
 /var/lib/kubelet/plugins/cxl-pool.nri.io/:
 total 0
-srwxr-xr-x 1 root root 0 Oct 20 07:15 dra.sock
-drwxr-xr-x 1 root root 0 Oct 20 06:44 mounts
+srwxr-xr-x 1 root root 0 Oct 20 12:46 dra.sock
+drwxr-xr-x 1 root root 0 Oct 20 09:36 mounts
 waiting for: vm1: ResourceSlices of cxl-pool.nri.io and cxl.nri.io on n4-cxl-shared-1-fedora-43-containerd, cxl-pool.nri.io kubelet plugin socket, /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 [38;5;13mroot@vm1>[0m kubectl get resourceslices; ls -l /var/lib/kubelet/plugins/cxl-pool.nri.io/ /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 NAME                                                          NODE                                   DRIVER            POOL                                   AGE
-00000-cxl-pool.nri.io-hz6zh                                                                          cxl-pool.nri.io   fake-cxl-pool                          4s
-00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-vftsj   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   10s
-00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-spdqx   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   10s
--rwxr-xr-x 1 root root 3914164 Oct 20 07:15 /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
+00000-cxl-pool.nri.io-j84wl                                                                          cxl-pool.nri.io   fake-cxl-pool                          3s
+00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-ff4hp   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   10s
+00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-n4xzp   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   10s
+-rwxr-xr-x 1 root root 3914164 Oct 20 12:46 /var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 
 /var/lib/kubelet/plugins/cxl-pool.nri.io/:
 total 0
-srwxr-xr-x 1 root root 0 Oct 20 07:15 dra.sock
-drwxr-xr-x 1 root root 0 Oct 20 06:44 mounts
+srwxr-xr-x 1 root root 0 Oct 20 12:46 dra.sock
+drwxr-xr-x 1 root root 0 Oct 20 09:36 mounts
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m kubectl delete pods --all -n cxl-demo --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace cxl-demo --ignore-not-found --wait=true --timeout=120s && kubectl create namespace cxl-demo
 namespace/cxl-demo created
-[38;5;11mhost>[0m /home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9909 -o json devices
-[
-  {
-    "name": "n4-cxl-shared-1-fedora-43-containerd.memdev1",
-    "serial": "0xc100e2e1",
-    "size": 268435456,
-    "shared": false,
-    "persistent": false,
-    "backend": "ram",
-    "pool": "",
-    "scope": "local",
-    "localHost": "n4-cxl-shared-1-fedora-43-containerd",
-    "state": "free",
-    "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T07:15:32.491751572Z"
-  },
-  {
-    "name": "n4-cxl-shared-2-fedora-43-containerd.memdev1",
-    "serial": "0xc100e2e1",
-    "size": 1073741824,
-    "shared": false,
-    "persistent": false,
-    "backend": "ram",
-    "pool": "",
-    "scope": "local",
-    "localHost": "n4-cxl-shared-2-fedora-43-containerd",
-    "state": "free",
-    "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T07:15:32.491836552Z"
-  },
-  {
-    "name": "static-shared0",
-    "serial": "0xc1ae0000",
-    "size": 268435456,
-    "shared": true,
-    "persistent": false,
-    "backend": "file",
-    "path": "/tmp/fake-cxl-pool/static-shared0.raw",
-    "pool": "",
-    "scope": "local",
-    "localHost": "n4-cxl-shared-1-fedora-43-containerd",
-    "localHosts": [
-      "n4-cxl-shared-1-fedora-43-containerd",
-      "n4-cxl-shared-2-fedora-43-containerd"
-    ],
-    "state": "free",
-    "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T07:15:32.491716246Z"
-  }
-]
-[38;5;11mhost>[0m /home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9909 -o json attach n4-cxl-shared-2-fedora-43-containerd.memdev1 --host n4-cxl-shared-2-fedora-43-containerd --owner e2e:dra-local-device
-{
-  "id": "n4-cxl-shared-2-fedora-43-containerd.memdev1@n4-cxl-shared-2-fedora-43-containerd",
-  "device": "n4-cxl-shared-2-fedora-43-containerd.memdev1",
-  "host": "n4-cxl-shared-2-fedora-43-containerd",
-  "serial": "0xc100e2e1",
-  "slot": {
-    "bus": "cxlsw_ds3_usrp0hb0",
-    "kind": "downstream",
-    "hostBridge": "cxlhb0",
-    "numaNode": 0,
-    "device": "fcp_n4-cxl-shared-2-fedora-43-containerd.memdev1.hp1",
-    "attachment": "n4-cxl-shared-2-fedora-43-containerd.memdev1@n4-cxl-shared-2-fedora-43-containerd",
-    "reservedFor": "n4-cxl-shared-2-fedora-43-containerd.memdev1"
-  },
-  "qemuDeviceId": "fcp_n4-cxl-shared-2-fedora-43-containerd.memdev1.hp1",
-  "qemuObjectId": "beram_cxl_memdev1__bus_cxlsw_ds3_usrp0hb0__sn_0xc100e2e1",
-  "state": "attached",
-  "owner": "e2e:dra-local-device",
-  "created": "2026-10-20T07:15:57.193269351Z",
-  "updated": "2026-10-20T07:15:57.228239649Z"
-}
-waiting for: pkg/cxl: by_serial(0xc100e2e1) is not None
-cxl-dump local-device: 1 memdevs (mem0), 0 regions (), 1 endpoints, nodes 0:3944M, 1:4030M
-waiting for: vm: kubectl get resourceslices: device('memdev-c100e2e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd') is not None and attr(device('memdev-c100e2e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'type') == 'memdev' and attr(device('memdev-c100e2e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'serial') == '0xc100e2e1'
-dra ok: local-device: device('memdev-c100e2e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd') is not None and attr(device('memdev-c100e2e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'type') == 'memdev' and attr(device('memdev-c100e2e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'serial') == '0xc100e2e1'
-dra-local-device vm: n4-cxl-shared-2-fedora-43-containerd.memdev1, serial 0xc100e2e1 (C100E2E1), 1073741824 bytes, ResourceSlice device memdev-c100e2e1, memory block size 134217728 bytes
-### demo setup local: images, tools, manifests
+### demo setup pool: images, tools, manifests
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m crictl pull docker.io/library/python:3-alpine 2>&1 | grep -v 'level=warning'; exit ${PIPESTATUS[0]}
 Image is up to date for sha256:c94b9cf3b01531c3a28f55ba23b2dfaaf9afc84175978539a45f86e442eba521
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m crictl pull registry.k8s.io/pause:3.10 2>&1 | grep -v 'level=warning'; exit ${PIPESTATUS[0]}
@@ -462,7 +316,7 @@ Image is up to date for sha256:873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4a
 Image is up to date for sha256:c94b9cf3b01531c3a28f55ba23b2dfaaf9afc84175978539a45f86e442eba521
 [38;5;13mroot@vm1>[0m crictl pull registry.k8s.io/pause:3.10 2>&1 | grep -v 'level=warning'; exit ${PIPESTATUS[0]}
 Image is up to date for sha256:873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136
-[38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m rm -rf /root/demo && mkdir -p /root/demo/tools /root/demo/local
+[38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m rm -rf /root/demo && mkdir -p /root/demo/tools /root/demo/pool
 [38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/bin/tools/cxl-demo.py" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.cxl-demo.py"
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.cxl-demo.py" "/root/demo/tools/cxl-demo.py"
 [38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/bin/tools/write" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.write"
@@ -473,10 +327,10 @@ Image is up to date for sha256:873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4a
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.hold" "/root/demo/tools/hold"
 [38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/bin/tools/env" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.env"
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.env" "/root/demo/tools/env"
-[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/manifests/local/readers.yaml" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.readers.yaml"
-[38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.readers.yaml" "/root/demo/local/readers.yaml"
-[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/manifests/local/writer.yaml" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.writer.yaml"
-[38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.writer.yaml" "/root/demo/local/writer.yaml"
+[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/manifests/pool/readers.yaml" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.readers.yaml"
+[38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.readers.yaml" "/root/demo/pool/readers.yaml"
+[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/plan-8-demo/demo/manifests/pool/writer.yaml" n4-cxl-shared-2-fedora-43-containerd:"vm-put-file.writer.yaml"
+[38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m mv "vm-put-file.writer.yaml" "/root/demo/pool/writer.yaml"
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m kubectl create configmap demo-tools -n cxl-demo --from-file=cxl-demo.py=/root/demo/tools/cxl-demo.py --from-file=write=/root/demo/tools/write --from-file=read=/root/demo/tools/read --from-file=hold=/root/demo/tools/hold --from-file=env=/root/demo/tools/env --dry-run=client -o yaml | kubectl apply -f -
 configmap/demo-tools created
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m cp /root/.kube/config /root/demo/kubeconfig && kubectl --kubeconfig /root/demo/kubeconfig config set-context --current --namespace=cxl-demo
@@ -484,26 +338,26 @@ Context "kubernetes-admin@kubernetes" modified.
 [38;5;11mroot@vm dra-driver-cxl/test90-demo-setup>[0m kubectl label node n4-cxl-shared-2-fedora-43-containerd cxl-demo/node=vm2 --overwrite && kubectl label node n4-cxl-shared-1-fedora-43-containerd cxl-demo/node=vm1 --overwrite
 node/n4-cxl-shared-2-fedora-43-containerd labeled
 node/n4-cxl-shared-1-fedora-43-containerd labeled
-### demo setup local: the trace
+### demo setup pool: the trace
 waiting for: trace collectors in vm
 waiting for: trace collectors in vm1
 dra-trace-start: 12 collectors, streams in /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/trace
-# demo setup local, 2026-10-20 10:16:11, /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup
-DEMO_CASE=local
+# demo setup pool, 2026-10-20 15:47:11, /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup
+DEMO_CASE=pool
 VM2_DIR=/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd
 VM1_DIR=/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-1-fedora-43-containerd
 VM2_NODE=n4-cxl-shared-2-fedora-43-containerd
 VM1_NODE=n4-cxl-shared-1-fedora-43-containerd
 NS=cxl-demo
-SERIAL=0xc100e2e1
+SERIAL=0xc1ae0001
 POOL_DEVICE=shared0
 POOL_URL=http://127.0.0.1:9909
-POOL_SERVER_PID=2304662
+POOL_SERVER_PID=2484219
 POOL_SERVER_LOG=/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/fake-cxl-pool-server.log
 TRACE_DIR=/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/trace
 SETUP_OUTPUT_DIR=/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup
-LOCAL_DEVICE_NAME=n4-cxl-shared-2-fedora-43-containerd.memdev1
-demo setup local: done
+LOCAL_DEVICE_NAME=''
+demo setup pool: done
 [38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C n4-cxl-shared-2-fedora-43-containerd:nri-resource-policy.output.txt "/home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/"
 curl: (7) Failed to connect to localhost port 8891 after 0 ms: Could not connect to server
 no coverage data to dump from the plugin

@@ -51,8 +51,12 @@ default in v1.37. Pool devices do not use `nodeAllocatableResources`.
 
 ## What the pool controller publishes
 
-One cluster-scoped ResourceSlice (no node name) under driver
-`cxl-pool.nri.io`:
+One cluster-scoped ResourceSlice (no node name) per pool under driver
+`cxl-pool.nri.io`. A cluster that spans several pools has one controller
+per pool, each publishing its own pool name under the same driver; the
+reference controller names the pool after its server and confines itself
+to that pool (resourceslice `Options.ReconcilePoolWithName`: without it, a
+controller removes the slices of pools it does not know).
 
 ```yaml
 apiVersion: resource.k8s.io/v1
@@ -60,7 +64,11 @@ kind: ResourceSlice
 spec:
   driver: cxl-pool.nri.io
   pool: {name: fake-cxl-pool, generation: N, resourceSliceCount: 1}
-  allNodes: true                 # or a nodeSelector of the nodes the pool can reach
+  # the nodes the pool can reach; allNodes: true if every node can
+  nodeSelector:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - {key: kubernetes.io/hostname, operator: In, values: [node1, node2]}
   devices:
   - name: pooled0                # device name, a DNS label
     attributes:
@@ -264,12 +272,15 @@ read in place.
 
 Nothing to configure. The scheduler tries pools without binding
 conditions first, so node-local `cxl.nri.io` devices win when they
-satisfy a request. It writes `status.allocation` (results with driver,
-pool, device and the binding conditions; `shareID` and `consumedCapacity`
-for shared devices) with `nodeSelector` = the picked node, emits the pod
-event `BindingConditionsPending` and checks the claim every few seconds
-until the binding timeout (default 600 s). If a failure condition becomes
-True or the timeout expires, the claim is deallocated and allocated again.
+satisfy a request. Devices of a pool are considered on the nodes of its
+nodeSelector only, so a pod whose claim can be satisfied by several pools
+lands on a node that reaches one of them with a free device. It writes
+`status.allocation` (results with driver, pool, device and the binding
+conditions; `shareID` and `consumedCapacity` for shared devices) with
+`nodeSelector` = the picked node, emits the pod event
+`BindingConditionsPending` and checks the claim every few seconds until
+the binding timeout (default 600 s). If a failure condition becomes True
+or the timeout expires, the claim is deallocated and allocated again.
 
 ## What the pool controller writes
 
@@ -303,7 +314,8 @@ status:
       persistent: true           # only for a device of persistent memory
 ```
 
-The node plugin matches the entry by (driver, pool, device) and reads
+The node plugin matches the entry by (driver, pool, device): several
+pools under one driver need no change. It reads
 only `serial`, `shared`, `size`, `exclusive` and `persistent` from
 `data`; a missing `exclusive` or `persistent` is `false`. `exclusive`
 lets a `block` claim of a shared persistent device write; `persistent`

@@ -16,7 +16,7 @@
 # completes that, the server reports the attachment failed, and the device
 # stays in qemu until the VM restarts (see plan/60-e2e-test.md).
 #
-# Run test00-up of n4-cxl-shared-1 and -2 first: they create the VMs and
+# Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
 # make them one Kubernetes cluster, which this test, like every test of
 # n4-cxl-shared-2, checks before anything else.
 
@@ -25,7 +25,7 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
 VM1="$POOL_VM1_DIR"    # the other VM, driven over ssh from the host

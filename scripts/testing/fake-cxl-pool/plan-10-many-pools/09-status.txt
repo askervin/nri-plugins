@@ -1,0 +1,94 @@
+plan-10: orchestrator status (final)
+====================================
+Written 2026-10-21 (orchestrator). Branch 5jg-cxl at 3e8cfe17f, working
+tree uncommitted (36 files changed by this plan, plus the plan directory
+and the new topology n4-cxl-shared-0). Nothing committed. Paths as in
+00-README.
+
+Result
+------
+Several CXL memory pools in one cluster work end to end, in the shape of
+02-design: one fake-cxl-pool-server process per pool appliance, one pool
+controller per server, one DRA pool each under the one driver
+cxl-pool.nri.io, devices published with a nodeSelector of the nodes the
+pool reaches. test19-many-pools passed twice in a row (3 min 4 s and
+3 min 13 s) with three pools: pool-a on VM1 and VM2 (QMP, host bridge 0),
+pool-b on VM0 (QMP, host bridge 0), pool-c on all three VMs (HMP, host
+bridge 1). The regression tests test10 and test13 passed on the
+three-node cluster with the new controller; test00-up of n4-cxl-shared-2
+made the cluster in 2 min. 06-runs.txt has the commands, times and logs.
+
+What test19 showed (from its log, run 1)
+- three pool slices, nodeSelector values: pool-a [VM1, VM2], pool-b
+  [VM0], pool-c [VM0, VM1, VM2], no allNodes;
+- an unpinned pod with a claim for b-pooled0 went to VM0, attached by
+  pool-b as fcp_b-pooled0.hp1 under cxlhb0; pool-a and pool-c had no
+  attachment;
+- an unpinned pod with a claim for a-pooled0 went to VM1;
+- "any 512Mi of pool memory" with a-pooled0 held went to VM0 (pool-b);
+- a pod pinned to VM0 with a claim for a-shared0 stayed Pending:
+  "0/3 nodes are available: 1 cannot allocate all claims, 2 node(s)
+  didn't match Pod's node affinity/selector", never allocated;
+- one pod on VM0 with claims of b-shared0 (pool-b) and c-shared0 (pool-c):
+  CXL_C1AE1001_DAX=/dev/dax0.0 and CXL_C1AE2001_DAX=/dev/dax1.0;
+- a pod on VM2 read what VM0 wrote into c-shared0; pool-c held c-shared0
+  on VM0 and VM2 at once; the HMP monitor of VM2 and VM0 answered the
+  test's own vm-monitor four times while pool-c attached (02-design C3:
+  HMP is fit, monitor.sock is shared without refused connections);
+- teardown: every device back in its pool on all three servers, no CXL
+  device left in any VM, ports 9909-9911 free.
+
+Research (01-research-multi-pool.txt)
+A server attached to several pools is realistic: Xeon 6 and EPYC 9005
+expose four x16 or eight x8 CXL root ports, each an independent
+hierarchy (own CFMWS, own NUMA node); Microsoft's Octopus prototyped
+servers cabled to two pooling devices each; appliances (H3 Falcon,
+Samsung CMM-B, Liqid, UnifabriX MAX) attach one cable per host; nothing
+in CXL 3.x binds a host to one fabric manager. Advantages: capacity
+beyond one appliance, bandwidth over several host bridges, per-pool
+blast radius, a rack pool for capacity plus a global pool for sharing.
+Costs: lanes, cable length, two management planes, more NUMA nodes.
+The recommended emulation mapping is test19's.
+
+Streams
+- POOL (04-status-POOL.txt): server name, discovery.control, slot
+  patterns (nil inherits, [] = every slot), serial-checked adoption with
+  pruned warn-once map; controller ReconcilePoolWithName, pool name from
+  GET /status, hostname node selector, nothing published without a
+  reachable node, one listing of hosts and nodes per sync; README,
+  config example, pool.md. make, go test -race, lint, vet clean.
+- E2E (04-status-E2E.txt): topology n4-cxl-shared-0 and VM0
+  (n4-cxl-shared-0-fedora-43-containerd, uuid 140edfaa-e57c-5e4c-9fb4-
+  84744231dcad, VM network 10.76.170.229); three-node test00-up;
+  pool.source.sh registry and options (--name --port --hosts --index
+  --control --slots --local-devices, --pool on the clients), dra.source.sh
+  one controller unit per server (fake-cxl-pool-controller for the first,
+  fake-cxl-pool-controller-<name> for the others; journalctl -f resolves
+  unit globs once, so the trace names each unit); test10/11/13/16/17 and
+  comments updated; test19; e2e.md, SKILL.md.
+- Review (05-review.txt): POOL 8 minors, 7 fixed, P8 left (consistent
+  with its neighbours); E2E 6 minors fixed, E1 major in the plan-8 demo
+  suite fixed by the runner (views.py selects pool slices by driver and
+  no nodeName, test91 includes VM0, test90 and README say three nodes).
+  The demo itself was not run again.
+- Runner (06-runs.txt): image rebuilt, binaries built, test00-up,
+  test10, test19 x2, test13 PASS; e2e.md placeholders filled from the
+  real cluster.
+
+Not done, on purpose
+- test11 and test16 not run (slow; test10 covers the changed assertion,
+  test16's change is the node count). test17/test18 untouched in logic.
+- The demo (plan-8) not re-run after its E1 fix; run test90-demo-setup
+  on the three-node cluster before the next demo.
+- A third QMP socket per VM (02-design O2) not needed: HMP was fit.
+- Requests to the user: R1 (03-plan E2E status): test/e2e/run.sh
+  "help FUNCTION" ignores its argument and does not read the suite's
+  *.source.sh files.
+
+Follow-ups worth considering
+- Each server counts only its own attachments against a host bridge's
+  fixed memory window (04-status-POOL open point): two servers on one
+  host bridge could over-commit it; the slot patterns avoid it.
+- The pool controller's Deployment manifest is one per server (header
+  note); a Helm chart or a list of servers would be the next step for
+  real clusters.

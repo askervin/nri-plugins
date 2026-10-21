@@ -32,6 +32,7 @@ func (s *Server) Status() api.Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	st := api.Status{
+		Name:        s.cfg.Name,
 		Version:     api.ServerVersion,
 		Qemu:        api.QemuStatus{Discovery: s.cfg.Discovery.QemuEnabled(), Versions: map[string]string{}},
 		Hosts:       len(s.hosts),
@@ -608,7 +609,7 @@ func (s *Server) chooseSlotLocked(h *host, b *binding, req api.AttachRequest, si
 	}
 	if req.Slot != "" {
 		p := h.tree.Port(req.Slot)
-		if p == nil || !p.IsSlot() {
+		if p == nil || !p.IsSlot() || !s.slotKnownLocked(h, p.Bus) {
 			return "", api.InvalidArgument("host %q has no CXL slot %q", h.name, req.Slot)
 		}
 		if !free(p) {
@@ -618,7 +619,7 @@ func (s *Server) chooseSlotLocked(h *host, b *binding, req api.AttachRequest, si
 	}
 	if b != nil && b.Bus != "" {
 		p := h.tree.Port(b.Bus)
-		if p == nil || !p.IsSlot() {
+		if p == nil || !p.IsSlot() || !s.slotKnownLocked(h, p.Bus) {
 			return "", api.InvalidArgument("host %q has no CXL slot %q for its local device", h.name, b.Bus)
 		}
 		if !free(p) {

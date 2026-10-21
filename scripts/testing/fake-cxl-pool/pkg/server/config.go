@@ -19,7 +19,9 @@ package server
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,8 +48,15 @@ const (
 	CapacityMultiplier = 256 << 20
 )
 
+// DefaultName is the default name of the server (the appliance), the DRA
+// pool name of fake-cxl-pool-controller.
+const DefaultName = "fake-cxl-pool"
+
 // Config is the server configuration (YAML).
 type Config struct {
+	// Name is the name of the server: a DNS label, the DRA pool name of
+	// fake-cxl-pool-controller.
+	Name   string `json:"name,omitempty"`
 	Listen string `json:"listen,omitempty"`
 	// SharedSerialBase and ExclusiveSerialBase: devices without a serial
 	// get the next free serial above the base of their kind.
@@ -89,9 +98,13 @@ type HostConfig struct {
 	UUID string `json:"uuid,omitempty"`
 	QMP  string `json:"qmp,omitempty"`
 	HMP  string `json:"hmp,omitempty"`
-	// Control forces the monitor protocol: "qmp" or "hmp" (default: qmp
-	// if a QMP socket is known, else hmp).
+	// Control forces the monitor protocol: "qmp" or "hmp" (default:
+	// discovery.control, else qmp if a QMP socket is known, else hmp).
 	Control string `json:"control,omitempty"`
+	// Slots, if set, limits the CXL slots of the host that the server
+	// knows to the buses that match one of these path.Match patterns. An
+	// empty list is every slot, no key is discovery.slots.
+	Slots []string `json:"slots,omitempty"`
 }
 
 // DiscoveryConfig configures qemu process discovery.
@@ -102,6 +115,27 @@ type DiscoveryConfig struct {
 	Names        []string     `json:"names,omitempty"`
 	Interval     api.Duration `json:"interval,omitempty"`
 	LocalDevices *bool        `json:"localDevices,omitempty"`
+	// Control forces the monitor protocol of every host without a control
+	// of its own: "qmp" or "hmp" (default: qmp if a QMP socket is known,
+	// else hmp).
+	Control string `json:"control,omitempty"`
+	// Slots, if set, limits the CXL slots of every host without slots of
+	// its own to the buses that match one of these path.Match patterns.
+	Slots []string `json:"slots,omitempty"`
+}
+
+// dnsLabelRe matches a DNS label (RFC 1123) of at most 63 characters.
+var dnsLabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// checkPatterns returns an error if one of the path.Match patterns is
+// malformed.
+func checkPatterns(pats []string) error {
+	for _, pat := range pats {
+		if _, err := path.Match(pat, ""); err != nil {
+			return fmt.Errorf("invalid pattern %q", pat)
+		}
+	}
+	return nil
 }
 
 // checkDeviceFiles returns an error if the label storage area file of a
@@ -182,6 +216,12 @@ func DefaultConfig() *Config {
 
 // Complete applies defaults and validates the configuration.
 func (c *Config) Complete() error {
+	if c.Name == "" {
+		c.Name = DefaultName
+	}
+	if !dnsLabelRe.MatchString(c.Name) {
+		return fmt.Errorf("name must be a DNS label (lower-case letters, digits, '-')")
+	}
 	if c.Listen == "" {
 		c.Listen = api.DefaultListen
 	}
@@ -254,6 +294,15 @@ func (c *Config) Complete() error {
 		if h.Control != "" && h.Control != "qmp" && h.Control != "hmp" {
 			return fmt.Errorf("host %q: control must be qmp or hmp", h.Name)
 		}
+		if err := checkPatterns(h.Slots); err != nil {
+			return fmt.Errorf("host %q: slots: %w", h.Name, err)
+		}
+	}
+	if c.Discovery.Control != "" && c.Discovery.Control != "qmp" && c.Discovery.Control != "hmp" {
+		return fmt.Errorf("discovery.control must be qmp or hmp")
+	}
+	if err := checkPatterns(c.Discovery.Slots); err != nil {
+		return fmt.Errorf("discovery.slots: %w", err)
 	}
 	if c.Discovery.Interval == 0 {
 		c.Discovery.Interval = api.Duration(DefaultDiscoveryPeriod)

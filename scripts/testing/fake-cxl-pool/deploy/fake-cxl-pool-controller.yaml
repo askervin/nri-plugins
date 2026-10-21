@@ -10,8 +10,11 @@
 #   (image with bin/fake-cxl-pool-controller as entrypoint) -> localhost/fake-cxl-pool-controller:testing
 #
 # hostNetwork: the pod reaches the fake-cxl-pool server on the VM host at
-# the slirp gateway 192.168.76.2. Run one controller per cluster; several
-# clusters may share one server.
+# the slirp gateway 192.168.76.2. Run one controller per server in a
+# cluster; several clusters may share one server. For a second server,
+# copy the Deployment with another name and its -server, and drop
+# -pool-name (the pool name is then the server's name) or give a pool
+# name of its own.
 apiVersion: v1
 kind: Namespace
 metadata:

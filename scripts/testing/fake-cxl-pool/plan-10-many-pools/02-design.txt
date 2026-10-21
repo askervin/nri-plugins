@@ -1,0 +1,312 @@
+plan-10: design
+===============
+Written 2026-10-21 (orchestrator). Decisions are numbered D1..; each names
+the finding (01-findings F/C) it answers. Paths as in 00-README. Every
+text in quotes is the wording to use (logs, docs, errors) unless the
+implementing stream finds a reason and records it in its status file.
+
+1. The model
+------------
+D1  A pool appliance is one fake-cxl-pool-server process with a name, a
+    REST endpoint, its own devices (pool dirs, state file) and the set of
+    VMs it is cabled to (discovery.names). A cluster that spans N
+    appliances runs N pool controllers, one per server, all of driver
+    cxl-pool.nri.io, each publishing one DRA pool named after its
+    server. (O1, C1)
+D2  Cabling has two levels: which VMs (discovery.names, exists) and which
+    CXL ports of them (slot patterns, new: D7). A VM cabled to two
+    appliances gives each its own ports; in the emulation both appliances
+    also need their own control path to qemu, which is QMP for one and
+    HMP for the other (D6, C3).
+D3  Serials are unique across all appliances a cluster uses (C5, F7).
+    Convention: shared 0xc1aeP000 + n, exclusive 0xc1eeP000 + n, P the
+    pool index (one hex digit; 0 is today's default). Device names must
+    be unique across appliances cabled to the same VM (F8).
+
+2. fake-cxl-pool-server (stream POOL)
+-------------------------------------
+D4  Config "name" (string, default "fake-cxl-pool"): the appliance name.
+    api.Status gets Name string `json:"name"`; GET /status returns it;
+    the CLI "status" prints "name: <name>" as its first line (keep the
+    other lines); the server logs it at start ("fake-cxl-pool-server
+    <name> listening on ..."), together with the discovery names when
+    they are set. Validation: a DNS label (lower-case [a-z0-9-], 1..63,
+    no leading or trailing '-'), because it becomes a ResourceSlice pool
+    name; error "name must be a DNS label (lower-case letters, digits,
+    '-')". (C1)
+D5  (no change) discovery.names, listen, pools[].dir, stateFile stay as
+    they are; several servers on one host differ in all four. The
+    config.example.yaml gets a commented block "Several pool servers" that
+    shows a second server's config (name, listen 127.0.0.1:9910, pool dir
+    /tmp/fake-cxl-pool-b, stateFile, names: ["n4-cxl-shared-0-*"],
+    sharedSerialBase 0xc1ae1000, exclusiveSerialBase 0xc1ee1000) and
+    says why: one QMP client per VM, unique serials, unique names.
+D6  discovery.control: "qmp" | "hmp" | "" (default ""): the monitor
+    protocol of every discovered host that has no hosts[] entry with a
+    control of its own. Implementation: setMonitorLocked takes force
+    from h.cfg.Control if set, else s.cfg.Discovery.Control. Validation
+    as for hosts[].control: "discovery.control must be qmp or hmp".
+    With "hmp" a host without an HMP socket gets lastErr "no monitor
+    socket" (unchanged behaviour of the force path). Document in README:
+    "a second server cabled to a VM that another server holds over QMP
+    uses HMP: discovery.control: hmp (a connection per command on
+    monitor.sock, device events polled)". (C3)
+D7  Slot patterns. discovery.slots []string and hosts[].slots []string
+    (path.Match patterns on the slot bus name, e.g. "*hb1",
+    "cxlsw_ds[01]_usrp0hb0"); a host's patterns override the discovery
+    ones; empty = every slot. Semantics: the server knows only matching
+    slots: slotsLocked(h) returns them (so Host.Slots, "hosts NAME" and
+    chooseSlotLocked see only them), an attach with --slot outside them
+    fails InvalidArgument "host %q has no CXL slot %q" (the existing text:
+    the slot does not exist for this server), a local device whose
+    reserved slot (binding bus) is outside them cannot be attached by
+    this server (Conflict/InvalidArgument through the same path; document
+    "a server cabled to some ports only cannot attach local devices on
+    other ports: set localDevices: false or include their ports").
+    attachedBytesLocked and fmwSizeLocked are unchanged (host bridge
+    capacity is a property of the VM, not of the server). (C4)
+D8  Adoption checks the serial: reconcile adopts a foreign cxl-type3
+    device fcp_<name>.hp<N> only when <name> is a device of this server
+    AND (the tree device has no serial OR its serial equals the device's
+    serial); otherwise it logs once per host/device id "WARNING: host %s
+    has qemu device %s with serial %s, not the serial %s of device %s: not
+    adopted (another pool server's device?)" and skips it. (F8)
+D9  Unit tests (P/pkg/server/*_test.go, pkg/api, cmd/fake-cxl-pool-client
+    main_test.go): name default and validation and in status; control
+    default qmp/hmp per discovery and per host override; slot patterns
+    (view, chooseSlotLocked picks only matching, --slot outside fails,
+    local device slot outside fails); adoption skips a serial mismatch
+    and still adopts a match; config example parses (example_config_test).
+
+3. fake-cxl-pool-controller (stream POOL)
+-----------------------------------------
+D10 Pool name: -pool-name default "" = "the name of the server"
+    (GET /status name; an old server without one gives "fake-cxl-pool").
+    The controller resolves it once in Run before the first sync, logs
+    "driver %s, pool %s (from the server), server %s, ...". A non-empty
+    -pool-name is used as given (the flag help says so). (C1)
+D11 ReconcilePoolWithName: resourceslice.StartController gets
+    Options.ReconcilePoolWithName = pool name. Keep Owner nil. (F4)
+D12 Node selector. publish takes the node->host map (hosts.go mapHosts
+    of the server's hosts and the cluster's Nodes). Reachable nodes = the
+    Node objects mapped to a host. The pool is published with
+    resourceslice.Pool{NodeSelector: &v1.NodeSelector{NodeSelectorTerms:
+    [{MatchExpressions: [{Key: "kubernetes.io/hostname", Operator: In,
+    Values: <the label values of the reachable nodes, sorted>}]}]},
+    Slices: ...}; AllNodes is never set. The value of a node is its
+    kubernetes.io/hostname label if it has one, else its name (log once
+    "node %s has no kubernetes.io/hostname label, using its name"). With
+    no reachable node: Update(&DriverResources{Pools: {}}) (the library
+    removes the slices) and log once "pool %s: no node of the cluster is
+    a host of the server, publishing nothing" (and "publishing pool %s
+    for nodes [...]" when nodes appear again). Republish whenever the
+    devices or the selector differ from what was last given to the
+    library (compare the whole DriverResources with reflect.DeepEqual,
+    not only the devices). (C2, F5)
+D13 sync order: hosts and nodes are listed once per sync (today reconcile
+    lists them); sync computes hm := mapHosts(...), then publish(ctx, hm),
+    then reconcile(ctx, hm). The "pool hosts of nodes: [...]" log line
+    stays. (C2)
+D14 Status data and events unchanged. NoHost stays for the race (C2).
+    deleteSlices (shutdown) is unchanged (filters by pool name).
+D15 Unit tests (P/pkg/controller/controller_test.go): TestPublish
+    expects NodeSelector with the hostname labels of node1 and node2
+    (give the fake nodes labels; node3 has no host and must not be in
+    the values), no AllNodes; a node that appears later (or a host that
+    appears) republishes with the new selector; no reachable node
+    publishes no slice and a later node publishes again; the pool name
+    comes from the fake pool's /status name when Config.PoolName is "",
+    the flag wins when set; two controllers with different pool names on
+    the same fake clientset: NOTE the fake clientset ignores field
+    selectors, so the library's confinement cannot be shown there (the
+    in-code fallback filter of the library applies only after the API
+    server rejected the selector); do not write a test that would pass
+    for the wrong reason; e2e test19 is the verification of F4.
+    DeviceName and the rest unchanged.
+D16 README.md (P): the fake-cxl-pool-controller section says: one
+    cluster-scoped ResourceSlice per controller, pool name = the server's
+    name, nodeSelector kubernetes.io/hostname In [the nodes whose VMs the
+    server reaches], nothing published while no node is reachable, one
+    controller per server and several servers per cluster ("Several pool
+    servers" subsection: how to configure them, the serial convention,
+    unique names, QMP vs HMP, slot patterns, the controller unit names
+    the e2e tests use). The "Running the server" section gets name,
+    discovery.control and slots. The README's usage line of the
+    controller: -pool-name "" (the server's name).
+D17 docs/memory/cxl/pool.md (POOL): the example slice uses nodeSelector
+    (one term, kubernetes.io/hostname In [node names]) with the comment
+    "the nodes the pool can reach; allNodes: true if every node can";
+    prose in "What the pool controller publishes": "one ResourceSlice
+    per pool; a cluster that spans several pools has one controller per
+    pool, each publishing its own pool name under the same driver; the
+    reference controller names the pool after its server and confines
+    itself to that pool (resourceslice Options.ReconcilePoolWithName:
+    without it, a controller removes the slices of pools it does not
+    know)". Add to "What the scheduler does": "Devices of a pool are
+    considered on the nodes of its nodeSelector only, so a pod whose
+    claim can be satisfied by several pools lands on a node that reaches
+    one of them with a free device." The node plugin section: "matches
+    the entry by (driver, pool, device): several pools under one driver
+    need no change". Keep the rest.
+
+4. e2e framework (stream E2E)
+-----------------------------
+D18 New topology E/n4-cxl-shared-0/: topology.var.json (as -1: 256M
+    local device, the same pool slots and static shared device),
+    vm_network.var.sh (cxl-pool), kernel_config.var.sh,
+    kernel_getsource.var.sh, cxl.source.sh (copies of -1's, they are
+    identical in -1 and -2), test00-up/code.var.sh (from -1's; the header
+    says VM0 is the second worker of the cluster of n4-cxl-shared-2 and
+    that it is cabled to pool B in test19). VM name
+    n4-cxl-shared-0-fedora-43-containerd. (C6)
+D19 E/n4-cxl-shared-2/test00-up: pool-host-wait "$VM0" with the pointer
+    "create VM0 first: ./run_tests.sh memory.test-suite/dra-driver-cxl/
+    n4-cxl-shared-0/test00-up"; vm-k8s-reinit "$VM2 $VM1 $VM0";
+    vm-k8s-in-shape of the same; header: three nodes. Create VM1, then
+    VM0, then run VM2's test00-up (order in docs).
+D20 pool.source.sh:
+    - POOL_VM0_DIR/POOL_VM0_NAME like VM1's (n4-cxl-shared-0 + the same
+      suffix), pool-vm-label -> vm0, pool-vm-dir knows it,
+      pool-cluster-require default "$POOL_VM2_DIR $POOL_VM1_DIR
+      $POOL_VM0_DIR", header comment: three VMs, which pools.
+    - Several servers. pool-server-start [OPTIONS] [DEVICES]:
+        --name NAME      server/pool name (default fake-cxl-pool)
+        --port PORT      listen port (default POOL_PORT)
+        --hosts "VMDIR..." the VMs it is cabled to (default "$POOL_VM1_DIR
+                         $POOL_VM2_DIR"; names: of the config are their
+                         basenames)
+        --index P        pool index: sharedSerialBase 0xc1aeP000,
+                         exclusiveSerialBase 0xc1eeP000 (default 0:
+                         the server's defaults, nothing written)
+        --control hmp    discovery.control (default: not written)
+        --slots "PAT..." discovery.slots (default: not written)
+        --local-devices yes|no (default yes)
+      Pool dir: /tmp/fake-cxl-pool for the default name, else
+      /tmp/fake-cxl-pool-<name>; config, state and log files carry the
+      name when it is not the default (fake-cxl-pool-<name>.yaml ...).
+      Registry: POOL_SERVERS=() (names in start order), associative
+      arrays POOL_SERVER_PIDS, POOL_SERVER_PORTS, POOL_SERVER_LOGS,
+      POOL_SERVER_HOSTS (the VMDIRs); the scalars POOL_SERVER_PID,
+      POOL_SERVER_LOG, POOL_URL, POOL_GUEST_URL keep meaning the first
+      started server, so every existing test and dra.source.sh work
+      unchanged. pool-url NAME / pool-guest-url NAME print the URLs.
+      Fail if NAME is running already, if the port is busy (the existing
+      message), if --index is not one hex digit.
+    - pool-server-stop [NAME] (default: all, last started first),
+      pool-cleanup over all servers (attachments: pool-vm-dir of the
+      host, release in the VM, detach on that server; dynamic devices
+      deleted per server), pool-client [--pool NAME] VMDIR ... and
+      pool-host-client [--pool NAME] ... (default: the first server),
+      pool-attachments [--pool NAME], pool-device-files [--pool NAME],
+      pool-snapshot LABEL (all servers: one file per server, suffix
+      .<name> for the others). pool-port-busy [PORT].
+D21 dra.source.sh:
+    - dra-install starts one controller per started server: for the
+      first (default) server the unit fake-cxl-pool-controller with
+      "-server URL -v" (unchanged line); for every other server the unit
+      fake-cxl-pool-controller-<name> with "-server <its guest URL> -v".
+      The pool name comes from the server (D10): no -pool-name. When
+      pool.source.sh is not sourced or no server was started, behave as
+      today (one unit, $POOL_GUEST_URL).
+    - dra-install-ready waits until every started pool has a slice:
+      {s.spec.pool.name for s in slices(pool driver)} is a superset of
+      the started names (the first server's name is fake-cxl-pool unless
+      --name was given: the registry knows); and the local slice as
+      today.
+    - dra-uninstall and dra-install's removal of an earlier run stop
+      every unit: systemctl stop 'fake-cxl-pool-controller*' and
+      reset-failed of the same pattern (verify that systemctl accepts
+      the glob for loaded transient units; else list units with
+      systemctl list-units --all 'fake-cxl-pool-controller*' --plain
+      --no-legend and stop them one by one); dra-uninstall waits for the
+      attachments of every node on every started server
+      (dra-pool-attachments HOST [URL]).
+    - dra-trace-start: journalctl -f -n0 -o cat -u 'fake-cxl-pool-
+      controller*' (verify that journalctl -u accepts the glob; it does
+      in systemd >= 232) so that one collector sees all controllers; the
+      trace tag stays "controller"; lines of a non-default controller are
+      recognizable by their pool name in the log texts.
+    - diagnostics in dra-wait-node: status and journal of the pattern.
+D22 Existing tests (C6, F14): test10:93 asserts the pool slice has no
+    allNodes and nodeSelector kubernetes.io/hostname In [VM1, VM2] (not
+    VM0): the three nodes make this a real check of D12; test11:161 keeps
+    len == 1 (one server); test13:201 expects [VM0, VM1, VM2] and 206
+    the lease device on all three. grep every test and the demo suite
+    (P/plan-8-demo/demo/e2e) for other two-node assumptions (node
+    counts, "both nodes", launch_available) and fix them. Comments and
+    headers that say "two nodes" where the cluster is meant: three.
+
+5. test19-many-pools (stream E2E)
+---------------------------------
+D23 E/n4-cxl-shared-2/test19-many-pools/code.var.sh, header in the style
+    of test10/test11 (what a multi-pool cluster is, what the test shows,
+    what to run first). Pools:
+      pool-a: --name pool-a --hosts "$VM1 $VM2" --index 0 --slots "*hb0"
+              devices a-pooled0 512Mi 0xc1ee0001, a-shared0 256Mi shared
+              0xc1ae0001
+      pool-b: --name pool-b --port 9910 --hosts "$VM0" --index 1
+              --slots "*hb0"  devices b-pooled0 512Mi 0xc1ee1001,
+              b-shared0 256Mi shared 0xc1ae1001
+      pool-c: --name pool-c --port 9911 --hosts "$VM0 $VM1 $VM2" --index 2
+              --control hmp --slots "*hb1" --local-devices no
+              devices c-shared0 256Mi shared 0xc1ae2001, c-pooled0 256Mi
+              0xc1ee2001
+    (names unique across servers: D3). Steps, each with its own "###":
+    0  preconditions: pool-cluster-require (three nodes),
+       pool-vm-require and pool-vm-tools-install and pool-vm-reset of
+       all three VMs, no CXL devices anywhere, the three servers started
+       (hosts of each: pool-host-client --pool X hosts shows exactly its
+       VMs, control qmp/hmp as configured, slots: only hb0/hb1 ports),
+       dra-build, dra-install (three controller units), dra-trace-start.
+    A  the pools in Kubernetes: three slices of the pool driver, pool
+       names pool-a/b/c, nodeSelector values: a = [VM1, VM2], b = [VM0],
+       c = [VM0, VM1, VM2], no allNodes; device names and serials per
+       pool; the local slices of all three nodes.
+    B  an unpinned pod with a claim that selects b-pooled0 by serial
+       (class cxl-pool): scheduled to VM0 (allocated_node, pod nodeName),
+       attached by pool-b (its attachments list, qemu id fcp_b-pooled0,
+       slot under hb0), Running, CXL_<KEY>_NODE a new NUMA node of VM0,
+       the serial of the device, pool-a and pool-c have no attachments.
+    C  an unpinned pod with a claim that selects a-pooled0 by serial:
+       lands on VM1 or VM2, never VM0.
+    D  "any pool": with a-pooled0 held (C still running), an unpinned
+       pod with a claim of class cxl-pool and capacity memory >= 512Mi
+       and no selector: the only free 512Mi device is in pool-b, so the
+       pod lands on VM0 (b-pooled0 is taken by B: use a second device
+       or delete B's pod first; make the test's arithmetic explicit).
+    E  unschedulable: a pod pinned to VM0 with a claim selecting
+       a-shared0: stays Pending with a scheduler event that no node is
+       available (the claim is never allocated: no AttachFailed NoHost
+       in pool-a's controller log, no attachment); delete it.
+    F  two pools in one pod: a pod pinned to VM0 with two claims,
+       b-shared0 (one share) and c-shared0 (one share), mode dax: both
+       attached (pool-b over QMP on hb0, pool-c over HMP on hb1 of VM0),
+       two CXL_<KEY>_DAX variables, two devices in the pod, the dax
+       devices work (dra-dax-tool / pool-dax-rw.py writes a tag to each).
+    G  shared across racks: a pod on VM2 with a claim of one share of
+       c-shared0 reads the tag that F wrote; pool-c has c-shared0
+       attached to VM0 and VM2 at once; meanwhile pool-vm-monitor
+       "info qtree -b" on VM0 works (monitor.sock shared with HMP, C3).
+    H  teardown: delete pods and claims, every device detached on every
+       server (pool-c's detaches complete over HMP: polled), no CXL
+       devices in any VM, dra-trace-stop and summary, dra-cleanup,
+       pool-cleanup, ports free.
+    Use the existing helpers (dra-apply, dra-wait, dra-assert,
+    dra-claim-yaml/dra-claim-pod-yaml where they fit, pool-cxl-wait,
+    retry-until), no sleeps. Timeouts as in test10/test11.
+D24 docs/memory/cxl/e2e.md (E2E): the setup section and diagram (three
+    VMs, pool A on VM1 and VM2; test19 adds B and C), "Create the VMs"
+    (VM1, VM0, then VM2's test00-up), the kubectl get nodes example
+    (three rows: take them from the real cluster), the test table row
+    for test19, "Deploy by hand" unchanged except a sentence that it
+    uses pool A only and VM0 is idle. .github/skills/run-e2e-tests/
+    SKILL.md troubleshooting: the three-node cluster.
+
+6. Out of scope
+---------------
+- A third QMP socket per VM (O2 fallback), a QMP proxy.
+- Interleaving across pools, NUMA distance of pools, capacity accounting
+  across pools.
+- The Deployment manifest P/deploy/fake-cxl-pool-controller.yaml: one
+  Deployment per server is a copy with another -server; a one-line note
+  in its header is enough.

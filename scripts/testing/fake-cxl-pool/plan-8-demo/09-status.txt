@@ -101,3 +101,29 @@ Ready after the writer's release); four ssh views cost VM2 1.1 CPUs at a
 1 s refresh; 96 captures within 50 x 10 in demo/captures/; fixes: T5
 zeroing/attach lines, sorted names, host time zone, L6 waits for Ready,
 zoom noise, pgrep -x. VMs handed back to E2E for its reruns.
+2026-10-20: the user's live demo was given (local demo set up with demo
+setup local). E2E stopped for it: the orchestrator interrupted the
+running suite (SIGINT ended test14 mid-way, run_tests.sh went on; then
+SIGTERM to the loop and SIGINT to test17); E2E finished the cleanup by
+hand. Partial results: test17/test18 PASS twice after the R-T fixes;
+suite: test00-up x2, test01, test11-test13 PASS, test10 FAIL on a
+transient "x509: certificate signed by unknown authority" pulling
+docker.io busybox in VM2 (registry/proxy), test14 cut by the interrupt,
+test15 PASS but 354 s (VM2 rebooted by pool-vm-reset: the cut test14
+left a device), test16 PASS 253 s, test17 cut.
+After the demo (user: continue the e2e tests, find out why they got
+stuck): demo teardown PASS (46 s), VMs clean; the logs show no hang,
+only the effects of the interrupts; the whole suite runs again with a
+once-a-minute progress monitor.
+2026-10-20 12:11-12:44: ./run_tests.sh memory.test-suite/dra-driver-cxl
+on image 1c361fc62a4d, clean VMs: all 12 PASS in 33 min 14 s (test00-up
+22/23 s, test01 81, test10 84, test11 104, test12 342, test13 195,
+test14 179, test15 250, test16 254, test17 244, test18 216 s). A monitor
+sampled the newest run.sh.output every minute: it grew in every one of
+the 34 samples, no stall. Conclusion on "stuck": no test hangs; the
+earlier impression came from the interrupts (test14 cut, test15 +150 s
+for the VM2 reboot that the cut test14 caused, test17 cut) and from long
+silent waits of the E2E agent on its background run; test10's earlier
+failure was a transient x509 error pulling docker.io busybox in VM2.
+Final state: no CXL devices or regions in either VM or qemu, port 9909
+free, nodes Ready. Nothing committed.

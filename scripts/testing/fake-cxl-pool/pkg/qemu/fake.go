@@ -56,6 +56,8 @@ type Fake struct {
 	LeakOnRelease bool
 	// FMW are the fixed memory windows reported by QomGet /machine cxl-fmw.
 	FMW []FMWWindow
+	// noSerial are the devices plugged without a serial property
+	noSerial map[string]bool
 }
 
 // NewFake returns a fake monitor with the given host bridges (id ->
@@ -71,6 +73,7 @@ func NewFake(hostBridges map[string]int, slots map[string]string) *Fake {
 		held:       map[string]bool{},
 		deletedCh:  map[string]chan struct{}{},
 		leaked:     map[string]bool{},
+		noSerial:   map[string]bool{},
 	}
 	for id, numa := range hostBridges {
 		f.hostBridges = append(f.hostBridges, TreeHostBridge{ID: id, NumaNode: numa})
@@ -93,6 +96,19 @@ func (f *Fake) AddObject(b MemoryBackend) {
 // PlugDevice plugs a device as if done by someone else (or at boot).
 func (f *Fake) PlugDevice(d CXLType3) error {
 	return f.DeviceAdd(context.Background(), d)
+}
+
+// PlugDeviceWithoutSerial plugs a device like PlugDevice, but the device
+// tree shows it without a serial (device_add without serial=).
+func (f *Fake) PlugDeviceWithoutSerial(d CXLType3) error {
+	d.Serial = 0
+	if err := f.DeviceAdd(context.Background(), d); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noSerial[d.ID] = true
+	return nil
 }
 
 // Hold makes the guest hold the device: device_del will not complete until
@@ -395,7 +411,7 @@ func (f *Fake) QueryTree(ctx context.Context) (*Tree, error) {
 	}
 	for _, d := range f.devices {
 		t.Type3 = append(t.Type3, Type3Device{ID: d.ID, Bus: d.Bus, VolatileMemdev: d.VolatileMemdev,
-			PersistentMemdev: d.PersistentMemdev, LSA: d.LSA, Serial: d.Serial, HasSerial: true})
+			PersistentMemdev: d.PersistentMemdev, LSA: d.LSA, Serial: d.Serial, HasSerial: !f.noSerial[d.ID]})
 	}
 	sort.Slice(t.Type3, func(i, j int) bool { return t.Type3[i].ID < t.Type3[j].ID })
 	return t, nil

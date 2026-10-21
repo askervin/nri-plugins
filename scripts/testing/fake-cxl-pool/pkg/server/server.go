@@ -72,8 +72,9 @@ type Server struct {
 	// (yet) known, e.g. allocations of local devices of a stopped host.
 	overrides map[string]*deviceOverride
 
-	// adoptWarned remembers the devices that were not adopted because the
-	// device is exclusive and attached elsewhere (warn once).
+	// adoptWarned remembers the qemu devices that were not adopted because
+	// their serial is not the device's, or the device is exclusive and
+	// attached elsewhere (warn once).
 	adoptWarned map[string]bool
 
 	events *broker
@@ -723,8 +724,8 @@ func (s *Server) updateHostLocked(h *host, p *qemu.Process) {
 func (s *Server) setMonitorLocked(h *host, qmpPath, hmpPath string) {
 	h.qmpPath, h.hmpPath = qmpPath, hmpPath
 	proto, path := "", ""
-	force := ""
-	if h.cfg != nil {
+	force := s.cfg.Discovery.Control
+	if h.cfg != nil && h.cfg.Control != "" {
 		force = h.cfg.Control
 	}
 	switch {
@@ -968,6 +969,16 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 			if s.atts[id] != nil {
 				continue
 			}
+			if fcpObjectRe.MatchString(t3.Memdev()) && t3.HasSerial && t3.Serial != d.serial {
+				// a device of the same name, plugged by another pool server
+				key := h.name + "/" + t3.ID
+				if !s.adoptWarned[key] {
+					s.adoptWarned[key] = true
+					s.logf("WARNING: host %s has qemu device %s with serial %s, not the serial %s of device %s: not adopted (another pool server's device?)",
+						h.name, t3.ID, api.FormatSerial(t3.Serial), d.Serial, d.Name)
+				}
+				continue
+			}
 			if !d.Shared {
 				if other := s.otherHostAttachmentLocked(d, h.name); other != nil {
 					key := h.name + "/" + t3.ID
@@ -1001,6 +1012,12 @@ func (s *Server) reconcile(ctx context.Context, hs []*host) {
 			changed = true
 			s.logf("attachment %s: adopted qemu device %s (bus %s, backend %s)", id, t3.ID, t3.Bus, t3.Memdev())
 			s.publishAttachmentLocked(a)
+		}
+		// warn again about a qemu device that is gone and comes back
+		for key := range s.adoptWarned {
+			if id, ok := strings.CutPrefix(key, h.name+"/"); ok && !inTree[id] {
+				delete(s.adoptWarned, key)
+			}
 		}
 	}
 	if changed {

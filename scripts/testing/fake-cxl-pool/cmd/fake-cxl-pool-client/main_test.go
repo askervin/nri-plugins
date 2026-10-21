@@ -88,7 +88,16 @@ func TestCLI(t *testing.T) {
 	if rc, _, errs := runCLI(t, url, "--sever", "x", "hosts"); rc != exitUsage || !strings.Contains(errs, "flag provided but not defined") {
 		t.Fatalf("bad global flag: rc %d stderr %q", rc, errs)
 	}
-	rc, out, _ := runCLI(t, url, "hosts")
+	rc, out, _ := runCLI(t, url, "status")
+	if first, _, _ := strings.Cut(out, "\n"); rc != 0 || !regexp.MustCompile(`^name: +fake-cxl-pool$`).MatchString(first) {
+		t.Fatalf("status: %d\n%s", rc, out)
+	}
+	rc, out, _ = runCLI(t, url, "-o", "json", "status")
+	var st api.Status
+	if rc != 0 || json.Unmarshal([]byte(out), &st) != nil || st.Name != "fake-cxl-pool" || !strings.Contains(out, `"name": "fake-cxl-pool"`) {
+		t.Fatalf("status JSON: %d\n%s", rc, out)
+	}
+	rc, out, _ = runCLI(t, url, "hosts")
 	if rc != 0 || !strings.Contains(out, "vm1") || !strings.Contains(out, "2/2") {
 		t.Fatalf("hosts: %d\n%s", rc, out)
 	}

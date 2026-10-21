@@ -17,9 +17,11 @@ package controller
 import (
 	"context"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -121,46 +123,87 @@ func (c *Controller) warnName(device, format string, args ...any) {
 	}
 }
 
-func (c *Controller) driverResources(devs []resourceapi.Device) *resourceslice.DriverResources {
-	return &resourceslice.DriverResources{
-		Pools: map[string]resourceslice.Pool{
-			c.cfg.PoolName: {AllNodes: true, Slices: []resourceslice.Slice{{Devices: devs}}},
-		},
+// nodeSelector returns the node selector of the nodes that are hosts of
+// the server: kubernetes.io/hostname In [their hostname labels, sorted],
+// the node name for a node without the label. nil if there is no such
+// node.
+func (c *Controller) nodeSelector(hm hostMap) *corev1.NodeSelector {
+	values := make([]string, 0, len(hm.nodeHost))
+	for n := range hm.nodeHost {
+		v, ok := hm.hostnames[n]
+		if !ok {
+			if !c.noLabel[n] {
+				c.noLabel[n] = true
+				c.logf("node %s has no %s label, using its name", n, corev1.LabelHostname)
+			}
+			v = n
+		}
+		values = append(values, v)
 	}
+	if len(values) == 0 {
+		return nil
+	}
+	sort.Strings(values)
+	return &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+		MatchExpressions: []corev1.NodeSelectorRequirement{{
+			Key:      corev1.LabelHostname,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   slices.Compact(values),
+		}},
+	}}}
+}
+
+// driverResources returns the pool of the devices for the nodes of the
+// node selector, no pool if the selector is nil.
+func (c *Controller) driverResources(devs []resourceapi.Device, sel *corev1.NodeSelector) *resourceslice.DriverResources {
+	res := &resourceslice.DriverResources{Pools: map[string]resourceslice.Pool{}}
+	if sel != nil {
+		res.Pools[c.cfg.PoolName] = resourceslice.Pool{NodeSelector: sel, Slices: []resourceslice.Slice{{Devices: devs}}}
+	}
+	return res
 }
 
 // publish reads the pool devices from the server and updates the
-// ResourceSlice when they changed.
-func (c *Controller) publish(ctx context.Context) error {
+// ResourceSlice of the pool for the nodes that are hosts of the server
+// when the devices or the nodes changed. Without such nodes the pool has
+// no ResourceSlice.
+func (c *Controller) publish(ctx context.Context, hm hostMap) error {
 	ds, err := c.pool.Devices(ctx, client.DeviceListOptions{Scope: api.ScopePool})
 	if err != nil {
 		return err
 	}
 	devs, byName := c.buildDevices(ds)
 	c.devices = byName
+	sel := c.nodeSelector(hm)
+	res := c.driverResources(devs, sel)
 	if c.slices == nil {
 		sc, err := resourceslice.StartController(ctx, resourceslice.Options{
 			DriverName: c.cfg.DriverName,
 			KubeClient: c.kube,
 			Owner:      nil,
-			Resources:  c.driverResources(devs),
+			Resources:  res,
 			ErrorHandler: func(_ context.Context, err error, msg string) {
 				c.logf("ERROR: ResourceSlice: %s: %v", msg, err)
 			},
+			// other pools of the driver belong to other controllers
+			ReconcilePoolWithName: c.cfg.PoolName,
 		})
 		if err != nil {
 			return err
 		}
-		c.slices, c.published = sc, devs
-		c.logf("publishing pool %s: %d devices %s", c.cfg.PoolName, len(devs), deviceNames(devs))
-		return nil
+		c.slices = sc
+	} else {
+		if reflect.DeepEqual(res, c.published) {
+			return nil
+		}
+		c.slices.Update(res)
 	}
-	if reflect.DeepEqual(devs, c.published) {
-		return nil
+	c.published = res
+	if sel == nil {
+		c.logf("pool %s: no node of the cluster is a host of the server, publishing nothing", c.cfg.PoolName)
+	} else {
+		c.logf("publishing pool %s for nodes %s: %d devices %s", c.cfg.PoolName, sel.NodeSelectorTerms[0].MatchExpressions[0].Values, len(devs), deviceNames(devs))
 	}
-	c.slices.Update(c.driverResources(devs))
-	c.published = devs
-	c.logf("publishing pool %s: %d devices %s", c.cfg.PoolName, len(devs), deviceNames(devs))
 	return nil
 }
 

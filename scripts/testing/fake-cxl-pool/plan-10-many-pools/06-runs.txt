@@ -1,0 +1,150 @@
+plan-10: phase 2 runs
+======================
+Written 2026-10-21 (phase-2 runner). Branch 5jg-cxl. Logs under
+/tmp/plan10-runs/ (not in the repo). All commands run from N =
+~/github.com/containers/nri-plugins unless noted. P = N/scripts/testing/
+fake-cxl-pool, E = N/test/e2e/memory.test-suite/dra-driver-cxl.
+
+1. Build
+--------
+Command (N):
+  make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= \
+    BINARIES= images
+Duration: about 1 minute (09:49:00-09:50:03).
+Result: PASS. Image tar:
+  build/images/nri-dra-driver-cxl-image-84ee192fcb82.tar
+Tag: nri-dra-driver-cxl:v0.14.0-212-g32e0c8dc6-dirty
+Log: /tmp/plan10-runs/images.log
+
+Command (P):
+  make -C scripts/testing/fake-cxl-pool
+Duration: about 5 seconds (09:50:08-09:50:13).
+Result: PASS. Built bin/fake-cxl-pool-server, bin/fake-cxl-pool-client,
+bin/fake-cxl-pool-controller.
+Log: /tmp/plan10-runs/fake-cxl-pool-make.log
+
+2. Three-node cluster (test00-up)
+----------------------------------
+Command (N/test/e2e):
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up
+Duration: about 2 minutes 4 seconds (09:50:18-09:52:22).
+Verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test00-up
+Output dir:
+  N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+  dra-driver-cxl/test00-up/
+Log: /tmp/plan10-runs/test00-vm2.log
+Three Ready nodes confirmed (n4-cxl-shared-0 <none>, n4-cxl-shared-1
+<none>, n4-cxl-shared-2 control-plane). "kubectl get nodes -o wide" from
+VM2 saved to /tmp/plan10-runs/nodes-wide.txt.
+
+3. Regression test10-dra-pooling
+---------------------------------
+Command (N/test/e2e):
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
+Duration: about 2 minutes 12 seconds (09:52:36-09:54:48).
+Verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
+Output dir:
+  N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+  dra-driver-cxl/test10-dra-pooling/
+Log: /tmp/plan10-runs/test10.log
+During the run, polling VM2 every 60s for driver pods and resourceslices
+caught, on the second poll (about 09:53), three driver pods Running (one
+per node) and the cxl-pool.nri.io resourceslice (pool fake-cxl-pool)
+alongside the three per-node cxl.nri.io slices. Saved to
+/tmp/plan10-runs/pods-slices.txt.
+Note: an "error: waiting for command ... timed out after 5 s" line for
+"kubectl get pods -n kube-system | grep -q nri-resource-policy-" appears
+at the start of the preconditions section; it is a retried wait, not a
+test failure (the test still reaches Test verdict: PASS).
+
+4. e2e.md placeholders
+-----------------------
+Both PLACEHOLDER markers in N/docs/memory/cxl/e2e.md (around the former
+lines 199-202 and 411) were filled and removed:
+- the first with the real three-row "kubectl get nodes -o wide" output
+  of step 2;
+- the second with the real "kubectl get pods ...; kubectl get
+  resourceslices; cat auto_online_blocks" output of step 3 (three driver
+  pods, four resourceslices: cxl-pool.nri.io plus one cxl.nri.io slice
+  per node), with the preceding command list adjusted to match (dropped
+  "kubectl get deviceclasses" and the custom-columns resourceslices form,
+  for which no real three-node capture exists; kept auto_online_blocks,
+  verified "offline" live on VM2).
+grep PLACEHOLDER docs/memory/cxl/e2e.md: no matches left.
+The diff of the two hunks was shown to the user (git diff -U2
+docs/memory/cxl/e2e.md); the file also carries unrelated pre-existing
+uncommitted plan-10 edits from earlier streams, not made in this step.
+
+5. test19-many-pools, twice
+-----------------------------
+Run 1. Command (N/test/e2e):
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test19-many-pools
+Duration: about 3 minutes 4 seconds (09:57:09-10:00:13).
+Verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test19-many-pools
+Log: /tmp/plan10-runs/test19-1.log
+
+Run 2. Same command.
+Duration: about 3 minutes 13 seconds (10:00:21-10:03:34).
+Verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test19-many-pools
+Log: /tmp/plan10-runs/test19-2.log
+
+Output dir (both runs):
+  N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+  dra-driver-cxl/test19-many-pools/
+Both runs passed through steps 0 (preconditions, three pool servers and
+controllers), A (three slices, node selectors), B (unpinned pod to
+pool-b on VM0), C (unpinned pod to pool-a on VM1 or VM2), D ("any 512Mi"
+to the only free pool), E (pod pinned where its pool cannot reach:
+Pending), F (two pools, one pod, on VM0), G (cross-rack sharing through
+pool-c), H (teardown). No failure evidence to collect; step 5's failure
+branch was not used.
+
+6. Regression test13-dra-shared-one-writer-many-readers
+----------------------------------------------------------
+Command (N/test/e2e):
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+Duration: about 4 minutes 3 seconds (10:03:42-10:07:45).
+Verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+Output dir:
+  N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+  dra-driver-cxl/test13-dra-shared-one-writer-many-readers/
+Log: /tmp/plan10-runs/test13.log
+(test11 and test16 intentionally not run, per the plan.)
+
+7. Static demo-suite fix (finding E1), edits only
+----------------------------------------------------
+P/plan-8-demo/demo/bin/views.py:130 (render_t3): pool slice selection
+changed from "spec.allNodes is set" to "spec.driver ==
+cxl-pool.nri.io and spec.nodeName is absent". Checked with
+"python3 -I -m py_compile views.py" (OK). The existing allNodes samples
+under demo/testdata/*/vm2.json and demo/testdata/make-samples.py:109
+still match the new selector (driver cxl-pool.nri.io, no nodeName field),
+so no sample regeneration was needed.
+
+P/plan-8-demo/demo/e2e/demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+test91-demo-teardown/code.var.sh: DRA_INSTALLED_VMS now includes
+"$POOL_VM0_DIR" alongside "$VM2" and "$VM1".
+
+P/plan-8-demo/demo/e2e/demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+test90-demo-setup/code.var.sh: the header comment and the "the driver on
+both nodes" echo now say "every node" / "the three-node cluster",
+noting VM0 is the second worker and pool A reaches VM1 and VM2 only.
+
+P/plan-8-demo/demo/README.txt: "The two VMs" prerequisite section now
+says three VMs (vm0 added, with its own test00-up), "leaves both VMs
+clean" -> "leaves all VMs clean", and the setup description now says
+the driver installs on every node and notes the three-node shape and
+pool A's reach. Other "both nodes" mentions further down (readers,
+attach/detach of vm1/vm2 specifically in the demo scenario, not a
+cluster-size claim) were left unchanged, as they describe only the two
+nodes the demo pods actually run on.
+
+Checks: "bash -n" on both changed code.var.sh files (OK), "python3 -I -m
+py_compile" on views.py (OK). Nothing of the demo itself was run.
+Diffs were shown to the user (git diff on the four files above).
+
+8. Not reached / out of scope
+---------------------------------
+Finding E2 (slot pattern glob-expansion) and E3 (NoHost check) from
+05-review.txt were not touched: out of this phase's scope.
+R1 (test/e2e/run.sh help argument) is a request to the user, untouched.

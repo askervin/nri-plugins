@@ -25,6 +25,9 @@ const ServerVersion = "fake-cxl-pool/v1.0"
 
 // Status is the server status (GET /api/v1/status).
 type Status struct {
+	// Name is the name of the server, the DRA pool name of
+	// fake-cxl-pool-controller ("" from a server without a name).
+	Name        string     `json:"name"`
 	Version     string     `json:"version"`
 	Qemu        QemuStatus `json:"qemu"`
 	Hosts       int        `json:"hosts"`

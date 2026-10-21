@@ -155,10 +155,12 @@ PLAY RECAP *********************************************************************
 n4-cxl-shared-2-fedora-43-containerd : ok=13   changed=3    unreachable=0    failed=0    skipped=9    rescued=0    ignored=0   
 
 ### demo teardown: the trace
-dra-trace-stop: 1947 lines in /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test91-demo-teardown/trace.txt
+dra-trace-stop: 85484 lines in /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test91-demo-teardown/trace.txt
 demo teardown: trace /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test91-demo-teardown/trace.txt, summary /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test91-demo-teardown/trace-summary.txt
 ### demo teardown: the demo pods and leases
 [38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m kubectl delete pods --all -n cxl-demo --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; true
+pod "cxl-lease-d9caec78" deleted from cxl-demo namespace
+pod "writer" deleted from cxl-demo namespace
 waiting for: no lease companions in cxl-demo
 ### demo teardown: unconfigure the shared local device before detaching it (plan-9 R9)
 [38;5;11mhost>[0m /home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9909 -o json devices
@@ -176,7 +178,7 @@ waiting for: no lease companions in cxl-demo
     "state": "free",
     "allocation": null,
     "attachments": [],
-    "created": "2026-10-20T05:54:58.838947173Z"
+    "created": "2026-10-20T12:46:34.624241294Z"
   },
   {
     "name": "n4-cxl-shared-2-fedora-43-containerd.memdev1",
@@ -191,7 +193,7 @@ waiting for: no lease companions in cxl-demo
     "state": "free",
     "allocation": null,
     "attachments": [],
-    "created": "2026-10-20T05:54:58.838994702Z"
+    "created": "2026-10-20T12:46:34.624289905Z"
   },
   {
     "name": "shared0",
@@ -204,10 +206,32 @@ waiting for: no lease companions in cxl-demo
     "pool": "default",
     "scope": "pool",
     "static": true,
-    "state": "free",
+    "state": "detaching",
     "allocation": null,
-    "attachments": [],
-    "created": "2026-10-20T05:54:58.810641431Z"
+    "attachments": [
+      {
+        "id": "shared0@n4-cxl-shared-1-fedora-43-containerd",
+        "device": "shared0",
+        "host": "n4-cxl-shared-1-fedora-43-containerd",
+        "serial": "0xc1ae0001",
+        "slot": {
+          "bus": "cxlsw_ds0_usrp0hb0",
+          "kind": "downstream",
+          "hostBridge": "cxlhb0",
+          "numaNode": 0,
+          "device": "fcp_shared0.hp1",
+          "attachment": "shared0@n4-cxl-shared-1-fedora-43-containerd"
+        },
+        "qemuDeviceId": "fcp_shared0.hp1",
+        "qemuObjectId": "fcp_shared0.hp1",
+        "state": "detaching",
+        "owner": "k8s:resourceclaim/e3975c65-d00e-4ccc-b0f4-0d63fd743b8e",
+        "exclusive": true,
+        "created": "2026-10-20T12:51:42.217469871Z",
+        "updated": "2026-10-21T06:41:51.91172918Z"
+      }
+    ],
+    "created": "2026-10-20T12:46:34.595947213Z"
   },
   {
     "name": "static-shared0",
@@ -227,7 +251,7 @@ waiting for: no lease companions in cxl-demo
     "state": "free",
     "allocation": null,
     "attachments": [],
-    "created": "2026-10-20T05:54:58.838935722Z"
+    "created": "2026-10-20T12:46:34.624227288Z"
   }
 ]
 ### demo teardown: the driver, the controller, the namespace
@@ -244,11 +268,9 @@ no coverage data to dump from the plugin
 release "test" uninstalled
 [38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m fuser --kill /tmp/nri-resource-policy-port-forward 2>/dev/null || :
 waiting for: no pods of nri-dra-driver-cxl in the cluster
-[38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m systemctl stop fake-cxl-pool-controller 2>/dev/null; systemctl reset-failed fake-cxl-pool-controller 2>/dev/null; true
+[38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m systemctl stop 'fake-cxl-pool-controller*' 2>/dev/null; systemctl reset-failed 'fake-cxl-pool-controller*' 2>/dev/null; true
 [38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json /var/lib/kubelet/plugins/cxl.nri.io/leases.json; rm -rfv /var/lib/kubelet/plugins/cxl.nri.io/leases; fi
-removed '/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json'
 removed '/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json'
-removed '/var/lib/kubelet/plugins/cxl.nri.io/leases.json'
 removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
 [38;5;13mroot@vm1>[0m if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json /var/lib/kubelet/plugins/cxl.nri.io/leases.json; rm -rfv /var/lib/kubelet/plugins/cxl.nri.io/leases; fi
 removed '/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json'
@@ -258,7 +280,7 @@ removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
 [38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json /var/lib/kubelet/plugins/cxl.nri.io/leases.json; rm -rfv /var/lib/kubelet/plugins/cxl.nri.io/leases; fi
 [38;5;13mroot@vm1>[0m if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json /var/lib/kubelet/plugins/cxl.nri.io/localDevices.json /var/lib/kubelet/plugins/cxl.nri.io/leases.json; rm -rfv /var/lib/kubelet/plugins/cxl.nri.io/leases; fi
 ### demo teardown: the pool server
-pool-server-stop: stopped fake-cxl-pool-server pid 2192892
+pool-server-stop: stopped fake-cxl-pool-server pid 2484219
 [38;5;11mroot@vm dra-driver-cxl/test91-demo-teardown>[0m kubectl label node n4-cxl-shared-2-fedora-43-containerd cxl-demo/node- ; kubectl label node n4-cxl-shared-1-fedora-43-containerd cxl-demo/node- ; rm -rf /root/demo; true
 node/n4-cxl-shared-2-fedora-43-containerd unlabeled
 node/n4-cxl-shared-1-fedora-43-containerd unlabeled

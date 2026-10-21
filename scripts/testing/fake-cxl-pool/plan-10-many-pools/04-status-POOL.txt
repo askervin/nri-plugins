@@ -1,0 +1,350 @@
+plan-10: status of stream POOL
+==============================
+Written 2026-10-21 (stream POOL). Paths as in 00-README. Nothing
+committed. 02-design D4-D17 implemented; deviations in section 3.
+
+1. What changed, per file
+-------------------------
+Server
+  P/pkg/api/types.go         Status.Name (`json:"name"`), first field.
+  P/pkg/server/config.go     Config.Name (DefaultName "fake-cxl-pool",
+                             DNS label check), DiscoveryConfig.Control and
+                             .Slots, HostConfig.Slots, pattern validation
+                             (checkPatterns).
+  P/pkg/server/ops.go        Status() returns the name; chooseSlotLocked
+                             refuses --slot and local-device slots outside
+                             the patterns (existing InvalidArgument texts).
+  P/pkg/server/views.go      slotPatternsLocked, slotKnownLocked;
+                             slotsLocked (Host.Slots, "hosts NAME", the
+                             automatic slot choice) keeps matching slots.
+  P/pkg/server/server.go     setMonitorLocked: force = hosts[].control,
+                             else discovery.control; reconcile: serial
+                             check before adopting fcp_<name>.hp<N>, warn
+                             once per host/qemu id.
+  P/cmd/fake-cxl-pool-server/main.go  start log line with the name and
+                             the discovery names/control/slots when set.
+  P/cmd/fake-cxl-pool-client/main.go  "status" prints "name:" first.
+  P/config.example.yaml      name: fake-cxl-pool; commented
+                             discovery.control, discovery.slots,
+                             hosts[].slots; block "Several pool servers"
+                             (second server pool-b on :9910).
+Controller
+  P/pkg/controller/controller.go  PoolName "" = the server's name
+                             (resolvePoolName, resolved in Run before the
+                             first sync, retried every sync interval);
+                             sync = mapNodes, publish(ctx, hm),
+                             reconcile(ctx, hm); published is now the whole
+                             DriverResources; noLabel (warn once per node).
+  P/pkg/controller/hosts.go  hostMap.hostnames (kubernetes.io/hostname of
+                             mapped nodes); mapNodes lists hosts and nodes
+                             once per sync and logs "pool hosts of nodes".
+  P/pkg/controller/publisher.go  nodeSelector, driverResources(devs, sel),
+                             publish(ctx, hm) with ReconcilePoolWithName,
+                             Owner nil, republish on any DeepEqual change
+                             of the DriverResources.
+  P/pkg/controller/reconciler.go  reconcile(ctx, hm); its own host/node
+                             listing moved to mapNodes; steps renumbered.
+  P/cmd/fake-cxl-pool-controller/main.go  -pool-name default "" with help.
+Tests
+  P/pkg/server/multipool_test.go (new)  TestServerName,
+                             TestDiscoveryControl, TestSlotPatterns,
+                             TestAdoptionChecksSerial.
+  P/pkg/server/server_test.go  testEnv: logbuf is a locked buffer that the
+                             logger writes (it was unused), hmpSockets
+                             (monitor.sock exists); TestConfigErrors: bad
+                             name/control/slots and the new defaults.
+  P/pkg/server/example_config_test.go  name/control/slots of the example;
+                             TestExampleConfigSecondServer parses the
+                             commented second-server block.
+  P/pkg/server/regression_test.go  TestAdoptionRespectsExclusive plugged
+                             shared s0 with an exclusive serial 0xc1ee0001;
+                             now the device's serial 0xc1ae0001 (D8 would
+                             rightly refuse the old one).
+  P/pkg/controller/controller_test.go  fake pool GET /status (name,
+                             request count), nodes labelled
+                             kubernetes.io/hostname=h-<name>, newEnvWith,
+                             log capture, sync helper = mapNodes + publish
+                             + reconcile; TestPublish expects the selector.
+  P/pkg/controller/multipool_test.go (new)  TestPublishNodeSelector,
+                             TestPoolNameFromServer, TestRunPoolName.
+  P/cmd/fake-cxl-pool-client/main_test.go  status table first line and
+                             JSON "name".
+Docs
+  P/README.md                intro sentence; "Running the server": name,
+                             discovery.names/control/slots, start log; HMP
+                             with control: hmp; adoption serial check;
+                             controller section: pool name, nodeSelector,
+                             nothing published without nodes,
+                             ReconcilePoolWithName, three-node e2e cluster,
+                             usage -pool-name ""; new subsection "Several
+                             pool servers" (config, serial convention,
+                             unique names, QMP vs HMP, slots, unit names
+                             fake-cxl-pool-controller[-<name>]).
+  N/docs/memory/cxl/pool.md  D17: one slice per pool, one controller per
+                             pool, ReconcilePoolWithName; example slice with
+                             nodeSelector and the comment "the nodes the pool
+                             can reach; allNodes: true if every node can";
+                             scheduler sentence; node plugin "(driver, pool,
+                             device): several pools under one driver need
+                             no change".
+  P/deploy/fake-cxl-pool-controller.yaml  header note only: one controller
+                             per server; copy for a second server, drop
+                             -pool-name or give one of its own.
+
+2. Configuration keys (server)
+------------------------------
+  name               string, default "fake-cxl-pool"; DNS label
+                     ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
+  discovery.control  "" (default) | qmp | hmp; applies to every host
+                     whose hosts[] entry has no control of its own
+  discovery.slots    []string, default empty = every slot; path.Match on
+                     the slot bus name
+  hosts[].slots      []string, default empty = discovery.slots; non-empty
+                     overrides discovery.slots for that host
+Unchanged: listen, stateFile, pools[].dir, sharedSerialBase,
+exclusiveSerialBase, discovery.names, hosts[].control.
+Controller flag: -pool-name, default "" = GET /status name, and
+"fake-cxl-pool" when the server reports no name.
+
+3. Deviations from 02-design, with reasons
+------------------------------------------
+V1  Start log keeps "listening on http://" and adds control and slots
+    when set (design: name and discovery names). Useful for test19
+    diagnostics; nothing greps the old line (grep of E, docs, P).
+V2  Controller publish log: "publishing pool %s for nodes %v: %d devices
+    %v" replaces "publishing pool %s: %d devices %s" (one line for both
+    D12 texts; only traces contain the old one).
+V3  The no-node text is logged once per transition into "no reachable
+    node" (publish logs only when the DriverResources change, and with no
+    node they are always the empty Pools map); the label warning once per
+    node for the lifetime of the controller.
+V4  Run retries GET /status every sync interval until it answers when the
+    pool name is to come from the server (nothing is published before the
+    name is known; a controller started before its server keeps waiting
+    instead of exiting).
+V5  sync: a failure to list hosts or nodes now ends the round before
+    publish ("ERROR: sync: list hosts: ..."), because publish needs
+    the map. Before, publish ran first and the same server outage gave
+    "ERROR: publish: ...".
+V6  Slot patterns are validated (path.Match ErrBadPattern): new error
+    texts in section 4. The design did not mention validation.
+V7  D8 checks the serial only when the qemu tree device has one (the
+    design: "no serial OR equal"); devices whose backend is not fcp_* are
+    adopted as before.
+V8  CLI "status" prints "name:  -" for an old server without a name
+    (as for "state file").
+
+4. New log and error texts (verbatim; %s/%v are filled in)
+----------------------------------------------------------
+Server, config errors (process exits 1, logged with the "fake-cxl-pool: "
+prefix and a timestamp):
+  name must be a DNS label (lower-case letters, digits, '-')
+  discovery.control must be qmp or hmp
+  discovery.slots: invalid pattern "%s"
+  host "%s": slots: invalid pattern "%s"
+Server, start:
+  fake-cxl-pool-server %s listening on http://%s (state file %s)
+  with, appended inside the parentheses when set:
+    , discovery names [%s ...]
+    , discovery control %s
+    , discovery slots [%s ...]
+  example (smoke run):
+  fake-cxl-pool-server pool-b listening on http://127.0.0.1:9922 (state
+  file /tmp/fake-cxl-pool-smoke-mfT9bA/b.state.json, discovery names
+  [nomatch-*], discovery control hmp, discovery slots [*hb1])
+Server, adoption (once per host and qemu device id):
+  WARNING: host %s has qemu device %s with serial %s, not the serial %s
+  of device %s: not adopted (another pool server's device?)
+  (one line; serials as 0x lower-case hex)
+Server, unchanged texts that the slot patterns now produce:
+  host "%s" has no CXL slot "%s"                       (InvalidArgument)
+  host "%s" has no CXL slot "%s" for its local device  (InvalidArgument)
+  host "%s" has no free CXL slot                       (Conflict)
+  host error "no monitor socket" (discovery.control: hmp, no HMP socket)
+CLI status, first line:
+  name:         <name>
+Controller:
+  driver %s, pool %s (from the server), server %s, sync interval %s
+  driver %s, pool %s, server %s, sync interval %s     (-pool-name given)
+  ERROR: pool name: server status: %v (retrying in %s)
+  node %s has no kubernetes.io/hostname label, using its name
+  pool %s: no node of the cluster is a host of the server, publishing
+  nothing                                              (one line)
+  publishing pool %s for nodes [%s ...]: %d devices [%s ...]
+  example: publishing pool pool-x for nodes [h-node1 h-node2]: 3 devices
+  [pooled0 shared0 weird-name]
+  unchanged: pool hosts of nodes: [node=host ...]
+Library (through the controller's ErrorHandler, only if a second pool
+were given, which the controller never does):
+  ERROR: ResourceSlice: processing update DriverResources:
+  ReconcilePoolWithName="...", but found N pools; ...
+
+5. Published slice (pool A of test19, VM1 and VM2 reachable)
+------------------------------------------------------------
+apiVersion: resource.k8s.io/v1
+kind: ResourceSlice
+metadata:
+  generateName: 0-cxl-pool.nri.io-     # library naming, no owner
+spec:
+  driver: cxl-pool.nri.io
+  pool: {name: pool-a, generation: 1, resourceSliceCount: 1}
+  nodeSelector:                        # never allNodes
+    nodeSelectorTerms:                 # exactly one term
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:                        # label values, sorted, unique
+        - n4-cxl-shared-1-fedora-43-containerd
+        - n4-cxl-shared-2-fedora-43-containerd
+  devices:                             # unchanged device shape
+  - name: a-pooled0
+    attributes:
+      type: {string: memdev}
+      source: {string: pool}
+      serial: {string: "0xc1ee0001"}
+      shared: {bool: false}
+      persistent: {bool: false}
+      size: {int: 536870912}
+    capacity:
+      memory: {value: 512Mi}
+    bindsToNode: true
+    bindingConditions: ["cxl-pool.nri.io/Attached"]
+    bindingFailureConditions: ["cxl-pool.nri.io/AttachFailed"]
+No node of the cluster mapped to a host of the server: no ResourceSlice of
+that pool at all (Update with an empty Pools map; the library deletes the
+existing one).
+Node -> host mapping unchanged (systemUUID, else node name). Values are
+the nodes' kubernetes.io/hostname labels (the node name if missing).
+
+6. ReconcilePoolWithName, verified in the library code
+------------------------------------------------------
+k8s.io/dynamic-resource-allocation@v0.37.0/resourceslice/
+resourceslicecontroller.go:
+  302-315  Options.ReconcilePoolWithName: "the controller enqueues only
+           ResourceSlices with a matching Spec.Pool.Name".
+  532      usePoolNameFieldSelector starts true when the option is set.
+  546-559  the informer's field selector: spec.driver, spec.nodeName=""
+           and, with the option, spec.pool.name=<pool>.
+  576-592  List: if the API server rejects the pool-name selector, list
+           by driver and retainSlicesByPoolName (in-code filter).
+  600-610  Watch: the same fallback with filterSliceWatchByPoolName.
+  625-667  event handlers enqueue Spec.Pool.Name of the slices the
+           informer sees, so only the own pool is ever queued.
+  724-757  syncPool: slices of a queued pool name that is not in
+           Resources are removed ("All are obsolete"). Without the option
+           controller A queues pool B (it sees B's slices) and deletes
+           them: F4. With it, A never sees B's slices.
+  437-447  Update with any pool other than the configured one is
+           rejected; an empty Pools map is allowed and removes the own
+           pool's slices (lines 428-431 queue the old pools).
+Unit test: TestRunPoolName checks that the library's ResourceSlice list
+call of a running controller carries "spec.pool.name=pool-x" (fake
+clientset actions). Per the D15 NOTE there is no two-controller test: the
+fake clientset ignores field selectors, such a test would pass or fail for
+the wrong reason. test19 (E2E) is the verification of F4.
+
+7. Verification
+---------------
+make -C P
+  go build -o bin/fake-cxl-pool-server ...
+  CGO_ENABLED=0 GOARCH=amd64 go build -o bin/fake-cxl-pool-client ...
+  CGO_ENABLED=0 GOARCH=amd64 go build -o bin/fake-cxl-pool-controller ...
+make -C P test          (go test -race)
+  ok  .../fake-cxl-pool/cmd/fake-cxl-pool-client   1.166s
+  ok  .../fake-cxl-pool/pkg/api
+  ok  .../fake-cxl-pool/pkg/controller            21.437s
+  ok  .../fake-cxl-pool/pkg/pool
+  ok  .../fake-cxl-pool/pkg/qemu
+  ok  .../fake-cxl-pool/pkg/server
+make -C P lint          rc 0 (go vet + gofmt; only the existing
+                        "ignoring symlink plan-8-demo/demo/e2e/lib")
+cd N && go vet ./scripts/testing/fake-cxl-pool/...   no output, rc 0
+golangci-lint, whole tree (cd N && golangci-lint run): stops at
+  typecheck of the user's untracked
+  cmd/plugins/balloons/policy/podresourcehints_test.go ("TestPodResource
+  HintDevName redeclared in this block"), so nothing else is reported.
+golangci-lint run ./scripts/testing/fake-cxl-pool/...: 41 issues (40
+  errcheck, 1 unused stateFilePath), all in code this stream did not
+  touch, except one:
+golangci-lint run --new-from-rev=HEAD ./scripts/testing/fake-cxl-pool/...
+  cmd/fake-cxl-pool-client/main.go:246:13: Error return value of
+  `fmt.Fprintf` is not checked (errcheck)
+  -> the new "name:" line; the eight lines after it in cmdStatus are the
+  same unchecked fmt.Fprintf to the tabwriter (existing style, w.Flush()
+  returns the error). Left as it is.
+Smoke run (host, no VMs; ports 9921/9922 were free; 9909 not touched):
+  configs in /tmp/fake-cxl-pool-smoke-mfT9bA: pool-a (:9921, qemu: false,
+  device a-pooled0 0xc1ee0001) and pool-b (:9922, qemu: false, names
+  [nomatch-*], control hmp, slots [*hb1], bases 0xc1ae1000/0xc1ee1000,
+  device b-pooled0 without serial)
+  logs: "fake-cxl-pool-server pool-a listening on http://127.0.0.1:9921
+  (state file .../a.state.json)" and the pool-b line of section 4
+  curl GET /api/v1/status: "name": "pool-a" / "name": "pool-b"
+  fake-cxl-pool-client --server http://127.0.0.1:992[12] status:
+    name:         pool-a      /  name:         pool-b
+  devices: a-pooled0 0xc1ee0001, b-pooled0 0xc1ee1001 (serial base)
+  name: Pool_A -> "name must be a DNS label (lower-case letters, digits,
+  '-')", rc 1; control: x -> "discovery.control must be qmp or hmp"
+  both stopped with SIGTERM, ports free, temp dir removed.
+
+8. Open points
+--------------
+O1  attachedBytesLocked counts the attachments of this server only; two
+    servers that attach under the same host bridge of a VM can over-commit
+    its fixed memory window (the second device_add then fails in qemu,
+    503). Slot patterns on different host bridges avoid it (test19: A and
+    B "*hb0", C "*hb1"; A and B never share a VM).
+O2  A second server that shares a VM still sees the first server's
+    devices in the tree: their slots are occupied (never chosen), their
+    fcp_* ids raise its hotplug counter (harmless). A device of the same
+    name and serial on two servers would still be adopted by both:
+    unique names are the convention (D3).
+O3  HMP sharing monitor.sock with vm-monitor (C3) is for E2E to verify.
+O4  The real API server must accept the spec.pool.name field selector of
+    ResourceSlices for the cheap path; otherwise the library filters in
+    code (section 6), with the same result.
+
+9. Requests
+-----------
+None. The e2e helpers per D21 (no -pool-name, one unit per server) match
+the controller as built; test10's nodeSelector assertion (D22) can expect
+the exact section 5 shape (one term, matchExpressions only, sorted
+values, no allNodes).
+
+10. Review fixes (05-review.txt, stream POOL)
+--------------------------------------------
+P1  hosts[].slots: no key (nil) = discovery.slots, `slots: []` = every
+    slot of that host. P/pkg/server/views.go:218 (Slots != nil instead of
+    len > 0), config.go:105-106 (field comment), config.example.yaml:69-71,
+    README.md:71 ("slots: [] on a host means every slot of that host").
+    Test: multipool_test.go:150-159 (sigs.k8s.io/yaml: missing key ->
+    nil, `slots: []` -> non-nil empty; vm2 with [] lists all four slots
+    while discovery.slots is ["*_hb0"]).
+P2  Run returns quietly when ctx is cancelled while the server status
+    is retried: P/pkg/controller/controller.go:211 (ctx.Err() before the
+    ERROR line).
+P3  mapNodes failure is "ERROR: sync: %v" (skips publish and reconcile):
+    controller.go:263. Section 3 V5 updated.
+P4  adoptWarned pruned per host at the end of its reconcile: keys whose
+    qemu device id is no longer in the trusted tree are deleted, so the
+    map does not grow and a device that comes back warns again
+    (P/pkg/server/server.go:1016-1021). Test: multipool_test.go:194-204.
+P5  qemu.Fake.PlugDeviceWithoutSerial (P/pkg/qemu/fake.go:101-112, tree
+    HasSerial from noSerial at :414); third case of
+    TestAdoptionChecksSerial: fcp_shared0.hp9 without serial is adopted
+    with the device's serial 0xc1ae0000 (multipool_test.go:209-218).
+P6  Wrapped: N/docs/memory/cxl/pool.md:67-68 (comment above
+    nodeSelector), :276-282 ("What the scheduler does");
+    config.example.yaml:69-71. YAML of pool.md still parses.
+P7  discoveryInfo comment says what it returns:
+    P/cmd/fake-cxl-pool-server/main.go:36-37.
+P8  Left as it is: cmd/fake-cxl-pool-client/main.go:246 is one of nine
+    fmt.Fprintf to the tabwriter in cmdStatus, all unchecked, and the
+    file uses this form throughout (w.Flush() returns the error);
+    golangci-lint --new-from-rev=HEAD still reports this one line.
+Checks after the fixes: make -C P (three binaries), make -C P test (all
+ok: client 1.168s, controller 21.515s, qemu 1.740s, server 5.801s, api
+and pool cached), make -C P lint rc 0, go vet
+./scripts/testing/fake-cxl-pool/... rc 0.
+
+POOL done

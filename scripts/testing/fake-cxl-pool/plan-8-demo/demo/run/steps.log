@@ -478,3 +478,14 @@ resourceclaimtemplate.resource.k8s.io "cxl-lease" deleted from cxl-demo namespac
 pod "writer" deleted from cxl-demo namespace
 
 result: pods and leases gone after 0.2 s (2.3 s)
+=== 15:50:58 pool L1 rc=0 0.6s
+$ kubectl apply -f pool/writer.yaml
+resourceclaimtemplate.resource.k8s.io/cxl-lease created
+pod/writer created
+
+result: Running: writer vm1 | (1.6 s until Running) (2.2 s)
+=== 15:51:46 pool L2 rc=0 5.8s
+$ kubectl exec writer -- cxl-request request --serial 0xc1ae0001 --mode dax
+{"lease":"d9caec78","state":"Ready","source":"pool","mode":"dax","shared":false,"readOnly":false,"size":268435456,"serial":"0xc1ae0001","dax":"/dev/dax0.0","env":{"CXL_C1AE0001_DAX":"/dev/dax0.0","CXL_C1AE0001_MODE":"dax","CXL_C1AE0001_READONLY":"0","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"268435456"}}
+
+result: lease d9caec78 Ready dax rw (exclusive) | dax /dev/dax0.0 (5.8 s)

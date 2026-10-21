@@ -33,6 +33,22 @@ import (
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/server"
 )
 
+// discoveryInfo returns the discovery names, control and slots of a
+// configuration that are set, as ", discovery ..." clauses.
+func discoveryInfo(d *server.DiscoveryConfig) string {
+	s := ""
+	if len(d.Names) > 0 {
+		s += fmt.Sprintf(", discovery names %v", d.Names)
+	}
+	if d.Control != "" {
+		s += ", discovery control " + d.Control
+	}
+	if len(d.Slots) > 0 {
+		s += fmt.Sprintf(", discovery slots %v", d.Slots)
+	}
+	return s
+}
+
 func main() {
 	configFile := flag.String("config", "", "YAML config file (default: built-in defaults)")
 	listen := flag.String("listen", "", "listen address, overrides the config (default 127.0.0.1:9909)")
@@ -76,7 +92,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
-	logger.Printf("listening on http://%s (state file %s)", l.Addr(), cfg.StateFile)
+	logger.Printf("fake-cxl-pool-server %s listening on http://%s (state file %s%s)", cfg.Name, l.Addr(), cfg.StateFile, discoveryInfo(&cfg.Discovery))
 	srv.Start()
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 

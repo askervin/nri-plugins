@@ -1,0 +1,275 @@
+One server, several CXL memory pools: what public sources say
+=============================================================
+Written 2026-10-21 by a research agent from public sources; URLs cited inline.
+
+Method and limits. Sources are vendor pages, the Linux kernel CXL docs, the
+QEMU CXL docs, CXL Consortium white papers/blog posts and two peer-reviewed
+papers. Intel's and Arm's own spec pages, Micron CZ120, MemVerge and the Hot
+Chips program were JavaScript-only or blocked, so their wording comes from
+third parties and is marked as such. Unverified items are labelled.
+
+
+1. Server-side CXL ports
+------------------------
+Intel Xeon 6 (Granite Rapids / Sierra Forest)
+- Intel ARK, Xeon 6980P: "PCI Express Revision 5.0", "Max # of PCI Express
+  Lanes 96", 6 UPI links, 2S. ARK has no CXL lane field.
+  https://www.intel.com/content/www/us/en/products/sku/240777/intel-xeon-6980p-processor-504m-cache-2-00-ghz/specifications.html
+- Phoronix: "Intel Xeon 6900P series feature CXL 2.0 support"; the 6500P/6700P
+  "only support up to 88 lanes of PCI Express 5.0 compared to 96 lanes with
+  the Xeon 6900P series". https://www.phoronix.com/review/intel-xeon-6900p
+  https://www.phoronix.com/review/intel-xeon-6500p-6700p
+- CXL lane count only from third parties: Exxact, "Up to 96 PCIe 5.0 Lanes
+  with CXL 2.0"; Octopus paper (Microsoft authors), sec. 2: "Xeon 6 sockets
+  have 64 CXL lanes, configurable as four x16 CXL ports or eight x8 CXL
+  ports." https://arxiv.org/html/2501.09020v3
+  https://www.exxactcorp.com/blog/news/intel-xeon-6-128-cores-of-performance-144-cores-of-efficiency
+
+AMD EPYC
+- 9005 "Turin" datasheet: "CXL 2.0 capabilities", "128 PCIe Gen 5 I/O lanes
+  (up to 160 in 2-socket servers)"; SKU 9965 page: "PCIe 5.0 x128".
+  https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/datasheets/amd-epyc-9005-series-processor-datasheet.pdf
+- Octopus prototype on EPYC 9825 (Turin), sec. 6.1: "Each server has 64 CXL
+  lanes, but we connect only 16 lanes (two x8 lanes) per CPU".
+- 9004 "Genoa": "128 PCIe 5.0 lanes. Genoa also became the first x86 server
+  CPU to support Compute Express Link 1.1" (https://en.wikipedia.org/wiki/Epyc).
+  AMD's own Genoa CXL lane figure (often quoted as 64 lanes CXL 1.1+) was not
+  reachable here: unverified.
+
+Arm Neoverse servers
+- Arm reference design docs: "This document explains CXL 2.0 Type-3 device
+  (Memory expander) handling on Neoverse N2 reference design platform. At
+  present, CXL support has been verified on 'rdn2cfg1' platform." Firmware
+  emits ACPI0016/ACPI0017; "There is no real interleaving address windows
+  across multiple ports with this configuration. It is same as single port
+  CXL Host bridge."
+  https://neoverse-reference-design.docs.arm.com/en/latest/features/cxl.html
+- Arm CMN S3 blog (search snippet; page is JS-only): CMN S3 "supports
+  CXL.mem(Type3) and CXL.cache(Type1) functionality and is complaint with CXL
+  specification revision 2.0 and CXL 3 revision 3.0 version."
+  https://developer.arm.com/community/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/arm-cmn-s3-driving-cxl-storage-innovation
+- AmpereOne brief: "128 lanes PCIe 5.0 with 32 controllers (1P)", "up to
+  eight x16 devices"; no CXL mention. NVIDIA Grace CXL support: unverified.
+  https://amperecomputing.com/briefs/ampereone-family-product-brief
+
+Does each root port form an independent hierarchy? Yes.
+- Linux: "A Host Bridge is a special type of CXL switch port" (ACPI0016) with
+  "one or more downstream port connections"; worked example is "a
+  single-socket system with 4 host bridges"; "Only root decoders are capable
+  of Inter-Host-Bridge Interleave".
+  https://docs.kernel.org/driver-api/cxl/linux/cxl-driver.html
+- QEMU: each host bridge "has 2 CXL Root Ports and programmable HDM decoders
+  to route memory accesses either to a single port or interleave them across
+  multiple ports." https://www.qemu.org/docs/master/system/devices/cxl.html
+- Octopus sec. 5.4: pods normally interleave pooling devices at 256 B, but
+  "Octopus disables this interleaving in firmware and exposes each CXL port as
+  a distinct NUMA node". Sec. 2: passive copper is limited to "<= 1.5 m"
+  without retimers or optics.
+
+
+2. Pool products and topologies
+-------------------------------
+- UnifabriX MAX / Smart Memory Node. Blocks & Files 2025-01-15: 32 TB DDR5 in
+  2RU (2023 node); "the six frontend ports go to the host. Today there are CXL
+  1.1 and 2.0"; 112G backend "when you connect multiple MAX appliances, one to
+  each other"; FM "compliant with CXL 3.2 FM APIs including support for DCD";
+  OSFP x8 / OSFP-XD x16 cabling. Site: "up to 256TB of fabric memory".
+  "Maxview" is not on the public pages reached (unverified).
+  https://blocksandfiles.com/2025/01/15/unifabrix-taking-cxl-external-memory-mainstream/
+- H3 Platform Falcon C5022: 3U, "CXL Switch Xconn XC50256", 22 E3.S 2T x8
+  slots, 5.5 TB, "4 PCIe x16 CDFP connectors"; topologies "4 Hosts + 22 CXL
+  Memory Modules" up to "8 Hosts + 14 CXL Memory Modules"; "Memory sharing
+  among hosts", "Memory surprise add and remove", Redfish/REST. Falcon 5208 is
+  absent from H3's product list and the 24 press releases scanned.
+  https://www.h3platform.com/product-detail/overview/35
+- XConn Apollo XC50256: hybrid CXL 2.0 + PCIe 5 "single 256-lane SoC"
+  (PR 2023-08-08); Apollo 2: "CXL 3.1 and PCIe Gen 6.2 on a single chip",
+  "64 to 260 lanes" (DCD 2025-03-21). Marvell announced the acquisition
+  2026-01-06 and closed it 2026-02-10; xconn-tech.com now redirects to
+  marvell.com (observed 2026-10-21). XConn blog: pools "up to 100 TiB per
+  cluster", "latency in the 200-500 ns range".
+  https://www.prnewswire.com/news-releases/xconn-technologies-launches-the-industrys-first-and-only-hybrid-cxl-2-0-and-pcie-gen-5-switch-301895313.html
+  https://www.datacenterdynamics.com/en/news/xconn-technologies-unveils-apollo-2-hybrid-switch-for-cxl-31-and-pcie-gen-6-protocols/
+  https://investor.marvell.com/news-events/press-releases/detail/1007/marvell-completes-acquisition-of-xconn-technologies
+  https://computeexpresslink.org/blog/overcoming-the-ai-memory-wall-how-cxl-memory-pooling-powers-the-next-leap-in-scalable-ai-computing-4267/
+- Astera Labs Leo 2 E-/P-Series (PR 2026-09-15): "PCIe 6, single x16 and
+  dual x8 host connectivity and CXL 3.2 support"; P-Series for "pooled and
+  shared memory ... across multiple hosts" (dual x8 = two heads; host count
+  is my inference). Leo X-Series is PCIe fabric-attached, not CXL.mem. Azure
+  M-series is "the industry's first announced deployment of CXL-attached
+  memory" (SC25 post).
+  https://www.asteralabs.com/products/leo-smart-memory-controllers/
+- Samsung CMM-B: 4U, "up to 24 x E3.S CMM-D devices, with total capacity
+  ranging from 3TiB to 24 TiB", "CXL 1.1 and 2.0", "up to 8 hosts can connect
+  to a CMM-B" (one Samsung blog) vs "supports up to three hosts" (another);
+  SCMC console, REST/Redfish. White paper: Xconn switch chip, "FMAPI", SLD
+  pooling per CXL 2.0; one Emerald Rapids host via three upstream ports
+  "recognizes three HDM ranges", software-interleaved for +32% TPC-DS.
+  https://semiconductor.samsung.com/news-events/tech-blog/redefining-possibilities-in-memory-technology-samsung-cxl-memory-appliance-with-orchestration-console/
+  https://download.semiconductor.samsung.com/resources/white-paper/CMM-B_whitepaper-V2.pdf
+- SK hynix Niagara: FPGA prototype, "Up to 4 CXL host servers", 1 TB DDR4
+  (SlideShare deck); Niagara 2.0 lets "multiple hosts (CPUs and GPUs)
+  efficiently share large memory pools" (OCP 2024); OCP 2025 demo "connects
+  multiple servers and GPUs without a network using CXL pooled memory".
+  https://news.skhynix.com/en/sk-hynix-showcases-full-stack-ai-memory-portfolio-at-2025-ocp-global-summit
+- Micron: Intel SC25 demo, "four Intel Granite Rapids-AP servers" behind one
+  switch with "22 Micron CZ122 memory expansion devices ... forming a 5.6 TB
+  shared memory pool", driven by a "CXL memory orchestrator".
+  https://computeexpresslink.org/blog/intel-sc25-demo-4245/
+- Panmnesia: CXL 3.x switch IP; SC25 demo "CXL 3.X Switch-Based Memory Pooling
+  and Sharing in a Multi-Host Environment"; 2026-04-16 pre-release silicon of
+  a "PCIe 6.4-CXL 3.2 Fusion Switch" with port-based routing; 2026-09 Meta +
+  Panmnesia review in Nature Reviews EE. https://panmnesia.com/news/en/
+  https://computeexpresslink.org/blog/exploring-cxl-use-cases-with-cxl-3-x-switches-for-hpc-applications-4331/
+- Liqid: CXL 2.0 fabric of EX-5410C "ten-slot expansion chassis", "LIQID
+  Fabric Switch - CXL 2.0", HBA "HX-5160C-1C CXL 2.0 HBA Gen 5 x16", Matrix
+  software; "Pool & Share Across Up to 32 Hosts", "Scale Up to 100TB Per
+  Host" (home page says "shared across 16 nodes").
+  https://www.liqid.com/products/memory-pooling-solutions
+- MemVerge GISMO + XConn Apollo: OCP 2025 and SC25 KV-cache pool for NVIDIA
+  Dynamo/NIXL, "up to 100TB in 2025", ">5x" vs SSD offload.
+  https://www.storagenewsletter.com/2025/10/16/ocp-global-summit-2025-xconn-technologies-and-memverge-demonstrate-cxl-memory-pool-for-kv-cache/
+- Enfabrica EMFASYS: "RDMA Ethernet based AI Memory Fabric", "up to 144 CXL
+  memory lanes per system", "up to 18 TB CXL DDR5 DRAM per system". Hosts use
+  RDMA, so it is not a CXL.mem pool from the host's side.
+  https://www.enfabrica.net/solution/emfasys
+- Lightelligence Photowave: "compatible with PCIe 5.0/6.0 and CXL 2.0/3.0",
+  "inter-rack optical CXL connectivity"; no reach figure found.
+  https://computeexpresslink.org/blog/cxl-consortium-member-spotlight-lightelligence-3937/
+- Montage MXC Gen3 (2026-04-16): CXL 3.2 x8 controller "bifurcated into dual
+  Gen6 x4 ports connecting two CXL 2.x/3.x hosts"; live DCD add/release of
+  8 GB extents; "A Fabric Manager on a BMC-like platform and an Orchestrator
+  coordinate the system"; Linux DCD patches; scale-out by "intertwining two
+  hosts per CXL Memory Controller", citing Octopus.
+  https://computeexpresslink.org/blog/cxl-dynamic-capacity-device-technology-demo-with-live-multi-host-system-using-mxc-gen3-silicon-4527/
+- Conferences: FMS 2025 pooling panel (Astera, Samsung, Montage, XConn); FMS
+  2026 panel (Intel chair; Astera, Liqid, Micron, UnifabriX); SC25: 14 member
+  demos incl. the Intel 4-host pool; OCP 2025: XConn+MemVerge, SK hynix,
+  Astera. Hot Chips 2025 CXL content: unverified (site unreachable).
+  https://computeexpresslink.org/blog/increasing-tokens-per-dollar-with-cxl-fms-2026-recap-4788/
+  https://computeexpresslink.org/blog/advancing-coherent-connectivity-highlights-from-the-cxl-consortium-at-sc25-4351/
+
+
+3. Multi-pool per host: evidence
+--------------------------------
+Linux driver model (one root, many hierarchies)
+- cxl_acpi creates the root "if the ACPI0017 ... Root Object Device Class is
+  found"; host bridges from CEDT CHBS, root decoders from CFMWS; "The CXL root
+  is a special type of switch port, in that it only has downstream port
+  connections." https://docs.kernel.org/driver-api/cxl/linux/cxl-driver.html
+- CFMWS "describes a memory region associated with one or more CXL host
+  bridges"; "INTRA-host-bridge interleave ... is NOT reported in this
+  structure". https://docs.kernel.org/driver-api/cxl/platform/acpi/cedt.html
+- "Linux will create a NUMA node for each CEDT CFMWS entry"; BIOS may publish
+  one window across all bridges, one per bridge and one per device.
+  https://docs.kernel.org/driver-api/cxl/platform/bios-and-efi.html
+- "Flexible presentation": two host bridges, seven CFMWS (cross-bridge, per
+  bridge, per device) over the same hardware, "to provide the user flexibility
+  to configure the memory devices in various interleave or NUMA node
+  configurations".
+  https://docs.kernel.org/driver-api/cxl/platform/example-configurations/flexible.html
+- "The CXL Port topology is enumerated by the arrival of a CXL.mem device."
+  https://docs.kernel.org/driver-api/cxl/theory-of-operation.html
+- The FM is "an external, privileged host with privileges to change
+  configurations for other hosts"; "As of v6.14, Linux does not provide a
+  formalized interface to manage non-DCD MHSLD or MHMLD devices"; DCD is
+  "active work on LKML".
+  https://docs.kernel.org/driver-api/cxl/devices/device-types.html
+- Maturity map: "[0] Dynamic Capacity Device (DCD) Support", "[0] Sharing",
+  "[0] Fabrics / G-FAM (chapter 7)", "[0] Switch CCI", "[1] Hotplug of LDs
+  (via PCI hotplug)". https://docs.kernel.org/driver-api/cxl/maturity-map.html
+- QEMU "will also completely ignore the fabric management aspects of CXL by
+  considering only a single host and a static configuration"; "Hosts often
+  have no awareness of complex rerouting and device pooling, they simply see
+  devices being hot added or hot removed."
+Spec concepts
+- CXL 3.0 white paper: pooling "with or without a CXL 2.0 switch"; sharing =
+  coherent multi-host access; fabrics "can support up to 4096 nodes" via Port
+  Based Routing; "A GFAM device is like a traditional CXL Type-3 device,
+  except it can be accessed by multiple nodes (up to 4095)".
+  https://computeexpresslink.org/wp-content/uploads/2023/12/CXL_3.0_white-paper_FINAL.pdf
+- CXL 3.1 white paper: "fabric manager API definition for PBR switch", GIM for
+  inter-host communication; "Hosts rely on the switches to do the appropriate
+  mapping."
+  https://computeexpresslink.org/wp-content/uploads/2023/12/CXL_3.1-White-Paper_FINAL.pdf
+- CXL 4.0 Q&A: "MLDs require a switch, which handles mapping the traffic from
+  individual LDs to the physical CXL link connected to the host"; bundled
+  ports not extended to MH-SLD/MH-MLD.
+  https://computeexpresslink.org/blog/introducing-the-cxl-4-0-specification-webinar-qa-recap-4386/
+Can one host see two FM domains? Nothing found binds a host to one FM. The FM
+manages a switch or device, not the host; each product ships its own (H3
+management center, Samsung SCMC, Liqid Matrix, UnifabriX FM, Montage FM on a
+BMC). A host with ports into two appliances has two independent hierarchies
+under two FMs. Direct evidence:
+- Octopus (arXiv 2501.09020v3): "Octopus assumes X=8 CXL ports per server and
+  N=4 ports per MPD", each port to a different pooling device, each "a
+  distinct NUMA node"; prototype of three EPYC 9825 servers, each wired by
+  two x8 ports to two different 2-port devices ("X=N=2"); 267 ns read
+  latency, 24.7 GiB/s per x8 link.
+- Montage's 2026 DCD demo adopts that topology (hosts spanning controllers).
+- Samsung's white paper: one host via three USPs into one CMM-B sees three
+  HDM ranges (multi-port into one pool).
+- Not found: a public demo of one server on two switch-based appliances from
+  different vendors.
+
+
+4. Attaching one server to several pools: pros and cons
+-------------------------------------------------------
+Advantages
+- Capacity past one box: 5.5 TB (H3 C5022), 24 TiB (CMM-B), ~100 TB per switch
+  pool (XConn/Liqid); extra ports are the only way beyond a box unless the
+  vendor has a backend fabric (UnifabriX).
+- Bandwidth: Linux sums per host bridge and "The sum across ACPI0017 entries
+  becomes the region's bandwidth coordinate"; one x8 Gen5 link is ~25 GiB/s
+  (Octopus), Samsung measured +32% from three ports.
+  https://docs.kernel.org/driver-api/cxl/linux/access-coordinates.html
+- Latency tiers: direct multi-headed pools avoid the switch hop ("A CXL switch
+  has 2.4x higher latency", "at least 220 ns" of re-serialization, Octopus);
+  a host can hold a small fast pool and a large shared pool at once.
+- Blast radius: each pool is its own hierarchy and NUMA node; hot-remove of
+  one device cleans only "the port data that was established to support that
+  Memory Expander"; sparse direct pools cut switch cost ("switches remain an
+  order of magnitude more expensive than MPDs").
+- Sharing domains: rack-local capacity pool plus a wider shared pool (GIM/GFAM
+  or optical inter-rack links) map onto separate host bridges naturally.
+Disadvantages and constraints
+- Port budget: 64 CXL lanes per socket = 4 x16 or 8 x8; GPUs and NICs compete
+  for the same lanes; copper <= 1.5 m without retimers.
+- Static CFMWS: "Hot-adding a memory device requires this pre-defined, static
+  CFMWS to have sufficient HPA space"; "some platforms omit the CFMWS in the
+  CEDT. When this occurs, hot-add is not possible"; "Hotplugged devices cannot
+  add host-bridge interleave capabilities at hotplug time."
+  https://docs.kernel.org/driver-api/cxl/platform/device-hotplug.html
+- Decoders: "A port may contain one or more decoders" (fixed by hardware);
+  "expect to use one decoder per contiguous chunk of host physical memory";
+  "Unbalanced interleave sets are not supported"; asymmetric topologies abort
+  the bandwidth calculation. Interleaving across pools run by two FMs would
+  need identical extents and symmetric paths; not forbidden by the docs, not
+  documented by any product (inference).
+- NUMA: each window is another node; software "must be NUMA optimized, which
+  takes time and effort" (CXL 4.0 Q&A).
+- Management: two FMs and APIs (Redfish/REST, CXL 3.2 FM API); the kernel has
+  no DCD/sharing support yet, so allocation is vendor-tool driven.
+- Cost and cabling: more CDFP/OSFP cables, HBAs or retimers; Octopus puts
+  pooling at 5% of server CapEx for sparse direct pools vs 12% for switches.
+
+
+5. Conclusion
+-------------
+A server attached to two CXL pools at once is realistic with 2025/2026
+hardware: Xeon 6 and EPYC 9005 expose 64 CXL 2.0 lanes as four x16 or eight
+x8 root ports, each an independent ACPI0016 hierarchy with its own CFMWS and
+NUMA node, and appliances from H3, Samsung, Liqid and UnifabriX as well as
+the Montage/Astera multi-headed controllers all attach with one x8/x16 cable
+per host. Microsoft's Octopus work and Montage's 2026 demo already run hosts
+with ports into several pooling devices; what is not yet public is one host
+on two switch-based appliances from different vendors, and the kernel still
+lacks DCD/sharing plumbing, so capacity moves through each pool's own FM. For
+the emulated setup (each VM: two pxb-cxl host bridges, each with a 4-port
+switch) the closest real shape is "rack-local pool on host bridge 0, global
+shared pool on host bridge 1": pool A on host bridge 0 of servers 1-2 (small,
+low-latency, Octopus/H3 style) and pool C on host bridge 1 of all servers
+(the sharing domain, CMM-B/switch style). Give each pool its own cxl-fmw
+(QEMU's two-bridge example does exactly this), do not interleave across the
+two bridges, and treat each pool as a separate NUMA node and a separate
+fabric-manager domain.

@@ -14,19 +14,20 @@
 #   0xc1f0ee00 here: recreate them (see the error message).
 # - The VM sees no CXL memory devices.
 #
-# The topologies n4-cxl-shared-1 and n4-cxl-shared-2 have the same pool
-# slots and the same statically shared device, so their VMs can share the
-# same CXL memory devices. They differ only in the size of the local device:
-# 256M in n4-cxl-shared-1, 1G in n4-cxl-shared-2. Hot-removing and
-# hotplugging a device again needs a patched qemu. Give it when creating
-# the VM, see qemu_bin in .github/skills/run-e2e-tests/SKILL.md, for
-# instance:
+# The topologies n4-cxl-shared-0, n4-cxl-shared-1 and n4-cxl-shared-2 have
+# the same pool slots and the same statically shared device, so their VMs
+# can share the same CXL memory devices. They differ only in the size of the
+# local device: 256M in n4-cxl-shared-0 and n4-cxl-shared-1, 1G in
+# n4-cxl-shared-2. Hot-removing and hotplugging a device again needs a
+# patched qemu. Give it when creating the VM, see qemu_bin in
+# .github/skills/run-e2e-tests/SKILL.md, for instance:
 #   qemu_bin=$HOME/github.com/qemu/qemu/build/qemu-system-x86_64 \
 #     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-1/test00-up
 #
-# This VM (VM1) is the worker of the Kubernetes cluster of the tests of
+# This VM (VM1) is a worker of the Kubernetes cluster of the tests of
 # n4-cxl-shared-2 once test00-up of n4-cxl-shared-2 has made it: this test
-# checks only the VM and leaves its cluster as it is.
+# checks only the VM and leaves its cluster as it is. Pool A, the pool
+# server of most tests, is cabled to VM1 and VM2.
 
 if [[ "$distro" != *"fedora"* ]]; then
     echo "Test verdict: SKIP (this test runs only on fedora)"

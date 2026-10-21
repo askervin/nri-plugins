@@ -6,7 +6,9 @@
 # Leaves running, until "demo teardown" (test91-demo-teardown):
 # - fake-cxl-pool-server on the host: local demo with the local device of
 #   VM2 attached, pool demo with shared0 (256Mi, shared, 0xc1ae0001);
-# - nri-dra-driver-cxl on both nodes (helm), the local demo with
+# - nri-dra-driver-cxl on every node of the three-node cluster (helm,
+#   DaemonSet; VM0 is the second worker, pool A reaches VM1 and VM2
+#   only), the local demo with
 #   sharedDevices: [<the serial of the local device of VM2>];
 # - fake-cxl-pool-controller on VM2;
 # - the trace collectors of dra-trace-start (host side, setsid);
@@ -78,7 +80,7 @@ else
     SERIAL="$SHARED_SERIAL"
 fi
 
-echo "### demo setup $DEMO_CASE: the driver on both nodes, the pool controller on VM2"
+echo "### demo setup $DEMO_CASE: the driver on every node, the pool controller on VM2"
 dra-install
 if [ "$DEMO_CASE" == local ]; then
     dra-local-device "$VM2"

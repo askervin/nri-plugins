@@ -25,10 +25,12 @@
 #   for reading.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
-# control plane, the VM of n4-cxl-shared-1 (VM1) a worker, over the VM
-# network "cxl-pool" (vm_network.var.sh); test00-up of n4-cxl-shared-2
-# makes it. The pool controller runs once, on VM2, the driver on both: one
-# DaemonSet, installed with helm on VM2, whose pod on VM1 starts at once
+# control plane, the VMs of n4-cxl-shared-1 (VM1) and n4-cxl-shared-0
+# (VM0) workers, over the VM network "cxl-pool" (vm_network.var.sh);
+# test00-up of n4-cxl-shared-2 makes it. The pool is cabled to VM1 and VM2
+# only, and the test uses those two nodes. The pool controller runs once,
+# on VM2, the driver on every node: one DaemonSet, installed with helm on
+# VM2, whose pod on VM1 starts at once
 # with the image that dra-install imported there.
 #
 # What you will see: the writer on VM1 holding shared0 exclusively, three
@@ -38,9 +40,9 @@
 # to map it for writing; a late exclusive request that times out without
 # leftovers; a fourth reader with a read-only claim from its creation; the
 # exclusive device pooled0 used as a dax device too, through a lease and
-# through a claim; and the trace of both nodes.
+# through a claim; and the trace of VM2 and VM1.
 #
-# Run test00-up of n4-cxl-shared-1 and -2 first: they create the VMs and
+# Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
 # make them one cluster. The DRA driver comes from its image, build it
 # first:
 #   make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
@@ -50,11 +52,12 @@ if [[ "$distro" != *"fedora"* ]]; then
     exit 0
 fi
 
-echo "### preconditions: one cluster, VM2 control plane, VM1 worker (test00-up)"
+echo "### preconditions: one cluster, VM2 control plane, VM1 and VM0 workers (test00-up)"
 pool-cluster-require
 
 VM1="$POOL_VM1_DIR"    # worker
 VM2="$OUTPUT_DIR"      # control plane, the VM of this test
+VM0_NAME="$POOL_VM0_NAME"   # the other worker, not cabled to the pool
 VM1_NAME="$POOL_VM1_NAME"
 VM2_NAME="$POOL_VM2_NAME"
 SHARED_SERIAL=0xc1ae0001    # 0xc1ae....: shared pool devices
@@ -185,7 +188,7 @@ pool-server-start "
     serial: $POOLED0_SERIAL"
 pool-client-install "$VM2" "$VM1"
 
-echo "### preconditions: the pool controller on the control plane, the node plugin on both nodes"
+echo "### preconditions: the pool controller on the control plane, the node plugin on every node"
 dra-build
 dra-install
 for vm in "$VM2" "$VM1"; do
@@ -195,15 +198,15 @@ dra-dax-tool-install "$VM2"
 dra-apply "$VM2" <<< "$(lease-template-yaml)"
 dra-trace-start "$VM2" "$VM1"
 
-echo "### A: one cluster of two nodes, one pool, the lease device on both nodes"
+echo "### A: one cluster of three nodes, one pool for VM1 and VM2, the lease device on every node"
 dra-kubectl "$VM2" "get nodes -o wide"
 dra-json "$VM2" nodes
-dra-assert "$COMMAND_OUTPUT" "sorted(n['metadata']['name'] for n in j['items']) == sorted(['$VM1_NAME', '$VM2_NAME'])"
+dra-assert "$COMMAND_OUTPUT" "sorted(n['metadata']['name'] for n in j['items']) == sorted(['$VM0_NAME', '$VM1_NAME', '$VM2_NAME'])"
 dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 S0="device('shared0', '$DRA_POOL_DRIVER')"
-dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and slices('$DRA_LOCAL_DRIVER', '$VM1_NAME') and slices('$DRA_LOCAL_DRIVER', '$VM2_NAME')"
-dra-assert "$COMMAND_OUTPUT" "all(attr(device('lease', '$DRA_LOCAL_DRIVER', n), 'type') == 'lease' for n in ['$VM1_NAME', '$VM2_NAME'])"
+dra-assert "$COMMAND_OUTPUT" "len(slices('$DRA_POOL_DRIVER')) == 1 and all(slices('$DRA_LOCAL_DRIVER', n) for n in ['$VM0_NAME', '$VM1_NAME', '$VM2_NAME'])"
+dra-assert "$COMMAND_OUTPUT" "all(attr(device('lease', '$DRA_LOCAL_DRIVER', n), 'type') == 'lease' for n in ['$VM0_NAME', '$VM1_NAME', '$VM2_NAME'])"
 # "shares" without a requestPolicy: a claim takes one share ("1") or, with
 # no shares request, all of them (exclusive).
 dra-assert "$COMMAND_OUTPUT" "sorted(${S0}.get('capacity') or {}) == ['shares'] and quantity(capacity($S0, 'shares')) == $DRA_SHARES and request_policy($S0, 'shares') is None"
@@ -462,7 +465,7 @@ for vm in "$VM2" "$VM1"; do
         error "qemu of $(pool-vm-label "$vm") still has a CXL memory device"
 done
 
-echo "### I: what every component of both nodes did, in order"
+echo "### I: what every component of VM2 and VM1 did, in order"
 dra-trace-stop
 dra-trace-summary
 echo "TIMING: writer exit until all readers hold the memory: $T_READERS s"

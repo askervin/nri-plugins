@@ -127,7 +127,9 @@ def render_t3(data, state, now=None, stale=False):
     case = state.get("DEMO_CASE", "local")
     lines = [c.title("SCHEDULER: DEVICES AND CLAIMS", stale, now)]
     status = driver_status(k8s.get("drivers"), state, case)
-    pool_slices = [s for s in c.items(k8s.get("slices")) if (s.get("spec") or {}).get("allNodes")]
+    pool_slices = [s for s in c.items(k8s.get("slices"))
+                   if (s.get("spec") or {}).get("driver") == "cxl-pool.nri.io"
+                   and not (s.get("spec") or {}).get("nodeName")]
     if case == "pool":
         status += "  pool %s" % ("ok" if pool_slices else "down")
     rows = [status]

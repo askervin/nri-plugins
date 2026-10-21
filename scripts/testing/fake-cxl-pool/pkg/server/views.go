@@ -15,6 +15,7 @@
 package server
 
 import (
+	"path"
 	"sort"
 	"strconv"
 	"unicode"
@@ -211,7 +212,32 @@ func portSlot(h *host, p *qemu.Port) api.Slot {
 	}
 }
 
-// slotsLocked returns the slots of a host in natural order.
+// slotPatternsLocked returns the slot patterns of a host: its own if set
+// (an empty list too), else those of discovery; empty for every slot.
+func (s *Server) slotPatternsLocked(h *host) []string {
+	if h.cfg != nil && h.cfg.Slots != nil {
+		return h.cfg.Slots
+	}
+	return s.cfg.Discovery.Slots
+}
+
+// slotKnownLocked returns true if a slot bus of a host matches the slot
+// patterns of the host, or the host has none.
+func (s *Server) slotKnownLocked(h *host, bus string) bool {
+	pats := s.slotPatternsLocked(h)
+	if len(pats) == 0 {
+		return true
+	}
+	for _, pat := range pats {
+		if ok, _ := path.Match(pat, bus); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// slotsLocked returns the slots of a host that match its slot patterns, in
+// natural order.
 func (s *Server) slotsLocked(h *host) []api.Slot {
 	out := []api.Slot{}
 	if h.tree == nil {
@@ -219,7 +245,7 @@ func (s *Server) slotsLocked(h *host) []api.Slot {
 	}
 	var ports []*qemu.Port
 	for i := range h.tree.Ports {
-		if h.tree.Ports[i].IsSlot() {
+		if h.tree.Ports[i].IsSlot() && s.slotKnownLocked(h, h.tree.Ports[i].Bus) {
 			ports = append(ports, &h.tree.Ports[i])
 		}
 	}

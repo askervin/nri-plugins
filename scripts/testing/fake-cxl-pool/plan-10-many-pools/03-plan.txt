@@ -1,0 +1,110 @@
+plan-10: implementation plan
+============================
+Written 2026-10-21 (orchestrator). Two streams, POOL and E2E, run at the
+same time on disjoint files; E2E runs test19 only after POOL is done.
+Then one review (05-review.txt), fixes by the owning stream, final
+status (09-status.txt). Paths as in 00-README.
+
+Rules for every stream
+----------------------
+- Read first: N/.github/skills/coding-style/SKILL.md, run-e2e-tests/
+  SKILL.md, build-nri-policy-images/SKILL.md; this directory's 00, 01,
+  02 (and 01-research-multi-pool.txt when it exists); P/README.md,
+  docs/memory/cxl/pool.md and e2e.md; then the sources your stream names.
+- Nothing committed. Edit only the files your stream owns; a change
+  elsewhere is a "Request" in your status file 04-status-<S>.txt.
+- Plain ASCII in code, comments and docs. Function comments say what,
+  not how or who calls. Document current state only.
+- No host installs, no native builds besides the project's make targets.
+  The VMs belong to stream E2E alone. One run_tests.sh at a time.
+- Status file 04-status-<S>.txt: what changed per file, deviations from
+  02-design with reasons, verification commands and their results
+  (copy the decisive output lines), open points, Requests; end with the
+  line "<S> done".
+
+POOL  fake-cxl-pool server and controller, their docs
+  Owns: P/pkg/**, P/cmd/**, P/README.md, P/config.example.yaml,
+        P/deploy/fake-cxl-pool-controller.yaml (header note only),
+        docs/memory/cxl/pool.md.
+  Do (02-design D4-D17), in this order so that E2E can build early:
+   1. Server: name (D4), discovery.control (D6), slots (D7), adoption
+      serial check (D8), config example block (D5), unit tests (D9).
+   2. Controller: ReconcilePoolWithName (D11), pool name from the server
+      (D10), node selector and sync order (D12, D13), unit tests (D15).
+   3. README.md and pool.md (D16, D17).
+  Checks: make -C P (all three binaries), make -C P test, make -C P lint;
+    cd N && go vet ./scripts/testing/fake-cxl-pool/... ; golangci-lint
+    on the changed packages if it runs in this tree (the whole tree may
+    stop at the user's untracked
+    cmd/plugins/balloons/policy/podresourcehints_test.go: say so);
+    a smoke run on the host without VMs: start two servers with -config
+    files of distinct names/ports/dirs/state and discovery.qemu: false
+    (or names that match nothing), check GET /status of both (name),
+    stop them. Do not touch the VMs or the server on 127.0.0.1:9909.
+  Done: status lists every config key and its default, every new log
+    and error text (E2E greps them), the published slice shape (one
+    example in YAML), and the test results.
+
+E2E  the third VM, the framework helpers, test19, the e2e docs
+  Owns: E/** (n4-cxl-shared-0/, n4-cxl-shared-2/, dra.source.sh),
+        docs/memory/cxl/e2e.md, N/.github/skills/run-e2e-tests/SKILL.md.
+  Phase 1 (does not need POOL's binaries):
+   1. VM0: the topology directory (D18); create the VM:
+        cd N/test/e2e && qemu_bin=$HOME/github.com/qemu/qemu/build/
+        qemu-system-x86_64 ./run_tests.sh
+        memory.test-suite/dra-driver-cxl/n4-cxl-shared-0/test00-up
+      (the kernel RPMs come from the e2e cache: test00-up tells if not).
+      Start it early: it takes long. Verify the VM: patched qemu, the
+      serials, VMNET_* in its env, product_uuid.
+   2. The three-node cluster: n4-cxl-shared-2/test00-up (D19), run it,
+      kubectl get nodes shows three Ready nodes without taints.
+   3. pool.source.sh (D20) and dra.source.sh (D21); keep every existing
+      caller working; shellcheck-clean where the file was.
+   4. Existing tests updated (D22). Run test10 and test13 against the
+      three-node cluster with the CURRENT fake-cxl-pool binaries (before
+      POOL lands they still publish allNodes: expect test10's new
+      nodeSelector assertion to fail until POOL is done; everything else
+      must pass; say what you saw).
+   5. Write test19 (D23) and the docs (D24).
+  Phase 2 (after 04-status-POOL.txt ends with "POOL done"; the
+    orchestrator tells you):
+   6. make -C P; run test10, test11, test13 (regression: the new
+      controller with the real node selector), then test19 until it
+      passes. Fix what is yours; anything in P or D is a Request with
+      the evidence (log lines, JSON). If pool C over HMP is unfit (C3:
+      refused connections, missed deletions), say so with the evidence
+      and leave test19 at pools A and B with step F and G rewritten for
+      two pools (F: a pod on VM0 with b-shared0 and b-pooled0; G
+      dropped); 02-design O2 names the fallback for later.
+   7. test19 passes twice in a row; test10, test11, test13 pass once
+      after it. Record the run times.
+  Checks: shellcheck on changed .sh files where it was clean before;
+    ./run.sh help for new script API functions prints their usage.
+  Done: status lists the VM0 facts (name, uuid, VMNET_IP), the helper
+    API changes, the test results with output dirs, and the docs.
+  Before any run: a fake-cxl-pool-server (pid 2484219) listens on
+    127.0.0.1:9909 (01-findings F15). Find out what it is (its cmdline,
+    config, attachments: curl http://127.0.0.1:9909/api/v1/attachments);
+    if it holds no attachments and is a leftover of the demo (plan-8-demo
+    test90-demo-setup) or of a dead test, stop it with SIGTERM and note
+    it in the status; if it holds attachments, stop and ask the
+    orchestrator (write the question in the status file and stop).
+
+Review (after both streams)
+  A reviewer (best model, high effort) reads 02-design and both status
+  files and reviews the diff (git diff and the untracked files of P, E,
+  docs) for correctness against the design, the contract (pool.md), race
+  conditions in the controller (publish vs reconcile order, node set
+  changes), the server's slot filter and adoption, shell robustness of
+  the helpers (quoting, arrays, traps, pattern matches), and the test's
+  assertions (would they catch a wrong node selector, a wrong pool, a
+  missing attachment). Findings in 05-review.txt with file:line and a
+  severity; the owning stream fixes them; the orchestrator reruns test19.
+
+Verification matrix
+  unit: make -C P test (server, controller, api, client)
+  e2e:  n4-cxl-shared-0/test00-up, n4-cxl-shared-2/test00-up (three
+        nodes), test10, test11, test13, test19 (twice)
+  docs: every reference to the two-node cluster updated (grep "two
+        nodes", "two-node", "VM1 and VM2" in docs/, E, P/README.md,
+        SKILL.md), pool.md's example slice validates as YAML.
