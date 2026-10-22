@@ -1,7 +1,0 @@
-PRESENTER pool L2/9                       08:55:43
-the writer asks for the whole device, exclusively
-$ kubectl exec writer -- cxl-request request
-    --serial 0xc1ae0001 --mode dax
--> lease c6b76edd Ready dax rw (exclusive)
--> dax /dev/dax0.0
-   5.6 s (command 5.6 s)

@@ -1,6 +1,0 @@
-PRESENTER local L6/9                      08:47:43
-the writer is done and releases the device
-$ kubectl exec writer -- cxl-request release --all
--> released: 17e76e97 Released
--> readers' leases allocated after 0.3 s
-   2.2 s (command 1.9 s)

@@ -1,4 +1,0 @@
-MEMORY: dax0.0 on vm2                     08:45:39
-at 0: (zeros)
-0000: 00000000 00000000 00000000 00000000
-used by: writer rw (exclusive)

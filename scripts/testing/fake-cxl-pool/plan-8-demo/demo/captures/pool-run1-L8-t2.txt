@@ -1,6 +1,0 @@
-PODS & LEASES                             08:56:33
-POD       NODE STATE   LEASE    MEMORY
-writer    vm1  Running -        -
-reader-a  vm2  Running 61d9b4ac dax ro share
-reader-b  vm2  Running bb6b6fc0 dax ro share
-reader-c  vm1  Running dc296569 dax ro share

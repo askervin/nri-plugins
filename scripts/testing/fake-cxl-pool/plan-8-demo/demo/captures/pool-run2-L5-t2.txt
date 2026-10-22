@@ -1,6 +1,0 @@
-PODS & LEASES                             08:59:49
-POD       NODE STATE   LEASE    MEMORY
-writer    vm1  Running 965a0ecc dax rw excl
-reader-a  vm2  Running 49be12a1 waiting
-reader-b  vm2  Running 39828662 waiting
-reader-c  vm1  Running fd655792 waiting

@@ -1,4 +1,0 @@
-SCHEDULER: DEVICES AND CLAIMS             08:59:27
-drivers: vm2 ok  vm1 ok  pool ok
-shared0 @pool 256Mi shared
-  exclusive: writer rw

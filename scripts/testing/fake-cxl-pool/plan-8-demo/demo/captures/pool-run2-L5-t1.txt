@@ -1,9 +1,0 @@
-PRESENTER pool L5/9                       08:59:46
-readers ask for a read-only share: they must wait
-$ for r in reader-a reader-b reader-c; do kubectl
-    exec $r -- cxl-request request --serial
-    0xc1ae0001 --shared --read-only --wait 0s;
-    done
--> reader-a Pending, reader-b Pending,
--> reader-c Pending
-   0.7 s (command 0.7 s)

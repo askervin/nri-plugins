@@ -1,3 +1,0 @@
-NODES: CXL IN THE KERNEL                  08:56:20
-vm1 mem0 c1ae0001 256M  no region
-vm2 mem0 c1ae0001 256M  no region

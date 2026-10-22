@@ -1,5 +1,0 @@
-PRESENTER pool L8/9                       09:00:15
-a reader tries to write: the kernel refuses
-$ kubectl exec reader-a -- /demo/write "overwrite"
--> refused: read-only (EACCES)
-   0.5 s (command 0.5 s)

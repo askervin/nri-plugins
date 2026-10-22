@@ -1,6 +1,0 @@
-POOL: fake-cxl-pool-server                08:55:51
-shared0 256Mi shared  attached
-  attached: vm1 exclusive
-at 0: "dra-one-writer 2026-10-20T08:18:34.07630404
-0000: 6472612d 6f6e652d 77726974 65722032
-file /tmp/fake-cxl-pool/shared0.raw

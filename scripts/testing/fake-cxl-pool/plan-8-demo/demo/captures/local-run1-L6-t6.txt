@@ -1,4 +1,0 @@
-MEMORY: dax0.0 on vm2                     08:46:08
-at 0: "Hello from the writer, 05:45:43"
-0000: 48656c6c 6f206672 6f6d2074 68652077
-shared by: reader-b ro, reader-c ro, reader-a ro
