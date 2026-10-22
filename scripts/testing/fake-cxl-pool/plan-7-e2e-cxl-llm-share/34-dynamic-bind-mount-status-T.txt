@@ -1,0 +1,308 @@
+plan-7 dynamic bind mounts: stream T (e2e) status
+=================================================
+Phase 1 (desk) written 2026-10-22. No VM access, no run_tests.sh, nothing
+committed. Paths as in 30: N = nri-plugins, E = N/test/e2e/memory.test-suite/
+dra-driver-cxl, S2 = E/n4-cxl-shared-2. The contract is 32 sections 9 and
+10; D's working tree was looked at only to confirm texts (api.go V2-V10,
+lease_claims.go mount options, pool.go "unpreparing claim ..." logged with
+klog.Error), nothing of D was changed.
+
+1. Files changed
+----------------
+E/dra.source.sh
+- DRA_LEASE_FS_DIR=/var/lib/kubelet/plugins/cxl.nri.io/lease-fs (32 s9),
+  DRA_LEASE_FS_CTR_DIR=/run/cxl/fs (the container side, api.FsDir).
+- dra-lease-fs-mounts VMDIR (32 s9): JSON list sorted by target of the
+  mounts under DRA_LEASE_FS_DIR, keys target, source, fstype, options
+  (FS-OPTIONS, superblock), vfs (VFS-OPTIONS). Reads findmnt -J -l (no
+  whitespace parsing); COMMAND_OUTPUT has the list; non-zero if unreadable.
+- dra-lease-template-yaml [NAME] (32 s9): the ResourceClaimTemplate
+  (default cxl-lease), one request "lease" of class cxl-lease.
+- Added (not named in 32, needed by both tests):
+  dra-cdi-mounts CDI: the mounts of a CDI device (dra-cdi-device lines) as
+  JSON in spec order (block and flow option lists, quoted values).
+  dra-lease-cdi-assert VMDIR CLAIM-UID: lease-<uid> of kind nri.io/cxl,
+  env CXL_LEASE_SOCKET=/run/cxl/cxl.sock, exactly three bind mounts:
+  $DRA_LEASE_DIR/<uid> at /run/cxl [rbind, rw], $DRA_LEASE_FS_DIR/<uid> at
+  /run/cxl/fs [rbind, ro, rslave], $DRA_REQUEST_NODE_BIN at
+  /usr/local/bin/cxl-request [bind, ro]; /run/cxl before /run/cxl/fs in
+  the spec (other order not asserted).
+S2/llm.source.sh
+- llm-server-pod-yaml NAME VMDIR KIND CLAIM SCRIPT: KIND claim
+  (ResourceClaim CLAIM as claim "mem", as before), lease (claim "lease"
+  from ResourceClaimTemplate CLAIM, resources.claims lease), none (no
+  claim; llm-warm). Rendered YAML of all three parsed with python yaml.
+- llm-lease-reader-script KEY ACCESS NAME THREADS: writes /tmp/reader.sh
+  (quoted heredoc: echo "CXL_LEASE=$CXL_LEASE", then llm-reader-script
+  KEY THREADS), echoes the command line and runs
+    exec cxl-request request --serial 0x<key> --shared --read-only --mode fs
+         --access ACCESS [--name NAME] --wait 120s --exec sh /tmp/reader.sh
+  So the log has "cxl-request request ...", CXL_LEASE=<id>, and the env,
+  mount, files, pmem and write-probe lines of llm-reader-script; llama-
+  server runs on CXL_<KEY>_PATH of the lease. The rendered container
+  command passes sh -n.
+S2/test16-cxl-llm-share/code.var.sh
+- Header: the two dynamic readers, D2, proofs of leases, pause image pull.
+- READER_KIND=([direct-b]=lease [cached-c]=lease), READER_NAME=([direct-b]=
+  models), READER_PATH=([cached-b]=/models) (direct-b's /models claim path
+  is gone: it is a lease now); READER_LEASE, READER_UID, READER_CLAIM,
+  READER_CLAIM_UID; LEASE_TEMPLATE=cxl-lease; PAUSE_IMAGE=registry.k8s.io/
+  pause:3.10 (pulled on both VMs with the other images).
+- The template is applied once at the start of C.
+- reader-start: lease readers get llm-server-pod-yaml lease with
+  llm-lease-reader-script; after the page cache measurement (so the window
+  is unchanged) lease-reader-found: "cxl-request list" has exactly one
+  lease, Ready, 8 hex digits, path == /run/cxl/fs/<READER_NAME or id>;
+  READER_PATH from the response; the pod uid; the lease claim (from
+  status.resourceClaimStatuses "lease") allocated to the lease device of
+  cxl.nri.io on the node, its uid.
+- reader-check: common proofs as before (env with the PATH of the lease,
+  mount line ro erofs at the path, no pmem, write refused, answer, frames,
+  RssAnon, cached-serve-check), then claim-check (the old claim and CDI
+  part) or lease-check:
+  - CXL_LEASE of the log == the lease id;
+  - "cxl-request list": exactly [(id, Ready, pool, fs, access, True, True,
+    0xc1ae0001, $LLM_NS_SIZE, path)], no "node" or "dax" field, env ==
+    the CXL_C1AE0001_* lines of the log;
+  - "cxl-request env --lease ID" == those lines + CXL_LEASE=<id>, sorted;
+  - "cxl-request fd --lease ID --exec true": exit 3, "lease ID is not a
+    dax lease; use env";
+  - lease-companion-check: pod cxl-lease-<id> Running on the reader's
+    node, owned by the reader pod, labels and annotation
+    (dra-companion-meta-check, requester <ns>/<reader>/main), holds only
+    its claim, pause image, no resources.claims; claim cxl-lease-<id>
+    owned (controller) by the reader pod, labels and annotation,
+    subrequests == [(cxl-pool-persistent, [serial selector], {requests:
+    {shares: "1"}})], configs == [(cxl-pool.nri.io, {apiVersion, kind
+    DeviceConfig, mode fs, readOnly True, access})] exactly (so no path),
+    results [(cxl-pool.nri.io, llm0)] on the node, Attached True, shares 1,
+    data persistent and not exclusive; no CDI device with the claim uid;
+  - dra-lease-cdi-assert on the reader's node;
+  - lease-bind-assert: exactly one mount at $DRA_LEASE_FS_DIR/<lease claim
+    uid>/<name>, erofs, the same source and superblock options as the node
+    mount $DRA_POOL_MOUNT_DIR/c1ae0001-<access>, vfs options include ro,
+    nosuid, nodev.
+- D2 (new, after D): readers-stop --keep direct-a; mounts-assert VM2
+  direct cached; lease-bind-assert direct-b; VM2 has a region; direct-b
+  answers. "cxl-request release --lease ID --wait 5s" in direct-b: exit 3,
+  response state Releasing. Wait (60 s) for the driver log of VM2 to match
+  "lease ID: unmounting <bind>: .*device or resource busy". Then: bind,
+  node mounts direct+cached, region still there, direct-b answers, pod
+  cxl-lease-<id> exists with a deletionTimestamp, claim cxl-lease-<id>
+  exists, "cxl-request list" == [(id, Releasing)], llm0 attached to VM2.
+  kill -KILL of llama-server (its pid from llm-server-pid, killed from the
+  node); pod direct-b Failed (60 s), exit code 137; wait (90 s) until no
+  pod or claim cxl-lease-<id of direct-b>; no mount under
+  DRA_LEASE_FS_DIR on VM2; mounts-assert VM2 cached; region still there;
+  cached-a and cached-b answer; VM1 unchanged (mounts-assert direct cached,
+  cached-c's bind, cached-c's companion Running). Delete the direct-b pod,
+  wait (60 s) until its lease claim is gone, lease-dirs-gone direct-b (60
+  s): neither $DRA_LEASE_DIR/<uid> nor $DRA_LEASE_FS_DIR/<uid> on VM2.
+  TIMINGS: release refused after X s; lease and companion gone Y s after
+  the kill.
+- E: readers-stop direct-c cached-a cached-b cached-c (lease readers: wait
+  90 s until their lease claim and companion pod/claim are gone, then
+  llm0-free); the template deleted; no pods, claims or claim templates in
+  the namespace; lease-dirs-gone cached-c; per node additionally
+  lease-fs-empty: no mount under DRA_LEASE_FS_DIR, nothing under it
+  (find -mindepth 1, waits 60 s, fails closed on an unreadable VM).
+- exit-cleanup: dra-lease-fs-mounts of both VMs counts as held, as the
+  node mounts do; the hand-cleanup text says to unmount lease mounts first.
+- New local helpers: reader-kind, lease-reader-found, claim-check,
+  lease-check, lease-companion-check, lease-bind-assert, lease-dirs-gone,
+  vm-region-assert (ls /sys/bus/cxl/devices, as llm0-free: cxl-dump may
+  not list pmem regions), lease-fs-empty; readers-stop gains --keep.
+S2/test12-dra-live-attach/code.var.sh
+- A2 texts: 'invalid mode "memory" (numa, dax or fs)', "readOnly needs
+  mode dax or fs". New refusals, exactly 32 s10:
+    2 "mode fs needs readOnly"  request --serial $SHARED_SERIAL --shared --mode fs
+    2 'invalid access "slow" (direct or cached)'  request --mode fs --read-only --access slow --shared --size 64Mi
+    2 "access needs mode fs"  request --access cached --size 64Mi
+    2 "name needs mode fs"  request --name x --size 64Mi
+    2 'invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")'
+        request --mode fs --read-only --name a/b --shared --size 64Mi
+        (32 gives no arguments: these violate V7 only)
+    2 "mode fs needs source pool"  request --source local --mode fs --read-only --shared --size 64Mi
+    1 "device 0xc1ae0001: mode fs needs a persistent device"
+        request --serial $SHARED_SERIAL --shared --read-only --mode fs
+  Each violates exactly one rule, so the V order does not matter. The
+  existing "nothing left" checks follow.
+- A: dra-lease-cdi-assert of the borrower's lease claim; the node has
+  $DRA_LEASE_FS_DIR/<uid>; in container main /run/cxl/fs is an empty
+  directory, its mountinfo line is "ro" and "master:N" (a slave), touch
+  /run/cxl/fs/x fails with "Read-only file system"; container idle has
+  no /run/cxl/fs (with no socket and no CLI, as before).
+- F: $DRA_LEASE_FS_DIR/<uid> is gone after the pod (like the socket dir).
+- borrower-yaml uses dra-lease-template-yaml; header mentions /run/cxl/fs.
+- The pre-existing SC2015 at the mknod check got braces (same logic), so
+  that the file has 0 shellcheck findings.
+N/docs/memory/cxl/e2e.md: the rows of test12 (the fs directory, the fs
+refusals) and test16 (two dynamic readers, one next to static mounts of
+the same device on VM2, the release that waits, the device kept).
+
+2. Checks (phase 1)
+-------------------
+  bash -n of dra.source.sh, llm.source.sh, test12, test16           ok
+  cat dra.source.sh S2/{pool,cxl,llm}.source.sh test16 | bash -n     ok
+  the same with test12                                                ok
+  shellcheck -s bash -e SC2154,SC2034,SC1090,SC2148,SC2016:
+    dra.source.sh, llm.source.sh, test12, test16 (each alone)         0 findings
+    the test16 and the test12 concatenations                          0 findings
+  every S2/test1*/code.var.sh concatenated with the sources: bash -n ok;
+    shellcheck of the concatenation 0 for test10-14, 16, 18; test15 5,
+    test17 2, test19 6 findings, all cross-file variable type warnings of
+    those tests' own code (with the HEAD sources they have 8, 5 and 9: my
+    renames of two locals, claims -> pod_claims in llm-server-pod-yaml and
+    keep -> free in readers-stop, removed the rest); their files alone: 0.
+  Desk tests with mocks (host): dra-cdi-mounts on a lease and a claim CDI
+    device (block and flow options); dra-lease-cdi-assert accepts the
+    three mounts in either order of the fs and CLI mounts; dra-lease-fs-
+    mounts filters by prefix (not the directory itself); lease-bind-assert
+    accepts a ro,nosuid,nodev bind and rejects one without nosuid/nodev;
+    lease-companion-check on a synthetic companion pod and claim; lease-
+    check (list, env, fd) on a synthetic list response; borrower-yaml and
+    the three llm-server-pod-yaml kinds parse (python yaml).
+
+3. Choices and interpretations (no contract name, text or path changed)
+-----------------------------------------------------------------------
+I1 D2.3 "no cxl-lease-* pod or claim": the companion of cached-c (VM1)
+   legitimately lives until E, so D2 waits for the objects of direct-b's
+   lease only and checks that cached-c's companion still runs; E waits
+   for all of them.
+I2 "kill llama-server (pkill llama-server)": kill -KILL of the host pid of
+   llama-server (llm-server-pid) from the node, not pkill in the
+   container: the llama.cpp image is not known to have procps, and a
+   kubectl exec in a container whose pid 1 exits ends unreliably. SIGKILL
+   makes the exit status deterministic (137, the pod Failed); SIGTERM
+   would let llama-server exit 0 and the pod Succeed, against 32's
+   "the pod is Failed".
+I3 Extra proofs: the lease reader's log names CXL_LEASE (echo in
+   reader.sh), checked against the list; the lease response has no node
+   and no dax field; the companion DeviceConfig is the exact dict; the
+   lease bind has the superblock options of the node mount; the pod exit
+   code 137; test12's /run/cxl/fs is a slave mount (master:N) in main and
+   its host directory exists and goes.
+I4 The region checks of D2 use /sys/bus/cxl/devices (region*), like
+   llm0-free, not cxl-dump.
+
+4. Requests
+-----------
+None.
+
+5. Phase 2 plan (when the orchestrator says D's image is ready)
+---------------------------------------------------------------
+From N/test/e2e, one test at a time, never two at once:
+  ls -1t ../../build/images/nri-dra-driver-cxl-image-*.tar | head -n 1   (must be D's image id)
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share   (second PASS in a row)
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+  for t in test10-dra-pooling test11-dra-sharing test13-dra-shared-one-writer-many-readers \
+           test14-dra-local-memdev test15-dra-local-live-attach test17-dra-local-shared \
+           test18-dra-local-shared-one-writer-many-readers test19-many-pools; do
+      ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/$t
+  done
+Recorded per run: time, verdict, the TIMING lines of test16 (lease readers
+start-to-serve, release refused, lease gone after the kill), final VM state.
+When a run fails, in this order:
+  O=N/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/dra-driver-cxl/<test>
+  - $O/run.sh.output (the failing assertion), $O/<reader>.log (the reader
+    and cxl-request lines), $O/nri-dra-driver-cxl.vm.log and .vm1.log
+    (dra-plugin-log-save), $O/trace.txt, $O/dra.*.json of the failed wait.
+  - On a VM still running (ssh -F <vmdir>/.ssh-config node ...):
+      kubectl logs -n kube-system <driver pod of the node> -c nri-dra-driver-cxl | grep -E 'lease|bound|unbound|unmounting|unprepar'
+      kubectl describe pod,resourceclaim -n cxl-pool-demo cxl-lease-<id>
+      kubectl describe pod -n cxl-pool-demo <reader>
+      findmnt -R /var/lib/kubelet/plugins/cxl.nri.io/lease-fs; findmnt -rn | grep -E 'lease-fs|cxl-pool.nri.io/mounts'
+      ls -laR /var/lib/kubelet/plugins/cxl.nri.io/lease-fs /var/lib/kubelet/plugins/cxl.nri.io/leases
+      kubectl exec -n cxl-pool-demo <reader> -- grep /run/cxl /proc/self/mountinfo
+      cat /var/run/cdi/cxl-leases.yaml (or /etc/cdi), jq . preparedPoolClaims.json, leases.json
+  - A bind on the host that does not appear in the container (32 s11): no
+    test change; report with the host findmnt and the container mountinfo,
+    D measures.
+  - A driver bug (wrong text, field, mount, order): a Request here with
+    the driver log lines; no Go change by T.
+  - A test bug: fix, bash -n + shellcheck again, rerun.
+  - Cleanup: exit-cleanup leaves a held device for debugging; the next run
+    repairs it (pool-vm-reset restarts a VM with CXL devices); otherwise
+    dra-uninstall / pool-vm-reset from a test as the plan says, noted here.
+
+T phase 1 done
+
+
+6. Phase 2, interim runs (2026-10-22, before the final image)
+-------------------------------------------------------------
+Read 34-dynamic-bind-mount-status-D.txt first (log lines, D-1..D-7); no
+test change was needed for them. All from N/test/e2e, one at a time.
+The image of each run is the one the e2e framework imported (ctr images
+import line of the run output).
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+    run 1  11:47:54  326 s  image c4fcce123f5d  PASS
+    run 2  11:53:35  303 s  image c4fcce123f5d  PASS
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+           11:58:47  360 s  image c4fcce123f5d  PASS
+  the rest, each ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/<test>:
+    test10  89 s c4fcce123f5d PASS     test11 110 s c4fcce123f5d PASS
+    test13 203 s c4fcce123f5d PASS     test14 191 s c4fcce123f5d PASS
+    test15 265 s c089afbfea59 PASS     test17 261 s abb97a5cbcda PASS
+    test18 225 s abb97a5cbcda PASS     test19 174 s abb97a5cbcda PASS
+  (D's images changed during the loop; dra-install takes the newest.)
+Evidence of test16 run 1 (the proofs that are new):
+  direct-b: lease a7be58fd at /run/cxl/fs/models; cached-c: lease
+  d80a624b at /run/cxl/fs/d80a624b (default name).
+  binds: vm  lease-fs/<uid>/models erofs on /dev/pmem0 (ro,user_xattr,acl,
+  dax=always), vfs ro,nosuid,nodev,relatime == the direct node mount;
+  vm1 lease-fs/<uid>/d80a624b erofs on /dev/loop0 (dax=never), vfs
+  ro,nosuid,nodev,relatime == the cached node mount. Exactly one host
+  mount per bind (open question of phase 1 settled). The fs lease size is
+  the namespace size (534773760), as asserted.
+  D2: release --wait 5s -> exit 3, Releasing; driver log
+    "cxl-pool.nri.io: unpreparing claim cxl-pool-demo/cxl-lease-a7be58fd:
+     lease a7be58fd: unmounting /var/lib/kubelet/plugins/cxl.nri.io/
+     lease-fs/<uid>/models: device or resource busy" (kubelet retried
+    about every second); direct-b kept answering; after kill -KILL the
+    pod Failed with 137 and the lease and companion were gone in 8.6 s
+    (run 2: 4.4 s); VM2 kept the cached node mount and the region.
+  test12: container main's /run/cxl/fs "ro,relatime master:62" (a slave),
+  touch -> Read-only file system; all new refusal texts as in 32.
+TIMING lines, run 1 / run 2 (s):
+  lease readers start to serve: direct-b 8.95 / 8.88, cached-c 8.91 / 8.95
+  (claim readers 8.22-8.39)
+  page cache of the pod: direct-b 4 / 4 kB; cached-c 387416 / 387416 kB
+  release refused after 5.42 / 5.42 (--wait 5s)
+  lease and companion gone after the kill 8.57 / 4.41
+
+7. Phase 2, final runs (2026-10-22, image nri-dra-driver-cxl-image-abb97a5cbcda,
+   the newest in build/images at the start and imported by every run)
+-------------------------------------------------------------------------------
+From N/test/e2e, one at a time, each
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/<test>
+   1 test16-cxl-llm-share    12:30:33  303 s  PASS
+   2 test16-cxl-llm-share    12:35:36  300 s  PASS   (twice in a row)
+   3 test12-dra-live-attach  12:40:36  354 s  PASS
+   4 test10-dra-pooling      12:46:30   92 s  PASS
+   5 test11-dra-sharing      12:48:02  111 s  PASS
+   6 test13-dra-shared-one-writer-many-readers       12:49:53  202 s  PASS
+   7 test14-dra-local-memdev                         12:53:15  190 s  PASS
+   8 test15-dra-local-live-attach                    12:56:25  260 s  PASS
+   9 test17-dra-local-shared                         13:00:45  259 s  PASS
+  10 test18-dra-local-shared-one-writer-many-readers 13:05:04  226 s  PASS
+  11 test19-many-pools                               13:08:50  169 s  PASS
+(test00-up and test01 not run: not needed, the cluster was up.)
+TIMING lines of the lease readers and D2, run 1 / run 2:
+  direct-b (lease, VM2) pod created until serving 9.08 / 8.92 s;
+    10 tokens, generation 39.8 / 31.7 tokens/s; RssAnon 134016 / 134020 kB
+  cached-c (lease, VM1) pod created until serving 8.89 / 8.97 s; read
+    from CXL through loop0 388060 kB; 128 tokens served, 0 bytes from CXL
+  release of the mapped lease refused (still Releasing) after 5.43 / 5.41 s
+  lease and companion gone 5.81 / 4.31 s after llama-server was killed
+  (claim readers serve 8.2-8.4 s after pod creation; all other TIMING
+  values as in section 6.)
+No test change was needed in phase 2; no driver failure; no Requests.
+Final state: VM0, VM1, VM2 on 7.3.0-rc4, all three nodes Ready; no CXL
+memdevs or regions; no mounts under lease-fs or cxl-pool.nri.io/mounts;
+no loop device; /var/lib/kubelet/plugins/cxl.nri.io/lease-fs empty on VM1
+and VM2 (absent on VM0), no leases/ directory; no namespace cxl-pool-demo,
+no helm release; port 9909 free; /tmp/fake-cxl-pool/llm0.* removed.
+Nothing committed.
+
+T done

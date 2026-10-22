@@ -1,0 +1,290 @@
+plan-7 dynamic bind mounts: feasibility findings
+================================================
+Written 2026-10-22 (orchestrator) from the code of branch 5jg-cxl at
+295376a27 (working tree clean but for untracked files), the earlier plan-7
+files (sources in parentheses: IN = 11-research-IN-integration.txt, P1 =
+12-proto-P1-erofs-pmem.txt, F = 21-erofs-findings.txt, D22 =
+22-erofs-design.txt) and one probe on VM2 (section 3). Paths as in 30.
+
+Verdict: feasible, no obstacle. Section 5 lists what the implementation
+must get right; none of it is a blocker.
+
+1. What the driver has today
+----------------------------
+L1  Leases (D/broker.go, lease_claims.go, lease_store.go, lending.go;
+    docs/memory/cxl/leases.md). A claim on DeviceClass cxl-lease gives
+    its containers the CDI device nri.io/cxl=lease-<claim uid>: the host
+    directory <cxl.nri.io data dir>/leases/<claim uid> bind-mounted rw at
+    /run/cxl (socket cxl.sock in it) and the static cxl-request at
+    /usr/local/bin/cxl-request (leaseCDIDevice, lease_claims.go:99-125).
+    "cxl-request request" makes the broker store a lease (Creating),
+    create a companion ResourceClaim and pause Pod cxl-lease-<id> on the
+    requester's node, and wait. The companion claim carries, per source
+    driver, a DeviceConfig {mode, readOnly} (companionRequest,
+    broker.go:838-891) and requests class cxl-local/-shared or
+    cxl-pool/-shared (companionDevices, broker.go:898-945). kubelet
+    prepares the companion claim through the driver of the device; the
+    pool driver recognizes a companion by its label cxl.nri.io/lease
+    (leaseOf), asks the broker (OnLending -> lendRecord {Lease, Pod,
+    Container}), prepares the device like any pool claim, lends numa
+    nodes (companionLender.lend), drops the CDI devices of the companion
+    (dropCDIDevices; buildCDISpec skips claims with pc.Lend) and tells the
+    broker (OnPrepared -> Ready). A dax lease passes an fd with the
+    response (respond, SCM_RIGHTS). Release: the broker revokes numa
+    nodes, deletes the companion; kubelet unprepares the companion
+    claim; the pool driver revokes again (idempotent) and releases the
+    device; the lease is dropped when both objects are gone.
+L2  The lease protocol validates modes numa and dax only (A/api.go
+    validateValues: 'invalid mode "X" (numa or dax)'; validateRequest:
+    "readOnly needs mode dax"), both asserted by test12 (F15) and listed
+    in leases.md. The lease table (lease struct) has no filesystem
+    fields. leases.md "Limitations" says modes block and fs are for
+    claims only and that the companion classes select no persistent
+    device.
+L3  Mode fs for claims (D/pool_persistent.go, D22 sections 4, 5, 10):
+    the pool driver mounts the erofs of /dev/pmemK once per (serial,
+    access) at <pool data dir>/mounts/<hex>-<access> (ensureNodeMount:
+    direct dax=always on the block device, cached dax=never on a
+    read-only direct-I/O autoclear loop device), flags
+    MS_RDONLY|MS_NOSUID|MS_NODEV, and gives the container a CDI bind
+    mount of it (fsMount, options bind,ro,nosuid,nodev). The prepared
+    device records Access, Path, NodeMount, LoopDevice, BlockDevice and
+    its numbers (preparedPoolDevice). Unprepare (releaseDevices):
+    unmount the node mount when no other prepared claim uses it
+    (mountUsed; umount2 without MNT_DETACH; EBUSY fails the Unprepare,
+    kubelet retries), then, when no other prepared claim uses the serial,
+    wait up to 10 s until nothing holds /dev/pmemK (Holder: no loop
+    backing file names it, O_RDONLY|O_EXCL open succeeds) and release the
+    region; else fail (kubelet retries). restoreMounts at start mounts
+    missing node mounts of prepared claims again and unmounts mounts
+    under mounts/ that no prepared claim uses.
+L4  A companion claim with DeviceConfig {mode: fs, readOnly: true,
+    access} would already be prepared by L3 unchanged: poolModeFor
+    accepts fs on a persistent device, shared or not (exclusive fs is
+    allowed; only writable block needs exclusivity), checkSamePreparation
+    lets block and fs claims and both accesses of one device coexist on a
+    node, and the node mount is reused (ensureNodeMount finds it
+    mounted). Nothing in L3 distinguishes a claim from a companion: the
+    node mount reference count and the region release already include
+    companion claims through p.prepared.
+L5  The broker's view of a prepared companion device is lentDevice
+    (lending.go:44-57): Driver, Source, Request, Device, Pool, Serial,
+    Shared, Size, Mode, ReadOnly, Node, DaxDevice. No Access, no node
+    mount. The lendRecord (persisted with the prepared claim as pc.Lend,
+    preparedPoolClaims.json) has Lease, Pod, Container, Nodes.
+L6  The driver pod (deployment/helm/dra-driver-cxl/templates/daemonset.yaml)
+    is privileged, hostPID, and mounts /var/lib/kubelet/plugins with
+    mountPropagation: Bidirectional (D22 section 5, proved by test16: the
+    node mounts reach the host and the readers' containers). On the VMs
+    / and /var (btrfs subvolume) are shared mounts; /var/lib/kubelet is
+    not a mount of its own.
+L7  The broker's DataDir is the cxl.nri.io plugin directory
+    (/var/lib/kubelet/plugins/cxl.nri.io, driver.go:303-312); the pool
+    driver's state file is in /var/lib/kubelet/plugins/cxl-pool.nri.io.
+    Both are under the Bidirectional volume. The pool driver gets its
+    nodeMounter (mount, unmount, Mounted, loop ioctls, Holder; a fake in
+    the unit tests) from newPoolDriver; the broker has no mounter.
+L8  cxl-request (C/main.go) parses "op --opt [ARG] ... [--exec CMD...]",
+    runs api.Request.Validate before connecting (exit 2 on refusal), and
+    with --exec runs CMD with api.ExecEnv (CXL_<KEY>_* of the lease,
+    CXL_LEASE, the fd as fd 3 for dax). api.Env already produces PATH,
+    ACCESS and READONLY=1 for ModeFs (used by claims), and api.Memory
+    has Path and Access. So the environment side of fs leases exists;
+    only Request/Response fields and the lease table are missing.
+L9  The pool controller publishes the attribute persistent on every pool
+    device (F14; fake-cxl-pool/pkg/controller/publisher.go:64), so the
+    broker can tell a persistent device from the ResourceSlice when a
+    request names a serial (deviceBySerial reads shared the same way).
+    Shared devices publish the capacity shares (no requestPolicy);
+    exclusive devices publish memory.
+
+2. The mechanism (IN 2.4, 3.1; P1 5.2)
+--------------------------------------
+M1  A CDI mount of a plugin-owned host directory with options
+    [rbind, ro, rslave] at /run/cxl/fs makes that directory in the
+    container a slave of the host's peer group: a mount the host makes
+    below the directory later appears in the running container, with the
+    flags it was created with; "ro" on the bind keeps the container from
+    writing the directory itself. P1 5.2 measured it with a hostPath
+    volume (mountPropagation: HostToContainer gives the OCI mount the same
+    options, plus rootfsPropagation rslave that CDI does not set and runc
+    does not need: it makes the container root MS_SLAVE|MS_REC anyway, IN
+    3.1). CDI mounts reach the OCI spec verbatim (IN 3.1), and the lease
+    CDI device already has a mount of this kind (/run/cxl, rbind rw).
+M2  Why a second, read-only host directory (IN 2.4): the container writes
+    the socket directory /run/cxl (rw bind of leases/<uid>). If the
+    plugin mounted below a container-writable directory, the container
+    could replace the mount point by a symlink and make the privileged
+    plugin mount over any host path. lease-fs/<claim uid> is written by
+    the plugin only and mounted ro.
+M3  Unmount: a bind mount that propagated into a container and is in use
+    there (a mapped or open file) makes umount2 on the host fail with
+    EBUSY (P1 5.3, probe P3 below); umount2 with MNT_DETACH succeeds
+    everywhere and leaves a live superblock whose region release crashes
+    the guest (P1 5.3, F10). The rule of D22 section 5 holds for lease
+    binds too: plain umount, EBUSY means retry later, never MNT_DETACH,
+    never release the region while a mount of the superblock exists.
+M4  Unmounting the node mount while a bind of it exists elsewhere
+    succeeds (F10: a mount's busy count is its own, not the
+    superblock's): the superblock, and the loop device of a cached
+    mount, live on through the bind, and the Holder check of L3 (O_EXCL
+    open of /dev/pmemK fails, the loop backing file still names it)
+    refuses the region release. So the lease bind must be unmounted
+    before the node mount accounting runs, and the Holder check is the
+    safety net.
+
+3. Probe on VM2 (2026-10-22, idle cluster, no CXL devices, kernel
+   7.3.0-rc4, containerd 2.4.1)
+------------------------------------------------------------------
+Two pods on VM2 (default namespace, image python:3-alpine): probe-drv,
+privileged, hostPath /var/lib/kubelet/plugins with mountPropagation
+Bidirectional (as the driver DaemonSet); probe-app, unprivileged, hostPath
+/var/lib/kubelet/plugins/probe/leases/u1 rw at /run/cxl and hostPath
+/var/lib/kubelet/plugins/probe/lease-fs/u1 readOnly with
+mountPropagation HostToContainer at /run/cxl/fs (the model of the two
+lease CDI mounts). Everything was removed afterwards; the host has no
+probe mounts or directories left (/var/lib/kubelet/plugins has cxl.nri.io
+and cxl-pool.nri.io only).
+P1  probe-app before: /run/cxl "rw,relatime" (no propagation tag),
+    /run/cxl/fs "ro,relatime master:62" (a slave of the peer group of
+    /var). The nested mount point inside the rw bind works (kubelet
+    ordered the two volumes; CDI sorts its mounts by depth likewise).
+P2  probe-drv: mount -t tmpfs probe $B/src; mount -o bind $B/src
+    $B/lease-fs/u1/m1; mount -o remount,bind,ro,nosuid,nodev
+    $B/lease-fs/u1/m1. The host saw $B/lease-fs/u1/m1 "shared
+    rw,relatime,inode64"; probe-app saw "/run/cxl/fs/m1 rw,relatime
+    master:557" and could read the file in it. A write into m1 in
+    probe-app SUCCEEDED (the tmpfs was rw and the propagated copy had the
+    source's flags); "touch /run/cxl/fs/y" failed with "Read-only file
+    system" (the ro bind of the directory holds).
+    Finding: per-mount flags set by MS_REMOUNT|MS_BIND on the plugin's
+    copy do not reach the propagated copies. The propagated copies clone
+    the mount as it was created.
+P3  probe-app held a file of m1 open (exec 3<...; sleep). probe-drv:
+    "umount $B/lease-fs/u1/m1" -> "Resource busy", rc 1. After the holder
+    exited: umount succeeded, probe-app's mountinfo lost /run/cxl/fs/m1.
+P4  Flag inheritance: probe-drv: mount -t tmpfs -o ro,nosuid,nodev
+    probe2 $B/src2; mount -o bind $B/src2 $B/lease-fs/u1/m2 (no remount).
+    probe-drv saw m2 "ro,nosuid,nodev,relatime shared:565", the host
+    "shared ro,nosuid,nodev,relatime,inode64", probe-app "/run/cxl/fs/m2
+    ro,nosuid,nodev,relatime master:565". A plain MS_BIND of a source
+    mounted with the flags yields a bind with the same flags, and the
+    propagated copies have them. The node mounts of mode fs are mounted
+    with MS_RDONLY|MS_NOSUID|MS_NODEV (L3): a plain bind of a node mount
+    is read-only, nosuid and nodev everywhere.
+P5  umount of a path that is not a mount point: ENOENT ("No such file or
+    directory", here the directory did not exist); umount2 of an
+    existing directory that is not a mount point gives EINVAL.
+Conclusion: a mount made inside the driver's Bidirectional container
+propagates to the host and into the slave bind of a running pod with the
+flags of its creation; a busy slave stops a plain umount with EBUSY. The
+chain driver container -> host -> running container, which P1 did not
+measure (P1 mounted from the host), works.
+
+4. Life cycle: who references the device, and when it is released
+------------------------------------------------------------------
+References to the erofs superblock of a device on a node, and what
+removes them:
+  a. the node mount mounts/<hex>-<access> (L3): unmounted by the pool
+     driver when no prepared claim on the node, static or companion,
+     uses it (mountUsed over p.prepared).
+  b. the CDI bind of a static claim in its container: private to the
+     container, dies with the container's mount namespace (kubelet stops
+     the containers before it unprepares the claim). Not counted; the
+     Holder check catches a container that still lives (M4).
+  c. the lease bind lease-fs/<claim uid>/<name> (new): one per fs lease,
+     made by the pool driver when it prepares the companion claim,
+     unmounted when the companion is unprepared (the lease's revoke, as
+     cpuset.mems is the revoke of a numa lease). It propagates into the
+     containers of the lease claim as slaves (d).
+  d. the slave copies of (c) in the lease claim's containers: they go
+     with (c), unless in use, which makes (c) EBUSY (M3): the Unprepare of
+     the companion fails, kubelet retries, the lease stays Releasing.
+     They also go with the container's mount namespace.
+  e. a loop device of a cached node mount (autoclear): goes with the last
+     mount of its superblock, i.e. after (a), (b), (c), (d) are gone.
+Region release: when no prepared claim of the serial remains on the node
+and the Holder check passes (L3). With (c) unmounted before the node
+mount accounting of the companion's Unprepare, the existing ordering
+"revoke, then releaseDevices" (unprepareClaim) gives: unmount the lease
+bind (EBUSY: fail, retry), unmount the node mount if unused, wait for no
+holder, release the region. A lease bind that cannot be unmounted
+therefore keeps the region, exactly as the user asked: the device is
+released only when every reference, static and dynamic, is gone.
+Timeline of the two ways a lease ends:
+  - "cxl-request release": the broker deletes the companion; kubelet
+    unprepares its claim; (c) is unmounted; if the requester still has
+    files of the mount open or mapped, EBUSY: the lease stays Releasing
+    and the companion Terminating until the requester closes them
+    (kubelet retries the Unprepare with its own backoff). Cooperative,
+    like a dax lease whose fd stays open; unlike dax, the data stays
+    usable meanwhile and nothing crashes.
+  - the requester pod ends: its containers stop (the slaves (d) die),
+    kubelet unprepares the lease claim (CloseClaim: release of all its
+    leases, wait until their companion deletions are requested), the
+    companion's Unprepare unmounts (c) without EBUSY.
+Restart of the driver: (a) and (c) are kernel mounts that survive it;
+(c) is recorded in the lendRecord of the prepared companion
+(preparedPoolClaims.json) so that the Unprepare after a restart unmounts
+it; restoreMounts must re-bind a missing (c) as it re-mounts a missing
+node mount, and must unmount a (c) that belongs to no prepared claim
+(a crash between the bind and the state write), else it would hold the
+superblock forever and the Holder check would refuse the region release
+("still in use") on every Unprepare.
+
+5. What the implementation must get right (no blocker)
+------------------------------------------------------
+R1  The bind must be a plain MS_BIND of the node mount (P4), not a bind
+    followed by a read-only remount (P2). The node mount's flags
+    (ro,nosuid,nodev) are inherited; verify them in mountinfo after the
+    bind and fail the lend if they are missing.
+R2  The lease bind is the lend of an fs device and belongs to the pool
+    driver (which owns the mounter, the node mounts and the prepared
+    companion claim), as cpuset.mems is the lend of a numa device: bind
+    at Prepare before OnPrepared (so that the mount exists when
+    cxl-request returns Ready), unmount at Unprepare before
+    releaseDevices, record the paths in the lendRecord, re-bind and sweep
+    at restart. The broker owns the directories (lease-fs/<claim uid>,
+    created at OpenClaim, removed when the claim is closed and no bind is
+    left in it) and the name of the mount point.
+R3  CloseClaim must not os.RemoveAll a directory that may still have a
+    bind (the companion's Unprepare is asynchronous): removing a mount
+    point fails with EBUSY, and RemoveAll would descend into the mounted
+    filesystem. Remove known entries with os.Remove only, leave the
+    directory while a mount is in it, and remove it later (when the last
+    lease of a closed claim is dropped, and in a sweep at start and on
+    reconcile).
+R4  The validation texts of the lease protocol change: 'invalid mode "X"
+    (numa or dax)' and "readOnly needs mode dax" are asserted by test12
+    (F15) and listed in leases.md; the local driver's DeviceConfig texts
+    (test14) do not change.
+R5  The companion claim of an fs lease must request class
+    cxl-pool-persistent (the cxl-pool and cxl-pool-shared classes exclude
+    persistent devices, D22 section 5), from source pool only (the local
+    driver has no mode fs), and carry DeviceConfig {mode: fs,
+    readOnly: true, access}. No path: T5 forbids paths under /run/cxl
+    for claims, and the companion pod gets no CDI mount anyway; the pool
+    driver's default path of the companion device is unused.
+R6  The broker's serialOptions turns every shared device into mode dax;
+    a shared persistent device must keep mode fs. With the persistent
+    attribute (L9) the broker can refuse early what the pool driver
+    would refuse at Prepare (T8, T9 of D22): mode fs on a volatile
+    device, and a persistent device without mode fs (its companion claim
+    could never be allocated: the classes of the other modes exclude it,
+    the lease would time out after --wait).
+R7  A lease claim prepared by a driver without this feature has no
+    /run/cxl/fs mount in its running containers; an fs lease from such a
+    container would be Ready and invisible. Record in the lease claim
+    entry that the directory exists and refuse fs requests on old
+    entries.
+R8  Default name of the mount point: the lease id (unique per claim);
+    --name lets a program use a fixed path. Names must be one path
+    component and unique per lease claim.
+R9  SELinux: the VMs have it disabled (P1 5.1); label the new directory
+    best effort like the socket directory. User-namespaced pods (IN M8)
+    stay untested.
+R10 Time: a pool lease takes 5-7 s (binding condition); an fs lease adds
+    the pmem region and the mount, as a static fs claim does (test16:
+    readers serve 8-9 s after pod creation). The release of a lease whose
+    files are closed takes about 8 s; one that is still in use waits for
+    the requester.

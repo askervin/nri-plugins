@@ -28,6 +28,27 @@
 #   node. Three direct readers (two on VM2, one on VM1) start first, then
 #   three cached readers in the same places, one at a time, while the
 #   direct ones still run.
+# - Two readers mount the device dynamically, into their running
+#   container: direct-b on VM2 and cached-c on VM1 start with a lease
+#   claim only (DeviceClass cxl-lease), and the container asks for the
+#   erofs itself with "cxl-request request --serial 0xc1ae0001 --shared
+#   --read-only --mode fs --access direct|cached [--name models] --exec
+#   sh /tmp/reader.sh". The driver creates a companion claim of class
+#   cxl-pool-persistent for the lease, prepares it on the node like the
+#   claim of a reader (the same node mount), and binds the node mount at
+#   /run/cxl/fs/<name> into the container: the lease claim gave the
+#   container a read-only slave mount of a host directory of the driver
+#   there, and the bind propagates into it. So VM2 has a static and a
+#   dynamic mount of the same device and access, VM1 a static direct and
+#   a dynamic cached one.
+# - With the claim of direct-a gone, the direct node mount of VM2 has one
+#   user left, the lease of direct-b. Its release is refused while
+#   llama-server maps the model: the driver cannot unmount the bind (the
+#   lease stays Releasing, the companion pod Terminating, the model keeps
+#   serving). Once llama-server is killed, the lease, its bind and the
+#   direct node mount go, and the region stays for the cached readers of
+#   VM2: the device is released only when every reference, static and
+#   dynamic, is gone.
 #
 # Proofs: every reader answers "hello" with the expected text, asked from
 # its node on its pod IP. Direct readers: every page of llama-server's
@@ -47,24 +68,29 @@
 # is served from the page cache of the node, not from CXL. (Presence of
 # every page is not asserted for cached readers: khugepaged may unmap
 # page-cached ranges at any time; block reads of the only path to CXL are
-# the measure.) The
-# mounts, loop devices, environment and CDI devices are what the driver
-# promises, writes under the mount fail, the readers change neither the
-# data nor the labels of the device, and nothing is left at the end. In
-# qemu, CXL memory is host RAM mapped into the VMs: timing cannot tell CXL
-# from DRAM, page frames and page cache counters can.
+# the measure.) The mounts, loop devices, environment and CDI devices are
+# what the driver promises, writes under the mount fail, the readers change
+# neither the data nor the labels of the device, and nothing is left at the
+# end. The leases of the dynamic readers, their companion objects, the CDI
+# device of their lease claim and their binds on the node are what the
+# lease protocol promises. In qemu, CXL memory is host RAM mapped into the
+# VMs: timing cannot tell CXL from DRAM, page frames and page cache
+# counters can.
 #
 # What you will see: VM1 building the erofs image (the first time), the
 # writer on VM1 flashing it into llm0 in about a second, the host finding
 # the model in the data file, three direct and three cached llama.cpp
 # servers on two nodes answering "hello" from the one copy in CXL memory or
-# from one page cache copy per node, the frames of their model mappings,
-# the page cache deltas, the tokens per second, and the trace of both
-# nodes.
+# from one page cache copy per node, two of them on a filesystem that
+# appeared in their running container, the frames of their model mappings,
+# the page cache deltas, the tokens per second, a release refused while
+# the model is in use and done once its user is gone, and the trace of
+# both nodes.
 #
 # The "shares" capacity of llm0 is 1M without a requestPolicy: every reader
-# claim takes one share of it, whatever its node, so the six reader claims
-# fit at once; the writer, with no shares request, takes all of them.
+# claim, and every companion claim of a lease, takes one share of it,
+# whatever its node, so the six readers fit at once; the writer, with no
+# shares request, takes all of them.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
 # control plane, the VMs of n4-cxl-shared-1 (VM1) and n4-cxl-shared-0
@@ -77,8 +103,9 @@
 # Host prerequisites: curl, and through http_proxy and https_proxy
 # huggingface.co (the model). The first run downloads the model (378 MiB)
 # into $CACHE_DIR/llm. The VMs pull $LLM_SERVER_IMAGE
-# (ghcr.io/ggml-org/llama.cpp:server-b11681, about 310 MB) and VM1 installs
-# erofs-utils with dnf, through their own proxies. The VMs keep
+# (ghcr.io/ggml-org/llama.cpp:server-b11681, about 310 MB) and the image of
+# the companion pods, and VM1 installs erofs-utils with dnf, through their
+# own proxies. The VMs keep
 # /usr/local/bin/cxl-where.py, VM1 also the model in /opt/cxl-llm/model and
 # its erofs image /opt/cxl-llm/llm.erofs. The data and LSA files of llm0
 # (/tmp/fake-cxl-pool/llm0.raw and llm0.lsa, host RAM) are removed at the
@@ -137,7 +164,21 @@ declare -A READER_VM=([direct-a]="$VM2" [direct-b]="$VM2" [direct-c]="$VM1"
                       [cached-a]="$VM2" [cached-b]="$VM2" [cached-c]="$VM1")
 declare -A READER_ACCESS=([direct-a]=direct [direct-b]=direct [direct-c]=direct
                           [cached-a]=cached [cached-b]=cached [cached-c]=cached)
-declare -A READER_PATH=([direct-b]=/models [cached-b]=/models)
+# Lease readers mount the device dynamically: their pod has a claim from
+# the ResourceClaimTemplate $LEASE_TEMPLATE, and their container leases the
+# erofs (llm-lease-reader-script) at /run/cxl/fs/<name>, <name> from
+# READER_NAME or the lease id. The others are claim readers.
+declare -A READER_KIND=([direct-b]=lease [cached-c]=lease)
+declare -A READER_NAME=([direct-b]=models)
+# The path of the erofs in a reader: claim readers $LLM_DEFAULT_PATH unless
+# set here; lease readers the path of their lease (lease-reader-found).
+declare -A READER_PATH=([cached-b]=/models)
+declare -A READER_LEASE=()     # lease reader -> its lease id,
+declare -A READER_UID=()       # the uid of its pod,
+declare -A READER_CLAIM=()     # and the name and uid of its lease claim
+declare -A READER_CLAIM_UID=()
+LEASE_TEMPLATE=cxl-lease
+PAUSE_IMAGE=registry.k8s.io/pause:3.10   # the image of the companion pods of leases
 CACHE_DELTA=""            # reader-start: the growth of the page cache of the node in bytes,
 POD_FILE=""               # and the page cache charged to the pod of the reader in bytes,
 LOOP_READ=""              # and, for a cached reader, the bytes read meanwhile through the loop device
@@ -170,10 +211,11 @@ exit-cleanup() {
     #
     # The EXIT trap after dra-install: dra-cleanup, then pool-cleanup and
     # the removal of the files of the device, unless a node still has a
-    # mount under $DRA_POOL_MOUNT_DIR or a loop device over a pmem device,
-    # or they cannot be read. Then stop the server only, leave the device,
-    # the VMs and the files as they are for debugging, and print what holds
-    # the device and how to clean up by hand.
+    # mount under $DRA_POOL_MOUNT_DIR or $DRA_LEASE_FS_DIR or a loop device
+    # over a pmem device, or they cannot be read. Then stop the server
+    # only, leave the device, the VMs and the files as they are for
+    # debugging, and print what holds the device and how to clean up by
+    # hand.
     local vm label held="" loops
     dra-cleanup
     for vm in "$VM2" "$VM1"; do
@@ -184,6 +226,13 @@ exit-cleanup() {
         elif [ "$COMMAND_OUTPUT" != "[]" ]; then
             held+="
   $label: mounts $COMMAND_OUTPUT"
+        fi
+        if ! dra-lease-fs-mounts "$vm" >/dev/null; then
+            held+="
+  $label: cannot read its lease mounts"
+        elif [ "$COMMAND_OUTPUT" != "[]" ]; then
+            held+="
+  $label: lease mounts $COMMAND_OUTPUT"
         fi
         if ! loops=$(dra-pmem-loops "$vm"); then
             held+="
@@ -201,11 +250,18 @@ exit-cleanup() {
     # Releasing a region under a live erofs can crash the guest.
     echo "exit-cleanup: $LLM_DEVICE is still held, not releasing or detaching it:$held
   To clean up by hand in each VM above: stop what uses the mount (fuser -vm MOUNT),
-  umount MOUNT (never umount -l), check that no /sys/block/loop*/loop/backing_file
+  umount MOUNT (never umount -l; the lease mounts first), check that no /sys/block/loop*/loop/backing_file
   names the pmem device, then: fake-cxl-pool-client guest release $LLM_SERIAL.
   Or run the test again: it restarts a VM that still has CXL memory devices
   (pool-vm-reset). Remove $LLM_DATA and $LLM_LSA after that."
     pool-server-stop
+}
+
+reader-kind() {
+    # Usage: reader-kind READER
+    #
+    # Print "lease" for a lease reader, else "claim".
+    echo "${READER_KIND[$1]:-claim}"
 }
 
 reader-path() {
@@ -215,13 +271,43 @@ reader-path() {
     echo "${READER_PATH[$1]:-$LLM_DEFAULT_PATH}"
 }
 
+lease-reader-found() {
+    # Usage: lease-reader-found READER
+    #
+    # Set READER_LEASE and READER_PATH of the lease reader READER from its
+    # only lease ("cxl-request list" in it), READER_UID from its pod, and
+    # READER_CLAIM and READER_CLAIM_UID from its lease claim. Fail the test
+    # unless the lease is Ready at /run/cxl/fs/<name>, <name> its
+    # READER_NAME or else the lease id, and the lease claim is allocated
+    # the lease device of its node.
+    local r="$1" node lease
+    node=$(basename "${READER_VM[$r]}")
+    dra-leases "$VM2" "$r/main"
+    dra-assert "$DRA_LEASES" "len(j) == 1 and j[0].get('state') == 'Ready' and j[0].get('path')"
+    lease=$(dra-value "$DRA_LEASES" "j[0]['lease']")
+    [[ "$lease" =~ ^[0-9a-f]{8}$ ]] || error "$r: lease id '$lease' is not 8 hex digits"
+    READER_LEASE[$r]=$lease
+    READER_PATH[$r]=$(dra-value "$DRA_LEASES" "j[0]['path']")
+    [ "${READER_PATH[$r]}" == "$DRA_LEASE_FS_CTR_DIR/${READER_NAME[$r]:-$lease}" ] ||
+        error "$r: lease $lease has the path ${READER_PATH[$r]}, expected $DRA_LEASE_FS_CTR_DIR/${READER_NAME[$r]:-$lease}"
+    dra-json "$VM2" pod -n "$DRA_NS" "$r"
+    READER_UID[$r]=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+    READER_CLAIM[$r]=$(dra-value "$COMMAND_OUTPUT" "[s['resourceClaimName'] for s in j['status']['resourceClaimStatuses'] if s['name'] == 'lease'][0]")
+    dra-json "$VM2" resourceclaim -n "$DRA_NS" "${READER_CLAIM[$r]}"
+    dra-assert "$COMMAND_OUTPUT" "[(x['driver'], x['device']) for x in results()] == [('$DRA_LOCAL_DRIVER', 'lease')] and allocated_node() == '$node'"
+    READER_CLAIM_UID[$r]=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+    echo "$r: lease $lease at ${READER_PATH[$r]}, lease claim ${READER_CLAIM[$r]} (uid ${READER_CLAIM_UID[$r]})"
+}
+
 reader-start() {
     # Usage: reader-start READER
     #
-    # Create the ResourceClaim and the pod READER on its node, with a
-    # read-only fs claim of the device with its access and path, and wait
-    # until llama-server serves. Print the page cache of the node before
-    # and after and the cgroups it was charged to meanwhile, and set
+    # Create the pod READER on its node and wait until llama-server serves:
+    # a claim reader with a ResourceClaim of its own, a read-only fs claim
+    # of the device with its access and path; a lease reader with a claim
+    # from $LEASE_TEMPLATE, leasing the erofs of the device with its access
+    # and name (lease-reader-found). Print the page cache of the node
+    # before and after and the cgroups it was charged to meanwhile, and set
     # CACHE_DELTA to its growth in bytes. Ask the reader for its answer,
     # then set POD_FILE to the page cache charged to its pod. For a cached
     # reader set READER_LOOP to the loop device over pmem on its node and
@@ -237,13 +323,19 @@ reader-start() {
     fi
     before=$(llm-page-cache "$vm")
     t0=$(date +%s.%N)
-    dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$r" "$LLM_SERIAL" 1 "$params" cxl-pool-persistent)
+    if [ "$(reader-kind "$r")" == lease ]; then
+        dra-apply "$VM2" <<< "$(llm-server-pod-yaml "$r" "$vm" lease "$LEASE_TEMPLATE" \
+            "$(llm-lease-reader-script "$LLM_HEX" "${READER_ACCESS[$r]}" "${READER_NAME[$r]}" "$LLM_THREADS")")"
+    else
+        dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$r" "$LLM_SERIAL" 1 "$params" cxl-pool-persistent)
 ---
-$(llm-server-pod-yaml "$r" "$vm" "$r" "$(llm-reader-script "$LLM_HEX" "$LLM_THREADS")")"
+$(llm-server-pod-yaml "$r" "$vm" claim "$r" "$(llm-reader-script "$LLM_HEX" "$LLM_THREADS")")"
+    fi
     llm-server-wait "$vm" "$r"
-    TIMINGS+=("$r on $(pool-vm-label "$vm"): pod created until llama-server serves: $(echo "$(date +%s.%N) - $t0" | bc) s")
+    TIMINGS+=("$r on $(pool-vm-label "$vm") ($(reader-kind "$r")): pod created until llama-server serves: $(echo "$(date +%s.%N) - $t0" | bc) s")
     after=$(llm-page-cache "$vm")
     CACHE_DELTA=$(( (after - before) * 1024 ))
+    [ "$(reader-kind "$r")" != lease ] || lease-reader-found "$r"
     echo "page cache charged meanwhile in $(pool-vm-label "$vm"): $(llm-file-charges-delta "$charges" "$(llm-file-charges "$vm")")"
     echo "page cache of $(pool-vm-label "$vm") around $r: $before kB -> $after kB, $(( CACHE_DELTA >> 10 )) kB, the model $(( LLM_MODEL_SIZE >> 10 )) kB"
     llm-ask "$vm" "$r"
@@ -292,17 +384,19 @@ reader-check() {
     # Usage: reader-check READER CHAIN
     #
     # Fail the test unless READER answers the expected text, got the
-    # environment, the CDI device and the read-only mount of an fs claim of
-    # the device with its access and path and no pmem device, could not
-    # write under the mount, maps the model with every page in resources
-    # of /proc/iomem that match CHAIN, and has not copied the weights into
-    # its anonymous memory.
-    local r="$1" chain="$2" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" path log uid cdi anon
+    # environment and the read-only mount of an fs claim of the device with
+    # its access and path and no pmem device, could not write under the
+    # mount, maps the model with every page in resources of /proc/iomem
+    # that match CHAIN, and has not copied the weights into its anonymous
+    # memory; a claim reader its claim and CDI device (claim-check), a
+    # lease reader its lease, the companion objects, the CDI device of its
+    # lease claim and the bind on its node (lease-check).
+    local r="$1" chain="$2" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" path log anon
     path=$(reader-path "$r")
     log=$(dra-pod-log "$VM2" "$r")
     echo "$log" > "$TEST_OUTPUT_DIR/$r.log"
-    echo "### $r on $(pool-vm-label "$vm"), $access, at $path (log: $TEST_OUTPUT_DIR/$r.log):"
-    grep -E '^(CXL_|mount: |files: |no pmem devices$|pmem devices: |write under )' <<< "$log"
+    echo "### $r on $(pool-vm-label "$vm"), $access, $(reader-kind "$r") reader, at $path (log: $TEST_OUTPUT_DIR/$r.log):"
+    grep -E '^(CXL_|mount: |files: |no pmem devices$|pmem devices: |write under |cxl-request )' <<< "$log"
     dra-env-assert "$r" "$log" "$LLM_HEX" \
         SERIAL="$LLM_SERIAL" SHARED=1 MODE=fs SIZE="$LLM_NS_SIZE" PATH="$path" ACCESS="$access" READONLY=1
     grep -qx "no pmem devices" <<< "$log" ||
@@ -315,22 +409,11 @@ reader-check() {
     llm-ask "$vm" "$r"
     [ "$LLM_CONTENT" == "$LLM_EXPECT" ] || error "$r answered '$LLM_CONTENT', expected '$LLM_EXPECT'"
     TIMINGS+=("$r on $(pool-vm-label "$vm"): $(llm-answer-value 'j["tokens_predicted"]') tokens, prompt $(llm-answer-value 'round(j["timings"]["prompt_per_second"], 1)') tokens/s, generation $(llm-answer-value 'round(j["timings"]["predicted_per_second"], 1)') tokens/s on $LLM_THREADS threads")
-    # One share of the device on the node of the reader, and the CDI device
-    # of the claim, claim-<uid>-0 of the pool driver: a read-only bind of
-    # the node mount of its access at its path, no device node.
-    dra-json "$VM2" resourceclaim -n "$DRA_NS" "$r"
-    dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$(basename "$vm")' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == 1"
-    dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"
-    uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
-    cdi=$(dra-cdi-device "$vm" "claim-$uid-0")
-    echo "CDI device claim-$uid-0: $cdi"
-    grep -qx "kind: nri.io/cxl-pool" <<< "$cdi" || error "no CDI device claim-$uid-0 of kind nri.io/cxl-pool for $r"
-    grep -q 'deviceNodes:' <<< "$cdi" && error "the CDI device of $r has device nodes"
-    grep -qxE " *(- )?hostPath: \"?${DRA_POOL_MOUNT_DIR//./\\.}/$LLM_MOUNT_ID-$access\"?" <<< "$cdi" ||
-        error "the CDI device of $r does not mount $DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-$access"
-    grep -qE "^ *(- )?containerPath: \"?$path\"?$" <<< "$cdi" || error "the CDI device of $r does not mount at $path"
-    grep -qE '^ *(- )?type: "?bind"?$' <<< "$cdi" || error "the CDI mount of $r is not a bind mount"
-    grep -qE '^ *- "?ro"?$' <<< "$cdi" || error "the CDI mount of $r is not read-only"
+    if [ "$(reader-kind "$r")" == lease ]; then
+        lease-check "$r" "$log"
+    else
+        claim-check "$r"
+    fi
     # Where the weights are. Direct: every page of the model mappings in
     # the CXL window. Cached: the present pages in System RAM; khugepaged
     # may unmap page-cached ranges of a mapping at any time (until the
@@ -351,6 +434,140 @@ reader-check() {
         error "$r has $anon kB of anonymous memory, not less than half the model ($(( LLM_MODEL_SIZE / 2048 )) kB): the weights were copied into the process"
     echo "memory.stat of $r: $(dra-container-read "$vm" "$r" main memory.stat | grep -E '^(anon|file|file_mapped|shmem) ' | tr '\n' ' ')"
     TIMINGS+=("$r: anonymous memory of llama-server $anon kB")
+}
+
+claim-check() {
+    # Usage: claim-check READER
+    #
+    # Fail the test unless the claim of the claim reader READER has one
+    # share of the device on the node of READER, persistent and not
+    # exclusive, and its CDI device claim-<uid>-0 of the pool driver is a
+    # read-only bind of the node mount of its access at its path, without
+    # device nodes.
+    local r="$1" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" path uid cdi
+    path=$(reader-path "$r")
+    dra-json "$VM2" resourceclaim -n "$DRA_NS" "$r"
+    dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$(basename "$vm")' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == 1"
+    dra-assert "$COMMAND_OUTPUT" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"
+    uid=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+    cdi=$(dra-cdi-device "$vm" "claim-$uid-0")
+    echo "CDI device claim-$uid-0: $cdi"
+    grep -qx "kind: nri.io/cxl-pool" <<< "$cdi" || error "no CDI device claim-$uid-0 of kind nri.io/cxl-pool for $r"
+    grep -q 'deviceNodes:' <<< "$cdi" && error "the CDI device of $r has device nodes"
+    grep -qxE " *(- )?hostPath: \"?${DRA_POOL_MOUNT_DIR//./\\.}/$LLM_MOUNT_ID-$access\"?" <<< "$cdi" ||
+        error "the CDI device of $r does not mount $DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-$access"
+    grep -qE "^ *(- )?containerPath: \"?$path\"?$" <<< "$cdi" || error "the CDI device of $r does not mount at $path"
+    grep -qE '^ *(- )?type: "?bind"?$' <<< "$cdi" || error "the CDI mount of $r is not a bind mount"
+    grep -qE '^ *- "?ro"?$' <<< "$cdi" || error "the CDI mount of $r is not read-only"
+}
+
+lease-check() {
+    # Usage: lease-check READER LOG
+    #
+    # Fail the test unless the lease reader READER, whose log is LOG, has
+    # exactly its lease in "cxl-request list": Ready, a read-only share of
+    # the persistent pool device in mode fs with its access, the namespace
+    # size, its path and the environment of the log; "cxl-request env"
+    # prints that environment and CXL_LEASE; "cxl-request fd" refuses the
+    # lease (exit status 3); and the companion objects (lease-companion-check),
+    # the CDI device of its lease claim (dra-lease-cdi-assert) and the bind
+    # on its node (lease-bind-assert) are those of the lease.
+    local r="$1" log="$2" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" lease="${READER_LEASE[$1]}" path="${READER_PATH[$1]}" env want
+    [ "$(dra-env-value "$log" CXL_LEASE)" == "$lease" ] ||
+        error "$r: the command of cxl-request has CXL_LEASE=$(dra-env-value "$log" CXL_LEASE), expected $lease"
+    env=$(grep -E "^CXL_${LLM_HEX}_[A-Z]+=" <<< "$log" | LC_ALL=C sort)
+    dra-leases "$VM2" "$r/main"
+    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), l.get('access'), l.get('shared'), l.get('readOnly'), l.get('serial'), int(l.get('size', 0)), l.get('path')) for l in j] == [('$lease', 'Ready', 'pool', 'fs', '$access', True, True, '$LLM_SERIAL', $LLM_NS_SIZE, '$path')]"
+    dra-assert "$DRA_LEASES" "'node' not in j[0] and 'dax' not in j[0]"
+    dra-assert "$DRA_LEASES" "j[0].get('env') == $(python3 -c 'import json, sys; print(json.dumps(dict(l.split("=", 1) for l in sys.argv[1].splitlines())))' "$env")"
+    # The environment again, with the lease, and no fd: the lease has none.
+    dra-exec "$VM2" "$r/main" "$DRA_REQUEST_CTR_BIN" env --lease "$lease" ||
+        command-error "$r: cxl-request env --lease $lease failed"
+    want=$(LC_ALL=C sort <<< "$env
+CXL_LEASE=$lease")
+    [ "$COMMAND_OUTPUT" == "$want" ] ||
+        error "$r: cxl-request env --lease $lease printed
+$COMMAND_OUTPUT
+expected
+$want"
+    dra-exec "$VM2" "$r/main" "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec true &&
+        error "$r: cxl-request fd of the fs lease $lease succeeded"
+    [ "$COMMAND_STATUS" == 3 ] || error "$r: cxl-request fd of the fs lease $lease exited $COMMAND_STATUS, expected 3"
+    grep -qF "lease $lease is not a dax lease; use env" <<< "$COMMAND_OUTPUT
+$DRA_EXEC_STDERR" || error "$r: cxl-request fd of the fs lease $lease did not print 'lease $lease is not a dax lease; use env'"
+    lease-companion-check "$r"
+    dra-lease-cdi-assert "$vm" "${READER_CLAIM_UID[$r]}"
+    lease-bind-assert "$r"
+}
+
+lease-companion-check() {
+    # Usage: lease-companion-check READER
+    #
+    # Fail the test unless the companion pod and claim cxl-lease-<id> of the
+    # lease of the lease reader READER are owned by the pod of READER and
+    # labeled and annotated with the lease and its requester (container
+    # main), the pod runs on the node of READER and holds the claim, and
+    # the claim asks for one share of the device in class
+    # cxl-pool-persistent with a DeviceConfig {mode: fs, readOnly: true,
+    # access} of the pool driver and no path, is allocated the device on
+    # that node, attached, persistent and not exclusive, and has no CDI
+    # device.
+    local r="$1" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" lease="${READER_LEASE[$1]}" uid="${READER_UID[$1]}" node name json claim_uid cdis
+    node=$(basename "$vm")
+    name="cxl-lease-$lease"
+    dra-pod-wait "$VM2" "$name" Running 30
+    dra-json "$VM2" pod -n "$DRA_NS" "$name"
+    json="$COMMAND_OUTPUT"
+    dra-assert "$json" "[(o['kind'], o['name'], o['uid']) for o in j['metadata']['ownerReferences']] == [('Pod', '$r', '$uid')]"
+    dra-companion-meta-check "$json" "$lease" "$uid" "$node" "$DRA_NS/$r/main"
+    dra-assert "$json" "j['spec']['nodeName'] == '$node' and j['spec']['resourceClaims'] == [{'name': 'lease', 'resourceClaimName': '$name'}]"
+    dra-assert "$json" "[c['image'] for c in j['spec']['containers']] == ['$PAUSE_IMAGE'] and not j['spec']['containers'][0]['resources'].get('claims')"
+    dra-json "$VM2" resourceclaim -n "$DRA_NS" "$name"
+    json="$COMMAND_OUTPUT"
+    dra-claim-conditions "$VM2" "$name"
+    dra-assert "$json" "[(o['kind'], o['name'], o['uid'], o.get('controller')) for o in j['metadata']['ownerReferences']] == [('Pod', '$r', '$uid', True)]"
+    dra-companion-meta-check "$json" "$lease" "$uid" "$node" "$DRA_NS/$r/main"
+    dra-assert "$json" "[(s['deviceClassName'], [x['cel']['expression'] for x in s.get('selectors') or []], s.get('capacity')) for s in subrequests()] == [('cxl-pool-persistent', ['device.attributes[\"$DRA_POOL_DRIVER\"].serial == \"$LLM_SERIAL\"'], {'requests': {'shares': '1'}})]"
+    dra-assert "$json" "[(c['driver'], c['parameters']) for c in configs()] == [('$DRA_POOL_DRIVER', {'apiVersion': '$DRA_POOL_DRIVER/v1alpha1', 'kind': 'DeviceConfig', 'mode': 'fs', 'readOnly': True, 'access': '$access'})]"
+    dra-assert "$json" "[(x['driver'], x['device']) for x in results()] == [('$DRA_POOL_DRIVER', '$LLM_DEVICE')] and allocated_node() == '$node'"
+    dra-assert "$json" "condition('$DRA_POOL_DRIVER/Attached') == 'True' and quantity(results()[0]['consumedCapacity']['shares']) == 1"
+    dra-assert "$json" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"
+    # The companion pod uses nothing of its claim: no CDI device.
+    claim_uid=$(dra-value "$json" "j['metadata']['uid']")
+    cdis=$(dra-cdi-devices-with "$vm" "$claim_uid") || error "cannot read the CDI specs of $(pool-vm-label "$vm")"
+    [ -z "$cdis" ] || error "$r: the companion claim $name has CDI devices: $cdis"
+}
+
+lease-bind-assert() {
+    # Usage: lease-bind-assert READER
+    #
+    # Fail the test unless the node of the lease reader READER has exactly
+    # one mount at $DRA_LEASE_FS_DIR/<lease claim uid>/<name of its path>:
+    # the erofs of the node mount of its access (the same source and
+    # superblock options), with the mount options ro, nosuid and nodev.
+    local r="$1" vm="${READER_VM[$1]}" label nodes target
+    label=$(pool-vm-label "$vm")
+    target="$DRA_LEASE_FS_DIR/${READER_CLAIM_UID[$r]}/${READER_PATH[$r]##*/}"
+    dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
+    nodes="$COMMAND_OUTPUT"
+    dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
+    python3 -c '
+import json, sys
+nodes, binds, target, node_mount, label = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+n = [m for m in nodes if m["target"] == node_mount]
+b = [m for m in binds if m["target"] == target]
+if len(n) != 1:
+    sys.exit("%s: no node mount %s: %s" % (label, node_mount, nodes))
+if len(b) != 1:
+    sys.exit("%s: not one mount at %s: %s" % (label, target, binds))
+n, b = n[0], b[0]
+if b["fstype"] != "erofs" or b["source"] != n["source"] or b["options"] != n["options"]:
+    sys.exit("%s: %s is %s on %s (%s), not the erofs of %s on %s (%s)" % (label, target, b["fstype"], b["source"], b["options"], node_mount, n["source"], n["options"]))
+if not {"ro", "nosuid", "nodev"} <= set(b["vfs"].split(",")):
+    sys.exit("%s: %s has the mount options %s, not ro, nosuid and nodev" % (label, target, b["vfs"]))
+print("%s: lease bind %s: erofs on %s (%s), %s, the node mount %s" % (label, target, b["source"], b["options"], b["vfs"], node_mount))' \
+        "$nodes" "$COMMAND_OUTPUT" "$target" "$DRA_POOL_MOUNT_DIR/$LLM_MOUNT_ID-${READER_ACCESS[$r]}" "$label" ||
+        error "$r: no read-only bind of the node mount of its lease on $label"
 }
 
 cached-serve-check() {
@@ -429,17 +646,74 @@ print(sys.argv[4] + ": mounts: " + ", ".join("%s on %s%s" % (m["target"], m["sou
 }
 
 readers-stop() {
-    # Usage: readers-stop READER...
+    # Usage: readers-stop [--keep] READER...
     #
-    # Delete the pods of the READERs, then their claims, and wait until the
-    # device is free again (llm0-free).
-    local r
+    # Delete the pods of the READERs, then the claims of the claim readers,
+    # wait until the lease claims and the companion objects of the lease
+    # readers are gone, 90 s at most, and, unless --keep, until the device
+    # is free again (llm0-free).
+    local r free=1 gone=()
+    if [ "$1" == --keep ]; then
+        free=""
+        shift
+    fi
     dra-vm-command "$VM2" "kubectl delete pod -n $DRA_NS --grace-period=2 --wait=true --timeout=120s $*" ||
         command-error "cannot delete the readers"
     for r in "$@"; do
-        dra-delete "$VM2" resourceclaim "$r" --wait=true --timeout=120s
+        if [ "$(reader-kind "$r")" == lease ]; then
+            gone+=("'${READER_CLAIM[$r]}'" "'cxl-lease-${READER_LEASE[$r]}'")
+        else
+            dra-delete "$VM2" resourceclaim "$r" --wait=true --timeout=120s
+        fi
     done
-    llm0-free
+    if [ "${#gone[@]}" -gt 0 ]; then
+        dra-wait "$VM2" "leases-gone-$(IFS=-; echo "$*")" "pods,resourceclaims -n $DRA_NS" \
+            "not set(names()) & {$(IFS=,; echo "${gone[*]}")}" 90
+    fi
+    [ -z "$free" ] || llm0-free
+}
+
+lease-dirs-gone() {
+    # Usage: lease-dirs-gone READER...
+    #
+    # Wait until the node of each lease reader READER has neither the
+    # socket directory nor the filesystem directory of its lease claim,
+    # $DRA_LEASE_DIR/<uid> and $DRA_LEASE_FS_DIR/<uid>, 60 s at most. Fail
+    # the test on timeout.
+    local r vm dirs
+    for r in "$@"; do
+        vm="${READER_VM[$r]}"
+        dirs="$DRA_LEASE_DIR/${READER_CLAIM_UID[$r]} $DRA_LEASE_FS_DIR/${READER_CLAIM_UID[$r]}"
+        retry-until --timeout 60 --interval 1 --message "$(pool-vm-label "$vm") has no $dirs" \
+            'pool-vm-command-q "$vm" "for d in $dirs; do test ! -e \$d || exit 1; done"' ||
+            error "$r: $(pool-vm-label "$vm") still has $(pool-vm-command-q "$vm" "ls -d $dirs 2>/dev/null; findmnt -rn -o TARGET | grep -F $DRA_LEASE_FS_DIR/")"
+        echo "$r: $(pool-vm-label "$vm") has no directories of its lease claim"
+    done
+}
+
+vm-region-assert() {
+    # Usage: vm-region-assert VMDIR
+    #
+    # Fail the test unless the VM of VMDIR has a CXL region.
+    local regions
+    regions=$(pool-vm-command-q "$1" "ls /sys/bus/cxl/devices/") ||
+        error "cannot list the CXL devices of $(pool-vm-label "$1")"
+    grep -q '^region[0-9]' <<< "$regions" || error "$(pool-vm-label "$1") has no CXL region"
+    echo "$(pool-vm-label "$1") has the region $(grep '^region[0-9]' <<< "$regions" | tr '\n' ' ')"
+}
+
+lease-fs-empty() {
+    # Usage: lease-fs-empty VMDIR
+    #
+    # Fail the test unless the VM of VMDIR has no mount and no directory
+    # under $DRA_LEASE_FS_DIR, waiting 60 s at most for the directories.
+    local vm="$1" label
+    label=$(pool-vm-label "$vm")
+    dra-lease-fs-mounts "$vm" || error "cannot read the lease mounts of $label"
+    [ "$COMMAND_OUTPUT" == "[]" ] || error "$label still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
+    retry-until --timeout 60 --interval 1 --message "$label has nothing under $DRA_LEASE_FS_DIR" \
+        '[ "$(pool-vm-command-q "$vm" "{ test ! -d $DRA_LEASE_FS_DIR || find $DRA_LEASE_FS_DIR -mindepth 1; } && echo end")" == end ]' ||
+        error "$label still has under $DRA_LEASE_FS_DIR: $(pool-vm-command-q "$vm" "find $DRA_LEASE_FS_DIR -mindepth 1")"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX, CONFIG_EROFS_FS"
@@ -497,7 +771,7 @@ dra-build
 dra-install
 trap exit-cleanup EXIT
 for vm in "$VM2" "$VM1"; do
-    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$LLM_SERVER_IMAGE"
+    dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$LLM_SERVER_IMAGE" "$PAUSE_IMAGE"
 done
 dra-dax-tool-install "$VM2"
 # The first container of an image on a node reads its files into the page
@@ -581,7 +855,10 @@ SHA_DATA=$(llm-file-sha256 "$LLM_DATA")
 SHA_LSA=$(llm-file-sha256 "$LLM_LSA")
 echo "host: sha256 of $LLM_DATA $SHA_DATA, of $LLM_LSA $SHA_LSA"
 
-echo "### C: three direct readers map the model from CXL memory, two on VM2 and one on VM1"
+echo "### C: three direct readers map the model from CXL memory, two on VM2 (direct-b dynamically) and one on VM1"
+# The lease readers claim the lease device of their node through this
+# template: the claim lives and dies with their pod.
+dra-apply "$VM2" <<< "$(dra-lease-template-yaml "$LEASE_TEMPLATE")"
 # Page cache proofs: the page cache charged to the pod of a reader (its
 # first toucher is charged; the warm-up pod already holds the files of the
 # image) is the exact measure of what the reader put there. The page cache
@@ -602,7 +879,7 @@ done
 pool-attachments "$LLM_DEVICE"
 pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['state']) for a in j) == sorted([('$VM1_NAME', False, 'attached'), ('$VM2_NAME', False, 'attached')])"
 
-echo "### D: three cached readers map the model from the page cache of their node, started one by one"
+echo "### D: three cached readers map the model from the page cache of their node, started one by one (cached-c dynamically)"
 for r in "${CACHED[@]}"; do
     vm="${READER_VM[$r]}"
     first=1
@@ -636,15 +913,89 @@ for vm in "$VM2" "$VM1"; do
     mounts-assert "$vm" direct cached
 done
 
+echo "### D2: a static and a dynamic mount of the same device on VM2: the device is released only when both are gone"
+# Without direct-a, the lease of direct-b is the only user of the direct
+# node mount of VM2; the cached readers of VM2 keep the region.
+LEASE_B="${READER_LEASE[direct-b]}"
+BIND_B="$DRA_LEASE_FS_DIR/${READER_CLAIM_UID[direct-b]}/${READER_PATH[direct-b]##*/}"
+readers-stop --keep direct-a
+mounts-assert "$VM2" direct cached
+lease-bind-assert direct-b
+vm-region-assert "$VM2"
+llm-ask "$VM2" direct-b
+[ "$LLM_CONTENT" == "$LLM_EXPECT" ] || error "direct-b answered '$LLM_CONTENT', expected '$LLM_EXPECT'"
+# The release cannot finish while llama-server maps the model: the driver
+# cannot unmount the bind (EBUSY), kubelet retries the Unprepare of the
+# companion claim, the companion pod stays Terminating.
+t0=$EPOCHREALTIME
+dra-exec "$VM2" direct-b/main "$DRA_REQUEST_CTR_BIN" release --lease "$LEASE_B" --wait 5s &&
+    error "cxl-request release of lease $LEASE_B of direct-b succeeded while llama-server maps the model"
+[ "$COMMAND_STATUS" == 3 ] || error "cxl-request release of lease $LEASE_B exited $COMMAND_STATUS, expected 3 (not Released in time)"
+TIMINGS+=("direct-b: release of the mapped lease $LEASE_B refused (still Releasing) after $(echo "$EPOCHREALTIME - $t0" | bc) s (--wait 5s)")
+dra-assert "$(dra-last-json "$COMMAND_OUTPUT")" "j.get('lease') == '$LEASE_B' and j.get('state') == 'Releasing'"
+busy_re="lease $LEASE_B: unmounting ${BIND_B//./\\.}: .*device or resource busy"
+retry-until --timeout 60 --interval 1 --message "the driver of VM2 cannot unmount $BIND_B: busy" \
+    'dra-plugin-log "$VM2" | grep -qE "$busy_re"' ||
+    error "the driver of VM2 did not log that it cannot unmount $BIND_B (lease $LEASE_B: unmounting ...: device or resource busy)"
+dra-plugin-log "$VM2" | grep -E "$busy_re" | tail -n 2
+lease-bind-assert direct-b
+mounts-assert "$VM2" direct cached
+vm-region-assert "$VM2"
+llm-ask "$VM2" direct-b
+[ "$LLM_CONTENT" == "$LLM_EXPECT" ] || error "direct-b answered '$LLM_CONTENT' while its lease is Releasing, expected '$LLM_EXPECT'"
+dra-json "$VM2" pod -n "$DRA_NS" "cxl-lease-$LEASE_B" ||
+    error "the companion pod cxl-lease-$LEASE_B is gone while its bind is busy"
+dra-assert "$COMMAND_OUTPUT" "j['metadata'].get('deletionTimestamp')"
+dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$LEASE_B" ||
+    error "the companion claim cxl-lease-$LEASE_B is gone while its bind is busy"
+dra-leases "$VM2" direct-b/main
+dra-assert "$DRA_LEASES" "[(l['lease'], l['state']) for l in j] == [('$LEASE_B', 'Releasing')]"
+pool-attachments "$LLM_DEVICE"
+pool-assert "$COMMAND_OUTPUT" "('$VM2_NAME', 'attached') in [(a['host'], a['state']) for a in j]"
+# The user of the mount goes: cxl-request passes the SIGKILL of
+# llama-server on as its exit status, the container ends and the pod
+# fails (restartPolicy Never). The broker releases the leases of the pod,
+# the next Unprepare of the companion claim unmounts the bind, the node
+# mount it was the last user of, and keeps the region for the cached
+# readers.
+pid=$(llm-server-pid "$VM2" direct-b) || error "no llama-server runs in direct-b"
+t0=$EPOCHREALTIME
+pool-vm-command "$VM2" "kill -KILL $pid" || command-error "cannot kill llama-server (pid $pid) of direct-b"
+dra-pod-wait "$VM2" direct-b Failed 60
+dra-json "$VM2" pod -n "$DRA_NS" direct-b
+dra-assert "$COMMAND_OUTPUT" "j['status']['containerStatuses'][0]['state']['terminated']['exitCode'] == 137"
+dra-wait "$VM2" d2-lease-b-gone "pods,resourceclaims -n $DRA_NS" "'cxl-lease-$LEASE_B' not in names()" 90
+TIMINGS+=("direct-b: lease $LEASE_B and its companion gone $(echo "$EPOCHREALTIME - $t0" | bc) s after llama-server was killed")
+dra-lease-fs-mounts "$VM2" || error "cannot read the lease mounts of $(pool-vm-label "$VM2")"
+[ "$COMMAND_OUTPUT" == "[]" ] || error "$(pool-vm-label "$VM2") still has mounts under $DRA_LEASE_FS_DIR: $COMMAND_OUTPUT"
+mounts-assert "$VM2" cached
+vm-region-assert "$VM2"
+for r in cached-a cached-b; do
+    llm-ask "$VM2" "$r"
+    [ "$LLM_CONTENT" == "$LLM_EXPECT" ] || error "$r answered '$LLM_CONTENT' after direct-b, expected '$LLM_EXPECT'"
+done
+# VM1 is unchanged: its direct claim and its cached lease.
+mounts-assert "$VM1" direct cached
+lease-bind-assert cached-c
+dra-pod-wait "$VM2" "cxl-lease-${READER_LEASE[cached-c]}" Running 5
+# The pod goes with its lease claim; the broker removes the directories of
+# the claim once it is closed and no bind is left in them.
+dra-delete-pod "$VM2" direct-b
+dra-wait "$VM2" d2-lease-claim-b-gone "resourceclaims -n $DRA_NS" "'${READER_CLAIM[direct-b]}' not in names()" 60
+lease-dirs-gone direct-b
+
 echo "### E: all readers stop, nothing is left"
-readers-stop "${DIRECT[@]}" "${CACHED[@]}"
-left=$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims -n $DRA_NS -o name") ||
-    error "cannot list the pods and claims in $DRA_NS"
+readers-stop direct-c "${CACHED[@]}"
+dra-delete "$VM2" resourceclaimtemplate "$LEASE_TEMPLATE" --wait=true --timeout=60s
+left=$(dra-vm-command-q "$VM2" "kubectl get pods,resourceclaims,resourceclaimtemplates -n $DRA_NS -o name") ||
+    error "cannot list the pods, claims and claim templates in $DRA_NS"
 [ -z "$left" ] || error "objects left in $DRA_NS: $left"
+lease-dirs-gone cached-c
 for vm in "$VM2" "$VM1"; do
     label=$(pool-vm-label "$vm")
     dra-fs-mounts "$vm" || error "cannot read the mounts of $label"
     [ "$COMMAND_OUTPUT" == "[]" ] || error "$label still has mounts under $DRA_POOL_MOUNT_DIR: $COMMAND_OUTPUT"
+    lease-fs-empty "$vm"
     loops=$(dra-pmem-loops "$vm") || error "cannot list the loop devices of $label"
     [ -z "$loops" ] || error "$label still has loop devices over pmem devices: $loops"
     cdis=$(dra-cdi-devices-with "$vm" "CXL_${LLM_HEX}_") || error "cannot read the CDI specs of $label"
@@ -656,7 +1007,7 @@ done
 # erofs never writes the device, and the readers never touch the labels.
 [ "$(llm-file-sha256 "$LLM_DATA")" == "$SHA_DATA" ] || error "host: the readers changed $LLM_DATA"
 [ "$(llm-file-sha256 "$LLM_LSA")" == "$SHA_LSA" ] || error "host: the readers changed $LLM_LSA"
-echo "no pods, claims, mounts, loop devices, CDI devices, memory devices or regions of $LLM_DEVICE left; its data and labels are as the writer left them"
+echo "no pods, claims, leases, mounts, lease directories, loop devices, CDI devices, memory devices or regions of $LLM_DEVICE left; its data and labels are as the writer left them"
 
 echo "### what every component of VM2 and VM1 did, in order"
 dra-trace-stop

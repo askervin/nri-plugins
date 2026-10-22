@@ -18,7 +18,8 @@
 // containers of claims on DeviceClass cxl-lease. See
 // docs/memory/cxl/leases.md.
 //
-//	cxl-request request [--source local|pool] [--mode numa|dax] [--shared] [--read-only]
+//	cxl-request request [--source local|pool] [--mode numa|dax|fs] [--shared] [--read-only]
+//	                    [--access direct|cached] [--name NAME]
 //	                    [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
 //	                    [--exec CMD [ARG...]]
 //	cxl-request release (--lease ID | --all) [--wait DURATION]
@@ -30,10 +31,11 @@
 // request, release and list print the plugin's JSON response line, env
 // prints the environment of the lease as sorted KEY=VALUE lines. With
 // --exec CMD runs with the environment of the lease, and with the fd of a
-// dax lease as fd 3. Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is
-// Failed, not Ready (request, fd, env) or not Released (release) within
-// --wait, or fd of a lease that is not a dax lease. With --exec the exit
-// code of CMD is passed through.
+// dax lease as fd 3; an fs lease has its filesystem at CXL_<KEY>_PATH.
+// Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is Failed, not Ready
+// (request, fd, env) or not Released (release) within --wait, or fd of a
+// lease that is not a dax lease. With --exec the exit code of CMD is
+// passed through.
 package main
 
 import (
@@ -65,7 +67,8 @@ const (
 )
 
 const usage = `usage:
-  cxl-request request [--source local|pool] [--mode numa|dax] [--shared] [--read-only]
+  cxl-request request [--source local|pool] [--mode numa|dax|fs] [--shared] [--read-only]
+                      [--access direct|cached] [--name NAME]
                       [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
                       [--exec CMD [ARG...]]
   cxl-request release (--lease ID | --all) [--wait DURATION]
@@ -75,10 +78,14 @@ const usage = `usage:
   cxl-request help
 request: memory for this container, exclusive unless --shared:
   --source    local (a memdev of this node) or pool; default local, then pool
-  --mode      numa (lent as a NUMA node) or dax (a devdax fd); default numa,
-              dax with --shared or for a shared device
+  --mode      numa (lent as a NUMA node), dax (a devdax fd) or fs (a read-only
+              filesystem of a persistent pool device at /run/cxl/fs/NAME);
+              default numa, dax with --shared or for a shared device
   --shared    one share of a shared device (default: the whole device, exclusive)
-  --read-only a dax fd that allows reads only
+  --read-only a dax fd that allows reads only; fs needs it
+  --access    fs: direct (file pages are the memory of the device) or
+              cached (the page cache of the node); default direct
+  --name      fs: the mount point /run/cxl/fs/NAME; default the lease id
   --size      at least this much, a quantity such as 512Mi
   --serial    this device (0x hex or decimal)
   --wait      until Ready (Go duration; 0s returns at once); default: the
@@ -91,7 +98,7 @@ The socket is $CXL_LEASE_SOCKET.
 
 // options lists the options of each operation; --exec is the last one.
 var options = map[string][]string{
-	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--size", "--serial", "--wait", "--request-id", "--exec"},
+	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--access", "--name", "--size", "--serial", "--wait", "--request-id", "--exec"},
 	api.OpRelease: {"--lease", "--all", "--wait"},
 	api.OpList:    {},
 	api.OpFd:      {"--lease", "--wait", "--exec"},
@@ -160,7 +167,8 @@ func parseArgs(args []string) (*command, error) {
 // values returns the options with a value of the command.
 func (cmd *command) values() map[string]*string {
 	return map[string]*string{
-		"--source": &cmd.req.Source, "--mode": &cmd.req.Mode, "--size": &cmd.req.Size, "--serial": &cmd.req.Serial,
+		"--source": &cmd.req.Source, "--mode": &cmd.req.Mode, "--access": &cmd.req.Access, "--name": &cmd.req.Name,
+		"--size": &cmd.req.Size, "--serial": &cmd.req.Serial,
 		"--wait": &cmd.req.Wait, "--request-id": &cmd.req.RequestID, "--lease": &cmd.req.Lease,
 	}
 }

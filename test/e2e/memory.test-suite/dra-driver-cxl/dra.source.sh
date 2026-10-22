@@ -66,6 +66,12 @@ DRA_EXIT_TRAP=""
 DRA_REQUEST_NODE_BIN=/var/lib/kubelet/plugins/cxl.nri.io/cxl-request
 DRA_REQUEST_CTR_BIN=/usr/local/bin/cxl-request
 DRA_LEASE_DIR=/var/lib/kubelet/plugins/cxl.nri.io/leases
+# The filesystems of fs leases: the host directory of each lease claim
+# (<claim uid>) under DRA_LEASE_FS_DIR, a read-only slave bind at
+# DRA_LEASE_FS_CTR_DIR in the containers of the claim; the driver binds the
+# filesystem of a lease at <claim uid>/<name>, /run/cxl/fs/<name> in them.
+DRA_LEASE_FS_DIR=/var/lib/kubelet/plugins/cxl.nri.io/lease-fs
+DRA_LEASE_FS_CTR_DIR=/run/cxl/fs
 # The labels of the companion pods and claims of leases.
 DRA_LEASE_LABEL=cxl.nri.io/lease
 DRA_REQUESTER_LABEL=cxl.nri.io/requester-uid
@@ -1058,6 +1064,80 @@ EOF2
     dra-vm-command-q "$1" "$script"
 }
 
+dra-cdi-mounts() { # script API
+    # Usage: dra-cdi-mounts CDI
+    #
+    # Print the mounts of the CDI device CDI (the lines that dra-cdi-device
+    # printed) as a JSON list in the order of the spec, one object per
+    # mount with its fields (hostPath, containerPath, type, options).
+    # Return non-zero if CDI has a mount line that cannot be parsed.
+    python3 -c '
+import json, sys
+
+def value(text):
+    text = text.strip()
+    if text.startswith("[") and text.endswith("]"):
+        return [value(t) for t in text[1:-1].split(",") if t.strip()]
+    if text.startswith("\""):
+        return json.loads(text)
+    if text.startswith("\x27") and text.endswith("\x27"):
+        return text[1:-1]
+    return text
+
+mounts, base, item, opts, cur = [], None, None, None, None
+for line in sys.argv[1].splitlines():
+    if not line.strip():
+        continue
+    indent = len(line) - len(line.lstrip())
+    s = line.strip()
+    if base is None:
+        if s == "mounts:":
+            base = indent
+        continue
+    if indent < base or (indent == base and not s.startswith("- ")):
+        break
+    if s.startswith("- ") and (item is None or indent == item):
+        item, cur, opts = indent, {}, None
+        mounts.append(cur)
+        s = s[2:]
+    elif s.startswith("- "):
+        if opts is None:
+            sys.exit("dra-cdi-mounts: an item outside options: %r" % line)
+        opts.append(value(s[2:]))
+        continue
+    key, sep, rest = s.partition(":")
+    if not sep or cur is None:
+        sys.exit("dra-cdi-mounts: cannot parse: %r" % line)
+    if rest.strip():
+        cur[key] = value(rest)
+        opts = None
+    else:
+        opts = cur[key] = []
+print(json.dumps(mounts))' "$1"
+}
+
+dra-lease-cdi-assert() { # script API
+    # Usage: dra-lease-cdi-assert VMDIR CLAIM-UID
+    #
+    # Fail the test unless the VM of VMDIR has the CDI device lease-CLAIM-UID
+    # of kind nri.io/cxl, the device of a lease claim that may lease
+    # filesystems: env CXL_LEASE_SOCKET=/run/cxl/cxl.sock and exactly three
+    # bind mounts, $DRA_LEASE_DIR/CLAIM-UID at /run/cxl (rbind, rw), then
+    # $DRA_LEASE_FS_DIR/CLAIM-UID at $DRA_LEASE_FS_CTR_DIR (rbind, ro,
+    # rslave), and $DRA_REQUEST_NODE_BIN at $DRA_REQUEST_CTR_BIN (bind, ro).
+    local vmdir="$1" uid="$2" cdi mounts
+    cdi=$(dra-cdi-device "$vmdir" "lease-$uid")
+    echo "CDI device lease-$uid: $cdi"
+    grep -qx "kind: nri.io/cxl" <<< "$cdi" || error "no CDI device lease-$uid of kind nri.io/cxl in $(dra-vm-label "$vmdir")"
+    grep -qxE ' *- "?CXL_LEASE_SOCKET=/run/cxl/cxl\.sock"?' <<< "$cdi" ||
+        error "the CDI device lease-$uid has no env CXL_LEASE_SOCKET=/run/cxl/cxl.sock"
+    mounts=$(dra-cdi-mounts "$cdi") || error "cannot parse the mounts of the CDI device lease-$uid"
+    echo "mounts of lease-$uid: $mounts"
+    dra-assert "$mounts" "sorted((m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j) == sorted([('$DRA_LEASE_DIR/$uid', '/run/cxl', 'bind', ['rbind', 'rw']), ('$DRA_LEASE_FS_DIR/$uid', '$DRA_LEASE_FS_CTR_DIR', 'bind', ['rbind', 'ro', 'rslave']), ('$DRA_REQUEST_NODE_BIN', '$DRA_REQUEST_CTR_BIN', 'bind', ['bind', 'ro'])])"
+    # The socket directory first: the filesystem directory is mounted inside it.
+    dra-assert "$mounts" "[m['containerPath'] for m in j].index('/run/cxl') < [m['containerPath'] for m in j].index('$DRA_LEASE_FS_CTR_DIR')"
+}
+
 dra-fs-mounts() { # script API
     # Usage: dra-fs-mounts VMDIR
     #
@@ -1097,6 +1177,27 @@ dra-pmem-loops() { # script API
     # pmem block device, one "loopN /dev/pmemK" per line, quietly. Return
     # non-zero if the loop devices cannot be listed.
     dra-vm-command-q "$1" "test -d /sys/block || exit 1; for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$(cat \"\$f\") || exit 1; case \"\$b\" in /dev/pmem*) n=\${f#/sys/block/}; echo \"\${n%%/*} \$b\";; esac; done; exit 0"
+}
+
+dra-lease-fs-mounts() { # script API
+    # Usage: dra-lease-fs-mounts VMDIR
+    #
+    # Print the mounts under $DRA_LEASE_FS_DIR in the mount namespace of the
+    # VM of VMDIR as a JSON list sorted by target, quietly, one object per
+    # mount: target, source, fstype, options (the superblock options) and
+    # vfs (the options of the mount itself, for instance
+    # ro,nosuid,nodev,relatime). COMMAND_OUTPUT has the list. Return
+    # non-zero if the mounts cannot be read.
+    local json
+    json=$(dra-vm-command-q "$1" "findmnt -J -l -o TARGET,SOURCE,FSTYPE,FS-OPTIONS,VFS-OPTIONS") || return 1
+    COMMAND_OUTPUT=$(python3 -c '
+import json, sys
+base = sys.argv[1].rstrip("/") + "/"
+out = [{"target": m["target"], "source": m.get("source") or "", "fstype": m.get("fstype") or "",
+        "options": m.get("fs-options") or "", "vfs": m.get("vfs-options") or ""}
+       for m in json.loads(sys.stdin.read())["filesystems"] if m["target"].startswith(base)]
+print(json.dumps(sorted(out, key=lambda m: m["target"]), sort_keys=True))' "$DRA_LEASE_FS_DIR" <<< "$json") || return 1
+    echo "$COMMAND_OUTPUT"
 }
 
 dra-local-state-claims() {
@@ -1681,6 +1782,28 @@ dra-companion-meta-check() { # script API
     # container.
     dra-assert "$1" "j['metadata']['labels'] == {'$DRA_LEASE_LABEL': '$2', '$DRA_REQUESTER_LABEL': '$3', '$DRA_NODE_LABEL': '$4'}"
     dra-assert "$1" "j['metadata']['annotations']['$DRA_REQUESTER_ANNOTATION'] == '$5'"
+}
+
+dra-lease-template-yaml() { # script API
+    # Usage: dra-lease-template-yaml [NAME]
+    #
+    # Print the ResourceClaimTemplate NAME (default cxl-lease) with one
+    # request "lease" of DeviceClass cxl-lease: a pod with a claim from it
+    # may lease memory and filesystems for its containers that use the
+    # claim, and the claim lives and dies with the pod.
+    cat <<EOF2
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: ${1:-cxl-lease}
+spec:
+  spec:
+    devices:
+      requests:
+      - name: lease
+        exactly:
+          deviceClassName: cxl-lease
+EOF2
 }
 
 dra-leases() { # script API

@@ -30,6 +30,7 @@ const mountInfoSample = `22 1 0:21 / / rw,relatime shared:1 - btrfs /dev/vda3 rw
 301 22 259:0 / /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct ro,nosuid,nodev,relatime shared:150 - erofs /dev/pmem0 ro,user_xattr,acl,dax=always
 302 22 7:0 / /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-cached ro,nosuid,nodev,relatime shared:151 - erofs /dev/loop0 ro,user_xattr,acl,dax=never
 310 22 0:40 / /mnt/with\040space rw,relatime - tmpfs tmpfs rw
+313 22 259:0 /sub\040dir /mnt/sub ro,nosuid,nodev,relatime shared:150 - erofs /dev/pmem0 ro,user_xattr,acl,dax=always
 311 22 0:41 / /mnt/stacked rw,relatime - tmpfs first rw
 312 311 0:42 / /mnt/stacked rw,relatime master:3 - tmpfs second rw,size=1k
 `
@@ -39,10 +40,11 @@ func TestParseMountInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mounts) != 7 {
+	if len(mounts) != 8 {
 		t.Fatalf("%d mounts", len(mounts))
 	}
 	want := mountInfo{
+		Root:       "/",
 		Target:     "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct",
 		FsType:     "erofs",
 		Source:     "/dev/pmem0",
@@ -55,6 +57,9 @@ func TestParseMountInfo(t *testing.T) {
 	}
 	if mi := findMount(mounts, "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-cached"); mi == nil || mi.Source != "/dev/loop0" || !mi.hasSuperOpt("dax=never") {
 		t.Fatalf("cached mount %+v", mi)
+	}
+	if mi := findMount(mounts, "/mnt/sub"); mi == nil || mi.Root != "/sub dir" || mi.Source != "/dev/pmem0" {
+		t.Fatalf("bind of a subdirectory: %+v", mi)
 	}
 	if mi := findMount(mounts, "/mnt/with space"); mi == nil || mi.FsType != "tmpfs" {
 		t.Fatalf("escaped mount point: %+v", mi)

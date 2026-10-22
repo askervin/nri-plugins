@@ -180,10 +180,11 @@ func (f *fakePoolSys) manager() *memctl.Manager {
 }
 
 type poolTestEnv struct {
-	f         *fakePoolSys
-	m         *fakeMounter // the mounts of the node outlive driver restarts
-	cdiDir    string
-	stateFile string
+	f           *fakePoolSys
+	m           *fakeMounter // the mounts of the node outlive driver restarts
+	cdiDir      string
+	stateFile   string
+	leaseFsRoot string // of the pool driver, "" for none
 }
 
 func newPoolTestEnv(t *testing.T) *poolTestEnv {
@@ -207,7 +208,7 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond)
+	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond, e.leaseFsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

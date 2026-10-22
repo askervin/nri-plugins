@@ -414,7 +414,8 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string) 
 		return nil, fmt.Errorf("pool driver data directory: %w", err)
 	}
 	mem := newMemctl(sysfsRoot)
-	pool, err := newPoolDriver(cxlFlags.PoolDriverName, mem, newSysMounter(mem.SysRoot), filepath.Join(poolDataDir, poolStateFileName), cxlFlags.PoolPrepareTimeout)
+	pool, err := newPoolDriver(cxlFlags.PoolDriverName, mem, newSysMounter(mem.SysRoot), filepath.Join(poolDataDir, poolStateFileName),
+		cxlFlags.PoolPrepareTimeout, filepath.Join(config.KubeletPluginDir, leaseFsDirName))
 	if err != nil {
 		return nil, fmt.Errorf("pool driver: %w", err)
 	}

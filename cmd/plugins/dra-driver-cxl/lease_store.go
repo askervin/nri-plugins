@@ -38,12 +38,16 @@ type podRef struct {
 }
 
 // leaseClaim is a prepared claim on the lease device: it owns the socket
-// <data dir>/leases/<uid>/cxl.sock.
+// <data dir>/leases/<uid>/cxl.sock and, when FsDir is set, the directory
+// of the mounts of its fs leases, <data dir>/lease-fs/<uid>, which its
+// containers have at api.FsDir. A claim prepared without FsDir has
+// containers without that mount.
 type leaseClaim struct {
 	UID       string   `json:"uid"`
 	Namespace string   `json:"namespace"`
 	Name      string   `json:"name"`
 	Pods      []podRef `json:"pods"` // reservedFor at Prepare (refreshed on demand)
+	FsDir     string   `json:"fsDir,omitempty"`
 }
 
 // hasPod tells whether the pod with the uid is one of the claim's pods.
@@ -67,7 +71,7 @@ type lease struct {
 	// Source is the requested source ("": local, then pool), and the
 	// source of the device once Ready.
 	Source string `json:"source,omitempty"`
-	Mode   string `json:"mode"`   // effective: api.ModeNUMA or api.ModeDax
+	Mode   string `json:"mode"`   // effective: api.ModeNUMA, api.ModeDax or api.ModeFs
 	Shared bool   `json:"shared"` // one share of a shared device
 	// SharedDevice is true when the device of the lease is a shared
 	// device: one share of it when Shared, the whole device otherwise.
@@ -75,8 +79,15 @@ type lease struct {
 	// DeviceSource is the source of the device that Serial names when
 	// a ResourceSlice has it and no source was requested, "" otherwise.
 	DeviceSource string `json:"deviceSource,omitempty"`
-	ReadOnly     bool   `json:"readOnly,omitempty"` // dax: the fd is opened read-only
-	Size         string `json:"size,omitempty"`     // requested quantity
+	ReadOnly     bool   `json:"readOnly,omitempty"` // dax: the fd is opened read-only; fs: always
+	Access       string `json:"access,omitempty"`   // fs: api.AccessDirect or api.AccessCached
+	// Name is the mount point of an fs lease in api.FsDir, unique among
+	// the leases of the lease claim.
+	Name string `json:"name,omitempty"`
+	// Path is the directory of the filesystem of a Ready fs lease in the
+	// container, api.FsDir/<Name>.
+	Path string `json:"path,omitempty"`
+	Size string `json:"size,omitempty"` // requested quantity
 	// Serial is 0x<lower-case hex>: the requested device, or the device
 	// of a Ready lease.
 	Serial    string    `json:"serial,omitempty"`
@@ -110,7 +121,9 @@ func (l *lease) memory() (api.Memory, bool) {
 		Size:     l.Bytes,
 		Node:     l.Node,
 		Dax:      l.Dax,
-		ReadOnly: l.ReadOnly,
+		Path:     l.Path,
+		Access:   l.Access,
+		ReadOnly: l.ReadOnly || l.Mode == api.ModeFs,
 	}, true
 }
 
@@ -125,10 +138,13 @@ type leaseStore struct {
 	path   string
 	Claims map[string]*leaseClaim `json:"claims"` // lease claim uid -> ...
 	Leases map[string]*lease      `json:"leases"` // lease id -> ...
+	// Recovered is true when the stored table could not be decoded and
+	// the store started empty: the lease claims of the node are unknown.
+	Recovered bool `json:"-"`
 }
 
 // loadLeaseStore reads the store at path: an empty store if it does not
-// exist or cannot be decoded (strictly).
+// exist or cannot be decoded (strictly), Recovered in the latter case.
 func loadLeaseStore(path string) (*leaseStore, error) {
 	s := &leaseStore{path: path}
 	data, err := os.ReadFile(path)
@@ -140,7 +156,7 @@ func loadLeaseStore(path string) (*leaseStore, error) {
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(s); err != nil {
 			klog.Errorf("lease broker: parsing %s: %v; starting with an empty lease table", path, err)
-			s = &leaseStore{path: path}
+			s = &leaseStore{path: path, Recovered: true}
 		}
 	}
 	if s.Claims == nil {

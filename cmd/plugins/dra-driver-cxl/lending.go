@@ -50,10 +50,12 @@ type lentDevice struct {
 	Serial    uint64
 	Shared    bool
 	Size      uint64 // bytes the lease gets: the slice size or the device size
-	Mode      string // api.ModeNUMA or api.ModeDax
+	Mode      string // api.ModeNUMA, api.ModeDax or api.ModeFs
 	ReadOnly  bool
 	Node      int    // numa: NUMA node of the memory, else -1
 	DaxDevice string // dax: /dev/daxX.Y
+	Access    string // fs: api.AccessDirect or api.AccessCached
+	NodeMount string // fs: the host path of the node mount of the device
 }
 
 // leaseHooks is what a driver tells the lease broker about companion
@@ -79,6 +81,14 @@ type lendRecord struct {
 	Pod       podRef `json:"pod"`
 	Container string `json:"container"`
 	Nodes     []int  `json:"nodes,omitempty"` // lent NUMA nodes
+	// FsDir is the host directory of the mounts of the fs leases of the
+	// lease claim, "" for other leases and for a lease claim without it.
+	FsDir string `json:"fsDir,omitempty"`
+	// Name is the mount point of an fs lease in FsDir.
+	Name string `json:"name,omitempty"`
+	// Mounts are the host paths of the binds of the node mounts of the
+	// fs devices in FsDir.
+	Mounts []string `json:"mounts,omitempty"`
 }
 
 // companionLender lends the companion claims of one driver to running

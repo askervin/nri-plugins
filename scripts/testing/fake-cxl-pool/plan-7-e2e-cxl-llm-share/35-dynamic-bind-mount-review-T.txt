@@ -1,0 +1,64 @@
+plan-7 dynamic bind mounts: review of stream T (tests)
+======================================================
+2026-10-22, orchestrator. Read: the full diff of E/dra.source.sh,
+S2/llm.source.sh, test16 and test12, docs/memory/cxl/e2e.md, and T's
+status file (34-dynamic-bind-mount-status-T.txt, sections 6 and 7 with
+the runs and their evidence).
+
+1. The test against the contract (32 sections 9, 10)
+----------------------------------------------------
+- Readers as designed: direct-b (VM2, lease, --name models) and cached-c
+  (VM1, lease, default name) through llm-lease-reader-script (the reader
+  script written to /tmp/reader.sh, then exec cxl-request request ...
+  --exec sh /tmp/reader.sh, so that the same env, mount, files, pmem and
+  write-probe lines are logged); the others unchanged claim readers. VM2
+  has a static and a dynamic mount of the same device and access.
+- Every proof of 32 section 9 for lease readers is there: cxl-request
+  list/env/fd, the companion pod and claim (class cxl-pool-persistent,
+  serial selector, shares "1", DeviceConfig exactly {fs, readOnly,
+  access} without path, Attached, persistent, not exclusive, no CDI
+  device), the lease CDI device with the three mounts and their options
+  in order (dra-lease-cdi-assert, shared with test12), the bind on the
+  node (same source and superblock options as the node mount, vfs
+  options ro,nosuid,nodev, exactly one mount at the target).
+- Phase D2 as designed, with the precise assertions: release --wait 5s
+  exits 3 with state Releasing; the driver log has the EBUSY line; the
+  bind, both node mounts, the region and the answer stay; the companion
+  pod has a deletionTimestamp; list shows Releasing; kill of llama-server
+  (SIGKILL on the host pid, exit 137, pod Failed) -> lease and companion
+  gone, bind gone, VM2 keeps the cached node mount and the region and
+  the cached readers answer; VM1 unchanged; the directories of the lease
+  claim gone after the pod is deleted.
+- E: no cxl-lease-* objects, no mounts or directories under lease-fs, the
+  template deleted; exit-cleanup also refuses to release while a lease
+  bind remains.
+- test12: the two changed texts, the seven new refusals, the /run/cxl/fs
+  checks (empty, read-only slave, touch fails, idle has none), the
+  lease-fs directory gone at the end; one old shellcheck finding fixed.
+- Accepted choices: D2 checks only direct-b's lease objects after the
+  kill (cached-c's companion lives until E); SIGKILL instead of pkill in
+  the container (the image may lack pkill; a SIGTERM could end 0 and the
+  pod Succeeded). Helpers beyond 32 (DRA_LEASE_FS_CTR_DIR,
+  dra-cdi-mounts, dra-lease-cdi-assert) are shared by test12 and test16.
+No findings.
+
+2. Runs (T, 34-dynamic-bind-mount-status-T.txt)
+-----------------------------------------------
+Final image abb97a5cbcda: test16 PASS twice in a row (303 s, 300 s),
+test12 PASS (354 s), test10, 11, 13, 14, 15, 17, 18, 19 PASS once each.
+Earlier: test16 PASS twice and test12 PASS on c4fcce123f5d, the
+directory once on mixed images. Nothing in the tests had to change after
+the first run. Measured: lease readers serve 8.9-9.1 s after pod
+creation (claim readers 8.2-8.4 s); the fs lease size is the namespace
+size; each bind is exactly one host mount; the release of the mapped
+lease is refused after 5.4 s (--wait 5s) and kubelet retried the
+companion's Unprepare about every second; the lease and its companion
+were gone 4.3-8.6 s after llama-server was killed. Final VM state clean
+(no memdevs, regions, mounts, loop devices, lease directories, namespace
+or helm release; the llm0 files removed).
+
+3. Orchestrator checks on the final tree
+----------------------------------------
+bash -n of test16 and test12 concatenated with their sources: ok;
+shellcheck (SC2154, SC2034, SC1090, SC2148, SC2016 excluded) of the four
+changed files: 0 findings; plain ASCII.

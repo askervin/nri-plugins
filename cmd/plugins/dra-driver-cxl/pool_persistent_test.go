@@ -48,9 +48,11 @@ type fakeMounter struct {
 	mountErr  map[string]error    // source -> error of Mount
 	superOpts map[string][]string // source -> super options of a new superblock
 	busy      map[string]bool     // targets whose Unmount fails with EBUSY
+	bindRoot  string              // the root of a new bind, "": that of its source
 	holders   map[string]string   // block device -> holder, like a container's bind mount
 	holderErr error               // error of Holder
 	detachErr error               // error of Release(true) of a loop device
+	bindFlags []string            // the per-mount flags of a new bind, nil: those of its source
 }
 
 func newFakeMounter() *fakeMounter {
@@ -77,6 +79,23 @@ func (m *fakeMounter) Mount(source, target, fstype string, flags uintptr, data s
 	if _, err := os.Stat(target); err != nil {
 		return err
 	}
+	if flags&unix.MS_BIND != 0 {
+		// a bind has the superblock and the per-mount flags of its source
+		src := findMount(m.mounts, source)
+		if src == nil {
+			return unix.EINVAL
+		}
+		bind := *src
+		bind.Target = filepath.Clean(target)
+		if m.bindFlags != nil {
+			bind.MountFlags = slices.Clone(m.bindFlags)
+		}
+		if m.bindRoot != "" {
+			bind.Root = m.bindRoot
+		}
+		m.mounts = append(m.mounts, bind)
+		return nil
+	}
 	opts := []string{"ro", data}
 	if o, ok := m.superOpts[source]; ok {
 		opts = o
@@ -86,7 +105,7 @@ func (m *fakeMounter) Mount(source, target, fstype string, flags uintptr, data s
 			opts = mi.SuperOpts
 		}
 	}
-	m.mounts = append(m.mounts, mountInfo{Target: target, FsType: fstype, Source: source, SuperOpts: opts, MountFlags: []string{"ro", "nosuid", "nodev"}})
+	m.mounts = append(m.mounts, mountInfo{Root: "/", Target: target, FsType: fstype, Source: source, SuperOpts: opts, MountFlags: []string{"ro", "nosuid", "nodev"}})
 	return nil
 }
 
@@ -189,6 +208,13 @@ func (m *fakeMounter) Holder(dev string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// setBusy makes the Unmount of target fail with EBUSY, or not.
+func (m *fakeMounter) setBusy(target string, busy bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.busy[target] = busy
 }
 
 func (m *fakeMounter) callsOf(prefix string) []string {
@@ -829,4 +855,474 @@ func TestPoolPersistentSyncFailure(t *testing.T) {
 	if len(p.prepared) != 0 {
 		t.Fatalf("prepared %v", p.prepared)
 	}
+}
+
+// newPoolLeaseEnv returns a pool test env with the persistent device of
+// persistentData written by a writer, a pool driver with a lease-fs root,
+// and fake hooks that give the lend records of companion claims the
+// lease-fs directory of the lease claim lc1 and the name models.
+func newPoolLeaseEnv(t *testing.T) (*poolTestEnv, *poolDriver, *fakeHooks) {
+	t.Helper()
+	e := newPoolTestEnv(t)
+	e.leaseFsRoot = filepath.Join(filepath.Dir(e.stateFile), "lease-fs")
+	e.f.plugPersistent(persistentSerial)
+	e.f.labels = true
+	hooks := &fakeHooks{fsDir: filepath.Join(e.leaseFsRoot, "lc1"), name: "models"}
+	noErr(t, os.MkdirAll(hooks.fsDir, 0o755))
+	return e, e.leaseDriver(t, hooks), hooks
+}
+
+// leaseDriver returns a new pool driver, as after a restart, that lends
+// companion claims with the hooks.
+func (e *poolTestEnv) leaseDriver(t *testing.T, hooks *fakeHooks) *poolDriver {
+	t.Helper()
+	p := e.driver(t)
+	p.lender.set(newFakeLender(testRef), hooks)
+	return p
+}
+
+// fsCompanion returns the companion claim of lease id of mode fs with the
+// access on the persistent device, as the broker writes its DeviceConfig.
+func fsCompanion(id, access string) *resourceapi.ResourceClaim {
+	cfg := fmt.Sprintf(`{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":%q}`, access)
+	c := persistentClaim("uid-"+companionName(id), persistentData, cfg)
+	c.ObjectMeta = companionClaim(id).ObjectMeta
+	return c
+}
+
+// bindCall returns the call of the fake mounter of a lease bind.
+func bindCall(nodeMount, target string) string {
+	return fmt.Sprintf("mount %s %s  0x%x ", nodeMount, target, unix.MS_BIND)
+}
+
+// TestPoolLeaseBind prepares the companion claim of an fs lease: the node
+// mount, then its bind in the lease-fs directory before the broker hears
+// of it; the Unprepare unmounts the bind before the node mount and the
+// region, and fails while the bind is busy.
+func TestPoolLeaseBind(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	direct := p.nodeMountPath(0xc1ae0001, "direct")
+	target := filepath.Join(hooks.fsDir, "models")
+	uid := "uid-cxl-lease-l1"
+	bound := false
+	hooks.onPrepared = func(string) {
+		mi, _ := e.m.Mounted(target)
+		bound = mi != nil
+	}
+	r := prepare(t, p, fsCompanion("l1", "direct"))
+	noErr(t, r.Err)
+	e.wantNoCDIDevices(t, r)
+	if !bound {
+		t.Fatal("the bind did not exist when the broker was told that the companion is prepared")
+	}
+	// a plain bind of the node mount, which inherits its flags
+	wantCalls := []string{fmt.Sprintf("mount /dev/pmem0 %s erofs 0x%x dax=always", direct, fsMountFlags), bindCall(direct, target)}
+	if got := e.m.callsOf("mount"); !slices.Equal(got, wantCalls) {
+		t.Fatalf("mount calls %q, expected %q", got, wantCalls)
+	}
+	if mi, _ := e.m.Mounted(target); mi == nil || mi.FsType != "erofs" || mi.Source != "/dev/pmem0" || !slices.Equal(mi.MountFlags, []string{"ro", "nosuid", "nodev"}) {
+		t.Fatalf("bind %+v", mi)
+	}
+	// recorded in the lend and the state file
+	if rec := p.prepared[uid].Lend; rec.FsDir != hooks.fsDir || rec.Name != "models" || !slices.Equal(rec.Mounts, []string{target}) {
+		t.Fatalf("lend record %+v", rec)
+	}
+	data, _ := os.ReadFile(e.stateFile)
+	for _, want := range []string{`"fsDir": "` + hooks.fsDir + `"`, `"name": "models"`, `"mounts": [`, `"` + target + `"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("state file lacks %s:\n%s", want, data)
+		}
+	}
+	// the broker gets the access and the node mount
+	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.Serial != 0xc1ae0001 ||
+		d.Size != fakePmemBytes || !d.ReadOnly || d.Node != -1 {
+		t.Fatalf("lent device %+v", d)
+	}
+	if log := hooks.log(); log != "lending l1 cxl-lease-l1\nprepared l1" {
+		t.Fatalf("hooks:\n%s", log)
+	}
+
+	// the borrower has files of the bind open: the Unprepare fails, the
+	// claim, the node mount and the region stay
+	e.m.busy[target] = true
+	wantErr(t, unprepare(t, p, uid), "cxl-pool.nri.io: unpreparing claim demo/cxl-lease-l1: lease l1: unmounting "+target+": device or resource busy")
+	if p.prepared[uid] == nil || strings.Contains(e.f.commands(), "disable-region") {
+		t.Fatalf("busy bind: claim %v, commands:\n%s", p.prepared[uid], e.f.commands())
+	}
+	for _, mnt := range []string{target, direct} {
+		if mi, _ := e.m.Mounted(mnt); mi == nil {
+			t.Fatalf("%s unmounted while the bind is busy", mnt)
+		}
+	}
+	// kubelet retries: the bind, then the node mount, then the region
+	e.m.busy[target] = false
+	noErr(t, unprepare(t, p, uid))
+	if got := e.m.callsOf("umount"); !slices.Equal(got, []string{"umount " + target, "umount " + target, "umount " + direct}) {
+		t.Fatalf("umount calls %q", got)
+	}
+	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bind directory left: %v", err)
+	}
+	if _, err := os.Stat(hooks.fsDir); err != nil {
+		t.Fatalf("the lease-fs directory of the lease claim is the broker's: %v", err)
+	}
+	if log := hooks.log(); !strings.HasSuffix(log, "releasing l1\nreleasing l1") {
+		t.Fatalf("hooks:\n%s", log)
+	}
+	// unbinding again is a no-op
+	noErr(t, p.unbindLeaseMounts(&lendRecord{Lease: "l1", Mounts: []string{target}}, ""))
+	noErr(t, p.unbindLeaseMounts(nil, ""))
+
+	// a static claim of the same device and access keeps the node mount
+	// and the region when the companion is unprepared
+	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
+	noErr(t, prepare(t, p, fsCompanion("l2", "direct")).Err)
+	noErr(t, unprepare(t, p, "uid-cxl-lease-l2"))
+	if mi, _ := e.m.Mounted(target); mi != nil {
+		t.Fatalf("bind left %+v", mi)
+	}
+	if mi, _ := e.m.Mounted(direct); mi == nil || strings.Count(e.f.commands(), "disable-region") != 1 {
+		t.Fatalf("the static claim lost its node mount or region:\n%s", e.f.commands())
+	}
+	noErr(t, unprepare(t, p, "d1"))
+	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+}
+
+// TestPoolLeaseBindErrors fails the Prepare of companion claims of fs
+// leases whose bind cannot be made, and rolls back everything.
+func TestPoolLeaseBindErrors(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	direct := p.nodeMountPath(0xc1ae0001, "direct")
+	target := filepath.Join(hooks.fsDir, "models")
+	checkClean := func(what string) {
+		t.Helper()
+		e.wantClean(t, p)
+		e.wantNoMounts(t, p)
+		e.f.wantReleased(t)
+		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s: bind directory left: %v", what, err)
+		}
+	}
+
+	// E1: a lease claim of an older driver
+	hooks.fsDir = ""
+	wantErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err,
+		"cxl-pool.nri.io: preparing claim demo/cxl-lease-l1: lease l1: its lease claim has no filesystem directory")
+	if !strings.Contains(hooks.log(), "failed l1: lease l1: its lease claim has no filesystem directory") {
+		t.Fatalf("lend failure not told:\n%s", hooks.log())
+	}
+	checkClean("E1")
+	hooks.fsDir = filepath.Join(e.leaseFsRoot, "lc1")
+
+	// E2: two fs devices, the first bind is unmounted again
+	c := fsCompanion("l2", "direct")
+	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
+		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
+	wantErr(t, prepare(t, p, c).Err, "lease l2: more than one filesystem device")
+	if !slices.Contains(e.m.calls, "umount "+target) {
+		t.Fatalf("first bind not unmounted: %q", e.m.calls)
+	}
+	checkClean("E2")
+
+	// E3: a foreign mount at the target is neither used nor unmounted
+	noErr(t, os.MkdirAll(target, 0o755))
+	noErr(t, e.m.Mount("tmpfs", target, "tmpfs", 0, ""))
+	n := len(e.m.callsOf("umount " + target))
+	wantErr(t, prepare(t, p, fsCompanion("l3", "direct")).Err, "device 0xc1ae0001: "+target+" is a tmpfs mount of tmpfs, not of "+direct)
+	if mi, _ := e.m.Mounted(target); mi == nil || mi.Source != "tmpfs" || len(e.m.callsOf("umount "+target)) != n {
+		t.Fatalf("foreign mount touched: %+v %q", mi, e.m.calls)
+	}
+	e.m.mounts = slices.DeleteFunc(e.m.mounts, func(mi mountInfo) bool { return mi.Target == target })
+	noErr(t, os.Remove(target))
+	checkClean("E3")
+
+	// a bind of the node mount at the target (a Prepare again after a
+	// crash before the state was written) is used
+	noErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err)
+	n = len(e.m.callsOf("mount "))
+	delete(p.prepared, "uid-cxl-lease-l4")
+	noErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err)
+	if len(e.m.callsOf("mount ")) != n || !slices.Equal(p.prepared["uid-cxl-lease-l4"].Lend.Mounts, []string{target}) {
+		t.Fatalf("existing bind not used: %q %+v", e.m.calls, p.prepared["uid-cxl-lease-l4"].Lend)
+	}
+	noErr(t, unprepare(t, p, "uid-cxl-lease-l4"))
+	checkClean("existing bind")
+
+	// E4: a bind without the flags of the node mount is unmounted again
+	e.m.bindFlags = []string{"ro", "relatime"}
+	wantErr(t, prepare(t, p, fsCompanion("l5", "cached")).Err,
+		"device 0xc1ae0001: the bind of "+p.nodeMountPath(0xc1ae0001, "cached")+" at "+target+" is not a read-only nosuid nodev erofs mount")
+	e.m.bindFlags = nil
+	checkClean("E4")
+
+	// a bad name
+	hooks.name = ".."
+	wantErr(t, prepare(t, p, fsCompanion("l6", "direct")).Err, `lease l6: invalid name ".."`)
+	hooks.name = "models"
+	checkClean("name")
+
+	// a bind of a failed Prepare that cannot be unmounted holds the
+	// region; the next release unmounts it
+	c = fsCompanion("l7", "direct")
+	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
+		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
+	e.m.setBusy(target, true)
+	wantErr(t, prepare(t, p, c).Err, "lease l7: more than one filesystem device")
+	if mi, _ := e.m.Mounted(target); mi == nil || !slices.Equal(p.staleBinds, []staleBind{{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"}}) {
+		t.Fatalf("busy bind %+v, stale %v", mi, p.staleBinds)
+	}
+	e.wantRegion(t, true)
+	e.m.setBusy(target, false)
+	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
+	noErr(t, unprepare(t, p, "d1"))
+	if len(p.staleBinds) != 0 {
+		t.Fatalf("stale binds %v", p.staleBinds)
+	}
+	checkClean("stale bind")
+}
+
+// TestPoolLeaseBindSyncFailure unmounts the bind of a companion claim whose
+// state cannot be written.
+func TestPoolLeaseBindSyncFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only directory")
+	}
+	e, p, hooks := newPoolLeaseEnv(t)
+	dir := filepath.Dir(e.stateFile)
+	noErr(t, os.MkdirAll(p.mountsDir(), 0o755))
+	noErr(t, os.Chmod(dir, 0o555))
+	defer func() { _ = os.Chmod(dir, 0o755) }()
+	wantErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err, poolStateFileName)
+	e.wantNoMounts(t, p)
+	e.f.wantReleased(t)
+	if len(p.prepared) != 0 || !slices.Contains(e.m.calls, "umount "+filepath.Join(hooks.fsDir, "models")) {
+		t.Fatalf("prepared %v, calls %q", p.prepared, e.m.calls)
+	}
+}
+
+// TestPoolLeaseBindRestart binds missing lease binds again at start and
+// unmounts the binds of no prepared claim.
+func TestPoolLeaseBindRestart(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	cached := p.nodeMountPath(0xc1ae0001, "cached")
+	target := filepath.Join(hooks.fsDir, "models")
+	uid := "uid-cxl-lease-l1"
+	noErr(t, prepare(t, p, fsCompanion("l1", "cached")).Err)
+	if mi, _ := e.m.Mounted(target); mi == nil || mi.Source != "/dev/loop0" {
+		t.Fatalf("bind of the cached node mount %+v", mi)
+	}
+	nmounts := len(e.m.callsOf("mount "))
+
+	// a restart keeps the bind
+	e.leaseDriver(t, hooks)
+	if len(e.m.callsOf("mount ")) != nmounts || len(e.m.callsOf("umount")) != 0 {
+		t.Fatalf("restart touched the mounts: %q", e.m.calls)
+	}
+	// a missing bind is bound again after its node mount
+	e.m.mounts = nil
+	e.m.loops = map[string]string{}
+	e.leaseDriver(t, hooks)
+	if got, want := e.m.callsOf("mount ")[nmounts:], []string{fmt.Sprintf("mount /dev/loop1 %s erofs 0x%x dax=never", cached, fsMountFlags),
+		bindCall(cached, target)}; !slices.Equal(got, want) {
+		t.Fatalf("mounts after the restart %q, expected %q", got, want)
+	}
+	if mi, _ := e.m.Mounted(target); mi == nil || mi.Source != "/dev/loop1" {
+		t.Fatalf("bind %+v", mi)
+	}
+	// a bind of no prepared claim (a crash between the bind and the
+	// state write) is unmounted, its directory removed
+	stale := filepath.Join(e.leaseFsRoot, "lc2", "x")
+	noErr(t, os.MkdirAll(stale, 0o755))
+	noErr(t, e.m.Mount(cached, stale, "", unix.MS_BIND, ""))
+	e.leaseDriver(t, hooks)
+	if mi, _ := e.m.Mounted(stale); mi != nil || !slices.Contains(e.m.calls, "umount "+stale) {
+		t.Fatalf("stale bind left: %q", e.m.calls)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale bind directory left: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(stale)); err != nil {
+		t.Fatalf("the lease-fs directory of a lease claim is the broker's: %v", err)
+	}
+	if mi, _ := e.m.Mounted(target); mi == nil {
+		t.Fatal("the bind of the prepared claim was unmounted")
+	}
+	// without a lease-fs root nothing is swept
+	noErr(t, os.MkdirAll(stale, 0o755))
+	noErr(t, e.m.Mount(cached, stale, "", unix.MS_BIND, ""))
+	root := e.leaseFsRoot
+	e.leaseFsRoot = ""
+	e.driver(t)
+	if mi, _ := e.m.Mounted(stale); mi == nil {
+		t.Fatal("swept without a lease-fs root")
+	}
+	e.leaseFsRoot = root
+	e.leaseDriver(t, hooks)
+	if mi, _ := e.m.Mounted(stale); mi != nil {
+		t.Fatal("stale bind not swept")
+	}
+	// without its node mount a bind is not bound again
+	e.m.mounts = nil
+	e.m.loops = map[string]string{}
+	e.f.write(fakeNdRegionPath+"/pfn0.0/block/pmem0/dev", "259:4")
+	e.leaseDriver(t, hooks)
+	if mi, _ := e.m.Mounted(target); mi != nil {
+		t.Fatalf("bound without a node mount: %+v", mi)
+	}
+	e.f.write(fakeNdRegionPath+"/pfn0.0/block/pmem0/dev", "259:0")
+	p = e.leaseDriver(t, hooks)
+	if mi, _ := e.m.Mounted(target); mi == nil {
+		t.Fatal("not bound again")
+	}
+	noErr(t, unprepare(t, p, uid))
+	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bind directory left: %v", err)
+	}
+}
+
+// badConfigClaim is a claim of the persistent device whose DeviceConfig
+// fails before any device is touched; its rollback runs releaseDevices.
+func badConfigClaim(uid string) *resourceapi.ResourceClaim {
+	return persistentClaim(uid, persistentData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ext4"}`)
+}
+
+// TestPoolLeaseBindChecks covers the abnormal cases of lease binds: a
+// device of mode fs for a lease of another mode, a bind that another
+// prepared claim lists, a bind of another root of the erofs, a foreign
+// mount stacked on a bind.
+func TestPoolLeaseBindChecks(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	target := filepath.Join(hooks.fsDir, "models")
+
+	// the lease is not in mode fs: OnLending gives it no name
+	hooks.name = ""
+	wantErr(t, prepare(t, p, fsCompanion("l0", "direct")).Err, "lease l0: the device is of mode fs, the lease is not")
+	hooks.name = "models"
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+
+	// a bind that another prepared claim lists is not adopted
+	noErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err)
+	wantErr(t, prepare(t, p, fsCompanion("l2", "direct")).Err, "device 0xc1ae0001: "+target+" is the bind of another lease")
+	if mi, _ := e.m.Mounted(target); mi == nil || len(e.m.callsOf("umount "+target)) != 0 {
+		t.Fatalf("the bind of l1 was touched: %+v %q", mi, e.m.calls)
+	}
+	// nor unmounted by another claim that lists it too
+	p.prepared["dup"] = &preparedPoolClaim{ClaimName: "demo/dup", Lend: &lendRecord{Lease: "l9", Mounts: []string{target}}}
+	noErr(t, unprepare(t, p, "dup"))
+	if mi, _ := e.m.Mounted(target); mi == nil || len(e.m.callsOf("umount "+target)) != 0 {
+		t.Fatalf("the bind of l1 was unmounted by another claim: %+v %q", mi, e.m.calls)
+	}
+
+	// a foreign mount stacked on the bind stops the unbind
+	noErr(t, e.m.Mount("tmpfs", target, "tmpfs", 0, ""))
+	releases := strings.Count(e.f.commands(), "disable-region")
+	wantErr(t, unprepare(t, p, "uid-cxl-lease-l1"), "lease l1: "+target+" is a tmpfs mount of tmpfs, not a lease bind")
+	if p.prepared["uid-cxl-lease-l1"] == nil || len(e.m.callsOf("umount "+target)) != 0 || strings.Count(e.f.commands(), "disable-region") != releases {
+		t.Fatalf("unbind went on under a foreign mount: %q\n%s", e.m.calls, e.f.commands())
+	}
+	e.m.mounts = slices.DeleteFunc(e.m.mounts, func(mi mountInfo) bool { return mi.FsType == "tmpfs" })
+	noErr(t, unprepare(t, p, "uid-cxl-lease-l1"))
+	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+
+	// a bind of another directory of the erofs than the root of the node
+	// mount is no lease bind
+	e.m.bindRoot = "/sub"
+	wantErr(t, prepare(t, p, fsCompanion("l3", "direct")).Err, "is not a read-only nosuid nodev erofs mount")
+	e.m.bindRoot = ""
+	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+}
+
+// TestPoolLeaseStaleBinds checks that lease binds of no prepared claim
+// that cannot be unmounted are unmounted at a later release, and that the
+// region of their device is released then when no claim has it.
+func TestPoolLeaseStaleBinds(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	target := filepath.Join(hooks.fsDir, "models")
+	stale := []staleBind{{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"}}
+	// releaseLater runs a release of an unrelated failed Prepare, unbusies
+	// the bind before that if unbusy, and checks the result
+	releaseLater := func(what string) {
+		t.Helper()
+		e.wantRegion(t, true)
+		e.m.setBusy(target, false)
+		wantErr(t, prepare(t, p, badConfigClaim("x-"+what)).Err, `invalid mode "ext4"`)
+		if len(p.staleBinds) != 0 {
+			t.Fatalf("%s: stale binds %v left", what, p.staleBinds)
+		}
+		e.f.wantReleased(t)
+		e.wantClean(t, p)
+		e.wantNoMounts(t, p)
+		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s: bind directory left: %v", what, err)
+		}
+	}
+
+	// R4: a failed Prepare whose bind is busy; no later claim of the serial
+	c := fsCompanion("l1", "direct")
+	c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
+		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
+	e.m.setBusy(target, true)
+	wantErr(t, prepare(t, p, c).Err, "lease l1: more than one filesystem device")
+	if !slices.Equal(p.staleBinds, stale) {
+		t.Fatalf("stale binds %+v", p.staleBinds)
+	}
+	// a release while the bind is still busy keeps it and the region
+	wantErr(t, prepare(t, p, badConfigClaim("x0")).Err, `invalid mode "ext4"`)
+	if !slices.Equal(p.staleBinds, stale) || strings.Contains(e.f.commands(), "disable-region") {
+		t.Fatalf("stale binds %+v, commands:\n%s", p.staleBinds, e.f.commands())
+	}
+	releaseLater("failed prepare")
+
+	// R3: a bind that fails its check and cannot be unmounted
+	e.m.bindFlags = []string{"ro", "relatime"}
+	e.m.setBusy(target, true)
+	wantErr(t, prepare(t, p, fsCompanion("l2", "direct")).Err, "is not a read-only nosuid nodev erofs mount")
+	e.m.bindFlags = nil
+	if !slices.Equal(p.staleBinds, stale) {
+		t.Fatalf("stale binds %+v", p.staleBinds)
+	}
+	releaseLater("failed check")
+
+	// R2: a bind of no prepared claim at start (a crash before the state
+	// write) that is busy, of a cached node mount: its block device is the
+	// backing device of the loop device
+	noErr(t, prepare(t, p, fsCompanion("l3", "cached")).Err)
+	delete(p.prepared, "uid-cxl-lease-l3")
+	noErr(t, p.save())
+	e.m.setBusy(target, true)
+	p = e.leaseDriver(t, hooks)
+	if !slices.Equal(p.staleBinds, stale) {
+		t.Fatalf("stale binds after the restart %+v", p.staleBinds)
+	}
+	if mi, _ := e.m.Mounted(p.nodeMountPath(0xc1ae0001, "cached")); mi != nil {
+		t.Fatalf("node mount of no claim left: %+v", mi)
+	}
+	releaseLater("restart")
+
+	// a stale bind that a Prepare again adopts is forgotten, not unmounted
+	noErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err)
+	delete(p.prepared, "uid-cxl-lease-l4")
+	p.addStaleBind(staleBind{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"})
+	noErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err)
+	wantErr(t, prepare(t, p, badConfigClaim("x1")).Err, `invalid mode "ext4"`)
+	if mi, _ := e.m.Mounted(target); mi == nil || len(p.staleBinds) != 0 {
+		t.Fatalf("adopted bind %+v, stale binds %v", mi, p.staleBinds)
+	}
+	noErr(t, unprepare(t, p, "uid-cxl-lease-l4"))
+	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
 }

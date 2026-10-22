@@ -57,11 +57,18 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"fd", "--lease", "1a2b3c4d", "--wait", "60s", "--exec", "prog"}, api.Request{Op: "fd", Lease: "1a2b3c4d", Wait: "60s"}, []string{"prog"}, ""},
 		{[]string{"env", "--lease", "1a2b3c4d"}, api.Request{Op: "env", Lease: "1a2b3c4d"}, nil, ""},
 		{[]string{"env", "--lease=1a2b3c4d", "--exec", "numactl", "--membind=2", "prog"}, api.Request{Op: "env", Lease: "1a2b3c4d"}, []string{"numactl", "--membind=2", "prog"}, ""},
+		// mode fs
+		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--mode", "fs", "--access", "cached", "--name", "models", "--exec", "sh", "/tmp/r.sh"},
+			api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}, []string{"sh", "/tmp/r.sh"}, ""},
+		{[]string{"request", "--serial=0xc1ae0001", "--read-only", "--mode=fs", "--access=direct", "--name=m.1"},
+			api.Request{Op: "request", Serial: "0xc1ae0001", ReadOnly: true, Mode: "fs", Access: "direct", Name: "m.1"}, nil, ""},
+		{[]string{"request", "--source", "pool", "--mode", "fs", "--read-only", "--shared", "--size", "64Mi"},
+			api.Request{Op: "request", Source: "pool", Mode: "fs", ReadOnly: true, Shared: true, Size: "64Mi"}, nil, ""},
 		// validation errors
 		{[]string{"request", "--size", "1Gi", "--source", "any"}, api.Request{}, nil, `invalid source "any" (local or pool)`},
-		{[]string{"request", "--size", "1Gi", "--mode", "devdax"}, api.Request{}, nil, `invalid mode "devdax" (numa or dax)`},
+		{[]string{"request", "--size", "1Gi", "--mode", "devdax"}, api.Request{}, nil, `invalid mode "devdax" (numa, dax or fs)`},
 		{[]string{"request", "--shared", "--mode", "numa"}, api.Request{}, nil, "shared memory is never onlined as RAM: use mode dax"},
-		{[]string{"request", "--size", "1Gi", "--read-only"}, api.Request{}, nil, "readOnly needs mode dax"},
+		{[]string{"request", "--size", "1Gi", "--read-only"}, api.Request{}, nil, "readOnly needs mode dax or fs"},
 		{[]string{"request"}, api.Request{}, nil, "size or serial is required"},
 		{[]string{"request", "--serial", "zz"}, api.Request{}, nil, `invalid serial "zz"`},
 		{[]string{"release", "--all", "--exec", "cat"}, api.Request{}, nil, "--exec is for request, fd and env"},
@@ -85,6 +92,9 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"fd", "--exec", "cat"}, api.Request{}, nil, "fd needs --lease ID"},
 		{[]string{"request", "--size", "1Gi", "--exec"}, api.Request{}, nil, "--exec needs a command"},
 		{[]string{"request", "--shared=maybe"}, api.Request{}, nil, `--shared: invalid value "maybe"`},
+		{[]string{"request", "--size", "1Gi", "--name"}, api.Request{}, nil, "--name needs a value"},
+		{[]string{"env", "--lease", "1a2b3c4d", "--access", "direct"}, api.Request{}, nil, "--access is not an option of env"},
+		{[]string{"release", "--all", "--name", "x"}, api.Request{}, nil, "--name is not an option of release"},
 	} {
 		cmd, err := parseArgs(c.args)
 		if c.err != "" {
@@ -100,6 +110,94 @@ func TestParseArgs(t *testing.T) {
 		if cmd.req != c.req || !reflect.DeepEqual(cmd.exec, c.exec) {
 			t.Errorf("%v: got %+v %v", c.args, cmd.req, cmd.exec)
 		}
+	}
+}
+
+func TestOptions(t *testing.T) {
+	want := []string{"--source", "--mode", "--shared", "--read-only", "--access", "--name", "--size", "--serial", "--wait", "--request-id", "--exec"}
+	if got := options[api.OpRequest]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("options of request %v, want %v", got, want)
+	}
+	cmd := &command{}
+	for _, name := range []string{"--access", "--name"} {
+		if cmd.values()[name] == nil || cmd.isFlag(name) {
+			t.Errorf("%s is not an option with a value", name)
+		}
+	}
+	for _, line := range []string{"[--mode numa|dax|fs]", "[--access direct|cached] [--name NAME]", "fs: the mount point /run/cxl/fs/NAME; default the lease id",
+		"--read-only a dax fd that allows reads only; fs needs it"} {
+		if !strings.Contains(usage, line) {
+			t.Errorf("usage lacks %q", line)
+		}
+	}
+}
+
+// Requests that the validation refuses exit with 2 before anything is sent.
+func TestRunRefusesFs(t *testing.T) {
+	t.Setenv(api.SocketEnv, filepath.Join(t.TempDir(), "none.sock"))
+	for _, c := range []struct {
+		args []string
+		err  string
+	}{
+		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "block"}, `invalid mode "block" (numa, dax or fs)`},
+		{[]string{"request", "--mode", "fs", "--read-only", "--access", "slow", "--shared", "--size", "64Mi"}, `invalid access "slow" (direct or cached)`},
+		{[]string{"request", "--access", "cached", "--size", "64Mi"}, "access needs mode fs"},
+		{[]string{"request", "--name", "x", "--size", "64Mi"}, "name needs mode fs"},
+		{[]string{"request", "--mode", "fs", "--read-only", "--name", "a/b", "--size", "64Mi"},
+			`invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
+		{[]string{"request", "--mode", "fs", "--read-only", "--name", "..", "--size", "64Mi"}, `invalid name ".."`},
+		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--mode", "fs"}, "mode fs needs readOnly"},
+		{[]string{"request", "--size", "64Mi", "--read-only", "--mode", "numa"}, "readOnly needs mode dax or fs"},
+		{[]string{"request", "--source", "local", "--mode", "fs", "--read-only", "--shared", "--size", "64Mi"}, "mode fs needs source pool"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(c.args, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "cxl-request: "+c.err) {
+			t.Errorf("%v: exit %d, stderr %q; want %d and %q", c.args, code, errb.String(), exitUsage, c.err)
+		}
+	}
+}
+
+func TestRunExecFs(t *testing.T) {
+	resp := `{"lease":"000000b1","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"cached","path":"/run/cxl/fs/models",` +
+		`"size":534773760,"serial":"0xc1ae0001","env":{"CXL_C1AE0001_ACCESS":"cached","CXL_C1AE0001_MODE":"fs","CXL_C1AE0001_PATH":"/run/cxl/fs/models",` +
+		`"CXL_C1AE0001_READONLY":"1","CXL_C1AE0001_SERIAL":"0xc1ae0001","CXL_C1AE0001_SHARED":"1","CXL_C1AE0001_SIZE":"534773760"}}`
+	sock, reqs := fakeServer(t, resp, "")
+	t.Setenv(api.SocketEnv, sock)
+	var out, errb bytes.Buffer
+	script := `echo "$CXL_C1AE0001_PATH $CXL_C1AE0001_ACCESS $CXL_C1AE0001_MODE $CXL_C1AE0001_READONLY $CXL_LEASE ${CXL_C1AE0001_FD-nofd}"; ` +
+		`if (exec 9<&3) 2>/dev/null; then echo fd3; else echo nofd3; fi`
+	code := run([]string{"request", "--serial", "0xc1ae0001", "--shared", "--read-only", "--mode", "fs", "--access", "cached", "--name", "models",
+		"--exec", "/bin/sh", "-c", script}, &out, &errb)
+	if code != exitOK {
+		t.Fatalf("exit %d (stderr %s)", code, errb.String())
+	}
+	if r := <-reqs; r != (api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"}) {
+		t.Fatalf("request %+v", r)
+	}
+	if want := "/run/cxl/fs/models cached fs 1 000000b1 nofd\nnofd3\n"; out.String() != want {
+		t.Fatalf("output %q, want %q", out.String(), want)
+	}
+
+	// env prints the same variables
+	out.Reset()
+	if code := run([]string{"env", "--lease", "000000b1"}, &out, &errb); code != exitOK {
+		t.Fatalf("env: exit %d", code)
+	}
+	want := "CXL_C1AE0001_ACCESS=cached\nCXL_C1AE0001_MODE=fs\nCXL_C1AE0001_PATH=/run/cxl/fs/models\nCXL_C1AE0001_READONLY=1\n" +
+		"CXL_C1AE0001_SERIAL=0xc1ae0001\nCXL_C1AE0001_SHARED=1\nCXL_C1AE0001_SIZE=534773760\nCXL_LEASE=000000b1\n"
+	if out.String() != want {
+		t.Fatalf("env output\n%s\nwant\n%s", out.String(), want)
+	}
+	<-reqs
+
+	// an fs lease has no fd
+	errb.Reset()
+	fs := `{"lease":"000000b1","state":"Ready","mode":"fs","shared":true,"readOnly":true,"error":"lease 000000b1 is not a dax lease; use env"}`
+	sock, _ = fakeServer(t, fs, "")
+	t.Setenv(api.SocketEnv, sock)
+	if code := run([]string{"fd", "--lease", "000000b1", "--exec", "/bin/true"}, &out, &errb); code != exitNotUsed ||
+		!strings.Contains(errb.String(), "lease 000000b1 is not a dax lease; use env") {
+		t.Fatalf("fd of an fs lease: exit %d %s", code, errb.String())
 	}
 }
 

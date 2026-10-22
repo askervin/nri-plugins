@@ -1,0 +1,70 @@
+plan-7 dynamic bind mounts: plan
+================================
+Written 2026-10-22 (orchestrator). Two streams, one Opus agent each,
+started together. The contract is 32-dynamic-bind-mount-design.txt (32);
+the facts 31-dynamic-bind-mount-findings.txt (31). Paths as in 30.
+Branch 5jg-cxl, working tree; nothing is committed by the streams (the
+user commits).
+
+Streams
+-------
+D  driver: A/api.go (+ api_test.go), C/main.go (+ main_test.go),
+   D/broker.go, lease_claims.go, lease_store.go, lending.go, pool.go,
+   pool_persistent.go, mount.go, driver.go (+ their tests), the docs of
+   32 section 8. Desk work: unit tests, vet, reformat, golangci-lint of
+   the CXL packages. Then the image:
+     make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+   (build/images/nri-dra-driver-cxl-image-<id>.tar; the e2e tests take
+   the newest image in build/images). D does not touch the VMs. Status
+   file 34-dynamic-bind-mount-status-D.txt: what was done per section of
+   32, deviations as Requests, the image id, how it was verified.
+T  tests: S2/test16-cxl-llm-share/code.var.sh, S2/llm.source.sh,
+   E/dra.source.sh, S2/test12-dra-live-attach/code.var.sh,
+   docs/memory/cxl/e2e.md (32 sections 9, 10). Phase 1 (desk, in
+   parallel with D): the changes, checked with bash -n of each test
+   concatenated with its sources and shellcheck (exclusions as in
+   14-branch-5jg-cxl.txt section 1: SC2154, SC2034, SC1090, SC2148,
+   SC2016). Phase 2 (after D's image exists, the orchestrator says when):
+   run on the VMs, from N/test/e2e:
+     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+     ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+   one test at a time, never two at once. A failure that is the driver's
+   goes to the orchestrator as a Request in the status file (with the
+   driver log lines, dra-plugin-log); T does not change Go code. Done
+   means: test16 PASS twice in a row and test12 PASS once with the final
+   image, then the rest of the n4-cxl-shared-2 directory once
+   (test10-test19) to catch regressions of the shared helpers. Status
+   file 34-dynamic-bind-mount-status-T.txt with the runs (times,
+   verdicts, the TIMING lines of test16) and the final VM state.
+
+The VMs
+-------
+n4-cxl-shared-0, -1 and -2 (N/test/e2e/n4-cxl-shared-*-fedora-43-containerd,
+ssh -F <dir>/.ssh-config vagrant@node) are running, one cluster of three
+nodes (VM2 control plane), kernel 7.3.0-rc4 with CONFIG_EROFS_FS, no CXL
+memory devices, no driver installed (2026-10-22). test00-up is not
+needed. Only T uses them, and only in its phase 2. If a run leaves the
+cluster broken, T repairs with the tools of the tests (pool-vm-reset,
+dra-uninstall) before the next run and notes it.
+
+Order
+-----
+1. D and T phase 1 start together.
+2. D done -> the orchestrator tells T the image id -> T phase 2.
+3. T's driver findings -> orchestrator -> D fixes -> new image -> T reruns.
+4. Reviews (35-dynamic-bind-mount-review-D.txt, -T.txt) by the
+   orchestrator and a reviewer agent; fixes; final runs.
+
+Rules for both
+--------------
+- Read first: N/.github/skills/*/SKILL.md (coding style: plain ASCII,
+  function comments say what, not how; e2e: no sleeps, wait-until),
+  30, 31, 32, 33, then the files named in your section of 32 and the
+  earlier plan files that 30 lists.
+- Texts, names and paths exactly as in 32. A deviation is a Request in
+  the status file, with the reason; continue with the design meanwhile
+  unless the design cannot work.
+- Keep the status file current as you go (sections per step), so that an
+  interrupted stream can be picked up.
+- Do not commit. Do not run two e2e tests at once. Do not force-delete
+  pods that hold pool devices (pool.md, force deletion hazard).

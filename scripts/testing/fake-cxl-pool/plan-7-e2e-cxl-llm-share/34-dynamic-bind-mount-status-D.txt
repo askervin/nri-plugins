@@ -1,0 +1,415 @@
+plan-7 dynamic bind mounts: status of stream D (driver)
+=======================================================
+2026-10-22. Branch 5jg-cxl, working tree, nothing committed. Paths as in
+30 (N, A, C, D). State: DONE, image built, all desk checks clean.
+
+Image
+-----
+Current: N/build/images/nri-dra-driver-cxl-image-c089afbfea59.tar (fix
+round, 2026-10-22 12:12, see the section "Fix round" at the end).
+First: N/build/images/nri-dra-driver-cxl-image-c4fcce123f5d.tar
+(2026-10-22 11:45, tag nri-dra-driver-cxl:v0.15.0-30-g295376a27-dirty),
+built with
+  make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+(exit 0). It is the newest tar in build/images.
+
+Read
+----
+skills (coding-style, build, e2e), 30, 31, 32, 33, 22 (1, 4, 5, 9, 10),
+21 F10-F12, leases.md, usage.md; then every file changed, fully.
+
+32 section 2: API (A/api.go, api_test.go)
+-----------------------------------------
+- const FsDir = "/run/cxl/fs". Request.Access ("access"), Request.Name
+  ("name"); Response.Access ("access"), Response.Path ("path"), all
+  omitempty.
+- Validate texts and order exactly V1-V12 (V1-V3 in validateValues, V4-V11
+  in validateRequest, V12 last). New exported ValidName(name) (V7 rule:
+  1-255 bytes of [A-Za-z0-9._-], not "." or ".."); the pool driver uses it
+  too. EffectiveMode, Memory, Env, ExecEnv unchanged.
+- Tests: round trip with access/name/path; V2, V3, V5-V10 texts and order
+  (e.g. a bad name before "mode fs needs readOnly"), fs accepted with
+  readOnly, 255/256-byte names, ".", "..", "a b".
+
+32 section 3: cxl-request (C/main.go, main_test.go)
+---------------------------------------------------
+- Synopsis (file comment and usage) and the help lines exactly as 32;
+  --access and --name in options[OpRequest] before --size and in
+  values(). The --exec paragraph of the file comment mentions
+  CXL_<KEY>_PATH of an fs lease. No other behaviour change (an fs
+  response has mode != dax: no fd, "fd" exits 3 through the existing
+  exitCode rule).
+- Tests: parsing (--access/--name, also --opt=VAL), TestOptions (option
+  list order, values, usage lines), TestRunRefusesFs (V2, V3, V5-V10 exit
+  2 with "cxl-request: <text>" and the socket never dialed),
+  TestRunExecFs (request --exec runs CMD with PATH/ACCESS/MODE/READONLY
+  and CXL_LEASE, no CXL_<KEY>_FD, fd 3 closed in CMD; env prints the same
+  variables; fd on an fs lease exits 3 with "lease ... is not a dax
+  lease; use env").
+
+32 section 4: broker (D/broker.go, lease_claims.go, lease_store.go)
+-------------------------------------------------------------------
+- lease_claims.go: leaseFsDirName = "lease-fs", leaseFsMountPoint = "fs",
+  b.leaseFsRoot(), b.leaseFsDir(uid). leaseClaim.FsDir ("fsDir",
+  omitempty) set by OpenClaim. listen() -> makeFsDirs(): leases/<uid>/fs
+  and lease-fs/<uid>, 0755 (chmod too), selinuxLabel (best effort), only
+  for entries with FsDir. leaseCDIDevice: mounts /run/cxl (rbind, rw),
+  then, when FsDir is set, {FsDir, /run/cxl/fs, bind, [rbind, ro,
+  rslave]}, then the CLI; entries without FsDir keep the old device.
+- CloseClaim: as before (RemoveAll of leases/<uid>), then
+  removeFsDir(uid). removeFsDir: os.Remove of each entry of
+  lease-fs/<uid> that has no mount at or below it (mountinfo through
+  brokerConfig.Mounts, nil -> /proc/self/mountinfo via sysMounter.Mounts
+  /parseMountInfo), then of the directory if nothing is left; a mounted
+  entry is logged at V(3) and kept with the directory; never RemoveAll
+  under lease-fs; a mountinfo error removes nothing. sweepFsDirs: every
+  directory of lease-fs whose name is no claim of the store ->
+  removeFsDir; called by newBroker (after the store and the sockets) and
+  at the end of reconcile. release() calls removeFsDir(l.Claim) after the
+  drop when the claim is gone and has no lease left. All under b.mu.
+- lease.Access/Name/Path (omitempty). lease.memory(): Path, Access,
+  ReadOnly (true for fs). leaseInfo copies Access and Path.
+- requestOptions: Access ("" -> direct) and Name for mode fs.
+  fsLeaseOptions (under b.mu, before the store): B1 (exact text), id,
+  Name "" -> id, B2 `name "X" is in use by lease <id>` over leases of the
+  claim in any state. Both answered {"error"}, nothing stored.
+- serialOptions: sliceDevice.persistent from device.AttrPersistent
+  (false when absent). B3/B4 exact texts after the not-shareable /
+  not-local / not-pool / node checks and before the mode-numa check; the
+  exclusive early return after B3/B4. A shared device sets SharedDevice,
+  Mode = dax only when volatile (R6).
+- companionSources: fs -> [pool] (errPoolDisabled without the pool
+  driver). companionDevices: fs -> device.ClassPoolPersistent, selectors
+  and capacity as today. companionRequest: DeviceConfig with access for
+  fs, no path.
+- OnLending: lendRecord.FsDir (the claim's) and Name for fs leases.
+  OnPrepared: fs -> Access, Path = FsDir/<Name>, Node -1, Dax "";
+  fs/non-fs mismatch -> Failed "companion prepared mode X, lease is mode
+  Y", logged, released (b.mu released before startRelease). Ready log
+  line: "lease broker: lease <id>: Ready (source S, serial S, mode M, node
+  N, dax "", access "A", path "P", B bytes)".
+- brokerConfig.Mounts func() ([]mountInfo, error) for tests.
+
+32 section 5: pool driver (D/pool.go, pool_persistent.go, lending.go, mount.go)
+-------------------------------------------------------------------------------
+- lentDevice.Access, .NodeMount (filled by preparedPoolDevice.lent).
+  lendRecord.FsDir ("fsDir"), Name ("name"), Mounts ("mounts"), omitempty.
+- bindLeaseMounts(rec, devs) in pool_persistent.go: per fs device E1, E2
+  (exact texts), target = FsDir/Name, bindLeaseMount: Mounted(node
+  mount); MkdirAll(target, 0755); existing mount at target: must be
+  erofs, Source of the node mount, flags ro,nosuid,nodev, else E3 (exact
+  text, neither used nor unmounted); else Mount(nodeMount, target, "",
+  MS_BIND, "") (plain bind, R1), then the same check, else unmount (no
+  detach), remove the directory, E4 (exact text). rec.Mounts gets the
+  target. Logs "<driver>: lease <id>: bound <node mount> at <target>"
+  (or "... is bound at <target> already" for an adopted bind).
+- unbindLeaseMounts(rec): for each target while Mounted: Unmount (umount2
+  flags 0, sysMounter.Unmount unchanged); error -> E5 "lease <id>:
+  unmounting <target>: <err>" and stop; then removeMountDir(target)
+  (ENOENT ignored). rec not changed. Logs "<driver>: lease <id>: unbound
+  <target>". nil rec is a no-op.
+- prepareClaim: bindLeaseMounts after the devices and before
+  lender.lend; on its error: unbind, revoke, lender.failed, fail. The
+  fail closure unbinds the lend's Mounts before the rollback (covers the
+  lend error and the sync error paths). Companion log line after
+  success: "<driver>: claim <ns>/<name>: companion of lease <id> of
+  <ns>/<pod>/<ctr> prepared (nodes [..], binds [..])".
+- unprepareClaim: releasing, revoke, unbindLeaseMounts(pc.Lend) (error ->
+  "<driver>: unpreparing claim <name>: <E5>", Unprepare fails, claim and
+  region kept), then releaseDevices unchanged.
+- restoreMounts: after the node mounts and the loop update, before the
+  mounts/ sweep: restoreLeaseMounts: a missing bind of a prepared
+  companion is bound again when its fs device's node mount is mounted
+  (bindLeaseMount checks; log "...: bound <node mount> at <target>
+  again"), else logged and left; then every mountinfo mount under
+  leaseFsRoot+"/" in no prepared Lend.Mounts is unmounted, topmost first,
+  no detach (error logged, left) and its directory removed.
+- nodeMounter.Mounts() added to the interface (sysMounter had it).
+- checkSamePreparation, poolModeFor, ensureNodeMount: unchanged.
+  releaseDevices: unchanged but for unbindStale() first (see D-7).
+
+32 section 6: wiring
+--------------------
+- newPoolDriver(name, mem, mounter, stateFile, timeout, leaseFsRoot);
+  loadPoolDriver passes filepath.Join(config.KubeletPluginDir,
+  leaseFsDirName). No flag, no chart change.
+
+32 section 7: unit tests
+------------------------
+- A/api_test.go, C/main_test.go: above.
+- D/broker_test.go:
+  TestBrokerLeaseClaimSocketAndCDI: the three CDI mounts with options,
+  lease-fs/<uid> and leases/<uid>/fs exist (0755), FsDir stored, both
+  directories gone after CloseClaim.
+  TestBrokerAuthRejection: new texts V2, V3, V5-V10 from the plugin.
+  TestBrokerRequestOptions: fs on shared/exclusive persistent devices,
+  B3 (volatile shared pool, exclusive pool, shared local), B4 (persistent
+  shared/exclusive, numa/dax/""), order (not shareable, not a local
+  device, node checks first), pool disabled.
+  TestBrokerCompanionClaims: fs classes, shares/no capacity/memory/size
+  selector, DeviceConfig {fs, readOnly, access} without path.
+  TestBrokerFsLease (broker + real pool driver + fake mounter; the fake
+  client unprepares a companion claim through the pool driver on delete
+  and keeps it while that fails, like kubelet): companion claim spec
+  exactly; Ready response with mode fs, access, path /run/cxl/fs/<id>
+  and /run/cxl/fs/models (--name, cached, bind of /dev/loop0), env, no
+  fd; env op; fd op error; name clash (explicit and default name), nothing
+  stored; restart decodes the new fields strictly (store and list);
+  release with EBUSY -> Releasing, bind and companion claim stay, then
+  Released after the borrower lets go, bind directory removed; CloseClaim
+  with a busy bind leaves lease-fs/<uid>/models, reconcile keeps it, the
+  release after the unbind removes lease-fs/<uid>; region released, no
+  mounts left.
+  TestBrokerFsLeaseClaims: B1 on an entry without FsDir (kept by
+  OpenClaim again, CDI device without /run/cxl/fs), nothing stored, numa
+  still served; sweep at newBroker and reconcile (claims gone removed,
+  mounted entries and the open claim kept, nothing recursive).
+- D/pool_persistent_test.go (fakeMounter now models MS_BIND: the bind
+  copies FsType, Source, SuperOpts and MountFlags of the mount at its
+  source; bindFlags overrides the flags for E4; setBusy):
+  TestPoolLeaseBind: node mount then plain bind (exact calls), inherited
+  flags, bind exists when OnPrepared runs, lend/state file fields, lent
+  device Access/NodeMount; EBUSY fails the Unprepare (text), claim, node
+  mount and region kept; retry: umount bind, then node mount, then
+  region; unbind idempotent; a static claim keeps node mount and region
+  when the companion goes.
+  TestPoolLeaseBindErrors: E1 (and OnLendFailed), E2 (first bind
+  unmounted), E3 foreign tmpfs untouched, adopted existing bind, E4, bad
+  name, stale bind of a failed Prepare retried at the next release; full
+  rollback each time.
+  TestPoolLeaseBindSyncFailure: state write fails -> bind unmounted.
+  TestPoolLeaseBindRestart: restart keeps the bind; missing bind bound
+  again after its missing (cached) node mount; stale bind swept with its
+  directory (lease-fs/<uid> kept); no sweep with leaseFsRoot ""; no
+  re-bind while the node mount cannot be restored, re-bind once it can.
+- lending_test.go fakeHooks: fsDir, name, onPrepared.
+
+Verification (2026-10-22, last run after all changes)
+-----------------------------------------------------
+  gofmt -s -l pkg/cxl cmd/cxl-request cmd/plugins/dra-driver-cxl   -> nothing
+  go vet ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...   -> clean
+  go test -race -count=1 ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...   -> all ok
+  go test -race -count=5 -run 'TestBrokerFs|TestPoolLease' ./cmd/plugins/dra-driver-cxl/   -> ok
+  golangci-lint run ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...   -> 0 issues
+  non-ASCII grep over the changed Go files and docs -> none
+  python yaml.safe_load_all of the changed sample -> ok
+(make reformat not run: it rewrites every tracked file; gofmt -s on the
+changed packages is what it would do there.)
+
+32 section 8: documentation
+---------------------------
+- docs/memory/cxl/leases.md: intro (mode fs, pool only); Opting in (the
+  lease-fs directory, the fs mount point, the second CDI mount with
+  rbind,ro,rslave, why a separate read-only plugin-written directory,
+  Bidirectional already there); Flow (fs flow block, name default, plain
+  bind inherits ro,nosuid,nodev, shared node mount, PATH); shared-device
+  sentences now say volatile; cxl-request synopsis, operation and option
+  tables (--mode fs, --read-only, --access, --name), the CLI refusal
+  table in V order with V2, V3, V5-V10, the plugin refusal table with
+  B1-B4, the name clash and pool disabled for fs, fd on fs; --exec env of
+  fs leases; examples (direct with --exec, cached with --name);
+  protocol fields access, name, response access, path, size of fs;
+  companion objects (cxl-pool-persistent, pool only, rows, access in the
+  DeviceConfig, no path); life cycle (bind as lend, EBUSY Unprepare text,
+  kubelet retries, close the files, release order, directories,
+  restart); Limitations (block for claims with the new text, visible to
+  every container of the lease claim, B1, user namespaces untested,
+  latency and cooperative release of fs).
+- docs/memory/cxl/usage.md: PATH row names /run/cxl/fs/<name> for leases.
+- docs/memory/cxl/pool.md "Leases": one sentence on mode fs.
+- deployment/samples/dra-driver-cxl/lease.yaml: pod lease-fs-reader
+  (llama.cpp server image, cxl-request request --serial 0xc1ae0001
+  --shared --read-only --mode fs --name models --exec sh -c 'exec
+  /app/llama-server -m "$CXL_C1AE0001_PATH/model.gguf" ...').
+- docs/memory/cxl/e2e.md: not touched by D (T's).
+
+Deviations and additions (Requests)
+-----------------------------------
+None of these changes a name, text or path of 32; they fill gaps.
+D-1 OpenClaim on a claim already in the store keeps its FsDir (also "").
+    Reason: R7; the containers of an entry prepared without the mount
+    would otherwise get fs leases they cannot see after a re-prepare.
+D-2 requestOptions also refuses mode fs with errPoolDisabled when the
+    pool driver is disabled (an {"error"} at once, nothing stored);
+    companionSources has the check too, as 32 says.
+D-3 The id loop of a request without --name skips ids that another lease
+    of the claim uses as an explicit name, so that a default name never
+    hits B2 (an explicit clash still gets B2, tested).
+D-4 serialOptions keeps the not-local/not-pool/node checks for shared
+    devices only (as before; exclusive devices are not checked for their
+    source, unchanged behaviour); B3/B4 run for every device found, after
+    those checks; the exclusive early return is after B3/B4.
+D-5 Extra error texts for paths 32 does not name (defensive, not
+    expected in operation): "lease <id>: invalid name "X"" (bind),
+    "device 0x<serial>: <node mount> is not mounted" (bind),
+    "device 0x<serial>: binding <node mount> at <target>: <err>" (mount
+    error), E5 with "still mounted" after 8 unmounts of one target.
+D-6 unbindLeaseMounts unmounts while Mounted(target) (stacked binds), at
+    most 8 times, so that no lower bind survives a "successful" unbind.
+D-7 staleBinds: when the unbind of a failed Prepare fails (EBUSY), its
+    targets are remembered and releaseDevices (any Unprepare or
+    rollback) tries again first, skipping targets that a prepared claim
+    adopted meanwhile. Reason: such a bind belongs to no prepared claim
+    and would hold the superblock (Holder "in use") until a restart. Only
+    binds the driver made are touched (E3 foreign mounts stay).
+
+For the reviewer
+----------------
+- Lifecycle order in unprepareClaim: releasing -> revoke -> unbind ->
+  releaseDevices; an unbind error returns before releaseDevices, so the
+  node mount and the region stay and kubelet retries; the Holder check
+  remains the safety net (a bind holds the superblock in the fake too).
+- Never MNT_DETACH: sysMounter.Unmount is unix.Unmount(target, 0); the
+  new code calls only Mount(MS_BIND) and Unmount.
+- MS_BIND without MS_REC of the node mount (a single erofs mount).
+  Propagation relies on /var/lib/kubelet/plugins being Bidirectional in
+  the DaemonSet, as in the probe P4; not verifiable at the desk (T).
+- The broker reads the plugin's /proc/self/mountinfo (same mount
+  namespace as the pool driver). The sweeps of broker (directories) and
+  pool driver (binds) only remove what has no mount / is in no lend.
+- Race window: a companion Prepare that passed OnLending before
+  CloseClaim may MkdirAll the target again after removeFsDir; the bind
+  is recorded and unbound at its Unprepare; the empty lease-fs/<uid> goes
+  in release() or the next sweep.
+- leases/<uid>/fs is created by the plugin in the rw socket directory
+  (the mount point runc would create); CloseClaim still RemoveAll's
+  leases/<uid> (host side: socket and the empty fs directory only).
+- Log lines T can grep: "lease <id>: bound <node mount> at <target>",
+  "lease <id>: unbound <target>", "unpreparing claim <ns>/cxl-lease-<id>:
+  lease <id>: unmounting <target>: device or resource busy", "lease
+  broker: lease <id>: Ready (... mode fs ... access "..." path "...")".
+
+Fix round (review 35 section 3, 2026-10-22)
+-------------------------------------------
+Image: N/build/images/nri-dra-driver-cxl-image-c089afbfea59.tar
+(2026-10-22 12:12, same make command, exit 0; the newest in build/images).
+No text of 32 changed; new texts are listed below.
+
+R1  bindLeaseMount(uid, d, target): an existing bind that passes the
+    check is refused when another prepared claim lists the target:
+    "device 0x<serial>: <target> is the bind of another lease" (neither
+    used nor unmounted). leaseBindUsed(target, exceptUID).
+    unbindLeaseMounts(rec, exceptUID) skips a target that another
+    prepared claim lists, with a warning "<driver>: lease <id>: <target>
+    is the bind of another prepared claim, not unmounting it". Callers
+    pass the uid of the claim being prepared or unprepared;
+    bindLeaseMounts(uid, rec, devs) passes it through.
+R2  restoreLeaseMounts: a stale bind whose Unmount fails is logged
+    ("...; trying again at the next release") and recorded in
+    p.staleBinds. Its serial and block device come from the node mount
+    with the same source under mounts/ (still mounted at that point:
+    the lease sweep runs before the mounts/ sweep): the serial from the
+    name <hex>-<access>, the block device the source, or for a loop
+    device its backing file. Unknown: 0 and "" (then only the unmount is
+    retried, no region release).
+R3  bindLeaseMount: a new bind that fails its check (E4, or a Mounted
+    error) and whose Unmount fails is recorded in p.staleBinds with the
+    device's serial and block device.
+R4  p.staleBinds is []staleBind{Target, Serial, BlockDevice}; the
+    record of a failed Prepare (fail closure) takes them from the fs
+    device of the claim. unbindStale(ctx), first in releaseDevices (so
+    in every Unprepare and every failed Prepare of any pool claim):
+    - a record whose target a prepared claim lists now is forgotten
+      (a Prepare again adopted the bind);
+    - the topmost mount at the target is unmounted if it is erofs; a
+      foreign mount on it, an unmount error or a Mounted error keep the
+      record (retried next time), logged;
+    - a record whose bind is gone is dropped, and the directory removed.
+    Then, once per serial of the dropped records, when no record of it
+    is left, no prepared claim has it (preparedDevice(serial, "")), no
+    inflight count, and waitNoHolder passes within p.holderWait:
+    p.release(serial). A failed wait or release is logged, and the
+    region is then left as after any failed rollback (released by the
+    Unprepare of a later claim of the serial on the node, as today). The
+    region release is attempted once per dropped record; that is the
+    simplest correct variant: the release runs only after the last bind
+    of the serial is gone, never while one is mounted, and the Holder
+    check still guards it.
+R5  CloseClaim: os.Remove of leases/<uid>/cxl.sock (an error is returned
+    as before), then removeClaimDirs(uid): removeFsDir (now reports
+    whether lease-fs/<uid> is gone); only then os.Remove of
+    leases/<uid>/fs and leases/<uid>. While a bind is in lease-fs/<uid>,
+    the fs mount point and leases/<uid> stay too (an rmdir of the mount
+    point would lazily detach /run/cxl/fs and the bind copy in a
+    container namespace that outlives the claim); what is left is logged
+    ("claim ...: left [...], removed later"). release() and the sweep
+    call removeClaimDirs; sweepFsDirs now walks the names of both
+    lease-fs/ and leases/ that are no claim of the store. Files a
+    container wrote into /run/cxl keep leases/<uid> (logged at V(3)),
+    which RemoveAll used to clean. Comment at waitNoHolder: the Holder
+    check is load-bearing for lease binds (umount succeeds while another
+    bind exists; rmdir of a mount point in another namespace detaches
+    lazily, Linux 3.18+) and must stay.
+S1  leaseStore.Recovered (json "-") is set when the table could not be
+    decoded. sweepFsDirs does nothing while Recovered, at start and in
+    every reconcile of that process (not only at start: the reconcile
+    sweep 60 s later would remove the same directories); a later start
+    with a table that decodes sweeps again.
+S2  bindLeaseMounts: rec.Name "" with a device of mode fs gives
+    "lease <id>: the device is of mode fs, the lease is not"; the E1 text
+    stays for an fs lease without FsDir.
+S3  unbindLeaseMounts: when the topmost mount at a target is not erofs:
+    "lease <id>: <target> is a <type> mount of <source>, not a lease bind"
+    (not wrapped in E5), the Unprepare fails, nothing is unmounted.
+S4  mountInfo.Root (field 4, unescaped) in parseMountInfo; isLeaseBind
+    also requires mi.Root == node.Root. The fake mounter gives plain
+    mounts Root "/", a bind copies its source's Root (bindRoot overrides
+    it for the test).
+
+Tests added
+- mount_test.go: Root parsed, also escaped ("/sub\040dir").
+- pool_persistent_test.go:
+  TestPoolLeaseBindChecks: S2 text; R1 adoption refused and the bind of
+  the other claim untouched; a second claim listing the same target
+  does not unmount it; S3 foreign tmpfs stacked on a bind stops the
+  unbind (claim and region kept), then the unbind goes on once it is
+  gone; S4 a bind of another root fails E4.
+  TestPoolLeaseStaleBinds: R4 failed Prepare (two fs devices) with a busy
+  bind -> one stale record {target, 0xc1ae0001, /dev/pmem0}; a release
+  while still busy keeps it and the region; after the borrower lets go,
+  an unrelated failed Prepare (bad DeviceConfig, touches no device)
+  unmounts the bind and releases the region; R3 E4 with a busy unmount
+  -> stale record, the same release later; R2 a crash before the state
+  write of a cached companion, busy bind at restart -> stale record with
+  the loop's backing device, node mount of no claim unmounted, release
+  later; a stale bind adopted by a Prepare again is forgotten and stays
+  mounted.
+- broker_test.go:
+  TestBrokerPreparedModeMismatch: both directions, Failed with
+  "companion prepared mode dax, lease is mode fs" and "... mode fs,
+  lease is mode dax", released.
+  TestBrokerRemoveFsDirMountsError: Mounts() error -> removeFsDir false,
+  the directory stays (start sweep too).
+  TestBrokerRecoveredStoreKeepsDirs: a table with an unknown field ->
+  Recovered, start and reconcile keep lease-fs/<uid> and leases/<uid>/fs;
+  a later start with a valid table removes them.
+  TestBrokerFsLeaseCloseRace: CloseClaim runs inside OnLending of the
+  companion's Prepare and removes lease-fs/<uid>; the bind makes it
+  again; the lease is never Ready and is dropped; the reconcile keeps
+  the mounted directory; after the companion's Unprepare the reconcile
+  removes lease-fs/<uid> and leases/<uid>.
+  TestBrokerFsLease: CloseClaim with a busy bind now keeps the fs mount
+  point (socket gone); after the release both directories are gone.
+
+Docs: leases.md life cycle: the directory order and the kept mount point
+while a bind is there, no removal after an undecodable table, and a
+"Stale binds" item (retry at the next Unprepare or failed Prepare of any
+pool claim on the node, region release when nothing holds /dev/pmemK
+within 10 s).
+
+Verification (after the last change)
+  gofmt -s -l pkg/cxl cmd/cxl-request cmd/plugins/dra-driver-cxl   -> nothing
+  go vet ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...   -> clean
+  go test -race -count=1 ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...   -> all ok
+  go test -race -count=5 -run 'TestBrokerFs|TestPoolLease|TestBrokerPrepared|TestBrokerRecovered|TestBrokerRemoveFsDir'   -> ok
+  golangci-lint run ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...   -> 0 issues
+  non-ASCII grep of the changed Go files and leases.md -> none
+  make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images -> exit 0
+
+For the reviewer (fix round)
+- unbindStale's region release can add up to the holder wait (10 s) to
+  an unrelated Unprepare, only right after a stale bind was unmounted
+  and while something still holds the device.
+- The R5 ordering is stricter than asked (the fs mount point and the
+  socket directory wait for lease-fs/<uid>); leases/<uid> with files a
+  container wrote stays, the sweep tries again every reconcile.

@@ -98,6 +98,9 @@ type brokerConfig struct {
 	Image       string        // companion image
 	WaitDefault time.Duration
 	PoolDriver  string // cxl-pool.nri.io, "" when the pool driver is disabled
+	// Mounts returns the mounts of the plugin's mount namespace; nil:
+	// /proc/self/mountinfo.
+	Mounts func() ([]mountInfo, error)
 }
 
 type broker struct {
@@ -168,6 +171,7 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 			klog.Errorf("lease broker: lease claim %s: %v", uid, err)
 		}
 	}
+	b.sweepFsDirs()
 	klog.Infof("lease broker: loaded %d lease claims and %d leases from %s", len(store.Claims), len(store.Leases), store.path)
 	return b, nil
 }
@@ -459,14 +463,20 @@ func (b *broker) parseWait(s string) time.Duration {
 	return b.cfg.WaitDefault
 }
 
-// requestOptions sets the source, mode, sharing, size and device of a
-// validated request on the lease.
+// requestOptions sets the source, mode, sharing, access, name, size and
+// device of a validated request on the lease.
 func (b *broker) requestOptions(l *lease, req *api.Request) error {
-	if b.cfg.PoolDriver == "" && req.Source == api.SourcePool {
+	if b.cfg.PoolDriver == "" && (req.Source == api.SourcePool || req.Mode == api.ModeFs) {
 		return errPoolDisabled
 	}
 	l.Source, l.Shared, l.ReadOnly, l.Mode = req.Source, req.Shared, req.ReadOnly, req.EffectiveMode()
 	l.SharedDevice = req.Shared
+	if l.Mode == api.ModeFs {
+		l.Access, l.Name = req.Access, req.Name
+		if l.Access == "" {
+			l.Access = api.AccessDirect
+		}
+	}
 	if req.Size != "" {
 		q, err := resource.ParseQuantity(req.Size)
 		if err != nil || q.Sign() <= 0 {
@@ -481,7 +491,9 @@ func (b *broker) requestOptions(l *lease, req *api.Request) error {
 }
 
 // serialOptions sets the serial of a validated request on the lease and,
-// when it names a shared device, mode dax and that the device is shared.
+// when it names a shared device, that the device is shared and, for a
+// device of volatile memory, mode dax. Mode fs needs a persistent device,
+// and a persistent device needs mode fs.
 func (b *broker) serialOptions(l *lease, req *api.Request) error {
 	serial, _ := api.ParseSerial(req.Serial)
 	l.Serial = api.FormatSerial(serial)
@@ -494,18 +506,28 @@ func (b *broker) serialOptions(l *lease, req *api.Request) error {
 	case !dev.shared && l.Shared:
 		return fmt.Errorf("device %s: not shareable", l.Serial)
 	case !dev.shared:
-		l.DeviceSource = deviceSourceOf(dev, req)
-		return nil
 	case req.Source == api.SourceLocal && dev.driver != device.DriverName:
 		return fmt.Errorf("device %s: not a local device", l.Serial)
 	case req.Source == api.SourcePool && dev.driver == device.DriverName:
 		return fmt.Errorf("device %s: not a pool device", l.Serial)
 	case dev.driver == device.DriverName && dev.node != b.cfg.NodeName:
 		return fmt.Errorf("device %s: a local device of node %s, not of this node", l.Serial, dev.node)
+	}
+	switch {
+	case l.Mode == api.ModeFs && !dev.persistent:
+		return fmt.Errorf("device %s: mode %s needs a persistent device", l.Serial, api.ModeFs)
+	case l.Mode != api.ModeFs && dev.persistent:
+		return fmt.Errorf("device %s: a persistent device needs mode %s", l.Serial, api.ModeFs)
+	case !dev.shared:
+		l.DeviceSource = deviceSourceOf(dev, req)
+		return nil
 	case req.Mode == api.ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
 	}
-	l.SharedDevice, l.Mode = true, api.ModeDax
+	l.SharedDevice = true
+	if !dev.persistent {
+		l.Mode = api.ModeDax
+	}
 	l.DeviceSource = deviceSourceOf(dev, req)
 	return nil
 }
@@ -524,10 +546,11 @@ func deviceSourceOf(dev *sliceDevice, req *api.Request) string {
 
 // sliceDevice is a device with a serial in a ResourceSlice.
 type sliceDevice struct {
-	name   string
-	shared bool
-	driver string // the driver of the ResourceSlice
-	node   string // the node of a ResourceSlice of cxl.nri.io
+	name       string
+	shared     bool
+	persistent bool   // a pool device of persistent memory
+	driver     string // the driver of the ResourceSlice
+	node       string // the node of a ResourceSlice of cxl.nri.io
 }
 
 // deviceBySerial returns the device with the serial in the ResourceSlices
@@ -558,6 +581,9 @@ func (b *broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 			dev := &sliceDevice{name: d.Name, driver: rs.Spec.Driver}
 			if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrShared); ok && a.BoolValue != nil {
 				dev.shared = *a.BoolValue
+			}
+			if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrPersistent); ok && a.BoolValue != nil {
+				dev.persistent = *a.BoolValue
 			}
 			if rs.Spec.Driver == device.DriverName && rs.Spec.NodeName != nil {
 				dev.node = *rs.Spec.NodeName
@@ -603,7 +629,7 @@ func deviceSerial(d *resourceapi.Device, driver string) (uint64, bool) {
 // leaseInfo is the response of a lease. Called with b.mu held.
 func leaseInfo(l *lease) *api.Response {
 	r := &api.Response{Lease: l.ID, State: l.State, Source: l.Source, Mode: l.Mode, Shared: l.Shared, ReadOnly: l.ReadOnly,
-		Serial: l.Serial, Dax: l.Dax, Error: l.Error, Size: l.Bytes}
+		Access: l.Access, Path: l.Path, Serial: l.Serial, Dax: l.Dax, Error: l.Error, Size: l.Bytes}
 	if l.Node >= 0 {
 		n := l.Node
 		r.Node = &n
@@ -657,8 +683,9 @@ func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Reques
 	}
 
 	b.mu.Lock()
-	for l.ID == "" || b.store.Leases[l.ID] != nil {
-		l.ID = b.newID()
+	if err := b.fsLeaseOptions(l, req); err != nil {
+		b.mu.Unlock()
+		return &api.Response{Error: err.Error()}, daxFd{}
 	}
 	b.store.Leases[l.ID] = l
 	if err := b.store.save(); err != nil {
@@ -668,8 +695,8 @@ func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Reques
 	}
 	b.notify()
 	b.mu.Unlock()
-	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, shared device %v, read-only %v)",
-		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, l.Size, l.Serial, l.Source, l.Mode, l.Shared, l.SharedDevice, l.ReadOnly)
+	klog.Infof("lease broker: lease %s: %s/%s/%s requests size %q serial %q (source %q, mode %s, shared %v, shared device %v, read-only %v, access %q, name %q)",
+		l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, l.Size, l.Serial, l.Source, l.Mode, l.Shared, l.SharedDevice, l.ReadOnly, l.Access, l.Name)
 
 	if err := b.createCompanion(l); err != nil {
 		klog.Errorf("lease broker: lease %s: %v", l.ID, err)
@@ -689,6 +716,48 @@ func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Reques
 	}
 	b.mu.Unlock()
 	return b.waitReady(l.ID, wait, true)
+}
+
+// fsLeaseOptions chooses the id of a new lease and, for an fs lease, its
+// name: the requested one, or the id. An fs lease needs a lease claim with
+// a filesystem directory, and a name that no other lease of the claim has.
+// Called with b.mu held.
+func (b *broker) fsLeaseOptions(l *lease, req *api.Request) error {
+	fs := l.Mode == api.ModeFs
+	if fs {
+		if tc := b.store.Claims[l.Claim]; tc == nil || tc.FsDir == "" {
+			ns, name := l.Pod.Namespace, l.Claim
+			if tc != nil {
+				ns, name = tc.Namespace, tc.Name
+			}
+			return fmt.Errorf("lease claim %s/%s has no filesystem directory (prepared by an older driver): recreate the pod", ns, name)
+		}
+	}
+	// a default name never clashes with a name that a request chose
+	for l.ID == "" || b.store.Leases[l.ID] != nil || (fs && req.Name == "" && b.nameUser(l.Claim, l.ID) != nil) {
+		l.ID = b.newID()
+	}
+	if !fs {
+		return nil
+	}
+	if l.Name == "" {
+		l.Name = l.ID
+	}
+	if other := b.nameUser(l.Claim, l.Name); other != nil {
+		return fmt.Errorf("name %q is in use by lease %s", l.Name, other.ID)
+	}
+	return nil
+}
+
+// nameUser returns the lease of the lease claim whose fs mount has the
+// name, nil if there is none. Called with b.mu held.
+func (b *broker) nameUser(claimUID, name string) *lease {
+	for _, l := range b.store.Leases {
+		if l.Claim == claimUID && l.Name == name {
+			return l
+		}
+	}
+	return nil
 }
 
 // waitReady waits until the lease is Ready or Failed, at most wait. At
@@ -918,6 +987,12 @@ func (b *broker) companionObjects(l *lease) (*resourceapi.ResourceClaim, *corev1
 // claim of a lease accepts, the preferred one first: the requested one,
 // that of the device of the serial, or local, then pool.
 func (b *broker) companionSources(l *lease) ([]string, error) {
+	if l.Mode == api.ModeFs {
+		if b.cfg.PoolDriver == "" {
+			return nil, errPoolDisabled
+		}
+		return []string{api.SourcePool}, nil
+	}
 	var sources []string
 	for _, s := range []string{api.SourceLocal, api.SourcePool} {
 		switch {
@@ -963,12 +1038,17 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 			})
 			requests = []string{companionClaimRef + "/" + source}
 		}
-		params, err := json.Marshal(&deviceConfig{
+		cfg := &deviceConfig{
 			APIVersion: driver + "/v1alpha1",
 			Kind:       device.DeviceConfigKind,
 			Mode:       l.Mode,
 			ReadOnly:   l.ReadOnly,
-		})
+		}
+		if l.Mode == api.ModeFs {
+			// no path: the companion pod gets no mount
+			cfg.Access = l.Access
+		}
+		params, err := json.Marshal(cfg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -986,11 +1066,11 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 }
 
 // companionDevices returns what the companion claim of a lease requests
-// from one source, and the driver of its devices: the DeviceClass, the
-// selectors of the serial and, on shared devices, of the size, and the
-// capacity: memory on devices that are not shared, one share when the
-// lease shares a shared device, none (the whole device) when it takes a
-// shared device exclusively.
+// from one source, and the driver of its devices: the DeviceClass (of
+// persistent pool devices for mode fs), the selectors of the serial and,
+// on shared devices, of the size, and the capacity: memory on devices that
+// are not shared, one share when the lease shares a shared device, none
+// (the whole device) when it takes a shared device exclusively.
 func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDeviceRequest, string, error) {
 	driver := device.DriverName
 	exact := &resourceapi.ExactDeviceRequest{DeviceClassName: device.ClassLocal}
@@ -1001,6 +1081,9 @@ func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDe
 		driver, exact.DeviceClassName = b.cfg.PoolDriver, device.ClassPool
 		if l.deviceShared() {
 			exact.DeviceClassName = device.ClassPoolShared
+		}
+		if l.Mode == api.ModeFs {
+			exact.DeviceClassName = device.ClassPoolPersistent
 		}
 	}
 	var cel []string
@@ -1131,6 +1214,11 @@ func (b *broker) release(l *lease) {
 	delete(b.releasing, l.ID)
 	delete(b.deleting, l.ID)
 	b.saveLocked()
+	// the lease-fs directory of a closed lease claim may have waited for
+	// the unmount of the companion's bind
+	if b.store.Claims[l.Claim] == nil && len(b.store.leasesOf(l.Claim)) == 0 {
+		b.removeClaimDirs(l.Claim)
+	}
 	b.mu.Unlock()
 	klog.Infof("lease broker: lease %s: released", l.ID)
 }
@@ -1286,7 +1374,8 @@ func (b *broker) reconcileLoop(lender nodeLender) {
 
 // reconcile releases leases whose requester container or companion pod
 // is gone, restarts interrupted releases, lends the nodes of numa leases
-// again and deletes companions of this node that have no lease.
+// again, deletes companions of this node that have no lease and removes
+// the lease-fs directories of closed lease claims.
 func (b *broker) reconcile() {
 	b.mu.Lock()
 	lender := b.lender
@@ -1324,6 +1413,9 @@ func (b *broker) reconcile() {
 		}
 	}
 	b.deleteOrphans()
+	b.mu.Lock()
+	b.sweepFsDirs()
+	b.mu.Unlock()
 }
 
 // companionGone reports whether a companion pod no longer holds its
@@ -1402,7 +1494,8 @@ var _ leaseHooks = (*broker)(nil)
 // OnLending checks that a claim is the companion of a lease of this
 // broker that is being created or lent: its name is cxl-lease-<id>, its
 // namespace and owner pod those of the requester. It marks the lease
-// Lending and returns the lend of the requester's container.
+// Lending and returns the lend of the requester's container, with the
+// filesystem directory of the lease claim and the name of an fs lease.
 func (b *broker) OnLending(id string, claim *resourceapi.ResourceClaim) (*lendRecord, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1419,7 +1512,14 @@ func (b *broker) OnLending(id string, claim *resourceapi.ResourceClaim) (*lendRe
 	default:
 		return nil, fmt.Errorf("lease %s is %s", l.ID, l.State)
 	}
-	return &lendRecord{Lease: id, Pod: l.Pod, Container: l.Container}, nil
+	rec := &lendRecord{Lease: id, Pod: l.Pod, Container: l.Container}
+	if l.Mode == api.ModeFs {
+		if tc := b.store.Claims[l.Claim]; tc != nil {
+			rec.FsDir = tc.FsDir
+		}
+		rec.Name = l.Name
+	}
+	return rec, nil
 }
 
 // ownedBy tells whether an object has an owner reference with the uid.
@@ -1432,27 +1532,43 @@ func ownedBy(claim *resourceapi.ResourceClaim, uid string) bool {
 	return false
 }
 
-// OnPrepared marks a lease Ready with the prepared device.
+// OnPrepared marks a lease Ready with the prepared device. A device whose
+// mode is fs when the lease's is not, or the reverse, fails the lease, and
+// it is released.
 func (b *broker) OnPrepared(id string, devs []lentDevice) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	l := b.store.Leases[id]
 	if l == nil || l.State == api.StateReleasing || len(devs) == 0 {
+		b.mu.Unlock()
 		return
 	}
 	d := devs[0]
+	if (d.Mode == api.ModeFs) != (l.Mode == api.ModeFs) {
+		l.State, l.Error = api.StateFailed, fmt.Sprintf("companion prepared mode %s, lease is mode %s", d.Mode, l.Mode)
+		b.saveLocked()
+		b.mu.Unlock()
+		klog.Errorf("lease broker: lease %s: %s", id, l.Error)
+		b.startRelease(id, "wrong mode")
+		return
+	}
+	defer b.mu.Unlock()
 	l.Serial = api.FormatSerial(d.Serial)
 	l.Bytes = d.Size
 	l.Source = d.Source
 	l.SharedDevice = l.SharedDevice || d.Shared
-	if d.Mode == api.ModeDax {
+	switch d.Mode {
+	case api.ModeDax:
 		l.Node, l.Dax = -1, d.DaxDevice
-	} else {
+	case api.ModeFs:
+		l.Access, l.Path = d.Access, api.FsDir+"/"+l.Name
+		l.Node, l.Dax = -1, ""
+	default:
 		l.Node, l.Dax = d.Node, ""
 	}
 	l.State, l.Error = api.StateReady, ""
 	b.saveLocked()
-	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, node %d, dax %q, %d bytes)", l.ID, l.Source, l.Serial, l.Node, l.Dax, l.Bytes)
+	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, node %d, dax %q, access %q, path %q, %d bytes)",
+		l.ID, l.Source, l.Serial, l.Mode, l.Node, l.Dax, l.Access, l.Path, l.Bytes)
 }
 
 // OnLendFailed fails the lease with the lend error (for example a

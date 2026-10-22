@@ -1,0 +1,94 @@
+plan-7 dynamic bind mounts: orchestrator status
+===============================================
+2026-10-22: task received (30). Read: 22-erofs-design (1, 4, 5, 9, 10),
+21-erofs-findings, 29-erofs-status, 14-branch, IN 2.4/3.1, P1 section 5,
+the lease code (broker, lease_claims, lease_store, lending, lend), the
+pool driver (pool.go, pool_persistent.go, mount.go), api, cxl-request,
+test12, test16, llm.source.sh, dra.source.sh, leases.md, usage.md. Probe
+on VM2 (31 section 3): a mount made in a Bidirectional pod propagates to
+the host and into the slave bind of a running pod with the flags of its
+creation; a read-only remount of the plugin's copy does not propagate
+(so: plain MS_BIND of the ro,nosuid,nodev node mount); a busy slave makes
+umount EBUSY. VMs and host left clean. Verdict: feasible, no obstacle
+(31 section 5 lists what must be right). Written: 30, 31, 32 (contract),
+33 (plan). Started: D (driver, docs, image) and T phase 1 (tests, desk),
+Opus agents. T phase 2 on the VMs after D's image.
+2026-10-22: T phase 1 done (34-dynamic-bind-mount-status-T.txt): test16
+with direct-b (VM2, lease, --name models) and cached-c (VM1, lease) as
+dynamic readers, phase D2, E extended; test12 texts and seven new
+refusals, /run/cxl/fs checks; e2e.md rows; new helpers DRA_LEASE_FS_DIR,
+DRA_LEASE_FS_CTR_DIR, dra-lease-fs-mounts, dra-lease-template-yaml,
+dra-cdi-mounts, dra-lease-cdi-assert; llm-server-pod-yaml takes a claim
+kind, llm-lease-reader-script. bash -n and shellcheck clean. No Requests.
+Two choices accepted: D2 checks only direct-b's lease objects after the
+kill (cached-c on VM1 lives until E); llama-server is killed with
+kill -KILL of its host pid (exit 137, pod Failed for certain). T waits
+for D's image.
+2026-10-22: D done (34-dynamic-bind-mount-status-D.txt): api V1-V12 and
+ValidName, cxl-request --access/--name, broker (lease-fs directories,
+second CDI mount, B1-B4, cxl-pool-persistent companions, directory
+sweeps), pool driver (bindLeaseMounts plain MS_BIND with verification,
+unbindLeaseMounts, order releasing -> revoke -> unbind -> releaseDevices,
+restart re-bind and stale sweep), docs, sample; Requests D-1 to D-7
+accepted. Image build/images/nri-dra-driver-cxl-image-c4fcce123f5d.tar.
+T told to start phase 2 with it (test16, test12, then the directory).
+Orchestrator review of D's diff (35-dynamic-bind-mount-review-D.txt
+sections 1-2): architecture as designed, two S findings fixed in place
+(index.md mode row, a long comment line in cxl-request). An independent
+Opus reviewer reads the production code meanwhile (section 3 when it
+reports).
+2026-10-22: independent review (35-dynamic-bind-mount-review-D.txt
+section 3): no bug in normal operation, no deadlock; nine abnormal-path
+findings R1-R5, S1-S4 (unaccounted binds after a busy unmount at restart
+or after a failed check, adoption of a bind another claim lists, the
+region of a failed Prepare with a busy bind never released, rmdir of a
+mount point detaching other namespaces' copies lazily, the start sweep
+after a store decode failure, E1 text, foreign stacked mounts, the
+mountinfo root). All accepted and sent to D with the named unit tests;
+new image when done. T keeps running test16/test12 on c4fcce123f5d
+meanwhile; its final runs will be on D's fixed image.
+2026-10-22: D fix round done (R1-R5, S1-S4 with tests, image
+c089afbfea59); orchestrator refinement (RemoveAll of leases/<uid> once
+lease-fs/<uid> is gone) and doc alignment; vet, test -race, lint clean;
+FINAL image build/images/nri-dra-driver-cxl-image-abb97a5cbcda.tar. T
+told to make its final runs on it once its current run ends.
+2026-10-22: T phase 2 done (34-dynamic-bind-mount-status-T.txt 6-7):
+on the final image abb97a5cbcda test16 PASS twice in a row (303, 300 s),
+test12 PASS (354 s), test10-test15 and test17-test19 PASS once each; no
+test change needed after the first run, no driver failure. Review R-T
+(35-dynamic-bind-mount-review-T.txt): no findings.
+
+Closing status (2026-10-22, orchestrator)
+-----------------------------------------
+Done, nothing committed (branch 5jg-cxl, working tree; 27 files, +2912
+-249). Everything verified on the final tree: gofmt, go vet,
+go test -race of pkg/cxl/..., cmd/cxl-request/..., cmd/plugins/
+dra-driver-cxl/..., golangci-lint of those packages 0 issues; bash -n
+and shellcheck of the e2e files clean; plain ASCII. No stray binary.
+- Study: 31 (feasible; the probe of section 3: plain MS_BIND of the
+  node mount propagates with its flags, a remount of the plugin's copy
+  does not, a busy slave makes umount EBUSY).
+- Driver (D, reviewed twice): cxl-request request --mode fs --read-only
+  [--access direct|cached] [--name NAME]; protocol fields access, name,
+  response access, path; broker: lease-fs/<claim uid> and the second CDI
+  mount [rbind, ro, rslave] at /run/cxl/fs, B1-B4, companions of class
+  cxl-pool-persistent with DeviceConfig {fs, readOnly, access}; pool
+  driver: the bind of the node mount as the lend (plain MS_BIND, flags
+  verified), unmounted at the companion's Unprepare before the node mount
+  and region accounting (EBUSY fails the Unprepare, kubelet retries, never
+  MNT_DETACH), stale binds retried and their serials released, restart
+  re-bind and sweep; docs leases.md, usage.md, pool.md, index.md, sample
+  lease.yaml. Final image build/images/nri-dra-driver-cxl-image-
+  abb97a5cbcda.tar.
+- Tests (T, reviewed): test16 with two dynamic readers (direct-b on VM2
+  next to the static direct-a, cached-c on VM1) and the lifecycle phase
+  D2; test12 texts, refusals and /run/cxl/fs checks; e2e.md rows; helpers
+  in dra.source.sh and llm.source.sh.
+- VMs: n4-cxl-shared-0/1/2 up, one cluster, clean; the llm0 files
+  removed; port 9909 free.
+For the user: commit (the untracked plan files 3x-dynamic-bind-mount-*
+and the 34/35 status and review files belong with it); make golangci-lint
+of the whole tree still stops at the user's untracked
+cmd/plugins/balloons/policy/podresourcehints_test.go (known); not in this
+step: mode block through leases, fsType ext4/famfs, a write mount (22
+section 9); user-namespaced pods with fs leases are untested.

@@ -22,13 +22,13 @@ import (
 )
 
 func TestRequestResponseRoundTrip(t *testing.T) {
-	req := Request{Op: OpRequest, Source: SourcePool, Mode: ModeDax, Shared: true, ReadOnly: true, Size: "256Mi",
-		Serial: "0xc1ae0001", Wait: "10s", RequestID: "r1", Lease: "1a2b3c4d", All: true}
+	req := Request{Op: OpRequest, Source: SourcePool, Mode: ModeFs, Shared: true, ReadOnly: true, Access: AccessCached,
+		Name: "models", Size: "256Mi", Serial: "0xc1ae0001", Wait: "10s", RequestID: "r1", Lease: "1a2b3c4d", All: true}
 	data, err := json.Marshal(&req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"op":"request","source":"pool","mode":"dax","shared":true,"readOnly":true,"size":"256Mi","serial":"0xc1ae0001","wait":"10s","requestId":"r1","lease":"1a2b3c4d","all":true}`
+	want := `{"op":"request","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"cached","name":"models","size":"256Mi","serial":"0xc1ae0001","wait":"10s","requestId":"r1","lease":"1a2b3c4d","all":true}`
 	if string(data) != want {
 		t.Fatalf("request JSON\n%s\nwant\n%s", data, want)
 	}
@@ -56,6 +56,17 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &rback); err != nil || !reflect.DeepEqual(rback, resp) {
 		t.Fatalf("response round trip %+v %v", rback, err)
 	}
+
+	fs := Response{Lease: "1a2b3c4d", State: StateReady, Source: SourcePool, Mode: ModeFs, Shared: true, ReadOnly: true,
+		Access: AccessDirect, Path: FsDir + "/models", Size: 534773760, Serial: "0xc1ae0001"}
+	data, err = json.Marshal(&fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"direct","path":"/run/cxl/fs/models","size":534773760,"serial":"0xc1ae0001"}`
+	if string(data) != want {
+		t.Fatalf("fs response JSON\n%s\nwant\n%s", data, want)
+	}
 }
 
 func TestValidate(t *testing.T) {
@@ -76,16 +87,44 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpEnv, Lease: "1a2b3c4d", Wait: "60s"}, ""},
 		{Request{Op: OpRequest, Size: "1Gi", Source: "remote"}, `invalid source "remote" (local or pool)`},
 		{Request{Op: OpRequest, Size: "1Gi", Source: "any"}, `invalid source "any" (local or pool)`},
-		{Request{Op: OpRequest, Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa or dax)`},
-		// modes block and fs are claims only
-		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs}, `invalid mode "fs" (numa or dax)`},
-		{Request{Op: OpRequest, Size: "1Gi", Mode: ModeBlock}, `invalid mode "block" (numa or dax)`},
+		{Request{Op: OpRequest, Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa, dax or fs)`},
+		// mode block is for claims only
+		{Request{Op: OpRequest, Size: "1Gi", Mode: ModeBlock}, `invalid mode "block" (numa, dax or fs)`},
+		// mode fs
+		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Serial: "0xc1ae0001"}, ""},
+		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Source: SourcePool, Access: AccessCached,
+			Name: "models", Serial: "0xc1ae0001"}, ""},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Access: AccessDirect, Serial: "0xc1ae0001"}, ""},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: "Model_1.0-x", Size: "64Mi"}, ""},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: strings.Repeat("n", 255), Size: "64Mi"}, ""},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Source: "remote", Access: "slow"}, `invalid source "remote" (local or pool)`},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: "memory", Access: "slow"}, `invalid mode "memory" (numa, dax or fs)`},
+		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Access: "slow", Size: "64Mi"}, `invalid access "slow" (direct or cached)`},
+		{Request{Op: OpRequest, Access: "slow", Size: "64Mi"}, `invalid access "slow" (direct or cached)`},
+		{Request{Op: OpRequest, Shared: true, Mode: ModeNUMA, Access: AccessCached}, "shared memory is never onlined as RAM: use mode dax"},
+		{Request{Op: OpRequest, Access: AccessCached, Size: "64Mi"}, "access needs mode fs"},
+		{Request{Op: OpRequest, Access: AccessDirect, Shared: true, Name: "x"}, "access needs mode fs"},
+		{Request{Op: OpRequest, Name: "x", Size: "64Mi"}, "name needs mode fs"},
+		{Request{Op: OpRequest, Name: "a/b", Mode: ModeDax, Size: "64Mi"}, "name needs mode fs"},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: "a/b", Size: "64Mi"},
+			`invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: ".", Size: "64Mi"}, `invalid name "."`},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: "..", Size: "64Mi"}, `invalid name ".."`},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: "a b", Size: "64Mi"}, `invalid name "a b"`},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: strings.Repeat("n", 256), Size: "64Mi"}, `invalid name "nnn`},
+		{Request{Op: OpRequest, Mode: ModeFs, Name: "a/b", Size: "64Mi"}, `invalid name "a/b"`},
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Shared: true, Mode: ModeFs}, "mode fs needs readOnly"},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, Size: "64Mi"}, "mode fs needs readOnly"},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, ReadOnly: true, Shared: true, Size: "64Mi"}, "mode fs needs source pool"},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, ReadOnly: true}, "mode fs needs source pool"},
+		{Request{Op: OpRequest, Mode: ModeFs, ReadOnly: true}, "size or serial is required"},
+		{Request{Op: OpRequest, Mode: ModeFs, ReadOnly: true, Serial: "c1ae0001"}, `invalid serial "c1ae0001"`},
 		{Request{Op: OpRequest, Shared: true, Mode: ModeNUMA}, "shared memory is never onlined as RAM: use mode dax"},
 		// a share of a shared local device
 		{Request{Op: OpRequest, Shared: true, Source: SourceLocal}, ""},
 		{Request{Op: OpRequest, Shared: true, Source: SourceLocal, ReadOnly: true, Serial: "0xc100e2e1"}, ""},
-		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax"},
-		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true, Mode: ModeNUMA}, "readOnly needs mode dax"},
+		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax or fs"},
+		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true, Mode: ModeNUMA}, "readOnly needs mode dax or fs"},
 		{Request{Op: OpRequest}, "size or serial is required"},
 		{Request{Op: OpRequest, Serial: "c1ae0001"}, `invalid serial "c1ae0001"`},
 		{Request{Op: OpRelease}, "release takes --lease ID or --all"},
@@ -115,6 +154,7 @@ func TestEffectiveMode(t *testing.T) {
 		{Request{Shared: true}, ModeDax},
 		{Request{Mode: ModeDax}, ModeDax},
 		{Request{Mode: ModeNUMA}, ModeNUMA},
+		{Request{Mode: ModeFs, Shared: true}, ModeFs},
 	} {
 		if got := c.req.EffectiveMode(); got != c.mode {
 			t.Errorf("%+v: mode %s, want %s", c.req, got, c.mode)

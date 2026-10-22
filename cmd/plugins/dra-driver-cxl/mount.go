@@ -31,6 +31,7 @@ import (
 
 // mountInfo is a mount of /proc/self/mountinfo.
 type mountInfo struct {
+	Root       string // the directory of the filesystem that is mounted, / for its root
 	Target     string // mount point
 	FsType     string
 	Source     string
@@ -67,6 +68,8 @@ type nodeMounter interface {
 	Unmount(target string) error
 	// Mounted returns the topmost mount at target, nil if there is none.
 	Mounted(target string) (*mountInfo, error)
+	// Mounts returns the mounts of the mount namespace of the process.
+	Mounts() ([]mountInfo, error)
 	// LoopBackingFile returns the backing file of a loop device
 	// (/dev/loopN), "" if it has none.
 	LoopBackingFile(loop string) (string, error)
@@ -144,6 +147,7 @@ func parseMountInfo(r io.Reader) ([]mountInfo, error) {
 			return nil, fmt.Errorf("invalid mountinfo line %q", s.Text())
 		}
 		mi := mountInfo{
+			Root:       unescapeMountInfo(f[3]),
 			Target:     unescapeMountInfo(f[4]),
 			MountFlags: strings.Split(f[5], ","),
 			FsType:     f[sep+1],

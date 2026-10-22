@@ -82,6 +82,13 @@ type poolDriver struct {
 	retryDelay time.Duration
 	mounter    nodeMounter   // node mounts and loop devices of mode fs
 	holderWait time.Duration // how long Unprepare waits for a held block device
+	// leaseFsRoot is the directory of the lease-fs directories of the
+	// lease claims, where the binds of fs leases are; "": no sweep of
+	// stale binds at start.
+	leaseFsRoot string
+	// staleBinds are lease binds of no prepared claim that could not be
+	// unmounted; releaseDevices tries again.
+	staleBinds []staleBind
 
 	// serials is a snapshot of the serials of prepared and inflight
 	// devices for the cxl.nri.io publisher (D29). It has its own lock
@@ -137,6 +144,8 @@ func (d *preparedPoolDevice) lent(driver string) lentDevice {
 		ReadOnly:  d.ReadOnly,
 		Node:      d.Node,
 		DaxDevice: d.DaxDevice,
+		Access:    d.Access,
+		NodeMount: d.NodeMount,
 	}
 }
 
@@ -213,24 +222,26 @@ type poolDevice struct {
 }
 
 // newPoolDriver returns a pool driver whose prepared claims are loaded
-// from stateFile, with their missing node mounts mounted again. The
-// kubelet plugin is started separately (start).
-func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration) (*poolDriver, error) {
+// from stateFile, with their missing node mounts and lease binds mounted
+// again, and the stale lease binds under leaseFsRoot ("": none) unmounted.
+// The kubelet plugin is started separately (start).
+func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration, leaseFsRoot string) (*poolDriver, error) {
 	if timeout <= 0 {
 		timeout = defaultPoolPrepareTimeout
 	}
 	p := &poolDriver{
-		name:       name,
-		mem:        mem,
-		stateFile:  stateFile,
-		timeout:    timeout,
-		probeGrace: defaultMemdevProbeGrace,
-		retryDelay: defaultRegionRetryDelay,
-		mounter:    mounter,
-		holderWait: defaultHolderWait,
-		lender:     newCompanionLender(name),
-		prepared:   map[string]*preparedPoolClaim{},
-		inflight:   map[uint64]int{},
+		name:        name,
+		mem:         mem,
+		stateFile:   stateFile,
+		timeout:     timeout,
+		probeGrace:  defaultMemdevProbeGrace,
+		retryDelay:  defaultRegionRetryDelay,
+		mounter:     mounter,
+		holderWait:  defaultHolderWait,
+		lender:      newCompanionLender(name),
+		leaseFsRoot: leaseFsRoot,
+		prepared:    map[string]*preparedPoolClaim{},
+		inflight:    map[uint64]int{},
 	}
 	if err := p.load(); err != nil {
 		return nil, err
@@ -365,6 +376,18 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 	fail := func(err error) kubeletplugin.PrepareResult {
 		err = fmt.Errorf("%s: preparing claim %s: %w", p.name, claimName, err)
 		klog.Error(err)
+		// a lease bind left mounted would hold the device
+		if uerr := p.unbindLeaseMounts(lend, uid); uerr != nil {
+			klog.Errorf("%s: claim %s: %v; trying again at the next release", p.name, claimName, uerr)
+			sb := staleBind{}
+			if d := fsDevice(pc.Devices); d != nil {
+				sb.Serial, sb.BlockDevice = d.Serial, d.BlockDevice
+			}
+			for _, t := range lend.Mounts {
+				sb.Target = t
+				p.addStaleBind(sb)
+			}
+		}
 		p.rollback(ctx, uid, append(slices.Clone(pc.Devices), failed...), touched)
 		return kubeletplugin.PrepareResult{Err: err}
 	}
@@ -444,6 +467,17 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 	}
 	devs := p.lentDevices(pc.Devices)
 	if lend != nil {
+		// the bind is the lend of an fs device: in place before Ready
+		if err := p.bindLeaseMounts(uid, lend, pc.Devices); err != nil {
+			if uerr := p.unbindLeaseMounts(lend, uid); uerr != nil {
+				klog.Errorf("%s: claim %s: %v", p.name, claimName, uerr)
+			}
+			if rerr := p.lender.revoke(ctx, lend, claimName); rerr != nil {
+				klog.Errorf("%s: claim %s: %v", p.name, claimName, rerr)
+			}
+			p.lender.failed(lend.Lease, err)
+			return fail(err)
+		}
 		if err := p.lender.lend(ctx, lend, devs); err != nil {
 			if rerr := p.lender.revoke(ctx, lend, claimName); rerr != nil {
 				klog.Errorf("%s: claim %s: %v", p.name, claimName, rerr)
@@ -471,6 +505,8 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		return res
 	}
 	if lend != nil {
+		klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
+			p.name, claimName, lend.Lease, lend.Pod.Namespace, lend.Pod.Name, lend.Container, lend.Nodes, lend.Mounts)
 		p.lender.prepared(lend.Lease, devs)
 	}
 	return pc.Result
@@ -677,6 +713,13 @@ func (p *poolDriver) unprepareClaim(ctx context.Context, uid string) error {
 		// Revoke before the release: offlining memory that the
 		// container still has in cpuset.mems leaves a stale node there.
 		if err := p.lender.revoke(ctx, pc.Lend, pc.ClaimName); err != nil {
+			err = fmt.Errorf("%s: unpreparing claim %s: %w", p.name, pc.ClaimName, err)
+			klog.Error(err)
+			return err
+		}
+		// The bind holds the superblock of the device: the region is
+		// released only after it is gone.
+		if err := p.unbindLeaseMounts(pc.Lend, uid); err != nil {
 			err = fmt.Errorf("%s: unpreparing claim %s: %w", p.name, pc.ClaimName, err)
 			klog.Error(err)
 			return err

@@ -196,6 +196,7 @@ type brokerEnv struct {
 	client *fake.Clientset
 	lender *fakeLender
 	b      *broker
+	mounts func() ([]mountInfo, error) // brokerConfig.Mounts of restart
 }
 
 func requesterPod() *corev1.Pod {
@@ -258,6 +259,7 @@ func (e *brokerEnv) restart() {
 		CLI:         e.cli,
 		WaitDefault: 5 * time.Second,
 		PoolDriver:  device.PoolDriverName,
+		Mounts:      e.mounts,
 	})
 	noErr(e.t, err)
 	b.pollInterval = 5 * time.Millisecond
@@ -453,12 +455,23 @@ func TestBrokerLeaseClaimSocketAndCDI(t *testing.T) {
 	if leaseCDIDeviceID(testLeaseClaimUID) != "nri.io/cxl=lease-lc1" {
 		t.Fatalf("CDI id %s", leaseCDIDeviceID(testLeaseClaimUID))
 	}
+	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
 	wantMounts := []*specs.Mount{
 		{HostPath: filepath.Dir(e.sock()), ContainerPath: "/run/cxl", Type: "bind", Options: []string{"rbind", "rw"}},
+		{HostPath: fsDir, ContainerPath: "/run/cxl/fs", Type: "bind", Options: []string{"rbind", "ro", "rslave"}},
 		{HostPath: e.cli, ContainerPath: "/usr/local/bin/cxl-request", Type: "bind", Options: []string{"bind", "ro"}},
 	}
 	if !reflect.DeepEqual(dev.ContainerEdits.Mounts, wantMounts) {
-		t.Fatalf("mounts %+v", dev.ContainerEdits.Mounts)
+		t.Fatalf("mounts %s", toJSON(dev.ContainerEdits.Mounts))
+	}
+	// the lease-fs directory and the mount point in the socket directory
+	for _, d := range []string{fsDir, filepath.Join(filepath.Dir(e.sock()), "fs")} {
+		if st, err := os.Stat(d); err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
+			t.Fatalf("directory %s: %v %v", d, st, err)
+		}
+	}
+	if tc := e.b.store.Claims[testLeaseClaimUID]; tc.FsDir != fsDir {
+		t.Fatalf("lease claim %+v", tc)
 	}
 	if !slices.Equal(dev.ContainerEdits.Env, []string{"CXL_LEASE_SOCKET=/run/cxl/cxl.sock"}) {
 		t.Fatalf("env %v", dev.ContainerEdits.Env)
@@ -479,10 +492,12 @@ func TestBrokerLeaseClaimSocketAndCDI(t *testing.T) {
 		t.Fatalf("list after restart: %+v", resp)
 	}
 
-	// close: socket, directory and CDI device gone
+	// close: socket, directories and CDI device gone
 	noErr(t, e.b.CloseClaim(context.Background(), testLeaseClaimUID))
-	if _, err := os.Stat(filepath.Dir(e.sock())); !os.IsNotExist(err) {
-		t.Fatalf("lease directory not removed: %v", err)
+	for _, d := range []string{filepath.Dir(e.sock()), fsDir} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Fatalf("directory %s not removed: %v", d, err)
+		}
 	}
 	if m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.LeasesCDISpecName+".*")); len(m) != 0 {
 		t.Fatalf("CDI spec not removed: %v", m)
@@ -524,9 +539,15 @@ func TestBrokerAuthRejection(t *testing.T) {
 		err string
 	}{
 		{api.Request{Op: "request", Size: "1Gi", Source: "any"}, `invalid source "any" (local or pool)`},
-		{api.Request{Op: "request", Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa or dax)`},
+		{api.Request{Op: "request", Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa, dax or fs)`},
 		{api.Request{Op: "request", Shared: true, Mode: "numa"}, "shared memory is never onlined as RAM: use mode dax"},
-		{api.Request{Op: "request", Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax"},
+		{api.Request{Op: "request", Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax or fs"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Access: "slow"}, `invalid access "slow" (direct or cached)`},
+		{api.Request{Op: "request", Size: "64Mi", Access: "cached"}, "access needs mode fs"},
+		{api.Request{Op: "request", Size: "64Mi", Name: "x"}, "name needs mode fs"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Name: "a/b"}, `invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs"}, "mode fs needs readOnly"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Source: "local"}, "mode fs needs source pool"},
 		{api.Request{Op: "request"}, "size or serial is required"},
 		{api.Request{Op: "request", Serial: "xyz"}, `invalid serial "xyz"`},
 		{api.Request{Op: "release"}, "release takes --lease ID or --all"},
@@ -1124,13 +1145,39 @@ func nodeResourceSlice(node string, devs ...resourceapi.Device) *resourceapi.Res
 	}
 }
 
+// persistentPoolSlice is a ResourceSlice of the pool controller with the
+// shared persistent device llm0 (0xc1af0001) and the exclusive persistent
+// device llm1 (0xc1af0002).
+func persistentPoolSlice() *resourceapi.ResourceSlice {
+	attrs := func(serial string, shared bool) map[resourceapi.QualifiedName]resourceapi.DeviceAttribute {
+		return map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+			"type": {StringValue: ptr("memdev")}, "source": {StringValue: ptr("pool")}, "serial": {StringValue: &serial},
+			"shared": {BoolValue: ptr(shared)}, "size": {IntValue: ptr(int64(1 << 29))}, "persistent": {BoolValue: ptr(true)},
+		}
+	}
+	return &resourceapi.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: "fake-cxl-pool-persistent"},
+		Spec: resourceapi.ResourceSliceSpec{
+			Driver:   device.PoolDriverName,
+			Pool:     resourceapi.ResourcePool{Name: "fake-cxl-pool-persistent", ResourceSliceCount: 1},
+			AllNodes: ptr(true),
+			Devices: []resourceapi.Device{
+				{Name: "llm0", Attributes: attrs("0xc1af0001", true),
+					Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{"shares": {Value: resource.MustParse("1M")}}},
+				{Name: "llm1", Attributes: attrs("0xc1af0002", false),
+					Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{"memory": {Value: resource.MustParse("512Mi")}}},
+			},
+		},
+	}
+}
+
 // newSlicesBrokerEnv returns a broker env whose client has the pool and
-// the local ResourceSlices, and that of node2 with the shared local memdev
-// 0xc100e2e3.
+// the local ResourceSlices, that of node2 with the shared local memdev
+// 0xc100e2e3, and the persistent pool devices.
 func newSlicesBrokerEnv(t *testing.T) *brokerEnv {
 	e := newBrokerEnv(t)
 	node2 := nodeResourceSlice("node2", localMemdevDevice("memdev-c100e2e3", &device.Memdev{Serial: 0xc100e2e3, Size: localRegionSize, NodeAffinity: -1, Shared: true}))
-	for _, s := range []*resourceapi.ResourceSlice{poolSlice(), localResourceSlice(), node2} {
+	for _, s := range []*resourceapi.ResourceSlice{poolSlice(), localResourceSlice(), node2, persistentPoolSlice()} {
 		_, err := e.client.ResourceV1().ResourceSlices().Create(context.Background(), s, metav1.CreateOptions{})
 		noErr(t, err)
 	}
@@ -1175,6 +1222,26 @@ func TestBrokerRequestOptions(t *testing.T) {
 		{req: api.Request{Serial: "0xc100e2e3", Mode: "numa"}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
 		{req: api.Request{Serial: "0xc1ae0001", Source: "local", Mode: "numa"}, err: "device 0xc1ae0001: not a local device"},
 		{req: api.Request{Size: "lots"}, err: `invalid size "lots"`},
+		// mode fs on persistent devices, shared or not
+		{req: api.Request{Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs"},
+			want: lease{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true, Access: "direct"}},
+		{req: api.Request{Serial: "0xc1af0001", ReadOnly: true, Mode: "fs", Access: "cached", Name: "models", Source: "pool"},
+			want: lease{Source: "pool", Serial: "0xc1af0001", SharedDevice: true, Mode: "fs", ReadOnly: true, Access: "cached", Name: "models"}},
+		{req: api.Request{Serial: "0xc1af0002", ReadOnly: true, Mode: "fs", Size: "512Mi"},
+			want: lease{Serial: "0xc1af0002", DeviceSource: "pool", Mode: "fs", ReadOnly: true, Access: "direct", Size: "512Mi"}},
+		{req: api.Request{Shared: true, ReadOnly: true, Mode: "fs", Size: "256Mi"},
+			want: lease{Shared: true, SharedDevice: true, Mode: "fs", ReadOnly: true, Access: "direct", Size: "256Mi"}},
+		// B3, B4 after the checks of the device and its source
+		{req: api.Request{Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc1ae0001: mode fs needs a persistent device"},
+		{req: api.Request{Serial: "0xc1ee0001", ReadOnly: true, Mode: "fs"}, err: "device 0xc1ee0001: mode fs needs a persistent device"},
+		{req: api.Request{Serial: "0xc100e2e2", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc100e2e2: mode fs needs a persistent device"},
+		{req: api.Request{Serial: "0xc1af0001", Shared: true, ReadOnly: true}, err: "device 0xc1af0001: a persistent device needs mode fs"},
+		{req: api.Request{Serial: "0xc1af0001", Mode: "numa"}, err: "device 0xc1af0001: a persistent device needs mode fs"},
+		{req: api.Request{Serial: "0xc1af0002", Size: "64Mi"}, err: "device 0xc1af0002: a persistent device needs mode fs"},
+		{req: api.Request{Serial: "0xc1af0002", Mode: "dax"}, err: "device 0xc1af0002: a persistent device needs mode fs"},
+		{req: api.Request{Serial: "0xc1ee0001", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc1ee0001: not shareable"},
+		{req: api.Request{Serial: "0xc1af0001", Source: "local", Mode: "numa"}, err: "device 0xc1af0001: not a local device"},
+		{req: api.Request{Serial: "0xc100e2e3", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc100e2e3: a local device of node node2, not of this node"},
 	} {
 		var l lease
 		tc.req.Op = api.OpRequest
@@ -1197,6 +1264,7 @@ func TestBrokerRequestOptions(t *testing.T) {
 	}{
 		{req: api.Request{Size: "1Gi", Source: "pool"}, err: "pool driver disabled (--pool-driver-name)"},
 		{req: api.Request{Size: "1Gi", Source: "pool", Shared: true}, err: "pool driver disabled (--pool-driver-name)"},
+		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: true}, err: "pool driver disabled (--pool-driver-name)"},
 		// shared local devices serve --shared
 		{req: api.Request{Shared: true, Size: "64Mi"}, want: lease{Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
 		{req: api.Request{Serial: "0xc100e2e2", Shared: true}, want: lease{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax"}},
@@ -1398,6 +1466,9 @@ func TestBrokerCompanionClaims(t *testing.T) {
 		poolNUMA  = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`
 		poolDax   = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`
 		poolRO    = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax","readOnly":true}`
+		// no path: the companion pod gets no mount
+		poolFsDirect = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":"direct"}`
+		poolFsCached = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":"cached"}`
 	)
 	memory := func(q string) *resourceapi.CapacityRequirements {
 		return &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{"memory": resource.MustParse(q)}}
@@ -1576,6 +1647,34 @@ func TestBrokerCompanionClaims(t *testing.T) {
 			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localDax}},
 		},
 		{
+			name: "fs of a share of a shared persistent device",
+			req:  api.Request{Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsDirect}},
+		},
+		{
+			name: "fs cached of a shared persistent device, whole",
+			req:  api.Request{Serial: "0xc1af0001", ReadOnly: true, Mode: "fs", Access: "cached", Name: "models"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-pool-persistent", Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsCached}},
+		},
+		{
+			name: "fs of an exclusive persistent device",
+			req:  api.Request{Serial: "0xc1af0002", ReadOnly: true, Mode: "fs", Size: "512Mi"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-pool-persistent", Capacity: memory("512Mi"), Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0002"))}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsDirect}},
+		},
+		{
+			name: "fs of a share of any persistent device of a size: the pool only",
+			req:  api.Request{Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(`device.attributes["cxl-pool.nri.io"].size >= 67108864`)}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsDirect}},
+		},
+		{
 			name:   "a share without the pool driver",
 			req:    api.Request{Shared: true, Size: "64Mi"},
 			noPool: true,
@@ -1609,6 +1708,8 @@ func TestBrokerCompanionClaims(t *testing.T) {
 	// pool memory without the pool driver
 	e.b.cfg.PoolDriver = ""
 	_, _, err := e.b.companionObjects(&lease{ID: "x", Source: api.SourcePool, Shared: true, Mode: api.ModeDax, Pod: pod})
+	wantErr(t, err, "pool driver disabled (--pool-driver-name)")
+	_, _, err = e.b.companionObjects(&lease{ID: "x", Shared: true, ReadOnly: true, Mode: api.ModeFs, Access: api.AccessDirect, Pod: pod})
 	wantErr(t, err, "pool driver disabled (--pool-driver-name)")
 }
 
@@ -1835,4 +1936,459 @@ func TestBrokerTwoLeasesOneNode(t *testing.T) {
 	if got := e.lender.LentNodes(testPodUID, testCtr); len(got) != 0 {
 		t.Fatalf("still lent after both releases: %v", got)
 	}
+}
+
+// toJSON returns v as JSON, for messages.
+func toJSON(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err.Error()
+	}
+	return string(data)
+}
+
+// fsLeaseData is the claim status data of a share of llm0 of
+// persistentPoolSlice.
+const fsLeaseData = `{"serial":"0xc1af0001","shared":true,"size":536870912,"persistent":true}`
+
+// leaseFsEnv is a broker and a pool driver with the shared persistent
+// device llm0, whose labels have an fsdax namespace. Like kubelet, the
+// fake client unprepares a companion claim through the pool driver when it
+// is deleted, and keeps the claim while that fails.
+type leaseFsEnv struct {
+	*brokerEnv
+	pe *poolTestEnv
+	p  *poolDriver
+}
+
+func newLeaseFsEnv(t *testing.T) *leaseFsEnv {
+	pe := newPoolTestEnv(t)
+	pe.f.plugPersistent("0xc1af0001")
+	pe.f.labels = true
+	e := &leaseFsEnv{brokerEnv: newSlicesBrokerEnv(t), pe: pe}
+	pe.leaseFsRoot = filepath.Join(e.dir, leaseFsDirName)
+	e.mounts = pe.m.Mounts
+	e.b.cfg.Mounts = pe.m.Mounts
+	e.p = pe.driver(t)
+	// added before the broker uses the client: the fake client does not
+	// lock its reactor chain
+	e.client.PrependReactor("delete", "resourceclaims", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		name := a.(k8stesting.DeleteAction).GetName()
+		if !strings.HasPrefix(name, "cxl-lease-") {
+			return false, nil, nil
+		}
+		uid := types.UID("uid-" + name)
+		res, err := e.p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: uid}})
+		if err != nil || res[uid] != nil {
+			return true, nil, nil // kept until the next try
+		}
+		return false, nil, nil
+	})
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.start()
+	e.p.lender.set(e.lender, e.b)
+	return e
+}
+
+// prepareFs requests a lease in the background, waits for its companion
+// claim cxl-lease-<id>, prepares it as the scheduler, the pool controller
+// and kubelet would, and returns the claim and the response with its fd.
+func (e *leaseFsEnv) prepareFs(id string, req api.Request) (*resourceapi.ResourceClaim, api.Response, int) {
+	e.t.Helper()
+	type result struct {
+		resp api.Response
+		fd   int
+	}
+	ch := make(chan result, 1)
+	go func() {
+		r, fd := e.call(req)
+		ch <- result{r, fd}
+	}()
+	claim := e.waitClaim(companionName(id))
+	r := prepare(e.t, e.p, allocated(claim, "llm0", fsLeaseData))
+	noErr(e.t, r.Err)
+	e.pe.wantNoCDIDevices(e.t, r)
+	res := <-ch
+	return claim, res.resp, res.fd
+}
+
+// fsEnv returns the environment of an fs lease of llm0.
+func fsEnv(access, path string) map[string]string {
+	return map[string]string{"CXL_C1AF0001_ACCESS": access, "CXL_C1AF0001_MODE": "fs", "CXL_C1AF0001_PATH": path, "CXL_C1AF0001_READONLY": "1",
+		"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_SIZE": "534773760"}
+}
+
+// TestBrokerFsLease runs fs leases through the broker and the pool driver:
+// the companion claim, the bind in the lease-fs directory of the lease
+// claim, the response, names, a release that waits for the borrower to
+// close the files, and the removal of the lease-fs directory.
+func TestBrokerFsLease(t *testing.T) {
+	e := newLeaseFsEnv(t)
+	ctx := context.Background()
+	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
+	direct, cached := e.p.nodeMountPath(0xc1af0001, "direct"), e.p.nodeMountPath(0xc1af0001, "cached")
+
+	// a direct lease with the default name
+	claim, resp, fd := e.prepareFs("000000a1", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Wait: "5s"})
+	params := `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":"direct"}`
+	wantSpec := resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{
+		Requests: []resourceapi.DeviceRequest{{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+			DeviceClassName: "cxl-pool-persistent",
+			Selectors:       []resourceapi.DeviceSelector{{CEL: &resourceapi.CELDeviceSelector{Expression: `device.attributes["cxl-pool.nri.io"].serial == "0xc1af0001"`}}},
+			Capacity:        &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{"shares": resource.MustParse("1")}},
+		}}},
+		Config: []resourceapi.DeviceClaimConfiguration{{DeviceConfiguration: resourceapi.DeviceConfiguration{Opaque: &resourceapi.OpaqueDeviceConfiguration{
+			Driver: "cxl-pool.nri.io", Parameters: runtime.RawExtension{Raw: []byte(params)},
+		}}}},
+	}}
+	if !reflect.DeepEqual(claim.Spec, wantSpec) {
+		t.Fatalf("claim spec:\n%s", toJSON(claim.Spec))
+	}
+	if fd >= 0 {
+		t.Fatalf("fd %d with an fs lease", fd)
+	}
+	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", Shared: true, ReadOnly: true, Access: "direct",
+		Path: "/run/cxl/fs/000000a1", Size: fakePmemBytes, Serial: "0xc1af0001", Env: fsEnv("direct", "/run/cxl/fs/000000a1")})
+	bind := filepath.Join(fsDir, "000000a1")
+	if mi, _ := e.pe.m.Mounted(bind); mi == nil || mi.FsType != "erofs" || mi.Source != "/dev/pmem0" {
+		t.Fatalf("bind %+v", mi)
+	}
+	if len(e.pe.m.callsOf(bindCall(direct, bind))) != 1 {
+		t.Fatalf("not a bind of the node mount: %q", e.pe.m.callsOf(""))
+	}
+	// env: the same environment, no fd; fd: not a dax lease
+	env, fd := e.call(api.Request{Op: "env", Lease: "000000a1"})
+	if fd >= 0 || env.State != api.StateReady || !reflect.DeepEqual(env.Env, resp.Env) || env.Path != resp.Path {
+		t.Fatalf("env %+v fd %d", env, fd)
+	}
+	r, fd := e.call(api.Request{Op: "fd", Lease: "000000a1"})
+	if fd >= 0 || r.Error != "lease 000000a1 is not a dax lease; use env" || r.Mode != "fs" {
+		t.Fatalf("fd of an fs lease %+v fd %d", r, fd)
+	}
+
+	// a cached lease with a name
+	_, resp, _ = e.prepareFs("000000a2", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs",
+		Access: "cached", Name: "models", Wait: "5s"})
+	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", Shared: true, ReadOnly: true, Access: "cached",
+		Path: "/run/cxl/fs/models", Size: fakePmemBytes, Serial: "0xc1af0001", Env: fsEnv("cached", "/run/cxl/fs/models")})
+	models := filepath.Join(fsDir, "models")
+	if mi, _ := e.pe.m.Mounted(models); mi == nil || mi.Source != "/dev/loop0" || len(e.pe.m.callsOf(bindCall(cached, models))) != 1 {
+		t.Fatalf("bind %+v, calls %q", mi, e.pe.m.callsOf(""))
+	}
+
+	// names are unique per lease claim, default names included; nothing
+	// is stored for a refused request
+	for _, c := range []struct{ name, err string }{
+		{"models", `name "models" is in use by lease 000000a2`},
+		{"000000a1", `name "000000a1" is in use by lease 000000a1`},
+	} {
+		r, _ := e.call(api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Name: c.name})
+		if r.Error != c.err || r.Lease != "" {
+			t.Errorf("name %s: %+v, expected %q", c.name, r, c.err)
+		}
+	}
+	e.b.mu.Lock()
+	n := len(e.b.store.Leases)
+	e.b.mu.Unlock()
+	if l, _ := e.client.ResourceV1().ResourceClaims(testNS).List(ctx, metav1.ListOptions{}); n != 2 || len(l.Items) != 3 {
+		t.Fatalf("%d leases, %d claims after refused requests", n, len(l.Items))
+	}
+
+	// the store has the new fields after a restart
+	e.restart()
+	e.start()
+	e.p.lender.set(e.lender, e.b)
+	if l := e.lease("000000a2"); l == nil || l.Mode != "fs" || l.Access != "cached" || l.Name != "models" || l.Path != "/run/cxl/fs/models" || !l.ReadOnly {
+		t.Fatalf("lease after a restart %+v", l)
+	}
+	if tc := e.b.store.Claims[testLeaseClaimUID]; tc == nil || tc.FsDir != fsDir {
+		t.Fatalf("lease claim after a restart %+v", tc)
+	}
+	list, _ := e.call(api.Request{Op: "list"})
+	if list.Leases == nil || len(*list.Leases) != 2 || (*list.Leases)[0].Path != "/run/cxl/fs/000000a1" || (*list.Leases)[1].Path != "/run/cxl/fs/models" {
+		t.Fatalf("list %s", toJSON(list))
+	}
+
+	// release while the borrower has files of the bind open: the Unprepare
+	// of the companion fails, the lease stays Releasing, the bind stays
+	e.pe.m.setBusy(bind, true)
+	rel, _ := e.call(api.Request{Op: "release", Lease: "000000a1", Wait: "200ms"})
+	if rel.State != api.StateReleasing {
+		t.Fatalf("release of a busy fs lease %+v", rel)
+	}
+	if mi, _ := e.pe.m.Mounted(bind); mi == nil {
+		t.Fatal("busy bind unmounted")
+	}
+	if _, err := e.client.ResourceV1().ResourceClaims(testNS).Get(ctx, companionName("000000a1"), metav1.GetOptions{}); err != nil {
+		t.Fatalf("companion claim of a busy bind: %v", err)
+	}
+	// the borrower closes the files: kubelet's next try succeeds
+	e.pe.m.setBusy(bind, false)
+	e.waitState("000000a1", api.StateReleased)
+	e.wantGone(companionName("000000a1"))
+	if _, err := os.Stat(bind); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bind directory left: %v", err)
+	}
+
+	// the pod ends with a busy bind: the lease-fs directory stays while
+	// the bind is in it, also through a reconcile
+	e.pe.m.setBusy(models, true)
+	noErr(t, e.b.CloseClaim(ctx, testLeaseClaimUID))
+	if _, err := os.Stat(models); err != nil {
+		t.Fatalf("bind directory removed while mounted: %v", err)
+	}
+	// the socket is gone; the mount point of /run/cxl/fs stays with the bind
+	if _, err := os.Stat(e.sock()); !os.IsNotExist(err) {
+		t.Fatalf("socket left: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(e.sock()), "fs")); err != nil {
+		t.Fatalf("mount point of /run/cxl/fs removed while a bind is in lease-fs: %v", err)
+	}
+	e.b.reconcile()
+	if l := e.lease("000000a2"); l == nil || l.State != api.StateReleasing {
+		t.Fatalf("lease %+v", l)
+	}
+	if _, err := os.Stat(models); err != nil {
+		t.Fatalf("bind directory swept while mounted: %v", err)
+	}
+	// the bind goes, the lease is dropped and the directory removed
+	e.pe.m.setBusy(models, false)
+	e.waitState("000000a2", api.StateReleased)
+	for _, d := range []string{fsDir, filepath.Dir(e.sock())} {
+		if _, err := os.Stat(d); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("directory %s left: %v", d, err)
+		}
+	}
+	e.pe.f.wantReleased(t)
+	e.pe.wantClean(t, e.p)
+	e.pe.wantNoMounts(t, e.p)
+}
+
+// TestBrokerFsLeaseClaims checks the lease claims without a filesystem
+// directory (B1) and the removal of lease-fs directories of closed lease
+// claims.
+func TestBrokerFsLeaseClaims(t *testing.T) {
+	e := newSlicesBrokerEnv(t)
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.start()
+
+	// a lease claim prepared by an older driver: no /run/cxl/fs in its
+	// containers, no fs leases, also after OpenClaim again
+	e.b.mu.Lock()
+	e.b.store.Claims[testLeaseClaimUID].FsDir = ""
+	e.b.mu.Unlock()
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.b.mu.Lock()
+	dev := e.b.leaseCDIDevice(testLeaseClaimUID)
+	fsDir := e.b.store.Claims[testLeaseClaimUID].FsDir
+	e.b.mu.Unlock()
+	if fsDir != "" || len(dev.ContainerEdits.Mounts) != 2 || dev.ContainerEdits.Mounts[1].ContainerPath != "/usr/local/bin/cxl-request" {
+		t.Fatalf("FsDir %q, CDI mounts %s", fsDir, toJSON(dev.ContainerEdits.Mounts))
+	}
+	r, _ := e.call(api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs"})
+	if r.Error != "lease claim demo/lease has no filesystem directory (prepared by an older driver): recreate the pod" {
+		t.Fatalf("fs lease of an old lease claim %+v", r)
+	}
+	e.b.mu.Lock()
+	n := len(e.b.store.Leases)
+	e.b.mu.Unlock()
+	if l, _ := e.client.ResourceV1().ResourceClaims(testNS).List(context.Background(), metav1.ListOptions{}); len(l.Items) != 1 || n != 0 {
+		t.Fatalf("objects for a refused request: %d claims, %d leases", len(l.Items), n)
+	}
+	// the other modes are served
+	r, _ = e.call(api.Request{Op: "request", Size: "64Mi", Wait: "0s"})
+	if r.Error != "" || r.State != api.StatePending {
+		t.Fatalf("numa lease of an old lease claim %+v", r)
+	}
+
+	// lease-fs directories of claims not in the store are removed at
+	// start and by the reconcile, unless a mount is in them
+	root := filepath.Join(e.dir, "lease-fs")
+	var mu sync.Mutex
+	var mounts []mountInfo
+	e.mounts = func() ([]mountInfo, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(mounts), nil
+	}
+	for _, d := range []string{"gone/x", "gone/y", "held/x", "held/y", "nested/x/sub"} {
+		noErr(t, os.MkdirAll(filepath.Join(root, d), 0o755))
+	}
+	mu.Lock()
+	mounts = []mountInfo{{Target: filepath.Join(root, "held/x")}, {Target: filepath.Join(root, "nested/x/sub")}}
+	mu.Unlock()
+	e.restart()
+	e.start()
+	for d, exists := range map[string]bool{"gone": false, "held": true, "held/x": true, "held/y": false, "nested/x/sub": true} {
+		if _, err := os.Stat(filepath.Join(root, d)); (err == nil) != exists {
+			t.Errorf("%s exists %v, expected %v", d, err == nil, exists)
+		}
+	}
+	mu.Lock()
+	mounts = nil
+	mu.Unlock()
+	e.b.reconcile()
+	// that of the open lease claim stays, and nothing is removed
+	// recursively
+	var left []string
+	entries, _ := os.ReadDir(root)
+	for _, d := range entries {
+		left = append(left, d.Name())
+	}
+	if !slices.Equal(left, []string{testLeaseClaimUID, "nested"}) {
+		t.Fatalf("lease-fs directories left: %v", left)
+	}
+}
+
+// TestBrokerPreparedModeMismatch fails a lease whose companion device has
+// mode fs when the lease is not in mode fs, or the reverse.
+func TestBrokerPreparedModeMismatch(t *testing.T) {
+	e := newBrokerEnv(t)
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.start()
+	for i, c := range []struct {
+		req api.Request
+		dev lentDevice
+		err string
+	}{
+		{api.Request{Op: "request", Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi", Wait: "5s"},
+			lentDevice{Source: api.SourcePool, Serial: 0xc1ae0001, Size: 1 << 28, Mode: api.ModeDax, Node: -1, DaxDevice: "/dev/dax0.0"},
+			"companion prepared mode dax, lease is mode fs"},
+		{api.Request{Op: "request", Source: "pool", Mode: "dax", Size: "64Mi", Wait: "5s"},
+			lentDevice{Source: api.SourcePool, Serial: 0xc1af0001, Size: fakePmemBytes, Mode: api.ModeFs, Node: -1, Access: "direct"},
+			"companion prepared mode fs, lease is mode dax"},
+	} {
+		id := fmt.Sprintf("%08x", 0xa1+i)
+		ch := e.async(c.req)
+		e.waitClaim(companionName(id))
+		_, err := e.b.OnLending(id, companionClaim(id))
+		noErr(t, err)
+		e.b.OnPrepared(id, []lentDevice{c.dev})
+		if r := <-ch; r.State != api.StateFailed || r.Error != c.err || r.Path != "" {
+			t.Errorf("%s: response %+v", c.err, r)
+		}
+		e.waitState(id, api.StateReleased)
+		e.wantGone(companionName(id))
+	}
+}
+
+// TestBrokerRemoveFsDirMountsError keeps a lease-fs directory when the
+// mounts cannot be read.
+func TestBrokerRemoveFsDirMountsError(t *testing.T) {
+	e := newBrokerEnv(t)
+	dir := filepath.Join(e.dir, "lease-fs", "gone")
+	noErr(t, os.MkdirAll(filepath.Join(dir, "x"), 0o755))
+	e.mounts = func() ([]mountInfo, error) { return nil, errors.New("no mountinfo") }
+	e.restart() // the sweep at start
+	e.b.mu.Lock()
+	removed := e.b.removeFsDir("gone")
+	e.b.mu.Unlock()
+	if removed {
+		t.Fatal("removed without mountinfo")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "x")); err != nil {
+		t.Fatalf("directory removed without mountinfo: %v", err)
+	}
+}
+
+// TestBrokerRecoveredStoreKeepsDirs keeps the directories of lease claims
+// at start when the lease table could not be decoded.
+func TestBrokerRecoveredStoreKeepsDirs(t *testing.T) {
+	e := newBrokerEnv(t)
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.b.stop()
+	noErr(t, os.WriteFile(filepath.Join(e.dir, leasesFileName), []byte(`{"claims":{},"leases":{},"bogus":1}`), 0o600))
+	e.b = nil
+	e.restart()
+	e.start()
+	if !e.b.store.Recovered || len(e.b.store.Claims) != 0 {
+		t.Fatalf("store %+v", e.b.store)
+	}
+	e.b.reconcile()
+	for _, d := range []string{filepath.Join(e.dir, "lease-fs", testLeaseClaimUID), filepath.Join(filepath.Dir(e.sock()), "fs")} {
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("directory of a lease claim removed after a recovered store: %v", err)
+		}
+	}
+	// a store of this version sweeps again after the next start
+	e.b.stop()
+	noErr(t, os.WriteFile(filepath.Join(e.dir, leasesFileName), []byte(`{"claims":{},"leases":{}}`), 0o600))
+	e.b = nil
+	e.restart()
+	if e.b.store.Recovered {
+		t.Fatal("recovered again")
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("directory of an unknown lease claim kept: %v", err)
+	}
+}
+
+// closingHooks closes the lease claim when the companion claim of one of
+// its leases is being prepared, right after OnLending.
+type closingHooks struct {
+	*broker
+	close func()
+}
+
+func (h *closingHooks) OnLending(id string, claim *resourceapi.ResourceClaim) (*lendRecord, error) {
+	rec, err := h.broker.OnLending(id, claim)
+	if err == nil && h.close != nil {
+		h.close()
+		h.close = nil
+	}
+	return rec, err
+}
+
+// TestBrokerFsLeaseCloseRace prepares the companion of an fs lease past
+// OnLending while CloseClaim removes the lease-fs directory: the bind
+// creates it again, the Unprepare of the companion unmounts the bind, and
+// the reconcile removes the directories.
+func TestBrokerFsLeaseCloseRace(t *testing.T) {
+	pe := newPoolTestEnv(t)
+	pe.f.plugPersistent("0xc1af0001")
+	pe.f.labels = true
+	e := newSlicesBrokerEnv(t)
+	pe.leaseFsRoot = filepath.Join(e.dir, leaseFsDirName)
+	e.mounts = pe.m.Mounts
+	e.b.cfg.Mounts = pe.m.Mounts
+	p := pe.driver(t)
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.start()
+	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
+	bind := filepath.Join(fsDir, "models")
+	closed := false
+	p.lender.set(e.lender, &closingHooks{broker: e.b, close: func() {
+		noErr(t, e.b.CloseClaim(context.Background(), testLeaseClaimUID))
+		_, err := os.Stat(fsDir)
+		closed = errors.Is(err, os.ErrNotExist)
+	}})
+
+	ch := e.async(api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Name: "models", Wait: "5s"})
+	claim := e.waitClaim(companionName("000000a1"))
+	noErr(t, prepare(t, p, allocated(claim, "llm0", fsLeaseData)).Err)
+	if !closed {
+		t.Fatal("CloseClaim did not remove the lease-fs directory")
+	}
+	if r := <-ch; r.State == api.StateReady {
+		t.Fatalf("lease of a closed claim Ready: %+v", r)
+	}
+	if mi, _ := pe.m.Mounted(bind); mi == nil {
+		t.Fatal("no bind in the directory made again")
+	}
+	e.waitState("000000a1", api.StateReleased)
+	e.b.reconcile()
+	if _, err := os.Stat(bind); err != nil {
+		t.Fatalf("bind directory swept while mounted: %v", err)
+	}
+	// kubelet unprepares the companion
+	noErr(t, unprepare(t, p, "uid-cxl-lease-000000a1"))
+	e.b.reconcile()
+	for _, d := range []string{fsDir, filepath.Dir(e.sock())} {
+		if _, err := os.Stat(d); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("directory %s left: %v", d, err)
+		}
+	}
+	pe.f.wantReleased(t)
+	pe.wantClean(t, p)
+	pe.wantNoMounts(t, p)
 }

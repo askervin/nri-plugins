@@ -13,7 +13,9 @@
 #   device has no memory, and any number of pods may claim it. Preparing
 #   that claim, nri-dra-driver-cxl mounts a unix socket and the CLI
 #   cxl-request into the container (/run/cxl/cxl.sock,
-#   /usr/local/bin/cxl-request). Nothing else changes for the pod.
+#   /usr/local/bin/cxl-request), and an empty read-only directory
+#   (/run/cxl/fs) where the filesystems of fs leases appear (test16).
+#   Nothing else changes for the pod.
 # - "cxl-request request --source pool --size 512Mi" in the container
 #   asks the node plugin over the socket. The plugin knows the caller by
 #   the socket (the pod of the claim) and by the pid of the caller (the
@@ -94,18 +96,8 @@ borrower-yaml() {
     # charged to the container, a limit would leave it no room to use the
     # memory. The claim comes from a template, so it lives and dies with the
     # pod.
+    dra-lease-template-yaml cxl-lease
     cat <<EOF
-apiVersion: resource.k8s.io/v1
-kind: ResourceClaimTemplate
-metadata:
-  name: cxl-lease
-spec:
-  spec:
-    devices:
-      requests:
-      - name: lease
-        exactly:
-          deviceClassName: cxl-lease
 ---
 apiVersion: v1
 kind: Pod
@@ -533,7 +525,7 @@ share() {
     # shellcheck disable=SC2016 # expanded by sh in the container
     dra-exec "$VM2" borrower/main sh -c 'mknod "/tmp/$1" c "$2" "$3" && echo "mknod ok" && python3 /tools/dax-rw.py read "/tmp/$1" 0' sh "${dax#/dev/}" "${majmin%:*}" "${majmin#*:}" &&
         error "cycle $cycle: container main could open $dax ($majmin) through a node of its own"
-    grep -q "^mknod ok" <<< "$COMMAND_OUTPUT" && grep -qE "Operation not permitted|Permission denied" <<< "$DRA_EXEC_STDERR" ||
+    { grep -q "^mknod ok" <<< "$COMMAND_OUTPUT" && grep -qE "Operation not permitted|Permission denied" <<< "$DRA_EXEC_STDERR"; } ||
         error "cycle $cycle: opening $dax through mknod failed for another reason than the device cgroup"
     dra-exec "$VM2" borrower/main rm -f "/tmp/${dax#/dev/}"
     echo "cycle $cycle: the device cgroup of container main denies $dax ($majmin), the fd works"
@@ -604,9 +596,27 @@ dra-exec "$VM2" borrower/main sh -c 'echo "$CXL_LEASE_SOCKET"; test -S /run/cxl/
     command-error "container main has no lease socket or cxl-request"
 [ "$COMMAND_OUTPUT" == "/run/cxl/cxl.sock
 ok" ] || error "container main: expected CXL_LEASE_SOCKET=/run/cxl/cxl.sock, a socket there, and cxl-request"
-# Container idle has no claim: no socket, no CLI.
-dra-exec "$VM2" borrower/idle sh -c 'test -e /run/cxl/cxl.sock || test -e /usr/local/bin/cxl-request' &&
-    error "container idle has the lease socket or cxl-request, it has no claim"
+# The CDI device of the claim: the socket directory, the directory of the
+# filesystems of fs leases (read-only, a slave of the host's directory, so
+# that a mount the driver makes there later appears in the running
+# container) and the CLI.
+dra-lease-cdi-assert "$VM2" "$LEASE_CLAIM_UID"
+vm-command "ls -la $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID/" ||
+    command-error "no filesystem directory of claim $LEASE_CLAIM in $DRA_LEASE_FS_DIR"
+# In container main an empty read-only directory, mounted as a slave.
+# shellcheck disable=SC2016 # expanded by sh in the container
+dra-exec "$VM2" borrower/main sh -c 'test -d "$1" && ls -A "$1" | wc -l && grep " $1 " /proc/self/mountinfo' sh "$DRA_LEASE_FS_CTR_DIR" ||
+    command-error "container main has no directory $DRA_LEASE_FS_CTR_DIR"
+[ "$(head -n 1 <<< "$COMMAND_OUTPUT" | tr -d ' ')" == 0 ] || error "container main: $DRA_LEASE_FS_CTR_DIR is not empty"
+grep -qE " $DRA_LEASE_FS_CTR_DIR ro[, ].* master:[0-9]+" <<< "$COMMAND_OUTPUT" ||
+    error "container main: $DRA_LEASE_FS_CTR_DIR is not a read-only slave mount"
+dra-exec "$VM2" borrower/main touch "$DRA_LEASE_FS_CTR_DIR/x" &&
+    error "container main could create a file in $DRA_LEASE_FS_CTR_DIR"
+grep -qF "Read-only file system" <<< "$DRA_EXEC_STDERR" ||
+    error "creating a file in $DRA_LEASE_FS_CTR_DIR failed for another reason than a read-only file system"
+# Container idle has no claim: no socket, no CLI, no filesystem directory.
+dra-exec "$VM2" borrower/idle sh -c "test -e /run/cxl/cxl.sock || test -e /usr/local/bin/cxl-request || test -e $DRA_LEASE_FS_CTR_DIR" &&
+    error "container idle has the lease socket, cxl-request or $DRA_LEASE_FS_CTR_DIR, it has no claim"
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "j == []"
 # The container runs on DRAM only, and the pool has given nothing.
@@ -621,15 +631,23 @@ pool-assert "$COMMAND_OUTPUT" "j in (None, [])"
 pool-cxl-dump "$VM2" borrower-running
 cxl-assert 'memdevs == [] and regions == []'
 
-echo "### A2: requests that cxl-request refuses, and one that the node plugin refuses"
+echo "### A2: requests that cxl-request refuses, and some that the node plugin refuses"
 # cxl-request checks its options before it connects (exit status 2), the
 # node plugin checks them again and knows the devices: pooled0 is not
-# shared. Nothing of a refused request is left.
+# shared, shared0 is not persistent. Nothing of a refused request is left.
 refused 2 "size or serial is required" request
 refused 2 'invalid source "remote" (local or pool)' request --source remote --size 64Mi
-refused 2 'invalid mode "memory" (numa or dax)' request --mode memory --size 64Mi
+refused 2 'invalid mode "memory" (numa, dax or fs)' request --mode memory --size 64Mi
 refused 2 "shared memory is never onlined as RAM: use mode dax" request --shared --mode numa --size 64Mi
-refused 2 "readOnly needs mode dax" request --size 64Mi --read-only
+refused 2 "readOnly needs mode dax or fs" request --size 64Mi --read-only
+# Filesystems of persistent pool devices: read-only, of the pool only, and
+# access and name are for mode fs.
+refused 2 "mode fs needs readOnly" request --serial "$SHARED_SERIAL" --shared --mode fs
+refused 2 'invalid access "slow" (direct or cached)' request --mode fs --read-only --access slow --shared --size 64Mi
+refused 2 "access needs mode fs" request --access cached --size 64Mi
+refused 2 "name needs mode fs" request --name x --size 64Mi
+refused 2 'invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")' request --mode fs --read-only --name a/b --shared --size 64Mi
+refused 2 "mode fs needs source pool" request --source local --mode fs --read-only --shared --size 64Mi
 refused 2 'invalid serial "pooled0"' request --serial pooled0
 refused 2 "--exec is for request, fd and env" list --exec true
 refused 2 "fd needs --exec" fd --lease 0123abcd
@@ -637,6 +655,8 @@ refused 2 "release takes --lease ID or --all" release
 refused 2 "release takes --lease ID or --all" release --lease 0123abcd --all
 refused 2 'invalid wait "soon"' request --size 64Mi --wait soon
 refused 1 "device $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --shared
+# shared0 is volatile: it has no filesystem.
+refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --read-only --mode fs
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "j == []"
 dra-json "$VM2" pods -n "$DRA_NS" -l "$DRA_LEASE_LABEL"
@@ -749,6 +769,8 @@ dra-wait "$VM2" lease-claim-gone "resourceclaims -n $DRA_NS" "names() == []" 90
 t_clean=$EPOCHREALTIME
 vm-command "test -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID" &&
     error "the lease directory of claim $LEASE_CLAIM is still in $DRA_LEASE_DIR"
+vm-command "test -e $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID" &&
+    error "the filesystem directory of claim $LEASE_CLAIM is still in $DRA_LEASE_FS_DIR"
 T_DELETE=$(echo "$t_clean - $t_delete" | bc)
 (( $(echo "$T_DELETE <= 90" | bc) )) || error "cleanup after deleting the pod took $T_DELETE s, more than 90 s"
 echo "pod deleted with 2 active leases: everything cleaned up in $T_DELETE s"

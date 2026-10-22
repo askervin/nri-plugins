@@ -255,24 +255,54 @@ exec /app/llama-server -m "\$p/$LLM_MODEL_FILE" -nr -t $threads -c 512 -np 1 --h
 SCRIPT
 }
 
+llm-lease-reader-script() { # script API
+    # Usage: llm-lease-reader-script KEY ACCESS NAME THREADS
+    #
+    # Print the shell script of a reader container (image
+    # $LLM_SERVER_IMAGE) with a lease claim: it leases the erofs of the
+    # persistent shared device KEY (serial 0x<key>) read-only with ACCESS
+    # (direct or cached) at /run/cxl/fs/NAME ("": the lease id) and runs
+    # the script of llm-reader-script with THREADS threads on it
+    # (cxl-request request --exec). Its log has the command line of
+    # cxl-request, then CXL_LEASE=<id> and the lines of llm-reader-script.
+    local key="$1" access="$2" name="$3" threads="$4" request
+    request="cxl-request request --serial 0x${key,,} --shared --read-only --mode fs --access $access${name:+ --name $name} --wait 120s --exec sh /tmp/reader.sh"
+    cat <<SCRIPT
+cat > /tmp/reader.sh <<'LLM_READER_EOF'
+echo "CXL_LEASE=\$CXL_LEASE"
+$(llm-reader-script "$key" "$threads")
+LLM_READER_EOF
+echo "$request"
+exec $request
+SCRIPT
+}
+
 # shellcheck disable=SC2001 # sed indents every line of SCRIPT
 llm-server-pod-yaml() { # script API
-    # Usage: llm-server-pod-yaml NAME VMDIR CLAIM SCRIPT
+    # Usage: llm-server-pod-yaml NAME VMDIR KIND CLAIM SCRIPT
     #
     # Print pod NAME on the node of VMDIR, restartPolicy Never, running the
-    # shell SCRIPT in its container "main" of $LLM_SERVER_IMAGE, with
-    # ResourceClaim CLAIM as its claim "mem" ("": no claim).
-    local name="$1" node claim="$3" script="$4" claims="" uses=""
+    # shell SCRIPT in its container "main" of $LLM_SERVER_IMAGE. KIND is
+    # the claim of the pod: "claim", ResourceClaim CLAIM as its claim
+    # "mem"; "lease", a claim "lease" from the ResourceClaimTemplate CLAIM
+    # (dra-lease-template-yaml); "none", no claim (CLAIM is "").
+    local name="$1" node kind="$3" claim="$4" script="$5" pod_claims="" uses="" ref="" source=""
     node=$(basename "$2")
-    if [ -n "$claim" ]; then
-        claims="
+    case "$kind" in
+        claim) ref=mem; source="resourceClaimName: $claim";;
+        lease) ref=lease; source="resourceClaimTemplateName: $claim";;
+        none) ;;
+        *) error "llm-server-pod-yaml: unknown claim kind \"$kind\" (claim, lease or none)";;
+    esac
+    if [ -n "$ref" ]; then
+        pod_claims="
   resourceClaims:
-  - name: mem
-    resourceClaimName: $claim"
+  - name: $ref
+    $source"
         uses="
     resources:
       claims:
-      - name: mem"
+      - name: $ref"
     fi
     cat <<EOF
 apiVersion: v1
@@ -283,7 +313,7 @@ spec:
   nodeSelector:
     kubernetes.io/hostname: $node
   terminationGracePeriodSeconds: 2
-  restartPolicy: Never$claims
+  restartPolicy: Never$pod_claims
   containers:
   - name: main
     image: $LLM_SERVER_IMAGE
@@ -305,7 +335,7 @@ llm-warm() { # script API
     # llama-server once on the node of VMDIR into its page cache, in pod
     # llm-warm without a claim.
     local vmdir="$1"
-    dra-apply "$OUTPUT_DIR" <<< "$(llm-server-pod-yaml llm-warm "$vmdir" "" "cat \$(find /app -type f) \$(ldd /app/llama-server /app/*.so 2>/dev/null | awk '\$3 ~ /^\\// {print \$3}' | sort -u) >/dev/null 2>&1; echo \"warm: \$(du -sh /app | cut -f1) of /app and the libraries of llama-server read\"")"
+    dra-apply "$OUTPUT_DIR" <<< "$(llm-server-pod-yaml llm-warm "$vmdir" none "" "cat \$(find /app -type f) \$(ldd /app/llama-server /app/*.so 2>/dev/null | awk '\$3 ~ /^\\// {print \$3}' | sort -u) >/dev/null 2>&1; echo \"warm: \$(du -sh /app | cut -f1) of /app and the libraries of llama-server read\"")"
     dra-pod-wait "$OUTPUT_DIR" llm-warm Succeeded 120
     dra-pod-log "$OUTPUT_DIR" llm-warm
     dra-delete-pod "$OUTPUT_DIR" llm-warm

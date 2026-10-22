@@ -34,6 +34,9 @@ const (
 	SocketEnv = "CXL_LEASE_SOCKET"
 	// DefaultSocket is the path of the lease socket in containers.
 	DefaultSocket = "/run/cxl/cxl.sock"
+	// FsDir is the directory of the mounts of fs leases in containers of
+	// lease claims.
+	FsDir = "/run/cxl/fs"
 	// LeaseEnv is the lease id in the environment of cxl-request --exec.
 	LeaseEnv = "CXL_LEASE"
 	// ClaimEnvPrefix is the prefix of the claim marker
@@ -54,7 +57,7 @@ const (
 	// namespace (claims of pool devices only).
 	ModeBlock = "block"
 	// ModeFs gives persistent memory as a read-only filesystem mounted
-	// from its fsdax namespace (claims of pool devices only).
+	// from its fsdax namespace (pool devices only).
 	ModeFs = "fs"
 
 	// AccessDirect is a mode fs mount whose file pages are the device's
@@ -91,6 +94,8 @@ type Request struct {
 	Mode      string `json:"mode,omitempty"`
 	Shared    bool   `json:"shared,omitempty"`
 	ReadOnly  bool   `json:"readOnly,omitempty"`
+	Access    string `json:"access,omitempty"`
+	Name      string `json:"name,omitempty"`
 	Size      string `json:"size,omitempty"`
 	Serial    string `json:"serial,omitempty"`
 	Wait      string `json:"wait,omitempty"`
@@ -101,7 +106,8 @@ type Request struct {
 
 // Response is one response line on a lease socket. The response of a
 // Ready dax lease to request and fd carries the open dax fd
-// (SCM_RIGHTS).
+// (SCM_RIGHTS). Path is the directory of the filesystem of a Ready fs
+// lease in the container.
 type Response struct {
 	Lease    string            `json:"lease,omitempty"`
 	State    string            `json:"state,omitempty"`
@@ -109,6 +115,8 @@ type Response struct {
 	Mode     string            `json:"mode,omitempty"`
 	Shared   bool              `json:"shared"`
 	ReadOnly bool              `json:"readOnly"`
+	Access   string            `json:"access,omitempty"`
+	Path     string            `json:"path,omitempty"`
 	Size     uint64            `json:"size,omitempty"`
 	Serial   string            `json:"serial,omitempty"`
 	Node     *int              `json:"node,omitempty"`
@@ -162,11 +170,22 @@ func (r *Request) validateRequest() error {
 	if err := r.validateValues(); err != nil {
 		return err
 	}
+	mode := r.EffectiveMode()
 	switch {
 	case r.Shared && r.Mode == ModeNUMA:
 		return errors.New("shared memory is never onlined as RAM: use mode dax")
-	case r.ReadOnly && r.EffectiveMode() != ModeDax:
-		return errors.New("readOnly needs mode dax")
+	case r.Access != "" && mode != ModeFs:
+		return errors.New("access needs mode fs")
+	case r.Name != "" && mode != ModeFs:
+		return errors.New("name needs mode fs")
+	case r.Name != "" && !ValidName(r.Name):
+		return fmt.Errorf(`invalid name %q (letters, digits, ".", "_" and "-", not "." or "..")`, r.Name)
+	case mode == ModeFs && !r.ReadOnly:
+		return errors.New("mode fs needs readOnly")
+	case r.ReadOnly && mode != ModeDax && mode != ModeFs:
+		return errors.New("readOnly needs mode dax or fs")
+	case mode == ModeFs && r.Source == SourceLocal:
+		return errors.New("mode fs needs source pool")
 	case !r.Shared && r.Serial == "" && r.Size == "":
 		return errors.New("size or serial is required")
 	}
@@ -178,16 +197,35 @@ func (r *Request) validateRequest() error {
 	return nil
 }
 
-// validateValues returns an error if the source or the mode of a request
-// is invalid.
+// validateValues returns an error if the source, the mode or the access of
+// a request is invalid.
 func (r *Request) validateValues() error {
 	switch {
 	case r.Source != "" && r.Source != SourceLocal && r.Source != SourcePool:
 		return fmt.Errorf("invalid source %q (%s or %s)", r.Source, SourceLocal, SourcePool)
-	case r.Mode != "" && r.Mode != ModeNUMA && r.Mode != ModeDax:
-		return fmt.Errorf("invalid mode %q (%s or %s)", r.Mode, ModeNUMA, ModeDax)
+	case r.Mode != "" && r.Mode != ModeNUMA && r.Mode != ModeDax && r.Mode != ModeFs:
+		return fmt.Errorf("invalid mode %q (%s, %s or %s)", r.Mode, ModeNUMA, ModeDax, ModeFs)
+	case r.Access != "" && r.Access != AccessDirect && r.Access != AccessCached:
+		return fmt.Errorf("invalid access %q (%s or %s)", r.Access, AccessDirect, AccessCached)
 	}
 	return nil
+}
+
+// ValidName returns true if name is a valid mount point name of an fs
+// lease: 1 to 255 bytes of letters, digits, ".", "_" and "-", not "." and
+// not "..".
+func ValidName(name string) bool {
+	if name == "" || len(name) > 255 || name == "." || name == ".." {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Memory is what a claim or a lease gives a container of one device:

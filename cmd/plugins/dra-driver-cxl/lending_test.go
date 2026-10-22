@@ -41,6 +41,9 @@ type fakeHooks struct {
 	calls      []string
 	lendingErr error
 	devs       []lentDevice
+	fsDir      string       // FsDir of the lend records
+	name       string       // Name of the lend records
+	onPrepared func(string) // called by OnPrepared with the lease id
 }
 
 func (h *fakeHooks) OnLending(id string, claim *resourceapi.ResourceClaim) (*lendRecord, error) {
@@ -50,14 +53,19 @@ func (h *fakeHooks) OnLending(id string, claim *resourceapi.ResourceClaim) (*len
 	if h.lendingErr != nil {
 		return nil, h.lendingErr
 	}
-	return &lendRecord{Lease: id, Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr}, nil
+	return &lendRecord{Lease: id, Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}, Container: testCtr,
+		FsDir: h.fsDir, Name: h.name}, nil
 }
 
 func (h *fakeHooks) OnPrepared(id string, devs []lentDevice) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.calls = append(h.calls, "prepared "+id)
 	h.devs = devs
+	fn := h.onPrepared
+	h.mu.Unlock()
+	if fn != nil {
+		fn(id)
+	}
 }
 
 func (h *fakeHooks) OnLendFailed(id string, err error) {
