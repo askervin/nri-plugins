@@ -54,7 +54,7 @@ const (
 	// (leases).
 	ModeDax = "dax"
 	// ModeBlock gives persistent memory as the block device of its fsdax
-	// namespace (claims of pool devices only).
+	// namespace (claims) or its fd (leases), of pool devices only.
 	ModeBlock = "block"
 	// ModeFs gives persistent memory as a read-only filesystem mounted
 	// from its fsdax namespace (pool devices only).
@@ -78,7 +78,7 @@ const (
 	StateCreating  = "Creating"  // stored, companion objects not created yet
 	StatePending   = "Pending"   // companion claim and pod exist
 	StateLending   = "Lending"   // companion claim being prepared
-	StateReady     = "Ready"     // memory lent or dax fd available
+	StateReady     = "Ready"     // memory lent, dax or block fd available, or filesystem mounted
 	StateReleasing = "Releasing" // companion being deleted
 	StateFailed    = "Failed"    // see Error
 	StateReleased  = "Released"  // gone (response state only)
@@ -105,9 +105,11 @@ type Request struct {
 }
 
 // Response is one response line on a lease socket. The response of a
-// Ready dax lease to request and fd carries the open dax fd
-// (SCM_RIGHTS). Path is the directory of the filesystem of a Ready fs
-// lease in the container.
+// Ready dax or block lease to request and fd carries the open fd of its
+// device (SCM_RIGHTS). Path is the directory of the filesystem of a Ready
+// fs lease in the container. Dax and Block are the host paths of the
+// devices of Ready dax and block leases, informational: the container has
+// no such device nodes.
 type Response struct {
 	Lease    string            `json:"lease,omitempty"`
 	State    string            `json:"state,omitempty"`
@@ -121,6 +123,7 @@ type Response struct {
 	Serial   string            `json:"serial,omitempty"`
 	Node     *int              `json:"node,omitempty"`
 	Dax      string            `json:"dax,omitempty"`
+	Block    string            `json:"block,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 	Error    string            `json:"error,omitempty"`
 	Leases   *[]Response       `json:"leases,omitempty"`
@@ -182,10 +185,12 @@ func (r *Request) validateRequest() error {
 		return fmt.Errorf(`invalid name %q (letters, digits, ".", "_" and "-", not "." or "..")`, r.Name)
 	case mode == ModeFs && !r.ReadOnly:
 		return errors.New("mode fs needs readOnly")
-	case r.ReadOnly && mode != ModeDax && mode != ModeFs:
-		return errors.New("readOnly needs mode dax or fs")
-	case mode == ModeFs && r.Source == SourceLocal:
-		return errors.New("mode fs needs source pool")
+	case mode == ModeBlock && r.Shared && !r.ReadOnly:
+		return errors.New("mode block with shared needs readOnly")
+	case r.ReadOnly && mode != ModeDax && mode != ModeFs && mode != ModeBlock:
+		return errors.New("readOnly needs mode dax, fs or block")
+	case (mode == ModeFs || mode == ModeBlock) && r.Source == SourceLocal:
+		return fmt.Errorf("mode %s needs source pool", mode)
 	case !r.Shared && r.Serial == "" && r.Size == "":
 		return errors.New("size or serial is required")
 	}
@@ -203,8 +208,8 @@ func (r *Request) validateValues() error {
 	switch {
 	case r.Source != "" && r.Source != SourceLocal && r.Source != SourcePool:
 		return fmt.Errorf("invalid source %q (%s or %s)", r.Source, SourceLocal, SourcePool)
-	case r.Mode != "" && r.Mode != ModeNUMA && r.Mode != ModeDax && r.Mode != ModeFs:
-		return fmt.Errorf("invalid mode %q (%s, %s or %s)", r.Mode, ModeNUMA, ModeDax, ModeFs)
+	case r.Mode != "" && r.Mode != ModeNUMA && r.Mode != ModeDax && r.Mode != ModeFs && r.Mode != ModeBlock:
+		return fmt.Errorf("invalid mode %q (%s, %s, %s or %s)", r.Mode, ModeNUMA, ModeDax, ModeFs, ModeBlock)
 	case r.Access != "" && r.Access != AccessDirect && r.Access != AccessCached:
 		return fmt.Errorf("invalid access %q (%s or %s)", r.Access, AccessDirect, AccessCached)
 	}
@@ -239,8 +244,8 @@ func ValidName(name string) bool {
 //   - Node: NUMA node of numa memory without Nodes
 //   - Nodes: NUMA nodes of DRAM (cpuset syntax)
 //   - Dax: /dev/daxX.Y of dax memory
-//   - Path: the device node (/dev/pmemK) of block memory, the directory in
-//     the container of fs memory
+//   - Path: the device node (/dev/pmemK) of block memory (of a lease: the
+//     host path), the directory in the container of fs memory
 //   - Access: AccessDirect or AccessCached of fs memory
 //   - ReadOnly: dax and block memory allows reads only; fs memory always
 type Memory struct {
@@ -332,12 +337,13 @@ func EnvList(env map[string]string) []string {
 }
 
 // ExecEnv returns the environment of a command that runs with a lease, as
-// sorted KEY=VALUE strings: env with every CXL_<KEY>_DAX replaced by
+// sorted KEY=VALUE strings: env with every CXL_<KEY>_DAX, and the
+// CXL_<KEY>_PATH of every key whose CXL_<KEY>_MODE is block, replaced by
 // CXL_<KEY>_FD=<fd> when fd >= 0, and CXL_LEASE=<lease>.
 func ExecEnv(env map[string]string, lease string, fd int) []string {
 	out := make(map[string]string, len(env)+1)
 	for k, v := range env {
-		if base, ok := strings.CutSuffix(k, "_DAX"); ok && fd >= 0 && strings.HasPrefix(k, "CXL_") {
+		if base, ok := fdVarBase(env, k); ok && fd >= 0 {
 			out[base+"_FD"] = strconv.Itoa(fd)
 			continue
 		}
@@ -345,6 +351,22 @@ func ExecEnv(env map[string]string, lease string, fd int) []string {
 	}
 	out[LeaseEnv] = lease
 	return EnvList(out)
+}
+
+// fdVarBase returns CXL_<KEY> of the variable k of env whose place
+// CXL_<KEY>_FD takes in the environment of a command with the fd of a
+// lease: CXL_<KEY>_DAX, or CXL_<KEY>_PATH when CXL_<KEY>_MODE is block.
+func fdVarBase(env map[string]string, k string) (string, bool) {
+	if !strings.HasPrefix(k, "CXL_") {
+		return "", false
+	}
+	if base, ok := strings.CutSuffix(k, "_DAX"); ok {
+		return base, true
+	}
+	if base, ok := strings.CutSuffix(k, "_PATH"); ok && env[base+"_MODE"] == ModeBlock {
+		return base, true
+	}
+	return "", false
 }
 
 // ParseSerial returns the value of a serial in 0x hex or decimal.

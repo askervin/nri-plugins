@@ -67,6 +67,17 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	if string(data) != want {
 		t.Fatalf("fs response JSON\n%s\nwant\n%s", data, want)
 	}
+
+	block := Response{Lease: "1a2b3c4d", State: StateReady, Source: SourcePool, Mode: ModeBlock, Shared: false, ReadOnly: false,
+		Block: "/dev/pmem0", Size: 534773760, Serial: "0xc1ae0001"}
+	data, err = json.Marshal(&block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"block","shared":false,"readOnly":false,"size":534773760,"serial":"0xc1ae0001","block":"/dev/pmem0"}`
+	if string(data) != want {
+		t.Fatalf("block response JSON\n%s\nwant\n%s", data, want)
+	}
 }
 
 func TestValidate(t *testing.T) {
@@ -87,9 +98,19 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpEnv, Lease: "1a2b3c4d", Wait: "60s"}, ""},
 		{Request{Op: OpRequest, Size: "1Gi", Source: "remote"}, `invalid source "remote" (local or pool)`},
 		{Request{Op: OpRequest, Size: "1Gi", Source: "any"}, `invalid source "any" (local or pool)`},
-		{Request{Op: OpRequest, Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa, dax or fs)`},
-		// mode block is for claims only
-		{Request{Op: OpRequest, Size: "1Gi", Mode: ModeBlock}, `invalid mode "block" (numa, dax or fs)`},
+		{Request{Op: OpRequest, Size: "1Gi", Mode: "devdax"}, `invalid mode "devdax" (numa, dax, fs or block)`},
+		// mode block: the whole device may be written, a share is read-only
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock}, ""},
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Source: SourcePool, ReadOnly: true}, ""},
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Shared: true, ReadOnly: true}, ""},
+		{Request{Op: OpRequest, Size: "1Gi", Mode: ModeBlock}, ""},
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Mode: ModeBlock, Shared: true}, "mode block with shared needs readOnly"},
+		{Request{Op: OpRequest, Mode: ModeBlock, Shared: true, Source: SourceLocal}, "mode block with shared needs readOnly"},
+		{Request{Op: OpRequest, Mode: ModeBlock, Access: AccessDirect, Size: "64Mi"}, "access needs mode fs"},
+		{Request{Op: OpRequest, Mode: ModeBlock, Name: "x", Size: "64Mi"}, "name needs mode fs"},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeBlock, Size: "64Mi"}, "mode block needs source pool"},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeBlock, Shared: true, ReadOnly: true}, "mode block needs source pool"},
+		{Request{Op: OpRequest, Mode: ModeBlock}, "size or serial is required"},
 		// mode fs
 		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Serial: "0xc1ae0001"}, ""},
 		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Source: SourcePool, Access: AccessCached,
@@ -98,7 +119,7 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: "Model_1.0-x", Size: "64Mi"}, ""},
 		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: strings.Repeat("n", 255), Size: "64Mi"}, ""},
 		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Source: "remote", Access: "slow"}, `invalid source "remote" (local or pool)`},
-		{Request{Op: OpRequest, ReadOnly: true, Mode: "memory", Access: "slow"}, `invalid mode "memory" (numa, dax or fs)`},
+		{Request{Op: OpRequest, ReadOnly: true, Mode: "memory", Access: "slow"}, `invalid mode "memory" (numa, dax, fs or block)`},
 		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Access: "slow", Size: "64Mi"}, `invalid access "slow" (direct or cached)`},
 		{Request{Op: OpRequest, Access: "slow", Size: "64Mi"}, `invalid access "slow" (direct or cached)`},
 		{Request{Op: OpRequest, Shared: true, Mode: ModeNUMA, Access: AccessCached}, "shared memory is never onlined as RAM: use mode dax"},
@@ -123,8 +144,8 @@ func TestValidate(t *testing.T) {
 		// a share of a shared local device
 		{Request{Op: OpRequest, Shared: true, Source: SourceLocal}, ""},
 		{Request{Op: OpRequest, Shared: true, Source: SourceLocal, ReadOnly: true, Serial: "0xc100e2e1"}, ""},
-		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax or fs"},
-		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true, Mode: ModeNUMA}, "readOnly needs mode dax or fs"},
+		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true}, "readOnly needs mode dax, fs or block"},
+		{Request{Op: OpRequest, Size: "1Gi", ReadOnly: true, Mode: ModeNUMA}, "readOnly needs mode dax, fs or block"},
 		{Request{Op: OpRequest}, "size or serial is required"},
 		{Request{Op: OpRequest, Serial: "c1ae0001"}, `invalid serial "c1ae0001"`},
 		{Request{Op: OpRelease}, "release takes --lease ID or --all"},
@@ -155,6 +176,7 @@ func TestEffectiveMode(t *testing.T) {
 		{Request{Mode: ModeDax}, ModeDax},
 		{Request{Mode: ModeNUMA}, ModeNUMA},
 		{Request{Mode: ModeFs, Shared: true}, ModeFs},
+		{Request{Mode: ModeBlock, Shared: true}, ModeBlock},
 	} {
 		if got := c.req.EffectiveMode(); got != c.mode {
 			t.Errorf("%+v: mode %s, want %s", c.req, got, c.mode)
@@ -237,6 +259,28 @@ func TestExecEnv(t *testing.T) {
 		"CXL_C100E2E1_SIZE=134217728", "CXL_LEASE=00000001"}
 	if got := ExecEnv(numa, "00000001", -1); !reflect.DeepEqual(got, want) {
 		t.Fatalf("numa exec env\n%v\nwant\n%v", got, want)
+	}
+	// a block lease: the fd takes the place of the device path
+	block := Env(Memory{Key: Key(0xc1ae0001, 1), Serial: "0xc1ae0001", Shared: true, Mode: ModeBlock, Size: 534773760, Path: "/dev/pmem0"})
+	want = []string{"CXL_C1AE0001_FD=3", "CXL_C1AE0001_MODE=block", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
+		"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_LEASE=000000a3"}
+	if got := ExecEnv(block, "000000a3", 3); !reflect.DeepEqual(got, want) {
+		t.Fatalf("block exec env\n%v\nwant\n%v", got, want)
+	}
+	want = []string{"CXL_C1AE0001_MODE=block", "CXL_C1AE0001_PATH=/dev/pmem0", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
+		"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_LEASE=000000a3"}
+	if got := ExecEnv(block, "000000a3", -1); !reflect.DeepEqual(got, want) {
+		t.Fatalf("block exec env without fd\n%v\nwant\n%v", got, want)
+	}
+	// an fs lease keeps its path, also with an fd
+	fs := Env(Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Shared: true, Mode: ModeFs, Size: 534773760, Path: "/run/cxl/fs/models",
+		Access: AccessDirect, ReadOnly: true})
+	want = []string{"CXL_C1AF0001_ACCESS=direct", "CXL_C1AF0001_MODE=fs", "CXL_C1AF0001_PATH=/run/cxl/fs/models", "CXL_C1AF0001_READONLY=1",
+		"CXL_C1AF0001_SERIAL=0xc1af0001", "CXL_C1AF0001_SHARED=1", "CXL_C1AF0001_SIZE=534773760", "CXL_LEASE=000000a4"}
+	for _, fd := range []int{-1, 3} {
+		if got := ExecEnv(fs, "000000a4", fd); !reflect.DeepEqual(got, want) {
+			t.Fatalf("fs exec env with fd %d\n%v\nwant\n%v", fd, got, want)
+		}
 	}
 	if got := EnvList(map[string]string{"B": "2", "A": "1"}); !reflect.DeepEqual(got, []string{"A=1", "B=2"}) {
 		t.Fatalf("env list %v", got)

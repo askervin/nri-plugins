@@ -71,7 +71,7 @@ type lease struct {
 	// Source is the requested source ("": local, then pool), and the
 	// source of the device once Ready.
 	Source string `json:"source,omitempty"`
-	Mode   string `json:"mode"`   // effective: api.ModeNUMA, api.ModeDax or api.ModeFs
+	Mode   string `json:"mode"`   // effective: api.ModeNUMA, api.ModeDax, api.ModeBlock or api.ModeFs
 	Shared bool   `json:"shared"` // one share of a shared device
 	// SharedDevice is true when the device of the lease is a shared
 	// device: one share of it when Shared, the whole device otherwise.
@@ -79,7 +79,7 @@ type lease struct {
 	// DeviceSource is the source of the device that Serial names when
 	// a ResourceSlice has it and no source was requested, "" otherwise.
 	DeviceSource string `json:"deviceSource,omitempty"`
-	ReadOnly     bool   `json:"readOnly,omitempty"` // dax: the fd is opened read-only; fs: always
+	ReadOnly     bool   `json:"readOnly,omitempty"` // dax, block: the fd is opened read-only; fs: always
 	Access       string `json:"access,omitempty"`   // fs: api.AccessDirect or api.AccessCached
 	// Name is the mount point of an fs lease in api.FsDir, unique among
 	// the leases of the lease claim.
@@ -90,15 +90,18 @@ type lease struct {
 	Size string `json:"size,omitempty"` // requested quantity
 	// Serial is 0x<lower-case hex>: the requested device, or the device
 	// of a Ready lease.
-	Serial    string    `json:"serial,omitempty"`
-	Pod       podRef    `json:"pod"`
-	Container string    `json:"container"`
-	State     string    `json:"state"`
-	Error     string    `json:"error,omitempty"`
-	Node      int       `json:"node"` // lent NUMA node, -1 if none
-	Bytes     uint64    `json:"bytes,omitempty"`
-	Dax       string    `json:"dax,omitempty"` // /dev/daxX.Y (dax mode)
-	Created   time.Time `json:"created"`
+	Serial    string `json:"serial,omitempty"`
+	Pod       podRef `json:"pod"`
+	Container string `json:"container"`
+	State     string `json:"state"`
+	Error     string `json:"error,omitempty"`
+	Node      int    `json:"node"` // lent NUMA node, -1 if none
+	Bytes     uint64 `json:"bytes,omitempty"`
+	Dax       string `json:"dax,omitempty"` // /dev/daxX.Y (dax mode)
+	// Block is the host path of the block device of a Ready block lease,
+	// /dev/pmemK.
+	Block   string    `json:"block,omitempty"`
+	Created time.Time `json:"created"`
 }
 
 // deviceShared tells whether the device of a lease is a shared device:
@@ -108,10 +111,15 @@ func (l *lease) deviceShared() bool {
 }
 
 // memory returns what a Ready lease gives its container, false before.
+// The path of a block lease is the host path of its block device.
 func (l *lease) memory() (api.Memory, bool) {
 	serial, err := api.ParseSerial(l.Serial)
 	if l.State != api.StateReady || err != nil {
 		return api.Memory{}, false
+	}
+	path := l.Path
+	if l.Mode == api.ModeBlock {
+		path = l.Block
 	}
 	return api.Memory{
 		Key:      api.Key(serial, 1),
@@ -121,7 +129,7 @@ func (l *lease) memory() (api.Memory, bool) {
 		Size:     l.Bytes,
 		Node:     l.Node,
 		Dax:      l.Dax,
-		Path:     l.Path,
+		Path:     path,
 		Access:   l.Access,
 		ReadOnly: l.ReadOnly || l.Mode == api.ModeFs,
 	}, true

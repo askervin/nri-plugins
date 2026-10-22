@@ -442,10 +442,13 @@ A running container can lease a pool device without a claim of its own:
 `cxl-request request --source pool --size 512Mi` in a container with a
 claim on `cxl-lease` makes the node plugin allocate the device for a
 companion pod and lend it to the container, as a NUMA node or as an open
-dax file descriptor. A device of persistent memory is lent in mode `fs`:
-its read-only erofs filesystem is mounted into the running container at
-`/run/cxl/fs/<name>` (`cxl-request request --serial ... --shared
---read-only --mode fs`). See [leases.md](leases.md).
+dax file descriptor. A device of persistent memory is lent in mode
+`block`, as an open file descriptor of its block device
+(`cxl-request request --serial ... --mode block`, the writer, or
+`--shared --read-only --mode block`), or in mode `fs`: its read-only erofs
+filesystem is mounted into the running container at `/run/cxl/fs/<name>`
+(`cxl-request request --serial ... --shared --read-only --mode fs`). See
+[leases.md](leases.md).
 
 ## Node requirements
 

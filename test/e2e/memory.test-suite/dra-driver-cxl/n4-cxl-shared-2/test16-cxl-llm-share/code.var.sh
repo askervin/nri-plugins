@@ -493,8 +493,8 @@ $want"
     dra-exec "$VM2" "$r/main" "$DRA_REQUEST_CTR_BIN" fd --lease "$lease" --exec true &&
         error "$r: cxl-request fd of the fs lease $lease succeeded"
     [ "$COMMAND_STATUS" == 3 ] || error "$r: cxl-request fd of the fs lease $lease exited $COMMAND_STATUS, expected 3"
-    grep -qF "lease $lease is not a dax lease; use env" <<< "$COMMAND_OUTPUT
-$DRA_EXEC_STDERR" || error "$r: cxl-request fd of the fs lease $lease did not print 'lease $lease is not a dax lease; use env'"
+    grep -qF "lease $lease is not a dax or block lease; use env" <<< "$COMMAND_OUTPUT
+$DRA_EXEC_STDERR" || error "$r: cxl-request fd of the fs lease $lease did not print 'lease $lease is not a dax or block lease; use env'"
     lease-companion-check "$r"
     dra-lease-cdi-assert "$vm" "${READER_CLAIM_UID[$r]}"
     lease-bind-assert "$r"

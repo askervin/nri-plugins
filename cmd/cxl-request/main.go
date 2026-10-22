@@ -18,7 +18,7 @@
 // containers of claims on DeviceClass cxl-lease. See
 // docs/memory/cxl/leases.md.
 //
-//	cxl-request request [--source local|pool] [--mode numa|dax|fs] [--shared] [--read-only]
+//	cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared] [--read-only]
 //	                    [--access direct|cached] [--name NAME]
 //	                    [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
 //	                    [--exec CMD [ARG...]]
@@ -31,11 +31,12 @@
 // request, release and list print the plugin's JSON response line, env
 // prints the environment of the lease as sorted KEY=VALUE lines. With
 // --exec CMD runs with the environment of the lease, and with the fd of a
-// dax lease as fd 3; an fs lease has its filesystem at CXL_<KEY>_PATH.
-// Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is Failed, not Ready
-// (request, fd, env) or not Released (release) within --wait, or fd of a
-// lease that is not a dax lease. With --exec the exit code of CMD is
-// passed through.
+// dax lease (a devdax device) or a block lease (the block device of a
+// persistent pool device) as fd 3; an fs lease has its filesystem at
+// CXL_<KEY>_PATH. Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is
+// Failed, not Ready (request, fd, env) or not Released (release) within
+// --wait, or fd of a lease that is neither a dax nor a block lease. With
+// --exec the exit code of CMD is passed through.
 package main
 
 import (
@@ -62,12 +63,12 @@ const (
 	exitOK      = 0
 	exitError   = 1
 	exitUsage   = 2
-	exitNotUsed = 3 // failed, not Ready or not Released in time, not a dax lease
-	execFd      = 3 // the fd of a dax lease in the command
+	exitNotUsed = 3 // failed, not Ready or not Released in time, not a dax or block lease
+	execFd      = 3 // the fd of a dax or block lease in the command
 )
 
 const usage = `usage:
-  cxl-request request [--source local|pool] [--mode numa|dax|fs] [--shared] [--read-only]
+  cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared] [--read-only]
                       [--access direct|cached] [--name NAME]
                       [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
                       [--exec CMD [ARG...]]
@@ -78,11 +79,12 @@ const usage = `usage:
   cxl-request help
 request: memory for this container, exclusive unless --shared:
   --source    local (a memdev of this node) or pool; default local, then pool
-  --mode      numa (lent as a NUMA node), dax (a devdax fd) or fs (a read-only
-              filesystem of a persistent pool device at /run/cxl/fs/NAME);
+  --mode      numa (lent as a NUMA node), dax (a devdax fd), fs (a read-only
+              filesystem of a persistent pool device at /run/cxl/fs/NAME) or
+              block (an fd of the block device of a persistent pool device);
               default numa, dax with --shared or for a shared device
   --shared    one share of a shared device (default: the whole device, exclusive)
-  --read-only a dax fd that allows reads only; fs needs it
+  --read-only a dax or block fd that allows reads only; fs needs it
   --access    fs: direct (file pages are the memory of the device) or
               cached (the page cache of the node); default direct
   --name      fs: the mount point /run/cxl/fs/NAME; default the lease id
@@ -91,7 +93,7 @@ request: memory for this container, exclusive unless --shared:
   --wait      until Ready (Go duration; 0s returns at once); default: the
               plugin's --lease-wait; release: until Released
   --request-id the same id returns the same lease
-  --exec      run CMD with the lease's environment and a dax lease's fd 3
+  --exec      run CMD with the lease's environment and a dax or block lease's fd 3
 release, fd, env: --lease ID of a lease of this pod; release --all: all of them.
 The socket is $CXL_LEASE_SOCKET.
 `
@@ -271,8 +273,8 @@ func output(cmd *command, resp *api.Response, line []byte, stdout, stderr io.Wri
 }
 
 // execute runs the command of --exec with the environment of a Ready
-// lease, and its fd for a dax lease of request and fd, and returns its
-// exit code.
+// lease, and its fd for a dax or block lease of request and fd, and
+// returns its exit code.
 func execute(cmd *command, resp *api.Response, line []byte, fd int, stdout, stderr io.Writer) int {
 	code := exitCode(&cmd.req, resp)
 	if code == exitOK && resp.State != api.StateReady {
@@ -285,11 +287,11 @@ func execute(cmd *command, resp *api.Response, line []byte, fd int, stdout, stde
 	}
 	envFd := -1
 	switch {
-	case cmd.req.Op == api.OpEnv || resp.Mode != api.ModeDax:
+	case cmd.req.Op == api.OpEnv || !hasFd(resp.Mode):
 		closeFd(fd)
 		fd = -1
 	case fd < 0:
-		_, _ = fmt.Fprintf(stderr, "cxl-request: no fd with the response of dax lease %s\n", resp.Lease)
+		_, _ = fmt.Fprintf(stderr, "cxl-request: no fd with the response of %s lease %s\n", resp.Mode, resp.Lease)
 		return exitError
 	default:
 		envFd = execFd
@@ -302,7 +304,7 @@ func exitCode(req *api.Request, resp *api.Response) int {
 	switch {
 	case resp.State == api.StateFailed:
 		return exitNotUsed
-	case req.Op == api.OpFd && resp.Mode != "" && resp.Mode != api.ModeDax:
+	case req.Op == api.OpFd && resp.Mode != "" && !hasFd(resp.Mode):
 		return exitNotUsed
 	case resp.Error != "":
 		return exitError
@@ -321,6 +323,12 @@ func exitCode(req *api.Request, resp *api.Response) int {
 		return releaseExitCode(resp)
 	}
 	return exitOK
+}
+
+// hasFd tells whether a lease of the mode passes an fd: dax and block
+// leases do.
+func hasFd(mode string) bool {
+	return mode == api.ModeDax || mode == api.ModeBlock
 }
 
 // releaseExitCode returns the exit code of a response to release: ok when
@@ -425,7 +433,7 @@ func runCommand(argv []string, fd int, env []string, stdout, stderr io.Writer) i
 	c.Env = append(os.Environ(), env...)
 	var f *os.File
 	if fd >= 0 {
-		f = os.NewFile(uintptr(fd), "dax")
+		f = os.NewFile(uintptr(fd), "lease")
 		defer func() { _ = f.Close() }()
 		c.ExtraFiles = []*os.File{f} // fd 3
 	}

@@ -50,12 +50,15 @@ type lentDevice struct {
 	Serial    uint64
 	Shared    bool
 	Size      uint64 // bytes the lease gets: the slice size or the device size
-	Mode      string // api.ModeNUMA, api.ModeDax or api.ModeFs
+	Mode      string // api.ModeNUMA, api.ModeDax, api.ModeBlock or api.ModeFs
 	ReadOnly  bool
 	Node      int    // numa: NUMA node of the memory, else -1
 	DaxDevice string // dax: /dev/daxX.Y
-	Access    string // fs: api.AccessDirect or api.AccessCached
-	NodeMount string // fs: the host path of the node mount of the device
+	// BlockDevice is the host path of the block device of a block or fs
+	// device, /dev/pmemK.
+	BlockDevice string
+	Access      string // fs: api.AccessDirect or api.AccessCached
+	NodeMount   string // fs: the host path of the node mount of the device
 }
 
 // leaseHooks is what a driver tells the lease broker about companion
@@ -151,7 +154,7 @@ func (c *companionLender) check(id string, claim *resourceapi.ResourceClaim) (*l
 
 // lend lends the NUMA nodes of the numa devices of a companion claim to
 // the container of the lend, held by its lease, and records them in rec.
-// Dax devices are passed as an fd by the broker. On error rec lists the
+// Dax and block devices are passed as an fd by the broker. On error rec lists the
 // nodes lent so far.
 func (c *companionLender) lend(ctx context.Context, rec *lendRecord, devs []lentDevice) error {
 	nodes, _ := c.get()

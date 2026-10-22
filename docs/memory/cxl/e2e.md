@@ -247,7 +247,7 @@ tests of `n4-cxl-shared-2`):
 | `test01-shared-cxl` | CXL memory shared by VM1 and VM2 through fake-cxl-pool, without Kubernetes |
 | `test10-dra-pooling` | pool devices for pods: exclusive devices as NUMA node and as dax device; the pool's slice is for the nodes it reaches, VM1 and VM2 |
 | `test11-dra-sharing` | a shared device claimed on two nodes at once, one share each: VM1 writes, VM2 reads, VM1 lets go while VM2 still reads |
-| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the filesystems of fs leases in the container of a lease claim, empty and read-only; refused requests, among them fs leases that are not read-only, not of the pool or of a volatile device, and access or name without mode `fs` |
+| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the filesystems of fs leases in the container of a lease claim, empty and read-only; refused requests, among them fs leases that are not read-only, not of the pool or of a volatile device, access or name without mode `fs`, and block leases that share a device writably, are not of the pool or are of a volatile device |
 | `test13-dra-shared-one-writer-many-readers` | single-writer sharing on two nodes: an exclusive writer, then read-only readers on VM1 and VM2 |
 | `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
 | `test15-dra-local-live-attach` | leases of local memory for running containers |

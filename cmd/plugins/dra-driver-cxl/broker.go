@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -82,9 +83,9 @@ var (
 	errPoolDisabled       = errors.New("pool driver disabled (--pool-driver-name)")
 )
 
-// daxFd names the dax device whose fd goes with a response: none if path
-// is "".
-type daxFd struct {
+// leaseFd names the device of a dax or block lease whose fd goes with a
+// response: none if path is "".
+type leaseFd struct {
 	path     string
 	readOnly bool
 }
@@ -121,7 +122,7 @@ type broker struct {
 	reconcileEvery  time.Duration
 	creatingGrace   time.Duration
 	syncWaitTimeout time.Duration
-	openDax         func(path string, readOnly bool) (*os.File, error)
+	openDevice      func(path string, readOnly bool) (*os.File, error)
 	newID           func() string
 }
 
@@ -157,7 +158,7 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 		reconcileEvery:  leaseReconcileEvery,
 		creatingGrace:   leaseCreatingGrace,
 		syncWaitTimeout: 30 * time.Second,
-		openDax:         openDaxDevice,
+		openDevice:      openDevice,
 		newID:           randomLeaseID,
 	}
 	b.mu.Lock()
@@ -300,7 +301,7 @@ func (b *broker) serveConn(claimUID string, c *net.UnixConn) {
 			return
 		}
 		var resp *api.Response
-		var fd daxFd
+		var fd leaseFd
 		req, err := decodeRequest(line)
 		switch {
 		case err != nil:
@@ -346,11 +347,11 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 	}
 }
 
-// respond writes a response line, with the open dax device of fd as
+// respond writes a response line, with the open device of fd as
 // SCM_RIGHTS if it names one.
-func (b *broker) respond(c *net.UnixConn, resp *api.Response, fd daxFd) error {
+func (b *broker) respond(c *net.UnixConn, resp *api.Response, fd leaseFd) error {
 	if fd.path != "" {
-		f, err := b.openDax(fd.path, fd.readOnly)
+		f, err := b.openDevice(fd.path, fd.readOnly)
 		if err != nil {
 			resp = &api.Response{Lease: resp.Lease, State: resp.State, Error: fmt.Sprintf("opening %s: %v", fd.path, err)}
 		} else {
@@ -432,10 +433,10 @@ func (b *broker) refreshClaimPods(tc *leaseClaim, podUID string) bool {
 }
 
 // handle runs one authenticated request. It returns the response and the
-// dax device whose fd goes with it.
-func (b *broker) handle(claimUID string, ref containerRef, req *api.Request) (*api.Response, daxFd) {
+// device whose fd goes with it.
+func (b *broker) handle(claimUID string, ref containerRef, req *api.Request) (*api.Response, leaseFd) {
 	if err := req.Validate(); err != nil {
-		return &api.Response{Lease: req.Lease, Error: err.Error()}, daxFd{}
+		return &api.Response{Lease: req.Lease, Error: err.Error()}, leaseFd{}
 	}
 	wait := b.parseWait(req.Wait)
 	switch req.Op {
@@ -443,11 +444,11 @@ func (b *broker) handle(claimUID string, ref containerRef, req *api.Request) (*a
 		return b.requestLease(claimUID, ref, req, wait)
 	case api.OpRelease:
 		if req.All {
-			return b.releaseAll(ref, wait), daxFd{}
+			return b.releaseAll(ref, wait), leaseFd{}
 		}
-		return b.releaseOne(ref, req.Lease, wait), daxFd{}
+		return b.releaseOne(ref, req.Lease, wait), leaseFd{}
 	case api.OpList:
-		return b.list(ref), daxFd{}
+		return b.list(ref), leaseFd{}
 	case api.OpFd:
 		return b.waitLease(ref, req.Lease, wait, true)
 	default: // api.OpEnv
@@ -466,7 +467,7 @@ func (b *broker) parseWait(s string) time.Duration {
 // requestOptions sets the source, mode, sharing, access, name, size and
 // device of a validated request on the lease.
 func (b *broker) requestOptions(l *lease, req *api.Request) error {
-	if b.cfg.PoolDriver == "" && (req.Source == api.SourcePool || req.Mode == api.ModeFs) {
+	if b.cfg.PoolDriver == "" && (req.Source == api.SourcePool || persistentMode(req.Mode)) {
 		return errPoolDisabled
 	}
 	l.Source, l.Shared, l.ReadOnly, l.Mode = req.Source, req.Shared, req.ReadOnly, req.EffectiveMode()
@@ -492,8 +493,8 @@ func (b *broker) requestOptions(l *lease, req *api.Request) error {
 
 // serialOptions sets the serial of a validated request on the lease and,
 // when it names a shared device, that the device is shared and, for a
-// device of volatile memory, mode dax. Mode fs needs a persistent device,
-// and a persistent device needs mode fs.
+// device of volatile memory, mode dax. Modes block and fs need a
+// persistent device, and a persistent device needs mode block or fs.
 func (b *broker) serialOptions(l *lease, req *api.Request) error {
 	serial, _ := api.ParseSerial(req.Serial)
 	l.Serial = api.FormatSerial(serial)
@@ -514,10 +515,10 @@ func (b *broker) serialOptions(l *lease, req *api.Request) error {
 		return fmt.Errorf("device %s: a local device of node %s, not of this node", l.Serial, dev.node)
 	}
 	switch {
-	case l.Mode == api.ModeFs && !dev.persistent:
-		return fmt.Errorf("device %s: mode %s needs a persistent device", l.Serial, api.ModeFs)
-	case l.Mode != api.ModeFs && dev.persistent:
-		return fmt.Errorf("device %s: a persistent device needs mode %s", l.Serial, api.ModeFs)
+	case persistentMode(l.Mode) && !dev.persistent:
+		return fmt.Errorf("device %s: mode %s needs a persistent device", l.Serial, l.Mode)
+	case !persistentMode(l.Mode) && dev.persistent:
+		return fmt.Errorf("device %s: a persistent device needs mode %s or %s", l.Serial, api.ModeBlock, api.ModeFs)
 	case !dev.shared:
 		l.DeviceSource = deviceSourceOf(dev, req)
 		return nil
@@ -629,7 +630,7 @@ func deviceSerial(d *resourceapi.Device, driver string) (uint64, bool) {
 // leaseInfo is the response of a lease. Called with b.mu held.
 func leaseInfo(l *lease) *api.Response {
 	r := &api.Response{Lease: l.ID, State: l.State, Source: l.Source, Mode: l.Mode, Shared: l.Shared, ReadOnly: l.ReadOnly,
-		Access: l.Access, Path: l.Path, Serial: l.Serial, Dax: l.Dax, Error: l.Error, Size: l.Bytes}
+		Access: l.Access, Path: l.Path, Serial: l.Serial, Dax: l.Dax, Block: l.Block, Error: l.Error, Size: l.Bytes}
 	if l.Node >= 0 {
 		n := l.Node
 		r.Node = &n
@@ -645,19 +646,23 @@ func leaseInfo(l *lease) *api.Response {
 	return r
 }
 
-// fdOf returns the dax device whose fd goes with the response of a lease:
-// that of a Ready dax lease.
-func fdOf(l *lease) daxFd {
-	if l.State == api.StateReady && l.Dax != "" {
-		return daxFd{path: l.Dax, readOnly: l.ReadOnly}
+// fdOf returns the device whose fd goes with the response of a lease:
+// that of a Ready dax or block lease.
+func fdOf(l *lease) leaseFd {
+	switch {
+	case l.State != api.StateReady:
+	case l.Dax != "":
+		return leaseFd{path: l.Dax, readOnly: l.ReadOnly}
+	case l.Mode == api.ModeBlock && l.Block != "":
+		return leaseFd{path: l.Block, readOnly: l.ReadOnly}
 	}
-	return daxFd{}
+	return leaseFd{}
 }
 
 // requestLease returns the response to a request of a container of ref on
-// the socket of a lease claim, and the dax device whose fd goes with it:
+// the socket of a lease claim, and the device whose fd goes with it:
 // it stores the lease, creates its companion and waits up to wait for it.
-func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Request, wait time.Duration) (*api.Response, daxFd) {
+func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Request, wait time.Duration) (*api.Response, leaseFd) {
 	l := &lease{
 		Claim:     claimUID,
 		RequestID: req.RequestID,
@@ -679,19 +684,19 @@ func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Reques
 	}
 	b.mu.Unlock()
 	if err := b.requestOptions(l, req); err != nil {
-		return &api.Response{Error: err.Error()}, daxFd{}
+		return &api.Response{Error: err.Error()}, leaseFd{}
 	}
 
 	b.mu.Lock()
 	if err := b.fsLeaseOptions(l, req); err != nil {
 		b.mu.Unlock()
-		return &api.Response{Error: err.Error()}, daxFd{}
+		return &api.Response{Error: err.Error()}, leaseFd{}
 	}
 	b.store.Leases[l.ID] = l
 	if err := b.store.save(); err != nil {
 		delete(b.store.Leases, l.ID)
 		b.mu.Unlock()
-		return &api.Response{Error: err.Error()}, daxFd{}
+		return &api.Response{Error: err.Error()}, leaseFd{}
 	}
 	b.notify()
 	b.mu.Unlock()
@@ -707,7 +712,7 @@ func (b *broker) requestLease(claimUID string, ref containerRef, req *api.Reques
 		b.mu.Unlock()
 		resp := b.startRelease(l.ID, err.Error())
 		resp.State, resp.Error = api.StateFailed, err.Error()
-		return resp, daxFd{}
+		return resp, leaseFd{}
 	}
 	b.mu.Lock()
 	if cur := b.store.Leases[l.ID]; cur != nil && cur.State == api.StateCreating {
@@ -763,11 +768,11 @@ func (b *broker) nameUser(claimUID, name string) *lease {
 // waitReady waits until the lease is Ready or Failed, at most wait. At
 // timeout a lease is released and reported Failed if release is set, else
 // reported in its state. wait 0 returns the state at once.
-func (b *broker) waitReady(id string, wait time.Duration, release bool) (*api.Response, daxFd) {
+func (b *broker) waitReady(id string, wait time.Duration, release bool) (*api.Response, leaseFd) {
 	ctx, cancel := context.WithTimeout(b.ctx, wait)
 	defer cancel()
 	var resp *api.Response
-	var fd daxFd
+	var fd leaseFd
 	done := func() bool {
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -788,7 +793,7 @@ func (b *broker) waitReady(id string, wait time.Duration, release bool) (*api.Re
 		klog.Warningf("lease broker: lease %s: %s, releasing", id, msg)
 		resp = b.startRelease(id, msg)
 		resp.State, resp.Error = api.StateFailed, msg
-		return resp, daxFd{}
+		return resp, leaseFd{}
 	}
 	return resp, fd
 }
@@ -882,25 +887,25 @@ func (b *broker) list(ref containerRef) *api.Response {
 }
 
 // waitLease waits until a lease of the pod of ref is Ready, at most wait,
-// and returns its info, and with withFd the fd of a dax lease of the
-// container of ref.
-func (b *broker) waitLease(ref containerRef, id string, wait time.Duration, withFd bool) (*api.Response, daxFd) {
+// and returns its info, and with withFd the device of a dax or block lease
+// of the container of ref whose fd goes with it.
+func (b *broker) waitLease(ref containerRef, id string, wait time.Duration, withFd bool) (*api.Response, leaseFd) {
 	b.mu.Lock()
 	l := b.ownLease(ref, id)
 	switch {
 	case l == nil || (withFd && l.Container != ref.Name):
 		b.mu.Unlock()
-		return &api.Response{Lease: id, Error: "no such lease of this container"}, daxFd{}
-	case withFd && l.Mode != api.ModeDax:
+		return &api.Response{Lease: id, Error: "no such lease of this container"}, leaseFd{}
+	case withFd && l.Mode != api.ModeDax && l.Mode != api.ModeBlock:
 		resp := leaseInfo(l)
 		b.mu.Unlock()
-		resp.Error = fmt.Sprintf("lease %s is not a %s lease; use %s", id, api.ModeDax, api.OpEnv)
-		return resp, daxFd{}
+		resp.Error = fmt.Sprintf("lease %s is not a %s or %s lease; use %s", id, api.ModeDax, api.ModeBlock, api.OpEnv)
+		return resp, leaseFd{}
 	}
 	b.mu.Unlock()
 	resp, fd := b.waitReady(id, wait, false)
 	if !withFd {
-		fd = daxFd{}
+		fd = leaseFd{}
 	}
 	return resp, fd
 }
@@ -987,7 +992,7 @@ func (b *broker) companionObjects(l *lease) (*resourceapi.ResourceClaim, *corev1
 // claim of a lease accepts, the preferred one first: the requested one,
 // that of the device of the serial, or local, then pool.
 func (b *broker) companionSources(l *lease) ([]string, error) {
-	if l.Mode == api.ModeFs {
+	if persistentMode(l.Mode) {
 		if b.cfg.PoolDriver == "" {
 			return nil, errPoolDisabled
 		}
@@ -1067,10 +1072,11 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 
 // companionDevices returns what the companion claim of a lease requests
 // from one source, and the driver of its devices: the DeviceClass (of
-// persistent pool devices for mode fs), the selectors of the serial and,
-// on shared devices, of the size, and the capacity: memory on devices that
-// are not shared, one share when the lease shares a shared device, none
-// (the whole device) when it takes a shared device exclusively.
+// persistent pool devices for modes block and fs), the selectors of the
+// serial and, on shared devices, of the size, and the capacity: memory on
+// devices that are not shared, one share when the lease shares a shared
+// device, none (the whole device) when it takes a shared device
+// exclusively.
 func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDeviceRequest, string, error) {
 	driver := device.DriverName
 	exact := &resourceapi.ExactDeviceRequest{DeviceClassName: device.ClassLocal}
@@ -1082,7 +1088,7 @@ func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDe
 		if l.deviceShared() {
 			exact.DeviceClassName = device.ClassPoolShared
 		}
-		if l.Mode == api.ModeFs {
+		if persistentMode(l.Mode) {
 			exact.DeviceClassName = device.ClassPoolPersistent
 		}
 	}
@@ -1533,8 +1539,8 @@ func ownedBy(claim *resourceapi.ResourceClaim, uid string) bool {
 }
 
 // OnPrepared marks a lease Ready with the prepared device. A device whose
-// mode is fs when the lease's is not, or the reverse, fails the lease, and
-// it is released.
+// mode is fs or block when the lease's is not, or the reverse, fails the
+// lease, and it is released.
 func (b *broker) OnPrepared(id string, devs []lentDevice) {
 	b.mu.Lock()
 	l := b.store.Leases[id]
@@ -1543,7 +1549,7 @@ func (b *broker) OnPrepared(id string, devs []lentDevice) {
 		return
 	}
 	d := devs[0]
-	if (d.Mode == api.ModeFs) != (l.Mode == api.ModeFs) {
+	if (d.Mode == api.ModeFs) != (l.Mode == api.ModeFs) || (d.Mode == api.ModeBlock) != (l.Mode == api.ModeBlock) {
 		l.State, l.Error = api.StateFailed, fmt.Sprintf("companion prepared mode %s, lease is mode %s", d.Mode, l.Mode)
 		b.saveLocked()
 		b.mu.Unlock()
@@ -1562,13 +1568,16 @@ func (b *broker) OnPrepared(id string, devs []lentDevice) {
 	case api.ModeFs:
 		l.Access, l.Path = d.Access, api.FsDir+"/"+l.Name
 		l.Node, l.Dax = -1, ""
+	case api.ModeBlock:
+		l.Block = d.BlockDevice
+		l.Node, l.Dax = -1, ""
 	default:
 		l.Node, l.Dax = d.Node, ""
 	}
 	l.State, l.Error = api.StateReady, ""
 	b.saveLocked()
-	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, node %d, dax %q, access %q, path %q, %d bytes)",
-		l.ID, l.Source, l.Serial, l.Mode, l.Node, l.Dax, l.Access, l.Path, l.Bytes)
+	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, node %d, dax %q, block %q, access %q, path %q, %d bytes)",
+		l.ID, l.Source, l.Serial, l.Mode, l.Node, l.Dax, l.Block, l.Access, l.Path, l.Bytes)
 }
 
 // OnLendFailed fails the lease with the lend error (for example a
@@ -1599,6 +1608,43 @@ func (b *broker) OnReleasing(id string) {
 		l.Error = "companion claim unprepared (companion pod deleted or evicted)"
 		b.saveLocked()
 		klog.Warningf("lease broker: lease %s: %s", id, l.Error)
+	}
+}
+
+// openDevice opens the device of a dax or block lease for passing to a
+// container, read-only or read-write: a devdax device /dev/daxX.Y as
+// openDaxDevice does, another device (the block device /dev/pmemK) as
+// openBlockDevice does.
+func openDevice(path string, readOnly bool) (*os.File, error) {
+	if strings.HasPrefix(path, "/dev/dax") {
+		return openDaxDevice(path, readOnly)
+	}
+	return openBlockDevice(path, readOnly)
+}
+
+// openBlockDevice opens a block device for passing to a container,
+// read-only or read-write. The device node is created by udev after the
+// fsdax namespace got its block device, so the open is retried every
+// 100 ms for up to 5 s while it fails with ENOENT or ENXIO.
+func openBlockDevice(path string, readOnly bool) (*os.File, error) {
+	flag := os.O_RDWR
+	if readOnly {
+		flag = os.O_RDONLY
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f, err := os.OpenFile(path, flag, 0)
+		if err == nil {
+			return f, nil
+		}
+		var errno syscall.Errno
+		if (!errors.As(err, &errno) || (errno != syscall.ENXIO && errno != syscall.ENOENT)) && !os.IsNotExist(err) {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

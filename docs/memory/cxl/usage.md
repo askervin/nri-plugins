@@ -625,8 +625,8 @@ container the same set of variables:
 | `CXL_<KEY>_NODE` | NUMA node | mode `numa`: memdev slices, pool devices, regions |
 | `CXL_<KEY>_NODES` | cpuset syntax | `dram` |
 | `CXL_<KEY>_DAX` | `/dev/daxX.Y` | mode `dax`: the device node of a claim; of a lease, the host path (informational: the container has no such node) |
-| `CXL_<KEY>_FD` | file descriptor number | mode `dax`, the command of `cxl-request request --exec` and `cxl-request fd --exec`, instead of `DAX` |
-| `CXL_<KEY>_PATH` | path | mode `block`: the block device node `/dev/pmemK`; mode `fs`: the directory of the filesystem in the container (`path` of a claim, `/run/cxl/fs/<name>` of a lease) |
+| `CXL_<KEY>_FD` | file descriptor number | leases of modes `dax` and `block`, the command of `cxl-request request --exec` and `cxl-request fd --exec`: instead of `DAX` (`dax`) or `PATH` (`block`) |
+| `CXL_<KEY>_PATH` | path | mode `block`: the block device node `/dev/pmemK` of a claim; of a lease, the host path (informational: the container has no such node); mode `fs`: the directory of the filesystem in the container (`path` of a claim, `/run/cxl/fs/<name>` of a lease) |
 | `CXL_<KEY>_ACCESS` | `direct` or `cached` | mode `fs` |
 | `CXL_<KEY>_READONLY` | `0` or `1` | modes `dax` and `block`; `1` in mode `fs` |
 

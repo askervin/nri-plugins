@@ -132,20 +132,21 @@ type preparedPoolDevice struct {
 // lent returns the device as the lease broker sees it.
 func (d *preparedPoolDevice) lent(driver string) lentDevice {
 	return lentDevice{
-		Driver:    driver,
-		Source:    api.SourcePool,
-		Request:   d.Request,
-		Device:    d.Device,
-		Pool:      d.Pool,
-		Serial:    d.Serial,
-		Shared:    d.Shared,
-		Size:      d.Size,
-		Mode:      d.Mode,
-		ReadOnly:  d.ReadOnly,
-		Node:      d.Node,
-		DaxDevice: d.DaxDevice,
-		Access:    d.Access,
-		NodeMount: d.NodeMount,
+		Driver:      driver,
+		Source:      api.SourcePool,
+		Request:     d.Request,
+		Device:      d.Device,
+		Pool:        d.Pool,
+		Serial:      d.Serial,
+		Shared:      d.Shared,
+		Size:        d.Size,
+		Mode:        d.Mode,
+		ReadOnly:    d.ReadOnly,
+		Node:        d.Node,
+		DaxDevice:   d.DaxDevice,
+		BlockDevice: d.BlockDevice,
+		Access:      d.Access,
+		NodeMount:   d.NodeMount,
 	}
 }
 

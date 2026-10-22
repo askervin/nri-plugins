@@ -934,7 +934,7 @@ func TestPoolLeaseBind(t *testing.T) {
 		}
 	}
 	// the broker gets the access and the node mount
-	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.Serial != 0xc1ae0001 ||
+	if d := hooks.devs[0]; d.Mode != api.ModeFs || d.Access != api.AccessDirect || d.NodeMount != direct || d.BlockDevice != "/dev/pmem0" || d.Serial != 0xc1ae0001 ||
 		d.Size != fakePmemBytes || !d.ReadOnly || d.Node != -1 {
 		t.Fatalf("lent device %+v", d)
 	}
@@ -990,6 +990,45 @@ func TestPoolLeaseBind(t *testing.T) {
 	noErr(t, unprepare(t, p, "d1"))
 	e.f.wantReleased(t)
 	e.wantClean(t, p)
+	e.wantNoMounts(t, p)
+}
+
+// TestPoolLeaseBlock prepares the companion claims of block leases: the
+// writer creates the fsdax namespace, a reader of a share finds it; the
+// broker gets the block device, nothing is mounted or bound, and the
+// companion has no CDI device.
+func TestPoolLeaseBlock(t *testing.T) {
+	e, p, hooks := newPoolLeaseEnv(t)
+	e.f.labels = false // a fresh device
+	for _, c := range []struct {
+		data, config string
+		readOnly     bool
+	}{
+		{writerData, blockConfig, false},
+		{persistentData, blockROConfig, true},
+	} {
+		claim := persistentClaim("uid-"+companionName("l1"), c.data, c.config)
+		claim.ObjectMeta = companionClaim("l1").ObjectMeta
+		r := prepare(t, p, claim)
+		noErr(t, r.Err)
+		e.wantNoCDIDevices(t, r)
+		if d := hooks.devs[0]; d.Mode != api.ModeBlock || d.BlockDevice != "/dev/pmem0" || d.ReadOnly != c.readOnly || d.Size != fakePmemBytes ||
+			d.Node != -1 || d.DaxDevice != "" || d.NodeMount != "" || d.Access != "" {
+			t.Fatalf("lent device %+v", d)
+		}
+		if rec := p.prepared["uid-cxl-lease-l1"].Lend; len(rec.Mounts) != 0 || len(rec.Nodes) != 0 {
+			t.Fatalf("lend record %+v", rec)
+		}
+		if calls := e.m.callsOf("mount"); len(calls) != 0 {
+			t.Fatalf("mount calls %q", calls)
+		}
+		noErr(t, unprepare(t, p, "uid-cxl-lease-l1"))
+		e.f.wantReleased(t)
+		e.wantClean(t, p)
+	}
+	if n := strings.Count(e.f.commands(), "ndctl create-namespace"); n != 1 {
+		t.Fatalf("ndctl create-namespace ran %d times:\n%s", n, e.f.commands())
+	}
 	e.wantNoMounts(t, p)
 }
 
