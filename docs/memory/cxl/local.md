@@ -529,3 +529,12 @@ not return to its initial state when idle.
   of a new RAM region to kmem) before the plugin switches it to
   `device_dax`: with `online` the kernel onlines the whole region in a
   kernel zone, and the offline before the switch can fail.
+- No udev rule that onlines hot-added memory, such as `40-redhat.rules`
+  of RHEL, CentOS Stream and Fedora (override it, see
+  [usage.md](usage.md#requirements)). Such a rule onlines the blocks of a
+  new region after the plugin offlined them: the plugin offlines them
+  again until they stay offline for 500 ms (logging `memoryN: online again
+  after offlining it (auto-onlined by udev?)`) and fails the Prepare after
+  30 s. The plugin never destroys a region whose memory is online after
+  it is disabled (the kernel could not remove it): online memory without
+  its region would read garbage.

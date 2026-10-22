@@ -353,6 +353,38 @@ func TestFindAndWait(t *testing.T) {
 	}
 }
 
+// TestHostBridgeUIDNotBusNumber: on real hardware the uid of a host bridge
+// in the target_list of root decoders is its ACPI _UID, which differs
+// from the bus number of its PCI root (pci0000:0c, uid 24 here).
+func TestHostBridgeUIDNotBusNumber(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(f *fakeSys)
+	}{
+		{"dport", func(f *fakeSys) {
+			f.link("bus/cxl/devices/root0/dport7", "../../../../devices/pci0000:0d")
+			f.link("bus/cxl/devices/root0/dport24", "../../../../devices/pci0000:0c")
+		}},
+		{"firmware_node", func(f *fakeSys) {
+			f.write("devices/pci0000:0c/firmware_node/uid", "24")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeSys(t)
+			f.plug("0xc1f00001")
+			_ = os.MkdirAll(f.p("devices/pci0000:0d"), 0o755)
+			tc.setup(f)
+			g := f.manager()
+			if uid, err := g.hostBridgeUID("mem0"); err != nil || uid != 24 {
+				t.Fatalf("uid %d %v", uid, err)
+			}
+			if d, err := g.RootDecoder("mem0", RegionRAM); err != nil || d != "decoder0.1" {
+				t.Fatalf("root decoder %q %v", d, err)
+			}
+		})
+	}
+}
+
 func TestRegionNUMAOnlineRelease(t *testing.T) {
 	f := newFakeSys(t)
 	f.plug("0xc1f00001")
@@ -721,6 +753,100 @@ func TestBlocksNodeAndReleaseRegion(t *testing.T) {
 	}
 	if err := g.ReleaseRegion(ctx, "region0"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestReleaseRegionOnlineWithoutKmem: a failed switch to device_dax can
+// leave the memory of a region added and online without kmem. Releasing the
+// region offlines it first, and a region whose memory is online after it
+// is disabled (the kernel could not remove it) is never destroyed: its
+// memory would read garbage.
+func TestReleaseRegionOnlineWithoutKmem(t *testing.T) {
+	f := newFakeSys(t)
+	f.plug("0xc100e2e1")
+	g := f.manager()
+	ctx := context.Background()
+	if _, err := g.CreateRegion(ctx, "mem0", ModeNUMA, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Online("mem0", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(f.p(daxRegionPath + "/dax0.0/driver"))
+	if err := g.ReleaseRegion(ctx, "region0"); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []string{"74", "75"} {
+		if st, _ := readTrim(f.p("devices/system/memory/memory" + b + "/state")); st != "offline" {
+			t.Fatalf("memory%s state %q after release", b, st)
+		}
+	}
+	if !strings.HasSuffix(f.commands(), "cxl destroy-region region0") {
+		t.Fatalf("region not destroyed:\n%s", f.commands())
+	}
+
+	f = newFakeSys(t)
+	f.plug("0xc100e2e1")
+	g = f.manager()
+	g.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+		out, err := f.exec(ctx, name, args...)
+		if name == "cxl" && args[0] == "disable-region" {
+			// kmem could not remove memory75, and it is online again
+			f.write("devices/system/memory/memory75/state", "online")
+		}
+		return out, err
+	}
+	if _, err := g.CreateRegion(ctx, "mem0", ModeNUMA, ""); err != nil {
+		t.Fatal(err)
+	}
+	err := g.ReleaseRegion(ctx, "region0")
+	if err == nil || !strings.Contains(err.Error(), "memory blocks [75] are online after disabling it") {
+		t.Fatalf("expected a refusal to destroy region0, got %v", err)
+	}
+	if strings.Contains(f.commands(), "destroy-region") {
+		t.Fatalf("region0 with online memory destroyed:\n%s", f.commands())
+	}
+}
+
+// TestRegionDaxReofflinesAutoOnlined: a udev rule (40-redhat.rules) onlines
+// the blocks that kmem adds for a new region, also after they were
+// offlined. The blocks must stay offline before the switch to device_dax.
+func TestRegionDaxReofflinesAutoOnlined(t *testing.T) {
+	defer func(d time.Duration) { settleOffline = d }(settleOffline)
+	settleOffline = 50 * time.Millisecond
+	f := newFakeSys(t)
+	f.plug("0xc100e2e1")
+	g := f.manager()
+	var udev sync.WaitGroup
+	g.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+		out, err := f.exec(ctx, name, args...)
+		if name == "cxl" && args[0] == "create-region" {
+			f.write("devices/system/memory/memory74/state", "online")
+			udev.Add(1)
+			go func() {
+				defer udev.Done()
+				for i := 0; i < 200; i++ {
+					if st, _ := readTrim(f.p("devices/system/memory/memory74/state")); st == "offline" {
+						f.write("devices/system/memory/memory75/state", "online")
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}()
+		}
+		if name == "daxctl" {
+			for _, b := range []string{"74", "75"} {
+				if st, _ := readTrim(f.p("devices/system/memory/memory" + b + "/state")); st != "offline" {
+					t.Errorf("daxctl %v with memory%s %s", args, b, st)
+				}
+			}
+		}
+		return out, err
+	}
+	ri, err := g.CreateRegion(context.Background(), "mem0", ModeDax, "")
+	udev.Wait()
+	if err != nil || ri.Driver != DriverDeviceDax {
+		t.Fatalf("region %+v, %v", ri, err)
 	}
 }
 

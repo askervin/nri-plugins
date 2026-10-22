@@ -36,7 +36,10 @@ described in the
   `CONFIG_FS_DAX`; for pool devices of persistent memory also
   `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
   `CONFIG_ND_PFN`, `CONFIG_EROFS_FS` and `CONFIG_BLK_DEV_LOOP`.
-- `/sys/devices/system/memory/auto_online_blocks` set to `offline`.
+- `/sys/devices/system/memory/auto_online_blocks` set to `offline`, and
+  no udev rule that onlines hot-added memory (`40-redhat.rules` of RHEL,
+  CentOS Stream and Fedora does: override it, see the requirements in the
+  CXL memory documentation).
 
 The image contains the `cxl`, `daxctl` and `ndctl` tools of ndctl and the
 static `cxl-request` command line tool of leases. The pod runs privileged

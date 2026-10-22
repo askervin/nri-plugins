@@ -245,11 +245,14 @@ func (mc *Manager) Regions(memdev string) []string {
 	return out
 }
 
-var pciRootRe = regexp.MustCompile(`/pci([0-9a-f]{4}):([0-9a-f]{2})/`)
+var pciRootRe = regexp.MustCompile(`^(.*/pci([0-9a-f]{4}):([0-9a-f]{2}))/`)
 
-// hostBridgeUID returns the uid of the host bridge of a memdev: the bus
-// number of its PCI root (qemu pxb-cxl bus_nr), as root decoders list it in
-// target_list.
+// hostBridgeUID returns the uid of the host bridge of a memdev, as root
+// decoders list it in target_list: N of the dportN of a CXL root port
+// that links to the PCI root of the memdev, else the ACPI _UID of the PCI
+// root (firmware_node/uid), else the bus number of the PCI root. The ACPI
+// _UID equals the bus number with qemu pxb-cxl (bus_nr) but not on real
+// hardware, where host bridge pci0000:63 can have the uid 35.
 func (mc *Manager) hostBridgeUID(memdev string) (int, error) {
 	real, err := filepath.EvalSymlinks(mc.cxlDev(memdev))
 	if err != nil {
@@ -259,7 +262,23 @@ func (mc *Manager) hostBridgeUID(memdev string) (int, error) {
 	if m == nil {
 		return 0, fmt.Errorf("cannot find the PCI root of %s in %s", memdev, real)
 	}
-	v, _ := strconv.ParseInt(m[2], 16, 32)
+	pciRoot := m[1]
+	dports, _ := filepath.Glob(mc.cxlDev("root*", "dport*"))
+	for _, dport := range dports {
+		target, err := filepath.EvalSymlinks(dport)
+		if err != nil || target != pciRoot {
+			continue
+		}
+		if v, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(dport), "dport")); err == nil {
+			return v, nil
+		}
+	}
+	if s, err := readTrim(filepath.Join(pciRoot, "firmware_node", "uid")); err == nil {
+		if v, err := strconv.Atoi(s); err == nil {
+			return v, nil
+		}
+	}
+	v, _ := strconv.ParseInt(m[3], 16, 32)
 	return int(v), nil
 }
 
@@ -889,6 +908,12 @@ func (mc *Manager) Info(memdev string) (*RegionInfo, error) {
 	return ri, nil
 }
 
+// settleOffline is how long the memory blocks of a new region must
+// stay offline before its dax device is switched to device_dax.
+// TODO: can we detect when kernel has finished moving all data from
+// offlined blocks?
+var settleOffline = 500 * time.Millisecond
+
 var regionNameRe = regexp.MustCompile(`"region"\s*:\s*"(region\d+)"`)
 
 // CreateRegion creates a volatile region on the memdev under the decoder
@@ -954,7 +979,7 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 	switch mode {
 	case ModeDax:
 		if mc.DaxDriver(dax) == DriverKmem {
-			if err := mc.SetBlocksState(blocks, "offline"); err != nil {
+			if err := mc.offlineSettled(ctx, blocks, settleOffline, 30*time.Second); err != nil {
 				return nil, err
 			}
 		}
@@ -1053,25 +1078,76 @@ func (mc *Manager) ReleaseRegions(ctx context.Context, memdev string) error {
 // ReleaseRegion offlines the memory of a region, and disables and destroys
 // the region. Namespaces and labels of a region of persistent memory are
 // not touched. A missing region is not an error.
+//
+// A region with memory blocks that are online after it is disabled is not
+// destroyed: the kernel could not remove the memory (kmem keeps it "until
+// the next reboot"), and destroying the region would leave online memory
+// that no decoder maps, which reads garbage.
 func (mc *Manager) ReleaseRegion(ctx context.Context, region string) error {
 	if _, err := os.Stat(mc.cxlDev(region)); err != nil {
 		return nil
 	}
-	for _, dax := range mc.DaxDevices(region) {
-		if mc.DaxDriver(dax) == DriverKmem {
-			if blocks, err := mc.RegionBlocks(region); err == nil {
-				if err := mc.SetBlocksState(blocks, "offline"); err != nil {
-					return fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
-				}
-			}
+	// Offline every memory block of the region, whatever the driver of its
+	// dax devices: a failed driver switch can leave blocks added and
+	// online without kmem.
+	if blocks, err := mc.RegionBlocks(region); err == nil && len(blocks) > 0 {
+		if err := mc.SetBlocksState(blocks, "offline"); err != nil {
+			return fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
 		}
 	}
 	if _, err := mc.Exec(ctx, "cxl", "disable-region", region); err != nil {
 		return err
+	}
+	if blocks, err := mc.RegionBlocks(region); err == nil {
+		var online []int
+		for _, b := range blocks {
+			if st, err := readTrim(mc.block(b, "state")); err == nil && st != "offline" {
+				online = append(online, b)
+			}
+		}
+		if len(online) > 0 {
+			return fmt.Errorf("%s: memory blocks %v are online after disabling it (the kernel could not remove them, see dmesg): not destroying the region, the memory would read garbage", region, online)
+		}
 	}
 	if _, err := mc.Exec(ctx, "cxl", "destroy-region", region); err != nil {
 		return err
 	}
 	mc.logf("destroyed %s", region)
 	return nil
+}
+
+// offlineSettled offlines memory blocks and waits until all of them have
+// stayed offline for settle: a udev rule (for instance 40-redhat.rules of
+// RHEL and its derivatives) may online hot-added blocks after they were
+// offlined, whatever auto_online_blocks says. Blocks that come online are
+// offlined again until timeout.
+func (mc *Manager) offlineSettled(ctx context.Context, blocks []int, settle, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := mc.SetBlocksState(blocks, "offline"); err != nil {
+			return err
+		}
+		stable := time.Now().Add(settle)
+		onlined := false
+		for !onlined && time.Now().Before(stable) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(mc.PollInterval):
+			}
+			for _, b := range blocks {
+				if st, err := readTrim(mc.block(b, "state")); err == nil && st != "offline" {
+					mc.logf("memory%d: %s again after offlining it (auto-onlined by udev?)", b, st)
+					onlined = true
+					break
+				}
+			}
+		}
+		if !onlined {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?", blocks)
+		}
+	}
 }

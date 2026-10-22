@@ -24,7 +24,12 @@
 // A Manager applies the steps to a cgroup with two mechanisms. The
 // nodes of every step are added to cpuset.mems of the cgroup, which
 // confines all allocations of the cgroup to the nodes used so far.
-// Nodes are only added, so memory is never migrated. The nodes of
+// Nodes are only added, so memory is never migrated. When none of the
+// allowed nodes has normal (non-movable) memory, for instance a CXL node
+// whose memory is onlined movable, the nearest node with normal memory
+// is allowed too: unmovable user allocations (pipe buffers, for
+// instance) obey cpuset.mems but cannot use movable memory, and fail
+// with ENOMEM without such a node. The nodes of
 // the current step are set as the memory policy of every thread in
 // the cgroup with mpolinject. The step size is enforced with
 // memory.high through cgmemnotify: the kernel throttles the cgroup
@@ -38,6 +43,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +77,7 @@ var numaUsageCategories = []string{"anon", "shmem"}
 // Manager steers the memory allocations of one cgroup along a plan.
 type Manager struct {
 	cgroupPath string
+	sysRoot    string
 	name       string
 	plan       *Plan
 	log        Logger
@@ -103,6 +111,14 @@ func WithLogger(l Logger) Option {
 	}
 }
 
+// WithSysRoot sets the root of the sysfs where the NUMA nodes are
+// found. The default is /sys.
+func WithSysRoot(root string) Option {
+	return func(m *Manager) {
+		m.sysRoot = root
+	}
+}
+
 // New returns a Manager for the cgroup and the plan. Nothing is
 // written to the cgroup before Start. The plan must not be modified
 // after this call.
@@ -119,6 +135,7 @@ func New(cgroupPath string, plan *Plan, opts ...Option) (*Manager, error) {
 	}
 	m := &Manager{
 		cgroupPath: cgroupPath,
+		sysRoot:    "/sys",
 		name:       filepath.Base(cgroupPath),
 		plan:       plan,
 		log:        log,
@@ -316,6 +333,11 @@ func (m *Manager) allowNodes(nodes []int) error {
 	if !added {
 		return nil
 	}
+	if node, ok := normalMemoryFallback(m.sysRoot, m.allowed, nodes[0]); ok {
+		m.allowed[node] = true
+		m.log.Infof("%s: nodes %s have no normal (non-movable) memory, allowing node %d for unmovable allocations",
+			m.name, m.allowedNodes().Difference(cpuset.New(node)), node)
+	}
 	mems := m.allowedNodes().String()
 	if err := os.WriteFile(filepath.Join(m.cgroupPath, "cpuset.mems"), []byte(mems+"\n"), 0644); err != nil {
 		return fmt.Errorf("write cpuset.mems %q: %w", mems, err)
@@ -332,4 +354,49 @@ func (m *Manager) allowedNodes() cpuset.CPUSet {
 	}
 	sort.Ints(nodes)
 	return cpuset.New(nodes...)
+}
+
+// normalMemoryFallback returns the node with normal (non-movable) memory
+// that is nearest to node near, if none of the allowed nodes has normal
+// memory. ok is false if one has, or if the nodes with normal memory are
+// unknown.
+func normalMemoryFallback(sysRoot string, allowed map[int]bool, near int) (node int, ok bool) {
+	nodeDir := filepath.Join(sysRoot, "devices", "system", "node")
+	b, err := os.ReadFile(filepath.Join(nodeDir, "has_normal_memory"))
+	if err != nil {
+		return 0, false
+	}
+	normal, err := cpuset.Parse(strings.TrimSpace(string(b)))
+	if err != nil || normal.IsEmpty() {
+		return 0, false
+	}
+	for n := range allowed {
+		if allowed[n] && normal.Contains(n) {
+			return 0, false
+		}
+	}
+	// distance of near to every node, in node order; unknown distances
+	// leave the lowest normal node
+	var distances []int
+	if b, err := os.ReadFile(filepath.Join(nodeDir, "node"+strconv.Itoa(near), "distance")); err == nil {
+		for _, f := range strings.Fields(string(b)) {
+			d, err := strconv.Atoi(f)
+			if err != nil {
+				distances = nil
+				break
+			}
+			distances = append(distances, d)
+		}
+	}
+	best, bestDist := -1, 0
+	for _, n := range normal.List() {
+		d := 0
+		if n < len(distances) {
+			d = distances[n]
+		}
+		if best < 0 || d < bestDist {
+			best, bestDist = n, d
+		}
+	}
+	return best, true
 }

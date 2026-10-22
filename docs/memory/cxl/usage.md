@@ -49,6 +49,17 @@ all of it in the e2e test VMs.
 - `/sys/devices/system/memory/auto_online_blocks` set to `offline`: the
   plugin onlines the memory of `numa` slices and pool devices itself, and
   the kernel must never online shared devices as RAM.
+- No udev rule that onlines hot-added memory. `40-redhat.rules` of RHEL,
+  CentOS Stream and Fedora does (`ATTR{state}="online_movable"` for
+  `SUBSYSTEM=="memory"`, `ACTION=="add"`), whatever `auto_online_blocks`
+  says, and races the plugin when it creates a region. Override it with
+  a copy without its "Memory hotadd request" section:
+
+  ```bash
+  sed '/^# Memory hotadd request/,/^LABEL="memory_hotplug_end"/d' \
+      /usr/lib/udev/rules.d/40-redhat.rules > /etc/udev/rules.d/40-redhat.rules
+  udevadm control --reload
+  ```
 
 ### Feature gates
 
@@ -580,7 +591,15 @@ container with only DRAM or only CXL uses that one (`first-dram`,
 `first-cxl`), and one with both interleaves them (`start-interleaved`).
 The steering adds the nodes to the container's `cpuset.mems` as the plan
 reaches them (memory is never migrated), sets the memory policy of the
-container's threads, and throttles each step with `memory.high`.
+container's threads, and throttles each step with `memory.high`. When
+none of the nodes in `cpuset.mems` has normal (non-movable) memory, as
+for a container with only CXL claims whose nodes are onlined movable,
+the nearest node with normal memory (`/sys/devices/system/node/has_normal_memory`,
+by node distance) is added too: unmovable user allocations, such as pipe
+buffers, obey `cpuset.mems` but cannot use movable memory, and would fail
+with ENOMEM (`runc` fails to start the container: `write exec fifo:
+cannot allocate memory`). The memory policy keeps the allocations of the
+container on the CXL node.
 
 Pool devices in mode `numa` are not steered: the container gets the node
 number in `CXL_<KEY>_NODE` and binds its memory to it itself, for example

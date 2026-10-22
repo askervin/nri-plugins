@@ -460,7 +460,9 @@ its read-only erofs filesystem is mounted into the running container at
   `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
   `CONFIG_ND_PFN`, `CONFIG_EROFS_FS` and `CONFIG_BLK_DEV_LOOP`.
 - `/sys/devices/system/memory/auto_online_blocks` should be `offline`,
-  so that the kernel never onlines shared devices as RAM on its own.
+  so that the kernel never onlines shared devices as RAM on its own, and
+  no udev rule may online hot-added memory (`40-redhat.rules` of RHEL and
+  its derivatives does, see [usage.md](usage.md#requirements)).
 
 ## Ordering and failure semantics
 
