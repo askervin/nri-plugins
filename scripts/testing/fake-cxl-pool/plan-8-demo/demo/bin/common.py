@@ -393,6 +393,144 @@ def lease_memory(claim):
 
 
 ###
+### erofs
+###
+
+EROFS_MAGIC = 0xE0F5E1E2
+EROFS_SUPER_OFFSET = 1024
+EROFS_LAYOUTS = {0: "plain", 1: "compressed", 2: "inline", 3: "compressed", 4: "chunk-based"}
+EROFS_TEXT_LEN = 48
+
+
+PFN_INFO = b"NVDIMM_PFN_INFO\0"
+PFN_INFO_OFFSET = 4096
+
+
+def fsdax_data_offset(head):
+    """Return where the block device of an fsdax namespace starts in the device bytes HEAD (from 0), 0 without a pfn info block."""
+    import struct
+    o = PFN_INFO_OFFSET
+    if head[o:o + 16] != PFN_INFO or len(head) < o + 64:
+        return 0
+    # struct nd_pfn_sb: signature, uuid, parent_uuid, flags, version
+    # major and minor, then dataoff (from the start of the namespace).
+    return struct.unpack_from("<Q", head, o + 56)[0]
+
+
+def read_fsdax(f, length):
+    """Return (offset, data): LENGTH bytes of the block device of the fsdax namespace at the start of the open device file F."""
+    f.seek(0)
+    off = fsdax_data_offset(f.read(2 * PFN_INFO_OFFSET))
+    f.seek(off)
+    return off, f.read(length)
+
+
+def read_hex(path):
+    """Return the bytes of a hex dump file; lines starting with # are comments."""
+    with open(path) as f:
+        return bytes.fromhex("".join(l for l in f if not l.lstrip().startswith("#")))
+
+
+def _erofs_inode(data, sb, nid):
+    """Return the fields of the inode NID of the erofs image DATA with the superblock SB."""
+    import struct
+    off = sb["meta_blkaddr"] * sb["blocksize"] + nid * 32
+    if off + 32 > len(data):
+        raise ValueError("inode %d at %d is beyond the data" % (nid, off))
+    fmt, xcount, mode = struct.unpack_from("<HHH", data, off)
+    if fmt & 1 == 0:
+        size, raw = struct.unpack_from("<I4xI", data, off + 8)
+        isize = 32
+    else:
+        if off + 64 > len(data):
+            raise ValueError("inode %d at %d is beyond the data" % (nid, off))
+        size, raw = struct.unpack_from("<QI", data, off + 8)
+        isize = 64
+    xsize = 12 + (xcount - 1) * 4 if xcount else 0
+    return {"nid": nid, "offset": off, "extended": bool(fmt & 1), "layout": (fmt >> 1) & 7, "mode": mode,
+            "size": size, "rawBlkaddr": raw, "tail": off + isize + xsize}
+
+
+def _erofs_data(data, sb, ino, limit):
+    """Return the first LIMIT bytes of the data of inode INO, ValueError if they cannot be read."""
+    bs, size = sb["blocksize"], ino["size"]
+    want = min(size, limit)
+    if ino["layout"] == 0:
+        start = ino["rawBlkaddr"] * bs
+        out = data[start:start + want]
+    elif ino["layout"] == 2:
+        full = size // bs * bs
+        head = data[ino["rawBlkaddr"] * bs:ino["rawBlkaddr"] * bs + min(full, want)] if full else b""
+        out = head + data[ino["tail"]:ino["tail"] + max(0, want - full)]
+    else:
+        raise ValueError("data layout %s of inode %d" % (EROFS_LAYOUTS.get(ino["layout"], ino["layout"]), ino["nid"]))
+    if len(out) < want:
+        raise ValueError("the data of inode %d is beyond the data" % ino["nid"])
+    return out
+
+
+def erofs_files(data):
+    """Return what the start DATA of an erofs image holds: type, files, error, super.
+
+    type is "erofs", "zeros" (DATA is all zeros) or "none" (no erofs
+    magic); files are the entries of the root directory, each {name, size,
+    type, text}: text is the first 48 bytes of a regular file up to its
+    first newline, printable ASCII, "(not readable)" if the data does not
+    hold them; super has the superblock fields; error says what could not
+    be read ("" for nothing).
+    """
+    import struct
+    out = {"type": "none", "files": [], "error": "", "super": {}}
+    if not any(data):
+        out["type"] = "zeros"
+        return out
+    sbo = EROFS_SUPER_OFFSET
+    if len(data) < sbo + 128 or struct.unpack_from("<I", data, sbo)[0] != EROFS_MAGIC:
+        return out
+    out["type"] = "erofs"
+    compat, bits, _, root2, inos = struct.unpack_from("<IBBHQ", data, sbo + 8)
+    blocks, meta, xattr = struct.unpack_from("<III", data, sbo + 36)
+    incompat = struct.unpack_from("<I", data, sbo + 80)[0]
+    root = struct.unpack_from("<Q", data, sbo + 112)[0] if incompat & 0x80 else root2
+    sb = {"magic": "0x%08x" % EROFS_MAGIC, "blocksize": 1 << bits, "blkszbits": bits, "inos": inos,
+          "blocks": blocks, "rootNid": root, "metaBlkaddr": meta, "xattrBlkaddr": xattr,
+          "featureCompat": "0x%x" % compat, "featureIncompat": "0x%x" % incompat}
+    out["super"] = sb
+    geom = {"blocksize": sb["blocksize"], "meta_blkaddr": meta}
+    try:
+        if not 9 <= bits <= 16:
+            raise ValueError("block size 2^%d" % bits)
+        rootino = _erofs_inode(data, geom, root)
+        if rootino["mode"] & 0o170000 != 0o040000:
+            raise ValueError("root inode %d is not a directory" % root)
+        dirents = _erofs_data(data, geom, rootino, sb["blocksize"])
+        if len(dirents) < 12:
+            raise ValueError("root directory without entries")
+        count = struct.unpack_from("<H", dirents, 8)[0] // 12
+        ents = [struct.unpack_from("<QHBx", dirents, 12 * i) for i in range(count)]
+        for i, (nid, nameoff, ftype) in enumerate(ents):
+            end = ents[i + 1][1] if i + 1 < count else len(dirents)
+            name = dirents[nameoff:end].split(b"\0", 1)[0].decode(errors="replace")
+            if name in (".", ".."):
+                continue
+            f = {"name": name, "size": None, "type": {1: "file", 2: "dir", 7: "symlink"}.get(ftype, "other")}
+            try:
+                ino = _erofs_inode(data, geom, nid)
+                f["size"] = ino["size"]
+                if ftype == 1:
+                    text = _erofs_data(data, geom, ino, EROFS_TEXT_LEN).split(b"\n", 1)[0]
+                    f["text"] = "".join(chr(b) if 32 <= b < 127 else "." for b in text)
+            except ValueError as e:
+                out["error"] = out["error"] or str(e)
+                if ftype == 1:
+                    f["text"] = "(not readable)"
+            out["files"].append(f)
+    except (ValueError, struct.error) as e:
+        out["error"] = str(e)
+    return out
+
+
+###
 ### Formatting
 ###
 

@@ -9,9 +9,12 @@ Prints one JSON object with the sections that ARGS ask for:
                  pods in kube-system), allclaims (all namespaces)
   --ns NS        the namespace of the demo
   --node         CXL in the kernel: memdevs (serial, size), regions (mode,
-                 size, memdevs, dax devices with size and driver), and the
-                 processes that map a dax device (/proc/PID/maps), with the
-                 pod uid of their cgroup
+                 size, memdevs, dax devices with size and driver, the fsdax
+                 namespaces of pmem regions with their block device and
+                 whether it has an erofs), the processes of pods that map a
+                 dax device (/proc/PID/maps) or have an fd of a pmem block
+                 device (/proc/PID/fd), with the pod uid of their cgroup, and
+                 the erofs mounts of the pmem block devices (mountinfo)
   --bytes SERIAL the first --len bytes (default 256) of the dax device of
                  the region of the memdev SERIAL, mapped read-only
   --root DIR     prefix of /sys, /proc and /dev (tests)
@@ -29,6 +32,9 @@ import threading
 ROOT = ""
 KUBECTL_TIMEOUT = 3.0
 DRIVER_LABEL = "app.kubernetes.io/name=nri-dra-driver-cxl"
+POOL_MOUNT_DIR = "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/"
+LEASE_FS_DIR = "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/"
+EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"   # 0xE0F5E1E2 little-endian, at offset 1024
 POD_UID = re.compile(r"pod([0-9a-f]{8}[_-][0-9a-f]{4}[_-][0-9a-f]{4}[_-][0-9a-f]{4}[_-][0-9a-f]{12})")
 
 
@@ -130,7 +136,8 @@ def memdevs():
             devs.append({
                 "name": name,
                 "serial": "0x%x" % (int_any(read("%s/%s/serial" % (base, name))) or 0),
-                "size": int_any(read("%s/%s/ram/size" % (base, name), "0")) or 0,
+                "size": (int_any(read("%s/%s/ram/size" % (base, name), "0")) or 0) +
+                        (int_any(read("%s/%s/pmem/size" % (base, name), "0")) or 0),
                 "numaNode": int_any(read("%s/%s/numa_node" % (base, name))),
             })
         m = re.fullmatch(r"endpoint(\d+)", name)
@@ -171,21 +178,80 @@ def regions(endpoints, devs):
                     "driver": link_name("/sys/bus/dax/devices/%s/driver" % d),
                     "targetNode": int_any(read("%s/%s/target_node" % (dax_dir, d))),
                 })
+        if r["mode"] == "pmem":
+            r["namespaces"] = namespaces(name)
         out.append(r)
     return out
 
 
-def mappers():
-    """Return the processes of pods that map a dax device."""
+def blockfs(block):
+    """Return "erofs" if /dev/BLOCK has the erofs magic at 1024, "none" if not, "?" if unreadable."""
+    try:
+        fd = os.open(path("/dev/" + block), os.O_RDONLY)
+        try:
+            magic = os.pread(fd, 4, 1024)
+        finally:
+            os.close(fd)
+    except OSError:
+        return "?"
+    return "erofs" if magic == EROFS_MAGIC else "none"
+
+
+def namespaces(region):
+    """Return the namespaces of the pmem region REGION with their block devices.
+
+    The nd region of a CXL pmem region is the one with the same physical
+    address (resource); the block device of an fsdax namespace is on its
+    holder (pfnX.Y), of a raw one on the namespace itself.
+    """
+    out = []
+    res = read("/sys/bus/cxl/devices/%s/resource" % region)
+    base = "/sys/bus/nd/devices"
+    for ndr in listdir(base):
+        if not re.fullmatch(r"region\d+", ndr) or res is None or read("%s/%s/resource" % (base, ndr)) != res:
+            continue
+        rdir = "%s/%s" % (base, ndr)
+        for ns in listdir(rdir):
+            if not re.fullmatch(r"namespace\d+\.\d+", ns):
+                continue
+            d = "%s/%s" % (rdir, ns)
+            size = int_any(read(d + "/size", "0")) or 0
+            if not size:
+                continue
+            holder = read(d + "/holder") or ""
+            blocks = listdir(d + "/block") or (listdir("%s/%s/block" % (rdir, holder)) if holder else [])
+            mode = read(d + "/mode")
+            n = {"name": ns, "mode": "fsdax" if mode == "memory" else mode, "size": size,
+                 "block": blocks[0] if blocks else None, "major": None, "minor": None, "fs": None}
+            if blocks:
+                dev = (read("/sys/block/%s/dev" % blocks[0]) or "").split(":")
+                if len(dev) == 2:
+                    n["major"], n["minor"] = int_any(dev[0]), int_any(dev[1])
+                sectors = int_any(read("/sys/block/%s/size" % blocks[0]))
+                if sectors:
+                    n["size"] = sectors * 512
+                n["fs"] = blockfs(blocks[0])
+            out.append(n)
+    return out
+
+
+def pod_pids():
+    """Return [(pid, pod uid)] of the processes of pods, this one excluded."""
     out = []
     me = str(os.getpid())
     for pid in listdir("/proc"):
         if not pid.isdigit() or pid == me:
             continue
-        cg = read("/proc/%s/cgroup" % pid, "")
-        m = POD_UID.search(cg or "")
-        if not m:
-            continue
+        m = POD_UID.search(read("/proc/%s/cgroup" % pid, "") or "")
+        if m:
+            out.append((pid, m.group(1).replace("_", "-")))
+    return out
+
+
+def mappers(pids):
+    """Return the processes of PIDS that map a dax device."""
+    out = []
+    for pid, pod_uid in pids:
         try:
             with open(path("/proc/%s/maps" % pid)) as f:
                 maps = f.read()
@@ -201,15 +267,84 @@ def mappers():
                     seen[dev] = perms
         for dev, perms in seen.items():
             out.append({"pid": int(pid), "comm": read("/proc/%s/comm" % pid, "?"),
-                        "podUID": m.group(1).replace("_", "-"), "dax": dev, "perms": perms})
+                        "podUID": pod_uid, "dax": dev, "perms": perms})
+    return out
+
+
+def openers(pids, blocks):
+    """Return the processes of PIDS that have an fd of one of the block devices BLOCKS."""
+    out = []
+    want = {"/dev/" + b: b for b in blocks}
+    for pid, pod_uid in pids:
+        seen = {}
+        for fd in listdir("/proc/%s/fd" % pid):
+            try:
+                target = os.readlink(path("/proc/%s/fd/%s" % (pid, fd)))
+            except OSError:
+                continue
+            if target not in want:
+                continue
+            flags = re.search(r"^flags:\s+([0-7]+)", read("/proc/%s/fdinfo/%s" % (pid, fd), "") or "", re.M)
+            perms = "rw" if flags and int(flags.group(1), 8) & 3 else "ro"
+            if seen.get(want[target]) != "rw":
+                seen[want[target]] = perms
+        for block, perms in seen.items():
+            out.append({"pid": int(pid), "comm": read("/proc/%s/comm" % pid, "?"), "podUID": pod_uid,
+                        "block": block, "perms": perms})
+    return out
+
+
+def unescape(field):
+    """Return a mountinfo FIELD with its octal escapes (\\040) decoded."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def erofs_mounts(blocks):
+    """Return the erofs mounts of the block devices BLOCKS, directly or through a loop device."""
+    out = []
+    want = {"/dev/" + b: b for b in blocks}
+    try:
+        with open(path("/proc/self/mountinfo")) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        parts = line.split(" - ", 1)
+        if len(parts) != 2:
+            continue
+        left, right = parts[0].split(), parts[1].split()
+        if len(left) < 5 or len(right) < 2 or right[0] != "erofs":
+            continue
+        target, source = unescape(left[4]), unescape(right[1])
+        loop = bool(re.fullmatch(r"/dev/loop\d+", source))
+        backing = read("/sys/block/%s/loop/backing_file" % source[len("/dev/"):]) if loop else source
+        if backing not in want:
+            continue
+        opts = (right[2] if len(right) > 2 else "").split(",")
+        m = {"target": target, "source": source, "block": want[backing], "loop": loop,
+             "dax": "dax=always" in opts or "dax" in opts, "kind": "other"}
+        if target.startswith(POOL_MOUNT_DIR):
+            m["kind"] = "node"
+        else:
+            lm = re.fullmatch(re.escape(LEASE_FS_DIR) + r"([^/]+)/([^/]+)", target)
+            if lm:
+                m.update(kind="lease", claimUID=lm.group(1), name=lm.group(2))
+        out.append(m)
     return out
 
 
 def node(errors):
     try:
         devs, endpoints = memdevs()
-        return {"hostname": read("/proc/sys/kernel/hostname", ""), "memdevs": devs,
-                "regions": regions(endpoints, devs), "mappers": mappers()}
+        regs = regions(endpoints, devs)
+        blocks = [n["block"] for r in regs for n in r.get("namespaces") or [] if n.get("block")]
+        pids = pod_pids()
+        out = {"hostname": read("/proc/sys/kernel/hostname", ""), "memdevs": devs,
+               "regions": regs, "mappers": mappers(pids)}
+        if blocks:
+            out["openers"] = openers(pids, blocks)
+            out["mounts"] = erofs_mounts(blocks)
+        return out
     except Exception as e:   # the views show it, the probe must not die
         errors.append("node: %r" % e)
         return None

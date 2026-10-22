@@ -12,7 +12,12 @@ Usage: zoom.py WHAT [ARGS]
   kernel NODE       dmesg lines of cxl, dax, memory
   cxl NODE          cxl list -M -R -X (memdevs, regions, dax)
   pool              the pool server's devices and attachments
-  bytes             a hex dump of the first 256 bytes of the demo device
+  fs                the erofs in the pool device's backing file: the
+                    superblock and the files of the root directory
+  mounts NODE       the node's erofs mounts, loop devices and lease binds
+  bytes [OFFSET]    a hex dump of 256 bytes of the demo device from OFFSET
+                    (default 0); in pool-shared-fs of its block device
+                    (1024 is the erofs superblock)
   last              the full output of the last step
 NODE is vm1 or vm2. The output is plain text; "demo zoom" pages it.
 """
@@ -98,6 +103,42 @@ def zoom_pod(state, args):
                     print("  " + c.short_text(cond["message"], state))
 
 
+def pool_device(state):
+    """Return the pool server's JSON of the demo's pool device."""
+    return c.http_json("%s/api/v1/devices/%s" % (state["POOL_URL"], state.get("POOL_DEVICE", "shared0")))
+
+
+def zoom_fs(state):
+    if not (state.get("DEMO_CASE") or "").startswith("pool"):
+        sys.exit("zoom fs: the file system is in the pool device of pool-shared-fs, not in the %s demo" % state.get("DEMO_CASE"))
+    dev = pool_device(state)
+    with open(dev["path"], "rb") as f:
+        off, data = c.read_fsdax(f, 1 << 20)
+    fs = c.erofs_files(data)
+    print("%s, the backing file %s on the host; its block device (pmem) starts at %d:" % (dev["name"], dev["path"], off))
+    if fs["type"] != "erofs":
+        print("no file system%s" % (" (the first MiB is zeros)" if fs["type"] == "zeros" else " (no erofs magic at 1024)"))
+        return
+    sb = fs["super"]
+    print("erofs superblock at 1024: magic %s, block size %d, inodes %d, blocks %d, root nid %d" % (
+        sb["magic"], sb["blocksize"], sb["inos"], sb["blocks"], sb["rootNid"]))
+    print("  meta_blkaddr %d, xattr_blkaddr %d, feature_compat %s, feature_incompat %s" % (
+        sb["metaBlkaddr"], sb["xattrBlkaddr"], sb["featureCompat"], sb["featureIncompat"]))
+    print("root directory:")
+    for f in fs["files"]:
+        size = "" if f.get("size") is None else " %d bytes" % f["size"]
+        text = ' "%s"' % f["text"] if f.get("text") and f["text"] != "(not readable)" else (" " + f["text"] if f.get("text") else "")
+        print("  %s %s%s%s" % (f["type"], f["name"], size, text))
+    if fs["error"]:
+        print("not readable: " + fs["error"])
+
+
+def zoom_mounts(state, node):
+    zoom_shell(state, node, "echo '== erofs mounts'; findmnt -t erofs -o TARGET,SOURCE,FSTYPE,OPTIONS || echo none; "
+               "echo '== loop devices'; losetup -l; "
+               "echo '== lease binds'; find /var/lib/kubelet/plugins/cxl.nri.io/lease-fs -maxdepth 2 2>&1")
+
+
 def zoom_shell(state, node, script, timeout=30):
     rc, out = c.run_vm(vmdir(state, node), script, timeout)
     print(c.short_text(out.rstrip(), state))
@@ -117,7 +158,7 @@ def main():
         return
     state = c.load_state()
     if state is None:
-        sys.exit("demo not set up: demo setup local|pool")
+        sys.exit("demo not set up: demo setup local|pool|pool-shared-fs")
     what, rest = args[0], args[1:]
     ns = state["NS"]
     if what == "slice":
@@ -155,21 +196,35 @@ def main():
                                                    " exclusive" if o.get("exclusive") else "", o.get("owner") or "-"))
             except OSError as e:
                 print("pool server: %s" % e)
+    elif what == "fs":
+        zoom_fs(state)
+    elif what == "mounts" and rest:
+        zoom_mounts(state, rest[0])
     elif what == "bytes":
-        if state.get("DEMO_CASE") == "pool":
-            dev = c.http_json("%s/api/v1/devices/%s" % (state["POOL_URL"], state.get("POOL_DEVICE", "shared0")))
+        start = c.int_any(rest[0]) if rest else 0
+        if start is None or not 0 <= start <= (2 << 20) - 256:
+            sys.exit("bytes [OFFSET]: OFFSET is 0 to %d" % ((2 << 20) - 256))
+        if state.get("DEMO_CASE") == "pool-shared-fs":
+            dev = pool_device(state)
             with open(dev["path"], "rb") as f:
+                off, data = c.read_fsdax(f, start + 256)
+            data = data[start:]
+            print("%s, the block device in the backing file %s (from %d), from %d:" % (dev["name"], dev["path"], off, start))
+        elif state.get("DEMO_CASE") == "pool":
+            dev = pool_device(state)
+            with open(dev["path"], "rb") as f:
+                f.seek(start)
                 data = f.read(256)
-            print("%s, the backing file %s on the host:" % (dev["name"], dev["path"]))
+            print("%s, the backing file %s on the host, from %d:" % (dev["name"], dev["path"], start))
         else:
-            b = c.run_probe(state["VM2_DIR"], ["--bytes", state["SERIAL"]], timeout=10).get("bytes") or {}
+            b = c.run_probe(state["VM2_DIR"], ["--bytes", state["SERIAL"], "--len", str(start + 256)], timeout=10).get("bytes") or {}
             if not b.get("hex"):
                 sys.exit("cannot read: %s" % b.get("error"))
-            data = bytes.fromhex(b["hex"])
-            print("/dev/%s (%s, %s) on vm2:" % (b.get("dax"), b.get("region"), b.get("memdev")))
+            data = bytes.fromhex(b["hex"])[start:]
+            print("/dev/%s (%s, %s) on vm2, from %d:" % (b.get("dax"), b.get("region"), b.get("memdev"), start))
         for off in range(0, len(data), 16):
             chunk = data[off:off + 16]
-            print("%04x  %-48s %s" % (off, " ".join("%02x" % x for x in chunk),
+            print("%04x  %-48s %s" % (start + off, " ".join("%02x" % x for x in chunk),
                                      "".join(chr(x) if 32 <= x < 127 else "." for x in chunk)))
     else:
         sys.exit(__doc__)

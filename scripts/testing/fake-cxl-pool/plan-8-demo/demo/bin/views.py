@@ -2,12 +2,12 @@
 """The live views of the demo, one per terminal of 50 x 10.
 
 Usage:
-  views.py VIEW [local|pool] [--color|--no-color] [--once] [--interval S]
+  views.py VIEW [local|pool|pool-shared-fs] [--color|--no-color] [--once] [--interval S]
   views.py VIEW --sample DIR [--now EPOCH] [--until EPOCH]
 
 VIEW is t2 (pods and leases), t3 (scheduler: devices and claims), t4
 (nodes: CXL in the kernel), t5 (trace), t6 (memory; the pool server in the
-pool demo). The case defaults to DEMO_CASE of the state of demo setup.
+pool demos). The case defaults to DEMO_CASE of the state of demo setup.
 A view refreshes once a second: a title with a clock and at most 9 lines,
 cut to 50 columns. A failed refresh keeps the last rendering and marks
 the title "stale". --once prints one rendering without color (captures).
@@ -22,6 +22,13 @@ import threading
 import time
 
 import common as c
+
+CASES = ("local", "pool", "pool-shared-fs")
+
+
+def pool_case(state):
+    """Return True if the case of STATE is a pool demo (pool, pool-shared-fs)."""
+    return (state.get("DEMO_CASE") or "").startswith("pool")
 
 
 ###
@@ -130,7 +137,7 @@ def render_t3(data, state, now=None, stale=False):
     pool_slices = [s for s in c.items(k8s.get("slices"))
                    if (s.get("spec") or {}).get("driver") == "cxl-pool.nri.io"
                    and not (s.get("spec") or {}).get("nodeName")]
-    if case == "pool":
+    if pool_case(state):
         status += "  pool %s" % ("ok" if pool_slices else "down")
     rows = [status]
     claims = c.items(k8s.get("claims"), "ResourceClaim")
@@ -139,7 +146,8 @@ def render_t3(data, state, now=None, stale=False):
     for entry in devices:
         drv, pool, where, d = entry
         at = "@" + (c.short_node(where, state) if where else "pool")
-        rows.append("%s %s %s shared" % (d.get("name"), at, c.k8s_size(c.device_attr(d, "size"))))
+        rows.append("%s %s %s shared%s" % (d.get("name"), at, c.k8s_size(c.device_attr(d, "size")),
+                                           " persistent" if c.device_attr(d, "persistent") is True else ""))
         excl, shared, waiting = device_holders(entry, claims)
         for w in excl:
             rows.append("  exclusive: " + w)
@@ -174,7 +182,60 @@ def pod_names(pods_doc):
     return out
 
 
-def node_lines(label, node, names):
+def lease_claim_pods(k8s):
+    """Return lease claim uid -> pod name: the claim's name in the pods' status.resourceClaimStatuses."""
+    by_name = {}
+    for p in c.items(k8s.get("pods"), "Pod"):
+        for st in (p.get("status") or {}).get("resourceClaimStatuses") or []:
+            if st.get("resourceClaimName"):
+                by_name[st["resourceClaimName"]] = c.meta(p).get("name")
+    out = {}
+    for cl in c.items(k8s.get("claims"), "ResourceClaim"):
+        uid, name = c.meta(cl).get("uid"), c.meta(cl).get("name")
+        if uid and name in by_name:
+            out[uid] = by_name[name]
+    return out
+
+
+def pmem_lines(region, node, names, claim_pods):
+    """Return the lines of the fsdax namespaces of a pmem REGION: block device, file system, openers, mounts."""
+    out = []
+    for n in region.get("namespaces") or []:
+        block = n.get("block")
+        if not block:
+            out.append("    %s %s %s, no block device" % (n.get("name"), c.kernel_size(n.get("size")), n.get("mode")))
+            continue
+        fs = {"erofs": "erofs", "none": "no file system"}.get(n.get("fs"), "file system ?")
+        out.append("    %s %s %s" % (block, c.kernel_size(n.get("size")), fs))
+        who = {}
+        for o in node.get("openers") or []:
+            if o.get("block") == block:
+                name = names.get(o.get("podUID")) or "pid %s" % o.get("pid")
+                if who.get(name) != "rw":
+                    who[name] = o.get("perms") or "ro"
+        if who:
+            out += c.wrap_list("    open: ", ["%s %s" % (k, v) for k, v in sorted(who.items())], indent=6)
+        mounts = [m for m in node.get("mounts") or [] if m.get("block") == block]
+        groups = {}
+        for m in mounts:
+            if m.get("kind") == "lease":
+                how = "cached" if m.get("loop") else ("dax" if m.get("dax") else "no dax")
+                groups.setdefault(how, []).append(claim_pods.get(m.get("claimUID")) or (m.get("claimUID") or "?")[:8])
+        if groups:
+            words = []
+            for how in sorted(groups):
+                words += sorted(set(groups[how])) + ["(%s)%s" % (how, "," if how != sorted(groups)[-1] else "")]
+            out += c.wrap_list("    mounted: ", words, indent=6, sep="")
+        elif any(m.get("kind") == "node" for m in mounts):
+            out.append("    mounted: node mount, no lease")
+        elif n.get("fs") == "erofs":
+            out.append("    mounted: -")
+    if not region.get("namespaces"):
+        out.append("    no namespace yet")
+    return out
+
+
+def node_lines(label, node, names, claim_pods=None):
     if node is None:
         return ["%s unreachable" % label]
     devs = node.get("memdevs") or []
@@ -192,6 +253,10 @@ def node_lines(label, node, names):
             continue
         for j, r in enumerate(mine):
             head = "%s %s %s %s" % (pre, d["name"], serial, c.kernel_size(d.get("size"))) if j == 0 else " " * (len(label) + 1)
+            if r.get("mode") == "pmem":
+                out.append("%s  %s pmem %s" % (head, r["name"], c.kernel_size(r.get("size"))))
+                out += pmem_lines(r, node, names, claim_pods or {})
+                continue
             out.append("%s  %s %s" % (head, r["name"], c.kernel_size(r.get("size"))))
             dax_names = []
             for x in r.get("dax") or []:
@@ -217,14 +282,16 @@ def node_lines(label, node, names):
 def render_t4(data, state, now=None, stale=False):
     vm2 = data.get("vm2") or {}
     vm1 = data.get("vm1") or {}
-    names = pod_names((vm2.get("k8s") or {}).get("pods"))
+    k8s = vm2.get("k8s") or {}
+    names = pod_names(k8s.get("pods"))
+    claim_pods = lease_claim_pods(k8s)
     lines = [c.title("NODES: CXL IN THE KERNEL", stale, now)]
     order = [("vm2", vm2), ("vm1", vm1)]
-    if state.get("DEMO_CASE") == "pool":
+    if pool_case(state):
         order.reverse()
     rows = []
     for label, d in order:
-        rows += node_lines(label, d.get("node") if d else None, names)
+        rows += node_lines(label, d.get("node") if d else None, names, claim_pods)
     return lines + c.fit(rows)
 
 
@@ -284,8 +351,9 @@ def render_t6_pool(data, state, now=None, stale=False):
     if not dev:
         rows.append("no device %s: %s" % (state.get("POOL_DEVICE", "?"), pool.get("error", "?")))
         return lines + rows
-    rows.append("%s %s %s  %s" % (dev.get("name"), c.k8s_size(dev.get("size")),
-                                  "shared" if dev.get("shared") else "exclusive", dev.get("state")))
+    rows.append("%s %s %s%s  %s" % (dev.get("name"), c.k8s_size(dev.get("size")),
+                                    "shared" if dev.get("shared") else "exclusive",
+                                    " persistent" if dev.get("persistent") else "", dev.get("state")))
     atts = dev.get("attachments") or []
     words = []
     for a in sorted(atts, key=lambda a: a.get("host") or ""):
@@ -301,17 +369,44 @@ def render_t6_pool(data, state, now=None, stale=False):
         rows.append("  attached: nowhere")
     if dev.get("allocation"):
         rows.append("  owner: " + c.short_text(dev["allocation"].get("owner") or "?", state))
-    if pool.get("hex"):
+    if pool.get("fileError"):
+        rows.append("backing file: " + pool["fileError"])
+    elif state.get("DEMO_CASE") == "pool-shared-fs":
+        rows += fs_lines(pool.get("fs"))
+    elif pool.get("hex"):
         rows.append("at 0: " + text_at(pool["hex"]))
         rows.append(hex_line(pool["hex"]))
-    elif pool.get("fileError"):
-        rows.append("backing file: " + pool["fileError"])
     rows.append("file " + (dev.get("path") or "?"))
     return lines + c.fit(rows)
 
 
+def fs_lines(fs):
+    """Return the lines of the file system FS (common.erofs_files) of the pool device."""
+    if not fs:
+        return ["file system: no data"]
+    if fs.get("type") == "zeros":
+        return ["no file system (zeros)"]
+    if fs.get("type") != "erofs":
+        return ["no file system"]
+    files = fs.get("files") or []
+    if not files:
+        return ["erofs (not readable: %s)" % fs["error"] if fs.get("error") else "erofs: no files"]
+    rows = []
+    for i, f in enumerate(files):
+        if f.get("type") == "dir":
+            what = f["name"] + "/"
+        else:
+            what = "%s %s bytes" % (f["name"], f["size"] if f.get("size") is not None else "?")
+        rows.append(("erofs: " if i == 0 else "       ") + what)
+    first = next((f for f in files if f.get("type") == "file"), None)
+    if first:
+        text = first.get("text")
+        rows.append("  " + (text if text in (None, "(not readable)") else '"%s"' % text))
+    return rows
+
+
 def render_t6(data, state, now=None, stale=False):
-    if state.get("DEMO_CASE") == "pool":
+    if pool_case(state):
         return render_t6_pool(data, state, now, stale)
     return render_t6_local(data, state, now, stale)
 
@@ -340,6 +435,7 @@ class Trace:
         self.who = {}           # lease id -> requester pod
         self.uid_claim = {}     # claim uid prefix -> claim name
         self.claims = {}        # claim name -> (allocated, deleting)
+        self.busy = set()       # lease ids whose busy unmount is shown
 
     def lease_who(self, name):
         """Return a marker of the requester of a companion claim or pod cxl-lease-ID, else NAME.
@@ -455,7 +551,7 @@ class Trace:
         lm = re.match(r"lease broker: lease ([0-9a-f]{8}): (.*)$", msg)
         if lm:
             lid, rest = lm.group(1), lm.group(2)
-            rq = re.match(r"\S+?/([^/\s]+)/\S+ requests .*mode (\w+), shared (\w+), .*read-only (\w+)\)", rest)
+            rq = re.match(r"\S+?/([^/\s]+)/\S+ requests .*mode (\w+), shared (\w+), .*read-only (\w+)[,)]", rest)
             if rq:
                 self.who[lid] = rq.group(1)
                 self.emit(t, "drv", "%s %s asks %s %s %s" % (
@@ -464,8 +560,7 @@ class Trace:
                 return
             who = LEASE_MARK % lid
             if rest.startswith("Ready"):
-                dax = re.search(r'dax "(\S+)"', rest)
-                self.emit(t, "drv", "%s %s: lease Ready%s" % (node, who, " " + os.path.basename(dax.group(1)) if dax else ""))
+                self.emit(t, "drv", "%s %s: lease Ready%s" % (node, who, self.ready_what(rest)))
             elif rest.startswith("releasing"):
                 why = re.match(r"releasing \(([^,]*)", rest)
                 why = (why.group(1) if why else "?").replace("requester ", "")
@@ -477,6 +572,15 @@ class Trace:
                 self.emit(t, "drv", "%s %s: lease released" % (node, who))
             elif level in "EF" or rest.startswith("failed") or "Failed" in rest:
                 self.emit(t, "drv", "%s %s: ERROR %s" % (node, who, rest))
+            return
+        pp = re.search(r'claim \S+?/(\S+): prepared \S+ \(.*mode (\w+), read-only (\w+)\) as \S+ \S+ namespace \S+ block (\S+) access "([^"]*)"', msg)
+        if pp:
+            ro = "ro" if pp.group(3) == "true" else "rw"
+            # An fs device is read-only always: its access fits the 35 columns instead.
+            what = "erofs " + pp.group(5) if pp.group(2) == "fs" else "%s %s" % (os.path.basename(pp.group(4)), ro)
+            self.emit(t, "drv", "%s %s: prepared %s" % (node, self.lease_who(pp.group(1)), what))
+            return
+        if self.on_lease_mount(t, node, msg):
             return
         pm = re.search(r"claim \S+?/(\S+): prepared (\S+) \(.*read-only (\w+)\) as \S+ \S+ dax (\S+)", msg)
         if pm:
@@ -518,12 +622,45 @@ class Trace:
         if level in "EF" and not re.search(DRIVER_NOISE, msg):
             self.emit(t, "drv", "%s ERROR %s" % (node, msg))
 
+    def ready_what(self, rest):
+        """Return what a Ready line of the lease broker names: " block pmem0", " fs hello", " dax0.0"."""
+        block = re.search(r'block "([^"]+)"', rest)
+        path = re.search(r'path "([^"]+)"', rest)
+        dax = re.search(r'dax "([^"]+)"', rest)
+        if block:
+            return " block " + os.path.basename(block.group(1))
+        if path:
+            return " fs " + os.path.basename(path.group(1))
+        return " " + os.path.basename(dax.group(1)) if dax else ""
+
+    def on_lease_mount(self, t, node, msg):
+        """Emit the bind, unbind and busy unmount lines of fs leases in MSG; return True if MSG was one."""
+        bm = re.search(r": lease ([0-9a-f]{8}): bound \S+ at (\S+?)( again)?$", msg)
+        um = re.search(r": lease ([0-9a-f]{8}): unbound (\S+)$", msg)
+        busy = re.search(r"unpreparing claim \S+: lease ([0-9a-f]{8}): unmounting \S+: .*busy", msg)
+        if bm:
+            self.emit(t, "drv", "%s %s: mounted %s%s" % (node, LEASE_MARK % bm.group(1), os.path.basename(bm.group(2)),
+                                                       " again" if bm.group(3) else ""))
+        elif um:
+            self.busy.discard(um.group(1))
+            self.emit(t, "drv", "%s %s: unmounted %s" % (node, LEASE_MARK % um.group(1), os.path.basename(um.group(2))))
+        elif busy:
+            # kubelet retries the Unprepare: one line until the unmount succeeds.
+            if busy.group(1) not in self.busy:
+                self.busy.add(busy.group(1))
+                self.emit(t, "drv", "%s %s: unmount busy, retry" % (node, LEASE_MARK % busy.group(1)))
+        return bool(bm or um or busy)
+
+    def on_kubelet(self, t, tag, text):
+        self.on_lease_mount(t, self.node_label(tag), text)
+
     def on_udev(self, t, tag, text):
-        m = re.match(r"KERNEL\[[\d.]+\]\s+(add|remove|bind|unbind)\s+(\S+) \((cxl|dax)\)", text)
+        m = re.match(r"KERNEL\[[\d.]+\]\s+(add|remove|bind|unbind)\s+(\S+) \((cxl|dax|block)\)", text)
         if not m:
             return
         name = os.path.basename(m.group(2))
-        if not re.fullmatch(r"mem\d+|region\d+|dax\d+\.\d+", name):
+        # pmemN of the cxl subsystem is the memdev's nvdimm, of block the block device.
+        if not re.fullmatch(r"mem\d+|region\d+|dax\d+\.\d+", name) and not (m.group(3) == "block" and re.fullmatch(r"pmem\d+", name)):
             return
         if m.group(1) in ("bind", "unbind"):
             return
@@ -592,7 +729,7 @@ def collect(view, state):
                 out[key] = c.run_probe(vmdir, args)
             except RuntimeError as e:
                 errs.append("%s: %s" % (key, e))
-        ts = [threading.Thread(target=get, args=("vm2", vm2, ["--node", "--k8s", "pods", "--ns", ns])),
+        ts = [threading.Thread(target=get, args=("vm2", vm2, ["--node", "--k8s", "pods,claims", "--ns", ns])),
               threading.Thread(target=get, args=("vm1", vm1, ["--node"]))]
         for t in ts:
             t.start()
@@ -602,12 +739,17 @@ def collect(view, state):
         if len(errs) == 2:
             raise RuntimeError("; ".join(errs))
         return out
-    if view == "t6" and state.get("DEMO_CASE") == "pool":
+    if view == "t6" and pool_case(state):
         dev = state.get("POOL_DEVICE", "shared0")
         out = {"device": c.http_json("%s/api/v1/devices/%s" % (state["POOL_URL"], dev))}
         try:
             with open(out["device"].get("path") or "", "rb") as f:
-                out["hex"] = f.read(256).hex()
+                if state.get("DEMO_CASE") == "pool-shared-fs":
+                    # The erofs is on the block device: after the pfn info block.
+                    out["fsOffset"], data = c.read_fsdax(f, 1 << 20)
+                    out["fs"] = c.erofs_files(data)
+                else:
+                    out["hex"] = f.read(256).hex()
         except OSError as e:
             out["fileError"] = e.strerror or str(e)
         return {"pool": out}
@@ -650,7 +792,7 @@ def loop(view, case, color, interval, once):
             start = time.time()
             state = c.load_state()
             if state is None:
-                lines = [c.title(TITLES[view]), "demo not set up: demo setup local|pool"]
+                lines = [c.title(TITLES[view]), "demo not set up: demo setup " + "|".join(CASES)]
                 last, trace = None, None
             else:
                 if case:
@@ -725,7 +867,7 @@ def main():
         until = float(opt["--until"]) if "--until" in opt else None
         print("\n".join(c.cut(l) for l in sample(view, opt["--sample"], now, until)))
         return
-    case = next((a for a in rest if a in ("local", "pool")), None)
+    case = next((a for a in rest if a in CASES), None)
     loop(view, case, c.use_color(rest) and "--once" not in rest, float(opt.get("--interval", 1)), "--once" in rest)
 
 

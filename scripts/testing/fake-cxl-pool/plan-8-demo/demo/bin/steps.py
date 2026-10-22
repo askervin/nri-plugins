@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The step runner of the presenter terminal (T1).
 
-Usage: steps.py local|pool [N | N- | --auto] [--no-color]
+Usage: steps.py local|pool|pool-shared-fs [N | N- | --auto] [--no-color]
 
 Each step prints its caption and its command as typed, waits for a key
 (Enter run, s skip, z zoom, q quit), runs the command in VM2 (in
@@ -22,6 +22,7 @@ import time
 import common as c
 
 READERS = ["reader-a", "reader-b", "reader-c"]
+CASES = ("local", "pool", "pool-shared-fs")
 
 
 class Step:
@@ -33,8 +34,10 @@ class Step:
 
 
 def steps(case, serial):
-    """Return the steps of CASE (03-demo-design sections 5 and 6), the device SERIAL in the commands."""
+    """Return the steps of CASE (03-demo-design sections 5 and 6, 12-fs-demo-design B3), the device SERIAL in the commands."""
     S = serial
+    if case == "pool-shared-fs":
+        return fs_steps(S)
     where = "vm1" if case == "pool" else "vm2"
     return [
         Step("a writer starts on %s; it has no CXL memory yet" % where,
@@ -57,6 +60,37 @@ def steps(case, serial):
              'kubectl exec reader-a -- /demo/write "overwrite"', check_last_line, expect_fail=True),
         Step("everything goes away", "kubectl delete -f %s/" % case, check_gone),
     ]
+
+
+def fs_steps(S):
+    """Return the steps F1-F9 of pool-shared-fs, the device serial S in the commands."""
+    case = "pool-shared-fs"
+    fs = "/run/cxl/fs/hello"
+    return [
+        Step("a writer starts on vm1; it has no CXL memory yet",
+             "kubectl apply -f %s/writer.yaml" % case, check_running(["writer"])),
+        Step("the writer asks for the device as a block device",
+             "kubectl exec writer -- cxl-request request --serial %s --mode block" % S, check_lease),
+        Step("the writer makes a file system with hello.txt",
+             'kubectl exec writer -- /demo/mkfs "Hello from the writer, $(date +%T)"', check_last_line),
+        Step("three readers start: two on vm2, one on vm1",
+             "kubectl apply -f %s/readers.yaml" % case, check_running(READERS)),
+        Step("readers ask for the file system: they must wait",
+             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial %s --shared --read-only --mode fs --name hello --wait 0s; done" % S,
+             check_leases),
+        Step("the writer is done and releases the device",
+             "kubectl exec writer -- cxl-request release --all", check_readers_get_it),
+        Step("each reader reads hello.txt from its mount",
+             "for r in reader-a reader-b reader-c; do kubectl exec $r -- cat %s/hello.txt; done" % fs, check_cat),
+        Step("a reader tries to write: read-only file system",
+             "kubectl exec reader-a -- sh -c 'echo overwrite > %s/hello.txt'" % fs, check_last_line, expect_fail=True),
+        Step("everything goes away", "kubectl delete -f %s/" % case, check_gone),
+    ]
+
+
+def step_letter(case):
+    """Return the letter of the step numbers of CASE: F for pool-shared-fs, L for the others."""
+    return "F" if case == "pool-shared-fs" else "L"
 
 
 ###
@@ -115,6 +149,9 @@ def lease_words(r):
     words.append("ro" if r.get("readOnly") else "rw")
     if r.get("state") == "Ready":
         words.append("(share)" if r.get("shared") else "(exclusive)")
+    # "-> lease " goes before the words in T1.
+    if r.get("mode") == "fs" and r.get("access") and len(" ".join(words + ["(%s)" % r["access"]])) + 9 <= c.WIDTH:
+        words.append("(%s)" % r["access"])
     return " ".join(words)
 
 
@@ -122,7 +159,9 @@ def check_lease(state, out, rc):
     rs = responses(out)
     if not rs:
         return last_lines(out, 2)
-    return ["lease " + lease_words(rs[-1])] + (["dax " + rs[-1]["dax"]] if rs[-1].get("dax") else [])
+    r = rs[-1]
+    second = next(("%s %s" % (k, r[k]) for k in ("dax", "block", "path") if r.get(k)), None)
+    return ["lease " + lease_words(r)] + ([second] if second else [])
 
 
 def check_leases(state, out, rc):
@@ -169,6 +208,13 @@ def check_reads(state, out, rc):
             "%d hold a read-only mapping" % len(holds)]
 
 
+def check_cat(state, out, rc):
+    texts = last_lines(out, len(READERS))
+    if len(texts) == len(READERS) and len(set(texts)) == 1:
+        return ['%d readers read: "%s"' % (len(texts), texts[0])]
+    return ["readers read different texts!"] + texts[-1:]
+
+
 def check_gone(state, out, rc):
     def cond(k):
         return not c.items(k.get("pods"), "Pod") and not [cl for cl in c.items(k.get("claims")) if c.lease_id(cl)]
@@ -185,6 +231,25 @@ def last_lines(out, n):
 ###
 ### Running
 ###
+
+def result_lines(result, rows=3):
+    """Return the ROWS terminal lines of the RESULT lines: "-> " first, a long one continued after its last fitting ": " or space."""
+    out = []
+    for line in result:
+        prefix = "-> "
+        while line and len(out) < rows:
+            room = c.WIDTH - len(prefix)
+            if len(line) <= room:
+                out.append(prefix + line)
+                break
+            cut = line.rfind(": ", 0, room)
+            cut = cut + 1 if cut > 0 else line.rfind(" ", 0, room + 1)
+            if cut <= 0:
+                cut = room
+            out.append(prefix + line[:cut].rstrip())
+            line, prefix = line[cut:].lstrip(), "   "
+    return [c.cut(l) for l in out[:rows]]
+
 
 def wrap_command(cmd):
     """Return the command as typed, "$ " first, wrapped at 50 columns."""
@@ -227,7 +292,7 @@ def log(text):
 
 def run_step(state, case, n, step, auto, color, total):
     sys.stdout.write("\033[H\033[2J")
-    hdr = c.title("PRESENTER %s L%d/%d" % (case, n, total))
+    hdr = c.title("PRESENTER %s %s%d/%d" % (case, step_letter(case), n, total))
     lines = [hdr] + c.wrap_list("", step.caption.split(" "), indent=2, sep="") + wrap_command(step.command)
     for i, l in enumerate(lines):
         print((c.BOLD + l + c.RESET) if color and i == 0 else l)
@@ -259,7 +324,7 @@ def run_step(state, case, n, step, auto, color, total):
     script = "cd /root/demo && export KUBECONFIG=/root/demo/kubeconfig%s\n%s\n" % (host_tz(), step.command)
     rc, out = c.run_vm(state["VM2_DIR"], script, timeout=300)
     t_cmd = time.time() - t0
-    log("=== %s %s L%d rc=%d %.1fs\n$ %s\n%s\n" % (time.strftime("%H:%M:%S"), case, n, rc, t_cmd, step.command, out))
+    log("=== %s %s %s%d rc=%d %.1fs\n$ %s\n%s\n" % (time.strftime("%H:%M:%S"), case, step_letter(case), n, rc, t_cmd, step.command, out))
     try:
         result = step.check(state, out, rc) if step.check else last_lines(out, 2)
     except Exception as e:   # a broken check must not stop the talk
@@ -268,8 +333,7 @@ def run_step(state, case, n, step, auto, color, total):
     ok = (rc != 0) if step.expect_fail else (rc == 0)
     if not ok and not step.expect_fail:
         result = ["exit %d: " % rc + (last_lines(out, 1)[0])] + result[:1]
-    for l in result[:2]:
-        l = c.cut("-> " + l)
+    for l in result_lines(result):
         print(c.colorize(l) if color else l)
     sys.stdout.write("   %.1f s (command %.1f s)" % (t_all, t_cmd))
     sys.stdout.flush()
@@ -279,7 +343,7 @@ def run_step(state, case, n, step, auto, color, total):
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0] not in ("local", "pool"):
+    if not args or args[0] not in CASES:
         sys.exit(__doc__)
     case = args[0]
     state = c.load_state()
@@ -315,7 +379,8 @@ def main():
             print()
     if auto:
         summary = "%s %s: %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), case,
-                                 " ".join("L%d=%.1fs%s" % (n, t, "" if w == "ok" else "(%s)" % w) for n, w, t in timings))
+                                 " ".join("%s%d=%.1fs%s" % (step_letter(case), n, t, "" if w == "ok" else "(%s)" % w)
+                                          for n, w, t in timings))
         print(summary)
         with open(os.path.join(c.STATE_DIR, "timings.txt"), "a") as f:
             f.write(summary + "\n")

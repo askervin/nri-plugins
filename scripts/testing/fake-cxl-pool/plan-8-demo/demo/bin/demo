@@ -10,19 +10,23 @@ DEMO_SUITE="$DEMO_DIR/e2e/demo.test-suite/dra-driver-cxl"
 export DEMO_DIR
 export DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
 STATE="$DEMO_STATE_DIR/state.env"
+CASES="local|pool|pool-shared-fs"
 
 usage() {
     cat <<EOF
 usage: demo COMMAND
-  setup local|pool         set up the cluster for a demo (minutes)
+  setup CASE               set up the cluster for a demo (minutes);
+                           CASE is local, pool or pool-shared-fs
   teardown                 remove all of it, leave the VMs clean
-  reset local|pool         delete the demo pods and leases, start over
+  reset CASE               delete the demo pods and leases, start over
   commands                 print the commands of the six terminals
-  view t2|t3|t4|t5|t6 [local|pool] [--once] [--no-color]
+  view t2|t3|t4|t5|t6 [CASE] [--once] [--no-color]
                            a live view: t2 pods and leases, t3 scheduler,
                            t4 nodes, t5 trace, t6 memory (pool server)
   local [N|N-|--auto]      the steps of the local demo (T1)
   pool [N|N-|--auto]       the steps of the pool demo (T1)
+  pool-shared-fs [N|N-|--auto]
+                           the steps of the file system demo (T1)
   zoom WHAT [ARGS]         details for questions, "demo zoom help"
   capture LABEL            the views T2-T6 once, to captures/CASE-LABEL-tN.txt
   selftest                 render every view from testdata/, check 50 x 10
@@ -78,7 +82,7 @@ e2e-run() {
 }
 
 print-commands() {
-    local case="${1:-local|pool}"
+    local case="${1:-$CASES}"
     cat <<EOF
 Six terminals of 50 x 10, two columns, three rows:
   T1 (left top)     $DEMO_BIN/demo $case
@@ -92,7 +96,7 @@ EOF
 
 cmd-setup() {
     local case="$1" tar
-    [ "$case" == local ] || [ "$case" == pool ] || die "setup local|pool"
+    [[ "$case" =~ ^($CASES)$ ]] || die "setup $CASES"
     [ ! -f "$STATE" ] || die "a demo ($(state-get DEMO_CASE)) is set up already: demo teardown first"
     # shellcheck disable=SC2012 # the newest by mtime, like the e2e framework
     tar=$(ls -1t "$NRI_SRC"/build/images/nri-dra-driver-cxl-image-*.tar 2>/dev/null | head -n 1)
@@ -160,7 +164,7 @@ main() {
         reset) cmd-reset "$@";;
         commands) print-commands "$(state-get DEMO_CASE)";;
         view) exec python3 "$DEMO_BIN/views.py" "$@";;
-        local|pool) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
+        local|pool|pool-shared-fs) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
         zoom) cmd-zoom "$@";;
         capture) cmd-capture "$@";;
         selftest) exec python3 "$DEMO_BIN/selftest.py" "$@";;

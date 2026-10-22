@@ -7,8 +7,12 @@
 #   can be detached;
 # - the trace stopped, its summary in the output of this test;
 # - the driver, the controller, the namespace (dra-uninstall);
+# - no erofs mounts, lease binds or loop devices over pmem left in the
+#   VMs: else a WARNING with the manual cleanup, and the pool device stays
+#   attached (releasing a region under a live erofs can crash the guest);
 # - the local device detached (dra-local-detach), the pool server stopped
-#   (pool-cleanup), node labels and /root/demo removed.
+#   (pool-cleanup), the files of a persistent pool device removed
+#   (POOL_DEVICE_FILES of the state), node labels and /root/demo removed.
 # Works without the state file of setup too (a setup that failed half
 # way): then it cleans what it finds.
 
@@ -20,6 +24,7 @@ DRA_NS=cxl-demo
 DEMO_CASE=unknown
 TRACE_DIR=""
 POOL_SERVER_PID=""
+POOL_DEVICE_FILES=""
 if [ -f "$state" ]; then
     # The views stop asking when the state is gone.
     mv "$state" "$state.teardown" || error "cannot move $state"
@@ -84,9 +89,49 @@ fi
 dra-state-cleanup "$VM2"
 dra-state-cleanup "$VM1"
 
+echo "### demo teardown: no erofs mounts left in the VMs"
+held=""
+for vm in "$VM2" "$VM1"; do
+    label=$(pool-vm-label "$vm")
+    if ! dra-fs-mounts "$vm" >/dev/null; then
+        held+="
+  $label: cannot read its mounts"
+    elif [ "$COMMAND_OUTPUT" != "[]" ]; then
+        held+="
+  $label: mounts $COMMAND_OUTPUT"
+    fi
+    if ! dra-lease-fs-mounts "$vm" >/dev/null; then
+        held+="
+  $label: cannot read its lease mounts"
+    elif [ "$COMMAND_OUTPUT" != "[]" ]; then
+        held+="
+  $label: lease mounts $COMMAND_OUTPUT"
+    fi
+    if ! loops=$(dra-pmem-loops "$vm"); then
+        held+="
+  $label: cannot list its loop devices"
+    elif [ -n "$loops" ]; then
+        held+="
+  $label: loop devices over pmem: $(tr '\n' ' ' <<< "$loops")"
+    fi
+done
+if [ -n "$held" ]; then
+    # Releasing a region under a live erofs can crash the guest.
+    echo "demo teardown: WARNING: a pool device is still mounted, not releasing or detaching it:$held
+  To clean up by hand in each VM above: stop what uses the mount (fuser -vm MOUNT),
+  umount MOUNT (never umount -l; the lease mounts first), check that no /sys/block/loop*/loop/backing_file
+  names the pmem device, then run demo teardown again."
+    error "demo teardown: the pool device is still mounted, see the WARNING above"
+fi
+
 echo "### demo teardown: the pool server"
 if [ -n "$POOL_SERVER_PID" ]; then
     pool-cleanup
+fi
+if [ -n "$POOL_DEVICE_FILES" ]; then
+    # shellcheck disable=SC2086 # the files are separated by spaces
+    rm -f $POOL_DEVICE_FILES || error "cannot remove $POOL_DEVICE_FILES"
+    echo "demo teardown: removed $POOL_DEVICE_FILES"
 fi
 pool-port-busy && error "port $POOL_PORT is still busy: a fake-cxl-pool-server that the demo did not start? stop it"
 dra-vm-command "$VM2" "kubectl label node $POOL_VM2_NAME cxl-demo/node- ; kubectl label node $POOL_VM1_NAME cxl-demo/node- ; rm -rf /root/demo; true"

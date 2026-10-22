@@ -2,17 +2,21 @@
 """The demo tools in the containers: the memory of a lease, through its fd.
 
 ConfigMap demo-tools mounts this at /demo with the wrappers write, read,
-hold and env:
+hold, env and mkfs:
   /demo/write TEXT   write TEXT and a NUL at offset 0 of the lease's memory,
                      keep the mapping DEMO_HOLD seconds (default 3)
   /demo/read         print the NUL-terminated string at offset 0
   /demo/hold         keep a read-only mapping in the background until
                      /demo/hold --stop (or the pod ends)
   /demo/env          the CXL_* variables of every lease of the pod
-The lease is the newest dax lease of the container (cxl-request list);
-DEMO_LEASE=ID picks one. The fd comes from "cxl-request fd --lease ID
---exec": the container needs no device node. A read-only lease's fd
-refuses a writable mapping: write prints "refused: read-only (EACCES)".
+  /demo/mkfs TEXT    make an erofs with hello.txt (TEXT and a newline) with
+                     mkfs.erofs and write it at offset 0 of the block device
+                     of a block lease, keep the fd DEMO_HOLD seconds
+The lease is the newest dax lease of the container (block lease for mkfs,
+cxl-request list); DEMO_LEASE=ID picks one. The fd comes from
+"cxl-request fd --lease ID --exec": the container needs no device node. A
+read-only lease's fd refuses a writable mapping: write prints "refused:
+read-only (EACCES)"; mkfs prints "refused: read-only (EBADF)".
 """
 import errno
 import json
@@ -27,6 +31,11 @@ FD = 3
 MAP_LEN = 2 << 20     # devdax maps in multiples of its 2 MiB alignment
 STOP = "/tmp/demo-hold.stop"
 HOLD_LOG = "/tmp/demo-hold.log"
+FS_DIR = "/tmp/fs"
+FS_FILE = "hello.txt"
+FS_IMAGE = "/tmp/hello.erofs"
+HINTS = {"dax": "no dax lease: cxl-request request ... first",
+         "block": "no block lease: cxl-request request --mode block first"}
 
 
 def leases():
@@ -39,19 +48,19 @@ def leases():
         sys.exit("cxl-request list: unexpected output")
 
 
-def lease():
-    """Return the id of the lease to use: DEMO_LEASE or the newest dax lease."""
+def lease(modes=("dax",)):
+    """Return the id of the lease to use: DEMO_LEASE or the newest lease of one of MODES."""
     if os.environ.get("DEMO_LEASE"):
         return os.environ["DEMO_LEASE"]
-    dax = [l for l in leases() if l.get("mode") == "dax" and l.get("state") not in ("Failed", "Released", "Releasing")]
-    if not dax:
-        sys.exit("no dax lease: cxl-request request ... first")
-    return dax[-1]["lease"]
+    found = [l for l in leases() if l.get("mode") in modes and l.get("state") not in ("Failed", "Released", "Releasing")]
+    if not found:
+        sys.exit(HINTS.get(modes[0], "no %s lease" % modes[0]))
+    return found[-1]["lease"]
 
 
-def with_fd(op, *args, background=False):
-    """Run this tool's internal OP with the lease's fd as fd 3."""
-    cmd = ["cxl-request", "fd", "--lease", lease(), "--wait", "120s", "--exec",
+def with_fd(op, *args, background=False, modes=("dax",)):
+    """Run this tool's internal OP with the fd of a lease of MODES as fd 3."""
+    cmd = ["cxl-request", "fd", "--lease", lease(modes), "--wait", "120s", "--exec",
            sys.executable, os.path.abspath(__file__), op] + list(args)
     if not background:
         os.execvp(cmd[0], cmd)
@@ -113,6 +122,43 @@ def do_hold():
     print("released the mapping", flush=True)
 
 
+def do_mkfs(text):
+    """Make the erofs image with hello.txt, then write it through the fd of a block lease."""
+    os.makedirs(FS_DIR, exist_ok=True)
+    with open(os.path.join(FS_DIR, FS_FILE), "w") as f:
+        f.write(text + "\n")
+    if os.path.exists(FS_IMAGE):
+        os.unlink(FS_IMAGE)
+    p = subprocess.run(["mkfs.erofs", "-b4096", "-Enoinline_data", FS_IMAGE, FS_DIR],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if p.returncode != 0:
+        sys.stdout.write(p.stdout.decode(errors="replace"))
+        sys.exit("mkfs.erofs failed with exit status %d" % p.returncode)
+    with_fd("_flash", FS_IMAGE, modes=("block",))
+
+
+def do_flash(image):
+    """Write IMAGE at offset 0 of fd 3, fsync it, and keep the fd DEMO_HOLD seconds."""
+    with open(image, "rb") as f:
+        data = f.read()
+    try:
+        done = 0
+        while done < len(data):
+            done += os.pwrite(FD, data[done:], done)
+        os.fsync(FD)
+    except OSError as e:
+        if e.errno == errno.EBADF:
+            print("refused: read-only (EBADF)")
+            sys.exit(1)
+        raise
+    with open(os.path.join(FS_DIR, FS_FILE)) as f:
+        text = f.read().rstrip("\n")
+    print('wrote erofs (%d bytes) with %s: "%s"' % (len(data), FS_FILE, text))
+    sys.stdout.flush()
+    time.sleep(float(os.environ.get("DEMO_HOLD", "3")))
+    os.close(FD)
+
+
 def do_env():
     for l in leases():
         print("lease %s %s" % (l.get("lease"), l.get("state")))
@@ -134,6 +180,10 @@ def main():
         with_fd("_hold", background=True)
     elif op == "env":
         do_env()
+    elif op == "mkfs" and len(args) == 2:
+        do_mkfs(args[1])
+    elif op == "_flash" and len(args) == 2:
+        do_flash(args[1])
     elif op == "_write":
         do_write(args[1])
     elif op == "_read":

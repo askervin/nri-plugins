@@ -3,12 +3,16 @@ CXL memory sharing: the live demo (presenter's guide)
 One sentence: "a container asks for CXL memory while it runs; the
 scheduler gives it a share of a device only when the rules allow; the
 node maps the device into the container; every sharer sees the same
-bytes; readers cannot write". Two scripts tell it, each with one writer
+bytes; readers cannot write". Three scripts tell it, each with one writer
 and three readers:
   local  all four pods on vm2 share vm2's own CXL memory device (1Gi);
   pool   the writer on vm1, readers on vm2 and vm1 share shared0 (256Mi)
-         of the memory pool, hot-plugged into the nodes as needed.
-The design is ../03-demo-design.txt; this file says how to run it.
+         of the memory pool, hot-plugged into the nodes as needed;
+  pool-shared-fs  the same pods and nodes, shared0 persistent: the writer
+         puts an erofs with hello.txt on it as a block device, the readers
+         get the file system mounted into their running containers.
+The design is ../03-demo-design.txt (pool-shared-fs: ../12-fs-demo-design.txt);
+this file says how to run it.
 "demo" below is bin/demo of this directory (alias demo=$PWD/bin/demo).
 
 1. Prerequisites (once, before the day)
@@ -27,32 +31,47 @@ The design is ../03-demo-design.txt; this file says how to run it.
 - Nothing else runs on the VMs: no run_tests.sh, no other
   fake-cxl-pool-server (port 9909). demo refuses to start a setup while
   run_tests.sh runs.
-- Host tools: bash, python3, ssh, curl (nothing to install).
+- Host tools: bash, python3, ssh, curl (nothing to install); for
+  pool-shared-fs also docker (as for the driver image): setup builds the
+  demo image localhost/cxl-demo-tools from image/Dockerfile
+  (python:3-alpine with erofs-utils, through the proxies of
+  ~/.docker/config.json) and imports it into vm1 and vm2. The first setup
+  takes 20-40 s longer for that; the image is kept on the host and in the
+  VMs (the import is skipped when they have it).
 - Desk check of this directory: "demo selftest" renders every view from
   testdata/ and checks that it fits 50 x 10.
 
 2. Setup, teardown, reset
 -------------------------
-  demo setup local      (or: demo setup pool) about 2-4 minutes
+  demo setup local      (or: demo setup pool, demo setup pool-shared-fs)
+                        about 2-4 minutes
   demo teardown         about 1-2 minutes; leaves all VMs clean
-  demo reset local      (or pool) deletes the demo pods and their leases:
-                        start the script again from step 1
+  demo reset local      (or pool, pool-shared-fs) deletes the demo pods and
+                        their leases: start the script again from step 1
 Setup runs the e2e framework (run_tests.sh on e2e/demo.test-suite, whose
 helper files are links to memory.test-suite/dra-driver-cxl): it checks
 the cluster shape (now three nodes; vm0 is the second worker, pool A
 reaches vm1 and vm2 only), starts fake-cxl-pool-server on the host
-(local: vm2's local device attached; pool: the device shared0), installs
+(local: vm2's local device attached; pool: the device shared0;
+pool-shared-fs: shared0 persistent, its files /tmp/fake-cxl-pool/shared0.raw
+and shared0.lsa removed first, so that it has no file system), installs
 the driver on every node with helm (local: sharedDevices: [<the serial
-of vm2's device>]), starts the pool controller, pulls the images, creates the
-ConfigMap demo-tools (/demo/write, /demo/read, /demo/hold, /demo/env in
-the pods), copies the manifests to /root/demo in vm2, labels the nodes
+of vm2's device>]), starts the pool controller, pulls the images
+(pool-shared-fs: imports the demo image), creates the ConfigMap demo-tools
+(/demo/write, /demo/read, /demo/hold, /demo/env, /demo/mkfs in the pods),
+copies the manifests to /root/demo in vm2, labels the nodes
 cxl-demo/node=vm1|vm2 and starts the trace. Everything stays up until
 teardown; run/state.env says what runs. Its log: run/test90-demo-setup.log.
 One demo at a time: to switch, "demo teardown" then "demo setup pool".
 A failed setup cleans up after itself (the EXIT traps of the e2e helpers).
 Teardown unconfigures vm2's shared device first (the driver restarted
 without sharedDevices destroys its region), then removes the rest and
-checks that neither VM has CXL memory devices left.
+checks that neither VM has CXL memory devices left. Before it detaches a
+pool device it checks that no erofs mount, lease bind or loop device over
+pmem is left in the VMs: if one is, it stops with a WARNING and the
+manual cleanup (releasing a region under a live erofs can crash the
+guest); "demo teardown" again goes on from there. It removes the files of
+the persistent shared0 at the end.
 
 3. The screen: 2 columns x 3 rows, each terminal 50 x 10
 --------------------------------------------------------
@@ -67,7 +86,7 @@ checks that neither VM has CXL memory devices left.
   +------------------------+  +------------------------+
 Open six terminals, size each to 50 columns x 10 rows (a title line
 ends exactly at column 50), and start (demo commands prints them):
-  T1  demo local          (or: demo pool)
+  T1  demo local          (or: demo pool, demo pool-shared-fs)
   T2  demo view t2
   T3  demo view t3
   T4  demo view t4
@@ -80,6 +99,8 @@ Ready/allocated, yellow waiting, red refused. Ctrl-C stops a view.
 Reading order: the right column from the application down to the memory
 (T2 -> T4 -> T6), the left column from the action down to why (T1 -> T3
 -> T5). Small screen (2 x 2): T1, T2, T3 and T4; zoom the rest.
+In pool-shared-fs the steps are F1-F9 (T1 title "F3/9"), L1-L9 in the
+other two.
 
 Emacs alternative (requires installed multi-vterm and a working vterm):
 from this demo directory, launch
@@ -184,6 +205,82 @@ L7 T4 "mapped: reader-c ro" on vm1, "reader-a ro, reader-b ro" on vm2.
 L9 the device is detached from both nodes: T6 "attached: nowhere",
    state free, the bytes still there.
 
+6b. Script 3: pool-shared-fs (shared0 persistent, 256Mi, serial 0xc1ae0001)
+-----------------------------------------------------------------------------
+The pool script once more, with a file system instead of bytes at 0: the
+writer gets the device as a block device (an fd of /dev/pmem0, no device
+node), makes an erofs with hello.txt and writes it into the device; the
+readers ask for the file system read-only and find it mounted at
+/run/cxl/fs/hello in their running containers. The pods use the demo
+image (mkfs.erofs). S = 0xc1ae0001, the writer on vm1, reader-a and
+reader-b on vm2, reader-c on vm1.
+F1 "a writer starts on vm1; it has no CXL memory yet"
+   $ kubectl apply -f pool-shared-fs/writer.yaml
+   T2 writer Running, lease "-". T3 "shared0 @pool 256Mi shared
+   persistent", "no claims" (persistent: the pool keeps the bytes in a
+   file, the node sees a pmem device). T4 no CXL memory. T6 free,
+   "attached: nowhere", "no file system (zeros)".
+F2 "the writer asks for the device as a block device"
+   $ kubectl exec writer -- cxl-request request --serial S --mode block
+   T1 "lease L Ready block rw (exclusive)", "block /dev/pmem0". T2 writer
+   "block rw excl". T3 "exclusive: writer rw". T4 vm1 "mem0 c1ae0001
+   256M  region0 pmem 256M", "pmem0 254M no file system" (on a re-run
+   before teardown: "erofs", the device kept the last one). T5 "writer
+   asks block rw excl", ctrl and pool attach lines, kern "vm1 add mem0",
+   then "vm1 add region0 pmem0", drv "writer: prepared pmem0 rw",
+   "writer: lease Ready block pmem0". T6 "attached: vm1 exclusive". The
+   lease takes about 5.5 s (attach, region, namespace).
+   Say: the lease is a claim of the whole device (exclusive); the node
+   made a pmem region and a namespace; the writer got an fd of the block
+   device, no device node in the container.
+F3 "the writer makes a file system with hello.txt"
+   $ kubectl exec writer -- /demo/mkfs "Hello from the writer, $(date +%T)"
+   T1 'wrote erofs (8192 bytes) with hello.txt: "Hello from the writer,
+   12:01:12"'. T4 "pmem0 254M erofs", "open: writer rw" for 3 seconds
+   (the tool keeps the fd that long), "mounted: -". T6 "erofs: hello.txt
+   32 bytes" and the text: read from the backing file on the host, the
+   bytes are in the pool (the block device starts 2 MiB into the device,
+   after the namespace's pfn info block; "demo zoom fs" says where). Say: mkfs.erofs writes a file; the tool copies
+   it through the fd (/proc/self/fd/3 cannot be opened again in the
+   container).
+F4 "three readers start: two on vm2, one on vm1"
+   $ kubectl apply -f pool-shared-fs/readers.yaml
+F5 "readers ask for the file system: they must wait"
+   $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request
+     request --serial S --shared --read-only --mode fs --name hello
+     --wait 0s; done
+   T2 three "waiting". T3 "waiting: reader-a reader-b reader-c". T5
+   "reader-a waits: cannot allocate" three times. Pause: the writer holds
+   the device exclusively. Zoom "claim reader-a" (class
+   cxl-pool-persistent, shares "1", mode fs, readOnly, access direct).
+F6 "the writer is done and releases the device"
+   $ kubectl exec writer -- cxl-request release --all
+   T1 "readers' leases Ready after N s". T3 "shared: reader-a ro,
+   reader-b ro, reader-c ro". T2 three "fs ro share". T4 both nodes
+   "region0 pmem", "pmem0 254M erofs", "mounted: reader-c (dax)" on vm1,
+   "mounted: reader-a reader-b (dax)" on vm2. T5 the detach from vm1, the
+   attach to vm2 and vm1, "reader-a: prepared erofs direct", "reader-a:
+   mounted hello", "reader-a: lease Ready fs hello". T6 "attached: vm1,
+   vm2", the file system still there.
+   Say: each node mounted the erofs once (dax=always: the pages of
+   hello.txt are the device's memory) and bound it into the running
+   containers at /run/cxl/fs/hello. Zooms "mounts vm2", "fs".
+F7 "each reader reads hello.txt from its mount"
+   $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cat
+     /run/cxl/fs/hello/hello.txt; done
+   T1 '3 readers read: "Hello from the writer, 12:01:12"'.
+F8 "a reader tries to write: read-only file system"
+   $ kubectl exec reader-a -- sh -c 'echo overwrite > /run/cxl/fs/hello/hello.txt'
+   T1 "sh: can't create /run/cxl/fs/hello/hello.txt: Read-only file
+   system" (the step expects the failure). T6 unchanged.
+F9 "everything goes away"
+   $ kubectl delete -f pool-shared-fs/
+   T2 empty. T3 "no claims". T4 both nodes "no CXL memory". T6 "attached:
+   nowhere", free, "erofs: hello.txt" still there: the file system stays
+   in the pool's device for the next reader. If a reader still has a file
+   of the mount open, T5 says "reader-a: unmount busy, retry" until it is
+   closed (kubelet retries the release).
+
 7. Zooms (in T1: z, or any terminal: demo zoom ...), paged with less
 --------------------------------------------------------------------
   demo zoom slice [DEVICE]   the ResourceSlice entry: attributes, the
@@ -198,7 +295,16 @@ L9 the device is detached from both nodes: T6 "attached: nowhere",
   demo zoom kernel vm1|vm2   dmesg lines of cxl, dax, memory
   demo zoom cxl vm1|vm2      cxl list -M -R -X (memdevs, regions, dax)
   demo zoom pool             the pool server's devices and attachments
-  demo zoom bytes            hex dump of the first 256 bytes
+  demo zoom fs               the erofs in the pool device's backing file:
+                             superblock (magic, block size, inodes,
+                             blocks, root nid) and the files of the root
+                             directory with size and first bytes
+  demo zoom mounts vm1|vm2   the node's erofs mounts (findmnt), loop
+                             devices (losetup -l) and lease binds
+                             (lease-fs/<lease claim uid>/<name>)
+  demo zoom bytes [OFFSET]   hex dump of 256 bytes from OFFSET (default 0);
+                             in pool-shared-fs of the block device in the
+                             backing file (1024 is the erofs superblock)
   demo zoom last             the full output of the last step
 
 8. When something hangs or goes wrong
@@ -217,6 +323,10 @@ L9 the device is detached from both nodes: T6 "attached: nowhere",
   scheduler's reason), "demo zoom driver vm2".
 - Start over in front of the audience: "demo reset local", then
   "demo local" (from L1).
+- pool-shared-fs: a reader's lease stays "releasing" and T5 says "unmount
+  busy, retry": a process of the reader has a file of /run/cxl/fs/hello
+  open; it ends with the pod. "demo zoom mounts vm2" shows the mounts.
+  Setup says "docker is needed ...": install or start docker on the host.
 - Anything else: "demo teardown" and "demo setup local" (minutes);
   a teardown that failed can be run again. If a VM is left with CXL
   memory devices, test00-up of that VM (or pool-vm-reset in any e2e
@@ -228,6 +338,11 @@ L9 the device is detached from both nodes: T6 "attached: nowhere",
   local L1-L9: 2.2 0.4-1.1 3.9 2.0 0.7 2.2 2.9-3.1 0.5 2.4-3.1 s
   pool  L1-L9: 2.0-2.2 5.6 4.0 2.0 0.7 10.3 3.2 0.5 1.6-2.0 s
   (L3 includes the writer's 3 s hold; pool L6 the attach to vm2.)
+  pool-shared-fs (rehearsals 2026-10-22, three --auto runs, s):
+        F1-F9: 2.0-2.2 5.6-5.8 3.8-4.0 2.0 0.7-0.8 10.1-10.3 0.6-0.7 0.3-0.4 1.6-2.8
+  (F3 includes the writer's 3 s hold of the fd; F6 the detach from vm1 and
+  the attach to vm2 and vm1.) A whole --auto run 73 s; setup 63-67 s
+  (the demo image cached), teardown 38 s. No view went stale.
   The four ssh views (T2, T3, T4, T6) at 1 s cost VM2 about 1.1 of its 8
   CPUs (idle: 0.08), mostly kubectl; no refresh went stale during the
   rehearsals. "demo view tN --interval 2" halves a view's share.
@@ -242,9 +357,12 @@ L9 the device is detached from both nodes: T6 "attached: nowhere",
                       over ssh stdin, one call per node per refresh)
   bin/steps.py        the step runner (T1), bin/zoom.py the zooms
   bin/tools/          the tools in the pods (ConfigMap demo-tools)
+  image/Dockerfile    the demo image of pool-shared-fs (mkfs.erofs)
   bin/selftest.py     the desk check; testdata/ its samples
                       (make-samples.py writes them; captured-test13/ is
-                      a trace and objects of a real e2e run)
-  manifests/local, manifests/pool  the pods and the lease claim template
+                      a trace and objects of a real e2e run;
+                      hello.erofs.hex a real image of mkfs.erofs)
+  manifests/local, manifests/pool, manifests/pool-shared-fs
+                      the pods and the lease claim template
   e2e/                the setup (test90) and teardown (test91) tests
   run/                state, logs and timings of the current demo
