@@ -7,6 +7,7 @@ ARG BUILD_VERSION
 ARG BUILD_BUILDID
 ARG DEBUG=0
 ARG NORACE=0
+ARG COVER=0
 ARG SKIP_LICENSES=0
 
 WORKDIR /go/builder
@@ -21,20 +22,17 @@ COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=cache,target="/root/.cache/go-build" \
-    make install-go-licenses
-
-RUN --mount=type=cache,target=/go/pkg/mod/ \
-    --mount=type=cache,target="/root/.cache/go-build" \
     make IMAGE_VERSION=${IMAGE_VERSION} \
          BUILD_VERSION=${BUILD_VERSION} \
          BUILD_BUILDID=${BUILD_BUILDID} \
          V=$DEBUG \
          DEBUG=$DEBUG \
          NORACE=$NORACE \
+         COVER=$COVER \
          OTHER_IMAGE_TARGETS="" \
          BINARIES=cxl-request \
          PLUGINS=nri-dra-driver-cxl \
-         clean build-plugins-static build-binaries-static licenses
+         clean build-plugins-static build-binaries-static
 
 # Build the cxl, daxctl and ndctl tools of ndctl. They are dynamically linked
 # (Debian has no static libudev), so collect them with their whole shared
@@ -104,7 +102,7 @@ FROM gcr.io/distroless/static
 COPY --from=builder /go/builder/build/bin/nri-dra-driver-cxl /bin/nri-dra-driver-cxl
 COPY --from=builder /go/builder/build/bin/cxl-request /bin/cxl-request
 COPY --from=builder /go/builder/build/licenses/nri-dra-driver-cxl/ /licenses/nri-dra-driver-cxl/
-COPY --from=builder /go/builder/build/licenses/cxl-request/ /licenses/cxl-request/
+COPY build/licenses/nri-dra-driver-cxl/ /licenses/nri-dra-driver-cxl/
 COPY --from=ndctl /rootfs/ /
 
 ENTRYPOINT ["/bin/nri-dra-driver-cxl"]
