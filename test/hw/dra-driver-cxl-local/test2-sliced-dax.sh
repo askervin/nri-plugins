@@ -15,9 +15,11 @@
 # reader-a and reader-b read (also live, while they keep it mapped), the
 # whole slice end to end with a pattern, that the ro slice cannot be
 # written and is zeroed, that dax slices add nothing to the NUMA node of
-# numa slices, that plain has no device node, that a new slice on the
-# memory of a released one is zeroed, and that the region goes away with
-# the last claim.
+# numa slices, that numa-c is the only container of the node with the
+# NUMA node of its slice in its effective mems (the dax pods, plain and the
+# kube-system containers do not have it), that plain has no device node,
+# that a new slice on the memory of a released one is zeroed, and that the
+# region goes away with the last claim.
 #
 # Needs the driver deployed with "deploy.sh sliced".
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -72,6 +74,7 @@ check "numa-c: CXL_<KEY>_MODE=numa on node $N" test "$(pod_env_value numa-c MODE
 mib=$(node_mib "$N")
 check "node $N has only the 2Gi numa slice, dax slices add nothing (MemTotal $mib MiB)" \
     test "$mib" -le 2048 -a "$mib" -ge $((2048 - 128))
+check_fenced "$N" numa-c
 
 log "the new slices are zeroed"
 for p in writer ro; do

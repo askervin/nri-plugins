@@ -36,11 +36,23 @@ type ltStub struct {
 	updates []string // "<id> mems=<mems>"
 	fail    bool     // report the update as failed
 	err     error    // return this error
+	// failIDs are the containers whose updates are reported failed.
+	failIDs map[string]bool
+	// entered gets a value when UpdateContainers is called, and gate
+	// blocks it until closed (nil: neither).
+	entered chan struct{}
+	gate    chan struct{}
 }
 
 func (s *ltStub) Start(context.Context) error { return nil }
 func (s *ltStub) Stop()                       {}
 func (s *ltStub) UpdateContainers(u []*api.ContainerUpdate) ([]*api.ContainerUpdate, error) {
+	if s.entered != nil {
+		s.entered <- struct{}{}
+	}
+	if s.gate != nil {
+		<-s.gate
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {
@@ -49,10 +61,15 @@ func (s *ltStub) UpdateContainers(u []*api.ContainerUpdate) ([]*api.ContainerUpd
 	if s.fail {
 		return u, nil
 	}
+	var failed []*api.ContainerUpdate
 	for _, cu := range u {
+		if s.failIDs[cu.GetContainerId()] {
+			failed = append(failed, cu)
+			continue
+		}
 		s.updates = append(s.updates, cu.GetContainerId()+" mems="+cu.GetLinux().GetResources().GetCpu().GetMems())
 	}
-	return nil, nil
+	return failed, nil
 }
 
 func (s *ltStub) taken() []string {

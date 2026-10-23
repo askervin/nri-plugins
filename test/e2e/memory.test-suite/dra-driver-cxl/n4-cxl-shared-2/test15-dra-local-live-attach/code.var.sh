@@ -14,7 +14,8 @@
 #   device, onlines its memory blocks on the NUMA node of the device, and
 #   lends the node to the container (cpuset.mems, through NRI). Nothing is
 #   attached and there is no binding condition to wait for: a local lease
-#   is Ready sooner than a pool lease.
+#   is Ready sooner than a pool lease. Containers that neither claim the
+#   node nor borrow it never have it, whatever their cpuset.mems.
 # - "cxl-request request --source local --size 64Mi --mode dax --exec
 #   CMD": the DeviceConfig of the claim says mode dax, the lease gets a
 #   devdax slice of the device of its own, passed to CMD as fd 3
@@ -357,20 +358,39 @@ mems-allowed() {
     awk '{print $2}' <<< "$COMMAND_OUTPUT"
 }
 
+mems-once() {
+    # Usage: mems-once LABEL CONTAINER VAR
+    #
+    # Check that cpuset.mems of container CONTAINER of the borrower is the
+    # value of variable VAR, or, when that is empty, the DRAM nodes, and
+    # set VAR to it: an empty cpuset.mems changes once, when the node
+    # plugin fences its first CXL node, and then stays.
+    local label="$1" ctr="$2" var="$3" mems
+    mems=$(dra-container-read "$VM2" borrower "$ctr" cpuset.mems) ||
+        error "$label: cannot read cpuset.mems of container $ctr of the borrower"
+    [ "$mems" == "${!var}" ] && return 0
+    [ -z "${!var}" ] ||
+        error "$label: cpuset.mems of container $ctr of the borrower changed from '${!var}' to '$mems'"
+    dra-nodes-eq "$mems" "$DRAM_NODES" ||
+        error "$label: cpuset.mems of container $ctr of the borrower is '$mems', expected '' or its DRAM nodes $DRAM_NODES"
+    echo "$label: cpuset.mems of container $ctr of the borrower changed from '' to its DRAM nodes '$mems'"
+    printf -v "$var" '%s' "$mems"
+}
+
 lent-check() {
-    # Usage: lent-check NODES LABEL
+    # Usage: lent-check NODES LABEL [NS/POD/CONTAINER...]
     #
     # Check that NUMA nodes NODES (a node list) are lent to container main
     # of the borrower and to nobody else: cpuset.mems of main is the DRAM
-    # nodes and NODES (the node plugin wrote it through NRI), and
-    # cpuset.mems of container idle is as it was at start.
-    local nodes="$1" label="$2" node effective idle idle_effective
+    # nodes and NODES (the node plugin wrote it through NRI), cpuset.mems
+    # of container idle is as it was at start (see mems-once), and of the
+    # running containers of the node only main and the listed containers
+    # (those with claims of the nodes) have the nodes.
+    local nodes="$1" label="$2" node effective idle_allowed
+    shift 2
     main-mems
-    if ! { effective=$(dra-container-read "$VM2" borrower main cpuset.mems.effective) &&
-           idle=$(dra-container-read "$VM2" borrower idle cpuset.mems) &&
-           idle_effective=$(dra-container-read "$VM2" borrower idle cpuset.mems.effective); }; then
-        error "$label: cannot read the cpusets of the containers of the borrower"
-    fi
+    effective=$(dra-container-read "$VM2" borrower main cpuset.mems.effective) ||
+        error "$label: cannot read cpuset.mems.effective of container main of the borrower"
     dra-nodes-eq "$MAIN_MEMS" "$DRAM_NODES,$nodes" ||
         error "$label: cpuset.mems of container main is '$MAIN_MEMS', expected $DRAM_NODES,$nodes"
     for node in ${nodes//,/ }; do
@@ -378,31 +398,27 @@ lent-check() {
             error "$label: node $node is not in cpuset.mems.effective of container main"
         dra-nodes-has "$(mems-allowed main)" "$node" ||
             error "$label: node $node is not in Mems_allowed_list of container main"
+        dra-mems-fenced "$VM2" "$node" "$DRA_NS/borrower/main" "$@"
     done
-    [ "$idle" == "$IDLE_MEMS" ] ||
-        error "$label: cpuset.mems of container idle is '$idle', expected '$IDLE_MEMS'"
-    if [ -z "$IDLE_MEMS" ]; then
-        # An empty cpuset.mems inherits every memory node of the VM: idle
-        # may use the lent nodes too, as a fallback (test12).
-        for node in ${nodes//,/ }; do
-            dra-nodes-has "$idle_effective" "$node" ||
-                error "$label: container idle inherits its nodes, but node $node is not among them"
-        done
-        echo "$label: container idle inherits its memory nodes: $nodes in its effective nodes without a lend"
-    else
-        [ "$idle_effective" == "$IDLE_MEMS" ] ||
-            error "$label: cpuset.mems.effective of container idle is not '$IDLE_MEMS'"
-    fi
+    mems-once "$label" idle IDLE_MEMS
+    idle_allowed=$(mems-allowed idle)
+    for node in ${nodes//,/ }; do
+        dra-nodes-has "$idle_allowed" "$node" &&
+            error "$label: node $node is in Mems_allowed_list of container idle"
+    done
     echo "$label: nodes $nodes lent to container main: cpuset.mems $MAIN_MEMS"
 }
 
 not-lent-check() {
-    # Usage: not-lent-check LABEL
+    # Usage: not-lent-check LABEL [NS/POD/CONTAINER...]
     #
     # Check that container main of the borrower has its DRAM nodes only,
     # and no memory left on NUMA_NODE: the pages of numa-touch.py, which
-    # still runs, moved off the node.
+    # still runs, moved off the node. Of the running containers of the
+    # node only the listed containers (those with claims of the node) have
+    # NUMA_NODE.
     local label="$1"
+    shift
     retry-until --timeout 30 --interval 1 --message "$label: cpuset.mems of container main back to $DRAM_NODES" \
         'main-mems && dra-nodes-eq "$MAIN_MEMS" "$DRAM_NODES"' ||
         error "$label: cpuset.mems of container main is '$MAIN_MEMS', not back to $DRAM_NODES"
@@ -413,6 +429,8 @@ not-lent-check() {
     dra-touch-pages "$NUMA_NODE"
     [ "$DRA_TOUCH_PAGES" == 0 ] || error "$label: numa-touch.py still has $DRA_TOUCH_PAGES pages on node $NUMA_NODE"
     echo "$label: numa-touch.py (pid $DRA_TOUCH_PID) lives, its pages moved off node $NUMA_NODE"
+    dra-mems-fenced "$VM2" "$NUMA_NODE" "$@"
+    mems-once "$label" idle IDLE_MEMS
 }
 
 pool-not-local() {
@@ -538,10 +556,12 @@ node-size static-a "$STATIC_A"
 dra-local-unchanged "$VM2"
 dra-assert "$COMMAND_OUTPUT" "not any(attr(d, 'type') == 'region' for d in devices('$DRA_LOCAL_DRIVER', '$VM2_NAME'))"
 dra-mems-wait "$VM2" static-a main "$NUMA_NODE"
-# The node is not lent to the borrower. (If its cpuset.mems is empty, the
-# borrower inherits every memory node, the new one too.)
-main-mems
-[ "$MAIN_MEMS" == "$MAIN_MEMS0" ] || error "the static claim of static-a changed cpuset.mems of container main of the borrower to '$MAIN_MEMS'"
+# The node is static-a's only: it is not lent to the borrower, and every
+# other container of the node is kept off it. An empty cpuset.mems of a
+# container of the borrower becomes its DRAM nodes.
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/static-a/main"
+mems-once A main MAIN_MEMS0
+mems-once A idle IDLE_MEMS
 
 echo "### B: the running container borrows a NUMA slice of the same device"
 t0=$EPOCHREALTIME
@@ -552,7 +572,7 @@ numa-slice lease-1 "$COMPANION_UID" "$LEASE1"
 printf 'the local NUMA lease is Ready in %.2f s (a pool lease of test12: about 5.7 s)\n' "$T_LOCAL_NUMA"
 dra-local-slices-wait "$VM2" lease-1 "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1"
 node-size lease-1 $(( STATIC_A + LEASE1 ))
-lent-check "$NUMA_NODE" B
+lent-check "$NUMA_NODE" B "$DRA_NS/static-a/main"
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('mode'), bool(l.get('shared')), l.get('source'), l.get('serial'), int(l.get('size') or 0)) for l in j] == [('$NUMA_LEASE1', 'Ready', 'numa', False, 'local', '$DRA_LOCAL_SERIAL', $LEASE1)]"
 # Container main uses the memory, it keeps it until D.
@@ -592,7 +612,7 @@ dra-assert "$DRA_MEMDEV" "sorted(d['name'] for d in dax_slices('device_dax')) ==
 # Dax slices add nothing to the node.
 node-size dax-leases $(( STATIC_A + LEASE1 ))
 dra-local-unchanged "$VM2"
-lent-check "$NUMA_NODE" C
+lent-check "$NUMA_NODE" C "$DRA_NS/static-a/main"
 # The fds again, for other programs: each lease has what was written in it.
 dax-fd-read "$DAX1_LEASE" "$TAG1"
 dax-fd-read "$DAX2_LEASE" "$TAG2"
@@ -613,7 +633,7 @@ NUMA_LEASE2="$LEASE"
 numa-slice lease-2 "$COMPANION_UID" "$(dra-local-round "$LEASE2_REQ")"
 node-size lease-2 $(( STATIC_A + LEASE1 + STATIC_B + $(dra-local-round "$LEASE2_REQ") ))
 dra-local-slices-wait "$VM2" lease-2 "$NUMA_NODE" "numa:$STATIC_A" "numa:$LEASE1" "dax:$(dra-local-round "$DAX1_REQ")" "dax:$DAX2" "numa:$STATIC_B" "numa:$(dra-local-round "$LEASE2_REQ")"
-lent-check "$NUMA_NODE" D
+lent-check "$NUMA_NODE" D "$DRA_NS/static-a/main" "$DRA_NS/static-b/main"
 # Give back the first lease: its block, and no other, goes offline, the
 # pages on it move, and the node stays lent: the second lease still holds
 # it.
@@ -622,7 +642,7 @@ release "$NUMA_LEASE1"
 node-size lease-1-released $(( STATIC_A + STATIC_B + $(dra-local-round "$LEASE2_REQ") ))
 numa-slice-gone lease-1
 dra-wait "$VM2" lease-1-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$NUMA_LEASE1" "items == []" 60
-lent-check "$NUMA_NODE" D-lease-1-released
+lent-check "$NUMA_NODE" D-lease-1-released "$DRA_NS/static-a/main" "$DRA_NS/static-b/main"
 dra-touch-pages "$NUMA_NODE"
 echo "numa-touch.py (pid $DRA_TOUCH_PID) lives, $DRA_TOUCH_PAGES of its pages on node $NUMA_NODE"
 # Give back the second lease: the node is not lent any more, the pages
@@ -631,7 +651,7 @@ t0=$EPOCHREALTIME
 release "$NUMA_LEASE2"
 node-size lease-2-released $(( STATIC_A + STATIC_B ))
 numa-slice-gone lease-2
-not-lent-check D-lease-2-released
+not-lent-check D-lease-2-released "$DRA_NS/static-a/main" "$DRA_NS/static-b/main"
 dra-wait "$VM2" lease-2-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$NUMA_LEASE2" "items == []" 60
 T_GIVE_BACK=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-touch-stop

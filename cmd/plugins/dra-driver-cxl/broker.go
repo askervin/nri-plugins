@@ -1358,7 +1358,8 @@ func (b *broker) relendContainer(podUID, name string) {
 }
 
 // reconcileLoop reconciles at start (once NRI is synchronized) and
-// periodically.
+// periodically. After the first reconcile the lender hears that the lends
+// are restored.
 func (b *broker) reconcileLoop(lender nodeLender) {
 	defer b.wg.Done()
 	if s, ok := lender.(interface{ WaitSynchronized(context.Context) error }); ok && lender != nil {
@@ -1368,8 +1369,11 @@ func (b *broker) reconcileLoop(lender nodeLender) {
 		}
 		cancel()
 	}
-	for {
+	for first := true; ; first = false {
 		b.reconcile()
+		if r, ok := lender.(interface{ LendsRestored() }); ok && first {
+			r.LendsRestored()
+		}
 		select {
 		case <-b.ctx.Done():
 			return

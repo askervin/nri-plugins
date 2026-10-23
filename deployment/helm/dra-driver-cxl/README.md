@@ -139,3 +139,12 @@ customize with their own values, along with the default values.
 | `affinity`               | {}                                                                                                                            | specify node affinity                                |
 | `nodeSelector`           | {}                                                                                                                            | specify node selector labels                         |
 | `podPriorityClassNodeCritical` | true                                                                                                                    | enable [marking Pod as node critical](https://kubernetes.io/docs/tasks/administer-cluster/guaranteed-scheduling-critical-addon-pods/#marking-pod-as-critical) |
+
+The keys of `config` are described in the
+[configuration file](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#configuration-file)
+section of the CXL memory documentation. `config.containerMemory.default`
+(`allowed-mems` by default) keeps the CXL nodes of the driver away from
+the containers that have not claimed memory on them; with an NRI resource
+policy that sets `cpuset.mems` (nri-resource-policy balloons or
+topology-aware) set it to `none`, see
+[containers without claims](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#containers-without-claims).

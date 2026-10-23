@@ -144,6 +144,9 @@ type localAllocator struct {
 	// shared has the serials of the memdevs that the configuration
 	// declares shared: their idle regions are kept.
 	shared map[uint64]bool
+	// fence gets the NUMA nodes of numa slices before their memory goes
+	// online, nil for none.
+	fence *nodeFence
 
 	// usesSnap is a snapshot of the use of the devices, and blockSize
 	// the memory block size in bytes (0 if unknown), for the publisher.
@@ -747,9 +750,13 @@ func localUsableSize(size, bs uint64) uint64 {
 
 // onlineSlice binds the dax device of a numa slice of a claim to kmem,
 // onlines its memory blocks movable, and sets the NUMA node of the device
-// to the node of the memory.
+// to the node of the memory. The node is fenced before the memory goes
+// online when the dax device tells it, else right after.
 func (a *localAllocator) onlineSlice(ctx context.Context, d *localDevice, claimUID string, s *localSlice, bs uint64) error {
 	start := time.Now()
+	// The node is fenced before kmem adds the memory of the device.
+	fenced := a.mem.TargetNode(s.Dax)
+	a.fence.Fence(ctx, fenced)
 	// kmem gets this device only: a sysfs bind, no new_id, no daxctl.
 	if err := a.mem.SetDaxDriverSysfs(ctx, s.Dax, memctl.DriverKmem); err != nil {
 		return err
@@ -770,6 +777,11 @@ func (a *localAllocator) onlineSlice(ctx context.Context, d *localDevice, claimU
 	}
 	if node < 0 {
 		return fmt.Errorf("cannot find the NUMA node of %s", s.Dax)
+	}
+	if a.fence != nil && node != fenced {
+		klog.V(3).Infof("local: memdev %s (serial 0x%x): claim %s: NUMA node %d of %s known only after onlining, fencing it late",
+			d.Memdev, d.Serial, claimUID, node, s.Dax)
+		a.fence.Fence(ctx, node)
 	}
 	d.Node = node
 	logSlice(d, claimUID, "onlined", s, start, fmt.Sprintf(" blocks %v node %d", blocks, node))

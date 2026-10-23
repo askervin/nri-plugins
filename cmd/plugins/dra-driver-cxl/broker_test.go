@@ -2663,3 +2663,48 @@ func TestOpenBlockDevice(t *testing.T) {
 		t.Fatalf("open below a file: %v after %v", err, time.Since(start))
 	}
 }
+
+// restoringLender is a fakeLender that hears when the lends are restored.
+type restoringLender struct {
+	*fakeLender
+	restored chan string // the call log at LendsRestored
+}
+
+func (l *restoringLender) LendsRestored() { l.restored <- l.callLog() }
+
+// TestBrokerLendsRestored checks that the lender hears that the lends are
+// restored once, after the first reconcile has lent the nodes of Ready numa
+// leases again.
+func TestBrokerLendsRestored(t *testing.T) {
+	e := newBrokerEnv(t)
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.start()
+	resp, _ := e.call(api.Request{Op: "request", Size: "256Mi", Wait: "0s"})
+	id := resp.Lease
+	_, err := e.b.OnLending(id, companionClaim(id))
+	noErr(t, err)
+	e.b.OnPrepared(id, []lentDevice{{Source: api.SourcePool, Serial: 0xc1ee0001, Size: 1 << 28, Mode: api.ModeNUMA, Node: 2}})
+	e.waitState(id, api.StateReady)
+
+	e.restart()
+	e.lender.mu.Lock()
+	e.lender.calls = nil
+	e.lender.mu.Unlock()
+	l := &restoringLender{fakeLender: e.lender, restored: make(chan string, 2)}
+	e.b.reconcileEvery = 10 * time.Millisecond
+	e.b.start(l)
+	select {
+	case calls := <-l.restored:
+		if !strings.Contains(calls, "lend pod-uid-1/app 2") {
+			t.Fatalf("lends restored before the lend:\n%s", calls)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lends not restored")
+	}
+	time.Sleep(50 * time.Millisecond) // more reconciles
+	select {
+	case <-l.restored:
+		t.Fatal("lends restored twice")
+	default:
+	}
+}

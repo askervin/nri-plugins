@@ -22,9 +22,10 @@
 #   serial number, creates a region on it and onlines its memory. The
 #   memory becomes a new NUMA node, and the container gets its id in the
 #   environment variable CXL_<KEY>_NODE, next to CXL_<KEY>_MODE=numa,
-#   _SIZE, _SERIAL and _SHARED. When the pod is gone, the node plugin
-#   releases the device, the controller detaches it, and the memory is
-#   back in the pool.
+#   _SIZE, _SERIAL and _SHARED, and the node in its cpuset.mems. No other
+#   container of the node has the node. When the pod is gone, the node
+#   plugin releases the device, the controller detaches it, and the memory
+#   is back in the pool.
 #
 # What you will see: the pool in a ResourceSlice, a claim of 512Mi that
 # waits for the attachment, a new 512 MB NUMA node in the VM and in the
@@ -216,6 +217,14 @@ grep -qx "CXL_CLAIM_${CLAIM_UID//-/_}=1" <<< "$POD_LOG" ||
 grep -q "^/sys/devices/system/node/node$CXL_NODE/meminfo:Node $CXL_NODE MemTotal:" <<< "$POD_LOG" ||
     error "pooled-consumer does not see the memory of node $CXL_NODE"
 echo "pooled-consumer: $(grep "node$CXL_NODE/meminfo" <<< "$POD_LOG")"
+# The node is for the consumer only: its claim puts the node into its
+# cpuset.mems from its start, while every other container of the node,
+# those of the control plane too, is kept off the node.
+MEMS_ALLOWED=$(sed -n 's/^Mems_allowed_list:[[:space:]]*//p' <<< "$POD_LOG")
+dra-nodes-has "$MEMS_ALLOWED" "$CXL_NODE" ||
+    error "pooled-consumer: node $CXL_NODE is not in its Mems_allowed_list '$MEMS_ALLOWED'"
+echo "pooled-consumer: Mems_allowed_list $MEMS_ALLOWED"
+dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
 
 echo "### D: the pool device is not advertised again as node-local CXL memory"
 # The new region is CXL memory of the node, which the node plugin offers

@@ -1,0 +1,69 @@
+plan-11: review of stream DRV
+=============================
+Written 2026-10-22 (orchestrator). Reviewed: git diff of D (driver.go,
+fence.go, nri.go, lend.go, local.go, pool.go, broker.go, lend_test.go,
+fence_test.go) against 02-design, with steering, lending (local, pool,
+restart), companion claims, pool claims, shared/dax/block/fs claims, NRI
+reconnect, no NRI, driver restart and none mode in mind. Unit tests,
+vet: rerun by the reviewer, ok.
+
+Must fix
+--------
+V1 (major) fence.go Fence: a concurrent Fence of the same node returns
+   before the containers are fenced.
+   Fence adds the node under f.mu and runs the pass after releasing it.
+   A second Fence of the node sees it in the set and returns at once.
+   Local Prepares (localAllocator.mu) and pool Prepares (poolDriver.mu)
+   run concurrently, and a local memdev and a pool device under one CXL
+   host bridge share a node: the second Prepare onlines memory on N while
+   the first one's pass is still updating containers. Fix: serialize
+   Fence callers with a lock of their own (held across the check, the
+   add and the pass; not f.mu, which NRI handlers take through Nodes),
+   so that Fence(N) returns only after the pass that fenced N. Lock
+   order: that lock -> lendMu -> p.mu. Unit test: two concurrent Fence of
+   one node, the second returns after the first's UpdateContainers.
+
+V2 (major) nri.go StartContainer: an update that raced with the
+   container's creation is never retried before the container runs.
+   containerd adds a container to its store after the NRI CreateContainer
+   round returns (internal/cri/server/container_create.go). A pass that
+   runs in that window (Fence from a Prepare: the handler saw the old
+   fenced set, e.g. empty, and recorded mems "") sends an update that
+   fails with "not found"; the next pass comes only with the next Fence
+   or Synchronize, so the container starts inheriting the node that is
+   onlined right after. Fix: in StartContainer, when the container is
+   fenced, not steered, the fenced set is not empty, fencing is ready and
+   wantMems differs from its recorded mems, start a pass in the
+   background (startFencing, after p.mu is released by the handler; never
+   synchronously). Unit test: a failed update of a created container is
+   applied at its StartContainer.
+
+Checked, no change needed
+-------------------------
+- Lock order and NRI deadlock rules: handlers take p.mu, nodeState's
+  lock, serialsMu and f.mu only, none held across UpdateContainers;
+  passes from Synchronize and LendsRestored run in goroutines; Fence is
+  called with localAllocator.mu or poolDriver.mu held, nothing under
+  lendMu waits for them; poolDriver.mu -> lendMu existed (lender.lend).
+- CreateContainer: claims read before p.mu, one critical section for
+  tracking, the fenced set, want and the record; steered containers and
+  an empty fenced set give no adjustment; error path tracks as before.
+- Restart: seed before kubeletplugin.Start; Synchronize refreshes mems
+  from the spec; a borrower's spec base+lent gives want == spec, so
+  nothing is revoked before the broker relends; LendsRestored after the
+  first reconcile, or right after NRI start without a broker.
+- none mode: tc.fenced false everywhere, changeLend's old branch, no
+  adjustment, no pass; existing tests unchanged.
+- Pool: Fence after CreateRegion (blocks offline) before Online;
+  claimNodes snapshot refreshed at load and in sync (prepare and
+  unprepare), read under serialsMu only.
+- Local: TargetNode before the kmem bind; late fence logged.
+- has_memory path follows memctl's sysfs root convention.
+
+Notes (not blocking)
+--------------------
+N1. The late-fence paths have no unit test (fake sysfs always has
+    target_node). e2e/hw exercise the normal path only.
+N2. A container whose update fails on a running container is retried by
+    the next pass only (after V2 also at its next start, which for a
+    running one does not happen). The warning names it.

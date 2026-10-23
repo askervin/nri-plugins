@@ -656,3 +656,34 @@ func TestRescanBeforeStart(t *testing.T) {
 		t.Fatalf("devices after the rescan: %+v", d.state.Allocatable)
 	}
 }
+
+func TestDriverConfigContainerMemory(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		want   string // mode, or the error
+	}{
+		{"{}", containerMemoryAllowedMems},
+		{"containerMemory: {}", containerMemoryAllowedMems},
+		{`containerMemory: {default: ""}`, containerMemoryAllowedMems},
+		{"containerMemory: {default: allowed-mems}", containerMemoryAllowedMems},
+		{"containerMemory:\n  default: none", containerMemoryNone},
+		{"containerMemory: {default: mempolicy}", "containerMemory.default: mempolicy is not implemented yet"},
+		{"containerMemory: {default: hard}", `containerMemory.default: invalid value "hard" (allowed-mems, mempolicy or none)`},
+		{"containerMemory: {defaults: none}", "failed to parse driver config"},
+	} {
+		cfg, err := newDriverConfigFromString(tc.config)
+		got := ""
+		if err != nil {
+			got = err.Error()
+		} else {
+			got = cfg.containerMemory()
+		}
+		if !strings.HasPrefix(got, tc.want) {
+			t.Errorf("%s: %q, expected %q", tc.config, got, tc.want)
+		}
+	}
+	data, err := json.Marshal(&DriverConfig{ContainerMemory: &ContainerMemoryConfig{Default: containerMemoryNone}})
+	if err != nil || string(data) != `{"containerMemory":{"default":"none"}}` {
+		t.Errorf("configuration %s %v", data, err)
+	}
+}

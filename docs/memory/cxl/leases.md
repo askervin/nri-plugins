@@ -106,7 +106,8 @@ container: cxl-request request --size 512Mi
      condition releases the bind)
   -> kubelet prepares cxl-lease-L: a slice or a region, online movable,
      NUMA node N; the label cxl.nri.io/lease=L names the lease        (Lending)
-  -> NRI UpdateContainers: cpuset.mems of THAT container = its own nodes + N
+  -> NRI UpdateContainers: cpuset.mems of THAT container = its own nodes
+     without the CXL nodes of the driver + N
   -> response {"lease":"L","state":"Ready","node":N,...}              (Ready)
 container: cxl-request release --lease L
   -> revoke (cpuset.mems shrinks, the kernel migrates the pages back)
@@ -653,7 +654,12 @@ and cannot make it the companion of a lease it did not request.
   and the pod cgroup. Without a raise the extra node adds locality, not
   room. Use requester pods without a memory limit, or raise it with
   `pods/resize`. Node allocatable never includes pool memory.
-- cpuset.mems has one owner: the lend goes through NRI UpdateContainers.
+- cpuset.mems has one owner: the lend goes through NRI UpdateContainers,
+  as does keeping the CXL nodes of the driver away from every container
+  that is not steered ([usage.md](usage.md#containers-without-claims)).
+  The other containers of the borrower's pod, and every other container,
+  do not get the lent node (with `containerMemory.default` `none` a
+  container without its own cpuset.mems inherits it).
   A node is lent per lease: memory devices under one CXL host bridge share
   a NUMA node, and when two leases of a container hold the same node, it
   stays in the container's cpuset.mems until the last of them is released.
@@ -666,7 +672,9 @@ and cannot make it the companion of a lease it did not request.
   Both components would own the container's cpuset.mems, and cgmpolmgr
   writes cgroupfs directly, which the next NRI update reverts.
   nri-resource-policy or the kubelet memory manager would conflict the
-  same way. A movable node is never the only node in cpuset.mems.
+  same way; next to an NRI resource policy that sets cpuset.mems
+  `containerMemory.default` must be `none`. A movable node is never the
+  only node in cpuset.mems.
 - Release is cooperative. Releasing a `dax` lease while the device is
   still mapped makes the holder get SIGBUS at its next access; munmap
   first. Releasing a `block` lease while its fd is open makes I/O through

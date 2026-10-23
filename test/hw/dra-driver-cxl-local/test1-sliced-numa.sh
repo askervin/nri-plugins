@@ -7,14 +7,20 @@
 #   numa-a  claim numa-a, 4Gi
 #   numa-b  claim numa-b, 2Gi
 #   plain   no claim
+#   plain2  no claim, created after a restart of the driver
 #
 # Checks that both slices are onlined on the same new NUMA node N, that N
 # has the size of the slices, that N is in Mems_allowed of numa-a and
-# numa-b but not of plain, that the memory of numa-a and numa-b lands on N
-# (default policy set by the driver's steering, and an explicit
-# MPOL_PREFERRED), that plain cannot use N, that a container's memory on N
-# stays within its claim, and that N shrinks and goes away when the claims
-# are released, leaving no region on the memdev.
+# numa-b but not of plain, that numa-a and numa-b are the only containers
+# of the node with N in their effective mems (plain and the kube-system
+# containers were created before N existed), that the memory of numa-a
+# and numa-b lands on N (default policy set by the driver's steering, and
+# an explicit MPOL_PREFERRED), that plain cannot use N, that a container's
+# memory on N stays within its claim, that N shrinks when numa-b is
+# released, that after a restart of the driver while numa-a holds N only
+# numa-a has N and plain2 gets a cpuset.mems without N at its creation,
+# and that N goes away when the claims are released, leaving no region on
+# the memdev.
 #
 # The workloads run as descendants of the main process of the containers
 # (prun), which inherit the memory policy that the driver sets when it
@@ -69,6 +75,7 @@ check "node $N is not in Mems_allowed of plain ($mp)" eval "! in_list $N $mp"
 for p in numa-a numa-b plain; do
     echo "  cpuset.mems.effective of $p: $(pexec "$p" cat /sys/fs/cgroup/cpuset.mems.effective)"
 done
+check_fenced "$N" numa-a numa-b
 
 pages_on() { # Usage: pages_on OUTPUT NODE -- 4K pages on NODE in the last "pages" line
     grep 'pages ' <<< "$1" | tail -n 1 | tr ' ' '\n' | sed -n "s/^N$2=//p" | grep . || echo 0
@@ -137,7 +144,40 @@ check "node $N shrinks to <= 4096 MiB in 120 s" wait_for 120 "node $N shrinks" s
 log "node $N has $(node_mib "$N") MiB, $((EPOCHSECONDS - t0)) s after the delete"
 check "numa-a still runs with node $N in Mems_allowed" in_list "$N" "$(mems_allowed numa-a)"
 
-log "releasing numa-a and plain: node $N goes away, no region is left"
+driver_pod() { # the Running driver pod
+    k get pods -n kube-system -l "$DRA_POD_LABEL" -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}'
+}
+log "restarting the driver while numa-a holds node $N"
+old_pod=$(driver_pod)
+log_before=$(driver_log)
+t0=$EPOCHSECONDS
+k delete pod -n kube-system "$old_pod" --wait=true --timeout=180s >/dev/null
+new_pod() { local p; p=$(driver_pod) && [ -n "$p" ] && [ "$p" != "$old_pod" ]; }
+check "a new driver pod is Running" wait_for 180 "a new driver pod Running" new_pod
+DRIVER_POD=$(driver_pod)
+seeded() { k logs -n kube-system "$DRIVER_POD" | grep -q "NRI fence: fencing CXL nodes .* of prepared claims"; }
+check "driver: fences the CXL nodes of the prepared claims at start" wait_for 60 "the fence log of $DRIVER_POD" seeded
+log "driver $DRIVER_POD Running and fencing after $((EPOCHSECONDS - t0)) s"
+seed=$(k logs -n kube-system "$DRIVER_POD" | sed -n 's/.*NRI fence: fencing CXL nodes \(.*\) of prepared claims.*/\1/p' | tail -n 1)
+echo "  fenced nodes of the prepared claims: $seed"
+check "driver: node $N is among the fenced nodes of the prepared claims ($seed)" in_list "$N" "$(tr -d '[]' <<< "$seed" | tr ' ' ',')"
+check_fenced "$N" numa-a
+
+log "creating pod plain2 (no claim) after the restart"
+t0=$EPOCHSECONDS
+pod_yaml plain2 | kapply
+wait_pod plain2 Running 300
+log "plain2 Running after $((EPOCHSECONDS - t0)) s"
+m2=$(pexec plain2 cat /sys/fs/cgroup/cpuset.mems)
+ma2=$(mems_allowed plain2)
+echo "  plain2: cpuset.mems $m2, cpuset.mems.effective $(pexec plain2 cat /sys/fs/cgroup/cpuset.mems.effective), Mems_allowed $ma2"
+check "plain2: has a cpuset.mems without node $N ($m2)" eval "test -n '$m2' && ! in_list $N '$m2'"
+check "plain2: node $N is not in Mems_allowed ($ma2)" eval "! in_list $N $ma2"
+adjusted() { k logs -n kube-system "$DRIVER_POD" | grep -q "NRI CreateContainer: ctr=$NS/plain2/main: cpuset.mems="; }
+check "driver: sets cpuset.mems of plain2 at its creation" wait_for 30 "the adjustment of plain2 in the log" adjusted
+k logs -n kube-system "$DRIVER_POD" | grep -E "NRI fence|NRI CreateContainer: ctr=$NS/plain2/main: cpuset.mems=" | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 20
+
+log "releasing numa-a, plain and plain2: node $N goes away, no region is left"
 t0=$EPOCHSECONDS
 delete_all
 gone() { [ "$(node_mib "$N")" == 0 ]; }
@@ -146,9 +186,9 @@ check "no CXL region is left on the memdev" wait_for 60 "no regions" no_regions
 log "released in $((EPOCHSECONDS - t0)) s"
 
 log "driver log of the steering of numa-a and numa-b"
-driver_log 15m | grep -E "numa-[ab]/main: " | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 40
+{ echo "$log_before"; driver_log 15m; } | grep -E "numa-[ab]/main: " | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 40
 
 log "driver log of the slices (local:)"
-driver_log 15m | grep -E "local: " | sed 's/^[^]]*] //; s/^/    /' | tail -n 30
+{ echo "$log_before"; driver_log 15m; } | grep -E "local: " | sed 's/^[^]]*] //; s/^/    /' | tail -n 30
 
 summary

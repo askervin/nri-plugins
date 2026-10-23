@@ -1891,6 +1891,123 @@ dra-mems-wait() { # script API
         command-error "cannot read Mems_allowed_list in container $container of pod $pod"
 }
 
+dra-mems-fenced() { # script API
+    # Usage: dra-mems-fenced VMDIR NODE [NS/POD/CONTAINER...]
+    #
+    # Wait until NUMA node NODE is in cpuset.mems.effective of the listed
+    # containers and of no other running container of the node of the VM
+    # of VMDIR, 30 s at most, and print the cpusets of every running
+    # container (see dra-mems-table). Containers are those of crictl ps:
+    # pod sandboxes are not containers. Fail the test on timeout, naming
+    # the offenders: a container that has the node without being listed,
+    # one that is listed and lacks it, a listed one that does not run.
+    # Example: dra-mems-fenced "$VM" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
+    local vmdir="$1" node="$2" label wanted table="" status=""
+    shift 2
+    local ctrs=("$@")
+    label=$(dra-vm-label "$vmdir")
+    if [ "${#ctrs[@]}" == 0 ]; then
+        wanted="of no container"
+    else
+        wanted="of ${ctrs[*]} and of no other container"
+    fi
+    retry-until --timeout 30 --interval 1 --message "$label: node $node in cpuset.mems.effective $wanted" \
+        'table=$(dra-mems-table "$vmdir" "$node" "${ctrs[@]}"); status=$?; [ "$status" == 0 ]'
+    echo "$table"
+    case "$status" in
+        0) return 0;;
+        3) error "$label: node $node is allowed only in ${ctrs[*]:-no container}, offenders:
+$(grep -F '  <- ' <<< "$table")";;
+        *) error "dra-mems-fenced: cannot list the containers of $label and their cpusets (status $status)";;
+    esac
+}
+
+dra-mems-table() {
+    # Usage: dra-mems-table VMDIR NODE [NS/POD/CONTAINER...]
+    #
+    # Print one line per running container of the node of the VM of VMDIR,
+    # sorted, read in one go:
+    #   NS/POD/CONTAINER cpuset.mems MEMS effective EFFECTIVE[  <- REASON]
+    # MEMS and EFFECTIVE are its cpuset.mems and cpuset.mems.effective
+    # ('""' when empty). REASON marks an offender: "has node NODE" (not
+    # listed), "lacks node NODE" (listed), "cannot read its cpuset: ...",
+    # and "not running" for a listed container that does not run (MEMS and
+    # EFFECTIVE are "-").
+    # Return 0 if there is no offender, 3 if there is one, other values if
+    # the containers cannot be listed.
+    local vmdir="$1" prog
+    shift
+    # The cgroup of a container is that of its init process (crictl
+    # inspect .info.pid, /proc/PID/cgroup). A container that exits during
+    # the listing is left out.
+    prog='
+import json, os, subprocess, sys
+def nodes(text):
+    out = set()
+    for part in text.strip().split(","):
+        if part.strip():
+            lo, _, hi = part.strip().partition("-")
+            out.update(range(int(lo), int(hi or lo) + 1))
+    return out
+def crictl(*args):
+    return subprocess.run(["crictl"] + list(args), capture_output=True, text=True)
+def inspected(text):
+    j = json.loads(text)
+    return j if isinstance(j, list) else [j]
+node, allowed = int(sys.argv[1]), set(sys.argv[2:])
+ps = crictl("ps", "-q")
+if ps.returncode != 0:
+    sys.exit("crictl ps failed: " + ps.stderr.strip())
+ids = ps.stdout.split()
+infos = []
+if ids:
+    r = crictl("inspect", "-o", "json", *ids)
+    if r.returncode == 0:
+        infos = inspected(r.stdout)
+    else:
+        # A container was removed after the listing: the others one by one.
+        for i in ids:
+            r = crictl("inspect", "-o", "json", i)
+            if r.returncode == 0:
+                infos += inspected(r.stdout)
+rows, seen = [], set()
+for c in infos:
+    st = c.get("status") or {}
+    if st.get("state") != "CONTAINER_RUNNING":
+        continue
+    lb = st.get("labels") or {}
+    name = "/".join([lb.get("io.kubernetes.pod.namespace", "-"), lb.get("io.kubernetes.pod.name", "-"),
+                     lb.get("io.kubernetes.container.name") or (st.get("metadata") or {}).get("name", "-")])
+    pid = (c.get("info") or {}).get("pid") or 0
+    try:
+        with open("/proc/%d/cgroup" % pid) as f:
+            cg = "/sys/fs/cgroup" + [l[3:].strip() for l in f if l.startswith("0::")][0]
+        with open(cg + "/cpuset.mems") as f:
+            mems = f.read().strip()
+        with open(cg + "/cpuset.mems.effective") as f:
+            eff = f.read().strip()
+    except (OSError, IndexError) as e:
+        if pid == 0 or not os.path.exists("/proc/%d" % pid):
+            continue
+        seen.add(name)
+        rows.append((name, "?", "?", "cannot read its cpuset: %s" % e))
+        continue
+    seen.add(name)
+    has = node in nodes(eff)
+    why = ""
+    if has and name not in allowed:
+        why = "has node %d" % node
+    elif not has and name in allowed:
+        why = "lacks node %d" % node
+    rows.append((name, mems or "\"\"", eff or "\"\"", why))
+rows += [(name, "-", "-", "not running") for name in allowed - seen]
+w = max([len(r[0]) for r in rows] + [1])
+for name, mems, eff, why in sorted(rows):
+    print(("%-*s cpuset.mems %-5s effective %-5s%s" % (w, name, mems, eff, "  <- " + why if why else "")).rstrip())
+sys.exit(3 if any(r[3] for r in rows) else 0)'
+    dra-vm-command-q "$vmdir" "python3 -c $(printf %q "$prog")$(printf ' %q' "$@")"
+}
+
 dra-container-anon() { # script API
     # Usage: dra-container-anon VMDIR POD CONTAINER NODE
     #

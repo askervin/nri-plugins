@@ -1,0 +1,106 @@
+plan-11: implementation plan
+============================
+Written 2026-10-22 (orchestrator). Four streams on disjoint files. Phase
+1: DRV, DOC, E2E (edits only) and HW (edits only) at the same time.
+Then the orchestrator reviews DRV (05-review.txt), the owner fixes, the
+orchestrator builds the image. Phase 2: E2E runs the e2e tests, HW runs
+the hw tests, at the same time (different machines). Final status in
+09-status.txt. Paths and D<n> as in 01-findings.txt and 02-design.txt.
+
+Rules for every stream
+----------------------
+- Read first: N/.github/skills/coding-style/SKILL.md; this directory's
+  00, 01, 02; then the sources your stream names. E2E also reads
+  N/.github/skills/run-e2e-tests/SKILL.md and docs/memory/cxl/e2e.md.
+- Nothing committed. Edit only the files your stream owns; a change
+  elsewhere is a "Request" in your status file.
+- Never write anything under ~/github.com/askervin/ (read only).
+- Plain ASCII in code, comments and docs. Function comments say what,
+  not how or who calls. Document current state only. Match the
+  surrounding code: naming, comment density, idioms.
+- No host installs. One run_tests.sh at a time; the VMs belong to E2E,
+  root@cwf to HW.
+- Status file 04-status-<S>.txt: what changed per file, deviations from
+  02-design with reasons, verification commands and their decisive
+  output lines, open points, Requests; end with the line "<S> done".
+
+DRV  driver code and unit tests
+  Owns: D/*.go (and D/*_test.go); pkg/cgmpolmgr only if a Request is
+        granted.
+  Do: D1-D9 of 02-design, unit tests of D9.
+  Checks (N):
+    go build ./cmd/plugins/dra-driver-cxl/...
+    go test ./cmd/plugins/dra-driver-cxl/... ./pkg/cgmpolmgr/... ./pkg/cxl/...
+    go test -race ./cmd/plugins/dra-driver-cxl/...
+    go vet ./cmd/plugins/dra-driver-cxl/...
+    gofmt -l cmd/plugins/dra-driver-cxl
+    golangci-lint run ./cmd/plugins/dra-driver-cxl/... (if available;
+      if the whole-tree lint stops at an unrelated untracked file, say so)
+  Done: status lists every new log text exactly (D8; E2E and HW grep
+    them), the config keys and error texts, the lock order you
+    implemented, and anything of 02-design you could not do as written.
+
+DOC  user documentation
+  Owns: docs/memory/cxl/usage.md, pool.md, local.md, leases.md,
+        deployment/helm/dra-driver-cxl/values.yaml (comments/example of
+        config only), deployment/helm/dra-driver-cxl/README.md.
+  Do: D10. Use the texts of D1 and D8. Keep tables and anchors of the
+    existing docs working (links like usage.md#steering are used from
+    other files: grep before renaming a heading).
+  Checks: grep that no doc still says other containers may allocate
+    from a pool or local numa node without "containerMemory: none";
+    links to new anchors resolve; ASCII only (grep -P '[^\x00-\x7F]').
+  Done: status lists every section changed.
+
+E2E  e2e test helpers and tests
+  Owns: E/dra.source.sh, E/n4-cxl-shared-2/test10-dra-pooling/,
+        test12-dra-live-attach/, test14-dra-local-memdev/,
+        test15-dra-local-live-attach/ (code.var.sh), docs/memory/cxl/
+        e2e.md only if it documents the changed assertions.
+  Phase 1 (edits): D11 e2e part. The helper dra-mems-fenced and the test
+    changes; shellcheck-clean where the file was (run shellcheck before
+    and after, compare). You may run read-only commands in VM2 to try
+    the helper's listing (crictl, cgroup files), nothing else in phase
+    1: no run_tests.sh before the orchestrator says the image is built.
+  Phase 2 (orchestrator tells you the image tar): run, one at a time,
+    from N/test/e2e:
+      ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test14-dra-local-memdev
+      test15, test10, test12 (the changed ones), then regression
+      test11, test13, test16, test17, test18, test19, test01.
+    Record each run (command, duration, verdict, output dir) in
+    06-runs-E2E.txt. A failure: collect evidence (driver log of the
+    output dir, the assertion), fix what is yours, anything in D is a
+    Request with the evidence; then rerun.
+  Done: every test above PASS on the final image, runs recorded.
+
+HW   hardware tests on root@cwf
+  Owns: H/lib.sh, H/deploy.sh, H/test1-sliced-numa.sh,
+        H/test2-sliced-dax.sh, H/test3-local-leases.sh, H/README.md,
+        H/results/ (written by run-all.sh).
+  Phase 1 (edits): D11 hw part. You may run read-only commands on
+    root@cwf (crictl, cgroup files, kubectl get) to try the listing.
+  Phase 2 (orchestrator tells you the image tar): TARGET=root@cwf
+      ./run-all.sh --image <tar>          (all tests, results/)
+    The node is prepared already (udev override in place, no BIOS
+    region); use --prepare-node only if deploy says the memdev has a
+    foreign region. Compare with ~/github.com/askervin/nri-plugins/test/
+    hw/dra-driver-cxl-local/results/ (the earlier run): the checks of
+    finding A must pass now; failures of findings B and C are expected
+    and not yours. Record runs in 06-runs-HW.txt (command, duration,
+    per-test pass/fail counts, each failure and which finding it is).
+  Done: test1, test2, test3 have no failure other than findings B/C;
+    test4 and test5 unchanged against the earlier run.
+
+Review (orchestrator, after phase 1)
+  Correctness of DRV against 02-design with every driver feature in
+  mind: steering, lending (local, pool, restart), companion claims, pool
+  claims, shared devices, dax/block/fs claims, NRI reconnect, no NRI,
+  driver restart, none mode unchanged; lock order and NRI deadlock
+  rules (F5); the CreateContainer critical section; failure paths.
+  Findings in 05-review.txt with file:line and severity.
+
+Verification matrix
+  unit: go test (D, pkg/cgmpolmgr, pkg/cxl), -race on D, vet, lint
+  e2e:  test14, test15, test10, test12 (changed), test11, test13, test16,
+        test17, test18, test19, test01 (regression)
+  hw:   run-all.sh on root@cwf: test1-test5

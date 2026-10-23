@@ -368,10 +368,14 @@ device of the driver:
    all memory blocks `online_movable` (movable, so that the memory can be
    removed again). The memory becomes a new NUMA node N.
 
-   The pool driver does not steer the container: N is not added to its
-   memory policy or its `cpuset.mems` (a container whose cgroup allows
-   only ZONE_MOVABLE memory cannot start), and other containers whose
-   cpusets allow every node may allocate from N too. Workloads use the
+   The pool driver does not steer the container: its memory policy is
+   left alone. With `containerMemory.default` `allowed-mems` (the
+   default), N is added to its `cpuset.mems` next to its other nodes (a
+   container whose cgroup allows only ZONE_MOVABLE memory cannot start),
+   and the other containers do not get N; they are updated before the
+   memory goes online. With `none` no `cpuset.mems` is changed, and every
+   container without its own `cpuset.mems` may allocate from N
+   ([usage.md](usage.md#containers-without-claims)). Workloads use the
    node number from the environment, for example with `numactl` or
    `mbind` ([usage.md](usage.md#steering)).
 

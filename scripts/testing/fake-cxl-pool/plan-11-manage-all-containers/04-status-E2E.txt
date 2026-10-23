@@ -1,0 +1,200 @@
+plan-11: status of stream E2E
+=============================
+Written 2026-10-22 (stream E2E). Paths: N = ~/github.com/containers/
+nri-plugins, E = N/test/e2e/memory.test-suite/dra-driver-cxl, T =
+E/n4-cxl-shared-2. Nothing committed, nothing run with run_tests.sh.
+
+Phase 1: edits
+--------------
+
+E/dra.source.sh (section "Containers of pods, and leases of pool memory",
+after dra-mems-wait)
+- New script API helper dra-mems-fenced, and its worker dra-mems-table.
+
+    dra-mems-fenced VMDIR NODE [NS/POD/CONTAINER...]
+
+  Waits (retry-until, 30 s, 1 s interval) until NUMA node NODE is in
+  cpuset.mems.effective of the listed containers and of no other running
+  container of the node of the VM of VMDIR. Prints the table of the last
+  attempt. On timeout fails the test (error) with the offender lines:
+    "<label>: node N is allowed only in <list or 'no container'>, offenders:
+     <offender lines>"
+  or, when the listing itself failed, "dra-mems-fenced: cannot list the
+  containers of <label> and their cpusets (status S)".
+  Example: dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
+
+  dra-mems-table VMDIR NODE [NS/POD/CONTAINER...]: one VM command per
+  attempt, a python3 program (python3 -c, through dra-vm-command-q):
+  crictl ps -q (running containers only; sandboxes are not containers),
+  one crictl inspect -o json of all ids (falls back to one inspect per id
+  when a container was removed meanwhile), state CONTAINER_RUNNING only,
+  name from the kubernetes labels, .info.pid -> /proc/PID/cgroup (0::) ->
+  cpuset.mems and cpuset.mems.effective. A container whose pid is gone
+  while reading is left out; one whose files cannot be read while it
+  lives is an offender. Node lists are parsed as ranges ("0-1,3", "",
+  " 3\n"). Exit status 0 no offender, 3 offenders, else listing failed.
+  Output, sorted, one line per running container:
+    NS/POD/CONTAINER cpuset.mems MEMS effective EFFECTIVE[  <- REASON]
+  MEMS/EFFECTIVE '""' when empty; REASON "has node N" (not listed),
+  "lacks node N" (listed), "cannot read its cpuset: ...", and "not
+  running" for a listed container that does not run (MEMS, EFFECTIVE
+  "-").
+
+T/test10-dra-pooling/code.var.sh
+- Header: the container gets the node in its cpuset.mems, no other
+  container of the node has the node.
+- Step D, after the meminfo check: Mems_allowed_list from the pod log
+  (printed by the pod at its start) must have CXL_NODE; then
+  dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
+  (kube-system containers, the driver's among them, must lack it).
+
+T/test12-dra-live-attach/code.var.sh
+- New helper idle-mems-check CYCLE: cpuset.mems of borrower/idle is
+  IDLE_MEMS, or, when IDLE_MEMS is "", the DRAM nodes (nodelist-eq), and
+  then IDLE_MEMS is set to it: changes once from "" to DRAM, then stays.
+- lend-memory: the IDLE_MEMS branches are gone ("idle inherits the lent
+  node" removed). Now: dra-mems-fenced "$VM2" "$MEM_NODE"
+  "$DRA_NS/borrower/main" (idle, the companion's pause container and
+  kube-system lack the node), idle-mems-check, Mems_allowed_list of idle
+  lacks MEM_NODE, numa-touch.py 16 MEM_NODE in idle fails with
+  "set_mempolicy.*Invalid argument" (always now, before only when
+  IDLE_MEMS was set).
+- give-back: after main's cpuset.mems and Mems_allowed_list are back to
+  DRAM: dra-mems-fenced "$VM2" "$MEM_NODE" (nobody), idle-mems-check.
+- C2 (claimer, a pool numa claim): dra-mems-fenced "$VM2" "$CLAIM_NODE"
+  "$DRA_NS/claimer/main". Not in the brief: added because pool numa
+  claims now get their node explicitly (D3 claimed(c)), the same check
+  as test10, one call.
+- Header: "Every other container of the node is kept off the node,
+  whatever its cpuset.mems"; "What you will see" says the same.
+
+T/test14-dra-local-memdev/code.var.sh
+- Header and "What you will see": the node only in the containers of
+  the NUMA claims, also after a restart, not in a pod created after it.
+- B, after dra-mems-wait numa-a: dra-mems-fenced ... numa-a/main.
+- B, after numa-b: dra-mems-fenced ... numa-a/main numa-b/main (dax-1
+  exists and must lack the node).
+- New step "### B2: a restart of the driver keeps the node to the NUMA
+  pods, a new pod is kept off it", after four-claims (numa-a, numa-b,
+  dax-1, dax-s1, dax-s2 running):
+    dra-driver-restart "$VM2"
+    dra-plugin-log-wait "NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims"
+    dra-mems-fenced numa-a/main numa-b/main (the new driver's own
+      container was created with every node; its first fence pass, after
+      the lends are restored, must fence it: the 30 s retry covers that)
+    dra-local-slices-wait restarted: the four slices are kept
+    pod "plain" (no claim, $DRA_TOOLS_IMAGE, prints Mems_allowed_list at
+      start), then: dra-plugin-log-wait "NRI CreateContainer:
+      ctr=$DRA_NS/plain/main: cpuset.mems=", its mems value parsed from
+      the log is non-empty and lacks NUMA_NODE, the cgroup's cpuset.mems
+      equals it (dra-nodes-eq), the pod log has the line
+      "Mems_allowed_list:<TAB><mems>" (its first process never had the
+      node), dra-mems-fenced numa-a/main numa-b/main again; delete plain.
+  C and later steps unchanged (they now run with the restarted driver).
+
+T/test15-dra-local-live-attach/code.var.sh
+- Header: containers that neither claim nor borrow the node never have
+  it, whatever their cpuset.mems.
+- New helper mems-once LABEL CONTAINER VAR: like test12's
+  idle-mems-check for any borrower container, VAR updated (printf -v).
+- A: "MAIN_MEMS == MAIN_MEMS0" flipped: dra-mems-fenced NUMA_NODE
+  static-a/main, then mems-once A main MAIN_MEMS0 and mems-once A idle
+  IDLE_MEMS (the first fence, by static-a's slice, turns "" into DRAM).
+- lent-check NODES LABEL [NS/POD/CONTAINER...]: idle branches gone; per
+  lent node dra-mems-fenced with borrower/main plus the listed static
+  pods; mems-once LABEL idle IDLE_MEMS; Mems_allowed_list of idle lacks
+  every lent node. Calls: B, C with static-a/main; D, D-lease-1-released
+  with static-a/main and static-b/main; E, E-local-left with none.
+- not-lent-check LABEL [NS/POD/CONTAINER...]: at the end dra-mems-fenced
+  NUMA_NODE with the listed containers (borrower/main no longer) and
+  mems-once idle. Call D-lease-2-released with static-a/main,
+  static-b/main.
+
+docs/memory/cxl/e2e.md: unchanged. It does not describe the changed
+assertions (its test table names topics only); its example outputs stay
+valid with allowed-mems (borrower 0-1 -> 0-2 -> 0-1, the claim pod of
+example a has the node).
+
+Tried in VM2 (read-only)
+------------------------
+VM2 now: DRAM nodes 0-1 (has_memory), possible 0-3, no driver running,
+7 kube-system containers, all cpuset.mems "", effective 0-1.
+- crictl inspect -o json with several ids returns one JSON array with
+  status.labels, status.state and info.pid of each: one call suffices.
+- dra-mems-fenced through the real helper code (framework stubs only for
+  vm-command-q/error, retry-until taken from lib/test.bash):
+    dra-mems-fenced VM2 2  -> pass at the first attempt, 0.54 s:
+      kube-system/coredns-559f6c778d-lzhlb/coredns          cpuset.mems ""    effective 0-1
+      kube-system/etcd-n4-cxl-shared-2-fedora-43-containerd/etcd  cpuset.mems ""    effective 0-1
+      ... (7 lines)
+    dra-mems-table VM2 1 kube-system/kube-proxy-cd9mh/kube-proxy cxl-pool-demo/x/main
+      -> exit 3, 0.40 s; "<- has node 1" on the 6 others, "<- not running"
+         on cxl-pool-demo/x/main, kube-proxy unmarked.
+    dra-mems-fenced VM2 1 kube-system/kube-proxy-cd9mh/kube-proxy
+      -> fails after 41.9 s (30 attempts of 1 s + ~0.4 s each), the error
+         lists the 6 offender lines.
+- On the host with a fake crictl: inspect of all ids failing -> one by
+  one; a gone pid -> left out; an unreadable cpuset.mems -> offender
+  "cannot read its cpuset: [Errno 2] ..."; node-list parsing "0-1,3",
+  "", "0", "2-3", "0-1, 3\n" correct.
+
+shellcheck
+----------
+As the other plans: shellcheck -s bash -e SC2154,SC2034,SC1090,SC2148,
+SC2016 on dra.source.sh and the four code.var.sh: 0 findings before, 0
+after. Without exclusions (-s bash), before -> after: dra.source.sh 25 ->
+26 (the new one: SC2016 on the single-quoted retry-until snippet, as the
+18 existing ones), test10 2 -> 2, test12 4 -> 4, test14 1 -> 1, test15
+8 -> 8. bash -n clean on all five. ASCII only.
+
+Open points
+-----------
+O1. Log texts. 04-status-DRV.txt is not there yet. The DRV working tree
+    has them as D8 says: fence.go "NRI fence: fencing CXL nodes %s of
+    prepared claims" with a cpuset.CPUSet (prints "2" for one node, so
+    "$NUMA_NODE" matches) and nri.go "NRI CreateContainer: ctr=%s:
+    cpuset.mems=%s (fenced nodes %s)" at V(3), ctr = ns/pod/container
+    (logLevel 4 in the e2e helm values). Recheck when DRV reports.
+O2. test14 B2 is the first restart of the driver with local NUMA slices
+    held in test14; C then unprepares them with the restarted driver.
+    A failure there in phase 2 may be a driver restart issue, not a
+    fencing one.
+O3. dra-mems-fenced treats any running container of the node that has
+    the node and is not listed as an offender: a pod with a numa claim
+    left running by an earlier failed test would fail the check (tests
+    normally start clean).
+O4. test16-test19, test11, test13, test01 not edited; phase 2 runs
+    them as regression.
+
+Requests
+--------
+None.
+
+E2E phase 1 done
+
+Phase 2: runs
+-------------
+Image N/build/images/nri-dra-driver-cxl-image-d8a0980797d9.tar (not
+rebuilt). Runs, durations and decisive lines: 06-runs-E2E.txt.
+- Greps rechecked against "Log texts (exact; klog)" of 04-status-DRV.txt:
+  the seed text "NRI fence: fencing CXL nodes %s of prepared claims"
+  (cpuset string, "2") and "NRI CreateContainer: ctr=%s: cpuset.mems=%s
+  (fenced nodes %s)" (V(3), shown at logLevel 4) are as the tests grep.
+- Changed tests: test14, test15, test10, test12 PASS. Regression:
+  test11, test13, test16, test17, test18, test19, test01 PASS. No fence
+  warning in any driver log.
+- Evidence the checks are not vacuous: before each fence the control
+  plane containers had cpuset.mems "" (effective 0-1 only because node 2
+  had no memory yet); the first fence of test14 updated 8 containers
+  ("was \"\""), after the driver restart the new driver's own container
+  (created with every node) was the one updated; idle's numa-touch got
+  "Invalid argument" in every cycle of test12.
+- Change in phase 2 (mine): dra-mems-fenced retry message reads "node N
+  in cpuset.mems.effective of no container" when nothing is listed
+  (was "of no container and of no other container"); message only. bash
+  -n and shellcheck (exclusions as in phase 1) clean; tried against VM2;
+  test12 rerun PASS with it.
+- O1 closed (texts match). O2 closed: test14 C after the restart passed.
+- Requests: none. No driver change needed.
+
+E2E done

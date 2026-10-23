@@ -8,8 +8,10 @@
 # lease-a and lease-b lease 2Gi of local memory in mode numa each: both
 # leases are slices of the memdev on the same new node N, which comes to
 # lease-a's and lease-b's cpuset.mems (Mems_allowed) while they hold the
-# lease, not to plain's. Their memory lands on N. Releasing a lease takes
-# N away from the container (its pages move back) and shrinks N. A lease
+# lease, not to plain's: no other container of the node, the companion
+# pods of the leases included, has N in its effective mems. Their memory
+# lands on N. Releasing a lease takes N away from the container (its
+# pages move back) and shrinks N. A lease
 # in mode dax passes a devdax fd to the container, which writes and reads
 # it.
 #
@@ -57,6 +59,7 @@ check "lease-b: the numa lease $LEASE_B is Ready on node $N" \
 mib=$(node_mib "$N")
 check "node $N has both 2Gi leases (MemTotal $mib MiB)" test "$mib" -le 4096 -a "$mib" -ge $((4096 - 256))
 check "lease-b: node $N is in Mems_allowed ($(mems_allowed lease-b))" in_list "$N" "$(mems_allowed lease-b)"
+check_fenced "$N" lease-a lease-b
 k get pods,resourceclaims -n "$NS" | sed 's/^/    /'
 
 pages_on() {
@@ -85,6 +88,7 @@ echo "    $out" | cut -c1-300
 log "release returned after $(echo "$EPOCHREALTIME - $t0" | bc) s"
 ma=$(mems_allowed lease-a)
 check "lease-a: node $N is not in Mems_allowed any more ($ma)" eval "! in_list $N $ma"
+check_fenced "$N" lease-b
 pexec lease-a pkill -USR1 -f numa-touch.py
 sleep 1
 out=$(pexec lease-a cat /tmp/hold.log)

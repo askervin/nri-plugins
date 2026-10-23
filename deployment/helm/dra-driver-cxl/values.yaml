@@ -48,6 +48,11 @@ config: {}
 #   manageMemdevs: true
 #   # local devices shared by the claims of class cxl-local-shared
 #   sharedDevices: ["0xc100e2e1"]
+#   # keep containers off the CXL nodes of the driver that they did not
+#   # claim: allowed-mems (default) | mempolicy | none; none next to an
+#   # NRI resource policy that sets cpuset.mems (balloons, topology-aware)
+#   containerMemory:
+#     default: allowed-mems
 
 # Log verbosity (-v).
 logLevel: 4

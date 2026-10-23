@@ -15,7 +15,8 @@
 #   the NUMA node of the device. The node grows by the memory blocks of
 #   every such claim and shrinks by them when the claim goes. The
 #   containers of the claims get the node in their cpuset.mems and in
-#   CXL_<KEY>_NODE.
+#   CXL_<KEY>_NODE. No other container of the node has the node, also
+#   after a restart of the driver.
 # - mode dax: the slice is a character device /dev/daxX.Y in the
 #   containers of the claim (CXL_<KEY>_DAX), so containers get isolated
 #   pieces of one device. Pods that reference the same ResourceClaim share
@@ -38,7 +39,9 @@
 # on it at the same time, the NUMA node appearing with the first NUMA
 # claim and growing with the next one by exactly its blocks, while dax
 # claims (one rounded up to a block, one shared by two pods) take slices
-# next to them, with data isolated between the slices; the node shrinking
+# next to them, with data isolated between the slices; the node only in
+# the containers of the NUMA claims, before and after a restart of the
+# driver, and not in a pod created after the restart; the node shrinking
 # block by block as the NUMA pods go, while the dax pods keep their data;
 # the device back in its initial state (no region, memdev enabled,
 # published as at the start); claims with invalid configs that fail their
@@ -282,6 +285,9 @@ dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
 numa-env-check numa-a "$NUMA_A"
 dra-mems-wait "$VM2" numa-a main "$NUMA_NODE"
+# The node is numa-a's only: every other container of the node, those of
+# the control plane too, is kept off it.
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main"
 # Memory that numa-a allocates on the node is on the node.
 dra-touch-start "$VM2" numa-a/main "$TOUCH_MIB" "$NUMA_NODE"
 pages=$(dra-touch-log-pages "$DRA_TOUCH_LOG" "$NUMA_NODE")
@@ -318,6 +324,8 @@ node-size numa-b $(( NUMA_A + NUMA_B ))
 numa-env-check numa-b "$NUMA_B"
 dra-mems-wait "$VM2" numa-a main "$NUMA_NODE"
 dra-mems-wait "$VM2" numa-b main "$NUMA_NODE"
+# Both NUMA pods have the node, the dax pod does not.
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main" "$DRA_NS/numa-b/main"
 # One ResourceClaim referenced by two pods: prepared once, one slice for
 # both.
 dra-apply "$VM2" <<< "$(dra-claim-yaml claim shared-slice "$LOCAL_CLASS" "$(dra-mi "$SHARED")" dax)
@@ -355,6 +363,47 @@ LOCAL_CLAIMS="[c for c in items if any(r['device'] == '$DRA_LOCAL_DEVICE' for r 
 dra-assert "$COMMAND_OUTPUT" "len($LOCAL_CLAIMS) == 4 and sum(consumed(c) for c in $LOCAL_CLAIMS) == $TOTAL"
 node-size four-claims $(( NUMA_A + NUMA_B ))
 dra-vm-command "$VM2" "daxctl list -R -D 2>/dev/null; ls -l /dev/dax*; numactl -H" || :
+
+echo "### B2: a restart of the driver keeps the node to the NUMA pods, a new pod is kept off it"
+# The new driver knows the node from the prepared NUMA claims. Its own
+# container was created while no driver ran, with every node: the driver
+# fences it like every other container once it runs. The slices stay.
+dra-driver-restart "$VM2"
+dra-plugin-log-wait "$VM2" "NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims"
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main" "$DRA_NS/numa-b/main"
+dra-local-slices-wait "$VM2" restarted "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B" "dax:$SHARED"
+# A pod without a claim, created after the restart, gets an explicit
+# cpuset.mems without the node when its container is created: not even
+# its first process has the node.
+dra-apply "$VM2" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plain
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: $VM2_NAME
+  terminationGracePeriodSeconds: 2
+  restartPolicy: Never
+  containers:
+  - name: main
+    image: $DRA_TOOLS_IMAGE
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c", "grep Mems_allowed_list /proc/self/status; trap 'exit 0' TERM; sleep infinity & wait"]
+EOF
+dra-pod-wait "$VM2" plain Running 60
+dra-plugin-log-wait "$VM2" "NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems="
+PLAIN_MEMS=$(dra-plugin-log "$VM2" | sed -n "s|.*NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems=\([0-9,-]*\) .*|\1|p" | tail -n 1)
+if [ -z "$PLAIN_MEMS" ] || dra-nodes-has "$PLAIN_MEMS" "$NUMA_NODE"; then
+    error "plain: the driver gave it cpuset.mems '$PLAIN_MEMS' at its creation, expected nodes without $NUMA_NODE"
+fi
+mems=$(dra-container-read "$VM2" plain main cpuset.mems) || error "cannot read cpuset.mems of plain"
+dra-nodes-eq "$mems" "$PLAIN_MEMS" ||
+    error "plain: cpuset.mems is '$mems', the driver gave it '$PLAIN_MEMS' at its creation"
+dra-wait-log "$VM2" plain "Mems_allowed_list:"$'\t'"$mems" 30
+echo "plain: cpuset.mems $mems from its creation, also in Mems_allowed_list of its first process"
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main" "$DRA_NS/numa-b/main"
+dra-delete-pod "$VM2" plain
 
 echo "### C: the NUMA pods go, the node shrinks by their blocks, the dax slices keep their data"
 t0=$EPOCHREALTIME

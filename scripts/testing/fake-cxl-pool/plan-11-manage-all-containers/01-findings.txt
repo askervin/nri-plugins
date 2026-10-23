@@ -1,0 +1,167 @@
+plan-11: findings
+=================
+Written 2026-10-22 (orchestrator). Branch 5jg-cxl at ed99fcc44. Paths:
+N = ~/github.com/containers/nri-plugins, D = N/cmd/plugins/dra-driver-cxl,
+E = N/test/e2e/memory.test-suite/dra-driver-cxl, H = N/test/hw/
+dra-driver-cxl-local, R = ~/github.com/askervin/nri-plugins/test/hw/
+dra-driver-cxl-local (the hw report and its results: read only).
+
+F1. The problem on real hardware (R/REPORT.md, finding A)
+  cwf-bkc (machine-id 982d432423fa44019a74c86369c8a8f1): DRAM nodes 0-2
+  (SNC3), CXL node 3 (the window of mem0, memoryless until the driver
+  onlines a numa slice), possible nodes 0-11. Every container of the
+  node has an empty cpuset.mems and cpuset.mems.effective 0-2 (checked
+  2026-10-22 23:27 IST: 9 pods, 18 container scopes incl. pause). When
+  the driver onlines a numa slice on node 3, the effective mems of every
+  container without an explicit cpuset.mems grows to 0-3: test1's
+  "plain" had Mems_allowed 0-3, set_mempolicy(MPOL_PREFERRED, 3)
+  succeeded and its pages went to node 3. The same in test3 (leases).
+  e2e VM2 (n4-cxl-shared-2): DRAM nodes 0-1, CXL nodes 2-3 (one per CXL
+  host bridge window), possible 0-3; 7 kube-system containers, all with
+  an empty cpuset.mems.
+
+F2. Who writes cpuset.mems today
+  - Steered containers (a cxl.nri.io claim with numa memory: memdev
+    slice, region or dram): cgmpolmgr (pkg/cgmpolmgr/manager.go
+    allowNodes) writes the cgroup file directly at StartContainer and
+    when the plan reaches new nodes: the nodes holding memory, the step
+    nodes, and the nearest normal-memory node when the others are movable
+    only. Unclaimed CXL nodes are not among them. The spec's mems stays
+    empty (runtime does not know).
+  - Lent nodes (leases, mode numa): lend.go changeLend sets cpuset.mems
+    = base + lent through NRI UpdateContainers (the runtime's spec
+    follows). base = cpuset.mems.effective at StartContainer minus the
+    nodes lent to anyone.
+  - Everything else: nobody. The container inherits the effective mems
+    of its parents, i.e. every node with memory.
+  So the lend path already owns cpuset.mems of non-steered containers;
+  the new feature generalizes it from "borrowers" to "every non-steered
+  container".
+
+F3. Pool numa claims are not steered and get their node by inheritance
+  nri.go claimedMemory reads only nodeState claims (cxl.nri.io). A pool
+  claim (cxl-pool.nri.io) injects the same CXL_CLAIM_<uid> marker, but
+  GetClaimInfo returns nil for it: the container is not steered and has
+  its pool node only because it inherits every node (usage.md#steering,
+  pool.md step 4 say so). With CXL nodes kept away from containers that
+  did not claim them, a container with a pool numa claim must get its
+  node explicitly. Its nodes are in poolDriver.prepared (Node of devices
+  of mode numa). poolDriver.mu is held across the whole Prepare (waits
+  for udev up to the prepare timeout): an NRI handler must not take it.
+  The pool driver already keeps a lock-free snapshot for the publisher
+  (serials, serialsMu); the claim nodes can ride along.
+
+F4. NRI ownership: two plugins setting cpuset.mems of one container fail
+  nri v0.12.2 pkg/adaptation/result.go adjustCPUResource: a Cpu.Mems
+  adjustment claims ownership (owners.ClaimCPUSetMems); a second plugin
+  adjusting it in the same CreateContainer is a conflict and the
+  container creation fails. Unsolicited UpdateContainers
+  (Adaptation.updateContainers -> updateFn) are not ownership-checked:
+  the last writer wins silently. nri-resource-policy balloons and
+  topology-aware set cpuset.mems of every container they manage (chart
+  index 90; dra-driver-cxl index 30). leases.md already lists
+  "nri-resource-policy or the kubelet memory manager would conflict" for
+  lending. Running the driver's container memory management with such
+  a policy needs containerMemory "none".
+
+F5. containerd applies NRI updates to created containers at start
+  containerd CRI creates the runc task in StartContainer; a CREATED
+  container has a spec but no cgroup. UpdateContainerResources (the NRI
+  UpdateContainers path) updates the spec of a created container, and
+  the task is created with it. Updates and NRI events are serialized by
+  one lock in containerd: an update sent while an event handler of the
+  plugin waits for the plugin's own lock deadlocks until the request
+  timeout (lend.go header). So: no UpdateContainers from inside an NRI
+  handler; handlers must never wait for a lock that is held across an
+  UpdateContainers call.
+
+F6. runc writes cpuset.mems on update only when the spec has it
+  A resource update (kubelet resize, NRI update) rewrites cpuset.mems
+  from the spec when the spec has mems. Steered containers have spec
+  mems "" and cgmpolmgr's direct writes survive updates. Giving a
+  steered container spec mems at creation would make the next update
+  overwrite cgmpolmgr's narrower set: steered containers must stay
+  untouched by the new code.
+
+F7. When the CXL node appears, and how the driver knows it
+  - Local memdev, numa slice: local.go onlineSlice binds the slice's dax
+    device to kmem, onlines its blocks movable, then reads the node
+    (TargetNode(dax), else BlocksNode). TargetNode works before the bind:
+    the node is known before any memory is online.
+  - Pool device, numa: pool.go prepareDevice CreateRegion(ModeNUMA)
+    (kmem bound, blocks offline) then Online(); RegionInfo.Node is the
+    dax target node, known after CreateRegion, before Online.
+  - Companion claims (leases) of both drivers go through the same two
+    paths, then lend.
+  - At start: nodeState.preparedClaims (DeviceType memdev, Mode numa,
+    NUMANodes) and poolDriver.prepared (Mode numa, Node) hold every node
+    with driver-onlined memory. Both are loaded before the kubelet
+    plugins and NRI start.
+  - Region devices (a region the driver did not create, BIOS or admin)
+    are onlined by someone else, used as system RAM from boot by host
+    processes and running containers; the driver publishes them, claims
+    of them are steered. Not "a CXL NUMA node that the driver has
+    created".
+  - With a udev rule that onlines hot-added memory, kmem binding onlines
+    memory before the driver does (hw REPORT bug 2); the docs require no
+    such rule. Not handled here.
+
+F8. Ordering in newDriver
+  kubeletplugin.Start (Prepare can run) comes before startNRIPlugin, and
+  NRI may fail to connect (the driver runs on without it). The set of
+  fenced nodes must exist before the kubelet plugin starts and survive a
+  missing NRI plugin; NRI applies it when it synchronizes.
+
+F9. Driver restart and lends
+  After a restart nriPlugin's lent sets are empty until the lease broker
+  reconciles (broker.reconcileLoop: WaitSynchronized, then reconcile ->
+  relendContainer -> LendNode). A borrower's spec mems is base + lent
+  (written by the previous instance). Fencing running containers at
+  Synchronize would drop the lent node from the borrower (pages migrate
+  to DRAM) until the broker lends it again: the first fencing of running
+  containers must wait until the broker has re-applied its lends.
+
+F10. Pause containers (pod sandboxes) are out of NRI's reach
+  NRI has no cpuset.mems update for sandboxes. The pause process
+  allocates nothing after its start. cgroup listings of a node show one
+  pause scope per pod with an empty cpuset.mems: tests must check
+  containers (crictl ps), not every scope.
+
+F11. Processes outside containers
+  kubelet, containerd, systemd services and anything in system.slice or
+  user.slice keep every node. Out of scope ("all containers").
+
+F12. e2e tests and what they assert today
+  Every test reinstalls the driver (dra-install), so the set of fenced
+  nodes starts from the prepared claims (normally none) in each test;
+  kube-system containers live across tests and may carry an explicit
+  cpuset.mems from an earlier test. Checks must use
+  cpuset.mems.effective and Mems_allowed, not cpuset.mems == "".
+  - test10-dra-pooling: pool numa node of pooled-consumer; the pod prints
+    Mems_allowed_list. Good place: pooled-consumer has the node, no other
+    container of VM2 has it.
+  - test12-dra-live-attach: lend-memory asserts that container idle of
+    the borrower keeps its cpuset.mems unchanged, and when it was empty,
+    that idle's effective mems HAVE the lent node ("Nobody restricts the
+    nodes of idle"). That branch flips: idle never has the node.
+  - test14-dra-local-memdev: local numa slices on node N for numa-a and
+    numa-b, dax slices for others. Good place: numa-a/numa-b have N,
+    dax pods and every kube-system container do not; a driver restart
+    keeps that, and a pod created after the restart is fenced at
+    creation.
+  - test15-dra-local-live-attach: lent-check asserts the same "idle
+    inherits" branch as test12; flips too. Static numa pods keep N.
+  - test16-cxl-llm-share, test17, test18, test11, test13: dax, block, fs
+    and shared devices; no numa memory of the driver except possibly
+    none; must keep passing (regression).
+  - test19-many-pools: pool numa claims on VM0/VM1/VM2; regression and
+    the same "only claimers have the node" holds on workers.
+  Helpers that exist: dra-container-read, dra-mems-wait, dra-nodes-has,
+  dra-nodes-eq, dra-driver-restart, dra-plugin-log, dra-exec.
+
+F13. hw tests
+  H/test1-sliced-numa.sh already checks "node N is not in Mems_allowed
+  of plain" and that set_mempolicy(MPOL_PREFERRED, N) is refused in
+  plain: both failed in the report. test3-local-leases.sh has the same
+  for leases. H and R differ only by REPORT.md, results/ and editor
+  backups (diff -r).

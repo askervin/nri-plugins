@@ -1,0 +1,268 @@
+plan-11: status of stream DRV (driver code and unit tests)
+==========================================================
+Written 2026-10-22 (DRV). Branch 5jg-cxl, nothing committed. Paths and
+D<n>/F<n> as in 01-findings.txt and 02-design.txt; D = N/cmd/plugins/
+dra-driver-cxl. Only D/*.go touched (fence.go and fence_test.go new).
+
+What changed, per file
+----------------------
+D/driver.go
+  - DriverConfig.ContainerMemory *ContainerMemoryConfig
+    (`json:"containerMemory,omitempty"`), ContainerMemoryConfig{Default
+    string `json:"default,omitempty"`}; constants containerMemoryAllowedMems
+    "allowed-mems", containerMemoryMempolicy "mempolicy",
+    containerMemoryNone "none"; DriverConfig.containerMemory() (default
+    allowed-mems for an absent object or an empty default) and
+    DriverConfig.validate(), called by newDriverConfigFromString.
+  - newDriver: newNodeFence(mode) before the pool driver, the start log
+    (D8), fence to loadPoolDriver (pool.fence) and newDriverState
+    (local.fence), fence.seed(preparedNodes(state, pool)) right after the
+    node state, before kubeletplugin.Start; startNRIPlugin gets fence, pool
+    and sysfsRoot; NRI failure -> fence.setNoNRI(); without a broker
+    nri.LendsRestored() right after NRI started.
+D/fence.go (new)
+  - nodeFence {mu, nodes cpuset.CPUSet, applier fenceApplier, noNRI};
+    nil = mode none. newNodeFence, mode, Nodes, Fence(ctx, node), seed,
+    setApplier, setNoNRI; fenceApplier interface{ fenceContainers(ctx) };
+    preparedNodes(state, pool): memdev numa NUMANodes of the cxl.nri.io
+    prepared claims + numa nodes of the pool snapshot; nonNegative.
+D/nri.go
+  - nriPlugin: fence, poolNodes (pool.ClaimNodes), hasMemory
+    (<sysfsRoot>/sys/devices/system/node/has_memory, as newMemctl builds
+    SysRoot), lendsRestored, fenceReady, fenceWG.
+  - startNRIPlugin(ctx, state, opts, fence, pool, sysfsRoot); after
+    stub.Start: fence.setApplier(p).
+  - CreateContainer: claims read first (steeringPlan, claimNodes, no
+    p.mu), then one p.mu section: trackCreated, pending/steered, claimed,
+    fenceCreated (reads F, computes want, records tc.mems). Adjustment
+    SetLinuxCPUSetMems only when want differs from the spec as a set.
+  - steeringPlan (the former body of CreateContainer, same logs),
+    memoryMode(pod, ctr) (returns the default), claimNodes(uids) (nodeState
+    memdev/region devices of mode numa + pool snapshot).
+D/lend.go
+  - header comment on fencing and lock order.
+  - trackedContainer: fenced (memoryMode == allowed-mems, set in
+    trackCreated), mems (spec cpuset.mems as the plugin knows it), claimed.
+  - Synchronize: claimed for new entries, mems from the spec for every
+    container, p.startFencing() at the end (pass in a goroutine when
+    ready).
+  - changeLend: fenced containers use fencedLend (base = own - F - node,
+    mems = base | claimed | lent, needed = mems differs from tc.mems;
+    steered: never needed); the none-mode computation is the old code
+    unchanged. tc.mems recorded after a successful update.
+  - new: steeredLocked, memNodes (lazy has_memory reader), ownMems,
+    wantMems, sameMems, fenceCreated, LendsRestored, startFencing,
+    fenceContainers (the pass), sortedContainers.
+D/local.go
+  - localAllocator.fence; onlineSlice: Fence(TargetNode(dax)) before the
+    kmem bind; after onlining, if the found node differs (TargetNode was
+    -1), V(3) log and late Fence.
+D/pool.go
+  - poolDriver.fence; claimNodes snapshot next to serials (same
+    serialsMu, refreshed by updateSerials); ClaimNodes(uid) and
+    numaNodes(), both nil-safe; prepareDevice numa: Fence(created.Node)
+    after CreateRegion and before Online, late Fence (V(3)) when the node
+    is known only after Online.
+D/broker.go
+  - reconcileLoop: after the first reconcile, LendsRestored() on the
+    lender if it has it (interface{ LendsRestored() }).
+Tests
+  - D/fence_test.go (new): TestFenceNodes, TestFencePreparedNodes,
+    TestFenceWantMems, TestFenceCreateContainer, TestFencePass,
+    TestFenceLend, TestFenceRestart, TestFenceLocalBeforeOnline,
+    TestFencePoolBeforeOnline.
+  - D/driver_test.go: TestDriverConfigContainerMemory.
+  - D/broker_test.go: TestBrokerLendsRestored (restoringLender).
+  - D/lend_test.go: ltStub.failIDs (per-container failed updates; nil
+    keeps the old behavior). No existing test changed otherwise.
+  D9 coverage: config parse (default, three values, invalid, mempolicy,
+  unknown key); want arithmetic (empty spec, explicit spec, lent, claimed,
+  has_memory unreadable, nothing left); CreateContainer (adjusted; not
+  adjusted with F empty, steered, mode none, want == spec, has_memory
+  unreadable; recorded mems; dax claim, pool numa claim, unknown claim);
+  pass (running and created containers, steered skipped, unchanged
+  skipped, per-container failure retried by the next pass, UpdateContainers
+  error retried, nothing sent when nothing changes, reconnect resync,
+  created-then-fenced container left alone); Fence before readiness
+  records only; LendsRestored then pass, once only; lend/revoke in
+  allowed-mems (mems = DRAM + lent, back to DRAM, pass keeps lent node,
+  own nodes unknown refused, steered never updated); restart (borrower
+  keeps the lent node, others fenced at LendsRestored); none mode = the
+  existing lend tests untouched; pool ClaimNodes/numaNodes snapshot
+  (also after a restart, cleared at unprepare, dax not fenced); local and
+  pool fence before onlining (checked by a mutation that moved Fence
+  after onlining: both tests fail).
+
+Config keys and error texts
+---------------------------
+  containerMemory:
+    default: allowed-mems | mempolicy | none   (absent/empty: allowed-mems)
+  mempolicy:  containerMemory.default: mempolicy is not implemented yet
+  other:      containerMemory.default: invalid value "X" (allowed-mems, mempolicy or none)
+  (returned by newDriverConfigFromString unwrapped; newDriver wraps it as
+  "newDriverConfigFromString: <text>", so the driver exits with it.)
+
+Log texts (exact; klog)
+-----------------------
+  Info     containerMemory: allowed-mems: containers get the CXL nodes of the driver only by claims and leases
+  Info     containerMemory: none: containers are not kept off the CXL nodes of the driver
+  Info     NRI fence: fencing CXL nodes %s of prepared claims          (seed, only if not empty)
+  Info     NRI fence: fencing CXL node %d (fenced nodes %s)            (Fence adds a node)
+  Info     NRI fence: %d containers updated, %d failed (fenced nodes %s)   (pass that sent updates)
+  V(3)     NRI fence: ctr=%s id=%s cpuset.mems=%s (was %q, fenced nodes %s)   (per updated container)
+  V(3)     NRI CreateContainer: ctr=%s: cpuset.mems=%s (fenced nodes %s)   (adjustment)
+  V(3)     NRI fence: lends restored, fencing running containers
+  Warning  NRI fence: ctr=%s id=%s: %v                                  (failed update; also want unknown)
+  Warning  NRI fence: NRI not connected, containers are not fenced from CXL node %d
+  Not in D8 (new):
+  Warning  NRI CreateContainer: ctr=%s: cpuset.mems left as it is: %v   (want unknown at creation)
+  V(3)     local: memdev %s (serial 0x%x): claim %s: NUMA node %d of %s known only after onlining, fencing it late
+  V(3)     %s: %s: NUMA node %d of %s known only after onlining, fencing it late   (pool: driver name, memdev, node, region)
+  The failed-update %v is "NRI UpdateContainers(cpuset.mems=M): <err>" or
+  "NRI UpdateContainers(cpuset.mems=M): update failed in the runtime".
+  Fenced-node sets print as cpuset strings ("2", "2-3", "2,4").
+  The chart's logLevel 4 shows the V(3) lines.
+
+Lock order and why it is deadlock-free
+--------------------------------------
+  nodeLocks claim lock -> localAllocator.mu | poolDriver.mu -> lendMu ->
+  p.mu -> {nodeFence.mu, baseState mutex (GetClaimInfo), pool serialsMu}
+  - Fence takes nodeFence.mu alone and releases it before the pass.
+  - The pass (fenceContainers): p.mu briefly (readiness), lendMu, p.mu
+    (collect), p.mu released, UpdateContainers, p.mu (record). p.mu is
+    never held across UpdateContainers; nodeFence.mu, baseState and
+    serialsMu are leaves held only while reading.
+  - changeLend (unchanged order): lendMu -> p.mu, released before
+    UpdateContainers. pool Prepare already did poolDriver.mu -> lendMu
+    (lender.lend); Fence adds the same edge, and the local allocator adds
+    localAllocator.mu -> lendMu. Nothing that holds lendMu or p.mu waits for
+    localAllocator.mu, poolDriver.mu or a claim lock.
+  - NRI handlers take only p.mu, baseState (claimedMemory, claimNodes),
+    serialsMu and nodeFence.mu; none of them is held across
+    UpdateContainers, so containerd's event/update lock cannot close a
+    cycle. CreateContainer reads claims before p.mu.
+  - Passes started by Synchronize and LendsRestored run in goroutines
+    (startFencing, called with p.mu held, only spawns); passes from Fence
+    run in the Prepare's goroutine, never in an NRI handler.
+  - The broker calls LendsRestored from its reconcile goroutine without
+    b.mu held.
+  Race-freedom of CreateContainer vs. a pass: Fence adds the node to F
+  before the pass takes p.mu, and CreateContainer reads F inside its p.mu
+  section, so a new container either sees the node in F (adjusted) or is
+  tracked before the pass collects (updated by it).
+
+Deviations from 02-design, with reasons
+---------------------------------------
+  1. The local allocator gets the fence by field assignment in
+     newDriverState right after newLocalHelper, not as a parameter of
+     newLocalHelper: TestNewLocalHelper calls newLocalHelper with its
+     current signature and must stay unchanged; Reconcile (inside
+     newLocalHelper) never onlines memory, so nothing is missed. Same for
+     the pool driver: loadPoolDriver(..., fence) sets pool.fence after
+     newPoolDriver, whose signature the pool tests use.
+  2. changeLend in allowed-mems mode: base = own(c) - F - {node} (also
+     minus the node being lent or revoked, as none mode does), so a revoke
+     drops the node even if it were not fenced.
+  3. A steered container in allowed-mems mode: a revoke never updates it
+     (D4: steered containers never updated). In none mode the old code
+     runs (it may shrink cpuset.mems through cgroupMemsContain, as today).
+  4. want that is empty (own nodes all fenced, no claims, no lends) is
+     treated as unknown: the container is left as it is with a warning
+     (cpuset.mems "" through NRI means "unchanged").
+  5. Synchronize refreshes tc.mems from the runtime's spec for every
+     container, also known ones (reconnect), so a lost update is redone.
+  6. "Warning once at Fence": logged at each Fence that adds a node while
+     NRI did not start, i.e. once per node. Fence calls before NRI starts
+     (window between kubeletplugin.Start and startNRIPlugin) only record:
+     the readiness pass covers them.
+  7. fenceWG (a WaitGroup of background passes) exists so that the unit
+     tests can wait for them; Stop does not wait on it.
+  8. Late fences have their own V(3) log texts (not given by D8, listed
+     above).
+
+Verification (from N)
+---------------------
+  go build ./cmd/plugins/dra-driver-cxl/...                    -> ok
+  go test ./cmd/plugins/dra-driver-cxl/... ./pkg/cgmpolmgr/... ./pkg/cxl/...
+    ok  github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl  38.578s
+    ok  .../pkg/cgmpolmgr, pkg/cxl, pkg/cxl/api, pkg/cxl/device,
+        pkg/cxl/memctl, pkg/cxl/memorypolicy
+  go test -race ./cmd/plugins/dra-driver-cxl/...
+    ok  github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl  43.657s
+  go test -race -count=10 ./cmd/plugins/dra-driver-cxl/ -run 'TestFence|TestBrokerLendsRestored|TestLend|TestDriverConfig'
+    ok  (15.6s)
+  go vet ./cmd/plugins/dra-driver-cxl/...                      -> no output
+  gofmt -l cmd/plugins/dra-driver-cxl                          -> no output
+  golangci-lint run ./cmd/plugins/dra-driver-cxl/...           -> 0 issues.
+    (golangci-lint 2.12.2; the package-scoped run, no whole-tree run)
+  grep -P '[^\x00-\x7F]' D/*.go                                -> none
+  The existing tests passed before any test file was touched (baseline
+  and after the code changes).
+
+Open points
+-----------
+  - The late fence (node unknown before onlining) has no unit test: the
+    fake sysfs always has target_node. Code path is two lines in each of
+    local.go and pool.go.
+  - newDriver itself (wiring, seed before kubeletplugin.Start, start log,
+    LendsRestored without a broker) has no unit test (it needs a kubelet
+    plugin); e2e test14 checks the seed log after a restart.
+  - The NRI adjustment makes the driver an owner of cpuset.mems at
+    creation (F4): next to a resource policy that sets cpuset.mems the
+    container creation fails unless containerMemory.default is none (as
+    documented by DOC).
+  - A container whose spec cpuset.mems names only fenced nodes is left as
+    it is (deviation 4); no such container exists in the e2e/hw setups.
+  - newDriver keeps using the untrimmed sysfsRoot for has_memory, like
+    newMemctl does (pre-existing: cxlFlags.SysfsRoot is trimmed of "/sys"
+    but the local variable is not); no change made.
+  - O1-O5 of D12 unchanged.
+
+Requests
+--------
+  None. pkg/cgmpolmgr needed no change.
+
+DRV done
+
+Fixes after review (05-review.txt V1, V2)
+-----------------------------------------
+V1 D/fence.go: nodeFence.fenceMu (new) serializes Fence: held across the
+   check, the add and the pass. A concurrent Fence of a node that is
+   being fenced (local and pool Prepare under one host bridge) returns
+   only after the pass of the first one. f.mu stays the short lock of
+   the set that NRI handlers take through Nodes(). Lock order now:
+   claim lock -> localAllocator.mu | poolDriver.mu -> fence.fenceMu ->
+   lendMu -> p.mu -> {fence.mu, baseState, serialsMu}. Nothing that holds
+   lendMu, p.mu or fence.mu takes fenceMu (only Fence does), so no cycle.
+   Header comments of fence.go and lend.go state the order.
+V2 D/nri.go StartContainer, D/lend.go fenceMissed (new): with p.mu held,
+   after trackStarted, when fencing is ready, the fenced set is not
+   empty, the container is fenced and not steered, and wantMems differs
+   from its recorded mems, StartContainer calls startFencing: the pass
+   runs in a goroutine (it waits for lendMu and p.mu), never inside the
+   handler. No new log text (the pass logs as before).
+Tests (D/fence_test.go, D/lend_test.go)
+   - TestFenceConcurrent: two concurrent Fence(2); the second has not
+     returned while the first is blocked in UpdateContainers, both
+     return after it, one update "c1 mems=0-1".
+   - TestFenceMissedAtStart: an update of a created container fails
+     (not in the runtime's store), the container's StartContainer
+     applies it in the background ("c1 mems=0-1"); a container fenced at
+     creation gets nothing at its start.
+   - ltStub: entered/gate channels (nil: unchanged behavior).
+   Mutation check: without fenceMu.Lock TestFenceConcurrent fails ("the
+   second Fence returned before the update of the first"); without the
+   StartContainer pass TestFenceMissedAtStart fails (updates []).
+Checks (from N), all clean:
+   go build ./cmd/plugins/dra-driver-cxl/...                    -> ok
+   go test ./cmd/plugins/dra-driver-cxl/... ./pkg/cgmpolmgr/... ./pkg/cxl/...
+     ok  .../cmd/plugins/dra-driver-cxl  38.557s; pkg/cgmpolmgr, pkg/cxl/... ok
+   go test -race ./cmd/plugins/dra-driver-cxl/...               -> ok 43.774s
+   go test -race -count=10 ... -run 'TestFence|TestBrokerLendsRestored|TestLend|TestDriverConfig'
+                                                                -> ok 16.225s
+   go vet ./cmd/plugins/dra-driver-cxl/...                      -> no output
+   gofmt -l cmd/plugins/dra-driver-cxl                          -> no output
+   golangci-lint run ./cmd/plugins/dra-driver-cxl/...           -> 0 issues.
+   non-ASCII in D/*.go                                          -> none
+
+DRV fixes done

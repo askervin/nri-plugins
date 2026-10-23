@@ -22,6 +22,11 @@
 #                     without foreign regions. A reboot (BIOS) or "cxl
 #                     create-region" brings such a region back.
 #
+# Environment (and the variables of lib.sh):
+#   CONTAINER_MEMORY  containerMemory.default of the driver configuration
+#                     (allowed-mems, mempolicy or none); unset: not in the
+#                     configuration, the driver's default applies
+#
 # Switching between sliced and shared needs an idle device: delete the
 # pods and claims of the device first.
 set -o pipefail
@@ -106,10 +111,18 @@ values="image:
   tag: $IMAGE_TAG
   pullPolicy: Never
 logLevel: 4"
+config=""
 if [ "$mode" == shared ]; then
-    values+="
-config:
+    config+="
   sharedDevices: [\"$S\"]"
+fi
+if [ -n "$CONTAINER_MEMORY" ]; then
+    config+="
+  containerMemory: {default: $CONTAINER_MEMORY}"
+fi
+if [ -n "$config" ]; then
+    values+="
+config:$config"
 fi
 echo "$values" | t "cat > /root/dra-driver-cxl-values.yaml"
 log "helm values:"

@@ -1,0 +1,125 @@
+plan-11: status of stream HW
+============================
+2026-10-22. Phase 1 (edits only). H = N/test/hw/dra-driver-cxl-local.
+Nothing committed, nothing deployed, no test run.
+
+Changes per file
+----------------
+H/lib.sh
+  - node_mems: one ssh to TARGET; for every `crictl ps -q --state
+    running` container, crictl inspect (go-template: namespace/pod/
+    container labels and .info.pid), cgroup from /proc/<pid>/cgroup
+    ("0::" line), prints "NAMESPACE/POD/CONTAINER CPUSET.MEMS EFFECTIVE"
+    ("-" for an empty cpuset.mems). Sandboxes are not listed (crictl ps
+    lists containers only). Containers that exit between ps and the read
+    are skipped.
+  - fence_offenders N TABLE CONTAINER...: one line per container that
+    breaks "only CONTAINERs have N in effective mems", and per listed
+    CONTAINER missing from TABLE ("not running").
+  - check_fenced N POD...: allowed = $NS/POD/main; retries node_mems +
+    fence_offenders every second for 30 s; prints the table, then one
+    PASS ("node N is in the effective mems of <list> of the K containers
+    of the node") or one FAIL per offender ("node N fenced: <ctr>: ...").
+H/test1-sliced-numa.sh
+  - header comment: plain2, the fence and restart checks.
+  - after the Mems_allowed checks of numa-a/numa-b/plain: check_fenced
+    "$N" numa-a numa-b. The plain checks (Mems_allowed, set_mempolicy
+    refused) are unchanged.
+  - after numa-b's release (numa-a holds N alone): driver restart. Saves
+    the driver log, deletes the driver pod (--wait), waits for a new
+    Running pod (check, 180 s), waits for "NRI fence: fencing CXL nodes
+    .* of prepared claims" in the new pod's log (check, 60 s), checks N
+    is in that node list (brackets stripped, spaces -> commas, so "3",
+    "[3]", "3-4", "[3 4]" all parse), logs the time; check_fenced "$N"
+    numa-a. Then pod plain2 (no claim): cpuset.mems non-empty and
+    without N, Mems_allowed without N, the log line "NRI CreateContainer:
+    ctr=$NS/plain2/main: cpuset.mems=" (check, 30 s); prints the fence
+    and plain2 log lines.
+  - the final "driver log of ..." sections grep the saved log of the
+    old pod plus the new pod's log (the steering lines of numa-a/numa-b
+    are in the old pod's log).
+H/test2-sliced-dax.sh
+  - after the node size check of numa-c (all six pods Running, dax and
+    numa slices at the same time): check_fenced "$N" numa-c. Header
+    comment updated.
+H/test3-local-leases.sh
+  - after both numa leases are Ready: check_fenced "$N" lease-a lease-b;
+    after lease-a's release: check_fenced "$N" lease-b. Header updated.
+H/deploy.sh
+  - CONTAINER_MEMORY (env): adds "containerMemory: {default: <value>}"
+    under config: in both configurations (with sharedDevices when
+    shared); unset: no config key (chart default config: {}), driver
+    default. Header documents it. Generated values checked offline with
+    yaml.safe_load for sliced/shared x unset/none.
+H/README.md
+  - table rows of lib.sh, test1-3; CONTAINER_MEMORY in Environment; a
+    paragraph on allowed-mems and check_fenced/node_mems.
+
+Tried on cwf (read-only)
+------------------------
+machine-id 982d432423fa44019a74c86369c8a8f1 (cwf-bkc). Old driver image
+v0.15.0-31-gd0805a37-dirty running, no test pods.
+  $ TARGET=root@cwf bash -c 'source lib.sh; node_mems'     (0.65 s)
+  kube-system/nri-dra-driver-cxl-q6h7g/nri-dra-driver-cxl - 0-2
+  kube-system/coredns-559f6c778d-bhn4t/coredns - 0-2
+  kube-system/coredns-559f6c778d-vlwpk/coredns - 0-2
+  kube-flannel/kube-flannel-ds-n7dkm/kube-flannel - 0-2
+  kube-system/kube-proxy-xg7ss/kube-proxy - 0-2
+  kube-system/etcd-cwf-bkc/etcd - 0-2
+  kube-system/kube-scheduler-cwf-bkc/kube-scheduler - 0-2
+  kube-system/kube-controller-manager-cwf-bkc/kube-controller-manager - 0-2
+  kube-system/kube-apiserver-cwf-bkc/kube-apiserver - 0-2
+  check_fenced 3            -> PASS (9 containers)
+  check_fenced 0 x          -> after 30 s one FAIL per kube-system
+                               container plus "cxl-hw/x/main: not running"
+
+Checks run
+----------
+  bash -n on lib.sh, deploy.sh, test1-3: ok
+  shellcheck -x: only SC2016 (intended single quotes for remote
+    commands), SC2001 (the files' sed-indent idiom), SC2148 (lib.sh has
+    no shebang), SC2119 (driver_log in deploy.sh): all of the kinds that
+    were there before; no new warning or error.
+  ASCII: grep -P '[^\x00-\x7F]' on the changed files: none.
+
+Open points
+-----------
+- Log texts are taken from 02-design D8; 04-status-DRV.txt did not exist
+  yet. Before phase 2 check: seed "NRI fence: fencing CXL nodes %s of
+  prepared claims" (test1 parses %s, see above) and adjustment "NRI
+  CreateContainer: ctr=%s: cpuset.mems=" with ctr = ns/pod/container
+  (V(3); deploy uses logLevel 4).
+- test3 assumes the companion pods cxl-lease-<id> (container "pause",
+  no claim reference, no CXL_CLAIM marker) are fenced containers, i.e.
+  do not have N. If DRV treats them otherwise, check_fenced in test3
+  fails on them.
+- After the restart the new driver container itself is created before
+  its NRI plugin runs; it gets fenced by the readiness pass (check_fenced
+  retries 30 s for that).
+- With CONTAINER_MEMORY=none the new checks (and the plain checks) are
+  expected to fail; run-all.sh does not use none.
+
+Requests
+--------
+none.
+
+HW phase 1 done
+
+Phase 2 (runs on root@cwf)
+--------------------------
+- Greps of test1 rechecked against the final log texts of
+  04-status-DRV.txt: they match (fenced sets print as cpuset strings,
+  ctr=ns/pod/container). No edit needed.
+- Pre-checks: same host (machine-id 982d432423fa44019a74c86369c8a8f1),
+  no pods/claims in cxl-hw, no region: no --prepare-node.
+- TARGET=root@cwf ./run-all.sh --image .../nri-dra-driver-cxl-image-d8a0980797d9.tar
+  610 s. test1 30/1, test2 22/0, test3 22/0, test4 28/1, test5 2/2.
+  The only failures are finding B (test1 numa-b 3593 MiB beyond its
+  claim) and finding C (test4 reader-c, test5 both). Every finding-A
+  check and every new check (check_fenced, restart seed, plain2 at
+  creation) passes. Details, tables and log lines in 06-runs-HW.txt.
+- No test edits in phase 2, no Requests.
+- Driver left deployed sliced with the new image; cxl-hw empty, no
+  region.
+
+HW done

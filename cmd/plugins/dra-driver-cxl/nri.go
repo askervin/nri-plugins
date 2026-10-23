@@ -31,6 +31,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	"k8s.io/klog/v2"
+	"k8s.io/utils/cpuset"
 )
 
 // NRIOpts holds NRI plugin configuration from CLI flags.
@@ -44,6 +45,9 @@ type NRIOpts struct {
 // TODO: make this configurable or auto-detect from /proc/mounts.
 const cgroupV2MountPoint = "/sys/fs/cgroup"
 
+// hasMemoryFile lists the NUMA nodes with memory, under the sysfs root.
+const hasMemoryFile = "sys/devices/system/node/has_memory"
+
 // pendingSteering is the memory steering of a container that has
 // been created but not started yet.
 type pendingSteering struct {
@@ -52,22 +56,35 @@ type pendingSteering struct {
 }
 
 // nriPlugin implements the NRI container lifecycle hooks that start
-// and stop memory steering of containers with CXL claims, and keeps
-// the table of containers that the lend primitives (lend.go) use.
+// and stop memory steering of containers with CXL claims, keeps the
+// containers that are not steered off the fenced nodes (fence.go), and
+// keeps the table of containers that the lend primitives (lend.go) use.
 type nriPlugin struct {
-	stub     nriStub
-	state    *nodeState
-	pending  map[string]pendingSteering    // key: containerID
-	managers map[string]*cgmpolmgr.Manager // key: containerID
-	mu       sync.Mutex                    // protects all fields below too
+	stub  nriStub
+	state *nodeState
+	fence *nodeFence // nil: containerMemory none
+	// poolNodes returns the NUMA nodes of the devices in mode numa of a
+	// pool claim, nil for none.
+	poolNodes func(uid string) []int
+	// hasMemory is the sysfs file of the NUMA nodes with memory.
+	hasMemory string
+	pending   map[string]pendingSteering    // key: containerID
+	managers  map[string]*cgmpolmgr.Manager // key: containerID
+	mu        sync.Mutex                    // protects all fields below too
 
 	ctrs       map[string]*trackedContainer // key: containerID
 	seq        uint64                       // creation counter of ctrs
 	syncedC    chan struct{}                // closed at first Synchronize
 	goneFns    []func(ref containerRef)
 	startedFns []func(ref containerRef)
+	// lendsRestored is set when the lends of a restarted plugin are
+	// applied again, fenceReady when fencing of running containers runs
+	// (synchronized and lends restored).
+	lendsRestored bool
+	fenceReady    bool
 
-	lendMu sync.Mutex // serializes LendNode and RevokeNode
+	lendMu  sync.Mutex     // serializes LendNode, RevokeNode and fence passes
+	fenceWG sync.WaitGroup // fence passes running in the background
 }
 
 // klogLogger writes cgmpolmgr log messages with klog.
@@ -80,12 +97,17 @@ func (klogLogger) Errorf(format string, args ...any) { klog.Errorf(format, args.
 
 // startNRIPlugin creates and starts the NRI plugin. It connects to
 // the container runtime's NRI socket and begins listening for
-// container lifecycle events.
-func startNRIPlugin(ctx context.Context, state *nodeState, opts NRIOpts) (*nriPlugin, error) {
+// container lifecycle events. The plugin keeps containers off the nodes
+// of fence, gets the nodes of pool claims from pool, and the nodes with
+// memory from the sysfs under sysfsRoot.
+func startNRIPlugin(ctx context.Context, state *nodeState, opts NRIOpts, fence *nodeFence, pool *poolDriver, sysfsRoot string) (*nriPlugin, error) {
 	p := &nriPlugin{
-		state:    state,
-		pending:  make(map[string]pendingSteering),
-		managers: make(map[string]*cgmpolmgr.Manager),
+		state:     state,
+		fence:     fence,
+		poolNodes: pool.ClaimNodes,
+		hasMemory: filepath.Join(sysfsRoot, "/", hasMemoryFile),
+		pending:   make(map[string]pendingSteering),
+		managers:  make(map[string]*cgmpolmgr.Manager),
 	}
 	p.initLendState()
 
@@ -111,6 +133,7 @@ func startNRIPlugin(ctx context.Context, state *nodeState, opts NRIOpts) (*nriPl
 	if err := p.stub.Start(ctx); err != nil {
 		return nil, fmt.Errorf("failed to start NRI plugin: %w", err)
 	}
+	fence.setApplier(p)
 
 	klog.V(3).Info("NRI plugin started")
 	return p, nil
@@ -141,7 +164,9 @@ func (p *nriPlugin) onClose() {
 // CreateContainer is called by the container runtime (via NRI) when a
 // new container is about to be created. It aggregates all CXL claims
 // of the container into one memory steering plan and stores it until
-// StartContainer. Returns an error if the claims specify conflicting
+// StartContainer. A container that is not steered gets cpuset.mems
+// without the fenced nodes that it did not claim, if that changes its
+// cpuset.mems. Returns an error if the claims specify conflicting
 // memory policies or no plan can be built, blocking container
 // creation.
 func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
@@ -150,26 +175,53 @@ func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr 
 
 	klog.V(3).Infof("NRI CreateContainer: ctr=%s id=%s", ctrName, ctrID)
 
+	// The claims are read before p.mu is taken.
+	claimUIDs := extractClaimUIDs(ctr.GetEnv())
+	plan, err := p.steeringPlan(ctrName, claimUIDs)
+	if err != nil {
+		p.mu.Lock()
+		p.trackCreated(pod, ctr)
+		p.mu.Unlock()
+		return nil, nil, err
+	}
+	claimed := p.claimNodes(claimUIDs)
+
 	p.mu.Lock()
-	p.trackCreated(pod, ctr)
+	tc := p.trackCreated(pod, ctr)
+	if plan != nil {
+		p.pending[ctrID] = pendingSteering{name: ctrName, plan: plan}
+		tc.steered = true
+	}
+	tc.claimed = claimed
+	mems, fenced := p.fenceCreated(tc)
 	p.mu.Unlock()
 
-	// Scan container env vars for CDI-injected claim markers.
-	claimUIDs := extractClaimUIDs(ctr.GetEnv())
+	if mems == "" {
+		return nil, nil, nil
+	}
+	klog.V(3).Infof("NRI CreateContainer: ctr=%s: cpuset.mems=%s (fenced nodes %s)", ctrName, mems, fenced)
+	adjust := &api.ContainerAdjustment{}
+	adjust.SetLinuxCPUSetMems(mems)
+	return adjust, nil, nil
+}
+
+// steeringPlan returns the memory steering plan of a container with the
+// claims, nil if the claims have no DRAM or CXL memory to steer.
+func (p *nriPlugin) steeringPlan(ctrName string, claimUIDs []string) (*cgmpolmgr.Plan, error) {
 	if len(claimUIDs) == 0 {
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s: no CXL claims", ctrName)
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	klog.V(5).Infof("NRI CreateContainer: ctr=%s has %d CXL claim(s): %v", ctrName, len(claimUIDs), claimUIDs)
 
 	mem, userPolicy, err := p.claimedMemory(ctrName, claimUIDs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("NRI CreateContainer: ctr=%s: %w", ctrName, err)
+		return nil, fmt.Errorf("NRI CreateContainer: ctr=%s: %w", ctrName, err)
 	}
 	if len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0 {
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s: no DRAM or CXL devices in claims", ctrName)
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	policy := defaultPolicy(mem)
@@ -178,21 +230,39 @@ func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr 
 	}
 	plan, err := policy.Plan(mem)
 	if err != nil {
-		return nil, nil, fmt.Errorf("NRI CreateContainer: ctr=%s: failed to build memory steering plan: %w",
+		return nil, fmt.Errorf("NRI CreateContainer: ctr=%s: failed to build memory steering plan: %w",
 			ctrName, err)
 	}
 
-	p.mu.Lock()
-	p.pending[ctrID] = pendingSteering{name: ctrName, plan: plan}
-	if tc, ok := p.ctrs[ctrID]; ok {
-		tc.steered = true
-	}
-	p.mu.Unlock()
-
 	klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (order=%s, dramNodes=%v, cxlNodes=%v, %s)",
 		ctrName, policy.MemoryUseOrder, mem.DRAMNodes, mem.CXLNodes, plan)
+	return plan, nil
+}
 
-	return nil, nil, nil
+// memoryMode returns the containerMemory mode of a container.
+func (p *nriPlugin) memoryMode(_ *api.PodSandbox, _ *api.Container) string {
+	return p.fence.mode()
+}
+
+// claimNodes returns the NUMA nodes of the devices in mode numa of the
+// claims, of both drivers.
+func (p *nriPlugin) claimNodes(claimUIDs []string) cpuset.CPUSet {
+	nodes := cpuset.New()
+	for _, uid := range claimUIDs {
+		if p.state != nil {
+			if info := p.state.GetClaimInfo(uid); info != nil {
+				for _, d := range info.Devices {
+					if d.Mode == cxlapi.ModeNUMA && (d.DeviceType == device.DeviceTypeMemdev || d.DeviceType == device.DeviceTypeRegion) {
+						nodes = nodes.Union(cpuset.New(nonNegative(d.NUMANodes)...))
+					}
+				}
+			}
+		}
+		if p.poolNodes != nil {
+			nodes = nodes.Union(cpuset.New(p.poolNodes(uid)...))
+		}
+	}
+	return nodes
 }
 
 // RemoveContainer is called by the container runtime (via NRI) when a
@@ -220,7 +290,8 @@ func (p *nriPlugin) RemoveContainer(_ context.Context, pod *api.PodSandbox, ctr 
 // StartContainer is called by the container runtime (via NRI) after a
 // container has been started. It resolves the cgroup directory of the
 // container and starts steering its memory along the plan stored in
-// CreateContainer.
+// CreateContainer. A fenced container that missed an update gets it from
+// a fence pass in the background.
 func (p *nriPlugin) StartContainer(_ context.Context, pod *api.PodSandbox, ctr *api.Container) error {
 	ctrName := pod.GetNamespace() + "/" + pod.GetName() + "/" + ctr.GetName()
 	ctrID := ctr.GetId()
@@ -236,6 +307,10 @@ func (p *nriPlugin) StartContainer(_ context.Context, pod *api.PodSandbox, ctr *
 	klog.V(4).Infof("NRI StartContainer: ctr=%s id=%s pid=%d cgroup=%s baseMems=%s",
 		ctrName, ctrID, tc.ref.Pid, tc.ref.CgroupPath, tc.base)
 	p.fireStarted(tc)
+	if p.fenceMissed(tc) {
+		// in the background: the pass waits for p.mu
+		p.startFencing()
+	}
 	p.mu.Unlock()
 
 	if !hasPending {

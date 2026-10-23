@@ -1,0 +1,149 @@
+plan-11: hw runs (stream HW)
+============================
+2026-10-22, TARGET=root@cwf (cwf-bkc, machine-id
+982d432423fa44019a74c86369c8a8f1, same host as the earlier report).
+H = N/test/hw/dra-driver-cxl-local, R = askervin/.../dra-driver-cxl-local
+(earlier run, read only).
+
+Before the run: no pods or claims in cxl-hw, `cxl list -R` empty (no
+region), so no --prepare-node. Greps of test1 checked against the final
+texts of 04-status-DRV.txt (seed "NRI fence: fencing CXL nodes %s of
+prepared claims", nodes as cpuset strings; adjustment "NRI
+CreateContainer: ctr=%s: cpuset.mems=%s (fenced nodes %s)"): match, no
+change needed.
+
+Run 1
+-----
+Command (from H):
+  TARGET=root@cwf ./run-all.sh --image ~/github.com/containers/nri-plugins/build/images/nri-dra-driver-cxl-image-d8a0980797d9.tar
+Image deployed: docker.io/library/nri-dra-driver-cxl:v0.15.0-35-ged99fcc44-dirty-35afa79a09e6
+  (CONTAINER_MEMORY unset: driver default; driver log "containerMemory:
+  allowed-mems: containers get the CXL nodes of the driver only by
+  claims and leases").
+Duration: 610 s (21:40:48 - 21:50:58), run-all rc=1 (findings B, C).
+Logs: H/results/*.log
+
+  test    now          earlier (R)  failures now
+  test1   30 pass 1    20 pass 3    B: numa-b: its memory on node 3 stays within its 2Gi claim (+64 MiB) (3593 MiB)
+  test2   22 pass 0    21 pass 0    -
+  test3   22 pass 0    18 pass 2    -
+  test4   28 pass 1    28 pass 1    C: reader-c verifies every page of the 192 GiB device
+                                       (bad 16764522 of 50331648 pages; earlier 16763673)
+  test5    2 pass 2     2 pass 2    C: every page of the memdev holds what was written (no aliasing)
+                                       (bad 16238397 pages, 61.94 GiB, index delta 128 GiB; earlier 16236031)
+                                    C: a: c's writes do not change a's slice (bad 520685 of 524288; earlier 520718)
+
+Finding A fixed: the four A failures of R pass now:
+  test1 PASS: node 3 is not in Mems_allowed of plain (0-2)            (R: 0-3, FAIL)
+  test1 PASS: plain: set_mempolicy(MPOL_PREFERRED, 3) is refused (exit 1)  (R: exit 0)
+  test3 PASS: plain: node 3 is not in Mems_allowed (0-2)              (R: 0-3)
+  test3 PASS: plain: set_mempolicy(MPOL_PREFERRED, 3) is refused (exit 1)  (R: exit 0)
+New checks (test1 +8, test2 +1, test3 +2) all pass.
+Mems_allowed of numa-a/numa-b now 0,3 (R: numa-a 0-1,3, numa-b 0,3).
+Finding B unchanged (same 3593 MiB), finding C unchanged (same pattern).
+
+check_fenced tables
+-------------------
+test1, after numa-a and numa-b run:
+  containers of the node (cpuset.mems, effective), after 1 s:
+    cxl-hw/numa-b/main 0,3 0,3
+    cxl-hw/plain/main 0-2 0-2
+    cxl-hw/numa-a/main 0,3 0,3
+    kube-system/nri-dra-driver-cxl-m4wp6/nri-dra-driver-cxl 0-2 0-2
+    kube-system/coredns-559f6c778d-bhn4t/coredns 0-2 0-2
+    kube-system/coredns-559f6c778d-vlwpk/coredns 0-2 0-2
+    kube-flannel/kube-flannel-ds-n7dkm/kube-flannel 0-2 0-2
+    kube-system/kube-proxy-xg7ss/kube-proxy 0-2 0-2
+    kube-system/etcd-cwf-bkc/etcd 0-2 0-2
+    kube-system/kube-scheduler-cwf-bkc/kube-scheduler 0-2 0-2
+    kube-system/kube-controller-manager-cwf-bkc/kube-controller-manager 0-2 0-2
+    kube-system/kube-apiserver-cwf-bkc/kube-apiserver 0-2 0-2
+  PASS: node 3 is in the effective mems of cxl-hw/numa-a/main cxl-hw/numa-b/main of the 12 containers of the node
+
+test1, driver restart while numa-a holds node 3, then plain2:
+[21:42:09] restarting the driver while numa-a holds node 3
+  PASS: a new driver pod is Running
+  PASS: driver: fences the CXL nodes of the prepared claims at start
+[21:42:13] driver nri-dra-driver-cxl-crkng Running and fencing after 3 s
+  fenced nodes of the prepared claims: 3
+  PASS: driver: node 3 is among the fenced nodes of the prepared claims (3)
+  containers of the node (cpuset.mems, effective), after 1 s:
+    kube-system/nri-dra-driver-cxl-crkng/nri-dra-driver-cxl 0-2 0-2
+    cxl-hw/plain/main 0-2 0-2
+    cxl-hw/numa-a/main 0,3 0,3
+    kube-system/coredns-559f6c778d-bhn4t/coredns 0-2 0-2
+    kube-system/coredns-559f6c778d-vlwpk/coredns 0-2 0-2
+    kube-flannel/kube-flannel-ds-n7dkm/kube-flannel 0-2 0-2
+    kube-system/kube-proxy-xg7ss/kube-proxy 0-2 0-2
+    kube-system/etcd-cwf-bkc/etcd 0-2 0-2
+    kube-system/kube-scheduler-cwf-bkc/kube-scheduler 0-2 0-2
+    kube-system/kube-controller-manager-cwf-bkc/kube-controller-manager 0-2 0-2
+    kube-system/kube-apiserver-cwf-bkc/kube-apiserver 0-2 0-2
+  PASS: node 3 is in the effective mems of cxl-hw/numa-a/main of the 11 containers of the node
+[21:42:14] creating pod plain2 (no claim) after the restart
+[21:42:17] plain2 Running after 3 s
+  plain2: cpuset.mems 0-2, cpuset.mems.effective 0-2, Mems_allowed 0-2
+  PASS: plain2: has a cpuset.mems without node 3 (0-2)
+  PASS: plain2: node 3 is not in Mems_allowed (0-2)
+  PASS: driver: sets cpuset.mems of plain2 at its creation
+    NRI fence: fencing CXL nodes 3 of prepared claims
+    NRI fence: lends restored, fencing running containers
+    NRI fence: ctr=kube-system/nri-dra-driver-cxl-crkng/nri-dra-driver-cxl id=48e8892067c90a20dbc071fe232cc59b1258eca8221135c9a1666eb994ed25bb cpuset.mems=0-2 (was "", fenced nodes 3)
+    NRI fence: 1 containers updated, 0 failed (fenced nodes 3)
+    NRI CreateContainer: ctr=cxl-hw/plain2/main: cpuset.mems=0-2 (fenced nodes 3)
+
+test3, both numa leases Ready:
+  containers of the node (cpuset.mems, effective), after 1 s:
+    cxl-hw/cxl-lease-a0b56b52/pause 0-2 0-2
+    cxl-hw/cxl-lease-a3257b21/pause 0-2 0-2
+    cxl-hw/plain/main 0-2 0-2
+    cxl-hw/lease-b/main 0-3 0-3
+    cxl-hw/lease-a/main 0-3 0-3
+    kube-system/nri-dra-driver-cxl-crkng/nri-dra-driver-cxl 0-2 0-2
+    kube-system/coredns-559f6c778d-bhn4t/coredns 0-2 0-2
+    kube-system/coredns-559f6c778d-vlwpk/coredns 0-2 0-2
+    kube-flannel/kube-flannel-ds-n7dkm/kube-flannel 0-2 0-2
+    kube-system/kube-proxy-xg7ss/kube-proxy 0-2 0-2
+    kube-system/etcd-cwf-bkc/etcd 0-2 0-2
+    kube-system/kube-scheduler-cwf-bkc/kube-scheduler 0-2 0-2
+    kube-system/kube-controller-manager-cwf-bkc/kube-controller-manager 0-2 0-2
+    kube-system/kube-apiserver-cwf-bkc/kube-apiserver 0-2 0-2
+  PASS: node 3 is in the effective mems of cxl-hw/lease-a/main cxl-hw/lease-b/main of the 14 containers of the node
+
+test3, after lease-a's release:
+  containers of the node (cpuset.mems, effective), after 1 s:
+    cxl-hw/cxl-lease-a0b56b52/pause 0-2 0-2
+    cxl-hw/plain/main 0-2 0-2
+    cxl-hw/lease-b/main 0-3 0-3
+    cxl-hw/lease-a/main 0-2 0-2
+    kube-system/nri-dra-driver-cxl-crkng/nri-dra-driver-cxl 0-2 0-2
+    kube-system/coredns-559f6c778d-bhn4t/coredns 0-2 0-2
+    kube-system/coredns-559f6c778d-vlwpk/coredns 0-2 0-2
+    kube-flannel/kube-flannel-ds-n7dkm/kube-flannel 0-2 0-2
+    kube-system/kube-proxy-xg7ss/kube-proxy 0-2 0-2
+    kube-system/etcd-cwf-bkc/etcd 0-2 0-2
+    kube-system/kube-scheduler-cwf-bkc/kube-scheduler 0-2 0-2
+    kube-system/kube-controller-manager-cwf-bkc/kube-controller-manager 0-2 0-2
+    kube-system/kube-apiserver-cwf-bkc/kube-apiserver 0-2 0-2
+  PASS: node 3 is in the effective mems of cxl-hw/lease-b/main of the 13 containers of the node
+
+test2 (numa-c with dax pods writer, reader-a, reader-b, ro and plain):
+  PASS: node 3 is in the effective mems of cxl-hw/numa-c/main of the 15
+  containers of the node (all dax pods 0-2 0-2).
+
+Notes
+-----
+- Restart: new driver pod Running and seed logged 3 s after the delete;
+  the new driver's own container was created before its NRI plugin and
+  was fenced by the readiness pass ("NRI fence: ctr=kube-system/
+  nri-dra-driver-cxl-crkng/... cpuset.mems=0-2 (was "", fenced nodes
+  3)", "1 containers updated, 0 failed"); check_fenced passed at the
+  first try (1 s).
+- Companion pods cxl-lease-<id>/pause get cpuset.mems 0-2 (fenced), as
+  assumed in phase 1.
+- Every non-claiming container has an explicit cpuset.mems 0-2 in the
+  first table already (before this run they had none, see phase 1): the
+  running ones were updated when node 3 was fenced; plain2 got it at
+  creation (adjustment line above).
+- End state: driver deployed sliced (ResourceSlice shared=False) with
+  the new image, no pods in cxl-hw, no region.

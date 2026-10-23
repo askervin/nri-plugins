@@ -15,6 +15,7 @@ The words used below (`source`, `type`, `shared`, `persistent`, `mode`,
 - [DeviceClasses](#deviceclasses)
 - [Opaque configurations](#opaque-configurations)
 - [Steering](#steering)
+- [Containers without claims](#containers-without-claims)
 - [Environment variables](#environment-variables)
 - [What the memory contains](#what-the-memory-contains)
 - [Example claims](#example-claims)
@@ -603,13 +604,83 @@ container on the CXL node.
 
 Pool devices in mode `numa` are not steered: the container gets the node
 number in `CXL_<KEY>_NODE` and binds its memory to it itself, for example
-with `numactl --membind` or `mbind`. The pool driver does not change
-`cpuset.mems`, so other containers whose cpusets allow every node may
-allocate from the node too.
+with `numactl --membind` or `mbind`. The memory policy of the container
+is left alone; the node is added to the container's `cpuset.mems`, next
+to its other nodes, and other containers do not get it. With
+`containerMemory.default` `none` no `cpuset.mems` is changed, and other
+containers whose cpusets allow every node may allocate from the node too
+([Containers without claims](#containers-without-claims)).
 
 Memory for running containers (leases) in mode `numa` is lent through
 `cpuset.mems` instead; a steered container cannot take such a lease
 ([leases.md](leases.md#limitations)).
+
+## Containers without claims
+
+The NUMA nodes on which the plugin onlines CXL memory are kept away from
+the containers that have not claimed memory there. These nodes are the
+nodes of `numa` slices of local memdevs and of pool devices in mode
+`numa`, also of the companion claims of leases. The nodes of `region`
+devices (regions that the plugin did not create) and DRAM nodes are not
+among them: they are system RAM from boot, used by host processes and
+running containers.
+
+A container has such a node only through
+
+- a claim of `numa` memory on it: a `cxl.nri.io` claim makes the
+  container steered, and the steering puts the nodes of its claims into
+  `cpuset.mems` ([Steering](#steering));
+- a claim of a pool device in mode `numa`: the node is in the container's
+  `cpuset.mems` explicitly, next to its other nodes;
+- a lease in mode `numa`: the node is lent ([leases.md](leases.md#flow)).
+
+Every other container, which is every container that is not steered, gets
+`cpuset.mems` = its own nodes without these CXL nodes, plus the nodes of
+its pool claims and leases. Its own nodes are the `cpuset.mems` of its
+spec (set by the kubelet memory manager or an earlier NRI plugin), or all
+nodes with memory (`/sys/devices/system/node/has_memory`) when the spec
+has none. A new container gets it when it is created; the running and
+created containers are updated before the memory of a new node goes
+online, so no container sees the node. After a restart the plugin
+updates the running containers when NRI has synchronized and the lease
+broker has lent the memory of Ready `numa` leases again. A node stays
+kept away when its last claim is released, until the plugin restarts.
+
+`containerMemory.default` of the [configuration file](#configuration-file)
+selects this:
+
+| value | |
+|:------|:-|
+| `allowed-mems` | (default, also when `containerMemory` or `default` is missing or empty) a container that has not claimed memory on a CXL node of the driver does not have that node in its `cpuset.mems` (`Mems_allowed`). It cannot allocate there even with `mbind` or `set_mempolicy`, and a container out of other memory is OOM-killed rather than spilling to CXL memory. |
+| `mempolicy` | through the memory policy of the container's threads; not implemented: the configuration is refused with `containerMemory.default: mempolicy is not implemented yet` |
+| `none` | containers are left as they are: one without its own `cpuset.mems` inherits every node with memory, CXL nodes too |
+
+Any other value is refused with `containerMemory.default: invalid value
+"X" (allowed-mems, mempolicy or none)`, and the plugin does not start.
+Steering and leases work with every value. At start the plugin logs
+`containerMemory: allowed-mems: containers get the CXL nodes of the
+driver only by claims and leases` (or `containerMemory: none: containers
+are not kept off the CXL nodes of the driver`), and `NRI fence: fencing
+CXL node N (fenced nodes ...)` when it starts keeping a node away.
+
+While no node is kept away (no CXL memory onlined by the plugin since
+its start, and none of its prepared claims), no container is changed.
+Without NRI (the socket cannot be reached) containers are not changed
+either.
+
+Not covered:
+
+- Pod sandboxes (the `pause` containers): NRI cannot update their
+  `cpuset.mems`. The pause process allocates nothing after its start.
+- Processes outside containers (kubelet, the container runtime, systemd
+  services) keep every node.
+- A container that is steered and also has a pool claim in mode `numa`
+  does not get the pool node: the steering owns its `cpuset.mems`.
+
+An NRI resource policy that sets `cpuset.mems` of containers
+(nri-resource-policy balloons or topology-aware) needs `containerMemory`
+`none`: NRI refuses a container whose `cpuset.mems` two plugins set, and
+the container is not created.
 
 ## Environment variables
 
@@ -991,7 +1062,8 @@ variable when it is set. Both `-flag` and `--flag` work.
 SIGINT.
 
 Without NRI (the socket cannot be reached) the plugin runs on: claims are
-prepared, containers are not steered, and lease requests fail with
+prepared, containers are not steered and not kept off the CXL nodes of
+the plugin, and lease requests fail with
 `lending unavailable: NRI not connected`.
 
 ## Configuration file
@@ -1004,6 +1076,8 @@ ignoreDevices: ["mem0", "0xc100e2e0"]
 sharedDevices: ["0xc100e2e2"]
 manageMemdevs: true
 udevStableDuration: 200ms
+containerMemory:
+  default: allowed-mems    # allowed-mems | mempolicy | none
 ```
 
 | key | type | default | |
@@ -1018,6 +1092,7 @@ udevStableDuration: 200ms
 | `ignoreDRAMNodes` | bool | `false` | publish no `dram` device |
 | `udevStableDuration` | duration | `200ms` | quiet period after the last udev event before the devices are scanned again |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
+| `containerMemory.default` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
 | `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo` |
 
 [local.md](local.md#what-the-plugin-publishes) describes `manageMemdevs`.

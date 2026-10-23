@@ -1,0 +1,84 @@
+plan-11: status of stream DOC
+=============================
+Written 2026-10-22 (DOC). Nothing committed. Only the owned files edited.
+
+Changed sections per file
+-------------------------
+docs/memory/cxl/usage.md
+  - Table of contents: entry "Containers without claims".
+  - "Steering", paragraph on pool devices in mode numa: the memory policy
+    is left alone, the node is added to the container's cpuset.mems, other
+    containers do not get it; with containerMemory.default none no
+    cpuset.mems is changed and others may allocate from the node.
+  - New section "## Containers without claims" (anchor
+    #containers-without-claims) after "Steering": which nodes are kept
+    away (numa slices of local memdevs, pool numa devices, also of lease
+    companion claims; not region devices, not DRAM); who has them (steered
+    numa claims through steering, pool numa claims explicitly, numa leases
+    by lending); the want formula in words (own nodes from the spec, or
+    has_memory, minus the fenced ones, plus pool claim and lent nodes);
+    timing (at creation; running/created updated before memory goes
+    online; after a restart when NRI synchronized and the broker re-lent);
+    a node stays fenced until restart; table of the three values with the
+    D1 texts (OOM consequence of allowed-mems, the mempolicy refusal text,
+    none); the invalid-value text; the D8 start log lines and the "NRI
+    fence: fencing CXL node N (fenced nodes ...)" line; nothing changes
+    while no node is fenced, nor without NRI; not covered: pause
+    containers, host processes, steered container with a pool numa claim
+    (O2); NRI resource policies that set cpuset.mems need none (NRI
+    refuses two plugins setting cpuset.mems of one container).
+  - "nri-dra-driver-cxl flags", the Without NRI paragraph: containers
+    are also not kept off the CXL nodes.
+  - "Configuration file": example gains containerMemory.default:
+    allowed-mems with the three values as a comment; table row
+    containerMemory.default, string, allowed-mems, link to the section.
+docs/memory/cxl/pool.md
+  - "What the node plugin does", step 4 (numa): with allowed-mems N is
+    added to the claiming container's cpuset.mems, other containers do
+    not get N and are updated before the memory goes online; with none
+    nothing is changed and others may allocate from N. Link to
+    usage.md#containers-without-claims.
+docs/memory/cxl/local.md
+  - "Limitations", numa isolation bullet: other containers do not get the
+    node unless containerMemory.default is none.
+docs/memory/cxl/leases.md
+  - "Flow": the lend line is "its own nodes without the CXL nodes of the
+    driver + N".
+  - "Limitations", "cpuset.mems has one owner": fencing also goes through
+    NRI UpdateContainers; other containers (also of the borrower's pod) do
+    not get the lent node, except with none; next to an NRI resource
+    policy that sets cpuset.mems containerMemory.default must be none.
+deployment/helm/dra-driver-cxl/values.yaml
+  - Commented config example gains containerMemory.default: allowed-mems
+    with a comment on the values and when to use none. No value changed.
+deployment/helm/dra-driver-cxl/README.md
+  - "Configuration options": paragraph after the table on config keys
+    (link to usage.md#configuration-file) and containerMemory.default
+    (link to usage.md#containers-without-claims).
+
+Checks
+------
+- grep -nP '[^\x00-\x7F]' on the six files: no output (rc 1).
+- Heading "## Containers without claims" exists in usage.md (line 618);
+  7 links to #containers-without-claims, all to that heading. No
+  existing heading renamed (#steering, #configuration-file kept).
+- grep -i 'allocate from' docs/memory/cxl deployment/helm/dra-driver-cxl:
+  two hits (usage.md Steering, pool.md step 4), both in the
+  containerMemory none sentence.
+
+Open points
+-----------
+- The docs follow 02-design D1-D4, D6, D8, D12, not the DRV code (in
+  progress). To check against DRV's status: the exact log texts, that
+  pool numa claim containers get N explicitly only in allowed-mems mode,
+  that the lend in none mode is unchanged (base = effective at start),
+  and that an absent/empty default means allowed-mems.
+- e2e.md (not owned) has no statement that other containers may use a
+  pool or local numa node; its sample outputs of cpuset.mems.effective
+  were not checked against the new behavior (E2E owns it).
+
+Requests
+--------
+None.
+
+DOC done

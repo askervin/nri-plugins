@@ -119,9 +119,57 @@ type DriverConfig struct {
 	// regions for claims. Default: true.
 	ManageMemdevs *bool `json:"manageMemdevs,omitempty"`
 
+	// ContainerMemory is how the driver manages the memory of the
+	// containers of the node.
+	ContainerMemory *ContainerMemoryConfig `json:"containerMemory,omitempty"`
+
 	// PublishLeaseDevice publishes the lease device (set from --leases,
 	// not part of the configuration file).
 	PublishLeaseDevice bool `json:"-"`
+}
+
+// ContainerMemoryConfig is how the driver manages the memory of containers.
+type ContainerMemoryConfig struct {
+	// Default is the management of every container:
+	// containerMemoryAllowedMems (also when empty), containerMemoryMempolicy
+	// (not implemented) or containerMemoryNone.
+	Default string `json:"default,omitempty"`
+}
+
+// The values of containerMemory.default.
+const (
+	// containerMemoryAllowedMems keeps the CXL nodes of the driver out of
+	// cpuset.mems of every container that has not claimed or borrowed
+	// memory on them.
+	containerMemoryAllowedMems = "allowed-mems"
+	// containerMemoryMempolicy keeps containers off the CXL nodes of the
+	// driver through the memory policy of their threads.
+	containerMemoryMempolicy = "mempolicy"
+	// containerMemoryNone leaves the memory nodes of containers as they
+	// are.
+	containerMemoryNone = "none"
+)
+
+// containerMemory returns the containerMemory.default of the
+// configuration, containerMemoryAllowedMems when it is not set.
+func (c *DriverConfig) containerMemory() string {
+	if c.ContainerMemory == nil || c.ContainerMemory.Default == "" {
+		return containerMemoryAllowedMems
+	}
+	return c.ContainerMemory.Default
+}
+
+// validate returns an error if a value of the configuration is invalid.
+func (c *DriverConfig) validate() error {
+	switch mode := c.containerMemory(); mode {
+	case containerMemoryAllowedMems, containerMemoryNone:
+	case containerMemoryMempolicy:
+		return fmt.Errorf("containerMemory.default: %s is not implemented yet", mode)
+	default:
+		return fmt.Errorf("containerMemory.default: invalid value %q (%s, %s or %s)",
+			mode, containerMemoryAllowedMems, containerMemoryMempolicy, containerMemoryNone)
+	}
+	return nil
 }
 
 // manageMemdevs tells whether local memdevs are published and get regions
@@ -152,6 +200,9 @@ func newDriverConfigFromString(configStr string) (*DriverConfig, error) {
 	driverConfig := &DriverConfig{}
 	if err := yaml.UnmarshalStrict([]byte(configStr), driverConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse driver config: %v", err)
+	}
+	if err := driverConfig.validate(); err != nil {
+		return nil, err
 	}
 	return driverConfig, nil
 }
@@ -270,10 +321,19 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		cxlFlags.SysfsRoot = sysfsRoot[:len(sysfsRoot)-4]
 	}
 
+	// The fenced nodes exist before any Prepare can online memory, and
+	// without NRI too.
+	fence := newNodeFence(driverConfig.containerMemory())
+	if fence != nil {
+		klog.Infof("containerMemory: %s: containers get the CXL nodes of the driver only by claims and leases", fence.mode())
+	} else {
+		klog.Infof("containerMemory: %s: containers are not kept off the CXL nodes of the driver", fence.mode())
+	}
+
 	// The pool driver's prepared claims are loaded before the first
 	// scan, so that its devices are never published as cxl.nri.io
 	// devices (D29). Its kubelet plugin is started after cxl.nri.io.
-	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot)
+	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot, fence)
 	if err != nil {
 		return nil, err
 	}
@@ -283,10 +343,11 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
 
 	poolSlices := newPoolSlices(config.Client)
-	state, err := newDriverState(ctx, config, driverConfig, sysfsRoot, preparedClaimsFilePath, pool, poolSlices)
+	state, err := newDriverState(ctx, config, driverConfig, sysfsRoot, preparedClaimsFilePath, pool, poolSlices, fence)
 	if err != nil {
 		return nil, err
 	}
+	fence.seed(preparedNodes(state, pool))
 
 	driver := &driver{
 		state:      *state,
@@ -355,11 +416,16 @@ PluginDataDirectoryPath: %v`,
 		Idx:    cxlFlags.NRIIdx,
 		Socket: cxlFlags.NRISocket,
 	}
-	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts)
+	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, fence, pool, sysfsRoot)
 	if err != nil {
 		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
+		fence.setNoNRI()
 	} else {
 		driver.nriPlugin = nri
+		if driver.broker == nil {
+			// no lends to restore
+			nri.LendsRestored()
+		}
 	}
 	if driver.broker != nil {
 		// A nil lender (NRI not connected) makes lease requests and
@@ -403,9 +469,10 @@ PluginDataDirectoryPath: %v`,
 	return driver, nil
 }
 
-// loadPoolDriver returns the pool driver with its prepared claims loaded,
-// or nil if it is disabled (empty --pool-driver-name).
-func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string) (*poolDriver, error) {
+// loadPoolDriver returns the pool driver with its prepared claims loaded
+// and the fenced nodes fence, or nil if it is disabled (empty
+// --pool-driver-name).
+func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence) (*poolDriver, error) {
 	if cxlFlags.PoolDriverName == "" {
 		return nil, nil
 	}
@@ -419,12 +486,14 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string) 
 	if err != nil {
 		return nil, fmt.Errorf("pool driver: %w", err)
 	}
+	pool.fence = fence
 	return pool, nil
 }
 
 // newDriverState returns the node state with the devices of the first scan
-// and the local allocator.
-func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot, preparedClaimsFilePath string, pool *poolDriver, poolSlices *poolSlices) (*nodeState, error) {
+// and the local allocator, which fences the nodes of numa slices with
+// fence.
+func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot, preparedClaimsFilePath string, pool *poolDriver, poolSlices *poolSlices, fence *nodeFence) (*nodeState, error) {
 	// The local allocator's state is reconciled before the first scan,
 	// so that the regions it created are never published as region
 	// devices.
@@ -432,6 +501,9 @@ func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	local, err := newLocalHelper(ctx, config, driverConfig, sysfsRoot, poolSerials)
 	if err != nil {
 		return nil, err
+	}
+	if local != nil {
+		local.fence = fence
 	}
 
 	devInfos, err := scanDevices(sysfsRoot, scanConfig, poolSerials, local.Snapshot())

@@ -473,6 +473,8 @@ not return to its initial state when idle.
 - `numa` capacity is online per claim but not isolated per claim:
   `cpuset.mems` is per node, all containers with `numa` claims or leases
   on the node share its memory; `memory.max` and cgmpolmgr bound each.
+  Other containers do not get the node, unless `containerMemory.default`
+  is `none` ([usage.md](usage.md#containers-without-claims)).
 - Slice sizes are multiples of the memory block size, also for `dax`
   slices: a 64Mi dax claim gets 128Mi with 128 MiB blocks, 2Gi with 2 GiB
   blocks.

@@ -1,0 +1,90 @@
+plan-11: final status
+=====================
+Written 2026-10-22 (orchestrator). Nothing committed. Paths as in
+00-README.txt.
+
+Result
+------
+containerMemory.default allowed-mems (the default) keeps every container
+that has not claimed or borrowed memory on a CXL NUMA node of the driver
+from having the node in cpuset.mems. Finding A of the hw report is fixed
+on cwf; all e2e tests pass.
+
+What changed
+------------
+Driver (D, stream DRV, 04-status-DRV.txt):
+  driver.go   containerMemory.default (allowed-mems | mempolicy refused as
+              not implemented | none), validated at parse; the fence is
+              created first, seeded from the prepared claims before
+              kubeletplugin.Start; LendsRestored without a broker.
+  fence.go    new: nodeFence (nil = none), Fence (serialized, returns
+              after the pass), seed, preparedNodes.
+  nri.go      CreateContainer adjustment of cpuset.mems for containers
+              that are not steered (only when it changes something);
+              StartContainer starts a pass for a container whose update
+              was missed; claimNodes of both drivers; memoryMode.
+  lend.go     wantMems = (own nodes - fenced) + claimed + lent; the fence
+              pass (one UpdateContainers, failures retried); readiness
+              (NRI synchronized and lends restored); changeLend with
+              wantMems in allowed-mems mode, unchanged in none mode.
+  local.go    fence before the kmem bind of a numa slice.
+  pool.go     fence after CreateRegion, before Online; claim nodes
+              snapshot under serialsMu.
+  broker.go   LendsRestored after the first reconcile.
+  tests       fence_test.go (new), lend_test.go (stub options), config
+              tests in driver_test.go.
+Docs (stream DOC): usage.md (new section "Containers without claims",
+  configuration table, Steering), pool.md step 4, local.md Limitations,
+  leases.md flow and limitations, Helm chart values.yaml and README.md.
+e2e (stream E2E): dra.source.sh dra-mems-fenced (+ dra-mems-table);
+  test10, test12, test14 (driver restart step B2), test15.
+hw (stream HW): lib.sh node_mems, check_fenced; test1 (restart, plain2),
+  test2, test3; deploy.sh CONTAINER_MEMORY; README.md.
+
+Review
+------
+05-review.txt: V1 (concurrent Fence of one node returned before the
+pass) and V2 (an update racing with container creation was not retried
+before the start) fixed by DRV with unit tests that fail without the
+fixes. No other findings blocking.
+
+Verification
+------------
+unit (orchestrator, final tree): go test -count=1 of
+  cmd/plugins/dra-driver-cxl, pkg/cgmpolmgr, pkg/cxl/...: ok; go vet ok;
+  gofmt clean; golangci-lint ./cmd/plugins/dra-driver-cxl/...: 0 issues.
+  DRV also ran -race (10x for the new tests).
+image: build/images/nri-dra-driver-cxl-image-d8a0980797d9.tar,
+  nri-dra-driver-cxl:v0.15.0-35-ged99fcc44-dirty (fence code checked in
+  the binary). No driver change after the build.
+e2e (06-runs-E2E.txt), VM2 DRAM 0-1, CXL node 2: PASS test14, test15,
+  test10, test12 (twice), test11, test13, test16, test17, test18,
+  test19, test01. E.g. test14: the first fence updated 8 control-plane
+  containers from "" to 0-1; after the restart "NRI fence: fencing CXL
+  nodes 2 of prepared claims", the new driver's own container fenced by
+  the readiness pass, a new pod got cpuset.mems=0-1 at creation.
+hw (06-runs-HW.txt), cwf DRAM 0-2, CXL node 3, 610 s:
+  test1 30/1 (was 20/3), test2 22/0 (21/0), test3 22/0 (18/2), test4 28/1
+  (28/1), test5 2/2 (2/2). Remaining failures are findings B (numa-b
+  used 3593 MiB of node 3 on a 2Gi claim) and C (aliasing at 128 GiB),
+  both untouched by this plan. plain: Mems_allowed 0-2 (was 0-3),
+  set_mempolicy(MPOL_PREFERRED, 3) refused. check_fenced: only the
+  claiming containers have node 3, the 9 kube-system/flannel containers
+  and the driver 0-2, also after a driver restart; plain2 got
+  cpuset.mems=0-2 at creation. The driver is left deployed (sliced) with
+  the new image on cwf; namespace cxl-hw empty, no region.
+
+Open (02-design D12)
+--------------------
+O1 mempolicy (soft) mode and per-container values of containerMemory:
+   the option is an object and memoryMode(pod, container) is the one
+   place that resolves the mode of a container.
+O2 a container that is steered and also has a pool numa claim does not
+   get its pool node (cgmpolmgr owns its cpuset.mems; pool numa memory
+   is not steered).
+O3 region devices (BIOS/admin regions) are not fenced.
+O4 pause containers and host processes keep every node.
+O5 a udev rule that onlines hot-added memory would online it before the
+   fence (docs require no such rule).
+Also: next to an NRI resource policy that sets cpuset.mems (balloons,
+topology-aware) the value must be none (NRI refuses two owners).

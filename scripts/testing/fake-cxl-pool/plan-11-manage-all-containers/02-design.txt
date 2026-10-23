@@ -1,0 +1,308 @@
+plan-11: design
+===============
+Written 2026-10-22 (orchestrator). Paths and F<n> as in 01-findings.txt.
+
+Terms
+-----
+- CXL node of the driver, "fenced node": a NUMA node on which the driver
+  onlines CXL memory: numa slices of local memdevs and pool devices in
+  mode numa, also those of companion claims (leases). Not: nodes of
+  region devices (regions the driver did not create, F7), DRAM nodes.
+- F: the set of fenced nodes of the running driver.
+- steered container: a container with a pending plan or a cgmpolmgr
+  manager, or after a restart one whose cxl.nri.io claims have numa
+  memory (trackedContainer.steered, as today).
+- fenced container: a container the driver manages with containerMemory
+  allowed-mems: every container that is not steered.
+
+D1. Configuration: containerMemory.default
+------------------------------------------
+Driver configuration file (-f/-c, Helm value config), not a flag: it is
+policy, and it will grow per-container values.
+
+  containerMemory:
+    default: allowed-mems    # allowed-mems | mempolicy | none
+
+- allowed-mems (the default, also for an absent containerMemory or an
+  empty default): hard. A container that has not claimed memory on a
+  CXL node of the driver does not have that node in its cpuset.mems
+  (Mems_allowed). It cannot allocate there even with mbind or
+  set_mempolicy, and a container out of other memory is OOM-killed
+  rather than spilling to CXL memory.
+- mempolicy: soft, through the memory policy of the container's
+  threads. Reserved: the configuration is refused with
+  `containerMemory.default: mempolicy is not implemented yet`.
+- none: containers are left as they are: one without its own
+  cpuset.mems inherits every node with memory, CXL nodes too (the
+  behavior before this plan). Needed next to an NRI plugin that sets
+  cpuset.mems of containers (nri-resource-policy balloons,
+  topology-aware: F4).
+- Anything else: `containerMemory.default: invalid value "X"
+  (allowed-mems, mempolicy or none)`.
+Validation at config parse (newDriverConfigFromString), so a bad value
+stops the driver at start with the message.
+Extension point: containerMemory is an object so that later keys (per
+QoS class, with/without claims, ...) fit without a format change. In
+code, the mode of one container comes from one function (memoryMode of
+pod and container), which returns default now.
+Steering and lending are not affected by the value: a claim's memory
+policy and a lease's lend work in every mode.
+
+D2. The fenced nodes F
+----------------------
+- One object, nodeFence (new file D/fence.go), created in newDriver from
+  the configuration before the pool driver and the node state, so that
+  both get it. nil-safe methods (nil = none mode), like companionLender.
+- F starts from the prepared claims (F7): cxl.nri.io claims' devices
+  with DeviceType memdev and Mode numa (NUMANodes), pool claims' devices
+  with Mode numa and Node >= 0. Seeded in newDriver after the node state
+  and the pool driver are loaded, before kubeletplugin.Start.
+- F only grows while the driver runs: a node whose last slice is
+  released keeps being fenced (it has no memory; a container that does
+  not have it in cpuset.mems is unaffected). After a restart F is again
+  the nodes of the prepared claims.
+- Fence(ctx, node) adds a node to F. It is called by the prepare paths
+  before memory of the node goes online (D5) and returns after the
+  containers have been updated (D4), or at once when fencing of running
+  containers is not ready yet (D6) or NRI is not connected. Errors are
+  logged, never returned: a failure to update another container must not
+  fail a claim. Adding a node that is in F is a no-op.
+- Lazy: while F is empty nothing is touched, no container gets an
+  adjustment or an update (the condition of the task: "if there is at
+  least one CXL NUMA node in the system that the driver has created").
+
+D3. What a fenced container gets
+--------------------------------
+  want(c) = (own(c) - F) | claimed(c) | lent(c)
+
+- own(c): the memory nodes the container has of its own: cpuset.mems of
+  its spec as the plugin knows it (the CreateContainer request, the
+  container of Synchronize, or what the plugin last wrote through NRI),
+  or, when that is empty, the nodes with memory
+  (<sysfs>/devices/system/node/has_memory, read when want is computed).
+  A spec that the kubelet memory manager or an earlier NRI plugin set is
+  respected: own is a subset of it. If has_memory cannot be read, want
+  is unknown: the container is left as it is, with a warning.
+- claimed(c): the NUMA nodes of the numa devices of the container's
+  claims (CXL_CLAIM_<uid> markers in its env), of both drivers: pool
+  claims' devices with Mode numa (from a snapshot of the pool driver,
+  D7) and cxl.nri.io claims' memdev/region devices with Mode numa. For a
+  fenced container that is in practice its pool numa nodes (cxl.nri.io
+  numa claims make a container steered). Computed once per container,
+  when it is tracked (claims are prepared before a container is created
+  and do not change).
+- lent(c): the nodes lent to the container (trackedContainer.lent, nodes
+  with holders), as today.
+lent and claimed nodes are in F (they are onlined by the driver), so
+own(c) - F never removes them.
+
+D4. How a fenced container gets it
+----------------------------------
+Two paths, one function (want), one record per container:
+trackedContainer.mems, the cpuset.mems of the container's spec as the
+plugin knows it.
+
+a) CreateContainer (new containers): if mode is allowed-mems, the
+   container is not steered and F is not empty, compute want; if it
+   differs from the spec's cpuset.mems return the adjustment
+   Linux.Resources.Cpu.Mems = want (api.ContainerAdjustment
+   SetLinuxCPUSetMems). Record mems (want, or the spec's when no
+   adjustment). Claims (claimedMemory, pool snapshot) are read before
+   p.mu is taken; tracking, reading F, computing want and recording
+   happen in one p.mu critical section. No UpdateContainers here.
+   Not adjusting when want equals the spec keeps the driver off the
+   ownership of cpuset.mems (F4) where nothing needs to change.
+b) Fence pass (running and created containers): under lendMu (the lend
+   lock: lends and fence passes never compute from stale sets), under
+   p.mu: for every tracked container that is not steered, want != mems
+   -> one ContainerUpdate (SetLinuxCPUSetMems). Release p.mu, send all
+   updates in one UpdateContainers, then under p.mu record mems for the
+   containers whose update did not fail (same entry still tracked).
+   Failed updates are logged per container (warning) and retried by the
+   next pass. Created (not started) containers are included: containerd
+   updates their spec and creates the task with it (F5).
+   A pass never runs inside an NRI event handler: from Synchronize and
+   from the readiness hook it runs in a goroutine; from Fence it runs in
+   the caller (a Prepare, not an NRI handler).
+   Triggers: Fence adds a node (when ready), fencing becomes ready (D6),
+   every Synchronize after that (NRI reconnect).
+c) Lending (changeLend) in allowed-mems mode: the cpuset.mems written is
+   want(c) with the changed lent set (base = own(c) - F), recorded in
+   mems. In none mode changeLend is unchanged (base = effective at start
+   minus every lent node). The "base memory nodes unknown" refusal stays
+   for none mode; in allowed-mems mode own(c) falls back to has_memory.
+Steered containers: never adjusted, never updated (F6). Their cgroup's
+cpuset.mems is cgmpolmgr's: claimed nodes, nodes with memory and the
+normal-memory fallback; unclaimed CXL nodes are not among them. Between
+creation and the start of steering they inherit, as today.
+
+D5. Fencing before memory goes online
+-------------------------------------
+- local.go onlineSlice: node := TargetNode(s.Dax) before the kmem bind;
+  if node >= 0, Fence(ctx, node) before SetDaxDriverSysfs(kmem). After
+  onlining, when the node was unknown before, Fence(ctx, the found node)
+  (late: the memory was online meanwhile; logged at V(3)).
+- pool.go prepareDevice, mode numa: after CreateRegion (blocks offline,
+  RegionInfo.Node from the dax target node) and before Online:
+  Fence(ctx, ri.Node) if >= 0; after Online, Fence(ctx, dev.Node) if it
+  was not known before.
+- The local allocator and the pool driver get the fence as a field set
+  at construction (localAllocator via newLocalHelper, poolDriver via
+  loadPoolDriver); nil fence: nothing.
+- Lock facts the implementation relies on: Fence is called with
+  localAllocator.mu or poolDriver.mu held. That is safe because no NRI
+  handler takes either lock, the pass takes lendMu then p.mu (p.mu never
+  held across UpdateContainers), and nothing that holds lendMu waits for
+  localAllocator.mu or poolDriver.mu. The NRI handlers must not take
+  lendMu, poolDriver.mu or localAllocator.mu (the pool snapshot has its
+  own lock, D7).
+
+D6. Readiness after a start (F9)
+--------------------------------
+Fencing of running containers waits until the lends of a restarted
+plugin are back: the first pass runs when NRI has synchronized AND the
+lease broker has finished its first reconcile (it re-applies the lends
+of Ready numa leases). The broker tells the lender after its first
+reconcile through an optional interface, the same pattern as
+WaitSynchronized (interface{ LendsRestored() } on the lender). Without a
+broker (--leases=false) the driver marks lends restored right after
+starting NRI. CreateContainer adjustments (D4a) and changeLend (D4c) do
+not wait. Fence called before readiness only records the node.
+
+D7. Pool claim nodes snapshot
+-----------------------------
+poolDriver keeps, next to the serials snapshot and under the same
+serialsMu, claimNodes: claim uid -> NUMA nodes of its devices of mode
+numa (Node >= 0), refreshed where the serials snapshot is (updateSerials,
+called with p.mu held after every change of prepared). Accessor
+ClaimNodes(uid) []int, nil-safe. The NRI plugin gets a function
+claimNodes(uid) that asks both: nodeState (GetClaimInfo: memdev and
+region devices with Mode numa) and the pool snapshot.
+
+D8. Logs (tests grep them; klog)
+--------------------------------
+- start, Info: `containerMemory: allowed-mems: containers get the CXL
+  nodes of the driver only by claims and leases` or `containerMemory:
+  none: containers are not kept off the CXL nodes of the driver`
+- seed, Info (only if not empty): `NRI fence: fencing CXL nodes %s of
+  prepared claims`
+- Fence adds, Info: `NRI fence: fencing CXL node %d (fenced nodes %s)`
+- pass, Info: `NRI fence: %d containers updated, %d failed (fenced
+  nodes %s)` when it sent updates; per container V(3): `NRI fence:
+  ctr=%s id=%s cpuset.mems=%s (was %q, fenced nodes %s)`
+- adjustment, V(3): `NRI CreateContainer: ctr=%s: cpuset.mems=%s
+  (fenced nodes %s)`
+- readiness, V(3): `NRI fence: lends restored, fencing running
+  containers`
+- failure, Warning: `NRI fence: ctr=%s id=%s: %v`
+- no NRI, Warning once at Fence: `NRI fence: NRI not connected,
+  containers are not fenced from CXL node %d`
+
+D9. Code map
+------------
+- D/driver.go: DriverConfig.ContainerMemory (*ContainerMemoryConfig
+  {Default string `json:"default,omitempty"`}), validation, the
+  constants of the three values, newNodeFence in newDriver, seed, pass
+  the fence to loadPoolDriver/newDriverState/newLocalHelper and to
+  startNRIPlugin, LendsRestored when there is no broker.
+- D/fence.go (new): nodeFence (mode, mu, nodes, applier), Fence, Nodes,
+  enabled; the seed helper.
+- D/nri.go: CreateContainer adjustment (D4a), memoryMode, startNRIPlugin
+  wiring (applier, sysfs root for has_memory, claimNodes), Synchronize
+  hook (pass in a goroutine when ready).
+- D/lend.go: trackedContainer.mems and .claimed, want, the fence pass,
+  changeLend in allowed-mems mode, LendsRestored, readiness state.
+- D/local.go: the fence field and the calls in onlineSlice.
+- D/pool.go: the fence field, the calls in prepareDevice, claimNodes
+  snapshot and ClaimNodes.
+- D/broker.go: after the first reconcile, LendsRestored on the lender.
+- Unit tests next to them (D/*_test.go): config parse (default, three
+  values, invalid, mempolicy refused); want arithmetic (empty spec,
+  explicit spec, lent, claimed); CreateContainer: adjusted, not adjusted
+  when F empty / steered / none / want == spec, recorded mems;
+  the pass: running and created containers, steered skipped, failure
+  retried by the next pass, nothing sent when nothing changes; Fence
+  before readiness records only; LendsRestored then pass; lend and
+  revoke in allowed-mems mode (mems = DRAM + lent, back to DRAM) and in
+  none mode (unchanged behavior, existing tests pass untouched); pool
+  ClaimNodes snapshot; local onlineSlice calls Fence before the kmem
+  bind (fake memctl sysfs, the order of Fence vs the bind).
+
+D10. Documentation
+------------------
+- docs/memory/cxl/usage.md: configuration table and example
+  (containerMemory.default); a section "Containers without claims"
+  after "Steering": what allowed-mems does, the three values, OOM
+  consequence, F (driver-created only, region devices excluded), pool
+  numa claims get their node, steered containers, pause containers and
+  host processes not covered, the NRI conflict with resource policies
+  and kubelet memory manager notes; "Steering" paragraph about pool
+  devices updated (they now get their node in cpuset.mems, others do
+  not).
+- docs/memory/cxl/pool.md step 4: "other containers ... may allocate
+  from N too" -> only with containerMemory none.
+- docs/memory/cxl/local.md Limitations: isolation per node stays; other
+  containers do not get the node.
+- docs/memory/cxl/leases.md: "cpuset.mems has one owner" bullet and the
+  flow: the lend keeps base = own nodes minus the fenced ones.
+- deployment/helm/dra-driver-cxl/values.yaml (config example) and
+  README.md (config section) mention containerMemory.
+Plain ASCII, current state only.
+
+D11. Tests on the cluster
+-------------------------
+e2e (E, VM2 of n4-cxl-shared-2 and the three-node cluster):
+- New helper in E/dra.source.sh, script API:
+    dra-mems-fenced VMDIR NODE [NS/POD/CONTAINER...]
+  Every running container of the VM's node (crictl ps; sandboxes are
+  not containers) is checked by its cpuset.mems.effective (through
+  /proc/<pid>/cgroup of the container's pid): the listed ones must have
+  NUMA node NODE, all others must not. Retries for 30 s (passes are
+  asynchronous after a restart), prints one line per container
+  (ns/pod/container, cpuset.mems, effective), fails with the offenders.
+- test10: pooled-consumer has CXL_NODE in Mems_allowed_list (pod log)
+  and dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer".
+- test12: lend-memory: the "idle inherits" branch goes; idle's effective
+  mems never have MEM_NODE whatever IDLE_MEMS was, numa-touch to
+  MEM_NODE in idle fails with an invalid node; cpuset.mems of idle may
+  change once from "" to the DRAM nodes (the first fence) and then
+  stays; dra-mems-fenced with borrower/main allowed while lent.
+- test14: after numa-a, then numa-b: dra-mems-fenced with exactly the
+  numa claim pods allowed (dax pods and kube-system not); then
+  dra-driver-restart while numa claims hold N; after it, the same check
+  passes, the driver log has "NRI fence: fencing CXL nodes N of prepared
+  claims", and a pod created after the restart (no claim) has an
+  explicit cpuset.mems without N from creation (log line of D8
+  adjustment).
+- test15: lent-check: the same flip as test12; static numa pods keep N,
+  idle and everything else never have it.
+- No new e2e test directory: the running kube-system containers are the
+  containers without claims (the task says so).
+- Regression: test01, test10-test19 pass.
+hw (H, TARGET=root@cwf):
+- lib.sh: node_mems: one line "ns/pod/container effective" per running
+  container of the node (crictl on TARGET), and check_fenced NODE
+  ALLOWED...: like dra-mems-fenced.
+- test1: after both numa pods run: check_fenced N numa-a numa-b (plain
+  and every kube-system container lack N, they were created before N
+  existed); plain's set_mempolicy refused and Mems_allowed checks
+  already there now pass; a driver restart while numa-a holds N keeps
+  that and a pod created after it is fenced from creation.
+- test2: with numa and dax slices at the same time: the dax pods lack N.
+- test3: while leases hold N: only lease-a, lease-b have N.
+- deploy.sh: CONTAINER_MEMORY=<value> (env) puts containerMemory.default
+  into the chart config; unset keeps the driver default.
+- REPORT findings A is expected to pass now; B and C stay (not touched
+  by this plan).
+
+D12. Not done here (open)
+-------------------------
+O1. mempolicy (soft) mode; per-container values of containerMemory.
+O2. Pool numa claims are not steered: a container with both a
+    cxl.nri.io numa claim and a pool numa claim is steered and cgmpolmgr
+    leaves its pool node out of cpuset.mems (as before this plan).
+    Steering pool numa memory would fix it and change pool behavior.
+O3. Region devices (BIOS/admin regions) are not fenced.
+O4. Pause containers and host processes keep every node.
+O5. A udev rule that onlines hot-added memory onlines it before Fence
+    (docs require no such rule).

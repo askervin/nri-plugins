@@ -27,7 +27,8 @@
 #   to this node, kubelet asks the node plugin to prepare the claim of the
 #   companion, and the memory becomes a new NUMA node. Then the node
 #   plugin lends the node to the requesting container: it adds the node
-#   to cpuset.mems of that container (only), through NRI.
+#   to cpuset.mems of that container (only), through NRI. Every other
+#   container of the node is kept off the node, whatever its cpuset.mems.
 #   "cxl-request env --lease ID" prints the environment that a claim of
 #   the same memory gives a container (CXL_<KEY>_NODE and the rest).
 # - "cxl-request request --serial 0xc1ae0001 --shared --exec CMD" joins a
@@ -41,14 +42,15 @@
 #
 # What you will see: a pod that starts without any CXL memory, requests
 # that cxl-request and the node plugin refuse, 512Mi of pooled memory as
-# a new NUMA node in one container (but not in the other container of the
-# same pod), 256 MiB of its memory there, the environment of the lease,
-# which a claim of the same device gives too, the memory given back
-# without stopping, shared CXL memory written and read through a file
-# descriptor without any /dev/dax device, all this four times without
-# leftovers, and finally the pod deleted with leases active: Kubernetes
-# garbage collection and the node plugin clean up everything. At the end
-# the trace summary of what every component did, in order.
+# a new NUMA node in one container (not in the other container of the
+# same pod, nor in any other container of the node), 256 MiB of its
+# memory there, the environment of the lease, which a claim of the same
+# device gives too, the memory given back without stopping, shared CXL
+# memory written and read through a file descriptor without any /dev/dax
+# device, all this four times without leftovers, and finally the pod
+# deleted with leases active: Kubernetes garbage collection and the node
+# plugin clean up everything. At the end the trace summary of what every
+# component did, in order.
 #
 # Everything happens on VM2, the VM of the test (n4-cxl-shared-2), the
 # control plane of the cluster of VM2 and VM1 (n4-cxl-shared-1): the pods
@@ -182,6 +184,24 @@ cgroup-mems() {
     # cgroup of container CONTAINER of the borrower, read in the VM.
     dra-container-file "$VM2" borrower "$1" "${2:-cpuset.mems.effective}" >&2
     echo "$COMMAND_OUTPUT"
+}
+
+idle-mems-check() {
+    # Usage: idle-mems-check CYCLE
+    #
+    # Check that cpuset.mems of container idle of the borrower is IDLE_MEMS,
+    # or, when IDLE_MEMS is empty, the DRAM nodes, and set IDLE_MEMS to it:
+    # an empty cpuset.mems changes once, when the node plugin fences its
+    # first CXL node, and then stays.
+    local mems
+    mems=$(cgroup-mems idle cpuset.mems)
+    [ "$mems" == "$IDLE_MEMS" ] && return 0
+    [ -z "$IDLE_MEMS" ] ||
+        error "cycle $1: cpuset.mems of container idle changed from '$IDLE_MEMS' to '$mems'"
+    nodelist-eq "$mems" "$DRAM_NODES" ||
+        error "cycle $1: cpuset.mems of container idle is '$mems', expected '' or its DRAM nodes $DRAM_NODES"
+    echo "cycle $1: cpuset.mems of container idle changed from '' to its DRAM nodes '$mems'"
+    IDLE_MEMS="$mems"
 }
 
 new-lease() {
@@ -354,26 +374,20 @@ lend-memory() {
         error "cycle $cycle: node $MEM_NODE is not in cpuset.mems.effective of container main"
     nodelist-has "$(mems-allowed main)" "$MEM_NODE" ||
         error "cycle $cycle: node $MEM_NODE is not in Mems_allowed_list of container main"
-    [ "$(cgroup-mems idle cpuset.mems)" == "$IDLE_MEMS" ] ||
-        error "cycle $cycle: cpuset.mems of container idle changed, expected '$IDLE_MEMS'"
-    if [ -z "$IDLE_MEMS" ]; then
-        # Nobody restricts the nodes of idle (an empty cpuset.mems inherits
-        # every memory node of the VM): it may use the new node, too,
-        # though only as a fallback, it has no CPUs. Lending is exclusive
-        # only where containers have their nodes set (03-summary.txt,
-        # cpuset.mems ownership; R8 of 02-option-companion-pod-dra-lend).
-        nodelist-has "$(cgroup-mems idle)" "$MEM_NODE" ||
-            error "cycle $cycle: container idle inherits its nodes, but node $MEM_NODE is not among them"
-        echo "cycle $cycle: container idle inherits its memory nodes: node $MEM_NODE is in its effective nodes without a lend"
-    else
-        [ "$(cgroup-mems idle)" == "$IDLE_MEMS" ] ||
-            error "cycle $cycle: cpuset.mems.effective of container idle is not '$IDLE_MEMS'"
-        # The idle container cannot even prefer the node: it is not its node.
-        dra-exec "$VM2" borrower/idle python3 /tools/numa-touch.py 16 "$MEM_NODE" &&
-            error "cycle $cycle: container idle could allocate memory on node $MEM_NODE"
-        grep -q "set_mempolicy.*Invalid argument" <<< "$COMMAND_OUTPUT" ||
-            error "cycle $cycle: numa-touch.py in idle failed for another reason than an invalid node"
-    fi
+    # No other container has the node: neither container idle of the same
+    # pod nor the companion nor any container of the control plane. The
+    # node plugin keeps every container without a claim or a lend of the
+    # node off it, also those that inherit their nodes (an empty
+    # cpuset.mems).
+    dra-mems-fenced "$VM2" "$MEM_NODE" "$DRA_NS/borrower/main"
+    idle-mems-check "$cycle"
+    nodelist-has "$(mems-allowed idle)" "$MEM_NODE" &&
+        error "cycle $cycle: node $MEM_NODE is in Mems_allowed_list of container idle"
+    # The idle container cannot even prefer the node: it is not its node.
+    dra-exec "$VM2" borrower/idle python3 /tools/numa-touch.py 16 "$MEM_NODE" &&
+        error "cycle $cycle: container idle could allocate memory on node $MEM_NODE"
+    grep -q "set_mempolicy.*Invalid argument" <<< "$COMMAND_OUTPUT" ||
+        error "cycle $cycle: numa-touch.py in idle failed for another reason than an invalid node"
     dra-leases "$VM2" borrower/main
     dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), bool(l.get('shared'))) for l in j] == [('$MEM_LEASE', 'Ready', 'pool', 'numa', False)]"
     lease-env-check "$cycle"
@@ -447,6 +461,9 @@ give-back() {
         error "cycle $cycle: cpuset.mems of container main is not back to $DRAM_NODES"
     nodelist-eq "$(mems-allowed main)" "$DRAM_NODES" ||
         error "cycle $cycle: Mems_allowed_list of container main is not back to $DRAM_NODES"
+    # Nobody has the node now, and container idle keeps its nodes.
+    dra-mems-fenced "$VM2" "$MEM_NODE"
+    idle-mems-check "$cycle"
     nothing-left "released-$cycle"
     T_GIVE_BACK+=("$(echo "$EPOCHREALTIME - $t0" | bc)")
     touch-stop
@@ -734,6 +751,9 @@ $CLAIMER_ENV
 the lease of pooled0 gave (on node $LEASE_NODE)
 $LEASE_ENV"
 echo "the claim (node $CLAIM_NODE) and the lease (node $LEASE_NODE) of pooled0 have the same environment"
+# The node of the claim is the claimer's only, as a lent node is the
+# borrower's: container main of the borrower has none now.
+dra-mems-fenced "$VM2" "$CLAIM_NODE" "$DRA_NS/claimer/main"
 dra-delete "$VM2" pod claimer --grace-period=2 --wait=true --timeout=60s
 dra-delete "$VM2" resourceclaim pooled-memory --wait=true --timeout=60s
 nothing-left claimer-deleted

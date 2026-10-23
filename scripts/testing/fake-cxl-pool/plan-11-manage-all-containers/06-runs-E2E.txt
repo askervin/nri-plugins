@@ -1,0 +1,94 @@
+plan-11: e2e runs of stream E2E
+===============================
+2026-10-22, host times. Image: N/build/images/nri-dra-driver-cxl-image-
+d8a0980797d9.tar (nri-dra-driver-cxl:v0.15.0-35-ged99fcc44-dirty, the
+newest tar, imported by the framework; not rebuilt). Every command from
+N/test/e2e:
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/<test>
+one at a time. Output dir of each: N/test/e2e/n4-cxl-shared-2-fedora-43-
+containerd/memory.test-suite/dra-driver-cxl/<test>/ (the last run of a
+test; full console logs of these runs in /tmp/e2e-plan11/runs/<t>.log).
+Before the first run: no run_tests.sh active; VM2 cluster had no pods or
+claims outside the control plane (kubectl get pods,resourceclaims -A).
+
+Changed tests
+-------------
+start  test                               duration  verdict
+21:40  test14-dra-local-memdev            213 s     PASS
+21:50  test15-dra-local-live-attach       263 s     PASS
+21:55  test10-dra-pooling                  91 s     PASS
+21:56  test12-dra-live-attach             365 s     PASS
+22:33  test12-dra-live-attach (rerun)     365 s     PASS   after a
+       message-only change of dra-mems-fenced (retry message without
+       listed containers); 10 dra-mems-fenced checks, all passed.
+
+Regression
+----------
+22:03  test11-dra-sharing                         115 s  PASS
+22:05  test13-dra-shared-one-writer-many-readers  201 s  PASS
+22:09  test16-cxl-llm-share                       304 s  PASS
+22:14  test17-dra-local-shared                    263 s  PASS
+22:18  test18-dra-local-shared-one-writer-many-readers 226 s PASS
+22:22  test19-many-pools                          172 s  PASS
+22:25  test01-shared-cxl                           79 s  PASS
+No "NRI fence" warning and no "cpuset.mems left as it is" in any driver
+log of the eleven output dirs. test19 (workers): vm0 "NRI fence: fencing
+CXL node 2 (fenced nodes 2)", "2 containers updated, 0 failed",
+CreateContainer adjustments any-consumer/b-consumer 0-2 (pool numa
+claims), f-writer 0-1; vm1 the same for a-consumer.
+
+Decisive lines
+--------------
+VM2: DRAM nodes 0-1; the CXL node of every test is 2.
+
+test14 (columns trimmed; every listed container prints "cpuset.mems M
+effective E")
+  after numa-a:
+    cxl-pool-demo/numa-a/main            0-2  0-2
+    kube-system/* (7 control plane)      0-1  0-1
+    kube-system/nri-dra-driver-cxl-59g42 0-1  0-1
+  driver: "NRI fence: fencing CXL node 2 (fenced nodes 2)", "NRI fence:
+    8 containers updated, 0 failed (fenced nodes 2)", per container e.g.
+    "NRI fence: ctr=kube-system/kube-proxy-cd9mh/kube-proxy id=22da...
+    cpuset.mems=0-1 (was "", fenced nodes 2)"
+  after numa-b: dax-1 0-1/0-1, numa-a and numa-b 0-2/0-2, others 0-1.
+  B2, after dra-driver-restart (new pod nri-dra-driver-cxl-mpjq9):
+    I1022 18:42:48.849201 fence.go:123] NRI fence: fencing CXL nodes 2 of prepared claims
+    I1022 18:42:49.902743 lend.go:818] NRI fence: lends restored, fencing running containers
+    I1022 18:42:49.952731 lend.go:912] NRI fence: 1 containers updated, 0 failed (fenced nodes 2)
+      (the new driver's own container, created with every node)
+    table: dax-1, dax-s1, dax-s2 0-1/0-1; numa-a, numa-b 0-2/0-2;
+      nri-dra-driver-cxl-mpjq9 0-1/0-1; control plane 0-1/0-1.
+    I1022 18:42:54.519899 nri.go:202] NRI CreateContainer: ctr=cxl-pool-demo/plain/main: cpuset.mems=0-1 (fenced nodes 2)
+    plain: pod log "Mems_allowed_list:<TAB>0-1"; cgroup cpuset.mems 0-1;
+      table again with plain/main 0-1/0-1.
+  C (unprepare with the restarted driver) and D passed unchanged.
+
+test15
+  A (static-a): borrower/idle 0-1/0-1, borrower/main 0-1/0-1,
+    static-a/main 0-2/0-2; "A: cpuset.mems of container main of the
+    borrower changed from '' to its DRAM nodes '0-1'", the same for idle.
+  B, C: borrower/main 0-2, static-a 0-2, idle 0-1, others 0-1.
+  D, D-lease-1-released: + static-b/main 0-2.
+  D-lease-2-released: borrower/main 0-1, static-a and static-b 0-2.
+  E (local and pool lease on node 2), E-local-left: borrower/main 0-2,
+    idle 0-1, companions 0-1.
+
+test10
+  pod log: "Mems_allowed_list:<TAB>0-2"
+  driver: "NRI fence: fencing CXL node 2 (fenced nodes 2)", "NRI fence:
+    1 containers updated, 0 failed (fenced nodes 2)", "NRI CreateContainer:
+    ctr=cxl-pool-demo/pooled-consumer/consumer: cpuset.mems=0-2 (fenced
+    nodes 2)"
+  table: pooled-consumer/consumer 0-2/0-2, every kube-system container
+    (driver nri-dra-driver-cxl-zsk4w included) 0-1/0-1.
+
+test12 (every cycle 1-5 the same)
+  lent: borrower/main 0-2/0-2, borrower/idle 0-1/0-1,
+    cxl-lease-<id>/pause 0-1/0-1, kube-system 0-1/0-1.
+  cycle 1: "cpuset.mems of container idle changed from '' to its DRAM
+    nodes '0-1'" (IDLE_MEMS at A was ''); later cycles unchanged.
+  idle: Mems_allowed_list 0-1; "numa-touch: set_mempolicy(MPOL_PREFERRED,
+    node 2) failed: Invalid argument".
+  released: borrower/main 0-1, idle 0-1, nobody has node 2.
+  C2: claimer/main 0-2/0-2, borrower main and idle 0-1.

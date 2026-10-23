@@ -170,6 +170,83 @@ sys.exit(0 if n in nodes else 1)
 EOF
 }
 
+node_mems() {
+    # Prints "NAMESPACE/POD/CONTAINER CPUSET.MEMS EFFECTIVE" for every
+    # running container of the node ("-" for an empty cpuset.mems). Pod
+    # sandboxes are not containers and are not listed.
+    t 'for id in $(crictl ps -q --state running); do
+        crictl inspect -o go-template --template "{{index .status.labels \"io.kubernetes.pod.namespace\"}}/{{index .status.labels \"io.kubernetes.pod.name\"}}/{{.status.metadata.name}} {{.info.pid}}{{\"\n\"}}" "$id" 2>/dev/null
+    done | while read -r name pid; do
+        cg=$(sed -n "s/^0:://p" "/proc/$pid/cgroup" 2>/dev/null)
+        [ -n "$cg" ] || continue
+        m=$(cat "/sys/fs/cgroup$cg/cpuset.mems" 2>/dev/null) &&
+            e=$(cat "/sys/fs/cgroup$cg/cpuset.mems.effective" 2>/dev/null) || continue
+        echo "$name ${m:--} ${e:--}"
+    done'
+}
+
+fence_offenders() {
+    # Usage: fence_offenders N TABLE CONTAINER...
+    #
+    # Prints one line per container of TABLE (node_mems) that breaks "node
+    # N is in the effective mems of the CONTAINERs (NAMESPACE/POD/CONTAINER)
+    # and of no other container", and per CONTAINER that is not in TABLE.
+    local n="$1" table="$2" name mems eff c
+    shift 2
+    local -A allowed=()
+    for c in "$@"; do
+        allowed[$c]=1
+    done
+    while read -r name mems eff; do
+        [ -n "$name" ] || continue
+        if [ -n "${allowed[$name]}" ]; then
+            unset "allowed[$name]"
+            in_list "$n" "$eff" || echo "$name: node $n is not in its effective mems ($eff)"
+        elif in_list "$n" "$eff"; then
+            echo "$name: node $n is in its effective mems ($eff, cpuset.mems $mems)"
+        fi
+    done <<< "$table"
+    for c in "${!allowed[@]}"; do
+        echo "$c: not running"
+    done
+}
+
+check_fenced() {
+    # Usage: check_fenced N POD...
+    #
+    # Passes if containers "main" of the PODs in $NS have node N in their
+    # effective mems and no other container of the node has it, within 30
+    # s; otherwise fails once per offending container. Prints the table of
+    # node_mems.
+    local n="$1" table off c t0=$EPOCHSECONDS
+    shift
+    local ctrs=()
+    for c in "$@"; do
+        ctrs+=("$NS/$c/main")
+    done
+    while :; do
+        table=$(node_mems)
+        off=$(fence_offenders "$n" "$table" "${ctrs[@]}")
+        [ -n "$table" ] && [ -z "$off" ] && break
+        [ $((EPOCHSECONDS - t0)) -lt 30 ] || break
+        sleep 1
+    done
+    echo "  containers of the node (cpuset.mems, effective), after $((EPOCHSECONDS - t0)) s:"
+    sed 's/^/    /' <<< "$table"
+    if [ -z "$table" ]; then
+        fail "node $n fenced: no running container listed on $TARGET"
+        return 1
+    fi
+    if [ -z "$off" ]; then
+        pass "node $n is in the effective mems of ${ctrs[*]:-none} of the $(wc -l <<< "$table") containers of the node"
+        return 0
+    fi
+    while read -r c; do
+        fail "node $n fenced: $c"
+    done <<< "$off"
+    return 1
+}
+
 node_mib() { # Usage: node_mib N -- MemTotal of NUMA node N in MiB, 0 if it has none
     t "awk '/MemTotal/ {print int(\$4/1024)}' /sys/devices/system/node/node$1/meminfo 2>/dev/null || echo 0"
 }

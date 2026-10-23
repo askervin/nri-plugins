@@ -89,12 +89,19 @@ type poolDriver struct {
 	// staleBinds are lease binds of no prepared claim that could not be
 	// unmounted; releaseDevices tries again.
 	staleBinds []staleBind
+	// fence gets the NUMA nodes of devices in mode numa before their
+	// memory goes online, nil for none.
+	fence *nodeFence
 
 	// serials is a snapshot of the serials of prepared and inflight
-	// devices for the cxl.nri.io publisher (D29). It has its own lock
-	// so that a rescan never waits for a Prepare that waits for udev.
-	serialsMu sync.Mutex
-	serials   map[uint64]bool
+	// devices for the cxl.nri.io publisher (D29), and claimNodes of the
+	// NUMA nodes of the devices in mode numa of prepared claims (claim
+	// uid -> nodes) for the NRI plugin. They have their own lock so that
+	// a rescan or an NRI event never waits for a Prepare that waits for
+	// udev.
+	serialsMu  sync.Mutex
+	serials    map[uint64]bool
+	claimNodes map[string][]int
 }
 
 type preparedPoolDevice struct {
@@ -310,12 +317,44 @@ func (p *poolDriver) Serials() map[uint64]bool {
 	return out
 }
 
-// updateSerials refreshes the Serials snapshot. Called with p.mu held.
+// ClaimNodes returns the NUMA nodes of the devices in mode numa of a
+// prepared claim. Nil for a nil (disabled) pool driver.
+func (p *poolDriver) ClaimNodes(uid string) []int {
+	if p == nil {
+		return nil
+	}
+	p.serialsMu.Lock()
+	defer p.serialsMu.Unlock()
+	return slices.Clone(p.claimNodes[uid])
+}
+
+// numaNodes returns the NUMA nodes of the devices in mode numa of all
+// prepared claims. Nil for a nil (disabled) pool driver.
+func (p *poolDriver) numaNodes() []int {
+	if p == nil {
+		return nil
+	}
+	p.serialsMu.Lock()
+	defer p.serialsMu.Unlock()
+	var nodes []int
+	for _, n := range p.claimNodes {
+		nodes = append(nodes, n...)
+	}
+	slices.Sort(nodes)
+	return slices.Compact(nodes)
+}
+
+// updateSerials refreshes the Serials and ClaimNodes snapshots. Called
+// with p.mu held.
 func (p *poolDriver) updateSerials() {
 	s := map[uint64]bool{}
-	for _, pc := range p.prepared {
+	claimNodes := map[string][]int{}
+	for uid, pc := range p.prepared {
 		for _, d := range pc.Devices {
 			s[d.Serial] = true
+			if d.Mode == api.ModeNUMA && d.Node >= 0 && !slices.Contains(claimNodes[uid], d.Node) {
+				claimNodes[uid] = append(claimNodes[uid], d.Node)
+			}
 		}
 	}
 	for serial := range p.inflight {
@@ -323,6 +362,7 @@ func (p *poolDriver) updateSerials() {
 	}
 	p.serialsMu.Lock()
 	p.serials = s
+	p.claimNodes = claimNodes
 	p.serialsMu.Unlock()
 }
 
@@ -618,7 +658,8 @@ func (p *poolDriver) waitMemdev(ctx context.Context, serial uint64) (string, err
 
 // prepareDevice returns the device of an allocation result prepared as
 // data says; with an error of a device of persistent memory, the device as
-// far as it was prepared.
+// far as it was prepared. The NUMA node of a device in mode numa is fenced
+// before its memory goes online.
 func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice) (*preparedPoolDevice, error) {
 	memdev, err := p.waitMemdev(ctx, data.Serial)
 	if err != nil {
@@ -659,9 +700,12 @@ func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceReq
 		dev.Region, dev.Dax, dev.DaxDevice, dev.DaxMajor, dev.DaxMinor = ri.Region, ri.Dax, ri.Device, major, minor
 		return dev, nil
 	}
-	if _, err := p.mem.CreateRegion(ctx, memdev, memctl.ModeNUMA, ""); err != nil {
+	created, err := p.mem.CreateRegion(ctx, memdev, memctl.ModeNUMA, "")
+	if err != nil {
 		return nil, err
 	}
+	// the blocks of the region are offline until Online
+	p.fence.Fence(ctx, created.Node)
 	ri, err := p.mem.Online(memdev, true)
 	if err != nil {
 		return nil, err
@@ -672,6 +716,10 @@ func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceReq
 	}
 	if dev.Node < 0 {
 		return nil, fmt.Errorf("%s: cannot find the NUMA node of %s", memdev, ri.Region)
+	}
+	if p.fence != nil && dev.Node != created.Node {
+		klog.V(3).Infof("%s: %s: NUMA node %d of %s known only after onlining, fencing it late", p.name, memdev, dev.Node, ri.Region)
+		p.fence.Fence(ctx, dev.Node)
 	}
 	return dev, nil
 }
