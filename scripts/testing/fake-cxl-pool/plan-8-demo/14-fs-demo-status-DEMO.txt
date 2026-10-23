@@ -1,0 +1,416 @@
+plan-8-demo pool-shared-fs: status of stream DEMO (the demo)
+============================================================
+2026-10-22. Branch 5jg-cxl, working tree, nothing committed. Edited only
+DEMO/** and this file (no Go code, no driver docs, nothing under
+N/test/e2e). Paths as in 10 (N, P, DEMO, E, S2). State: phase 1 (desk)
+DONE; phase 2 (VMs) DONE, see the section at the end.
+
+Read
+----
+skills (coding-style, build, e2e), 00, 03, DEMO/README.txt, 05-status-DEMO,
+10, 11, 12, 13, plan-7 32 sections 1-5 and 34, every file of the demo,
+E/dra.source.sh (dra-image-put, dra-pull-images, dra-fs-mounts,
+dra-lease-fs-mounts, dra-pmem-loops, dra-trace-start, dra-trace-collect-vm,
+dra-state-cleanup), S2/pool.source.sh (pool-server-start, POOL_DIR,
+pool-device-files, pool-cleanup), S2/test16 (persistent device setup,
+exit-cleanup), the guest's fs/erofs/erofs_fs.h, and the log formats in
+D/broker.go, pool.go, pool_persistent.go (read only).
+
+What changed, per file (12 sections B and C)
+--------------------------------------------
+DEMO/bin/demo (C1)
+  Case set local|pool|pool-shared-fs for setup, reset, the steps
+  ("pool-shared-fs [N|N-|--auto]"), view and print-commands; usage text.
+DEMO/bin/steps.py (C2, B3)
+  steps("pool-shared-fs", S) = fs_steps(S): F1-F9 with the captions,
+  commands and checks of B3 (F3 caption shortened, Request R1).
+  check_lease's second line: "dax X", "block X" or "path X" from the
+  response. New check_cat: '3 readers read: "TEXT"' when the three lines
+  are equal, else "readers read different texts!" and the last line.
+  lease_words adds "(direct)" for fs leases when the T1 line fits.
+  Step numbers are F1-F9 for this case (title "PRESENTER pool-shared-fs
+  F3/9", run/steps.log, run/timings.txt; R5).
+DEMO/image/Dockerfile (C3): FROM docker.io/library/python:3-alpine, RUN
+  apk add --no-cache erofs-utils, with a 4-line comment (R11).
+DEMO/bin/tools/cxl-demo.py, DEMO/bin/tools/mkfs (C4)
+  "mkfs TEXT": /tmp/fs/hello.txt = TEXT + newline, mkfs.erofs -b4096
+  -Enoinline_data /tmp/hello.erofs /tmp/fs (output only on errors), then
+  "cxl-request fd --lease L --wait 120s --exec python3 /demo/cxl-demo.py
+  _flash /tmp/hello.erofs" with L the newest block lease (DEMO_LEASE
+  picks one; "no block lease: cxl-request request --mode block first").
+  _flash pwrites the image at 0 of fd 3, fsyncs, prints
+    wrote erofs (8192 bytes) with hello.txt: "Hello from the writer, 12:01:12"
+  and keeps the fd DEMO_HOLD (3) s (R4); EBADF -> "refused: read-only
+  (EBADF)", exit 1. lease(modes) and with_fd(modes=...) default to dax;
+  write, read, hold, env unchanged. Wrapper /demo/mkfs.
+DEMO/bin/probe.py (C5)
+  memdev size = ram/size + pmem/size (a persistent memdev has ram 0).
+  pmem regions get "namespaces": [{name, mode, size, block, major, minor,
+  fs}] from the nd region of the same resource (/sys/bus/nd/devices/
+  regionN; the block device of the namespace or of its holder pfnX.Y;
+  phase 2 fix, the path of 12 C5 does not exist), fs from the 4 bytes at
+  1024 of /dev/pmemK (erofs, none, ?). With pmem block devices:
+  "mounts" (erofs mounts of /proc/self/mountinfo on /dev/pmemK or on a
+  loop device backed by it: target, source, block, loop, dax, kind
+  node|lease|other, claimUID and name for lease binds) and "openers" (pod
+  processes with an fd of /dev/pmemK, perms rw|ro from fdinfo flags).
+  mappers() shares pod_pids() with openers().
+DEMO/bin/views.py (C6)
+  - T3: " persistent" after "shared" when the slice attribute is true;
+    "pool ok|down" for every case starting with "pool".
+  - T4: pmem rendering "vm1 mem0 c1ae0001 256M  region0 pmem 256M",
+    "    pmem0 254M erofs|no file system", "    open: writer rw" (only
+    while a pod process has an fd), "    mounted: reader-a reader-b
+    (dax)" (lease binds; "(cached)" on a loop device; names deduplicated),
+    "mounted: node mount, no lease", "mounted: -" (only when the
+    namespace has an erofs: R12). Lease bind -> pod: claim uid -> claim
+    name (VM2's claims) -> the pod whose status.resourceClaimStatuses
+    names it, else the uid's first 8 characters. VM2's T4 probe asks
+    pods,claims. vm1 first for both pool cases.
+  - T5: request regex accepts the plan-7 tail (R9); Ready shows " block
+    pmem0", " fs hello" or " dax0.0"; the persistent prepared line gives
+    "prepared pmem0 rw|ro" (block) or "prepared erofs direct" (fs; R2);
+    bound/unbound -> "mounted hello" / "unmounted hello" ("again" for a
+    rebind); the EBUSY unprepare error -> "unmount busy, retry" once per
+    lease until unbound (driver and kubelet streams); udev takes (block)
+    pmemN.
+  - T6: render_t6_pool for both pool cases; the device row gets
+    " persistent"; in pool-shared-fs fs_lines replaces "at 0": "no file
+    system (zeros)", "no file system", "erofs (not readable: why)",
+    "erofs: NAME SIZE bytes" per file and the quoted text of the first
+    regular file. collect() reads the first MiB of the backing file and
+    parses it on the host (data["pool"]["fs"]).
+DEMO/bin/common.py (C7)
+  erofs_files(data) -> {type erofs|zeros|none, files [{name, size, type,
+  text}], error, super {magic, blocksize, blkszbits, inos, blocks,
+  rootNid, metaBlkaddr, xattrBlkaddr, featureCompat, featureIncompat}}:
+  superblock at 1024 (48BIT root nid too), compact and extended inodes,
+  layouts plain and inline (tail after the inode and its inline xattrs),
+  one block of root dirents, text = first 48 bytes cut at the first
+  newline, printable ASCII; other layouts and short data -> error and
+  "(not readable)". read_hex(path) for the testdata hex (# comments).
+DEMO/bin/zoom.py (B5)
+  fs (superblock fields and the root directory's files, "no file system"
+  otherwise), mounts vm1|vm2 (findmnt -t erofs -o
+  TARGET,SOURCE,FSTYPE,OPTIONS, losetup -l, find lease-fs -maxdepth 2),
+  bytes [OFFSET] (0 to 2 MiB - 256; pool cases from the backing file,
+  local through the probe with --len OFFSET+256). Listed in "demo zoom
+  help".
+DEMO/manifests/pool-shared-fs/{writer,readers}.yaml (B2)
+  The pool ones with image localhost/cxl-demo-tools:demo, imagePullPolicy
+  Never, comments of the case.
+test90-demo-setup (C3, C8)
+  DEMO_TOOLS + mkfs. pool-shared-fs: rm -f $POOL_DIR/shared0.raw and
+  shared0.lsa before pool-server-start of shared0 with "persistent: true";
+  pool-device-files shared0, persistent and shared asserted, the paths
+  checked; POOL_DEVICE_FILES. demo-image-build (docker required, tag
+  localhost/cxl-demo-tools:<sha256 of the Dockerfile, 12 hex>, docker
+  build unless docker image inspect succeeds, docker save to
+  $DEMO_STATE_DIR/cxl-demo-tools-<sha12>.tar) and demo-image-put VMDIR
+  TAR TAG REF (skip when ctr shows REF with TAG's digest; scp, ctr -n
+  k8s.io images import, images tag --force TAG REF, rm in the VM) for VM2
+  and VM1 before the pull of PAUSE_IMAGE; python:3-alpine not pulled; the
+  tarball removed after the imports (R8). After dra-trace-start: a
+  collector <vm>.block.udev per VM (R3). state.env: POOL_DEVICE_FILES,
+  DEMO_IMAGE (R8).
+test91-demo-teardown (C8)
+  After dra-uninstall and before the pool server: dra-fs-mounts,
+  dra-lease-fs-mounts and dra-pmem-loops of both VMs; anything left (or
+  unreadable) -> WARNING with test16's manual cleanup hint and an error,
+  no pool-cleanup, so no detach (R7). After pool-cleanup: rm -f of
+  POOL_DEVICE_FILES when the state has them.
+DEMO/README.txt (C9)
+  Three scripts in the intro; docker in the prerequisites; setup,
+  teardown (the mount check, the files) and reset texts; T1 command and
+  the F step numbers; section "6b. Script 3: pool-shared-fs" after the
+  pool one (F1-F9 with what to point at and what to say); zooms fs,
+  mounts, bytes [OFFSET]; two troubleshooting items; expected timings
+  in section 9 (rehearsal timings in phase 2); files image/,
+  manifests/pool-shared-fs, hello.erofs.hex.
+DEMO/bin/selftest.py, DEMO/testdata (C10)
+  make-samples.py: companion() takes mode and access (class
+  cxl-pool-persistent for block and fs), pool_slice(persistent), pod
+  claim statuses, lease claims of the demo pods, pmem regions, fs mounts;
+  scenarios pool-shared-fs-F2 (block lease, pmem0 no file system, open
+  writer), -F3 (erofs, T6 hello.txt), -F5 (readers waiting), -F6 (fs
+  leases Ready, node mount and binds on both nodes), -F9 (nothing, the
+  file system left); trace-fs (F1-F9 streams with the new driver lines,
+  controller, server, udev and <vm>.block.udev, a busy unmount twice);
+  pool.json carries fs from erofs_files of the real image.
+  hello.erofs.hex: the real 8192-byte image, generated once with the
+  docker command of the task (mkfs.erofs 1.9), od format, 3 comment lines.
+  selftest: forces 50 x 10 (R6); probe on a second fake tree (pmem region,
+  namespace, /dev/pmem0 with the image, mountinfo with a node mount, a
+  lease bind, a cached node mount on loop0 and a foreign erofs, openers rw
+  and ro and a non-pod process) and T4 from it; erofs_files on the hex
+  (hello.txt, 32, text; zeros; none; a cut image -> "(not readable)");
+  trace-fs lines and that none is cut in T5; T1 of the 27 steps (captions
+  <= 50); check_lease (block, fs) and check_cat on sample outputs.
+  renderings.txt regenerated.
+
+How it was checked (desk, host only)
+------------------------------------
+- bash -n of bin/demo and bin/tools/{write,read,hold,env,mkfs}: ok;
+  shellcheck -e SC2154,SC2034,SC1090,SC2148,SC2016 on them: 0 findings.
+- test90 and test91 each concatenated with dra.source.sh pool.source.sh
+  cxl.source.sh llm.source.sh: bash -n ok, the same shellcheck: 0
+  findings.
+- python3 -m py_compile of bin/*.py, bin/tools/cxl-demo.py,
+  testdata/make-samples.py: ok.
+- "demo selftest": "selftest: ok, 126 renderings fit 50 x 10" (92 before).
+- erofs_files on hello.erofs.hex: hello.txt, 32 bytes, "Hello from the
+  writer, 12:01:12"; also on images made with the demo image: inline
+  layout (no -Enoinline_data), extended inodes (-Eforce-inode-extended)
+  with 4 files and a directory, lz4 (the compressed file "(not
+  readable)", the others read).
+- The image: docker build of image/Dockerfile on the host (tag
+  localhost/cxl-demo-tools:69f690c27bf2), mkfs.erofs 1.9 in it.
+- The tool against a fake cxl-request (a shell script: "list" prints a
+  block lease, "fd ... --exec CMD" runs CMD with fd 3 on a 1 MiB scratch
+  file), run in the demo image: /demo/mkfs prints the exact line, the
+  scratch file has the image at offset 0 (erofs_files reads hello.txt
+  from it); with fd 3 read-only "refused: read-only (EBADF)", exit 1, the
+  file untouched; without a block lease "no block lease: cxl-request
+  request --mode block first", exit 1; the run with DEMO_HOLD 3 takes 3.3 s.
+- views.py --sample of each new scenario (t2, t3, t4, t6) and t5 of
+  trace-fs at four points: all within 50 x 10, plain ASCII.
+- zoom fs, zoom bytes 1024 and 4096, and views.py t6 --once against a
+  local http.server on 127.0.0.1:19909 serving a fake device JSON whose
+  backing file is the tool's scratch file: ok.
+- Plain ASCII: every changed and new file, the samples and renderings.
+- No VM contact, no ssh, no run_tests.sh, no demo setup.
+
+Requests (deviations from 12, with reasons)
+-------------------------------------------
+R1  F3 caption "the writer makes a file system with hello.txt" (12 B3
+    has "... with hello.txt in it", 51 characters; B3 also says captions
+    are one line of at most 50).
+R2  T5 has 35 columns after "HH:MM:SS tag   ", and every drv line keeps
+    the node prefix ("vm2 "), so: "reader-a: prepared erofs direct" (no
+    "ro": an fs device is always read-only), "reader-a: lease Ready fs
+    hello" (no "(direct)"), "reader-a: unmount busy, retry" (no "(file
+    in use)"). The other C6 texts are as written. selftest checks that no
+    trace-fs line is cut.
+R3  dra-trace-start's udev collector is "udevadm monitor -k -u -s cxl -s
+    dax -s memory -s node": no block events, so "add ... pmem0" (C6
+    on_udev) never arrives. test90 (pool-shared-fs only) starts one more
+    collector per VM after dra-trace-start, tag <vm>.block.udev ("udevadm
+    monitor -k -s block", through dra-trace-collect-vm, stopped by
+    dra-trace-stop like the others), which T5 reads as udev. For D/E: "-s
+    block" in dra-trace-start's udev collector would make it unnecessary.
+R4  _flash keeps the fd DEMO_HOLD seconds (default 3) after its line, as
+    write keeps its mapping: else B3 F3's "open: writer rw" in T4 is never
+    seen (the write takes milliseconds). Closed long before the release
+    (11 W5).
+R5  Step numbers F1-F9 in pool-shared-fs (T1 title, steps.log,
+    timings.txt), L1-L9 in the others.
+R6  selftest sets COLUMNS=50 LINES=10: it used the size of the terminal
+    it ran in (80 x 24 in a pipe). The old renderings.txt was stale: its
+    captured-test13 t3 said "pool ok", the code of HEAD and now both say
+    "pool down" (no cxl-pool.nri.io slice in that capture).
+R7  test91 also checks dra-pmem-loops (as test16's exit-cleanup); with a
+    mount left it stops with an error and keeps state.teardown, the
+    server and the attachment (no pool-cleanup), the hint ends "then run
+    demo teardown again" (test16 stops the server; the demo's teardown is
+    re-runnable instead).
+R8  test90 removes the docker save tarball after both imports (60+ MB in
+    run/); state.env has DEMO_IMAGE for every case (python:3-alpine for
+    local and pool).
+R9  Found while reading: the broker's request log line ends with
+    'read-only B, access "A", name "N")' since plan-7, and T5's regex
+    wanted "read-only B)": the "asks" lines were missing for the current
+    driver in all cases. Fixed ("[,)]").
+R10 Git: testdata/ is ignored by N/.gitignore (line 28) and bin/ by
+    P/.gitignore (line 1): the new DEMO/bin/tools/mkfs and DEMO/testdata/**
+    (make-samples.py, hello.erofs.hex, the new scenarios, trace-fs,
+    renderings.txt) need "git add -f" at commit time, as the existing
+    files had.
+R11 The Dockerfile has a 4-line comment above the two lines of C3.
+R12 T4 shows the "mounted:" line only when the namespace has an erofs or
+    a mount: F2 is "pmem0 254M no file system" alone (as B3 F2 shows it).
+R13 README: the third script is section "6b" so that the timings stay
+    section 9 (C11 refers to it).
+
+Notes for phase 2
+-----------------
+- The second --auto run starts with the erofs of run 1 on shared0 (the
+  device is persistent and teardown removes its files only at the end):
+  F1/F2 show "erofs: hello.txt" and "pmem0 254M erofs" until F3 writes a
+  new one. "demo teardown" + "demo setup pool-shared-fs" starts fresh.
+- The texts of D's block lease (Response.block, the Ready line with block
+  "/dev/pmem0", the companion's DeviceConfig {mode: block}) are coded from
+  12 A; check them against the image's log in the first run.
+- The busy-unmount line's framing in the driver log is assumed (an E line
+  with the E5 text); the regex needs only "unpreparing claim X: lease L:
+  unmounting T: ... busy" anywhere in the line.
+
+Phase 2 plan (after the orchestrator's word on D's image and tests)
+-------------------------------------------------------------------
+One rehearsal at a time; nothing else on the VMs. From DEMO
+(cd N/scripts/testing/fake-cxl-pool/plan-8-demo/demo; alias demo=$PWD/bin/demo):
+ 1. ls -t N/build/images/nri-dra-driver-cxl-image-*.tar | head -1   (D's image)
+    demo selftest --quiet
+ 2. demo setup pool-shared-fs        (log run/test90-demo-setup.log; check
+    the image build/import and "demo setup pool-shared-fs: done")
+ 3. the six views (50 x 10 each; or demo-terminals.el):
+      demo pool-shared-fs     (T1)
+      demo view t2
+      demo view t3
+      demo view t4
+      demo view t5
+      demo view t6
+ 4. demo pool-shared-fs --auto      (run 1, timings to run/timings.txt)
+    demo reset pool-shared-fs
+    demo pool-shared-fs --auto      (run 2)
+ 5. Captures, a step-by-step pass (after demo reset pool-shared-fs):
+      for n in 1 2 3 4 5 6 7 8 9; do
+        DEMO_AUTO_PAUSE=0 demo pool-shared-fs $n --auto
+        case $n in 2|3|5|6|8) demo capture run3-F$n;; esac
+      done
+    (captures/pool-shared-fs-run3-F<n>-t<2..6>.txt, T1 from the runner's
+    output) and zooms in that pass, after F6:
+      demo zoom fs; demo zoom mounts vm1; demo zoom mounts vm2
+      demo zoom claim reader-a; demo zoom env reader-a
+      demo zoom bytes 1024; demo zoom driver vm2 40; demo zoom pool
+ 6. demo teardown                    (log run/test91-demo-teardown.log)
+    VMs clean (read-only): for each of vm1 and vm2
+      ssh -F N/test/e2e/n4-cxl-shared-<1|2>-fedora-43-containerd/.ssh-config node \
+        'ls /sys/bus/cxl/devices | grep -E "^(mem|region)[0-9]"; findmnt -t erofs; losetup -l;
+         sudo ls /var/lib/kubelet/plugins/cxl.nri.io/lease-fs'
+    (all empty), ls /tmp/fake-cxl-pool/shared0.* (none), port 9909 free.
+ 7. demo setup pool; demo pool --auto; demo teardown   (the shared code changed)
+ 8. README section 9 timings, this file: runs, timings, captures, the
+    final VM state.
+When a step fails: run/steps.log and "demo zoom last" (what the command
+printed), "demo zoom driver vm1" / "demo zoom driver vm2" (the broker and
+the pool driver), "demo zoom mounts vm1|vm2" (node mounts and binds),
+"demo zoom pod reader-a" (why a companion waits), T5; setup and teardown:
+run/test90-demo-setup.log, run/test91-demo-teardown.log and the e2e output
+dir of the test (trace/). A teardown that stops with "still mounted":
+follow its hint, then demo teardown again.
+
+DEMO phase 1 done
+
+Phase 2 (VMs, 2026-10-22)
+=========================
+Image: N/build/images/nri-dra-driver-cxl-image-2b1eafa98e22.tar (D's,
+the newest; setup imported it into all three nodes, run/test90-demo-setup.log).
+Demo image localhost/cxl-demo-tools:69f690c27bf2 (built in phase 1),
+imported as localhost/cxl-demo-tools:demo into vm1 and vm2 by the first
+setup; the second setup skipped the import ("demo-image-put vm: ... is
+localhost/cxl-demo-tools:69f690c27bf2 already").
+
+Runs, in order (one at a time, all six views live: T1 the runner, T2-T6
+"demo view tN" at 50 x 10 with output to files)
+ 1. demo setup pool-shared-fs: PASS, 67 s.
+ 2. demo pool-shared-fs --auto (first): every step ok, but two demo bugs
+    showed (fixed below, captures of this run discarded):
+    a. T4 "no namespace yet": the nd region of a CXL pmem region is not
+       under regionN/pmem_regionN/ndbus*, it is
+       /sys/devices/.../nvdimm-bridge0/ndbus0/region0 (same resource as
+       the CXL region), the namespace's block device is on its holder
+       (namespace0.0/holder = pfn0.1, pfn0.1/block/pmem0), the namespace
+       mode reads "memory". So no "open: writer rw" and no mounts in T4.
+    b. T6 "no file system" while the readers read hello.txt: the fsdax
+       namespace starts with a pfn info block ("NVDIMM_PFN_INFO" at 4096,
+       dataoff 2 MiB): the erofs is at 2 MiB of the backing file (magic at
+       0x200400), not at 0.
+    The block lease itself worked at once: response {"mode": "block",
+    "block": "/dev/pmem0", "size": 266338304, env PATH /dev/pmem0}, the fd
+    came into the container, /demo/mkfs wrote the image (8192 bytes)
+    through it, the three readers read the text from /run/cxl/fs/hello.
+ 3. Fixes (all the demo's own), then a step-by-step pass F1-F9 to verify:
+    - probe.py namespaces(): nd region by resource, block device of the
+      namespace or of its holder, size from /sys/block/pmemK/size, mode
+      memory -> fsdax. The selftest fake tree models the real layout
+      (and an nd region of another resource that must not match).
+    - common.read_fsdax / fsdax_data_offset: the data offset of the pfn
+      info block; T6 (collect), zoom fs and zoom bytes (pool-shared-fs:
+      offsets of the block device) read from there.
+    - T5: "pmemN" only from block udev events (the cxl subsystem has a
+      mem0/pmem0, the memdev's nvdimm, which made "vm1 add mem0 pmem0").
+    - T1: long result lines wrap (after the last fitting ": ", else at a
+      space, continued with 3 spaces, at most 3 rows): F3's tool line,
+      F7's '3 readers read: "..."' and F8's "sh: can't create ...: Read-only
+      file system" were cut at 50; pool L7 shows both its lines again.
+    - make-samples (namespace0.0, the real block and nvdimm udev paths),
+      selftest (pmem fake tree, result_lines), renderings regenerated.
+ 4. demo pool-shared-fs --auto twice, with captures at F2, F3 (taken while
+    T4 shows "open: writer rw"), F5, F6, F8 by a watcher on run/steps.log
+    (/tmp helper, not in the tree): both all steps ok.
+    run1 F1-F9: 2.0 5.7 3.8 2.0 0.7 10.3 0.6 0.4 2.8 s
+    run2 F1-F9: 2.0 5.8 3.9 2.0 0.8 10.1 0.7 0.3 2.0 s
+    whole run 73 s each. Captures: DEMO/captures/pool-shared-fs-run<1|2>-
+    F<2|3|5|6|8>-t<2..6>.txt (50 files), all within 50 x 10; T1 frames from
+    the runner's output. They show what 12 B3 says: F2 "block rw excl",
+    "exclusive: writer rw", "vm1 mem0 c1ae0001 256M  region0 pmem 256M",
+    "lease Ready block pmem0"; F3 "open: writer rw", T6 "erofs: hello.txt
+    32 bytes" with the new text; F5 three "waiting"; F6 three "fs ro
+    share", "mounted: reader-c (dax)" / "mounted: reader-a reader-b
+    (dax)", "attached: vm1, vm2"; F8 unchanged T6.
+ 5. demo teardown: PASS, 38 s; "no erofs mounts left", shared0.raw and
+    .lsa removed; VMs clean (below).
+ 6. Manual pass: demo setup pool-shared-fs (PASS, 63 s, import skipped);
+    one more full --auto by mistake ("1-6" is not a step selection: steps
+    take N or N-; it ran all, ok, F1-F9 2.0 5.5 4.0 2.0 0.8 10.3 0.7 0.4
+    1.6 s); then F1..F6 one by one; zooms: fs (block device at 2097152,
+    superblock, hello.txt with the text), mounts vm1 (node mount
+    mounts/c1ae0001-direct and one lease bind, dax=always), mounts vm2
+    (node mount and two binds), claim reader-a (cxl-pool-persistent,
+    serial selector, shares "1", DeviceConfig {mode fs, readOnly, access
+    direct}), env reader-a (CXL_C1AE0001_PATH=/run/cxl/fs/hello, ACCESS
+    direct, MODE fs, READONLY 1), bytes 1024 (the superblock), pod
+    reader-a, driver vm2 (the bound and Ready lines). Busy unmount: in
+    reader-a "exec 4</run/cxl/fs/hello/hello.txt; cxl-request release
+    --all; sleep 8": T2 "releasing", T5 "vm2 reader-a: lease releasing",
+    "claim deleting", "unmount busy, retry" once, while the driver logged
+    the EBUSY Unprepare every 11-15 s (kubelet's retries); "cxl-request
+    release" itself waited about two minutes for the Released state (it
+    holds the open file in the same shell, so this was my test's
+    deadlock, not a fault: the release is cooperative, 11 W5) and
+    answered Releasing; the unmount went through at the next retry, then
+    "unprepared" and "released". demo reset pool-shared-fs: 2.5 s, "no
+    leases left"; demo teardown: PASS, 38 s, clean.
+ 7. demo setup pool: PASS, 60 s; demo pool --auto: all ok (L1-L9 2.0 5.7
+    3.9 2.0 0.8 10.3 3.1 0.5 2.8 s); once more after the T1 rows change
+    (2.2 5.5 3.9 2.0 0.8 10.2 3.2 0.5 2.0 s; L7 shows "3 readers read at
+    0:" with the text on the next row and "3 hold a read-only mapping");
+    demo teardown: PASS, 37 s.
+Views: 0 "stale" renderings in all view outputs of all runs.
+
+Driver findings: none. Block leases behaved as 12 A says in every run
+(the Ready line with block "/dev/pmem0" after dax "", the fd in the
+container, O_RDWR: the image written and fsynced, the region released at
+the writer's release with no holder left).
+
+Final state (after the last teardown, checked read-only)
+- vm1 and vm2: no CXL memdevs or regions in /sys/bus/cxl/devices, no
+  erofs mounts (findmnt -t erofs), no loop devices, empty
+  /var/lib/kubelet/plugins/cxl.nri.io/lease-fs and
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts; /root/demo gone; no
+  cxl-demo node labels; namespace cxl-demo gone; all three nodes Ready,
+  no pod not Running.
+- Host: port 9909 free, no fake-cxl-pool-server or trace collector left;
+  /tmp/fake-cxl-pool/shared0.{raw,lsa} of pool-shared-fs removed.
+  /tmp/fake-cxl-pool/shared0.raw (256 MiB) of the volatile pool demo is
+  left by its teardown, as before this change (pool-cleanup does not
+  remove the files of volatile devices); pooled0.raw, pooled1.raw and
+  static-shared0.raw are older, of other tests. A pool-shared-fs setup
+  removes shared0.raw first.
+
+More Requests from phase 2
+--------------------------
+R14 T1 result lines wrap (3 rows at most) instead of being cut at 50
+    (12 B3 result texts are longer than 47 columns: F3, F7, F8).
+R15 The T6 fs block and "zoom fs"/"zoom bytes" read the block device's
+    data at the pfn info block's dataoff (2 MiB), not at 0 of the
+    backing file as 12 C6 says: the fsdax namespace of the pool driver
+    puts its info block first.
+R16 "demo pool-shared-fs N-M" (a range) is not supported, as in the other
+    cases: N, N- or all.
+R17 The volatile pool demo leaves /tmp/fake-cxl-pool/shared0.raw on the
+    host (unchanged behaviour); a "rm -f" of it in test91 for the pool
+    case would free 256 MiB of host RAM. Not done: not in 12.
+
+DEMO phase 2 done
+

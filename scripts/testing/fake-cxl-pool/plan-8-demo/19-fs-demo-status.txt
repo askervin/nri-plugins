@@ -1,0 +1,88 @@
+plan-8-demo pool-shared-fs: orchestrator status
+===============================================
+2026-10-22: task received (10). Read: plan-8 00, 03, 05-status-DEMO, 09,
+demo/README.txt, demo/bin/*, tools, manifests, test90, test91,
+make-samples.py; checked on the host: docker 29.3 works,
+python:3-alpine + apk erofs-utils 1.9 builds an 8192-byte one-file
+erofs (layout in 11 M3), the erofs header is in the guest kernel source;
+VM2 has no mkfs.erofs. User (mid-task): implement lease mode block first
+if it is critical; asked whether a loop device as a CDI node of the lease
+claim could do it. Decisions (11): dynamic writer through lease mode
+block (the fd model of dax leases, about 250 lines), the loop device idea
+assessed as workable but not needed (11 section 3); mkfs.erofs from a
+demo image built at setup; T6 parses the erofs in the backing file; T4
+shows pmem regions, the block device and the mounts. Written: 10, 11, 12
+(contract), 13 (plan). Started: D (lease mode block, e2e texts, image,
+test12/test16 runs) and DEMO phase 1 (desk), Opus agents. DEMO phase 2
+on the VMs after D.
+2026-10-22: DEMO phase 1 done (14-fs-demo-status-DEMO.txt): bin/demo case
+set, steps F1-F9 (check_cat, check_lease second line), image/Dockerfile
+(built on the host as localhost/cxl-demo-tools:69f690c27bf2, mkfs.erofs
+1.9), tools mkfs/_flash, probe namespaces/mounts/openers, views T3-T6,
+common.erofs_files, zooms fs/mounts/bytes OFFSET, manifests, test90
+(persistent shared0, files removed, image build+import, state keys),
+test91 (mount and loop checks before any detach, files removed), README,
+selftest 126 renderings ok, hello.erofs.hex. Requests R1-R13 accepted:
+shorter F3 caption and T5 texts (50 columns), a demo-side udev collector
+for block events (dra-trace-start listens to cxl/dax/memory/node only;
+unifying it into dra.source.sh is possible later), _flash holds the fd
+3 s (as /demo/write does), F numbering, selftest at a fixed 50 x 10,
+teardown stops with its state kept while a mount remains, tarball
+removed after import; R9 is a real bug found and fixed: T5's "asks"
+regex no longer matched the broker's request line since plan-7 added
+access and name to it. For the user: bin/tools/mkfs and demo/testdata/*
+are gitignored (git add -f, as before). DEMO waits for D.
+2026-10-22: D done (14-fs-demo-status-D.txt): lease mode block (12 part A)
+with unit tests, docs, the e2e texts; image nri-dra-driver-cxl-image-
+2b1eafa98e22.tar; test12 PASS (6 min), test16 PASS (5 min) on it; no
+Requests. Review R-D (15-fs-demo-review-D.txt): no findings. DEMO told to
+start phase 2 on the VMs with that image.
+2026-10-22: DEMO phase 2 done (14-fs-demo-status-DEMO.txt "Phase 2"):
+setup, --auto twice with captures (73 s each), manual pass with zooms and
+a busy-unmount test, reset, teardown twice, and the pool demo once more:
+all PASS, 0 stale renderings; no driver findings (the first live block
+lease worked at once). Demo bugs of the first run fixed (nd region by
+resource and the pfn holder's block device; the erofs at the pfn info
+block's dataoff, 2 MiB; pmemN from block udev events only; T1 result
+lines wrap). Review R-DEMO (15-fs-demo-review-DEMO.txt): no findings;
+R14-R16 accepted, R17 and R3 noted for the user.
+
+Closing status (2026-10-22, orchestrator; finished by Opus 5.5 after the
+Fable session's budget ran out)
+-----------------------------------------------------------------------
+Done, nothing committed (branch 5jg-cxl, working tree). Verified on the
+final tree: gofmt, go vet, go test -race of pkg/cxl/...,
+cmd/cxl-request/..., cmd/plugins/dra-driver-cxl/... all ok,
+golangci-lint 0 issues; demo selftest ok (126 renderings), py_compile,
+bash -n and shellcheck of the demo's shell files clean, plain ASCII.
+The VMs vm1 and vm2: no memdevs, regions, erofs mounts or loop devices;
+port 9909 free. A stray untracked 77 MB build of the driver binary
+(cmd/plugins/dra-driver-cxl/dra-driver-cxl, not ignored by git) was
+removed.
+- Driver (D): lease mode block, the fd of /dev/pmemK as dax leases get
+  /dev/daxX.Y (cxl-request --mode block, Response.block, CXL_<KEY>_FD for
+  block leases, class cxl-pool-persistent companions, the texts of 12
+  A1-A3), docs, unit tests, test12 and test16 texts; final image
+  build/images/nri-dra-driver-cxl-image-2b1eafa98e22.tar; test12 and
+  test16 PASS on it.
+- Demo (DEMO): the third story line pool-shared-fs, F1-F9: the writer
+  leases shared0 (persistent) as a block device and makes an erofs with
+  hello.txt with mkfs.erofs of the demo image
+  (demo/image/Dockerfile, built at setup with docker, imported with ctr
+  as localhost/cxl-demo-tools:demo); readers lease the file system
+  read-only and cat /run/cxl/fs/hello/hello.txt; a write fails with
+  "Read-only file system"; everything goes and the file system stays in
+  the device. The six views show it: T3 persistent, T4 the pmem region,
+  the block device, "open:" and "mounted:", T5 the new driver and block
+  udev lines, T6 hello.txt parsed from the backing file. README section
+  6b and section 9 timings, 50 captures.
+For the user:
+- Commit. With git add -f: demo/bin/tools/mkfs and demo/testdata/* (the
+  .gitignore rules hide them, as before).
+- R17: the volatile pool demo's teardown leaves
+  /tmp/fake-cxl-pool/shared0.raw (256 MiB of host RAM); a rm -f in test91
+  for the pool case would free it (older behaviour, not in this step).
+- R3: the demo's setup starts its own udev collector for block devices;
+  dra-trace-start could listen to -s block for all e2e traces instead.
+- Not in this step: a path for block leases in the container (the loop
+  device idea of 11 section 3).

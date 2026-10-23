@@ -1,0 +1,433 @@
+plan-8-demo pool-shared-fs: design and contract
+===============================================
+Written 2026-10-22 (orchestrator) from 11-fs-demo-findings.txt (11),
+03-demo-design.txt and plan-7 32-dynamic-bind-mount-design.txt (32).
+Every stream implements exactly these names, texts and paths; a stream
+that needs a change writes a Request in its status file and continues.
+Paths as in 10. Part A is the driver (stream D), parts B and C the demo
+(stream DEMO).
+
+A. Lease mode block (stream D)
+==============================
+The fd model of dax leases applied to the block device of a persistent
+pool device: "cxl-request request --serial S --mode block" makes the
+broker create a companion claim of class cxl-pool-persistent with
+DeviceConfig {mode: block, readOnly}; the pool driver prepares it as a
+block claim (pmem region, the fsdax namespace that only an exclusive
+writable one creates, no CDI device for a companion); the broker opens
+/dev/pmemK and sends the fd with the Ready response (SCM_RIGHTS), as for
+/dev/daxX.Y; "cxl-request fd --lease L --exec CMD" gives it again.
+
+A1 api (A/api.go)
+- Validate (shared by the CLI, exit 2, and the plugin), texts in order:
+  V1  invalid source "X" (local or pool)                      (unchanged)
+  V2  invalid mode "X" (numa, dax, fs or block)       (was "(numa, dax or fs)")
+  V3  invalid access "X" (direct or cached)                   (unchanged)
+  V4  shared memory is never onlined as RAM: use mode dax     (unchanged)
+  V5  access needs mode fs                                    (unchanged)
+  V6  name needs mode fs                                      (unchanged)
+  V7  invalid name "X" (letters, digits, ".", "_" and "-", not "." or "..")
+  V8  mode fs needs readOnly                                  (unchanged)
+  V8b mode block with shared needs readOnly     (shared and mode block without
+      readOnly: a share of a device is read-only; the whole device, without
+      --shared, may be written)
+  V9  readOnly needs mode dax, fs or block       (was "readOnly needs mode dax or fs")
+  V10 mode <M> needs source pool                 (M = fs or block, with source local;
+      was "mode fs needs source pool")
+  V11 size or serial is required                              (unchanged)
+  V12 invalid serial "X"                                      (unchanged)
+  EffectiveMode unchanged (block is never a default).
+- Response gains Block (json "block", omitempty): /dev/pmemK of a Ready
+  block lease, the host path, informational (the container has no such
+  node), as Dax is for dax leases.
+- Env unchanged: ModeBlock gives CXL_<KEY>_PATH (the device node path)
+  and CXL_<KEY>_READONLY. ExecEnv: for every key whose CXL_<KEY>_MODE is
+  block, when fd >= 0, CXL_<KEY>_PATH is replaced by CXL_<KEY>_FD=<fd>
+  (as CXL_<KEY>_DAX is for dax); without an fd PATH stays (cxl-request
+  env prints it).
+
+A2 cxl-request (C/main.go)
+- Synopsis: --mode numa|dax|fs|block. Help lines:
+    --mode      numa (lent as a NUMA node), dax (a devdax fd), fs (a read-only
+                filesystem of a persistent pool device at /run/cxl/fs/NAME) or
+                block (an fd of the block device of a persistent pool device);
+                default numa, dax with --shared or for a shared device
+    --read-only a dax or block fd that allows reads only; fs needs it
+    --exec      run CMD with the lease's environment and a dax or block lease's fd 3
+- execute(): the fd goes to CMD for dax and block leases (today dax only);
+  exitCode(): "fd" on a lease whose mode is neither dax nor block exits 3.
+- File comment and the --exec paragraph mention block.
+
+A3 broker (D/broker.go, lease_store.go)
+- lease gains Block (json "block", omitempty): the host path of a Ready
+  block lease. lease.memory(): Path = Block for ModeBlock (api.Env then
+  gives PATH), ReadOnly as requested. leaseInfo copies Block.
+- serialOptions: a helper persistentMode(mode) (block or fs);
+  B3  device 0x<serial>: mode <M> needs a persistent device   (M = fs or block
+      on a volatile device)
+  B4  device 0x<serial>: a persistent device needs mode block or fs
+      (a persistent device with mode "", numa or dax)
+  A shared persistent device keeps the requested mode (dax only for
+  volatile shared devices, as now).
+- requestOptions / fsLeaseOptions: block needs the pool driver (errPoolDisabled
+  when disabled, as fs); no name, no access, no FsDir needed.
+- companionSources: block -> [pool]; companionDevices: block ->
+  device.ClassPoolPersistent; selectors and capacity as for fs (serial
+  selector; shares "1" with --shared; the whole device without).
+  companionRequest: DeviceConfig {mode: block, readOnly}, no access, no
+  path.
+- OnLending: a block lease's lendRecord has no FsDir and no Name.
+  OnPrepared: d.Mode == block -> l.Block = d.BlockDevice, l.Node = -1,
+  l.Dax = ""; the fs/non-fs mismatch check stays (block is "non-fs"); a
+  lease of mode block whose device is not block, or the reverse, fails as
+  the fs mismatch does ("companion prepared mode X, lease is mode Y").
+- fdOf: a Ready block lease -> daxFd{path: l.Block, readOnly: l.ReadOnly}
+  (rename the type to leaseFd if that reads better; the field names may
+  stay). waitLease(withFd): dax and block leases have an fd; the error
+  for numa and fs:
+      lease <id> is not a dax or block lease; use env
+  (was "is not a dax lease; use env").
+- respond: openDax becomes openDevice(path, readOnly): the udev wait with
+  the major:minor check and the private node fallback stay for /dev/dax*
+  paths; another path (/dev/pmemK) is opened with os.OpenFile (O_RDWR, or
+  O_RDONLY when readOnly), retried every 100 ms for up to 5 s on ENOENT and
+  ENXIO, then the error. The brokerConfig hook (tests) keeps its shape.
+- The Ready log line gains block %q after dax %q:
+  "lease broker: lease <id>: Ready (source S, serial S, mode M, node N,
+  dax "", block "/dev/pmem0", access "", path "", B bytes)".
+
+A4 pool driver (D/lending.go, pool.go)
+- lentDevice gains BlockDevice (the host path of the block device of a
+  block or fs device); preparedPoolDevice.lent fills it. Nothing else
+  changes: a companion of mode block is prepared like a block claim
+  (poolModeFor: block on a shared device needs exclusive or readOnly, as
+  today), CDI devices dropped, released at Unprepare with the holder
+  wait. A plain open fd of /dev/pmemK is not a holder (11 W5): the release
+  is cooperative, documented in A5.
+
+A5 docs
+- docs/memory/cxl/leases.md: block in the introduction, the flow (a block
+  lease: companion of class cxl-pool-persistent {mode: block, readOnly},
+  the fd of /dev/pmemK with the response, "cxl-request fd" again), the
+  cxl-request tables (--mode, --read-only, --exec), the refusal tables
+  (V2, V8b, V9, V10, B3, B4, the fd error text), the --exec environment
+  (CXL_<KEY>_FD for dax and block leases, PATH of a block lease without
+  --exec is the host path, informational), the protocol fields (mode
+  values) and response fields (block), the companion rows (--serial S
+  --mode block: exactly cxl-pool-persistent, serial selector, no
+  capacity: the whole device; --serial S --shared --read-only --mode
+  block: shares "1"), an example (the writer of an erofs: mkfs.erofs into
+  a file, then "cxl-request fd --lease L --exec sh -c 'cat image >&3'"
+  or the demo tool), Life cycle (a block lease has no bind; release is
+  cooperative: close the fd first, I/O through a released fd fails),
+  Limitations (replace "Mode block ... is for claims" by: leases have
+  every mode of claims; block leases pass an fd, there is no device node
+  in the container; a path in the container is not available).
+- docs/memory/cxl/usage.md: the FD row of the environment table (dax and
+  block leases); the PATH row (block: the device node of a claim, the
+  host path of a lease).
+- docs/memory/cxl/pool.md "Leases" and docs/memory/cxl/index.md mode row:
+  block through claims and leases.
+
+A6 tests
+- A/api_test.go: V2, V8b, V9, V10 texts; block accepted (exclusive
+  writable; shared read-only); ExecEnv of a block lease replaces PATH by
+  FD, keeps PATH without an fd and for fs leases.
+- C/main_test.go: --mode block parsing; request --exec of a block lease
+  runs CMD with fd 3 and CXL_<KEY>_FD=3 and no CXL_<KEY>_PATH; fd on a
+  block lease works; fd on an fs lease exits 3 with the new text.
+- D/broker_test.go: a block lease on the shared persistent device of the
+  pool slice (newLeaseFdEnv pattern with a block companion): the
+  companion claim (class, selector, no capacity, DeviceConfig {block,
+  readOnly false}), the response (mode block, block /dev/pmem0, size =
+  the namespace size, env PATH), the fd passed (the fake open records
+  the path and readOnly), a read-only share (--shared --read-only:
+  shares "1", fd read-only), B3/B4 texts for block, the fd error text on
+  numa and fs leases, the mode mismatch block/fs. Keep every existing
+  test passing (texts).
+- D/pool_test.go or pool_persistent_test.go: lentDevice.BlockDevice of a
+  block companion.
+- e2e (D edits these too, no VM runs before the image exists):
+  S2/test12-dra-live-attach: A2 texts 'invalid mode "memory" (numa, dax,
+  fs or block)', "readOnly needs mode dax, fs or block"; new refusals:
+    refused 2 "mode block with shared needs readOnly" request --serial "$SHARED_SERIAL" --shared --mode block
+    refused 2 "mode block needs source pool" request --source local --mode block --size 64Mi
+    refused 1 "device $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
+  and lease-env-check's fd refusal text "lease $MEM_LEASE is not a dax or
+  block lease; use env". S2/test16-cxl-llm-share lease-check: the same new
+  text for the fs lease. docs/memory/cxl/e2e.md test12 row mentions the
+  block refusals.
+- VM runs after the image: test12 and test16 PASS (13).
+
+B. The story line pool-shared-fs (stream DEMO)
+==============================================
+One sentence, as before: "a container asks for CXL memory while it runs;
+the scheduler gives it a share of a device only when the rules allow;
+the node maps the device into the container; every sharer sees the same
+bytes; readers cannot write" - here the bytes are a file system on
+persistent pooled CXL memory, and "maps the device" is a mount that
+appears inside the running container.
+
+B1 The device: shared0, 256Mi, shared, persistent, serial 0xc1ae0001
+(the pool demo's name and serial; the attribute persistent tells them
+apart). Its files $POOL_DIR/shared0.raw and shared0.lsa are removed
+before the server starts (a fresh device: no file system until the writer
+makes one) and after teardown.
+
+B2 The pods: writer on vm1, reader-a and reader-b on vm2, reader-c on vm1
+(as the pool demo), each with a lease claim from the template cxl-lease,
+image localhost/cxl-demo-tools:demo (C3), the tools ConfigMap at /demo.
+Manifests DEMO/manifests/pool-shared-fs/{writer,readers}.yaml, the pool
+ones with the image and imagePullPolicy: Never.
+
+B3 The steps (T1, "demo pool-shared-fs"), S = 0xc1ae0001; captions are
+one line of at most 50 characters; the result lines come from the
+existing checks unless named:
+F1 "a writer starts on vm1; it has no CXL memory yet"
+   kubectl apply -f pool-shared-fs/writer.yaml
+   -> "Running: writer vm1" (check_running)
+   T2 writer Running, lease "-"; T3 "shared0 @pool 256Mi shared
+   persistent", "no claims"; T4 vm1 and vm2 "no CXL memory"; T6 shared0
+   free, "attached: nowhere", "no file system".
+F2 "the writer asks for the device as a block device"
+   kubectl exec writer -- cxl-request request --serial S --mode block
+   -> "lease L Ready block rw (exclusive)" and "block /dev/pmem0"
+   (check_lease shows resp.block)
+   T2 writer "block rw excl"; T3 "exclusive: writer rw"; T4 vm1 "mem0
+   c1ae0001 256M  region0 pmem 256M" / "pmem0 254M no file system"; T5
+   drv "writer asks block rw excl", ctrl/pool attach lines, kern "vm1 add
+   mem0 region0 pmem0", drv "writer: prepared pmem0 rw", "writer: lease
+   Ready block pmem0"; T6 "attached: vm1 exclusive".
+   Say: the lease is a claim of the whole device (exclusive); the node
+   made a pmem region and a namespace; the writer got an fd of the block
+   device, no device node.
+F3 "the writer makes a file system with hello.txt in it"
+   kubectl exec writer -- /demo/mkfs "Hello from the writer, $(date +%T)"
+   -> the tool's line: wrote erofs (8192 bytes) with hello.txt: "Hello from the writer, 12:01:12"
+   T4 vm1 "pmem0 254M erofs", "open: writer rw" while it writes; T6
+   "erofs: hello.txt 32 bytes" and the text (from the backing file on
+   the host: the bytes are in the pool).
+F4 "three readers start: two on vm2, one on vm1"
+   kubectl apply -f pool-shared-fs/readers.yaml
+F5 "readers ask for the file system: they must wait"
+   for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial S --shared --read-only --mode fs --name hello --wait 0s; done
+   -> "reader-a Pending, reader-b Pending, reader-c Pending" (check_leases)
+   T2 three "waiting"; T3 "waiting: reader-a reader-b reader-c"; T5 sched
+   "reader-a waits: cannot allocate" x3. Pause: the writer holds the
+   device exclusively.
+F6 "the writer is done and releases the device"
+   kubectl exec writer -- cxl-request release --all
+   -> "released: L Released", "readers' leases Ready after N s"
+   T3 "shared: reader-a ro, reader-b ro, reader-c ro"; T2 three "fs ro
+   share"; T4 vm1 and vm2: region0 pmem, "pmem0 254M erofs", "mounted:
+   reader-c (dax)" / "mounted: reader-a reader-b (dax)"; T5 detach from
+   vm1, attach to vm2 and vm1, "reader-a: prepared erofs direct ro",
+   "reader-a: mounted hello", "reader-a: lease Ready fs hello (direct)";
+   T6 "attached: vm1, vm2", the file system still there.
+   Say: the device was detached and attached again; each node mounted
+   the erofs once (dax=always: the file's pages are the device's
+   memory) and bound it into the running containers at /run/cxl/fs/hello.
+F7 "each reader reads hello.txt from its mount"
+   for r in reader-a reader-b reader-c; do kubectl exec $r -- cat /run/cxl/fs/hello/hello.txt; done
+   -> '3 readers read: "Hello from the writer, 12:01:12"' (check_cat: the
+   three lines are equal; else "readers read different texts!")
+F8 "a reader tries to write: read-only file system"
+   kubectl exec reader-a -- sh -c 'echo overwrite > /run/cxl/fs/hello/hello.txt'
+   -> "sh: can't create /run/cxl/fs/hello/hello.txt: Read-only file system"
+   (expect_fail; check_last_line). T6 unchanged.
+F9 "everything goes away"
+   kubectl delete -f pool-shared-fs/
+   -> "pods and leases gone after N s" (check_gone)
+   T2 empty; T3 "no claims"; T4 both nodes "no CXL memory"; T6
+   "attached: nowhere", state free, "erofs: hello.txt" still there: the
+   file system stays in the pool's device for the next reader.
+"demo pool-shared-fs N", "N-" and "--auto" as for the other cases;
+"demo reset pool-shared-fs" deletes the pods and leases.
+
+B4 The views in this case
+- T2 PODS & LEASES: unchanged (lease_memory gives "block rw excl" and
+  "fs ro share" from the companion's DeviceConfig).
+- T3 SCHEDULER: the device row gets the word persistent when the slice
+  attribute persistent is true: "shared0 @pool 256Mi shared persistent";
+  the "pool ok|down" status for every pool case (the case name starts
+  with "pool"). Holders as today.
+- T4 NODES: a pmem region (probe C5) renders as
+    vm1 mem0 c1ae0001 256M  region0 pmem 256M
+        pmem0 254M erofs
+        open: writer rw
+        mounted: reader-c (dax)
+  "pmem0 254M no file system" before the writer wrote; "open: ..." only
+  while a pod process has an fd of the block device (rw if opened for
+  writing); "mounted: NAME (dax)" for each lease bind of the node (NAME
+  the requester pod of the lease claim, "(cached)" when the mount is on a
+  loop device), "mounted: -" for none, "mounted: node mount, no lease"
+  when only the node mount exists. Order vm1 then vm2 for the pool cases
+  (as today). The dax lines (volatile regions) stay as they are.
+- T5 TRACE: the new driver lines (C6).
+- T6 POOL: as the pool demo plus the file system:
+    POOL: fake-cxl-pool-server               12:01:07
+    shared0 256Mi shared persistent  allocated
+      attached: vm1 exclusive
+      owner: writer
+    erofs: hello.txt 32 bytes
+      "Hello from the writer, 12:01:12"
+    file /tmp/fake-cxl-pool/shared0.raw
+  Before F3 the two erofs lines are one: "no file system (zeros)" when
+  the first MiB is zeros, "no file system" otherwise; an erofs the reader
+  cannot follow: "erofs (not readable: <why>)"; several files: one
+  "name size" line each, the text of the first regular file only. The
+  "at 0" lines of the pool demo are not shown in this case (offset 0 is
+  the erofs's reserved area). The owner line as today (short_text of the
+  server's owner).
+
+B5 Zooms (zoom.py; "demo zoom help" lists them)
+  demo zoom fs               the erofs in the pool device's backing file:
+                             the superblock fields (magic, block size,
+                             inodes, blocks, root nid) and every file of
+                             the root directory with size and first bytes
+                             (C7); "no file system" otherwise
+  demo zoom mounts vm1|vm2   the node's erofs mounts: findmnt -t erofs -o
+                             TARGET,SOURCE,FSTYPE,OPTIONS, the loop
+                             devices (losetup -l), and the lease-fs tree
+                             (find /var/lib/kubelet/plugins/cxl.nri.io/lease-fs -maxdepth 2)
+  demo zoom bytes [OFFSET]   the hex dump starts at OFFSET (default 0;
+                             1024 shows the erofs superblock)
+  The existing zooms work unchanged (claim, env, cdi, driver, kernel, cxl,
+  pool, slice, pod, last).
+
+C. Implementation (stream DEMO)
+===============================
+C1 bin/demo: the case set is local|pool|pool-shared-fs for setup, reset,
+   the steps ("pool-shared-fs [N|N-|--auto]"), the view case argument and
+   print-commands; usage text updated.
+C2 steps.py: steps("pool-shared-fs", serial) returns F1-F9 (B3);
+   check_lease shows "block <resp.block>" or "path <resp.path>" as its
+   second line when the response has them (dax stays); new check_cat
+   (B3 F7); lease_words adds the access of fs leases in parentheses only
+   if it fits. main() accepts the new case.
+C3 The image: DEMO/image/Dockerfile:
+     FROM docker.io/library/python:3-alpine
+     RUN apk add --no-cache erofs-utils
+   test90 (case pool-shared-fs): tag = localhost/cxl-demo-tools:<first 12
+   hex of sha256 of the Dockerfile>; "docker build -t <tag> DEMO/image"
+   unless "docker image inspect <tag>" succeeds; "docker save <tag> -o
+   $DEMO_STATE_DIR/cxl-demo-tools-<sha12>.tar"; for VM1 and VM2:
+   demo-image-put VMDIR TAR TAG REF (a helper in test90, modeled on
+   dra-image-put: skip when "ctr -n k8s.io images ls" shows REF with the
+   same digest as TAG, else scp, "ctr -n k8s.io images import", "ctr -n
+   k8s.io images tag --force <imported ref> localhost/cxl-demo-tools:demo",
+   rm the tar in the VM). REF = localhost/cxl-demo-tools:demo. Without
+   docker: error "docker is needed to build the demo image
+   localhost/cxl-demo-tools (as for the driver image)". The host's proxy
+   environment applies to the build as it does to the driver image.
+C4 tools/cxl-demo.py: "mkfs TEXT" (wrapper /demo/mkfs): mkdir -p /tmp/fs,
+   write TEXT and a newline to /tmp/fs/hello.txt, run
+   "mkfs.erofs -b4096 -Enoinline_data /tmp/hello.erofs /tmp/fs" (output
+   kept for errors only), then run itself through the fd of the newest
+   block lease of the container (lease(modes=("block",)); DEMO_LEASE=ID
+   picks one; "no block lease: cxl-request request --mode block first"
+   otherwise): "cxl-request fd --lease L --wait 120s --exec python3
+   /demo/cxl-demo.py _flash /tmp/hello.erofs", where _flash pwrites the
+   whole image at offset 0 of fd 3, fsyncs, and prints
+     wrote erofs (8192 bytes) with hello.txt: "Hello from the writer, 12:01:12"
+   (the size of the image, the file name, TEXT). A read-only fd gives
+   "refused: read-only (EBADF)" and exit 1 (pwrite on an O_RDONLY fd fails
+   with EBADF). write, read, hold, env stay as they are (dax leases);
+   lease() takes the modes it accepts (dax by default).
+C5 probe.py (--node): regions of mode pmem have no dax entries; the probe
+   adds to each region "namespaces": [{name, mode, size, block (pmemK),
+   major, minor, fs ("erofs" when the 4 bytes at offset 1024 of
+   /dev/pmemK are e2 e1 f5 e0, "none" otherwise, "?" when unreadable)}]
+   from /sys/bus/cxl/devices/regionN/pmem_regionN/ndbus*/region*/
+   namespace*.*/{mode,size,block/*/dev}; "mounts": the erofs mounts of
+   /proc/self/mountinfo whose source is /dev/pmemK or a loop device whose
+   /sys/block/loopN/loop/backing_file is /dev/pmemK: {target, source,
+   block (pmemK), loop (bool), dax (dax=always in the super options),
+   kind: "node" (target under /var/lib/kubelet/plugins/cxl-pool.nri.io/
+   mounts/), "lease" (under /var/lib/kubelet/plugins/cxl.nri.io/
+   lease-fs/<claim uid>/<name>, with claimUID and name), "other"};
+   "openers": the processes of pods (the cgroup filter of mappers) that
+   have an fd to /dev/pmemK: {pid, comm, podUID, block, perms ("rw" when
+   /proc/PID/fdinfo flags have O_WRONLY or O_RDWR, else "ro")}. The k8s
+   section of T4's VM2 probe asks for pods,claims. The fake tree of
+   selftest gets a pmem region with a namespace, a block device file
+   with the erofs magic at 1024, mountinfo lines of a node mount and a
+   lease bind, and an opener.
+C6 views.py:
+   - T3: "persistent" word; pool status for cases starting with "pool".
+   - T4: the pmem rendering of B4 (node_lines); the pod name of a lease
+     bind: claimUID -> claim name (claims of VM2's k8s) -> the pod whose
+     status.resourceClaimStatuses names that claim (pods), else the
+     claim uid's first 8 characters.
+   - T5 (Trace.on_driver): the Ready line shows "lease Ready block pmem0"
+     (block "..." basename) or "lease Ready fs hello (direct)" (path
+     basename and access) or "lease Ready dax0.0" as today; the pool
+     driver's persistent prepared line
+       prepared <dev> (serial 0x.., shared .., mode <M>, read-only <B>) as <mem> <region> namespace <ns> block <bdev> access "<A>" mount "<mnt>" loop "<loop>"
+     gives "<who>: prepared pmem0 rw|ro" (block) or "<who>: prepared erofs
+     <A> ro" (fs); "lease <id>: bound <node mount> at <target>" gives
+     "<who>: mounted <basename of target>", "lease <id>: unbound <target>"
+     "<who>: unmounted <basename>", the EBUSY error "unpreparing claim
+     ...: lease <id>: unmounting <target>: ... busy" gives "<who>:
+     unmount busy (file in use), retry"; "<who>" is the lease marker.
+     on_udev also takes "add|remove PATH (block)" for pmem\d+ into the
+     kern line of the node ("vm1 add mem0 region0 pmem0").
+   - T6: render_t6_pool for every pool case; in pool-shared-fs the fs
+     block of B4 replaces the "at 0" lines; collect() reads the first MiB
+     of the backing file and parses it on the host (common.erofs_files):
+     data["pool"]["fs"] = {"type": "erofs"|"none"|"zeros", "files":
+     [{"name", "size", "text"}], "error"}; samples carry "fs" (no 1 MiB
+     hex).
+C7 common.py: erofs_files(data) -> {"type", "files", "error", "super":
+   {...}} for the bytes DATA of the start of an erofs image: the
+   superblock at 1024 (magic 0xE0F5E1E2 little-endian, blkszbits,
+   root_nid, inos, blocks, meta_blkaddr, xattr_blkaddr), the root inode at
+   meta_blkaddr * blocksize + root_nid * 32 (version bit 0: compact 32
+   bytes, i_format u16, i_xattr_icount u16, i_mode u16, i_nlink u16,
+   i_size u32, i_reserved u32, i_u u32, i_ino u32, i_uid u16, i_gid u16;
+   version 1: extended 64 bytes, i_format, i_xattr_icount, i_mode,
+   i_reserved, i_size u64, i_u u32, i_ino u32, i_uid u32, i_gid u32,
+   mtime u64, mtime_nsec u32, i_nlink u32), data layout = bits 1-3 of
+   i_format (0 plain: the data at raw_blkaddr * blocksize; 2 inline: the
+   full blocks at raw_blkaddr, the tail right after the inode and its
+   inline xattrs (12 + (xattr_icount - 1) * 4 bytes when xattr_icount >
+   0) in the meta block), the root directory's dirents (nid u64, nameoff
+   u16, file_type u8, reserved u8; names from nameoff to the next nameoff
+   or the end), regular files (file_type 1) with their inode's size and
+   the first 48 bytes of their data cut at the first newline, printable
+   ASCII only. Other layouts and anything the data does not contain are
+   reported in "error" and the file's text is "(not readable)". Tested
+   in selftest with testdata/hello.erofs.hex (the 8192-byte image of
+   mkfs.erofs 1.9 for a 32-byte hello.txt, written by the Dockerfile's
+   image on the host with docker; the agent generates it once and stores
+   the hex).
+C8 test90 (setup, case pool-shared-fs): as the pool case, with the server
+   device "persistent: true", "rm -f $POOL_DIR/shared0.raw $POOL_DIR/
+   shared0.lsa" before pool-server-start, the image build and import
+   (C3) before the pull of PAUSE_IMAGE (PYTHON_IMAGE is not pulled for
+   this case), state.env with DEMO_CASE=pool-shared-fs, POOL_DEVICE=shared0,
+   POOL_DEVICE_FILES="<raw> <lsa>", DEMO_IMAGE=localhost/cxl-demo-tools:demo.
+   test91 (teardown): after pool-cleanup, "rm -f" of POOL_DEVICE_FILES
+   when the state has them; before the final cxl-assert, both VMs must
+   have no mounts under the pool driver's mounts directory and no
+   lease-fs mounts (dra-fs-mounts and dra-lease-fs-mounts of dra.source.sh
+   are linked into the demo suite): else a WARNING with the manual
+   cleanup hint of test16's exit-cleanup, and no detach of the device
+   (releasing a region under a live erofs can crash the guest).
+C9 README.txt: prerequisites (docker for the demo image, built at setup),
+   the third script as a section after the pool one (B3 with what to
+   point at), the zooms, timings after the rehearsal, the files (image/,
+   manifests/pool-shared-fs). bin/demo usage.
+C10 selftest and testdata: scenarios pool-shared-fs-F2 (writer's block
+   lease, vm1 pmem region, no file system, open writer), -F3 (erofs,
+   T6 fs with hello.txt), -F5 (readers waiting), -F6 (readers' fs leases
+   Ready, mounts and binds on both nodes), -F9 (nothing, the file system
+   left); trace-fs (hand-made streams with the new driver lines of C6);
+   hello.erofs.hex; renderings.txt regenerated; "demo selftest" prints
+   ok with the new count.
+C11 Rehearsal (phase 2, 13): setup, six views, --auto twice, captures at
+   F2, F3, F5, F6, F8, teardown, the VMs clean (no memdevs, regions,
+   mounts, loop devices, lease directories; the shared0 files removed);
+   then one manual pass with the zooms; and "demo setup pool" + "demo
+   pool --auto" + teardown once, because the shared code changed.
+   Timings into README section 9.

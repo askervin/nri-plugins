@@ -1,0 +1,208 @@
+plan-8-demo pool-shared-fs: findings
+====================================
+Written 2026-10-22 (orchestrator) from the demo code (demo/bin, test90,
+test91, manifests), the driver after plan-7's fs leases (branch 5jg-cxl
+working tree), and three checks on the host and on VM2. Paths as in 10.
+
+1. What the demo has, and what the story line needs
+----------------------------------------------------
+D1  The six views and the step runner are generic over a case: steps.py
+    has one step list per case (local, pool) with check functions;
+    views.py renders T2 (pods and their leases: MEMORY from the companion
+    claim's DeviceConfig mode and readOnly, so "fs ro share" and "block
+    rw excl" come out without a change), T3 (shared devices of the slices
+    with their holders), T4 (probe.py: memdevs, regions, dax devices and
+    the processes that map them), T5 (the trace streams of dra-trace-start
+    translated line by line), T6 (local: the bytes of the dax device;
+    pool: the server's device, attachments and the first bytes of the
+    backing file on the host). Setup and teardown are e2e tests (test90,
+    test91) run through run_tests.sh; the pods are python:3-alpine with
+    the tools of a ConfigMap at /demo; the pool demo's device is shared0,
+    256Mi, shared, volatile, serial 0xc1ae0001.
+D2  What the fs story needs that is missing: a persistent pool device
+    (fake-cxl-pool persistent: true, a data and an LSA file); a writer
+    that makes an erofs with hello.txt and writes it into the device; the
+    readers' mounts (fs leases of plan-7, done: cxl-request request
+    --mode fs --read-only --name NAME mounts the erofs at
+    /run/cxl/fs/NAME of the running container); views that show pmem
+    regions, the block device, the mounts and the file system's content;
+    trace lines for the new driver messages.
+
+2. The writer: static claim or cxl-request?
+-------------------------------------------
+W1  Static: a ResourceClaim of class cxl-pool-persistent with DeviceConfig
+    {mode: block} gives the pod /dev/pmemK as a CDI block device node
+    (test16's writer). Proven, documented, simple, but the pod must be
+    created with the claim: the demo's L1 ("a writer starts; it has no
+    CXL memory yet") and L2 ("the writer asks ...") collapse into one
+    step, the writer's "ask while running" beat is lost, and the release
+    is a pod deletion instead of "cxl-request release". The story of the
+    other two scripts is "a container asks for CXL memory while it runs":
+    the writer would be the one container that does not.
+W2  Dynamic: leases have no mode block today (plan-7 32 section 11,
+    leases.md "Mode block ... is for claims"). Adding it is the fd model of
+    dax leases applied to the block device: the companion claim asks
+    class cxl-pool-persistent with DeviceConfig {mode: block, readOnly};
+    the pool driver prepares it exactly as a block claim (region, fsdax
+    namespace created by an exclusive writable one, no CDI device for a
+    companion); the broker opens /dev/pmemK (O_RDWR, or O_RDONLY for a
+    read-only lease) and sends the fd with the response, as it does for
+    /dev/daxX.Y; "cxl-request fd --lease L --exec CMD" gives the fd again.
+    Code: api texts and a response field, cxl-request's mode list and fd
+    handling, the broker's checks (B3/B4 of 32 become "block or fs"),
+    class choice, OnPrepared, fdOf and the device open, lentDevice gains
+    BlockDevice; about 250 lines with tests and docs, no new mechanism,
+    no CDI change, no chart change. The texts that test12 and test16 pin
+    change once more ("(numa, dax or fs)", "readOnly needs mode dax or
+    fs", "is not a dax lease; use env").
+W3  What an fd of a block device can and cannot do in the container: it
+    can be written and fsynced (write(2), pwrite), and read; it cannot be
+    given to a tool that wants a path: /proc/self/fd/3 cannot be
+    reopened (the device cgroup refuses the reopen, plan-4 02 section 7,
+    the same as for dax fds). mkfs.erofs writes to a path, so the writer
+    makes the image in a file first (mkfs.erofs IMAGE DIR, 8192 bytes for
+    one small file) and copies it into the device through the fd: the
+    demo tool /demo/mkfs TEXT does both and prints one line. That is as
+    much "hacking" as /demo/write is for the dax demo (a tool that maps
+    the fd), and the audience sees the same shape: ask, then use.
+W4  Decision: dynamic writer through lease mode block (W2, W3). It keeps
+    the nine steps and the sentence of the other two scripts, and closes
+    the "Not in this step: mode block through leases" item of plan-7 22
+    section 9: leases then have every mode that claims have.
+W5  Release of a block lease while the requester still holds the fd: the
+    Holder check of the pool driver (O_EXCL open of /dev/pmemK, loop
+    backing files) does not see a plain open fd, so the region is
+    released under it; the fd's I/O then fails (ENXIO/EIO). No DAX mapping
+    is involved (a raw block device mmap goes through the page cache), so
+    this cannot oops the node as a lazy unmount of a DAX mount can (P1
+    5.3). It is the cooperative release of dax leases ("munmap first")
+    applied to block ("close first"); the demo tool closes the fd when it
+    is done with the image, long before the release.
+
+3. The loop device idea (user's question)
+-----------------------------------------
+L1  The idea: the lease claim's CDI device (fixed when the container is
+    created) carries a block device node of a loop device; when a block
+    lease becomes Ready, the driver points that loop device at /dev/pmemK
+    (LOOP_CONFIGURE with the pmem fd, direct I/O, LO_FLAGS_READ_ONLY for a
+    read-only lease); the container then has a real path (/dev/cxl0, say)
+    for mkfs.erofs or dd; at release the driver detaches it (LOOP_CLR_FD).
+    Loop over a block device is what the cached node mounts already use
+    (plan-7 22 section 5), so the kernel side is known to work.
+L2  It would work, with three caveats:
+    a. A loop device per lease claim must be reserved at the container's
+       creation, before any lease exists, and it must not be "free":
+       LOOP_CTL_GET_FREE (used by the pool driver's cached mounts and by
+       losetup) returns the first unbound loop device whatever its
+       number, so a reserved but unbound device would be taken by the
+       next cached mount, and the container could read that mount's
+       device. The reservation needs a placeholder backing file bound
+       read-only, replaced under the pool driver's lock when the lease
+       becomes Ready, and the detach at release deferred by the kernel
+       while the container keeps the device open (then the Holder check
+       keeps the region, as it should).
+    b. One block lease at a time per lease claim (one node), and every
+       lease claim pays a loop device whether it ever asks for block or
+       not (cheap, but visible: an empty /dev/cxl0 in every lease pod).
+    c. The device cgroup permission of the node is fixed at creation
+       (rw), so read-only block leases rely on the loop device's own
+       read-only flag (kernel-enforced, so that is fine).
+    About 400 lines (CDI node per lease claim, placeholder life cycle,
+    configure and detach paths, restart handling) and a third mechanism
+    next to "fd" (dax) and "bind" (fs).
+L3  Decision: not now. The fd model (W2) is the existing one, smaller, and
+    enough for a clean demo: the only thing the loop device buys is a
+    path in the container, which the demo tool does not need. If a path
+    turns out to matter for real users, the loop variant can be added
+    later as an option of block leases without changing the fd one.
+
+4. mkfs.erofs in the writer's container
+---------------------------------------
+M1  No stock image has erofs-utils; installing it at pod start (apk,
+    dnf) needs the proxy and the network from inside the pod on every
+    run: fragile and slow for a demo. The VMs do not have mkfs.erofs
+    either (checked on VM2; test16 installs it in VM1 only when it runs),
+    and a binary of Fedora cannot run in an Alpine container.
+M2  Checked on the host (2026-10-22): docker 29.3 is there (the driver
+    image is built with it, so no new host dependency);
+    docker.io/library/python:3-alpine (Alpine 3.24) installs erofs-utils
+    1.9 with apk in a few seconds; "mkfs.erofs -b4096 -Enoinline_data
+    IMAGE DIR" with one 32-byte hello.txt gives an 8192-byte image.
+    Decision: a demo image built at setup from DEMO/image/Dockerfile
+    (FROM python:3-alpine, RUN apk add --no-cache erofs-utils), saved
+    with docker save and imported into VM1 and VM2 with "ctr -n k8s.io
+    images import" as dra-image-put imports the driver (tagged
+    localhost/cxl-demo-tools:demo; imagePullPolicy Never in the
+    manifests). All pods of this story line use it; the ConfigMap keeps
+    the tools editable without a rebuild.
+M3  Image layout of that mkfs (measured on the 8192-byte image): the
+    superblock at 1024 (magic e0f5e1e2, blkszbits 12, meta_blkaddr 0,
+    xattr_blkaddr 0, feature_compat 3, feature_incompat 0, inos 2, blocks
+    2, root_nid 36 = offset 1152), the root inode compact (version bit 0,
+    data layout 2 = inline dirents in the meta block, no xattrs), the file
+    data in block 1 (offset 4096). The first 1024 bytes are zeros, so
+    "at 0" of the pool view would show nothing: T6 must read the file
+    system (section 5). -Enoinline_data keeps the file's data in a block
+    of its own, which the readers' dax=always mount maps straight from
+    the device (plan-7 F7); without it the 32 bytes would be inline in the
+    inode and read through the page cache (invisible in this demo, but
+    the story says "the readers read it from the device").
+
+5. Showing the file system in the views
+---------------------------------------
+V1  T6 (the pool server's view, host side, no ssh) reads the backing file
+    /tmp/fake-cxl-pool/shared0.raw today (256 bytes at 0). For the fs
+    story it reads the first 1 MiB and parses the erofs: superblock, root
+    inode, the root directory's entries, the regular files' sizes and
+    first bytes. The reader handles compact and extended inodes, data
+    layouts plain (0) and inline (2), inline xattrs (skipped by
+    xattr_icount), one block of dirents; everything else is reported as
+    not readable. About 60 lines of Python on struct.unpack, from
+    fs/erofs/erofs_fs.h (the guest kernel source at
+    /home/akervine/.claude/jobs/5b6674cf/tmp/ws3/linux-src/fs/erofs/
+    erofs_fs.h; structs: erofs_super_block 144 bytes at 1024,
+    erofs_inode_compact 32, erofs_inode_extended 64, erofs_dirent 12,
+    erofs_xattr_ibody_header 12). Tested by selftest against a real image
+    of mkfs.erofs 1.9 (M3) stored as hex in testdata.
+V2  T4 (the node's kernel): a pmem region has no dax device; its memory
+    is the fsdax namespace's block device: /sys/bus/cxl/devices/regionN/
+    pmem_regionN/ndbusX/regionY/namespaceY.0 (mode fsdax, size) with
+    block/pmemK (dev major:minor). The mounts of /dev/pmemK and of loop
+    devices over it are in /proc/self/mountinfo of the VM: the node mount
+    under /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<hex>-<access>
+    and the lease binds under /var/lib/kubelet/plugins/cxl.nri.io/
+    lease-fs/<lease claim uid>/<name>; the lease claim uid maps to the
+    pod through the pods' status.resourceClaimStatuses and the claims'
+    uids (T4's probe of VM2 fetches pods already; it adds claims). So T4
+    can say "mounted: reader-a reader-b (dax)" from the kernel's mount
+    table, the way it says "mapped: reader-a ro" from /proc/PID/maps in
+    the dax demos. Whether /dev/pmemK has an erofs: 4 bytes at offset
+    1024 read from the device (harmless while the writer writes).
+V3  T5: the driver's new lines (plan-7 D status files): "lease broker:
+    lease L: ... Ready (source pool, serial S, mode fs, node -1, dax "",
+    access "direct", path "/run/cxl/fs/hello", N bytes)" (block leases
+    will add block "/dev/pmemK"), the pool driver's "prepared ... as memN
+    regionN namespace namespaceK.0 block /dev/pmemK access "direct" mount
+    "..." loop """, "lease L: bound <node mount> at <target>", "lease L:
+    unbound <target>", "unpreparing claim ...: lease L: unmounting
+    <target>: device or resource busy"; udev adds pmemK (subsystem block)
+    and namespaceK.0 (nd).
+
+6. The device, timing and risks
+-------------------------------
+T1  The story's device: shared0, 256Mi, shared, persistent, serial
+    0xc1ae0001 (the pool demo's name and serial, so T3 and the zooms read
+    the same; the attribute persistent and the word in T3 tell the
+    difference). Its files are removed before setup (a fresh device: no
+    file system until the writer makes one) and after teardown.
+T2  Expected timings from test16 and the pool demo: the writer's lease
+    5-7 s (attach, region, namespace), mkfs and flash under 1 s, the
+    readers' leases after the release about 10-12 s (detach from vm1,
+    attach to vm2 and vm1, region, mount, bind), the first setup +20-40 s
+    for the image build and import (cached afterwards). A whole --auto run
+    about 70-80 s.
+T3  Risks: the texts of test12/test16 change again with mode block (a
+    small T task); the erofs reader must match mkfs.erofs's layout (tested
+    on a real image); docker must be usable by the presenter's user (it
+    is on this host); the readers' bind propagation is proven by test16
+    on this cluster.

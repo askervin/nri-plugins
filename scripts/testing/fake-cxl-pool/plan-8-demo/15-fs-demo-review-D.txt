@@ -1,0 +1,41 @@
+plan-8-demo pool-shared-fs: review of stream D (lease mode block)
+================================================================
+2026-10-22, orchestrator, on the working tree after D's report
+(14-fs-demo-status-D.txt, image nri-dra-driver-cxl-image-2b1eafa98e22).
+Read: the diff of pkg/cxl/api/api.go, cmd/cxl-request/main.go,
+D/{broker, lease_store, lending, pool}.go.
+
+1. Against the contract (12 part A)
+-----------------------------------
+- A1: V2, V8b (after V8, before V9), V9 and V10 ("mode <M> needs source
+  pool" for fs and block) with the exact texts; Response.Block; ExecEnv
+  replaces CXL_<KEY>_PATH by CXL_<KEY>_FD only for keys whose
+  CXL_<KEY>_MODE is block (fdVarBase), DAX as before, fs PATH untouched.
+- A2: --mode numa|dax|fs|block, the help lines; hasFd(mode) decides the
+  fd for CMD and the exit-3 rule of "fd"; the "no fd with the response"
+  message names the mode.
+- A3: lease.Block; memory() gives PATH = Block for block leases (api.Env);
+  leaseInfo copies Block; serialOptions uses persistentMode (block or fs)
+  for B3/B4 with the exact texts, a shared persistent device keeps the
+  requested mode; block is pool only (errPoolDisabled otherwise), class
+  cxl-pool-persistent, DeviceConfig {block, readOnly}; OnPrepared sets
+  Block and fails a block/fs mismatch with the existing text; fdOf covers
+  block; waitLease's text "lease <id> is not a dax or block lease; use
+  env"; openDevice routes /dev/dax* to the unchanged openDaxDevice and
+  other paths to openBlockDevice (O_RDWR or O_RDONLY, retried every 100 ms
+  for 5 s on ENOENT/ENXIO); the Ready log line has block %q after dax %q.
+  The type daxFd became leaseFd and the test hook openDax became
+  openDevice (names only).
+- A4: lentDevice.BlockDevice filled by preparedPoolDevice.lent; nothing
+  else in the pool driver.
+- A5/A6: docs, unit tests and the e2e texts as listed; test12 and test16
+  PASS on the image.
+No findings. The first live block lease (the plugin opening /dev/pmemK
+and passing the fd into a container) runs in DEMO phase 2, F2 and F3.
+
+2. Verification by the orchestrator
+-----------------------------------
+D's checks (gofmt, vet, go test -race, golangci-lint 0 issues, bash -n,
+shellcheck, plain ASCII) and runs (test12 PASS, test16 PASS) are in its
+status file; the orchestrator reruns go test -race on the final tree at
+the end (19).

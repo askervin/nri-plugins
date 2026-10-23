@@ -1,0 +1,100 @@
+plan-8-demo pool-shared-fs: review of stream DEMO
+=================================================
+2026-10-22, orchestrator.
+
+1. Desk read of phase 1 (before the rehearsal)
+----------------------------------------------
+Read: the diff of bin/demo, steps.py, common.py, probe.py, views.py,
+tools/cxl-demo.py, tools/mkfs, image/Dockerfile, manifests/pool-shared-fs,
+test90, test91; the status file (14-fs-demo-status-DEMO.txt).
+- steps.py: F1-F9 as 12 B3 (F3 caption shortened to 50 columns, R1);
+  check_lease's second line "block /dev/pmem0" / "path ..." / "dax ...";
+  check_cat compares the three cat lines. Step letter F in the title, the
+  log and the timings.
+- tools: mkfs makes /tmp/fs/hello.txt, runs mkfs.erofs -b4096
+  -Enoinline_data into /tmp/hello.erofs, then runs _flash through
+  "cxl-request fd --lease <newest block lease> --exec": pwrite at offset
+  0, fsync, the exact output line, EBADF on a read-only fd -> "refused:
+  read-only (EBADF)", the fd kept DEMO_HOLD seconds (R4) so that T4 shows
+  "open: writer rw". lease() takes the modes it accepts.
+- common.erofs_files: superblock fields at the offsets of erofs_fs.h
+  (feature_compat 8, blkszbits 12, root_nid 14, inos 16, blocks 36,
+  meta_blkaddr 40, xattr_blkaddr 44, feature_incompat 80, rootnid_8b 112
+  for the 48-bit feature), compact (32) and extended (64) inodes by the
+  version bit, layouts plain and inline with the inline xattr skip
+  (12 + (icount - 1) * 4), dirents counted from the first nameoff. Tested
+  by the agent on the real image, an inline-data image, an extended-inode
+  image, several files and an lz4 image (reported not readable).
+- probe.py: memdev size = ram + pmem; pmem regions get namespaces from
+  pmem_regionN/ndbus*/region*/namespace*.* with the block device, its
+  numbers and the erofs magic at 1024; erofs mounts from mountinfo with
+  loop backing files resolved, kind node/lease/other and the lease claim
+  uid and name from the lease-fs path; openers from /proc/PID/fd with the
+  fdinfo flags. The k8s probe of T4 asks for pods and claims.
+- views.py: T3 persistent word and pool status for both pool cases; T4
+  pmem lines (block device, file system, open:, mounted: names from lease
+  claim uid -> claim name -> pod through resourceClaimStatuses); T5: the
+  request regex of the broker fixed for the line that plan-7 extended
+  (R9: "asks" lines had been missing for the current driver in all three
+  cases), Ready shows block/fs/dax, the persistent prepared line, bound/
+  unbound/busy lines, udev of pmem block devices; T6 pool: persistent
+  word, the fs block from the first MiB of the backing file parsed on the
+  host; samples carry the parsed "fs".
+- test90: shared0 persistent after its two files are removed; the image
+  built with docker (tag by the Dockerfile's sha256, skipped when it
+  exists), saved, imported with ctr and tagged localhost/cxl-demo-tools:
+  demo in both VMs (skipped when the digests match), the tarball
+  removed; the block udev collector per VM (R3); state keys
+  POOL_DEVICE_FILES and DEMO_IMAGE. test91: no erofs mount, lease bind or
+  pmem loop device may remain in either VM before the pool server is
+  stopped and the device files removed; else the WARNING with the manual
+  steps and an error that keeps the state for a second run (R7).
+- Manifests: the pool ones with image localhost/cxl-demo-tools:demo,
+  imagePullPolicy Never.
+No findings that need a change before the rehearsal. Accepted Requests
+R1-R13 (19-fs-demo-status.txt). Noted for later: the block udev collector
+could move into dra-trace-start (-s block) with the summary's filter
+extended, so that the e2e traces have it too.
+
+2. Rehearsal (phase 2)
+----------------------
+DEMO's runs (14-fs-demo-status-DEMO.txt "Phase 2"): setup pool-shared-fs
+PASS (67 s, 63 s with the image import skipped), --auto twice with
+captures (73 s each; F1-F9 2.0 5.7 3.8 2.0 0.7 10.3 0.6 0.4 2.8 s and
+2.0 5.8 3.9 2.0 0.8 10.1 0.7 0.3 2.0 s), a manual pass with the zooms
+and a busy-unmount test, reset 2.5 s, teardown PASS (38 s) twice; then
+setup pool, pool --auto twice, teardown PASS (the shared code changed).
+0 stale renderings in every view of every run. No driver findings: the
+first live block lease worked as 12 part A says (response block
+"/dev/pmem0", size 266338304, the fd in the container, the image written
+and fsynced, the region released at the writer's release).
+Demo bugs found in the first --auto run and fixed, reviewed here:
+- probe.namespaces: the nd region of a CXL pmem region is found by its
+  resource (physical address) under /sys/bus/nd/devices, not under
+  regionN/pmem_regionN; the block device of an fsdax namespace is on its
+  holder pfnX.Y; namespace mode "memory" is fsdax. Matches the kernel's
+  layout; the fake tree of selftest models it, with a non-matching nd
+  region.
+- common.fsdax_data_offset: the fsdax namespace starts with the pfn info
+  block (signature "NVDIMM_PFN_INFO" at 4096), and the block device data
+  starts at its dataoff: byte 56 of struct nd_pfn_sb (signature 16, uuid
+  16, parent_uuid 16, flags 4, version_major 2, version_minor 2, then
+  dataoff le64), 2 MiB here. T6, zoom fs and zoom bytes read from there
+  (R15; 12 C6 assumed 0, wrongly).
+- T5 takes pmemN from block udev events only (the cxl subsystem has a
+  mem0/pmem0 nvdimm device).
+- T1 result lines wrap to at most 3 rows (R14): the result texts of F3,
+  F7 and F8 are longer than 47 columns; pool L7's second line is back.
+Requests R14-R16 accepted. R17 (the volatile pool demo leaves the 256
+MiB /tmp/fake-cxl-pool/shared0.raw on the host after teardown,
+unchanged older behaviour) goes to the user. R3 (the block udev
+collector in the demo's setup instead of dra-trace-start) stays as it
+is; moving it into dra-trace-start would change every e2e trace and its
+summary filter, a separate change.
+
+3. Orchestrator checks on the final tree
+----------------------------------------
+demo selftest: ok, 126 renderings fit 50 x 10; py_compile of every .py;
+bash -n of bin/demo, the tools and test90/test91 concatenated with their
+sources; shellcheck (SC2154, SC2034, SC1090, SC2148, SC2016 excluded): 0
+findings; plain ASCII; 50 captures of pool-shared-fs. No findings.

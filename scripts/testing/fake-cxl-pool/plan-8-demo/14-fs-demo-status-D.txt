@@ -1,0 +1,164 @@
+plan-8-demo pool-shared-fs: status of stream D (lease mode block)
+===================================================================
+Contract: 12-fs-demo-design.txt part A. Branch 5jg-cxl, working tree, not
+committed. Paths as in 10.
+
+2026-10-22: read the skills, 10, 11, 12, 13, plan-7 32, leases.md, and the
+code of A, C and D with their tests, the e2e tests test12 and test16,
+e2e.md.
+
+A1 api (A/api.go) - done
+- Validate: V2 'invalid mode "X" (numa, dax, fs or block)'; V8b "mode
+  block with shared needs readOnly" right after V8; V9 "readOnly needs
+  mode dax, fs or block"; V10 "mode <M> needs source pool" for fs and
+  block. Other texts and order unchanged; EffectiveMode unchanged.
+- Response.Block (json "block", omitempty) after Dax; doc comment says
+  Dax and Block are informational host paths.
+- ExecEnv: with fd >= 0, CXL_<KEY>_DAX and the CXL_<KEY>_PATH of every key
+  whose CXL_<KEY>_MODE is block become CXL_<KEY>_FD=<fd> (helper
+  fdVarBase); without an fd PATH stays; fs PATH always stays.
+
+A2 cxl-request (C/main.go) - done
+- Synopsis and usage --mode numa|dax|fs|block; the --mode, --read-only and
+  --exec help lines of 12 A2 verbatim; file comment and the --exec
+  paragraph mention block.
+- execute(): fd to CMD for dax and block (helper hasFd); exitCode(): fd
+  on a lease of a mode other than dax and block exits 3. The "no fd with
+  the response of <mode> lease <id>" error now names the mode (the dax
+  text is unchanged).
+
+A3 broker (D/broker.go, lease_store.go) - done
+- lease.Block (json "block", omitempty); lease.memory(): Path = Block for
+  mode block (env PATH = host path), ReadOnly as requested; leaseInfo
+  copies Block.
+- serialOptions with persistentMode() (it existed already in
+  pool_persistent.go, used as is): B3 "device 0x<serial>: mode <M> needs a
+  persistent device", B4 "device 0x<serial>: a persistent device needs
+  mode block or fs". Shared persistent devices keep the requested mode.
+- requestOptions: block (as fs) needs the pool driver (errPoolDisabled).
+  companionSources: block -> [pool]; companionDevices: block ->
+  cxl-pool-persistent, selectors and capacity as for fs; companionRequest:
+  DeviceConfig {mode: block, readOnly}, no access, no path (unchanged
+  code: access only for fs).
+- OnLending unchanged (FsDir and Name only for fs). OnPrepared: block ->
+  l.Block = d.BlockDevice, Node -1, Dax ""; mismatch check is fs/non-fs or
+  block/non-block, same text "companion prepared mode X, lease is mode Y".
+- daxFd renamed leaseFd (fields kept). fdOf: Ready dax -> Dax, Ready block
+  -> Block. waitLease(withFd): dax and block have an fd; else
+  "lease <id> is not a dax or block lease; use env".
+- respond: b.openDax field renamed b.openDevice (same signature, the test
+  hook). openDevice(path, readOnly): /dev/dax* -> openDaxDevice
+  (unchanged: udev wait with major:minor check, private node fallback);
+  other paths -> openBlockDevice: os.OpenFile O_RDWR or O_RDONLY, retried
+  every 100 ms up to 5 s on ENOENT/ENXIO, then the error.
+- Ready log line: "lease broker: lease <id>: Ready (source S, serial S,
+  mode M, node N, dax "", block "/dev/pmem0", access "", path "", B
+  bytes)".
+
+A4 pool driver (D/lending.go, pool.go) - done
+- lentDevice.BlockDevice (host path of the block device of a block or fs
+  device), filled by preparedPoolDevice.lent. Nothing else changed: a
+  block companion is prepared like a block claim (poolModeFor unchanged),
+  CDI devices dropped, released at Unprepare with the holder wait.
+
+A5 docs - done
+- leases.md: introduction; a block flow section (companion
+  cxl-pool-persistent {mode: block, readOnly}, the fd of /dev/pmemK with
+  the response, "cxl-request fd" again, writer whole / reader share
+  read-only, no path in the container); persistent devices "block or fs
+  only"; synopsis; operation table (request, fd); option table (--mode,
+  --read-only, --exec); refusal tables (V2, V8b, V9, V10, B3, B4, pool
+  disabled, the fd text); the --exec environment (FD in place of PATH,
+  PATH without --exec is the host path, informational); exit code text;
+  examples (writer with cat image >&3, fd again, a reader); protocol
+  mode values, a block request row, fd row; response fields (mode,
+  size, block, env); the open error answer; companion rows (--serial S
+  --mode block, --serial S --shared --read-only --mode block) and the
+  DeviceConfig sentence; Life cycle (fd gone with the process; mode
+  block: no bind, cooperative release, I/O fails after release, no node
+  crash); Limitations (every mode of claims, fd only, no path; release of
+  block with an open fd; latency).
+- usage.md: FD row (dax and block leases), PATH row (block: node of a
+  claim, host path of a lease).
+- pool.md "Leases": block through leases in one sentence. index.md mode
+  row: block and fs through claims and leases.
+
+A6 tests - done
+- A/api_test.go: V2, V8b, V9, V10 texts; block accepted (whole device
+  writable, shared read-only, size); block response JSON; ExecEnv of a
+  block lease (FD replaces PATH; PATH kept without fd; fs PATH kept with
+  and without fd); EffectiveMode of block.
+- C/main_test.go: --mode block parsing (also --mode=block); usage lines;
+  refusals V2 ("blk"), V8b, V10 block, access with block; TestRunExecBlock
+  (request --exec: fd 3, CXL_<KEY>_FD=3, no CXL_<KEY>_PATH; fd --exec the
+  same; env --exec: no fd, PATH host path; response without fd -> exit
+  1); fd on an fs lease exits 3 with the new text; exitCode rows.
+- D/broker_test.go: TestBrokerBlockLease (shared persistent llm0 of the
+  slices env with the real pool driver and fake sysfs: writer request,
+  companion claim exactly class cxl-pool-persistent, serial selector, no
+  capacity, DeviceConfig {mode block}; ndctl create-namespace on a fresh
+  device; response Ready mode block, block /dev/pmem0, size 534773760,
+  env PATH /dev/pmem0; fd passed, fake open records "/dev/pmem0 rw"; fd
+  again; env without fd; restart keeps Block; release; then a reader
+  --shared --read-only: shares "1", readOnly config, fd opened read-only,
+  namespace reused); TestBrokerBlockLeaseOpenError ("opening /dev/pmem0:
+  no such device or address"); TestOpenBlockDevice (rw/ro, a node that
+  appears late, an immediate error); RequestOptions rows (block accepted,
+  B3 block texts, not shareable, pool disabled); CompanionClaims rows
+  (writer, reader, exclusive persistent device); PreparedModeMismatch
+  rows block/fs both ways and block/dax. Existing texts updated (fd text,
+  V2, V9, B4).
+- D/pool_persistent_test.go: TestPoolLeaseBlock (block companions,
+  writer then reader: lentDevice Mode block, BlockDevice /dev/pmem0,
+  ReadOnly as asked, no mounts, no binds, no nodes, no CDI devices,
+  released); TestPoolLeaseBind checks BlockDevice of an fs companion too.
+- e2e: test12: 'invalid mode "memory" (numa, dax, fs or block)',
+  "readOnly needs mode dax, fs or block", three new refusals (exactly as
+  12 A6), lease-env-check fd text "lease $MEM_LEASE is not a dax or block
+  lease; use env"; the comment above the shared0 refusals says "no
+  filesystem and no block device". test16 lease-check: the new fd text.
+  e2e.md test12 row mentions the block refusals.
+
+Verification (2026-10-22, final code)
+- gofmt -s -l pkg/cxl cmd/cxl-request cmd/plugins/dra-driver-cxl: nothing
+- go vet ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...: ok
+- go test -race -count=1 (same packages): all ok
+- golangci-lint run (same packages): 0 issues
+- plain ASCII: all changed files of this stream
+- bash -n of test12 and test16 concatenated with ../dra.source.sh
+  pool.source.sh cxl.source.sh llm.source.sh: ok
+- shellcheck -e SC2154,SC2034,SC1090,SC2148,SC2016 of the two
+  code.var.sh: 0 findings
+
+Image
+- make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+  -> build/images/nri-dra-driver-cxl-image-2b1eafa98e22.tar (15:17)
+
+VM runs (one at a time, from N/test/e2e, image 2b1eafa98e22)
+- ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+  15:17:45-15:23:52 (6 min 7 s): PASS. The log shows the new refusals
+  ("mode block with shared needs readOnly", "mode block needs source
+  pool", "device 0xc1ae0001: mode block needs a persistent device"), the
+  new V2 and V9 texts and the fd text "lease <id> is not a dax or block
+  lease; use env" of the four cycles.
+- ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+  15:24:07-15:29:09 (5 min 2 s): PASS (the fs leases' fd text checked).
+- The VMs are as the tests leave them on PASS (clean).
+
+Requests
+--------
+(none)
+
+Notes for the reviewer
+- persistentMode() of pool_persistent.go is reused by the broker (same
+  package) rather than a second helper.
+- The broker struct field openDax is now openDevice (same signature); the
+  two test hooks were renamed accordingly.
+- A block lease whose /dev/pmemK cannot be opened is answered with
+  "opening <path>: <error>" and stays Ready, as a dax lease does.
+- The DEMO stream's files under demo/ show in git diff; they are not mine.
+- No e2e test makes a real block lease: test12 and test16 check only
+  texts of block. The first real one (the plugin opening /dev/pmemK of a
+  pmem region on a VM and passing the fd into a container) is the DEMO
+  stream's phase 2 (F2/F3); openBlockDevice and the whole broker/pool
+  path are covered by unit tests with the fake sysfs.
