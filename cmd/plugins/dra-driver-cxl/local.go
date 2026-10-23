@@ -147,6 +147,14 @@ type localAllocator struct {
 	// fence gets the NUMA nodes of numa slices before their memory goes
 	// online, nil for none.
 	fence *nodeFence
+	// configured returns the configured usable size of a memdev (0: all
+	// of it), nil for none; verify runs the address line probe on new
+	// regions. probesFile keeps the probe results.
+	configured func(memdev string, serial uint64) uint64
+	verify     bool
+	probesFile string
+	// probe runs the address line probe on a dax device.
+	probe func(dax string) (*memctl.Aliasing, error)
 
 	// usesSnap is a snapshot of the use of the devices, and blockSize
 	// the memory block size in bytes (0 if unknown), for the publisher.
@@ -155,6 +163,8 @@ type localAllocator struct {
 	snapMu    sync.Mutex
 	usesSnap  map[uint64]localUse
 	blockSize uint64
+	// probes are the results of the address line probes, by serial.
+	probes map[uint64]localProbe
 }
 
 // localUse is how the allocator uses a memdev.
@@ -174,6 +184,18 @@ type localSnapshot struct {
 	Uses map[uint64]localUse
 	// BlockSize is the memory block size in bytes, 0 if unknown.
 	BlockSize uint64
+	// Probed are the usable sizes that the address line probe found, by
+	// serial.
+	Probed map[uint64]uint64
+}
+
+// probed returns the usable size that the address line probe found for
+// the memdev with the serial, 0 if none.
+func (l *localSnapshot) probed(serial uint64) uint64 {
+	if l == nil {
+		return 0
+	}
+	return l.Probed[serial]
 }
 
 // uses tells whether the allocator uses the memdev with the serial.
@@ -208,10 +230,16 @@ func newLocalAllocator(mem *memctl.Manager, stateFile, bootID string) (*localAll
 		zero: func(major, minor int, size, align uint64) error {
 			return zeroDax(mem.DevRoot, major, minor, size, align)
 		},
-		devices: map[uint64]*localDevice{},
-		shared:  map[uint64]bool{},
+		devices:    map[uint64]*localDevice{},
+		shared:     map[uint64]bool{},
+		verify:     true,
+		probe:      mem.ProbeAliasing,
+		probesFile: filepath.Join(filepath.Dir(stateFile), localProbesFileName),
 	}
 	if err := a.load(); err != nil {
+		return nil, err
+	}
+	if err := a.loadProbes(); err != nil {
 		return nil, err
 	}
 	if _, err := a.readBlockSize(); err != nil {
@@ -261,6 +289,7 @@ func (a *localAllocator) Snapshot() *localSnapshot {
 	a.snapMu.Lock()
 	snap := &localSnapshot{Uses: maps.Clone(a.usesSnap), BlockSize: a.blockSize}
 	a.snapMu.Unlock()
+	snap.Probed = a.probedSizes()
 	if snap.BlockSize == 0 {
 		snap.BlockSize, _ = a.readBlockSize()
 	}
@@ -447,7 +476,7 @@ func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64) (*loca
 			// the block size only checks the alignment of the region
 			bs = cxlRegionAlign
 		}
-		err = a.createRegion(ctx, d, bs)
+		err = a.createProbedRegion(ctx, d, bs)
 	}
 	if err == nil {
 		err = a.zeroShared(ctx, d)
@@ -534,7 +563,7 @@ func (a *localAllocator) device(ctx context.Context, serial, bs uint64) (*localD
 	a.updateSnapshot()
 	err = a.save()
 	if err == nil {
-		err = a.createRegion(ctx, d, bs)
+		err = a.createProbedRegion(ctx, d, bs)
 	}
 	if err == nil {
 		err = a.save()
@@ -562,13 +591,13 @@ func (a *localAllocator) checkRegions(memdev string, d *localDevice) error {
 // the memory blocks of bs bytes is logged.
 func (a *localAllocator) createRegion(ctx context.Context, d *localDevice, bs uint64) error {
 	start := time.Now()
-	ri, err := a.region(ctx, d.Memdev)
+	ri, err := a.region(ctx, d.Memdev, d.Serial)
 	if err != nil && isAddDevError(err) {
 		klog.Warningf("local: memdev %s (serial 0x%x): %v; retrying once in %v", d.Memdev, d.Serial, err, a.retryDelay)
 		select {
 		case <-ctx.Done():
 		case <-time.After(a.retryDelay):
-			ri, err = a.region(ctx, d.Memdev)
+			ri, err = a.region(ctx, d.Memdev, d.Serial)
 		}
 	}
 	if err != nil {
@@ -593,8 +622,15 @@ func (a *localAllocator) createRegion(ctx context.Context, d *localDevice, bs ui
 }
 
 // region creates the devdax region of a memdev.
-func (a *localAllocator) region(ctx context.Context, memdev string) (*memctl.RegionInfo, error) {
-	ri, err := a.mem.CreateRegion(ctx, memdev, memctl.ModeDax, "")
+func (a *localAllocator) region(ctx context.Context, memdev string, serial uint64) (*memctl.RegionInfo, error) {
+	size := a.usableSize(memdev, serial)
+	if ram, err := a.mem.RamSize(memdev); err == nil && size >= ram {
+		size = 0
+	}
+	if size > 0 {
+		klog.Infof("local: memdev %s (serial 0x%x): creating a region of its first %d bytes only (usable size)", memdev, serial, size)
+	}
+	ri, err := a.mem.CreateRegionSize(ctx, memdev, memctl.ModeDax, "", size)
 	if err != nil {
 		return nil, err
 	}

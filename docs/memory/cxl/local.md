@@ -467,6 +467,49 @@ alignment rule of its own: it is the whole region as one `device_dax`
 device, mapped with the 2 MiB alignment of devdax devices, and it does
 not return to its initial state when idle.
 
+## Broken and aliased memory
+
+A CXL memory device may advertise more memory than it decodes. For
+instance, a broken device/setup that advertised 192 GiB, offsets X and
+X+128 GiB of every region reached the same memory: address bit 37 was
+ignored, and a slice in the last 64 GiB overwrote the slice at the
+same offset in the first 64 GiB, of another claim, silently, in modes
+`numa` and `dax` alike.
+
+The plugin protects against such devices in two ways:
+
+- `verifyAddressing` (default `true`): every new region is probed with an
+  address line test before its first slice or shared claim: for every
+  power of two P from 4 KiB up to the region size it writes a marker at a
+  few offsets X and X+P, bypassing the CPU caches, and reads X back. When
+  X holds the marker of X+P, only the first P bytes are distinct: the
+  region is destroyed and created again with only those bytes
+  (`cxl create-region -s P`), the memdev is published with that size from
+  the next scan on, and the result is kept in `localProbes.json` in the
+  plugin data directory, also across reboots (remove the file to probe
+  the whole memdev again). The probe takes milliseconds and writes 16
+  bytes at a few hundred offsets of the new region before anything uses
+  it. A marker that reads back as something else fails the claim.
+
+  ```
+  local: memdev mem0 (serial 0x...): address line probe of region0 (206158430208 bytes): offsets 0x0 and 0x2000000000 reach the same memory (address bit 37 is ignored): only the first 137438953472 bytes are distinct in <t>
+  local: memdev mem0 (serial 0x...): region0: ...; using only the first 137438953472 bytes of the memdev from now on
+  ```
+
+  The claim that triggers the probe was allocated against the capacity
+  published before it. If its slices do not fit in the usable size, its
+  Prepare fails with "no room for the slice"; recreate the claim.
+
+- `memdevSettings` with `usableSize` limits a memdev by configuration,
+  before any claim: regions map only its first `usableSize` bytes, and
+  the published capacity is computed from it.
+
+  ```yaml
+  memdevSettings:
+  - device: "0x..."
+    usableSize: 128Gi
+  ```
+
 ## Limitations
 
 - One region per device, no interleaving across devices.

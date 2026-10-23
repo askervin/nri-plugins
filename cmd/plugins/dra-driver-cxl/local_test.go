@@ -61,9 +61,11 @@ type fakeLocalSys struct {
 	failDaxctl error            // error of daxctl
 	// failSeq has the results of the next writes of sysfs attributes
 	// (relative path), nil for a write that succeeds.
-	failSeq map[string][]error
-	zeroed  []string // "major:minor size align" of zeroed slices
-	zeroErr error    // error of zeroing
+	failSeq  map[string][]error
+	zeroed   []string         // "major:minor size align" of zeroed slices
+	zeroErr  error            // error of zeroing
+	probed   []string         // dax devices of address line probes
+	aliasing *memctl.Aliasing // the result of the next probe, nil: no aliasing
 	// regionStart and regionSize are the memory of region0.
 	regionStart, regionSize uint64
 	// bs is the memory block size.
@@ -102,6 +104,10 @@ func (f *fakeLocalSys) exec(ctx context.Context, name string, args ...string) (s
 			f.failCreate--
 			f.record(name, args...)
 			return "", errors.New("cxl region: cmd_create_region: region0: add_dev() failed")
+		}
+		if i := slices.Index(args, "-s"); i >= 0 && i+1 < len(args) {
+			// a region of the first bytes of the memdev only
+			f.regionSize, _ = strconv.ParseUint(args[i+1], 0, 64)
 		}
 		out, err := f.fakePoolSys.exec(ctx, name, args...)
 		f.write("bus/cxl/devices/region0/resource", fmt.Sprintf("0x%x", f.regionStart))
@@ -512,7 +518,21 @@ func (f *fakeLocalSys) allocatorOfBoot(t *testing.T, dir, boot string) *localAll
 	noErr(t, err)
 	a.retryDelay = time.Millisecond
 	a.zero = f.zero
+	a.probe = f.probe
 	return a
+}
+
+// probe records an address line probe of a dax device and returns
+// f.aliasing (no aliasing if nil) once, then no aliasing.
+func (f *fakeLocalSys) probe(dax string) (*memctl.Aliasing, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probed = append(f.probed, dax)
+	if a := f.aliasing; a != nil {
+		f.aliasing = nil
+		return a, nil
+	}
+	return &memctl.Aliasing{Garbage: -1}, nil
 }
 
 // zero records the zeroing of a slice.
@@ -705,6 +725,7 @@ func TestLocalSlicesSysfs(t *testing.T) {
 	a, err := newLocalAllocator(m, filepath.Join(t.TempDir(), localStateFileName), "boot-1")
 	noErr(t, err)
 	a.zero = f.zero
+	a.probe = f.probe
 	acquire(t, a, "u1", api.ModeDax, 8*mib)
 	f.wantDax(t, "dax0.0", localBlockSize, "device_dax")
 	acquire(t, a, "u2", api.ModeNUMA, 8*mib)
@@ -1281,4 +1302,52 @@ func TestZeroFile(t *testing.T) {
 		t.Fatal("zeroed past the size")
 	}
 	wantErr(t, zeroDax(t.TempDir(), 0, 0, mib, 2*mib), "")
+}
+
+// A new region whose memory aliases is released and created again with its
+// distinct bytes only, the usable size is published and kept across
+// restarts, and slices that do not fit fail.
+func TestLocalAliasedRegion(t *testing.T) {
+	f := newFakeLocalSys(t)
+	dir := t.TempDir()
+	a := f.allocator(t, dir)
+	half := f.regionSize / 2
+	f.aliasing = &memctl.Aliasing{Offset: half, Base: 0, Garbage: -1}
+	acquire(t, a, "u1", api.ModeDax, 8*mib)
+	if n := strings.Count(f.commands(), "create-region"); n != 2 {
+		t.Fatalf("expected the region to be created twice, got %d:\n%s", n, f.commands())
+	}
+	f.wantCommand(t, fmt.Sprintf("cxl create-region -t ram -d decoder0.0 -m mem0 -s %d", half))
+	if !slices.Equal(f.probed, []string{"dax0.0", "dax0.0"}) {
+		t.Fatalf("expected two probes, got %v", f.probed)
+	}
+	if got := a.Snapshot().probed(0xc100e2e1); got != half {
+		t.Fatalf("probed usable size %d, expected %d", got, half)
+	}
+	if f.regionSize != half {
+		t.Fatalf("region size %d, expected %d", f.regionSize, half)
+	}
+	b := f.allocator(t, dir)
+	if got := b.Snapshot().probed(0xc100e2e1); got != half {
+		t.Fatalf("probed usable size after a restart %d, expected %d", got, half)
+	}
+}
+
+// The configured usable size limits the regions of the memdev; a probe
+// that is turned off is not run.
+func TestLocalConfiguredUsableSize(t *testing.T) {
+	f := newFakeLocalSys(t)
+	a := f.allocator(t, t.TempDir())
+	limit := f.regionSize / 2
+	a.SetUsableSizes(func(memdev string, serial uint64) uint64 {
+		if serial == 0xc100e2e1 {
+			return limit + 4096
+		}
+		return 0
+	}, false)
+	acquire(t, a, "u1", api.ModeDax, 8*mib)
+	f.wantCommand(t, fmt.Sprintf("cxl create-region -t ram -d decoder0.0 -m mem0 -s %d", limit))
+	if len(f.probed) != 0 {
+		t.Fatalf("probed although verifyAddressing is off: %v", f.probed)
+	}
 }

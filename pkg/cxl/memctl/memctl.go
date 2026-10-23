@@ -282,6 +282,11 @@ func (mc *Manager) hostBridgeUID(memdev string) (int, error) {
 	return int(v), nil
 }
 
+// RamSize returns the RAM capacity of a memdev in bytes.
+func (mc *Manager) RamSize(memdev string) (uint64, error) {
+	return readUint(mc.cxlDev(memdev, "ram", "size"))
+}
+
 // DaxDevices returns the dax devices of a region.
 func (mc *Manager) DaxDevices(region string) []string {
 	m, _ := filepath.Glob(mc.cxlDev(region, "dax_region*", "dax*.*"))
@@ -921,6 +926,14 @@ var regionNameRe = regexp.MustCompile(`"region"\s*:\s*"(region\d+)"`)
 // the mode: device_dax for ModeDax (memory never onlined), kmem for
 // ModeNUMA (memory left offline, see Online). An existing region is reused.
 func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder string) (*RegionInfo, error) {
+	return mc.CreateRegionSize(ctx, memdev, mode, decoder, 0)
+}
+
+// CreateRegionSize is CreateRegion with the size of a new region in bytes:
+// the region maps only the first size bytes of the memdev's RAM capacity
+// (cxl create-region -s), 0 maps all of it. The size must be a multiple of
+// 256 MiB, the alignment of CXL regions.
+func (mc *Manager) CreateRegionSize(ctx context.Context, memdev, mode, decoder string, size uint64) (*RegionInfo, error) {
 	if err := ValidMode(mode); err != nil {
 		return nil, err
 	}
@@ -941,7 +954,11 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 			}
 			decoder = d
 		}
-		out, err := mc.Exec(ctx, "cxl", "create-region", "-t", "ram", "-d", decoder, "-m", memdev)
+		args := []string{"create-region", "-t", "ram", "-d", decoder, "-m", memdev}
+		if size > 0 {
+			args = append(args, "-s", strconv.FormatUint(size, 10))
+		}
+		out, err := mc.Exec(ctx, "cxl", args...)
 		if err != nil {
 			return nil, err
 		}

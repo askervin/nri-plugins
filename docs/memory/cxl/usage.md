@@ -1075,6 +1075,10 @@ YAML; unknown keys are refused. All keys are optional:
 ignoreDevices: ["mem0", "0xc100e2e0"]
 sharedDevices: ["0xc100e2e2"]
 manageMemdevs: true
+memdevSettings:
+- device: "0xc1ffe2ef"
+  usableSize: 128Gi
+verifyAddressing: true
 udevStableDuration: 200ms
 containerMemory:
   default: allowed-mems    # allowed-mems | mempolicy | none
@@ -1092,6 +1096,8 @@ containerMemory:
 | `ignoreDRAMNodes` | bool | `false` | publish no `dram` device |
 | `udevStableDuration` | duration | `200ms` | quiet period after the last udev event before the devices are scanned again |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
+| `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0` or serial in decimal or `0x` hex) and `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory)) |
+| `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)) |
 | `containerMemory.default` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
 | `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo` |
 

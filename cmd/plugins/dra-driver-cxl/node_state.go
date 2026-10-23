@@ -489,18 +489,19 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 			logSharedRefusal(memDev, refusal)
 		}
 		if listed && refusal == "" {
-			addSharedMemdev(devInfos, memDev, regions[memDev.Serial], local, bs)
+			addSharedMemdev(devInfos, memDev, memdevUsableSize(driverConfig, memDev, local), regions[memDev.Serial], local, bs)
 			continue
 		}
 		use, used := local.use(memDev.Serial)
+		size := memdevUsableSize(driverConfig, memDev, local)
 		reason := ""
 		switch {
 		case memDev.RamSize == 0:
 			reason = "no RAM capacity"
 		case bs == 0:
 			reason = "the memory block size is unknown"
-		case localUsableSize(memDev.RamSize, bs) == 0:
-			reason = fmt.Sprintf("RAM capacity %d is not sure to hold a whole memory block of %d bytes", memDev.RamSize, bs)
+		case localUsableSize(size, bs) == 0:
+			reason = fmt.Sprintf("usable RAM capacity %d is not sure to hold a whole memory block of %d bytes", size, bs)
 		case !memDev.Enabled:
 			reason = "memory device is disabled"
 		case poolSerials[memDev.Serial]:
@@ -522,14 +523,27 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 			Dev: &device.Memdev{
 				Name:         memDev.Name,
 				Serial:       memDev.Serial,
-				Size:         memDev.RamSize,
+				Size:         size,
 				NodeAffinity: memDev.NodeAffinity,
 				BlockSize:    bs,
 			},
 			SysfsPath: memDev.SysfsPath,
 		}
-		klog.V(3).Infof("discovered local memory device %s: %s serial 0x%x size %d memory block size %d", name, memDev.Name, memDev.Serial, memDev.RamSize, bs)
+		klog.V(3).Infof("discovered local memory device %s: %s serial 0x%x size %d (RAM capacity %d) memory block size %d", name, memDev.Name, memDev.Serial, size, memDev.RamSize, bs)
 	}
+}
+
+// memdevUsableSize returns the bytes of a local memdev that the allocator
+// uses: its RAM capacity, or less when memdevSettings or the address line
+// probe limit it, rounded down to the alignment of CXL regions.
+func memdevUsableSize(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, local *localSnapshot) uint64 {
+	size := memDev.RamSize
+	for _, limit := range []uint64{driverConfig.configuredUsableSize(memDev.Name, memDev.Serial), local.probed(memDev.Serial)} {
+		if limit > 0 && limit < size {
+			size = limit / cxlRegionAlign * cxlRegionAlign
+		}
+	}
+	return size
 }
 
 // addSharedMemdev adds a memdev of sharedDevices to devInfos as a shared
@@ -537,7 +551,7 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 // that the allocator did not create or claims that use it as slices.
 //   - regions: the regions on the memdev
 //   - bs: the memory block size, 0 if unknown
-func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, regions []string, local *localSnapshot, bs uint64) {
+func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, size uint64, regions []string, local *localSnapshot, bs uint64) {
 	use, used := local.use(memDev.Serial)
 	reason := ""
 	switch {
@@ -560,7 +574,7 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, r
 		Dev: &device.Memdev{
 			Name:         memDev.Name,
 			Serial:       memDev.Serial,
-			Size:         memDev.RamSize,
+			Size:         size,
 			NodeAffinity: memDev.NodeAffinity,
 			BlockSize:    bs,
 			Shared:       true,

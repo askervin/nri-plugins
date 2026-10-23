@@ -119,6 +119,16 @@ type DriverConfig struct {
 	// regions for claims. Default: true.
 	ManageMemdevs *bool `json:"manageMemdevs,omitempty"`
 
+	// MemdevSettings are settings of individual local memdevs, such as
+	// the usable part of a memdev whose memory aliases.
+	MemdevSettings []MemdevSetting `json:"memdevSettings,omitempty"`
+
+	// VerifyAddressing runs an address line test on every new region of
+	// a local memdev before it is used: a memdev whose memory aliases
+	// (offsets X and X+P reach the same memory) is used only up to P,
+	// and remembered so. Default: true.
+	VerifyAddressing *bool `json:"verifyAddressing,omitempty"`
+
 	// ContainerMemory is how the driver manages the memory of the
 	// containers of the node.
 	ContainerMemory *ContainerMemoryConfig `json:"containerMemory,omitempty"`
@@ -161,6 +171,9 @@ func (c *DriverConfig) containerMemory() string {
 
 // validate returns an error if a value of the configuration is invalid.
 func (c *DriverConfig) validate() error {
+	if err := c.validateMemdevSettings(); err != nil {
+		return err
+	}
 	switch mode := c.containerMemory(); mode {
 	case containerMemoryAllowedMems, containerMemoryNone:
 	case containerMemoryMempolicy:
@@ -558,6 +571,7 @@ func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *Dri
 		injectFakeDevices(driverConfig.Testability, detected)
 	}
 	local.SetShared(sharedSerials(driverConfig, detected.MemoryDevices, poolSerials))
+	local.SetUsableSizes(driverConfig.configuredUsableSize, driverConfig.verifyAddressing())
 	local.Reconcile(ctx, prepared)
 	return local, nil
 }
