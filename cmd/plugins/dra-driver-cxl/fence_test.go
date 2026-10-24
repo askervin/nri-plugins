@@ -30,6 +30,7 @@ import (
 	"k8s.io/utils/cpuset"
 
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -62,7 +63,7 @@ func (r *fenceRecorder) taken() []string {
 
 // newRecordedFence returns an allowed-mems fence whose passes are recorded.
 func newRecordedFence(at func() string) (*nodeFence, *fenceRecorder) {
-	f := newNodeFence(containerMemoryAllowedMems)
+	f := newNodeFence(config.FencingAllowedMems)
 	r := &fenceRecorder{fence: f, at: at}
 	f.setApplier(r)
 	return f, r
@@ -73,7 +74,8 @@ func newRecordedFence(at func() string) (*nodeFence, *fenceRecorder) {
 func newFenceEnv(t *testing.T, hasMemory string, fenced ...int) *ltEnv {
 	t.Helper()
 	e := newLtEnv(t)
-	e.p.fence = newNodeFence(containerMemoryAllowedMems)
+	e.p.defaults = config.Container{}
+	e.p.fence = newNodeFence(config.FencingAllowedMems)
 	e.p.fence.seed(cpuset.New(fenced...))
 	e.p.fence.setApplier(e.p)
 	e.p.hasMemory = filepath.Join(e.root, "has_memory")
@@ -104,12 +106,22 @@ func specMems(ctr *api.Container, mems string) *api.Container {
 	return ctr
 }
 
-// withClaims adds the claim markers of the claims to the env of a container.
+// withClaims adds the markers of the results 0 of the claims to the env of
+// a container.
 func withClaims(ctr *api.Container, uids ...string) *api.Container {
 	for _, uid := range uids {
-		ctr.Env = append(ctr.Env, claimEnvVarName(uid)+"=1")
+		ctr.Env = append(ctr.Env, resultEnvVarName(uid, 0)+"=1")
 	}
 	return ctr
+}
+
+// optIn returns the container settings of a result with the steering
+// policy from a claim.
+func optIn(policy string) config.ResultSettings {
+	return config.ResultSettings{
+		Container: &config.Container{Steering: &config.Steering{Policy: policy}},
+		Origins:   map[string]string{config.FieldPolicy: "claim ns/x request mem"},
+	}
 }
 
 // createMems runs CreateContainer and returns the cpuset.mems of the
@@ -136,10 +148,17 @@ func (e *ltEnv) trackedMems(id string) string {
 	return e.p.ctrs[id].mems
 }
 
-// fenceClaims is a node state with prepared claims: steered DRAM, a dax
-// slice and a numa slice of a local memdev.
+// fenceClaims is a node state with prepared claims: DRAM, a dax slice, a
+// numa slice of a local memdev and a region, and DRAM and a numa slice
+// that opt in to steering.
 func fenceClaims() *nodeState {
 	return &nodeState{baseState: &baseState{}, preparedClaims: PreparedClaimsInfo{
+		"dram-auto": {ClaimName: "ns/dram-auto", Devices: []PreparedDeviceInfo{
+			{DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{0}, ConsumedBytes: 1 << 30, ResultSettings: optIn(config.PolicyAuto)},
+		}},
+		"numa-auto": {ClaimName: "ns/numa-auto", Devices: []PreparedDeviceInfo{
+			{DeviceType: device.DeviceTypeMemdev, Mode: cxlapi.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30, ResultSettings: optIn(config.PolicyAuto)},
+		}},
 		"dram": {ClaimName: "ns/dram", Devices: []PreparedDeviceInfo{
 			{DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{0}, ConsumedBytes: 1 << 30},
 		}},
@@ -157,18 +176,18 @@ func fenceClaims() *nodeState {
 
 func TestFenceNodes(t *testing.T) {
 	ctx := context.Background()
-	// nil: containerMemory none
+	// nil: fencing none
 	var none *nodeFence
 	none.Fence(ctx, 2)
 	none.seed(cpuset.New(2))
 	none.setApplier(nil)
 	none.setNoNRI()
-	if !none.Nodes().IsEmpty() || none.mode() != containerMemoryNone || newNodeFence(containerMemoryNone) != nil {
+	if !none.Nodes().IsEmpty() || none.mode() != config.FencingNone || newNodeFence(config.FencingNone) != nil {
 		t.Fatalf("none fences %s", none.Nodes())
 	}
 
 	f, r := newRecordedFence(nil)
-	if f.mode() != containerMemoryAllowedMems {
+	if f.mode() != config.FencingAllowedMems {
 		t.Fatalf("mode %s", f.mode())
 	}
 	f.seed(cpuset.New(3))
@@ -188,7 +207,10 @@ func TestFenceNodes(t *testing.T) {
 }
 
 func TestFencePreparedNodes(t *testing.T) {
-	pool := &poolDriver{claimNodes: map[string][]int{"p1": {3}, "p2": {3, 6}}}
+	pool := &poolDriver{results: map[string][]poolResult{
+		"p1": {{Mode: cxlapi.ModeNUMA, Node: 3}},
+		"p2": {{Mode: cxlapi.ModeNUMA, Node: 3}, {Index: 1, Mode: cxlapi.ModeNUMA, Node: 6}, {Index: 2, Mode: cxlapi.ModeDax, Node: -1}},
+	}}
 	if got := preparedNodes(fenceClaims(), pool).String(); got != "2-3,6" {
 		t.Fatalf("prepared nodes %s, expected 2-3,6", got)
 	}
@@ -232,7 +254,9 @@ func TestFenceWantMems(t *testing.T) {
 func TestFenceCreateContainer(t *testing.T) {
 	e := newFenceEnv(t, "0-2")
 	e.p.state = fenceClaims()
-	e.p.poolNodes = func(uid string) []int { return map[string][]int{"pool": {3}}[uid] }
+	e.p.poolResults = func(uid string) []poolResult {
+		return map[string][]poolResult{"pool": {{Mode: cxlapi.ModeNUMA, Node: 3, Size: 1 << 30}}}[uid]
+	}
 	pod := ltPod("u1")
 
 	// nothing fenced: no adjustment
@@ -251,8 +275,13 @@ func TestFenceCreateContainer(t *testing.T) {
 		{specMems(ltCtr(pod, "c3", "a", 0), "0-2"), "0-1", "0-1"},
 		{specMems(ltCtr(pod, "c4", "a", 0), "1"), "-", "1"},
 		// steered: left to cgmpolmgr
-		{withClaims(ltCtr(pod, "c5", "a", 0), "dram"), "-", ""},
-		{withClaims(ltCtr(pod, "c6", "a", 0), "numa", "dax"), "-", ""},
+		{withClaims(ltCtr(pod, "c5", "a", 0), "dram-auto"), "-", ""},
+		{withClaims(ltCtr(pod, "c6", "a", 0), "numa-auto", "dax"), "-", ""},
+		// not steered: DRAM is capacity only, numa slices and regions
+		// give their nodes
+		{withClaims(ltCtr(pod, "c5n", "a", 0), "dram"), "0-1", "0-1"},
+		{withClaims(ltCtr(pod, "c6n", "a", 0), "numa", "dax"), "0-2", "0-2"},
+		{withClaims(ltCtr(pod, "c6r", "a", 0), "region"), "0-1,4", "0-1,4"},
 		// dax claims are no memory nodes
 		{withClaims(ltCtr(pod, "c7", "a", 0), "dax"), "0-1", "0-1"},
 		// pool numa claims get their node
@@ -278,7 +307,7 @@ func TestFenceCreateContainer(t *testing.T) {
 	e.passes()
 	e.expectUpdates()
 
-	// containerMemory none
+	// fencing none
 	n := newLtEnv(t)
 	if got := n.createMems(pod, specMems(ltCtr(pod, "c1", "a", 0), "0-2")); got != "-" {
 		t.Fatalf("adjustment %s in mode none", got)
@@ -296,7 +325,7 @@ func TestFencePass(t *testing.T) {
 	c1.State = api.ContainerState_CONTAINER_RUNNING
 	c2 := ltCtr(p1, "c2", "init", 0)
 	c2.State = api.ContainerState_CONTAINER_CREATED
-	c3 := withClaims(ltCtr(p1, "c3", "steered", 102), "dram")
+	c3 := withClaims(ltCtr(p1, "c3", "steered", 102), "dram-auto")
 	c3.State = api.ContainerState_CONTAINER_RUNNING
 	c4 := specMems(ltCtr(p2, "c4", "pinned", 0), "0")
 	c4.State = api.ContainerState_CONTAINER_CREATED
@@ -408,7 +437,7 @@ func TestFenceLend(t *testing.T) {
 	// steered: never updated
 	e.hasMemory("0-2")
 	e.p.mu.Lock()
-	e.p.ctrs["c2"].steered = true
+	e.p.ctrs["c2"].memory = memorySteered
 	e.p.mu.Unlock()
 	noErr(t, e.p.RevokeNode(ctx, "u2", "app", 2, "l1"))
 	e.p.fence.Fence(ctx, 4)
@@ -482,8 +511,8 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 		t.Fatalf("passes %v, expected one before onlining", got)
 	}
 	e.f.wantBlocks(t, "online_movable")
-	if got := p.ClaimNodes("u1"); !reflect.DeepEqual(got, []int{2}) {
-		t.Fatalf("claim nodes %v", got)
+	if got := p.ClaimResults("u1"); len(got) != 1 || got[0].Node != 2 || got[0].Mode != cxlapi.ModeNUMA || got[0].Index != 0 || got[0].Size != 256<<20 {
+		t.Fatalf("claim results %+v", got)
 	}
 	if got := p.numaNodes(); !reflect.DeepEqual(got, []int{2}) {
 		t.Fatalf("numa nodes %v", got)
@@ -492,11 +521,11 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 		t.Fatalf("prepared nodes after a restart %s", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))
-	if got := p.ClaimNodes("u1"); got != nil {
-		t.Fatalf("claim nodes %v after unprepare", got)
+	if got := p.ClaimResults("u1"); got != nil {
+		t.Fatalf("claim results %v after unprepare", got)
 	}
 	var none *poolDriver
-	if none.ClaimNodes("u1") != nil || none.numaNodes() != nil {
+	if none.ClaimResults("u1") != nil || none.numaNodes() != nil {
 		t.Fatal("nodes of a disabled pool driver")
 	}
 
@@ -508,8 +537,8 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 	p2.fence = fence2
 	claim := withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
 	noErr(t, prepare(t, p2, claim).Err)
-	if got := r2.taken(); len(got) != 0 || p2.ClaimNodes("u2") != nil {
-		t.Fatalf("dax device fenced: %v, claim nodes %v", got, p2.ClaimNodes("u2"))
+	if got := r2.taken(); len(got) != 0 || p2.numaNodes() != nil {
+		t.Fatalf("dax device fenced: %v, numa nodes %v", got, p2.numaNodes())
 	}
 }
 

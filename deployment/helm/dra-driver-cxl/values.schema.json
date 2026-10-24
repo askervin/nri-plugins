@@ -7,6 +7,127 @@
         "pool",
         "leases"
     ],
+    "definitions": {
+        "quantity": {
+            "type": ["string", "integer"],
+            "$comment": "a Kubernetes quantity"
+        },
+        "device": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["numa", "dax", "block", "fs"]
+                },
+                "readOnly": {
+                    "type": "boolean"
+                },
+                "access": {
+                    "type": "string",
+                    "enum": ["direct", "cached"]
+                },
+                "path": {
+                    "type": "string",
+                    "pattern": "^/"
+                }
+            }
+        },
+        "container": {
+            "type": "object",
+            "additionalProperties": false,
+            "$comment": "fencing is set by config.defaults.container only",
+            "properties": {
+                "steering": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "policy": {
+                            "type": "string",
+                            "enum": ["none", "auto", "first-dram", "first-cxl", "start-interleaved", "end-interleaved", "waypoints"]
+                        },
+                        "waypoints": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "targetUsages": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "required": [
+                                                "memoryType",
+                                                "usage"
+                                            ],
+                                            "properties": {
+                                                "memoryType": {
+                                                    "type": "string",
+                                                    "enum": ["DRAM", "CXL"]
+                                                },
+                                                "usage": {
+                                                    "$ref": "#/definitions/quantity"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "minStep": {
+                            "$ref": "#/definitions/quantity"
+                        },
+                        "maxStep": {
+                            "$ref": "#/definitions/quantity"
+                        }
+                    }
+                }
+            }
+        },
+        "pool": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "opaque": {
+                    "type": "object",
+                    "$comment": "controller key -> an object that the controller defines",
+                    "additionalProperties": {
+                        "type": "object"
+                    }
+                }
+            }
+        },
+        "localMemoryConfig": {
+            "type": "object",
+            "$comment": "a MemoryConfig body for a class of cxl.nri.io",
+            "additionalProperties": false,
+            "properties": {
+                "device": {
+                    "$ref": "#/definitions/device"
+                },
+                "container": {
+                    "$ref": "#/definitions/container"
+                }
+            }
+        },
+        "poolMemoryConfig": {
+            "type": "object",
+            "$comment": "a MemoryConfig body for a class of cxl-pool.nri.io",
+            "additionalProperties": false,
+            "properties": {
+                "device": {
+                    "$ref": "#/definitions/device"
+                },
+                "container": {
+                    "$ref": "#/definitions/container"
+                },
+                "pool": {
+                    "$ref": "#/definitions/pool"
+                }
+            }
+        }
+    },
     "properties": {
         "image": {
             "type": "object",
@@ -156,6 +277,37 @@
         },
         "config": {
             "type": "object"
+        },
+        "deviceClassConfig": {
+            "type": "object",
+            "$comment": "DeviceClass name -> the body of a MemoryConfig, rendered into the class's spec.config",
+            "additionalProperties": false,
+            "properties": {
+                "cxl-local": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-local-shared": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-pool": {
+                    "$ref": "#/definitions/poolMemoryConfig"
+                },
+                "cxl-pool-shared": {
+                    "$ref": "#/definitions/poolMemoryConfig"
+                },
+                "cxl-pool-persistent": {
+                    "$ref": "#/definitions/poolMemoryConfig"
+                },
+                "cxl-region": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-dram": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-lease": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                }
+            }
         },
         "logLevel": {
             "type": "integer",

@@ -1,8 +1,9 @@
 # 256Mi as a devdax device, of a CXL memory device attached to the node if
 # one has room, else of a memory pool: a prioritized list (firstAvailable)
-# of a cxl-local and a cxl-pool subrequest, and a DeviceConfig mode: dax
-# for each driver. The container prints which one it got: the CXL_*
-# environment is the same for both.
+# of a cxl-local and a cxl-pool subrequest, and a MemoryConfig with
+# device.mode: dax for each driver: the two entries differ in driver only.
+# The container prints which one it got: the CXL_* environment is the same
+# for both.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -27,14 +28,16 @@ spec:
         driver: cxl.nri.io
         parameters:
           apiVersion: cxl.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: dax
+          kind: MemoryConfig
+          device:
+            mode: dax
     - opaque:
         driver: cxl-pool.nri.io
         parameters:
-          apiVersion: cxl-pool.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: dax
+          apiVersion: cxl.nri.io/v1alpha1
+          kind: MemoryConfig
+          device:
+            mode: dax
 ---
 apiVersion: v1
 kind: Pod

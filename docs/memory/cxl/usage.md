@@ -32,8 +32,9 @@ all of it in the e2e test VMs.
 
 - Kubernetes v1.37 or later, see [Feature gates](#feature-gates).
 - A container runtime with CDI support (containerd 1.7 or newer with CDI
-  enabled, CRI-O 1.23 or newer) and with NRI enabled: the driver steers
-  containers and lends memory to them through NRI.
+  enabled, CRI-O 1.23 or newer) and with NRI enabled: the driver keeps
+  containers off the CXL memory they did not claim, steers them, and lends
+  memory to them through NRI.
 - cgroup v2.
 - Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
   `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE`, and `CONFIG_FS_DAX` for
@@ -176,6 +177,7 @@ The main values of the chart:
 | `leases.wait` | `120s` | `--lease-wait` |
 | `leases.companionImage` | `registry.k8s.io/pause:3.10` | `--lease-companion-image` |
 | `config` | `{}` | the [configuration file](#configuration-file) (`-f`) |
+| `deviceClassConfig` | `{}` | class name: a `MemoryConfig` body for the class, see [Presets in DeviceClasses](#presets-in-deviceclasses) |
 | `logLevel` | `4` | `-v` |
 | `extraEnv` | | more environment variables of the plugin container, name: value |
 | `tolerations`, `affinity`, `nodeSelector` | | where the DaemonSet runs |
@@ -230,6 +232,11 @@ echo '{}' > /etc/nri-dra-driver-cxl.yaml
 systemd-run --unit nri-dra-driver-cxl -E KUBECONFIG=/etc/kubernetes/nri-dra-driver-cxl.conf \
     /usr/local/bin/nri-dra-driver-cxl --node-name "$(hostname)" -f /etc/nri-dra-driver-cxl.yaml
 ```
+
+`templates/deviceclasses.yaml` is plain YAML: applied as it is, the
+classes carry no configuration. Classes with the presets of a
+`deviceClassConfig` come from the chart:
+`helm template x deployment/helm/dra-driver-cxl -f values.yaml --show-only templates/deviceclasses.yaml | kubectl apply -f -`.
 
 `cxl-request` must be a static binary: it runs in the containers of lease
 claims. `--lease-cli` defaults to `/usr/local/bin/cxl-request`; with
@@ -311,7 +318,8 @@ under the driver `cxl.nri.io`:
   ([local.md](local.md#shared-local-devices)).
 - `<region>-node<N>`, type `region`: a region that exists already
   (created by the BIOS or an admin) and is online as NUMA node N; claims
-  consume its capacity and their containers are steered to N.
+  consume its capacity, and their containers that opt in to steering are
+  steered to N.
 - `dram`, type `dram`: one device for all DRAM nodes, for steering;
   absent with `ignoreDRAMNodes`.
 - `lease`, type `lease`: the device of lease claims
@@ -339,12 +347,12 @@ of the Helm chart:
 
 | class | selects | gets |
 |:------|:--------|:-----|
-| `cxl-local` | `cxl.nri.io`, `type == "memdev"`, `shared == false` | a slice of a local memdev: RAM of its NUMA node (mode `numa`, default) or a devdax device (`DeviceConfig` `mode: dax`) |
+| `cxl-local` | `cxl.nri.io`, `type == "memdev"`, `shared == false` | a slice of a local memdev: RAM of its NUMA node (mode `numa`, default) or a devdax device (`device.mode: dax`) |
 | `cxl-local-shared` | `cxl.nri.io`, `type == "memdev"`, `shared == true` | a shared local device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
-| `cxl-pool` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
+| `cxl-pool` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`device.mode: dax`) |
 | `cxl-pool-shared` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
-| `cxl-pool-persistent` | `cxl-pool.nri.io`, `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: the block device of its fsdax namespace (`mode: block`) or a read-only erofs filesystem on it (`mode: fs`); a shared device exclusively without a capacity request, one share with `capacity.requests.shares: "1"` |
-| `cxl-region` | `cxl.nri.io`, `type == "region"` | capacity of a pre-created CXL NUMA node; the container is steered to it |
+| `cxl-pool-persistent` | `cxl-pool.nri.io`, `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: the block device of its fsdax namespace (`device.mode: block`) or a read-only erofs filesystem on it (`device.mode: fs`); a shared device exclusively without a capacity request, one share with `capacity.requests.shares: "1"` |
+| `cxl-region` | `cxl.nri.io`, `type == "region"` | capacity of a pre-created CXL NUMA node, CXL memory for [steering](#steering) |
 | `cxl-dram` | `cxl.nri.io`, `type == "dram"` | DRAM capacity for steering |
 | `cxl-lease` | `cxl.nri.io`, `type == "lease"` | the lease socket and `cxl-request` |
 
@@ -359,92 +367,89 @@ spec:
   - cel: {expression: 'device.driver == "cxl-pool.nri.io" && device.attributes["cxl-pool.nri.io"].type == "memdev" && device.attributes["cxl-pool.nri.io"].shared == false && device.attributes["cxl-pool.nri.io"].persistent == false'}
 ```
 
-The classes carry no configuration: how a device is used (`mode`,
-`readOnly`, `access`, `path`) is a `DeviceConfig` of the claim. Memory from either source,
-local first, is a `firstAvailable` request with a subrequest per class
-([example 9](#example-claims)).
+The classes carry no configuration unless the Helm value
+`deviceClassConfig` gives them one: how a device is prepared and how the
+containers that use it are managed is a [MemoryConfig](#opaque-configurations)
+of the claim, and a `MemoryConfig` of a class is a preset that the claims
+of the class change field by field ([Presets in DeviceClasses](#presets-in-deviceclasses)).
+Memory from either source, local first, is a `firstAvailable` request
+with a subrequest per class ([example 9](#example-claims)).
 
 ## Opaque configurations
 
-### DeviceConfig
-
-Both drivers take the same configuration for the devices of a request:
+Both drivers take one kind of opaque configuration, `MemoryConfig`, with
+one apiVersion, `cxl.nri.io/v1alpha1`, in claims and in DeviceClasses.
+The `driver` of the entry selects the driver that reads it; the
+parameters are the same for local and pool devices:
 
 ```yaml
 config:
 - opaque:
-    driver: cxl.nri.io                 # or cxl-pool.nri.io
+    driver: cxl-pool.nri.io            # or cxl.nri.io
     parameters:
-      apiVersion: cxl.nri.io/v1alpha1  # <driver>/v1alpha1
-      kind: DeviceConfig
-      mode: dax
-      readOnly: true
+      apiVersion: cxl.nri.io/v1alpha1  # for both drivers
+      kind: MemoryConfig
+      device:                          # how the device of a result is prepared
+        mode: numa
+      container:                       # how a container that uses the result is managed
+        steering: {policy: auto}
+      pool:                            # cxl-pool.nri.io only: for the pool controller
+        opaque:
+          fake-cxl-pool: {numaNode: 1}
 ```
 
-| field | values | default | |
-|:------|:-------|:--------|:-|
-| `mode` | `numa`, `dax`; `block`, `fs` (`cxl-pool.nri.io`) | `numa`; `dax` for shared devices; none for persistent devices | `numa`: the memory is online as system RAM of a NUMA node. `dax`: the container gets a devdax device `/dev/daxX.Y` of its own to `mmap`. Shared devices of volatile memory are `dax` only. `block`, `fs`: pool devices of persistent memory only, which have no other modes, see [Persistent memory](#persistent-memory). |
-| `readOnly` | `false`, `true` | `false` | `dax`, `block`: the container's device node has CDI permissions `r`, so its device cgroup allows opening it for reading only. `fs`: required, the filesystem is mounted read-only. |
-| `access` | `direct`, `cached` | `direct` | `fs` only: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node. |
-| `path` | an absolute path | `/run/cxl-fs/<KEY>` | `fs` only: the directory of the filesystem in the container; not `/`, not in `/dev`, `/proc`, `/sys`, `/run/cxl` or `/var/run/cxl`. |
+Every section and every field is optional.
 
-- `apiVersion` is the driver name followed by `/v1alpha1`; `driver` and
-  `apiVersion` change together.
-- Unknown fields are refused, and so is another apiVersion. An opaque
-  configuration of the driver with a kind it does not know fails the
-  Prepare before any device is touched:
-  `unknown kind "..." (DeviceConfig or MemoryPolicyConfig)` for
-  `cxl.nri.io`, `unknown kind "..." (DeviceConfig)` for `cxl-pool.nri.io`
-  (a configuration without a kind gives `unknown kind ""`).
-- Regions and DRAM (`cxl-region`, `cxl-dram`) are used as `numa` only: a
-  `DeviceConfig` for them may say `mode: numa` and nothing else. In a
-  claim that has such requests next to `dax` memdev requests, list the
-  memdev requests in the `requests` of the `DeviceConfig`.
-- A configuration comes from the DeviceClass or from the claim; the
-  claim's comes later and replaces the class's. It applies to the requests
-  it lists (a request `r` also covers its subrequests `r/s`) or, without
-  `requests`, to all requests of its driver.
-- Errors fail the Prepare of the claim (kubelet retries, the pod does not
-  start); the error of the Prepare contains, for `cxl.nri.io`:
-  - `DeviceConfig: invalid mode "..." (numa or dax)`
-  - `DeviceConfig: readOnly needs mode dax`
-  - `DeviceConfig: access needs mode fs`, `DeviceConfig: path needs mode fs`
-  - `DeviceConfig: mode dax: a region is used as numa only`,
-    `DeviceConfig: mode dax: a dram is used as numa only`
+### Sections and owners
 
-  for `cxl-pool.nri.io`, checked in this order, first those of the
-  configuration alone:
-  - `DeviceConfig: invalid mode "..." (numa, dax, block or fs)`
-  - `DeviceConfig: access needs mode fs`
-  - `DeviceConfig: path needs mode fs`
-  - `DeviceConfig: invalid access "..." (direct or cached)`
-  - `DeviceConfig: invalid path "..." (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)`
-  - `DeviceConfig: mode fs is read-only: set readOnly: true (write the device with mode block)`
-  - `DeviceConfig: readOnly needs mode dax, block or fs`
+Each section has one owner, which reads only its section:
 
-  then those that need the claim status data of the device (`persistent`,
-  `shared`, `exclusive`, [pool.md](pool.md#what-the-pool-controller-writes)):
-  - `DeviceConfig: mode block needs a persistent device` (or `mode fs`)
-  - `DeviceConfig: a persistent device needs mode block or fs` (no mode,
-    `numa` or `dax` on a persistent device)
-  - `DeviceConfig: mode block: a shared device is writable only exclusively (no shares request)`
-  - `DeviceConfig: readOnly needs mode dax, block or fs` (readOnly without
-    a mode on an exclusive volatile device, which is `numa` by default)
+| section | owner (applies it) | when | errors appear as |
+|:--------|:-------------------|:-----|:-----------------|
+| `pool` | the pool controller of the device (cluster level, one per pool) | after the allocation, before binding (attach) | claim condition `cxl-pool.nri.io/AttachFailed`, reason `InvalidConfig`; the scheduler allocates the claim again until the binding timeout |
+| `device` | the kubelet plugin of the device's driver in nri-dra-driver-cxl (`cxl.nri.io` or `cxl-pool.nri.io`) | NodePrepareResources, per allocation result | Prepare error (pod events): kubelet retries, the pod does not start |
+| `container` | the NRI plugin of nri-dra-driver-cxl | CreateContainer of a container that uses the result; it also passes over other containers (fencing, lending) | invalid values: Prepare error; results of a container that disagree: CreateContainer error, the container is not created |
 
-  and for both drivers:
-  - `DeviceConfig: mode numa: a shared device is used as dax only`
-    (shared local devices and shared volatile pool devices)
-  - `device 0x<serial>: consumed shares "<q>" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
-    (an allocation of a shared device whose `consumedCapacity` has less
-    than one share, for instance of a claim with `shares: "0"`; `<q>` is
-    the consumed quantity, `""` when there is none; checked before any
-    device is touched)
-  - `DeviceConfig: apiVersion "...", expected "<driver>/v1alpha1"`
-  - `DeviceConfig: invalid FromClaim config: json: unknown field "..."`
-    (`FromClass` for a config of the DeviceClass)
+The node driver checks the structure of `pool` (no unknown fields next to
+`opaque`), never the contents of a controller's object.
 
-| device | DeviceConfig | the container gets |
-|:-------|:-------------|:-------------------|
+### MemoryConfig fields
+
+Where a field may be set: *class* is an entry of a DeviceClass, *claim*
+an entry of a claim, *node* the `defaults.container` of the
+[configuration file](#configuration-file).
+
+| field | section | owner | values | default | where it may be set | |
+|:------|:--------|:------|:-------|:--------|:--------------------|:-|
+| `device.mode` | `device` | kubelet plugin | `numa`, `dax`; `block`, `fs` (`cxl-pool.nri.io`) | `numa`; `dax` for shared devices; none for persistent devices | class, claim | `numa`: the memory is online as system RAM of a NUMA node. `dax`: the container gets a devdax device `/dev/daxX.Y` of its own to `mmap`. Shared devices of volatile memory are `dax` only. `block`, `fs`: pool devices of persistent memory only, which have no other modes, see [Persistent memory](#persistent-memory). |
+| `device.readOnly` | `device` | kubelet plugin | `false`, `true` | `false` | class, claim | `dax`, `block`: the container's device node has CDI permissions `r`, so its device cgroup allows opening it for reading only. `fs`: required, the filesystem is mounted read-only. |
+| `device.access` | `device` | kubelet plugin | `direct`, `cached` | `direct` | class, claim | `fs` only: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node. |
+| `device.path` | `device` | kubelet plugin | an absolute path | `/run/cxl-fs/<KEY>` | class, claim | `fs` only: the directory of the filesystem in the container; not `/`, not in `/dev`, `/proc`, `/sys`, `/run/cxl` or `/var/run/cxl`. |
+| `container.steering.policy` | `container` | NRI plugin | `none`, `auto`, `first-dram`, `first-cxl`, `start-interleaved`, `end-interleaved`, `waypoints` | `none` | class, claim, node | how the allocations of the container are spread over the DRAM and CXL memory of its results, see [Steering](#steering); `none`: not steered |
+| `container.steering.waypoints` | `container` | NRI plugin | list of `{targetUsages: [{memoryType: DRAM or CXL, usage: <quantity>}]}` | | class, claim, node | policy `waypoints` only, which needs them: the target usage per memory type at each waypoint; a type that is not listed keeps its usage of the previous waypoint; usages never decrease |
+| `container.steering.minStep` | `container` | NRI plugin | quantity | the smallest change of the usage of a node between two waypoints, at most `maxStep` | class, claim, node | not with policy `none`: the smallest amount of new allocations after which the route is re-evaluated |
+| `container.steering.maxStep` | `container` | NRI plugin | quantity | the total quota | class, claim, node | not with policy `none`: the largest amount of new allocations after which the route is re-evaluated |
+| `container.fencing` | `container` | NRI plugin | `allowed-mems`, `mempolicy` (not implemented), `none` | `allowed-mems` | node only | whether the containers are kept off the CXL nodes of the driver that they did not claim, see [Containers without claims](#containers-without-claims) |
+| `pool.opaque.<key>` | `pool` | the pool controllers with controller key `<key>` | an object that the controller defines | | class, claim; not in entries of `cxl.nri.io` | settings of one implementation of a pool controller; the reference controller (key `fake-cxl-pool`) takes `slot` and `numaNode`, see [Configuration of a pool controller](pool.md#configuration-of-a-pool-controller) |
+
+The `device` fields per device:
+
+- Local memdev (`cxl-local`): `mode` `numa` (default) or `dax`;
+  `readOnly` needs `dax`; `access` and `path` are refused.
+- Shared local device (`cxl-local-shared`): `dax`, the default and only
+  mode; `readOnly` is allowed.
+- Regions and DRAM (`cxl-region`, `cxl-dram`): `numa` only; `mode: numa`
+  is allowed and nothing else. In a claim that has such requests next to
+  `dax` memdev requests, list the memdev requests in the `requests` of
+  the entry.
+- Lease device (`cxl-lease`): no `device` field.
+- Pool devices: `numa` (exclusive devices, their default) or `dax`;
+  shared devices of volatile memory `dax` only; devices of persistent
+  memory `block` or `fs` only, and `fs` needs `readOnly: true`
+  ([pool.md](pool.md#options-of-pool-devices)).
+
+| device | `device` | the container gets |
+|:-------|:---------|:-------------------|
 | local memdev (`cxl-local`) | none | a slice online as RAM of the memdev's NUMA node |
 | local memdev | `mode: dax` | a devdax slice of its own |
 | shared local device (`cxl-local-shared`), `capacity.requests.shares: "1"` | none | the device as devdax, shared with the other claims of the device |
@@ -463,6 +468,280 @@ whatever its capabilities, except in privileged containers (their device
 cgroup allows everything). It is a property of the claim, not of the
 device: another claim of the same device may write, and the readers see
 it.
+
+### Merge order
+
+A driver resolves the configuration of every allocation result of a
+claim:
+
+1. The entries of the result's driver apply that have no `requests`,
+   that list the result's request, or, for a subrequest `r/s` of a
+   `firstAvailable` request, that list `r`. An entry that lists `r/s`
+   applies to that alternative only.
+2. The entries of the DeviceClass come first (`FromClass`), then the
+   entries of the claim (`FromClaim`), each in the order of its list.
+3. Each entry is decoded alone, strictly and case-sensitively: an
+   unknown or duplicate field, another kind or another apiVersion fails
+   the Prepare, naming the entry
+   (`MemoryConfig: FromClaim config 1: json: unknown field "x"`). Every
+   entry of the driver is checked so, also one for another request.
+4. The parameters merge in that order as a JSON merge patch (RFC 7386):
+   objects merge field by field, scalars and lists (`waypoints`) replace,
+   and `null` removes a field, which returns it to its default (`null`
+   never counts as setting a field).
+5. The result is decoded and validated again, and the driver checks it
+   against the device (type, shared, persistent, exclusive).
+
+So a class with `device: {mode: dax}` and a claim with
+`device: {readOnly: true}` give a read-only dax slice, and a claim with
+`device: {mode: null}` gives a numa slice of the same class. The node
+defaults are no part of a result: they apply per container.
+
+### Container settings
+
+A container uses the results of the requests it references: all results
+of a claim that it lists without a `request`, and only the result of the
+request that `resources.claims[].request` names (kubelet gives it only
+that result's CDI device, see [Environment variables](#environment-variables)).
+Only those results count for the container: their memory for its
+steering and its `cpuset.mems`, and their `container` sections. A
+container that uses the `dax` request of a claim is neither steered by
+nor given the node of the `numa` request of the same claim, which
+another container uses.
+
+The settings of a container:
+
+1. A `container` field that the resolved configurations of several of its
+   results set must have the same value in all of them (lists and
+   objects compared as JSON, quantities by value); a field that only some
+   of them set is taken from those. A conflict fails CreateContainer, and
+   the container is not created:
+   `container ns/pod/ctr: container.steering.policy: claim ns/a request r says first-cxl, claim ns/b request s says none`
+2. The `defaults.container` of the driver configuration, overlaid by
+   these fields, is effective. The `waypoints`, `minStep` and `maxStep`
+   of the defaults apply only when the results set no policy or the
+   policy of the defaults: a claim with `policy: none` on a node whose
+   default is `{policy: first-dram, maxStep: 1Gi}` is not steered, and
+   does not get the `maxStep`. A container without results gets the
+   defaults.
+3. The effective steering takes `waypoints`, `minStep` and `maxStep` only
+   with a policy other than `none`, and policy `waypoints` needs
+   `waypoints` (from any of its results or the defaults); else
+   CreateContainer fails, naming where the settings came from
+   ([Configuration errors](#configuration-errors)).
+
+The `container` sections of different requests of one claim may differ:
+they reach different containers. The settings of a shared claim reach
+every container that uses its request.
+
+### Examples of configurations
+
+Steering on for the containers of a claim, one line (the same with
+`driver: cxl-pool.nri.io` for pool memory):
+
+```yaml
+config:
+- opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, container: {steering: {policy: auto}}}}
+```
+
+A read-only dax slice:
+
+```yaml
+config:
+- opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax, readOnly: true}}}
+```
+
+Two requests for two containers: `app` uses `numa`, steered DRAM first in
+1Gi steps; `cache` uses `dax`, and gets neither the node nor steering:
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata: {name: app-memory}
+spec:
+  devices:
+    requests:
+    - {name: dram, exactly: {deviceClassName: cxl-dram,  capacity: {requests: {memory: 4Gi}}}}
+    - {name: numa, exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 4Gi}}}}
+    - {name: dax,  exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 1Gi}}}}
+    config:
+    - requests: [dram, numa]
+      opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, container: {steering: {policy: first-dram, maxStep: 1Gi}}}}
+    - requests: [dax]
+      opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax}}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: app}
+spec:
+  resourceClaims:
+  - {name: mem, resourceClaimName: app-memory}
+  containers:
+  - name: app
+    image: docker.io/library/python:3-alpine
+    command: ["sleep", "infinity"]
+    resources: {claims: [{name: mem, request: dram}, {name: mem, request: numa}]}
+  - name: cache
+    image: docker.io/library/python:3-alpine
+    command: ["sleep", "infinity"]
+    resources: {claims: [{name: mem, request: dax}]}
+```
+
+Settings for the pool controller (`cxl-pool.nri.io` only): the reference
+controller attaches the device to a slot near NUMA node 1 of the host
+([pool.md](pool.md#configuration-of-a-pool-controller)):
+
+```yaml
+config:
+- opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, pool: {opaque: {fake-cxl-pool: {numaNode: 1}}}}}
+```
+
+### Presets in DeviceClasses
+
+A DeviceClass may carry `MemoryConfig` entries of its driver; they are the
+first layer of the [merge](#merge-order), so a claim of the class changes
+single fields of them. A class for dax slices of local memdevs:
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata: {name: cxl-local-dax}
+spec:
+  selectors:
+  - cel: {expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == false'}
+  config:
+  - opaque:
+      driver: cxl.nri.io
+      parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax}}
+```
+
+The Helm value `deviceClassConfig` gives the shipped classes such an
+entry: class name to a `MemoryConfig` body (`device`, `container`, and
+`pool` for the classes of `cxl-pool.nri.io`), which the chart renders
+into the class's `spec.config` with the class's driver, the apiVersion
+and the kind. Steering on for every container with memory of `cxl-local`
+or `cxl-pool`, unless its claim says
+`container: {steering: {policy: none}}`:
+
+```yaml
+deviceClassConfig:
+  cxl-local:
+    container: {steering: {policy: auto}}
+  cxl-pool:
+    container: {steering: {policy: auto}}
+```
+
+Steering on for every container of a node is
+`defaults.container.steering: {policy: auto}` in the
+[configuration file](#configuration-file); there it applies to the
+containers whose results do not set a policy.
+
+### Configuration errors
+
+Errors of the `device` and `container` sections fail the Prepare of the
+claim (kubelet retries, the pod does not start), before any device is
+touched; conflicts between the results of a container fail its
+CreateContainer ([Container settings](#container-settings)); errors of
+`pool.opaque.<key>` are the pool controller's
+([pool.md](pool.md#configuration-of-a-pool-controller)). The errors of a
+configuration start with `MemoryConfig: ` and the path of the field. The
+Prepare error of `cxl.nri.io` puts `claim NS/NAME: ` before an error of
+an entry, and `claim NS/NAME: request R: ` before an error of the
+configuration of a result; that of `cxl-pool.nri.io` puts
+`cxl-pool.nri.io: preparing claim NS/NAME: ` and `request R: ` or
+`device D serial 0xS: ` before them. The CreateContainer error starts with
+`container NS/POD/CTR: `.
+
+Decoding is strict and case-sensitive: a field `Mode` is unknown, and so
+are a field written twice and the names of fields that are not
+implemented. `null` removes a value and never counts as setting a field.
+Every entry of the driver is checked, also one for another request of the
+claim. Of every entry (`SRC` `FromClass` or `FromClaim`, `I` the index of
+the entry among the entries of its source, from 0):
+
+- `unknown kind "..." (MemoryConfig)` (an entry without a kind gives
+  `unknown kind ""`)
+- `MemoryConfig: apiVersion "...", expected "cxl.nri.io/v1alpha1"`
+- `MemoryConfig: SRC config I: json: unknown field "F"`, F the dotted path
+  of the field (`x`, `device.online`, `container.steering.memoryUseOrder`)
+- `MemoryConfig: SRC config I: json: duplicate field "F"`
+- `MemoryConfig: SRC config I: json: cannot unmarshal ...` (a value of
+  the wrong type)
+- `MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)`
+- `MemoryConfig: pool: only for devices of cxl-pool.nri.io` (in an entry
+  of `cxl.nri.io`)
+- `MemoryConfig: claim NS/NAME has no allocation`
+
+Of the `container` section of a result:
+
+- `MemoryConfig: container.steering.policy: invalid policy "..." (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)`
+- `MemoryConfig: container.steering.minStep: invalid quantity "..."`,
+  `... (must be positive)` (also `maxStep`)
+- `MemoryConfig: container.steering.waypoints[I].targetUsages: empty`
+- `MemoryConfig: container.steering.waypoints[I].targetUsages[J].memoryType: invalid memory type "..." (DRAM or CXL)`,
+  `...: DRAM twice in the waypoint` (or `CXL`)
+- `MemoryConfig: container.steering.waypoints[I].targetUsages[J].usage: missing`,
+  `...: invalid quantity "..."`, `...: invalid quantity "..." (must not be negative)`
+- `MemoryConfig: container.steering.waypoints[I]: DRAM usage X is less than Y of waypoint I-1` (or `CXL`)
+- `MemoryConfig: container.steering.waypoints needs a policy other than none`
+  (also `minStep`, `maxStep`)
+- `MemoryConfig: container.steering.waypoints needs policy waypoints`
+- `MemoryConfig: container.steering.minStep X exceeds maxStep Y`
+
+Of the `pool` section:
+
+- `MemoryConfig: pool.opaque: empty controller key`
+- `MemoryConfig: pool.opaque.KEY: not a JSON object`
+
+Of the effective settings of a container, at CreateContainer: the
+conflict of [Container settings](#container-settings), and the texts of
+the `container` section and
+`MemoryConfig: container.steering.policy waypoints needs waypoints`, each
+followed by the fields involved and where they came from:
+
+```
+container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy other than none (policy none (default), maxStep 1Gi from claim ns/a request r)
+container ns/pod/ctr: MemoryConfig: container.steering.minStep 2Gi exceeds maxStep 1Gi (minStep 2Gi from claim ns/a request r, maxStep 1Gi (node default))
+```
+
+Of the `device` section, `cxl.nri.io`, in this order:
+
+- `MemoryConfig: device.mode: invalid mode "..." (numa or dax)`
+- `MemoryConfig: device.readOnly needs mode dax`
+- `MemoryConfig: device: a shared device is used as dax only`
+- `MemoryConfig: device.access needs mode fs`
+- `MemoryConfig: device.path needs mode fs`
+- `MemoryConfig: device: a region is used as numa only`,
+  `MemoryConfig: device: a dram is used as numa only`
+- `MemoryConfig: device: the lease device has no device settings`
+
+Of the `device` section, `cxl-pool.nri.io`, first those of the section
+alone:
+
+- `MemoryConfig: device.mode: invalid mode "..." (numa, dax, block or fs)`
+- `MemoryConfig: device.access needs mode fs`
+- `MemoryConfig: device.path needs mode fs`
+- `MemoryConfig: device.access: invalid access "..." (direct or cached)`
+- `MemoryConfig: device.path: invalid path "..." (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)`
+- `MemoryConfig: device.readOnly: mode fs is read-only: set readOnly: true (write the device with mode block)`
+- `MemoryConfig: device.readOnly needs mode dax, block or fs`
+
+then those that need the claim status data of the device (`persistent`,
+`shared`, `exclusive`, [pool.md](pool.md#what-the-pool-controller-writes)):
+
+- `MemoryConfig: device.mode block needs a persistent device` (or `fs`)
+- `MemoryConfig: device: a persistent device needs mode block or fs` (no
+  mode, `numa` or `dax` on a persistent device)
+- `MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)`
+- `MemoryConfig: device: a shared device is used as dax only`
+- `MemoryConfig: device.readOnly needs mode dax, block or fs` (readOnly
+  without a mode on an exclusive volatile device, which is `numa` by
+  default)
+
+and of both drivers, for an allocation of a shared device whose
+`consumedCapacity` has less than one share (a claim with `shares: "0"`):
+`device 0x<serial>: consumed shares "<q>" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
+(`<q>` the consumed quantity, `""` when there is none).
 
 ### Persistent memory
 
@@ -550,51 +829,39 @@ conv=fsync`. The image must fit `CXL_<KEY>_SIZE`.
 [pool-persistent-erofs.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml)
 has a writer and two readers.
 
-### MemoryPolicyConfig
-
-`cxl.nri.io` only: how the memory of a container is spread over the DRAM
-and CXL nodes of its claims while it allocates ([Steering](#steering)).
-
-```yaml
-config:
-- opaque:
-    driver: cxl.nri.io
-    parameters:
-      apiVersion: cxl.nri.io/v1alpha1
-      kind: MemoryPolicyConfig
-      memoryUseOrder: first-dram
-```
-
-| field | values | |
-|:------|:-------|:-|
-| `memoryUseOrder` | `first-dram`, `first-cxl`, `start-interleaved`, `end-interleaved`, `waypoints` | `first-dram`: the DRAM quota first, then CXL; `first-cxl` the other way round; `start-interleaved`: DRAM and CXL interleaved until the smaller quota is used, then the rest of the other; `end-interleaved`: the excess of the larger quota first, then interleaved; `waypoints`: along `memoryUseWaypoints` |
-| `memoryUseWaypoints` | list of `{targetUsages: [{memoryType: DRAM or CXL, usage: <quantity>}]}` | target usage per memory type at each waypoint; a type that is not listed keeps its usage of the previous waypoint; usages never decrease |
-| `minStep` | quantity | the smallest amount of new allocations after which the route is re-evaluated; default `maxStep` |
-| `maxStep` | quantity | the largest amount of new allocations after which the route is re-evaluated; default the total quota |
-
-A `MemoryPolicyConfig` belongs to a claim, not to a request: it applies to
-the containers that reference the claim, whatever its `requests` say, and
-one container may have only one claim with a policy. It may come from the
-DeviceClass or from the claim; the later one replaces the earlier.
-Unknown fields, another apiVersion and an invalid policy fail the Prepare
-of the claim with `MemoryPolicyConfig: ...`; an unknown kind with
-`unknown kind "..." (DeviceConfig or MemoryPolicyConfig)`.
-
 ## Steering
 
-A container that references `cxl.nri.io` claims in mode `numa` when it is
-created is steered: the NRI plugin of `nri-dra-driver-cxl` finds the
-claims by their marker (`CXL_CLAIM_<uid>`), takes the consumed capacity of
-every `dram` device as the DRAM quota and of every `region` device and
-`numa` memdev slice as the CXL quota, and steers the container's
-allocations along the claim's `MemoryPolicyConfig`. Without one, a
-container with only DRAM or only CXL uses that one (`first-dram`,
-`first-cxl`), and one with both interleaves them (`start-interleaved`).
+Steering is opt-in: a container is steered when its effective
+`container.steering.policy` ([Container settings](#container-settings)) is
+not `none` and its results have memory in mode `numa`. The default is
+`none`. A claim opts in with one line
+(`container: {steering: {policy: auto}}`,
+[Examples of configurations](#examples-of-configurations)), a DeviceClass
+for all its claims ([Presets in DeviceClasses](#presets-in-deviceclasses)),
+a node for all its containers (`defaults.container.steering` of the
+[configuration file](#configuration-file)).
+
+The NRI plugin of `nri-dra-driver-cxl` finds the results of a container
+by their markers (`CXL_CLAIM_<uid>_<n>`), takes the consumed capacity of
+every `dram` device as the DRAM quota, and of every `region` device,
+`numa` memdev slice and pool device in mode `numa` (its size) as the CXL
+quota: pool memory is steered like local memory. The policy:
+
+| policy | |
+|:-------|:-|
+| `none` | not steered (default) |
+| `auto` | by the memory types of the results: `first-cxl` with only CXL memory, `first-dram` with only DRAM, `start-interleaved` with both |
+| `first-dram` | the DRAM quota first, then CXL |
+| `first-cxl` | the CXL quota first, then DRAM |
+| `start-interleaved` | DRAM and CXL interleaved until the smaller quota is used, then the rest of the other |
+| `end-interleaved` | the excess of the larger quota first, then interleaved |
+| `waypoints` | along `waypoints` |
+
 The steering adds the nodes to the container's `cpuset.mems` as the plan
 reaches them (memory is never migrated), sets the memory policy of the
 container's threads, and throttles each step with `memory.high`. When
 none of the nodes in `cpuset.mems` has normal (non-movable) memory, as
-for a container with only CXL claims whose nodes are onlined movable,
+for a container with only CXL memory whose nodes are onlined movable,
 the nearest node with normal memory (`/sys/devices/system/node/has_normal_memory`,
 by node distance) is added too: unmovable user allocations, such as pipe
 buffers, obey `cpuset.mems` but cannot use movable memory, and would fail
@@ -602,18 +869,58 @@ with ENOMEM (`runc` fails to start the container: `write exec fifo:
 cannot allocate memory`). The memory policy keeps the allocations of the
 container on the CXL node.
 
-Pool devices in mode `numa` are not steered: the container gets the node
-number in `CXL_<KEY>_NODE` and binds its memory to it itself, for example
-with `numactl --membind` or `mbind`. The memory policy of the container
-is left alone; the node is added to the container's `cpuset.mems`, next
-to its other nodes, and other containers do not get it. With
-`containerMemory.default` `none` no `cpuset.mems` is changed, and other
-containers whose cpusets allow every node may allocate from the node too
-([Containers without claims](#containers-without-claims)).
+Steering is not for every workload. It narrows `cpuset.mems` to the
+nodes of the plan, sets the memory policy of the threads that exist when
+it starts (processes that are not descendants of them, such as those of
+`kubectl exec`, keep theirs), and holds the cgroup at `memory.high` at
+every step until the plan moves on. Workloads that place their memory
+themselves, such as HPC applications and databases, are better left
+unsteered. A steered container cannot take a `numa` lease
+([leases.md](leases.md#limitations)). A restart of the plugin does not
+restart the steering of running containers: they keep their
+`cpuset.mems` and memory policies and are no longer throttled.
+
+A container that is not steered (policy `none`, or no `numa` memory) is
+managed like a [container without claims](#containers-without-claims):
+with `defaults.container.fencing` `allowed-mems` (the default) its
+`cpuset.mems` are its own nodes without the CXL nodes of the driver,
+plus the nodes of its `numa` results (memdev slices, regions, pool
+devices) and of its `numa` leases; its memory policy and `memory.high`
+are left alone. The kernel allocates its memory from the nodes of its
+CPUs first, and the workload binds memory to the CXL node itself with the
+node number of `CXL_<KEY>_NODE`, for example with `numactl --membind` or
+`mbind`. It may take `numa` leases. Its `dram` and `region` results
+reserve capacity only. With `fencing` `none` its `cpuset.mems` are left
+as they are.
+
+A container has one policy: results that set different ones fail its
+CreateContainer ([Container settings](#container-settings)); the plugin
+logs the error too (`NRI CreateContainer: <error>`). It logs the
+management of every container at verbosity 3, `memory steered`, `fenced`
+or `none`, with the effective policy and fencing and where they came
+from (`from <origin>`, `(node default)`, `(default)`):
+
+```
+NRI CreateContainer: ctr=<ctr>: memory steered (steering auto from claim ns/a request r, fencing allowed-mems (default))
+NRI CreateContainer: ctr=<ctr>: memory fenced (steering none (default), fencing allowed-mems (default))
+NRI CreateContainer: ctr=<ctr>: memory none (steering none (default), fencing none (node default))
+```
+
+and, for a container with results,
+
+```
+NRI CreateContainer: ctr=<ctr>: steering policy auto: no numa memory to steer
+NRI CreateContainer: ctr=<ctr>: dram and region memory is not steered: the claims reserve capacity only
+```
+
+After a restart the plugin computes the management of the running
+containers again from their markers and the prepared claims; a container
+whose settings no longer combine is taken as steered (never fenced, never
+lent to) with the warning `NRI Synchronize: ctr=<ctr>: <error>; taken as
+steered`.
 
 Memory for running containers (leases) in mode `numa` is lent through
-`cpuset.mems` instead; a steered container cannot take such a lease
-([leases.md](leases.md#limitations)).
+`cpuset.mems` ([leases.md](leases.md#limitations)).
 
 ## Containers without claims
 
@@ -627,41 +934,48 @@ running containers.
 
 A container has such a node only through
 
-- a claim of `numa` memory on it: a `cxl.nri.io` claim makes the
-  container steered, and the steering puts the nodes of its claims into
-  `cpuset.mems` ([Steering](#steering));
-- a claim of a pool device in mode `numa`: the node is in the container's
-  `cpuset.mems` explicitly, next to its other nodes;
+- a `numa` result on it: a steered container gets it from the steering
+  ([Steering](#steering)), any other container in its `cpuset.mems`
+  next to its other nodes;
 - a lease in mode `numa`: the node is lent ([leases.md](leases.md#flow)).
 
-Every other container, which is every container that is not steered, gets
-`cpuset.mems` = its own nodes without these CXL nodes, plus the nodes of
-its pool claims and leases. Its own nodes are the `cpuset.mems` of its
-spec (set by the kubelet memory manager or an earlier NRI plugin), or all
-nodes with memory (`/sys/devices/system/node/has_memory`) when the spec
-has none. A new container gets it when it is created; the running and
-created containers are updated before the memory of a new node goes
-online, so no container sees the node. After a restart the plugin
-updates the running containers when NRI has synchronized and the lease
-broker has lent the memory of Ready `numa` leases again. A node stays
-kept away when its last claim is released, until the plugin restarts.
+Every container that is not steered gets `cpuset.mems` = its own nodes
+without these CXL nodes, plus the nodes of its `numa` results and leases.
+Its own nodes are the `cpuset.mems` of its spec (set by the kubelet
+memory manager or an earlier NRI plugin), or all nodes with memory
+(`/sys/devices/system/node/has_memory`) when the spec has none. A new
+container gets it when it is created; the running and created containers
+are updated before the memory of a new node goes online, so no container
+sees the node. After a restart the plugin updates the running containers
+when NRI has synchronized and the lease broker has lent the memory of
+Ready `numa` leases again. A node stays kept away when its last claim is
+released, until the plugin restarts.
 
-`containerMemory.default` of the [configuration file](#configuration-file)
-selects this:
+`defaults.container.fencing` of the [configuration file](#configuration-file)
+selects this, for every container of the node; claims and DeviceClasses
+cannot set it:
 
 | value | |
 |:------|:-|
-| `allowed-mems` | (default, also when `containerMemory` or `default` is missing or empty) a container that has not claimed memory on a CXL node of the driver does not have that node in its `cpuset.mems` (`Mems_allowed`). It cannot allocate there even with `mbind` or `set_mempolicy`, and a container out of other memory is OOM-killed rather than spilling to CXL memory. |
-| `mempolicy` | through the memory policy of the container's threads; not implemented: the configuration is refused with `containerMemory.default: mempolicy is not implemented yet` |
+| `allowed-mems` | (default, also when `defaults`, `container` or `fencing` is missing) a container that has not claimed memory on a CXL node of the driver does not have that node in its `cpuset.mems` (`Mems_allowed`). It cannot allocate there even with `mbind` or `set_mempolicy`, and a container out of other memory is OOM-killed rather than spilling to CXL memory. |
+| `mempolicy` | through the memory policy of the container's threads; not implemented: the configuration is refused with `defaults.container.fencing: mempolicy is not implemented yet` |
 | `none` | containers are left as they are: one without its own `cpuset.mems` inherits every node with memory, CXL nodes too |
 
-Any other value is refused with `containerMemory.default: invalid value
-"X" (allowed-mems, mempolicy or none)`, and the plugin does not start.
-Steering and leases work with every value. At start the plugin logs
-`containerMemory: allowed-mems: containers get the CXL nodes of the
-driver only by claims and leases` (or `containerMemory: none: containers
-are not kept off the CXL nodes of the driver`), and `NRI fence: fencing
-CXL node N (fenced nodes ...)` when it starts keeping a node away.
+Any other value is refused with `defaults.container.fencing: invalid
+value "X" (allowed-mems, mempolicy or none)`, and the plugin does not
+start. Steering and leases work with every value. At start the plugin
+logs the node defaults:
+
+```
+defaults.container.fencing: allowed-mems: containers get the CXL nodes of the driver only by claims and leases
+defaults.container.fencing: none: containers are not kept off the CXL nodes of the driver
+defaults.container.steering.policy: none: containers are steered only when their claims opt in
+defaults.container.steering.policy: auto: containers with numa claims are steered unless their claims say none
+```
+
+(the last one with the policy of the node default), and
+`NRI fence: fencing CXL node N (fenced nodes ...)` when it starts keeping
+a node away.
 
 While no node is kept away (no CXL memory onlined by the plugin since
 its start, and none of its prepared claims), no container is changed.
@@ -674,13 +988,12 @@ Not covered:
   `cpuset.mems`. The pause process allocates nothing after its start.
 - Processes outside containers (kubelet, the container runtime, systemd
   services) keep every node.
-- A container that is steered and also has a pool claim in mode `numa`
-  does not get the pool node: the steering owns its `cpuset.mems`.
 
 An NRI resource policy that sets `cpuset.mems` of containers
-(nri-resource-policy balloons or topology-aware) needs `containerMemory`
-`none`: NRI refuses a container whose `cpuset.mems` two plugins set, and
-the container is not created.
+(nri-resource-policy balloons or topology-aware) needs
+`defaults.container.fencing` `none` and no steering: NRI refuses a
+container whose `cpuset.mems` two plugins set, and the container is not
+created.
 
 ## Environment variables
 
@@ -718,17 +1031,19 @@ The variables and device nodes come from CDI devices, one per allocation
 result of a claim: `nri.io/cxl=claim-<uid>-<n>` (spec file `cxl-claims`)
 and `nri.io/cxl-pool=claim-<uid>-<n>` (spec file `cxl-pool`), n being the
 index of the result in the claim's allocation (so the n of one driver may
-have gaps). Each has the claim marker and the variables and device node
-(or, in mode `fs`, the bind mount) of its own result only. kubelet gives a container the CDI devices of the
-requests it references (`resources.claims[].request`), all of them
-without a request: a container that references only the read-only request
-of a claim gets only that request's device node and variables.
+have gaps). Each has the marker, the variables and the device node (or,
+in mode `fs`, the bind mount) of its own result only. kubelet gives a
+container the CDI devices of the requests it references
+(`resources.claims[].request`), all of them without a request: a
+container that references only the read-only request of a claim gets only
+that request's device node and variables, and only that result's memory
+and settings count for it ([Container settings](#container-settings)).
 
 Other variables:
 
 | variable | |
 |:---------|:-|
-| `CXL_CLAIM_<uid>=1` | the claim marker (the claim uid with `_` for `-`), in every CDI device of both drivers, internal: the NRI plugin finds the claims of a container by it; pool claims have no steering information and are not steered |
+| `CXL_CLAIM_<uid>_<n>=1` | the marker of allocation result n of a claim (the claim uid with `_` for `-`), in the CDI device of the result, both drivers; internal: the NRI plugin finds the results that a container uses by it |
 | `CXL_LEASE_SOCKET=/run/cxl/cxl.sock` | containers of claims on `cxl-lease` |
 | `CXL_LEASE=<id>` | the output of `cxl-request env` and the commands of `cxl-request ... --exec` |
 
@@ -785,7 +1100,8 @@ with the local memdev `0xc100e2e1`, the shared local device `0xc100e2e2`
 (listed in `sharedDevices`), the exclusive pool device `0xc1ee0001` and
 the shared pool device `0xc1ae0001`.
 
-1. 128Mi of local CXL memory as RAM
+1. 128Mi of local CXL memory as RAM; the container is not steered, it has
+   the node in its `cpuset.mems`
    ([local-numa.yaml](blob:/deployment/samples/dra-driver-cxl/local-numa.yaml)):
 
    ```yaml
@@ -798,7 +1114,7 @@ the shared pool device `0xc1ae0001`.
    CXL_C100E2E1_SERIAL=0xc100e2e1
    CXL_C100E2E1_SHARED=0
    CXL_C100E2E1_SIZE=134217728
-   CXL_CLAIM_<uid>=1
+   CXL_CLAIM_<uid>_0=1
    ```
 
 2. A 64Mi read-only dax slice of a local memdev; with 128 MiB memory
@@ -808,7 +1124,7 @@ the shared pool device `0xc1ae0001`.
    ```yaml
    requests: [{name: mem, exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 64Mi}}}}]
    config:
-   - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: DeviceConfig, mode: dax, readOnly: true}}
+   - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax, readOnly: true}}}
    ```
 
    ```
@@ -818,7 +1134,7 @@ the shared pool device `0xc1ae0001`.
    CXL_C100E2E1_SERIAL=0xc100e2e1
    CXL_C100E2E1_SHARED=0
    CXL_C100E2E1_SIZE=134217728
-   CXL_CLAIM_<uid>=1
+   CXL_CLAIM_<uid>_0=1
    ```
 
    One ResourceClaim (not a template) that several pods reference gives
@@ -831,7 +1147,8 @@ the shared pool device `0xc1ae0001`.
    selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100e2e1"'}}]
    ```
 
-4. 512Mi of pool memory as RAM: a whole exclusive device of at least 512Mi
+4. 512Mi of pool memory as RAM: a whole exclusive device of at least
+   512Mi; not steered, like claim 1
    ([pool-numa.yaml](blob:/deployment/samples/dra-driver-cxl/pool-numa.yaml)):
 
    ```yaml
@@ -844,7 +1161,7 @@ the shared pool device `0xc1ae0001`.
    CXL_C1EE0001_SERIAL=0xc1ee0001
    CXL_C1EE0001_SHARED=0
    CXL_C1EE0001_SIZE=536870912
-   CXL_CLAIM_<uid>=1
+   CXL_CLAIM_<uid>_0=1
    ```
 
 5. An exclusive pool device as dax: claim 4 plus
@@ -852,7 +1169,7 @@ the shared pool device `0xc1ae0001`.
 
    ```yaml
    config:
-   - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: dax}}
+   - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax}}}
    ```
 
    ```
@@ -878,7 +1195,7 @@ the shared pool device `0xc1ae0001`.
    CXL_C1AE0001_SERIAL=0xc1ae0001
    CXL_C1AE0001_SHARED=1
    CXL_C1AE0001_SIZE=268435456
-   CXL_CLAIM_<uid>=1
+   CXL_CLAIM_<uid>_0=1
    ```
 
 7. One share of the same device: claim 6 plus, in `exactly`,
@@ -891,7 +1208,7 @@ the shared pool device `0xc1ae0001`.
 
    ```yaml
    config:
-   - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, readOnly: true}}
+   - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {readOnly: true}}}
    ```
 
    ```
@@ -913,11 +1230,13 @@ the shared pool device `0xc1ae0001`.
      - {name: local, deviceClassName: cxl-local, capacity: {requests: {memory: 256Mi}}}
      - {name: pool,  deviceClassName: cxl-pool,  capacity: {requests: {memory: 256Mi}}}
    config:
-   - opaque: {driver: cxl.nri.io,      parameters: {apiVersion: cxl.nri.io/v1alpha1,      kind: DeviceConfig, mode: dax}}
-   - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: dax}}
+   - opaque: {driver: cxl.nri.io,      parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax}}}
+   - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax}}}
    ```
 
-10. Steering to a pre-created CXL node after DRAM
+   The two entries differ in `driver` only.
+
+10. Steering, opted in: DRAM first, then a pre-created CXL node
     ([region-dram-policy.yaml](blob:/deployment/samples/dra-driver-cxl/region-dram-policy.yaml)):
 
     ```yaml
@@ -925,11 +1244,12 @@ the shared pool device `0xc1ae0001`.
     - {name: dram, exactly: {deviceClassName: cxl-dram,   capacity: {requests: {memory: 64Mi}}}}
     - {name: cxl,  exactly: {deviceClassName: cxl-region, capacity: {requests: {memory: 64Mi}}}}
     config:
-    - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryPolicyConfig, memoryUseOrder: first-dram}}
+    - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, container: {steering: {policy: first-dram}}}}
     ```
 
     ```
-    CXL_CLAIM_<uid>=1
+    CXL_CLAIM_<uid>_0=1
+    CXL_CLAIM_<uid>_1=1
     CXL_DRAM_MODE=numa
     CXL_DRAM_NODES=0-1
     CXL_DRAM_SIZE=67108864
@@ -961,7 +1281,7 @@ the shared pool device `0xc1ae0001`.
     ```yaml
     requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent}}]
     config:
-    - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: block}}
+    - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: block}}}
     ```
 
     ```
@@ -971,7 +1291,7 @@ the shared pool device `0xc1ae0001`.
     CXL_C1AE0001_SERIAL=0xc1ae0001
     CXL_C1AE0001_SHARED=1
     CXL_C1AE0001_SIZE=534773760
-    CXL_CLAIM_<uid>=1
+    CXL_CLAIM_<uid>_0=1
     ```
 
     A reader, after the writer is done, with one share in mode `fs`:
@@ -979,7 +1299,7 @@ the shared pool device `0xc1ae0001`.
     ```yaml
     requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent, capacity: {requests: {shares: "1"}}}}]
     config:
-    - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: fs, readOnly: true, path: /models}}
+    - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: fs, readOnly: true, path: /models}}}
     ```
 
     ```
@@ -1007,7 +1327,7 @@ the shared pool device `0xc1ae0001`.
     CXL_C100E2E2_SERIAL=0xc100e2e2
     CXL_C100E2E2_SHARED=1
     CXL_C100E2E2_SIZE=1073741824
-    CXL_CLAIM_<uid>=1
+    CXL_CLAIM_<uid>_0=1
     ```
 
 14. One share of the same device: claim 13 plus, in `exactly`,
@@ -1020,7 +1340,7 @@ the shared pool device `0xc1ae0001`.
 
     ```yaml
     config:
-    - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: DeviceConfig, readOnly: true}}
+    - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {readOnly: true}}}
     ```
 
     ```
@@ -1080,8 +1400,10 @@ memdevSettings:
   usableSize: 128Gi
 verifyAddressing: true
 udevStableDuration: 200ms
-containerMemory:
-  default: allowed-mems    # allowed-mems | mempolicy | none
+defaults:
+  container:
+    steering: {policy: none}    # none (default) | auto | first-dram | ...
+    fencing: allowed-mems       # allowed-mems (default) | mempolicy | none
 ```
 
 | key | type | default | |
@@ -1098,19 +1420,38 @@ containerMemory:
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
 | `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0` or serial in decimal or `0x` hex) and `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory)) |
 | `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)) |
-| `containerMemory.default` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
+| `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
+| `defaults.container.fencing` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
 | `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo` |
 
-[local.md](local.md#what-the-plugin-publishes) describes `manageMemdevs`.
-The configuration is read at start: a change of `sharedDevices`, or of
-any other key, takes effect when the plugin restarts.
+`defaults` has the `container` section of a
+[MemoryConfig](#memoryconfig-fields) only: the node defaults of the
+settings of containers, which their results override field by field
+([Container settings](#container-settings)). It is decoded strictly and
+case-sensitively, and an error stops the plugin:
+
+- `defaults: json: unknown field "F"` (`device`, `pool`,
+  `container.Fencing`, ...)
+- `defaults.container.fencing: invalid value "X" (allowed-mems, mempolicy or none)`,
+  `defaults.container.fencing: mempolicy is not implemented yet`
+- the texts of the `container` section
+  ([Configuration errors](#configuration-errors)) with `defaults.` instead
+  of `MemoryConfig: `, as for an effective steering:
+  `defaults.container.steering.policy: invalid policy "X" (...)`,
+  `defaults.container.steering.maxStep needs a policy other than none`,
+  `defaults.container.steering.policy waypoints needs waypoints`
+
+[local.md](local.md#what-the-plugin-publishes) describes
+`manageMemdevs`. The configuration is read at start: a change of
+`sharedDevices`, or of any other key, takes effect when the plugin
+restarts.
 
 ## Files on the node
 
 | file | |
 |:-----|:-|
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices, memory policy and lend of every prepared claim of `cxl.nri.io` |
+| `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, and its lend |
 | `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, and the claims of shared local devices |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |

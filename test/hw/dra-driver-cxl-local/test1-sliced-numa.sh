@@ -1,33 +1,37 @@
 #!/bin/bash
 # Test 1: a sliced local memdev as extra NUMA memory of several containers.
 #
-# Two containers claim slices of the local CXL memdev in mode numa (the
-# default of DeviceClass cxl-local), a third container has no claim:
+# Three containers claim slices of the local CXL memdev in mode numa (the
+# default of DeviceClass cxl-local), two of them opt in to steering:
 #
-#   numa-a  claim numa-a, 4Gi
-#   numa-b  claim numa-b, 2Gi
+#   numa-a  claim numa-a, 4Gi, container.steering.policy auto
+#   numa-b  claim numa-b, 2Gi, container.steering.policy auto
+#   numa-u  claim numa-u, 2Gi, not steered (the default policy none)
 #   plain   no claim
 #   plain2  no claim, created after a restart of the driver
 #
-# Checks that both slices are onlined on the same new NUMA node N, that N
-# has the size of the slices, that N is in Mems_allowed of numa-a and
-# numa-b but not of plain, that numa-a and numa-b are the only containers
-# of the node with N in their effective mems (plain and the kube-system
+# Checks that the slices are onlined on the same new NUMA node N, that N
+# has the size of the slices, that N is in Mems_allowed of numa-a, numa-b
+# and numa-u but not of plain, that they are the only containers of the
+# node with N in their effective mems (plain and the kube-system
 # containers were created before N existed), that the memory of numa-a
 # and numa-b lands on N (default policy set by the driver's steering, and
-# an explicit MPOL_PREFERRED), that plain cannot use N, that a container's
-# memory on N stays within its claim, that N shrinks when numa-b is
-# released, that after a restart of the driver while numa-a holds N only
-# numa-a has N and plain2 gets a cpuset.mems without N at its creation,
-# and that N goes away when the claims are released, leaving no region on
-# the memdev.
+# an explicit MPOL_PREFERRED), that numa-u is not steered (memory.high
+# max, its own nodes and N in cpuset.mems, default allocations on DRAM,
+# MPOL_PREFERRED N lands on N), that plain cannot use N, that a steered
+# container's memory on N stays within its claim, that N shrinks when
+# numa-u and numa-b are released, that after a restart of the driver
+# while numa-a holds N only numa-a has N and plain2 gets a cpuset.mems
+# without N at its creation, and that N goes away when the claims are
+# released, leaving no region on the memdev.
 #
 # The workloads run as descendants of the main process of the containers
 # (prun), which inherit the memory policy that the driver sets when it
 # steers a container; processes of kubectl exec do not, which is shown
 # separately.
 #
-# Needs the driver deployed with "deploy.sh sliced".
+# Needs the driver deployed with "deploy.sh sliced". CONTAINER_FENCING
+# (deploy.sh) none: the fencing checks fail, and numa-u is managed "none".
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TEST_NAME=test1-sliced-numa
 GiB=$((1 << 30))
@@ -37,18 +41,23 @@ reset_ns
 check "the memdev is published as a sliced local device" \
     test "$(jget "$(slice_json)" 'j["attributes"]["shared"]["bool"]')" == False
 
-log "creating claims numa-a (4Gi), numa-b (2Gi) and pods numa-a, numa-b, plain"
+log "creating claims numa-a (4Gi, steered), numa-b (2Gi, steered), numa-u (2Gi) and pods numa-a, numa-b, numa-u, plain"
 t0=$EPOCHSECONDS
-{ claim_yaml numa-a cxl-local memory=4Gi; echo ---; pod_yaml numa-a claim=numa-a; } | kapply
+{ claim_yaml numa-a cxl-local memory=4Gi steering=auto; echo ---; pod_yaml numa-a claim=numa-a; } | kapply
 wait_pod numa-a Running 300
 log "numa-a Running after $((EPOCHSECONDS - t0)) s"
 t0=$EPOCHSECONDS
-{ claim_yaml numa-b cxl-local memory=2Gi; echo ---; pod_yaml numa-b claim=numa-b; echo ---; pod_yaml plain; } | kapply
+{
+    claim_yaml numa-b cxl-local memory=2Gi steering=auto; echo ---; pod_yaml numa-b claim=numa-b; echo ---
+    claim_yaml numa-u cxl-local memory=2Gi; echo ---; pod_yaml numa-u claim=numa-u; echo ---
+    pod_yaml plain
+} | kapply
 wait_pod numa-b Running 300
+wait_pod numa-u Running 300
 wait_pod plain Running 300
-log "numa-b and plain Running after $((EPOCHSECONDS - t0)) s"
+log "numa-b, numa-u and plain Running after $((EPOCHSECONDS - t0)) s"
 
-for p in numa-a numa-b; do
+for p in numa-a numa-b numa-u; do
     echo "  env of $p:"
     pod_env "$p" | sed 's/^/    /'
 done
@@ -56,26 +65,30 @@ check "numa-a: CXL_<KEY>_MODE=numa" test "$(pod_env_value numa-a MODE)" == numa
 check "numa-b: CXL_<KEY>_MODE=numa" test "$(pod_env_value numa-b MODE)" == numa
 check "numa-a: CXL_<KEY>_SIZE=4Gi" test "$(pod_env_value numa-a SIZE)" == $((4 * GiB))
 check "numa-b: CXL_<KEY>_SIZE=2Gi" test "$(pod_env_value numa-b SIZE)" == $((2 * GiB))
+check "numa-u: CXL_<KEY>_SIZE=2Gi" test "$(pod_env_value numa-u SIZE)" == $((2 * GiB))
 N=$(pod_env_value numa-a NODE)
 NB=$(pod_env_value numa-b NODE)
-check "numa-a and numa-b are on the same node ($N, $NB)" test -n "$N" -a "$N" == "$NB"
+NU=$(pod_env_value numa-u NODE)
+check "numa-a, numa-b and numa-u are on the same node ($N, $NB, $NU)" test -n "$N" -a "$N" == "$NB" -a "$N" == "$NU"
 log "CXL node N=$N"
 t "numactl -H | grep -E '^available|^node $N '" | sed 's/^/    /'
 mib=$(node_mib "$N")
-check "node $N has the memory of both slices, 6144 MiB (MemTotal $mib MiB)" \
-    test "$mib" -le 6144 -a "$mib" -ge $((6144 - 256))
+check "node $N has the memory of the three slices, 8192 MiB (MemTotal $mib MiB)" \
+    test "$mib" -le 8192 -a "$mib" -ge $((8192 - 256))
 
 ma=$(mems_allowed numa-a)
 mb=$(mems_allowed numa-b)
+mu=$(mems_allowed numa-u)
 mp=$(mems_allowed plain)
-log "Mems_allowed_list: numa-a=$ma numa-b=$mb plain=$mp"
+log "Mems_allowed_list: numa-a=$ma numa-b=$mb numa-u=$mu plain=$mp"
 check "node $N is in Mems_allowed of numa-a ($ma)" in_list "$N" "$ma"
 check "node $N is in Mems_allowed of numa-b ($mb)" in_list "$N" "$mb"
+check "node $N is in Mems_allowed of numa-u ($mu)" in_list "$N" "$mu"
 check "node $N is not in Mems_allowed of plain ($mp)" eval "! in_list $N $mp"
-for p in numa-a numa-b plain; do
+for p in numa-a numa-b numa-u plain; do
     echo "  cpuset.mems.effective of $p: $(pexec "$p" cat /sys/fs/cgroup/cpuset.mems.effective)"
 done
-check_fenced "$N" numa-a numa-b
+check_fenced "$N" numa-a numa-b numa-u
 
 pages_on() { # Usage: pages_on OUTPUT NODE -- 4K pages on NODE in the last "pages" line
     grep 'pages ' <<< "$1" | tail -n 1 | tr ' ' '\n' | sed -n "s/^N$2=//p" | grep . || echo 0
@@ -98,6 +111,46 @@ out=$(prun numa-b "python3 /tools/numa-touch.py 1024 $N" 2>&1)
 echo "$out" | sed 's/^/    /'
 p=$(pages_on "$out" "$N")
 check "numa-b: >= 90% of 1024 MiB preferring node $N on it ($p pages)" test "$p" -ge $((1024 * 256 * 9 / 10))
+
+log "numa-u: not steered"
+hu=$(pexec numa-u cat /sys/fs/cgroup/memory.high)
+echo "  numa-u: memory.high $hu, cpuset.mems $(pexec numa-u cat /sys/fs/cgroup/cpuset.mems), Mems_allowed $mu"
+check "numa-u: memory.high is max ($hu)" test "$hu" == max
+all_in() { # Usage: all_in LIST1 LIST2 -- is every node of LIST1 in LIST2
+    local n
+    for n in $(python3 -c 'import sys
+for p in sys.argv[1].split(","):
+    lo, _, hi = p.partition("-")
+    print(*range(int(lo), int(hi or lo) + 1))' "$1"); do
+        in_list "$n" "$2" || return 1
+    done
+}
+check "numa-u: the nodes of plain ($mp) are in its Mems_allowed ($mu)" all_in "$mp" "$mu"
+out=$(prun numa-u "python3 /tools/alloc-touch.py 1024" 2>&1)
+echo "$out" | sed 's/^/    /'
+p=$(pages_on "$out" "$N")
+check "numa-u: <= 1% of 1024 MiB of default allocations on node $N ($p pages)" test "$p" -le $((1024 * 256 / 100))
+check "numa-u: the memory holds what was written" grep -q "verify ok" <<< "$out"
+out=$(prun numa-u "python3 /tools/numa-touch.py 1024 $N" 2>&1)
+echo "$out" | sed 's/^/    /'
+p=$(pages_on "$out" "$N")
+check "numa-u: >= 90% of 1024 MiB preferring node $N on it ($p pages)" test "$p" -ge $((1024 * 256 * 9 / 10))
+case "${CONTAINER_FENCING:-allowed-mems}" in
+    none) want_u=none ;;
+    *) want_u=fenced ;;
+esac
+managed() { # Usage: managed POD MANAGEMENT -- the driver logged the management of POD
+    driver_log | grep -q "NRI CreateContainer: ctr=$NS/$1/main: memory $2 "
+}
+check "driver: numa-u is managed $want_u" managed numa-u "$want_u"
+check "driver: numa-a is managed steered" managed numa-a steered
+driver_log | grep -E "NRI CreateContainer: ctr=$NS/numa-[abu]/main: (memory|cpuset)" | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300
+
+log "releasing numa-u: node $N shrinks to the 6Gi of numa-a and numa-b"
+kn delete pod numa-u --wait=true --timeout=300s >/dev/null
+kn delete resourceclaim numa-u --wait=true --timeout=300s >/dev/null
+shrunk_u() { [ "$(node_mib "$N")" -le 6144 ]; }
+check "node $N shrinks to <= 6144 MiB in 120 s" wait_for 120 "node $N shrinks" shrunk_u
 
 log "plain: numa-touch.py preferring node $N must fail (not in Mems_allowed)"
 out=$(prun plain "python3 /tools/numa-touch.py 64 $N" 2>&1)
@@ -185,8 +238,8 @@ check "node $N has no memory in 120 s" wait_for 120 "node $N empty" gone
 check "no CXL region is left on the memdev" wait_for 60 "no regions" no_regions
 log "released in $((EPOCHSECONDS - t0)) s"
 
-log "driver log of the steering of numa-a and numa-b"
-{ echo "$log_before"; driver_log 15m; } | grep -E "numa-[ab]/main: " | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 40
+log "driver log of the steering of numa-a and numa-b (numa-u is not steered)"
+{ echo "$log_before"; driver_log 15m; } | grep -E "numa-[abu]/main: " | sed 's/^[^]]*] //; s/^/    /' | cut -c1-300 | tail -n 40
 
 log "driver log of the slices (local:)"
 { echo "$log_before"; driver_log 15m; } | grep -E "local: " | sed 's/^[^]]*] //; s/^/    /' | tail -n 30

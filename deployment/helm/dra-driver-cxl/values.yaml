@@ -14,8 +14,9 @@ resources:
 
 nri:
   plugin:
-    # The driver steers containers to their claimed memory and lends
-    # memory to running containers through NRI.
+    # Through NRI the driver keeps containers off the CXL memory they did
+    # not claim, steers containers that opt in, and lends memory to
+    # running containers.
     index: 30
   runtime:
     patchConfig: false
@@ -48,11 +49,34 @@ config: {}
 #   manageMemdevs: true
 #   # local devices shared by the claims of class cxl-local-shared
 #   sharedDevices: ["0xc100e2e1"]
-#   # keep containers off the CXL nodes of the driver that they did not
-#   # claim: allowed-mems (default) | mempolicy | none; none next to an
-#   # NRI resource policy that sets cpuset.mems (balloons, topology-aware)
-#   containerMemory:
-#     default: allowed-mems
+#   # node defaults of the settings of containers, which the
+#   # MemoryConfigs of their claims override
+#   defaults:
+#     container:
+#       # none (default): not steered; auto steers every container with
+#       # numa memory
+#       steering: {policy: none}
+#       # keep containers off the CXL nodes of the driver that they did not
+#       # claim: allowed-mems (default) | mempolicy | none; none next to an
+#       # NRI resource policy that sets cpuset.mems (balloons,
+#       # topology-aware)
+#       fencing: allowed-mems
+
+# MemoryConfig presets of the DeviceClasses of the chart: class name ->
+# the body of a MemoryConfig (device, container; pool for the cxl-pool*
+# classes). The chart renders it into the spec.config of the class as an
+# opaque entry of the class's driver, apiVersion cxl.nri.io/v1alpha1, kind
+# MemoryConfig. Claims of the class change it field by field. See
+# docs/memory/cxl/usage.md.
+deviceClassConfig: {}
+#
+# Example: steering on for the containers with local CXL memory, unless
+# their claim says container: {steering: {policy: none}}
+#
+# deviceClassConfig:
+#   cxl-local:
+#     container:
+#       steering: {policy: auto}
 
 # Log verbosity (-v).
 logLevel: 4

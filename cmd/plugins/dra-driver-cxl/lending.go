@@ -15,14 +15,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
-	"slices"
-	"strings"
 	"sync"
 
 	resourceapi "k8s.io/api/resource/v1"
@@ -31,6 +26,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -242,125 +238,24 @@ func (c *companionLender) name() string {
 	return c.driver
 }
 
-// deviceConfig is the opaque configuration of kind DeviceConfig of how a
-// device is prepared (apiVersion <driver>/v1alpha1).
-type deviceConfig struct {
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	// Mode is "numa", "dax", "block" or "fs" (pool devices of persistent
-	// memory); "" is numa for exclusive devices and dax for shared
-	// devices of volatile memory.
-	Mode string `json:"mode,omitempty"`
-	// ReadOnly makes the dax or block device node of the container
-	// read-only; mode fs needs it.
-	ReadOnly bool `json:"readOnly,omitempty"`
-	// Access is "direct" or "cached" of mode fs; "" is direct.
-	Access string `json:"access,omitempty"`
-	// Path is the directory of the filesystem of mode fs in the
-	// container; "" is /run/cxl-fs/<KEY>.
-	Path string `json:"path,omitempty"`
-}
-
-// parseConfig decodes into out the opaque config of kind for driver that
-// applies to an allocation result's request, and reports whether there is
-// one: class configs first, then claim configs; a later one replaces an
-// earlier one. With a request, a config applies if it lists the request
-// (a request "r" also covers its subrequests "r/s") or lists none; with
-// an empty request every config of the kind applies. Configs are decoded
-// strictly and need apiVersion <driver>/v1alpha1.
-//   - out: a pointer to the struct of the kind, zeroed before each config
-func parseConfig(claim *resourceapi.ResourceClaim, driver, kind, request string, out any) (bool, error) {
-	parent, _, _ := strings.Cut(request, "/")
-	found := false
-	for _, source := range []resourceapi.AllocationConfigSource{resourceapi.AllocationConfigSourceClass, resourceapi.AllocationConfigSourceClaim} {
-		for _, c := range claim.Status.Allocation.Devices.Config {
-			if c.Source != source || c.Opaque == nil || c.Opaque.Driver != driver {
-				continue
-			}
-			if request != "" && len(c.Requests) > 0 && !slices.Contains(c.Requests, request) && !slices.Contains(c.Requests, parent) {
-				continue
-			}
-			var head struct {
-				APIVersion string `json:"apiVersion"`
-				Kind       string `json:"kind"`
-			}
-			if err := json.Unmarshal(c.Opaque.Parameters.Raw, &head); err != nil {
-				return false, fmt.Errorf("invalid opaque %s config for %s: %w", source, driver, err)
-			}
-			if head.Kind != kind {
-				continue
-			}
-			if head.APIVersion != driver+"/v1alpha1" {
-				return false, fmt.Errorf("%s: apiVersion %q, expected %q", kind, head.APIVersion, driver+"/v1alpha1")
-			}
-			reflect.ValueOf(out).Elem().SetZero()
-			dec := json.NewDecoder(bytes.NewReader(c.Opaque.Parameters.Raw))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(out); err != nil {
-				return false, fmt.Errorf("%s: invalid %s config: %w", kind, source, err)
-			}
-			found = true
-		}
-	}
-	return found, nil
-}
-
-// checkConfigKinds returns an error if an opaque config of driver in the
-// allocation of a claim has a kind that is not one of kinds.
-func checkConfigKinds(claim *resourceapi.ResourceClaim, driver string, kinds ...string) error {
-	for _, c := range claim.Status.Allocation.Devices.Config {
-		if c.Opaque == nil || c.Opaque.Driver != driver {
+// resolveResults returns the MemoryConfig of each allocation result of a
+// claim for driver by result index; of selects the results of the driver.
+// Returns an error with the request of the first result whose
+// configuration is invalid.
+func resolveResults(claim *resourceapi.ResourceClaim, driver string, of func(r *resourceapi.DeviceRequestAllocationResult) bool) (map[int]*config.Resolved, error) {
+	out := map[int]*config.Resolved{}
+	for n := range claim.Status.Allocation.Devices.Results {
+		r := &claim.Status.Allocation.Devices.Results[n]
+		if !of(r) {
 			continue
 		}
-		var head struct {
-			Kind string `json:"kind"`
+		res, err := config.Resolve(claim, driver, r.Request)
+		if err != nil {
+			return nil, fmt.Errorf("request %s: %w", r.Request, err)
 		}
-		if err := json.Unmarshal(c.Opaque.Parameters.Raw, &head); err != nil {
-			return fmt.Errorf("invalid opaque %s config for %s: %w", c.Source, driver, err)
-		}
-		if !slices.Contains(kinds, head.Kind) {
-			return fmt.Errorf("unknown kind %q (%s)", head.Kind, strings.Join(kinds, " or "))
-		}
+		out[n] = res
 	}
-	return nil
-}
-
-// numaOnly returns an error if the config asks a device that is used as
-// numa only (what: region or dram) for another mode or for readOnly.
-func (cfg *deviceConfig) numaOnly(what string) error {
-	mode, err := cfg.modeFor(false)
-	if err == nil && mode != api.ModeNUMA {
-		err = fmt.Errorf("%s: mode %s: a %s is used as %s only", device.DeviceConfigKind, mode, what, api.ModeNUMA)
-	}
-	return err
-}
-
-// modeFor returns the mode of a device of volatile memory of the local
-// driver with the config: shared devices are dax only (two kernels must
-// never online the same memory), read-only is a property of a dax device
-// node, and access and path are of mode fs, which the local driver does
-// not have.
-func (cfg *deviceConfig) modeFor(shared bool) (string, error) {
-	mode := cfg.Mode
-	switch {
-	case mode == "" && shared:
-		mode = api.ModeDax
-	case mode == "":
-		mode = api.ModeNUMA
-	case mode != api.ModeNUMA && mode != api.ModeDax:
-		return "", fmt.Errorf("%s: invalid mode %q (%s or %s)", device.DeviceConfigKind, cfg.Mode, api.ModeNUMA, api.ModeDax)
-	}
-	switch {
-	case cfg.ReadOnly && mode != api.ModeDax:
-		return "", fmt.Errorf("%s: readOnly needs mode %s", device.DeviceConfigKind, api.ModeDax)
-	case shared && mode != api.ModeDax:
-		return "", fmt.Errorf("%s: mode %s: a shared device is used as %s only", device.DeviceConfigKind, mode, api.ModeDax)
-	case cfg.Access != "":
-		return "", fmt.Errorf("%s: access needs mode %s", device.DeviceConfigKind, api.ModeFs)
-	case cfg.Path != "":
-		return "", fmt.Errorf("%s: path needs mode %s", device.DeviceConfigKind, api.ModeFs)
-	}
-	return mode, nil
+	return out, nil
 }
 
 // consumedShares returns the shares that an allocation result of the

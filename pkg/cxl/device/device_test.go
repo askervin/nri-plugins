@@ -26,10 +26,12 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestDeviceClassesMatchConstants checks that the DeviceClasses of the
-// helm chart (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
+// TestDeviceClassesMatchConstants checks that the DeviceClasses of the raw
+// helm chart file (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
 // are the eight classes of the Class* constants, each selecting the driver,
-// type and sharing that the constant stands for, and no config.
+// type and sharing that the constant stands for, and no config: the raw
+// file has none, configs come only into rendered classes with the Helm
+// value deviceClassConfig.
 func TestDeviceClassesMatchConstants(t *testing.T) {
 	data, err := os.ReadFile("../../../deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml")
 	if err != nil {

@@ -1,0 +1,151 @@
+plan-12 stream CTRL: the reference pool controller
+==================================================
+Written 2026-10-23 (stream CTRL). Branch 5jg-cxl, nothing committed.
+Paths: N = ~/github.com/containers/nri-plugins, P = N/scripts/testing/
+fake-cxl-pool. pkg/cxl/config used as is (no change, no Request).
+
+Changes per file
+----------------
+  P/pkg/controller/config.go (new)
+      PoolSettings {Slot string `json:"slot,omitempty"`; NumaNode *int
+      `json:"numaNode,omitempty"`}, String(); Controller.poolSettings:
+      config.CheckEntries(claim, driver), config.Resolve(claim, driver,
+      result.Request), config.PoolOpaque(res, ConfigKey, &s), numaNode >= 0.
+  P/pkg/controller/controller.go
+      DefaultConfigKey = "fake-cxl-pool"; Config.ConfigKey (default when
+      ""); cfgLogged (log-once map of configuration errors); start log
+      gains ", config key %s".
+  P/pkg/controller/reconciler.go
+      want.settings, want.cfgErr; step 1 resolves every result of the
+      pool; an invalid want is not desired (no attach, and an attachment
+      that only it wants is detached in step 5) unless its result is
+      Attached already; logConfigError (once per claim uid/request/device
+      and message, cleaned up like attLogged); attach sends Slot and
+      NumaNode only for a new attachment (not for the exclusive-flag
+      update of an existing one); writeStatus: InvalidConfig first;
+      one log when the Attached condition is written for an attachment in
+      another slot than the configured one.
+  P/pkg/controller/status.go
+      ReasonInvalidConfig = "InvalidConfig".
+  P/pkg/controller/controller_test.go
+      fake pool records AttachRequests (attachReqs) and uses req.Slot as
+      the bus of a new attachment; createClaimConfig (createClaimShares
+      with allocation config entries).
+  P/pkg/controller/config_test.go (new)
+      TestConfigSettingsPassed (6 cases), TestConfigInvalid (8 cases),
+      TestConfigInvalidNotHalfAttached, TestConfigInvalidSharedWithValid,
+      TestConfigInvalidAttachedKept, TestConfigExistingAttachmentKept.
+  P/cmd/fake-cxl-pool-controller/main.go
+      flag -config-key.
+  P/deploy/fake-cxl-pool-controller.yaml
+      args: -config-key fake-cxl-pool (explicit, the default).
+  P/README.md
+      controller bullet, usage line with -config-key, start log text, new
+      section "Where a device is attached" (example, field table, errors,
+      existing attachments kept, link to pool.md).
+  N/docs/memory/cxl/pool.md
+      "## Configuration of a pool controller" only (placeholder replaced):
+      where the configuration is, resolution (link usage.md#merge-order),
+      controller key and pool.opaque, sections not the controller's,
+      errors (InvalidConfig, no attachment left, stable, event), Go calls
+      (CheckEntries + Resolve + PoolOpaque), the reference controller's
+      fields and an example.
+
+Flag and fields
+---------------
+  -config-key string   key of the controller's settings in pool.opaque of
+                       MemoryConfig entries (default "fake-cxl-pool")
+  pool.opaque.<key>:   slot (string, exact CXL slot bus of the host),
+                       numaNode (integer >= 0, slot preference); strict
+                       (unknown fields, wrong types refused).
+  -> api.AttachRequest{Slot, NumaNode} (server chooseSlotLocked: Slot is
+     exact, refused if unknown (InvalidArgument -> AttachError) or occupied
+     (Conflict); NumaNode adds to the score of free slots).
+
+Exact texts
+-----------
+  Log (once per claim uid/request/device and message):
+    ERROR: claim %s/%s: request %s device %s: invalid configuration: %v%s
+    args: namespace, name, result.Request, result.Device, the error, and ""
+    or " (attached already, kept)". Example:
+    ERROR: claim default/c: request mem device pooled0: invalid configuration: MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "port"
+    (contract 11 `claim %s: %s: invalid configuration: %v` with claim =
+    ns/name and the second %s = "request R device D"; the "ERROR: "
+    prefix as the controller's other error logs.)
+  Condition on the result's status entry:
+    type cxl-pool.nri.io/AttachFailed (<driver>/AttachFailed), status True,
+    reason InvalidConfig, message = the error text (pkg/cxl/config's, or
+    the controller's own:
+    MemoryConfig: pool.opaque.<key>.numaNode: invalid NUMA node %d).
+  Event (E2E's request; it is the path of every attach failure, kept):
+    on the claim, type Warning, reason AttachFailed, message = the
+    condition message; emitted when the condition is written (once per
+    allocation; a new allocation gives a new one).
+  Status log (existing): status of claim NS/NAME device D node N:
+    cxl-pool.nri.io/AttachFailed=True reason InvalidConfig: <error>
+  Start log: driver %s, pool %s[ (from the server)], server %s, sync
+    interval %s, config key %s
+  Slot mismatch (when the Attached condition is written):
+    claim NS/NAME device D node N: attachment ID is in slot BUS, not in the configured slot SLOT: kept
+  Attach with settings (-v): attach DEV to HOST for claim ...: slot S, numa node N
+
+Decisions
+---------
+C1. CheckEntries before Resolve: an invalid entry of the driver for
+    another request of the claim also gives InvalidConfig (the node
+    driver refuses the whole claim for it in Prepare, so attaching would
+    only leave a device attached until deallocation).
+C2. Resolve validates the container section: an invalid steering value
+    is an invalid MemoryConfig for the controller too (InvalidConfig).
+    The device section is not read (Resolve does not check it).
+C3. numaNode < 0 is refused by the controller (the server would treat it
+    as no preference silently).
+C4. Existing attachments are never moved: the settings go into the attach
+    request only when no attachment of the device to the host exists. The
+    exclusive-flag update of an existing attachment is sent without them
+    (the server would answer Conflict for another slot). A mismatching
+    slot is logged once; the Attached message names the real slot.
+C5. Several claims on one attachment (shared device, same node): the
+    first claim in namespace/name order owns and places it (desired[k][0],
+    as for the owner already); the others share it whatever their
+    settings (C4 log for a different slot).
+C6. An invalid result whose status entry is Attached already (possible
+    only if another controller version or key attached it: the
+    allocation's config is immutable) keeps its attachment and status; the
+    error is logged with " (attached already, kept)". Never detaches a
+    device in use.
+C7. Not half attached: an invalid want is not desired, so an attachment
+    of its own (no Attached condition) is detached in the same reconcile
+    (TestConfigInvalidNotHalfAttached); a shared attachment of a valid
+    claim on the node stays (TestConfigInvalidSharedWithValid).
+C8. Stable: the error comes from the immutable allocation, the condition
+    write is skipped when reason and message are unchanged, the log is
+    deduplicated; tests check no attach, no detach, no status write, no
+    event and one log line over further reconciles.
+
+Checks (from N unless noted) and output
+---------------------------------------
+  make -C P                                       server, client, controller built
+  make -C P test (go test -race P/...)            ok for all packages
+      (pkg/controller 42.7s)
+  go test -count=1 -run Config -v P/pkg/controller   PASS: 6 tests, 14 subtests
+  make -C P lint (go vet + gofmt check)           no findings
+  go vet ./scripts/testing/fake-cxl-pool/...      no output
+  gofmt -l scripts/testing/fake-cxl-pool          no output (symlink warnings only)
+  golangci-lint run ./scripts/testing/fake-cxl-pool/pkg/controller/...
+      ./scripts/testing/fake-cxl-pool/cmd/fake-cxl-pool-controller/...   0 issues.
+  LC_ALL=C grep -nP '[^\x00-\x7F]' on the changed files   no output
+
+Open points
+-----------
+O1. Rebuild and redeploy the controller binary/image for E2E-2 (the
+    running controllers in the VMs are the old ones; not touched here).
+O2. The pool.md "What the pool controller writes" paragraph (DOC's)
+    says the controller "detaches anything that was half attached" on
+    failure; for InvalidConfig that holds (C7), with the exception C6.
+
+Requests
+--------
+None.
+
+CTRL done

@@ -9,15 +9,15 @@
 # local memory and gives it back, while it keeps running, next to pods
 # that have static claims of the same device:
 # - "cxl-request request --source local --size 128Mi": the companion
-#   claim asks for 128Mi of DeviceClass cxl-local, with a DeviceConfig of
-#   mode numa. Preparing it, the node plugin carves a slice of the local
-#   device, onlines its memory blocks on the NUMA node of the device, and
-#   lends the node to the container (cpuset.mems, through NRI). Nothing is
-#   attached and there is no binding condition to wait for: a local lease
+#   claim asks for 128Mi of DeviceClass cxl-local, with a MemoryConfig of
+#   device.mode numa. Preparing it, the node plugin carves a slice of the
+#   local device, onlines its memory blocks on the NUMA node of the device,
+#   and lends the node to the container (cpuset.mems, through NRI). Nothing
+#   is attached and there is no binding condition to wait for: a local lease
 #   is Ready sooner than a pool lease. Containers that neither claim the
 #   node nor borrow it never have it, whatever their cpuset.mems.
 # - "cxl-request request --source local --size 64Mi --mode dax --exec
-#   CMD": the DeviceConfig of the claim says mode dax, the lease gets a
+#   CMD": the MemoryConfig of the claim says mode dax, the lease gets a
 #   devdax slice of the device of its own, passed to CMD as fd 3
 #   (CXL_<KEY>_FD=3); "cxl-request env --lease ID" names the device.
 # - Without --source: local memory if a local device has room, else
@@ -27,7 +27,9 @@
 # NUMA and dax slices, of leases and of static claims, share the device.
 # The NUMA node grows by the blocks of every NUMA slice and shrinks by
 # them when it goes. Pods with static claims and leases share the node; a
-# container keeps it lent while any of its leases holds it.
+# container keeps it lent while any of its leases holds it. Steering is
+# opt-in: a container whose static NUMA claim does not opt in is not
+# steered, only fenced, and may borrow more of the node.
 #
 # What you will see: a pod with a static NUMA claim, then the borrower's
 # NUMA lease on the same node, the node growing by exactly its blocks,
@@ -35,7 +37,8 @@
 # NUMA slices; a second static pod and a second NUMA lease, and the leases
 # given back one by one: the node stays lent while the second lease holds
 # it, then the pages move back to DRAM, while the static pods keep the
-# node; the device back in its initial state; a lease falling back to the
+# node; the device back in its initial state; a container with a static
+# NUMA claim, not steered, taking a NUMA lease; a lease falling back to the
 # pool when the local device is full; and the pod deleted with leases
 # active, leaving nothing behind. At the end the trace summary of what
 # every component did, in order.
@@ -263,7 +266,8 @@ companion-check() {
     # REQUESTED bytes of DeviceClass CLASS, is allocated to the local
     # device on this node, consumes CONSUMED bytes of it, and tells the
     # node plugin (driver cxl.nri.io) how it prepares the device: one
-    # DeviceConfig of MODE, read-only with ro. The pool attaches nothing
+    # MemoryConfig with a device section only, of MODE, read-only with ro.
+    # The pool attaches nothing
     # for it. COMPANION_UID is the uid of the claim.
     local lease="$1" class="$2" size="$3" consumed="$4" mode="$5" ro=False name="cxl-lease-$1" pod_json claim_json uid
     [ "$6" != ro ] || ro=True
@@ -283,7 +287,7 @@ companion-check() {
     dra-assert "$claim_json" "[(r['driver'], r['device']) for r in results()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and allocated_node() == '$VM2_NAME' and consumed() == $consumed"
     dra-assert "$claim_json" "[r['name'] for r in j['status']['reservedFor']] == ['$name']"
     # The opaque config for the node plugin: how it prepares the device.
-    dra-assert "$claim_json" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), c['parameters'].get('mode'), bool(c['parameters'].get('readOnly'))) for c in configs()] == [('$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DRIVER/v1alpha1', 'DeviceConfig', '$mode', $ro)]"
+    dra-assert "$claim_json" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), sorted(set(c['parameters']) - {'apiVersion', 'kind'}), config_section(c, 'device').get('mode'), bool(config_section(c, 'device').get('readOnly'))) for c in configs()] == [('$DRA_LOCAL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', ['device'], '$mode', $ro)]"
     uid=$(dra-value "$claim_json" "j['metadata']['uid']")
     COMPANION_UID="$uid"
     if dra-pool-attachments "$VM2_NAME" | grep -qF "$uid"; then
@@ -704,6 +708,41 @@ node-size static-b-deleted 0
 numa-slice-gone static-b
 nothing-left released
 
+echo "### D2: a container with a static NUMA claim that is not steered takes a NUMA lease"
+# Steering is opt-in: the static claim of container main of pod mixed has
+# no container section, so the driver only fences the container, the node
+# of its claim in its cpuset.mems, and lends it more of the node as to any
+# container that is not steered. The container has the lease claim too.
+t0=$EPOCHREALTIME
+dra-apply "$VM2" <<< "$(dra-claim-yaml template mixed-static "$LOCAL_CLASS" "$(dra-mi "$STATIC_A")")
+---
+$(dra-pod-yaml mixed "$VM2_NAME" mem=template:mixed-static cxl=template:cxl-lease)"
+dra-pod-wait "$VM2" mixed Running 120
+dra-memory-wait "$VM2" mixed main fenced "none (default)"
+dra-mems-wait "$VM2" mixed main "$NUMA_NODE"
+node-size mixed-static "$STATIC_A"
+dra-exec "$VM2" mixed/main "$CXL_REQUEST" request --source local --size "$(dra-mi "$LEASE1")" --wait 120s ||
+    command-error "cxl-request request in mixed/main failed: a container with a static NUMA claim that is not steered must get a NUMA lease"
+REQ_JSON=$(dra-last-json "$COMMAND_OUTPUT") || error "cxl-request request in mixed/main printed no JSON response"
+dra-assert "$REQ_JSON" "j.get('state') == 'Ready' and j.get('mode') == 'numa' and j.get('source') == 'local' and int(j['node']) == $NUMA_NODE and int(j['size']) == $LEASE1"
+MIXED_LEASE=$(dra-value "$REQ_JSON" "j['lease']")
+new-lease "$MIXED_LEASE"
+node-size mixed-lease $(( STATIC_A + LEASE1 ))
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/mixed/main"
+# The lease given back: the node stays, it is the node of the static
+# claim; the container is still not steered.
+dra-exec "$VM2" mixed/main "$CXL_REQUEST" release --lease "$MIXED_LEASE" ||
+    command-error "cxl-request release --lease $MIXED_LEASE in mixed/main failed"
+node-size mixed-lease-released "$STATIC_A"
+dra-wait "$VM2" mixed-lease-gone "pods,resourceclaims -n $DRA_NS -l $DRA_LEASE_LABEL=$MIXED_LEASE" "items == []" 60
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/mixed/main"
+high=$(dra-container-read "$VM2" mixed main memory.high) || error "cannot read memory.high of mixed/main"
+[ "$high" == max ] || error "mixed/main: memory.high is '$high' after the lease, expected max: not steered"
+t0=$EPOCHREALTIME
+dra-delete-pod "$VM2" mixed
+node-size mixed-deleted 0
+nothing-left released-mixed
+
 echo "### E: without --source: local memory first, the pool when the local device is full"
 # The whole local device as one lease.
 t0=$EPOCHREALTIME
@@ -719,9 +758,10 @@ ANY_SUBREQUESTS="[(s['name'], s['deviceClassName'], quantity(s['capacity']['requ
 dra-assert "$COMMAND_OUTPUT" "[s['name'] for s in j['spec']['devices']['requests'][0]['firstAvailable']] == ['local', 'pool']"
 dra-assert "$COMMAND_OUTPUT" "$ANY_SUBREQUESTS == [('lease/local', '$LOCAL_CLASS', $DRA_LOCAL_SIZE), ('lease/pool', 'cxl-pool', $DRA_LOCAL_SIZE)]"
 dra-assert "$COMMAND_OUTPUT" "[(r['request'], r['driver'], r['device']) for r in results()] == [('lease/local', '$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and consumed() == $DRA_LOCAL_SIZE"
-# A DeviceConfig for each driver, each for its own subrequest.
-ANY_CONFIGS="sorted((c['driver'], c['parameters']['kind'], c['parameters'].get('mode'), c['requests']) for c in configs())"
-dra-assert "$COMMAND_OUTPUT" "$ANY_CONFIGS == [('$DRA_POOL_DRIVER', 'DeviceConfig', 'numa', ['lease/pool']), ('$DRA_LOCAL_DRIVER', 'DeviceConfig', 'numa', ['lease/local'])]"
+# A MemoryConfig for each driver, each for its own subrequest, of the one
+# apiVersion of both drivers.
+ANY_CONFIGS="sorted((c['driver'], c['parameters']['apiVersion'], c['parameters']['kind'], config_section(c, 'device').get('mode'), c['requests']) for c in configs())"
+dra-assert "$COMMAND_OUTPUT" "$ANY_CONFIGS == [('$DRA_POOL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', 'numa', ['lease/pool']), ('$DRA_LOCAL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', 'numa', ['lease/local'])]"
 dra-companion-meta-check "$COMMAND_OUTPUT" "$ANY1_LEASE" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
 [ -z "$(dra-pool-attachments "$VM2_NAME")" ] || error "a request without --source with room on the local device made the pool attach a device"
 # The local device has no room left: the next lease comes from the pool.
@@ -737,7 +777,7 @@ CLAIM_JSON="$COMMAND_OUTPUT"
 dra-assert "$CLAIM_JSON" "[s['name'] for s in j['spec']['devices']['requests'][0]['firstAvailable']] == ['local', 'pool']"
 dra-assert "$CLAIM_JSON" "$ANY_SUBREQUESTS == [('lease/local', '$LOCAL_CLASS', 256 * MiB), ('lease/pool', 'cxl-pool', 256 * MiB)]"
 dra-assert "$CLAIM_JSON" "[(r['request'], r['driver'], r['device']) for r in results()] == [('lease/pool', '$DRA_POOL_DRIVER', 'pooled0')]"
-dra-assert "$CLAIM_JSON" "$ANY_CONFIGS == [('$DRA_POOL_DRIVER', 'DeviceConfig', 'numa', ['lease/pool']), ('$DRA_LOCAL_DRIVER', 'DeviceConfig', 'numa', ['lease/local'])]"
+dra-assert "$CLAIM_JSON" "$ANY_CONFIGS == [('$DRA_POOL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', 'numa', ['lease/pool']), ('$DRA_LOCAL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', 'numa', ['lease/local'])]"
 dra-assert "$CLAIM_JSON" "condition('$DRA_POOL_DRIVER/Attached') == 'True' and allocated_node() == '$VM2_NAME'"
 ANY2_UID=$(dra-value "$CLAIM_JSON" "j['metadata']['uid']")
 pool-host-client -o json devices pooled0 || command-error "cannot get pooled0"

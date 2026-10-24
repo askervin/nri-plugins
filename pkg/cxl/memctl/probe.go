@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -50,6 +51,17 @@ const (
 // probeBases are the offsets below every power of two that the probe
 // writes markers at: the start, an odd page, and a few far from the start.
 var probeBases = []uint64{0, 3 * probePage, 5 << 20, 7<<30 + 5*probePage, 33<<30 + 11*probePage}
+
+// A dax device that the kernel binds to device_dax by itself has its
+// driver link before device_dax has added its character device: until
+// then an open fails with ENXIO. The probe tries again every
+// daxOpenInterval for daxOpenTimeout.
+var (
+	daxOpenTimeout  = 5 * time.Second
+	daxOpenInterval = 10 * time.Millisecond
+	// openFile opens a file (a variable for tests).
+	openFile = os.OpenFile
+)
 
 // ProbeAliasing runs an address line test (memtest86 "walking ones") on
 // the memory of a dax device: for every power of two P from 4 KiB up to
@@ -85,7 +97,7 @@ func (mc *Manager) ProbeAliasing(dax string) (*Aliasing, error) {
 	if err := unix.Mknod(node, unix.S_IFCHR|0o600, int(unix.Mkdev(uint32(major), uint32(minor)))); err != nil {
 		return nil, fmt.Errorf("mknod %s: %w", node, err)
 	}
-	f, err := os.OpenFile(node, os.O_RDWR, 0)
+	f, err := openDaxNode(node)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +108,20 @@ func (mc *Manager) ProbeAliasing(dax string) (*Aliasing, error) {
 	}
 	defer func() { _ = unix.Munmap(mem) }()
 	return probeAliasing(mem), nil
+}
+
+// openDaxNode opens the device node of a dax device for reading and
+// writing, trying again while the character device is not there yet.
+func openDaxNode(node string) (*os.File, error) {
+	deadline := time.Now().Add(daxOpenTimeout)
+	for {
+		f, err := openFile(node, os.O_RDWR, 0)
+		notYet := errors.Is(err, unix.ENXIO) || errors.Is(err, unix.ENODEV)
+		if !notYet || !time.Now().Before(deadline) {
+			return f, err
+		}
+		time.Sleep(daxOpenInterval)
+	}
 }
 
 // probeAliasing runs the address line test on mapped memory.

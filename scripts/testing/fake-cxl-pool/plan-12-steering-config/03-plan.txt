@@ -1,0 +1,145 @@
+plan-12: implementation plan
+============================
+Written 2026-10-23 (orchestrator), after the decisions (02-design
+"Decisions"); the contract is 04-contract.txt. Paths as there. Nothing
+committed by the streams; the user commits.
+
+Rules for every stream
+----------------------
+- Read first: N/.github/skills/coding-style/SKILL.md; this directory's
+  00, 01, 02 (Decisions, N), 03, 04; then the sources of your stream.
+  E2E also reads N/.github/skills/run-e2e-tests/SKILL.md.
+- Edit only the files your stream owns; anything else is a Request in
+  your status file. Never write under ~/github.com/askervin/.
+- Plain ASCII; comments say what, not how or who calls; current state
+  only; match the surrounding code.
+- No host installs. One run_tests.sh at a time; the VMs belong to E2E,
+  root@cwf to HW.
+- Status file 05-status-<S>.txt: changes per file, deviations from
+  04-contract with reasons, verification commands and their decisive
+  output, open points, Requests; end with "<S> done".
+
+Streams and order
+-----------------
+  phase 1   API                      (DOC, E2E-1, HW-1 start in parallel)
+  review    orchestrator reviews API (05-review.txt)
+  phase 2   DRV and CTRL in parallel
+  review    orchestrator reviews DRV and CTRL; image built
+  phase 3   E2E-2 and HW-2 runs in parallel
+  final     09-status.txt
+
+API  pkg/cxl/config
+  Owns: N/pkg/cxl/config/** (new).
+  Do: 04-contract sections 2, 3, 5 (Combine), 6 (PoolOpaque), 7
+    (Defaults type and validation), 8, 12 (all error texts). Unit tests:
+    merge order and null, request/subrequest targeting, strict decode per
+    entry and after merge, kinds/apiVersions, source table (fencing from
+    entries refused, pool in cxl.nri.io refused), steering validation
+    (policies, waypoints, steps, none with parameters), Combine
+    (agreement, conflicts with origins, defaults overlay, missing policy),
+    PoolOpaque (own key, other keys ignored, strict), Defaults.
+  Checks: go build/test/-race/vet of ./pkg/cxl/..., gofmt, golangci-lint
+    on the package.
+  Done: status lists the exported API and every error text.
+
+DRV  the driver (after API is reviewed)
+  Owns: D/** (incl. tests), N/pkg/cxl/memorypolicy (removed),
+    N/pkg/cxl/api only for the marker helper if it lives there,
+    N/cmd/cxl-request only if a Request needs it.
+  Do: 04-contract sections 2 (device rules per type), 4 (per-result
+    markers, both drivers), 5 (management decision in the NRI plugin:
+    steered/fenced/none, pool numa steered, lending for non-steered,
+    restart), 7 (defaults replace containerMemory; nodeFence from
+    defaults.container.fencing), 9 (prepared state, pool snapshot per
+    result), 10 (broker companion entries), 11 (logs). Remove
+    deviceConfig, parseMemoryPolicy, PreparedClaimInfo.Policy,
+    checkConfigKinds lists of two kinds.
+  Tests: unit tests of D adapted and new: Prepare with MemoryConfig of
+    both drivers and every device type; markers; a container using one
+    request of a claim gets only that result (P4); management: default
+    none for a numa claim (fenced with its node), auto/first-dram steered,
+    conflict refused, pool numa steered on opt-in, lend to an unsteered
+    container with a static numa claim, restart; broker entries.
+  Checks: as plan-11 (build, test, -race, vet, gofmt, golangci-lint).
+
+CTRL  the reference pool controller
+  Owns: P/pkg/controller/**, P/cmd/fake-cxl-pool-controller/**,
+    P/README.md, P/deploy/fake-cxl-pool-controller.yaml (if it lists
+    flags), docs/memory/cxl/pool.md section "Configuration of a pool
+    controller" (only that section; DOC owns the rest of pool.md).
+  Do: 04-contract section 6: -config-key flag, resolve per result with
+    pkg/cxl/config, slot and numaNode into AttachRequest, InvalidConfig
+    condition, logs; unit tests (resolve, own key only, invalid object ->
+    AttachFailed InvalidConfig and no attach, slot/numaNode passed).
+  Checks: make -C P, make -C P test, go vet ./scripts/testing/
+    fake-cxl-pool/..., golangci-lint on the changed packages.
+
+DOC  docs, chart, samples
+  Owns: docs/memory/cxl/usage.md, local.md, leases.md, index.md, e2e.md
+    (config mentions only), pool.md (all but the controller section),
+    deployment/helm/dra-driver-cxl/** (deviceclasses.yaml comments and
+    deviceClassConfig rendering, values.yaml, values.schema.json,
+    README.md), deployment/samples/dra-driver-cxl/*.yaml.
+  Do: 04-contract section 13; the field table; ownership table; merge
+    order; opt-in steering (one line, class preset, deviceClassConfig,
+    node default); "Containers without claims" with defaults.container;
+    "Configuration file" (defaults replaces containerMemory); error texts
+    from API's status; samples rewritten (one shows opt-in steering).
+  Checks: helm template renders with and without deviceClassConfig and
+    the classes validate (kubectl --dry-run=client if available, else
+    yaml parse); ASCII; links resolve.
+
+E2E  e2e tests
+  Phase 1 (edits, parallel to API/DRV): E/dra.source.sh claim helpers
+    write MemoryConfig (device and container sections); updated error
+    texts (test14, test17); new checks:
+    - test14: a numa claim without steering is not steered (cpuset.mems
+      has the node, memory.high is max, the main process has the default
+      memory policy) and fenced; steering opt-in cases with placement
+      measured from a process that is a child of the container's main
+      process (the pod's command starts the workload on a trigger, as
+      the hw tests' prun): auto with a CXL-only claim (lands on the CXL
+      node), DRAM only (cxl-dram, lands on DRAM, cpuset.mems narrowed),
+      DRAM and CXL (start-interleaved, both nodes), first-dram with a
+      small maxStep (DRAM first, then CXL); a claim with two requests
+      (numa and dax) used by two containers with request: each gets only
+      its result (P4); a conflict of policies fails CreateContainer.
+    - test10 (or test19): a pool numa claim is not steered by default;
+      with policy auto it is (pages on the pool node without numa-touch
+      preference); pool.opaque.fake-cxl-pool numaNode or slot decides
+      where the device is attached (pool attachments list); an invalid
+      opaque object gives AttachFailed reason InvalidConfig.
+    - test15: a numa lease to a container whose static numa claim is
+      not steered (refused before plan-12 because it was steered).
+  Phase 2 (after the image): run test14, test10, test15, test19 (changed),
+    then test11, test12, test13, test16, test17, test18, test01; record
+    in 06-runs-E2E.txt.
+
+HW  hardware tests on root@cwf
+  Phase 1 (edits): H/lib.sh claim_yaml writes MemoryConfig and takes a
+    steering option; test1: numa-a and numa-b opt in (their default-
+    placement checks rely on steering), plus a third numa pod that is not
+    steered (no memory.high, its default allocations on DRAM, the node in
+    its cpuset.mems); deploy.sh CONTAINER_MEMORY -> defaults.container.
+    fencing.
+  Phase 2: run-all.sh on root@cwf with the image; record in
+    06-runs-HW.txt; findings B and C of the hw report still expected.
+
+Review points (orchestrator)
+  API: the contract to the letter (it is the user-facing schema), merge
+    edge cases, error texts readable.
+  DRV: every driver feature (steering, fencing, leases local and pool,
+    companion claims, shared, dax, block, fs, restart, no NRI), the
+    per-result attribution everywhere a claim was used before (steering
+    quotas, claimed nodes, lending, logs), lock rules of plan-11 (NRI
+    handlers never wait for poolDriver.mu; the snapshot).
+  CTRL: a controller that is not the owner of a key never fails on it;
+    InvalidConfig is final per allocation, no attach left behind.
+
+Verification matrix
+  unit: go test ./pkg/cxl/... ./cmd/plugins/dra-driver-cxl/...
+        ./scripts/testing/fake-cxl-pool/... (-race on D), vet, lint
+  helm: helm template with and without deviceClassConfig
+  e2e:  test14, test10, test15, test19 (changed); test11, test12, test13,
+        test16, test17, test18, test01 (regression)
+  hw:   run-all.sh on root@cwf

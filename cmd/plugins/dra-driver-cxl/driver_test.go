@@ -24,6 +24,7 @@ import (
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -657,33 +658,46 @@ func TestRescanBeforeStart(t *testing.T) {
 	}
 }
 
-func TestDriverConfigContainerMemory(t *testing.T) {
+func TestDriverConfigDefaults(t *testing.T) {
 	for _, tc := range []struct {
 		config string
-		want   string // mode, or the error
+		want   string // fencing and steering policy, or the error
 	}{
-		{"{}", containerMemoryAllowedMems},
-		{"containerMemory: {}", containerMemoryAllowedMems},
-		{`containerMemory: {default: ""}`, containerMemoryAllowedMems},
-		{"containerMemory: {default: allowed-mems}", containerMemoryAllowedMems},
-		{"containerMemory:\n  default: none", containerMemoryNone},
-		{"containerMemory: {default: mempolicy}", "containerMemory.default: mempolicy is not implemented yet"},
-		{"containerMemory: {default: hard}", `containerMemory.default: invalid value "hard" (allowed-mems, mempolicy or none)`},
-		{"containerMemory: {defaults: none}", "failed to parse driver config"},
+		{"{}", "allowed-mems none"},
+		{"defaults: {}", "allowed-mems none"},
+		{"defaults: {container: {}}", "allowed-mems none"},
+		{"defaults: {container: {fencing: allowed-mems}}", "allowed-mems none"},
+		{"defaults:\n  container:\n    fencing: none\n    steering: {policy: auto}", "none auto"},
+		{`{"defaults": {"container": {"steering": {"policy": "first-dram", "maxStep": "1Gi"}}}}`, "allowed-mems first-dram"},
+		{"defaults: {container: {fencing: mempolicy}}", "defaults.container.fencing: mempolicy is not implemented yet"},
+		{"defaults: {container: {fencing: hard}}", `defaults.container.fencing: invalid value "hard" (allowed-mems, mempolicy or none)`},
+		{"defaults: {container: {steering: {policy: bogus}}}", `defaults.container.steering.policy: invalid policy "bogus" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)`},
+		{"defaults: {container: {steering: {maxStep: 1Gi}}}", "defaults.container.steering.maxStep needs a policy other than none"},
+		{"defaults: {container: {Fencing: none}}", `defaults: json: unknown field "container.Fencing"`},
+		{"defaults: {device: {mode: dax}}", `defaults: json: unknown field "device"`},
+		{"containerMemory: {default: none}", "failed to parse driver config"},
 	} {
 		cfg, err := newDriverConfigFromString(tc.config)
 		got := ""
 		if err != nil {
 			got = err.Error()
 		} else {
-			got = cfg.containerMemory()
+			got = cfg.fencing() + " " + cfg.steeringPolicy()
 		}
 		if !strings.HasPrefix(got, tc.want) {
 			t.Errorf("%s: %q, expected %q", tc.config, got, tc.want)
 		}
 	}
-	data, err := json.Marshal(&DriverConfig{ContainerMemory: &ContainerMemoryConfig{Default: containerMemoryNone}})
-	if err != nil || string(data) != `{"containerMemory":{"default":"none"}}` {
+	cfg, err := newDriverConfigFromString("defaults: {container: {steering: {policy: auto, minStep: 64Mi}}}")
+	noErr(t, err)
+	if got := cfg.containerDefaults(); got.Steering == nil || got.Steering.Policy != config.PolicyAuto || got.Steering.MinStep != "64Mi" || got.Fencing != "" {
+		t.Errorf("container defaults %+v", got)
+	}
+	if got := (&DriverConfig{}).containerDefaults(); got.Steering != nil || got.Fencing != "" {
+		t.Errorf("container defaults of no defaults %+v", got)
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil || string(data) != `{"defaults":{"container":{"steering":{"minStep":"64Mi","policy":"auto"}}}}` {
 		t.Errorf("configuration %s %v", data, err)
 	}
 }

@@ -51,6 +51,10 @@ type want struct {
 	// exclusive: a shared device allocated with all of its shares
 	// capacity, attached with AttachRequest.Exclusive
 	exclusive bool
+	// settings: where to attach, from the MemoryConfig of the result
+	settings PoolSettings
+	// cfgErr: the MemoryConfig of the result is invalid, no attach
+	cfgErr error
 }
 
 // exclusiveResult reports whether an allocation result of a shared device
@@ -132,6 +136,7 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 	})
 	var wants []*want
 	desired := map[attKey][]*want{}
+	cfgSeen := map[string]bool{}
 	for _, claim := range claims {
 		if claim.Status.Allocation == nil {
 			continue
@@ -148,8 +153,16 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			if h, ok := hm.nodeHost[node]; ok {
 				w.host = &h
 			}
+			w.settings, w.cfgErr = c.poolSettings(claim, &r)
+			if w.cfgErr != nil {
+				cfgSeen[c.logConfigError(w)] = true
+				if hasCondition(claim, r, c.condAttached()) != nil {
+					// attached already: a device in use is never detached
+					w.cfgErr = nil
+				}
+			}
 			wants = append(wants, w)
-			if w.device != "" && w.host != nil {
+			if w.device != "" && w.host != nil && w.cfgErr == nil {
 				desired[w.key()] = append(desired[w.key()], w)
 			}
 		}
@@ -219,7 +232,30 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			delete(c.attLogged, id)
 		}
 	}
+	for id := range c.cfgLogged {
+		if !cfgSeen[id] {
+			delete(c.cfgLogged, id)
+		}
+	}
 	return nil
+}
+
+// logConfigError logs the configuration error of a want once and returns
+// the key of the want in cfgLogged.
+func (c *Controller) logConfigError(w *want) string {
+	id := string(w.claim.UID) + "/" + w.result.Request + "/" + w.result.Device
+	msg := w.cfgErr.Error()
+	if c.cfgLogged[id] == msg {
+		return id
+	}
+	c.cfgLogged[id] = msg
+	kept := ""
+	if hasCondition(w.claim, w.result, c.condAttached()) != nil {
+		kept = " (attached already, kept)"
+	}
+	c.logf("ERROR: claim %s/%s: request %s device %s: invalid configuration: %v%s",
+		w.claim.Namespace, w.claim.Name, w.result.Request, w.result.Device, w.cfgErr, kept)
+	return id
 }
 
 func sortedKeys[V any](m map[attKey]V) []attKey {
@@ -240,15 +276,24 @@ func sortedKeys[V any](m map[attKey]V) []attKey {
 // or a failure, or neither (attaching continues, or waiting for a detach).
 func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
 	owner := c.Owner(w.claim.UID)
-	actx, cancel := context.WithTimeout(ctx, c.cfg.AttachTimeout+10*time.Second)
-	defer cancel()
-	a, status, err := c.pool.Attach(actx, k.device, api.AttachRequest{
+	req := api.AttachRequest{
 		Host:      k.host,
 		Owner:     owner,
 		Wait:      ptr.To(true),
 		Timeout:   c.cfg.AttachTimeout.String(),
 		Exclusive: exclusive,
-	})
+	}
+	// the settings place a new attachment; an existing one stays where it
+	// is
+	if _, ok := actual[k]; !ok {
+		req.Slot, req.NumaNode = w.settings.Slot, w.settings.NumaNode
+		if s := w.settings.String(); s != "" {
+			c.debugf("attach %s to %s for %s: %s", k.device, k.host, w, s)
+		}
+	}
+	actx, cancel := context.WithTimeout(ctx, c.cfg.AttachTimeout+10*time.Second)
+	defer cancel()
+	a, status, err := c.pool.Attach(actx, k.device, req)
 	if err == nil {
 		switch status {
 		case http.StatusAccepted:
@@ -291,6 +336,8 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive bo
 func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey]api.Attachment, failures map[attKey]failure) {
 	var f *failure
 	switch {
+	case w.cfgErr != nil:
+		f = &failure{ReasonInvalidConfig, w.cfgErr.Error()}
 	case w.device == "":
 		f = &failure{ReasonAttachError, fmt.Sprintf("device %s is not in pool %s", w.result.Device, c.cfg.PoolName)}
 	case w.host == nil:
@@ -317,6 +364,9 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	}
 	if hasCondition(w.claim, w.result, c.condAttached()) != nil {
 		return
+	}
+	if s := w.settings.Slot; s != "" && s != a.Slot.Bus {
+		c.logf("%s: attachment %s is in slot %s, not in the configured slot %s: kept", w, a.ID, a.Slot.Bus, s)
 	}
 	d := c.devices[w.result.Device]
 	serial := a.Serial

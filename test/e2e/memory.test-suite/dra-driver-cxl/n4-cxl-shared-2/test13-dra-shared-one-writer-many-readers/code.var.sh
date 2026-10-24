@@ -20,9 +20,9 @@
 #   takes one share of the device (shares: "1") and gets an fd opened
 #   O_RDONLY: the reader can map the memory for reading only, a writable
 #   mapping is refused (EACCES) whatever the capabilities of the
-#   container. A claim of a pod with the opaque config DeviceConfig
-#   readOnly: true gets a device node that the container can only open
-#   for reading.
+#   container. A claim of a pod with the opaque config MemoryConfig
+#   device.readOnly: true gets a device node that the container can only
+#   open for reading.
 #
 # The cluster: the VM of n4-cxl-shared-2 (VM2, the VM of the test) is the
 # control plane, the VMs of n4-cxl-shared-1 (VM1) and n4-cxl-shared-0
@@ -235,7 +235,7 @@ dra-wait "$VM2" writer-companion "resourceclaim -n $DRA_NS cxl-lease-$WRITER_LEA
 dra-assert "$COMMAND_OUTPUT" "[(s['name'], s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('lease', 'cxl-pool-shared', None)] and j['spec']['devices']['requests'][0].get('exactly')"
 dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME' and quantity(j['status']['allocation']['devices']['results'][0]['consumedCapacity']['shares']) == $DRA_SHARES"
 dra-assert "$COMMAND_OUTPUT" "device_data('shared0')['exclusive'] == True"
-dra-assert "$COMMAND_OUTPUT" "[(c['driver'], c['parameters']['kind'], c['parameters'].get('mode'), bool(c['parameters'].get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', 'DeviceConfig', 'dax', False)]"
+dra-assert "$COMMAND_OUTPUT" "[(c['driver'], c['parameters']['apiVersion'], c['parameters']['kind'], config_section(c, 'device').get('mode'), bool(config_section(c, 'device').get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', 'dax', False)]"
 dra-assert "$COMMAND_OUTPUT" "j['metadata']['labels']['$DRA_LEASE_LABEL'] == '$WRITER_LEASE' and j['metadata']['annotations']['$DRA_REQUESTER_ANNOTATION'] == '$DRA_NS/writer/main'"
 dra-claim-conditions "$VM2" "cxl-lease-$WRITER_LEASE"
 pool-attachments shared0
@@ -316,7 +316,7 @@ pool-assert "$COMMAND_OUTPUT" "sorted((a['host'], a.get('exclusive', False), a['
 # get no CDI device.
 READER_A_LEASE=$(lease-of reader-a)
 dra-json "$VM2" resourceclaim -n "$DRA_NS" "cxl-lease-$READER_A_LEASE"
-dra-assert "$COMMAND_OUTPUT" "[c['parameters'] for c in configs()] == [{'apiVersion': '$DRA_POOL_DRIVER/v1alpha1', 'kind': 'DeviceConfig', 'mode': 'dax', 'readOnly': True}]"
+dra-assert "$COMMAND_OUTPUT" "[c['parameters'] for c in configs()] == [{'apiVersion': '$DRA_CONFIG_API', 'kind': '$DRA_CONFIG_KIND', 'device': {'mode': 'dax', 'readOnly': True}}]"
 dra-assert "$COMMAND_OUTPUT" "[(s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('cxl-pool-shared', {'requests': {'shares': '1'}})]"
 READER_A_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 [ -z "$(dra-cdi-devices-with "$VM2" "$READER_A_UID")" ] ||
@@ -360,14 +360,15 @@ dra-json "$VM2" resourceclaim -n "$DRA_NS" shared-read-only
 dra-assert "$COMMAND_OUTPUT" "allocated_node() == '$VM1_NAME'"
 # The pool driver on VM1 prepared the claim as the CDI device of its
 # allocation result, claim-<uid>-0 (spec cxl-pool), with a read-only
-# device node, the environment of shared0 and the claim marker.
+# device node, the environment of shared0 and the marker of the result,
+# CXL_CLAIM_<uid>_0.
 RO_CLAIM_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 cdi=$(dra-cdi-device "$VM1" "claim-$RO_CLAIM_UID-0")
 echo "CDI device claim-$RO_CLAIM_UID-0: $cdi"
 grep -qx "kind: nri.io/cxl-pool" <<< "$cdi" || error "no CDI device claim-$RO_CLAIM_UID-0 of kind nri.io/cxl-pool in VM1"
 grep -qE '^ *permissions: r$' <<< "$cdi" || error "the CDI device of the claim of reader-d has no device node with permissions r"
 grep -qF -- "- CXL_${SHARED_HEX}_READONLY=1" <<< "$cdi" || error "the CDI device of the claim of reader-d has no CXL_${SHARED_HEX}_READONLY=1"
-grep -qF -- "- CXL_CLAIM_${RO_CLAIM_UID//-/_}=1" <<< "$cdi" || error "the CDI device of the claim of reader-d has no claim marker"
+grep -qF -- "- CXL_CLAIM_${RO_CLAIM_UID//-/_}_0=1" <<< "$cdi" || error "the CDI device of the claim of reader-d has no marker of result 0 of its claim"
 [ "$(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")" == "claim-$RO_CLAIM_UID-0" ] ||
     error "the claim of reader-d has other CDI devices than claim-$RO_CLAIM_UID-0: $(dra-cdi-devices-with "$VM1" "$RO_CLAIM_UID")"
 for r in "${READERS[@]}"; do
@@ -435,7 +436,7 @@ spec:
     config:
     - opaque:
         driver: $DRA_POOL_DRIVER
-        parameters: {apiVersion: $DRA_POOL_DRIVER/v1alpha1, kind: DeviceConfig, mode: dax}
+        parameters: $(dra-memory-config "device: {mode: dax}")
 EOF
 dra-apply "$VM2" <<< "$(dra-script-pod-yaml dax-claimer "$VM1" pooled-dax "env | grep ^CXL_${POOLED0_HEX}_ | sort
 echo \"before: \$(python3 /tools/dax-rw.py read \"\$CXL_${POOLED0_HEX}_DAX\" 0)\"

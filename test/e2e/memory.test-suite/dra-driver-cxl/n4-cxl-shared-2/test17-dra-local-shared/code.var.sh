@@ -14,8 +14,8 @@
 #   until it is gone. Claims that ask meanwhile wait, their pods Pending.
 # - A claim with capacity.requests.shares: "1" is one share: any number
 #   of such claims hold the device at the same time, each with its own
-#   DeviceConfig (readOnly: true gives a device node that the container
-#   can only open for reading).
+#   MemoryConfig (device section readOnly: true gives a device node that
+#   the container can only open for reading).
 # All of them get the same /dev/daxX.0 of the one region of the device,
 # CXL_<KEY>_SHARED=1 and _MODE=dax, and see the same bytes. The node
 # plugin zeroes the device once, when it creates the region for the first
@@ -80,8 +80,9 @@ claim-pod() {
     # Usage: claim-pod NAME SHARES PARAMETERS SCRIPT
     #
     # Create ResourceClaim NAME of class cxl-local-shared for the local
-    # device with SHARES ("1" a share, "" exclusive) and the DeviceConfig
-    # PARAMETERS (see dra-shared-claim-yaml), and pod NAME on VM2 with the
+    # device with SHARES ("1" a share, "" exclusive) and the fields
+    # PARAMETERS of the device section of its MemoryConfig (see
+    # dra-shared-claim-yaml), and pod NAME on VM2 with the
     # claim, running the shell SCRIPT (see dra-script-pod-yaml).
     dra-apply "$VM2" <<< "$(dra-shared-claim-yaml "$1" "$DRA_LOCAL_SERIAL" "$2" "$3" "$SHARED_CLASS")
 ---
@@ -135,9 +136,10 @@ env-check() {
     #
     # Check the CXL_ variables of container main of pod POD: the shared
     # local device in mode dax, the whole device, READONLY (0 or 1), and
-    # the marker of its claim, nothing else; its dax device is the dax
-    # device of the region of the shared device (DRA_LOCAL_SHARED_DAX), a
-    # character device with the numbers of that dax device (SHARED_DEV).
+    # the marker of the result of its claim, nothing else; its dax device
+    # is the dax device of the region of the shared device
+    # (DRA_LOCAL_SHARED_DAX), a character device with the numbers of that
+    # dax device (SHARED_DEV).
     # POD_ENV are the variables, POD_DAX the device.
     local pod="$1" ro="$2"
     # shellcheck disable=SC2016 # expanded by sh in the container
@@ -146,8 +148,8 @@ env-check() {
     POD_ENV="$COMMAND_OUTPUT"
     dra-env-assert "$pod" "$POD_ENV" "$DRA_LOCAL_HEX" \
         SERIAL="$DRA_LOCAL_SERIAL" SHARED=1 MODE=dax SIZE="$DRA_LOCAL_SIZE" "DAX=/dev/dax*" READONLY="$ro"
-    [ "$(grep -cE '^CXL_CLAIM_[0-9a-f_]+=1$' <<< "$POD_ENV")" == 1 ] && [ "$(grep -c '^CXL_' <<< "$POD_ENV")" == 7 ] ||
-        error "$pod does not have the six variables of the device and one claim marker: $POD_ENV"
+    [ "$(grep -cE '^CXL_CLAIM_[0-9a-f_]+_0=1$' <<< "$POD_ENV")" == 1 ] && [ "$(grep -c '^CXL_' <<< "$POD_ENV")" == 7 ] ||
+        error "$pod does not have the six variables of the device and one marker of result 0 of a claim: $POD_ENV"
     POD_DAX=$(dra-env-value "$POD_ENV" "CXL_${DRA_LOCAL_HEX}_DAX")
     [ "$POD_DAX" == "/dev/$DRA_LOCAL_SHARED_DAX" ] ||
         error "$pod has $POD_DAX, expected /dev/$DRA_LOCAL_SHARED_DAX, the dax device of the shared device"
@@ -162,7 +164,8 @@ cdi-check() {
     # Check the CDI device of the allocation result of claim UID,
     # claim-UID-0 (spec cxl-claims): the device node of the shared device,
     # with permissions r if READONLY is 1, the environment of the device
-    # and the claim marker, and no other CDI device of the claim. CDI_NODE
+    # and the marker of the result (CXL_CLAIM_<uid>_0), and no other CDI
+    # device of the claim. CDI_NODE
     # are its device node lines.
     local uid="$1" ro="$2" cdi
     cdi=$(dra-cdi-device "$VM2" "claim-$uid-0")
@@ -175,7 +178,7 @@ cdi-check() {
         ! grep -qE '^ *permissions:' <<< "$cdi" || error "the CDI device claim-$uid-0 has a device node with restricted permissions"
     fi
     grep -qF -- "- CXL_${DRA_LOCAL_HEX}_READONLY=$ro" <<< "$cdi" || error "the CDI device claim-$uid-0 has no CXL_${DRA_LOCAL_HEX}_READONLY=$ro"
-    grep -qF -- "- CXL_CLAIM_${uid//-/_}=1" <<< "$cdi" || error "the CDI device claim-$uid-0 has no claim marker"
+    grep -qF -- "- CXL_CLAIM_${uid//-/_}_0=1" <<< "$cdi" || error "the CDI device claim-$uid-0 has no marker of result 0 of its claim"
     [ "$(dra-cdi-devices-with "$VM2" "$uid")" == "claim-$uid-0" ] ||
         error "the claim $uid has other CDI devices than claim-$uid-0: $(dra-cdi-devices-with "$VM2" "$uid")"
     CDI_NODE=$(grep -E '^ *(- )?(path|type|major|minor|permissions): ' <<< "$cdi")
@@ -333,7 +336,7 @@ pool-cxl-dump "$VM2" sliced-refused
 cxl-assert "regions == []"
 
 echo "### B: the writer claims the device exclusively and writes"
-# No capacity request: the claim consumes all shares. No DeviceConfig:
+# No capacity request: the claim consumes all shares. No MemoryConfig:
 # mode dax, the only mode of a shared device, read-write.
 t0=$EPOCHREALTIME
 claim-pod writer "" "" "env | grep ^CXL_ | sort"
@@ -387,7 +390,7 @@ declare -A READER_UID=()
 for r in reader-a reader-b; do
     claim-check "$r" 1
     READER_UID[$r]="$CLAIM_UID"
-    dra-assert "$CLAIM_JSON" "[c['parameters'] for c in configs()] == [{'apiVersion': '$DRA_LOCAL_DRIVER/v1alpha1', 'kind': 'DeviceConfig', 'readOnly': True}]"
+    dra-assert "$CLAIM_JSON" "[c['parameters'] for c in configs()] == [{'apiVersion': '$DRA_CONFIG_API', 'kind': '$DRA_CONFIG_KIND', 'device': {'readOnly': True}}]"
     dra-wait-log "$VM2" "$r" "read: $TEXT0" 60
     dra-wait-log "$VM2" "$r" holding 30
     for line in "open for writing refused: EPERM" "writable mapping refused: EACCES"; do
@@ -440,9 +443,9 @@ claim-pod bad-access 1 "access: cached" "echo started"
 # shares "0" passes the API and fits next to any holder: the scheduler
 # allocates it, consuming nothing, and the node plugin refuses it.
 claim-pod zero-shares 0 "readOnly: true" "echo started"
-event-wait bad-numa "DeviceConfig: mode numa: a shared device is used as dax only"
-event-wait bad-numa-ro "DeviceConfig: readOnly needs mode dax"
-event-wait bad-access "DeviceConfig: access needs mode fs"
+event-wait bad-numa "MemoryConfig: device: a shared device is used as dax only"
+event-wait bad-numa-ro "MemoryConfig: device.readOnly needs mode dax"
+event-wait bad-access "MemoryConfig: device.access needs mode fs"
 event-wait zero-shares "device $DRA_LOCAL_SERIAL: consumed shares \"0\" is less than 1: request shares: 1 (a share) or no shares (exclusive)"
 claim-check zero-shares 0
 for p in bad-numa bad-numa-ro bad-access zero-shares; do

@@ -290,6 +290,8 @@ the server, the controller and the driver in the e2e VMs. The controller:
   for. A node that is not a pool host, a 409 or another error gives
   `AttachFailed=True` (reason `NoHost`, `Conflict`, `Timeout`,
   `AttachError`), and the scheduler allocates again.
+- attaches where the claim says: `pool.opaque.fake-cxl-pool` of the
+  claim's `MemoryConfig` (below).
 - attaches exclusively (`AttachRequest.exclusive`) for a claim that
   consumes all `shares` of a shared device (`exclusive: true` in its
   device data).
@@ -312,14 +314,15 @@ are one cluster of three nodes (n4-cxl-shared-2 the control plane, -1 and
 fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
     [-driver-name cxl-pool.nri.io] [-pool-name ""]
     [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
-    [-owner-prefix k8s:] [-v]
+    [-owner-prefix k8s:] [-config-key fake-cxl-pool] [-v]
 ```
 
 `-server` defaults to `$FAKE_CXL_POOL_SERVER`, `-kubeconfig` to
 `$KUBECONFIG`, else the in-cluster config. `-pool-name ""` (the default)
 is the name of the server; the controller logs it at start: `driver
 cxl-pool.nri.io, pool <name> (from the server), server <url>, sync
-interval 10s`. In the e2e VMs, on the control plane:
+interval 10s, config key fake-cxl-pool`. In the e2e VMs, on the control
+plane:
 
 ```
 systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-controller -kubeconfig /root/.kube/config -v
@@ -329,6 +332,62 @@ systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-control
 runs it as a Deployment with a ServiceAccount and the RBAC it needs
 (`resourceclaims/driver` `arbitrary-node:update` for `cxl-pool.nri.io`,
 `resourceclaims/status`, `resourceslices`, nodes, events).
+
+### Where a device is attached
+
+The `MemoryConfig` entries of `cxl-pool.nri.io` in a claim or its
+DeviceClass may choose the slot of the host that the server attaches the
+device to, under the controller key (`-config-key`, default
+`fake-cxl-pool`) in `pool.opaque`:
+
+```yaml
+spec:
+  devices:
+    requests:
+    - name: mem
+      exactly: {deviceClassName: cxl-pool}
+    config:
+    - requests: [mem]
+      opaque:
+        driver: cxl-pool.nri.io
+        parameters:
+          apiVersion: cxl.nri.io/v1alpha1
+          kind: MemoryConfig
+          pool:
+            opaque:
+              fake-cxl-pool: {numaNode: 1}
+```
+
+| field | type | |
+|:--|:--|:--|
+| `slot` | string | an exact CXL slot (bus name) of the host, as `fake-cxl-pool-client hosts NAME` lists them; the attach fails (`AttachError`, `host "..." has no CXL slot "..."`) for another one, `Conflict` while it is occupied |
+| `numaNode` | integer >= 0 | prefer the free slots of host bridges on that NUMA node of the host; any free slot when none is |
+
+Both go into the attach request (`slot`, `numaNode`, as `attach --slot`
+and `--numa` of the client). The controller resolves the configuration of
+every allocation result with pkg/cxl/config (class entries first, then the
+claim's, merged field by field) and reads only its own key: the objects of
+other keys and the `device` and `container` sections are ignored. An
+invalid entry of the driver, or an invalid object under its key (unknown
+field, wrong type, a negative `numaNode`), attaches nothing: the result
+gets `cxl-pool.nri.io/AttachFailed=True` with reason `InvalidConfig` and
+the error as message, a Warning event `AttachFailed` with the same message
+on the claim, and the log line `ERROR: claim <ns>/<name>: request <request>
+device <device>: invalid configuration: <error>`.
+
+The settings place a new attachment only. An attachment that exists
+already (one claim of a shared device on the node made it, the controller
+restarted, a claim of all shares makes it exclusive) is kept where it is:
+a device is never moved while it may be in use. Its `Attached` message
+names its slot, and a slot other than the configured one is logged
+(`... attachment <id> is in slot <bus>, not in the configured slot <slot>:
+kept`). For the same reason, a result that is `Attached` already keeps its
+attachment when the controller finds its configuration invalid (attached
+by a controller of another version, say); the log line then ends with
+` (attached already, kept)`.
+
+The contract for other pool controllers is
+[Configuration of a pool controller](../../../docs/memory/cxl/pool.md#configuration-of-a-pool-controller).
 
 ### Several pool servers
 

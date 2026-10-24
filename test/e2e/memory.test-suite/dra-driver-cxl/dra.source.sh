@@ -95,6 +95,15 @@ DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
 # one per device and access: <serial hex without 0x>-<direct|cached>.
 DRA_POOL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_POOL_DRIVER/mounts
 DRA_LOCAL_DRIVER=cxl.nri.io        # node-local CXL and DRAM, published by the driver
+# The opaque configuration of the claims and DeviceClasses of both drivers
+# (docs/memory/cxl/usage.md): one kind with the sections device (how the
+# kubelet plugin prepares a device), container (how the NRI plugin manages
+# the containers that use it: steering is opt-in, policy none by default)
+# and pool (pool.opaque.<controller key> for the pool controllers). The
+# reference controller's key is fake-cxl-pool (slot, numaNode).
+DRA_CONFIG_API=cxl.nri.io/v1alpha1
+DRA_CONFIG_KIND=MemoryConfig
+DRA_POOL_CONFIG_KEY=fake-cxl-pool
 DRA_NS=cxl-pool-demo               # namespace of the test objects
 DRA_INSTALLED_VMS=()               # dra-install: the VMDIRs of the nodes, the VM of the test first,
 declare -A DRA_WORKERS=()          # and VMDIR -> 1 of the other nodes, the workers
@@ -126,6 +135,22 @@ DRA_TOUCH_EXEC=""                  # kubectl exec into that container,
 DRA_TOUCH_PID=""                   # its pid in the container,
 DRA_TOUCH_LOG=""                   # and its output when it had touched its memory
 DRA_TOUCH_PAGES=""                 # dra-touch-pages: its pages on the node
+DRA_MEM_HIGH=""                    # dra-memory-wait: memory.high of the container
+DRA_MEMPOLICY=""                   # and the memory policy of its main process
+# The main process of the containers of dra-pod-yaml: it runs /tmp/run
+# (written by dra-run) when it appears, so that the workloads are its
+# descendants and inherit the memory policy that the driver sets on the
+# processes of a steered container. Processes of kubectl exec do not.
+DRA_RUNNER='trap "exit 0" TERM
+while :; do
+    if [ -f /tmp/run ]; then
+        mv /tmp/run /tmp/run.sh
+        sh /tmp/run.sh > /tmp/run.out 2>&1
+        echo $? > /tmp/run.rc.new
+        mv /tmp/run.rc.new /tmp/run.rc
+    fi
+    sleep 0.2 & wait
+done'
 DRA_TRACE_DIR=""                   # $TEST_OUTPUT_DIR/trace of a running trace
 DRA_TRACE_RUNNING=""
 DRA_TRACE_VMS=()
@@ -251,7 +276,8 @@ dra-dax-tool-install() { # script API
     #   dax-rw.py      = pool-dax-rw.py: write and read strings in a devdax
     #                    device, or through an inherited fd (--fd N)
     #   numa-touch.py  = numa-touch.py: allocate and touch memory that
-    #                    prefers one NUMA node, report where the pages are
+    #                    prefers one NUMA node, or with the memory policy
+    #                    of the process, report where the pages are
     local vmdir="$1"
     dra-vm-put-file "$vmdir" "$DRA_DAX_TOOL" /root/dax-rw.py
     dra-vm-put-file "$vmdir" "$DRA_NUMA_TOOL" /root/numa-touch.py
@@ -1448,20 +1474,71 @@ for key in sorted(times):
 '
 }
 
+dra-memory-config() { # script API
+    # Usage: dra-memory-config SECTIONS
+    #
+    # Print the parameters of an opaque config entry of a claim or a
+    # DeviceClass, either driver, as a YAML flow mapping: apiVersion
+    # $DRA_CONFIG_API, kind $DRA_CONFIG_KIND and SECTIONS, the sections of
+    # the configuration as flow YAML ("": none).
+    # Example: dra-memory-config "device: {mode: dax}, container: {steering: {policy: auto}}"
+    echo "{apiVersion: $DRA_CONFIG_API, kind: $DRA_CONFIG_KIND${1:+, $1}}"
+}
+
+dra-config-sections() {
+    # Usage: dra-config-sections DEVICE CONTAINER POOL
+    #
+    # Print the sections device, container and pool of a configuration as
+    # flow YAML, each with its fields (flow YAML, "": no such section).
+    local out="" name fields
+    for name in device container pool; do
+        fields="$1"
+        shift
+        [ -n "$fields" ] || continue
+        out+="${out:+, }$name: {$fields}"
+    done
+    echo "$out"
+}
+
 dra-claim-yaml() { # script API
-    # Usage: dra-claim-yaml claim|template NAME CLASS SIZE [MODE [read-only]]
+    # Usage: dra-claim-yaml claim|template NAME CLASS SIZE [MODE [read-only]] [SECTION=FIELDS...]
     #
     # Print a ResourceClaim (claim) or a ResourceClaimTemplate (template)
     # NAME with one request "mem" of DeviceClass CLASS for SIZE of memory
-    # ("": no amount). With MODE (numa or dax, "": none) or read-only the
-    # claim has an opaque DeviceConfig with that mode and readOnly: true,
-    # for the driver of CLASS: $DRA_POOL_DRIVER for cxl-pool*, else
-    # $DRA_LOCAL_DRIVER.
-    # Example: dra-claim-yaml template dax-ro cxl-local 64Mi dax read-only
-    local kind="$1" name="$2" class="$3" size="$4" mode="$5" ro="$6" driver="$DRA_LOCAL_DRIVER" params="" devices
+    # ("": no amount). The claim has an opaque config of kind
+    # $DRA_CONFIG_KIND for the driver of CLASS ($DRA_POOL_DRIVER for
+    # cxl-pool*, else $DRA_LOCAL_DRIVER) if any of these is given:
+    #   MODE            device.mode (numa, dax, ...; "": none)
+    #   read-only       device.readOnly: true
+    #   device=FIELDS   more fields of the device section (flow YAML)
+    #   container=FIELDS  the container section, for instance
+    #                   "steering: {policy: auto}"
+    #   pool=FIELDS     the pool section, for instance
+    #                   "opaque: {fake-cxl-pool: {numaNode: 1}}"
+    # Examples:
+    #   dra-claim-yaml template dax-ro cxl-local 64Mi dax read-only
+    #   dra-claim-yaml claim steered cxl-local 128Mi "container=steering: {policy: auto}"
+    local kind="$1" name="$2" class="$3" size="$4" driver="$DRA_LOCAL_DRIVER" mode="" ro="" device="" container="" pool="" a n=0 sections devices
+    shift 4
+    for a in "$@"; do
+        case "$a" in
+            device=*) device="${a#device=}";;
+            container=*) container="${a#container=}";;
+            pool=*) pool="${a#pool=}";;
+            *)
+                case "$n" in
+                    0) mode="$a";;
+                    1) ro="$a";;
+                    *) error "dra-claim-yaml: unexpected argument '$a'";;
+                esac
+                n=$(( n + 1 ));;
+        esac
+    done
+    [ -z "$ro" ] || [ "$ro" == read-only ] || error "dra-claim-yaml: '$ro' is not read-only"
     [[ "$class" != cxl-pool* ]] || driver="$DRA_POOL_DRIVER"
-    [ -z "$mode" ] || params+=", mode: $mode"
-    [ "$ro" != read-only ] || params+=", readOnly: true"
+    [ -z "$ro" ] || device="readOnly: true${device:+, $device}"
+    [ -z "$mode" ] || device="mode: $mode${device:+, $device}"
+    sections=$(dra-config-sections "$device" "$container" "$pool")
     devices="devices:
   requests:
   - name: mem
@@ -1473,12 +1550,12 @@ dra-claim-yaml() { # script API
         requests:
           memory: $size"
     fi
-    if [ -n "$params" ]; then
+    if [ -n "$sections" ]; then
         devices+="
   config:
   - opaque:
       driver: $driver
-      parameters: {apiVersion: $driver/v1alpha1, kind: DeviceConfig$params}"
+      parameters: $(dra-memory-config "$sections")"
     fi
     # shellcheck disable=SC2001 # sed indents every line
     if [ "$kind" == claim ]; then
@@ -1503,59 +1580,155 @@ EOF
     fi
 }
 
-dra-claim-pod-yaml() { # script API
-    # Usage: dra-claim-pod-yaml NAME claim|template SOURCE NODE
+dra-pod-yaml() { # script API
+    # Usage: dra-pod-yaml NAME NODE [CLAIM...] [-- CONTAINER...]
     #
     # Print pod NAME on Kubernetes node NODE (nodeSelector
-    # kubernetes.io/hostname) whose claim "mem" is the ResourceClaim SOURCE
-    # (claim) or is made from the ResourceClaimTemplate SOURCE (template):
-    # one idle container "main" of $DRA_TOOLS_IMAGE that uses the claim, the
-    # tools of dra-dax-tool-install in /tools, no memory limit.
-    local name="$1" ref=resourceClaimName
-    [ "$2" == claim ] || ref=resourceClaimTemplateName
-    [ -n "$4" ] || error "dra-claim-pod-yaml: no node for pod $name"
-    cat <<EOF
-apiVersion: v1
+    # kubernetes.io/hostname), restartPolicy Never, no memory limits, with
+    # containers of $DRA_TOOLS_IMAGE that have the tools of
+    # dra-dax-tool-install in /tools and run $DRA_RUNNER as their main
+    # process (see dra-run). Every CLAIM is a claim of the pod:
+    #   CNAME=claim:CLAIM        the ResourceClaim CLAIM
+    #   CNAME=template:TEMPLATE  a claim made from the ResourceClaimTemplate
+    # Every CONTAINER is a container of the pod and the claims it uses:
+    #   CTR=REF[,REF...]         REF: a claim CNAME (every result of it) or
+    #                            CNAME/REQUEST (only the result of REQUEST)
+    #   CTR                      no claims
+    # Without CONTAINERs the pod has one container "main" with every claim.
+    # Example: dra-pod-yaml split "$VM2_NAME" mem=claim:split -- c-numa=mem/numa c-dax=mem/dax
+    local name="$1" node="$2" claims=() ctrs=() a cname src ctr refs ref yaml
+    shift 2
+    [ -n "$node" ] || error "dra-pod-yaml: no node for pod $name"
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do
+        claims+=("$1")
+        shift
+    done
+    [ "$1" != -- ] || shift
+    ctrs=("$@")
+    if [ "${#ctrs[@]}" == 0 ]; then
+        refs=""
+        for a in "${claims[@]}"; do
+            refs+="${refs:+,}${a%%=*}"
+        done
+        ctrs=("main${refs:+=$refs}")
+    fi
+    yaml="apiVersion: v1
 kind: Pod
 metadata:
   name: $name
 spec:
   nodeSelector:
-    kubernetes.io/hostname: $4
+    kubernetes.io/hostname: $node
   terminationGracePeriodSeconds: 2
-  restartPolicy: Never
-  resourceClaims:
-  - name: mem
-    $ref: $3
+  restartPolicy: Never"
+    if [ "${#claims[@]}" -gt 0 ]; then
+        yaml+="
+  resourceClaims:"
+        for a in "${claims[@]}"; do
+            cname=${a%%=*} src=${a#*=}
+            case "$src" in
+                claim:*) yaml+="
+  - name: $cname
+    resourceClaimName: ${src#claim:}";;
+                template:*) yaml+="
+  - name: $cname
+    resourceClaimTemplateName: ${src#template:}";;
+                *) error "dra-pod-yaml: claim '$a' is not CNAME=claim:CLAIM or CNAME=template:TEMPLATE";;
+            esac
+        done
+    fi
+    yaml+="
   volumes:
   - name: tools
     configMap:
       name: dax-rw
-  containers:
-  - name: main
+  containers:"
+    for a in "${ctrs[@]}"; do
+        ctr=${a%%=*} refs=""
+        [[ "$a" != *=* ]] || refs=${a#*=}
+        # shellcheck disable=SC2001 # sed indents every line of the runner
+        yaml+="
+  - name: $ctr
     image: $DRA_TOOLS_IMAGE
     imagePullPolicy: IfNotPresent
-    command: ["sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+    command:
+    - sh
+    - -c
+    - |
+$(sed 's/^/      /' <<< "$DRA_RUNNER")
     volumeMounts:
     - name: tools
-      mountPath: /tools
+      mountPath: /tools"
+        [ -n "$refs" ] || continue
+        yaml+="
     resources:
-      claims:
-      - name: mem
-EOF
+      claims:"
+        for ref in ${refs//,/ }; do
+            yaml+="
+      - name: ${ref%%/*}"
+            [[ "$ref" != */* ]] || yaml+="
+        request: ${ref#*/}"
+        done
+    done
+    echo "$yaml"
+}
+
+dra-claim-pod-yaml() { # script API
+    # Usage: dra-claim-pod-yaml NAME claim|template SOURCE NODE
+    #
+    # Print pod NAME on Kubernetes node NODE (see dra-pod-yaml) whose claim
+    # "mem" is the ResourceClaim SOURCE (claim) or is made from the
+    # ResourceClaimTemplate SOURCE (template): one container "main" that
+    # uses the claim, the tools of dra-dax-tool-install in /tools, its main
+    # process $DRA_RUNNER (see dra-run), no memory limit.
+    [ -n "$4" ] || error "dra-claim-pod-yaml: no node for pod $1"
+    dra-pod-yaml "$1" "$4" "mem=$2:$3"
 }
 
 dra-claim-pod() { # script API
-    # Usage: dra-claim-pod VMDIR NAME CLASS SIZE [MODE [read-only]]
+    # Usage: dra-claim-pod VMDIR NAME CLASS SIZE [MODE [read-only]] [SECTION=FIELDS...]
     #
     # Create pod NAME on the node of the VM of VMDIR with a claim of
-    # DeviceClass CLASS for SIZE, with MODE and read-only in its
-    # DeviceConfig (see dra-claim-yaml), made from a
+    # DeviceClass CLASS for SIZE, with the configuration of MODE, read-only
+    # and SECTION=FIELDS (see dra-claim-yaml), made from a
     # ResourceClaimTemplate NAME of its own: the claim lives and dies with
     # the pod.
-    dra-apply "$1" <<< "$(dra-claim-yaml template "$2" "$3" "$4" "$5" "$6")
+    # Example: dra-claim-pod "$VM" steered cxl-local 128Mi "container=steering: {policy: auto}"
+    local vmdir="$1" name="$2"
+    shift 2
+    dra-apply "$vmdir" <<< "$(dra-claim-yaml template "$name" "$@")
 ---
-$(dra-claim-pod-yaml "$2" template "$2" "$(dra-vm-name "$1")")"
+$(dra-claim-pod-yaml "$name" template "$name" "$(dra-vm-name "$vmdir")")"
+}
+
+dra-run() { # script API
+    # Usage: dra-run VMDIR POD[/CONTAINER] SCRIPT [TIMEOUT]
+    #
+    # Run the shell SCRIPT as a child of the main process of a container of
+    # dra-pod-yaml (the default container of POD when CONTAINER is not
+    # given), so that it inherits the memory policy of that process, and
+    # wait until it exits, TIMEOUT seconds at most (default 120). One
+    # kubectl exec writes the script for $DRA_RUNNER and waits in the
+    # container. COMMAND_OUTPUT has what SCRIPT printed (stdout and
+    # stderr), COMMAND_STATUS its exit status (124 on timeout), which is
+    # also returned.
+    # Example: dra-run "$VM" steered "python3 /tools/numa-touch.py 64 -"
+    local vmdir="$1" target="$2" script="$3" tmo="${4:-120}"
+    # shellcheck disable=SC2016 # expanded by sh in the container
+    dra-exec "$vmdir" "$target" sh -c '
+rm -f /tmp/run.rc /tmp/run.out
+printf "%s\n" "$1" > /tmp/run.new && mv /tmp/run.new /tmp/run || exit 125
+i=0
+while [ ! -f /tmp/run.rc ]; do
+    if [ "$i" -ge "$2" ]; then
+        echo "dra-run: the script did not finish in $(( $2 / 10 )) s" >&2
+        exit 124
+    fi
+    sleep 0.1
+    i=$(( i + 1 ))
+done
+cat /tmp/run.out
+exit "$(cat /tmp/run.rc)"' sh "$script" "$(( tmo * 10 ))"
 }
 
 dra-shared-claim-yaml() { # script API
@@ -1565,13 +1738,18 @@ dra-shared-claim-yaml() { # script API
     # (default cxl-pool-shared) for the shared device SERIAL. SHARES is the
     # "shares" capacity to request: "1" for one share of the device, ""
     # for none, which is the device exclusively (the request consumes all
-    # of its shares). PARAMETERS are the fields of its DeviceConfig, for
-    # instance "mode: dax, readOnly: true" ("": no DeviceConfig). The
-    # selector and the DeviceConfig are of the driver of CLASS:
-    # $DRA_LOCAL_DRIVER for cxl-local*, else $DRA_POOL_DRIVER.
-    # Example: dra-shared-claim-yaml writer 0xc1ae0001 "" "mode: block" cxl-pool-persistent
+    # of its shares). PARAMETERS are the fields of the device section of
+    # its configuration, for instance "mode: dax, readOnly: true" ("": no
+    # configuration), or, when they start with "device:", "container:" or
+    # "pool:", its sections (see dra-memory-config). The selector and the
+    # configuration are of the driver of CLASS: $DRA_LOCAL_DRIVER for
+    # cxl-local*, else $DRA_POOL_DRIVER.
+    # Examples:
+    #   dra-shared-claim-yaml writer 0xc1ae0001 "" "mode: block" cxl-pool-persistent
+    #   dra-shared-claim-yaml placed 0xc1ee0002 "" "pool: {opaque: {fake-cxl-pool: {numaNode: 1}}}" cxl-pool
     local name="$1" serial="$2" shares="$3" params="$4" class="${5:-cxl-pool-shared}" driver="$DRA_POOL_DRIVER"
     [[ "$class" != cxl-local* ]] || driver="$DRA_LOCAL_DRIVER"
+    [[ -z "$params" || "$params" =~ ^(device|container|pool): ]] || params="device: {$params}"
     cat <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -1599,7 +1777,7 @@ EOF
     config:
     - opaque:
         driver: $driver
-        parameters: {apiVersion: $driver/v1alpha1, kind: DeviceConfig, $params}
+        parameters: $(dra-memory-config "$params")
 EOF
     fi
 }
@@ -2020,6 +2198,69 @@ dra-container-anon() { # script API
         awk -v n="N$node" '$1 == "anon" { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == n) v = kv[2] } } END { print v + 0 }'
 }
 
+dra-container-mempolicy() { # script API
+    # Usage: dra-container-mempolicy VMDIR POD CONTAINER
+    #
+    # Print the memory policy of the main process of container CONTAINER
+    # of pod POD in $DRA_NS (its init process, crictl inspect .info.pid),
+    # read in the VM of VMDIR, quietly: the policies of the mappings in its
+    # numa_maps, which show the policy of the process where a mapping has
+    # none of its own, distinct, space-separated, for instance "default",
+    # "prefer:2" or "interleave:0-2". Return non-zero if it cannot be read.
+    local vmdir="$1" pod="$2" container="$3"
+    dra-vm-command-q "$vmdir" "id=\$(kubectl get pod -n $DRA_NS $pod -o jsonpath='{.status.containerStatuses[?(@.name==\"$container\")].containerID}') && id=\${id#*://} && [ -n \"\$id\" ] &&
+        pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' \$id 2>/dev/null) && [ -n \"\$pid\" ] &&
+        p=\$(awk '{print \$2}' /proc/\$pid/numa_maps | sort -u | tr '\n' ' ') && [ -n \"\$p\" ] && echo \"\${p% }\""
+}
+
+dra-memory-state() {
+    # Usage: dra-memory-state VMDIR POD CONTAINER
+    #
+    # Set DRA_MEM_HIGH to memory.high of container CONTAINER of pod POD and
+    # DRA_MEMPOLICY to the memory policy of its main process (see
+    # dra-container-mempolicy). Return non-zero if either cannot be read.
+    DRA_MEM_HIGH=$(dra-container-read "$1" "$2" "$3" memory.high) || return 1
+    DRA_MEMPOLICY=$(dra-container-mempolicy "$1" "$2" "$3") || return 1
+}
+
+dra-memory-wait() { # script API
+    # Usage: dra-memory-wait VMDIR POD CONTAINER steered|fenced|none [STEERING]
+    #
+    # Wait until the driver on the node of the VM of VMDIR has logged how
+    # it manages the memory of container CONTAINER of pod POD in $DRA_NS
+    # ("NRI CreateContainer: ctr=NS/POD/CONTAINER: memory MANAGEMENT
+    # (steering STEERING, fencing ..."; STEERING is the effective policy
+    # and its origin, for instance "none (default)" or "auto from claim
+    # NS/NAME request mem"; any if not given), and check the container:
+    #   steered        memory.high is not max and the main process has a
+    #                  memory policy (waits until the steering has started)
+    #   fenced, none   memory.high is max and the main process has the
+    #                  default memory policy
+    # DRA_MEM_HIGH and DRA_MEMPOLICY are what was read last. Fail the test
+    # on timeout or a mismatch.
+    # Example: dra-memory-wait "$VM" numa-a main fenced "none (default)"
+    local vmdir="$1" pod="$2" container="$3" mgmt="$4" steering="$5" ctr label
+    ctr="$DRA_NS/$pod/$container"
+    label=$(dra-vm-label "$vmdir")
+    case "$mgmt" in
+        steered|fenced|none) ;;
+        *) error "dra-memory-wait: unknown management '$mgmt'";;
+    esac
+    dra-plugin-log-wait "$vmdir" "NRI CreateContainer: ctr=$ctr: memory $mgmt (${steering:+steering $steering}" 60
+    DRA_MEM_HIGH="" DRA_MEMPOLICY=""
+    if [ "$mgmt" == steered ]; then
+        retry-until --timeout 30 --interval 1 --message "$label: $ctr is steered: memory.high is not max, its main process has a memory policy" \
+            'dra-memory-state "$vmdir" "$pod" "$container" && [ "$DRA_MEM_HIGH" != max ] && [ "$DRA_MEMPOLICY" != default ]' ||
+            error "$label: $ctr is not steered: memory.high '$DRA_MEM_HIGH', memory policy of its main process '$DRA_MEMPOLICY'"
+    else
+        dra-memory-state "$vmdir" "$pod" "$container" ||
+            error "$label: cannot read memory.high or the memory policy of the main process of $ctr"
+        [ "$DRA_MEM_HIGH" == max ] && [ "$DRA_MEMPOLICY" == default ] ||
+            error "$label: $ctr is $mgmt, not steered, but memory.high is '$DRA_MEM_HIGH' and the memory policy of its main process '$DRA_MEMPOLICY', expected max and default"
+    fi
+    echo "memory ok: $label: $ctr $mgmt${steering:+, steering $steering}: memory.high $DRA_MEM_HIGH, memory policy of the main process $DRA_MEMPOLICY"
+}
+
 dra-container-bpf-count() {
     # Usage: dra-container-bpf-count VMDIR POD CONTAINER
     local cg
@@ -2066,6 +2307,8 @@ dra-nodes-py() {
     # has: return 0 if node ARG is in the node list LIST ("0-1,3").
     # eq:  return 0 if the node lists LIST and ARG have the same nodes
     #      ("0-2" and "0-1,2": the kernel joins ranges).
+    # sub: return 0 if LIST has nodes and all of them are in the node list
+    #      ARG.
     python3 -c '
 import sys
 def nodes(text):
@@ -2076,7 +2319,13 @@ def nodes(text):
             out.update(range(int(lo), int(hi or lo) + 1))
     return out
 op, a, b = sys.argv[1:4]
-sys.exit(0 if (int(b) in nodes(a) if op == "has" else nodes(a) == nodes(b)) else 1)' "$1" "$2" "$3"
+if op == "has":
+    ok = int(b) in nodes(a)
+elif op == "sub":
+    ok = bool(nodes(a)) and nodes(a) <= nodes(b)
+else:
+    ok = nodes(a) == nodes(b)
+sys.exit(0 if ok else 1)' "$1" "$2" "$3"
 }
 
 dra-nodes-has() { # script API
@@ -2093,12 +2342,22 @@ dra-nodes-eq() { # script API
     dra-nodes-py eq "$1" "$2"
 }
 
+dra-nodes-subset() { # script API
+    # Usage: dra-nodes-subset LIST1 LIST2
+    #
+    # Return 0 if the node list LIST1 has nodes and every one of them is in
+    # the node list LIST2.
+    dra-nodes-py sub "$1" "$2"
+}
+
 dra-touch-start() { # script API
     # Usage: dra-touch-start VMDIR POD/CONTAINER MIB NODE
     #
     # Start numa-touch.py (dra-dax-tool-install) in the background in
-    # container CONTAINER of pod POD in $DRA_NS: MIB MiB that prefer NUMA
-    # node NODE, held until dra-touch-stop. Wait until it has touched every
+    # container CONTAINER of pod POD in $DRA_NS (kubectl exec: not a child
+    # of the main process, see dra-run): MIB MiB that prefer NUMA node NODE
+    # ("-": the policy of the process), held until dra-touch-stop. Wait
+    # until it has touched every
     # page. DRA_TOUCH_PID is its pid in the container, DRA_TOUCH_LOG its
     # output then, with the pages per node. Fail the test if it fails.
     local vmdir="$1" target="$2" mib="$3" node="$4" pod container
@@ -2119,14 +2378,27 @@ dra-touch-start() { # script API
     DRA_TOUCH_LOG="$COMMAND_OUTPUT"
 }
 
-dra-touch-log-pages() {
-    # Usage: dra-touch-log-pages TEXT NODE
+dra-touch-log-pages() { # script API
+    # Usage: dra-touch-log-pages TEXT NODES
     #
-    # Print the pages on NODE in the last "numa-touch: pages" line of TEXT
-    # (0 if the node is not listed).
-    local pages
-    pages=$(grep '^numa-touch: pages' <<< "$1" | tail -n 1 | tr ' ' '\n' | sed -n "s/^N$2=//p")
-    echo "${pages:-0}"
+    # Print the pages on the NUMA nodes NODES (a node list, "2" or "0-1")
+    # in the last "numa-touch: pages" line of TEXT, the output of
+    # numa-touch.py (0 for a node that is not listed).
+    python3 -c '
+import sys
+text, spec = sys.argv[1], sys.argv[2]
+want = set()
+for part in spec.strip().split(","):
+    if part:
+        lo, _, hi = part.partition("-")
+        want.update(range(int(lo), int(hi or lo) + 1))
+lines = [l for l in text.splitlines() if l.startswith("numa-touch: pages")]
+pages = 0
+for w in (lines[-1].split()[2:] if lines else []):
+    k, sep, v = w.partition("=")
+    if sep and k[:1] == "N" and k[1:].isdigit() and int(k[1:]) in want:
+        pages += int(v)
+print(pages)' "$1" "$2"
 }
 
 dra-touch-pages() { # script API
@@ -2234,6 +2506,9 @@ dra-py() {
     #   configs(kind, claim)   the opaque configs of a ResourceClaim (j) of
     #                          kind (all if None): {driver, parameters,
     #                          requests}
+    #   config_section(c, name)  section name (device, container, pool) of
+    #                          the parameters of an entry c of configs(),
+    #                          {} if it has none
     #   events(reason, name)   Events with reason, of object name
     #   dax_slices(driver)     dax devices with a size of a dra-memdev-sysfs
     #                          document (j), bound to driver if given
@@ -2356,6 +2631,9 @@ def configs(kind=None, claim=None):
     return [dict(c["opaque"], requests=c.get("requests")) for c in claim["spec"]["devices"].get("config") or []
             if c.get("opaque") and (kind is None or c["opaque"]["parameters"].get("kind") == kind)]
 
+def config_section(c, name):
+    return (c.get("parameters") or {}).get(name) or {}
+
 def events(reason=None, name=None):
     return [e for e in items
             if (reason is None or e.get("reason") == reason)
@@ -2447,6 +2725,52 @@ for d in (j.get("status") or {}).get("devices") or []:
         print("  %s: %s=%s %s" % (d.get("device"), c.get("type"), c.get("status"), c.get("reason", "")))
     if d.get("data"):
         print("  %s: data %s" % (d.get("device"), json.dumps(d["data"], sort_keys=True)))' <<< "$json"
+}
+
+dra-claim-condition-watch() { # script API
+    # Usage: dra-claim-condition-watch VMDIR CLAIM TYPE REASON [TIMEOUT]
+    #
+    # Watch ResourceClaim CLAIM in $DRA_NS (kubectl get -w) until the status
+    # of one of its devices has condition TYPE with status True and reason
+    # REASON, TIMEOUT seconds at most (default 60), and print the condition.
+    # The watch sees conditions that last only until the scheduler
+    # deallocates the claim, for instance those of bindingFailureConditions.
+    # Fail the test on timeout.
+    # Example: dra-claim-condition-watch "$VM" bad-pool cxl-pool.nri.io/AttachFailed InvalidConfig
+    local vmdir="$1" claim="$2" ctype="$3" reason="$4" tmo="${5:-60}" prog
+    prog='
+import json, os, select, subprocess, sys, time
+ns, claim, ctype, reason, tmo = sys.argv[1:6]
+p = subprocess.Popen(["kubectl", "get", "resourceclaim", "-n", ns, claim, "-w", "-o", "json"], stdout=subprocess.PIPE)
+deadline = time.monotonic() + int(tmo)
+dec, buf = json.JSONDecoder(), ""
+while True:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        p.kill()
+        sys.exit(1)
+    if not select.select([p.stdout], [], [], left)[0]:
+        continue
+    chunk = os.read(p.stdout.fileno(), 65536)
+    if not chunk:
+        sys.exit(1)
+    buf += chunk.decode(errors="replace")
+    while True:
+        buf = buf.lstrip()
+        try:
+            obj, end = dec.raw_decode(buf)
+        except ValueError:
+            break
+        buf = buf[end:]
+        for d in (obj.get("status") or {}).get("devices") or []:
+            for c in d.get("conditions") or []:
+                if c.get("type") == ctype and c.get("status") == "True" and c.get("reason") == reason:
+                    print("%s: %s=True reason %s: %s" % (d.get("device"), ctype, reason, c.get("message", "")))
+                    p.kill()
+                    sys.exit(0)'
+    echo "watching ResourceClaim $claim for $ctype=True reason $reason, ${tmo}s at most"
+    dra-vm-command "$vmdir" "python3 -c $(printf %q "$prog")$(printf ' %q' "$DRA_NS" "$claim" "$ctype" "$reason" "$tmo")" ||
+        error "$(dra-vm-label "$vmdir"): ResourceClaim $claim had no device with condition $ctype=True reason $reason in ${tmo}s"
 }
 
 dra-pod-wait() { # script API

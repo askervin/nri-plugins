@@ -13,18 +13,18 @@
 #   both VMs. Class cxl-pool-persistent selects it, cxl-pool-shared does
 #   not.
 # - The writer claims it without a "shares" request, which takes all of
-#   them (exclusive, writable), DeviceConfig {mode: block}: the driver
-#   creates a pmem region and an fsdax namespace and gives the container
-#   the block device /dev/pmemK.
+#   them (exclusive, writable), MemoryConfig device {mode: block}: the
+#   driver creates a pmem region and an fsdax namespace and gives the
+#   container the block device /dev/pmemK.
 #   The writer runs on VM1, the only node with the model; VM1 builds the
 #   erofs image with "mkfs.erofs -b4096 --dsunit=512 -Enoinline_data", the
 #   writer writes it with dd and exits. The host finds the model in the data
 #   file at a 2 MiB-aligned offset, and labels in the LSA file.
-# - The readers claim it with one share each (shares: "1"), DeviceConfig
-#   {mode: fs, readOnly: true, access: direct|cached}: the driver mounts
-#   the erofs on the node once per access (direct: the pmem block device
-#   with dax=always; cached: a read-only direct-I/O loop device over it)
-#   and binds the mount read-only into the container, with no device
+# - The readers claim it with one share each (shares: "1"), MemoryConfig
+#   device {mode: fs, readOnly: true, access: direct|cached}: the driver
+#   mounts the erofs on the node once per access (direct: the pmem block
+#   device with dax=always; cached: a read-only direct-I/O loop device over
+#   it) and binds the mount read-only into the container, with no device
 #   node. Three direct readers (two on VM2, one on VM1) start first, then
 #   three cached readers in the same places, one at a time, while the
 #   direct ones still run.
@@ -508,8 +508,8 @@ lease-companion-check() {
     # labeled and annotated with the lease and its requester (container
     # main), the pod runs on the node of READER and holds the claim, and
     # the claim asks for one share of the device in class
-    # cxl-pool-persistent with a DeviceConfig {mode: fs, readOnly: true,
-    # access} of the pool driver and no path, is allocated the device on
+    # cxl-pool-persistent with a MemoryConfig of the pool driver, device
+    # section {mode: fs, readOnly: true, access} and no path, is allocated the device on
     # that node, attached, persistent and not exclusive, and has no CDI
     # device.
     local r="$1" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" lease="${READER_LEASE[$1]}" uid="${READER_UID[$1]}" node name json claim_uid cdis
@@ -528,7 +528,7 @@ lease-companion-check() {
     dra-assert "$json" "[(o['kind'], o['name'], o['uid'], o.get('controller')) for o in j['metadata']['ownerReferences']] == [('Pod', '$r', '$uid', True)]"
     dra-companion-meta-check "$json" "$lease" "$uid" "$node" "$DRA_NS/$r/main"
     dra-assert "$json" "[(s['deviceClassName'], [x['cel']['expression'] for x in s.get('selectors') or []], s.get('capacity')) for s in subrequests()] == [('cxl-pool-persistent', ['device.attributes[\"$DRA_POOL_DRIVER\"].serial == \"$LLM_SERIAL\"'], {'requests': {'shares': '1'}})]"
-    dra-assert "$json" "[(c['driver'], c['parameters']) for c in configs()] == [('$DRA_POOL_DRIVER', {'apiVersion': '$DRA_POOL_DRIVER/v1alpha1', 'kind': 'DeviceConfig', 'mode': 'fs', 'readOnly': True, 'access': '$access'})]"
+    dra-assert "$json" "[(c['driver'], c['parameters']) for c in configs()] == [('$DRA_POOL_DRIVER', {'apiVersion': '$DRA_CONFIG_API', 'kind': '$DRA_CONFIG_KIND', 'device': {'mode': 'fs', 'readOnly': True, 'access': '$access'}})]"
     dra-assert "$json" "[(x['driver'], x['device']) for x in results()] == [('$DRA_POOL_DRIVER', '$LLM_DEVICE')] and allocated_node() == '$node'"
     dra-assert "$json" "condition('$DRA_POOL_DRIVER/Attached') == 'True' and quantity(results()[0]['consumedCapacity']['shares']) == 1"
     dra-assert "$json" "device_data('$LLM_DEVICE').get('persistent') == True and not device_data('$LLM_DEVICE').get('exclusive')"

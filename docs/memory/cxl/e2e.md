@@ -438,7 +438,8 @@ also run their node-side commands (`cxl`, `daxctl`) in VM2.
 
 256Mi of the local CXL memory device of VM2 as system RAM: the driver
 creates a region on the device, onlines a slice of it as movable memory
-of the device's NUMA node, and steers the container to that node. Only
+of the device's NUMA node, and puts that node into the container's
+`cpuset.mems` (the container is not steered: it did not opt in). Only
 VM2's local device is attached, so only VM2 can serve the claim; the pod
 says so with its `nodeSelector` all the same. In VM2, attach the local
 device (nothing happens if it is attached already) and wait until the
@@ -506,7 +507,7 @@ CXL_C100E2E1_NODE=2
 CXL_C100E2E1_SERIAL=0xc100e2e1
 CXL_C100E2E1_SHARED=0
 CXL_C100E2E1_SIZE=268435456
-CXL_CLAIM_<uid>=1
+CXL_CLAIM_<uid>_0=1
 cpuset.mems: 0-2
 Node 2 MemTotal:         262144 kB
 ```
@@ -533,8 +534,8 @@ sudo cxl list -R
 
 ## Example b: a local dax slice
 
-A devdax slice of the same local device: claim 64Mi with a `DeviceConfig`
-`mode: dax`. The slice is rounded up to a whole memory block (128Mi), and
+A devdax slice of the same local device: claim 64Mi with a `MemoryConfig`
+`device: {mode: dax}`. The slice is rounded up to a whole memory block (128Mi), and
 the driver zeroes it before the container gets it. The container gets the
 device node `/dev/daxX.Y`, maps it, writes and reads. In VM2:
 
@@ -560,8 +561,9 @@ spec:
         driver: cxl.nri.io
         parameters:
           apiVersion: cxl.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: dax
+          kind: MemoryConfig
+          device:
+            mode: dax
 ---
 apiVersion: v1
 kind: Pod
@@ -617,8 +619,8 @@ bound to `device_dax`, and adds nothing to any NUMA node:
 sudo daxctl list
 ```
 
-Several pods that reference the same ResourceClaim share its slice; a
-`DeviceConfig` with `readOnly: true` gives a device node that the
+Several pods that reference the same ResourceClaim share its slice;
+`device: {mode: dax, readOnly: true}` gives a device node that the
 container may open for reading only
 ([local-dax-shared-claim.yaml](blob:/deployment/samples/dra-driver-cxl/local-dax-shared-claim.yaml),
 [local-dax-readonly.yaml](blob:/deployment/samples/dra-driver-cxl/local-dax-readonly.yaml)).
@@ -634,8 +636,9 @@ kubectl delete pod/local-dax resourceclaim/local-dax
 and waits for its binding condition, the pool controller attaches it to
 the node through fake-cxl-pool-server and sets
 `cxl-pool.nri.io/Attached`, and the driver onlines the hotplugged device
-as a new NUMA node. The container is not steered: it gets the node number
-and binds its memory there itself (`numactl --membind`, `mbind`). The pool
+as a new NUMA node. The container is not steered (it did not opt in): it
+gets the node number and binds its memory there itself
+(`numactl --membind`, `mbind`). The pool
 device could go to either node; the pod's `nodeSelector` makes the
 scheduler allocate it for VM2, so the node-side commands below run in
 VM2. In VM2:
@@ -693,7 +696,7 @@ CXL_C1EE0001_NODE=2
 CXL_C1EE0001_SERIAL=0xc1ee0001
 CXL_C1EE0001_SHARED=0
 CXL_C1EE0001_SIZE=536870912
-CXL_CLAIM_<uid>=1
+CXL_CLAIM_<uid>_0=1
 Node 2 MemTotal:         524288 kB
 cxl-pool.nri.io/Attached=True {"attachment":"pooled0@n4-cxl-shared-2-fedora-43-containerd","host":"n4-cxl-shared-2-fedora-43-containerd","hostUUID":"1b6d55a2-ae4a-52f8-bbba-2e3f9adca1b1","qemuDeviceId":"fcp_pooled0.hp2","serial":"0xc1ee0001","shared":false,"size":536870912}
 ```
@@ -854,7 +857,7 @@ CXL_C1AE0001_READONLY=0
 CXL_C1AE0001_SERIAL=0xc1ae0001
 CXL_C1AE0001_SHARED=1
 CXL_C1AE0001_SIZE=268435456
-CXL_CLAIM_<uid>=1
+CXL_CLAIM_<uid>_0=1
 read: message 1 from n4-cxl-shared-2-fedora-43-containerd
 read: message 2 from n4-cxl-shared-2-fedora-43-containerd
 read: message 3 from n4-cxl-shared-2-fedora-43-containerd
@@ -983,14 +986,14 @@ CXL_C1EE0001_READONLY=0
 CXL_C1EE0001_SERIAL=0xc1ee0001
 CXL_C1EE0001_SHARED=0
 CXL_C1EE0001_SIZE=536870912
-CXL_CLAIM_<uid>=1
+CXL_CLAIM_<uid>_0=1
 CXL_LEASE=11ff3fc6
 CXL_LEASE_SOCKET=/run/cxl/cxl.sock
 /dev/dax2.0
 {"shared":false,"readOnly":false,"leases":[{"lease":"11ff3fc6","state":"Ready","source":"pool","mode":"dax","shared":false,"readOnly":false,"size":536870912,"serial":"0xc1ee0001","dax":"/dev/dax2.0","env":{...}},{"lease":"319ab5d0","state":"Ready","source":"local","mode":"numa",...}]}
 ```
 
-`CXL_CLAIM_<uid>` is the marker of the pod's own lease claim. The whole
+`CXL_CLAIM_<uid>_0` is the marker of the pod's own lease claim. The whole
 512Mi device `pooled0` serves the 256Mi request.
 
 Give the memory back; the node leaves `cpuset.mems`, the companions go,
@@ -1209,8 +1212,8 @@ kubectl delete pod/fs-writer resourceclaim/fs-writer
 ```
 
 The readers: a ResourceClaimTemplate, so that each reader gets a claim of
-its own (one share of the device each, `shares: "1"`) with a `DeviceConfig`
-`readOnly: true`, and three pods, two on VM2 and one on VM1:
+its own (one share of the device each, `shares: "1"`) with a `MemoryConfig`
+`device: {readOnly: true}`, and three pods, two on VM2 and one on VM1:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -1235,9 +1238,10 @@ spec:
       - opaque:
           driver: cxl-pool.nri.io
           parameters:
-            apiVersion: cxl-pool.nri.io/v1alpha1
-            kind: DeviceConfig
-            readOnly: true
+            apiVersion: cxl.nri.io/v1alpha1
+            kind: MemoryConfig
+            device:
+              readOnly: true
 EOF
 for r in reader-1:n4-cxl-shared-2-fedora-43-containerd \
          reader-2:n4-cxl-shared-2-fedora-43-containerd \

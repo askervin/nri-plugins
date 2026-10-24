@@ -288,11 +288,13 @@ reset_ns() { # delete and create namespace $NS with the tools ConfigMap
 }
 
 claim_yaml() {
-    # Usage: claim_yaml NAME CLASS [memory=SIZE] [shares=N] [mode=MODE] [readonly] [template]
+    # Usage: claim_yaml NAME CLASS [memory=SIZE] [shares=N] [mode=MODE] [readonly] [steering=POLICY] [template]
     #
     # A ResourceClaim (a ResourceClaimTemplate with "template") NAME of one
-    # request "mem" on DeviceClass CLASS for the device of $CXL_SERIAL.
-    local name="$1" class="$2" mem="" shares="" mode="" ro="" template="" a cfg="" caps="" spec
+    # request "mem" on DeviceClass CLASS for the device of $CXL_SERIAL. A
+    # mode, readonly or steering gives the claim a MemoryConfig: device.mode,
+    # device.readOnly, container.steering.policy.
+    local name="$1" class="$2" mem="" shares="" mode="" ro="" steering="" template="" a cfg="" caps="" dev="" spec
     shift 2
     for a in "$@"; do
         case "$a" in
@@ -300,6 +302,7 @@ claim_yaml() {
             shares=*) shares=${a#shares=} ;;
             mode=*) mode=${a#mode=} ;;
             readonly) ro=true ;;
+            steering=*) steering=${a#steering=} ;;
             template) template=1 ;;
         esac
     done
@@ -310,16 +313,20 @@ claim_yaml() {
         caps="
         capacity: {requests: {shares: \"$shares\"}}"
     fi
-    if [ -n "$mode" ] || [ -n "$ro" ]; then
+    dev="${mode:+mode: $mode}"
+    [ -z "$ro" ] || dev+="${dev:+, }readOnly: true"
+    if [ -n "$dev" ] || [ -n "$steering" ]; then
         cfg="
     config:
     - opaque:
         driver: $DRIVER
         parameters:
           apiVersion: cxl.nri.io/v1alpha1
-          kind: DeviceConfig${mode:+
-          mode: $mode}${ro:+
-          readOnly: true}"
+          kind: MemoryConfig"
+        [ -z "$dev" ] || cfg+="
+          device: {$dev}"
+        [ -z "$steering" ] || cfg+="
+          container: {steering: {policy: $steering}}"
     fi
     spec="
   devices:

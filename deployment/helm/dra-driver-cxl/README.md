@@ -4,8 +4,9 @@ This chart deploys the dra-driver-cxl Node Resource Interface (NRI) plugin.
 The plugin is a Dynamic Resource Allocation (DRA) driver for CXL memory: it
 publishes the CXL memory devices, regions and DRAM of every node as DRA
 devices (driver `cxl.nri.io`), prepares claims of CXL memory pool devices
-(driver `cxl-pool.nri.io`), steers the memory of containers to their claimed
-memory, and lends memory to running containers (leases).
+(driver `cxl-pool.nri.io`), keeps containers off the CXL memory they did
+not claim, steers the memory of the containers that opt in to their
+claimed memory, and lends memory to running containers (leases).
 
 CAUTION: experimental. Interfaces may change.
 
@@ -84,6 +85,9 @@ config:
   ignoreDevices: ["mem0"]
   # local devices shared by the claims of class cxl-local-shared
   sharedDevices: ["0xc100e2e1"]
+  defaults:
+    container:
+      fencing: allowed-mems
 
 leases:
   enabled: false
@@ -130,6 +134,7 @@ customize with their own values, along with the default values.
 | `leases.wait`            | 120s                                                                                                                          | how long a lease request waits for Ready when it does not say (`--lease-wait`) |
 | `leases.companionImage`  | registry.k8s.io/pause:3.10                                                                                                    | image of the companion pods of leases (`--lease-companion-image`) |
 | `config`                 | {}                                                                                                                            | driver configuration file (`-f`)                     |
+| `deviceClassConfig`      | {}                                                                                                                            | class name: the body of a `MemoryConfig` (`device`, `container`, `pool`), rendered into the `spec.config` of the class |
 | `logLevel`               | 4                                                                                                                             | log verbosity (`-v`)                                 |
 | `extraEnv`               | {}                                                                                                                            | extra environment variables of the driver, name: value |
 | `initContainerImage.name` | [ghcr.io/containers/nri-plugins/nri-config-manager](https://ghcr.io/containers/nri-plugins/nri-config-manager)               | init container image name                            |
@@ -142,9 +147,31 @@ customize with their own values, along with the default values.
 
 The keys of `config` are described in the
 [configuration file](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#configuration-file)
-section of the CXL memory documentation. `config.containerMemory.default`
-(`allowed-mems` by default) keeps the CXL nodes of the driver away from
-the containers that have not claimed memory on them; with an NRI resource
-policy that sets `cpuset.mems` (nri-resource-policy balloons or
-topology-aware) set it to `none`, see
+section of the CXL memory documentation. `config.defaults.container`
+holds the node defaults of the settings of containers:
+`fencing` (`allowed-mems` by default) keeps the CXL nodes of the driver
+away from the containers that have not claimed memory on them; with an
+NRI resource policy that sets `cpuset.mems` (nri-resource-policy balloons
+or topology-aware) set it to `none`, see
 [containers without claims](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#containers-without-claims).
+`steering` (`{policy: none}` by default) steers every container of the
+node with `numa` memory when its policy is `auto` or another policy, see
+[steering](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#steering).
+
+`deviceClassConfig` gives the DeviceClasses of the chart a `MemoryConfig`
+as a preset: the chart renders the body of each class into an opaque
+entry of the class's driver with apiVersion `cxl.nri.io/v1alpha1` and
+kind `MemoryConfig`, and the claims of the class change it field by
+field. For example, steering on for every container with local or pool
+CXL memory, unless its claim says `container: {steering: {policy: none}}`:
+
+```yaml
+deviceClassConfig:
+  cxl-local:
+    container: {steering: {policy: auto}}
+  cxl-pool:
+    container: {steering: {policy: auto}}
+```
+
+See
+[presets in DeviceClasses](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#presets-in-deviceclasses).

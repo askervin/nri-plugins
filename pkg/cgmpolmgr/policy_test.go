@@ -148,9 +148,14 @@ func TestPolicyPlanOrders(t *testing.T) {
 			plan, err := Policy{MemoryUseOrder: tc.order}.Plan(mem)
 			require.NoError(t, err)
 			require.Equal(t, tc.waypoints, plan.Waypoints)
-			// Steps default to the total quota.
-			require.Equal(t, 120*GiB, plan.MinStep)
+			// maxStep defaults to the total quota, minStep to the
+			// smallest increment between waypoints
+			require.Equal(t, 20*GiB, plan.MinStep)
 			require.Equal(t, 120*GiB, plan.MaxStep)
+			// and the plan steers from no usage on
+			step, err := plan.NextStep(NodeMem{})
+			require.NoError(t, err)
+			require.NotEmpty(t, step.Nodes, "first step")
 		})
 	}
 
@@ -196,6 +201,38 @@ func TestPolicyPlanSteps(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 16*MiB, plan.MinStep)
 	require.Equal(t, 64*MiB, plan.MaxStep)
+
+	// one node of each type: the only increments are the quotas
+	plan, err = Policy{MemoryUseOrder: "first-dram"}.Plan(mem)
+	require.NoError(t, err)
+	require.Equal(t, 2*GiB, plan.MinStep, "minStep defaults to the smallest increment between waypoints")
+	require.Equal(t, 4*GiB, plan.MaxStep)
+}
+
+func TestPolicyPlanDefaultStepsInterleaved(t *testing.T) {
+	// 128Mi of DRAM on two nodes and 128Mi of CXL: the first waypoint
+	// is 64Mi, 64Mi and 128Mi, which no even step of the whole quota
+	// reaches
+	mem := MemoryTypes{DRAMNodes: []int{0, 1}, CXLNodes: []int{2}, DRAMQuota: 128 * MiB, CXLQuota: 128 * MiB}
+	plan, err := Policy{MemoryUseOrder: "start-interleaved"}.Plan(mem)
+	require.NoError(t, err)
+	require.Equal(t, 64*MiB, plan.MinStep)
+	require.Equal(t, 256*MiB, plan.MaxStep)
+
+	cur := NodeMem{}
+	for i := 0; i < 10; i++ {
+		step, err := plan.NextStep(cur)
+		require.NoError(t, err)
+		if len(step.Nodes) == 0 {
+			break
+		}
+		require.GreaterOrEqual(t, step.Bytes, plan.MinStep)
+		require.LessOrEqual(t, step.Bytes, plan.MaxStep)
+		for _, n := range step.Nodes {
+			cur[n] += step.Bytes / int64(len(step.Nodes))
+		}
+	}
+	require.Equal(t, NodeMem{0: 64 * MiB, 1: 64 * MiB, 2: 128 * MiB}, cur, "the usage reaches the waypoint")
 }
 
 func TestPolicyPlanUserWaypoints(t *testing.T) {

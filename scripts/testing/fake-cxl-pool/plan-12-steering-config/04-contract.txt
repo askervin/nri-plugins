@@ -1,0 +1,306 @@
+plan-12: contract of MemoryConfig v1alpha1 (normative)
+=====================================================
+Written 2026-10-23 (orchestrator) from the user's answers (02-design.txt
+"Decisions"). Every stream builds against this file; a stream that needs
+a change writes a Request in its status file. Paths: N =
+~/github.com/containers/nri-plugins, D = N/cmd/plugins/dra-driver-cxl,
+P = N/scripts/testing/fake-cxl-pool, E = N/test/e2e/memory.test-suite/
+dra-driver-cxl, H = N/test/hw/dra-driver-cxl-local.
+
+1. Owners
+---------
+  section    owner (applies it)                  when                       errors appear as
+  pool       the pool controller of the device   after allocation, before   claim condition
+             (cluster component, one per pool)   binding (attach)           <driver>/AttachFailed,
+                                                                            reason InvalidConfig
+  device     the kubelet plugin of the device's  NodePrepareResources       Prepare error (pod
+             driver in nri-dra-driver-cxl        (per allocation result)    events), kubelet retries
+             (cxl.nri.io or cxl-pool.nri.io)
+  container  the NRI plugin of                   CreateContainer of a       values: Prepare error;
+             nri-dra-driver-cxl                  container that uses the    combination: the
+                                                 result, and passes over    container is not
+                                                 other containers           created (CreateContainer
+                                                 (fencing, lending)         error)
+Each owner reads only its section. The node driver checks the structure
+of pool (no unknown generic fields) but never the controller-specific
+contents.
+
+2. The configuration
+--------------------
+One kind, one apiVersion, for both drivers and every source:
+
+  apiVersion: cxl.nri.io/v1alpha1
+  kind: MemoryConfig
+  device:
+    mode: numa | dax | block | fs
+    readOnly: false | true
+    access: direct | cached
+    path: <absolute path>
+  container:
+    steering:
+      policy: none | auto | first-dram | first-cxl | start-interleaved |
+              end-interleaved | waypoints
+      waypoints:
+      - targetUsages:
+        - {memoryType: DRAM | CXL, usage: <quantity>}
+      minStep: <quantity>
+      maxStep: <quantity>
+    fencing: allowed-mems | mempolicy | none   # driver configuration only
+  pool:
+    opaque:
+      <controller key>: <object defined by that controller>
+
+device: the fields and rules of today's DeviceConfig (docs usage.md
+  "DeviceConfig", pool.md "Options of pool devices"), unchanged in
+  meaning, per device type and driver:
+  - local memdev, sliced: mode numa (default) or dax; readOnly needs dax;
+    access, path refused.
+  - shared local memdev: dax (default and only); readOnly allowed.
+  - region, dram: numa only; any other device field refused.
+  - lease device (cxl-lease): no device field allowed.
+  - pool devices: as poolModeFor today (block/fs persistent only, fs
+    needs readOnly, ...).
+container.steering: opt-in. Absent (and the node default absent):
+  policy none. Semantics of the policies as cgmpolmgr's memoryUseOrder;
+  auto = today's defaultPolicy (CXL only: first-cxl; DRAM and CXL:
+  start-interleaved; DRAM only: first-dram). waypoints only with policy
+  waypoints, which requires them; minStep, maxStep, waypoints refused with
+  policy none; quantities as today (resource.ParseQuantity); a present
+  steering object needs a policy after combination (section 5).
+container.fencing: plan-11's containerMemory.default, moved. Settable
+  only in the driver configuration (defaults.container.fencing); a class
+  or claim entry that sets it is refused (section 3). mempolicy is
+  refused as not implemented, as in plan-11.
+pool: only in entries of driver cxl-pool.nri.io; in an entry of
+  cxl.nri.io it is refused. pool.opaque is a map: key = the controller
+  key (section 6), value = any JSON object, merged like everything else
+  (section 3). No generic pool field exists in v1alpha1; the section is
+  where they go.
+Reserved names (refused as unknown until implemented): device.online,
+  container.memoryLimit.
+Strict: unknown fields, another kind, another apiVersion are refused.
+
+3. Resolution of one allocation result
+--------------------------------------
+Input: the claim's status.allocation.devices.config, the driver of the
+result, the request name of the result (a subrequest is "r/s").
+1. Take the entries of that driver whose requests are empty, or list the
+   request, or list its main request "r" for "r/s"; class entries
+   (source FromClass) first, then claim entries (FromClaim), in list
+   order.
+2. Decode each entry strictly alone (kind, apiVersion, unknown fields);
+   the error names the source and the index of the entry:
+   `MemoryConfig: FromClaim config 1: json: unknown field "x"`.
+3. Check the allowed sources per field: container.fencing never from an
+   entry (`MemoryConfig: container.fencing: set by the driver
+   configuration only (defaults.container.fencing)`); pool never in a
+   cxl.nri.io entry. The check is a table field -> sources so that
+   admin-only fields later are one line (FromClass only).
+4. Merge the parameter objects (without apiVersion and kind) in order as
+   a JSON merge patch (RFC 7386, gopkg.in/evanphx/json-patch.v4
+   MergePatch): objects merge, scalars and lists replace, null removes.
+5. Decode the merge strictly into MemoryConfig and validate the values
+   that need no device facts. The device facts (type, shared,
+   persistent, exclusive) are checked by the driver, as today.
+Output: the resolved MemoryConfig of the result and, per container
+field that is set, its origin ("claim ns/name request r", "class
+NAME") for messages. Node defaults are not part of the resolution of a
+result: they apply per container (section 5).
+
+4. Which containers use a result
+--------------------------------
+The CDI device of allocation result n of claim <uid> (both drivers)
+injects CXL_CLAIM_<uid with - replaced by _>_<n>=1, replacing
+CXL_CLAIM_<uid>=1. The NRI plugin parses the markers of a container into
+(uid, n) pairs and uses only those results: for the steering plan
+(memory and quotas), for plan-11's claimed nodes, for the container
+settings. A container that lists a claim without request gets every
+result's CDI device, so all of them; with a request only that one
+(Kubernetes resources.claims[].request). Companion claims of leases have
+no CDI devices, as today.
+
+5. Container settings and the management of a container
+-------------------------------------------------------
+For a container with results R (section 4):
+- Combine: for each field of the container section set by the resolved
+  config of any result in R, all results that set it must give the same
+  value (lists and objects compared as JSON, quantities by value); a
+  conflict fails CreateContainer:
+  `container ns/pod/ctr: container.steering.policy: claim ns/a request r
+  says first-cxl, claim ns/b request s says none`.
+- Effective = the driver configuration's defaults.container, overlaid by
+  the combined fields. Containers without results get the defaults.
+- Validate the effective steering (needs a policy; parameters only with
+  a policy that is not none); an error fails CreateContainer naming the
+  origin.
+- Memory to steer: results with numa memory: dram devices (DRAM),
+  regions and numa memdev slices of cxl.nri.io (CXL), numa devices of
+  cxl-pool.nri.io (CXL; quota = the device size). Pool numa memory is
+  steered like local memory (user decision Q2).
+- Management, one of:
+    steered  effective steering.policy is not none and there is memory
+             to steer: cgmpolmgr with that policy (auto: by memory types)
+             and the quotas of the container's results, as today.
+    fenced   not steered, effective fencing allowed-mems: plan-11's
+             wantMems with claimed = the CXL numa nodes of its results
+             (memdev, region, pool) and lent nodes.
+    none     not steered, fencing none: left as it is.
+  This replaces trackedContainer.steered/.fenced and plan-11's
+  memoryMode(pod, ctr). Lending (numa leases) is refused only for
+  steered containers. A container whose results have dram or region
+  memory and that is not steered: V(3) log that the claim reserves
+  capacity only.
+- After a driver restart (Synchronize) the management is computed again
+  from the env markers of the containers and the prepared state, as
+  plan-11 does for steered and claimed nodes; steering managers are still
+  not restarted (02-design P8, open).
+
+6. The pool section and the controller contract
+-----------------------------------------------
+- A pool controller has a controller key, the key of its settings in
+  pool.opaque: fake-cxl-pool-controller flag -config-key, default
+  "fake-cxl-pool". Different implementations use different keys; all
+  controllers of one implementation share it (a claim targets one pool
+  instance with requests/subrequests if it must).
+- For every allocation result of its pool, a controller resolves the
+  result as in section 3 (entries of its driver, cxl-pool.nri.io), reads
+  pool.opaque.<its key> and ignores the other keys and the device and
+  container sections. Go controllers call pkg/cxl/config (section 8).
+- An invalid MemoryConfig or an invalid own object: no attach; the
+  status entry of the result gets condition <driver>/AttachFailed=True,
+  reason InvalidConfig, message the error. The scheduler deallocates
+  and retries until the binding timeout, as for other attach failures.
+- The reference controller's object (strict): slot (string, an exact
+  CXL slot of the host, as the pool server lists them) and numaNode
+  (integer, prefer slots of host bridges on that NUMA node of the host);
+  both go into the pool server's AttachRequest (Slot, NumaNode), which
+  supports them today. Example:
+      pool:
+        opaque:
+          fake-cxl-pool: {numaNode: 1}
+
+7. Driver configuration (node)
+------------------------------
+  defaults:
+    container:
+      steering: {policy: none}      # default; auto opts in every container of the node
+      fencing: allowed-mems         # default; mempolicy refused; none
+containerMemory (plan-11) is removed. defaults has only container in
+v1alpha1 (device and pool are refused as unknown). Decoded and validated
+by pkg/cxl/config. memdevSettings, verifyAddressing and the other keys
+stay as they are.
+
+8. pkg/cxl/config (new; replaces pkg/cxl/memorypolicy and D's
+   deviceConfig)
+---------------------------------------------------------------
+- Types: MemoryConfig, Device, Container, Steering, Waypoint, Pool,
+  Defaults (container only); constants APIVersion, Kind, the policy,
+  mode, access and fencing values.
+- Resolve(claim *resourceapi.ResourceClaim, driver, request string)
+  (*Resolved, error): section 3; Resolved has the config and the origins
+  of the set container fields.
+- Pool helper: PoolOpaque(resolved, key string, out any) (found bool,
+  err error), strict decode of the controller's object.
+- Combine(results []ResultSettings, defaults Container) (Container,
+  error): section 5 combination, defaults and validation, error texts.
+- Steering -> cgmpolmgr.Policy (auto resolved by the caller's memory
+  types).
+- No dependency on cmd/ packages; used by D (both drivers, NRI, broker)
+  and P (controller).
+
+9. Prepared state
+-----------------
+- PreparedDeviceInfo (cxl.nri.io) and preparedPoolDevice gain the
+  resolved container section of the result (Container, json
+  "container,omitempty"); PreparedClaimInfo.Policy goes away. Device
+  fields stay where they are (Mode, ReadOnly, ...).
+- The pool driver's lock-free snapshot (plan-11 claimNodes under
+  serialsMu) becomes per result: uid -> results {index, request, mode,
+  node, size, container}; the NRI plugin reads results of both drivers
+  without poolDriver.mu.
+- Old state files are read leniently (unknown fields ignored); nothing
+  to migrate (unpublished).
+
+10. Leases
+----------
+The broker's companion claims carry one MemoryConfig entry per driver
+(apiVersion cxl.nri.io/v1alpha1) with the device section built from the
+request (mode, readOnly; access for fs), targeted at the subrequest of
+that driver as today. A borrower's container settings come from the
+results of its own claims (the lease claim) and the node defaults.
+cxl-request flags are unchanged.
+
+11. Logs (tests grep them)
+--------------------------
+- Prepare, V(3), per result: cxl.nri.io: `claim %s/%s request %s result
+  %d: MemoryConfig %s`; cxl-pool.nri.io: `cxl-pool.nri.io: claim %s/%s
+  request %s result %d: MemoryConfig %s` (the resolved config as compact
+  JSON, sections that are empty left out).
+- CreateContainer, V(3): `NRI CreateContainer: ctr=%s: memory %s
+  (steering %s, fencing %s)` with %s = steered|fenced|none, the
+  effective policy and its origin ("none (default)", "auto from claim
+  ns/a request r", "first-dram (node default)"), the effective fencing.
+- Steering on for a container without memory to steer, V(3): `NRI
+  CreateContainer: ctr=%s: steering policy %s: no numa memory to
+  steer`.
+- plan-11's fence texts stay.
+- Controller: `claim %s: %s: invalid configuration: %v` and the
+  AttachFailed condition message.
+
+12. Error texts
+---------------
+Prefix `MemoryConfig: ` and the field path, e.g.:
+  MemoryConfig: device.mode: invalid mode "x" (numa or dax)
+  MemoryConfig: device.readOnly needs mode dax
+  MemoryConfig: device.access needs mode fs
+  MemoryConfig: device: a region is used as numa only
+  MemoryConfig: container.steering.policy: invalid policy "x" (none,
+    auto, first-dram, first-cxl, start-interleaved, end-interleaved or
+    waypoints)
+  MemoryConfig: container.steering.maxStep needs a policy other than none
+  MemoryConfig: pool: only for devices of cxl-pool.nri.io
+  unknown kind "X" (MemoryConfig)
+  MemoryConfig: apiVersion "X", expected "cxl.nri.io/v1alpha1"
+The API stream lists every text in its status; DRV and the docs use that
+list.
+
+13. Chart, docs
+---------------
+- Helm value deviceClassConfig: class name -> a MemoryConfig body
+  (device, container, pool), rendered into that class's spec.config as
+  an opaque entry of the class's driver with apiVersion and kind; the
+  easy cluster-wide opt-in:
+      deviceClassConfig:
+        cxl-local:
+          container: {steering: {policy: auto}}
+- docs: one field table (field, section, owner, values, default, where it
+  may be set), the ownership table of section 1, the merge order,
+  examples (opt-in steering in one line, dax read-only, controller key);
+  pool.md gets "Configuration of a pool controller" for implementers.
+
+14. Amendments after the review of stream API (2026-10-23)
+-----------------------------------------------------------
+Accepted deviations of 05-status-API.txt (D1-D7), normative from now on:
+- Combine returns (*Effective, error); Effective has the settings and the
+  origins of every field (for the section 11 log). Its conflict error has
+  no container prefix: the NRI plugin prefixes "container ns/pod/ctr: ".
+- Resolve validates no device fields: the drivers check them per result
+  with the Device methods (MemdevMode, NUMAOnly, CheckLease, PoolMode),
+  whose rules and order are today's.
+- "policy waypoints needs waypoints" is checked on the effective
+  steering only.
+- The steering parameters (waypoints, minStep, maxStep) of the node
+  defaults apply only when the results set no policy or the node
+  default's policy.
+- Decoding is case-sensitive and refuses duplicate fields; unknown-field
+  errors name the dotted path.
+- null removes a value and never counts as setting a field.
+- pool is refused in entries of driver cxl.nri.io only (the pool driver's
+  name is a flag).
+- CheckEntries(claim, driver) checks every entry of the driver before any
+  device is touched (replaces checkConfigKinds).
+- The error texts of section 12 are those listed in 05-status-API.txt.
+Requests of API assigned: R2 and R3 to DRV (store ResultSettings with
+origins per result, also in the pool snapshot; prefix Combine errors),
+R4 done by DOC against the source (recheck against the list), R1
+(go mod tidy) at commit time by the user.

@@ -28,6 +28,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	"k8s.io/klog/v2"
@@ -55,17 +56,78 @@ type pendingSteering struct {
 	plan *cgmpolmgr.Plan
 }
 
+// The management of the memory of a container.
+const (
+	// memorySteered: cgmpolmgr steers the memory of the container.
+	memorySteered = "steered"
+	// memoryFenced: the container has cpuset.mems without the fenced
+	// nodes that its results have no numa memory on and that are not lent
+	// to it (wantMems, lend.go).
+	memoryFenced = "fenced"
+	// memoryNone: the memory nodes of the container are left as they are.
+	memoryNone = "none"
+)
+
+// resultRef is an allocation result of a claim: the claim UID and the
+// index of the result in the allocation of the claim.
+type resultRef struct {
+	uid string
+	n   int
+}
+
+// containerResult is a prepared allocation result of either driver that a
+// container uses.
+type containerResult struct {
+	// pool: a device of the pool driver.
+	pool bool
+	// deviceType is the device type of a result of cxl.nri.io.
+	deviceType string
+	mode       string
+	nodes      []int
+	// bytes is the memory of the result.
+	bytes    int64
+	settings config.ResultSettings
+}
+
+// numaCXL tells whether the result has CXL memory in mode numa: a numa
+// slice of a local memdev, a region or a pool device in mode numa.
+func (r *containerResult) numaCXL() bool {
+	return r.mode == cxlapi.ModeNUMA && (r.pool || r.deviceType == device.DeviceTypeMemdev || r.deviceType == device.DeviceTypeRegion)
+}
+
+// management is how the NRI plugin manages the memory of a container.
+type management struct {
+	// memory is memorySteered, memoryFenced or memoryNone.
+	memory string
+	// eff are the effective container settings.
+	eff *config.Effective
+	// claimed are the NUMA nodes of the CXL numa memory of the results.
+	claimed cpuset.CPUSet
+	// plan is the steering plan of a steered container, if built.
+	plan *cgmpolmgr.Plan
+	// policy is the memory use order of the plan.
+	policy string
+	// mem is the memory to steer.
+	mem cgmpolmgr.MemoryTypes
+	// capacityOnly: the results have DRAM or region memory that is not
+	// steered.
+	capacityOnly bool
+}
+
 // nriPlugin implements the NRI container lifecycle hooks that start
-// and stop memory steering of containers with CXL claims, keeps the
-// containers that are not steered off the fenced nodes (fence.go), and
-// keeps the table of containers that the lend primitives (lend.go) use.
+// and stop memory steering of containers whose CXL claims opt in, keeps
+// the fenced containers off the fenced nodes (fence.go), and keeps the
+// table of containers that the lend primitives (lend.go) use.
 type nriPlugin struct {
 	stub  nriStub
 	state *nodeState
-	fence *nodeFence // nil: containerMemory none
-	// poolNodes returns the NUMA nodes of the devices in mode numa of a
-	// pool claim, nil for none.
-	poolNodes func(uid string) []int
+	fence *nodeFence // nil: fencing none
+	// defaults are the container settings of the driver configuration
+	// (defaults.container).
+	defaults config.Container
+	// poolResults returns the prepared allocation results of a pool
+	// claim, nil for none.
+	poolResults func(uid string) []poolResult
 	// hasMemory is the sysfs file of the NUMA nodes with memory.
 	hasMemory string
 	pending   map[string]pendingSteering    // key: containerID
@@ -97,17 +159,19 @@ func (klogLogger) Errorf(format string, args ...any) { klog.Errorf(format, args.
 
 // startNRIPlugin creates and starts the NRI plugin. It connects to
 // the container runtime's NRI socket and begins listening for
-// container lifecycle events. The plugin keeps containers off the nodes
-// of fence, gets the nodes of pool claims from pool, and the nodes with
-// memory from the sysfs under sysfsRoot.
-func startNRIPlugin(ctx context.Context, state *nodeState, opts NRIOpts, fence *nodeFence, pool *poolDriver, sysfsRoot string) (*nriPlugin, error) {
+// container lifecycle events. The plugin manages containers with the
+// container settings defaults and those of their results, keeps containers
+// off the nodes of fence, gets the results of pool claims from pool, and
+// the nodes with memory from the sysfs under sysfsRoot.
+func startNRIPlugin(ctx context.Context, state *nodeState, opts NRIOpts, defaults config.Container, fence *nodeFence, pool *poolDriver, sysfsRoot string) (*nriPlugin, error) {
 	p := &nriPlugin{
-		state:     state,
-		fence:     fence,
-		poolNodes: pool.ClaimNodes,
-		hasMemory: filepath.Join(sysfsRoot, "/", hasMemoryFile),
-		pending:   make(map[string]pendingSteering),
-		managers:  make(map[string]*cgmpolmgr.Manager),
+		state:       state,
+		fence:       fence,
+		defaults:    defaults,
+		poolResults: pool.ClaimResults,
+		hasMemory:   filepath.Join(sysfsRoot, "/", hasMemoryFile),
+		pending:     make(map[string]pendingSteering),
+		managers:    make(map[string]*cgmpolmgr.Manager),
 	}
 	p.initLendState()
 
@@ -162,12 +226,14 @@ func (p *nriPlugin) onClose() {
 }
 
 // CreateContainer is called by the container runtime (via NRI) when a
-// new container is about to be created. It aggregates all CXL claims
-// of the container into one memory steering plan and stores it until
-// StartContainer. A container that is not steered gets cpuset.mems
-// without the fenced nodes that it did not claim, if that changes its
-// cpuset.mems. Returns an error if the claims specify conflicting
-// memory policies or no plan can be built, blocking container
+// new container is about to be created. It decides the management of the
+// memory of the container from the container settings of the allocation
+// results that it uses and the defaults: a steered container gets one
+// memory steering plan of the memory of its results, stored until
+// StartContainer; a fenced container gets cpuset.mems without the fenced
+// nodes that its results have no numa memory on, if that changes its
+// cpuset.mems. Returns an error if the container settings of the results
+// conflict or are invalid, or no plan can be built, blocking container
 // creation.
 func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
 	ctrName := pod.GetNamespace() + "/" + pod.GetName() + "/" + ctr.GetName()
@@ -175,24 +241,25 @@ func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr 
 
 	klog.V(3).Infof("NRI CreateContainer: ctr=%s id=%s", ctrName, ctrID)
 
-	// The claims are read before p.mu is taken.
-	claimUIDs := extractClaimUIDs(ctr.GetEnv())
-	plan, err := p.steeringPlan(ctrName, claimUIDs)
+	// The results are read before p.mu is taken.
+	results := p.containerResults(ctrName, extractResults(ctr.GetEnv()))
+	m, err := p.manage(ctrName, results, true)
 	if err != nil {
+		klog.Errorf("NRI CreateContainer: %v", err)
 		p.mu.Lock()
 		p.trackCreated(pod, ctr)
 		p.mu.Unlock()
 		return nil, nil, err
 	}
-	claimed := p.claimNodes(claimUIDs)
+	logManagement(ctrName, m, len(results) > 0)
 
 	p.mu.Lock()
 	tc := p.trackCreated(pod, ctr)
-	if plan != nil {
-		p.pending[ctrID] = pendingSteering{name: ctrName, plan: plan}
-		tc.steered = true
+	tc.memory = m.memory
+	tc.claimed = m.claimed
+	if m.plan != nil {
+		p.pending[ctrID] = pendingSteering{name: ctrName, plan: m.plan}
 	}
-	tc.claimed = claimed
 	mems, fenced := p.fenceCreated(tc)
 	p.mu.Unlock()
 
@@ -205,64 +272,169 @@ func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr 
 	return adjust, nil, nil
 }
 
-// steeringPlan returns the memory steering plan of a container with the
-// claims, nil if the claims have no DRAM or CXL memory to steer.
-func (p *nriPlugin) steeringPlan(ctrName string, claimUIDs []string) (*cgmpolmgr.Plan, error) {
-	if len(claimUIDs) == 0 {
-		klog.V(5).Infof("NRI CreateContainer: ctr=%s: no CXL claims", ctrName)
-		return nil, nil
+// manage returns the management of the memory of a container that uses
+// the results, with the steering plan of a steered container if plan is
+// set. A container is steered when its effective steering policy is not
+// none and its results have DRAM or CXL numa memory; otherwise it is
+// fenced when its effective fencing is allowed-mems, else none. Returns an
+// error if the container settings of the results conflict or are invalid,
+// or the steering plan cannot be built.
+func (p *nriPlugin) manage(ctrName string, results []containerResult, plan bool) (*management, error) {
+	settings := make([]config.ResultSettings, 0, len(results))
+	for _, r := range results {
+		settings = append(settings, r.settings)
 	}
-
-	klog.V(5).Infof("NRI CreateContainer: ctr=%s has %d CXL claim(s): %v", ctrName, len(claimUIDs), claimUIDs)
-
-	mem, userPolicy, err := p.claimedMemory(ctrName, claimUIDs)
+	eff, err := config.Combine(settings, p.defaults)
 	if err != nil {
-		return nil, fmt.Errorf("NRI CreateContainer: ctr=%s: %w", ctrName, err)
+		return nil, fmt.Errorf("container %s: %w", ctrName, err)
 	}
-	if len(mem.DRAMNodes) == 0 && len(mem.CXLNodes) == 0 {
-		klog.V(5).Infof("NRI CreateContainer: ctr=%s: no DRAM or CXL devices in claims", ctrName)
-		return nil, nil
-	}
-
-	policy := defaultPolicy(mem)
-	if userPolicy != nil {
-		policy = *userPolicy
-	}
-	plan, err := policy.Plan(mem)
-	if err != nil {
-		return nil, fmt.Errorf("NRI CreateContainer: ctr=%s: failed to build memory steering plan: %w",
-			ctrName, err)
-	}
-
-	klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (order=%s, dramNodes=%v, cxlNodes=%v, %s)",
-		ctrName, policy.MemoryUseOrder, mem.DRAMNodes, mem.CXLNodes, plan)
-	return plan, nil
-}
-
-// memoryMode returns the containerMemory mode of a container.
-func (p *nriPlugin) memoryMode(_ *api.PodSandbox, _ *api.Container) string {
-	return p.fence.mode()
-}
-
-// claimNodes returns the NUMA nodes of the devices in mode numa of the
-// claims, of both drivers.
-func (p *nriPlugin) claimNodes(claimUIDs []string) cpuset.CPUSet {
-	nodes := cpuset.New()
-	for _, uid := range claimUIDs {
-		if p.state != nil {
-			if info := p.state.GetClaimInfo(uid); info != nil {
-				for _, d := range info.Devices {
-					if d.Mode == cxlapi.ModeNUMA && (d.DeviceType == device.DeviceTypeMemdev || d.DeviceType == device.DeviceTypeRegion) {
-						nodes = nodes.Union(cpuset.New(nonNegative(d.NUMANodes)...))
-					}
-				}
+	m := &management{memory: memoryNone, eff: eff, claimed: claimedNodes(results), mem: steeredMemory(results)}
+	if pol, ok := eff.Container.Steering.CgmPolicy(m.mem); ok {
+		m.memory, m.policy = memorySteered, pol.MemoryUseOrder
+		if plan {
+			if m.plan, err = pol.Plan(m.mem); err != nil {
+				return nil, fmt.Errorf("NRI CreateContainer: ctr=%s: failed to build memory steering plan: %w", ctrName, err)
 			}
 		}
-		if p.poolNodes != nil {
-			nodes = nodes.Union(cpuset.New(p.poolNodes(uid)...))
+		return m, nil
+	}
+	if eff.Container.Fencing == config.FencingAllowedMems {
+		m.memory = memoryFenced
+	}
+	for _, r := range results {
+		if r.deviceType == device.DeviceTypeDRAM || (r.deviceType == device.DeviceTypeRegion && r.mode == cxlapi.ModeNUMA) {
+			m.capacityOnly = true
+		}
+	}
+	return m, nil
+}
+
+// logManagement logs the management of the memory of a new container.
+//   - hasResults: the container uses allocation results
+func logManagement(ctrName string, m *management, hasResults bool) {
+	klog.V(3).Infof("NRI CreateContainer: ctr=%s: memory %s (steering %s, fencing %s)",
+		ctrName, m.memory, m.eff.PolicyText(), fencingText(m.eff))
+	switch {
+	case m.memory == memorySteered && m.plan != nil:
+		klog.V(5).Infof("NRI CreateContainer: ctr=%s: prepared memory steering (order=%s, dramNodes=%v, cxlNodes=%v, %s)",
+			ctrName, m.policy, m.mem.DRAMNodes, m.mem.CXLNodes, m.plan)
+	case m.memory == memorySteered:
+	case m.eff.Steers() && hasResults:
+		klog.V(3).Infof("NRI CreateContainer: ctr=%s: steering policy %s: no numa memory to steer", ctrName, m.eff.Container.Steering.Policy)
+	}
+	if m.capacityOnly {
+		klog.V(3).Infof("NRI CreateContainer: ctr=%s: dram and region memory is not steered: the claims reserve capacity only", ctrName)
+	}
+}
+
+// fencingText returns the effective fencing and its origin, such as
+// "allowed-mems (default)" or "none (node default)".
+func fencingText(eff *config.Effective) string {
+	switch origin := eff.Origins[config.FieldFencing]; origin {
+	case config.OriginDefault, "":
+		return eff.Container.Fencing + " (" + config.OriginDefault + ")"
+	case config.OriginNodeDefault:
+		return eff.Container.Fencing + " (" + config.OriginNodeDefault + ")"
+	default:
+		return eff.Container.Fencing + " from " + origin
+	}
+}
+
+// defaultMemory returns the management of the memory of a container that
+// uses no allocation results.
+func (p *nriPlugin) defaultMemory() string {
+	eff, err := config.Combine(nil, p.defaults)
+	if err == nil && eff.Container.Fencing == config.FencingAllowedMems {
+		return memoryFenced
+	}
+	return memoryNone
+}
+
+// containerResults returns the prepared allocation results of both drivers
+// that refs refer to. Results that are not prepared are left out.
+func (p *nriPlugin) containerResults(ctrName string, refs []resultRef) []containerResult {
+	var out []containerResult
+	for _, ref := range refs {
+		if claim, d, ok := p.state.preparedResult(ref.uid, ref.n); ok {
+			klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s (%s) result %d: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s",
+				ctrName, ref.uid, claim, ref.n,
+				d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NodeAffinities,
+				formatBytes(d.TotalBytes), formatBytes(uint64(d.ConsumedBytes)), d.RequestName)
+			out = append(out, containerResult{
+				deviceType: d.DeviceType,
+				mode:       d.Mode,
+				nodes:      nonNegative(d.NUMANodes),
+				bytes:      d.ConsumedBytes,
+				settings:   d.ResultSettings,
+			})
+			continue
+		}
+		if r, ok := p.poolResult(ref); ok {
+			klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: pool device mode=%s node=%d size=%s request=%s",
+				ctrName, ref.uid, ref.n, r.Mode, r.Node, formatBytes(r.Size), r.Request)
+			cr := containerResult{pool: true, mode: r.Mode, bytes: int64(r.Size), settings: r.Settings}
+			if r.Node >= 0 {
+				cr.nodes = []int{r.Node}
+			}
+			out = append(out, cr)
+			continue
+		}
+		klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: not prepared (driver may have restarted)", ctrName, ref.uid, ref.n)
+	}
+	return out
+}
+
+// poolResult returns the prepared pool allocation result of ref, and false
+// if there is none.
+func (p *nriPlugin) poolResult(ref resultRef) (poolResult, bool) {
+	if p.poolResults == nil {
+		return poolResult{}, false
+	}
+	for _, r := range p.poolResults(ref.uid) {
+		if r.Index == ref.n {
+			return r, true
+		}
+	}
+	return poolResult{}, false
+}
+
+// claimedNodes returns the NUMA nodes of the CXL numa memory of the
+// results.
+func claimedNodes(results []containerResult) cpuset.CPUSet {
+	nodes := cpuset.New()
+	for i := range results {
+		if results[i].numaCXL() {
+			nodes = nodes.Union(cpuset.New(results[i].nodes...))
 		}
 	}
 	return nodes
+}
+
+// steeredMemory returns the memory types and quotas of the results: DRAM
+// of dram devices, CXL of numa slices of local memdevs, regions and pool
+// devices in mode numa.
+func steeredMemory(results []containerResult) cgmpolmgr.MemoryTypes {
+	dramNodeSet := make(map[int]bool)
+	cxlNodeSet := make(map[int]bool)
+	var mem cgmpolmgr.MemoryTypes
+	for i := range results {
+		r := &results[i]
+		switch {
+		case r.deviceType == device.DeviceTypeDRAM:
+			for _, n := range r.nodes {
+				dramNodeSet[n] = true
+			}
+			mem.DRAMQuota += r.bytes
+		case r.numaCXL():
+			for _, n := range r.nodes {
+				cxlNodeSet[n] = true
+			}
+			mem.CXLQuota += r.bytes
+		}
+	}
+	mem.DRAMNodes = sortedNodes(dramNodeSet)
+	mem.CXLNodes = sortedNodes(cxlNodeSet)
+	return mem
 }
 
 // RemoveContainer is called by the container runtime (via NRI) when a
@@ -274,13 +446,13 @@ func (p *nriPlugin) RemoveContainer(_ context.Context, pod *api.PodSandbox, ctr 
 
 	p.containerGone(ctrID)
 
-	claimUIDs := extractClaimUIDs(ctr.GetEnv())
-	if len(claimUIDs) == 0 {
+	refs := extractResults(ctr.GetEnv())
+	if len(refs) == 0 {
 		klog.V(5).Infof("NRI RemoveContainer: ctr=%s: no CXL claims", ctrName)
 		return nil
 	}
 
-	klog.V(5).Infof("NRI RemoveContainer: ctr=%s releasing claims: %v", ctrName, claimUIDs)
+	klog.V(5).Infof("NRI RemoveContainer: ctr=%s releasing results: %v", ctrName, refs)
 
 	p.stopContainerManagers(ctrID, ctrName)
 
@@ -303,7 +475,9 @@ func (p *nriPlugin) StartContainer(_ context.Context, pod *api.PodSandbox, ctr *
 		delete(p.pending, ctrID)
 	}
 	tc := p.trackStarted(pod, ctr)
-	tc.steered = tc.steered || hasPending
+	if hasPending {
+		tc.memory = memorySteered
+	}
 	klog.V(4).Infof("NRI StartContainer: ctr=%s id=%s pid=%d cgroup=%s baseMems=%s",
 		ctrName, ctrID, tc.ref.Pid, tc.ref.CgroupPath, tc.base)
 	p.fireStarted(tc)
@@ -380,78 +554,6 @@ func (p *nriPlugin) stopContainerManagers(ctrID string, ctrName string) {
 	}
 }
 
-// claimedMemory returns the memory types and quotas of the devices in
-// the claims of a container, and the memory policy specified in the
-// claims, if any. Returns an error if more than one claim specifies a
-// policy.
-func (p *nriPlugin) claimedMemory(ctrName string, claimUIDs []string) (cgmpolmgr.MemoryTypes, *cgmpolmgr.Policy, error) {
-	dramNodeSet := make(map[int]bool)
-	cxlNodeSet := make(map[int]bool)
-	var mem cgmpolmgr.MemoryTypes
-	var userPolicy *cgmpolmgr.Policy
-
-	for _, claimUID := range claimUIDs {
-		info := p.state.GetClaimInfo(claimUID)
-		if info == nil {
-			klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s: no claim info (driver may have restarted)",
-				ctrName, claimUID)
-			continue
-		}
-
-		klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s (%s) devices=%d",
-			ctrName, claimUID, info.ClaimName, len(info.Devices))
-
-		for i, dev := range info.Devices {
-			klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s device[%d]: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s",
-				ctrName, claimUID, i,
-				dev.DeviceName, dev.DeviceType, dev.Mode, dev.SysfsPath, dev.NUMANodes, dev.NodeAffinities,
-				formatBytes(dev.TotalBytes), formatBytes(uint64(dev.ConsumedBytes)),
-				dev.RequestName)
-			switch {
-			case dev.DeviceType == device.DeviceTypeDRAM:
-				for _, n := range dev.NUMANodes {
-					dramNodeSet[n] = true
-				}
-				mem.DRAMQuota += dev.ConsumedBytes
-			case dev.Mode == cxlapi.ModeNUMA && (dev.DeviceType == device.DeviceTypeMemdev || dev.DeviceType == device.DeviceTypeRegion):
-				for _, n := range dev.NUMANodes {
-					cxlNodeSet[n] = true
-				}
-				mem.CXLQuota += dev.ConsumedBytes
-			}
-		}
-
-		if info.Policy != nil && info.Policy.MemoryUseOrder != "" {
-			klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s policy: order=%s waypoints=%v minStep=%s maxStep=%s",
-				ctrName, claimUID,
-				info.Policy.MemoryUseOrder, info.Policy.MemoryUseWaypoints,
-				info.Policy.MinStep, info.Policy.MaxStep)
-			if userPolicy != nil {
-				return mem, nil, fmt.Errorf("multiple claims specify memory policies, only one is allowed per container")
-			}
-			userPolicy = &info.Policy.Policy
-		}
-	}
-	mem.DRAMNodes = sortedNodes(dramNodeSet)
-	mem.CXLNodes = sortedNodes(cxlNodeSet)
-	return mem, userPolicy, nil
-}
-
-// defaultPolicy returns the memory policy of containers whose claims
-// specify none: the only memory type present is consumed alone, and
-// DRAM and CXL are interleaved when both are present. Step sizes take
-// their defaults from the plan.
-func defaultPolicy(mem cgmpolmgr.MemoryTypes) cgmpolmgr.Policy {
-	switch {
-	case len(mem.CXLNodes) == 0:
-		return cgmpolmgr.Policy{MemoryUseOrder: cgmpolmgr.MemoryUseFirstDRAM.String()}
-	case len(mem.DRAMNodes) == 0:
-		return cgmpolmgr.Policy{MemoryUseOrder: cgmpolmgr.MemoryUseFirstCXL.String()}
-	default:
-		return cgmpolmgr.Policy{MemoryUseOrder: cgmpolmgr.MemoryUseStartInterleaved.String()}
-	}
-}
-
 // sortedNodes returns the nodes of the set in ascending order.
 func sortedNodes(nodes map[int]bool) []int {
 	sorted := make([]int, 0, len(nodes))
@@ -496,20 +598,20 @@ func resolveContainerCgroupDir(ctr *api.Container) (string, error) {
 	return "", fmt.Errorf("no cgroup v2 entry found in %s (content: %q)", procCgroupPath, string(data))
 }
 
-// extractClaimUIDs scans an environment variable list for CDI-injected
-// CXL_CLAIM_* markers and returns the unique claim UIDs. Duplicates
-// are possible because each device in a claim carries the same CDI
-// marker, and kubelet doesn't deduplicate CDI device IDs.
-func extractClaimUIDs(envVars []string) []string {
-	seen := make(map[string]bool)
-	var uids []string
+// extractResults scans an environment variable list for the CDI-injected
+// result markers CXL_CLAIM_<uid>_<n> and returns the unique allocation
+// results. Duplicates are possible because kubelet doesn't deduplicate CDI
+// device IDs.
+func extractResults(envVars []string) []resultRef {
+	seen := make(map[resultRef]bool)
+	var refs []resultRef
 	for _, env := range envVars {
-		if uid, ok := ClaimUIDFromEnvVar(env); ok && !seen[uid] {
-			seen[uid] = true
-			uids = append(uids, uid)
+		if ref, ok := resultFromEnvVar(env); ok && !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
 		}
 	}
-	return uids
+	return refs
 }
 
 // formatBytes formats a byte count as a human-readable string using

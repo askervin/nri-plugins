@@ -37,6 +37,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
@@ -445,7 +446,7 @@ func TestPoolPrepareExclusive(t *testing.T) {
 		t.Fatalf("CDI spec kind %q", spec.Kind)
 	}
 	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001",
-		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1=1"})
+		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 	if len(cd.ContainerEdits.DeviceNodes) != 0 {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
@@ -490,7 +491,7 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	e.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
 	sharedEnv := func(uid string) []string {
 		return []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
-			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_" + uid + "=1"}
+			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_" + uid + "_0=1"}
 	}
 	cd := e.wantCDIDevice(t, "claim-u1-0", sharedEnv("u1"))
 	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3}}
@@ -612,8 +613,8 @@ func TestBuildDevInfosSkipsPoolDevices(t *testing.T) {
 }
 
 const (
-	daxConfig = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`
-	roConfig  = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","readOnly":true}`
+	daxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
+	roConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`
 )
 
 // withConfig adds an opaque config of the pool driver to the allocation
@@ -643,7 +644,7 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	e.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
 	e.f.wantBlocks(t, "offline") // a dax device is never onlined
 	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0",
-		"CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1=1"})
+		"CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3}}
 	if !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
@@ -672,7 +673,7 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
 	ro := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=1",
-		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1=1"})
+		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
 	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3, Permissions: "r"}}
 	if !reflect.DeepEqual(ro.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected read-only device nodes %+v", ro.ContainerEdits.DeviceNodes)
@@ -689,7 +690,7 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 		t.Fatalf("region created %d times", n)
 	}
 	rw := e.wantCDIDevice(t, "claim-u2-0", []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
-		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u2=1"})
+		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u2_0=1"})
 	if rw.ContainerEdits.DeviceNodes[0].Permissions != "" {
 		t.Fatalf("read-write device node %+v", rw.ContainerEdits.DeviceNodes[0])
 	}
@@ -711,19 +712,20 @@ func TestPoolConfigErrors(t *testing.T) {
 	for _, tc := range []struct {
 		data, params, err string
 	}{
-		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`, "DeviceConfig: mode numa: a shared device is used as dax only"},
-		{exclusiveData, roConfig, "DeviceConfig: readOnly needs mode dax, block or fs"},
-		{exclusiveData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ram"}`, `DeviceConfig: invalid mode "ram" (numa, dax, block or fs)`},
-		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","access":"cached"}`, "DeviceConfig: access needs mode fs"},
-		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","fsType":"erofs"}`, `unknown field "fsType"`},
-		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block"}`, "DeviceConfig: mode block needs a persistent device"},
-		{exclusiveData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true}`, "DeviceConfig: mode fs needs a persistent device"},
-		{sharedData, `{"apiVersion":"v1","kind":"DeviceConfig"}`, `DeviceConfig: apiVersion "v1", expected "cxl-pool.nri.io/v1alpha1"`},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`, "MemoryConfig: device: a shared device is used as dax only"},
+		{exclusiveData, roConfig, "MemoryConfig: device.readOnly needs mode dax, block or fs"},
+		{exclusiveData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ram"}}`, `MemoryConfig: device.mode: invalid mode "ram" (numa, dax, block or fs)`},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"access":"cached"}}`, "MemoryConfig: device.access needs mode fs"},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"fsType":"erofs"}}`, `unknown field "device.fsType"`},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`, "MemoryConfig: device.mode block needs a persistent device"},
+		{exclusiveData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`, "MemoryConfig: device.mode fs needs a persistent device"},
+		{sharedData, `{"apiVersion":"v1","kind":"MemoryConfig"}`, `MemoryConfig: apiVersion "v1", expected "cxl.nri.io/v1alpha1"`},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`, `unknown kind "DeviceConfig" (MemoryConfig)`},
 		// an old kind would give a read-write device of a reader
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"PoolDeviceConfig","readOnly":true}`,
-			`cxl-pool.nri.io: preparing claim default/c1: unknown kind "PoolDeviceConfig" (DeviceConfig)`},
+			`cxl-pool.nri.io: preparing claim default/c1: unknown kind "PoolDeviceConfig" (MemoryConfig)`},
 		{sharedData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`,
-			`unknown kind "MemoryPolicyConfig" (DeviceConfig)`},
+			`unknown kind "MemoryPolicyConfig" (MemoryConfig)`},
 	} {
 		claim := withConfig(poolClaim("u1", "c1", "shared0", tc.data), resourceapi.AllocationConfigSourceClaim, nil, tc.params)
 		wantErr(t, prepare(t, p, claim).Err, tc.err)
@@ -752,17 +754,17 @@ func TestPoolCDISpecKeys(t *testing.T) {
 	want := []cdiSpecs.Device{
 		{Name: "claim-u1-0", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
-				"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1=1"},
+				"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"},
 			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3}},
 		}},
 		{Name: "claim-u1-1", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1AE0001_2_DAX=/dev/dax0.0", "CXL_C1AE0001_2_MODE=dax", "CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001",
-				"CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=268435456", "CXL_CLAIM_u1=1"},
+				"CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=268435456", "CXL_CLAIM_u1_1=1"},
 			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3, Permissions: "r"}},
 		}},
 		{Name: "claim-u1-3", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=3", "CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0",
-				"CXL_C1EE0001_SIZE=536870912", "CXL_CLAIM_u1=1"},
+				"CXL_C1EE0001_SIZE=536870912", "CXL_CLAIM_u1_3=1"},
 		}},
 	}
 	if spec.Kind != device.PoolCDIKind || !reflect.DeepEqual(spec.Devices, want) {
@@ -800,4 +802,82 @@ func TestPoolSharesGuard(t *testing.T) {
 	e.f.plug("0xc1ee0001")
 	noErr(t, prepare(t, p, poolClaim("u3", "c3", "pooled0", exclusiveData)).Err)
 	noErr(t, unprepare(t, p, "u3"))
+}
+
+// TestPoolPrepareMemoryConfig prepares a pool claim with MemoryConfig
+// entries of the pool driver: a class preset with a container and a pool
+// section (the controller's, not read here), changed by a claim entry; the
+// container settings of the result are in the prepared state and in the
+// snapshot that the NRI plugin reads. Invalid entries and values touch no
+// device.
+func TestPoolPrepareMemoryConfig(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ee0001")
+	p := e.driver(t)
+	const (
+		class = resourceapi.AllocationConfigSourceClass
+		claim = resourceapi.AllocationConfigSourceClaim
+	)
+	c := poolClaim("u1", "c1", "pooled0", exclusiveData)
+	c.Spec.Devices.Requests = []resourceapi.DeviceRequest{{Name: "mem", Exactly: &resourceapi.ExactDeviceRequest{DeviceClassName: "cxl-pool"}}}
+	withConfig(c, claim, []string{"mem"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"maxStep":"64Mi"}}}`)
+	withConfig(c, class, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"},"container":{"steering":{"policy":"auto"}},`+
+		`"pool":{"opaque":{"fake-cxl-pool":{"numaNode":1},"other":{"x":1}}}}`)
+	// an entry of cxl.nri.io is not read by the pool driver
+	withDriverConfig(c, device.DriverName, claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"none"}}}`)
+	res := prepare(t, p, c)
+	noErr(t, res.Err)
+	want := config.ResultSettings{
+		Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto, MaxStep: "64Mi"}},
+		Origins:   map[string]string{config.FieldPolicy: "class cxl-pool", config.FieldMaxStep: "claim default/c1 request mem"},
+	}
+	if d := p.prepared["u1"].Devices[0]; d.Mode != api.ModeNUMA || d.Node != 2 || !reflect.DeepEqual(d.ResultSettings, want) {
+		t.Fatalf("prepared device %+v", d)
+	}
+	got := p.ClaimResults("u1")
+	if len(got) != 1 || got[0].Index != 0 || got[0].Request != "mem" || got[0].Mode != api.ModeNUMA || got[0].Node != 2 ||
+		got[0].Size != 256<<20 || !reflect.DeepEqual(got[0].Settings, want) {
+		t.Fatalf("claim results %+v", got)
+	}
+	e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=2", "CXL_C1EE0001_SERIAL=0xc1ee0001",
+		"CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
+
+	// the NRI plugin steers a container that uses the result
+	n := &nriPlugin{poolResults: p.ClaimResults}
+	m, err := n.manage("default/pod/ctr", n.containerResults("default/pod/ctr", []resultRef{{"u1", 0}}), true)
+	noErr(t, err)
+	if m.memory != memorySteered || m.policy != "first-cxl" || m.claimed.String() != "2" || m.plan == nil || m.mem.CXLQuota != 256<<20 {
+		t.Fatalf("management %+v", m)
+	}
+
+	// the settings survive a restart of the driver
+	p2 := e.driver(t)
+	if got := p2.ClaimResults("u1"); len(got) != 1 || !reflect.DeepEqual(got[0].Settings, want) {
+		t.Fatalf("claim results after a restart %+v", got)
+	}
+	noErr(t, unprepare(t, p, "u1"))
+	e.wantClean(t, p)
+
+	commands := e.f.commands()
+	for _, tc := range []struct {
+		source      resourceapi.AllocationConfigSource
+		params, err string
+	}{
+		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"fencing":"none"}}`,
+			"cxl-pool.nri.io: preparing claim default/c2: MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)"},
+		{class, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"waypoints","waypoints":[{"targetUsages":[{"memoryType":"HBM","usage":"1Gi"}]}]}}}`,
+			`cxl-pool.nri.io: preparing claim default/c2: request mem: MemoryConfig: container.steering.waypoints[0].targetUsages[0].memoryType: invalid memory type "HBM" (DRAM or CXL)`},
+		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","pool":{"opaque":{"fake-cxl-pool":1}}}`,
+			"cxl-pool.nri.io: preparing claim default/c2: request mem: MemoryConfig: pool.opaque.fake-cxl-pool: not a JSON object"},
+		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","pool":{"slot":"1"}}`,
+			`cxl-pool.nri.io: preparing claim default/c2: MemoryConfig: FromClaim config 0: json: unknown field "pool.slot"`},
+		{claim, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"none","minStep":"1Gi"}}}`,
+			"cxl-pool.nri.io: preparing claim default/c2: request mem: MemoryConfig: container.steering.minStep needs a policy other than none"},
+	} {
+		wantErr(t, prepare(t, p, withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), tc.source, nil, tc.params)).Err, tc.err)
+		e.wantClean(t, p)
+	}
+	if got := e.f.commands(); got != commands {
+		t.Fatalf("a refused config touched the device:\n%s", strings.TrimPrefix(got, commands))
+	}
 }

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,12 +39,11 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
-	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/memorypolicy"
 )
 
 func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, config interface{}) resourcev1.DeviceAllocationConfiguration {
@@ -61,214 +61,6 @@ func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, c
 	}
 }
 
-func makeClaim(uid string, configs ...resourcev1.DeviceAllocationConfiguration) *resourcev1.ResourceClaim {
-	return &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-claim",
-			Namespace: "test-ns",
-			UID:       types.UID(uid),
-		},
-		Status: resourcev1.ResourceClaimStatus{
-			Allocation: &resourcev1.AllocationResult{
-				Devices: resourcev1.DeviceAllocationResult{
-					Config: configs,
-				},
-			},
-		},
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_NoConfig(t *testing.T) {
-	claim := makeClaim("uid-1")
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy != nil {
-		t.Fatalf("expected nil policy, got %+v", policy)
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_NoAllocation(t *testing.T) {
-	claim := &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
-	}
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy != nil {
-		t.Fatalf("expected nil policy, got %+v", policy)
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_ClaimConfig(t *testing.T) {
-	cfg := memorypolicy.MemoryPolicyConfig{
-		APIVersion: memorypolicy.APIVersion,
-		Kind:       memorypolicy.Kind,
-		Policy: cgmpolmgr.Policy{
-			MemoryUseOrder: "first-dram",
-			MinStep:        "128M",
-			MaxStep:        "1G",
-		},
-	}
-	claim := makeClaim("uid-2",
-		makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, cfg),
-	)
-
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy == nil {
-		t.Fatal("expected non-nil policy")
-	}
-	if policy.MemoryUseOrder != "first-dram" {
-		t.Errorf("expected order first-dram, got %s", policy.MemoryUseOrder)
-	}
-	if policy.MinStep != "128M" {
-		t.Errorf("expected minStep 128M, got %s", policy.MinStep)
-	}
-	if policy.MaxStep != "1G" {
-		t.Errorf("expected maxStep 1G, got %s", policy.MaxStep)
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_ClassConfig(t *testing.T) {
-	cfg := memorypolicy.MemoryPolicyConfig{
-		APIVersion: memorypolicy.APIVersion,
-		Kind:       memorypolicy.Kind,
-		Policy: cgmpolmgr.Policy{
-			MemoryUseOrder: "first-cxl",
-		},
-	}
-	claim := makeClaim("uid-3",
-		makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClass, cfg),
-	)
-
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy == nil {
-		t.Fatal("expected non-nil policy")
-	}
-	if policy.MemoryUseOrder != "first-cxl" {
-		t.Errorf("expected order first-cxl, got %s", policy.MemoryUseOrder)
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_ClaimOverridesClass(t *testing.T) {
-	classCfg := memorypolicy.MemoryPolicyConfig{
-		APIVersion: memorypolicy.APIVersion,
-		Kind:       memorypolicy.Kind,
-		Policy: cgmpolmgr.Policy{
-			MemoryUseOrder: "first-cxl",
-		},
-	}
-	claimCfg := memorypolicy.MemoryPolicyConfig{
-		APIVersion: memorypolicy.APIVersion,
-		Kind:       memorypolicy.Kind,
-		Policy: cgmpolmgr.Policy{
-			MemoryUseOrder: "first-dram",
-			MinStep:        "64M",
-		},
-	}
-	claim := makeClaim("uid-4",
-		makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClass, classCfg),
-		makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, claimCfg),
-	)
-
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy == nil {
-		t.Fatal("expected non-nil policy")
-	}
-	if policy.MemoryUseOrder != "first-dram" {
-		t.Errorf("expected claim-level order first-dram, got %s", policy.MemoryUseOrder)
-	}
-	if policy.MinStep != "64M" {
-		t.Errorf("expected claim-level minStep 64M, got %s", policy.MinStep)
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_WrongDriver(t *testing.T) {
-	cfg := memorypolicy.MemoryPolicyConfig{
-		APIVersion: memorypolicy.APIVersion,
-		Kind:       memorypolicy.Kind,
-		Policy: cgmpolmgr.Policy{
-			MemoryUseOrder: "first-dram",
-		},
-	}
-	claim := makeClaim("uid-5",
-		makeOpaqueConfig("other.driver", resourcev1.AllocationConfigSourceClaim, cfg),
-	)
-
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy != nil {
-		t.Fatalf("expected nil policy for wrong driver, got %+v", policy)
-	}
-}
-
-// A DeviceConfig is not a policy; a config of an unknown kind fails the
-// Prepare (checkConfigKinds).
-func TestParseMemoryPolicyFromClaim_OtherKinds(t *testing.T) {
-	claim := makeClaim("uid-6",
-		makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, json.RawMessage(localDaxConfig)),
-	)
-	policy, err := parseMemoryPolicy(claim)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy != nil {
-		t.Fatalf("expected nil policy for a DeviceConfig, got %+v", policy)
-	}
-	other := map[string]string{
-		"apiVersion": memorypolicy.APIVersion,
-		"kind":       "SomeOtherConfig",
-		"foo":        "bar",
-	}
-	claim = makeClaim("uid-6", makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, other))
-	err = checkConfigKinds(claim, device.DriverName, device.DeviceConfigKind, memorypolicy.Kind)
-	if err == nil || err.Error() != `unknown kind "SomeOtherConfig" (DeviceConfig or MemoryPolicyConfig)` {
-		t.Fatalf("unknown kind: %v", err)
-	}
-}
-
-func TestParseMemoryPolicyFromClaim_InvalidConfig(t *testing.T) {
-	cfg := memorypolicy.MemoryPolicyConfig{
-		APIVersion: memorypolicy.APIVersion,
-		Kind:       memorypolicy.Kind,
-		Policy: cgmpolmgr.Policy{
-			MemoryUseOrder: "invalid-order",
-		},
-	}
-	claim := makeClaim("uid-7",
-		makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim, cfg),
-	)
-
-	_, err := parseMemoryPolicy(claim)
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
-}
-
-func TestParseMemoryPolicyStrict(t *testing.T) {
-	claim := makeClaim("uid-8", makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim,
-		json.RawMessage(`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrdr":"first-dram"}`)))
-	_, err := parseMemoryPolicy(claim)
-	wantErr(t, err, `MemoryPolicyConfig: invalid FromClaim config: json: unknown field "memoryUseOrdr"`)
-	claim = makeClaim("uid-9", makeOpaqueConfig(device.DriverName, resourcev1.AllocationConfigSourceClaim,
-		json.RawMessage(`{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`)))
-	_, err = parseMemoryPolicy(claim)
-	wantErr(t, err, `MemoryPolicyConfig: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`)
-}
-
 func TestPreparedClaimsInfo_Persistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
@@ -277,15 +69,6 @@ func TestPreparedClaimsInfo_Persistence(t *testing.T) {
 	claims := PreparedClaimsInfo{
 		"uid-1": {
 			ClaimName: "test-ns/test-claim",
-			Policy: &memorypolicy.MemoryPolicyConfig{
-				APIVersion: memorypolicy.APIVersion,
-				Kind:       memorypolicy.Kind,
-				Policy: cgmpolmgr.Policy{
-					MemoryUseOrder: "first-dram",
-					MinStep:        "128M",
-					MaxStep:        "1G",
-				},
-			},
 			Devices: []PreparedDeviceInfo{
 				{
 					RequestName:    "req1",
@@ -298,12 +81,23 @@ func TestPreparedClaimsInfo_Persistence(t *testing.T) {
 					NodeAffinities: []int{0},
 					TotalBytes:     4294967296,
 					ConsumedBytes:  1073741824,
+					ResultSettings: config.ResultSettings{
+						Container: &config.Container{Steering: &config.Steering{Policy: "first-dram", MinStep: "128M", MaxStep: "1G"}},
+						Origins:   map[string]string{config.FieldPolicy: "claim test-ns/test-claim request req1"},
+					},
 				},
 			},
 		},
 	}
 	if err := writePreparedClaimsInfoToFile(filePath, claims); err != nil {
 		t.Fatalf("failed to write: %v", err)
+	}
+	data, err := os.ReadFile(filePath)
+	noErr(t, err)
+	var compact bytes.Buffer
+	noErr(t, json.Compact(&compact, data))
+	if !strings.Contains(compact.String(), `"container":{"steering":{"policy":"first-dram","minStep":"128M","maxStep":"1G"}},"origins":{"container.steering.policy":"claim test-ns/test-claim request req1"}`) {
+		t.Fatalf("stored settings: %s", compact.String())
 	}
 
 	// Read them back.
@@ -321,15 +115,6 @@ func TestPreparedClaimsInfo_Persistence(t *testing.T) {
 	}
 	if info.ClaimName != "test-ns/test-claim" {
 		t.Errorf("expected test-ns/test-claim, got %s", info.ClaimName)
-	}
-	if info.Policy == nil {
-		t.Fatal("expected non-nil policy")
-	}
-	if info.Policy.MemoryUseOrder != "first-dram" {
-		t.Errorf("expected first-dram, got %s", info.Policy.MemoryUseOrder)
-	}
-	if info.Policy.MinStep != "128M" {
-		t.Errorf("expected 128M, got %s", info.Policy.MinStep)
 	}
 	if len(info.Devices) != 1 {
 		t.Fatalf("expected 1 device, got %d", len(info.Devices))
@@ -349,6 +134,9 @@ func TestPreparedClaimsInfo_Persistence(t *testing.T) {
 	}
 	if len(dev.NUMANodes) != 1 || dev.NUMANodes[0] != 2 {
 		t.Errorf("expected NUMA [2], got %v", dev.NUMANodes)
+	}
+	if !reflect.DeepEqual(dev.ResultSettings, claims["uid-1"].Devices[0].ResultSettings) {
+		t.Errorf("settings %+v", dev.ResultSettings)
 	}
 }
 
@@ -370,7 +158,7 @@ func TestPreparedClaimsInfo_CreateEmpty(t *testing.T) {
 	}
 }
 
-func TestPreparedClaimsInfo_NilPolicy(t *testing.T) {
+func TestPreparedClaimsInfo_NoSettings(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
 
@@ -401,8 +189,8 @@ func TestPreparedClaimsInfo_NilPolicy(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected claim info")
 	}
-	if info.Policy != nil {
-		t.Errorf("expected nil policy, got %+v", info.Policy)
+	if d := info.Devices[0]; d.Container != nil || d.Origins != nil {
+		t.Errorf("expected no settings, got %+v", d.ResultSettings)
 	}
 	if info.Devices[0].DeviceType != device.DeviceTypeDRAM {
 		t.Errorf("expected %s, got %s", device.DeviceTypeDRAM, info.Devices[0].DeviceType)
@@ -721,8 +509,8 @@ func localCompanion(uid string, consumed int64, configs ...string) *resourcev1.R
 }
 
 const (
-	localDaxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`
-	localROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax","readOnly":true}`
+	localDaxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
+	localROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
 )
 
 func TestPrepareLocalNUMA(t *testing.T) {
@@ -744,7 +532,7 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	})
 	e.f.wantMemoryBlocks(t, "online_movable", 74)
 	e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C100E2E1_MODE=numa", "CXL_C100E2E1_NODE=2", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1=1"}, nil)
+		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"}, nil)
 	// a dax claim on the same device, and another numa claim on the node
 	noErr(t, e.Prepare(ctx, localClaim("u2", localBlockSize, localDaxConfig)))
 	noErr(t, e.Prepare(ctx, localClaim("u3", 2*localBlockSize)))
@@ -816,11 +604,11 @@ func TestPrepareLocalDax(t *testing.T) {
 	})
 	e.wantCDIDevice(t, "claim-u2-0",
 		[]string{"CXL_C100E2E1_DAX=/dev/dax0.1", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-			"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u2=1"},
+			"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u2_0=1"},
 		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.1", Type: "c", Major: 252, Minor: 1, Permissions: "r"}})
 	e.wantCDIDevice(t, "claim-u1-0",
 		[]string{"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-			"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1=1"},
+			"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"},
 		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0}})
 
 	// the spec is rebuilt from the prepared claims after a restart,
@@ -836,7 +624,7 @@ func TestPrepareLocalDax(t *testing.T) {
 		t.Fatalf("rebuilt CDI spec %+v", spec)
 	}
 	e.wantCDIDevice(t, "claim-stale-0", []string{"CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_stale=1"}, nil)
+		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_stale_0=1"}, nil)
 	delete(e.Prepared, "stale")
 	delete(e.preparedClaims, "stale")
 	// a numa claim on the same device gets the node
@@ -878,12 +666,12 @@ func TestPrepareLocalTwoSlices(t *testing.T) {
 	}
 	e.wantCDIDevice(t, "claim-u1-0", []string{
 		"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1=1"},
+		"CXL_C100E2E1_SHARED=0", "CXL_C100E2E1_SIZE=134217728", "CXL_CLAIM_u1_0=1"},
 		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0}})
 	// the second slice of the memdev in the claim: <HEX>_2
 	e.wantCDIDevice(t, "claim-u1-1", []string{
 		"CXL_C100E2E1_2_DAX=/dev/dax0.1", "CXL_C100E2E1_2_MODE=dax", "CXL_C100E2E1_2_READONLY=1", "CXL_C100E2E1_2_SERIAL=0xc100e2e1",
-		"CXL_C100E2E1_2_SHARED=0", "CXL_C100E2E1_2_SIZE=134217728", "CXL_CLAIM_u1=1"},
+		"CXL_C100E2E1_2_SHARED=0", "CXL_C100E2E1_2_SIZE=134217728", "CXL_CLAIM_u1_1=1"},
 		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.1", Type: "c", Major: 252, Minor: 1, Permissions: "r"}})
 	if spec := e.cdiSpec(t); len(spec.Devices) != 2 {
 		t.Fatalf("CDI devices %+v", spec.Devices)
@@ -896,12 +684,12 @@ func TestPrepareLocalErrors(t *testing.T) {
 	e := newLocalTestState(t)
 	ctx := context.Background()
 	for _, tc := range []struct{ params, err string }{
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","readOnly":true}`, "DeviceConfig: readOnly needs mode dax"},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ram"}`, `DeviceConfig: invalid mode "ram" (numa or dax)`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","size":1}`, `unknown field "size"`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LocalDeviceConfig","mode":"dax"}`, `claim demo/claim-u1: unknown kind "LocalDeviceConfig" (DeviceConfig or MemoryPolicyConfig)`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LendConfig","lease":"l1"}`, `unknown kind "LendConfig" (DeviceConfig or MemoryPolicyConfig)`},
-		{`{"apiVersion":"cxl.nri.io/v1alpha1","mode":"dax"}`, `unknown kind "" (DeviceConfig or MemoryPolicyConfig)`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`, "MemoryConfig: device.readOnly needs mode dax"},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ram"}}`, `MemoryConfig: device.mode: invalid mode "ram" (numa or dax)`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"size":1}}`, `unknown field "device.size"`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LocalDeviceConfig","mode":"dax"}`, `claim demo/claim-u1: unknown kind "LocalDeviceConfig" (MemoryConfig)`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"LendConfig","lease":"l1"}`, `unknown kind "LendConfig" (MemoryConfig)`},
+		{`{"apiVersion":"cxl.nri.io/v1alpha1","mode":"dax"}`, `unknown kind "" (MemoryConfig)`},
 	} {
 		wantErr(t, e.Prepare(ctx, localClaim("u1", 2*mib, tc.params)), tc.err)
 	}
@@ -1120,7 +908,7 @@ func TestPrepareDoesNotBlockReaders(t *testing.T) {
 			readers <- errors.New("no claim info of u0")
 			return
 		}
-		_ = e.GetMemoryPolicy("u0")
+		_, _, _ = e.preparedResult("u0", 0)
 		_ = e.GetResources()
 		err := e.Prepare(ctx, localClaim("u2", 2*mib))
 		if err == nil {
@@ -1249,10 +1037,10 @@ func TestClaimsCDISpec(t *testing.T) {
 	spec := s.buildClaimsCDISpec()
 	want := []cdiSpecs.Device{
 		{Name: "claim-u1-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{
-			"CXL_CLAIM_u1=1", "CXL_DRAM_MODE=numa", "CXL_DRAM_NODES=0-1", "CXL_DRAM_SIZE=67108864"}}},
+			"CXL_CLAIM_u1_0=1", "CXL_DRAM_MODE=numa", "CXL_DRAM_NODES=0-1", "CXL_DRAM_SIZE=67108864"}}},
 		{Name: "claim-u1-2", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{
-			"CXL_CLAIM_u1=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
-		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2=1"}}},
+			"CXL_CLAIM_u1_2=1", "CXL_REGION0_MODE=numa", "CXL_REGION0_NODE=2", "CXL_REGION0_SIZE=67108864"}}},
+		{Name: "claim-u2-0", ContainerEdits: cdiSpecs.ContainerEdits{Env: []string{"CXL_CLAIM_u2_0=1"}}},
 	}
 	if spec.Kind != "nri.io/cxl" || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
@@ -1276,7 +1064,7 @@ func TestRemoveCXLSpecs(t *testing.T) {
 	}
 }
 
-// A DeviceConfig on a region or DRAM request fails unless it is numa.
+// A device section on a region or DRAM request fails unless it is numa.
 func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 	e := newLocalTestState(t)
 	ctx := context.Background()
@@ -1287,14 +1075,14 @@ func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 	devs["region0-node2"] = &device.DeviceInfo{Name: "region0-node2", Dev: &nricxl.RegionDevice{Name: "region0", Node: 2, Size: 1 << 30, Enabled: true}}
 	devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
 	for _, tc := range []struct{ dev, params, err string }{
-		{"region0-node2", localDaxConfig, "claim demo/claim-u1: request mem: DeviceConfig: mode dax: a region is used as numa only"},
-		{"region0-node2", localROConfig, "DeviceConfig: mode dax: a region is used as numa only"},
-		{"region0-node2", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","readOnly":true}`, "DeviceConfig: readOnly needs mode dax"},
-		{"dram", localDaxConfig, "claim demo/claim-u1: request mem: DeviceConfig: mode dax: a dram is used as numa only"},
-		{"dram", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","readOnly":true}`, "DeviceConfig: readOnly needs mode dax"},
-		{"dram", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ram"}`, `DeviceConfig: invalid mode "ram" (numa or dax)`},
-		{"region0-node2", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`, ""},
-		{"dram", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`, ""},
+		{"region0-node2", localDaxConfig, "claim demo/claim-u1: request mem: MemoryConfig: device: a region is used as numa only"},
+		{"region0-node2", localROConfig, "MemoryConfig: device: a region is used as numa only"},
+		{"region0-node2", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`, "MemoryConfig: device.readOnly needs mode dax"},
+		{"dram", localDaxConfig, "claim demo/claim-u1: request mem: MemoryConfig: device: a dram is used as numa only"},
+		{"dram", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`, "MemoryConfig: device.readOnly needs mode dax"},
+		{"dram", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ram"}}`, `MemoryConfig: device.mode: invalid mode "ram" (numa or dax)`},
+		{"region0-node2", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`, ""},
+		{"dram", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`, ""},
 	} {
 		claim := localClaim("u1", 64*mib, tc.params)
 		claim.Status.Allocation.Devices.Results[0].Device = tc.dev
@@ -1311,5 +1099,195 @@ func TestPrepareRegionDRAMNUMAOnly(t *testing.T) {
 	}
 	if len(e.Prepared) != 0 {
 		t.Fatalf("prepared %v", e.Prepared)
+	}
+}
+
+// fakeLeaseClaims records the lease claims whose sockets are open.
+type fakeLeaseClaims struct {
+	open map[string]bool
+}
+
+func (f *fakeLeaseClaims) OpenClaim(claim *resourcev1.ResourceClaim) error {
+	if f.open == nil {
+		f.open = map[string]bool{}
+	}
+	f.open[string(claim.UID)] = true
+	return nil
+}
+
+func (f *fakeLeaseClaims) CloseClaim(_ context.Context, uid string) error {
+	delete(f.open, uid)
+	return nil
+}
+
+// memoryConfigClaim returns a claim with the results numa (a slice of the
+// local memdev), region, dram and lease, in this order, of the device
+// classes cxl-local, cxl-region, cxl-dram and cxl-lease, with the configs.
+func memoryConfigClaim(uid string, configs ...resourcev1.DeviceAllocationConfiguration) *resourcev1.ResourceClaim {
+	c := localClaim(uid, localBlockSize)
+	c.Status.Allocation.Devices.Results[0].Request = "numa"
+	for _, r := range []struct{ request, dev string }{{"region", "region5-node4"}, {"dram", "dram"}, {"lease", device.LeaseDeviceName}} {
+		c.Status.Allocation.Devices.Results = append(c.Status.Allocation.Devices.Results,
+			resourcev1.DeviceRequestAllocationResult{Request: r.request, Driver: device.DriverName, Pool: testNode, Device: r.dev})
+	}
+	for _, i := range []int{1, 2} {
+		c.Status.Allocation.Devices.Results[i].ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{
+			device.CapacityMemory: *resource.NewQuantity(64*mib, resource.BinarySI)}
+	}
+	for _, r := range []struct{ request, class string }{{"numa", "cxl-local"}, {"region", "cxl-region"}, {"dram", "cxl-dram"}, {"lease", "cxl-lease"}} {
+		c.Spec.Devices.Requests = append(c.Spec.Devices.Requests,
+			resourcev1.DeviceRequest{Name: r.request, Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: r.class}})
+	}
+	c.Status.Allocation.Devices.Config = configs
+	return c
+}
+
+// memoryConfigEntry returns an opaque config entry of cxl.nri.io.
+func memoryConfigEntry(source resourcev1.AllocationConfigSource, requests []string, params string) resourcev1.DeviceAllocationConfiguration {
+	e := makeOpaqueConfig(device.DriverName, source, json.RawMessage(params))
+	e.Requests = requests
+	return e
+}
+
+// TestPrepareMemoryConfig prepares the results of every device type of
+// cxl.nri.io with MemoryConfig entries: a class entry is a preset that
+// claim entries change field by field, each result stores its container
+// settings with their origins and has its own marker, and the NRI plugin
+// manages a container by the results it uses. Refused entries touch no
+// device.
+func TestPrepareMemoryConfig(t *testing.T) {
+	e := newLocalTestState(t)
+	leases := &fakeLeaseClaims{}
+	e.leases = leases
+	ctx := context.Background()
+	devs, ok := e.Allocatable.(device.DevicesInfo)
+	if !ok {
+		t.Fatal("no devices")
+	}
+	devs["region5-node4"] = &device.DeviceInfo{Name: "region5-node4", Dev: &nricxl.RegionDevice{Name: "region5", Node: 4, Size: 1 << 30, Enabled: true}}
+	devs["dram"] = &device.DeviceInfo{Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}
+	devs[device.LeaseDeviceName] = &device.DeviceInfo{Name: device.LeaseDeviceName, Dev: &device.LeaseToken{}}
+	const (
+		class = resourcev1.AllocationConfigSourceClass
+		claim = resourcev1.AllocationConfigSourceClaim
+	)
+
+	c := memoryConfigClaim("u1",
+		// a claim entry before a class entry: classes come first
+		memoryConfigEntry(claim, []string{"dram"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"first-dram","maxStep":"1Gi"}}}`),
+		memoryConfigEntry(class, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"auto"}}}`),
+		// null removes the preset of the class
+		memoryConfigEntry(claim, []string{"numa"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":null}}}`),
+	)
+	noErr(t, e.Prepare(ctx, c))
+	info := e.preparedClaims["u1"]
+	auto := func(origin string) config.ResultSettings {
+		return config.ResultSettings{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto}}, Origins: map[string]string{config.FieldPolicy: origin}}
+	}
+	for i, want := range []config.ResultSettings{
+		{},
+		auto("class cxl-region"),
+		{Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyFirstDRAM, MaxStep: "1Gi"}},
+			Origins: map[string]string{config.FieldPolicy: "claim demo/claim-u1 request dram", config.FieldMaxStep: "claim demo/claim-u1 request dram"}},
+		auto("class cxl-lease"),
+	} {
+		if d := info.Devices[i]; d.Result != i || !reflect.DeepEqual(d.ResultSettings, want) {
+			t.Errorf("result %d (%s): %d %+v %v, expected %+v %v", i, d.RequestName, d.Result, d.Container, d.Origins, want.Container, want.Origins)
+		}
+	}
+	if d := info.Devices[0]; d.Mode != api.ModeNUMA || !slices.Equal(d.NUMANodes, []int{2}) {
+		t.Fatalf("numa slice %+v", d)
+	}
+	// one CDI device per result, with the marker of the result
+	for n, wantID := range []string{"claim-u1-0", "claim-u1-1", "claim-u1-2", "claim-u1-3"} {
+		d := cdiDeviceByName(e.cdiSpec(t), wantID)
+		marker := resultEnvVarName("u1", n) + "=1"
+		if d == nil || !slices.Contains(d.ContainerEdits.Env, marker) {
+			t.Fatalf("CDI device %s: %+v, expected %s", wantID, d, marker)
+		}
+		for _, env := range d.ContainerEdits.Env {
+			if strings.HasPrefix(env, "CXL_CLAIM_") && env != marker {
+				t.Fatalf("CDI device %s has the marker %s", wantID, env)
+			}
+		}
+	}
+	if !leases.open["u1"] {
+		t.Fatal("no lease socket")
+	}
+
+	// a container gets the management of the results it uses
+	p := &nriPlugin{state: e.nodeState}
+	for _, tc := range []struct {
+		results []int
+		want    string
+	}{
+		{[]int{0}, "fenced 2 none (default)"},
+		{[]int{1}, "steered 4 auto from class cxl-region"},
+		{[]int{2}, "steered  first-dram from claim demo/claim-u1 request dram"},
+		{[]int{0, 1}, "steered 2,4 auto from class cxl-region"},
+		{[]int{3}, "fenced  auto from class cxl-lease"},
+	} {
+		var refs []resultRef
+		for _, n := range tc.results {
+			refs = append(refs, resultRef{"u1", n})
+		}
+		m, err := p.manage("demo/pod/ctr", p.containerResults("demo/pod/ctr", refs), true)
+		noErr(t, err)
+		if got := m.memory + " " + m.claimed.String() + " " + m.eff.PolicyText(); got != tc.want {
+			t.Errorf("results %v: %q, expected %q", tc.results, got, tc.want)
+		}
+	}
+	_, err := p.manage("demo/pod/ctr", p.containerResults("demo/pod/ctr", []resultRef{{"u1", 1}, {"u1", 2}}), true)
+	wantErr(t, err, "container demo/pod/ctr: container.steering.policy: class cxl-region says auto, claim demo/claim-u1 request dram says first-dram")
+	noErr(t, e.Unprepare(ctx, "u1"))
+
+	// the device rules of a result are checked at the result: the slice
+	// of the memdev of result 0 is rolled back
+	for _, tc := range []struct{ request, params, err string }{
+		{"lease", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`,
+			"claim demo/claim-u9: request lease: MemoryConfig: device: the lease device has no device settings"},
+		{"region", localDaxConfig, "claim demo/claim-u9: request region: MemoryConfig: device: a region is used as numa only"},
+		{"dram", localROConfig, "claim demo/claim-u9: request dram: MemoryConfig: device: a dram is used as numa only"},
+	} {
+		wantErr(t, e.Prepare(ctx, memoryConfigClaim("u9", memoryConfigEntry(claim, []string{tc.request}, tc.params))), tc.err)
+		if len(e.Prepared) != 0 || e.inUse() || leases.open["u9"] {
+			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.Prepared, e.inUse())
+		}
+	}
+
+	// the entries and the values of all results are checked before any
+	// device is touched
+	commands := e.f.commands()
+	for _, tc := range []struct {
+		configs []resourcev1.DeviceAllocationConfiguration
+		err     string
+	}{
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(class, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","pool":{"opaque":{"fake-cxl-pool":{"numaNode":1}}}}`)},
+			"claim demo/claim-u9: MemoryConfig: pool: only for devices of cxl-pool.nri.io"},
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(class, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"fencing":"none"}}`)},
+			"claim demo/claim-u9: MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)"},
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"off"}}}`)},
+			`claim demo/claim-u9: request numa: MemoryConfig: container.steering.policy: invalid policy "off" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)`},
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, []string{"dram"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"none","maxStep":"1Gi"}}}`)},
+			"claim demo/claim-u9: request dram: MemoryConfig: container.steering.maxStep needs a policy other than none"},
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`)},
+			`claim demo/claim-u9: unknown kind "DeviceConfig" (MemoryConfig)`},
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryPolicyConfig","memoryUseOrder":"first-dram"}`)},
+			`claim demo/claim-u9: unknown kind "MemoryPolicyConfig" (MemoryConfig)`},
+		{[]resourcev1.DeviceAllocationConfiguration{memoryConfigEntry(claim, nil, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"MemoryConfig"}`)},
+			`claim demo/claim-u9: MemoryConfig: apiVersion "cxl-pool.nri.io/v1alpha1", expected "cxl.nri.io/v1alpha1"`},
+		// every entry of the driver is checked, also of other requests
+		{[]resourcev1.DeviceAllocationConfiguration{
+			memoryConfigEntry(class, nil, localDaxConfig),
+			memoryConfigEntry(claim, []string{"other"}, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"online":"all"}}`)},
+			`claim demo/claim-u9: MemoryConfig: FromClaim config 0: json: unknown field "device.online"`},
+	} {
+		wantErr(t, e.Prepare(ctx, memoryConfigClaim("u9", tc.configs...)), tc.err)
+		if len(e.Prepared) != 0 || e.inUse() || leases.open["u9"] {
+			t.Fatalf("%s: prepared %v, memdev in use %v", tc.err, e.Prepared, e.inUse())
+		}
+	}
+	if got := e.f.commands(); got != commands {
+		t.Fatalf("a refused config touched the memdev:\n%s", strings.TrimPrefix(got, commands))
 	}
 }

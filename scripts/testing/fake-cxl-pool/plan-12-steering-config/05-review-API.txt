@@ -1,0 +1,35 @@
+plan-12: review of stream API (pkg/cxl/config)
+==============================================
+Written 2026-10-23 (orchestrator). Reviewed: pkg/cxl/config/*.go against
+04-contract.txt sections 2, 3, 5, 6, 7, 8, 12 and 05-status-API.txt.
+Reran: go test -count=1 ./pkg/cxl/config/ ok, go vet ok.
+
+Verdict: accepted as the contract of v1alpha1. Deviations D1-D7 accepted
+and written into 04-contract.txt section 14.
+
+Checked
+- Resolve: entries of the driver, class (FromClass) then claim
+  (FromClaim) in list order, request and main-request targeting, each
+  entry decoded strictly alone (kind before apiVersion, as today's
+  "unknown kind" first), source table (fencing never; pool not for
+  cxl.nri.io), merge with json-patch.v4 MergePatch, strict decode of the
+  merge, origins per container field with null removing them, class
+  origin from the request or subrequest's class.
+- Entry indexes count all entries of a source, so they match the
+  position in spec.devices.config of the claim.
+- Combine: agreement per field with JSON and quantity comparison, first
+  origin and the conflicting one named, defaults overlay with D4,
+  policy none and fencing allowed-mems as built-in defaults, effective
+  validation with origins.
+- CgmPolicy: auto by memory types as today's defaultPolicy; none or no
+  memory -> not steered.
+- The package imports cgmpolmgr, not the other way round; no cmd/
+  imports.
+
+Notes (not blocking)
+- The FromClass origin falls back to "class of request R" when the claim
+  spec has no class for the request (cannot happen for allocated
+  requests; fine).
+- DOC's texts came from the in-progress source; DOC or DRV must diff
+  docs/memory/cxl/usage.md "Configuration errors" against the final
+  list in 05-status-API.txt.

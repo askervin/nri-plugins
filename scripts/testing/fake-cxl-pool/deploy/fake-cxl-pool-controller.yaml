@@ -102,6 +102,8 @@ spec:
         - cxl-pool.nri.io
         - -pool-name
         - fake-cxl-pool
+        - -config-key
+        - fake-cxl-pool
         resources:
           requests:
             cpu: 10m

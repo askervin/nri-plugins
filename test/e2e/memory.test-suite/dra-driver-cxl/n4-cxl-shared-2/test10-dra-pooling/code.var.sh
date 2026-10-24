@@ -26,11 +26,23 @@
 #   container of the node has the node. When the pod is gone, the node
 #   plugin releases the device, the controller detaches it, and the memory
 #   is back in the pool.
+# The claim configures all of them with one opaque MemoryConfig: its pool
+# section for the pool controller (pool.opaque.fake-cxl-pool: slot,
+# numaNode, where the pool attaches the device), its device section for
+# the node plugin, its container section for the NRI plugin of the driver.
+# Steering is opt-in, as for local memory: without a steering policy the
+# container is only fenced, the workload places its memory itself; with
+# container.steering.policy auto the driver steers the memory of the
+# container to the pool node.
 #
 # What you will see: the pool in a ResourceSlice, a claim of 512Mi that
 # waits for the attachment, a new 512 MB NUMA node in the VM and in the
-# pod, the memory going back to the pool, and at the end the trace summary
-# of what every component did, in order.
+# pod, not steered, the memory going back to the pool; a claim that opts in
+# to steering and asks the pool for a slot near NUMA node 1, its device
+# under the other host bridge, a NUMA node of its own, the memory of the
+# workload there; a claim with an invalid pool section that the controller
+# refuses; and at the end the trace summary of what every component did, in
+# order.
 #
 # Run test00-up of n4-cxl-shared-1, -0 and -2 first (see there for the
 # patched qemu): they create the VMs and make them one cluster. The DRA
@@ -53,7 +65,10 @@ POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
 POOLED0_HEX=C1EE0001        # the serial in environment variable names
 POOLED0_SIZE=$(( 512 << 20 ))
 POOLED1_SERIAL=0xc1ee0002
+POOLED1_HEX=C1EE0002
 POOLED1_SIZE=$(( 256 << 20 ))
+MiB=$(( 1 << 20 ))
+TOUCH_MIB=64                # what the steered workload touches, within its claim
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
@@ -83,7 +98,8 @@ pool-client-install "$VM2"
 echo "### preconditions: the pool controller and the node plugin run in the cluster"
 dra-build
 dra-install
-dra-pull-images "$VM2" docker.io/library/busybox:latest
+dra-pull-images "$VM2" docker.io/library/busybox:latest "$DRA_TOOLS_IMAGE"
+dra-dax-tool-install "$VM2"
 dra-trace-start "$VM2"
 
 echo "### A: the pool is visible in Kubernetes"
@@ -210,10 +226,10 @@ dra-kubectl "$VM2" "logs -n $DRA_NS pooled-consumer" || command-error "cannot ge
 POD_LOG="$COMMAND_OUTPUT"
 dra-env-assert pooled-consumer "$POD_LOG" "$POOLED0_HEX" \
     SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$CXL_NODE"
-grep -qx "CXL_CLAIM_${CLAIM_UID//-/_}=1" <<< "$POD_LOG" ||
-    error "pooled-consumer has no claim marker CXL_CLAIM_${CLAIM_UID//-/_}=1"
+grep -qx "CXL_CLAIM_${CLAIM_UID//-/_}_0=1" <<< "$POD_LOG" ||
+    error "pooled-consumer has no marker CXL_CLAIM_${CLAIM_UID//-/_}_0=1 of result 0 of its claim"
 [ "$(grep -c '^CXL_' <<< "$POD_LOG")" == 6 ] ||
-    error "pooled-consumer has other CXL_ variables than the five of $POOLED0_SERIAL and the claim marker: $(grep '^CXL_' <<< "$POD_LOG")"
+    error "pooled-consumer has other CXL_ variables than the five of $POOLED0_SERIAL and the marker of its result: $(grep '^CXL_' <<< "$POD_LOG")"
 grep -q "^/sys/devices/system/node/node$CXL_NODE/meminfo:Node $CXL_NODE MemTotal:" <<< "$POD_LOG" ||
     error "pooled-consumer does not see the memory of node $CXL_NODE"
 echo "pooled-consumer: $(grep "node$CXL_NODE/meminfo" <<< "$POD_LOG")"
@@ -225,6 +241,9 @@ dra-nodes-has "$MEMS_ALLOWED" "$CXL_NODE" ||
     error "pooled-consumer: node $CXL_NODE is not in its Mems_allowed_list '$MEMS_ALLOWED'"
 echo "pooled-consumer: Mems_allowed_list $MEMS_ALLOWED"
 dra-mems-fenced "$VM2" "$CXL_NODE" "$DRA_NS/pooled-consumer/consumer"
+# Steering is opt-in: the claim has no MemoryConfig, the consumer is fenced,
+# not steered: no memory policy, no memory.high.
+dra-memory-wait "$VM2" pooled-consumer consumer fenced "none (default)"
 
 echo "### D: the pool device is not advertised again as node-local CXL memory"
 # The new region is CXL memory of the node, which the node plugin offers
@@ -268,7 +287,78 @@ deleted=$(grep -c 'event DEVICE_DELETED' "$POOL_SERVER_LOG")
 [ "$deleted" -ge 1 ] || error "qemu did not report DEVICE_DELETED, see $POOL_SERVER_LOG"
 grep -E 'attachment pooled0@.*: (attached|detached)|event DEVICE_DELETED' "$POOL_SERVER_LOG"
 
-echo "### F: what every component did, in order"
+echo "### F: a claim opts in to steering and asks the pool for a slot near NUMA node 1"
+# pooled1 for a claim with a container section (steering policy auto) and
+# a pool section: the object of the reference controller,
+# pool.opaque.fake-cxl-pool, asks for a slot under a host bridge on NUMA
+# node 1 of the host (the server prefers such slots); a key of another
+# controller implementation is not this controller's business. Without
+# numaNode the server takes a slot under host bridge 0, the slot of
+# pooled0 in D.
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml pooled-steered "$POOLED1_SERIAL" "" "container: {steering: {policy: auto}}, pool: {opaque: {$DRA_POOL_CONFIG_KEY: {numaNode: 1}, other-pool: {qos: gold}}}" cxl-pool)
+---
+$(dra-claim-pod-yaml pooled-steered claim pooled-steered "$VM2_NAME")"
+dra-wait "$VM2" steered-attached "resourceclaim -n $DRA_NS pooled-steered" \
+    "condition('$DRA_POOL_DRIVER/Attached') == 'True'" 60
+STEERED_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
+pool-client "$VM2" -o json attachments || command-error "cannot list the attachments of the pool"
+pool-assert "$COMMAND_OUTPUT" "[(a['device'], a['host'], a.get('owner'), a['slot']['hostBridge'], a['slot']['numaNode']) for a in j] == [('pooled1', '$VM2_NAME', 'k8s:resourceclaim/$STEERED_UID', 'cxlhb1', 1)]"
+echo "pooled1 is in slot $(pool-value "$COMMAND_OUTPUT" "j[0]['slot']['bus']") under host bridge cxlhb1 on NUMA node 1"
+dra-pod-wait "$VM2" pooled-steered Running 120
+pool-cxl-wait "$VM2" pooled1-prepared \
+    "by_serial($POOLED1_SERIAL) is not None and len(regions) == 1 and regions[0]['Enabled'] and regions[0]['OnlineSize'] == $POOLED1_SIZE"
+POOL_NODE=$(cxl-value "regions[0]['Node']")
+if (( POOL_NODE < CPU_NODES )) || [ "$POOL_NODE" == "$CXL_NODE" ]; then
+    error "pooled1 is NUMA node $POOL_NODE, expected a CXL node other than $CXL_NODE of host bridge 0"
+fi
+echo "pooled1 is NUMA node $POOL_NODE of the VM, the CXL window of host bridge 1"
+# shellcheck disable=SC2016 # expanded by sh in the container
+dra-exec "$VM2" pooled-steered sh -c 'env | grep ^CXL_ | sort' ||
+    command-error "cannot read the environment of pooled-steered"
+dra-env-assert pooled-steered "$COMMAND_OUTPUT" "$POOLED1_HEX" \
+    SERIAL="$POOLED1_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED1_SIZE" NODE="$POOL_NODE"
+# Pool numa memory is steered like local memory: CXL only, policy
+# first-cxl, the memory policy of the main process prefers the pool node.
+# A workload that runs as a child of the main process and has no NUMA
+# preference of its own gets its memory there.
+dra-memory-wait "$VM2" pooled-steered main steered "auto from claim $DRA_NS/pooled-steered request mem"
+dra-nodes-has "${DRA_MEMPOLICY##*:}" "$POOL_NODE" ||
+    error "pooled-steered: the memory policy of the main process is '$DRA_MEMPOLICY', expected node $POOL_NODE"
+dra-run "$VM2" pooled-steered "python3 /tools/numa-touch.py $TOUCH_MIB -" ||
+    error "numa-touch.py in pooled-steered failed"
+pages=$(dra-touch-log-pages "$COMMAND_OUTPUT" "$POOL_NODE")
+[ "$pages" -ge $(( (TOUCH_MIB << 8) * 9 / 10 )) ] ||
+    error "pooled-steered: only $pages of $(( TOUCH_MIB << 8 )) pages of the workload are on the pool node $POOL_NODE"
+dra-mems-fenced "$VM2" "$POOL_NODE" "$DRA_NS/pooled-steered/main"
+dra-delete "$VM2" pod pooled-steered --grace-period=2 --wait=true --timeout=60s
+dra-delete "$VM2" resourceclaim pooled-steered --wait=true --timeout=60s
+pool-device-free-wait pooled1 "$VM2"
+
+echo "### G: an invalid pool section: the controller refuses the claim and attaches nothing"
+# A misspelled field in the object of the controller: the controller
+# refuses the allocation with the condition AttachFailed, reason
+# InvalidConfig, without attaching the device. The scheduler deallocates
+# the claim and tries again until the binding times out: the condition
+# lasts only until then, the watch sees it, the Event of the controller
+# stays.
+dra-apply "$VM2" <<< "$(dra-shared-claim-yaml bad-pool "$POOLED0_SERIAL" "" "pool: {opaque: {$DRA_POOL_CONFIG_KEY: {numaNod: 1}}}" cxl-pool)
+---
+$(dra-claim-pod-yaml bad-pool claim bad-pool "$VM2_NAME")"
+dra-claim-condition-watch "$VM2" bad-pool "$DRA_POOL_DRIVER/AttachFailed" InvalidConfig 90
+grep -qF 'unknown field "numaNod"' <<< "$COMMAND_OUTPUT" ||
+    error "the AttachFailed condition of bad-pool does not name the unknown field numaNod: $COMMAND_OUTPUT"
+dra-wait "$VM2" bad-pool-event "events -n $DRA_NS --field-selector involvedObject.name=bad-pool" \
+    "any(e['involvedObject'].get('kind') == 'ResourceClaim' and e.get('reason') == 'AttachFailed' and 'numaNod' in (e.get('message') or '') for e in items)" 60
+dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-pool"
+pool-attachments pooled0
+pool-assert "$COMMAND_OUTPUT" "j in (None, [])"
+dra-json "$VM2" pod -n "$DRA_NS" bad-pool
+dra-assert "$COMMAND_OUTPUT" "j['status']['phase'] == 'Pending' and not j['spec'].get('nodeName')"
+dra-delete "$VM2" pod bad-pool --grace-period=2 --wait=true --timeout=60s
+dra-delete "$VM2" resourceclaim bad-pool --wait=true --timeout=60s
+pool-device-free-wait pooled0 "$VM2"
+
+echo "### H: what every component did, in order"
 dra-trace-stop
 dra-trace-summary
 printf 'timings (test steps, 1 s polling): attached %.1f s, pod Running %.1f s after the claim; detached %.1f s after the delete\n' \

@@ -1,0 +1,448 @@
+plan-12 stream E2E: e2e tests of MemoryConfig
+=============================================
+Written 2026-10-23 (stream E2E). Branch 5jg-cxl, nothing committed.
+Paths: N = ~/github.com/containers/nri-plugins, E = N/test/e2e/
+memory.test-suite/dra-driver-cxl, S2 = E/n4-cxl-shared-2.
+
+Phase 1: edits only (no test runs)
+==================================
+
+Changes per file
+----------------
+E/dra.source.sh
+  - DRA_CONFIG_API=cxl.nri.io/v1alpha1, DRA_CONFIG_KIND=MemoryConfig,
+    DRA_POOL_CONFIG_KEY=fake-cxl-pool (the reference controller's key).
+  - DRA_RUNNER: the main process of the containers of dra-pod-yaml; runs
+    /tmp/run when it appears (as the hw tests' RUNNER/prun), so that
+    workloads are descendants of the main process and inherit the memory
+    policy that steering sets.
+  - dra-claim-yaml writes MemoryConfig: MODE and read-only go into the
+    device section as before (callers unchanged); new keyword arguments
+    device=FIELDS, container=FIELDS, pool=FIELDS (flow YAML).
+  - dra-shared-claim-yaml: PARAMETERS are the device fields as before
+    ("mode: dax, readOnly: true", callers unchanged); PARAMETERS that
+    start with "device:", "container:" or "pool:" are the sections.
+  - dra-claim-pod passes every argument after NAME to dra-claim-yaml.
+  - dra-claim-pod-yaml is now dra-pod-yaml with one claim "mem": the
+    container's main process is DRA_RUNNER instead of "sleep infinity"
+    (same TERM handling), for every claim pod of the tests.
+  - new: dra-memory-config, dra-config-sections (internal), dra-pod-yaml,
+    dra-run, dra-container-mempolicy, dra-memory-state (internal),
+    dra-memory-wait, dra-nodes-subset (dra-nodes-py op "sub"),
+    dra-claim-condition-watch; dra-py config_section(c, name).
+  - dra-touch-log-pages takes a node list ("0-1") and sums the pages;
+    script API now.
+  - doc of dra-dax-tool-install and dra-touch-start: numa-touch.py "-".
+S2/numa-touch.py
+  - NODE "-": no set_mempolicy, the inherited policy; prints
+    "numa-touch: policy <policy of the mapping in numa_maps>" before the
+    pages line (dra-touch-start and dra-touch-log-pages still parse it).
+S2/test14-dra-local-memdev/code.var.sh
+  - header: MemoryConfig device section, steering opt-in, what you see.
+  - claim-env: marker CXL_CLAIM_<uid>_<n>=1; works for POD/CONTAINER.
+  - B: numa-a (no config) and numa-b (device.mode numa only): fenced,
+    "none (default)", memory.high max, main process policy default
+    (dra-memory-wait); a child of numa-a's main process allocating with
+    the default policy has <= 1% of its pages on the CXL node.
+  - D: seven refused configs in parallel (bad-config, bad-mode, bad-kind
+    as before, plus bad-policy, bad-steps, bad-pool, bad-fencing) with the
+    05-status-API texts; CDI marker claim-<uid>-0 checks
+    CXL_CLAIM_<uid>_0=1. dra-local-blocks-require 7 (was 5).
+  - E (new) steering opt-in, four pods at once, workloads run as children
+    of the main process (dra-run, numa-touch.py MIB -):
+      steer-cxl   cxl-local 1 block, policy auto (first-cxl): steered,
+                  policy nodes = CXL node, >= 90% of 64 MiB on the CXL node
+      steer-dram  cxl-dram 128Mi, auto (first-dram): policy nodes and
+                  cpuset.mems subset of the DRAM nodes, >= 90% on DRAM,
+                  <= 1% on CXL
+      steer-mix   template with requests dram (128Mi) + cxl (1 block),
+                  auto (start-interleaved): policy has the CXL node and
+                  DRAM nodes, >= 1/5 of the pages on each
+      steer-first same with {policy: first-dram, maxStep: 32Mi}: before
+                  the workload cpuset.mems DRAM only; 192 MiB touched:
+                  >= 96 MiB on DRAM and >= 32 MiB on CXL; the cgroup's
+                  anon on DRAM <= quota + one step; then the CXL node in
+                  cpuset.mems
+  - F (new) claim split: requests numa and dax (both slices of the local
+    memdev), device.mode dax for request dax, steering auto for both;
+    containers c-numa (mem/numa) and c-dax (mem/dax): each has exactly
+    its result's env and marker CXL_CLAIM_<uid>_<index of its result>;
+    c-numa steered "auto from claim NS/split request numa" with the
+    node; c-dax logs "steering policy auto: no numa memory to steer", is
+    fenced, memory.high max, no node; one dra-mems-fenced over all
+    containers of E and F.
+  - G (new) conflict: pod with DRAM claims conflict-a (first-dram) and
+    conflict-b (none) in one container: event text of the failed
+    CreateContainer, container waiting CreateContainerError.
+  - H: the trace (was E).
+S2/test10-dra-pooling/code.var.sh
+  - header: MemoryConfig sections, opt-in steering, new cases.
+  - marker CXL_CLAIM_<uid>_0=1; pooled-consumer: fenced "none (default)",
+    memory.high max, policy default.
+  - tools image and ConfigMap installed (dra-dax-tool-install).
+  - F (new) pooled-steered: pooled1 by serial with container steering
+    auto and pool.opaque {fake-cxl-pool: {numaNode: 1}, other-pool:
+    {qos: gold}}: the attachment is in a slot of host bridge cxlhb1 on
+    NUMA node 1 (pool attachments list), its region a CXL node other than
+    pooled0's (hb0) and CXL_C1EE0002_NODE that node; steered "auto from
+    claim NS/pooled-steered request mem", policy has the pool node; a
+    child workload without preference has >= 90% of 64 MiB on the pool
+    node; fenced for all others. The other-pool key is ignored (the
+    attach succeeds).
+  - G (new) bad-pool: pooled0 with pool.opaque.fake-cxl-pool {numaNod: 1}:
+    condition cxl-pool.nri.io/AttachFailed=True reason InvalidConfig seen
+    by a kubectl watch (the scheduler deallocates, so the condition is
+    transient), its message has unknown field "numaNod"; the controller's
+    Event AttachFailed on the claim; no attachment of pooled0; the pod
+    Pending, unbound.
+  - H: the trace (was F).
+S2/test15-dra-local-live-attach/code.var.sh
+  - header and companion-check: MemoryConfig with a device section only
+    (apiVersion cxl.nri.io/v1alpha1, kind MemoryConfig, keys [device],
+    device.mode, device.readOnly); ANY_CONFIGS with apiVersion and kind
+    of the one apiVersion for both drivers, device.mode.
+  - D2 (new) pod mixed: a static numa claim (no config: not steered) and
+    the lease claim in container main; fenced "none (default)"; a local
+    numa lease of 1 block is Ready (refused before plan-12); node grows
+    and shrinks by it; only mixed/main has the node; memory.high max after
+    the lease; nothing left after the pod.
+S2/test17-dra-local-shared/code.var.sh
+  - error texts: "MemoryConfig: device: a shared device is used as dax
+    only", "MemoryConfig: device.readOnly needs mode dax",
+    "MemoryConfig: device.access needs mode fs".
+  - reader claim parameters == {apiVersion: cxl.nri.io/v1alpha1, kind:
+    MemoryConfig, device: {readOnly: true}}; markers CXL_CLAIM_<uid>_0.
+S2/test19-many-pools/code.var.sh, S2/pool.source.sh: unchanged (test19's
+  claims come from the helpers, which now write MemoryConfig; nothing in
+  test19 asserts on the config shape or the marker).
+
+New helpers: usage
+------------------
+  dra-memory-config SECTIONS
+      "{apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, SECTIONS}",
+      for inline YAML (parameters: $(dra-memory-config "device: {mode: dax}")).
+  dra-claim-yaml claim|template NAME CLASS SIZE [MODE [read-only]] [device=F] [container=F] [pool=F]
+      dra-claim-yaml claim s cxl-local 128Mi "container=steering: {policy: auto}"
+  dra-claim-pod VMDIR NAME CLASS SIZE [MODE [read-only]] [SECTION=F...]
+  dra-shared-claim-yaml NAME SERIAL [SHARES [PARAMETERS [CLASS]]]
+      dra-shared-claim-yaml p 0xc1ee0002 "" "pool: {opaque: {fake-cxl-pool: {numaNode: 1}}}" cxl-pool
+  dra-pod-yaml NAME NODE [CNAME=claim:CLAIM|CNAME=template:T...] [-- CTR[=REF[,REF...]]...]
+      REF is CNAME or CNAME/REQUEST; default one container main with all
+      claims; every container runs DRA_RUNNER, /tools mounted.
+      dra-pod-yaml split node mem=claim:split -- c-numa=mem/numa c-dax=mem/dax
+  dra-run VMDIR POD[/CTR] SCRIPT [TIMEOUT]
+      SCRIPT as a child of the main process; one kubectl exec writes it
+      and waits in the container; COMMAND_OUTPUT, exit status (124 on
+      timeout). Tested locally with the runner: output, rc, timeout.
+  dra-container-mempolicy VMDIR POD CTR
+      the policy of the container's init process from /proc/PID/numa_maps
+      ("default", "prefer:2", "interleave:0-2").
+  dra-memory-wait VMDIR POD CTR steered|fenced|none [STEERING]
+      waits for "NRI CreateContainer: ctr=NS/POD/CTR: memory MGMT
+      (steering STEERING" in the driver log; steered: waits until
+      memory.high != max and policy != default; fenced/none: memory.high
+      max and policy default. Sets DRA_MEM_HIGH, DRA_MEMPOLICY.
+  dra-nodes-subset LIST1 LIST2
+  dra-touch-log-pages TEXT NODES
+  dra-claim-condition-watch VMDIR CLAIM TYPE REASON [TIMEOUT]
+      kubectl get -w -o json parsed in python in the VM, kubectl killed
+      when found or at the timeout. Tested locally with a fake kubectl
+      (found in 1 s; timeout path rc 1).
+
+What I checked in VM2 (read-only)
+---------------------------------
+  - numactl -H: DRAM nodes 0 (3944 MB) and 1 (4030 MB), CPUs 0-3 / 4-7,
+    free 1.3 GB / 0.5 GB (buff/cache 5 GB, available 6.7 GB); possible
+    nodes 0-3, has_memory 0-1 now (no CXL memory online).
+  - block_size_bytes 0x8000000 = 128 MiB; no swap; THP always; kernel
+    7.3.0-rc4.
+  - CXL root decoders: decoder0.0 (target dport 12 = pci0000:0c) and
+    decoder0.1 (dport 24 = pci0000:18): two CFMWS, so host bridge 0 and
+    1 memory become two different CXL nodes (2 and 3 expected).
+    topology2qemuopts: pxb-cxl numa_node = host bridge index, so hb0 is
+    NUMA 0, hb1 NUMA 1 of the host; topology.var.json: hb0 2 pool slots
+    (+ static shared0 and the local 1G memdev), hb1 4 pool slots (1G
+    each). The server's slot choice without numaNode takes the first best
+    slot (hb0, as test15 relies on); numaNode 1 scores hb1 slots higher
+    (pkg/server/ops.go).
+  - The driver is not installed now: the ResourceSlice of cxl.nri.io on
+    VM2 from the last test14 run (dra.local-device.vm.json): dram nodes
+    "0-1", capacity memory 8166408Ki, no requestPolicy,
+    allowMultipleAllocations; memdev-c100e2e1 1Gi, min/step 128Mi,
+    default 1Gi; lease device.
+  - Sizes used: local memdev at most 7 blocks at once (D: seven refused
+    claims of a block each; E+F: 5 blocks); DRAM claims 128Mi each and
+    64Mi for the conflict, touches 32-192 MiB.
+  - numa_maps policy strings checked on the host with numa-touch.py:
+    "default" without a policy, "prefer:1" with MPOL_PREFERRED 1.
+
+Texts the tests depend on, and their source
+-------------------------------------------
+  Prepare errors (05-status-API.txt "Every error text"):
+    MemoryConfig: device.readOnly needs mode dax              test14, test17
+    MemoryConfig: device.mode: invalid mode "memory" (numa or dax)   test14
+    unknown kind "DaxConfig" (MemoryConfig)                    test14
+    MemoryConfig: container.steering.policy: invalid policy "fastest" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)   test14
+    MemoryConfig: container.steering.maxStep needs a policy other than none   test14 (per result, substring: a suffix is fine)
+    MemoryConfig: pool: only for devices of cxl-pool.nri.io    test14
+    MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)   test14
+    MemoryConfig: device: a shared device is used as dax only  test17
+    MemoryConfig: device.access needs mode fs                  test17
+    All are matched as substrings of the pod events (drivers wrap them).
+  CreateContainer error (contract 5, 05-status-API Combine + R3 to DRV):
+    "container NS/conflict/main: container.steering.policy: " and
+    "claim NS/conflict-a request mem says first-dram" and
+    "claim NS/conflict-b request mem says none", in a pod event.
+  Logs (contract 11; PolicyText of 05-status-API):
+    NRI CreateContainer: ctr=NS/POD/CTR: memory fenced (steering none (default)
+    NRI CreateContainer: ctr=NS/POD/CTR: memory steered (steering auto from claim NS/NAME request R
+    NRI CreateContainer: ctr=NS/POD/CTR: memory steered (steering first-dram from claim NS/NAME request
+    NRI CreateContainer: ctr=NS/POD/CTR: memory fenced (
+    NRI CreateContainer: ctr=NS/split/c-dax: steering policy auto: no numa memory to steer
+    plan-11 texts unchanged: "NRI fence: fencing CXL nodes N of prepared
+    claims", "NRI CreateContainer: ctr=NS/plain/main: cpuset.mems=".
+  Markers (contract 4): CXL_CLAIM_<uid with _>_<n>=1 in env and CDI.
+  Controller (contract 6; PoolOpaque text of 05-status-API): condition
+    cxl-pool.nri.io/AttachFailed=True reason InvalidConfig with a message
+    containing 'unknown field "numaNod"'; an Event reason AttachFailed on
+    the ResourceClaim whose message has "numaNod" (today's
+    reconciler.updateStatus records the condition message as an Event).
+  Broker (contract 10): companion configs: one MemoryConfig per driver,
+    keys apiVersion, kind, device (mode; readOnly).
+
+Shellcheck
+----------
+  shellcheck -s bash -e SC2154,SC2034,SC1090,SC2148,SC2016 on
+  E/dra.source.sh and S2/test10, test14, test15, test17, test19
+  code.var.sh: before 0 findings, after 0 findings (two new info
+  findings SC2015/SC2017 in test14 fixed while editing). bash -n of all,
+  python ast of numa-touch.py, ASCII only: ok. Helper YAML rendered
+  offline and parsed with PyYAML (claims with each section, shared
+  claims, pods with request refs, lease + static claim): ok.
+
+Open points
+-----------
+O1. test14 F needs the scheduler to allocate the one local memdev to two
+    requests of one claim (allowMultipleAllocations, consumable capacity);
+    the driver keeps a list of slices per claim and request
+    (localDevice.Claims). If the scheduler refuses, F falls back to numa
+    + dram requests (phase 2).
+O2. steer-dram: cpuset.mems is asserted a subset of the DRAM nodes (the
+    plan's nodes plus nodes holding memory at the start), not equal.
+O3. first-dram thresholds (DRAM >= 3/4 of its 128 MiB quota, CXL >= 32
+    MiB, cgroup DRAM anon <= quota + 32 MiB) leave room for the ~10 MiB
+    of the runner and python; calibrate in phase 2.
+O4. The InvalidConfig condition is transient (the scheduler deallocates
+    on bindingFailureConditions); the watch must see one allocation cycle
+    in 90 s, the scheduler retries with its pod backoff (<= 10 s).
+O5. The conflict event: containerd's error text must carry the NRI
+    plugin's error into the kubelet event (substring checks only).
+O6. dra-claim-pod-yaml pods now run DRA_RUNNER (a 0.2 s poll) instead of
+    sleep: test14, test15 and test17 claim pods. No test relies on the old
+    command.
+O7. test14 grows by E (4 pods), F (1 pod, 2 containers), G (1 pod) and 4
+    more refused pods in D's parallel batch: roughly +3 min, measured in
+    phase 2.
+O8. Not tested: that lending is still refused for a steered container
+    (no contract text for the refusal).
+
+Requests
+--------
+R1 (orchestrator: owners of test11, test12, test13, test16, test18, or
+    give E2E the files): the new markers and config shape break these
+    lines (n4-cxl-shared-2):
+    - test11 190-191, test12 741-742: grep -qx "CXL_CLAIM_${UID//-/_}=1"
+      -> "..._0=1" (result 0).
+    - test13 370: "- CXL_CLAIM_${RO_CLAIM_UID//-/_}=1" -> "..._0=1".
+    - test13 238 (companion): ('$DRA_POOL_DRIVER', 'DeviceConfig', 'dax',
+      False) from c['parameters']['kind'] / .get('mode') -> kind
+      '$DRA_CONFIG_KIND' and config_section(c, 'device').get('mode') /
+      .get('readOnly').
+    - test13 319: == [{'apiVersion': '$DRA_CONFIG_API', 'kind':
+      '$DRA_CONFIG_KIND', 'device': {'mode': 'dax', 'readOnly': True}}]
+      (whether the broker writes readOnly: false is DRV's choice).
+    - test13 438: parameters: $(dra-memory-config "device: {mode: dax}").
+    - test12 267: (driver, apiVersion '$DRA_CONFIG_API', kind
+      '$DRA_CONFIG_KIND', config_section(c, 'device').get('mode'),
+      bool(config_section(c, 'device').get('readOnly'))); comment 238.
+    - test16 531: parameters == {'apiVersion': '$DRA_CONFIG_API', 'kind':
+      '$DRA_CONFIG_KIND', 'device': {'mode': 'fs', 'readOnly': True,
+      'access': '$access'}}; comments 16, 23, 511.
+    - test18 226: kind '$DRA_CONFIG_KIND', device section mode/readOnly;
+      comment 216.
+    - test13 23: comment.
+R2 (DRV): the tests rely on contract 11 at V(3) (e2e logLevel 4): the
+    CreateContainer management line for every container with or without
+    results (also for pool claims and for c-dax), and the "no numa memory
+    to steer" line for a steered policy without numa memory; the
+    management "fenced" for that container.
+R3 (CTRL): keep the AttachFailed Event on the claim with the condition
+    message (test10 G checks it besides the condition).
+
+E2E phase 1 done
+
+Phase 1b: the other tests of n4-cxl-shared-2 (R1 granted)
+=========================================================
+Written 2026-10-23 (stream E2E). Edits only, no runs. Only what plan-12
+changes: the per-result marker and the MemoryConfig shape.
+
+Changes per file (S2 = E/n4-cxl-shared-2)
+  S2/test11-dra-sharing/code.var.sh
+    writer: marker CXL_CLAIM_<uid>_0=1 (was CXL_CLAIM_<uid>=1); comment
+    and messages.
+  S2/test12-dra-live-attach/code.var.sh
+    companion-check: the companion claim's config is one MemoryConfig of
+    the pool driver, apiVersion cxl.nri.io/v1alpha1, keys [device],
+    config_section(c, 'device') mode MODE, readOnly false; comment.
+    claimer: marker CXL_CLAIM_<uid>_0=1; comment and messages.
+  S2/test13-dra-shared-one-writer-many-readers/code.var.sh
+    header comment (MemoryConfig device.readOnly); writer companion:
+    (driver, apiVersion, kind, device.mode, device.readOnly) ==
+    (pool driver, cxl.nri.io/v1alpha1, MemoryConfig, dax, False);
+    reader-a companion: parameters == {apiVersion: cxl.nri.io/v1alpha1,
+    kind: MemoryConfig, device: {mode: dax, readOnly: true}}; reader-d
+    CDI marker CXL_CLAIM_<uid>_0=1; the inline claim pooled-dax writes
+    parameters with dra-memory-config "device: {mode: dax}".
+  S2/test16-cxl-llm-share/code.var.sh
+    header comments; companion of a lease reader: parameters ==
+    {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode:
+    fs, readOnly: true, access: ACCESS}}. Its other claims come from
+    dra-shared-claim-yaml (device fields, wrapped by the helper).
+  S2/test18-dra-local-shared-one-writer-many-readers/code.var.sh
+    companion-shape: (driver, apiVersion, kind, device.mode,
+    device.readOnly) == (cxl.nri.io, cxl.nri.io/v1alpha1, MemoryConfig,
+    dax, READONLY); comment.
+  S2/test14-dra-local-memdev/code.var.sh: one comment left from phase 1
+    (DeviceConfig -> MemoryConfig).
+  S2/llm.source.sh: unchanged (no config or marker in it).
+
+Depends on (contract 10, 05-status-API "Mapping for DRV"): the broker's
+companion entries have only a device section with mode (and readOnly,
+access for fs); exact-dict checks (test13 reader-a, test16) also expect
+readOnly: true there and no readOnly/access for dax beyond what the
+request gives. If DRV writes readOnly: false explicitly for writable
+companions, only test13 writer, test12 and test18 are affected, and those
+compare with bool(), so they pass either way.
+
+Checks
+  grep over E (*.sh, *.py, *.yaml) for DeviceConfig, MemoryPolicyConfig,
+  /v1alpha1 (other than DRA_CONFIG_API), CXL_CLAIM_<uid>}=1 and
+  memoryUseOrder: no hits left.
+  shellcheck -s bash -e SC2154,SC2034,SC1090,SC2148,SC2016 on test11,
+  test12, test13, test16, test18 code.var.sh and llm.source.sh: before 0,
+  after 0 findings; test14 again 0. bash -n ok, ASCII only.
+
+E2E phase 1b done
+
+Phase 2: runs (stopped on a driver failure; see 06-runs-E2E.txt)
+=================================================================
+Written 2026-10-23 (stream E2E).
+
+Rechecked the greps against 05-status-DRV.txt, 05-status-API.txt and
+05-status-CTRL.txt before the runs: the management line "NRI
+CreateContainer: ctr=%s: memory %s (steering %s, fencing %s)" (fencing
+"allowed-mems (default)"; dra-memory-wait matches the prefix up to the
+steering text), "steering policy %s: no numa memory to steer", the
+origins "auto from claim NS/NAME request R", the Prepare error prefixes
+("claim NS/NAME: request R: MemoryConfig: ..."; substring matches), the
+CreateContainer error prefix "container NS/POD/CTR: ", the controller's
+condition, Event and "invalid configuration" log. No test greps the
+renamed start lines (defaults.container.fencing: ...) or containerMemory.
+Nothing changed in the tests for phase 2.
+
+Results
+  test10  PASS: unsteered pool numa (fenced, none (default), memory.high
+          max, policy default); pool.opaque.fake-cxl-pool numaNode 1 ->
+          slot cxlsw_ds0_usrp0hb1 of cxlhb1, NUMA node 3 (pooled0: 2);
+          steered auto: policy prefer:3, a child's 64 MiB all on node 3;
+          a foreign opaque key ignored; invalid object -> AttachFailed
+          InvalidConfig (watched), Event, no attachment.
+  test14  FAIL x3 at the first region the driver creates again in the same
+          boot (dax-ro; numa-a in run 2): the address line probe of
+          c55476444 gets ENXIO opening the new dax0.0. The plan-12 checks
+          before it passed: numa-a/numa-b fenced and unsteered, a child's
+          default allocations 0 MiB on CXL, all seven refused-config texts.
+          E (steering), F (split), G (conflict) not reached.
+  not run: test15, test19, test11, test12, test13, test16, test17, test18,
+          test01.
+The first-dram thresholds are not calibrated yet (section E not reached).
+
+Request (DRV / owner of c55476444), with the evidence in 06-runs-E2E.txt:
+  memctl.CreateRegionSize returns when the dax device has a driver
+  symlink; when the kernel binds the new region's dax device to
+  device_dax by itself (every region after the first of a boot in VM2),
+  the probe (ProbeAliasing via probeRegion in createProbedRegion) opens
+  the node before device_dax has registered its cdev: ENXIO, the Prepare
+  fails, every later local region of the boot fails. Probable fix: wait
+  until the dax device is fully bound (e.g. retry the open on ENXIO for
+  a short time, or wait for the probe of the binding to finish) before
+  probing. Blocks test14, and likely test15, test17 and test18 (local
+  regions created more than once per boot). Needs a new image.
+
+Phase 2 stopped here, waiting for the orchestrator.
+
+Phase 2, second image (11bb350ad77a): stopped again on a driver issue
+  The new image is in containerd of all three nodes (sha256:11bb350ad77a).
+  test14 FAIL in section E at steer-dram (DRAM only, policy auto): steered
+  (interleave:0-1, memory.high set) but cpuset.mems stays "": cgmpolmgr
+  writes cpuset.mems only when a step adds a node, Start pre-allows the
+  nodes holding memory (0, 1), and the NRI plugin does not fence steered
+  containers. So its effective mems include the CXL node of other claims.
+  Before it: A-D as in the first image's runs, steer-cxl passed (policy
+  prefer:2, a child's 64 MiB all on node 2, cpuset.mems 0-2).
+  Request (DRV, pkg/cgmpolmgr or nri.go): give a steered container
+  cpuset.mems = its plan's nodes (and the fallback normal node) from the
+  start, written even when no node is added (e.g. write cpuset.mems in
+  Start unconditionally, or set it in CreateContainer like fenceCreated
+  does for fenced containers), so that it never has CXL nodes it does not
+  steer to; evidence in 06-runs-E2E.txt. The test's expectation (subset
+  of the DRAM nodes, and dra-mems-fenced at the end of F not listing
+  steer-dram) is the plan's (03-plan stream E2E) and is kept.
+  Waiting for the orchestrator.
+
+Phase 2, third image (2db5e4fd5d5f): stopped again on a driver issue
+  Image in all three nodes. test14 FAIL in E at steer-mix: steer-cxl and
+  steer-dram pass now (steer-dram cpuset.mems 0-1, its child's 64 MiB on
+  DRAM only). steer-mix (DRAM + CXL, auto = start-interleaved, default
+  steps) is not steered: its first step is "nothing left to steer"
+  because minStep defaults to the whole quota and NextStep/nextStep
+  measure the distance to the waypoint against it (06-runs-E2E.txt).
+  Request (DRV / pkg/cgmpolmgr): the default steps must steer a
+  start-interleaved plan (and any plan whose first waypoint is within one
+  minStep of zero): e.g. treat the first step from usage below the first
+  waypoint as a step even when the remaining distance is less than
+  minStep, or default minStep to something smaller than the total quota.
+  The test keeps the default steps for steer-mix (auto must work without
+  parameters); steer-first's own maxStep is unaffected.
+  Waiting for the orchestrator.
+
+Phase 2, final (image a68667412e60)
+===================================
+All eleven tests pass on the final image, one at a time: test14, test15,
+test17, test18, test19, test11, test12, test13, test16, test01, test10
+(06-runs-E2E.txt has commands, durations, verdicts and decisive lines).
+The image ID a68667412e60 was checked in containerd of VM2, VM1, VM0.
+
+Test changes in phase 2 (test14 only; shellcheck 0 findings after)
+  - F: the env key of each split container from the order of its result:
+    the second result of the same device in one claim has the key
+    <serial>_2 (driver envKeys, existing rule), the first the serial.
+  - E steer-first, calibrated from runs 7-9 (DRAM 118/98/100 MiB, CXL
+    74/94/92 MiB of 192): the plan counts the DRAM waypoint reached
+    within one step (minStep = maxStep = 32 MiB) and the runner and
+    python use ~10 MiB of the quota first, so the workload's DRAM is the
+    quota less 10-42 MiB. Bounds: DRAM >= quota - step - 16 MiB (80),
+    CXL >= 3/4 of the 64 MiB beyond the quota (48), DRAM <= quota + step
+    (160). The cgroup-anon check (anon-mib) is gone: it read the cgroup
+    after the workload had exited (0 MiB), so it proved nothing; the
+    upper bound is on the workload's own DRAM pages.
+Driver fixes made for these runs (by DRV, from E2E's Requests): memctl
+openDaxNode (ENXIO of the probe of a region bound by the kernel),
+cgmpolmgr writes cpuset.mems at the first step (DRAM-only steering
+narrowed and fenced), cgmpolmgr default minStep (start-interleaved and
+first-dram with default steps steer).
+Open: none of E2E's. Not covered: lending refused for a steered
+container (no contract text), steering managers after a driver restart
+(contract 5, P8, unchanged).
+
+E2E done

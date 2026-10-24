@@ -1,8 +1,11 @@
 # 128Mi of a CXL memory device attached to the node, as RAM of the
 # device's NUMA node (DeviceClass cxl-local of
 # ../../helm/dra-driver-cxl/templates/deviceclasses.yaml). The
-# container is steered to that node: it is in its cpuset.mems. It prints
-# its CXL_* environment (CXL_<KEY>_NODE is the node) and cpuset.mems.
+# container has that node in its cpuset.mems; it is not steered (no
+# container.steering, see region-dram-policy.yaml): the kernel allocates
+# its memory near its CPUs first, and numactl or mbind bind it to the
+# node. It prints its CXL_* environment (CXL_<KEY>_NODE is the node) and
+# cpuset.mems.
 # A selector picks a specific device:
 #   device.attributes["cxl.nri.io"].serial == "0xc100e2e1"
 apiVersion: resource.k8s.io/v1

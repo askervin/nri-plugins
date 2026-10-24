@@ -300,79 +300,17 @@ const (
 	// a shared persistent device with one share, and exclusive
 	persistentData = `{"serial":"0xc1ae0001","shared":true,"size":536870912,"persistent":true}`
 	writerData     = `{"serial":"0xc1ae0001","shared":true,"size":536870912,"persistent":true,"exclusive":true}`
-	blockConfig    = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block"}`
-	blockROConfig  = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block","readOnly":true}`
+	blockConfig    = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`
+	blockROConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block","readOnly":true}}`
 )
 
-// fsConfig returns a DeviceConfig of mode fs with the access and path.
+// fsConfig returns a MemoryConfig of mode fs with the access and path.
 func fsConfig(access, path string) string {
-	return fmt.Sprintf(`{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":%q,"path":%q}`, access, path)
+	return fmt.Sprintf(`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":%q,"path":%q}}`, access, path)
 }
 
 func persistentClaim(uid, data, config string) *resourceapi.ResourceClaim {
 	return withConfig(poolClaim(uid, "c-"+uid, "llm0", data), resourceapi.AllocationConfigSourceClaim, nil, config)
-}
-
-func TestPoolModeFor(t *testing.T) {
-	volatile := &poolDevice{}
-	shared := &poolDevice{Shared: true}
-	reader := &poolDevice{Shared: true, Persistent: true}
-	writer := &poolDevice{Shared: true, Persistent: true, Exclusive: true}
-	private := &poolDevice{Persistent: true}
-	for _, tc := range []struct {
-		cfg  deviceConfig
-		dev  *poolDevice
-		want string
-		err  string
-	}{
-		{dev: volatile, want: api.ModeNUMA},
-		{dev: shared, want: api.ModeDax},
-		{cfg: deviceConfig{ReadOnly: true}, dev: shared, want: api.ModeDax},
-		{cfg: deviceConfig{Mode: "block"}, dev: writer, want: api.ModeBlock},
-		{cfg: deviceConfig{Mode: "block"}, dev: private, want: api.ModeBlock},
-		{cfg: deviceConfig{Mode: "block", ReadOnly: true}, dev: reader, want: api.ModeBlock},
-		{cfg: deviceConfig{Mode: "fs", ReadOnly: true}, dev: reader, want: api.ModeFs},
-		{cfg: deviceConfig{Mode: "fs", ReadOnly: true, Access: "cached", Path: "/models"}, dev: writer, want: api.ModeFs},
-		// T1-T7: the config alone, in this order
-		{cfg: deviceConfig{Mode: "ext4", Access: "bogus"}, dev: reader, err: `DeviceConfig: invalid mode "ext4" (numa, dax, block or fs)`},
-		{cfg: deviceConfig{Mode: "block", Access: "bogus", Path: "rel"}, dev: reader, err: "DeviceConfig: access needs mode fs"},
-		{cfg: deviceConfig{Access: "direct"}, dev: volatile, err: "DeviceConfig: access needs mode fs"},
-		{cfg: deviceConfig{Mode: "dax", Path: "rel"}, dev: reader, err: "DeviceConfig: path needs mode fs"},
-		{cfg: deviceConfig{Mode: "fs", Access: "dax", Path: "rel"}, dev: volatile, err: `DeviceConfig: invalid access "dax" (direct or cached)`},
-		{cfg: deviceConfig{Mode: "fs", Path: "/run/cxl/fs"}, dev: volatile,
-			err: `DeviceConfig: invalid path "/run/cxl/fs" (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)`},
-		{cfg: deviceConfig{Mode: "fs", Access: "cached"}, dev: volatile, err: "DeviceConfig: mode fs is read-only: set readOnly: true (write the device with mode block)"},
-		{cfg: deviceConfig{Mode: "numa", ReadOnly: true}, dev: reader, err: "DeviceConfig: readOnly needs mode dax, block or fs"},
-		// T8-T10: with the status data
-		{cfg: deviceConfig{Mode: "block"}, dev: shared, err: "DeviceConfig: mode block needs a persistent device"},
-		{cfg: deviceConfig{Mode: "fs", ReadOnly: true}, dev: volatile, err: "DeviceConfig: mode fs needs a persistent device"},
-		{dev: reader, err: "DeviceConfig: a persistent device needs mode block or fs"},
-		{cfg: deviceConfig{ReadOnly: true}, dev: private, err: "DeviceConfig: a persistent device needs mode block or fs"},
-		{cfg: deviceConfig{Mode: "dax"}, dev: writer, err: "DeviceConfig: a persistent device needs mode block or fs"},
-		{cfg: deviceConfig{Mode: "numa"}, dev: private, err: "DeviceConfig: a persistent device needs mode block or fs"},
-		{cfg: deviceConfig{Mode: "block"}, dev: reader, err: "DeviceConfig: mode block: a shared device is writable only exclusively (no shares request)"},
-		// volatile devices as before
-		{cfg: deviceConfig{Mode: "numa"}, dev: shared, err: "DeviceConfig: mode numa: a shared device is used as dax only"},
-		{cfg: deviceConfig{ReadOnly: true}, dev: volatile, err: "DeviceConfig: readOnly needs mode dax, block or fs"},
-	} {
-		got, err := tc.cfg.poolModeFor(tc.dev)
-		if (tc.err == "" && (err != nil || got != tc.want)) || (tc.err != "" && (err == nil || err.Error() != tc.err)) {
-			t.Errorf("%+v %+v: got %q %v, expected %q %q", tc.cfg, *tc.dev, got, err, tc.want, tc.err)
-		}
-	}
-}
-
-func TestValidFsPath(t *testing.T) {
-	for p, want := range map[string]bool{
-		"/models": true, "/run/cxl-fs/C1AE0001": true, "/run/cxl-fs": true, "/devices": true, "/run/cxlfs": true, "/a/b": true,
-		"": false, "/": false, "models": false, "/models/": false, "/a/../b": false, "/a//b": false,
-		"/dev": false, "/dev/pmem0": false, "/proc/1": false, "/sys": false, "/run/cxl": false, "/run/cxl/fs/x": false,
-		"/var/run/cxl": false, "/var/run/cxl/fs": false, "/var/run/cxl-fs": true,
-	} {
-		if got := validFsPath(p); got != want {
-			t.Errorf("validFsPath(%q) = %v", p, got)
-		}
-	}
 }
 
 // wantNoMounts checks that the node has no mounts, loop devices and mount
@@ -396,7 +334,7 @@ func TestPoolPersistentWriter(t *testing.T) {
 	e.f.wantCommand(t, "cxl create-region -t pmem -d decoder0.0 -m mem0")
 	e.f.wantCommand(t, "ndctl create-namespace -f -r region0 -m fsdax -M mem")
 	cd := e.wantCDIDevice(t, "claim-w1-0", []string{"CXL_C1AE0001_MODE=block", "CXL_C1AE0001_PATH=/dev/pmem0", "CXL_C1AE0001_READONLY=0",
-		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_w1=1"})
+		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_w1_0=1"})
 	if want := []*cdiSpecs.DeviceNode{{Path: "/dev/pmem0", Type: "b", Major: 259, Minor: 0}}; !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, want) ||
 		len(cd.ContainerEdits.Mounts) != 0 {
 		t.Fatalf("CDI device %+v", cd.ContainerEdits)
@@ -422,7 +360,7 @@ func TestPoolPersistentWriter(t *testing.T) {
 	// a read-only block claim: device node "r", never creates a namespace
 	noErr(t, prepare(t, p, persistentClaim("r1", persistentData, blockROConfig)).Err)
 	cd = e.wantCDIDevice(t, "claim-r1-0", []string{"CXL_C1AE0001_MODE=block", "CXL_C1AE0001_PATH=/dev/pmem0", "CXL_C1AE0001_READONLY=1",
-		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_r1=1"})
+		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_r1_0=1"})
 	if cd.ContainerEdits.DeviceNodes[0].Permissions != "r" {
 		t.Fatalf("read-only device node %+v", cd.ContainerEdits.DeviceNodes[0])
 	}
@@ -470,7 +408,7 @@ func TestPoolPersistentReaders(t *testing.T) {
 	}
 	env := func(uid, path, access string) []string {
 		return []string{"CXL_C1AE0001_ACCESS=" + access, "CXL_C1AE0001_MODE=fs", "CXL_C1AE0001_PATH=" + path, "CXL_C1AE0001_READONLY=1",
-			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_" + uid + "=1"}
+			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_" + uid + "_0=1"}
 	}
 	for _, c := range []struct{ uid, host, path, access string }{
 		{"d1", direct, "/run/cxl-fs/C1AE0001", "direct"},
@@ -531,7 +469,7 @@ func TestPoolPersistentSamePreparation(t *testing.T) {
 		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
 	noErr(t, prepare(t, p, claim).Err)
 	e.wantCDIDevice(t, "claim-r3-2", []string{"CXL_C1AE0001_2_ACCESS=direct", "CXL_C1AE0001_2_MODE=fs", "CXL_C1AE0001_2_PATH=/run/cxl-fs/C1AE0001_2",
-		"CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001", "CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=534773760", "CXL_CLAIM_r3=1"})
+		"CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001", "CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=534773760", "CXL_CLAIM_r3_2=1"})
 	if n := len(e.m.callsOf("mount ")); n != 2 {
 		t.Fatalf("%d mounts: %q", n, e.m.calls)
 	}
@@ -882,9 +820,9 @@ func (e *poolTestEnv) leaseDriver(t *testing.T, hooks *fakeHooks) *poolDriver {
 }
 
 // fsCompanion returns the companion claim of lease id of mode fs with the
-// access on the persistent device, as the broker writes its DeviceConfig.
+// access on the persistent device, as the broker writes its MemoryConfig.
 func fsCompanion(id, access string) *resourceapi.ResourceClaim {
-	cfg := fmt.Sprintf(`{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":%q}`, access)
+	cfg := fmt.Sprintf(`{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":%q}}`, access)
 	c := persistentClaim("uid-"+companionName(id), persistentData, cfg)
 	c.ObjectMeta = companionClaim(id).ObjectMeta
 	return c
@@ -1227,10 +1165,10 @@ func TestPoolLeaseBindRestart(t *testing.T) {
 	}
 }
 
-// badConfigClaim is a claim of the persistent device whose DeviceConfig
+// badConfigClaim is a claim of the persistent device whose MemoryConfig
 // fails before any device is touched; its rollback runs releaseDevices.
 func badConfigClaim(uid string) *resourceapi.ResourceClaim {
-	return persistentClaim(uid, persistentData, `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"ext4"}`)
+	return persistentClaim(uid, persistentData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ext4"}}`)
 }
 
 // TestPoolLeaseBindChecks covers the abnormal cases of lease binds: a

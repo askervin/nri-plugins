@@ -41,8 +41,8 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
-	"github.com/containers/nri-plugins/pkg/cxl/memorypolicy"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
@@ -84,15 +84,17 @@ type PreparedDeviceInfo struct {
 	// Shared is true for a shared local memdev: the dax device is the
 	// whole device, which other claims may have too.
 	Shared bool `json:"shared,omitempty"`
+	// ResultSettings are the container settings of the resolved
+	// MemoryConfig of the result and their origins.
+	config.ResultSettings
 }
 
 // PreparedClaimInfo captures all relevant information about a prepared
-// claim: its devices, their types/capacities, and the memory policy.
-// Persisted to preparedClaims.json for crash recovery.
+// claim: its devices, their types/capacities and the container settings of
+// their results. Persisted to preparedClaims.json for crash recovery.
 type PreparedClaimInfo struct {
-	ClaimName string                           `json:"claimName"` // namespace/name
-	Policy    *memorypolicy.MemoryPolicyConfig `json:"policy,omitempty"`
-	Devices   []PreparedDeviceInfo             `json:"devices"`
+	ClaimName string               `json:"claimName"` // namespace/name
+	Devices   []PreparedDeviceInfo `json:"devices"`
 	// Lend is the lend of a companion claim.
 	Lend *lendRecord `json:"lend,omitempty"`
 }
@@ -910,12 +912,18 @@ func (s *nodeState) prepare(ctx context.Context, claim *resourcev1.ResourceClaim
 	if claim.Status.Allocation == nil {
 		return fmt.Errorf("no allocation found in claim %v/%v status", claim.Namespace, claim.Name)
 	}
-	if err := checkConfigKinds(claim, device.DriverName, device.DeviceConfigKind, memorypolicy.Kind); err != nil {
+	if err := config.CheckEntries(claim, device.DriverName); err != nil {
 		return fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
 	}
 	allocatable, err := s.allocatable()
 	if err != nil {
 		return err
+	}
+	resolved, err := resolveResults(claim, device.DriverName, func(r *resourcev1.DeviceRequestAllocationResult) bool {
+		return r.Driver == device.DriverName && r.Pool == s.NodeName
+	})
+	if err != nil {
+		return fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
 	}
 
 	local, all := s.localMemdevResults(claim, allocatable)
@@ -924,7 +932,7 @@ func (s *nodeState) prepare(ctx context.Context, claim *resourcev1.ResourceClaim
 		return err
 	}
 
-	allocatedDevices, claimInfo, err := s.prepareAllocatedDevices(ctx, claim, allocatable)
+	allocatedDevices, claimInfo, err := s.prepareAllocatedDevices(ctx, claim, allocatable, resolved)
 	if err == nil && lend != nil {
 		err = s.lendClaim(ctx, lend, claimInfo)
 		// The memory of a companion claim belongs to the borrower, and
@@ -936,10 +944,6 @@ func (s *nodeState) prepare(ctx context.Context, claim *resourcev1.ResourceClaim
 		return err
 	}
 
-	if claimInfo.Policy != nil {
-		klog.V(3).Infof("Claim %v has memory policy: order=%s minStep=%s maxStep=%s",
-			claim.UID, claimInfo.Policy.MemoryUseOrder, claimInfo.Policy.MinStep, claimInfo.Policy.MaxStep)
-	}
 	s.store(claim, allocatedDevices, claimInfo)
 
 	if err := s.persist(); err != nil {
@@ -1139,8 +1143,8 @@ func dropCDIDevices(result *kubeletplugin.PrepareResult) {
 }
 
 // prepareAllocatedDevices prepares the devices of a claim from
-// allocatableDevices.
-func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resourcev1.ResourceClaim, allocatableDevices device.DevicesInfo) (allocatedDevices kubeletplugin.PrepareResult, claimInfo *PreparedClaimInfo, err error) {
+// allocatableDevices as the MemoryConfig of each result in resolved says.
+func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resourcev1.ResourceClaim, allocatableDevices device.DevicesInfo, resolved map[int]*config.Resolved) (allocatedDevices kubeletplugin.PrepareResult, claimInfo *PreparedClaimInfo, err error) {
 	allocatedDevices = kubeletplugin.PrepareResult{}
 	claimInfo = &PreparedClaimInfo{
 		ClaimName: claim.Namespace + "/" + claim.Name,
@@ -1160,11 +1164,11 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 		}
 
 		// The CDI device of the allocation result (written with the
-		// prepared claims) injects the claim marker CXL_CLAIM_<uid>=1,
-		// the environment of the result's memory and its dax device
-		// node into the containers that reference the result's request.
-		// The NRI CreateContainer handler finds the claims of a
-		// container by their markers.
+		// prepared claims) injects the result marker
+		// CXL_CLAIM_<uid>_<n>=1, the environment of the result's memory
+		// and its dax device node into the containers that reference the
+		// result's request. The NRI CreateContainer handler finds the
+		// results of a container by their markers.
 		newDevice := kubeletplugin.Device{
 			Requests:     []string{allocatedDevice.Request},
 			PoolName:     allocatedDevice.Pool,
@@ -1172,12 +1176,18 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 			CDIDeviceIDs: []string{claimCDIDeviceID(string(claim.UID), n)},
 		}
 
-		// Collect device info for NRI logging and future cgmpolmgr use.
-		devInfo, err := s.preparedDeviceInfo(ctx, claim, &allocatedDevice, allocatableDevice)
+		res := resolved[n]
+		if res == nil {
+			return allocatedDevices, nil, fmt.Errorf("claim %v/%v: request %s: internal error: no MemoryConfig of the result", claim.Namespace, claim.Name, allocatedDevice.Request)
+		}
+		klog.V(3).Infof("claim %s/%s request %s result %d: MemoryConfig %s", claim.Namespace, claim.Name, allocatedDevice.Request, n, res.Config.Compact())
+
+		devInfo, err := s.preparedDeviceInfo(ctx, claim, &allocatedDevice, allocatableDevice, res.Config.DeviceSection())
 		if err != nil {
 			return allocatedDevices, nil, err
 		}
 		devInfo.Result = n
+		devInfo.ResultSettings = res.Settings()
 		if devInfo.DeviceType == device.DeviceTypeLease {
 			hasLease = true
 			newDevice.CDIDeviceIDs = append(newDevice.CDIDeviceIDs, leaseCDIDeviceID(string(claim.UID)))
@@ -1200,25 +1210,20 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 		}
 	}
 
-	claimInfo.Policy, err = parseMemoryPolicy(claim)
-	if err != nil {
-		return allocatedDevices, nil, fmt.Errorf("claim %v/%v: %w", claim.Namespace, claim.Name, err)
-	}
-
 	return allocatedDevices, claimInfo, nil
 }
 
-// preparedDeviceInfo prepares the device of an allocation result and
-// returns its info.
-func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, allocatable *device.DeviceInfo) (PreparedDeviceInfo, error) {
+// preparedDeviceInfo prepares the device of an allocation result as its
+// device settings cfg say and returns its info.
+func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, allocatable *device.DeviceInfo, cfg config.Device) (PreparedDeviceInfo, error) {
 	devInfo := PreparedDeviceInfo{
 		RequestName: r.Request,
 		DeviceName:  r.Device,
 	}
 	switch dev := allocatable.Dev.(type) {
 	case *nricxl.RegionDevice:
-		if err := checkNUMAOnly(claim, r, device.DeviceTypeRegion); err != nil {
-			return devInfo, err
+		if err := cfg.NUMAOnly(device.DeviceTypeRegion); err != nil {
+			return devInfo, fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
 		}
 		devInfo.DeviceType = device.DeviceTypeRegion
 		devInfo.Mode = api.ModeNUMA
@@ -1232,18 +1237,21 @@ func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.Re
 			}
 		}
 	case *device.DRAM:
-		if err := checkNUMAOnly(claim, r, device.DeviceTypeDRAM); err != nil {
-			return devInfo, err
+		if err := cfg.NUMAOnly(device.DeviceTypeDRAM); err != nil {
+			return devInfo, fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
 		}
 		devInfo.DeviceType = device.DeviceTypeDRAM
 		devInfo.Mode = api.ModeNUMA
 		devInfo.NUMANodes = dev.Nodes
 		devInfo.TotalBytes = dev.Size
 	case *device.LeaseToken:
+		if err := cfg.CheckLease(); err != nil {
+			return devInfo, fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
+		}
 		devInfo.DeviceType = device.DeviceTypeLease
 	case *device.Memdev:
 		// the slice is what the claim consumes
-		err := s.prepareLocalMemdev(ctx, claim, r, dev, &devInfo)
+		err := s.prepareLocalMemdev(ctx, claim, r, dev, cfg, &devInfo)
 		return devInfo, err
 	default:
 		klog.Warningf("unknown device type %T for %v", allocatable.Dev, r.Device)
@@ -1258,21 +1266,17 @@ func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.Re
 
 // prepareLocalMemdev acquires a slice of a local memdev for an allocation
 // result, as memory of the NUMA node of the memdev or as a dax device by the
-// DeviceConfig of the request, and describes it in devInfo: the slice size
-// is its total and consumed bytes.
-func (s *nodeState) prepareLocalMemdev(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, dev *device.Memdev, devInfo *PreparedDeviceInfo) error {
+// device settings cfg of the result, and describes it in devInfo: the slice
+// size is its total and consumed bytes.
+func (s *nodeState) prepareLocalMemdev(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, dev *device.Memdev, cfg config.Device, devInfo *PreparedDeviceInfo) error {
 	shares := int64(0)
 	var err error
 	if dev.Shared {
 		shares, err = consumedShares(dev.Serial, r)
 	}
-	cfg := &deviceConfig{}
-	if err == nil {
-		_, err = parseConfig(claim, device.DriverName, device.DeviceConfigKind, r.Request, cfg)
-	}
 	mode := ""
 	if err == nil {
-		mode, err = cfg.modeFor(dev.Shared)
+		mode, err = cfg.MemdevMode(dev.Shared)
 	}
 	if err != nil {
 		return fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
@@ -1335,38 +1339,6 @@ func (s *nodeState) prepareSharedMemdev(ctx context.Context, claim *resourcev1.R
 	return nil
 }
 
-// checkNUMAOnly returns an error if the DeviceConfig of an allocation
-// result on a device that is used as numa only (what: region or dram) asks
-// for another mode or for readOnly.
-func checkNUMAOnly(claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, what string) error {
-	cfg := &deviceConfig{}
-	_, err := parseConfig(claim, device.DriverName, device.DeviceConfigKind, r.Request, cfg)
-	if err == nil {
-		err = cfg.numaOnly(what)
-	}
-	if err != nil {
-		return fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
-	}
-	return nil
-}
-
-// parseMemoryPolicy returns the MemoryPolicyConfig of a claim, nil if it
-// has none: a claim config replaces a class config.
-func parseMemoryPolicy(claim *resourcev1.ResourceClaim) (*memorypolicy.MemoryPolicyConfig, error) {
-	if claim.Status.Allocation == nil {
-		return nil, nil
-	}
-	cfg := &memorypolicy.MemoryPolicyConfig{}
-	found, err := parseConfig(claim, device.DriverName, memorypolicy.Kind, "", cfg)
-	if err != nil || !found {
-		return nil, err
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", memorypolicy.Kind, err)
-	}
-	return cfg, nil
-}
-
 // GetClaimInfo returns the full prepared claim information for a given
 // claim UID, or nil if the claim is not prepared.
 func (s *nodeState) GetClaimInfo(claimUID string) *PreparedClaimInfo {
@@ -1375,16 +1347,24 @@ func (s *nodeState) GetClaimInfo(claimUID string) *PreparedClaimInfo {
 	return s.preparedClaims[claimUID]
 }
 
-// GetMemoryPolicy returns the memory policy config for a given claim
-// UID, or nil if no policy was configured.
-func (s *nodeState) GetMemoryPolicy(claimUID string) *memorypolicy.MemoryPolicyConfig {
+// preparedResult returns the claim name and the prepared device of the
+// allocation result n of a prepared claim, and false if there is none.
+func (s *nodeState) preparedResult(claimUID string, n int) (string, PreparedDeviceInfo, bool) {
+	if s == nil || s.baseState == nil {
+		return "", PreparedDeviceInfo{}, false
+	}
 	s.Lock()
 	defer s.Unlock()
 	info := s.preparedClaims[claimUID]
 	if info == nil {
-		return nil
+		return "", PreparedDeviceInfo{}, false
 	}
-	return info.Policy
+	for _, d := range info.Devices {
+		if d.Result == n {
+			return info.ClaimName, d, true
+		}
+	}
+	return "", PreparedDeviceInfo{}, false
 }
 
 // getOrCreatePreparedClaimsInfo loads the prepared claims info from
@@ -1431,32 +1411,36 @@ func claimCDIDeviceID(claimUID string, n int) string {
 	return cdiparser.QualifiedName(device.CDIVendor, device.CDIClass, claimCDIDeviceName(claimUID, n))
 }
 
-// claimEnvVarName returns the environment variable name for a claim
-// marker. Hyphens in the UID are replaced with underscores since env
-// var names don't allow hyphens.
-func claimEnvVarName(claimUID string) string {
-	return api.ClaimEnvPrefix + strings.ReplaceAll(claimUID, "-", "_")
+// resultEnvVarName returns the name of the marker of the allocation result
+// n of a claim, CXL_CLAIM_<uid>_<n> with the hyphens of the UID replaced by
+// underscores (env var names have no hyphens).
+func resultEnvVarName(claimUID string, n int) string {
+	return api.ClaimEnvPrefix + strings.ReplaceAll(claimUID, "-", "_") + "_" + strconv.Itoa(n)
 }
 
-// ClaimUIDFromEnvVar extracts a claim UID from a CXL_CLAIM_* env var
-// name, reversing the hyphen->underscore mapping. Returns the UID and
-// true if the env var matches the prefix, or "" and false otherwise.
-func ClaimUIDFromEnvVar(envVar string) (string, bool) {
-	// envVar is "KEY=VALUE"
-	parts := strings.SplitN(envVar, "=", 2)
-	key := parts[0]
-	if !strings.HasPrefix(key, api.ClaimEnvPrefix) {
-		return "", false
+// resultFromEnvVar returns the allocation result of a result marker
+// "CXL_CLAIM_<uid>_<n>=<value>", and false for other environment
+// variables.
+func resultFromEnvVar(envVar string) (resultRef, bool) {
+	key, _, _ := strings.Cut(envVar, "=")
+	rest, ok := strings.CutPrefix(key, api.ClaimEnvPrefix)
+	if !ok {
+		return resultRef{}, false
 	}
-	uidWithUnderscores := key[len(api.ClaimEnvPrefix):]
-	// Restore hyphens. UID format is 8-4-4-4-12 hex digits.
-	uid := strings.ReplaceAll(uidWithUnderscores, "_", "-")
-	return uid, true
+	i := strings.LastIndexByte(rest, '_')
+	if i <= 0 {
+		return resultRef{}, false
+	}
+	n, err := strconv.Atoi(rest[i+1:])
+	if err != nil || n < 0 || strconv.Itoa(n) != rest[i+1:] {
+		return resultRef{}, false
+	}
+	return resultRef{uid: strings.ReplaceAll(rest[:i], "_", "-"), n: n}, true
 }
 
 // buildClaimsCDISpec builds the CDI spec of all prepared claims but
 // companion claims: one device claim-<uid>-<n> per allocation result n with
-// the claim marker, the environment of the result's memory device
+// the result marker, the environment of the result's memory device
 // (api.Env) and the device node of a dax slice. It is built from the
 // prepared claims (not from the existing CDI file), so it is right also
 // after a driver restart. Called with the tables locked.
@@ -1472,7 +1456,7 @@ func (s *nodeState) buildClaimsCDISpec() *cdiSpecs.Spec {
 		keys := envKeys{}
 		for i := range info.Devices {
 			d := &info.Devices[i]
-			env := map[string]string{claimEnvVarName(claimUID): "1"}
+			env := map[string]string{resultEnvVarName(claimUID, d.Result): "1"}
 			edits := cdiSpecs.ContainerEdits{}
 			if m, ok := d.memory(keys); ok {
 				maps.Copy(env, api.Env(m))
