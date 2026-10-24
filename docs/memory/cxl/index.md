@@ -14,15 +14,16 @@ One process, `nri-dra-driver-cxl`, runs two DRA drivers on every node:
 - `cxl.nri.io` publishes the memory of the node in a ResourceSlice of the
   node: CXL memory devices (memdevs) whose regions the plugin creates on
   demand, CXL regions that exist already, the DRAM nodes, and the `lease`
-  device that lets running containers request memory. It also steers the
-  memory of containers to the NUMA nodes of their claims.
+  device that lets running containers request memory.
 - `cxl-pool.nri.io` prepares the devices of a CXL memory pool. A pool
   controller (cluster level, specific to the pool product) publishes the
   pool devices and attaches them to the node that the scheduler picked;
   the node plugin makes the hotplugged memory usable for the pod.
 
-The same process is an NRI plugin (`dra-driver-cxl`, index 30): it steers
-the memory of containers and lends memory to running containers.
+The same process is an NRI plugin (`dra-driver-cxl`, index 30): it keeps
+containers off the CXL memory they did not claim, steers the memory of
+the containers that opt in to steering to the NUMA nodes of their claims,
+and lends memory to running containers.
 
 ## Supported Kubernetes versions
 
@@ -54,9 +55,10 @@ its protocol.
 
 The Helm chart installs eight DeviceClasses,
 [`templates/deviceclasses.yaml`](blob:/deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml).
-They select device kinds only; `mode`, `readOnly`, `access` and `path`
-are set with a `DeviceConfig` (see
-[Opaque configurations](usage.md#opaque-configurations)).
+They select device kinds; `mode`, `readOnly`, `access` and `path`, and
+steering, are set with a `MemoryConfig` of the claim, or of the class as
+a preset (Helm value `deviceClassConfig`), see
+[Opaque configurations](usage.md#opaque-configurations).
 
 | class | gets |
 |:------|:-----|
@@ -65,7 +67,7 @@ are set with a `DeviceConfig` (see
 | `cxl-pool` | a whole exclusive pool device of volatile memory: a new NUMA node (default) or a devdax device (`mode: dax`) |
 | `cxl-pool-shared` | a shared pool device of volatile memory as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
 | `cxl-pool-persistent` | a pool device of persistent memory, shared or not: its block device (`mode: block`, the writer, exclusively) or a read-only erofs filesystem on it (`mode: fs`, the readers, `shares: "1"` each on a shared device) |
-| `cxl-region` | capacity of a pre-created CXL NUMA node; the container is steered to it |
+| `cxl-region` | capacity of a pre-created CXL NUMA node, for steering |
 | `cxl-dram` | DRAM capacity for steering |
 | `cxl-lease` | the lease socket and `cxl-request` in the container |
 

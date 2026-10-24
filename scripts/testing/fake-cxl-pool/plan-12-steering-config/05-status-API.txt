@@ -1,0 +1,364 @@
+plan-12 stream API: pkg/cxl/config
+==================================
+Written 2026-10-23 (stream API). Branch 5jg-cxl, nothing committed.
+Paths: N = ~/github.com/containers/nri-plugins.
+
+Changes per file (all new, N/pkg/cxl/config/)
+---------------------------------------------
+  types.go         package doc; constants; MemoryConfig, Device, Container,
+                   Steering, Waypoint, TargetUsage, Pool; DeviceSection,
+                   Compact; normalization (sections that set nothing are nil)
+  resolve.go       Resolve, CheckEntries, Resolved, the source table
+                   (sourceRules), per-entry strict decode, merge patch,
+                   origins
+  validate.go      steering validation (per result and effective), pool
+                   structure, quantities, waypoints
+  device.go        device rules per device type: MemdevMode, NUMAOnly,
+                   CheckLease, PoolMode, PoolFacts; validFsPath
+  combine.go       ResultSettings, Effective, Combine, Steers, PolicyText,
+                   Steering.CgmPolicy
+  pool.go          PoolOpaque
+  defaults.go      Defaults, ParseDefaults, Validate, ContainerSettings
+  *_test.go        device_test, resolve_test, combine_test, validate_test,
+                   pool_test, defaults_test (172 test cases and subtests)
+Nothing else changed: no cmd/, docs, go.mod (see Requests R1).
+Imports: pkg/cxl/api (mode/access values), pkg/cxl/device (driver names,
+device types, shares), pkg/cgmpolmgr, k8s.io/api/resource/v1,
+apimachinery resource, gopkg.in/evanphx/json-patch.v4, sigs.k8s.io/json,
+sigs.k8s.io/yaml. pkg/cgmpolmgr does not import pkg/cxl/config (no cycle).
+
+Exported API
+------------
+Constants
+  APIVersion = "cxl.nri.io/v1alpha1", Kind = "MemoryConfig"
+  PolicyNone "none", PolicyAuto "auto", PolicyFirstDRAM "first-dram",
+  PolicyFirstCXL "first-cxl", PolicyStartInterleaved "start-interleaved",
+  PolicyEndInterleaved "end-interleaved", PolicyWaypoints "waypoints"
+  ModeNUMA, ModeDax, ModeBlock, ModeFs, AccessDirect, AccessCached
+    (= the pkg/cxl/api values)
+  FencingAllowedMems "allowed-mems", FencingMempolicy "mempolicy",
+  FencingNone "none"
+  MemoryTypeDRAM "DRAM", MemoryTypeCXL "CXL"
+  FieldPolicy "container.steering.policy", FieldWaypoints
+    "container.steering.waypoints", FieldMinStep "container.steering.minStep",
+    FieldMaxStep "container.steering.maxStep", FieldFencing
+    "container.fencing"  (the keys of origins)
+  OriginDefault "default", OriginNodeDefault "node default"
+
+Types (json tags as the contract's YAML; sections and optional fields
+omitempty)
+  type MemoryConfig struct { APIVersion, Kind string; Device *Device;
+      Container *Container; Pool *Pool }
+  type Device struct { Mode string; ReadOnly bool; Access, Path string }
+  type Container struct { Steering *Steering; Fencing string }
+  type Steering struct { Policy string; Waypoints []Waypoint;
+      MinStep, MaxStep string }          (quantities kept as written)
+  type Waypoint struct { TargetUsages []TargetUsage }
+  type TargetUsage struct { MemoryType, Usage string }
+  type Pool struct { Opaque map[string]json.RawMessage }
+  type Resolved struct { Config MemoryConfig; Origins map[string]string }
+  type ResultSettings struct { Container *Container `json:"container,omitempty"`;
+      Origins map[string]string `json:"origins,omitempty"` }
+  type Effective struct { Container Container; Origins map[string]string }
+  type PoolFacts struct { Persistent, Shared, Exclusive bool }
+  type Defaults struct { Container *Container `json:"container,omitempty"` }
+
+Functions and methods
+  func Resolve(claim *resourceapi.ResourceClaim, driver, request string) (*Resolved, error)
+      the MemoryConfig of one allocation result (contract 3): entries of the
+      driver that target the request, class entries first, each decoded
+      strictly alone, source table, merge patch, strict decode of the
+      merge, validation of container and pool values; origins of the set
+      container fields ("claim NS/NAME request R", "class NAME").
+  func CheckEntries(claim *resourceapi.ResourceClaim, driver string) error
+      checks every entry of the driver alone (kind, apiVersion, fields,
+      source table) whatever requests it targets; replaces
+      checkConfigKinds (before any device is touched).
+  func (r *Resolved) Settings() ResultSettings
+      the container section and its origins, the input of Combine.
+  func (c *MemoryConfig) DeviceSection() Device
+      the device section, zero Device when absent (nil-safe).
+  func (c *MemoryConfig) Compact() string
+      sections as compact JSON without apiVersion, kind and empty
+      sections ("{}" for none): the %s of the section 11 Prepare logs.
+  func (d Device) MemdevMode(shared bool) (string, error)
+      local memdev slice / shared local memdev; replaces modeFor.
+  func (d Device) NUMAOnly(what string) error
+      region and dram (what: device.DeviceTypeRegion, DeviceTypeDRAM);
+      replaces numaOnly.
+  func (d Device) CheckLease() error
+      the lease device: no device field.
+  func (d Device) PoolMode(f PoolFacts) (string, error)
+      pool devices; replaces poolModeFor (PoolFacts{d.Persistent,
+      d.Shared, d.Exclusive} of poolDevice).
+  func PoolOpaque(r *Resolved, key string, out any) (found bool, err error)
+      strict decode of pool.opaque.<key>; other keys ignored.
+  func Combine(results []ResultSettings, defaults Container) (*Effective, error)
+      contract 5: agreement per field, defaults overlay, built-in
+      defaults, validation of the effective steering with origins.
+  func (e *Effective) Steers() bool
+      effective policy is not none.
+  func (e *Effective) PolicyText() string
+      "none (default)", "auto from claim ns/a request r", "first-dram
+      (node default)": the steering %s of the section 11 log.
+  func (s *Steering) CgmPolicy(mem cgmpolmgr.MemoryTypes) (cgmpolmgr.Policy, bool)
+      the cgmpolmgr policy; false for nil, "" or none, or no DRAM and no
+      CXL nodes; auto by nodes as today's defaultPolicy (no CXL nodes:
+      first-dram, no DRAM nodes: first-cxl, both: start-interleaved);
+      minStep, maxStep, waypoints copied.
+  func ParseDefaults(data []byte) (*Defaults, error)
+      YAML or JSON, strict (case sensitive), validated.
+  func (d *Defaults) Validate() error
+      fencing (mempolicy refused) and steering as an effective steering.
+  func (d *Defaults) ContainerSettings() Container
+      the defaults.container to pass to Combine (zero when absent).
+
+Mapping for DRV
+  parseConfig(..., DeviceConfig, r.Request, cfg)  -> res, err := config.Resolve(claim, driver, r.Request)
+  checkConfigKinds(claim, driver, kinds...)       -> config.CheckEntries(claim, driver)
+  cfg.modeFor(dev.Shared)                         -> res.Config.DeviceSection().MemdevMode(dev.Shared)
+  checkNUMAOnly -> cfg.numaOnly(what)             -> res.Config.DeviceSection().NUMAOnly(what)
+  lease device (no check today)                   -> res.Config.DeviceSection().CheckLease()
+  cfg.poolModeFor(data)                           -> res.Config.DeviceSection().PoolMode(config.PoolFacts{...})
+  cfg.ReadOnly / Access / Path                    -> DeviceSection().ReadOnly / Access / Path
+  parseMemoryPolicy, defaultPolicy, userPolicy    -> config.Combine(...) then eff.Container.Steering.CgmPolicy(mem)
+  containerMemory / ContainerMemoryConfig         -> Defaults (key defaults), Validate, ContainerSettings
+  broker deviceConfig                             -> config.MemoryConfig{APIVersion: config.APIVersion,
+                                                     Kind: config.Kind, Device: &config.Device{...}}
+Resolve errors name no claim or request (as today's parseConfig); the
+drivers wrap them as today ("claim ns/name: request r: ...").
+
+Every error text
+----------------
+Placeholders: NS/NAME claim, R request ("r" or "r/s"), SRC FromClass or
+FromClaim, I/J indexes from 0, X the value as written, KEY a controller
+key, F a field path, O an origin.
+
+Resolve and CheckEntries
+  MemoryConfig: claim NS/NAME has no allocation
+  MemoryConfig: SRC config I: json: unknown field "F"
+      F is the dotted path from the top of the parameters, case
+      sensitive: "x", "device.online", "container.memoryLimit",
+      "pool.slot", "device.Mode", "container.steering.memoryUseOrder"
+  MemoryConfig: SRC config I: json: duplicate field "F"
+  MemoryConfig: SRC config I: json: cannot unmarshal ...   (Go's text,
+      e.g. "json: cannot unmarshal string into Go struct field
+      Device.device.readOnly of type bool")
+  unknown kind "X" (MemoryConfig)          (also "" for no kind; kind is
+      case sensitive: "Kind" gives "")
+  MemoryConfig: apiVersion "X", expected "cxl.nri.io/v1alpha1"
+      (cxl-pool.nri.io/v1alpha1 too)
+  MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)
+  MemoryConfig: pool: only for devices of cxl-pool.nri.io
+  MemoryConfig: O: <merge error>             (not reachable: every entry
+      is a decoded object)
+  MemoryConfig: merged config: <json error>  (not reachable: a merge of
+      valid entries is valid)
+  container section of the merge (per result):
+  MemoryConfig: container.steering.policy: invalid policy "X" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)
+  MemoryConfig: container.steering.minStep: invalid quantity "X"
+  MemoryConfig: container.steering.minStep: invalid quantity "X" (must be positive)
+  MemoryConfig: container.steering.maxStep: invalid quantity "X"
+  MemoryConfig: container.steering.maxStep: invalid quantity "X" (must be positive)
+  MemoryConfig: container.steering.waypoints[I].targetUsages: empty
+  MemoryConfig: container.steering.waypoints[I].targetUsages[J].memoryType: invalid memory type "X" (DRAM or CXL)
+  MemoryConfig: container.steering.waypoints[I].targetUsages[J].memoryType: DRAM twice in the waypoint   (or CXL)
+  MemoryConfig: container.steering.waypoints[I].targetUsages[J].usage: missing
+  MemoryConfig: container.steering.waypoints[I].targetUsages[J].usage: invalid quantity "X"
+  MemoryConfig: container.steering.waypoints[I].targetUsages[J].usage: invalid quantity "X" (must not be negative)
+  MemoryConfig: container.steering.waypoints[I]: DRAM usage X is less than Y of waypoint I-1   (or CXL)
+  MemoryConfig: container.steering.waypoints needs a policy other than none
+  MemoryConfig: container.steering.minStep needs a policy other than none
+  MemoryConfig: container.steering.maxStep needs a policy other than none
+  MemoryConfig: container.steering.waypoints needs policy waypoints
+  MemoryConfig: container.steering.minStep X exceeds maxStep Y
+  pool section:
+  MemoryConfig: pool.opaque: empty controller key
+  MemoryConfig: pool.opaque.KEY: not a JSON object
+
+PoolOpaque
+  MemoryConfig: pool.opaque.KEY: json: unknown field "F"
+  MemoryConfig: pool.opaque.KEY: json: duplicate field "F"
+  MemoryConfig: pool.opaque.KEY: json: cannot unmarshal ...
+
+Device helpers (in the order they are checked)
+  MemdevMode (local memdev; NUMAOnly runs it with shared false):
+  MemoryConfig: device.mode: invalid mode "X" (numa or dax)
+  MemoryConfig: device.readOnly needs mode dax
+  MemoryConfig: device: a shared device is used as dax only
+  MemoryConfig: device.access needs mode fs
+  MemoryConfig: device.path needs mode fs
+  NUMAOnly (after those):
+  MemoryConfig: device: a region is used as numa only
+  MemoryConfig: device: a dram is used as numa only
+  CheckLease:
+  MemoryConfig: device: the lease device has no device settings
+  PoolMode, the section alone:
+  MemoryConfig: device.mode: invalid mode "X" (numa, dax, block or fs)
+  MemoryConfig: device.access needs mode fs
+  MemoryConfig: device.path needs mode fs
+  MemoryConfig: device.access: invalid access "X" (direct or cached)
+  MemoryConfig: device.path: invalid path "X" (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)
+  MemoryConfig: device.readOnly: mode fs is read-only: set readOnly: true (write the device with mode block)
+  MemoryConfig: device.readOnly needs mode dax, block or fs
+  PoolMode, with the facts:
+  MemoryConfig: device.mode block needs a persistent device   (or fs)
+  MemoryConfig: device: a persistent device needs mode block or fs
+  MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)
+  MemoryConfig: device: a shared device is used as dax only
+  MemoryConfig: device.readOnly needs mode dax, block or fs
+
+Combine (CreateContainer; the caller prefixes "container ns/pod/ctr: ")
+  F: O says X, O says Y
+      F a full field path (container.steering.policy, ...waypoints,
+      ...minStep, ...maxStep, container.fencing); the first result that
+      sets F and the first that disagrees; X, Y as written (waypoints as
+      compact JSON); O "result I" when a result has no origin. Example:
+      container.steering.policy: claim ns/a request r says first-cxl, claim ns/b request s says none
+  the effective steering: the texts of the container section above, and
+  MemoryConfig: container.steering.policy waypoints needs waypoints
+  each followed by " (<fields>)" with the involved fields as
+  "policy P<o>", "minStep X<o>", "maxStep X<o>", "waypoints<o>" and <o>
+  " from O", " (node default)" or " (default)". Examples:
+  MemoryConfig: container.steering.maxStep needs a policy other than none (policy none (default), maxStep 1Gi from claim ns/a request r)
+  MemoryConfig: container.steering.waypoints needs policy waypoints (policy first-cxl from claim ns/b request s, waypoints from claim ns/a request r)
+  MemoryConfig: container.steering.policy waypoints needs waypoints (policy waypoints from claim ns/a request r)
+  MemoryConfig: container.steering.minStep 2Gi exceeds maxStep 1Gi (minStep 2Gi from claim ns/a request r, maxStep 1Gi (node default))
+
+Defaults (driver configuration)
+  defaults: json: unknown field "F"       (device, pool, container.memoryLimit, ...)
+  defaults: <YAML error>, e.g. defaults: yaml: line 1: did not find expected node content
+  defaults.container.fencing: mempolicy is not implemented yet
+  defaults.container.fencing: invalid value "X" (allowed-mems, mempolicy or none)
+  defaults.container.steering...: the container-section texts above with
+      "defaults." instead of "MemoryConfig: " and the effective rules, e.g.
+      defaults.container.steering.policy: invalid policy "X" (none, auto, ...)
+      defaults.container.steering.maxStep needs a policy other than none
+      defaults.container.steering.policy waypoints needs waypoints
+      defaults.container.steering.maxStep: invalid quantity "X"
+
+Deviations from 04-contract, with reasons
+-----------------------------------------
+D1. Combine returns (*Effective, error), not (Container, error):
+    Effective has the container settings and the origin of every field,
+    for the section 11 log ("auto from claim ns/a request r", "none
+    (default)", PolicyText) and the effective-validation errors. The
+    conflict error has no "container ns/pod/ctr: " prefix: Combine does
+    not know the container; the caller adds it (section 5 text then
+    matches exactly).
+D2. Resolve does not validate the device section. The rules and their
+    order depend on the driver and the device type (local: "(numa or
+    dax)", pool: "(numa, dax, block or fs)" and access/path before the
+    mode facts), so all device checks are in the Device helpers, which
+    the drivers call per result as they call modeFor/poolModeFor today.
+    The pool controller is not affected (it reads pool only).
+D3. "policy waypoints requires waypoints" is checked on the effective
+    steering only (Combine, Defaults): waypoints may come from another
+    result or from defaults with the same policy. Per result: invalid
+    values, parameters with an explicit none, waypoints with an
+    explicit other policy, minStep > maxStep when both are set.
+D4. Defaults overlay: the steering parameters of the defaults
+    (waypoints, minStep, maxStep) are taken only when the results set no
+    policy or the default's policy. Steering is a discriminated union;
+    without this rule a node default {policy: first-dram, maxStep: 1Gi}
+    would make every claim with {policy: none} fail ("maxStep needs a
+    policy other than none"). Review point.
+D5. Strict decoding is case sensitive and refuses duplicate fields
+    (sigs.k8s.io/json, as Kubernetes): encoding/json matches "Mode" to
+    mode, and the merge patch would keep "Mode" and "mode" side by side.
+    Its unknown-field error names the dotted path: `json: unknown field
+    "x"` at the top (the contract example exactly), `json: unknown field
+    "device.x"` nested.
+D6. Source table: a null value does not count as setting a field, so
+    {container: {fencing: null}} or pool: null is accepted in any entry
+    (null removes, and in a claim it can only remove a value back to the
+    default). Table: sourceRules in resolve.go, one line per field with
+    allowed(source, driver); an admin-only field later is
+    {path, allowed: source == FromClass, reason: "set by a DeviceClass only"}.
+D7. pool is refused for driver cxl.nri.io (device.DriverName), allowed
+    for any other driver: the pool driver name is configurable
+    (--pool-driver-name). The text names cxl-pool.nri.io as in the
+    contract.
+D8. Added CheckEntries (contract 8 has no replacement of
+    checkConfigKinds): the Prepare can refuse an unknown kind or field
+    in any entry of the driver before touching devices, as today.
+D9. The entry index of "SRC config I" is the position among the
+    allocation's entries of that source (all drivers counted), from 0.
+D10. Policy names, memory types and field names are case sensitive
+    (cgmpolmgr matches names without case); a memory type twice in one
+    waypoint is refused (cgmpolmgr took the last).
+D11. Lease device text is new (the contract has the rule but no text).
+D12. ParseDefaults added (strict YAML/JSON) next to Validate.
+D13. Class origins come from the claim spec (device class of the
+    request or subrequest); when the request is not in the spec:
+    "class of request R".
+
+Checks (from N) and results
+---------------------------
+  go build ./pkg/cxl/...                       ok
+  go test ./pkg/cxl/...                        ok (cxl, api, config, device, memctl, memorypolicy)
+  go test -race ./pkg/cxl/config/...           ok
+  go test -count=1 -v ./pkg/cxl/config/ | grep -c -- "--- PASS"   172
+  go vet ./pkg/cxl/...                         no output
+  gofmt -l pkg/cxl                             no output
+  golangci-lint run ./pkg/cxl/config/...       0 issues.
+  LC_ALL=C grep -nP '[^\x00-\x7F]' pkg/cxl/config/*.go   no output
+  go mod tidy -diff: moves gopkg.in/evanphx/json-patch.v4 and
+    sigs.k8s.io/json from indirect to direct AND gopkg.in/yaml.v3 too
+    (unrelated to this package) -> not run, see R1.
+
+Tests cover (03-plan list): merge order (class first whatever the list
+order, later claim entry wins), null of a field / an object / absent
+field, set again after null, lists and booleans replace, pool.opaque
+merge per key and key removal; request/subrequest targeting (r, d, p,
+p/local, p/pool, unknown requests); strict decode per entry (unknown,
+reserved device.online and container.memoryLimit, generic pool field,
+case, duplicate, wrong type, an invalid entry that a later one would
+override) and after merge (values); kinds (DeviceConfig,
+MemoryPolicyConfig, none, case) and apiVersions (cxl-pool.nri.io/v1alpha1,
+v1); source table for every source and both drivers, CheckEntries over
+other requests; steering validation (every policy, waypoints, steps,
+none with parameters, quantities); Combine (agreement, by-value
+quantities, conflicts of policy/quantity/waypoints with origins, missing
+origins, defaults overlay, D4, missing policy, cross-result validation,
+inputs not modified, with real Resolve output); CgmPolicy (auto by
+nodes, every policy, cgmpolmgr accepts and plans); policy names vs
+cgmpolmgr; PoolOpaque (own key, other keys ignored, merged null, strict,
+case, wrong type); Defaults; device rules of MemdevMode, NUMAOnly,
+CheckLease, PoolMode (ported tables of lending_test/pool_persistent_test
+with the new texts), validFsPath.
+
+Open points
+-----------
+O1. D4 (default parameters go with the default policy) needs the
+    orchestrator's yes; the alternative is the contract's plain overlay.
+O2. The driver configuration is decoded by sigs.k8s.io/yaml
+    UnmarshalStrict (encoding/json, case insensitive): defaults embedded
+    as a *config.Defaults field accept "Fencing". DRV may decode the
+    defaults key with ParseDefaults instead (json.RawMessage field) for
+    case sensitivity; Validate is needed either way.
+O3. No request "" (whole claim) mode in Resolve: nothing needs it after
+    per-result attribution.
+O4. Combine does not validate fencing values of results (Resolve never
+    gives one); defaults' fencing is validated by Defaults.Validate.
+
+Requests
+--------
+R1 (orchestrator/user): go.mod lists gopkg.in/evanphx/json-patch.v4 and
+    sigs.k8s.io/json as // indirect; they are now direct imports. Build
+    and tests work as is. `go mod tidy` would also move gopkg.in/yaml.v3
+    to direct (not caused by this package), so it was not run; run it
+    when committing.
+R2 (DRV): store config.ResultSettings (container + origins, JSON tags
+    container/origins) per result in PreparedDeviceInfo and
+    preparedPoolDevice and in the pool snapshot, instead of Container
+    only (contract 9), so conflict errors and the CreateContainer log
+    name origins, also after a restart.
+R3 (DRV): prefix Combine errors with "container ns/pod/ctr: " (D1).
+R4 (DOC): take the error texts from this file; document D3-D7 and D10
+    (null, case sensitivity, default parameters with their policy,
+    pool for the pool driver only).
+R5 (orchestrator): 04-contract sections 5, 8 and 12 to be updated for
+    D1-D3, D8 if accepted.
+
+API done

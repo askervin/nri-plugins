@@ -54,6 +54,7 @@ type fakePool struct {
 	// detachHold: detach leaves the attachment detaching and returns 409
 	detachHold bool
 	attaches   []string // "device@host owner"
+	attachReqs []api.AttachRequest
 	detaches   []string // "device@host"
 	counter    int
 	// name is the name in GET /status, statuses counts the requests
@@ -145,6 +146,7 @@ func (p *fakePool) handler() http.Handler {
 			call += " exclusive"
 		}
 		p.attaches = append(p.attaches, call)
+		p.attachReqs = append(p.attachReqs, req)
 		if code := p.attachErr[name]; code != "" {
 			writeErr(w, &api.Error{Code: code, Message: "injected " + code})
 			return
@@ -168,9 +170,13 @@ func (p *fakePool) handler() http.Handler {
 			return
 		}
 		p.counter++
+		bus := fmt.Sprintf("ds%d", p.counter)
+		if req.Slot != "" {
+			bus = req.Slot
+		}
 		a := api.Attachment{
 			ID: id, Device: name, Host: req.Host, Serial: d.Serial, Owner: req.Owner,
-			Slot:         api.Slot{Bus: fmt.Sprintf("ds%d", p.counter)},
+			Slot:         api.Slot{Bus: bus},
 			QemuDeviceID: fmt.Sprintf("fcp_%s.hp%d", name, p.counter),
 			State:        api.AttachmentAttached,
 			Exclusive:    req.Exclusive,
@@ -355,6 +361,13 @@ func (e *env) createClaim(name, devName, nodeName string, shareID string) *resou
 // shared device (0: no consumed capacity in the result).
 func (e *env) createClaimShares(name, devName, nodeName string, shareID string, shares int64) *resourceapi.ResourceClaim {
 	e.t.Helper()
+	return e.createClaimConfig(name, devName, nodeName, shareID, shares, nil)
+}
+
+// createClaimConfig is createClaimShares with the config entries of the
+// allocation.
+func (e *env) createClaimConfig(name, devName, nodeName string, shareID string, shares int64, config []resourceapi.DeviceAllocationConfiguration) *resourceapi.ResourceClaim {
+	e.t.Helper()
 	r := resourceapi.DeviceRequestAllocationResult{
 		Request: "mem", Driver: DefaultDriverName, Pool: DefaultPoolName, Device: devName,
 		BindingConditions:        []string{DefaultDriverName + "/Attached"},
@@ -374,7 +387,7 @@ func (e *env) createClaimShares(name, devName, nodeName string, shareID string, 
 					// a result of another driver is ignored
 					{Request: "local", Driver: "cxl.nri.io", Pool: "node1", Device: "region0-node2"},
 					r,
-				}},
+				}, Config: config},
 				NodeSelector: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
 					MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{nodeName}}},
 				}}},

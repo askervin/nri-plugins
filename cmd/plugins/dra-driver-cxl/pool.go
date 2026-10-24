@@ -36,6 +36,7 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	"github.com/containers/nri-plugins/pkg/cxl/memctl"
@@ -94,14 +95,26 @@ type poolDriver struct {
 	fence *nodeFence
 
 	// serials is a snapshot of the serials of prepared and inflight
-	// devices for the cxl.nri.io publisher (D29), and claimNodes of the
-	// NUMA nodes of the devices in mode numa of prepared claims (claim
-	// uid -> nodes) for the NRI plugin. They have their own lock so that
-	// a rescan or an NRI event never waits for a Prepare that waits for
-	// udev.
-	serialsMu  sync.Mutex
-	serials    map[uint64]bool
-	claimNodes map[string][]int
+	// devices for the cxl.nri.io publisher (D29), and results of the
+	// allocation results of prepared claims (claim uid -> results) for
+	// the NRI plugin. They have their own lock so that a rescan or an NRI
+	// event never waits for a Prepare that waits for udev.
+	serialsMu sync.Mutex
+	serials   map[uint64]bool
+	results   map[string][]poolResult
+}
+
+// poolResult is a prepared allocation result of a pool claim as the NRI
+// plugin sees it.
+type poolResult struct {
+	// Index is the index of the allocation result in the claim.
+	Index   int
+	Request string
+	Mode    string // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
+	Node    int    // NUMA node of the memory (numa mode), -1 if none
+	Size    uint64
+	// Settings are the container settings of the result.
+	Settings config.ResultSettings
 }
 
 type preparedPoolDevice struct {
@@ -134,6 +147,9 @@ type preparedPoolDevice struct {
 	Path        string `json:"path,omitempty"`       // fs: the directory in the container
 	NodeMount   string `json:"nodeMount,omitempty"`  // fs: the node mount of the serial and access
 	LoopDevice  string `json:"loopDevice,omitempty"` // fs, cached: the loop device of the node mount
+	// ResultSettings are the container settings of the resolved
+	// MemoryConfig of the result and their origins.
+	config.ResultSettings
 }
 
 // lent returns the device as the lease broker sees it.
@@ -216,7 +232,7 @@ type poolDeviceData struct {
 }
 
 // poolDevice is the parsed poolDeviceData of an allocation result, with
-// the mode, read-only setting, access and path of its DeviceConfig.
+// the mode, read-only setting, access and path of its device settings.
 type poolDevice struct {
 	Serial     uint64
 	Shared     bool
@@ -317,15 +333,15 @@ func (p *poolDriver) Serials() map[uint64]bool {
 	return out
 }
 
-// ClaimNodes returns the NUMA nodes of the devices in mode numa of a
-// prepared claim. Nil for a nil (disabled) pool driver.
-func (p *poolDriver) ClaimNodes(uid string) []int {
+// ClaimResults returns the prepared allocation results of a pool claim.
+// Nil for a nil (disabled) pool driver.
+func (p *poolDriver) ClaimResults(uid string) []poolResult {
 	if p == nil {
 		return nil
 	}
 	p.serialsMu.Lock()
 	defer p.serialsMu.Unlock()
-	return slices.Clone(p.claimNodes[uid])
+	return slices.Clone(p.results[uid])
 }
 
 // numaNodes returns the NUMA nodes of the devices in mode numa of all
@@ -337,24 +353,33 @@ func (p *poolDriver) numaNodes() []int {
 	p.serialsMu.Lock()
 	defer p.serialsMu.Unlock()
 	var nodes []int
-	for _, n := range p.claimNodes {
-		nodes = append(nodes, n...)
+	for _, results := range p.results {
+		for _, r := range results {
+			if r.Mode == api.ModeNUMA && r.Node >= 0 {
+				nodes = append(nodes, r.Node)
+			}
+		}
 	}
 	slices.Sort(nodes)
 	return slices.Compact(nodes)
 }
 
-// updateSerials refreshes the Serials and ClaimNodes snapshots. Called
+// updateSerials refreshes the Serials and ClaimResults snapshots. Called
 // with p.mu held.
 func (p *poolDriver) updateSerials() {
 	s := map[uint64]bool{}
-	claimNodes := map[string][]int{}
+	results := map[string][]poolResult{}
 	for uid, pc := range p.prepared {
 		for _, d := range pc.Devices {
 			s[d.Serial] = true
-			if d.Mode == api.ModeNUMA && d.Node >= 0 && !slices.Contains(claimNodes[uid], d.Node) {
-				claimNodes[uid] = append(claimNodes[uid], d.Node)
-			}
+			results[uid] = append(results[uid], poolResult{
+				Index:    d.Result,
+				Request:  d.Request,
+				Mode:     d.Mode,
+				Node:     d.Node,
+				Size:     d.Size,
+				Settings: d.ResultSettings,
+			})
 		}
 	}
 	for serial := range p.inflight {
@@ -362,7 +387,7 @@ func (p *poolDriver) updateSerials() {
 	}
 	p.serialsMu.Lock()
 	p.serials = s
-	p.claimNodes = claimNodes
+	p.results = results
 	p.serialsMu.Unlock()
 }
 
@@ -386,14 +411,14 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		return pc.Result
 	}
 	claimName := claim.Namespace + "/" + claim.Name
-	if err := p.checkClaim(claim); err != nil {
+	resolved, err := p.checkClaim(claim)
+	if err != nil {
 		err = fmt.Errorf("%s: preparing claim %s: %w", p.name, claimName, err)
 		klog.Error(err)
 		return kubeletplugin.PrepareResult{Err: err}
 	}
 	var lend *lendRecord
 	if id := leaseOf(claim); id != "" {
-		var err error
 		if lend, err = p.lender.check(id, claim); err != nil {
 			err = fmt.Errorf("%s: preparing claim %s: %w", p.name, claimName, err)
 			klog.Error(err)
@@ -448,11 +473,10 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 				return fail(err)
 			}
 		}
-		cfg := &deviceConfig{}
-		if _, err := parseConfig(claim, p.name, device.DeviceConfigKind, r.Request, cfg); err != nil {
-			return fail(fmt.Errorf("request %s: %w", r.Request, err))
-		}
-		if data.Mode, err = cfg.poolModeFor(data); err != nil {
+		res := resolved[n]
+		klog.V(3).Infof("%s: claim %s request %s result %d: MemoryConfig %s", p.name, claimName, r.Request, n, res.Config.Compact())
+		cfg := res.Config.DeviceSection()
+		if data.Mode, err = cfg.PoolMode(config.PoolFacts{Persistent: data.Persistent, Shared: data.Shared, Exclusive: data.Exclusive}); err != nil {
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
 		data.ReadOnly = cfg.ReadOnly
@@ -489,6 +513,7 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
 		dev.Result = n
+		dev.ResultSettings = res.Settings()
 		pc.Devices = append(pc.Devices, *dev)
 		pc.Result.Devices = append(pc.Result.Devices, kubeletplugin.Device{
 			Requests:     []string{r.Request},
@@ -553,13 +578,18 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 	return pc.Result
 }
 
-// checkClaim returns an error if a claim has no allocation, or an opaque
-// config of the pool driver of an unknown kind.
-func (p *poolDriver) checkClaim(claim *resourceapi.ResourceClaim) error {
+// checkClaim returns the MemoryConfig of each allocation result of the
+// pool driver in a claim by result index, and an error if the claim has no
+// allocation, an opaque config entry of the pool driver that is not a
+// valid MemoryConfig entry, or a result whose configuration is invalid.
+func (p *poolDriver) checkClaim(claim *resourceapi.ResourceClaim) (map[int]*config.Resolved, error) {
 	if claim.Status.Allocation == nil {
-		return errors.New("no allocation")
+		return nil, errors.New("no allocation")
 	}
-	return checkConfigKinds(claim, p.name, device.DeviceConfigKind)
+	if err := config.CheckEntries(claim, p.name); err != nil {
+		return nil, err
+	}
+	return resolveResults(claim, p.name, func(r *resourceapi.DeviceRequestAllocationResult) bool { return r.Driver == p.name })
 }
 
 // isAddDevError matches the transient region creation failure right
@@ -799,7 +829,7 @@ func poolCDIDeviceID(claimUID string, n int) string {
 
 // buildCDISpec builds the CDI spec of all prepared pool claims but
 // companion claims: one device claim-<uid>-<n> per allocation result n with
-// the claim marker, the environment of the result's device (api.Env), the
+// the result marker, the environment of the result's device (api.Env), the
 // device node of a dax or block device and the bind mount of the node
 // mount of an fs device.
 func (p *poolDriver) buildCDISpec() *cdiSpecs.Spec {
@@ -812,7 +842,7 @@ func (p *poolDriver) buildCDISpec() *cdiSpecs.Spec {
 		keys := envKeys{}
 		for i := range pc.Devices {
 			d := &pc.Devices[i]
-			env := map[string]string{claimEnvVarName(uid): "1"}
+			env := map[string]string{resultEnvVarName(uid, d.Result): "1"}
 			maps.Copy(env, api.Env(d.memory(keys.next(api.Key(d.Serial, 1)))))
 			edits := cdiSpecs.ContainerEdits{Env: api.EnvList(env)}
 			switch d.Mode {

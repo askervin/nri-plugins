@@ -374,15 +374,15 @@ func TestPrepareSharedLocal(t *testing.T) {
 	})
 	e.wantCDIDevice(t, "claim-u1-0",
 		[]string{"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=0", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-			"CXL_C100E2E1_SHARED=1", "CXL_C100E2E1_SIZE=1073741824", "CXL_CLAIM_u1=1"},
+			"CXL_C100E2E1_SHARED=1", "CXL_C100E2E1_SIZE=1073741824", "CXL_CLAIM_u1_0=1"},
 		[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0}})
 	// readers: one share each, read-only device nodes of the same device
 	noErr(t, e.Prepare(ctx, sharedClaim("u2", "1", localROConfig)))
-	noErr(t, e.Prepare(ctx, sharedClaim("u3", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","readOnly":true}`)))
+	noErr(t, e.Prepare(ctx, sharedClaim("u3", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`)))
 	for _, uid := range []string{"u2", "u3"} {
 		e.wantCDIDevice(t, "claim-"+uid+"-0",
 			[]string{"CXL_C100E2E1_DAX=/dev/dax0.0", "CXL_C100E2E1_MODE=dax", "CXL_C100E2E1_READONLY=1", "CXL_C100E2E1_SERIAL=0xc100e2e1",
-				"CXL_C100E2E1_SHARED=1", "CXL_C100E2E1_SIZE=1073741824", "CXL_CLAIM_" + uid + "=1"},
+				"CXL_C100E2E1_SHARED=1", "CXL_C100E2E1_SIZE=1073741824", "CXL_CLAIM_" + uid + "_0=1"},
 			[]*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 252, Minor: 0, Permissions: "r"}})
 	}
 	e.f.wantRegionCount(t, 1, 0)
@@ -402,10 +402,10 @@ func TestPrepareSharedLocal(t *testing.T) {
 			"claim demo/claim-u9: request mem: device 0xc100e2e1: consumed shares "+tc.text+" is less than 1: request shares: 1 (a share) or no shares (exclusive)")
 	}
 	// dax only
-	wantErr(t, e.Prepare(ctx, sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`)),
-		"DeviceConfig: mode numa: a shared device is used as dax only")
-	wantErr(t, e.Prepare(ctx, sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa","readOnly":true}`)),
-		"DeviceConfig: readOnly needs mode dax")
+	wantErr(t, e.Prepare(ctx, sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`)),
+		"MemoryConfig: device: a shared device is used as dax only")
+	wantErr(t, e.Prepare(ctx, sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa","readOnly":true}}`)),
+		"MemoryConfig: device.readOnly needs mode dax")
 	if e.f.commands() != before || e.Prepared["u9"].Devices != nil {
 		t.Fatalf("a refused claim touched the device:\n%s", strings.TrimPrefix(e.f.commands(), before))
 	}

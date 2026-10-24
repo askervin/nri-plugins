@@ -1,8 +1,9 @@
 # Two pods that share a devdax slice of a CXL memory device attached to
-# their node: both reference one ResourceClaim (cxl-local, DeviceConfig
-# mode: dax), so the scheduler puts them on the node of the claim's device
-# and kubelet prepares the claim once. Both get the same /dev/daxX.Y
-# (CXL_<KEY>_DAX). The writer writes a message, the reader prints it.
+# their node: both reference one ResourceClaim (cxl-local, MemoryConfig
+# device.mode: dax), so the scheduler puts them on the node of the claim's
+# device and kubelet prepares the claim once. Both get the same
+# /dev/daxX.Y (CXL_<KEY>_DAX). The writer writes a message, the reader
+# prints it.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -21,8 +22,9 @@ spec:
         driver: cxl.nri.io
         parameters:
           apiVersion: cxl.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: dax
+          kind: MemoryConfig
+          device:
+            mode: dax
 ---
 apiVersion: v1
 kind: Pod

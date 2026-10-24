@@ -8,7 +8,8 @@
 # and no other claim gets the device while it exists; readers created
 # meanwhile stay pending. The writer writes a message and finishes. The
 # three readers join with one share each (capacity.requests.shares: "1")
-# and DeviceConfig readOnly: true: their device node allows reads only.
+# and MemoryConfig device.readOnly: true: their device node allows reads
+# only.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -75,8 +76,9 @@ spec:
           driver: cxl.nri.io
           parameters:
             apiVersion: cxl.nri.io/v1alpha1
-            kind: DeviceConfig
-            readOnly: true
+            kind: MemoryConfig
+            device:
+              readOnly: true
 ---
 apiVersion: v1
 kind: Pod

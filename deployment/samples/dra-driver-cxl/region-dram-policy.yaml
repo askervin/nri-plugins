@@ -1,8 +1,9 @@
-# Steering of a container to DRAM first, then to the CXL NUMA node of a
-# region that existed before the driver: 64Mi of DeviceClass cxl-dram and
-# 64Mi of cxl-region, and a MemoryPolicyConfig with memoryUseOrder
-# first-dram. The container prints its CXL_* environment and its
-# cpuset.mems.
+# Steering, opted in: the container's allocations go to DRAM first, then
+# to the CXL NUMA node of a region that existed before the driver: 64Mi of
+# DeviceClass cxl-dram and 64Mi of cxl-region, and a MemoryConfig with
+# container.steering.policy first-dram (auto would interleave DRAM and
+# CXL). Without container.steering the container is not steered. It
+# prints its CXL_* environment and its cpuset.mems.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -27,8 +28,10 @@ spec:
         driver: cxl.nri.io
         parameters:
           apiVersion: cxl.nri.io/v1alpha1
-          kind: MemoryPolicyConfig
-          memoryUseOrder: first-dram
+          kind: MemoryConfig
+          container:
+            steering:
+              policy: first-dram
 ---
 apiVersion: v1
 kind: Pod

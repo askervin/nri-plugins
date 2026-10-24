@@ -1,8 +1,9 @@
 # A read-only devdax slice of a CXL memory device attached to the node:
-# DeviceClass cxl-local with DeviceConfig mode: dax, readOnly: true. The
-# 64Mi request gets one memory block (128Mi with 128 MiB blocks). The
-# device node allows reads only (enforced by the device cgroup), and
-# CXL_<KEY>_READONLY=1 tells the program. A new slice reads zeros.
+# DeviceClass cxl-local with MemoryConfig device.mode: dax and
+# device.readOnly: true. The 64Mi request gets one memory block (128Mi with 128 MiB
+# blocks). The device node allows reads only (enforced by the device
+# cgroup), and CXL_<KEY>_READONLY=1 tells the program. A new slice reads
+# zeros.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -21,9 +22,10 @@ spec:
         driver: cxl.nri.io
         parameters:
           apiVersion: cxl.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: dax
-          readOnly: true
+          kind: MemoryConfig
+          device:
+            mode: dax
+            readOnly: true
 ---
 apiVersion: v1
 kind: Pod

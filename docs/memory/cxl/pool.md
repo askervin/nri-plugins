@@ -32,7 +32,8 @@ the e2e tests and [e2e.md](e2e.md) use it.
 ```
  pool controller
    publishes a ResourceSlice of pool devices (driver cxl-pool.nri.io),
-   attaches a device to the node the scheduler picked,
+   attaches a device to the node the scheduler picked, with the settings
+   of the pool section of the claim's MemoryConfig,
    writes claim.status.devices[] (condition Attached=True + data),
    detaches the device after the claim is deallocated.
  kube-scheduler
@@ -40,7 +41,7 @@ the e2e tests and [e2e.md](e2e.md) use it.
    waits for the binding condition, binds the pod.
  nri-dra-driver-cxl, driver cxl-pool.nri.io
    waits for the memory device with the serial from the claim status,
-   creates a region on it and returns CDI edits;
+   creates a region on it as the device section says, returns CDI edits;
    on unprepare, releases the device so that the pool can hot-remove it.
 ```
 
@@ -210,12 +211,16 @@ Complete examples with pods:
 
 ### Options of pool devices
 
-An opaque configuration of driver `cxl-pool.nri.io`, kind `DeviceConfig`
-(the same fields as for `cxl.nri.io`, see
-[usage.md](usage.md#deviceconfig)), selects how the node plugin prepares
-a pool device. It may come from the claim or from its DeviceClass (the
-claim's wins), and applies to the requests it lists, or to all requests
-of the driver:
+An opaque configuration of driver `cxl-pool.nri.io`, kind `MemoryConfig`
+(apiVersion `cxl.nri.io/v1alpha1`, the same as for `cxl.nri.io`, see
+[usage.md](usage.md#opaque-configurations)), has three sections: `device`
+selects how the node plugin prepares a pool device, `container` how the
+containers that use it are managed (steering, as for local memory), and
+`pool` the settings of the pool controller
+([Configuration of a pool controller](#configuration-of-a-pool-controller)).
+Entries of the DeviceClass and of the claim merge field by field, the
+claim's last, and apply to the requests they list, or to all requests of
+the driver ([usage.md](usage.md#merge-order)):
 
 ```yaml
 spec:
@@ -224,18 +229,20 @@ spec:
     config:
     - opaque:
         driver: cxl-pool.nri.io
-        parameters: {apiVersion: cxl-pool.nri.io/v1alpha1, kind: DeviceConfig, mode: dax, readOnly: true}
+        parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: dax, readOnly: true}}
 ```
 
 An opaque configuration of `cxl-pool.nri.io` of another kind fails the
-Prepare with `unknown kind "..." (DeviceConfig)`.
+Prepare with `unknown kind "..." (MemoryConfig)`.
 
 | field | values | |
 |---|---|---|
-| `mode` | `numa`, `dax`, `block`, `fs` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). Devices of persistent memory have `block` and `fs` only, and no default ([usage.md](usage.md#persistent-memory)). |
-| `readOnly` | `false`, `true` | `dax`, `block`: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only. `fs`: required. |
-| `access` | `direct`, `cached` | `fs` only, default `direct`: file pages in the device (DAX) or in the page cache of the node |
-| `path` | absolute path | `fs` only, default `/run/cxl-fs/<KEY>`: where the filesystem is in the container |
+| `device.mode` | `numa`, `dax`, `block`, `fs` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). Devices of persistent memory have `block` and `fs` only, and no default ([usage.md](usage.md#persistent-memory)). |
+| `device.readOnly` | `false`, `true` | `dax`, `block`: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only. `fs`: required. |
+| `device.access` | `direct`, `cached` | `fs` only, default `direct`: file pages in the device (DAX) or in the page cache of the node |
+| `device.path` | absolute path | `fs` only, default `/run/cxl-fs/<KEY>`: where the filesystem is in the container |
+| `container.steering` | | mode `numa`: the steering of the containers that use the device, default policy `none` ([usage.md](usage.md#steering)) |
+| `pool.opaque.<key>` | an object | the settings of the pool controllers with controller key `<key>`, for example `fake-cxl-pool: {numaNode: 1}` ([Configuration of a pool controller](#configuration-of-a-pool-controller)) |
 
 So every pool device can be used as a dax device: shared devices always,
 exclusive devices with `mode: dax`. A claim of a shared device without a
@@ -244,10 +251,10 @@ capacity request has it exclusively; a share is `shares: "1"`:
 | pool device | claim | gets |
 |---|---|---|
 | exclusive | (nothing) | a NUMA node |
-| exclusive | `mode: dax` | a dax device of its own |
+| exclusive | `device.mode: dax` | a dax device of its own |
 | shared | `capacity.requests.shares: "1"` | a dax device, shared with the other claims of the device |
 | shared | (nothing) | a dax device, nobody else has the device meanwhile |
-| shared or exclusive dax | `readOnly: true` | the dax device, read-only |
+| shared or exclusive dax | `device.readOnly: true` | the dax device, read-only |
 
 Read-only is enforced by the kernel for every process of the container,
 whatever its capabilities, except in privileged containers (their device
@@ -260,7 +267,7 @@ write.
 
 Single-writer data sharing: the writer claims the shared device without
 a capacity request (exclusively) and writes; the readers claim one share
-each (`shares: "1"`) with `readOnly: true`. A
+each (`shares: "1"`) with `device.readOnly: true`. A
 reader that asks while the writer has the device waits (its pod or lease
 stays pending) until the writer's claim is deallocated: the writer's pod
 has finished or is deleted, or its lease is released.
@@ -323,8 +330,13 @@ selects modes `block` and `fs`.
 
 On failure the controller sets `cxl-pool.nri.io/AttachFailed` to True
 instead (reasons used by the reference controller: `NoHost`,
-`AttachError`, `Timeout`, `Conflict`) and detaches anything that was half
-attached. The controller detaches a device only after the claim has been
+`AttachError`, `Timeout`, `Conflict`; `InvalidConfig` for an invalid
+`MemoryConfig` or controller object, which every controller uses, see
+[Configuration of a pool controller](#configuration-of-a-pool-controller))
+and detaches anything that was half attached for the result. A result
+whose status entry is `Attached` already keeps its attachment, also when
+its configuration is found invalid (the device may be in use); otherwise
+the controller detaches a device only after the claim has been
 deallocated.
 
 RBAC of the controller:
@@ -339,6 +351,130 @@ rules:
 - {apiGroups: [""], resources: [events], verbs: [create, patch]}
 ```
 
+## Configuration of a pool controller
+
+A claim configures its pool controller in the `pool` section of the
+`MemoryConfig` entries of the pool driver. This section is for
+implementers of pool controllers other than the reference
+fake-cxl-pool-controller.
+
+**Where.** The configuration of an allocation result is in
+`claim.status.allocation.devices.config`: the entries with
+`opaque.driver` = the controller's driver (`cxl-pool.nri.io`), copied
+there by the scheduler from the DeviceClass (`source: FromClass`) and the
+claim (`source: FromClaim`). Entries of other drivers are not the
+controller's.
+
+**Resolution.** For each allocation result of its pool, the controller
+takes the entries of its driver whose `requests` are empty, list the
+result's request, or list the main request `r` of a subrequest `r/s`;
+class entries first, then claim entries, each in list order. Each entry is
+decoded strictly (kind `MemoryConfig`, apiVersion `cxl.nri.io/v1alpha1`,
+no unknown fields), and the parameters merge as a JSON merge patch
+(objects field by field, scalars and lists replace, `null` removes). This
+is the same rule as the node driver's,
+[usage.md](usage.md#merge-order).
+
+**The controller key.** `pool.opaque` is a map from controller key to an
+object that the controller with that key defines:
+
+```yaml
+pool:
+  opaque:
+    fake-cxl-pool: {numaNode: 1}       # the reference controller
+    example.com/appliance: {port: 3}   # another implementation
+```
+
+A controller has one key (a flag or setting of its own, unique per
+implementation; all controllers of one implementation share it), reads
+only the object under it, and ignores the other keys: a claim may carry
+settings for several implementations. The objects merge per key across
+the class and claim entries, so a class may give defaults that a claim
+overrides field by field. Version the object yourself if it needs a
+version (a field in it); the outer apiVersion stays `cxl.nri.io/v1alpha1`.
+No generic field next to `opaque` exists yet; the node driver refuses
+unknown ones and never looks into the objects.
+
+**Not yours.** The `device` and `container` sections belong to the node
+driver (how the device is prepared, how containers are managed). A
+controller does not interpret them.
+
+**Errors.** An invalid `MemoryConfig` entry of the driver (also one of
+another request of the claim, which fails the node's Prepare anyway) or
+an invalid object under the controller's key attaches nothing. The status
+entry of the result gets `<driver>/AttachFailed=True` with reason
+`InvalidConfig` and the error as the message; the scheduler deallocates
+and allocates again until the binding timeout, as for other attach
+failures. Leave no attachment behind for the result, and do not let the
+failure flap: the allocation, and so its configuration, does not change,
+so the same answer is given on every reconcile. A configuration error is
+final for the allocation; because the condition goes away with the
+deallocation, an event on the claim with the same message helps users.
+
+**Go.** Controllers in Go call pkg/cxl/config
+([source](tree:/pkg/cxl/config)):
+
+```go
+import "github.com/containers/nri-plugins/pkg/cxl/config"
+
+type Settings struct { // the controller's object, decoded strictly
+	Slot     string `json:"slot,omitempty"`
+	NumaNode *int   `json:"numaNode,omitempty"`
+}
+
+// for each allocation result r of the pool
+if err := config.CheckEntries(claim, driver); err != nil { ... } // every entry of the driver
+res, err := config.Resolve(claim, driver, r.Request)               // the merged MemoryConfig of the result
+var s Settings
+found, err := config.PoolOpaque(res, key, &s)                     // pool.opaque.<key>, other keys ignored
+// any err: AttachFailed=True, reason InvalidConfig, message err.Error()
+```
+
+The error texts start with `MemoryConfig: `, for example
+`MemoryConfig: FromClaim config 1: json: unknown field "x"` or
+`MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "port"`.
+`Resolve` also validates the values of the `container` section (an
+invalid steering policy fails it); it checks no device fields.
+
+**The reference controller.** fake-cxl-pool-controller has the key
+`fake-cxl-pool` (flag `-config-key`) and the object:
+
+| field | type | |
+|:--|:--|:--|
+| `slot` | string | an exact CXL slot (bus name) of the host, as the pool server lists them; the server refuses another one (`AttachError`) and an occupied one (`Conflict`) |
+| `numaNode` | integer >= 0 | prefer the free slots of host bridges on that NUMA node of the host |
+
+Both go into the server's attach request. A claim that wants its pool
+memory near NUMA node 1 of the host:
+
+```yaml
+spec:
+  devices:
+    requests:
+    - name: mem
+      exactly: {deviceClassName: cxl-pool}
+    config:
+    - requests: [mem]
+      opaque:
+        driver: cxl-pool.nri.io
+        parameters:
+          apiVersion: cxl.nri.io/v1alpha1
+          kind: MemoryConfig
+          pool:
+            opaque:
+              fake-cxl-pool: {numaNode: 1}
+```
+
+An invalid object, such as `fake-cxl-pool: {port: 3}`, gives
+`AttachFailed` reason `InvalidConfig`, message `MemoryConfig:
+pool.opaque.fake-cxl-pool: json: unknown field "port"`, a Warning event
+`AttachFailed` with that message on the claim, and the controller log
+line `ERROR: claim <ns>/<name>: request <request> device <device>: invalid
+configuration: <error>`. The settings place a new attachment only: an
+attachment that exists already (a shared device attached for another
+claim on the node, or found after a restart) stays in its slot, because
+the device may be in use; the `Attached` message names the slot.
+
 ## What the node plugin does
 
 nri-dra-driver-cxl registers the `cxl-pool.nri.io` driver with kubelet
@@ -350,17 +486,18 @@ publishes ResourceSlices.
 | `--pool-driver-name` | `POOL_DRIVER_NAME` | `cxl-pool.nri.io` | empty disables the pool driver (Helm value `pool.driverName`) |
 | `--pool-prepare-timeout` | `POOL_PREPARE_TIMEOUT` | `30s` | how long to wait for the memory device to appear (Helm value `pool.prepareTimeout`) |
 
-NodePrepareResources checks first that every opaque configuration of
-the driver in the claim and its classes is a `DeviceConfig`
-(`unknown kind "..." (DeviceConfig)` otherwise), then, for each allocated
-device of the driver:
+NodePrepareResources, for each allocated device of the driver:
 
 1. Read `serial`, `shared`, `size`, `exclusive` and `persistent` from
    the claim status entry. A missing entry or missing data is an error;
    kubelet retries. An allocation of a shared device that consumed less
-   than one share fails ([usage.md](usage.md#deviceconfig)).
-2. Read the `DeviceConfig` of the request; an invalid one fails the
-   Prepare ([usage.md](usage.md#deviceconfig)).
+   than one share fails ([usage.md](usage.md#configuration-errors)).
+2. Resolve the `MemoryConfig` of the result: the entries of the driver
+   in the class and the claim that apply to its request, merged
+   ([usage.md](usage.md#merge-order)); an invalid one fails the Prepare
+   ([usage.md](usage.md#configuration-errors)). The plugin reads the
+   `device` and `container` sections, and checks only the structure of
+   `pool`.
 3. Wait until a CXL memory device with the serial appears
    (`/sys/bus/cxl/devices/memN/serial`).
 4. Mode `numa` (exclusive devices): create a ram region on it under the
@@ -368,16 +505,18 @@ device of the driver:
    all memory blocks `online_movable` (movable, so that the memory can be
    removed again). The memory becomes a new NUMA node N.
 
-   The pool driver does not steer the container: its memory policy is
-   left alone. With `containerMemory.default` `allowed-mems` (the
-   default), N is added to its `cpuset.mems` next to its other nodes (a
-   container whose cgroup allows only ZONE_MOVABLE memory cannot start),
-   and the other containers do not get N; they are updated before the
-   memory goes online. With `none` no `cpuset.mems` is changed, and every
+   A container that uses the device is steered to N like to local CXL
+   memory when it opts in (`container.steering`, quota the device size,
+   [usage.md](usage.md#steering)). Otherwise its memory policy is left
+   alone: with `defaults.container.fencing` `allowed-mems` (the default),
+   N is added to its `cpuset.mems` next to its other nodes (a container
+   whose cgroup allows only ZONE_MOVABLE memory cannot start), and the
+   other containers do not get N; they are updated before the memory
+   goes online. With `none` no `cpuset.mems` is changed, and every
    container without its own `cpuset.mems` may allocate from N
    ([usage.md](usage.md#containers-without-claims)). Workloads use the
    node number from the environment, for example with `numactl` or
-   `mbind` ([usage.md](usage.md#steering)).
+   `mbind`.
 
    Mode `dax` (shared devices, and exclusive devices with `mode: dax`):
    create a ram region, bind the dax device to `device_dax`. The memory
@@ -395,7 +534,7 @@ device of the driver:
    [usage.md](usage.md#persistent-memory).
 5. Return the device's CDI device `nri.io/cxl-pool=claim-<claim uid>-<n>`
    (spec file `cxl-pool`, n the index of the allocation result in the
-   claim) with the claim marker `CXL_CLAIM_<uid>=1`, the device node of a
+   claim) with the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a
    `dax` device and the variables of
    [usage.md](usage.md#environment-variables):
 
@@ -414,8 +553,8 @@ device of the driver:
    `<KEY>` is the serial in upper-case hex without `0x` (`<KEY>_2`, ...
    for a second device with the same serial in the claim), `<serial>` in
    lower-case hex. A container gets the devices of the requests it
-   references only. The marker does not make the container steered: the
-   NRI plugin has no steering information for pool claims. A companion
+   references only; by the marker the NRI plugin finds the results that
+   a container uses, and their settings and memory. A companion
    claim of a lease gets no CDI device ([leases.md](leases.md)). The
    prepared claim is stored in
    `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json`.

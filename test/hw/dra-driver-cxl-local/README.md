@@ -16,7 +16,7 @@ CXL memdev with RAM capacity.
 | `lib.sh` | helpers: ssh/kubectl, claims and pods (`claim_yaml`, `pod_yaml`), checks (`check_fenced`) |
 | `deploy.sh` | import the image, prepare the node, install/reconfigure the Helm chart (`sliced` or `shared`) |
 | `run-all.sh` | deploy and run all tests, logs in `results/` |
-| `test1-sliced-numa.sh` | slices in mode `numa`: several containers, one NUMA node, `Mems_allowed`, other containers fenced off the node, placement, release, a driver restart |
+| `test1-sliced-numa.sh` | slices in mode `numa`: several containers, one NUMA node, `Mems_allowed`, other containers fenced off the node, placement of steered containers (opt-in) and of a container that is not steered, release, a driver restart |
 | `test2-sliced-dax.sh` | slices in mode `dax`: one claim shared by a writer and readers, read-only slice, zeroing, `numa` and `dax` slices on one memdev, `dax` pods fenced off the `numa` node |
 | `test3-local-leases.sh` | `cxl-request` leases of local memory in modes `numa` and `dax`, other containers fenced off the leased node |
 | `test4-shared-swmr.sh` | the memdev in `sharedDevices`: single writer, many read-only readers, a read-only shared lease, exclusive claims, persistence |
@@ -47,19 +47,49 @@ without foreign regions. A reboot brings the BIOS region back; run with
 Environment: `TARGET` (ssh destination), `CXL_SERIAL` (memdev, default the
 first one), `NS` (namespace of the test pods, default `cxl-hw`),
 `TOOLS_IMAGE` (default `docker.io/library/python:3-alpine`),
-`CONTAINER_MEMORY` (`deploy.sh`, `run-all.sh`: `containerMemory.default`
-of the driver configuration, `allowed-mems`, `mempolicy` or `none`; unset
-leaves it out, the driver's default `allowed-mems` applies).
+`CONTAINER_FENCING` (`deploy.sh`, `run-all.sh`: `defaults.container.fencing`
+of the driver configuration, `allowed-mems` or `none`; `mempolicy` is
+refused as not implemented; unset leaves it out, the driver's default
+`allowed-mems` applies).
 
-With `containerMemory.default: allowed-mems`, no container has a CXL NUMA
+## Claims
+
+`claim_yaml` writes claims of one request `mem` on the memdev. Its options
+`mode=MODE`, `readonly` and `steering=POLICY` give the claim one opaque
+config of kind `MemoryConfig` (`apiVersion: cxl.nri.io/v1alpha1`):
+
+```yaml
+config:
+- opaque:
+    driver: cxl.nri.io
+    parameters:
+      apiVersion: cxl.nri.io/v1alpha1
+      kind: MemoryConfig
+      device: {mode: dax, readOnly: true}       # mode=dax readonly
+      container: {steering: {policy: auto}}     # steering=auto
+```
+
+Steering is opt-in: a container with a `numa` claim without
+`container.steering.policy` (the default `none`) is not steered. It gets
+the claimed node in its `cpuset.mems` next to its own nodes, no memory
+policy and no `memory.high`; its default allocations stay on DRAM. In
+test1, `numa-a` and `numa-b` opt in with `steering=auto` (their default
+allocations land on the CXL node) and `numa-u` does not. The `numa` claims
+of test2 and the leases of test3 are not steered.
+
+## Fencing
+
+With `defaults.container.fencing: allowed-mems`, no container has a CXL NUMA
 node of the driver in its `cpuset.mems.effective` (`Mems_allowed`) unless
 it claimed memory on it. `check_fenced N POD...` checks that on every
 running container of the node (`crictl ps`; pod sandboxes are not
 containers): containers `main` of the PODs in `NS` have node N, all others,
 the kube-system containers included, do not. It retries for 30 s and
 prints the table of `node_mems` (container, `cpuset.mems`, effective).
-test1, test2 and test3 use it; with `CONTAINER_MEMORY=none` those checks,
+test1, test2 and test3 use it; with `CONTAINER_FENCING=none` those checks,
 and the checks that `plain` cannot use the node, fail.
+
+## Workloads
 
 The test containers run their workloads as children of their main process
 (`prun`): the driver sets the memory policy of a steered container on the

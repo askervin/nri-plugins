@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
@@ -129,58 +131,68 @@ type DriverConfig struct {
 	// and remembered so. Default: true.
 	VerifyAddressing *bool `json:"verifyAddressing,omitempty"`
 
-	// ContainerMemory is how the driver manages the memory of the
-	// containers of the node.
-	ContainerMemory *ContainerMemoryConfig `json:"containerMemory,omitempty"`
+	// Defaults are the container settings of every container of the
+	// node (config.Defaults: container.steering, container.fencing),
+	// overlaid by the settings of the claims that a container uses.
+	// Decoded strictly by config.ParseDefaults into defaults.
+	Defaults json.RawMessage `json:"defaults,omitempty"`
+	defaults *config.Defaults
 
 	// PublishLeaseDevice publishes the lease device (set from --leases,
 	// not part of the configuration file).
 	PublishLeaseDevice bool `json:"-"`
 }
 
-// ContainerMemoryConfig is how the driver manages the memory of containers.
-type ContainerMemoryConfig struct {
-	// Default is the management of every container:
-	// containerMemoryAllowedMems (also when empty), containerMemoryMempolicy
-	// (not implemented) or containerMemoryNone.
-	Default string `json:"default,omitempty"`
+// containerDefaults returns the container settings of the defaults.
+func (c *DriverConfig) containerDefaults() config.Container {
+	return c.defaults.ContainerSettings()
 }
 
-// The values of containerMemory.default.
-const (
-	// containerMemoryAllowedMems keeps the CXL nodes of the driver out of
-	// cpuset.mems of every container that has not claimed or borrowed
-	// memory on them.
-	containerMemoryAllowedMems = "allowed-mems"
-	// containerMemoryMempolicy keeps containers off the CXL nodes of the
-	// driver through the memory policy of their threads.
-	containerMemoryMempolicy = "mempolicy"
-	// containerMemoryNone leaves the memory nodes of containers as they
-	// are.
-	containerMemoryNone = "none"
-)
-
-// containerMemory returns the containerMemory.default of the
-// configuration, containerMemoryAllowedMems when it is not set.
-func (c *DriverConfig) containerMemory() string {
-	if c.ContainerMemory == nil || c.ContainerMemory.Default == "" {
-		return containerMemoryAllowedMems
+// fencing returns defaults.container.fencing, config.FencingAllowedMems
+// when it is not set.
+func (c *DriverConfig) fencing() string {
+	if f := c.containerDefaults().Fencing; f != "" {
+		return f
 	}
-	return c.ContainerMemory.Default
+	return config.FencingAllowedMems
 }
 
-// validate returns an error if a value of the configuration is invalid.
+// steeringPolicy returns defaults.container.steering.policy,
+// config.PolicyNone when it is not set.
+func (c *DriverConfig) steeringPolicy() string {
+	if s := c.containerDefaults().Steering; s != nil && s.Policy != "" {
+		return s.Policy
+	}
+	return config.PolicyNone
+}
+
+// logDefaults logs the container defaults.
+func (c *DriverConfig) logDefaults() {
+	if fencing := c.fencing(); fencing == config.FencingAllowedMems {
+		klog.Infof("defaults.container.fencing: %s: containers get the CXL nodes of the driver only by claims and leases", fencing)
+	} else {
+		klog.Infof("defaults.container.fencing: %s: containers are not kept off the CXL nodes of the driver", fencing)
+	}
+	if policy := c.steeringPolicy(); policy == config.PolicyNone {
+		klog.Infof("defaults.container.steering.policy: %s: containers are steered only when their claims opt in", policy)
+	} else {
+		klog.Infof("defaults.container.steering.policy: %s: containers with numa claims are steered unless their claims say none", policy)
+	}
+}
+
+// validate returns an error if a value of the configuration is invalid,
+// and decodes the defaults.
 func (c *DriverConfig) validate() error {
 	if err := c.validateMemdevSettings(); err != nil {
 		return err
 	}
-	switch mode := c.containerMemory(); mode {
-	case containerMemoryAllowedMems, containerMemoryNone:
-	case containerMemoryMempolicy:
-		return fmt.Errorf("containerMemory.default: %s is not implemented yet", mode)
-	default:
-		return fmt.Errorf("containerMemory.default: invalid value %q (%s, %s or %s)",
-			mode, containerMemoryAllowedMems, containerMemoryMempolicy, containerMemoryNone)
+	c.defaults = nil
+	if len(c.Defaults) > 0 {
+		d, err := config.ParseDefaults(c.Defaults)
+		if err != nil {
+			return err
+		}
+		c.defaults = d
 	}
 	return nil
 }
@@ -336,12 +348,8 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 
 	// The fenced nodes exist before any Prepare can online memory, and
 	// without NRI too.
-	fence := newNodeFence(driverConfig.containerMemory())
-	if fence != nil {
-		klog.Infof("containerMemory: %s: containers get the CXL nodes of the driver only by claims and leases", fence.mode())
-	} else {
-		klog.Infof("containerMemory: %s: containers are not kept off the CXL nodes of the driver", fence.mode())
-	}
+	fence := newNodeFence(driverConfig.fencing())
+	driverConfig.logDefaults()
 
 	// The pool driver's prepared claims are loaded before the first
 	// scan, so that its devices are never published as cxl.nri.io
@@ -429,7 +437,7 @@ PluginDataDirectoryPath: %v`,
 		Idx:    cxlFlags.NRIIdx,
 		Socket: cxlFlags.NRISocket,
 	}
-	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, fence, pool, sysfsRoot)
+	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, driverConfig.containerDefaults(), fence, pool, sysfsRoot)
 	if err != nil {
 		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
 		fence.setNoNRI()

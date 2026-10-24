@@ -23,14 +23,20 @@
 #                     create-region" brings such a region back.
 #
 # Environment (and the variables of lib.sh):
-#   CONTAINER_MEMORY  containerMemory.default of the driver configuration
-#                     (allowed-mems, mempolicy or none); unset: not in the
-#                     configuration, the driver's default applies
+#   CONTAINER_FENCING  defaults.container.fencing of the driver
+#                      configuration (allowed-mems or none; mempolicy is
+#                      refused as not implemented);
+#                      unset: not in the configuration, the driver's
+#                      default allowed-mems applies
 #
 # Switching between sliced and shared needs an idle device: delete the
 # pods and claims of the device first.
 set -o pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+if [ -n "$CONTAINER_MEMORY" ]; then
+    echo "CONTAINER_MEMORY is gone, use CONTAINER_FENCING (defaults.container.fencing)" >&2
+    exit 2
+fi
 
 RELEASE=${RELEASE:-cxl}
 CHART_DIR="$REPO_DIR/deployment/helm/dra-driver-cxl"
@@ -116,9 +122,9 @@ if [ "$mode" == shared ]; then
     config+="
   sharedDevices: [\"$S\"]"
 fi
-if [ -n "$CONTAINER_MEMORY" ]; then
+if [ -n "$CONTAINER_FENCING" ]; then
     config+="
-  containerMemory: {default: $CONTAINER_MEMORY}"
+  defaults: {container: {fencing: $CONTAINER_FENCING}}"
 fi
 if [ -n "$config" ]; then
     values+="

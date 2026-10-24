@@ -31,7 +31,6 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/memctl"
 )
 
@@ -78,90 +77,15 @@ var fsMountOptions = []string{"bind", "ro", "nosuid", "nodev"}
 // the node mount (fsMountFlags) and must have.
 var leaseBindFlags = []string{"ro", "nosuid", "nodev"}
 
-// forbiddenPathDirs are the directories that the path of mode fs must not
-// be in.
-var forbiddenPathDirs = []string{"/dev", "/proc", "/sys", "/run/cxl", "/var/run/cxl"}
-
 // persistentMode tells whether a mode is a mode of persistent devices.
 func persistentMode(mode string) bool {
 	return mode == api.ModeBlock || mode == api.ModeFs
 }
 
-// validFsPath tells whether p may be the path of mode fs in a container:
-// absolute, clean, not / and not in one of forbiddenPathDirs.
-func validFsPath(p string) bool {
-	if !filepath.IsAbs(p) || filepath.Clean(p) != p || p == "/" {
-		return false
-	}
-	for _, dir := range forbiddenPathDirs {
-		if p == dir || strings.HasPrefix(p, dir+"/") {
-			return false
-		}
-	}
-	return true
-}
-
 // defaultFsPath returns the path of mode fs of the memory with the env key
-// in a container when the DeviceConfig has none.
+// in a container when its device settings have none.
 func defaultFsPath(key string) string {
 	return defaultFsPathDir + "/" + key
-}
-
-// poolModeFor returns the mode of a pool device with the config. The
-// checks of the config alone come first, then those that need the claim
-// status data of the device (persistent, shared, exclusive).
-func (cfg *deviceConfig) poolModeFor(d *poolDevice) (string, error) {
-	k := device.DeviceConfigKind
-	mode := cfg.Mode
-	switch mode {
-	case "", api.ModeNUMA, api.ModeDax, api.ModeBlock, api.ModeFs:
-	default:
-		return "", fmt.Errorf("%s: invalid mode %q (%s, %s, %s or %s)", k, mode, api.ModeNUMA, api.ModeDax, api.ModeBlock, api.ModeFs)
-	}
-	switch {
-	case cfg.Access != "" && mode != api.ModeFs:
-		return "", fmt.Errorf("%s: access needs mode %s", k, api.ModeFs)
-	case cfg.Path != "" && mode != api.ModeFs:
-		return "", fmt.Errorf("%s: path needs mode %s", k, api.ModeFs)
-	case cfg.Access != "" && cfg.Access != api.AccessDirect && cfg.Access != api.AccessCached:
-		return "", fmt.Errorf("%s: invalid access %q (%s or %s)", k, cfg.Access, api.AccessDirect, api.AccessCached)
-	case cfg.Path != "" && !validFsPath(cfg.Path):
-		return "", fmt.Errorf("%s: invalid path %q (an absolute path outside %s and %s)", k, cfg.Path,
-			strings.Join(forbiddenPathDirs[:len(forbiddenPathDirs)-1], ", "), forbiddenPathDirs[len(forbiddenPathDirs)-1])
-	case mode == api.ModeFs && !cfg.ReadOnly:
-		return "", fmt.Errorf("%s: mode %s is read-only: set readOnly: true (write the device with mode %s)", k, api.ModeFs, api.ModeBlock)
-	case cfg.ReadOnly && mode == api.ModeNUMA:
-		return "", errReadOnlyMode()
-	}
-	switch {
-	case !d.Persistent && persistentMode(mode):
-		return "", fmt.Errorf("%s: mode %s needs a persistent device", k, mode)
-	case d.Persistent && !persistentMode(mode):
-		return "", fmt.Errorf("%s: a persistent device needs mode %s or %s", k, api.ModeBlock, api.ModeFs)
-	case mode == api.ModeBlock && d.Shared && !d.Exclusive && !cfg.ReadOnly:
-		return "", fmt.Errorf("%s: mode %s: a shared device is writable only exclusively (no %s request)", k, api.ModeBlock, device.CapacityShares)
-	case d.Persistent:
-		return mode, nil
-	}
-	// volatile memory
-	switch {
-	case mode == "" && d.Shared:
-		mode = api.ModeDax
-	case mode == "":
-		mode = api.ModeNUMA
-	}
-	switch {
-	case d.Shared && mode != api.ModeDax:
-		return "", fmt.Errorf("%s: mode %s: a shared device is used as %s only", k, mode, api.ModeDax)
-	case cfg.ReadOnly && mode != api.ModeDax:
-		return "", errReadOnlyMode()
-	}
-	return mode, nil
-}
-
-// errReadOnlyMode returns the error of readOnly in a mode without it.
-func errReadOnlyMode() error {
-	return fmt.Errorf("%s: readOnly needs mode %s, %s or %s", device.DeviceConfigKind, api.ModeDax, api.ModeBlock, api.ModeFs)
 }
 
 // nodeMountPath returns the node mount of mode fs of the device with the

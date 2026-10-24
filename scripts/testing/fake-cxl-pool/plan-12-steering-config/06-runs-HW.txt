@@ -1,0 +1,152 @@
+plan-12: hw runs (stream HW)
+============================
+2026-10-23, TARGET=root@cwf (cwf-bkc, machine-id
+982d432423fa44019a74c86369c8a8f1, the host of plan-11 and of the earlier
+report). H = N/test/hw/dra-driver-cxl-local.
+
+Before the run
+--------------
+- machine-id matches; namespace cxl-hw empty ("No resources found");
+  `cxl list -R` empty (no region): no --prepare-node.
+- Greps checked against 05-status-DRV.txt: test1 matches
+  "NRI CreateContainer: ctr=%s: memory %s (steering %s, fencing %s)" by
+  "memory steered " / "memory fenced "; the fence texts are unchanged. No
+  hw test greps the renamed start lines or an API error text. No edit
+  needed.
+
+Run 1
+-----
+Command (from H):
+  TARGET=root@cwf ./run-all.sh --image ~/github.com/containers/nri-plugins/build/images/nri-dra-driver-cxl-image-21d87b11ec23.tar
+Image deployed: docker.io/library/nri-dra-driver-cxl:v0.15.0-38-gc55476444-dirty-1127e928caa8
+  (CONTAINER_FENCING unset; driver start log:
+  "defaults.container.fencing: allowed-mems: containers get the CXL nodes
+  of the driver only by claims and leases",
+  "defaults.container.steering.policy: none: containers are steered only
+  when their claims opt in").
+Duration: 665 s (17:38:15 - 17:49:20), run-all rc=1 (finding B only).
+Logs: H/results/*.log (plan-11's copy kept in /tmp/hw-plan11-results
+  for the comparison).
+
+  test    start     plan-12      plan-11      failures now
+  test1   17:38:42  40 pass 1    30 pass 1    B: numa-b: its memory on node 3 stays within
+                                                 its 2Gi claim (+64 MiB) (3593 MiB; plan-11 3593)
+  test2   17:40:03  22 pass 0    22 pass 0    -
+  test3   17:41:03  22 pass 0    22 pass 0    -
+  test4   17:41:42  29 pass 0    28 pass 1    - (plan-11: C, reader-c bad 16764522 pages)
+  test5   17:45:50   4 pass 0     2 pass 2    - (plan-11: C twice)
+No new failure.
+
+numa-u (not steered; test1, 10 new checks, all PASS)
+---------------------------------------------------
+  PASS: numa-u: CXL_<KEY>_SIZE=2Gi
+  PASS: numa-a, numa-b and numa-u are on the same node (3, 3, 3)
+  PASS: node 3 has the memory of the three slices, 8192 MiB
+  PASS: node 3 is in Mems_allowed of numa-u (0-3)
+  PASS: node 3 is in the effective mems of cxl-hw/numa-a/main cxl-hw/numa-b/main cxl-hw/numa-u/main of the 13 containers of the node
+  numa-u: memory.high max, cpuset.mems 0-3, Mems_allowed 0-3
+  PASS: numa-u: memory.high is max (max)
+  PASS: numa-u: the nodes of plain (0-2) are in its Mems_allowed (0-3)
+  PASS: numa-u: <= 1% of 1024 MiB of default allocations on node 3 (0 pages)
+  PASS: numa-u: the memory holds what was written
+  PASS: numa-u: >= 90% of 1024 MiB preferring node 3 on it (262144 pages)
+  PASS: driver: numa-u is managed fenced
+  PASS: driver: numa-a is managed steered
+  PASS: node 3 shrinks to <= 6144 MiB in 120 s   (numa-u released)
+numa-a and numa-b (steering=auto): default allocations of numa-a 100% on
+node 3, as in plan-11; the restart and plain2 checks pass as in plan-11.
+
+Management log lines (driver, V(3))
+-----------------------------------
+  NRI CreateContainer: ctr=cxl-hw/numa-a/main: memory steered (steering auto from claim cxl-hw/numa-a request mem, fencing allowed-mems (default))
+  NRI CreateContainer: ctr=cxl-hw/numa-u/main: memory fenced (steering none (default), fencing allowed-mems (default))
+  NRI CreateContainer: ctr=cxl-hw/numa-u/main: cpuset.mems=0-3 (fenced nodes 3)
+  NRI CreateContainer: ctr=cxl-hw/numa-b/main: memory steered (steering auto from claim cxl-hw/numa-b request mem, fencing allowed-mems (default))
+  NRI CreateContainer: ctr=cxl-hw/plain2/main: cpuset.mems=0-2 (fenced nodes 3)
+Prepare per result, e.g.:
+  claim cxl-hw/probe request mem result 0: MemoryConfig {"device":{"mode":"dax"}}
+
+Address line probe (verifyAddressing, finding C)
+------------------------------------------------
+- The probe result was already on the node: localProbes.json has
+  {"usableSize": 135291469824, "result": "offsets 0x3000c0 and
+  0x1f803000c0 reach the same memory: only the first 135291469824 bytes
+  are usable", "region": "region0", "size": 206158430208, "time":
+  "2026-10-23T13:19:53.605265288Z"} (an earlier probe on this host,
+  before this run). At start the driver logs
+  "local: memdev serial 0x3035bf76084aed1d: using only its first
+  135291469824 bytes, found by the address line probe of region0 at
+  2026-10-23T13:19:53Z: ...".
+- New regions: "creating a region of its first 135291469824 bytes only
+  (usable size)", then "address line probe of region0 (135291469824
+  bytes): no aliasing in 0.320ms".
+- Published: attribute size 135291469824 (126 GiB; plan-11 206158430208,
+  192 GiB), capacity memory 124Gi (plan-11 190Gi; the 2 GiB difference
+  between size and capacity is the same as before).
+- test5: the whole 124 GiB dax slice: "bad pages 0 (0.00 GiB) in 0 runs"
+  (plan-11: 16238397 bad pages at a 128 GiB delta); slices a (first) and
+  c (last, 0xaf00000000) are isolated, bad 0. test4: the 126 GiB shared
+  device verifies with bad 0 (33030144 pages). Finding C is avoided by
+  the probe; the memdev is used to 126 of 192 GiB.
+- test5 step 0 waited its 60 s timeout for "the capacity is republished"
+  (published capacity 126976 MiB before and after): with a stored probe
+  the capacity is limited from the start and never changes, and the log
+  says "using only" anyway. Not a failure (wait_for, not a check), 60 s
+  lost; see 05-status-HW phase 2 O5.
+
+Other observations
+------------------
+- numa-b's Mems_allowed is 0,2-3 (plan-11: 0,3): its first steering step
+  saw usage on nodes 0 and 2 ("step: usage=[0:2691072 1:0 2:24576 3:0]
+  ... cpuset.mems=0,2-3"), and the "nodes 3 have no normal memory,
+  allowing node 0" line is printed for numa-a only. cgmpolmgr keeps
+  nodes where the container already has memory; no check depends on it.
+  Not a plan-12 change in meaning (same steering code); informational.
+
+After the run
+-------------
+Driver deployed sliced (test4 switches back; "the memdev is published
+sliced again" PASS), image ...-1127e928caa8; cxl-hw empty; no region.
+
+Run 2 (final image, after 05-review F1-F3)
+------------------------------------------
+Pre-checks: machine-id 982d432423fa44019a74c86369c8a8f1, cxl-hw empty,
+`cxl list -R` empty: no --prepare-node. Run-1 logs kept in
+/tmp/hw-plan12-run1-results.
+Command (from H):
+  TARGET=root@cwf ./run-all.sh --image ~/github.com/containers/nri-plugins/build/images/nri-dra-driver-cxl-image-a68667412e60.tar
+Image deployed: docker.io/library/nri-dra-driver-cxl:v0.15.0-38-gc55476444-dirty-f4b2cd5eccd4
+Duration: 631 s (19:20:11 - 19:30:42), run-all rc=1 (finding B only).
+
+  test    start     run 2        run 1        failures now
+  test1   19:20:38  40 pass 1    40 pass 1    B: numa-b 3593 MiB on node 3 with a 2Gi claim (run 1: 3593)
+  test2   19:21:57  22 pass 0    22 pass 0    -
+  test3   19:22:57  22 pass 0    22 pass 0    -
+  test4   19:23:35  29 pass 0    29 pass 0    - (126 GiB device verifies, bad 0)
+  test5   19:27:43   4 pass 0     4 pass 0    - (124 GiB slice, bad pages 0)
+No difference in results to run 1; no new failure.
+
+numa-u: all checks pass as in run 1 (memory.high max, cpuset.mems 0-3,
+Mems_allowed 0-3, 0 pages of default allocations on node 3, 262144
+pages with MPOL_PREFERRED 3, managed fenced, node shrinks after release).
+
+Management log lines:
+  NRI CreateContainer: ctr=cxl-hw/numa-a/main: memory steered (steering auto from claim cxl-hw/numa-a request mem, fencing allowed-mems (default))
+  NRI CreateContainer: ctr=cxl-hw/numa-b/main: memory steered (steering auto from claim cxl-hw/numa-b request mem, fencing allowed-mems (default))
+  NRI CreateContainer: ctr=cxl-hw/numa-u/main: memory fenced (steering none (default), fencing allowed-mems (default))
+  NRI CreateContainer: ctr=cxl-hw/numa-u/main: cpuset.mems=0-3 (fenced nodes 3)
+  NRI CreateContainer: ctr=cxl-hw/plain2/main: cpuset.mems=0-2 (fenced nodes 3)
+
+Differences in the details (no check depends on them):
+- Steered cpuset.mems: numa-a 1-3 ("step: usage=[0:0 1:28672 2:4792320
+  3:0] ... cpuset.mems=1-3", no "allowing node 0" line since it had
+  normal memory on 1 and 2), numa-b 0,3 (with "allowing node 0"). In
+  run 1 it was numa-a 0,3 and numa-b 0,2-3. Same behavior: steering
+  keeps the DRAM nodes where the container already has pages; which pod
+  has early pages where varies per run.
+- Address probe: same stored result (13:19:53Z), "using only its first
+  135291469824 bytes", new regions "no aliasing in 0.341ms"; capacity
+  124Gi as in run 1.
+
+After the run: driver deployed sliced (image ...-f4b2cd5eccd4), cxl-hw
+empty, no region.

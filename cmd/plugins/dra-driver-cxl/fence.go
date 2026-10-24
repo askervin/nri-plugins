@@ -14,10 +14,11 @@
 
 package main
 
-// Fenced nodes (containerMemory allowed-mems): the NUMA nodes on which the
-// driver onlines CXL memory, numa slices of local memdevs and pool devices
-// in mode numa. A container that cgmpolmgr does not steer has a fenced
-// node in cpuset.mems only when it claimed memory on it or borrows it
+// Fenced nodes (defaults.container.fencing allowed-mems): the NUMA nodes on
+// which the driver onlines CXL memory, numa slices of local memdevs and
+// pool devices in mode numa. A fenced container (its memory is not steered,
+// its fencing is allowed-mems) has a fenced node in cpuset.mems only when
+// one of its allocation results has numa memory on it or it borrows it
 // (wantMems, lend.go). The set starts from the prepared claims and only
 // grows. A node is fenced before its memory goes online: Fence returns
 // after the containers have been updated through NRI.
@@ -38,6 +39,7 @@ import (
 	"k8s.io/utils/cpuset"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -49,8 +51,8 @@ type fenceApplier interface {
 	fenceContainers(ctx context.Context)
 }
 
-// nodeFence is the set of fenced nodes. A nil nodeFence is
-// containerMemory none: it fences nothing.
+// nodeFence is the set of fenced nodes. A nil nodeFence is fencing none:
+// it fences nothing.
 type nodeFence struct {
 	fenceMu sync.Mutex // serializes Fence
 	mu      sync.Mutex
@@ -59,21 +61,21 @@ type nodeFence struct {
 	noNRI   bool         // NRI did not start
 }
 
-// newNodeFence returns the fenced nodes of containerMemory mode, nil for
-// a mode that fences nothing.
+// newNodeFence returns the fenced nodes of the fencing mode, nil for a mode
+// that fences nothing.
 func newNodeFence(mode string) *nodeFence {
-	if mode != containerMemoryAllowedMems {
+	if mode != config.FencingAllowedMems {
 		return nil
 	}
 	return &nodeFence{nodes: cpuset.New()}
 }
 
-// mode returns the containerMemory mode of the fence.
+// mode returns the fencing mode of the fence.
 func (f *nodeFence) mode() string {
 	if f == nil {
-		return containerMemoryNone
+		return config.FencingNone
 	}
-	return containerMemoryAllowedMems
+	return config.FencingAllowedMems
 }
 
 // Nodes returns the fenced nodes.

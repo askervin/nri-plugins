@@ -1,8 +1,10 @@
 # 512Mi of exclusive CXL memory of a memory pool (DeviceClass cxl-pool): a
 # whole pool device of at least 512Mi. The pool controller attaches it to
 # the node that the scheduler picked, and the driver onlines it as a new
-# NUMA node, CXL_<KEY>_NODE. The container is not steered to the node:
-# it uses numactl or mbind. It prints its CXL_* environment.
+# NUMA node, CXL_<KEY>_NODE, in the container's cpuset.mems. The container
+# is not steered to the node: it uses numactl or mbind. A MemoryConfig
+# with container: {steering: {policy: auto}} (driver cxl-pool.nri.io)
+# would steer it like local CXL memory. It prints its CXL_* environment.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:

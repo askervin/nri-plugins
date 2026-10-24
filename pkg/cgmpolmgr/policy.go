@@ -91,7 +91,8 @@ type Policy struct {
 	// MemoryUseWaypoints are the waypoints of the "waypoints" order.
 	MemoryUseWaypoints []MemoryUseWaypoint `json:"memoryUseWaypoints,omitempty" yaml:"memoryUseWaypoints,omitempty"`
 	// MinStep is the smallest amount of new allocations after which
-	// the route is re-evaluated. Defaults to MaxStep.
+	// the route is re-evaluated. Defaults to the smallest change of the
+	// usage of a node between two waypoints, at most MaxStep.
 	MinStep string `json:"minStep,omitempty" yaml:"minStep,omitempty"`
 	// MaxStep is the largest amount of new allocations after which
 	// the route is re-evaluated. Defaults to the total quota.
@@ -178,10 +179,6 @@ func (pol Policy) Plan(mem MemoryTypes) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if minStep == 0 {
-		minStep = maxStep
-	}
-	maxStep = max(maxStep, minStep)
 
 	order, _ := ParseMemoryUseOrder(pol.MemoryUseOrder)
 	var waypoints []Waypoint
@@ -193,6 +190,17 @@ func (pol Policy) Plan(mem MemoryTypes) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if minStep == 0 {
+		// A step spreads evenly over its nodes: a minStep larger than
+		// what a node gains towards a waypoint would make the waypoint
+		// unreachable.
+		minStep = maxStep
+		if inc := smallestIncrement(waypoints); inc > 0 {
+			minStep = min(minStep, inc)
+		}
+	}
+	maxStep = max(maxStep, minStep)
 
 	plan := &Plan{
 		Waypoints: waypoints,
@@ -380,4 +388,21 @@ func userWaypoints(wps []MemoryUseWaypoint, mem MemoryTypes) ([]Waypoint, error)
 		waypoints = append(waypoints, typeWaypoint(mem, usage))
 	}
 	return waypoints, nil
+}
+
+// smallestIncrement returns the smallest increase of the usage of a node
+// from one waypoint to the next, starting from no usage, 0 if no usage
+// increases.
+func smallestIncrement(waypoints []Waypoint) int64 {
+	var smallest int64
+	prev := NodeMem{}
+	for _, wp := range waypoints {
+		for n, usage := range wp.Usage {
+			if inc := usage - prev[n]; inc > 0 && (smallest == 0 || inc < smallest) {
+				smallest = inc
+			}
+		}
+		prev = wp.Usage
+	}
+	return smallest
 }

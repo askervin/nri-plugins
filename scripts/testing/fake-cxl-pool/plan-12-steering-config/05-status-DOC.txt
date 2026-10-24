@@ -1,0 +1,263 @@
+plan-12 stream DOC: docs, Helm chart, samples
+=============================================
+Written 2026-10-23 (stream DOC). Nothing committed. Paths: N =
+~/github.com/containers/nri-plugins, docs = N/docs/memory/cxl, chart =
+N/deployment/helm/dra-driver-cxl, samples = N/deployment/samples/dra-driver-cxl.
+
+Changes per file
+----------------
+docs/usage.md
+  - "DeviceClasses": table in device.* terms; classes carry no config
+    unless deviceClassConfig gives one (presets, merged field by field).
+  - "Opaque configurations" rewritten around MemoryConfig: intro example
+    (all three sections), new subsections "Sections and owners" (contract
+    1), "MemoryConfig fields" (one table: field, section, owner, values,
+    default, where it may be set, description), device rules per device
+    type (contract 2) and the device -> container-gets table, "Merge
+    order" (targeting r, r/s; class then claim; strict per entry; RFC 7386
+    merge, null removes; node defaults per container), "Container
+    settings" (per-result attribution, combination and conflict text,
+    defaults overlay, validation), "Examples of configurations" (opt-in
+    one line, dax read-only, two requests for two containers with
+    request:, pool.opaque), "Presets in DeviceClasses" (class preset,
+    deviceClassConfig, node-wide opt-in), "Configuration errors".
+    "Persistent memory" kept. "DeviceConfig" and "MemoryPolicyConfig"
+    subsections removed.
+  - "Steering" rewritten: opt-in (default none), how to opt in (claim,
+    class, node), quotas incl. pool numa, policy table (none, auto, ...),
+    what steering does, why it is not for every workload, lease and
+    restart caveats, what an unsteered container gets (fencing path:
+    claimed nodes in cpuset.mems, no memory policy, no memory.high, numa
+    leases allowed, dram/region capacity only), the one-policy rule, the
+    V(3) CreateContainer log lines of contract 11.
+  - "Containers without claims": defaults.container.fencing replaces
+    containerMemory.default; the "steered + pool claim loses the pool
+    node" bullet removed (pool numa is steered now); NRI resource policy
+    note says fencing none and no steering.
+  - Helm values table: deviceClassConfig row. Host process: the plain
+    kubectl apply of deviceclasses.yaml still works; presets via helm
+    template --show-only.
+  - Environment variables: marker CXL_CLAIM_<uid>_<n>=1 per result; all
+    example outputs CXL_CLAIM_<uid>_0=1 (example 10: _0 and _1); example
+    configs in MemoryConfig form; example 10 = opted-in first-dram.
+  - "Configuration file": defaults.container.steering/fencing replace
+    containerMemory; memdevSettings, verifyAddressing unchanged.
+  - "Files on the node": preparedClaimsInfo.json content.
+  Anchors: all old headings that other files link to kept (steering,
+  containers-without-claims, persistent-memory, environment-variables,
+  configuration-file, opaque-configurations, ...). #deviceconfig is gone;
+  its four links (local.md, pool.md) now point to #opaque-configurations,
+  #merge-order or #configuration-errors. New anchors: sections-and-owners,
+  memoryconfig-fields, merge-order, container-settings,
+  examples-of-configurations, presets-in-deviceclasses,
+  configuration-errors.
+docs/pool.md
+  - Overview diagram: controller attaches with the pool section's
+    settings; node driver prepares as the device section says.
+  - "Options of pool devices" in MemoryConfig terms (three sections,
+    merge, field table with device.*, container.steering, pool.opaque).
+  - "What the pool controller writes": InvalidConfig reason added.
+  - Placeholder "## Configuration of a pool controller" / "(written by
+    stream CTRL)" between "What the pool controller writes" and "What the
+    node plugin does"; linked from usage.md (field table, examples,
+    errors) and pool.md (options, reasons).
+  - "What the node plugin does": no kind pre-check; step 2 resolves the
+    MemoryConfig; step 4 numa: steered on opt-in, else fenced as before;
+    step 5 marker per result.
+docs/local.md: MemoryConfig device section example and claim tables (plus
+  a "steered" row); Prepare step 1/4/6 (cpuset.mems, steering on opt-in,
+  marker per result); shared device steps; limitations use
+  defaults.container.fencing.
+docs/leases.md: companion claims carry a MemoryConfig device section and
+  no container section (borrower settings from its own claims + node
+  defaults); marker of the lease result; limitations: only steered
+  containers are refused numa leases, unsteered ones with numa claims may
+  take them; containerMemory -> defaults.container.fencing.
+docs/index.md: NRI plugin role (fences, steers opt-in, lends); classes
+  configured with MemoryConfig and deviceClassConfig.
+docs/e2e.md: example a: node in cpuset.mems, not steered; example b and
+  F readers: MemoryConfig; markers _0.
+chart/templates/deviceclasses.yaml: header and class comments in
+  MemoryConfig terms; each class ends with a YAML comment line
+    # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "<name>" "driver" "<driver>") }}
+  so the file stays plain YAML (kubectl apply, and pkg/cxl/device
+  TestDeviceClassesMatchConstants which reads it raw and wants no config)
+  while helm renders the preset after it.
+chart/templates/_helpers.tpl: dra-driver-cxl.classConfig: the spec.config
+  with one opaque entry {driver, parameters: {apiVersion
+  cxl.nri.io/v1alpha1, kind MemoryConfig, <body>}}, or nothing.
+chart/values.yaml: deviceClassConfig: {} with commented cxl-local opt-in;
+  config example uses defaults.container (steering, fencing); NRI comment.
+chart/values.schema.json: definitions (quantity, device, container
+  without fencing, pool, local/pool MemoryConfig bodies); deviceClassConfig
+  with the eight class names only (additionalProperties false), pool
+  allowed for the three cxl-pool* classes only.
+chart/README.md: intro; deviceClassConfig row; config.defaults.container
+  paragraph (fencing, steering); deviceClassConfig paragraph with the
+  opt-in example; example values use defaults.container.
+samples: every DeviceConfig -> MemoryConfig device section, every
+  apiVersion cxl-pool.nri.io/v1alpha1 -> cxl.nri.io/v1alpha1, header
+  comments updated (local-numa, pool-numa: not steered, node in
+  cpuset.mems); region-dram-policy.yaml is the opt-in example
+  (container.steering.policy: first-dram). lease.yaml unchanged (no config).
+
+Checks
+------
+helm v4.1.4, from N:
+  helm template x deployment/helm/dra-driver-cxl                -> ok
+  helm template x deployment/helm/dra-driver-cxl -f dcc.yaml    -> ok
+    (dcc.yaml: cxl-local auto; cxl-pool numa + first-dram/maxStep 1Gi +
+    pool.opaque.fake-cxl-pool.numaNode 1; cxl-pool-persistent fs cached
+    /models; config.defaults.container)
+  helm template ... --set-json 'deviceClassConfig={"cxl-local":{"container":{"steering":{"policy":"auto"}}}}' -> ok
+  helm lint (both)                                              -> 0 failed
+  rendered output: no trailing whitespace; python yaml: 15 documents both.
+  Strict decode (sigs.k8s.io/yaml UnmarshalStrict into
+  resource.k8s.io/v1 DeviceClass, a throwaway go run outside the tree) of
+  the raw templates/deviceclasses.yaml, the render without and with
+  values, and the --set-json render: 8 DeviceClasses each; configs:
+    cxl-local: cxl.nri.io {"apiVersion":"cxl.nri.io/v1alpha1","container":{"steering":{"policy":"auto"}},"kind":"MemoryConfig"}
+    cxl-pool: cxl-pool.nri.io {"apiVersion":"cxl.nri.io/v1alpha1","container":{"steering":{"maxStep":"1Gi","policy":"first-dram"}},"device":{"mode":"numa"},"kind":"MemoryConfig","pool":{"opaque":{"fake-cxl-pool":{"numaNode":1}}}}
+    cxl-pool-persistent: cxl-pool.nri.io {"apiVersion":"cxl.nri.io/v1alpha1","device":{"access":"cached","mode":"fs","path":"/models","readOnly":true},"kind":"MemoryConfig"}
+  The raw file decodes with no config, as TestDeviceClassesMatchConstants
+  expects (the test itself was not run).
+  Schema refusals: unknown class "cxl-foo"; pool in cxl-local; container.
+  fencing; policy "off" -> "values don't meet the specifications ...".
+  kubectl --dry-run=client not used (it needs an API server).
+  Samples: all parse with python yaml.
+  ASCII: grep -P '[^\x00-\x7F]' over docs/memory/cxl, chart, samples: 0.
+  Links: every ](x.md#a) and ](#a) in docs/memory/cxl/*.md and the chart
+  README's blob/main/docs/memory/cxl/*.md#a links resolve (154 links, 0
+  bad).
+
+Error texts used, and from where
+--------------------------------
+05-status-API.txt did not exist when DOC finished. pkg/cxl/config (API,
+in progress) did; the texts in usage.md "Configuration errors" and
+"Containers without claims" are taken from its current source
+(resolve.go, validate.go, device.go, defaults.go, pool.go), which agree
+with contract 12 where the contract gives one:
+  unknown kind "..." (MemoryConfig)
+  MemoryConfig: apiVersion "...", expected "cxl.nri.io/v1alpha1"
+  MemoryConfig: FromClaim config 1: json: unknown field "..."
+  MemoryConfig: merged config: ...
+  MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)
+  MemoryConfig: pool: only for devices of cxl-pool.nri.io
+  MemoryConfig: pool.opaque: empty controller key / pool.opaque.<key>: not a JSON object
+  MemoryConfig: container.steering.policy: invalid policy "..." (none, auto, ... or waypoints)
+  MemoryConfig: container.steering.<field> needs a policy other than none
+  MemoryConfig: container.steering.waypoints needs policy waypoints
+  MemoryConfig: container.steering.minStep: invalid quantity "..." [(must be positive)]
+  MemoryConfig: container.steering.minStep X exceeds maxStep Y
+  container.steering.policy waypoints needs waypoints (effective)
+  waypoint errors (described, not quoted)
+  MemoryConfig: device.mode: invalid mode "..." (numa or dax) / (numa, dax, block or fs)
+  MemoryConfig: device.readOnly needs mode dax / needs mode dax, block or fs
+  MemoryConfig: device.access needs mode fs, device.path needs mode fs
+  MemoryConfig: device.access: invalid access ..., device.path: invalid path ...
+  MemoryConfig: device.readOnly: mode fs is read-only: set readOnly: true (write the device with mode block)
+  MemoryConfig: device.mode block needs a persistent device
+  MemoryConfig: device: a persistent device needs mode block or fs
+  MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)
+  MemoryConfig: device: a shared device is used as dax only
+  MemoryConfig: device: a region is used as numa only / a dram ...
+  MemoryConfig: device: the lease device has no device settings
+  defaults.container.fencing: invalid value "X" (allowed-mems, mempolicy or none)
+  defaults.container.fencing: mempolicy is not implemented yet
+From the contract only (not in pkg/cxl/config, DRV writes them):
+  container ns/pod/ctr: container.steering.policy: claim ns/a request r says first-cxl, claim ns/b request s says none
+  (the package gives the part after "container ns/pod/ctr: ")
+  the CreateContainer V(3) log lines of contract 11.
+Kept from the current driver: device 0x<serial>: consumed shares ...
+
+Open points
+-----------
+O1. Re-check usage.md "Configuration errors" against 05-status-API.txt
+    when it exists (the order of the cxl-pool.nri.io checks, the
+    "a dram is used as numa only" text, which is built from the type).
+O2. leases.md no longer quotes the lend refusal text ("container is
+    memory-steered by a local CXL claim; ..."): with pool numa steered
+    the "local" in it is wrong. DRV picks the new text; add it to
+    leases.md "Limitations" then.
+O3. The marker of the lease device result is documented as
+    CXL_CLAIM_<uid>_<n> like every result (contract 4, 02-design E2
+    "also lease claims"); e2e.md shows CXL_CLAIM_<uid>_0 for the
+    borrower's lease claim.
+O4. usage.md "Containers without claims" drops the plan-11 start log
+    texts ("containerMemory: allowed-mems: ..."); DRV renames them, add
+    them back if tests or users need them.
+O5. Restart behavior of steering is documented as "not restarted: keeps
+    cpuset.mems and memory policies, no longer throttled" (01-findings P8,
+    contract 5); adjust if DRV changes it.
+O6. "Configuration of a pool controller" in pool.md is a placeholder for
+    CTRL; usage.md and pool.md link to #configuration-of-a-pool-controller.
+
+Requests
+--------
+R1 (DRV or whoever owns pkg/cxl/device): TestDeviceClassesMatchConstants
+   reads templates/deviceclasses.yaml raw. It still passes (the include
+   lines are YAML comments), but its doc comment "and no config" now
+   means "no config in the raw file"; deviceClassConfig adds configs only
+   in helm renders. No change needed unless the test should also render.
+R2 (DRV): the plan-11 start log lines and the lending refusal text (O2,
+   O4) for the docs.
+
+DOC done
+
+Recheck (2026-10-23, after API, DRV and CTRL were reviewed)
+===========================================================
+Against 05-status-API.txt (errors), 05-status-DRV.txt (logs, errors),
+05-status-CTRL.txt, 04-contract.txt section 14.
+
+docs/usage.md
+  - "Configuration errors" rewritten from the final API list: the driver
+    prefixes (cxl.nri.io "claim NS/NAME: [request R: ]", cxl-pool.nri.io
+    "cxl-pool.nri.io: preparing claim NS/NAME: [request R: | device D
+    serial 0xS: ]", CreateContainer "container NS/POD/CTR: "); strict,
+    case-sensitive decoding, duplicate fields, dotted unknown-field paths,
+    "cannot unmarshal", "claim NS/NAME has no allocation"; null never
+    sets a field; every entry checked, also for other requests; SRC
+    config I with I from 0 per source; all steering, waypoint and pool
+    texts; effective-steering texts with their "(<fields> from O)"
+    suffix (two examples); local device texts in the checked order
+    (mode, readOnly, shared, access, path, region/dram, lease). The
+    unreachable "merged config" text is gone.
+  - "Merge order": strict per entry incl. duplicates and case, every
+    entry checked; null never counts as setting a field.
+  - "Container settings": D4 (default steering parameters only with no
+    result policy or the default's policy, with an example); "policy
+    waypoints needs waypoints" on the effective steering (D3).
+  - Field table: pool "not in entries of cxl.nri.io" (D7).
+  - "Steering": the management line as DRV prints it (fencing with its
+    origin, "memory none"), "no numa memory to steer" and the
+    capacity-only line for containers with results, the CreateContainer
+    error log, Synchronize recomputation and "taken as steered" (V3).
+  - "Containers without claims": the renamed start lines
+    "defaults.container.fencing: allowed-mems: ...", "...: none: ...",
+    "defaults.container.steering.policy: none: ...", "...: <policy>:
+    containers with numa claims are steered unless their claims say none".
+  - "Configuration file": defaults errors (unknown field incl. case,
+    fencing, defaults.container.steering... texts).
+docs/leases.md: "Limitations" quotes the new lend refusal text "lend node
+  N to <container>: container is memory-steered (container.steering.policy
+  of its claims or the node defaults); lending is not supported together
+  with steering yet".
+docs/pool.md: "What the pool controller writes": half-attached detach is
+  per result, and a result Attached already keeps its attachment when its
+  configuration is found invalid (CTRL C6/C7). CTRL's "Configuration of a
+  pool controller" reads consistently with "Options of pool devices", the
+  overview, the node plugin steps and usage.md (merge order, owners,
+  InvalidConfig, event); no change in CTRL's section.
+Other docs, chart, samples: no stale texts (grep for containerMemory,
+  DeviceConfig, MemoryPolicyConfig, CXL_CLAIM_<uid>=, the old lend text,
+  old log texts: no hits).
+
+Checks: ASCII grep of docs/memory/cxl: 0 hits; links 158, 0 bad; helm
+template with the values file: ok (chart unchanged in the recheck).
+
+Open points closed: O1 (texts aligned with 05-status-API.txt), O2 (lend
+text), O3 (DRV V8: lease results have markers), O4 (start lines back),
+R1/R2 (DRV did the test comment and gave the texts). O5 stands (steering
+managers not restarted, DRV O4). Remaining: none for DOC.
+
+DOC recheck done

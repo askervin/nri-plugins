@@ -1,14 +1,14 @@
-# A read-only filesystem on a device of persistent memory of a memory
-# pool (DeviceClass cxl-pool-persistent), written once, read in place on
-# many nodes. The writer's claim requests no shares (the whole device,
-# exclusive) and DeviceConfig mode: block: its container gets the block
-# device of the fsdax namespace of the device and writes an erofs image
-# into it. Readers join after the writer is done, with one share each
-# (capacity.requests.shares: "1") and mode: fs: their containers get the erofs
-# mounted read-only at a path, access direct (the file pages are the memory
-# of the device) or cached (the file pages are in the page cache of the
-# node). The image must be built with -Enoinline_data, else access direct
-# silently uses the page cache.
+# A read-only filesystem on a device of persistent memory of a memory pool
+# (DeviceClass cxl-pool-persistent), written once, read in place on many
+# nodes. The writer's claim requests no shares (the whole device,
+# exclusive) and MemoryConfig device.mode: block: its container gets the
+# block device of the fsdax namespace of the device and writes an erofs
+# image into it. Readers join after the writer is done, with one share
+# each (capacity.requests.shares: "1") and device.mode: fs: their
+# containers get the erofs mounted read-only at a path, access direct (the
+# file pages are the memory of the device) or cached (the file pages are
+# in the page cache of the node). The image must be built with
+# -Enoinline_data, else access direct silently uses the page cache.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -27,9 +27,10 @@ spec:
     - opaque:
         driver: cxl-pool.nri.io
         parameters:
-          apiVersion: cxl-pool.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: block
+          apiVersion: cxl.nri.io/v1alpha1
+          kind: MemoryConfig
+          device:
+            mode: block
 ---
 apiVersion: v1
 kind: Pod
@@ -81,11 +82,12 @@ spec:
       - opaque:
           driver: cxl-pool.nri.io
           parameters:
-            apiVersion: cxl-pool.nri.io/v1alpha1
-            kind: DeviceConfig
-            mode: fs
-            readOnly: true
-            path: /data
+            apiVersion: cxl.nri.io/v1alpha1
+            kind: MemoryConfig
+            device:
+              mode: fs
+              readOnly: true
+              path: /data
 ---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -108,12 +110,13 @@ spec:
       - opaque:
           driver: cxl-pool.nri.io
           parameters:
-            apiVersion: cxl-pool.nri.io/v1alpha1
-            kind: DeviceConfig
-            mode: fs
-            readOnly: true
-            access: cached
-            path: /data
+            apiVersion: cxl.nri.io/v1alpha1
+            kind: MemoryConfig
+            device:
+              mode: fs
+              readOnly: true
+              access: cached
+              path: /data
 ---
 apiVersion: v1
 kind: Pod

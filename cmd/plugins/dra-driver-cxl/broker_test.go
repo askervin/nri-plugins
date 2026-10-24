@@ -46,6 +46,7 @@ import (
 	"tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
@@ -592,7 +593,7 @@ func TestBrokerPoolNumaLease(t *testing.T) {
 	e.waitState("000000a1", api.StatePending)
 
 	// the companion claim, exactly
-	params := `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`
+	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`
 	wantSpec := resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{
 		Requests: []resourceapi.DeviceRequest{{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
 			DeviceClassName: "cxl-pool",
@@ -724,7 +725,7 @@ func TestBrokerSharedLeaseFd(t *testing.T) {
 		t.Fatalf("shared request %+v", claim.Spec.Devices.Requests[0].Exactly)
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.ReadOnly {
-		t.Fatalf("companion DeviceConfig %+v", dc)
+		t.Fatalf("companion device section %+v", dc)
 	}
 	sharedEnv := map[string]string{"CXL_C1AE0001_DAX": "/dev/dax0.0", "CXL_C1AE0001_MODE": "dax", "CXL_C1AE0001_READONLY": "0",
 		"CXL_C1AE0001_SERIAL": "0xc1ae0001", "CXL_C1AE0001_SHARED": "1", "CXL_C1AE0001_SIZE": "268435456"}
@@ -1036,7 +1037,7 @@ func TestBrokerCloseClaimRetry(t *testing.T) {
 }
 
 // TestLeaseDevice publishes the lease device and prepares a claim on it
-// through nodeState: claim marker + lease CDI device, socket opened.
+// through nodeState: result marker + lease CDI device, socket opened.
 func TestLeaseDevice(t *testing.T) {
 	devs, err := buildDevInfos(&DriverConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true}, &nricxl.Devices{}, nil, nil)
 	noErr(t, err)
@@ -1294,16 +1295,21 @@ func TestBrokerRequestOptions(t *testing.T) {
 	}
 }
 
-// deviceConfigOf returns the DeviceConfig of driver of a companion claim,
-// nil if it has none.
-func deviceConfigOf(t *testing.T, c *resourceapi.ResourceClaim, driver string) *deviceConfig {
+// deviceConfigOf returns the device section of the MemoryConfig of driver
+// of a companion claim, nil if it has none. A MemoryConfig of a companion
+// claim has the device section only.
+func deviceConfigOf(t *testing.T, c *resourceapi.ResourceClaim, driver string) *config.Device {
 	t.Helper()
 	for _, cfg := range c.Spec.Devices.Config {
-		var dc deviceConfig
-		noErr(t, json.Unmarshal(cfg.Opaque.Parameters.Raw, &dc))
-		if cfg.Opaque.Driver == driver && dc.Kind == device.DeviceConfigKind {
-			return &dc
+		if cfg.Opaque.Driver != driver {
+			continue
 		}
+		var mc config.MemoryConfig
+		noErr(t, json.Unmarshal(cfg.Opaque.Parameters.Raw, &mc))
+		if mc.APIVersion != config.APIVersion || mc.Kind != config.Kind || mc.Container != nil || mc.Pool != nil || mc.Device == nil {
+			t.Fatalf("companion config of %s: %s", driver, cfg.Opaque.Parameters.Raw)
+		}
+		return mc.Device
 	}
 	return nil
 }
@@ -1374,7 +1380,7 @@ func TestBrokerExclusiveReadOnlySharedLease(t *testing.T) {
 		t.Fatalf("exclusive request %+v", claim.Spec.Devices.Requests[0])
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || !dc.ReadOnly {
-		t.Fatalf("companion DeviceConfig %+v", dc)
+		t.Fatalf("companion device section %+v", dc)
 	}
 	e.wantDaxFd(resp, fd)
 	if resp.Shared || !resp.ReadOnly || resp.Env["CXL_C1AE0001_SHARED"] != "1" || resp.Env["CXL_C1AE0001_READONLY"] != "1" {
@@ -1397,7 +1403,7 @@ func TestBrokerPoolDaxLease(t *testing.T) {
 		t.Fatalf("memory request %+v", ex)
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.ReadOnly {
-		t.Fatalf("companion DeviceConfig %+v", dc)
+		t.Fatalf("companion device section %+v", dc)
 	}
 	e.pe.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
 	e.pe.f.wantBlocks(t, "offline")
@@ -1408,7 +1414,7 @@ func TestBrokerPoolDaxLease(t *testing.T) {
 	if calls := e.lender.callLog(); strings.Contains(calls, "lend") {
 		t.Fatalf("dax memory lent as a node:\n%s", calls)
 	}
-	// a numa lease has its DeviceConfig too: the claim shows what was asked
+	// a numa lease has its device section too: the claim shows what was asked
 	l := &lease{ID: "x", Source: "pool", Size: "1Gi", Mode: api.ModeNUMA, Pod: podRef{Namespace: testNS, Name: testPod, UID: testPodUID}}
 	plain, _, err := e.b.companionObjects(l)
 	noErr(t, err)
@@ -1471,17 +1477,17 @@ func TestBrokerCompanionClaims(t *testing.T) {
 	e := newSlicesBrokerEnv(t)
 	pod := podRef{Namespace: testNS, Name: testPod, UID: testPodUID}
 	const (
-		localNUMA = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`
-		localDax  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`
-		localRO   = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax","readOnly":true}`
-		poolNUMA  = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"numa"}`
-		poolDax   = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax"}`
-		poolRO    = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"dax","readOnly":true}`
+		localNUMA = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`
+		localDax  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
+		localRO   = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
+		poolNUMA  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa"}}`
+		poolDax   = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
+		poolRO    = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
 		// no path: the companion pod gets no mount
-		poolFsDirect = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":"direct"}`
-		poolFsCached = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":"cached"}`
-		poolBlock    = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block"}`
-		poolBlockRO  = `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block","readOnly":true}`
+		poolFsDirect = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":"direct"}}`
+		poolFsCached = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":"cached"}}`
+		poolBlock    = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`
+		poolBlockRO  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block","readOnly":true}}`
 	)
 	memory := func(q string) *resourceapi.CapacityRequirements {
 		return &resourceapi.CapacityRequirements{Requests: map[resourceapi.QualifiedName]resource.Quantity{"memory": resource.MustParse(q)}}
@@ -1791,11 +1797,23 @@ func TestBrokerLocalDaxLease(t *testing.T) {
 	if id := leaseOf(c); id != "000000a1" {
 		t.Fatalf("lease of the companion %q", id)
 	}
-	dc := &deviceConfig{}
-	_, err := parseConfig(c, device.DriverName, device.DeviceConfigKind, "lease/local", dc)
+	noErr(t, config.CheckEntries(c, device.DriverName))
+	res, err := config.Resolve(c, device.DriverName, "lease/local")
 	noErr(t, err)
-	if mode, err := dc.modeFor(false); err != nil || mode != api.ModeDax || !dc.ReadOnly {
-		t.Fatalf("DeviceConfig %+v: mode %q %v", dc, mode, err)
+	dc := res.Config.DeviceSection()
+	if mode, err := dc.MemdevMode(false); err != nil || mode != api.ModeDax || !dc.ReadOnly || res.Config.Container != nil || res.Origins != nil {
+		t.Fatalf("MemoryConfig %s: mode %q %v", res.Config.Compact(), mode, err)
+	}
+	// the entry of the pool driver targets the pool subrequest only
+	pc := allocatedLocal(claim, "lease/pool", "pooled0")
+	noErr(t, config.CheckEntries(pc, device.PoolDriverName))
+	pres, err := config.Resolve(pc, device.PoolDriverName, "lease/pool")
+	noErr(t, err)
+	if got := pres.Config.Compact(); got != `{"device":{"mode":"dax","readOnly":true}}` {
+		t.Fatalf("pool MemoryConfig %s", got)
+	}
+	if lres, err := config.Resolve(c, device.PoolDriverName, "lease/local"); err != nil || lres.Config.Compact() != "{}" {
+		t.Fatalf("pool MemoryConfig of the local subrequest %+v %v", lres, err)
 	}
 	rec, err := lender.check("000000a1", c)
 	noErr(t, err)
@@ -2066,7 +2084,7 @@ func TestBrokerFsLease(t *testing.T) {
 
 	// a direct lease with the default name
 	claim, resp, fd := e.prepareFs("000000a1", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Wait: "5s"})
-	params := `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"fs","readOnly":true,"access":"direct"}`
+	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":"direct"}}`
 	wantSpec := resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{
 		Requests: []resourceapi.DeviceRequest{{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
 			DeviceClassName: "cxl-pool-persistent",
@@ -2532,7 +2550,7 @@ func TestBrokerBlockLease(t *testing.T) {
 
 	// the writer: the whole device, no capacity, read-write
 	claim, resp, fd := e.prepareBlock("000000a1", api.Request{Op: "request", Serial: "0xc1af0001", Mode: "block", Wait: "5s"}, blockWriterData)
-	params := `{"apiVersion":"cxl-pool.nri.io/v1alpha1","kind":"DeviceConfig","mode":"block"}`
+	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`
 	wantSpec := resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{
 		Requests: []resourceapi.DeviceRequest{{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
 			DeviceClassName: "cxl-pool-persistent", Selectors: serialSel}}},
@@ -2544,7 +2562,7 @@ func TestBrokerBlockLease(t *testing.T) {
 		t.Fatalf("claim spec:\n%s", toJSON(claim.Spec))
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || dc.ReadOnly || dc.Access != "" || dc.Path != "" {
-		t.Fatalf("companion DeviceConfig %+v", dc)
+		t.Fatalf("companion device section %+v", dc)
 	}
 	e.pe.f.wantCommand(t, "ndctl create-namespace -f -r region0 -m fsdax -M mem")
 	e.wantBlockFd(fd)
@@ -2600,7 +2618,7 @@ func TestBrokerBlockLease(t *testing.T) {
 		t.Fatalf("reader request %s", toJSON(claim.Spec.Devices.Requests))
 	}
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || !dc.ReadOnly {
-		t.Fatalf("companion DeviceConfig %+v", dc)
+		t.Fatalf("companion device section %+v", dc)
 	}
 	e.wantBlockFd(fd)
 	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Shared: true, ReadOnly: true, Block: "/dev/pmem0",

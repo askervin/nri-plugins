@@ -45,6 +45,7 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	"github.com/containers/nri-plugins/pkg/cxl/memctl"
@@ -1015,10 +1016,11 @@ func (b *broker) companionSources(l *lease) ([]string, error) {
 }
 
 // companionRequest returns the device request and the opaque configs of
-// the companion claim of a lease. A lease with one source gets an exact
-// request; with more, a request with one subrequest per source in order
-// of preference (firstAvailable), and configs that apply to the
-// subrequest of their driver only.
+// the companion claim of a lease: one MemoryConfig with the device section
+// of the lease per driver. A lease with one source gets an exact request;
+// with more, a request with one subrequest per source in order of
+// preference (firstAvailable), and configs that apply to the subrequest of
+// their driver only.
 func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resourceapi.DeviceClaimConfiguration, error) {
 	sources, err := b.companionSources(l)
 	if err != nil {
@@ -1043,16 +1045,12 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 			})
 			requests = []string{companionClaimRef + "/" + source}
 		}
-		cfg := &deviceConfig{
-			APIVersion: driver + "/v1alpha1",
-			Kind:       device.DeviceConfigKind,
-			Mode:       l.Mode,
-			ReadOnly:   l.ReadOnly,
-		}
+		dev := &config.Device{Mode: l.Mode, ReadOnly: l.ReadOnly}
 		if l.Mode == api.ModeFs {
 			// no path: the companion pod gets no mount
-			cfg.Access = l.Access
+			dev.Access = l.Access
 		}
+		cfg := &config.MemoryConfig{APIVersion: config.APIVersion, Kind: config.Kind, Device: dev}
 		params, err := json.Marshal(cfg)
 		if err != nil {
 			return nil, nil, err

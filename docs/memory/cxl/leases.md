@@ -67,7 +67,7 @@ enabled), the empty mount point `fs` in that directory and the directory
 `/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/<claim uid>` (0755, labelled
 the same way), and returns for the allocation result of the lease device
 its CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file `cxl-claims`,
-only the claim marker) and the CDI device `nri.io/cxl=lease-<claim uid>`
+only the marker `CXL_CLAIM_<uid>_<n>=1`) and the CDI device `nri.io/cxl=lease-<claim uid>`
 (spec file `cxl-leases`):
 
 - bind mount (rbind, rw) of the socket directory at `/run/cxl`,
@@ -153,7 +153,7 @@ node in the container, no mount:
 
 ```
 container: cxl-request request --serial 0xc1af0001 --mode block
-  -> companion claim cxl-lease-L of class cxl-pool-persistent, DeviceConfig {mode: block, readOnly}
+  -> companion claim cxl-lease-L of class cxl-pool-persistent, MemoryConfig device {mode: block, readOnly}
   -> kubelet prepares cxl-lease-L as a claim of mode block: pmem region, the fsdax namespace
      (created only by an exclusive writable one, the writer of a fresh device)  (Lending)
   -> the plugin opens /dev/pmemK (O_RDWR, or O_RDONLY for a read-only lease)
@@ -176,7 +176,7 @@ node:
 
 ```
 container: cxl-request request --serial 0xc1ae0001 --shared --read-only --mode fs [--access cached] [--name models]
-  -> companion claim cxl-lease-L of class cxl-pool-persistent, DeviceConfig {mode: fs, readOnly: true, access}
+  -> companion claim cxl-lease-L of class cxl-pool-persistent, MemoryConfig device {mode: fs, readOnly: true, access}
   -> kubelet prepares cxl-lease-L: pmem region, the node mount
      /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access> (as for a claim of mode fs),
      then a bind of it at lease-fs/<claim uid>/<name>                 (Lending)
@@ -459,7 +459,7 @@ answered with `opening <device>: <error>` instead, and the lease is kept.
 - Errors: the validation messages of [cxl-request](#cxl-request),
   `not a container of the claim's pod`, `no such lease` (`release`),
   `no such lease of this container` (`fd`, `env`), and the errors of the
-  lend. A lend that fails (for example the container is memory-steered,
+  lend. A lend that fails (for example the container is steered,
   see [Limitations](#limitations), or not running) makes the lease Failed
   with that message, and it is released.
 
@@ -512,13 +512,16 @@ The companion objects of lease `<id>` live in the requester's namespace:
   | `--serial S --shared --read-only --mode block`, S a shared persistent pool device (a reader) | `exactly`: `cxl-pool-persistent`, serial selector, `shares: "1"` |
 
   Every source
-  driver gets a `DeviceConfig` with the effective `mode` and `readOnly`,
-  and for mode `fs` the `access` (no `path`: the companion pod gets no
-  mount; `{mode: block, readOnly}` for mode `block`), so that the claim
-  shows what was asked; in a `firstAvailable` request
+  driver gets a `MemoryConfig` (apiVersion `cxl.nri.io/v1alpha1`) whose
+  `device` section has the effective `mode` and `readOnly`, and for mode
+  `fs` the `access` (no `path`: the companion pod gets no mount;
+  `{mode: block, readOnly}` for mode `block`), so that the claim shows
+  what was asked; in a `firstAvailable` request
   each applies to its subrequest (`requests: [lease/local]`,
-  `[lease/pool]`). The claim has an ownerReference to the requester pod
-  (controller: true).
+  `[lease/pool]`). The claim has no `container` section: the settings
+  of the borrower come from its own claims, the lease claim included,
+  and the node defaults ([usage.md](usage.md#container-settings)). The
+  claim has an ownerReference to the requester pod (controller: true).
 - Pod `cxl-lease-<id>`: ownerReference to the requester pod, required
   node affinity `metadata.name In [<node>]`, `tolerations: [{operator: Exists}]`,
   restartPolicy Always, `automountServiceAccountToken: false`,
@@ -658,22 +661,26 @@ and cannot make it the companion of a lease it did not request.
   as does keeping the CXL nodes of the driver away from every container
   that is not steered ([usage.md](usage.md#containers-without-claims)).
   The other containers of the borrower's pod, and every other container,
-  do not get the lent node (with `containerMemory.default` `none` a
+  do not get the lent node (with `defaults.container.fencing` `none` a
   container without its own cpuset.mems inherits it).
   A node is lent per lease: memory devices under one CXL host bridge share
   a NUMA node, and when two leases of a container hold the same node, it
   stays in the container's cpuset.mems until the last of them is released.
-  A container that has a claim of `cxl.nri.io` with memory in mode
-  `numa` (a `numa` memdev slice, a region or DRAM: memory steered by
-  cgmpolmgr, [usage.md](usage.md#steering)) cannot take a `numa` lease:
-  the lend is refused with "container is memory-steered by a local CXL
-  claim; lending is not supported together with steering yet", and the
-  lease becomes Failed. `dax` leases lend no node and are not affected.
+  A steered container (one whose settings opt in to steering and whose
+  claims have memory in mode `numa`: memory steered by cgmpolmgr,
+  [usage.md](usage.md#steering)) cannot take a `numa` lease: the lend is
+  refused with "lend node N to <container>: container is memory-steered
+  (container.steering.policy of its claims or the node defaults); lending
+  is not supported together with steering yet", and the lease becomes
+  Failed. A container that is not steered
+  may, also with `numa` claims of its own: the lent node joins the nodes
+  of its claims in its cpuset.mems. `dax` leases lend no node and are
+  not affected.
   Both components would own the container's cpuset.mems, and cgmpolmgr
   writes cgroupfs directly, which the next NRI update reverts.
   nri-resource-policy or the kubelet memory manager would conflict the
   same way; next to an NRI resource policy that sets cpuset.mems
-  `containerMemory.default` must be `none`. A movable node is never the
+  `defaults.container.fencing` must be `none`. A movable node is never the
   only node in cpuset.mems.
 - Release is cooperative. Releasing a `dax` lease while the device is
   still mapped makes the holder get SIGBUS at its next access; munmap

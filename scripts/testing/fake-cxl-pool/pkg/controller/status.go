@@ -34,6 +34,9 @@ const (
 	ReasonAttachError = "AttachError"
 	ReasonTimeout     = "Timeout"
 	ReasonConflict    = "Conflict"
+	// ReasonInvalidConfig: the MemoryConfig of the result or the
+	// controller's object in it is invalid.
+	ReasonInvalidConfig = "InvalidConfig"
 	// Event reasons.
 	EventAttached     = "Attached"
 	EventAttachFailed = "AttachFailed"

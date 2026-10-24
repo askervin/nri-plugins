@@ -115,8 +115,9 @@ modes share a device at the same time:
   the containers are isolated by NUMA node (`cpuset.mems`), not per slice.
 - `dax`: the slice is a character device `/dev/daxX.Y` of its own.
 
-The mode, and `readOnly` for `dax` slices, is a `DeviceConfig` of the
-claim ([usage.md](usage.md#deviceconfig)):
+The mode, and `readOnly` for `dax` slices, is the `device` section of a
+`MemoryConfig` of the claim or its class
+([usage.md](usage.md#opaque-configurations)):
 
 ```yaml
 config:
@@ -124,9 +125,10 @@ config:
     driver: cxl.nri.io
     parameters:
       apiVersion: cxl.nri.io/v1alpha1
-      kind: DeviceConfig
-      mode: dax          # numa (default) or dax
-      readOnly: true     # dax only: the device node allows reads only
+      kind: MemoryConfig
+      device:
+        mode: dax        # numa (default) or dax
+        readOnly: true   # dax only: the device node allows reads only
 ```
 
 ### Slices and memory blocks
@@ -171,8 +173,9 @@ one node to the containers.
 | | claim on `cxl-local` |
 |:--|:--|
 | 128Mi as NUMA memory | `exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 128Mi}}}` |
-| a 128Mi dax slice | the same and a `DeviceConfig` with `mode: dax` |
-| a read-only slice | a `DeviceConfig` with `mode: dax, readOnly: true` |
+| a 128Mi dax slice | the same and a `MemoryConfig` with `device: {mode: dax}` |
+| a read-only slice | a `MemoryConfig` with `device: {mode: dax, readOnly: true}` |
+| steered to the slice's node | a `MemoryConfig` with `container: {steering: {policy: auto}}` |
 | a specific device | add `selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100e2e1"'}}]` |
 | the whole device | no capacity request |
 | a slice shared by pods | one ResourceClaim (not a template) that several pods reference |
@@ -192,7 +195,8 @@ Examples in [`deployment/samples/dra-driver-cxl`](tree:/deployment/samples/dra-d
 
 For every allocated `memdev` device of a claim:
 
-1. The mode and read-only setting come from the `DeviceConfig`, the
+1. The mode and read-only setting come from the `device` section of the
+   result's `MemoryConfig` ([usage.md](usage.md#merge-order)), the
    size from the allocation's consumed capacity (the whole device if
    there is none), rounded up to a multiple of the memory block size
    (the block size is read again for every slice). A region the plugin
@@ -206,8 +210,9 @@ For every allocated `memdev` device of a claim:
    capacity: this is not expected).
 4. `numa`: the slice is bound to kmem through sysfs, its memory blocks
    are onlined movable, and N is the slice's `target_node`. The claim has
-   node N with the slice size as its total and consumed bytes: containers
-   that reference it are steered to N exactly as for `region` devices
+   node N with the slice size as its total and consumed bytes: the
+   containers that use it have N in their `cpuset.mems`, and those that
+   opt in to steering are steered to N exactly as for `region` devices
    ([usage.md](usage.md#steering)).
 5. `dax`: the slice is bound to `device_dax`. The plugin writes zeros to
    the whole slice before the claim gets it, so a claim never reads what
@@ -219,7 +224,7 @@ For every allocated `memdev` device of a claim:
    2 MiB) and agree on the layout of the memory themselves.
 6. The slice's CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file
    `cxl-claims`, n the index of the allocation result in the claim) has
-   the claim marker `CXL_CLAIM_<uid>=1`, the device node of a `dax` slice
+   the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a `dax` slice
    and the variables of [usage.md](usage.md#environment-variables):
 
    ```
@@ -365,10 +370,10 @@ offers them.
 |:--|:--|
 | the device exclusively (the writer) | `exactly: {deviceClassName: cxl-local-shared}` and a `serial` selector, no capacity request |
 | one share | the same and `capacity: {requests: {shares: "1"}}` |
-| one share, read-only (a reader) | the same and a `DeviceConfig` with `readOnly: true` |
+| one share, read-only (a reader) | the same and a `MemoryConfig` with `device: {readOnly: true}` |
 | one share for several pods | one ResourceClaim (not a template) that the pods reference |
 
-The mode is `dax` with or without a `DeviceConfig` that says so. While an
+The mode is `dax` with or without a `device.mode` that says so. While an
 exclusive claim holds the device, the scheduler allocates the device to
 no other claim: the pods of waiting claims stay Pending. The environment
 of each case is in [usage.md](usage.md#example-claims) (examples 13-15);
@@ -380,10 +385,10 @@ with `cxl-request request --serial 0xc100e2e1` (exclusively) or
 
 ### What Prepare does for a shared device
 
-1. The mode (`dax`) and `readOnly` come from the `DeviceConfig`; the size
+1. The mode (`dax`) and `readOnly` come from the `device` section; the size
    is that of the device's dax device. A claim that consumed less than one share is refused
    before any device is touched
-   ([usage.md](usage.md#deviceconfig)).
+   ([usage.md](usage.md#configuration-errors)).
 2. The first claim of the device creates its devdax region. The region's
    dax device `daxX.0` is the shared device: bound to `device_dax`, the
    size of the region, never resized. The plugin writes zeros to the
@@ -397,7 +402,7 @@ with `cxl-request request --serial 0xc100e2e1` (exclusively) or
    dax device, mode, size and `readOnly`; the device entry says
    `"shared": true`.
 4. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
-   claim marker, the variables of
+   marker `CXL_CLAIM_<uid>_<n>=1`, the variables of
    [usage.md](usage.md#environment-variables) with
    `CXL_<KEY>_SHARED=1` and `CXL_<KEY>_SIZE` the size of `daxX.0` (the
    region of the whole memdev), and
@@ -516,7 +521,7 @@ The plugin protects against such devices in two ways:
 - `numa` capacity is online per claim but not isolated per claim:
   `cpuset.mems` is per node, all containers with `numa` claims or leases
   on the node share its memory; `memory.max` and cgmpolmgr bound each.
-  Other containers do not get the node, unless `containerMemory.default`
+  Other containers do not get the node, unless `defaults.container.fencing`
   is `none` ([usage.md](usage.md#containers-without-claims)).
 - Slice sizes are multiples of the memory block size, also for `dax`
   slices: a 64Mi dax claim gets 128Mi with 128 MiB blocks, 2Gi with 2 GiB
@@ -554,7 +559,7 @@ The plugin protects against such devices in two ways:
   claim reads what the last writer left, also after the device was idle.
   The region of a shared
   device stays while the device is configured shared, also with no
-  claims. A shared device is `dax` only (a `numa` `DeviceConfig` fails),
+  claims. A shared device is `dax` only (`device.mode: numa` fails),
   is never sliced and is volatile: modes `block` and `fs` are for pool
   devices of persistent memory only.
 

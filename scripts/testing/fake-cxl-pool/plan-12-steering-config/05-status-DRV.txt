@@ -1,0 +1,292 @@
+plan-12 stream DRV: the driver on pkg/cxl/config
+================================================
+Written 2026-10-23 (stream DRV). Branch 5jg-cxl, nothing committed (the
+removal of pkg/cxl/memorypolicy is an unstaged working tree deletion).
+Paths: N = ~/github.com/containers/nri-plugins, D = N/cmd/plugins/dra-driver-cxl.
+
+Changes per file
+----------------
+D/lending.go
+  - removed deviceConfig, parseConfig, checkConfigKinds, numaOnly, modeFor.
+  - new resolveResults(claim, driver, of): config.Resolve of every result
+    of the driver by result index, used by both drivers before any device
+    is touched.
+D/node_state.go (cxl.nri.io)
+  - PreparedDeviceInfo embeds config.ResultSettings (JSON "container",
+    "origins", omitempty; R2). PreparedClaimInfo.Policy removed, so are
+    parseMemoryPolicy, checkNUMAOnly, GetMemoryPolicy.
+  - prepare: config.CheckEntries, then resolveResults, then the lend
+    check and the devices. Per result: V(3) log of the resolved config,
+    device rules with the Device methods (region/dram NUMAOnly, lease
+    CheckLease, memdev MemdevMode), settings stored per result.
+  - markers: resultEnvVarName(uid, n) = CXL_CLAIM_<uid _>_<n>, in each
+    CDI device claim-<uid>-<n>; resultFromEnvVar parses it (uid, n);
+    claimEnvVarName and ClaimUIDFromEnvVar removed.
+  - new preparedResult(uid, n): claim name and the device of result n,
+    copied under the node state lock (nil-safe).
+D/pool.go, D/pool_persistent.go (cxl-pool.nri.io)
+  - checkClaim: CheckEntries, then resolveResults (returns the map).
+    Per result: V(3) log, Device.PoolMode(PoolFacts{Persistent, Shared,
+    Exclusive}), settings stored in preparedPoolDevice (embedded
+    config.ResultSettings, same JSON keys).
+  - snapshot per result: poolResult{Index, Request, Mode, Node, Size,
+    Settings} in results (uid -> []poolResult) under serialsMu,
+    accessor ClaimResults(uid) (nil-safe); numaNodes() from it;
+    claimNodes/ClaimNodes removed.
+  - CDI marker per result like cxl.nri.io.
+  - removed poolModeFor, errReadOnlyMode, validFsPath, forbiddenPathDirs
+    (now in pkg/cxl/config); persistentMode stays (broker, pool.go).
+D/nri.go
+  - management memorySteered | memoryFenced | memoryNone; resultRef;
+    containerResult (pool flag, device type, mode, nodes, bytes,
+    settings); management (memory, effective settings, claimed nodes,
+    plan, policy, memory types, capacityOnly).
+  - containerResults(refs): results of both drivers (node state lock,
+    pool snapshot; never poolDriver.mu, lendMu or localAllocator.mu).
+  - manage(ctr, results, plan): config.Combine(settings, defaults)
+    (errors prefixed "container ns/pod/ctr: ", R3); steered when
+    Steering.CgmPolicy(memory types) is ok (memory: dram = DRAM; numa
+    memdev slices, numa regions, pool numa devices = CXL, quota = the
+    consumed bytes, pool: the device size); else fenced when effective
+    fencing is allowed-mems, else none; claimed = CXL numa nodes of the
+    results (memdev, region, pool).
+  - CreateContainer: per-result attribution, management logs, plan
+    pending for steered, fenceCreated for fenced; errors logged and
+    returned (container not created).
+  - steeringPlan, claimedMemory, defaultPolicy, memoryMode, claimNodes,
+    extractClaimUIDs removed; extractResults added.
+  - nriPlugin.defaults (config.Container), poolResults replaces poolNodes;
+    startNRIPlugin takes the defaults.
+D/lend.go
+  - trackedContainer.memory replaces .steered and .fenced; trackCreated
+    sets defaultMemory() (management of a container without results).
+  - Synchronize: syncManagement (manage without a plan) for containers
+    learned from it; hasSteeredClaims removed.
+  - changeLend: refused for steeredLocked (memory steered, a pending plan
+    or a manager); fenced or steered containers go through fencedLend,
+    which never changes a steered container's cpuset.mems.
+  - errSteered text changed (below); header comment (fencing, lock order).
+D/driver.go
+  - DriverConfig.Defaults json.RawMessage (key defaults), decoded by
+    config.ParseDefaults in validate (strict, case sensitive: API O2);
+    ContainerMemory, ContainerMemoryConfig and the containerMemory*
+    constants removed. Accessors containerDefaults, fencing,
+    steeringPolicy; logDefaults (start log lines). nodeFence from
+    defaults.container.fencing; NRI plugin gets defaults.container.
+D/fence.go
+  - modes from config.Fencing*; comments.
+D/broker.go
+  - companionRequest: one MemoryConfig per driver {apiVersion
+    cxl.nri.io/v1alpha1, kind MemoryConfig, device {mode, readOnly,
+    access (fs)}}, targeted at the subrequest of the driver as before.
+Tests (D/*_test.go)
+  - all DeviceConfig/MemoryPolicyConfig strings -> MemoryConfig device
+    sections, old error texts -> pkg/cxl/config texts, CXL_CLAIM_<uid>=1
+    -> CXL_CLAIM_<uid>_<n>=1.
+  - removed (their tables are ported in pkg/cxl/config, 05-status-API):
+    TestParseMemoryPolicy*, TestParseConfig*, TestDeviceConfigModeFor,
+    TestCheckConfigKinds, TestDeviceConfigNUMAOnly, TestPoolModeFor,
+    TestValidFsPath, TestDefaultPolicy, TestClaimedMemory,
+    TestExtractClaimUIDs, TestDriverConfigContainerMemory.
+  - new: TestPrepareMemoryConfig (cxl.nri.io: memdev, region, dram and
+    lease results; class preset + claim entries, null, origins, one
+    marker per CDI device, management per used results, conflict, and
+    errors: lease device field, region dax, dram dax, pool in cxl.nri.io,
+    fencing, invalid policy, maxStep with none, kinds DeviceConfig and
+    MemoryPolicyConfig, apiVersion cxl-pool.nri.io/v1alpha1, unknown
+    device.online in an entry of another request; entry/value errors
+    touch no device, device-rule errors roll back);
+    TestPoolPrepareMemoryConfig (pool: class preset with container and
+    pool sections, claim entry, cxl.nri.io entry ignored, settings in
+    state, snapshot and after a restart, steered on opt-in, errors:
+    fencing, waypoint memory type, pool.opaque not an object, pool.slot,
+    minStep with none; nothing touched); TestResultMarkers;
+    TestContainerResults (P4: one request of a claim gives only that
+    result's memory and claimed nodes, both drivers); TestManage (default
+    none fenced with its node and no plan, fencing none, auto CXL only /
+    DRAM+CXL, first-dram, node default auto, claim none overrides it,
+    no numa memory, pool numa default fenced / opt-in steered / node
+    default, local+pool, conflicts, invalid effective steering, plan
+    failure); TestCreateContainerManagement; TestLendToUnsteeredNUMAClaim
+    (lend and revoke to a fenced container with a static numa claim,
+    refusal for a steered one); TestSynchronizeManagement (restart:
+    steered/fenced/claimed recomputed, conflicting settings taken as
+    steered, no managers, pass, lends); TestDriverConfigDefaults; broker
+    entries in deviceConfigOf (strict: apiVersion, kind, device section
+    only) and TestBrokerLocalDaxLease (Resolve of both drivers'
+    entries).
+  - fence/lend tests: newLtEnv has defaults fencing none (its nil fence),
+    newFenceEnv default fencing; claims that must be steered opt in
+    (dram-auto, numa-auto); new cases: unsteered dram (capacity only),
+    numa+dax and region claims fenced with their nodes.
+N/pkg/cxl/memorypolicy: removed (nothing imports it).
+N/pkg/cxl/device/device_test.go: only the doc comment of
+  TestDeviceClassesMatchConstants (raw file has no config; rendered
+  classes may, via deviceClassConfig).
+
+Log texts (new or changed; klog)
+--------------------------------
+Start, Info (renamed from containerMemory, DOC O4):
+  defaults.container.fencing: allowed-mems: containers get the CXL nodes of the driver only by claims and leases
+  defaults.container.fencing: none: containers are not kept off the CXL nodes of the driver
+  defaults.container.steering.policy: none: containers are steered only when their claims opt in
+  defaults.container.steering.policy: %s: containers with numa claims are steered unless their claims say none
+Prepare, V(3), per result (contract 11; %s = Compact(), "{}" for none):
+  claim %s/%s request %s result %d: MemoryConfig %s
+  %s: claim %s request %s result %d: MemoryConfig %s      (%s = cxl-pool.nri.io, claim ns/name)
+  removed: "Claim %v has memory policy: order=%s minStep=%s maxStep=%s"
+CreateContainer:
+  V(3) NRI CreateContainer: ctr=%s: memory %s (steering %s, fencing %s)
+       memory steered|fenced|none; steering = Effective.PolicyText()
+       ("none (default)", "auto from claim ns/a request r", "auto (node
+       default)"); fencing "allowed-mems (default)", "none (node
+       default)" (or "X from O"). Printed for every container.
+  V(3) NRI CreateContainer: ctr=%s: steering policy %s: no numa memory to steer
+       (%s the effective policy value; only for containers with results)
+  V(3) NRI CreateContainer: ctr=%s: dram and region memory is not steered: the claims reserve capacity only
+  Error NRI CreateContainer: %v     (the returned error, see below)
+  V(5) NRI CreateContainer: ctr=%s claim=%s (%s) result %d: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s
+  V(5) NRI CreateContainer: ctr=%s claim=%s result %d: pool device mode=%s node=%d size=%s request=%s
+  V(5) NRI CreateContainer: ctr=%s claim=%s result %d: not prepared (driver may have restarted)
+  V(5) NRI CreateContainer: ctr=%s: prepared memory steering (order=%s, dramNodes=%v, cxlNodes=%v, %s)   (unchanged)
+  removed V(5): "no CXL claims", "has %d CXL claim(s)", "no DRAM or CXL
+  devices in claims", the per-claim device and policy lines.
+Synchronize:
+  V(4) NRI Synchronize: ctr=%s id=%s pid=%d cgroup=%s baseMems=%s memory=%s   (was steered=%v)
+  Warning NRI Synchronize: ctr=%s: %v; taken as steered
+RemoveContainer V(5): NRI RemoveContainer: ctr=%s releasing results: %v
+plan-11 fence texts unchanged ("NRI fence: ...", "NRI CreateContainer:
+ctr=%s: cpuset.mems=%s (fenced nodes %s)").
+
+Error texts (new or changed)
+----------------------------
+Lending refusal (errSteered; DOC O2), as returned by LendNode:
+  lend node %d to %s: container is memory-steered (container.steering.policy of its claims or the node defaults); lending is not supported together with steering yet
+CreateContainer (container not created):
+  container NS/POD/CTR: <Combine error of 05-status-API>, e.g.
+  container ns/pod/ctr: container.steering.policy: claim ns/a request r says first-cxl, claim ns/b request s says none
+  container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy other than none (policy none (default), maxStep 1Gi from claim ns/a request r)
+  NRI CreateContainer: ctr=%s: failed to build memory steering plan: %w   (unchanged)
+Prepare of cxl.nri.io (pod events):
+  claim NS/NAME: <CheckEntries error>            e.g. claim demo/c: unknown kind "DeviceConfig" (MemoryConfig)
+  claim NS/NAME: request R: <Resolve error>      e.g. claim demo/c: request r: MemoryConfig: container.steering.policy: invalid policy "off" (...)
+  claim NS/NAME: request R: <device rule>        region/dram NUMAOnly, lease CheckLease, memdev MemdevMode, e.g.
+  claim demo/c: request lease: MemoryConfig: device: the lease device has no device settings
+  claim demo/c: request mem: MemoryConfig: device: a region is used as numa only
+Prepare of cxl-pool.nri.io:
+  cxl-pool.nri.io: preparing claim NS/NAME: <CheckEntries error>
+  cxl-pool.nri.io: preparing claim NS/NAME: request R: <Resolve error>
+  cxl-pool.nri.io: preparing claim NS/NAME: device D serial 0xS: <PoolMode error>   (as before with the new texts)
+Driver configuration (the driver does not start; newDriver prefixes
+"newDriverConfigFromString: "):
+  the texts of ParseDefaults (05-status-API "Defaults"), e.g.
+  defaults: json: unknown field "container.Fencing"
+  defaults: json: unknown field "device"
+  defaults.container.fencing: mempolicy is not implemented yet
+  defaults.container.fencing: invalid value "hard" (allowed-mems, mempolicy or none)
+  an old containerMemory key:
+  failed to parse driver config: error unmarshaling JSON: while decoding JSON: json: unknown field "containerMemory"
+Markers: CXL_CLAIM_<uid with _ for ->_<n>=1 per CDI device
+claim-<uid>-<n> of both drivers, lease claims included.
+
+Deviations from 04-contract, with reasons
+-----------------------------------------
+V1. Every result of the driver is resolved before any device is touched
+    (both drivers; also before the lend check of a companion claim): a
+    value error never touches a device or marks a lease Lending. The
+    device rules stay per result in result order (they need the device),
+    so a device-rule error of a later result rolls back the earlier
+    results, as before.
+V2. "steering policy %s: no numa memory to steer" is logged only for
+    containers that use results; with a node default other than none it
+    would be printed for every container without claims. The management
+    line shows the policy for all.
+V3. A container learned at Synchronize whose settings no longer combine
+    (state changed under it) is taken as steered: not fenced, not lent
+    to (warning logged), as hasSteeredClaims did for errors.
+V4. changeLend never changes cpuset.mems of a steered container, also on
+    revoke with fencing none (before: plan-11 none mode could rewrite it
+    from its base); steered cpuset.mems is cgmpolmgr's.
+V5. Fenced is decided from the effective fencing only; the fenced node
+    set exists only for node default allowed-mems. Equivalent today
+    (entries cannot set fencing); with admin-only fencing later the
+    fence set must exist whenever any container can be fenced.
+V6. The stored settings are config.ResultSettings embedded in
+    PreparedDeviceInfo and preparedPoolDevice: JSON "container" and
+    "origins" on each device entry (contract 9 + R2).
+V7. CreateContainer errors are also logged (klog Error), so a refused
+    container shows in the driver log (P13).
+V8. The lease device result has a marker like every result (contract 4,
+    DOC O3).
+
+Lock order and rules
+--------------------
+Unchanged from plan-11: f.fenceMu -> lendMu -> p.mu -> (f.mu, the node
+state lock, the pool snapshot lock serialsMu). NRI handlers
+(CreateContainer, StartContainer, StopContainer, RemoveContainer,
+Synchronize) take p.mu, the node state lock (preparedResult) and
+serialsMu (ClaimResults) only, never lendMu, poolDriver.mu or
+localAllocator.mu; CreateContainer reads the results before p.mu.
+Synchronize reads them under p.mu (as hasSteeredClaims did): the node
+state lock and serialsMu are leaves, nothing holding them takes p.mu.
+p.mu is never held across UpdateContainers; passes from Synchronize and
+LendsRestored run in goroutines. poolDriver.mu -> serialsMu (updateSerials)
+as before.
+
+Checks (from N) and decisive output
+-----------------------------------
+  go build -o /dev/null ./cmd/plugins/dra-driver-cxl/... ; go build ./pkg/cxl/... ./cmd/cxl-request/...   ok
+  go vet ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/... ./pkg/cgmpolmgr/...   no output
+  gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl pkg/cgmpolmgr                   no output
+  go test -count=1 ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/... ./pkg/cgmpolmgr/...
+      pkg/cxl, api, config, device, memctl, cgmpolmgr: ok
+      D: FAIL only TestMemdevSettings (pre-existing, see O1)
+  go test -count=1 -skip TestMemdevSettings ./cmd/plugins/dra-driver-cxl/...   ok (193 PASS)
+  go test -race -count=1 -skip TestMemdevSettings ./cmd/plugins/dra-driver-cxl/...   ok, no DATA RACE
+  golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/config/... ./pkg/cxl/device/... ./pkg/cxl/api/...   0 issues.
+  golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...   3 errcheck
+      issues, all in pkg/cxl/memctl/probe.go:83,92 and probe_test.go:32
+      (unchanged files, from c55476444; see O2)
+  grep -rn pkg/cxl/memorypolicy --include=*.go N                        no output
+  LC_ALL=C grep -P '[^\x00-\x7F]' on the changed files                  no output
+
+Open points
+-----------
+O1. TestMemdevSettings (D/local_probe_test.go, c55476444) fails at HEAD
+    too (checked in a clean worktree of HEAD): memdevSettings device
+    "0x0badc0dedeadbeef" does not match configuredUsableSize's
+    fmt.Sprintf("0x%x") = "0xbadc0dedeadbeef" (leading zero). Not
+    touched (other workstream); the fix is either the test or matching
+    through api.ParseSerial.
+O2. golangci-lint errcheck in pkg/cxl/memctl/probe*.go: pre-existing,
+    not in this stream.
+O3. A marker of the old format CXL_CLAIM_<uid>=1 whose UID ends in an
+    all-digit group parses as (shorter uid, n) and is then not found;
+    no compatibility is kept (unpublished), and old containers are gone
+    with the upgrade.
+O4. Steering managers are still not restarted after a driver restart
+    (P8, contract 5): Synchronize marks them steered only.
+
+Requests
+--------
+R1 (pkg/cxl/api owner): the comment of api.ClaimEnvPrefix still says
+    "CXL_CLAIM_<uid with underscores>=1 of the claims"; it is now
+    CXL_CLAIM_<uid with underscores>_<n>=1 per allocation result.
+R2 (pkg/cxl/device owner): device.DeviceConfigKind ("DeviceConfig") is
+    no longer used; remove it.
+R3 (DOC): take the log and error texts above: the lend refusal text
+    (leases.md "Limitations", DOC O2), the renamed start lines (DOC O4),
+    the management line, "no numa memory to steer" for containers with
+    results only, the capacity-only line, Synchronize "taken as steered"
+    (V3); recheck usage.md "Configuration errors" prefixes ("claim NS/NAME:
+    request R: ..." for value and device errors of cxl.nri.io).
+R4 (E2E): tests that still grep the old claim marker CXL_CLAIM_<uid>=1:
+    test10 code.var.sh:213, test11:190, test12:741, test13:370 ("- CXL_CLAIM_${RO_CLAIM_UID//-/_}=1");
+    now CXL_CLAIM_<uid>_<n>=1 (n = index of the result, 0 for one result).
+    test14 "steering policy auto: no numa memory to steer" matches V2 (c-dax
+    uses a result).
+R5 (HW): test1's "memory fenced " / "memory steered " greps match the
+    management line.
+R6 (user, at commit): go mod tidy (API R1) still pending.
+
+DRV done

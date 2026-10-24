@@ -1,0 +1,153 @@
+plan-12 stream HW: status
+=========================
+H = N/test/hw/dra-driver-cxl-local. Phase 1 (edits only), 2026-10-23.
+Nothing deployed, nothing run on root@cwf except read-only commands,
+nothing committed.
+
+Changes per file
+----------------
+H/lib.sh
+  claim_yaml NAME CLASS [memory=SIZE] [shares=N] [mode=MODE] [readonly]
+  [steering=POLICY] [template]: with mode, readonly or steering the claim
+  gets one opaque entry of driver cxl.nri.io:
+      apiVersion: cxl.nri.io/v1alpha1
+      kind: MemoryConfig
+      device: {mode: dax, readOnly: true}     # mode=, readonly
+      container: {steering: {policy: auto}}   # steering=
+  Sections that are not asked for are left out; the entry has no
+  requests (applies to the one request "mem"). Rendered and parsed with
+  python yaml for claim and template forms.
+
+H/test1-sliced-numa.sh
+  - numa-a and numa-b: steering=auto (their "default allocations land on
+    N" and "stays within its claim" checks need steering).
+  - new pod numa-u with claim numa-u (2Gi, cxl-local, no config: steering
+    default none), created with numa-b and plain. Checks:
+    CXL_<KEY>_SIZE=2Gi; same node N as numa-a/numa-b; node N now 8192 MiB
+    (three slices; was 6144); N in Mems_allowed of numa-u; the nodes of
+    plain's Mems_allowed are all in numa-u's (not narrowed like steered
+    containers, contract 5 "fenced": own nodes - fenced + claimed);
+    check_fenced N numa-a numa-b numa-u; memory.high == max;
+    alloc-touch 1024 MiB via prun (child of the main process): <= 1% of
+    pages on N; verify ok; numa-touch 1024 MiB MPOL_PREFERRED N via prun:
+    >= 90% on N; driver log management line for numa-u (fenced, or none
+    when CONTAINER_FENCING=none) and numa-a (steered). Then numa-u and its
+    claim are deleted and node N must shrink to <= 6144 MiB, so the rest
+    of the test (plain, holders, beyond-the-claim, numa-b release to
+    4096, restart with numa-a only, plain2) is unchanged.
+  - header comment and the final steering log grep (numa-[abu]) updated.
+H/test2, test3, test4, test5: no edits. They use claim_yaml with
+  mode=dax / readonly only, which now writes MemoryConfig device
+  sections; test2's numa-c and test3's leases are unsteered now, which
+  does not change any of their checks (check_fenced still applies:
+  fenced management keeps the claimed/lent node).
+H/deploy.sh
+  Renamed CONTAINER_MEMORY -> CONTAINER_FENCING; it writes
+  config.defaults.container.fencing (helm values:
+  "defaults: {container: {fencing: X}}"). A set CONTAINER_MEMORY now
+  exits 2 with "CONTAINER_MEMORY is gone, use CONTAINER_FENCING
+  (defaults.container.fencing)" so an old invocation is not silently
+  ignored. Header documents it (mempolicy refused as not implemented).
+H/run-all.sh: unchanged (passes the environment through).
+H/README.md
+  test1 row; CONTAINER_FENCING; new sections "Claims" (claim_yaml
+  options, the MemoryConfig entry, steering opt-in, which pods are
+  steered), "Fencing" (the former paragraph, with
+  defaults.container.fencing), "Workloads" (prun paragraph).
+
+Log and error texts the tests depend on
+---------------------------------------
+New (contract 04 section 11, implemented by DRV):
+  test1: `NRI CreateContainer: ctr=cxl-hw/numa-u/main: memory fenced `
+         and `NRI CreateContainer: ctr=cxl-hw/numa-a/main: memory steered `
+         (grep "memory <mgmt> " with a trailing space; the steering and
+         fencing details in parentheses are printed, not matched).
+         V(3); deploy.sh sets logLevel 4.
+Unchanged (plan-11, D/fence.go, D/nri.go, D/lend.go):
+  `NRI fence: fencing CXL nodes %s of prepared claims` (test1 restart),
+  `NRI CreateContainer: ctr=%s: cpuset.mems=%s (fenced nodes %s)` (test1
+  plain2; also printed for numa-a/b/u),
+  "start steering", "local: memdev" lines (printed only).
+Kernel/sysfs: /sys/fs/cgroup/memory.high "max" inside the container.
+No error text of pkg/cxl/config is matched by the hw tests.
+
+Checks
+------
+  bash -n lib.sh deploy.sh test1-sliced-numa.sh: ok
+  shellcheck -x, before (HEAD) vs after, findings without line numbers:
+    lib.sh, deploy.sh: no new findings
+    test1-sliced-numa.sh: 2 new SC2001 notes (echo "$out" | sed 's/^/ /'),
+    the pattern the file already uses everywhere; kept for consistency.
+  claim_yaml rendered for dax+readonly+steering, shares+readonly
+    template, steering only, mode only; parsed with python yaml.
+  ASCII only in the changed files.
+  Read-only on root@cwf: driver deployed
+    (nri-dra-driver-cxl:v0.15.0-38-gc5547644-dirty-6e32bb18aa42), DRAM
+    nodes 0-2 with CPUs, no CXL node while idle (N was 3 in the last
+    run), machine-id 982d432423fa44019a74c86369c8a8f1.
+
+Open points
+-----------
+O1. numa-u's "<= 1% on N" assumes default local allocation from CPUs of
+    DRAM nodes (N has no CPUs and only ZONE_MOVABLE); plain uses == 0.
+    If phase 2 shows stray pages, the bound is the place to look.
+O2. The management log line format is DRV's; if DRV prints it
+    differently than contract 11, test1's two "driver: ... is managed"
+    checks need the text adjusted (nothing else depends on it).
+O3. Finding B of the hw report (beyond-the-claim of numa-b) is still
+    expected to fail; finding C (aliasing) affects test5 as before.
+O4. Not added: a CONTAINER_STEERING knob for
+    defaults.container.steering.policy; not needed by the tests.
+
+Requests
+--------
+None.
+
+HW phase 1 done
+
+Phase 2 (run on root@cwf), 2026-10-23
+=====================================
+Pre-checks: machine-id 982d432423fa44019a74c86369c8a8f1, cxl-hw empty,
+no region (no --prepare-node). Greps rechecked against 05-status-DRV.txt
+(CreateContainer "memory %s (steering %s, fencing %s)"; fence texts
+unchanged; no hw grep of the renamed start lines or of API error
+texts): no edit needed.
+Run: TARGET=root@cwf ./run-all.sh --image
+  .../nri-dra-driver-cxl-image-21d87b11ec23.tar, 665 s, rc=1. Details
+  in 06-runs-HW.txt.
+  test1 40/1, test2 22/0, test3 22/0, test4 29/0, test5 4/0.
+  Only failure: finding B (numa-b 3593 MiB on node 3 with a 2Gi claim),
+  as in plan-11. All numa-u checks pass (memory.high max, cpuset.mems
+  0-3, 0 pages of default allocations on node 3, 262144 pages with
+  MPOL_PREFERRED 3, "memory fenced (steering none (default), fencing
+  allowed-mems (default))"); numa-a/numa-b "memory steered (steering auto
+  from claim ...)".
+  Finding C no longer fails: the address line probe (stored result from
+  13:19:53Z) limits the memdev to 135291469824 bytes (126 GiB; capacity
+  124Gi), and test4/test5 see no bad page.
+Driver left deployed sliced; no files changed in phase 2.
+
+Open points (phase 2)
+O5. test5 step 0 waits its full 60 s for "the capacity is republished"
+    when the probe result is stored on the node (capacity limited from
+    the start, the log says "using only" anyway). A wait condition like
+    "the probe line for this region is in the log, or a stored probe is
+    reported" would save the 60 s; not changed without a run to verify.
+O6. numa-b's cpuset.mems 0,2-3 (plan-11 0,3): steering kept node 2 where
+    the container already had pages; informational.
+Requests: none.
+
+HW done
+
+Rerun with the final image (after 05-review F1-F3), 2026-10-23
+==============================================================
+Same pre-checks (host, empty cxl-hw, no region). Image
+nri-dra-driver-cxl-image-a68667412e60.tar (deployed tag
+v0.15.0-38-gc55476444-dirty-f4b2cd5eccd4), 631 s, rc=1: test1 40/1
+(finding B only), test2 22/0, test3 22/0, test4 29/0, test5 4/0, the
+same as run 1. numa-u checks and the steered/fenced log lines as in run
+1; only the DRAM nodes kept in steered containers' cpuset.mems moved
+between numa-a and numa-b (O6). Details: 06-runs-HW.txt "Run 2". Driver
+left deployed sliced; no files changed. Requests: none.
+
+HW rerun done

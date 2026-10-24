@@ -2,8 +2,8 @@
 # (DeviceClass cxl-pool-shared): the writer's claim requests no shares, so
 # it has the device exclusively and no other claim gets the device while
 # it exists; readers created meanwhile stay pending. The readers join with
-# one share each (capacity.requests.shares: "1") and DeviceConfig
-# readOnly: true: their device node allows reads only.
+# one share each (capacity.requests.shares: "1") and MemoryConfig
+# device.readOnly: true: their device node allows reads only.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -67,9 +67,10 @@ spec:
       - opaque:
           driver: cxl-pool.nri.io
           parameters:
-            apiVersion: cxl-pool.nri.io/v1alpha1
-            kind: DeviceConfig
-            readOnly: true
+            apiVersion: cxl.nri.io/v1alpha1
+            kind: MemoryConfig
+            device:
+              readOnly: true
 ---
 apiVersion: v1
 kind: Pod

@@ -28,6 +28,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 )
 
 // ltStub is a fake NRI stub that records UpdateContainers.
@@ -106,6 +107,7 @@ func newLtEnv(t *testing.T) *ltEnv {
 	}
 	e.p = &nriPlugin{
 		stub:     e.stub,
+		defaults: config.Container{Fencing: config.FencingNone},
 		pending:  make(map[string]pendingSteering),
 		managers: make(map[string]*cgmpolmgr.Manager),
 	}
@@ -439,7 +441,7 @@ func TestLendRefusedWhenSteered(t *testing.T) {
 
 	e.p.mu.Lock()
 	e.p.managers["c1"] = &cgmpolmgr.Manager{}
-	e.p.ctrs["c2"].steered = true
+	e.p.ctrs["c2"].memory = memorySteered
 	e.p.mu.Unlock()
 	t.Cleanup(func() { delete(e.p.managers, "c1") })
 

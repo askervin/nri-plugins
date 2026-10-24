@@ -9,14 +9,20 @@
 # serial, size, nodeAffinity and memoryBlockSize; capacity memory in steps
 # of the memory block size of the node, any number of claims), and carves
 # a slice of the device for every claim of DeviceClass cxl-local that it
-# prepares, a multiple of the block size, in the mode of the opaque
-# DeviceConfig of the claim:
+# prepares, a multiple of the block size, in the mode of the device section
+# of the claim's opaque MemoryConfig:
 # - mode numa (the default): the slice becomes movable system memory of
 #   the NUMA node of the device. The node grows by the memory blocks of
 #   every such claim and shrinks by them when the claim goes. The
 #   containers of the claims get the node in their cpuset.mems and in
 #   CXL_<KEY>_NODE. No other container of the node has the node, also
-#   after a restart of the driver.
+#   after a restart of the driver. Steering is opt-in: without a container
+#   section (steering policy none) a container is only fenced, the node in
+#   its cpuset.mems, no memory policy, no memory.high; the workload places
+#   its memory itself. With container.steering.policy the driver steers
+#   the container's memory over its DRAM and CXL claims: it sets the memory
+#   policy of the container's processes and their descendants, narrows
+#   cpuset.mems to the nodes used so far and steps memory.high.
 # - mode dax: the slice is a character device /dev/daxX.Y in the
 #   containers of the claim (CXL_<KEY>_DAX), so containers get isolated
 #   pieces of one device. Pods that reference the same ResourceClaim share
@@ -40,13 +46,18 @@
 # claim and growing with the next one by exactly its blocks, while dax
 # claims (one rounded up to a block, one shared by two pods) take slices
 # next to them, with data isolated between the slices; the node only in
-# the containers of the NUMA claims, before and after a restart of the
-# driver, and not in a pod created after the restart; the node shrinking
-# block by block as the NUMA pods go, while the dax pods keep their data;
-# the device back in its initial state (no region, memdev enabled,
-# published as at the start); claims with invalid configs that fail their
-# Prepare; a read-only slice; a dax claim without an amount that gets all
-# of the device; and the trace summary of what every component did, in
+# the containers of the NUMA claims, which are not steered, before and
+# after a restart of the driver, and not in a pod created after the
+# restart; the node shrinking block by block as the NUMA pods go, while
+# the dax pods keep their data; the device back in its initial state (no
+# region, memdev enabled, published as at the start); claims with invalid
+# configs that fail their Prepare; a read-only slice; a dax claim without
+# an amount that gets all of the device; containers that opt in to
+# steering, their memory placed for workloads that know nothing of NUMA:
+# CXL only, DRAM only, DRAM and CXL interleaved, DRAM first in small
+# steps; one claim whose numa and dax results go to two containers, each
+# getting only its own; a container whose claims disagree on the policy
+# not created; and the trace summary of what every component did, in
 # order.
 #
 # Run test00-up of n4-cxl-shared-1, -0 and -2 first: they create the VMs and
@@ -67,7 +78,8 @@ VM2="$OUTPUT_DIR"      # the VM of this test, the control plane
 VM2_NAME="$POOL_VM2_NAME"
 POOLED0_SERIAL=0xc1ee0001   # 0xc1ee....: exclusive pool devices
 MiB=$(( 1 << 20 ))
-LOCAL_CLASS=cxl-local  # a slice of a local memdev: numa (default) or dax (DeviceConfig)
+LOCAL_CLASS=cxl-local  # a slice of a local memdev: numa (default) or dax (MemoryConfig device.mode)
+DRAM_CLASS=cxl-dram    # DRAM of the node, for steering
 TAG="dra-local-memdev $(date +%Y-%m-%dT%H:%M:%S.%N)"
 NODE_LAST=0            # the last MemTotal of the node that node-size saw, in bytes
 NODE_TIMES=()          # changes of MemTotal of the node: "LABEL OLD->NEW MiB, seconds since t0"
@@ -105,14 +117,15 @@ initial-state() {
 claim-env() {
     # Usage: claim-env POD
     #
-    # Set CLAIM_ENV to the CXL_ variables of container main of pod POD, and
-    # check that one of them is the marker of its claim (CXL_CLAIM_<uid>=1).
+    # Set CLAIM_ENV to the CXL_ variables of container main of pod POD (or
+    # of POD/CONTAINER), and check that one of them is the marker of an
+    # allocation result of a claim (CXL_CLAIM_<uid>_<n>=1).
     # shellcheck disable=SC2016 # expanded by sh in the container
     dra-exec "$VM2" "$1" sh -c 'env | grep ^CXL_ | sort' ||
         command-error "cannot read the environment of $1"
     CLAIM_ENV="$COMMAND_OUTPUT"
-    [ "$(grep -cE '^CXL_CLAIM_[0-9a-f_]+=1$' <<< "$CLAIM_ENV")" == 1 ] ||
-        error "$1 has not one claim marker CXL_CLAIM_<uid>=1"
+    [ "$(grep -cE '^CXL_CLAIM_[0-9a-f_]+_[0-9]+=1$' <<< "$CLAIM_ENV")" == 1 ] ||
+        error "$1 has not one claim marker CXL_CLAIM_<uid>_<n>=1"
 }
 
 numa-env-check() {
@@ -175,9 +188,85 @@ dax-read() {
 bad-pods-creating() {
     # Usage: bad-pods-creating
     #
-    # Return 0 if the containers of pods bad-config, bad-mode and bad-kind
-    # are all waiting in ContainerCreating.
-    [ "$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS bad-config bad-mode bad-kind -o jsonpath='{.items[*].status.containerStatuses[0].state.waiting.reason}'" || echo unread)" == "ContainerCreating ContainerCreating ContainerCreating" ]
+    # Return 0 if the containers of the pods BAD_PODS are all waiting in
+    # ContainerCreating.
+    local want
+    want=$(printf 'ContainerCreating %.0s' "${BAD_PODS[@]}")
+    [ "$(dra-vm-command-q "$VM2" "kubectl get pod -n $DRA_NS ${BAD_PODS[*]} -o jsonpath='{.items[*].status.containerStatuses[0].state.waiting.reason}'" || echo unread) " == "$want" ]
+}
+
+dram-cxl-template-yaml() {
+    # Usage: dram-cxl-template-yaml NAME STEERING
+    #
+    # Print ResourceClaimTemplate NAME with two requests of driver
+    # cxl.nri.io, "dram" for DRAM_REQ bytes of DeviceClass cxl-dram and
+    # "cxl" for one memory block of the local device (numa), and one
+    # MemoryConfig for both with the container section
+    # "steering: {STEERING}".
+    cat <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: $1
+spec:
+  spec:
+    devices:
+      requests:
+      - name: dram
+        exactly:
+          deviceClassName: $DRAM_CLASS
+          capacity:
+            requests:
+              memory: $(dra-mi "$DRAM_REQ")
+      - name: cxl
+        exactly:
+          deviceClassName: $LOCAL_CLASS
+          capacity:
+            requests:
+              memory: $(dra-mi "$BS")
+      config:
+      - opaque:
+          driver: $DRA_LOCAL_DRIVER
+          parameters: $(dra-memory-config "container: {steering: {$2}}")
+EOF
+}
+
+steered-check() {
+    # Usage: steered-check POD POLICY NODES
+    #
+    # Wait until the driver steers container main of pod POD with the
+    # steering POLICY of its claim (see dra-memory-wait), and check that
+    # the memory policy that it set on the main process has NUMA nodes and
+    # every one of them is in NODES (a node list).
+    local claim nodes
+    claim=$(dra-pod-claim "$VM2" "$1") || error "pod $1 has no ResourceClaim"
+    dra-memory-wait "$VM2" "$1" main steered "$2 from claim $DRA_NS/$claim request "
+    [[ "$DRA_MEMPOLICY" == *:* ]] || error "$1: the memory policy of the main process '$DRA_MEMPOLICY' names no nodes"
+    nodes=${DRA_MEMPOLICY##*:}
+    dra-nodes-subset "$nodes" "$3" ||
+        error "$1: the memory policy of the main process is '$DRA_MEMPOLICY', expected nodes of $3"
+}
+
+touch-child() {
+    # Usage: touch-child POD[/CONTAINER] MIB
+    #
+    # Run numa-touch.py as a child of the main process of the container
+    # (dra-run): MIB MiB with the memory policy that it inherits, no
+    # preference of its own. TOUCH_OUT is its output, TOUCH_CXL its pages
+    # on NUMA_NODE, TOUCH_DRAM its pages on DRAM_NODES.
+    dra-run "$VM2" "$1" "python3 /tools/numa-touch.py $2 -" ||
+        error "numa-touch.py in $1 failed"
+    TOUCH_OUT="$COMMAND_OUTPUT"
+    TOUCH_CXL=$(dra-touch-log-pages "$TOUCH_OUT" "$NUMA_NODE")
+    TOUCH_DRAM=$(dra-touch-log-pages "$TOUCH_OUT" "$DRAM_NODES")
+    echo "$1: $2 MiB touched by a child of the main process: $(( TOUCH_CXL >> 8 )) MiB on CXL node $NUMA_NODE, $(( TOUCH_DRAM >> 8 )) MiB on DRAM nodes $DRAM_NODES"
+}
+
+result-index() {
+    # Usage: result-index JSON REQUEST
+    #
+    # Print the index of the allocation result of REQUEST in the claim JSON.
+    dra-value "$1" "[r['request'] for r in results()].index('$2')"
 }
 
 echo "### preconditions: patched qemu, hdm_for_passthrough=on, kernel with CONFIG_FS_DAX"
@@ -220,9 +309,12 @@ LREGIONS="$DRA_LOCAL_REGIONS"  # its regions in cxl-dump (cxl-py)
 NUMA_NODE=""           # the NUMA node of the device, known when memory of it is online
 # Every slice is whole memory blocks of the VM. The claims of the test
 # are sized in blocks: numa-a 1, dax-1 half a block (it consumes 1),
-# numa-b 2, shared-slice 1, all at the same time.
+# numa-b 2, shared-slice 1, all at the same time; seven refused claims of
+# a quarter block (1 each); the steering claims steer-cxl, steer-mix,
+# steer-first and the numa and dax requests of split 1 each. The DRAM
+# claims are a block each (DRAM_REQ, the conflicting ones half of it).
 BS="$DRA_LOCAL_BLOCK_SIZE"
-dra-local-blocks-require "$VM2" "$(basename "$TOPOLOGY_DIR")" 5
+dra-local-blocks-require "$VM2" "$(basename "$TOPOLOGY_DIR")" 7
 NUMA_A=$BS
 DAX1_REQ=$(( BS / 2 ))
 NUMA_B=$(( 2 * BS ))
@@ -230,6 +322,10 @@ SHARED=$BS
 RO_REQ=$(( BS / 8 ))
 BAD_REQ=$(( BS / 4 ))
 TOUCH_MIB=$(( BS / 4 / MiB ))
+DRAM_REQ=$BS                           # the DRAM quota of the steered claims
+STEER_MIB=$(( BS / 2 / MiB ))          # what a steered workload touches, within its quota
+FIRST_STEP=$(( BS / 4 ))               # maxStep of first-dram
+FIRST_MIB=$(( (DRAM_REQ + BS / 2) / MiB ))   # first-dram: all of the DRAM quota, half of the CXL quota
 pool-cxl-dump "$VM2" local-attached
 cxl-assert "by_serial($DRA_LOCAL_SERIAL) is not None and by_serial($DRA_LOCAL_SERIAL)['Enabled'] and by_serial($DRA_LOCAL_SERIAL)['RamSize'] == $DRA_LOCAL_SIZE"
 cxl-assert "regions == []"
@@ -256,7 +352,7 @@ dra-assert "$SLICES" "${LD}.get('allowMultipleAllocations') == True"
 no-region-device "$SLICES"
 dra-assert "$SLICES" "len(slices('$DRA_POOL_DRIVER')) == 1 and [d['name'] for d in devices('$DRA_POOL_DRIVER')] == ['pooled0']"
 # The DeviceClasses of the driver select device kinds and carry no config:
-# the mode is the DeviceConfig of a claim.
+# the mode is the MemoryConfig of a claim.
 dra-json "$VM2" deviceclasses
 dra-assert "$COMMAND_OUTPUT" "sorted(n for n in names() if n.startswith('cxl-')) == sorted([$(printf "'%s', " "${DRA_CLASSES[@]}")])"
 dra-assert "$COMMAND_OUTPUT" "'\"memdev\"' in by_name('$LOCAL_CLASS')['spec']['selectors'][0]['cel']['expression'] and '\"$DRA_LOCAL_DRIVER\"' in by_name('$LOCAL_CLASS')['spec']['selectors'][0]['cel']['expression']"
@@ -266,7 +362,7 @@ vm-command "cat /sys/devices/system/node/has_memory" || command-error "cannot re
 dra-nodes-eq "$COMMAND_OUTPUT" "$DRAM_NODES" || error "memory nodes $COMMAND_OUTPUT before any claim, expected $DRAM_NODES"
 
 echo "### B: NUMA and dax claims share the device, the NUMA node grows with the NUMA claims"
-# numa-a has no DeviceConfig: mode numa is the default.
+# numa-a has no MemoryConfig: mode numa is the default.
 t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" numa-a "$LOCAL_CLASS" "$(dra-mi "$NUMA_A")"
 dra-pod-wait "$VM2" numa-a Running 120
@@ -288,6 +384,14 @@ dra-mems-wait "$VM2" numa-a main "$NUMA_NODE"
 # The node is numa-a's only: every other container of the node, those of
 # the control plane too, is kept off it.
 dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/numa-a/main"
+# Steering is opt-in: the claim of numa-a has no container section, so the
+# driver only fences the container (the node in its cpuset.mems, above),
+# it sets no memory policy and no memory.high. Default allocations of a
+# child of its main process stay on DRAM, although the node is allowed.
+dra-memory-wait "$VM2" numa-a main fenced "none (default)"
+touch-child numa-a "$TOUCH_MIB"
+[ "$TOUCH_CXL" -le $(( (TOUCH_MIB << 8) / 100 )) ] ||
+    error "numa-a is not steered, yet $TOUCH_CXL pages of the default allocations of a child of its main process are on node $NUMA_NODE"
 # Memory that numa-a allocates on the node is on the node.
 dra-touch-start "$VM2" numa-a/main "$TOUCH_MIB" "$NUMA_NODE"
 pages=$(dra-touch-log-pages "$DRA_TOUCH_LOG" "$NUMA_NODE")
@@ -312,8 +416,8 @@ dra-local-slices-wait "$VM2" numa-a-dax-1 "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra
 node-size dax-1 "$NUMA_A"
 dra-local-unchanged "$VM2"
 no-region-device "$COMMAND_OUTPUT"
-# A second NUMA claim, with mode numa in its DeviceConfig: the node grows
-# by its two blocks, both containers have the node.
+# A second NUMA claim, with device.mode numa in its MemoryConfig: the node
+# grows by its two blocks, both containers have the node.
 t0=$EPOCHREALTIME
 dra-claim-pod "$VM2" numa-b "$LOCAL_CLASS" "$(dra-mi "$NUMA_B")" numa
 dra-pod-wait "$VM2" numa-b Running 120
@@ -322,6 +426,8 @@ dra-local-claim-check "$VM2" numa-b "$NUMA_B"
 dra-local-slices-wait "$VM2" numa-b "$NUMA_NODE" "numa:$NUMA_A" "dax:$(dra-local-round "$DAX1_REQ")" "numa:$NUMA_B"
 node-size numa-b $(( NUMA_A + NUMA_B ))
 numa-env-check numa-b "$NUMA_B"
+# A MemoryConfig with a device section only does not opt in to steering.
+dra-memory-wait "$VM2" numa-b main fenced "none (default)"
 dra-mems-wait "$VM2" numa-a main "$NUMA_NODE"
 dra-mems-wait "$VM2" numa-b main "$NUMA_NODE"
 # Both NUMA pods have the node, the dax pod does not.
@@ -442,35 +548,47 @@ initial-state released
 T_RELEASE=$(echo "$EPOCHREALTIME - $t0" | bc)
 
 echo "### D: refused configs, a read-only slice, a slice of the whole device"
-# Claims whose opaque config the node plugin refuses (readOnly is for dax
-# slices, there is no mode "memory", and no config kind DaxConfig): the
-# scheduler allocates the device, the Prepare fails, the pods stay
-# ContainerCreating, and the device stays free.
+# Claims whose MemoryConfig the node plugin refuses: readOnly is for dax
+# slices, there is no mode "memory" and no config kind DaxConfig, the
+# steering policy must be known, a policy none takes no steps, the pool
+# section is for devices of the pool, and fencing is set by the driver
+# configuration only. The scheduler allocates the device, the Prepare
+# fails, the pods stay ContainerCreating, and the device stays free.
+BAD_PODS=(bad-config bad-mode bad-kind bad-policy bad-steps bad-pool bad-fencing)
+declare -A BAD_TEXT=(
+    [bad-config]='MemoryConfig: device.readOnly needs mode dax'
+    [bad-mode]='MemoryConfig: device.mode: invalid mode "memory" (numa or dax)'
+    [bad-kind]='unknown kind "DaxConfig" (MemoryConfig)'
+    [bad-policy]='MemoryConfig: container.steering.policy: invalid policy "fastest" (none, auto, first-dram, first-cxl, start-interleaved, end-interleaved or waypoints)'
+    [bad-steps]='MemoryConfig: container.steering.maxStep needs a policy other than none'
+    [bad-pool]="MemoryConfig: pool: only for devices of $DRA_POOL_DRIVER"
+    [bad-fencing]='MemoryConfig: container.fencing: set by the driver configuration only (defaults.container.fencing)'
+)
 dra-claim-pod "$VM2" bad-config "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" numa read-only
 dra-claim-pod "$VM2" bad-mode "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" memory
-dra-apply "$VM2" <<< "$(dra-claim-yaml template bad-kind "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" dax | sed 's/kind: DeviceConfig/kind: DaxConfig/')
+dra-apply "$VM2" <<< "$(dra-claim-yaml template bad-kind "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" dax | sed "s/kind: $DRA_CONFIG_KIND/kind: DaxConfig/")
 ---
 $(dra-claim-pod-yaml bad-kind template bad-kind "$VM2_NAME")"
-dra-wait "$VM2" bad-config-event "events -n $DRA_NS --field-selector involvedObject.name=bad-config" \
-    "any('DeviceConfig: readOnly needs mode dax' in (e.get('message') or '') for e in items)" 120
-dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-config"
-dra-wait "$VM2" bad-mode-event "events -n $DRA_NS --field-selector involvedObject.name=bad-mode" \
-    "any('DeviceConfig: invalid mode \"memory\" (numa or dax)' in (e.get('message') or '') for e in items)" 120
-dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-mode"
-dra-wait "$VM2" bad-kind-event "events -n $DRA_NS --field-selector involvedObject.name=bad-kind" \
-    "any('unknown kind \"DaxConfig\" (DeviceConfig or MemoryPolicyConfig)' in (e.get('message') or '') for e in items)" 120
-dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=bad-kind"
-for pod in bad-config bad-mode bad-kind; do
+dra-claim-pod "$VM2" bad-policy "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "container=steering: {policy: fastest}"
+dra-claim-pod "$VM2" bad-steps "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "container=steering: {policy: none, maxStep: 64Mi}"
+dra-claim-pod "$VM2" bad-pool "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "pool=opaque: {$DRA_POOL_CONFIG_KEY: {numaNode: 1}}"
+dra-claim-pod "$VM2" bad-fencing "$LOCAL_CLASS" "$(dra-mi "$BAD_REQ")" "container=fencing: none"
+for pod in "${BAD_PODS[@]}"; do
+    dra-wait "$VM2" "$pod-event" "events -n $DRA_NS --field-selector involvedObject.name=$pod" \
+        "any($(python3 -c 'import sys; print(repr(sys.argv[1]))' "${BAD_TEXT[$pod]}") in (e.get('message') or '') for e in items)" 120
+    dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=$pod"
+done
+for pod in "${BAD_PODS[@]}"; do
     dra-wait "$VM2" "$pod-creating" "pod -n $DRA_NS $pod" \
         "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['ContainerCreating']" 60
 done
-dra-stays 10 "pods bad-config, bad-mode and bad-kind are ContainerCreating" bad-pods-creating
+dra-stays 10 "pods ${BAD_PODS[*]} are ContainerCreating" bad-pods-creating
 pool-cxl-dump "$VM2" bad-config
 cxl-assert "regions == []"
 dra-local-unchanged "$VM2"
-dra-delete-pod "$VM2" bad-config
-dra-delete-pod "$VM2" bad-mode
-dra-delete-pod "$VM2" bad-kind
+for pod in "${BAD_PODS[@]}"; do
+    dra-delete-pod "$VM2" "$pod"
+done
 initial-state bad-config-deleted
 # A read-only slice: the claim config says mode dax and readOnly, the
 # device node of the container can only be opened for reading. An eighth
@@ -495,14 +613,14 @@ dra-assert "$(sed -n 's/^spec: //p' <<< "$devices")" \
     "[d.get('access') for d in j if d.get('allow') and d.get('major') == ${RO_DEV%:*} and d.get('minor') == ${RO_DEV#*:}] == ['r']"
 # The CDI device of the allocation result of the claim, claim-<uid>-0 in
 # the spec cxl-claims, has the device node with permissions r, the
-# environment of the slice and the claim marker. There is no CDI device
-# of the claim as a whole.
+# environment of the slice and the marker of the result,
+# CXL_CLAIM_<uid>_0. There is no CDI device of the claim as a whole.
 cdi=$(dra-cdi-device "$VM2" "claim-$RO_UID-0")
 echo "CDI device claim-$RO_UID-0: $cdi"
 grep -qx "kind: nri.io/cxl" <<< "$cdi" || error "no CDI device claim-$RO_UID-0 of kind nri.io/cxl in the VM"
 grep -qE '^ *permissions: r$' <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no device node with permissions r"
 grep -qF -- "- CXL_${DRA_LOCAL_HEX}_READONLY=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no CXL_${DRA_LOCAL_HEX}_READONLY=1"
-grep -qF -- "- CXL_CLAIM_${RO_UID//-/_}=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no claim marker"
+grep -qF -- "- CXL_CLAIM_${RO_UID//-/_}_0=1" <<< "$cdi" || error "the CDI device claim-$RO_UID-0 of dax-ro has no marker of result 0 of its claim"
 [ "$(dra-cdi-devices-with "$VM2" "$RO_UID")" == "claim-$RO_UID-0" ] ||
     error "the claim of dax-ro has other CDI devices than claim-$RO_UID-0: $(dra-cdi-devices-with "$VM2" "$RO_UID")"
 dra-delete-pod "$VM2" dax-ro
@@ -519,7 +637,175 @@ dra-local-slices-wait "$VM2" whole "$NUMA_NODE" "dax:$DRA_LOCAL_SIZE"
 dra-delete-pod "$VM2" dax-whole
 initial-state whole-deleted
 
-echo "### E: what every component did, in order"
+echo "### E: steering is opt-in: CXL only, DRAM only, DRAM and CXL, DRAM first in steps"
+# A container section with a steering policy in a claim opts in. Policy
+# auto picks by the memory of the claims of the container: CXL only
+# first-cxl, DRAM only first-dram, both start-interleaved. The driver sets
+# the memory policy of the processes of the container when it starts and
+# at every step, and their children inherit it: the workloads here run as
+# children of the main process (dra-run), allocate without a NUMA
+# preference of their own, and land where the plan of the driver says.
+t0=$EPOCHREALTIME
+dra-claim-pod "$VM2" steer-cxl "$LOCAL_CLASS" "$(dra-mi "$BS")" "container=steering: {policy: auto}"
+dra-claim-pod "$VM2" steer-dram "$DRAM_CLASS" "$(dra-mi "$DRAM_REQ")" "container=steering: {policy: auto}"
+dra-apply "$VM2" <<< "$(dram-cxl-template-yaml steer-mix "policy: auto")
+---
+$(dra-claim-pod-yaml steer-mix template steer-mix "$VM2_NAME")
+---
+$(dram-cxl-template-yaml steer-first "policy: first-dram, maxStep: $(dra-mi "$FIRST_STEP")")
+---
+$(dra-claim-pod-yaml steer-first template steer-first "$VM2_NAME")"
+for pod in steer-cxl steer-dram steer-mix steer-first; do
+    dra-pod-wait "$VM2" "$pod" Running 120
+done
+dra-local-slices-wait "$VM2" steering "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS"
+node-size steering $(( 3 * BS ))
+# CXL only (first-cxl): the policy prefers the CXL node, the memory of the
+# workload is there.
+steered-check steer-cxl auto "$NUMA_NODE"
+dra-mems-wait "$VM2" steer-cxl main "$NUMA_NODE"
+touch-child steer-cxl "$STEER_MIB"
+[ "$TOUCH_CXL" -ge $(( (STEER_MIB << 8) * 9 / 10 )) ] ||
+    error "steer-cxl: only $TOUCH_CXL of $(( STEER_MIB << 8 )) pages of the workload are on CXL node $NUMA_NODE"
+# DRAM only (first-dram): the policy names DRAM nodes, and the driver
+# narrows cpuset.mems to them; the memory of the workload is on DRAM.
+steered-check steer-dram auto "$DRAM_NODES"
+mems=$(dra-container-read "$VM2" steer-dram main cpuset.mems) || error "cannot read cpuset.mems of steer-dram"
+dra-nodes-subset "$mems" "$DRAM_NODES" ||
+    error "steer-dram: cpuset.mems is '$mems', expected it narrowed to DRAM nodes of $DRAM_NODES"
+echo "steer-dram: cpuset.mems $mems"
+touch-child steer-dram "$STEER_MIB"
+[ "$TOUCH_DRAM" -ge $(( (STEER_MIB << 8) * 9 / 10 )) ] && [ "$TOUCH_CXL" -le $(( (STEER_MIB << 8) / 100 )) ] ||
+    error "steer-dram: $TOUCH_DRAM pages of the workload on DRAM, $TOUCH_CXL on CXL node $NUMA_NODE, expected all on DRAM"
+# DRAM and CXL (start-interleaved): the policy interleaves over DRAM and
+# the CXL node, the memory of the workload is on both.
+steered-check steer-mix auto "$DRAM_NODES,$NUMA_NODE"
+if ! dra-nodes-has "${DRA_MEMPOLICY##*:}" "$NUMA_NODE" || dra-nodes-eq "${DRA_MEMPOLICY##*:}" "$NUMA_NODE"; then
+    error "steer-mix: the memory policy of the main process is '$DRA_MEMPOLICY', expected DRAM nodes and CXL node $NUMA_NODE"
+fi
+touch-child steer-mix "$STEER_MIB"
+[ "$TOUCH_DRAM" -ge $(( (STEER_MIB << 8) / 5 )) ] && [ "$TOUCH_CXL" -ge $(( (STEER_MIB << 8) / 5 )) ] ||
+    error "steer-mix: $TOUCH_DRAM pages of the workload on DRAM, $TOUCH_CXL on CXL node $NUMA_NODE, expected at least a fifth on each"
+# DRAM first in steps of FIRST_STEP: before the workload the policy and
+# cpuset.mems name DRAM only. The workload takes the DRAM quota and goes
+# on on CXL: the driver adds the node to cpuset.mems and moves the policy
+# to it when the DRAM quota is used. The DRAM of the workload stays
+# within the quota and one step.
+steered-check steer-first first-dram "$DRAM_NODES"
+mems=$(dra-container-read "$VM2" steer-first main cpuset.mems) || error "cannot read cpuset.mems of steer-first"
+dra-nodes-subset "$mems" "$DRAM_NODES" ||
+    error "steer-first: cpuset.mems is '$mems' before the workload, expected DRAM nodes of $DRAM_NODES only"
+touch-child steer-first "$FIRST_MIB"
+# The plan counts the DRAM waypoint reached within one step (minStep =
+# maxStep = FIRST_STEP), and the runner and python use about 10 MiB of the
+# DRAM quota first: the workload gets the quota less 10-42 MiB on DRAM (98
+# and 118 MiB in VM2), the rest on CXL (94 and 74 MiB). Bounds: DRAM at
+# least the quota less a step and 16 MiB, CXL at least 3/4 of what the
+# workload touches beyond the quota.
+[ $(( TOUCH_DRAM >> 8 )) -ge $(( (DRAM_REQ - FIRST_STEP) / MiB - 16 )) ] && [ $(( TOUCH_CXL >> 8 )) -ge $(( (FIRST_MIB - DRAM_REQ / MiB) * 3 / 4 )) ] ||
+    error "steer-first: $(( TOUCH_DRAM >> 8 )) MiB of the workload on DRAM, $(( TOUCH_CXL >> 8 )) MiB on CXL node $NUMA_NODE, expected the DRAM quota $(( DRAM_REQ / MiB )) MiB filled first, the rest on CXL"
+[ $(( TOUCH_DRAM >> 8 )) -le $(( (DRAM_REQ + FIRST_STEP) / MiB )) ] ||
+    error "steer-first: $(( TOUCH_DRAM >> 8 )) MiB of the workload on DRAM, more than the DRAM quota and a step, $(( (DRAM_REQ + FIRST_STEP) / MiB )) MiB"
+dra-mems-wait "$VM2" steer-first main "$NUMA_NODE"
+
+echo "### F: one claim, two requests, two containers: each gets only the result of its request"
+# Claim split has a request numa and a request dax, both of the local
+# device, and opts in to steering for both. Container c-numa uses only the
+# result of numa, c-dax only that of dax (resources.claims[].request):
+# kubelet gives each only the CDI device of its result, with the marker of
+# that result, CXL_CLAIM_<uid>_<n>. The driver attributes each container
+# only its result: c-numa is steered to the node; c-dax has no memory to
+# steer and is fenced like a container without claims, without the node.
+t0=$EPOCHREALTIME
+dra-apply "$VM2" <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: split
+spec:
+  devices:
+    requests:
+    - name: numa
+      exactly:
+        deviceClassName: $LOCAL_CLASS
+        capacity:
+          requests:
+            memory: $(dra-mi "$BS")
+    - name: dax
+      exactly:
+        deviceClassName: $LOCAL_CLASS
+        capacity:
+          requests:
+            memory: $(dra-mi "$BS")
+    config:
+    - requests: [dax]
+      opaque:
+        driver: $DRA_LOCAL_DRIVER
+        parameters: $(dra-memory-config "device: {mode: dax}")
+    - opaque:
+        driver: $DRA_LOCAL_DRIVER
+        parameters: $(dra-memory-config "container: {steering: {policy: auto}}")
+---
+$(dra-pod-yaml split "$VM2_NAME" mem=claim:split -- c-numa=mem/numa c-dax=mem/dax)
+EOF
+dra-pod-wait "$VM2" split Running 120
+dra-json "$VM2" resourceclaim -n "$DRA_NS" split
+SPLIT_JSON="$COMMAND_OUTPUT"
+# Both results are slices of the one local device.
+dra-assert "$SPLIT_JSON" "sorted((r['request'], r['driver'], r['device']) for r in results()) == [('dax', '$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE'), ('numa', '$DRA_LOCAL_DRIVER', '$DRA_LOCAL_DEVICE')] and consumed() == $(( 2 * BS ))"
+SPLIT_UID=$(dra-value "$SPLIT_JSON" "j['metadata']['uid']")
+SPLIT_NUMA=$(result-index "$SPLIT_JSON" numa)
+SPLIT_DAX=$(result-index "$SPLIT_JSON" dax)
+# The environment key of a device is its serial; the second result of the
+# same device in one claim, in result order, has the key <serial>_2.
+NUMA_KEY="$DRA_LOCAL_HEX" DAX_KEY="${DRA_LOCAL_HEX}_2"
+if [ "$SPLIT_DAX" -lt "$SPLIT_NUMA" ]; then
+    NUMA_KEY="${DRA_LOCAL_HEX}_2" DAX_KEY="$DRA_LOCAL_HEX"
+fi
+dra-local-slices-wait "$VM2" split "$NUMA_NODE" "numa:$BS" "numa:$BS" "numa:$BS" "numa:$BS" "dax:$BS"
+node-size split $(( 4 * BS ))
+claim-env split/c-numa
+dra-env-assert split/c-numa "$CLAIM_ENV" "$NUMA_KEY" \
+    SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=numa SIZE="$BS" NODE="$NUMA_NODE"
+[ "$(grep '^CXL_CLAIM_' <<< "$CLAIM_ENV")" == "CXL_CLAIM_${SPLIT_UID//-/_}_$SPLIT_NUMA=1" ] && [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 6 ] ||
+    error "split/c-numa has other CXL_ variables than those of result $SPLIT_NUMA (numa) of claim split: $CLAIM_ENV"
+claim-env split/c-dax
+dra-env-assert split/c-dax "$CLAIM_ENV" "$DAX_KEY" \
+    SERIAL="$DRA_LOCAL_SERIAL" SHARED=0 MODE=dax SIZE="$BS" "DAX=/dev/dax*" READONLY=0
+[ "$(grep '^CXL_CLAIM_' <<< "$CLAIM_ENV")" == "CXL_CLAIM_${SPLIT_UID//-/_}_$SPLIT_DAX=1" ] && [ "$(grep -c '^CXL_' <<< "$CLAIM_ENV")" == 7 ] ||
+    error "split/c-dax has other CXL_ variables than those of result $SPLIT_DAX (dax) of claim split: $CLAIM_ENV"
+dra-memory-wait "$VM2" split c-numa steered "auto from claim $DRA_NS/split request numa"
+dra-mems-wait "$VM2" split c-numa "$NUMA_NODE"
+dra-plugin-log-wait "$VM2" "NRI CreateContainer: ctr=$DRA_NS/split/c-dax: steering policy auto: no numa memory to steer"
+dra-memory-wait "$VM2" split c-dax fenced
+# Of all containers of the node only those with CXL memory to use have the
+# node: steer-first since its workload went on to CXL; not steer-dram, not
+# c-dax.
+dra-mems-fenced "$VM2" "$NUMA_NODE" "$DRA_NS/steer-cxl/main" "$DRA_NS/steer-mix/main" "$DRA_NS/steer-first/main" "$DRA_NS/split/c-numa"
+for pod in steer-cxl steer-dram steer-mix steer-first split; do
+    dra-delete-pod "$VM2" "$pod"
+done
+dra-delete "$VM2" resourceclaim split --wait=true --timeout=60s
+initial-state steering-deleted
+
+echo "### G: claims of one container that disagree on the steering policy: the container is not created"
+# Both claims prepare, each MemoryConfig is valid alone; combined for the
+# container they conflict, and the driver fails its CreateContainer.
+dra-apply "$VM2" <<< "$(dra-claim-yaml claim conflict-a "$DRAM_CLASS" "$(dra-mi $(( DRAM_REQ / 2 )))" "container=steering: {policy: first-dram}")
+---
+$(dra-claim-yaml claim conflict-b "$DRAM_CLASS" "$(dra-mi $(( DRAM_REQ / 2 )))" "container=steering: {policy: none}")
+---
+$(dra-pod-yaml conflict "$VM2_NAME" a=claim:conflict-a b=claim:conflict-b)"
+dra-wait "$VM2" conflict-event "events -n $DRA_NS --field-selector involvedObject.name=conflict" \
+    "any(all(t in (e.get('message') or '') for t in ['container $DRA_NS/conflict/main: container.steering.policy: ', 'claim $DRA_NS/conflict-a request mem says first-dram', 'claim $DRA_NS/conflict-b request mem says none']) for e in items)" 120
+dra-kubectl "$VM2" "get events -n $DRA_NS --field-selector involvedObject.name=conflict"
+dra-wait "$VM2" conflict-not-created "pod -n $DRA_NS conflict" \
+    "[(cs.get('state') or {}).get('waiting', {}).get('reason') for cs in j['status'].get('containerStatuses') or []] == ['CreateContainerError']" 60
+dra-delete-pod "$VM2" conflict
+dra-delete "$VM2" resourceclaim conflict-a --wait=true --timeout=60s
+dra-delete "$VM2" resourceclaim conflict-b --wait=true --timeout=60s
+
+echo "### H: what every component did, in order"
 # Every slice is whole memory blocks: the scheduler rounded every claim
 # up, and the kernel's first-fit kept every slice block-aligned.
 dra-local-slices-aligned "$VM2"

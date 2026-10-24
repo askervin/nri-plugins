@@ -213,9 +213,9 @@ companion-shape() {
     # Check the request of the companion claim of companion-claim: one
     # exactly request "lease" of class cxl-local-shared for the serial of
     # the local device, with capacity shares SHARES ("": none, exclusive),
-    # one DeviceConfig of the node plugin, mode dax and READONLY (True or
-    # False); and that its allocation consumed the shares (all of them
-    # without a request).
+    # one MemoryConfig of the node plugin with a device section of mode
+    # dax and READONLY (True or False); and that its allocation consumed
+    # the shares (all of them without a request).
     local shares="$1" ro="$2" capacity=None consumed="$DRA_SHARES"
     if [ -n "$shares" ]; then
         capacity="{'requests': {'shares': '$shares'}}"
@@ -223,7 +223,7 @@ companion-shape() {
     fi
     dra-assert "$COMPANION_JSON" "[(s['name'], s['deviceClassName'], s.get('capacity')) for s in subrequests()] == [('lease', '$SHARED_CLASS', $capacity)] and j['spec']['devices']['requests'][0].get('exactly')"
     dra-assert "$COMPANION_JSON" "any('$DRA_LOCAL_SERIAL' in (sel.get('cel') or {}).get('expression', '') for sel in subrequests()[0].get('selectors') or [])"
-    dra-assert "$COMPANION_JSON" "[(c['driver'], c['parameters'].get('kind'), c['parameters'].get('mode'), bool(c['parameters'].get('readOnly'))) for c in configs()] == [('$DRA_LOCAL_DRIVER', 'DeviceConfig', 'dax', $ro)]"
+    dra-assert "$COMPANION_JSON" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), config_section(c, 'device').get('mode'), bool(config_section(c, 'device').get('readOnly'))) for c in configs()] == [('$DRA_LOCAL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', 'dax', $ro)]"
     dra-assert "$COMPANION_JSON" "quantity((results()[0].get('consumedCapacity') or {}).get('shares', 0)) == $consumed"
 }
 

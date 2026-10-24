@@ -50,6 +50,7 @@ func main() {
 	flag.DurationVar(&cfg.AttachTimeout, "attach-timeout", controller.DefaultAttachTimeout, "attach request timeout")
 	flag.DurationVar(&cfg.DetachTimeout, "detach-timeout", controller.DefaultDetachTimeout, "detach request timeout")
 	flag.StringVar(&cfg.OwnerPrefix, "owner-prefix", controller.DefaultOwnerPrefix, "prefix of the attachment owners of this controller")
+	flag.StringVar(&cfg.ConfigKey, "config-key", controller.DefaultConfigKey, "key of the controller's settings in pool.opaque of MemoryConfig entries")
 	flag.BoolVar(&cfg.Verbose, "v", false, "log reconcile details")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags]\n", os.Args[0])

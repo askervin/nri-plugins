@@ -1,0 +1,113 @@
+plan-12: final status
+=====================
+Written 2026-10-23 (orchestrator). Nothing committed. Paths as in
+04-contract.txt.
+
+Result
+------
+The claim configuration of the CXL DRA driver is one kind, MemoryConfig
+(apiVersion cxl.nri.io/v1alpha1), for the node driver (cxl.nri.io), the
+pool driver (cxl-pool.nri.io) and pool controllers, with three sections
+by owner: pool (the pool controller; pool.opaque.<controller key>),
+device (the kubelet plugin), container (the NRI plugin). Steering is
+opt-in (default policy none; one line opts in). Class and claim entries
+merge field by field; node defaults are the driver configuration's
+defaults.container. Containers are attributed per allocation result
+(CXL_CLAIM_<uid>_<n>). Pool numa memory is steered like local memory on
+opt-in. All e2e tests pass; the hw tests have no new failure.
+
+What changed
+------------
+pkg/cxl/config (new, stream API): types, Resolve (class -> claim, JSON
+  merge patch, strict, source table), CheckEntries, device rules per type
+  (MemdevMode, NUMAOnly, CheckLease, PoolMode), Combine (per container,
+  conflicts with origins, defaults), PoolOpaque, ParseDefaults,
+  Steering.CgmPolicy.
+cmd/plugins/dra-driver-cxl (stream DRV): both kubelet plugins prepare by
+  MemoryConfig; ResultSettings per result in the prepared state and the
+  pool snapshot; per-result CDI markers; the NRI plugin attributes only
+  the results a container uses and decides steered / fenced / none per
+  container (replacing steered/fenced flags and memoryMode); lending
+  refused only for steered containers; defaults replaces containerMemory;
+  broker companion entries are MemoryConfig. Removed: deviceConfig,
+  parseConfig for configs, checkConfigKinds, modeFor, numaOnly,
+  poolModeFor, parseMemoryPolicy, PreparedClaimInfo.Policy,
+  pkg/cxl/memorypolicy.
+scripts/testing/fake-cxl-pool (stream CTRL): -config-key (default
+  fake-cxl-pool); pool.opaque.<key> {slot, numaNode} into the attach
+  request; invalid configuration -> AttachFailed InvalidConfig + event,
+  nothing attached; existing attachments never moved; README.
+pkg/cgmpolmgr and pkg/cxl/memctl (orchestrator, fixes found by e2e,
+  05-review.txt F1-F3; all three older than plan-12):
+  F1 the address line probe (commit c55476444) opened a new region's dax
+     device before device_dax had added its character device: retry
+     ENXIO/ENODEV (memctl probe.go openDaxNode);
+  F2 a steered container whose plan nodes all held memory already
+     (DRAM-only claims) never got cpuset.mems written and inherited
+     every node: the first step always writes it (manager.go);
+  F3 with default steps every two-type plan with unequal per-node shares
+     took no first step (minStep defaulted to the whole quota): the
+     default minStep is the smallest per-node increase between
+     waypoints, at most maxStep (policy.go).
+docs (stream DOC, rechecked against the final texts): usage.md
+  (MemoryConfig: owners, field table, merge order, container settings,
+  examples, presets, errors; Steering opt-in; Containers without claims;
+  Configuration file defaults), pool.md (options; "Configuration of a pool
+  controller" by CTRL for implementers of other controllers), local.md,
+  leases.md, index.md, e2e.md. Helm: deviceClassConfig value rendered
+  into the shipped classes, values, schema, README. Samples rewritten.
+e2e (stream E2E): helpers write MemoryConfig and run workloads as
+  children of the main process (dra-run); new checks in test14 (unsteered
+  numa claims; opt-in steering CXL only, DRAM only, DRAM+CXL, first-dram
+  with steps; a claim with two requests used by two containers; a policy
+  conflict), test10 (pool numa unsteered by default and steered on
+  opt-in; numaNode places the device under host bridge 1; InvalidConfig),
+  test15 (a numa lease to an unsteered container with a static numa
+  claim); test11/12/13/16/17/18/19 adapted (markers, config shape, error
+  texts).
+hw (stream HW): claim_yaml writes MemoryConfig with a steering option;
+  test1 steers numa-a/numa-b by opt-in and adds numa-u (a numa claim
+  that is not steered); deploy.sh CONTAINER_FENCING; README.
+
+Verification
+------------
+unit (orchestrator, final tree): build of D, cmd/cxl-request, pkg/cxl,
+  pkg/cgmpolmgr, P ok; go test -count=1 of pkg/cxl/..., pkg/cgmpolmgr,
+  P ok; D ok with -skip TestMemdevSettings (fails identically on a clean
+  HEAD, commit c55476444, see Open); go vet ok; gofmt clean.
+image: build/images/nri-dra-driver-cxl-image-a68667412e60.tar
+  (nri-dra-driver-cxl:v0.15.0-38-gc55476444-dirty), the final tree.
+e2e (06-runs-E2E.txt), all on a68667412e60, one at a time: test14 275 s,
+  test15 287 s, test17 261 s, test18 230 s, test19 172 s, test11 112 s,
+  test12 364 s, test13 202 s, test16 300 s, test01 77 s, test10 120 s:
+  all PASS. Earlier images failed test14 on F1, F2, F3 in turn.
+hw (06-runs-HW.txt) on root@cwf: image 21d87b11ec23 (before F1-F3):
+  test1 40/1, test2 22/0, test3 22/0, test4 29/0, test5 4/0; the one
+  failure is REPORT finding B (unchanged); finding C no longer fails (the
+  address line probe of c55476444 limits the memdev to its 126 GiB of
+  distinct memory); numa-u: memory.high max, cpuset.mems 0-3, 0 default
+  pages on CXL, 100% with MPOL_PREFERRED; logs "memory fenced (steering
+  none (default), ...)" and "memory steered (steering auto from claim
+  ...)". Rerun on the final image a68667412e60 (deployed
+  v0.15.0-38-gc55476444-dirty-f4b2cd5eccd4, 631 s): identical counts and
+  log lines, no new failure. The driver is left deployed on cwf with the
+  final image (sliced); namespace cxl-hw empty, no region.
+
+Open
+----
+O1 Steering managers are not restarted after a driver restart (P8).
+O2 Admin-only fields: room only (source table); container.fencing is
+   node-level only.
+O3 Reserved: device.online, container.memoryLimit, mempolicy fencing,
+   gentler steering (02-design I1-I4).
+O4 Not covered by a test: the lend refusal for a steered container
+   (unit-tested only).
+O5 Commit c55476444 (another workstream): memdev serial matching by
+   string misses serials written with a leading zero
+   (TestMemdevSettings fails on HEAD; memdevSettings, ignoreDevices,
+   sharedDevices); 3 errcheck findings in pkg/cxl/memctl/probe*.go.
+O6 At commit: go mod tidy (json-patch and sigs.k8s.io/json become
+   direct); small follow-ups: the ClaimEnvPrefix comment in pkg/cxl/api,
+   device.DeviceConfigKind unused.
+O7 hw test5 step 0 waits its full 60 s for a republish that does not
+   come when a probe result is stored already (cosmetic).

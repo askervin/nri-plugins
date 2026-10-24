@@ -1,0 +1,120 @@
+plan-12: review of streams DRV and CTRL
+=======================================
+Written 2026-10-23 (orchestrator). Reviewed: git diff of D (nri.go,
+lend.go, fence.go, lending.go, node_state.go, pool.go, pool_persistent.go,
+broker.go, driver.go and tests), pkg/cxl/device comment, removal of
+pkg/cxl/memorypolicy; P/pkg/controller (config.go, reconciler.go,
+status.go, controller.go), P/cmd/fake-cxl-pool-controller; against
+04-contract.txt (with section 14) and 03-plan.txt review points.
+
+Reran (orchestrator, final tree)
+- go build of D, cmd/cxl-request, pkg/cxl, P: ok.
+- go test -count=1 of D, pkg/cxl/..., pkg/cgmpolmgr, P: ok except
+  TestMemdevSettings in D, which fails identically on a clean worktree of
+  HEAD (c55476444, not plan-12; see N1). D passes with -skip
+  TestMemdevSettings.
+- go vet ok, gofmt clean, nothing imports pkg/cxl/memorypolicy.
+- Image build/images/nri-dra-driver-cxl-image-21d87b11ec23.tar
+  (nri-dra-driver-cxl:v0.15.0-38-gc55476444-dirty), fake-cxl-pool binaries
+  rebuilt; both checked to contain the new code.
+
+DRV: accepted
+- Prepare (both drivers): CheckEntries, then every result resolved
+  before any device is touched; device rules per type through the
+  config Device methods; ResultSettings with origins stored per result;
+  V(3) MemoryConfig log per result.
+- Markers CXL_CLAIM_<uid>_<n>; resultFromEnvVar parses the last "_" as
+  the index (UIDs have no "_" after the hyphen mapping, as they are hex
+  and hyphens), refuses non-canonical numbers.
+- NRI: containerResults reads only the results of the container (P4
+  fixed for steering quotas, claimed nodes, settings, Synchronize);
+  nodeState lookups by (uid, n) then the pool snapshot; manage(): Combine
+  with defaults, steered when CgmPolicy applies (pool numa counts as CXL),
+  else fenced or none; capacity-only hint for unsteered dram/region.
+- Lock order unchanged from plan-11; Synchronize takes the node state
+  lock and serialsMu under p.mu, as plan-11's hasSteeredClaims did; no
+  handler takes lendMu, poolDriver.mu or localAllocator.mu.
+- Lending refused for steered only; fencedLend leaves a steered
+  container's cpuset.mems alone (V4, a regression the stream caught).
+- Driver configuration: defaults decoded strictly with ParseDefaults;
+  containerMemory gone; start log lines renamed (05-status-DRV.txt).
+- Broker: companion entries MemoryConfig cxl.nri.io/v1alpha1, device
+  section.
+- Decisions V1-V8 of 05-status-DRV.txt accepted (V3: a container whose
+  settings no longer combine after a restart is taken as steered: never
+  fenced or lent to; logged).
+
+CTRL: accepted
+- CheckEntries + Resolve + PoolOpaque per result with -config-key;
+  invalid -> AttachFailed InvalidConfig + Warning event, nothing attached,
+  logged once, no flapping; existing attachments never moved; settings
+  only for new attachments; other keys and sections ignored.
+- Decisions accepted: an invalid entry for another request of the claim
+  is InvalidConfig too (the node refuses the claim anyway); a result
+  attached already keeps its attachment.
+
+Notes
+N1. TestMemdevSettings (commit c55476444, another workstream): serials
+    in memdevSettings (and in ignoreDevices/sharedDevices, memdevMatches)
+    are matched as strings against "0x%x", "%x" and decimal, so a serial
+    written with a leading zero ("0x0badc0dedeadbeef") never matches.
+    Fix: parse the spec as a serial (api.ParseSerial) and compare
+    numbers. Reported to the user, not fixed in plan-12.
+N2. golangci-lint finds 3 errcheck issues in pkg/cxl/memctl/probe*.go
+    (same commit), not plan-12.
+N3. Requests R1 (pkg/cxl/api ClaimEnvPrefix comment) and R2
+    (device.DeviceConfigKind unused) are small follow-ups for the commit
+    of plan-12; R6/API R1: go mod tidy at commit.
+
+Fix during phase 3 (orchestrator, 2026-10-23)
+F1. E2E test14 failed three times: every local region created again in
+    one boot failed Prepare with "probing region0 for address aliasing:
+    open /dev/.cxl-probe-N/dax0.0: no such device or address" (address
+    line probe of commit c55476444). When the kernel binds the first dax
+    device of a new region to device_dax by itself, the driver link
+    exists before device_dax has added the character device (driver core
+    adds the link before probe), so an open in between gets ENXIO;
+    binds that the driver makes itself go through sysfs bind, which
+    returns after probe, and are not affected. Fix in
+    pkg/cxl/memctl/probe.go: ProbeAliasing opens its node with
+    openDaxNode, retrying ENXIO/ENODEV every 10 ms for up to 5 s; unit
+    test TestOpenDaxNode (retried, other errors at once, timeout). go
+    test, -race, vet, gofmt ok; golangci-lint: only the 3 errcheck issues
+    of c55476444 (N2). New image
+    build/images/nri-dra-driver-cxl-image-11bb350ad77a.tar (same tag
+    v0.15.0-38-gc55476444-dirty). The hw run on cwf (image 21d87b11ec23)
+    did not hit the race and stays valid: the fix changes nothing but the
+    open of the probe.
+F2. E2E test14 run 5: a steered container with DRAM-only claims (policy
+    auto -> first-dram) kept an empty cpuset.mems, so it inherited every
+    node, also the CXL nodes of other claims. cgmpolmgr's Start allows the
+    nodes that hold memory already, and allowNodes wrote cpuset.mems only
+    when a step added a node: a plan whose nodes all hold memory never
+    wrote it. Older than plan-12 (DRAM claims were steered by default
+    before, unnoticed because no test checked it). Fix in
+    pkg/cgmpolmgr/manager.go: the first allowNodes writes cpuset.mems also
+    without an added node (Manager.written); unit test
+    TestAllowNodesFirstWrite. New image
+    build/images/nri-dra-driver-cxl-image-2db5e4fd5d5f.tar. The hw run on
+    cwf used steered containers with CXL-only claims, whose first step
+    adds the CXL node and wrote cpuset.mems already: unaffected.
+F3. E2E test14 run 6: steer-mix (dram 128Mi on nodes 0-1, cxl 128Mi on
+    node 2, policy auto = start-interleaved) was steered but its first
+    step was empty ("nothing left to steer"). Cause: with no steps given,
+    minStep defaulted to maxStep = the total quota (256Mi); a step spreads
+    evenly over its nodes, and no subset of nodes can take 256Mi evenly
+    towards the first waypoint (64Mi, 64Mi, 128Mi), so nextStep dropped
+    every node; waypointReached's tolerance (remaining < minStep) was as
+    coarse. Every two-type plan with unequal per-node shares was affected
+    (also first-dram with DRAM 20Gi, CXL 100Gi: no first step); only
+    single-type plans worked (all tests and hw used those). Older than
+    plan-12. Fix in pkg/cgmpolmgr/policy.go Plan: an unset minStep is the
+    smallest increase of one node's usage between consecutive waypoints
+    (from zero), at most maxStep; maxStep defaults stay (total quota).
+    Single-type plans keep one step. Tests: TestPolicyPlanDefaultSteps-
+    Interleaved (steps reach the waypoint exactly), TestPolicyPlanOrders
+    asserts a first step for every order (the old test asserted the
+    default values only), TestPolicyPlanSteps a default for one node per
+    type. docs/memory/cxl/usage.md field table: minStep default. New image
+    build/images/nri-dra-driver-cxl-image-a68667412e60.tar. hw: the
+    steered pods there have CXL-only claims (one type): unaffected.

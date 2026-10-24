@@ -84,6 +84,8 @@ type Manager struct {
 	notifier   *cgmemnotify.Notifier
 	// allowed are the nodes written to cpuset.mems so far.
 	allowed map[int]bool
+	// written: cpuset.mems has been written.
+	written bool
 	// stop is closed by Stop, done is closed when the steering
 	// goroutine has exited.
 	stop     chan struct{}
@@ -321,7 +323,8 @@ func (m *Manager) step(usage NodeMem) error {
 }
 
 // allowNodes adds the nodes to cpuset.mems of the cgroup if they are
-// not allowed yet.
+// not allowed yet. The first call writes cpuset.mems also when it adds no
+// node.
 func (m *Manager) allowNodes(nodes []int) error {
 	added := false
 	for _, node := range nodes {
@@ -330,7 +333,8 @@ func (m *Manager) allowNodes(nodes []int) error {
 			added = true
 		}
 	}
-	if !added {
+	// until the first write the cgroup inherits every node
+	if !added && m.written {
 		return nil
 	}
 	if node, ok := normalMemoryFallback(m.sysRoot, m.allowed, nodes[0]); ok {
@@ -342,6 +346,7 @@ func (m *Manager) allowNodes(nodes []int) error {
 	if err := os.WriteFile(filepath.Join(m.cgroupPath, "cpuset.mems"), []byte(mems+"\n"), 0644); err != nil {
 		return fmt.Errorf("write cpuset.mems %q: %w", mems, err)
 	}
+	m.written = true
 	m.log.Debugf("%s: cpuset.mems=%s", m.name, mems)
 	return nil
 }

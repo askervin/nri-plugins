@@ -53,6 +53,9 @@ const (
 	DefaultDetachTimeout = 60 * time.Second
 	DefaultOwnerPrefix   = "k8s:"
 	DefaultDebounce      = 500 * time.Millisecond
+	// DefaultConfigKey is the key of the controller's settings in
+	// pool.opaque of a MemoryConfig.
+	DefaultConfigKey = "fake-cxl-pool"
 	// Component is the event source component.
 	Component = "fake-cxl-pool-controller"
 )
@@ -68,6 +71,9 @@ type Config struct {
 	// OwnerPrefix is the prefix of the attachment owners of this
 	// controller: "<prefix>resourceclaim/<claim uid>".
 	OwnerPrefix string
+	// ConfigKey is the key of the controller's settings (PoolSettings)
+	// in pool.opaque of a MemoryConfig.
+	ConfigKey string
 	// Debounce delays a reconcile after an informer or server event.
 	Debounce time.Duration
 	Verbose  bool
@@ -90,6 +96,9 @@ func (c *Config) complete() {
 	if c.OwnerPrefix == "" {
 		// never "": that would claim the attachments of every owner
 		c.OwnerPrefix = DefaultOwnerPrefix
+	}
+	if c.ConfigKey == "" {
+		c.ConfigKey = DefaultConfigKey
 	}
 	if c.Debounce <= 0 {
 		c.Debounce = DefaultDebounce
@@ -122,6 +131,7 @@ type Controller struct {
 	noLabel    map[string]bool // nodes without a hostname label (warned once)
 	hostMapStr string
 	attLogged  map[string]string // attachment id -> last logged state of undesired attachments
+	cfgLogged  map[string]string // claim uid/request -> last logged configuration error
 }
 
 // New creates a controller. recorder may be nil (no events).
@@ -142,6 +152,7 @@ func New(cfg Config, kube kubernetes.Interface, pool *client.Client, recorder re
 		nameWarned: map[string]bool{},
 		noLabel:    map[string]bool{},
 		attLogged:  map[string]string{},
+		cfgLogged:  map[string]string{},
 	}
 	handler := cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(any) { c.requestReconcile() },
@@ -220,9 +231,9 @@ func (c *Controller) Run(ctx context.Context) error {
 		fromServer, err = c.resolvePoolName(ctx)
 	}
 	if fromServer {
-		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval)
+		c.logf("driver %s, pool %s (from the server), server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ConfigKey)
 	} else {
-		c.logf("driver %s, pool %s, server %s, sync interval %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval)
+		c.logf("driver %s, pool %s, server %s, sync interval %s, config key %s", c.cfg.DriverName, c.cfg.PoolName, c.pool.BaseURL, c.cfg.SyncInterval, c.cfg.ConfigKey)
 	}
 	if err := c.start(ctx); err != nil {
 		return err

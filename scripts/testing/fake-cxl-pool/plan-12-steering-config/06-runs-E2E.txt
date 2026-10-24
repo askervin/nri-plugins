@@ -1,0 +1,240 @@
+plan-12: e2e runs of stream E2E
+===============================
+2026-10-23, host times. Image: N/build/images/nri-dra-driver-cxl-image-
+21d87b11ec23.tar (nri-dra-driver-cxl:v0.15.0-38-gc55476444-dirty), the
+newest tar by mtime, imported by the framework; not rebuilt.
+fake-cxl-pool server, client and controller from N/scripts/testing/
+fake-cxl-pool/bin (17:36): pool-server-start runs the server from there
+on the host, dra-install copies the controller from there into VM2 and
+starts it as a fresh transient unit in every test (no unit or server was
+running before). Every command from N/test/e2e:
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/<test>
+one at a time. Output dir: N/test/e2e/n4-cxl-shared-2-fedora-43-
+containerd/memory.test-suite/dra-driver-cxl/<test>/ (last run); copies
+of earlier runs and all console logs in /tmp/e2e-p12/runs/.
+Before the first run: no run_tests.sh active, no fake-cxl-pool server or
+controller unit, no pods or claims outside kube-system on VM2, VM1, VM0,
+no CXL memdevs or regions.
+
+Runs
+----
+start     test                      duration  verdict
+17:38:09  test14-dra-local-memdev   364 s     FAIL  dax-ro Pending: Prepare
+          "probing region0 for address aliasing: open /dev/.cxl-probe-
+          935890811/dax0.0: no such device or address" (copy:
+          /tmp/e2e-p12/runs/test14-run1-output)
+17:45:50  test14-dra-local-memdev   245 s     FAIL  numa-a Pending, the same
+          error for the first region of the run (VM2 not rebooted since
+          run 1; copy: test14-run2-output)
+17:51:00  test10-dra-pooling        121 s     PASS
+17:53     VM2 guest reboot (systemctl reboot; node Ready after ~60 s)
+17:54:31  test14-dra-local-memdev   360 s     FAIL  as run 1: the first
+          region of the boot probes fine, dax-ro (the region created again
+          after C released it) fails the probe with ENXIO (copy:
+          test14-run3-output, also the current output dir)
+Not run: test15, test19, test11, test12, test13, test16, test17, test18,
+test01 (stopped on the driver failure, see Request below).
+
+Decisive lines
+--------------
+test14 (runs 1 and 3, the plan-12 checks reached before D's dax-ro)
+  memory ok: vm: cxl-pool-demo/numa-a/main fenced, steering none (default): memory.high max, memory policy of the main process default
+  numa-a: 32 MiB touched by a child of the main process: 0 MiB on CXL node 2, 32 MiB on DRAM nodes 0-1
+  memory ok: vm: cxl-pool-demo/numa-b/main fenced, steering none (default): memory.high max, memory policy of the main process default
+  D, all seven refused configs, events (e.g.):
+    ... ResourceClaim bad-config-mem-5j8c2: claim cxl-pool-demo/bad-config-mem-5j8c2: request mem: MemoryConfig: device.readOnly needs mode dax
+    bad-mode 'MemoryConfig: device.mode: invalid mode "memory" (numa or dax)',
+    bad-kind 'unknown kind "DaxConfig" (MemoryConfig)', bad-policy (full
+    text), bad-steps, bad-pool, bad-fencing: all matched; the seven pods
+    stayed ContainerCreating 10 s, no region.
+  B2 (driver restart) and C passed (fence lines, node shrink, dax data).
+  E, F, G (steering, split, conflict) never reached.
+
+test10 (PASS)
+  NRI CreateContainer: ctr=cxl-pool-demo/pooled-consumer/consumer: memory fenced (steering none (default), fencing allowed-mems (default))
+  memory ok: ... pooled-consumer/consumer fenced, steering none (default): memory.high max, memory policy of the main process default
+  marker CXL_CLAIM_<uid>_0=1 of pooled-consumer: ok
+  attachment: [('pooled1', VM2, 'k8s:resourceclaim/2840be32-...', 'cxlhb1', 1)]
+  pooled1 is in slot cxlsw_ds0_usrp0hb1 under host bridge cxlhb1 on NUMA node 1
+  pooled1 is NUMA node 3 of the VM (pooled0 under hb0 was node 2)
+  env ok: pooled-steered: CXL_C1EE0002_: SERIAL=0xc1ee0002 SHARED=0 MODE=numa SIZE=268435456 NODE=3
+  NRI CreateContainer: ctr=cxl-pool-demo/pooled-steered/main: memory steered (steering auto from claim cxl-pool-demo/pooled-steered request mem, fencing allowed-mems (default))
+  memory ok: ... memory.high 277200896, memory policy of the main process prefer:3
+  child workload: numa-touch: policy prefer:3, pages N3=16384 (all 64 MiB on the pool node)
+  the other-pool key of pool.opaque: ignored, attach succeeded
+  bad-pool: pooled0: cxl-pool.nri.io/AttachFailed=True reason InvalidConfig: MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "numaNod"
+  controller: ERROR: claim cxl-pool-demo/bad-pool: request mem device pooled0: invalid configuration: MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "numaNod"
+  Event AttachFailed on the claim with "numaNod"; no attachment of pooled0; pod Pending, unbound.
+
+The failure of test14 (evidence for the Request)
+------------------------------------------------
+Driver log of the region creations (local.go / memctl):
+  good, first region of a boot (14:39:11, 14:55:33 after the reboot):
+    memctl: mem0: created region0 under decoder0.0
+    (kernel: kmem adds the region's memory, "Built 3 zonelists")
+    memctl: dax0.0: bound to device_dax
+    local: ... created region0 (devdax, dax dax0.0, node 2) in 896.772ms
+    local_probe.go:227] ... address line probe of region0 (1073741824 bytes): no aliasing in 0.847ms
+  bad, every later region of the same boot (14:41:07, 14:42:27, 14:46:51,
+  14:47:56, 14:49:14, 14:57:26, 14:58:33, 14:59:57):
+    memctl: mem0: created region0 under decoder0.0
+    local: ... created region0 (devdax, dax dax0.0, node 2) in 19-54ms
+    (no "bound to" line, no kmem hotplug in the kernel log)
+    memctl: destroyed region0 / released region0
+    Prepare error: probing region0 for address aliasing: open /dev/.cxl-probe-N/dax0.0: no such device or address
+  The bad case is the binding of the plan-11 runs (2026-10-22, before
+  c55476444): "created region0 ... in 230.903ms" without a "bound to"
+  line: the kernel binds the dax device of a later region to device_dax
+  itself. Then memctl.CreateRegionSize returns as soon as
+  /sys/bus/dax/devices/dax0.0/driver exists, and ProbeAliasing opens the
+  node within milliseconds. The kernel creates the driver symlink
+  (driver_sysfs_add) before it calls the driver's probe, and device_dax
+  registers the character device in dev_dax_probe (cdev_device_add):
+  an open in between finds no cdev, ENXIO. With the kmem first binding
+  the explicit switch to device_dax completes before the probe.
+  Reproduced in three runs, after a guest reboot too; not plan-12 code
+  (commit c55476444: local_probe.go probeRegion, memctl/probe.go
+  ProbeAliasing, memctl.CreateRegionSize). A run with the probe turned off
+  in the driver configuration, to reach E-G, was not allowed (safety
+  check bypass), so it was not done.
+
+Runs with the fixed image (2026-10-23 evening)
+----------------------------------------------
+Image N/build/images/nri-dra-driver-cxl-image-11bb350ad77a.tar (same tag
+v0.15.0-38-gc55476444-dirty; memctl openDaxNode retries ENXIO). After
+dra-install localhost/dra-driver-cxl:testing is sha256:11bb350ad77a in
+containerd of VM2, VM1 and VM0 (the playbook tags by the tar's id,
+dra-image-put compares ids).
+
+start     test                      duration  verdict
+18:10     test14-dra-local-memdev   240 s     FAIL  steer-dram: cpuset.mems
+          is '' (expected narrowed to the DRAM nodes 0-1). Copy:
+          /tmp/e2e-p12/runs/test14-run5-output (also the output dir).
+          The probe problem is gone: every region of the run probed.
+
+Decisive lines (run 5)
+  A-D as before (unsteered numa-a/numa-b, a child's 32 MiB: N1=8192, 0
+  on CXL; all seven refused-config texts).
+  steer-cxl: NRI CreateContainer: ... memory steered (steering auto from claim cxl-pool-demo/steer-cxl-mem-5kd6l request mem, fencing allowed-mems (default))
+    cgmpolmgr: cpuset.mems=0-2; step: usage=[0:2412544 1:581632 2:0] nodes=[2] bytes=134217728 ... cpuset.mems=0-2
+    memory.high 138477568, policy prefer:2; child 64 MiB: N2=16384 (all on CXL node 2)
+  steer-dram: NRI CreateContainer: ... memory steered (steering auto from claim cxl-pool-demo/steer-dram-mem-rckf9 request mem, fencing allowed-mems (default))
+    cgmpolmgr: step: usage=[0:4796416 1:12288 2:0] nodes=[0 1] bytes=134217728 procs=1 cpuset.mems=0-1 lower=0 upper=140718080
+    (no "cxl-pool-demo/steer-dram/main: cpuset.mems=..." write line, unlike steer-cxl)
+    memory.high 140718080, policy interleave:0-1, but the cgroup's cpuset.mems is "".
+
+The failure (evidence for the Request)
+  pkg/cgmpolmgr Manager.Start marks the nodes that already hold memory
+  (here 0 and 1) as allowed; allowNodes writes cpuset.mems only when a
+  step adds a node. A plan of DRAM nodes only adds none, so cpuset.mems
+  is never written and stays "" (all memory nodes of the parent:
+  effective 0-2 while node 2, the CXL node of other claims, is online).
+  The NRI plugin does not fence steered containers (lend.go: the
+  cpuset.mems of a steered container is cgmpolmgr's), so a steered
+  container with DRAM claims only is neither narrowed nor kept off the
+  CXL nodes of other claims: the plan-11 rule "no other container has the
+  node" breaks for it, and 03-plan's "DRAM only lands on DRAM, cpuset.mems
+  narrowed" does not hold. Steering itself works (policy interleave:0-1).
+  Same in the old code (DRAM claims were steered first-dram by default
+  before plan-12); with plan-12 it needs an opt-in.
+
+Runs with image 2db5e4fd5d5f (cgmpolmgr writes cpuset.mems at the first step)
+------------------------------------------------------------------------------
+localhost/dra-driver-cxl:testing = sha256:2db5e4fd5d5f in VM2, VM1, VM0.
+
+start     test                      duration  verdict
+18:17     test14-dra-local-memdev   302 s     FAIL  steer-mix not steered
+          (memory.high max, policy default). Copy:
+          /tmp/e2e-p12/runs/test14-run6-output.
+
+Decisive lines (run 6)
+  steer-cxl: as run 5 (prefer:2, child 64 MiB N2=16384).
+  steer-dram: now ok: memory.high 141996032, policy interleave:0-1,
+    cpuset.mems 0-1; child 64 MiB: N0=8192 N1=8192, 0 on CXL.
+  steer-mix (requests dram 128Mi + cxl 1 block, policy auto):
+    NRI CreateContainer: ctr=cxl-pool-demo/steer-mix/main: memory steered (steering auto from claim cxl-pool-demo/steer-mix-mem-jvnwf request dram, fencing allowed-mems (default))
+    start steering ...: waypoints=[[0:67108864 1:67108864 2:134217728] [0:67108864 1:67108864 2:134217728]] minStep=268435456 maxStep=268435456
+    step: usage=[0:61440 1:2940928 2:0] nothing left to steer, removing memory.high
+  steer-first ({policy: first-dram, maxStep: 32Mi}) for comparison:
+    waypoints=[[0:67108864 1:67108864 2:0] [0:67108864 1:67108864 2:134217728]] minStep=33554432 maxStep=33554432
+    step: usage=[0:5021696 1:77824 2:0] nodes=[0 1] bytes=33554432 ... cpuset.mems=0-1
+
+The failure (evidence for the Request)
+  pkg/cgmpolmgr: without maxStep the plan's maxStep is the total quota and
+  minStep defaults to maxStep (Policy.Plan). Plan.NextStep skips waypoints
+  that waypointReached() within minStep, and nextStep() returns no nodes
+  when "no node is behind the next waypoint by at least its share of
+  minStep". With start-interleaved (auto for DRAM + CXL) and minStep = the
+  whole quota (256 MiB here), no node of the first waypoint (64, 64, 128
+  MiB to go) is behind by its share, so the very first step is "nothing
+  left to steer": the container is not steered at all (memory.high
+  removed, no memory policy). Not plan-12 code; the same with the old
+  default auto for DRAM + CXL claims.
+
+Runs with image a68667412e60 (cgmpolmgr default minStep)
+--------------------------------------------------------
+localhost/dra-driver-cxl:testing = sha256:a68667412e60 in VM2, VM1, VM0
+(checked after the first dra-install of this image).
+
+start     test                                              duration  verdict
+18:24:49  test14-dra-local-memdev (run 7)                   260 s     FAIL  test error: split/c-dax
+          expected key CXL_C100E2E1_; the second result of the same device
+          in one claim has the key <serial>_2 (driver envKeys, existing
+          rule). Fixed in test14 F. E passed.
+18:30:28  test14-dra-local-memdev (run 8)                   278 s     PASS  (steer-first DRAM 98 MiB:
+          the bound of 96 held by 2 MiB -> calibrated, see below)
+18:35:37  test14-dra-local-memdev (run 9)                   275 s     PASS  with the calibrated bounds
+18:40:20  test15-dra-local-live-attach                      287 s     PASS
+18:45:17  test17-dra-local-shared                           261 s     PASS
+18:49:47  test18-dra-local-shared-one-writer-many-readers   230 s     PASS
+18:53:37  test19-many-pools                                 172 s     PASS
+18:56:36  test11-dra-sharing                                112 s     PASS
+18:58:28  test12-dra-live-attach                            364 s     PASS
+19:04:32  test13-dra-shared-one-writer-many-readers         202 s     PASS
+19:07:54  test16-cxl-llm-share                              300 s     PASS
+19:13:04  test01-shared-cxl                                  77 s     PASS
+19:14:21  test10-dra-pooling                                120 s     PASS  (again, on this image)
+Driver logs of all eleven output dirs: no NRI error or warning other than
+test14 G's expected "NRI CreateContainer: container cxl-pool-demo/
+conflict/main: container.steering.policy: claim cxl-pool-demo/conflict-a
+request mem says first-dram, claim cxl-pool-demo/conflict-b request mem
+says none" (twice, the kubelet retry); no "taken as steered".
+
+Decisive lines (test14 run 8/9, E-G)
+  steer-cxl   steered "auto from claim cxl-pool-demo/steer-cxl-mem-... request mem",
+              memory.high 140369920, policy prefer:2, cpuset.mems 0-2;
+              child 64 MiB: 64 on CXL node 2, 0 on DRAM
+  steer-dram  memory.high 130809856, policy interleave:0-1, cpuset.mems 0-1;
+              child 64 MiB: 0 on CXL, 64 on DRAM (N0=8192 N1=8192 in run 6)
+  steer-mix   memory.high 73179136, policy interleave:0-2; child 64 MiB:
+              22 on CXL, 42 on DRAM (run 7: 20 / 44)
+  steer-first policy interleave:0-1 and cpuset.mems DRAM only before the
+              workload; child 192 MiB: DRAM 98 / 100 (runs 8, 9; 118 in
+              run 7), CXL 94 / 92 (74); then cpuset.mems 0-2, child's
+              final policy prefer:2
+  split       c-numa: env CXL_C100E2E1_* mode numa node 2 and only
+              CXL_CLAIM_99ec..._0=1 (run 7); steered "auto from claim
+              cxl-pool-demo/split request numa", policy prefer:2, mems 0-2.
+              c-dax: env CXL_C100E2E1_2_* mode dax /dev/dax0.4 and only
+              CXL_CLAIM_..._1=1; "NRI CreateContainer: ctr=cxl-pool-demo/
+              split/c-dax: steering policy auto: no numa memory to steer",
+              fenced, memory.high max, policy default, cpuset.mems 0-1.
+  fencing     node 2 only in steer-cxl, steer-mix, steer-first, split/c-numa
+              (0-2); steer-dram, split/c-dax and all of kube-system 0-1.
+  conflict    event with "container cxl-pool-demo/conflict/main:
+              container.steering.policy: claim .../conflict-a request mem
+              says first-dram, claim .../conflict-b request mem says none";
+              container waiting CreateContainerError.
+test15 D2: mixed/main fenced "none (default)"; local numa lease Ready
+  (mode numa, source local, node 2, 134217728 bytes); node 2: 128 -> 256
+  -> 128 -> 0 MB; only mixed/main has node 2; memory.high max after.
+test17: reader configs {apiVersion cxl.nri.io/v1alpha1, kind MemoryConfig,
+  device: {readOnly: true}}; "MemoryConfig: device: a shared device is
+  used as dax only", "MemoryConfig: device.readOnly needs mode dax",
+  "MemoryConfig: device.access needs mode fs".
+test12, 13, 16, 18: companion configs as MemoryConfig device sections
+  (16 checks, all ok, e.g. test16 {'apiVersion': 'cxl.nri.io/v1alpha1',
+  'kind': 'MemoryConfig', 'device': {'mode': 'fs', 'readOnly': True,
+  'access': ...}}); markers CXL_CLAIM_<uid>_0=1 in test11, 12, 13.
+test10: as on the previous image (pooled1 in cxlhb1 slot, node 3,
+  steered prefer:3, InvalidConfig watched).

@@ -1,0 +1,312 @@
+plan-12: design options and recommendations
+===========================================
+Written 2026-10-23 (orchestrator). P<n>, C<n> as in 01-findings.txt.
+Nothing is published: the recommendations replace DeviceConfig,
+MemoryPolicyConfig and plan-11's containerMemory without compatibility.
+
+Requirements
+------------
+R1. One configuration vocabulary for claims of both drivers, DeviceClass
+    presets, the node defaults and leases; new aspects are new fields,
+    not new kinds.
+R2. Aspects of different nature fit: how a device is prepared (mode,
+    read-only, how much of it is onlined), how a container that uses it
+    is managed (steering, memory limit adjustment, fencing), and
+    node-wide defaults.
+R3. Steering is trivial to switch off per workload and per node.
+R4. Settings that weaken isolation can be granted to chosen workloads
+    by an admin, not taken by any tenant.
+R5. Precise: a setting reaches exactly the containers that use the
+    request it is attached to.
+R6. Errors early and readable; the effective settings are visible.
+R7. User-friendly: the common cases are one or two lines; examples
+    copy between local and pool claims.
+
+A. How many kinds
+-----------------
+A1. Keep one kind per aspect (DeviceConfig, MemoryPolicyConfig, later
+    MemoryLimitConfig, ...), accept all in both drivers.
+    + small kinds. - P2 stays: a kind per future aspect, precedence and
+    "one per container" rules per kind, several entries per claim.
+A2. One kind per scope: DeviceConfig (device) and ContainerConfig
+    (container).
+    + scope is the kind. - two entries for the common "numa slice, not
+    steered" claim; two merge pipelines.
+A3. One kind, MemoryConfig, with a section per scope (recommended).
+    + one entry per driver for everything, new aspects are fields, one
+    merge and validation pipeline, the same struct is the node default
+    and the class preset. - a kind that grows; mitigated by sections.
+Recommendation A3. Name: MemoryConfig ("how the claimed memory is
+prepared and used"); DeviceConfig would be wrong for container settings.
+
+B. Shape of MemoryConfig
+------------------------
+B1. Flat: mode, readOnly, steering, ... at the top level.
+    + shortest YAML. - scopes mixed: a reader cannot tell which fields
+    are per device and which are combined per container (rules differ,
+    see E); a future field that could be either is ambiguous.
+B2. Two sections, device and container (recommended):
+
+    apiVersion: cxl.nri.io/v1alpha1
+    kind: MemoryConfig
+    device:                      # how each device of the request is prepared
+      mode: numa                 # numa | dax | block | fs
+      readOnly: false            # dax, block, fs
+      access: direct             # fs: direct | cached
+      path: /models              # fs
+      # reserved: online (how much of a local memdev is onlined, I3)
+    container:                   # how a container that uses the request is managed
+      steering:
+        policy: auto             # auto | none | first-dram | first-cxl |
+                                 # start-interleaved | end-interleaved | waypoints
+        waypoints:               # policy waypoints
+        - targetUsages: [{memoryType: DRAM, usage: 4Gi}]
+        minStep: 128Mi
+        maxStep: 1Gi
+      # admin-only (G): fencing: allowed-mems | mempolicy | none
+      # reserved: memoryLimit (I1)
+
+    + the scope rule is the section: device settings are resolved per
+    allocation result, container settings are combined over the results
+    a container uses (E); the container section is the same struct as
+    the node's container defaults (H). - one more level of YAML.
+Steering is a discriminated union (policy + its parameters), the usual
+Kubernetes shape (no string-or-object fields). Renames: memoryUseOrder
+-> policy, memoryUseWaypoints -> waypoints. "auto" is today's choice by
+memory types (CXL only first-cxl, both start-interleaved, DRAM only
+first-dram). Avoid YAML 1.1 booleans as values (off, no): "none".
+Recommendation B2.
+
+Examples (R7):
+  numa slice, not steered (HPC, databases):
+      kind: MemoryConfig
+      container: {steering: {policy: none}}
+  read-only dax slice:
+      kind: MemoryConfig
+      device: {mode: dax, readOnly: true}
+  steered, DRAM first in 1Gi steps:
+      kind: MemoryConfig
+      container: {steering: {policy: first-dram, maxStep: 1Gi}}
+
+C. apiVersion and drivers
+-------------------------
+C1. apiVersion <driver>/v1alpha1 as today.
+C2. One apiVersion, cxl.nri.io/v1alpha1, accepted by both drivers
+    (recommended); the opaque entry's driver field (a Kubernetes field)
+    still selects the driver. Copying a config between a local and a pool
+    claim changes only `driver` (P9). Fields a driver cannot honor are
+    refused by it with a clear error (mode block on a local memdev).
+Recommendation C2.
+
+D. Combining entries (class and claim)
+--------------------------------------
+D1. Last applicable entry wins (today; the example driver does this).
+D2. Field merge in order (recommended): node defaults, then class
+    entries, then claim entries, each applied to the requests it
+    targets, as a JSON merge patch (RFC 7386): objects merge, scalars and
+    lists replace, null removes (back to the default). Decoded strictly
+    after merging; each entry is also checked alone for unknown fields so
+    that the error names the entry.
+    + DeviceClasses become presets (P5); extended-resource classes get a
+    config (C4); a claim changes one field of a preset.
+Recommendation D2. A config entry of another kind is refused ("unknown
+kind").
+
+E. Which containers a setting reaches
+-------------------------------------
+E1. Per claim (today, P4): wrong for containers that use one request.
+E2. Per allocation result (recommended): the CDI device of result n
+    injects CXL_CLAIM_<uid>_<n>=1 instead of CXL_CLAIM_<uid>=1 (both
+    drivers, also lease claims). The NRI plugin knows exactly the
+    results a container uses, so device memory (steering quotas,
+    plan-11 claimed nodes) and container settings follow
+    resources.claims[].request.
+Combination of the container sections of those results (each already
+merged per D2, without node defaults): a field that several results set
+must have one value; unset fields take the node defaults (H). A
+conflict fails CreateContainer: `container ns/pod/ctr: container.
+steering.policy: claim ns/a request r says none, claim ns/b request s
+says first-dram`. Shared claims: the settings apply to every container
+that uses the request, by design. Within one claim the container
+sections of different requests may differ (they reach different
+containers).
+Recommendation E2.
+
+F. Steering: switching it off, and its default
+----------------------------------------------
+F1. steering.policy: none in a claim or class (per workload, R3).
+F2. Node default defaults.container.steering.policy (H): auto (default)
+    or none for clusters of self-managing workloads.
+F3. Pod annotations (as nri-memory-policy does): not DRA, no presets,
+    no validation at Prepare; not recommended (E2 already targets single
+    containers through requests).
+What none means: no cgmpolmgr for the container. It is managed like a
+container without claims (plan-11): cpuset.mems = its own nodes without
+the fenced nodes + the numa nodes of its results + lent nodes; no
+memory policy, no memory.high. The workload places memory itself
+(numactl, mbind; CXL_<KEY>_NODE tells the node). Bonus: such a container
+can take numa leases (P7: the lend/steer conflict is gone for it).
+DRAM claims of an unsteered container are capacity only.
+Default stays auto: a claim of numa memory is used without the workload
+knowing NUMA (the e2e and hw tests show it works), and turning it off is
+one line per workload or per node. Recommendation F1 + F2, default auto.
+Later, without a schema change: a gentler steering (memory policy only,
+no memory.high stepping) as a further policy value, and restoring
+managers after a driver restart (P8).
+
+G. Admin-only settings
+----------------------
+G1. Everything settable by claims (today).
+G2. Fields marked admin-only: honored from the node defaults and from
+    DeviceClass entries (source FromClass) only; a claim entry that sets
+    one fails the Prepare: `container.fencing: set by a DeviceClass
+    only`. Admins grant them by a class, and limit who may use the class
+    with ResourceQuota or an admission policy (C4). Recommended.
+First admin-only fields: container.fencing (plan-11's per-container
+override, e.g. none for a monitoring agent that must see every node),
+reserved device.online (I3). Containers without memory claims that need
+an admin setting claim a token device: G-a reuse the lease device (has
+side effects: socket and CLI, needs --leases), G-b a new device type
+"settings" (no memory, unlimited claims, always published): admins
+create classes that select it and carry the admin-only settings.
+Recommendation G2 with G-b, built when the first admin-only container
+setting is implemented (fencing), not before.
+
+H. Node defaults (driver configuration)
+---------------------------------------
+H1. Keep separate node keys (containerMemory.default, ...).
+H2. defaults: a MemoryConfig body (device, container) that is the first
+    layer of D2 for every result, and the container settings of every
+    container, also those without claims (recommended):
+      defaults:
+        container:
+          steering: {policy: auto}
+          fencing: allowed-mems      # plan-11 containerMemory.default
+plan-11's containerMemory.default moves to defaults.container.fencing;
+its per-container future (plan-11 O1) is G2.
+Later: rules by pod properties (QoS class, namespace) as a list next to
+defaults; nothing reserved beyond the name.
+Recommendation H2.
+
+I. Reserved aspects (not built in plan-12, placed now)
+------------------------------------------------------
+I1. container.memoryLimit: adjust the container's memory limit to its
+    claimed memory, e.g. {raise: claimed} (memory.max grows by the
+    memory of its numa results; leases: by lent memory). Mechanism to
+    study: pods/resize subresource (API, scheduler and kubelet agree)
+    versus NRI updates (kubelet does not know). Container scope.
+I2. container.fencing: mempolicy (plan-11's soft mode). Admin-only.
+I3. device.online: how much of a local memdev a numa slice onlines
+    (claimed, or more: the claim then bounds use by steering quota and
+    limits, not by onlined blocks). Affects the capacity left for dax
+    slices of others: admin-only. Device scope.
+I4. Steering variants (F): a policy that only places, no stepping.
+
+J. Pool numa memory and steering
+--------------------------------
+J1. Not steered (today, P1). steering in a pool claim would be refused
+    or meaningless.
+J2. Steered like local CXL memory (recommended): claimedMemory takes the
+    numa results of both drivers (pool through a snapshot, as plan-11
+    claimNodes). Default auto then steers a container with a pool numa
+    claim first-cxl, like a local one; `policy: none` gives today's pool
+    behavior. Resolves plan-11 O2 (a container with local and pool numa
+    claims loses the pool node).
+Recommendation J2: one semantics for numa memory, whatever its source.
+
+K. Leases
+---------
+- Companion claims get a MemoryConfig device section built from the
+  request (broker.companionRequest), with the same validation.
+- The borrower's container settings come from its lease claim (the
+  cxl-lease request) through E2, plus node defaults; lent nodes are
+  part of the fenced-container formula (F).
+- cxl-request keeps its flags for device fields; a generic --config
+  (device section only, validated by the same package) is optional
+  later. Admin-only fields are never taken from a lease request.
+
+L. Visibility (R6)
+------------------
+- Device sections are validated at Prepare (pod events); container
+  sections are validated per field at Prepare, combined at
+  CreateContainer.
+- The driver logs the effective device settings per result and the
+  effective container settings per container (V(3)), and which layer
+  set what (node, class name, claim).
+- Optional: the effective container settings as env of the container
+  through the NRI adjustment (CXL_STEERING=none|first-cxl|...), so a
+  workload can check what it got. Decide when implementing.
+
+M. Code architecture
+--------------------
+- New package pkg/cxl/config: v1alpha1 types (MemoryConfig,
+  DeviceSettings, ContainerSettings, SteeringSettings), Resolve (D2
+  over node defaults and allocation config entries, strict decode,
+  admin-only check by source), Validate (per driver capabilities, the
+  device facts that need the claim status stay in the drivers),
+  Combine (E2), mapping to cgmpolmgr.Policy. Used by both drivers, the
+  NRI plugin, the broker and cxl-request. pkg/cxl/memorypolicy and
+  lending.go deviceConfig go away.
+- Prepared state stores per result: request name, resolved device
+  settings, the container section (explicit fields only). Pool: in
+  preparedPoolDevice, read by the NRI plugin through the snapshot.
+- The NRI plugin decides one management per container from the combined
+  settings: steered (cgmpolmgr), allowed (plan-11 fence path with
+  claimed and lent nodes), none; replacing trackedContainer.steered and
+  .fenced. memoryMode(pod, ctr) of plan-11 becomes this decision.
+- Docs: one field table (field, scope, values, default, admin-only),
+  generated or kept next to the types.
+
+Decisions for the user (recommended first)
+------------------------------------------
+Q1. One kind MemoryConfig with device and container sections (A3+B2);
+    alternative: flat fields (B1).
+Q2. Pool numa memory steered like local by default (J2); alternative:
+    pool stays unsteered (J1).
+Q3. Steering default auto, none per workload and per node (F);
+    alternative: default none (steering opt-in).
+Q4. Admin-only fields through DeviceClasses (G2), first one fencing,
+    with a token device type "settings" when needed (G-b).
+Q5. One apiVersion cxl.nri.io/v1alpha1 for both drivers (C2).
+
+N. A pool section (added 2026-10-23 after Q1)
+--------------------------------------------
+The user asked for three sections by owner: pool (the pool controller),
+device (the node driver's kubelet plugins), container (the NRI plugin).
+Pool-side settings that a claim could choose already exist in the
+reference pool server (AttachRequest Slot and NumaNode, 01-findings C7);
+real appliances have their own (ports, QoS, sanitize on reassignment).
+N1. Generic pool fields only. - every vendor setting needs a schema
+    change here.
+N2. pool.opaque, a map from controller key to an object that the
+    controller defines (recommended). Several implementations can serve
+    one driver and every controller sees every entry of its driver:
+    keying by controller lets a claim carry settings for several
+    implementations, and objects merge per key across class and claim
+    entries (a list would be replaced whole). The node driver checks only
+    the structure. Generic pool fields can be added next to opaque when
+    two implementations need the same setting.
+    The reference controller's object: slot, numaNode.
+Recommendation N2. With it, one apiVersion for everything (Q5) is
+enough: a vendor versions its own object if it wants (an apiVersion
+inside it), the outer schema stays cxl.nri.io/v1alpha1.
+
+Decisions (user, 2026-10-23)
+----------------------------
+Q1 Separate sections, by owner: pool (controller), device (node
+   driver), container (NRI plugin); a nested opaque part for
+   controller-specific settings (N2).
+Q2 Pool devices are handled like local devices by default, the same
+   steering defaults included (J2).
+Q3 Steering is opt-in for now (throttling and injecting memory policies
+   into running processes are disruptive): default policy none; opting
+   in must be very easy: one line in a claim
+   (container: {steering: {policy: auto}}), a class preset, the Helm
+   value deviceClassConfig for the shipped classes, or the node default.
+   Supersedes the default auto of F.
+Q4 Admin-only settings: room in the design only (G2's source table), no
+   field implemented. container.fencing is settable in the driver
+   configuration only for now.
+Q5 One apiVersion cxl.nri.io/v1alpha1 for the node driver, the pool
+   driver and the controllers (C2 with N2).
+The normative result is 04-contract.txt.

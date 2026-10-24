@@ -1,8 +1,8 @@
 # An exclusive device of a memory pool as a devdax device: DeviceClass
-# cxl-pool with DeviceConfig mode: dax. The memory is never onlined, and
-# the device keeps its bytes until they are written again, also when the
-# next claim gets it on another node: the container prints what it finds
-# and writes "hello".
+# cxl-pool with MemoryConfig device.mode: dax. The memory is never
+# onlined, and the device keeps its bytes until they are written again,
+# also when the next claim gets it on another node: the container prints
+# what it finds and writes "hello".
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -20,9 +20,10 @@ spec:
     - opaque:
         driver: cxl-pool.nri.io
         parameters:
-          apiVersion: cxl-pool.nri.io/v1alpha1
-          kind: DeviceConfig
-          mode: dax
+          apiVersion: cxl.nri.io/v1alpha1
+          kind: MemoryConfig
+          device:
+            mode: dax
 ---
 apiVersion: v1
 kind: Pod

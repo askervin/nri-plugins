@@ -15,7 +15,11 @@
 package memctl
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -69,4 +73,48 @@ func TestProbeAliasing(t *testing.T) {
 		t.Fatalf("expected aliasing at +8 MiB from 0, got %s", a)
 	}
 	t.Log(a)
+}
+
+func TestOpenDaxNode(t *testing.T) {
+	node := filepath.Join(t.TempDir(), "dax0.0")
+	if err := os.WriteFile(node, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldOpen, oldTimeout, oldInterval := openFile, daxOpenTimeout, daxOpenInterval
+	t.Cleanup(func() { openFile, daxOpenTimeout, daxOpenInterval = oldOpen, oldTimeout, oldInterval })
+	daxOpenTimeout, daxOpenInterval = time.Second, time.Millisecond
+	// the character device appears after failing opens
+	fails := 0
+	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if fails < 3 {
+			fails++
+			return nil, &os.PathError{Op: "open", Path: name, Err: unix.ENXIO}
+		}
+		return os.OpenFile(name, flag, perm)
+	}
+	f, err := openDaxNode(node)
+	if err != nil {
+		t.Fatalf("open after ENXIO: %v", err)
+	}
+	_ = f.Close()
+	if fails != 3 {
+		t.Fatalf("expected 3 failed opens, got %d", fails)
+	}
+	// other errors are returned at once
+	calls := 0
+	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		calls++
+		return nil, &os.PathError{Op: "open", Path: name, Err: unix.EACCES}
+	}
+	if _, err := openDaxNode(node); !errors.Is(err, unix.EACCES) || calls != 1 {
+		t.Fatalf("expected EACCES at once, got %v after %d calls", err, calls)
+	}
+	// ENXIO until the timeout is returned
+	daxOpenTimeout = 20 * time.Millisecond
+	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		return nil, &os.PathError{Op: "open", Path: name, Err: unix.ENXIO}
+	}
+	if _, err := openDaxNode(node); !errors.Is(err, unix.ENXIO) {
+		t.Fatalf("expected ENXIO after the timeout, got %v", err)
+	}
 }

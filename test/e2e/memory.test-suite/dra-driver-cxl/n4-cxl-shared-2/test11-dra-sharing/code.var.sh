@@ -184,13 +184,13 @@ retry-until --timeout 30 --message "writer has written" \
 dra-kubectl "$VM2" "logs -n $DRA_NS writer"
 WRITER_LOG="$COMMAND_OUTPUT"
 # The environment of the shared device, read-write, and the marker of the
-# claim, nothing else.
+# allocation result of the claim (result 0), nothing else.
 dra-env-assert writer "$WRITER_LOG" "$SHARED_HEX" \
     SERIAL="$SHARED_SERIAL" SHARED=1 MODE=dax SIZE="$SHARED_SIZE" "DAX=/dev/dax*" READONLY=0
-grep -qx "CXL_CLAIM_${VM1_CLAIM_UID//-/_}=1" <<< "$WRITER_LOG" ||
-    error "writer has no claim marker CXL_CLAIM_${VM1_CLAIM_UID//-/_}=1"
+grep -qx "CXL_CLAIM_${VM1_CLAIM_UID//-/_}_0=1" <<< "$WRITER_LOG" ||
+    error "writer has no marker CXL_CLAIM_${VM1_CLAIM_UID//-/_}_0=1 of result 0 of its claim"
 [ "$(grep -c '^CXL_' <<< "$WRITER_LOG")" == 7 ] ||
-    error "writer has other CXL_ variables than the six of $SHARED_SERIAL and the claim marker: $(grep '^CXL_' <<< "$WRITER_LOG")"
+    error "writer has other CXL_ variables than the six of $SHARED_SERIAL and the marker of its result: $(grep '^CXL_' <<< "$WRITER_LOG")"
 VM1_DAX=$(dra-env-value "$WRITER_LOG" "CXL_${SHARED_HEX}_DAX")
 # In VM1 the device is a devdax region, never system RAM.
 pool-cxl-wait "$VM1" shared0-writer \

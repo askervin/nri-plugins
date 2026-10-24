@@ -235,9 +235,10 @@ companion-check() {
     # The objects of lease LEASE: the companion pod and its claim
     # cxl-lease-LEASE, both owned by the borrower, labeled and annotated
     # with the lease and its requester; the claim asks for a device of
-    # DeviceClass CLASS, has a DeviceConfig of mode MODE for the pool
-    # driver and no other config, and is allocated to pool device DEVICE on
-    # this node and attached by the pool. CLAIM_JSON is the claim.
+    # DeviceClass CLASS, has a MemoryConfig of the pool driver with a
+    # device section of mode MODE only and no other config, and is
+    # allocated to pool device DEVICE on this node and attached by the
+    # pool. CLAIM_JSON is the claim.
     local lease="$1" dev="$2" class="$3" mode="$4" name="cxl-lease-$1" pod_json claim_uid
     dra-pod-wait "$VM2" "$name" Running 30
     dra-json "$VM2" pod -n "$DRA_NS" "$name"
@@ -264,7 +265,7 @@ companion-check() {
     # the mode.
     dra-companion-meta-check "$CLAIM_JSON" "$lease" "$BORROWER_UID" "$VM2_NAME" "$DRA_NS/borrower/main"
     dra-assert "$CLAIM_JSON" "[s['deviceClassName'] for s in subrequests()] == ['$class']"
-    dra-assert "$CLAIM_JSON" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), c['parameters'].get('mode'), bool(c['parameters'].get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', '$DRA_POOL_DRIVER/v1alpha1', 'DeviceConfig', '$mode', False)]"
+    dra-assert "$CLAIM_JSON" "[(c['driver'], c['parameters'].get('apiVersion'), c['parameters'].get('kind'), sorted(set(c['parameters']) - {'apiVersion', 'kind'}), config_section(c, 'device').get('mode'), bool(config_section(c, 'device').get('readOnly'))) for c in configs()] == [('$DRA_POOL_DRIVER', '$DRA_CONFIG_API', '$DRA_CONFIG_KIND', ['device'], '$mode', False)]"
     claim_uid=$(dra-value "$CLAIM_JSON" "j['metadata']['uid']")
     pool-host-client -o json devices "$dev" || command-error "cannot get $dev"
     pool-assert "$COMMAND_OUTPUT" "[(a['host'], a.get('owner'), a['state']) for a in j['attachments']] == [('$VM2_NAME', 'k8s:resourceclaim/$claim_uid', 'attached')]"
@@ -694,7 +695,7 @@ echo "### C2: a claim of the same memory gives the same environment"
 # A pod with a claim of pooled0 from its creation (test10): its container
 # has the variables that cxl-request env printed for the lease of pooled0,
 # each with the same value, the NUMA node that of the claim, and the
-# marker of the claim.
+# marker of the allocation result of the claim.
 dra-apply "$VM2" <<EOF
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -738,10 +739,10 @@ CLAIM_NODE=$(cxl-value "[r['Node'] for r in regions if names(r['Memories']) == [
 dra-json "$VM2" resourceclaim -n "$DRA_NS" pooled-memory
 CLAIMER_UID=$(dra-value "$COMMAND_OUTPUT" "j['metadata']['uid']")
 dra-kubectl "$VM2" "logs -n $DRA_NS claimer" || command-error "cannot get the log of claimer"
-grep -qx "CXL_CLAIM_${CLAIMER_UID//-/_}=1" <<< "$COMMAND_OUTPUT" ||
-    error "claimer has no claim marker CXL_CLAIM_${CLAIMER_UID//-/_}=1"
+grep -qx "CXL_CLAIM_${CLAIMER_UID//-/_}_0=1" <<< "$COMMAND_OUTPUT" ||
+    error "claimer has no marker CXL_CLAIM_${CLAIMER_UID//-/_}_0=1 of result 0 of its claim"
 [ "$(grep -c '^CXL_' <<< "$COMMAND_OUTPUT")" == 6 ] ||
-    error "claimer has other CXL_ variables than the five of $POOLED0_SERIAL and the claim marker"
+    error "claimer has other CXL_ variables than the five of $POOLED0_SERIAL and the marker of its result"
 CLAIMER_ENV=$(grep "^CXL_${POOLED0_HEX}_" <<< "$COMMAND_OUTPUT")
 dra-env-assert claimer "$CLAIMER_ENV" "$POOLED0_HEX" \
     SERIAL="$POOLED0_SERIAL" SHARED=0 MODE=numa SIZE="$POOLED0_SIZE" NODE="$CLAIM_NODE"

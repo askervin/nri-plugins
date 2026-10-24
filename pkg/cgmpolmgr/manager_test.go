@@ -66,3 +66,32 @@ func TestNormalMemoryFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestAllowNodesFirstWrite(t *testing.T) {
+	cg := t.TempDir()
+	mems := filepath.Join(cg, "cpuset.mems")
+	m := &Manager{
+		cgroupPath: cg,
+		sysRoot:    writeNodes(t, "0-1", ""),
+		name:       "test",
+		log:        log,
+		// the cgroup holds memory on its DRAM nodes already
+		allowed: map[int]bool{0: true, 1: true},
+	}
+	// the first step adds no node and still confines the cgroup
+	require.NoError(t, m.allowNodes([]int{0, 1}))
+	data, err := os.ReadFile(mems)
+	require.NoError(t, err)
+	require.Equal(t, "0-1\n", string(data))
+	// a later step that adds no node writes nothing
+	require.NoError(t, os.WriteFile(mems, []byte("unchanged\n"), 0o644))
+	require.NoError(t, m.allowNodes([]int{1}))
+	data, err = os.ReadFile(mems)
+	require.NoError(t, err)
+	require.Equal(t, "unchanged\n", string(data))
+	// a step that adds a node writes all of them
+	require.NoError(t, m.allowNodes([]int{2}))
+	data, err = os.ReadFile(mems)
+	require.NoError(t, err)
+	require.Equal(t, "0-2\n", string(data))
+}

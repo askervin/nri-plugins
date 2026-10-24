@@ -1,0 +1,201 @@
+plan-12: findings - how claims are configured today
+===================================================
+Written 2026-10-23 (orchestrator). Branch 5jg-cxl at ed99fcc44 plus the
+uncommitted plan-11 change. Paths: N = ~/github.com/containers/
+nri-plugins, D = N/cmd/plugins/dra-driver-cxl, docs = N/docs/memory/cxl.
+
+C1. The configuration surfaces
+------------------------------
+  surface                      who writes it   scope            today
+  driver configuration (-f,    node admin      node             ignoreDevices, sharedDevices,
+    Helm value config)                                          manageMemdevs, containerMemory
+                                                                (plan-11), udev, testability
+  DeviceClasses (Helm chart)   cluster admin   class            selectors only, no config
+  opaque config of a claim     user            claim/request    kinds DeviceConfig,
+    (or of a DeviceClass)      (admin)                          MemoryPolicyConfig
+  lease request (cxl-request)  workload        lease            --source --mode --read-only
+                                                                --access --name --size
+                                                                --serial --shared --wait
+  CDI env of a prepared result driver          container        CXL_CLAIM_<uid>=1 and
+                                                                CXL_<KEY>_<FIELD>
+The opaque config is the only per-workload surface for prepared claims;
+the lease request is the one for leases.
+
+C2. The two opaque kinds
+------------------------
+DeviceConfig (lending.go deviceConfig; both drivers, apiVersion
+<driver>/v1alpha1): mode, readOnly, access, path. Read per allocation
+result with parseConfig(claim, driver, kind, request): class configs
+first, then claim configs; one that lists requests applies to those (a
+request covers its subrequests), one without requests to all; a later
+one REPLACES an earlier one (no field merge). Strict decoding.
+Validation per driver: modeFor/numaOnly (cxl.nri.io), poolModeFor
+(cxl-pool.nri.io, needs the claim status data of the device).
+
+MemoryPolicyConfig (pkg/cxl/memorypolicy, apiVersion cxl.nri.io/
+v1alpha1): cgmpolmgr.Policy inline: memoryUseOrder (first-dram,
+first-cxl, start-interleaved, end-interleaved, waypoints),
+memoryUseWaypoints, minStep, maxStep. Read with request "" (node_state.go
+parseMemoryPolicy): it belongs to the whole claim and ignores the
+requests of the config entry. Stored as PreparedClaimInfo.Policy.
+
+C3. Problems
+------------
+P1. The pool driver accepts DeviceConfig only (pool.go checkClaim ->
+    checkConfigKinds(..., DeviceConfig)). A MemoryPolicyConfig for
+    driver cxl-pool.nri.io fails the Prepare ("unknown kind ...
+    (DeviceConfig)"); one for driver cxl.nri.io in a claim of pool
+    devices only is never read (cxl.nri.io does not prepare that
+    claim). Pool numa memory is not steered at all (nri.go
+    claimedMemory reads nodeState claims only), so a pool claim cannot
+    have a steering configuration, with or without a device config.
+    (The user's hunch is right.)
+P2. One kind per aspect. Every new aspect (memory limit adjustment,
+    onlining extent, fencing exemption, ...) would be a new kind, to be
+    accepted by each driver (checkConfigKinds lists), each with its own
+    precedence rules, its own "one per container" rule and its own
+    error texts. A user who wants two aspects writes two config
+    entries per driver.
+P3. Scopes are implicit and inconsistent. DeviceConfig is per request
+    (how a device is prepared). MemoryPolicyConfig is about containers
+    but is attached to the whole claim and ignores `requests`. Neither
+    the API nor the docs separate "how the device is prepared" from
+    "how a container that uses it is managed".
+P4. Containers are attributed whole claims, not requests. The CDI
+    device of every result of a claim injects the same marker
+    CXL_CLAIM_<uid>=1 (node_state.go buildClaimsCDISpec; pool.go
+    buildCDISpec likewise). Kubernetes lets a container use one request
+    of a claim (containers[].resources.claims[].request: "only the
+    result of this request" is made available), and kubelet then
+    injects only that result's CDI device. The driver still sees the
+    claim marker and attributes ALL devices of the claim to the
+    container: claimedMemory sums every numa device of the claim into
+    the container's steering plan, plan-11 claimNodes gives it every
+    numa node of the claim. Example: claim X with requests numa (4Gi
+    numa slice) and dax; container A uses X/numa, container B uses
+    X/dax: B is steered to the CXL node and gets it in cpuset.mems.
+P5. Replace instead of merge. A DeviceClass config cannot be a preset:
+    a claim config of the same kind replaces it entirely (class mode:
+    dax + claim readOnly: true = readOnly without mode). The chart's
+    classes carry no configs at all; presets (an "unsteered" class, a
+    dax class) are not possible in a useful way.
+P6. No way to say "do not steer". memoryUseOrder has no "none"; the
+    only ways to avoid steering are to claim memory that is not steered
+    (dax, pool numa) or nothing. Steering is on for every container with
+    a cxl.nri.io numa claim (CXL only: first-cxl, CXL+DRAM:
+    start-interleaved, DRAM only: first-dram; defaultPolicy, nri.go).
+P7. Steering is disruptive for workloads that manage their own memory
+    (HPC, databases): it narrows cpuset.mems to the plan's nodes, sets
+    the memory policy of the threads that exist at its start (processes
+    of kubectl exec and anything not descended from them are not
+    covered), and throttles the cgroup with memory.high at every step
+    (a step is minStep..maxStep, default the whole quota) until the
+    manager raises it. A steered container cannot take a numa lease
+    (lending refuses steered containers: one owner of cpuset.mems).
+P8. Steering does not survive a driver restart: managers are created
+    only at StartContainer (nri.go); Synchronize marks steered
+    containers but starts no manager, Stop removes memory.high. The
+    cpuset.mems and memory policies of the threads stay as they were.
+P9. Two API groups for one vocabulary. The same fields are
+    cxl.nri.io/v1alpha1 for local devices and cxl-pool.nri.io/v1alpha1
+    for pool devices; a claim with firstAvailable local, pool needs two
+    entries that differ only in driver and apiVersion (the broker does
+    exactly that for companion claims). The `driver` of an opaque entry
+    is a Kubernetes API field and stays per driver; the apiVersion of
+    the parameters need not be.
+P10. No admin-only settings. Every field of a claim config is the
+    user's. Settings that weaken isolation (plan-11 fencing of other
+    containers, onlining more than claimed) cannot be offered per
+    workload without letting every tenant use them. The allocation's
+    config entries carry their source (FromClass, FromClaim), so the
+    driver can tell admin (DeviceClass) from user (claim) settings.
+P11. Node-level container memory (plan-11 containerMemory.default) is a
+    separate vocabulary from the per-claim one, and plan-11 O1
+    (per-container values) has no place to go.
+P12. Lease requests have their own flags for the device fields and
+    nothing for container settings; the broker hand-builds DeviceConfig
+    for companion claims (broker.go companionRequest).
+P13. Errors and visibility: config errors of devices fail the Prepare
+    (pod events); MemoryPolicyConfig conflicts between claims of one
+    container fail CreateContainer ("multiple claims specify memory
+    policies"). The effective settings of a container are visible only
+    in the driver log (V(5)).
+
+C4. Kubernetes facts that the design builds on (k8s.io/api v0.37)
+------------------------------------------------------------------
+- DeviceClass.spec.config and ResourceClaim.spec.devices.config are
+  lists of opaque entries {driver, parameters} (claim entries also
+  {requests}); the allocation copies both into
+  status.allocation.devices.config with source FromClass or FromClaim,
+  class entries first. How entries combine is up to the driver.
+- A container's resources.claims[] entry has name and an optional
+  request; with a request only that result reaches the container.
+- firstAvailable subrequests: a config for "r" covers "r/s"; "r/s"
+  targets one alternative (the broker uses it for local-then-pool).
+- DeviceClass.spec.extendedResourceName (DRAExtendedResource): pods can
+  get devices through extended resource requests, without a claim of
+  their own; the config of such an allocation comes from the class only.
+  Mergeable class configs are what makes such classes configurable.
+- Access to a DeviceClass per namespace can be limited with
+  ResourceQuota (<class>.deviceclass.resource.k8s.io/devices) and
+  admission policies: classes are the natural carrier of admin choices.
+- Other DRA drivers (the example driver, NVIDIA GPU) use one config kind
+  per kind of device with nested structs per aspect (GpuConfig.sharing)
+  and take the last applicable entry.
+
+C5. Who uses the kinds today (blast radius of a change)
+-------------------------------------------------------
+D (lending.go deviceConfig, node_state.go, pool.go, pool_persistent.go,
+broker.go companion claims, tests), pkg/cxl/memorypolicy,
+deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml (comments),
+deployment/samples/dra-driver-cxl/*.yaml (8 files),
+docs/memory/cxl/{usage,local,pool,leases,index,e2e}.md,
+E/dra.source.sh dra-claim-yaml and dra-shared-claim-yaml (DeviceConfig
+with mode/readOnly), test14 (error text), H/lib.sh claim_yaml,
+plan-8-demo manifests. Nothing published: no compatibility to keep.
+
+C6. Commit c55476444 "cxl: detect memory size limited by address line
+    issues" (pulled in 2026-10-23 from another workstream)
+------------------------------------------------------------------------
+- New node-level driver configuration: memdevSettings (per memdev,
+  matched by name or serial: usableSize) and verifyAddressing (default
+  true: an address line probe of every new local region; an aliased
+  memdev is used, published and remembered in localProbes.json with only
+  its distinct bytes). Both describe what the hardware of the node can be
+  trusted with: node-admin settings about devices, not choices of a
+  claim. They stay in the driver configuration; they do not move into
+  MemoryConfig.
+- The probe runs inside region creation (createProbedRegion, under
+  localAllocator.mu, before any slice), i.e. before plan-11's fence and
+  before any memory goes online; a numa slice is onlined later in
+  onlineSlice as before. No interaction with fencing or steering.
+- Published memdev capacity is now the usable size (memdevUsableSize).
+  A claim allocated against the larger capacity published before a probe
+  fails its Prepare with "no room for the slice". The reserved
+  device.online setting (02-design I3) must count in usable bytes.
+- The driver configuration thus has two kinds of keys: inventory and
+  health of devices (ignore*, sharedDevices, manageMemdevs,
+  memdevSettings, verifyAddressing) and defaults for containers
+  (containerMemory of plan-11, which becomes defaults.container).
+- pkg/cgmpolmgr gained manager tests only. Unaffected by plan-12.
+
+C7. The pool controller today (scripts/testing/fake-cxl-pool)
+-------------------------------------------------------------
+- fake-cxl-pool-controller reads no opaque configuration. Per allocation
+  result it attaches the device (exclusive when the allocation consumed
+  all shares), then writes claim.status.devices[] (condition
+  cxl-pool.nri.io/Attached or AttachFailed with reasons NoHost,
+  AttachError, Timeout, Conflict; data serial, shared, size, exclusive,
+  persistent and informational fields), docs/memory/cxl/pool.md "What the
+  pool controller writes". The scheduler deallocates on AttachFailed and
+  allocates again until the binding timeout.
+- The pool server's attach request already takes per-attachment
+  placement that a claim could choose: Slot (an exact CXL slot of the
+  host) and NumaNode (prefer slots of host bridges near a NUMA node).
+  Neither is reachable from a claim today.
+- Several controllers can serve one driver (plan-10, pools A/B/C), each
+  for its own DRA pool; an opaque config entry is per driver, so every
+  controller of the driver sees every entry of a claim.
+- The controller is in this module (go vet ./scripts/testing/
+  fake-cxl-pool/... runs from N): it can share a Go package with the
+  driver.
