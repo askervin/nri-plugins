@@ -39,6 +39,11 @@ type ltStub struct {
 	err     error    // return this error
 	// failIDs are the containers whose updates are reported failed.
 	failIDs map[string]bool
+	// specOnly are the containers whose updates reach only their spec,
+	// as in containerd before it has marked a container started.
+	specOnly map[string]bool
+	// applied is called for an update that reaches the cgroup.
+	applied func(id, mems string)
 	// entered gets a value when UpdateContainers is called, and gate
 	// blocks it until closed (nil: neither).
 	entered chan struct{}
@@ -62,15 +67,36 @@ func (s *ltStub) UpdateContainers(u []*api.ContainerUpdate) ([]*api.ContainerUpd
 	if s.fail {
 		return u, nil
 	}
-	var failed []*api.ContainerUpdate
+	var failed, applied []*api.ContainerUpdate
 	for _, cu := range u {
 		if s.failIDs[cu.GetContainerId()] {
 			failed = append(failed, cu)
 			continue
 		}
 		s.updates = append(s.updates, cu.GetContainerId()+" mems="+cu.GetLinux().GetResources().GetCpu().GetMems())
+		if !s.specOnly[cu.GetContainerId()] {
+			applied = append(applied, cu)
+		}
+	}
+	if s.applied != nil {
+		s.mu.Unlock()
+		for _, cu := range applied {
+			s.applied(cu.GetContainerId(), cu.GetLinux().GetResources().GetCpu().GetMems())
+		}
+		s.mu.Lock()
 	}
 	return failed, nil
+}
+
+// setSpecOnly makes the updates of the container reach only its spec
+// (on) or its cgroup too.
+func (s *ltStub) setSpecOnly(id string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.specOnly == nil {
+		s.specOnly = map[string]bool{}
+	}
+	s.specOnly[id] = on
 }
 
 func (s *ltStub) taken() []string {
@@ -114,7 +140,46 @@ func newLtEnv(t *testing.T) *ltEnv {
 	e.p.initLendState()
 	e.p.OnContainerGone(func(ref containerRef) { e.gone <- ref })
 	e.p.OnContainerStarted(func(ref containerRef) { e.start <- ref })
+	e.stub.applied = e.toCgroup
 	return e
+}
+
+// toCgroup writes the cpuset.mems of an update to the cgroup of a started
+// container, as runc does.
+func (e *ltEnv) toCgroup(id, mems string) {
+	e.p.mu.Lock()
+	dir := ""
+	if tc := e.p.ctrs[id]; tc != nil && tc.started {
+		dir = tc.ref.CgroupPath
+	}
+	e.p.mu.Unlock()
+	if dir == "" {
+		return
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cpuset.mems"), []byte(mems+"\n"), 0o644); err != nil {
+		e.t.Error(err)
+	}
+}
+
+// setCgroupMems sets the cpuset.mems of the cgroup of a container.
+func (e *ltEnv) setCgroupMems(rel, mems string) {
+	e.t.Helper()
+	if err := os.WriteFile(filepath.Join(cgroupRoot, rel, "cpuset.mems"), []byte(mems+"\n"), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// cgroupMems returns the cpuset.mems of the cgroup of a container.
+func (e *ltEnv) cgroupMems(rel string) string {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(cgroupRoot, rel, "cpuset.mems"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // proc makes /proc/<pid>/cgroup point to cgroup rel and returns the
@@ -148,20 +213,38 @@ func ltCtr(pod *api.PodSandbox, id, name string, pid uint32) *api.Container {
 	return &api.Container{Id: id, PodSandboxId: pod.GetId(), Name: name, Pid: pid}
 }
 
-// run creates and starts a container whose cgroup has effMems.
+// run creates and starts a container whose cgroup has effMems, and the
+// cpuset.mems of its adjustment, as runc creates it. Its updates reach
+// only its spec until it has started, as in containerd.
 func (e *ltEnv) run(pod *api.PodSandbox, id, name string, pid uint32, effMems string) *api.Container {
 	e.t.Helper()
-	e.proc(pid, "kubepods/"+pod.GetUid()+"/"+id, effMems, "")
 	ctr := ltCtr(pod, id, name, pid)
 	ctx := context.Background()
-	if _, _, err := e.p.CreateContainer(ctx, pod, ctr); err != nil {
+	adj, _, err := e.p.CreateContainer(ctx, pod, ctr)
+	if err != nil {
 		e.t.Fatal(err)
 	}
+	e.stub.setSpecOnly(ctr.GetId(), true)
+	e.proc(pid, "kubepods/"+pod.GetUid()+"/"+id, effMems, adj.GetLinux().GetResources().GetCpu().GetMems())
+	e.startCtr(pod, ctr)
+	return ctr
+}
+
+// startCtr starts a created container: StartContainer, then the runtime
+// marks it started (its updates reach the cgroup) and PostStartContainer.
+// Waits for the OnContainerStarted callback and the fence passes.
+func (e *ltEnv) startCtr(pod *api.PodSandbox, ctr *api.Container) {
+	e.t.Helper()
+	ctx := context.Background()
 	if err := e.p.StartContainer(ctx, pod, ctr); err != nil {
 		e.t.Fatal(err)
 	}
-	e.wait(e.start, id)
-	return ctr
+	e.stub.setSpecOnly(ctr.GetId(), false)
+	if err := e.p.PostStartContainer(ctx, pod, ctr); err != nil {
+		e.t.Fatal(err)
+	}
+	e.wait(e.start, ctr.GetId())
+	e.passes()
 }
 
 func (e *ltEnv) wait(c chan containerRef, id string) containerRef {
@@ -217,6 +300,11 @@ func TestLendContainerTable(t *testing.T) {
 	}
 
 	if err := e.p.StartContainer(ctx, pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	// started when the runtime applies updates to its cgroup
+	e.noCallback(e.start)
+	if err := e.p.PostStartContainer(ctx, pod, ctr); err != nil {
 		t.Fatal(err)
 	}
 	started := e.wait(e.start, "c1")
@@ -505,10 +593,7 @@ func TestLendNeverWithoutBaseMems(t *testing.T) {
 	if _, _, err := e.p.CreateContainer(ctx, pod, ctr); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.p.StartContainer(ctx, pod, ctr); err != nil {
-		t.Fatal(err)
-	}
-	e.wait(e.start, "c1")
+	e.startCtr(pod, ctr)
 	if err := e.p.LendNode(ctx, "u1", "app", 2, "l1"); err == nil || !strings.Contains(err.Error(), "base memory nodes unknown") {
 		t.Fatalf("lend without base: %v", err)
 	}
@@ -526,10 +611,7 @@ func TestLendNeverWithoutBaseMems(t *testing.T) {
 	if _, _, err := e.p.CreateContainer(ctx, pod3, ctr3); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.p.StartContainer(ctx, pod3, ctr3); err != nil {
-		t.Fatal(err)
-	}
-	e.wait(e.start, "c3")
+	e.startCtr(pod3, ctr3)
 	if err := e.p.LendNode(ctx, "u3", "app", 2, "l1"); err != nil {
 		t.Fatal(err)
 	}

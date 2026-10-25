@@ -95,3 +95,37 @@ func TestAllowNodesFirstWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "0-2\n", string(data))
 }
+
+// TestRelease removes the memory.high that a killed manager left, leaves
+// max as it is and creates no file.
+func TestRelease(t *testing.T) {
+	cg := t.TempDir()
+	high := filepath.Join(cg, "memory.high")
+	readHigh := func() string {
+		data, err := os.ReadFile(high)
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	require.NoError(t, os.WriteFile(high, []byte("140668928\n"), 0o644))
+	was, err := Release(cg)
+	require.NoError(t, err)
+	require.Equal(t, "140668928", was)
+	require.Equal(t, "max\n", readHigh())
+
+	// max already (a manager stopped gracefully): nothing to write
+	require.NoError(t, os.WriteFile(high, []byte("max\n"), 0o444))
+	was, err = Release(cg)
+	require.NoError(t, err)
+	require.Equal(t, "", was)
+	require.Equal(t, "max\n", readHigh())
+
+	// a cgroup without memory.high, or gone
+	require.NoError(t, os.Remove(high))
+	_, err = Release(cg)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(high)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = Release(filepath.Join(cg, "gone"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}

@@ -1,0 +1,80 @@
+bug-03: host bridge and switch decoders keep the start and size of a
+destroyed region in sysfs
+======================================================================
+2026-10-24, debugging agent of plan-13 (explains EXEC's S2, 04-status-
+EXEC.txt section 9; found while debugging bug-02). Evidence in
+/tmp/bug02.
+
+1. Summary
+----------
+After a region is destroyed, /sys/bus/cxl/devices/decoderP.K of the
+host bridge and switch ports it went through still show the region's
+start, size and target_list (cxl list -D too), with region "". The
+decoder is not committed: the port's decoders_committed does not count
+it, its hardware registers are zero and the next region takes it and
+overwrites the values. Only the endpoint decoders are cleared. EXEC
+read these values as "port decoders stay programmed after every run,
+vm0 hb0 has one free decoder left" (S2); in fact every decoder was free
+in every VM.
+
+Classification: kernel bookkeeping bug, cosmetic (no functional effect
+found in this driver's use). Not qemu, not the driver.
+
+2. Reproduction
+---------------
+Any in-order create and destroy, e.g. VM0 right after a restart
+(/tmp/bug02/race.log, 09:02-09:03 UTC): attach d1, cxl create-region
+(region0 on decoder 2.0 of port2 = host bridge pci0000:0c), destroy it,
+detach. Afterwards:
+  port2 committed=0
+  decoder2.0 size=0x10000000 start=0x650000000 region=
+  decoder2.1 size=0x0 start=0x0 region=          (2.2, 2.3 the same)
+and the host bridge HDM registers read over HMP
+(/tmp/bug02/bin/hdm-regs.sh VMDIR 0x640010000 4: the CHBS base of uid 12
+from the CEDT, cache-mem at +0x1000, HDM capability at +0x128):
+  decoder0 base=0 size=0 ctrl=0x00001000 commit=0 committed=0
+In bug-02's sequence the next region on such a decoder got it at once
+(decoder2.0 with a stale 256 MiB became the 512 MiB region0; decoder2.2
+with a stale 0x680000000 became region3), so the values are free to be
+overwritten.
+
+3. Root cause (Linux v7.3-rc4)
+------------------------------
+drivers/cxl/core/region.c 2266 __cxl_decoder_detach, for the last
+target of a region:
+  1. cxl_region_decode_reset (247): resets the decoders, hardware
+     registers zeroed (hdm.c 889 cxl_decoder_reset, 910-918);
+  2. cxl_port_detach_region (1313) for every port: nr_eps drops to 0,
+     free_region_ref drops the cxl_region_ref of the port;
+  3. cxl_region_teardown_targets (2319) -> cxl_port_reset_targets
+     (1645), which would set cxld->hpa_range to 0..-1, finds no
+     cxl_region_ref any more ("After the last endpoint has been
+     detached the entire cxl_rr may now be gone") and returns;
+  4. only the endpoint decoder's hpa_range is cleared (2323).
+start and size in sysfs are cxld->hpa_range (port.c 101 start_show,
+110 size_show); target_list is cxlsd->target, also left. The values are
+rewritten by cxl_port_setup_targets when the decoder is used again.
+Possible functional effect, not seen: match_switch_decoder_by_range
+(region.c 1894, used by find_pos_and_ways for auto-assembled regions)
+compares hpa_range, so a stale decoder with the same range as a region
+programmed by firmware could be matched; runtime regions do not use it.
+
+4. Impact
+---------
+Misleading state for people and tools (S2; any check of "decoders with
+a size"). The truth is decoders_committed of each port (and, for one
+decoder, its committed state, which sysfs does not show for switch
+decoders; bug-02's holes are the decoders below decoders_committed
+without a region).
+
+5. Fixed / proposals
+--------------------
+Fixed in the test infrastructure (see bug-02 section 7a): pool-vm-
+decoders and pool-vm-reset look at decoders_committed, not at sizes,
+and do not restart a VM for stale sizes (every teardown leaves them;
+restarting for them would restart every VM before every test).
+Proposal (kernel, small): clear hpa_range (and the target list) of a
+switch decoder when its cxl_region_ref is freed (cxl_rr_free_decoder),
+or tear the targets down before the ports are detached in
+__cxl_decoder_detach. Proposal (test90 observer): report ports'
+decoders_committed and decoder -> region, never sizes, as port state.

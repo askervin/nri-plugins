@@ -41,13 +41,32 @@ package main
 // of running containers becomes ready (NRI synchronized and lends
 // restored) and at every Synchronize after that; passes started from
 // Synchronize and LendsRestored run in their own goroutines.
-// CreateContainer gives a new container wantMems as an adjustment, and
-// StartContainer starts a pass in the background when an update of the
-// container was missed. Steered containers (memorySteered, a pending plan
-// or a manager) are never updated and never lent to. Lock order: the Fence
-// lock of the fence, lendMu, p.mu, then the fenced set and the claim
-// tables (the lock of the node state, the pool snapshot lock serialsMu);
+// CreateContainer gives a new container wantMems as an adjustment, with
+// the nodes of the leases kept for it when it restarts (keptLends).
+// Steered containers (memorySteered, a pending plan or a manager) are
+// never updated and never lent to. A container that Synchronize finds is
+// not steered by this process, whatever its settings say
+// (syncManagement). Lock order: the Fence lock of the fence, lendMu, p.mu,
+// then the fenced set and the claim tables (the lock of the node state,
+// the pool snapshot lock serialsMu), then the lease table of the broker;
 // p.mu is never held across UpdateContainers.
+//
+// Updates before the start: containerd (2.x, container_start.go) applies
+// an NRI update to the cgroup only of a container that it has marked
+// started, which it does after task start, right before
+// PostStartContainer. Of a container that it has created but not marked
+// started it changes only the spec, which reaches the cgroup only if the
+// task is created after it, and the task is created before the
+// StartContainer event; one that is not in its store yet (during
+// CreateContainer) it skips. Both are reported as applied. So the
+// OnContainerStarted callbacks and a fence pass of the started container
+// run from PostStartContainer, and lends and passes compare with the
+// cpuset.mems of the cgroup of a started container (curMems), not with
+// the one recorded, and update it again when it differs. Not covered: a
+// revoke of a container that is not fenced between its StartContainer and
+// its PostStartContainer reaches its spec only, and its cgroup keeps the
+// node (with fencing none the plugin keeps no container off a node, and
+// offlining migrates the pages of the node whatever cpuset.mems says).
 
 import (
 	"context"
@@ -59,6 +78,7 @@ import (
 	"strings"
 
 	"github.com/containerd/nri/pkg/api"
+	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 )
@@ -92,11 +112,22 @@ type nodeLender interface {
 	// OnContainerGone registers a callback for StopContainer/RemoveContainer
 	// of a container that has lends or a lease socket.
 	OnContainerGone(func(ref containerRef))
-	// OnContainerStarted registers a callback for StartContainer.
+	// OnContainerStarted registers a callback for PostStartContainer: the
+	// container has started, and the runtime applies updates to its
+	// cgroup.
 	OnContainerStarted(func(ref containerRef))
 }
 
 var _ nodeLender = (*nriPlugin)(nil)
+
+// leaseNodes tells the NRI plugin the NUMA nodes that the leases of a
+// container hold (the lease broker), so that a requester container that
+// restarts is created with them.
+type leaseNodes interface {
+	// LeaseNodes returns the nodes of the Ready numa leases of the
+	// container name of the pod, with the leases that hold each node.
+	LeaseNodes(podUID, name string) map[int][]string
+}
 
 // errSteered is returned by LendNode for containers whose memory is
 // steered by cgmpolmgr.
@@ -282,6 +313,50 @@ func (p *nriPlugin) allLentNodes() cpuset.CPUSet {
 	return all
 }
 
+// keptLends returns the lends of the leases of the container name of the
+// pod, kept by the broker when the container stopped to restart, nil for
+// none. Caller holds p.mu: the broker marks a lease Releasing before it
+// revokes it, so the revoke finds the container that a lease seeds
+// (seedLends) under the same p.mu.
+func (p *nriPlugin) keptLends(podUID, name string) lentNodes {
+	if p.leases == nil || podUID == "" {
+		return nil
+	}
+	var kept lentNodes
+	for node, ids := range p.leases.LeaseNodes(podUID, name) {
+		for _, id := range ids {
+			if node >= 0 {
+				kept = kept.set(node, kept.with(node, id, true))
+			}
+		}
+	}
+	return kept
+}
+
+// seedLends gives a container that has no lends the kept lends of its
+// leases, unless it is steered (lending to it is refused), and returns the
+// lent nodes. Caller holds p.mu.
+func (p *nriPlugin) seedLends(tc *trackedContainer, kept lentNodes) cpuset.CPUSet {
+	if len(kept) == 0 || len(tc.lent) != 0 || p.steeredLocked(tc) {
+		return cpuset.New()
+	}
+	tc.lent = kept
+	return kept.nodes()
+}
+
+// curMems returns the cpuset.mems of a container: that of its cgroup once
+// it has started (an update before the start may have reached its spec
+// only, see the header), else that of its spec as the plugin knows it.
+// Caller holds p.mu.
+func (tc *trackedContainer) curMems() string {
+	if tc.started && tc.ref.CgroupPath != "" {
+		if data, err := os.ReadFile(filepath.Join(tc.ref.CgroupPath, "cpuset.mems")); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return tc.mems
+}
+
 // untrack removes a container from the table and returns its entry,
 // or nil if it was not tracked. Caller holds p.mu.
 func (p *nriPlugin) untrack(id string) *trackedContainer {
@@ -346,7 +421,15 @@ func (p *nriPlugin) containerGone(id string) {
 // lent sets are empty and BaseMems is cpuset.mems.effective, which still
 // includes the nodes lent before the restart; they are dropped from
 // BaseMems when the lease code re-applies (LendNode) or revokes
-// (RevokeNode) them.
+// (RevokeNode) them. A container that is new to the table gets the kept
+// lends of its leases (keptLends), as at CreateContainer: a requester
+// that restarted while the plugin was down, or whose CreateContainer
+// adjustment of the previous plugin has the nodes of its leases, keeps
+// them through the first fence pass. The steering of containers is not
+// restarted: those that were steered lose their memory.high and are
+// managed like containers that are not steered (syncManagement); the
+// steering record keeps only the containers of the managers of this
+// process from now on.
 func (p *nriPlugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
 	podByID := make(map[string]*api.PodSandbox, len(pods))
 	for _, pod := range pods {
@@ -380,6 +463,12 @@ func (p *nriPlugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs 
 		if !known {
 			tc.synced = true
 			p.syncManagement(tc, ctr)
+			if lent := p.seedLends(tc, p.keptLends(pod.GetUid(), tc.ref.Name)); !lent.IsEmpty() {
+				// not its own nodes, as in baseMems
+				tc.base = tc.base.Difference(lent)
+				tc.ref.BaseMems = tc.base.String()
+				klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: nodes %s lent by its leases", tc.name(), tc.ref.ID, lent)
+			}
 		}
 		tc.mems = ctr.GetLinux().GetResources().GetCpu().GetMems()
 		klog.V(4).Infof("NRI Synchronize: ctr=%s id=%s pid=%d cgroup=%s baseMems=%s memory=%s",
@@ -390,6 +479,7 @@ func (p *nriPlugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs 
 			p.fireGone(p.untrack(id))
 		}
 	}
+	p.steered.synced(func(id string) bool { return p.managers[id] != nil })
 
 	select {
 	case <-p.syncedC:
@@ -403,17 +493,85 @@ func (p *nriPlugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs 
 
 // syncManagement sets the management and the claimed nodes of a container
 // that the plugin learns from Synchronize, as CreateContainer would have
-// decided them. A container whose settings are not valid any more is
-// taken as steered: neither fenced nor lent to. Caller holds p.mu.
+// decided them, except that it is never steered: steering is planned at
+// CreateContainer and runs in the process that started the container, so
+// no manager of this process steers it (the plugin restarted, gracefully
+// or killed, or the container was created while the plugin was down). A
+// container that its settings steer is managed as its fencing says, like a
+// container that is not steered. A container whose settings are not valid
+// any more (the configuration or the claims changed) is taken as steered:
+// neither fenced nor lent to. Then the container is released as the Stop
+// of a manager would (releaseSteering) if a manager of a previous process
+// steered it. Caller holds p.mu.
 func (p *nriPlugin) syncManagement(tc *trackedContainer, ctr *api.Container) {
 	results := p.containerResults(tc.name(), extractResults(ctr.GetEnv()))
 	m, err := p.manage(tc.name(), results, false)
-	if err != nil {
+	id := tc.ref.ID
+	ours := p.managers[id] != nil || p.pending[id].plan != nil
+	steers := false
+	switch {
+	case err != nil:
 		klog.Warningf("NRI Synchronize: ctr=%s: %v; taken as steered", tc.name(), err)
 		tc.memory = memorySteered
+	case m.memory == memorySteered && !ours:
+		tc.memory, tc.claimed = unsteeredMemory(m.eff), m.claimed
+		steers = true
+	default:
+		tc.memory, tc.claimed = m.memory, m.claimed
+	}
+	if !ours {
+		p.releaseSteering(tc, steers)
+	}
+}
+
+// releaseSteering sets memory.high of a container to max, as the Stop of
+// a manager does, if the steering record (steeredRecord) says that a
+// manager of a previous process steered it, whatever its settings say now
+// (steers: they steer it): the manager of a killed plugin left the
+// memory.high of its last step, which nothing raises any more. The
+// memory.high of a container that no manager steered (created while the
+// plugin was down, or one that is not steered) is left alone: it may be
+// someone else's (MemoryQoS). Without a record (legacy) the containers
+// that their settings steer are released, as a started one may have had
+// a manager. Its cpuset.mems and memory policies are left as they are.
+// Caller holds p.mu.
+func (p *nriPlugin) releaseSteering(tc *trackedContainer, steers bool) {
+	dir, recorded := p.steered.left(tc.ref.ID)
+	switch {
+	case p.steered.legacy && steers && !tc.started:
+		klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s", tc.name(), tc.ref.ID, tc.memory)
+		return
+	case p.steered.legacy && steers:
+		dir = tc.ref.CgroupPath
+	case !recorded:
+		if steers {
+			klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; memory.high left alone: no manager steered it",
+				tc.name(), tc.ref.ID, tc.memory)
+		}
+		return
+	case dir == "":
+		dir = tc.ref.CgroupPath
+	}
+	if dir == "" {
+		klog.Warningf("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; memory.high not checked: no cgroup directory",
+			tc.name(), tc.ref.ID, tc.memory)
 		return
 	}
-	tc.memory, tc.claimed = m.memory, m.claimed
+	was, err := cgmpolmgr.Release(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; no memory.high: %v",
+			tc.name(), tc.ref.ID, tc.memory, err)
+	case err != nil:
+		klog.Warningf("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; removing memory.high failed: %v",
+			tc.name(), tc.ref.ID, tc.memory, err)
+	case was != "":
+		klog.Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; memory.high %s removed (max)",
+			tc.name(), tc.ref.ID, tc.memory, was)
+	default:
+		klog.V(3).Infof("NRI Synchronize: ctr=%s id=%s: steering not restarted, memory %s; memory.high max",
+			tc.name(), tc.ref.ID, tc.memory)
+	}
 }
 
 // ContainerByPid implements nodeLender.
@@ -533,7 +691,11 @@ func (p *nriPlugin) RevokeNode(ctx context.Context, podUID, name string, node in
 // Synchronize). The base of a fenced container is its own nodes without
 // the fenced nodes, and its cpuset.mems has the CXL numa nodes of its
 // results too (wantMems). The cpuset.mems of a steered container is not
-// changed.
+// changed. A lend that the bookkeeping has is applied again when the
+// cgroup of the container lacks it (an update before its start reached
+// its spec only, see the header). A container that has not started has
+// only the lends of its creation (seedLends): a lend of one of them is
+// done, a revoke drops it, from the spec of a fenced container too.
 func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node int, holder string, lend bool) error {
 	op := "revoke"
 	if lend {
@@ -566,11 +728,26 @@ func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node in
 		return fmt.Errorf("lend node %d to %s: %w", node, ctrName, errSteered)
 	}
 	if !tc.started {
-		p.mu.Unlock()
-		if !lend {
+		seeded := tc.lent[node][holder]
+		switch {
+		case lend && seeded:
+			p.mu.Unlock()
+			klog.V(4).Infof("NRI lend: lend node %d for %s: ctr=%s: lent at its creation, not started yet", node, holder, ctrName)
+			return nil
+		case lend:
+			p.mu.Unlock()
+			return fmt.Errorf("lend node %d to %s: container not started yet", node, ctrName)
+		case !seeded:
+			p.mu.Unlock()
+			return nil
+		case tc.memory != memoryFenced:
+			// its spec has the nodes of the runtime: lent by updates only
+			tc.lent = tc.lent.set(node, tc.lent.with(node, holder, false))
+			p.mu.Unlock()
+			klog.V(3).Infof("NRI lend: revoke node %d for %s: ctr=%s: not started yet", node, holder, ctrName)
 			return nil
 		}
-		return fmt.Errorf("lend node %d to %s: container not started yet", node, ctrName)
+		// a fenced container created with the node: off its spec
 	}
 
 	nodeSet := cpuset.New(node)
@@ -589,10 +766,20 @@ func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node in
 		base = tc.base.Difference(nodeSet)
 		mems = base.Union(lent).String()
 		needed = !sameSet(lent, tc.lent.nodes()) || !sameSet(base, tc.base)
-		if !lend && !needed && len(holders) == 0 {
+		switch {
+		case !lend && !needed && len(holders) == 0:
 			// Not lent as far as we know, but a lend from before a plugin
 			// restart that is not re-applied still shows in cpuset.mems.
 			needed = cgroupMemsContain(tc.ref.CgroupPath, node)
+		case lend && !needed:
+			if missing := cgroupLacks(tc.ref.CgroupPath, lent); !missing.IsEmpty() {
+				// lost only if an update had them (not a seeded lend:
+				// lent at its creation without an update)
+				if memsContain(tc.mems, missing) {
+					klog.Infof("NRI lend: ctr=%s id=%s: the cpuset.mems of its cgroup lacks the lent nodes %s, updating again", ctrName, id, missing)
+				}
+				needed = true
+			}
 		}
 	}
 	if !needed {
@@ -628,9 +815,9 @@ func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node in
 
 // fencedLend returns, for a lend change of node (nodeSet) of a fenced
 // container, its own nodes without the fenced nodes and node (base), its
-// cpuset.mems with the nodes lent, and whether its cpuset.mems changes.
-// The cpuset.mems of a steered container never changes. Caller holds
-// p.mu.
+// cpuset.mems with the nodes lent, and whether its cpuset.mems (curMems)
+// changes. The cpuset.mems of a steered container never changes. Caller
+// holds p.mu.
 func (p *nriPlugin) fencedLend(tc *trackedContainer, nodeSet, lent cpuset.CPUSet) (cpuset.CPUSet, string, bool, error) {
 	if p.steeredLocked(tc) {
 		return tc.base, tc.mems, false, nil
@@ -641,7 +828,46 @@ func (p *nriPlugin) fencedLend(tc *trackedContainer, nodeSet, lent cpuset.CPUSet
 	}
 	base := own.Difference(p.fence.Nodes()).Difference(nodeSet)
 	want := base.Union(tc.claimed, lent)
-	return base, want.String(), !sameMems(want, tc.mems), nil
+	_, differ := p.memsDiffer(tc, want, "NRI lend")
+	return base, want.String(), differ, nil
+}
+
+// memsDiffer returns the cpuset.mems of a container (curMems) and whether
+// it is not want, and logs it when its cgroup has not got an update that
+// the plugin has recorded. Caller holds p.mu.
+func (p *nriPlugin) memsDiffer(tc *trackedContainer, want cpuset.CPUSet, prefix string) (string, bool) {
+	cur := tc.curMems()
+	if sameMems(want, cur) {
+		return cur, false
+	}
+	if sameMems(want, tc.mems) {
+		klog.Infof("%s: ctr=%s id=%s: the cpuset.mems of its cgroup is %q, not %s as updated, updating again",
+			prefix, tc.name(), tc.ref.ID, cur, tc.mems)
+	}
+	return cur, true
+}
+
+// cgroupLacks returns the nodes that the cpuset.mems of the cgroup dir
+// lacks, of its cpuset.mems.effective when its cpuset.mems is empty (it
+// has the nodes of its parent); none when the cgroup cannot be read.
+func cgroupLacks(dir string, nodes cpuset.CPUSet) cpuset.CPUSet {
+	if dir == "" || nodes.IsEmpty() {
+		return cpuset.New()
+	}
+	for _, file := range []string{"cpuset.mems", "cpuset.mems.effective"} {
+		data, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			return cpuset.New()
+		}
+		if s := strings.TrimSpace(string(data)); s != "" {
+			set, err := cpuset.Parse(s)
+			if err != nil {
+				return cpuset.New()
+			}
+			return nodes.Difference(set)
+		}
+	}
+	return cpuset.New()
 }
 
 // updateMems sets cpuset.mems of a container through NRI.
@@ -663,6 +889,12 @@ func updateMems(s nriStub, id, mems string) error {
 		}
 	}
 	return nil
+}
+
+// memsContain tells whether the cpuset.mems mems has the nodes.
+func memsContain(mems string, nodes cpuset.CPUSet) bool {
+	set, err := cpuset.Parse(mems)
+	return err == nil && nodes.IsSubsetOf(set)
 }
 
 // cgroupMemsContain tells whether cpuset.mems of a cgroup contains node.
@@ -778,17 +1010,25 @@ func (p *nriPlugin) fenceCreated(tc *trackedContainer) (string, cpuset.CPUSet) {
 	return tc.mems, fenced
 }
 
-// fenceMissed tells whether a fenced container that is not steered lacks
-// its wantMems while fencing of running containers is ready, as after an
-// update that failed before the runtime knew the container. Caller holds
-// p.mu.
-func (p *nriPlugin) fenceMissed(tc *trackedContainer) bool {
-	fenced := p.fence.Nodes()
-	if !p.fenceReady || tc.memory != memoryFenced || fenced.IsEmpty() || p.steeredLocked(tc) {
-		return false
-	}
-	want, err := wantMems(tc, fenced, tc.lent.nodes(), p.memNodes())
-	return err == nil && !sameMems(want, tc.mems)
+// fenceAtStart tells whether a started container gets a fence pass of its
+// own (fenceStarted): it is fenced and not steered, there are fenced nodes
+// and fencing of running containers is ready. Updates of the container
+// before its start may have reached its spec only, also that of a pass
+// while the plugin synchronized as the runtime was creating its task.
+// Caller holds p.mu.
+func (p *nriPlugin) fenceAtStart(tc *trackedContainer) bool {
+	return p.fenceReady && tc.memory == memoryFenced && !p.fence.Nodes().IsEmpty() && !p.steeredLocked(tc)
+}
+
+// fenceStarted starts a fence pass of one started container in the
+// background: its cgroup gets its wantMems if it has not got it. Caller
+// holds p.mu.
+func (p *nriPlugin) fenceStarted(id string) {
+	p.fenceWG.Add(1)
+	go func() {
+		defer p.fenceWG.Done()
+		p.fencePass(context.Background(), id)
+	}()
 }
 
 // LendsRestored tells that the lends of a restarted plugin are applied
@@ -836,10 +1076,17 @@ type fenceUpdate struct {
 
 // fenceContainers implements fenceApplier: when fencing of running
 // containers is ready, it sets cpuset.mems of the tracked containers that
-// are fenced and not steered to wantMems where that changes it, with one
-// NRI UpdateContainers. Created containers are included. Failed updates
-// are logged and tried again by the next pass.
+// are fenced and not steered to wantMems where that changes it (curMems:
+// the cgroup of a started container), with one NRI UpdateContainers.
+// Created containers are included. Failed updates are logged and tried
+// again by the next pass.
 func (p *nriPlugin) fenceContainers(ctx context.Context) {
+	p.fencePass(ctx, "")
+}
+
+// fencePass is fenceContainers of the container with the id only, of all
+// containers if id is "".
+func (p *nriPlugin) fencePass(ctx context.Context, only string) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -863,7 +1110,7 @@ func (p *nriPlugin) fenceContainers(ctx context.Context) {
 	var updates []*api.ContainerUpdate
 	mem := p.memNodes()
 	for _, tc := range p.sortedContainers() {
-		if tc.memory != memoryFenced || p.steeredLocked(tc) {
+		if (only != "" && tc.ref.ID != only) || tc.memory != memoryFenced || p.steeredLocked(tc) {
 			continue
 		}
 		want, err := wantMems(tc, fenced, tc.lent.nodes(), mem)
@@ -871,13 +1118,14 @@ func (p *nriPlugin) fenceContainers(ctx context.Context) {
 			klog.Warningf("NRI fence: ctr=%s id=%s: %v", tc.name(), tc.ref.ID, err)
 			continue
 		}
-		if sameMems(want, tc.mems) {
+		was, differ := p.memsDiffer(tc, want, "NRI fence")
+		if !differ {
 			continue
 		}
 		u := &api.ContainerUpdate{ContainerId: tc.ref.ID}
 		u.SetLinuxCPUSetMems(want.String())
 		updates = append(updates, u)
-		changes = append(changes, fenceUpdate{tc: tc, was: tc.mems, mems: want.String()})
+		changes = append(changes, fenceUpdate{tc: tc, was: was, mems: want.String()})
 	}
 	s := p.stub
 	p.mu.Unlock()

@@ -90,6 +90,7 @@ DRA_CONTROLLER_BIN="$nri_resource_policy_src/scripts/testing/fake-cxl-pool/bin/f
 DRA_CONTROLLER_UNIT=fake-cxl-pool-controller
 DRA_CONTROLLER_UNITS_GLOB="$DRA_CONTROLLER_UNIT*"
 DRA_CONTROLLER_UNITS=()
+declare -A DRA_CONTROLLER_URLS=()  # dra-install: unit -> the URL of its pool server, seen from the VMs
 DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
 # The node mounts of the file systems of persistent pool devices (mode fs),
 # one per device and access: <serial hex without 0x>-<direct|cached>.
@@ -420,8 +421,10 @@ dra-install() { # script API
     helm_config="$values" helm_name="$DRA_HELM_RELEASE" launch_available="${#nodes[@]}" launch_timeout=120s \
         helm-launch "$DRA_CHART"
     DRA_CONTROLLER_UNITS=()
+    DRA_CONTROLLER_URLS=()
     for i in "${!units[@]}"; do
-        dra-vm-command "$vmdir" "systemd-run --unit ${units[$i]} --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server ${urls[$i]} -v" ||
+        DRA_CONTROLLER_URLS["${units[$i]}"]="${urls[$i]}"
+        dra-controller-run "${units[$i]}" ||
             command-error "cannot start ${units[$i]} in $label"
         DRA_CONTROLLER_UNITS+=("${units[$i]}")
     done
@@ -434,6 +437,62 @@ dra-install() { # script API
 
     dra-vm-command "$vmdir" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --ignore-not-found --wait=true --timeout=60s 2>&1 | grep -v 'No resources found'; kubectl delete namespace $DRA_NS --ignore-not-found --wait=true --timeout=120s && kubectl create namespace $DRA_NS" ||
         command-error "cannot create namespace $DRA_NS in $label"
+}
+
+dra-controller-run() {
+    # Usage: dra-controller-run UNIT
+    #
+    # Start fake-cxl-pool-controller as the transient systemd unit UNIT in
+    # the VM of the test, with the URL of its pool server
+    # (DRA_CONTROLLER_URLS), Restart=no and the admin kubeconfig of the VM:
+    # the command line of dra-install. Return the status of systemd-run.
+    local unit="$1" url="${DRA_CONTROLLER_URLS[$1]:-}"
+    if [ -z "$url" ]; then
+        echo "dra-controller-run: no pool server URL of $unit: dra-install starts the controllers" >&2
+        return 2
+    fi
+    dra-vm-command "$OUTPUT_DIR" "systemd-run --unit $unit --property=Restart=no -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-controller -server $url -v"
+}
+
+dra-controller-start() { # script API
+    # Usage: dra-controller-start UNIT
+    #
+    # Start the pool controller UNIT of dra-install (one of
+    # DRA_CONTROLLER_UNITS) again after it stopped or was killed: the unit
+    # is transient with Restart=no, so a killed one stays failed until
+    # "systemctl reset-failed", which also removes it, and systemd-run
+    # creates it again with the command line of dra-install
+    # (dra-controller-run). Wait until it is active, 10 s at most. Return
+    # non-zero if it does not start, for instance because it runs already.
+    local unit="$1"
+    dra-vm-command "$OUTPUT_DIR" "systemctl reset-failed $unit 2>/dev/null; systemctl is-active $unit" &&
+        { echo "dra-controller-start: $unit is active already" >&2; return 1; }
+    dra-controller-run "$unit" || return 1
+    retry-until --timeout 10 --interval 1 --message "$unit active" \
+        'dra-vm-command-q "$OUTPUT_DIR" "systemctl -q is-active $unit"'
+}
+
+dra-controller-stop() { # script API
+    # Usage: dra-controller-stop UNIT
+    #
+    # Stop the pool controller UNIT of dra-install gracefully (systemctl
+    # stop: SIGTERM, the controller deletes the ResourceSlices of its pool
+    # before it exits) and remove the unit (reset-failed). Return non-zero
+    # if it is still active.
+    dra-vm-command "$OUTPUT_DIR" "systemctl stop $1; systemctl reset-failed $1 2>/dev/null; ! systemctl -q is-active $1"
+}
+
+dra-controller-kill() { # script API
+    # Usage: dra-controller-kill UNIT
+    #
+    # Kill the pool controller UNIT of dra-install with SIGKILL: it leaves
+    # its ResourceSlices behind and, with Restart=no, its unit stays failed
+    # until dra-controller-start. Wait until it is not active any more, 5 s
+    # at most. Return non-zero if it was not active or is still active.
+    dra-vm-command "$OUTPUT_DIR" "systemctl -q is-active $1 || { echo '$1 is not active'; exit 1; }
+systemctl kill --signal=SIGKILL $1 || exit 1
+for i in \$(seq 50); do systemctl -q is-active $1 || break; sleep 0.1; done
+systemctl is-active $1; ! systemctl -q is-active $1"
 }
 
 dra-helm-values() {
@@ -667,19 +726,25 @@ dra-cleanup() {
 ###
 
 dra-local-find() {
-    # Usage: dra-local-find VMDIR
+    # Usage: dra-local-find [--pool NAME] VMDIR
     #
     # Set DRA_LOCAL_NAME, DRA_LOCAL_SERIAL, DRA_LOCAL_HEX, DRA_LOCAL_SIZE,
     # DRA_LOCAL_DEVICE and DRA_LOCAL_ATTACHMENT (attached, detached, or
     # another attachment state) of the local CXL memory device of the VM of
-    # VMDIR in fake-cxl-pool-server: the device of scope local that is
-    # bound to this VM only and is not shared (a memory-backend-ram device
-    # of the topology). Fail the test unless there is exactly one.
-    local host found
+    # VMDIR in fake-cxl-pool-server NAME (default: the first started
+    # server; a server knows the local devices of the VMs it is cabled to):
+    # the device of scope local that is bound to this VM only and is not
+    # shared (a memory-backend-ram device of the topology). Fail the test
+    # unless there is exactly one.
+    local server=() host found
+    if [ "$1" == "--pool" ]; then
+        server=(--pool "$2")
+        shift 2
+    fi
     type -t pool-host-client >/dev/null ||
         error "${FUNCNAME[1]}: needs pool.source.sh and fake-cxl-pool-server (pool-server-start)"
     host=$(dra-vm-name "$1")
-    pool-host-client -o json devices || command-error "cannot list the devices of fake-cxl-pool-server"
+    pool-host-client "${server[@]}" -o json devices || command-error "cannot list the devices of fake-cxl-pool-server${server[1]:+ ${server[1]}}"
     found=$(pool-value "$COMMAND_OUTPUT" "chr(10).join(' '.join([d['name'], d['serial'], str(d['size']), next((a['state'] for a in d.get('attachments') or [] if a['host'] == '$host'), 'detached')]) for d in j if d.get('scope') == 'local' and not d.get('shared') and (d.get('localHosts') or [d.get('localHost')]) == ['$host'])")
     [ -n "$found" ] && [ "$(wc -l <<< "$found")" == 1 ] ||
         error "${FUNCNAME[1]}: expected one local, not shared device of $host in fake-cxl-pool-server, found: '$found'"
@@ -690,11 +755,12 @@ dra-local-find() {
 }
 
 dra-local-device() { # script API
-    # Usage: dra-local-device VMDIR
+    # Usage: dra-local-device [--pool NAME] VMDIR
     #
     # Attach the local CXL memory device of the VM of VMDIR (see
-    # dra-local-find) through fake-cxl-pool-server, unless it is attached,
-    # and wait until pkg/cxl sees it in the VM. If dra-install runs in the
+    # dra-local-find) through fake-cxl-pool-server NAME (default: the first
+    # started server), unless it is attached, and wait until pkg/cxl sees
+    # it in the VM. If dra-install runs in the
     # VM, wait also until the node's cxl.nri.io ResourceSlice has its
     # device. Print and set DRA_LOCAL_NAME (the device in the server),
     # DRA_LOCAL_SERIAL (0x<lower-case hex>), DRA_LOCAL_HEX (the serial in
@@ -707,15 +773,20 @@ dra-local-device() { # script API
     # (its device in the ResourceSlice as JSON, see dra-local-unchanged).
     # The attachment has the owner e2e:dra-local-device, not a k8s: owner of
     # the pool controller.
-    local vmdir="$1" host label v installed=""
+    local server=() vmdir host label v installed=""
+    if [ "$1" == "--pool" ]; then
+        server=(--pool "$2")
+        shift 2
+    fi
+    vmdir="$1"
     host=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
-    dra-local-find "$vmdir"
+    dra-local-find "${server[@]}" "$vmdir"
     case "$DRA_LOCAL_ATTACHMENT" in
         attached)
             echo "dra-local-device $label: $DRA_LOCAL_NAME is attached already";;
         detached)
-            pool-host-client -o json attach "$DRA_LOCAL_NAME" --host "$host" --owner e2e:dra-local-device ||
+            pool-host-client "${server[@]}" -o json attach "$DRA_LOCAL_NAME" --host "$host" --owner e2e:dra-local-device ||
                 command-error "cannot attach the local device $DRA_LOCAL_NAME to $label";;
         *)
             error "dra-local-device: the attachment of $DRA_LOCAL_NAME to $host is $DRA_LOCAL_ATTACHMENT";;
@@ -737,7 +808,7 @@ dra-local-device() { # script API
 }
 
 dra-local-detach() { # script API
-    # Usage: dra-local-detach VMDIR
+    # Usage: dra-local-detach [--pool NAME] VMDIR
     #
     # Detach the local CXL memory device of the VM of VMDIR (see
     # dra-local-device) if it is attached, and wait until pkg/cxl does not
@@ -745,11 +816,16 @@ dra-local-detach() { # script API
     # it has released the regions of the device. Then release what is left of it
     # in the VM (fake-cxl-pool-client guest release: offline, destroy the
     # regions, disable the memdev) and detach it through
-    # fake-cxl-pool-server.
-    local vmdir="$1" host label expr
+    # fake-cxl-pool-server NAME (default: the first started server).
+    local server=() vmdir host label expr
+    if [ "$1" == "--pool" ]; then
+        server=(--pool "$2")
+        shift 2
+    fi
+    vmdir="$1"
     host=$(dra-vm-name "$vmdir")
     label=$(dra-vm-label "$vmdir")
-    dra-local-find "$vmdir"
+    dra-local-find "${server[@]}" "$vmdir"
     if [ "$DRA_LOCAL_ATTACHMENT" == detached ]; then
         echo "dra-local-detach $label: $DRA_LOCAL_NAME is not attached"
         return 0
@@ -758,9 +834,9 @@ dra-local-detach() { # script API
     if dra-driver-pod "$vmdir" >/dev/null; then
         pool-cxl-wait "$vmdir" local-released "$expr" 60
     fi
-    pool-client "$vmdir" guest release "$DRA_LOCAL_SERIAL" ||
+    pool-client "${server[@]}" "$vmdir" guest release "$DRA_LOCAL_SERIAL" ||
         command-error "cannot release $DRA_LOCAL_NAME in $label"
-    pool-host-client detach "$DRA_LOCAL_NAME" --host "$host" ||
+    pool-host-client "${server[@]}" detach "$DRA_LOCAL_NAME" --host "$host" ||
         command-error "cannot detach $DRA_LOCAL_NAME from $label"
     pool-cxl-wait "$vmdir" local-detached "by_serial($DRA_LOCAL_SERIAL) is None" 60
     echo "dra-local-detach $label: $DRA_LOCAL_NAME detached"
@@ -1416,6 +1492,55 @@ dra-driver-restart() { # script API
     echo "dra-driver-restart $label: $old replaced by $DRA_DRIVER_POD"
     dra-wait-node "$vmdir"
     dra-trace-driver-follow "$vmdir"
+}
+
+dra-driver-kill() { # script API
+    # Usage: dra-driver-kill VMDIR
+    #
+    # Kill the driver on the node of the VM of VMDIR in place: SIGKILL to
+    # the process of its container (found with crictl in the VM), so that
+    # kubelet starts the container again in the same pod (restartPolicy
+    # Always of the DaemonSet, with the back-off of a crashing container),
+    # unlike dra-driver-restart, which replaces the pod. Do not wait for the
+    # restart. COMMAND_OUTPUT has "killed POD CONTAINER-ID pid PID". Return
+    # non-zero if no container of the driver runs there or the kill fails.
+    dra-vm-command "$1" "id=\$(crictl ps -q --state running --namespace '^kube-system\$' --name '^$DRA_CONTAINER\$' 2>/dev/null | head -n 1)
+[ -n \"\$id\" ] || { echo 'no running container $DRA_CONTAINER'; exit 1; }
+set -- \$(crictl inspect -o go-template --template '{{index .status.labels \"io.kubernetes.pod.name\"}} {{.info.pid}}' \$id 2>/dev/null)
+[ -n \"\$2\" ] && [ \"\$2\" != 0 ] || { echo \"no pid of container \$id\"; exit 1; }
+kill -KILL \"\$2\" && echo \"killed \$1 \$id pid \$2\""
+}
+
+dra-node-service-restart() { # script API
+    # Usage: dra-node-service-restart VMDIR kubelet|containerd [TIMEOUT]
+    #
+    # Restart kubelet or containerd in the VM of VMDIR (systemctl restart;
+    # the containers keep running) and wait until the service is active
+    # and answers again (kubelet: its healthz endpoint, containerd: crictl
+    # info) and its node is Ready in the cluster of the VM of the test,
+    # TIMEOUT seconds at most (default 120). Return non-zero on failure or
+    # timeout.
+    local vmdir="$1" service="$2" tmo="${3:-120}" name check
+    name=$(dra-vm-name "$vmdir")
+    # shellcheck disable=SC2034 # check is used in the snippet of retry-until
+    case "$service" in
+        kubelet) check="curl -sf --max-time 2 http://127.0.0.1:10248/healthz >/dev/null";;
+        containerd) check="crictl info >/dev/null 2>&1";;
+        *) echo "dra-node-service-restart: unknown service '$service' (kubelet or containerd)" >&2; return 2;;
+    esac
+    dra-vm-command "$vmdir" "systemctl restart $service" || return 1
+    retry-until --timeout "$tmo" --interval 1 --message "$(dra-vm-label "$vmdir"): $service active and answering, node $name Ready" \
+        'dra-vm-command-q "$vmdir" "systemctl -q is-active $service && $check" && dra-node-ready "$vmdir"'
+}
+
+dra-node-ready() {
+    # Usage: dra-node-ready VMDIR
+    #
+    # Return 0 if the node of the VM of VMDIR is Ready in the cluster of the
+    # VM of the test.
+    local status
+    status=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl get node $(dra-vm-name "$1") -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'") || return 1
+    [ "$status" == True ]
 }
 
 dra-plugin-log() { # script API

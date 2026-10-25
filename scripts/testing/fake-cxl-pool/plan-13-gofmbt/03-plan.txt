@@ -1,0 +1,85 @@
+plan-13: plan
+=============
+2026-10-24 (orchestrator). Design 02-design.txt, contract
+04-contract.txt. T = test/e2e/memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-2/test90-gofmbt-reliability. N = the nri-plugins root.
+
+Streams
+-------
+GOFMBT  ~/github.com/askervin/gofmbt, local branch 5jo-mbt-cxl:
+        Do nil-chain fix, exported coverage (Cover, CoverSteps),
+        incremental BestPath with identical results (property test
+        against the stock algorithm), deadline-bounded search,
+        ResetCoverage, benchmarks, docs. Status 04-status-GOFMBT.txt.
+        STARTED first (independent).
+MODEL   T/model, a Go module of its own: the slot model of 02-design 4
+        and 04-contract 2-4, predictions, the oracle (7), the coverage
+        criteria C1-C4, the subcommands generate / online / replay /
+        check, the line protocol (5) with planning ahead, files (7).
+        Unit tests: model rules (capacity, pending, attachments,
+        fencing set, data tokens), oracle on recorded and synthetic
+        observations, protocol against a simulated executor (a fake
+        SUT that answers from the model, with injected deviations,
+        delays and nondeterministic node choices), determinism
+        (same seed and flags => same steps). Off-line experiments
+        (P4): branching, planning time per depth, coverage growth for
+        C1..C4 and their mixes, steps to saturation, both profiles.
+        No cluster access. Status 04-status-MODEL.txt.
+EXEC    T/code.var.sh, T/mbt.source.sh, T/mbt-observe.py and helper
+        additions in dra.source.sh / pool.source.sh where they are
+        reusable (pool-server restart on its own state, controller
+        kill/start, driver kill in place, kubelet/containerd restart
+        on any VM, local device attach through the server that knows
+        the VM, a crashable pod): setup as test19 plus the local
+        devices of all three VMs and the pause image, the claim
+        templates of 04-contract 2, the step loop for the coproc and
+        for a code.gen.sh, the observer (6), inspect table, teardown
+        that checks that everything was released. Development may use
+        the cluster (it is idle); a stub generator (a bash or Go
+        script that sends a fixed list of steps and accepts every
+        observation) is enough to exercise the loop before MODEL is
+        ready. Status 04-status-EXEC.txt.
+        MODEL and EXEC start in parallel when the contract is
+        written; only EXEC uses the cluster.
+RUN     The orchestrator (with debugging agents): integration and the
+        prototypes P1-P3 in the cluster, then long runs; every failure
+        is triaged: model error, executor error, or SUT bug; SUT bugs
+        get bug-NN-<slug>.txt and, if easy, a fix (DRV-FIX agents,
+        unit test first, image rebuilt, the run repeated). Runs in
+        06-runs.txt.
+REVIEW  Opus reviewers of MODEL+EXEC (after P1) and of every driver
+        fix; findings in 05-review*.txt.
+
+Prototypes
+----------
+P1 off-line: mbt-cxl generate --profile small --steps 40 >
+   code.gen.sh, MBT_MODE=offline MBT_SCRIPT=..., in the cluster.
+   Measures: steps per minute, failures, what the expectations catch.
+P2 on-line lock-step: MBT_MODE=online with planning ahead off
+   (--plan-ahead=false), small profile, 20 min.
+P3 on-line planning ahead (default), full profile, 20 min, then 2 h:
+   planning time vs step time, how often the plan was reused,
+   coverage growth in the real run vs the off-line estimate.
+P4 model and coverage variants off-line (MODEL), the best mix becomes
+   the default; documented with numbers.
+P5 verification: oracle cost per settle; a deliberate model mutation
+   (e.g. predict no fencing) must be caught by the oracle at the
+   first relevant settle (self-test of the oracle).
+
+Order
+-----
+1 GOFMBT (running) | MODEL | EXEC
+2 RUN: P1 as soon as MODEL generate + EXEC offline loop work
+3 REVIEW of MODEL+EXEC; fixes
+4 RUN: P2, P3 short; then long runs with faults; bugs
+5 DRV-FIX for easy bugs; repeat runs
+6 09-status.txt; memory note
+
+Verification of the streams
+---------------------------
+MODEL: go vet, gofmt, go test -race in T/model (with go.work to the
+gofmbt branch). EXEC: shellcheck of mbt.source.sh and code.var.sh as
+far as the e2e scripts use it; the observer run once in each VM;
+the loop with the stub generator against the cluster. Driver fixes:
+go test ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/..., go vet,
+gofmt, then the e2e runs that cover them.

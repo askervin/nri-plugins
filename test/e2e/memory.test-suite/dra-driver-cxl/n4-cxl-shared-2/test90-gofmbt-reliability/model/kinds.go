@@ -1,0 +1,303 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+// Allocation kinds (04-contract.txt 2) and slots (3).
+
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Kind is an allocation kind: the claim of a pod.
+type Kind int8
+
+const (
+	KXNuma  Kind = iota // exclusive pool device, numa
+	KXDax               // exclusive pool device, dax
+	KSDax               // a share of the shared pool device, dax
+	KSRo                // a read-only share
+	KSExcl              // the shared pool device without shares: exclusive
+	KLNuma              // a 128Mi numa slice of the local memdev
+	KLDax               // a 128Mi dax slice
+	KLSteer             // a numa slice with steering policy auto
+	KLease              // a lease claim
+	KPlain              // no claim
+	nKinds
+)
+
+// kindNames are the families (the kind without its pool).
+var kindNames = [nKinds]string{"xnuma", "xdax", "sdax", "sro", "sexcl", "lnuma", "ldax", "lsteer", "lease", "plain"}
+
+func (k Kind) String() string { return kindNames[k] }
+
+// pooled: the kind has a pool device.
+func (k Kind) pooled() bool { return k <= KSExcl }
+
+// local: the kind has a slice of the local memdev.
+func (k Kind) local() bool { return k == KLNuma || k == KLDax || k == KLSteer }
+
+// numa: the kind's memory is online on a node of the container.
+func (k Kind) numa() bool { return k == KXNuma || k == KLNuma || k == KLSteer }
+
+// dax: the container has a dax device to write and read.
+func (k Kind) dax() bool {
+	return k == KXDax || k == KSDax || k == KSRo || k == KSExcl || k == KLDax
+}
+
+// share: the kind takes a share of a shared device.
+func (k Kind) share() bool { return k == KSDax || k == KSRo }
+
+// onShared: the kind uses the shared device of its pool.
+func (k Kind) onShared() bool { return k == KSDax || k == KSRo || k == KSExcl }
+
+// claimed: the pod has a claim.
+func (k Kind) claimed() bool { return k != KPlain }
+
+func parseKind(s string) (Kind, Pool, error) {
+	fam, p, hasPool := strings.Cut(s, "-")
+	for k := Kind(0); k < nKinds; k++ {
+		if kindNames[k] != fam {
+			continue
+		}
+		if k.pooled() != hasPool {
+			break
+		}
+		if !hasPool {
+			return k, noPool, nil
+		}
+		pool, err := parsePool(p)
+		if err != nil {
+			return 0, noPool, fmt.Errorf("kind %q: %w", s, err)
+		}
+		return k, pool, nil
+	}
+	return 0, noPool, fmt.Errorf("invalid kind %q", s)
+}
+
+// Slot is a pod slot KIND@VM#I.
+type Slot struct {
+	Kind  Kind
+	Pool  Pool // pool kinds only
+	VM    VM   // VMAny for "any" slots
+	Index int
+	Name  string // KIND@VM#I
+	Res   Res    // the resource the slot's claim holds
+	Dev   DevID  // pool kinds: the device
+}
+
+// KindName is the kind with its pool (xnuma-a).
+func (s *Slot) KindName() string {
+	if s.Kind.pooled() {
+		return s.Kind.String() + "-" + s.Pool.String()
+	}
+	return s.Kind.String()
+}
+
+// Label is the value of the label mbt.slot.
+func (s *Slot) Label() string {
+	return s.KindName() + "_" + s.VM.String() + "_" + strconv.Itoa(s.Index)
+}
+
+// Any: the scheduler chooses the node.
+func (s *Slot) Any() bool { return s.VM == VMAny }
+
+// hostOK tells if a pod of the slot may run on a VM.
+func (s *Slot) hostOK(v VM) bool {
+	if s.Kind.pooled() {
+		if !poolHasHost(s.Pool, v) {
+			return false
+		}
+	}
+	return s.Any() || s.VM == v
+}
+
+// numaNode is the node of the numa memory of the slot's claim, -1 if none.
+func (s *Slot) numaNode(c *Config) int {
+	switch s.Kind {
+	case KXNuma:
+		return c.bridgeNode(poolBridge[s.Pool])
+	case KLNuma, KLSteer:
+		return c.bridgeNode(HB0)
+	}
+	return -1
+}
+
+// parseSlot parses KIND@VM#I.
+func parseSlot(name string) (Slot, error) {
+	kind, rest, ok := strings.Cut(name, "@")
+	if !ok {
+		return Slot{}, fmt.Errorf("slot %q: not KIND@VM#I", name)
+	}
+	vms, idx, ok := strings.Cut(rest, "#")
+	if !ok {
+		return Slot{}, fmt.Errorf("slot %q: not KIND@VM#I", name)
+	}
+	k, p, err := parseKind(kind)
+	if err != nil {
+		return Slot{}, fmt.Errorf("slot %q: %w", name, err)
+	}
+	vm, err := parseVM(vms)
+	if err != nil {
+		return Slot{}, fmt.Errorf("slot %q: %w", name, err)
+	}
+	i, err := strconv.Atoi(idx)
+	if err != nil || i < 0 || strconv.Itoa(i) != idx {
+		return Slot{}, fmt.Errorf("slot %q: invalid index", name)
+	}
+	s := Slot{Kind: k, Pool: p, VM: vm, Index: i, Name: name, Res: resNone, Dev: -1}
+	switch {
+	case k.pooled():
+		if vm != VMAny && !poolHasHost(p, vm) {
+			return Slot{}, fmt.Errorf("slot %q: pool %s has no host %s", name, p, vm)
+		}
+		if k.onShared() {
+			s.Dev = sharedDev(p)
+		} else {
+			s.Dev = pooledDev(p)
+		}
+		s.Res = Res(s.Dev)
+	case k.local():
+		if vm == VMAny {
+			return Slot{}, fmt.Errorf("slot %q: a local kind needs a VM", name)
+		}
+		s.Res = localRes(vm)
+	case vm == VMAny:
+		return Slot{}, fmt.Errorf("slot %q: only pool kinds may be on any VM", name)
+	}
+	return s, nil
+}
+
+// profiles are the slot lists. "full" and "small" are the contract's;
+// "tiny" is for unit tests and quick runs.
+var profiles = map[string][]string{
+	"full": {
+		// pool a
+		"xnuma-a@vm1#0", "xnuma-a@vm2#0", "xdax-a@vm1#0", "xdax-a@vm2#0",
+		"sdax-a@vm1#0", "sdax-a@vm2#0", "sdax-a@vm2#1", "sro-a@vm1#0",
+		"sro-a@vm2#0", "sexcl-a@vm2#0",
+		// pool b
+		"xnuma-b@vm0#0", "xdax-b@vm0#0", "sdax-b@vm0#0", "sdax-b@vm0#1",
+		"sro-b@vm0#0", "sexcl-b@vm0#0",
+		// pool c
+		"xnuma-c@vm1#0", "xdax-c@vm2#0", "xdax-c@any#0", "sdax-c@vm0#0",
+		"sdax-c@vm1#0", "sdax-c@vm2#0", "sdax-c@any#0", "sro-c@vm0#0",
+		"sro-c@vm2#0", "sexcl-c@vm1#0",
+		// local
+		"lnuma@vm0#0", "lnuma@vm0#1", "ldax@vm0#0", "lnuma@vm1#0", "ldax@vm1#0",
+		"ldax@vm1#1", "lnuma@vm2#0", "lnuma@vm2#1", "ldax@vm2#0", "lsteer@vm2#0",
+		"lsteer@vm1#0",
+		// lease
+		"lease@vm0#0", "lease@vm1#0", "lease@vm2#0",
+		// plain
+		"plain@vm0#0", "plain@vm1#0", "plain@vm2#0",
+	},
+	"small": {
+		"xnuma-a@vm1#0", "xdax-a@vm2#0", "sdax-c@vm0#0", "sdax-c@vm2#0",
+		"sro-c@vm1#0", "sexcl-c@vm1#0", "lnuma@vm0#0", "lnuma@vm0#1",
+		"ldax@vm0#0", "lease@vm2#0", "plain@vm0#0", "plain@vm2#0",
+	},
+	"tiny": {
+		"xnuma-a@vm1#0", "xdax-a@vm2#0", "sdax-c@vm0#0", "sexcl-c@vm1#0",
+		"lnuma@vm0#0", "ldax@vm0#0", "lsteer@vm2#0", "lease@vm0#0", "plain@vm0#0",
+	},
+}
+
+func init() {
+	// "union": the slots of full and small (replays of runs that used
+	// both, like the executor's stub lists)
+	seen := map[string]bool{}
+	var u []string
+	for _, n := range append(append([]string(nil), profiles["full"]...), profiles["small"]...) {
+		if !seen[n] {
+			seen[n] = true
+			u = append(u, n)
+		}
+	}
+	profiles["union"] = u
+}
+
+func profileNames() []string {
+	names := make([]string, 0, len(profiles))
+	for n := range profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// loadProfile sets the slots of the configuration from a profile. Off-line
+// (cfg.Online false) "any" slots are left out.
+func (c *Config) loadProfile(name string) error {
+	list, ok := profiles[name]
+	if !ok {
+		return fmt.Errorf("unknown profile %q (%s)", name, strings.Join(profileNames(), ", "))
+	}
+	c.Profile = name
+	c.Slots = nil
+	c.slotByName = map[string]int{}
+	for _, n := range list {
+		s, err := parseSlot(n)
+		if err != nil {
+			return err
+		}
+		if s.Any() && !c.Online {
+			continue
+		}
+		if _, dup := c.slotByName[n]; dup {
+			return fmt.Errorf("profile %s: slot %s twice", name, n)
+		}
+		c.slotByName[n] = len(c.Slots)
+		c.Slots = append(c.Slots, s)
+	}
+	return nil
+}
+
+// slotIndex returns the index of a slot by name, -1 if there is none.
+func (c *Config) slotIndex(name string) int {
+	if i, ok := c.slotByName[name]; ok {
+		return i
+	}
+	return -1
+}
+
+// slotByLabel returns the index of a slot by its label, -1 if none.
+func (c *Config) slotByLabel(label string) int {
+	for i := range c.Slots {
+		if c.Slots[i].Label() == label {
+			return i
+		}
+	}
+	return -1
+}
+
+// poolsUsed are the pools of the profile's slots.
+func (c *Config) poolsUsed() []Pool {
+	var used [nPools]bool
+	for i := range c.Slots {
+		if c.Slots[i].Kind.pooled() {
+			used[c.Slots[i].Pool] = true
+		}
+	}
+	var ps []Pool
+	for p := Pool(0); p < nPools; p++ {
+		if used[p] {
+			ps = append(ps, p)
+		}
+	}
+	return ps
+}

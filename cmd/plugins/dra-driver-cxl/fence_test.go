@@ -15,8 +15,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,6 +29,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	resourceapi "k8s.io/api/resource/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
@@ -125,13 +128,15 @@ func optIn(policy string) config.ResultSettings {
 }
 
 // createMems runs CreateContainer and returns the cpuset.mems of the
-// adjustment, "-" for no adjustment.
+// adjustment, "-" for no adjustment. The updates of the container reach
+// only its spec until it has started (startCtr), as in containerd.
 func (e *ltEnv) createMems(pod *api.PodSandbox, ctr *api.Container) string {
 	e.t.Helper()
 	adj, upd, err := e.p.CreateContainer(context.Background(), pod, ctr)
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	e.stub.setSpecOnly(ctr.GetId(), true)
 	if len(upd) != 0 {
 		e.t.Fatalf("CreateContainer returned updates %v", upd)
 	}
@@ -348,12 +353,13 @@ func TestFencePass(t *testing.T) {
 		t.Fatalf("fenced %s", got)
 	}
 
-	// running and created containers, not the steered one, not the one
-	// whose nodes do not change; a failed update is tried again
+	// running and created containers, also c3 that its settings steer (no
+	// manager of this process steers it), not the one whose nodes do not
+	// change; a failed update is tried again
 	e.stub.failIDs = map[string]bool{"c5": true}
 	e.p.LendsRestored()
 	e.passes()
-	e.expectUpdates("c1 mems=0-1", "c2 mems=0-1")
+	e.expectUpdates("c1 mems=0-1", "c2 mems=0-1", "c3 mems=0-1")
 	if got := e.trackedMems("c5"); got != "" {
 		t.Fatalf("failed update recorded: %q", got)
 	}
@@ -365,7 +371,7 @@ func TestFencePass(t *testing.T) {
 	e.expectUpdates("c5 mems=0-1")
 
 	// the runtime has the updates: nothing to do at a reconnect
-	for _, c := range []*api.Container{c1, c2, c5} {
+	for _, c := range []*api.Container{c1, c2, c3, c5} {
 		specMems(c, "0-1")
 	}
 	resync()
@@ -377,6 +383,7 @@ func TestFencePass(t *testing.T) {
 
 	// an error of UpdateContainers fails all, the next pass repeats
 	specMems(c1, "0-2")
+	e.setCgroupMems("kubepods/u1/c1", "0-2")
 	specMems(c2, "0-2")
 	e.stub.err = errors.New("ttrpc closed")
 	resync()
@@ -594,8 +601,7 @@ func TestFenceMissedAtStart(t *testing.T) {
 	e.p.fence.Fence(ctx, 2)
 	e.expectUpdates()
 	e.stub.failIDs = nil
-	noErr(t, e.p.StartContainer(ctx, pod, c1))
-	e.wait(e.start, "c1")
+	e.startCtr(pod, c1)
 	e.passes()
 	e.expectUpdates("c1 mems=0-1")
 
@@ -605,8 +611,421 @@ func TestFenceMissedAtStart(t *testing.T) {
 	if got := e.createMems(pod, c2); got != "0-1" {
 		t.Fatalf("adjustment %s", got)
 	}
-	noErr(t, e.p.StartContainer(ctx, pod, c2))
-	e.wait(e.start, "c2")
+	e.startCtr(pod, c2)
 	e.passes()
 	e.expectUpdates()
+}
+
+// fakeLeases is the lease table of a broker for the NRI plugin.
+type fakeLeases struct {
+	mu    sync.Mutex
+	nodes map[string]map[int][]string // key: pod UID/container name
+}
+
+func (f *fakeLeases) LeaseNodes(podUID, name string) map[int][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nodes[podUID+"/"+name]
+}
+
+// set makes the leases ids Ready numa leases of node of a container, none
+// without ids.
+func (f *fakeLeases) set(podUID, name string, node int, ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.nodes == nil {
+		f.nodes = map[string]map[int][]string{}
+	}
+	if len(ids) == 0 {
+		delete(f.nodes, podUID+"/"+name)
+		return
+	}
+	f.nodes[podUID+"/"+name] = map[int][]string{node: ids}
+}
+
+// readyFence makes fencing of running containers ready.
+func (e *ltEnv) readyFence() {
+	e.t.Helper()
+	if _, err := e.p.Synchronize(context.Background(), nil, nil); err != nil {
+		e.t.Fatal(err)
+	}
+	e.p.LendsRestored()
+	e.passes()
+	e.expectUpdates()
+}
+
+// TestLendRestartedRequester (bug-05) checks that a requester container
+// that restarts while the broker keeps its numa lease is created with the
+// node of the lease: an update at its start would reach its spec only.
+func TestLendRestartedRequester(t *testing.T) {
+	e := newFenceEnv(t, "0-2", 2)
+	leases := &fakeLeases{}
+	e.p.leases = leases
+	ctx := context.Background()
+	e.readyFence()
+	pod := ltPod("u1")
+	c1 := e.run(pod, "c1", "main", 101, "0-1")
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+	leases.set("u1", "main", 2, "l1")
+
+	// the workload crashes, the broker keeps the lease for the restart
+	_, err := e.p.StopContainer(ctx, pod, c1)
+	noErr(t, err)
+	e.wait(e.gone, "c1")
+	c2 := ltCtr(pod, "c2", "main", 102)
+	if got := e.createMems(pod, c2); got != "0-2" {
+		t.Fatalf("adjustment %s of the restarted requester, expected the lent node", got)
+	}
+	if got := e.p.LentNodes("u1", "main"); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("lent %v at the creation", got)
+	}
+	// the reconcile of the broker before its start: done
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	// its task is created from the spec; then the broker lends again
+	e.proc(102, "kubepods/u1/c2", "0-2", "0-2")
+	e.startCtr(pod, c2)
+	e.passes()
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates()
+	if ref, _ := e.p.Container("u1", "main"); ref.BaseMems != "0-1" {
+		t.Fatalf("BaseMems %q has the lent node", ref.BaseMems)
+	}
+	// a pass keeps the node; other containers, as the companion pod's,
+	// are not lent to
+	e.p.fence.Fence(ctx, 3)
+	e.expectUpdates()
+	cp := ltPod("u9")
+	if got := e.createMems(cp, ltCtr(cp, "c9", "pause", 0)); got != "0-1" {
+		t.Fatalf("adjustment %s of the companion", got)
+	}
+	// the lease is released
+	leases.set("u1", "main", 2)
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c2 mems=0-1")
+	if got := e.cgroupMems("kubepods/u1/c2"); got != "0-1" {
+		t.Fatalf("cgroup mems %s after the release", got)
+	}
+
+	// released while the restarted requester is created: off its spec
+	leases.set("u1", "main", 2, "l2")
+	c3 := ltCtr(pod, "c3", "main", 0)
+	if got := e.createMems(pod, c3); got != "0-2" {
+		t.Fatalf("adjustment %s", got)
+	}
+	leases.set("u1", "main", 2)
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l2"))
+	e.expectUpdates("c3 mems=0-1")
+	if got := e.p.LentNodes("u1", "main"); len(got) != 0 || e.trackedMems("c3") != "0-1" {
+		t.Fatalf("lent %v, mems %q after the revoke", got, e.trackedMems("c3"))
+	}
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l2"))
+	if err := e.p.LendNode(ctx, "u1", "main", 2, "l2"); err == nil || !strings.Contains(err.Error(), "not started") {
+		t.Fatalf("lend before the start: %v", err)
+	}
+	e.expectUpdates()
+
+	// steered: not lent to at its creation
+	e.p.state = fenceClaims()
+	sp := ltPod("u2")
+	leases.set("u2", "main", 2, "l3")
+	if got := e.createMems(sp, withClaims(ltCtr(sp, "c4", "main", 0), "numa-auto")); got != "-" {
+		t.Fatalf("adjustment %s of a steered container", got)
+	}
+	if got := e.p.LentNodes("u2", "main"); len(got) != 0 {
+		t.Fatalf("lent %v to a steered container", got)
+	}
+
+	// not fenced: lent by updates after its start only
+	n := newLtEnv(t)
+	n.p.leases = leases
+	np := ltPod("u3")
+	leases.set("u3", "main", 2, "l4")
+	if got := n.createMems(np, ltCtr(np, "c5", "main", 0)); got != "-" {
+		t.Fatalf("adjustment %s in mode none", got)
+	}
+	noErr(t, n.p.RevokeNode(ctx, "u3", "main", 2, "l4"))
+	if got := n.p.LentNodes("u3", "main"); len(got) != 0 {
+		t.Fatalf("lent %v after the revoke", got)
+	}
+	n.expectUpdates()
+}
+
+// TestLendUpdateBeforeStart checks that a lend whose update reached only
+// the spec, as an update before containerd has marked the container
+// started, is applied again: by the pass at the start of a fenced
+// container, by the next lend (the reconcile of the broker) of one that is
+// not fenced.
+func TestLendUpdateBeforeStart(t *testing.T) {
+	e := newFenceEnv(t, "0-2", 2)
+	ctx := context.Background()
+	e.readyFence()
+	pod := ltPod("u1")
+	c1 := ltCtr(pod, "c1", "main", 101)
+	if got := e.createMems(pod, c1); got != "0-1" {
+		t.Fatalf("adjustment %s", got)
+	}
+	e.proc(101, "kubepods/u1/c1", "0-1", "0-1")
+	noErr(t, e.p.StartContainer(ctx, pod, c1))
+	e.noCallback(e.start)
+	e.stub.setSpecOnly("c1", true)
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+	if got := e.cgroupMems("kubepods/u1/c1"); got != "0-1" {
+		t.Fatalf("cgroup mems %s", got)
+	}
+	e.startCtr(pod, c1)
+	e.passes()
+	e.expectUpdates("c1 mems=0-2")
+	if got := e.cgroupMems("kubepods/u1/c1"); got != "0-2" {
+		t.Fatalf("cgroup mems %s after the start", got)
+	}
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates()
+	// lost after the start (no such runtime): the next lend repeats it
+	e.setCgroupMems("kubepods/u1/c1", "0-1")
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+
+	n := newLtEnv(t)
+	np := ltPod("u2")
+	c2 := specMems(ltCtr(np, "c2", "main", 201), "0-1")
+	if got := n.createMems(np, c2); got != "-" {
+		t.Fatalf("adjustment %s in mode none", got)
+	}
+	n.proc(201, "kubepods/u2/c2", "0-1", "0-1")
+	noErr(t, n.p.StartContainer(ctx, np, c2))
+	n.stub.setSpecOnly("c2", true)
+	noErr(t, n.p.LendNode(ctx, "u2", "main", 2, "l1"))
+	n.expectUpdates("c2 mems=0-2")
+	n.startCtr(np, c2)
+	n.expectUpdates()
+	noErr(t, n.p.LendNode(ctx, "u2", "main", 2, "l1"))
+	n.expectUpdates("c2 mems=0-2")
+	if got := n.cgroupMems("kubepods/u2/c2"); got != "0-2" {
+		t.Fatalf("cgroup mems %s", got)
+	}
+	noErr(t, n.p.LendNode(ctx, "u2", "main", 2, "l1"))
+	n.expectUpdates()
+}
+
+// TestFenceSynchronizeWhileCreating (bug-05, v14) checks that the first
+// pass of a plugin that synchronized while the runtime was creating the
+// task of a container is applied at the start of the container: the
+// update reached its spec only, after the task had read it.
+func TestFenceSynchronizeWhileCreating(t *testing.T) {
+	e := newFenceEnv(t, "0-2", 2)
+	ctx := context.Background()
+	pod := ltPod("u1")
+	c1 := ltCtr(pod, "c1", "main", 0)
+	c1.State = api.ContainerState_CONTAINER_CREATED
+	e.stub.setSpecOnly("c1", true)
+	if _, err := e.p.Synchronize(ctx, []*api.PodSandbox{pod}, []*api.Container{c1}); err != nil {
+		t.Fatal(err)
+	}
+	e.p.LendsRestored()
+	e.passes()
+	e.expectUpdates("c1 mems=0-1")
+	// the task has every node
+	e.proc(101, "kubepods/u1/c1", "0-2", "")
+	c1.Pid = 101
+	noErr(t, e.p.StartContainer(ctx, pod, c1))
+	e.passes()
+	e.expectUpdates()
+	e.stub.setSpecOnly("c1", false)
+	noErr(t, e.p.PostStartContainer(ctx, pod, c1))
+	e.wait(e.start, "c1")
+	e.passes()
+	e.expectUpdates("c1 mems=0-1")
+	if got := e.cgroupMems("kubepods/u1/c1"); got != "0-1" {
+		t.Fatalf("cgroup mems %s", got)
+	}
+	e.p.fence.Fence(ctx, 3)
+	e.expectUpdates()
+	// a PostStartContainer of a container that is gone
+	_, err := e.p.StopContainer(ctx, pod, c1)
+	noErr(t, err)
+	e.wait(e.gone, "c1")
+	noErr(t, e.p.PostStartContainer(ctx, pod, c1))
+	e.noCallback(e.start)
+}
+
+// TestLendSynchronizeKept checks that a restarted plugin gives a container
+// that is new to it the lends of its kept leases: a requester created with
+// the node of its lease by the previous plugin keeps it through the first
+// pass, before its start.
+func TestLendSynchronizeKept(t *testing.T) {
+	e := newFenceEnv(t, "0-2", 2)
+	leases := &fakeLeases{}
+	leases.set("u1", "main", 2, "l1")
+	e.p.leases = leases
+	ctx := context.Background()
+	pod := ltPod("u1")
+	c2 := specMems(ltCtr(pod, "c2", "main", 0), "0-2")
+	c2.State = api.ContainerState_CONTAINER_CREATED
+	// a running requester whose cgroup lacks the node
+	other := ltPod("u2")
+	leases.set("u2", "main", 2, "l2")
+	e.proc(201, "kubepods/u2/c3", "0-1", "0-1")
+	c3 := specMems(ltCtr(other, "c3", "main", 201), "0-2")
+	c3.State = api.ContainerState_CONTAINER_RUNNING
+	if _, err := e.p.Synchronize(ctx, []*api.PodSandbox{pod, other}, []*api.Container{c2, c3}); err != nil {
+		t.Fatal(err)
+	}
+	// the reconcile of the broker, then the first pass
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNode(ctx, "u2", "main", 2, "l2"))
+	e.expectUpdates("c3 mems=0-2")
+	e.p.LendsRestored()
+	e.passes()
+	e.expectUpdates()
+	if got := e.p.LentNodes("u1", "main"); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("lent %v", got)
+	}
+	if ref, _ := e.p.Container("u2", "main"); ref.BaseMems != "0-1" {
+		t.Fatalf("BaseMems %q", ref.BaseMems)
+	}
+	e.proc(102, "kubepods/u1/c2", "0-2", "0-2")
+	c2.Pid = 102
+	e.startCtr(pod, c2)
+	e.passes()
+	e.expectUpdates()
+}
+
+// captureKlog makes klog write to a buffer at verbosity 3 for the test and
+// returns a function that returns the output so far.
+func captureKlog(t *testing.T) func() string {
+	t.Helper()
+	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
+	klog.InitFlags(fs)
+	noErr(t, fs.Set("logtostderr", "false"))
+	noErr(t, fs.Set("alsologtostderr", "false"))
+	noErr(t, fs.Set("v", "3"))
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	klog.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() {
+		klog.Flush()
+		_ = fs.Set("logtostderr", "true")
+		_ = fs.Set("v", "0")
+	})
+	return func() string {
+		klog.Flush()
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// The init process of a running container is in a child cgroup of the
+// container's (systemd in the container moves itself to init.scope) when
+// a restarted plugin synchronizes. The plugin takes the container's own
+// cgroup, which the runtime updates, so an update is sent once, not again
+// at every pass and every lend for the lifetime of the container with an
+// "updating again" line each time (05-review D1). A lease requester in
+// another child cgroup of the container is found in it.
+func TestReviewSubCgroupUpdatesForever(t *testing.T) {
+	e := newFenceEnv(t, "0-2", 2)
+	logs := captureKlog(t)
+	ctx := context.Background()
+	pod := ltPod("u1")
+	parent := filepath.Join(cgroupRoot, "kubepods/u1/c1")
+	child := e.proc(101, "kubepods/u1/c1/init.scope", "0-2", "")
+	noErr(t, os.WriteFile(filepath.Join(parent, "cpuset.mems"), []byte("\n"), 0o644))
+	noErr(t, os.WriteFile(filepath.Join(parent, "cpuset.mems.effective"), []byte("0-2\n"), 0o644))
+	// runc writes the container's cgroup; the kernel recomputes the
+	// child's effective set, its cpuset.mems stays ""
+	e.stub.applied = func(id, mems string) {
+		_ = os.WriteFile(filepath.Join(parent, "cpuset.mems"), []byte(mems+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(parent, "cpuset.mems.effective"), []byte(mems+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(child, "cpuset.mems.effective"), []byte(mems+"\n"), 0o644)
+	}
+	c1 := ltCtr(pod, "c1", "main", 101)
+	c1.State = api.ContainerState_CONTAINER_RUNNING
+	if _, err := e.p.Synchronize(ctx, []*api.PodSandbox{pod}, []*api.Container{c1}); err != nil {
+		t.Fatal(err)
+	}
+	e.p.mu.Lock()
+	dir := e.p.ctrs["c1"].ref.CgroupPath
+	e.p.mu.Unlock()
+	if dir != parent {
+		t.Fatalf("cgroup %s, expected the container's %s", dir, parent)
+	}
+	e.p.LendsRestored()
+	e.passes()
+	e.expectUpdates("c1 mems=0-1")
+	// a later pass (any Fence of a new node) finds it fenced
+	e.p.fenceContainers(ctx)
+	e.expectUpdates()
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+	for i := 0; i < 3; i++ { // three reconciles
+		noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+		e.expectUpdates()
+	}
+	if n := strings.Count(logs(), "updating again"); n != 0 {
+		t.Errorf("%d \"updating again\" lines; parent cpuset.mems %q", n, e.cgroupMems("kubepods/u1/c1"))
+	}
+	e.proc(201, "kubepods/u1/c1/app.scope", "0-2", "")
+	if ref, ok := e.p.ContainerByPid(201); !ok || ref.ID != "c1" {
+		t.Errorf("a process in another child cgroup: %+v %v", ref, ok)
+	}
+}
+
+func TestContainerCgroupDir(t *testing.T) {
+	old := cgroupRoot
+	cgroupRoot = "/sys/fs/cgroup"
+	t.Cleanup(func() { cgroupRoot = old })
+	const id = "4bb166f8e2"
+	scope := "/sys/fs/cgroup/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podu1.slice/cri-containerd-" + id + ".scope"
+	for _, tc := range []struct{ dir, id, want string }{
+		{scope, id, scope},
+		{scope + "/init.scope", id, scope},
+		{"/sys/fs/cgroup/kubepods/burstable/podu1/" + id + "/a/b", id, "/sys/fs/cgroup/kubepods/burstable/podu1/" + id},
+		{"/sys/fs/cgroup/system.slice/crio-" + id + ".scope/container", id, "/sys/fs/cgroup/system.slice/crio-" + id + ".scope"},
+		{"/sys/fs/cgroup/kubepods/podu1/other/init.scope", id, "/sys/fs/cgroup/kubepods/podu1/other/init.scope"},
+		{scope + "/init.scope", "", scope + "/init.scope"},
+		{"/elsewhere/" + id + "/init.scope", id, "/elsewhere/" + id + "/init.scope"},
+	} {
+		if got := containerCgroupDir(tc.dir, tc.id); got != tc.want {
+			t.Errorf("containerCgroupDir(%s, %q) = %s, expected %s", tc.dir, tc.id, got, tc.want)
+		}
+	}
+}
+
+// fencing none, a requester restarts with its kept lease and a spec pinned
+// to its DRAM nodes (kubelet memory manager): the first lend after its
+// start is not logged as a lost update ("updating again"): nothing was sent
+// before (05-review D6).
+func TestReviewSeededNoneLogsUpdatingAgain(t *testing.T) {
+	e := newLtEnv(t)
+	logs := captureKlog(t)
+	leases := &fakeLeases{}
+	e.p.leases = leases
+	ctx := context.Background()
+	pod := ltPod("u1")
+	leases.set("u1", "main", 2, "l1")
+	c2 := specMems(ltCtr(pod, "c2", "main", 102), "0-1")
+	if got := e.createMems(pod, c2); got != "-" {
+		t.Fatalf("adjustment %s", got)
+	}
+	e.proc(102, "kubepods/u1/c2", "0-1", "0-1")
+	e.startCtr(pod, c2)
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1")) // the broker at PostStart
+	e.expectUpdates("c2 mems=0-2")
+	// a lost update is: the cgroup loses the node again
+	e.setCgroupMems("kubepods/u1/c2", "0-1")
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c2 mems=0-2")
+	if n := strings.Count(logs(), "updating again"); n != 1 {
+		t.Errorf("%d \"updating again\" lines, expected 1 (the lost update):\n%s", n, logs())
+	}
 }

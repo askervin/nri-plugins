@@ -1,0 +1,131 @@
+BUG-07: THE PREPARED CLAIMS ARE PERSISTED IN TWO FILES, NOT ATOMICALLY
+
+Branch 5jg-cxl, 2026-10-24. Predicted by 01-findings-driver.txt
+section 4 E4 (a)-(c), made more likely by the bug-01 fix (the driver
+exits on every loss of NRI) and raised again by 05-review-DRV.txt D3.
+Fixed in the working tree (uncommitted), unit tested; no cluster run
+(no reproduction: the windows are microseconds wide).
+
+D/ = cmd/plugins/dra-driver-cxl/. Line numbers of HEAD (ed0370b24)
+unless "new".
+
+========================================================================
+1. SUMMARY
+
+The cxl.nri.io driver keeps a prepared claim in two files of its data
+directory (/var/lib/kubelet/plugins/cxl.nri.io/):
+  preparedClaims.json      claim UID -> the PrepareResult (CDI ids)
+  preparedClaimsInfo.json  claim UID -> its devices, settings, lend
+persist (D/node_state.go:1008-1025) writes the CDI spec, then
+preparedClaims.json, then preparedClaimsInfo.json. A driver that
+stops between the two writes leaves them disagreeing, and nothing
+reconciled them at the next start. preparedClaims.json was also
+written in place (os.WriteFile: truncate, then write,
+D/prepared_claims.go:79, :49), unlike every other state file.
+
+Since bug-01 the driver exits (status 1) whenever the runtime closes
+its NRI connection, at any moment, from the stub's goroutine, also
+while a Prepare or an Unprepare persists: what was a SIGKILL window
+is now a routine event of every containerd restart during pod churn.
+
+========================================================================
+2. THE CRASH WINDOWS AND THEIR EFFECTS
+
+(a) Between the two writes of a Prepare: preparedClaims.json has the
+    claim, preparedClaimsInfo.json does not.
+    - the local allocator, reconciled with the claims of the info file
+      (D/driver.go:566-573), releases the claim's slices at start;
+    - kubelet retries the Prepare (the crashed call never succeeded);
+      prepare() finds the claim in Prepared, "Claim ... was already
+      prepared, nothing to do" (D/node_state.go:904-910), and returns
+      the stored CDI ids;
+    - the CDI spec is built from the info (buildClaimsCDISpec skips a
+      claim without info, D/node_state.go:1451-1455): the container
+      gets CDI ids that no spec has and never starts (unresolvable CDI
+      device), for as long as the claim is allocated.
+(b) Between the two writes of an Unprepare (or of the rollback of a
+    failed Prepare): preparedClaimsInfo.json has the claim,
+    preparedClaims.json does not. The devices were released before
+    the persist (revoke, local Release).
+    - the retried Unprepare finds no prepared claim and returns nil
+      (preparedInfo looks at Prepared, D/node_state.go:846-851);
+    - the info entry stays for ever, also across restarts: its numa
+      nodes are fenced at every start (preparedNodes, D/fence.go:154),
+      its lend record and devices are taken as prepared by the NRI
+      plugin (containerResults) and the broker; after a rollback that
+      could not release, the local slices stay too (the local
+      allocator takes the claim as prepared).
+(c) During the write of preparedClaims.json: a truncated or empty
+    file. Every start fails ("failed to parse prepared claims file",
+    D/prepared_claims.go:64-66): the driver crash-loops until the file
+    is repaired by hand. The same for the creation of an empty file
+    at the first start (os.WriteFile of "{}").
+
+========================================================================
+3. THE FIX
+
+(c) D/prepared_claims.go writePreparedClaimsToFile and the creation
+    in getOrCreatePreparedClaims, and the creation in
+    getOrCreatePreparedClaimsInfo (D/node_state.go), go through
+    writeJSONFile (D/local.go: tmp file, then rename), as the info
+    file, the local state, the lease table and the pool state do: a
+    crash leaves the old file or the new one.
+
+(a), (b): a claim is prepared only when both files have it.
+D/prepared_claims.go (new) loadPreparedClaims reads both files and
+reconcilePreparedClaims drops what only one has:
+- only in preparedClaims.json, or with a null info: the claim was
+  being prepared. It is forgotten. Its local memory is released by the
+  local allocator's Reconcile (newLocalHelper, D/driver.go, now takes
+  the claims of both files, through the same function), and the
+  Prepare that kubelet retries prepares it from scratch. This is the
+  state that a crash before the first write leaves, a window that the
+  driver had already (the device work of a Prepare is done before its
+  persist).
+- only in preparedClaimsInfo.json: the claim was being unprepared, its
+  devices are released already. It is forgotten: the state that the
+  second write would have left. The retried Unprepare (or Prepare,
+  after a rollback) finds nothing and does its normal work.
+newNodeState (D/node_state.go) loads through it, logs a warning per
+forgotten claim ("claim U: prepared without its info (the plugin
+stopped in its Prepare): not prepared, its retried Prepare prepares
+it again", "claim U: info of a claim that is not prepared (the plugin
+stopped in its Unprepare): forgotten, its devices are released"), and
+its persist at start writes both files consistently.
+
+Not chosen: one file for both. It closes the window too, but changes
+the on-disk format (preparedClaims.json is documented, and an upgrade
+would need a migration of both files), for no gain over the
+reconciliation, which maps either crash onto a state the driver
+already handles.
+Not done: fsync of the state files (a power loss rather than a
+process exit), the same for all of them.
+
+Docs: docs/memory/cxl/local.md (Restart): the slices of claims that
+are not in both files are released.
+
+========================================================================
+4. TESTS
+
+- D/main_test.go TestPreparedClaimsReconcile (new): u1 in both, u2
+  only in preparedClaims.json, u3 only in the info, u4 with a null
+  info: loadPreparedClaims keeps u1, reports preparing [u2 u4] and
+  unpreparing [u3]; missing files are created as "{}"; newNodeState
+  on those files has u2 not prepared and no info of u3, and leaves
+  both files with u1 only, no .tmp file.
+- TestPreparedClaimsFile (unchanged) passes with the atomic writes.
+- Mutation: without the reconciliation the test fails.
+- gofmt, go vet, golangci-lint (the pre-existing errcheck of
+  pkg/cxl/memctl/probe.go only), go test -race -count=3
+  ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/... ./pkg/cgmpolmgr/...
+  -skip TestMemdevSettings: ok.
+
+========================================================================
+5. STATUS
+
+Fixed in the working tree, not committed:
+  cmd/plugins/dra-driver-cxl/prepared_claims.go, node_state.go,
+  driver.go (newLocalHelper), main_test.go
+  docs/memory/cxl/local.md
+No cluster verification (the windows cannot be hit on purpose; a
+replay would need a fault-injection hook between the writes).

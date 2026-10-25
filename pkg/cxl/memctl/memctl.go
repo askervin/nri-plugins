@@ -960,7 +960,7 @@ func (mc *Manager) CreateRegionSize(ctx context.Context, memdev, mode, decoder s
 		}
 		out, err := mc.Exec(ctx, "cxl", args...)
 		if err != nil {
-			return nil, err
+			return nil, mc.explainCreateRegion(memdev, err)
 		}
 		if m := regionNameRe.FindStringSubmatch(out); m != nil {
 			region = m[1]

@@ -1,0 +1,441 @@
+plan-13: review of the uncommitted driver fixes (stream DRV)
+============================================================
+2026-10-24 (Opus reviewer). Read, built and tested only: no file of N
+was changed (this one excepted), the cluster and the VMs were not
+touched.
+  N    ~/github.com/containers/nri-plugins, branch 5jg-cxl, working
+       tree on top of ed0370b24
+  D/   N/cmd/plugins/dra-driver-cxl/
+  C/   ~/github.com/containerd/containerd (57d315c6e)
+  REV  /tmp/drvreview: throwaway tests, patched copies and mutations,
+       run with "go test -overlay" (nothing written into N)
+Scope: git diff of D/{nri,lend,broker,driver}.go, D/node_slices.go
+(new), the changed *_test.go, pkg/cgmpolmgr/manager.go,
+pkg/cxl/memctl/{decoders.go (new),memctl.go,pmem.go},
+docs/memory/cxl/{usage,leases}.md; test/e2e ignored. Specs: bug-01,
+bug-02 (7b), bug-04, bug-05, bug-06, 01-findings-driver.
+
+Verdict
+-------
+No blocking bug. The five fixes do what their bug files say, the new
+lock edge creates no cycle, every new test fails without its fix
+(mutations, section 2) and the tests also pass with a stricter
+containerd fake. Two risks deserve a change before the commit:
+- D1: after a driver restart, a fenced container whose pid 1 sits in
+  a child cgroup (systemd in the container) is updated again at every
+  pass and every lend reconcile (60 s) for its lifetime, each time
+  with an Info "updating again" line;
+- D2: Synchronize releases memory.high only for containers that the
+  NEW settings steer: a configuration change followed by a kill or a
+  bug-01 exit leaves the dead manager's memory.high for ever.
+D3 (non-atomic preparedClaims.json, now hit by a routine self-exit)
+is a one-line fix. The rest are nits.
+
+Commands run
+------------
+go test -race -count=3 ./cmd/plugins/dra-driver-cxl/... \
+  ./pkg/cxl/... ./pkg/cgmpolmgr/... -skip TestMemdevSettings
+                                                   ok (2m50s)
+go test -race -count=10 -run 'TestNodeSlice|TestNRIConnection|
+  TestLendRestartedRequester|TestLendUpdateBeforeStart|
+  TestFenceSynchronizeWhileCreating|TestLendSynchronizeKept|
+  TestSynchronizeReleasesSteering' ./cmd/plugins/dra-driver-cxl/
+                                                   ok (79 s)
+go vet (the three trees), gofmt -l                 clean
+golangci-lint run (the three trees): 3 errcheck in
+  pkg/cxl/memctl/probe.go:95,104 and probe_test.go:36, a file of HEAD
+  (ed0370b24), not of this diff.
+REV: review_throwaway_test.go (D1, D2, D6), mut/ (mutations M1-M6),
+overlay_spec.json (stricter fake, D8), overlay2.json and
+overlay3.json (two candidate fixes of D1).
+
+1. Findings
+-----------
+D1 risk, bug-05 (hit after every restart, bug-01/04): endless re-send
+   when the cgroup that the driver reads is not the one runc writes
+   Where: D/lend.go:347-354 curMems reads cpuset.mems of
+   tc.ref.CgroupPath; memsDiffer (:806-816), used by fencePass
+   (:1083) and fencedLend (:799), compares want with it. CgroupPath
+   is the cgroup of the container's pid in /proc (trackStarted
+   :261-275 -> resolveContainerCgroupDir, D/nri.go:673). At
+   StartContainer that pid is runc init, still in the container's
+   cgroup. At Synchronize (every driver restart, since bug-01 every
+   containerd restart too) it is the workload's pid 1, which may have
+   moved into a child cgroup: systemd in the container moves itself
+   to init.scope; nested runtimes and other cgroup-v2 delegating
+   workloads do the same. The child's cpuset.mems is "" for ever:
+   runc updates the container's cgroup, its parent.
+   Effect: for a fenced container every fence pass sends want again
+   and logs (Info) "NRI fence: ...: the cpuset.mems of its cgroup is
+   "", not X as updated, updating again"; with a numa lease every
+   broker reconcile (60 s) does the same through fencedLend, for the
+   container's lifetime. Functionally harmless (the same value is
+   written to the real cgroup), but it is an endless "updating
+   again", and it breaks item 3 of bug-05's cluster verification ("no
+   updating again lines without lost updates").
+   Evidence: REV TestReviewSubCgroupUpdatesForever: pid 101 in
+   kubepods/u1/c1/init.scope, the fake runtime writes kubepods/u1/c1
+   (and the child's effective set, as the kernel would); after the
+   first pass, a second pass and three LendNode calls each send the
+   update again: 4 "updating again" lines.
+   Not affected: the non-fenced lend path (cgroupLacks reads
+   cpuset.mems.effective when cpuset.mems is "", :821-839).
+   Fix, not the obvious one: comparing cpuset.mems.effective when
+   cpuset.mems is "" (as cgroupLacks does; tried in REV
+   overlay2.json) stops the re-sends but is wrong for fencing:
+   effective lacks the nodes that are not online yet, so a container
+   with "" whose effective set happens to equal want is left with ""
+   and inherits the next fenced node when its memory goes online.
+   Instead, either
+   (a) resolve the container's own cgroup at Synchronize: walk up
+       from the pid's cgroup to the directory that names the
+       container id (cri-containerd-<id>.scope, crio-<id>.scope,
+       .../<id>); this also fixes ContainerByPid for such containers
+       (pre-existing: a lease requester in a sibling child cgroup is
+       "in no known container"), or
+   (b) in curMems, when cpuset.mems is "", take the nearest explicit
+       cpuset.mems of an ancestor, "" if none. Tried in REV
+       overlay3.json: all TestLend/TestFence/TestSynchronize/TestNRI
+       tests pass, the D1 re-sends stop, bug-05 case 2 is still found
+       (the container's and the pod's cpuset.mems are "", the root
+       has none).
+   Optionally, after a successful update, read the cgroup again once
+   and warn once instead of re-sending for ever.
+
+D2 risk, bug-04: memory.high stays when the settings changed across a
+   non-graceful restart
+   Where: D/lend.go:499-514 syncManagement releases only when the new
+   process's manage() says memorySteered; a container "taken as
+   steered" (Combine error, :502-505) is never released either. The
+   bug file argues that a container that its settings do not steer
+   (or whose settings do not combine) was never steered by any
+   process. That holds only while the driver configuration
+   (p.defaults, defaults.container) stays the same: the old process
+   may have steered it under defaults that are gone (steering.policy
+   auto -> none, or auto -> another policy that conflicts with a
+   claim), e.g. for a claim that inherits the policy. A ConfigMap
+   change takes effect at the next start, which is now also every
+   containerd restart (bug-01 exit), so "configuration changed, later
+   a kill or a runtime restart" is not exotic.
+   Effect: the container keeps the memory.high of the dead manager's
+   last step for its lifetime: the bug-04 symptom.
+   Evidence: REV TestReviewReleaseAfterDefaultsChange: claims "split"
+   (numa node 2 and DRAM, no settings of their own); with the old
+   defaults (policy auto) manage() says steered (precondition
+   checked); with the new defaults (none) Synchronize leaves
+   memory.high 140668928 (FAIL: expected max).
+   Fix: record the containers that have a manager, independently of
+   the settings: e.g. a small state file in the plugin data directory
+   with their ids (written when a manager starts, removed when it
+   stops); Synchronize releases exactly those, whatever manage() says
+   now. That also leaves alone the memory.high (MemoryQoS) of
+   containers that the settings steer but that no process steered
+   (created while the plugin was down), which the current fix
+   overwrites. Cheaper: document it as a limit in usage.md Steering.
+
+D3 risk, bug-01: a routine self-exit can truncate preparedClaims.json
+   (01-findings E4(c))
+   Where: D/prepared_claims.go:71-79 writePreparedClaimsToFile writes
+   with os.WriteFile (truncate, then write) at every persist
+   (D/node_state.go:1018). The other state files go through
+   writeJSONFile (tmp + rename, D/local.go:1331-1344), the CDI cache
+   renames too. exitOnNRILost (D/nri.go:285) calls os.Exit from the
+   stub's close goroutine at any moment, also while a Prepare or
+   Unprepare persists. A truncated file fails every start ("failed to
+   parse prepared claims file", D/prepared_claims.go:63-66): the
+   driver crash-loops until the file is repaired by hand. The same
+   as a SIGKILL before, but the exit is now a normal event of every
+   containerd restart during pod churn. Small window, large effect.
+   Fix: writePreparedClaimsToFile -> writeJSONFile (one line).
+
+D4 nit, bug-01: exit 1 in the middle of a graceful Shutdown
+   Where: D/driver.go:713-728 Shutdown stops the broker first
+   (broker.stop waits for its goroutines: a reconcile in LendNode or
+   in API calls, up to apiTimeout each) and the NRI plugin marks
+   stopping only in nriPlugin.Stop (D/nri.go:224-227). A runtime that
+   closes the connection in that window (node shutdown: containerd
+   and the driver stop together) makes onClose exit 1 in the middle
+   of Shutdown: the steering managers are not stopped (memory.high
+   stays until the next start releases it, bug-04), the kubelet
+   plugin is not unregistered, the status is a failure. Harmless for
+   the DaemonSet.
+   Fix: mark stopping at the start of Shutdown (a method of the NRI
+   plugin called before d.broker.stop(), or when run() gets the
+   signal). The ctx.Err() case of exitIfLostLocked (:279) is dead in
+   production (ctx is context.Background, D/main.go:323); harmless.
+
+D5 nit, bug-04 principle: a failed manager start leaves the container
+   "steered" by nobody
+   Where: D/nri.go:553-555 sets tc.memory = memorySteered before the
+   manager exists; when the cgroup cannot be resolved (:565-570),
+   cgmpolmgr.New fails (:574-581) or mgr.Start fails (:583-587), it
+   stays steered with neither manager nor plan: never fenced, never
+   lent to, for its lifetime in this process. bug-04's principle is
+   "steered means that a manager of this process steers it (or
+   will)". Pre-existing (Start cleans memory.high up itself).
+   Fix: on these failures set tc.memory = unsteeredMemory(eff) (keep
+   eff in pendingSteering) and start its fence pass (fenceStarted).
+
+D6 nit, bug-05: Info "updating again" for the first lend of a seeded
+   container that is not fenced
+   Where: D/lend.go:746-751. A requester with fencing none is seeded
+   (tc.lent) at CreateContainer without an adjustment, as designed;
+   at PostStart the broker's relend finds needed=false and
+   cgroupLacks true when its spec is pinned (kubelet memory manager,
+   another plugin), and logs "the cpuset.mems of its cgroup lacks the
+   lent nodes 2, updating again" (Info) although nothing was sent.
+   Evidence: REV TestReviewSeededNoneLogsUpdatingAgain (FAIL: the
+   line is logged by lend.go:748). Also breaks bug-05 item 3.
+   Fix: log "updating again" only when tc.mems has the lent nodes (a
+   recorded update), else the normal V3 lend line.
+
+D7 nit, bug-05: a revoke of a not-fenced container between
+   StartContainer and PostStart reaches its spec only, and nothing
+   repairs it
+   Where: tc.started is set at StartContainer (D/nri.go:552), before
+   containerd's StartedAt; the non-fenced revoke (D/lend.go:737-752)
+   sends base, spec only; PostStart runs a pass for fenced containers
+   only (D/nri.go:622, fenceAtStart D/lend.go:981-983); the broker
+   has no lease left to reconcile. The cgroup keeps the node. Benign:
+   with fencing none an unconstrained container has every node
+   anyway, and offlining migrates its pages whatever its cpuset. The
+   lend.go header ("updates prompted by a start are sent after the
+   runtime marked the container started") just does not cover it.
+   Fix if wanted: at PostStart compare a recorded tc.mems of a
+   not-fenced container with its cgroup (cgroupMemsContain of the
+   nodes no longer lent).
+
+D8 nit, test quality (bug-05): the containerd fake is truthful only
+   on request
+   Where: D/lend_test.go ltStub: specOnly defaults to false, so an
+   update between StartContainer and PostStart reaches the cgroup
+   unless a test sets it (containerd: spec only until StartedAt);
+   toCgroup writes the driver's own tc.ref.CgroupPath, so a wrong
+   path (D1) can never show; spec updates are never carried into the
+   cgroup at task creation (tests write e.proc by hand).
+   Checked: with spec-only as the default from CreateContainer to
+   PostStart (REV overlay_spec.json: run and createMems set it) all
+   TestLend/TestFence/TestSynchronize/TestNRI tests still pass: the
+   fix is robust. Making that the default keeps it so.
+
+D9 nit, docs (bug-05): usage.md:960-962 still says "the running and
+   created containers are updated before the memory of a new node
+   goes online, so no container sees the node". A container between
+   NewTask and StartedAt gets the update in its spec only and runs
+   with the node until its PostStart pass (or the first pass after a
+   restart): say that a container being started gets it when it has
+   started. usage.md:964 is 100 columns: re-wrap.
+
+D10 nit, bug-06: the short SyncDelay also speeds up fights
+   SyncDelay applies to every informer event of the slice, so any
+   second writer is answered within 1 s instead of 30 s: two driver
+   instances on a node (DaemonSet maxSurge, a host process and the
+   pod), or a stale owner UID (the controller looks up the Node UID
+   once, vendor resourceslicecontroller.go:771-777; a Node object
+   deleted and re-created while the driver runs makes the garbage
+   collector delete the slice and the driver re-create it with the
+   stale owner: about 1/s instead of 1/30 s, a flapping slice either
+   way). Bounded (one pool, one slice, about one write a second).
+   Accept; maybe say so next to nodeSliceSyncDelay.
+   Test: TestNodeSliceBackAfterKubeletWipe requires a publish to show
+   within the sync delay (< 1 s, polling every 20 ms): may flake on a
+   loaded CI machine under -race; a bound of a few seconds still
+   tells "at once" from 30 s.
+
+D11 nit, bug-02: holes of the endpoint's own decoders are not named
+   decoders.go:58-86 walks only the portN ancestors; an endpoint with
+   several regions has the same in-order rule. Not reachable with
+   this driver (one region per memdev at a time, bug-02 section 6):
+   completeness only.
+
+2. Verified as correct
+----------------------
+bug-01 (exit on NRI loss)
+- D/nri.go:255-286 exits only when started && closed && !stopping.
+  Both orders of Start's success and the close: stub.connClosed
+  (vendor stub.go:626) blocks on the stub lock until Start returns,
+  then closes and calls onClose; connStarted after a close exits. A
+  failed Start never exits (its deferred rpcc.Close reaches onClose
+  with started false), and the driver runs on without NRI as before.
+- Stop sets stopping before stub.Stop; the stub reports that close
+  later from the ttrpc goroutine: V3 "closed (stopping)", no exit.
+  TestNRIConnectionLostStub drives the real stub through a fake
+  runtime (multiplex, ttrpc, RegisterPlugin, Configure) and shows
+  that the stub reports our own Stop to onClose.
+- Startup: an exit after connStarted only restarts the process; a
+  newDriver error after NRI started returns through main (exit 1).
+  Decision and exit under connMu, no other lock is taken.
+bug-02 (decoder holes in the error)
+- Message only: %w keeps errors.Is (tested); isAddDevError
+  (D/pool.go:597, a string match) still retries the add_dev race;
+  memctl takes no lock that DecoderHoles could re-enter; the walk
+  over the endpoint's sysfs ancestors matches the real layout
+  (root0/port2/port3/endpointN).
+bug-04 (Synchronize releases steering)
+- Synchronize comes once per connection (the stub collects the parts
+  of a chunked sync, vendor stub.go:717-765), before any
+  CreateContainer or StartContainer of this process, and the process
+  never reconnects: at Synchronize there are no managers and no
+  pending plans, so no live or pending steering is released. The
+  window of StartContainer between dropping the plan and storing the
+  manager (D/nri.go:547-591) has tc.memory steered and a known entry
+  (syncManagement runs only for !known).
+- cgmpolmgr.Release: creates no file, does not rewrite "max" (the
+  graceful path is a no-op), ErrNotExist for a gone cgroup.
+- Release and class are set under p.mu inside Synchronize, before
+  syncedC closes; the first pass waits for LendsRestored and sees the
+  final class. "Taken as steered" containers keep memory.high.
+bug-05 (updates before the start)
+- containerd checked in C/: NewTask (container_start.go:146) ->
+  BlockPluginSync (:168, held until the CRI call returns) ->
+  nri.StartContainer (:181) -> task.Start (:188) -> StartedAt (:195)
+  -> nri.PostStartContainer (:206); container_update_resources.go
+  :120-122 updates only the spec unless RUNNING; internal/nri/
+  domain.go updateContainers skips unknown containers without an
+  error. With BlockPluginSync a plugin synchronizes only before
+  NewTask or after the start: case 2 is the "during NewTask" window.
+- Lock order: the new edge is p.mu -> b.mu (keptLends ->
+  LeaseNodes, D/broker.go:1342). The broker never holds b.mu across
+  a lender call (start :189, authenticate :387, release :1175,
+  containerGone :1297, relendContainer :1365, reconcile :1418), its
+  hooks (OnLending, OnPrepared, OnLendFailed, OnReleasing) touch only
+  the lease table and its file, and no API call runs under b.mu
+  (refreshClaimPods, deleteOrphans, createCompanion lock around
+  them): no cycle with the drivers' locks, f.fenceMu, lendMu or p.mu,
+  and CreateContainer is not delayed by API latency.
+- Seeding vs release: startRelease marks the lease Releasing under
+  b.mu before the revoke goroutine runs, so either the new container
+  is not seeded or the revoke (lendMu, then p.mu) finds it seeded. A
+  fenced one loses the node from its spec; if containerd skipped
+  that update (not in its store yet) the PostStart pass repairs the
+  cgroup. Steered containers are never seeded; the companion has
+  another pod UID.
+- No update loop apart from D1: passes run on Fence, Synchronize,
+  LendsRestored and PostStart only, lends on broker events and the
+  60 s reconcile; the plugin does not subscribe to UpdateContainer,
+  so its own updates trigger nothing. kubelet's CPU manager updates
+  only CpusetCpus (containerd keeps the spec's mems), the memory
+  manager sets mems only at creation: no fight with kubelet. An NRI
+  resource policy that rewrites cpuset.mems of fenced containers
+  would be answered at each pass or reconcile (bounded; that set-up
+  is documented as fencing none). Sets are compared by content
+  (sameMems), so "0,1" and "0-1" do not loop.
+- PostStartContainer of a gone container is ignored; of one that
+  Synchronize saw CREATED it records the start (pid, cgroup, base).
+  fireStarted and fenceStarted under p.mu only start goroutines.
+- Mutations, each caught: M1 no seeding (TestLendRestartedRequester,
+  TestLendSynchronizeKept); M2 curMems = tc.mems
+  (TestLendUpdateBeforeStart, TestFenceSynchronizeWhileCreating,
+  TestLendSynchronizeKept); M3 no PostStart pass
+  (TestFenceMissedAtStart, TestLendUpdateBeforeStart,
+  TestFenceSynchronizeWhileCreating); M4 no release
+  (TestSynchronizeReleasesSteering); M5 no cgroupLacks
+  (TestLendUpdateBeforeStart).
+bug-06 (own ResourceSlice controller)
+- Same Options as the helper (vendor draplugin.go:1191-1225): driver
+  cxl.nri.io, owner Node by name (UID looked up by the controller),
+  no ReconcilePoolWithName (the helper's default ""), an error
+  wrapper equal to the helper's recoverableError. Same slice names,
+  so the slices of a running cluster are adopted, not replaced.
+- Stop: Controller.Stop only cancels and waits (vendor
+  resourceslicecontroller.go:410-416); the helper never deleted
+  slices either (it stops its controller the same way,
+  draplugin.go:1121-1134). A graceful restart keeps the slice;
+  kubelet's wipe 30 s after an unregistration is unchanged.
+- The helper no longer publishes (no other PublishResources call):
+  one controller. The pool driver's helper (D/pool.go:288) never
+  published; pool controllers publish with a NodeSelector, no
+  nodeName, under another driver name: neither kubelet's wipe nor
+  this controller touches them.
+- Every publish caller passes run()'s context.Background (newDriver,
+  rescanAndPublish from retryPoolList and udev): the controller runs
+  until Shutdown; d.slices is set before started.Store(true), which
+  orders it for those goroutines.
+- API load: SyncDelay delays only informer events; Update syncs at
+  once; one no-op sync per own write, as before; dropped fields do
+  not loop (TestNodeSliceErrorsRecoverable). M6 (the delay back at
+  30 s) fails TestNodeSliceBackAfterKubeletWipe.
+
+3. Disposition (fixer, Opus, 2026-10-24)
+----------------------------------------
+Working tree only, nothing committed, no image, cluster and VMs not
+touched. Line numbers of the working tree after the fixes.
+
+D1 FIXED (option a). D/nri.go:860 containerCgroupDir: from the pid's
+   cgroup, the nearest directory (under the cgroup root) whose name
+   has the container id (cri-containerd-<id>.scope, crio-<id>.scope,
+   <id>), else the pid's cgroup as before; resolveContainerCgroupDir
+   uses it, so tracking, curMems, baseMems, the steering manager,
+   bug-04's Release and ContainerByPid (a requester in a sibling child
+   cgroup) all see the container's own cgroup. Option b not taken: an
+   ancestor whose explicit set equals want would leave the container
+   "" for ever, inheriting a later change of that ancestor. Case 2 of
+   bug-05 still caught (TestFenceSynchronizeWhileCreating). Tests:
+   TestReviewSubCgroupUpdatesForever (yours, assertions inverted: one
+   update per change, no "updating again", ContainerByPid of
+   kubepods/u1/c1/app.scope), TestContainerCgroupDir.
+D2 FIXED (record of managed containers). D/nri.go:64-162
+   steeredRecord, file steeredContainers.json in the plugin data
+   directory (writeJSONFile), id -> cgroup of the manager: added in
+   StartContainer before mgr.Start, removed after mgr.Stop
+   (stopContainerManagers, Stop). Synchronize releases exactly the
+   recorded containers it finds (D/lend.go:538 releaseSteering), also
+   one taken as steered, whatever manage() says, then keeps only this
+   process's managers (synced, D/lend.go:482). No file at start
+   (first start of this version, lost or unreadable file): the old
+   rule once (legacy). Containers that their settings steer but no
+   manager ran for keep their memory.high (MemoryQoS). Tests:
+   TestReviewReleaseAfterDefaultsChange (yours, with a record),
+   TestSynchronizeReleasesSteering extended (c7, c8, gone id, the file
+   during and after a manager), TestSynchronizeReleasesSteeringLegacy.
+D3 FIXED. writePreparedClaimsToFile and the creation of both
+   prepared-claims files use writeJSONFile.
+E4 (a), (b) FIXED: a start reconciles the two files (a claim is
+   prepared only when both have it); new
+   bug-07-split-persistence-of-prepared-claims.txt; test
+   TestPreparedClaimsReconcile (D/main_test.go).
+D4 FIXED. nriPlugin.markStopping (D/nri.go:359), called first in
+   driver.Shutdown and by Stop. Test: TestNRIConnectionLost
+   "Shutdown" (the close comes from broker.stop): no exit. The dead
+   ctx.Err() case is kept (harmless).
+D5 FIXED. notSteered (D/nri.go:733): a failed resolve, New or Start
+   sets tc.memory = pendingSteering.unsteered (unsteeredMemory of its
+   settings, stored at CreateContainer) and drops the record entry.
+   The fence pass is the one of its PostStartContainer (fenceAtStart),
+   not one started from StartContainer: that update would reach the
+   spec only. Test: TestSteeringStartFails (no cgroup; Start fails:
+   fenced 0-2 in the cgroup, lent to, no record).
+D6 FIXED. D/lend.go:778: "updating again" only when the recorded
+   cpuset.mems has the missing nodes (memsContain); else just the V3
+   lend line. Test: TestReviewSeededNoneLogsUpdatingAgain (yours, plus
+   a real loss that is logged once).
+D7 NOT CHANGED: benign as you say (fencing none keeps nobody off a
+   node; offlining migrates); a fix would compare a recorded value
+   with a cgroup that another owner (an NRI resource policy) may set.
+   The lend.go header now names the gap.
+D8 ADOPTED: run and createMems make the container spec-only until
+   startCtr (your overlay_spec.json); all tests pass with it. toCgroup
+   still writes the driver's path; the D1 test has its own runtime.
+D9 FIXED. usage.md "Containers without claims": no running container
+   sees the node, one being started runs with it until it has started;
+   re-wrapped. usage.md Steering and Files on the node describe D2/D5;
+   local.md Restart describes E4.
+D10 FIXED. TestNodeSliceBackAfterKubeletWipe: the publish must show
+   within 5 s (was 1 s); the fight is accepted and documented next to
+   nodeSliceSyncDelay.
+D11 NOT CHANGED: not reachable with one region per memdev
+   (completeness only); left for when several regions are created.
+
+Mutations (go test -overlay, /tmp/drvfix/mut): no walk-up (D1),
+release by settings (D2), no record entry (D2), no markStopping in
+Shutdown (D4), no fallback (D5), always log (D6), no reconciliation
+(E4): each fails a new test.
+Commands: gofmt -l, go vet (the three trees): clean; golangci-lint:
+only the 3 errcheck of pkg/cxl/memctl/probe.go(_test).go of HEAD;
+go test -race -count=3 ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...
+./pkg/cgmpolmgr/... -skip TestMemdevSettings: ok (driver 162 s); the
+new and bug-04/05 tests -race -count=10: ok.
+To re-verify in the cluster: bug-04 V14 (same Info line; the file
+/var/lib/kubelet/plugins/cxl.nri.io/steeredContainers.json names the
+lsteer container while it runs), bug-05 item 3 (no "updating again"
+without a lost update).

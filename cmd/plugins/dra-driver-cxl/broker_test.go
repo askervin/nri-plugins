@@ -858,6 +858,14 @@ func TestBrokerRestartAndReconcile(t *testing.T) {
 	noErr(t, err)
 	e.b.OnPrepared(id, []lentDevice{{Source: api.SourcePool, Serial: 0xc1ee0001, Size: 1 << 28, Mode: api.ModeNUMA, Node: 2}})
 	e.waitState(id, api.StateReady)
+	// the node that a restarted requester is created with
+	if got := e.b.LeaseNodes(testPodUID, testCtr); !reflect.DeepEqual(got, map[int][]string{2: {id}}) {
+		t.Fatalf("lease nodes %v", got)
+	}
+	var none *broker
+	if e.b.LeaseNodes(testPodUID, "other") != nil || e.b.LeaseNodes("other", testCtr) != nil || none.LeaseNodes(testPodUID, testCtr) != nil {
+		t.Fatal("lease nodes of another container")
+	}
 
 	// restart: lease and socket are back, the lend is re-applied
 	e.restart()
@@ -914,6 +922,9 @@ func TestBrokerRestartAndReconcile(t *testing.T) {
 	e.b.reconcile()
 	e.waitState(id, api.StateReleased)
 	e.wantGone(companionName(id))
+	if got := e.b.LeaseNodes(testPodUID, testCtr); got != nil {
+		t.Fatalf("lease nodes %v after the release", got)
+	}
 	if !strings.Contains(e.lender.callLog(), "revoke pod-uid-1/app 2") {
 		t.Fatalf("not revoked:\n%s", e.lender.callLog())
 	}

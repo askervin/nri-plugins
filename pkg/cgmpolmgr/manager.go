@@ -264,6 +264,37 @@ func (m *Manager) release() {
 	m.log.Infof("%s: stopped steering %s", m.name, m.cgroupPath)
 }
 
+// Release removes memory.high from a cgroup that no manager steers any
+// more, as Stop does: memory.high is set to max, cpuset.mems and the memory
+// policies of the threads are left as they are. A manager whose process was
+// killed leaves the cgroup throttled at the memory.high of its last step.
+// Returns the memory.high that was replaced, "" when it was max already
+// (nothing is written then). An error wrapping os.ErrNotExist tells that
+// the cgroup has no memory.high (it is gone); the file is never created.
+func Release(cgroupPath string) (string, error) {
+	path := filepath.Join(cgroupPath, "memory.high")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	high := strings.TrimSpace(string(data))
+	if high == "max" {
+		return "", nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return "", err
+	}
+	_, err = f.WriteString("max\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return "", fmt.Errorf("write memory.high: %w", err)
+	}
+	return high, nil
+}
+
 // numaUsage returns the steered memory usage per node of the cgroup.
 func (m *Manager) numaUsage() (NodeMem, error) {
 	usage, err := cgmemnotify.NumaUsage(m.cgroupPath, numaUsageCategories...)

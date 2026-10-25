@@ -1,0 +1,577 @@
+plan-13: status of stream EXEC
+==============================
+2026-10-24 (EXEC). Contract 04-contract.txt, plan 03-plan.txt.
+  N  ~/github.com/containers/nri-plugins
+  T  N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+     test90-gofmbt-reliability
+  O  the output dir of T: N/test/e2e/n4-cxl-shared-2-fedora-43-
+     containerd/memory.test-suite/dra-driver-cxl/
+     test90-gofmbt-reliability (reused by every run)
+  R  /tmp/mbt-exec-dev: console logs runN.log and copies runN-out/ of
+     O after each run, step lists, evidence
+Image: N/build/images/nri-dra-driver-cxl-image-39d9ab5700ab.tar (the
+newest by mtime, 09:06 today, imported by the framework; the driver
+logs "v0.15.0-39-geb1ca79e3-dirty"), not rebuilt. fake-cxl-pool from
+make -C N/scripts/testing/fake-cxl-pool (dra-build, every run).
+
+Summary
+-------
+The executor works end to end on the cluster: setup as test19 plus
+the three local memdevs, the step loop on-line (coprocess) and
+off-line (code.gen.sh), every verb of contract 4, the settle
+observation of contract 6 (0.45-1.2 s, 2-35 KB), teardown and the
+error-path cleanup. Verified with the stub generator (run 1 PASS, 65
+steps, every verb; run 2, 30 pods at once) and with MODEL's real
+binary off-line (run 3, its generate + check: 24 steps passed) and
+on-line (run 4: 24 steps, plan-ahead, built by the test). Two suspected
+SUT problems with evidence (S1 decoder EBUSY on re-attach, S2 port
+decoders left programmed), one confirmed predicted one (D E1, NRI lost
+after a containerd restart: seen in run 2, it ended run 4), one oracle
+issue for MODEL (M1, a deleting pod in phase Succeeded, ended run 3),
+contract amendments proposed in 8. MBT_MODE=replay is the on-line path
+plus --replay (MODEL's flag, the stub's too); not run separately.
+
+1. Files and functions
+----------------------
+T/code.var.sh      the test: parameters (contract 8), the generator
+                   (build, or the stub), setup (2), the run (mode
+                   online|replay|offline), teardown (6), cleanup.
+T/mbt.source.sh    the executor (sourced by the framework):
+  names            mbt-setup-ids, mbt-slot, mbt-slot-pod, mbt-vm-arg,
+                   mbt-pool-arg, mbt-dax-key
+  YAML             mbt-claim-to-template, mbt-template-yaml,
+                   mbt-templates-apply, mbt-pod-yaml (MBT_WORKLOAD)
+  commands         mbt-sh (quiet ssh, logged to mbt-exec.log),
+                   mbt-exec-in (kubectl exec in a slot's pod), mbt-json,
+                   mbt-utc, mbt-forget-inspected
+  actions          mbt-act-<verb> for the 15 verbs, mbt-run (dispatch,
+                   progress and result lines, status 2 for unknown
+                   verbs and bad arguments, mbt-times.tsv)
+  observation      mbt-observer-install, mbt-observe, mbt-drivers-seen
+  protocol         mbt-coproc-start/-stop, mbt-send, mbt-recv,
+                   mbt-gone, mbt-answer, mbt-fail, mbt-settle-online,
+                   mbt-online; off-line mbt-step, mbt-expect, mbt-check,
+                   mbt-offline
+  end              mbt-local-blocks, mbt-k8s-attachments, mbt-restore,
+                   mbt-teardown, mbt-exit-trap (DRA_EXIT_TRAP)
+T/mbt-observe.py   python3 stdlib only. "vm" in each VM (contract 6.3,
+                   with --cluster in VM2 also the kubectl/systemd parts
+                   of 6.1 and the inspect execs, in threads); "assemble"
+                   on the host (6.1, the inspect table, a driver summary
+                   for bash).
+T/mbt-stub.py      the stub generator: online (fixed step list, settle
+                   ok when the cluster is quiet and what a crash or a
+                   driver-kill hit has restarted; --replay FILE),
+                   generate, check. Keep it in T: MBT_STUB=1 is a smoke
+                   test of the cluster and the executor without the
+                   model (run 1: 4.3 min).
+N/test/e2e/memory.test-suite/dra-driver-cxl/dra.source.sh (reusable):
+  dra-local-find, dra-local-device, dra-local-detach: option --pool
+                   NAME (the server that knows the VM's local device)
+  DRA_CONTROLLER_URLS (unit -> server URL, set by dra-install),
+  dra-controller-run (the systemd-run line of dra-install, which uses
+                   it now), dra-controller-start (reset-failed + run,
+                   active within 10 s), dra-controller-stop (graceful,
+                   reset-failed), dra-controller-kill (SIGKILL, waits
+                   until not active)
+  dra-driver-kill VMDIR (SIGKILL of the driver container's process via
+                   crictl in the VM, in place), dra-node-service-restart
+                   VMDIR kubelet|containerd [TMO] (restart, wait active
+                   + healthz / crictl info + node Ready), dra-node-ready
+N/.../n4-cxl-shared-2/pool.source.sh: pool-server-restart NAME (stop,
+                   start on the same config, port, state file and log,
+                   appended; status within 60 s; returns non-zero).
+shellcheck: mbt.source.sh, code.var.sh: only SC2016 (snippets of
+retry-until, as everywhere) and SC2034/SC2154 for variables of other
+files; dra.source.sh and pool.source.sh keep their baseline classes
+(SC2016, SC2034, SC2154).
+
+2. Setup (code.var.sh, "### 0")
+-------------------------------
+The model is built first (a broken model stops the test before the
+45 s of setup): GOWORK=$O/go.work made by "go work init T/model
+$GOFMBT_DIR" when GOFMBT_DIR exists, else GOWORK=off, given to that go
+build only (an exported GOWORK broke the later go build of cxl-dump:
+run 4, first attempt). MBT_STUB=1, or no T/model/go.mod: mbt-stub.py.
+MBT_BIN set by the user: that one.
+Then test19 verbatim (E 2.1: cluster, qemu/hdm/FS_DAX checks, tools,
+pool-vm-reset, no-devices asserts, three servers and their host
+checks, client install, dra-build, dra-install with
+DRA_EXIT_TRAP=mbt-exit-trap, the three units and their pool names),
+plus dra-node-size-exact per VM, then:
+- dra-local-device --pool pool-a VM2, --pool pool-a VM1, --pool pool-b
+  VM0 (all 0xc100e2e1); --local-blocks measured from the cxl.nri.io
+  slices: vm2=8,vm1=2,vm0=2 in every run;
+- $DRA_TOOLS_IMAGE and registry.k8s.io/pause:3.10 pulled on each VM,
+  dra-dax-tool-install;
+- 19 ResourceClaimTemplates mbt-<kind>: x*/s* by serial (test19's CEL
+  via dra-shared-claim-yaml, made templates by mbt-claim-to-template),
+  lnuma/ldax/lsteer by dra-claim-yaml (cxl-local 128Mi; lsteer
+  "container: {steering: {policy: auto}}" as usage.md:838), lease by
+  dra-lease-template-yaml;
+- mbt-observe.py to /usr/local/bin in each VM, one observation that
+  must have no errors and no pods (0.54 s, 2.2 KB);
+- dra-trace-start of the three VMs (MBT_TRACE=0: none).
+Setup takes ~45 s after the framework's VM setup; a whole stub run of
+65 steps took 259 s (run 1).
+
+3. The run
+----------
+online/replay: coproc MBTGEN { exec "$MBT_BIN" online FLAGS; }, stderr
+>> $O/mbt-cxl.log, MBT_OUT=$O exported. FLAGS: --seed --duration
+--steps --depth --profile --unsettled --settle-timeout=Ns
+--local-blocks --node-hb0=2 --node-hb1=3 --out=$O [--avoid]
+[--replay=FILE] and the words of MBT_ARGS (new: e.g.
+"--plan-ahead=false" for P2). Checked against MODEL's main.go flag set
+(no --poll: polling is bash's; Go's flag package would refuse it).
+The loop runs in the test's shell (functions only, no ( ... )):
+step N VERB ARGS -> mbt-run -> "done N STATUS JSON" -> ok|fail;
+step N settle -> observe, "observe N JSON", wait -> sleep MBT_POLL, ok
+or fail; end -> stop the coprocess -> teardown. Details that matter:
+- bash unsets MBTGEN[0] when it reaps the coprocess, which loses its
+  last lines (measured): MBT_RFD is a dup of its stdout taken at
+  start, read with read -t $MBT_READ_TIMEOUT (900 s).
+- A write to a dead coprocess kills bash with SIGPIPE without the EXIT
+  trap (measured, exit 141): mbt-send ignores SIGPIPE around printf.
+- fail N: mbt-fail prints the message, the head of mbt-fail.txt,
+  copies the last observation to mbt-obs/fail-N.json, calls error; the
+  EXIT trap stops the generator (stdin closed, 5 s, TERM, KILL).
+- Files of the generator from an earlier run (mbt-fail.txt,
+  mbt-steps.txt) and driver logs are removed at setup: O is reused.
+offline: MBT_SCRIPT is sourced in the test's shell. mbt-step runs the
+action (records it in mbt-steps.txt); mbt-expect N runs "$MBT_BIN check
+--step=N --expect=FILE --observed=FILE [--since=T0
+--settle-timeout=Ns]"; FILE has the on-line line ("done N STATUS
+JSON" after an action, "observe N JSON" for a settle; MODEL's check
+accepts both), a settle polls every MBT_POLL s while check says wait
+(exit 3) and also stops itself after MBT_SETTLE_TIMEOUT.
+Output: two lines per action, settle lines only when the wait message
+changes; faults print their few commands. run.sh.output of run 1:
+2257 lines, ~1680 of them the framework and setup. Observations:
+$O/mbt-obs/obs-STEP-POLL.json, the last MBT_OBS_KEEP=30, plus
+fail-N.json; times in mbt-times.tsv, mbt-obs-times.tsv; every command
+and its output in mbt-exec.log (24 KB for 65 steps).
+
+4. Verbs (contract 4): implementation, measured duration
+---------------------------------------------------------
+Seconds, min-max (samples) over runs 1-4; kubectl runs in VM2 over the
+framework's persistent ssh.
+create        0.27-0.45 (62) kubectl apply of mbt-pod-yaml with the
+                             next gen, return at once
+delete        0.23-0.41 (18) kubectl delete pod --wait=false; status 2
+                             if the slot never had a pod
+crash         0.40-0.42 (4)  kubectl exec ... kill -SEGV $(cat
+                             /tmp/workload.pid): exit 139, restarts+1.
+                             The first restart at once (~1 s), the
+                             next after kubelet's back-off 10, 20,
+                             40 s (probe: 13.7, 21.7, 59.1 s after the
+                             kill; run 2: a 15 s settle). The pod
+                             status lags ~1 s: an observation right
+                             after still shows Running, Ready, the old
+                             restarts (run 1 step 26)
+write         0.47-0.86 (5)  kubectl exec sh -c 'exec python3
+                             /tools/dax-rw.py write "$CXL_<KEY>_DAX" 0
+                             "$1"' sh mbt-STEP, KEY from the kind; a
+                             read-only claim: exit 1, PermissionError
+                             (run 1 step 18); kinds without dax: 2
+read          0.38-0.53 (7)  the same with read; text = stdout, null
+                             on failure
+lease-get     0.58-0.65 (4)  cxl-request request --source local --mode
+              60.5 (1)       M --size 128Mi --wait 60s; result {lease,
+                             response, stderr}; the slot is inspected
+                             again at the next settle. 60.5 s: no free
+                             block, exit 3, lease Failed and released
+lease-put     1.95 (1)       cxl-request release --all; inspected again
+driver-kill   0.31-0.37 (5)  dra-driver-kill (crictl in the VM, kill
+                             -KILL); the container is back in the same
+                             pod ~1 s later, back-off as for crash
+driver-restart 3.08-4.80 (7) delete the pod, wait for a new Ready one
+                             and the node's cxl.nri.io slice, dra.sock
+                             and cxl-request (not the pool slices: a
+                             stopped controller may not have
+                             republished); old log saved, the trace
+                             follows the new pod; a status, no error()
+ctrl-kill     0.30-0.33 (5)  dra-controller-kill: SIGKILL, unit failed
+ctrl-start    0.71-0.78 (5)  dra-controller-start
+ctrl-restart  1.06-1.10 (4)  dra-controller-stop, dra-controller-start
+server-restart 6.07-6.08 (3) pool-server-restart: 5 s are the server's
+                             graceful shutdown (its HTTP shutdown
+                             waits for the controller's /events
+                             stream), 1 s the start on its state
+kubelet-restart 0.83-0.93 (5) dra-node-service-restart VMDIR kubelet
+containerd-restart 1.06-1.17 (5) ... containerd; since 11: plus the
+                             wait for the driver's restart (A8), 1.97
+                             (1) with the bug-01 fix
+settle        0.5-25 s       see 5; the teardown settle after 13
+                             deletes took 25 s (detaches)
+Faults on a VM (driver-kill, kubelet-, containerd-restart) mark the
+trace of that driver to be followed again (kubectl logs -f
+--since-time) once the driver is Ready; an in-place restart also saves
+"kubectl logs --previous" as nri-dra-driver-cxl.<vm>.<pod>.rN.log.
+
+5. The observer
+---------------
+mbt-observe STEP POLL: three ssh in parallel (VM2 with --cluster) and
+three curls of the pool servers' /api/v1/attachments, then assemble
+(contract 6.1). Containers: crictl ps --namespace ^NS$ (running ones),
+one crictl inspect for all, the cgroup v2 dir of the init pid
+(/proc/PID/cgroup "0::"). Cost (wall clock, bash's side included):
+  idle cluster            0.54 s,  2.2 KB
+  10 pods (run 1)         0.45-0.69 s, mean 0.55 (n 31), 14.5 KB
+  30 pods + companion     0.49-1.18 s, mean 0.61 (n 72), 34 KB; the
+  (run 2)                 1.18 s is the first one, with 30 inspects
+43 pods would be ~50 KB per line: MODEL reads with a 1 MiB
+bufio.Reader (online.go), fine.
+Content verified on the cluster: memdevs (serial, size, enabled),
+regions (serials of the targets, mode, size, node from the dax
+devices; dax devices with size, driver kmem/device_dax, online bytes
+from the memory blocks of their mappings), nodes MemTotal, the state
+files (prepared/info/pool uids, localDevices reduced, leases.json),
+CDI device names per file, containers' cpuset.mems/.effective and
+memory.high (lsteer: 140173312, others max), pods (phase, ready,
+deleting, restarts, lastExit 139 after a crash, waiting, claim with
+devices and Attached), companions with requester slot, drivers per VM,
+controllers, inspect env (CXL_* only) and leases.
+
+6. Teardown
+-----------
+end -> mbt-teardown: mbt-restore (restart a pool server that died,
+start controllers that are not active, wait <= 330 s for a Ready
+driver pod per node: back-off), kubectl delete pods --all
+(--grace-period=2, wait 180 s, never --force), no pods and claims in
+120 s, no k8s:-owned attachment per server in 120 s, pool-cxl-wait per
+VM "regions == [] and memdevs == [local]" 120 s; exactly one
+cxl-type3 per qemu; dra-trace-stop and summary to file; dra-cleanup;
+dra-local-detach --pool for the three VMs; pool-cleanup; trap - EXIT;
+ports 9909-9911 free; no cxl-type3 in any qemu. Error path
+(mbt-exit-trap): stop the generator, mbt-restore, dra-cleanup,
+pool-cleanup (which releases and detaches the local memdevs too).
+Both paths left the cluster clean in runs 1-4 (no pods in
+cxl-pool-demo, no servers, no units, no CXL devices in qemu or the
+kernels) except for S2.
+
+7. Verified live
+----------------
+run 1 MBT_STUB=1, built-in list: 65 steps, every verb and kind incl.
+      an "any" slot, PASS, 259 s. R/run1.log, R/run1-out.
+run 2 MBT_STUB=1 MBT_STUB_STEPS=R/steps2.txt: 30 pods at once (all
+      kinds but sexcl, two shares of one device on one node, three
+      lease pods), a second crash in back-off, ctrl-kill + delete,
+      containerd-restart + create, driver-kill during a create,
+      server-restart with attachments, kubelet-restart on VM2. FAIL at
+      step 57 after 56 steps: S1. The error path cleaned up.
+      R/run2.log, R/run2-out, R/evidence-b.
+run 3 MBT_MODE=offline MBT_SCRIPT=R/gen-small-20.sh (mbt-cxl
+      generate --profile small --steps 20 --seed 7) MBT_BIN pinned:
+      steps 1-24 passed MODEL's check, step 25 (the teardown settle)
+      failed the oracle (M1). R/run3.log, R/run3-out.
+run 4 MBT_PROFILE=small MBT_STEPS=40 MBT_SEED=11, on-line, the model
+      built by the test (go.work with GOFMBT_DIR): 24 steps accepted
+      (23 plans reused from planning ahead, a new plan 77 ms), 62
+      observations mean 0.52 s, max 0.70; step 25 settle failed after
+      180 s on E1 (below); the error path cleaned up; 365 s.
+      R/run4.log, R/run4-out (mbt-fail.txt, mbt-cxl.log).
+Probe (default ns, before run 1): crash semantics and back-off.
+
+8. Deviations, ambiguities, proposed amendments
+-----------------------------------------------
+A1 inspect of lease pods: once per (uid, restarts) would give the
+   cxl-request list of a lease pod from before any lease-get. The
+   executor forgets the slot after lease-get and lease-put, so the
+   next settle inspects it again. Amend 6.1: "... and lease pods after
+   each lease-get or lease-put".
+A2 Extra fields (MODEL decodes leniently): pods[].lastExit (exit code
+   of the last terminated main container), claim.deleting; companions
+   ready, deleting; drivers phase, deleting, count (pods of the node);
+   containers uid (pod), attempt; memdevs enabled; dax node;
+   attachments serial; lease-get result "response" (the JSON line of
+   cxl-request); "errors" in the top level and in each VM object.
+A3 attachments include the local memdevs that setup attached (owner
+   e2e:dra-local-device, device "<node name>.memdev1"); the oracle
+   should ignore owners that are not k8s:. dax lists leave out the
+   size-0 seed device. cdi keys are full paths (/etc/cdi/x.yaml).
+   localDevices serial is "0x..." (the file has a number).
+A4 Ambiguity: the off-line observed file. Implemented as the on-line
+   line (done/observe); MODEL's check takes both. Amend 5 to say so.
+A5 Settle timing facts for the model: a crash or driver-kill shows in
+   the pod status only ~1 s later; kubelet back-off 10/20/40 s ... 300
+   s (resets after 10 min running) for crash and driver-kill alike
+   (MODEL has --max-restarts 2); a restarted driver fences containers
+   created while NRI was down ~2 s after its start (lends restored);
+   a lease that cannot be Ready returns exit 3 after --wait 60s and the
+   broker releases it (no companion left); a restarted controller
+   detaches what was released while it was down ~5 s after start.
+A6 --poll is not a flag of mbt-cxl (MBT_POLL is bash's); MBT_ARGS
+   passes other flags (contract 8 could list it).
+
+9. Suspected SUT problems (evidence; not fixed)
+-----------------------------------------------
+S1 Re-attaching an exclusive pool device whose region was destroyed
+   below a newer region of the same host bridge fails for ever: every
+   Prepare "cxl create-region -t ram -d decoder0.0 -m mem1: exit
+   status 1: cxl region: create_region: region2: failed to set target0
+   to mem1", kernel "cxl_port endpoint5: failed to attach decoder5.0 to
+   region2: -16" (EBUSY), the pod stays ContainerCreating.
+   Sequence on vm0 (run 2, R/steps2.txt): ldax region0 (hb0 decoder
+   2.0), xdax-b region2 (b-pooled0, 512Mi, decoder 2.1 at
+   0x660000000), sdax-b/sro-b region3 (b-shared0, decoder 2.2 at
+   0x680000000); delete xdax-b: "memctl: destroyed region2" 08:10:22;
+   the device detached (controller), attached again for a new
+   xdax-b pod at 08:10:46: every create-region fails (08:10:51,
+   08:11:55, 08:13:11). Meanwhile host-bridge decoder2.1 and switch
+   decoder3.1 still had size 0x20000000 at 0x660000000 and no region
+   (R/evidence-b/vm0-sysfs.txt, taken at 08:12:40): it looks like the
+   kernel's in-order decoder reset (a lower decoder cannot be reset
+   while a higher one is committed), so the freed range cannot be
+   decoded again. Possibly not the driver's fault, but the driver (or
+   the controller's slot choice) is where it would be handled; a
+   model that frees pool devices in any order will hit it. Logs:
+   R/run2-out/trace/vm0*.driver.log, nri-dra-driver-cxl.vm0.*.log,
+   mbt-obs/fail-57.json, run2.log step 57.
+S2 Port decoders stay programmed after the devices are gone: after
+   every run (and before run 1: test19's dumps of 2026-10-23 too) the
+   host-bridge decoders keep size/start with no region and no memdev
+   (now vm0 decoder2.0-2.2, 1.0; vm1 2.0-2.2, 1.0-1.1; vm2 2.0-2.1,
+   1.0). pool-vm-reset only looks at memdevs and regions, so the next
+   test inherits them. Probably the same cause as S1; with 4 decoders
+   per host bridge a VM may run out (vm0 hb0 has one left). Proposal
+   (orchestrator): pool-vm-reset also restarts a VM that has port
+   decoders with a size and no region; evidence: "cxl list -D" in the
+   VMs, R/run1-out/cxl-sysfs.no-devices.vm0.txt vs
+   R/run2-out/cxl-sysfs.no-devices.vm0.txt.
+E1 (D E1 predicted, confirmed) containerd restart: "NRI connection to
+   the runtime lost" (vm0 driver, 08:10:28) and no reconnect; a
+   claim-less pod created afterwards on vm0 had cpuset.mems "" ->
+   effective 0-2 while node 2 was fenced (run 2 step 51, mbt-obs
+   obs-000052-002.json), until driver-restart: "NRI fence:
+   ctr=.../mbt-plain-vm0-0-g2/main cpuset.mems=0-1 (was "", fenced
+   nodes 2)" 1.8 s after the new driver started.
+   Run 4 (real model): driver-restart vm1, containerd-restart vm1 2 s
+   after the new driver's start ("NRI connection to the runtime lost"
+   08:26:48.342), then xnuma-a@vm1#0's claim onlined node 2: "NRI fence:
+   fencing CXL node 2", "NRI UpdateContainers(cpuset.mems=0-1): ttrpc:
+   closed", "0 containers updated, 2 failed"; sro-c@vm1#0 kept
+   effective 0-2 until the settle timeout (R/run4-out/trace/
+   vm1.xmmhn.driver.log, mbt-obs/fail-25.json). No retry, no
+   reconnect. Until it is fixed (or predicted by the model) runs need
+   MBT_AVOID=containerd-restart.
+M1 (oracle, for MODEL) a deleted pod of restartPolicy Always whose
+   container exits 0 on SIGTERM (the workload of contract 2) goes to
+   phase Succeeded while it is deleted; the oracle failed it: "pod
+   lnuma@vm0#1: phase Succeeded (restartPolicy Always)"
+   (R/run3-out/mbt-obs/fail-25.json: deleting true). Terminal phases
+   are normal for deleting pods.
+
+10. Open issues
+---------------
+- (done, 11) E1 is bug-01, fixed in the driver: no MBT_AVOID needed
+  with an image that has the fix.
+- S1/S2 need a decision before long runs: S2 degrades the VMs from run
+  to run; restarting the qemu of the VMs clears it (pool-vm-restart).
+- (done, 11) mbt-observe has a timeout per VM.
+- driver-restart's readiness is the node's own slice, socket and
+  cxl-request, not "the driver is ready" (the DaemonSet has no
+  readiness probe); the oracle's settle covers the rest.
+- The trace of a long run grows with every step (run 1: 3033 lines);
+  MBT_TRACE=0 turns it off.
+
+11. Amendment A10 and follow-ups (after the triage)
+---------------------------------------------------
+Triage of 9: E1 = bug-01 (fixed: the driver exits when it loses NRI,
+A8), S1 = bug-02 (a Linux decoder-stack limit, predicted by the model,
+A9), S2 = bug-03 (stale sysfs only: pool-vm-reset checks
+decoders_committed with pool-vm-decoders, done by the bug-02 agent),
+M1 = A7. Done here:
+- A10 "ports" (mbt-observe.py vm): every port* and endpoint* of
+  /sys/bus/cxl/devices with decoders_committed > 0: kind hostbridge (a
+  port right under rootR), switch (a port below one) or endpoint; hb:
+  hbK when root decoder decoderR.K targets the host bridge (its
+  target_list names root dportID, a link to the host bridge's uport;
+  test90's topologies have cxl-fmw.K -> cxlhbK); committed; decoders
+  P.0 .. P.(committed-1) with region ("" for none), start, size.
+- A10 "event" per pod: one "kubectl get events -n NS --field-selector
+  type=Warning -o json" per observation (in parallel with the other
+  gets in VM2); per pod the newest by series.lastObservedTime,
+  lastTimestamp, eventTime, creationTimestamp: reason, message (first
+  1000 characters), time, count; null if none.
+- A1 checked: lease-get and lease-put drop the slot from the inspect
+  table; run 5: lease@vm2#0 was inspected again at the settle after
+  its lease-get, with lease a2e20fb4 in "leases".
+- Observer timeout: in the VM "timeout -k 5 $MBT_OBS_TIMEOUT python3
+  ..." (default 60 s); on the host mbt-wait-pids kills a background
+  ssh still running after MBT_OBS_TIMEOUT + 10 s; that VM is then null
+  with an error in the observation (assemble), the oracle waits.
+- containerd-restart: driver pod and restart count before
+  (mbt-driver-restarts), dra-node-service-restart, then up to
+  MBT_NRI_RESTART_WAIT = 60 s for more restarts and Ready; the note
+  says "restarted in place: N -> M" or "did not restart in 60s (a
+  driver without the fix of bug-01)"; the status stays 0 either way.
+- mbt-stub.py: a Pending pod that is unschedulable counts as quiet.
+Verified: run 5, MBT_STUB=1 MBT_STUB_STEPS=R/steps5.txt (xnuma-c@vm1#0,
+ldax@vm2#0, lease@vm2#0 with lease-get, xnuma-a@vm0#0 which no node
+can have, containerd-restart vm1, deletes), PASS, 164 s. R/run5.log,
+R/run5-out. Observations 0.50-0.88 s (n 9), 8 KB with 4 pods.
+- ports: vm1 hb1 port1 (hostbridge), port5 (switch), endpoint6, each
+  committed 1, decoder -> region1 (c-pooled0, 256Mi at 0x850000000);
+  vm2 hb0 port2, port3, endpoint4 -> region0 (the local memdev, 1Gi);
+  vm0 none. After the teardown no port has committed decoders.
+- event: xnuma-a@vm0#0 FailedScheduling "0/3 nodes are available: 1
+  cannot allocate all claims, 2 node(s) didn't match Pod's node
+  affinity/selector. ..." count 2, then 3; the other pods null.
+- The framework imported the newer image N/build/images/
+  nri-dra-driver-cxl-image-571d3f262db0.tar (12:11, the driver logs
+  "v0.15.0-39-ged0370b24-dirty"), which has the bug-01 fix:
+  containerd-restart vm1 -> the driver restarted in place, 0 -> 1, the
+  step took 1.97 s. Its log line "NRI connection to the runtime lost,
+  exiting ..." is not in the log of the ended container (kubectl logs
+  --previous, nor in the trace): containerd copies container output to
+  the log file and is the process being restarted. Evidence of the
+  exit is the restart count; not a driver fault.
+shellcheck of mbt.source.sh still only SC2016 and a cross-file
+SC2034. The cluster was left clean (no cxl-pool-demo, no servers,
+units or driver pods, no CXL devices, regions or committed decoders).
+
+12. Amendments A11-A16, R12 (after the review 05-review.txt)
+------------------------------------------------------------
+Kept: the orchestrator's kubectl exec retry in mbt-exec-in
+(MBT_EXEC_RETRY). Images: runs 6-8 imported 8c43a36bf383 (14:22, the
+newest; bug-01 and bug-04 fixes), not rebuilt.
+A11 (R2) completeness. Why containers could be left out: crictl ps
+  lists running containers only, and the observer dropped one whose
+  pid was gone between the listing and the reading (it had exited) or
+  that crictl inspect no longer knew; an unreadable cgroup gave nulls
+  with an error, but an empty cpuset.mems was reported as "", which is
+  normal (the cgroup sets no nodes and has its parent's), and the
+  oracle could not tell it from a failure. Pause containers are
+  sandboxes, never in crictl ps, and not containers of the pod: not
+  missing. Now:
+  - containers[].mems is cpuset.mems, or, when that file is empty, its
+    effective value with mems_inherited true: never ""; an empty
+    cpuset.mems.effective (never so for a live cgroup) or memory.high
+    is an error with nulls;
+  - pods[] and companions[] carry "containers" from the pod status
+    (name, id, state, restarts); assemble adds per VM "missing": every
+    container that its pod status says runs and that the VM's
+    containers lacks ("the pod status says it runs, crictl does not
+    list it") or has without a cpuset ("its cpuset cannot be read");
+    "missing" is null when containers is null. The oracle waits while
+    either is non-empty or null (A11). Observed: [] in every VM of runs
+    6-8 once quiet; a companion whose pause container was still
+    "waiting" is not counted (not running).
+A12 (R9) pods[].events: the Warning events of the pod (by uid), newest
+  first, at most 5: reason, message, count, lastTimestamp; a message
+  over 4000 bytes keeps its first 1900 and last 2000 bytes around
+  " [...] " (the driver's reason, e.g. "CXL decoders released out of
+  order", is at the end). "event" is the first of them (A10 kept).
+  Run 6: xnuma-a@vm0#0 (no node can have it) FailedScheduling, count
+  3, lastTimestamp. One kubectl call per observation, as before.
+A13 (R14) per VM "driverLog": the running nri-dra-driver-cxl container
+  (crictl): container, pod, attempt, started; panics (lines of its log
+  file, status.logPath, whose content matches "panic|fatal error|
+  SIGSEGV": 0 in every log of runs 1-8), errors (the first 5),
+  lendsRestored ("NRI fence: lends restored" seen: NRI and lending
+  up), sockets (both dra.sock exist). The file is read incrementally
+  (position, counts in /run/mbt-observe/driverlog-<id>.json; a
+  rotated file is read from its start). No running container:
+  container null, lendsRestored false (run 6, right after
+  driver-kill vm1). Settle "slices": per VM the devices of its
+  cxl.nri.io slices (name, serial, shared, type) from one kubectl get
+  resourceslices: dram, lease and memdev-c100e2e1 on every node.
+A14 (R6) off-line: every mbt-expect after an action checks its done
+  line (as before); a step without one (a generator before A14:
+  MODEL's generate still writes 4 expects for 9 steps) is checked
+  before the next step and at the end: a nonzero status fails it
+  (mbt-unchecked); a settle without one prints a warning. Tested with
+  a harness (bad slots, no cluster): step 2 failed before step 3.
+A15 (R8) mbt-driver-ready VM (one ssh): a running driver container,
+  "NRI fence: lends restored" in its log file (or its rotated files,
+  zgrep), cxl.nri.io and cxl-pool.nri.io dra.sock, the node's
+  cxl.nri.io ResourceSlice. mbt-driver-ready-wait (120 s,
+  MBT_DRIVER_READY_WAIT) after driver-restart (new pod), kubelet-
+  restart and containerd-restart (after the in-place restart wait);
+  status 1 if not ready; every failed try and the time are in
+  mbt-exec.log. The observation carries the same facts (driverLog,
+  slices) for the settle after a driver-kill.
+  Measured (runs 6-8): driver-restart 5.1-5.2 s, containerd-restart
+  3.6-3.7 s (the driver restarted in place 0 -> 1 every time, image
+  8c43a36bf383), kubelet-restart 7.0-31.3 s (was 0.9 s): see S3.
+A16 (R13, executor side; MODEL does not read headers yet): replay
+  passes the model flags of the header of MBT_REPLAY first
+  (mbt-header-flags: profile, seed, depth, coverage, randomness,
+  unsettled, max-restarts, avoid, avoid-holes, max-paths,
+  settle-timeout, unblock-timeout), then only the MBT_* that the user
+  set, the measured facts, MBT_ARGS; Go's flag package keeps the last
+  value. A recorded --local-blocks different from the cluster's is a
+  warning. Tested on run 4's mbt-steps.txt (parsing); no replay run.
+R12 without GOFMBT_DIR the model is built with GOWORK=off -tags
+  gofmbtstock (compiles; the plain build does not: "undefined:
+  m.SearchBudget") and run with --coverage=C1,C3 (the stock planner
+  refuses the default C1x3,C2x2,C3), with a WARNING; if that build
+  fails, the test stops with "set GOFMBT_DIR to a checkout of
+  github.com/askervin/gofmbt branch 5jo-mbt-cxl ... until its
+  extensions are published". Checked by building and generating.
+mbt-stub.py now also waits for: every VM observed with no "missing",
+a running driver container per VM with lendsRestored and sockets, no
+panics, memdev-c100e2e1 in every node's slice; unschedulable Pending
+pods count as quiet. Small fix: the reason of a bad slot (MBT_ERR)
+was lost inside $(...) (mbt-slot-has-pod).
+Runs (R = /tmp/mbt-exec-dev):
+  run 6 stub, R/steps6.txt (pool, local, lease, plain and
+        unschedulable pods; lease-get; driver-restart, kubelet-restart,
+        containerd-restart, driver-kill): PASS 178 s. Observations
+        0.56-0.83 s, 13 KB with 5 pods. R/run6.log, R/run6-out.
+  run 7 the real model (built by the test), small, MBT_STEPS=25,
+        MBT_SEED=5, MBT_AVOID=crash:lease (bug-05): 12 steps ok, step
+        13 failed: "pod lease@vm2#0: 1 restarts, the model crashed it
+        0 times" (M2). R/run7.log, R/run7-out.
+  run 8 stub, R/steps8.txt, MBT_TRACE=0: three kubelet restarts with
+        pods on the nodes, PASS 221 s: the waits of S3. R/run8-out/
+        mbt-exec.log.
+M2 (for MODEL) a kubelet restart while a container is being created
+   restarts it: run 7, lease@vm2#0 created 0.8 s before kubelet-restart
+   vm2: the old kubelet created container 843b78b2 (driver: NRI
+   CreateContainer 11:43:26.718) and stopped before starting it, the
+   new kubelet created 85d1f718 (attempt 1, restartCount 1, no
+   lastState). Kubernetes behaviour, not the SUT: a pod that was
+   starting at a kubelet restart may get restarts +1 without a crash.
+S3 (suspected SUT, for triage) after a kubelet restart the node's
+   cxl.nri.io ResourceSlice is gone for 20-30 s (run 8: vm2 20.2 s,
+   25.8 s, vm1 30.3 s; "no cxl.nri.io ResourceSlice of <node>" every
+   1.4 s in R/run8-out/mbt-exec.log): kubelet deletes every
+   ResourceSlice of its node at startup (k8s 1.37 pkg/kubelet/cm/dra/
+   plugin/dra_plugin_manager.go:167-180, "wipeResourceSlices(ctx, "" /*
+   all drivers */)"), and the driver's ResourceSlice controller
+   (vendor/k8s.io/dynamic-resource-allocation/resourceslice) syncs
+   only DefaultSyncDelay = 30 s after its last informer event; the
+   driver logs nothing meanwhile. In that window local claims on the
+   node cannot be allocated (Pending). Possible fix: a short SyncDelay
+   in the driver's kubelet plugin options; or the model predicts it.
+   The pool slices (controllers, nodeSelector) are not affected.
+The cluster was left clean after every run (no cxl-pool-demo, no
+servers, units or driver pods, no CXL devices, regions or committed
+decoders, ports free). shellcheck: SC2016 and cross-file SC2034/
+SC2154 only.
+
+
+13. Amendment A18: poolSlices
+-----------------------------
+Kept: the orchestrator's "fail)" branch of mbt-online (a replay
+divergence between steps).
+- mbt-observe.py (cluster part): "poolSlices" from the same kubectl
+  get resourceslices as "slices": per pool id the cxl-pool.nri.io
+  slices of its DRA pool (name, device names, nodes: the VM ids of its
+  nodeSelector kubernetes.io/hostname In, every VM for allNodes), []
+  for a pool without slices; a slice of an unknown pool is keyed by
+  its pool name. The map of pool ids to pool names is the new
+  --pools a=pool-a,b=pool-b,c=pool-c (MBT_POOLS, set by
+  mbt-setup-ids; default ID=pool-ID). assemble copies it.
+- mbt-stub.py: a settle also waits until every pool whose controller
+  should be active has slices.
+run 9 (stub, R/steps9.txt: sdax-c and xdax-b pods on vm0, ctrl-restart
+b, ctrl-kill b at once, settle, ctrl-start b, settle, deletes,
+MBT_TRACE=0): PASS 156 s. poolSlices: before, a/b/c one slice each
+(a nodes vm1,vm2; b vm0; c vm0,vm1,vm2); after ctrl-restart + ctrl-kill
+b: b [] with controller b failed (run L1's state); right after
+ctrl-start b still [] (the stub waited 4 s), then a new b slice
+(...-ljkkb). R/run9.log, R/run9-out. Cluster left clean (no
+cxl-pool-demo, ResourceSlices, servers, units, CXL devices).

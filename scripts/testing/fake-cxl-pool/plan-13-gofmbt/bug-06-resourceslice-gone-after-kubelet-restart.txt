@@ -1,0 +1,304 @@
+BUG-06: THE NODE'S RESOURCESLICE IS GONE FOR 30 S AFTER KUBELET RESTART
+
+Branch 5jg-cxl, 2026-10-24. Found by the executor (plan 13, stream
+EXEC: S3 in 04-status-EXEC.txt section 12), fixed in the working tree
+(uncommitted), unit tested; cluster verification pending.
+
+D/ = cmd/plugins/dra-driver-cxl/, L/ = vendor/k8s.io/dynamic-resource-
+allocation/ (v0.37.0), K/ = ~/go/pkg/mod/k8s.io/kubernetes@v1.37.0/,
+R/ = /tmp/mbt-exec-dev/. Line numbers of HEAD unless "new". Times in
+mbt-exec.log are the host's (EEST), in the driver logs UTC; the
+clocks agree within a second.
+
+========================================================================
+1. SUMMARY
+
+After "systemctl restart kubelet" on a node whose driver keeps
+running, the node has no cxl.nri.io ResourceSlice for up to 30 s
+(measured 20.2, 30.3 and 25.8 s). kubelet deletes every ResourceSlice
+of its node when it starts, by design. The driver's ResourceSlice
+controller notices the deletion at once (an informer event) but syncs
+the pool only SyncDelay later: 30 s, the library default, which
+kubeletplugin.Helper.PublishResources uses and offers no option for.
+In that window no claim that needs a cxl.nri.io device of the node
+(local memdev and numa slices, the lease device, DRAM, regions) can
+be allocated: such pods stay Pending, unschedulable. The driver logs
+nothing meanwhile.
+
+Fix: the driver runs the ResourceSlice controller itself, configured
+as the helper's, with SyncDelay 1 s. The slice is back about 1 s
+after kubelet deletes it.
+
+========================================================================
+2. REPRODUCTION
+
+n4-cxl-shared-2 (test90), any VM whose driver runs:
+
+  settle
+  kubelet-restart vm1      systemctl restart kubelet; the driver
+                           container keeps running
+  create lnuma@vm1#0       a pod with a local numa claim on vm1,
+                           within 30 s of the restart
+  settle
+
+Before the fix lnuma@vm1#0 stays Pending, not schedulable (vm1
+publishes no cxl.nri.io device), until the slice is back 20-30 s
+after the restart; then it is scheduled and runs. By hand:
+
+  vm1$ sudo systemctl restart kubelet
+  $ kubectl get resourceslices -w \
+      --field-selector spec.driver=cxl.nri.io,spec.nodeName=<node>
+
+shows the slice deleted at once and created again up to 30 s later.
+
+========================================================================
+3. EVIDENCE
+
+R/run8-out/mbt-exec.log (stub run 8, R/steps8.txt, MBT_TRACE=0: three
+kubelet-restarts with pods on the nodes; mbt-driver-ready-wait polls
+every 1.4 s):
+
+  === step 4: kubelet-restart vm2 (14:48:24.261839454)
+  14:48:25.141858911 vm2: kubelet back after 0.88 s
+  14:48:25.561213913 vm2: driver not ready: no cxl.nri.io
+                     ResourceSlice of n4-cxl-shared-2-fedora-43-...
+  ... (the same every 1.4 s) ...
+  14:48:43.883507627 vm2: driver not ready: no cxl.nri.io ...
+  14:48:45.301927513 vm2: driver ready after 20.16 s
+  === step 6: kubelet-restart vm1 (14:48:45.908802891)
+  14:48:47.289792165 vm1: driver not ready: no cxl.nri.io ...
+  14:49:17.160272765 vm1: driver ready after 30.33 s
+  === step 8: kubelet-restart vm2 (14:49:17.983343925)
+  14:49:19.280086068 vm2: driver not ready: no cxl.nri.io ...
+  14:49:44.707080078 vm2: driver ready after 25.84 s
+
+53 such lines in all; every other readiness fact (running driver
+container, "lends restored", both dra.sock) held. The drivers did not
+restart (R/run8-out/nri-dra-driver-cxl.vm.log, .vm1.log: one process
+from 11:47:42 to the end). Their only lines at the restarts are the
+new kubelet's health streams (11:48:24.62 vm2, 11:48:46.22 vm1,
+11:49:18.36 vm2: "device health reporting is not supported by this
+driver", expected); the controller logs its syncs at V(5) only.
+
+Why 20.2 and 25.8 s on vm2 but 30.3 s on vm1: the slice comes back at
+the first sync of the pool due after the deletion. The deletion
+schedules one 30 s later, but a sync scheduled earlier wins (the work
+queue keeps the earliest time), and the controller schedules a
+re-sync one minute (the mutation cache TTL) after each create:
+- vm2's slice was created at 11:47:43.91 ("create ResourceSlice" in
+  .vm.log): re-sync at 11:48:43.9, which re-created it (ready at
+  14:48:45.30) and scheduled the next re-sync at about 11:49:44
+  (step 8: ready at 14:49:44.71).
+- vm1's create at 11:47:43.88 had its re-sync at 11:48:43.9, before
+  the restart at 11:48:45.9: the full 30 s.
+
+========================================================================
+4. ROOT CAUSE
+
+kubelet, K/pkg/kubelet/cm/dra/plugin/dra_plugin_manager.go:
+- NewDRAPluginManager (:151) runs wipeResourceSlices(ctx, "" /* all
+  drivers */) in the background at startup (:166-181): "When kubelet
+  starts up, no DRA driver has registered yet. None of the drivers
+  are usable until they come back, which might not happen at all.
+  Therefore it is better to not advertise any local resources".
+- wipeResourceSlices (:217) calls DeleteCollection with the field
+  selector spec.nodeName=<node> (:246): the node-local slices of all
+  drivers, also of a driver that keeps running and re-registers a
+  second later. By design: upstream's node e2e test "must be removed
+  on kubelet startup" (K/test/e2e_node/dra_test.go:758) checks it.
+  Otherwise kubelet wipes a driver's slices only when its plugin
+  stays unregistered for 30 s (sync, :504; defaultWipingDelay,
+  K/pkg/kubelet/cm/dra/manager.go:75).
+
+The driver: D/driver.go PublishResourceSlice (:657) called
+d.helper.PublishResources (:661), the helper of kubeletplugin.Start
+(:408).
+- L/kubeletplugin/draplugin.go PublishResources (:1183) starts a
+  resourceslice controller on the first call (StartController,
+  :1211) with DriverName, KubeClient, Owner (the node), Resources,
+  ErrorHandler and ReconcilePoolWithName, no SyncDelay, and calls its
+  Update later. No helper Option sets SyncDelay (the options,
+  :329-808; neither in upstream master of 2026-09-23).
+- L/resourceslice/resourceslicecontroller.go: DefaultSyncDelay = 30 s
+  (:69); Options.SyncDelay (:282, "The default is 30 seconds"). The
+  informer's add, update and delete handlers schedule the pool with
+  queue.AddAfter(pool, syncDelay) (:632, :650, :667). The informer
+  has no periodic resync (:616). So the deletion is seen by an event
+  at once, and acted on 30 s later.
+- The delaying queue keeps the earliest time of an item
+  (vendor/k8s.io/client-go/util/workqueue/delaying_queue.go:355-361);
+  syncPool schedules a re-sync DefaultMutationCacheTTL (1 min, :62)
+  after a create (:980-992): the 20-26 s cases.
+- Update (:423), i.e. every publish of the driver, queues the pool at
+  once (queue.Add, :430, :457): not delayed.
+
+Other drivers: Intel's intel-resource-drivers-for-kubernetes
+(~/github.com/intel/, the gpu, qat, cxl and gaudi kubelet plugins)
+use helper.PublishResources as well, so they have the same 30 s.
+Kubernetes' integration test runs its controller with SyncDelay
+DefaultSyncDelay/factor (K/test/integration/dra/core.go:516, :538);
+the library's unit test of exactly this case ("kubelet deletes the
+slice", TestControllerUpdateDeleteRecreate,
+dynamic-resource-allocation@v0.37.0 resourceslicecontroller_test.go
+:1660-1720) uses SyncDelay 0.
+
+The pool controllers are not affected (confirmed):
+scripts/testing/fake-cxl-pool/pkg/controller/publisher.go starts its
+controller (:180) with Owner nil and ReconcilePoolWithName; its slice
+has a NodeSelector (:161) and no spec.nodeName, so kubelet's field
+selector does not match it. EXEC saw the pool slices stay (S3).
+
+========================================================================
+5. THE FIX
+
+New D/node_slices.go: nodeSlices publishes the node's slice with a
+resourceslice controller of its own, started as the helper starts
+its: driver cxl.nri.io, owner Node <node> (the controller looks up
+the UID), so the same names (00000-cxl.nri.io-<node>-...) and an
+existing slice is adopted, not replaced; the "ResourceSlice
+controller" logger; errors to driver.HandleError marked recoverable
+(recoverableSliceError: errors.Is kubeletplugin.ErrRecoverable, like
+the helper's unexported recoverableError, message unchanged). And:
+
+  SyncDelay: nodeSliceSyncDelay = 1 s     (node_slices.go:48, new)
+
+with a comment that explains why. D/driver.go: the driver gets
+slices = newNodeSlices(client, node, driver.HandleError) next to the
+helper; PublishResourceSlice calls slices.publish instead of
+helper.PublishResources; Shutdown calls slices.stop before
+helper.Stop. The helper still serves kubelet (registration, Prepare,
+Unprepare); it just publishes nothing. RBAC is unchanged (the same
+calls).
+
+Why 1 s, and its cost. SyncDelay delays only the syncs that informer
+events of the driver's own slice cause; who changes that slice:
+- the controller itself: each of its creates and updates comes back
+  as an event, one more sync 1 s later that compares and makes no
+  API call (it did the same 30 s later before);
+- kubelet's wipe: one DeleteCollection, one sync, one create;
+- a human.
+The delay batches a burst into at most one sync per second; the node
+has one pool of one slice, so at most one create or update per
+second, and only while someone else keeps changing the slice. The
+other purpose of the delay, an informer cache that has seen a
+deletion before the sync (else a redundant delete), needs
+milliseconds. A field that the API server drops does not make it
+loop: the controller takes the stored slice as desired (sliceStored,
+L/resourceslice/resourceslicecontroller.go:1034-1067); the unit test
+checks it. The driver's own publishes (startup, udev rescans, pool
+list retries: rescanAndPublish) go through Update and were and are
+synced at once.
+
+kubelet's intent is kept: a driver that does not run re-creates
+nothing, and one that stays unregistered is wiped after 30 s as
+before. A pod scheduled in the moment between the re-creation and the
+plugin's registration with the new kubelet is only delayed: its pod
+sync fails with "DRA driver cxl.nri.io is not registered"
+(K/pkg/kubelet/cm/dra/manager.go:336, plugin/dra_plugin_manager.go
+:280) and kubelet retries it.
+
+Not chosen: watching the slice and calling helper.PublishResources
+again on its deletion (Update syncs at once, but the helper's own
+informer may not have seen the deletion yet and then nothing is
+created; more code); a model prediction of the 30 s window (keeps a
+real outage).
+
+========================================================================
+6. TESTS
+
+New D/node_slices_test.go, fake clientset with reactors for
+GenerateName and resource versions (what the library's tests do):
+- TestNodeSliceBackAfterKubeletWipe (:122): publish dram and lease;
+  the node's slice appears, owned by the node (its UID); delete it as
+  kubelet does: back after 0.99 s (limit 1 s + 5 s, far below 30 s).
+  A second publish (a udev rescan) changes the slice in less than
+  the sync delay, right after the re-creation's event. After stop a
+  deleted slice stays deleted. A throw-away variant (not kept) with
+  SyncDelay = DefaultSyncDelay: back after 30.0 s, the bug.
+- TestNodeSliceErrorsRecoverable (:176): the fake API server drops
+  AllowMultipleAllocations: the driver's handler gets an error that
+  is errors.Is kubeletplugin.ErrRecoverable and errors.As
+  *resourceslice.DroppedFieldsError, with its message unchanged; no
+  second error in 3 s (no update loop); publish without a node name
+  fails; stop of nil and of an unstarted publisher.
+
+gofmt and go vet ./cmd/plugins/dra-driver-cxl/... clean; go test
+./cmd/plugins/dra-driver-cxl/... -skip TestMemdevSettings ok (50 s,
+with the other agents' uncommitted changes in the package); the new
+tests also with -race -count=3.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER (orchestrator)
+
+1. An image with this fix; replay R/steps8.txt (three
+   kubelet-restarts with pods): "driver ready after" about 1-3 s
+   (was 20.16, 30.33, 25.84 s), at most one or two "no cxl.nri.io
+   ResourceSlice" lines per restart.
+2. Section 2: lnuma@vm1#0 created right after kubelet-restart vm1 is
+   scheduled within a few seconds (at most one FailedScheduling).
+3. kubectl get resourceslices -w during a kubelet restart: the
+   node's cxl.nri.io slice is deleted and added again about 1 s
+   later (prefix 00000-cxl.nri.io-<node>-). After a driver restart
+   (driver-restart, driver-kill) the existing slice is kept, not
+   replaced: exactly one cxl.nri.io slice per node at all times, with
+   an ownerReference to the node.
+4. Driver log at start: "Publishing resources", then the
+   "ResourceSlice controller" lines (informer started and synced) as
+   before; no new errors.
+5. driver-restart, driver-kill and containerd-restart readiness times
+   as in runs 6-8 (5.1-5.2 s, 3.6-3.7 s).
+6. For MODEL: a kubelet-restart no longer makes local claims of the
+   node unschedulable for 30 s; nothing to predict.
+
+========================================================================
+8. SEEN ON THE WAY (not this bug, not fixed)
+
+Every publish on every node logs an error (run 8, all three driver
+logs: the create at 11:47:43.9 and each later update, e.g. vm1
+11:48:01.1, 11:48:20.35, 11:49:46.5):
+
+  "DRAPlugin encountered an error." err="pool \"<node>\", slice #0:
+  some fields were dropped by the apiserver, probably because these
+  features are disabled: unknown"
+
+"unknown": the library's DroppedFieldsError.DisabledFeatures knows no
+feature for the dropped field. Most likely NodeAllocatableResources
+(set on DRAM, region and memdev devices, D/node_state.go:671, :704,
+:736; +featureGate=DRANodeAllocatableResources in
+vendor/k8s.io/api/resource/v1/types.go:541), with that gate off in
+the cluster. The controller then takes the stored slice as desired,
+so it does not loop; but each driver publish makes one update call
+that the API server stores unchanged (no event: that is also why
+vm1's update at 11:48:20.35 did not shorten its 30 s). For triage:
+publish the field only when the cluster stores it, or log it once.
+
+========================================================================
+9. STATUS
+
+Fixed in the working tree, not committed:
+  cmd/plugins/dra-driver-cxl/node_slices.go       (new)
+  cmd/plugins/dra-driver-cxl/node_slices_test.go  (new)
+  cmd/plugins/dra-driver-cxl/driver.go  (the slices field, its
+    creation after kubeletplugin.Start, PublishResourceSlice,
+    Shutdown)
+The other agents' uncommitted changes in driver.go (startNRIPlugin
+with leases) and elsewhere are kept. No image built, cluster not
+touched. Cluster verification pending (section 7).
+
+Verification in the e2e cluster (orchestrator, 2026-10-24)
+----------------------------------------------------------
+V5 (06-runs.txt), image 1d9a1f54a692: kubelet-restart vm2 with the
+driver-ready wait (which includes the node's cxl.nri.io slice) took
+2.66 s, before 7-31 s; a local claim created right after ran at the
+next settle. Status: FIXED, verified.
+
+Follow-up after review (05-review-DRV.txt D10; 2026-10-24)
+----------------------------------------------------------
+The short SyncDelay also answers any other writer of the slice within
+a second (two driver instances on a node, a Node re-created while the
+driver runs): accepted, bounded, now said next to nodeSliceSyncDelay.
+TestNodeSliceBackAfterKubeletWipe: the publish after the re-creation
+must show within 5 s (was: within the 1 s sync delay, polling every
+20 ms, which may flake under -race on a loaded machine); still far
+below the 30 s default, and the test still checks the short delay
+itself. Status unchanged: FIXED, verified.

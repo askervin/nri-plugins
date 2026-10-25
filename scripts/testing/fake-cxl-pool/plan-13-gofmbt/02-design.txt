@@ -1,0 +1,234 @@
+plan-13: design of the gofmbt reliability test
+==============================================
+2026-10-24 (orchestrator). Inputs: 01-findings-gofmbt.txt (G),
+01-findings-e2e.txt (E), 01-findings-driver.txt (D). The normative
+details (action vocabulary, protocol, observation schema) are in
+04-contract.txt.
+
+1. What the test is for
+-----------------------
+A long run in the three-node, three-pool cluster of test19 where many
+pods with CXL memory of every kind come and go, interleaved with the
+faults the driver must survive, and where after every step the state
+of the SUT (pods, claims, pool attachments, guest CXL state, driver
+state files, cpuset.mems, environment, data on the devices) is
+compared with what a model predicts. The generator chooses steps that
+cover what has not been covered yet: every action, every fault in
+every allocation context, interleavings of two actions, the abstract
+states. A failure stops the run with a replayable step list.
+
+2. Integration options
+----------------------
+I1 Off-line, a generated script (the test06-fuzz pattern,
+   policies.test-suite/topology-aware/n4c16/test06-fuzz: generate.sh
+   runs generate.go, generated*.sh files are sourced by code.var.sh).
+   + reviewable, re-runnable, no generator at run time, the existing
+     precedent; parallel scripts possible.
+   - the SUT must be deterministic: every pod pinned, every claim by
+     serial, no races whose winner matters; expectations must be
+     embedded in the script; a model change means regenerating; a
+     failing step leaves the rest of the script meaningless.
+I2 On-line, lock-step coprocess: code.var.sh builds the model and runs
+   it as a bash coproc; the generator sends one action, bash executes
+   it and answers with its exit status and an observation, the
+   generator (also the oracle) compares, answers, sends the next.
+   + the observed state feeds back: nondeterministic outcomes (the
+     scheduler picks the node of an unpinned pod) are adopted, the
+     test runs for a time budget, the model state at a failure is
+     known exactly, the oracle is Go code next to the model.
+   - a bash<->Go protocol to keep simple and robust.
+I3 = I2 + planning ahead: while bash executes step n, the generator
+   plans step n+1 from the predicted end state of n, under a deadline;
+   if the observation of n differs from the prediction, it plans
+   again. Hides the search time (G3: depth 3 on the stock library
+   takes ~12 s per step) behind the step (pool claim ~6 s, settle
+   3-10 s, E 6).
+I4 Go drives everything (client-go, ssh): rejected, it duplicates the
+   3000-line helper library (dra.source.sh) and the framework's
+   output conventions.
+I5 Stateless CLI per step (bash calls `mbt next`, the state in a
+   file): simplest plumbing, no planning ahead; kept as a fallback if
+   the coprocess proves fragile.
+Measured (2026-10-24, bash 5.3): coproc fds work in functions and in
+$(...) but not in ( ... ) subshells, and external commands do not
+inherit them (close-on-exec), so the ssh ControlMaster processes of the
+framework cannot keep the generator's pipes open. FIFOs opened with
+exec would be inherited. code.var.sh runs in a subshell of run.sh
+(E 1.2), the coproc is created and used in that shell only.
+
+Recommendation and decision D1: I3 as the main mode, I1 as a second
+mode of the same program and the same bash executor, and replay:
+  mbt-cxl generate ...   > code.gen.sh  (I1; deterministic subset)
+  mbt-cxl online ...                    (I3; the coproc)
+  mbt-cxl online --replay FILE          (the steps of a file, oracle on)
+Every on-line run writes the executed actions to mbt-steps.txt in the
+test output dir; `MBT_REPLAY=that-file` repeats the run, and
+`mbt-cxl generate --from FILE` turns it into a code.gen.sh. Prototypes
+P1 (off-line), P2 (lock-step), P3 (planning ahead) are measured
+against each other (03-plan).
+
+3. Where things live (decision D2)
+----------------------------------
+test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+  test90-gofmbt-reliability/
+    code.var.sh        setup (test19's three servers and controllers,
+                       local devices on every VM, images), the step
+                       loop over the coproc or a code.gen.sh, cleanup
+    mbt.source.sh      the bash executor: one function per action verb,
+                       the observer, settle polling (sourced by the
+                       framework: test-level *.source* files are, E 1.1)
+    mbt-observe.py     the guest observer, run in each VM over ssh:
+                       one JSON line (CXL, driver state files, CDI,
+                       containers' cpuset.mems and memory.high)
+    model/             Go module of its own (go.mod, model.go,
+                       oracle.go, online.go, generate.go, *_test.go)
+The model is a module of its own, not the main module like test06:
+the gofmbt extensions (04-status-GOFMBT) are on a local branch, and
+the main go.mod and vendor/ must not change for a test. code.var.sh
+builds it with a go.work in the test output dir that uses the local
+gofmbt checkout (GOFMBT_DIR, default ~/github.com/askervin/gofmbt);
+without one it builds against the version in model/go.mod. When the
+extensions are pushed upstream, model/go.mod points at that version
+and the go.work becomes optional. File names avoid ".var" (E 1.1).
+Name: test90-gofmbt-reliability as the user asked; it matches none of
+the SKIP_LONG_TESTS patterns, so its default budget is short (MBT_
+DURATION=20m) and long runs are asked for explicitly.
+
+4. Model options
+----------------
+M1 Slot model (decision D3). The cluster is fixed (E 2.4), so the
+   pods are too: a static list of SLOTS, each a pod "kind" on a node
+   (or "any" node) with an index, e.g. sdax-a@vm1#0. A slot holds at
+   most one pod at a time; the Kubernetes name gets a generation
+   suffix from bash (unique names, E 7: stale log lines). Actions
+   name slots, so the action vocabulary is finite and stable
+   ("create sdax-a@vm1#0", "crash lnuma@vm0#1") and action coverage
+   saturates. Resource occupancy (who holds which device, local
+   capacity in blocks, attachments) is DERIVED from the slots, so
+   the model predicts Running vs Pending, attachments and regions.
+M2 Resource-centric: the state is per device (free, held by slot S,
+   shared by n), pods follow from it. Equivalent information; used
+   here as a COVERAGE ABSTRACTION of M1 rather than a second model
+   (see 6).
+M3 Separate sub-models per pool/node composed by the generator:
+   rejected for now, the interesting bugs are cross-cutting (fencing
+   on node 2 joins local slices and pool-a/b devices, D 2.9).
+Asynchronous actions (decision D4): create and delete return at
+once (kubectl apply / delete --wait=false), faults act at once, and
+`settle` waits until the SUT reaches the predicted stable state and
+checks everything. At most MBT_UNSETTLED (default 3) operations are
+in flight before the model forces a settle. That is where the races
+come from: create, then kill the driver of that node before the pod
+runs (D E2), delete, then kill the controller before the detach,
+create two shares at once.
+Deterministic rules: at most one pending pod per exclusive resource
+(else which one wins is the scheduler's choice); "any"-node slots
+only on-line, where the observed node is adopted.
+
+5. Allocation kinds and faults in the model (v1)
+------------------------------------------------
+Kinds (claim templates, one per kind, created at setup):
+  xnuma-P  exclusive pool device of pool P (a, b, c), mode numa
+  xdax-P   the same device, mode dax (not zeroed: the next claim reads
+           what the last wrote, D 1.3)
+  sdax-P   a share (shares: "1") of the shared device of P, dax rw
+  sro-P    a share, readOnly
+  sexcl-P  the shared device without a shares request: exclusive
+  lnuma    a 128Mi slice of the local memdev, numa
+  ldax     a 128Mi slice, dax (zeroed)
+  lsteer   a 128Mi local numa slice with container.steering auto
+  lease    a lease claim; the pod requests/releases memory with
+           cxl-request while it runs
+  plain    no claim (fencing: no fenced CXL node in cpuset.mems)
+Faults: crash (a child process of the container killed with SIGSEGV,
+restartPolicy Always: the container restarts with the same CDI
+devices, E 5.5), driver-kill (SIGKILL in place, kubelet restarts the
+container), driver-restart (pod deleted, a new pod), ctrl-kill /
+ctrl-start (SIGKILL, the pool has no controller until started),
+ctrl-restart (graceful: deletes and republishes the slices),
+server-restart (the pool server stopped and started on its own state
+file), kubelet-restart, containerd-restart (D E1 predicts the NRI
+connection is lost for good).
+Not in v1: persistent pool devices (block, fs: no persistent device
+in test19's pools, heavy setup, E 7), node reboot (VM2 takes the API
+server down), driver reconfiguration (a full dra-install reset,
+E 2.2), force delete (forbidden with pool memory, E 7), the static
+shared local device 0xc1ae0000 (needs a sharedDevices config and a
+hot-add variant), claims shared by two pods. Each is a later step.
+
+6. Coverage (decision D5)
+-------------------------
+Several criteria summed (gofmbt counts covered strings):
+C1 every action (slot verb, fault): the baseline.
+C2 "fault in context": for each fault step, one string per pod it
+   affects: fault|kind|phase (e.g. driver-kill|xnuma|starting,
+   ctrl-kill|sdax|deleting); custom coverage (gofmbt extension).
+C3 pairs of action formats (verb+kind, without node and index):
+   interleavings of two operations.
+C4 abstract states, M2 style: per device its holder kind and phase,
+   per node the set of kinds present and the component states.
+The variants are compared off-line (no SUT needed): coverage growth
+per step, steps to saturation, branching, planning time.
+When nothing new is reachable within the search depth the coverage
+round restarts (gofmbt ResetCoverage), so a time budget is used to
+the end.
+
+7. Verification (decision D6)
+-----------------------------
+V1 per-action checks in bash (the e2e helpers' style): the action
+   function knows what it expects. Simple, but the expectations live
+   far from the model and get out of sync with it.
+V2 model as oracle: bash only executes and OBSERVES; the observation
+   (one JSON line) goes to the generator, which compares it with the
+   model's prediction and answers ok, wait or fail with a diff.
+Decision: V2, with bash computing only what needs the SUT (exec in a
+pod, read a device). The checks after a settle, from one kubectl JSON,
+three pool attachment lists and one observer run per VM (~3-5 s):
+  O1 pods per slot: phase, ready, node, restarts; no unexpected pods
+     (lease companions are expected); Pending pods Unschedulable or
+     waiting for the attach as predicted.
+  O2 pool attachments per pool == predicted (device -> hosts, the
+     exclusive flag); none attaching, detaching, failed, adopted
+     (D I6).
+  O3 per VM: regions on CXL memdevs (serial, mode, online size),
+     local slices (count, sizes, modes) == predicted (D I3-I5).
+  O4 per VM: driver state files consistent with the prepared claims of
+     the VM: prepared == info keys, no "-" slice owner (D I1, I2).
+  O5 fencing: no claim-less or unrelated container has a fenced CXL
+     node in cpuset.mems; claimers of numa memory have their node
+     (D I9); steered containers have memory.high set (D I10).
+  O6 env of a newly started or restarted pod: CXL_<SERIAL>_MODE,
+     SIZE, SHARED, READONLY, NODE or DAX as the kind says.
+  O7 data: write/read actions on dax kinds return what they read; the
+     model knows what the device holds (shared and pool dax devices
+     keep their bytes, local dax slices are zeroed, read-only writes
+     are refused).
+  O8 the driver pods Ready, their restarts only from our faults; no
+     panic in their logs.
+settle polls: observe, send, the oracle answers "wait" (not there yet)
+or "ok"; after MBT_SETTLE_TIMEOUT the last difference is the failure.
+
+8. gofmbt extensions (decision D7, stream GOFMBT)
+-------------------------------------------------
+Needed: exported custom coverage (C2, C4), an incremental BestPath
+(the branching here is 60-90 steps), a deadline-bounded search (I3),
+a coverage reset (time budget), the Do nil-chain fix (bug G-B1,
+01-findings-gofmbt G1). Not needed: WithTest (the executor is bash,
+out of process; the oracle is derived from the end state). Possible
+later: an on-line runner in gofmbt itself if the one in model/online.go
+turns out generic.
+
+9. Failures and bugs
+--------------------
+A failure stops the run (FAIL), with the step list, the model state,
+the last observation and the oracle's diff in the output dir. Each
+driver bug found gets bug-NN-<slug>.txt: the steps that reproduce it,
+evidence, cause, fix or status. A known unfixed bug can be kept out of
+a run with MBT_AVOID (actions or faults the generator must not use).
+
+Open (not blocking; defaults taken)
+-----------------------------------
+Q1 Push the gofmbt extensions to github.com/askervin/gofmbt and bump
+   the main go.mod (and test06) to them? Default: local branch only.
+Q2 Default budget of test90 in suite runs (default 20 min), or rename
+   it to a *long* name so that SKIP_LONG_TESTS skips it.

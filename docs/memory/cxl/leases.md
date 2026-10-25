@@ -564,9 +564,12 @@ and cannot make it the companion of a lease it did not request.
   empty one.
 - Requester container stops: if the pod is being deleted, finished, gone
   or has restartPolicy Never, its leases are released. Otherwise they
-  are kept, and `numa` lends are applied again when the container starts
-  again (a dax or block fd is gone with the process: get it again with
-  `cxl-request fd --lease ID --exec ...`).
+  are kept, and the restarted container is created with the nodes of its
+  `numa` leases in its `cpuset.mems` (in the CreateContainer adjustment
+  when it is fenced; containerd would apply an update before the start
+  to the container's spec only), and they are checked against its cgroup
+  when it has started (a dax or block fd is gone with the process: get it
+  again with `cxl-request fd --lease ID --exec ...`).
 - Requester pod deleted: the companion pods are garbage collected
   (ownerReference); NodeUnprepare of the lease claim starts the release of
   all leases of the pod, waits until their nodes are revoked and the
@@ -583,7 +586,8 @@ and cannot make it the companion of a lease it did not request.
   interrupted releases, releases leases left in Creating, leases whose
   companion pod is gone or finished and leases whose requester will not
   come back, applies the `numa` lends of Ready leases again (this is how a
-  plugin restart restores them), and deletes the pods and claims labelled
+  plugin restart restores them, and a lend that the container's cgroup
+  lacks is updated again), and deletes the pods and claims labelled
   `cxl.nri.io/node=<node>` and `cxl.nri.io/lease` that are named
   `cxl-lease-<value of the lease label>` and have no lease in the table.
 - Plugin restart: the sockets of the lease claims are created again in

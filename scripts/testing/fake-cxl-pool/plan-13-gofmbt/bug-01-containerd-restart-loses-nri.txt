@@ -1,0 +1,232 @@
+BUG 01: A CONTAINERD RESTART LOSES THE NRI CONNECTION OF THE CXL DRA
+DRIVER FOR GOOD
+
+Plan 13 (gofmbt), branch 5jg-cxl, 2026-10-24. Predicted as D E1
+(01-findings-driver.txt 3.6, 4 E1), confirmed live by EXEC
+(04-status-EXEC.txt 9 E1, runs 2 and 4).
+  N   ~/github.com/containers/nri-plugins
+  D/  N/cmd/plugins/dra-driver-cxl/
+  R   /tmp/mbt-exec-dev (EXEC's runs)
+Status: FIXED (pending e2e verification). Not committed.
+
+1. Summary
+----------
+When containerd (or CRI-O) restarts, it closes the NRI connection of
+nri-dra-driver-cxl. The driver only logged "NRI connection to the
+runtime lost" and ran on without NRI for good: the NRI stub never
+connects again, and the DaemonSet has no liveness probe. Until the
+driver was restarted by hand:
+- new containers were not fenced (a claim-less container got the
+  fenced CXL node in cpuset.mems), not steered, and conflicting
+  container settings were not refused (no CreateContainer hook);
+- every UpdateContainers failed with "ttrpc: closed": fence passes
+  (running containers keep a newly fenced node), numa lends (the
+  lease is Failed) and revokes (the Unprepare of a numa companion
+  claim fails on every retry, the memory stays held).
+
+Fix: the driver exits with status 1 when the runtime closes the
+connection, like the other NRI plugins of the repository, and is
+restarted by the DaemonSet (or by systemd's Restart= for a host
+process); the restarted driver connects again and rebuilds its state
+from its state files and Synchronize, as after a SIGKILL. A close
+caused by the driver itself (Stop, a done context) or by a failed
+Start does not exit.
+
+2. Reproduction
+---------------
+test90-gofmbt-reliability (N/test/e2e/memory.test-suite/
+dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability), any VM:
+  containerd-restart vmN
+  then any of:
+  create <a claim-less pod>@vmN    (plain)
+  create <a numa claim>@vmN        (xnuma-a, a lend, a revoke)
+  settle
+
+Run 2 (MBT_STUB=1 MBT_STUB_STEPS=R/steps2.txt, steps 48-52):
+  containerd-restart vm0; delete plain@vm0#0; settle;
+  create plain@vm0#0; settle
+- vm0 driver, 08:10:28: "NRI connection to the runtime lost", no
+  reconnect.
+- the new plain pod had cpuset.mems "" -> effective 0-2 while node 2
+  was fenced (R/run2-out/mbt-obs/obs-000052-002.json).
+- only the next driver-restart healed it, 1.8 s after the new driver
+  started: "NRI fence: ctr=.../mbt-plain-vm0-0-g2/main
+  cpuset.mems=0-1 (was "", fenced nodes 2)".
+
+Run 4 (real model, MBT_PROFILE=small MBT_STEPS=40 MBT_SEED=11):
+  step 23 driver-restart vm1; step 24 containerd-restart vm1 (2 s
+  after the new driver's start); step 25 settle failed after 3m1s:
+  "vm1: container of sro-c@vm1#0: cpuset.mems "0-2" has fenced CXL
+  node 2". R/run4-out/trace/vm1.driver.log:
+    W1024 08:26:48.342195 nri.go:225] NRI connection to the runtime
+      lost
+    I1024 08:26:48.884745 fence.go:110] NRI fence: fencing CXL node 2
+      (fenced nodes 2)
+    W1024 08:26:48.885101 lend.go:901] NRI fence: ctr=cxl-pool-demo/
+      mbt-sro-c-vm1-0-g1/main ...: NRI UpdateContainers(
+      cpuset.mems=0-1): ttrpc: closed
+    I1024 08:26:48.885149 lend.go:916] NRI fence: 0 containers
+      updated, 2 failed (fenced nodes 2)
+  No retry, no reconnect. Runs needed MBT_AVOID=containerd-restart.
+
+3. Root cause
+-------------
+Line numbers of HEAD (ed0370b24).
+- D/nri.go:178-180: startNRIPlugin gives the stub
+  stub.WithOnClose(p.onClose); D/driver.go:440 starts the NRI plugin
+  once, at driver start, and nothing starts it again.
+- D/nri.go:224-226: onClose only logged:
+    func (p *nriPlugin) onClose() {
+        klog.Warning("NRI connection to the runtime lost")
+    }
+- vendor/github.com/containerd/nri/pkg/stub/stub.go:626-633
+  connClosed: on a lost connection the stub closes itself (close(),
+  :491-516, resets it so that a new Start could connect) and calls
+  onClose. The stub itself never reconnects; only a new Start would.
+- D/lend.go:648-658 updateMems: UpdateContainers on the closed stub
+  returns "ttrpc: closed" to fence passes, LendNode and RevokeNode.
+- deployment/helm/dra-driver-cxl/templates/daemonset.yaml: no
+  liveness probe, so nothing restarts the still running driver.
+Every other NRI plugin here exits in onClose so that it is restarted:
+N/pkg/resmgr/nri.go:121-124 (os.Exit(1)), memory-policy, memtierd,
+memory-qos (os.Exit(0)), resctrl-mon.
+
+The stub also calls onClose when the driver closes the connection
+itself: Stop() (on SIGTERM, driver.Shutdown, D/driver.go:713) closes
+the ttrpc client, whose goroutine calls onClose after Stop has
+returned. Seen in every orderly stop, e.g. R/run4-out/trace/
+vm1.driver.log lines 49-53: "Received signal terminated", "NRI
+plugin stopped", then "NRI connection to the runtime lost". So
+exiting in onClose unconditionally would turn each SIGTERM into an
+exit 1 in the middle of Shutdown (before the kubelet plugins stop).
+
+4. The fix
+----------
+D/nri.go:
+- exitOnNRILost = os.Exit: the seam for tests.
+- nriPlugin gets connMu and started, stopping, closed.
+- startNRIPlugin: stub.WithOnClose(func() { p.onClose(ctx) }); after
+  a successful Start, connStarted(ctx) marks started.
+- Stop() marks stopping before it closes the stub.
+- onClose(ctx) marks closed; exitIfLostLocked exits when started and
+  closed and not stopping and ctx not done: it logs "NRI connection
+  to the runtime lost, exiting to be restarted and connect again"
+  (error), flushes klog and calls exitOnNRILost(1). An orderly close
+  logs "NRI connection to the runtime closed (stopping)" at -v=3.
+- A close before Start has returned: if Start fails, nothing (the
+  driver runs on without NRI as before, "Failed to start NRI plugin
+  (continuing without it)"); if Start succeeds, connStarted exits.
+- The decision and the exit are taken with connMu held, so a Stop
+  cannot come between them (and tests see a settled state).
+Exit status 1: Kubernetes restarts the container whatever the status;
+systemd's Restart=on-failure restarts only on a failure. Nothing has
+to be done before the exit: not stopping the kubelet plugins, the
+broker and the steering managers is what a SIGKILL does, and the
+driver survives that (driver-kill in place by the plan-13 executor,
+the e2e driver-restart tests).
+
+Why exit and not reconnect in-process: a reconnect is possible in
+principle (stub.close resets the stub for a new Start, and
+Synchronize keeps the lent sets of containers that remain), but it is
+a new path that nothing tests, while the restart path (state files,
+reconcile, fence reseeding, lends restored, broker) is tested. It
+would need: a Start retry loop that races with Stop; Start of a reused
+stub racing with UpdateContainers callers (the stub reads its runtime
+client without a lock); pending steering plans and managers of
+containers whose Start/Stop/Remove fell into the gap; containers
+created in the gap (never seen by CreateContainer). It would also
+mask a runtime that dropped the plugin for a timeout. Its only gain:
+the steering managers of running steered containers keep running,
+whereas a restart stops them (a documented limitation of every
+restart, doc/usage.md Steering).
+
+Docs, N/docs/memory/cxl/usage.md:
+- As a host process: the systemd-run example has -p Restart=on-failure
+  -p RestartSec=5s, and two sentences: the plugin exits with status 1
+  when the runtime closes its NRI connection and connects again only
+  when restarted (DaemonSet; a host process needs Restart=on-failure
+  or always); RestartSec gives the runtime time to bring its NRI
+  socket back, as a plugin that cannot reach it at start runs on
+  without NRI.
+- Flags: "exits with status 1 when the runtime closes the NRI
+  connection, to be restarted".
+- Steering: the restart after a runtime restart also stops the
+  steering of running containers.
+
+5. Unit tests
+-------------
+D/nri_test.go:
+- TestNRIConnectionLost: the state logic with a fake stub; exit
+  status 1 for "runtime closes" and "closed before Start returned";
+  no exit for "Start failed", "Stop" (Stop, then the close) and "ctx
+  done".
+- TestNRIConnectionLostStub: startNRIPlugin with the real NRI stub
+  connected to a fake runtime (unix socket, multiplex, ttrpc,
+  RegisterPlugin then Configure). "runtime closes": the runtime closes
+  its end, exitOnNRILost(1) is called once. "Stop": p.Stop(), the
+  stub reports the close (waits for closed), no exit.
+Mutation check: without the stopping guard both Stop cases fail with
+"exit statuses [1], expected []", which also proves that the real
+stub calls onClose on our own Stop. -race -count=50: clean.
+go vet, gofmt, golangci-lint: clean. go test ./cmd/plugins/
+dra-driver-cxl/... ./pkg/cxl/...: all pass except TestMemdevSettings
+(D/local_probe_test.go:53, "mem0 probed 0: usable size 206158430208,
+expected 137438953472"), which fails on HEAD too (introduced by
+c55476444, unrelated).
+
+6. To verify on the cluster
+---------------------------
+With an image of the fix, test90 without MBT_AVOID=containerd-restart:
+a. the run 2 and run 4 sequences above (containerd-restart vmN, then
+   a claim-less create, and a numa claim that onlines a node).
+   Expected: "kubectl logs --previous" of the driver pod on vmN ends
+   with "NRI connection to the runtime lost, exiting to be restarted
+   and connect again"; the same pod, restartCount +1, lastState
+   terminated exitCode 1; the new container logs "Started plugin
+   30-dra-driver-cxl", "NRI Synchronize: ...", "NRI fence: lends
+   restored, fencing running containers"; the claim-less container
+   has cpuset.mems without the fenced node; the settle passes.
+b. an orderly driver-restart (pod deleted, SIGTERM): exitCode 0, no
+   "exiting to be restarted" line.
+c. a numa lease and its release after a containerd restart: the
+   lease becomes Ready, the companion claim is unprepared.
+Notes for the executor and the model: containerd-restart now implies
+an in-place driver restart (like driver-kill): wait for the driver to
+be Ready again and follow its new log; containers created between the
+runtime restart and the new driver's Synchronize are fenced by the
+first fence pass, not at creation, and steering claims created then
+run unsteered (as after driver-kill).
+
+Remaining risks, not fixed here:
+- The exit can hit a Prepare in progress, as a SIGKILL would (D E2).
+- A host process restarted before the runtime's NRI socket is back
+  runs on without NRI for good (the start behaviour of before;
+  RestartSec mitigates). In the DaemonSet the container is restarted
+  through the restarted runtime, so its NRI socket is back [I].
+- Repeated runtime restarts within minutes put the driver into
+  CrashLoopBackOff (10 s up to 5 min between restarts).
+
+Verification in the e2e cluster (orchestrator, 2026-10-24)
+----------------------------------------------------------
+V14 (06-runs.txt), image 8c43a36bf383: after containerd-restart vm0 the
+driver restarted in place (restarts 1), synchronized and fenced. V5,
+image 1d9a1f54a692: containerd-restart twice, the driver back each
+time (containerd-restart verb 3.6 s and 14.3 s with the driver-ready
+wait). Status: FIXED, verified.
+
+Follow-up after review (05-review-DRV.txt D3, D4; 2026-10-24)
+-------------------------------------------------------------
+D4: Shutdown marks the NRI plugin stopping first (nriPlugin.
+markStopping, D/driver.go Shutdown), before the udev watcher and the
+broker stop: a runtime that closes the connection while the broker
+waits for its reconciles (node shutdown) no longer makes onClose exit
+1 in the middle of a graceful Shutdown. Stop still marks it too.
+Test: TestNRIConnectionLost "Shutdown" (the close comes from the
+broker's stop): no exit; it fails without the fix.
+D3 and E4: the routine self-exit can hit a persist of a Prepare or
+an Unprepare: preparedClaims.json is now written atomically, and a
+start reconciles the two files of the prepared claims: see
+bug-07-split-persistence-of-prepared-claims.txt.
+The "Remaining risks" item "the exit can hit a Prepare in progress"
+(D E2, a pool claim) is unchanged.
+Status: FIXED in the working tree, not committed.

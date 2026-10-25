@@ -1,0 +1,308 @@
+plan-13: contract between the model (Go) and the executor (bash)
+=================================================================
+2026-10-24 (orchestrator). Normative for streams MODEL and EXEC
+(03-plan). A change needs an entry in "Amendments" at the end, made
+by the orchestrator. T = test/e2e/memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-2/test90-gofmbt-reliability.
+
+1. Names
+--------
+VM ids: vm2 (control plane, $POOL_VM2_NAME, VM dir $OUTPUT_DIR), vm1
+($POOL_VM1_NAME), vm0 ($POOL_VM0_NAME). The model knows only the ids;
+bash maps ids <-> Kubernetes node names <-> VM dirs.
+Pools (servers and controllers as in test19, E 2.1): a = pool-a (vm1,
+vm2; hb0), b = pool-b (vm0; hb0), c = pool-c (vm0, vm1, vm2; hb1, HMP).
+Devices (name, serial, size, kind):
+  a-pooled0 0xc1ee0001 512Mi exclusive   a-shared0 0xc1ae0001 256Mi shared
+  b-pooled0 0xc1ee1001 512Mi exclusive   b-shared0 0xc1ae1001 256Mi shared
+  c-pooled0 0xc1ee2001 256Mi exclusive   c-shared0 0xc1ae2001 256Mi shared
+  local memdev 0xc100e2e1 on every VM: vm2 8 blocks, vm1 2, vm0 2
+  (block = 128Mi), attached at setup by the pool server that knows it
+  (pool-a: vm2, vm1; pool-b: vm0), owner e2e:..., never by k8s.
+NUMA nodes: everything under hb0 (local memdev, pool-a, pool-b
+devices) is node 2 of its VM, under hb1 (pool-c) node 3 (flags
+--node-hb0 2 --node-hb1 3; the oracle reports a mismatch with the
+observed region node plainly).
+
+2. Kinds (one ResourceClaimTemplate per kind and pool, made at setup
+   in DRA_NS; every pod has exactly one claim "c0", or none)
+------------------------------------------------------------------
+kind     claim                                   env of CXL_<KEY>_ (KEY = serial hex upper)
+xnuma-P  class cxl-pool, serial of P-pooled0     MODE=numa SHARED=0 SIZE=<dev> NODE=<hb node>
+xdax-P   cxl-pool, P-pooled0, device.mode dax    MODE=dax SHARED=0 SIZE=<dev> DAX=/dev/dax* READONLY=0
+sdax-P   cxl-pool-shared, P-shared0, shares "1"  MODE=dax SHARED=1 SIZE=256Mi DAX READONLY=0
+sro-P    as sdax-P, device.readOnly true         ... READONLY=1
+sexcl-P  cxl-pool-shared, P-shared0, no shares   MODE=dax SHARED=1 SIZE=256Mi DAX READONLY=0
+lnuma    cxl-local, memory 128Mi                 MODE=numa SHARED=0 SIZE=134217728 NODE=2 SERIAL=0xc100e2e1
+ldax     cxl-local, 128Mi, device.mode dax       MODE=dax SHARED=0 SIZE=134217728 DAX READONLY=0
+lsteer   as lnuma + container.steering.policy auto   as lnuma
+lease    class cxl-lease                         CXL_LEASE_SOCKET=/run/cxl/cxl.sock
+plain    no claim                                no CXL_* variable
+P is a, b or c. Every memdev result also has SERIAL=<serial>; every
+claimed container has a marker CXL_CLAIM_<uid>_<n>=1 (not checked).
+Every pod: restartPolicy Always, terminationGracePeriodSeconds 2,
+label mbt.slot=<slot label>, nodeSelector kubernetes.io/hostname of
+its VM unless its slot is "any", image $DRA_TOOLS_IMAGE with the
+dax-rw ConfigMap at /tools. Main process: a shell whose child is the
+"workload" (sleep): the shell exits with the child's status when the
+child dies of a signal, so killing the child with SIGSEGV is a crash
+(exit 139) and the container restarts (E 5.5: PID 1 ignores SIGSEGV).
+
+3. Slots
+--------
+A slot is KIND@VM#I (VM = vm0|vm1|vm2|any). It holds at most one pod.
+Slot label (Kubernetes label value): KIND_VM_I. Pod name:
+mbt-KIND-VM-I-g<gen>, gen counted per slot by bash from 1.
+Profile "full" (default), 43 slots:
+  pool a: xnuma-a@vm1#0 xnuma-a@vm2#0 xdax-a@vm1#0 xdax-a@vm2#0
+          sdax-a@vm1#0 sdax-a@vm2#0 sdax-a@vm2#1 sro-a@vm1#0
+          sro-a@vm2#0 sexcl-a@vm2#0
+  pool b: xnuma-b@vm0#0 xdax-b@vm0#0 sdax-b@vm0#0 sdax-b@vm0#1
+          sro-b@vm0#0 sexcl-b@vm0#0
+  pool c: xnuma-c@vm1#0 xdax-c@vm2#0 xdax-c@any#0 sdax-c@vm0#0
+          sdax-c@vm1#0 sdax-c@vm2#0 sdax-c@any#0 sro-c@vm0#0
+          sro-c@vm2#0 sexcl-c@vm1#0
+  local:  lnuma@vm0#0 lnuma@vm0#1 ldax@vm0#0 lnuma@vm1#0 ldax@vm1#0
+          ldax@vm1#1 lnuma@vm2#0 lnuma@vm2#1 ldax@vm2#0 lsteer@vm2#0
+          lsteer@vm1#0
+  lease:  lease@vm0#0 lease@vm1#0 lease@vm2#0
+  plain:  plain@vm0#0 plain@vm1#0 plain@vm2#0
+"any" slots exist only on-line (generate leaves them out).
+Profile "small" (first trials), 12 slots: xnuma-a@vm1#0 xdax-a@vm2#0
+sdax-c@vm0#0 sdax-c@vm2#0 sro-c@vm1#0 sexcl-c@vm1#0 lnuma@vm0#0
+lnuma@vm0#1 ldax@vm0#0 lease@vm2#0 plain@vm0#0 plain@vm2#0.
+The model may add profiles; bash must not depend on the list.
+
+4. Actions (one line: VERB ARGS..., words separated by one space)
+------------------------------------------------------------------
+create SLOT        apply the pod of SLOT (new gen), return at once
+delete SLOT        kubectl delete pod --wait=false, return at once
+crash SLOT         SIGSEGV to the workload child of the main container
+write SLOT         dax kinds: write "mbt-<step>" + NUL at offset 0 of
+                   $CXL_<KEY>_DAX in the container (dax-rw.py write)
+read SLOT          dax kinds: read the string at offset 0
+lease-get SLOT M   lease kind: cxl-request request --source local
+                   --mode M --size 128Mi --wait 60s, M = numa|dax;
+                   one lease per slot at a time
+lease-put SLOT     cxl-request release --all
+settle             observe until the oracle says ok (6)
+driver-kill VM     SIGKILL of the driver process of VM (in place:
+                   kubelet restarts the container), return at once
+driver-restart VM  delete the driver pod of VM, wait for a new Ready
+                   pod (dra-driver-restart)
+ctrl-kill P        SIGKILL the controller unit of pool P (stays down)
+ctrl-start P       reset-failed and start the unit with the same
+                   command line as dra-install (E 5.2)
+ctrl-restart P     systemctl stop (graceful: deletes the slices), start
+server-restart P   stop the pool server P (SIGTERM) and start it again
+                   on the same config and state file and log; wait for
+                   its status to answer
+kubelet-restart VM systemctl restart kubelet, wait node Ready
+containerd-restart VM  systemctl restart containerd, wait node Ready
+Bash refuses an unknown verb with status 2 (the oracle fails the step).
+
+5. Protocol (on-line; the coproc's stdout -> bash, bash -> its stdin)
+---------------------------------------------------------------------
+Go -> bash, one line each:
+  step N VERB ARGS...   execute step N
+  ok N                  step N is accepted
+  wait N MESSAGE        settle: not there yet, observe again after
+                        MBT_POLL (default 3 s)
+  fail N MESSAGE        the step failed the oracle: bash reports
+                        MESSAGE and the files of 7, and calls error
+  end MESSAGE           no more steps: bash goes to the teardown
+bash -> Go, one line each:
+  done N STATUS JSON    a non-settle step finished with exit STATUS
+                        and observation JSON ({} if none; 6.2)
+  observe N JSON        one settle observation (6.1)
+After "step N settle" bash sends observe lines until Go answers ok or
+fail; Go enforces MBT_SETTLE_TIMEOUT (default 180 s) and answers fail
+with the last difference. For other verbs Go answers ok or fail to
+done. Lines are single-line; MESSAGE is a one-line summary (details in
+Go's files). No other output may go to the coproc's stdin. Go logs to
+stderr, which code.var.sh redirects to $test_outdir/mbt-cxl.log.
+Off-line (code.gen.sh, from mbt-cxl generate):
+  mbt-step N VERB ARGS...
+  mbt-expect N <<'EOF'
+  <the prediction JSON of step N>
+  EOF
+mbt-expect N polls like settle and runs "$MBT_BIN" check --step N
+--expect FILE --observed FILE, which prints ok, wait MESSAGE or fail
+MESSAGE as above (exit 0, 3, 1). Non-settle steps that return an
+observation get an mbt-expect too.
+
+6. Observations
+---------------
+6.1 settle (one JSON object):
+{"step":N, "poll":K,
+ "pods":[{"slot":"sdax-a@vm1#0", "name":..., "uid":..., "gen":G,
+   "node":"vm1"|null, "phase":"Pending|Running|Succeeded|Failed|Unknown",
+   "ready":bool, "deleting":bool, "restarts":int,
+   "waiting":"<reason of the main container's waiting state>"|null,
+   "unschedulable":bool,
+   "claim":{"name":..., "uid":..., "allocated":bool,
+            "devices":[{"driver":..., "pool":..., "device":...}],
+            "attached":true|false|null}|null}],
+ "companions":[{"name":..., "node":"vm0", "phase":..., "lease":"<id>",
+   "requester":"<slot>"|null}],
+ "others":[<names of other pods in DRA_NS>],
+ "attachments":{"a":[{"device":"a-pooled0", "host":"vm1",
+   "state":"attached|attaching|detaching|failed|...",
+   "exclusive":bool, "adopted":bool, "owner":"..."}], "b":[...], "c":[...]},
+ "drivers":{"vm0":{"pod":..., "ready":bool, "restarts":int}, ...},
+ "controllers":{"a":"active|inactive|failed", "b":..., "c":...},
+ "vms":{"vm0":<6.3>, "vm1":..., "vm2":...},
+ "inspect":{"<slot>":{"uid":..., "restarts":int, "env":{"CXL_...":"..."},
+   "leases":[<cxl-request list>]|null}}}
+"inspect" has the pods that are Running and Ready and whose (uid,
+restarts) bash has not inspected yet (bash keeps a table; one kubectl
+exec each: env, and cxl-request list for lease pods).
+6.2 done JSON: write/read: {"text":"<read string>"|null,
+"stderr":"<first 200 bytes>"}; lease-get: {"lease":"<id>"|null,
+"stderr":...}; others {}. STATUS is the exit status of the in-container
+command (write on a read-only claim: nonzero).
+6.3 per VM (mbt-observe.py, run as root in the VM, one JSON line):
+{"bootID":...,
+ "memdevs":[{"name":"mem0", "serial":"0x...", "size":bytes}],
+ "regions":[{"name":"region0", "serials":["0x..."], "mode":"ram|devdax|pmem|...",
+   "size":bytes, "node":int|null,
+   "dax":[{"name":"dax0.1", "size":bytes, "driver":"kmem|device_dax|null",
+           "online":bytes}]}],
+ "nodes":{"2":{"memtotal":bytes}, ...},
+ "state":{"prepared":[uids], "info":[uids], "pool":[uids],
+   "localDevices":{"bootID":..., "devices":[{"serial":..., "region":...,
+     "claims":{"<uid or ->":<slices>}}]}|null, "leases":<leases.json>|null},
+ "cdi":{"<file>":[<device names>]},
+ "containers":[{"ns":..., "pod":..., "name":..., "id":...,
+   "mems":"<cpuset.mems>", "mems_effective":"...", "memory_high":"..."}]}
+Errors reading a part: that part null plus "errors":["..."].
+
+7. Oracle (Go) and files
+------------------------
+Checks at settle (02-design 7): O1 pods, O2 attachments, O3 regions
+and slices, O4 driver state files, O5 fencing and memory.high, O6 env
+of inspected pods, O8 driver pods (restarts only from driver-kill and
+crash-free), controllers as the model says. O7 at write/read.
+Fencing set F per VM: the CXL nodes onlined since the driver of the
+VM last started, seeded at a start with the nodes of the numa claims
+prepared on it (D 3.2 step 4). O5: no container of DRA_NS without a
+numa claim or lease on node X has X in mems_effective when X is in F;
+a numa claimer has its node; lsteer containers have memory_high !=
+"max", others "max".
+"Stable" for settle: no pod deleting; every predicted-Running pod
+Running and Ready; predicted-Pending pods Pending; no attachment in a
+transient state; driver pods Ready; ctrl as predicted.
+On fail Go writes $MBT_OUT/mbt-fail.txt (step, action, model state,
+prediction, last observation, differences) and keeps
+$MBT_OUT/mbt-steps.txt (every executed action, one per line, with a
+header of seed, profile, flags) up to date after every step. MBT_OUT
+= $test_outdir.
+
+8. Configuration (env of code.var.sh -> flags of mbt-cxl)
+---------------------------------------------------------
+MBT_MODE online|offline|replay (online)   MBT_SEED (time-based, printed)
+MBT_DURATION (20m)   MBT_STEPS (0 = no limit)   MBT_DEPTH (3)
+MBT_PROFILE (full)   MBT_UNSETTLED (3)   MBT_SETTLE_TIMEOUT (180)
+MBT_POLL (3)   MBT_AVOID (comma list of verbs or verb:arg to leave out)
+MBT_REPLAY (file)   MBT_SCRIPT (a code.gen.sh for offline)
+GOFMBT_DIR (~/github.com/askervin/gofmbt)
+Facts of the setup that bash measures and passes as flags (the model's
+defaults in brackets): --local-blocks vm2=8,vm1=2,vm0=2 (the
+capacity.memory of memdev-c100e2e1 in each node's cxl.nri.io slice
+divided by 128Mi; the address-line probe of c55476444 may publish
+less), --node-hb0 2 --node-hb1 3.
+
+Amendments
+----------
+A1 (2026-10-24, EXEC 8) Lease pods are inspected again after every
+   lease-get and lease-put (their "leases" change without a restart).
+A2 Observations may carry fields that are not in 6; the oracle decodes
+   leniently and ignores them.
+A3 Attachment lists include the setup's local memdevs (owner
+   e2e:dra-local-device); the oracle ignores attachments whose owner
+   does not start with "k8s:".
+A4 Off-line, the observed file holds the same JSON as the on-line
+   observe line; check accepts it.
+A5 No --poll flag: polling is bash's (MBT_POLL). MBT_ARGS passes extra
+   flags to mbt-cxl (e.g. --plan-ahead=false for P2).
+A6 Timing facts for "wait" vs "fail": the pod status lags a crash by
+   ~1 s; kubelet's restart back-off is 10/20/40 s for a crash and for
+   a driver-kill alike; a restarted driver fences ~2 s after it starts.
+A7 A deleting pod may be in phase Succeeded or Failed (its workload
+   exits 0 on SIGTERM): terminal phases are normal while deleting.
+A8 (bug-01 fix) containerd-restart VM makes the driver of VM exit (1)
+   when its NRI connection is lost: its container restarts in place
+   (restarts +1, exit code 1), like driver-kill; the fencing set F of
+   VM is reseeded; containers created between the runtime restart and
+   the new driver's Synchronize are fenced by its first fence pass.
+A9 (bug-02, a Linux limit) Decoder stacks. Per (VM, host bridge) the
+   model keeps the stack of the regions through it: hb0 = the local
+   memdev's region and the regions of P-pooled0 / P-shared0 of pool a
+   (vm1, vm2) or b (vm0); hb1 = c-pooled0 and c-shared0. Lifetimes on a
+   node: exclusive pool device = its claim (Prepare to Unprepare);
+   shared pool device = first to last claim on that node; local memdev
+   = first to last claim or lease slice (numa and dax slices share it).
+   A new region is pushed; destroying the top pops it and every hole
+   below it; destroying another one leaves a HOLE. A Prepare that needs
+   a new region through a stack with a hole fails: the pod is BLOCKED
+   (Pending, ContainerCreating), its last Warning event contains "CXL
+   decoders released out of order" (pkg/cxl/memctl/decoders.go:164);
+   faults neither create nor destroy regions. When the hole clears the
+   pod must be Running within MBT_UNBLOCK_TIMEOUT (default 330 s;
+   kubelet caps its Prepare back-off at 5 min); settles accept it as
+   ContainerCreating meanwhile, without waiting for it. Concurrent
+   region-creating operations on one stack race for the order: the
+   oracle adopts the observed order (A10); generate never has two of
+   them in flight on one stack. --avoid-holes: never generate an action
+   that destroys a region below the top of its stack.
+A10 Observation additions (EXEC): per VM "ports":[{"port":"port2",
+   "kind":"hostbridge|switch|endpoint", "hb":"hb0|hb1"|null,
+   "committed":N, "decoders":[{"name":"decoder2.0", "region":
+   "region0"|"", "start":int, "size":int}]}] (committed decoders only);
+   per pod "event":{"reason":..., "message":...}|null, the newest
+   Warning event of the pod.
+A11 (05-review R2) Completeness: every running container of a DRA_NS
+   pod is in "containers" of its VM with non-empty mems and
+   mems_effective; a missing container or an empty field is "wait" (a
+   fail at the timeout), never "ok"; a VM part that is null is "wait".
+A12 (R9, R4) per pod "events": its Warning events (reason, message up
+   to 4000 bytes, count, lastTimestamp), newest first, at most 5, next
+   to "event" (kept). The blocked check searches every one of them. A9
+   correction: kubelet retries a failed Prepare at its pod resync,
+   every ~60-90 s per pod, independently: the order of retries is
+   taken from the observed decoders, never assumed.
+A13 (R14) per VM "driverLog":{"container":<id>, "panics":N, "errors":
+   [first 5 lines matching "panic|fatal error|SIGSEGV"]} of the
+   current driver container since its start; settle "slices":{"vm0":
+   [{"name":..., "serial":..., "shared":bool}], ...} of each node's
+   cxl.nri.io ResourceSlice (one kubectl call). Oracle: panics == 0;
+   memdev-c100e2e1 published on every node; no pool serial in a
+   cxl.nri.io slice (D I12); leases.json consistent with the model's
+   leases (state.leases of 6.3).
+A14 (R6) Off-line, mbt-step passes the status and observation of every
+   action to "$MBT_BIN" check like an on-line done line; generate
+   writes an mbt-expect for every step.
+A15 (R8) driver-restart, driver-kill (at the next settle),
+   containerd-restart and kubelet-restart: "ready" means the driver
+   container of the node runs, its log has "NRI fence: lends restored"
+   after its start, and the node's cxl.nri.io slice and dra.sock are
+   back; the verbs that wait (driver-restart, containerd-restart,
+   kubelet-restart) wait for that; settle treats a not-ready driver as
+   "wait".
+A16 (R13) replay reads the profile and flags from the header of the
+   steps file (the environment may only add); a seed reproduces the
+   same steps only with --plan-time 0 or --max-paths (documented).
+A18 (run L1) settle "poolSlices":{"a":[{"name":..., "devices":[...],
+   "nodes":[VM ids]}], "b":[...], "c":[...]}: the cxl-pool.nri.io
+   slices per pool ([] for none). A graceful controller stop
+   (ctrl-restart) deletes the pool's slices and the new controller
+   publishes them again; a ctrl-kill before it did leaves the pool
+   without slices until ctrl-start: new claims of that pool are then
+   Unschedulable (FailedScheduling "cannot allocate all claims"), not
+   allocated-and-waiting. The model takes the presence of the slices
+   from poolSlices; without the field it accepts either outcome.
+A17 (bug-04 fix, R7) after any driver restart that is not graceful
+   (driver-kill, containerd-restart) as after a graceful one: a
+   running lsteer container has memory.high max and is fenced like an
+   unsteered container with its claim; a later restart of the
+   container is steered again (memory.high set).

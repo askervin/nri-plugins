@@ -229,9 +229,17 @@ and run the plugin on the node:
 kubectl apply -f deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml
 install -m 755 build/bin/nri-dra-driver-cxl build/bin/cxl-request /usr/local/bin/
 echo '{}' > /etc/nri-dra-driver-cxl.yaml
-systemd-run --unit nri-dra-driver-cxl -E KUBECONFIG=/etc/kubernetes/nri-dra-driver-cxl.conf \
+systemd-run --unit nri-dra-driver-cxl -p Restart=on-failure -p RestartSec=5s \
+    -E KUBECONFIG=/etc/kubernetes/nri-dra-driver-cxl.conf \
     /usr/local/bin/nri-dra-driver-cxl --node-name "$(hostname)" -f /etc/nri-dra-driver-cxl.yaml
 ```
+
+The plugin exits with status 1 when the container runtime closes its NRI
+connection (when containerd or CRI-O restarts, for example), and connects
+again only when it is restarted: the DaemonSet restarts its container, a
+host process needs `Restart=on-failure` (or `always`). `RestartSec` gives
+the runtime time to bring its NRI socket back: a plugin that cannot reach
+it at start runs on without NRI.
 
 `templates/deviceclasses.yaml` is plain YAML: applied as it is, the
 classes carry no configuration. Classes with the presets of a
@@ -876,9 +884,17 @@ it starts (processes that are not descendants of them, such as those of
 every step until the plan moves on. Workloads that place their memory
 themselves, such as HPC applications and databases, are better left
 unsteered. A steered container cannot take a `numa` lease
-([leases.md](leases.md#limitations)). A restart of the plugin does not
-restart the steering of running containers: they keep their
-`cpuset.mems` and memory policies and are no longer throttled.
+([leases.md](leases.md#limitations)). A restart of the plugin, graceful
+or killed, also the one after a restart of the runtime, does not restart
+the steering of running containers, nor steers those created while it was
+down: the restarted plugin manages them like containers that are not
+steered (below), and they keep their memory policies. It sets the
+`memory.high` of the containers that the steering of the stopped plugin
+throttled to `max`, as the end of a steering does, also when the
+configuration no longer steers them (the plugin keeps them in
+`steeredContainers.json`), and leaves the `memory.high` of the others
+alone. A container whose steering fails to start (`failed to start
+memory steering`) is managed like a container that is not steered too.
 
 A container that is not steered (policy `none`, or no `numa` memory) is
 managed like a [container without claims](#containers-without-claims):
@@ -914,10 +930,12 @@ NRI CreateContainer: ctr=<ctr>: dram and region memory is not steered: the claim
 ```
 
 After a restart the plugin computes the management of the running
-containers again from their markers and the prepared claims; a container
-whose settings no longer combine is taken as steered (never fenced, never
-lent to) with the warning `NRI Synchronize: ctr=<ctr>: <error>; taken as
-steered`.
+containers again from their markers and the prepared claims, and steers
+none of them (`NRI Synchronize: ctr=<ctr> id=<id>: steering not
+restarted, memory fenced; memory.high <bytes> removed (max)` for one that
+was steered); a container whose settings no longer combine is taken as
+steered (never fenced, never lent to) with the warning `NRI Synchronize:
+ctr=<ctr>: <error>; taken as steered`.
 
 Memory for running containers (leases) in mode `numa` is lent through
 `cpuset.mems` ([leases.md](leases.md#limitations)).
@@ -945,11 +963,15 @@ Its own nodes are the `cpuset.mems` of its spec (set by the kubelet
 memory manager or an earlier NRI plugin), or all nodes with memory
 (`/sys/devices/system/node/has_memory`) when the spec has none. A new
 container gets it when it is created; the running and created containers
-are updated before the memory of a new node goes online, so no container
-sees the node. After a restart the plugin updates the running containers
-when NRI has synchronized and the lease broker has lent the memory of
-Ready `numa` leases again. A node stays kept away when its last claim is
-released, until the plugin restarts.
+are updated before the memory of a new node goes online, so no running
+container sees the node. containerd applies an update of a container
+that it has not marked started to its spec only: a container that is
+being started when a node is kept away runs with the node until it has
+started, when the plugin checks its cgroup and updates it. After a
+restart the plugin updates the running containers when NRI has
+synchronized and the lease broker has lent the memory of Ready `numa`
+leases again. A node stays kept away when its last claim is released,
+until the plugin restarts.
 
 `defaults.container.fencing` of the [configuration file](#configuration-file)
 selects this, for every container of the node; claims and DeviceClasses
@@ -1379,7 +1401,8 @@ variable when it is set. Both `-flag` and `--flag` work.
 
 `-v` and the other logging flags of klog are accepted too;
 `nri-dra-driver-cxl -help` lists them all. The plugin stops on SIGTERM and
-SIGINT.
+SIGINT, and exits with status 1 when the runtime closes the NRI connection,
+to be restarted ([As a host process](#as-a-host-process)).
 
 Without NRI (the socket cannot be reached) the plugin runs on: claims are
 prepared, containers are not steered and not kept off the CXL nodes of
@@ -1453,6 +1476,7 @@ restarts.
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, and its lend |
 | `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, and the claims of shared local devices |
+| `/var/lib/kubelet/plugins/cxl.nri.io/steeredContainers.json` | the containers that the steering of the plugin throttles, with their cgroups: a restarted plugin removes their `memory.high` ([Steering](#steering)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |
 | `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |

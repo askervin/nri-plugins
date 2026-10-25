@@ -56,6 +56,9 @@ type driver struct {
 	started atomic.Bool
 	// poolSlices has the serials of the devices of pool controllers.
 	poolSlices *poolSlices
+	// slices publishes the node's ResourceSlice (not the helper: see
+	// nodeSliceSyncDelay).
+	slices *nodeSlices
 }
 
 // TestabilityConfig holds configuration for injecting fake CXL
@@ -419,6 +422,7 @@ PluginDataDirectoryPath: %v`,
 	}
 
 	driver.helper = helper
+	driver.slices = newNodeSlices(config.Client, config.Flags.NodeName, driver.HandleError)
 	driver.started.Store(true)
 
 	if err := startPoolDriver(ctx, config, pool); err != nil {
@@ -437,7 +441,11 @@ PluginDataDirectoryPath: %v`,
 		Idx:    cxlFlags.NRIIdx,
 		Socket: cxlFlags.NRISocket,
 	}
-	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, driverConfig.containerDefaults(), fence, pool, sysfsRoot)
+	var leases leaseNodes // the lease table is loaded: Synchronize may use it
+	if driver.broker != nil {
+		leases = driver.broker
+	}
+	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, driverConfig.containerDefaults(), fence, pool, leases, sysfsRoot, config.KubeletPluginDir)
 	if err != nil {
 		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
 		fence.setNoNRI()
@@ -563,7 +571,8 @@ func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	if err != nil {
 		return nil, fmt.Errorf("local allocator: %w", err)
 	}
-	claims, err := getOrCreatePreparedClaimsInfo(filepath.Join(dataDir, preparedClaimsInfoFileName))
+	// the claims of both files (newNodeState forgets the others)
+	_, claims, _, _, err := loadPreparedClaims(filepath.Join(dataDir, device.PreparedClaimsFileName))
 	if err != nil {
 		return nil, fmt.Errorf("local allocator: %w", err)
 	}
@@ -658,7 +667,7 @@ func (d *driver) PublishResourceSlice(ctx context.Context) error {
 	resources := d.state.GetResources()
 	klog.FromContext(ctx).Info("Publishing resources", "len", len(resources.Pools[d.state.NodeName].Slices[0].Devices))
 	klog.V(5).Infof("devices: %+v", resources.Pools[d.state.NodeName].Slices[0].Devices)
-	if err := d.helper.PublishResources(ctx, resources); err != nil {
+	if err := d.slices.publish(ctx, resources); err != nil {
 		return fmt.Errorf("error publishing resources: %v", err)
 	}
 
@@ -705,6 +714,11 @@ func (d *driver) rescanAndPublish(ctx context.Context) {
 func (d *driver) Shutdown(ctx context.Context) error {
 	klog.V(5).Info("Shutting down driver")
 
+	// First: the runtime may close the NRI connection while the rest
+	// stops (the broker waits for its reconciles), which is no loss now.
+	if d.nriPlugin != nil {
+		d.nriPlugin.markStopping()
+	}
 	if d.udevWatcher != nil {
 		d.udevWatcher.Stop()
 	}
@@ -713,6 +727,7 @@ func (d *driver) Shutdown(ctx context.Context) error {
 		d.nriPlugin.Stop()
 	}
 	d.pool.stop()
+	d.slices.stop()
 	d.helper.Stop()
 
 	return nil

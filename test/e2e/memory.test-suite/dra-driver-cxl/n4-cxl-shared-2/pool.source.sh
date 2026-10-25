@@ -236,29 +236,57 @@ run memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test00-up first"
     echo "pool-cluster-require: cluster \"$(vm-k8s-cluster-names "$cluster")\" is in shape"
 }
 
+pool-vm-decoders() { # script API
+    # Usage: pool-vm-decoders VMDIR
+    #
+    # Print the CXL ports and endpoints of the VM of VMDIR that have
+    # committed HDM decoders, "portN=COUNT" separated by spaces, nothing if
+    # none has. COUNT is the kernel's decoders_committed of the port: the
+    # decoders 0..COUNT-1 are committed, or released out of order below a
+    # committed one and pinned until it is released (bug-02 of plan-13:
+    # the port then refuses every new region with EBUSY). Without CXL
+    # memory devices and regions every count is 0. Decoders that only keep
+    # the start and size of a destroyed region in sysfs are not committed:
+    # Linux does not clear that bookkeeping of host bridge and switch
+    # decoders when it tears a region down, their registers are zero and
+    # the next region reuses them. Return non-zero if the VM cannot be read.
+    pool-vm-command-q "$1" 'cd /sys/bus/cxl/devices || exit 0
+for f in port*/decoders_committed endpoint*/decoders_committed; do
+    [ -f "$f" ] || continue
+    n=$(cat "$f") || exit 1
+    [ "$n" == 0 ] || printf "%s=%s " "${f%%/*}" "$n"
+done' | sed 's/ $//'
+    return "${PIPESTATUS[0]}"
+}
+
 pool-vm-reset() { # script API
     # Usage: pool-vm-reset VMDIR
     #
     # Make sure that the VM of VMDIR has no CXL memory devices, neither in
-    # qemu nor in the kernel, and that hotplugged memory is not onlined
+    # qemu nor in the kernel, no CXL regions and no committed HDM decoders
+    # (pool-vm-decoders), and that hotplugged memory is not onlined
     # automatically: onlined shared memory would be system RAM of several
-    # VMs at once. Restart the VM if it has devices, and wait until its
-    # Kubernetes node is Ready again.
-    local vmdir="$1" name plugged guest_devs
+    # VMs at once. Restart the VM if it has devices, regions or committed
+    # decoders, and wait until its Kubernetes node is Ready again.
+    local vmdir="$1" name plugged guest_devs committed
     name="$(basename "$vmdir")"
     plugged=$(pool-vm-monitor "$vmdir" "info qtree -b" | grep -c 'dev: cxl-type3')
     guest_devs=$(pool-vm-command-q "$vmdir" "ls /sys/bus/cxl/devices/" | grep -cE '^(mem|region)[0-9]')
-    if [ "$plugged" != "0" ] || [ "$guest_devs" != "0" ]; then
-        echo "pool-vm-reset: $name has $plugged CXL memory devices in qemu, $guest_devs CXL memory devices or regions in the kernel: restarting it"
+    committed=$(pool-vm-decoders "$vmdir") || error "pool-vm-reset: cannot read the CXL decoders of $name"
+    if [ "$plugged" != "0" ] || [ "$guest_devs" != "0" ] || [ -n "$committed" ]; then
+        echo "pool-vm-reset: $name has $plugged CXL memory devices in qemu, $guest_devs CXL memory devices or regions in the kernel, committed CXL decoders: ${committed:-none}: restarting it"
         pool-vm-restart "$vmdir"
         plugged=$(pool-vm-monitor "$vmdir" "info qtree -b" | grep -c 'dev: cxl-type3')
         [ "$plugged" == "0" ] || error "pool-vm-reset: $name still has $plugged CXL memory devices after restart"
+        committed=$(pool-vm-decoders "$vmdir") || error "pool-vm-reset: cannot read the CXL decoders of $name"
+        [ -z "$committed" ] || error "pool-vm-reset: $name still has committed CXL decoders after restart: $committed"
         # The restart keeps the shape of the cluster, but the node, or the
         # whole cluster if the VM is its control plane, needs a while.
         retry-until --timeout 300 --interval 2 --message "node $name Ready after the restart" \
             'pool-vm-command-q "$vmdir" "kubectl wait --for=condition=Ready node/$name --timeout=10s" >/dev/null 2>&1' ||
             error "pool-vm-reset: node $name is not Ready after the restart of its VM"
     fi
+    echo "pool-vm-reset: $name has no CXL memory devices, regions or committed CXL decoders"
     pool-vm-command "$vmdir" "echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks" ||
         command-error "cannot disable automatic onlining of hotplugged memory in $name"
 }
@@ -535,6 +563,46 @@ EOF
     }
     host-command "curl -sS --max-time 30 $url/api/v1/status" ||
         command-error "cannot get the status of the server $name"
+}
+
+pool-server-restart() { # script API
+    # Usage: pool-server-restart NAME
+    #
+    # Restart the server NAME that pool-server-start started, the way a
+    # pool appliance restarts: stop it (SIGTERM, SIGKILL after 10 s, see
+    # pool-server-kill) and start it again on the same port with the same
+    # configuration, the same state file and the same log, appended. Unlike
+    # pool-server-start, keep the state file: the server loads its devices,
+    # hosts and attachments from it, and adopts the CXL memory devices in
+    # qemu that it has no attachment for. Wait until it answers its status,
+    # 60 s at most. POOL_SERVER_PIDS[NAME] (POOL_SERVER_PID for the first
+    # server) is the new process. Return non-zero if no server NAME was
+    # started, or if the new one does not answer (the end of its log is
+    # shown).
+    local name="$1" suffix="" config state log port pid url
+    if [ -z "$name" ] || [ -z "${POOL_SERVER_PIDS[$name]:-}" ]; then
+        echo "pool-server-restart: no server '$name', started: ${POOL_SERVERS[*]:-none}" >&2
+        return 2
+    fi
+    [ "$name" == "$POOL_DEFAULT_NAME" ] || suffix="-$name"
+    config="$TEST_OUTPUT_DIR/fake-cxl-pool$suffix.yaml"
+    state="$TEST_OUTPUT_DIR/fake-cxl-pool$suffix.state.json"
+    log="${POOL_SERVER_LOGS[$name]}"
+    port="${POOL_SERVER_PORTS[$name]}"
+    url="http://127.0.0.1:$port"
+    pool-server-kill "${POOL_SERVER_PIDS[$name]}" "$name"
+    retry-until --timeout 10 --message "port $port of $name free" '! pool-port-busy "$port"' || return 1
+    "$POOL_BIN_DIR/fake-cxl-pool-server" -config "$config" -state "$state" -v \
+        </dev/null >>"$log" 2>&1 &
+    pid=$!
+    POOL_SERVER_PIDS["$name"]="$pid"
+    pool-server-first
+    echo "pool-server-restart: fake-cxl-pool-server $name pid $pid, $url, state $state, log $log"
+    retry-until --timeout 60 --message "fake-cxl-pool-server $name on $url" \
+        'kill -0 "$pid" 2>/dev/null && curl -sf --max-time 5 "$url/api/v1/status" >/dev/null' || {
+        tail -n 20 "$log"
+        return 1
+    }
 }
 
 pool-server-kill() {

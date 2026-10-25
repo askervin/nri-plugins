@@ -1,0 +1,156 @@
+plan-13: runs of test90-gofmbt-reliability in the e2e cluster
+=============================================================
+Every run from N/test/e2e:
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability
+with the MBT_* variables given per run. Output: N/test/e2e/n4-cxl-shared-
+2-fedora-43-containerd/memory.test-suite/dra-driver-cxl/test90-gofmbt-
+reliability/ (last run); copies of earlier runs under /tmp/p13-runs/.
+
+Development runs of stream EXEC (2026-10-24, image 39d9ab5700ab, before
+any plan-13 fix): 04-status-EXEC.txt section 7; copies in
+/tmp/mbt-exec-dev.
+  run 1 stub, 65 steps, every verb and kind          PASS  259 s
+  run 2 stub, 30 pods at once                        FAIL  step 57: S1
+        (bug-02), E1 seen at step 51 (bug-01)
+  run 3 off-line, the model's code.gen.sh            FAIL  step 25: M1
+        (oracle: a deleting pod in phase Succeeded; amendment A7)
+  run 4 on-line, the model built by the test, plan   FAIL  step 25: E1
+        ahead on (23 of 24 plans reused)                    (bug-01)
+
+Images
+------
+39d9ab5700ab  built 2026-10-24 09:06 from HEAD ed0370b24 (plan-12
+              committed), before any plan-13 change; used by EXEC
+571d3f262db0  v0.15.0-39-ged0370b24-dirty (2026-10-24): + bug-01 fix
+              (exit on NRI loss), + bug-02 diagnostics (memctl names
+              the port with the decoder hole); both strings checked in
+              the binary of the image
+8c43a36bf383  v0.15.0-39-ged0370b24-dirty (2026-10-24 14:22): + bug-04
+              fix (steered containers released and fenced at
+              Synchronize after a restart); format strings of all three
+              changes checked in the binary
+1d9a1f54a692  (2026-10-24 15:11): + bug-05 fix (leases seeded at
+              CreateContainer, PostStartContainer, cgroup comparison),
+              + bug-06 fix (own slice controller, SyncDelay 1 s)
+76999c4cf136  (2026-10-24 16:05): + the follow-up of 05-review-DRV
+              (D1 container cgroup dir, D2 steeredContainers.json,
+              D3/E4 = bug-07 atomic and reconciled prepared-claims
+              files, D4 shutdown order, D5 failed manager start)
+
+  run 5 stub, after A10 (ports, events), observer    PASS  164 s
+        timeout, containerd-restart wait; image 571d3f262db0: the
+        driver of the VM restarted in place after containerd-restart
+        (restarts 0 -> 1, step 1.97 s): bug-01 fix seen working. Its
+        "exiting" log line is lost (containerd writes the container
+        logs and is the one restarting); the restart count is the
+        evidence. /tmp/mbt-exec-dev/run5.log, run5-out.
+
+Runs
+----
+P1 2026-10-24 13:52, image 571d3f262db0, gofmbt 8283135, off-line:
+   mbt-cxl generate --profile small --steps 40 --seed 1 (47 steps with
+   the teardown; /tmp/p13-runs/p1/code.gen.sh), MBT_MODE=offline.
+   PASS, 313 s in all; the steps 175 s, of which settles 131 s (11
+   settles, mean 11.9 s; observation 0.54 s mean, 47 observations).
+   Verbs: create 0.43 s, delete 0.33, crash -, write/read 0.5,
+   driver-kill 0.35, driver-restart 4.1, ctrl-kill 0.31, ctrl-start
+   0.78, ctrl-restart 1.08, server-restart 6.1, kubelet-restart 0.91,
+   containerd-restart 1.9.
+   Findings:
+   - settle 13 took 90 s: ldax@vm0#0 was created right after
+     driver-kill vm0; its Prepare failed "NodePrepareResources: rpc
+     error: code = Unavailable" while the driver restarted, and kubelet
+     retried only after its pod back-off although the driver was Ready
+     again within seconds (restarts 2). Not a driver bug: a fact for
+     the model (a pod that hit a down driver may take ~90 s; the
+     settle timeout covers it).
+   - the generator spent steps 2-11 on faults with no pod in the
+     cluster: C1 makes every fault verb new and cheap at the start.
+     Faults matter in context (C2); C1 should not reward a fault on an
+     empty cluster as much (MODEL follow-up).
+   Copy: /tmp/p13-runs/p1/out.
+X1 2026-10-24 14:10, image 571d3f262db0, replay /tmp/p13-runs/x1/
+   steps.txt (settle, create lsteer@vm2#0, settle, driver-kill vm2,
+   settle, ...). FAIL as the model predicted (04-status-MODEL X1): step
+   5 "settle timeout after 3m1s: vm2: container of lsteer@vm2#0:
+   memory.high "140668928", want max". A steered container stays
+   throttled for good after a driver crash: bug-04 (fix being made).
+   Copy: /tmp/p13-runs/x1/out.
+P2 2026-10-24 14:08, image 571d3f262db0, on-line lock-step
+   (MBT_ARGS=--plan-ahead=false), profile small, seed 2, 20m budget.
+   FAIL at step 35 (67 s of steps): "read sro-c@vm1#0: exit status 1:
+   error: unable to upgrade connection: pod does not exist" right
+   after containerd-restart vm1 + kubelet-restart vm1: the restarted
+   kubelet reports the node Ready before it knows its pods again, so a
+   kubectl exec fails for a moment. Test infrastructure, not the SUT:
+   the executor must retry an exec on such transient errors (EXEC
+   follow-up). Planning: 34 plans, mean 25 ms, max 96 ms at depth 3
+   (small profile, 72 actions): lock-step costs nothing here.
+   Settles mean 3.5 s. Copy: /tmp/p13-runs/p2/out.
+P3 2026-10-24 14:12, image 571d3f262db0, on-line with planning ahead,
+   profile full (43 slots, 213 actions), seed 3, 20m budget,
+   MBT_AVOID=create:lsteer (bug-04 not in this image), exec retry of
+   P2 in. FAIL at step 122 after 121 steps (397 s of steps, 719 s
+   in all): "settle timeout after 3m3s: vm0: container of lease@vm0#0:
+   cpuset.mems "0-1" lacks its node 2". Steps 119-123: containerd-
+   restart vm0, settle, lease-get lease@vm0#0 numa (node 2 lent), ctrl-
+   start b, crash lease@vm0#0. The driver kept the lease for the
+   restart and logged the lend of node 2 to the new container at
+   StartContainer ("cpuset.mems=0-2 (base=0-1 lent=2)", then every 60 s
+   "unchanged"), but its cgroup kept cpuset.mems 0-1 (mbt-obs/
+   fail-122.json, attempt 1): bug-05 (fix being made).
+   Planning ahead: all 121 plans reused, planned in 198 ms mean (max
+   795 ms, depth 3), bash waited 32 ms in all for the generator.
+   Settles: 23, mean 11.7 s. containerd-restart 7.2 s mean (now waits
+   for the driver's restart in place).
+   Coverage reached: every verb but lease-put, faults on all VMs and
+   pools, decoder holes
+   (stack vm1/hb1 [hole,c-pooled0] at the end), an "any" slot pending.
+   Copy: /tmp/p13-runs/p3/out.
+V14 2026-10-24 14:23, image 8c43a36bf383 (bug-01 + bug-04 fixes),
+   replay /tmp/p13-runs/v14/steps.txt: create lnuma@vm0#0 and
+   lsteer@vm2#0, settle, containerd-restart vm0, create plain@vm0#0,
+   driver-kill vm2, settle, delete all, settle.
+   bug-04 VERIFIED: the restarted vm2 driver logged "NRI Synchronize:
+   ctr=.../mbt-lsteer-vm2-0-g1/main ...: steering not restarted,
+   memory fenced; memory.high 141242368 removed (max)" and fenced it
+   to cpuset.mems=0-2; the oracle had no difference for lsteer.
+   bug-01 VERIFIED: after containerd-restart vm0 the driver restarted
+   in place, synchronized and ran its fence pass.
+   FAIL at step 8: "vm0: container of plain@vm0#0: cpuset.mems "0-2"
+   has fenced CXL node 2" (3 min): the pod was created while the vm0
+   driver restarted; the new driver's Synchronize saw it CREATED
+   (pid=0), its fence pass updated cpuset.mems=0-1 at 11:26:47.573098
+   and StartContainer came 0.5 ms later; the running container kept
+   cpuset.mems "" (effective 0-2). Same root cause as bug-05 (an NRI
+   update of a container that is not running yet is lost, the driver
+   counts it applied): bug-05 extended to this case.
+   Copy: /tmp/p13-runs/v14/out.
+V5 2026-10-24 15:13, image 1d9a1f54a692 (bug-01, -02 diagnostics, -04,
+   -05, -06), replay /tmp/p13-runs/v5/steps.txt with the generator of
+   P1 (MBT_BIN=/tmp/p13-mbt-cxl: the model was being changed). PASS,
+   26 steps, 204 s in all.
+   bug-05 case 1 VERIFIED: lease-get numa, crash of the requester, the
+   restarted container got "NRI CreateContainer: ... nodes 2 lent by
+   its leases (kept for its restart)"; the settle found node 2 in its
+   cpuset.mems. Case 2 (a claim-less pod created while the driver
+   restarts after containerd-restart, twice): both settled fenced; no
+   "updating again" line, so the window of V14 was not hit this time
+   (timing-dependent; the unit test covers it).
+   bug-06 VERIFIED: kubelet-restart vm2 took 2.66 s including the
+   driver-ready wait (EXEC measured 7-31 s before: the node slice was
+   gone 20-30 s), and ldax@vm2#0 created right after ran at the next
+   settle (4.4 s). Copy: /tmp/p13-runs/v5/out.
+L1 2026-10-24 15:44, image 1d9a1f54a692, model round 2 (05-review R1-
+   R14 fixed), gofmbt 8283135, on-line, full profile, all faults, no
+   MBT_AVOID, seed 3, 45m budget. FAIL at step 152 after 151 steps
+   (710 s in all): "pod sro-b@vm0#0: claim not allocated, want
+   allocated and waiting for the attach". MODEL ERROR (M3): steps 187-
+   189 of the file: ctrl-restart b (graceful: the controller deletes
+   pool-b's slices, the new one publishes them again), ctrl-kill b
+   right after (before the new controller published), create sro-b:
+   no pool-b slices, so FailedScheduling "cannot allocate all claims"
+   is correct. The model must allow pool slices to be absent after a
+   ctrl-restart that a ctrl-kill interrupts, until a ctrl-start.
+   P3's failure (bug-05) did not recur: the run went past its step 122.
+   Copy: /tmp/p13-runs/l1/out.

@@ -1,0 +1,98 @@
+plan-13: findings on gofmbt
+===========================
+2026-10-24 (orchestrator). Source: ~/github.com/askervin/gofmbt at
+8920a4a (main, clean, `go test ./...` ok), go 1.23.4 in go.mod (uses
+iter.Seq, range-over-func). Host go 1.26.3. G = gofmbt/gofmbt/.
+
+G1  The modeling API
+--------------------
+- State: any type with String() (G/state.go). The library never
+  compares states except through String() (coverage strings); it never
+  deduplicates states while walking.
+- StateChange func(State) State: returns the end state, nil = the
+  transition is not enabled in that state (G/transition.go:21). Must
+  not modify its input.
+- Transition = Action + StateChange (G/transition.go:29).
+- Model.From(gen func(State) []*Transition): any number of generators;
+  TransitionsFrom concatenates them, StepsFrom keeps those whose
+  StateChange gives non-nil (G/model.go:38-56). A generator can filter
+  by the state already (common preconditions), the StateChange can
+  refuse later.
+- When(enabled, tss...)/OnAction(format, args...)/(*Action).Do(scs...)
+  are sugar (G/action.go:80-104): Do chains StateChanges; NOTE a chain
+  does not stop at nil, the next StateChange gets nil and must cope
+  (the player example's setState ignores its input, so it never sees
+  it).
+- Action: name = Sprintf(format, args...), format kept separately
+  (G/action.go:23-38). WithTest(fn, args...) stores a function and its
+  arguments, Test() calls it by reflection and returns []any
+  (G/action.go:42-66). Actions are created anew every time a
+  generator runs, so WithTest must be attached in the generator.
+- Step = (start, action, end); Path = []*Step (G/step.go).
+
+G2  Test generation
+-------------------
+- Walker.IterPaths(s, maxLen): exhaustive depth-first enumeration of
+  every path of exactly maxLen steps, shorter only at dead ends
+  (G/walk.go:44-71). The yielded slice is reused (copy to keep).
+  SetStepFilter is how Coverer shuffles the steps at every node.
+- Coverer (G/cover.go): a list of functions Path -> []string; coverage
+  = the set of strings of the covered path. Built-ins: ActionNames,
+  ActionFormats, StateStrings, StateActionStrings, Action(Format)
+  Combinations(n), StateCombinations(n). addCovFunc is NOT exported:
+  a user cannot add a coverage function of their own today.
+- MarkCovered appends steps to coveredPath; UpdateCoverage RECOMPUTES
+  the whole coverage map from the whole covered path
+  (G/cover.go:184-190): O(length of the test) per call, O(n^2) over a
+  test that calls it after every step.
+- EstimateCoverageIncrease(path): takes historyLen steps of the
+  covered path (the longest combination length) plus the path, and
+  for every prefix i calls covFunc(prefix) again (G/cover.go:216-247):
+  O(L^2) coverage strings, each state String()ed again, per candidate
+  path. MaxIncrease = new strings of the whole path, MaxStep = first
+  index where the cumulative new count reaches it, FirstStep/
+  FirstIncrease = first index with any new string.
+- BestPath(m, s, maxLen): every path of IterPaths is estimated, paths
+  with MaxIncrease 0 are skipped; best = largest MaxIncrease, then
+  smallest MaxStep, then smallest FirstStep, then largest
+  FirstIncrease (G/cover.go:268-342). Returns nil when no path of at
+  most maxLen steps increases coverage: generation ENDS there, which a
+  time-budgeted reliability test does not want.
+- Randomness (SetBestPathRandom(seed, level)): shuffles steps at every
+  walk node; levels choose among equally good, among fastest max
+  increase, among max increase, or the first increasing path at all.
+  Seeded: reproducible for one model and one coverage history.
+- Executing a path: the example runs path[:MaxStep+1], the doc example
+  path[:FirstStep+1]. Re-planning after every executed step (run only
+  path[0]) is the most adaptive and costs one BestPath per step.
+- Nothing in the library knows about the SUT: no executor, no
+  nondeterministic outcomes (a StateChange returns exactly one state),
+  no notion of time or cost of an action. An on-line user replaces
+  its current state with whatever it observed.
+
+G3  Cost measured (toy, /tmp/gofmbt-exp, 2026-10-24)
+----------------------------------------------------
+A model shaped like a CXL cluster model: 4 pod slots, each absent or
+one of 10 kinds on one of 3 nodes, plus 6 fault actions: 126 steps from
+the empty state. CoverStateActions, run path[0] and re-plan:
+  depth 1:   0.3 ms per BestPath
+  depth 2:   ~100 ms
+  depth 3:   ~12 s (4.7 s when a slot is busy)
+  depth 4:   not tried (x126)
+So the stock search is fine at depth 2, borderline at depth 3 for an
+on-line run whose steps take 10-30 s, hopeless beyond. The cost is
+dominated by EstimateCoverageIncrease (O(L^2) coverage strings and
+state String() calls per leaf), not by the walk itself.
+
+G4  Consequences for the CXL model
+----------------------------------
+- State.String() is the coverage identity: it should be an
+  ABSTRACTION (what matters for coverage) and canonical (symmetric
+  pod names sorted away), while the Go struct keeps the full model
+  state that predicts results. Memoize String() in the struct.
+- Branching must stay around 100 or less, or the search must become
+  incremental / budgeted (gofmbt extension, 02-design).
+- Generation must not end when coverage saturates within the search
+  depth: either a new coverage round or a deeper/randomized search.
+- Custom coverage (e.g. "fault F hit while allocation kind K was in
+  use") needs an exported way to add a coverage function.

@@ -1,0 +1,355 @@
+BUG-05: A NUMA LEASE IS LOST WHEN ITS REQUESTER RESTARTS
+
+Branch 5jg-cxl, 2026-10-24. Found by the model-based test (plan 13),
+run P3; a second case found by the verification replay v14. Fixed in
+the working tree (uncommitted), unit tested; cluster verification
+pending.
+
+D/ = cmd/plugins/dra-driver-cxl/, doc/ = docs/memory/cxl/,
+C/ = containerd v2.4.0-154-g57d315c6e (~/github.com/containerd/
+containerd). Line numbers of HEAD (ed0370b24) unless "new".
+
+========================================================================
+1. SUMMARY
+
+One root cause, two cases.
+
+containerd applies an NRI UpdateContainers to the cgroup only of a
+container that it has marked started (Status.StartedAt, set after
+task start, right before PostStartContainer). For a container that it
+has created but not marked started it changes only the spec, which
+reaches the cgroup only if the task is created after it; the task
+(and the cgroup) is created before the StartContainer event. It
+reports the update as applied. The driver recorded every successful
+update as applied and compared later only with its own records, so it
+never noticed and never sent it again.
+
+Case 1 (P3): a container holds a Ready numa lease (node 2 lent). Its
+workload crashes, the broker keeps the lease for the restart. The new
+container is created with cpuset.mems 0-1 (node 2 fenced), and the
+lend at its StartContainer reaches its spec only. The lease stays
+Ready, the container runs without the leased node, silently, until
+the lease is released. Every 60 s the reconcile says "cpuset.mems
+unchanged".
+
+Case 2 (v14): the driver restarts (after a containerd restart, bug-01)
+while a claim-less container is being started. Synchronize sees it
+CREATED, the first fence pass updates it to 0-1, which reaches its
+spec only: the task already had cpuset.mems "" (every node). The
+fenced CXL node 2 leaks to a container that has not claimed it, for
+its lifetime.
+
+========================================================================
+2. REPRODUCTION
+
+Case 1, run P3 (/tmp/p13-runs/p3/out), steps 117-122 (mbt-steps.txt
+lines 119-124, mbt-times.tsv):
+
+  117 containerd-restart vm0
+  118 settle
+  119 lease-get lease@vm0#0 numa    lease 7f14cb92 Ready, node 2 lent
+  120 ctrl-start b
+  121 crash lease@vm0#0             restartPolicy Always
+  122 settle                        <- fails after 3m3s
+
+Minimal replay:
+
+  settle
+  create lease@vm0#0
+  settle
+  lease-get lease@vm0#0 numa
+  crash lease@vm0#0
+  settle                            <- fails without the fix
+
+Case 2, replay v14 (/tmp/p13-runs/v14/out), steps 5-8:
+
+  5 containerd-restart vm0          the driver exits (bug-01 fix)
+  6 create plain@vm0#0              while the driver restarts
+  7 driver-kill vm2
+  8 settle                          <- fails after 3m2s
+
+Minimal replay (node 2 fenced on vm0 by lnuma; the create must fall
+into the window, timing dependent):
+
+  settle
+  create lnuma@vm0#0
+  settle
+  containerd-restart vm0
+  create plain@vm0#0
+  settle
+
+========================================================================
+3. EVIDENCE
+
+Case 1. mbt-fail.txt:
+  settle timeout after 3m3s: vm0: container of lease@vm0#0:
+  cpuset.mems "0-1" lacks its node 2
+mbt-obs/fail-122.json, vm0 containers: id 7f342507..., attempt 1,
+  "mems": "0-1", "mems_effective": "0-1"; lease 7f14cb92 "state":
+  "Ready", "node": 2.
+nri-dra-driver-cxl.vm0.log (11:19, one driver incarnation):
+  :40.706 NRI lend: lend node 2 for 7f14cb92: ctr=cxl-pool-demo/
+          mbt-lease-vm0-0-g1/main id=16aec10f... cpuset.mems=0-2
+          (base=0-1 lent=2)
+  :42.220 NRI StopContainer: ctr=.../mbt-lease-vm0-0-g1/main
+  :42.227 lease broker: container .../main stopped, keeping its 1
+          leases for its restart
+  :43.289 NRI CreateContainer: ctr=.../main id=7f342507...
+  :43.289 NRI CreateContainer: ctr=.../main: cpuset.mems=0-1 (fenced
+          nodes 2)
+  :43.388 NRI StartContainer: ctr=.../main id=7f342507... pid=51005
+  :43.389 NRI lend: lend node 2 for 7f14cb92: ctr=.../main
+          id=7f342507... cpuset.mems=0-2 (base=0-1 lent=2)
+  (no error after it: UpdateContainers succeeded)
+  11:20:36, 11:21:36, 11:22:36 NRI lend: lend node 2 for 7f14cb92:
+          ctr=.../main: cpuset.mems unchanged (base=0-1 lent=2, node
+          holders 1)
+
+Case 2. mbt-fail.txt:
+  settle timeout after 3m2s: vm0: container of plain@vm0#0:
+  cpuset.mems "0-2" has fenced CXL node 2
+mbt-obs/fail-8.json: id 348ec037..., "mems": "",
+  "mems_effective": "0-2".
+nri-dra-driver-cxl.vm0.log lines 56-63 (11:26:47):
+  .516961 NRI Synchronize: ctr=cxl-pool-demo/mbt-plain-vm0-0-g1/main
+          id=348ec037... pid=0 cgroup= baseMems= memory=fenced
+  .523899 NRI fence: lends restored, fencing running containers
+  .573098 NRI fence: ctr=.../mbt-plain-vm0-0-g1/main id=348ec037...
+          cpuset.mems=0-1 (was "", fenced nodes 2)
+  .573118 NRI fence: 2 containers updated, 0 failed (fenced nodes 2)
+  .573604 NRI StartContainer: ctr=.../main id=348ec037... pid=59841
+  (nothing else about it until its StopContainer at 11:29:52)
+
+========================================================================
+4. ROOT CAUSE
+
+containerd (C/):
+- internal/cri/server/container_start.go: NewTask :146 (runc create:
+  the cgroup is made from the spec as it is now), BlockPluginSync
+  :168, nri.StartContainer :181, task.Start :188, Status.StartedAt
+  :195, nri.PostStartContainer :206.
+- internal/nri/nri.go: StartContainer :320 and updateFromPlugin :527
+  take the same lock: an update that a plugin sends while the
+  StartContainer event is relayed waits for its end, and then races
+  task.Start and StartedAt.
+- internal/cri/nri/nri_api_linux.go UpdateContainer :468 ->
+  internal/cri/server/container_update_resources.go :122: "If
+  container is not running, only update spec is enough, new resource
+  limit will be applied when container start" (State() is RUNNING iff
+  StartedAt != 0, internal/cri/store/container/status.go :111); no
+  error. (internal/nri/domain.go :127 skips, without an error, an
+  update of a container that is not in the store yet.)
+So an update is applied to the cgroup only after StartedAt; between
+NewTask and StartedAt it is lost, reported as applied.
+
+Driver, case 1:
+- broker.go containerGone :1297 keeps the lease; the restarted
+  container gets a new id, nri.go CreateContainer -> lend.go
+  fenceCreated :774 computes wantMems with tc.lent of the new entry:
+  empty. Adjustment 0-1.
+- nri.go StartContainer :483 fireStarted -> broker containerStarted
+  :1328 -> relendContainer :1334 -> LendNode -> changeLend :537 ->
+  fencedLend :634 -> updateMems: the update hits the window above,
+  succeeds, and changeLend records tc.mems = 0-2.
+- Why the periodic check did not notice: reconcile :1387 calls
+  relendContainer every 60 s; fencedLend compares want (0-2) with the
+  recorded tc.mems (0-2) (:644): "unchanged". The cgroup was never
+  read. Fence passes compare with tc.mems too (:874).
+
+Driver, case 2:
+- lend.go Synchronize: the container is CREATED (pid 0, no cgroup):
+  the containerd NewTask of it is running (BlockPluginSync comes
+  after it). The first fence pass (:842) sends 0-1: spec only, and
+  records tc.mems = 0-1. StartContainer's fenceMissed (:785) compares
+  wantMems with tc.mems: equal, no pass. Nothing reads the cgroup.
+
+Every update aimed at a container before StartedAt can be lost this
+way: the lend at StartContainer (case 1), the pass that fenceMissed
+started at StartContainer, a pass or a revoke during the start
+(case 2).
+
+========================================================================
+5. THE FIX
+
+Principle: an update counts only when the container's cgroup has it;
+updates prompted by a start are sent after the runtime marked the
+container started; a restarted requester is created with its leased
+nodes, without an update.
+
+- D/lend.go keptLends, seedLends (new :317, :335), broker.go
+  LeaseNodes (new :1342, the predicate lendsNode shared with
+  relendContainer): CreateContainer (new nri.go :301) and
+  Synchronize (new lend.go :427, containers new to this process)
+  give a container that is not steered the lends of the Ready numa
+  leases of its pod UID and container name. A fenced one gets them
+  in the adjustment: the restarted requester is created with
+  cpuset.mems 0-2. Steered containers are not seeded (lending stays
+  refused, errSteered); fencing none: no adjustment (an NRI resource
+  policy may own cpuset.mems), the lend is an update after the start.
+  The companion pod has another pod UID: not seeded. The query runs
+  under p.mu (lock order p.mu -> broker b.mu; b.mu is never held
+  across a lender call): the broker marks a lease Releasing before it
+  revokes, so the revoke always finds a seeded container.
+- D/nri.go PostStartContainer (new :608, the stub subscribes to it):
+  fires the OnContainerStarted callbacks (moved from StartContainer)
+  and, for a fenced, not steered container when fencing is ready, a
+  fence pass of that container only (fenceAtStart, fenceStarted,
+  fencePass new lend.go :981-1051). Updates sent from here are
+  processed after StartedAt. StartContainer only tracks pid, cgroup
+  and base and starts steering. fenceMissed is gone.
+- D/lend.go curMems (new :347): the cpuset.mems of the cgroup of a
+  started container (the spec's as recorded for a created one).
+  fencedLend and the fence passes compare wantMems with it (via
+  memsDiffer, new :806, Info log "the cpuset.mems of its cgroup is
+  "X", not Y as updated, updating again"); the non-fenced lend path
+  checks that the cgroup has the lent nodes (cgroupLacks, new :821;
+  cpuset.mems.effective when cpuset.mems is empty). So the broker's
+  60 s reconcile repairs a lost lend, and the pass at
+  PostStartContainer repairs a lost fence update (case 2).
+- changeLend, created container: a lend of a seeded holder is done
+  (V4 "lent at its creation, not started yet"); a revoke drops it,
+  and a fenced one's spec loses the node by an update (checked again
+  at its start); other lends still fail "not started yet".
+- driver.go: startNRIPlugin gets the broker (the lease table is
+  loaded before NRI starts, so Synchronize can use it).
+
+Fencing: the seeded nodes are in tc.lent, so wantMems keeps them in
+every pass. Revoke on release: unchanged for started containers.
+Driver restart while a requester restarts: created by the old
+process with 0-2 -> seeded at Synchronize, the first pass keeps it;
+created while the driver was down (spec "") -> seeded, the first
+pass sends 0-2, checked again at its PostStartContainer.
+
+Cost: one cgroup file read per fenced container per pass, per lent
+container per reconcile, and one single-container pass per fenced
+container start (no update, no log when it matches).
+
+Docs: doc/leases.md (Life cycle: requester restart, reconcile),
+doc/usage.md (Containers without claims: checked at the start).
+
+========================================================================
+6. TESTS
+
+D/lend_test.go: the fake stub now models containerd: an update
+writes cpuset.mems to the cgroup of a started container unless it is
+marked spec-only (before StartedAt); run/startCtr do Create, the
+cgroup as runc makes it from the adjustment, Start, PostStart.
+TestLendContainerTable: no started callback before PostStart.
+D/fence_test.go, new:
+- TestLendRestartedRequester (case 1): lend, StopContainer, the new
+  container's adjustment is 0-2 (0-1 before the fix), LentNodes [2],
+  lends before and after the start send nothing, a pass keeps it,
+  the companion's container gets 0-1, release -> 0-1 in the cgroup;
+  a revoke before the start takes the node off the spec; steered:
+  not seeded; fencing none: no adjustment, revoke drops the holder.
+- TestLendUpdateBeforeStart: a lend in the window reaches the spec
+  only; the PostStart pass sends it again (cgroup 0-2); a later loss
+  is repaired by the next lend; fencing none: the next lend after
+  the start repairs it (cgroupLacks).
+- TestFenceSynchronizeWhileCreating (case 2): Synchronize with a
+  CREATED container, the first pass is spec-only, the task has "";
+  PostStart -> "c1 mems=0-1", cgroup 0-1; PostStart of a gone
+  container is ignored.
+- TestLendSynchronizeKept: a restarted plugin keeps the node of a
+  CREATED requester through the first pass (0-1 without seeding),
+  and a RUNNING one whose cgroup lacks it gets it from the reconcile.
+D/broker_test.go TestBrokerRestartAndReconcile: LeaseNodes of a
+Ready numa lease, of other containers, of a nil broker, after the
+release.
+Adjusted to the model (cgroups as runc makes them): TestFencePass,
+TestLendToUnsteeredNUMAClaim, TestSynchronizeReleasesSteering.
+Each new test fails with seeding or the cgroup comparison disabled.
+gofmt -l, go vet, go test ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... ./pkg/cgmpolmgr/... -skip TestMemdevSettings: ok;
+-race for the package: ok; lend/fence/sync tests -race -count=30: ok.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER (orchestrator)
+
+1. Case 1 minimal replay: the last settle passes; the restarted
+   lease@vm0#0 container has mems and mems_effective 0-2 (attempt 1).
+   Driver log of vm0, in order:
+     lease broker: container .../main stopped, keeping its 1 leases
+       for its restart
+     NRI CreateContainer: ctr=.../main: nodes 2 lent by its leases
+       (kept for its restart)                                  (V3)
+     NRI CreateContainer: ctr=.../main: cpuset.mems=0-2 (fenced
+       nodes 2)
+     NRI lend: lend node 2 for <lease>: ctr=.../main: cpuset.mems
+       unchanged (base=0-1 lent=2, node holders 1)        (V4, at
+       PostStart and every 60 s; no "NRI lend: lend node 2 ...
+       cpuset.mems=0-2" update for the new id)
+   The companion pause container stays 0-1. lease-release then:
+   "NRI lend: revoke node 2 ... cpuset.mems=0-1", cgroup 0-1.
+2. Case 2 (v14 replay or the minimal one, several times: timing):
+   settles; plain has mems 0-1. When the window is hit, the log has
+     NRI fence: ctr=.../mbt-plain-vm0-0-g1/main id=...: the
+       cpuset.mems of its cgroup is "", not 0-1 as updated, updating
+       again
+     NRI fence: ctr=.../main id=... cpuset.mems=0-1 (was "", ...)
+   right after its StartContainer.
+3. No "updating again" lines in runs without restarts (they mean a
+   lost update or another owner of cpuset.mems).
+4. driver-kill / containerd-restart while lease@vm0#0 is restarting:
+   settles with node 2 ("NRI Synchronize: ... nodes 2 lent by its
+   leases" when it was CREATED at the sync).
+5. Rerun P3 (seed 3) to step 122 and beyond.
+
+Model: no change needed: it already predicts node 2 for a restarting
+lease holder and no fenced node for plain.
+
+========================================================================
+8. STATUS
+
+Fixed in the working tree, not committed:
+  cmd/plugins/dra-driver-cxl/lend.go, nri.go, broker.go, driver.go,
+  lend_test.go, fence_test.go, nri_test.go, broker_test.go
+  docs/memory/cxl/leases.md, usage.md
+The uncommitted bug-01 and bug-04 changes are kept. Cluster
+verification pending.
+
+Verification in the e2e cluster (orchestrator, 2026-10-24)
+----------------------------------------------------------
+V5 (06-runs.txt), image 1d9a1f54a692: case 1 verified ("nodes 2
+lent by its leases (kept for its restart)", node 2 in the restarted
+requester's cpuset.mems). Case 2 settled correctly twice, but its
+window (a fence update during NewTask) was not hit in that run; it is
+covered by TestFenceSynchronizeWhileCreating. Status: FIXED, case 1
+verified in the cluster, case 2 by the unit test.
+
+Follow-up after review (05-review-DRV.txt D1, D6-D9; 2026-10-24)
+----------------------------------------------------------------
+D1: after a restart the cgroup of a container whose pid 1 had moved
+into a child cgroup (systemd in the container: init.scope) was that
+child, whose cpuset.mems stays "": every fence pass and every lend
+reconcile updated it again, with an Info "updating again", for its
+lifetime. Fixed by resolving the container's own cgroup (the
+reviewer's option a): D/nri.go containerCgroupDir walks up from the
+pid's cgroup to the nearest directory whose name has the container
+id (cri-containerd-<id>.scope, crio-<id>.scope, <id>), the pid's
+cgroup if none; used by resolveContainerCgroupDir, so for tracking,
+fencing, lending, the steering manager and bug-04's release alike.
+Also fixes ContainerByPid for a requester in a sibling child cgroup.
+Option b (nearest explicit cpuset.mems of an ancestor) not taken: it
+would leave the container's own cgroup "" when an ancestor's set
+happens to equal want, inheriting any later change of that ancestor.
+bug-05 case 2 is still caught (TestFenceSynchronizeWhileCreating).
+D6: the non-fenced lend path logs "updating again" only when the
+recorded cpuset.mems has the missing nodes (an update that got lost);
+a seeded lend (fencing none, no update yet) is sent with the normal
+V3 lend line only.
+D7 (revoke of a not-fenced container between StartContainer and
+PostStart reaches its spec only): not changed, benign; the lend.go
+header says so now.
+D8: the test fake is truthful by default: run and createMems make the
+container spec-only until startCtr (as the reviewer's
+overlay_spec.json); all tests pass.
+D9: usage.md "Containers without claims": no RUNNING container sees
+the node; one being started runs with it until it has started, when
+the plugin checks and updates its cgroup; the long line re-wrapped.
+Tests: D/fence_test.go TestReviewSubCgroupUpdatesForever (now: one
+update per change, no "updating again", ContainerByPid of a sibling
+child cgroup), TestContainerCgroupDir, TestReviewSeededNoneLogs
+UpdatingAgain (one "updating again" only for a really lost update).
+Mutations (no walk-up, always log) each fail a test.
+Status: FIXED in the working tree, not committed.

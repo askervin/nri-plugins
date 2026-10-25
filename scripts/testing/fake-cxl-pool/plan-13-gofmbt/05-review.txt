@@ -1,0 +1,422 @@
+plan-13: review of streams MODEL and EXEC
+=========================================
+2026-10-24 (Opus reviewer). Read and tested only; nothing under T or N
+was changed, the cluster and the VMs were not touched.
+  N    ~/github.com/containers/nri-plugins
+  T    N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+       test90-gofmbt-reliability (model: T/model at 13:52, executor:
+       T/mbt.source.sh as of 14:11, with EXEC's new kubectl exec retry)
+  R    /tmp/mbt-exec-dev (EXEC runs 1-5)
+  P    /tmp/p13-runs (trial runs of the other session, read only)
+  REV  /tmp/rev: model/ a copy of T/model plus rev_test.go (the
+       counterexamples below, run with GOWORK=/tmp/rev.work), bash/
+       offline-status.sh, mbt-cxl (built from the copy)
+Specs: 02-design, 04-contract with A1-A10, 01-findings-driver, bug-02,
+04-status-MODEL, 04-status-EXEC.
+
+Verdict
+-------
+The architecture holds: lock-step protocol, slot model, oracle over one
+observation, decoder stacks. The executor and the observer match the
+contract and the recorded runs. Run 5's real observations (with A10)
+check ok against the model (REV TestRevRun5Observations).
+But the oracle is wrong in a few places, in both directions:
+- one wrong outcome is accepted: a leaked region that the next claim
+  reuses passes as a legal race (R1);
+- the fencing check passes when a container is not observed (R2);
+- four cases fail a correct SUT, all about kubelet retries and
+  decoder-stack order (R3, R4), --from (R5) and steering after a
+  non-graceful driver exit (R7, the trial in P/x1 hit it);
+- off-line mode ignores failed actions (R6).
+Each bug was reproduced with a concrete model state and observation,
+except R6 (a bash harness) and R7 (the trial).
+
+Findings
+--------
+
+R1 [bug] MODEL. A claim that fits only after the old holder's
+    claim is gone may still prepare before that claim's Unprepare.
+    The oracle then accepts a region that was never destroyed and
+    was reused.
+  create(), actions.go:542-545 ("case later: n.start(i, -1)"), gives
+  the new claim's prepare event no After. So outcomes() also plays
+  "new prepare, then old unprepare": ref > 0 means reuse, and the
+  region is not destroyed. For an exclusive pool device, or for
+  sexcl on a shared device, that order cannot happen. The scheduler
+  allocates the device only after the old claim is deallocated, which
+  is after its Unprepare destroyed the region (D/pool.go
+  unprepareClaim, releaseDevices). promote() (actions.go:623-635) has
+  the same problem when several shares of one node are deleted: it
+  orders the waiter after the last delete only.
+  Evidence (REV rev_test.go):
+  - TestRevCreateLaterFitImpossibleAlt. Steps: create xnuma-a@vm1#0;
+    settle; create lnuma@vm1#0; settle (vm1/hb0 [a-pooled0,local]);
+    delete xnuma-a@vm1#0; create xdax-a@vm1#0; settle.
+    The alternatives are xdax-a blocked with [hole,local] (correct)
+    and xdax-a running with [a-pooled0,local] (impossible).
+    The observation of an SUT whose Unprepare left the region, and
+    whose next Prepare reused it (memctl.go:946 reuses regions), gets
+    "ok ok". With the delete settled first, the same observation
+    fails at once ("Running, but its decoder stack vm1/hb0
+    [hole,local] has a hole").
+  - TestRevSexclLaterFitImpossibleAlt: delete sdax-c@vm1#0, then
+    create sexcl-c@vm1#0. The alternative with sexcl running on the
+    old c-shared0 region is accepted.
+  - TestRevPromoteAfterOneOfTwoShares: sexcl-a@vm2#0 waits; delete
+    sdax-a@vm2#0 and sdax-a@vm2#1. The alternative with sexcl
+    running on [a-shared0,local] is accepted.
+  For the local memdev the extra orders give no extra outcome:
+  capacity needs only one release, and reuse is reachable anyway.
+  Fix: the prepare of a claim that takes over an exclusive or shared
+  device comes after every unprepare in the window by a holder of
+  that resource (After becomes a list, or ready() checks "no
+  unplaced unprepare of the same Res"). Keep the current rule for
+  the local memdev. Add the three cases as tests.
+
+R2 [bug] MODEL (and EXEC). O5 passes when a container is missing or
+    its cpuset cannot be read.
+  checkFencing (oracle.go:1226-1306) checks only the containers the
+  observer lists. Nothing requires a container for each Running slot
+  pod or each companion of the VM. An empty mems_effective falls
+  back to mems (oracle.go:1277-1280), and an empty string parses as
+  no nodes. memory.high "" passes for containers that are not
+  steered. mbt-observe.py drops containers it cannot inspect
+  (crictl_inspect one by one, then "continue" when the pid is gone,
+  containers() 513-539).
+  Evidence: TestRevFencingVacuous. lnuma@vm0#0 and plain@vm0#0 run,
+  node 2 is fenced:
+    plain's container left out of vm0            -> ok
+    plain's mems = mems_effective = ""           -> ok
+    plain's mems_effective "0-2" (the check works) -> wait "has
+                                                      fenced CXL
+                                                      node 2"
+  Fix: in the oracle, wait while a Running slot pod (the main
+  container) or a companion on the VM has no observed container.
+  Treat an empty mems_effective as unreadable (wait):
+  cpuset.mems.effective is never empty for a live cgroup. In the
+  observer, report null and an error rather than "".
+
+R3 [bug] MODEL. The rule that a stack with an unblocking pod must
+    not change skips "any" pods. The stack check then fails a
+    correct SUT.
+  stackRulesOK, actions.go:330-333: "if si < 0 { continue }". The
+  event of an "any" pod whose node is not known yet is not checked
+  against unblockingOn of the stacks of its pool's hosts. resolve()
+  (oracle.go:222-234) puts the unblocking pod's region on top of its
+  stack when it is seen Running. When kubelet's retry came first,
+  the observed order is the other one, and checkPorts waits until
+  the settle times out.
+  Evidence: TestRevAnyPodOnUnblockingStack. xnuma-c@vm1#0 is
+  unblocking on vm1/hb1 []. "create sdax-c@vm1#0" is disabled (as it
+  should be), but "create sdax-c@any#0" is enabled. In the SUT the
+  retry of xnuma-c comes first, then sdax-c@any lands on vm1. Verdict:
+  "wait stack vm1/hb1: committed decoders [c-pooled0,c-shared0], want
+  [c-shared0,c-pooled0]", which becomes a fail after 180 s.
+  Fix: for si < 0, apply the rule to stackIndex(v, poolBridge[p])
+  of every host v of the pool. And see R4 (adopt the order).
+
+R4 [bug] MODEL. The order in which kubelet retries blocked pods is
+    assumed, not adopted from the observation.
+  Kubelet retries a Prepare that failed at its pod resync, 60-90 s
+  apart and independently per pod. kuberuntime_manager.go:1726
+  records the event and returns without a sync error, so
+  pod_workers.go:1531 requeues the pod after resyncInterval with
+  jitter 0.5. (A9 says 5 min of back-off. That is not the mechanism;
+  the 330 s timeout is still safe.) The model has two cases:
+  (a) Two or more pods unblocking on one stack: resolve() pushes
+      their regions in slot order.
+      Evidence: TestRevTwoUnblockingOrder. xdax-b@vm0#0 and
+      ldax@vm0#0 unblock on vm0/hb0. If ldax's retry comes first:
+      "wait stack vm0/hb0: committed decoders [local,b-pooled0], want
+      [b-pooled0,local]". The other order is ok.
+  (b) A blocked pod whose hole clears in a window that also pushes
+      another region on the stack. The retry can fall between the
+      two. The model plays it only after every event of the window.
+      Evidence: TestRevBlockedRetryInClearingWindow. xnuma-c@vm1#0
+      is blocked behind [hole,c-shared0]. The window has
+      delete sdax-c@vm1#0 and create sexcl-c@vm1#0. If the retry came
+      first: "wait ... [c-pooled0,c-shared0], want
+      [c-shared0,c-pooled0]". Rare: the gap is sub-second against a
+      60-90 s timer.
+  Fix: in resolve(), take the order of the unblocking pods' regions
+  from the observed host-bridge decoders (A10 is there for this). Any
+  permutation of those keys is legal above the settled prefix. For
+  (b), let outcomes() add an optional prepare for each blocked user
+  after the unprepare that clears its hole. Or make it a generator
+  rule: no region-creating event on a stack in the window that clears
+  its hole while pods are blocked there.
+
+R5 [bug] MODEL. generate --from turns an on-line run into
+    expectations that are wrong after the first adopted choice.
+  generate.go:82-93 checks only allowed(). Expectations follow the
+  model's first alternative: the first host of an "any" pod, the
+  issue order of a race, the "not prepared" branch of a ctrl-kill.
+  The on-line run adopted something else, so a later step fails off
+  line, with no hint why.
+  Evidence: TestRevFromAnyNodeDiverges. Steps: settle; create
+  sdax-c@any#0; settle; create plain@vm0#0; settle. --from accepts
+  them. The step-5 expectation has sdax-c@any#0 on vm0 with no
+  alternatives. The on-line SUT had it on vm1: "fail pod
+  sdax-c@any#0: on vm1, want vm0 (+12 more)".
+  Fix: record the adopted choices in mbt-steps.txt, as comment lines
+  after each settle (node of each any pod, the index of the
+  alternative, the lease IDs). Let --from replay them. Until then,
+  stop --from at the first step whose prediction has Alts, an any
+  node or a maybe attachment, and say so (design D1 promises
+  "--from FILE turns it into a code.gen.sh").
+
+R6 [bug] EXEC. Off-line, a failed action does not fail the step.
+  mbt-step (mbt.source.sh:970-981) runs the action and stores
+  MBT_LAST_DONE. Only write, read and lease-get get an mbt-expect, so
+  the status of create, delete, crash and every fault is never
+  looked at. 04-status-MODEL P1 says the opposite ("other steps fail
+  on a nonzero status in bash (EXEC does so)").
+  Evidence: REV bash/offline-status.sh. A create whose kubectl apply
+  fails: "status 1 ... after mbt-step: MBT_STATUS=1, the test goes
+  on". Failures then show up as settle timeouts with an unrelated
+  message. Failures of ctrl-restart, server-restart and
+  kubelet-restart are not observable at all.
+  Fix: in mbt-step, call mbt-fail when MBT_STATUS != 0 and the verb
+  has no expectation (not write, read or lease-get). This matches
+  on-line, where checkDone fails any nonzero status.
+
+R7 [bug] CONTRACT/MODEL. Steering after a non-graceful driver exit
+    is predicted inconsistently, and the real behaviour fails the
+    run.
+  driver-kill makes running lsteer containers SteerOff, i.e.
+  memory.high max (actions.go:493). containerd-restart makes them
+  SteerAny, i.e. unchecked (actions.go:503). Both skip
+  Manager.Stop: SIGKILL, and os.Exit(1) in exitIfLostLocked of the
+  bug-01 fix (D/nri.go, working tree). Stop is the only place where
+  memory.high is removed (pkg/cgmpolmgr/manager.go:187-200, 255-265).
+  The trial P/x1 (settle, create lsteer@vm2#0, settle, driver-kill
+  vm2, settle) failed at step 5: "memory.high "140668928", want max".
+  The doc (usage.md, changed today) says "no longer throttled" for
+  both cases. So the driver contradicts its doc (X1, bug-04
+  candidate), and the model applies the doc to only one of the two.
+  C2 seeks "fault driver-kill lsteer running", so any full run with
+  driver-kill on vm1 or vm2 stops there.
+  Fix: decide bug-04 first. If memory.high is to be reset (at
+  Synchronize, for containers taken as steered without a manager),
+  predict max for both verbs. Otherwise predict "unchanged" for both
+  and amend R8/A8. Meanwhile give MBT_AVOID for both verbs on vm1 and
+  vm2 when lsteer slots are in the profile. X2/E5 (lsteer restarted
+  while its driver is down sees node 3) is the next expected fail of
+  the same family.
+
+R8 [risk] MODEL/EXEC. The driver-restart and kubelet-restart windows
+    are treated as quiet, but NRI and lending are not ready yet.
+  mbt-act-driver-restart returns once the node's cxl.nri.io slice,
+  the pool dra.sock and cxl-request exist (mbt.source.sh:530-535).
+  The NRI plugin and lending.set come later (01-findings-driver 3.2,
+  steps 7-8). The model blocks lease-get and the SteerAny of new
+  lsteer containers only in the kill window (actions.go:451, 458,
+  575-580).
+  In that window:
+  - A lease companion's Prepare fails with "lending ... disabled".
+    Kubelet retries one resync later (60-90 s, see R4), which is
+    after cxl-request's --wait 60s. The lease-get then fails.
+  - An lsteer container created or restarted then is unmanaged (E5),
+    but the model predicts SteerOn.
+  After kubelet-restart, a companion Prepare that comes before the
+  plugin re-registers takes the same 60-90 s path. C3 rewards
+  exactly these pairs ("driver-restart" then "lease-get").
+  Fix: make driver-restart wait for a readiness signal of NRI and
+  lending (a log line, or a probe of lending through cxl-request).
+  Or extend the kill-window rules to the driver-restart window
+  (Restarted). Consider a lease-get --wait of 120 s.
+
+R9 [risk] MODEL/EXEC. The check of a blocked pod rests on one
+    Warning event, and has never been run against a real blocked pod.
+  checkBlocked (oracle.go:440-446) wants the newest Warning event of
+  the pod to contain "CXL decoders released out of order". Two ways
+  this can go wrong:
+  - A retry while the plugin is away (driver-kill, containerd- or
+    kubelet-restart, all C2 contexts with blocked pods) makes a
+    newer event with another message. The next retry is 60-90 s
+    later. That is within 180 s, unless the restart back-off of the
+    driver and two unlucky resyncs add up.
+  - mbt-observe.py:652 keeps the first 1000 characters. The hole
+    text comes last, after kubelet's prefix, the driver's prefix and
+    the full output of "cxl create-region" (decoders.go:164,
+    memctl.go:92-93).
+  None of the recorded observations has a real blocked pod: run 2
+  predates A10 and image 571d3f262db0.
+  Fix: let the observer report, per pod, whether any of its events
+  of this generation contains the text, over the full message.
+  Accept "blocked" while no Prepare of the pod has succeeded.
+
+R10 [risk] MODEL. The enumeration of outcomes truncates silently.
+  maxEnumerated = 7 events of one stack: beyond that, only the issue
+  order is played (stack.go:372, 443-446). maxAlts = 64 cuts the
+  alternatives (stack.go:563, 593-611). On line, a window of 3
+  operations can pass 7 events on one stack: the delete of an
+  unblocking pod adds 2, plus promotions and leases. A cut-off true
+  outcome is a false fail, and nothing logs it.
+  Fix: log the cut. On line, derive the outcome from the observed
+  decoders (A10) instead of the issue order.
+
+R11 [risk] EXEC (coverage). The lease verbs and several crashes
+    starve.
+  Simulated runs, full profile, default coverage C1x3,C2x2,C3:
+  - REV mbt-cxl experiment --exp growth --depth 2 --steps 600
+    --seed 5: C1 200/215. Never covered: lease-get and lease-put of
+    lease@vm0#0, and crash of 11 slots (xnuma-a@vm1#0, xdax-a@vm1#0,
+    sdax-a@vm1#0, sdax-a@vm2#1, xnuma-c@vm1#0, xdax-c@vm2#0,
+    sdax-c@vm0#0, ldax@vm1#0, ldax@vm1#1, lsteer@vm1#0, plain@vm2#0).
+  - TestRevCoverageProbe, 400 steps (depth 2 / depth 3): lease-get
+    2 / 3, and no C2 context with a held numa lease ("lease-numa"
+    never shows). read and write take 83 / 70 steps: they are
+    allowed in forced states and C3 rewards their pairs.
+  Faults in transient phases are well covered: 165 / 183 distinct
+  C2 strings with starting, deleting, blocked, unblocking, attaching,
+  pending, restarting or a hole. Settles with a blocked pod: 8 / 10;
+  with a hole: 25 / 20; with an unblocking pod: 2 / 2.
+  Cause of the starving leases: vm0 has 2 blocks for 3 local slots
+  plus the lease. A waiter disables lease-get (actions.go:456), and
+  so does anything in flight on hb0 (leaseRegionOK).
+  Fix: in "full", fewer local slots on vm0 and vm1, or a criterion
+  that rewards lease states. Report the --uncovered list of a long
+  simulated run in the status.
+
+R12 [risk] EXEC. The fallback build without GOFMBT_DIR cannot
+    compile.
+  code.var.sh:89-100 builds with GOWORK=off and no tags.
+  planner_ext.go needs the extended gofmbt: "GOWORK=off go build ."
+  fails with "c.CoverSteps undefined". -tags gofmbtstock compiles,
+  but refuses the default --coverage C1x3,C2x2,C3
+  (planner_stock.go:46-48). Design D2 says it "builds against the
+  version in model/go.mod". It fails at the start of the test, so
+  this is loud, not wrong.
+  Fix: say "needs GOFMBT_DIR (branch 5jo-mbt-cxl)" and stop. Or
+  build with -tags gofmbtstock and pass --coverage C1,C3.
+
+R13 [risk] CONTRACT. Reproducibility.
+  - A seed reproduces the steps only with --plan-time 0, plus an SUT
+    that resolves every race the same way. The default is 10 s, and
+    a plan made ahead is cut when the observation changed the state
+    (online.go:283-288).
+  - MBT_MODE=replay takes the profile and the model flags from MBT_*
+    variables, not from the header of the steps file
+    (code.var.sh:227-246). A small-profile run replayed with the
+    default profile diverges at its first slot that full lacks.
+  mbt-steps.txt does suffice for a replay with the same flags
+  (TestOnlineSmall replays one).
+  Fix: document both. In replay, take --profile, --local-blocks,
+  --max-restarts and --unsettled from the header, or warn on a
+  mismatch.
+
+R14 [risk] MODEL. Checks of design section 7 that are missing.
+  - No check that the driver logs have no panic (O8).
+  - leases.json is decoded (observe.go:163) but never compared
+    (I11).
+  - ResourceSlices are not observed (X4, E6).
+  - Off line, an unblocking pod never times out (X7), and every read
+    of a never-written device passes, including two reads that
+    disagree, because nothing is learnt.
+  - A k8s-owned attachment of an unknown device is skipped
+    (oracle.go:675-677), and two entries for one device@host
+    overwrite each other (seen[d][v]).
+
+Nits
+----
+N1 The phase Either and RaceKill are effectively dead: ctrl-kill
+   races always become alternatives (state.go:51-53,
+   actions.go:799-800, oracle.go:215-221, 403-404). Remove them, or
+   say why they stay.
+N2 sim.go answers from the model's own predictions. The "no
+   disagreement in ~400 runs" of 04-status-MODEL 8 shows only that
+   the oracle accepts what the model produced. The recorded runs and
+   the counterexamples here are the external evidence.
+N3 When a replay diverges, Go sends "fail N ..." while bash waits for
+   a step line. Bash fails through its generic "unexpected line"
+   path (mbt.source.sh:952), not mbt-fail, so mbt-fail.txt is not
+   shown.
+N4 The experiment's header always prints "--plan-time 0s": the
+   experiment registers its own -plan-time flag.
+N5 Small items: the 255 magic for "this optional event does not
+   happen" (stack.go:460, 476); a hand-made itoa and insertion sort
+   next to strconv and sort; predictVM computed twice per VM
+   (oracle.go:801, 1229).
+N6 The new kubectl exec retry (mbt.source.sh, MBT_EXEC_RETRY, after
+   the trial P/p2: "unable to upgrade connection: pod does not
+   exist" right after a kubelet restart) matches only two error
+   texts. That is enough for what was seen. The observer's inspect
+   (kubectl exec env) has no retry, but it waits instead.
+
+Verified as correct
+-------------------
+- Decoder stacks vs the kernel (bug-02 section 4):
+  - a push only with no hole, and any hole blocks;
+  - destroying the top pops it and every hole below;
+  - destroying any other region leaves a hole.
+  Region lifetimes vs the driver:
+  - local regions are released with the last claim (local.go:
+    993-1014);
+  - a failed local Prepare drops the device (local.go:571-574,
+    dropUnused);
+  - a failed pool Prepare rolls back (pool.go fail -> rollback);
+  - memctl reuses an existing region (memctl.go:946-949).
+  Both region-creating paths carry the hole text: local.go:633 and
+  pool.go:719/733 via CreateRegionSize -> explainCreateRegion.
+- O1-O6 and O8 against the driver's files and EXEC's observations:
+  - preparedClaims == info, counting the lease claim and the
+    companion;
+  - cxl-claims.yaml has local and lease claims, cxl-leases.yaml
+    lease-<uid>, cxl-pool.yaml the pool claims;
+  - local slices and kmem online bytes, pool regions, MemTotal;
+  - attachments with the k8s: owner filter (A3), the exclusive flag;
+  - Pending, Attaching and Blocked rules; A7.
+  Run 5 replayed in REV (TestRevRun5Observations, its impossible
+  slot xnuma-a@vm0#0 removed): steps 5, 9 (containerd-restart:
+  driver restarts 1, fencing after the lease) and 14 ok. Step 7 is a
+  legitimate wait: the companion is still Pending.
+- Fencing logic, given an observed container (R2 aside):
+  - a claimed node is required;
+  - a node in F, or one with memory on the VM, is forbidden to
+    everyone else;
+  - lent numa leases count as claimed;
+  - memory.high is checked by steering state.
+- The protocol:
+  - strict lock-step; no line length limits (bufio ReadString, bash
+    read);
+  - one JSON line per observation, with a fallback JSON on errors;
+  - SIGPIPE is ignored around writes; EOF or a timeout leads to
+    mbt-gone, then error and the EXIT trap;
+  - MBT_RFD keeps the generator's last lines; the coproc fds and
+    the {var} dup do not leak into children (checked with bash 5.3:
+    REV bash/fdleak.sh);
+  - the EXIT trap closes stdin, then sends TERM and KILL;
+  - the settle timeout is enforced by Go (online.go:461-465) and by
+    check (--since); every observer part is bounded (60+10 s);
+  - there is no error() inside $(...) in the executor that could be
+    lost (every one either returns a status or happens at setup).
+- The verbs:
+  - crash is a SIGSEGV to the sleep child via /tmp/workload.pid, so
+    PID 1 exits 139;
+  - driver-kill is a SIGKILL to the container's init pid (crictl),
+    in place;
+  - ctrl-kill is systemctl kill SIGKILL, and the unit stays failed;
+  - ctrl-start does reset-failed and runs the same systemd-run line;
+  - ctrl-restart is a graceful stop, then a start;
+  - server-restart keeps config, state, port and log;
+  - kubelet- and containerd-restart wait for readiness, and
+    containerd-restart also waits for the driver's in-place restart
+    (A8);
+  - lease-get and lease-put follow contract 4; A1 re-inspection
+    works;
+  - write and read use the kind's env key; a write on sro is
+    refused nonzero;
+  - an unknown verb or wrong arity gives status 2.
+- The observer covers 6.1, 6.3 and A10:
+  - ports, with the hb from the root decoder's target, and the
+    newest Warning event;
+  - every part fails on its own into errors, and the oracle waits;
+  - torn reads of preparedClaims.json are retried;
+  - crictl inspect falls back to one id at a time;
+  - the cgroup v2 path comes from the init pid;
+  - the CDI parser is right for the block-style YAML that the CDI
+    library writes.
+- Determinism with --plan-time 0: TestOnlineDeterministic and
+  TestGenerateDeterministic. In the REV copy, go test, go vet and
+  gofmt are clean, and the -tags gofmbtstock build compiles.

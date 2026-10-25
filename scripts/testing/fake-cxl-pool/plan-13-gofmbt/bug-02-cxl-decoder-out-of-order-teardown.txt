@@ -1,0 +1,305 @@
+bug-02: a CXL region released out of order blocks every new region
+through its host bridge and switch until the regions above it are gone
+======================================================================
+2026-10-24, debugging agent of plan-13 (from EXEC's S1 and S2,
+04-status-EXEC.txt section 9). N = ~/github.com/containers/nri-plugins,
+P13 = N/scripts/testing/fake-cxl-pool/plan-13-gofmbt, evidence in
+/tmp/bug02.
+
+1. Summary
+----------
+Linux allocates the HDM decoders of a CXL port (host bridge, switch) in
+commit order, as a stack: a new region gets decoder commit_end+1, and
+only if every decoder below it is enabled. Destroying a region whose
+decoders are not the highest committed ones of a port (allowed since
+v6.12) resets the hardware registers but leaves a hole in that stack.
+The kernel then refuses EVERY new region through that port, for any
+memdev under it and at any address, with EBUSY ("cxl region:
+create_region: regionN: failed to set target0 to memM", kernel
+"cxl_port endpointK: failed to attach decoderK.0 to regionN: -16"),
+until every region above the hole is destroyed; then it reaps the hole
+by itself and the port works again. It is not permanent, not decoder
+exhaustion, not a stale target of the downstream port and not a qemu
+artefact.
+
+In run 2 of test90 the regions on VM0's host bridge 0 were the local
+device (decoder 2.0), b-pooled0 (2.1) and b-shared0 (2.2). Deleting the
+b-pooled0 pod destroyed the middle region; the next b-pooled0 claim was
+refused at every Prepare as long as the b-shared0 pods kept region3.
+
+S2 ("port decoders stay programmed after every run, vm0 hb0 has one
+free decoder left") is a misreading, see bug-03: the start and size of
+host bridge and switch decoders in sysfs are bookkeeping the kernel
+never clears at region teardown. Their decoders_committed was 0 and
+their registers were zero in every VM; all decoders were free.
+
+Classification: kernel limitation (design choice of drivers/cxl, not a
+bug that a one-line fix removes); the driver tears down in the right
+order; qemu commits and uncommits whatever it is told. Real hardware
+behaves the same, because the rule is in Linux.
+
+2. Reproduction
+---------------
+2.1 Minimal, without Kubernetes (VM0, 2026-10-24 08:50-08:58 UTC,
+    every command and its output: /tmp/bug02/repro.log)
+Host: one fake-cxl-pool-server cabled to VM0 only, slots of host bridge
+0, three exclusive devices (/tmp/bug02/server.yaml: name bug02, port
+9919, d1 256Mi 0xc1ee9001, d2 512Mi 0xc1ee9002, d3 256Mi 0xc1ee9003,
+discovery.names [VM0], slots ["*hb0"], localDevices false):
+  fake-cxl-pool-server -config /tmp/bug02/server.yaml \
+      -state /tmp/bug02/server.state.json -v &
+VM0 (C = fake-cxl-pool-client --server http://192.168.76.2:9919):
+  $C attach d2 --self --exclusive; $C guest wait d2
+  $C guest region create d2 --mode dax  -> mem1 region0, decoders
+                                           2.0/3.0, 0x650000000 512M
+  $C attach d3 ...; $C guest region create d3 --mode dax
+                                        -> mem2 region2, 2.1/3.1
+  $C guest region create d1 --mode dax  -> mem0 region3, 2.2/3.2
+  (d1 was attached first, in slot 0; its first create right after the
+  hotplug hit the add_dev race of the side note in section 8)
+  (port2 = host bridge pci0000:0c, port3 = switch 0000:0d:00.0, both
+  decoders_committed 3)
+  cxl disable-region region2; cxl destroy-region region2   # the middle
+  -> port2 and port3 decoders_committed stay 3; decoder2.1/3.1 keep
+     size 0x10000000 start 0x670000000, region "" ; host bridge HDM
+     registers (read over HMP, /tmp/bug02/bin/hdm-regs.sh): decoder0
+     and 2 committed, decoder1 base 0 size 0 committed 0
+  cxl create-region -t ram -d decoder0.0 -m mem2
+  -> cxl region: create_region: region2: failed to set target0 to mem2
+     cxl_port endpoint6: failed to attach decoder6.0 to region2: -16
+The same for a new 512 MiB device d4 (created and attached in slot 3):
+its region cannot fit the 256 MiB hole, so it would lie above region3,
+and it fails the same way (endpoint7 ... -16). The same after
+"guest release d3; detach d3; attach d3", the driver's sequence:
+  error: cxl create-region -t ram -d decoder0.0 -m mem2: exit status 1:
+  cxl region: create_region: region2: failed to set target0 to mem2
+Then the region above the hole:
+  cxl disable-region region3; cxl destroy-region region3
+  -> port2 and port3 decoders_committed 3 -> 1 (the kernel reaped 2.2
+     and the hole 2.1 at once)
+  $C guest region create d3 --mode dax -> region2 on 2.1/3.1, ok
+  $C guest region create d4 --mode dax -> region3 on 2.2/3.2, ok
+No VM restart, no decoder reset from userspace: LIFO order heals it.
+
+2.2 In test90 (EXEC run 2, /tmp/mbt-exec-dev/steps2.txt, the vm0
+    driver log in R/run2-out/trace/vm0.driver.log)
+  create ldax@vm0#0          local region0 on hb0 decoder 2.0
+  create xdax-b@vm0#0        b-pooled0 region2, decoder 2.1 (08:08:48)
+  create sdax-b@vm0#0, #1, sro-b@vm0#0
+                             b-shared0 region3, decoder 2.2 (08:08:49)
+  ctrl-kill b; delete xdax-b@vm0#0
+                             "memctl: destroyed region2" 08:10:22
+  ... create xdax-b@vm0#0    b-pooled0 attached again 08:10:46; every
+                             Prepare fails (08:10:51, 08:11:55,
+                             08:13:11, pool.go:444), step 57 failed
+Any "create" that needs a new region on a VM and host bridge after a
+"delete" of a pod whose region was not the newest live region there,
+while a newer region lives, hits it.
+
+3. Evidence
+-----------
+- /tmp/bug02/repro.log: the minimal sequence with dec-state.sh (ports'
+  decoders_committed, every decoder's size/start/region, memdevs,
+  regions) and hdm-regs.sh (qemu's host bridge HDM registers, one
+  4-byte xp per register: qemu answers 0 to 8-byte cache-mem reads)
+  before and after each step.
+- /tmp/mbt-exec-dev/evidence-b/vm0-sysfs.txt (08:12:40, run 2):
+  decoder2.1/3.1 size 0x20000000 start 0x660000000 region "" between
+  region0 and region3, the -16 lines of the kernel log.
+- /tmp/bug02/race.log: after the VM0 restart, one in-order create and
+  destroy: decoder2.0 keeps size 0x10000000 start 0x650000000 while
+  port2 decoders_committed is 0 and every HDM register is zero (S2).
+- Earlier dumps (R/run1-out, R/run2-out cxl-sysfs.no-devices.vm0.txt):
+  port1/port2 decoders_committed:0 next to the "stale" sizes.
+
+4. Root cause (Linux v7.3-rc4, 93f51579e7df, the VMs' 7.3.0-rc4 build
+   of 2026-10-19; qemu ff076b1e6c, branch 5jL-fix-cxl-hot-remove)
+------------------------------------------------------------------
+drivers/cxl/core/hdm.c
+  800 cxl_decoder_commit: commits only decoder number
+      decoders_committed (810-815 "out of order commit" -EBUSY), then
+      commit_end++.
+  889 cxl_decoder_reset: if the decoder is the highest committed one,
+      cxl_port_commit_reap; otherwise only dev_dbg "out of order reset"
+      (903-908) and commit_end stays. Either way it clears COMMIT,
+      zeroes base and size (910-918) and clears CXL_DECODER_F_ENABLE.
+  852-887 commit_reap, cxl_port_commit_reap: when the highest decoder is
+      reset, commit_end walks down over every disabled decoder below it.
+drivers/cxl/core/region.c
+  874 check_commit_order, 888 match_free_decoder: the only candidate is
+      decoder commit_end+1, and it is refused if any decoder below it is
+      not enabled ("unable to allocate %s due to out of order shutdown",
+      dev_dbg: this kernel has no CONFIG_DYNAMIC_DEBUG, nor tracing).
+  967 cxl_port_pick_region_decoder -> 1198 cxl_port_attach_region:
+      "no decoder available" (1243), -EBUSY. Ports are attached from the
+      endpoint up, so the switch (port3) refuses first.
+  1016-1040 alloc_region_ref: a second barrier, "HPA order violation"
+      -EBUSY for a region below one already on the port. The HPA
+      allocator is first fit ascending (kernel/resource.c 2140
+      alloc_free_mem_region), so a region that fits the hole is put
+      there and would be refused by this check even without the first.
+  2393 attach_target: "failed to attach %s to %s: %d", the kernel line.
+  The cxl tool reports it as "failed to set target0 to memM".
+History: 101c268bd2f3 "cxl/port: Fix use-after-free, permit out-of-order
+decoder shutdown" (v6.12-rc6, Cc stable): "the CXL specification places
+no mandate on in-order shutdown of switch-decoders, the driver enforces
+in-order allocation, and hardware enforces in-order commit"; commit_end
+"only decrements from 2 after 2 has been disabled". 105b6235ad0f
+"cxl/port: Prevent out-of-order decoder allocation" (same series):
+allocation order = commit order, no allocation while a reservation is
+not committed. Documentation/ABI/testing/sysfs-bus-cxl, regionZ/commit:
+"validates that the decoders are being committed in spec mandated order
+(last committed decoder id + 1)"; region.c auto_order_ok cites CXL 3.1
+8.2.4.20.12 "software must commit decoders in HPA order". (The spec
+text itself was not available here: whether hardware may re-commit a
+middle decoder whose range fits between its neighbours is the open
+question for a kernel change, section 8.)
+qemu: hw/cxl/cxl-component-utils.c 118 dumb_hdm_handler (host bridge,
+switch) sets COMMITTED on COMMIT and clears it otherwise, with no
+ordering or range checks; hw/mem/cxl_type3.c 420 hdm_decoder_commit
+("TODO: Sanity checks"). The failing create never reaches a register:
+the EBUSY is the kernel's bookkeeping, not the emulated hardware.
+The driver: pkg/cxl/memctl ReleaseRegion (memctl.go 1103) offlines,
+"cxl disable-region", checks no block stayed online, "cxl destroy-
+region"; Release (1065) then "cxl disable-memdev"; the pool driver
+(pool.go 759 release) and the controller detach afterwards. That is the
+order the kernel wants; nothing is left committed. Nothing the driver
+could reset: the hole's registers are already zero and Linux has no
+userspace control of switch decoders; the pin goes when the decoders
+above it are reset.
+So the answers to the questions of the task: the commit order (the
+in-order allocation cursor), not the stale switch decoder or its target
+port (other downstream ports and higher addresses fail too), not
+exhaustion (2.3/3.3 were free; after the reap 2.1-2.3 were used again).
+
+5. Classification
+-----------------
+Kernel limitation, by design since v6.12: out-of-order teardown is
+allowed, out-of-order allocation is not, so a port is a LIFO stack of
+regions. Not spec-mandated as far as the kernel's own commit message
+says for shutdown; the in-order commit rule is the kernel's reading of
+CXL 8.2.4.20.12. Not a qemu artefact (qemu checks nothing; real
+hardware may check more, which only makes it stricter). Not a driver
+bug. A minor kernel bookkeeping bug that made it look worse is bug-03.
+
+6. Impact
+---------
+Where: only ports with HDM decoders that carry more than one region at
+a time. In the e2e VMs that needs hdm_for_passthrough=on (pxb-cxl
+without it has one passthrough decoder: one region per host bridge, no
+hole possible); every device of a VM's host bridge 0 (pool-a or pool-b,
+and the local memdev) shares the host bridge and the switch decoders,
+pool-c shares host bridge 1. On real hardware: a host bridge with
+several root ports in use, or a switch (a pooling appliance that binds
+logical devices to a host through a switch hot-adds them below the same
+upstream port, exactly the fake pool's model). Machines with one device
+per host bridge are not affected. Regions made once at boot are not
+affected; per-claim regions (this driver: one region per pool device
+and node, per local device while it is used) are.
+Effect: a claim that needs a new region on that host bridge stays in
+ContainerCreating (kubelet retries Prepare, ~64-76 s apart in run 2)
+until every pod holding a region above the hole is gone. With long-
+lived pods on a shared device that can be for ever, for every device
+of that host bridge, also local ones.
+test90: sequences "create X, create Y (same VM, same host bridge,
+both making a new region, X's first), delete X while Y's region lives,
+then create anything that makes a new region there". Regions per node:
+exclusive pool device = its claim; shared pool device = first to last
+claim on that node; local device = first to last claim or lease slice
+(numa and dax slices share it), kept while configured shared. faults
+(crash, driver/kubelet/containerd restart, ctrl and server faults) do
+not create or destroy regions. Recommendation: predict, do not avoid by
+default (real deployments hit it), plus an avoid option for long runs:
+- the observer reports the ports of each VM: decoders_committed and
+  decoder -> region (one more glob in mbt-observe.py "vm"), so the
+  oracle need not guess the creation order of regions made in one
+  settle;
+- predicted: a pod needing a new region through a port with a hole
+  stays pending, its event has "released out of order" (driver message
+  of section 7); once the blocking regions are gone it becomes Running
+  at kubelet's next retry (settle timeout >= kubelet's back-off; seen
+  64-76 s, kubelet caps the pod back-off at 5 min);
+- MBT_AVOID-style flag: do not generate a create that needs a new
+  region on a (vm, host bridge) whose stack has a hole.
+
+7. What was fixed
+-----------------
+a. Test infrastructure (pool.source.sh, n4-cxl-shared-2):
+   pool-vm-decoders VMDIR (new): prints "portN=COUNT" for every port and
+   endpoint with decoders_committed > 0, nothing for none. pool-vm-reset
+   restarts the VM also when it has committed decoders (with no devices
+   and regions there must be none), checks again after the restart and
+   fails if any stay, and ends with "pool-vm-reset: NAME has no CXL
+   memory devices, regions or committed CXL decoders": every test with a
+   no-devices precondition calls pool-vm-reset just before it, so the
+   precondition now covers decoders without touching the tests. It does
+   NOT restart for decoders that only show a size without a region
+   (bug-03): they are free, and every teardown leaves them, so that
+   would restart every VM (and the control plane) before every test.
+   pool-vm-require is about qemu and kernel capabilities, unchanged.
+   Verification:
+   - stub test of the branches plus pool-vm-decoders on the real VM0 in
+     the hole state ('port2=3 port3=3 endpoint5=1 endpoint7=1'):
+     /tmp/bug02/shtest/pool-vm-reset-test.{sh,out}
+   - a temporary test (removed) running pool-vm-reset, the no-devices
+     dump and cxl-assert on VM2, VM1, VM0, with VM0 left in the hole
+     state with 4 memdevs: VM2 and VM1 not restarted (no committed
+     decoders), VM0 restarted ("committed CXL decoders: port2=3 port3=3
+     endpoint5=1 endpoint7=1: restarting it"), afterwards no committed
+     decoder in any VM, three nodes Ready, PASS:
+     /tmp/bug02/verify-reset.log, /tmp/bug02/verify-reset-out/
+   - shellcheck: the classes of HEAD (SC2016, SC2148, SC2154).
+b. Driver (pkg/cxl/memctl, used by the node driver and the fake
+   client): decoders.go (new) DecoderHoles(memdev): the ports from the
+   root to the memdev's endpoint (its sysfs ancestors) where a decoder
+   below decoders_committed has no region, with the regions above it;
+   CreateRegionSize (memctl.go 963) and the pmem create (pmem.go 341)
+   wrap a failed "cxl create-region" with it (errors.Is keeps the
+   original). On VM0, client built with it:
+     error: cxl create-region -t ram -d decoder0.0 -m mem2: exit status
+     1: ... failed to set target0 to mem2 ... (CXL decoders released out
+     of order: port2 has 3 committed decoders, decoder2.1 without a
+     region below region3; port3 has 3 committed decoders, decoder3.1
+     without a region below region3; the kernel creates no region
+     through these ports until region3 is destroyed)
+   Unit tests decoders_test.go (fake sysfs of VM0's state, in order and
+   with the hole, and CreateRegion's error); go test ./pkg/cxl/... ok.
+   No behaviour change, only the message; the driver image was not
+   rebuilt (the next image build takes it).
+
+8. Proposals (not done)
+-----------------------
+P1 Kernel (the real fix; report to linux-cxl with section 2.1, which
+   needs only qemu with hdm_for_passthrough=on and three type-3
+   devices behind one switch): let match_free_decoder reuse the lowest
+   disabled decoder below commit_end for a region whose HPA lies
+   between the ranges of the enabled decoders around it (the ascending
+   HPA allocator already places a fitting region in the hole), relax
+   alloc_region_ref's HPA order check to the neighbours of the chosen
+   decoder, and let cxl_decoder_commit re-commit such a decoder without
+   moving commit_end. Needs the CXL 8.2.4.20.12 commit checks to allow
+   committing decoder m while m+1 is committed when Base[m] >=
+   limit[m-1] and limit[m] <= Base[m+1]; to be checked in the spec.
+P2 Driver, same-node reuse: keep ("park") the region of a released
+   exclusive pool device that is not on top of its ports, so that a new
+   claim of the same device on the same node reuses it (CreateRegion
+   reuses an existing region already). Fixes exactly S1, needs the
+   controller to leave the device attached until it is needed elsewhere
+   (then the hole comes anyway). Medium change, controller contract.
+P3 Controller placement: when a node is cabled to slots of several host
+   bridges, put long-lived (shared) and short-lived (exclusive) devices
+   on different host bridges, and prefer a host bridge with no live
+   regions; the node driver could publish "port blocked" per host
+   bridge for it. Reduces, does not remove.
+P4 Repair by compaction: destroy and re-create regions above a hole
+   that have no users (none in this driver except a local device kept
+   while configured shared). Little value.
+P5 test90 model and observer as in section 6.
+Side note (known, handled): right after a hotplug the memdev's driver
+link exists before its endpoint port: create-region then fails with
+"libcxl: __sysfs_device_parse: endpoint4: add_dev() failed ... no active
+memdevs found" (7 of 8 immediate tries on freshly booted VM0,
+/tmp/bug02/race.log). The driver retries once after 3 s
+(pool.go isAddDevError, plan-3); fake-cxl-pool-client "guest region
+create" does not retry (test helpers that call it right after a hotplug
+may need to wait for the endpoint).

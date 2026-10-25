@@ -1329,6 +1329,37 @@ func (b *broker) containerStarted(ref containerRef) {
 	b.relendContainer(ref.PodUID, ref.Name)
 }
 
+// lendsNode tells whether a lease is a Ready numa lease of the container
+// name of the pod: the container has its node.
+func (l *lease) lendsNode(podUID, name string) bool {
+	return l.Pod.UID == podUID && l.Container == name && l.Mode == api.ModeNUMA && l.State == api.StateReady && l.Node >= 0
+}
+
+// LeaseNodes implements leaseNodes: the nodes of the Ready numa leases of
+// a container, those that a restarted container is created with. Called
+// by the NRI plugin with its lock held: b.mu is never held across a call
+// of the lender.
+func (b *broker) LeaseNodes(podUID, name string) map[int][]string {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var nodes map[int][]string
+	for id, l := range b.store.Leases {
+		if l.lendsNode(podUID, name) {
+			if nodes == nil {
+				nodes = map[int][]string{}
+			}
+			nodes[l.Node] = append(nodes[l.Node], id)
+		}
+	}
+	for _, ids := range nodes {
+		sort.Strings(ids)
+	}
+	return nodes
+}
+
 // relendContainer applies LendNode for the Ready numa leases of a
 // container (idempotent).
 func (b *broker) relendContainer(podUID, name string) {
@@ -1337,7 +1368,7 @@ func (b *broker) relendContainer(podUID, name string) {
 	var nodes []int
 	var ids []string
 	for id, l := range b.store.Leases {
-		if l.Pod.UID == podUID && l.Container == name && l.Mode == api.ModeNUMA && l.State == api.StateReady && l.Node >= 0 {
+		if l.lendsNode(podUID, name) {
 			nodes = append(nodes, l.Node)
 			ids = append(ids, id)
 		}

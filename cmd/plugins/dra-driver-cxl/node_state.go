@@ -199,18 +199,18 @@ func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, n
 	}
 
 	// TODO: should be only create prepared claims, discard old preparations. Do we even need the snapshot?
-	preparedClaims, err := getOrCreatePreparedClaims(preparedClaimsFilePath)
+	preparedClaims, claimsInfo, preparing, unpreparing, err := loadPreparedClaims(preparedClaimsFilePath)
 	if err != nil {
 		klog.Errorf("failed to get prepared claims: %v", err)
 		return nil, fmt.Errorf("failed to get prepared claims: %v", err)
 	}
-
-	claimsInfoFilePath := filepath.Join(filepath.Dir(preparedClaimsFilePath), preparedClaimsInfoFileName)
-	claimsInfo, err := getOrCreatePreparedClaimsInfo(claimsInfoFilePath)
-	if err != nil {
-		klog.Errorf("failed to get prepared claims info: %v", err)
-		return nil, fmt.Errorf("failed to get prepared claims info: %v", err)
+	for _, uid := range preparing {
+		klog.Warningf("claim %s: prepared without its info (the plugin stopped in its Prepare): not prepared, its retried Prepare prepares it again", uid)
 	}
+	for _, uid := range unpreparing {
+		klog.Warningf("claim %s: info of a claim that is not prepared (the plugin stopped in its Unprepare): forgotten, its devices are released", uid)
+	}
+	claimsInfoFilePath := filepath.Join(filepath.Dir(preparedClaimsFilePath), preparedClaimsInfoFileName)
 
 	klog.V(5).Info("Creating NodeState")
 	// TODO: allocatable should include cdi-described
@@ -1372,7 +1372,7 @@ func (s *nodeState) preparedResult(claimUID string, n int) (string, PreparedDevi
 func getOrCreatePreparedClaimsInfo(filePath string) (PreparedClaimsInfo, error) {
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		klog.V(5).Infof("creating empty prepared claims info file %v", filePath)
-		if err := os.WriteFile(filePath, []byte("{}"), 0600); err != nil {
+		if err := writeJSONFile(filePath, PreparedClaimsInfo{}); err != nil {
 			return nil, fmt.Errorf("failed creating %v: %v", filePath, err)
 		}
 		return make(PreparedClaimsInfo), nil

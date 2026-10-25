@@ -1,0 +1,904 @@
+PLAN 13 (gofmbt): FINDINGS ON THE CXL DRA DRIVER, POOL CONTROLLER
+AND POOL SERVER, FOR A MODEL-BASED RELIABILITY TEST
+
+Branch 5jg-cxl, read 2026-10-24. Code and docs only, nothing was run.
+
+Legend
+  [R]   read in code or docs at the reference given
+  [I]   inferred: not read directly, or depends on Kubernetes, kernel
+        or qemu behaviour that was not verified here
+  D/    cmd/plugins/dra-driver-cxl/
+  C/    pkg/cxl/
+  F/    scripts/testing/fake-cxl-pool/pkg/
+  K/    kubelet v1.37.0 sources,
+        ~/go/pkg/mod/k8s.io/kubernetes@v1.37.0/pkg/kubelet/
+  doc/  docs/memory/cxl/
+  Sched = stays Pending (scheduler finds no device)
+  Prep  = NodePrepareResources error: kubelet retries, pod stays
+          ContainerCreating, pod events show the message
+  Ctrl  = pool controller sets <driver>/AttachFailed=True; scheduler
+          deallocates and allocates again until the binding timeout
+  CC    = NRI CreateContainer error: container not created
+          (CreateContainerError), kubelet retries
+
+Test topology [R test/e2e/memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-2/test19-many-pools/code.var.sh:47-71,
+topology.var.json, doc/e2e.md:59-75, 695-706]
+- VM2 control plane (schedulable), VM1 and VM0 workers. Per VM: DRAM
+  NUMA nodes 0 and 1 (4G each), memory block size 128Mi, CXL host
+  bridge 0 (switch: 2 pool slots, the local memdev slot, the static
+  shared slot) and host bridge 1 (switch: 4 pool slots).
+- All regions under one host bridge share one NUMA node. hb0 = node 2
+  (the local memdev and pool-a/pool-b devices) [R doc/e2e.md:704-706];
+  hb1 = node 3 [I].
+- The local memdev cxl_memdev1 has serial 0xc100e2e1 in EVERY VM (1G
+  in VM2, 256M in VM1 and VM0); not present at boot; the pool server
+  attaches it as the scope-local device "<VM name>.memdev1".
+- pool-a (VM1, VM2; hb0, QMP): pooled0 0xc1ee0001 512Mi exclusive,
+  shared0 0xc1ae0001 256Mi shared. pool-b (VM0; hb0, QMP): 0xc1ee1001
+  512Mi exclusive, 0xc1ae1001 256Mi shared. pool-c (all VMs; hb1,
+  HMP): 0xc1ee2001 256Mi exclusive, 0xc1ae2001 256Mi shared.
+- No persistent pool device in this topology: modes block and fs are
+  covered below for completeness only.
+
+========================================================================
+1. ALLOCATION DIMENSIONS AND THE VALID MATRIX
+========================================================================
+
+1.1 What is published
+
+cxl.nri.io: one ResourceSlice per node, pool name = node name
+[R D/node_state.go:595-643]
+  memdev-<hex>    sliced local memdev. type=memdev source=local
+                  serial=0x<hex> shared=false size nodeAffinity
+                  memoryBlockSize; capacity.memory with requestPolicy;
+                  allowMultipleAllocations; nodeAllocatableResources
+                  (D/node_state.go:710-739)
+  memdev-<hex>    shared local memdev (only if listed in sharedDevices
+                  of the config at driver start): shared=true,
+                  capacity.shares=1M without policy, no memory
+                  capacity, no memoryBlockSize, no node allocatable
+                  (D/node_state.go:745-764)
+  <reg>-node<N>   pre-existing region: type=region node size,
+                  capacity.memory=size, no policy
+                  (D/node_state.go:657-674)
+  dram            type=dram nodes="0-1" size, capacity.memory=size
+                  (D/node_state.go:694-707)
+  lease           type=lease only, no capacity, allowMultiple
+                  (D/node_state.go:619-628); absent with --leases=false
+
+cxl-pool.nri.io: one cluster-scoped slice per pool, nodeSelector
+kubernetes.io/hostname In [nodes the server reaches], pool name = the
+server name [R F/controller/publisher.go:47-85, 169-208]
+  every device: type=memdev source=pool serial shared persistent size,
+  bindsToNode=true, bindingConditions [cxl-pool.nri.io/Attached],
+  bindingFailureConditions [cxl-pool.nri.io/AttachFailed]
+  exclusive (shared=false): capacity.memory=size and NOT
+    allowMultipleAllocations: one claim at a time, cluster-wide
+  shared: allowMultipleAllocations, capacity.shares=1M, no policy
+  devices in server state "error" are not published
+  (F/controller/publisher.go:90-103)
+
+DeviceClasses [R deployment/helm/dra-driver-cxl/templates/
+deviceclasses.yaml:16-107]: cxl-local (cxl.nri.io memdev,
+shared==false), cxl-local-shared (memdev, shared==true), cxl-pool
+(pool memdev, !shared, !persistent), cxl-pool-shared (shared,
+!persistent), cxl-pool-persistent (persistent), cxl-region, cxl-dram,
+cxl-lease. No config in the classes unless the Helm value
+deviceClassConfig gives one.
+
+When a local memdev is published [R D/node_state.go:469-587,
+D/pool_slices.go:62-131]
+- Precedence per memdev: ignoreDevices > pool device (serial in any
+  ResourceSlice of a driver other than cxl.nri.io, or prepared or
+  inflight in the pool driver) > sharedDevices > sliced.
+- Sliced: RAM capacity > 0, block size known, usable size holds >= 1
+  block, memdev enabled, not a pool serial, no region the plugin did
+  not create, not used shared by claims.
+- Shared: RAM capacity > 0, enabled, no foreign region, no slices of
+  claims.
+- Until one ResourceSlice list succeeded no memdev is published at all
+  (D/pool_slices.go:118-131).
+- The slice is republished ONLY at start, on udev events of the node,
+  memory and cxl subsystems (200 ms quiet period, D/udev.go:51-82) and
+  every 30 s while the slice list fails (D/pool_slices.go:139-152).
+  No periodic rescan [R D/driver.go:464-487, 680-703]. dax subsystem
+  events are not watched.
+- A foreign devdax region whose dax device has a target_node is
+  "Enabled" (C/devices.go:236-245) and nothing in buildDevInfos
+  filters by mode or online size (D/node_state.go:274-321): it is
+  published as a region device [I; doc/local.md:33-34 says a foreign
+  devdax region is not published].
+
+1.2 Opaque configuration: MemoryConfig, apiVersion cxl.nri.io/v1alpha1
+[R doc/usage.md:378-500, C/config/resolve.go:103-153]
+- Sections: device (the kubelet plugin of the device's driver),
+  container (the NRI plugin), pool (the pool controller only).
+- Entries of the class first, then of the claim; an entry applies to
+  all requests, to the listed request r, or r/s for one firstAvailable
+  alternative; JSON merge patch; strict, case-sensitive decoding.
+- Every entry of the driver is checked, also one of another request
+  (C/config/resolve.go:135-153).
+- Refused at Prepare: "MemoryConfig: container.fencing: set by the
+  driver configuration only (defaults.container.fencing)"
+  (C/config/resolve.go:69); "MemoryConfig: pool: only for devices of
+  cxl-pool.nri.io" in a cxl.nri.io entry (C/config/resolve.go:74);
+  unknown kind/apiVersion/field texts in doc/usage.md:662-673.
+- Error prefixes: cxl.nri.io "claim NS/NAME: " and "claim NS/NAME:
+  request R: " (D/node_state.go:915-927, 1225-1250);
+  cxl-pool.nri.io "cxl-pool.nri.io: preparing claim NS/NAME: " then
+  "request R: " or "device D serial 0xS: " (D/pool.go:414-480).
+
+1.3 The matrix: device kind x mode x readOnly x sharing
+
+LOCAL SLICED MEMDEV, class cxl-local [R C/config/device.go:44-66,
+D/node_state.go:1271-1316, D/local.go:335-372, 671-862]
+  no mode, mode numa  OK. A slice (dax device of the memdev's devdax
+                      region) bound to kmem, blocks online_movable,
+                      on node N of the memdev (hb0: 2). Env MODE=numa
+                      NODE=N SIZE=<slice> SERIAL SHARED=0. Container
+                      gets N in cpuset.mems (fenced or steered).
+  mode dax            OK. /dev/daxX.Y of its own, device_dax, ZEROED
+                      before the claim gets it (D/local.go:702-705);
+                      the first slice reuses daxX.0. Env MODE=dax
+                      DAX=/dev/daxX.Y READONLY=0. No node added.
+  dax + readOnly      OK. CDI device node permissions "r", READONLY=1.
+  readOnly, no mode   Prep "MemoryConfig: device.readOnly needs mode
+   or mode numa       dax"
+  mode block/fs/other Prep "MemoryConfig: device.mode: invalid mode
+                      \"X\" (numa or dax)"
+  access, path        Prep "MemoryConfig: device.access needs mode fs",
+                      "MemoryConfig: device.path needs mode fs"
+  consumed shares     Prep "claim NS/N: request R: device 0xS:
+   (stale alloc)      allocated as a shared device, which it is not
+                      any more" (D/node_state.go:1287-1289)
+  manageMemdevs:false never published; Acquire would say "local
+                      memdevs are not managed (manageMemdevs: false)"
+  Slice size = consumed capacity, else the whole usable size; rounded
+  up again to the block size and the dax region align
+  (D/node_state.go:1290-1296, D/local.go:676-680).
+
+LOCAL SHARED MEMDEV, class cxl-local-shared, only with sharedDevices
+[R C/config/device.go:44-66, D/node_state.go:1271-1286, 1323-1340,
+D/local.go:384-519, 1019-1031]
+  no shares request   OK, exclusive (consumes all 1M shares). The
+                      whole device /dev/daxX.0. Env MODE=dax SHARED=1
+                      SIZE=<daxX.0 size> DAX READONLY.
+  shares "1" (n>=1)   OK, one share; the same daxX.0.
+  readOnly            OK, permissions "r".
+  mode dax or none    OK (dax is the default and only mode).
+  mode numa           Prep "MemoryConfig: device: a shared device is
+                      used as dax only"
+  shares "0"          Prep "device 0xS: consumed shares \"0\" is less
+                      than 1: request shares: 1 (a share) or no shares
+                      (exclusive)" (D/lending.go:264-275)
+  The first claim creates the region and zeroes the WHOLE device once;
+  the region and the bytes stay while the memdev is configured shared,
+  also when idle; Unprepare only drops the claim. Readers see what the
+  last writer left.
+  Errors of stale allocations: "memdev M (serial 0xS): used as slices
+  by claims [U]; a shared device cannot be sliced", "memdev M (serial
+  0xS): used shared by claims [U]; a sliced device cannot be shared"
+  (D/local.go:432, 532); "memdev M (serial 0xS): zeroing new shared
+  daxX.0: <cause>" (D/local.go:515).
+
+REGION (cxl-region) and DRAM (cxl-dram) [R C/config/device.go:71-78,
+D/node_state.go:1224-1246]
+  no mode, mode numa  OK. Capacity reservation only. Env MODE=numa
+                      NODE=N (region) or NODES=0-1 (dram), SIZE =
+                      consumed bytes. Steered only with a policy.
+  other mode          Prep "MemoryConfig: device: a region is used as
+                      numa only" / "... a dram is used as numa only"
+  readOnly            Prep "MemoryConfig: device.readOnly needs mode
+                      dax"
+  Region and DRAM nodes are never fenced (D/fence.go:143-165).
+  The e2e VMs have no pre-created region [I].
+
+LEASE DEVICE (cxl-lease) [R D/node_state.go:1203-1211, 1247-1251,
+D/lease_claims.go:121-162, 192-226]
+  no device section   OK. Env CXL_LEASE_SOCKET=/run/cxl/cxl.sock and
+                      the marker; mounts /run/cxl (rbind rw),
+                      /run/cxl/fs (rbind ro rslave),
+                      /usr/local/bin/cxl-request (only if the CLI file
+                      exists on the host).
+  any device field    Prep "MemoryConfig: device: the lease device has
+                      no device settings"
+  --leases=false      no lease device: Sched; companion claims fail
+                      "lease ID: lending to running containers is
+                      disabled (--leases=false)"
+
+POOL EXCLUSIVE VOLATILE (cxl-pool) [R C/config/device.go:94-140,
+D/pool.go:693-755]
+  no mode, mode numa  OK. New ram region, kmem, every block
+                      online_movable: node N of the slot's host bridge
+                      (pool-a/pool-b 2, pool-c 3 [I]). Env MODE=numa
+                      NODE=N SIZE=<device size> SHARED=0.
+  mode dax            OK. /dev/daxX.0 device_dax. NOT zeroed: a later
+                      claim, on any node, reads what the last wrote
+                      [R doc/usage.md:1061-1063].
+  dax + readOnly      OK, permissions "r".
+  readOnly, no mode   Prep "MemoryConfig: device.readOnly needs mode
+   or mode numa       dax, block or fs"
+  mode block or fs    Prep "MemoryConfig: device.mode block needs a
+                      persistent device" (or fs)
+  invalid mode        Prep "MemoryConfig: device.mode: invalid mode
+                      \"X\" (numa, dax, block or fs)"
+  memory > size       Sched
+  memory <= size      the whole device; SIZE is the device size
+
+POOL SHARED VOLATILE (cxl-pool-shared)
+  no shares request   OK, exclusive cluster-wide: the scheduler gives
+                      the device to no other claim, the controller
+                      attaches it Exclusive (status data
+                      exclusive=true); dax; SHARED=1.
+  shares "1"          OK; dax; non-exclusive attachment; any number of
+                      nodes; claims of one node share one attachment
+                      and one region.
+  readOnly            OK, permissions "r"
+  mode numa           Prep "MemoryConfig: device: a shared device is
+                      used as dax only"
+  shares "0"          Prep, the consumed-shares text (D/pool.go:469-
+                      475)
+  Two claims of one serial on a node prepared differently (only stale
+  allocations): Prep "shared=X, but another claim prepared it with
+  shared=Y", "mode X, but another claim prepared it in mode Y"
+  (D/pool.go:622-633). readOnly may differ.
+
+POOL PERSISTENT (cxl-pool-persistent), not in test19
+[R C/config/device.go:94-140, D/pool_persistent.go:107-148]
+  block, writable, non-shared or exclusive  OK; creates the fsdax
+                      namespace if none; CDI block node /dev/pmemK
+  block, writable, shares "1"  Prep "MemoryConfig: device.mode block:
+                      a shared device is writable only exclusively (no
+                      shares request)"
+  block readOnly      OK if a namespace exists, else "device 0xS: no
+                      fsdax namespace in regionK: has a writer written
+                      the device?"
+  fs readOnly         OK; node mount + CDI bind; PATH ACCESS READONLY=1
+  fs, not readOnly    Prep "MemoryConfig: device.readOnly: mode fs is
+                      read-only: set readOnly: true (write the device
+                      with mode block)"
+  no mode, numa, dax  Prep "MemoryConfig: device: a persistent device
+                      needs mode block or fs"
+
+POOL, ANY KIND [R D/pool.go:645-687, C/memctl/memctl.go:202-216]
+  no status entry     Prep "claim status has no entry for device P/D
+                      (not attached by the pool controller yet?)"
+  entry without data  Prep "status of device P/D has no data (written
+                      by the pool controller with the Attached
+                      condition)"
+  data incomplete     Prep "device data <raw>: serial, shared and size
+                      are required"
+  memdev not seen in  Prep "timeout waiting for CXL memory device with
+   30 s                serial 0x<hex>: context deadline exceeded"
+  "add_dev" failure   one retry after 3 s (D/pool.go:501-508)
+  pool.opaque invalid Ctrl reason InvalidConfig, message "MemoryConfig:
+                      pool.opaque.fake-cxl-pool: json: unknown field
+                      \"port\"" (F/controller/reconciler.go:150-165);
+                      a result that is Attached already keeps it
+  device not in pool  Ctrl AttachError "device D is not in pool P"
+  node not a host     Ctrl NoHost "node \"X\" is not a host of the
+                      pool" (F/controller/reconciler.go:336-346)
+  attach conflicts    Ctrl Conflict / AttachError / Timeout
+                      (F/controller/reconciler.go:277-333)
+
+1.4 Container settings: steering (opt-in) and fencing
+[R C/config/combine.go:104-215, D/nri.go:238-310, 355-385,
+D/lend.go:739-792, D/fence.go]
+- A container's results are found by the markers CXL_CLAIM_<uid>_<n>
+  in its env: only the results of the requests it references. Results
+  that are not prepared are left out silently (D/nri.go:382).
+- A field set by several results must agree, else CC "container
+  NS/POD/CTR: container.steering.policy: claim ns/a request r says X,
+  claim ns/b request s says Y" (C/config/combine.go:136-139).
+  defaults.container of the driver config fills unset fields.
+- Steered iff the effective policy is not none AND its results have
+  DRAM (dram devices) or CXL numa memory (numa local slices, regions,
+  pool numa devices) (C/config/combine.go:191-215). Then cgmpolmgr
+  sets cpuset.mems along the plan, the memory policy of the threads and
+  memory.high per step; manager started at StartContainer
+  (D/nri.go:504-523), stopped at StopContainer/RemoveContainer.
+  Policy auto: first-cxl (CXL only), first-dram (DRAM only),
+  start-interleaved (both).
+- Otherwise, with defaults.container.fencing allowed-mems (default),
+  "fenced": cpuset.mems = own - F + claimed + lent (D/lend.go:743-
+  753); own = the spec's cpuset.mems, or /sys/devices/system/node/
+  has_memory when the spec has none. Applied as a CreateContainer
+  adjustment only if F is not empty and the value differs
+  (D/lend.go:764-779). Memory policy and memory.high untouched.
+  fencing none: nothing changed.
+- Claim-less containers are fenced (default) or none.
+- F, the fenced set: the nodes of numa local slices and of pool numa
+  devices, added BEFORE their memory goes online (D/fence.go:85-108,
+  D/local.go:793-795, D/pool.go:737-738); seeded at start from the
+  prepared claims (D/fence.go:111-119, 143-165); ONLY GROWS until the
+  driver restarts; region and DRAM nodes never.
+- Log at V3: "NRI CreateContainer: ctr=C: memory steered|fenced|none
+  (steering P ..., fencing F ...)" (D/nri.go:315-316); "NRI fence:
+  fencing CXL node N (fenced nodes S)" (D/fence.go:101).
+- Invalid container values: Prep or CC, texts doc/usage.md:675-705.
+- Without NRI: claims are prepared, nothing is steered or fenced,
+  lease requests fail "lending unavailable: NRI not connected".
+
+1.5 firstAvailable [R doc/usage.md:1223-1237, doc/pool.md:280-283]
+- The scheduler takes the first subrequest that fits; the result's
+  request is "mem/local" or "mem/pool". Pools without binding
+  conditions are tried first. Entries listing "mem" apply to every
+  alternative, "mem/pool" to one; each driver needs its own entry.
+
+1.6 Per-request attribution [R D/node_state.go:1172-1177, 1404-1472,
+D/pool.go:518-524, 835-860]
+- One CDI device per allocation result n: nri.io/cxl=claim-<uid>-<n>
+  (cxl-claims.yaml) or nri.io/cxl-pool=claim-<uid>-<n> (cxl-pool.yaml)
+  with the marker CXL_CLAIM_<uid, - as _>_<n>=1, the result's env and
+  its device node (dax, block) or bind mount (fs). n is the index in
+  the allocation, so each driver's n may have gaps.
+- A lease claim also has nri.io/cxl=lease-<uid> (cxl-leases.yaml).
+- Companion claims of leases get NO CDI devices
+  (D/node_state.go:936-941, D/pool.go:555-557).
+- Env KEY: serial in upper-case hex, REGION<n>, DRAM; repeated keys in
+  one claim get _2, _3, counted per driver over the claim's results.
+  Two claims of one serial in one container: same names, one value
+  wins [R doc/usage.md:1050-1052].
+
+1.7 Leases [R D/broker.go, C/api/api.go:134-200, doc/leases.md]
+- Request validation (CLI exit 2, socket {"error": ...}), in order
+  (C/api/api.go:172-200): "invalid source ...", "invalid mode ...",
+  "invalid access ...", "shared memory is never onlined as RAM: use
+  mode dax", "access needs mode fs", "name needs mode fs", "invalid
+  name ...", "mode fs needs readOnly", "mode block with shared needs
+  readOnly", "readOnly needs mode dax, fs or block", "mode fs needs
+  source pool" / "mode block needs source pool", "size or serial is
+  required".
+- Plugin refusals (D/broker.go:470-536, 731-758): "invalid size
+  \"X\"", "device 0xS: not shareable", "device 0xS: not a local
+  device", "device 0xS: not a pool device", "device 0xS: a local
+  device of node N, not of this node", "device 0xS: mode fs needs a
+  persistent device", "device 0xS: a persistent device needs mode
+  block or fs", "pool driver disabled (--pool-driver-name)", "name
+  \"X\" is in use by lease ID", "lease claim NS/N has no filesystem
+  directory (prepared by an older driver): recreate the pod",
+  "lending unavailable: NRI not connected".
+- Effective mode: --mode, else dax with --shared, else numa; a serial
+  of a shared volatile device makes it dax (D/broker.go:529-535).
+- Companion claim and pod cxl-lease-<id> in the requester's namespace,
+  owner = requester pod; pod: pause, 100m/16Mi Guaranteed,
+  restartPolicy Always, required node affinity to this node
+  (D/broker.go:915-993). Requests (D/broker.go:995-1127):
+    --size S              firstAvailable [local: cxl-local memory S,
+                          pool: cxl-pool memory S]
+    --source X            exactly the class of X
+    --serial S            exactly the class of S's device, serial CEL
+    --shared [--size S]   cxl-local-shared then cxl-pool-shared,
+                          shares "1", size >= S
+    shared serial without --shared: no capacity (exclusive)
+    MemoryConfig {device: {mode, readOnly[, access]}} per driver.
+- States: Creating -> Pending -> Lending -> Ready; Releasing; Failed;
+  Released (responses only) (D/broker.go:666-728, 1507-1617).
+- numa: the node is lent through NRI to THAT container. Refused for a
+  steered container, the lease becomes Failed: "lend node N to C:
+  container is memory-steered (container.steering.policy of its claims
+  or the node defaults); lending is not supported together with
+  steering yet" (D/lend.go:103, 564-566). Not started: "lend node N to
+  C: container not started yet" (D/lend.go:568-574).
+- dax and block: fd over SCM_RIGHTS; fs: bind at /run/cxl/fs/<name>.
+- wait timeout (default 120 s): released and reported Failed
+  "timeout: not Ready after <wait>" (D/broker.go:772-802). wait 0
+  keeps a Pending lease forever: nothing times out Pending leases
+  (D/broker.go:1387-1429).
+- The node of a local numa companion slice is fenced: no other
+  container sees it.
+
+1.8 Driver configuration, read at start only [R D/driver.go:80-198,
+C/config/defaults.go:32-71]
+- sharedDevices, ignoreDevices, manageMemdevs, memdevSettings,
+  verifyAddressing (default true: address-line probe of each new
+  region; aliasing shrinks the published size, D/local_probe.go),
+  defaults.container.{steering,fencing}. An invalid fencing value stops
+  the driver.
+- ignoreNewMemoryDevices and ignoreNewRegions are parsed but used
+  nowhere [R grep: only D/driver.go:101-102]; ignoreNewNodes disables
+  the udev watcher, so the slice is never republished
+  (D/driver.go:464-487).
+
+========================================================================
+2. CAPACITY AND ACCOUNTING (what the scheduler sees)
+========================================================================
+
+2.1 Sliced local memdev [R D/node_state.go:541-549, 710-739, 771-788,
+D/local.go:773-785, 831-851]
+- capacity.memory C = localUsableSize(U, bs). U = RAM capacity, or less
+  by memdevSettings.usableSize or the probe result, rounded down to
+  256Mi. With bs = 128Mi (<= 256Mi, no head subtracted):
+  C = floor(U / 128Mi) * 128Mi. VM2: 1Gi = 8 blocks; VM0, VM1: 256Mi =
+  2 blocks.
+- requestPolicy: default C, validRange {min bs, step bs}; validValues
+  [C] when C < 2*bs. A request r consumes roundUp(r, bs), at least bs;
+  no request consumes C (the whole device).
+- Claims fit while the sum of consumed memory of all allocated results
+  on the memdev <= C. Each allocation RESULT is one slice: two
+  requests of one claim on one memdev are two slices (KEY, KEY_2).
+- Driver side: if the dax region has less free memory than the slice,
+  Prep "... no room for the slice: N bytes free in regionX, the slice
+  needs M" (D/local.go:846-848). Not expected; happens when orphan
+  slices of owner "-" hold memory (2.7) or the probe shrank U after the
+  allocation (doc/local.md:504-506).
+- Node N grows by every numa slice and shrinks on release; dax slices
+  add nothing (doc/local.md:157-165).
+- With DRANodeAllocatableResources, consumed memory counts against
+  node allocatable memory, and a dax claim raises the container's
+  memory limit too [R doc/local.md:539-541].
+
+2.2 Shared device, local or pool: capacity.shares = 1M, no policy. A
+claim without a shares request consumes 1M = exclusive and blocks
+every other allocation of the device; any share blocks an exclusive
+claim; shares sum <= 1M. For a pool device this holds cluster-wide.
+The node driver never checks exclusivity (D/local.go:384-416;
+D/pool.go:622-633 checks shared and mode only); the pool server
+refuses cross-host conflicts at attach (F/server/ops.go:533-546).
+
+2.3 Exclusive pool device: no allowMultipleAllocations: one claim at a
+time, cluster-wide; a memory request <= size fits and gets the whole
+device, > size: Sched. A device that moves to another node waits for
+its detach: the controller does not fail the new allocation while the
+other attachment is no longer desired (F/controller/reconciler.go:
+316-327).
+
+2.4 Pool slots, invisible to the scheduler [R F/server/ops.go:562-
+668]: the server picks a free slot under a host bridge with room in
+its fixed memory window, else Conflict "host H has no free CXL slot"
+(or "... under a host bridge with room for X", "host bridge B of host
+H has no room for X more: ...") -> Ctrl reason Conflict. test19: 2
+pool slots on hb0 and 4 on hb1 per VM against 2 devices per pool: not
+exhausted [I]. A shared device attached to k hosts takes one slot on
+each.
+
+2.5 Region, DRAM: capacity.memory = size, no policy; a request
+consumes its amount, no request the whole capacity [I: consumable
+capacity semantics]. Reservation only.
+
+2.6 Lease device: any number of claims, no capacity.
+
+2.7 Hidden consumers: orphan slices "-" (D/local.go:708-716,
+1193-1196, 1245-1262) hold region memory that the scheduler counts as
+free until the next Prepare on the memdev releases them.
+
+2.8 Placement: pool devices only on the nodes of the pool's
+nodeSelector (hosts mapped by systemUUID, else by name,
+F/controller/hosts.go:41-90); the scheduler pins the claim to a node
+(bindsToNode) and waits for Attached until the binding timeout
+(600 s), then allocates again [R doc/pool.md:278-290].
+
+2.9 Shared NUMA node: in a VM, local slices and pool numa devices
+under hb0 are all node 2. Isolation is per node: a container with any
+numa memory on node 2 may allocate from all memory on node 2
+[R doc/local.md:113-115, 167-169].
+
+========================================================================
+3. STATE AND RECOVERY
+========================================================================
+
+3.1 Files on the node [R doc/usage.md:1449-1473]
+  /var/lib/kubelet/plugins/cxl.nri.io/
+    preparedClaims.json     claim uid -> PrepareResult (CDI ids);
+                            written with os.WriteFile: NOT atomic
+                            (D/prepared_claims.go:71-80)
+    preparedClaimsInfo.json uid -> devices, settings, lend; atomic
+                            tmp+rename (D/local.go:1331-1344)
+    localDevices.json       bootID, devices {serial, region, dax,
+                            node, shared, claims {uid or "-": slices}}
+    localProbes.json        address-probe results, kept across boots
+    leases.json             lease claims and leases; strict decode,
+                            undecodable = empty and "Recovered"
+                            (D/lease_store.go:154-178)
+    leases/<uid>/cxl.sock, lease-fs/<uid>/, cxl-request
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/
+    preparedPoolClaims.json uid -> devices, result, lend; atomic; NO
+                            boot id (D/pool.go:887-915)
+    mounts/<hex>-<access>   fs node mounts
+  /etc/cdi/cxl-claims.yaml, cxl-leases.yaml, cxl-pool.yaml
+  kubelet DRA checkpoint under /var/lib/kubelet [I path]
+- Write order of cxl.nri.io persist(): CDI spec, preparedClaims.json,
+  preparedClaimsInfo.json (D/node_state.go:1008-1025). Prepare: device
+  work, store in memory, persist. Unprepare: device work, forget,
+  persist.
+- Prepare and Unprepare are serialized per driver by the kubelet
+  plugin helper (in-memory mutex, vendor/k8s.io/dynamic-resource-
+  allocation/kubeletplugin/draplugin.go:1262-1283) and per claim by
+  nodeLocks (D/node_state.go:133-181); the pool driver holds p.mu for
+  a whole batch, including the 30 s memdev wait (D/pool.go:394-402).
+  The two drivers run concurrently with each other, with NRI events
+  and with the lease broker.
+
+3.2 Driver restart: the start sequence [R D/driver.go:329-491]
+  1 Pool driver: load preparedPoolClaims.json (gone memdevs only
+    logged, kept until Unprepare), restoreMounts: fs node mounts and
+    lease binds mounted again, unknown mounts unmounted
+    (D/pool.go:252-276, D/pool_persistent.go:641-771). No sweep of pool
+    regions that no prepared claim has.
+  2 Local allocator: load localDevices.json; another boot: dropped
+    without touching anything (D/local.go:1314-1318); Reconcile against
+    the keys of preparedClaimsInfo.json (D/driver.go:557-585,
+    D/local.go:1148-1241): memdev gone -> forget; Region == "" (it was
+    being created) -> forget WITHOUT touching the memdev; region gone
+    -> forget; claims not prepared -> released (numa offlined first;
+    on failure kept as "-"); "-" slices released; dax devices of no
+    slice deleted; a device without claims -> region destroyed; shared:
+    unprepared claims dropped, region kept while configured shared.
+  3 First scan, then nodeState: ALL CDI specs of kinds nri.io/cxl and
+    nri.io/cxl-pool removed, 250 ms sleep, forgetGoneSlices (dax slices
+    that the allocator does not hold lose their device node),
+    cxl-claims.yaml rewritten (D/node_state.go:183-251). In this window
+    the CDI devices of running claims are missing [I: a container
+    (re)created then fails with an unresolvable CDI device].
+  4 Fence seeded with the numa nodes of prepared claims of both
+    drivers (D/driver.go:371).
+  5 Broker: load leases.json, rewrite cxl-leases.yaml, listen again
+    on the sockets of stored lease claims, sweep the directories of
+    unknown claims (D/broker.go:133-179).
+  6 kubelet plugin cxl.nri.io starts: Prepare/Unprepare may come now.
+    Pool driver writes cxl-pool.yaml and starts. Slice published.
+  7 NRI plugin starts; Synchronize rebuilds the container table and
+    derives the management of each container from its markers and the
+    prepared claims (D/lend.go:350-417); settings that do not combine:
+    "NRI Synchronize: ctr=C: <error>; taken as steered".
+  8 Only now lending.set(lender, broker) for both drivers
+    (D/driver.go:451-461). In the window 6-8 a companion claim's
+    Prepare fails with "lease ID: lending to running containers is
+    disabled (--leases=false)" (D/lending.go:142-144) and a revoke
+    returns nil with a warning (D/lending.go:181-186) [R; the window
+    is short].
+  9 Broker reconcile after Synchronize (waits at most 30 s): restarts
+    interrupted releases, releases leases in Creating > 2 min and
+    leases whose companion pod is gone, deleted or finished or whose
+    requester is done, lends the nodes of Ready numa leases again,
+    deletes companions without a lease (D/broker.go:1361-1495); then
+    LendsRestored: fencing of running containers becomes ready and a
+    fence pass runs (D/lend.go:797-829). Before that no running
+    container is updated.
+  Running containers across a driver restart:
+  - fenced: keep cpuset.mems; recomputed by the first fence pass.
+  - steered: managers are NOT restored: they keep cpuset.mems and their
+    memory policy, are no longer throttled with memory.high and do not
+    step on [R doc/usage.md:879-881; no restore path in D/nri.go].
+  - numa lends: kept in the cgroups, re-applied by the reconcile.
+  - dax and block fds: kept by the processes.
+  - fs lease binds: kernel mounts, kept; bound again if missing.
+  - regions and dax devices: kept; reconciled as in 2 (local only).
+  - containers (re)created while the driver is down: no NRI adjustment
+    (claim-less ones get every node; steered ones are not steered).
+    After restart: fenced ones are fixed by the first pass; steered
+    ones are taken as steered and never fenced or steered [R D/lend.go:
+    408-417; consequence I].
+  Claim unprepared while the driver is down: kubelet's
+  NodeUnprepareResources fails, the pod stays Terminating (pod deletion
+  waits for unprepare: K/kubelet.go:2440-2447, K/kubelet_pods.go:
+  1129-1133), kubelet retries in its reconcile loop
+  (K/cm/dra/manager.go:187-237) and succeeds after the restart.
+
+3.3 Pool controller restart [R F/controller/controller.go:250-326,
+F/controller/reconciler.go:125-243, 414-455]
+- Stateless and level-triggered: desired attachments from the claims
+  (allocation, node), actual from the server's attachments (owner
+  prefix "k8s:", not Adopted). Sync every 10 s and on informer events.
+- A graceful stop DELETES its pool's ResourceSlices
+  (F/controller/controller.go:316-326, publisher.go:219-237). While
+  they are gone: no new pool allocation, and the next rescan of
+  cxl.nri.io no longer sees those serials as pool serials
+  (D/pool_slices.go:62-93) [I: see E6].
+- Claims allocated while it is down wait for the binding condition
+  (600 s), then are allocated again; on return it attaches and writes
+  Attached.
+- Undesired attachments of ours: state attached -> detach; attaching ->
+  later; detaching -> waited for; failed -> left alone forever, logged
+  once (F/controller/reconciler.go:414-428).
+- An invalid pool config gives the same AttachFailed InvalidConfig on
+  every reconcile, unless the result is Attached already.
+
+3.4 Pool server restart [R F/server/state.go:105-282,
+F/server/server.go:931-1131]
+- The state file keeps devices, hosts and attachments (atomic write).
+  An interrupted "attaching" loads as "attached"; reconcile against
+  the qemu device tree: an attachment whose qemu device is gone is
+  checked for a still mapped backend, then finalized (detached) or
+  marked failed "leaked: ..."; a qemu device without an attachment is
+  ADOPTED (Adopted=true), which the controller ignores: it is never
+  detached by the controller (F/controller/reconciler.go:171-184).
+- qemu devices stay in the VMs across server restarts [I].
+- While the server is down the controller's sync fails at "list
+  hosts": no slice change, no attach, detach or status [R
+  F/controller/controller.go sync, hosts.go:95-111].
+
+3.5 kubelet restart [R K/cm/dra/manager.go:350-390]: the claim cache
+and checkpoint survive; prepared claims are not prepared again; pods
+keep running; the driver is not involved [I: plugins re-register
+through plugins_registry].
+
+3.6 containerd restart [R D/nri.go:178-180, 224-226; vendor/github.com/
+containerd/nri/pkg/stub/stub.go:626-633]: the NRI connection closes
+and is NEVER re-established: onClose only logs, the stub does not
+reconnect, the DaemonSet has no liveness probe. Until the driver
+restarts: no CreateContainer hook (no fencing of new containers, no
+steering, no conflict refusal), UpdateContainers fail (lends, revokes,
+fence passes). See E1.
+
+3.7 Container crash and restart, restartPolicy Always [R D/nri.go:
+238-273, 440-540; D/broker.go:1297-1359]
+- kubelet creates a new container with the same CDI devices; NRI
+  CreateContainer manages it afresh: fenced cpuset.mems recomputed;
+  steering gets a NEW plan from its first step and a new manager at
+  StartContainer (the old one is stopped by container id).
+- Leases: on stop, released only if the pod is gone, being deleted,
+  finished or has restartPolicy Never; otherwise kept, and the nodes
+  of Ready numa leases are lent again at StartContainer; dax and block
+  fds are gone (cxl-request fd --lease ID to get them again).
+- dax slice contents survive (no zeroing again).
+
+3.8 Pod deletion while Prepare runs [R K/cm/dra/manager.go:350-390,
+657-700; D/node_state.go:935-945, D/pool.go:442-459]: kubelet records
+the claim in its cache and checkpoint BEFORE calling Prepare; the
+Unprepare comes after the Prepare (helper serialization); a failed
+Prepare has rolled back; kubelet then unprepares the claim of the
+inactive pod, which the driver answers with nil for an unknown claim.
+
+3.9 Claim deletion order [I]: a reserved claim is not removed while a
+pod uses it (finalizer); it is deallocated after the last consumer has
+gone (after Unprepare); only then the controller detaches. Template
+claims go with their pod.
+
+3.10 Node (guest) reboot [R D/local.go:1314-1318, D/pool.go:891-915,
+D/node_state.go:1030-1040; I kubelet and qemu]: local state of another
+boot dropped untouched; regions are gone. kubelet keeps the claims
+prepared in its checkpoint and does not prepare them again:
+containers restart with the old CDI devices. Local dax slices lose
+their device node and CXL_<KEY>_DAX; local numa claims keep NODE=N
+without memory. The pool driver has no boot id: cxl-pool.yaml keeps
+stale dax major:minor and node numbers (E7). qemu keeps hot-plugged
+devices across a guest reboot [I].
+
+========================================================================
+4. ERROR SCENARIOS, RANKED BY HOW LIKELY THEY HIDE BUGS
+========================================================================
+
+E1 containerd restart (high)
+  path: D/nri.go:224-226 onClose logs; the stub never reconnects.
+  effect: new claim-less containers get every node, fenced CXL nodes
+  included; steering claims run unsteered; conflicting settings are
+  no longer refused; numa lease requests fail (updateMems error,
+  D/lend.go:614-616) and the lease is Failed; the Unprepare of a numa
+  companion claim fails on every retry (revoke error,
+  D/node_state.go:825-832, D/pool.go:790-798): companion Terminating,
+  lease Releasing, memory held until the driver restarts.
+  test: restart containerd; create a claim-less pod, a numa lease,
+  release it; check cpuset.mems and the lease state.
+
+E2 driver killed during a pool Prepare, pod deleted before the retry
+  (high)
+  path: region creation and onlining happen before p.sync()
+  (D/pool.go:497-560); after the restart nothing records the region
+  (newPoolDriver has no sweep, D/pool.go:252-276); kubelet unprepares
+  the claim (K/cm/dra/manager.go:187-237), the driver says nil for an
+  unknown claim (D/pool.go:786-789).
+  effect [I]: the region stays (numa: memory online on node N, and N is
+  not seeded into the fence, so new claim-less containers get N); the
+  memdev stays enabled; after deallocation the controller detaches,
+  the guest cannot release the device, the attachment becomes failed or
+  "leaked" (F/server/server.go:1113-1149), and an exclusive device is
+  refused on every other host ("device D is not shared and it is
+  attached to H", F/server/ops.go:541) until forced.
+  If the pod is not deleted the retry reuses the region
+  (C/memctl/memctl.go:946-949) and succeeds.
+  test: SIGKILL the driver 0.5-2 s into a pool claim's Prepare, delete
+  the pod, wait; check I5, I6, I9.
+
+E3 driver killed during the creation of a local region (medium-high)
+  path: the device is saved with Region "" before the region is
+  created (D/local.go:555-570 sliced; D/local.go:462-486 shared, where
+  the second save comes only after zeroing the whole device); Reconcile
+  forgets such an entry "without touching the memdev"
+  (D/local.go:1173-1176), intentionally, but tested only without a
+  region (D/local_test.go:1264-1273).
+  effect: the region stays; the memdev is never published again
+  ("it has regions [regionX] that the plugin did not create",
+  D/node_state.go:511-512), local claims stay Pending; the leaked
+  devdax region may be published as a region device [I, 1.1].
+  test: SIGKILL during the first claim of a memdev; the 1G shared
+  zeroing gives a wide window.
+
+E4 split, non-atomic persistence of cxl.nri.io claims (medium: small
+  window, large effect)
+  path: persist() writes preparedClaims.json (os.WriteFile), then
+  preparedClaimsInfo.json (D/node_state.go:1008-1025).
+  (a) crash between the two writes of a Prepare: the restart releases
+  the slices (Reconcile uses the info keys, D/driver.go:566-583), but
+  prepare() finds the claim "already prepared" (D/node_state.go:904-
+  910) and returns CDI ids that the rewritten spec does not have
+  (buildClaimsCDISpec skips claims without info, D/node_state.go:1451-
+  1455): the container never starts (unresolvable CDI device) [I].
+  (b) crash between the two writes of an Unprepare: Prepared lacks the
+  claim, info has it; the retried Unprepare returns nil
+  (D/node_state.go:821-823, 846-851): slices, fence node and the info
+  entry leak forever, also across restarts.
+  (c) truncated preparedClaims.json: the driver does not start ("failed
+  to parse prepared claims file", D/prepared_claims.go:63-66).
+  test: SIGKILL at random points of Prepare/Unprepare bursts; check
+  I1-I3 after the restart.
+
+E5 steered containers across a driver restart or downtime (medium)
+  path: no manager restore; Synchronize takes them as steered
+  (D/lend.go:408-417); one (re)created while the driver is down is
+  neither steered nor ever fenced.
+  test: steered pod; crash its container while the driver is down;
+  restart the driver; check that its cpuset.mems has no fenced node of
+  other claims.
+
+E6 pool controller stopped gracefully while a pool memdev is attached
+  but not prepared (medium)
+  path: the controller deletes its slices; any udev event (another
+  claim's region) rescans; the memdev's serial is no pool serial now
+  (D/pool_slices.go:62-93) and is not prepared, so it is published as
+  memdev-<hex> under cxl.nri.io (D/node_state.go:488-536) [I].
+  effect [I]: a local claim may slice it; the pool claim's Prepare later
+  reuses that region (C/memctl/memctl.go:946) and two claims share
+  bytes; or the memdev stays published locally after the attachment.
+  test: SIGTERM the controller after Attached and before the pod runs
+  (or after a failed Prepare); trigger a local claim; check I12.
+
+E7 node reboot with prepared pool claims (medium, if modelled)
+  path: no boot id in preparedPoolClaims.json (D/pool.go:891-915);
+  cxl-pool.yaml is built from the stored dax major:minor
+  (D/pool.go:848-851). The local driver guards with forgetGoneSlices
+  (D/node_state.go:1030-1040); the pool driver has no such guard.
+  effect [I]: restarted containers get a dax node with stale numbers,
+  maybe another device's, or NODE=N without memory.
+
+E8 lease release paths (medium)
+  - numa release while pages cannot move: offline fails, Unprepare
+    retried (D/local.go:1087-1104); lease Releasing, companion
+    Terminating.
+  - lease claim Unprepare waits 5 s, then "claim NS/N: still releasing
+    K leases, retry" (D/lease_claims.go:236-259).
+  - companion deleted behind the broker's back: "companion claim
+    unprepared (companion pod deleted or evicted)", Failed, dropped by
+    the reconcile within 60 s (D/broker.go:1605-1617, 1387-1429).
+  - requester container gone: kept with restartPolicy Always and a live
+    pod, released otherwise (D/broker.go:1277-1326).
+  - numa lease to a steered container: Failed with the errSteered text.
+  - dax lease released while mapped: SIGBUS in the borrower
+    (documented, doc/leases.md:685-692).
+  - wait timeout: Failed "timeout: not Ready after Xs" and released.
+  - a release that the plugin restart interrupts is restarted by the
+    reconcile (state Releasing).
+
+E9 orphan slices "-" consume capacity the scheduler counts as free
+  (medium-low)
+  path: failed delete after a failed addSlice (D/local.go:708-716),
+  failed release at restart (D/local.go:1193-1196), unknown dax
+  devices (D/local.go:1245-1262). Released before the next slice of
+  the memdev; while that fails every Prepare on the memdev fails with
+  the release error; else "no room for the slice".
+
+E10 two claims racing for a shared device (low; owned by the
+  scheduler)
+  path: the driver accepts any allocation; the shares capacity and the
+  controller's Exclusive attach (F/server/ops.go:533-546,
+  F/controller/reconciler.go:186-212) prevent overlaps. An exclusive
+  claim allocated while another host's share attachment is still
+  detaching waits (F/controller/reconciler.go:316-327).
+  test: create a writer and readers concurrently, repeatedly.
+
+E11 detach of a device that the guest still uses (force-deleted pod,
+  or E2): attachment failed, never retried
+  (F/controller/reconciler.go:422-427); needs a forced detach on the
+  server; the qemu device is a zombie until the VM restarts.
+
+E12 the allocated device disappeared before Prepare (hot-remove of an
+  idle local memdev): Prep "could not find allocatable device
+  memdev-<hex> (pool NODE)" (D/node_state.go:1161-1164), retried
+  forever. Hot-removing an in-use memdev: not supported, refused by the
+  kernel while its region exists [R doc/local.md:554-555].
+
+E13 idempotence: Unprepare of an unknown claim -> nil
+  (D/node_state.go:821-823, D/pool.go:786-789); Prepare of a prepared
+  claim -> the stored result, no device work (D/node_state.go:904-910,
+  D/pool.go:406-412); a prepared companion claim tells the broker
+  again (D/lending.go:207-215).
+
+E14 stale tracked containers: a container whose CreateContainer
+  returned an error stays in the table until a Synchronize
+  (D/nri.go:247-252), so every fence pass tries to update it and logs
+  "NRI fence: N containers updated, M failed" (D/lend.go:916); lookups
+  pick the newest entry of a pod and name (D/lend.go:466-474) [I: could
+  pick a never-started one: "container not started yet"].
+
+E15 persistent devices only (not in test19): busy unmount "device 0xS:
+  unmounting M: device or resource busy", held block device "device
+  0xS: /dev/pmemK is still in use": Unprepare fails and is retried
+  (D/pool_persistent.go:268-313).
+
+E16 restart CDI window: a container that restarts during the driver's
+  restart may hit the missing CDI devices of step 3.2-3 (transient
+  CreateContainerError) [I].
+
+========================================================================
+5. QUIESCENT INVARIANTS (check after every step, once settled)
+========================================================================
+Per node X, from the driver pod or the VM; the controller needs up to
+10 s per sync, the broker reconcile up to 60 s.
+
+I1 Prepared sets agree: keys(preparedClaims.json) ==
+   keys(preparedClaimsInfo.json); keys(cxl.nri.io files) U
+   keys(preparedPoolClaims.json) == the claims with a result on X
+   (cxl.nri.io pool X, or a pool result whose allocation nodeSelector
+   is X) reserved by a pod on X that is not terminated == kubelet's
+   prepared claims of X. Companion claims included.
+   (cat the files; kubectl get resourceclaims -A -o json; pods -o wide)
+I2 localDevices.json: bootID == /proc/sys/kernel/random/boot_id;
+   every claim uid is in preparedClaimsInfo.json with a memdev device
+   of that serial; no "-" owner; no device without claims unless shared
+   and configured shared.
+I3 Local memdevs (cxl list -RMu, /sys/bus/cxl/devices, daxctl list):
+   a region on a local memdev exists iff localDevices.json has it; the
+   dax devices of size > 0 in it == the slices of the state (names,
+   sizes); numa slices on kmem with all blocks online_movable
+   (/sys/devices/system/memory/memoryN/state); dax slices on
+   device_dax.
+I4 Per memdev: sum of slice sizes <= published capacity; slices ==
+   allocated results on it; MemTotal of node N
+   (/sys/devices/system/node/nodeN/meminfo) == numa slices + pool numa
+   devices on N (minus memmap_on_memory if used).
+I5 Pool memdevs in the guest: a memdev of a pool serial has a region
+   iff a prepared pool claim of X has the serial; numa: kmem and
+   online_movable; dax: device_dax, no block online; memdevs of pool
+   serials without a prepared claim are disabled or gone.
+I6 Pool attachments, per server (fake-cxl-pool-client --pool P -o json
+   attachments): {(device, host) attached} == {(device, node) of the
+   allocated claims of P}; none attaching, detaching, failed or
+   adopted; exclusive == some claim without a shares request; a
+   non-shared or exclusive device attached to at most one host.
+I7 Claim status: every allocated pool result has Attached=True with
+   data.serial, shared, size of its device; Attached results never
+   have AttachFailed.
+I8 CDI (/etc/cdi): cxl-claims.yaml == {claim-<uid>-<n>: prepared
+   non-companion cxl.nri.io claims, results n on X}; cxl-pool.yaml
+   likewise; cxl-leases.yaml == {lease-<uid>: claims in leases.json};
+   each dax DeviceNode major:minor == /sys/bus/dax/devices/<name>/dev;
+   no other spec of vendor nri.io.
+I9 Fencing: F = the numa nodes of local slices and pool numa devices
+   prepared since the driver started (logs "NRI fence: fencing CXL
+   node N"), it never shrinks. For every running container c that is
+   not steered, with fencing allowed-mems: cpuset.mems(c) == own(c) -
+   F + claimed(c) + lent(c); claim-less containers have no node of F.
+   Pause containers are exempt. (/sys/fs/cgroup/<ctr>/cpuset.mems,
+   Mems_allowed in /proc/<pid>/status, crictl inspect.)
+I10 Steering: a steered container has a manager (log "NRI
+   StartContainer: ctr=C: started memory steering"), cpuset.mems
+   within its DRAM and claimed CXL nodes plus the nearest node with
+   normal memory, memory.high set. After a driver restart its
+   cpuset.mems does not change and it is not updated any more.
+I11 Leases (leases.json): every lease Ready (or Pending with wait 0
+   when unschedulable); each has its companion pod and claim
+   cxl-lease-<id> in the requester's namespace with labels
+   cxl.nri.io/lease, cxl.nri.io/node=X, cxl.nri.io/requester-uid; a
+   numa lease's node is in the requester container's cpuset.mems and
+   in no other container without its own claim or lease on it; no
+   companion objects labelled cxl.nri.io/node=X and cxl.nri.io/lease
+   without a lease; leases/<uid>/cxl.sock exists for every stored
+   lease claim; no leases/<uid> or lease-fs/<uid> of unknown claims.
+I12 cxl.nri.io ResourceSlice of X (kubectl get resourceslices -o json):
+   memdev-<hex> iff the memdev is present, enabled, has no foreign
+   region and its serial is in no pool slice; never a pool serial;
+   shared iff in sharedDevices.
+I13 Logs: no "no room for the slice", no "keeping ... for a later
+   release", no "is held: "; the memory of a dax-mode (shared or dax)
+   device is never online.
+I14 Persistent devices only: node mounts == the fs devices of the
+   prepared claims.
+
+Observation commands [I]: kubectl get resourceslices,resourceclaims,
+pods -A -o json; crictl ps / inspect; cat /var/lib/kubelet/plugins/
+{cxl.nri.io,cxl-pool.nri.io}/*.json; ls /etc/cdi; cxl list -RMu;
+daxctl list; /sys/devices/system/node/node*/meminfo;
+/sys/devices/system/memory/memory*/state; fake-cxl-pool-client --pool
+P -o json attachments; kubectl logs -n kube-system -l
+app.kubernetes.io/name=nri-dra-driver-cxl.

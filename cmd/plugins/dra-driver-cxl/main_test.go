@@ -15,6 +15,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -224,5 +225,61 @@ func TestPreparedClaimsFile(t *testing.T) {
 	}
 	if _, err := getOrCreatePreparedClaims(path); err == nil {
 		t.Fatal("invalid file: expected an error")
+	}
+}
+
+// The two files of the prepared claims after a crash between their writes
+// (bug-07): a claim is prepared only when both have it.
+func TestPreparedClaimsReconcile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, device.PreparedClaimsFileName)
+	result := func(uid string) kubeletplugin.PrepareResult {
+		return kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{{
+			Requests: []string{"mem"}, PoolName: "n1", DeviceName: "dram0", CDIDeviceIDs: []string{"nri.io/cxl=claim-" + uid + "-0"}}}}
+	}
+	info := &PreparedClaimInfo{ClaimName: "ns/c", Devices: []PreparedDeviceInfo{{RequestName: "mem", DeviceName: "dram0", DeviceType: device.DeviceTypeDRAM}}}
+	// u1 prepared; u2 stopped in its Prepare (the first file written);
+	// u3 stopped in its Unprepare (the first file written); u4 with a null
+	// info
+	noErr(t, writePreparedClaimsToFile(path, claimPreparations{"u1": result("u1"), "u2": result("u2"), "u4": result("u4")}))
+	noErr(t, writePreparedClaimsInfoToFile(filepath.Join(dir, preparedClaimsInfoFileName), PreparedClaimsInfo{"u1": info, "u3": info, "u4": nil}))
+	prepared, infos, preparing, unpreparing, err := loadPreparedClaims(path)
+	noErr(t, err)
+	if !reflect.DeepEqual(prepared, claimPreparations{"u1": result("u1")}) || !reflect.DeepEqual(infos, PreparedClaimsInfo{"u1": info}) {
+		t.Errorf("prepared %v info %v, expected u1 only", prepared, infos)
+	}
+	if !reflect.DeepEqual(preparing, []string{"u2", "u4"}) || !reflect.DeepEqual(unpreparing, []string{"u3"}) {
+		t.Errorf("forgotten preparing %v unpreparing %v", preparing, unpreparing)
+	}
+
+	// missing files are created empty
+	empty := filepath.Join(t.TempDir(), device.PreparedClaimsFileName)
+	prepared, infos, preparing, unpreparing, err = loadPreparedClaims(empty)
+	if err != nil || len(prepared) != 0 || len(infos) != 0 || preparing != nil || unpreparing != nil {
+		t.Fatalf("new files: %v %v %v %v %v", prepared, infos, preparing, unpreparing, err)
+	}
+	for _, name := range []string{device.PreparedClaimsFileName, preparedClaimsInfoFileName} {
+		if data, err := os.ReadFile(filepath.Join(filepath.Dir(empty), name)); err != nil || string(data) != "{}" {
+			t.Errorf("new %s %q %v", name, data, err)
+		}
+	}
+
+	// a restarted node state prepares u2 again, has no info of u3 (its
+	// fenced node and lend are gone) and writes both files so
+	s, err := newNodeState(device.DevicesInfo{}, t.TempDir(), path, "n1", &DriverConfig{}, nil)
+	noErr(t, err)
+	if _, found := s.preparedInfo("u2"); found {
+		t.Error("u2 is prepared")
+	}
+	if s.GetClaimInfo("u3") != nil {
+		t.Error("u3 has info")
+	}
+	prepared, infos, preparing, unpreparing, err = loadPreparedClaims(path)
+	noErr(t, err)
+	if len(prepared) != 1 || len(infos) != 1 || preparing != nil || unpreparing != nil {
+		t.Errorf("files after the start: %v %v %v %v", prepared, infos, preparing, unpreparing)
+	}
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temporary file left: %v", err)
 	}
 }

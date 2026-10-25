@@ -1,0 +1,829 @@
+plan-13-gofmbt: the e2e framework of the CXL DRA driver, for test90
+=====================================================================
+2026-10-24. Read-only research for a model-based test
+memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-
+reliability. Nothing was run, no VM was touched.
+
+Abbreviations:
+  N    ~/github.com/containers/nri-plugins
+  E    N/test/e2e
+  S    E/memory.test-suite/dra-driver-cxl
+  T    S/n4-cxl-shared-2
+  P    N/scripts/testing/fake-cxl-pool
+  O    E/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/
+       dra-driver-cxl (output dirs of the last runs, 2026-10-23)
+  dra: S/dra.source.sh     pool: T/pool.source.sh   cxl: T/cxl.source.sh
+  tNN: T/testNN-*/code.var.sh
+  VM2 = n4-cxl-shared-2 (control plane, the VM of the test), VM1 =
+  n4-cxl-shared-1, VM0 = n4-cxl-shared-0 (workers).
+
+1. How a test runs
+------------------
+
+1.1 Discovery (E/run_tests.sh)
+
+- Argument: a *.test-suite dir, or POLICY, POLICY/TOPOLOGY or
+  POLICY/TOPOLOGY/TEST under one (run_tests.sh:168-198).
+- Every level (suite root, policy, topology, test) goes through
+  export-and-source-dir (133-138): *.var and *.var.* files become
+  exported variables, *.source and *.source.* files are sourced before
+  the test code, vm-files/ becomes vm_files.
+- *.var rule (48-83): the variable name is the file name up to the
+  first ".var"; names ending in "~" or containing "#" are skipped.
+  "code" and "py_consts" are appended level by level; any other
+  variable is created once and a deeper level overrides it only if it
+  came from a var file, never if the user set it in the environment.
+  *.var.in.* files are expanded with eval echo -e (76-77).
+- Consequence for test90: code.var.sh is the test; any other
+  X.var.* file in the test dir exports X; any *.source* file is
+  sourced by bash. A Go model must not be named like that
+  (model.var.go would export "model", x.source.go would be sourced).
+- Source order: E/lib/test.bash first (253), then suite, policy
+  (dra.source.sh), topology (T/cxl.source.sh, llm.source.sh,
+  pool.source.sh in glob order), test dir (source-source-files,
+  115-131). Topology var files: topology.var.json, vm_network.var.sh
+  ("cxl-pool"), kernel_config.var.sh, kernel_getsource.var.sh.
+- A test is a dir TOPOLOGY/test* (312); the test filter is a
+  substring regex of its name (316).
+- Long tests: SKIP_LONG_TESTS=${skip_long_tests:-yes} (5). When yes, a
+  test whose whole TEST_DIR path matches *fuzz*, *long* or *stress* is
+  skipped (323-338). "test90-gofmbt-reliability" matches none, so it
+  would run in every run of the suite
+  (./run_tests.sh memory.test-suite/dra-driver-cxl). SKIP_LONG_TESTS is
+  not exported (5): the code sees only $skip_long_tests, if the user
+  exported it.
+- No per-test timeout in run_tests.sh or run.sh (run_tests.sh:354-355
+  is a plain call piped into tee).
+- Precedent of a generated test: policies.test-suite/topology-aware/
+  n4c16/test06-fuzz: generate.sh runs "go run ./generate.go" offline
+  (gofmbt, github.com/askervin/gofmbt/gofmbt) into generated<N>.sh in
+  the test dir; code.var.sh sources each in ( ... ) & and waits, and
+  exits 0 with a warning if none were generated. gofmbt is in N/go.mod
+  (line 6, v0.0.0-20260730061456-f663bfa65cdf) and in N/vendor
+  (modules.txt:4; vendor/ is untracked in git). cxl-tools-install
+  builds Go on the host from a test too (cxl:22).
+
+1.2 run.sh and the code
+
+- run_tests.sh runs, per test (354-355):
+    policy=... test_outdir=... TEST_DIR=... TOPOLOGY_DIR=...
+    POLICY_DIR=... run.sh test 2>&1 | tee $test_outdir/run.sh.output
+  test_outdir = $OUTPUT_DIR/<suite>/<policy>/<test> (347); OUTPUT_DIR is
+  the output dir of the VM (310). test_outdir is mkdir -p'd, never
+  cleaned (349): files of earlier runs stay (O/test14-dra-local-memdev
+  holds 8 nri-dra-driver-cxl.vm.<pod>.log of earlier runs).
+- run.sh per test: vm-setup and vm-nri-plugin-deploy (308-310; the
+  playbook imports the newest driver image into VM2), then
+  test-user-code (335-343): "kubectl delete pods --all --now" in
+  namespace default (336), then ( eval "$code" ) (340), the source
+  lines plus code.var.sh in a subshell of run.sh. Every run.sh variable
+  is visible to the code.
+- Variables of the code: TEST_DIR, TOPOLOGY_DIR, POLICY_DIR
+  (run_tests.sh:354), TEST_OUTPUT_DIR (= test_outdir, run.sh:41),
+  COMMAND_OUTPUT_DIR (TEST_OUTPUT_DIR/commands, 42), OUTPUT_DIR (VM2's
+  output dir, 35), VM_HOSTNAME (167), POLICY = dra-driver-cxl (168),
+  SSH, SCP (175-176), distro, k8scri, nri_resource_policy_src (179),
+  topology, vm_network, SCRIPT_DIR, LIB_DIR, and every variable the user
+  exported for run_tests.sh (run.sh is a child process): the way to give
+  test90 parameters (steps, seed, ...).
+- Verdict: a non-zero exit of the subshell sets TEST_FAILURES (341);
+  run.sh appends "Test verdict: FAIL" or "PASS" to summary.txt and
+  prints it (1166-1173). run_tests.sh greps run.sh.output for "Test
+  verdict: SKIP" first, then PASS, then FAIL, else ERROR (362-371). A
+  test that prints "Test verdict: SKIP ..." and exits 0 is SKIP
+  (t19:44-47). The suite run exits 1 on any FAIL or ERROR (398-400).
+- error MSG (E/lib/vm.bash:51-54) prints and exits 1. command-error
+  MSG (E/lib/command.bash:77-93) prints COMMAND, COMMAND_OUTPUT,
+  COMMAND_STATUS and exits 1 unless INTERACTIVE_MODE (breakpoint,
+  run.sh:318-333). Both end the test only in the test's own shell:
+  inside $(...), a pipeline or ( ) they end only that subshell.
+  Evidence: helm-launch's port forward calls vm-run-until inside $(...)
+  (vm.bash:1420-1422); every dra-install prints "error: waiting for
+  command ... timed out after 5 s" and goes on
+  (O/test19-many-pools/run.sh.output:816, P/plan-10-many-pools/
+  06-runs.txt:55-58). The YAML helpers (dra-claim-yaml, ...) are used
+  inside "$(...)": their error() leaves partial YAML for dra-apply.
+- retry-until (E/lib/test.bash:28-73) never fails the test (returns 1);
+  vm-run-until (vm.bash:1256-1283) calls error on timeout.
+- verify/pyexec (run.sh:975-1135) work on the policy cache; the cxl
+  tests do not use them.
+- Logging: vm-command and vmdir-command print the command and its
+  output and write $COMMAND_OUTPUT_DIR/NNNN-<vm> (command.bash:22-75);
+  the -q variants are silent and write nothing. The counter is a shell
+  variable (command.bash:19, 29): a command run in a subshell does not
+  advance it for the parent. vm-command (not
+  vmdir-command) also parses every command for E2EISH records
+  (vm.bash:844, lib/e2eish.bash:108-130; e2eish=0 turns them off).
+
+1.3 Background processes and cleanup
+
+- Allowed: the code is a subshell of run.sh, background jobs are its
+  children. Precedents: pool-server-start runs the server with &
+  (pool:516-518), keeps the pid, pool-server-kill stops it (TERM, KILL
+  after 10 s, wait; pool:540-557); dra-trace-collect starts every
+  stream as "setsid bash -c ... &" (dra:2902), dra-trace-stop kills the
+  process groups on the host and the sessions in the VMs (dra:3028-
+  3075, DRA_TRACE_KILL dra:158); test06-fuzz runs generated scripts in
+  ( ... ) & and waits. No coproc or mkfifo exists anywhere in E.
+- stdin: vm-command and vm-command-q give ssh the command on stdin with
+  <<< (vm.bash:852, 859), vmdir-command too (E/lib/k8s.bash:69, 81); the
+  trace ssh uses -n (dra:2932); host-command runs bash -c and inherits
+  stdin (E/lib/host.bash:9); fake-cxl-pool-client on the host runs that
+  way (pool:692).
+- The test's stdout goes through tee into run.sh.output
+  (run_tests.sh:355): what a coprocess prints to the test's stdout ends
+  up there.
+- One EXIT trap, replaced, never chained: pool-server-start sets
+  "trap pool-cleanup EXIT" at the first server (pool:519); dra-install
+  replaces it with "$DRA_EXIT_TRAP" if set, else
+  'dra-cleanup; pool-cleanup' (dra:410-417). A test that needs more sets
+  DRA_EXIT_TRAP before dra-install (t17:298
+  'dra-local-shared-cleanup "$VM2"') or traps again after it
+  (t16:759, 772 exit-cleanup). Every test ends with the cleanup called
+  explicitly and "trap - EXIT" (t19:496-499, t14:819-823,
+  t17:542-546). A coprocess of test90 must be stopped in that trap.
+- dra-cleanup (dra:643-663) = dra-uninstall (590-641: delete the pods
+  of DRA_NS gracefully (--grace-period=2, timeout 60 s) and the
+  namespace (120 s); wait <=60 s for no claims; wait <=60 s per node and
+  server until no k8s:-owned attachment is left; save every node's
+  driver log; helm uninstall; stop the controller units; delete pool
+  slices left; dra-state-cleanup per node) + dra-trace-stop + a report
+  of memdevs left. pool-cleanup (pool:592-644) runs "fake-cxl-pool-
+  client guest release SERIAL" in the VM and detaches every
+  non-adopted attachment of every server, deletes dynamic devices,
+  stops the servers. Neither fails the test.
+
+2. Cluster setup for test90
+---------------------------
+
+2.1 test19's setup, step by step (t19)
+
+ 1 fedora check (44-47); pool-cluster-require (50; pool:224-237):
+   VM2 control plane, VM1 and VM0 workers, made by T/test00-up.
+ 2 VM2="$OUTPUT_DIR", VM1="$POOL_VM1_DIR", VM0="$POOL_VM0_DIR"
+   (52-58; pool:37-44); the dir basenames are the host names, the
+   fake-cxl-pool host names and the Kubernetes node names (dra:211-217).
+ 3 pool-vm-require VMDIR TOPOLOGY for each VM (201-203; pool:170-204):
+   patched qemu (power_controller_present of cxlsw_ds0_usrp0hb0),
+   hdm_for_passthrough on cxlhb0 and cxlhb1, CONFIG_FS_DAX=y.
+ 4 pool-vm-tools-install for each, VM2 first (it builds cxl-dump on the
+   host; 206-208; pool:206-222); pool-vm-reset for each (209-213;
+   pool:239-264): restart a VM that has cxl-type3 in qemu or mem*/
+   region* in the kernel, wait <=300 s for its node Ready, write
+   "offline" to auto_online_blocks; pool-cxl-dump no-devices +
+   cxl-assert empty.
+ 5 three servers (217-249):
+     pool-server-start --name pool-a --hosts "$VM1 $VM2" --index 0
+       --slots "*hb0"  a-pooled0 512Mi excl 0xc1ee0001,
+                       a-shared0 256Mi shared 0xc1ae0001
+     pool-server-start --name pool-b --port 9910 --hosts "$VM0"
+       --index 1 --slots "*hb0"  b-pooled0 512Mi 0xc1ee1001,
+                                 b-shared0 256Mi 0xc1ae1001
+     pool-server-start --name pool-c --port 9911
+       --hosts "$VM0 $VM1 $VM2" --index 2 --control hmp --slots "*hb1"
+       --local-devices no  c-shared0 256Mi 0xc1ae2001,
+                           c-pooled0 256Mi 0xc1ee2001
+   pool-server-start writes the config (pool:485-513: pool capacity 8G,
+   discovery interval 10s, detachTimeout 15s), removes the state file
+   first (474), waits <=60 s for /api/v1/status (531-535).
+ 6 hosts of each pool checked (252-262: 4 slots per host, all of the
+   pool's host bridge); pool-client-install "$VM2" "$VM1" "$VM0" (263;
+   pool:646-661: fake-cxl-pool-client and pool-dax-rw.py to
+   /usr/local/bin).
+ 7 dra-build (266; dra:292-303: make -C P); dra-install (267; 2.2);
+   DRA_CONTROLLER_UNITS == fake-cxl-pool-controller,
+   fake-cxl-pool-controller-pool-b, fake-cxl-pool-controller-pool-c
+   (268-271); each unit's journal has "pool <name> (from the server)"
+   (272-275).
+ 8 dra-pull-images VM $DRA_TOOLS_IMAGE (python:3-alpine, dra:130) on
+   each VM (276-278); dra-dax-tool-install "$VM2" (279; dra:270-286:
+   ConfigMap dax-rw in DRA_NS, once for the cluster; it must follow
+   dra-install, which recreates DRA_NS, dra:435).
+ 9 dra-trace-start "$VM2" "$VM1" "$VM0" (280; dra:2818-2886: 8
+   collectors on VM2, 3 on each worker).
+ Leases also need registry.k8s.io/pause:3.10, the companion image,
+ pulled on the nodes of the leases (t12:584, t15:72).
+ Teardown (469-503): delete the pods and claims; pool-cxl-wait VM
+ released "memdevs == [] and regions == []" on each VM; pool-free-wait
+ per pool; no cxl-type3 in qemu (pool-vm-monitor "info qtree -b");
+ pool-snapshot end; the pool slice uids unchanged; dra-trace-stop;
+ dra-trace-summary; dra-cleanup; pool-cleanup; trap - EXIT; ports
+ 9909-9911 free.
+
+2.2 dra-install (dra:336-437)
+
+- Needs dra-build and pool-server-start first (365, 360-362).
+  Controller URLs: POOL_GUEST_URL for the first server, pool-guest-url
+  NAME for the others (367-375); the VMs reach the host at 192.168.76.2.
+- Nodes: kubectl get nodes; the workers get the image with
+  dra-image-put (378-390; skipped if already the same image id).
+- Removes an earlier run: the helm release (and waits <=60 s for no
+  driver pods), stops and reset-fails fake-cxl-pool-controller*, deletes
+  the DeviceClasses, dra-state-cleanup per node (479-488: removes
+  preparedPoolClaims.json, localDevices.json, leases.json and leases/
+  only if the VM has no CXL region) (392-399).
+- helm-launch dra-driver-cxl with launch_available=<nodes>,
+  launch_timeout=120s (420-421; E/run.sh:440-572); controllers (423-
+  427): systemd-run --unit UNIT --property=Restart=no
+  -E KUBECONFIG=/root/.kube/config /usr/local/bin/fake-cxl-pool-
+  controller -server URL -v; dra-wait-node per node (490-507, <=60 s:
+  the pool slices of every server, the node's cxl.nri.io slice,
+  cxl-pool.nri.io dra.sock, cxl-request on the node); then all pods of
+  DRA_NS deleted, the namespace deleted (<=120 s) and created again
+  (435).
+- dra-install is a full reset: calling it mid-run to reconfigure kills
+  every pod and claim of DRA_NS. test17 did it to drop sharedDevices:
+  36-37 s until the region was gone (O/test17-dra-local-shared/
+  run.sh.output TIMING lines).
+- DRA_DRIVER_CONFIG (dra:59, 439-466): the driver configuration of
+  every node (one helm release), e.g.
+  sharedDevices: ["0xc100e2e1"] (t17:296).
+
+2.3 Local memdevs and what each VM offers
+
+- Topologies (T/topology.var.json, S/n4-cxl-shared-0|1/
+  topology.var.json): two CXL host bridges, hdm-for-passthrough.
+  Host bridge 0: a switch with two 1G pool slots, a file-backed shared
+  256M device (present false, /tmp/fake-cxl-pool/static-shared0.raw,
+  sn 0xc1ae0000, the same file in all three VMs) and the local device
+  (present false): 1G in VM2, 256M in VM1 and VM0. Host bridge 1: a
+  switch with four 1G pool slots.
+- The local device has serial 0xc100e2e1 in all three VMs
+  (docs/memory/cxl/e2e.md:68-72); fake-cxl-pool calls it
+  <vm name>.memdev1, slot cxlsw_ds3_usrp0hb0 (O/test19-many-pools/
+  fake-cxl-pool-server-pool-a.log, -pool-b.log); the driver publishes
+  it as memdev-c100e2e1 in the node's cxl.nri.io slice; its env key is
+  CXL_C100E2E1_ on every node. A sharedDevices entry therefore names
+  the local device of every node.
+- Memory block size 128 MiB, DRAM NUMA nodes 0 and 1 (e2e.md:61-62):
+  VM2's local device is 8 blocks, VM1's and VM0's 2 blocks.
+- NUMA nodes of CXL: every region under one host bridge has the node of
+  that host bridge (e2e.md:704-706): hb0 node 2, hb1 node 3 in VM2
+  (P/plan-12-steering-config/06-runs-E2E.txt:58-59); node 2 on VM0 for
+  b-pooled0 (P/plan-11-manage-all-containers/06-runs-E2E.txt:35-38).
+  Local numa slices and pool numa devices under hb0 of one VM share
+  node 2.
+- In test19's setup pool-a (VM1, VM2, local devices on by default,
+  pool:425) knows VM2.memdev1 and VM1.memdev1, pool-b knows
+  VM0.memdev1, both know static-shared0, pool-c has local devices off
+  (t19:239; the server logs).
+- Hot-add: dra-local-device VMDIR (dra:692-737) -> dra-local-find
+  (669-690), which lists the devices of the FIRST started server only
+  (pool-host-client without --pool, pool:682-693) and wants exactly one
+  local, not shared device bound to the VM; attaches it with owner
+  e2e:dra-local-device (718) (the controllers ignore non-k8s owners,
+  P/pkg/controller/reconciler.go:178); waits <=60 s for pkg/cxl and, if
+  the driver runs on the node, <=60 s for the ResourceSlice device; sets
+  the globals DRA_LOCAL_* (113-122): one device at a time. Already
+  attached: only the globals are set again (715-716). In test19's setup
+  it works for VM2 and VM1 (pool-a is first), not for VM0 (pool-b):
+  a --pool variant is needed.
+- test14: pool-server-start with one device, pool-client-install VM2,
+  dra-build, dra-install, dra-local-device VM2 (t14:286-306),
+  dra-local-blocks-require VM2 TOPOLOGY 7 (317); cleanup dra-cleanup,
+  dra-local-detach VM2, pool-cleanup (819-823).
+- test17: dra-local-device before dra-install (to seed bytes),
+  DRA_DRIVER_CONFIG sharedDevices, DRA_EXIT_TRAP
+  dra-local-shared-cleanup (t17:285-303); dra-local-device again after
+  dra-install (306).
+- dra-local-detach VMDIR (dra:739-767): waits for the driver to release
+  the regions (if it runs), guest release, server detach, waits until
+  pkg/cxl does not see it. pool-cleanup releases and detaches it too.
+- The other hotplug path (qemu monitor: vm-cxl-hotplug vm.bash:1019,
+  cxl-hotplug cxl:234) is for tests without a pool server.
+
+2.4 Summary of the resources of test19's setup with local devices
+  VM2  pool-a hb0 (node 2), pool-c hb1 (node 3), local 1G (hb0)
+  VM1  pool-a hb0, pool-c hb1, local 256M (hb0)
+  VM0  pool-b hb0, pool-c hb1, local 256M (hb0)
+  pool-a  a-pooled0 512Mi excl, a-shared0 256Mi shared
+  pool-b  b-pooled0 512Mi excl, b-shared0 256Mi shared
+  pool-c  c-pooled0 256Mi excl, c-shared0 256Mi shared
+  An exclusive device is attached to one host at a time; a shared
+  device once per host, one claim per node (e2e.md, "The setup").
+
+3. Helper catalog for actions
+-----------------------------
+Format: name (file:line) usage. What it does. Time. On failure.
+Times: one vm-command/kubectl over the persistent ssh connection takes
+about 0.35 s, kubectl apply about 0.45 s (O/test19-many-pools/commands
+start/end times).
+
+3.1 YAML (print only, no ssh)
+- dra-claim-yaml (dra:1503-1581) claim|template NAME CLASS SIZE
+  [MODE [read-only]] [device=F] [container=F] [pool=F]. One request
+  "mem" of CLASS, capacity.requests.memory SIZE ("" none), an opaque
+  MemoryConfig for cxl-pool.nri.io if CLASS is cxl-pool*, else
+  cxl.nri.io. Kinds: cxl-local numa (default) / dax / dax read-only;
+  cxl-local "" dax = whole device (t14:631); cxl-pool 512Mi = any pool
+  device that matches (t19:353; the 256Mi devices and the shared ones,
+  which have no memory capacity, do not, t19:346-349); cxl-dram SIZE
+  with container=steering (t14:650). error() on bad arguments.
+- dra-shared-claim-yaml (dra:1734-1783) NAME SERIAL [SHARES [PARAMS
+  [CLASS]]]. CEL selector on the serial, CLASS default cxl-pool-shared.
+  SHARES "1" one share, "" all shares (exclusive). PARAMS: device fields
+  ("mode: dax, readOnly: true") or sections ("container: ..., pool:
+  ..."). Uses: pool shared share (t19:375, 406), pool shared read-only
+  (t13:346 "readOnly: true"), exclusive pool device by serial with
+  CLASS cxl-pool (t10 F, G), local shared with CLASS cxl-local-shared
+  (t17:87), persistent with CLASS cxl-pool-persistent (t16:813, 330).
+- serial-claim-yaml (t19:77-97) NAME SERIAL: exclusive pool device by
+  serial, cxl-pool, numa.
+- dra-pod-yaml (dra:1583-1674) NAME NODE [CNAME=claim:C|
+  CNAME=template:T ...] [-- CTR[=REF,...] ...]. NODE is required
+  (nodeSelector kubernetes.io/hostname), restartPolicy Never,
+  terminationGracePeriodSeconds 2, image DRA_TOOLS_IMAGE, main process
+  DRA_RUNNER (dra:144-153: runs /tmp/run when it appears, trap TERM ->
+  exit 0), /tools from the ConfigMap; REF = CNAME or CNAME/REQUEST.
+- dra-claim-pod-yaml (dra:1676-1686) NAME claim|template SOURCE NODE.
+- dra-script-pod-yaml (dra:1786-1846) NAME VMDIR CLAIM SCRIPT
+  [TYPE:PATH...]: runs SCRIPT then idles; restartPolicy Never.
+- pod-yaml (t19:100-150) NAME NODE SCRIPT CLAIM...: NODE "" = no
+  nodeSelector (the scheduler picks the node by the pool's reach);
+  claims c0, c1, ...
+- dra-lease-template-yaml (dra:1965-1985) [NAME]: ResourceClaimTemplate
+  of DeviceClass cxl-lease (default name cxl-lease).
+- borrower-yaml (t12:92-, t15:80-133): lease template + pod with
+  containers main (lease claim) and idle (none).
+- Split claims, several requests, per-request configs: inline YAML
+  (t14:720-750); dram-cxl-template-yaml (t14:198-232).
+- Steering: container section "steering: {policy: P[, maxStep: Q]}",
+  P none, auto, first-dram, first-cxl, start-interleaved,
+  end-interleaved, waypoints (t14:562); fencing comes from the driver
+  configuration only (t14:565). Pool section
+  "pool: {opaque: {fake-cxl-pool: {numaNode: N}}}" (t10:298).
+- firstAvailable: no helper for static claims; only the companion
+  claims of leases without --source have it (t15:758). dra-py
+  subrequests() reads it (dra:2619-2627).
+- DRA_CLASSES (dra:51): cxl-local cxl-local-shared cxl-pool
+  cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease.
+
+3.2 Apply, delete, wait
+- dra-apply (dra:230-243) VMDIR <<< YAML: kubectl apply -n DRA_NS;
+  ~0.45 s; command-error on failure.
+- dra-claim-pod (dra:1688-1702) VMDIR NAME CLASS SIZE [...]: template
+  NAME + pod NAME on the VM's node; the claim is NAME-mem-<5 chars>
+  (O/test14 trace: numa-a-mem-4nwqh); command-error on failure.
+- dra-delete (dra:245-255) VMDIR KIND NAME [ARGS]: --ignore-not-found;
+  command-error if kubectl fails. Claims: ~0.35 s.
+- dra-delete-pod (dra:1038-1043) VMDIR POD: --grace-period=2
+  --wait=true --timeout=60s; 1.2-1.6 s for pods of test19 (commands
+  0089-0116).
+- delete-pods (E/lib/test.bash:934-950): --now, never fails.
+- dra-pod-wait (dra:2776-2789) VMDIR POD PHASE [TMO=120]: phase polled
+  every 1 s; error (and describe) on timeout.
+- dra-wait (dra:2688-2708) VMDIR LABEL "GET-ARGS" EXPR [TMO=60]: 1 ssh
+  + 1 host python per poll; writes TEST_OUTPUT_DIR/dra.LABEL.<vm>.json;
+  error on timeout.
+- dra-claim-condition-watch (dra:2730-2774) VMDIR CLAIM TYPE REASON
+  [TMO=60]: kubectl get -w in the VM, sees transient conditions
+  (AttachFailed InvalidConfig, t10:347); error on timeout.
+- dra-wait-log (dra:2799-2812) VMDIR POD LINE [TMO=120]: whole-line
+  match in the pod log; error on timeout.
+- dra-stays (dra:2449-2465) SECS MSG SNIPPET: SNIPPET must stay true;
+  error.
+- wait-pod-gone (E/lib/test.bash:126-136): VM2 only (vm-run-until).
+- Pending/unschedulable expectations: t17:206, 332, t16:802
+  (PodScheduled False Unschedulable "cannot allocate all claims"),
+  t19:378-386 (FailedScheduling "0/3 nodes are available").
+- Refused configs: Prepare fails, pod ContainerCreating, Event text
+  (t14:557-592); a bad pool section: AttachFailed InvalidConfig, pod
+  Pending (t10:337-359); conflicting steering: CreateContainerError
+  (t14:791-806).
+
+3.3 Inside containers
+- dra-exec (dra:1861-1885) VMDIR POD[/CTR] CMD ARGS...: kubectl exec,
+  argv preserved; COMMAND_OUTPUT, DRA_EXEC_STDERR, COMMAND_STATUS;
+  returns the status, never fails the test.
+- dra-run (dra:1704-1732) VMDIR POD[/CTR] SCRIPT [TMO=120]: SCRIPT as a
+  child of the DRA_RUNNER main process (inherits its memory policy);
+  status 124 on timeout; never fails the test.
+- cxl-request (in containers of a lease claim, /usr/local/bin):
+  request [--source local|pool] [--mode numa|dax|fs|block] [--shared]
+  [--read-only] [--access ...] [--name ...] [--size S] [--serial S]
+  [--wait D] [--exec CMD...]; release --lease ID|--all; list;
+  env --lease ID [--exec]; fd --lease ID --exec CMD
+  (docs/memory/cxl/leases.md:199-330). Exit 0 ok, 1 error, 2 usage,
+  3 Failed / not Ready in --wait / fd on a numa or fs lease. Refusals:
+  leases.md:247-288, t12:652-688.
+- dra-leases (dra:1987-2016) VMDIR POD[/CTR]: cxl-request list as a
+  JSON list (DRA_LEASES); command-error if cxl-request fails.
+- dra-last-json (dra:1887-1907) TEXT: the response line.
+- Test-local lease wrappers: t12 lend-memory, give-back, share,
+  refused, companion-check, nothing-left (t12:207-553); t15 request,
+  numa-lease, local-numa-lease, dax-lease, dax-fd-read, release,
+  companion-check, nothing-left (t15:135-478). Lease ids are 8 hex
+  digits; companion pod and claim cxl-lease-<id>, owned by the
+  requester pod, labels cxl.nri.io/lease, requester-uid, node
+  (dra:76-79, 1953-1963).
+- dax tools: python3 /tools/dax-rw.py write|read|watch|check-ro DEV
+  OFFSET [TEXT], or --fd N (T/pool-dax-rw.py:1-40); wrappers dax-write,
+  dax-read (t14:170-186); the host side: pool-device-files
+  [--pool NAME] DEV (pool:709-732) + pool-file-string FILE OFFSET
+  (pool:825-835) read the backing file.
+- numa-touch.py [--hold] MIB NODE|- (T/numa-touch.py:1-25): exit 1 if
+  NODE is not allowed. dra-touch-start VMDIR POD/CTR MIB NODE
+  (dra:2353-2379), dra-touch-pages NODE (2404), dra-touch-stop (2440),
+  dra-touch-forget (2432), dra-touch-log-pages TEXT NODES (2381): one
+  held process at a time (DRA_TOUCH_* globals, dra:132-137); errors on
+  failure.
+- cxl-where.py PID [PATH...] (T/cxl-where.py:1-23): where the page
+  frames of file mappings are (root on the node).
+- dra-local-seed (dra:1320-1346): writes through a devdax region that
+  the guest tools create on the local device and destroys it; test17
+  uses it before dra-install (t17:291-293).
+
+4. Helper catalog for checks
+----------------------------
+"ssh" = one vm-command(-q) round trip, ~0.35 s; host-only checks run
+python3 or curl on the host.
+
+4.1 Pool servers (host only, no ssh)
+- dra-pool-attachments HOST [URL] (dra:570-588): curl; k8s:-owned
+  attachments "device@host owner state"; silent, never fails.
+- pool-attachments [--pool NAME] DEVICE (pool:695-707), pool-host-
+  client [--pool NAME] -o json devices|attachments|hosts
+  (pool:682-693): host client; command-error / returns status.
+- pool-attachments-of POOL, pool-free-wait POOL (t19:167-183).
+- pool-device-free-wait [--pool NAME] DEV VMDIR... (pool:734-754):
+  pool-cxl-wait "memdevs == []" per VM (60 s) then the device free on
+  the server (60 s); error.
+- pool-snapshot LABEL (pool:756-783): hosts, devices, attachments per
+  server to TEST_OUTPUT_DIR/pool.LABEL[.NAME].json.
+- pool-assert / pool-value JSON EXPR (pool:806-823).
+- Attachment fields used: host, owner (k8s:resourceclaim/<uid>),
+  state, qemuDeviceId (fcp_<dev>.hp<n>), slot.hostBridge,
+  slot.numaNode, exclusive (t19:314-315, t10:207, 305, t16:843).
+- qemu: pool-vm-monitor VMDIR "info qtree -b" | grep 'dev: cxl-type3'
+  (pool:137-142, local socat to monitor.sock, no ssh; t12:293, t19:484);
+  pool-vm-qmp uses qmp-e2e.sock (pool:127-135).
+
+4.2 Kubernetes objects (1 ssh each)
+- dra-json VMDIR ARGS (dra:2654-2668) + dra-assert/dra-value JSON EXPR
+  (2670-2686) + dra-py (2471-2652): helpers slices(), pool_slices(),
+  pool_nodes(), devices(), device(name, driver, node), attr(),
+  capacity(), request_policy(), quantity(), results(), consumed(),
+  allocated_node(), condition(type), device_data(dev) (serial, shared,
+  size, persistent, exclusive), subrequests(), configs(),
+  config_section(), events(), dax_slices().
+- dra-claim-conditions VMDIR CLAIM (dra:2710-2728): prints conditions
+  and data; error if no claim.
+- dra-pod-claim VMDIR POD [NAME] (dra:2290-2302): claim of a pod.
+- Claim expectations used: condition('cxl-pool.nri.io/Attached') ==
+  'True' (t19:305), results pool/device, allocated_node(),
+  reservedFor (t14:445), consumed() (t14:469), shares consumed
+  (t12:496).
+- dra-install-ready (dra:509-518) and dra-wait-node (490-507): pool
+  slices of all servers + node slice + plugin socket + cxl-request.
+
+4.3 pkg/cxl and sysfs in a VM
+- pool-cxl-wait VMDIR LABEL EXPR [TMO=30] (pool:299-314): other VMs:
+  1 ssh (cxl-dump -o json) per poll, then a full pool-cxl-dump (2 more
+  ssh: /sys/bus/cxl/devices dump ~120 KB, memory blocks; pool:266-285);
+  VM2: cxl-wait (cxl:79-99), the full cxl-dump is 4 ssh (+ zoneinfo,
+  cxl:45-66). Files per LABEL in TEST_OUTPUT_DIR. error on timeout.
+- cxl-assert / cxl-value EXPR (cxl:101-121) on the last dump; names
+  memdevs, regions (Name, Node, Size, OnlineSize, Enabled, Memories),
+  endpoints, nodes; by_serial(), names(), node(), cpu_nodes(),
+  summary() (cxl:123-197).
+- dra-memdev-sysfs VMDIR SERIAL (dra:769-823): 1 ssh: memdev, enabled,
+  regions (size, available, align), dax devices (size, node, dev,
+  driver); dra-memdev-wait (825-845) polls it; error on timeout.
+- dra-node-memtotal / dra-node-wait VMDIR NODE KB [TMO=30]
+  (dra:861-890): MemTotal of a NUMA node; 1 ssh per poll.
+- dra-node-size-exact (dra:892-904): memmap_on_memory off.
+- Local device (globals DRA_LOCAL_*, one device): dra-local-slices-wait
+  VMDIR LABEL NODE numa|dax:BYTES... (dra:940-961, exact slice set and
+  available size, one region), dra-local-node-size (963-975),
+  dra-local-slices-none (977-987), dra-local-unchanged (989-1000),
+  dra-local-claim-check VMDIR POD BYTES (1002-1016), dra-local-claim-
+  slice VMDIR UID (1018-1036, from localDevices.json),
+  dra-local-state-claims (1229-1247), dra-local-initial-state VMDIR
+  LABEL [NODE] (1249-1270, ~12 ssh), dra-local-state-shared and
+  dra-local-shared-wait VMDIR LABEL [UID...] (1272-1318),
+  dra-local-slices-aligned (1433-1447, driver log). All error on
+  failure.
+
+4.4 Containers (fencing, memory)
+- dra-mems-fenced VMDIR NODE [NS/POD/CTR...] (dra:2072-2101): NODE in
+  cpuset.mems.effective of exactly the listed running containers of the
+  node, every container of crictl ps included (kube-system,
+  companions); 1 ssh per try (python + crictl in the VM,
+  dra-mems-table 2103-2187), retry <=30 s; error naming offenders.
+- dra-mems-wait VMDIR POD CTR NODE (dra:2056-2070): node in
+  cpuset.mems, prints Mems_allowed_list; error.
+- dra-container-cgroup / -read / -file (dra:2018-2054): 1 ssh for the
+  cgroup (kubectl + crictl inspect .info.pid + /proc/PID/cgroup), 1 to
+  read; -file errors, -read returns status.
+- dra-container-anon VMDIR POD CTR NODE (dra:2189-2199),
+  dra-container-mempolicy (2201-2214, numa_maps of the main process),
+  dra-container-devices (2271-2288, device rules and bpf programs).
+- dra-memory-wait VMDIR POD CTR steered|fenced|none [STEERING]
+  (dra:2226-2262): waits <=60 s for the driver log line
+  "NRI CreateContainer: ctr=NS/POD/CTR: memory MGMT (steering ...",
+  then memory.high and the memory policy; error.
+- dra-nodes-has / -eq / -subset (dra:2331-2351): node lists, host only.
+
+4.5 Environment, CDI, mounts
+- dra-env-assert LABEL TEXT KEY FIELD=VALUE... (dra:1909-1940): exact
+  CXL_<KEY>_* set, shell patterns; host only; error. Fields: SERIAL,
+  SHARED, MODE, SIZE, NODE (numa), DAX + READONLY (dax), PATH (block,
+  fs), ACCESS (fs), FD (--exec). KEY is the upper-case serial; the
+  second result of one device in one claim is <serial>_2 (t14:761-764).
+  Every result also gives CXL_CLAIM_<uid with _>_<n>=1 (t14:127,
+  t10:229). dra-env-value TEXT NAME (1942).
+- dra-cdi-device VMDIR NAME (dra:1045-1067), dra-cdi-devices-with
+  VMDIR TEXT (1069-1091), dra-cdi-mounts (1093), dra-lease-cdi-assert
+  VMDIR UID (1145-1165): 1 ssh each.
+- dra-fs-mounts, dra-pmem-loops, dra-lease-fs-mounts (dra:1167-1227):
+  persistent devices, 1 ssh each.
+
+4.6 Driver log and trace
+- dra-plugin-log VMDIR (dra:1421-1431): 2 ssh (pod name, kubectl logs
+  of the whole log of the current pod); error if the driver does not
+  run. dra-plugin-log-wait VMDIR TEXT [TMO=30] (1348-1360): fixed
+  string, polls the whole log every 1 s; error. Log sizes: 8-134 KB per
+  node and test at verbosity 4 (O/*/nri-dra-driver-cxl.vm*.log).
+- dra-local-slice-times (dra:1449-1475): region and slice times.
+- dra-trace-start [VMDIR...] (dra:2818-2886), dra-trace-driver-follow
+  VMDIR (2906-2918, called by dra-driver-restart), dra-trace-stop
+  (3028-3075, merged trace.txt), dra-trace-summary (3077-3160, story
+  lines into trace-summary.txt). Tags <vm>.driver, .udev, .kubelet on
+  every node, .controller, .scheduler, .events, .claims, .pods on the
+  control plane, server / <name>.server on the host.
+
+4.7 Cost
+- Cheap (0 or 1 ssh): dra-pool-attachments, pool-host-client,
+  pool-vm-monitor, dra-json + dra-assert, dra-memdev-sysfs,
+  dra-node-memtotal, dra-cdi-*, dra-mems-table, dra-env-assert,
+  pool-cxl-dump-json alone.
+- Slower: pool-cxl-wait / cxl-wait (1 ssh per poll + 2-3 ssh and
+  ~120 KB of files on success), dra-container-read (2 ssh),
+  dra-memory-wait and dra-plugin-log-wait (whole driver log per poll),
+  dra-local-initial-state (~12 ssh), dra-trace-summary at the end.
+
+5. Fault injection
+------------------
+
+5.1 Driver (DaemonSet nri-dra-driver-cxl, kube-system)
+- Exists: dra-driver-restart VMDIR (dra:1393-1419): saves the pod log
+  as TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.<pod>.log, kubectl delete
+  pod --wait=true --timeout=60s (graceful), waits <=120 s for a new
+  Ready pod of the node, dra-wait-node (<=60 s), dra-trace-driver-
+  follow. Errors on failure. Used by t14 B2 (t14:473-512: then
+  dra-plugin-log-wait "NRI fence: fencing CXL nodes N of prepared
+  claims", dra-mems-fenced, dra-local-slices-wait, a pod created after
+  the restart has cpuset.mems without the node) and t17 H (t17:489-519:
+  restart-kept checks "keeping shared REGION and DAX, claims [...]" and
+  that nothing was zeroed or released, t17:253-264).
+- dra-driver-pod VMDIR (dra:520-529): the Running pod of the node.
+- Not existing: killing the driver container in place (SIGKILL of its
+  process, the container restarted by kubelet in the same pod) and
+  restarting all three nodes' drivers at once. dra-driver-restart
+  expects a new pod name (1412).
+- The DaemonSet runs hostPID, privileged, system-node-critical, with
+  an init container patch-runtime (deployment/helm/dra-driver-cxl/
+  templates/daemonset.yaml:31, 38-57, 132).
+
+5.2 Pool controllers (transient systemd units in VM2)
+- Units: fake-cxl-pool-controller (first server, pool-a in test19),
+  fake-cxl-pool-controller-pool-b, fake-cxl-pool-controller-pool-c
+  (dra:90-92, t19:63). Started by dra-install with systemd-run --unit
+  UNIT --property=Restart=no -E KUBECONFIG=/root/.kube/config
+  /usr/local/bin/fake-cxl-pool-controller -server URL -v (dra:424);
+  URLs http://192.168.76.2:9909, :9910, :9911.
+- Stopped only by dra-install and dra-uninstall: systemctl stop
+  'fake-cxl-pool-controller*'; systemctl reset-failed ... (dra:395,
+  629). No restart helper.
+- Code facts (P): SIGTERM/SIGINT end the context (cmd/fake-cxl-pool-
+  controller/main.go:84) and shutdown() deletes the pool's slices
+  (pkg/controller/controller.go:313-326, 10 s timeout); SIGKILL skips
+  that. On start the pool name comes from the server, retried every
+  sync interval (controller.go:219-237); full sync every 10 s
+  (DefaultSyncInterval, controller.go:51), on server events after a 500
+  ms debounce (55); the event stream reconnects with backoff 1 s..30 s
+  (288-311). Restart=no: a killed unit stays failed; a new start needs
+  reset-failed and the systemd-run line again.
+- pool.md:629-630: "the controller recomputes the attachments from the
+  claims and the pool, and re-confirms existing ones."
+- Journal: every start logs "pool <name> (from the server)" once
+  (t19:272-275); the trace's controller stream follows the units by
+  name (dra:2851-2856, 2869).
+
+5.3 Pool servers (host processes)
+- pool-server-stop [NAME] (pool:560-590) and pool-server-kill PID LABEL
+  (540-557, SIGTERM, SIGKILL after 10 s) exist.
+- No restart that keeps state: pool-server-start removes the state
+  file (474) and refuses a NAME that runs (451-455). The server itself
+  loads -state on start (P/pkg/server/state.go:109-; hosts with qemu
+  pid and start time, attachments with owners, dynamic devices,
+  state.go:31-96) and adopts cxl-type3 devices of known backends that
+  have no attachment (pkg/server/server.go:926-1025, Adopted true); the
+  controllers skip adopted attachments (reconciler.go:178). A restart
+  helper would rerun the line of pool:516 with the same config and
+  state, append to the same log (the trace follows it with tail -F,
+  dra:2844-2850) and update POOL_SERVER_PIDS[NAME]. Startup to the
+  first answered status: ~1 s (O/test19.../fake-cxl-pool-server-
+  pool-a.log 18:54:00.52 -> 18:54:01.52).
+
+5.4 kubelet, containerd
+- vm-restart-kubelet (vm.bash:1644-1650): VM2 only, systemctl restart
+  kubelet + wait-for-node-ready (1853-1875, /readyz and node Ready,
+  <=5 min). Workers: no helper (vmdir-command VM "systemctl restart
+  kubelet" + a node wait). No containerd restart helper anywhere in E.
+  No dra-driver-cxl test restarts either.
+- Design expectations, not tested here: driver down while a pod is
+  deleted -> Unprepare fails, kubelet retries, pod Terminating until
+  the plugin is back; kubelet restart re-prepares idempotently
+  (P/plan-3-cxl-live-attach/02-option-node-plugin-request-channel.txt:
+  590, 592, 03-summary.txt:146).
+
+5.5 Container crash
+- Every pod helper has restartPolicy Never (dra:1623, 1821; t19:128;
+  t10:164; t12:112; t15:108). A container restart needs a new YAML
+  helper (OnFailure/Always).
+- Exists: t16:957-966 kills llama-server from the node,
+  pool-vm-command "$VM2" "kill -KILL $pid" (pid from the container's
+  cgroup.procs, T/llm.source.sh:458-469): the pod went Failed,
+  exitCode 137, the lease and its companion were gone 5.7 s later
+  (O/test16 TIMING). The host pid of a container's main process:
+  crictl inspect .info.pid (dra:2026-2028, 2211-2213).
+  kill-test-processes (E/lib/test.bash:984-995) pkill -9 "sleep inf".
+  test06-fuzz/codelib.sh has container-signal and container-exit0.
+- DRA_RUNNER traps TERM -> exit 0 (dra:144): SIGTERM ends the
+  container as Completed, the pod Succeeded (restartPolicy Never).
+- Kernel rule (pid_namespaces(7), not exercised by these tests): the
+  init process of a PID namespace gets from an ancestor namespace only
+  signals it has a handler for, and SIGKILL/SIGSTOP. The main process
+  of a container is PID 1 of its namespace, so kill -SEGV from the node
+  to the DRA_RUNNER sh does nothing; SIGKILL works, or the runner must
+  exit 139 itself, or the crash must be a child process.
+- After the container of a restartPolicy Never pod stops, kubelet
+  unprepares its claims (plan-3 research of kubelet: "resources must be
+  unprepared AFTER all containers have stopped", kubelet.go:2439-2446,
+  02-option-node-plugin-request-channel.txt:94-102; a claim shared by
+  pods is unprepared for the last pod). Not verified for static claims
+  in these tests.
+- plan-3 03-summary.txt:121-126 (design): a restarted requester
+  container gets its exclusive lends re-applied at NRI CreateContainer;
+  shared fds are gone with the process.
+
+5.6 Node reboot
+- vm-reboot (vm.bash:862-938, VM2: shutdown, vagrant up, wait ssh),
+  vmdir-restart VMDIR (E/lib/k8s.bash:144-176; VM2 -> vm-reboot
+  timeout=300), pool-vm-restart (pool:161-168), pool-vm-reset
+  (pool:239-264, restart only with CXL devices, node Ready <=300 s,
+  auto_online_blocks offline again).
+- A guest reboot of VM2 took ~60 s to node Ready (plan-12 06-runs-
+  E2E.txt:30). Restarting VM2 makes the API server unavailable
+  (e2e.md:1398-1402). The driver's state files survive on disk and
+  refer to gone regions: dra-install removes them only in its own
+  cleanup (dra:479-488). The server finalizes attachments whose qemu
+  device is gone (server.go:951-957). No test reboots a node with pool
+  devices attached and the driver running.
+
+5.7 Other faults available
+- Force delete: forbidden for pods with pool memory (pool.md:621-626,
+  e2e.md:731): the device stays half removed until the VM restarts.
+- Pool exhaustion / unsatisfiable claims (Pending), refused configs,
+  AttachFailed, steering conflicts, lease refusals (3.2, 3.3).
+- dra-local-detach while claims exist: not done by any test.
+
+6. Operation durations (evidence)
+---------------------------------
+- Pool claim, pod create -> Running: 6.0-6.1 s (O/test19 trace-
+  summary: claim allocated +0.05 s, server attached +0.6 s, pod
+  ContainerCreating +5.1 s, Running +6.1 s); test10 "attached 1.1 s,
+  pod Running 6.7 s after the claim" (1 s polling). 5 s of it is the
+  scheduler's binding poll (plan-3 03-summary.txt:105-106, 172).
+- Pool claim delete -> free: pod Terminating -> Completed 0.5 s,
+  claim deallocated 0.5 s later, server "detaching" ~1 s after the
+  delete, "detached" 6.1 s later on the qemu DEVICE_DELETED (O/test19
+  trace-summary, pool-b.server lines 18:55:04.79 -> 18:55:10.92);
+  test10 "detached 8.3 s after the delete". pool-c (HMP) detached
+  c-shared0 from VM0 only after its detach from VM2 had finished
+  (18:56:03.39 -> 18:56:03.41 -> 18:56:09.95).
+- Local claim, pod create -> Running: ~1.05 s (O/test14 trace numa-a
+  18:36:36.52 -> 18:36:37.57); test14 "pod Running after apply 2.5 s"
+  (1 s polling). Local device attach -> published by the driver 0.5 s
+  (trace 18:36:30.20 -> 18:36:30.71).
+- Region and slice times (O/test14 and test15 run.sh.output,
+  dra-local-slice-times): region created 14-32 ms, released 85-122 ms;
+  numa slice created 1-76 ms, onlined 6-177 ms, offlined 12-104 ms;
+  dax slice created 0.6-79 ms, zeroed 48-533 ms, deleted 47-79 ms.
+- Last local claim deleted -> device initial state: 5.5 s (test14).
+  MemTotal of the CXL node seen changed 2.6-6.1 s after apply or delete
+  in test14, 2.5-15.6 s in test15 with leases (timing lines, checks
+  included).
+- Leases (test12, test15 timing lines): pool numa lease Ready 5.7 s;
+  shared dax lease with --exec 6.4 s; release until nothing left
+  9.6-9.7 s; local numa lease Ready 0.55 s, local dax lease 0.68 s,
+  dax leases released until slices gone 3.9 s, last numa lease given
+  back until its pages left the node 8.8 s; pod deleted with active
+  leases -> clean 12.2 s (test15) and 14.5 s (test12); borrower pod
+  Running 2.0 s after apply.
+- Local shared device (test17): writer claim -> Running (region
+  created, 1G zeroed) 3.8 s; writer deleted -> both readers Running
+  2.9 s.
+- Persistent fs readers: pod create -> llama-server serving 8.2-8.9 s
+  (test16).
+- Driver restart: pod delete 18:37:22.33 -> new pod Running
+  18:37:23.55 -> "NRI plugin started" 18:37:24.63, ~2.3 s (O/test14
+  trace, VM clock is UTC); dra-driver-restart with a reader 4.0 s
+  (test17 TIMING).
+- Controller restart: not measured anywhere.
+- Pool server start: ~1 s to the first status (5.3).
+- dra-install: not timed directly; the reinstall of test17 36-37 s.
+  test19's setup took ~65 s (test start 18:53:37.5 = end 18:56:29.1
+  minus 171.7 s; trace started 18:54:42.2); its teardown ~19 s (trace
+  end 18:56:10.5 -> 18:56:29.1).
+- Whole tests, PASS (plan-12 06-runs-E2E.txt:179-196): test19 172 s,
+  test14 275 s, test15 287 s, test12 364 s, test10 120 s, test17
+  261 s, test16 300 s.
+- Per-test output: ~130 command files, 2.5-4.6 MB, run.sh.output
+  2.4-5.3 k lines, trace.txt 1.6-2.9 k lines (O/test19, test14, test12);
+  each cxl-sysfs dump of pool-cxl-wait ~120 KB.
+
+7. Gotchas for a long randomized test
+-------------------------------------
+- Never force-delete a pod with pool memory (pool.md:621-626): the
+  device stays half removed (zombie) until its VM restarts; the next
+  test's pool-vm-reset then restarts the VM.
+- Stock qemu leaves a zombie device on every detach: pool-vm-require
+  insists on the patched qemu (pool:193-195, e2e.md:108-116).
+- Latency floor: ~5 s scheduler binding poll per pool claim or pool
+  lease, ~6 s per detach (pciehp); HMP detaches serialized (6). The
+  scheduler retries an AttachFailed binding with its pod backoff,
+  <= 10 s (plan-12 05-status-E2E.txt:237).
+- "cxl create-region" right after a hotplug can fail once with
+  "add_dev() failed"; the pool driver retries once after 3 s
+  (pool.md:632-634).
+- ENXIO opening a new dax device right after the kernel bound it
+  (plan-12 06-runs-E2E.txt:69-99); fixed by an open retry in memctl,
+  but it shows that the first region of a boot and later regions
+  behave differently in the kernel.
+- An offline of a numa slice or region fails with EBUSY when pages
+  cannot move (pinned, DRAM full): the Unprepare fails, kubelet
+  retries, the pod stays Terminating, the device stays attached
+  (plan-3 03-summary.txt:117-120; plan-4 02-design.txt:187-188).
+  Workloads that touch CXL memory (numa-touch.py) raise the chance.
+- kubelet retried a failing Unprepare about every second (plan-7
+  35-dynamic-bind-mount-review-T.txt:54; O/test16 trace-summary lines
+  335-339).
+- A claim that cannot be allocated keeps its pod Pending, not a failure
+  (pool.md:627-628); the model must predict Pending vs Running and
+  which node an unpinned pod lands on (t19 B, C, D, E).
+- Steering and fencing are easy to break: plan-12 06-runs-E2E.txt:110-
+  172 shows two steering bugs that test14 found (cpuset.mems "" of a
+  steered DRAM-only container; no steering at all with
+  start-interleaved and no maxStep).
+- dra-mems-fenced checks every running container of the node: the
+  model must know every claim and lease that has a CXL node, and that
+  hb0 pool devices and local numa slices share node 2 (2.3).
+- Log-based checks read only the current driver pod's log
+  (dra:1421-1431): after a restart, CreateContainer lines of older
+  containers are gone (dra-memory-wait waits 60 s and fails). Reused
+  pod or claim names make log greps match stale lines: use unique names
+  per step.
+- Single-device / single-process globals: DRA_LOCAL_* (one local
+  device), DRA_TOUCH_* (one numa-touch.py), DRA_CLAIM_*, DRA_MEMDEV,
+  DRA_JSON, COMMAND_OUTPUT are overwritten by every call.
+- dra-local-find works only on the first server: VM0's local device
+  (pool-b) cannot be attached with dra-local-device (2.3).
+- The local device serial 0xc100e2e1 is the same on every node: one
+  sharedDevices entry makes all three local devices shared, and the
+  env keys are the same on all nodes.
+- dra-install resets everything (2.2); a driver-configuration action
+  mid-run is a full teardown.
+- Controller SIGTERM deletes the pool's slices (5.2): new claims of
+  that pool stay Pending until the restarted controller publishes
+  again (sync every 10 s); SIGKILL keeps them.
+- Monitors: one QMP client per VM; pool-a and pool-b hold QMP, pool-c
+  uses HMP on monitor.sock, which pool-vm-monitor uses too (t19 G
+  checks both keep answering). Tests use qmp-e2e.sock for their own QMP
+  (pool:127-135).
+- Output growth: every pool-cxl-wait or cxl-wait LABEL writes ~120 KB
+  of sysfs dump plus small files, dra-wait writes dra.LABEL.<vm>.json,
+  dra-memdev-wait memdev.LABEL.<vm>.json; the driver log at verbosity 4
+  and the trace grow with every step; the test_outdir is never cleaned
+  (1.2). Bounded or step-numbered labels decide the disk use.
+- error() inside $(...) does not stop the test (1.2): e.g. the YAML
+  helpers inside "$(...)", or X=$(dra-value ...) (t14:375), which
+  leaves X empty and goes on.
+- A failure mid-run triggers the EXIT trap, which waits up to minutes
+  (60 s per wait in dra-uninstall); leftover devices make the next test
+  reboot VMs (pool-vm-reset).
+- Pods must be pinned with a nodeSelector, never nodeName (e2e.md
+  troubleshooting): nodeName skips the scheduler and the allocation.
+- Shared memory must never be onlined as RAM on two VMs: it corrupts
+  them (pool:182-184, 244-245); the CLI and driver refuse numa for
+  shared devices (leases.md:256, 283).
+- Releasing a region under a live erofs can crash the guest
+  (t16:250); persistent fs needs erofs-utils, the model image and
+  CONFIG_EROFS_FS (t16, e2e.md prerequisites): heavy for test90.
+- auto_online_blocks must be offline (pool-vm-reset); a reboot action
+  must set it again.
+- memmap_on_memory must be off for exact node sizes
+  (dra-node-size-exact, dra:892-904).
+- The port-forward lookup of helm-launch costs 5 s per dra-install and
+  prints an error line that is not a failure (1.2).

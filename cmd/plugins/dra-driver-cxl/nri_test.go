@@ -16,13 +16,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	nriapi "github.com/containerd/nri/pkg/api"
+	"github.com/containerd/nri/pkg/net/multiplex"
+	"github.com/containerd/ttrpc"
 
 	"github.com/containers/nri-plugins/pkg/cgmpolmgr"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -284,13 +292,12 @@ func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 	e.p.LendsRestored()
 	e.passes()
 	pod := ltPod("u1")
-	e.proc(101, "kubepods/u1/c1", "0-2", "")
+	e.proc(101, "kubepods/u1/c1", "0-2", "0-2") // as runc creates it
 	c1 := withClaims(ltCtr(pod, "c1", "app", 101), "split")
 	if got := e.createMems(pod, c1); got != "0-2" {
 		t.Fatalf("adjustment %s", got)
 	}
-	noErr(t, e.p.StartContainer(ctx, pod, c1))
-	e.wait(e.start, "c1")
+	e.startCtr(pod, c1)
 	e.passes()
 	e.expectUpdates()
 	noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
@@ -345,7 +352,9 @@ func TestSynchronizeManagement(t *testing.T) {
 		got[id] = tc.memory + " " + tc.claimed.String()
 	}
 	e.p.mu.Unlock()
-	want := map[string]string{"c1": "steered 2", "c2": "fenced 2", "c3": "fenced 3", "c4": "fenced ", "c5": "steered "}
+	// c1, that its settings steer, is managed like a container that is not
+	// steered
+	want := map[string]string{"c1": "fenced 2", "c2": "fenced 2", "c3": "fenced 3", "c4": "fenced ", "c5": "steered "}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("management %v, expected %v", got, want)
 	}
@@ -355,15 +364,339 @@ func TestSynchronizeManagement(t *testing.T) {
 	}
 	e.p.LendsRestored()
 	e.passes()
-	e.expectUpdates("c2 mems=0-2", "c3 mems=0-1,3", "c4 mems=0-1")
-	if err := e.p.LendNode(ctx, "u1", "c1", 3, "l1"); !errors.Is(err, errSteered) {
-		t.Fatalf("lend to a steered container after a restart: %v", err)
-	}
+	e.expectUpdates("c1 mems=0-2", "c2 mems=0-2", "c3 mems=0-1,3", "c4 mems=0-1")
+	noErr(t, e.p.LendNode(ctx, "u1", "c1", 3, "l1"))
+	e.expectUpdates("c1 mems=0-3")
 	if err := e.p.LendNode(ctx, "u1", "c5", 3, "l1"); !errors.Is(err, errSteered) {
 		t.Fatalf("lend to a container with conflicting settings: %v", err)
 	}
 	noErr(t, e.p.LendNode(ctx, "u1", "c2", 3, "l1"))
 	e.expectUpdates("c2 mems=0-3")
+}
+
+// steerableCgroup gives the cgroup dir the files that a steering manager
+// reads and writes, with memory.high high.
+func steerableCgroup(t *testing.T, dir, high string) {
+	t.Helper()
+	for name, data := range map[string]string{
+		"memory.high":      high,
+		"memory.current":   "4096",
+		"memory.events":    "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0",
+		"memory.numa_stat": "anon N0=4096 N1=0 N2=0 N3=0\nshmem N0=0 N1=0 N2=0 N3=0",
+		"cgroup.procs":     "",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// memoryHigh returns memory.high of the cgroup dir.
+func memoryHigh(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "memory.high"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// steeredFile writes the steering record of a killed plugin (container ID
+// -> cgroup directory) to a file and returns the path.
+func steeredFile(t *testing.T, ids map[string]string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), steeredFileName)
+	noErr(t, writeJSONFile(path, ids))
+	return path
+}
+
+// readSteeredFile returns the containers of the steering record file.
+func readSteeredFile(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	noErr(t, err)
+	ids := map[string]string{}
+	noErr(t, json.Unmarshal(data, &ids))
+	return ids
+}
+
+// TestSynchronizeReleasesSteering checks the running containers of a
+// restarted plugin (bug-04): a container that its settings steer is not
+// steered by the new process, and it is fenced like a container that is
+// not steered, also one created while the plugin was down that has every
+// node (X2). A container that the steering record of the killed plugin
+// names loses the memory.high that its manager left, also one taken as
+// steered; the memory.high of the others is left alone (MemoryQoS). The
+// record keeps only the managers of the new process. A restart of the
+// container is steered by a new manager, recorded until it stops.
+func TestSynchronizeReleasesSteering(t *testing.T) {
+	e := newFenceEnv(t, "0-3", 2, 3)
+	e.p.state = nriClaims()
+	e.p.poolResults = nriPoolResults
+	t.Cleanup(e.p.Stop)
+	ctx := context.Background()
+	p1 := ltPod("u1")
+
+	// c1 was steered when the plugin was killed: the cpuset.mems of its
+	// manager and the memory.high of its last step
+	cg1 := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")
+	steerableCgroup(t, cg1, "140668928")
+	// c2 was created while the plugin was down: every node, memory.high max
+	cg2 := e.proc(102, "kubepods/u1/c2", "0-3", "")
+	steerableCgroup(t, cg2, "max")
+	// c3 is not steered, someone else (MemoryQoS) set its memory.high
+	cg3 := e.proc(103, "kubepods/u1/c3", "0-3", "")
+	steerableCgroup(t, cg3, "1073741824")
+	// c5's settings conflict: never created by the plugin
+	cg5 := e.proc(105, "kubepods/u1/c5", "0-3", "")
+	steerableCgroup(t, cg5, "268435456")
+	// c7 was created while the plugin was down, its settings steer it,
+	// MemoryQoS set its memory.high
+	cg7 := e.proc(107, "kubepods/u1/c7", "0-3", "")
+	steerableCgroup(t, cg7, "536870912")
+	// c8 was steered by the killed plugin under settings that combined
+	// then, they conflict now
+	cg8 := e.proc(108, "kubepods/u1/c8", "0,2", "0,2")
+	steerableCgroup(t, cg8, "201326592")
+	c1 := withClaims(ltCtr(p1, "c1", "app", 101), "auto")
+	c2 := withClaims(ltCtr(p1, "c2", "down", 102), "poolauto")
+	c3 := withClaims(ltCtr(p1, "c3", "plain", 103), "split")
+	c5 := withClaims(ltCtr(p1, "c5", "conflict", 105), "auto", "none")
+	c7 := withClaims(ltCtr(p1, "c7", "qos", 107), "auto")
+	c8 := withClaims(ltCtr(p1, "c8", "changed", 108), "auto", "none")
+	for _, c := range []*nriapi.Container{c1, c2, c3, c5, c7, c8} {
+		c.State = nriapi.ContainerState_CONTAINER_RUNNING
+	}
+	// c4 was created by the killed plugin (with a plan), not started
+	c4 := withClaims(ltCtr(p1, "c4", "late", 0), "auto")
+	c4.State = nriapi.ContainerState_CONTAINER_CREATED
+	record := steeredFile(t, map[string]string{"c1": cg1, "c8": cg8, "gone": filepath.Join(cgroupRoot, "kubepods/u1/gone")})
+	e.p.steered = loadSteeredRecord(record)
+	if _, err := e.p.Synchronize(ctx, []*nriapi.PodSandbox{p1}, []*nriapi.Container{c1, c2, c3, c4, c5, c7, c8}); err != nil {
+		t.Fatal(err)
+	}
+
+	e.p.mu.Lock()
+	got := map[string]string{}
+	for id, tc := range e.p.ctrs {
+		got[id] = tc.memory + " " + tc.claimed.String()
+	}
+	e.p.mu.Unlock()
+	want := map[string]string{"c1": "fenced 2", "c2": "fenced 3", "c3": "fenced 2", "c4": "fenced 2", "c5": "steered ",
+		"c7": "fenced 2", "c8": "steered "}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("management %v, expected %v", got, want)
+	}
+	if len(e.p.managers) != 0 || len(e.p.pending) != 0 {
+		t.Fatalf("managers %v pending %v", e.p.managers, e.p.pending)
+	}
+	for _, c := range []struct{ dir, high string }{{cg1, "max"}, {cg2, "max"}, {cg3, "1073741824"}, {cg5, "268435456"},
+		{cg7, "536870912"}, {cg8, "max"}} {
+		if got := memoryHigh(t, c.dir); got != c.high {
+			t.Errorf("%s: memory.high %s, expected %s", c.dir, got, c.high)
+		}
+	}
+	if ids := readSteeredFile(t, record); len(ids) != 0 {
+		t.Errorf("steering record %v after Synchronize, expected none", ids)
+	}
+
+	// the first pass fences them: c2 loses node 2 of another claim
+	e.expectUpdates()
+	e.p.LendsRestored()
+	e.passes()
+	e.expectUpdates("c1 mems=0-2", "c2 mems=0-1,3", "c3 mems=0-2", "c4 mems=0-2", "c7 mems=0-2")
+	// lent to, as containers that are not steered
+	noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
+	e.expectUpdates("c1 mems=0-3")
+	noErr(t, e.p.RevokeNode(ctx, "u1", "app", 3, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+	if err := e.p.LendNode(ctx, "u1", "conflict", 3, "l1"); !errors.Is(err, errSteered) {
+		t.Fatalf("lend to a container taken as steered: %v", err)
+	}
+
+	// c4 starts without a plan in this process: not steered, fenced (its
+	// task is created after the update of its spec)
+	e.proc(104, "kubepods/u1/c4", "0-3", "0-2")
+	c4.Pid = 104
+	e.startCtr(p1, c4)
+	e.passes()
+	e.expectUpdates()
+	if len(e.p.managers) != 0 {
+		t.Fatalf("managers %v", e.p.managers)
+	}
+
+	// c1 restarts: the new container gets a plan and a manager
+	_, err := e.p.StopContainer(ctx, p1, c1)
+	noErr(t, err)
+	e.wait(e.gone, "c1")
+	cg6 := e.proc(106, "kubepods/u1/c6", "0-3", "")
+	steerableCgroup(t, cg6, "max")
+	c6 := withClaims(ltCtr(p1, "c6", "app", 106), "auto")
+	if got := e.createMems(p1, c6); got != "-" || e.p.pending["c6"].plan == nil {
+		t.Fatalf("adjustment %s of the restarted steered container", got)
+	}
+	e.startCtr(p1, c6)
+	e.p.mu.Lock()
+	mgr := e.p.managers["c6"]
+	e.p.mu.Unlock()
+	if mgr == nil {
+		t.Fatal("no manager of the restarted container")
+	}
+	if got := memoryHigh(t, cg6); got == "max" {
+		t.Fatal("restarted container not throttled by its manager")
+	}
+	if ids := readSteeredFile(t, record); !reflect.DeepEqual(ids, map[string]string{"c6": cg6}) {
+		t.Fatalf("steering record %v, expected c6", ids)
+	}
+	if err := e.p.LendNode(ctx, "u1", "app", 3, "l1"); !errors.Is(err, errSteered) {
+		t.Fatalf("lend to the restarted steered container: %v", err)
+	}
+	e.p.fenceContainers(ctx)
+	e.expectUpdates()
+	// its stop releases it
+	_, err = e.p.StopContainer(ctx, p1, c6)
+	noErr(t, err)
+	e.wait(e.gone, "c6")
+	if got := memoryHigh(t, cg6); got != "max" {
+		t.Fatalf("memory.high %s after the stop of the manager", got)
+	}
+	if ids := readSteeredFile(t, record); len(ids) != 0 {
+		t.Fatalf("steering record %v after the stop of the manager", ids)
+	}
+}
+
+// TestSynchronizeReleasesSteeringLegacy: without a steering record (the
+// first start of a plugin that keeps one) a restarted plugin releases the
+// started containers that their settings steer, and keeps a record from
+// then on.
+func TestSynchronizeReleasesSteeringLegacy(t *testing.T) {
+	e := newFenceEnv(t, "0-3", 2)
+	e.p.state = nriClaims()
+	ctx := context.Background()
+	p1 := ltPod("u1")
+	cg1 := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")
+	steerableCgroup(t, cg1, "140668928")
+	cg3 := e.proc(103, "kubepods/u1/c3", "0-3", "")
+	steerableCgroup(t, cg3, "1073741824")
+	c1 := withClaims(ltCtr(p1, "c1", "app", 101), "auto")
+	c3 := withClaims(ltCtr(p1, "c3", "plain", 103), "split")
+	c1.State, c3.State = nriapi.ContainerState_CONTAINER_RUNNING, nriapi.ContainerState_CONTAINER_RUNNING
+	record := filepath.Join(t.TempDir(), steeredFileName)
+	e.p.steered = loadSteeredRecord(record)
+	if !e.p.steered.legacy {
+		t.Fatal("no file: expected the legacy rule")
+	}
+	if _, err := e.p.Synchronize(ctx, []*nriapi.PodSandbox{p1}, []*nriapi.Container{c1, c3}); err != nil {
+		t.Fatal(err)
+	}
+	if got := memoryHigh(t, cg1); got != "max" {
+		t.Errorf("memory.high %s of a container that its settings steer", got)
+	}
+	if got := memoryHigh(t, cg3); got != "1073741824" {
+		t.Errorf("memory.high %s of a container that is not steered", got)
+	}
+	if ids := readSteeredFile(t, record); len(ids) != 0 || e.p.steered.legacy {
+		t.Errorf("steering record %v (legacy %v) after Synchronize", ids, e.p.steered.legacy)
+	}
+	// an unreadable record is taken as none
+	noErr(t, os.WriteFile(record, []byte(`{"c1": `), 0o600))
+	if r := loadSteeredRecord(record); !r.legacy || len(r.ids) != 0 {
+		t.Errorf("record of an invalid file %+v", r)
+	}
+}
+
+// A container steered by a killed plugin under the old defaults (steering
+// policy auto) is released by the plugin restarted with new defaults (no
+// steering) that do not steer it: the steering record names it (05-review
+// D2).
+func TestReviewReleaseAfterDefaultsChange(t *testing.T) {
+	e := newFenceEnv(t, "0-3", 2)
+	e.p.state = nriClaims()
+	ctx := context.Background()
+	old := config.Container{Steering: &config.Steering{Policy: config.PolicyAuto}}
+	e.p.defaults = old
+	results := e.p.containerResults("x", []resultRef{{uid: "split", n: 0}, {uid: "split", n: 2}})
+	m, err := e.p.manage("x", results, false)
+	noErr(t, err)
+	if m.memory != memorySteered {
+		t.Fatalf("precondition: old defaults do not steer: %s", m.memory)
+	}
+	e.p.defaults = config.Container{} // the new configuration
+	pod := ltPod("u1")
+	cg := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")
+	steerableCgroup(t, cg, "140668928")
+	e.p.steered = loadSteeredRecord(steeredFile(t, map[string]string{"c1": cg}))
+	c1 := ltCtr(pod, "c1", "app", 101)
+	c1.Env = append(c1.Env, resultEnvVarName("split", 0)+"=1", resultEnvVarName("split", 2)+"=1")
+	c1.State = nriapi.ContainerState_CONTAINER_RUNNING
+	if _, err := e.p.Synchronize(ctx, []*nriapi.PodSandbox{pod}, []*nriapi.Container{c1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := memoryHigh(t, cg); got != "max" {
+		t.Errorf("memory.high %s of the dead manager kept after a defaults change", got)
+	}
+	e.p.mu.Lock()
+	memory := e.p.ctrs["c1"].memory
+	e.p.mu.Unlock()
+	if memory != memoryFenced {
+		t.Errorf("memory %s, expected fenced", memory)
+	}
+}
+
+// A steered container whose manager does not start is managed like a
+// container that is not steered (05-review D5): fenced by the pass of its
+// PostStartContainer, lent to, and not in the steering record.
+func TestSteeringStartFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *ltEnv) // the cgroup of c1 (pid 101)
+	}{
+		{"no cgroup", func(e *ltEnv) {}},
+		{"manager start fails", func(e *ltEnv) {
+			// no memory.numa_stat: the manager cannot read the usage
+			e.proc(101, "kubepods/u1/c1", "0-3", "")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newFenceEnv(t, "0-3", 2, 3)
+			e.p.state = nriClaims()
+			ctx := context.Background()
+			record := steeredFile(t, map[string]string{})
+			e.p.steered = loadSteeredRecord(record)
+			if _, err := e.p.Synchronize(ctx, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			e.p.LendsRestored()
+			e.passes()
+			pod := ltPod("u1")
+			c1 := withClaims(ltCtr(pod, "c1", "app", 101), "auto")
+			if got := e.createMems(pod, c1); got != "-" || e.p.pending["c1"].plan == nil {
+				t.Fatalf("adjustment %s of a steered container", got)
+			}
+			tc.setup(e)
+			e.startCtr(pod, c1)
+			e.p.mu.Lock()
+			memory, mgr := e.p.ctrs["c1"].memory, e.p.managers["c1"]
+			e.p.mu.Unlock()
+			if memory != memoryFenced || mgr != nil {
+				t.Fatalf("memory %s manager %v, expected fenced without a manager", memory, mgr)
+			}
+			if ids := readSteeredFile(t, record); len(ids) != 0 {
+				t.Fatalf("steering record %v", ids)
+			}
+			if tc.name == "no cgroup" {
+				// its cgroup is unknown: the pass updates its spec
+				e.expectUpdates("c1 mems=0-2")
+				return
+			}
+			e.expectUpdates("c1 mems=0-2")
+			if got := e.cgroupMems("kubepods/u1/c1"); got != "0-2" {
+				t.Fatalf("cgroup cpuset.mems %s", got)
+			}
+			noErr(t, e.p.LendNode(ctx, "u1", "app", 3, "l1"))
+			e.expectUpdates("c1 mems=0-3")
+		})
+	}
 }
 
 func TestSortedNodes(t *testing.T) {
@@ -388,4 +721,241 @@ func TestFormatBytes(t *testing.T) {
 			t.Errorf("formatBytes(%d) = %q, expected %q", in, got, want)
 		}
 	}
+}
+
+// recordExits makes exitOnNRILost send the exit statuses to the returned
+// channel for the test.
+func recordExits(t *testing.T) chan int {
+	t.Helper()
+	exits := make(chan int, 4)
+	old := exitOnNRILost
+	exitOnNRILost = func(code int) { exits <- code }
+	t.Cleanup(func() { exitOnNRILost = old })
+	return exits
+}
+
+// expectExits checks that the exit statuses sent to exits are want.
+func expectExits(t *testing.T, exits chan int, want ...int) {
+	t.Helper()
+	close(exits)
+	got := []int{}
+	for code := range exits {
+		got = append(got, code)
+	}
+	if !reflect.DeepEqual(got, append([]int{}, want...)) {
+		t.Errorf("exit statuses %v, expected %v", got, want)
+	}
+}
+
+// TestNRIConnectionLost: the plugin exits with status 1 when the runtime
+// closes the connection after Start, before Start has returned too, and
+// not when Stop or a done ctx closes it or Start fails.
+func TestNRIConnectionLost(t *testing.T) {
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		run  func(ctx context.Context, p *nriPlugin)
+		want []int
+	}{
+		{"runtime closes", context.Background(), func(ctx context.Context, p *nriPlugin) {
+			p.connStarted(ctx)
+			p.onClose(ctx)
+		}, []int{1}},
+		{"closed before Start returned", context.Background(), func(ctx context.Context, p *nriPlugin) {
+			p.onClose(ctx)
+			p.connStarted(ctx)
+		}, []int{1}},
+		{"Start failed", context.Background(), func(ctx context.Context, p *nriPlugin) {
+			p.onClose(ctx)
+		}, nil},
+		{"Stop", context.Background(), func(ctx context.Context, p *nriPlugin) {
+			p.connStarted(ctx)
+			p.Stop()
+			p.onClose(ctx)
+		}, nil},
+		{"ctx done", done, func(ctx context.Context, p *nriPlugin) {
+			p.connStarted(ctx)
+			p.onClose(ctx)
+		}, nil},
+		// the runtime closes the connection while Shutdown stops the
+		// broker, before the NRI plugin (05-review D4)
+		{"Shutdown", context.Background(), func(ctx context.Context, p *nriPlugin) {
+			p.connStarted(ctx)
+			d := &driver{nriPlugin: p, broker: &broker{cancel: func() { p.onClose(ctx) }}}
+			_ = d.Shutdown(ctx) // always nil
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exits := recordExits(t)
+			tc.run(tc.ctx, newLtEnv(t).p)
+			expectExits(t, exits, tc.want...)
+		})
+	}
+}
+
+// fakeRuntime is the runtime end of an NRI connection: it accepts a
+// plugin on a socket, registers and configures it.
+type fakeRuntime struct {
+	sock       string
+	registered chan struct{} // gets a value at RegisterPlugin
+	conns      chan net.Conn // the connection of the configured plugin
+}
+
+func (rt *fakeRuntime) RegisterPlugin(context.Context, *nriapi.RegisterPluginRequest) (*nriapi.Empty, error) {
+	rt.registered <- struct{}{}
+	return &nriapi.Empty{}, nil
+}
+
+func (*fakeRuntime) UpdateContainers(context.Context, *nriapi.UpdateContainersRequest) (*nriapi.UpdateContainersResponse, error) {
+	return &nriapi.UpdateContainersResponse{}, nil
+}
+
+// newFakeRuntime starts a fake runtime that serves one plugin.
+func newFakeRuntime(t *testing.T) *fakeRuntime {
+	t.Helper()
+	// a short path: the limit of a unix socket path is 108 bytes
+	dir, err := os.MkdirTemp("", "nri")
+	noErr(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	rt := &fakeRuntime{
+		sock:       filepath.Join(dir, "nri.sock"),
+		registered: make(chan struct{}, 1),
+		conns:      make(chan net.Conn, 1),
+	}
+	l, err := net.Listen("unix", rt.sock)
+	noErr(t, err)
+	srv, err := ttrpc.NewServer()
+	noErr(t, err)
+	nriapi.RegisterRuntimeService(srv, rt)
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		accepted net.Conn
+	)
+	// cleanups run in reverse order: close everything, then wait
+	t.Cleanup(wg.Wait)
+	t.Cleanup(func() {
+		_ = l.Close()
+		_ = srv.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		if accepted != nil {
+			_ = accepted.Close()
+		}
+	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		conn, err := l.Accept()
+		if err != nil {
+			t.Errorf("fake runtime: accept: %v", err)
+			return
+		}
+		mu.Lock()
+		accepted = conn
+		mu.Unlock()
+		mux := multiplex.Multiplex(conn)
+		rl, err := mux.Listen(multiplex.RuntimeServiceConn)
+		if err != nil {
+			t.Errorf("fake runtime: listen: %v", err)
+			return
+		}
+		go func() { _ = srv.Serve(context.Background(), rl) }()
+		pc, err := mux.Open(multiplex.PluginServiceConn)
+		if err != nil {
+			t.Errorf("fake runtime: open plugin connection: %v", err)
+			return
+		}
+		plugin := nriapi.NewPluginClient(ttrpc.NewClient(pc))
+		// as the runtime does: configure after the registration
+		select {
+		case <-rt.registered:
+		case <-time.After(10 * time.Second):
+			t.Errorf("fake runtime: the plugin did not register")
+			return
+		}
+		if _, err := plugin.Configure(context.Background(), &nriapi.ConfigureRequest{
+			RuntimeName:         "fake",
+			RuntimeVersion:      "v2.2.0",
+			NRIVersion:          "v0.12.2",
+			RegistrationTimeout: 5000,
+			RequestTimeout:      2000,
+		}); err != nil {
+			t.Errorf("fake runtime: configure: %v", err)
+			return
+		}
+		rt.conns <- conn
+	}()
+	return rt
+}
+
+// conn returns the connection of the configured plugin.
+func (rt *fakeRuntime) conn(t *testing.T) net.Conn {
+	t.Helper()
+	select {
+	case conn := <-rt.conns:
+		return conn
+	case <-time.After(10 * time.Second):
+		t.Fatal("fake runtime: the plugin was not configured")
+		return nil
+	}
+}
+
+// waitClosed waits until the stub has reported the connection closed.
+func waitClosed(t *testing.T, p *nriPlugin) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		p.connMu.Lock()
+		closed := p.closed
+		p.connMu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stub did not report the connection closed")
+		}
+	}
+}
+
+// TestNRIConnectionLostStub: with the NRI stub connected to a runtime,
+// the plugin exits when the runtime closes the connection, and not when
+// Stop closes it (which the stub reports to onClose too).
+func TestNRIConnectionLostStub(t *testing.T) {
+	start := func(t *testing.T, rt *fakeRuntime) *nriPlugin {
+		t.Helper()
+		p, err := startNRIPlugin(context.Background(), &nodeState{baseState: &baseState{}},
+			NRIOpts{Name: "test", Idx: "50", Socket: rt.sock}, config.Container{Fencing: config.FencingNone},
+			nil, nil, nil, t.TempDir(), t.TempDir())
+		noErr(t, err)
+		return p
+	}
+	t.Run("runtime closes", func(t *testing.T) {
+		exits := recordExits(t)
+		rt := newFakeRuntime(t)
+		p := start(t, rt)
+		t.Cleanup(p.Stop)
+		noErr(t, rt.conn(t).Close())
+		select {
+		case code := <-exits:
+			if code != 1 {
+				t.Errorf("exit status %d, expected 1", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no exit after the runtime closed the connection")
+		}
+		waitClosed(t, p)
+		expectExits(t, exits)
+	})
+	t.Run("Stop", func(t *testing.T) {
+		exits := recordExits(t)
+		rt := newFakeRuntime(t)
+		p := start(t, rt)
+		rt.conn(t)
+		p.Stop()
+		waitClosed(t, p)
+		expectExits(t, exits)
+	})
 }

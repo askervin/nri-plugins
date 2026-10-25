@@ -1,0 +1,589 @@
+plan-13: status of stream MODEL
+===============================
+2026-10-24 (MODEL). Contract 04-contract.txt with amendments A1-A18,
+design 02-design.txt, plan 03-plan.txt, bug-01..bug-04, the review
+05-review.txt (round 2: section 12; where it differs from sections
+1-11, section 12 holds).
+  N  ~/github.com/containers/nri-plugins
+  T  N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+     test90-gofmbt-reliability
+  M  T/model (Go module github.com/containers/nri-plugins/test/e2e/
+     mbt-cxl, binary mbt-cxl)
+  D/ cmd/plugins/dra-driver-cxl/   F/ scripts/testing/fake-cxl-pool/pkg/
+  doc/ docs/memory/cxl/
+gofmbt: the extended branch 5jo-mbt-cxl (f8d8a11) through a go.work;
+stock gofmbt (go.mod's v0.0.0-20260730061456-f663bfa65cdf) with
+-tags gofmbtstock. No cluster access: everything here ran against the
+simulated SUT and against EXEC's recorded observations (7).
+
+Summary
+-------
+The slot model (profiles full 43 slots, small 12, tiny 9, union),
+every action of contract 4 with its preconditions, the prediction
+rules of 4 (incl. A8 containerd-restart and A9 decoder stacks with
+blocked pods and races decided by the observation), the oracle O1-O8
+plus the decoder stacks with the stable rule, coverage C1-C4 with
+weights, and the subcommands online (planning ahead), online --replay,
+generate (also --from), check and experiment. 41 tests (98 cases),
+gofmt, go vet, go test -race clean (87% statements), a simulated SUT
+that answers the protocol from the model's own predictions: transient
+observations, injected deviations, random outcomes of every race (node
+of "any" pods, controller kills, region order, retries of unblocked
+pods) that the oracle must adopt. EXEC's real observations of runs 1,
+3 and 4 re-checked: ok or legitimate waits; E1 reproduced. Defaults
+from P4: --coverage C1x3,C2x2,C3 --depth 3 --plan-time 10s, and
+GOMAXPROCS=2 GOGC=400 inside the binary.
+
+1. Files (M)
+------------
+go.mod, go.sum    module; gofmbt pinned to the stock pseudo-version
+.gitignore        the binary mbt-cxl and a go.work, if built in M
+topology.go       VMs, pools, devices, serials, NUMA nodes, resources,
+                  Config (--local-blocks, --node-hb0/1, --avoid-holes)
+kinds.go          kinds, slots (KIND@VM#I, label KIND_VM_I), profiles
+state.go          State (slots, controllers, drivers, data, stacks,
+                  window events, alternatives), derived occupancy and
+                  C4 abstraction (memoized, String() = the latter), dump
+stack.go          decoder stacks (A9): keys, push/destroy, region
+                  events, outcome enumeration, settleAll, any-host
+                  expansion
+actions.go        verbs, Act, parse/format, MBT_AVOID, preconditions
+                  (allowed), generation rules (next/enabled), changes
+expect.go         Expectation (the JSON of code.gen.sh) <-> State
+observe.go        observation types of contract 6 + A10, lenient
+oracle.go         checkStateAt (alternatives; O1-O6, O8, stacks),
+                  checkDone (O7), resolution = adoption, verdicts
+coverage.go       criteria, weights, C2 strings
+planner.go        gofmbt model (one Transition per action, built once),
+                  planner interface, planAfter's forced first step
+planner_ext.go    planner on extended gofmbt (default build)
+planner_stock.go  planner on stock gofmbt (-tags gofmbtstock: C1, C3,
+                  no weights, no budget)
+online.go         protocol, planning ahead, mbt-steps.txt,
+                  mbt-fail.txt, replay, teardown
+generate.go       code.gen.sh, --from, code.gen.sh parser (tests)
+check.go          `check`
+experiment.go     P4 experiments (each one a soak test of model+oracle)
+sim.go            the simulated SUT
+main.go           subcommands, flags, runtime tuning
+*_test.go         model, oracle, stack, online, generate tests
+
+2. Build and test
+-----------------
+  M=T/model
+  printf 'go 1.23.4\n\nuse (\n\t%s\n\t%s\n)\n' $M \
+      ~/github.com/askervin/gofmbt > /tmp/mbt-cxl.work
+  cd $M && GOWORK=/tmp/mbt-cxl.work go build -o mbt-cxl .
+  GOWORK=/tmp/mbt-cxl.work go vet . && \
+      GOWORK=/tmp/mbt-cxl.work go test -race -timeout 30m .  # ~10 min
+  GOWORK=off go build -tags gofmbtstock .       # without the checkout
+No go.work in M (do not commit one; `go work init` in M makes one).
+
+3. Usage
+--------
+mbt-cxl online [flags]  stdin/stdout = contract 5, log on stderr
+  --profile --seed (0: time-based, printed) --depth (3) --steps (0)
+  --duration (20m) --unsettled (3) --settle-timeout (180s)
+  --unblock-timeout (330s) --avoid --avoid-holes --local-blocks
+  (vm2=8,vm1=2,vm0=2) --node-hb0 (2) --node-hb1 (3) --coverage
+  (C1x3,C2x2,C3) --randomness (1) --max-restarts (2) --plan-ahead
+  (true) --plan-time (10s) --max-paths (0) --out DIR --replay FILE
+mbt-cxl generate [the model flags] --steps N | --from FILE
+mbt-cxl check --step N --expect FILE --observed FILE
+  [--since UNIX_SECONDS | --elapsed SECONDS] [--settle-timeout 180s]
+  prints ok / wait MSG / fail MSG, exit 0 / 3 / 1, the differences on
+  stderr. --since is `date +%s` of bash's first poll of the step (EXEC
+  passes it); a wait after the timeout prints "fail settle timeout
+  after Ns: MSG". The observed file: the on-line line or its JSON (A4).
+mbt-cxl experiment --exp branching|plantime|growth|all [--mixes
+  "C1;C1,C2"] [--max-depth 4] [--uncovered] [--cpuprofile F]
+Files (--out): mbt-steps.txt (2 comment lines, one action per line,
+synced per step, the initial settle and the teardown included) and
+mbt-fail.txt (message, every difference, the model state before the
+step, the prediction JSON, the last observation line, a replay hint).
+
+4. Prediction rules (the specification the oracle checks)
+---------------------------------------------------------
+Phases: absent, starting (created or promoted in this window, holds
+its resource), restarting (crashed), running, pending (unschedulable,
+holds nothing), attaching (allocated, waits for its pool controller),
+blocked (allocated, its Prepare refused by a decoder hole, A9),
+unblocking (the hole cleared, kubelet's retry pending), either (a
+controller-kill race, now always resolved into alternatives), deleting.
+R1 Capacity (01-findings-driver 2.1-2.3): an exclusive pool device has
+   one holder cluster-wide; a shared one one exclusive holder (sexcl)
+   or any number of shares; a local memdev --local-blocks blocks, one
+   per lnuma/ldax/lsteer pod and per lease (128Mi = one block).
+R2 create: no pod in the slot, no waiter and no unsettled transfer on
+   its resource; fits now -> starting; fits once what is being
+   released is gone -> starting, the resource "contested" (the only
+   candidate; nothing else asks until the settle); else pending (the
+   one waiter). No race whose winner is the scheduler's choice.
+R3 delete: a holder's waiter is promoted (starting, contested) if it
+   fits when the deleting holders are gone; likewise on a lease
+   release (lease-put, requester deleted). An exclusive device moves
+   to another node: detach then attach (F/controller/reconciler.go:
+   316-327).
+R4 settle: deleting -> absent, restarting -> running, starting ->
+   running, attaching (its controller is down), blocked or unblocking
+   (R15). Attachments of a pool whose controller is up: the nodes of
+   its holders (also blocked ones: allocated claims are attached),
+   exclusive iff a sexcl holds the shared device there (reconciler.go:
+   64-82 exclusiveResult).
+R5 Controller down (ctrl-kill): new pool claims wait for the attach,
+   also on a node where the device is attached for another claim
+   (writeStatus, reconciler.go:336, is per claim); attachments stay
+   (only the controller detaches, reconciler.go:414). What was
+   changing at the kill is "maybe" (attached or not) and a pod that
+   was starting may have prepared or not: alternatives (R15) that the
+   observation decides on-line; off-line a kill is not generated while
+   a prepare of its pool is pending. ctrl-start: waiting pods prepare.
+   ctrl-restart, server-restart, kubelet-restart: nothing changes.
+R6 Regions (D/local.go:993 releaseClaim -> :1108 releaseRegion,
+   D/pool.go:693 prepareDevice): a local region exists while it has a
+   slice; numa slices kmem with 128Mi online on the hb0 node, dax
+   slices device_dax; pool numa: one kmem dax device with the whole
+   device online on its host bridge's node; pool dax: one device_dax.
+   MemTotal of a CXL node = the numa memory prepared on it.
+R7 Fencing set F per VM (D/fence.go:95 Fence, :121 seed, :154
+   preparedNodes): seeded at each driver start (driver-kill,
+   driver-restart, containerd-restart) with the numa claims prepared on
+   the VM then (in flux -> maybe); grows at every settle and numa
+   lease-get. A container of a test pod or companion without a numa
+   claim or numa lease on CXL node X has no X in mems_effective when X
+   is in F or has memory on the VM; a numa claimer or lease holder has
+   its node. (F alone is observable only through memory on the node.)
+R8 Steering (doc/usage.md:879-881, A17 = bug-04 fix): an lsteer
+   container started while its driver runs has memory.high != max;
+   after any driver restart (driver-kill, driver-restart, containerd-
+   restart) max, fenced with its claim like an unsteered container; a
+   later restart of the container is steered again; (re)started in a
+   kill window: either (adopted). Every other container: max.
+R9 Leases (D/broker.go:1277 requesterDone, :1297 containerGone, :1328
+   containerStarted): lease-get only with a free block (blocks being
+   released count), no driver kill window, and its slice's region
+   available now (R15); Ready when cxl-request returns, one companion
+   Running on the requester's node; kept across a requester crash;
+   released with the requester pod or by lease-put.
+R10 Data (doc/usage.md:1062-1078): pool dax devices keep their bytes
+   between claims and nodes, unknown after a numa use; shared pool
+   devices keep them; a new local dax slice reads "" (D/local.go:855
+   zeroSlice); a crash keeps the content; never-written content is
+   unknown: any read is accepted (and learnt on-line). write on sro
+   fails.
+R11 Restarts: crash, driver-kill and containerd-restart only below
+   --max-restarts (2) restarts (kubelet back-off 10/20/40 s, A6);
+   driver-restart: a new pod, restarts 0.
+R12 Env (pkg/cxl/api/api.go:298 Env, :388 FormatSerial; D/node_state.go
+   :1476, D/pool.go:178 memory): CXL_<SERIAL HEX>_MODE, SIZE (bytes),
+   SERIAL, SHARED, NODE (numa) or DAX (/dev/dax*) and READONLY (dax);
+   lease: CXL_LEASE_SOCKET=/run/cxl/cxl.sock; plain: none; CXL_CLAIM_*
+   ignored; any other CXL_ variable is a difference.
+R13 State files, CDI (D/node_state.go:1447 buildClaimsCDISpec,
+   D/lease_claims.go:122 leaseCDIDevice): prepared == info; running
+   local and lease claims plus one companion per held lease;
+   preparedPoolClaims == running pool claims of the VM; localDevices of
+   this boot, no "-" owner, one slice per claim; cxl-claims.yaml
+   claim-<uid>-<n> of local and lease claims, cxl-pool.yaml of pool
+   claims, cxl-leases.yaml lease-<uid> of lease claims.
+R14 Teardown: settle, ctrl-start of stopped controllers, delete every
+   pod (waiters first), a final settle with nothing left (no pods,
+   companions, k8s attachments, regions, pool memdevs, CXL memory,
+   prepared claims, CDI devices, decoders).
+R15 Decoder stacks (A9, bug-02): per (VM, host bridge) the regions in
+   creation order. Users of a region on a VM: the claim (exclusive
+   pool device), the claims of the node (shared device), the slices of
+   pods and leases (local). Region events of a window: prepare (a pod
+   starting with its Prepare in the window: local, or pool with its
+   controller up; at ctrl-start for those that waited; a lease-get,
+   synchronous) and unprepare (delete of a prepared pod, lease
+   release). A prepare of a user without its region pushes it if the
+   stack has no hole, else the pod is BLOCKED; an unprepare of the
+   last user destroys it (the top pops with the holes below, else a
+   hole). The settle plays the events in every order the window
+   allows (a lease-get before what came after it; a promoted pod after
+   the release it waited for; a pod's unprepare after its prepare;
+   optional prepares: a pod starting at a controller kill, a pod
+   deleted while starting or unblocking) and the hosts of "any" pods:
+   the distinct outcomes are the alternatives of the settled state,
+   the issue order first. Blocked pods stay blocked while the hole is
+   there; when it clears they are UNBLOCKING: Running or
+   ContainerCreating accepted, Running within --unblock-timeout of the
+   settle that first saw it so (on-line). Faults make no region
+   events. Generation rules: off-line every stack keeps one outcome
+   per window (no race for the order); nothing changes a stack where a
+   pod is unblocking (its retry lands on top) but deleting that pod;
+   --avoid-holes leaves out actions with an outcome that adds a hole;
+   lease-get needs nothing in flight on its hb0 stack and the local
+   region there or no hole (else it would fail after --wait 60s).
+R16 Containerd restart (A8, bug-01 fix): the driver restarts in place
+   like after driver-kill (restarts +1, F reseeded, the kill window,
+   steering as R8), containers keep running.
+
+5. The oracle
+-------------
+A settle observation is checked against the predicted state and each
+alternative; the first that fits (else the closest: wait before fail,
+fewest differences) gives the verdict and the adopted state. Per
+alternative: index the pods (slot label or name, generation), resolve
+(node of "any" pods, either, maybe attachments, steering "either",
+unblocking pods seen Running with their region on top, unblock times,
+driver pod names, lease IDs), then O1 pods (incl. blocked: Pending,
+bound, claim allocated/Attached, newest Warning event containing "CXL
+decoders released out of order"; unblocking: ContainerCreating until
+the deadline), companions, others, O8 controllers and drivers, O2
+attachments (owners k8s: only, A3), per VM O3 memdevs, regions, nodes,
+O4 state files and CDI, O5 cpuset.mems and memory.high, the decoder
+stacks against "ports" (A10: the host bridge port's committed
+decoders in index order, region names mapped through the regions'
+serials, "" = hole; unblocking pods' regions may be on top), O6 env
+and lease lists. Without "ports" the stack is not checked and a race
+for the order adopts the issue order.
+Stable rule: "pending" (wait; after the settle timeout the last wait
+is the failure) unless it can never become right, then "fatal" (fail
+at once): restarts above the model's; a pod of an unknown slot or
+generation, an old generation not deleting, two pods of one
+generation; Failed/Succeeded while not deleting (A7); Running when it
+must be pending, waiting for the attach or blocked; wrong node, also of
+a companion; an adopted attachment (any owner), a failed one (k8s
+owners); a wrong env or lease list (no second inspection); an
+unblocking pod not Running after --unblock-timeout; wrong
+write/read/lease-get results. Messages "AREA: what, want what (+N
+more)".
+
+6. Decisions where the contract was silent
+------------------------------------------
+- Step 1 of an on-line run is a settle; the teardown steps (R14) are
+  steps (in mbt-steps.txt, checked) that ignore MBT_UNSETTLED. A
+  replayed file that ends with its teardown gets no second one.
+- settle is enabled only with operations in flight; write and read
+  are synchronous checks: allowed when forced, not counted.
+- ctrl-kill not while an "any" pod of the pool holds its device on a
+  node not known yet; ctrl-restart/ctrl-kill only when up, ctrl-start
+  only when down; driver-restart not in a kill window.
+- Off-line: no "any" slots; controller-kill and stack races are not
+  generated (R5, R15); what stays open (a maybe attachment, steering
+  either, never-written data, unblocking pods) stays open in the
+  expectations until an event decides it. --from stops with the step
+  number where a step needs what an on-line run adopted.
+- The Expectation is the model state (slots, controllers, drivers,
+  data, stacks) plus its alternatives and the done prediction; the
+  oracle derives the rest, so check needs no model of its own.
+- Plan reuse: the plan made ahead is used if the adopted state has the
+  same abstraction (String) and the action is enabled; else a new
+  plan. With --plan-time 0 the plan ahead is never cut, so the same
+  seed and SUT give the same steps (tested).
+- GOFMBT review (05-review-GOFMBT F1/F2): no state is changed after
+  gofmbt saw it (adoption builds new states); the step being executed
+  is not marked covered before its observation: planning ahead
+  searches from the state before it with the predicted step as the
+  forced first step (planAfter, depth+1), and the step is marked with
+  its adopted end state afterwards; ResetCoverage only when the search
+  completed the depth and found nothing.
+- Names: devices "a-pooled0" or "pooled0"; companions' requester and
+  inspect keys slot name or label; CDI files by substring;
+  localDevices serial number, decimal or 0x string or serialHex; a
+  decoder's region by name through the VM's regions list.
+- Profiles tiny (tests) and union (full + small: EXEC's stub lists).
+- Coverage weights: CNxW counts each string W times (prefixed copies).
+  C3 weight 1 is gofmbt's CoverActionFormatCombinations(2) on formats
+  "verb kind" (kind family only): 51 formats.
+- State.String() is the C4 abstraction: per pool device its users by
+  kind and phase class (new, run, att, wait, gone, blk, unb), per
+  local memdev fill and users, per stack the sequence of kinds (local,
+  pooled, shared, hole), per driver up/killed/restarted and F, per
+  controller up/down/down-maybe. Memoized with atomics.
+- The binary sets GOMAXPROCS=2 and GOGC=400 unless set (P4: the GC of
+  the 256-CPU host spent most of the time on its own synchronization;
+  planning 3x faster).
+
+7. Validation against EXEC's recorded runs (/tmp/mbt-exec-dev)
+--------------------------------------------------------------
+Run 3 (off-line, gen-small-20.sh): every settle ok, step 25 (teardown)
+now waits (A7) instead of failing. Run 4 (on-line; expectations by
+--from of its mbt-steps.txt): step 25 waited 52 polls on "vm1:
+container of sro-c@vm1#0: cpuset.mems "0-2" has fenced CXL node 2"
+(E1, bug-01); with A8 the pre-fix driver now waits for its restart.
+Run 1 (stub, 65 steps, every verb and kind, union profile): ok, but
+where the stub moved on before the SUT got there (restarts not seen
+yet) and A8's driver restart on the pre-fix image: legitimate waits.
+
+8. P4: off-line experiments
+---------------------------
+Every run on the simulated SUT with the oracle on: no disagreement in
+any of ~400 runs. Coverage: means of 5 seeds, "C1/C2/C3/C4" = distinct
+strings of each criterion whatever guided the planner. Final model.
+Branching (enabled actions per state, 400 steps, depth 1):
+  tiny 59 actions mean 15.0 max 37; small 72: 16.2, 38; full 215
+  (205 off-line): 31.3 (33.0), 74 (70); median 3-5 (a third of the
+  states are forced settles)
+Planning time per step, mean / max, first 30 steps (8 at depth 4)
+from an empty cluster, one process, GOMAXPROCS=2 GOGC=400:
+                     depth 1  depth 2     depth 3      depth 4
+  small C1,C3 stock  0.1ms    3.6/13ms    117/470ms    1.6/4.4s
+  small C1,C3 ext    0.02ms   0.4/1ms     10/49ms      178/500ms
+  small default      0.03ms   1.0/3ms     18/86ms      123/257ms
+  small all          0.15ms   4.1/10ms    146/513ms    0.6/1.0s
+  full C1,C3 stock   0.1ms    12/35ms     0.76/3.4s    12.8/38.7s
+  full C1,C3 ext     0.07ms   3.3/14ms    140/622ms    3.2/11.3s
+  full default       0.08ms   3.7/11ms    173/702ms    2.1/4.8s
+  full all           0.4ms    27/80ms     1.5/5.2s     14.3/42.8s
+  (default = C1x3,C2x2,C3; extended vs stock: 5x full, 9-12x small)
+Coverage after 100 / 200 / 400 steps, full profile:
+  depth 2        @100           @200            @400
+  C1             80/35/126/98   159/58/210/162  185/89/328/245
+  C1,C2          53/87/103/77   92/177/176/124  172/266/283/206
+  C1,C3          79/18/147/95   132/33/243/135  187/66/381/201
+  C1,C2,C3       59/99/137/80   100/149/229/125 174/216/386/190
+  C1,C2,C3,C4    64/86/133/130  116/152/228/193 170/230/375/281
+  C1x3,C2,C3     72/77/141/89   139/125/235/149 187/176/353/215
+  C1x3,C2x2,C3   59/103/132/80  111/177/221/132 185/248/341/208
+  C1x2,C2,C3,C4  71/73/135/124  134/131/224/208 176/215/369/282
+  depth 3
+  C1             81/39/131/99   160/64/211/162  198/96/326/242
+  C1,C2          53/116/102/88  98/202/176/139  171/307/290/215
+  C1,C3          80/23/149/96   155/52/247/157  192/72/416/211
+  C1,C2,C3       56/117/138/79  112/178/233/138 181/256/384/206
+  C1,C2,C3,C4    63/102/132/138 122/156/227/220 168/237/378/309
+  C1x3,C2,C3     71/88/142/88   138/142/239/149 193/193/392/201
+  C1x3,C2x2,C3   58/116/129/81  116/184/220/143 190/266/363/214
+  C1x2,C2,C3,C4  68/101/135/130 135/141/230/215 184/227/374/317
+Small profile, depth 3:
+  C1             67/22/133/67   70/51/206/92    71/86/318/122
+  C1,C2          47/103/106/60  66/170/174/86   71/280/248/122
+  C1,C2,C3       61/78/139/69   67/140/224/95   71/212/379/116
+  C1,C2,C3,C4    56/73/137/92   70/141/221/133  72/215/364/181
+  C1x3,C2,C3     69/47/146/68   71/121/229/93   72/205/377/119
+  C1x3,C2x2,C3   60/82/134/63   70/148/215/93   71/235/348/119
+  (depth 2: C1x3,C2x2,C3 @400 70/201/321/114, C1,C2,C3 70/162/321/100)
+Saturation of C1: small (72 actions) at depth 3 in 200-300 steps for
+the weighted mixes (C1x3,C2,C3 5/5 runs at step 199 on average), at
+depth 2 in ~500; full (215 actions) not within 800 steps (depth 2,
+best 205/215): the rest need long setups (crash/write/read of sexcl-c
+with five shares of c-shared0, the any slots, leases on a busy node).
+Depth 4 (C1x3,C2x2,C3, 200 steps): small (5 seeds) @100 63/74/138/67,
+@200 71/150/215/92: depth 3's numbers (60/82/134/63, 70/148/215/93)
+at 25x the planning time (0.57 s mean, 3.3 s max); full (2 seeds, 25
+min per run) @100 54/120/133/86, @200 111/193/223/147 against depth
+3's 58/116/129/81, 116/184/220/143: +5% C2, -4% C1, for 8 s mean and
+44 s max per plan. Not worth it.
+Choice: C1x3,C2x2,C3 at depth 3. Against C1,C2,C3 it covers more
+actions (full @400 190 vs 181) and faults in context (266 vs 256) for
+less of C3 (363 vs 384); C1 alone covers actions fastest but a third
+of the faults in context; C1,C2 the most faults, the fewest actions;
+C4 costs 8x the planning time for a few more abstract states (it is
+the criterion that rewards reaching deep resource shapes: sexcl with
+every share gone, holes; C1x2,C2,C3,C4 is the mix for those). Depth 3
+over 2: +7% C2 on full, +17% on small @400, at ~50x the planning time
+(173 ms mean on full), mostly hidden by planning ahead behind the
+settles (0.5-25 s, 04-status-EXEC 4). At EXEC's 3-4 s per step a
+20 min run has ~300-400 steps, a 2 h run ~2000.
+
+9. C2 and C4 and "blocked" (orchestrator's question)
+----------------------------------------------------
+Implemented: (1) a fault's C2 strings carry the phase of every pod it
+affects, so "fault driver-kill xnuma blocked", "fault ctrl-kill sdax
+unblocking", "fault kubelet-restart ldax blocked" are contexts of
+their own; (2) a fault on a VM with a hole on a host bridge adds
+"fault VERB hole hbN", a pool fault "fault VERB hole" when a host has
+a hole on the pool's host bridge, so faults while a hole exists count
+also without a blocked pod; (3) C4 has "stack vmX/hbN local,pooled,
+hole,shared"-like shapes and the phase classes blk/unb in the device
+and local-memdev strings, so reaching a hole, a blocked pod and its
+unblocking are new abstract states. Recommendation: keep blocked as a
+phase (not a kind) in C2 - the interesting question is what a fault
+does to a pod whose Prepare is being retried (driver restart: does
+the retry still come; kubelet restart: is the claim prepared twice;
+ctrl-kill: is its attachment kept). The generated full runs reach it
+(600 steps off-line: 25 settles with a blocked pod, 6 unblocking).
+
+10. Contract: ambiguities and proposed amendments
+-------------------------------------------------
+P1 (5) generate emits mbt-expect for settle, write, read, lease-get;
+   other steps fail on a nonzero status in bash (EXEC does so).
+P2 (5) check: --since UNIX_SECONDS of the first poll (or --elapsed).
+P3 (6.1) Containers are identified by the slot pods' and companions'
+   names; mems_effective (mems if empty); memory_high "" = unknown.
+P4 (6.3) Regions: dax devices (driver, size, online), node, size; the
+   mode only "not pmem".
+P5 (7) Driver restarts are compared after the pod name; off-line
+   (no names) a restart count difference is a wait.
+P6 (4) lease-get only with a free block and its region available
+   (R9, R15): EXEC's 60.5 s exit-3 case is never generated.
+P7 (3) profiles may be added: tiny, union.
+P8 (8) MBT_ARGS for --coverage, --plan-time, --max-restarts,
+   --max-paths, --randomness, --avoid-holes, --unblock-timeout.
+P9 (A10) ports: the oracle uses the "hostbridge" port of each hb only
+   and orders decoders by their index; it needs the regions list for
+   the region names (a decoder of an unknown region is a wait).
+P10 (A9) the unblock deadline counts from the settle that first saw
+   the hole cleared (later than the clearing itself), on-line only.
+
+11. Open issues, expected findings
+----------------------------------
+X1 (FIXED as bug-04, A17) Steering after driver-kill: SIGKILL skipped
+   the managers' Stop;
+   the new incarnation takes the container as steered without a
+   manager (D/lend.go:408 syncManagement): memory.high stays at the
+   old bound, the doc says "no longer throttled". The model predicts
+   max, so the first run with an lsteer pod and a driver-kill of its
+   VM waits 180 s and fails on "memory.high ..., want max". A bug by
+   the doc (a growing workload stays throttled); fix: reset
+   memory.high of containers taken as steered without a manager, or
+   amend R8 like A8 ("not checked after driver-kill"). Meanwhile
+   MBT_AVOID=driver-kill:vm2,driver-kill:vm1 (lsteer slots are on
+   vm1 and vm2) or crash:lsteer,create:lsteer.
+X2 (closed by the bug-04 fix) E5: an lsteer container restarted while
+   its driver is down was
+   neither steered nor fenced; with xnuma-c on vm1 it sees node 3 (O5
+   fails). Reachable in full (lsteer@vm1#0, xnuma-c@vm1#0).
+X3 bug-03 (stale start/size of uncommitted decoders): not modelled,
+   ports list committed decoders only.
+X4 The cxl.nri.io ResourceSlice is not observed, so E6 (a pool serial
+   published as local after a graceful controller stop) is not caught.
+X5 Steering "either" is adopted from memory_high at the settle; an
+   observation between a container's start and its manager's start
+   would adopt "off" wrongly (a window of milliseconds).
+X6 The covered steps of a coverage round stay in memory (~1-2 KB per
+   state): fine for 2 h runs.
+X7 Unblocking pods: off-line their stack stays frozen (no adoption)
+   until they are deleted; on-line the oracle adopts them when seen
+   Running. The deadline runs from the first settle that saw them.
+X8 (superseded by section 12, R10) A window with more than 7 region
+   events on one stack (teardown
+   bursts) is played in issue order only (enumeration bound); the
+   final teardown expects empty stacks anyway.
+
+12. Round 2: fixes after 05-review.txt and A11-A17
+-------------------------------------------------
+Done in M, with regression tests of the reviewer's counterexamples
+(review_test.go: his /tmp/rev/model/rev_test.go cases with the right
+behaviour asserted) and of each amendment:
+R1 A pool claim that gets its device only once the old holders are
+   gone (created with a later fit, or promoted) has a "handover"
+   prepare: after every earlier unprepare of the same region in the
+   window (ready() in stack.go; promote() too). The local memdev keeps
+   one-release ordering (no extra outcome, 05-review). The leaked-
+   region SUT now fails at once ("Running, but its decoder stack ...
+   has a hole"); the sexcl and promote-after-two-shares cases have one
+   outcome, blocked.
+R2/A11 Every Running slot pod and Running companion of a VM must have
+   a container in "containers" (else wait), mems_effective must be
+   non-empty (else wait; cpuset.mems may be "": an inherited cpuset),
+   a null part (regions, containers, cdi, memdevs, nodes, state) is a
+   wait, the executor's "missing" list must be [] (null or entries:
+   wait).
+R3 The "nothing on a stack with an unblocking pod" rule covers "any"
+   pods: every host stack of the pool is checked.
+R4/A12 (a) The regions of unblocking pods seen Running take the order
+   of the observed decoders (any permutation above the settled stack);
+   without ports, slot order. (b) Generator rule: no window that
+   clears a hole with pods blocked behind it may also make a region
+   (an outcome with Cleared && Pushed && blocked users is refused):
+   their retries come at kubelet's resync, any time. The blocked check
+   searches "event" and every entry of "events" (A12).
+R5 On-line runs write after every settle (and after a read or
+   lease-get that adopted something) "#adopt N alt=J phase=...
+   node=... steer=... restarts=... att=... stack=... lease=...
+   data=..." (adopt.go): the alternative that fitted and what the
+   observation decided beyond it. generate --from replays the records,
+   so its expectations follow the run (TestGenerateFrom executes the
+   --from script of full-profile runs with any slots and races on the
+   simulated SUT: every expectation holds). Without records it stops
+   at the first settle that leaves something open, saying why.
+R7/A17 driver-kill and containerd-restart end steering like a
+   graceful restart: memory.high max; a crash steers again. A17's
+   "fenced with its claim" is O5's rule as it is.
+R10 Enumeration: memoized DFS over (events placed, stack state), up
+   to 24 events per stack (was 7, factorial); beyond, and beyond 64
+   alternatives, the settle is marked Truncated: the on-line loop logs
+   it, a failure message says "the outcomes ... were not all
+   enumerated: the observed one may be legal", the JSON carries
+   "truncated".
+R11/P1 C1 counts a fault by its verb only, once, and C2 has no "fault
+   VERB -" string any more (no context, no reward): the generator no
+   longer opens with faults on an empty cluster. A crash is a fault
+   in C2 too ("fault crash KIND [lease-numa|dax] [steer-on|off]
+   [hole] [again]"). C1 adds "can lease-get/lease-put SLOT" for the
+   states that allow them (weighed like C1), a gradient towards the
+   free block and quiet stack a lease needs. Simulated, default mix,
+   depth 3, 400 steps, 3 seeds (before -> after):
+     full  C1 189 -> 193/215, C2 266 -> 288, C3 363 -> 362;
+           lease-get 2-3 -> 5, lease-put ~1 -> 2.7, crash ~37; C2
+           contexts with lease-numa 0 -> 6, lease-dax 10, blocked 6,
+           hole 17
+     small C1 72/72 (saturated by step ~200), C2 235 -> 263
+   Still uncovered after 400 steps on full: crash/write/read of ~20
+   pool slots (they need their device free of others first) and 1-2
+   lease actions; a 2 h run (~2000 steps) gets most of them.
+R13/A16 online --replay and generate --from read the steps file's
+   header and take its model flags (profile, unsettled, max-restarts,
+   avoid, avoid-holes) over the command line, with a warning where
+   they differ; the measured facts (--local-blocks, --node-hb0/1),
+   budgets, timeouts and planner flags stay the command line's (as
+   EXEC: it warns on a different --local-blocks). A seed reproduces
+   the steps only with --plan-time 0 or --max-paths (and an SUT that
+   decides every race the same way).
+R14/A13 Panics in the current driver container's log: fail; A15: no
+   running driver container, lendsRestored false or sockets false:
+   wait; slices: memdev-c100e2e1 on every node, no pool serial in a
+   cxl.nri.io slice (wait); leases.json: its lease claims == the
+   running lease pods' claims, its leases == the held ones (pod, mode,
+   Ready, ID when known). A missing new field is not checked and
+   logged once per run (Verdict.Notes). Attachments: a k8s-owned one
+   of an unknown device, or listed twice, is a wait.
+A14 generate writes an mbt-expect for every step (done steps: status
+   0, write on sro nonzero, read text, lease-get lease).
+M2 (EXEC run 7) A kubelet restart while a pod of its VM is starting or
+   restarting may restart it once: Slack +1, the oracle accepts
+   restarts up to Restarts+Slack and adopts the observed count.
+S3 (EXEC, bug-06 candidate) local claims Pending for ~30 s after a
+   kubelet restart: the settle waits for them (predicted Running);
+   nothing else needed.
+N1 Either and RaceKill stay: RaceKill marks the optional prepares of a
+   controller kill; Either is never produced any more (the
+   alternatives replace it) and is kept for older expectation JSON.
+N2 The simulated SUT answers from the model: its "no disagreement"
+   is consistency, not evidence; the evidence is section 7 and the
+   reviewer's counterexamples, now regression tests.
+N4 experiment's header prints its own --plan-time; N5 the magic 255,
+   itoa and the insertion sort are gone, predictVM runs once per VM.
+Left to EXEC: R6 (A14 off-line statuses: done), R8/A15 readiness
+(done), R12 (stock fallback: done), N3 (a replay divergence: Go sends
+"fail N" while bash waits for a step line).
+Tests: 55 test functions, gofmt, go vet (also -tags gofmbtstock) and
+go test -race clean.
+
+13. Round 3: A18 pool slices (run L1, M3)
+-----------------------------------------
+L1 failed on a model error: ctrl-restart b, ctrl-kill b at once (the
+new controller had not published pool-b's slices yet), create sro-b:
+the claim stayed unallocated ("cannot allocate all claims"), the model
+wanted "allocated, waiting for the attach". Now (A18):
+- CtrlState.Slices present / absent / unknown. ctrl-restart -> unknown;
+  ctrl-kill keeps it; a settle with the controller up -> present (the
+  new controller publishes; ctrl-start included).
+- A settle with the controller down and the slices unknown has two
+  worlds as alternatives: present (claims allocated, waiting for the
+  attach as before) and absent (the claims of the pool that were being
+  allocated become UNSCHED: Pending, unschedulable, claim not
+  allocated, no region event). The oracle takes the world from
+  "poolSlices" (present = a non-empty list; a mismatch waits), or,
+  without it, from the pods (allocated or not); the adopted world goes
+  into the #adopt record ("slices=b:absent").
+- With the slices absent a new claim of the pool is Unsched at once;
+  it holds its device in the model, so no other claim may ask for that
+  device until the controller is back (the scheduler would pick one).
+  ctrl-start: Unsched -> starting, with its prepare.
+- Rules: ctrl-restart only while no claim of the pool is being
+  allocated (it may or may not have been allocated before the stop);
+  off-line no ctrl-kill while the slices are unknown.
+- C4: "ctrl b up-unknown", "down-slices-absent", phase class "uns".
+- Tests: TestReviewA18SlicesAfterRestart (the L1 sequence: two
+  outcomes, the L1 observation ok with and without poolSlices,
+  recovery at ctrl-start); a full-profile generated run found one more
+  model error, fixed: two unblocking users of one region (lnuma and
+  lsteer on vm2's local memdev) made it twice in the adopted stack
+  (TestReviewUnblockingUsersOfOneRegion).
+57 test functions; gofmt, go vet (also -tags gofmbtstock), the stock
+build, go test and go test -race -timeout 30m clean.

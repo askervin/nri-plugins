@@ -1,0 +1,225 @@
+// Copyright The NRI Plugins Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+// Coverage criteria (02-design.txt 6):
+//   C1 every action (gofmbt action names)
+//   C2 fault in context: per fault step, fault|kind|phase of every pod
+//      that the fault affects (custom, incremental)
+//   C3 pairs of action formats: verb+kind without pool, node and index
+//   C4 abstract states: State.abstract() of every state (custom)
+
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Coverage is a mix of criteria with weights: a criterion of weight w
+// counts each of its strings w times (w copies with different prefixes),
+// 0 is off.
+type Coverage struct {
+	W [4]int
+}
+
+// on tells if criterion Cn (1..4) is in the mix.
+func (c Coverage) on(n int) bool { return c.W[n-1] > 0 }
+
+// weighted: some criterion has a weight above 1.
+func (c Coverage) weighted() bool {
+	for _, w := range c.W {
+		if w > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// parseCoverage parses a comma list of C1..C4, each with an optional
+// weight xN (C1x3), or "all".
+func parseCoverage(s string) (Coverage, error) {
+	var c Coverage
+	for _, f := range strings.Split(s, ",") {
+		f = strings.ToUpper(strings.TrimSpace(f))
+		if f == "" {
+			continue
+		}
+		if f == "ALL" {
+			c.W = [4]int{1, 1, 1, 1}
+			continue
+		}
+		name, wstr, hasW := strings.Cut(f, "X")
+		w := 1
+		if hasW {
+			n, err := strconv.Atoi(wstr)
+			if err != nil || n < 1 || n > 100 {
+				return c, fmt.Errorf("--coverage: invalid weight in %q", f)
+			}
+			w = n
+		}
+		switch name {
+		case "C1", "C2", "C3", "C4":
+			c.W[name[1]-'1'] = w
+		default:
+			return c, fmt.Errorf("--coverage: unknown criterion %q (C1, C2, C3, C4 with an optional weight xN, or all)", f)
+		}
+	}
+	if c == (Coverage{}) {
+		return c, fmt.Errorf("--coverage: no criterion")
+	}
+	return c, nil
+}
+
+func (c Coverage) String() string {
+	var cs []string
+	for i, w := range c.W {
+		switch {
+		case w == 1:
+			cs = append(cs, fmt.Sprintf("C%d", i+1))
+		case w > 1:
+			cs = append(cs, fmt.Sprintf("C%dx%d", i+1, w))
+		}
+	}
+	return strings.Join(cs, ",")
+}
+
+// weigh returns w copies of strings with different prefixes (the
+// strings themselves for w == 1).
+func weigh(w int, tag string, xs []string) []string {
+	if w <= 1 || len(xs) == 0 {
+		return xs
+	}
+	out := make([]string, 0, w*len(xs))
+	for k := 0; k < w; k++ {
+		p := tag + strconv.Itoa(k) + "|"
+		for _, x := range xs {
+			out = append(out, p+x)
+		}
+	}
+	return out
+}
+
+// faultContext returns the C2 strings of a fault taken in a state: one
+// "fault VERB KIND PHASE" for every pod that the fault affects (the pods
+// on the VM of a VM fault, the pods of the pool of a pool fault), and
+// "fault VERB -" when it affects none. Lease pods with a lease are of
+// kind lease-numa or lease-dax.
+func faultContext(s *State, a Act) []string {
+	if a.Verb == VCrash {
+		return crashContext(s, a)
+	}
+	if !a.Verb.fault() {
+		return nil
+	}
+	var out []string
+	for i := range s.Slots {
+		ss := &s.Slots[i]
+		sl := s.slot(i)
+		if ss.Phase == Absent {
+			continue
+		}
+		switch {
+		case a.Verb.vmFault():
+			if ss.Node != a.VM {
+				continue
+			}
+		case a.Verb.poolFault():
+			if !sl.Kind.pooled() || sl.Pool != a.Pool {
+				continue
+			}
+		}
+		kind := sl.Kind.String()
+		if sl.Kind == KLease && ss.Lease != LeaseNone {
+			kind += "-" + ss.LeaseMode.String()
+		}
+		out = append(out, "fault "+a.Verb.String()+" "+kind+" "+ss.Phase.String())
+	}
+	// a decoder hole is a context of its own (A9): pods blocked behind it
+	// show up as "blocked" above
+	switch {
+	case a.Verb.vmFault():
+		for b := Bridge(0); b < nBridges; b++ {
+			if s.Stacks[stackIndex(a.VM, b)].hasHole() {
+				out = append(out, "fault "+a.Verb.String()+" hole hb"+string(rune('0'+b)))
+			}
+		}
+	case a.Verb.poolFault():
+		for _, v := range poolHosts[a.Pool] {
+			if s.Stacks[stackIndex(v, poolBridge[a.Pool])].hasHole() {
+				out = append(out, "fault "+a.Verb.String()+" hole")
+			}
+		}
+	}
+	// a fault that affects nothing is no context (06-runs P1: faults on
+	// an empty cluster); C1 covers the verb once
+	sort.Strings(out)
+	return uniq(out)
+}
+
+// crashContext is C2 of a crash (a fault of one container, 05-review
+// R11): the kind of the pod and what its container has that a restart
+// must give back: a held lease and its mode, steering, the hole of its
+// stack.
+func crashContext(s *State, a Act) []string {
+	i := int(a.Slot)
+	ss := &s.Slots[i]
+	sl := s.slot(i)
+	str := "fault crash " + sl.Kind.String()
+	if sl.Kind == KLease && ss.Lease == LeaseHeld {
+		str += " lease-" + ss.LeaseMode.String()
+	}
+	if ss.Steer == SteerOn || ss.Steer == SteerOff {
+		str += " steer-" + ss.Steer.String()
+	}
+	if si, _, ok := s.userRegion(int16(i)); ok && s.Stacks[si].hasHole() {
+		str += " hole"
+	}
+	if ss.Restarts > 0 {
+		str += " again"
+	}
+	return []string{str}
+}
+
+// leaseChances are C1 strings of a state: the lease actions it allows
+// (05-review R11: lease-get needs a free local block and a quiet hb0
+// stack, which the search reaches only with a reward on the way).
+func leaseChances(s *State) []string {
+	var out []string
+	for i := range s.Slots {
+		sl := s.slot(i)
+		if sl.Kind != KLease || s.Slots[i].Phase != Running {
+			continue
+		}
+		if s.allowed(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool}) {
+			out = append(out, "C1.can lease-get "+sl.Name)
+		}
+		if s.allowed(Act{Verb: VLeasePut, Slot: int16(i), VM: VMAny, Pool: noPool}) {
+			out = append(out, "C1.can lease-put "+sl.Name)
+		}
+	}
+	return out
+}
+
+// c1Strings are the C1 strings of an action: its name, weighed w times;
+// a fault counts by its verb only, once, whatever its VM or pool: what
+// matters of faults is their context (C2), and the planner must not
+// spend the first steps on faults of an empty cluster (06-runs P1).
+func c1Strings(cfg *Config, a Act, w int) []string {
+	if a.Verb.fault() {
+		return []string{"C1.fault " + a.Verb.String()}
+	}
+	return weigh(w, "C1.", []string{a.name(cfg)})
+}

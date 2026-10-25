@@ -1,0 +1,287 @@
+plan-13: review of stream GOFMBT
+================================
+2026-10-24. Reviewed ~/github.com/askervin/gofmbt, branch 5jo-mbt-cxl,
+8920a4a..f8d8a11 (7 commits), against 04-status-GOFMBT.txt. The
+repository was not modified. Throwaway code is under /tmp/gofrev:
+  stock/, new/       git archive of 8920a4a and 5jo-mbt-cxl
+  gen-stock/, gen-new/  test06-fuzz generate.go built against each
+  probe/gofmbt/      copy of the new package + probe*_test.go
+                     (reviewer tests, internal access to stockCoverer)
+Toolchain: go1.26.3 (go.mod says go 1.23.4; no newer library APIs
+are used).
+
+Verdict
+-------
+No correctness bug found in the incremental estimation, the one-walk
+BestPath, ResetCoverage or the budgeted search. Every claim in the
+status report held up under independent tests, including byte-for-
+byte equal test06-fuzz output. The findings are 3 risks and some
+nits, mostly about documentation and test coverage.
+
+Findings
+--------
+
+F1 [risk] The String() memo kept across calls makes in-place state
+    updates silently wrong.
+  coveredStr keeps the String()s of covered states between calls,
+  and covCtx.init reuses the last covered end string for the root of
+  the next path when the root is the same pointer (lastHist). If a
+  caller updates the current state object in place after MarkCovered
+  (an easy mistake in an on-line loop that "observes" the system),
+  the next step's strings use the old string.
+  Evidence: probe6_test.go. CoverStates+CoverStateActions, mark
+  X--go->X+, set the X+ object's label to OBSERVED, then BestPath and
+  MarkCovered the next step:
+    stock covered: OBSERVED OBSERVED|go OBSERVED+ X X|go
+    new   covered: OBSERVED+ X X|go X+ X+|go       ("X+|go" is stale)
+  BestPath and doc.go say "States must not change", but MarkCovered,
+  the Coverer type and the on-line example do not.
+  Fix: drop the cross-call memo (coveredStr and lastHist). It saves
+  at most maxWindow-1 String() calls per BestPath/MarkCovered, which
+  is nothing next to b^d. Keep the memo inside one walk only, where
+  it does pay. Then strings of new steps always come from the live
+  objects, as in stock. Otherwise, say "do not modify states after
+  MarkCovered" on MarkCovered and in the on-line example.
+
+F2 [risk] The doc.go on-line loop resets coverage when the budget ran
+    out, not when coverage is saturated.
+  The example calls ResetCoverage whenever path == nil and ignores
+  depth. BestPathWithBudget's own doc says that nil with Depth <
+  maxLen does not mean saturated. TestLongRunningLoop copies the
+  pattern, but on a tiny model where every depth completes.
+  Evidence: probe5_test.go. S-a->T, T-a->S, T-x->S, T-c->T,
+  CoverActions, a and x covered, at S:
+    BestPathWithin(S, 4, expired deadline) = <nil>, depth 1
+    BestPath(S, 4) = [a c a a]   (c is still uncovered)
+  The example would start a new round here.
+  Fix: reset only when path == nil && depth == maxLen. When depth <
+  maxLen, take any step or retry with a longer deadline, and show
+  that in the example.
+
+F3 [risk] The property test does not exercise cross-round history
+    (claim 5).
+  runEquivalence calls ResetCoverage only when every spec has
+  window 1 (allWindow1), because the stock reference has no rounds.
+  So history across ResetCoverage is checked only by the 3 unit tests
+  in cover_test.go.
+  Evidence: mutation `keep := 0` in ResetCoverage (drop all history).
+  TestEquivalenceWithStock*, all three, still pass. Only
+  TestResetCoverageCombinationsAcrossRounds fails.
+  What I did: probe2_test.go TestProbeReset is an independent brute-
+  force reference. The covered strings of a round are the multiset
+  differences covFunc(Q[:i+1]) - covFunc(Q[:i]) over the round's
+  steps, using stock functions over the whole test, plus the round's
+  start state. Estimates and BestPath (level 0) are computed from it.
+  1500 seeds, up to 4 resets each, windows up to 5, a custom window-4
+  CoverSteps, functions added mid-round: all equal.
+  Fix: add a test like this to the repository.
+
+F4 [nit] The CoverSteps doc says "The window is shorter only at the
+    beginning of a test".
+  It is also shorter when a function with a bigger window is added
+  after ResetCoverage (history was trimmed to the old maxWindow-1).
+  Evidence: probe5_test.go. CoverActions, 4 steps, ResetCoverage,
+  CoverSteps(3, fn): fn gets a 1-step window. The status file lists
+  this limitation, but the API doc does not.
+  Fix: mention it in the CoverSteps/ResetCoverage docs. Or keep more
+  history: ResetCoverage could keep a fixed minimum, say 8 steps.
+
+F5 [nit] The on-line example marks the planned step, not the observed
+    one.
+  It runs `observed := execute(...); MarkCovered(step); state =
+  observed`. If observed != step.EndState(), the end state that
+  counts as covered is the planned one. The covered path is then
+  discontinuous, and the observed state is never covered by
+  CoverStates (the documented TestDiscontinuousStates behaviour).
+  Fix: MarkCovered(NewStep(step.StartState(), step.Action(),
+  observed)) in the example.
+
+F6 [nit] Concurrent use now crashes instead of racing.
+  New BestPath writes temporary marks into c.coverCount, so two
+  concurrent BestPath calls on one Coverer give "fatal error:
+  concurrent map read and map write" (probe3_test.go). Stock was not
+  safe either: -race reports EstimateCoverageIncrease appending into
+  the shared spare capacity of coveredPath. So this is not a
+  regression in guarantees, but a silent race became a hard crash.
+  The "not safe for concurrent use" note is only on
+  BestPathWithBudget and in doc.go.
+  Fix: put it on the Coverer type doc.
+
+F7 [nit] At BestPathRandomNone an interrupted depth prefers the
+    first StepsFrom subtrees.
+  The partial result is sound: its stats are exact, and it replaces
+  the depth-d best only if strictly better. But the interrupted DFS
+  saw only the first subtrees in model order, so in long runs with
+  tight deadlines the "Partial" upgrades always come from the
+  earliest-listed actions.
+  Fix: one sentence in the BestPathWithBudget doc, or recommend
+  level >= 1 together with budgets.
+
+F8 [nit] Documentation accuracy.
+  - SearchBudget.MaxPaths: "stops the search when this many paths
+    have been evaluated" does not hold for depth 1, which is exempt.
+    Only BestPathWithBudget's doc says so.
+  - BestPathWithin: a zero deadline means no deadline (full search).
+    This is not said there.
+  - SetBestPathRandom/doc.go: "the same seed produces the same
+    choices for the same model and the same covered steps". It also
+    needs the same sequence of BestPath* calls, and no deadline or
+    Stop.
+  - MarkCovered "strings ... are added to coverage": for Cover
+    functions this happens lazily, at the next read.
+  - search.go:374 has a comment line of 120 columns (in the
+    BestPathWithBudget doc). Reflow it.
+  - The on-line example logs "planned %d steps ahead" with depth. On
+    a Partial result the plan went depth+1 steps ahead.
+
+F9 [nit] API naming and consistency.
+  - Cover(fn) is the slow, whole-path entry point, but it has the
+    most generic name. CoverPaths or CoverWholePath would warn
+    readers.
+  - BestPathWithin returns an int, which loses SearchInfo.Partial
+    and Paths. Consider returning *SearchInfo, like
+    BestPathWithBudget.
+  - Deadline+Stop duplicate context.Context. At least document
+    `SearchBudget{Deadline: d, Stop: ctx.Done()}`.
+
+F10 [nit] Shapes the property-test generator never produces.
+  The checks all passed when I probed these shapes, so this is only
+  about the strength of the test in the repository.
+  - rm.mk returns a fresh object on every call. Pointer identity is
+    shared only through self-loops and Model's NewStep(s, ...).
+  - Branching is at most 5, so leaves have <= 16 strings except in
+    the AllSpecs test.
+  - Only *Model is walked, never a Walkable whose step.start is not
+    the walked object.
+  - Levels are only 0..4; test06-fuzz documents level 5.
+  - Combinations go up to 3. CoverSteps functions never return
+    duplicates or "".
+  - At most 14 rounds per seed.
+  - Results are compared by strings only, not by step identity.
+  probe_test.go fills these gaps:
+  - a graph Walkable in 4 modes: singleton pointers, fresh pointers,
+    values, and step.start a fresh copy;
+  - 10-39 edges per state, levels -1..5, AC1-5 and SC1-5, a window-4
+    CoverSteps returning duplicates and "";
+  - 40 rounds per seed, EstimateCoverageIncrease on random paths;
+  - BestPath compared by path strings, stats, number of StepsFrom
+    calls and chosen edge identity (*Action pointer + target id).
+  Result: 3000 seeds (2000 with identity) all equal.
+  probe4_test.go: discontinuous candidate paths and a step object
+  repeated in a path, with EstimateCoverageIncrease and
+  CoveredStrings (no CoverStates): 3000 seeds equal.
+
+F11 [nit] Small things.
+  - cover_property_test.go: walkIsValid is unused.
+  - sync() passes c.coveredPath[c.roundStart:] uncapped to Cover
+    functions. An fn that appends to its argument writes into
+    coveredPath's spare capacity. That is harmless today, but pass
+    round[:len(round):len(round)] as CoverSteps does.
+  - Do stops on `s == nil`. A typed nil pointer returned as State is
+    not nil, which is consistent with Model.StepsFrom. The Do doc
+    could say "returns a nil State".
+  - BestPath(maxLen < 0) now returns nil. Stock panicked (makeslice:
+    len out of range, probe7_test.go). Harmless but undocumented.
+
+Verified as correct
+-------------------
+- Every commit separately: gofmt -l, go vet and go test -short are
+  clean. Tip: go test ./... and go test -race ./... are clean, and
+  the timing tests pass with -race -count=3.
+- Exported API: only additions (go doc -all diff). Nothing removed
+  or changed.
+- (1) Do: TestDoStopsAtFirstNil is right. Before the fix, a nil in
+  mid-chain reached the next StateChange (typically a panic on the
+  type assertion).
+- (2) The built-in Cover* cover the same strings ("\x00" included):
+  CoveredStrings is equal in every probe, including AC/SC up to 5,
+  n=0, and functions added mid-test.
+- (3) BestPath gives the same path and stats. From the code: the walk
+  makes the same StepsFrom and shuffle calls in the same order as
+  Walker.IterPaths. There is no StepsFrom at depth maxLen. Shuffling
+  an empty or 1-element slice consumes no random numbers. AnyPath
+  stops at the same first leaf. better() is the stock comparison
+  chain. Because the strings of a prefix grow monotonically, the
+  stock prefix loop and the per-depth counts give the same results:
+  count, lastIncD (MaxStep), firstD (FirstStep/FirstIncrease). Marks
+  are undone on backtrack and, via defer, on abort or panic
+  (probe2_test.go TestProbePanicDuringSearch: no leftover -1
+  entries). The history window and the initial state counted as new
+  match stock. Dead ends shorter than maxLen are evaluated as leaves,
+  as in stock.
+- test06-fuzz generate.go, built against 8920a4a and 5jo-mbt-cxl:
+  - Default flags (3000 steps, depth 4, CoverActionCombinations(3)):
+    all 9001 lines are identical apart from the header's source
+    path. Stock takes 6m54s, new 55s.
+  - 38 more runs, also identical: randomness 0-5 x seeds 1-3 x
+    depth 2,3 x 400 steps, plus depth 4 and depth 5 with small
+    resources (600 steps).
+  - The player example output is identical (142 lines).
+- (4) MarkCovered updates coverage at once.
+  TestCoverageWithoutUpdateCoverage passes, and so do the probes
+  without UpdateCoverage.
+- (5) ResetCoverage: TestProbeReset (see F3) agrees with the
+  brute-force reference. It covers combinations across the boundary,
+  the start state of a round, repeated resets, and functions added
+  mid-round with windows that fit in the kept history.
+- (6) The budget (MaxPaths) matches stockBudget at every level,
+  including the rand state afterwards. The test checks this through
+  the subsequent BestPath calls. The partial result is sound: a
+  depth-(d+1) best can beat the depth-d best only by a larger
+  MaxIncrease, or by an earlier MaxStep/FirstStep that some depth-d
+  path would already have shown. So "strictly better" means a real
+  improvement, and the returned stats are exact.
+  Without Deadline and Stop, overBudget returns before calling
+  time.Now or select. Results are deterministic and the race detector
+  finds nothing. probe2_test.go TestProbeStopRace closes Stop from
+  another goroutine at 20 timings under -race: no race, coverage
+  unchanged, and the returned path increases coverage.
+- Memory: grows linearly, and ResetCoverage trims it. After 100k
+  covered steps of the toy (StateActions + AC2): new 34.1 MB, stock
+  (with UpdateCoverage) 27.9 MB, about +62 B/step for coveredStr.
+  Both cover 93862 strings. No per-call growth: the search buffers
+  are per call, and only c.scratch/leafNew are reused. BestPath
+  depth 2 took 0.31 ms at step 100 and 0.71 ms at step 100k. I
+  attribute this to the 94k-entry map; the code does no work that
+  grows with the test length.
+- Benchmarks reproduce the report's depth-2 numbers. For StateActions
+  at -cpu 8: stock 102 ms, new 18 ms, walk only 15 ms.
+- The deviations documented in the report were all confirmed:
+  discontinuous paths with CoverStates, stale coverage without
+  UpdateCoverage, Cover seeing the whole round, and a new shuffle on
+  every BestPathWithBudget depth.
+
+Dispositions (stream GOFMBT, 2026-10-24)
+----------------------------------------
+Branch 5jo-mbt-cxl f8d8a11..8283135: 8d1ff94 (tests), 6db4f4c (F1),
+8283135 (F2, F4-F9, F11 and docs).
+F1  fixed: no state strings kept between calls (coveredStr and
+    lastHist removed); per-call memo for the history window. Stale
+    "X+|go" case is TestStateChangedAfterMarkCovered. Documented on
+    Coverer, MarkCovered, BestPath, doc.go.
+F2  fixed: example resets only when path == nil && depth == maxLen,
+    otherwise retries with a doubled budget. TestLongRunningLoop
+    follows it; TestInterruptedSearchIsNotSaturation is your case.
+F3  fixed: your TestProbeReset is TestResetReference (reference
+    looks back 8 steps and caches the covered set, for run time).
+    The `keep := 0` mutation now fails it.
+F4  fixed in docs (CoverSteps, ResetCoverage). Declined keeping a
+    fixed minimum history: it would only move the limit.
+F5  fixed: example marks NewStep(start, action, observed).
+F6  fixed: concurrency note on the Coverer type.
+F7  fixed: one paragraph in BestPathWithBudget, recommends level>=1.
+F8  fixed: all six bullets (MaxPaths depth 1, zero deadline,
+    reproducibility, lazy whole-path strings, reflowed line, the
+    example logs the completed depth).
+F9  declined renames (Cover, BestPathWithin's int): stream MODEL
+    builds against these names. Documented Stop: ctx.Done() and
+    Deadline from ctx.Deadline().
+F10 fixed: probe_test.go and probe4 are TestEquivalenceGraph and
+    TestDiscontinuousEstimate; panic/Stop probes included; the
+    memory probe was left out. Wide graphs capped at depth 2 (seed
+    29 took 88 s at depth 3). Defaults 100-1000 seeds; -args
+    -seeds N for thorough runs (1500 passed).
+F11 fixed: walkIsValid removed; capped slices in sync() and in
+    estimateSlow, where an appending function overwrote the next
+    candidate step (TestWholePathFunctionMayAppend); Do doc says
+    "nil State"; BestPath documents nil for maxLen < 1.

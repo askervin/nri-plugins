@@ -284,8 +284,10 @@ local: memdev mem1 (serial 0xc100e2e1): released region0 in 90.733ms
 
 Restart: the state file is read again; regions are found by the memdev
 serial and slices by name; a slice that is gone is dropped, the slices of
-claims that are not in the prepared claims (`preparedClaimsInfo.json`)
-are released (`numa` slices offlined first), and so are the slices of the
+claims that are not in the prepared claims (in both `preparedClaims.json`
+and `preparedClaimsInfo.json`: a plugin stopped between their writes
+left a claim in one only, which is not prepared then) are released
+(`numa` slices offlined first), and so are the slices of the
 owner `-`, dax devices of the region that belong to no slice are deleted,
 and a region of the plugin without claims is destroyed.
 Regions do not survive a node reboot: the state file records the boot id

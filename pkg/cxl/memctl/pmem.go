@@ -338,7 +338,7 @@ func (mc *Manager) CreatePmemRegion(ctx context.Context, memdev, decoder string)
 		}
 		out, err := mc.Exec(ctx, "cxl", "create-region", "-t", RegionPmem, "-d", decoder, "-m", memdev)
 		if err != nil {
-			return nil, err
+			return nil, mc.explainCreateRegion(memdev, err)
 		}
 		if m := regionNameRe.FindStringSubmatch(out); m != nil {
 			region = m[1]

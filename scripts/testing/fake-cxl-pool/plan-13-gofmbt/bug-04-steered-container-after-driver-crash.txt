@@ -1,0 +1,334 @@
+BUG-04: A STEERED CONTAINER STAYS THROTTLED AFTER A DRIVER CRASH
+
+Branch 5jg-cxl, 2026-10-24. Found by the model-based test (plan 13),
+fixed in the working tree (uncommitted), unit tested; cluster
+verification pending.
+
+D/ = cmd/plugins/dra-driver-cxl/, M/ = pkg/cgmpolmgr/, doc/ =
+docs/memory/cxl/. Line numbers of HEAD unless "new".
+
+========================================================================
+1. SUMMARY
+
+A container steered by the driver (a claim with MemoryConfig
+container.steering.policy auto and numa memory) keeps the memory.high
+of the last step of its steering manager for ever when the driver
+process is SIGKILLed and restarted in place. Since the bug-01 fix the
+driver also exits (status 1) on a containerd restart, so the same
+happens after every containerd restart. Nothing raises memory.high
+again: a workload that needs more memory than the step allowed stalls
+in memory.high reclaim. doc/usage.md (Steering) promised that after a
+restart running containers "are no longer throttled"; that held only
+for a graceful stop.
+
+Related (X2, 01-findings-driver.txt 3.2 and E5): after any restart a
+container that its settings steer is "taken as steered" although no
+manager steers it, so it is never fenced. One (re)created while the
+driver is down gets no NRI adjustment and keeps every NUMA node,
+including the CXL nodes fenced for other claims. Confirmed by reading;
+closed by the same fix.
+
+========================================================================
+2. REPRODUCTION
+
+Replay /tmp/p13-runs/x1/steps.txt (n4-cxl-shared-2, test90):
+
+  settle
+  create lsteer@vm2#0      steered pod, local numa slice on node 2
+  settle
+  driver-kill vm2          SIGKILL, kubelet restarts the container
+  settle                   <- fails after 3m1s
+  delete lsteer@vm2#0
+  settle
+
+Evidence, /tmp/p13-runs/x1/out:
+
+mbt-fail.txt:
+  settle timeout after 3m1s: vm2: container of lsteer@vm2#0:
+  memory.high "140668928", want max
+  (observation: "memory_high":"140668928","mems":"0-2")
+
+nri-dra-driver-cxl.vm.nri-dra-driver-cxl-djmkc.r0.log (killed):
+  11:02:19.503526 nri.go:166] cxl-pool-demo/mbt-lsteer-vm2-0-g1/main:
+    start steering ...: waypoints=[[2:134217728]] ...
+  11:02:19.505689 nri.go:165] ...: step: usage=[0:2134016 1:2695168
+    2:0] nodes=[2] bytes=134217728 procs=1 cpuset.mems=0-2 lower=0
+    upper=140668928
+  (the log ends here: no "stopped steering")
+
+nri-dra-driver-cxl.vm.log (restarted):
+  11:02:25.393906 lend.go:385] NRI Synchronize:
+    ctr=cxl-pool-demo/mbt-lsteer-vm2-0-g1/main id=4bb166f8...
+    pid=614877 ... baseMems=0-2 memory=steered
+  11:02:25.403264 lend.go:822] NRI fence: lends restored, fencing
+    running containers
+  11:02:25.450885 lend.go:916] NRI fence: 1 containers updated, 0
+    failed (fenced nodes 2)      (the driver's own container only)
+  11:05:27.540027 nri.go:589] NRI StopContainer:
+    ctr=cxl-pool-demo/mbt-lsteer-vm2-0-g1/main  (the delete step)
+
+upper=140668928 = memory.current 6451200 + step 134217728: the value
+of the dead manager, unchanged three minutes later.
+
+========================================================================
+3. ROOT CAUSE
+
+- M/manager.go: a Manager sets memory.high at every step
+  (step -> notifier.SetBounds, :317) and removes it only in
+  release (:256), deferred by its loop goroutine (:209) and reached
+  through Stop (:191). D/nri.go Stop (:207) and stopContainerManagers
+  (:551) call Stop: graceful paths only. A SIGKILL, or the exit of
+  the bug-01 fix (os.Exit(1) in exitIfLostLocked), runs no deferred
+  code: memory.high of the last step stays in the cgroup.
+- A manager lives only in the process that ran StartContainer of
+  the container (D/nri.go:467, plan from CreateContainer :261). The
+  restarted process has none for any running container.
+- D/lend.go syncManagement (:404-417) classifies a container that
+  Synchronize finds as CreateContainer would: manage() says
+  memorySteered for steering settings with numa memory, so
+  tc.memory = steered with no manager. Nothing releases it, and
+  "steered" excludes it from fencing (fenceContainers :866,
+  fenceCreated, fenceMissed) and from lending (changeLend :564,
+  errSteered).
+
+X2, by reading (not run):
+- While the driver is down there is no NRI plugin: no
+  CreateContainer adjustment, the spec has the kubelet's cpuset.mems
+  (normally none), the container cgroup inherits every node of the
+  pod slice, the online CXL nodes of other claims too.
+- After the restart, Synchronize -> syncManagement -> "steered"
+  (no manager): fenceContainers skips it (:866), so it keeps those
+  nodes for its lifetime. Same for a container that the old process
+  created (pending plan) and the new one starts: StartContainer has
+  no pending plan, logs "no memory claims to be managed", and the
+  Synchronize classification "steered" keeps it out of fencing.
+  Confirmed.
+
+========================================================================
+4. THE FIX
+
+Principle: "steered" must mean that a manager of this process steers
+the container (or will: a pending plan). After any restart no
+container is, so Synchronize never yields steered for valid settings.
+
+- M/manager.go Release(cgroupPath) (new :274): sets memory.high to
+  "max" as Stop's release does (SetBounds(Bounds{}) writes "max"),
+  leaves cpuset.mems and the memory policies alone. Reads first:
+  "max" already -> nothing written (the graceful path is a no-op);
+  opens O_WRONLY|O_TRUNC without O_CREATE, so a missing memory.high
+  is os.ErrNotExist and no file is created. Returns the replaced
+  value for the log.
+- D/lend.go syncManagement (new :421): when manage() says steered
+  and this process has neither a manager nor a pending plan for the
+  id, the container becomes unsteeredMemory(eff) (new D/nri.go:399,
+  also used by manage and defaultMemory): fenced with allowed-mems,
+  none with fencing none; then releaseSteering (new :444):
+  - started (RUNNING or PAUSED) with a cgroup directory:
+    cgmpolmgr.Release; Info log "NRI Synchronize: ctr=C id=I:
+    steering not restarted, memory fenced; memory.high N removed
+    (max)", V3 when it was max, V3 when memory.high is gone, a
+    warning on failure or without a cgroup directory;
+  - CREATED: nothing (no manager ever ran: StartContainer creates
+    it after the start).
+- Unchanged: settings that no longer combine stay "taken as
+  steered" (not fenced, not lent to) and their memory.high is NOT
+  touched: CreateContainer refuses such settings, so no manager of
+  any process steered that container (it was created while the
+  driver was down); writing max would only overwrite another
+  owner's value.
+- Not done: restoring steering. The plan would restart at its first
+  step (narrowing cpuset.mems and throttling again) without the
+  state of the dead manager, and the documented behaviour is "not
+  restarted".
+
+What changes for a running container that was steered:
+- memory.high: max, no longer throttled (the documented promise).
+- memory policies: kept (the threads still prefer or interleave the
+  nodes of the last step).
+- cpuset.mems: the first fence pass sets wantMems = own - F +
+  claimed + lent through NRI UpdateContainers. own is the spec's
+  cpuset.mems (the manager wrote cgroupfs directly, the spec keeps
+  the kubelet's value, normally none) or has_memory. The manager's
+  set is the nodes with memory at its start + the plan nodes
+  reached + the normal-memory fallback, within the DRAM nodes and
+  the claimed CXL nodes, so with a spec without cpuset.mems the
+  pass only adds nodes (DRAM nodes the plan had not reached): no
+  migration. A node is removed only if it is a fenced CXL node of
+  another claim (fencing's purpose, X2), or if the kubelet memory
+  manager pinned the spec to some DRAM nodes and the plan (a dram
+  result) had reached another: its pages migrate, the same rule as
+  for an unsteered container with that spec. Accepted.
+- lending: allowed (no longer errSteered), like any container that
+  is not steered. The broker reconcile has no Ready numa lease of
+  such a container to lend again: lends to it were refused before.
+
+Other paths checked:
+- graceful restart: Stop -> Manager.Stop -> max; Synchronize ->
+  Release reads max, writes nothing; then fenced. Before the fix a
+  graceful restart also left it unfenced; now both end the same.
+- race with the first fence pass: the release and the new class
+  are set inside Synchronize under p.mu, before syncedC is closed.
+  Fencing becomes ready only when syncedC is closed and
+  LendsRestored has come (the broker reconcile waits for
+  WaitSynchronized first), so the first pass sees the final class.
+  A lend between Synchronize and that pass goes through fencedLend
+  under lendMu, like the pass.
+- a later container restart: CreateContainer of the new id builds a
+  fresh plan (pending), StartContainer starts a new manager on the
+  new cgroup; the released old entry leaves the table at its
+  StopContainer/RemoveContainer; lookup picks the newest container,
+  so lends are refused for the new steered one. Unchanged, tested.
+- memory.high of someone else (Kubernetes MemoryQoS, alpha, off by
+  default): untouched for every container that its settings do not
+  steer. For one that they do, max is written whatever the value,
+  as Manager.release does: the plugin cannot tell a dead manager's
+  value from the kubelet's on a container created while it was
+  down, and a manager would have overwritten it at its first step.
+
+Docs, doc/usage.md (Steering): the restart sentence now says that a
+restart, graceful or killed, also after a runtime restart, does not
+restart the steering of running containers nor steers those created
+while the plugin was down; it sets their memory.high to max, as the
+end of a steering does, and manages them like containers that are not
+steered; they keep their memory policies. The restart paragraph after
+the CreateContainer log lines names the new log line and says that a
+container taken as steered keeps its memory.high.
+
+Outdated in 01-findings-driver.txt (not edited): 3.2 "Running
+containers across a driver restart" (steered: keep cpuset.mems, never
+fenced), E5, I10 ("after a driver restart its cpuset.mems does not
+change and it is not updated any more").
+
+========================================================================
+5. TESTS
+
+- M/manager_test.go TestRelease: a step value -> "max", returns the
+  value; "max" (file 0444) -> "" returned, unchanged; no
+  memory.high -> os.ErrNotExist and no file created; a gone cgroup
+  -> os.ErrNotExist.
+- D/nri_test.go TestSynchronizeReleasesSteering (new), has_memory
+  0-3, fenced 2-3: Synchronize with
+    c1 RUNNING, auto on node 2, memory.high 140668928 (killed
+       manager), cgroup mems 0,2  -> fenced 2, memory.high max
+    c2 RUNNING, pool auto on node 3, created while down: mems 0-3,
+       memory.high max            -> fenced 3, max
+    c3 RUNNING, numa claim not steered, memory.high 1073741824
+       (MemoryQoS)                -> fenced 2, untouched
+    c4 CREATED by the killed plugin, auto -> fenced 2
+    c5 RUNNING, conflicting settings, memory.high 268435456
+                                  -> taken as steered, untouched
+  no managers or plans; first pass after LendsRestored:
+  "c1 mems=0-2", "c2 mems=0-1,3" (X2: node 2 of another claim
+  removed), "c3 mems=0-2", "c4 mems=0-2", not c5; lend to c1 works
+  (0-3, revoke 0-2), lend to c5 errSteered; c4 starts without a
+  plan: no manager, no further update; c1 restarts as c6: no
+  adjustment, a pending plan, a real cgmpolmgr manager on a fake
+  cgroup, memory.high != max, lend refused, a fence pass leaves it;
+  its StopContainer sets memory.high max.
+- TestSynchronizeManagement: c1 (auto) now "fenced 2", gets
+  "c1 mems=0-2" from the first pass and a lend (0-3); the
+  conflicting c5 stays steered (errSteered).
+- D/fence_test.go TestFencePass: c3 (dram auto, RUNNING at
+  Synchronize) now gets "c3 mems=0-1" in the first pass.
+- gofmt -l, go vet, and go test ./cmd/plugins/dra-driver-cxl/...
+  ./pkg/cxl/... ./pkg/cgmpolmgr/... ./pkg/cgmemnotify/... -skip
+  TestMemdevSettings: ok; -race for dra-driver-cxl and cgmpolmgr:
+  ok; the new and changed tests -race -count=30: ok.
+
+========================================================================
+6. TO VERIFY ON THE CLUSTER (orchestrator)
+
+1. Image with this fix (and bug-01), replay /tmp/p13-runs/x1/
+   steps.txt: step 5 settles; the lsteer container has
+   memory_high "max" and mems "0-2".
+2. Restarted driver log of vm2:
+     NRI Synchronize: ctr=cxl-pool-demo/mbt-lsteer-vm2-0-g1/main
+       id=...: steering not restarted, memory fenced; memory.high
+       140668928 removed (max)                        (Info)
+     NRI Synchronize: ctr=... memory=fenced           (V4)
+     NRI fence: lends restored, fencing running containers
+     NRI fence: ctr=cxl-pool-demo/mbt-lsteer-vm2-0-g1/main id=...
+       cpuset.mems=0-2 (was "", fenced nodes 2)
+     NRI fence: N containers updated, 0 failed (fenced nodes 2)
+       (N counts lsteer and the driver's own new container)
+3. driver-restart (graceful) with a running lsteer: memory.high max
+   as before, V3 "... memory fenced; memory.high max", and the same
+   fence line for lsteer.
+4. containerd-restart with a running lsteer: memory.high max once
+   the driver has restarted.
+5. X2 (E5): F with two CXL nodes (lsteer on node 2 and a numa
+   claim on node 3), recreate the lsteer container while the driver
+   is down (it gets mems with node 3), restart the driver: its first
+   pass gives it cpuset.mems without node 3.
+
+Model prediction for an lsteer slot that is Running across a driver
+restart (driver-kill, driver-restart, and now containerd-restart):
+steer off, i.e. memory.high "max", and fenced like an unsteered
+container with its claim: cpuset.mems = own - F + its numa node
+(+ lent), on vm2 "0-2" (spec without cpuset.mems, has_memory 0-2).
+O5 already checks the fencing of every slot, so only steering
+changes: VContainerdRestart may now call driverRestarted(vm,
+SteerOff) instead of SteerAny for Running lsteer slots; Starting
+and Restarting stay SteerAny (on if their CreateContainer reaches
+the new process, else off). Such a container is no longer refused
+lends after a restart.
+
+========================================================================
+7. STATUS
+
+Fixed in the working tree, not committed:
+  pkg/cgmpolmgr/manager.go, manager_test.go
+  cmd/plugins/dra-driver-cxl/lend.go, nri.go, nri_test.go,
+  fence_test.go
+  docs/memory/cxl/usage.md
+The uncommitted bug-01 changes in nri.go, nri_test.go and usage.md
+are kept. Cluster verification pending.
+
+Verification in the e2e cluster (orchestrator, 2026-10-24)
+----------------------------------------------------------
+V14 (06-runs.txt), image 8c43a36bf383: replay of X1 with driver-kill
+vm2: "steering not restarted, memory fenced; memory.high 141242368
+removed (max)", fenced to cpuset.mems=0-2, no oracle difference.
+Status: FIXED, verified.
+
+Follow-up after review (05-review-DRV.txt D2, D5; 2026-10-24)
+-------------------------------------------------------------
+D2: the release at Synchronize depended on the NEW settings, so a
+configuration change (steering auto -> none) followed by a kill or a
+bug-01 exit left the dead manager's memory.high. Now it depends on
+whether a manager of a previous process ran: the steering record
+D/nri.go steeredRecord, file steeredContainers.json in the plugin
+data directory (writeJSONFile: tmp + rename), container ID -> the
+cgroup of its manager. StartContainer adds the entry before
+mgr.Start writes the cgroup; stopContainerManagers and Stop remove it
+after mgr.Stop; Synchronize (syncManagement -> releaseSteering)
+releases exactly the recorded containers that it finds, whatever
+manage() says now (also one "taken as steered"), and then keeps only
+the managers of this process (synced). The memory.high of containers
+that no manager steered (created while the plugin was down: MemoryQoS)
+is now left alone, V3 "steering not restarted, memory fenced;
+memory.high left alone: no manager steered it". Classification
+unchanged (a container that its settings steer is fenced). Without a
+file at start (the first start of this version, a lost or unreadable
+file) the previous rule applies once (legacy: release the started
+containers that their settings steer). The Info line of the cluster
+verification is unchanged.
+D5: a manager that does not start (cgroup not resolved, cgmpolmgr.New
+or Start fails) no longer leaves the container "steered" by nobody:
+notSteered sets its management to unsteeredMemory of its settings
+(kept in pendingSteering.unsteered) and drops its record entry; its
+PostStartContainer fence pass fences it (an update from StartContainer
+would reach the spec only), and it may be lent to.
+D1 (bug-05) also matters here: the cgroup that Release writes at
+Synchronize is now the container's own, not a child of it.
+Tests (D/nri_test.go): TestSynchronizeReleasesSteering (record of c1,
+c8 and a gone id; c7 steered by its settings, created while down,
+keeps its MemoryQoS memory.high; c8 taken as steered, recorded,
+released; record empty after Synchronize, c6 recorded while its
+manager runs, gone after its stop), TestSynchronizeReleasesSteering
+Legacy, TestReviewReleaseAfterDefaultsChange (the reviewer's),
+TestSteeringStartFails (no cgroup; Start fails). Mutations (release
+by settings, no record entry, no fallback) each fail a test.
+Docs: usage.md Steering and Files on the node.
+Status: FIXED in the working tree, not committed; cluster
+re-verification of V14 pending (expected the same log line).
