@@ -267,16 +267,24 @@ func removeCXLSpecs(cache *cdiapi.Cache) error {
 
 // buildDevInfos returns the devices to publish, by device name.
 // poolSerials are the serials of pool devices (prepared by the pool
-// driver, or published by a pool controller): their regions are skipped
-// (D29), and they are never local memdevs. Regions on memdevs that the
+// driver, published by a pool controller, or remembered as such,
+// pool_serials.go): their regions are skipped (D29), and they are never
+// local memdevs. Regions on memdevs that the
 // local allocator uses (local) are skipped too: the allocator created
 // them, and the memdevs are published as memdev devices.
 func buildDevInfos(driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
+	return buildDevInfosHeld(driverConfig, detectedDevices, poolSerials, nil, local)
+}
+
+// buildDevInfosHeld is buildDevInfos with the serials of new memdevs that
+// are held back as possible pool devices (pool_serials.go, Gate): like
+// pool devices, neither they nor their regions are published.
+func buildDevInfosHeld(driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials, held map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
 	cxlNodes := make(map[int]bool)
 	devInfos := make(map[string]*device.DeviceInfo)
 	for _, regDev := range detectedDevices.RegionDevices {
 		klog.V(3).Infof("discovered CXL region device: %+v", regDev)
-		ignoreReason := poolIgnoreReason(regDev, poolSerials)
+		ignoreReason := poolIgnoreReason(regDev, poolSerials, held)
 		if ignoreReason == "" {
 			ignoreReason = localIgnoreReason(regDev, local)
 		}
@@ -320,7 +328,7 @@ func buildDevInfos(driverConfig *DriverConfig, detectedDevices *nricxl.Devices, 
 		}
 	}
 	if driverConfig.manageMemdevs() {
-		addLocalMemdevs(devInfos, driverConfig, detectedDevices, poolSerials, local)
+		addLocalMemdevs(devInfos, driverConfig, detectedDevices, poolSerials, held, local)
 	}
 	if !driverConfig.IgnoreDRAMNodes {
 		dramDev := &device.DRAM{}
@@ -370,16 +378,22 @@ func regionDeviceName(regDev *nricxl.RegionDevice) string {
 	return fmt.Sprintf("%s-node%d", regDev.Name, regDev.Node)
 }
 
-// poolIgnoreReason returns why a region on a pool device is not published,
-// "" if it is not on a pool device.
-func poolIgnoreReason(regDev *nricxl.RegionDevice, poolSerials map[uint64]bool) string {
+// poolIgnoreReason returns why a region on a pool device or on a memdev
+// that is held back is not published, "" if it is on neither.
+func poolIgnoreReason(regDev *nricxl.RegionDevice, poolSerials, held map[uint64]bool) string {
 	for _, memDev := range regDev.Memories {
 		if poolSerials[memDev.Serial] {
 			return fmt.Sprintf("pool device (%s), memory device serial 0x%x", device.PoolDriverName, memDev.Serial)
 		}
+		if held[memDev.Serial] {
+			return fmt.Sprintf("memory device serial 0x%x is held back: it may be a pool device", memDev.Serial)
+		}
 	}
 	return ""
 }
+
+// heldReason is why a memdev that is held back is not published.
+const heldReason = "held back: it may be a pool device"
 
 // localIgnoreReason returns why a region on a local memdev that the local
 // allocator uses is not published, "" if it is not on one.
@@ -422,6 +436,11 @@ func memdevMatches(specs []string, memDev *nricxl.MemoryDevice) string {
 // memdev, and why a listed memdev is not a shared local device: it is
 // ignored or a pool device ("" if it is one).
 func sharedListing(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, poolSerials map[uint64]bool) (bool, string) {
+	return sharedListingHeld(driverConfig, memDev, poolSerials, nil)
+}
+
+// sharedListingHeld is sharedListing with the memdevs that are held back.
+func sharedListingHeld(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, poolSerials, held map[uint64]bool) (bool, string) {
 	if memdevMatches(driverConfig.SharedDevices, memDev) == "" {
 		return false, ""
 	}
@@ -430,6 +449,9 @@ func sharedListing(driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, pool
 	}
 	if poolSerials[memDev.Serial] {
 		return true, "pool device"
+	}
+	if held[memDev.Serial] {
+		return true, heldReason
 	}
 	return true, ""
 }
@@ -474,7 +496,7 @@ func logSharedRefusal(memDev *nricxl.MemoryDevice, reason string) {
 // sliced memdev is published when it is enabled, its RAM capacity is sure
 // to hold a whole memory block, it has no regions but the allocator's and
 // no claims that use it shared.
-func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials map[uint64]bool, local *localSnapshot) {
+func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials, held map[uint64]bool, local *localSnapshot) {
 	bs := uint64(0)
 	if local != nil {
 		bs = local.BlockSize
@@ -486,7 +508,7 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 		}
 	}
 	for _, memDev := range detectedDevices.MemoryDevices {
-		listed, refusal := sharedListing(driverConfig, memDev, poolSerials)
+		listed, refusal := sharedListingHeld(driverConfig, memDev, poolSerials, held)
 		if refusal != "" {
 			logSharedRefusal(memDev, refusal)
 		}
@@ -508,6 +530,8 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 			reason = "memory device is disabled"
 		case poolSerials[memDev.Serial]:
 			reason = "pool device"
+		case held[memDev.Serial]:
+			reason = heldReason
 		case len(regions[memDev.Serial]) > 0 && !used:
 			reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions[memDev.Serial])
 		case use.Shared && len(use.Claims) > 0:

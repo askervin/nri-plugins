@@ -68,10 +68,17 @@ const (
 	// controller is back. Holds its resource in the model (it is the
 	// only candidate for it then).
 	Unsched
+	// Stalled: the contender of a device whose holder was deleted
+	// while its claim waited for the binding conditions (A19, bug-08):
+	// the scheduler may keep it Pending (claim not allocated) until a
+	// requeueing event or 5:30 after the delete, or promote it at once.
+	// Both are accepted for 360 s; the observation decides. Holds the
+	// device in the model (the only candidate).
+	Stalled
 	nPhases
 )
 
-var phaseNames = [nPhases]string{"absent", "starting", "restarting", "running", "pending", "attaching", "either", "deleting", "blocked", "unblocking", "unsched"}
+var phaseNames = [nPhases]string{"absent", "starting", "restarting", "running", "pending", "attaching", "either", "deleting", "blocked", "unblocking", "unsched", "stalled"}
 
 func (p Phase) String() string { return phaseNames[p] }
 
@@ -87,8 +94,19 @@ func parsePhase(s string) (Phase, error) {
 // holding: the pod of the phase holds (or will hold) its resource and is
 // not being deleted.
 func (p Phase) holding() bool {
-	return p == Starting || p == Restarting || p == Running || p == Attaching || p == Either || p == Blocked || p == Unblocking || p == Unsched
+	return p == Starting || p == Restarting || p == Running || p == Attaching || p == Either || p == Blocked || p == Unblocking || p == Unsched || p == Stalled
 }
+
+// unbound: a pool pod of the phase may have its claim allocated while
+// it is not bound yet (PreBind waits for the binding conditions).
+func (p Phase) unbound() bool {
+	return p == Starting || p == Attaching || p == Either || p == Stalled
+}
+
+// waitsRetry: the pod gets its region at a time the model does not know
+// (kubelet's retry, the scheduler's requeue): nothing else may change its
+// decoder stack meanwhile.
+func (p Phase) waitsRetry() bool { return p == Unblocking || p == Stalled }
 
 // Steer is what memory.high of an lsteer container is.
 type Steer uint8
@@ -222,12 +240,26 @@ type State struct {
 	Data      [nDevs]Token // pool devices
 	SlotData  []Token      // ldax slots: the content of the slice (copy on write)
 	LeaseIDs  []string     // lease slots: the lease ID if known (copy on write)
-	UnblockAt []int64      // Unblocking slots: Unix time first seen so on-line (copy on write)
+	UnblockAt []int64      // Unblocking, Stalled, Attaching slots: Unix time first seen so on-line (copy on write)
 	Stacks    [nStacks]Stack
 	Ev        []stackEvent // region events of the current window (copy on write)
 	Alts      []*State     // a settle: the other possible outcomes (A9 races)
 	Truncated bool         // a settle: its outcomes were not all enumerated
 	Contested uint16       // resources with an unsettled transfer: no creates
+	// Held: pool devices whose claim was deleted before its pod was
+	// bound, in a window that a settle ended: kube-scheduler may still
+	// hold the device in flight (up to 5 s after the delete, A19): a
+	// contender created now may stall. HeldAt: the Unix time of the
+	// settle that ended that window (on-line; the oracle clears the
+	// bit 6 s after it).
+	Held   uint16
+	HeldAt [nDevs]int64
+	// Released: pool devices whose claim was deleted in the window that
+	// the last settle ended: the claim may still be deallocated a
+	// moment after its pod is gone (0.1-0.3 s); a claim created now may
+	// fail its first attempt and wait for that event, and a second one
+	// would race with it: one candidate (contested) per such device
+	Released  uint16
 	Unsettled uint8
 	Steps     int32 // steps executed: the next step is Steps+1
 	Last      Act   // the action that led to this state
@@ -273,6 +305,9 @@ func (s *State) clone() *State {
 		Stacks:    s.Stacks,
 		Ev:        s.Ev,
 		Contested: s.Contested,
+		Held:      s.Held,
+		Released:  s.Released,
+		HeldAt:    s.HeldAt,
 		Unsettled: s.Unsettled,
 		Steps:     s.Steps,
 		Last:      s.Last,
@@ -416,6 +451,17 @@ func (s *State) fitsIn(o *occupancy, i int) (now, later bool) {
 // fits is fitsIn with fresh counts (for states being built).
 func (s *State) fits(i int) (now, later bool) { return s.fitsIn(s.computeOcc(), i) }
 
+// holders counts the slots that hold a resource and are not going away.
+func (s *State) holders(r Res) int {
+	n := 0
+	for i := range s.Slots {
+		if s.slot(i).Res == r && s.Slots[i].Phase.holding() {
+			n++
+		}
+	}
+	return n
+}
+
 // waiter returns the Pending slot of a resource, -1 if none.
 func (s *State) waiter(r Res) int {
 	for i := range s.Slots {
@@ -428,6 +474,10 @@ func (s *State) waiter(r Res) int {
 
 func (s *State) contested(r Res) bool { return r >= 0 && s.Contested&(1<<uint(r)) != 0 }
 
+// held tells if a pool device may still be held in flight by the
+// scheduler for a claim deleted before its pod was bound (A19).
+func (s *State) held(r Res) bool { return r >= 0 && r < resLocal0 && s.Held&(1<<uint(r)) != 0 }
+
 // desiredAtt are the attachments that the claims of a pool want: the
 // device (0 pooled, 1 shared) on the VM of every holder that is not going
 // away, and if one of them uses the shared device exclusively.
@@ -438,7 +488,7 @@ func (s *State) desiredAtt(p Pool) (att [2][nVMs]bool, excl [2][nVMs]bool) {
 			continue
 		}
 		ss := &s.Slots[i]
-		if !ss.Phase.holding() || ss.Phase == Unsched || ss.Node == VMAny {
+		if !ss.Phase.holding() || ss.Phase == Unsched || ss.Phase == Stalled || ss.Node == VMAny {
 			continue
 		}
 		d := int(sl.Dev) - 2*int(p)
@@ -524,6 +574,8 @@ func phaseClass(p Phase) string {
 		return "unb"
 	case Unsched:
 		return "uns"
+	case Stalled:
+		return "stl"
 	}
 	return ""
 }
@@ -563,6 +615,9 @@ func (s *State) computeAbstract() []string {
 			}
 		}
 		str := set("dev "+d.String(), items)
+		if s.held(Res(d)) {
+			str += " held"
+		}
 		if !s.Ctrl[devices[d].Pool].Up {
 			str += " ctrl-down"
 		}
@@ -655,7 +710,13 @@ func uniq(sorted []string) []string {
 // dump is the full state, for files and messages.
 func (s *State) dump() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "steps %d, unsettled %d, contested %s\n", s.Steps, s.Unsettled, s.contestedString())
+	fmt.Fprintf(&b, "steps %d, unsettled %d, contested %s", s.Steps, s.Unsettled, s.contestedString())
+	for d := DevID(0); d < nDevs; d++ {
+		if s.held(Res(d)) {
+			fmt.Fprintf(&b, ", held %s since %d", d, s.HeldAt[d])
+		}
+	}
+	b.WriteString("\n")
 	for i := range s.Slots {
 		ss := &s.Slots[i]
 		if ss.Phase == Absent && ss.Gen == 0 {

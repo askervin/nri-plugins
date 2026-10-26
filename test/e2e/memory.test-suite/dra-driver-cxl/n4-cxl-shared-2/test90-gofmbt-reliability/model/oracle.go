@@ -124,6 +124,10 @@ func checkSettle(e *Expectation, o *Observation) Verdict {
 	return v
 }
 
+// stallTimeout is how long a contender may stall (A19: 360 s from the
+// delete; counted from the settle that first saw it).
+const stallTimeout = 360 * time.Second
+
 // defaultUnblock is MBT_UNBLOCK_TIMEOUT (A9).
 const defaultUnblock = 330 * time.Second
 
@@ -132,6 +136,17 @@ const defaultUnblock = 330 * time.Second
 // It returns the verdict of the alternative that fits best and the state
 // with what the observation resolved (the adopted state, meaningful when
 // the verdict is ok).
+// heldSeconds: a device whose claim was deleted before its pod was bound
+// is free in the scheduler this long after the settle that ended the
+// delete's window (PreBind polls every 5 s; A19).
+const heldSeconds = 6
+
+// bindingExpiry: from this long after the first settle that saw a claim
+// waiting for the attach with its controller down, its binding timeout
+// (600 s from its allocation, which came at most a window and a settle
+// earlier) may have handed its device to its waiter.
+const bindingExpiry = 600 - 180
+
 func checkState(st *State, o *Observation, prefix string) (Verdict, *State) {
 	return checkStateAt(st, o, prefix, time.Now(), defaultUnblock)
 }
@@ -229,7 +244,8 @@ func (k *checker) resolve() {
 		if p == nil {
 			continue
 		}
-		if ss.Node == VMAny && p.Node != nil && (ss.Phase == Running || ss.Phase == Either) {
+		// (a stalled contender seen bound: promoted, on its node)
+		if ss.Node == VMAny && p.Node != nil && (ss.Phase == Running || ss.Phase == Either || ss.Phase == Stalled) {
 			v, err := parseVM(*p.Node)
 			switch {
 			case err != nil || v == VMAny:
@@ -250,6 +266,32 @@ func (k *checker) resolve() {
 		if ss.Slack > 0 && p.Restarts >= int(ss.Restarts) && p.Restarts <= int(ss.Restarts)+int(ss.Slack) && p.Phase == "Running" && p.Ready {
 			// adopt the restarts that a kubelet restart gave (M2)
 			ss.Restarts, ss.Slack = uint8(p.Restarts), 0
+		}
+		if ss.Phase == Stalled {
+			switch {
+			case p.Claim != nil && p.Claim.Allocated && !p.Deleting:
+				// promoted: the scheduler allocated it (A19)
+				rs.setUnblockAt(i, 0)
+				// (bound also with the controller down: it was
+				// attached before a kill of this window)
+				bound := p.Node != nil || (p.Claim.Attached != nil && *p.Claim.Attached)
+				if rs.Ctrl[sl.Pool].Up || bound {
+					ss.Phase = Running
+					if si, key, ok := rs.userRegion(int16(i)); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
+						if rs.Stacks[si].hasHole() {
+							// its Prepare needs a new region
+							// through a hole (A9)
+							ss.Phase = Blocked
+						} else {
+							unblocked[si] = append(unblocked[si], key)
+						}
+					}
+				} else {
+					ss.Phase = Attaching
+				}
+			case rs.unblockAt(i) == 0 && !k.now.IsZero():
+				rs.setUnblockAt(i, k.now.Unix())
+			}
 		}
 		if ss.Phase == Unblocking {
 			switch {
@@ -273,6 +315,49 @@ func (k *checker) resolve() {
 					rs.setLeaseID(i, c.Lease)
 				}
 			}
+		}
+	}
+	// a claim that waits for the attach with its controller down times
+	// out in PreBind after 600 s (bindingTimeout): it is deallocated and
+	// tried again, and the waiter of its device, requeued by that, may
+	// take the device first. Timed from the first settle that saw it
+	// waiting (UnblockAt), accepted from bindingExpiry on.
+	for i := range rs.Slots {
+		ss := &rs.Slots[i]
+		sl := rs.slot(i)
+		if ss.Phase != Attaching || !sl.Kind.pooled() || rs.Ctrl[sl.Pool].Up || k.now.IsZero() {
+			continue
+		}
+		if rs.unblockAt(i) == 0 {
+			rs.setUnblockAt(i, k.now.Unix())
+			continue
+		}
+		w := rs.waiter(sl.Res)
+		if w < 0 || k.now.Unix()-rs.unblockAt(i) < bindingExpiry {
+			continue
+		}
+		p, pw := k.cur[i], k.cur[w]
+		if p == nil || pw == nil || (p.Claim != nil && p.Claim.Allocated) || pw.Claim == nil || !pw.Claim.Allocated || rs.holders(sl.Res) != 1 {
+			continue
+		}
+		ss.Phase = Pending
+		rs.setUnblockAt(i, 0)
+		rs.Slots[w].Phase = Attaching
+		rs.setUnblockAt(w, k.now.Unix())
+	}
+	// the scheduler's hold of a device whose claim was deleted before
+	// its pod was bound ends within 5.5 s of the delete (A19): timed
+	// from the settle that ended its window, cleared 6 s after it
+	for d := DevID(0); d < nDevs; d++ {
+		if !rs.held(Res(d)) || k.now.IsZero() {
+			continue
+		}
+		switch {
+		case rs.HeldAt[d] == 0:
+			rs.HeldAt[d] = k.now.Unix()
+		case k.now.Unix()-rs.HeldAt[d] >= heldSeconds:
+			rs.Held &^= 1 << uint(d)
+			rs.HeldAt[d] = 0
 		}
 	}
 	// kubelet retries every blocked pod at its own resync (A12): the
@@ -447,6 +532,18 @@ func (k *checker) checkPods() {
 			k.checkBlocked(i, name)
 		case Unblocking:
 			k.checkUnblocking(i, name)
+		case Stalled:
+			at := k.rs.unblockAt(i)
+			switch {
+			case p == nil:
+				k.waitf("%s: no pod, want Pending or allocated (a stalled contender)", name)
+			case p.Deleting:
+				k.failf("%s: being deleted, want Pending or allocated", name)
+			case p.Phase != "Pending":
+				k.waitf("%s: phase %s, want Pending (stalled) or allocated", name, p.Phase)
+			case at > 0 && k.now.Sub(time.Unix(at, 0)) > stallTimeout:
+				k.failf("%s: still not allocated %s after the delete of the claim it waits for (A19)", name, k.now.Sub(time.Unix(at, 0)).Round(time.Second))
+			}
 		case Unsched:
 			switch {
 			case p == nil:
@@ -694,6 +791,11 @@ func (k *checker) checkUnblocking(i int, name string) {
 		k.failf("%s: being deleted, want it to start after its decoder hole cleared", name)
 	case p.Phase != "Pending":
 		k.waitf("%s: phase %s, want Running (or ContainerCreating for its retry)", name, p.Phase)
+	case p.Node == nil:
+		// (F13) a pool pod is bound only at PreBind's next poll after
+		// its claim is Attached (up to 5 s): until then its delete is
+		// that of an unbound claim (A19)
+		k.waitf("%s: not bound yet, want it on %s (its retry after its decoder hole cleared)", name, k.rs.Slots[i].Node)
 	case k.rs.unblockAt(i) > 0 && k.unblock > 0 && k.now.Sub(time.Unix(k.rs.unblockAt(i), 0)) > k.unblock:
 		k.failf("%s: not Running %s after its decoder hole cleared%s", name, k.now.Sub(time.Unix(k.rs.unblockAt(i), 0)).Round(time.Second), waitingOf(p))
 	}
@@ -703,7 +805,7 @@ func slackNote(ss *SlotState) string {
 	if ss.Slack == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" (+%d for kubelet restarts while it was being created)", ss.Slack)
+	return fmt.Sprintf(" (+%d for kubelet or containerd restarts while it was being created)", ss.Slack)
 }
 
 // holderNames lists the slots that hold a resource, but slot i.
@@ -1215,7 +1317,7 @@ func sameKeys(a, b []RKey) bool {
 // unblockingKey: a pod of the stack that waits for its retry has the key.
 func (k *checker) unblockingKey(si int, key RKey) bool {
 	for i := range k.rs.Slots {
-		if k.rs.Slots[i].Phase != Unblocking {
+		if !k.rs.Slots[i].Phase.waitsRetry() {
 			continue
 		}
 		if ssi, kk, ok := k.rs.userRegion(int16(i)); ok && ssi == si && kk == key {

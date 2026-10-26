@@ -154,3 +154,103 @@ L1 2026-10-24 15:44, image 1d9a1f54a692, model round 2 (05-review R1-
    ctrl-restart that a ctrl-kill interrupts, until a ctrl-start.
    P3's failure (bug-05) did not recur: the run went past its step 122.
    Copy: /tmp/p13-runs/l1/out.
+L2 2026-10-24 16:07, image 76999c4cf136 (every driver fix so far),
+   model round 3 (A18), gofmbt 8283135, on-line, full profile, all
+   faults, no MBT_AVOID, seed 4, 90m budget. FAIL at step 1309 after
+   1308 steps (3274 s of steps, 3805 s in all). Steps: create 151,
+   delete 138, crash 109, write 183, read 182, lease-get 12, lease-put
+   3, settle 245 (mean 8.1 s, max 95 s), driver-kill 38,
+   driver-restart 52, containerd-restart 44, kubelet-restart 47,
+   ctrl-kill 25, ctrl-start 24, ctrl-restart 22, server-restart 33.
+   Planning ahead: 1294 plans reused, 14 planned again. No driver
+   panic, no failure of any earlier oracle check in 1308 steps.
+   Failure: "pod xdax-a@vm1#0: claim not allocated, want allocated and
+   waiting for the attach". pool-a's controller was killed (ctrl-kill
+   a, no ctrl-start after it); xnuma-a@vm1#0 (gen 4) was created, its
+   claim allocated a-pooled0 and waited for the attach; xdax-a@vm1#0
+   was created pending on a-pooled0; xnuma-a@vm1#0 was deleted while
+   it waited. The model predicted that the deleted pod's claim gives
+   the device up and xdax-a's claim gets it (waiting for the attach);
+   the scheduler kept saying "cannot allocate all claims" (24 times).
+   The host traces of claims stopped at 17:02 and the scheduler log is
+   empty, so the claims of that moment are not recorded: being
+   reproduced (debugging agent). Copy: /tmp/p13-runs/l2/out.
+D8 2026-10-26 (debugging agent), image 76999c4cf136, replays of the L2
+   sequence (ctrl-kill a, create xnuma-a@vm1#0, create xdax-a@vm1#0,
+   delete xnuma-a@vm1#0, settle; and with ctrl-start a right after
+   the delete), MBT_SETTLE_TIMEOUT=480, kube-scheduler at --v=5 for
+   the run (manifest restored). PASS both; the settles after the
+   delete took 324 s and 314 s: kube-scheduler keeps the device
+   in-flight until its next 5 s PreBind poll, the contender was
+   retried before that and is not requeued when Unreserve frees the
+   device; it waits for the 5 min unschedulable flush (bug-08,
+   Kubernetes; 08-analysis-claim-after-pod-deleted.txt; model rule
+   A19). Copy: /tmp/p13-runs/d8.
+L3 2026-10-26 08:43, image 76999c4cf136, model with A19, on-line, full
+   profile, all faults, seed 5, 120m budget. FAIL at step 113 (678 s
+   in all): "pool a: no ResourceSlices, want them published". MODEL
+   ERROR (M4): ctrl-restart a, write, ctrl-kill a, server-restart a,
+   settle: pool-a's slices were legitimately absent (the killed
+   controller had not republished, A18), the model wanted them while
+   the controller was down. Copy: /tmp/p13-runs/l3/out.
+L4 2026-10-26 08:59, image 76999c4cf136, model with the M4 fix, same
+   flags as L3 (seed 5). FAIL at step 131 (539 s in all): MODEL ERROR
+   (M5): after ctrl-start a the model kept pool-a's slices "absent"
+   and failed the settle that saw them published again, with
+   xdax-a@vm1#0 and sro-a@vm1#0 attached and Running (correct SUT
+   behaviour). After M3-M5 the model gets an independent simulation of
+   the pool controller and an off-line fuzz of controller faults.
+   Copy: /tmp/p13-runs/l4/out.
+L5 2026-10-26 10:33, image 76999c4cf136, model with the independent
+   pool reference and its 14 fixes (04-status-MODEL 16, A20), seed 5,
+   full, all faults, 120m. FAIL at step 26 (202 s in all): MODEL ERROR
+   (M6, the containerd analogue of M2): crash lease@vm2#0, then
+   containerd-restart vm2 while kubelet re-created the container (pod
+   event "Failed: Error: error reading from server: EOF"): restarts 2
+   where the model crashed it once. Copy: /tmp/p13-runs/l5/out.
+L6 2026-10-26 10:42, image 76999c4cf136, model with the M6 fix, seed 5,
+   full, all faults, 120m. FAIL at step 1226 after 1225 steps (3494 s
+   in all; the generator started 10:43:21, the failure 11:39): "vm0:
+   cxl.nri.io slice publishes memdev-c1ae2001 (serial 0xc1ae2001 of
+   pool device c-shared0)" for 3 min. Steps 1222-1226: create
+   sdax-c@vm0#0 (c-shared0 attached to vm0, not prepared yet),
+   ctrl-restart c (pool-c's slices deleted), write, ctrl-kill c (no
+   republish), settle: poolSlices c [], c-shared0 attached to vm0 and
+   vm2, and vm0's node driver published the SHARED pool device as a
+   local memdev with shared=false: a cxl-local claim could online it
+   as RAM while vm2 maps it. DRIVER BUG, severe: bug-09 (predicted as
+   E6 in 01-findings-driver.txt; fix being made). The first 1225 steps
+   had no failure (L3-L5's seed, past all of their model errors).
+   Copy: /tmp/p13-runs/l6/out.
+V9 2026-10-26 10:00-10:20, attempts to reproduce bug-09 on purpose:
+   - replay (model) of create sdax-c@vm0#0, ctrl-restart c, ctrl-kill
+     c: the model refuses ctrl-restart while a claim of the pool is
+     being allocated (its rule for decidable outcomes).
+   - stub runs (MBT_STUB=1, MBT_STUB_STEPS) on the old image
+     76999c4cf136 (touched to be the newest tar) and the new
+     ee5c9ac1b7a7: (a) no pause: the old controller was stopped before
+     it attached; (b) a ~1 s pause (ctrl-kill b, ctrl-start b) and (c)
+     the same plus a local region on vm0 to force a rescan: the old
+     controller attached AND wrote Attached before its stop, kubelet
+     prepared the claim, a prepared device is never published locally.
+     The window of L6 (attached, Attached not written, slices deleted,
+     a rescan) is narrower than a stub step. Not reproduced on purpose
+     on either image; bug-09's unit tests reproduce it (6 of 9 fail
+     without the fix). Observations analysed with
+     /tmp/p13-runs/v9-analyze.py; copies /tmp/p13-runs/v9*.
+   With the new image the setup's waits for the local memdev of every
+   VM in its node's slice passed (v9, v9b), and vm0's slice had
+   memdev-c100e2e1 in every observation of v9b: the hold-back did not
+   keep the local device back.
+L7 2026-10-26 12:20, image ee5c9ac1b7a7 (+ bug-09 fix), model with the
+   M6 fix, seed 6, full, all faults, 120m. FAIL at step 1529 after 1528
+   steps (4671 s in all; generator 12:22-13:36): "vm2: container of
+   lsteer@vm2#0: memory.high "max", want set (steered)". MODEL ERROR
+   (M7): the slot was unblocking (blocked by a decoder hole) and its
+   container was created while vm2's driver restarted (driver-restart
+   at step 1528); the new driver's Synchronize saw it CREATED (pid=0)
+   and managed it as fenced by the bug-04 rule ("steering not
+   restarted, memory fenced; memory.high left alone"), StartContainer
+   9 ms later had nothing to steer: the documented behaviour. No pool
+   serial was published locally in any of the 1528 steps' settles
+   (bug-09's check). Copy: /tmp/p13-runs/l7/out.

@@ -301,6 +301,33 @@ A18 (run L1) settle "poolSlices":{"a":[{"name":..., "devices":[...],
    Unschedulable (FailedScheduling "cannot allocate all claims"), not
    allocated-and-waiting. The model takes the presence of the slices
    from poolSlices; without the field it accepts either outcome.
+A19 (run L2, bug-08, 08-analysis section 6) A pod deleted while its
+   claim is allocated and waiting for the binding conditions keeps its
+   device taken in the scheduler 0-5 s after the delete (HOLD). A
+   contender pending before the delete, or created within 5 s after
+   it, may stay Pending (STALL) until the first of: a ResourceSlice add
+   or update (a node driver's republish, kubelet-restart, ctrl-restart;
+   not ctrl-start after ctrl-kill), another claim's deallocation after
+   the hold, a Node or DeviceClass change, or 5:00-5:30 after the
+   delete. The oracle accepts Pending or the promoted state for 360 s
+   after the delete (the device stays contested), and requires the
+   promotion after that; settles do not wait for it. A holder that was
+   bound already (Running, or ContainerCreating on its node) hands the
+   device over at once, as before.
+A20 (04-status-MODEL 16, the independent pool reference and its
+   fuzz, after runs L3/L4: M4, M5) refinements of A18/A19:
+   - ctrl-start makes absent slices "unknown": republished within
+     seconds; a ctrl-kill before that leaves either outcome.
+   - A19's hold applies across a settle (the 5 s may outlive a short
+     settle; the oracle clears it 6 s later, "#adopt held=DEV:off"),
+     and to a promotion after any unbound delete of the device in the
+     window; off-line no unbound pool delete is generated.
+   - After the 600 s binding timeout a waiting claim may take the
+     device of another (the swap): accepted from 420 s on.
+   - While a pool's slices are not known to be back, one claim per
+     device (others are contested).
+   - A claim of a pod gone at the last settle may not be deallocated
+     yet (deallocation lag): its device is contested.
 A17 (bug-04 fix, R7) after any driver restart that is not graceful
    (driver-kill, containerd-restart) as after a graceful one: a
    running lsteer container has memory.high max and is fenced like an

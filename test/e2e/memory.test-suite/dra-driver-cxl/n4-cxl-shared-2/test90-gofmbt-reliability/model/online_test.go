@@ -247,3 +247,23 @@ func TestOnlineProtocolErrors(t *testing.T) {
 		t.Fatalf("run %v fail %q", err, sm.sawFail)
 	}
 }
+
+// TestOnlineRefPool: the on-line loop over the protocol against the
+// simulated SUT with the independent reference of the pool side
+// (refpool.go), on the reference's clock (settle timeout, A19 and
+// binding-timeout times), full profile, with the teardown.
+func TestOnlineRefPool(t *testing.T) {
+	for _, seed := range []int64{11} {
+		o := testOpts(t, "full", 120, 2, true)
+		o.seed = seed
+		sm := newSim(o.cfg, seed).withRef(seed + 100)
+		o.now = sm.refWall
+		err, logs := runSim(t, o, sm)
+		if err != nil || sm.sawEnd == "" {
+			t.Fatalf("seed %d: %v, sim end %q fail %q\n%s\n%s", seed, err, sm.sawEnd, sm.sawFail, sm.ref, logs)
+		}
+		if len(sm.ref.Anomalies) > 0 {
+			t.Fatalf("reference anomalies: %v", sm.ref.Anomalies)
+		}
+	}
+}

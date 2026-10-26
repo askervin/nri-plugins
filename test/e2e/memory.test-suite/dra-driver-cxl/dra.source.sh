@@ -542,8 +542,10 @@ dra-state-cleanup() {
     # regions, if the VM has no regions: then it is a leftover of an earlier
     # VM boot. That is the prepared pool claims (preparedPoolClaims.json),
     # the regions and slices of local devices (localDevices.json), the
-    # leases (leases.json) and the lease sockets of lease claims (leases/).
-    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+    # leases (leases.json), the lease sockets of lease claims (leases/) and
+    # the serials of pool devices seen by the driver (poolSerials.json, so
+    # that every test starts with the pools of its own servers only).
+    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/poolSerials.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
 dra-wait-node() {

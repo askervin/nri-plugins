@@ -173,23 +173,25 @@ func blockDevice(dir string) string {
 	return filepath.Base(m[0])
 }
 
-// namespace returns a namespace of an nvdimm region and whether its
-// probing has finished: it has no memory (a seed), a block device of its
-// own (raw), or a holder (pfn, btt or dax device) with a driver and, for
-// pfn and btt, a block device.
-func (mc *Manager) namespace(name string) (Namespace, bool, error) {
+// probeNamespace returns a namespace of an nvdimm region and why its
+// probing has not finished, "" if it has: it has no memory (a seed), a
+// block device of its own (raw), or a holder (pfn, btt or dax device) with
+// a driver and, for pfn and btt, a block device; a pfn device also has a
+// mode that is ram or pmem.
+func (mc *Manager) probeNamespace(name string) (Namespace, string, error) {
 	dir := mc.ndDev(name)
 	ns := Namespace{Name: name}
-	size, err := readUint(filepath.Join(dir, "size"))
+	sizeFile := filepath.Join(dir, "size")
+	size, err := readUint(sizeFile)
 	if errors.Is(err, os.ErrNotExist) {
-		return ns, false, nil // being added
+		return ns, "no " + sizeFile, nil // being added
 	}
 	if err != nil {
-		return ns, false, err
+		return ns, "", err
 	}
 	ns.Size = size
 	if size == 0 {
-		return ns, true, nil // the seed of new namespaces
+		return ns, "", nil // the seed of new namespaces
 	}
 	holder, _ := readTrim(filepath.Join(dir, "holder"))
 	blockDir := dir
@@ -199,35 +201,61 @@ func (mc *Manager) namespace(name string) (Namespace, bool, error) {
 	case strings.HasPrefix(holder, "pfn"):
 		ns.Mode = NamespaceFsdax
 		blockDir = mc.ndDev(holder)
-		switch m, _ := readTrim(filepath.Join(blockDir, "mode")); m {
-		case "ram":
-			ns.Map = MapMem
-		case "pmem":
-			ns.Map = MapDev
-		}
 	case strings.HasPrefix(holder, "btt"):
 		ns.Mode = NamespaceSector
 		blockDir = mc.ndDev(holder)
 	case strings.HasPrefix(holder, "dax"):
 		ns.Mode = NamespaceDevdax
-		return ns, hasDriver(mc.ndDev(holder)), nil
+		if d := mc.ndDev(holder); !hasDriver(d) {
+			return ns, "no " + filepath.Join(d, "driver"), nil
+		}
+		return ns, "", nil
 	default:
-		return ns, false, fmt.Errorf("%s: unknown holder %q", name, holder)
+		return ns, "", fmt.Errorf("%s: unknown holder %q", name, holder)
 	}
 	blk := blockDevice(blockDir)
 	if blk == "" {
-		return ns, false, nil
+		return ns, "no block device in " + filepath.Join(blockDir, "block"), nil
 	}
 	if holder != "" && !hasDriver(blockDir) {
-		return ns, false, nil
+		return ns, "no " + filepath.Join(blockDir, "driver"), nil
 	}
+	// The driver link of a pfn or btt device appears before its probe
+	// adds the disk, and the disk directory before its class link and its
+	// dev and size attributes: a missing one is a probe in progress.
 	major, minor, bytes, err := mc.BlockDeviceInfo(blk)
+	if errors.Is(err, os.ErrNotExist) {
+		if pe := (*os.PathError)(nil); errors.As(err, &pe) {
+			return ns, "no " + pe.Path, nil
+		}
+		return ns, err.Error(), nil
+	}
 	if err != nil {
-		return ns, false, err
+		return ns, "", err
 	}
 	ns.BlockDevice = filepath.Join(mc.DevRoot, blk)
 	ns.Major, ns.Minor, ns.Size = major, minor, bytes
-	return ns, true, nil
+	// The mode of a pfn device is read last, from a device known to be
+	// probed: read before, it could be missing (the holder of the
+	// namespace is set before the pfn device is registered) while the
+	// probe finishes before the checks above. A mode that cannot be read
+	// is not settled either: an fsdax namespace with an unknown map would
+	// look like no fsdax namespace with map mem (FsdaxNamespace), and a
+	// writer's namespace could be reconfigured.
+	if ns.Mode == NamespaceFsdax {
+		modeFile := filepath.Join(blockDir, "mode")
+		switch m, err := readTrim(modeFile); {
+		case err != nil:
+			return ns, fmt.Sprintf("cannot read %s: %v", modeFile, err), nil
+		case m == "ram":
+			ns.Map = MapMem
+		case m == "pmem":
+			ns.Map = MapDev
+		default:
+			return ns, fmt.Sprintf("unknown mode %q in %s", m, modeFile), nil
+		}
+	}
+	return ns, "", nil
 }
 
 // BlockDeviceInfo returns the device numbers and the size in bytes of a
@@ -258,9 +286,16 @@ func (mc *Manager) BlockDeviceInfo(name string) (major, minor int, size uint64, 
 // namespaces returns the namespaces of an nvdimm region with memory, and
 // whether all of them and the region have finished probing.
 func (mc *Manager) namespaces(ndregion string) ([]Namespace, bool, error) {
+	out, why, err := mc.probeNamespaces(ndregion)
+	return out, why == "" && err == nil, err
+}
+
+// probeNamespaces is namespaces: it returns why the region or a namespace
+// has not finished probing, "" if all have.
+func (mc *Manager) probeNamespaces(ndregion string) ([]Namespace, string, error) {
 	dir := mc.ndDev(ndregion)
 	if !hasDriver(dir) {
-		return nil, false, nil
+		return nil, "no " + filepath.Join(dir, "driver"), nil
 	}
 	// The kernel registers the namespaces that it found at the probe of
 	// the region asynchronously; init_namespaces counts them.
@@ -276,35 +311,40 @@ func (mc *Manager) namespaces(ndregion string) ([]Namespace, bool, error) {
 		names = append(names, filepath.Base(p))
 	}
 	sort.Slice(names, func(i, j int) bool { return natLess(names[i], names[j]) })
-	settled := len(names) >= active
+	why := ""
+	if len(names) < active {
+		why = fmt.Sprintf("%d of %d namespaces registered", len(names), active)
+	}
 	var out []Namespace
 	for _, name := range names {
-		ns, ok, err := mc.namespace(name)
+		ns, nsWhy, err := mc.probeNamespace(name)
 		if err != nil {
-			return nil, false, err
+			return nil, "", err
 		}
-		settled = settled && ok
+		if why == "" && nsWhy != "" {
+			why = name + ": " + nsWhy
+		}
 		if ns.Size > 0 {
 			out = append(out, ns)
 		}
 	}
-	return out, settled, nil
+	return out, why, nil
 }
 
 // Namespaces returns the namespaces with memory of an nvdimm region, after
 // waiting until the region and its namespaces have finished probing.
 func (mc *Manager) Namespaces(ctx context.Context, ndregion string) ([]Namespace, error) {
 	for {
-		out, settled, err := mc.namespaces(ndregion)
+		out, why, err := mc.probeNamespaces(ndregion)
 		if err != nil {
 			return nil, err
 		}
-		if settled {
+		if why == "" {
 			return out, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%s: namespaces still probing: %w", ndregion, ctx.Err())
+			return nil, fmt.Errorf("%s: namespaces still probing (%s): %w", ndregion, why, ctx.Err())
 		case <-time.After(mc.PollInterval):
 		}
 	}
@@ -374,8 +414,23 @@ var namespaceNameRe = regexp.MustCompile(`"dev"\s*:\s*"(namespace\d+\.\d+)"`)
 // CreateFsdaxNamespace creates an fsdax namespace with map mem in an
 // nvdimm region, or reconfigures the namespace existing ("" for a new
 // one) as such, with ndctl create-namespace, and returns it when its
-// block device is there. This writes the labels of the region.
+// block device is there. This writes the labels of the region, and
+// destroys what the reconfigured namespace had: it is refused unless the
+// region has finished probing and has no fsdax namespace, which a writer
+// may have formatted.
 func (mc *Manager) CreateFsdaxNamespace(ctx context.Context, ndregion, existing string) (*Namespace, error) {
+	nss, why, err := mc.probeNamespaces(ndregion)
+	if err != nil {
+		return nil, err
+	}
+	if why != "" {
+		return nil, fmt.Errorf("%s: not creating an fsdax namespace: the namespaces are still probing (%s)", ndregion, why)
+	}
+	for _, ns := range nss {
+		if ns.Mode == NamespaceFsdax {
+			return nil, fmt.Errorf("%s: not creating an fsdax namespace: %s is one already (map %q)", ndregion, ns.Name, ns.Map)
+		}
+	}
 	args := []string{"create-namespace", "-f", "-r", ndregion, "-m", NamespaceFsdax, "-M", MapMem}
 	if existing != "" {
 		args = append(args, "-e", existing)

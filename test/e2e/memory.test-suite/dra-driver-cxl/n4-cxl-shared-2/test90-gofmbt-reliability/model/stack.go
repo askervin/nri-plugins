@@ -556,13 +556,19 @@ func ready(evs []stackEvent, mask uint32, bySeq map[int16]int, j int) bool {
 }
 
 // unblockingOn tells if a stack has a user that waits for kubelet's retry
+// or the scheduler's requeue (a stalled contender, also of an "any" slot)
 // after its hole cleared.
 func (s *State) unblockingOn(si int) bool {
 	for i := range s.Slots {
-		if s.Slots[i].Phase != Unblocking {
+		if !s.Slots[i].Phase.waitsRetry() {
 			continue
 		}
 		if ssi, _, ok := s.userRegion(int16(i)); ok && ssi == si {
+			return true
+		}
+		// an "any" pod whose node is not known yet: any host of its
+		// pool
+		if sl := s.slot(i); sl.Kind.pooled() && s.Slots[i].Node == VMAny && poolBridge[sl.Pool] == stackBridge(si) && poolHasHost(sl.Pool, stackVM(si)) {
 			return true
 		}
 	}
@@ -800,6 +806,17 @@ func (s *State) altKey() string {
 		b = append(b, byte(st.N))
 		for _, k := range st.E[:st.N] {
 			b = append(b, byte(k+1))
+		}
+	}
+	// the pools: worlds that differ only in the slices or the
+	// attachments of a pool are different outcomes (L3, M4)
+	for p := range s.Ctrl {
+		c := &s.Ctrl[p]
+		b = append(b, byte(c.Slices))
+		for _, row := range c.Att {
+			for _, t := range row {
+				b = append(b, byte(t))
+			}
 		}
 	}
 	return string(b)

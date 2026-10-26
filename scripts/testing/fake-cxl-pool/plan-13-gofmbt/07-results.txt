@@ -1,0 +1,115 @@
+plan-13: results of the prototypes (P1-P5) and the answer to the
+integration question
+=================================================================
+2026-10-24/26 (orchestrator). Evidence: 06-runs.txt (cluster runs),
+04-status-MODEL.txt section 8 (P4, off-line), 04-status-GOFMBT.txt,
+05-review*.txt. T = test/e2e/memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-2/test90-gofmbt-reliability.
+
+1. The question
+---------------
+Should gofmbt generate a code.gen.sh that code.var.sh sources (the
+test06-fuzz pattern), or should code.var.sh build and run the model and
+execute generated steps on-line while the generator already plans the
+next one?
+
+2. Answer
+---------
+On-line, with planning ahead, as the main mode; off-line generation
+and replay kept as modes of the same program (mbt-cxl generate,
+online --replay, generate --from). Measured reasons:
+
+a. The SUT is not deterministic enough for a script. Every real run
+   needed outcomes that only an observation can decide:
+   - the node of an "any" slot (the scheduler's choice);
+   - the order in which concurrent operations created regions on one
+     host bridge, which decides where a decoder hole appears (bug-02,
+     A9): adopted from the observed decoders;
+   - kubelet re-creating a container after its own restart (M2:
+     restarts +1 with no crash);
+   - whether a controller published its slices before it was killed
+     (run L1, A18);
+   - the order of kubelet's Prepare retries of pods blocked by a hole
+     (05-review R4).
+   Off-line, each of these has to be avoided (generate leaves out the
+   "any" slots, never puts two region-creating operations of one stack
+   in flight, no ctrl-kill while slices are unknown), which removes
+   exactly the races that a reliability test is for.
+b. Planning time is not a cost on-line. Full profile (43 slots, 215
+   actions, ~31 enabled per state), depth 3, extended gofmbt: 173-198
+   ms mean, 795 ms max per plan (P3; P4 table); planning ahead hid it
+   completely: in P3 all 121 plans were reused, bash waited 32 ms in
+   all; in L2 1294 of 1308 plans were reused. Lock-step (P2) costs 25
+   ms per step on the small profile, ~0.2 s on the full one: P3's
+   planning ahead matters only at depth 4 (2-14 s per plan), which
+   P4 found not worth it (+5% faults in context for 8 s mean).
+c. A failure is diagnosed at the step that caused it, with the model
+   state, the prediction, the last observation and the differences
+   (mbt-fail.txt), and the run is reproducible: mbt-steps.txt with
+   its header (flags) and #adopt records (observed outcomes) replays
+   on-line (MBT_REPLAY) or becomes a code.gen.sh (generate --from).
+   Every bug of this plan was confirmed from such a replay (x1, v14,
+   v5; 06-runs.txt).
+d. The run is budgeted by time (MBT_DURATION), not by a pre-generated
+   length; coverage rounds restart on saturation (gofmbt
+   ResetCoverage).
+Off-line still has uses: a reviewable, Go-free script for a smoke run
+(P1: 47 steps PASS in 313 s), a fixed regression sequence for a bug
+(generate --from a failing run), and parallel scripts like test06.
+
+3. Prototypes, measured
+-----------------------
+P1 off-line code.gen.sh (small profile, 47 steps): PASS; generation
+   1.1 s; settles 131 of 175 s of steps; found a coverage flaw (faults
+   on an empty cluster first; fixed, 05-review R11).
+P2 on-line lock-step (small, 20m): 34 plans, 25 ms mean, 96 ms max;
+   stopped on an executor transient (kubectl exec after a kubelet
+   restart; retry added).
+P3 on-line planning ahead (full, 20m): 121 steps, all plans reused;
+   found bug-05.
+L1, L2 on-line, full profile, all faults: 151 and 1308 steps; L1 found
+   model error M3 (A18), L2 a stuck allocation after a pod deletion
+   during the binding wait (08-analysis-claim-after-pod-deleted.txt).
+P4 model and coverage variants (simulated SUT, 04-status-MODEL 8):
+   - slot model with asynchronous create/delete and a settle; ~31
+     enabled actions per state on the full profile (max 74);
+   - coverage mixes: C1 alone covers actions fastest but only a third
+     of the faults in context; C1+C2 the most faults in context, the
+     fewest actions; C4 rewards deep resource shapes (holes, a
+     shared device used exclusively after its shares left) at 8x the
+     planning time. Default C1x3,C2x2,C3 at depth 3: after 400 steps
+     190 actions, 266 faults in context, 363 action pairs;
+   - gofmbt extended vs stock planning: 5x faster (full), 9-12x
+     (small); stock depth 3 on full 0.76 s mean, 3.4 s max.
+P5 verification: the model as oracle over one JSON observation per
+   settle (0.5 s mean; 8.1 s mean per settle in L2 including the wait
+   for the SUT). The oracle flagged bug-01 (EXEC run 4: a fenced node
+   in a new container), bug-04 (X1) and both cases of bug-05 (P3,
+   V14); bug-02 stopped a stub run (no oracle: a pod that never ran),
+   bug-06 showed as the executor's driver-ready wait (20-30 s), bug-07
+   came from a review. The reviews' counterexamples (R1 leaked region,
+   R2 vacuous fencing) are regression tests of the oracle. The simulated SUT answers from the model itself, so its
+   "no disagreement" shows self-consistency only (05-review); the
+   cluster runs are what count.
+
+4. Model and verification design that held
+------------------------------------------
+- Slots (kind@vm#i) keep the action vocabulary finite and readable
+  ("create sdax-c@any#0", "crash lease@vm0#0"); resources derived.
+- Asynchronous create/delete/faults with a forced settle after at most
+  three operations produced the interleavings that found bugs: a fault
+  while a pod is starting (bug-05 case 2, bug-04 with lsteer), a delete
+  while a claim waits for its attach (L2), restart sequences
+  (ctrl-restart then ctrl-kill, L1).
+- The state string is an abstraction for coverage; observed outcomes
+  are adopted into new state objects (gofmbt review F1).
+- Observation completeness had to be checked explicitly (05-review R2):
+  a missing container is "wait", never "ok".
+
+5. gofmbt changes that made it work (04-status-GOFMBT.txt)
+----------------------------------------------------------
+Exported custom coverage (CoverSteps, CoverStartState, Cover), an
+incremental BestPath with results identical to the stock one (property
+tested; test06-fuzz output byte-identical, 7x faster), a search
+budget with a Stop channel (planning ahead), ResetCoverage, the Do
+nil-chain fix. Local branch 5jo-mbt-cxl, not pushed.

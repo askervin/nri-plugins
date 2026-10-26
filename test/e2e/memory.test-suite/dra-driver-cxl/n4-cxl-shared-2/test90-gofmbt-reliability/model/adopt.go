@@ -94,6 +94,11 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 			items = append(items, "slices="+p.String()+":"+x.String())
 		}
 	}
+	for d := DevID(0); d < nDevs; d++ {
+		if base.held(Res(d)) && !adopted.held(Res(d)) {
+			items = append(items, "held="+d.String()+":off")
+		}
+	}
 	for si := 0; si < nStacks; si++ {
 		if !adopted.Stacks[si].equal(&base.Stacks[si]) {
 			var keys []string
@@ -248,6 +253,15 @@ func (n *State) applyItem(kind, key, val string) error {
 		default:
 			return fmt.Errorf("invalid slices %q", val)
 		}
+	case "held":
+		for d := DevID(0); d < nDevs; d++ {
+			if d.String() == key && val == "off" {
+				n.Held &^= 1 << uint(d)
+				n.HeldAt[d] = 0
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid held %q:%q", key, val)
 	case "stack":
 		si := -1
 		for x := 0; x < nStacks; x++ {

@@ -312,14 +312,14 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 			}
 			ctx := map[string]int{}
 			for x := range r.m.sets[1] {
-				for _, w := range []string{"lease-numa", "lease-dax", "blocked", "unblocking", "hole", "steer-on", "steer-off"} {
+				for _, w := range []string{"lease-numa", "lease-dax", "blocked", "unblocking", "stalled", "unsched", "hole", "steer-on", "steer-off"} {
 					if strings.Contains(x, w) {
 						ctx[w]++
 					}
 				}
 			}
 			var cs []string
-			for _, w := range []string{"lease-numa", "lease-dax", "blocked", "unblocking", "hole", "steer-on", "steer-off"} {
+			for _, w := range []string{"lease-numa", "lease-dax", "blocked", "unblocking", "stalled", "unsched", "hole", "steer-on", "steer-off"} {
 				cs = append(cs, fmt.Sprintf("%s=%d", w, ctx[w]))
 			}
 			fmt.Fprintf(stdout, "  verbs %s faults=%d; C2 contexts %s\n", strings.Join(vc, " "), faults, strings.Join(cs, " "))

@@ -155,6 +155,10 @@ type localAllocator struct {
 	probesFile string
 	// probe runs the address line probe on a dax device.
 	probe func(dax string) (*memctl.Aliasing, error)
+	// poolGuard refuses a memdev that is a pool device (or may be one),
+	// checked before the allocator creates a region on a memdev or
+	// onlines its memory; nil for no check.
+	poolGuard func(ctx context.Context, serial uint64) error
 
 	// usesSnap is a snapshot of the use of the devices, and blockSize
 	// the memory block size in bytes (0 if unknown), for the publisher.
@@ -342,6 +346,9 @@ func (a *localAllocator) Acquire(ctx context.Context, claimUID, request string, 
 	if size == 0 {
 		return nil, -1, errors.New("size 0")
 	}
+	if err := a.checkPool(ctx, serial); err != nil {
+		return nil, -1, err
+	}
 	bs, err := a.readBlockSize()
 	if err != nil {
 		return nil, -1, err
@@ -371,6 +378,19 @@ func (a *localAllocator) Acquire(ctx context.Context, claimUID, request string, 
 	return s, node, nil
 }
 
+// checkPool returns the error of poolGuard for the memdev with the serial,
+// logged: a pool device is never used as a local memdev (bug-09).
+func (a *localAllocator) checkPool(ctx context.Context, serial uint64) error {
+	if a.poolGuard == nil {
+		return nil
+	}
+	if err := a.poolGuard(ctx, serial); err != nil {
+		klog.Errorf("local: refusing memdev serial 0x%x: %v", serial, err)
+		return err
+	}
+	return nil
+}
+
 // AcquireShared gives the shared local memdev with the serial to an
 // allocation result of a claim: the first dax device of its region, bound
 // to device_dax and never resized. A region is created and its dax device
@@ -384,6 +404,9 @@ func (a *localAllocator) Acquire(ctx context.Context, claimUID, request string, 
 func (a *localAllocator) AcquireShared(ctx context.Context, claimUID, request string, serial uint64, readOnly bool, use string) (*localSlice, error) {
 	if a == nil {
 		return nil, errors.New("local memdevs are not managed (manageMemdevs: false)")
+	}
+	if err := a.checkPool(ctx, serial); err != nil {
+		return nil, err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1327,18 +1350,52 @@ func (a *localAllocator) load() error {
 }
 
 // writeJSONFile replaces the file with v in JSON, readable by the owner
-// only.
+// only. The new content is synced before the rename, and the directory
+// after it: after a crash or a power loss the file has the old content or
+// the new one, never an empty or a partial one.
 func writeJSONFile(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding %s: %w", path, err)
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	if err := writeSynced(tmp, data, 0600); err != nil {
 		return fmt.Errorf("writing %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("renaming %s: %w", tmp, err)
 	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("syncing the directory of %s: %w", path, err)
+	}
 	return nil
+}
+
+// writeSynced writes data to the file name and syncs it.
+func writeSynced(name string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// syncDir syncs a directory, so that a rename in it is durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

@@ -1,0 +1,281 @@
+08: THE DEVICE OF A POD DELETED WHILE IT WAITED FOR THE ATTACH
+========================================================================
+2026-10-26, debugging agent of plan-13. Explains the failure of run L2
+(06-runs.txt; /tmp/p13-runs/l2/out): "pod xdax-a@vm1#0: claim not
+allocated, want allocated and waiting for the attach" at step 1309.
+Reproduced as run D8 (/tmp/p13-runs/d8: steps.txt, out/, claims.watch,
+sched.log, claims-during-wait.yaml).
+
+Verdict: Kubernetes behaviour (kube-scheduler v1.37), not our pool
+controller, not our node driver. No bug-08 file. The model must learn
+the rule of section 6.
+
+K = ~/go/pkg/mod/k8s.io/kubernetes@v1.37.0 (the cluster runs v1.37.1),
+DR = K/pkg/scheduler/framework/plugins/dynamicresources.
+
+1. WHAT I RAN
+------------------------------------------------------------------------
+Replay of a hand-written steps file (/tmp/p13-runs/d8/steps.txt), from
+N/test/e2e:
+  MBT_MODE=replay MBT_REPLAY=/tmp/p13-runs/d8/steps.txt \
+  MBT_PROFILE=full MBT_SETTLE_TIMEOUT=480 MBT_DURATION=90m \
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/\
+test90-gofmbt-reliability
+image 76999c4cf136 (imported by the test). The settle timeout was
+raised to 480 s so that the settle could show when the claim finally
+gets allocated. Steps:
+  A: ctrl-kill a; create xnuma-a@vm1#0; create xdax-a@vm1#0;
+     delete xnuma-a@vm1#0; settle (the controller stays down);
+     ctrl-start a; delete xdax-a@vm1#0
+  B: ctrl-kill a; create xnuma-a@vm1#0; create xdax-a@vm1#0;
+     delete xnuma-a@vm1#0; ctrl-start a right after (0.34 s); settle;
+     delete xdax-a@vm1#0
+(each with a settle between the steps). Result: PASS, but the settle
+after the delete took 324.19 s (A) and 314.46 s (B); every other
+settle took less than 12 s. With the default 180 s both fail as L2
+did.
+
+While it ran, from another shell:
+- a timestamped watch of the claims (kubectl get resourceclaims -w,
+  with deletionTimestamp, finalizers, allocation, reservedFor,
+  device conditions): claims.watch, and a YAML snapshot taken during
+  the wait: claims-during-wait.yaml
+- kube-scheduler at --v=5 (one added line in the static pod manifest
+  of vm2, restored afterwards; the scheduler restarted twice):
+  sched.log
+- the pool controller log of the test (out/trace/vm.controller.log).
+The scheduler log of L2 (default verbosity) was still in the
+kube-scheduler pod of the run: /tmp/p13-runs/d8/sched-l2.log.
+
+2. WHAT I SAW (D8, scenario A; times UTC from the scheduler log)
+------------------------------------------------------------------------
+06:17:23.450 xnuma-a g1: allocated a-pooled0, "Added in-flight claim",
+             PreBind writes allocation + reservedFor and waits for
+             the binding conditions (the controller is down).
+06:17:24.437 xdax-a g1: "cannot allocate all claims"; moved to the
+             Unschedulable queue, unschedulable plugins
+             {DynamicResources, NodeAffinity}.
+06:17:25.228 delete xnuma-a g1 (executor, host clock).
+06:17:25.344 scheduler: assumed pod deleted -> event AssignedPodDelete:
+             "Event is not making entity schedulable" for xdax-a.
+06:17:25.353 claim of xnuma-a deallocated by the resourceclaim
+             controller (reservedFor [] and allocation nil in one
+             UpdateStatus) -> event ResourceClaimUpdate: hint Queue
+             ("claim got deallocated") -> xdax-a retried at once
+             (SchedulerPopFromBackoffQ) -> "cannot allocate all
+             claims" again: a-pooled0 is still in the scheduler's
+             in-flight allocations of xnuma-a's PreBind.
+06:17:25.365 delete-protection finalizer removed (ResourceClaimUpdate,
+             not xdax-a's claim: QueueSkip).
+06:17:25.378 claim deleted (ResourceClaimDelete, it had no allocation
+             any more: QueueSkip).
+06:17:28.482 xnuma-a's PreBind polls (5 s period): "could not find
+             ResourceClaim" -> PreBind fails -> Unreserve: "Removed
+             in-flight claim", "Released resource in allocation
+             result", "Restore object ... could not find ResourceClaim"
+             (no assume-cache event), then MoveAll(AssignedPodDelete)
+             at 06:17:28.487: "Event is not making entity schedulable"
+             for xdax-a. From here the device is free, but nothing
+             tells xdax-a.
+06:17:28 -   xdax-a's claim: no allocation, no reservedFor, no
+06:22:48     deletionTimestamp (claims-during-wait.yaml); pod Pending;
+             no scheduling attempt at all.
+06:22:48.924 "Entity moved to an internal scheduling queue ...
+             event=UnschedulableTimeout" (5 min 23.6 s after its last
+             attempt): xdax-a allocated a-pooled0, waits for the attach.
+06:22:49.8   ctrl-start a: the controller attaches a-pooled0 to vm1 for
+             xdax-a (06:22:51.33), Attached=True, PreBind done
+             06:22:53.956, "Pod scheduled after flush from
+             unschedulableEntities".
+
+Scenario B: delete at 06:23:13.08, xdax-a's failed retry 06:23:13.188,
+ctrl-start 06:23:13.42, the new controller "publishing pool pool-a"
+06:23:14.89 with identical content (the pool-a ResourceSlice kept
+resourceVersion 733561 of 06:16:50: no API write, so no ResourceSlice
+event), xnuma-a's PreBind fails 06:23:16.284; xdax-a flushed by
+UnschedulableTimeout at 06:28:18.964 (5 min 5.8 s), allocated,
+attached by the running controller, bound 06:28:24.0. ctrl-start does
+not shorten the wait.
+
+L2 fits the same timeline: delete of xnuma-a g4 14:08:00.6 (plus the
+deletion of lease@vm2#0 14:08:01.5), xdax-a's last FailedScheduling
+14:08:02 (count 24 stayed for 3 min), xnuma-a g4's PreBind "could not
+find ResourceClaim" 14:08:05.108 (L2 scheduler log), settle timeout at
+about 14:11:03. In the teardown sexcl-a's claim got deallocated
+(14:11:08), which requeued xdax-a: it was allocated and in PreBind when
+its own claim was deleted at 14:11:12 ("could not find ResourceClaim
+mbt-xdax-a-vm1-0-g2-c0-5thrg"), 4-5 min after the delete and before
+the flush would have come (14:13:02-14:13:32). The earlier delete of
+xnuma-a g3 (step 1257) did not trip the oracle because no pod was
+pending on a-pooled0 then: g4 came as a new pod and was scheduled at
+once.
+
+3. THE ANSWERS
+------------------------------------------------------------------------
+Is the deleted pod's claim still allocated? No. The resourceclaim
+controller (kube-controller-manager) clears reservedFor and the
+allocation about 0.1-0.3 s after the pod is gone (the pod has no
+nodeName yet, so its deletion is immediate), removes the
+resource.kubernetes.io/delete-protection finalizer and the claim is
+deleted within 0.4 s. No deletionTimestamp lingers, no finalizer of
+ours (the pool controller and the driver add none to claims).
+
+Is the scheduler still in the binding cycle of the deleted pod? Yes,
+but only until the next poll of PreBind (0-5 s): it finds the claim
+gone and fails; Unreserve drops the in-flight allocation. Not the
+binding timeout (600 s): that applies only while the claim exists.
+
+Is it the pool controller or the driver? No. The controller only acts
+on claims with an allocation; the driver is not involved before the
+pod is bound.
+
+How long until the device is free? In the scheduler's books 0-5 s
+after the delete. But a pod that was already pending on the device is
+not retried when it gets free: it waits for the next queueing event
+that the DynamicResources plugin turns into "Queue", or for the
+UnschedulableTimeout flush, 5 min after its last failed attempt
+(checked every 30 s: 5:00-5:30). Its last failed attempt is the
+immediate retry right after the delete, so in practice 5:00-5:30 after
+the delete (measured 5:23.6 and 5:05.8).
+
+What frees it? The deletion noticed by the PreBind poll (claim not
+found) frees the device; what lets the pending pod take it is a
+later queueing event or the 5-minute flush. Not ctrl-start (the pool
+slice is republished unchanged), not the binding timeout.
+
+ctrl-start later: the controller reconciles the claims that have an
+allocation of its pool. The deleted pod's claim no longer exists, so
+nothing is attached for it, also when ctrl-start comes 0.34 s after
+the delete (scenario B: the controller's first reconcile came 1.5 s
+later, the claim was gone). Attachments whose owner claim is gone are
+detached at its first reconcile (L2: a-pooled0@vm1 of claim 70664454,
+deleted at 14:00:45 while the controller was down, detached at
+14:11:11 when the controller came back). When the waiting pod finally
+gets the device, the running controller attaches it within 1-3 s and
+the pod binds.
+
+4. WHY (SOURCES)
+------------------------------------------------------------------------
+DR/dynamicresources.go
+- PreBind (1661-1780): bindClaim writes allocation and reservedFor;
+  the in-flight allocation is removed only by prebindSuccessCleanup,
+  which runs when PreBind returns success (1689-1693, 1850-1866;
+  bindClaim 1805).
+  Then it waits: wait.PollUntilContextTimeout(ctx, 5*time.Second,
+  pl.bindingTimeout, true, isPodReadyForBinding) (1723).
+- isPodReadyForBinding (2054-2081): gets each claim from the assume
+  cache; a missing claim is an error, which ends the poll at once.
+  A claim without allocation is "not ready" (isClaimReadyForBinding,
+  1995) and isClaimTimeout needs an allocation (2030-2048), so a claim
+  that still exists but was deallocated would be polled until the
+  binding timeout (600 s, K/pkg/scheduler/apis/config/
+  types_pluginargs.go:289). Not our case: our claims come from
+  templates and are deleted with the pod.
+- Unreserve (1582-1645): MaybeRemoveClaimPendingAllocation, then
+  AssumedClaimRestore; the restore emits an event only for an object
+  still in the cache (K/pkg/scheduler/util/assumecache/
+  assume_cache.go:476-492); a deleted claim gives none.
+- EventsToRegister (278-299): Node add/label/allocatable, ResourceClaim
+  add/update/delete (with isSchedulableAfterClaimChange), the pod's
+  generated claim, DeviceClass add/update, ResourceSlice add/update.
+  No AssignedPodDelete.
+- isSchedulableAfterClaimChange (379-470): any claim going from
+  allocated to not allocated -> Queue (for every pending pod); a
+  deleted claim without allocation -> QueueSkip; other claims'
+  updates -> QueueSkip.
+DR/dra_manager.go:321-345, 367-431: ListAllAllocatedDevices and
+GatherAllocatedState count the in-flight allocations as allocated.
+K/pkg/scheduler/eventhandlers.go deletePodFromSchedulingQueue (359)
+and handleAssumedPodDeletion (268): a deleted assumed pod is removed
+from the cache and AssignedPodDelete is sent; the binding goroutine is
+not cancelled (the PreBind cancel of schedule_one.go:458-464 is used
+only by preemption).
+K/pkg/scheduler/schedule_one.go handleBindingCycleError (507): after
+the failed PreBind, MoveAllToActiveOrBackoffQueue(AssignedPodDelete),
+which DynamicResources does not listen to.
+K/pkg/scheduler/backend/queue/scheduling_queue.go:65
+DefaultPodMaxInUnschedulablePodsDuration = 5 min, flushed by
+flushUnschedulableEntitiesLeftover every 30 s (507-515, 1306-1328).
+K/pkg/features/kube_features.go:2119 SchedulerPopFromBackoffQ (beta,
+on): the retry right after the delete runs at once, so it always
+falls into the in-flight window and fails.
+K/pkg/controller/resourceclaim/controller.go:1474-1709 syncClaim: a
+deleted pod's reservation is dropped, the allocation is cleared when
+reservedFor gets empty, the finalizer is removed.
+
+In short: the release of an in-flight allocation by Unreserve, when
+the claim was deleted first, produces no event the DRA plugin
+listens to. That is a gap of kube-scheduler (worth an upstream issue:
+"pods rejected by DynamicResources are not requeued when a deleted
+pod's in-flight allocation is released in Unreserve"), not of ours.
+
+5. WHAT THE MODEL GOT WRONG
+------------------------------------------------------------------------
+promote (model/actions.go:690-703) hands the device to its waiter as
+soon as the holder is deleted, and the settle oracle demands the
+waiter's claim allocated within the settle timeout (180 s). That holds
+when the holder was bound (its claim's deallocation is the event that
+requeues the waiter, and nothing is in flight), not when the holder's
+pod was still in PreBind: phase attaching or starting with its pool
+claim allocated and its binding conditions not yet true (controller
+down, or the attach not yet done), i.e. the pod has no nodeName yet.
+
+6. THE RULE FOR THE MODEL
+------------------------------------------------------------------------
+R1. Hold. When a pod is deleted while its claim is allocated and the
+    scheduler waits for its binding conditions (the pod not bound
+    yet), its device stays taken in the scheduler for up to 5 s after
+    the delete (until the PreBind poll finds the claim gone). The
+    claim itself is gone within 1 s; nothing is attached for it, also
+    if ctrl-start comes right after.
+R2. Stall. A pod that contends for that device and gets a scheduling
+    attempt in that window stays Pending ("cannot allocate all
+    claims", claim not allocated). That is every contender that was
+    already Pending before the delete (the claim deallocation retries
+    it at once, inside the window), and a contender created within 5 s
+    after the delete.
+R3. Release. A stalled contender gets the device (allocated, then
+    waiting for the attach or attached) at the first of:
+    a) any ResourceSlice add or update anywhere in the cluster (a
+       node driver republishing its slice, e.g. after an attach or
+       detach on any node or a kubelet restart that removed its
+       slice; a ctrl-restart, which deletes and republishes the pool
+       slices); NOT ctrl-start after ctrl-kill (unchanged slice);
+    b) any claim in the cluster going from allocated to deallocated
+       (the deletion of another pod whose claim was allocated) after
+       the hold of R1 is over;
+    c) a Node add, label or allocatable change, a DeviceClass change;
+    d) otherwise 5 min to 5 min 30 s after the contender's last failed
+       attempt, which is right after the delete.
+    It cannot get it before the hold of R1 is over.
+
+Oracle: the model cannot see a)-c) reliably, so in the window from
+the delete until 330 s after it (take 360 s with margin) a stalled
+contender is nondeterministic: accept both "Pending, claim not
+allocated" and the promoted state (allocated, waiting for the attach,
+or attached and starting when the controller is up). The device stays
+contested meanwhile (no new creates for it, as now). After 360 s
+without the promotion having been seen, require it. A settle in that
+window must either not wait for the stalled contender (treat it as
+settled in both states) or have a timeout of at least 360 s from the
+delete; the first is cheaper, since otherwise every such step costs
+5 min.
+
+Simplest variant if the extra state is not wanted: when a holder in
+PreBind is deleted and a contender is or becomes Pending within 5 s,
+do not promote it; treat it as Pending until a ctrl-restart of its
+pool, a kubelet-restart, or the 360 s are over, and accept the
+promoted state at any time (a)-(c) happened behind the model's back).
+
+Not chosen: making the executor nudge the scheduler (for instance a
+label change on a node, which DynamicResources and NodeAffinity both
+turn into "Queue") after such a delete. It would hide a delay that a
+real user of the pool sees, and the test is about real behaviour.
+
+7. CLUSTER LEFT
+------------------------------------------------------------------------
+The test's own teardown and cleanup ran (PASS): no pods or claims in
+cxl-pool-demo, no ResourceSlices, no driver daemonset, no pool servers
+or controllers, no CXL memdevs in the VMs (decoders_committed 0 on
+every port), nodes Ready. The kube-scheduler manifest of vm2 is back
+to the original (no --v), the scheduler restarted from it.

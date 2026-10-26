@@ -577,7 +577,9 @@ A device that is already gone is not an error.
 The `cxl.nri.io` driver publishes neither a memory device that the pool
 driver prepared or whose serial a pool controller publishes, nor a region
 on such a device, so pool memory is not offered twice
-([local.md](local.md#what-the-plugin-publishes)).
+([local.md](local.md#what-the-plugin-publishes)). It remembers these
+serials: a pool device stays one while its controller is stopped and has
+deleted its ResourceSlices, also across a restart of the node plugin.
 
 ## Leases
 
@@ -627,7 +629,12 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
 - A second exclusive claim while all devices are taken stays pending in
   the scheduler (no device); it is not a failure.
 - Controller restart: the controller recomputes the attachments from the
-  claims and the pool, and re-confirms existing ones.
+  claims and the pool, and re-confirms existing ones. A graceful stop
+  deletes its ResourceSlices; the node plugin still takes the attached
+  devices as pool devices by the serials that it remembers, holds back a
+  new memory device while a pool claim of the node is not attached yet,
+  and for up to 5 minutes while the pool has no ResourceSlices
+  ([local.md](local.md#what-the-plugin-publishes)).
 - Node plugin restart: the prepared claims file restores the prepared
   devices; regions are found again by serial.
 - `cxl create-region` right after a hotplug can fail once with

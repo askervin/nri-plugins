@@ -37,14 +37,76 @@ plugin manage the device.
 Local and pool devices are told apart by serial. A memdev is a pool
 device when the pool driver prepares it for a claim, or when its serial
 is the `serial` attribute (or `<driver>/serial`) of a device in a
-ResourceSlice of any DRA driver other than `cxl.nri.io`: a pool
+ResourceSlice of the pool driver (`--pool-driver-name`, by default
+`cxl-pool.nri.io`; the slices of other DRA drivers do not count): a pool
 controller publishes its devices before it attaches one to a node, so a
 pool device is never offered as a local one, not even between its attach
-and its Prepare, or when its pod never starts. The plugin lists the
-ResourceSlices at every scan. When a list fails it keeps the serials of
-the last successful one; until a list has succeeded it publishes no
-`memdev` device at all (regions are published as usual), and it tries
-again every 30 seconds while the list fails.
+and its Prepare, or when its pod never starts. The plugin lists these
+ResourceSlices at every scan, and scans at least every 2 minutes (plus at
+most 30 seconds) also without udev events. When a list fails it keeps
+the serials of the last successful one; until a list has succeeded it
+publishes no `memdev` device at all (regions are published as usual),
+and it tries again every 30 seconds while the list fails.
+
+A pool controller deletes its ResourceSlices when it stops gracefully,
+while its devices stay attached to their nodes. So the plugin remembers
+serials in `poolSerials.json` in its data directory (written atomically
+and synced to disk, kept across restarts and reboots):
+
+- A serial that it has seen in a ResourceSlice of the pool driver, that
+  the pool driver prepared, or that the status of a pool claim allocated
+  to the node names, stays a pool device serial: such a memdev is never
+  published as a local memdev, whatever the ResourceSlices say at the
+  moment, and also after a restart of the plugin while the
+  ResourceSlices are absent. The serial is forgotten only after the
+  plugin has observed it absent (in no ResourceSlice, not prepared, not
+  on the node) for 24 hours. Absence is observed by the scans; it counts
+  over scans that are at most 5 minutes apart, and starts again after a
+  longer gap (a stopped plugin, a failing list, a step of the clock) and
+  after a restart of the plugin.
+- A memdev that it has published as a local memdev before stays local,
+  unless the pool driver publishes or prepares its serial: then it is a
+  pool device, and the next scan (within about 2.5 minutes) withdraws it
+  from the ResourceSlice. If local claims use it at that moment, the log
+  has an error; they keep their memory, but no new local claim is
+  prepared on it.
+- Any other memdev is new. While a pool claim that is allocated to the
+  node is not attached yet (its status has neither a serial nor a failed
+  attach), a new memdev is held back for as long as that lasts: it may be
+  the device of that claim. A new memdev is local at once otherwise,
+  unless a pool that the plugin remembers has been observed without
+  ResourceSlices for less than an hour, the list fails, or
+  `poolSerials.json` could not be read in the last hour (it exists but is
+  corrupt: the log has an error). Then it is held back: it is not
+  published at all for up to 5 minutes, until the pool is back. If the
+  pool's ResourceSlices list the serial, it is a pool device; otherwise,
+  or after the 5 minutes, it is local. The log has
+  `pool serials: holding back new memdev ...`.
+
+A memdev that is held back, or a pool device, is not used by the plugin
+even if a local claim was allocated on it: before it creates a region on
+a memdev or onlines its memory, the plugin lists the ResourceSlices of
+the pool driver again, and Prepare fails with `memory device serial
+0x... is a pool device ...: it is not used as a local memory device`.
+
+Memdevs that are on the node when the plugin first starts (as local
+memdevs are on a real machine, from boot) and a local memdev that is
+hot-added while all pools have their ResourceSlices are published at
+once. After a restart of the plugin, the hour of a pool without
+ResourceSlices starts again, because absence is not kept across
+restarts. The rules depend on the file: if it is lost (deleted,
+or a first start with this version) while a pool controller is stopped,
+an unprepared pool device on the node is taken as local, unless the
+status of a pool claim of the node names it or a pool claim of the node
+is still being attached. A pool device whose claim was deleted before
+the controller detached it is not covered then. Shared pool memory must
+never be onlined as RAM, so keep the file with the other state of the
+plugin, and upgrade while the pool controllers run.
+
+A pool device that stays attached stays a pool device. To use a former
+pool device as a local memdev without detaching it, stop the plugin,
+remove the record of its serial from `poolSerials.json` (`jq
+'.serials |= map(select(.serial != "0x..."))'`) and start the plugin.
 
 ```yaml
 - name: memdev-c100e2e1               # "memdev-" + serial in lower-case hex

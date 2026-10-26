@@ -37,7 +37,10 @@ Files
   04-status-*.txt          stream status files
   05-review*.txt           reviews
   06-runs.txt              trial runs in the e2e cluster
+  07-results.txt           the prototypes measured, the answer to
+                           the integration question
   bug-NN-*.txt             one file per bug found
+  08-analysis-*.txt        analysis of a run failure (L2)
   09-status.txt            final status
 
 Status

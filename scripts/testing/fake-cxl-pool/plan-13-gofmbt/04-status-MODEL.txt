@@ -1,6 +1,6 @@
 plan-13: status of stream MODEL
 ===============================
-2026-10-24 (MODEL). Contract 04-contract.txt with amendments A1-A18,
+2026-10-24 (MODEL). Contract 04-contract.txt with amendments A1-A19,
 design 02-design.txt, plan 03-plan.txt, bug-01..bug-04, the review
 05-review.txt (round 2: section 12; where it differs from sections
 1-11, section 12 holds).
@@ -65,8 +65,12 @@ generate.go       code.gen.sh, --from, code.gen.sh parser (tests)
 check.go          `check`
 experiment.go     P4 experiments (each one a soak test of model+oracle)
 sim.go            the simulated SUT
+refpool.go        independent reference of the pool side (section 16)
+simref.go         the simulated SUT with that reference (withRef)
 main.go           subcommands, flags, runtime tuning
-*_test.go         model, oracle, stack, online, generate tests
+*_test.go         model, oracle, stack, online, generate tests;
+                  refpool_test.go the fuzz against the reference
+recorded/         L4's mbt-steps.txt and its observation of step 131
 
 2. Build and test
 -----------------
@@ -587,3 +591,279 @@ wanted "allocated, waiting for the attach". Now (A18):
   (TestReviewUnblockingUsersOfOneRegion).
 57 test functions; gofmt, go vet (also -tags gofmbtstock), the stock
 build, go test and go test -race -timeout 30m clean.
+
+14. Round 4: A19 stalled contenders (run L2, bug-08)
+---------------------------------------------------
+L2 ran 1308 steps and failed at 1309 on a model error: xdax-a@vm1#0
+waited for a-pooled0, pool-a's controller was down, its holder
+xnuma-a@vm1#0 (allocated, waiting for the attach) was deleted; the
+model promoted xdax-a at once, kube-scheduler kept it Pending (its
+PreBind holds the device for up to 5 s, then nothing requeues the
+contender until a requeueing event or ~5:30 later: bug-08). Now:
+- The contender of a pool device whose holder is deleted before its
+  pod was bound (prev Attaching, or Starting: maybe in PreBind), and a
+  contender created in that window with a later fit, is STALLED:
+  Pending with the claim not allocated, or promoted at any time. The
+  simple variant of A19 is modelled: the requeueing events are not;
+  both outcomes are accepted for 360 s from the first settle that saw
+  it stalled (on-line), then the promotion is required (fail).
+- Promotion is adopted when the claim is seen allocated: controller
+  down -> Attaching; up -> Running, its region on top of its stack
+  (like an unblocked pod: nothing else may change that stack while a
+  pod is stalled or unblocking, waitsRetry). The device stays its: no
+  other claim may ask for it. Deleting it: its promotion may have
+  made its region (optional prepare + unprepare, no hole either way).
+  A holder already bound (Running, Blocked on its node) hands over at
+  once as before.
+- Off-line no action that makes a contender stalled is generated
+  (nothing would adopt the outcome).
+- C4 phase class "stl"; it is a C2 context as a phase like the others.
+- Test: TestReviewA19StalledContender (the L2 sequence: stalled ok,
+  promoted ok and adopted, fail after 360 s, promotion after ctrl-start
+  with its region, off-line refusal, bound holder hands over).
+  Soak: 3 x 800 simulated steps, full profile, no disagreement, the
+  stall reached.
+57 -> 58 test functions; gofmt, go vet (also -tags gofmbtstock), the
+stock build, go test and go test -race -timeout 30m clean.
+
+15. Round 5: L3 (M4), slices absent after a kill
+------------------------------------------------
+L3 failed at step 113: ctrl-restart a, write, ctrl-kill a, server-
+restart a, settle; pool-a's slices were legitimately absent, the
+oracle waited for them. Cause: the settle's two A18 worlds (slices
+present / absent) were merged as one outcome when no pod of the pool
+was being allocated, because the key that dedupes alternatives
+(altKey) held only slots and stacks. It now holds every pool's slice
+state and attachments too, so the absent world stays and is adopted
+from poolSlices [] (then new claims of the pool are Unsched until
+ctrl-start). Checked the other A18 paths: only ctrl-restart makes the
+slices unknown, a settle with the controller up makes them present,
+ctrl-kill, server-restart, kubelet-, containerd- and driver restarts
+keep them (TestReviewL3SlicesAbsentAfterKill covers the L3 sequence,
+adoption and those verbs). 59 test functions; gofmt, go vet (also
+-tags gofmbtstock), the stock build, go test and go test -race
+-timeout 30m clean.
+
+16. Round 6: L4 (M5), an independent pool reference and its fuzz
+----------------------------------------------------------------
+M5 (L4 step 131). ctrl-restart a, ctrl-kill a: pool a's slices absent
+(adopted, A18); ctrl-start a kept them absent until a settle, so the
+delete of xnuma-a@vm2#0 in the same window made its waiter xdax-a@vm1#0
+Unsched (no slices) instead of Starting, and the settle (controller up,
+slices published, xdax-a and sro-a attached and Running) failed at once.
+Fix: ctrl-start turns absent into unknown (the new controller publishes
+within seconds; a kill before that: both worlds, as after ctrl-restart).
+TestReviewL4SlicesBackAfterStart replays L4's own steps file with its
+adoption records (model/recorded/) and checks L4's own observation of step
+131: ok now (and fails with the old rule).
+
+The reference (refpool.go, ~800 lines, no call into the model's
+transition, settle or oracle code; static topology only). Written from
+A18/A19, 08-analysis and F/controller (Run, sync, publish,
+reconcile/attach/writeStatus/detach, shutdown): a virtual clock (ms);
+controller incarnations (start: informer sync 0.3-1.5 s, then every sync
+publishes the slice if missing, written 0.1-0.8 s later; reconcile on
+claim and server events, debounce 0.5 s, every 10 s; graceful stop
+deletes the slices, SIGKILL keeps them and loses an unwritten publish);
+the pool servers (attach/detach complete 0.3-2 s after the request,
+also across a kill; then Attached is written only by the incarnation
+that asked; server-restart unreachable 3-6.5 s); the reconcile's
+desired set = allocated claims, waits for the detach of an exclusive
+device elsewhere, AttachFailed on a conflict with a wanted attachment;
+kube-scheduler (first attempt 20-150 ms after the create; needs the
+pool's slice and a free device, in-flight allocations count; attempts
+again on a claim deallocation, a ResourceSlice add, sometimes kubelet
+and driver restarts; else the unschedulable flush 5:00-5:30; PreBind
+polls every 5 s, binds on Attached, fails on AttachFailed and after
+600 s); deletes (bound: gone after 0.6-2.6 s, claim deallocated 0.1-
+0.3 s later; unbound: gone at once, claim deallocated after 0.1-0.35 s
+while it is still in flight: the HOLD until the next PreBind poll, no
+event). simref.go puts the reference into the simulated SUT (withRef):
+every pool fact of an observation (pool pods' phase, node,
+unschedulable, claim allocated/devices/Attached, deleting pool pods,
+attachments with state and exclusive, poolSlices, controllers, the
+pool memdevs of the VMs) is the reference's; the node side (regions,
+stacks, state files, fencing, env) comes from the model's outcome that
+fits the reference best, resolved by it (Either, Stalled, maybe
+attachments, the node of any pods, a binding-timeout swap; attached
+but not yet bound counts as bound). Where no outcome fits, the
+observation still shows the reference: the oracle must reject it.
+
+The fuzz (refpool_test.go TestRefPoolFuzz, flags -refpool-seqs,
+-refpool-seed, -refpool-len, -refpool-slow): random sequences of
+4..len steps chosen among the model's enabled actions (on-line rules,
+MBT_UNSETTLED 3), weights ctrl-kill/ctrl-start/ctrl-restart 2.5,
+server-restart 1, create 1 / delete 2.5 / crash 0.3 of the 26 pool
+slots of all three pools (local kinds a quarter of that), settle 4,
+kubelet-restart 0.4, driver faults 0.15; every settle polled like bash
+(0.4-0.9 s, then every 3 s of the reference's clock) through the
+oracle with the 180 s settle timeout on that clock; a stable wait is a
+failure only at the timeout, as on the cluster. TestOnlineRefPool runs
+the real on-line loop (planner, protocol, teardown) against it.
+Sequences run in all: about 180 000 (~9 million steps, ~2.4 million
+settles; batches of 10 000 short ones of 4-60 steps, of 1 500 long
+ones of up to 400 steps, some of those with controllers staying down
+(-refpool-slow), and 10 000 of up to 30). The final round with the
+final code: 29 000 sequences (2 x 10 000 short, 5 x 1 500 long, one
+of them slow), 2.18 million steps, 0 disagreements; the reference
+counted there per 10 000 short sequences ~9 700 holds (A19), ~3 000
+stalled attempts, ~19 000 republished slices, ~4 400 attempts without
+slices, ~1 AttachFailed.
+
+Model errors the fuzz found (fixed, each with a regression test in
+review_test.go and the fuzz's shortest sequence with its seed in
+refRegressions, TestRefPoolRegressions; every fix checked by reverting
+it: its tests fail). Of the first 1 000 sequences 33 disagreed:
+F1 A stalled contender of an "any" slot seen bound: its node was not
+   adopted (resolve took the node only of Running/Either pods): its
+   attachment "wanted by no claim". Oracle.
+F2 The A19 hold outlives a short settle: a settle is ok ~0.6 s after
+   the delete of a pod that was not bound (Attaching, or Starting:
+   created and deleted in one window), and a contender created in the
+   next window tries within the hold and stalls for 5 min (about half
+   of the first 33 disagreements; 3 more were M5 itself). Now Held (bitmask,
+   State) is set by the settle that ends such a delete's window; a
+   create of the device is Stalled while held; the oracle stamps
+   HeldAt at that settle and clears the bit at a settle 6 s later
+   (#adopt held=DEV:off). Off-line nothing would clear it: deleting a
+   pool pod that may be unbound (Starting, Attaching, Either,
+   Stalled) is not generated off-line.
+F3 A stalled contender promoted with its stack holding a hole was
+   taken as Running with its region on top; its Prepare is refused:
+   Blocked. Oracle (and the simulated truth).
+F4 Claims that tried while the pool had no slices are requeued
+   together by the publish; the scheduler picks: two claims of one
+   device in a window while the slices are unknown (after ctrl-restart,
+   or ctrl-start from absent: the Unsched one promoted) raced. Now such
+   a create, and the promoted Unsched claim, make the device
+   contested (one candidate).
+F5 ctrl-kill left attachments "no" or "yes" that may have changed: the
+   attach of a claim deleted before it was bound (in flight at the
+   server), of a stalled contender promoted unseen, and an orphan that
+   the start's reconcile detached before the claims now wanting it were
+   allocated. Now maybe (adopted from the observation).
+F6 A stalled contender promoted and bound before a kill of the same
+   window was taken as Attaching (controller down): Running. Oracle.
+F7 ctrl-start adds the prepare of an "any" pod that waited for the
+   attach; the rule "nothing else on a stack of a stalled/unblocking
+   pod" looked at slot verbs only. Now at every new "any" event.
+F8 The claim of a pod that was gone at the last settle may be
+   deallocated 0.1-0.3 s later; a create's first attempt fails and is
+   requeued by that event, and a second create in the window overtakes
+   it. Now Released (set by the settle for the devices of deleted pool
+   pods, cleared by the next) makes such a create contested.
+F9 promote() stalled the waiter only when the delete that freed the
+   device was unbound; a bound holder deleted in a window in which an
+   unbound claim of the same device was deleted too (or that is held
+   since the last settle) also leaves it in flight. Likewise create's
+   later-fit path with Held.
+F10 A contender that became stalled in a window that has other region
+   events on its stack races with them for the order. Now refused
+   (stallStacksQuiet).
+F11 unblockingOn ignored stalled "any" pods: a prepare on a host stack
+   of their pool raced with their promotion. Now every host stack.
+F12 (by a targeted scenario: the random fuzz restarts controllers too
+   often to reach it) Binding timeout: a claim waiting for the attach
+   with its controller down fails PreBind after 600 s, is deallocated
+   and tried again; the waiter of its device, requeued by that, may
+   take it. The oracle stamps a waiting claim at its first settle
+   (UnblockAt) and accepts the swap (holder Pending, waiter Attaching)
+   from bindingExpiry = 420 s on (600 s less a window and a settle);
+   ctrl-start clears the stamp. TestRefPoolBindingTimeout (four
+   scenarios x 10 seeds, the controller down ~17 min).
+F13 (in the last long rounds) A pool pod is bound only at PreBind's
+   next poll after its claim is Attached, up to 5 s later; an
+   unblocking pod (hole cleared in the window) was settled while not
+   bound yet, and its delete in the next window was taken as that of a
+   bound claim (handover) while the scheduler held the device (A19):
+   the waiter stalled. checkUnblocking now waits for the node.
+Also found, in the reference and the simulated truth (not the model):
+the first attempt of a create overtaking the previous create (attempt
+delay now below a step's duration: the model's issue order, R2); the
+truth taking "attached, not bound yet" as Attaching while the oracle
+(rightly) waits for the bind; the truth not following a swap; an attach
+conflicting with a wanted attachment on another host (an exclusive use
+being detached while a share on the same host is allocated): the
+controller writes AttachFailed, PreBind fails and the pod is scheduled
+again, now modelled (it converges; the settle waits).
+
+What the reference does not decide (taken from the model): Prepare,
+regions and the decoder stacks, kubelet's retries of blocked pods,
+fencing, steering, leases, env; so blocked/unblocking pool pods and
+stack orders are self-consistent only (as before, N2). Not modelled:
+the server's own failures, attach timeouts (60 s), node label changes.
+
+Proposed contract amendments (orchestrator): A19 says "a contender ...
+created within 5 s after it": the model now applies it across a settle
+(F2) and to promotions after any unbound delete of the device in the
+window (F9); new: the binding timeout swap (F12); A18: while a pool's
+slices are not known to be back, one claim per device (F4); the
+deallocation lag after a settle (F8).
+
+Tests: 59 -> 73 test functions (TestReviewL4SlicesBackAfterStart,
+TestReviewF2HoldAfterSettle, TestReviewF1F3F6StalledPromoted,
+TestReviewF4OneCandidateWhileSlicesComeBack, TestReviewF5Kill-
+OpensAttachments, TestReviewF8ReleasedDevice, TestReviewF9Promotion-
+AfterUnboundDelete, TestReviewF7F10F11StalledStacksQuiet,
+TestReviewF12BindingTimeout, TestReviewF13UnblockingNotBound,
+TestRefPoolFuzz (400 sequences by default, 50 with -short),
+TestRefPoolBindingTimeout, TestRefPoolRegressions, TestOnlineRefPool);
+gofmt, go vet (also -tags gofmbtstock), the stock build, go test (41 s)
+and go test -race -timeout 30m (3 min) clean. (go test with -tags
+gofmbtstock fails in the tests that ask for C2/C4, as before.)
+
+17. Round 7: L5 (M6), a containerd restart restarts a container
+---------------------------------------------------------------
+L5 failed at step 26: crash lease@vm2#0 (step 22, its container
+restarting), containerd-restart vm2 (step 24) while kubelet re-created
+the container: event "Failed: Error: error reading from server: EOF",
+kubelet created it again, restartCount 2 for one crash; the oracle
+failed it ("2 restarts, the model crashed it 1 times"). Like a kubelet
+restart (M2), a containerd restart now gives one restart of slack
+(Slack +1, adopted from the observed count at the settle, #adopt
+restarts=) to every pod of the VM whose container is being created or
+started in the window: Starting (created right before it: in L5
+lnuma@vm2#1 created right before step 9's containerd-restart got
+FailedCreatePodSandBox and then a CDI error, restarts 0, within the
+slack), Restarting (crashed), and now also Unblocking (kubelet's retry
+of its Prepare and create may come in the window); the same set for
+kubelet-restart (restartSlack in actions.go). Running containers keep
+running (A8): no slack. driver-kill and driver-restart do not touch the
+runtime: none. TestReviewM6ContainerdRestartSlack: the sequence (1 and
+2 restarts ok and adopted, 3 fail; the slack of starting pods, none on
+running pods or other VMs) and L5's own steps file and observation of
+step 26 (model/recorded/l5-*): ok now, fails without the fix. Tests
+74 functions; gofmt, go vet (also -tags gofmbtstock), the stock build,
+go test, go test -race -timeout 30m clean; fuzz against the reference
+re-run: 10 000 short and 1 500 long sequences (0.64 million steps), no
+disagreement (the simulated SUT never adds restarts, so the fuzz only
+checks that the slack breaks nothing).
+
+18. Round 8: L7 (M7), steering of an lsteer pod created in a restart
+--------------------------------------------------------------------
+L7 (seed 6, image with the bug-09 fix) ran 1528 steps and failed at
+1529: lsteer@vm2#0 (gen 6) was unblocking (blocked by a decoder hole
+before) through driver-restart vm2 (1509), driver-kill vm2 (1511) and
+driver-restart vm2 (1528); kubelet's retry created its container while
+the driver was away, the new driver's Synchronize saw it CREATED and
+applied the bug-04 rule ("steering not restarted, memory fenced;
+memory.high left alone"), StartContainer 9 ms later found "no memory
+claims to be managed": memory.high max, fenced, documented behaviour.
+The model kept "steer on" for unblocking pods (driverRestarted turned
+only starting and restarting lsteer pods into "either"). Now every
+lsteer pod whose container may be created or started in the window of
+a driver-restart, driver-kill or containerd-restart (starting,
+restarting, blocked, unblocking, stalled) gets steering "either": the
+oracle accepts max + fenced (adopted "off") or steered (adopted "on")
+once it is Running; off stays off until its container restarts under a
+running driver (crash: steered again, as before). Blocked is included
+because its hole may clear and kubelet retry inside the window.
+TestReviewM7SteeringOfUnblockingPod: the sequence for all three verbs,
+off and on adopted, off kept, a crash steers again; and L7's own steps
+file and observation of step 1529 (model/recorded/l7-*): ok now,
+adopted off; it fails without the fix. 75 test functions; gofmt, go
+vet (also -tags gofmbtstock), the stock build, go test, go test -race
+-timeout 30m clean; the fuzz against the reference re-run (10 000
+short, 1 500 long sequences, 0.63 million steps): no disagreement (it
+does not exercise steering: the simulated SUT resolves "either" at
+random).

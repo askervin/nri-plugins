@@ -33,6 +33,7 @@ import (
 type fakeSys struct {
 	t       *testing.T
 	root    string
+	tmp     string // where write prepares a file before renaming it
 	mu      sync.Mutex
 	cmds    []string
 	writes  []string // dax bus driver attributes written
@@ -46,7 +47,23 @@ func (f *fakeSys) write(rel, val string) {
 	if err := os.MkdirAll(filepath.Dir(f.p(rel)), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
-	if err := os.WriteFile(f.p(rel), []byte(val+"\n"), 0o644); err != nil {
+	// A sysfs attribute is read whole: write the file aside and rename it
+	// in place, for a reader polling from another goroutine never to see
+	// it truncated or half written.
+	tmp, err := os.CreateTemp(f.tmp, "write")
+	if err == nil {
+		_, err = tmp.WriteString(val + "\n")
+		if cerr := tmp.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err == nil {
+		err = os.Chmod(tmp.Name(), 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), f.p(rel))
+	}
+	if err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -65,7 +82,7 @@ func (f *fakeSys) link(rel, target string) {
 const memPath = "devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0"
 
 func newFakeSys(t *testing.T) *fakeSys {
-	f := &fakeSys{t: t, root: t.TempDir()}
+	f := &fakeSys{t: t, root: t.TempDir(), tmp: t.TempDir()}
 	f.write("devices/system/memory/block_size_bytes", "8000000")
 	for _, b := range []int{74, 75} {
 		f.write("devices/system/memory/memory"+itoa(b)+"/state", "offline")

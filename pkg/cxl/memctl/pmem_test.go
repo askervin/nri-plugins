@@ -19,6 +19,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,10 +45,14 @@ type pmemSys struct {
 	*fakeSys
 	labels bool          // the LSA has the label of an fsdax namespace
 	delay  time.Duration // until the nvdimm region and namespaces are probed
+	probes sync.WaitGroup
 }
 
 func newPmemSys(t *testing.T) *pmemSys {
 	f := &pmemSys{fakeSys: newFakeSys(t)}
+	// a probe outliving a failed test must not write into its removed
+	// temporary directory
+	t.Cleanup(f.probes.Wait)
 	f.write("bus/cxl/devices/decoder0.0/cap_ram", "1")
 	f.write("bus/cxl/devices/decoder0.0/cap_pmem", "0")
 	f.write("bus/cxl/devices/decoder0.2/devtype", "cxl_decoder_root")
@@ -119,7 +124,11 @@ func (f *pmemSys) exec(ctx context.Context, name string, args ...string) (string
 		f.write("bus/cxl/devices/region0/pmem_region0/uevent", "")
 		f.write(ndRegionPath+"/size", itoa(pmemNsBytes))
 		f.link("bus/nd/devices/region0", "../../../"+ndRegionPath)
-		go f.probe()
+		f.probes.Add(1)
+		go func() {
+			defer f.probes.Done()
+			f.probe()
+		}()
 		return `{"region":"region0","resource":"0x250000000","size":"512.00 MiB","type":"pmem"}` + "\ncxl region: cmd_create_region: created 1 region\n", nil
 	case strings.HasPrefix(cmd, "ndctl create-namespace "):
 		f.mu.Lock()
@@ -285,7 +294,30 @@ func TestNamespacesWaitForProbe(t *testing.T) {
 	if _, settled := poll(); settled {
 		t.Fatal("settled before the pfn device was probed")
 	}
+	// the driver bound, its probe adding the disk: the disk directory
+	// is there, its class link and dev attribute not yet
 	f.link(ndRegionPath+"/pfn0.1/driver", f.p("bus/nd/drivers/nd_pmem"))
+	_ = os.Remove(f.p("class/block/pmem0"))
+	if _, settled := poll(); settled {
+		t.Fatal("settled before the class link of the disk appeared")
+	}
+	f.link("class/block/pmem0", "../../"+ndRegionPath+"/pfn0.1/block/pmem0")
+	_ = os.Remove(f.p(ndRegionPath + "/pfn0.1/block/pmem0/dev"))
+	if _, settled := poll(); settled {
+		t.Fatal("settled before the dev attribute of the disk appeared")
+	}
+	f.write(ndRegionPath+"/pfn0.1/block/pmem0/dev", "259:0")
+	// the disk complete, the mode of the pfn device not readable (or
+	// unknown): not settled, whatever the order of the reads (bug-10 C)
+	_ = os.Remove(f.p(ndRegionPath + "/pfn0.1/mode"))
+	if got, settled := poll(); settled {
+		t.Fatalf("settled without the mode of the pfn device: %+v", got)
+	}
+	f.write(ndRegionPath+"/pfn0.1/mode", "bogus")
+	if got, settled := poll(); settled {
+		t.Fatalf("settled with an unknown mode of the pfn device: %+v", got)
+	}
+	f.write(ndRegionPath+"/pfn0.1/mode", "ram")
 	got, settled := poll()
 	if !settled || len(got) != 1 || got[0].Mode != NamespaceFsdax || got[0].Map != MapMem || got[0].BlockDevice != "/dev/pmem0" {
 		t.Fatalf("settled %v namespaces %+v", settled, got)
@@ -317,8 +349,57 @@ func TestNamespacesWaitForProbe(t *testing.T) {
 	_ = os.Remove(f.p(ndRegionPath + "/dax0.1/driver"))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := g.Namespaces(ctx, "region0"); err == nil || !strings.Contains(err.Error(), "region0: namespaces still probing") {
-		t.Fatalf("expected a timeout, got %v", err)
+	if _, err := g.Namespaces(ctx, "region0"); err == nil || !strings.Contains(err.Error(), "region0: namespaces still probing (namespace0.0: no ") ||
+		!strings.Contains(err.Error(), "bus/nd/devices/dax0.1/driver): context deadline exceeded") {
+		t.Fatalf("expected a timeout naming the missing file, got %v", err)
+	}
+}
+
+// A pfn device that is probed, with its disk complete, but whose mode
+// cannot be read is not settled: an fsdax namespace with an unknown map is
+// not taken for no fsdax namespace (review DRV2 E11).
+func TestNamespacesPfnModeUnreadable(t *testing.T) {
+	f := newPmemSys(t)
+	f.plugPmem("0xc1ae0001")
+	g := f.manager()
+	f.write(ndRegionPath+"/size", itoa(pmemNsBytes))
+	f.link("bus/nd/devices/region0", "../../../"+ndRegionPath)
+	f.write(ndRegionPath+"/init_namespaces", "1/1")
+	f.link(ndRegionPath+"/driver", f.p("bus/nd/drivers/nd_region"))
+	f.link("bus/nd/devices/namespace0.0", "../../../"+ndRegionPath+"/namespace0.0")
+	f.fsdax("pfn0.1")
+	_ = os.Remove(f.p(ndRegionPath + "/pfn0.1/mode"))
+	got, settled, err := g.namespaces("region0")
+	if err != nil || settled {
+		t.Fatalf("settled %v err %v namespaces %+v", settled, err, got)
+	}
+}
+
+// ndctl create-namespace -f is never run over a region that is probing
+// or has an fsdax namespace: it would destroy what a writer formatted.
+func TestCreateFsdaxNamespaceRefuses(t *testing.T) {
+	f := newPmemSys(t)
+	f.plugPmem("0xc1ae0001")
+	g := f.manager()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pr, err := g.CreatePmemRegion(ctx, "mem0", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a writer formatted the device meanwhile, with map dev
+	f.fsdax("pfn0.1")
+	f.write(ndRegionPath+"/pfn0.1/mode", "pmem")
+	if _, err := g.CreateFsdaxNamespace(ctx, pr.NdRegion, "namespace0.0"); err == nil || !strings.Contains(err.Error(), `region0: not creating an fsdax namespace: namespace0.0 is one already (map "dev")`) {
+		t.Fatalf("expected a refusal, got %v", err)
+	}
+	// its mode cannot be read
+	_ = os.Remove(f.p(ndRegionPath + "/pfn0.1/mode"))
+	if _, err := g.CreateFsdaxNamespace(ctx, pr.NdRegion, "namespace0.0"); err == nil || !strings.Contains(err.Error(), "region0: not creating an fsdax namespace: the namespaces are still probing (namespace0.0: cannot read ") {
+		t.Fatalf("expected a refusal, got %v", err)
+	}
+	if strings.Contains(f.commands(), "ndctl") {
+		t.Fatalf("ndctl ran:\n%s", f.commands())
 	}
 }
 
@@ -341,7 +422,17 @@ func TestCreatePmemRegionErrors(t *testing.T) {
 	if _, err := g.NdRegion("pmem_region0"); err == nil {
 		t.Fatal("invalid region name accepted")
 	}
+	// no namespace is created in a region that is probing
+	if _, err := g.CreateFsdaxNamespace(ctx, "region0", "namespace0.0"); err == nil || !strings.Contains(err.Error(), "region0: not creating an fsdax namespace: the namespaces are still probing") {
+		t.Fatalf("expected a refusal, got %v", err)
+	}
+	if strings.Contains(f.commands(), "ndctl") {
+		t.Fatalf("ndctl ran:\n%s", f.commands())
+	}
 	// ndctl output without a namespace
+	f.write(ndRegionPath+"/init_namespaces", "0/0")
+	f.link("bus/nd/devices/region0", "../../../"+ndRegionPath)
+	f.link(ndRegionPath+"/driver", f.p("bus/nd/drivers/nd_region"))
 	g.Exec = func(ctx context.Context, name string, args ...string) (string, error) { return "{}", nil }
 	if _, err := g.CreateFsdaxNamespace(ctx, "region0", "namespace0.0"); err == nil || !strings.Contains(err.Error(), "did not report a namespace") {
 		t.Fatalf("expected an error, got %v", err)

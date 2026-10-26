@@ -1,0 +1,56 @@
+bug-08: a pending pod waits ~5 min for a device that a deleted pod
+held during its binding wait (kube-scheduler, upstream)
+=================================================================
+2026-10-26 (orchestrator). Classification: Kubernetes kube-scheduler
+v1.37 (DRA plugin), NOT the CXL driver or the pool controller. Not
+fixed here; worth an upstream issue. Full analysis, sources and
+measurements: 08-analysis-claim-after-pod-deleted.txt (debugging
+agent, run D8 in /tmp/p13-runs/d8).
+
+Summary
+-------
+A pod whose claim was allocated a pool device and waits in PreBind
+for the binding conditions (the pool controller is down, so no
+attach) is deleted. kube-controller-manager clears and deletes its
+claim within 0.4 s. The scheduler keeps the device in its in-flight
+allocations until its next 5 s PreBind poll, then Unreserve drops it.
+A contender pod that was pending for the device (or is created within
+those 5 s) was retried at the claim's deallocation, inside that
+window, and failed; when Unreserve frees the device nothing requeues
+it (the claim is already gone, the DRA plugin does not listen to
+AssignedPodDelete: dynamicresources.go:278-299, Unreserve at 1582), so
+it waits for the UnschedulableTimeout flush (5 min, checked every
+30 s; scheduling_queue.go:65). Measured 5:23.6 and 5:05.8 (D8).
+
+How found
+---------
+Run L2 (06-runs.txt), step 1309 after 1308 steps: xdax-a@vm1#0 pending
+on a-pooled0 while pool-a's controller was killed; xnuma-a@vm1#0, whose
+claim waited for the attach, deleted; the settle timed out after 3 min
+with "claim not allocated, want allocated and waiting for the attach".
+Reproduced twice by replay (D8: ctrl-kill a, create xnuma-a@vm1#0,
+create xdax-a@vm1#0, delete xnuma-a@vm1#0, settle; and with ctrl-start
+a right after the delete): PASS only with MBT_SETTLE_TIMEOUT=480 (the
+settles took 324 s and 314 s).
+
+Effect
+------
+Only while a pool controller is down (or slow to attach): a device
+given up by a pod that never ran is not given to the next pod for up
+to 5.5 min, unless another event (a ResourceSlice update, another
+claim's deallocation, a Node or DeviceClass change) requeues it.
+ctrl-start does not help (it republishes an unchanged slice: no
+event).
+
+For the model (contract A19)
+----------------------------
+Hold 0-5 s after the delete, stall of a contender pending before or
+created within 5 s, release at the first requeueing event or 5:00-5:30
+after the delete; the oracle accepts Pending or the promoted state for
+360 s after the delete and requires the promotion after that.
+
+Status
+------
+Upstream (Kubernetes); the model predicts it (A19). Possible upstream
+fix: requeue pods rejected by the DRA plugin when Unreserve releases
+in-flight devices (or register for AssignedPodDelete).

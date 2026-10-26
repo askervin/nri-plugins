@@ -49,6 +49,12 @@ type sim struct {
 	sawEnd, sawFail string
 	failStep        int
 	prev            *State
+	// ref, if set, is the independent reference of the pool side
+	// (refpool.go): it decides the pool facts of every observation, and
+	// which outcome of the model's a settle has (simref.go)
+	ref *refPool
+	// pend is the prediction of the settle being observed (ref only)
+	pend *State
 }
 
 func newSim(cfg *Config, seed int64) *sim {
@@ -65,8 +71,17 @@ func (s *sim) do(step int, a Act) *DoneObs {
 	from := s.truth
 	if a.Verb == VSettle {
 		s.prev = from
+		if s.ref != nil {
+			// resolved against the reference at every poll
+			s.pend = from.apply(a)
+			s.truth = s.resolveRef(s.pend)
+			return nil
+		}
 		s.truth = s.resolve(from.apply(a))
 		return nil
+	}
+	if s.ref != nil {
+		s.ref.do(a, freesClaim(from, a))
 	}
 	to := from.apply(a)
 	d := &DoneObs{}
@@ -122,6 +137,19 @@ func (s *sim) resolve(st *State) *State {
 	n := st.clone()
 	for i := range n.Slots {
 		ss := &n.Slots[i]
+		if ss.Phase == Stalled && s.rng.Intn(2) == 0 {
+			sl := n.slot(i)
+			n.setUnblockAt(i, 0)
+			if n.Ctrl[sl.Pool].Up {
+				ss.Phase = Running
+				if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
+					n.Stacks[si].push(key)
+				}
+			} else {
+				ss.Phase = Attaching
+			}
+			continue
+		}
 		if ss.Phase == Unblocking && s.rng.Intn(2) == 0 {
 			ss.Phase = Running
 			n.setUnblockAt(i, 0)
@@ -219,7 +247,7 @@ func (s *sim) observe(step, poll int) *Observation {
 		case Running:
 			node := ss.Node.String()
 			p.Node, p.Phase, p.Ready = &node, "Running", true
-		case Pending, Unsched:
+		case Pending, Unsched, Stalled:
 			p.Phase, p.Unschedulable = "Pending", true
 		case Attaching:
 			p.Phase = "Pending"
@@ -316,7 +344,9 @@ func (s *sim) observe(step, poll int) *Observation {
 		o.VMs[v.String()] = s.observeVM(v)
 		o.Slices[v.String()] = []ObsSliceDev{{Name: "memdev-c100e2e1", Serial: formatSerial(localSerial)}, {Name: "dram"}}
 	}
-	_ = cfg
+	if s.ref != nil {
+		s.refOverride(o)
+	}
 	return o
 }
 
@@ -336,6 +366,11 @@ func (s *sim) env(sl *Slot, ss *SlotState) map[string]string {
 
 func (s *sim) observeVM(v VM) *ObsVM {
 	st := s.truth
+	if s.ref != nil {
+		// the pool memdevs are those that the reference attached
+		st = st.clone()
+		s.refAtts(st)
+	}
 	cfg := s.cfg
 	ov := &ObsVM{
 		BootID:  "boot-" + v.String(),
@@ -599,7 +634,10 @@ func (s *sim) serve(in io.Reader, out io.Writer) error {
 			for {
 				poll++
 				var o *Observation
-				if poll <= s.transient {
+				if s.ref != nil {
+					s.refPoll(poll)
+					o = s.observe(n, poll)
+				} else if poll <= s.transient {
 					o = s.transientObservation(n, poll)
 				} else {
 					o = s.observe(n, poll)

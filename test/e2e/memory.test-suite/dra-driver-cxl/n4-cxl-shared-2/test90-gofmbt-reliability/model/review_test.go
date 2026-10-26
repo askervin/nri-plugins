@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -313,7 +314,7 @@ func TestReviewM2KubeletRestartSlack(t *testing.T) {
 		restarts int
 		status   VStatus
 		msg      string
-	}{{0, VOK, "ok"}, {1, VOK, "ok"}, {2, VFail, "2 restarts, the model crashed it 0 times (+1 for kubelet restarts"}} {
+	}{{0, VOK, "ok"}, {1, VOK, "ok"}, {2, VFail, "2 restarts, the model crashed it 0 times (+1 for kubelet or containerd restarts"}} {
 		o := observation(t, s)
 		podOf(t, o, "lease@vm2#0").Restarts = c.restarts
 		v, adopted := checkState(s, o, "")
@@ -421,4 +422,505 @@ func TestReviewUnblockingUsersOfOneRegion(t *testing.T) {
 	v, adopted := checkState(s, observation(t, truth), "")
 	wantVerdict(t, v, VOK, "ok")
 	wantStack(t, adopted, stackIndex(VM2, HB0), "[local]")
+}
+
+// A19 (run L2, bug-08): a claim deleted while it waited for the binding
+// conditions holds its device in the scheduler: the contender may stall
+// (Pending, claim not allocated) or be promoted; both are accepted for
+// 360 s, then the promotion is required.
+func TestReviewA19StalledContender(t *testing.T) {
+	s := revState(t, "full", true, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle")
+	wantPhase(t, s, "xnuma-a@vm1#0", Attaching)
+	wantPhase(t, s, "xdax-a@vm1#0", Pending)
+	// off-line it is not generated
+	off := revState(t, "full", false, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle")
+	steps(t, off, "!delete xnuma-a@vm1#0")
+	s = steps(t, s, "delete xnuma-a@vm1#0", "settle")
+	wantPhase(t, s, "xdax-a@vm1#0", Stalled)
+	// the device stays its: nothing else asks for it
+	steps(t, s, "!create xnuma-a@vm2#0")
+	now := time.Unix(time.Now().Unix(), 0)
+	// stalled (L2): ok, and the time is kept
+	o := observation(t, s)
+	v, adopted := checkStateAt(s, o, "", now, defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xdax-a@vm1#0", Stalled)
+	v, _ = checkStateAt(adopted, o, "", now.Add(400*time.Second), defaultUnblock)
+	wantVerdict(t, v, VFail, "still not allocated 6m40s after the delete")
+	// promoted: allocated, waiting for the attach (controller down)
+	truth := s.clone()
+	truth.Slots[truth.cfg.slotIndex("xdax-a@vm1#0")].Phase = Attaching
+	v, adopted = checkStateAt(s, observation(t, truth), "", now, defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xdax-a@vm1#0", Attaching)
+	// stalled, then the controller comes back: promoted later, Running
+	st := steps(t, s, "ctrl-start a", "settle")
+	wantPhase(t, st, "xdax-a@vm1#0", Stalled)
+	truth = st.clone()
+	truth.Slots[truth.cfg.slotIndex("xdax-a@vm1#0")].Phase = Running
+	truth.Ctrl[PoolA].Att[0][VM1] = TriYes
+	truth.Stacks[stackIndex(VM1, HB0)].push(devKey(pooledDev(PoolA)))
+	v, adopted = checkStateAt(st, observation(t, truth), "", now, defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xdax-a@vm1#0", Running)
+	wantStack(t, adopted, stackIndex(VM1, HB0), "[a-pooled0]")
+	// a holder that was bound hands over at once
+	b := revState(t, "full", true, "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle")
+	wantPhase(t, b, "xdax-a@vm1#0", Running)
+}
+
+// L3 (M4): ctrl-restart a, ctrl-kill a before the new controller
+// published, server-restart a, settle with no pod of the pool starting:
+// the slices may be absent (the outcomes differ only in them: they must
+// not be merged); absent is adopted, a new claim of the pool is then
+// unschedulable until ctrl-start.
+func TestReviewL3SlicesAbsentAfterKill(t *testing.T) {
+	s := revState(t, "full", true, "create sexcl-a@vm2#0", "settle", "ctrl-restart a", "write sexcl-a@vm2#0", "ctrl-kill a", "server-restart a", "settle")
+	var worlds []string
+	for _, a := range alts(s) {
+		worlds = append(worlds, a.Ctrl[PoolA].Slices.String())
+	}
+	if strings.Join(worlds, " ") != "present absent" {
+		t.Fatalf("outcomes %v", worlds)
+	}
+	o := observation(t, s.Alts[0])
+	if len(o.PoolSlices["a"]) != 0 {
+		t.Fatalf("simulated slices %v", o.PoolSlices["a"])
+	}
+	v, adopted := checkState(s, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	if adopted.Ctrl[PoolA].Slices != SlicesAbsent {
+		t.Fatalf("adopted slices %s", adopted.Ctrl[PoolA].Slices)
+	}
+	// nothing but ctrl-start brings them back
+	n := steps(t, adopted, "server-restart a", "kubelet-restart vm2", "driver-kill vm2", "containerd-restart vm1", "settle")
+	if n.Ctrl[PoolA].Slices != SlicesAbsent {
+		t.Fatalf("slices %s after other faults", n.Ctrl[PoolA].Slices)
+	}
+	n = steps(t, n, "create xnuma-a@vm1#0")
+	wantPhase(t, n, "xnuma-a@vm1#0", Unsched)
+	n = steps(t, n, "settle", "ctrl-start a", "settle")
+	wantPhase(t, n, "xnuma-a@vm1#0", Running)
+	if n.Ctrl[PoolA].Slices != SlicesPresent {
+		t.Fatalf("slices %s after ctrl-start", n.Ctrl[PoolA].Slices)
+	}
+}
+
+// replaySteps replays the first n steps of a steps file with its
+// adoption records (as generate --from does).
+func replaySteps(t *testing.T, cfg *Config, file string, n int) *State {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := readSteps(string(data))
+	st := newState(cfg)
+	for j, l := range lines[:n] {
+		a, err := parseAct(cfg, l.Action)
+		if err != nil {
+			t.Fatalf("step %d: %v", j+1, err)
+		}
+		if !st.allowed(a) {
+			t.Fatalf("step %d %q not allowed in\n%s", j+1, l.Action, st.dump())
+		}
+		st = st.apply(a)
+		if l.Has {
+			if st, err = applyAdoption(st, l.Adopt); err != nil {
+				t.Fatalf("step %d: %v", j+1, err)
+			}
+		}
+	}
+	return st
+}
+
+// L4 (M5): ctrl-restart a and ctrl-kill a left pool a's slices absent;
+// ctrl-start a, then the holder of a-pooled0 deleted: the new controller
+// publishes the slices within seconds, the waiter of a-pooled0 and the
+// claim that waited for the slices are allocated, attached and Running
+// at the settle. The run's own observation of step 131 is ok now.
+func TestReviewL4SlicesBackAfterStart(t *testing.T) {
+	cfg := testConfig(t, "full", true)
+	cfg.Unsettled = 3
+	st := replaySteps(t, cfg, "recorded/l4-mbt-steps.txt", 130)
+	if st.Ctrl[PoolA].Slices != SlicesUnknown {
+		t.Fatalf("after ctrl-start a: slices %s, want unknown (published within seconds)", st.Ctrl[PoolA].Slices)
+	}
+	wantPhase(t, st, "xdax-a@vm1#0", Starting)
+	pred := steps(t, st, "settle")
+	js, err := os.ReadFile("recorded/l4-fail-131.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseObservation(js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, adopted := checkState(pred, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xdax-a@vm1#0", Running)
+	wantPhase(t, adopted, "sro-a@vm1#0", Running)
+	if adopted.Ctrl[PoolA].Slices != SlicesPresent {
+		t.Fatalf("adopted slices %s", adopted.Ctrl[PoolA].Slices)
+	}
+	// the same in short: a claim of the pool waits for the slices, the
+	// holder of the device that another one waits for is deleted
+	s := revState(t, "full", true, "create xnuma-a@vm2#0", "settle", "create xdax-a@vm1#0", "settle",
+		"ctrl-restart a", "ctrl-kill a", "settle")
+	s = adoptSlices(t, s, PoolA, SlicesAbsent)
+	s = steps(t, s, "create sro-a@vm1#0", "settle")
+	wantPhase(t, s, "sro-a@vm1#0", Unsched)
+	s = steps(t, s, "ctrl-start a", "delete xnuma-a@vm2#0", "settle")
+	for _, a := range alts(s) { // (the order of their two regions races)
+		wantPhase(t, a, "xdax-a@vm1#0", Running)
+		wantPhase(t, a, "sro-a@vm1#0", Running)
+		if a.Ctrl[PoolA].Slices != SlicesPresent {
+			t.Fatalf("slices %s", a.Ctrl[PoolA].Slices)
+		}
+	}
+	// killed again before the publish: present or absent
+	k := steps(t, adoptSlices(t, revState(t, "full", true, "ctrl-restart a", "ctrl-kill a", "settle"), PoolA, SlicesAbsent), "ctrl-start a", "ctrl-kill a", "settle")
+	var worlds []string
+	for _, a := range alts(k) {
+		worlds = append(worlds, a.Ctrl[PoolA].Slices.String())
+	}
+	if strings.Join(worlds, " ") != "present absent" {
+		t.Fatalf("ctrl-start, ctrl-kill: outcomes %v", worlds)
+	}
+}
+
+// adoptSlices returns the outcome of a settle with the given slices.
+func adoptSlices(t *testing.T, s *State, p Pool, st SliceSt) *State {
+	t.Helper()
+	for _, a := range alts(s) {
+		if a.Ctrl[p].Slices == st {
+			return a
+		}
+	}
+	t.Fatalf("no outcome with the slices of pool %s %s:\n%s", p, st, dumpAlts(s))
+	return nil
+}
+
+// The model errors that the fuzz against the reference of the pool side
+// found (refpool.go, TestRefPoolFuzz; 04-status-MODEL.txt section 16);
+// TestRefPoolRegressions replays the fuzz's own sequences.
+
+// F2 (A19): a claim deleted before its pod was bound holds its device in
+// the scheduler up to 5 s after the delete, also past a short settle: a
+// contender created in the next window may stall. The oracle ends the
+// hold 6 s after the settle that ended the delete's window (adoption
+// record held=DEV:off). Off-line nothing would end it: no such delete.
+func TestReviewF2HoldAfterSettle(t *testing.T) {
+	s := revState(t, "full", true, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle")
+	d := pooledDev(PoolA)
+	if !s.held(Res(d)) {
+		t.Fatalf("a-pooled0 not held:\n%s", s.dump())
+	}
+	now := time.Unix(time.Now().Unix(), 0)
+	v, adopted := checkStateAt(s, observation(t, s), "", now, defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	if adopted.HeldAt[d] != now.Unix() {
+		t.Fatalf("held since %d, want %d", adopted.HeldAt[d], now.Unix())
+	}
+	n := steps(t, adopted, "create xdax-a@vm1#0", "!create xnuma-a@vm2#0")
+	wantPhase(t, n, "xdax-a@vm1#0", Stalled)
+	// a settle 6 s later ends it: a contender gets the device at once
+	pred := steps(t, adopted, "create plain@vm0#0", "settle")
+	v, later := checkStateAt(pred, observation(t, pred), "", now.Add(7*time.Second), defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	if later.held(Res(d)) {
+		t.Fatalf("still held after 7 s")
+	}
+	if rec := adoptionRecord(pred, 0, later); !strings.Contains(rec, "held=a-pooled0:off") {
+		t.Fatalf("adoption record %q", rec)
+	}
+	if back, err := applyAdoption(pred, adoptionRecord(pred, 0, later)); err != nil || back.held(Res(d)) {
+		t.Fatalf("record not applied: %v", err)
+	}
+	wantPhase(t, steps(t, later, "create xdax-a@vm1#0"), "xdax-a@vm1#0", Starting)
+	// a holder deleted while it was starting holds it too (L4-like
+	// create and delete in one window)
+	if h := revState(t, "full", true, "create xdax-b@vm0#0", "delete xdax-b@vm0#0", "settle"); !h.held(Res(pooledDev(PoolB))) {
+		t.Fatalf("b-pooled0 not held:\n%s", h.dump())
+	}
+	// a bound holder does not
+	if b := revState(t, "full", true, "create xdax-b@vm0#0", "settle", "delete xdax-b@vm0#0", "settle"); b.held(Res(pooledDev(PoolB))) {
+		t.Fatalf("b-pooled0 held after a bound holder")
+	}
+	steps(t, revState(t, "full", false, "ctrl-kill a", "create xnuma-a@vm1#0", "settle"), "!delete xnuma-a@vm1#0")
+	steps(t, revState(t, "full", false, "create xdax-b@vm0#0"), "!delete xdax-b@vm0#0")
+}
+
+// F1, F3, F6 (A19): a stalled contender seen allocated: an "any" one
+// on the node it was bound to; through a decoder hole Blocked; bound
+// before a controller kill of the same window: Running.
+func TestReviewF1F3F6StalledPromoted(t *testing.T) {
+	s := revState(t, "full", true, "ctrl-kill c", "create xnuma-c@vm1#0", "settle", "create xdax-c@any#0", "settle",
+		"delete xnuma-c@vm1#0", "ctrl-start c", "settle")
+	wantPhase(t, s, "xdax-c@any#0", Stalled)
+	truth := s.clone()
+	i := truth.cfg.slotIndex("xdax-c@any#0")
+	truth.Slots[i].Phase, truth.Slots[i].Node = Running, VM2
+	truth.Stacks[stackIndex(VM2, HB1)].push(devKey(pooledDev(PoolC)))
+	v, adopted := checkState(s, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	if ss := slotOf(t, adopted, "xdax-c@any#0"); ss.Phase != Running || ss.Node != VM2 {
+		t.Fatalf("adopted %s on %s", ss.Phase, ss.Node)
+	}
+	// F3: vm1/hb0 [hole,local]: its Prepare needs a new region
+	h := revState(t, "full", true, "create xnuma-a@vm1#0", "settle", "create lnuma@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle",
+		"ctrl-kill a", "create xnuma-a@vm2#0", "settle", "create xdax-a@vm1#0", "settle", "delete xnuma-a@vm2#0", "ctrl-start a", "settle")
+	wantPhase(t, h, "xdax-a@vm1#0", Stalled)
+	wantStack(t, h, stackIndex(VM1, HB0), "[hole,local]")
+	truth = h.clone()
+	truth.Slots[truth.cfg.slotIndex("xdax-a@vm1#0")].Phase = Blocked
+	v, adopted = checkState(h, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xdax-a@vm1#0", Blocked)
+	// F6: promoted and bound, then the controller killed
+	k := steps(t, revState(t, "full", true, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle",
+		"delete xnuma-a@vm1#0", "ctrl-start a", "settle"), "ctrl-kill a", "settle")
+	wantPhase(t, k, "xdax-a@vm1#0", Stalled)
+	if k.Ctrl[PoolA].Att[0][VM1] != TriMaybe {
+		t.Fatalf("a-pooled0@vm1 %v after the kill, want maybe (F5)", k.Ctrl[PoolA].Att[0][VM1])
+	}
+	truth = k.clone()
+	truth.Slots[truth.cfg.slotIndex("xdax-a@vm1#0")].Phase = Running
+	truth.Ctrl[PoolA].Att[0][VM1] = TriYes
+	truth.Stacks[stackIndex(VM1, HB0)].push(devKey(pooledDev(PoolA)))
+	v, adopted = checkState(k, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xdax-a@vm1#0", Running)
+}
+
+// F4 (A18): claims that tried while the pool had no slices are requeued
+// together when they are published: the scheduler picks one. While the
+// slices are not known to be back, a claim of the pool is the only
+// candidate for its device.
+func TestReviewF4OneCandidateWhileSlicesComeBack(t *testing.T) {
+	steps(t, revState(t, "full", true, "ctrl-restart a", "create xdax-a@vm2#0"), "!create xnuma-a@vm1#0", "create sdax-a@vm1#0")
+	s := adoptSlices(t, revState(t, "full", true, "ctrl-restart a", "ctrl-kill a", "settle"), PoolA, SlicesAbsent)
+	s = steps(t, s, "create sdax-a@vm1#0", "settle", "ctrl-start a", "!create sexcl-a@vm2#0", "settle", "create sexcl-a@vm2#0")
+	wantPhase(t, s, "sexcl-a@vm2#0", Pending)
+}
+
+// F5: at a controller kill the attachments that may have changed since
+// the last settle are open: the attach of a claim deleted before it was
+// bound (in flight at the server), and an attachment that only claims
+// being allocated want (a reconcile may have detached it before them).
+func TestReviewF5KillOpensAttachments(t *testing.T) {
+	s := revState(t, "full", true, "create sdax-b@vm0#1", "delete sdax-b@vm0#1", "ctrl-kill b")
+	if got := s.Ctrl[PoolB].Att[1][VM0]; got != TriMaybe {
+		t.Fatalf("b-shared0@vm0 %v, want maybe", got)
+	}
+	o := revState(t, "full", true, "create sro-c@vm2#0", "settle", "ctrl-kill c", "delete sro-c@vm2#0", "settle")
+	if o.Ctrl[PoolC].Att[1][VM2] != TriYes {
+		t.Fatalf("orphan c-shared0@vm2 %v", o.Ctrl[PoolC].Att[1][VM2])
+	}
+	o = steps(t, o, "create sdax-c@vm2#0", "ctrl-start c", "ctrl-kill c")
+	if got := o.Ctrl[PoolC].Att[1][VM2]; got != TriMaybe {
+		t.Fatalf("c-shared0@vm2 %v, want maybe", got)
+	}
+}
+
+// F8: the claim of a pod that was gone at the last settle may be
+// deallocated a moment later: a claim created now may wait for that and
+// race with a second one: one candidate per such device in the window.
+func TestReviewF8ReleasedDevice(t *testing.T) {
+	s := revState(t, "full", true, "create xnuma-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle")
+	s = steps(t, s, "create xnuma-c@vm1#0", "!create xdax-c@vm2#0", "settle")
+	if s.Released != 0 {
+		t.Fatalf("released %b after a settle without deletes", s.Released)
+	}
+}
+
+// F9 (A19): a contender promoted when a bound holder goes, in a window
+// in which (or before whose last settle) an unbound claim of the device
+// was deleted, may stall.
+func TestReviewF9PromotionAfterUnboundDelete(t *testing.T) {
+	s := revState(t, "full", true, "create sdax-a@vm2#1", "settle", "ctrl-kill a", "create sro-a@vm2#0", "settle",
+		"create sexcl-a@vm2#0", "settle")
+	wantPhase(t, s, "sro-a@vm2#0", Attaching)
+	wantPhase(t, s, "sexcl-a@vm2#0", Pending)
+	n := steps(t, s, "delete sro-a@vm2#0", "delete sdax-a@vm2#1")
+	wantPhase(t, n, "sexcl-a@vm2#0", Stalled)
+	// held since the last settle, a later fit
+	h := revState(t, "full", true, "create sdax-c@vm2#0", "settle", "create sro-c@vm0#0", "delete sro-c@vm0#0", "settle")
+	h = steps(t, h, "delete sdax-c@vm2#0", "create sexcl-c@vm1#0")
+	wantPhase(t, h, "sexcl-c@vm1#0", Stalled)
+}
+
+// F7, F10, F11 (A19): a stalled contender gets its region whenever the
+// scheduler requeues it: no other region event on the stacks it may get
+// it on (also when ctrl-start makes it for an "any" pod, and for the
+// hosts of a stalled "any" pod), and no contender stalls into a window
+// that has one.
+func TestReviewF7F10F11StalledStacksQuiet(t *testing.T) {
+	held := revState(t, "full", true, "create xdax-c@vm2#0", "delete xdax-c@vm2#0", "settle")
+	steps(t, held, "create sro-c@vm2#0", "!create xdax-c@vm2#0")
+	steps(t, held, "create xdax-c@vm2#0", "!create sro-c@vm2#0")
+	a := steps(t, held, "create xdax-c@any#0", "settle")
+	wantPhase(t, a, "xdax-c@any#0", Stalled)
+	steps(t, a, "!create sdax-c@vm0#0", "create sdax-a@vm1#0")
+	k := steps(t, held, "create xnuma-c@vm1#0", "settle", "ctrl-kill c", "create sdax-c@any#0")
+	wantPhase(t, k, "xnuma-c@vm1#0", Stalled)
+	steps(t, k, "!ctrl-start c")
+}
+
+// F12: a claim that waits for the attach with its controller down
+// times out in PreBind (600 s): it is deallocated, and the waiter of its
+// device may get it. Accepted from bindingExpiry after the first settle
+// that saw it waiting.
+func TestReviewF12BindingTimeout(t *testing.T) {
+	s := revState(t, "full", true, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle")
+	now := time.Unix(time.Now().Unix(), 0)
+	v, adopted := checkStateAt(s, observation(t, s), "", now, defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	truth := adopted.clone()
+	truth.Slots[truth.cfg.slotIndex("xnuma-a@vm1#0")].Phase = Pending
+	truth.Slots[truth.cfg.slotIndex("xdax-a@vm1#0")].Phase = Attaching
+	v, _ = checkStateAt(adopted, observation(t, truth), "", now.Add(100*time.Second), defaultUnblock)
+	if v.Status == VOK {
+		t.Fatalf("the swap accepted 100 s after")
+	}
+	v, swapped := checkStateAt(adopted, observation(t, truth), "", now.Add(bindingExpiry*time.Second), defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, swapped, "xnuma-a@vm1#0", Pending)
+	wantPhase(t, swapped, "xdax-a@vm1#0", Attaching)
+	// ctrl-start: no binding timeout any more
+	n := steps(t, swapped, "ctrl-start a")
+	if n.unblockAt(n.cfg.slotIndex("xdax-a@vm1#0")) != 0 {
+		t.Fatalf("binding time kept after ctrl-start")
+	}
+}
+
+// F13: a pool pod is bound only at PreBind's next poll after its claim
+// is Attached (up to 5 s later): an unblocking pod seen without a node
+// is not settled (its delete would be that of an unbound claim).
+func TestReviewF13UnblockingNotBound(t *testing.T) {
+	s := revState(t, "full", true,
+		"create xnuma-a@vm2#0", "settle", "create sdax-a@vm2#0", "settle", // vm2/hb0 [a-pooled0,a-shared0]
+		"delete xnuma-a@vm2#0", "settle", // [hole,a-shared0]
+		"create xdax-a@vm2#0", "settle", // blocked
+		"delete sdax-a@vm2#0", "settle") // unblocking
+	wantPhase(t, s, "xdax-a@vm2#0", Unblocking)
+	o := observation(t, s)
+	podOf(t, o, "xdax-a@vm2#0").Node = nil
+	v, _ := checkState(s, o, "")
+	wantVerdict(t, v, VWait, "xdax-a@vm2#0: not bound yet")
+}
+
+// M6 (run L5 step 26): crash lease@vm2#0, then containerd-restart vm2
+// while kubelet re-created its container: "Failed: Error: error reading
+// from server: EOF", kubelet created it again: 2 restarts for one
+// crash. A containerd restart, like a kubelet restart (M2), allows one
+// more restart of every container of the VM being created or started
+// (starting, restarting, unblocking pods), adopted from the observation.
+func TestReviewM6ContainerdRestartSlack(t *testing.T) {
+	s := revState(t, "full", true, "create lease@vm2#0", "create sdax-a@vm2#0", "settle", "lease-get lease@vm2#0 numa",
+		"crash lease@vm2#0", "write sdax-a@vm2#0", "create lnuma@vm2#1", "create plain@vm1#0", "containerd-restart vm2", "settle")
+	if ss := slotOf(t, s, "lease@vm2#0"); ss.Restarts != 1 || ss.Slack != 1 {
+		t.Fatalf("lease@vm2#0 %+v", ss)
+	}
+	if slotOf(t, s, "lnuma@vm2#1").Slack != 1 || slotOf(t, s, "sdax-a@vm2#0").Slack != 0 || slotOf(t, s, "plain@vm1#0").Slack != 0 {
+		t.Fatalf("slack: lnuma %d sdax %d plain@vm1 %d", slotOf(t, s, "lnuma@vm2#1").Slack, slotOf(t, s, "sdax-a@vm2#0").Slack, slotOf(t, s, "plain@vm1#0").Slack)
+	}
+	for _, c := range []struct {
+		restarts int
+		status   VStatus
+		msg      string
+	}{{1, VOK, "ok"}, {2, VOK, "ok"}, {3, VFail, "3 restarts, the model crashed it 1 times (+1 for kubelet or containerd restarts"}} {
+		o := observation(t, s)
+		podOf(t, o, "lease@vm2#0").Restarts = c.restarts
+		for k := range o.Inspect {
+			delete(o.Inspect, k)
+		}
+		v, adopted := checkState(s, o, "")
+		wantVerdict(t, v, c.status, c.msg)
+		if c.status == VOK {
+			if ss := slotOf(t, adopted, "lease@vm2#0"); int(ss.Restarts) != c.restarts || ss.Slack != 0 {
+				t.Fatalf("adopted %+v", ss)
+			}
+		}
+	}
+	// the run's own observation of step 26 (L5): ok now
+	cfg := testConfig(t, "full", true)
+	cfg.Unsettled = 3
+	st := replaySteps(t, cfg, "recorded/l5-mbt-steps.txt", 25)
+	js, err := os.ReadFile("recorded/l5-fail-26.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseObservation(js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, adopted := checkState(steps(t, st, "settle"), o, "")
+	wantVerdict(t, v, VOK, "ok")
+	if ss := slotOf(t, adopted, "lease@vm2#0"); ss.Restarts != 2 || ss.Slack != 0 {
+		t.Fatalf("adopted %+v", ss)
+	}
+}
+
+// M7 (run L7 step 1529): an lsteer pod unblocking (blocked by a decoder
+// hole before) when its VM's driver restarts: its container is created
+// while the driver is away, the new driver's Synchronize sees it CREATED
+// and manages it fenced, memory.high max ("steering not restarted, memory
+// fenced", the bug-04 rule), or it comes after the restart: steered.
+// Either is accepted and adopted; off stays off until its container
+// restarts under a running driver.
+func TestReviewM7SteeringOfUnblockingPod(t *testing.T) {
+	s := revState(t, "full", true,
+		"create xnuma-a@vm2#0", "settle", "create sdax-a@vm2#0", "settle", // vm2/hb0 [a-pooled0,a-shared0]
+		"delete xnuma-a@vm2#0", "settle", // [hole,a-shared0]
+		"create lsteer@vm2#0", "settle", // blocked
+		"delete sdax-a@vm2#0", "settle") // unblocking
+	wantPhase(t, s, "lsteer@vm2#0", Unblocking)
+	for _, verb := range []string{"driver-restart vm2", "driver-kill vm2", "containerd-restart vm2"} {
+		n := steps(t, s, verb, "settle")
+		if st := slotOf(t, n, "lsteer@vm2#0").Steer; st != SteerAny {
+			t.Fatalf("%s: steering %s, want either", verb, st)
+		}
+		for _, steer := range []Steer{SteerOff, SteerOn} {
+			truth := n.clone()
+			ss := &truth.Slots[truth.cfg.slotIndex("lsteer@vm2#0")]
+			ss.Phase, ss.Steer = Running, steer
+			truth.setUnblockAt(truth.cfg.slotIndex("lsteer@vm2#0"), 0)
+			truth.Stacks[stackIndex(VM2, HB0)].push(rkLocal)
+			truth.growFence()
+			v, adopted := checkState(n, observation(t, truth), "")
+			wantVerdict(t, v, VOK, "ok")
+			got := slotOf(t, adopted, "lsteer@vm2#0")
+			if got.Phase != Running || got.Steer != steer {
+				t.Fatalf("%s: adopted %s steer %s, want running %s", verb, got.Phase, got.Steer, steer)
+			}
+			if steer == SteerOff {
+				// off stays off; a crash under a running driver
+				// steers it again
+				if st := steps(t, adopted, "create plain@vm2#0", "settle"); slotOf(t, st, "lsteer@vm2#0").Steer != SteerOff {
+					t.Fatalf("off not kept")
+				}
+				if st := steps(t, adopted, "crash lsteer@vm2#0", "settle"); slotOf(t, st, "lsteer@vm2#0").Steer != SteerOn {
+					t.Fatalf("not steered after a crash")
+				}
+			}
+		}
+	}
+	// the run's own observation of step 1529 (L7): ok now, adopted off
+	cfg := testConfig(t, "full", true)
+	cfg.Unsettled = 3
+	st := replaySteps(t, cfg, "recorded/l7-mbt-steps.txt", 1528)
+	js, err := os.ReadFile("recorded/l7-fail-1529.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseObservation(js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, adopted := checkState(steps(t, st, "settle"), o, "")
+	wantVerdict(t, v, VOK, "ok")
+	if got := slotOf(t, adopted, "lsteer@vm2#0"); got.Phase != Running || got.Steer != SteerOff {
+		t.Fatalf("adopted %s steer %s", got.Phase, got.Steer)
+	}
 }

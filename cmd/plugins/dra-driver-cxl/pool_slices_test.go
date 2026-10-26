@@ -60,7 +60,7 @@ func poolTestDevices() *nricxl.Devices {
 func scanNames(t *testing.T, ctx context.Context, cfg *DriverConfig, ps *poolSlices) []string {
 	t.Helper()
 	scanConfig, serials := scanInput(ctx, cfg, nil, ps)
-	devs, err := buildDevInfos(scanConfig, poolTestDevices(), serials, &localSnapshot{BlockSize: localBlockSize})
+	devs, err := scanDetected(ctx, scanConfig, poolTestDevices(), serials, ps, &localSnapshot{BlockSize: localBlockSize})
 	noErr(t, err)
 	return slices.Sorted(maps.Keys(devs))
 }
@@ -71,11 +71,17 @@ func TestPoolSlicesSerials(t *testing.T) {
 		slice("other", "other.example.com", serialAttr("other.example.com/serial", "3238060770")),
 		slice("node1", device.DriverName, serialAttr("serial", "0xc100e2e1")),
 	)
-	ps := newPoolSlices(client)
+	ps := newPoolSlices(client, "node1", "", "")
 	ctx := context.Background()
+	// only the slices of the pool driver count (review DRV2 E7)
 	serials, known := ps.Serials(ctx)
-	if !known || ps.Failing() || !maps.Equal(serials, map[uint64]bool{0xc1ee0001: true, 3238060770: true}) {
+	if !known || ps.Failing() || !maps.Equal(serials, map[uint64]bool{0xc1ee0001: true}) {
 		t.Fatalf("serials %v known %v failing %v", serials, known, ps.Failing())
+	}
+	// another pool driver name
+	other := newPoolSlices(client, "node1", "other.example.com", "")
+	if serials, _ := other.Serials(ctx); !maps.Equal(serials, map[uint64]bool{3238060770: true}) {
+		t.Fatalf("serials of other.example.com %v", serials)
 	}
 	// a pool device is not a local memdev, the others are
 	cfg := &DriverConfig{IgnoreDRAMNodes: true}
@@ -94,7 +100,7 @@ func TestPoolSlicesSerials(t *testing.T) {
 	if got := scanNames(t, ctx, cfg, ps); !slices.Equal(got, []string{localDeviceName}) {
 		t.Fatalf("published %v after a failed list", got)
 	}
-	if newPoolSlices(nil) != nil {
+	if newPoolSlices(nil, "node1", "", "") != nil {
 		t.Fatal("poolSlices without a client")
 	}
 }
@@ -108,7 +114,7 @@ func TestPoolSlicesFirstListFails(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	ps := newPoolSlices(client)
+	ps := newPoolSlices(client, "node1", "", "")
 	ctx := context.Background()
 	cfg := &DriverConfig{IgnoreDRAMNodes: true}
 	// nothing is known: no local memdev at all, regions stay as they are

@@ -19,9 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -59,6 +62,12 @@ type driver struct {
 	// slices publishes the node's ResourceSlice (not the helper: see
 	// nodeSliceSyncDelay).
 	slices *nodeSlices
+	// rescanMu serializes the rescans (udev events and the pool watch),
+	// from the pool list to the publish: a rescan never stores and
+	// publishes the result of an older one. rescanned is the time of the
+	// last one (UnixNano).
+	rescanMu  sync.Mutex
+	rescanned atomic.Int64
 }
 
 // TestabilityConfig holds configuration for injecting fake CXL
@@ -303,10 +312,11 @@ func injectFakeDevices(tc *TestabilityConfig, devices *nricxl.Devices) {
 // DevicesInfo map. This is the single place where device scanning
 // happens, used both at startup and on udev-triggered rescans.
 // Regions on memdevs whose serial is in poolSerials belong to the pool
-// driver and are skipped; local has the memdevs that the local allocator
-// uses and the memory block size.
-func scanDevices(sysfsRoot string, driverConfig *DriverConfig, poolSerials map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
-	detectedDevices, err := nricxl.DevicesFromSysfs(sysfsRoot)
+// driver and are skipped; poolSlices adds the memdevs that it holds back
+// (Gate); local has the memdevs that the local allocator uses and the
+// memory block size.
+func scanDevices(ctx context.Context, sysfsRoot string, driverConfig *DriverConfig, poolSerials map[uint64]bool, poolSlices *poolSlices, local *localSnapshot) (device.DevicesInfo, error) {
+	detectedDevices, err := detectDevices(sysfsRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %v", err)
 	}
@@ -314,12 +324,24 @@ func scanDevices(sysfsRoot string, driverConfig *DriverConfig, poolSerials map[u
 	if driverConfig.Testability != nil {
 		injectFakeDevices(driverConfig.Testability, detectedDevices)
 	}
+	return scanDetected(ctx, driverConfig, detectedDevices, poolSerials, poolSlices, local)
+}
+
+// detectDevices detects the devices under the sysfs root (a variable for
+// tests).
+var detectDevices = nricxl.DevicesFromSysfs
+
+// scanDetected builds the DevicesInfo map of the detected devices as
+// scanDevices does: the memdevs that poolSlices holds back or remembers as
+// pool devices are not published.
+func scanDetected(ctx context.Context, driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials map[uint64]bool, poolSlices *poolSlices, local *localSnapshot) (device.DevicesInfo, error) {
+	poolSerials, held := poolSlices.Gate(ctx, detectedDevices, poolSerials, local)
 
 	if len(detectedDevices.RegionDevices) == 0 {
 		klog.Info("No region devices detected")
 	}
 
-	devInfos, err := buildDevInfos(driverConfig, detectedDevices, poolSerials, local)
+	devInfos, err := buildDevInfosHeld(driverConfig, detectedDevices, poolSerials, held, local)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build device infos: %v", err)
 	}
@@ -366,7 +388,10 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// with the pool driver, pool devices.
 	driverConfig.PublishLeaseDevice = cxlFlags.Leases
 
-	poolSlices := newPoolSlices(config.Client)
+	// The serials of pool devices are remembered across restarts: a pool
+	// device on the node is never a local memdev, also while the pool
+	// controller has deleted its ResourceSlices.
+	poolSlices := newPoolSlices(config.Client, config.Flags.NodeName, cxlFlags.PoolDriverName, filepath.Join(config.KubeletPluginDir, poolSerialsFileName))
 	state, err := newDriverState(ctx, config, driverConfig, sysfsRoot, preparedClaimsFilePath, pool, poolSlices, fence)
 	if err != nil {
 		return nil, err
@@ -380,7 +405,6 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		sysfsRoot:  sysfsRoot,
 		poolSlices: poolSlices,
 	}
-	go driver.retryPoolList(ctx)
 
 	// The lease broker re-creates the sockets of prepared lease claims
 	// before kubelet can call Prepare or Unprepare.
@@ -434,6 +458,8 @@ PluginDataDirectoryPath: %v`,
 	if err := driver.PublishResourceSlice(ctx); err != nil {
 		return nil, fmt.Errorf("startup error: %v", err)
 	}
+	driver.rescanned.Store(time.Now().UnixNano())
+	go driver.poolWatch(ctx)
 
 	// Start NRI plugin for container lifecycle hooks.
 	nriOpts := NRIOpts{
@@ -533,9 +559,10 @@ func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	}
 	if local != nil {
 		local.fence = fence
+		local.poolGuard = localPoolGuard(pool, poolSlices)
 	}
 
-	devInfos, err := scanDevices(sysfsRoot, scanConfig, poolSerials, local.Snapshot())
+	devInfos, err := scanDevices(ctx, sysfsRoot, scanConfig, poolSerials, poolSlices, local.Snapshot())
 	if err != nil {
 		return nil, err
 	}
@@ -546,6 +573,18 @@ func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *Dri
 		return nil, fmt.Errorf("failed to create new NodeState: %v", err)
 	}
 	return state, nil
+}
+
+// localPoolGuard returns the check of the local allocator before it uses a
+// memdev: a memdev that the pool driver prepares, or that poolSlices
+// knows as a pool device, is refused.
+func localPoolGuard(pool *poolDriver, poolSlices *poolSlices) func(ctx context.Context, serial uint64) error {
+	return func(ctx context.Context, serial uint64) error {
+		if pool.Serials()[serial] {
+			return fmt.Errorf("memory device serial 0x%x is prepared by the pool driver %s: it is not used as a local memory device", serial, pool.driverName())
+		}
+		return poolSlices.CheckLocal(ctx, serial)
+	}
 }
 
 // newMemctl returns a memctl manager for the sysfs under sysfsRoot.
@@ -687,18 +726,41 @@ func (d *driver) udevRescanLoop(ctx context.Context) {
 // ResourceSlices if the set of allocatable devices has changed. Before the
 // kubelet plugin runs, it only re-discovers them.
 func (d *driver) rescanAndPublish(ctx context.Context) {
-	klog.Infof("rescanAndPublish: rescanning devices")
+	d.rescan(ctx, false)
+}
+
+// lastRescan returns the time of the last rescan, or of the start.
+func (d *driver) lastRescan() time.Time {
+	return time.Unix(0, d.rescanned.Load())
+}
+
+// rescan is rescanAndPublish, logged at V(4) for a periodic rescan of the
+// pool watch that changes nothing.
+func (d *driver) rescan(ctx context.Context, periodic bool) {
+	d.rescanMu.Lock()
+	defer d.rescanMu.Unlock()
+	defer func() { d.rescanned.Store(time.Now().UnixNano()) }()
+	logf := klog.Infof
+	if periodic {
+		logf = klog.V(4).Infof
+	}
+	logf("rescanAndPublish: rescanning devices")
 
 	scanConfig, poolSerials := scanInput(ctx, d.config, d.pool, d.poolSlices)
-	newDevInfos, err := scanDevices(d.sysfsRoot, scanConfig, poolSerials, d.state.local.Snapshot())
+	newDevInfos, err := scanDevices(ctx, d.sysfsRoot, scanConfig, poolSerials, d.poolSlices, d.state.local.Snapshot())
 	if err != nil {
 		klog.Errorf("rescanAndPublish: %v", err)
 		return
 	}
 
 	d.state.Lock()
+	old, _ := d.state.Allocatable.(device.DevicesInfo)
 	d.state.Allocatable = newDevInfos
 	d.state.Unlock()
+	if periodic && !slices.Equal(slices.Sorted(maps.Keys(old)), slices.Sorted(maps.Keys(newDevInfos))) {
+		logf = klog.Infof
+		logf("rescanAndPublish: the periodic rescan changed the devices")
+	}
 
 	if !d.started.Load() {
 		return
@@ -708,7 +770,7 @@ func (d *driver) rescanAndPublish(ctx context.Context) {
 		return
 	}
 
-	klog.Infof("rescanAndPublish: published updated resources (%d devices)", len(newDevInfos))
+	logf("rescanAndPublish: published updated resources (%d devices)", len(newDevInfos))
 }
 
 func (d *driver) Shutdown(ctx context.Context) error {

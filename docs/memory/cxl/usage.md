@@ -1476,6 +1476,7 @@ restarts.
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, and its lend |
 | `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, and the claims of shared local devices |
+| `/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json` | the serials of pool devices and of local memdevs that the plugin has seen, and the pools it has listed: a pool device is never published as a local memdev while its controller's ResourceSlices are absent; edit it only while the plugin is stopped ([local.md](local.md#what-the-plugin-publishes)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/steeredContainers.json` | the containers that the steering of the plugin throttles, with their cgroups: a restarted plugin removes their `memory.high` ([Steering](#steering)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |

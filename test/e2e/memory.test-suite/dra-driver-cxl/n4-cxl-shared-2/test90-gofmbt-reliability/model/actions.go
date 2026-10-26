@@ -315,10 +315,59 @@ func (s *State) next(a Act) *State {
 		return nil
 	}
 	n := s.apply(a)
-	if !s.stackRulesOK(a, n) {
+	if !s.stackRulesOK(a, n) || !n.stallStacksQuiet(s) {
+		return nil
+	}
+	// off-line nothing adopts whether a contender stalled (A19), and
+	// nothing ends the hold of a device whose claim was deleted before
+	// its pod was bound (no clock): no such delete
+	if !s.cfg.Online && (n.count(Stalled) > s.count(Stalled) || (a.Verb == VDelete && s.slot(int(a.Slot)).Kind.pooled() && s.Slots[a.Slot].Phase.unbound())) {
 		return nil
 	}
 	return n
+}
+
+// stallStacksQuiet: a contender that the action made stalled gets its
+// region whenever the scheduler requeues it (A19): the stacks it may get
+// it on have no other region events in the window (they would race).
+func (n *State) stallStacksQuiet(s *State) bool {
+	for i := range n.Slots {
+		if n.Slots[i].Phase != Stalled || s.Slots[i].Phase == Stalled {
+			continue
+		}
+		sl := n.slot(i)
+		key := devKey(sl.Dev)
+		var stacks []int
+		if si, _, ok := n.userRegion(int16(i)); ok {
+			stacks = append(stacks, si)
+		} else {
+			for _, v := range poolHosts[sl.Pool] {
+				stacks = append(stacks, stackIndex(v, poolBridge[sl.Pool]))
+			}
+		}
+		for _, e := range n.Ev {
+			if e.Key == key {
+				continue
+			}
+			for _, si := range stacks {
+				if int(e.Stack) == si || (e.Stack < 0 && poolBridge[devices[e.Key-1].Pool] == stackBridge(si)) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// count counts the slots in a phase.
+func (s *State) count(ph Phase) int {
+	c := 0
+	for i := range s.Slots {
+		if s.Slots[i].Phase == ph {
+			c++
+		}
+	}
+	return c
 }
 
 // stackRulesOK checks what an action does to the decoder stacks (A9):
@@ -330,8 +379,9 @@ func (s *State) stackRulesOK(a Act, n *State) bool {
 	for _, si := range changedStacks(s.Ev, n.Ev) {
 		if si < 0 {
 			// an "any" pod: its node is not known yet, every host of
-			// its pool may get its region (R3)
-			if s.unblockingAnyHost(a) {
+			// its pool may get its region (R3); also when the event
+			// comes from another action (ctrl-start)
+			if s.unblockingAnyHost(n.anyPools(s.Ev)) {
 				return false
 			}
 			continue
@@ -365,19 +415,27 @@ func (s *State) stackRulesOK(a Act, n *State) bool {
 	return true
 }
 
-// unblockingAnyHost: the action is on an "any" pod, and a stack of a
-// host of its pool has an unblocking pod.
-func (s *State) unblockingAnyHost(a Act) bool {
-	if !a.Verb.slotVerb() {
-		return false
+// anyPools returns the pools of the events of "any" pods (node not
+// known) that the state has and before did not.
+func (n *State) anyPools(before []stackEvent) []Pool {
+	var out []Pool
+	for j, e := range n.Ev {
+		if e.Stack >= 0 || (j < len(before) && before[j] == e) {
+			continue
+		}
+		out = append(out, devices[e.Key-1].Pool)
 	}
-	sl := s.slot(int(a.Slot))
-	if !sl.Kind.pooled() {
-		return false
-	}
-	for _, v := range poolHosts[sl.Pool] {
-		if s.unblockingOn(stackIndex(v, poolBridge[sl.Pool])) {
-			return true
+	return out
+}
+
+// unblockingAnyHost: a stack of a host of one of the pools has a pod
+// that waits for its retry.
+func (s *State) unblockingAnyHost(pools []Pool) bool {
+	for _, p := range pools {
+		for _, v := range poolHosts[p] {
+			if s.unblockingOn(stackIndex(v, poolBridge[p])) {
+				return true
+			}
 		}
 	}
 	return false
@@ -404,11 +462,11 @@ func changedStacks(before, after []stackEvent) []int {
 // stack, and nothing else is in flight there (its region, if its retry
 // made one, is the top: no hole either way).
 func (s *State) deletesLastUnblocking(a Act, si int) bool {
-	if a.Verb != VDelete || s.Slots[a.Slot].Phase != Unblocking || len(s.eventsOn(si)) > 0 {
+	if a.Verb != VDelete || !s.Slots[a.Slot].Phase.waitsRetry() || len(s.eventsOn(si)) > 0 {
 		return false
 	}
 	for i := range s.Slots {
-		if i != int(a.Slot) && s.Slots[i].Phase == Unblocking {
+		if i != int(a.Slot) && s.Slots[i].Phase.waitsRetry() {
 			if ssi, _, ok := s.userRegion(int16(i)); ok && ssi == si {
 				return false
 			}
@@ -532,12 +590,15 @@ func (s *State) apply(a Act) *State {
 		// The driver exits on the loss of its NRI connection and its
 		// container restarts in place (contract A8, bug-01): like
 		// driver-kill (A17: also for steering). The containers keep
-		// running.
+		// running. A container being created or started then fails
+		// ("error reading from server: EOF") and kubelet creates it
+		// again: restarts +1 (M6, run L5), as for a kubelet restart.
 		d := &n.Drv[a.VM]
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
 		n.driverRestarted(a.VM, SteerOff)
+		n.restartSlack(a.VM)
 	case VDriverRestart:
 		d := &n.Drv[a.VM]
 		d.PodGen++
@@ -558,11 +619,7 @@ func (s *State) apply(a Act) *State {
 		// without a crash (04-status-EXEC M2). The node's cxl.nri.io
 		// slice is gone for ~30 s (S3): local claims wait, which the
 		// settle waits for.
-		for i := range n.Slots {
-			if ss := &n.Slots[i]; ss.Node == a.VM && (ss.Phase == Starting || ss.Phase == Restarting) && ss.Slack < 255 {
-				ss.Slack++
-			}
-		}
+		n.restartSlack(a.VM)
 	case VCtrlRestart:
 		// A graceful stop deletes the pool's slices, the new
 		// controller publishes them again (A18): unknown until a
@@ -577,6 +634,19 @@ func (s *State) apply(a Act) *State {
 	return n
 }
 
+// restartSlack: a kubelet or containerd restart on a VM may restart once
+// more every container of it that is being created or started in the
+// window (M2, M6): a pod starting, restarting after a crash, or whose
+// Prepare is being retried after its decoder hole cleared.
+func (n *State) restartSlack(v VM) {
+	for i := range n.Slots {
+		ss := &n.Slots[i]
+		if ss.Node == v && (ss.Phase == Starting || ss.Phase == Restarting || ss.Phase == Unblocking) && ss.Slack < 255 {
+			ss.Slack++
+		}
+	}
+}
+
 // create creates the pod of a slot.
 func (n *State) create(i int) {
 	ss := &n.Slots[i]
@@ -588,14 +658,33 @@ func (n *State) create(i int) {
 		return
 	}
 	now, later := n.fits(i)
+	if sl.Kind.pooled() && (n.Ctrl[sl.Pool].Slices == SlicesUnknown || n.Released&(1<<uint(sl.Res)) != 0) {
+		// it may try before the slices are published again (F4), or
+		// before the claim deleted in the last window is deallocated
+		// (F8), and wait for that with every other claim that did:
+		// the scheduler picks one of them then; let it be the only
+		// candidate
+		n.Contested |= 1 << uint(sl.Res)
+	}
 	switch {
+	case now && sl.Kind.pooled() && n.held(sl.Res) && n.Ctrl[sl.Pool].Slices != SlicesAbsent:
+		// the scheduler may still hold the device in flight for a
+		// claim deleted before the last settle (A19)
+		n.Contested |= 1 << uint(sl.Res)
+		n.stall(i)
 	case now:
 		n.start(i, -1)
 	case later:
 		// the only candidate for what is being released: a pool
-		// device is allocated to it after the old claims are gone
-		n.handover(i, n.start(i, -1))
+		// device is allocated to it after the old claims are gone;
+		// it may stall behind a claim deleted before its pod was
+		// bound (A19)
 		n.Contested |= 1 << uint(sl.Res)
+		if (n.unboundDeleting(sl.Res) || n.held(sl.Res)) && n.Ctrl[sl.Pool].Slices != SlicesAbsent {
+			n.stall(i)
+			return
+		}
+		n.handover(i, n.start(i, -1))
 	default:
 		ss.Phase = Pending
 	}
@@ -665,8 +754,8 @@ func (n *State) delete(i int) {
 		// its Prepare may or may not come before the delete
 		n.setOptional(u)
 		seq = n.addEvent(u, evUnprepare, false, -1)
-	case Unblocking:
-		// its retry may have made its region
+	case Unblocking, Stalled:
+		// its retry (its promotion) may have made its region
 		n.addEvent(u, evPrepare, false, -1)
 		n.setOptional(u)
 		seq = n.addEvent(u, evUnprepare, false, -1)
@@ -679,17 +768,20 @@ func (n *State) delete(i int) {
 		lseq = n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
 	}
 	if prev.holding() {
-		n.promote(sl.Res, seq)
+		// a pool claim deleted before its pod was bound (waiting for
+		// the binding conditions) holds its device in the scheduler
+		// for a while: its contender may stall (A19)
+		n.promote(sl.Res, seq, sl.Kind.pooled() && prev.unbound())
 	}
 	if released {
-		n.promote(localRes(sl.VM), lseq)
+		n.promote(localRes(sl.VM), lseq, false)
 	}
 }
 
 // promote gives a resource to its waiter if it fits when the holders
 // that are going away are gone; its Prepare comes after the event that
 // released the resource.
-func (n *State) promote(r Res, after int16) {
+func (n *State) promote(r Res, after int16, stall bool) {
 	if r == resNone {
 		return
 	}
@@ -698,9 +790,34 @@ func (n *State) promote(r Res, after int16) {
 		return
 	}
 	if _, later := n.fits(w); later {
-		n.handover(w, n.start(w, after))
 		n.Contested |= 1 << uint(r)
+		// (also when another claim of the device deleted in this
+		// window, or before the last settle, was not bound)
+		if (stall || n.unboundDeleting(r) || n.held(r)) && n.Ctrl[n.slot(w).Pool].Slices != SlicesAbsent {
+			n.stall(w)
+			return
+		}
+		n.handover(w, n.start(w, after))
 	}
+}
+
+// stall makes a contender Stalled (A19).
+func (n *State) stall(i int) {
+	ss := &n.Slots[i]
+	ss.Phase, ss.RaceKill = Stalled, false
+	n.setUnblockAt(i, 0)
+}
+
+// unboundDeleting: a pool claim of the resource is being deleted before
+// its pod was bound (A19).
+func (s *State) unboundDeleting(r Res) bool {
+	for i := range s.Slots {
+		ss := &s.Slots[i]
+		if sl := s.slot(i); sl.Res == r && sl.Kind.pooled() && ss.Phase == Deleting && ss.Prev.unbound() {
+			return true
+		}
+	}
+	return false
 }
 
 // crash kills the workload of a running pod: the container restarts.
@@ -747,7 +864,7 @@ func (n *State) leaseGet(i int, m LeaseMode) {
 func (n *State) leasePut(i int) {
 	n.Slots[i].Lease = LeaseReleasing
 	seq := n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
-	n.promote(localRes(n.slot(i).VM), seq)
+	n.promote(localRes(n.slot(i).VM), seq, false)
 }
 
 // driverRestarted applies a new driver incarnation on a VM: the fenced
@@ -789,7 +906,11 @@ func (n *State) driverRestarted(v VM, running Steer) {
 			switch ss.Phase {
 			case Running:
 				ss.Steer = running
-			case Starting, Restarting:
+			case Starting, Restarting, Blocked, Unblocking, Stalled:
+				// its container may be created or started while the
+				// driver is away: the new driver's Synchronize sees
+				// it CREATED and manages it fenced, not steered
+				// (bug-04 rule; M7, run L7), or it comes after
 				ss.Steer = SteerAny
 			}
 		}
@@ -809,10 +930,11 @@ func (s *State) poolStarting(p Pool) bool {
 	return false
 }
 
-// unschedHolder: a claim of the resource waits for its pool's slices.
+// unschedHolder: a claim of the resource waits for its pool's slices or
+// is stalled (A19).
 func (s *State) unschedHolder(r Res) bool {
 	for i := range s.Slots {
-		if s.Slots[i].Phase == Unsched && s.slot(i).Res == r {
+		if ph := s.Slots[i].Phase; (ph == Unsched || ph == Stalled) && s.slot(i).Res == r {
 			return true
 		}
 	}
@@ -826,10 +948,35 @@ func (n *State) ctrlKill(p Pool) {
 	c := &n.Ctrl[p]
 	c.Up = false
 	want, _ := n.desiredAtt(p)
+	// (F5) the attach of a claim that a stalled contender may have got
+	// since, or of one deleted before its pod was bound, may have been
+	// in flight at the server; and an attachment that only claims being
+	// allocated want may have been detached by a reconcile before them
+	var flux, settled [2][nVMs]bool
+	for i := range n.Slots {
+		sl, ss := n.slot(i), &n.Slots[i]
+		if !sl.Kind.pooled() || sl.Pool != p || ss.Node == VMAny {
+			continue
+		}
+		d := int(sl.Dev) - 2*int(p)
+		if ss.Phase == Stalled || (ss.Phase == Deleting && ss.Prev.unbound()) {
+			flux[d][ss.Node] = true
+		}
+		if ss.Phase.holding() && ss.Phase != Starting && ss.Phase != Unsched && ss.Phase != Stalled {
+			settled[d][ss.Node] = true
+		}
+	}
+	for d := 0; d < 2; d++ {
+		for v := VM(0); v < nVMs; v++ {
+			if c.Att[d][v] == TriYes && want[d][v] && !settled[d][v] {
+				flux[d][v] = true
+			}
+		}
+	}
 	for d := 0; d < 2; d++ {
 		for v := VM(0); v < nVMs; v++ {
 			cur := c.Att[d][v]
-			if cur == TriMaybe || (cur == TriYes) != want[d][v] {
+			if cur == TriMaybe || (cur == TriYes) != want[d][v] || flux[d][v] {
 				c.Att[d][v] = TriMaybe
 			}
 		}
@@ -847,6 +994,12 @@ func (n *State) ctrlKill(p Pool) {
 // get it, and prepare.
 func (n *State) ctrlStart(p Pool) {
 	n.Ctrl[p].Up = true
+	if n.Ctrl[p].Slices == SlicesAbsent {
+		// the new controller publishes them within seconds (M5): the
+		// claims of the window are allocated (one that tried before
+		// the publish is requeued by it), unless a kill comes first
+		n.Ctrl[p].Slices = SlicesUnknown
+	}
 	for i := range n.Slots {
 		sl := n.slot(i)
 		ss := &n.Slots[i]
@@ -855,7 +1008,14 @@ func (n *State) ctrlStart(p Pool) {
 		}
 		switch {
 		case ss.Phase == Attaching || ss.Phase == Either || ss.Phase == Unsched:
-			// (Unsched: the new controller publishes the slices)
+			// (Unsched: the new controller publishes the slices; a
+			// claim created before they are there would race with
+			// it for the device)
+			if ss.Phase == Unsched {
+				n.Contested |= 1 << uint(sl.Res)
+			}
+			// (Attaching: no binding timeout any more)
+			n.setUnblockAt(i, 0)
 			ss.Phase = Starting
 			ss.RaceKill = false
 			n.addEvent(int16(i), evPrepare, false, -1)
@@ -873,6 +1033,20 @@ func (n *State) ctrlStart(p Pool) {
 // settle is the stable state that the SUT reaches after the operations
 // in flight.
 func (n *State) settle() {
+	n.Released = 0
+	for i := range n.Slots {
+		ss, sl := &n.Slots[i], n.slot(i)
+		if ss.Phase != Deleting || !sl.Kind.pooled() || !ss.Prev.holding() {
+			continue
+		}
+		n.Released |= 1 << uint(sl.Res)
+		// a claim deleted before its pod was bound: its device may stay
+		// in flight in the scheduler after the settle (A19)
+		if ss.Prev.unbound() {
+			n.Held |= 1 << uint(sl.Res)
+			n.HeldAt[sl.Dev] = 0
+		}
+	}
 	for i := range n.Slots {
 		ss := &n.Slots[i]
 		sl := n.slot(i)
