@@ -1,0 +1,299 @@
+20-mbtopt: stream DEBUG (M8, and M9 found behind it)
+=====================================================
+2026-10-27, debugging agent (Opus, xhigh). Worktree /tmp/mbtopt/wt-C,
+branch 5jg-cxl-mbtopt-C (from fa00607e1), go.work /tmp/mbtopt/work-C/
+go.work (gofmbt 951575f unchanged). M = T/model of that worktree.
+Evidence: /tmp/mbtopt/work-C (binaries, logs, steps files of every run
+below; zz_m8debug_test.go.txt is the throw-away replay-and-dump test
+used for the event sequences, not committed).
+
+Summary
+-------
+M8 is an error of the SIMULATED SUT (sim.go), not of the model: the
+simulator's truth never ended the scheduler's hold of a device (A19),
+and it promoted a stalled contender through a decoder hole. The model's
+prediction (Blocked) was the right one. Fixing the simulator uncovered
+three MODEL errors that the never-ending hold had masked (M9a-c; all
+reachable on the cluster, two of them as false failures, one as a
+missed check); fixed too, with contract amendment A21 (below). No
+driver bug. After the fixes: 4 x 600 steps at depth 3, 1 x 1000 at
+depth 2 (the requested runs) and 95 x 1000 steps at depth 2 (seeds
+2-96) without a disagreement; the unchanged model on the same 95
+seeds: 75 disagree.
+
+1. Symptom and reproduction
+---------------------------
+  mbt-cxl experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3 \
+      --seed 1 --steps 400
+(unchanged model, 3m8s; again 3m22s with --steps-out, same numbers:
+@100 C1=56 C2=120 C3=144 C4=78, @200 C1=122 C2=191 C3=221 C4=143)
+stops at
+  step 330 settle: pod sro-b@vm0#0: Running, but its decoder stack
+  vm0/hb0 [hole,local] has a hole (+4 more)
+the other four: region13 of b-shared0 with no prepared claim of it,
+preparedPoolClaims.json and cxl-pool.yaml with sro-b's claim, ports
+[hole,local,b-shared0] where [hole,local] was predicted.
+New in M (commit 173bd5f37), to iterate without planning:
+  experiment --steps-out FILE   the actions of the run, and "#now N UNIX"
+                                records of the oracle's clock per settle
+  experiment --from FILE        replay them (seed from the header): the
+                                simulated SUT is seeded the same way
+The clock matters (open issue O1): the oracle ends the hold 6 s
+(heldSeconds) after a settle by time.Now(). The 330 steps replay in
+0.05 s:
+  B=/tmp/mbtopt/work-C/mbt-cxl-dbg     # base model + the two flags
+  $B experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3 \
+      --from /tmp/mbtopt/work-C/s1d3-m8.steps
+(the same file is M/recorded/m8-mbt-steps.txt).
+
+2. Event sequence of the failing window (seed 1)
+------------------------------------------------
+The hold:
+  248 create sro-b@vm0#0, 249 ctrl-kill b, 250 settle: sro-b waits
+      for the attach (attaching), a share of b-shared0
+  256 create sdax-b@vm0#1, 257 delete sro-b@vm0#0 (unbound),
+  258 ctrl-start b, 259 settle: b-shared0 HELD (A19) in the model and
+      in the simulator's truth
+  275 settle: the oracle ends the hold (>= 6 s after the check of 259);
+      the simulator's truth keeps "held b-shared0" to the end
+The hole on vm0/hb0:
+  295 create xnuma-b@vm0#0 -> 296 settle [b-pooled0]
+  297 create lease@vm0#0, 301 lease-get lease@vm0#0 dax -> [b-pooled0,
+      local] (304)
+  315 delete xnuma-b@vm0#0 -> 318 settle [hole,local]
+The window:
+  327 create sro-b@vm0#0 (gen 2), 328 server-restart b,
+  329 containerd-restart vm0, 330 settle
+  model: b-shared0 fits and is not held: Starting, a prepare of
+      b-shared0 (no region of it on vm0 since 287) through [hole,local]:
+      BLOCKED (one outcome) - right by A9 and bug-02
+  simulator: create while "held": STALLED; resolve promotes it (50%)
+      to Running and pushes b-shared0 above the hole: [hole,local,
+      b-shared0] - impossible: the kernel refuses every new region
+      through a port with a hole (bug-02 section 4), the driver says
+      "CXL decoders released out of order" and kubelet retries
+  oracle: stalled-or-starting is not the question; what it sees is a
+      pod Running whose Prepare needed a region through a hole: fail.
+
+3. Root cause, which side
+-------------------------
+SIMULATOR (M/sim.go resolve, the plain simulator of the experiments
+and protocol tests; simref.go, the pool reference of TestRefPoolFuzz,
+was right):
+a. Held is set by the model's settle and cleared only by the oracle
+   (oracle.go resolve, heldSeconds) and by adoption records
+   (adopt.go held=DEV:off). The simulator's truth is advanced by the
+   model's own transitions and never through the oracle, so its hold
+   never ended: every later create of the device in the truth stalled,
+   while the model had started it. Real: the hold ends within 5 s of
+   the delete, at kube-scheduler's next PreBind poll (bug-08,
+   08-analysis section 6, A19 "hold 0-5 s after the delete").
+b. resolve promoted a Stalled contender with its controller up to
+   Running and pushed its region with no check of a hole. Real (A9,
+   bug-02): its claim is allocated and bound, its Prepare needs a new
+   region through the hole and fails: Blocked. simref.go (resolveRef)
+   and the oracle's resolve (TestReviewF1F3F6StalledPromoted, F3) did
+   exactly that already.
+c. (same place, latent, the same class) an "any" stalled contender was
+   promoted with no node yet: userRegion failed, no region was pushed,
+   and the node was drawn afterwards: Running on a node whose stack
+   lacks its region. The oracle (node from the pod, region on top)
+   then waits for "stack vmX/hbB: committed decoders [], want
+   [c-pooled0]" (seen in the base soak, seed 15).
+Both (a) and (b) are needed for the exact M8 message; each alone gives
+a disagreement of its own (TestReviewM8SimHoldAndHole shows each part
+failing without its fix).
+Why the cluster did not show it: the real scheduler ends its hold, and
+the real kernel refuses the region; only the simulator did neither.
+
+4. The fix of the simulator (commit 2c7f9ca5d, M/sim.go resolve)
+---------------------------------------------------------------
+- The hold lasts through the window after the settle that ended the
+  delete's window, then ends (the step of that settle kept in the
+  truth's HeldAt, as the oracle keeps its clock there). That is never
+  later than the oracle (which ends it at a settle >= 6 s after that
+  one), so a contender that the model starts is never stalled in the
+  truth; earlier is legitimate (the model's stall accepts the
+  promotion). A real SUT may do either (0-5 s).
+- A promoted stalled contender: an "any" one is bound to a host of its
+  pool first; its region is pushed unless the stack has a hole, then it
+  is Blocked.
+No change of the rng draws except where the old code was wrong (the
+node draw of a promoted "any" contender moved up), so runs that did
+not reach a hold are unchanged: seed 1 depth 3 prints the baseline
+@100/@200 numbers.
+
+5. M9: model errors found behind M8 (commit 8c4f663e3, M/actions.go)
+---------------------------------------------------------
+With the simulator's hold ending in time, the simulator starts
+contenders that the model (holding up to 6 s of wall clock longer)
+stalls; the model accepts the promotion, but three of its rules about
+a stall were wrong. A depth-2 soak (32 seeds x 1000 steps, 12 s each)
+found them; the base model on the same seeds failed earlier on M8.
+M9a (seeds 3 9 15 16 30) data of a stalled numa contender:
+  read xdax-c@any#0: read "junk-94", want "mbt-354"
+  (seed 3: 549 create xnuma-c@vm1#0 while c-pooled0 is held: stalled
+  in the model, started in the simulator; 552 promoted (adopted
+  Running); 563 create xdax-c@any#0 waits, 566 delete xnuma-c@vm1#0,
+  568 settle, 569 read.) start() makes a numa claim's device bytes
+  unknown (onlined as system RAM, R10); stall() did not, and the
+  promotion is adopted from the observation without the effect. Real:
+  a promoted numa contender onlines its device: the bytes are gone; the
+  model would fail a correct read on the cluster. Fix (actions.go
+  stall): a stalled xnuma contender makes its device's data unknown
+  (its promotion may come at any time; unknown accepts any read and is
+  learnt on-line).
+M9b (seeds 2 and 26) a contender stalled only by the hold, racing with
+  another share's release:
+  seed 26: 624 delete sro-b@vm0#0 (the last share of b-shared0 on vm0,
+  stack [hole,b-shared0]), 625 create sdax-b@vm0#0 (fits; held in the
+  model: stalled), 626 ctrl-kill b, 627 settle. The simulator, whose
+  hold had ended, allocated sdax-b at once and prepared it before
+  sro-b's Unprepare: the region stays, [hole,b-shared0], sdax-b Running.
+  The model: [] (sro-b's release popped the region and the hole), the
+  promotion adopted on top: [b-shared0]: "stack vm0/hb0: committed
+  decoders [hole,b-shared0], want [b-shared0]". Seed 2: the same with
+  c-shared0 and the other order: Running where the model wanted the
+  promotion blocked by the hole the release left.
+  The oracle adopts a promotion after every event of the window (on
+  top of the settled stack). stallStacksQuiet refuses other region
+  events on the stacks of a newly stalled contender but let the events
+  of its own device through, because they are what a waiting
+  contender waits for (handover). A contender that fits now (stalled
+  only by the hold) waits for nothing: it may be allocated at any
+  moment of its window (the real hold is 0-5 s after the delete), also
+  before the release of another share. Fix (actions.go
+  stallStacksQuiet): for such a contender only the prepares of its
+  device pass (shares make the region once in any order), a release
+  of it is refused like any other event. The planner then does not
+  generate that window (A21).
+M9c (seed 33) a handover prepare deferred to ctrl-start lost its order:
+  653-656 ... ctrl-kill a; 657 delete sdax-a@vm2#0 (the last share of
+  a-shared0 on vm2, [hole,a-shared0,local]) promotes the waiter
+  sexcl-a@vm2#0 (held in the model: stalled; not in the simulator:
+  starting, no prepare with its controller down); 658 ctrl-start a adds
+  its prepare with no handover mark; 660 settle: the simulator's truth
+  (the model's own transitions) had sexcl-a's prepare BEFORE the
+  share's Unprepare: the exclusive claim shared the departing share's
+  region, [hole,a-shared0,local], Running. Impossible: the scheduler
+  allocated sexcl-a after the share's claim was deallocated, which is
+  after its Unprepare; a controller down delays the attach only
+  (R1 of 05-review). On the cluster this was a missed check (the model
+  accepted an outcome that cannot happen); with the simulator it
+  became a disagreement. Fix (actions.go ctrlStart, new
+  handoverAfterRelease): a prepare that ctrl-start adds for a pod of
+  its pool is a handover when a claim it could not share the device
+  with (anything but two shares) was released earlier in the window.
+
+6. Contract amendment (for 04-contract.txt, by the orchestrator)
+----------------------------------------------------------------
+A21 (20-mbtopt DEBUG, M9) refinements of A19 and A9:
+   - A contender stalled by the scheduler's hold may be promoted at
+     any moment of its window: a numa contender's device bytes are
+     unknown from the stall on (its Prepare onlines the device; R10).
+   - A window in which a contender that fits at once (stalled only by
+     the hold) shares a decoder stack with the release of another
+     claim of its device is not generated: the promotion before or
+     after that release gives different stacks, and the oracle adopts
+     a promotion only after the window's events. A contender that
+     waits for the release of its device still gets it after that
+     release (the handover of R1), as before.
+   - A pod that got its pool device from a claim released in its window
+     prepares after that claim's Unprepare also when its controller
+     was down and the prepare comes with ctrl-start (R1).
+For 04-status-MODEL.txt section 4: R10 "unknown after a numa use or a
+stalled numa contender"; R15 generation rules: "a contender stalled
+only by the scheduler's hold: no release of its device on its stacks
+in the window either"; R1/R15 events: "a prepare added at ctrl-start
+is a handover after the releases it waited for". Simulator notes
+(not contract): the hold of the plain simulator lasts one window after
+the settle; promoted contenders are blocked by holes.
+
+7. Regression tests (M/review_test.go; each fails before its fix)
+------------------------------------------------------------------
+TestReviewM8SimHoldAndHole: simSteps (new helper: drives newSim and
+  the oracle like expRun, with a clock of dt per action) over 16 sim
+  seeds: the hole on vm0/hb0, a hold of b-shared0, the hold ending,
+  sro-b blocked in model and simulator (without the hold fix: "pod
+  sro-b@vm0#0: not bound yet, want blocked on vm0"); a contender while
+  still held: stalled or blocked (without the hole check: the M8
+  message itself); a contender stalled behind an unbound holder
+  promoted: blocked; an "any" contender promoted: its region on its
+  host's stack (without the node fix: "stack vm0/hb1: committed
+  decoders [], want [c-pooled0]").
+TestReviewM8RecordedRun: the seed 1 run itself (recorded/m8-mbt-
+  steps.txt, 330 steps, 72 clock records) through expRun's replay:
+  without the fix the step 330 failure, with it none.
+TestReviewM9StalledNumaData: data unknown with a stalled numa
+  contender; the sim run of the seed 3 pattern (without: read
+  "junk-425", want "mbt-3").
+TestReviewM9StalledShareRace: the seed 26 window is refused (was
+  enabled), the reverse order still refused, a waiter behind an
+  unbound holder still allowed its handover events.
+TestReviewM9HandoverAtCtrlStart: sexcl after the last share at
+  ctrl-start: one outcome, blocked by the hole (was: also Running
+  sharing the region); a share that fits now: both orders.
+Suite at 8c4f663e3 (gofmt, go vet, -tags gofmbtstock vet and build):
+go test ./... ok (41 s); go test -race -timeout 30m ./... ok (181 s).
+The worktree lacked M/recorded/l4-*, l5-*, l7-* (untracked in the main
+checkout, needed by TestReviewL4/M6/M7): copied there, not committed;
+only recorded/m8-mbt-steps.txt is committed.
+
+8. Runs after the fix (binary /tmp/mbtopt/work-C/mbt-cxl-final, all
+   commits; files in /tmp/mbtopt/work-C/final)
+--------------------------------------------------------------------
+growth --mixes C1x3,C2x2,C3, full profile, default flags:
+  depth 3, 600 steps (4m19s-5m22s each, in parallel):
+    seed 1: PASS. @100 C1=56 C2=120 C3=144 C4=78, @200 C1=122 C2=191
+            C3=221 C4=143 (the baseline's), @400 C1=199 C2=274 C3=366
+            C4=227; C1 209/215; plan mean 486 ms, max 3.24 s; verbs
+            crash=57 write=64 read=71 lease-get=6 lease-put=3
+            settle=118 faults=151; C2 contexts blocked=11
+            unblocking=7 unsched=2 hole=16. (Steps 330 and on: the
+            M8 window now ends with sro-b blocked.)
+    seed 2: PASS. @100 C1=60 C2=114 C3=139 C4=80, @200 C1=127 C2=191
+            C3=221 C4=144, @400 C1=193 C2=271 C3=370 C4=213; C1
+            201/215; plan mean 536 ms, max 3.46 s; blocked=15 hole=18.
+    seed 3: PASS. @200 C1=116 C2=204 C3=224 C4=140, @400 C1=192
+            C2=290 C3=368 C4=224; C1 202/215; stalled=12 blocked=13.
+    seed 4: PASS. @200 C1=125 C2=173 C3=224 C4=146, @400 C1=190
+            C2=302 C3=359 C4=219; C1 201/215; blocked=34 unsched=11.
+  depth 2, seed 1, 1000 steps (14 s): PASS. @400 C1=189 C2=290 C3=360
+            C4=232, @800 C1=204 C2=388 C3=532 C4=373; C1 205/215;
+            stalled=21 blocked=31 hole=23.
+Contrast, the base model and simulator (mbt-cxl-dbg) on depth 2,
+1000 steps, seeds 2-96: 75 of 95 disagree (base-soak/): "Running, but
+its decoder stack ... has a hole" 44, "stack ...: committed decoders"
+20, "claim not allocated, want allocated and waiting for the attach"
+6, "phase Pending ..., want Running" 5 (the M8 class: a hold that
+never ends, a promotion through a hole, an "any" region missing). The
+fixed binary: 0 of 95 (final/d2-s2..96, 95 x 1000 steps; C2 contexts
+summed: blocked 3389, hole 1891, stalled 1409, unblocking 603,
+unsched 262). Intermediate: the simulator fix alone (mbt-cxl-run1)
+passed seeds 1-4 at depth 3 to 600 and seed 1 at depth 2 to 1000, and
+failed 7 of 32 depth-2 seeds (M9a, M9b); with M9a and a first, too
+strict M9b (it refused the prepares of other shares as well, which
+TestRefPoolRegressions F3 caught), seeds 1-4 at depth 3 to 600 passed
+and 1 of 63 depth-2 seeds failed (seed 33: M9c).
+
+9. Open issues
+--------------
+O1 Experiments are not reproducible across planner speeds. expRun's
+   oracle runs on time.Now(): the hold of A19 ends at the first settle
+   6 s after the one that set it, so after the first hold of a run
+   (seed 1 depth 3: step 259; seed 3: 267) the steps depend on how
+   fast the planner is. Stream MODEL's acceptance ("the seeded
+   experiments print the baseline coverage numbers") holds for the
+   @100/@200 marks of seed 1 (before 259), not necessarily for the
+   totals at 300 or other seeds. Proposal (not done, it would change
+   the baseline): a virtual clock in expRun (e.g. 2 s per step), with
+   --steps-out/--from it would also make the "#now" records
+   unnecessary. A replay with --from uses the recorded clock already.
+O2 The plain simulator decides the M8/M9 timing classes one way each
+   (hold: one window; promotion: 50% per settle); TestRefPoolFuzz's
+   reference covers the pool side with its own clock. Neither
+   exercises a real kubelet/scheduler order beyond that.
+O3 The generation rule of M9b is conservative: a release that leaves
+   the region to other shares would not race; refused anyway. And
+   on-line the planner now avoids that window instead of predicting
+   it (as for the other races it does not enumerate).

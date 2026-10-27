@@ -1,0 +1,83 @@
+plan-13 / 20-mbtopt, stream RUNS-CLUSTER: a 2 h test90 run of the
+integrated model (canonical states, transition and coverage caches)
+with the new gofmbt in the three-node e2e cluster
+====================================================================
+2026-10-27, stream RUNS-CLUSTER (agent). Nothing in the sources, tests
+or cluster was changed; the cluster was only used by this run.
+
+Preconditions checked (12:49)
+-----------------------------
+- No other e2e test on the cluster: `pgrep -af run_tests.sh` and
+  `pgrep -af "mbt-cxl online"` showed nothing but the pgrep itself.
+- VMs running: qemu processes of n4-cxl-shared-0, -1 and -2 present
+  (VMs up since 2026-10-20; test00-up of all three done earlier).
+- N at fa00607e1 (branch 5jg-cxl) with the integrated model as
+  uncommitted changes in T/model (expected, that is what is tested):
+  M actions.go experiment.go main.go online.go planner.go
+    planner_ext.go planner_stock.go review_test.go sim.go stack.go
+    topology.go; ?? canon.go canon_test.go covstrings_test.go
+    recorded/
+- gofmbt ~/github.com/askervin/gofmbt: branch 5jo-mbt-cxl at 0ccea8c
+  ("gofmbt: document caching and de-duplication as the model's"),
+  used through GOFMBT_DIR's default (go.work in the output dir).
+- Driver image loaded by the test: 392e3abf548d (the same as L9).
+- The previous test90 output (L9) has its copy in /tmp/p13-runs/l9/out
+  before this run overwrote the output directory.
+
+Command
+-------
+  cd N/test/e2e
+  MBT_DURATION=120m MBT_SEED=10 ./run_tests.sh \
+    memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability \
+    > /tmp/mbtopt/runs-cluster/l10.log 2>&1
+  (defaults otherwise: profile full, depth 3, coverage C1x3,C2x2,C3,
+  every fault, plan-ahead on, plan-time 10 s, no plan cache; header of
+  mbt-steps.txt: "mbt-cxl online seed=10 profile=full
+  coverage=C1x3,C2x2,C3 depth=3 gofmbt=extended")
+  Launched 12:49:32, generator 12:51:14-14:51:56, test ended 14:52:56.
+
+Entry
+-----
+L10 2026-10-27 12:49, image 392e3abf548d, integrated 20-mbtopt model
+   (uncommitted on fa00607e1) with gofmbt 0ccea8c, seed 10, full, all
+   faults, 120m. PASS: 2755 steps in 2h0m42s (test duration 7403 s in
+   all), including the teardown settle (step 2755, 8 polls, 26.9 s:
+   every pod deleted, the last attachment c-shared0@vm2 detached,
+   cxl-pool-demo deleted, no ResourceClaim left; the local memdevs
+   released and detached, the pool servers stopped). Steps: create
+   417, delete 417, crash 278, write 286, read 280, lease-get 34,
+   lease-put 19, settle 554 (mean 8.5 s, max 99 s), driver-kill 59,
+   driver-restart 81, containerd-restart 65, kubelet-restart 65,
+   ctrl-kill 48, ctrl-start 48, ctrl-restart 48, server-restart 56.
+   The other 2201 steps took 1.0 s on average. Coverage 3447 strings
+   in round 1 (no saturation in 2 h). Plans 2813: reused 2645,
+   planned again 84 (84 "plan: the observation changed the state"
+   lines), random 0, resets 0; planning 22m40s in all, bash waited for
+   it 4m45s (497 steps waited at all, the longest wait 1.89 s). Final
+   line: "done: 2755 steps in 2h0m42s, coverage 3447 in round 1, plans
+   2813 (reused 2645, replanned 84, random 0, resets 0), planning
+   22m39.746s (waited 4m45.02s)". No driver panic (every driver
+   observation "panics":0, no "panic" in any driver or containerd
+   log), no oracle difference. Copy: /tmp/mbtopt/runs-cluster/l10/out
+   (run_tests output: /tmp/mbtopt/runs-cluster/l10.log).
+
+Comparison with L8 and L9 (same profile, depth, coverage, 120m)
+---------------------------------------------------------------
+            steps  plans  planning  per plan  waited   per step  max wait
+  L8 (s7)   2663   2711   34 min    0.75 s    10.5 min 0.24 s    3.8 s
+  L9 (s8)   2946   3019   33 min    0.66 s     9.9 min 0.20 s    -
+  L10 (s10) 2755   2813   22.7 min  0.48 s     4.75 min 0.10 s   1.89 s
+  Planning time is down by a third (-31..36% in total, -28..36% per
+  plan), consistent with MODEL's -31% at depth 3 in the simulated
+  protocol; the time bash waited for the generator is roughly halved
+  (-52% vs L8, -52% vs L9 in total; per step 0.10 s against 0.20-0.24
+  s), and the longest single wait halved (1.9 s vs 3.8 s). The step
+  count is within the L8-L9 range: the run is dominated by the SUT
+  (settles 554 x 8.5 s = 78 min of the 120), so the saved ~5 min of
+  waiting shows only as a few percent more steps, and the seeds
+  differ. Coverage after 2 h (3447) is between L8 (3403) and L9
+  (3558). Settle times (mean 8.5 s, max 99 s) are like L8's (8.2 s,
+  91 s) and L9's (7.1 s, 85 s). Replans 84 (L8 65, L9 93).
+
+Nothing unusual: no environmental trouble, no retry needed, no model
+error, no driver failure.

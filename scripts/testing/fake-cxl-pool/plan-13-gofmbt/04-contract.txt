@@ -333,3 +333,20 @@ A17 (bug-04 fix, R7) after any driver restart that is not graceful
    running lsteer container has memory.high max and is fenced like an
    unsteered container with its claim; a later restart of the
    container is steered again (memory.high set).
+A21 (20-mbtopt-04-status-DEBUG.txt, M9; refinements of A19 and A9)
+   - A contender stalled by the scheduler's hold may be promoted at
+     any moment of its window: a numa contender's device bytes are
+     unknown from the stall on (its Prepare onlines the device; R10).
+   - A window in which a contender that fits at once (stalled only by
+     the hold) shares a decoder stack with the release of another
+     claim of its device is not generated: the promotion before or
+     after that release gives different stacks, and the oracle adopts
+     a promotion only after the window's events. A contender that
+     waits for the release of its device still gets it after that
+     release (the handover of R1), as before.
+   - A pod that got its pool device from a claim released in its window
+     prepares after that claim's Unprepare also when its controller
+     was down and the prepare comes with ctrl-start (R1).
+   Simulator (not contract): the plain simulator's hold lasts one
+   window after the settle that ended the delete's window; a promoted
+   stalled contender is Blocked by a hole on its stack like any other.

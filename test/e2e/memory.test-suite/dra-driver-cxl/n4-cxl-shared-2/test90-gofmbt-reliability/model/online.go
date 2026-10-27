@@ -50,6 +50,12 @@ type runOpts struct {
 	replay         []string // actions of a replay
 	header         string   // the flags, for mbt-steps.txt
 	now            func() time.Time
+	stepTime       time.Duration // experiment: the oracle's clock advances this much per step, 0: the wall clock
+
+	// experiment: the steps file to write (--steps-out), the oracle's
+	// clock of each settle of a replayed one (--from)
+	stepsOut  string
+	replayNow map[int]int64
 }
 
 // errFailed is returned when the oracle failed a step.
@@ -158,7 +164,7 @@ func (r *onlineRun) openFiles() error {
 		return err
 	}
 	r.steps = f
-	_, err = fmt.Fprintf(f, "# mbt-cxl online seed=%d profile=%s coverage=%s depth=%d gofmbt=%s\n# %s\n", r.seed, r.cfg.Profile, r.cov, r.depth, gofmbtFlavor, r.header)
+	_, err = fmt.Fprintf(f, "# mbt-cxl online seed=%d profile=%s coverage=%s depth=%d gofmbt=%s\n# %s\n", r.seed, r.cfg.Profile, r.cov, r.depth, gofmbtVersion, r.header)
 	return err
 }
 
@@ -194,7 +200,7 @@ func (r *onlineRun) run() (err error) {
 	}()
 	r.start = r.now()
 	r.log.Printf("start: profile %s (%d slots, %d actions), seed %d, depth %d, coverage %s, gofmbt %s, plan-ahead %v, unsettled %d",
-		r.cfg.Profile, len(r.cfg.Slots), len(r.mm.acts), r.seed, r.depth, r.cov, gofmbtFlavor, r.planAhead, r.cfg.Unsettled)
+		r.cfg.Profile, len(r.cfg.Slots), len(r.mm.acts), r.seed, r.depth, r.cov, gofmbtVersion, r.planAhead, r.cfg.Unsettled)
 	settle := Act{Verb: VSettle, Slot: -1, VM: VMAny, Pool: noPool}
 	replaying := r.replay != nil
 	next := 0

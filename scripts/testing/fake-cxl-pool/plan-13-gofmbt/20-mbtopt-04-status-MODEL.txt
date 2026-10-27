@@ -1,0 +1,395 @@
+20-mbtopt: status of stream MODEL
+=================================
+2026-10-27 (MODEL). Design 20-mbtopt-02-design.txt D4, D5 (B1, C1, C2,
+C3), plan 20-mbtopt-03-plan.txt, findings F2-F5.
+  W  /tmp/mbtopt/wt-A (worktree, branch 5jg-cxl-mbtopt-A from fa00607e1)
+  M  W/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+     test90-gofmbt-reliability/model
+  G  ~/github.com/askervin/gofmbt, branch 5jo-mbt-cxl 951575f, UNCHANGED
+     (go.work /tmp/mbtopt/work-A/go.work)
+  R  /tmp/mbtopt/work-A/runs (every measurement of this file, raw)
+
+Summary
+-------
+Stage 1 (canonical key, intern table, per-plan transition cache) and
+stage 2 (precomputed coverage strings) are committed; stage 3 (short
+coverage keys) was measured at 0-2% and is not kept. Every seeded
+experiment takes exactly the steps of the unchanged model (same
+coverage numbers, verb counts, paths per depth) once the experiment's
+oracle runs on a clock that does not depend on the plan time (see
+"The wall clock trap" below: the protocol as written in 03-plan is not
+reproducible, the unchanged model itself takes other steps when its
+plans are slower). Depth 3, default mix: plan time -31% (plantime
+mean 561 -> 389 ms, max 2.40 -> 1.63 s), -40%/-45% in the growth runs
+(650/702 -> 387/388 ms mean). Depth 4: -12% only (5.9 -> 5.2 s): the
+cache is bounded to 150k states, a depth-4 tree has ~430k. The price
+is memory: a plan keeps its distinct states alive (~2 KB each, up to
+~300 MB), RSS ~0.7 GB instead of 40 MB; the binary sets a soft memory
+limit of 768 MiB unless GOMEMLIMIT is set. Weighted strings (C1x3,
+C2x2) cost ~17% per path on top of stage 2; a struct-keyed
+outcomesCut would save another 11-16% (not done: stream DEBUG's
+file; the patch is ready, see "outcomesCut").
+
+Commits (W, branch 5jg-cxl-mbtopt-A)
+------------------------------------
+d6423ce20 cxl: mbt experiment: --step-time, a clock independent of the
+          plan time
+ecaf6c9c6 cxl: mbt: canonical states and a per-plan transition cache
+f40907210 cxl: mbt: precomputed coverage strings
+git diff fa00607e1 --stat (in M):
+  canon.go           | 218 +++  (new)
+  canon_test.go      | 328 +++  (new)
+  covstrings_test.go | 121 +++  (new)
+  experiment.go      |  23 +-
+  main.go            |   8 +-
+  online.go          |   1 +
+  planner.go         |  79 +--
+  planner_ext.go     | 182 ++--
+  planner_stock.go   |   5 +-
+  9 files changed, 889 insertions(+), 76 deletions(-)
+Not touched: actions.go, stack.go, state.go, sim*.go, refpool.go,
+oracle.go, adopt.go, expect.go, coverage.go, the bash files, the
+defaults of test90 (depth 3, C1x3,C2x2,C3, plan-time 10 s).
+
+1. What changed, by file and function
+-------------------------------------
+canon.go (new)
+  State.appendKey(b) / State.key()  the canonical key (layout in 2)
+  planWalk                          the Walkable of one plan:
+    newPlanWalk(mm, roots...)       interns the roots (plan: s; planAfter:
+                                    from and to) so that their memoized
+                                    data are shared
+    intern(n)                       key -> canonical *State (n itself if
+                                    first); a reused buffer for the key,
+                                    the map lookup does not allocate
+    StepsFrom(s)                    cached steps of a canonical state,
+                                    computed by mbtModel.stepsOf with
+                                    interning; returns a COPY (gofmbt's
+                                    search shuffles the slice in place)
+    full(), size()                  the bound (maxPlanStates = 150000)
+                                    and the counters for the experiment
+planner.go
+  mbtModel                          no gofmbt Model/Transition any more:
+                                    all/forced are index lists into the
+                                    action table
+  mbtModel.stepsOf(st, intern)      the steps in table order (the same
+                                    order as gofmbt's Model.StepsFrom,
+                                    so the shuffles draw the same random
+                                    numbers); the forced fast path stays
+                                    (settle, write, read only); kept: it
+                                    is one compare and saves 212 next()
+                                    calls of a forced state
+  mbtModel.StepsFrom                uncached (stepsOf without interning)
+  forcedFirst / forced1             wraps any inner Walkable (the plan's
+                                    planWalk)
+  planInfo.States, .Expanded        cache size of the plan
+planner_ext.go
+  extPlanner.plan                   one planWalk for both attempts (a
+                                    coverage round reset does not change
+                                    transitions); covStrings.startPlan/
+                                    endPlan around it
+  extPlanner.planAfter              a planWalk rooted at from and to
+  C2                                the action comes from the step
+                                    (mm.acts[actIndex(step)]), not from
+                                    EndState().Last (stage 1)
+  covStrings (stage 2)              names (C1) and singles (C3) per
+                                    action, pairs (C3) per (prev, cur)
+                                    filled lazily, and per plan
+                                    planStrings: the C1+C2+C4 strings of
+                                    every step (map by *Step) and the
+                                    weighed leaseChances of every end
+                                    state (map by *State), only while
+                                    the walk is not full; outside a plan
+                                    (MarkCovered) computed every time
+  newPlanner                        C1, C2, C4 of a step are ONE
+                                    CoverSteps(1) function (the number of
+                                    new strings of a step does not
+                                    depend on their order); C3 is one
+                                    CoverSteps(2) function for every
+                                    weight (weight 1 gives exactly the
+                                    strings of gofmbt's
+                                    CoverActionFormatCombinations(2))
+planner_stock.go                    plan/planAfter walk a planWalk too
+                                    (compiles and works with -tags
+                                    gofmbtstock and GOWORK=off)
+main.go tuneRuntime                 debug.SetMemoryLimit(768 MiB) unless
+                                    GOMEMLIMIT is set (see 4)
+experiment.go, online.go            --step-time D (runOpts.stepTime): the
+                                    oracle's clock advances D per step
+                                    from a fixed epoch (default 0: the
+                                    wall clock, as before); the growth
+                                    line is followed by "paths mean/max,
+                                    cached states mean/max", plantime
+                                    lines end with "cached states"
+canon_test.go (new)
+  TestCanonicalKeyComplete          random roots (full profile, on-line
+                                    and off-line, 4 seeds depth 2 full
+                                    width, 2 seeds depth 3 with 6 random
+                                    children per node, small profile
+                                    depth 3 full width); the tree walked
+                                    without and with interning in lock
+                                    step: same action lists, same end
+                                    states (reflect.DeepEqual of the
+                                    state without the left-out fields),
+                                    same C1/C2/C4 strings. Then for up to
+                                    30 keys with several nodes: equal
+                                    states, and for EVERY action equal
+                                    next() (nil-ness, end state, key),
+                                    allowed(), coverage strings; and 20
+                                    "noisy twins" (random values in every
+                                    left-out field) behave the same.
+                                    ~11 s.
+  TestPlanWalkReturnsCopies         a caller that reorders/clobbers the
+                                    returned slice does not change the
+                                    cache; equal steps share end states
+  TestPlanWalkBound                 a full walk walks the same tree
+  TestKeyLayoutBounds               the enums fit their bits; escaped
+                                    counters (Restarts, Slack >= 15)
+                                    keep keys distinct
+covstrings_test.go (new, !gofmbtstock)
+  TestCovStrings                    covStrings vs the strings the old
+                                    coverage functions computed, 5 mixes
+                                    (weights 1-3, C4 on/off), on-line and
+                                    off-line, plan cache filling, hit,
+                                    off
+
+2. The key
+----------
+One string, fixed order, fixed-size fields except the length-prefixed
+stack entries and events (injective; ~180 bytes on the full profile:
+43 slots x 3 + 6 + 9 + stacks + 9 + events).
+  field                     bytes    encoding
+  Slots[i], every slot      3        Phase | Prev<<4
+                                     Node+1 | RaceKill<<2 | Steer<<3 |
+                                       Lease<<5 | LeaseMode<<7
+                                     min(Restarts,15) | min(Slack,15)<<4
+  Ctrl[p], every pool       2        Up | Slices<<1 | Att[d][v]<<(3+2(3d+v))
+  Drv[v], every VM          3        Restarts; F | FMaybe<<4;
+                                     Killed | Restarted<<1
+  Stacks[si], 6 stacks      1+N/2    N, then E[j]+1 as nibbles
+  Contested, Held, Released 2 each   little endian
+  Unsettled                 1
+  Ev, in issue order        2+7/ev   count; per event Stack+1 | Kind<<3 |
+                                     Opt<<4 | Sync<<5 | Handover<<6;
+                                     Key+1; User; Seq (2); After+1 (2)
+  trailer                   2/slot   the exact Restarts, Slack of every
+                                     slot whose nibble is 15, slot order
+Ev: kept in order with Seq and After (conservative: Seq equals the
+index today, After refers to Seq; normalizing would buy nothing).
+Slack is in the key although only the oracle reads it (restartSlack
+writes it, next() never decides on it): conservative as asked; leaving
+it out would merge a few more states.
+Left out, with the reason (grep of every reader, M at fa00607e1):
+  Steps        only write()'s token text (into Data/SlotData), the
+               protocol and messages read it
+  Last         was read by the C2 function only: now the step's action
+  HeldAt       oracle.go (the clock of Held; the Held bit is in the key)
+  UnblockAt    oracle.go, expect.go (clocks of Unblocking/Stalled/
+               Attaching)
+  Drv.Pod, Drv.PodBefore, Drv.PodGen, Drv.Inc
+               oracle.go, sim.go, simref.go, expect.go, dump
+  LeaseIDs     oracle.go, sim.go, adopt.go, expect.go
+  SlotData, Data
+               tokens: expect.go, sim.go, adopt.go, oracle.go adoption
+  Slots[i].Gen pod names/UIDs: oracle.go, sim.go, simref.go, expect.go
+  Alts, Truncated
+               the other outcomes of a settle: oracle.go, sim.go,
+               simref.go, adopt.go, online.go, expect.go
+  cfg          one per planner
+A canonical state carries the left-out fields (and Last, Steps, Alts)
+of whichever path reached its key first. Harmless: no state of the
+search leaves the planner (plan/planAfter return an Act; the on-line
+loop and the experiment compute the executed state with from.apply(a);
+planAfter's roots from/to are the real objects and are never
+modified).
+Bounds checked by TestKeyLayoutBounds (nPhases <= 16, nVMs <= 3,
+nDevs+2 <= 16, nBridges <= 4, nStacks+1 <= 8, users < 256).
+
+3. The per-plan cache and its memory
+------------------------------------
+Scope: one planWalk per plan() (shared by its two attempts) and per
+planAfter(); dropped when the call returns (nothing hangs off State
+objects, so the Coverer's coveredPath retains nothing of it, F5).
+Single goroutine: online.go never runs plan, planAfter and mark
+concurrently; mark runs outside plans and computes its strings
+directly.
+Tables: states map[key]*State; steps map[*State][]*Step (the slice
+handed out is a copy); planStrings.step map[*Step][]string and
+.chances map[*State][]string (stage 2).
+Distinct states per plan (cached states, = intern-table size):
+  depth 1     32 mean       63 max
+  depth 2   1319 mean     2798 max
+  depth 3  32568 mean   127615 max   (plantime; paths 101882 mean:
+                                      1 distinct state per 3.1 paths)
+           26197 / 26958 mean, 135180 / 134404 max (growth seeds 1/2)
+  depth 4 148452 mean   150000 max   (the bound; ~430k unbounded)
+Live heap at a 114858-state plan (runtime.GC + HeapAlloc, heap
+profile): stage 1 193 MB (1.7 KB/state: State 640 B, its Slots 576 B,
+key ~200 B, map entries, its Step), stage 2 236 MB (2.05 KB/state).
+Alts are negligible (392 alternative states in that plan). The bound
+maxPlanStates = 150000 caps it at ~300 MB; past it new states and
+their steps are walked uncached (the same steps, the old speed).
+GOGC=400 (tuneRuntime, for the short-lived states of P4) lets the heap
+grow to 5x the live size: unbounded, depth 4 had 3.9 GB RSS (GOGC=100:
+1.35 GB, +11% time). Hence the soft limit 768 MiB (GOMEMLIMIT env
+overrides it): RSS ~0.72-0.75 GB at depth 3 and 4. Measured at depth 4
+(plantime, 8 plans, noisy): 768 MiB 5.0-5.9 s, 1 GiB 4.6 s (RSS 0.97
+GB), no limit 4.5 s (RSS 2.1 GB); depth 3 within noise of all of them.
+
+4. Measurements
+---------------
+Host: 256 CPUs (EPYC 7662), mostly idle; binary GOMAXPROCS=2 GOGC=400
+(+ the 768 MiB limit from stage 1 on). Runs of a table row ran
+simultaneously, unpinned (pinning to one core + SMT sibling makes the
+GC workers share the mutator's core and penalizes the cached variants;
+not representative of test90). All rows with --step-time 1s (see 5):
+  $B experiment --exp plantime --max-depth 4 --seed 1 --steps 30 --step-time 1s
+  $B experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3 --seed {1,2} --steps 300 --step-time 1s
+
+plantime (mean / max per plan; median of 3 repeated runs; paths per
+depth identical in all rows: 36, 2629, 101882, 868426 mean)
+  stage        d1       d2              d3               d4               RSS
+  0 (fa006)  139 us   11.6/40 ms   561 ms/2.40 s   5.91 s/12.8 s     37 MB
+  1          172 us   12.0/38 ms   436 ms/1.85 s   5.12 s/11.1 s    717 MB
+  2          193 us   12.0/38 ms   389 ms/1.63 s   5.18 s/11.3 s    737 MB
+  (d1 pays the key and the maps, ~50 us; nothing at d2)
+growth, depth 3, default mix (plan mean / max; RSS)
+  stage    seed 1                    seed 2                    RSS
+  0        650 ms / 3.48 s           702 ms / 3.77 s            39 MB
+  1        423 ms / 2.39 s           433 ms / 2.85 s           710 MB
+  2        387 ms / 2.23 s           388 ms / 2.52 s           719-740 MB
+  CPU (user) of a 300-step run: 207/225 s -> 136/140 s -> 129/126 s
+Coverage numbers, identical for stages 0, 1, 2 (and 3, P3 below):
+  seed 1 @100 C1=56 C2=120 C3=144 C4=78; @200 C1=122 C2=191 C3=221
+         C4=143; C1 186/215, last new C1 299, C2 298; crash=28 write=22
+         read=21 lease-get=4 lease-put=2 settle=66 faults=69;
+         paths mean 131130 max 608443
+  seed 2 @100 C1=60 C2=114 C3=139 C4=80; @200 C1=127 C2=191 C3=221
+         C4=144; C1 188/215, last new C1 299, C2 296; crash=30 write=21
+         read=22 lease-get=4 lease-put=1 settle=65 faults=69;
+         paths mean 161277 max 653115
+  (@100/@200 are also those of 01-findings F3: the wall-clock runs
+  only diverge after step 200, see 5)
+The protocol exactly as in 03-plan (wall clock), for the record: the
+worktree at fa00607e1 reproduced the base binary (identical coverage,
+verbs and paths; d3 619 vs 580 ms, d4 6.34 vs 6.48 s, RSS 33-47 MB).
+Stage 1 under the wall clock: seed 2 identical, seed 1 identical up to
+step 276 and different from step 277 on (C1 186/215 at the end
+instead of 188) -- not a semantics change, see 5.
+
+Stage 3, short coverage keys (C2 of the design): every coverage
+string replaced by a varint index into a readable table (encode once
+per precomputed string). Same coverage numbers. Gain: protocol runs
+428 vs 431 ms (d3), 373/395 vs 378/396 ms (growth) = 0.4-1.3%; the
+controlled harness below: 1.77-1.85 vs 1.76-1.83 us/path, within
+noise. Below the 5% threshold: reverted, the strings stay readable.
+(Profile of stage 2: the coverage-map lookups are ~10% of the plan, of
+which hashing the strings is ~4%; short keys can only take part of
+that.)
+
+Weights as copies (coverage.go weigh) on top of stage 2, controlled:
+the SAME 12 trees (full profile, random walks of 20-80 steps marked
+covered, then one depth-3 plan; best of 3; 2567486 paths in both):
+  C1x3,C2x2,C3   1.77-1.79 us/path
+  C1,C2,C3       1.50-1.53 us/path
+=> the copies cost ~17% per path (~15% of the plan time). An upper
+bound for a weight feature in gofmbt (design C3): it would still
+count each new string with its weight, but saves (w-1) map lookups
+and copies per string. With fresh coverers (nothing covered) the
+difference is 22%. The protocol runs with --coverage/--mixes C1,C2,C3
+(other steps, so per path only): growth 2.35/3.01 us/path vs
+2.95/2.41 weighted, plantime d3 3.1 vs 3.8 us/path: consistent but
+noisy. Recommendation: worth it only if it stays a few lines in
+gofmbt (CoverSteps with a weight, count += w); 15% is less than the
+cache gave and less than outcomesCut below.
+
+outcomesCut (not done, stream DEBUG's stack.go): in stage 2 it is 22%
+of the plan (userSet.toMap 7%, stackOutcome.key 7%, memoKey 1.5%).
+Obviously safe: dedup the outcomes by a comparable struct {S Stack;
+prepared, blocked userSet} before building the maps (the entries of a
+Stack above N are always zero, so struct equality = key() equality;
+first occurrence kept, same order), and memoize the DFS by struct
+{mask uint32; p playState} instead of the memoKey string. Measured
+with the controlled harness (same trees and paths): 1.74-1.79 ->
+1.47-1.58 us/path = -11..-16%. The patch (51 lines):
+/tmp/mbtopt/work-A/outcomescut-structkeys.diff (against stack.go of
+fa00607e1).
+
+5. The wall clock trap (for the orchestrator)
+---------------------------------------------
+The experiment's oracle ran on time.Now(): checkState -> checkStateAt
+(now) clears a Held device bit 6 s after the settle that set it
+(oracle.go "heldSeconds"), also the unblock (330 s) and binding (420 s)
+timers. So a seeded run without deadline hits is NOT reproducible
+across planner speeds: the unchanged base binary with GOGC=25 (plans
+928 ms instead of 667 ms) ends seed 1 at C1 186/215 (last new C1 299)
+instead of 188/215; the cached planner diverged at step 277 (the plan
+of step 276 made 4982 instead of 5006 StepsFrom calls), and two runs
+of the same cached binary with the same flags disagreed with each
+other (one took the base's steps): the oracle's timers are the only
+wall-clock input of a run (the plan deadline, 60 s, is never hit).
+The trees themselves were checked identical at that plan (lock-step
+compare of the planner's populated cache against an uncached walk: no
+difference; the StepsFrom call logs of a cached and an uncached run
+byte-identical when their states are). Fix (commit d6423ce20):
+--step-time D gives the oracle refEpoch + n*D; with --step-time 1s
+the base trajectories of seeds 1 and 2 keep the F3 numbers up to @200
+(seed 2 identically to 300) and are reproducible for any plan time.
+D6 acceptance runs must use --step-time (or --max-paths) to be
+meaningful; the orchestrator's F3 base numbers past step 200 of seed 1
+belong to one timing.
+
+6. Profile of stage 2 (growth seed 1, 150 steps)
+------------------------------------------------
+next() 35% (outcomesCut 22%, apply 12.6%, clone 5.5%), countNew 36.6%
+(our stepStrings 18.5% of which computeStep 13.8%: strings of distinct
+steps, leaseChances 7.5%; the coverage-map lookups ~10%), intern 9%
+(key 4.7%, its hash), GC mark workers 11.7% (the live cache is marked
+by every cycle: the price of keeping it, and of the memory limit).
+
+7. Limitations
+--------------
+- The key must follow State: a field added to State, SlotState,
+  DriverState, CtrlState or stackEvent that next() or a coverage
+  function reads must go into appendKey, or into the left-out list with
+  its reason AND into canon_test.go searchView/noisyTwin.
+  TestCanonicalKeyComplete fails (states of equal keys differ in
+  searchView) if a field is neither, provided the random trees reach
+  states that differ in it.
+- Memory: ~0.7 GB RSS instead of 40 MB at depth 3; depth 4 gains only
+  ~12% because of the bound (430k states would need ~0.9 GB live).
+- d1 plans are ~50 us slower (key + maps); irrelevant.
+- The deadline: a search stopped by --plan-time depends on timing
+  anyway; the cache only changes how far it gets.
+- The cache is per plan: planAfter does not reuse plan's tree (F4: ~3%).
+- recorded/ (the L4/L5/L7 replays of review_test.go) is untracked in
+  the main checkout; the worktree has a copy (not committed) to run
+  the suite.
+
+8. How to verify
+----------------
+cd M; export GOWORK=/tmp/mbtopt/work-A/go.work
+gofmt -l .; go vet ./...; go test ./...        (~36-40 s)
+go test -run 'Canonical|PlanWalk|KeyLayout|CovStrings' -v .
+GOWORK=off go build -tags gofmbtstock -o /dev/null .
+go build -o /tmp/mbt-cxl . ; for each seed S in 1 2:
+  /tmp/mbt-cxl experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3 \
+    --seed S --steps 300 --step-time 1s
+  must print the coverage/verb lines of 4; the same with the binary of
+  fa00607e1 + d6423ce20 (/tmp/mbtopt/work-A/mbt-cxl-s0v) for the
+  reference. /tmp/mbtopt/work-A/cmp.sh TAG REF compares two sets of
+  runs in R; protou.sh BINARY TAG 0 runs the protocol (virtual clock).
+Binaries in /tmp/mbtopt/work-A: mbt-cxl-s0v (fa00607e1 + --step-time),
+mbt-cxl-s1v (stage 1), mbt-cxl-s2v (= HEAD f40907210).
+
+9. For the merge with stream DEBUG
+----------------------------------
+No overlap in files: DEBUG touches actions.go/stack.go/sim*.go/
+oracle.go, this stream canon.go, planner*.go, experiment.go, main.go,
+online.go (one field) and new tests. Semantic coupling: if DEBUG adds
+or changes a State field that next() reads, appendKey must follow (7);
+rerun canon_test.go. If DEBUG's rule changes what next() returns,
+nothing here changes (the cache caches whatever next() returns), but
+the reference numbers of 4 change: re-measure stage 0 vs HEAD with
+--step-time. The outcomesCut patch of 4 touches stack.go: apply it
+after DEBUG's change (or let DEBUG apply it).

@@ -1,0 +1,77 @@
+20-mbtopt: plan
+===============
+2026-10-27 (orchestrator). Design 20-mbtopt-02-design.txt (D1-D7).
+
+Streams (parallel, in worktrees; nothing is committed on 5jg-cxl or
+5jo-mbt-cxl by the streams; the orchestrator integrates)
+-------------------------------------------------------------------
+MODEL  (Opus, high)  worktree /tmp/mbtopt/wt-A (branch
+  5jg-cxl-mbtopt-A of nri-plugins), go.work /tmp/mbtopt/work-A/go.work
+  (uses the UNCHANGED gofmbt checkout ~/github.com/askervin/gofmbt,
+  branch 5jo-mbt-cxl). D4 and D5 in M: the canonical key, the intern
+  table and the per-plan transition cache in the planner; Last out of
+  the coverage functions; precomputed coverage strings; the
+  completeness test of the key; measurements of each step separately
+  (key+intern+cache; +precomputed strings; +short keys; and the
+  per-plan memory). Status: 20-mbtopt-04-status-MODEL.txt.
+GOFMBT (Opus, high)  worktree /tmp/mbtopt/gofmbt-B (branch
+  5jo-mbt-immutable from 5jo-mbt-cxl), go.work /tmp/mbtopt/work-B/
+  go.work (uses the UNCHANGED test90 model of the main checkout for
+  measuring). D1-D3: the immutability contract, removal of the memo
+  machinery, Walkable ownership doc, doc.go section; the toy
+  benchmark before/after with a memoizing and a non-memoizing toy
+  state; A2 only if needed; a measurement (toy) of short vs long
+  coverage strings and of weights as copies vs a weight (for C2/C3 of
+  the design: report, do not add API unless clearly worth it).
+  Property/reference tests must keep passing (they compare against
+  the stock copy: results must stay identical; only String() call
+  counts may change). Status: 20-mbtopt-04-status-GOFMBT.txt.
+DEBUG  (Opus, xhigh) worktree /tmp/mbtopt/wt-C (branch
+  5jg-cxl-mbtopt-C), go.work /tmp/mbtopt/work-C/go.work. M8 (findings
+  F6): the oracle/simulator disagreement at step 330 of the seed-1
+  growth run. Root cause, fix (model, oracle or simulator), regression
+  test, the test suite, growth runs of several seeds to 600+ steps.
+  Status: 20-mbtopt-04-status-DEBUG.txt (and a contract amendment if
+  the model's rule changes; a bug-NN file if it is a driver bug).
+
+Then (orchestrator)
+-------------------
+INTEGRATE: apply MODEL's and DEBUG's changes to the main checkout's
+  model (resolve overlaps), fast-forward 5jo-mbt-cxl to GOFMBT's
+  branch if accepted; run the model test suite, the seeded
+  experiments against the baseline numbers (D6), gofmbt's tests,
+  test06-fuzz generate.go output comparison. Write 05-results.
+RUNS (Opus, medium): long simulated runs of the integrated model
+  (several seeds, 2000-4000 steps, depth 3 and depth 4, default mix;
+  --plan-time 0 for reproducibility), then the cluster: test90 with
+  MBT_DURATION=120m (L10) as 06-runs.txt L8/L9 were run, after
+  checking that nothing else uses the three VMs. Record in
+  20-mbtopt-06-runs.txt.
+DEBUG-N (Opus, xhigh): every disagreement or failure of RUNS, one
+  agent each, same deliverables as DEBUG.
+
+Measurement protocol (every stream reports these, same host)
+------------------------------------------------------------
+  B=/tmp/mbtopt/<work>/mbt-cxl built with the stream's go.work
+  $B experiment --exp plantime --max-depth 4 --seed 1 --steps 30
+  $B experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3 --seed 1 --steps 300
+  $B experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3 --seed 2 --steps 300
+  (300, not 400: the baseline hits M8 at step 330 with seed 1)
+  /usr/bin/time -v for the RSS; --cpuprofile for the profile.
+Baseline (01-findings F3): depth 3 541 ms mean / 2.36 s max, depth 4
+5.8 s / 12.5 s; growth seed 1 @100 C1=56 C2=120 C3=144 C4=78, @200
+C1=122 C2=191 C3=221 C4=143 (these numbers must not change for a
+semantics-preserving optimization: the run is seeded and no deadline
+is hit).
+Baseline RSS 50-60 MB.
+
+Acceptance (D6)
+---------------
+- M: go vet, gofmt, go test ./... pass; the seeded experiments print
+  the baseline coverage numbers; the completeness test of the key
+  passes; the per-plan memory is bounded and reported.
+- G: gofmt, go vet, go test ./... and go test -race ./... pass; the
+  player example output is byte-identical; test06-fuzz generate.go
+  output is byte-identical to the 5jo-mbt-cxl build.
+- Both: the same experiment numbers with G's branch as with
+  5jo-mbt-cxl (D1 changes no result).

@@ -1,0 +1,179 @@
+20-mbtopt: findings
+===================
+2026-10-27 (orchestrator). Sources: G (gofmbt 5jo-mbt-cxl 951575f),
+M (test90 model at fa00607e1), plan-13 01-findings-gofmbt.txt,
+04-status-GOFMBT.txt, 05-review-GOFMBT.txt, 04-status-MODEL.txt 8.
+Measurements of this file: /tmp/mbtopt (mbt-cxl-base built with a
+go.work on the two checkouts; profiles base-plantime.prof and
+base-growth.prof).
+
+F1  How gofmbt treats states today
+----------------------------------
+- State is an interface with String() only (G/state.go). The library
+  never compares states except through String(); it never
+  de-duplicates them while walking (01-findings-gofmbt G1).
+- StateChange "must not modify the original state" (G/transition.go),
+  but nothing says that the RETURNED state is final. After review
+  finding F1 of plan-13 (05-review-GOFMBT.txt), the contract became:
+  "States must not change while a method of the Coverer is running.
+  Between the calls they may change: the Coverer does not remember
+  their String()s from one call to the next" (G/cover.go Coverer
+  doc, MarkCovered, BestPath, doc.go). The motivation was an on-line
+  loop that updates its current state object in place with what it
+  observed.
+- The price of that contract is in G/cover.go: covCtx (buf, h, hist
+  []stateStrs, rootIsHist, nodes, nodeStr, nodeOk, sameStart,
+  roundStarted), stateStrs with startOk/endOk bits, sameState()
+  (pointer identity through reflect), nodeString/startString/
+  endString, and the init/place bookkeeping of a per-call memo: about
+  130 lines whose only purpose is to call String() once per walked
+  state within ONE call without trusting the state to stay the same
+  across calls. Review F1 itself said the cross-call memo "saves at
+  most maxWindow-1 String() calls per BestPath/MarkCovered, which is
+  nothing next to b^d"; the same holds for most of the per-call memo
+  if the model memoizes String() itself.
+- Walkable.StepsFrom's result is shuffled in place by the search
+  (G/search.go walk: c.shuffle(sr.m.StepsFrom(st))) and reordered by
+  Walker's step filter; nothing documents who owns the slice. A
+  Walkable that caches its steps must know.
+- Actions: the toy and the player example create a new Action
+  (Sprintf) on every generator call; the test90 model creates them
+  once (M/planner.go newMbtModel). Not a contract, a cost.
+
+F2  How the test90 model treats states
+--------------------------------------
+- Immutable by convention: every transition clones (M/state.go
+  clone, copy-on-write slices for SlotData, LeaseIDs, UnblockAt, Ev);
+  String() (the C4 abstraction) and the occupancy are memoized in the
+  state with atomic.Pointer, "race-free: the planner and the oracle
+  share states". Adoption of an observation returns a new state
+  (M/oracle.go adoptDone, checkAlts; M/adopt.go applyAdoption clones).
+  So the on-line loop never needed gofmbt's permission to mutate.
+- The state carries fields that matter only to the protocol and the
+  oracle, not to the search: Steps (the step number), Last (the
+  action that led here; the C2 coverage function reads it instead of
+  the step's action), HeldAt and UnblockAt (Unix times set by the
+  oracle), Drv.Pod/PodBefore, LeaseIDs, SlotData and Data (tokens),
+  Gen (pod name generation), Alts and Truncated (the other outcomes of
+  a settle, for the oracle). Two states reached by different paths
+  that differ only in these behave the same in next() and in the
+  coverage functions.
+- Fields that next() and the coverage functions read: Slots (Phase,
+  Prev, Node, Restarts, RaceKill, Steer, Lease, LeaseMode, Slack),
+  Ctrl (Up, Att, Slices), Drv (Restarts for max-restarts, Killed,
+  Restarted, F, FMaybe), Stacks, Ev (order matters: issue order),
+  Contested, Held, Released, Unsettled; cfg is shared.
+- The planner (M/planner_ext.go) returns only the Act of path[0] (or
+  path[1] in planAfter); no state of the search leaves the planner.
+  The on-line loop computes the predicted state itself with
+  from.apply(a) (M/online.go execute), and planAfter is rooted at the
+  real from/to objects through forcedFirst (M/planner.go).
+
+F3  Baseline cost (this host, GOMAXPROCS=2 GOGC=400 set by the binary)
+----------------------------------------------------------------------
+mbt-cxl experiment, full profile (43 slots, 215 actions), default mix
+C1x3,C2x2,C3, randomness 1, seed 1, simulated SUT, no deadline hit.
+Planning time per plan (first 30 steps; 8 at depth 4), paths = leaves
+evaluated:
+  depth 1   126 us mean,   324 us max,      36 paths mean
+  depth 2    11 ms mean,    30 ms max,    2629 paths mean
+  depth 3   541 ms mean,  2.36 s max,  101882 paths mean (max 431810)
+  depth 4   5.8 s mean,  12.5 s max,  868426 paths mean (max 1.36 M)
+  => ~5.3 us per path at depth 3, 6.6 us at depth 4.
+(04-status-MODEL 8 measured 173 ms mean / 702 ms max at depth 3 on
+the same mix: the numbers depend on the states visited; the first
+steps of a seed-1 run are busier here. Compare only within this
+file's protocol: same binary flags, same host.)
+400-step growth run at depth 3 (stopped at step 330 by M8, F6):
+  plan 557 ms mean, 3.06 s max; 195 s CPU in 184 s wall; RSS 60 MB.
+CPU profile of that run (cum):
+  57.5%  mbtModel.StepsFrom = State.next
+         36.5%  outcomesCut (the decoder-stack outcome enumeration,
+                called by stackRulesOK for EVERY action that touches
+                a stack, and by settleAll): userSet.toMap 11.8%,
+                stackOutcome.key 11.4%, sortedUsers 6.1%, memoKey
+         16.3%  apply (clone 5.6%, create 4.7%, settleAll 4.0%)
+          5.7%  allowed (slotEnabled 4.9%, fits/computeOcc)
+  33.8%  search.countNew = the coverage strings of a leaf step
+         27.9%  appendStepStrings: the C1 function 18.3% (leaseChances
+                8.4%, which calls allowed() for every lease slot;
+                weigh 8.75%: w prefixed copies of every string),
+                C3 pairs 6.4% (concat), C2 faultContext 3.5%
+          ~8%   coverCount map lookups (mapaccess2_faststr 5.6%,
+                mapassign 1.6%, aeshash)
+  20.8%  mallocgc in all (strings, maps, slices, states); GC workers
+         ~6%.
+  Library overhead outside the model's functions and the map: small
+  (search.walk 0.25% flat, place/addCount not visible).
+gofmbt toy benchmark (G/bench_test.go, -cpu 2, this host): depth 2
+StateActions stock 58 ms, new 11 ms; ActionCombinations2 stock 55 ms,
+new 14 ms; walk only ~8-10 ms (04-status-GOFMBT). The toy's cost is
+its own StepsFrom (Sprintf'd actions, closures) and its Fprintf
+String().
+
+F4  De-duplication potential
+----------------------------
+Temporary test (full profile, on-line config, random walk of 48 steps
+with seed 1, measured every 8 steps): the depth-d tree from the
+current state, nodes = states created by StepsFrom, distinct = by the
+full state dump without the step number.
+  step  d  leaves   nodes    distinct states  distinct transitions
+   0    3  261142   265317    92818 (1/2.9)   153204 (1/1.7)
+   8    3  297874   302437    89771 (1/3.4)   163772 (1/1.8)
+  16    3  285253   289682    67997 (1/4.3)   138991 (1/2.1)
+  24    3  516552   523151   108077 (1/4.8)   238170 (1/2.2)
+  32    3   21051    22162     8148 (1/2.7)    13110 (1/1.7)
+  40    3   16667    17640     5821 (1/3.0)     9773 (1/1.8)
+  48    3   94898    99126    20177 (1/4.9)    40360 (1/2.5)
+  depth 2: distinct states 1/1.7-1/2.4 of nodes, transitions 1/1.1-1/1.3
+  depth 1: 54-69 distinct of 64-81 (a few actions give equal states,
+           e.g. read, and faults that change nothing yet)
+So a cache of transitions by canonical state removes 40-60% of the
+next() calls at depth 3 (the leaves' transitions are never computed:
+a leaf is the END of a transition, the saving is on the internal
+nodes' StepsFrom, i.e. on every state created). Since a leaf's
+coverage strings depend on the path (C3 pairs, C2 on start state and
+action), the walk itself cannot be shortened: the leaves are the
+floor of the search, which is what the exponent means.
+Across consecutive plans the trees overlap little: after executing
+one step the new depth-3 tree shares b+b^2 of its b+b^2+b^3 nodes with
+the old one (~3% at b=31). A cache per plan loses almost nothing; a
+cache across plans would grow with the run.
+
+F5  Memory
+----------
+50-60 MB RSS for everything (depth 3, 400 steps; depth 4 too). Each
+State is ~250 bytes plus 43 SlotStates (12 bytes each) plus shared
+slices; a depth-3 tree of ~100k distinct states is ~100 MB if kept.
+What a cache must not do: hang off the State objects that the Coverer
+retains. Coverer.coveredPath keeps every covered step of the round
+(X6 of 04-status-MODEL: ~1-2 KB per step), so a children cache stored
+in a State would keep every explored subtree of the run alive. The
+cache belongs to the planner and is dropped at the start of the next
+plan.
+
+F6  A pre-existing model error (M8)
+-----------------------------------
+mbt-cxl-base experiment --exp growth --mixes C1x3,C2x2,C3 --depth 3
+--seed 1 --steps 400 (unmodified model, gofmbt 951575f) stops at
+  step 330 settle: pod sro-b@vm0#0: Running, but its decoder stack
+  vm0/hb0 [hole,local] has a hole (+4 more)
+  ORACLE DISAGREES WITH THE SIMULATED SUT
+Reproducible (seeded, no deadline hit). Either the model's prediction
+of the stack or the simulated SUT's (M/sim.go, simref.go, refpool.go)
+is wrong; the cluster runs L8/L9 did not show it. Stream DEBUG.
+
+F7  What immutability changes, and what it does not
+---------------------------------------------------
+Changes: the library may drop its per-call String() memo and the
+pointer-identity tricks (F1) and say "a State returned by a
+StateChange is final; String() is called often, make it cheap". It
+may document a caching Walkable (the modeler's de-duplication) as
+safe. Nothing in test90 must change for it (F2).
+Does not change: the number of paths. With b enabled actions and
+depth d the search evaluates b^d leaves whatever the state
+representation; de-duplication and precomputed strings reduce the
+constant per leaf (F3: today ~5 us) and nothing else. Depth 4 at
+b=31 is ~1 M leaves: at 1 us per leaf it fits a 10 s budget, at 5 us
+it does so only sometimes. P4 (04-status-MODEL 8) found depth 4 worth
++5% faults in context for 25x the time of depth 3.

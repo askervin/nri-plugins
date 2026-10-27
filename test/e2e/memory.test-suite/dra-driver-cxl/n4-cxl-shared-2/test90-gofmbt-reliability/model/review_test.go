@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -922,5 +923,254 @@ func TestReviewM7SteeringOfUnblockingPod(t *testing.T) {
 	wantVerdict(t, v, VOK, "ok")
 	if got := slotOf(t, adopted, "lsteer@vm2#0"); got.Phase != Running || got.Steer != SteerOff {
 		t.Fatalf("adopted %s steer %s", got.Phase, got.Steer)
+	}
+}
+
+// simSteps drives the simulated SUT of seed through action lines as
+// expRun does (the model's state adopted from every check), each line
+// enabled in the model's state, with a clock that advances dt per
+// action. It returns the first step whose check is not ok ("" if none),
+// the model's and the simulator's states.
+func simSteps(t *testing.T, cfg *Config, seed int64, dt time.Duration, lines ...string) (string, *State, *sim) {
+	t.Helper()
+	s := newSim(cfg, seed)
+	st := newState(cfg)
+	now := time.Unix(1800000000, 0)
+	for j, line := range lines {
+		n := j + 1
+		a := mustAct(t, cfg, line)
+		if !st.enabled(a) {
+			t.Fatalf("seed %d step %d %q: not enabled in\n%s", seed, n, line, st.dump())
+		}
+		now = now.Add(dt)
+		next := st.apply(a)
+		if a.Verb == VSettle {
+			s.do(n, a)
+			v, adopted := checkStateAt(next, s.observe(n, 1), "", now, defaultUnblock)
+			if v.Status != VOK {
+				return fmt.Sprintf("step %d %s: %s", n, line, v.Msg), st, s
+			}
+			st = adopted
+			continue
+		}
+		d := s.do(n, a)
+		if v := checkDone(expectDone(st, next, a, n), d); v.Status != VOK {
+			return fmt.Sprintf("step %d %s: %s", n, line, v.Msg), st, s
+		}
+		st = adoptDone(next, a, d)
+	}
+	return "", st, s
+}
+
+// M8 (20-mbtopt, seed 1 growth run, step 330): the simulated SUT kept the
+// scheduler's hold of b-shared0 (sro-b's claim deleted before its pod was
+// bound, A19) for ever, while the oracle ends it 6 s after the settle:
+// sro-b created again long after was Starting in the model (its Prepare
+// through vm0/hb0 [hole,local]: Blocked) and Stalled in the simulator,
+// which then promoted it Running with its region pushed above the hole.
+// The real hold ends within 5 s of the delete (bug-08); a promoted
+// contender's Prepare through a hole is refused like any other (A9).
+// Both are the simulator's errors; the model was right.
+func TestReviewM8SimHoldAndHole(t *testing.T) {
+	cfg := testConfig(t, "full", true)
+	hole := []string{
+		"create xnuma-b@vm0#0", "settle", "create lnuma@vm0#0", "settle", // vm0/hb0 [b-pooled0,local]
+		"delete xnuma-b@vm0#0", "settle", // [hole,local]
+	}
+	held := []string{
+		"ctrl-kill b", "create sro-b@vm0#0", "settle", // waits for the attach
+		"delete sro-b@vm0#0", "ctrl-start b", "settle", // b-shared0 held
+	}
+	// the M8 sequence in short: the hold ends, sro-b blocked by the
+	// hole, in the model and in every simulated SUT
+	m8 := append(append(append([]string{}, hole...), held...), "create plain@vm0#0", "settle", "create sro-b@vm0#0", "settle")
+	for seed := int64(1); seed <= 16; seed++ {
+		msg, st, s := simSteps(t, cfg, seed, 4*time.Second, m8...)
+		if msg != "" {
+			t.Fatalf("seed %d: %s\nsimulated:\n%s", seed, msg, s.truth.dump())
+		}
+		wantPhase(t, st, "sro-b@vm0#0", Blocked)
+		wantPhase(t, s.truth, "sro-b@vm0#0", Blocked)
+		wantStack(t, s.truth, stackIndex(VM0, HB0), "[hole,local]")
+		if s.truth.held(Res(sharedDev(PoolB))) {
+			t.Fatalf("seed %d: the simulator still holds b-shared0", seed)
+		}
+	}
+	// still held in the window after the settle: a contender created
+	// then stalls in the model; the simulator may hold it as long (it
+	// promotes it or not), and never beyond the oracle
+	pre := append(append([]string{}, hole...), held...)
+	for seed := int64(1); seed <= 16; seed++ {
+		msg, st, s := simSteps(t, cfg, seed, time.Second, append(append([]string{}, pre...), "create sro-b@vm0#0", "settle", "create plain@vm0#0", "settle")...)
+		if msg != "" {
+			t.Fatalf("seed %d: %s\nsimulated:\n%s", seed, msg, s.truth.dump())
+		}
+		if ph := slotOf(t, st, "sro-b@vm0#0").Phase; ph != Stalled && ph != Blocked {
+			t.Fatalf("seed %d: sro-b %s, want stalled or blocked (promoted through the hole)", seed, ph)
+		}
+	}
+	// a contender stalled behind an unbound holder in its window,
+	// promoted by the simulator: blocked by the hole, never Running
+	promoted := 0
+	for seed := int64(1); seed <= 16; seed++ {
+		msg, st, s := simSteps(t, cfg, seed, 4*time.Second, append(append([]string{}, hole...),
+			"ctrl-kill b", "create xdax-b@vm0#0", "settle", "create xnuma-b@vm0#0", "settle", // a waiter of b-pooled0
+			"delete xdax-b@vm0#0", "ctrl-start b", "settle")...) // stalled
+		if msg != "" {
+			t.Fatalf("seed %d: %s\nsimulated:\n%s", seed, msg, s.truth.dump())
+		}
+		switch ph := slotOf(t, s.truth, "xnuma-b@vm0#0").Phase; ph {
+		case Blocked:
+			promoted++
+			wantPhase(t, st, "xnuma-b@vm0#0", Blocked)
+		case Stalled:
+		default:
+			t.Fatalf("seed %d: simulated xnuma-b %s through vm0/hb0 %s", seed, ph, s.truth.Stacks[stackIndex(VM0, HB0)])
+		}
+	}
+	if promoted == 0 {
+		t.Fatalf("no seed promoted the stalled contender")
+	}
+	// an "any" contender promoted by the simulator: its region on the
+	// stack of the host it was bound to
+	promoted = 0
+	for seed := int64(1); seed <= 16; seed++ {
+		msg, st, s := simSteps(t, cfg, seed, 4*time.Second, "ctrl-kill c", "create xnuma-c@vm1#0", "settle", "create xdax-c@any#0", "settle",
+			"delete xnuma-c@vm1#0", "ctrl-start c", "settle")
+		if msg != "" {
+			t.Fatalf("seed %d: %s\nsimulated:\n%s", seed, msg, s.truth.dump())
+		}
+		if ss := slotOf(t, s.truth, "xdax-c@any#0"); ss.Phase == Running {
+			promoted++
+			wantStack(t, s.truth, stackIndex(ss.Node, HB1), "[c-pooled0]")
+			if got := slotOf(t, st, "xdax-c@any#0"); got.Phase != Running || got.Node != ss.Node {
+				t.Fatalf("seed %d: adopted %s on %s", seed, got.Phase, got.Node)
+			}
+		}
+	}
+	if promoted == 0 {
+		t.Fatalf("no seed promoted the stalled any contender")
+	}
+}
+
+// M8: the seed 1 growth run itself (experiment --steps-out), replayed
+// with experiment --from's code and its recorded oracle clock: the
+// settle of step 330 failed with the simulator's never-ending hold.
+func TestReviewM8RecordedRun(t *testing.T) {
+	data, err := os.ReadFile("recorded/m8-mbt-steps.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := readSteps(string(data))
+	cfg := testConfig(t, "full", true)
+	cfg.Unsettled = 3
+	cov, err := parseCoverage(defaultCoverage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := runOpts{cfg: cfg, cov: cov, depth: 1, seed: 1, randomness: 1, replayNow: readNow(string(data))}
+	for _, l := range lines {
+		o.replay = append(o.replay, l.Action)
+	}
+	if len(o.replay) != 330 || len(o.replayNow) != 72 {
+		t.Fatalf("%d steps, %d clock records", len(o.replay), len(o.replayNow))
+	}
+	r, err := expRun(o, len(o.replay), planBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.failures) > 0 || r.steps != 330 {
+		t.Fatalf("after %d steps: %v", r.steps, r.failures)
+	}
+}
+
+// M9 (20-mbtopt, depth-2 soak after the M8 fix, seeds 3 9 15 16 30): a
+// numa contender stalled by the scheduler's hold of its device (A19) may
+// be promoted at any time, and its Prepare onlines the device as system
+// RAM: the bytes are gone. The model kept them known (only start set
+// them unknown), the simulator, whose hold had ended, started the
+// contender and lost them; a later read of the device saw junk.
+func TestReviewM9StalledNumaData(t *testing.T) {
+	cfg := testConfig(t, "full", true)
+	held := []string{
+		"create xdax-c@vm2#0", "settle", "write xdax-c@vm2#0", "delete xdax-c@vm2#0", "settle", // c-pooled0 "mbt-3"
+		"ctrl-kill c", "create xdax-c@vm2#0", "settle", "delete xdax-c@vm2#0", "ctrl-start c", "settle", // held
+	}
+	s := revState(t, "full", true, held...)
+	if !s.held(Res(pooledDev(PoolC))) || s.Data[pooledDev(PoolC)] != (Token{Known: true, Text: "mbt-3"}) {
+		t.Fatalf("held %v, data %s", s.held(Res(pooledDev(PoolC))), s.Data[pooledDev(PoolC)])
+	}
+	s = steps(t, s, "create xnuma-c@vm1#0")
+	wantPhase(t, s, "xnuma-c@vm1#0", Stalled)
+	if s.Data[pooledDev(PoolC)].Known {
+		t.Fatalf("data of c-pooled0 %s with a stalled numa contender, want unknown", s.Data[pooledDev(PoolC)])
+	}
+	// the run: the simulator's hold ends a window earlier than the
+	// model's, the contender starts there; the read is accepted
+	for seed := int64(1); seed <= 16; seed++ {
+		msg, _, sm := simSteps(t, cfg, seed, time.Second, append(append([]string{}, held...),
+			"create plain@vm0#0", "settle", "create xnuma-c@vm1#0", "settle",
+			"delete xnuma-c@vm1#0", "settle", "create xdax-c@vm2#0", "settle", "read xdax-c@vm2#0")...)
+		if msg != "" {
+			t.Fatalf("seed %d: %s\nsimulated:\n%s", seed, msg, sm.truth.dump())
+		}
+	}
+}
+
+// M9 (seeds 2 and 26): a contender stalled only by the scheduler's hold
+// (it fits now) may be allocated at once (the hold is 0-5 s after the
+// delete), so its Prepare races with the release of another share of
+// its device on its node: before it the region stays (above a hole),
+// after it the region is destroyed and made again on top, or blocked by
+// a hole. The oracle adopts a promotion after every event of the window
+// only. Such a window is not generated (A21); a contender that waits for
+// the releases of its device still may have them in its window.
+func TestReviewM9StalledShareRace(t *testing.T) {
+	s := revState(t, "full", true,
+		"create xnuma-b@vm0#0", "settle", "create sro-b@vm0#0", "settle", // vm0/hb0 [b-pooled0,b-shared0]
+		"delete xnuma-b@vm0#0", "settle", // [hole,b-shared0]
+		"ctrl-kill b", "create sdax-b@vm0#1", "settle", "delete sdax-b@vm0#1", "ctrl-start b", "settle") // b-shared0 held
+	wantStack(t, s, stackIndex(VM0, HB0), "[hole,b-shared0]")
+	if !s.held(Res(sharedDev(PoolB))) {
+		t.Fatalf("b-shared0 not held")
+	}
+	// the release first, then the contender: refused (it was enabled)
+	steps(t, s, "delete sro-b@vm0#0", "!create sdax-b@vm0#0", "create plain@vm0#0")
+	// the contender first, then the release: refused as before (its
+	// stack has a pod that waits for the scheduler)
+	n := steps(t, s, "create sdax-b@vm0#0", "!delete sro-b@vm0#0")
+	wantPhase(t, n, "sdax-b@vm0#0", Stalled)
+	// a waiter of an exclusive device behind a holder deleted before its
+	// pod was bound: the holder's events are what it waits for
+	w := revState(t, "full", true, "ctrl-kill b", "create xnuma-b@vm0#0", "settle", "create xdax-b@vm0#0", "settle")
+	w = steps(t, w, "ctrl-start b", "delete xnuma-b@vm0#0")
+	wantPhase(t, w, "xdax-b@vm0#0", Stalled)
+}
+
+// M9 (seed 33): a waiter promoted while its pool's controller is down
+// prepares at ctrl-start. Its claim was allocated after the released
+// claim's Unprepare (the controller only delayed the attach), so its
+// prepare is a handover (R1) also then: an sexcl after the last share of
+// the device on its node, through the hole that share's release leaves.
+// The model let it come first and share the departing share's region.
+func TestReviewM9HandoverAtCtrlStart(t *testing.T) {
+	s := revState(t, "full", true,
+		"create sdax-a@vm2#0", "settle", "create lnuma@vm2#0", "settle", // vm2/hb0 [a-shared0,local]
+		"create sexcl-a@vm2#0", "settle", // waits for the share
+		"ctrl-kill a", "delete sdax-a@vm2#0", "ctrl-start a", "settle")
+	for _, a := range alts(s) {
+		wantPhase(t, a, "sexcl-a@vm2#0", Blocked)
+		wantStack(t, a, stackIndex(VM2, HB0), "[hole,local]")
+	}
+	// a share that fits now waits for no release: either order
+	s = revState(t, "full", true,
+		"create sdax-a@vm2#0", "settle", "create lnuma@vm2#0", "settle",
+		"ctrl-kill a", "delete sdax-a@vm2#0", "create sro-a@vm2#0", "ctrl-start a", "settle")
+	var got []string
+	for _, a := range alts(s) {
+		got = append(got, slotOf(t, a, "sro-a@vm2#0").Phase.String()+" "+a.Stacks[stackIndex(VM2, HB0)].String())
+	}
+	if strings.Join(got, "; ") != "blocked [hole,local]; running [a-shared0,local]" {
+		t.Fatalf("outcomes %v", got)
 	}
 }

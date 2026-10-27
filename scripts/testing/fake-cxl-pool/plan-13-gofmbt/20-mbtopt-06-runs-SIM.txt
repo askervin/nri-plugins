@@ -1,0 +1,150 @@
+plan-13/20-mbtopt: stream RUNS-SIM, off-line runs of the integrated model
+=========================================================================
+2026-10-27 12:49-14:35, agent RUNS-SIM. Binary /tmp/mbtopt/mbt-cxl-main
+(main checkout's model with MODEL + DEBUG + orchestrator changes,
+gofmbt 5jo-mbt-cxl at 0ccea8c; GOMAXPROCS=2). Simulated SUT only; no
+cluster, kubectl or ssh touched. Files: /tmp/mbtopt/runs-sim/<name>.
+{cmd,log,steps,time}; job list jobs.txt, runner bin/one.sh, table
+bin/table.sh. 57 runs, 10 processes at a time (xargs -P 10), on a
+host where a 2-hour cluster test ran concurrently: the wall and plan
+times are under that load, not clean benchmarks.
+
+Every run:
+  /usr/bin/time -v /tmp/mbtopt/mbt-cxl-main experiment --exp growth \
+      <flags> --step-time 1s --steps-out /tmp/mbtopt/runs-sim/<name>.steps
+with M = --mixes C1x3,C2x2,C3 unless said otherwise. Defaults:
+--plan-states 0 (no cache), --plan-time 1m0s, --profile full.
+
+RESULT: 57 of 57 PASS. No "ORACLE DISAGREES WITH THE SIMULATED SUT"
+in any log; every process exited 0 and ran all its steps.
+
+Columns: name, wall (h:mm:ss / m:ss), max RSS, plan mean / max, the
+last growth mark printed (marks are @10,25,50,100,200,400,800,1600,..;
+the experiment prints no total at the last step, so for 3000 steps
+the last mark is @1600, for 1000 and 2000 it is @800 / @1600), C1 at
+the end of the run (actions covered of the profile), result.
+
+Runs
+----
+1. depth 3, M, 3000 steps, seeds 11-16
+r1-d3-s11            23:57.27 109MB | 478.976ms 3.606508s | @1600 C1=215 C2=520 C3=1129 C4=506 | C1 215/215 | PASS
+r1-d3-s12            27:48.90 136MB | 556.224ms 3.238403s | @1600 C1=212 C2=502 C3=1133 C4=484 | C1 215/215 | PASS
+r1-d3-s13            29:37.62 133MB | 592.463ms 5.254028s | @1600 C1=215 C2=505 C3=1131 C4=490 | C1 215/215 | PASS
+r1-d3-s14            24:22.34 135MB | 487.344ms 4.286234s | @1600 C1=215 C2=509 C3=1137 C4=496 | C1 215/215 | PASS
+r1-d3-s15            22:54.52 141MB | 458.074ms 3.551829s | @1600 C1=215 C2=519 C3=1122 C4=512 | C1 215/215 | PASS
+r1-d3-s16            32:53.96 160MB | 657.935ms 4.05585s | @1600 C1=215 C2=510 C3=1130 C4=495 | C1 215/215 | PASS
+   verbs (seed 11): crash=324 write=294 read=293 lease-get=37
+   lease-put=21 settle=606 faults=521; C2 contexts blocked=52
+   unblocking=46 stalled=40 unsched=12 hole=30 steer-on=4 steer-off=4.
+   All six seeds reach C1 215/215; last new C1 at step 721, 1678,
+   798, 777, 671, 1171 (seeds 11-16).
+
+2. depth 3, M, 3000 steps, --plan-states 150000, seeds 11 and 12
+r2-d3-s11-ps150k     11:16.97 729MB | 225.477ms 1.649227s | @1600 C1=215 C2=520 C3=1129 C4=506 | C1 215/215 | PASS
+r2-d3-s12-ps150k     14:47.60 731MB | 295.687ms 1.978787s | @1600 C1=212 C2=502 C3=1133 C4=484 | C1 215/215 | PASS
+   (cached states mean 17259 max 127373 for seed 11.)
+
+3. depth 4, M, 400 steps, seeds 11 and 12
+r3-d4-s11             1:25:20 105MB | 12.832047s 1m0.000361s | @400 C1=200 C2=297 C3=358 C4=237 | C1 200/215 | PASS
+r3-d4-s12             1:45:23 111MB | 15.847723s 1m0.000414s | @400 C1=197 C2=304 C3=349 C4=240 | C1 197/215 | PASS
+   paths mean 3.65M / 4.54M, max 19.4M / 24.6M per plan.
+   NOTE (not a disagreement): the max plan time is 1m0.0004s, the
+   --plan-time budget: at least one depth-4 plan of each seed hit the
+   deadline and returned its best path so far. Such a plan depends on
+   the planner's speed, so a fresh depth-4 run with the same seed is
+   not guaranteed to take the same steps (the clock is virtual, the
+   deadline is not). The recorded .steps files replay exactly (below).
+   The plan means (12.8 s, 15.8 s) are ~3x the orchestrator's 4.07 s,
+   which was measured with the cache on (--plan-states 150000 was the
+   default then); these runs had --plan-states 0 and ran under load.
+   The log does not say how many plans hit the deadline.
+
+4. depth 2, M, 2000 steps, seeds 100-139 (40 runs)
+r4-d2-s100            0:20.73 75MB | 10.153ms 50.91ms | @1600 C1=213 C2=427 C3=796 C4=474 | C1 214/215 | PASS
+r4-d2-s101            0:21.55 80MB | 10.569ms 55.065ms | @1600 C1=213 C2=438 C3=789 C4=452 | C1 215/215 | PASS
+r4-d2-s102            0:21.30 70MB | 10.44ms 57.325ms | @1600 C1=214 C2=435 C3=754 C4=512 | C1 215/215 | PASS
+r4-d2-s103            0:20.78 71MB | 10.187ms 48.249ms | @1600 C1=211 C2=431 C3=776 C4=506 | C1 212/215 | PASS
+r4-d2-s104            0:25.10 79MB | 12.326ms 59.565ms | @1600 C1=215 C2=428 C3=788 C4=458 | C1 215/215 | PASS
+r4-d2-s105            0:20.57 77MB | 10.082ms 55.322ms | @1600 C1=208 C2=441 C3=771 C4=455 | C1 213/215 | PASS
+r4-d2-s106            0:19.05 65MB | 9.316ms 47.465ms | @1600 C1=211 C2=421 C3=753 C4=508 | C1 214/215 | PASS
+r4-d2-s107            0:19.98 72MB | 9.782ms 46.144ms | @1600 C1=205 C2=448 C3=741 C4=522 | C1 205/215 | PASS
+r4-d2-s108            0:20.45 75MB | 10.013ms 59.896ms | @1600 C1=212 C2=437 C3=806 C4=466 | C1 212/215 | PASS
+r4-d2-s109            0:19.67 73MB | 9.64ms 52.236ms | @1600 C1=212 C2=435 C3=797 C4=464 | C1 214/215 | PASS
+r4-d2-s110            0:20.39 71MB | 9.987ms 52.676ms | @1600 C1=211 C2=424 C3=767 C4=499 | C1 212/215 | PASS
+r4-d2-s111            0:20.46 75MB | 10.028ms 60.866ms | @1600 C1=215 C2=426 C3=770 C4=486 | C1 215/215 | PASS
+r4-d2-s112            0:21.58 77MB | 10.584ms 50.573ms | @1600 C1=214 C2=425 C3=800 C4=436 | C1 215/215 | PASS
+r4-d2-s113            0:20.20 75MB | 9.906ms 48.717ms | @1600 C1=213 C2=422 C3=776 C4=462 | C1 214/215 | PASS
+r4-d2-s114            0:19.87 76MB | 9.733ms 51.722ms | @1600 C1=213 C2=426 C3=749 C4=486 | C1 213/215 | PASS
+r4-d2-s115            0:23.36 73MB | 11.456ms 63.746ms | @1600 C1=212 C2=433 C3=784 C4=484 | C1 214/215 | PASS
+r4-d2-s116            0:18.35 65MB | 8.98ms 53.97ms | @1600 C1=207 C2=448 C3=792 C4=457 | C1 208/215 | PASS
+r4-d2-s117            0:21.45 67MB | 10.515ms 53.645ms | @1600 C1=212 C2=436 C3=793 C4=479 | C1 212/215 | PASS
+r4-d2-s118            0:21.65 67MB | 10.616ms 60.561ms | @1600 C1=211 C2=416 C3=764 C4=464 | C1 215/215 | PASS
+r4-d2-s119            0:20.16 70MB | 9.873ms 53.952ms | @1600 C1=211 C2=418 C3=783 C4=509 | C1 213/215 | PASS
+r4-d2-s120            0:23.36 84MB | 11.469ms 61.156ms | @1600 C1=211 C2=425 C3=781 C4=483 | C1 211/215 | PASS
+r4-d2-s121            0:18.07 64MB | 8.845ms 47.168ms | @1600 C1=213 C2=447 C3=768 C4=490 | C1 214/215 | PASS
+r4-d2-s122            0:22.25 82MB | 10.922ms 55.516ms | @1600 C1=211 C2=428 C3=772 C4=439 | C1 214/215 | PASS
+r4-d2-s123            0:18.53 72MB | 9.076ms 49.968ms | @1600 C1=215 C2=438 C3=801 C4=492 | C1 215/215 | PASS
+r4-d2-s124            0:21.28 79MB | 10.425ms 60.68ms | @1600 C1=206 C2=447 C3=760 C4=503 | C1 212/215 | PASS
+r4-d2-s125            0:20.45 73MB | 10.014ms 52.682ms | @1600 C1=211 C2=422 C3=768 C4=462 | C1 211/215 | PASS
+r4-d2-s126            0:18.97 70MB | 9.287ms 52.565ms | @1600 C1=213 C2=444 C3=765 C4=484 | C1 215/215 | PASS
+r4-d2-s127            0:21.89 68MB | 10.738ms 58.358ms | @1600 C1=214 C2=448 C3=797 C4=441 | C1 214/215 | PASS
+r4-d2-s128            0:16.65 72MB | 8.138ms 44.429ms | @1600 C1=214 C2=436 C3=783 C4=449 | C1 215/215 | PASS
+r4-d2-s129            0:21.72 76MB | 10.662ms 50.714ms | @1600 C1=211 C2=435 C3=805 C4=452 | C1 213/215 | PASS
+r4-d2-s130            0:21.57 67MB | 10.583ms 56.538ms | @1600 C1=213 C2=445 C3=791 C4=477 | C1 214/215 | PASS
+r4-d2-s131            0:20.73 67MB | 10.156ms 48.271ms | @1600 C1=215 C2=424 C3=739 C4=475 | C1 215/215 | PASS
+r4-d2-s132            0:17.39 75MB | 8.497ms 45.663ms | @1600 C1=215 C2=434 C3=763 C4=500 | C1 215/215 | PASS
+r4-d2-s133            0:22.11 66MB | 10.842ms 50.534ms | @1600 C1=214 C2=437 C3=776 C4=487 | C1 214/215 | PASS
+r4-d2-s134            0:16.47 78MB | 8.059ms 44.807ms | @1600 C1=210 C2=427 C3=770 C4=426 | C1 212/215 | PASS
+r4-d2-s135            0:20.00 71MB | 9.804ms 50.546ms | @1600 C1=210 C2=436 C3=806 C4=457 | C1 215/215 | PASS
+r4-d2-s136            0:22.41 73MB | 10.994ms 55.769ms | @1600 C1=212 C2=421 C3=771 C4=486 | C1 212/215 | PASS
+r4-d2-s137            0:24.68 68MB | 12.127ms 59.012ms | @1600 C1=211 C2=445 C3=782 C4=462 | C1 211/215 | PASS
+r4-d2-s138            0:25.37 75MB | 12.46ms 61.788ms | @1600 C1=215 C2=425 C3=739 C4=489 | C1 215/215 | PASS
+r4-d2-s139            0:18.37 77MB | 8.999ms 61.686ms | @1600 C1=211 C2=459 C3=819 C4=426 | C1 212/215 | PASS
+   40 of 40 PASS; 16-25 s each; plan mean 8-12 ms, max <= 64 ms;
+   C1 at the end 205..215 of 215.
+
+5. coverage "all" (C1,C2,C3,C4), depth 3, 1000 steps, seeds 11, 12
+   (--mixes all instead of M)
+r5-all-s11           27:47.32 88MB | 1.668743s 11.164308s | @800 C1=197 C2=375 C3=633 C4=527 | C1 205/215 | PASS
+r5-all-s12           24:24.57 105MB | 1.465778s 10.653606s | @800 C1=196 C2=381 C3=626 C4=501 | C1 200/215 | PASS
+   paths mean 118k / 102k, max 742k / 746k. Plans are 3x slower than
+   with M (C4 makes more paths distinct), max 11 s, below the budget.
+
+6. --profile small, depth 3, M: 2000 steps seeds 11-13; and
+   --profile small --online=false (off-line generation mode),
+   1000 steps seeds 11-12
+r6-small-s11          1:03.19 54MB | 31.472ms 270.159ms | @1600 C1=72 C2=384 C3=1109 C4=242 | C1 72/72 | PASS
+r6-small-s12          1:01.42 52MB | 30.601ms 309.579ms | @1600 C1=72 C2=397 C3=1102 C4=255 | C1 72/72 | PASS
+r6-small-s13          0:54.80 52MB | 27.271ms 260.721ms | @1600 C1=72 C2=397 C3=1110 C4=255 | C1 72/72 | PASS
+r6-small-off-s11      0:27.24 48MB | 27.131ms 248.145ms | @800 C1=72 C2=322 C3=600 C4=153 | C1 72/72 | PASS
+r6-small-off-s12      0:40.24 47MB | 40.133ms 292.738ms | @800 C1=72 C2=322 C3=620 C4=144 | C1 72/72 | PASS
+   C1 72/72 in all five. The off-line mode has no blocked/unblocking/
+   stalled/unsched contexts (C2 hole=8/10, lease-numa/dax 13-14).
+
+Disagreements
+-------------
+None. No .steps file needed keeping for a disagreement; all are kept
+anyway under /tmp/mbtopt/runs-sim/.
+
+Identity check, run 2 (cache) vs run 1 (no cache)
+-------------------------------------------------
+For seeds 11 and 12 the output lines with the plan-time and the
+cached-states figures stripped (sed 's/plan mean [^ ]+ max [^ ]+//;
+s/cached states mean [0-9]+ max [0-9]+//', header '#' lines excluded,
+which differ only by --plan-states) are IDENTICAL: every growth mark
+@10..@1600, "last new C1 at step 721 / C2 at 2750" (seed 11), the
+verb counts and the C2 contexts. The .steps files (header lines
+excluded) are byte-identical (cmp): 3608 lines each for both seeds,
+the same actions and clock records. No cache bug. The cache halves the plan
+time (seed 11 479 -> 225 ms mean, 3.61 -> 1.65 s max; seed 12 556 ->
+296 ms, 3.24 -> 1.98 s) and the wall time (24:00 -> 11:17, 27:49 ->
+14:48) at 729-731 MB RSS against 109-136 MB.
+
+Replay check
+------------
+  /tmp/mbtopt/mbt-cxl-main experiment --exp growth --mixes C1x3,C2x2,C3 \
+      --depth 4 --seed 11 --steps 400 --step-time 1s \
+      --from /tmp/mbtopt/runs-sim/r3-d4-s11.steps      0.04 s
+  (same for r1-d3-s16: depth 3 seed 16 3000 steps, 0.23 s)
+print growth marks, C1 and verb/C2 lines identical to the original
+runs (85 min and 33 min): the recordings are complete and usable.

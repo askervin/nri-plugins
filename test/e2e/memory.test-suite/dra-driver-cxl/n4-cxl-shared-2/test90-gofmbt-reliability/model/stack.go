@@ -468,14 +468,21 @@ func (s *State) outcomesCut(si int) ([]*stackOutcome, bool) {
 	}
 	hadHole := start.S.hasHole()
 	var outs []*stackOutcome
-	seen := map[string]bool{}
+	// (the stack entries above N are always zero: equal stacks are
+	// equal structs, like their strings in stackOutcome.key)
+	type outKey struct {
+		S                 Stack
+		prepared, blocked userSet
+	}
+	seen := map[outKey]bool{}
 	add := func(p *playState) {
-		o := &stackOutcome{S: p.S, Prepared: p.prepared.toMap(), Blocked: p.blocked.toMap(),
-			Cleared: hadHole && !p.S.hasHole(), Pushed: p.pushed}
-		if k := o.key(); !seen[k] {
-			seen[k] = true
-			outs = append(outs, o)
+		k := outKey{p.S, p.prepared, p.blocked}
+		if seen[k] {
+			return
 		}
+		seen[k] = true
+		outs = append(outs, &stackOutcome{S: p.S, Prepared: p.prepared.toMap(), Blocked: p.blocked.toMap(),
+			Cleared: hadHole && !p.S.hasHole(), Pushed: p.pushed})
 	}
 	// the issue order first
 	issue := start
@@ -494,14 +501,18 @@ func (s *State) outcomesCut(si int) ([]*stackOutcome, bool) {
 		bySeq[e.Seq] = j
 	}
 	full := uint32(1)<<uint(len(evs)) - 1
-	memo := map[string]bool{}
+	type memoK struct {
+		mask uint32
+		p    playState
+	}
+	memo := map[memoK]bool{}
 	var dfs func(mask uint32, p playState)
 	dfs = func(mask uint32, p playState) {
 		if mask == full {
 			add(&p)
 			return
 		}
-		k := p.memoKey(mask)
+		k := memoK{mask, p}
 		if memo[k] {
 			return
 		}

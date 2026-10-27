@@ -119,4 +119,6 @@ Exported custom coverage (CoverSteps, CoverStartState, Cover), an
 incremental BestPath with results identical to the stock one (property
 tested; test06-fuzz output byte-identical, 7x faster), a search
 budget with a Stop channel (planning ahead), ResetCoverage, the Do
-nil-chain fix. Local branch 5jo-mbt-cxl, not pushed.
+nil-chain fix. Local branch 5jo-mbt-cxl, not pushed. (2026-10-27:
+merged into gofmbt's main as 7 commits, head bc12d42; test90's
+model/go.mod requires it, no go.work; run L10.)

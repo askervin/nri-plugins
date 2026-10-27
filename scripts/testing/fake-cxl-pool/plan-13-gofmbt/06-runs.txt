@@ -284,3 +284,16 @@ L9 2026-10-26 15:50, image 392e3abf548d (every fix: bug-01, -02
    reused 2833, planned again 93; planning 33 min, bash waited 9.9
    min. No driver panic, no oracle difference; cxl-pool-demo empty
    afterwards. Copy: /tmp/p13-runs/l9/out.
+L10 2026-10-27 17:47, image 392e3abf548d, the model built from its
+   go.mod with GOWORK=off (no go.work, GOFMBT_DIR unset; gofmbt
+   v0.0.0-20261027151000-bc12d421910e = main bc12d42, in `go version
+   -m` and in the log's start line), the extended planner (coverage
+   C1x3,C2x2,C3), seed 9, full, all faults, 10m. PASS: 257 steps in
+   10m57s (801 s in all), including the teardown settle. Steps:
+   create 30, delete 30, crash 17, write 41, read 38, lease-get 3,
+   lease-put 1, settle 47 (mean 8.2 s, max 91 s), driver-kill 7,
+   driver-restart 9, containerd-restart 8, kubelet-restart 8,
+   ctrl-kill 5, ctrl-start 5, ctrl-restart 3, server-restart 5.
+   Coverage 1030 strings in round 1. Plans 249: reused 241, planned
+   again 4; planning 2m07s, bash waited 22 s. No oracle difference;
+   cxl-pool-demo gone afterwards. Copy: /tmp/p13-runs/l10.

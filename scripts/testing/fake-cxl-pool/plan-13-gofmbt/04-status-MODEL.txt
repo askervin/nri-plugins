@@ -82,6 +82,7 @@ recorded/         L4's mbt-steps.txt and its observation of step 131
       GOWORK=/tmp/mbt-cxl.work go test -race -timeout 30m .  # ~10 min
   GOWORK=off go build -tags gofmbtstock .       # without the checkout
 No go.work in M (do not commit one; `go work init` in M makes one).
+(Since 2026-10-27 no go.work and no stock build: section 19.)
 
 3. Usage
 --------
@@ -867,3 +868,23 @@ vet (also -tags gofmbtstock), the stock build, go test, go test -race
 short, 1 500 long sequences, 0.63 million steps): no disagreement (it
 does not exercise steering: the simulated SUT resolves "either" at
 random).
+
+19. Build on the published gofmbt (2026-10-27)
+----------------------------------------------
+gofmbt's extensions are on its main (bc12d42, 04-status-GOFMBT.txt
+"Published"). model/go.mod requires github.com/askervin/gofmbt
+v0.0.0-20261027151000-bc12d421910e (GOWORK=off go get @bc12d42 and go
+mod tidy; the default GOPROXY through the host's https_proxy had it).
+The stock build is gone: planner_stock.go deleted, the build tags of
+planner_ext.go and covstrings_test.go dropped, MBT_STOCK_FLAGS gone
+from code.var.sh. gofmbtFlavor ("extended"/"stock") became
+gofmbtVersion, gofmbt's version from the binary's build info (the
+go.mod version, or "(devel)" with a go.work), in the log's start line
+and the headers (gofmbt=...). code.var.sh builds with GOWORK=off and
+prints the gofmbt line of `go version -m`; GOFMBT_DIR has no default
+now and, when set, builds with a go.work of the model and that
+checkout (for developing gofmbt). Section 2 now reads:
+  cd M && GOWORK=off go build -o mbt-cxl . && GOWORK=off go vet ./...
+  GOWORK=off go test ./...; GOWORK=off go test -race -timeout 30m ./...
+85 test functions; gofmt, go vet, go test, go test -race clean. Run
+L10 (06-runs.txt) built it in the cluster run.

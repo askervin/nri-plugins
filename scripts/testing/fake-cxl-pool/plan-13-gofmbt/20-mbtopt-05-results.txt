@@ -1,0 +1,213 @@
+20-mbtopt: results
+==================
+2026-10-27 (orchestrator). The questions of 02-design.txt (Q1-Q3), the
+measurements of the streams (04-status-MODEL, -GOFMBT, -DEBUG) and of
+the integration, the decisions, and what was left in test90 and in
+gofmbt. Long runs of the result: 20-mbtopt-06-runs-SIM.txt and
+20-mbtopt-06-runs-CLUSTER.txt. Host: 256 CPUs; the binary runs with
+GOMAXPROCS=2 GOGC=400; "d3" = plan time at search depth 3 on the full
+profile, seed 1, first 30 steps (mean / max); "growth" = mean plan time
+over 300 steps at depth 3 with the default mix; every number with the
+virtual clock --step-time 1s unless said otherwise; the runs of one
+table row were taken under the same host load, rows of different
+tables were not.
+
+1. Answers
+----------
+Q1 Immutable states: YES, as a contract of gofmbt (A1 of the design).
+   What the mutable-between-calls contract had cost was ~95 lines of
+   per-call String() memoization and pointer-identity bookkeeping in
+   cover.go (746 -> 651 lines), a two-part rule every reader had to
+   learn, and a trap that the review F1 of plan-13 had only moved.
+   Removing it changed no result (property and reference tests against
+   the stock copy, the player example and test06-fuzz output are
+   byte-identical) and no plan time of test90 (gofmbt is under 2% of
+   its profile; test90 memoizes String() itself). A model with an
+   expensive, unmemoized String() pays per walked step now: the toy
+   benchmark with a Fprintf String() and CoverStateActions is 56-68%
+   slower, with a memoized toy state 0-7% faster (GOFMBT status). The
+   contract says so; that is the modeler's job, as the user argued.
+Q2 De-duplication belongs to the modeler: YES. gofmbt cannot shorten
+   the walk (coverage is path-dependent) and does not know which fields
+   of a state matter; it now documents that caching and de-duplication
+   are the model's, that the caller owns StepsFrom's slice (a caching
+   Walkable returns a copy; TestCachingWalkable shows the pattern), and
+   that a cache needs a scope because the Coverer keeps covered steps.
+   The model got a canonical key, an intern table and a per-plan cache
+   of transitions and coverage strings (canon.go), switchable with
+   --plan-states. Measured: it buys ~30% of the plan time at depth 3
+   for ~0.7 GB of RSS, almost nothing at depth 4, and it hurts under a
+   tighter memory limit (section 3). The default is OFF.
+Q3 Compact encodings: used where they pay and nowhere else. The
+   fixed-layout byte key of a state (3 bytes per slot, nibbles for the
+   stacks, ~200-300 bytes in all) IS the user's Marshal idea, on the
+   model side, and it is what makes the intern table cheap. Short
+   coverage keys instead of readable strings gained 0-2% in the model
+   and 0-5% in the toy (the map is ~6% of a plan): rejected, the
+   strings stay readable. A weight per coverage function in gofmbt
+   would save ~15% at most (the w prefixed copies cost ~17% per path);
+   not added. No State/Action Marshal interface in gofmbt: a string is
+   already a byte array, and the library needs only an identity.
+The exponent: nothing changed it. The constant per evaluated path went
+from ~5.5 us (baseline) to ~4 us without the cache and ~2.8 us with it;
+depth 4 still takes 4-6 s mean and 9-13 s max per plan, and P4
+(04-status-MODEL 8) measured its coverage gain as small. test90 keeps
+depth 3, the mix C1x3,C2x2,C3 and plan-time 10 s.
+
+2. What made the model faster without memory
+--------------------------------------------
+Found on the way, kept, no memory cost (RSS 57-77 MB, as before):
+- outcomesCut (the decoder-stack outcome enumeration, 36% of the
+  baseline profile): comparable structs instead of built strings as
+  the keys of its de-duplication and DFS memo: -11..16% per path
+  (MODEL's patch, applied by the orchestrator).
+- StepsFrom loops over the action table itself instead of gofmbt's
+  Model/Transition closures; the forced-settle fast path kept.
+- C3 pair strings from a lazily filled table indexed by two action
+  indexes; C1, C2 and C4 of a step from one coverage function.
+- C2 takes the action from the step, not from the end state's Last.
+Result (section 3, row "default"): d3 409 ms / 1.76 s against the
+baseline's 561 / 2.40 (-27%), d4 4.37 / 9.43 s against 5.91 / 12.8
+(-26%), growth 511-538 ms against 650-702 (-21..23%).
+
+3. The memory/time trade of the plan cache
+------------------------------------------
+Stages of stream MODEL (04-status-MODEL; old gofmbt, before DEBUG and
+the struct keys; plantime median of 3 runs):
+  stage 0 (base)       d3 561 ms / 2.40 s  d4 5.91 / 12.8 s  growth 650/702 ms  RSS 37-39 MB
+  stage 1 (key+cache)  d3 436 / 1.85       d4 5.12 / 11.1    growth 423/433     RSS ~0.71 GB
+  stage 2 (+strings)   d3 389 / 1.63       d4 5.18 / 11.3    growth 387/388     RSS ~0.72-0.74 GB
+Integrated binary (stages 1-2 + DEBUG's rules + struct keys + gofmbt
+0ccea8c), sweep of --plan-states on ONE binary, five runs at once:
+  --plan-states      d3 mean / max       d4 mean / max      RSS
+       0 (no cache)  405 ms / 1.80 s     4.16 s /  8.84 s    60 MB
+   20000             373 / 1.77          4.34 /  9.54       345 MB
+   50000             321 / 1.42          4.01 /  8.48       702 MB
+  150000             286 / 1.22          3.93 /  8.60       751 MB
+  600000             330 / 1.45          6.20 / 13.1       1.17 GB (GC at the 768 MiB limit)
+  (paths per depth identical in every row: 36, 2629, 101882, 868426;
+  cached states at depth 3: mean 32.6k, max 127.6k; at depth 4 the
+  trees have ~430k distinct states, the bound 150k is hit)
+Growth runs, final binary, four runs at once:
+  default (no cache)              seed 1 511 ms / 2.85 s  seed 2 538 / 2.71   RSS 77 MB
+  --plan-states 150000            seed 1 310 / 1.87                            RSS 719 MB
+  --plan-states 150000, GOMEMLIMIT=384MiB
+                                  seed 1 425 / 4.57                            RSS 468 MB
+  the same limit, plantime:       d3 457 / 3.48, d4 11.4 / 26.7 s             RSS 473 MB
+Long off-line runs (20-mbtopt-06-runs-SIM.txt, 10 runs at a time beside
+the cluster test): depth 3, 3000 steps, seeds 11-16 without the cache
+458-658 ms mean per plan (max 3.2-5.3 s), 23-33 min wall, RSS 109-160
+MB; seeds 11 and 12 with --plan-states 150000: 225 and 296 ms (max
+1.65 / 1.98 s), 11-15 min wall, RSS ~730 MB, and the steps files are
+byte-identical to the uncached runs' (the cache changes no choice over
+3000 steps either).
+Coverage is the same in every row (@100 C1=56 C2=120 C3=144 C4=78,
+@200 C1=122 C2=191 C3=221 C4=143 for seed 1; the steps taken are
+identical: the cache and the strings change no choice).
+Reading: the cache is worth ~30% of the plan time at depth 3 when it
+may hold its ~300 MB live set under GOGC=400 (RSS ~0.75 GB); below
+that the GC eats the gain and worse (the 384 MiB row), and at depth 4
+the trees exceed any affordable bound. In the on-line test the plans
+are mostly hidden behind the steps (L8: bash waited 10.5 of 120 min
+for plans of 0.7-1.2 s): halving the plan time would buy a few per
+cent more steps per run. A test generator should not spend 0.7 GB
+unasked for that: the default is --plan-states 0; MBT_ARGS="--plan-
+states 150000" (and GOMEMLIMIT if 768 MiB is too much or too little)
+turns it on for a run or an experiment. The code stays: it is the
+modeler's knob, the design the user asked to study, and
+TestCanonicalKeyComplete keeps the key honest when the model changes
+(a field read by next() or a coverage function that the key omits
+fails it, provided the random trees reach states that differ in it).
+
+4. Correctness checks that held
+-------------------------------
+- Every stage and the final binary take exactly the steps of the
+  unchanged model on the seeded runs (growth marks, verb counts, paths
+  per depth), once the experiment got a clock that does not depend on
+  the plan time (--step-time; without it, the oracle's 6 s hold of a
+  device (A19) made even two runs of the same binary diverge after the
+  first hold, ~step 260 of seed 1: 04-status-MODEL, 04-status-DEBUG
+  O1). The baseline numbers of 01-findings F3 past step 200 belong to
+  one particular timing.
+- The model's test suite (85 tests incl. canon_test.go,
+  covstrings_test.go, the M8/M9 regression tests) passes with the
+  main checkout's gofmbt and the stock build (-tags gofmbtstock)
+  compiles.
+- gofmbt: gofmt, vet, go test, -race, -seeds 1500; player and
+  test06-fuzz byte-identical; exported API identical.
+- The DEBUG stream's soak of the integrated rules: depth 2, 95 seeds x
+  1000 steps, no disagreement (75 of 95 before the M8/M9 fixes).
+- L10 (20-mbtopt-06-runs-CLUSTER.txt): test90 for 2 h in the cluster,
+  seed 10, defaults (no cache), driver image 392e3abf548d: PASS, 2755
+  steps in 2h0m42s with a clean teardown, no oracle difference, no
+  panic; coverage 3447 in round 1 (L8 3403, L9 3558). Planning 22.7
+  min = 0.48 s/plan (L8 34 min = 0.75, L9 33 = 0.66; -31..36%), bash
+  waited 4.75 min (L8 10.5, L9 9.9), longest wait 1.89 s (L8 3.8 s);
+  2645 of 2813 plans reused, 84 replanned after an observation that
+  differed from the prediction. Settles are 78 of the 120 min, so the
+  planning saved buys only a few per cent more steps, as predicted.
+- RUNS-SIM (20-mbtopt-06-runs-SIM.txt): 57 off-line runs of the final
+  binary, every one PASS, no disagreement: depth 3 x 6 seeds x 3000
+  steps (C1 saturates at 215/215), depth 4 x 2 seeds x 400 steps,
+  depth 2 x 40 seeds x 2000 steps, the mix "all" x 2 x 1000, the small
+  profile on-line and off-line. Recorded runs replay with --from in
+  0.04-0.23 s. Note: at depth 4 without the cache the longest plan of
+  each seed hit the experiment's 60 s --plan-time, so a fresh depth-4
+  run depends on the planner's speed even with the virtual clock;
+  raise --plan-time (or turn the cache on) for reproducible depth-4
+  experiments.
+
+5. M8 and M9 (found by the baseline measurement, fixed)
+-------------------------------------------------------
+The baseline growth run stopped at step 330 on a disagreement between
+the oracle and the simulated SUT. The simulator was wrong (its
+scheduler hold never ended; it promoted a stalled contender through a
+decoder hole), and once fixed it exposed three model errors (M9a-c)
+that the hold had hidden; all three can happen on the cluster:
+amendment A21 (04-contract.txt), three regression tests, and the
+experiment got --steps-out/--from so that a 3-minute failing run
+replays in 0.05 s. Details: 20-mbtopt-04-status-DEBUG.txt.
+
+6. Decisions (final; D1-D7 of 02-design.txt)
+--------------------------------------------
+D1 kept: immutable states, no library memo (A1); A2 not needed.
+D2 kept: StepsFrom ownership, the doc section on caching.
+D3 kept: no Key/Marshal interfaces, no de-duplication, no weights in
+   gofmbt.
+D4 changed: the canonical key, intern table and per-plan cache exist
+   (canon.go) but are OFF by default (--plan-states 0); the memory-
+   free parts of the work (section 2) are on.
+D5 changed: precomputed C3 pairs and the merged coverage function are
+   on; per-transition C1/C2 caching comes with the cache; short keys
+   rejected.
+D6 met, with the virtual clock added to the protocol.
+D7 kept: depth 3, C1x3,C2x2,C3, plan-time 10 s, plan-ahead on.
+
+7. What was left where
+----------------------
+test90 model (M, uncommitted in the main checkout; the same commits on
+branch 5jg-cxl-mbtopt-A of /tmp/mbtopt/wt-A):
+  canon.go (new)       the key, the intern table, the per-plan cache
+  canon_test.go (new)  key completeness, copies, merging
+  covstrings_test.go (new)  precomputed strings == the reference
+  planner.go, planner_ext.go, planner_stock.go
+                       StepsFrom over the action table, the cache per
+                       plan()/planAfter(), the merged coverage
+                       functions, C2 from the step's action
+  stack.go             struct keys in outcomesCut
+  actions.go, sim.go   M9 rules, the simulator's hold and holes (M8)
+  experiment.go, online.go, main.go, topology.go
+                       --step-time, --steps-out, --from, --plan-states
+                       (Config.PlanStates, header), "cached states" in
+                       the plantime output, SetMemoryLimit(768 MiB)
+                       unless GOMEMLIMIT
+  review_test.go, recorded/m8-mbt-steps.txt
+                       M8/M9 regression tests
+gofmbt (~/github.com/askervin/gofmbt, branch 5jo-mbt-cxl fast-
+forwarded to 0ccea8c = 5jo-mbt-immutable, not pushed):
+  state.go, transition.go, model.go, cover.go, search.go, doc.go
+  bench_test.go (memoized toy, key-length and copies benchmarks),
+  cover_test.go (TestCachingWalkable replaces the mutation test)
+Documents: 04-contract.txt A21; 20-mbtopt-*.
+Not done, on purpose: pushing gofmbt (Q1 of 09-status.txt is still
+the user's); changing test90's defaults; weights or keys in gofmbt.

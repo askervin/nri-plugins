@@ -135,15 +135,44 @@ func (s *sim) resolve(st *State) *State {
 		}
 	}
 	n := st.clone()
+	// The scheduler's hold of a device whose claim was deleted before
+	// its pod was bound ends within 5 s of the delete (A19, bug-08):
+	// here it lasts through the window after the settle that ended the
+	// delete's window. Never longer: the oracle ends it at a settle at
+	// least heldSeconds after that one, and a contender that the truth
+	// stalls after the model's hold has ended would be a difference of
+	// the simulator's (M8). The step of that settle is kept in HeldAt
+	// (the oracle keeps its clock there).
+	for d := DevID(0); d < nDevs; d++ {
+		switch {
+		case !n.held(Res(d)):
+		case n.HeldAt[d] == 0:
+			n.HeldAt[d] = int64(n.Steps)
+		default:
+			n.Held &^= 1 << uint(d)
+			n.HeldAt[d] = 0
+		}
+	}
 	for i := range n.Slots {
 		ss := &n.Slots[i]
 		if ss.Phase == Stalled && s.rng.Intn(2) == 0 {
 			sl := n.slot(i)
 			n.setUnblockAt(i, 0)
 			if n.Ctrl[sl.Pool].Up {
+				// bound: an "any" pod on a host of its pool, and its
+				// Prepare makes its region there, unless a hole is in
+				// the way (A9; as simref.go and the oracle's resolve)
+				if ss.Node == VMAny {
+					hosts := poolHosts[sl.Pool]
+					ss.Node = hosts[s.rng.Intn(len(hosts))]
+				}
 				ss.Phase = Running
 				if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-					n.Stacks[si].push(key)
+					if n.Stacks[si].hasHole() {
+						ss.Phase = Blocked
+					} else {
+						n.Stacks[si].push(key)
+					}
 				}
 			} else {
 				ss.Phase = Attaching

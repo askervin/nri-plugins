@@ -16,29 +16,47 @@ package main
 
 // The gofmbt model of the State, and the planner interface that the
 // on-line loop, the generator and the experiments use. planner_ext.go
-// implements it with the extended gofmbt (branch 5jo-mbt-cxl: custom
-// coverage, budgets, coverage rounds), planner_stock.go (build tag
-// gofmbtstock) with the stock library (C1 and C3 only, no budget).
+// implements it (custom coverage, budgets, coverage rounds).
 
 import (
 	"math/rand"
+	"runtime/debug"
 	"time"
 
 	m "github.com/askervin/gofmbt/gofmbt"
 )
 
-// mbtModel is the gofmbt model: one transition per action of the
-// configuration, created once; a transition is enabled when its state
-// change returns non-nil.
+// gofmbtVersion is the version of gofmbt in the binary, printed in the
+// headers and the log: model/go.mod's version, or "(devel)" when a
+// go.work replaced it with a checkout.
+var gofmbtVersion = func() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, d := range bi.Deps {
+			if d.Path != "github.com/askervin/gofmbt" {
+				continue
+			}
+			if d.Replace != nil {
+				return d.Replace.Path + "@" + d.Replace.Version
+			}
+			return d.Version
+		}
+	}
+	return "unknown"
+}()
+
+// mbtModel is the gofmbt model: one action per action of the
+// configuration, created once; an action is enabled when State.next
+// returns non-nil. StepsFrom loops over the action table directly (no
+// gofmbt Model and Transition closures); the planner walks a planWalk
+// (canon.go), which caches the steps of canonical states per plan.
 type mbtModel struct {
 	cfg      *Config
 	acts     []Act
 	actions  []*m.Action
-	trans    []*m.Transition
-	forced   []*m.Transition // settle, write and read: all a forced state allows
+	all      []int // every action index
+	forced   []int // settle, write and read: all a forced state allows
 	byAction map[*m.Action]int
 	byAct    map[Act]int
-	model    *m.Model
 	formats  []string // C3: the format of each action
 }
 
@@ -48,37 +66,45 @@ func (mm *mbtModel) actIndex(st *m.Step) int { return mm.byAction[st.Action()] }
 func newMbtModel(cfg *Config) *mbtModel {
 	mm := &mbtModel{cfg: cfg, byAction: map[*m.Action]int{}, byAct: map[Act]int{}}
 	for _, a := range allActs(cfg) {
-		a := a
 		f, args := a.format(cfg)
 		act := m.NewAction(f, args...)
-		t := m.NewTransition(act, func(st m.State) m.State {
-			if n := st.(*State).next(a); n != nil {
-				return n
-			}
-			return nil
-		})
-		mm.byAction[act] = len(mm.acts)
-		mm.byAct[a] = len(mm.acts)
+		i := len(mm.acts)
+		mm.byAction[act] = i
+		mm.byAct[a] = i
 		mm.acts = append(mm.acts, a)
 		mm.actions = append(mm.actions, act)
-		mm.trans = append(mm.trans, t)
+		mm.all = append(mm.all, i)
 		mm.formats = append(mm.formats, f)
 		if a.Verb == VSettle || a.Verb == VWrite || a.Verb == VRead {
-			mm.forced = append(mm.forced, t)
+			mm.forced = append(mm.forced, i)
 		}
 	}
-	mm.model = m.NewModel()
-	mm.model.From(func(st m.State) []*m.Transition {
-		if st.(*State).forced() {
-			return mm.forced
-		}
-		return mm.trans
-	})
 	return mm
 }
 
-// StepsFrom implements gofmbt's Walkable.
-func (mm *mbtModel) StepsFrom(s m.State) []*m.Step { return mm.model.StepsFrom(s) }
+// stepsOf returns the steps from a state in table order; intern, if not
+// nil, maps every end state to its canonical object.
+func (mm *mbtModel) stepsOf(st *State, intern func(*State) *State) []*m.Step {
+	idx := mm.all
+	if st.forced() {
+		idx = mm.forced
+	}
+	var steps []*m.Step
+	for _, i := range idx {
+		n := st.next(mm.acts[i])
+		if n == nil {
+			continue
+		}
+		if intern != nil {
+			n = intern(n)
+		}
+		steps = append(steps, m.NewStep(st, mm.actions[i], n))
+	}
+	return steps
+}
+
+// StepsFrom implements gofmbt's Walkable without caching.
+func (mm *mbtModel) StepsFrom(s m.State) []*m.Step { return mm.stepsOf(s.(*State), nil) }
 
 // enabledActs returns the enabled actions of a state in table order.
 func (mm *mbtModel) enabledActs(s *State) []Act {
@@ -106,6 +132,8 @@ type planInfo struct {
 	Reset    bool // a new coverage round was started
 	Random   bool // no path increased coverage: a random step
 	Elapsed  time.Duration
+	States   int // canonical states of the plan's cache (planWalk)
+	Expanded int // of them, states whose steps were computed
 }
 
 // planner chooses steps by coverage.
@@ -128,22 +156,24 @@ type planner interface {
 }
 
 // forcedFirst is the walkable of planAfter: from the root only the step
-// being executed, the model's steps elsewhere.
+// being executed, the inner walkable's steps elsewhere.
 type forcedFirst struct {
-	mm   *mbtModel
-	root *State
-	step *m.Step
+	inner m.Walkable
+	root  *State
+	step  *m.Step
 }
 
 func (f *forcedFirst) StepsFrom(s m.State) []*m.Step {
 	if st, ok := s.(*State); ok && st == f.root {
 		return []*m.Step{f.step}
 	}
-	return f.mm.StepsFrom(s)
+	return f.inner.StepsFrom(s)
 }
 
-func (mm *mbtModel) forced1(from *State, a Act, to *State) *forcedFirst {
-	return &forcedFirst{mm: mm, root: from, step: m.NewStep(from, mm.actions[mm.byAct[a]], to)}
+// forced1 returns the walkable of planAfter over an inner walkable (a
+// planWalk with from and to as roots).
+func (mm *mbtModel) forced1(inner m.Walkable, from *State, a Act, to *State) *forcedFirst {
+	return &forcedFirst{inner: inner, root: from, step: m.NewStep(from, mm.actions[mm.byAct[a]], to)}
 }
 
 // randomEnabled returns a random enabled action, settle first if the

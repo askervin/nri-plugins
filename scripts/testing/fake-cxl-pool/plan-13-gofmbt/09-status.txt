@@ -16,10 +16,12 @@ What exists
   its own). Modes: MBT_MODE=online (default: coproc, planning ahead),
   replay (MBT_REPLAY=mbt-steps.txt), offline (MBT_SCRIPT=code.gen.sh of
   mbt-cxl generate). How to run: the header of code.var.sh.
-- gofmbt: local branch 5jo-mbt-cxl of ~/github.com/askervin/gofmbt
-  (10 commits on main 8920a4a, head 951575f), not pushed. test90
-  builds against the checkout through a go.work (GOFMBT_DIR); without
-  it, a stock-gofmbt build with fewer coverage criteria.
+- gofmbt: the extensions are merged into gofmbt's main on GitHub as 7
+  commits, head bc12d42 (2026-10-27; the old history in local branch
+  5jo-mbt-cxl-backup-20261027). test90's model/go.mod requires it
+  (v0.0.0-20261027151000-bc12d421910e) and code.var.sh builds it with
+  GOWORK=off; GOFMBT_DIR (unset by default) makes a go.work with a
+  checkout, for developing gofmbt. The stock build is gone. Run L10.
 - Helpers added to dra.source.sh and pool.source.sh: controller run/
   start/stop/kill, driver kill in place, kubelet/containerd restart
   on any node, driver readiness, local devices through any server,
@@ -75,8 +77,9 @@ P1 off-line PASS 47 steps; P2 lock-step, P3 planning ahead; L1 151
 steps; L2 1308 steps in 63 min, L6 1225 steps (found bug-09), L7 1528
 steps in 71 min, every fault type, full profile; L8 2663 steps in
 2 h PASS (image ee5c9ac1b7a7) and L9 2946 steps in 2 h PASS on the
-final image 392e3abf548d, both with a clean teardown. Model errors found
-by the cluster runs: M1-M7 (oracle too strict or wrong after
+final image 392e3abf548d, both with a clean teardown; L10 257 steps
+in 10 min PASS on the published gofmbt (go.mod, no go.work). Model
+errors found by the cluster runs: M1-M7 (oracle too strict or wrong after
 controller, runtime and driver faults); each became a contract
 amendment (A7, A18-A20) and a regression test; after M3-M5 an
 independent simulation of the pool controller was fuzzed off-line
@@ -85,8 +88,10 @@ reached the cluster.
 
 Open
 ----
-Q1 Push the gofmbt branch upstream and bump nri-plugins' go.mod
-   (test06-fuzz output is byte-identical on it, 7x faster)?
+Q1 ANSWERED 2026-10-27: merged into gofmbt's main at bc12d42; test90
+   uses it from its model/go.mod. Only test06-fuzz's vendored copy in
+   nri-plugins' main module is still old (f663bfa); bumping it is
+   optional (its output is byte-identical on the new one, 7x faster).
 Q2 test90 runs in every suite run (its name matches no
    SKIP_LONG_TESTS pattern): keep the 20 min default, or rename it to
    a *long* name?

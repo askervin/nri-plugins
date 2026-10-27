@@ -3,19 +3,19 @@
 #
 # The cluster of test19-many-pools (three nodes, three pool servers, three
 # pool controllers) with the local memdev of every VM attached, where a
-# model (model/, the Go program mbt-cxl, built here with
-# github.com/askervin/gofmbt) chooses the steps of a long run: pods with
-# CXL memory of every kind (exclusive and shared pool devices in numa and
-# dax mode, read-only shares, local slices, steering, leases, no claim)
-# created, deleted and crashed, data written and read, and the faults the
-# driver must survive (the driver killed in place or restarted, a pool
-# controller killed, started and restarted, a pool server restarted on its
-# state, kubelet and containerd restarted). After the steps that change
-# the cluster a "settle" observes the pods, claims, pool attachments, the
-# CXL devices of the VMs, the driver's state files and CDI specs and the
-# cpusets of the containers, and the model compares that with its
-# prediction (04-contract.txt: the actions, the protocol, the
-# observations). A failure stops the run; the steps are in
+# model (model/, the Go program mbt-cxl, built here with the
+# github.com/askervin/gofmbt of model/go.mod) chooses the steps of a long
+# run: pods with CXL memory of every kind (exclusive and shared pool
+# devices in numa and dax mode, read-only shares, local slices, steering,
+# leases, no claim) created, deleted and crashed, data written and read,
+# and the faults the driver must survive (the driver killed in place or
+# restarted, a pool controller killed, started and restarted, a pool
+# server restarted on its state, kubelet and containerd restarted). After
+# the steps that change the cluster a "settle" observes the pods, claims,
+# pool attachments, the CXL devices of the VMs, the driver's state files
+# and CDI specs and the cpusets of the containers, and the model compares
+# that with its prediction (04-contract.txt: the actions, the protocol,
+# the observations). A failure stops the run; the steps are in
 # mbt-steps.txt for a replay.
 #
 # Modes (MBT_MODE):
@@ -28,9 +28,10 @@
 # time-based), MBT_DURATION (20m), MBT_STEPS (0: no limit), MBT_DEPTH (3),
 # MBT_PROFILE (full), MBT_UNSETTLED (3), MBT_SETTLE_TIMEOUT (180 s),
 # MBT_POLL (3 s), MBT_AVOID (verbs or verb:arg to leave out), MBT_REPLAY,
-# MBT_SCRIPT, GOFMBT_DIR (~/github.com/askervin/gofmbt: built with a
-# go.work that uses it, if it is there), MBT_ARGS (more flags of mbt-cxl,
-# for instance "--plan-ahead=false"). MBT_POLL is the executor's: the
+# MBT_SCRIPT, GOFMBT_DIR (unset: the gofmbt of model/go.mod; a checkout
+# of github.com/askervin/gofmbt: the model is built with a go.work that
+# uses it, for developing gofmbt), MBT_ARGS (more flags of mbt-cxl, for
+# instance "--plan-ahead=false"). MBT_POLL is the executor's: the
 # seconds between settle observations. Executor: MBT_TRACE (1: the
 # dra-trace of every component, 0: none), MBT_OBS_KEEP (30 observations
 # kept in mbt-obs/), MBT_STUB=1 (run mbt-stub.py, a fixed list of steps
@@ -69,8 +70,7 @@ MBT_AVOID="${MBT_AVOID:-}"
 MBT_REPLAY="${MBT_REPLAY:-}"
 MBT_SCRIPT="${MBT_SCRIPT:-}"
 MBT_TRACE="${MBT_TRACE:-1}"
-MBT_STOCK_FLAGS=()   # the flags of a model built on stock gofmbt
-GOFMBT_DIR="${GOFMBT_DIR:-$HOME/github.com/askervin/gofmbt}"
+GOFMBT_DIR="${GOFMBT_DIR:-}"
 NODE_HB0=2   # the NUMA node of the CXL memory under host bridge 0 (local memdev, pool-a, pool-b)
 NODE_HB1=3   # and under host bridge 1 (pool-c)
 
@@ -91,23 +91,23 @@ elif [ "${MBT_STUB:-0}" == 1 ] || [ ! -f "$TEST_DIR/model/go.mod" ]; then
     [ "${MBT_STUB:-0}" == 1 ] || echo "WARNING: no $TEST_DIR/model/go.mod: the stub generator runs instead of the model"
     MBT_BIN="$TEST_DIR/mbt-stub.py"
 else
-    # The go.work is for the model only: other go builds of the test
-    # (cxl-dump) are of the main module. The model needs the extensions of
-    # gofmbt (branch 5jo-mbt-cxl, not published yet): without GOFMBT_DIR
-    # it builds on the gofmbt of model/go.mod with -tags gofmbtstock, which
-    # knows only the coverage C1 and C3 and plans without a time budget.
-    if [ -d "$GOFMBT_DIR" ]; then
-        rm -f "$TEST_OUTPUT_DIR/go.work" "$TEST_OUTPUT_DIR/go.work.sum"
+    # The model is a module of its own (model/go.mod), built without the
+    # main module's go.work (GOWORK=off), or with a go.work of the model
+    # and a gofmbt checkout if GOFMBT_DIR is set. The go.work is for the
+    # model only: other go builds of the test (cxl-dump) are of the main
+    # module.
+    rm -f "$TEST_OUTPUT_DIR/go.work" "$TEST_OUTPUT_DIR/go.work.sum"
+    if [ -n "$GOFMBT_DIR" ]; then
+        [ -f "$GOFMBT_DIR/go.mod" ] || error "GOFMBT_DIR=$GOFMBT_DIR is not a checkout of github.com/askervin/gofmbt"
+        echo "GOFMBT_DIR is set: building the model with a go.work that uses $GOFMBT_DIR instead of the gofmbt of model/go.mod"
         host-command "cd $(printf %q "$TEST_OUTPUT_DIR") && GOWORK= go work init $(printf %q "$TEST_DIR/model") $(printf %q "$GOFMBT_DIR")" ||
             command-error "cannot make a go.work of the model and $GOFMBT_DIR"
-        host-command "cd $(printf %q "$TEST_DIR/model") && GOWORK=$(printf %q "$TEST_OUTPUT_DIR/go.work") go build -o $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") ." ||
-            command-error "cannot build the model in $TEST_DIR/model with the gofmbt of $GOFMBT_DIR (it needs its branch 5jo-mbt-cxl)"
+        mbt_gowork="$TEST_OUTPUT_DIR/go.work"
     else
-        echo "WARNING: no GOFMBT_DIR ($GOFMBT_DIR): building the model on the stock gofmbt of model/go.mod (-tags gofmbtstock): coverage C1,C3 only, no plan budget. Set GOFMBT_DIR to a checkout of github.com/askervin/gofmbt branch 5jo-mbt-cxl for the full model."
-        host-command "cd $(printf %q "$TEST_DIR/model") && GOWORK=off go build -tags gofmbtstock -o $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") ." ||
-            command-error "the model does not build on the stock gofmbt: set GOFMBT_DIR to a checkout of github.com/askervin/gofmbt branch 5jo-mbt-cxl (default ~/github.com/askervin/gofmbt) until its extensions are published"
-        MBT_STOCK_FLAGS=("--coverage=C1,C3")
+        mbt_gowork=off
     fi
+    host-command "cd $(printf %q "$TEST_DIR/model") && GOWORK=$(printf %q "$mbt_gowork") go build -o $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") . && go version -m $(printf %q "$TEST_OUTPUT_DIR/mbt-cxl") | grep -w github.com/askervin/gofmbt" ||
+        command-error "cannot build the model in $TEST_DIR/model (GOWORK=$mbt_gowork)"
     MBT_BIN="$TEST_OUTPUT_DIR/mbt-cxl"
 fi
 [ -x "$MBT_BIN" ] || error "the generator $MBT_BIN is not executable"
@@ -236,8 +236,8 @@ dra-py assert "$MBT_OBS" "j['errors'] == [] and j['pods'] == [] and all(j['vms']
 echo "### 1: the run"
 export MBT_OUT="$TEST_OUTPUT_DIR"
 # Go's flag package keeps the last value of a flag: the flags of the
-# header of a replayed file first, then the stock build's coverage, the
-# MBT_* (in replay only those the user set), the measured facts, MBT_ARGS.
+# header of a replayed file first, then the MBT_* (in replay only those
+# the user set), the measured facts, MBT_ARGS.
 MBT_FLAGS=()
 if [ "$MBT_MODE" == replay ]; then
     mapfile -t MBT_FLAGS < <(mbt-header-flags "$MBT_REPLAY")
@@ -246,7 +246,6 @@ if [ "$MBT_MODE" == replay ]; then
     [ -z "$hdr_blocks" ] || [ "$hdr_blocks" == "$LOCAL_BLOCKS" ] ||
         echo "WARNING: $MBT_REPLAY was recorded with --local-blocks $hdr_blocks, the cluster has $LOCAL_BLOCKS: the replay may diverge"
 fi
-MBT_FLAGS+=("${MBT_STOCK_FLAGS[@]}")
 mbt-flag() {
     # Usage: mbt-flag VAR FLAG=VALUE: add FLAG=VALUE, in replay only if
     # the user set VAR.

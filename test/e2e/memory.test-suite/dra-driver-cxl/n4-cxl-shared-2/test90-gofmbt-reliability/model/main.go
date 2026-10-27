@@ -45,13 +45,19 @@ func main() {
 // a lot of short-lived states, and the garbage collector of a host with
 // many CPUs spends most of the time on its own synchronization (256 CPUs:
 // depth 3 on the full profile took 2.4x longer with all of them than with
-// GOMAXPROCS=2 and GOGC=400).
+// GOMAXPROCS=2 and GOGC=400). With --plan-states a plan keeps its distinct
+// states until it ends (canon.go, ~300 MB at 150000): unless GOMEMLIMIT is
+// set, a soft limit of 768 MiB keeps GOGC=400 from growing the heap to
+// five times that.
 func tuneRuntime() {
 	if os.Getenv("GOMAXPROCS") == "" && runtime.NumCPU() > 2 {
 		runtime.GOMAXPROCS(2)
 	}
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(400)
+	}
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(768 << 20)
 	}
 }
 
@@ -113,6 +119,7 @@ type commonFlags struct {
 	from          string
 	avoidHoles    bool
 	unblock       time.Duration
+	planStates    int
 }
 
 // defaultCoverage is the default mix, chosen by the P4 experiments
@@ -134,6 +141,7 @@ func (c *commonFlags) register(fs *flag.FlagSet, online bool) {
 	fs.IntVar(&c.randomness, "randomness", 1, "gofmbt randomness level (0 none, 1 among equally good, ... 4 any increasing path)")
 	fs.IntVar(&c.maxRestarts, "max-restarts", 2, "crash and driver-kill only below this many restarts (CrashLoopBackOff)")
 	fs.IntVar(&c.maxPaths, "max-paths", 0, "paths evaluated per plan at most (0: no limit; reproducible)")
+	fs.IntVar(&c.planStates, "plan-states", defaultPlanStates, "states the planner caches per plan at most (0: no cache; 150000 caches a whole depth-3 plan: ~30% less plan time for ~0.7 GB; GOMEMLIMIT bounds the heap, default 768 MiB)")
 	fs.BoolVar(&c.avoidHoles, "avoid-holes", false, "never generate an action that destroys a CXL region below the top of its decoder stack (A9)")
 	if online {
 		fs.DurationVar(&c.duration, "duration", 20*time.Minute, "time budget of the run before the teardown (0: no limit)")
@@ -169,6 +177,10 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 	}
 	cfg.MaxRestarts = c.maxRestarts
 	cfg.AvoidHoles = c.avoidHoles
+	cfg.PlanStates = c.planStates
+	if cfg.PlanStates < 0 {
+		return runOpts{}, errors.New("--plan-states must not be negative")
+	}
 	if c.avoid != "" {
 		for _, r := range strings.Split(c.avoid, ",") {
 			if r = strings.TrimSpace(r); r != "" {
@@ -209,8 +221,8 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 		outDir:         c.out,
 		unblockTimeout: c.unblock,
 	}
-	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --max-paths %d",
-		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.maxPaths)
+	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --max-paths %d --plan-states %d",
+		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.maxPaths, c.planStates)
 	if online {
 		o.header += fmt.Sprintf(" --steps %d --duration %s --settle-timeout %s --unblock-timeout %s --plan-ahead=%v --plan-time %s", c.steps, c.duration, c.settleTimeout, c.unblock, c.planAhead, c.planTime)
 	} else {

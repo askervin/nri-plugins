@@ -1,0 +1,289 @@
+20-mbtopt: status of stream GOFMBT
+==================================
+2026-10-27. Worktree /tmp/mbtopt/gofmbt-B of ~/github.com/askervin/gofmbt,
+branch 5jo-mbt-immutable from 5jo-mbt-cxl 951575f, NOT pushed; the main
+checkout ~/github.com/askervin/gofmbt was not touched. go.mod unchanged
+(go 1.23.4). gofmt -l empty, go vet clean, go test ./... (~30 s) and
+go test -race ./... (~143 s) pass on the tip; go test on every commit;
+the thorough run `go test ./gofmbt -run 'Equivalence|Reference|Caching'
+-args -seeds 1500` passes (141 s). Exported API unchanged (go doc -short
+of both checkouts is identical), so the test90 model builds as before.
+The 5jo-mbt-cxl -> 5jo-mbt-immutable step is a fast-forward.
+
+Commits
+-------
+1dd3898 gofmbt: benchmark memoized state strings and coverage keys on the toy
+ac827c3 gofmbt: states are immutable, drop the state string memo
+0ccea8c gofmbt: document caching and de-duplication as the model's
+
+ gofmbt/bench_test.go | 232 +++++++++++++++++-----   (test only)
+ gofmbt/cover.go      | 217 ++++++----------------- (746 -> 651 lines)
+ gofmbt/cover_test.go | 121 ++++++++++---          (test only)
+ gofmbt/doc.go        |  42 +++-
+ gofmbt/model.go      |   7 +-
+ gofmbt/search.go     |  14 +-
+ gofmbt/state.go      |  10 +
+ gofmbt/transition.go |   4 +-
+ 8 files changed, 422 insertions(+), 225 deletions(-)
+
+The contract (design D1, alternative A1)
+----------------------------------------
+state.go, State:
+  A State is immutable once it is given to gofmbt: returned by a
+  StateChange or in a Step of a Walkable, passed to BestPath*,
+  NewStep or MarkCovered, or held in a Step. What changes in the
+  modeled system is a new State, never a modification of an existing
+  one. gofmbt calls String() of the same State any number of times
+  and expects the same result every time. Coverage functions of
+  states, like CoverStates and CoverStateActions, call it for the
+  states of every step that BestPath walks, so String() should be
+  cheap: if it is expensive to compute, the State should memoize it.
+transition.go, StateChange: must not modify the original state, and the
+  state it returns must not be modified afterwards; it may return the
+  original state if the transition changes nothing.
+cover.go, Coverer: "States are immutable (see State): the Coverer keeps
+  the steps marked covered and their states, and coverage functions may
+  call String() of the states of every step whenever the Coverer needs
+  their strings." MarkCovered: the Coverer keeps the steps, their states
+  must not change; if the SUT ended up elsewhere than predicted, mark
+  NewStep(step.StartState(), step.Action(), observed) with a new object.
+search.go, BestPath: the state coverage functions call String() of the
+  states of every walked step, so String() should be cheap (see State).
+doc.go: the same in the Models section; the "States must not change
+  while BestPath is running ... Between calls ... may be updated in
+  place" sentence is gone; the on-line example's execute() "returns a
+  new State object" and marks NewStep(start, action, observed) (it
+  already did).
+Removed: every "between the calls they may change" wording (Coverer,
+MarkCovered, BestPath, doc.go). This reverses the F1 disposition of
+05-review-GOFMBT.txt on the user's instruction.
+
+What was removed from cover.go/search.go (ac827c3: -164 +67 lines)
+-------------------------------------------------------------------
+stateStrs and its startOk/endOk bits, sameState() (and the reflect
+import with its pointer-kind check), covCtx.nodeString/startString/
+endString, and covCtx's c, hist, rootIsHist, nodes, nodeStr, nodeOk and
+sameStart fields with their init/place bookkeeping. covCtx keeps only
+buf (history window + current path), h and roundStarted; init takes
+roundStarted as an argument (the callers set it on the next line
+before). The internal incremental functions now get the window of
+steps (stepCover.add(dst, steps Path)) or the start state
+(startCover.add(dst, s State)) instead of covCtx and indexes; the
+built-ins call String() directly. CoverStateCombinations calls String()
+once per state of the window and combination (a closure-local buffer
+of end strings), not twice as before. All windows are now capped
+slices (before: only CoverSteps'). Results are unchanged: the property
+test (TestEquivalenceWithStock*, against the verbatim stock copy) and
+the reference tests pass unchanged; only String() call counts differ.
+TestStateChangedAfterMarkCovered (the old contract) is replaced by
+TestCachingWalkable: a Walkable that interns states by String() and
+caches their steps (returning copies) plans exactly the same tests as
+the plain model, on randomness levels 0-4, 400 steps, across 1-3
+coverage rounds, with CoverStates, CoverStateActions,
+CoverStateCombinations(2), CoverActionCombinations(2) (>99.9% cache
+hits). Mutation check: returning the cached slice itself (no copy)
+makes it fail at the first plan (the search shuffles it in place).
+
+D2: Walkable ownership and the caching section (0ccea8c)
+-------------------------------------------------------
+Checked: search.walk shuffles the StepsFrom result in place
+(c.shuffle -> rand.Shuffle on the slice) on randomness levels >= 1;
+Walker.yieldPaths passes it to the user's step filter, which may
+reorder or overwrite it. Kept as is (cheap). Walkable.StepsFrom now
+says: the caller owns the returned slice and may reorder it, so a
+caching Walkable returns a copy; steps and states are not modified.
+doc.go "# Caching and de-duplication" (generic): gofmbt does not
+compare, de-duplicate or cache states; StepsFrom is called for every
+state of every walked path and coverage functions for every step of
+every path, since coverage depends on the path. Caching and
+de-duplication are the model's: with immutable states a model may
+intern equal states by a key of the fields its transitions and
+coverage functions read, and cache the steps of a state (and its own
+coverage computations). Musts: return a copy of the cached slice; give
+the cache a memory scope, e.g. one BestPath call, because the Coverer
+keeps covered steps and their states (a cache hanging off states, or
+never dropped, keeps every explored state alive for the round).
+Points to TestCachingWalkable. Plus: Actions are best created once
+(NewAction/OnAction and their Transitions) and reused by the
+generators: creating an Action formats its name.
+
+Measurements (this host, 256 CPUs, go 1.26.3, -cpu 2)
+-----------------------------------------------------
+Toy (BenchmarkBestPathToy: 4 slots x 10 kinds x 3 nodes + 6 faults,
+126 steps from the root, 5 history steps). Test binaries of 1dd3898
+(before: the old Coverer with the new benchmarks) and 0ccea8c (after),
+run alternately 5 times; median ms/op (depth 3: 3 iterations per run).
+  new        = the toy as it was (Fprintf String(), actions per call)
+  new-memo   = toyState memoizes String() in a field
+  -once      = the toy's transitions and actions created once
+                                          before     after    change
+  StateActions        d2 new              12.8      19.9      +56%
+                      d2 new-memo         12.9      12.2       -6%
+                      d2 new-memo-once     4.19      4.03      -4%
+                      d3 new             884      1484        +68%
+                      d3 new-memo        936       869         -7%
+                      d3 new-once        317       987      (+211%)
+                      d3 new-memo-once   327       306         -6%
+  States+Actions      d2 new              21.9      22.5       +3%
+                      d2 new-memo         20.6      22.7     (+10%, noise: min 18.2 vs 20.0)
+                      d3 new            1646      1505         -9%
+                      d3 new-memo       1484      1407         -5%
+                      d3 new-memo-once   899       893         -1%
+  ActionCombinations2 d2 new-memo         14.5      12.0      -17%
+                      d3 new             934      1044      (+12%, min 899 vs 908)
+                      d3 new-memo       1022      1020         0%
+                      d3 new-memo-once   429       438         +2%
+  WalkToy (no coverage) d2 10.3 / 10.5, d3 713 / 728 (unchanged code: the noise level, ~+-5-10%)
+  Allocations: identical except ~600 B per BestPath less (the per-call memo slices); the
+  non-memoizing StateActions allocates +11% (a String() per leaf).
+Reading: only a model with an expensive, non-memoized String() and a
+state coverage function that the memo used to share between siblings
+(CoverStateActions: one String() per parent, now one per walked step)
+gets slower: +56-68% on the toy (Fprintf of 4 ints per leaf, ~0.2 us).
+CoverStates did one String() per leaf before too: unchanged. With the
+memoizing toy state (what the contract asks), everything is the same
+or a few percent faster: the memo bookkeeping (reflect.TypeOf per
+placed step, per-call slices) is gone.
+Player example (CoverStateActions, BestPath depth 8, Sprintf String(),
+not memoized): 5 runs each, wall 1.45-1.57 s before, 1.75-1.83 s after
+(+16%). Output byte-identical (142 lines, md5 9dc4b1dc...).
+
+CXL model (test90 model of the main checkout, unchanged, built with
+GOWORK=/tmp/mbtopt/work-B/go.work -> /tmp/mbtopt/work-B/mbt-cxl; the
+baseline is /tmp/mbtopt/mbt-cxl-base). The model calls no String()
+through gofmbt (its coverage is CoverSteps/CoverStartState of its own
+strings, and CoverActionFormatCombinations), so the change can only
+remove library overhead. Identical results:
+  plantime --max-depth 4 --seed 1 --steps 30: paths mean/max per depth
+    identical (36/69, 2629/5689, 101882/431810, 868426/1355541).
+    plan time (mean / max):          base                  new
+      depth 1                      132 us / 436 us       122 us / 326 us
+      depth 2                      12.4 ms / 36 ms       11.6 ms / 37 ms
+      depth 3                      609 ms / 2.62 s       548 ms / 2.37 s
+      depth 4                      6.18 s / 13.5 s       5.46 s / 11.3 s
+    repeated depth-3 runs (--max-depth 3), mean ms: base 615, 546, 548,
+    550; new 599, 566, 499, 584 (user CPU 17.2/17.4 s vs 15.9/18.3 s).
+  growth --mixes C1x3,C2x2,C3 --depth 3 --seed 1 --steps 300: output
+    identical apart from the plan times (@100 C1=56 C2=120 C3=144 C4=78,
+    @200 C1=122 C2=191 C3=221 C4=143, C1 188/215, the verbs and C2
+    contexts line too); plan mean base 584, 601, 596 ms; new 657 (my
+    race test was running on other cores), 602, 661 ms; max 3.2 s vs
+    3.1-3.8 s. RSS 45 MB vs 47-48 MB.
+  growth seed 2, 300 steps: identical numbers (@100 C1=60 C2=114 C3=139
+    C4=80, @200 C1=127 C2=191 C3=221 C4=144); plan mean base 767 ms,
+    new 723 ms; RSS 44 / 51 MB.
+  CPU profile of plantime depth 3 (p-base1/p-new1.prof in
+  /tmp/mbtopt/B-meas): gofmbt flat time < 2% in both, the rest is the
+  model (StepsFrom ~60%, appendStepStrings ~26% = the model's coverage
+  functions). Conclusion: no measurable difference; run-to-run noise on
+  this shared host is +-10% (other streams' mbt-cxl runs and VMs).
+test06-fuzz generate.go (scratch modules /tmp/mbtopt/t06-{old,new} with
+a replace to each checkout): default flags (3000 steps, depth 4,
+CoverActionCombinations(3), randomness 0): 9001 lines, identical apart
+from line 1 (the generate.go path); 53.9 s vs 53.6 s. generate.sh-like
+flags --cpu 14050 --test-steps 1000 --random-seed 1 --randomness 2:
+3001 lines identical apart from line 1; 16.8 s vs 16.3 s.
+
+A2 decision
+-----------
+Not adopted. The trigger was "the memoizing toy or the CXL model more
+than ~20% slower at depth 2 and 3": the memoizing toy is 0-7% faster at
+depth 2 and 3, the CXL model has the same paths and plan times within
+noise. A model that does not memoize an expensive String() and uses
+CoverStateActions pays (toy +56-68%, player +16%): that is the
+documented responsibility of the model (memoize in the state); a
+library map[State]string would cost a map insert per walked state for
+every model that already memoizes.
+
+Actions created once (to report only)
+-------------------------------------
+In the memoizing toy, creating the transitions and actions on every
+StepsFrom (OnAction -> NewAction -> Sprintf, the Do closures) is most of
+the time: StateActions d2 12.2 -> 4.0 ms (-67%), d3 869 -> 306 ms
+(-65%); States+Actions d3 1407 -> 893 ms (-37%); ActionCombinations2
+d3 1020 -> 438 ms (-57%). A CPU profile of StateActions d2 new-memo:
+NewAction 34% cum, the toy's generator 56%. The test90 model already
+creates its actions once (M/planner.go newMbtModel). The player example
+and the toy still create them per call (unchanged: the player is a
+readable example; the toy's -once variant shows the difference).
+
+C2: short coverage keys vs readable strings (BenchmarkCoverageKeysToy)
+---------------------------------------------------------------------
+Memoizing toy, actions once, CoverSteps(1, fn) returning 2 precomputed
+strings per step (the action, the action with the end state's
+occupancy), readable ~30 bytes ("C0.C1|create p0 kind3 node1 with 2
+pods") or a 3-byte key per distinct readable string (a bijection: the
+same paths, checked by the benchmark). Median of 5 runs, ms/op:
+                     depth 2    depth 3
+  none (no strings)    2.32      170       the walk and the toy model
+  short-w1             3.64      274
+  long-w1              3.59      287
+  short-w3             6.32      513
+  long-w3              6.36      513
+  long-w3-built       15.5      1141       copies built per call, as M/coverage.go weigh does
+At depth 3 (~2 M leaves, ~4 M strings with w1) the coverage map costs
+~115 ms = ~29 ns per string, 40% of this cheap toy's plan; 3-byte keys
+instead of 30-byte strings save 0-5% of the plan (within noise; zero
+with w3). The map's cost is the lookup itself (and the cache misses),
+not the hashing of 30 bytes. In the CXL model the map is ~6% of the
+plan (mapaccess2_faststr 5.6% in base-growth.prof, countNew 33.8 minus
+appendStepStrings 27.9). Recommendation: keep readable strings (C2
+rejected for gofmbt; nothing in gofmbt to change anyway: a short string
+already is a byte array).
+
+C3: weights as copies vs a weight per coverage function
+-------------------------------------------------------
+Toy, depth 3: weight 3 as 3 precomputed copies costs 513 vs 287 ms for
+weight 1 (+79%: 2 more map lookups per string); built per call like
+weigh() 1141 ms (+300%: the string concatenation and slice dominate).
+CXL model (base-growth.prof): weigh 8.75% of the plan (building the
+copies), plus roughly half of the ~6% map lookups being copies (~3%):
+~12% in the baseline. But the 8.75% is the model's string building,
+which stream MODEL's precomputed strings (design C1, D5) remove
+without any gofmbt change (precompute the weighted copies per
+transition, as M/planner_ext.go already does for the C1 names). What
+a library weight would save on top of that is the copies' lookups,
+~3% of a typical plan: under the 10% bar. Not implemented, not
+designed further. For the record, what it would take: a new method
+(e.g. CoverStepsWeighted(window, weight, fn)), a weight per stepCover,
+weighted sums in markNew/countNew/estimateSlow, and a decision on
+Coverage() (count strings or weights) and on a string returned by
+functions of different weights; ~40 lines and two semantic questions,
+for ~3%. Recommendation: no (design C3 default). C4 (Marshal/Key
+interfaces) not touched, as decided.
+
+Limitations
+-----------
+- Immutability is a contract, not checked: a model that modifies a
+  state after giving it to gofmbt gets wrong coverage silently (as
+  with the old contract during a call). The doc says it in State,
+  StateChange, Coverer, MarkCovered and doc.go.
+- Non-memoizing models with expensive String() and state coverage
+  functions are slower (CoverStateActions: one String() per walked
+  step instead of one per parent state; toy +56-68%, player +16%).
+- Timings on this host are noisy (+-10% between identical runs, other
+  streams running); the CXL comparison rests on identical paths, the
+  library's < 2% share in the profile, and interleaved runs.
+- bench_test.go's toyState memo is not goroutine-safe (benchmarks are
+  single-goroutine); a model sharing states between goroutines
+  memoizes race-free (test90: atomic.Pointer).
+
+How to verify
+-------------
+  cd /tmp/mbtopt/gofmbt-B
+  gofmt -l . ; go vet ./... ; go test ./... ; go test -race ./...
+  go test ./gofmbt -run 'Equivalence|Reference|Caching' -args -seeds 1500
+  go test ./gofmbt -run xxx -bench 'BestPathToy/.*/new|CoverageKeysToy' -cpu 2 -benchtime 3x
+  diff <(cd ~/github.com/askervin/gofmbt && go run ./examples/player) <(go run ./examples/player)
+  diff <(cd ~/github.com/askervin/gofmbt && go doc -short ./gofmbt) <(go doc -short ./gofmbt)
+  test06: /tmp/mbtopt/t06-{old,new}/gen (go.mod replace to each
+    checkout; rebuild with GOWORK=off GOFLAGS=-mod=mod go build -o gen .),
+    diff the outputs without line 1.
+  CXL: cd T/model && GOWORK=/tmp/mbtopt/work-B/go.work go build -o
+    /tmp/mbtopt/work-B/mbt-cxl . and the 03-plan protocol; raw outputs
+    in /tmp/mbtopt/B-meas (base-*, new-*, r1-*, r2-*, bench/).
+Integration: fast-forward 5jo-mbt-cxl to 5jo-mbt-immutable (0ccea8c).
+Nothing in test90 needs to change for it (its states are already
+immutable and memoize String()); the MODEL stream's caching Walkable is
+what doc.go's new section describes (copy the cached slice, per-plan
+scope).

@@ -1,0 +1,178 @@
+20-mbtopt: design
+=================
+2026-10-27 (orchestrator). Inputs: 20-mbtopt-01-findings.txt (F1-F7).
+Provisional decisions D1-D7 at the end; 05-results confirms or
+changes them after the measurements of the streams.
+
+1. The question split in three
+------------------------------
+Q1 Should a gofmbt State be immutable once created, as a contract?
+Q2 Who de-duplicates states: gofmbt or the modeler?
+Q3 Is a compact encoding (Marshal) of states and actions worth adding
+   to gofmbt, to the model, or to neither?
+And the rule for all three: the search is b^d leaves whatever we do
+(F7). A change is worth it if it makes the code simpler, or if it
+cuts the constant per leaf enough to matter for the depth or the
+budget that test90 uses; not otherwise.
+
+2. Q1: immutability
+-------------------
+A0 As today: states may change between Coverer calls; the library
+   memoizes String() per call with pointer identity (F1).
+   + an on-line loop may patch its current state object in place.
+   - 130 lines of memo bookkeeping in cover.go; a contract with two
+     halves ("not during a call, but between calls") that every
+     reader must learn; the documented F1 trap is only moved, not
+     removed (a state changed DURING a MarkCovered of several steps,
+     or by another goroutine while a plan runs, still breaks).
+A1 Contract: a State returned by a StateChange (or given to the
+   library in any way) is final. The library drops its String() memo
+   and calls String() where it needs it; the doc says String() is
+   called several times per walked step and should be O(1) amortized
+   (memoize in the model, as test90 does with atomic.Pointer; value
+   states compute it each time, which is fine for small models).
+   + the simplest cover.go: covCtx shrinks to the window buffer and
+     the round flag; sameState, stateStrs, nodeStr/nodeOk/sameStart/
+     rootIsHist and their tests go; one sentence of contract.
+   + de-duplication by the modeler becomes obviously safe (a cached
+     Step's end state can be shared by many paths).
+   - a model whose String() is expensive and not memoized pays per
+     call (the toy benchmark's Fprintf: measure).
+   - the on-line loop must create a new state object for the observed
+     state: test90 already does (F2), and doc.go's example does
+     (NewStep(start, action, observed)).
+A2 A1 plus a simple per-search memo in the library: one
+   map[State]string for pointer states, created by BestPath*/
+   MarkCovered and dropped at return.
+   + naive models stay as fast as today.
+   - one map and ~20 lines; a reflect check for pointer-ness; the
+     memo is wasted work for models that memoize themselves (a map
+     insert per walked state, ~30-50 ns of ~5000).
+Recommendation: A1. A2 only if the toy benchmark loses more than
+~20% with a memoizing toy state (the model's responsibility, stated).
+
+3. Q2: de-duplication
+---------------------
+B0 In gofmbt. The library would need an identity for states (a Key()
+   method or String() itself) and a cache of StepsFrom per identity.
+   - the library cannot know which fields of a state matter for the
+     transitions (F2: test90's Steps, Last, HeldAt... do not), so the
+     identity would have to be the model's anyway; the library cannot
+     skip repeated states in the walk (coverage is path-dependent), so
+     it could only cache StepsFrom, which the model does better with
+     its own key, its own cache scope and its own memory policy. A
+     generic cache in the library also fixes one memory policy for
+     every model. Rejected: gofmbt stays a walker over a Walkable.
+B1 In the model, as a caching Walkable (the modeler's choice, per
+   model):
+   - a canonical key of the search-relevant state (F2): fixed-layout
+     bytes (per slot ~3 bytes, controllers, drivers, stacks, the
+     event window in order, the bit sets, Unsettled), ~200-300 bytes;
+     computed once per new state;
+   - an intern table key -> *State: next(a) returns the canonical
+     object for its key, so equal states ARE the same object;
+   - a cache canonical *State -> []*m.Step (its steps, end states
+     canonical too): StepsFrom returns a COPY of the cached slice (the
+     search reorders it, F1);
+   - scope: the planner's own maps, created at the start of plan()/
+     planAfter() and dropped at the end (F4: the overlap between
+     plans is ~3%; F5: caches in State objects would be retained
+     through Coverer.coveredPath). Memory per plan: the distinct
+     states of one tree (~100k, ~100 MB worst case at depth 3; fine
+     for a process that has 60 MB today; at depth 4 bound the table or
+     accept ~0.5-1 GB; measure).
+   + removes 40-60% of next() calls at depth 3 (F4), where 57% of the
+     time is (F3): ~1.4-1.8x on the search before anything else;
+   + makes the memoized per-state data (abstract(), occ(),
+     leaseChances) hit more often;
+   - correctness rests on the key being complete: a field that
+     next() or a coverage function reads but the key omits merges
+     states that behave differently. Checked by (a) a test that
+     walks random trees with and without interning and compares the
+     steps' action lists and end-state dumps (without the excluded
+     fields) and the coverage strings, (b) the growth experiment with
+     a seed must print the same coverage numbers and take the same
+     steps with and without the cache (reproducible run, F3).
+   - Last must go out of the coverage functions (use the step's
+     action, M/planner_ext.go, M/coverage.go faultContext callers);
+     Steps/Last/Alts of a canonical state are those of the first path
+     that reached it: harmless because no search state leaves the
+     planner (F2), to be stated in a comment.
+B2 B1 plus a cache kept across plans (an LRU or a generation count).
+   - gains ~3% (F4) for memory that grows with the run; rejected.
+Recommendation: B1.
+
+4. Q3: compact encodings
+------------------------
+C0 Coverage elements stay human-readable strings built per step
+   (concat + weigh copies): 25% of the time is model-side string
+   building and allocation (F3), ~8% the coverage map lookups.
+C1 Precompute the strings. With B1 every (canonical state, action)
+   pair is seen once per plan, so its C1 strings (names + lease
+   chances of the end state) and C2 strings (fault context of start
+   state and action) can be cached next to the transition; C3 pair
+   strings are a lazily filled table indexed by two action indexes.
+   The coverage functions then only append precomputed slices. No
+   gofmbt change; the strings stay readable in reports.
+   + removes most of the 25% (and the allocation pressure that the GC
+     workers' 6% comes from).
+C2 Short coverage keys (the user's Marshal idea applied to coverage):
+   the coverage functions return 2-4 byte strings (criterion, index)
+   and the model keeps the readable names in a table for its reports
+   (CoveredStrings is only used by tests today). No gofmbt change is
+   needed: a string is a string; the map hashes 3 bytes instead of
+   30. Expected gain: part of the ~8% of map cost; measure on top of
+   C1 before deciding; if it is under ~5% of the plan time, keep the
+   readable strings (simpler debugging of coverage).
+C3 Weights in gofmbt (a weight per coverage function) instead of w
+   prefixed copies: saves (w-1) map lookups per string (C1x3, C2x2).
+   A small generic feature, but an API addition for a few percent;
+   decide on measurement; default no.
+C4 Marshal/Unmarshal interfaces in gofmbt (State, Action): the
+   library needs only an identity string from a state and the
+   action's name/format; both exist. A Marshal method would be a
+   second way to say the same thing. For the model's de-duplication
+   key (B1) the model needs no library interface. Rejected unless C2
+   shows that the library itself must avoid strings (it does not: a
+   short string is already a byte array).
+Recommendation: C1 now; C2 and C3 measured, adopted only if they
+show more than a few percent on top of C1.
+
+5. The exponent, and what the work buys
+---------------------------------------
+If A1+B1+C1 bring the depth-3 plan from ~540 ms to ~150-250 ms mean
+on this host, nothing changes in test90's defaults: depth 3 with a
+10 s budget is already hidden behind execution, except for the
+~0.4 s steps (06-runs L8: bash waited 10.5 min of 2 h for plans of
+0.7-1.2 s). A 2-3x faster plan roughly halves that waiting. Depth 4
+(~5.8 s mean today, 12.5 s max) would complete within the 10 s
+budget almost always at 1.5-2 s mean, but P4 measured depth 4 worth
++5% faults in context and -4% actions (04-status-MODEL 8): the
+depth stays 3 unless a growth experiment at depth 4 with the fast
+model says otherwise. The value of the work is therefore mostly
+simplicity (A1) and headroom (B1, C1), and that is the honest
+summary to give.
+
+6. Provisional decisions
+------------------------
+D1 gofmbt: states are immutable once created (A1); String() is called
+   freely; the per-call memo machinery is removed; the doc says a
+   model memoizes String() itself if it is expensive. A2 only on
+   measured need.
+D2 gofmbt: Walkable.StepsFrom documents that the caller owns the
+   returned slice (may reorder it); a caching Walkable returns a
+   copy. doc.go gets a short section "Caching and de-duplication are
+   the model's" with the pattern of B1 in general terms (no CXL).
+D3 gofmbt: no Key/Marshal interfaces, no state de-duplication in the
+   library (B0, C4 rejected).
+D4 model: canonical key + intern table + per-plan transition cache in
+   the planner (B1); Last out of the coverage functions.
+D5 model: precomputed coverage strings per transition and per action
+   pair (C1); C2 short keys and C3 weights only if measured worth it.
+D6 Acceptance: the model's test suite passes; the seeded growth and
+   plantime experiments print the same coverage numbers and the same
+   steps as the baseline (with the baseline gofmbt and with the
+   simplified one, since D1 must not change any result); gofmbt's
+   property and reference tests pass; test06-fuzz output unchanged.
+D7 Defaults of test90 (depth 3, C1x3,C2x2,C3, plan-time 10 s) change
+   only if a growth experiment of the fast model shows a clear gain.

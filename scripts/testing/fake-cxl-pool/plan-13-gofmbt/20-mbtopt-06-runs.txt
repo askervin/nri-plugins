@@ -1,0 +1,12 @@
+20-mbtopt: runs of the integrated model
+=======================================
+The long runs of the result (05-results) are in two files, one per
+stream:
+  20-mbtopt-06-runs-SIM.txt      simulated SUT: depth 2/3/4, several
+                                 seeds and profiles, 300-3000 steps,
+                                 the cache against no cache
+  20-mbtopt-06-runs-CLUSTER.txt  L10: test90 for 2 h in the three-node
+                                 cluster (seed 10, defaults), like
+                                 L8/L9 of 06-runs.txt
+Failures found by them get 20-mbtopt-04-status-DEBUG-N.txt files (or
+bug-NN files when the driver is at fault).

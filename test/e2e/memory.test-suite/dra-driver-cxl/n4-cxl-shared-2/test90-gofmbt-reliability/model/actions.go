@@ -330,6 +330,11 @@ func (s *State) next(a Act) *State {
 // stallStacksQuiet: a contender that the action made stalled gets its
 // region whenever the scheduler requeues it (A19): the stacks it may get
 // it on have no other region events in the window (they would race).
+// One that waits for the releases of its device gets it after them
+// (handover): those are no race. One stalled only by the scheduler's
+// hold (it fits now) may get it at any moment, also before the release
+// of another share of its device there (M9, A21); the prepares of
+// other shares make the region once in any order.
 func (n *State) stallStacksQuiet(s *State) bool {
 	for i := range n.Slots {
 		if n.Slots[i].Phase != Stalled || s.Slots[i].Phase == Stalled {
@@ -337,6 +342,8 @@ func (n *State) stallStacksQuiet(s *State) bool {
 		}
 		sl := n.slot(i)
 		key := devKey(sl.Dev)
+		now, _ := s.fits(i)
+		waits := !now
 		var stacks []int
 		if si, _, ok := n.userRegion(int16(i)); ok {
 			stacks = append(stacks, si)
@@ -346,7 +353,7 @@ func (n *State) stallStacksQuiet(s *State) bool {
 			}
 		}
 		for _, e := range n.Ev {
-			if e.Key == key {
+			if e.Key == key && (waits || e.Kind == evPrepare) {
 				continue
 			}
 			for _, si := range stacks {
@@ -801,11 +808,16 @@ func (n *State) promote(r Res, after int16, stall bool) {
 	}
 }
 
-// stall makes a contender Stalled (A19).
+// stall makes a contender Stalled (A19). Its promotion may come at any
+// time: a numa claim onlines its device then (the bytes are gone, as in
+// start; M9).
 func (n *State) stall(i int) {
 	ss := &n.Slots[i]
 	ss.Phase, ss.RaceKill = Stalled, false
 	n.setUnblockAt(i, 0)
+	if sl := n.slot(i); sl.Kind == KXNuma {
+		n.Data[sl.Dev] = tokUnknown
+	}
 }
 
 // unboundDeleting: a pool claim of the resource is being deleted before
@@ -1018,14 +1030,35 @@ func (n *State) ctrlStart(p Pool) {
 			n.setUnblockAt(i, 0)
 			ss.Phase = Starting
 			ss.RaceKill = false
-			n.addEvent(int16(i), evPrepare, false, -1)
+			n.handoverAfterRelease(i, n.addEvent(int16(i), evPrepare, false, -1))
 		case ss.Phase == Starting && !n.hasPrepare(int16(i)):
-			// created while the controller was down
-			n.addEvent(int16(i), evPrepare, false, -1)
+			// created (or promoted) while the controller was down
+			n.handoverAfterRelease(i, n.addEvent(int16(i), evPrepare, false, -1))
 		case ss.Phase == Starting && ss.RaceKill:
 			// its Prepare comes now for sure
 			ss.RaceKill = false
 			n.setRequired(int16(i))
+		}
+	}
+}
+
+// handoverAfterRelease marks the prepare (seq) that a controller start
+// adds for a pod of its pool as a handover (R1) when a claim that the
+// pod's claim could not share the device with was released in this
+// window: the pod was allocated after that claim's Unprepare, the
+// controller being down only delayed its attach (M9).
+func (n *State) handoverAfterRelease(i int, seq int16) {
+	if seq < 0 {
+		return
+	}
+	key := n.Ev[seq].Key
+	for _, f := range n.Ev[:seq] {
+		if f.Kind != evUnprepare || f.Key != key {
+			continue
+		}
+		if j, lease := n.userSlot(f.User); !lease && j != i && !(n.slot(i).Kind.share() && n.slot(j).Kind.share()) {
+			n.setHandover(seq)
+			return
 		}
 	}
 }

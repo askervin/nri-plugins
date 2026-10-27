@@ -199,6 +199,7 @@ type Config struct {
 	Online      bool          // "any" slots and nondeterministic outcomes
 	Avoid       []string      // MBT_AVOID rules
 	AvoidHoles  bool          // never destroy a region below the top of its stack (A9)
+	PlanStates  int           // states the planner caches per plan at most (canon.go); 0: no cache
 	// Verbs that the generator may use; nil: every verb.
 	slotByName map[string]int
 }
@@ -206,6 +207,7 @@ type Config struct {
 // defaultConfig returns the configuration of the contract's defaults.
 func defaultConfig() *Config {
 	return &Config{
+		PlanStates:  defaultPlanStates,
 		Profile:     "full",
 		LocalBlocks: [nVMs]int{VM0: 2, VM1: 2, VM2: 8},
 		NodeHB:      [nBridges]int{HB0: 2, HB1: 3},

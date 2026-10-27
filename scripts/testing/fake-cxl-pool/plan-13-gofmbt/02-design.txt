@@ -90,6 +90,10 @@ gofmbt checkout (GOFMBT_DIR, default ~/github.com/askervin/gofmbt);
 without one it builds against the version in model/go.mod. When the
 extensions are pushed upstream, model/go.mod points at that version
 and the go.work becomes optional. File names avoid ".var" (E 1.1).
+(2026-10-27: so it went. The extensions are on gofmbt's main since
+bc12d42, model/go.mod requires that version, code.var.sh builds with
+GOWORK=off; GOFMBT_DIR, unset by default, makes the go.work only for
+developing gofmbt; the stock build (-tags gofmbtstock) is gone.)
 Name: test90-gofmbt-reliability as the user asked; it matches none of
 the SKIP_LONG_TESTS patterns, so its default budget is short (MBT_
 DURATION=20m) and long runs are asked for explicitly.

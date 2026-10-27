@@ -171,3 +171,19 @@ concurrency on the Coverer type; MaxPaths depth-1 exemption, zero
 deadline, reproducibility conditions, CoverSteps short windows after
 ResetCoverage, partial results on level 0, context.Context usage.
 API names kept (stream MODEL builds against them).
+
+Published (2026-10-27)
+----------------------
+Merged into gofmbt's main on GitHub as 7 commits after 8920a4a, head
+bc12d42 (pseudo-version v0.0.0-20261027151000-bc12d421910e, on
+proxy.golang.org and sum.golang.org):
+  a47124b stop Do state change chain at the first nil
+  9462800 attach package documentation to the package clause
+  a302f24 incremental coverage functions and a one-walk BestPath
+  ebdcdb1 benchmark BestPath on a cluster-shaped toy model
+  c91d8b8 search budget for on-line test generation
+  8ae84bc leave caching and de-duplication to the model
+  bc12d42 a skill on applying model-based testing with gofmbt
+test90's model/go.mod requires it (no go.work, no stock build).
+nri-plugins' main go.mod and vendor/ (test06-fuzz) still have
+f663bfa.

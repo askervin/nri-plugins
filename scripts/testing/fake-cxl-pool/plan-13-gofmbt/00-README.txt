@@ -93,3 +93,7 @@ Status
   independent pool reference fuzzed off-line. L8 (2663 steps) and L9
   (2946 steps, final image 392e3abf548d) PASS 2 h each. DONE: final
   status 09-status.txt, results 07-results.txt.
+2026-10-27: gofmbt's extensions merged into its main (bc12d42); test90's
+  model/go.mod requires it, code.var.sh builds with GOWORK=off, the
+  stock build is gone (04-status-MODEL.txt 19). L10 (257 steps, 10
+  min) PASS on that build.

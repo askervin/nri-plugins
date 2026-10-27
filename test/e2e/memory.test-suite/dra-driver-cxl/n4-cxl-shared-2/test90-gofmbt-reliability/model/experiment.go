@@ -27,6 +27,7 @@ import (
 	"os"
 	"runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -85,6 +86,7 @@ type expResult struct {
 	planTimes []time.Duration
 	depths    []int
 	paths     []int
+	states    []int    // canonical states cached per plan
 	growth    [][4]int // after each step
 	m         *metrics
 	random    int
@@ -105,7 +107,34 @@ func (r *expResult) uncovered() []string {
 	return out
 }
 
-// expRun drives the model through the simulated SUT for some steps.
+// nowPrefix starts a record of the oracle's clock at a settle of an
+// experiment: "#now N UNIX".
+const nowPrefix = "#now "
+
+// readNow reads the "#now" records of a steps file.
+func readNow(data string) map[int]int64 {
+	out := map[int]int64{}
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if f := strings.Fields(strings.TrimPrefix(line, nowPrefix)); strings.HasPrefix(line, nowPrefix) && len(f) == 2 {
+			n, err1 := strconv.Atoi(f[0])
+			t, err2 := strconv.ParseInt(f[1], 10, 64)
+			if err1 == nil && err2 == nil {
+				out[n] = t
+			}
+		}
+	}
+	return out
+}
+
+// expRun drives the model through the simulated SUT for some steps. With
+// o.replay (experiment --from) the actions are those of a steps file
+// instead of planned ones (the planner still marks them): the simulated
+// SUT is seeded the same way, so a run of a seed is reproduced in a
+// fraction of its planning time (the oracle's clock of each settle is
+// the recorded one, o.replayNow). With o.stepsOut (experiment
+// --steps-out) every action is written to that file, one per line, as
+// in mbt-steps.txt, with the clock of each settle.
 func expRun(o runOpts, steps int, budget planBudget) (*expResult, error) {
 	mm := newMbtModel(o.cfg)
 	pl, err := newPlanner(mm, o.cov, o.depth, o.seed, o.randomness)
@@ -119,9 +148,31 @@ func expRun(o runOpts, steps int, budget planBudget) (*expResult, error) {
 		res.allActs = append(res.allActs, a.name(o.cfg))
 	}
 	settle := Act{Verb: VSettle, Slot: -1, VM: VMAny, Pool: noPool}
+	var stepsOut *os.File
+	if o.stepsOut != "" {
+		f, err := os.Create(o.stepsOut)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		stepsOut = f
+		fmt.Fprintf(f, "# mbt-cxl experiment seed=%d profile=%s coverage=%s depth=%d gofmbt=%s\n# %s\n", o.seed, o.cfg.Profile, o.cov, o.depth, gofmbtVersion, o.header)
+	}
+	if o.replay != nil && steps > len(o.replay) {
+		steps = len(o.replay)
+	}
 	for n := 1; n <= steps; n++ {
 		a := settle
-		if n > 1 {
+		if o.replay != nil {
+			var err error
+			if a, err = parseAct(o.cfg, o.replay[n-1]); err != nil {
+				return res, fmt.Errorf("step %d: %w", n, err)
+			}
+			if n > 1 && !st.allowed(a) {
+				res.failures = append(res.failures, fmt.Sprintf("step %d %s: replay diverged: not allowed by the model", n, a.name(o.cfg)))
+				return res, nil
+			}
+		} else if n > 1 {
 			res.branching = append(res.branching, len(mm.enabledActs(st)))
 			b := budget
 			if !b.Deadline.IsZero() {
@@ -132,6 +183,7 @@ func expRun(o runOpts, steps int, budget planBudget) (*expResult, error) {
 			res.planTimes = append(res.planTimes, info.Elapsed)
 			res.depths = append(res.depths, info.Depth)
 			res.paths = append(res.paths, info.Paths)
+			res.states = append(res.states, info.States)
 			if info.Random {
 				res.random++
 			}
@@ -139,12 +191,29 @@ func expRun(o runOpts, steps int, budget planBudget) (*expResult, error) {
 				res.resets++
 			}
 		}
+		if stepsOut != nil {
+			fmt.Fprintln(stepsOut, a.name(o.cfg))
+		}
 		next := st.apply(a)
 		after := next
 		res.verbs[a.Verb]++
 		if a.Verb == VSettle {
 			s.do(n, a)
-			v, adopted := checkState(next, s.observe(n, 1), "")
+			// the oracle's clock (the scheduler's hold of A19 ends
+			// 6 s after a settle): the wall clock, or with --step-time
+			// a clock that advances per step whatever the plans take;
+			// recorded with --steps-out and replayed with --from
+			now := time.Now()
+			if o.stepTime > 0 {
+				now = refEpoch.Add(time.Duration(n) * o.stepTime)
+			}
+			if t, ok := o.replayNow[n]; ok {
+				now = time.Unix(t, 0)
+			}
+			if stepsOut != nil {
+				fmt.Fprintf(stepsOut, "%s%d %d\n", nowPrefix, n, now.Unix())
+			}
+			v, adopted := checkStateAt(next, s.observe(n, 1), "", now, defaultUnblock)
 			if v.Status != VOK {
 				res.failures = append(res.failures, fmt.Sprintf("step %d %s: %s", n, a.name(o.cfg), v.Msg))
 				return res, nil
@@ -201,12 +270,39 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 	exp := fs.String("exp", "all", "branching, plantime, growth or all")
 	maxDepth := fs.Int("max-depth", 4, "plantime: deepest depth")
 	planTime := fs.Duration("plan-time", 60*time.Second, "time budget of one plan")
+	stepTime := fs.Duration("step-time", 0, "the oracle's clock advances this much per step from a fixed epoch (0: the wall clock, which makes runs depend on how long the plans take: the hold of a device ends 6 s after its settle)")
 	mixes := fs.String("mixes", "C1;C1,C2;C1,C3;C1,C2,C3;C1,C2,C3,C4", "growth: coverage mixes, ';' separated")
 	online := fs.Bool("online", true, "with the any slots of the profile")
 	showUncovered := fs.Bool("uncovered", false, "growth: list the actions not taken")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile to this file")
+	stepsOut := fs.String("steps-out", "", "write the actions of the (last) run and the oracle's clock to this file, for --from")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	var from []string
+	var replayNow map[int]int64
+	if c.from != "" {
+		data, err := os.ReadFile(c.from)
+		if err != nil {
+			fmt.Fprintf(stderr, "mbt-cxl: %v\n", err)
+			return 2
+		}
+		lines, header := readSteps(string(data))
+		if err := applyHeader(fs, header, stderr); err != nil {
+			fmt.Fprintf(stderr, "mbt-cxl: %s: %v\n", c.from, err)
+			return 2
+		}
+		// the simulated SUT of the run is seeded from its seed
+		for i := 0; c.seed == 0 && i+1 < len(header); i++ {
+			if header[i] == "--seed" {
+				c.seed, _ = strconv.ParseInt(header[i+1], 10, 64)
+			}
+		}
+		from = []string{}
+		for _, l := range lines {
+			from = append(from, l.Action)
+		}
+		replayNow = readNow(string(data))
 	}
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
@@ -227,16 +323,26 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	o.planTime = *planTime
+	o.stepTime = *stepTime
 	o.header = strings.Replace(o.header, "--plan-time 0s", "--plan-time "+planTime.String(), 1)
+	if o.stepTime > 0 {
+		o.header += " --step-time " + o.stepTime.String()
+	}
+	o.stepsOut = *stepsOut
+	o.replay = from
+	o.replayNow = replayNow
 	steps := c.steps
 	if steps <= 0 {
 		steps = 200
+		if from != nil {
+			steps = len(from)
+		}
 	}
 	budget := planBudget{MaxPaths: o.maxPaths}
 	if o.planTime > 0 {
 		budget.Deadline = time.Now() // set per plan
 	}
-	fmt.Fprintf(stdout, "# mbt-cxl experiment: gofmbt %s, %s\n", gofmbtFlavor, o.header)
+	fmt.Fprintf(stdout, "# mbt-cxl experiment: gofmbt %s, %s\n", gofmbtVersion, o.header)
 	if *exp == "branching" || *exp == "all" {
 		oo := o
 		oo.depth = 1
@@ -270,8 +376,9 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 			_, _, maxPaths := stats(r.paths)
 			pm, _, _ := stats(r.paths)
 			dm, _, _ := stats(r.depths)
-			fmt.Fprintf(stdout, "plantime profile=%s coverage=%s depth=%d steps=%d: mean %s median %s max %s, paths mean %.0f max %d, depth completed mean %.2f, random %d\n",
-				o.cfg.Profile, o.cov, d, r.steps, mean.Round(time.Microsecond), med.Round(time.Microsecond), max.Round(time.Microsecond), pm, maxPaths, dm, r.random)
+			sm, _, smax := stats(r.states)
+			fmt.Fprintf(stdout, "plantime profile=%s coverage=%s depth=%d steps=%d: mean %s median %s max %s, paths mean %.0f max %d, depth completed mean %.2f, random %d, cached states mean %.0f max %d\n",
+				o.cfg.Profile, o.cov, d, r.steps, mean.Round(time.Microsecond), med.Round(time.Microsecond), max.Round(time.Microsecond), pm, maxPaths, dm, r.random, sm, smax)
 			reportFailures(stdout, r)
 		}
 	}
@@ -297,9 +404,12 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 			mean, _, max := durStats(r.planTimes)
+			pm, _, pmax := stats(r.paths)
+			sm, _, smax := stats(r.states)
 			fmt.Fprintf(stdout, "growth profile=%s coverage=%s depth=%d steps=%d: %s; C1 %d/%d actions, last new C1 at step %d, C2 at %d; resets %d random %d; plan mean %s max %s\n",
 				o.cfg.Profile, cov, o.depth, r.steps, strings.Join(marks, "; "), len(r.m.sets[0]), r.m.total, r.m.lastInc[0], r.m.lastInc[1],
 				r.resets, r.random, mean.Round(time.Microsecond), max.Round(time.Microsecond))
+			fmt.Fprintf(stdout, "  paths mean %.0f max %d, cached states mean %.0f max %d\n", pm, pmax, sm, smax)
 			var vc []string
 			for _, v := range []Verb{VCrash, VWrite, VRead, VLeaseGet, VLeasePut, VSettle} {
 				vc = append(vc, fmt.Sprintf("%s=%d", v, r.verbs[v]))
