@@ -88,3 +88,8 @@ Status
   (05-review.txt, R1-R14) -> amendments A11-A17, fixes in both streams
   (EXEC done). EXEC found S3 = bug-06 (the node's ResourceSlice gone
   20-30 s after a kubelet restart; being looked at).
+2026-10-24..26: long runs L1-L9 (06-runs.txt); bugs 07-10 found and
+  fixed (bug-08 is Kubernetes'), model errors M3-M7 fixed, an
+  independent pool reference fuzzed off-line. L8 (2663 steps) and L9
+  (2946 steps, final image 392e3abf548d) PASS 2 h each. DONE: final
+  status 09-status.txt, results 07-results.txt.

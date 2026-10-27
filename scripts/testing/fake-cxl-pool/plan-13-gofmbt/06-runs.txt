@@ -36,6 +36,11 @@ Images
               (D1 container cgroup dir, D2 steeredContainers.json,
               D3/E4 = bug-07 atomic and reconciled prepared-claims
               files, D4 shutdown order, D5 failed manager start)
+ee5c9ac1b7a7  (2026-10-26 11:57): + bug-09 fix (first version)
+392e3abf548d  v0.15.0-41-g8026ed091-dirty (2026-10-26 15:49): + the
+              follow-up of 05-review-DRV2 (bug-09: pool watch, checks
+              before local regions, rescan lock, fsync; bug-10: pmem
+              races, verified no-namespace before create-namespace -f)
 
   run 5 stub, after A10 (ports, events), observer    PASS  164 s
         timeout, containerd-restart wait; image 571d3f262db0: the
@@ -254,3 +259,28 @@ L7 2026-10-26 12:20, image ee5c9ac1b7a7 (+ bug-09 fix), model with the
    9 ms later had nothing to steer: the documented behaviour. No pool
    serial was published locally in any of the 1528 steps' settles
    (bug-09's check). Copy: /tmp/p13-runs/l7/out.
+L8 2026-10-26 13:44, image ee5c9ac1b7a7, model with the M7 fix, seed 7,
+   full, all faults, 120m. PASS: 2663 steps in 2h0m31s (7379 s in
+   all), including the teardown settle (every pod deleted, nothing
+   attached, no region left). Steps: create 383, delete 383, crash
+   280, write 283, read 288, lease-get 35, lease-put 22, settle 533
+   (mean 8.2 s, max 91 s), driver-kill 60, driver-restart 76,
+   containerd-restart 60, kubelet-restart 62, ctrl-kill 47,
+   ctrl-start 47, ctrl-restart 48, server-restart 56. Coverage 3403
+   strings in round 1 (no saturation in 2 h). Plans 2711: reused
+   2581, planned again 65; planning 34 min in all, bash waited for it
+   10.5 min (fast steps of ~0.4 s cannot hide a 0.7-1.2 s plan; the
+   longest wait 3.8 s). No driver panic, no oracle difference.
+   Copy: /tmp/p13-runs/l8/out.
+L9 2026-10-26 15:50, image 392e3abf548d (every fix: bug-01, -02
+   diagnostics, -04, -05, -06, -07, -09 with its review follow-up,
+   -10), model with the M7 fix, seed 8, full, all faults, 120m. PASS:
+   2946 steps in 2h0m59s (7417 s in all), including the teardown
+   settle. Steps: create 456, delete 456, crash 300, write 295, read
+   294, lease-get 35, lease-put 17, settle 599 (mean 7.1 s, max 85 s),
+   driver-kill 62, driver-restart 79, containerd-restart 61,
+   kubelet-restart 68, ctrl-kill 57, ctrl-start 57, ctrl-restart 49,
+   server-restart 61. Coverage 3558 strings in round 1. Plans 3019:
+   reused 2833, planned again 93; planning 33 min, bash waited 9.9
+   min. No driver panic, no oracle difference; cxl-pool-demo empty
+   afterwards. Copy: /tmp/p13-runs/l9/out.

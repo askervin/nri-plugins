@@ -1,0 +1,97 @@
+plan-13: status
+===============
+2026-10-26 (orchestrator). Task ../5jo-task-apply-mbt.txt. Read with
+00-README.txt (files), 07-results.txt (the integration answer) and
+06-runs.txt (every cluster run).
+
+What exists
+-----------
+- test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+  test90-gofmbt-reliability: code.var.sh (test19's three-node,
+  three-pool cluster plus the local memdev of every VM; the step
+  loop), mbt.source.sh (the executor: one function per verb, the
+  observer, the coproc protocol, teardown), mbt-observe.py (guest
+  observer), mbt-stub.py (smoke run without the model, MBT_STUB=1),
+  model/ (mbt-cxl: the gofmbt model, oracle, generator; a Go module of
+  its own). Modes: MBT_MODE=online (default: coproc, planning ahead),
+  replay (MBT_REPLAY=mbt-steps.txt), offline (MBT_SCRIPT=code.gen.sh of
+  mbt-cxl generate). How to run: the header of code.var.sh.
+- gofmbt: local branch 5jo-mbt-cxl of ~/github.com/askervin/gofmbt
+  (10 commits on main 8920a4a, head 951575f), not pushed. test90
+  builds against the checkout through a go.work (GOFMBT_DIR); without
+  it, a stock-gofmbt build with fewer coverage criteria.
+- Helpers added to dra.source.sh and pool.source.sh: controller run/
+  start/stop/kill, driver kill in place, kubelet/containerd restart
+  on any node, driver readiness, local devices through any server,
+  pool-server-restart on its state, pool-vm-decoders (pool-vm-reset
+  restarts a VM with committed CXL decoders).
+
+Bugs (bug-NN files)
+-------------------
+  01 containerd restart loses the driver's NRI connection for good
+     FIXED (exit on loss, restarted by the DaemonSet), verified V14, V5
+  02 Linux: a region destroyed below the top of a port's decoder stack
+     blocks new regions there (design limit, also on real hardware)
+     NOT a driver bug; memctl names the hole; the model predicts it
+  03 Linux: freed decoders keep stale sysfs (cosmetic)        upstream
+  04 a steered container stays throttled (memory.high) after a driver
+     crash; X2: unmanaged steered containers never fenced
+     FIXED (release + fence at Synchronize, steeredContainers.json),
+     verified V14
+  05 NRI updates before a container has started are lost (containerd
+     applies them to the spec only): a numa lease lost on requester
+     restart; a fence update in the Synchronize window
+     FIXED (leases seeded at CreateContainer, PostStartContainer,
+     comparisons with the real cgroup), case 1 verified V5
+  06 the node's ResourceSlice gone 20-30 s after a kubelet restart
+     FIXED (own slice controller, SyncDelay 1 s), verified V5
+  07 split, non-atomic persistence of prepared claims (review)
+     FIXED (atomic writes, reconciliation at start), unit tests
+  08 kube-scheduler: a pending pod waits ~5 min for a device that a
+     deleted pod held during its binding wait    upstream (Kubernetes)
+  09 a shared pool device attached but not prepared was published as a
+     local, sliceable memdev while its pool's slices were gone (severe:
+     a local claim could online shared memory as RAM)
+     FIXED (sticky pool serials in poolSerials.json, hold-back, a pool
+     watch every 30 s, a pool-serial check before any local region or
+     onlining; two reviews, 05-review-DRV2.txt); found by L6, unit
+     tests reproduce it; not reproduced on purpose in the cluster (the
+     window is narrower than a step, 06-runs.txt V9)
+  10 races in pkg/cxl/memctl/pmem.go behind a flaky unit test: a disk
+     node read during a pfn probe; the pfn mode read too early, which
+     could make a writable attach reformat a writer's namespace
+     FIXED (also: create-namespace -f only on a region verified to have
+     no fsdax namespace), stress-tested
+All code (driver, test90, model, helpers) is in the commits
+aea6362d8 and 8026ed091 (user, 2026-10-25/26); only plan-13 documents
+changed after them; images in
+06-runs.txt "Images", the newest 392e3abf548d (every fix). Known
+and not of this plan: TestMemdevSettings fails since c55476444
+(plan-12 N1).
+
+Runs (06-runs.txt)
+------------------
+P1 off-line PASS 47 steps; P2 lock-step, P3 planning ahead; L1 151
+steps; L2 1308 steps in 63 min, L6 1225 steps (found bug-09), L7 1528
+steps in 71 min, every fault type, full profile; L8 2663 steps in
+2 h PASS (image ee5c9ac1b7a7) and L9 2946 steps in 2 h PASS on the
+final image 392e3abf548d, both with a clean teardown. Model errors found
+by the cluster runs: M1-M7 (oracle too strict or wrong after
+controller, runtime and driver faults); each became a contract
+amendment (A7, A18-A20) and a regression test; after M3-M5 an
+independent simulation of the pool controller was fuzzed off-line
+(about 180 000 sequences) and found 13 more, all fixed before they
+reached the cluster.
+
+Open
+----
+Q1 Push the gofmbt branch upstream and bump nri-plugins' go.mod
+   (test06-fuzz output is byte-identical on it, 7x faster)?
+Q2 test90 runs in every suite run (its name matches no
+   SKIP_LONG_TESTS pattern): keep the 20 min default, or rename it to
+   a *long* name?
+Q3 bug-08 is worth an upstream Kubernetes issue (08-analysis has the
+   reproduction and the source lines).
+Not modelled yet (02-design 5): persistent pool devices (block, fs),
+node reboot, driver reconfiguration (fencing none, sharedDevices),
+the static shared local device, a claim shared by two pods.

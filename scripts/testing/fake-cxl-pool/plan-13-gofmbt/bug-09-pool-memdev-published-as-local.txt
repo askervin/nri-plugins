@@ -1,0 +1,323 @@
+BUG-09: A POOL DEVICE IS PUBLISHED AS A LOCAL MEMDEV WHILE ITS
+CONTROLLER'S RESOURCESLICES ARE GONE
+
+Branch 5jg-cxl, 2026-10-26. Found by the model-based test, run L6,
+step 1226 (/tmp/p13-runs/l6/out). Predicted by 01-findings-driver.txt
+section 3.3 and section 4 E6. Fixed in the working tree (uncommitted),
+unit tested; not yet verified on the cluster.
+
+D/ = cmd/plugins/dra-driver-cxl/. Line numbers of HEAD (aea6362d8)
+unless "new".
+
+========================================================================
+1. SUMMARY
+
+c-shared0 (serial 0xc1ae2001) is a SHARED pool device. It was attached
+to vm0 for a claim whose pod was not prepared yet, and it was attached
+to vm2 as well. vm0's node driver published it in its cxl.nri.io
+ResourceSlice as the local memdev memdev-c1ae2001 (type memdev,
+shared=false) for more than 3 minutes. The settle timed out:
+  vm0: cxl.nri.io slice publishes memdev-c1ae2001 (serial 0xc1ae2001
+  of pool device c-shared0)
+
+The node driver treated a memdev as a pool device only while its
+serial was in a current pool ResourceSlice or while the pool driver
+had it prepared. A graceful stop of the pool controller (ctrl-restart)
+deletes its ResourceSlices. The new controller was SIGKILLed before it
+published again, so the slices stayed gone.
+
+========================================================================
+2. SEVERITY
+
+Critical: silent memory corruption across VMs, with no error
+anywhere. DeviceClass cxl-local selects type memdev && shared ==
+false. While the device is published, a local numa claim on vm0 can
+get a slice of it. The driver then creates a region on it and
+onlines it as System RAM on vm0, while vm2 maps the same bytes as
+shared dax. vm0's kernel and vm2's readers and writers then overwrite
+each other's memory. Shared memory must never be onlined as RAM.
+It also breaks the pool claim on vm0. Its later Prepare finds the
+region the local claim created and reuses it (C/memctl/memctl.go:946,
+E6), so two claims share the same bytes. In L6 no local claim took
+the device: the only local claim in that window,
+lnuma@vm0#1, was allocated memdev-c100e2e1.
+
+========================================================================
+3. REPRODUCTION
+
+L6 steps (mbt-steps.txt, times from mbt-exec.log, host clock = vm
+clock + 2 h):
+  1220 ctrl-start c            11:35:45.45
+  1221 settle
+  1222 create sdax-c@vm0#0     11:36:03.95
+  1223 ctrl-restart c          11:36:04.73
+  1224 write xdax-c@any#0      (irrelevant)
+  1225 ctrl-kill c             11:36:06.37
+  1226 settle                  timeout after 3m3s
+
+Minimal replay: settle; create sdax-c@vm0#0; ctrl-restart c;
+ctrl-kill c; settle. The steps must follow each other without a
+pause, as in L6. ctrl-restart must come within about a second of the
+create, so that the attach happens around the graceful stop.
+ctrl-kill must come before the new controller publishes (in L6 about
+1.7 s after it started). The pod's Prepare cannot happen in this
+window, for this reason. kubelet prepares a pool claim only after the
+controller has set the binding condition cxl-pool.nri.io/Attached in
+the claim status. In L6 the old controller attached and then stopped
+without writing that status, and the new controller was killed before
+it did. The claim got its status only at 09:39:11, when the
+orchestrator started controller c again:
+  vm.claims MODIFIED ... mbt-sdax-c-vm0-0-g3 ... status=- (09:36:04)
+  ... status=c-shared0:cxl-pool.nri.io/Attached=True,
+      c-shared0:serial=0xc1ae2001                        (09:39:11)
+So the memdev is attached and never prepared, which is the case the
+driver got wrong. A Prepare would have saved it (pool.Serials()).
+Setting Attached and then stopping (create; settle until Attached;
+ctrl-restart; ctrl-kill) is the E6 variant. It needs a udev rescan
+after the slices are deleted (any local claim's region). The bug's
+mechanism is the same.
+
+========================================================================
+4. EVIDENCE (trace/merged.txt; vm0 driver pid 440731, started
+   09:35:37, the 4th process of pod g6q48)
+
+09:35:46.9 vm.controller  publishing pool pool-c ... 2 devices
+                          [c-pooled0 c-shared0]
+09:35:51.9 vm0.udev       remove .../mem2 (cxl)  (the controller
+                          detached c-shared0 of the deleted claim
+                          aa2e9be2)
+09:35:51.9 vm0.driver     rescan: mem2 absent
+11:36:04.94 pool-c.server attachment c-shared0@n4-cxl-shared-0...:
+                          attaching ... serial 0xc1ae2001 ... attached
+09:36:04.78 vm.controller deleted ResourceSlice
+                          00000-cxl-pool.nri.io-8vcl7; stopped
+09:36:05.2 vm0.udev       add .../mem2 (cxl); bind mem2
+09:36:05.08 vm0.driver    rescanAndPublish: rescanning devices
+09:36:05.09 vm0.driver    node_state.go:534] discovered local memory
+                          device memdev-c1ae2001: mem2 serial
+                          0xc1ae2001 size 268435456
+09:36:05.09 vm0.driver    "Publishing resources" len=4
+09:36:05.65 vm.controller Started fake-cxl-pool-controller-pool-c
+09:36:07.13 vm.controller ... SIGKILL ... (no "publishing pool")
+09:36:55, 09:38:04       the same "discovered local memory device
+                          memdev-c1ae2001" at every later rescan
+mbt-obs/fail-1226.json: slices vm0 has memdev-c1ae2001, poolSlices
+c is [], attachments c: c-shared0 on vm0 (owner
+k8s:resourceclaim/f2423760) and on vm2 (owner .../4e94f9a2, sro-c
+running). vm0's kubelet log never mentions claim f2423760: no Prepare.
+
+Earlier driver processes on vm0 had seen 0xc1ae2001 as a pool device
+many times ("ignoring region device region1: pool device
+(cxl-pool.nri.io), memory device serial 0xc1ae2001", 09:13 onwards).
+Process 440731 itself listed it at 09:35:51. The driver kept none of
+this knowledge.
+
+========================================================================
+5. ROOT CAUSE
+
+- D/pool_slices.go:71-104 (Serials) returned only the serials of the
+  current ResourceSlices of drivers other than cxl.nri.io (or of the
+  last list, if a list failed).
+- D/pool_slices.go:119-136 (scanInput) added the serials that the pool
+  driver prepares. Nothing else counted.
+- D/node_state.go:509 (addLocalMemdevs) skips a memdev as "pool
+  device" only if its serial is in that set. Otherwise an enabled
+  memdev with RAM and no foreign region is published as
+  memdev-<hex> (:534).
+- The fake controller deletes its ResourceSlices on a graceful stop
+  (F/controller/controller.go:316-326, publisher.go:219-237, 3.3). The
+  attachments stay. So an attached pool device that is not prepared
+  becomes a local memdev at the next rescan, and the hot-add of the
+  attach triggers that rescan. The driver also has no memory across
+  restarts: a restart while the slices are absent publishes it too.
+
+========================================================================
+6. FIX
+
+D/pool_serials.go (new) and D/pool_slices.go: the driver remembers
+serials in /var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json. The
+file is written atomically with writeJSONFile (tmp + rename), and
+loaded by newPoolSlices before the first scan. Rules:
+
+(a) Pool serials are sticky. Every serial seen in a pool ResourceSlice
+    (Serials) or prepared by the pool driver (NotePrepared, from
+    scanInput) is recorded as a pool serial, with the slice's
+    <driver>/<pool> and a time last seen. Serials returns the current
+    slice serials plus all remembered pool serials, so the memdev and
+    its regions are skipped whatever the slices say. The time is
+    refreshed while the serial is in a slice, prepared or on the node.
+    A serial is forgotten only after 24 h unseen
+    (poolSerialRetention), so a pool device stays one while it is on
+    the node.
+(b) Established local memdevs stay local. A memdev taken as local is
+    recorded (Local: true). After that it is published without delay,
+    also while pool slices are absent, unless a pool slice lists it
+    later (then it becomes a pool serial: pool takes precedence).
+(c) A new memdev is held back while a pool is missing. A memdev that
+    is neither remembered nor used by the local allocator is new.
+    Gate, called by scanDetected (new, D/driver.go:324, between
+    detection and buildDevInfos), takes it as local at once when every
+    pool listed with serial devices in the last hour
+    (poolMissingWindow) has its ResourceSlices and the list works.
+    Otherwise it is held back: not published at all (no memdev, no
+    region, no shared device) for up to 5 min (newMemdevHoldBack), or
+    until the pool is back. If the returning slices list it, it is a
+    pool serial; otherwise, or after 5 min, it is local. retryPoolList
+    rescans every 30 s while something is held back. This covers a
+    pool device whose slice the driver never listed (the slice was
+    published, allocated, attached and deleted between two scans of
+    the driver).
+
+Effect on L6: 0xc1ae2001 was recorded by (a) at 09:35:51, and long
+before that by the earlier processes through the file. The rescan at
+09:36:05 and any restart skip it. A local device that is present at the
+first start, or hot-added while all pools have slices (the e2e local
+memdev 0xc100e2e1 at test setup, owner e2e:dra-local-device, never in
+a pool slice), is established by (b) and published at once, also
+later while a controller is down.
+
+Weighed and not used:
+- The serial in the claim status: in L6 the controller died before
+  writing it. The status is the last thing that is written, exactly
+  when the window is open.
+- A hold-back of every hot-added memdev, without the "pool missing"
+  condition: it would delay every local hot-add (the e2e waits 60 s
+  for dra-local-device) and give nothing more than (a) gives.
+- ignoreNewMemoryDevices: still parsed and unused. "New" in a process
+  is meaningless across restarts, and (a)-(c) need no opt-in.
+Residual risks:
+- First start with no file (upgrade, or the file deleted) while a
+  controller is stopped and an unprepared pool device is attached:
+  nothing tells it is a pool device, so it is local as before (unless
+  a remembered pool is missing).
+- Pools are cluster-wide (all ResourceSlices of drivers other than
+  cxl.nri.io with a serial attribute). A pool that disappears for good
+  makes new local memdevs wait up to 5 min for one hour.
+Docs: docs/memory/cxl/local.md (What the plugin publishes): the rules
+and the file. pool.md: the node plugin paragraph and the "Controller
+restart" item. usage.md: the "Files on the node" table.
+
+========================================================================
+7. TESTS (D/pool_serials_test.go, new; fake API server with
+   ResourceSlices, memdevs as nricxl.Devices, a fake clock, scanned
+   by scanInput + scanDetected as rescanAndPublish does)
+
+TestPoolSerialsSliceDeleted       the L6 sequence: serial in pool-c's
+  slice, memdev attached and not prepared, slice deleted, rescan: not
+  published; driver restart while the slice is absent: not published;
+  file content checked
+TestPoolSerialsHotAddWhileSliceDeleted  as observed: detach, slice
+  deleted, hot-add, rescans 3 min later and after a restart: not
+  published
+TestPoolSerialsNewMemdevHeldBack  never-listed pool serial attached
+  while pool-c is missing: held back; pool-c lists it: pool device
+TestPoolSerialsHoldBackEnds       a held-back local memdev is
+  published after 5 min, or at once when the pool comes back without
+  it; a pool missing for longer than 1 h holds nothing back
+TestPoolSerialsLocalDevice        the e2e local device: first run,
+  re-attach, restart and re-attach while the pool slices are absent:
+  always published
+TestPoolSerialsPoolDeviceRemoved  pool device detached, then a local
+  device with another serial: published; the pool serial is still a
+  pool serial without the slice, and is forgotten after 24 h
+TestPoolSerialsLocalAllocatorUses, TestPoolSerialsPrepared,
+TestPoolSerialsBadFile
+pool_slices_test.go: newPoolSlices(client, ""), and scanNames scans
+through scanDetected.
+Without the fix 6 of the 9 new tests fail (checked by disabling Gate
+and the sticky serials). go vet, gofmt and `go test -race
+./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/... -skip
+TestMemdevSettings` are clean.
+
+========================================================================
+8. TO VERIFY ON THE CLUSTER
+
+- Replay L6 up to step 1226, or run the minimal replay. vm0's
+  cxl.nri.io slice must not have memdev-c1ae2001. The vm0 driver log
+  must have no "discovered local memory device memdev-c1ae2001".
+  /var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json must list
+  0xc1ae2001 (pool cxl-pool.nri.io/pool-c) and 0xc100e2e1
+  (local: true).
+- driver-restart vm0 while controller c is killed: still not
+  published. The log has "pool serials: loaded N serials ...".
+- test90 setup and test14/15 (dra-local-device waits 60 s): the local
+  memdev must still be published at once. There must be no "pool
+  serials: holding back new memdev" for 0xc100e2e1.
+- Note: dra-state-cleanup does not remove poolSerials.json, so the
+  file outlives a test, by design. A later test that hot-adds a local
+  memdev with a NEW serial, while a pool that the driver listed in
+  the last hour has no slices, waits up to 5 min.
+
+========================================================================
+9. STATUS
+
+Fixed in the working tree, not committed:
+  D/pool_serials.go (new), D/pool_serials_test.go (new),
+  D/pool_slices.go, D/pool_slices_test.go, D/driver.go,
+  D/node_state.go (comment), docs/memory/cxl/local.md, pool.md,
+  usage.md.
+Image not built; cluster verification pending (section 8).
+
+========================================================================
+10. FOLLOW-UP AFTER REVIEW (05-review-DRV2.txt, E1-E10; 2026-10-26)
+
+The review found that the 1 h window and the 24 h retention of 6(a)/(c)
+counted time between scans, so a quiet node (no udev events for hours)
+could publish a never-listed pool device at once, or forget a pool
+serial at the first scan after a day. Changes (uncommitted, image not
+built, cluster not touched):
+
+- Pool watch (D/pool_slices.go poolWatch, replaces retryPoolList): a
+  30 s tick rescans while the list fails or a memdev is held back, and
+  whenever the node has not been rescanned for 2 min. Rescans are
+  serialized by driver.rescanMu (E3).
+- Observed absence (D/pool_serials.go): a serial or pool counts as
+  absent from the first observation that missed it, over observations
+  at most 5 min apart; a longer gap or a restart starts it again. A
+  serial is forgotten after 24 h of observed absence, a pool is
+  "missing" during its first hour of observed absence. Absence is not
+  kept in the file.
+- Only ResourceSlices of the pool driver count (field selector
+  spec.driver=<--pool-driver-name>), no longer any DRA driver with a
+  serial attribute (E7).
+- Claim evidence (E5): for a scan with a new memdev, the pool claims
+  allocated to this node are listed; a serial in their status is a pool
+  serial, and a pool claim of the node that is not attached yet (no
+  serial, no AttachFailed) holds back every new memdev without expiry.
+  This closes the "first start without the file" residual of section 6
+  except when the claim is already gone while its device is attached.
+- A lost (corrupt/empty) poolSerials.json is logged as an Error and holds
+  back new memdevs as for a missing pool for an hour; writeJSONFile now
+  fsyncs the file and its directory (E4); null records are skipped.
+- No hold-back expiry before the first successful list (E6); held
+  memdevs are logged as "held back", not "pool device" (E8).
+- Defence in depth (E2): the local allocator refuses, in Acquire and
+  AcquireShared before any region or onlining, a memdev that the pool
+  driver prepares, that a current pool slice lists (fresh list), that
+  is a remembered pool serial, or that is held back. A local memdev that
+  a pool slice lists later is withdrawn at the next (periodic) rescan,
+  also when local claims use it (Error log naming them; their memory is
+  left alone).
+
+Section 6 rules, as they are now: (a) sticky pool serials, forgotten
+after 24 h of OBSERVED absence; (b) unchanged; (c) a new memdev is held
+without expiry while a pool claim of the node is being attached or no
+list has succeeded, and for up to 5 min while a remembered pool has been
+observed without slices for less than an hour, the list fails, or the
+file was lost in the last hour.
+
+New tests (D/pool_serials_test.go): QuietNodeWindow (R1), QuietNodeForget
+(R2), NullRecord (R3), TruncatedFile (R5), LocalBecomesPool (R7),
+ClaimEvidence, HoldWhileNotListed, HeldRegion, CheckLocal,
+TestRescanSerialized, TestPoolWatch, TestPrepareLocalPoolDevice; updated
+BadFile, HoldBackEnds, PoolDeviceRemoved, pool_slices_test.go. go vet,
+gofmt, golangci-lint (3 old errcheck only) and go test -race -count=3
+clean.
+
+Add to section 8 (cluster verification): after the minimal replay, wait
+3 min without udev events and check the vm0 driver log for periodic
+rescans at V(4) (or none at default verbosity) and no "discovered local
+memory device memdev-c1ae2001"; test14/15 local hot-add must still be
+published at once (no pool claim of the node in flight, all pools
+listed).
+Docs: local.md (What the plugin publishes) rewritten; pool.md, usage.md.

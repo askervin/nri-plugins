@@ -67,9 +67,10 @@ P2 on-line lock-step (small, 20m): 34 plans, 25 ms mean, 96 ms max;
    restart; retry added).
 P3 on-line planning ahead (full, 20m): 121 steps, all plans reused;
    found bug-05.
-L1, L2 on-line, full profile, all faults: 151 and 1308 steps; L1 found
-   model error M3 (A18), L2 a stuck allocation after a pod deletion
-   during the binding wait (08-analysis-claim-after-pod-deleted.txt).
+L1-L8 on-line, full profile, all faults: L1 151 steps (model error
+   M3), L2 1308 (bug-08, kube-scheduler), L3-L5 short (M4-M6), L6 1225
+   (bug-09), L7 1528 (M7), L8 2663 steps in 2 h: PASS with a clean
+   teardown.
 P4 model and coverage variants (simulated SUT, 04-status-MODEL 8):
    - slot model with asynchronous create/delete and a settle; ~31
      enabled actions per state on the full profile (max 74);
@@ -87,10 +88,16 @@ P5 verification: the model as oracle over one JSON observation per
    in a new container), bug-04 (X1) and both cases of bug-05 (P3,
    V14); bug-02 stopped a stub run (no oracle: a pod that never ran),
    bug-06 showed as the executor's driver-ready wait (20-30 s), bug-07
-   came from a review. The reviews' counterexamples (R1 leaked region,
-   R2 vacuous fencing) are regression tests of the oracle. The simulated SUT answers from the model itself, so its
-   "no disagreement" shows self-consistency only (05-review); the
-   cluster runs are what count.
+   came from a review, bug-09 from the oracle in L6 (a pool serial in
+   a node's local slice). The reviews' counterexamples (R1 leaked
+   region, R2 vacuous fencing) are regression tests of the oracle.
+   The simulated SUT first answered from the model itself (self-
+   consistency only, 05-review); after the model errors M3-M5 of the
+   cluster runs it got an independent reference of the pool
+   controllers and the scheduler (T/model/refpool.go), whose fuzz
+   (~180 000 sequences) found 13 more model errors off-line, so that
+   the cluster runs after it stopped on model errors far less often
+   (M6, M7: runtime and driver restarts, outside the reference).
 
 4. Model and verification design that held
 ------------------------------------------

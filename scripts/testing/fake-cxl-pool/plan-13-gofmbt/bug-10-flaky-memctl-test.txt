@@ -1,0 +1,128 @@
+bug-10: memctl reads the namespaces of an nvdimm region racing with
+their probe (code bug), and the fake sysfs tears its writes (test bug)
+=====================================================================
+2026-10-26 (debugging agent). Classification: a race in
+pkg/cxl/memctl/pmem.go (Manager.namespace), plus two defects of the
+fake sysfs of the unit tests that made it flaky in other ways. Fixed.
+
+The failing test
+----------------
+TestPmemWriterThenReader (pkg/cxl/memctl/pmem_test.go), the reader
+half: the second CreatePmemRegion polls the namespaces of region0
+while a goroutine of the fake (pmemSys.probe) makes the labelled
+namespace0.0, its pfn device pfn0.1 and the disk pmem0 appear, the
+way the kernel does. Nothing else in the package failed.
+
+How reproduced
+--------------
+Test binaries built before the fix (go test -c, with and without
+-race), 256-CPU host, every CPU busy with a bash busy loop (load
+average 240-520). Outputs in /tmp/bug10.
+
+  whole package, -race -count=20 -shuffle=on,
+    -cpu/GOMAXPROCS 1, 2, 8                      1 of 60 runs fail
+  same, -count=50                                4 of 150
+  -run '^TestPmemWriterThenReader$' -cpu 8:
+    -count=500                                   5 (3 B, 2 A)
+    -count=1000                                  5 (2 A, 2 B, 1 C)
+    -count=1500                                  2 A, then panic D
+
+Without load the user saw 2 failures in 48 package runs, both during
+or right after a parallel test of other packages. Four distinct
+messages, A to C at line 235 or 238 of the old pmem_test.go:
+
+  A  open .../class/block/pmem0/dev: no such file or directory
+  B  cannot parse "" in .../bus/nd/devices/namespace0.0/size
+  C  reader namespaces [{... Mode:fsdax Map: ...}]   (Map empty)
+  D  panic: Log in goroutine after TestPmemWriterThenReader has
+     completed: symlink ... class/block/pmem0: no such file or
+     directory                               (kills the binary)
+
+Cause
+-----
+namespace() decides from several sysfs files, read one after the
+other, whether a namespace has finished probing.
+
+A, code: it took "pfn0.1 has a driver link and a block/pmem0
+  directory" as probed and then read /sys/class/block/pmem0/dev,
+  turning ENOENT into a hard error. The kernel creates the driver link
+  before it calls probe (really_probe: driver_sysfs_add, then
+  call_driver_probe), and device_add of the disk creates its
+  directory, then the class link, then the attributes, dev last. The
+  fake does the same in the same order. CreatePmemRegion failed; in
+  the driver, preparePersistent fails the claim (kubelet retries).
+
+C, code: it read the mode of the pfn device ("ram" = map mem) first,
+  before the checks. The kernel sets the holder of the namespace
+  (nd_pfn_devinit, __nd_attach_ndns) before it registers the pfn
+  device (asynchronously), so mode may not exist yet; if the probe
+  then finishes before the driver and block checks, the namespace
+  settles with Map "". FsdaxNamespace then returns nil: a read-only
+  or fs attach fails with "has a writer written the device?", and a
+  writable non-fs attach runs ndctl create-namespace -f -e
+  namespace0.0 over the namespace that the writer formatted.
+
+B, test: fakeSys.write was os.WriteFile, which truncates and then
+  writes; a polling reader could read an empty attribute. Real sysfs
+  attributes are never seen half written.
+
+D, test: after a failed test, the probe goroutine kept writing into
+  the removed t.TempDir() and called t.Fatal from a goroutine of a
+  completed test, which panics the whole test binary.
+
+Fix
+---
+pkg/cxl/memctl/pmem.go, namespace():
+  - ENOENT from BlockDeviceInfo means "still probing" (not settled,
+    no error); other errors still fail.
+  - the pfn mode (Map) is read last, once the pfn device has a
+    driver and its disk has dev and size.
+pkg/cxl/memctl/memctl_test.go: fakeSys.write writes a temporary file
+  (in a second t.TempDir(), not in the tree) and renames it in place.
+pkg/cxl/memctl/pmem_test.go: pmemSys tracks its probe goroutines in a
+  WaitGroup that a t.Cleanup waits for before the temporary directory
+  is removed. TestNamespacesWaitForProbe gets two deterministic steps:
+  the pfn driver bound with the disk directory but no class link,
+  then the class link but no dev attribute; neither may settle.
+
+Proof
+-----
+Deterministic: the new TestNamespacesWaitForProbe steps fail with the
+old pmem.go ("pmem_test.go:292: open .../class/block/pmem0/dev: no
+such file or directory") and pass with the new one.
+
+Under the same load, the old and the new binary side by side:
+  -run '^TestPmemWriterThenReader$' -count=1500 -cpu 8:
+    before: 2 failures (A), then the binary panicked (D)
+    after:  1500 of 1500 pass
+  -race -count=50 -shuffle=on, -cpu/GOMAXPROCS 1, 2, 8 (whole
+    package), after: 150 of 150 pass (before: 4 of 150 failed)
+  -count=500 -shuffle=on -cpu 8 (whole package), after:
+    500 of 500 pass (busy-loop load for all but its last minutes)
+
+go vet and gofmt clean; go test -race ./pkg/cxl/... passes.
+
+Not related: TestMemdevSettings in cmd/plugins/dra-driver-cxl fails
+with and without this fix ("usable size 206158430208, expected
+137438953472"), deterministically; not investigated here.
+
+Follow-up after review (05-review-DRV2.txt E11-E13; 2026-10-26)
+---------------------------------------------------------------
+- E11: probeNamespace (replaces namespace) does not settle a probed pfn
+  device whose mode cannot be read or is neither "ram" nor "pmem": the
+  caller's deadline then gives an error instead of FsdaxNamespace() ==
+  nil. CreateFsdaxNamespace re-reads the region right before
+  "ndctl create-namespace -f" and refuses unless every namespace has
+  finished probing and none is in mode fsdax (any map; a writer's map
+  dev namespace used to be reconfigured with -e). So the destructive
+  path runs only when the device verifiably has no fsdax namespace.
+- E12: TestNamespacesWaitForProbe has the steps "disk complete, pfn mode
+  missing" and "unknown mode" (neither settles); with the reviewer's
+  copy that reads the mode first (/tmp/drv2rev/ov-p3.json) this step and
+  TestNamespacesPfnModeUnreadable fail, so the order is pinned
+  deterministically.
+- E13: the timeout names the cause: "<region>: namespaces still probing
+  (namespace0.0: no .../dev): context deadline exceeded".
+- New tests: TestNamespacesPfnModeUnreadable,
+  TestCreateFsdaxNamespaceRefuses; TestCreatePmemRegionErrors adjusted.
+  go test -race -count=3 ./pkg/cxl/... ok.

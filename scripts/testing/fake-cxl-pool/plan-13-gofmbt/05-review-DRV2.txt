@@ -1,0 +1,542 @@
+plan-13: review of the uncommitted driver fixes bug-09 and bug-10
+=================================================================
+2026-10-26 (Opus reviewer). I only read, built and tested. I changed no
+file of N except this one, and I did not touch the cluster or the VMs.
+  N    ~/github.com/containers/nri-plugins, branch 5jg-cxl, working
+       tree on top of aea6362d8
+  D/   N/cmd/plugins/dra-driver-cxl/
+  M/   N/pkg/cxl/memctl/
+  REV  /tmp/drv2rev: throwaway tests and patched copies, run with
+       "go test -overlay" (nothing was written into N)
+Scope: D/pool_serials.go and D/pool_serials_test.go (new, read whole),
+the diff of D/pool_slices.go, D/driver.go, D/node_state.go,
+D/pool_slices_test.go, M/pmem.go, M/memctl_test.go, M/pmem_test.go
+and docs/memory/cxl/{local,pool,usage}.md. Specs: bug-09, bug-10.
+
+Verdict
+-------
+bug-09: the fix closes the L6 sequence and its restart variant, and
+the tests prove it. Some paths still publish a pool device as a local
+memdev, though:
+- E1 (bug): the 1 h window and the 24 h retention are measured
+  between SCANS, and a node scans only at start, on udev events and on
+  the 30 s retries. On an idle node that has not scanned for over an
+  hour, a pool device whose serial the node never listed is
+  published as local at once. On a node idle for over 24 h, one
+  unrelated rescan while the slices are gone forgets the pool serials,
+  and the next attach publishes them as local.
+- E2, E3 (risk): nothing notices that a pool's slices are back
+  until the next udev event, and two concurrent rescans can store a
+  stale result.
+- E4 (risk): the state file is not fsynced, and an unreadable file is
+  silently treated as no knowledge at all.
+bug-10: correct. Every caller of the new wait has a deadline. One
+narrow destructive path remains: E11, a pfn mode that cannot be read
+still settles with Map "". The C half of the fix has no
+deterministic test (E12).
+
+Commands run
+------------
+go vet ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...       clean
+gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl                 clean
+go test -race -count=3 ./cmd/plugins/dra-driver-cxl/... \
+  ./pkg/cxl/... -skip TestMemdevSettings                    ok
+golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...
+  3 errcheck in M/probe.go:95,104 and M/probe_test.go:36, files
+  that this change does not touch; nothing in the changed files
+Fix disabled (REV/pool_serials_nofix.go: Gate returns its input,
+  no remembered pool serials): 6 of the 9 TestPoolSerials* fail, as
+  bug-09 says (SliceDeleted, HotAddWhileSliceDeleted,
+  NewMemdevHeldBack, HoldBackEnds, PoolDeviceRemoved, Prepared)
+HEAD M/pmem.go with the new tests: TestNamespacesWaitForProbe fails
+  (pmem_test.go:301 open .../class/block/pmem0/dev: ENOENT)
+New M/pmem.go with only the mode read moved back first
+  (REV/pmem_modefirst.go): -count=20 of the package passes (E12)
+Throwaway tests (REV/zz_review_test.go, zz_review2_test.go,
+  zz_pmem_review_test.go): R1..R8 and TestRevPfnModeUnreadable,
+  results quoted below
+
+========================================================================
+Findings
+========================================================================
+
+E1  bug  bug-09: the window and the retention count time between
+    scans, not observed absence
+  pool_slices.go:131 sets p.pools[pool] only on a list that has the
+  pool. Gate refreshes r.Seen only for memdevs present at a scan
+  (pool_serials.go:245, 277). Pool serials are listed only by
+  scanInput, and scans run only at start, on udev events and on the
+  retries (driver.go:701, pool_slices.go:177). So
+  uncertainLocked (pool_serials.go:210) and the forget loops
+  (pool_serials.go:279-291) compare "now" with the time of the
+  node's last scan, not with how long the pool or the serial has
+  actually been absent.
+  R1 TestRevQuietNodeWindowLapsed: pool-c is listed at a scan, 2 h
+     pass without a scan, pool-c's slice is deleted, and a serial the
+     node never listed is attached. Result:
+       published [memdev-c100e2e1 memdev-c1ae2001] holding false
+     bug-09 6(c) says this case is covered ("the slice was
+     published, allocated, attached and deleted between two scans").
+     It is covered only if the node scanned in the last hour.
+  R2 TestRevQuietNodeForget: 0xc1ae2001 is in pool-c's slice at a
+     scan, 25 h pass without a scan, the controller stops gracefully,
+     one unrelated rescan runs (the device is detached), then the
+     device is attached:
+       published [memdev-c100e2e1 memdev-c1ae2001] holding false
+     The forget loop deleted both the serial and the pool at the
+     first scan after 25 h, without ever seeing them absent.
+  The e2e cluster hides this, because udev events come every few
+  seconds there. A production node can easily go hours without a
+  CXL udev event. A wall-clock step forward does the same to the
+  times loaded from the file (they have no monotonic reading), for
+  example an RTC that runs ahead at boot and is then corrected.
+  Fix (either):
+  (a) List the pool slices periodically, every 5-10 min, even
+      without a scan: run Serials(), which refreshes p.pools and the
+      Seen of listed serials. Gate's Seen refresh needs a sysfs scan,
+      or at least a "present serials" pass. This also fixes E2.
+  (b) Count observed absence: give each record and pool an
+      AbsentSince, set at the first successful list or scan that
+      misses it and cleared when it is seen again. Forget when
+      now - AbsentSince > retention. A pool is missing when it was in
+      the previous successful list, or when now - AbsentSince <
+      window. On the first scan after a load, set every AbsentSince
+      to "now", so that downtime and clock steps never count.
+  Add R1 and R2 as tests.
+
+E2  risk  bug-09: nothing notices returning slices that list a
+    published local memdev
+  A memdev can be published as local while it is a pool device: the
+  hold-back expired (pool_serials.go:267), R4, E1. Its pool's slices
+  can come back and list it later. The driver learns this only at the
+  next scan. Holding() is false by then, so retryPoolList does not
+  rescan (pool_slices.go:185). Until the next udev event, the memdev
+  stays in Allocatable and in the slice. A local claim allocated
+  meanwhile is prepared, because Prepare checks only Allocatable
+  (node_state.go:1162). This was already true at HEAD, but the
+  hold-back expiry makes it a designed path now.
+  Fix: E1(a), or a ResourceSlice informer for drivers other than
+  cxl.nri.io that triggers rescanAndPublish when a listed serial is
+  on the node and not known as a pool serial. Also add a last line of
+  defense before RAM is onlined: the local allocator's Acquire, or
+  the memdev Prepare, refuses a serial that poolSlices remembers as a
+  pool serial (records !Local) at that moment.
+
+E3  risk  bug-09: concurrent rescans can store a stale result
+  udevRescanLoop (driver.go:690) and retryPoolList call
+  rescanAndPublish with no serialization. Each one does
+  scanInput -> Gate -> buildDevInfos, then stores
+  d.state.Allocatable (driver.go:712) and publishes. Gate re-reads the
+  records under p.mu, so an interleaved Serials cannot demote a pool
+  serial (verified). But the store order is not the order of the
+  Gates.
+  R8 TestRevInterleavedRescans: A gates at the hold-back expiry, then
+  B lists pool-c with the serial and gates:
+    A [memdev-c100e2e1 memdev-c1ae2001] B [memdev-c100e2e1]
+    holding false
+  If A stores and publishes after B, the pool device stays published
+  as local, and nothing rescans (E2). The window is narrow: A has to
+  be descheduled for about one API round trip. But the hold-back
+  creates exactly this coincidence, a 30 s retry at the moment the
+  pool returns.
+  Fix: a mutex in driver around rescanAndPublish, from scanInput
+  through the publish. Prepare does not take it, and scans are short.
+
+E4  risk  bug-09: the state file is not durable, and losing it is
+    silent
+  writeJSONFile (local.go:1331-1344) writes the .tmp file and renames
+  it, with no fsync of the file or the directory. After a power loss
+  an empty or truncated poolSerials.json is possible (xfs, or ext4
+  without auto_da_alloc). loadRecords then warns and starts with no
+  records (pool_serials.go:105-107). That is the "no file" residual
+  of bug-09, reached without an upgrade.
+  R5 TestRevTruncatedFile: the serial is listed, the slice is
+     deleted, the file is truncated, the driver restarts and the
+     device is attached:
+       truncated file, controller down: [memdev-c100e2e1
+       memdev-c1ae2001]
+  Fix: fsync the tmp file before the rename, and fsync the directory
+  after it (this helps every state file that writeJSONFile writes).
+  A file that exists but cannot be read means the knowledge is lost,
+  which is not the same as "no pools". For newMemdevHoldBack after
+  start, hold back every memdev that the local allocator does not
+  use, and log an Error, not a Warning.
+
+E5  risk  bug-09: first start without the file while a controller is
+    stopped (documented residual)
+  R4 TestRevNoFileControllerDown: [memdev-c100e2e1 memdev-c1ae2001].
+  The first deployment of this fix is such a start on every node. Two
+  possible mitigations:
+  - Document an upgrade precondition in local.md: all pool
+    controllers running, or no pool claims in flight.
+  - Use an independent signal of an attach in flight: while a
+    ResourceClaim that is allocated to this node with a result of a
+    driver other than cxl.nri.io is not prepared here, treat new
+    memdevs as uncertain. This would also cover R1 without timing
+    windows.
+
+E6  nit  bug-09: the hold-back clock runs while no list has succeeded
+  Before the first successful list, scanInput turns off local memdevs
+  (pool_slices.go:170), but Gate still holds and expires: after 5 min
+  it records the memdev as Local:true (pool_serials.go:267-276). When
+  the first list succeeds with the pool still missing, the memdev is
+  published at once instead of being held. Fix: in Gate, while
+  !p.known, neither expire a hold nor record Local.
+
+E7  nit  bug-09: any DRA driver with a "serial" attribute counts as a
+    pool
+  deviceSerial (broker.go:622) accepts "serial" and "<driver>/serial"
+  of any driver except cxl.nri.io. Pools named by node (node-local
+  drivers) disappear when a node leaves the cluster. For an hour
+  after that, every node holds back each new memdev for 5 min. The
+  file also collects every serial of the cluster and is rewritten on
+  each new one. The API cost is a cluster-wide List of all
+  ResourceSlices at each scan, which was already there, but now also
+  every 30 s while holding. Suggest restricting the drivers to the
+  configured pool driver names (--pool-driver-name,
+  device.PoolDriverName).
+
+E8  nit  bug-09: held memdevs are logged as pool devices
+  A held serial is added to poolSerials, so it is logged as
+  "pool device" (node_state.go:511, V(4)) and as "pool device
+  (cxl-pool.nri.io), memory device serial ..." on its regions
+  (node_state.go:379). A shared-device refusal is also logged once as
+  "pool device" (logSharedRefusal caches it). This is misleading
+  when debugging a bug-09-like case. Suggest passing the held set
+  separately with its own reason ("held back: it may be a pool
+  device").
+
+E9  nit  bug-09: test gaps
+  - The fake never goes through newDriverState: no first scan with
+    the local allocator, and no !known configuration combined with
+    the Gate (E6).
+  - No test for an established local memdev that a pool slice lists
+    later. R7 TestRevLocalBecomesPool passes; add it.
+  - No test for the retry ticker (Holding), and none with regions on
+    a held memdev.
+  - serialsEnv.plug names memdevs "mem"+len(e.devs), so the names
+    collide after unplug and plug. This is harmless now (keyed by
+    serial), but it is a trap later.
+  The fake itself is truthful for what it covers: the real
+  scanInput and scanDetected, the fake clientset, and restarts
+  through the file.
+
+E10 nit  bug-09: docs
+  local.md says a serial is forgotten after 24 h "neither in a
+  ResourceSlice, nor prepared, nor on the node", and that pools
+  "listed with devices in the last hour" count. Both are true only
+  for a node that scans (E1); fix the text together with E1. local.md
+  also does not say how to give a former pool device a new role as a
+  local memdev while it stays attached (it is never forgotten). Say
+  that its record has to be removed from poolSerials.json before a
+  restart. loadRecords also crashes on a hand-edited file with a
+  null record:
+  R3 TestRevNullRecord: nil pointer dereference at
+     pool_serials.go:110 (r.Serial), so the driver crash-loops. Skip
+     nil entries.
+
+E11 risk  bug-10: a pfn mode that cannot be read still settles, so
+    the destructive path stays reachable
+  M/pmem.go:234-241: if the mode read fails, or returns anything
+  other than "ram" or "pmem", Map stays "" and the namespace is
+  settled.
+  TestRevPfnModeUnreadable (pfn0.1 fully probed, mode file removed):
+    settled true err <nil> namespaces [{Name:namespace0.0
+    Mode:fsdax Map: ... BlockDevice:/dev/pmem0 ...}] fsdax <nil>
+  FsdaxNamespace then returns nil. preparePersistent
+  (D/pool_persistent.go:123-133) fails a read-only or fs attach. A
+  writable non-fs attach runs "ndctl create-namespace -f -e
+  namespace0.0" over the writer's namespace. In the kernel,
+  nd_pfn_validate sets the mode before nd_device_register, so with
+  the disk complete only a teardown or an I/O error can hit this,
+  which is unlikely. But the outcome is the one that bug-10 calls
+  the worst. Fix: a probed pfn device whose mode is neither ram nor
+  pmem is not settled (return ns, false, nil), so the deadline then
+  produces an error instead of a reformat. Possibly also refuse -e
+  over a namespace in mode fsdax whose Map is unknown.
+
+E12 nit  bug-10: the C half of the fix has no deterministic test
+  With only the mode read moved back first (REV/pmem_modefirst.go),
+  the whole package passes -count=20. The new
+  TestNamespacesWaitForProbe steps pin down only A (ENOENT). After
+  E11, add a step "pfn device with driver and complete disk but no
+  mode: not settled". That pins the ordering without a race.
+
+E13 nit  bug-10: a timeout loses its cause
+  At HEAD, ENOENT named the missing file. Now the caller gets only
+  "<region>: namespaces still probing: context deadline exceeded"
+  (pmem.go:319). Suggest keeping the last reason a namespace was
+  unsettled, for example the missing path, and adding it to the
+  error.
+
+========================================================================
+Verified correct
+========================================================================
+
+bug-09
+- The L6 sequence, restarts while the slice is absent, the hot-add
+  variant, and a never-listed serial while the pool is missing within
+  the window are all closed. The 9 new tests pass, and 6 fail without
+  the fix.
+- Order: newPoolSlices loads the file in its constructor
+  (pool_slices.go:81), and newDriver creates it before newDriverState
+  (driver.go:381-382). So the first scanInput, newLocalHelper's
+  SetShared (which excludes remembered pool serials, driver.go:602)
+  and the first Gate all see the records.
+- Precedence in Gate (pool_serials.go:242-269): a current or
+  remembered pool serial always wins over Local, over local.uses and
+  over the hold-back. A Local record flips to pool when a slice lists
+  it or the pool driver prepares it, and it stays pool after the
+  slice is gone (R7).
+- Serials, NotePrepared, Gate and Holding all take p.mu. Gate
+  re-reads the records, so an interleaved Serials cannot demote a
+  pool serial. -race -count=3 is clean.
+- A driver restart during the hold-back restarts the 5 min (R6),
+  which is conservative. A crash loop holds for as long as it lasts,
+  which is acceptable.
+- Times set in the process carry monotonic readings, so in-process
+  windows ignore clock steps. A backward step of the file's times is
+  conservative (missing longer, never forgotten). Only a forward step
+  is unsafe (E1).
+- saveLocked: the file is written on any change and at most hourly
+  for time-only changes. A failed write keeps saved/dirty, so the
+  next call writes again.
+- Held memdevs: no memdev, no region and no shared device is
+  published (they are in poolSerials). Hold-back ends at 5 min, plus
+  at most one 30 s tick, or as soon as the pool is listed again.
+- Prepare of a memdev that is no longer in Allocatable fails
+  (node_state.go:1162-1165). So a rescan that happens before Prepare
+  does protect it; E2 is about rescans that do not happen.
+- A genuinely local device: one present at the first start, or
+  hot-added while all pools have their slices, is published at once
+  and then also while the pools are absent (TestPoolSerialsLocalDevice).
+  A controller that is uninstalled for good delays new local memdevs
+  by at most 5 min, for at most 1 h.
+
+bug-10
+- No hang: every caller has a deadline. preparePersistent uses
+  p.timeout, whose default is 30 s, and 0 maps to the default
+  (pool.go:253). checkBlockDevice uses min(p.timeout, 5 s), and
+  CreateFsdaxNamespace uses the caller's wctx.
+  TestNamespacesWaitForProbe still checks that Namespaces gives up
+  with the context.
+- Only ENOENT from BlockDeviceInfo (of dev or size) means "probing".
+  Parse and other errors still fail.
+- Reading the mode last is correct for every mode. fsdax: the mode is
+  set before the pfn device is registered, and the disk exists only
+  after the probe of the registered device. devdax (holder dax*),
+  raw and sector never read Map, as before. Raw is safe because a
+  namespace with an info block never gets its own disk (nd_pmem
+  probes btt/pfn/dax first and returns -ENXIO).
+- For a probed fsdax namespace with map mem, FsdaxNamespace now always
+  finds it, so the writable path never reaches create-namespace -f
+  for a writer's namespace, except through E11.
+- Harness: fakeSys.write renames from a second t.TempDir() on the same
+  filesystem, so the write is atomic. The t.Cleanup(probes.Wait) is
+  registered after the TempDir cleanups, so it runs first (LIFO).
+  After the test function returns, no probe goroutine writes or
+  calls t.Fatal.
+
+========================================================================
+Disposition (2026-10-26, Opus implementer)
+========================================================================
+All changes are uncommitted in the working tree, on top of the earlier
+bug-09/bug-10 work. Image not built; cluster and VMs not touched.
+New/changed: D/pool_serials.go, D/pool_slices.go, D/driver.go,
+D/node_state.go, D/local.go (poolGuard, writeJSONFile), M/pmem.go, tests
+D/pool_serials_test.go, D/pool_slices_test.go, M/pmem_test.go, docs
+local.md, pool.md, usage.md.
+
+E1  FIXED, both (a) and (b).
+  (a) The pool watch (D/pool_slices.go poolWatch, replaces retryPoolList)
+      ticks every 30 s: it rescans while the list fails or a memdev is
+      held, and otherwise whenever the node has not been rescanned for
+      poolSlicesPoll = 2 min (udev rescans count). A rescan is the full
+      rescanAndPublish: field-selected list of the pool slices, sysfs
+      scan, Gate, Update of the slice controller (no API write when
+      nothing changed). Periodic rescans that change nothing log at
+      V(4).
+  (b) Absence is observed, not inferred from the time of the last scan:
+      p.absent / p.poolAbsent hold the first observation that missed a
+      serial / pool. An observation continues the previous one only if
+      it is at most poolObservationGap = 5 min later (observedSince);
+      after a longer gap (stopped or starved driver, failing list, clock
+      step, quiet node without the watch) the absence starts again at
+      "now". Serial absence = not on the node, not in the current list,
+      not prepared, observed in Gate only when the list of this scan
+      succeeded. Forget after poolSerialRetention (24 h) of observed
+      absence; a pool is "missing" for poolMissingWindow (1 h) of
+      observed absence. Absence is not persisted: after a restart it
+      starts again (file times are informational only), so the clock
+      steps of loaded times no longer matter.
+  Why both and why not an informer: the periodic list reuses the one
+  scan path that already exists (no event plumbing, no second cache),
+  its latency (<= 2.5 min) is backed by the Prepare check of E2, and the
+  absence of a memdev can only be observed by scanning sysfs anyway
+  (udev reports arrivals, not "still absent"). (b) alone would keep a
+  node that never scans conservative, but never forgetting; (a) alone
+  would still let a single late observation decide. Cost: with E7 the
+  list is field-selected (spec.driver=<pool driver>), one small List
+  per node per 2 min.
+  Tests: TestPoolSerialsQuietNodeWindow (R1), TestPoolSerialsQuietNodeForget
+  (R2), TestPoolSerialsPoolDeviceRemoved (one scan after 25 h forgets
+  nothing; a day of scans does), TestPoolSerialsHoldBackEnds (an hour of
+  observed absence holds nothing, a restart starts it again),
+  TestPoolWatch (the ticks rescan while holding; periodic rescans).
+
+E2  FIXED.
+  - Noticed by the periodic rescan of E1(a): a returning pool slice that
+    lists a published local memdev turns its record into a pool serial
+    (pool wins, as before), and the memdev is withdrawn at the next
+    rescan (TestPoolWatch, TestPoolSerialsLocalBecomesPool = R7).
+  - In use: withdrawn as well (not kept published). Deviation from the
+    "if it is not in use" wording, deliberately: withdrawing it touches
+    no prepared claim (only Prepare reads Allocatable) and stops new
+    allocations on it; keeping it would only invite more claims that the
+    Prepare check then fails. Gate logs an Error once per serial, naming
+    the local claims ("release the local claims ... and check its
+    memory"). Nothing is torn down automatically.
+  - Defence in depth: localAllocator.poolGuard (D/local.go checkPool),
+    called at the start of Acquire and AcquireShared, before a.mu and
+    before any region is created or memory onlined, so every local
+    Prepare (also companion/lease claims) goes through it. The guard
+    (D/driver.go localPoolGuard) refuses a serial that the pool driver
+    prepares, and poolSlices.CheckLocal does a fresh list: a current
+    pool slice serial, a remembered pool serial, or a held memdev is
+    refused ("memory device serial 0x... is a pool device of
+    cxl-pool.nri.io/pool-c: it is not used as a local memory device").
+    A failing list falls back to the last list plus the records (does
+    not refuse on an API blip alone). TestPrepareLocalPoolDevice,
+    TestPoolSerialsCheckLocal.
+
+E3  FIXED. driver.rescanMu serializes rescan() from scanInput through
+  the publish; Prepare does not take it. TestRescanSerialized blocks the
+  first rescan inside device detection (detectDevices is now a package
+  variable for tests) and fails if a second one enters; verified to fail
+  with the lock removed ("rescan 2 ran while rescan 1 was running"). R8
+  itself is an interleaving at the scan level that the lock makes
+  impossible, so the test pins the lock rather than replaying R8.
+
+E4  FIXED.
+  - writeJSONFile: the tmp file is written and fsynced (writeSynced),
+    renamed, and the directory fsynced (syncDir). It serves all state
+    files (prepared claims, their info, localDevices, probes, pool
+    state, leases, steering record, poolSerials). Measured on this
+    host's ext4/NVMe (/home): 0.35 ms per write synced vs 0.17 ms
+    unsynced (throwaway benchmark, 200 writes). A Prepare writes a few
+    files and spends seconds in region creation; the steering record is
+    written per steered container start/stop. Acceptable; on slow disks
+    a sync costs a few ms each.
+  - An existing file that cannot be read or parsed (also empty, R5) sets
+    p.lost and logs an Error; for poolMissingWindow after the first
+    scan, new memdevs are held back as for a missing pool (up to 5 min
+    each). The next write replaces the file. TestPoolSerialsBadFile,
+    TestPoolSerialsTruncatedFile (now: nothing published at once; the
+    local memdev is new again too).
+  - Null records (E10/R3) are skipped with a Warning:
+    TestPoolSerialsNullRecord.
+
+E5  FIXED with the clients the driver has (RBAC already allows list of
+  resourceclaims cluster-wide). When a scan has a new memdev (no record,
+  not prepared, not in a pool slice, not used by the local allocator),
+  Gate lists the ResourceClaims (without p.mu) and looks at the results
+  of the pool driver of claims allocated to this node (bindsToNode
+  matchFields metadata.name, as the controller's allocationNode):
+  - a serial in the status data (poolDataFor) is a pool serial, recorded
+    with <driver>/<pool>;
+  - a result without serial data and without <driver>/AttachFailed True
+    is an attach in flight: every new memdev is held back, WITHOUT
+    expiry, for as long as such a claim exists (its device may be the
+    new memdev). The log names the claims.
+  This applies always, not only after a start without the file, and so
+  also covers R1-like cases beyond the 5 min hold-back. Cost: one
+  cluster-wide claims List per scan that has a new memdev (rare; every
+  30 s while one is held). A failing claims list makes the scan
+  uncertain (expiring hold).
+  Remaining residual (documented in local.md): no file, controller
+  stopped, and the claim already deleted/deallocated while the device is
+  still attached: nothing tells it is a pool device. Allocations without
+  bindsToNode are not attributed to a node.
+  TestPoolSerialsClaimEvidence (fails without the claim list: verified).
+
+E6  FIXED. While no list has succeeded (!p.known), a new memdev is held
+  with no expiry, its hold-back start refreshed at every scan, and no
+  Local record is made; the 5 min count starts at the first successful
+  list. TestPoolSerialsHoldWhileNotListed (fails without the change:
+  verified).
+
+E7  FIXED (agreed). newPoolSlices takes the pool driver name
+  (--pool-driver-name, cxl-pool.nri.io when empty or disabled) and the
+  node name. The ResourceSlice list uses the field selector
+  spec.driver=<pool driver> (resourceapi.ResourceSliceSelectorDriver,
+  plus a client-side check because the fake client ignores field
+  selectors). Slices of other drivers no longer count:
+  TestPoolSlicesSerials updated (other.example.com is ignored, but is a
+  pool with --pool-driver-name other.example.com). This also makes the
+  periodic list of E1 cheap.
+
+E8  FIXED. Gate returns the pool serials and the held memdevs
+  separately; buildDevInfosHeld / addLocalMemdevs / sharedListingHeld /
+  poolIgnoreReason log "held back: it may be a pool device" for held
+  memdevs and their regions, "pool device" only for pool serials.
+  buildDevInfos keeps its signature (held nil) for its other callers.
+  TestPoolSerialsHeldRegion (regions on a held memdev are not
+  published, with the held reason).
+
+E9  FIXED except one bullet.
+  - Added: R7 (TestPoolSerialsLocalBecomesPool), the pool watch
+    (TestPoolWatch: holding ticks and periodic rescans), a region on a
+    held memdev (TestPoolSerialsHeldRegion), !known with the Gate (E6).
+  - serialsEnv.plug names memdevs by a counter (mem0, mem1, ...), no
+    collision after unplug/plug.
+  - Not done: a test through newDriverState. newNodeState reconfigures
+    the process-wide CDI default cache (cdiapi.Configure) and sleeps
+    250 ms; doing that from a unit test leaks into the other tests of
+    the package. The first-scan order is unchanged and was verified by
+    reading (Verified correct, bug-09).
+
+E10 FIXED. local.md rewritten for the observed-absence rules, the pool
+  watch, the claim evidence, the lost-file hold, the Prepare refusal,
+  the "upgrade while the controllers run" advice, and how to give a
+  still-attached former pool device a local role (stop the plugin,
+  remove its record from poolSerials.json, start). pool.md (controller
+  restart item) and usage.md (edit the file only while stopped)
+  updated. Null records: see E4.
+
+E11 FIXED.
+  - M/pmem.go probeNamespace: a pfn device whose mode cannot be read, or
+    is neither "ram" nor "pmem", is not settled (the deadline gives an
+    error, never a reformat). TestNamespacesPfnModeUnreadable (the
+    reviewer's TestRevPfnModeUnreadable as a regression test).
+  - CreateFsdaxNamespace itself now re-reads the region right before
+    running "ndctl create-namespace -f" and refuses unless the region
+    has finished probing and has NO namespace in mode fsdax (any map,
+    so also a writer's map dev namespace, which used to be reconfigured
+    with -e). TestCreateFsdaxNamespaceRefuses (map dev present: refused;
+    mode unreadable: refused as probing; ndctl never ran);
+    TestCreatePmemRegionErrors adjusted (a probing region is refused
+    before ndctl). preparePersistent needed no change.
+
+E12 FIXED. TestNamespacesWaitForProbe has the steps "disk complete, pfn
+  mode missing" and "unknown mode": neither may settle. With the
+  reviewer's mode-first copy (REV/ov-p3.json) the step fails ("settled
+  without the mode of the pfn device"), as do the two new tests: the
+  ordering is pinned without a race.
+
+E13 FIXED. probeNamespace/probeNamespaces return why a region or
+  namespace is unsettled (the missing path, "N of M namespaces
+  registered", "cannot read .../mode"); Namespaces' timeout is now
+  "<region>: namespaces still probing (namespace0.0: no
+  .../bus/nd/devices/dax0.1/driver): context deadline exceeded"
+  (checked in TestNamespacesWaitForProbe).
+
+Commands
+  go vet ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...        clean
+  gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl                  clean
+  go test -race -count=3 ./cmd/plugins/dra-driver-cxl/... \
+    ./pkg/cxl/... -skip TestMemdevSettings                     ok
+    (driver package 165 s, as before)
+  golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...
+    only the 3 pre-existing errcheck in M/probe.go, M/probe_test.go
+  Throwaway overlays in /tmp/drvfix (lock removed, E6 branch removed,
+  claim list disabled): the corresponding new tests fail.
