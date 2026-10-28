@@ -91,6 +91,39 @@ func TestDecoderHoles(t *testing.T) {
 	}
 }
 
+// TestRegionsAbove: the regions of other memdevs above those of a memdev
+// in its ports (bug-02's VM0 before the release: region2 of mem2 between
+// region0 and region3), none when its region is the top one or it has
+// none.
+func TestRegionsAbove(t *testing.T) {
+	for _, tc := range []struct {
+		name, region string
+		want         []string
+	}{
+		{"middle", "region2", []string{"region3"}},
+		{"bottom", "region0", []string{"region2", "region3"}},
+		{"top", "region3", nil},
+		{"no region", "", nil},
+	} {
+		f := holeSys(t, false)
+		if tc.region != "" {
+			f.write("bus/cxl/devices/"+tc.region+"/target0", "decoder6.0")
+		}
+		if got := f.manager().RegionsAbove("mem2"); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: RegionsAbove(mem2) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// a hole above the memdev's region is no region
+	f := holeSys(t, true)
+	f.write("bus/cxl/devices/region0/target0", "decoder6.0")
+	if got := f.manager().RegionsAbove("mem2"); !reflect.DeepEqual(got, []string{"region3"}) {
+		t.Errorf("below a hole: RegionsAbove(mem2) = %v, want [region3]", got)
+	}
+	if got := f.manager().RegionsAbove("mem9"); got != nil {
+		t.Errorf("unknown memdev: RegionsAbove = %v, want none", got)
+	}
+}
+
 func TestCreateRegionExplainsDecoderHole(t *testing.T) {
 	for _, hole := range []bool{true, false} {
 		f := holeSys(t, hole)

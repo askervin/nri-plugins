@@ -105,10 +105,11 @@ type poolDriver struct {
 	// state file) or the rollback of its Prepare released everything. The
 	// claims loaded at start are those of Prepares that the plugin did not
 	// finish (it was killed in them): their devices may have a region, a
-	// namespace, online memory, which Unprepare releases and a Prepare
-	// again reuses. Their Devices have what is known before a device is
-	// touched (no region), and the NUMA node of a device in mode numa
-	// found at start.
+	// namespace, online memory, which the start releases
+	// (releaseUnfinished); of the claims that it keeps, Unprepare releases
+	// them and a Prepare again reuses them. Their Devices have what is
+	// known before a device is touched (no region), and the NUMA node of a
+	// device in mode numa found at start.
 	preparing     map[string]*preparingPoolClaim
 	preparingFile string // <plugin data dir>/preparingPoolClaims.json
 
@@ -294,9 +295,10 @@ type poolDevice struct {
 // newPoolDriver returns a pool driver whose prepared claims are loaded
 // from stateFile, and the claims whose Prepare did not finish from the
 // preparing file next to it, with the missing node mounts and lease binds
-// of the prepared claims mounted again, and the stale lease binds under
-// leaseFsRoot ("": none) and node mounts unmounted. The kubelet plugin is
-// started separately (start).
+// of the prepared claims mounted again, the stale lease binds under
+// leaseFsRoot ("": none) and node mounts unmounted, and what the Prepares
+// that did not finish touched released (releaseUnfinished). The kubelet
+// plugin is started separately (start).
 func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration, leaseFsRoot string) (*poolDriver, error) {
 	if timeout <= 0 {
 		timeout = defaultPoolPrepareTimeout
@@ -324,6 +326,7 @@ func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateF
 	}
 	p.loadPreparing()
 	p.restoreMounts()
+	p.releaseUnfinished()
 	p.updateSerials()
 	return p, nil
 }
@@ -905,7 +908,7 @@ func (p *poolDriver) loadPreparing() {
 				d.Node = p.regionNode(d.Serial)
 			}
 		}
-		klog.Warningf("%s: claim %s (%s): its Prepare did not finish (the plugin stopped in it): devices %s may have a region, a namespace or online memory; its Unprepare releases them, its Prepare again reuses them",
+		klog.Warningf("%s: claim %s (%s): its Prepare did not finish (the plugin stopped in it): devices %s may have a region, a namespace or online memory",
 			p.name, rec.ClaimName, uid, strings.Join(serials, ", "))
 		p.preparing[uid] = rec
 	}
@@ -914,6 +917,79 @@ func (p *poolDriver) loadPreparing() {
 			klog.Errorf("%s: %v", p.name, err)
 		}
 	}
+}
+
+// releaseUnfinished releases at start, before kubelet can call Prepare or
+// Unprepare, what the Prepares of the claims that did not finish touched,
+// as their Unprepare does (unprepareUnfinished), and forgets the claims;
+// their Prepare again prepares the devices anew. A region of such a
+// Prepare is the newest one in the ports of its host bridge now. Kept for
+// the Prepare again, it would lie below the regions that other claims get
+// until kubelet retries (60-90 s), and its release by a Prepare again that
+// fails (always for a claim whose device refuses it) or by the claim's
+// Unprepare would leave a hole that blocks every new region through those
+// ports until the regions above it are gone (memctl.DecoderHole).
+// A claim is kept for its Unprepare or its Prepare again, which reuses
+// what is there, when it is a companion claim (the nodes that it may have
+// lent can be revoked only when the lender is set up, and the broker
+// learns of the release from its Unprepare), when a region of another
+// memdev lies above one of its regions already (releasing it now would
+// leave the hole), or when not everything could be released.
+func (p *poolDriver) releaseUnfinished() {
+	ctx, cancel := rollbackContext(context.Background())
+	defer cancel()
+	for _, uid := range slices.Sorted(maps.Keys(p.preparing)) {
+		rec := p.preparing[uid]
+		if rec.Lend != nil {
+			klog.Infof("%s: claim %s (%s) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them", p.name, rec.ClaimName, uid)
+			continue
+		}
+		if above := p.regionsAbove(uid, rec); len(above) > 0 {
+			klog.Warningf("%s: claim %s (%s): not releasing its devices at start: %s lie above their regions, a release would leave a hole in the decoders of their ports; its Unprepare releases them, its Prepare again reuses them",
+				p.name, rec.ClaimName, uid, strings.Join(above, ", "))
+			continue
+		}
+		var serials []string
+		for _, d := range rec.Devices {
+			serials = append(serials, api.FormatSerial(d.Serial))
+		}
+		klog.Infof("%s: claim %s (%s), whose Prepare did not finish: releasing devices %s", p.name, rec.ClaimName, uid, strings.Join(serials, ", "))
+		errs := p.releaseDevices(ctx, uid, p.unfinishedDevices(rec, nil), nil)
+		if len(errs) == 0 {
+			errs = p.deleteRecordedRegions(uid, rec, "left by a Prepare of the claim that did not finish")
+		}
+		if len(errs) > 0 {
+			klog.Warningf("%s: claim %s (%s): not everything was released at start (%v): keeping its record in %s: its Unprepare releases its devices, its Prepare again reuses them",
+				p.name, rec.ClaimName, uid, errors.Join(errs...), p.preparingFile)
+			continue
+		}
+		if err := p.forgetPreparing(uid); err == nil {
+			klog.Infof("%s: claim %s (%s): released, its Prepare again prepares its devices anew", p.name, rec.ClaimName, uid)
+		}
+	}
+}
+
+// regionsAbove returns the regions of other memdevs above the regions of
+// the devices of a claim whose Prepare did not finish in the ports of
+// their memdevs (memctl.RegionsAbove), but of the devices that another
+// prepared claim uses: the release keeps their regions.
+func (p *poolDriver) regionsAbove(uid string, rec *preparingPoolClaim) []string {
+	var above []string
+	for _, d := range rec.Devices {
+		if p.preparedDevice(d.Serial, uid) != nil {
+			continue
+		}
+		memdev, err := p.mem.FindMemdev(d.Serial)
+		if err != nil {
+			continue
+		}
+		for _, r := range p.mem.RegionsAbove(memdev) {
+			if !slices.Contains(above, r) {
+				above = append(above, r)
+			}
+		}
+	}
+	return above
 }
 
 // regionNode returns the NUMA node of the region of the memdev with the

@@ -56,6 +56,9 @@ type sim struct {
 	ref *refPool
 	// pend is the prediction of the settle being observed (ref only)
 	pend *State
+	// lateKill: the truth keeps the armed driver-kill-at watcher of the
+	// VM through the window after a settle (keepKillAt)
+	lateKill [nVMs]bool
 }
 
 func newSim(cfg *Config, seed int64) *sim {
@@ -86,6 +89,7 @@ func (s *sim) do(step int, a Act) *DoneObs {
 		s.truth = s.resolve(from.apply(a))
 		return nil
 	}
+	from = s.fireLate(from)
 	if s.ref != nil {
 		s.ref.do(a, refHint{freesClaim: freesClaim(from, a), releasesLease: releasesPLease(from, from.apply(a), int(a.Slot))})
 	}
@@ -276,13 +280,43 @@ func (s *sim) resolve(st *State) *State {
 	}
 	n.growFence()
 	s.fixPDev(n)
-	// the simulated watcher of driver-kill-at fires in the window after
-	// it was armed or never (the model keeps it armed until the oracle
-	// disarms it, 70 s)
-	for v := range n.Drv {
-		n.Drv[v].KillAt, n.Drv[v].KillAtAt = 0, 0
-	}
+	s.keepKillAt(n)
 	return n
+}
+
+// keepKillAt ends the truth's armed driver-kill-at watchers at a settle,
+// or keeps one through the next window (the model keeps it armed until
+// the oracle disarms it, 70 s): the simulated watcher fires in the window
+// after it was armed, at the next settle or before a step of the next
+// window (fireLate), or never.
+func (s *sim) keepKillAt(n *State) {
+	for v := range n.Drv {
+		d := &n.Drv[v]
+		if d.KillAt != 0 && !s.lateKill[v] && s.rng.Intn(2) == 0 {
+			s.lateKill[v] = true
+			continue
+		}
+		s.lateKill[v] = false
+		d.KillAt, d.KillAtAt = 0, 0
+	}
+}
+
+// fireLate fires a watcher that the truth kept (keepKillAt) before a
+// step, at random, when a Prepare that comes at any time shows its
+// marker (killAnyTime): FP4's refused reader retried by kubelet 0.4 s
+// after the settle's observation, and deleted later in the window.
+func (s *sim) fireLate(st *State) *State {
+	var fired [nVMs]bool
+	for v := VM(0); v < nVMs; v++ {
+		d := &st.Drv[v]
+		if s.lateKill[v] && d.KillAt != 0 && st.killAnyTime(v, int(d.KillAt-1)) && s.rng.Intn(2) == 0 {
+			fired[v] = true
+		}
+	}
+	if f := st.fireKillAt(fired, false); f != nil {
+		return f
+	}
+	return st
 }
 
 // names of the simulated objects

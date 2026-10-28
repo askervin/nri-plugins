@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -57,6 +58,8 @@ type fakePoolSys struct {
 	// cutAfter is the beginning of a command after which the plugin is
 	// killed (cutPrepare), "" for none.
 	cutAfter string
+	// failCmd is the beginning of a command that fails, "" for none.
+	failCmd string
 }
 
 const fakeMemPath = "devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0"
@@ -147,9 +150,14 @@ func (f *fakePoolSys) exec(ctx context.Context, name string, args ...string) (st
 }
 
 func (f *fakePoolSys) run(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := name + " " + strings.Join(args, " ")
 	f.mu.Lock()
-	f.cmds = append(f.cmds, name+" "+strings.Join(args, " "))
+	f.cmds = append(f.cmds, cmd)
+	fail := f.failCmd != "" && strings.HasPrefix(cmd, f.failCmd)
 	f.mu.Unlock()
+	if fail {
+		return "", errors.New(cmd + ": exit status 1")
+	}
 	if out, ok := f.execPmem(name, args...); ok {
 		return out, nil
 	}
@@ -238,6 +246,24 @@ func (f *fakePoolSys) hollowRegion(region, mode string) {
 		f.write(dir+"/"+file, value)
 	}
 	f.link("bus/cxl/devices/"+region, "decoder0.0/"+region)
+}
+
+// stackPorts puts the endpoint of mem0 under the host bridge port1 and
+// the switch port6, whose committed decoders have the regions in commit
+// order ("" for a decoder without a region), as the decoder stacks of
+// plan-13 bug-02 (memctl.DecoderHole).
+func (f *fakePoolSys) stackPorts(regions ...string) {
+	const ep = "devices/platform/ACPI0017:00/root0/port1/port6/endpoint4"
+	_ = os.RemoveAll(f.p("bus/cxl/devices/endpoint4"))
+	f.link(ep+"/uport", "../../../../../../../"+fakeMemPath)
+	f.link("bus/cxl/devices/endpoint4", "../../../"+ep)
+	for _, port := range []string{"devices/platform/ACPI0017:00/root0/port1", "devices/platform/ACPI0017:00/root0/port1/port6"} {
+		id := strings.TrimPrefix(filepath.Base(port), "port")
+		f.write(port+"/decoders_committed", fmt.Sprint(len(regions)))
+		for i, r := range regions {
+			f.write(fmt.Sprintf("%s/decoder%s.%d/region", port, id, i), r)
+		}
+	}
 }
 
 // errCut is the panic of a plugin killed in a Prepare (cutPrepare).

@@ -647,15 +647,21 @@ func (n *State) settleAll() *State {
 	seen := map[string]bool{}
 	truncated := false
 	var bases []*State
-	for _, k := range n.expandLeaseOpen() {
-		// (a watcher fires in the worlds of the slices and of the
-		// hosts of the "any" pods where a Prepare on its VM may show
-		// its marker, FP1; the order of the worlds is as before)
-		for _, fired := range k.killWorlds() {
-			for _, w := range k.expandSlices() {
-				for _, h := range w.expandAnyNodes() {
-					if f := h.fireKillAt(fired); f != nil {
-						bases = append(bases, f)
+	// (the worlds of the watchers that may have fired earlier in the
+	// window, FP4, come last: the alternatives of a settle keep their
+	// order, and the "#adopt N alt=J" of older steps files their meaning)
+	for _, late := range []bool{false, true} {
+		for _, k := range n.expandLeaseOpen() {
+			// (a watcher fires in the worlds of the slices and of the
+			// hosts of the "any" pods where a Prepare on its VM may
+			// show its marker, FP1; the order of the worlds is as
+			// before)
+			for _, fired := range k.killWorlds(late) {
+				for _, w := range k.expandSlices() {
+					for _, h := range w.expandAnyNodes() {
+						if f := h.fireKillAt(fired, late); f != nil {
+							bases = append(bases, f)
+						}
 					}
 				}
 			}
@@ -738,11 +744,13 @@ func (n *State) expandLeaseOpen() []*State {
 // (A23), as sets of the VMs whose watcher fired: not fired (still armed:
 // it may fire later, until the oracle disarms it 70 s after it saw it),
 // and, when a Prepare on the VM may show the marker (killCandidate),
-// fired.
-func (n *State) killWorlds() [][nVMs]bool {
+// fired. late: only the worlds in which a watcher that may have fired
+// before one of the window's steps (KillMay) fired.
+func (n *State) killWorlds(late bool) [][nVMs]bool {
 	worlds := [][nVMs]bool{{}}
 	for v := VM(0); v < nVMs; v++ {
-		if n.Drv[v].KillAt == 0 || !n.killCandidate(v, int(n.Drv[v].KillAt-1)) {
+		d := &n.Drv[v]
+		if d.KillAt == 0 || !(late && d.KillMay) && !n.killCandidate(v, int(d.KillAt-1)) {
 			continue
 		}
 		var next [][nVMs]bool
@@ -753,24 +761,46 @@ func (n *State) killWorlds() [][nVMs]bool {
 		}
 		worlds = next
 	}
-	return worlds
+	if !late {
+		return worlds
+	}
+	var out [][nVMs]bool
+	for _, w := range worlds {
+		for v := VM(0); v < nVMs; v++ {
+			if w[v] && n.Drv[v].KillMay {
+				out = append(out, w)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // fireKillAt returns the state of a world of the watchers (killWorlds)
 // with the hosts of the "any" pods and the slices settled, nil if a
 // watcher that fired in it has no Prepare there that may show its
-// marker. A watcher that fired killed the driver (a driver-kill:
-// restarts +1, fencing seeded, steering as after a kill); the
-// interrupted Prepare is retried after the restart, so the pods end as
-// without the kill.
-func (n *State) fireKillAt(fired [nVMs]bool) *State {
+// marker. late: a watcher that could fire before one of the window's
+// steps (KillMay) fired also without such a Prepare, and one of them
+// did (the other worlds are the first pass's). A watcher that fired
+// killed the driver (a driver-kill: restarts +1, fencing seeded,
+// steering as after a kill); the interrupted Prepare is retried after
+// the restart, so the pods end as without the kill.
+func (n *State) fireKillAt(fired [nVMs]bool, late bool) *State {
 	if fired == [nVMs]bool{} {
 		return n
 	}
+	earlier := false
 	for v := VM(0); v < nVMs; v++ {
-		if fired[v] && !n.killCandidate(v, int(n.Drv[v].KillAt-1)) {
+		if !fired[v] || n.killCandidate(v, int(n.Drv[v].KillAt-1)) {
+			continue
+		}
+		if !late || !n.Drv[v].KillMay {
 			return nil
 		}
+		earlier = true
+	}
+	if late && !earlier {
+		return nil
 	}
 	f := n.clone()
 	for v := VM(0); v < nVMs; v++ {
@@ -778,7 +808,7 @@ func (n *State) fireKillAt(fired [nVMs]bool) *State {
 			continue
 		}
 		d := &f.Drv[v]
-		d.KillAt, d.KillAtAt = 0, 0
+		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
@@ -800,7 +830,40 @@ func (n *State) fireKillAt(fired [nVMs]bool) *State {
 // mount (fs claims and fs leases); bind, a new bind of an fs lease.
 // Volatile kinds never show one (their regions are ram, ignored).
 func (s *State) killCandidate(v VM, marker int) bool {
+	if s.killAnyTime(v, marker) {
+		return true
+	}
 	si := stackIndex(v, HB1)
+	for _, e := range s.Ev {
+		if e.Kind != evPrepare || e.Key < 1 || !devices[e.Key-1].Persistent {
+			continue
+		}
+		i, lease := s.userSlot(e.User)
+		if int(e.Stack) != si && !(e.Stack < 0 && !lease && s.mayLandOn(i, v)) {
+			continue
+		}
+		kind := s.slot(i).Kind
+		if lease {
+			kind = s.Slots[i].LeaseMode.kind()
+		}
+		stage := prepWhole
+		if e.Probe {
+			stage = prepProbe
+		}
+		if s.prepareShows(v, marker, kind, lease, DevID(e.Key-1), stage) {
+			return true
+		}
+	}
+	return false
+}
+
+// killAnyTime: a Prepare on VM v that comes at any time, without an
+// event of the window, may show the marker (killCandidate). It may come
+// right after the observation of a settle that saw the watcher armed
+// and its claim may be gone by the next settle: FP4's refused reader,
+// retried by kubelet 0.4 s after the observation and deleted four steps
+// later (apply keeps it in KillMay).
+func (s *State) killAnyTime(v VM, marker int) bool {
 	for i := range s.Slots {
 		ss, sl := &s.Slots[i], s.slot(i)
 		if !sl.Kind.persistent() || sl.Kind == KPBad || !s.mayLandOn(i, v) {
@@ -824,26 +887,6 @@ func (s *State) killCandidate(v VM, marker int) bool {
 			continue
 		}
 		if s.prepareShows(v, marker, sl.Kind, false, sl.Dev, stage) {
-			return true
-		}
-	}
-	for _, e := range s.Ev {
-		if e.Kind != evPrepare || e.Key < 1 || !devices[e.Key-1].Persistent {
-			continue
-		}
-		i, lease := s.userSlot(e.User)
-		if int(e.Stack) != si && !(e.Stack < 0 && !lease && s.mayLandOn(i, v)) {
-			continue
-		}
-		kind := s.slot(i).Kind
-		if lease {
-			kind = s.Slots[i].LeaseMode.kind()
-		}
-		stage := prepWhole
-		if e.Probe {
-			stage = prepProbe
-		}
-		if s.prepareShows(v, marker, kind, lease, DevID(e.Key-1), stage) {
 			return true
 		}
 	}

@@ -112,6 +112,7 @@ type DriverJSON struct {
 	FMaybe    []int  `json:"fencedMaybe,omitempty"`
 	KillAt    string `json:"killAt,omitempty"` // A23: the marker of an armed watcher
 	KillAtAt  int64  `json:"killAtAt,omitempty"`
+	KillMay   bool   `json:"killAtMay,omitempty"` // it may have fired in the window (FP4)
 }
 
 // DoneJSON is what a non-settle step must return.
@@ -228,6 +229,7 @@ func (s *State) expect(step int, action string) *Expectation {
 			FMaybe:    s.bitNodes(d.FMaybe),
 			KillAt:    killAtName(d.KillAt),
 			KillAtAt:  d.KillAtAt,
+			KillMay:   d.KillMay,
 		})
 	}
 	for d := DevID(0); d < nDevs; d++ {
@@ -457,7 +459,7 @@ func (e *Expectation) state() (*State, error) {
 		if mk, ok := parseMarker(dj.KillAt); ok {
 			d.KillAt = uint8(mk) + 1
 		}
-		d.KillAtAt = dj.KillAtAt
+		d.KillAtAt, d.KillMay = dj.KillAtAt, dj.KillMay
 	}
 	for _, pj := range e.PDevs {
 		x := -1

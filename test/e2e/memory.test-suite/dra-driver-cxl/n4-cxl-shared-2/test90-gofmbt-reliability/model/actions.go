@@ -776,12 +776,26 @@ func (s *State) pwipeOK(d DevID) bool {
 
 // killAtMayHaveFired: an armed driver-kill-at watcher of the VM may have
 // fired already: the window has a Prepare at its marker, or a refused
-// claim's retry makes the region at any time. A driver fault would
-// disarm it (A31), and whether the kill came first would be open: not
-// generated then.
+// claim's retry makes the region at any time, now or before one of the
+// window's steps (KillMay). A driver fault would disarm it (A31), and
+// whether the kill came first would be open: not generated then.
 func (s *State) killAtMayHaveFired(v VM) bool {
-	k := s.Drv[v].KillAt
-	return k != 0 && s.killCandidate(v, int(k-1))
+	d := &s.Drv[v]
+	return d.KillAt != 0 && (d.KillMay || s.killCandidate(v, int(d.KillAt-1)))
+}
+
+// markKillMay remembers for the window that an armed watcher may have
+// fired before a step (killAnyTime): a step may take the claim whose
+// Prepare could show its marker (FP4: a refused reader's retry fired
+// the watcher after the settle's observation had seen it armed, and its
+// delete hid the kill from the next settle and let a containerd-restart
+// be generated).
+func (n *State) markKillMay() {
+	for v := VM(0); v < nVMs; v++ {
+		if d := &n.Drv[v]; d.KillAt != 0 && !d.KillMay && n.killAnyTime(v, int(d.KillAt-1)) {
+			d.KillMay = true
+		}
+	}
 }
 
 // killAtBind: a lease-get of an fs lease of slot i comes while a
@@ -926,6 +940,9 @@ func (s *State) apply(a Act) *State {
 	n := s.clone()
 	n.Steps++
 	n.Last = a
+	if a.Verb != VSettle {
+		n.markKillMay()
+	}
 	switch a.Verb {
 	case VSettle:
 		return n.settleAll()
@@ -951,7 +968,7 @@ func (s *State) apply(a Act) *State {
 	case VDriverKill:
 		d := &n.Drv[a.VM]
 		// it disarms a driver-kill-at watcher of the VM first (A31)
-		d.KillAt, d.KillAtAt = 0, 0
+		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
@@ -964,7 +981,7 @@ func (s *State) apply(a Act) *State {
 		// ("error reading from server: EOF") and kubelet creates it
 		// again: restarts +1 (M6, run L5), as for a kubelet restart.
 		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt = 0, 0 // (A31)
+		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false // (A31)
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
@@ -972,7 +989,7 @@ func (s *State) apply(a Act) *State {
 		n.restartSlack(a.VM)
 	case VDriverRestart:
 		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt = 0, 0 // (A31)
+		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false // (A31)
 		d.PodGen++
 		d.Restarts = 0
 		d.Inc++
@@ -1025,7 +1042,7 @@ func (s *State) apply(a Act) *State {
 		// armed; the settle has a world in which it fired (stack.go
 		// killWorlds)
 		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt = a.Arg+1, 0
+		d.KillAt, d.KillAtAt, d.KillMay = a.Arg+1, 0, false
 	}
 	n.Unsettled++
 	return n
@@ -1669,6 +1686,9 @@ func (n *State) settle() {
 	for v := range n.Drv {
 		n.Drv[v].Killed = false
 		n.Drv[v].Restarted = false
+		// (the settle's observation decides; a refused claim's retry
+		// after it marks the next window again)
+		n.Drv[v].KillMay = false
 	}
 	n.Unsettled = 0
 }

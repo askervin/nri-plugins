@@ -1,0 +1,253 @@
+BUG-14: THE REGION OF A CUT PREPARE IS KEPT FOR KUBELET'S RETRY AND
+ITS LATE RELEASE LEAVES A DECODER HOLE
+
+Branch 5jg-cxl, 2026-10-28. Found by run FP3 of the model-based test
+(06-runs.txt; step 798 settle failed after 3 min: "stack vm0/hb1:
+committed decoders [hole,c-pmem0], want [c-pmem0]"). A consequence of
+the bug-11 fix (Prepare again reuses what a cut Prepare made) and the
+Linux decoder-stack rule of bug-02. Fixed in the working tree
+(uncommitted), unit tested, verified on the cluster by a replay that
+failed before the fix.
+
+D/ = cmd/plugins/dra-driver-cxl/, M/ = pkg/cxl/memctl/,
+R/ = /tmp/p13-runs/fp3/out/, B/ = /tmp/p13-runs/b14/. Line numbers of
+HEAD (c74eff381) unless "new". Times of the driver logs are UTC, of
+mbt-exec.log local (UTC+2).
+
+========================================================================
+1. SUMMARY
+
+When the plugin is killed in a pool Prepare after it made a region, the
+restarted plugin kept the region for kubelet's Prepare again of the
+claim (bug-11: "its Unprepare releases them, its Prepare again reuses
+them"). kubelet retries 60-90 s later. Meanwhile the Prepares of other
+claims through the same host bridge put their regions on the decoders
+above it. If the retry then fails, its rollback destroys the kept
+region; if the claim goes before its retry, its Unprepare does. Either
+way a region below a newer one is destroyed: a hole in the decoders of
+the host bridge and the switch (bug-02), and the kernel creates no
+region through them until every region above the hole is gone.
+
+A claim whose device refuses it (Refused, A25: an fs reader of a device
+without erofs or without a namespace, a read-only block reader without
+a namespace) fails every retry, so after such a cut the hole comes for
+sure once anything else is prepared on that host bridge within the
+retry interval.
+
+Severity: medium-high. Needs a plugin kill (SIGKILL, OOM, crash, exit
+on the loss of NRI) inside a pool Prepare after the region, then a
+Prepare of another claim on the same host bridge before kubelet's
+retry, then a failing retry or an Unprepare. The effect is severe: no
+new region on that host bridge (every pool claim and the local memdev
+under it is blocked, "CXL decoders released out of order") for as long
+as the newer regions live, possibly the lifetime of a long-running
+workload. The driver could avoid it: at start the cut region is the
+newest on its ports, and releasing it then is in order.
+
+========================================================================
+2. REPRODUCTION
+
+Replay B/steps.txt (profile fullp, from N/test/e2e:
+MBT_MODE=replay MBT_REPLAY=/tmp/p13-runs/b14/steps.txt
+MBT_PROFILE=fullp ./run_tests.sh memory.test-suite/dra-driver-cxl/
+n4-cxl-shared-2/test90-gofmbt-reliability):
+  settle
+  driver-kill-at vm0 region   arm the watcher
+  create xpf-c@vm0#0          c-pmem1 has no namespace (fresh):
+                              Refused; its first Prepare makes
+                              region1, the watcher kills the plugin
+  driver-restart vm2, driver-restart vm1, server-restart a,
+  server-restart b            ~20 s: the vm0 plugin restarts meanwhile
+  create sdax-c@vm0#0         c-shared0 on vm0/hb1: a region above
+                              region1
+  settle                      xpf-c's retry reuses region1, refuses,
+                              destroys it: hole below c-shared0
+In general: driver-kill-at VM region (or ns, mount) during the Prepare
+of a refused claim, or of any claim whose pod is deleted before the
+retry; a Prepare of another claim through the same host bridge before
+kubelet's retry.
+
+========================================================================
+3. EVIDENCE
+
+FP3 (R/), vm0, host bridge 1 (pool c: c-pmem0, c-pmem1, c-shared0):
+- Steps 724 create xpf-c@vm0#0 (c-pmem1: namespace, no erofs: Refused,
+  waiting for c-pmem1 until 775 delete xpb-c@vm1#0), 790 create
+  pfsc-c@vm0#0 (a cached fs reader of c-pmem0), 791 driver-kill-at vm0
+  region. At the end of settle 789 (mbt-obs/obs-000789-021.json) no
+  decoder of vm0's host bridge 1 was committed; every earlier xpf-c
+  retry made region1 and destroyed it at the top (08:35:25.99 created
+  region1, 08:35:26.36 destroyed).
+- mbt-exec.log 10:36:56.17: killAt fired true, ms 1997 (armed
+  10:36:53.12), seen "region1", stateChanged false.
+- trace/vm0.svnqt.driver.log 08:36:53.04: the Prepare of
+  mbt-xpf-c-vm0-0-g2-c0-r6ckd (c-pmem1) starts; the log ends at
+  08:36:53.47 (killed ~2 s later in cxl create-region, after the
+  commit).
+- trace/vm0.driver.log, the new container: 08:36:56.395 "claim
+  .../mbt-xpf-c-vm0-0-g2-c0-r6ckd ...: its Prepare did not finish ...
+  devices 0xc1ee2002 ...; its Unprepare releases them, its Prepare
+  again reuses them"; 08:36:56.445 region1 pmem, Targets decoder8.0,
+  disabled (kept).
+- 08:38:00.113 "mem3: created region3 (pmem) under decoder0.1"
+  (pfsc-c, c-pmem0): above region1.
+- 08:38:10.045 "mem1: reusing region1", 08:38:10.049 "/dev/pmem1 has
+  no erofs filesystem", 08:38:10.273 "destroyed region1": the hole.
+- 08:39:43.157 the next retry: "cxl create-region -t pmem -d
+  decoder0.1 -m mem1 ... (CXL decoders released out of order: port1
+  has 2 committed decoders, decoder1.0 without a region below region3;
+  port6 has 2 committed decoders, decoder6.0 without a region below
+  region3 ...)".
+- Settle 798 (mbt-obs/obs-000798-*.json, port1 of vm0): observations
+  1-16 region1 (c-pmem1, kept from the cut) on decoder1.0, 17-19
+  region1 and region3, from 20 on decoder1.0 without a region below
+  region3, until the timeout.
+Replay before the fix (B/before-out, image c6fb66d40533), vm0:
+08:54:16.71 the Prepare of xpf-c, killed; 08:54:17.65 "its Prepare did
+not finish"; 08:54:39.68 "mem2: created region2 (ram) under decoder0.1"
+(sdax-c); 08:55:43.05 "mem1: reusing region1", "no fsdax namespace in
+region1", 08:55:43.15 "destroyed region1"; 08:57:02 "CXL decoders
+released out of order: port1 ... decoder1.0 without a region below
+region2; port5 ...". mbt-fail.txt: "step 9 settle failed ... stack
+vm0/hb1: committed decoders [hole,c-shared0], want [c-shared0]".
+
+Not the controller or the server (the attachments are as predicted),
+not the model: its prediction (the kill changes no stack: the refused
+retry pushes and pops at the top, A9, A25) is the behaviour the driver
+can give, and gives with the fix.
+
+========================================================================
+4. ROOT CAUSE
+
+- D/pool.go:871-917 loadPreparing keeps every claim whose Prepare did
+  not finish ("its Unprepare releases them, its Prepare again reuses
+  them", :908); D/pool.go:325-327 newPoolDriver does nothing else with
+  them; restoreMounts unmounts their node mounts and lease binds only.
+- The Prepare again finds the region of the memdev and reuses it
+  (M/pmem.go:370-376, M/memctl.go:1015-1019) wherever it lies in the
+  decoder stack.
+- The release of the kept region comes late: by the rollback of a
+  failed Prepare again (D/pool.go:722-751, :524; a refusal of
+  D/pool_persistent.go:127, :171, :200) or by the Unprepare of the
+  unfinished claim (D/pool.go:1000-1036). By then the Prepares of other
+  claims (serialized in p.mu, but kubelet's retry of the cut claim is
+  60-90 s away) may have put regions on the decoders above it.
+- Linux (bug-02): destroying a region below the last committed decoder
+  of a port leaves the decoder counted in decoders_committed; no new
+  region through the port until the regions above are destroyed
+  (drivers/cxl/core/hdm.c cxl_decoder_reset, region.c
+  match_free_decoder).
+The model and the contract assumed what the driver should do: faults
+neither create nor destroy regions (A9), a refused claim's retry pushes
+and pops its region at the top (A25).
+
+========================================================================
+5. THE FIX
+
+Release at start, while the cut Prepare's region is the newest on its
+ports (nothing ran in between: the plugin is down), and let the
+Prepare again make it anew (~0.1-0.3 s more for that Prepare).
+a) D/pool.go releaseUnfinished (new :938), called by newPoolDriver
+   after restoreMounts and before updateSerials (new :329), so before
+   the kubelet plugin registers and before the first scan: for each
+   claim whose Prepare did not finish, the release of
+   unprepareUnfinished (releaseDevices of unfinishedDevices: node mount
+   of the device's erofs, holder wait, offline, disable-region,
+   destroy-region, disable-memdev; then deleteRecordedRegions for a
+   hollow region of a cut cxl create-region), then forgetPreparing.
+   Devices that another prepared claim uses stay as for every release.
+b) Kept for the old path (Unprepare releases, Prepare again reuses):
+   - companion claims (rec.Lend): the nodes that a numa companion may
+     have lent can be revoked only when the lender is set up (after
+     NRI, 05-review-DRV3 G4), and the broker learns of the release from
+     the Unprepare (OnReleasing);
+   - a claim with a region below a region of another memdev already
+     (regionsAbove, new :976; a local region made concurrently before
+     the kill): releasing it at start would make the hole now;
+   - a claim whose release or hollow-region deletion failed (a busy
+     node mount, a failed command), or whose record could not be
+     forgotten. Its numa node is fenced at start as before.
+c) M/decoders.go RegionsAbove (new :81): the regions of other memdevs
+   on committed decoders above the memdev's regions in the ports
+   between the CXL root and its endpoint (host bridge, switch); ports
+   (new :104) and portRegions (new :127) are shared with DecoderHoles.
+d) Logs: loadPreparing no longer promises the reuse; releaseUnfinished
+   logs "releasing devices ...", "released, its Prepare again prepares
+   its devices anew", or why it keeps the claim.
+e) Docs: docs/memory/cxl/pool.md (Ordering and failure semantics),
+   usage.md (Files on the node: preparingPoolClaims.json).
+Not changed: the model and the contract (A9, A25 hold now); the Prepare
+again of a kept claim still reuses.
+
+========================================================================
+6. TESTS
+
+- D/pool_unfinished_test.go TestPoolCutRefusedPrepare (new): an fs
+  reader of a device without erofs cut after cxl create-region; the
+  start releases the region (no ports; on top of the ports of
+  stackPorts) and the Prepare again makes it anew and rolls it back
+  (two create-regions); with a region of another memdev above it at
+  start the claim is kept, nothing runs at start, the Prepare again
+  reuses the region. Fails without the fix ("no ports", "top").
+- Changed to the new behaviour, each also covering the kept path:
+  TestPoolCutPersistentPrepare (released at start, nothing for the
+  Unprepare; busy node mount: kept, not published, the Unprepare
+  releases), TestPoolCutPrepareRetry (released at start, region made
+  anew, prepared), TestPoolCutPrepareFailedRetry (kept: a failed
+  command at start; the rollback of the failed Prepare again releases
+  it), TestPoolCutVolatilePrepare (numa and dax released at start,
+  nothing fenced; numa kept: node 2 fenced, the Unprepare releases),
+  TestPoolCutCompanionPrepare (kept at start, node 2 fenced),
+  TestPoolCutCreateRegion (hollow region deleted at start; kept: by
+  the Unprepare, by the Prepare again), TestPoolForgetSaveFails
+  (released at start, the record kept while the file cannot be saved).
+- Fakes (D/pool_test.go): fakePoolSys.failCmd (a command that fails),
+  stackPorts (the endpoint of mem0 under host bridge port1 and switch
+  port6 with committed decoders).
+- M/decoders_test.go TestRegionsAbove (new): middle, bottom, top, no
+  region, below a hole, unknown memdev.
+Mutations, each failing tests: no releaseUnfinished (TestPoolCut-
+RefusedPrepare, -PersistentPrepare, -PrepareRetry, -CreateRegion); no
+regions-above guard (TestPoolCutRefusedPrepare/below_another);
+companions released too (TestPoolCutCompanionPrepare); errors ignored
+at start (TestPoolCutPrepareFailedRetry, -VolatilePrepare/numa_kept,
+-CreateRegion, -PersistentPrepare/busy_mount).
+gofmt, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... -skip TestMemdevSettings: ok.
+
+========================================================================
+7. VERIFICATION
+
+Cluster (lock taken, released, cluster clean after both runs: no pods
+in cxl-pool-demo, no driver pods, no pool servers or controllers, no
+CXL devices, every decoders_committed 0, nodes Ready), replay
+B/steps.txt (section 2):
+- Before, image c6fb66d40533 (v0.15.0-44-gc74eff381, HEAD): FAIL at
+  step 9 after 3 min, "stack vm0/hb1: committed decoders
+  [hole,c-shared0], want [c-shared0]" (B/before-out, B/before.log;
+  section 3).
+- After, image 2ba73741f42a (v0.15.0-44-gc74eff381-dirty, the fix):
+  PASS, 12 steps in 1m56s with the teardown (B/after-out,
+  B/after.log). vm0: killAt fired at region1 (6082 ms); 09:09:07.31
+  "claim .../mbt-xpf-c-vm0-0-g1-c0-kfn9r ..., whose Prepare did not
+  finish: releasing devices 0xc1ee2002", 09:09:07.40 "destroyed
+  region1", 09:09:07.44 "released, its Prepare again prepares its
+  devices anew"; 09:09:29.74 sdax-c "created region1 (ram) under
+  decoder0.1" (now the bottom); 09:10:37.13 xpf-c's retry "created
+  region2 (pmem)", "no fsdax namespace in region2", 09:10:37.21
+  "destroyed region2" (the top); settle 9 ok after 21 polls (the
+  outcome with the kill, alt=1); the teardown destroyed region1.
+Not run again: FP3 itself (798 steps, ~55 min).
+
+========================================================================
+8. STATUS
+
+Fixed in the working tree, not committed: D/pool.go, D/pool_test.go,
+D/pool_unfinished_test.go, M/decoders.go, M/decoders_test.go,
+docs/memory/cxl/pool.md, docs/memory/cxl/usage.md. Image
+2ba73741f42a (build/images, the newest: e2e runs take it).
+Left: a cut companion claim keeps the old path, so a cut lease Prepare
+(driver-kill-at bind, or a numa lease) whose lease is released before
+the retry can still leave a hole when another region came above it in
+between; the model predicts that case (its release is an unprepare
+event in any order). FP3 is to be run again on the new image.

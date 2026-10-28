@@ -29,12 +29,15 @@ import (
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"golang.org/x/sys/unix"
 )
 
 // Prepares that the plugin does not finish (plan-13 bug-11): the plugin is
 // killed in a Prepare after it touched a device and before it saved the
 // claim, and kubelet unprepares the claim (its pod was deleted) or
-// prepares it again after the restart.
+// prepares it again after the restart. The restarted plugin releases what
+// such a Prepare touched at start (bug-14), but of the claims that it
+// keeps for their Unprepare or Prepare again.
 
 // wantPreparing checks that the claim uid is in the preparing file and in
 // the preparing claims of p with one device of the serial and mode, and
@@ -56,10 +59,12 @@ func (e *poolTestEnv) wantPreparing(t *testing.T, p *poolDriver, uid string, ser
 // claim of mode fs of a persistent device (the executor's run 6:
 // driver-kill-at region, the pod deleted before kubelet's retry): after
 // the region (with the namespace of the labels), and after the node
-// mount. The restarted plugin knows the claim, does not publish its
-// device, unmounts the node mount of no prepared claim, and the Unprepare
-// of the claim releases the device: before the fix it said nil and left
-// the region.
+// mount. The restarted plugin unmounts the node mount of no prepared
+// claim, releases the device and forgets the claim, and the Unprepare of
+// the claim finds nothing: before bug-11 the plugin did not know the
+// claim and left the region. With the node mount busy at start it keeps
+// the claim and does not publish its device, and the Unprepare of the
+// claim releases the device once the mount is free.
 func TestPoolCutPersistentPrepare(t *testing.T) {
 	for _, tc := range []struct {
 		name, cutAfter string
@@ -86,27 +91,28 @@ func TestPoolCutPersistentPrepare(t *testing.T) {
 			// a node mount that is busy at start stays mounted
 			e.m.setBusy(direct, tc.busy)
 			p2 := e.driver(t)
-			e.wantPreparing(t, p2, "d1", 0xc1ae0001, api.ModeFs)
-			if !p2.Serials()[0xc1ae0001] || len(p2.prepared) != 0 || e.cdiSpec(t) != nil {
-				t.Fatalf("serials %v, prepared %v, CDI spec %+v", p2.Serials(), p2.prepared, e.cdiSpec(t))
-			}
 			if mi, _ := e.m.Mounted(direct); (mi != nil) != tc.busy {
 				t.Fatalf("node mount of no prepared claim at start: %+v", mi)
 			}
 			if tc.busy {
-				// the Unprepare fails while the node mount is busy, and
-				// leaves the region and the claim
+				// kept, not published; the Unprepare fails while the
+				// node mount is busy, and leaves the region and the claim
+				e.wantPreparing(t, p2, "d1", 0xc1ae0001, api.ModeFs)
+				if !p2.Serials()[0xc1ae0001] || len(p2.prepared) != 0 || e.cdiSpec(t) != nil {
+					t.Fatalf("serials %v, prepared %v, CDI spec %+v", p2.Serials(), p2.prepared, e.cdiSpec(t))
+				}
+				e.wantRegion(t, true)
 				wantErr(t, unprepare(t, p2, "d1"), "cxl-pool.nri.io: unpreparing claim default/c-d1: releasing llm0 (serial 0xc1ae0001): device 0xc1ae0001: unmounting "+direct)
 				e.wantRegion(t, true)
 				e.wantPreparing(t, p2, "d1", 0xc1ae0001, api.ModeFs)
 				e.m.setBusy(direct, false)
+				noErr(t, unprepare(t, p2, "d1"))
 			}
-			noErr(t, unprepare(t, p2, "d1"))
 			e.f.wantReleased(t)
 			e.wantRegion(t, false)
 			e.wantClean(t, p2)
 			e.wantNoMounts(t, p2)
-			// kubelet's Unprepare again: nothing to do
+			// kubelet's Unprepare (again): nothing to do
 			ncmds := e.f.commands()
 			noErr(t, unprepare(t, p2, "d1"))
 			if e.f.commands() != ncmds {
@@ -119,9 +125,10 @@ func TestPoolCutPersistentPrepare(t *testing.T) {
 }
 
 // TestPoolCutPrepareRetry: kubelet prepares the claim of a cut Prepare
-// again after the restart (its pod was not deleted): the region is reused,
-// the claim is prepared and no longer preparing; its Unprepare releases
-// the device as usual.
+// again after the restart (its pod was not deleted): the start released
+// the device, the Prepare again makes the region anew, the claim is
+// prepared and no longer preparing; its Unprepare releases the device as
+// usual.
 func TestPoolCutPrepareRetry(t *testing.T) {
 	for _, tc := range []struct {
 		name, data, config, cutAfter, mode string
@@ -151,14 +158,18 @@ func TestPoolCutPrepareRetry(t *testing.T) {
 			e.wantRegion(t, true)
 
 			p2 := e.driver(t)
-			e.wantPreparing(t, p2, "u1", serial, tc.mode)
+			e.f.wantReleased(t)
+			e.wantClean(t, p2)
 			res := prepare(t, p2, claim)
 			noErr(t, res.Err)
-			if n := strings.Count(e.f.commands(), "create-region"); n != 1 {
+			if n := strings.Count(e.f.commands(), "create-region"); n != 2 {
 				t.Fatalf("region created %d times:\n%s", n, e.f.commands())
 			}
 			if p2.prepared["u1"] == nil || len(p2.preparing) != 0 || len(e.preparingFile(t)) != 0 {
 				t.Fatalf("prepared %v, preparing %v, preparing file %v", p2.prepared, p2.preparing, e.preparingFile(t))
+			}
+			if d := p2.prepared["u1"].Devices; len(d) != 1 || d[0].Serial != serial || d[0].Mode != tc.mode {
+				t.Fatalf("prepared devices %+v", d)
 			}
 			if cdiDeviceByName(e.cdiSpec(t), "claim-u1-0") == nil {
 				t.Fatalf("no CDI device of the prepared claim: %+v", e.cdiSpec(t))
@@ -175,33 +186,105 @@ func TestPoolCutPrepareRetry(t *testing.T) {
 	}
 }
 
-// TestPoolCutPrepareFailedRetry: the Prepare again of the claim of a cut
-// Prepare fails before it reaches the device (no status entry): its
-// rollback releases what the cut Prepare touched, and forgets the claim.
+// TestPoolCutPrepareFailedRetry: the start could not release what a cut
+// Prepare touched (a command failed) and kept the claim, and the Prepare
+// again of the claim fails before it reaches the device (no status entry):
+// its rollback releases what the cut Prepare touched, and forgets the
+// claim.
 func TestPoolCutPrepareFailedRetry(t *testing.T) {
 	e := newPoolTestEnv(t)
 	e.f.plug("0xc1ee0001")
 	p := e.driver(t)
 	e.f.cutAfter = "cxl create-region"
 	cutPrepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
+	e.f.failCmd = "cxl disable-region"
 	p2 := e.driver(t)
+	e.f.failCmd = ""
 	e.wantPreparing(t, p2, "u1", 0xc1ee0001, api.ModeNUMA)
+	e.wantRegion(t, true)
 	wantErr(t, prepare(t, p2, poolClaim("u1", "c1", "pooled0", "")).Err, "no entry")
 	e.f.wantReleased(t)
 	e.wantClean(t, p2)
 }
 
+// TestPoolCutRefusedPrepare (plan-13 bug-14, run FP3) kills the plugin in
+// the Prepare of a claim whose device refuses it (an fs reader of a device
+// without erofs: its rollback destroys the region) after cxl
+// create-region. The start releases the region while it is the newest one
+// in the decoders of its ports, and the Prepare again of the claim makes
+// it anew and rolls it back. Before the fix the region was kept for the
+// Prepare again: the regions that other claims got until kubelet's retry
+// lay above it, and the rollback of the retry left a hole that blocked
+// every new region through the ports of the host bridge. When a region of
+// another memdev lies above it at start already, the start keeps it: its
+// release would leave that hole now; a region below it does not matter.
+func TestPoolCutRefusedPrepare(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ports []string // the regions of the decoders of the ports of mem0, nil: no ports
+		kept  bool
+	}{
+		{name: "no ports"},
+		{name: "top", ports: []string{"region5", "region0"}},
+		{name: "below another", ports: []string{"region0", "region5"}, kept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPoolTestEnv(t)
+			e.f.plugPersistent(persistentSerial)
+			e.f.labels = true
+			e.m.mountErr["/dev/pmem0"] = unix.EINVAL // no erofs
+			claim := persistentClaim("r1", persistentData, fsConfig("direct", ""))
+			p := e.driver(t)
+			e.f.cutAfter = "cxl create-region"
+			cutPrepare(t, p, claim)
+			e.wantRegion(t, true)
+			if tc.ports != nil {
+				e.f.stackPorts(tc.ports...)
+			}
+
+			ncmds := e.f.commands()
+			p2 := e.driver(t)
+			if tc.kept {
+				if e.f.commands() != ncmds {
+					t.Fatalf("commands at start:\n%s", strings.TrimPrefix(e.f.commands(), ncmds))
+				}
+				e.wantRegion(t, true)
+				e.wantPreparing(t, p2, "r1", 0xc1ae0001, api.ModeFs)
+			} else {
+				e.f.wantReleased(t)
+				e.wantClean(t, p2)
+			}
+			// the Prepare again: made anew, or the kept region reused, and
+			// rolled back
+			wantErr(t, prepare(t, p2, claim).Err, "/dev/pmem0 has no erofs filesystem")
+			want := 2
+			if tc.kept {
+				want = 1
+			}
+			if n := strings.Count(e.f.commands(), "create-region"); n != want {
+				t.Fatalf("region created %d times, expected %d:\n%s", n, want, e.f.commands())
+			}
+			e.f.wantReleased(t)
+			e.wantClean(t, p2)
+		})
+	}
+}
+
 // TestPoolCutVolatilePrepare kills the plugin in the Prepare of volatile
 // devices: in mode numa after the region was created and while its memory
 // goes online, in mode dax after the dax device was bound to device_dax.
-// The restarted plugin fences the NUMA node of the numa device, and the
-// Unprepare offlines the memory and releases the device.
+// The restarted plugin offlines the memory and releases the device at
+// start, so nothing is fenced for it. When it keeps the claim (a command
+// failed), it fences the NUMA node of the numa device, and the Unprepare
+// releases the device.
 func TestPoolCutVolatilePrepare(t *testing.T) {
 	for _, tc := range []struct {
 		name, config, mode string
+		kept               bool
 	}{
-		{"numa", "", api.ModeNUMA},
-		{"dax", daxConfig, api.ModeDax},
+		{"numa", "", api.ModeNUMA, false},
+		{"dax", daxConfig, api.ModeDax, false},
+		{"numa kept", "", api.ModeNUMA, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newPoolTestEnv(t)
@@ -228,14 +311,23 @@ func TestPoolCutVolatilePrepare(t *testing.T) {
 				t.Fatal("the memory was not onlined before the kill")
 			}
 
-			p2 := e.driver(t)
-			e.wantPreparing(t, p2, "u1", 0xc1ee0001, tc.mode)
-			wantNodes := []int(nil)
-			if tc.mode == api.ModeNUMA {
-				wantNodes = []int{2}
+			if tc.kept {
+				e.f.failCmd = "cxl disable-region"
 			}
-			if got := p2.numaNodes(); !slices.Equal(got, wantNodes) {
-				t.Fatalf("fenced nodes %v, expected %v", got, wantNodes)
+			p2 := e.driver(t)
+			e.f.failCmd = ""
+			if !tc.kept {
+				e.f.wantReleased(t)
+				e.f.wantBlocks(t, "offline")
+				e.wantClean(t, p2)
+				if got := p2.numaNodes(); len(got) != 0 {
+					t.Fatalf("fenced nodes %v", got)
+				}
+				return
+			}
+			e.wantPreparing(t, p2, "u1", 0xc1ee0001, tc.mode)
+			if got := p2.numaNodes(); !slices.Equal(got, []int{2}) {
+				t.Fatalf("fenced nodes %v, expected [2]", got)
 			}
 			if p2.ClaimResults("u1") != nil {
 				t.Fatalf("results of a claim that is not prepared: %+v", p2.ClaimResults("u1"))
@@ -271,10 +363,11 @@ func (c *cutLender) RevokeNode(ctx context.Context, podUID, name string, node in
 // TestPoolCutCompanionPrepare kills the plugin in the Prepare of the
 // companion claim of a numa lease after it lent the node to the borrower,
 // and in the Prepare of the companion claim of an fs lease after the bind
-// (the executor's run 3: driver-kill-at bind, then lease-put). The
-// Unprepare of the companion revokes the node before the memory goes
-// offline, and releases the device; before the lender is set up it fails
-// (kubelet retries). The bind was unmounted at start.
+// (the executor's run 3: driver-kill-at bind, then lease-put). The start
+// keeps companion claims. The Unprepare of the companion revokes the node
+// before the memory goes offline, and releases the device; before the
+// lender is set up it fails (kubelet retries). The bind was unmounted at
+// start.
 func TestPoolCutCompanionPrepare(t *testing.T) {
 	t.Run("numa", func(t *testing.T) {
 		e := newPoolTestEnv(t)
@@ -290,7 +383,12 @@ func TestPoolCutCompanionPrepare(t *testing.T) {
 			t.Fatalf("lent nodes %v", got)
 		}
 
+		// kept at start, with its node fenced
 		p2 := e.driver(t)
+		e.wantPreparing(t, p2, "uid-cxl-lease-l1", 0xc1ee0001, api.ModeNUMA)
+		if got := p2.numaNodes(); !slices.Equal(got, []int{2}) {
+			t.Fatalf("fenced nodes %v, expected [2]", got)
+		}
 		// kubelet's retry before NRI is connected and the lender set up:
 		// nothing is released yet
 		wantErr(t, unprepare(t, p2, "uid-cxl-lease-l1"), "lease l1: lending is not set up yet (the plugin is starting): nodes [2] of demo/")
@@ -357,14 +455,15 @@ func (e *poolTestEnv) cutInCreateRegion(p *poolDriver, region string) {
 
 // TestPoolCutCreateRegion kills the plugin inside cxl create-region, which
 // leaves a hollow region (no target, not committed) that the memdev does
-// not list; its name was recorded before the tool ran. The Unprepare of
-// the claim disables the memdev and deletes that region through
-// delete_region (plan-13 bug-12: cxl destroy-region refuses it), and so
-// does the Prepare again of the claim after it prepared the device. A
-// hollow region that no record names is never deleted.
+// not list; its name was recorded before the tool ran. The start disables
+// the memdev and deletes that region through delete_region (plan-13
+// bug-12: cxl destroy-region refuses it). When the start keeps the claim
+// (the memdev could not be disabled), its Unprepare does, and so does its
+// Prepare again after it prepared the device. A hollow region that no
+// record names is never deleted.
 func TestPoolCutCreateRegion(t *testing.T) {
-	for _, again := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unprepare", true: "prepare again"}[again], func(t *testing.T) {
+	for _, next := range []string{"start", "unprepare", "prepare again"} {
+		t.Run(next, func(t *testing.T) {
 			e := newPoolTestEnv(t)
 			e.f.plug("0xc1ee0001")
 			e.f.hollowRegion("region7", "ram") // of someone else
@@ -378,12 +477,36 @@ func TestPoolCutCreateRegion(t *testing.T) {
 			// the kernel names the lowest free id next
 			e.f.write("bus/cxl/devices/decoder0.0/create_ram_region", "region0")
 
-			p2 := e.driver(t)
-			e.wantPreparing(t, p2, "u1", 0xc1ee0001, api.ModeNUMA)
-			if p2.preparing["u1"].Devices[0].Node != -1 {
-				t.Fatalf("node of a device without a region %+v", p2.preparing["u1"].Devices[0])
+			if next != "start" {
+				e.f.failCmd = "cxl disable-memdev"
 			}
-			if again {
+			p2 := e.driver(t)
+			e.f.failCmd = ""
+			if next != "start" {
+				e.wantPreparing(t, p2, "u1", 0xc1ee0001, api.ModeNUMA)
+				if p2.preparing["u1"].Devices[0].Node != -1 {
+					t.Fatalf("node of a device without a region %+v", p2.preparing["u1"].Devices[0])
+				}
+				if !p2.mem.HollowRegion("region1") {
+					t.Fatalf("region1 deleted at start:\n%s", e.f.commands())
+				}
+			}
+			switch next {
+			case "start":
+				ncmds := e.f.commands()
+				if !strings.HasSuffix(ncmds, "cxl disable-memdev mem0\ndelete_region decoder0.0 region1") {
+					t.Fatalf("commands:\n%s", ncmds)
+				}
+				noErr(t, unprepare(t, p2, "u1"))
+				if e.f.commands() != ncmds {
+					t.Fatalf("the Unprepare ran commands:\n%s", strings.TrimPrefix(e.f.commands(), ncmds))
+				}
+			case "unprepare":
+				noErr(t, unprepare(t, p2, "u1"))
+				if !strings.HasSuffix(e.f.commands(), "cxl disable-memdev mem0\ndelete_region decoder0.0 region1") {
+					t.Fatalf("commands:\n%s", e.f.commands())
+				}
+			case "prepare again":
 				noErr(t, prepare(t, p2, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
 				if !strings.HasSuffix(e.f.commands(), "delete_region decoder0.0 region1") || p2.prepared["u1"].Devices[0].Region != "region0" {
 					t.Fatalf("commands:\n%s", e.f.commands())
@@ -391,11 +514,6 @@ func TestPoolCutCreateRegion(t *testing.T) {
 				e.wantRegion(t, true)
 				noErr(t, unprepare(t, p2, "u1"))
 				e.f.wantReleased(t)
-			} else {
-				noErr(t, unprepare(t, p2, "u1"))
-				if !strings.HasSuffix(e.f.commands(), "cxl disable-memdev mem0\ndelete_region decoder0.0 region1") {
-					t.Fatalf("commands:\n%s", e.f.commands())
-				}
 			}
 			if _, err := os.Lstat(e.f.p("bus/cxl/devices/region1")); !os.IsNotExist(err) {
 				t.Fatalf("hollow region left: %v", err)
@@ -498,18 +616,23 @@ func TestPoolUnprepareHollowRegion(t *testing.T) {
 }
 
 // TestPoolForgetSaveFails: a record is forgotten only when the preparing
-// file without it is saved: the Unprepare of an unfinished claim fails,
-// and kubelet's retry finds the record and forgets it; a Prepare that
-// cannot forget its record leaves it to the claim's Unprepare.
+// file without it is saved: the start releases the device of a cut
+// Prepare and keeps its record, the Unprepare of the unfinished claim
+// fails, and kubelet's retry finds the record and forgets it; a Prepare
+// that cannot forget its record leaves it to the claim's Unprepare.
 func TestPoolForgetSaveFails(t *testing.T) {
 	e := newPoolTestEnv(t)
 	e.f.plug("0xc1ee0001")
 	p := e.driver(t)
 	e.f.cutAfter = "cxl create-region"
 	cutPrepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
-	p2 := e.driver(t)
 	tmp := filepath.Join(filepath.Dir(e.stateFile), poolPreparingFileName) + ".tmp"
 	noErr(t, os.MkdirAll(tmp, 0o755))
+	p2 := e.driver(t)
+	e.f.wantReleased(t)
+	if p2.preparing["u1"] == nil || e.preparingFile(t)["u1"] == nil {
+		t.Fatalf("record forgotten at start without its save: %v", p2.preparing)
+	}
 	wantErr(t, unprepare(t, p2, "u1"), poolPreparingFileName)
 	if p2.preparing["u1"] == nil || e.preparingFile(t)["u1"] == nil {
 		t.Fatalf("record forgotten without its save: %v", p2.preparing)

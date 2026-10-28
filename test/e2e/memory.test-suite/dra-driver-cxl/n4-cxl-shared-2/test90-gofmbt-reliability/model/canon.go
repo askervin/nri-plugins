@@ -34,7 +34,8 @@ package main
 //	                                     LeaseOpen<<5 | Alloc<<6
 //	Ctrl[p] (every pool)         4       Up | Slices<<1 | Att[d][v]<<(3+2*(3d+v))
 //	Drv[v] (every VM)            3       Restarts; F | FMaybe<<4;
-//	                                     Killed | Restarted<<1 | KillAt<<2
+//	                                     Killed | Restarted<<1 | KillAt<<2 |
+//	                                     KillMay<<5
 //	PDev[x] (every pmem device)  1       NS | FS<<2
 //	Stacks[si] (every stack)     1+N/2   N, then the keys+1 as nibbles
 //	Contested, Held, Released    2 each  little endian
@@ -104,7 +105,7 @@ func (s *State) appendKey(b []byte) []byte {
 	}
 	for v := range s.Drv {
 		d := &s.Drv[v]
-		b = append(b, d.Restarts, d.F|d.FMaybe<<4, b2u(d.Killed)|b2u(d.Restarted)<<1|d.KillAt<<2)
+		b = append(b, d.Restarts, d.F|d.FMaybe<<4, b2u(d.Killed)|b2u(d.Restarted)<<1|d.KillAt<<2|b2u(d.KillMay)<<5)
 	}
 	for x := range s.PDev {
 		b = append(b, byte(s.PDev[x].NS)|byte(s.PDev[x].FS)<<2)

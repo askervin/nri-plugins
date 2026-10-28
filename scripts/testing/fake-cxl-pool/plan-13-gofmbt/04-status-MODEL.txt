@@ -1213,3 +1213,88 @@ sequence against the reference with the default and 30 s stall
 windows); 112 tests; gofmt, vet, go test, go test -race clean; fuzz
 8 500 sequences (pmem, pmem 30s, fullp, fullp 30s, full, full slow), no
 disagreement.
+FP4 (2026-10-28, step 1177): MODEL ERROR, no driver bug. "driver vm0:
+pod nri-dra-driver-cxl-jd2sq has 3 restarts, want 2". The driver
+container of jd2sq (the pod of driver-restart vm0, step 1160) ran four
+times (containerd's journal, kubelet's log, the driver logs; UTC):
+attempt 0 killed by driver-kill vm0 (1161; exit 137 at 10:26:05.05);
+attempt 1 (519eb7a9, pid 1970908) killed by the watcher of
+driver-kill-at vm0 ns (1164; exit 137 at 10:26:21.60): kubelet,
+restarted at 1169, retried the Prepare of the refused pfsc-c@vm0#0
+(c-pmem0 has a namespace, no erofs) at 10:26:21.57, its probe made
+region2 and namespace2.0 (killAt "seen": "region2 region2 namespace2.0",
+10019 ms after arming; kubelet: "NodePrepareResources ... EOF" for
+mbt-pfsc-c-vm0-0-g2); attempt 2 (64b4afd8, pid 1972649) exited on the
+NRI loss of containerd-restart vm0 (1176, 10:26:30.3, A8; its last log
+lines and exit status are lost with containerd, which copies the CRI log
+and gets the exit event); attempt 3 runs since 10:26:45 (ready, no
+panic). Three restarts, each one expected; no driver or containerd
+misbehaviour.
+The kill came 0.4 s after the observation of settle 1170 had read the
+watcher armed and the driver at 1 restart: the oracle adopted, rightly
+for that observation, the outcome without the kill, and kept the
+watcher armed. The refused reader was deleted at 1175; killCandidate
+looked only at the end state of the window, found no candidate, so
+containerd-restart vm0 was generated (A31's rule did not see the retry
+that could come before the delete) and disarmed the watcher in the
+model; the "fired" on done 1171 and on the observe lines is not read
+once the model has disarmed it. Without the containerd restart the
+settle would have failed alike (no outcome with the kill).
+Fix (T/model): a Prepare that comes at any time without an event of
+the window (a refused claim's retry, a blocked or unblocking pod's
+retry, a stalled contender's promotion: stack.go killAnyTime, split
+from killCandidate) may fire an armed watcher also after the
+observation of the settle that saw it armed. apply marks the VM's
+DriverState.KillMay ("may have fired in this window") when such a
+Prepare exists before any step of the window; the settle clears it;
+driver-kill, containerd-restart, driver-restart and a fire clear it
+with KillAt. killAtMayHaveFired (no driver fault on the VM) and the
+settle's kill worlds count it; the worlds in which a watcher fired
+only by KillMay come after all others (settleAll's "late" pass), so
+the alternatives keep their order and the "#adopt N alt=J" of older
+steps files their meaning (PM3's alt=1 at step 62 showed it). KillMay
+is in the canonical key, the expectation ("killAtMay") and the dump
+("may have fired"). The done lines' killAt stays unread: the observe
+lines carry the watcher's state until the next arming, and KillMay
+keeps the outcome with the kill open until a settle sees it. Two steps
+of recorded runs are not generated now, both FP4's pattern where the
+watcher happened not to fire: FP4's 810 (driver-kill vm1 right after
+the delete of the refused pbro-c@vm1#0 under a region watcher) and
+FP1's 241 (driver-restart vm0 right after the delete of the refused
+xpf-c@vm0#0); the replay tests apply them as the runs did.
+Simulator: the simulated watcher may now fire late (sim.go keepKillAt,
+fireLate): the truth keeps an unfired watcher through the window after
+a settle and fires it, at random, before a step that such a Prepare
+precedes (the model's killAnyTime, timing of its own). With the fix
+disabled the fuzz finds FP4 (pmem 4 of 1 500, fullp 2 of 3 000
+sequences: "driver vmN ... has 2 restarts, want 1"); with it none.
+Tests: TestPmemFP4RefusedRetryAfterSettle replays FP4 to step 1175
+(model/recorded/fp4-*): vm0 armed at ns, may have fired; no
+containerd-restart, driver-kill or driver-restart of vm0; the settle
+has the kill, and the run's observation of step 1177 with 2 restarts
+(as without the containerd restart) is ok, adopted with the kill, and
+so is the last observation of FP4V (below, model/recorded/fp4v-*);
+TestPmemKillAtAfterSettle: a refused reader deleted as the first or a
+later step of the window after the settle, a blocked reader deleted,
+the flag cleared by the settle and by containerd-restart, never set by
+volatile claims. Both fail without the fix. 114 tests; gofmt, vet,
+GOWORK=off go test, go test -race clean; fuzz 14 000 sequences (pmem,
+fullp, also with --refpool-len 120 and --stall-window 30s, full), no
+disagreement.
+Cluster: replay FP4V (/tmp/p13-runs/fp4v: steps.txt, out/; 12 steps:
+pwr-c@vm0#0 makes c-pmem0's namespace, the refused pfsc-c@vm0#0,
+driver-kill-at vm0 ns, kubelet-restart vm0, settle, delete pfsc-c@vm0#0,
+settle) met FP4's race at once: settle 10's observation saw the
+watcher armed, it fired 0.2 s later (ms 4178, "region1 region1
+namespace1.0"), the delete's done line reported it; the final settle
+adopted the outcome with the kill (alt=1). PASS, clean teardown. The
+same steps and observations on the model without the fix: "driver
+vm0 ... has 1 restarts, want 0" (wait, a timeout as FP4).
+Proposed amendment A32 (A31 refined): an armed driver-kill-at watcher
+may fire at any time while a Prepare that comes without an event (a
+refused claim's retry, a blocked or unblocking pod's retry, a stalled
+contender's promotion) may show its marker on its VM, also after the
+observation of the settle that saw it armed. A driver fault on that VM
+is not generated in a window in which such a Prepare existed before
+any of its steps, also when its claim is gone; the settle of that
+window has the outcome with the kill.

@@ -48,6 +48,8 @@ ee5c9ac1b7a7  (2026-10-26 11:57): + bug-09 fix (first version)
               (G1 recorded region names, G2 only own hollow regions,
               G3 no delete with online memory, G4 revoke before lending
               set fails, G5, G6)
+c6fb66d40533  v0.15.0-44-gc74eff381 (2026-10-28 09:48): the committed
+              fixes (commit c74eff381), built from a clean tree
 
   run 5 stub, after A10 (ports, events), observer    PASS  164 s
         timeout, containerd-restart wait; image 571d3f262db0: the
@@ -369,3 +371,52 @@ FP1 2026-10-28 01:04, image 37d377d75cf9 (all fixes incl. 05-review-
    its node mount fired the watcher; the model had no kill outcome for
    a pod of unknown node (being fixed). No driver or controller failure
    in the 299 steps. Copy: /tmp/p13-runs/fp1.
+FP2 2026-10-28 02:17, image 37d377d75cf9, model with the FP1 fix,
+   profile fullp, seed 14, 120m, every fault. PASS: 2021 steps in
+   2h1m0s (7408 s in all) with a clean teardown. Steps: settle 304,
+   write 204, read 199, pwrite 180, create 141, delete 141, pread 135,
+   driver-kill-at 119, crash 112, driver-restart 64, hold 61, unhold
+   50, kubelet-restart 50, containerd-restart 46, driver-kill 37,
+   server-restart 36, pwipe 32, ctrl-kill 32, ctrl-start 32,
+   ctrl-restart 25, lease-get 14, lease-put 7. Coverage 5053 strings
+   in round 1. Plans 2029 (reused 1971): planning 1h15m in all, bash
+   waited 47 min of the 2 h for it (fullp plans take 1-4 s, fast
+   steps cannot hide them). No driver or controller failure, no
+   oracle difference. Copy: /tmp/p13-runs/fp2.
+FP3 2026-10-28 09:49, image c6fb66d40533 (v0.15.0-44-gc74eff381: every
+   fix committed), scheduler v1.37.1-dra-requeue.2, profile fullp, new
+   random seed 1793173745, 120m, every fault, 200 observations kept.
+   FAIL at step 798 after 797 steps (3133 s in all): "stack vm0/hb1:
+   committed decoders [hole,c-pmem0], want [c-pmem0]": vm0's host
+   bridge 1 has decoder1.0 committed without a region below region3
+   (c-pmem0, the region of pfsc-c@vm0#0 created at step 790, after
+   which driver-kill-at vm0 region was armed at 791). DRIVER BUG:
+   bug-14: the watcher fired on the retry of the refused xpf-c@vm0#0
+   (region1); the restarted plugin kept that cut Prepare's region for
+   kubelet's retry; pfsc-c's region3 came above it; the refused retry's
+   rollback destroyed region1 below region3: the bug-02 hole. Fixed
+   (the plugin releases what an unfinished Prepare touched at start,
+   before registering with kubelet), verified by replay B14: FAIL on
+   c6fb66d40533, PASS on 2ba73741f42a (/tmp/p13-runs/b14).
+   Copy: /tmp/p13-runs/fp3.
+FP4 2026-10-28 11:12, image 2ba73741f42a (+ bug-14 fix, uncommitted),
+   profile fullp, new random seed 1793178924, 120m, every fault. FAIL
+   at step 1177 after 1176 steps (4557 s in all): "driver vm0: pod
+   nri-dra-driver-cxl-jd2sq has 3 restarts, want 2". Steps 1160-1176:
+   driver-restart vm0, driver-kill vm0, driver-kill-at vm0 ns (1164),
+   kubelet-restart vm0, crashes, delete pfsc-c@vm0#0, containerd-
+   restart vm0 (1176). MODEL ERROR (no driver bug): the driver
+   container ran four times, each restart caused by the test: driver-
+   kill (1161), the ns watcher armed at 1164, fired 0.4 s after settle
+   1170 had seen it armed, by kubelet's retry of the refused pfsc-c@vm0#0
+   after kubelet-restart (probe made region2 and namespace2.0), and
+   containerd-restart (1176, A8). The model let a refused claim's
+   retry count only while the claim existed at the window's end, so it
+   generated the containerd-restart as if the watcher could not have
+   fired. Fixed in the model (KillMay; contract A32).
+   Copy: /tmp/p13-runs/fp4.
+FP4V 2026-10-28 (debugging agent), image 2ba73741f42a, replay of a
+   12-step steps file (/tmp/p13-runs/fp4v): hit the same race at once
+   (the watcher fired 0.2 s after the settle's observation); PASS with
+   the fixed model (the kill adopted, clean teardown); the same
+   observations fail on the old model ("has 1 restarts, want 0").

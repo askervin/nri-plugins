@@ -304,9 +304,7 @@ func (s *sim) resolveRef(pred *State) *State {
 		}
 	}
 	s.fixPDev(n)
-	for v := range n.Drv {
-		n.Drv[v].KillAt, n.Drv[v].KillAtAt = 0, 0
-	}
+	s.keepKillAt(n)
 	return n
 }
 

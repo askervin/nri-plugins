@@ -477,3 +477,11 @@ A31 (2026-10-28, run PM2, 04-status-EXEC section 15) A driver-kill-at
    it ends with done true, fired false, reason "driver restarted".
    killAt.reason is one of fired, expired, driver restarted, disarmed
    by VERB, no running driver container.
+A32 (2026-10-28, run FP4, A31 refined) An armed driver-kill-at watcher
+   may fire at any time while a Prepare that comes without an event (a
+   refused claim's retry, a blocked or unblocking pod's retry, a
+   stalled contender's promotion) may show its marker on its VM, also
+   after the observation of the settle that saw it armed. A driver
+   fault on that VM is not generated in a window in which such a
+   Prepare existed before any of its steps, also when its claim is
+   gone; the settle of that window has the outcome with the kill.

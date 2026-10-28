@@ -836,8 +836,10 @@ func TestPmemFP1AnyFiresWatcher(t *testing.T) {
 	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
 	// (step 182, containerd-restart vm0, is not generated now: the
 	// refused xpf-c@vm0#0 promoted by step 181 probes c-pmem1, whose new
-	// region shows its namespace to the watcher armed at ns)
-	st := replaySteps(t, cfg, "recorded/fp1-mbt-steps.txt", 299, 182)
+	// region shows its namespace to the watcher armed at ns; nor is step
+	// 241, driver-restart vm0 right after the delete of that claim under
+	// a region watcher, FP4)
+	st := replaySteps(t, cfg, "recorded/fp1-mbt-steps.txt", 299, 182, 241)
 	if st.Drv[VM0].KillAt != markerMount+1 {
 		t.Fatalf("vm0 kill-at %d, want mount", st.Drv[VM0].KillAt)
 	}
@@ -867,6 +869,140 @@ func TestPmemFP1AnyFiresWatcher(t *testing.T) {
 			t.Fatalf("an outcome with the kill of vm0 and pfsd-c@any#0 on %s:\n%s", ss.Node, dumpAlts(pred))
 		}
 	}
+}
+
+// FP4 (step 1177): driver-kill-at vm0 ns (step 1164) with the refused
+// reader pfsc-c@vm0#0 (c-pmem0 has a namespace, no erofs). Kubelet,
+// restarted at step 1169, retried its Prepare 0.4 s after the
+// observation of settle 1170 had seen the watcher armed: it fired at the
+// probe's namespace (restarts 2) while that settle adopted the outcome
+// without the kill. The reader was deleted (1175), so no candidate was
+// left, containerd-restart vm0 (1176) was generated and disarmed the
+// watcher in the model: restarts 3, want 2. The window now remembers
+// that the retry could fire it (KillMay): no driver fault on vm0 after
+// the delete, and the settle has the kill. The run's observation of step
+// 1177, without the containerd restart's exit (restarts 2), is ok, and
+// so is the last one of the short replay FP4V that met the race again.
+func TestPmemFP4RefusedRetryAfterSettle(t *testing.T) {
+	cfg := testConfig(t, "fullp", true)
+	cfg.Unsettled = 3
+	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
+	// (step 810, driver-kill vm1 right after the delete of the refused
+	// pbro-c@vm1#0 under a region watcher, is not generated now)
+	st := replaySteps(t, cfg, "recorded/fp4-mbt-steps.txt", 1175, 810)
+	if d := st.Drv[VM0]; d.KillAt != markerNS+1 || !d.KillMay || d.Restarts != 1 {
+		t.Fatalf("vm0 driver %+v, want armed at ns, may have fired, restarts 1", d)
+	}
+	wantPhase(t, st, "pfsc-c@vm0#0", Deleting)
+	steps(t, st, "!containerd-restart vm0", "!driver-kill vm0", "!driver-restart vm0", "kubelet-restart vm0")
+	pred := steps(t, st, "settle")
+	if !killAlt(pred, VM0) {
+		t.Fatalf("no outcome with the kill:\n%s", dumpAlts(pred))
+	}
+	js, err := os.ReadFile("recorded/fp4-fail-1177.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseObservation(js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Drivers["vm0"].Restarts = 2
+	v, adopted := checkState(pred, o, "")
+	wantVerdict(t, v, VOK, "ok")
+	if d := adopted.Drv[VM0]; d.Restarts != 2 || d.KillAt != 0 || d.KillMay {
+		t.Fatalf("adopted vm0 driver %+v", d)
+	}
+	// FP4V, its replay in short: the refused reader under the ns
+	// watcher, kubelet-restart vm0, a settle whose observation saw the
+	// watcher armed 0.2 s before it fired, the delete of the reader; the
+	// final settle's observation is ok, adopted with the kill
+	st = replaySteps(t, cfg, "recorded/fp4v-mbt-steps.txt", 11)
+	if d := st.Drv[VM0]; d.KillAt != markerNS+1 || !d.KillMay {
+		t.Fatalf("FP4V: vm0 driver %+v, want armed at ns, may have fired", d)
+	}
+	pred = steps(t, st, "!containerd-restart vm0", "settle")
+	if js, err = os.ReadFile("recorded/fp4v-obs-12.json"); err != nil {
+		t.Fatal(err)
+	}
+	if o, err = parseObservation(js); err != nil {
+		t.Fatal(err)
+	}
+	v, adopted = checkState(pred, o, "teardown: ")
+	wantVerdict(t, v, VOK, "teardown: ok")
+	if d := adopted.Drv[VM0]; d.Restarts != 1 || d.KillAt != 0 {
+		t.Fatalf("FP4V: adopted vm0 driver %+v", d)
+	}
+}
+
+// A Prepare that comes at any time may fire the watcher after the
+// observation of the settle that saw it armed: the next window keeps
+// that when its claim goes (FP4: a refused claim; also a blocked one); a
+// settle that sees it armed again starts afresh, and a volatile claim
+// never marks it.
+func TestPmemKillAtAfterSettle(t *testing.T) {
+	// (c-pmem0 with a namespace, no erofs: pfsc-c is refused)
+	r := revState(t, "fullp", true, "create pwr-c@vm0#0", "settle", "delete pwr-c@vm0#0", "settle", "create pfsc-c@vm0#0", "settle")
+	wantPhase(t, r, "pfsc-c@vm0#0", Refused)
+	a := steps(t, r, "driver-kill-at vm0 ns", "settle")
+	if a.Drv[VM0].KillAt != markerNS+1 || a.Drv[VM0].KillMay || !killAlt(a, VM0) {
+		t.Fatalf("settled vm0 driver %+v:\n%s", a.Drv[VM0], dumpAlts(a))
+	}
+	s := steps(t, a, "create plain@vm0#0")
+	if !s.Drv[VM0].KillMay {
+		t.Fatalf("a step after the settle: vm0 driver %+v", s.Drv[VM0])
+	}
+	s = steps(t, s, "delete pfsc-c@vm0#0", "!containerd-restart vm0", "!driver-kill vm0", "!driver-restart vm0")
+	if s.Drv[VM0].KillAt == 0 || !s.Drv[VM0].KillMay {
+		t.Fatalf("after the delete: vm0 driver %+v", s.Drv[VM0])
+	}
+	// the delete is the window's first step: the retry may have come
+	// before it
+	d := steps(t, a, "delete pfsc-c@vm0#0", "!containerd-restart vm0")
+	for _, x := range []*State{s, d} {
+		k := steps(t, x, "settle")
+		var kill *State
+		for _, y := range alts(k) {
+			if y.Drv[VM0].KillMay {
+				t.Fatalf("settled with KillMay:\n%s", dumpAlts(k))
+			}
+			if y.Drv[VM0].KillAt == 0 && y.Drv[VM0].Restarts > k.Drv[VM0].Restarts {
+				kill = y
+			}
+		}
+		if kill == nil {
+			t.Fatalf("no outcome with the kill:\n%s", dumpAlts(k))
+		}
+		o := observation(t, kill)
+		o.VMs["vm0"].KillAt = json.RawMessage(`{"armed":true,"fired":true,"done":true,"reason":"fired"}`)
+		v, adopted := checkState(k, o, "")
+		wantVerdict(t, v, VOK, "ok")
+		if dr := adopted.Drv[VM0]; dr.Restarts != 1 || dr.KillAt != 0 {
+			t.Fatalf("adopted %+v", dr)
+		}
+		// not fired: armed, nothing left to fire it
+		n := steps(t, k, "containerd-restart vm0")
+		if n.Drv[VM0].KillAt != 0 || n.Drv[VM0].KillMay {
+			t.Fatalf("containerd-restart: vm0 driver %+v", n.Drv[VM0])
+		}
+	}
+	// a reader blocked through a hole (its retry makes the region),
+	// deleted
+	w := revState(t, "fullp", true, "create pwr-c@vm0#0", "settle", "pwrite pwr-c@vm0#0 img", "delete pwr-c@vm0#0", "settle")
+	h := steps(t, w, "create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle", "create pfsd-c@vm1#0", "settle")
+	wantPhase(t, h, "pfsd-c@vm1#0", Blocked)
+	h = steps(t, h, "driver-kill-at vm1 region", "settle")
+	wantPhase(t, h, "pfsd-c@vm1#0", Blocked)
+	b := steps(t, h, "delete pfsd-c@vm1#0", "!driver-kill vm1", "settle")
+	if !killAlt(b, VM1) {
+		t.Fatalf("blocked, deleted: no outcome with the kill:\n%s", dumpAlts(b))
+	}
+	// volatile claims never mark it
+	v := steps(t, revState(t, "fullp", true), "driver-kill-at vm1 region", "settle", "create xnuma-c@vm1#0", "delete xnuma-c@vm1#0")
+	if v.Drv[VM1].KillMay {
+		t.Fatalf("volatile: vm1 driver %+v", v.Drv[VM1])
+	}
+	steps(t, v, "driver-kill vm1")
 }
 
 // killAlt: an outcome of the settle s has the kill of the watcher armed

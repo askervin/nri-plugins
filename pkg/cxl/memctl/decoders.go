@@ -64,6 +64,44 @@ var portDirRe = regexp.MustCompile(`^port\d+$`)
 // endpoint whose decoders were released out of order (see DecoderHole),
 // nearest to the root first. A memdev without an endpoint has none.
 func (mc *Manager) DecoderHoles(memdev string) []DecoderHole {
+	var holes []DecoderHole
+	for _, dir := range mc.ports(memdev) {
+		if h, ok := portHole(dir); ok {
+			holes = append(holes, h)
+		}
+	}
+	return holes
+}
+
+// RegionsAbove returns the regions of other memdevs on the decoders above
+// those of the memdev's regions in the ports between the CXL root and the
+// memdev's endpoint, nearest to the root first: while they live,
+// destroying the memdev's regions leaves a hole in those ports (see
+// DecoderHole). A memdev without an endpoint or regions has none.
+func (mc *Manager) RegionsAbove(memdev string) []string {
+	own := mc.Regions(memdev)
+	if len(own) == 0 {
+		return nil
+	}
+	var above []string
+	for _, dir := range mc.ports(memdev) {
+		ours := false
+		for _, region := range portRegions(dir) {
+			switch {
+			case slices.Contains(own, region):
+				ours = true
+			case ours && region != "" && !slices.Contains(above, region):
+				above = append(above, region)
+			}
+		}
+	}
+	return above
+}
+
+// ports returns the sysfs directories of the ports between the CXL root
+// and the memdev's endpoint, nearest to the root first, nil for a memdev
+// without an endpoint.
+func (mc *Manager) ports(memdev string) []string {
 	ep, err := mc.endpoint(memdev)
 	if err != nil {
 		return nil
@@ -81,13 +119,26 @@ func (mc *Manager) DecoderHoles(memdev string) []DecoderHole {
 		}
 	}
 	slices.Reverse(ports)
-	var holes []DecoderHole
-	for _, dir := range ports {
-		if h, ok := portHole(dir); ok {
-			holes = append(holes, h)
-		}
+	return ports
+}
+
+// portRegions returns the regions of the committed decoders of the port in
+// sysfs directory dir in decoder order, "" for a decoder without a region.
+func portRegions(dir string) []string {
+	n, err := readUint(filepath.Join(dir, "decoders_committed"))
+	if err != nil {
+		return nil
 	}
-	return holes
+	prefix := "decoder" + strings.TrimPrefix(filepath.Base(dir), "port") + "."
+	var regions []string
+	for id := 0; id < int(n); id++ {
+		region, err := readTrim(filepath.Join(dir, prefix+strconv.Itoa(id), "region"))
+		if err != nil {
+			continue
+		}
+		regions = append(regions, region)
+	}
+	return regions
 }
 
 // portHole returns the hole in the decoders of the port in sysfs

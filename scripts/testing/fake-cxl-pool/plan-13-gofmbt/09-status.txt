@@ -67,6 +67,20 @@ Bugs (bug-NN files)
      could make a writable attach reformat a writer's namespace
      FIXED (also: create-namespace -f only on a region verified to have
      no fsdax namespace), stress-tested
+  11 a pool region leaked when the driver was killed in a Prepare
+     before its state save and the claim was released before kubelet's
+     retry (found by the persistent executor; predicted as E2/S1)
+     FIXED (preparingPoolClaims.json; review 05-review-DRV3 follow-up)
+  12 a hollow region (left by 11) failed every device scan and every
+     plugin start: FIXED (scan skips it; the driver deletes its own
+     via the root decoder's delete_region)
+  13 after a driver restart a loop device's backing file reads /pmemN:
+     the driver did not recognise its own cached fs mount, and its
+     holder check missed the loop: FIXED (backing by device number)
+  14 a cut Prepare's region kept for kubelet's retry ended below newer
+     regions; its later release left a decoder hole (FP3): FIXED
+     (unfinished Prepares released at plugin start), verified by
+     replay B14
 All code (driver, test90, model, helpers) is in the commits
 aea6362d8 and 8026ed091 (user, 2026-10-25/26); only plan-13 documents
 changed after them; images in

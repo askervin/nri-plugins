@@ -650,17 +650,32 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   forgets the claim when the claim is prepared or its rollback released
   everything. At start such a claim is known as one whose Prepare did not
   finish: its device may have a region, a namespace, a node mount or
-  online memory (the node of a `numa` device is fenced); one none of
-  whose memory devices is on the node is forgotten. Its node mount and
-  lease bind are unmounted at start like those of no prepared claim.
-  kubelet then either prepares the claim again, which reuses the region,
-  or unprepares it (its pod was deleted meanwhile): the Unprepare revokes
-  the nodes that a companion claim may have lent, unmounts its lease
-  bind, and releases the device as for a prepared claim, before the claim
-  is deallocated and the controller detaches the device. An Unprepare
-  that would revoke lent nodes before the plugin has connected to NRI
-  fails, and kubelet retries it. A rollback that could not release
-  everything (a holder) keeps the record for that Unprepare too.
+  online memory; one none of whose memory devices is on the node is
+  forgotten. Its node mount and lease bind are unmounted at start like
+  those of no prepared claim. Then, before kubelet can call the plugin,
+  the start releases the device as for a prepared claim and forgets the
+  claim; kubelet's Prepare again makes the region anew. The region of
+  the cut Prepare is the newest one in the decoders of its host bridge
+  and switch at that moment. Kept until kubelet's retry (60-90 s), it
+  would lie below the regions that other claims get meanwhile, and its
+  release by a retry that fails (always for a claim that the device
+  refuses) or by the claim's Unprepare would leave a hole: Linux commits
+  the decoders of a port in order, and after a region below the newest
+  one is destroyed it creates no region through that port until the
+  regions above it are gone (the Prepares fail with "CXL decoders
+  released out of order"). The start keeps the claim when it is a
+  companion claim of a lease, when a region of another memory device
+  lies above its region already (its release would leave the hole now),
+  or when something could not be released (a busy node mount); the node
+  of such a `numa` device is fenced. kubelet then either prepares the
+  claim again, which reuses the region, or unprepares it (its pod was
+  deleted meanwhile): the Unprepare revokes the nodes that a companion
+  claim may have lent, unmounts its lease bind, and releases the device
+  as for a prepared claim, before the claim is deallocated and the
+  controller detaches the device. An Unprepare that would revoke lent
+  nodes before the plugin has connected to NRI fails, and kubelet
+  retries it. A rollback that could not release everything (a holder)
+  keeps the record for that Unprepare too.
 - A hollow region (no target, not committed, its address range kept in
   the root decoder) is what the kernel leaves of a region whose memory
   device was removed before the region was destroyed (a forced deletion),
@@ -673,7 +688,8 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   knows as its own, while none of their memory blocks is online: the
   region of a prepared claim whose memory device is gone (at its
   Unprepare), and the regions recorded for a Prepare that did not finish
-  (when the claim is prepared again, unprepared, or rolled back). The
+  (at start, or when the claim is prepared again, unprepared, or rolled
+  back). The
   device scan of `cxl.nri.io` skips every hollow region and logs a
   warning once, with that command.
 - `cxl create-region` right after a hotplug can fail once with

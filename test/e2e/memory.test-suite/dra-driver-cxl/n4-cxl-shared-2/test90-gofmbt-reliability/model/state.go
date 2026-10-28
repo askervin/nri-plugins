@@ -277,6 +277,11 @@ type DriverState struct {
 	// KillAtAt: the Unix time of the first settle that saw it armed (the
 	// oracle disarms it 70 s later: the watcher gives up after 60 s)
 	KillAtAt int64
+	// KillMay: the armed watcher may have fired in the current window: a
+	// Prepare that comes at any time (killAnyTime) could show its marker
+	// before one of the window's steps, also when its claim is gone by
+	// the settle (FP4)
+	KillMay bool
 }
 
 // Kill markers of driver-kill-at (A23).
@@ -957,6 +962,9 @@ func (s *State) dump() string {
 			v, d.PodGen, d.Restarts, d.Inc, d.Killed, s.bitNodes(d.F), s.bitNodes(d.FMaybe), d.Pod)
 		if d.KillAt > 0 {
 			fmt.Fprintf(&b, " kill-at %s", markerNames[d.KillAt-1])
+		}
+		if d.KillMay {
+			b.WriteString(" may have fired")
 		}
 		if d.PodBefore != "" {
 			fmt.Fprintf(&b, " not %q", d.PodBefore)

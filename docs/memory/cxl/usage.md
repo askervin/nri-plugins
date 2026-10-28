@@ -1482,7 +1482,7 @@ restarts.
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |
 | `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
 | `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json` | prepared claims of `cxl-pool.nri.io` |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json` | claims of `cxl-pool.nri.io` whose Prepare has touched a device and not finished: after a plugin restart their Unprepare releases the device ([pool.md](pool.md#ordering-and-failure-semantics)) |
+| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json` | claims of `cxl-pool.nri.io` whose Prepare has touched a device and not finished: a restarted plugin releases the device at start, or keeps the claim for its Unprepare or its Prepare again ([pool.md](pool.md#ordering-and-failure-semantics)) |
 | `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access>` | the node mount of the erofs of a persistent pool device for mode `fs` |
 | `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node |
 | `<cdi root>/cxl-leases.yaml` | CDI kind `nri.io/cxl`: a device `lease-<uid>` per lease claim |
