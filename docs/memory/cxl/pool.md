@@ -636,7 +636,46 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   and for up to 5 minutes while the pool has no ResourceSlices
   ([local.md](local.md#what-the-plugin-publishes)).
 - Node plugin restart: the prepared claims file restores the prepared
-  devices; regions are found again by serial.
+  devices; regions are found again by serial. Node mounts of mode `fs`
+  are checked by the device number of the block device: a loop device of
+  a cached node mount that the previous plugin container set up shows its
+  backing file in sysfs relative to the root of that container's `/dev`
+  (`/pmem1`), which is not a path the plugin can compare.
+- Plugin stopped in a Prepare (killed, crashed, or exited on the loss of
+  NRI): before a Prepare touches a device it records the claim and the
+  device in
+  `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json`,
+  and before it runs `cxl create-region` the name of the region to come
+  (the root decoder's `create_ram_region` or `create_pmem_region`); it
+  forgets the claim when the claim is prepared or its rollback released
+  everything. At start such a claim is known as one whose Prepare did not
+  finish: its device may have a region, a namespace, a node mount or
+  online memory (the node of a `numa` device is fenced); one none of
+  whose memory devices is on the node is forgotten. Its node mount and
+  lease bind are unmounted at start like those of no prepared claim.
+  kubelet then either prepares the claim again, which reuses the region,
+  or unprepares it (its pod was deleted meanwhile): the Unprepare revokes
+  the nodes that a companion claim may have lent, unmounts its lease
+  bind, and releases the device as for a prepared claim, before the claim
+  is deallocated and the controller detaches the device. An Unprepare
+  that would revoke lent nodes before the plugin has connected to NRI
+  fails, and kubelet retries it. A rollback that could not release
+  everything (a holder) keeps the record for that Unprepare too.
+- A hollow region (no target, not committed, its address range kept in
+  the root decoder) is what the kernel leaves of a region whose memory
+  device was removed before the region was destroyed (a forced deletion),
+  and what a `cxl create-region` that was killed before it set the target
+  leaves. No decoder maps its address range any more; memory of it that
+  `kmem` could not remove stays online until a reboot. `cxl
+  destroy-region` refuses it ("error locating decoder for target0");
+  writing its name to `/sys/bus/cxl/devices/<root decoder>/delete_region`
+  removes it. The pool driver deletes only the hollow regions that it
+  knows as its own, while none of their memory blocks is online: the
+  region of a prepared claim whose memory device is gone (at its
+  Unprepare), and the regions recorded for a Prepare that did not finish
+  (when the claim is prepared again, unprepared, or rolled back). The
+  device scan of `cxl.nri.io` skips every hollow region and logs a
+  warning once, with that command.
 - `cxl create-region` right after a hotplug can fail once with
   "add_dev() failed"; the pool driver retries a region creation once
   after 3 s.

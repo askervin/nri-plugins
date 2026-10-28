@@ -50,7 +50,10 @@ Bugs (bug-NN files)
   07 split, non-atomic persistence of prepared claims (review)
      FIXED (atomic writes, reconciliation at start), unit tests
   08 kube-scheduler: a pending pod waits ~5 min for a device that a
-     deleted pod held during its binding wait    upstream (Kubernetes)
+     deleted pod held during its binding wait (Kubernetes)
+     FIXED locally (kubernetes 5jr-dra-requeue, 4de1561b97c), deployed
+     on vm2, verified by A/B replay (3.5 s instead of 5 min); not
+     proposed upstream yet (10-scheduler-requeue-fix.txt)
   09 a shared pool device attached but not prepared was published as a
      local, sliceable memdev while its pool's slices were gone (severe:
      a local claim could online shared memory as RAM)

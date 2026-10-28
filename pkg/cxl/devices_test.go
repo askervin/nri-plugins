@@ -156,3 +156,65 @@ func TestRegionNodeOfOnlineSlices(t *testing.T) {
 		t.Fatalf("region %+v", r)
 	}
 }
+
+// A region whose memory device was removed before the region was
+// destroyed keeps its address range with target0 empty and commit 0 (bug-12
+// of plan-13: evidence of the e2e VMs, region1 of a pmem device). The scan
+// skips the empty target instead of failing: region1 has no targets, no
+// memories and is disabled, and region0 and its memdev are found as before.
+func TestHollowRegion(t *testing.T) {
+	root := sysfsFromDump(t, "test14-node-four-claims", map[string]string{"endpoint4": "mem0"})
+	region1 := filepath.Join(root, "sys/bus/cxl/devices/region1")
+	for file, value := range map[string]string{
+		"commit": "0", "devtype": "cxl_region", "interleave_granularity": "256", "interleave_ways": "1",
+		"mode": "pmem", "resource": "0x850000000", "size": "0x10000000", "target0": "",
+		"uuid": "675e71d7-179f-4beb-ab43-55f82e02b39a",
+	} {
+		if err := os.MkdirAll(region1, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(region1, file), []byte(value+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	devices, err := DevicesFromSysfs(root)
+	if err != nil {
+		t.Fatalf("scan with a hollow region: %v", err)
+	}
+	var r0, r1 *RegionDevice
+	for _, r := range devices.RegionDevices {
+		switch r.Name {
+		case "region0":
+			r0 = r
+		case "region1":
+			r1 = r
+		}
+	}
+	if r0 == nil || r0.Node != 2 || !r0.Enabled || len(r0.Targets) != 1 || len(r0.Memories) != 1 {
+		t.Fatalf("region0 %+v", r0)
+	}
+	if r1 == nil || len(r1.Targets) != 0 || !r1.Hollow || r0.Hollow || len(r1.Memories) != 0 || r1.Enabled || r1.Node != -1 ||
+		r1.Mode != "pmem" || r1.Resource != 0x850000000 || r1.Size != 0x10000000 {
+		t.Fatalf("hollow region1 %+v", r1)
+	}
+	if len(devices.MemoryDevices) != 1 {
+		t.Fatalf("memory devices %+v", devices.MemoryDevices)
+	}
+
+	// a two-way region with its first target gone keeps the second one
+	if err := os.WriteFile(filepath.Join(region1, "interleave_ways"), []byte("2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(region1, "target1"), []byte("decoder7.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	devices, err = DevicesFromSysfs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range devices.RegionDevices {
+		if r.Name == "region1" && (len(r.Targets) != 1 || r.Targets[0] != "decoder7.0" || r.Hollow) {
+			t.Fatalf("region1 targets %v", r.Targets)
+		}
+	}
+}

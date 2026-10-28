@@ -141,11 +141,7 @@ func faultContext(s *State, a Act) []string {
 				continue
 			}
 		}
-		kind := sl.Kind.String()
-		if sl.Kind == KLease && ss.Lease != LeaseNone {
-			kind += "-" + ss.LeaseMode.String()
-		}
-		out = append(out, "fault "+a.Verb.String()+" "+kind+" "+ss.Phase.String())
+		out = append(out, "fault "+faultVerb(a)+" "+contextKind(sl, ss)+" "+ss.Phase.String())
 	}
 	// a decoder hole is a context of its own (A9): pods blocked behind it
 	// show up as "blocked" above
@@ -153,7 +149,7 @@ func faultContext(s *State, a Act) []string {
 	case a.Verb.vmFault():
 		for b := Bridge(0); b < nBridges; b++ {
 			if s.Stacks[stackIndex(a.VM, b)].hasHole() {
-				out = append(out, "fault "+a.Verb.String()+" hole hb"+string(rune('0'+b)))
+				out = append(out, "fault "+faultVerb(a)+" hole hb"+string(rune('0'+b)))
 			}
 		}
 	case a.Verb.poolFault():
@@ -163,10 +159,45 @@ func faultContext(s *State, a Act) []string {
 			}
 		}
 	}
+	// the content of a persistent device in a fault of its pool or of a
+	// VM with a claim of it (A25: faults must not change it)
+	if a.Verb.poolFault() && a.Pool == PoolC || a.Verb.vmFault() {
+		for x := range s.PDev {
+			d := cPmem0 + DevID(x)
+			if s.cfg.devUsed(d) {
+				pd := &s.PDev[x]
+				out = append(out, "fault "+faultVerb(a)+" "+d.String()+" ns-"+triName(pd.NS)+" fs-"+triName(pd.FS))
+			}
+		}
+	}
 	// a fault that affects nothing is no context (06-runs P1: faults on
 	// an empty cluster); C1 covers the verb once
 	sort.Strings(out)
 	return uniq(out)
+}
+
+// faultVerb is the verb of a fault in C2: driver-kill-at with its marker.
+func faultVerb(a Act) string {
+	if a.Verb == VDriverKillAt {
+		return a.Verb.String() + ":" + a.argName()
+	}
+	return a.Verb.String()
+}
+
+// contextKind is the kind of a pod in C2: lease pods with their lease
+// mode (and a busy fs lease), a held file.
+func contextKind(sl *Slot, ss *SlotState) string {
+	kind := sl.Kind.String()
+	if sl.Kind.leaseKind() && ss.Lease != LeaseNone {
+		kind += "-" + ss.LeaseMode.String()
+		if ss.Lease == LeaseBusy {
+			kind += "-busy"
+		}
+	}
+	if ss.Hold {
+		kind += "-held"
+	}
+	return kind
 }
 
 // crashContext is C2 of a crash (a fault of one container, 05-review
@@ -178,8 +209,14 @@ func crashContext(s *State, a Act) []string {
 	ss := &s.Slots[i]
 	sl := s.slot(i)
 	str := "fault crash " + sl.Kind.String()
-	if sl.Kind == KLease && ss.Lease == LeaseHeld {
+	if sl.Kind.leaseKind() && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) {
 		str += " lease-" + ss.LeaseMode.String()
+		if ss.Lease == LeaseBusy {
+			str += " busy"
+		}
+	}
+	if ss.Hold {
+		str += " held"
 	}
 	if ss.Steer == SteerOn || ss.Steer == SteerOff {
 		str += " steer-" + ss.Steer.String()
@@ -200,11 +237,21 @@ func leaseChances(s *State) []string {
 	var out []string
 	for i := range s.Slots {
 		sl := s.slot(i)
-		if sl.Kind != KLease || s.Slots[i].Phase != Running {
+		if !sl.Kind.leaseKind() || s.Slots[i].Phase != Running {
 			continue
 		}
-		if s.allowed(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool}) {
-			out = append(out, "C1.can lease-get "+sl.Name)
+		modes := []LeaseMode{ModeNuma}
+		if sl.Kind == KPlse {
+			modes = []LeaseMode{ModePBW, ModePBR, ModePFD, ModePFC}
+		}
+		for _, m := range modes {
+			if s.allowed(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool, Mode: m}) {
+				str := "C1.can lease-get " + sl.Name
+				if sl.Kind == KPlse {
+					str += " " + m.String()
+				}
+				out = append(out, str)
+			}
 		}
 		if s.allowed(Act{Verb: VLeasePut, Slot: int16(i), VM: VMAny, Pool: noPool}) {
 			out = append(out, "C1.can lease-put "+sl.Name)
@@ -219,7 +266,7 @@ func leaseChances(s *State) []string {
 // spend the first steps on faults of an empty cluster (06-runs P1).
 func c1Strings(cfg *Config, a Act, w int) []string {
 	if a.Verb.fault() {
-		return []string{"C1.fault " + a.Verb.String()}
+		return []string{"C1.fault " + faultVerb(a)}
 	}
 	return weigh(w, "C1.", []string{a.name(cfg)})
 }

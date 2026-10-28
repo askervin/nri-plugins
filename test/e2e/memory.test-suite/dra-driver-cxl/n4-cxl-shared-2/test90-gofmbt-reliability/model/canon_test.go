@@ -37,6 +37,13 @@ func searchView(s *State) *State {
 	v.HeldAt = [nDevs]int64{}
 	v.UnblockAt, v.LeaseIDs, v.SlotData = nil, nil, nil
 	v.Data = [nDevs]Token{}
+	for x := range v.PDev {
+		v.PDev[x].Tok, v.PDev[x].Raw, v.PDev[x].UUID = Token{}, Token{}, ""
+		v.PDev[x].LsaSha, v.PDev[x].HeadSha = "", ""
+	}
+	for d := range v.Drv {
+		v.Drv[d].KillAtAt = 0
+	}
 	for i := range v.Slots {
 		v.Slots[i].Gen = 0
 	}
@@ -66,6 +73,11 @@ func noisyTwin(s *State, rng *rand.Rand) *State {
 		n.UnblockAt[i] = rng.Int63()
 		n.LeaseIDs[i] = fmt.Sprintf("lease-%d", rng.Intn(100))
 		n.SlotData[i] = Token{Known: rng.Intn(2) == 0, Text: fmt.Sprintf("mbt-%d", rng.Intn(100))}
+	}
+	for x := range n.PDev {
+		n.PDev[x].Tok = Token{Known: rng.Intn(2) == 0, Text: fmt.Sprintf("mbt-%d", rng.Intn(100))}
+		n.PDev[x].Raw = Token{Known: rng.Intn(2) == 0, Text: fmt.Sprintf("mbt-%d", rng.Intn(100))}
+		n.PDev[x].UUID = fmt.Sprintf("u%d", rng.Intn(100))
 	}
 	for d := range n.Data {
 		n.Data[d] = Token{Known: rng.Intn(2) == 0, Text: fmt.Sprintf("mbt-%d", rng.Intn(100))}
@@ -283,15 +295,15 @@ func TestKeyLayoutBounds(t *testing.T) {
 		t.Fatalf("phase does not fit 4 bits")
 	case nVMs > 3:
 		t.Fatalf("node+1 does not fit 2 bits")
-	case 3+2*2*nVMs > 16:
-		t.Fatalf("controller does not fit 16 bits")
+	case 3+2*devsPerPool*nVMs > 32:
+		t.Fatalf("controller does not fit 32 bits")
 	case nDevs+2 > 16:
 		t.Fatalf("stack key+1 does not fit 4 bits")
 	case nBridges > 4:
 		t.Fatalf("fence bits do not fit 4 bits")
 	case nStacks+1 > 8:
 		t.Fatalf("event stack+1 does not fit 3 bits")
-	case int(SteerAny) > 3 || int(LeaseReleasing) > 3 || int(ModeDax) > 1 || int(SlicesUnknown) > 3 || int(TriMaybe) > 3:
+	case int(SteerAny) > 3 || int(LeaseBusy) > 3 || int(nModes) > 8 || int(SlicesUnknown) > 3 || int(TriMaybe) > 3 || len(markerNames)+1 > 63:
 		t.Fatalf("an enum does not fit its bits")
 	case 2*96 > 255:
 		t.Fatalf("users do not fit a byte")

@@ -41,6 +41,13 @@ ee5c9ac1b7a7  (2026-10-26 11:57): + bug-09 fix (first version)
               follow-up of 05-review-DRV2 (bug-09: pool watch, checks
               before local regions, rescan lock, fsync; bug-10: pmem
               races, verified no-namespace before create-namespace -f)
+0b5452ac2464  v0.15.0-43-g1178bf032-dirty (2026-10-28 00:08): + bug-11
+              (preparingPoolClaims.json), bug-12 (hollow regions),
+              bug-13 (loop backing by device number)
+37d377d75cf9  (2026-10-28 00:56): + the follow-up of 05-review-DRV3
+              (G1 recorded region names, G2 only own hollow regions,
+              G3 no delete with online memory, G4 revoke before lending
+              set fails, G5, G6)
 
   run 5 stub, after A10 (ports, events), observer    PASS  164 s
         timeout, containerd-restart wait; image 571d3f262db0: the
@@ -297,3 +304,68 @@ L10 2026-10-27 17:47, image 392e3abf548d, the model built from its
    Coverage 1030 strings in round 1. Plans 249: reused 241, planned
    again 4; planning 2m07s, bash waited 22 s. No oracle difference;
    cxl-pool-demo gone afterwards. Copy: /tmp/p13-runs/l10.
+AB 2026-10-27 19:45-19:52 UTC, image 392e3abf548d, replays of the D8
+   steps (/tmp/p13-runs/d8/steps.txt) with MBT_ARGS=--stall-window=30s
+   (A28), kube-scheduler of vm2 switched between the two:
+   ab-fixed  v1.37.1-dra-requeue.1 (the fix, uncommitted build):
+             PASS 189 s; the stalled contender allocated 3.6 s and
+             3.5 s after its holder's delete (settles 9 and 22 waited
+             4.1 and 11.4 s).
+   ab-stock  registry.k8s.io/kube-scheduler:v1.37.1: FAIL at step 9,
+             "still not allocated 33s after the delete".
+   Before them, v8fix (the fix, the default 6m window): PASS but no
+   evidence: the settles accepted the stall at once and the contender
+   was deleted 2.3 s after its holder. vm2 then got the committed build
+   v1.37.1-dra-requeue.2 permanently. Copies /tmp/p13-runs/ab-*,
+   v8fix.
+PM1 2026-10-27 23:31, image 392e3abf548d, scheduler v1.37.1-dra-
+   requeue.2, profile pmem (persistent devices, A22-A30), seed 10, 30m,
+   MBT_AVOID=driver-kill-at (bug-11 open). FAIL at the first settle:
+   "vmN: poolClaims not observed (null)": preparedPoolClaims.json does
+   not exist before the driver's first pool claim. EXECUTOR ERROR:
+   mbt-observe.py reports no file as {} now.
+PM1b same flags. FAIL at step 85 after 84 steps (550 s in all): "vm1:
+   node mount .../mounts/c1ae2002-cached: /dev/loop0, want a loop
+   device over /dev/pmem*". After driver-restart vm1 (step 83) the
+   loop device of the cached fs node mount (made by the previous
+   driver container for an fs lease) has backing_file "/pmem1", not
+   "/dev/pmem1": the old container's mount namespace is gone and the
+   kernel prints the path relative to devtmpfs. The restarted driver
+   failed its own restore check: "... c1ae2002-cached is a erofs mount
+   of /dev/loop0, not of a loop device over /dev/pmem1". DRIVER BUG:
+   bug-13 (being fixed with bug-11/12); the observer now normalizes
+   /pmemN to /dev/pmemN (backingRaw keeps the raw path).
+   Copies: /tmp/p13-runs/pm1, pm1b.
+PM2 2026-10-28 00:05, image 0b5452ac2464 (bug-11/12/13 fixes), profile
+   pmem, seed 11, 30m, driver-kill-at included. FAIL at step 63 after
+   62 steps (459 s in all): "driver vm2: pod nri-dra-driver-cxl-vd8mb
+   has 1 restarts, want 0". EXECUTOR ERROR: driver-kill-at vm2 region
+   (step 58) was armed against the old driver container; driver-
+   restart vm2 (59) made a new one; the watcher re-resolved the driver
+   and killed the NEW container 10.2 s after arming when region1
+   appeared, and the observations stopped carrying killAt, so the
+   model did not know. The watcher must be bound to the container it
+   was armed against (being fixed). No driver failure in the 62 steps.
+   Copy: /tmp/p13-runs/pm2.
+PM3 2026-10-28 00:38, image 0b5452ac2464, model with A31, profile pmem,
+   seed 12, 30m, every fault incl. driver-kill-at, 200 observations
+   kept. FAIL at step 179 after 178 steps (769 s in all): "vm1: no
+   container of companion cxl-lease-60edb08a observed". MODEL ERROR: a
+   held fs lease put (steps 169 hold, 175 lease-put) leaves the
+   companion Terminating with its pause container terminated (A25
+   LeaseBusy); the A11 completeness check went by the pod phase
+   (Running while deleting) instead of the container state (being
+   fixed). No driver or controller failure in the 178 steps, which
+   had 12 driver-kill-at, 13 holds, 21 pwrite, 14 pread, 3 lease-get
+   and every other fault.
+   Copy: /tmp/p13-runs/pm3.
+FP1 2026-10-28 01:04, image 37d377d75cf9 (all fixes incl. 05-review-
+   DRV3 follow-up), scheduler v1.37.1-dra-requeue.2, gofmbt main
+   bc12d42, profile fullp (volatile + persistent), seed 13, 120m, every
+   fault. FAIL at step 300 after 299 steps (1450 s in all): "driver vm0
+   ... has 1 restarts, want 0", "vm0: driver-kill-at fired, want the
+   outcome with the kill". MODEL ERROR: driver-kill-at vm0 mount (298),
+   create pfsd-c@any#0 (299): the scheduler put the "any" reader on vm0,
+   its node mount fired the watcher; the model had no kill outcome for
+   a pod of unknown node (being fixed). No driver or controller failure
+   in the 299 steps. Copy: /tmp/p13-runs/fp1.

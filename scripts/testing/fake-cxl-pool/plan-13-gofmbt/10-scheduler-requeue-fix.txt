@@ -1,0 +1,113 @@
+plan-13: a kube-scheduler fix for bug-08
+========================================
+2026-10-27 (orchestrator). Inputs: bug-08-scheduler-no-requeue-after-
+prebind-unreserve.txt, 08-analysis-claim-after-pod-deleted.txt. Code:
+~/github.com/kubernetes/kubernetes, branch 5jr-dra-requeue (on
+release-1.37, v1.37.1-21-gd8848b7f2a5; the cluster runs v1.37.1).
+K = pkg/scheduler, DR = K/framework/plugins/dynamicresources.
+
+1. The gap
+----------
+- DR keeps an allocation "in flight" from Reserve until PreBind
+  succeeds (DR/dra_manager.go SignalClaimPendingAllocation,
+  DR/dynamicresources.go bindClaim prebindSuccessCleanup). With binding
+  conditions PreBind waits up to the binding timeout (600 s), polling
+  every 5 s, so the in-flight allocation outlives the claim's
+  deallocation and deletion by up to 5 s.
+- When the pod is deleted, kube-controller-manager deallocates and
+  deletes its claim at once. The deallocation (ResourceClaim update)
+  requeues every pod that DR rejected (isSchedulableAfterClaimChange:
+  allocated -> deallocated = Queue). They are retried at once and fail:
+  the device is still in flight.
+- PreBind's next poll finds the claim gone, PreBind fails, Unreserve
+  drops the in-flight allocation, and handleBindingCycleError (K/
+  schedule_one.go:507-534) moves pods with EventAssignedPodDelete:
+  "'Forget'ing an assumed Pod in binding cycle should be treated as a
+  PodDelete event, as the assumed Pod had occupied a certain amount of
+  resources in scheduler cache."
+- DR does not register AssignedPod/Delete (DR/dynamicresources.go
+  EventsToRegister), so that event never requeues the pods it
+  rejected. They wait for the 5 min unschedulable flush.
+
+2. Options
+----------
+A Drop the in-flight allocation as soon as bindClaim has written the
+  allocation and put it into the assume cache. The claim object then
+  carries the allocation alone, and its deallocation frees the device
+  before the requeue. Root cause, but it changes the life cycle of
+  in-flight allocations that pod-group (gang) scheduling relies on
+  (DR/dra_manager.go inFlightAllocationSharers comment), and the
+  ordering between the informer update and the requeue would need its
+  own proof. Larger review surface.
+B Register AssignedPod/Delete in DR with a queueing hint: Queue when
+  the deleted or forgotten pod had resource claims (spec.resourceClaims
+  or a DRA extended resource claim in its status), QueueSkip otherwise.
+  This is how NodeResourcesFit, NodePorts, the volume plugins and
+  default preemption learn that an assumed pod's resources are free
+  again, and it is the event the scheduler already sends after
+  Unreserve in the binding cycle. The informer's event for the deletion
+  itself gives one futile retry (the allocation is still in flight);
+  the event after Unreserve gives the retry that succeeds.
+C Make PreBind notice the claim's deletion at once (cancel the poll
+  from the claim event handler). Shortens the window, still needs B to
+  requeue.
+D Let the executor or a user touch a node or slice to trigger a
+  requeue: a workaround, not a fix.
+
+3. Decision
+-----------
+B: small, follows the framework's own contract for assumed pods, needs
+no change to in-flight bookkeeping, and also helps after a binding
+timeout or a binding failure for any other reason. The scheduling
+cycle's own Unreserve (Reserve or Permit failure) runs inside the one
+scheduling cycle, so no other pod saw the in-flight allocation there.
+
+Tests: a table test of the hint (deleted pod with claims, with an
+extended resource claim, without claims, wrong object type), the
+EventsToRegister expectation, and, if the plugin's tests allow it, a
+scheduling test where a pod rejected by DR is retried after an
+assumed pod with a claim is forgotten.
+
+Verification in the cluster: deploy the fixed kube-scheduler on vm2
+(static pod manifest, image built from the release-1.37 base with the
+fixed binary), replay the D8 sequence (ctrl-kill a, create
+xnuma-a@vm1#0, create xdax-a@vm1#0, delete xnuma-a@vm1#0, settle) and
+measure the time from the delete to xdax-a's allocation: expected
+within the backoff after the PreBind poll (~5-15 s), against 5:05 and
+5:23 before. Then the model's A19 stall window can be shortened for a
+fixed scheduler.
+
+4. Result (2026-10-27)
+----------------------
+Implemented as B in ~/github.com/kubernetes/kubernetes, branch
+5jr-dra-requeue, commit 4de1561b97c "DRA scheduler: requeue pods when
+Unreserve releases in-flight allocations" (2 files, +231: the
+registration and isSchedulableAfterAssignedPodDelete in
+dynamicresources.go; TestIsSchedulableAfterAssignedPodDelete, 9 cases,
+and TestRequeueAfterInFlightAllocationReleased, which fails without the
+registration, in dynamicresources_test.go). go test ./pkg/scheduler/...
+(45 packages) passes with Go 1.26.10, the new tests with -race;
+golangci-lint clean.
+Deployed on vm2 as localhost/kube-scheduler:v1.37.1-dra-requeue.2
+(FROM registry.k8s.io/kube-scheduler:v1.37.1, the binary built from the
+commit, version "v1.37.1-dra-requeue.2"), the kubeadm manifest
+changed in image and imagePullPolicy (Never) only; the original is
+/root/kube-scheduler.yaml.orig on vm2.
+A/B in the cluster, replay of the D8 steps with --stall-window=30s
+(contract A28), same steps, same image of the driver:
+  fixed (ab-fixed): PASS; xdax-a allocated a-pooled0 3.6 s (A) and
+    3.5 s (B) after the delete of its holder, while pool-a's
+    controller was down. Scheduler log: Unreserve "Released resource
+    in allocation result" 19:46:34.288, the hint "pod with claims got
+    deleted or forgotten" for xdax-a 19:46:34.292 (AssignedPodDelete ->
+    Backoff), the attempt at once, the claim allocated 19:46:34.537.
+  stock (ab-stock): FAIL at the settle after the delete: "pod
+    xdax-a@vm1#0: still not allocated 33s after the delete of the
+    claim it waits for"; its claim never got the device before the
+    test deleted it 37 s later (5:05 and 5:23 in D8).
+Copies: /tmp/p13-runs/ab-fixed, /tmp/p13-runs/ab-stock (claims.watch,
+sched.log, out/). For an upstream PR: the integration test sketched by
+the implementer (a subtest of test/integration/dra/binding_conditions.go
+with one device with binding conditions, pod1 waiting, pod2 pending,
+delete pod1, claim2 allocated within ~30 s), and a release note
+(/tmp/kube-scheduler-dra-requeue.releasenote).

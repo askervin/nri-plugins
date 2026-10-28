@@ -1,0 +1,310 @@
+BUG-11: A POOL REGION LEAKS AFTER A PREPARE THAT THE PLUGIN DID NOT
+FINISH
+
+Branch 5jg-cxl, 2026-10-28. Found by the executor of the model-based
+test (04-status-EXEC.txt 14.7 B1, runs 3 and 6), predicted as S1 in
+11-findings-persistent.txt section 4 and, for volatile pool devices, as
+E2 in 01-findings-driver.txt section 4. Fixed in the working tree
+(uncommitted), unit tested; not verified on the cluster.
+
+D/ = cmd/plugins/dra-driver-cxl/, M/ = pkg/cxl/memctl/,
+K/ = k8s.io/kubernetes v1.36.4 pkg/kubelet/, R/ = /tmp/p13-pexec/.
+Line numbers of HEAD (1178bf032) unless "new".
+
+========================================================================
+1. SUMMARY
+
+The pool driver (cxl-pool.nri.io) did all the device work of a Prepare
+(memdev enable, region, fsdax namespace, node mount, lease bind, fence
+and online memory, lend) before it saved the claim in
+preparedPoolClaims.json. A plugin killed in between restarted without
+any trace of the claim. When the claim was released before kubelet
+prepared it again (pod deleted, lease put), kubelet unprepared it, the
+plugin answered nil for a claim it did not know, the claim was
+deallocated and the pool controller detached the device with the region
+still on it. The kernel then kept the region hollow (bug-12): no target,
+not committed, its address range of the window held, and cxl
+destroy-region refuses it. The same window exists for volatile devices:
+in mode numa the memory was left online on a node that nothing fenced
+after the restart; in mode dax the region and dax device stayed.
+
+Severity: high. Every SIGKILL, OOM kill, crash or exit on the loss of
+NRI (since bug-01 the plugin exits on every containerd restart) inside
+a pool Prepare (84-207 ms for a persistent device, 2.4 of
+11-findings-persistent.txt) leaks a region when the claim goes away
+before kubelet's retry (71-90 s). Then bug-12 stops the node's
+ResourceSlice updates and any start of the plugin; the address range
+stays allocated until a reboot or a manual delete_region; in the test,
+pool-vm-reset restarts the VM (it counts regions).
+
+========================================================================
+2. REPRODUCTION
+
+The executor's steps (test90):
+a) run 6: driver-kill-at vm1 region; create pfsd-c@vm1#0 (a static
+   claim of class cxl-pool-persistent, mode fs, access direct); the
+   watcher kills the plugin 6.1 s later, at region1 (stateChanged
+   false); delete 2 s later, before kubelet's retry.
+b) run 3: driver-kill-at vm2 bind; lease-get plse@vm2#0 pfd (an fs
+   lease); the killed plugin had logged "prepared c-pmem0 ... region1
+   ... mount" and "lease 3a2c8f5d: bound ..." (20:28:01.31); lease-put
+   14 s later.
+In general: driver-kill-at VM region|ns|mount|bind, then delete (a
+static claim) or lease-put (a lease) before kubelet prepares the claim
+again. Volatile: SIGKILL the plugin 0.5-2 s into the Prepare of a numa
+or dax pool claim, delete the pod.
+
+========================================================================
+3. EVIDENCE
+
+- R/evidence-s1/vm1-state.txt (21:11:29, run 6): region1 commit 0, mode
+  pmem, resource 0x850000000, size 0x10000000, target0 "", no nvdimm
+  region, decoders_committed 0 on every port, cxl list empty, pool state
+  {}. The restarted plugin at 21:09:29: "discovered CXL region device:
+  ... region1 ... Targets:[decoder6.0] ... Enabled:false", "ignoring
+  region device "region1": region is disabled" (the region was still on
+  mem0), and after the detach, 21:09:48: "rescanAndPublish: failed to
+  detect devices: ... region1/target0" (bug-12). kubelet:
+  NodeUnprepareResources Unavailable while the plugin restarted, then
+  ok. R/evidence-s1/vm1-cleanup.txt: "region1 under decoder0.1 /
+  deleted (rc=0)".
+- R/evidence-bind/vm2-state.txt (20:31:33, run 3): region1 hollow
+  (resource 0x890000000), pool state {}, broker {"claims":{},
+  "leases":{}}, no nvdimm region, no /dev/pmem*; dmesg: erofs mounted on
+  pmem1 (365648), pciehp power off (365664-365670, the detach).
+  R/evidence-bind/vm2-cleanup.txt: cxl destroy-region fails
+  ("cxl_region_get_target_decoder: region1: error locating decoder for
+  target0", "No such device or address"), delete_region rc=0.
+- The logs of the plugins: R/runs/run6-out, R/runs/run3-out
+  (nri-dra-driver-cxl.vm*.log), quoted in 04-status-EXEC.txt 14.7.
+
+========================================================================
+4. ROOT CAUSE
+
+- D/pool.go:497-558 (prepareClaim): prepareDevice (D/pool.go:693-755:
+  waitMemdev, CreateRegion :719/:733, Fence and Online :738-739, or
+  preparePersistent, D/pool_persistent.go:107-148: CreatePmemRegion
+  :118, CreateFsdaxNamespace :132, ensureNodeMount :143),
+  bindLeaseMounts :537 and lender.lend :547 run before
+  p.prepared[uid] = pc and p.sync() (:559-560). Nothing on disk names
+  the claim before that save.
+- D/pool.go:252-276 newPoolDriver: load restores the saved claims;
+  restoreMounts (D/pool_persistent.go:703-771) unmounts the node mounts
+  and lease binds of no prepared claim; nothing looks at regions.
+- D/pool.go:785-789 unprepareClaim: a claim that is not prepared is not
+  an error, nothing is released.
+- kubelet adds the claim to its checkpointed claim info cache before it
+  calls NodePrepareResources (K/cm/dra/manager.go:345, :400) and calls
+  NodeUnprepareResources for every cached claim of a pod that goes
+  (:630, :679), also when its Prepare failed: the Unprepare does come,
+  and was answered wrongly.
+- After the successful Unprepare the claim is deallocated and the
+  controller detaches the device; the kernel detaches the endpoint
+  decoder from the region (decode reset, target cleared) and keeps the
+  region (bug-12).
+- Volatile: the node of numa memory onlined by the cut Prepare is not
+  fenced after the restart (preparedNodes, D/fence.go:154, has the nodes
+  of prepared claims only): claim-less containers get it.
+
+========================================================================
+5. THE FIX
+
+Design: a record of the claim written before a device is touched, and
+released by the claim's own Unprepare. Not chosen: a sweep of the pool
+regions at start. It would have to know which regions a claim that
+kubelet will prepare again still needs (allocated to the node, not
+prepared yet: the API and the claim status), which serials are pool
+devices and never local memdevs (poolSerials.json can be lost), and it
+would destroy regions that the retry creates again. The record names
+exactly the serials that this plugin touched for one claim, and kubelet
+guarantees either an Unprepare or a Prepare again of that claim
+(section 4).
+
+a) preparingPoolClaims.json next to the state file (D/pool.go
+   poolPreparingFileName :63 new, preparingPoolClaim :249 new; a
+   separate file so that preparedPoolClaims.json keeps its meaning, the
+   prepared claims, for the oracle and the kill-at watcher).
+   notePreparing (:733 new), called by prepareClaim right before a
+   device is touched (:553 new), records the claim name, the device
+   (result index, serial, shared, size, mode, read-only, persistent,
+   access, path) and the lend of a companion claim, and saves the file
+   atomically (writeJSONFile: tmp, fsync, rename, fsync of the
+   directory). A save error fails the Prepare before the device is
+   touched. A device of the same result recorded by an earlier Prepare
+   of the claim is replaced, the others stay.
+b) The record is forgotten (forgetPreparing :779 new) when the claim is
+   saved as prepared (:635 new; a crash between the two saves leaves
+   both, and prepared wins at start), or when the rollback of a failed
+   Prepare released everything (:725 new). A rollback that could not (a
+   holder, a busy mount) keeps it, so that the claim's Unprepare or its
+   next Prepare releases the rest (this also covers S13 of
+   11-findings-persistent.txt).
+c) Start (loadPreparing :807 new, from newPoolDriver :312 new): the
+   record of a prepared claim is dropped; so is one none of whose
+   memdevs is on the node (nothing can be left on them). The others are
+   logged ("claim N (uid): its Prepare did not finish (the plugin
+   stopped in it): devices 0x... may have a region, a namespace or
+   online memory; its Unprepare releases them, its Prepare again reuses
+   them"); the NUMA node of a device in mode numa is read from sysfs
+   (regionNode :857 new) and fenced at start (numaNodes :390,
+   updateSerials :411); their serials are serials of the pool driver
+   (Serials, for the cxl.nri.io publisher). Their node mounts and lease
+   binds are unmounted by restoreMounts as before (no prepared claim
+   wants them). A file that cannot be parsed is logged and taken as
+   empty (the old behaviour), it does not stop the start.
+d) Unprepare of a claim that is not prepared (unprepareClaim :1113 new
+   -> unprepareUnfinished :936 new), with a record: for a companion
+   claim the broker is told that it is releasing, the nodes that the
+   cut Prepare may have lent are revoked before any memory goes offline
+   (revokeUnfinished :875 new: the nodes found at start) and its lease
+   bind is unmounted (unfinishedLend :891 new: <fsDir>/<name>). Then
+   releaseDevices (D/pool_persistent.go:326 new) with unfinishedDevices
+   (D/pool.go:908 new): the block device of a persistent device is that
+   of its region now (currentBlockDevice, D/pool_persistent.go:394
+   new), for the holder wait; the node mount at its path is unmounted
+   only when it is the erofs of that block device for its access
+   (another mount there is never touched). The memdev is released as
+   for a prepared claim (offline, disable-region, destroy-region,
+   disable-memdev), then the hollow regions are deleted (bug-12). An
+   error fails the Unprepare (kubelet retries); success forgets the
+   record. Without a record: nil, as before.
+e) A Prepare again after the restart (pod not deleted): the region is
+   reused as before (M/memctl.go:946-949, M/pmem.go:365-370); the
+   record is replaced and forgotten when the claim is prepared. A
+   Prepare again that fails releases with its rollback also what the
+   earlier Prepare touched for its other results.
+f) Never touched: local memdevs (a record has only serials of the
+   claim's pool status data); a device that another prepared claim uses
+   (preparedDevice, as for every release); a block device that is held
+   (waitNoHolder; the requester of an fs lease may hold the bind, a
+   stale bind then, D/pool_persistent.go:683-696). An unfinished claim
+   has no CDI device: no container of it runs.
+
+Left: a Prepare killed inside cxl create-region, before the tool set
+the target, leaves a hollow region that the memdev does not list: it is
+deleted after the release of the unfinished claim (bug-12). A claim
+whose device was detached before its Unprepare (a forced deletion): its
+hollow region has no recorded name when its Prepare did not finish; the
+node scan reports it (bug-12).
+
+Docs: docs/memory/cxl/pool.md (Ordering and failure semantics),
+docs/memory/cxl/usage.md (Files on the node).
+
+========================================================================
+6. TESTS
+
+D/pool_unfinished_test.go (new). cutPrepare kills the plugin where the
+fakes say: after a command (fakePoolSys.cutAfter), a mount
+(fakeMounter.cutAt), a sysfs write or a lend; nothing after it runs
+(a panic), then a new plugin starts on the same files and sysfs.
+- TestPoolCutPersistentPrepare: a static fs claim cut after cxl
+  create-region, after the node mount, and with that mount busy at
+  start: in the preparing file, not in the state file, not published,
+  the node mount of no claim unmounted at start; the Unprepare releases
+  (disable-region, destroy-region, disable-memdev; with the busy mount
+  it fails until the mount is free); the Unprepare again and a restart
+  find nothing.
+- TestPoolCutPrepareRetry: fs, numa and dax cut, restart, Prepare again:
+  one create-region (reused), prepared, no record, also after another
+  restart; the Unprepare releases.
+- TestPoolCutPrepareFailedRetry: the Prepare again fails before it
+  reaches the device: its rollback releases the region of the cut one.
+- TestPoolCutVolatilePrepare: numa cut while the memory goes online
+  (node 2 fenced at start, no results), dax cut after device_dax: the
+  Unprepare offlines and releases.
+- TestPoolCutCompanionPrepare: a numa lease cut after the lend: the
+  Unprepare revokes node 2 while the memory is still online, then
+  releases; an fs lease cut after the bind (run 3): the bind is
+  unmounted at start, the Unprepare releases.
+- TestPoolCutCreateRegion (bug-12): cut inside cxl create-region with a
+  hollow region1 under decoder0.0: the Unprepare disables mem0 and
+  deletes region1 through delete_region.
+- TestPoolPreparingSaveFails: no device touched when the record cannot
+  be saved. TestPoolPreparingLoad: the records of a prepared claim and
+  of a claim without a memdev are dropped, an unparsable file is empty.
+Changed: wantClean checks the preparing claims and file too (every pool
+test); TestPoolPersistentSyncFailure and TestPoolLeaseBindSyncFailure
+fail only the save of the state file (its tmp file is a directory,
+instead of a read-only directory; no skip as root);
+TestPoolPersistentForeignNodeMount, TestPoolLeaseBindErrors,
+TestPoolLeaseStaleBinds: the claim of a rollback stopped by a holder is
+kept until kubelet's Unprepare, which releases or finds nothing.
+Mutations, each failing tests: the nil Unprepare of HEAD; no record
+before the touch; no revoke; no node at start; a rollback that never
+forgets.
+gofmt, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... -skip TestMemdevSettings: ok. golangci-lint: only the
+old errcheck findings of M/probe.go.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER
+
+- Runs 6 and 3 again: driver-kill-at vm1 region, create pfsd-c@vm1#0,
+  delete before the retry; driver-kill-at vm2 bind, lease-get plse@vm2#0
+  pfd, lease-put; and the markers ns and mount. The restarted plugin
+  logs "its Prepare did not finish", then "unpreparing claim ..., whose
+  Prepare did not finish: releasing devices 0x...", "released memN"; no
+  region on the VM after the detach (ls /sys/bus/cxl/devices), every
+  decoders_committed 0, preparingPoolClaims.json {} after the settle;
+  the device attaches to another VM.
+- The same with kubelet's retry instead of the delete: prepared, one
+  create-region in the log (reused).
+- A numa pool claim killed in its Prepare: "fencing CXL nodes N of
+  prepared claims" at start, the memory offline after the Unprepare.
+- The oracle: preparedPoolClaims.json and the kill-at watcher's
+  stateChanged are unchanged; the new file is
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json.
+  The VM boot cleanup of dra.source.sh (the rm of
+  preparedPoolClaims.json, :557) should remove it too (the plugin drops
+  a record whose memdev is not on the node anyway).
+
+========================================================================
+8. STATUS
+
+Fixed in the working tree, not committed: D/pool.go,
+D/pool_persistent.go, D/pool_unfinished_test.go (new), D/pool_test.go,
+D/pool_persistent_test.go; docs/memory/cxl/pool.md, usage.md. Together
+with bug-12 (pkg/cxl, M/decoders.go, D/node_state.go) and bug-13
+(D/mount.go). No image built, no cluster run.
+
+========================================================================
+9. FOLLOW-UP AFTER REVIEW (05-review-DRV3.txt G1-G8)
+
+Replaces 5 "Left" and corrects 5d. A Prepare killed inside cxl
+create-region (after the region got its size, before its target) left
+a hollow region that the memdev does not list; it was deleted only by
+a sweep of the root decoder at the claim's Unprepare or a rollback, not
+when kubelet prepared the claim again (the normal case), and the sweep
+took any hollow region under the decoder (in the e2e VMs that also
+covers the local memdev).
+- The name of a new region is recorded before the tool runs: memctl
+  reads it from the root decoder's create_ram_region or
+  create_pmem_region under a lock of the process that every region
+  creation takes (pool driver and local allocator), and the pool
+  driver saves it in the claim's record (Regions), and replaces it by
+  the name the tool created if they differ. The recorded regions are
+  deleted when hollow: after a Prepare again of the claim (its own
+  region kept), at the Unprepare of the unfinished claim (also when the
+  memdev is gone), at a rollback (which keeps the record if a deletion
+  failed). No other hollow region is ever deleted; the sweep is gone.
+- DeleteHollowRegion takes the creation lock instead of waiting 1 s,
+  and refuses while memory blocks of the region's range are online.
+- 5d: an Unprepare that would revoke lent nodes before the lender is
+  set up (the first retry after a restart can come before NRI) now
+  fails and kubelet retries; with leases disabled the lenders are set
+  up empty at start. The record is forgotten only after the file
+  without it was saved; the Unprepare of a prepared claim forgets a
+  record that its Prepare could not.
+- Tests: TestPoolCutCreateRegion (unprepare, prepare again, a foreign
+  hollow region kept), TestPoolRollbackKeepsForeignHollowRegion,
+  TestPoolRegionNoteReplaced, TestPoolForgetSaveFails, the numa case of
+  TestPoolCutCompanionPrepare, M/TestCreateRegionNoted.
+To verify in addition: a driver-kill-at region while cxl create-region
+runs (rare: the watcher fires 2 ms after the region appears) followed by
+kubelet's retry: "deleted hollow regionN" after "prepared", no region
+left after the Unprepare.
+Files of the follow-up, not committed: D/pool.go, D/pool_persistent.go,
+D/lending.go, D/driver.go, D/node_state.go, D/pool_test.go,
+D/pool_unfinished_test.go, pkg/cxl/{devices.go,types.go,
+devices_test.go}, pkg/cxl/memctl/{memctl.go,pmem.go,decoders.go,
+decoders_test.go}, docs/memory/cxl/pool.md.

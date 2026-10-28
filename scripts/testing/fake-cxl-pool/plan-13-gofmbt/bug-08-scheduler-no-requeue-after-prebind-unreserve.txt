@@ -54,3 +54,14 @@ Status
 Upstream (Kubernetes); the model predicts it (A19). Possible upstream
 fix: requeue pods rejected by the DRA plugin when Unreserve releases
 in-flight devices (or register for AssignedPodDelete).
+
+Fix (2026-10-27)
+----------------
+kube-scheduler fix: DynamicResources registers AssignedPod/Delete with
+a queueing hint, so pods it rejected are requeued when Unreserve
+releases a forgotten pod's in-flight allocation (10-scheduler-requeue-
+fix.txt). Commit 4de1561b97c on branch 5jr-dra-requeue of
+~/github.com/kubernetes/kubernetes (release-1.37 base). Deployed on vm2
+(kube-scheduler v1.37.1-dra-requeue.2). Verified by A/B replay of D8
+with --stall-window=30s: 3.5 s with the fix, still stalled after 33 s
+without. Status: FIXED locally, not proposed upstream yet.

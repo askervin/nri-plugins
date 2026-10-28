@@ -97,7 +97,14 @@ type companionLender struct {
 	mu     sync.Mutex
 	nodes  nodeLender // nil: NRI not connected
 	hooks  leaseHooks // nil: lending disabled
+	// isSet is true once set was called: before that, while the plugin
+	// starts, NRI may connect yet, and lent nodes are not revoked.
+	isSet bool
 }
+
+// errLendingStarting is the error of a revoke before the lender is set up:
+// kubelet retries the Unprepare.
+var errLendingStarting = errors.New("lending is not set up yet (the plugin is starting)")
 
 // newCompanionLender returns a companionLender for the companion claims of
 // driver, with lending disabled until set is called.
@@ -116,6 +123,7 @@ func (c *companionLender) set(nodes nodeLender, hooks leaseHooks) {
 	defer c.mu.Unlock()
 	c.nodes = nodes
 	c.hooks = hooks
+	c.isSet = true
 }
 
 // get returns the node lender and the hooks.
@@ -173,10 +181,15 @@ func (c *companionLender) lend(ctx context.Context, rec *lendRecord, devs []lent
 // revoke revokes the lent nodes of a lend for its lease: a node that
 // another lease of the container holds stays lent. Without NRI the nodes
 // cannot be revoked: the release then migrates the pages anyway, but the
-// stale node stays in the container's cpuset.mems.
+// stale node stays in the container's cpuset.mems. Before the lender is
+// set up (the first Unprepare of a restarted plugin can come before NRI
+// connects) it is an error: the caller fails, kubelet retries.
 func (c *companionLender) revoke(ctx context.Context, rec *lendRecord, claimName string) error {
 	if rec == nil || len(rec.Nodes) == 0 {
 		return nil
+	}
+	if !c.ready() {
+		return fmt.Errorf("lease %s: %w: nodes %v of %s/%s/%s not revoked yet", rec.Lease, errLendingStarting, rec.Nodes, rec.Pod.Namespace, rec.Pod.Name, rec.Container)
 	}
 	nodes, _ := c.get()
 	if nodes == nil {
@@ -228,6 +241,16 @@ func (c *companionLender) releasing(id string) {
 	if _, hooks := c.get(); hooks != nil {
 		hooks.OnReleasing(id)
 	}
+}
+
+// ready tells whether the lender has been set up (set). A nil lender is.
+func (c *companionLender) ready() bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.isSet
 }
 
 // name returns the driver name for logs.

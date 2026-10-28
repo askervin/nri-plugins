@@ -13,7 +13,7 @@ the executor (code.var.sh, mbt.source.sh, mbt-observe.py) without the
 model, and is a smoke test of the cluster: MBT_STUB=1 ./run_tests.sh ...
 
 Usage:
-  mbt-stub.py online [--stub-steps FILE | --replay FILE]
+  mbt-stub.py online [--stub-steps FILE | --replay FILE] [--stub-list all|volatile|persistent]
                      [--settle-timeout SECONDS] [--out DIR] [--FLAG VALUE...]
       The on-line generator: send the steps, answer done with ok and
       observe with wait or ok, or fail after the settle timeout (default
@@ -28,8 +28,28 @@ Usage:
       (done N STATUS JSON: always ok; observe N JSON: quiet or not).
 
 The steps: --replay FILE (an mbt-steps.txt), --stub-steps FILE, else
-$MBT_STUB_STEPS (a file), else the built-in list below, one action per
-line ("#" comments).
+$MBT_STUB_STEPS (a file), else the built-in lists below (--stub-list or
+$MBT_STUB_LIST: volatile, persistent, or all, the default: both), one
+action per line ("#" comments).
+
+A step line may end with " => CHECK,CHECK..." (the stub's own checks, not
+sent to the executor). For an action: status=N, status!=N, text=VALUE (the
+"text" of its done JSON; $W0 and $W1 are the tokens last written to
+c-pmem0 and c-pmem1 by a pwrite that succeeded: "mbt-<step>", "" after
+junk), fired (the last armed driver-kill-at fired), killat=REASON (its done
+line reports the watcher done with a reason starting with REASON). A failed
+check fails the
+step. For a settle: detached=DEV (no attachment of DEV in any pool),
+pdev=DEV:FIELD=VALUE (a field of pdevs DEV, VALUE $W0/$W1 too): the
+settle waits for them; companions=ready (every companion pod Running and
+Ready); pmem=none (no pmem region in any VM); restarts=VM:N (the driver
+pod of VM has N restarts); until=fired ends the settle as soon as a
+driver-kill-at fired, quiet or not (to act before kubelet retries the
+Prepare). Every settle also waits until the pdevs of a device
+written by a pwrite that succeeded have its token (token, raw, erofs), a
+pbad pod is Refused (Pending with a Warning event that its block claim of
+a share is refused), what a driver-kill-at watcher killed has restarted,
+and no VM logged a kernel BUG/Oops/WARNING (kernel.badTotal).
 """
 
 import json
@@ -106,7 +126,131 @@ delete xdax-c@any#0
 settle
 """
 
+# The persistent devices (A22-A27): every new verb and kind. The device's
+# regions on a VM's hb1 decoder stack are released in the reverse order
+# of their creation (no holes, A9); a writer runs only while no share is
+# held. Each driver-kill-at marker hits one persistent Prepare.
+PSTEPS = """
+# 1. the writers of the fresh devices: c-pmem0 block on vm0 (its fsdax
+# namespace created), c-pmem1 block on vm2
+create pwr-c@vm0#0
+create xpb-c@vm2#0
+create plse@vm1#0
+create plse@vm2#0
+settle
+pread pwr-c@vm0#0 => status=0,text=
+pwrite pwr-c@vm0#0 img => status=0
+pwrite xpb-c@vm2#0 img => status=0
+pread pwr-c@vm0#0 => status=0,text=$W0
+pread xpb-c@vm2#0 => status=0,text=$W1
+# hold is for fs kinds only
+hold pwr-c@vm0#0 => status=2
+settle => pdev=c-pmem0:lsa=labels,pdev=c-pmem1:lsa=labels
+delete pwr-c@vm0#0
+delete xpb-c@vm2#0
+settle => detached=c-pmem1
+# the exclusive device's erofs, direct, on vm0
+create xpf-c@vm0#0
+settle
+pread xpf-c@vm0#0 => status=0,text=$W1
+pwrite xpf-c@vm0#0 img => status!=0
+delete xpf-c@vm0#0
+settle
+# 2. readers of c-pmem0: direct (vm1), cached (vm2), read-only block (vm0),
+# a refused block claim of a share (vm1), fs leases direct and cached
+create pfsd-c@vm1#0
+create pfsc-c@vm2#0
+create pbro-c@vm0#0
+create pbad-c@vm1#0
+settle
+pread pfsd-c@vm1#0 => status=0,text=$W0
+pread pfsc-c@vm2#0 => status=0,text=$W0
+pread pbro-c@vm0#0 => status=0,text=$W0
+pwrite pbro-c@vm0#0 img => status!=0
+pwrite pfsd-c@vm1#0 junk => status!=0
+pread pbad-c@vm1#0 => status!=0
+lease-get plse@vm2#0 pfd => status=0
+lease-get plse@vm1#0 pfc => status=0
+settle
+pread plse@vm2#0 => status=0,text=$W0
+pread plse@vm1#0 => status=0,text=$W0
+pwrite plse@vm2#0 img => status!=0
+# a hold during lease-put: the release waits, the lease stays Releasing
+# and readable until unhold
+hold plse@vm2#0 => status=0
+lease-put plse@vm2#0 => status!=0
+pread plse@vm2#0 => status=0,text=$W0
+unhold plse@vm2#0 => status=0
+settle
+# a hold of a claim reader, ended by a crash; the bind comes back
+hold pfsd-c@vm1#0 => status=0
+crash pfsd-c@vm1#0
+settle
+pread pfsd-c@vm1#0 => status=0,text=$W0
+# a read-only block lease; its fd refuses writes
+lease-put plse@vm1#0 => status=0
+lease-get plse@vm1#0 pbr => status=0
+settle
+pread plse@vm1#0 => status=0,text=$W0
+pwrite plse@vm1#0 img => status!=0
+lease-put plse@vm1#0 => status=0
+delete pfsd-c@vm1#0
+delete pfsc-c@vm2#0
+delete pbro-c@vm0#0
+delete pbad-c@vm1#0
+settle
+# 3. a block writer lease (the whole device), then pwipe: fresh again
+lease-get plse@vm2#0 pbw => status=0
+settle
+pwrite plse@vm2#0 img => status=0
+pread plse@vm2#0 => status=0,text=$W0
+lease-put plse@vm2#0 => status=0
+settle => detached=c-pmem0,pdev=c-pmem0:token=$W0
+pwipe c c-pmem0 => status=0
+pwipe c c-pmem9 => status=2
+settle => pdev=c-pmem0:lsa=zero,pdev=c-pmem0:pfn=false
+# a new writer creates the namespace again
+create pwr-c@vm1#0
+settle => pdev=c-pmem0:lsa=labels
+pwrite pwr-c@vm1#0 img => status=0
+delete pwr-c@vm1#0
+settle => detached=c-pmem0,pmem=none
+# 4. driver-kill-at: each marker of a persistent Prepare
+driver-kill-at vm1 region => status=0
+create pfsd-c@vm1#0
+settle
+driver-kill-at vm0 ns => status=0
+create pbro-c@vm0#0
+settle
+driver-kill-at vm1 mount => status=0
+create pfsc-c@vm1#0
+settle
+driver-kill-at vm2 bind => status=0
+lease-get plse@vm2#0 pfd
+# kubelet retries the companion's Prepare: a release before that would
+# leak its region (S1, 04-status-EXEC 14)
+settle => companions=ready
+pread pfsd-c@vm1#0 => status=0,text=$W0
+pread pbro-c@vm0#0 => status=0,text=$W0
+pread pfsc-c@vm1#0 => status=0,text=$W0
+pread plse@vm2#0
+# the requester of a Ready fs lease crashes: its new container sees the bind
+crash plse@vm2#0
+settle
+pread plse@vm2#0
+lease-put plse@vm2#0
+delete pfsd-c@vm1#0
+delete pbro-c@vm0#0
+delete pfsc-c@vm1#0
+delete plse@vm1#0
+delete plse@vm2#0
+settle => detached=c-pmem0,pmem=none
+"""
+
 TRANSIENT_OK = ("attached",)
+# A pbad claim (a share with mode block, writable): the driver refuses its
+# Prepare with this (D/pool_persistent.go, Doc/usage.md).
+PBAD_REFUSAL = "writable only exclusively"
 
 
 def log(*args):
@@ -143,9 +287,121 @@ def seconds(text, default):
 
 
 def steps(opts):
+    """The steps: (action, checks) pairs."""
     path = opts.get("replay") or opts.get("stub-steps") or os.environ.get("MBT_STUB_STEPS")
-    text = open(path).read() if path else STEPS
-    return [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")]
+    if path:
+        text = open(path).read()
+    else:
+        which = opts.get("stub-list") or os.environ.get("MBT_STUB_LIST") or "all"
+        text = {"volatile": STEPS, "persistent": PSTEPS, "all": STEPS + PSTEPS}.get(which)
+        if text is None:
+            sys.exit("mbt-stub: --stub-list %r: volatile, persistent or all" % which)
+    out = []
+    for l in text.splitlines():
+        l = l.strip()
+        if not l or l.startswith("#"):
+            continue
+        action, _, checks = l.partition(" => ")
+        out.append((action.strip(), [c.strip() for c in checks.split(",") if c.strip()]))
+    return out
+
+
+def device_of(action, lease_modes):
+    """The persistent device that a pwrite writes: c-pmem0 for pwr-c and a
+    plse with a pbw lease, c-pmem1 for xpb-c, else None."""
+    words = action.split()
+    slot = words[1] if len(words) > 1 else ""
+    kind = slot.split("@")[0]
+    if kind == "pwr-c" or (kind == "plse" and lease_modes.get(slot) == "pbw"):
+        return "c-pmem0"
+    if kind == "xpb-c":
+        return "c-pmem1"
+    return None
+
+
+def subst(value, tokens):
+    return value.replace("$W0", tokens.get("c-pmem0", "")).replace("$W1", tokens.get("c-pmem1", ""))
+
+
+def check_done(checks, status, result, tokens, fired):
+    """What is wrong with a done line by the checks of its step."""
+    why = []
+    for c in checks:
+        if c == "fired":
+            if not fired:
+                why.append("no driver-kill-at fired")
+            continue
+        if c.startswith("killat="):
+            # killat=REASON: the done line reports the watcher done, with a
+            # reason that starts with REASON (fired false unless "fired")
+            k = (result or {}).get("killAt") or {}
+            want = c[len("killat="):]
+            if not k.get("done") or not str(k.get("reason") or "").startswith(want) or \
+                    bool(k.get("fired")) != (want == "fired"):
+                why.append("killAt %s, want done, reason %s" % (json.dumps(k, sort_keys=True)[:200], want))
+            continue
+        key, op, want = c.partition("!=") if "!=" in c else c.partition("=")
+        want = subst(want, tokens)
+        if key == "status":
+            ok = (str(status) == want) if op == "=" else (str(status) != want)
+            if not ok:
+                why.append("status %s, want %s%s" % (status, "" if op == "=" else "not ", want))
+        elif key == "text":
+            got = (result or {}).get("text")
+            if got != want:
+                why.append("text %r, want %r" % (got, want))
+        else:
+            why.append("unknown check %r" % c)
+    return why
+
+
+def settle_checks(obs, checks, tokens, written):
+    """Why the settle checks of a step and the pdevs of the written
+    devices do not hold yet."""
+    why = []
+    pdevs = obs.get("pdevs") or {}
+    for dev, tok in sorted(written.items()):
+        p = pdevs.get(dev)
+        want = {"token": tok or None, "raw": tok, "erofs": bool(tok)}
+        if p is None or any(p.get(k) != v for k, v in want.items()):
+            why.append("pdevs %s: %s, want %s" % (dev, p and {k: p.get(k) for k in want}, want))
+    for c in checks:
+        key, _, val = c.partition("=")
+        if key == "detached":
+            for pool, atts in sorted((obs.get("attachments") or {}).items()):
+                for a in atts or []:
+                    if a.get("device") == val:
+                        why.append("%s attached to %s (%s)" % (val, a.get("host"), a.get("state")))
+        elif key == "until":
+            continue
+        elif key == "restarts":
+            # restarts=VM:N: the driver pod of VM has N restarts
+            vm, _, n = val.partition(":")
+            got = ((obs.get("drivers") or {}).get(vm) or {}).get("restarts")
+            if str(got) != n:
+                why.append("driver %s: %s restarts, want %s" % (vm, got, n))
+        elif key == "pmem":
+            # pmem=none: no CXL region of mode pmem in any VM (a leaked one
+            # stays without targets after its memdev is detached)
+            for vm, v in sorted((obs.get("vms") or {}).items()):
+                for r in (v or {}).get("pmem") or []:
+                    why.append("%s: pmem %s (serials %s, nd %s)" % (vm, r.get("region"), r.get("serials"), r.get("ndRegion")))
+        elif key == "companions":
+            # every companion pod Running and Ready (a lease whose
+            # companion's Prepare was retried after a driver kill)
+            for c in obs.get("companions") or []:
+                if c.get("phase") != "Running" or not c.get("ready"):
+                    why.append("companion %s %s%s" % (c.get("name"), c.get("phase"), "" if c.get("ready") else " not ready"))
+        elif key == "pdev":
+            dev, _, fv = val.partition(":")
+            field, _, want = fv.partition("=")
+            want = subst(want, tokens)
+            got = (pdevs.get(dev) or {}).get(field)
+            if str(got).lower() != want.lower() and not (got is None and want == ""):
+                why.append("pdevs %s %s %r, want %r" % (dev, field, got, want))
+        else:
+            why.append("unknown settle check %r" % c)
+    return why
 
 
 def unquiet(obs, controllers=None, restarts=None):
@@ -168,6 +424,10 @@ def unquiet(obs, controllers=None, restarts=None):
             why.append("%s deleting" % p["slot"])
         elif p.get("phase") == "Pending" and p.get("unschedulable"):
             continue  # no node can have it: Pending by design
+        elif (p.get("slot") or "").startswith("pbad-") and p.get("phase") == "Pending":
+            # Refused (A25): its Prepare fails at every retry.
+            if not any(PBAD_REFUSAL in (e.get("message") or "") for e in p.get("events") or []):
+                why.append("%s Pending, not refused yet" % p["slot"])
         elif p.get("phase") != "Running" or not p.get("ready"):
             why.append("%s %s%s" % (p["slot"], p.get("phase"), " " + p["waiting"] if p.get("waiting") else ""))
     # A companion may stay Pending: a lease that cannot be Ready.
@@ -193,6 +453,11 @@ def unquiet(obs, controllers=None, restarts=None):
             continue
         for m in v.get("missing") or []:
             why.append("%s: %s/%s %s" % (vm, m.get("pod"), m.get("container"), m.get("reason")))
+        k = v.get("kernel")
+        if k is None:
+            why.append("%s: no kernel part" % vm)
+        elif k.get("badTotal"):
+            why.append("%s: kernel: %d BUG/Oops/WARNING lines: %s" % (vm, k["badTotal"], (k.get("badFirst") or [""])[0]))
         log = v.get("driverLog")
         if not log or not log.get("container"):
             why.append("%s: no running driver container" % vm)
@@ -234,9 +499,31 @@ def online(opts):
             sys.exit(1)
         return line.rstrip("\n")
 
-    seen = {}      # slot or "driver VM" -> restarts at the last quiet observation
-    restarts = {}  # what must restart before the next settle is quiet
-    for n, action in enumerate(todo, 1):
+    def fail(n, msg):
+        with open(os.path.join(out_dir, "mbt-fail.txt"), "w") as f:
+            f.write("step %d: %s\n" % (n, msg))
+        print("fail %d %s" % (n, msg), flush=True)
+        recv_rest()
+
+    seen = {}         # slot or "driver VM" -> restarts at the last quiet observation
+    restarts = {}     # what must restart before the next settle is quiet
+    tokens = {}       # persistent device -> the token last written ($W0, $W1)
+    written = {}      # persistent device -> the token its pdevs must show
+    lease_modes = {}  # plse slot -> the mode of its lease
+    killat = {"vm": None, "fired": False}
+
+    def killat_seen(state):
+        # A23: a driver-kill-at that fired restarts the driver of its VM.
+        if not killat["vm"] or not isinstance(state, dict) or state.get("done") is False:
+            return
+        log("driver-kill-at %s: %s" % (killat["vm"], json.dumps(state, sort_keys=True)[:300]))
+        if state.get("fired"):
+            key = "driver " + killat["vm"]
+            restarts[key] = seen.get(key, 0)
+            killat["fired"] = True
+        killat["vm"] = None
+
+    for n, (action, checks) in enumerate(todo, 1):
         words = action.split()
         if words[0] == "ctrl-kill":
             controllers[words[1]] = False
@@ -255,7 +542,32 @@ def online(opts):
             if parts[:2] != ["done", str(n)]:
                 log("step %d: expected done, got %r" % (n, line[:300]))
                 sys.exit(1)
+            status = int(parts[2]) if len(parts) > 2 and parts[2].lstrip("-").isdigit() else None
+            try:
+                result = json.loads(parts[3]) if len(parts) > 3 else {}
+            except ValueError:
+                result = {}
             log("step %d %s: status %s %s" % (n, action, parts[2], parts[3][:300] if len(parts) > 3 else ""))
+            if words[0] == "driver-kill-at" and status == 0:
+                killat.update(vm=words[1], fired=False)
+            else:
+                killat_seen(result.get("killAt"))
+            if status == 0:
+                if words[0] == "pwrite":
+                    dev = device_of(action, lease_modes)
+                    if dev:
+                        tokens[dev] = written[dev] = "mbt-%d" % n if words[2] == "img" else ""
+                elif words[0] == "pwipe":
+                    tokens[words[2]] = ""
+                    written.pop(words[2], None)
+                elif words[0] == "lease-get" and words[1].startswith("plse@"):
+                    lease_modes[words[1]] = words[2]
+            if words[0] in ("lease-put", "delete"):
+                lease_modes.pop(words[1], None)
+            why = check_done(checks, status, result, tokens, killat["fired"])
+            if why:
+                fail(n, "%s: %s" % (action, "; ".join(why)))
+                return
             print("ok %d" % n, flush=True)
             continue
         t0 = time.monotonic()
@@ -266,7 +578,17 @@ def online(opts):
                 log("step %d: expected observe, got %r" % (n, line[:300]))
                 sys.exit(1)
             obs = json.loads(parts[2])
-            why = unquiet(obs, controllers, restarts)
+            killat_seen(obs.get("killAt"))
+            if "until=fired" in checks:
+                # Not a settle: on as soon as the watcher has fired (to act
+                # in the window before kubelet retries the Prepare).
+                why = [] if killat["fired"] else ["driver-kill-at has not fired"]
+                if not why:
+                    log("step %d: driver-kill-at fired, poll %s" % (n, obs.get("poll")))
+                    print("ok %d" % n, flush=True)
+                    break
+            else:
+                why = unquiet(obs, controllers, restarts) + settle_checks(obs, checks, tokens, written)
             if obs.get("errors"):
                 log("step %d poll %s: errors %s" % (n, obs.get("poll"), obs["errors"]))
             if not why:
@@ -278,10 +600,7 @@ def online(opts):
                 break
             msg = "; ".join(why)
             if time.monotonic() - t0 > timeout:
-                with open(os.path.join(out_dir, "mbt-fail.txt"), "w") as f:
-                    f.write("step %d settle: not quiet in %.0f s: %s\n" % (n, timeout, msg))
-                print("fail %d not quiet in %.0f s: %s" % (n, timeout, msg), flush=True)
-                recv_rest()
+                fail(n, "settle: not quiet in %.0f s: %s" % (timeout, msg))
                 return
             print("wait %d %s" % (n, msg), flush=True)
     print("end mbt-stub: %d steps done" % len(todo), flush=True)
@@ -295,7 +614,7 @@ def recv_rest():
 
 
 def generate(opts):
-    todo = steps(opts)
+    todo = [a for a, _ in steps(opts)]
     print("# code.gen.sh of mbt-stub.py: %d steps" % len(todo))
     for n, action in enumerate(todo, 1):
         print("mbt-step %d %s" % (n, action))

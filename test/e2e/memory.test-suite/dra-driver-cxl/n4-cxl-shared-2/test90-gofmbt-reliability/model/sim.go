@@ -49,6 +49,7 @@ type sim struct {
 	sawEnd, sawFail string
 	failStep        int
 	prev            *State
+	uuidSeq         int
 	// ref, if set, is the independent reference of the pool side
 	// (refpool.go): it decides the pool facts of every observation, and
 	// which outcome of the model's a settle has (simref.go)
@@ -60,6 +61,11 @@ type sim struct {
 func newSim(cfg *Config, seed int64) *sim {
 	s := &sim{cfg: cfg, truth: newState(cfg), rng: rand.New(rand.NewSource(seed)), inspected: map[string]bool{}}
 	for d := range s.phys {
+		if devices[d].Persistent {
+			// (no draw: the random sequences of the volatile tests
+			// stay as they were)
+			continue
+		}
 		s.phys[d] = fmt.Sprintf("junk-%d", s.rng.Intn(1000))
 	}
 	return s
@@ -81,7 +87,7 @@ func (s *sim) do(step int, a Act) *DoneObs {
 		return nil
 	}
 	if s.ref != nil {
-		s.ref.do(a, freesClaim(from, a))
+		s.ref.do(a, refHint{freesClaim: freesClaim(from, a), releasesLease: releasesPLease(from, from.apply(a), int(a.Slot))})
 	}
 	to := from.apply(a)
 	d := &DoneObs{}
@@ -108,7 +114,29 @@ func (s *sim) do(step int, a Act) *DoneObs {
 		s.leaseSeq++
 		id := fmt.Sprintf("L%04d", s.leaseSeq)
 		d.Lease = &id
+		failed := from.killAtBind(int(a.Slot), a.Mode) && s.rng.Intn(2) == 0
+		if failed {
+			// the driver killed at its bind: cxl-request fails, the
+			// lease is released or stays Lending until kubelet's
+			// retry (A29 d, A30); the reference decides which
+			d.Status, d.Lease, d.Stderr = 1, nil, "reading response: EOF"
+			if s.ref != nil && s.rng.Intn(2) == 0 {
+				s.ref.leaseRelease(int(a.Slot))
+			}
+		}
 		to = adoptDone(to, a, d)
+		if failed {
+			// (the simulated SUT knows the lease's id)
+			to = to.clone()
+			to.setLeaseID(int(a.Slot), id)
+		}
+	case VPWrite, VPRead, VLeasePut:
+		s.doPmem(from, to, a, d)
+		to = adoptDone(to, a, d)
+	}
+	if to.PDev != from.PDev {
+		to = to.clone()
+		s.fixPDev(to)
 	}
 	for dev := DevID(0); dev < nDevs; dev++ {
 		switch {
@@ -168,11 +196,17 @@ func (s *sim) resolve(st *State) *State {
 				}
 				ss.Phase = Running
 				if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-					if n.Stacks[si].hasHole() {
+					switch {
+					case n.Stacks[si].hasHole() && sl.Kind != KPBad:
 						ss.Phase = Blocked
-					} else {
+					case ss.Refuse:
+					default:
 						n.Stacks[si].push(key)
 					}
+				}
+				if ss.Refuse && ss.Phase == Running {
+					// its Prepare is refused (A25): no region
+					ss.Phase = Refused
 				}
 			} else {
 				ss.Phase = Attaching
@@ -196,9 +230,12 @@ func (s *sim) resolve(st *State) *State {
 		}
 		if ss.Phase == Either {
 			c := &n.Ctrl[sl.Pool]
-			d := int(sl.Dev) - 2*int(sl.Pool)
+			d := devIndex(sl.Dev)
 			if s.rng.Intn(2) == 0 {
 				ss.Phase = Running
+				if ss.Refuse {
+					ss.Phase = Refused
+				}
 				c.Att[d][ss.Node] = TriYes
 			} else {
 				ss.Phase = Attaching
@@ -218,7 +255,7 @@ func (s *sim) resolve(st *State) *State {
 			n.deriveAtt(p)
 			continue
 		}
-		for d := 0; d < 2; d++ {
+		for d := range poolDevs(p) {
 			for v := VM(0); v < nVMs; v++ {
 				if c.Att[d][v] == TriMaybe {
 					if s.rng.Intn(2) == 0 {
@@ -238,6 +275,13 @@ func (s *sim) resolve(st *State) *State {
 		}
 	}
 	n.growFence()
+	s.fixPDev(n)
+	// the simulated watcher of driver-kill-at fires in the window after
+	// it was armed or never (the model keeps it armed until the oracle
+	// disarms it, 70 s)
+	for v := range n.Drv {
+		n.Drv[v].KillAt, n.Drv[v].KillAtAt = 0, 0
+	}
 	return n
 }
 
@@ -280,6 +324,12 @@ func (s *sim) observe(step, poll int) *Observation {
 			p.Phase, p.Unschedulable = "Pending", true
 		case Attaching:
 			p.Phase = "Pending"
+		case Refused:
+			node := ss.Node.String()
+			w := "ContainerCreating"
+			p.Node, p.Phase, p.Waiting = &node, "Pending", &w
+			p.Event = &ObsEvent{Reason: "FailedPrepareDynamicResources", Message: "Failed to prepare dynamic resources: prepare: " + refusedMessage(st, i)}
+			p.Events = []ObsEvent{*p.Event}
 		case Blocked, Unblocking:
 			node := ss.Node.String()
 			w := "ContainerCreating"
@@ -293,7 +343,7 @@ func (s *sim) observe(step, poll int) *Observation {
 			p.Events = []ObsEvent{*p.Event, ev}
 		}
 		if sl.Kind.claimed() {
-			held := ss.Phase == Running || ss.Phase == Attaching || ss.Phase == Blocked || ss.Phase == Unblocking
+			held := ss.Phase == Running || ss.Phase == Attaching || ss.Phase == Blocked || ss.Phase == Unblocking || ss.Phase == Refused
 			c := &ObsClaim{Name: p.Name + "-c0", UID: claimUID(sl, ss.Gen), Allocated: held}
 			if sl.Kind.pooled() && c.Allocated {
 				c.Devices = []ObsClaimDevice{{Driver: "cxl-pool.nri.io", Pool: "pool-" + sl.Pool.String(), Device: devices[sl.Dev].Name}}
@@ -306,22 +356,31 @@ func (s *sim) observe(step, poll int) *Observation {
 			p.Claim = c
 		}
 		o.Pods = append(o.Pods, p)
-		if sl.Kind == KLease && ss.Lease == LeaseHeld {
+		if sl.Kind.leaseKind() && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) {
 			id := st.LeaseIDs[i]
 			req := sl.Name
-			o.Companions = append(o.Companions, ObsCompanion{Name: companionName(id), Node: sl.VM.String(), Phase: "Running", Lease: id, Requester: &req})
+			o.Companions = append(o.Companions, ObsCompanion{Name: companionName(id), Node: sl.VM.String(), Phase: "Running", Lease: id, Requester: &req,
+				Deleting: ss.Lease == LeaseBusy})
 		}
 		if ss.Phase == Running {
 			key := podUID(sl, ss.Gen) + "/" + strconv.Itoa(int(ss.Restarts))
 			if !s.inspected[key] {
 				s.inspected[key] = true
 				in := &ObsInspect{UID: p.UID, Restarts: int(ss.Restarts), Env: s.env(sl, ss)}
-				if sl.Kind == KLease {
+				if sl.Kind.leaseKind() {
 					var ls []ObsLease
-					if ss.Lease == LeaseHeld {
+					switch {
+					case ss.Lease == LeaseHeld && ss.LeaseMode.persistent():
+						ls = append(ls, ObsLease{Lease: st.LeaseIDs[i], State: "Ready", Mode: ss.LeaseMode.String(), Source: "pool"})
+					case ss.Lease == LeaseBusy:
+						ls = append(ls, ObsLease{Lease: st.LeaseIDs[i], State: "Releasing", Mode: ss.LeaseMode.String(), Source: "pool"})
+					case ss.Lease == LeaseHeld:
 						ls = append(ls, ObsLease{Lease: st.LeaseIDs[i], State: "Ready", Mode: ss.LeaseMode.String(), Source: "local"})
 					}
 					in.Leases, _ = json.Marshal(ls)
+				}
+				if sl.Kind.persistent() || sl.Kind == KPlse {
+					s.inspectPmem(st, i, in)
 				}
 				o.Inspect[sl.Name] = in
 			}
@@ -331,10 +390,10 @@ func (s *sim) observe(step, poll int) *Observation {
 		c := &st.Ctrl[p]
 		list := []ObsAttachment{}
 		_, excl := st.desiredAtt(p)
-		for d := 0; d < 2; d++ {
+		for d, dev := range poolDevs(p) {
 			for v := VM(0); v < nVMs; v++ {
 				if c.Att[d][v] == TriYes {
-					list = append(list, ObsAttachment{Device: devices[2*int(p)+d].Name, Host: v.String(), State: "attached",
+					list = append(list, ObsAttachment{Device: devices[dev].Name, Host: v.String(), State: "attached",
 						Exclusive: c.Up && excl[d][v], Owner: "k8s:resourceclaim/x"})
 				}
 			}
@@ -373,6 +432,7 @@ func (s *sim) observe(step, poll int) *Observation {
 		o.VMs[v.String()] = s.observeVM(v)
 		o.Slices[v.String()] = []ObsSliceDev{{Name: "memdev-c100e2e1", Serial: formatSerial(localSerial)}, {Name: "dram"}}
 	}
+	o.PDevs = s.pdevsJSON(st)
 	if s.ref != nil {
 		s.refOverride(o)
 	}
@@ -385,7 +445,10 @@ func (s *sim) env(sl *Slot, ss *SlotState) map[string]string {
 		delete(env, "CXL_CLAIM_"+strings.ReplaceAll(claimUID(sl, ss.Gen), "-", "_")+"_0")
 	}
 	for k, v := range envWant(s.cfg, sl) {
-		if strings.HasSuffix(v, "*") {
+		switch {
+		case v == "/dev/pmem*":
+			v = simBlockdev(sl.Dev)
+		case strings.HasSuffix(v, "*"):
 			v = strings.TrimSuffix(v, "*") + "3.1"
 		}
 		env[k] = v
@@ -409,10 +472,10 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		CDI:     map[string][]string{},
 	}
 	for p := Pool(0); p < nPools; p++ {
-		for d := 0; d < 2; d++ {
+		for d, dv := range poolDevs(p) {
 			if st.Ctrl[p].Att[d][v] == TriYes {
-				dev := devices[2*int(p)+d]
-				ov.Memdevs = append(ov.Memdevs, ObsMemdev{Name: fmt.Sprintf("mem%d", 2+2*int(p)+d), Serial: formatSerial(dev.Serial), Size: dev.Size})
+				dev := devices[dv]
+				ov.Memdevs = append(ov.Memdevs, ObsMemdev{Name: fmt.Sprintf("mem%d", 2+int(dv)), Serial: formatSerial(dev.Serial), Size: dev.Size})
 			}
 		}
 	}
@@ -441,12 +504,21 @@ func (s *sim) observeVM(v VM) *ObsVM {
 			slice(companionUID(id), ss.LeaseMode == ModeNuma)
 			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: "0-1", MemsEffective: "0-1", MemoryHigh: "max"})
 		}
+		if sl.Kind == KPlse && sl.VM == v && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && ss.LeaseMode.persistent() {
+			// the companion's pool claim: prepared, no CDI device
+			id := st.LeaseIDs[i]
+			pool = append(pool, "pool-"+companionUID(id))
+			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: "0-1", MemsEffective: "0-1", MemoryHigh: "max"})
+		}
 		if ss.Phase != Running || ss.Node != v {
 			continue
 		}
 		uid := claimUID(sl, ss.Gen)
 		mems := map[int]bool{0: true, 1: true}
 		switch {
+		case sl.Kind.persistent():
+			pool = append(pool, uid)
+			poolCDI = append(poolCDI, "claim-"+uid+"-0")
 		case sl.Kind.pooled():
 			pool = append(pool, uid)
 			poolCDI = append(poolCDI, "claim-"+uid+"-0")
@@ -464,7 +536,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 			if sl.Kind.numa() {
 				mems[sl.numaNode(cfg)] = true
 			}
-		case sl.Kind == KLease:
+		case sl.Kind.leaseKind():
 			prepared = append(prepared, uid)
 			claimsCDI = append(claimsCDI, "claim-"+uid+"-0")
 			leasesCDI = append(leasesCDI, "lease-"+uid)
@@ -529,6 +601,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	ov.CDI["/etc/cdi/cxl-pool.yaml"] = poolCDI
 	ov.CDI["/etc/cdi/cxl-leases.yaml"] = leasesCDI
 	ov.Containers = containers
+	s.observePmemVM(st, v, ov)
 	return ov
 }
 
@@ -551,12 +624,16 @@ func (s *sim) leaseStore(v VM) json.RawMessage {
 	for i := range st.Slots {
 		ss := &st.Slots[i]
 		sl := st.slot(i)
-		if sl.Kind != KLease || sl.VM != v || ss.Phase != Running {
+		if !sl.Kind.leaseKind() || sl.VM != v || ss.Phase != Running {
 			continue
 		}
 		store.Claims[claimUID(sl, ss.Gen)] = map[string]string{"uid": claimUID(sl, ss.Gen)}
-		if ss.Lease == LeaseHeld {
-			l := lease{ID: st.LeaseIDs[i], Mode: ss.LeaseMode.String(), State: "Ready", Node: -1}
+		if ss.Lease == LeaseHeld || ss.Lease == LeaseBusy {
+			state := "Ready"
+			if ss.Lease == LeaseBusy {
+				state = "Releasing"
+			}
+			l := lease{ID: st.LeaseIDs[i], Mode: ss.LeaseMode.String(), State: state, Node: -1}
 			if ss.LeaseMode == ModeNuma {
 				l.Node = s.cfg.bridgeNode(HB0)
 			}
@@ -619,7 +696,7 @@ func (s *sim) transientObservation(step, poll int) *Observation {
 		for j := range o.Attachments[p.String()] {
 			a := &o.Attachments[p.String()][j]
 			if d, v, err := parseDevAt(a.Device + "@" + a.Host); err == nil {
-				if prev.Ctrl[p].Up && prev.Ctrl[p].Att[int(d)-2*int(p)][v] != TriYes {
+				if prev.Ctrl[p].Up && prev.Ctrl[p].Att[devIndex(d)][v] != TriYes {
 					a.State = "attaching"
 				}
 			}

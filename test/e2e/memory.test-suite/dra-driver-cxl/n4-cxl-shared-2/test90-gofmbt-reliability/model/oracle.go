@@ -57,6 +57,7 @@ type Verdict struct {
 // checker collects the differences of one check.
 type checker struct {
 	now     time.Time     // for the deadline of unblocking pods (A9)
+	since   time.Time     // the start of the settle (stalled contenders, A19)
 	unblock time.Duration // their timeout
 	st      *State        // the prediction
 	rs      *State        // the prediction with what the observation resolved
@@ -68,8 +69,8 @@ type checker struct {
 	notes   []string // fields not observed (not checked)
 	// attachments predicted per pool, device (0, 1) and VM, after
 	// resolution, and the exclusive flag (controller up only)
-	att  [nPools][2][nVMs]Tri
-	excl [nPools][2][nVMs]bool
+	att  [nPools][devsPerPool][nVMs]Tri
+	excl [nPools][devsPerPool][nVMs]bool
 }
 
 func (k *checker) failf(format string, args ...any) {
@@ -124,9 +125,10 @@ func checkSettle(e *Expectation, o *Observation) Verdict {
 	return v
 }
 
-// stallTimeout is how long a contender may stall (A19: 360 s from the
-// delete; counted from the settle that first saw it).
-const stallTimeout = 360 * time.Second
+// defaultStallWindow is how long a contender may stall (A19: 360 s from
+// the delete; counted from the start of the settle that first saw it
+// stalled): the default of --stall-window.
+const defaultStallWindow = 360 * time.Second
 
 // defaultUnblock is MBT_UNBLOCK_TIMEOUT (A9).
 const defaultUnblock = 330 * time.Second
@@ -156,16 +158,30 @@ func checkStateAt(st *State, o *Observation, prefix string, now time.Time, unblo
 	return v, rs
 }
 
+// stallWindow is --stall-window (A19).
+func (k *checker) stallWindow() time.Duration {
+	if k.cfg.StallWindow > 0 {
+		return k.cfg.StallWindow
+	}
+	return defaultStallWindow
+}
+
 // checkAlts is checkStateAt that also tells which alternative fitted
 // (0: the state itself, j: Alts[j-1]).
 func checkAlts(st *State, o *Observation, prefix string, now time.Time, unblock time.Duration) (Verdict, *State, int) {
-	best, bestRS := checkOne(st, o, prefix, now, unblock)
+	return checkAltsSince(st, o, prefix, now, now, unblock)
+}
+
+// checkAltsSince is checkAlts for a settle that started at since (the
+// clock of stalled contenders, A19).
+func checkAltsSince(st *State, o *Observation, prefix string, now, since time.Time, unblock time.Duration) (Verdict, *State, int) {
+	best, bestRS := checkOne(st, o, prefix, now, since, unblock)
 	bestJ := 0
 	for j, alt := range st.Alts {
 		if best.Status == VOK {
 			break
 		}
-		v, rs := checkOne(alt, o, prefix, now, unblock)
+		v, rs := checkOne(alt, o, prefix, now, since, unblock)
 		if v.Status < best.Status || (v.Status == best.Status && len(v.Diffs) < len(best.Diffs)) {
 			best, bestRS, bestJ = v, rs, j+1
 		}
@@ -177,8 +193,8 @@ func checkAlts(st *State, o *Observation, prefix string, now time.Time, unblock 
 	return best, bestRS, bestJ
 }
 
-func checkOne(st *State, o *Observation, prefix string, now time.Time, unblock time.Duration) (Verdict, *State) {
-	k := &checker{st: st, cfg: st.cfg, o: o, now: now, unblock: unblock}
+func checkOne(st *State, o *Observation, prefix string, now, since time.Time, unblock time.Duration) (Verdict, *State) {
+	k := &checker{st: st, cfg: st.cfg, o: o, now: now, since: since, unblock: unblock}
 	for _, e := range o.Errors {
 		k.waitf("observation: %s", e)
 	}
@@ -196,6 +212,7 @@ func checkOne(st *State, o *Observation, prefix string, now time.Time, unblock t
 	for v := VM(0); v < nVMs; v++ {
 		k.checkVM(v)
 	}
+	k.checkPDevs()
 	k.checkInspect()
 	return k.verdict(prefix), k.rs
 }
@@ -257,10 +274,14 @@ func (k *checker) resolve() {
 			}
 		}
 		if ss.Phase == Either {
-			if p.Phase == "Running" || (p.Claim != nil && p.Claim.Attached != nil && *p.Claim.Attached) {
-				ss.Phase = Running
-			} else {
+			switch {
+			case !(p.Phase == "Running" || (p.Claim != nil && p.Claim.Attached != nil && *p.Claim.Attached)):
 				ss.Phase = Attaching
+			case ss.Refuse:
+				// attached before the kill: its Prepare is refused
+				ss.Phase = Refused
+			default:
+				ss.Phase = Running
 			}
 		}
 		if ss.Slack > 0 && p.Restarts >= int(ss.Restarts) && p.Restarts <= int(ss.Restarts)+int(ss.Slack) && p.Phase == "Running" && p.Ready {
@@ -275,8 +296,19 @@ func (k *checker) resolve() {
 				// (bound also with the controller down: it was
 				// attached before a kill of this window)
 				bound := p.Node != nil || (p.Claim.Attached != nil && *p.Claim.Attached)
-				if rs.Ctrl[sl.Pool].Up || bound {
+				si, key, regionOK := rs.userRegion(int16(i))
+				holed := regionOK && sl.Kind != KPBad && !rs.Stacks[si].contains(key) && rs.Stacks[si].hasHole()
+				if (rs.Ctrl[sl.Pool].Up || bound) && ss.Refuse && !holed {
+					// a persistent claim whose Prepare is refused
+					// (A25): no region either way (through a hole it
+					// is blocked first, below)
+					ss.Phase = Refused
+				} else if rs.Ctrl[sl.Pool].Up || bound {
 					ss.Phase = Running
+					if sl.Kind.writer() {
+						// its Prepare makes the namespace (A25)
+						rs.madeNamespace(sl.Dev)
+					}
 					if si, key, ok := rs.userRegion(int16(i)); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
 						if rs.Stacks[si].hasHole() {
 							// its Prepare needs a new region
@@ -289,8 +321,16 @@ func (k *checker) resolve() {
 				} else {
 					ss.Phase = Attaching
 				}
-			case rs.unblockAt(i) == 0 && !k.now.IsZero():
-				rs.setUnblockAt(i, k.now.Unix())
+			case rs.Ctrl[sl.Pool].Slices == SlicesAbsent && p.Unschedulable && !p.Deleting:
+				// not allocated and its pool's slices are gone (a
+				// world without them): unschedulable like the
+				// claims that wait for them, not stalled
+				ss.Phase = Unsched
+				rs.setUnblockAt(i, 0)
+			case rs.unblockAt(i) == 0 && !k.since.IsZero():
+				// the start of the settle that first saw it
+				// stalled: after the delete, by the window's steps
+				rs.setUnblockAt(i, k.since.Unix())
 			}
 		}
 		if ss.Phase == Unblocking {
@@ -300,6 +340,10 @@ func (k *checker) resolve() {
 				// the order of several is adopted below
 				ss.Phase = Running
 				rs.setUnblockAt(i, 0)
+				if sl.Kind.writer() {
+					// and the namespace (A25)
+					rs.madeNamespace(sl.Dev)
+				}
 				// (users of one region: the local memdev, the shares
 				// of a node, make it once)
 				if si, key, ok := rs.userRegion(int16(i)); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
@@ -317,6 +361,7 @@ func (k *checker) resolve() {
 			}
 		}
 	}
+	k.resolvePersistent()
 	// a claim that waits for the attach with its controller down times
 	// out in PreBind after 600 s (bindingTimeout): it is deallocated and
 	// tried again, and the waiter of its device, requeued by that, may
@@ -378,12 +423,12 @@ func (k *checker) resolve() {
 			rs.deriveAtt(p)
 			continue
 		}
-		for d := 0; d < 2; d++ {
+		for d, dev := range poolDevs(p) {
 			for v := VM(0); v < nVMs; v++ {
 				if c.Att[d][v] != TriMaybe {
 					continue
 				}
-				switch k.obsAttState(p, DevID(2*int(p)+d), v) {
+				switch k.obsAttState(p, dev, v) {
 				case "attached":
 					c.Att[d][v] = TriYes
 				case "":
@@ -530,6 +575,8 @@ func (k *checker) checkPods() {
 			}
 		case Blocked:
 			k.checkBlocked(i, name)
+		case Refused:
+			k.checkRefused(i, name)
 		case Unblocking:
 			k.checkUnblocking(i, name)
 		case Stalled:
@@ -541,8 +588,12 @@ func (k *checker) checkPods() {
 				k.failf("%s: being deleted, want Pending or allocated", name)
 			case p.Phase != "Pending":
 				k.waitf("%s: phase %s, want Pending (stalled) or allocated", name, p.Phase)
-			case at > 0 && k.now.Sub(time.Unix(at, 0)) > stallTimeout:
-				k.failf("%s: still not allocated %s after the delete of the claim it waits for (A19)", name, k.now.Sub(time.Unix(at, 0)).Round(time.Second))
+			case at > 0 && k.now.Sub(time.Unix(at, 0)) > k.stallWindow():
+				k.failf("%s: still not allocated %s after the delete of the claim it waits for (A19, --stall-window %s)", name, k.now.Sub(time.Unix(at, 0)).Round(time.Second), k.stallWindow())
+			case k.cfg.StallStrict:
+				// a fixed kube-scheduler requeues it when the
+				// deleted claim's in-flight allocation goes
+				k.waitf("%s: not allocated yet, want its promotion (a stalled contender, --stall-window %s)", name, k.stallWindow())
 			}
 		case Unsched:
 			switch {
@@ -738,7 +789,7 @@ func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 	byPod := map[string]int{} // lease pod name -> slot
 	for i, p := range k.cur {
 		sl := k.rs.slot(i)
-		if p == nil || sl.Kind != KLease || sl.VM != v || k.rs.Slots[i].Phase != Running {
+		if p == nil || !sl.Kind.leaseKind() || sl.VM != v || k.rs.Slots[i].Phase != Running {
 			continue
 		}
 		if p.Claim != nil && p.Claim.UID != "" {
@@ -760,12 +811,16 @@ func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 		case !ok:
 			k.waitf("%s: leases.json: lease %s of pod %s, no lease pod of the model holds it", v, id, l.Pod.Name)
 			continue
+		case k.rs.Slots[i].Lease == LeaseBusy:
+			if l.State != "Releasing" && l.State != "Ready" {
+				k.waitf("%s: leases.json: lease %s of %s %s, want Releasing (held)", v, id, k.rs.slot(i).Name, l.State)
+			}
 		case k.rs.Slots[i].Lease != LeaseHeld:
 			k.waitf("%s: leases.json: lease %s (%s) of %s, want none", v, id, l.State, k.rs.slot(i).Name)
 			continue
 		case l.State != "Ready":
 			k.waitf("%s: leases.json: lease %s of %s %s, want Ready", v, id, k.rs.slot(i).Name, l.State)
-		case l.Mode != "" && l.Mode != k.rs.Slots[i].LeaseMode.String():
+		case !leaseModeIs(l.Mode, k.rs.Slots[i].LeaseMode):
 			k.waitf("%s: leases.json: lease %s of %s mode %s, want %s", v, id, k.rs.slot(i).Name, l.Mode, k.rs.Slots[i].LeaseMode)
 		}
 		if lid := k.rs.LeaseIDs[i]; lid != "" && lid != id {
@@ -774,10 +829,24 @@ func (k *checker) checkLeaseStore(v VM, ov *ObsVM) {
 		held[i] = true
 	}
 	for _, i := range byPod {
-		if k.rs.Slots[i].Lease == LeaseHeld && !held[i] {
+		if (k.rs.Slots[i].Lease == LeaseHeld || k.rs.Slots[i].Lease == LeaseBusy) && !held[i] {
 			k.waitf("%s: leases.json has no lease of %s", v, k.rs.slot(i).Name)
 		}
 	}
+}
+
+// leaseModeIs: the mode of a listed lease (numa, dax; block or fs for
+// persistent leases, or the model's mode name) is m.
+func leaseModeIs(got string, m LeaseMode) bool {
+	switch {
+	case got == "" || got == m.String():
+		return true
+	case m == ModePBW || m == ModePBR:
+		return got == "block"
+	case m.fs():
+		return got == "fs"
+	}
+	return false
 }
 
 // checkUnblocking: the hole has cleared; ContainerCreating is accepted
@@ -890,8 +959,17 @@ func (k *checker) checkCompanions() {
 	}
 	var wants []*want
 	for i := range k.rs.Slots {
-		if k.rs.slot(i).Kind == KLease && k.rs.Slots[i].Lease == LeaseHeld {
-			wants = append(wants, &want{slot: i})
+		ss := &k.rs.Slots[i]
+		switch k.rs.slot(i).Kind {
+		case KLease:
+			if ss.Lease == LeaseHeld {
+				wants = append(wants, &want{slot: i})
+			}
+		case KPlse:
+			// a busy fs lease's companion is Terminating (A25)
+			if ss.Lease == LeaseHeld || ss.Lease == LeaseBusy {
+				wants = append(wants, &want{slot: i})
+			}
 		}
 	}
 	match := func(c *ObsCompanion) *want {
@@ -928,8 +1006,12 @@ func (k *checker) checkCompanions() {
 		if c.Node != sl.VM.String() {
 			k.failf("companion %s of %s: on %s, want %s", c.Name, sl.Name, c.Node, sl.VM)
 		}
-		if c.Phase != "Running" {
+		busy := k.rs.Slots[w.slot].Lease == LeaseBusy
+		if c.Phase != "Running" && !busy {
 			k.waitf("companion %s of %s: phase %s", c.Name, sl.Name, c.Phase)
+		}
+		if c.Deleting && !busy {
+			k.waitf("companion %s of %s: being deleted", c.Name, sl.Name)
 		}
 		if id := k.rs.LeaseIDs[w.slot]; id != "" && c.Lease != id {
 			k.waitf("companion %s of %s: lease %s, want %s", c.Name, sl.Name, c.Lease, id)
@@ -1006,7 +1088,7 @@ func (k *checker) checkAttachments() {
 		c := &k.rs.Ctrl[p]
 		if c.Up {
 			want, excl := k.rs.desiredAtt(p)
-			for d := 0; d < 2; d++ {
+			for d := range poolDevs(p) {
 				for v := VM(0); v < nVMs; v++ {
 					if want[d][v] {
 						k.att[p][d][v] = TriYes
@@ -1022,7 +1104,7 @@ func (k *checker) checkAttachments() {
 			k.waitf("attachments of pool %s: not observed", p)
 			continue
 		}
-		var seen [2][nVMs]*ObsAttachment
+		var seen [devsPerPool][nVMs]*ObsAttachment
 		for j := range list {
 			a := &list[j]
 			if a.Adopted {
@@ -1035,8 +1117,8 @@ func (k *checker) checkAttachments() {
 				k.failf("attachment %s@%s of pool %s: failed", a.Device, a.Host, p)
 			}
 			d := -1
-			for x := 0; x < 2; x++ {
-				if a.Device == devices[2*int(p)+x].Name || a.Device == shortDevName(DevID(2*int(p)+x)) {
+			for x, dev := range poolDevs(p) {
+				if a.Device == devices[dev].Name || a.Device == shortDevName(dev) {
 					d = x
 				}
 			}
@@ -1063,8 +1145,8 @@ func (k *checker) checkAttachments() {
 				seen[d][v] = a
 			}
 		}
-		for d := 0; d < 2; d++ {
-			dev := devices[2*int(p)+d].Name
+		for d, dv := range poolDevs(p) {
+			dev := devices[dv].Name
 			for v := VM(0); v < nVMs; v++ {
 				a := seen[d][v]
 				switch k.att[p][d][v] {
@@ -1087,7 +1169,7 @@ func (k *checker) checkAttachments() {
 
 // predicted per-VM facts, after resolution
 type vmPred struct {
-	poolMode  [nDevs]int8 // 0 not prepared, 1 numa, 2 dax
+	poolMode  [nDevs]int8 // 0 not prepared, 1 numa, 2 dax, 3 pmem, 4 pmem maybe (refused)
 	slicesN   int         // local numa slices (pods and leases)
 	slicesD   int         // local dax slices
 	memdev    [nDevs]Tri  // pool memdevs present
@@ -1096,6 +1178,7 @@ type vmPred struct {
 	poolUIDs  map[string]bool // pool claims prepared here
 	leaseUIDs map[string]bool // lease claims prepared here
 	leases    int             // companions prepared here
+	pcomp     int             // companions of persistent leases prepared here
 }
 
 func (k *checker) predictVM(v VM) *vmPred {
@@ -1117,6 +1200,16 @@ func (k *checker) predictVM(v VM) *vmPred {
 				pr.slicesD++
 			}
 		}
+		if sl.Kind == KPlse && sl.VM == v && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && ss.LeaseMode.persistent() {
+			// its companion's claim: a pool claim of c-pmem0 prepared
+			// here (no CDI device)
+			pr.pcomp++
+			pr.poolMode[cPmem0] = 3
+		}
+		if sl.Kind.persistent() && ss.Node == v && (ss.Phase == Refused || ss.Phase == Unblocking) && sl.Kind != KPBad && pr.poolMode[sl.Dev] == 0 {
+			// its retries make and roll back the region (A25)
+			pr.poolMode[sl.Dev] = 4
+		}
 		if ss.Phase != Running || ss.Node != v {
 			continue
 		}
@@ -1125,6 +1218,11 @@ func (k *checker) predictVM(v VM) *vmPred {
 			uid = p.Claim.UID
 		}
 		switch {
+		case sl.Kind.persistent():
+			pr.poolMode[sl.Dev] = 3
+			if uid != "" {
+				pr.poolUIDs[uid] = true
+			}
 		case sl.Kind.pooled():
 			mode := int8(2)
 			if sl.Kind == KXNuma {
@@ -1145,7 +1243,7 @@ func (k *checker) predictVM(v VM) *vmPred {
 			if uid != "" {
 				pr.localUIDs[uid] = true
 			}
-		case sl.Kind == KLease:
+		case sl.Kind.leaseKind():
 			if uid != "" {
 				pr.localUIDs[uid] = true
 				pr.leaseUIDs[uid] = true
@@ -1153,8 +1251,8 @@ func (k *checker) predictVM(v VM) *vmPred {
 		}
 	}
 	for p := Pool(0); p < nPools; p++ {
-		for d := 0; d < 2; d++ {
-			pr.memdev[2*int(p)+d] = k.att[p][d][v]
+		for d, dev := range poolDevs(p) {
+			pr.memdev[dev] = k.att[p][d][v]
 		}
 	}
 	return pr
@@ -1190,6 +1288,7 @@ func (k *checker) checkVM(v VM) {
 	k.checkMissing(v, ov)
 	k.checkSlices(v)
 	k.checkLeaseStore(v, ov)
+	k.checkPersistentVM(v, ov)
 }
 
 // checkPorts compares the committed decoders of the host bridges of a VM
@@ -1214,8 +1313,9 @@ func (k *checker) checkPorts(v VM, ov *ObsVM) {
 			}
 			continue
 		}
-		// the regions of unblocking pods may be on top already
-		for got.N > want.N && k.unblockingKey(si, got.top()) {
+		// the regions of unblocking pods may be on top already, the
+		// region of a refused claim's retry for a moment (A25)
+		for got.N > want.N && (k.unblockingKey(si, got.top()) || k.refusedKey(si, got.top())) {
 			got.N--
 		}
 		if !got.equal(&want) {
@@ -1328,6 +1428,22 @@ func (k *checker) unblockingKey(si int, key RKey) bool {
 }
 
 // decoderIndex is K of decoderP.K.
+// refusedKey: a refused persistent claim of the device of the region key
+// is on the VM of the stack: each retry of its Prepare makes and rolls
+// back the region at the top (A25).
+func (k *checker) refusedKey(si int, key RKey) bool {
+	if key < 1 || !devices[key-1].Persistent || k.rs.Stacks[si].contains(key) {
+		return false
+	}
+	for i := range k.rs.Slots {
+		ss, sl := &k.rs.Slots[i], k.rs.slot(i)
+		if sl.Kind.persistent() && sl.Kind != KPBad && ss.Phase == Refused && devKey(sl.Dev) == key && ss.Node == stackVM(si) {
+			return true
+		}
+	}
+	return false
+}
+
 func decoderIndex(name string) int {
 	i := strings.LastIndexByte(name, '.')
 	if i < 0 {
@@ -1436,8 +1552,16 @@ func (k *checker) checkRegions(v VM, ov *ObsVM, pr *vmPred) {
 		case mode == 0 && r != nil:
 			k.waitf("%s: region %s of %s, no claim of it is prepared here", v, r.Name, d)
 		case mode == 0:
+		case mode == 4 && r == nil:
 		case r == nil:
 			k.waitf("%s: no region of %s", v, d)
+		case mode >= 3:
+			if r.Mode != "pmem" || len(r.Dax) > 0 {
+				k.waitf("%s: region %s of %s: mode %s with %d dax devices, want pmem", v, r.Name, d, r.Mode, len(r.Dax))
+			}
+			if r.Size != 0 && r.Size != devices[d].Size {
+				k.waitf("%s: region %s of %s: size %d, want %d", v, r.Name, d, r.Size, devices[d].Size)
+			}
 		default:
 			k.checkPoolRegion(v, d, mode == 1, r)
 		}
@@ -1549,8 +1673,19 @@ func (k *checker) checkStateFiles(v VM, ov *ObsVM, pr *vmPred) {
 	if want := len(pr.localUIDs) + pr.leases; len(prep) != want {
 		k.waitf("%s: %d claims in preparedClaims.json, want %d (%d of pods, %d companions)", v, len(prep), want, len(pr.localUIDs), pr.leases)
 	}
-	if pool := setOf(st.Pool); !sameSet(pool, pr.poolUIDs) {
-		k.waitf("%s: preparedPoolClaims.json %v, want %v", v, sortedKeys(pool), sortedKeys(pr.poolUIDs))
+	// (the companions of persistent leases are there too, by count:
+	// the model does not know their claims)
+	prepPool := setOf(st.Pool)
+	missing := false
+	for uid := range pr.poolUIDs {
+		missing = missing || !prepPool[uid]
+	}
+	if missing || len(prepPool) != len(pr.poolUIDs)+pr.pcomp {
+		if pr.pcomp == 0 {
+			k.waitf("%s: preparedPoolClaims.json %v, want %v", v, sortedKeys(prepPool), sortedKeys(pr.poolUIDs))
+		} else {
+			k.waitf("%s: preparedPoolClaims.json %v, want %v and %d companions", v, sortedKeys(prepPool), sortedKeys(pr.poolUIDs), pr.pcomp)
+		}
 	}
 	if ld := st.LocalDevices; ld != nil {
 		if ov.BootID != "" && ld.BootID != "" && ld.BootID != ov.BootID {
@@ -1694,13 +1829,13 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 	}
 	for i, p := range k.cur {
 		ss := &rs.Slots[i]
-		if p == nil || ss.Phase != Running || ss.Node != v || p.Phase != "Running" || p.Deleting || listed[p.Name] {
+		if p == nil || ss.Phase != Running || ss.Node != v || !runningContainer(p.Containers, p.Phase) || p.Deleting || listed[p.Name] {
 			continue
 		}
 		k.waitf("%s: no container of %s (pod %s) observed", v, rs.slot(i).Name, p.Name)
 	}
 	for _, c := range k.o.Companions {
-		if c.Node == v.String() && c.Phase == "Running" && !listed[c.Name] {
+		if c.Node == v.String() && runningContainer(c.Containers, c.Phase) && !listed[c.Name] {
 			k.waitf("%s: no container of companion %s observed", v, c.Name)
 		}
 	}
@@ -1788,8 +1923,11 @@ func (k *checker) checkInspect() {
 		for _, d := range envDiffs(k.cfg, sl, in.Env) {
 			k.failf("env of %s: %s", sl.Name, d)
 		}
-		if sl.Kind == KLease {
+		if sl.Kind.leaseKind() {
 			k.checkInspectLeases(i, in)
+		}
+		if sl.Kind.persistent() || sl.Kind == KPlse {
+			k.checkInspectPersistent(i, in)
 		}
 	}
 }
@@ -1815,7 +1953,7 @@ func (k *checker) checkInspectLeases(i int, in *ObsInspect) {
 			k.failf("leases of %s: lease %s %s, want none", sl.Name, l.Lease, l.State)
 			continue
 		}
-		if l.Mode != "" && l.Mode != ss.LeaseMode.String() {
+		if !leaseModeIs(l.Mode, ss.LeaseMode) {
 			k.failf("leases of %s: lease %s mode %s, want %s", sl.Name, l.Lease, l.Mode, ss.LeaseMode)
 		}
 		if id := k.rs.LeaseIDs[i]; id != "" && l.Lease != id {
@@ -1845,6 +1983,26 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		}
 	}
 	switch k := sl.Kind; {
+	case k.persistent():
+		// A22: block MODE PATH READONLY, fs MODE ACCESS PATH READONLY
+		dev := devices[sl.Dev]
+		p := "CXL_" + serialKey(dev.Serial) + "_"
+		w[p+"SIZE"] = strconv.FormatUint(nsSize, 10)
+		w[p+"SERIAL"] = formatSerial(dev.Serial)
+		w[p+"SHARED"] = boolEnv(dev.Shared)
+		if k.fsKind() {
+			w[p+"MODE"] = "fs"
+			w[p+"ACCESS"] = "direct"
+			if k == KPFsc {
+				w[p+"ACCESS"] = "cached"
+			}
+			w[p+"PATH"] = fsPath(sl)
+			w[p+"READONLY"] = "1"
+		} else {
+			w[p+"MODE"] = "block"
+			w[p+"PATH"] = "/dev/pmem*"
+			w[p+"READONLY"] = boolEnv(!k.writer())
+		}
 	case k.pooled():
 		dev := devices[sl.Dev]
 		mode := "dax"
@@ -1856,7 +2014,7 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		add(localSerial, "dax", blockSize, false, false, 0)
 	case k.local():
 		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNode(HB0))
-	case k == KLease:
+	case k == KLease || k == KPlse:
 		w["CXL_LEASE_SOCKET"] = "/run/cxl/cxl.sock"
 	}
 	return w
@@ -1914,6 +2072,7 @@ func checkDone(e *Expectation, d *DoneObs) Verdict {
 	}
 	what := e.Action
 	switch want.Status {
+	case "either":
 	case "nonzero":
 		if d.Status == 0 {
 			k.failf("%s: succeeded, want refused (read-only)", what)
@@ -1932,7 +2091,11 @@ func checkDone(e *Expectation, d *DoneObs) Verdict {
 	}
 	if len(k.fatal) == 0 {
 		switch want.Verb {
-		case "read":
+		case "pwrite":
+			if want.Text != nil && d.Text != nil && *d.Text != *want.Text {
+				k.failf("%s: wrote %q, want %q", what, *d.Text, *want.Text)
+			}
+		case "read", "pread":
 			switch {
 			case d.Text == nil:
 				k.failf("%s: no text read", what)
@@ -1940,7 +2103,7 @@ func checkDone(e *Expectation, d *DoneObs) Verdict {
 				k.failf("%s: read %q, want %q", what, *d.Text, *want.Text)
 			}
 		case "lease-get":
-			if d.Lease == nil || *d.Lease == "" {
+			if d.Status == 0 && (d.Lease == nil || *d.Lease == "") {
 				k.failf("%s: no lease", what)
 			}
 		}
@@ -1949,7 +2112,7 @@ func checkDone(e *Expectation, d *DoneObs) Verdict {
 }
 
 func (e *Expectation) verbIsObserved() bool {
-	return e.Done != nil && (e.Done.Verb == "write" || e.Done.Verb == "read" || e.Done.Verb == "lease-get")
+	return e.Done != nil && (e.Done.Verb == "write" || e.Done.Verb == "read" || e.Done.Verb == "lease-get" || e.Done.Verb == "pwrite" || e.Done.Verb == "pread")
 }
 
 func firstLine(s string) string {
@@ -1967,9 +2130,20 @@ func firstLine(s string) string {
 // a lease-get, the content read from an unknown device.
 func adoptDone(s *State, a Act, d *DoneObs) *State {
 	switch {
+	case a.Verb == VLeaseGet && a.Mode.persistent() && d.Status != 0 && s.Slots[a.Slot].Lease == LeaseHeld:
+		// cxl-request failed under a driver-kill-at bind (A29 d, A30):
+		// the lease is released, or Lending until kubelet's retry of
+		// its companion's Prepare makes it Ready: the settle decides
+		n := s.clone()
+		n.Slots[a.Slot].LeaseOpen = true
+		return n
 	case a.Verb == VLeaseGet && d.Lease != nil:
 		n := s.clone()
 		n.setLeaseID(int(a.Slot), *d.Lease)
+		return n
+	case a.Verb == VPRead && d.Text != nil && d.Status == 0 && !s.preadToken(int(a.Slot)).Known:
+		n := s.clone()
+		adoptPRead(n, int(a.Slot), *d.Text)
 		return n
 	case a.Verb == VRead && d.Text != nil && !s.token(int(a.Slot)).Known:
 		n := s.clone()

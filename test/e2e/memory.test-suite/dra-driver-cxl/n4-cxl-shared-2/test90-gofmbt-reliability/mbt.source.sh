@@ -48,6 +48,25 @@ MBT_POOL_IDS=(a b c)
 declare -A MBT_POOL_SERVER=([a]=pool-a [b]=pool-b [c]=pool-c)
 declare -A MBT_POOLED_SERIAL=([a]=0xc1ee0001 [b]=0xc1ee1001 [c]=0xc1ee2001)
 declare -A MBT_SHARED_SERIAL=([a]=0xc1ae0001 [b]=0xc1ae1001 [c]=0xc1ae2001)
+# Persistent pool devices (amendment A22): only pool c has them, P-pmem0
+# shared, P-pmem1 exclusive.
+declare -A MBT_PMEM_SERIAL=([c]=0xc1ae2002)
+declare -A MBT_XPMEM_SERIAL=([c]=0xc1ee2002)
+declare -A MBT_PDEV_POOL=([c-pmem0]=c [c-pmem1]=c)   # persistent device -> its pool id
+declare -A MBT_PDEV_FILES=()       # persistent device -> DATA:LSA, its backing files on the host (mbt-pdev-files)
+MBT_PDEV_DIR="/tmp/fake-cxl-pool-${MBT_POOL_SERVER[c]}"   # their directory (pool-server-start --name pool-c)
+MBT_PMEM_TOOL=/tools/pmem-rw.py    # pmem-rw.py in the pods (dra-dax-tool-install)
+MBT_HOLD_STOP=/tmp/mbt-hold.stop   # hold/unhold: the stop file of the holder in the container,
+MBT_HOLD_LOG=/tmp/mbt-hold.log     # and its output
+# The command line of a holder (pgrep -f): anchored, so that it matches
+# no shell whose script names the tool.
+MBT_HOLDER_RE='^python3 [^ ]*pmem-rw\.py (lease fs )?hold '
+MBT_FS_LEASE_NAME=mbt              # lease-get pfd: --name
+MBT_PLEASE_PUT_WAIT="${MBT_PLEASE_PUT_WAIT:-20s}"   # lease-put of plse: cxl-request release --wait
+MBT_KILLAT_TIMEOUT="${MBT_KILLAT_TIMEOUT:-60}"      # driver-kill-at: seconds until the watcher gives up
+MBT_KILLAT_STATE=/run/mbt-killat/state.json         # its state in the VM
+MBT_KILLAT_VM=""                   # the VM id of an armed driver-kill-at watcher not reported done yet
+MBT_KILLAT_JSON=""                 # mbt-killat-state: the state of that watcher
 declare -A MBT_VMDIR=()            # VM id -> VMDIR (mbt-setup-ids)
 declare -A MBT_NODE=()             # VM id -> Kubernetes node name
 declare -A MBT_POOL_UNIT=()        # pool id -> systemd unit of its controller
@@ -140,7 +159,7 @@ mbt-slot() {
     # MBT_SIDX (I), MBT_SLABEL (its label value, sdax-a_vm1_0) and MBT_SPOD
     # (its pod name without the generation, mbt-sdax-a-vm1-0). Return 2 if
     # SLOT is not a slot.
-    local re='^((xnuma|xdax|sdax|sro|sexcl)-([abc])|lnuma|ldax|lsteer|lease|plain)@(vm[012]|any)#([0-9]+)$'
+    local re='^((xnuma|xdax|sdax|sro|sexcl|pwr|pfsd|pfsc|pbro|pbad|xpb|xpf)-([abc])|lnuma|ldax|lsteer|lease|plse|plain)@(vm[012]|any)#([0-9]+)$'
     [[ "$1" =~ $re ]] || { MBT_ERR="not a slot: '$1'"; return 2; }
     MBT_KIND=${BASH_REMATCH[1]}
     MBT_POOL=${BASH_REMATCH[3]}
@@ -149,6 +168,43 @@ mbt-slot() {
     MBT_SIDX=${BASH_REMATCH[5]}
     MBT_SLABEL="${MBT_KIND}_${MBT_SVM}_${MBT_SIDX}"
     MBT_SPOD="mbt-$MBT_KIND-$MBT_SVM-$MBT_SIDX"
+    if [ "$(mbt-pclass)" != none ] && [ -n "$MBT_POOL" ] && [ -z "${MBT_PMEM_SERIAL[$MBT_POOL]:-}" ]; then
+        MBT_ERR="not a slot: '$1': pool $MBT_POOL has no persistent devices"
+        return 2
+    fi
+}
+
+mbt-pclass() {
+    # Usage: mbt-pclass
+    #
+    # Print the class of the kind of the last mbt-slot for the verbs of
+    # persistent devices (amendment A23): block (pwr, xpb, pbad: a block
+    # device that the claim may write), block-ro (pbro), fs (pfsd, pfsc,
+    # xpf), plse (the lease kind of persistent leases), none (the others).
+    case "$MBT_BASE" in
+        pwr|xpb|pbad) echo block;;
+        pbro) echo block-ro;;
+        pfsd|pfsc|xpf) echo fs;;
+        plse) echo plse;;
+        *) echo none;;
+    esac
+}
+
+mbt-pmem-key() {
+    # Usage: mbt-pmem-key
+    #
+    # Print the key of the environment of the persistent device of the kind
+    # of the last mbt-slot (CXL_<KEY>_PATH): P-pmem0 for pwr, pfsd, pfsc,
+    # pbro and pbad, P-pmem1 for xpb and xpf. Return 2 for other kinds.
+    local serial
+    case "$MBT_BASE" in
+        pwr|pfsd|pfsc|pbro|pbad) serial=${MBT_PMEM_SERIAL[$MBT_POOL]:-};;
+        xpb|xpf) serial=${MBT_XPMEM_SERIAL[$MBT_POOL]:-};;
+        *) MBT_ERR="$MBT_KIND has no persistent device"; return 2;;
+    esac
+    [ -n "$serial" ] || { MBT_ERR="pool $MBT_POOL has no persistent device"; return 2; }
+    serial=${serial#0x}
+    echo "${serial^^}"
 }
 
 mbt-slot-pod() {
@@ -225,13 +281,22 @@ mbt-template-yaml() {
     # Print the ResourceClaimTemplate mbt-KIND of the claim of the kind
     # KIND (contract 2): pool devices by serial, local slices of
     # $MBT_SLICE of class cxl-local, the lease claim.
-    local kind="$1" pool="${1##*-}"
+    local kind="$1" pool="${1##*-}" pc=cxl-pool-persistent
     case "$kind" in
         xnuma-?) dra-shared-claim-yaml x "${MBT_POOLED_SERIAL[$pool]}" "" "" cxl-pool | mbt-claim-to-template "mbt-$kind";;
         xdax-?) dra-shared-claim-yaml x "${MBT_POOLED_SERIAL[$pool]}" "" "mode: dax" cxl-pool | mbt-claim-to-template "mbt-$kind";;
         sdax-?) dra-shared-claim-yaml x "${MBT_SHARED_SERIAL[$pool]}" 1 "mode: dax" | mbt-claim-to-template "mbt-$kind";;
         sro-?) dra-shared-claim-yaml x "${MBT_SHARED_SERIAL[$pool]}" 1 "mode: dax, readOnly: true" | mbt-claim-to-template "mbt-$kind";;
         sexcl-?) dra-shared-claim-yaml x "${MBT_SHARED_SERIAL[$pool]}" "" "mode: dax" | mbt-claim-to-template "mbt-$kind";;
+        # Persistent devices (A22), class cxl-pool-persistent: the writer
+        # takes every share, the readers one each.
+        pwr-?) dra-shared-claim-yaml x "${MBT_PMEM_SERIAL[$pool]}" "" "mode: block" $pc | mbt-claim-to-template "mbt-$kind";;
+        pfsd-?) dra-shared-claim-yaml x "${MBT_PMEM_SERIAL[$pool]}" 1 "mode: fs, readOnly: true" $pc | mbt-claim-to-template "mbt-$kind";;
+        pfsc-?) dra-shared-claim-yaml x "${MBT_PMEM_SERIAL[$pool]}" 1 "mode: fs, readOnly: true, access: cached, path: /models" $pc | mbt-claim-to-template "mbt-$kind";;
+        pbro-?) dra-shared-claim-yaml x "${MBT_PMEM_SERIAL[$pool]}" 1 "mode: block, readOnly: true" $pc | mbt-claim-to-template "mbt-$kind";;
+        pbad-?) dra-shared-claim-yaml x "${MBT_PMEM_SERIAL[$pool]}" 1 "mode: block" $pc | mbt-claim-to-template "mbt-$kind";;
+        xpb-?) dra-shared-claim-yaml x "${MBT_XPMEM_SERIAL[$pool]}" "" "mode: block" $pc | mbt-claim-to-template "mbt-$kind";;
+        xpf-?) dra-shared-claim-yaml x "${MBT_XPMEM_SERIAL[$pool]}" "" "mode: fs, readOnly: true" $pc | mbt-claim-to-template "mbt-$kind";;
         lnuma) dra-claim-yaml template mbt-lnuma cxl-local "$MBT_SLICE";;
         ldax) dra-claim-yaml template mbt-ldax cxl-local "$MBT_SLICE" dax;;
         lsteer) dra-claim-yaml template mbt-lsteer cxl-local "$MBT_SLICE" "container=steering: {policy: auto}";;
@@ -244,14 +309,21 @@ mbt-templates-apply() { # script API
     # Usage: mbt-templates-apply
     #
     # Create the ResourceClaimTemplates of every kind and pool in $DRA_NS
-    # (19 of them, mbt-xnuma-a ... mbt-lease). Fail the test if kubectl
-    # fails.
+    # (26 of them, mbt-xnuma-a ... mbt-lease, the kinds of persistent
+    # devices for the pools that have them; plse uses mbt-lease). Fail the
+    # test if kubectl fails.
     local yaml="" kind pool base
     for pool in "${MBT_POOL_IDS[@]}"; do
         for base in xnuma xdax sdax sro sexcl; do
             yaml+="${yaml:+
 ---
 }$(mbt-template-yaml "$base-$pool")"
+        done
+        [ -n "${MBT_PMEM_SERIAL[$pool]:-}" ] || continue
+        for base in pwr pfsd pfsc pbro pbad xpb xpf; do
+            yaml+="
+---
+$(mbt-template-yaml "$base-$pool")"
         done
     done
     for kind in lnuma ldax lsteer lease; do
@@ -271,16 +343,18 @@ mbt-pod-yaml() {
     # terminationGracePeriodSeconds 2, its claim c0 from the template of
     # its kind (none for plain), image $DRA_TOOLS_IMAGE with the tools of
     # dra-dax-tool-install in /tools, main process $MBT_WORKLOAD.
-    local slot="$1" name="$2" selector="" claims="" uses=""
+    local slot="$1" name="$2" selector="" claims="" uses="" template
     mbt-slot "$slot" || return 2
     [ "$MBT_SVM" == any ] || selector="
   nodeSelector:
     kubernetes.io/hostname: ${MBT_NODE[$MBT_SVM]}"
+    template="mbt-$MBT_KIND"
+    [ "$MBT_KIND" != plse ] || template=mbt-lease   # A22: persistent leases, the lease claim of lease
     if [ "$MBT_KIND" != plain ]; then
         claims="
   resourceClaims:
   - name: c0
-    resourceClaimTemplateName: mbt-$MBT_KIND"
+    resourceClaimTemplateName: $template"
         uses="
     resources:
       claims:
@@ -473,20 +547,29 @@ mbt-forget-inspected() {
 }
 
 mbt-act-lease-get() {
-    # Usage: mbt-act-lease-get SLOT numa|dax
+    # Usage: mbt-act-lease-get SLOT MODE
     #
-    # Lease 128Mi of local memory in MODE for the container of the pod of
-    # the lease kind SLOT (cxl-request request ... --wait 60s). The result
-    # has the lease id (null if none) and the response of cxl-request. The
-    # next settle observation inspects the pod again: its leases changed.
-    local slot="$1" mode="$2" rc json
+    # The lease kind (MODE numa|dax): lease 128Mi of local memory in MODE
+    # for the container of the pod of SLOT (cxl-request request ... --wait
+    # 60s). plse (MODE pbw|pbr|pfd|pfc, amendment A23): lease c-pmem0, the
+    # whole device for a block writer (pbw), a read-only share of its block
+    # device (pbr), its erofs read-only, direct at
+    # /run/cxl/fs/$MBT_FS_LEASE_NAME (pfd) or cached at /run/cxl/fs/<lease
+    # id> (pfc). The result has the lease id (null if none) and the
+    # response of cxl-request. The next settle observation inspects the pod
+    # again: its leases changed.
+    local slot="$1" mode="$2" rc json args=() serial=${MBT_PMEM_SERIAL[c]}
     mbt-slot "$slot" || return 2
-    [ "$MBT_BASE" == lease ] || { MBT_ERR="$MBT_KIND is not the lease kind"; return 2; }
-    case "$mode" in
-        numa|dax) ;;
-        *) MBT_ERR="lease mode '$mode' is not numa or dax"; return 2;;
+    case "$MBT_BASE:$mode" in
+        lease:numa|lease:dax) args=(--source local --mode "$mode" --size "$MBT_SLICE");;
+        plse:pbw) args=(--serial "$serial" --mode block);;
+        plse:pbr) args=(--serial "$serial" --shared --read-only --mode block);;
+        plse:pfd) args=(--serial "$serial" --shared --read-only --mode fs --name "$MBT_FS_LEASE_NAME");;
+        plse:pfc) args=(--serial "$serial" --shared --read-only --mode fs --access cached);;
+        lease:*|plse:*) MBT_ERR="lease mode '$mode' is not one of $MBT_BASE (lease: numa, dax; plse: pbw, pbr, pfd, pfc)"; return 2;;
+        *) MBT_ERR="$MBT_KIND is not a lease kind (lease, plse)"; return 2;;
     esac
-    mbt-exec-in "$slot" "$DRA_REQUEST_CTR_BIN" request --source local --mode "$mode" --size "$MBT_SLICE" --wait "$MBT_LEASE_WAIT"
+    mbt-exec-in "$slot" "$DRA_REQUEST_CTR_BIN" request "${args[@]}" --wait "$MBT_LEASE_WAIT"
     rc=$?
     mbt-forget-inspected "$slot"
     json=$(dra-last-json "$MBT_OUT") || json=""
@@ -504,13 +587,351 @@ mbt-act-lease-put() {
     #
     # Release every lease of the pod of the lease kind SLOT (cxl-request
     # release --all). The next settle observation inspects the pod again.
-    local rc
+    # plse: with --wait $MBT_PLEASE_PUT_WAIT, so that an fs lease whose file
+    # a process maps (hold), which stays Releasing, ends the step with exit
+    # 3 after the wait instead of the plugin's 120 s; the result has the
+    # response (the states of the leases).
+    local rc wait=() json
     mbt-slot "$1" || return 2
-    [ "$MBT_BASE" == lease ] || { MBT_ERR="$MBT_KIND is not the lease kind"; return 2; }
-    mbt-exec-in "$1" "$DRA_REQUEST_CTR_BIN" release --all
+    case "$MBT_BASE" in
+        lease) ;;
+        plse) wait=(--wait "$MBT_PLEASE_PUT_WAIT");;
+        *) MBT_ERR="$MBT_KIND is not a lease kind (lease, plse)"; return 2;;
+    esac
+    mbt-exec-in "$1" "$DRA_REQUEST_CTR_BIN" release --all "${wait[@]}"
     rc=$?
     mbt-forget-inspected "$1"
+    if [ "$MBT_BASE" == plse ]; then
+        json=$(dra-last-json "$MBT_OUT") || json=""
+        MBT_RESULT=$(mbt-json response "@json:$json" stderr "@200:$MBT_ERR")
+    fi
     return "$rc"
+}
+
+###
+### Actions on persistent devices (amendment A23)
+###
+
+mbt-pexec() {
+    # Usage: mbt-pexec SLOT SCRIPT [ARGS...]
+    #
+    # Run the sh SCRIPT with ARGS in container main of the pod of SLOT
+    # (mbt-exec-in, after mbt-slot SLOT), with KEY (the env key of its
+    # persistent device, "" for plse) and TOOL ($MBT_PMEM_TOOL) set.
+    local slot="$1" script="$2" key=""
+    shift 2
+    if [ "$MBT_BASE" != plse ]; then
+        key=$(mbt-pmem-key) || return 2
+    fi
+    mbt-exec-in "$slot" sh -c "KEY=$key TOOL=$MBT_PMEM_TOOL
+$script" sh "$@"
+}
+
+mbt-act-pwrite() {
+    # Usage: mbt-act-pwrite SLOT img|junk STEP
+    #
+    # img: write the erofs template whose hello.txt and bytes 0-63 hold
+    # the token mbt-STEP at offset 0 of the device of the pod of SLOT, then
+    # fsync (pmem-rw.py image); junk: 8192 zero bytes (pmem-rw.py junk).
+    # Block kinds: the device node CXL_<KEY>_PATH, opened read-write (a
+    # read-only claim fails: EPERM); fs kinds: hello.txt under the mount
+    # (fails: EROFS); plse: its newest Ready lease, a block lease through
+    # its fd (cxl-request fd --exec; a read-only fd fails: EBADF), an fs
+    # lease under its path (fails). The result has the token written
+    # ("" for junk; null on failure); the status is that of the command in
+    # the container.
+    local slot="$1" what="$2" token="mbt-$3" rc text=@null op=image
+    mbt-slot "$slot" || return 2
+    case "$what" in
+        img) ;;
+        junk) token="" op=junk;;
+        *) MBT_ERR="pwrite takes img or junk, not '$what'"; return 2;;
+    esac
+    # shellcheck disable=SC2016 # expanded by sh in the container
+    case "$(mbt-pclass)" in
+        block|block-ro) mbt-pexec "$slot" 'eval "dev=\$CXL_${KEY}_PATH"
+if [ "$1" = image ]; then exec python3 "$TOOL" image "$dev" "$2"; fi
+exec python3 "$TOOL" junk "$dev"' "$op" "$token";;
+        fs) mbt-pexec "$slot" 'eval "dir=\$CXL_${KEY}_PATH"; exec python3 "$TOOL" write-file "$dir" "$1"' "$token";;
+        plse) mbt-pexec "$slot" 'exec python3 "$TOOL" lease any "$@"' "$op" "$token";;
+        *) MBT_ERR="$MBT_KIND has no persistent device"; return 2;;
+    esac
+    rc=$?
+    [ "$rc" != 0 ] || text=$token
+    MBT_NOTE="${token:-zeros}"
+    MBT_RESULT=$(mbt-json text "$text" stderr "@200:$MBT_ERR")
+    return "$rc"
+}
+
+mbt-act-pread() {
+    # Usage: mbt-act-pread SLOT
+    #
+    # Read the device of the pod of SLOT: block kinds the string in bytes
+    # 0-63 of CXL_<KEY>_PATH, fs kinds hello.txt under CXL_<KEY>_PATH,
+    # plse its newest Ready lease (block: through its fd; fs: under its
+    # path). The result has the text (null on failure).
+    local slot="$1" rc text=@null
+    mbt-slot "$slot" || return 2
+    # shellcheck disable=SC2016 # expanded by sh in the container
+    case "$(mbt-pclass)" in
+        block|block-ro) mbt-pexec "$slot" 'eval "dev=\$CXL_${KEY}_PATH"; exec python3 "$TOOL" read "$dev"';;
+        fs) mbt-pexec "$slot" 'eval "dir=\$CXL_${KEY}_PATH"; exec python3 "$TOOL" read-file "$dir"';;
+        plse) mbt-pexec "$slot" 'exec python3 "$TOOL" lease any read';;
+        *) MBT_ERR="$MBT_KIND has no persistent device"; return 2;;
+    esac
+    rc=$?
+    if [ "$rc" == 0 ]; then
+        text="$MBT_OUT"
+        MBT_NOTE="read '$text'"
+    fi
+    MBT_RESULT=$(mbt-json text "$text" stderr "@200:$MBT_ERR")
+    return "$rc"
+}
+
+# The end of the hold script: wait until the holder started in the
+# background ($! ) holds ($1 the stop file, $2 its log). The holder is an
+# external command started with its redirections: a builtin (eval) in a
+# background job would keep saved copies of the exec's stdout and stderr
+# open in that job, and kubectl exec would not end until the holder does.
+# shellcheck disable=SC2016 # expanded by sh in the container
+MBT_HOLD_WAIT='i=0
+while [ $i -lt 50 ]; do
+    grep -q "^holding " "$2" && { cat "$2"; exit 0; }
+    kill -0 $! 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+done
+cat "$2" >&2
+exit 1'
+
+mbt-act-hold() {
+    # Usage: mbt-act-hold SLOT
+    #
+    # Start a process in the container of the pod of SLOT, an fs kind or
+    # plse with an fs lease, that maps hello.txt of its erofs read-only and
+    # keeps it open until unhold (pmem-rw.py hold, in a session of its own:
+    # it outlives the kubectl exec; a crash or delete of the container ends
+    # it). Return when it says "holding" (5 s at most).
+    local slot="$1" hold rc
+    mbt-slot "$slot" || return 2
+    # shellcheck disable=SC2016 # expanded by sh in the container
+    case "$(mbt-pclass)" in
+        fs) hold='eval "dir=\$CXL_${KEY}_PATH"
+setsid python3 "$TOOL" hold "$dir" "$1" > "$2" 2>&1 < /dev/null &';;
+        plse) hold='setsid python3 "$TOOL" lease fs hold "$1" > "$2" 2>&1 < /dev/null &';;
+        *) MBT_ERR="hold is for the fs kinds and plse, not $MBT_KIND"; return 2;;
+    esac
+    mbt-pexec "$slot" "$hold
+$MBT_HOLD_WAIT" "$MBT_HOLD_STOP" "$MBT_HOLD_LOG"
+    rc=$?
+    MBT_NOTE=$(head -c 200 <<< "$MBT_OUT")
+    return "$rc"
+}
+
+mbt-act-unhold() {
+    # Usage: mbt-act-unhold SLOT
+    #
+    # End the holders of hold in the container of the pod of SLOT: create
+    # their stop file and wait until none runs (5 s at most).
+    local slot="$1"
+    mbt-slot "$slot" || return 2
+    case "$(mbt-pclass)" in
+        fs|plse) ;;
+        *) MBT_ERR="unhold is for the fs kinds and plse, not $MBT_KIND"; return 2;;
+    esac
+    # shellcheck disable=SC2016 # expanded by sh in the container
+    mbt-pexec "$slot" 'touch "$1"
+i=0
+while [ $i -lt 50 ]; do
+    pgrep -f "$3" > /dev/null || { cat "$2" 2>/dev/null; exit 0; }
+    sleep 0.1
+    i=$((i + 1))
+done
+echo "a holder still runs: $(pgrep -af "$3")" >&2
+exit 1' "$MBT_HOLD_STOP" "$MBT_HOLD_LOG" "$MBT_HOLDER_RE"
+}
+
+mbt-act-pwipe() {
+    # Usage: mbt-act-pwipe POOL DEV
+    #
+    # Make the persistent device DEV of pool POOL fresh again on the host:
+    # zeros over its LSA file and the first 4 MiB of its data file (labels,
+    # pfn info, the erofs). Refused (status 2) while the server of POOL
+    # lists an attachment of DEV (in any state) or does not answer. The
+    # result has the pdevs entry of DEV afterwards ("pdev").
+    local pool="$1" dev="$2" url json files
+    mbt-pool-arg "$pool" || return 2
+    [ "${MBT_PDEV_POOL[$dev]:-}" == "$pool" ] || { MBT_ERR="$dev is not a persistent device of pool $pool"; return 2; }
+    files=${MBT_PDEV_FILES[$dev]:-}
+    [ -n "$files" ] || { MBT_ERR="the backing files of $dev are not known (mbt-pdev-files)"; return 2; }
+    url=$(pool-url "${MBT_POOL_SERVER[$pool]}") || { MBT_ERR="no server of pool $pool"; return 2; }
+    json=$(curl -sf --max-time 10 "$url/api/v1/attachments") || { MBT_ERR="the server of pool $pool does not answer"; return 2; }
+    MBT_OUT=$(python3 -c '
+import json, sys
+print(" ".join("%s@%s:%s" % (a.get("device"), a.get("host"), a.get("state")) for a in json.loads(sys.argv[1]) or [] if a.get("device") == sys.argv[2]))' "$json" "$dev")
+    [ -z "$MBT_OUT" ] || { MBT_ERR="$dev is attached: $MBT_OUT"; return 2; }
+    MBT_RESULT=$(python3 - "${files%%:*}" "${files#*:}" "$MBT_OBSERVER" <<'EOF'
+import importlib.util, json, sys
+data, lsa, observer = sys.argv[1:4]
+for path, n in ((lsa, None), (data, 4 << 20)):
+    with open(path, "r+b") as f:
+        size = f.seek(0, 2)
+        f.seek(0)
+        f.write(bytes(size if n is None else min(n, size)))
+spec = importlib.util.spec_from_file_location("observe", observer)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(json.dumps({"pdev": m.pdev(data, lsa)}, sort_keys=True, separators=(",", ":")))
+EOF
+    ) || { MBT_ERR="cannot wipe $files"; MBT_RESULT='{}'; return 1; }
+    {
+        echo "[host] pwipe $dev: $files"
+        echo "$MBT_RESULT"
+    } >> "$MBT_EXEC_LOG"
+    MBT_NOTE="wiped $files"
+}
+
+mbt-act-driver-kill-at() {
+    # Usage: mbt-act-driver-kill-at VM MARKER
+    #
+    # Arm a one-shot watcher in VM (mbt-observe.py kill-at, detached) that
+    # SIGKILLs the driver process at MARKER of the next persistent Prepare
+    # there: region (a new CXL region of mode pmem), ns (a namespace with a
+    # size in its nvdimm region), mount (a new node mount), bind (a new
+    # lease bind); it gives up after MBT_KILLAT_TIMEOUT s. It is bound to
+    # the driver process it was armed against: if that one ends first, it
+    # ends, not fired (reason "driver restarted"); driver-kill,
+    # driver-restart and containerd-restart of VM disarm it first
+    # (mbt-killat-disarm). Return once it is armed. An armed watcher of
+    # an earlier step is stopped first. The
+    # result has its state ("killAt"); every later done and observe line
+    # has "killAt" too, until the first one that reports it done
+    # (mbt-killat-state).
+    local vm="$1" marker="$2" dir=${MBT_KILLAT_STATE%/*}
+    mbt-vm-arg "$vm" || return 2
+    case "$marker" in
+        region|ns|mount|bind) ;;
+        *) MBT_ERR="driver-kill-at marker '$marker' is not region, ns, mount or bind"; return 2;;
+    esac
+    mbt-killat-stop
+    MBT_TRACE_REFOLLOW[$vm]=$(mbt-utc 2)
+    mbt-sh "$vm" "mkdir -p $dir && rm -f $MBT_KILLAT_STATE
+setsid -f python3 $MBT_OBSERVER_VM kill-at --marker $marker --timeout $MBT_KILLAT_TIMEOUT > $dir/watcher.log 2>&1 < /dev/null
+for i in \$(seq 100); do [ -s $MBT_KILLAT_STATE ] && break; sleep 0.05; done
+cat $MBT_KILLAT_STATE" || return 1
+    MBT_KILLAT_JSON=$MBT_OUT
+    MBT_RESULT=$(mbt-json killAt "@json:$MBT_KILLAT_JSON")
+    if ! dra-py assert "$MBT_KILLAT_JSON" "j.get('armed') is True" 2>/dev/null; then
+        MBT_ERR="the watcher is not armed: $MBT_OUT"
+        return 1
+    fi
+    MBT_KILLAT_VM=$vm
+    MBT_NOTE="armed, driver pid $(dra-py eval "$MBT_KILLAT_JSON" "j.get('pid')")"
+}
+
+mbt-killat-state() {
+    # Usage: mbt-killat-state [JSON]
+    #
+    # Set MBT_KILLAT_JSON to the state of the armed driver-kill-at watcher
+    # of MBT_KILLAT_VM: JSON (the killAt of an observation) or read from
+    # the VM. Forget the watcher (MBT_KILLAT_VM "") once its state is done:
+    # it is reported once. Return 1 if no watcher is armed.
+    local vm=$MBT_KILLAT_VM
+    [ -n "$vm" ] || return 1
+    if [ -n "${1:-}" ]; then
+        MBT_KILLAT_JSON=$1
+    else
+        MBT_KILLAT_JSON=$(dra-vm-command-q "${MBT_VMDIR[$vm]}" "cat $MBT_KILLAT_STATE 2>/dev/null")
+        [ -n "$MBT_KILLAT_JSON" ] || MBT_KILLAT_JSON='{"armed": false, "fired": false, "done": true, "error": "no watcher state"}'
+    fi
+    if dra-py assert "$MBT_KILLAT_JSON" "j is None or j.get('done') is not False" 2>/dev/null; then
+        echo "    driver-kill-at $vm: $(head -c 300 <<< "$MBT_KILLAT_JSON")"
+        echo "$(date +%T.%N) driver-kill-at $vm done: $MBT_KILLAT_JSON" >> "$MBT_EXEC_LOG"
+        MBT_KILLAT_VM=""
+    fi
+    return 0
+}
+
+mbt-killat-disarm() {
+    # Usage: mbt-killat-disarm VM VERB
+    #
+    # Before VERB restarts the driver of VM (driver-kill, driver-restart,
+    # containerd-restart): disarm the driver-kill-at watcher armed there,
+    # if any (mbt-observe.py kill-at-disarm): it ends done, not fired,
+    # reason "disarmed by VERB", unless it fired or ended before; the done
+    # line of the step reports it (mbt-run). Never fails.
+    [ -n "$MBT_KILLAT_VM" ] && [ "$MBT_KILLAT_VM" == "$1" ] || return 0
+    mbt-sh "$1" "python3 $MBT_OBSERVER_VM kill-at-disarm --verb $2" || true
+}
+
+mbt-killat-stop() {
+    # Usage: mbt-killat-stop
+    #
+    # Stop an armed driver-kill-at watcher, if any (a later arming, the end
+    # of the run). Never fails.
+    local vm=$MBT_KILLAT_VM
+    [ -n "$vm" ] || return 0
+    MBT_KILLAT_VM=""
+    dra-vm-command-q "${MBT_VMDIR[$vm]}" "pkill -f '$MBT_OBSERVER_VM kill-at'; true" > /dev/null 2>&1
+    return 0
+}
+
+mbt-pdev-files() { # script API
+    # Usage: mbt-pdev-files DEV...
+    #
+    # Set MBT_PDEV_FILES of the persistent devices DEV from their server
+    # (pool-device-files), and fail the test unless the LSA file is 256 KiB
+    # of zeros: a fresh device.
+    local dev pool
+    for dev in "$@"; do
+        pool=${MBT_PDEV_POOL[$dev]}
+        pool-device-files --pool "${MBT_POOL_SERVER[$pool]}" "$dev"
+        pool-assert "$COMMAND_OUTPUT" "j['persistent'] == True"
+        [ "$POOL_DEVICE_DATA" == "$MBT_PDEV_DIR/$dev.raw" ] && [ "$POOL_DEVICE_LSA" == "$MBT_PDEV_DIR/$dev.lsa" ] ||
+            error "the backing files of $dev are $POOL_DEVICE_DATA and $POOL_DEVICE_LSA, expected $MBT_PDEV_DIR/$dev.raw and .lsa"
+        MBT_PDEV_FILES[$dev]="$POOL_DEVICE_DATA:$POOL_DEVICE_LSA"
+        python3 -c 'import sys; b = open(sys.argv[1], "rb").read(); sys.exit(0 if b.count(0) == len(b) == 262144 else 1)' "$POOL_DEVICE_LSA" ||
+            error "the LSA file $POOL_DEVICE_LSA of $dev is not 256 KiB of zeros"
+    done
+}
+
+mbt-pdev-files-remove() { # script API
+    # Usage: mbt-pdev-files-remove DIR DEV...
+    #
+    # Remove the data and LSA files (DEV.raw, DEV.lsa) of the persistent
+    # devices DEV in the pool directory DIR of a server, a
+    # /tmp/fake-cxl-pool-NAME (host RAM).
+    local dir="$1" dev
+    shift
+    [[ "$dir" =~ ^/tmp/fake-cxl-pool-[a-z0-9-]+$ ]] || { echo "mbt-pdev-files-remove: not a pool directory: '$dir'"; return 1; }
+    for dev in "$@"; do
+        [[ "$dev" =~ ^[a-z0-9-]+$ ]] || continue
+        rm -f -- "${dir:?}/${dev:?}.raw" "${dir:?}/${dev:?}.lsa"
+    done
+}
+
+mbt-pmem-held() { # script API
+    # Usage: mbt-pmem-held VMDIR
+    #
+    # Print what in the VM of VMDIR still holds a persistent device, one per
+    # line, quietly: node mounts and lease binds ("mount TARGET") and loop
+    # devices over /dev/pmem* ("loop loopN /dev/pmemK"); nothing if free.
+    # Return non-zero if the VM cannot be read.
+    dra-vm-command-q "$1" "awk '\$5 ~ \"^($DRA_POOL_MOUNT_DIR|$DRA_LEASE_FS_DIR)/\" {print \"mount \" \$5}' /proc/self/mountinfo | sort -u
+for f in /sys/block/loop*/loop/backing_file; do [ -f \"\$f\" ] || continue; b=\$(cat \"\$f\"); case \"\$b\" in /dev/pmem*) n=\${f#/sys/block/}; echo \"loop \${n%%/*} \$b\";; esac; done
+true"
+}
+
+mbt-pmem-unmount() { # script API
+    # Usage: mbt-pmem-unmount VMDIR
+    #
+    # The error path, after the driver is gone: unmount the lease binds,
+    # then the node mounts that are left in the VM of VMDIR, plainly (a
+    # busy one stays: never MNT_DETACH; a cached mount's autoclear loop
+    # device goes with it).
+    dra-vm-command "$1" "for t in \$(awk '\$5 ~ \"^$DRA_LEASE_FS_DIR/\" {print \$5}' /proc/self/mountinfo | sort -ur) \$(awk '\$5 ~ \"^$DRA_POOL_MOUNT_DIR/\" {print \$5}' /proc/self/mountinfo | sort -ur); do
+    umount \"\$t\" && echo \"unmounted \$t\" || echo \"cannot unmount \$t\"
+done; true"
 }
 
 mbt-act-driver-kill() {
@@ -519,6 +940,7 @@ mbt-act-driver-kill() {
     # SIGKILL to the driver of VM in place (dra-driver-kill), return at
     # once: kubelet restarts its container.
     mbt-vm-arg "$1" || return 2
+    mbt-killat-disarm "$1" driver-kill
     MBT_TRACE_REFOLLOW[$1]=$(mbt-utc 2)
     dra-driver-kill "${MBT_VMDIR[$1]}" || return 1
     MBT_NOTE="$COMMAND_OUTPUT"
@@ -576,6 +998,7 @@ mbt-act-driver-restart() {
     # follows the new pod.
     local vm="$1" vmdir label name old new=""
     mbt-vm-arg "$vm" || return 2
+    mbt-killat-disarm "$vm" driver-restart
     vmdir=${MBT_VMDIR[$vm]}
     label=$(dra-vm-label "$vmdir")
     name=${MBT_NODE[$vm]}
@@ -655,6 +1078,7 @@ mbt-act-containerd-restart() {
     # (mbt-driver-ready-wait, A15); return non-zero if it is not.
     local vm="$1" before after pod restarts ready rc
     mbt-vm-arg "$vm" || return 2
+    mbt-killat-disarm "$vm" containerd-restart
     MBT_TRACE_REFOLLOW[$vm]=$(mbt-utc 2)
     before=$(mbt-driver-restarts "$vm") || before=""
     dra-node-service-restart "${MBT_VMDIR[$vm]}" containerd
@@ -681,9 +1105,11 @@ mbt-run() { # script API
     echo "### mbt step $step: $verb${*:+ $*}"
     echo "=== step $step: $verb${*:+ $*} ($(date +%T.%N))" >> "$MBT_EXEC_LOG"
     MBT_RESULT='{}' MBT_NOTE="" MBT_ERR="" MBT_OUT=""
-    [ "$verb" != lease-get ] || nargs=2
     case "$verb" in
-        create|delete|crash|read|lease-put|lease-get|driver-kill|driver-restart|ctrl-kill|ctrl-start|ctrl-restart|server-restart|kubelet-restart|containerd-restart)
+        lease-get|pwrite|pwipe|driver-kill-at) nargs=2;;
+    esac
+    case "$verb" in
+        create|delete|crash|read|lease-put|lease-get|driver-kill|driver-restart|ctrl-kill|ctrl-start|ctrl-restart|server-restart|kubelet-restart|containerd-restart|pread|hold|unhold|pwipe|driver-kill-at)
             if [ $# != "$nargs" ]; then
                 MBT_ERR="$verb takes $nargs arguments, got $#: $*"
                 MBT_STATUS=2
@@ -691,18 +1117,28 @@ mbt-run() { # script API
                 "mbt-act-$verb" "$@"
                 MBT_STATUS=$?
             fi;;
-        write)
-            if [ $# != 1 ]; then
-                MBT_ERR="write takes 1 argument, got $#: $*"
+        write|pwrite)
+            # The token of the step: mbt-STEP.
+            if [ $# != "$nargs" ]; then
+                MBT_ERR="$verb takes $nargs arguments, got $#: $*"
                 MBT_STATUS=2
             else
-                mbt-act-write "$1" "$step"
+                "mbt-act-$verb" "$@" "$step"
                 MBT_STATUS=$?
             fi;;
         *)
             MBT_ERR="unknown verb '$verb'"
             MBT_STATUS=2;;
     esac
+    # A23: the state of an armed driver-kill-at watcher, in every done line
+    # until it is reported done (its own arming step reports it already).
+    if [ "$verb" != driver-kill-at ] && mbt-killat-state; then
+        MBT_RESULT=$(python3 -c '
+import json, sys
+r = json.loads(sys.argv[1] or "{}")
+r["killAt"] = json.loads(sys.argv[2])
+print(json.dumps(r, sort_keys=True, separators=(",", ":")))' "$MBT_RESULT" "$MBT_KILLAT_JSON")
+    fi
     secs=$(printf '%.2f' "$(echo "$EPOCHREALTIME - $t0" | bc)")
     echo "    status $MBT_STATUS, ${secs} s${MBT_NOTE:+, $MBT_NOTE}${MBT_ERR:+, stderr: $(head -c 200 <<< "$MBT_ERR" | tr '\n' ' ')}"
     printf '%s\t%s\t%s\t%s\t%s\t\n' "$step" "$verb" "$*" "$MBT_STATUS" "$secs" >> "$MBT_TIMES"
@@ -717,11 +1153,13 @@ mbt-observer-install() { # script API
     # Usage: mbt-observer-install VMDIR...
     #
     # Copy mbt-observe.py into the VMs ($MBT_OBSERVER_VM) and run it once
-    # in each. Fail the test if it does not print an observation.
+    # in each: the baseline of its "kernel" part (the kernel log from now
+    # on) and of nothing else. Stop driver-kill-at watchers of an earlier
+    # run. Fail the test if it does not print an observation.
     local vmdir
     for vmdir in "$@"; do
         dra-vm-put-file "$vmdir" "$MBT_OBSERVER" "$MBT_OBSERVER_VM"
-        dra-vm-command "$vmdir" "chmod 755 $MBT_OBSERVER_VM && python3 $MBT_OBSERVER_VM vm --ns $DRA_NS | head -c 300; echo; exit \${PIPESTATUS[0]}" ||
+        dra-vm-command "$vmdir" "pkill -f '$MBT_OBSERVER_VM kill-at'; rm -f /run/mbt-observe/kernel.json $MBT_KILLAT_STATE; chmod 755 $MBT_OBSERVER_VM && python3 $MBT_OBSERVER_VM vm --ns $DRA_NS | head -c 300; echo; exit \${PIPESTATUS[0]}" ||
             command-error "mbt-observe.py does not run in $(dra-vm-label "$vmdir")"
     done
 }
@@ -741,8 +1179,15 @@ mbt-observe() { # script API
     # killed on the host 10 s later. Return non-zero if the observation
     # could not be assembled: MBT_OBS is then an observation with the
     # error only.
-    local step="$1" poll="$2" t0=$EPOCHREALTIME vm p pids=() cmd inspected args=() url
+    local step="$1" poll="$2" t0=$EPOCHREALTIME vm p pids=() cmd inspected args=() url dev killat
     inspected=$(paste -sd, "$MBT_TMP/inspected")
+    # A24 pdevs from the backing files on the host, A23 killAt of the VM
+    # of an armed driver-kill-at watcher.
+    for dev in "${!MBT_PDEV_FILES[@]}"; do
+        args+=(--pdev "$dev=${MBT_PDEV_FILES[$dev]}")
+    done
+    killat=$MBT_KILLAT_VM
+    [ -z "$killat" ] || args+=(--kill-at "$killat")
     for vm in "${MBT_VMIDS[@]}"; do
         cmd="timeout -k 5 $MBT_OBS_TIMEOUT python3 $MBT_OBSERVER_VM vm --ns $DRA_NS"
         [ "$vm" != vm2 ] || cmd+=" --cluster --nodes $MBT_NODES --units $MBT_UNITS --pools $MBT_POOLS --inspected '$inspected'"
@@ -774,6 +1219,11 @@ mbt-observe() { # script API
     done
     MBT_OBS_SECONDS=$(printf '%.2f' "$(echo "$EPOCHREALTIME - $t0" | bc)")
     printf '%s\t%s\t%s\n' "$step" "$poll" "$MBT_OBS_SECONDS" >> "$MBT_OBS_TIMES"
+    if [ -n "$killat" ] && [ "$killat" == "$MBT_KILLAT_VM" ]; then
+        # The observation of the VM has the state, unless it failed.
+        p=$(python3 -c 'import json, sys; k = json.loads(sys.argv[1]).get("killAt"); print(json.dumps(k) if k else "")' "$MBT_OBS" 2>/dev/null)
+        [ -n "$p" ] && mbt-killat-state "$p"
+    fi
     mbt-drivers-seen
 }
 
@@ -1032,7 +1482,7 @@ mbt-header-flags() { # script API
     python3 -c '
 import shlex, sys
 keep = {"profile", "seed", "depth", "coverage", "randomness", "unsettled", "max-restarts", "avoid",
-        "avoid-holes", "max-paths", "settle-timeout", "unblock-timeout"}
+        "avoid-holes", "max-paths", "settle-timeout", "unblock-timeout", "stall-window"}
 for line in open(sys.argv[1]):
     if not line.startswith("# --"):
         continue
@@ -1169,6 +1619,29 @@ mbt-offline() { # script API
 ### Setup checks and teardown
 ###
 
+MBT_KERNEL_FEATURES="ZONE_DEVICE CXL_REGION CXL_PMEM LIBNVDIMM BLK_DEV_PMEM ND_PFN NVDIMM_PFN DEV_DAX FS_DAX FS_DAX_PMD BLK_DEV_LOOP EROFS_FS"
+
+mbt-kernel-require() { # script API
+    # Usage: mbt-kernel-require VMDIR
+    #
+    # Fail the test unless the kernel of the VM of VMDIR has every feature
+    # that persistent pool devices need (11-findings-persistent.txt 2.3),
+    # =y or =m in /boot/config-$(uname -r): pmem regions (CXL_PMEM,
+    # CXL_REGION, LIBNVDIMM), the fsdax namespace and its block device
+    # (BLK_DEV_PMEM, ND_PFN, NVDIMM_PFN, ZONE_DEVICE), erofs (EROFS_FS)
+    # with DAX (FS_DAX, FS_DAX_PMD) for access direct and on a loop device
+    # (BLK_DEV_LOOP) for access cached, and devdax (DEV_DAX).
+    local vmdir="$1" out missing
+    out=$(dra-vm-command-q "$vmdir" "c=/boot/config-\$(uname -r); test -r \$c || { echo \"no \$c\"; exit 1; }
+echo \"kernel \$(uname -r)\"
+for f in $MBT_KERNEL_FEATURES; do echo \"\$f=\$(sed -n \"s/^CONFIG_\$f=//p\" \$c)\"; done") ||
+        error "cannot read the kernel configuration of $(dra-vm-label "$vmdir"): $out"
+    missing=$(grep -E '^[A-Z0-9_]+=$|^[A-Z0-9_]+=[^ym]' <<< "$out" | cut -d= -f1 | tr '\n' ' ')
+    [ -z "$missing" ] ||
+        error "the kernel of $(dra-vm-label "$vmdir") ($(head -n 1 <<< "$out")) lacks $missing(CONFIG_*=y or =m): persistent pool devices (block, fs) cannot work. Build it with test/e2e/playbook/files/qemu-cxl-kernel.config (test00-up) and recreate the VM"
+    echo "$(dra-vm-label "$vmdir"): $(head -n 1 <<< "$out"): $(tail -n +2 <<< "$out" | tr '\n' ' ')"
+}
+
 mbt-local-blocks() { # script API
     # Usage: mbt-local-blocks
     #
@@ -1249,6 +1722,7 @@ mbt-teardown() { # script API
     # VM has a CXL region or a memdev other than its local memdev, 120 s
     # at most each.
     local vm p left
+    mbt-killat-stop
     mbt-restore
     dra-vm-command "$OUTPUT_DIR" "kubectl delete pods --all -n $DRA_NS --grace-period=2 --wait=true --timeout=180s 2>&1 | grep -v 'No resources found'; true"
     retry-until --timeout 120 --interval 2 --message "no pods and ResourceClaims in $DRA_NS" \
@@ -1263,6 +1737,13 @@ mbt-teardown() { # script API
     done
     for vm in "${MBT_VMIDS[@]}"; do
         pool-cxl-wait "${MBT_VMDIR[$vm]}" mbt-released "regions == [] and [m['Serial'] for m in memdevs] == [$MBT_LOCAL_SERIAL]" 120
+        # Persistent devices: no node mount, lease bind or loop device over
+        # pmem left, no directory of a lease claim or node mount.
+        left=$(mbt-pmem-held "${MBT_VMDIR[$vm]}") || error "mbt-teardown: cannot read the mounts of $vm"
+        [ -z "$left" ] || error "mbt-teardown: $vm still has: $(tr '\n' ' ' <<< "$left")"
+        retry-until --timeout 60 --interval 2 --message "$vm: nothing under $DRA_LEASE_FS_DIR and $DRA_POOL_MOUNT_DIR" \
+            'left=$(dra-vm-command-q "${MBT_VMDIR[$vm]}" "find $DRA_LEASE_FS_DIR $DRA_POOL_MOUNT_DIR -mindepth 1 -maxdepth 1 2>/dev/null; true") && [ -z "$left" ]' ||
+            error "mbt-teardown: $vm still has $(tr '\n' ' ' <<< "$left")"
     done
 }
 
@@ -1274,10 +1755,62 @@ mbt-exit-trap() {
     # dra-driver-cxl test: dra-cleanup (deletes the pods gracefully, waits
     # for the detaches, uninstalls the driver and the controllers) and
     # pool-cleanup (releases and detaches what is left, the local memdevs
-    # too, and stops the servers).
+    # too, and stops the servers). A persistent device that a node mount,
+    # lease bind or loop device still holds after dra-cleanup is unmounted
+    # (plainly: never MNT_DETACH); if one is still held then, releasing its
+    # region could crash the guest: only the servers are stopped, and what
+    # holds it is printed (as test16 does). The backing files of the
+    # persistent devices are removed after pool-cleanup.
+    local vmdir held="" left
     mbt-coproc-stop
     echo "### mbt: cleanup after an error or an interruption"
+    mbt-killat-stop
     mbt-restore
     dra-cleanup
+    for vmdir in "${MBT_VMDIR[@]}"; do
+        left=$(mbt-pmem-held "$vmdir") || left="cannot read its mounts"
+        [ -n "$left" ] || continue
+        echo "mbt-exit-trap: $(dra-vm-label "$vmdir") still has: $(tr '\n' ' ' <<< "$left")"
+        mbt-pmem-unmount "$vmdir"
+        left=$(mbt-pmem-held "$vmdir") || left="cannot read its mounts"
+        [ -z "$left" ] || held+="
+  $(dra-vm-label "$vmdir"): $(tr '\n' ' ' <<< "$left")"
+    done
+    if [ -n "$held" ]; then
+        echo "mbt-exit-trap: persistent pool devices are still held, not releasing or detaching anything:$held
+  By hand in each VM above: stop what uses the mount (fuser -vm MOUNT), umount MOUNT (never umount -l;
+  the lease binds first), check that no /sys/block/loop*/loop/backing_file names a pmem device, then
+  fake-cxl-pool-client --server <pool-c URL> guest release SERIAL; or let the next test restart the
+  VM (pool-vm-reset). Then remove the files: ${MBT_PDEV_FILES[*]}"
+        pool-server-stop
+        return 0
+    fi
     pool-cleanup
+    mbt-pdev-files-remove "$MBT_PDEV_DIR" "${!MBT_PDEV_POOL[@]}"
+    for vmdir in "${MBT_VMDIR[@]}"; do
+        mbt-hollow-regions-remove "$vmdir"
+    done
+}
+
+mbt-hollow-regions-remove() { # script API
+    # Usage: mbt-hollow-regions-remove VMDIR
+    #
+    # Print and delete the hollow CXL regions of the VM of VMDIR: a region
+    # that is not committed and has no target, what a pmem region becomes
+    # when the driver forgot it (killed in a Prepare, the claim released
+    # before kubelet retried it: 04-status-EXEC.txt 14.7 B1) and its
+    # memdev was detached. Nothing is behind it, but it keeps its range of
+    # the CXL window and pkg/cxl cannot read the devices while it exists;
+    # cxl destroy-region refuses it ("error locating decoder for
+    # target0"): delete_region of its root decoder. Never fails.
+    dra-vm-command "$1" "for r in /sys/bus/cxl/devices/region[0-9]*; do
+    [ -e \"\$r\" ] || continue
+    n=\${r##*/}
+    [ \"\$(cat \$r/commit)\" = 0 ] && [ -z \"\$(cat \$r/target* 2>/dev/null | tr -d '[:space:]')\" ] || continue
+    echo \"hollow region \$n: mode \$(cat \$r/mode) resource \$(cat \$r/resource) size \$(cat \$r/size) uuid \$(cat \$r/uuid 2>/dev/null)\"
+    for d in /sys/bus/cxl/devices/root[0-9]*/decoder*; do
+        [ -d \"\$d/\$n\" ] && echo \$n > \$d/delete_region && echo \"deleted \$n (\${d##*/})\"
+    done
+done; true" > /dev/null
+    [ -z "$COMMAND_OUTPUT" ] || echo "mbt-exit-trap: $(dra-vm-label "$1"): $COMMAND_OUTPUT"
 }

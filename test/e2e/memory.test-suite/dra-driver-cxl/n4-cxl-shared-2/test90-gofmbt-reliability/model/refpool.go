@@ -102,7 +102,12 @@ var refPhaseNames = []string{"none", "unallocated", "allocated", "bound"}
 func (p refPhase) String() string { return refPhaseNames[p] }
 
 type refPod struct {
-	slot    int
+	slot int
+	// comp: the companion of a persistent lease of plse slot slot
+	// (cslot: what it claims: c-pmem0 on the requester's node, whole
+	// for pbw, a share else)
+	comp    bool
+	cslot   *Slot
 	gen     uint16
 	deleted bool  // a delete was issued
 	goneAt  int64 // deleted: the pod object is gone then
@@ -165,6 +170,7 @@ type refPool struct {
 	clock    atomic.Int64 // now, for readers on other goroutines
 	ctrl     [nPools]refCtrl
 	pods     []*refPod // the live pod of every slot (pool kinds), nil if none
+	comps    []*refPod // the companion of the persistent lease of every plse slot
 	old      []*refPod // deleted pods until gone and their claims released
 	gens     []uint16
 	atts     []*refAtt
@@ -172,13 +178,19 @@ type refPool struct {
 	hist     []string
 	// Count counts what happened, by event
 	Count map[string]int
+	// RequeueOnUnreserve: kube-scheduler with the bug-08 fix (P13/
+	// 10-scheduler-requeue-fix.txt): the release of a deleted claim's
+	// in-flight allocation by Unreserve requeues the pods that
+	// DynamicResources rejected
+	RequeueOnUnreserve bool
 	// Anomalies are situations the reference does not model: never
 	// expected (none are detected at the moment)
 	Anomalies []string
 }
 
 func newRefPool(cfg *Config, seed int64) *refPool {
-	r := &refPool{cfg: cfg, rng: rand.New(rand.NewSource(seed)), pods: make([]*refPod, len(cfg.Slots)), gens: make([]uint16, len(cfg.Slots)), Count: map[string]int{}}
+	r := &refPool{cfg: cfg, rng: rand.New(rand.NewSource(seed)), pods: make([]*refPod, len(cfg.Slots)), comps: make([]*refPod, len(cfg.Slots)),
+		gens: make([]uint16, len(cfg.Slots)), Count: map[string]int{}}
 	for p := range r.ctrl {
 		r.ctrl[p] = refCtrl{running: true, slices: true, syncAt: refSyncInterval}
 	}
@@ -207,11 +219,72 @@ func (r *refPool) Now() int64 { return r.clock.Load() }
 
 func (r *refPool) slot(i int) *Slot { return &r.cfg.Slots[i] }
 
+// sl is what a pod claims: its slot, or a companion's claim.
+func (r *refPool) sl(p *refPod) *Slot {
+	if p.comp {
+		return p.cslot
+	}
+	return r.slot(p.slot)
+}
+
+// allPods are the live pods and companions (nil entries included).
+func (r *refPool) allPods() []*refPod {
+	return append(append([]*refPod(nil), r.pods...), r.comps...)
+}
+
+// live calls f for every live pod and companion.
+func (r *refPool) live(f func(p *refPod)) {
+	for _, p := range r.pods {
+		if p != nil {
+			f(p)
+		}
+	}
+	for _, p := range r.comps {
+		if p != nil {
+			f(p)
+		}
+	}
+}
+
+// refHint is what the simulated SUT tells the reference of an action
+// that the reference cannot know: a claim that is not a pool claim
+// freed, a persistent lease released (its companion deleted).
+type refHint struct {
+	freesClaim, releasesLease bool
+}
+
+// leaseGet takes a persistent lease of plse slot i: its companion claims
+// c-pmem0 on the requester's node; cxl-request waits (60 s) until it is
+// Ready: the companion bound.
+func (r *refPool) leaseGet(i int, m LeaseMode) {
+	sl := r.slot(i)
+	cs := &Slot{Kind: m.kind(), Pool: PoolC, VM: sl.VM, Name: sl.Name + "/lease", Res: Res(cPmem0), Dev: cPmem0}
+	r.comps[i] = &refPod{slot: i, comp: true, cslot: cs, gen: 1, attemptAt: r.now + r.rnd(20, 150)}
+	r.logf("lease-get %s %s", sl.Name, m)
+	for t := r.now; t < r.now+60000; t += 500 {
+		r.advance(t)
+		if r.comps[i].bound {
+			return
+		}
+	}
+	r.Anomalies = append(r.Anomalies, fmt.Sprintf("%.1fs: the companion of %s not Ready after 60 s", float64(r.now)/1000, sl.Name))
+}
+
+// leaseRelease deletes the companion of plse slot i.
+func (r *refPool) leaseRelease(i int) {
+	p := r.comps[i]
+	if p == nil {
+		return
+	}
+	r.comps[i] = nil
+	r.drop(p)
+}
+
 // do applies a non-settle action at the current time and advances the
 // clock by the time the executor takes for it. freesClaim: a pod with an
 // allocated claim that is not a pool claim was deleted (a requeueing
 // event when its claim is deallocated).
-func (r *refPool) do(a Act, freesClaim bool) {
+func (r *refPool) do(a Act, h refHint) {
 	cost := int64(0)
 	switch a.Verb {
 	case VCreate:
@@ -223,15 +296,36 @@ func (r *refPool) do(a Act, freesClaim bool) {
 		cost = r.rnd(200, 450)
 		if r.slot(int(a.Slot)).Kind.pooled() {
 			r.delete(int(a.Slot))
-		} else if freesClaim {
+		} else if h.freesClaim {
 			r.requeueAt(r.now + r.rnd(700, 2900))
+		}
+		if h.releasesLease {
+			r.leaseRelease(int(a.Slot))
 		}
 	case VCrash:
 		cost = r.rnd(100, 300)
-	case VWrite, VRead:
+		if h.releasesLease {
+			r.leaseRelease(int(a.Slot))
+		}
+	case VWrite, VRead, VPWrite, VPRead, VHold, VPWipe:
 		cost = r.rnd(300, 700)
-	case VLeaseGet, VLeasePut:
+	case VUnhold:
+		cost = r.rnd(300, 700)
+		if h.releasesLease {
+			r.leaseRelease(int(a.Slot))
+		}
+	case VDriverKillAt:
+		cost = r.rnd(200, 500)
+	case VLeaseGet:
 		cost = r.rnd(300, 900)
+		if a.Mode.persistent() {
+			r.leaseGet(int(a.Slot), a.Mode)
+		}
+	case VLeasePut:
+		cost = r.rnd(300, 900)
+		if h.releasesLease {
+			r.leaseRelease(int(a.Slot))
+		}
 	case VCtrlKill:
 		cost = r.rnd(200, 400)
 		c := &r.ctrl[a.Pool]
@@ -286,6 +380,11 @@ func (r *refPool) delete(i int) {
 		return
 	}
 	r.pods[i] = nil
+	r.drop(p)
+}
+
+// drop deletes a pod or companion.
+func (r *refPool) drop(p *refPod) {
 	p.deleted = true
 	switch {
 	case p.bound:
@@ -303,7 +402,7 @@ func (r *refPool) delete(i int) {
 		p.goneAt = r.now + r.rnd(20, 120)
 	}
 	r.old = append(r.old, p)
-	r.logf("delete %s g%d (%s)", r.slot(i).Name, p.gen, p.phase())
+	r.logf("delete %s g%d (%s)", r.sl(p).Name, p.gen, p.phase())
 }
 
 // start starts a controller incarnation at t.
@@ -323,7 +422,7 @@ func (r *refPool) requeueAt(t int64) { r.requeues = append(r.requeues, t) }
 // unschedulable pool pod is tried again (backoff and queue: soon).
 func (r *refPool) requeueAll(why string) {
 	n := 0
-	for _, p := range r.pods {
+	for _, p := range r.allPods() {
 		if p != nil && p.unsched && p.attemptAt == 0 {
 			p.attemptAt = r.now + r.rnd(0, 800)
 			n++
@@ -389,7 +488,7 @@ func (r *refPool) nextEvent() int64 {
 	for _, t := range r.requeues {
 		at(t)
 	}
-	for _, p := range r.pods {
+	for _, p := range r.allPods() {
 		if p == nil {
 			continue
 		}
@@ -428,7 +527,7 @@ func (r *refPool) step() {
 	// deleted pods and their claims
 	keep := r.old[:0]
 	for _, p := range r.old {
-		sl := r.slot(p.slot)
+		sl := r.sl(p)
 		if !p.gone && now >= p.goneAt {
 			p.gone = true
 		}
@@ -441,7 +540,12 @@ func (r *refPool) step() {
 		if p.inflight && now >= p.inflightTo {
 			p.inflight = false
 			r.Count["hold"]++
-			r.logf("in-flight allocation of %s g%d dropped (Unreserve, no event)", sl.Name, p.gen)
+			if r.RequeueOnUnreserve {
+				r.logf("in-flight allocation of %s g%d dropped (Unreserve, AssignedPodDelete)", sl.Name, p.gen)
+				r.requeueAll("Unreserve of " + sl.Name + " (bug-08 fix)")
+			} else {
+				r.logf("in-flight allocation of %s g%d dropped (Unreserve, no event)", sl.Name, p.gen)
+			}
 		}
 		if !p.gone || p.inflight || (p.alloc && !p.dealloced) {
 			keep = append(keep, p)
@@ -459,14 +563,14 @@ func (r *refPool) step() {
 	}
 	r.requeues = rq
 	// the scheduler
-	for _, p := range r.pods {
+	for _, p := range r.allPods() {
 		if p == nil {
 			continue
 		}
 		if p.attemptAt == 0 && p.unsched && now >= p.flushAt {
 			p.attemptAt = now
 			r.Count["flush"]++
-			r.logf("flush %s g%d from the unschedulable pods", r.slot(p.slot).Name, p.gen)
+			r.logf("flush %s g%d from the unschedulable pods", r.sl(p).Name, p.gen)
 		}
 		if p.attemptAt > 0 && now >= p.attemptAt {
 			r.attempt(p)
@@ -534,13 +638,13 @@ func (r *refPool) step() {
 // claimsOf calls f for every claim of a pool that has an allocation in
 // the API: live pods and deleted ones whose claim is not deallocated.
 func (r *refPool) claimsOf(p Pool, f func(rp *refPod, live bool)) {
-	for _, rp := range r.pods {
-		if rp != nil && rp.alloc && r.slot(rp.slot).Pool == p && r.slot(rp.slot).Kind.pooled() {
+	for _, rp := range r.allPods() {
+		if rp != nil && rp.alloc && r.sl(rp).Pool == p && r.sl(rp).Kind.pooled() {
 			f(rp, true)
 		}
 	}
 	for _, rp := range r.old {
-		if rp.alloc && !rp.dealloced && r.slot(rp.slot).Kind.pooled() && r.slot(rp.slot).Pool == p {
+		if rp.alloc && !rp.dealloced && r.sl(rp).Kind.pooled() && r.sl(rp).Pool == p {
 			f(rp, false)
 		}
 	}
@@ -565,9 +669,9 @@ func (r *refPool) reconcile(p Pool) {
 	c := &r.ctrl[p]
 	desired := map[refKey]bool{} // -> exclusive
 	r.claimsOf(p, func(rp *refPod, _ bool) {
-		sl := r.slot(rp.slot)
+		sl := r.sl(rp)
 		k := refKey{sl.Dev, rp.node}
-		desired[k] = desired[k] || sl.Kind == KSExcl
+		desired[k] = desired[k] || sl.Kind.wholeShared()
 	})
 	var keys []refKey
 	for k := range desired {
@@ -608,7 +712,7 @@ func (r *refPool) reconcile(p Pool) {
 		}
 		if conflict {
 			r.claimsOf(p, func(rp *refPod, live bool) {
-				if sl := r.slot(rp.slot); live && !rp.attached && !rp.failed && sl.Dev == k.dev && rp.node == k.host {
+				if sl := r.sl(rp); live && !rp.attached && !rp.failed && sl.Dev == k.dev && rp.node == k.host {
 					rp.failed = true
 					r.Count["attach-failed"]++
 					r.logf("claim of %s g%d AttachFailed: %s conflicts", sl.Name, rp.gen, k.dev)
@@ -637,11 +741,11 @@ func (r *refPool) reconcile(p Pool) {
 // attachment is attached (and exclusive, for sexcl).
 func (r *refPool) writeStatus(p Pool) {
 	r.claimsOf(p, func(rp *refPod, live bool) {
-		sl := r.slot(rp.slot)
+		sl := r.sl(rp)
 		if !live || rp.attached {
 			return
 		}
-		if a := r.findAtt(sl.Dev, rp.node); a != nil && a.state == "attached" && (sl.Kind != KSExcl || a.excl) {
+		if a := r.findAtt(sl.Dev, rp.node); a != nil && a.state == "attached" && (!sl.Kind.wholeShared() || a.excl) {
 			rp.attached = true
 			r.logf("claim of %s g%d Attached", sl.Name, rp.gen)
 		}
@@ -651,7 +755,7 @@ func (r *refPool) writeStatus(p Pool) {
 // attempt is a scheduling attempt of a pool pod.
 func (r *refPool) attempt(rp *refPod) {
 	rp.attemptAt = 0
-	sl := r.slot(rp.slot)
+	sl := r.sl(rp)
 	why := ""
 	if !r.ctrl[sl.Pool].slices {
 		why = "no ResourceSlice of pool " + sl.Pool.String()
@@ -687,19 +791,19 @@ func (r *refPool) attempt(rp *refPod) {
 // ("" if none): the scheduler's allocated devices and in-flight
 // allocations.
 func (r *refPool) conflict(rp *refPod) string {
-	sl := r.slot(rp.slot)
+	sl := r.sl(rp)
 	clash := func(o *refPod) bool {
-		os := r.slot(o.slot)
+		os := r.sl(o)
 		return os.Kind.pooled() && os.Dev == sl.Dev && !(os.Kind.share() && sl.Kind.share())
 	}
-	for _, o := range r.pods {
+	for _, o := range r.allPods() {
 		if o != nil && o != rp && o.alloc && clash(o) {
-			return r.slot(o.slot).Name
+			return r.sl(o).Name
 		}
 	}
 	for _, o := range r.old {
 		if ((o.alloc && !o.dealloced) || o.inflight) && clash(o) {
-			return r.slot(o.slot).Name + " (deleted)"
+			return r.sl(o).Name + " (deleted)"
 		}
 	}
 	return ""
@@ -708,7 +812,7 @@ func (r *refPool) conflict(rp *refPod) string {
 // poll is a PreBind poll of an allocated pod.
 func (r *refPool) poll(rp *refPod) {
 	rp.pollAt += refPollPeriod
-	sl := r.slot(rp.slot)
+	sl := r.sl(rp)
 	switch {
 	case rp.attached:
 		rp.bound = true
@@ -779,7 +883,7 @@ func (r *refPool) String() string {
 		s += fmt.Sprintf(" att %s@%s %s;", a.dev, a.host, a.state)
 	}
 	for _, p := range r.old {
-		s += fmt.Sprintf(" deleted %s g%d gone %v dealloc %v inflight %v;", r.slot(p.slot).Name, p.gen, p.gone, p.dealloced, p.inflight)
+		s += fmt.Sprintf(" deleted %s g%d gone %v dealloc %v inflight %v;", r.sl(p).Name, p.gen, p.gone, p.dealloced, p.inflight)
 	}
 	return s
 }

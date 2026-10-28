@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Expectation is the prediction of one step.
@@ -37,10 +38,15 @@ type Expectation struct {
 	Online      bool          `json:"online"`
 	LocalBlocks [nVMs]int     `json:"localBlocks"`
 	NodeHB      [nBridges]int `json:"nodeHB"`
-	Slots       []SlotJSON    `json:"slots"`
-	Pools       []PoolJSON    `json:"pools"`
-	Drivers     []DriverJSON  `json:"drivers"`
-	Data        []string      `json:"data,omitempty"`
+	// StallWindow (seconds; 0: the default) and StallStrict: A19's
+	// window of stalled contenders, and whether settles wait for them
+	StallWindow int          `json:"stallWindow,omitempty"`
+	StallStrict bool         `json:"stallStrict,omitempty"`
+	Slots       []SlotJSON   `json:"slots"`
+	Pools       []PoolJSON   `json:"pools"`
+	Drivers     []DriverJSON `json:"drivers"`
+	Data        []string     `json:"data,omitempty"`
+	PDevs       []PDevJSON   `json:"pdevs,omitempty"`
 	// Stacks are the decoder stacks (A9): "vm0/hb0": ["local",
 	// "b-pooled0", "hole", ...] bottom first.
 	Stacks map[string][]string `json:"stacks,omitempty"`
@@ -68,6 +74,21 @@ type SlotJSON struct {
 	SlotData  string `json:"data,omitempty"` // ldax: quoted content, "?" unknown
 	UnblockAt int64  `json:"unblockAt,omitempty"`
 	Slack     int    `json:"slack,omitempty"`
+	Hold      bool   `json:"hold,omitempty"`      // A23: a file of its fs claim or lease is held
+	Refuse    bool   `json:"refuse,omitempty"`    // A25: its Prepare is refused
+	LeaseOpen bool   `json:"leaseOpen,omitempty"` // A29 d: a failed lease-get, the lease kept or released
+}
+
+// PDevJSON is the content of a persistent device (A25).
+type PDevJSON struct {
+	Dev     string `json:"dev"`
+	NS      string `json:"ns"`  // no, yes, maybe
+	FS      string `json:"fs"`  // no, yes (the template erofs)
+	Tok     string `json:"tok"` // hello.txt: quoted, "?" unknown
+	Raw     string `json:"raw"` // bytes 0-63
+	UUID    string `json:"uuid,omitempty"`
+	LsaSha  string `json:"lsaSha,omitempty"`
+	HeadSha string `json:"headSha,omitempty"`
 }
 
 // PoolJSON is a pool controller; Att is what is known of the attachments
@@ -89,12 +110,14 @@ type DriverJSON struct {
 	PodBefore string `json:"podBefore,omitempty"`
 	F         []int  `json:"fenced,omitempty"`
 	FMaybe    []int  `json:"fencedMaybe,omitempty"`
+	KillAt    string `json:"killAt,omitempty"` // A23: the marker of an armed watcher
+	KillAtAt  int64  `json:"killAtAt,omitempty"`
 }
 
 // DoneJSON is what a non-settle step must return.
 type DoneJSON struct {
 	Verb   string  `json:"verb"`
-	Status string  `json:"status"`          // "zero" or "nonzero"
+	Status string  `json:"status"`          // "zero", "nonzero" or "either"
 	Text   *string `json:"text,omitempty"`  // read: the string; nil: anything
 	Lease  bool    `json:"lease,omitempty"` // lease-get: a lease ID
 }
@@ -127,6 +150,10 @@ func (s *State) expect(step int, action string) *Expectation {
 		Online:      s.cfg.Online,
 		LocalBlocks: s.cfg.LocalBlocks,
 		NodeHB:      s.cfg.NodeHB,
+		StallStrict: s.cfg.StallStrict,
+	}
+	if w := s.cfg.StallWindow; w > 0 && w != defaultStallWindow {
+		e.StallWindow = int(w / time.Second)
 	}
 	for i := range s.Slots {
 		ss := &s.Slots[i]
@@ -144,6 +171,9 @@ func (s *State) expect(step int, action string) *Expectation {
 			LeaseID:   s.LeaseIDs[i],
 			UnblockAt: s.unblockAt(i),
 			Slack:     int(ss.Slack),
+			Hold:      ss.Hold,
+			Refuse:    ss.Refuse,
+			LeaseOpen: ss.LeaseOpen,
 		}
 		if ss.Node != VMAny {
 			j.Node = ss.Node.String()
@@ -156,6 +186,8 @@ func (s *State) expect(step int, action string) *Expectation {
 			j.Lease, j.LeaseMode = "held", ss.LeaseMode.String()
 		case LeaseReleasing:
 			j.Lease, j.LeaseMode = "releasing", ss.LeaseMode.String()
+		case LeaseBusy:
+			j.Lease, j.LeaseMode = "busy", ss.LeaseMode.String()
 		}
 		if sl.Kind == KLDax && ss.Phase != Absent {
 			j.SlotData = tokenJSON(s.SlotData[i])
@@ -170,13 +202,13 @@ func (s *State) expect(step int, action string) *Expectation {
 		}
 		if !c.Up {
 			pj.Att = map[string]string{}
-			for d := 0; d < 2; d++ {
+			for d, dev := range poolDevs(p) {
 				for v := VM(0); v < nVMs; v++ {
 					switch c.Att[d][v] {
 					case TriYes:
-						pj.Att[devices[2*int(p)+d].Name+"@"+v.String()] = "yes"
+						pj.Att[devices[dev].Name+"@"+v.String()] = "yes"
 					case TriMaybe:
-						pj.Att[devices[2*int(p)+d].Name+"@"+v.String()] = "maybe"
+						pj.Att[devices[dev].Name+"@"+v.String()] = "maybe"
 					}
 				}
 			}
@@ -194,10 +226,21 @@ func (s *State) expect(step int, action string) *Expectation {
 			PodBefore: d.PodBefore,
 			F:         s.bitNodes(d.F),
 			FMaybe:    s.bitNodes(d.FMaybe),
+			KillAt:    killAtName(d.KillAt),
+			KillAtAt:  d.KillAtAt,
 		})
 	}
 	for d := DevID(0); d < nDevs; d++ {
 		e.Data = append(e.Data, tokenJSON(s.Data[d]))
+	}
+	for x := range s.PDev {
+		d := cPmem0 + DevID(x)
+		if !s.cfg.devUsed(d) {
+			continue
+		}
+		pd := &s.PDev[x]
+		e.PDevs = append(e.PDevs, PDevJSON{Dev: d.String(), NS: triName(pd.NS), FS: triName(pd.FS), Tok: tokenJSON(pd.Tok),
+			Raw: tokenJSON(pd.Raw), UUID: pd.UUID, LsaSha: pd.LsaSha, HeadSha: pd.HeadSha})
 	}
 	for si := 0; si < nStacks; si++ {
 		st := &s.Stacks[si]
@@ -253,6 +296,33 @@ func expectDone(from, to *State, a Act, step int) *Expectation {
 		}
 	case VLeaseGet:
 		d.Lease = true
+		if from.killAtBind(int(a.Slot), a.Mode) {
+			// 0 with the lease, or nonzero with it Failed (A29 d)
+			d.Status = "either"
+		}
+	case VPWrite:
+		// a read-only claim or fd refuses it (A23, P11); img returns
+		// its token, junk ""
+		if !from.pwriteOK(int(a.Slot)) {
+			d.Status = "nonzero"
+		} else {
+			txt := ""
+			if a.Arg == 0 {
+				txt = fmt.Sprintf("mbt-%d", to.Steps)
+			}
+			d.Text = &txt
+		}
+	case VPRead:
+		if t := from.preadToken(int(a.Slot)); t.Known {
+			txt := t.Text
+			d.Text = &txt
+		}
+	case VLeasePut:
+		// a held fs lease stays Releasing: cxl-request release --wait
+		// ends with exit 3 (A25, the executor's MBT_PLEASE_PUT_WAIT)
+		if to.Slots[a.Slot].Lease == LeaseBusy {
+			d.Status = "nonzero"
+		}
 	}
 	e.Done = d
 	return e
@@ -276,6 +346,10 @@ func (e *Expectation) config() (*Config, error) {
 	}
 	cfg.LocalBlocks = e.LocalBlocks
 	cfg.NodeHB = e.NodeHB
+	if e.StallWindow > 0 {
+		cfg.StallWindow = time.Duration(e.StallWindow) * time.Second
+	}
+	cfg.StallStrict = e.StallStrict
 	return cfg, nil
 }
 
@@ -324,10 +398,13 @@ func (e *Expectation) state() (*State, error) {
 			ss.Lease = LeaseHeld
 		case "releasing":
 			ss.Lease = LeaseReleasing
+		case "busy":
+			ss.Lease = LeaseBusy
 		}
-		if j.LeaseMode == "dax" {
-			ss.LeaseMode = ModeDax
+		if m, ok := parseLeaseMode(j.LeaseMode); ok {
+			ss.LeaseMode = m
 		}
+		ss.Hold, ss.Refuse, ss.LeaseOpen = j.Hold, j.Refuse, j.LeaseOpen
 		s.LeaseIDs[i] = j.LeaseID
 		s.setUnblockAt(i, j.UnblockAt)
 		ss.Slack = uint8(j.Slack)
@@ -360,7 +437,7 @@ func (e *Expectation) state() (*State, error) {
 			if v == "maybe" {
 				t = TriMaybe
 			}
-			c.Att[int(d)-2*int(p)][vm] = t
+			c.Att[devIndex(d)][vm] = t
 		}
 	}
 	for _, dj := range e.Drivers {
@@ -377,6 +454,31 @@ func (e *Expectation) state() (*State, error) {
 		for _, n := range dj.FMaybe {
 			d.FMaybe |= s.fenceBit(n)
 		}
+		if mk, ok := parseMarker(dj.KillAt); ok {
+			d.KillAt = uint8(mk) + 1
+		}
+		d.KillAtAt = dj.KillAtAt
+	}
+	for _, pj := range e.PDevs {
+		x := -1
+		for d := cPmem0; d < nDevs; d++ {
+			if d.String() == pj.Dev {
+				x = pmemIndex(d)
+			}
+		}
+		if x < 0 {
+			return nil, fmt.Errorf("expectation: invalid persistent device %q", pj.Dev)
+		}
+		pd := &s.PDev[x]
+		var err error
+		pd.NS, pd.FS = parseTri(pj.NS), parseTri(pj.FS)
+		if pd.Tok, err = parseTokenJSON(pj.Tok); err != nil {
+			return nil, fmt.Errorf("expectation: %w", err)
+		}
+		if pd.Raw, err = parseTokenJSON(pj.Raw); err != nil {
+			return nil, fmt.Errorf("expectation: %w", err)
+		}
+		pd.UUID, pd.LsaSha, pd.HeadSha = pj.UUID, pj.LsaSha, pj.HeadSha
 	}
 	for d := 0; d < len(e.Data) && d < nDevs; d++ {
 		t, err := parseTokenJSON(e.Data[d])
@@ -417,6 +519,23 @@ func (e *Expectation) state() (*State, error) {
 		s.Alts = append(s.Alts, a)
 	}
 	return s, nil
+}
+
+func killAtName(k uint8) string {
+	if k == 0 {
+		return ""
+	}
+	return markerNames[k-1]
+}
+
+func parseTri(s string) Tri {
+	switch s {
+	case "yes":
+		return TriYes
+	case "maybe":
+		return TriMaybe
+	}
+	return TriNo
 }
 
 // parseDevAt parses DEVICE@VM.

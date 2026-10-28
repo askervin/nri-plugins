@@ -203,10 +203,15 @@ func (s *State) userRegion(u int16) (int, RKey, bool) {
 	i, lease := s.userSlot(u)
 	sl := s.slot(i)
 	if lease {
-		if sl.Kind != KLease {
-			return 0, 0, false
+		switch {
+		case sl.Kind == KLease:
+			return stackIndex(sl.VM, HB0), rkLocal, true
+		case sl.Kind == KPlse && s.Slots[i].LeaseMode.persistent():
+			// the companion of a persistent lease: c-pmem0 on the
+			// requester's node
+			return stackIndex(sl.VM, HB1), devKey(cPmem0), true
 		}
-		return stackIndex(sl.VM, HB0), rkLocal, true
+		return 0, 0, false
 	}
 	v := s.Slots[i].Node
 	switch {
@@ -243,6 +248,10 @@ type stackEvent struct {
 	// allocates it after their claims are deallocated, which is after
 	// their Unprepare)
 	Handover bool
+	// Probe: the prepare of a claim whose Prepare is refused (A25): it
+	// needs the region (Blocked by a hole like any other), its rollback
+	// destroys it again at the top: no change of the stack
+	Probe bool
 }
 
 // addEvent records an event of a user (copy on write). The stack of an
@@ -282,6 +291,16 @@ func (s *State) hasPrepare(u int16) bool {
 	return false
 }
 
+// hasUnprepare tells if a user has an unprepare event in this window.
+func (s *State) hasUnprepare(u int16) bool {
+	for _, e := range s.Ev {
+		if e.User == u && e.Kind == evUnprepare {
+			return true
+		}
+	}
+	return false
+}
+
 // setOptional makes the prepare events of a user optional.
 func (n *State) setOptional(u int16) {
 	for j := range n.Ev {
@@ -309,7 +328,7 @@ func (s *State) preparedAtStart(u int16) bool {
 	i, lease := s.userSlot(u)
 	ss := &s.Slots[i]
 	if lease {
-		return (ss.Lease == LeaseHeld || ss.Lease == LeaseReleasing) && !s.hasPrepare(u)
+		return (ss.Lease == LeaseHeld || ss.Lease == LeaseReleasing || ss.Lease == LeaseBusy) && !s.hasPrepare(u)
 	}
 	if s.hasPrepare(u) {
 		return false
@@ -399,6 +418,10 @@ func (p *playState) apply(e *stackEvent) {
 	switch e.Kind {
 	case evPrepare:
 		switch {
+		case e.Probe:
+			if p.ref[e.Key] == 0 && p.S.hasHole() {
+				p.blocked.set(e.User)
+			}
 		case p.ref[e.Key] > 0:
 			p.ref[e.Key]++
 			p.prepared.set(e.User)
@@ -624,8 +647,19 @@ func (n *State) settleAll() *State {
 	seen := map[string]bool{}
 	truncated := false
 	var bases []*State
-	for _, w := range n.expandSlices() {
-		bases = append(bases, w.expandAnyNodes()...)
+	for _, k := range n.expandLeaseOpen() {
+		// (a watcher fires in the worlds of the slices and of the
+		// hosts of the "any" pods where a Prepare on its VM may show
+		// its marker, FP1; the order of the worlds is as before)
+		for _, fired := range k.killWorlds() {
+			for _, w := range k.expandSlices() {
+				for _, h := range w.expandAnyNodes() {
+					if f := h.fireKillAt(fired); f != nil {
+						bases = append(bases, f)
+					}
+				}
+			}
+		}
 	}
 	for _, b := range bases {
 		var sis []int
@@ -677,10 +711,219 @@ func (n *State) settleAll() *State {
 	return p
 }
 
+// expandLeaseOpen returns a state per world of the leases whose
+// lease-get failed under a driver-kill-at bind (A29 d, A30): kept (still
+// Lending, Ready after kubelet's retry of its companion's Prepare) or
+// released (what the cut Prepare made goes).
+func (n *State) expandLeaseOpen() []*State {
+	states := []*State{n}
+	for i := range n.Slots {
+		if !n.Slots[i].LeaseOpen {
+			continue
+		}
+		var next []*State
+		for _, b := range states {
+			kept, released := b.clone(), b.clone()
+			kept.Slots[i].LeaseOpen = false
+			released.Slots[i].LeaseOpen = false
+			released.releasePLease(i)
+			next = append(next, kept, released)
+		}
+		states = next
+	}
+	return states
+}
+
+// killWorlds returns the worlds of the armed driver-kill-at watchers
+// (A23), as sets of the VMs whose watcher fired: not fired (still armed:
+// it may fire later, until the oracle disarms it 70 s after it saw it),
+// and, when a Prepare on the VM may show the marker (killCandidate),
+// fired.
+func (n *State) killWorlds() [][nVMs]bool {
+	worlds := [][nVMs]bool{{}}
+	for v := VM(0); v < nVMs; v++ {
+		if n.Drv[v].KillAt == 0 || !n.killCandidate(v, int(n.Drv[v].KillAt-1)) {
+			continue
+		}
+		var next [][nVMs]bool
+		for _, w := range worlds {
+			f := w
+			f[v] = true
+			next = append(next, w, f)
+		}
+		worlds = next
+	}
+	return worlds
+}
+
+// fireKillAt returns the state of a world of the watchers (killWorlds)
+// with the hosts of the "any" pods and the slices settled, nil if a
+// watcher that fired in it has no Prepare there that may show its
+// marker. A watcher that fired killed the driver (a driver-kill:
+// restarts +1, fencing seeded, steering as after a kill); the
+// interrupted Prepare is retried after the restart, so the pods end as
+// without the kill.
+func (n *State) fireKillAt(fired [nVMs]bool) *State {
+	if fired == [nVMs]bool{} {
+		return n
+	}
+	for v := VM(0); v < nVMs; v++ {
+		if fired[v] && !n.killCandidate(v, int(n.Drv[v].KillAt-1)) {
+			return nil
+		}
+	}
+	f := n.clone()
+	for v := VM(0); v < nVMs; v++ {
+		if !fired[v] {
+			continue
+		}
+		d := &f.Drv[v]
+		d.KillAt, d.KillAtAt = 0, 0
+		d.Restarts++
+		d.Inc++
+		d.Killed = true
+		f.driverRestarted(v, SteerOff)
+	}
+	return f
+}
+
+// killCandidate: a persistent Prepare on VM v may show the marker in
+// the window (FP1): one of the window's events there, also of an "any"
+// pod not placed yet that may land on v, or a Prepare that comes at any
+// time without an event: a stalled contender's promotion, an unblocking
+// pod's retry (whole Prepares), a refused claim's retry (makes and rolls
+// back its region, which is probed: A25, PM2) and a blocked pod's retry
+// (its cxl create-region makes the region before the hole refuses it).
+// What the watcher sees (T/mbt-observe.py Marker): region, a new pmem
+// region; ns, a namespace with a size in a new pmem region (from the
+// labels of a device with one, or made by a writer); mount, a new node
+// mount (fs claims and fs leases); bind, a new bind of an fs lease.
+// Volatile kinds never show one (their regions are ram, ignored).
+func (s *State) killCandidate(v VM, marker int) bool {
+	si := stackIndex(v, HB1)
+	for i := range s.Slots {
+		ss, sl := &s.Slots[i], s.slot(i)
+		if !sl.Kind.persistent() || sl.Kind == KPBad || !s.mayLandOn(i, v) {
+			continue
+		}
+		stage := prepRegion
+		switch ss.Phase {
+		case Refused:
+			stage = prepProbe
+		case Blocked:
+		case Unblocking, Stalled:
+			if ss.Phase == Stalled && !s.Ctrl[sl.Pool].Up {
+				// (promoted, it waits for the attach)
+				continue
+			}
+			stage = prepWhole
+			if ss.Refuse {
+				stage = prepProbe
+			}
+		default:
+			continue
+		}
+		if s.prepareShows(v, marker, sl.Kind, false, sl.Dev, stage) {
+			return true
+		}
+	}
+	for _, e := range s.Ev {
+		if e.Kind != evPrepare || e.Key < 1 || !devices[e.Key-1].Persistent {
+			continue
+		}
+		i, lease := s.userSlot(e.User)
+		if int(e.Stack) != si && !(e.Stack < 0 && !lease && s.mayLandOn(i, v)) {
+			continue
+		}
+		kind := s.slot(i).Kind
+		if lease {
+			kind = s.Slots[i].LeaseMode.kind()
+		}
+		stage := prepWhole
+		if e.Probe {
+			stage = prepProbe
+		}
+		if s.prepareShows(v, marker, kind, lease, DevID(e.Key-1), stage) {
+			return true
+		}
+	}
+	return false
+}
+
+// how far a Prepare gets (killCandidate): makes the region (blocked by a
+// hole: no commit, no nd region), probes it too (refused: rolled back),
+// or the whole Prepare
+const (
+	prepRegion = iota
+	prepProbe
+	prepWhole
+)
+
+// mayLandOn: slot i is on VM v, or an "any" slot that may land there.
+func (s *State) mayLandOn(i int, v VM) bool {
+	n := s.Slots[i].Node
+	return n == v || (n == VMAny && s.slot(i).hostOK(v))
+}
+
+// prepareShows: a Prepare of the kind (a lease's: its mode's) on device
+// d of VM v that gets as far as stage shows the marker.
+func (s *State) prepareShows(v VM, marker int, kind Kind, lease bool, d DevID, stage int) bool {
+	si := stackIndex(v, HB1)
+	region := s.mayMakeRegion(si, devKey(d))
+	switch marker {
+	case markerRegion:
+		return region
+	case markerNS:
+		return region && stage >= prepProbe && (s.PDev[pmemIndex(d)].NS != TriNo || (stage == prepWhole && kind.writer()))
+	case markerMount:
+		return stage == prepWhole && kind.fsKind() && !s.nodeMountKept(v, d, kind == KPFsc)
+	case markerBind:
+		return stage == prepWhole && lease && kind.fsKind()
+	}
+	return false
+}
+
+// mayMakeRegion: a Prepare of key on stack si may make a new region: it
+// is not there at the start of the window, or an Unprepare of the window
+// may take it first (gone and back is new to the watcher).
+func (s *State) mayMakeRegion(si int, key RKey) bool {
+	if !s.Stacks[si].contains(key) {
+		return true
+	}
+	for _, e := range s.Ev {
+		if e.Kind == evUnprepare && int(e.Stack) == si && e.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeMountKept: the node mount of the device with the access is on VM v
+// for the whole window: a claim or lease prepared before it keeps it (no
+// Unprepare of it in the window).
+func (s *State) nodeMountKept(v VM, d DevID, cached bool) bool {
+	for i := range s.Slots {
+		ss, sl := &s.Slots[i], s.slot(i)
+		u := int16(-1)
+		switch {
+		case sl.Kind.fsKind() && sl.Dev == d && ss.Node == v && (sl.Kind == KPFsc) == cached:
+			u = int16(i)
+		case sl.Kind == KPlse && d == cPmem0 && sl.VM == v && ss.LeaseMode.fs() && (ss.LeaseMode == ModePFC) == cached:
+			u = s.leaseUser(i)
+		}
+		if u >= 0 && s.preparedAtStart(u) && !s.hasUnprepare(u) {
+			return true
+		}
+	}
+	return false
+}
+
 // expandSlices returns a state per world of the pools whose controller is
 // down while it is not known whether it published its slices again
 // after a graceful restart (A18): present (as is) and absent (the claims
-// of the pool that are being allocated cannot be: Unsched, no prepare).
+// of the pool that are being allocated cannot be: Unsched, no prepare;
+// one allocated before, Alloc, keeps its allocation: it waits for the
+// attach, or prepares if attached before the kill).
 func (n *State) expandSlices() []*State {
 	states := []*State{n}
 	for p := Pool(0); p < nPools; p++ {
@@ -696,7 +939,7 @@ func (n *State) expandSlices() []*State {
 			var ev []stackEvent
 			for i := range absent.Slots {
 				sl := absent.slot(i)
-				if ss := &absent.Slots[i]; sl.Kind.pooled() && sl.Pool == p && ss.Phase == Starting {
+				if ss := &absent.Slots[i]; sl.Kind.pooled() && sl.Pool == p && ss.Phase == Starting && !ss.Alloc {
 					ss.Phase, ss.RaceKill = Unsched, false
 				}
 			}
@@ -789,6 +1032,12 @@ func (a *State) applyOutcome(si int, o *stackOutcome) {
 		if ss.Phase == Deleting || ss.Phase == Absent {
 			continue
 		}
+		if ss.Phase == Starting && ss.Refuse && ss.RaceKill && !o.Blocked[u] {
+			// a refused claim's Prepare makes no region: whether it was
+			// attached before the controller kill is the settle's
+			// Either (refused or attaching), not the stack's
+			continue
+		}
 		switch {
 		case o.Prepared[u]:
 			ss.Phase = Running
@@ -810,7 +1059,7 @@ func (a *State) applyOutcome(si int, o *stackOutcome) {
 func (s *State) altKey() string {
 	b := make([]byte, 0, 4*len(s.Slots)+nStacks*(maxStack+1))
 	for i := range s.Slots {
-		b = append(b, byte(s.Slots[i].Phase), byte(s.Slots[i].Node+1))
+		b = append(b, byte(s.Slots[i].Phase), byte(s.Slots[i].Node+1), byte(s.Slots[i].Lease))
 	}
 	for si := range s.Stacks {
 		st := &s.Stacks[si]
@@ -829,6 +1078,14 @@ func (s *State) altKey() string {
 				b = append(b, byte(t))
 			}
 		}
+	}
+	// the drivers (a driver-kill-at that fired or not) and the
+	// persistent devices
+	for v := range s.Drv {
+		b = append(b, s.Drv[v].Restarts, s.Drv[v].KillAt)
+	}
+	for x := range s.PDev {
+		b = append(b, byte(s.PDev[x].NS), byte(s.PDev[x].FS))
 	}
 	return string(b)
 }

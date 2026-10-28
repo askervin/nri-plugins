@@ -8,9 +8,13 @@
 # run: pods with CXL memory of every kind (exclusive and shared pool
 # devices in numa and dax mode, read-only shares, local slices, steering,
 # leases, no claim) created, deleted and crashed, data written and read,
-# and the faults the driver must survive (the driver killed in place or
-# restarted, a pool controller killed, started and restarted, a pool
-# server restarted on its state, kubelet and containerd restarted). After
+# persistent pool devices (amendments A22-A27: a block writer, erofs
+# readers direct and cached, read-only block readers, persistent leases
+# of block and fs) written, read, held and wiped, and the faults the
+# driver must survive (the driver killed in place or restarted, also at
+# a chosen point of a persistent Prepare, a pool controller killed,
+# started and restarted, a pool server restarted on its state, kubelet
+# and containerd restarted). After
 # the steps that change the cluster a "settle" observes the pods, claims,
 # pool attachments, the CXL devices of the VMs, the driver's state files
 # and CDI specs and the cpusets of the containers, and the model compares
@@ -27,7 +31,10 @@
 # Parameters (environment of run_tests.sh; contract 8): MBT_SEED (default
 # time-based), MBT_DURATION (20m), MBT_STEPS (0: no limit), MBT_DEPTH (3),
 # MBT_PROFILE (full), MBT_UNSETTLED (3), MBT_SETTLE_TIMEOUT (180 s),
-# MBT_POLL (3 s), MBT_AVOID (verbs or verb:arg to leave out), MBT_REPLAY,
+# MBT_POLL (3 s), MBT_AVOID (verbs or verb:arg to leave out),
+# MBT_STALL_WINDOW (--stall-window, A28: default 30s if the kube-scheduler
+# of the cluster has the fix of bug-08, its image or version has
+# "dra-requeue", else the model's default, 6m), MBT_REPLAY,
 # MBT_SCRIPT, GOFMBT_DIR (unset: the gofmbt of model/go.mod; a checkout
 # of github.com/askervin/gofmbt: the model is built with a go.work that
 # uses it, for developing gofmbt), MBT_ARGS (more flags of mbt-cxl, for
@@ -36,7 +43,19 @@
 # dra-trace of every component, 0: none), MBT_OBS_KEEP (30 observations
 # kept in mbt-obs/), MBT_STUB=1 (run mbt-stub.py, a fixed list of steps
 # that exercises every action, instead of the model; also when there is no
-# model/), MBT_BIN (another generator).
+# model/; MBT_STUB_LIST=volatile|persistent|all picks its lists, all by
+# default, ~15 min; MBT_STUB_STEPS=FILE a list of one's own), MBT_BIN
+# (another generator), MBT_KILLAT_TIMEOUT (60 s: a
+# driver-kill-at watcher gives up), MBT_PLEASE_PUT_WAIT (20s: lease-put of
+# persistent leases waits that long for Released).
+#
+# Persistent pool devices (A22): pool-c has c-pmem0 (256Mi, shared,
+# 0xc1ae2002) and c-pmem1 (256Mi, exclusive, 0xc1ee2002) in every profile,
+# their backing files new (removed before the server starts and at the
+# end: host RAM); the settle observation reads their content from those
+# files ("pdevs"). The pods write and read them with pmem-rw.py and the
+# erofs template hello.erofs.hex (a copy of plan-8-demo/demo/testdata; ConfigMap
+# dax-rw at /tools): no mkfs.erofs, no image build.
 #
 # Output in the test output directory: mbt-steps.txt (the steps, for
 # MBT_REPLAY), mbt-cxl.log (the generator), mbt-fail.txt (the generator's
@@ -56,7 +75,7 @@ fi
 # The MBT_* that the user set (replay: they override the header of the
 # steps file, amendment A16).
 MBT_USER_SET=" "
-for v in MBT_SEED MBT_DEPTH MBT_PROFILE MBT_UNSETTLED MBT_AVOID; do
+for v in MBT_SEED MBT_DEPTH MBT_PROFILE MBT_UNSETTLED MBT_AVOID MBT_STALL_WINDOW; do
     [ -z "${!v+x}" ] || MBT_USER_SET+="$v "
 done
 MBT_MODE="${MBT_MODE:-online}"
@@ -133,6 +152,10 @@ echo "### 0: preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX 
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
 pool-vm-require "$VM0" n4-cxl-shared-0
+echo "### 0: preconditions: the kernel features of persistent pool devices (pmem, fsdax, erofs, loop) in the three VMs"
+for vm in "${VMS[@]}"; do
+    mbt-kernel-require "$vm"
+done
 
 echo "### 0: preconditions: cxl, daxctl and cxl-dump in the VMs, no CXL memory devices"
 for vm in "${VMS[@]}"; do
@@ -168,6 +191,9 @@ pool-server-start --name pool-b --port 9910 --hosts "$VM0" --index 1 --slots "*h
     shared: true
     pool: default
     serial: ${MBT_SHARED_SERIAL[b]}"
+# The persistent devices of pool-c start fresh: no data, no labels (the
+# server creates missing files as zeros, and never rewrites them).
+mbt-pdev-files-remove "$MBT_PDEV_DIR" c-pmem0 c-pmem1
 pool-server-start --name pool-c --port 9911 --hosts "$VM0 $VM1 $VM2" --index 2 --control hmp --slots "*hb1" --local-devices no "
   - name: c-shared0
     size: 256Mi
@@ -178,7 +204,22 @@ pool-server-start --name pool-c --port 9911 --hosts "$VM0 $VM1 $VM2" --index 2 -
     size: 256Mi
     shared: false
     pool: default
-    serial: ${MBT_POOLED_SERIAL[c]}"
+    serial: ${MBT_POOLED_SERIAL[c]}
+  - name: c-pmem0
+    size: 256Mi
+    shared: true
+    persistent: true
+    pool: default
+    serial: ${MBT_PMEM_SERIAL[c]}
+  - name: c-pmem1
+    size: 256Mi
+    shared: false
+    persistent: true
+    pool: default
+    serial: ${MBT_XPMEM_SERIAL[c]}"
+# Until dra-install sets its trap (mbt-exit-trap): the files go too.
+trap 'pool-cleanup; mbt-pdev-files-remove "$MBT_PDEV_DIR" c-pmem0 c-pmem1' EXIT
+mbt-pdev-files c-pmem0 c-pmem1
 for pool in "${POOLS[@]}"; do
     want=""
     for vm in ${POOL_HOSTS[$pool]}; do
@@ -222,7 +263,7 @@ echo "### 0: images, tools, claim templates, the observer"
 for vm in "${VMS[@]}"; do
     dra-pull-images "$vm" "$DRA_TOOLS_IMAGE" "$MBT_PAUSE_IMAGE"
 done
-dra-dax-tool-install "$VM2"
+dra-dax-tool-install "$VM2" "pmem-rw.py=$TEST_DIR/pmem-rw.py" "hello.erofs.hex=$TEST_DIR/hello.erofs.hex"
 mbt-templates-apply
 dra-vm-command "$VM2" "kubectl get resourceclaimtemplates -n $DRA_NS" ||
     command-error "cannot list the ResourceClaimTemplates"
@@ -231,7 +272,29 @@ mbt-observe 0 1
 echo "a settle observation took ${MBT_OBS_SECONDS} s ($(wc -c < "$MBT_OBS_FILE") bytes): $MBT_OBS_FILE"
 dra-py assert "$MBT_OBS" "j['errors'] == [] and j['pods'] == [] and all(j['vms'][v] and j['vms'][v]['errors'] == [] for v in ('vm0', 'vm1', 'vm2'))" ||
     error "the first observation has errors or pods: $(head -c 2000 "$MBT_OBS_FILE")"
+# The persistent devices are fresh, and no VM has a trace of an earlier
+# run: no pmem region, node mount, lease bind or loop device over pmem.
+dra-py assert "$MBT_OBS" "all(j['pdevs'][d]['lsa'] == 'zero' and not j['pdevs'][d]['pfn'] for d in ('c-pmem0', 'c-pmem1')) and all(j['vms'][v][k] == [] for v in ('vm0', 'vm1', 'vm2') for k in ('pmem', 'fsMounts', 'leaseBinds', 'loops'))" ||
+    error "the first observation has persistent devices that are not fresh, or pmem regions, mounts or loop devices: $(head -c 2000 "$MBT_OBS_FILE")"
 [ "$MBT_TRACE" == 0 ] || dra-trace-start "$VM2" "$VM1" "$VM0"
+
+echo "### 0: the kube-scheduler: the stall window of A19/A28"
+# A28: a kube-scheduler with the fix of bug-08 (its image or version has
+# "dra-requeue") promotes a stalled contender within seconds:
+# --stall-window=30s. MBT_STALL_WINDOW set by the user wins.
+sched=$(dra-vm-command-q "$VM2" "p=\$(kubectl get pods -n kube-system -l component=kube-scheduler -o jsonpath='{.items[0].metadata.name}')
+echo \"image \$(kubectl get pod -n kube-system \$p -o jsonpath='{.spec.containers[0].image}')\"
+echo \"version \$(kubectl logs -n kube-system \$p 2>/dev/null | grep -m1 -o 'Starting Kubernetes Scheduler.*version=[^ ]*' | sed 's/.*version=//')\"") ||
+    echo "WARNING: cannot read the kube-scheduler of the cluster: $sched"
+echo "kube-scheduler: $(tr '\n' ' ' <<< "$sched")"
+MBT_STALL_SOURCE="the model's default (6m): the kube-scheduler has no dra-requeue fix"
+if [ -n "${MBT_STALL_WINDOW+x}" ]; then
+    MBT_STALL_SOURCE="MBT_STALL_WINDOW=$MBT_STALL_WINDOW (set by the user)"
+elif grep -q dra-requeue <<< "$sched"; then
+    MBT_STALL_WINDOW=30s
+    MBT_STALL_SOURCE="30s: the kube-scheduler has the dra-requeue fix of bug-08"
+fi
+echo "mbt: stall window: $MBT_STALL_SOURCE"
 
 echo "### 1: the run"
 export MBT_OUT="$TEST_OUTPUT_DIR"
@@ -245,6 +308,9 @@ if [ "$MBT_MODE" == replay ]; then
     hdr_blocks=$(sed -n 's/^# .*--local-blocks[ =]\([^ ]*\).*/\1/p' "$MBT_REPLAY" | head -n 1)
     [ -z "$hdr_blocks" ] || [ "$hdr_blocks" == "$LOCAL_BLOCKS" ] ||
         echo "WARNING: $MBT_REPLAY was recorded with --local-blocks $hdr_blocks, the cluster has $LOCAL_BLOCKS: the replay may diverge"
+    hdr_stall=$(sed -n 's/^# .*--stall-window[ =]\([^ ]*\).*/\1/p' "$MBT_REPLAY" | head -n 1)
+    [ -z "$hdr_stall" ] || [ "$hdr_stall" == "${MBT_STALL_WINDOW:-6m}" ] ||
+        echo "WARNING: $MBT_REPLAY was recorded with --stall-window $hdr_stall, this run has ${MBT_STALL_WINDOW:-the default}: the replay may diverge"
 fi
 mbt-flag() {
     # Usage: mbt-flag VAR FLAG=VALUE: add FLAG=VALUE, in replay only if
@@ -266,6 +332,9 @@ MBT_FLAGS+=(
     --node-hb1="$NODE_HB1"
     --out="$TEST_OUTPUT_DIR"
 )
+# The stall window is a fact of the cluster's kube-scheduler, measured
+# above, or the user's.
+[ -z "${MBT_STALL_WINDOW:-}" ] || MBT_FLAGS+=(--stall-window="$MBT_STALL_WINDOW")
 # More flags of mbt-cxl, words: for instance --plan-ahead=false.
 read -r -a words <<< "${MBT_ARGS:-}"
 MBT_FLAGS+=("${words[@]}")
@@ -293,6 +362,7 @@ for vm in "${VMS[@]}"; do
     dra-local-detach --pool "${LOCAL_SERVER[$vm]}" "$vm"
 done
 pool-cleanup
+mbt-pdev-files-remove "$MBT_PDEV_DIR" c-pmem0 c-pmem1
 trap - EXIT
 trap - TERM
 for port in "$POOL_PORT" 9910 9911; do

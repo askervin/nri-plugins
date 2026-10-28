@@ -1,0 +1,175 @@
+BUG-13: THE BACKING FILE OF A LOOP DEVICE IS NOT FOUND BY ITS PATH
+AFTER A RESTART OF THE DRIVER CONTAINER
+
+Branch 5jg-cxl, 2026-10-28. Found in run PM1b of the model-based test
+(step 83 driver-restart vm1, settle of step 85 failed). Fixed in the
+working tree (uncommitted), unit tested; not verified on the cluster.
+The observer's side (mbt-observe.py reads the same sysfs file) is fixed
+separately by the orchestrator.
+
+D/ = cmd/plugins/dra-driver-cxl/, R/ = /tmp/p13-runs/pm1b/out/.
+Line numbers of HEAD (1178bf032) unless "new".
+
+========================================================================
+1. SUMMARY
+
+The pool driver found the block device behind the loop device of a
+cached fs node mount (erofs on /dev/loopN over /dev/pmemK) by the path
+in /sys/block/loopN/loop/backing_file. The kernel prints that path as
+the reader sees it, relative to the reader's root. The loop device was
+set up through the /dev of the driver container that made the mount, a
+devtmpfs mount in that container's mount namespace. After the container
+is replaced, that mount is reachable by no one (the open backing file
+keeps it alive), and the path is printed relative to its root:
+"/pmem1" for "/dev/pmem1". Every check by path then failed while the
+cached node mount lived on:
+a) the restore at start logged "... c1ae2002-cached is a erofs mount of
+   /dev/loop0, not of a loop device over /dev/pmem1" (it kept the mount
+   and the lease bind, see 4.);
+b) every new Prepare of a cached fs claim of that device on the node,
+   static or the companion of a lease, failed with the same error,
+   until all cached claims of the device were gone;
+c) the holder check of every release of a persistent device (Holder:
+   the scan of the loop devices) missed the loop device. The loop
+   driver does not claim its backing device, so the exclusive open of
+   /dev/pmemK succeeds next to it: the region could be released and
+   destroyed under a loop device whose erofs a container still uses
+   (I/O errors in the container, a loop device left over a removed
+   block device);
+d) the block device of a stale lease bind of the cached mount
+   (bindOrigin) was "/pmem1": the exclusive open of its holder check
+   failed with ENOENT, which reads "the device is gone", and an
+   exclusive holder was missed too.
+
+Severity: medium-high. b) after every driver restart, with a cached fs
+claim or lease on the node; c) and d) only when a reference to the
+erofs outlives the node mount (a bind left in a mount namespace that
+outlives its lease, the lazy detach of waitNoHolder's comment,
+D/pool_persistent.go:283-293), but then a region is destroyed under a
+live filesystem.
+
+========================================================================
+2. REPRODUCTION
+
+Run PM1b, step 83: driver-restart vm1 while c-pmem0 had a cached node
+mount (/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae2002-cached
+on /dev/loop0 over /dev/pmem1, made by the previous driver container for
+the fs lease 94f28d88). In general: any driver-restart or driver-kill
+with a cached fs claim or lease prepared on the VM; then cat
+/sys/block/loop0/loop/backing_file in the new container or on the host:
+"/pmem1".
+
+========================================================================
+3. EVIDENCE
+
+- R/trace/vm1.thf5k.driver.log, the restarted plugin: 21:44:06.445497
+  "E... pool_persistent.go:730] cxl-pool.nri.io: claim
+  cxl-pool-demo/cxl-lease-94f28d88: device 0xc1ae2002:
+  /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae2002-cached is a
+  erofs mount of /dev/loop0, not of a loop device over /dev/pmem1",
+  right after "loaded 2 prepared claims". No unmount, no bind at start.
+- R/mbt-fail.txt, step 85 settle: "node mount
+  .../c1ae2002-cached: /dev/loop0, want a loop device over /dev/pmem*",
+  "0 loop devices over pmem [], want 1" (the observer reads the same
+  file).
+- 21:47:16-17, the lease released (requester container gone): "lease
+  94f28d88: unbound .../lease-fs/53b50e9b-.../94f28d88", "device
+  0xc1ae2002: unmounted .../c1ae2002-cached", "serial 0xc1ae2002 is
+  still used by another claim", "unprepared claim
+  cxl-pool-demo/cxl-lease-94f28d88"; then "unmounted
+  .../c1ae2002-direct" of the static claim. Nothing was left in this
+  run: the autoclear loop0 went with the cached mount, its last user.
+
+========================================================================
+4. ROOT CAUSE
+
+- D/mount.go:246-255 LoopBackingFile returns the string of sysfs;
+  D/mount.go:259-261 sameDevice compares it with /dev/pmemK (equal, or
+  the same name in /dev): "/pmem1" is neither.
+- Its users: D/pool_persistent.go:213-240 checkNodeMount, for access
+  cached (the restore, :728-731, and every Prepare that finds the node
+  mount, ensureNodeMount :157-163); D/pool_persistent.go:605-625
+  bindOrigin (stale lease binds at start, :691-692); D/mount.go:263-280
+  Holder (waitNoHolder of the releases, D/pool_persistent.go:355-360,
+  and releaseUnused :582).
+- The kernel: backing_file of a loop device is file_path() of its
+  backing file, d_path(): the path of a file whose mount is not
+  reachable from the reader's root is printed from the root of that
+  mount. The device number of the backing file is not affected:
+  LOOP_GET_STATUS64 gives it as lo_rdevice.
+- What the restore did with the mount in PM1b (restoreMounts,
+  D/pool_persistent.go:703-771): the node mount existed; ensureNodeMount
+  -> checkNodeMount failed; the error was logged (:730) and the device
+  skipped: the mount was kept (it is wanted, so never unmounted as an
+  orphan), its loop device stayed as saved (/dev/loop0).
+  restoreLeaseMounts kept the existing bind (no backing check:
+  isLeaseBind compares the source and root with those of the node
+  mount); a missing bind would have been bound again. So the restore
+  itself was harmless.
+- The Unprepare of a claim or lease unmounts by path (unbind,
+  unmountNode) without a backing check: it leaves neither the mount nor
+  the loop device (autoclear, gone with its last user). What could be
+  left is c): a loop device over a region that the release destroyed
+  because the holder check missed the loop device.
+
+========================================================================
+5. THE FIX
+
+a) D/mount.go LoopBackingFile (:260 new): when sysfs shows a backing
+   file, its block device is found by device number: LOOP_GET_STATUS64
+   on /dev/loopN (loopStatus :313 new; lo_rdevice, the rdev of the
+   backing file) and the name of that device in sysfs
+   (/sys/dev/block/<major>:<minor>/uevent DEVNAME) give /dev/<name>
+   (loopBackingDevice :283 new). The path of sysfs is the fallback: a
+   backing file that is not a block device (rdev 0), or the ioctl or
+   sysfs failing (logged at V(3)). Opening the loop device read-only
+   does not clear an autoclear loop device: it is cleared at the close
+   of its last opener, and its mount holds it.
+b) devPath (:329 new): a fallback path of one component ("/pmem1") is
+   taken as /dev/<that>; sameDevice (:338) compares devPath(backing),
+   and bindOrigin returns devPath (D/pool_persistent.go:719 new).
+All the users (checkNodeMount, bindOrigin, Holder) go through
+LoopBackingFile and sameDevice and are fixed together; nothing else in
+the driver compares backing paths of loop devices (LoopBackingFile,
+sameDevice, "backing"). The mount sources in mountinfo are the strings
+given at mount time (/dev/pmemK, /dev/loopN), not affected.
+
+========================================================================
+6. TESTS
+
+- D/mount_test.go TestSysMounterLoopBackingAfterRestart (new): sysfs
+  "/pmem1", an injected LOOP_GET_STATUS64 with rdev 259:1 and
+  /sys/dev/block/259:1/uevent DEVNAME=pmem1: /dev/pmem1, loop0 the
+  holder of /dev/pmem1; a regular backing file keeps its path; without
+  the device number, and without DEVNAME, the fallback "/pmem1" is the
+  same device as /dev/pmem1 and loop0 still the holder; sameDevice
+  cases. TestSysMounterHolder now injects a failing loopStatus (no real
+  loop devices are opened).
+- D/pool_persistent_test.go TestPoolCachedMountAfterRestart (new): the
+  fake mounter's backing "/pmem0" after the restart (its Holder now
+  compares with sameDevice, as sysMounter): the node mount is kept and
+  passes checkNodeMount, a new cached claim uses it (one loop device),
+  bindOrigin gives /dev/pmem0, and the release waits ("/dev/pmem0 is
+  still in use") while a container's bind keeps loop0, then releases.
+- Mutation: sameDevice without devPath fails both tests, the pool test
+  with the error of the evidence.
+- gofmt, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+  ./pkg/cxl/... -skip TestMemdevSettings: ok.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER
+
+- PM1b's step: driver-restart, and driver-kill, with a cached fs lease
+  or claim on the VM: no "is a erofs mount of /dev/loopN, not of a loop
+  device over" at start; a new cached claim of the device on that VM
+  prepares and reuses the node mount (no second loop device).
+- In the VM the kernel's view stays: /sys/block/loop0/loop/backing_file
+  and losetup -l show "/pmem1" (the observer must compare by device
+  number too, or accept the path relative to /dev).
+
+========================================================================
+8. STATUS
+
+Fixed in the working tree, not committed: D/mount.go,
+D/pool_persistent.go (bindOrigin), D/mount_test.go,
+D/pool_persistent_test.go. No image built, no cluster run.

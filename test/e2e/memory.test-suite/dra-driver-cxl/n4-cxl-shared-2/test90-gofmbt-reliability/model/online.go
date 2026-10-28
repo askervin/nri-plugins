@@ -484,7 +484,7 @@ func (r *onlineRun) settle(n int, name string, to *State, sent time.Time, final 
 		if polls == 1 && to.Truncated {
 			r.log.Printf("step %d settle: the outcomes of its races were not all enumerated (R10): issue order only for some stack", n)
 		}
-		v, adopted, alt := checkAlts(to, o, prefix, r.now(), r.unblockTimeout)
+		v, adopted, alt := checkAltsSince(to, o, prefix, r.now(), sent, r.unblockTimeout)
 		for _, note := range v.Notes {
 			if !r.noted[note] {
 				r.noted[note] = true

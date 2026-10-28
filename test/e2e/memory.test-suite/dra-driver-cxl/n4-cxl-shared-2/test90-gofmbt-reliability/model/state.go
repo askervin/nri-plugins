@@ -75,10 +75,16 @@ const (
 	// Both are accepted for 360 s; the observation decides. Holds the
 	// device in the model (the only candidate).
 	Stalled
+	// Refused: an allocated, attached persistent claim whose Prepare the
+	// device refuses (fs: no fsdax namespace or no erofs; block ro: no
+	// namespace) or the config refuses (pbad): Pending,
+	// ContainerCreating, retried ~60-90 s apart; holds its share, which
+	// keeps every writer out: it lasts until the pod is deleted (A25).
+	Refused
 	nPhases
 )
 
-var phaseNames = [nPhases]string{"absent", "starting", "restarting", "running", "pending", "attaching", "either", "deleting", "blocked", "unblocking", "unsched", "stalled"}
+var phaseNames = [nPhases]string{"absent", "starting", "restarting", "running", "pending", "attaching", "either", "deleting", "blocked", "unblocking", "unsched", "stalled", "refused"}
 
 func (p Phase) String() string { return phaseNames[p] }
 
@@ -94,7 +100,7 @@ func parsePhase(s string) (Phase, error) {
 // holding: the pod of the phase holds (or will hold) its resource and is
 // not being deleted.
 func (p Phase) holding() bool {
-	return p == Starting || p == Restarting || p == Running || p == Attaching || p == Either || p == Blocked || p == Unblocking || p == Unsched || p == Stalled
+	return p == Starting || p == Restarting || p == Running || p == Attaching || p == Either || p == Blocked || p == Unblocking || p == Unsched || p == Stalled || p == Refused
 }
 
 // unbound: a pool pod of the phase may have its claim allocated while
@@ -129,21 +135,61 @@ const (
 	LeaseNone      LeaseSt = iota
 	LeaseHeld              // Ready, with its companion pod
 	LeaseReleasing         // released in the current window: gone at the settle
+	// LeaseBusy: lease-put of an fs lease whose file is held: Releasing,
+	// its companion Terminating, bind, node mount and region kept,
+	// pread works, until unhold, a crash or the delete of the requester
+	// (A25); then Releasing
+	LeaseBusy
 )
 
-// LeaseMode is the mode of a lease.
+// LeaseMode is the mode of a lease: numa or dax of the local memdev
+// (lease kind), or of c-pmem0 (plse, A23): pbw block writer (the whole
+// device), pbr block read-only share, pfd fs direct share (name mbt),
+// pfc fs cached share (name = the lease id).
 type LeaseMode uint8
 
 const (
 	ModeNuma LeaseMode = iota
 	ModeDax
+	ModePBW
+	ModePBR
+	ModePFD
+	ModePFC
+	nModes
 )
 
-func (m LeaseMode) String() string {
-	if m == ModeDax {
-		return "dax"
+var modeNames = [nModes]string{"numa", "dax", "pbw", "pbr", "pfd", "pfc"}
+
+func (m LeaseMode) String() string { return modeNames[m] }
+
+func parseLeaseMode(s string) (LeaseMode, bool) {
+	for m := LeaseMode(0); m < nModes; m++ {
+		if modeNames[m] == s {
+			return m, true
+		}
 	}
-	return "numa"
+	return 0, false
+}
+
+// persistent: a lease of c-pmem0 (plse).
+func (m LeaseMode) persistent() bool { return m >= ModePBW }
+
+// fs: an fs lease (a bind of the node mount).
+func (m LeaseMode) fs() bool { return m == ModePFD || m == ModePFC }
+
+// kind is the claim kind of the lease's companion (its prepare rules).
+func (m LeaseMode) kind() Kind {
+	switch m {
+	case ModePBW:
+		return KPWr
+	case ModePBR:
+		return KPBro
+	case ModePFD:
+		return KPFsd
+	case ModePFC:
+		return KPFsc
+	}
+	return KLease
 }
 
 // Token is what offset 0 of a dax device holds.
@@ -189,6 +235,24 @@ type SlotState struct {
 	// Slack: restarts the pod may have more than its crashes (M2: a
 	// kubelet restart while its container is being created)
 	Slack uint8
+	// Hold: a process of the container maps hello.txt of its fs claim
+	// or fs lease read-only (hold, A23); a crash and the delete end it
+	Hold bool
+	// Refuse: the Prepare of this persistent claim is refused (A25):
+	// Refused when it would be Running
+	Refuse bool
+	// LeaseOpen: a lease-get of this plse slot failed under a
+	// driver-kill-at bind (A29 d, A30): the lease may be released, or
+	// still Lending and Ready after kubelet's Prepare retry; the settle
+	// has both outcomes
+	LeaseOpen bool
+	// Alloc: a Starting pool claim allocated before the window (an
+	// attach-waiter that ctrl-start made Starting; A18, fuzz pmem seed
+	// 10091): it keeps its allocation when the slices go, so the world
+	// without them leaves it Starting. (ctrl-restart is not generated
+	// while a claim is being allocated; a stalled contender promoted
+	// before the slices went is the oracle's.) Cleared at the settle.
+	Alloc bool
 }
 
 // holds: the slot holds its resource now (also while deleting).
@@ -206,7 +270,52 @@ type DriverState struct {
 	F, FMaybe uint8  // fenced host bridges (bit b: node NodeHB[b]); maybe
 	Pod       string // the pod name, learnt at a settle
 	PodBefore string // driver-restart: the pod that must be gone
+	// KillAt: driver-kill-at armed in the current window (marker+1):
+	// the driver is killed at the marker of the next persistent Prepare
+	// of the VM, or not (60 s): both outcomes, adopted from "killAt"
+	KillAt uint8
+	// KillAtAt: the Unix time of the first settle that saw it armed (the
+	// oracle disarms it 70 s later: the watcher gives up after 60 s)
+	KillAtAt int64
 }
+
+// Kill markers of driver-kill-at (A23).
+var markerNames = []string{"region", "ns", "mount", "bind"}
+
+// the indexes of markerNames
+const (
+	markerRegion = iota
+	markerNS
+	markerMount
+	markerBind
+)
+
+func parseMarker(s string) (int, bool) {
+	for i, m := range markerNames {
+		if m == s {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// PDev is what a persistent device holds (A25): its fsdax namespace
+// (no, yes, maybe), an erofs (FS), the token of its hello.txt (Tok) and
+// bytes 0-63 (Raw), and the namespace UUID once observed.
+type PDev struct {
+	NS   Tri
+	FS   Tri // TriYes: the template erofs; TriNo: none
+	Tok  Token
+	Raw  Token
+	UUID string
+	// the hashes of the LSA and of the first 4 MiB of the data file as
+	// observed (pdevs); "": not known (after an event that changes
+	// them: adopted at the next settle)
+	LsaSha, HeadSha string
+}
+
+// freshPDev is a device without labels and data (zeros).
+var freshPDev = PDev{NS: TriNo, FS: TriNo, Raw: tokZero}
 
 // CtrlState is the controller of a pool, and what is known of the
 // attachments of its devices (index 0 pooled, 1 shared) per VM when it
@@ -214,7 +323,7 @@ type DriverState struct {
 // every settle.
 type CtrlState struct {
 	Up     bool
-	Att    [2][nVMs]Tri
+	Att    [devsPerPool][nVMs]Tri
 	Slices SliceSt // the pool's ResourceSlices (A18)
 }
 
@@ -238,6 +347,7 @@ type State struct {
 	Ctrl      [nPools]CtrlState
 	Drv       [nVMs]DriverState
 	Data      [nDevs]Token // pool devices
+	PDev      [nPDevs]PDev // persistent devices (A25)
 	SlotData  []Token      // ldax slots: the content of the slice (copy on write)
 	LeaseIDs  []string     // lease slots: the lease ID if known (copy on write)
 	UnblockAt []int64      // Unblocking, Stalled, Attaching slots: Unix time first seen so on-line (copy on write)
@@ -288,6 +398,9 @@ func newState(cfg *Config) *State {
 	for p := range s.Ctrl {
 		s.Ctrl[p].Up = true
 	}
+	for x := range s.PDev {
+		s.PDev[x] = freshPDev
+	}
 	s.Last = Act{Verb: VNone, Slot: -1}
 	return s
 }
@@ -299,6 +412,7 @@ func (s *State) clone() *State {
 		Ctrl:      s.Ctrl,
 		Drv:       s.Drv,
 		Data:      s.Data,
+		PDev:      s.PDev,
 		SlotData:  s.SlotData,
 		LeaseIDs:  s.LeaseIDs,
 		UnblockAt: s.UnblockAt,
@@ -375,6 +489,26 @@ func (s *State) computeOcc() *occupancy {
 				o.localAll[sl.VM]++
 			case LeaseReleasing:
 				o.localAll[sl.VM]++
+			}
+			continue
+		}
+		if sl.Kind == KPlse {
+			// a persistent lease's companion claim takes c-pmem0: whole
+			// (pbw) or a share
+			if ss.Lease == LeaseNone {
+				continue
+			}
+			held := ss.Lease == LeaseHeld || ss.Lease == LeaseBusy
+			if ss.LeaseMode == ModePBW {
+				if held {
+					o.exclHeld[cPmem0]++
+				}
+				o.exclAll[cPmem0]++
+			} else {
+				if held {
+					o.shareHeld[cPmem0]++
+				}
+				o.shareAll[cPmem0]++
 			}
 			continue
 		}
@@ -481,19 +615,29 @@ func (s *State) held(r Res) bool { return r >= 0 && r < resLocal0 && s.Held&(1<<
 // desiredAtt are the attachments that the claims of a pool want: the
 // device (0 pooled, 1 shared) on the VM of every holder that is not going
 // away, and if one of them uses the shared device exclusively.
-func (s *State) desiredAtt(p Pool) (att [2][nVMs]bool, excl [2][nVMs]bool) {
+func (s *State) desiredAtt(p Pool) (att [devsPerPool][nVMs]bool, excl [devsPerPool][nVMs]bool) {
 	for i := range s.Slots {
 		sl := s.slot(i)
+		ss := &s.Slots[i]
+		if sl.Kind == KPlse && p == PoolC && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && ss.LeaseMode.persistent() {
+			// the companion claim of a persistent lease, on the
+			// requester's node
+			d := devIndex(cPmem0)
+			att[d][sl.VM] = true
+			if ss.LeaseMode == ModePBW {
+				excl[d][sl.VM] = true
+			}
+			continue
+		}
 		if !sl.Kind.pooled() || sl.Pool != p {
 			continue
 		}
-		ss := &s.Slots[i]
 		if !ss.Phase.holding() || ss.Phase == Unsched || ss.Phase == Stalled || ss.Node == VMAny {
 			continue
 		}
-		d := int(sl.Dev) - 2*int(p)
+		d := devIndex(sl.Dev)
 		att[d][ss.Node] = true
-		if sl.Kind == KSExcl {
+		if sl.Kind.wholeShared() {
 			excl[d][ss.Node] = true
 		}
 	}
@@ -576,8 +720,24 @@ func phaseClass(p Phase) string {
 		return "uns"
 	case Stalled:
 		return "stl"
+	case Refused:
+		return "ref"
 	}
 	return ""
+}
+
+func triName(t Tri) string { return [...]string{"no", "yes", "maybe"}[t] }
+
+// devUsed: a slot of the profile uses the device (persistent leases:
+// c-pmem0).
+func (c *Config) devUsed(d DevID) bool {
+	for i := range c.Slots {
+		sl := &c.Slots[i]
+		if (sl.Kind.pooled() && sl.Dev == d) || (sl.Kind == KPlse && d == cPmem0) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *State) computeAbstract() []string {
@@ -593,6 +753,9 @@ func (s *State) computeAbstract() []string {
 			poolUsed[sl.Pool] = true
 		case sl.Kind.local() || sl.Kind == KLease:
 			vmLocal[sl.VM] = true
+		case sl.Kind == KPlse:
+			devUsed[cPmem0] = true
+			poolUsed[PoolC] = true
 		}
 	}
 	set := func(prefix string, items []string) string {
@@ -610,11 +773,27 @@ func (s *State) computeAbstract() []string {
 		var items []string
 		for i := range s.Slots {
 			sl := s.slot(i)
-			if sl.Dev == d && sl.Kind.pooled() && s.Slots[i].Phase != Absent {
-				items = append(items, sl.Kind.String()+"."+phaseClass(s.Slots[i].Phase))
+			ss := &s.Slots[i]
+			if sl.Dev == d && sl.Kind.pooled() && ss.Phase != Absent {
+				it := sl.Kind.String() + "." + phaseClass(ss.Phase)
+				if ss.Hold {
+					it += ".hold"
+				}
+				items = append(items, it)
+			}
+			if sl.Kind == KPlse && d == cPmem0 && ss.Lease != LeaseNone {
+				st := map[LeaseSt]string{LeaseHeld: "held", LeaseReleasing: "gone", LeaseBusy: "busy"}[ss.Lease]
+				if ss.Hold {
+					st += ".hold"
+				}
+				items = append(items, "lease-"+ss.LeaseMode.String()+"."+st)
 			}
 		}
 		str := set("dev "+d.String(), items)
+		if devices[d].Persistent {
+			pd := &s.PDev[pmemIndex(d)]
+			str += " ns-" + triName(pd.NS) + " fs-" + triName(pd.FS)
+		}
 		if s.held(Res(d)) {
 			str += " held"
 		}
@@ -739,7 +918,21 @@ func (s *State) dump() string {
 		if s.slot(i).Kind == KLDax && ss.Phase != Absent {
 			fmt.Fprintf(&b, " data %s", s.SlotData[i])
 		}
+		if ss.Hold {
+			b.WriteString(" hold")
+		}
+		if ss.Refuse {
+			b.WriteString(" refuse")
+		}
+		if ss.Alloc {
+			b.WriteString(" allocated")
+		}
 		b.WriteString("\n")
+	}
+	for x := range s.PDev {
+		if pd := &s.PDev[x]; s.cfg.devUsed(cPmem0 + DevID(x)) {
+			fmt.Fprintf(&b, "  pdev %s: ns %s fs %s tok %s raw %s uuid %q\n", cPmem0+DevID(x), triName(pd.NS), triName(pd.FS), pd.Tok, pd.Raw, pd.UUID)
+		}
 	}
 	for p := Pool(0); p < nPools; p++ {
 		c := &s.Ctrl[p]
@@ -748,10 +941,10 @@ func (s *State) dump() string {
 			fmt.Fprintf(&b, " slices %s", c.Slices)
 		}
 		if !c.Up {
-			for d := 0; d < 2; d++ {
+			for d, dev := range poolDevs(p) {
 				for v := VM(0); v < nVMs; v++ {
 					if c.Att[d][v] != TriNo {
-						fmt.Fprintf(&b, " %s@%s=%s", devices[2*int(p)+d].Name, v, map[Tri]string{TriYes: "yes", TriMaybe: "maybe"}[c.Att[d][v]])
+						fmt.Fprintf(&b, " %s@%s=%s", dev, v, map[Tri]string{TriYes: "yes", TriMaybe: "maybe"}[c.Att[d][v]])
 					}
 				}
 			}
@@ -762,6 +955,9 @@ func (s *State) dump() string {
 		d := &s.Drv[v]
 		fmt.Fprintf(&b, "  driver %s: pod gen %d restarts %d inc %d killed %v F %v maybe %v pod %q",
 			v, d.PodGen, d.Restarts, d.Inc, d.Killed, s.bitNodes(d.F), s.bitNodes(d.FMaybe), d.Pod)
+		if d.KillAt > 0 {
+			fmt.Fprintf(&b, " kill-at %s", markerNames[d.KillAt-1])
+		}
 		if d.PodBefore != "" {
 			fmt.Fprintf(&b, " not %q", d.PodBefore)
 		}

@@ -120,6 +120,7 @@ type commonFlags struct {
 	avoidHoles    bool
 	unblock       time.Duration
 	planStates    int
+	stallWindow   time.Duration
 }
 
 // defaultCoverage is the default mix, chosen by the P4 experiments
@@ -143,6 +144,7 @@ func (c *commonFlags) register(fs *flag.FlagSet, online bool) {
 	fs.IntVar(&c.maxPaths, "max-paths", 0, "paths evaluated per plan at most (0: no limit; reproducible)")
 	fs.IntVar(&c.planStates, "plan-states", defaultPlanStates, "states the planner caches per plan at most (0: no cache; 150000 caches a whole depth-3 plan: ~30% less plan time for ~0.7 GB; GOMEMLIMIT bounds the heap, default 768 MiB)")
 	fs.BoolVar(&c.avoidHoles, "avoid-holes", false, "never generate an action that destroys a CXL region below the top of its decoder stack (A9)")
+	fs.DurationVar(&c.stallWindow, "stall-window", defaultStallWindow, "a stalled contender (A19) is promoted within this long of the settle that first saw it; if not longer than the settle timeout (a kube-scheduler with the bug-08 fix: ~5-15 s), settles wait for its promotion, else it is settled stalled or promoted")
 	if online {
 		fs.DurationVar(&c.duration, "duration", 20*time.Minute, "time budget of the run before the teardown (0: no limit)")
 		fs.DurationVar(&c.settleTimeout, "settle-timeout", 180*time.Second, "a settle that waits longer fails")
@@ -177,6 +179,15 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 	}
 	cfg.MaxRestarts = c.maxRestarts
 	cfg.AvoidHoles = c.avoidHoles
+	if c.stallWindow <= 0 {
+		return runOpts{}, errors.New("--stall-window must be positive")
+	}
+	cfg.StallWindow = c.stallWindow
+	settleTimeout := c.settleTimeout
+	if !online {
+		settleTimeout = 180 * time.Second // MBT_SETTLE_TIMEOUT's default (check --settle-timeout)
+	}
+	cfg.StallStrict = c.stallWindow <= settleTimeout
 	cfg.PlanStates = c.planStates
 	if cfg.PlanStates < 0 {
 		return runOpts{}, errors.New("--plan-states must not be negative")
@@ -221,8 +232,8 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 		outDir:         c.out,
 		unblockTimeout: c.unblock,
 	}
-	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --max-paths %d --plan-states %d",
-		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.maxPaths, c.planStates)
+	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --stall-window %s --max-paths %d --plan-states %d",
+		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.stallWindow, c.maxPaths, c.planStates)
 	if online {
 		o.header += fmt.Sprintf(" --steps %d --duration %s --settle-timeout %s --unblock-timeout %s --plan-ahead=%v --plan-time %s", c.steps, c.duration, c.settleTimeout, c.unblock, c.planAhead, c.planTime)
 	} else {
@@ -286,7 +297,7 @@ func runOnline(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // command line's (EXEC warns when they differ from the header), and so
 // do the budget, the timeouts and the planner.
 var modelFlags = map[string]bool{
-	"profile": true, "unsettled": true, "max-restarts": true, "avoid": true, "avoid-holes": true,
+	"profile": true, "unsettled": true, "max-restarts": true, "avoid": true, "avoid-holes": true, "stall-window": true,
 }
 
 // applyHeader sets the model flags of a steps file's header over the

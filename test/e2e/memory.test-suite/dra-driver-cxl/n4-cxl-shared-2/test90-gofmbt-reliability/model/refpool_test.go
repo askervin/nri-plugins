@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,10 +34,12 @@ import (
 )
 
 var (
-	refSeqs = flag.Int("refpool-seqs", 400, "random sequences of TestRefPoolFuzz")
-	refSeed = flag.Int64("refpool-seed", 1, "first seed of TestRefPoolFuzz")
-	refMax  = flag.Int("refpool-len", 60, "longest sequence of TestRefPoolFuzz")
-	refSlow = flag.Bool("refpool-slow", false, "TestRefPoolFuzz: controllers stay down long (ctrl-start rare)")
+	refSeqs    = flag.Int("refpool-seqs", 400, "random sequences of TestRefPoolFuzz")
+	refSeed    = flag.Int64("refpool-seed", 1, "first seed of TestRefPoolFuzz")
+	refMax     = flag.Int("refpool-len", 60, "longest sequence of TestRefPoolFuzz")
+	refSlow    = flag.Bool("refpool-slow", false, "TestRefPoolFuzz: controllers stay down long (ctrl-start rare)")
+	refProfile = flag.String("refpool-profile", "full", "TestRefPoolFuzz: the profile (pmem, fullp: persistent devices)")
+	refStall   = flag.Duration("refpool-stall-window", 0, "TestRefPoolFuzz: --stall-window (0: the default); not above 180 s: settles wait for stalled contenders, the reference's scheduler has the bug-08 fix")
 )
 
 type fuzzStats struct {
@@ -79,6 +82,12 @@ func fuzzWeight(cfg *Config, a Act) float64 {
 		return 0.4
 	case VDriverKill, VDriverRestart, VContainerdRestart:
 		return 0.15
+	case VPWrite, VLeaseGet, VLeasePut:
+		return 1.5
+	case VPRead, VPWipe, VDriverKillAt:
+		return 0.5
+	case VHold, VUnhold:
+		return 1
 	case VCreate, VDelete, VCrash:
 		sl := &cfg.Slots[a.Slot]
 		w := 1.0
@@ -107,6 +116,7 @@ func fuzzSequence(cfg *Config, acts []Act, seed int64, maxLen int, st *fuzzStats
 func refSequence(cfg *Config, acts []Act, seed int64, maxLen int, script []string, st *fuzzStats) *fuzzFailure {
 	rng := rand.New(rand.NewSource(seed))
 	sm := newSim(cfg, seed).withRef(seed * 7919)
+	sm.ref.RequeueOnUnreserve = cfg.StallStrict && !refUnfixedScheduler
 	model := newState(cfg)
 	length := len(script)
 	if script == nil {
@@ -184,13 +194,17 @@ func refSequence(cfg *Config, acts []Act, seed int64, maxLen int, script []strin
 			continue
 		}
 		st.settles++
+		if dbgPred != nil {
+			dbgPred(pred, sm)
+		}
 		sm.do(n, a)
 		start := sm.ref.Now()
+		since := sm.refWall()
 		for poll := 1; ; poll++ {
 			st.polls++
 			sm.refPoll(poll)
 			o := sm.observe(n, poll)
-			v, adopted := checkStateAt(pred, o, "", sm.refWall(), defaultUnblock)
+			v, adopted, _ := checkAltsSince(pred, o, "", sm.refWall(), since, defaultUnblock)
 			elapsed := time.Duration(sm.ref.Now()-start) * time.Millisecond
 			if v.Status == VWait && elapsed >= 180*time.Second {
 				return fail("settle timeout after "+elapsed.Round(time.Second).String()+": "+v.Msg, v.Diffs, model)
@@ -223,6 +237,12 @@ func refSequence(cfg *Config, acts []Act, seed int64, maxLen int, script []strin
 	}
 }
 
+var dbgPred func(*State, *sim)
+
+// refUnfixedScheduler: the reference's scheduler without the bug-08 fix
+// also in strict stall mode (a test of the mode's failure).
+var refUnfixedScheduler bool
+
 var reNums = regexp.MustCompile(`[0-9]+(\.[0-9]+)?`)
 
 // runRefFuzz runs sequences and returns the failures by message kind.
@@ -230,6 +250,9 @@ func runRefFuzz(t *testing.T, profile string, seqs int, seed0 int64, maxLen int)
 	t.Helper()
 	cfg := testConfig(t, profile, true)
 	cfg.Unsettled = 3 // MBT_UNSETTLED of the runs
+	if *refStall > 0 {
+		cfg.StallWindow, cfg.StallStrict = *refStall, *refStall <= 180*time.Second
+	}
 	acts := allActs(cfg)
 	st := &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}}
 	kinds := map[string][]*fuzzFailure{}
@@ -249,7 +272,7 @@ func TestRefPoolFuzz(t *testing.T) {
 	if testing.Short() {
 		seqs = 50
 	}
-	kinds, st := runRefFuzz(t, "full", seqs, *refSeed, *refMax)
+	kinds, st := runRefFuzz(t, *refProfile, seqs, *refSeed, *refMax)
 	t.Logf("%d sequences (%d failed), %d steps, %d settles, %d polls; adopted: stalled %d, unsched %d, slices absent %d; settles with alternatives %d; verbs %v; reference %v",
 		seqs, seqs-st.seqs, st.steps, st.settles, st.polls, st.stalled, st.unsched, st.absent, st.eitherSeen, st.verbs, st.ref)
 	var keys []string
@@ -267,8 +290,24 @@ func TestRefPoolFuzz(t *testing.T) {
 // refScript runs a script against the reference; the failure if any.
 func refScript(t *testing.T, seed int64, lines ...string) *fuzzFailure {
 	t.Helper()
-	cfg := testConfig(t, "full", true)
+	return refScriptWindow(t, seed, 0, lines...)
+}
+
+// refScriptWindow is refScript with a --stall-window (0: the default; not
+// above 180 s: strict, and the reference's scheduler has the bug-08 fix).
+func refScriptWindow(t *testing.T, seed int64, window time.Duration, lines ...string) *fuzzFailure {
+	t.Helper()
+	return refScriptIn(t, "full", seed, window, lines...)
+}
+
+// refScriptIn is refScriptWindow with the profile.
+func refScriptIn(t *testing.T, profile string, seed int64, window time.Duration, lines ...string) *fuzzFailure {
+	t.Helper()
+	cfg := testConfig(t, profile, true)
 	cfg.Unsettled = 3
+	if window > 0 {
+		cfg.StallWindow, cfg.StallStrict = window, window <= 180*time.Second
+	}
 	return refSequence(cfg, allActs(cfg), seed, 0, lines, &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}})
 }
 
@@ -471,6 +510,163 @@ func TestRefPoolRegressions(t *testing.T) {
 		}
 		if f != nil {
 			t.Errorf("%s:\n%s", r.why, f)
+		}
+	}
+}
+
+// d8Steps are the actions of the D8 replay (plan-13-gofmbt/06-runs.txt;
+// recorded/d8-steps.txt) without the initial settle.
+func d8Steps(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("recorded/d8-steps.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := readSteps(string(data))
+	var out []string
+	for _, l := range lines[1:] {
+		out = append(out, l.Action)
+	}
+	return out
+}
+
+// --stall-window against the reference on the D8 sequence: the default
+// (6m: stalled contenders settled in both states) with the scheduler of
+// the cluster before the bug-08 fix, a short window (30 s: settles wait
+// for the promotion) with the fixed one; the short window with the old
+// scheduler fails (the settle that waits for the promotion times out).
+func TestRefPoolStallWindow(t *testing.T) {
+	steps := d8Steps(t)
+	for seed := int64(1); seed <= 20; seed++ {
+		if f := refScriptWindow(t, seed, 0, steps...); f != nil {
+			t.Fatalf("default window:\n%s", f)
+		}
+		if f := refScriptWindow(t, seed, 30*time.Second, steps...); f != nil {
+			t.Fatalf("30 s, fixed scheduler:\n%s", f)
+		}
+	}
+	refUnfixedScheduler = true
+	defer func() { refUnfixedScheduler = false }()
+	failed := 0
+	for seed := int64(1); seed <= 20; seed++ {
+		if f := refScriptWindow(t, seed, 30*time.Second, steps...); f != nil {
+			if !strings.Contains(f.msg, "still not allocated") {
+				t.Fatalf("30 s, old scheduler: %s", f.msg)
+			}
+			failed++
+		}
+	}
+	if failed == 0 {
+		t.Fatalf("30 s with the old scheduler never failed")
+	}
+}
+
+// A stalled contender (the scheduler holds the device of a claim deleted
+// before it was bound) seen not allocated and unschedulable when its
+// pool's slices are gone (ctrl-restart, then ctrl-kill) is Unsched, like
+// the claims that wait for the slices: a short --stall-window does not
+// fail it (fuzz, fullp seed 20031, pmem seeds 9442, 9445, 9472 with
+// --stall-window 30s); allocated before the slices went it waits for
+// the attach (seed 328).
+func TestRefPoolStalledWithoutSlices(t *testing.T) {
+	script := []string{"create sdax-c@any#0", "create pfsc-c@vm2#0", "pwipe c c-pmem1", "delete pfsc-c@vm2#0", "settle",
+		"ctrl-restart c", "create pfsc-c@vm1#0", "ctrl-kill c", "settle"}
+	if f := refScriptIn(t, "fullp", 20031, 30*time.Second, script...); f != nil {
+		t.Fatalf("%s", f)
+	}
+	s := steps(t, revState(t, "fullp", true, script[:len(script)-1]...), "settle")
+	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
+	var absent *State
+	for _, a := range alts(s) {
+		if a.Ctrl[PoolC].Slices == SlicesAbsent {
+			absent = a
+		}
+	}
+	if absent == nil {
+		t.Fatalf("no world without the slices:\n%s", dumpAlts(s))
+	}
+	truth := absent.clone()
+	truth.Slots[truth.cfg.slotIndex("pfsc-c@vm1#0")].Phase = Unsched
+	v, adopted := checkState(s, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "pfsc-c@vm1#0", Unsched)
+	if f := refScript(t, 328, "create xnuma-a@vm2#0", "create sdax-c@vm1#0", "delete xnuma-a@vm2#0", "settle",
+		"create xdax-a@vm1#0", "ctrl-restart a", "ctrl-kill a", "settle"); f != nil {
+		t.Fatalf("%s", f)
+	}
+}
+
+// The simulator's truth makes no namespace that the reference never let
+// a writer prepare: pwr-c@vm2#0 created while pool c has no slices,
+// deleted unallocated, in a window with ctrl-start c (fuzz, pmem seed
+// 9442; seed 9762 alike).
+func TestRefPoolTruthNamespace(t *testing.T) {
+	script := []string{"driver-kill-at vm0 ns", "kubelet-restart vm2", "server-restart c", "settle",
+		"driver-kill vm0", "create pbro-c@vm0#0", "delete pbro-c@vm0#0", "settle",
+		"ctrl-restart c", "ctrl-kill c", "create pwr-c@vm2#0", "settle",
+		"driver-kill-at vm0 ns", "driver-kill-at vm2 ns", "kubelet-restart vm0", "settle",
+		"delete pwr-c@vm2#0", "create pfsd-c@vm2#0", "ctrl-start c", "settle"}
+	if f := refScriptIn(t, "pmem", 9442, 0, script...); f != nil {
+		t.Fatalf("%s", f)
+	}
+}
+
+// A18 (fuzz pmem seed 10091): an allocated claim keeps its allocation
+// when its pool's slices go (the scheduler deallocates only on its own
+// failures and timeouts). A stalled pfsc-c@vm1#0 promoted before
+// ctrl-restart deleted the slices, then ctrl-kill: allocated, waiting
+// for the attach (adopted); after ctrl-start c and ctrl-kill c, the
+// world without the slices has it as with them (attached before the
+// kill or not: either), never Unsched.
+func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
+	s := revState(t, "pmem", true, "create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsc-c@vm1#0")
+	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
+	s = steps(t, s, "ctrl-restart c", "ctrl-kill c", "settle")
+	var absent *State
+	for _, a := range alts(s) {
+		if a.Ctrl[PoolC].Slices == SlicesAbsent {
+			absent = a
+		}
+	}
+	if absent == nil {
+		t.Fatalf("no world without the slices:\n%s", dumpAlts(s))
+	}
+	truth := absent.clone()
+	truth.Slots[truth.cfg.slotIndex("pfsc-c@vm1#0")].Phase = Attaching
+	v, adopted := checkState(s, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "pfsc-c@vm1#0", Attaching)
+	if adopted.Ctrl[PoolC].Slices != SlicesAbsent {
+		t.Fatalf("adopted slices %v", adopted.Ctrl[PoolC].Slices)
+	}
+	r := steps(t, adopted, "ctrl-start c", "ctrl-kill c", "settle")
+	found := false
+	for _, a := range alts(r) {
+		if a.Ctrl[PoolC].Slices != SlicesAbsent {
+			continue
+		}
+		found = true
+		if ph := slotOf(t, a, "pfsc-c@vm1#0").Phase; ph != Either {
+			t.Fatalf("without the slices: %s, want either (attached before the kill or not)", ph)
+		}
+	}
+	if !found {
+		t.Fatalf("no world without the slices:\n%s", dumpAlts(r))
+	}
+	// the fuzz's sequence against the reference
+	script := []string{"driver-kill-at vm2 ns", "create sdax-c@vm0#0", "settle",
+		"ctrl-restart c", "ctrl-restart c", "create xnuma-c@vm1#0", "settle",
+		"create pfsd-c@vm1#0", "kubelet-restart vm1", "settle",
+		"delete pfsd-c@vm1#0", "delete sdax-c@vm0#0", "settle",
+		"driver-kill-at vm1 mount", "create pfsd-c@vm1#0", "settle",
+		"ctrl-kill c", "settle",
+		"delete xnuma-c@vm1#0", "ctrl-start c", "delete pfsd-c@vm1#0", "settle",
+		"create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "ctrl-restart c", "settle",
+		"create pfsc-c@vm1#0", "ctrl-restart c", "ctrl-kill c", "settle",
+		"ctrl-start c", "ctrl-kill c", "create pfsd-c@vm1#0", "settle"}
+	for _, w := range []time.Duration{0, 30 * time.Second} {
+		if f := refScriptIn(t, "pmem", 10091, w, script...); f != nil {
+			t.Fatalf("--stall-window %s:\n%s", w, f)
 		}
 	}
 }

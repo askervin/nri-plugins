@@ -1,0 +1,877 @@
+plan-13: persistent pool devices (block, fs) in test90: findings
+===============================================================
+2026-10-27 (research agent). Read-only: code, docs and logs; no
+cluster, VM or e2e test touched. Branch 5jg-cxl at 1178bf032.
+Paths: N = nri-plugins, D = N/cmd/plugins/dra-driver-cxl,
+M = N/pkg/cxl/memctl, F = N/scripts/testing/fake-cxl-pool,
+E = N/test/e2e/memory.test-suite/dra-driver-cxl, S2 =
+E/n4-cxl-shared-2, T = S2/test90-gofmbt-reliability, T16 =
+S2/test16-cxl-llm-share/code.var.sh, Doc = N/docs/memory/cxl,
+P7 = F/plan-7-e2e-cxl-llm-share, P8 = F/plan-8-demo, P13 =
+F/plan-13-gofmbt, O16 = N/test/e2e/n4-cxl-shared-2-fedora-43-
+containerd/memory.test-suite/dra-driver-cxl/test16-cxl-llm-share (the
+last test16 run, 2026-10-23, PASS). [R] = read in code, docs or logs;
+[I] = inferred, not verified. Contract: 04-contract.txt (A1-A21).
+
+0. In short
+-----------
+- Every driver feature needed exists and was exercised once by test16
+  (writer block claim, fs readers direct and cached, fs leases, busy
+  lease release) and test12 (refusals, volatile devices only); nothing
+  combined them with faults: only test14 and test17 restart the driver
+  (local devices), no e2e restarts anything while a persistent device
+  is prepared [R grep of S2/test*/code.var.sh, P13/06-runs.txt].
+  test90 needs new kinds, verbs, a tool, observer parts (2, 3).
+- Room: hb0 is full on every VM; hb1 has 4 pool slots and pool-c uses
+  2, so one shared persistent device c-pmem0 (and optionally an
+  exclusive c-pmem1) goes into pool-c (all three VMs, HMP) [R
+  E/n4-cxl-shared-{0,1,2}/topology.var.json, T/code.var.sh:171-190].
+- No mkfs.erofs anywhere in the cluster; a fixed 8 KiB erofs template
+  (P8/demo/testdata/hello.erofs.hex) with its 32 data bytes patched is
+  the cheapest image source (section 2.2).
+- The host files of the pool device (data, .lsa) show the device's
+  content and labels at every settle without touching a guest: the
+  best oracle for "data intact" and "namespace kept" (2.6).
+- Highest bug risk: a driver killed in a persistent Prepare before the
+  state save, pod deleted before kubelet's retry: the pmem region (and
+  namespace) is leaked, the decoder stays committed, the detach hangs
+  (S1, the E2 of 01-findings-driver, with a wider window: 84-207 ms
+  measured). Then: an interrupted create-namespace (S2), busy fs lease
+  releases across faults (S3), orphan binds (S4).
+
+1. Allocation matrix and what is observable
+-------------------------------------------
+1.1 Devices and classes
+- persistent: true is an attribute of every pool device; DeviceClass
+  cxl-pool-persistent selects persistent memdevs, shared or not;
+  cxl-pool and cxl-pool-shared exclude them [R Doc/usage.md:360-362,
+  Doc/pool.md:172-174]. A pod with a cxl-pool-shared claim of a
+  persistent serial is Unschedulable [R T16:796-806].
+- fake-cxl-pool: persistent: true in a server's device config gives a
+  data file and an LSA file (the data path with .lsa, 256 KiB), both
+  memory-backend-file share=on in every qemu that attaches the device
+  (cxl-type3 persistent-memdev= and lsa=) [R F/pkg/server/config.go:
+  86-88, F/pkg/pool/pool.go:103-112, F/pkg/server/ops.go:781-807,
+  Doc/pool.md:156-162]. Files are created only when missing, never
+  rewritten [R F/pkg/server/server.go:331-339]: data and labels outlive
+  attachments and server restarts. New files are zeros (T16:748-753).
+- Controller status data: persistent: true; exclusive: true when the
+  allocation consumed all shares [R Doc/pool.md:300-329]. The node
+  plugin reads only serial, shared, size, exclusive, persistent.
+- The cxl.nri.io publisher never publishes a pmem-only memdev ("no RAM
+  capacity") nor the pmem region ("region is disabled") [R
+  D/node_state.go:523; O16/nri-dra-driver-cxl.vm1.log 16:09:22.46].
+
+1.2 Static claims (pool driver cxl-pool.nri.io)
+Check order: the device section alone, then with the status data [R
+Doc/usage.md:725-750; D/pool.go:479 PoolMode, :485-492 fs defaults,
+:494 checkSamePreparation].
+  device       capacity  device section          result
+  shared pers. none      mode: block             the writer: /dev/pmemK
+                                                 rw; creates the fsdax
+                                                 namespace if none
+  shared pers. shares 1  mode: block             refused: "device.mode
+                                                 block: a shared device
+                                                 is writable only
+                                                 exclusively ..."
+  shared pers. shares 1  block, readOnly         /dev/pmemK perm r; no
+                                                 namespace: refused
+                                                 "no fsdax namespace in
+                                                 regionK: has a writer
+                                                 written the device?"
+  shared pers. shares 1  fs, readOnly [access,   bind of the node mount
+                         path]                   at path; refused if no
+                                                 namespace or no erofs
+  shared pers. none      fs, readOnly            the same, exclusively
+  non-shared   none      block                   writer, SHARED=0
+  non-shared   none      fs, readOnly            fs, the only claim
+  persistent   any       fs without readOnly     refused "mode fs is
+                                                 read-only: set
+                                                 readOnly: true ..."
+  persistent   any       no mode, numa, dax      refused "a persistent
+                                                 device needs mode
+                                                 block or fs"
+  volatile     any       block or fs             refused "mode X needs
+                                                 a persistent device"
+  any          any       access/path, not fs     refused
+  any          any       path /, /dev, /proc,    refused "invalid path"
+                         /sys, /run/cxl, ...
+  [R Doc/usage.md:432-472, :725-750; D/pool_persistent.go:107-148;
+  P13/01-findings-driver.txt:247-262]
+- A refused Prepare returns an error; kubelet retries it at pod
+  resyncs (~60-90 s apart, bug-02 6) forever; the pod stays
+  ContainerCreating with a Warning event [R D/pool.go:442-461,
+  P13/bug-02 6; I reason FailedPrepareDynamicResources].
+- Config refusals come before the memdev wait: no region [R
+  D/pool.go:479-497 before prepareDevice :500]. Device refusals (no
+  namespace, no erofs, no DAX, foreign node mount) come after
+  CreatePmemRegion: the rollback releases the region unless another
+  prepared claim of the serial on the node has it, or a holder is
+  left [R D/pool.go:442-461, :637-643, D/pool_persistent.go:322-366].
+- Mixing on a node: block and fs of one device and both accesses share
+  one pmem region; persistent vs volatile preparation and shared
+  mismatches are refused; readOnly may differ [R D/pool.go:603-633].
+
+1.3 Leases (cxl-request, D/broker.go)
+  request (all with --serial S of c-pmem0)  companion claim (class
+                                            cxl-pool-persistent)
+  --mode block                              whole device, no capacity,
+                                            {block}: rw fd (writer)
+  --shared --read-only --mode block         shares 1, {block, ro}: ro fd
+  --shared --read-only --mode fs [--access  shares 1, {fs, ro, access}:
+    A] [--name N]                           bind at /run/cxl/fs/<N>
+  --read-only --mode fs                     whole device, fs
+  --shared --read-only --mode fs --size Z   any persistent >= Z, a share
+  [R Doc/leases.md:149-197, :497-512; D/broker.go:1024-1100]
+- CLI refusals, exit 2: "mode fs needs readOnly", "mode block with
+  shared needs readOnly", "access needs mode fs", "name needs mode fs",
+  invalid access or name, "mode fs/block needs source pool" [R
+  Doc/leases.md:252-268, S2/test12-dra-live-attach/code.var.sh:
+  660-672]. Broker refusals, exit 1: "device 0x..: mode fs needs a
+  persistent device", "... a persistent device needs mode block or
+  fs", "name ... is in use by lease L", "lease claim ... has no
+  filesystem directory" [R D/broker.go:499-536, :731-758; test12:
+  681-682].
+- block: the fd only with --exec (request or fd), as fd 3,
+  CXL_<KEY>_FD=3 instead of PATH; without --exec no fd is kept; the
+  broker opens /dev/pmemK O_RDWR or O_RDONLY per response [R
+  Doc/leases.md:300-320, D/broker.go:652-660, :1662-1665]; reopening
+  via /proc/self/fd is refused by the device cgroup [R
+  Doc/leases.md:167-170]. fs: no fd, "cxl-request fd" exits 3 [R
+  T16:494-497].
+- --wait timeout: the lease is released and reported Failed [R
+  P13/01-findings-driver.txt:385-388].
+
+1.4 Observable results
+Environment (D/pool.go:178-205, api.Env):
+  block  MODE=block PATH=/dev/pmemK READONLY=0|1 SERIAL SHARED
+         SIZE=<namespace bytes>
+  fs     MODE=fs PATH=<path> ACCESS=direct|cached READONLY=1 SERIAL
+         SHARED SIZE; default path /run/cxl-fs/<KEY>
+         [R D/pool_persistent.go:49-51, :87-89]
+  leases block: FD=3 with --exec, else PATH = host /dev/pmemK; fs:
+         PATH=/run/cxl/fs/<name> [R Doc/usage.md:1029-1037]
+  SIZE of a 256Mi device 266338304, of 512Mi 534773760 (2 MiB less:
+  pfn info and alignment) [R P8/14-fs-demo-status-DEMO.txt:319, O16
+  vm1 log 16:09:22.33]. SHARED=1 for a shared device held exclusively.
+CDI, nri.io/cxl-pool=claim-<uid>-<n> in cxl-pool.yaml (D/pool.go:
+835-862):
+  block  deviceNodes [{/dev/pmemK, type b, major, minor, permissions
+         r iff readOnly}] (D/pool_persistent.go:810-821); CDI omits
+         minor 0 [R P7/24-erofs-status-D.txt:364-366]
+  fs     mounts [{hostPath <node mount>, containerPath <path>, bind,
+         options bind,ro,nosuid,nodev}], no device node
+         (D/pool_persistent.go:824-831)
+  companion claims: no CDI device (D/pool.go:555-557); the lease claim
+  has lease-<uid> with /run/cxl (rbind,rw) and /run/cxl/fs (rbind,ro,
+  rslave of lease-fs/<uid>) (D/lease_claims.go:122-157)
+In the VM:
+  - CXL region mode pmem, no dax device; its nvdimm region is found by
+    physical address under /sys/bus/nd/devices (not under
+    regionN/pmem_regionN); namespaceK.0 mode "memory" (= fsdax), holder
+    pfnK.M with block/pmemK, pfn mode ram (= map mem) [R
+    P8/14-fs-demo-status-DEMO.txt:309-316, P7/24-erofs-status-D.txt:
+    368-379].
+  - pfn info block "NVDIMM_PFN_INFO" at namespace offset 4096; data at
+    its dataoff (le64 at byte 56 of nd_pfn_sb) = 2 MiB: /dev/pmemK
+    byte 0 is byte 2 MiB of the host data file; erofs magic at
+    0x200400 [R P8/14-fs-demo-status-DEMO.txt:315-317,
+    P8/15-fs-demo-review-DEMO.txt:78-82].
+  - node mounts <pool data dir>/mounts/<serial hex>-<access>
+    (c1ae2002-direct), MS_RDONLY|NOSUID|NODEV: direct = erofs on
+    /dev/pmemK, dax=always; cached = erofs on a read-only, direct-I/O,
+    autoclear loop device over /dev/pmemK, dax=never [R
+    D/pool_persistent.go:93-95, :155-207, D/mount.go:204-244]. Each
+    node mount is listed twice in the host mountinfo (rshared
+    self-bind of /var/lib/kubelet); one umount removes both [R
+    P7/24-erofs-status-D.txt:413-418].
+  - lease binds /var/lib/kubelet/plugins/cxl.nri.io/lease-fs/
+    <lease claim uid>/<name>: plain MS_BIND of the node mount, erofs,
+    same source and root, ro,nosuid,nodev; one host mount each [R
+    D/pool_persistent.go:424-481, P7/34-dynamic-bind-mount-status-T.txt:
+    252-257].
+  - containers: an fs claim has a private bind at its path, whose
+    superblock outlives the node mount (umount of the node mount
+    succeeds while it exists) [R P7/21-erofs-findings.txt F10]; an fs
+    lease requester has a slave copy at /run/cxl/fs/<name>.
+
+1.5 State files and the recovery at driver start
+- preparedPoolClaims.json: per claim uid: claimName, devices[]
+  {serial, shared, mode, readOnly, memdev, region, persistent,
+  ndRegion, namespace, blockDevice, blockMajor/Minor, access, path,
+  nodeMount, loopDevice}, result, lend {lease, pod, container, nodes,
+  fsDir, name, mounts[]} [R D/pool.go:118-152, :216-221,
+  D/lending.go:76-91]. Written (CDI spec, then the file, atomically)
+  only after the whole Prepare, after region, namespace, mount and
+  bind [R D/pool.go:559-560, :819-823].
+- leases.json (broker): mode, access, name, path, block, state; lease
+  claims with FsDir [R D/lease_store.go:41-134].
+- staleBinds: in memory only, lost at a restart and found again by
+  the start sweep [R D/pool.go:90-92, D/pool_persistent.go:522-530].
+- At start, before the kubelet plugin registers and before the CDI
+  rewrite [R D/pool.go:252-277, :280-297]: load (strict; a parse
+  error stops the driver, D/pool.go:891-917), then restoreMounts:
+  a. a node mount of a prepared fs device that is there is checked
+     (erofs, source, dax=always or loop backing) and kept; a changed
+     loop device is saved [R D/pool_persistent.go:213-240, :736-770];
+  b. a missing one is mounted again only if checkBlockDevice finds the
+     recorded namespace, pmem name and major:minor in the region of
+     the memdev of the serial (5 s probe wait); else logged "not
+     mounting ... again" and its directory removed [R :720-727,
+     :777-806];
+  c. missing lease binds of prepared companions are bound again when
+     the node mount is there; mounts under lease-fs that no prepared
+     claim lists are unmounted, busy ones become stale binds [R
+     :641-697];
+  d. entries of mounts/ that no prepared claim uses are unmounted;
+     busy ones are logged and left, never retried [R :745-765].
+  No sweep of pmem regions or namespaces of serials that no prepared
+  claim has [R D/pool.go:252-277; P13/01-findings-driver.txt:675-690].
+- Broker start: sweepFsDirs removes lease-fs/<uid> and leases/<uid>
+  of claims not in the store (os.Remove only, mounted entries stay),
+  not at all when leases.json did not decode [R D/lease_claims.go:
+  281-378].
+
+1.6 What happens to mounts and binds
+container crash (restartPolicy Always)
+  - fs claim: the container's mount namespace and bind go; kubelet
+    creates the new container from the same CDI device: a new bind of
+    the node mount, which stays mounted (no Unprepare) [I].
+  - block claim: the same device node again; data written and synced
+    stays; a crash cannot lose buffered writes of the guest's bdev
+    page cache (they belong to the VM, not the process) [I].
+  - fs lease requester: its leases are kept [R Doc/leases.md:565-572];
+    the new container's /run/cxl/fs is an rbind of lease-fs/<uid>
+    made at creation, which copies the existing bind [I, untested].
+    Holder processes die with the container (PID namespace) [I].
+  - block lease requester: the fd is gone; "cxl-request fd --lease L
+    --exec ..." gives it again [R Doc/leases.md:565-572].
+pod delete
+  - kubelet stops the containers, then NodeUnprepareResources; the pod
+    stays Terminating until it succeeds [R P13/01-findings-driver.txt:
+    574-578]. releaseDevices: unbindStale; unmount the node mount
+    unless another prepared claim uses it (busy: error, the serial is
+    not released); per serial that no other prepared claim has: wait
+    up to 10 s (one deadline per call) until nothing holds /dev/pmemK,
+    then offline, disable-region, destroy-region, disable-memdev;
+    labels and data untouched [R D/pool_persistent.go:250-366,
+    M/memctl.go:1065-1134, Doc/usage.md:785-792].
+  - Holder = a loop device backed by /dev/pmemK or an O_EXCL open that
+    gets EBUSY (mounts and container binds); a plain open fd is none
+    [R D/mount.go:263-281, Doc/leases.md:610-617].
+  - lease requester pod: CloseClaim releases its leases and waits 5 s
+    ("still releasing N leases, retry") [R D/lease_claims.go:228-260];
+    companions are garbage collected; the companion's Unprepare
+    unbinds without EBUSY (the requester's containers are gone) [R
+    P7/31-dynamic-bind-mount-findings.txt 4].
+  - The controller detaches after deallocation, i.e. after the last
+    Unprepare [R P13/01-findings-driver.txt 3.9].
+lease-put of an fs lease
+  - revoke, then unbind (never MNT_DETACH); a requester with a file of
+    the fs open or mapped makes it EBUSY: Unprepare fails, kubelet
+    retries about every second, the lease stays Releasing, the
+    companion Terminating, the data stays readable; after the holder
+    ends, lease and companion are gone 4.4-8.6 s later [R
+    D/pool.go:785-806, D/pool_persistent.go:489-520,
+    P7/34-dynamic-bind-mount-status-T.txt:257-271, T16:916-983].
+lease-put of a block lease: no holder is seen for an fd; the region
+  is released under an open fd, whose I/O fails (ENXIO, EIO) [R
+  Doc/leases.md:610-617].
+driver-kill in place, containerd-restart (A8: exit on NRI loss)
+  - node mounts and lease binds are kernel mounts made in the driver
+    container and propagated to the host by mountPropagation
+    Bidirectional (deployment/helm/dra-driver-cxl/templates/
+    daemonset.yaml:112); they outlive the container [R
+    Doc/leases.md:629-635; I for the CRI DaemonSet: only a ctr
+    container without propagation was measured, and its mounts
+    vanished, P7/24-erofs-status-D.txt:405-411]. Never measured in e2e.
+  - restoreMounts (1.5) keeps them; the CDI specs are deleted and
+    written again at start [R Doc/usage.md:1496-1498].
+  - A Prepare in flight: region, namespace, node mount or bind may
+    exist without the claim in the state file; the restart unmounts
+    the orphan mount and bind (1.5 c, d) and keeps the region;
+    kubelet's retry reuses the region (M/pmem.go:365-370), finds the
+    namespace, mounts again. If the pod was deleted first, the
+    Unprepare of a claim the driver does not know returns nil [R
+    D/pool.go:786-789]: the region stays (S1).
+  - An Unprepare in flight, killed after the unmount: the claim is
+    still in the file and the restart mounts it again (b); killed
+    after the region release: (b) fails and removes the directory, the
+    retried Unprepare unmounts nothing, its holder check passes
+    (ENOENT/ENXIO = gone), the memdev release is a no-op [R
+    D/mount.go:271-279, M/memctl.go:1065-1079]; see S5.
+  - containers, their binds and block fds are not affected [I].
+driver-restart (pod deleted): helper.Stop only, nothing unmounted [R
+  D/pool.go:315-319]; otherwise as driver-kill.
+kubelet-restart: no Prepare again; containers keep running; kubelet
+  may re-create a container (contract M2): it binds the node mount
+  again [I]; failed Unprepares are retried after it [I].
+ctrl-kill, ctrl-start, ctrl-restart: attachments stay (only the
+  controller detaches); new allocations as A18-A20; a writer's
+  exclusive attach waits (Attaching) [R P13/04-contract.txt A18-A20].
+server-restart: files untouched, attachments reloaded, devices stay
+  in qemu [R F/pkg/server/server.go:331-339, P13/01-findings-driver.
+  txt 3.4].
+
+1.7 Across VMs: one writer, readers elsewhere
+- pool-c reaches vm0, vm1, vm2 under hb1 [R T/model/topology.go:
+  133-140, T/code.var.sh:171]. One pair of host files backs the device
+  in every qemu (share=on): a write synced in one guest is in the host
+  file at once and in every later region of any guest [R
+  Doc/pool.md:156-162; I coherence of a shared file mapping].
+- The writer's claim takes all shares: the scheduler allocates no
+  other claim of the device anywhere; the server refuses an exclusive
+  attach while the device is attached elsewhere, and any attach while
+  it is attached exclusively; a shared attachment on the same host
+  becomes exclusive in place [R F/pkg/server/ops.go:540-545,
+  :904-920]. So the writer is Pending until every reader claim is
+  deallocated, i.e. after every reader node's Unprepare unmounted its
+  node mounts and released its region; a cached mount's page cache
+  goes with its autoclear loop device [R D/pool_persistent.go:322-366;
+  I cache drop at loop clear].
+- direct readers map device memory (no page cache): always the device
+  content; cached readers: one page-cache copy per node through the
+  loop device (direct I/O over pmem, no second copy) [R
+  P7/21-erofs-findings.txt F8, F9]; valid because the content cannot
+  change while a mount exists. A ro block reader fills the page cache
+  of /dev/pmemK of its VM; it goes with the region [I].
+- Labels are written only by the driver's ndctl create-namespace for
+  a writer of a device without fsdax namespace; every kernel reads
+  them at region probe; readers change neither data nor labels (sha256
+  of both files equal after the readers) [R T16:1008-1009,
+  P7/21-erofs-findings.txt F5].
+- Defined behaviour: a reader sees the erofs that the last writer
+  synced before its claim was released; an fs reader of a device
+  without namespace or erofs is refused (retried, not failed); a ro
+  block reader needs only the namespace; a rewrite under mounted
+  readers cannot happen. A reader that comes before any writer is
+  refused and its share keeps every writer out: the device is stuck
+  until that pod is deleted (by design of shares, worth a doc line)
+  [I from D/pool_persistent.go:123-127 and the share capacity].
+
+2. What setup, executor and observer need
+-----------------------------------------
+2.1 Pool devices
+- hb0 of every VM: 2 pool slots (pool-a or pool-b), the static
+  shared0 slot and the local memdev slot: full. hb1: 4 pool slots,
+  pool-c has c-shared0 and c-pooled0 [R E/n4-cxl-shared-{0,1,2}/
+  topology.var.json, T/code.var.sh:171-190].
+- Proposal, both in pool-c's config (T/code.var.sh:171):
+    c-pmem0  256Mi  shared: true  persistent: true  serial 0xc1ae2002
+    c-pmem1  256Mi  shared: false persistent: true  serial 0xc1ee2002
+             (optional: the non-shared path, SHARED=0, a second pmem
+             name for S5; takes the last hb1 slot)
+  serials follow the pool-index scheme 0xc1aeP000/0xc1eeP000 [R
+  S2/pool.source.sh:414-418]. Files /tmp/fake-cxl-pool-pool-c/
+  c-pmem0.raw and .lsa [R S2/pool.source.sh:438-439]; remove them
+  before the server starts (fresh: zeros, no labels) and at cleanup
+  (host RAM), as T16:247, :749, :759 do; pool-device-files gives the
+  paths [R S2/pool.source.sh:777-800].
+- The slot assert len(slots) == 4 per host stays true [R
+  T/code.var.sh:190]. Up to 4 regions per vm/hb1 stack then (qemu's
+  4 HDM decoders per component [I]); the CFMWS window of a host
+  bridge is the total CXL memory rounded up to 4 GiB, 8 GiB here [R
+  N/test/e2e/lib/topology2qemuopts.py:474-480].
+- The pmem root decoder: RootDecoder(memdev, pmem) needs cap_pmem on
+  the window of the memdev's host bridge [R M/pmem.go:106-136]; the
+  e2e windows had cap_ram=1 cap_pmem=1 [R P7/24-erofs-status-D.txt:
+  360-362]: ram and pmem regions of hb1 share one decoder stack [I;
+  check with the observer's ports at the first run].
+2.2 An erofs image without mkfs.erofs
+- No mkfs.erofs in the VMs (test16 installs erofs-utils in VM1 with
+  dnf when it runs) nor on the host (command -v: none, 2026-10-27);
+  DRA_TOOLS_IMAGE is python:3-alpine without it [R P8/11-fs-demo-
+  findings.txt M1, E/dra.source.sh:131].
+- a. Template (recommended): P8/demo/testdata/hello.erofs.hex, 8192
+     bytes of mkfs.erofs 1.9 -b4096 -Enoinline_data with one 32-byte
+     hello.txt: superblock at 1024 (feature_compat 3), root nid 36,
+     the file data in block 1 (offset 4096), bytes 0-1023 zero [R
+     P8/11-fs-demo-findings.txt M3, the file's header]. Ship it in
+     the dax-rw ConfigMap (dra-dax-tool-install, E/dra.source.sh:
+     271-287) with a tool pmem-rw.py; the writer patches the 32 data
+     bytes with a fixed-length token ("mbt-%026d\n"), puts the same
+     token in bytes 0-63 (unused by erofs: for block readers), writes
+     8 KiB and fsyncs. erofs keeps no data checksum; the superblock
+     checksum covers the superblock only [I: verify once by mounting a
+     patched copy in a VM]. No network, no image build, no time.
+  b. P8's image (python:3-alpine + apk erofs-utils, docker build, ctr
+     import into the VMs): real mkfs.erofs in pods; +20-40 s at the
+     first setup, needs the proxy [R P8/11-fs-demo-findings.txt M2,
+     T2].
+  c. A Python mkerofs: no dependency, format risk.
+  DAX of big files needs plain 2 MiB-aligned extents (Doc/usage.md:
+  825-837); a 4 KiB data block is enough for test90, which checks
+  dax=always on the node mount, not page frames (test16 does those).
+2.3 Kernel and VMs
+- test/e2e/playbook/files/qemu-cxl-kernel.config (7.3.0-rc4) has
+  ZONE_DEVICE :1048, CXL_PMEM :1687, CXL_REGION :1691, BLK_DEV_LOOP
+  :1896, LIBNVDIMM :2810, BLK_DEV_PMEM :2811, ND_PFN :2815,
+  NVDIMM_PFN :2816, DEV_DAX :2819-2823, FS_DAX :2895, FS_DAX_PMD
+  :2896, EROFS_FS :3032 (all =y) [R].
+- The three topologies use it (kernel_config.var.sh =
+  qemu-cxl-kernel.config, kernel_getsource.var.sh = vanilla) [R
+  E/n4-cxl-shared-{0,1,2}/kernel_*.var.sh]. All three booted
+  7.3.0-rc4 with FS_DAX and EROFS (test00-up, 2026-10-19..21) [R
+  N/test/e2e/n4-cxl-shared-{0,1,2}-fedora-43-containerd/memory.
+  test-suite/dra-driver-cxl/test00-up/commands]; Doc/e2e.md:201-203
+  lists rc4 on all nodes, while Doc/e2e.md:125 says rc7 (stale). The
+  same build [I: the cached tarball is keyed by the config's sha256].
+  containerd 2.4.2 on VM0, 2.4.1 on VM1 and VM2 [R Doc/e2e.md:
+  201-203].
+- test00-up checks only FS_DAX and EROFS [R E/n4-cxl-shared-*/
+  test00-up/code.var.sh:55-63]: test90 should also grep CXL_PMEM,
+  BLK_DEV_PMEM, ND_PFN, BLK_DEV_LOOP in /boot/config-$(uname -r).
+  ndctl, cxl, daxctl v85 are in the driver image; nothing new in the
+  VMs [R Doc/usage.md:128-133].
+2.4 Time
+- writer of a fresh device: Prepare = config line -> region 30 ms ->
+  namespace 83 ms -> prepared (saved) at once; pod created until the
+  image is written 11.5 s [R O16 vm1 log 16:09:22.215-.328, O16
+  run.sh.output TIMING].
+- reader claim or lease: Prepare region -> mounted 207 ms; pod created
+  until serving 8.2-9.0 s [R O16 vm1 log 16:10:14.023-.230, TIMING].
+- writer Unprepare 239 ms [R P7/24-erofs-status-D.txt:393-394]; busy
+  lease release: retried ~1 s apart, done 4.4-8.6 s after the holder
+  ends [R P7/34-dynamic-bind-mount-status-T.txt:259-271].
+- refused reader: kubelet retries ~60-90 s apart (as A12) [R bug-02 6].
+- pool claim latency as volatile (binding conditions 5-7 s); an 8 KiB
+  write, host file checks: milliseconds [I]. Planning: ~11-15 more
+  slots, ~+30% actions per state [I from 07-results P4].
+2.5 Executor (T/mbt.source.sh)
+- Templates: mbt-template-yaml (T/mbt.source.sh:222-241) with
+  dra-shared-claim-yaml x SERIAL SHARES PARAMS cxl-pool-persistent
+  (E/dra.source.sh:1860-1880, as T16:330, :813):
+    pwr-c  ""  "mode: block"
+    pfsd-c 1   "mode: fs, readOnly: true"
+    pfsc-c 1   "mode: fs, readOnly: true, access: cached, path: /models"
+    pbro-c 1   "mode: block, readOnly: true"
+    pbad-c 1   "mode: block"                         (refused)
+    xpb-c  ""  "mode: block"                         (c-pmem1)
+    xpf-c  ""  "mode: fs, readOnly: true"            (c-pmem1)
+  plse slots use the existing mbt-lease template.
+- mbt-pmem-key: C1AE2002 / C1EE2002 (as mbt-dax-key, :187-200).
+- pwrite SLOT img|junk: claim: python3 /tools/pmem-rw.py image
+  "$CXL_<K>_PATH" TOKEN (pwrite of the patched template at 0, fsync);
+  junk: zeros over 0-8191 (no erofs any more). pbw lease: cxl-request
+  fd --lease L --exec python3 /tools/pmem-rw.py --fd 3 image TOKEN.
+  done JSON {"text": TOKEN|null, "stderr"}; nonzero on a read-only
+  node or fd (EACCES/EBADF/EPERM).
+- pread SLOT: fs claim: cat "$CXL_<K>_PATH/hello.txt"; fs lease: the
+  same under its path (cxl-request list); block claim: pmem-rw.py
+  read "$CXL_<K>_PATH" 0; block lease: via fd --exec ... --fd 3.
+  done JSON {"text": ...}.
+- hold SLOT, unhold SLOT (fs claims and fs leases): setsid python3
+  /tools/pmem-rw.py hold FILE STOPFILE & (mmap read-only, report
+  "holding"), unhold touches STOPFILE and waits; precedent /demo/hold
+  [R P8/demo/bin/tools/cxl-demo.py:9-10, :113-123]. Crash and delete
+  end it [I].
+- lease-get SLOT pbw|pbr|pfd|pfc: cxl-request request --serial
+  0xc1ae2002 and --mode block | --shared --read-only --mode block |
+  --shared --read-only --mode fs --name mbt | --shared --read-only
+  --mode fs --access cached; --wait $MBT_LEASE_WAIT; result as today
+  (T/mbt.source.sh:475-500). lease-put unchanged.
+- pwipe c DEV (host): only when the server lists no attachment of DEV
+  (pool-attachments, S2/pool.source.sh:763-776): zero the .lsa file
+  and the first 4 MiB of the data file: a fresh device again, so
+  namespace creation recurs [I: no qemu maps an unattached device].
+- driver-kill-at VM MARKER (optional): start a watcher in the VM (root,
+  setsid, poll 2 ms, give up after 60 s) that SIGKILLs the driver
+  process when MARKER appears: region (a new regionN with a target on
+  the memdev of the serial), ns (a namespace of that nd region with
+  size > 0), mount (the node mount in /proc/self/mountinfo), bind (a
+  mount under lease-fs); return at once; report at the next step
+  {"fired": MARKER, "ms": ...}. Windows to hit: 84 ms (writer region
+  -> saved), 207 ms (reader region -> mounted) (2.4) [I feasible].
+2.6 Observer (T/mbt-observe.py, vm_observation :647-662)
+VM parts (all sysfs and mountinfo, no device opened):
+  "pmem": per CXL pmem region {region, serial, ndRegion,
+    namespaces [{name, mode, map, size, uuid, blockdev, major,
+    minor, holder}]} (the nd region of the same resource, P8 V2) [R
+    P8/11-fs-demo-findings.txt V2];
+  "fsMounts": host mounts under <pool dir>/mounts: target, source,
+    fstype, superopts, vfsopts, loop backing/dio/ro, count (2 each)
+    (like dra-fs-mounts, E/dra.source.sh:1245-1275);
+  "leaseBinds": mounts under lease-fs: target, source, root, fstype,
+    vfsopts (like dra-lease-fs-mounts, E/dra.source.sh:1286-);
+  "leaseDirs": the entries of lease-fs/ and leases/;
+  "loops": loop devices backed by /dev/pmem* (dra-pmem-loops,
+    E/dra.source.sh:1277-1284);
+  "ctrMounts": per running DRA_NS container (pid from the existing
+    crictl inspect): its erofs mounts from /proc/PID/mountinfo:
+    target, source, vfsopts;
+  "poolClaims": the devices and lend of preparedPoolClaims.json (today
+    only its keys, T/mbt-observe.py:442-456);
+  "cdiPool": per CDI device of cxl-pool.yaml: deviceNodes (path, type,
+    permissions), mounts (hostPath, containerPath, options);
+  "kernel": new dmesg lines matching BUG:|Oops|WARNING:|general
+    protection|nd_pmem|pfn|erofs since the last observation (state
+    in /run/mbt-observe like driverLog, T/mbt-observe.py:580-646);
+  driverLog: counts of "device or resource busy", "is still in use",
+    "stale lease bind", "not mounting", "belongs to no prepared claim".
+Host part (executor), "pdevs": per persistent device {lsa: zero|
+  labels, lsaSha, pfn: "NVDIMM_PFN_INFO" at 4096, dataoff (le64 at
+  4152), erofs: magic at dataoff+1024, token: the 32 bytes at
+  dataoff+4096 if erofs, raw: bytes 0-63 at dataoff} from the pool-c
+  files: no guest, no qemu involved [I harmless: plain reads of shared
+  host files].
+inspect (new or restarted pods of the new kinds): env, the
+  mountinfo line of PATH (fs), ls /dev/pmem* (block: exactly PATH;
+  fs: none, as T16:399-403), cxl-request list of plse pods (A1).
+Never (perturbation of the SUT):
+  - open, cd or read files under a node mount or a lease bind from
+    the host (fincore, sha256sum, cat): the driver's umount gets EBUSY
+    and the Unprepare fails [R D/pool_persistent.go:268-281];
+  - O_EXCL-open /dev/pmemK: a concurrent erofs mount needs the bdev
+    exclusively and would fail [I; the driver's own Holder does it,
+    D/mount.go:271];
+  - read through a container's mount except in the pread verb.
+
+3. A model extension
+--------------------
+3.1 Devices and resources
+- DevID is pool*2 (+1) today [R T/model/topology.go:104-130]: make it
+  a table per pool (pool-c: c-pooled0, c-shared0, c-pmem0, c-pmem1);
+  Device gains Persistent; CtrlState.Att [2][nVMs] becomes per device
+  of the pool; State.Data (volatile tokens) stays, PDev is new per
+  persistent device. nRes = nDevs + nVMs = 11 still fits the uint16
+  masks Held and Contested [R T/model/state.go:250-260].
+- RKey devKey(d) works unchanged; RKey.kind() gets "pmem" [R
+  T/model/stack.go:46-70].
+3.2 Kinds (pool-c)
+  pwr-c   writer: c-pmem0 whole (all shares), block rw; creates the
+          namespace on a fresh device (capacity like sexcl)
+  pfsd-c  a share, fs direct, default path /run/cxl-fs/C1AE2002
+  pfsc-c  a share, fs cached, path /models
+  pbro-c  a share, block read-only
+  pbad-c  a share with block rw: always Refused by the config; holds
+          its share (blocks writers), never a region
+  xpb-c   c-pmem1 (non-shared) block rw; xpf-c c-pmem1 fs direct
+  plse    a lease claim whose leases are persistent: lease-get modes
+          pbw (block writer, whole c-pmem0), pbr (block ro share),
+          pfd (fs direct share, --name mbt), pfc (fs cached share,
+          default name = lease id)
+  Kind.pooled() relies on kind order (k <= KSExcl, T/model/kinds.go:
+  45-46): the new kinds need explicit predicates.
+3.3 Slots
+  profile "pmem" (first trials, 11): pwr-c@vm0#0 pwr-c@vm2#0
+    pfsd-c@vm1#0 pfsd-c@vm2#0 pfsc-c@vm1#0 pfsc-c@vm2#0 pbro-c@vm0#0
+    plse@vm1#0 plse@vm2#0 sdax-c@vm0#0 xnuma-c@vm1#0 (volatile hb1
+    neighbours for A9)
+  profile "fullp" = full + pwr-c@vm0#0 pwr-c@vm2#0 pwr-c@any#0
+    pfsd-c@vm1#0 pfsd-c@vm2#0 pfsd-c@vm2#1 pfsd-c@any#0 pfsc-c@vm0#0
+    pfsc-c@vm1#0 pfsc-c@vm2#0 pbro-c@vm1#0 pbad-c@vm0#0 plse@vm0#0
+    plse@vm1#0 plse@vm2#0 (+ xpb-c@vm1#0 xpf-c@vm0#0 with c-pmem1)
+  Why: both accesses on two VMs (one node mount per access, shared by
+  claims), a claim and a lease of one access on vm2 (pfsd-c@vm2 and
+  plse@vm2 pfd), two claims of one access on vm2 (mountUsed), a
+  writer on each side, any-node slots for adoption.
+3.4 State additions
+- PDev per persistent device: NS Tri (no, yes, maybe), FS (none,
+  erofs, maybe), Tok and Raw Token, UUID string (adopted). Start:
+  NS no, FS none, Raw "" (zeros).
+- SlotState: Hold (fs claim or fs lease holds a file mapped), the
+  lease modes above, LeaseBusy (lease-put while held: Releasing).
+- Phase Refused: allocated and attached, its Prepare refused by the
+  device (no namespace, no erofs) or the config (pbad); Pending,
+  ContainerCreating, retried; holds its resource. Distinct from
+  Blocked (A9), which wins when both apply.
+3.5 Content tokens
+- pwrite img by a writer (claim or pbw lease) at step N: Tok = Raw =
+  "mbt-<N>", FS erofs; pwrite junk: FS none, Raw "". Status 0.
+- A writer's Prepare: NS no -> yes (UUID adopted from the observer);
+  NS maybe -> adopted from pdevs.lsa.
+- pread: fs kinds read Tok (a Running fs reader implies FS erofs);
+  block kinds read Raw. pwrite on a read-only kind fails and changes
+  nothing.
+- A starting fs reader becomes Running iff NS yes and FS erofs when
+  its Prepare runs, else Refused; pbro iff NS yes. While any claim
+  other than the writer's holds the device, PDev cannot change, so a
+  reader always reads the current PDev.
+- Readers, crashes and every fault leave PDev unchanged; pwipe sets
+  NS no, FS none, Raw "".
+- pdevs (host) == PDev at every settle; data and LSA hashes change
+  only at a writer's Prepare on NS no, at pwrite and at pwipe.
+3.6 Predictions per fault and phase
+  (W writer claim, R fs/block reader claim, L persistent lease,
+  "as volatile" = the A9-A21 rules of a shared device apply)
+  create   W: Starting -> Running (exclusive attach; NS yes); Pending
+             while a share is held anywhere
+           R: Starting -> Running or Refused (3.5); Pending while a
+             writer holds the device
+  delete   W/R from Running: Unprepare; node mount gone with the last
+             claim of its access on the VM, region with the last claim
+             of the device on the VM; no holder can exist (containers
+             gone); attachment removed after deallocation
+           from Starting: as volatile; NS maybe if a fresh device's
+             writer may have prepared
+           from Refused: nothing to release (each retry rolled back)
+  crash    W/R Running: Restarting -> Running, same env and node/bind;
+             mounts and region unchanged; Hold cleared
+           L requester: leases kept; fs bind visible again in the new
+             container; block fd gone (pread through fd works: fd op)
+  hold/unhold  L fs: lease-put while Hold -> LeaseBusy: lease
+             Releasing, companion Terminating, bind and node mount
+             stay, pread still works; unhold, crash or delete ->
+             released within 60 s; R: Hold has no effect on Unprepare
+  driver-kill, containerd-restart (in place), driver-restart (new pod)
+           Running/Refused/LeaseBusy: mounts, binds, loops, regions
+             unchanged; driver Ready again (A15); Refused retries go
+             on; LeaseBusy stays until unhold
+           Starting: the claim prepares after the restart (region
+             reused); a delete in the same window: no region left
+             (defined; the SUT leaks today, S1)
+           Deleting: Unprepare completes after the restart; nothing
+             left
+  kubelet-restart: no change; a container may be re-created (Slack,
+             M2): it gets its bind again
+  ctrl-kill/start/restart, server-restart: as volatile shared device;
+             W Starting while ctrl down: Attaching; PDev unchanged
+  pwipe    only with no attachment of the device: PDev fresh
+  driver-kill-at: as driver-kill at a known point of a Prepare of the
+             slot that is Starting; then delete or not
+3.7 Decoder stacks (A9)
+- c-pmem0's region on vm/hb1 lives from the first prepared claim of
+  the device on the VM (static or companion) to the Unprepare of its
+  last one that succeeds: as c-shared0 (T/model/stack.go:24-27);
+  LeaseBusy and holders only move that Unprepare later.
+- A Refused claim's every retry creates and destroys the region
+  (rollback, D/pool.go:442-461). All pool Prepares and Unprepares of
+  a node run under one lock (D/pool.go:394-401, :775-783) and hb1
+  carries pool-c only, so that push and pop are at the top [I]: accept
+  the region present or absent, and let nothing else change that
+  stack while a Refused claim exists (like waitsRetry,
+  T/model/state.go:139-141), or forbid Refused next to pool-c
+  region changes on the same VM in generate.
+- A hole on vm/hb1 blocks persistent Prepares like any other (Blocked,
+  the memctl text); a refused-to-be reader is Blocked first.
+- Concurrent Prepares on hb1 are serialized by the driver but their
+  order is the kubelets': adopt as A10.
+3.8 Nondeterministic outcomes to adopt
+- NS after a writer deleted, or the driver killed, while Starting on
+  a fresh device: from pdevs.lsa ("#adopt pns=c-pmem0:yes").
+- namespace UUID, pmem name, loop device: adopted at first sight,
+  then constant while the region lives (UUID forever until pwipe).
+- a Refused claim's transient region: either.
+- end of a busy release: Releasing until the holder ends, then gone
+  within 60 s (retries ~1 s, done 4.4-8.6 s).
+- driver-kill-at: whether the state was saved before the kill (both
+  converge while the pod stays).
+- the CDI rewrite at driver start: a fs/block container (re)created
+  in that window may fail once (CreateContainerError) and come back
+  later: extra Slack or wait [I; Doc/usage.md:1496-1498].
+- any-node slots: the node (as today).
+3.9 New invariants (checked at settle)
+  P1 node mounts on a VM = one per (serial, access) of the fs claims
+     and fs companions prepared there; direct: erofs on the namespace's
+     /dev/pmemK with dax=always; cached: erofs on a loop device with
+     backing /dev/pmemK, dio 1, ro 1, without dax=always; ro,nosuid,
+     nodev; none else under mounts/ (no stale node mount)
+  P2 lease binds = one per Ready or LeaseBusy fs lease, at lease-fs/
+     <lease claim uid>/<name>, same source as its node mount, ro,
+     nosuid,nodev; the requester's /run/cxl/fs/<name> exists in its
+     container; no other mount under lease-fs (no bind left)
+  P3 loop devices over pmem = the cached node mounts of the VM
+  P4 a pmem region of a persistent device on a VM iff a claim of it
+     is prepared there (Refused: either); its namespace fsdax map mem
+     when NS yes; that block device = poolClaims blockDevice = CDI
+     node path = env PATH of block claims
+  P5 no namespace lost: once NS yes, every region of the device on any
+     VM has the fsdax namespace with the adopted UUID; the LSA hash
+     changes only at a writer's Prepare on NS no and at pwipe
+  P6 data intact: pdevs token, raw and erofs == PDev after every
+     step; readers and faults never change the data or LSA hash
+  P7 no busy region released: dmesg has no new BUG/Oops/WARNING or
+     pmem/erofs errors; bootID unchanged; no attachment of a
+     persistent device in failed or leaked state
+  P8 directories: lease-fs/<uid> and leases/<uid> exist iff the lease
+     claim is prepared or still has a bind; no orphan dirs in mounts/
+  P9 attachments: exclusive on the writer's VM only while a writer
+     holds the device; shared on each VM with a reader claim
+  P10 CDI and env as 1.4; fs claims have no /dev/pmem* in the
+     container, block claims exactly PATH; companions no CDI device
+  P11 writes: on pbro, pfs* and pbr fail; pread on readers == PDev
+3.10 Coverage
+- C2 strings fault|kind|phase with refused and busy phases and the
+  lease modes (driver-kill|plse-pfd|busy, ctrl-kill|pwr|starting).
+- C4 per persistent device: NS/FS state, holders by class (writer,
+  fsd, fsc, bro, lease-fs, lease-blk), per VM the set of node mounts
+  {direct, cached}.
+
+4. Error scenarios most likely to hide bugs, ranked
+---------------------------------------------------
+S1 driver killed in a persistent Prepare before the state save, pod
+   deleted before kubelet's retry (high). Path: CreatePmemRegion,
+   CreateFsdaxNamespace, ensureNodeMount, bindLeaseMount all run
+   before p.prepared and p.sync (D/pool.go:497-560); at start only the
+   orphan node mount and bind are unmounted (D/pool_persistent.go:
+   683-696, :745-765), regions are not swept (D/pool.go:252-277); the
+   Unprepare of the unknown claim is nil (D/pool.go:786-789). Effect
+   [I]: pmem region and namespace stay; the vm/hb1 decoder stays
+   committed (a phantom region: later holes on that stack); the
+   controller detaches, device_del never completes, the attachment
+   fails or is "leaked" (F/pkg/server/server.go:1113-1149); the
+   writer elsewhere gets Conflict for ever (F/pkg/server/ops.go:
+   540-545). Windows 84-207 ms (2.4), wider than volatile ones. Test:
+   driver-kill-at region|ns|mount, then delete; P4 and P7.
+S2 driver killed inside ndctl create-namespace of a fresh device's
+   writer (medium-high). Path: M/pmem.go:421-463 (create-namespace -f,
+   then a wait for the fsdax block device), D/pool_persistent.go:
+   123-135. A raw namespace left: the next writer reconfigures it
+   with -e (fine). A pfn configured but not enabled: probeNamespace
+   never settles (M/pmem.go:216-257, bug-10 E11), the retry waits the
+   30 s prepare timeout, fails, the rollback destroys the region, the
+   next region re-probes from the labels [I: raw fallback, then -e].
+   Any combination that stays unsettled after a fresh region blocks
+   every writer and reader of the device for good. Readers meanwhile:
+   refused. Test: driver-kill-at ns during pwr-c on NS no, after pwipe.
+S3 fs lease busy across faults (medium). lease-put while Hold:
+   Unprepare fails at unbind (D/pool.go:785-806, D/pool_persistent.go:
+   489-520); then driver-kill (restoreLeaseMounts keeps the wanted
+   bind, :641-672; the broker's reconcile restarts releases,
+   D/broker.go:1418-1460), kubelet-restart, requester crash (a new
+   container sees the Releasing bind), requester delete (CloseClaim
+   5 s, D/lease_claims.go:228-260). After the holder ends: no bind,
+   no node mount of that access unless used, no lease-fs dir
+   (D/lease_claims.go:281-341), region kept iff other claims.
+S4 driver killed between the lease bind and the state save (medium).
+   D/pool.go:537-560: the bind exists, the claim is not saved; the
+   bind is visible in the requester before Ready. At start: unmounted
+   as unwanted, or, if the requester opened it, a stale bind kept in
+   memory only (D/pool_persistent.go:683-696, :522-530); its region is
+   released only by a later releaseDevices -> unbindStale of some
+   pool claim on that node (:539-589) or found again at the next
+   start; if kubelet retries the Prepare, the bind is adopted
+   (:440-447). Test: driver-kill-at bind on lease-get pfd, then hold
+   or lease-put.
+S5 a stale pmem name after a crash between the region release and
+   the state save of an Unprepare (medium-low, needs c-pmem1).
+   D/pool.go:807-813: the claim stays in the file with blockDevice
+   /dev/pmemK; another persistent device's region on the VM may get
+   that name (region ids reused [I]); the retried Unprepare's holder
+   wait (D/pool_persistent.go:355-360) then waits for the other
+   device's mount and fails: the deleted pod stays Terminating while
+   the other device is mounted. restoreMounts' checkBlockDevice
+   guards only the re-mount (:777-806).
+S6 holder waits under p.mu (medium-low). waitNoHolder (10 s per
+   releaseDevices call) and releaseUnused (10 s per stale serial) run
+   with the pool driver's lock (D/pool.go:394-401, :775-783;
+   D/pool_persistent.go:346-360, :575-589; P7/25-erofs-review-D.txt
+   R3): every pool Prepare and Unprepare of the node stalls, volatile
+   ones included; may exceed kubelet's DRA call deadline [I]. Seen as
+   slow settles or Prepare timeouts of unrelated pods.
+S7 driver-kill with fs claims prepared, the basic survival (medium:
+   cheap, never measured). Node mounts must survive in the host
+   namespace (Bidirectional); if they do not, restoreMounts mounts
+   them again and cached mounts get a new loop device (a second page
+   cache next to running containers' old superblock) [R
+   D/pool_persistent.go:720-733; I]. Run first.
+S8 requester crash with a Ready fs lease (medium-low): the new
+   container's /run/cxl/fs (rbind,ro,rslave at creation,
+   D/lease_claims.go:134-140) must show the existing bind [I
+   untested]; else the lease is Ready and invisible.
+S9 block lease released, or its requester deleted, while a process
+   holds the fd with unsynced writes (low-medium): no holder is seen
+   (D/mount.go:263-281), the region goes under an open bdev; data
+   lost by design, kernel behaviour on 7.3-rc4 unverified (Doc/
+   leases.md:610-617 claims no crash) [I]. P7 catches warnings.
+S10 the controller detaching a device whose fs is mounted (low,
+   severe): only after the driver forgot a claim (S1, S4) or a
+   deallocation without Unprepare; the guest cannot let the device
+   go, the attachment becomes failed or "leaked" [R
+   P13/01-findings-driver.txt:680-686, F/pkg/server/server.go:
+   1070-1149]; the guest keeps the memory, no surprise removal [I].
+S11 an orphan node mount that is busy at start is logged and never
+   retried (D/pool_persistent.go:755-762): with S1 it pins the
+   region; only kubelet's re-Prepare adopts it (:161-163) (low).
+S12 the CDI rewrite at start (delete, then write all specs): a
+   fs/block container created in that window fails once
+   (Doc/usage.md:1496-1498) (low, benign; also volatile).
+S13 repeated refusals: each retry of a Refused reader creates and
+   rolls back a region (D/pool.go:637-643); a rollback that fails
+   (holder, ctx) would accumulate a region per retry [I] (low).
+Hazards of the test itself (design them out): host reads under node
+mounts or binds (EBUSY at Unprepare); O_EXCL probes of /dev/pmemK
+(EBUSY at mount); a pwrite without fsync (token unknown).
+
+5. Proposed contract amendments (04-contract.txt style)
+-------------------------------------------------------
+A22 (persistent devices) Pool-c gets c-pmem0 256Mi shared persistent
+   0xc1ae2002 and, in profiles that name xpb/xpf, c-pmem1 256Mi
+   exclusive persistent 0xc1ee2002; their data and .lsa files are
+   removed before pool-c starts and at the cleanup. Kinds (claim c0,
+   class cxl-pool-persistent, serial selector; env of CXL_<KEY>_,
+   SIZE = the namespace size, 266338304 for 256Mi):
+     pwr-P   no shares, device {mode: block}
+             MODE=block SHARED=1 READONLY=0 PATH=/dev/pmem* SIZE
+     pfsd-P  shares 1, {mode: fs, readOnly: true}
+             MODE=fs ACCESS=direct READONLY=1 PATH=/run/cxl-fs/<KEY>
+     pfsc-P  shares 1, {mode: fs, readOnly: true, access: cached,
+             path: /models}  MODE=fs ACCESS=cached PATH=/models
+     pbro-P  shares 1, {mode: block, readOnly: true}  READONLY=1
+     pbad-P  shares 1, {mode: block}: Refused at every Prepare
+     xpb-P, xpf-P  c-pmem1, no capacity, block rw / fs direct, SHARED=0
+     plse    class cxl-lease (template mbt-lease); persistent leases
+   Every fs container has no /dev/pmem*, every block container exactly
+   PATH. Profiles "pmem" and "fullp" (11-findings-persistent.txt 3.3).
+A23 (verbs)
+   pwrite SLOT img|junk  writer kinds and plse with a pbw lease: img
+     writes the 8192-byte template erofs whose hello.txt (32 bytes) and
+     bytes 0-63 hold "mbt-<step>" padded, then fsync; junk writes zeros
+     over 0-8191. done {"text": token|null, "stderr"}; nonzero on a
+     read-only claim or fd.
+   pread SLOT  fs kinds: hello.txt under PATH (claim) or the lease's
+     path; block kinds and pbw/pbr leases: bytes 0-63. done {"text"}.
+   hold SLOT, unhold SLOT  fs claims and fs leases: a background
+     process maps hello.txt read-only until unhold; crash and delete
+     end it. done {}.
+   lease-get SLOT pbw|pbr|pfd|pfc  plse: request --serial of c-pmem0
+     --mode block | --shared --read-only --mode block | --shared
+     --read-only --mode fs --name mbt | ... --access cached; --wait
+     60s; done as A1 lease-get. lease-put as before.
+   pwipe P DEV  host: zero DEV's .lsa and the first 4 MiB of its data
+     file; refused (status 2) while the server lists an attachment.
+   driver-kill-at VM MARKER (MARKER region|ns|mount|bind)  arm a
+     one-shot watcher that kills the driver of VM at the marker of the
+     next persistent Prepare there; return at once; the next done or
+     observe line carries "killAt":{"fired":bool,"marker":...,"ms":N}.
+   Bash refuses these verbs on other kinds with status 2.
+A24 (observation) per VM: "pmem", "fsMounts", "leaseBinds",
+   "leaseDirs", "loops", "ctrMounts", "poolClaims", "cdiPool",
+   "kernel" as 11-findings-persistent.txt 2.6, driverLog counts
+   "busy", "inUse", "staleBind", "notRemounted"; settle "pdevs":{"c-
+   pmem0":{"lsa":"zero|labels","lsaSha":...,"pfn":bool,"dataoff":N,
+   "erofs":bool,"token":...|null,"raw":...}}; inspect adds "mount"
+   (the mountinfo line of PATH) and "pmemNodes" (ls /dev/pmem*). The
+   observer opens no file under a node mount or a lease bind and never
+   opens /dev/pmem* (A11 completeness: a null part is "wait").
+A25 (predictions) Phase Refused: an allocated, attached claim whose
+   Prepare the device refuses (fs: no fsdax namespace or no erofs;
+   block ro: no namespace) or the config refuses (pbad); Pending,
+   ContainerCreating, its Warning event names the cause; retried
+   ~60-90 s apart; it holds its share; its region may be seen or not;
+   its share keeps every writer out, so the content cannot become
+   valid meanwhile: Refused lasts until the pod is deleted. Device
+   content PDev (NS, FS, token) changes only at a writer's Prepare on
+   a device without namespace, pwrite and pwipe; a writer deleted or
+   killed while Starting leaves NS maybe, adopted from pdevs. LeaseBusy:
+   lease-put of a held fs lease leaves the lease Releasing, its
+   companion Terminating, bind, node mount and region in place and
+   pread working, until unhold, crash or delete; then released within
+   60 s. A persistent region on vm/hb1 lives from the first to the
+   last prepared claim of the device on the VM (A9 shared-device
+   rule); a Refused claim's retry pushes and pops it at the top.
+   Faults do not change PDev, mounts or binds; after any driver restart
+   the node mounts and binds of prepared claims are those of before.
+A26 (invariants) P1-P11 of 11-findings-persistent.txt 3.9: no stale
+   node mount, no bind left, no loop without a cached mount, no pmem
+   region without a prepared claim (Refused: either), no namespace
+   lost (UUID constant), data and labels intact (pdevs == PDev;
+   hashes change only at A25's events), no kernel BUG/Oops/WARNING
+   and no failed or leaked attachment of a persistent device, lease
+   directories only for prepared lease claims, exclusive attachment
+   iff a writer holds the device, CDI and env as A22.
+A27 (generation) off-line: no driver-kill-at, no pwipe while a claim
+   of the device may be allocating, no Refused next to a pool-c region
+   change on the same VM; a pwrite only by a Running writer; hold only
+   on a Running fs kind; at most one persistent lease per plse slot.
+   MBT_AVOID can name pwipe, driver-kill-at and hold.

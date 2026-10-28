@@ -71,7 +71,8 @@ type nodeMounter interface {
 	// Mounts returns the mounts of the mount namespace of the process.
 	Mounts() ([]mountInfo, error)
 	// LoopBackingFile returns the backing file of a loop device
-	// (/dev/loopN), "" if it has none.
+	// (/dev/loopN), "" if it has none: a block device as /dev/<its name>,
+	// whatever mount namespace set the loop device up.
 	LoopBackingFile(loop string) (string, error)
 	// AttachLoop returns a new read-only, direct-I/O, autoclear loop
 	// device over the file or block device backing.
@@ -85,6 +86,9 @@ type nodeMounter interface {
 type sysMounter struct {
 	sysRoot string
 	devRoot string
+	// loopStatus returns the status of a loop device (LOOP_GET_STATUS64 of
+	// the device node), nil for that ioctl (a variable for tests).
+	loopStatus func(path string) (*unix.LoopInfo64, error)
 }
 
 // newSysMounter returns the nodeMounter of the system.
@@ -243,6 +247,16 @@ func (m *sysMounter) AttachLoop(backing string) (loopDevice, error) {
 	}
 }
 
+// LoopBackingFile returns the backing file of a loop device. A block device
+// is found by its device number (loopBackingDevice): the path in sysfs
+// (loop/backing_file) is the path of the backing file as the reader sees
+// it, and when the mount through which the file was opened is not in the
+// reader's mount namespace, it is relative to the root of that mount. The
+// loop devices of the cached node mounts are set up in the driver
+// container through its /dev, a mount of devtmpfs: after a restart of the
+// container the next one reads "/pmem1" for "/dev/pmem1" (plan-13
+// bug-13). The path in sysfs is returned when the device number cannot be
+// found, and for a backing file that is not a block device.
 func (m *sysMounter) LoopBackingFile(loop string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(m.sysRoot, "block", filepath.Base(loop), "loop", "backing_file"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -251,12 +265,78 @@ func (m *sysMounter) LoopBackingFile(loop string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(b)), nil
+	path := strings.TrimSpace(string(b))
+	dev, err := m.loopBackingDevice(loop)
+	switch {
+	case err != nil:
+		klog.V(3).Infof("%s: the block device of its backing file %s: %v", loop, path, err)
+	case dev != "":
+		return dev, nil
+	}
+	return path, nil
+}
+
+// loopBackingDevice returns /dev/<name> of the block device that backs a
+// loop device: the device number of the backing file (lo_rdevice of
+// LOOP_GET_STATUS64) and its name in sysfs (/sys/dev/block/<major>:<minor>
+// /uevent DEVNAME); "" when the backing file is not a block device.
+func (m *sysMounter) loopBackingDevice(loop string) (string, error) {
+	status := m.loopStatus
+	if status == nil {
+		status = loopStatus
+	}
+	info, err := status(filepath.Join(m.devRoot, filepath.Base(loop)))
+	if err != nil {
+		return "", err
+	}
+	if info.Rdevice == 0 {
+		return "", nil
+	}
+	major, minor := unix.Major(info.Rdevice), unix.Minor(info.Rdevice)
+	uevent := filepath.Join(m.sysRoot, "dev", "block", fmt.Sprintf("%d:%d", major, minor), "uevent")
+	data, err := os.ReadFile(uevent)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if name, ok := strings.CutPrefix(line, "DEVNAME="); ok && name != "" {
+			return filepath.Join(m.devRoot, name), nil
+		}
+	}
+	return "", fmt.Errorf("no DEVNAME in %s", uevent)
+}
+
+// loopStatus returns the status of the loop device with the device node
+// path. Opening a loop device does not change it: an autoclear loop device
+// is cleared only when its last opener (the mount of a cached node mount)
+// closes it.
+func loopStatus(path string) (*unix.LoopInfo64, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := unix.IoctlLoopGetStatus64(int(f.Fd()))
+	if err != nil {
+		return nil, fmt.Errorf("%s: LOOP_GET_STATUS64: %w", path, err)
+	}
+	return info, nil
+}
+
+// devPath returns the path of the backing file of a loop device as a path
+// under /dev when it is relative to the root of a devtmpfs mount that the
+// reader does not see (a single component: "/pmem1"), else the path.
+func devPath(backing string) string {
+	if filepath.Dir(backing) == "/" && backing != "/" {
+		return "/dev" + backing
+	}
+	return backing
 }
 
 // sameDevice tells whether the backing file of a loop device, as the
 // process that set it up saw its path, is the device node dev.
 func sameDevice(backing, dev string) bool {
+	backing = devPath(backing)
 	return backing == dev || (filepath.Dir(backing) == "/dev" && filepath.Base(backing) == filepath.Base(dev))
 }
 

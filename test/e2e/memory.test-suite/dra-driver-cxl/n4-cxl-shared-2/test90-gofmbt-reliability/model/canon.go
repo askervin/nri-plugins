@@ -24,21 +24,25 @@ package main
 // The key is everything next() and the coverage functions read:
 //
 //	field                        bytes   encoding
-//	Slots[i] (every slot)        3       Phase | Prev<<4;
+//	Slots[i] (every slot)        4       Phase | Prev<<4;
 //	                                     Node+1 | RaceKill<<2 | Steer<<3 |
-//	                                     Lease<<5 | LeaseMode<<7;
+//	                                     Lease<<5;
 //	                                     min(Restarts,15) | min(Slack,15)<<4
 //	                                     (15: the exact bytes are in the
-//	                                     trailer)
-//	Ctrl[p] (every pool)         2       Up | Slices<<1 | Att[d][v]<<(3+2*(3d+v))
+//	                                     trailer);
+//	                                     LeaseMode | Hold<<3 | Refuse<<4 |
+//	                                     LeaseOpen<<5 | Alloc<<6
+//	Ctrl[p] (every pool)         4       Up | Slices<<1 | Att[d][v]<<(3+2*(3d+v))
 //	Drv[v] (every VM)            3       Restarts; F | FMaybe<<4;
-//	                                     Killed | Restarted<<1
+//	                                     Killed | Restarted<<1 | KillAt<<2
+//	PDev[x] (every pmem device)  1       NS | FS<<2
 //	Stacks[si] (every stack)     1+N/2   N, then the keys+1 as nibbles
 //	Contested, Held, Released    2 each  little endian
 //	Unsettled                    1
 //	Ev                           2+7/ev  the count (2 bytes), then per event
 //	                                     Stack+1 | Kind<<3 | Opt<<4 |
-//	                                     Sync<<5 | Handover<<6; Key+1; User;
+//	                                     Sync<<5 | Handover<<6 | Probe<<7;
+//	                                     Key+1; User;
 //	                                     Seq (2); After+1 (2)
 //	trailer                      2/esc   Restarts, Slack of every slot
 //	                                     whose nibble is 15, in slot order
@@ -51,13 +55,16 @@ package main
 //	Last        the action that led here: the C2 function takes the
 //	            action from the step (gofmbt's Action) instead
 //	HeldAt      the oracle's clock of Held (the bit itself is in the key)
+//	Drv.KillAtAt the oracle's clock of KillAt (KillAt is in the key)
+//	PDev[x].LsaSha, .HeadSha  hashes adopted from observations
 //	UnblockAt   the oracle's clock of Unblocking, Stalled, Attaching
 //	Drv.Pod, Drv.PodBefore, Drv.PodGen, Drv.Inc
 //	            driver pod names and incarnations: the oracle and the
 //	            simulator only
 //	LeaseIDs    lease IDs learnt from observations: the oracle only
-//	SlotData, Data
-//	            the tokens of dax devices and ldax slices: expectations
+//	SlotData, Data, PDev[x].Tok, .Raw, .UUID
+//	            the tokens of dax and persistent devices and ldax
+//	            slices, the namespace UUID: expectations and the oracle
 //	Slots[i].Gen
 //	            pod name generation: the oracle and the simulator only
 //	Alts, Truncated
@@ -80,23 +87,27 @@ func (s *State) appendKey(b []byte) []byte {
 		ss := &s.Slots[i]
 		b = append(b,
 			byte(ss.Phase)|byte(ss.Prev)<<4,
-			byte(ss.Node+1)|b2u(ss.RaceKill)<<2|byte(ss.Steer)<<3|byte(ss.Lease)<<5|byte(ss.LeaseMode)<<7,
-			nib(ss.Restarts)|nib(ss.Slack)<<4)
+			byte(ss.Node+1)|b2u(ss.RaceKill)<<2|byte(ss.Steer)<<3|byte(ss.Lease)<<5,
+			nib(ss.Restarts)|nib(ss.Slack)<<4,
+			byte(ss.LeaseMode)|b2u(ss.Hold)<<3|b2u(ss.Refuse)<<4|b2u(ss.LeaseOpen)<<5|b2u(ss.Alloc)<<6)
 		esc = esc || ss.Restarts >= 15 || ss.Slack >= 15
 	}
 	for p := range s.Ctrl {
 		c := &s.Ctrl[p]
-		x := uint16(b2u(c.Up)) | uint16(c.Slices)<<1
+		x := uint32(b2u(c.Up)) | uint32(c.Slices)<<1
 		for d := range c.Att {
 			for v := range c.Att[d] {
-				x |= uint16(c.Att[d][v]) << (3 + 2*(nVMs*d+v))
+				x |= uint32(c.Att[d][v]) << (3 + 2*(nVMs*d+v))
 			}
 		}
-		b = append(b, byte(x), byte(x>>8))
+		b = append(b, byte(x), byte(x>>8), byte(x>>16), byte(x>>24))
 	}
 	for v := range s.Drv {
 		d := &s.Drv[v]
-		b = append(b, d.Restarts, d.F|d.FMaybe<<4, b2u(d.Killed)|b2u(d.Restarted)<<1)
+		b = append(b, d.Restarts, d.F|d.FMaybe<<4, b2u(d.Killed)|b2u(d.Restarted)<<1|d.KillAt<<2)
+	}
+	for x := range s.PDev {
+		b = append(b, byte(s.PDev[x].NS)|byte(s.PDev[x].FS)<<2)
 	}
 	for si := range s.Stacks {
 		st := &s.Stacks[si]
@@ -115,7 +126,7 @@ func (s *State) appendKey(b []byte) []byte {
 	for j := range s.Ev {
 		e := &s.Ev[j]
 		b = append(b,
-			byte(e.Stack+1)|byte(e.Kind)<<3|b2u(e.Opt)<<4|b2u(e.Sync)<<5|b2u(e.Handover)<<6,
+			byte(e.Stack+1)|byte(e.Kind)<<3|b2u(e.Opt)<<4|b2u(e.Sync)<<5|b2u(e.Handover)<<6|b2u(e.Probe)<<7,
 			byte(e.Key+1), byte(e.User),
 			byte(e.Seq), byte(e.Seq>>8), byte(e.After+1), byte((e.After+1)>>8))
 	}

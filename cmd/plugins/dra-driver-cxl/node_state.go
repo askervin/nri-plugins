@@ -265,6 +265,50 @@ func removeCXLSpecs(cache *cdiapi.Cache) error {
 	return errors.Join(errs...)
 }
 
+// hollowRegions are the hollow regions of the last scan, warned about.
+var hollowRegions = &hollowRegionLog{warned: map[string]bool{}}
+
+// hollowRegionLog warns once about each hollow region of the scans.
+type hollowRegionLog struct {
+	mu     sync.Mutex
+	warned map[string]bool // sysfs path and resource of a hollow region
+}
+
+// observe returns the hollow regions among regions (pkg/cxl
+// RegionDevice.Hollow, memctl.HollowRegion), and logs a warning for each
+// one that the last scan did not have: no decoder maps its address range
+// any more (memory of it that kmem could not remove stays online until a
+// reboot, which is why such a region may still have a node), it holds
+// that range in its root decoder, and cxl destroy-region cannot remove
+// it. The pool driver deletes such a region that it knows as its own
+// (pool_persistent.go deleteHollowRegions); others are only reported,
+// with the command that removes them.
+func (h *hollowRegionLog) observe(regions []*nricxl.RegionDevice) map[*nricxl.RegionDevice]bool {
+	out := map[*nricxl.RegionDevice]bool{}
+	seen := map[string]bool{}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range regions {
+		if !r.Hollow {
+			continue
+		}
+		out[r] = true
+		key := fmt.Sprintf("%s@%#x", r.SysfsPath, r.Resource)
+		seen[key] = true
+		if h.warned[key] {
+			continue
+		}
+		decoder := "<its root decoder>"
+		if real, err := filepath.EvalSymlinks(r.SysfsPath); err == nil {
+			decoder = filepath.Base(filepath.Dir(real))
+		}
+		klog.Warningf("CXL region %s (mode %s, resource %#x, size %#x) has no target decoder: it is not published. It is left behind when its memory device was removed before the region was destroyed (or is being created right now). No decoder maps its address range, which it holds; cxl destroy-region cannot remove it. If it stays and none of its memory blocks is online: echo %s > /sys/bus/cxl/devices/%s/delete_region",
+			r.Name, r.Mode, r.Resource, r.Size, r.Name, decoder)
+	}
+	h.warned = seen
+	return out
+}
+
 // buildDevInfos returns the devices to publish, by device name.
 // poolSerials are the serials of pool devices (prepared by the pool
 // driver, published by a pool controller, or remembered as such,
@@ -282,8 +326,15 @@ func buildDevInfos(driverConfig *DriverConfig, detectedDevices *nricxl.Devices, 
 func buildDevInfosHeld(driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials, held map[uint64]bool, local *localSnapshot) (device.DevicesInfo, error) {
 	cxlNodes := make(map[int]bool)
 	devInfos := make(map[string]*device.DeviceInfo)
+	hollow := hollowRegions.observe(detectedDevices.RegionDevices)
 	for _, regDev := range detectedDevices.RegionDevices {
 		klog.V(3).Infof("discovered CXL region device: %+v", regDev)
+		if hollow[regDev] {
+			// its memory that kmem could not remove is not DRAM
+			cxlNodes[regDev.Node] = true
+			klog.V(4).Infof("- ignoring region device %q: it has no target decoder", regDev.Name)
+			continue
+		}
 		ignoreReason := poolIgnoreReason(regDev, poolSerials, held)
 		if ignoreReason == "" {
 			ignoreReason = localIgnoreReason(regDev, local)

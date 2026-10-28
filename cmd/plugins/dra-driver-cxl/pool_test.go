@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -53,6 +54,9 @@ type fakePoolSys struct {
 	mu     sync.Mutex
 	cmds   []string
 	labels bool // the LSA of a persistent mem0 has an fsdax namespace
+	// cutAfter is the beginning of a command after which the plugin is
+	// killed (cutPrepare), "" for none.
+	cutAfter string
 }
 
 const fakeMemPath = "devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0"
@@ -65,6 +69,10 @@ func newFakePoolSys(t *testing.T) *fakePoolSys {
 	}
 	f.write("bus/cxl/devices/decoder0.0/devtype", "cxl_decoder_root")
 	f.write("bus/cxl/devices/decoder0.0/target_list", "12")
+	// the name of the next region, which the fake cxl create-region
+	// always creates
+	f.write("bus/cxl/devices/decoder0.0/create_ram_region", "region0")
+	f.write("bus/cxl/devices/decoder0.0/create_pmem_region", "region0")
 	f.mkdir("bus/cxl/drivers/cxl_mem")
 	f.mkdir("bus/dax/drivers/kmem")
 	f.mkdir("bus/dax/drivers/device_dax")
@@ -121,7 +129,24 @@ func (f *fakePoolSys) unplug() {
 
 const daxPath = "bus/cxl/devices/region0/dax_region0/dax0.0"
 
+// exec runs a faked command, and kills the plugin after it if it is the
+// command of cutAfter.
 func (f *fakePoolSys) exec(ctx context.Context, name string, args ...string) (string, error) {
+	out, err := f.run(ctx, name, args...)
+	cmd := name + " " + strings.Join(args, " ")
+	f.mu.Lock()
+	cut := f.cutAfter != "" && strings.HasPrefix(cmd, f.cutAfter)
+	if cut {
+		f.cutAfter = ""
+	}
+	f.mu.Unlock()
+	if cut {
+		panic(errCut)
+	}
+	return out, err
+}
+
+func (f *fakePoolSys) run(ctx context.Context, name string, args ...string) (string, error) {
 	f.mu.Lock()
 	f.cmds = append(f.cmds, name+" "+strings.Join(args, " "))
 	f.mu.Unlock()
@@ -177,7 +202,62 @@ func (f *fakePoolSys) manager() *memctl.Manager {
 		LookPath:     func(string) (string, error) { return "/usr/bin/daxctl", nil },
 		PollInterval: 2 * time.Millisecond,
 		Logf:         f.t.Logf,
+		WriteFile:    f.writeAttr,
 	}
+}
+
+// writeAttr writes a sysfs attribute; delete_region of a root decoder
+// deletes the region under it, as the kernel does.
+func (f *fakePoolSys) writeAttr(path, val string) error {
+	if filepath.Base(path) != "delete_region" {
+		return os.WriteFile(path, []byte(val), 0o644)
+	}
+	f.mu.Lock()
+	f.cmds = append(f.cmds, "delete_region "+filepath.Base(filepath.Dir(path))+" "+val)
+	f.mu.Unlock()
+	dir := filepath.Join(filepath.Dir(path), val)
+	if _, err := os.Stat(dir); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(dir)
+	_ = os.Remove(f.p("bus/cxl/devices/" + val))
+	return nil
+}
+
+// hollowRegion makes the region under root decoder decoder0.0 hollow, as
+// the kernel leaves a region whose memdev was removed before it was
+// destroyed (plan-13 bug-12): commit 0, target0 empty, the address range
+// kept. A plain region directory of the fake is replaced.
+func (f *fakePoolSys) hollowRegion(region, mode string) {
+	_ = os.RemoveAll(f.p("bus/cxl/devices/" + region))
+	dir := "bus/cxl/devices/decoder0.0/" + region
+	for file, value := range map[string]string{
+		"commit": "0", "devtype": "cxl_region", "interleave_ways": "1", "mode": mode,
+		"resource": "0x850000000", "size": "0x10000000", "target0": "", "uuid": "675e71d7-179f-4beb-ab43-55f82e02b39a",
+	} {
+		f.write(dir+"/"+file, value)
+	}
+	f.link("bus/cxl/devices/"+region, "decoder0.0/"+region)
+}
+
+// errCut is the panic of a plugin killed in a Prepare (cutPrepare).
+var errCut = errors.New("killed")
+
+// cutPrepare runs a Prepare of the claim that the plugin does not finish:
+// it is killed (errCut) where the fakes say, and nothing after that runs.
+// The test then starts the plugin again on the same files and sysfs.
+func cutPrepare(t *testing.T, p *poolDriver, claim *resourceapi.ResourceClaim) {
+	t.Helper()
+	defer func() {
+		switch r := recover(); r {
+		case errCut:
+		case nil:
+			t.Fatal("the Prepare was not cut")
+		default:
+			panic(r)
+		}
+	}()
+	_, _ = p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
 }
 
 type poolTestEnv struct {
@@ -349,12 +429,42 @@ func (f *fakePoolSys) wantBlocks(t *testing.T, state string) {
 	}
 }
 
-// wantClean checks that nothing is prepared: no CDI spec, no serials.
+// wantClean checks that nothing is prepared: no CDI spec, no serials, no
+// claim whose Prepare did not finish (also not in the preparing file).
 func (e *poolTestEnv) wantClean(t *testing.T, p *poolDriver) {
 	t.Helper()
-	if e.cdiSpec(t) != nil || len(p.Serials()) != 0 || len(p.prepared) != 0 {
-		t.Fatalf("not clean: CDI spec %+v, serials %v, prepared %v", e.cdiSpec(t), p.Serials(), p.prepared)
+	if e.cdiSpec(t) != nil || len(p.Serials()) != 0 || len(p.prepared) != 0 || len(p.preparing) != 0 {
+		t.Fatalf("not clean: CDI spec %+v, serials %v, prepared %v, preparing %v", e.cdiSpec(t), p.Serials(), p.prepared, p.preparing)
 	}
+	if recs := e.preparingFile(t); len(recs) != 0 {
+		t.Fatalf("not clean: preparing file %v", recs)
+	}
+}
+
+// preparingFile returns the claims of the preparing file, nil if there is
+// none.
+func (e *poolTestEnv) preparingFile(t *testing.T) map[string]*preparingPoolClaim {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(e.stateFile), poolPreparingFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	recs := map[string]*preparingPoolClaim{}
+	if err == nil {
+		err = json.Unmarshal(data, &recs)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs
+}
+
+// failStateSave makes the saves of the state file fail (its temporary file
+// is a directory) and returns the function that undoes it.
+func (e *poolTestEnv) failStateSave(t *testing.T) func() {
+	t.Helper()
+	noErr(t, os.MkdirAll(e.stateFile+".tmp", 0o755))
+	return func() { noErr(t, os.Remove(e.stateFile+".tmp")) }
 }
 
 // wantCDIDevice returns the CDI device with the name and the env.

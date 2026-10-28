@@ -103,8 +103,9 @@ func (p *poolDriver) mountsDir() string {
 // in mode block or fs into dev: a pmem region with an fsdax namespace,
 // which only a writable block claim creates, and in mode fs the node
 // mount of the device and the access. On error dev has the block device
-// if it was found, and the node mount only if it is mounted.
-func (p *poolDriver) preparePersistent(ctx context.Context, memdev string, data *poolDevice, dev *preparedPoolDevice) error {
+// if it was found, and the node mount only if it is mounted. note is told
+// about a new region.
+func (p *poolDriver) preparePersistent(ctx context.Context, memdev string, data *poolDevice, dev *preparedPoolDevice, note memctl.RegionNote) error {
 	serial := api.FormatSerial(data.Serial)
 	ok, err := p.mem.Persistent(memdev)
 	if err != nil {
@@ -115,7 +116,7 @@ func (p *poolDriver) preparePersistent(ctx context.Context, memdev string, data 
 	}
 	wctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
-	pr, err := p.mem.CreatePmemRegion(wctx, memdev, "")
+	pr, err := p.mem.CreatePmemRegionNoted(wctx, memdev, "", note)
 	if err != nil {
 		return err
 	}
@@ -318,11 +319,13 @@ func (p *poolDriver) waitNoHolder(ctx context.Context, serial uint64, blockDev s
 // each serial that no other claim uses is released when nothing holds its
 // block device any more, waiting at most the holder wait for all of them
 // together. A serial whose node mount cannot be unmounted is not
-// released.
+// released. The regions of devs of a memdev that is gone are deleted when
+// the kernel left them hollow (memctl.HollowRegion).
 func (p *poolDriver) releaseDevices(ctx context.Context, uid string, devs []preparedPoolDevice, serials []uint64) []error {
 	p.unbindStale(ctx)
 	var errs []error
 	blockDevs := map[uint64]string{}
+	regions := map[uint64][]string{}
 	failed := map[uint64]bool{}
 	var unmounted []string
 	for i := range devs {
@@ -332,6 +335,9 @@ func (p *poolDriver) releaseDevices(ctx context.Context, uid string, devs []prep
 		}
 		if d.BlockDevice != "" {
 			blockDevs[d.Serial] = d.BlockDevice
+		}
+		if d.Region != "" && !slices.Contains(regions[d.Serial], d.Region) {
+			regions[d.Serial] = append(regions[d.Serial], d.Region)
 		}
 		if d.NodeMount == "" || slices.Contains(unmounted, d.NodeMount) || p.mountUsed(d.NodeMount, uid) {
 			continue
@@ -358,11 +364,95 @@ func (p *poolDriver) releaseDevices(ctx context.Context, uid string, devs []prep
 				continue
 			}
 		}
-		if err := p.release(ctx, serial); err != nil {
+		gone, err := p.release(ctx, serial)
+		switch {
+		case err != nil:
 			errs = append(errs, fmt.Errorf("releasing serial 0x%x: %w", serial, err))
+		case gone:
+			p.deleteHollowRegions(uid, serial, regions[serial], "its memdev was removed before the region was destroyed")
 		}
 	}
 	return errs
+}
+
+// currentBlockDevice returns the block device of the fsdax namespace of
+// the region of the memdev with the serial, else of another namespace of
+// it with a block device, "" if there is none (or its namespaces do not
+// finish probing within the restore probe timeout).
+func (p *poolDriver) currentBlockDevice(serial uint64) string {
+	memdev, err := p.mem.FindMemdev(serial)
+	if err != nil {
+		return ""
+	}
+	regions := p.mem.Regions(memdev)
+	if len(regions) == 0 {
+		return ""
+	}
+	nd, err := p.mem.NdRegion(regions[0])
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), min(p.timeout, restoreProbeTimeout))
+	defer cancel()
+	nss, err := p.mem.Namespaces(ctx, nd)
+	if err != nil {
+		klog.Warningf("%s: serial 0x%x: %v", p.name, serial, err)
+		return ""
+	}
+	if ns := memctl.FsdaxNamespace(nss); ns != nil {
+		return ns.BlockDevice
+	}
+	for _, ns := range nss {
+		if ns.BlockDevice != "" {
+			return ns.BlockDevice
+		}
+	}
+	return ""
+}
+
+// deleteHollowRegions deletes the regions that the pool driver knows as
+// its own, regions, if they are hollow (memctl.HollowRegion): the regions
+// of a device with the serial, why tells how they became hollow. A region
+// that a prepared claim other than exceptUID records is kept. It returns
+// the errors, which are also logged: a hollow region does not keep the
+// pool from removing the device, it only holds its address range in the
+// root decoder.
+func (p *poolDriver) deleteHollowRegions(exceptUID string, serial uint64, regions []string, why string) []error {
+	var errs []error
+	for _, r := range regions {
+		if !p.mem.HollowRegion(r) || p.regionUsed(r, exceptUID) {
+			continue
+		}
+		klog.Warningf("%s: serial 0x%x: %s has no target decoder (%s): deleting it", p.name, serial, r, why)
+		if err := p.mem.DeleteHollowRegion(r); err != nil {
+			errs = append(errs, err)
+			decoder, derr := p.mem.RegionRootDecoder(r)
+			if derr != nil {
+				decoder = "<its root decoder>"
+			}
+			klog.Errorf("%s: serial 0x%x: %v; it holds its address range until it is deleted, when none of its memory blocks is online: echo %s > /sys/bus/cxl/devices/%s/delete_region",
+				p.name, serial, err, r, decoder)
+			continue
+		}
+		klog.Infof("%s: serial 0x%x: deleted hollow %s", p.name, serial, r)
+	}
+	return errs
+}
+
+// regionUsed tells whether a device of a prepared claim other than
+// exceptUID records the region.
+func (p *poolDriver) regionUsed(region, exceptUID string) bool {
+	for uid, pc := range p.prepared {
+		if uid == exceptUID {
+			continue
+		}
+		for i := range pc.Devices {
+			if pc.Devices[i].Region == region {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // staleBind is a lease bind that belongs to no prepared claim and could
@@ -583,7 +673,7 @@ func (p *poolDriver) releaseUnused(ctx context.Context, serial uint64, blockDev 
 		klog.Errorf("%s: not releasing serial 0x%x after its stale lease bind: %v", p.name, serial, err)
 		return
 	}
-	if err := p.release(ctx, serial); err != nil {
+	if _, err := p.release(ctx, serial); err != nil {
 		klog.Errorf("%s: releasing serial 0x%x after its stale lease bind: %v", p.name, serial, err)
 	}
 }
@@ -617,7 +707,7 @@ func (p *poolDriver) bindOrigin(mounts []mountInfo, source string) (uint64, stri
 			return serial, source
 		}
 		if backing, err := p.mounter.LoopBackingFile(source); err == nil && backing != "" {
-			return serial, backing
+			return serial, devPath(backing)
 		}
 		return serial, ""
 	}

@@ -1,0 +1,449 @@
+plan-13: review of the uncommitted driver fixes bug-11, bug-12, bug-13
+======================================================================
+2026-10-28 (Opus reviewer). I only read, built and tested. I changed no
+file of N except this one, and I did not touch the cluster or the VMs.
+  N    ~/github.com/containers/nri-plugins, branch 5jg-cxl, working
+       tree on top of 1178bf032
+  D/   N/cmd/plugins/dra-driver-cxl/
+  C/   N/pkg/cxl/
+  M/   N/pkg/cxl/memctl/
+  K/   ~/github.com/torvalds/linux (7.3-rc1), drivers/cxl/core/region.c
+  REV  /tmp/drv3rev: throwaway tests (zz_rev_test.go,
+       zz_rev_cxl_test.go) and mutated copies (mut/), run with
+       "go test -overlay"
+Line numbers are those of the working tree.
+Scope: the diff of D/pool.go, D/pool_persistent.go, D/mount.go,
+D/node_state.go, D/pool_test.go, D/pool_persistent_test.go,
+D/mount_test.go, C/devices.go, C/types.go, C/devices_test.go,
+M/decoders.go, M/decoders_test.go, docs/memory/cxl/{pool,usage}.md,
+and D/pool_unfinished_test.go (new, read whole). Every hunk of these
+files belongs to bug-11, -12 or -13; I found none of earlier work.
+
+Verdict
+-------
+bug-11: the ordering is right and crash-safe at every point I could
+cut (record, device work, state save, record removal; a kill inside
+the Unprepare of an unfinished claim; two restarts in a row), and a
+record never releases what a prepared claim of the same serial uses.
+What is left goes through the hollow regions of bug-12:
+- G1 (bug): the hollow region of a cut cxl create-region is deleted
+  only if kubelet UNprepares the claim while it is unfinished. On the
+  normal path, kubelet's Prepare again, it is never deleted and keeps
+  its address range until a reboot.
+- G2 (risk): the sweep that deletes it takes every hollow region under
+  the root decoder, on every failed Prepare, guarded by two samples
+  1 s apart; in the e2e topology a local memdev shares that root
+  decoder.
+- G3 (risk): a hollow region whose memory kmem could not remove is
+  deleted with its blocks online.
+- G4 (risk, inherited): the first Unprepare after a restart can come
+  before the lender is set; the revoke is then skipped silently.
+bug-12: the scan fix is correct, also for a region that has no address
+range yet (size 0x0). The deletions have G1-G3.
+bug-13: correct. The ioctl struct, the device-number decoding, the
+fallback and every comparison of backing paths check out; the tests
+fail without the fix.
+
+Commands run
+------------
+go build, go vet ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...  clean
+gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl                      clean
+go test -race -count=3 ./cmd/plugins/dra-driver-cxl/... \
+  ./pkg/cxl/... -skip TestMemdevSettings                         ok
+  (driver package 170 s)
+golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...
+  only the 3 old errcheck in M/probe.go:95,104, M/probe_test.go:36
+Mutations (REV/mut, each with the package's tests):
+  M1 HEAD C/devices.go               TestHollowRegion (C/) fails
+  M2 devPath returns its input       TestSysMounterLoopBackingAfter-
+                                     Restart, TestPoolCachedMount-
+                                     AfterRestart fail
+  M3 loopBackingDevice returns ""    TestSysMounterLoopBackingAfter-
+                                     Restart fails
+  M4 unprepareUnfinished returns nil 7 tests fail (TestPoolCut*,
+                                     TestPoolLeaseBindErrors,
+                                     TestPoolLeaseStaleBinds,
+                                     TestPoolPersistentForeignNode-
+                                     Mount)
+  M5 no recheck after the 1 s wait   TestHollowRegion (M/) fails
+  M6 no hollow skip in buildDevInfos nothing fails (see G6)
+  M8 no root-decoder sweep           TestPoolCutCreateRegion fails
+  M9 prepared records kept at load   TestPoolPreparingLoad fails
+  M10 no unfinished nodes fenced     TestPoolCutVolatilePrepare fails
+Throwaway tests (REV/zz_rev_test.go, zz_rev_cxl_test.go), results
+quoted below:
+  R1 TestRevCutCreateRegionRetryLeaksHollow       FAIL (G1)
+  R2 TestRevRollbackDeletesForeignHollow          FAIL (G2)
+  R3 TestRevForgetSaveFailResurrects              FAIL (G5)
+  R4 TestRevCutSharedKeepsOther                   pass
+  R5 TestRevCutUnprepareUnfinished                pass
+  R6 TestRevTwoUnfinishedSameSerial               pass
+  R8 TestRevRegionWithoutSize (C/)                pass
+  R9 TestRevHollowWithOnlineMemory                FAIL (G3)
+  R10 TestRevHollowEnabledNotPublished            pass (G6)
+  R11 TestRevUnfinishedRevokeBeforeLending        FAIL (G4)
+
+========================================================================
+Findings
+========================================================================
+
+G1  bug  bug-11/bug-12: the hollow region of a cut create-region leaks
+    when kubelet prepares the claim again
+  The record names no region, and a hollow region is not listed by
+  the memdev (M/memctl.go:229-246). It is deleted only by the sweep of
+  releaseDevices with unfinished=true (D/pool_persistent.go:373-385),
+  i.e. by unprepareUnfinished (D/pool.go:961) or a rollback. kubelet's
+  normal answer to a Prepare cut by a restart is to prepare the claim
+  again (71-90 s); that Prepare finds no region of the memdev, creates
+  a new one, succeeds and forgets the record (D/pool.go:635). The
+  claim's later Unprepare is that of a prepared claim (unfinished
+  false): no sweep. The hollow region stays until a reboot or a manual
+  delete_region, holding its address range in the window (8 GiB per
+  host bridge in the e2e VMs; a cut after set_size, ndctl
+  cxl/region.c:722, and before set_target, :745). Each such cut costs
+  a device's worth of window; the scan warns once per start.
+  R1 TestRevCutCreateRegionRetryLeaksHollow (TestPoolCutCreateRegion
+  with "Prepare again" instead of "Unprepare"): prepared, unprepared,
+  released, wantClean ok, then
+    hollow region1 left after the Prepare again and the Unprepare:
+    cxl create-region -t ram -d decoder0.0 -m mem0
+    cxl disable-region region0 / destroy-region region0 /
+    disable-memdev mem0
+  bug-11 5 "Left" says the region "is deleted after the release of
+  the unfinished claim"; that is only the Unprepare branch.
+  Fix: name the region in the record before it exists. Before a new
+  region is created (Regions(memdev) empty) the pool driver can find
+  the root decoder itself (RootDecoder), read the name of the next
+  region from <root decoder>/create_ram_region or create_pmem_region
+  (K/region.c:2774; create-region writes that name back, and the
+  kernel's cmpxchg at :2811 refuses any other with EBUSY), save it in
+  the record (one more fsync'd save), and pass the decoder to
+  CreateRegion/CreatePmemRegion. Then: at a Prepare again, after the
+  device is prepared, delete the recorded region if it is hollow and
+  is not the device's region; at an unfinished Unprepare and a
+  rollback, delete only that region (also when the memdev is gone,
+  which today deletes nothing for an unfinished device). This also
+  replaces the sweep of G2.
+
+G2  risk  bug-12: the sweep deletes hollow regions of other owners, on
+    every failed Prepare
+  releaseDevices runs the sweep for every serial it releases when
+  unfinished is true, and rollback always passes true
+  (D/pool.go:713), with or without a record: every failed Prepare
+  (memdev timeout, a create-region error, a refused reader, S13 of
+  11-findings-persistent.txt) deletes every hollow region under the
+  device's root decoder (M/decoders.go:213-222), not only one that a
+  cut create-region of this device left. bug-12 5e gives the reason
+  not to do that in cxl.nri.io ("their owner is unknown (a region
+  being set up by the local allocator, which runs concurrently, or by
+  another tool)"); the same applies here. In the e2e VMs the pool
+  ports and the local memdev 0xc100e2e1 are under the one host bridge
+  cxlhb0, so one root decoder (cxl-fmw.0, decoder0.0).
+  The guard is DeleteHollowRegion's two samples 5 poll intervals
+  apart (M/decoders.go:252-262), not a check at each poll as its
+  comment and bug-12 5c say. For a ram region the uuid reads empty
+  (K/region.c:156-157) and the resource is 0xffffffffffffffff until
+  set_size, so the identity cannot tell a region from a new one of
+  the same name, and the kernel reuses the recently freed region id
+  on purpose (K/region.c:2519-2530). A create-region of the local
+  allocator that stalls 1 s before its target (a loaded VM), or a
+  destroy and a create in that second, loses its region and fails.
+  Each hollow region also costs 1 s under p.mu on every rollback, and
+  one whose delete_region fails is retried, and logged, on every
+  rollback.
+  R2 TestRevRollbackDeletesForeignHollow: region7 hollow under
+  decoder0.0 (no record names it), a Prepare whose create-region fails
+  with an error (no kill):
+    cxl disable-memdev mem0
+    delete_region decoder0.0 region7
+  Fix: G1's recorded name. Without it at least: sweep only when the
+  claim has a record from a cut Prepare (loaded at start) or when the
+  create-region of this Prepare was killed (ctx done); poll at every
+  interval and require size and resource unchanged at each.
+
+G3  risk  bug-12: a hollow region with online memory is deleted
+  A numa device removed while its memory is online (a forced pod
+  deletion; the guest lets a type-3 device go, kmem keeps the memory
+  "until the next reboot") leaves a hollow region over online blocks.
+  The Unprepare of its prepared claim finds the memdev gone and
+  deletes the recorded region (D/pool_persistent.go:381-382):
+  DeleteHollowRegion checks commit and targets only. memctl refuses to
+  destroy a region whose blocks stay online (M/memctl.go:1118-1127,
+  "the memory would read garbage"); this path skips that rule. The
+  kmem resource probably keeps the range busy after remove_resource,
+  so I do not claim corruption, but "it maps no memory" (pool.md, the
+  log text, bug-12 5d) is not true here.
+  R9 TestRevHollowWithOnlineMemory: prepared numa claim, mem0
+  unplugged with memory74/75 online_movable, region0 hollow:
+    hollow region0 deleted while its memory blocks are online_movable
+  Fix: in DeleteHollowRegion refuse (with the delete_region command in
+  the error) while any block of RegionBlocks(region) is not offline.
+
+G4  risk  bug-11 (inherited from prepared claims): the revoke of the
+    first Unprepare after a restart can be skipped
+  The pool kubelet plugin registers at D/driver.go:452; NRI starts at
+  :474 and the lender is set at :492. A kubelet Unprepare that failed
+  with Unavailable while the plugin restarted (bug-11 3) is retried
+  as soon as the plugin registers. In that window lender.revoke finds
+  no node lender, logs a warning and returns nil
+  (D/lending.go:181-186), releasing() tells no broker, and the memory
+  goes offline while the node is in the borrower's cpuset.mems: bug-11
+  5d "revoked before any memory goes offline" does not hold. Prepared
+  companion claims have the same window; the unfinished ones meet it
+  more often, since their Unprepare is typically that first retry.
+  R11 TestRevUnfinishedRevokeBeforeLending: the numa companion cut
+  after the lend, restarted, unprepared before lender.set:
+    Unprepare nil, memory offline, node(s) [2] still lent to the
+    borrower
+  ("lending unavailable: NRI not connected, cannot revoke nodes [2]").
+  Fix: tell "not set yet" from "NRI did not start" in
+  companionLender, and fail the Unprepare (kubelet retries) in the
+  first case; or register the pool plugin after lending.set.
+
+G5  nit  bug-11: forgetPreparing forgets before it has saved
+  D/pool.go:784-786 deletes the claim from p.preparing, then saves.
+  If the save fails the Unprepare fails, but kubelet's retry finds no
+  record and gets nil, while the file keeps it; after a restart with
+  the memdev still attached the record is back and no Unprepare will
+  come for it (its serial in Serials, its numa node fenced at every
+  start, preparingPoolClaims.json not {} after a settle) until a start
+  without the memdev.
+  R3 TestRevForgetSaveFailResurrects:
+    first Unprepare: ... preparingPoolClaims.json.tmp: is a directory;
+    kubelet's retry: <nil>
+    the retried Unprepare said nil, and the record is back after a
+    restart
+  Fix: save a copy without the claim and delete it in memory only
+  when the save succeeded (as notePreparing does on error), or let the
+  retry with no record but a record on disk try the save again.
+
+G6  nit  tests and fakes
+  - M6: TestBuildDevInfosHollowRegion passes without the skip in
+    buildDevInfosHeld (D/node_state.go:337): its hollow region has
+    node -1 and is ignored as disabled anyway. The skip matters only
+    for a hollow region whose range still has online memory (G3's
+    state): R10 publishes "region1-node2" without the skip, nothing
+    with it. Use such a region in the test.
+  - No test has a Prepare again after a cut inside create-region (G1),
+    or a region without an address range (R8: size 0x0, resource
+    0xffffffffffffffff, with and without target0; it passes).
+  - The fake create-region never passes through a hollow state, and
+    the fake's normal regions are not under a root decoder directory
+    (bus/cxl/devices/region0 is a plain directory), so the sweep never
+    meets a live region of its own under decoder0.0; real regions are
+    always children of a root decoder.
+  - C/devices_test.go TestHollowRegion writes target1 with
+    interleave_ways 1; the kernel shows targetN only for N < ways
+    (K/region.c:2484-2494). Harmless, but set ways 2 there.
+  - The pool tests reach bug-13 only through the fallback
+    (fakeMounter returns "/pmem0"); the device-number path is tested
+    with an injected LOOP_GET_STATUS64 only (TestSysMounterLoop-
+    BackingAfterRestart). Fine without root; worth one manual check
+    on a VM (bug-13 7).
+  - isHollow excludes testability regions by a "/fake/" path; a fake
+    region with its own SysfsPath and no memories (allowed,
+    D/driver_test.go:177) would be skipped.
+
+G7  nit  docs and bug texts
+  - pool.md: "It maps no memory" (G3); "stayed hollow for five poll
+    intervals" (two samples, G2); the sweep of "a hollow region under
+    the root decoder of the device" is of any hollow region there
+    (G2).
+  - bug-12 5d (sweep of the root decoder) and 5e (no deletion where
+    the owner is unknown) contradict each other.
+  - bug-11 5 "Left" (G1).
+  - DeleteHollowRegion's doc comment: "must stay hollow ... for
+    hollowSettlePolls poll intervals" is checked at the ends only.
+
+G8  nit  bug-11: smaller points
+  - rollback logs a revokeUnfinished error and goes on releasing and
+    forgetting (D/pool.go:708-725), unprepareUnfinished stops before
+    the release (:954-956). The rollback is reached only after
+    lender.check, which needs NRI, so this is the pattern of the
+    current lend (prepareClaim :601-612), not a new hole.
+  - notePreparing replaces the device of a result with a device of
+    another serial (:757-761) and drops the old one from the record.
+    That needs a claim of the same UID allocated another device on
+    this node (a forced deallocation); its old region then has no
+    record.
+  - A deletion error in a rollback is only logged and the record is
+    forgotten; with a cancelled Prepare ctx DeleteHollowRegion fails at
+    once. Use a fresh bounded context for the deletions, or keep the
+    record when a deletion that it asked for failed.
+
+========================================================================
+Verified correct
+========================================================================
+
+bug-11
+- Order in prepareClaim: checkClaim and lender.check (broker only),
+  then per result notePreparing (D/pool.go:553) before inflight and
+  prepareDevice; nothing touches a device before the record. A save
+  error fails the Prepare with nothing touched
+  (TestPoolPreparingSaveFails) and restores the old record in memory.
+- writeJSONFile: tmp file, fsync, rename, fsync of the directory; the
+  tmp names of the two files differ; both files in one directory.
+- A kill between sync and forgetPreparing leaves both files: load
+  keeps the claim prepared and drops the record (M9). A kill between
+  the CDI write and the state save leaves a record and a CDI device
+  that start() rewrites away.
+- A kill inside the Unprepare of an unfinished claim (after destroy-
+  region) and two restarts before it: the record is loaded again and
+  the next Unprepare finishes (R5). An Unprepare again finds nothing
+  and runs no command (TestPoolCutPersistentPrepare).
+- Shared serial: claim a1 prepared (fs direct), b1 cut after its
+  cached node mount: the start unmounts b1's mount, b1's Unprepare
+  runs no command, keeps the region and a1's node mount (R4). The
+  guards are preparedDevice, mountUsed and leaseBindUsed, as for every
+  release; the hollow sweep runs only after a release that was not
+  skipped. Two unfinished claims of one serial: the first Unprepare
+  releases the region, the second Prepare again creates it (R6); no
+  container of either can run (no CDI device).
+- Companion: the revoke comes before the offlining with the node found
+  at start (TestPoolCutCompanionPrepare checks the memory is online
+  at the revoke); changeLend also revokes a lend from before the
+  restart that only the cgroup shows (D/lend.go:770-773). The lease
+  bind <FsDir>/<Name> is derived only with an fs device and a valid
+  name; OnReleasing marks a Lending lease Failed.
+- Holders: unfinishedDevices takes the block device of the region now
+  (not a stale recorded name, S5) and sets the node mount only when
+  checkNodeMount accepts it, so a foreign mount is never unmounted and
+  then holds the device through waitNoHolder.
+- Start: records of prepared claims and of claims with no memdev on
+  the node are dropped and the file saved; the numa node is read from
+  the region (target_node, else the blocks) and fenced before any
+  Prepare (driver.go:399, M10); the serials are pool serials for the
+  publisher and the local guard.
+- kubelet: K8S v1.36.4 pkg/kubelet/cm/dra/manager.go:332-365
+  checkpoints the claim before NodePrepareResources, so an Unprepare
+  or a Prepare again does come.
+- Locks: all new state is used under p.mu (Prepare, Unprepare) or at
+  construction; unfinishedNodes under serialsMu; hollowRegionLog has
+  its own mutex. -race -count=3 clean.
+
+bug-12
+- Kernel: an unset target reads "\n" and targetN exists for
+  N < interleave_ways only (K/region.c:852-871, :2484-2494); the C/
+  loop stops at the first missing target and skips empty ones (M1).
+- A region without an address range (created, not sized: ndctl sets
+  the size after granularity, ways and uuid, cxl/region.c:696-722)
+  reads size "0x0" (the kernel's vsprintf gives "%#llx" of 0 the
+  prefix, lib/vsprintf.c number(), unlike C) and resource
+  0xffffffffffffffff (K/region.c:618-633, :762-776): it scans as a
+  disabled region without targets, hollow, skipped (R8).
+- delete_region finds the region by id and exact name and unregisters
+  it synchronously (K/region.c:2873-2896, :2559-2579), so the stat
+  after the write is right; a committed region or one with a target
+  is refused before the wait and after it (M5); a missing region is
+  not an error.
+- RegionRootDecoder: the parent of the region's real sysfs path, which
+  is always a root decoder in the kernel's layout.
+- The log of a hollow region is once per path and address while it
+  stays; it names the right delete_region file.
+
+bug-13
+- unix.LoopInfo64 matches struct loop_info64 (include/uapi/linux/
+  loop.h:52-66); lo_rdevice is huge_encode_dev(stat.rdev)
+  (drivers/block/loop.c:1329), which unix.Major/Minor decode; a
+  regular backing file has rdev 0 and keeps its path.
+- Opening a loop device that a mount holds does not clear it: an
+  autoclear device is cleared only at disk_openers == 0
+  (loop.c:1752-1774).
+- DEVNAME from /sys/dev/block/M:m/uevent under the plugin's sysfs
+  root; any error falls back to the sysfs path, logged at V(3).
+- Every comparison of backing paths goes through LoopBackingFile and
+  sameDevice (checkNodeMount, Holder, bindOrigin); mountinfo sources
+  are not affected. A fallback "/x" for a file named like the device
+  only makes Holder report a holder (the safe direction).
+- d_path of a file in a mount that the reader cannot reach is printed
+  from that mount's root, without "(unreachable)": "/pmem1", as the
+  evidence shows.
+
+========================================================================
+Dispositions (implementer, 2026-10-28)
+========================================================================
+
+All fixed in the working tree, not committed; no image, no cluster.
+Line numbers of the working tree after these changes.
+
+G1 fixed. memctl names the region before it creates it: createRegion
+   (M/memctl.go:945 new) reads the next name from the root decoder's
+   create_ram_region or create_pmem_region and calls a RegionNote
+   (:940) before cxl create-region runs, and again with the name that
+   it created; CreateRegionNoted (:1007), CreatePmemRegionNoted
+   (M/pmem.go) are CreateRegionSize and CreatePmemRegion with a note.
+   The read, the note and the create-region run under regionCreateMu
+   (:930), a lock of the process that the local allocator's creations
+   (CreateRegionSize) take too, so the name read is the one this
+   process gets. The pool driver's note (regionNote, D/pool.go:766)
+   records {serial, region, decoder} in the claim's record and saves it
+   before the tool runs (an error fails the Prepare with nothing
+   created), and replaces a name that the tool did not get (another
+   process in between). The recorded regions are deleted when hollow
+   (deleteRecordedRegions :753): when the claim is prepared again, after
+   it is prepared (:650; its own region is kept), at the Unprepare of
+   the unfinished claim (:1030, also when the memdev is gone), at a
+   rollback (:739), and at the Unprepare of a prepared claim whose
+   record could not be forgotten (:1215). notePreparing keeps the
+   regions of the record across Prepares.
+   Tests: TestPoolCutCreateRegion (unprepare, prepare again),
+   TestPoolRegionNoteReplaced, M/TestCreateRegionNoted. Your R1 still
+   fails: its fake create-region makes region1 while the root decoder's
+   create_ram_region (now in the fake, "region0") names region0, which
+   libcxl would not do; the same case with the name of the decoder is
+   TestPoolCutCreateRegion "prepare again".
+G2 fixed. The root-decoder sweep is gone (rootDecoder, HollowRegions and
+   releaseDevices' unfinished parameter removed): the pool driver
+   deletes only regions that it knows as its own, the regions recorded
+   by notes and the recorded region of a prepared claim whose memdev is
+   gone, and never one that another prepared claim records
+   (regionUsed, D/pool_persistent.go:444). The 1 s two-sample guard is
+   gone: DeleteHollowRegion (M/decoders.go:221) takes regionCreateMu, so
+   no creation of the process is under way, and deletes at once; no
+   wait under p.mu. Another process setting up a region of a name that
+   a record of ours names (after ours was deleted by hand and the id
+   reused) remains possible, in a window of milliseconds. R2 passes;
+   TestPoolRollbackKeepsForeignHollowRegion, and region7 of
+   TestPoolCutCreateRegion.
+G3 fixed. DeleteHollowRegion refuses while a memory block of the
+   region's address range is not offline (as ReleaseRegion), with the
+   blocks in the error; a region without an address range has none.
+   R9 passes; M/TestHollowRegion, TestPoolUnprepareHollowRegion (online
+   memory). The texts no longer say "it maps no memory" (log, pool.md).
+G4 fixed. companionLender knows whether set was called (isSet, ready,
+   D/lending.go:247); revoke of a lend with nodes before that fails with
+   errLendingStarting (:107): the Unprepare fails and kubelet retries,
+   for prepared and unfinished claims of both drivers. With leases
+   disabled, driver.go (:497) now calls set(nil, nil) for both lenders,
+   so a lend recorded before is handled as without NRI, as before. R11
+   passes; TestPoolCutCompanionPrepare (numa: fails before set, memory
+   still online, record kept).
+G5 fixed. forgetPreparing saves the file without the claim first and
+   forgets it in memory only on success (D/pool.go:842); the Unprepare
+   of a prepared claim forgets a record left by its Prepare (:1215).
+   R3 passes (both Unprepares fail while the file cannot be written, as
+   they must); TestPoolForgetSaveFails.
+G6 fixed. pkg/cxl gives RegionDevice.Hollow (no target set) and the node
+   scan uses it, not the "/fake/" path; a hollow region whose range has
+   online memory (node 3, enabled) is not published and its node is not
+   DRAM (D/node_state.go:334, the skip also marks the node as CXL):
+   TestBuildDevInfosHollowRegion fails without the skip. R10 fails only
+   because its region lacks the new Hollow field. The fake root decoder
+   has create_ram_region and create_pmem_region; the hollow regions of
+   the tests are under decoder0.0 (the fake's live region0 stays a
+   plain directory). C/devices_test.go: interleave_ways 2 for target1.
+   A region without an address range: M/TestHollowRegion region6.
+G7 fixed: pool.md (the two bullets rewritten), the DeleteHollowRegion
+   comment; bug-11 and bug-12 have a "Follow-up after review" section
+   that replaces 5 "Left", 5d and 5e where they differ.
+G8 1) kept as is (a rollback with a lend has passed lender.check, which
+   needs the lender set). 2) notePreparing replaces a device only of the
+   same result and serial; one of another serial is added. 3) the
+   rollback keeps the record when a deletion that it asked for failed;
+   DeleteHollowRegion takes no context any more (no wait).
+Mutations of the follow-up, each failing its tests: no region note; no
+deletion at the Prepare again; forget before the save; revoke before
+set; no hollow skip in the scan; no online check.
+gofmt, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... -skip TestMemdevSettings: ok (new tests -count=5/10);
+golangci-lint: the 3 old errcheck of M/probe.go only.

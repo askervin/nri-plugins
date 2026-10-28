@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -55,6 +56,10 @@ const (
 	// poolStateFileName is the prepared pool claims file in the plugin
 	// data directory of the pool driver.
 	poolStateFileName = "preparedPoolClaims.json"
+	// poolPreparingFileName is the file of the claims whose Prepare
+	// touched devices and did not finish (see poolDriver.preparing), next
+	// to the state file.
+	poolPreparingFileName = "preparingPoolClaims.json"
 	// defaultPoolPrepareTimeout is how long Prepare waits for the
 	// memdev to appear.
 	defaultPoolPrepareTimeout = 30 * time.Second
@@ -93,15 +98,32 @@ type poolDriver struct {
 	// fence gets the NUMA nodes of devices in mode numa before their
 	// memory goes online, nil for none.
 	fence *nodeFence
+	// preparing are the claims (uid -> ...) whose Prepare touches or has
+	// touched devices and has not finished, with the devices that it
+	// touches: each device is recorded in preparingFile before it is
+	// touched, and the claim is forgotten when it is prepared (in the
+	// state file) or the rollback of its Prepare released everything. The
+	// claims loaded at start are those of Prepares that the plugin did not
+	// finish (it was killed in them): their devices may have a region, a
+	// namespace, online memory, which Unprepare releases and a Prepare
+	// again reuses. Their Devices have what is known before a device is
+	// touched (no region), and the NUMA node of a device in mode numa
+	// found at start.
+	preparing     map[string]*preparingPoolClaim
+	preparingFile string // <plugin data dir>/preparingPoolClaims.json
 
 	// serials is a snapshot of the serials of prepared and inflight
-	// devices for the cxl.nri.io publisher (D29), and results of the
+	// devices, and of the devices of claims whose Prepare did not finish,
+	// for the cxl.nri.io publisher (D29), and results of the
 	// allocation results of prepared claims (claim uid -> results) for
 	// the NRI plugin. They have their own lock so that a rescan or an NRI
 	// event never waits for a Prepare that waits for udev.
 	serialsMu sync.Mutex
 	serials   map[uint64]bool
 	results   map[string][]poolResult
+	// unfinishedNodes are the NUMA nodes of the devices in mode numa of
+	// the claims whose Prepare did not finish, found at start.
+	unfinishedNodes []int
 }
 
 // poolResult is a prepared allocation result of a pool claim as the NRI
@@ -219,6 +241,30 @@ type preparedPoolClaim struct {
 	Lend      *lendRecord                 `json:"lend,omitempty"`
 }
 
+// preparingPoolClaim is a claim whose Prepare touches or has touched
+// devices and has not finished (poolDriver.preparing): the devices as far
+// as they are known before they are touched (no region, namespace, block
+// device or dax device), and the lend of a companion claim (without the
+// nodes and binds, which come later).
+type preparingPoolClaim struct {
+	ClaimName string               `json:"claimName"` // namespace/name
+	Devices   []preparedPoolDevice `json:"devices"`
+	Lend      *lendRecord          `json:"lend,omitempty"`
+	// Regions are the regions that the Prepares of the claim create or
+	// created (regionNote): the name of a new region is recorded before
+	// cxl create-region runs, so that a hollow region left by one that
+	// did not finish is known as the claim's.
+	Regions []preparingRegion `json:"regions,omitempty"`
+}
+
+// preparingRegion is a region that a Prepare creates on the memdev with
+// the serial under the root decoder.
+type preparingRegion struct {
+	Serial  uint64 `json:"serial"`
+	Region  string `json:"region"`
+	Decoder string `json:"decoder,omitempty"`
+}
+
 // poolDeviceData is claim.status.devices[].data written by the pool
 // controller. Serial, shared and size are required; exclusive (a shared
 // device whose claim consumed all of its shares) and persistent are false
@@ -246,9 +292,11 @@ type poolDevice struct {
 }
 
 // newPoolDriver returns a pool driver whose prepared claims are loaded
-// from stateFile, with their missing node mounts and lease binds mounted
-// again, and the stale lease binds under leaseFsRoot ("": none) unmounted.
-// The kubelet plugin is started separately (start).
+// from stateFile, and the claims whose Prepare did not finish from the
+// preparing file next to it, with the missing node mounts and lease binds
+// of the prepared claims mounted again, and the stale lease binds under
+// leaseFsRoot ("": none) and node mounts unmounted. The kubelet plugin is
+// started separately (start).
 func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration, leaseFsRoot string) (*poolDriver, error) {
 	if timeout <= 0 {
 		timeout = defaultPoolPrepareTimeout
@@ -266,10 +314,15 @@ func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateF
 		leaseFsRoot: leaseFsRoot,
 		prepared:    map[string]*preparedPoolClaim{},
 		inflight:    map[uint64]int{},
+		preparing:   map[string]*preparingPoolClaim{},
+		// the same directory: one rename never moves a claim between
+		// file systems
+		preparingFile: filepath.Join(filepath.Dir(stateFile), poolPreparingFileName),
 	}
 	if err := p.load(); err != nil {
 		return nil, err
 	}
+	p.loadPreparing()
 	p.restoreMounts()
 	p.updateSerials()
 	return p, nil
@@ -345,14 +398,15 @@ func (p *poolDriver) ClaimResults(uid string) []poolResult {
 }
 
 // numaNodes returns the NUMA nodes of the devices in mode numa of all
-// prepared claims. Nil for a nil (disabled) pool driver.
+// prepared claims, and of the claims whose Prepare did not finish (their
+// memory may be online). Nil for a nil (disabled) pool driver.
 func (p *poolDriver) numaNodes() []int {
 	if p == nil {
 		return nil
 	}
 	p.serialsMu.Lock()
 	defer p.serialsMu.Unlock()
-	var nodes []int
+	nodes := slices.Clone(p.unfinishedNodes)
 	for _, results := range p.results {
 		for _, r := range results {
 			if r.Mode == api.ModeNUMA && r.Node >= 0 {
@@ -364,11 +418,13 @@ func (p *poolDriver) numaNodes() []int {
 	return slices.Compact(nodes)
 }
 
-// updateSerials refreshes the Serials and ClaimResults snapshots. Called
-// with p.mu held.
+// updateSerials refreshes the Serials, ClaimResults and numaNodes
+// snapshots. The serials of the claims whose Prepare did not finish are
+// serials of the pool driver too. Called with p.mu held.
 func (p *poolDriver) updateSerials() {
 	s := map[uint64]bool{}
 	results := map[string][]poolResult{}
+	var nodes []int
 	for uid, pc := range p.prepared {
 		for _, d := range pc.Devices {
 			s[d.Serial] = true
@@ -382,12 +438,21 @@ func (p *poolDriver) updateSerials() {
 			})
 		}
 	}
+	for _, pc := range p.preparing {
+		for _, d := range pc.Devices {
+			s[d.Serial] = true
+			if d.Mode == api.ModeNUMA && d.Node >= 0 {
+				nodes = append(nodes, d.Node)
+			}
+		}
+	}
 	for serial := range p.inflight {
 		s[serial] = true
 	}
 	p.serialsMu.Lock()
 	p.serials = s
 	p.results = results
+	p.unfinishedNodes = nodes
 	p.serialsMu.Unlock()
 }
 
@@ -439,6 +504,8 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 	}()
 	// the device that failed to prepare, for the holder wait of the rollback
 	var failed []preparedPoolDevice
+	// the allocation results recorded in preparing by this Prepare
+	var noted []int
 	fail := func(err error) kubeletplugin.PrepareResult {
 		err = fmt.Errorf("%s: preparing claim %s: %w", p.name, claimName, err)
 		klog.Error(err)
@@ -454,7 +521,7 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 				p.addStaleBind(sb)
 			}
 		}
-		p.rollback(ctx, uid, append(slices.Clone(pc.Devices), failed...), touched)
+		p.rollback(ctx, uid, append(slices.Clone(pc.Devices), failed...), touched, noted)
 		return kubeletplugin.PrepareResult{Err: err}
 	}
 	keys := envKeys{}
@@ -494,16 +561,22 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		if err := p.checkSamePreparation(data, uid); err != nil {
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
+		// Recorded before it is touched: what a Prepare that does not
+		// finish does to the device is released by the claim's Unprepare.
+		if err := p.notePreparing(uid, claimName, lend, n, &r, data); err != nil {
+			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
+		}
+		noted = append(noted, n)
 		touched = append(touched, data.Serial)
 		p.inflight[data.Serial]++
 		p.updateSerials()
-		dev, err := p.prepareDevice(ctx, &r, data)
+		dev, err := p.prepareDevice(ctx, uid, &r, data)
 		if err != nil && isAddDevError(err) {
 			klog.Warningf("%s: claim %s: device %s: %v; retrying once in %v", p.name, claimName, r.Device, err, p.retryDelay)
 			select {
 			case <-ctx.Done():
 			case <-time.After(p.retryDelay):
-				dev, err = p.prepareDevice(ctx, &r, data)
+				dev, err = p.prepareDevice(ctx, uid, &r, data)
 			}
 		}
 		if err != nil {
@@ -570,6 +643,13 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		}
 		return res
 	}
+	// Prepared in the state file, which wins over the preparing file at
+	// start if this save fails. A region that an earlier Prepare of the
+	// claim left hollow (killed in cxl create-region) is deleted.
+	if rec := p.preparing[uid]; rec != nil {
+		p.deleteRecordedRegions(uid, rec, "left by a Prepare of the claim that did not finish")
+	}
+	_ = p.forgetPreparing(uid)
 	if lend != nil {
 		klog.Infof("%s: claim %s: companion of lease %s of %s/%s/%s prepared (nodes %v, binds %v)",
 			p.name, claimName, lend.Lease, lend.Pod.Namespace, lend.Pod.Name, lend.Container, lend.Nodes, lend.Mounts)
@@ -632,12 +712,327 @@ func (p *poolDriver) checkSamePreparation(data *poolDevice, exceptUID string) er
 	return nil
 }
 
-// rollback releases what a failed Prepare of a claim prepared, devs, and
-// the serials that it touched, unless another prepared claim uses them.
-func (p *poolDriver) rollback(ctx context.Context, uid string, devs []preparedPoolDevice, serials []uint64) {
-	for _, err := range p.releaseDevices(ctx, uid, devs, serials) {
+// rollback releases what a failed Prepare of a claim prepared, devs, the
+// serials that it touched, and the devices of other allocation results
+// than those that it recorded in preparing (noted), which an earlier
+// Prepare of the claim that did not finish touched, unless another
+// prepared claim uses them. The claim is forgotten in preparing when
+// everything was released; otherwise its record stays for its Unprepare
+// or its next Prepare.
+func (p *poolDriver) rollback(ctx context.Context, uid string, devs []preparedPoolDevice, serials []uint64, noted []int) {
+	rec := p.preparing[uid]
+	if rec != nil {
+		if err := p.revokeUnfinished(ctx, rec); err != nil {
+			klog.Errorf("%s: rollback: claim %s: %v", p.name, rec.ClaimName, err)
+		}
+		devs = append(slices.Clone(devs), p.unfinishedDevices(rec, noted)...)
+	}
+	errs := p.releaseDevices(ctx, uid, devs, serials)
+	for _, err := range errs {
 		klog.Errorf("%s: rollback: %v", p.name, err)
 	}
+	if rec == nil {
+		return
+	}
+	if len(errs) == 0 {
+		// those already logged
+		errs = p.deleteRecordedRegions(uid, rec, "left by a cxl create-region of the claim")
+	}
+	if len(errs) > 0 {
+		klog.Warningf("%s: rollback: claim %s (%s): not everything was released: keeping its record in %s for its Unprepare or its next Prepare",
+			p.name, rec.ClaimName, uid, p.preparingFile)
+		return
+	}
+	_ = p.forgetPreparing(uid)
+}
+
+// deleteRecordedRegions deletes the regions that the record of a claim
+// whose Prepare did not finish or failed names (regionNote) when they are
+// hollow and no other prepared claim records them, and returns the errors
+// (logged).
+func (p *poolDriver) deleteRecordedRegions(uid string, rec *preparingPoolClaim, why string) []error {
+	var errs []error
+	for _, r := range rec.Regions {
+		errs = append(errs, p.deleteHollowRegions(uid, r.Serial, []string{r.Region}, why)...)
+	}
+	return errs
+}
+
+// regionNote returns the memctl.RegionNote of a Prepare of the claim uid
+// for the device with the serial: the name of a region is recorded in the
+// claim's record and saved before cxl create-region runs, and replaced by
+// the name that it created if that differs (another process created a
+// region in between).
+func (p *poolDriver) regionNote(uid string, serial uint64) memctl.RegionNote {
+	noted := ""
+	return func(region, decoder string, created bool) error {
+		rec := p.preparing[uid]
+		if rec == nil || region == "" || (created && region == noted) {
+			return nil
+		}
+		old := slices.Clone(rec.Regions)
+		if created {
+			rec.Regions = slices.DeleteFunc(rec.Regions, func(r preparingRegion) bool { return r.Serial == serial && r.Region == noted })
+		}
+		if !slices.ContainsFunc(rec.Regions, func(r preparingRegion) bool { return r.Region == region }) {
+			rec.Regions = append(rec.Regions, preparingRegion{Serial: serial, Region: region, Decoder: decoder})
+		}
+		if err := p.savePreparing(); err != nil {
+			rec.Regions = old
+			return fmt.Errorf("recording region %s: %w", region, err)
+		}
+		noted = region
+		return nil
+	}
+}
+
+// notePreparing records the device of the allocation result n of a claim
+// in preparing, with the lend of a companion claim, and saves the
+// preparing file, before the Prepare touches the device. A device of the
+// result and serial recorded by an earlier Prepare that did not finish is
+// replaced, keeping its NUMA node; the others, and the regions, stay. On
+// error nothing changed.
+func (p *poolDriver) notePreparing(uid, claimName string, lend *lendRecord, n int, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice) error {
+	d := preparedPoolDevice{
+		Result:     n,
+		Request:    r.Request,
+		Device:     r.Device,
+		Pool:       r.Pool,
+		Serial:     data.Serial,
+		Shared:     data.Shared,
+		Size:       data.Size,
+		Mode:       data.Mode,
+		ReadOnly:   data.ReadOnly,
+		Persistent: data.Persistent,
+		Access:     data.Access,
+		Path:       data.Path,
+		Node:       -1,
+	}
+	old := p.preparing[uid]
+	rec := &preparingPoolClaim{ClaimName: claimName, Lend: lend}
+	if old != nil {
+		rec.Devices = slices.Clone(old.Devices)
+		rec.Regions = slices.Clone(old.Regions)
+		if rec.Lend == nil {
+			rec.Lend = old.Lend
+		}
+	}
+	if i := slices.IndexFunc(rec.Devices, func(x preparedPoolDevice) bool { return x.Result == n && x.Serial == d.Serial }); i >= 0 {
+		d.Node = rec.Devices[i].Node
+		rec.Devices[i] = d
+	} else {
+		rec.Devices = append(rec.Devices, d)
+	}
+	p.preparing[uid] = rec
+	if err := p.savePreparing(); err != nil {
+		if old != nil {
+			p.preparing[uid] = old
+		} else {
+			delete(p.preparing, uid)
+		}
+		return err
+	}
+	return nil
+}
+
+// forgetPreparing forgets a claim whose Prepare finished in preparing,
+// once the preparing file without it is saved. A save error is logged and
+// returned, and the claim is kept: its Unprepare, or the next one, tries
+// again.
+func (p *poolDriver) forgetPreparing(uid string) error {
+	rec, ok := p.preparing[uid]
+	if !ok {
+		return nil
+	}
+	delete(p.preparing, uid)
+	if err := p.savePreparing(); err != nil {
+		p.preparing[uid] = rec
+		err = fmt.Errorf("claim %s (%s): %w", rec.ClaimName, uid, err)
+		klog.Errorf("%s: %v", p.name, err)
+		return err
+	}
+	p.updateSerials()
+	return nil
+}
+
+// savePreparing writes the preparing file.
+func (p *poolDriver) savePreparing() error {
+	return writeJSONFile(p.preparingFile, p.preparing)
+}
+
+// loadPreparing loads the claims whose Prepare did not finish from the
+// preparing file, and finds the NUMA node of their devices in mode numa
+// (fenced at start, see preparedNodes). A claim that is prepared (the
+// plugin stopped after it saved the state file) is forgotten, and so is a
+// claim none of whose memdevs is on the node: no region can be left on
+// them. A file that cannot be read or parsed is logged and taken as
+// empty: what those Prepares touched is then left as before this file
+// existed.
+func (p *poolDriver) loadPreparing() {
+	data, err := os.ReadFile(p.preparingFile)
+	if os.IsNotExist(err) {
+		return
+	}
+	recs := map[string]*preparingPoolClaim{}
+	if err == nil {
+		err = json.Unmarshal(data, &recs)
+	}
+	if err != nil {
+		klog.Errorf("%s: %s: %v: the claims whose Prepare did not finish are lost, their devices may keep regions", p.name, p.preparingFile, err)
+		return
+	}
+	changed := false
+	for _, uid := range slices.Sorted(maps.Keys(recs)) {
+		rec := recs[uid]
+		switch {
+		case rec == nil:
+			changed = true
+			continue
+		case p.prepared[uid] != nil:
+			klog.Infof("%s: claim %s (%s) is prepared, forgetting the record of its Prepare", p.name, rec.ClaimName, uid)
+			changed = true
+			continue
+		case !slices.ContainsFunc(rec.Devices, func(d preparedPoolDevice) bool { _, err := p.mem.FindMemdev(d.Serial); return err == nil }):
+			klog.Infof("%s: claim %s (%s): its Prepare did not finish, and none of its memdevs is on the node: forgetting it", p.name, rec.ClaimName, uid)
+			changed = true
+			continue
+		}
+		var serials []string
+		for i := range rec.Devices {
+			d := &rec.Devices[i]
+			serials = append(serials, api.FormatSerial(d.Serial))
+			if d.Mode == api.ModeNUMA {
+				d.Node = p.regionNode(d.Serial)
+			}
+		}
+		klog.Warningf("%s: claim %s (%s): its Prepare did not finish (the plugin stopped in it): devices %s may have a region, a namespace or online memory; its Unprepare releases them, its Prepare again reuses them",
+			p.name, rec.ClaimName, uid, strings.Join(serials, ", "))
+		p.preparing[uid] = rec
+	}
+	if changed {
+		if err := p.savePreparing(); err != nil {
+			klog.Errorf("%s: %v", p.name, err)
+		}
+	}
+}
+
+// regionNode returns the NUMA node of the region of the memdev with the
+// serial, -1 if there is none.
+func (p *poolDriver) regionNode(serial uint64) int {
+	memdev, err := p.mem.FindMemdev(serial)
+	if err != nil {
+		return -1
+	}
+	ri, err := p.mem.Info(memdev)
+	if err != nil {
+		return -1
+	}
+	if ri.Node >= 0 {
+		return ri.Node
+	}
+	return p.mem.BlocksNode(ri.Blocks)
+}
+
+// revokeUnfinished revokes the nodes that a Prepare of a companion claim
+// that did not finish may have lent: those of its devices in mode numa
+// with a known node (found at start) and those of its lend.
+func (p *poolDriver) revokeUnfinished(ctx context.Context, rec *preparingPoolClaim) error {
+	if rec.Lend == nil {
+		return nil
+	}
+	lend := *rec.Lend
+	lend.Nodes = slices.Clone(rec.Lend.Nodes)
+	for _, d := range rec.Devices {
+		if d.Mode == api.ModeNUMA && d.Node >= 0 && !slices.Contains(lend.Nodes, d.Node) {
+			lend.Nodes = append(lend.Nodes, d.Node)
+		}
+	}
+	return p.lender.revoke(ctx, &lend, rec.ClaimName)
+}
+
+// unfinishedLend returns the lend of a companion claim whose Prepare did
+// not finish with the lease bind that its fs device may have.
+func unfinishedLend(rec *preparingPoolClaim) *lendRecord {
+	lend := *rec.Lend
+	lend.Mounts = slices.Clone(rec.Lend.Mounts)
+	if lend.FsDir != "" && api.ValidName(lend.Name) && fsDevice(rec.Devices) != nil {
+		if t := filepath.Join(lend.FsDir, lend.Name); !slices.Contains(lend.Mounts, t) {
+			lend.Mounts = append(lend.Mounts, t)
+		}
+	}
+	return &lend
+}
+
+// unfinishedDevices returns the devices of a claim whose Prepare did not
+// finish but those of the allocation results except, as releaseDevices
+// releases them: the block device of a persistent device is that of its
+// region now, and the node mount of a device in mode fs is set when the
+// erofs of that block device is mounted for its access at its node mount
+// (another mount there is not the device's, and is not unmounted).
+func (p *poolDriver) unfinishedDevices(rec *preparingPoolClaim, except []int) []preparedPoolDevice {
+	var devs []preparedPoolDevice
+	for _, d := range rec.Devices {
+		if slices.Contains(except, d.Result) {
+			continue
+		}
+		if d.Persistent && d.BlockDevice == "" {
+			d.BlockDevice = p.currentBlockDevice(d.Serial)
+		}
+		if d.Mode == api.ModeFs && d.BlockDevice != "" && d.NodeMount == "" {
+			mnt := p.nodeMountPath(d.Serial, d.Access)
+			if mi, err := p.mounter.Mounted(mnt); err == nil && mi != nil {
+				if _, err := p.checkNodeMount(d.Serial, d.BlockDevice, d.Access, mi); err == nil {
+					d.NodeMount = mnt
+				}
+			}
+		}
+		devs = append(devs, d)
+	}
+	return devs
+}
+
+// unprepareUnfinished releases what a Prepare of a claim that did not
+// finish touched (see preparing), as an Unprepare does: the lent nodes of
+// a companion claim are revoked and its lease bind unmounted first, then
+// the devices are released, and the recorded regions that a cut cxl
+// create-region left hollow are deleted. A claim that is neither prepared
+// nor preparing had nothing touched: not an error.
+func (p *poolDriver) unprepareUnfinished(ctx context.Context, uid string) error {
+	rec := p.preparing[uid]
+	if rec == nil {
+		klog.V(3).Infof("%s: claim %s is not prepared, nothing to release", p.name, uid)
+		return nil
+	}
+	var serials []string
+	for _, d := range rec.Devices {
+		serials = append(serials, api.FormatSerial(d.Serial))
+	}
+	klog.Infof("%s: unpreparing claim %s (%s), whose Prepare did not finish: releasing devices %s", p.name, rec.ClaimName, uid, strings.Join(serials, ", "))
+	fail := func(err error) error {
+		err = fmt.Errorf("%s: unpreparing claim %s: %w", p.name, rec.ClaimName, err)
+		klog.Error(err)
+		return err
+	}
+	if rec.Lend != nil {
+		p.lender.releasing(rec.Lend.Lease)
+		if err := p.revokeUnfinished(ctx, rec); err != nil {
+			return fail(err)
+		}
+		if err := p.unbindLeaseMounts(unfinishedLend(rec), uid); err != nil {
+			return fail(err)
+		}
+	}
+	if errs := p.releaseDevices(ctx, uid, p.unfinishedDevices(rec, nil), nil); len(errs) > 0 {
+		return fail(errors.Join(errs...))
+	}
+	// logged; a hollow region does not keep the pool from removing the
+	// device, and the scan of cxl.nri.io reports it
+	p.deleteRecordedRegions(uid, rec, "left by a Prepare of the claim that did not finish")
+	if err := p.forgetPreparing(uid); err != nil {
+		return fail(err)
+	}
+	klog.Infof("%s: unprepared claim %s (%s)", p.name, rec.ClaimName, uid)
+	return nil
 }
 
 // poolDataFor parses the claim.status.devices[] entry of an allocation
@@ -686,11 +1081,12 @@ func (p *poolDriver) waitMemdev(ctx context.Context, serial uint64) (string, err
 	return p.mem.WaitMemdev(wctx, serial)
 }
 
-// prepareDevice returns the device of an allocation result prepared as
-// data says; with an error of a device of persistent memory, the device as
-// far as it was prepared. The NUMA node of a device in mode numa is fenced
-// before its memory goes online.
-func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice) (*preparedPoolDevice, error) {
+// prepareDevice returns the device of an allocation result of the claim
+// uid prepared as data says; with an error of a device of persistent
+// memory, the device as far as it was prepared. The NUMA node of a device
+// in mode numa is fenced before its memory goes online. A region that it
+// creates is recorded in the claim's record first (regionNote).
+func (p *poolDriver) prepareDevice(ctx context.Context, uid string, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice) (*preparedPoolDevice, error) {
 	memdev, err := p.waitMemdev(ctx, data.Serial)
 	if err != nil {
 		return nil, err
@@ -709,14 +1105,14 @@ func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceReq
 	}
 	if data.Persistent {
 		dev.Persistent = true
-		if err := p.preparePersistent(ctx, memdev, data, dev); err != nil {
+		if err := p.preparePersistent(ctx, memdev, data, dev, p.regionNote(uid, data.Serial)); err != nil {
 			return dev, err
 		}
 		return dev, nil
 	}
 	if data.Mode == api.ModeDax {
 		// device_dax: never onlined as RAM (shared memory must never be).
-		ri, err := p.mem.CreateRegion(ctx, memdev, memctl.ModeDax, "")
+		ri, err := p.mem.CreateRegionNoted(ctx, memdev, memctl.ModeDax, "", 0, p.regionNote(uid, data.Serial))
 		if err != nil {
 			return nil, err
 		}
@@ -730,7 +1126,7 @@ func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceReq
 		dev.Region, dev.Dax, dev.DaxDevice, dev.DaxMajor, dev.DaxMinor = ri.Region, ri.Dax, ri.Device, major, minor
 		return dev, nil
 	}
-	created, err := p.mem.CreateRegion(ctx, memdev, memctl.ModeNUMA, "")
+	created, err := p.mem.CreateRegionNoted(ctx, memdev, memctl.ModeNUMA, "", 0, p.regionNote(uid, data.Serial))
 	if err != nil {
 		return nil, err
 	}
@@ -754,22 +1150,22 @@ func (p *poolDriver) prepareDevice(ctx context.Context, r *resourceapi.DeviceReq
 	return dev, nil
 }
 
-// release makes the memdev with the serial removable. A memdev that is
-// gone is not an error.
-func (p *poolDriver) release(ctx context.Context, serial uint64) error {
+// release makes the memdev with the serial removable, and tells whether it
+// is gone. A memdev that is gone is not an error.
+func (p *poolDriver) release(ctx context.Context, serial uint64) (bool, error) {
 	memdev, err := p.mem.FindMemdev(serial)
 	if errors.Is(err, memctl.ErrNotFound) {
 		klog.Infof("%s: memdev with serial 0x%x is gone, nothing to release", p.name, serial)
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := p.mem.Release(ctx, memdev); err != nil {
-		return err
+		return false, err
 	}
 	klog.Infof("%s: released %s (serial 0x%x)", p.name, memdev, serial)
-	return nil
+	return false, nil
 }
 
 func (p *poolDriver) UnprepareResourceClaims(ctx context.Context, claims []kubeletplugin.NamespacedObject) (map[types.UID]error, error) {
@@ -785,7 +1181,7 @@ func (p *poolDriver) UnprepareResourceClaims(ctx context.Context, claims []kubel
 func (p *poolDriver) unprepareClaim(ctx context.Context, uid string) error {
 	pc, ok := p.prepared[uid]
 	if !ok {
-		return nil
+		return p.unprepareUnfinished(ctx, uid)
 	}
 	if pc.Lend != nil {
 		p.lender.releasing(pc.Lend.Lease)
@@ -811,7 +1207,14 @@ func (p *poolDriver) unprepareClaim(ctx context.Context, uid string) error {
 	}
 	delete(p.prepared, uid)
 	klog.Infof("%s: unprepared claim %s (%s)", p.name, pc.ClaimName, uid)
-	return p.sync()
+	if err := p.sync(); err != nil {
+		return err
+	}
+	// the record of its Prepare if it could not be forgotten then
+	if rec := p.preparing[uid]; rec != nil {
+		p.deleteRecordedRegions(uid, rec, "left by a Prepare of the claim that did not finish")
+	}
+	return p.forgetPreparing(uid)
 }
 
 // sync rewrites the CDI spec and the state file from the prepared map.

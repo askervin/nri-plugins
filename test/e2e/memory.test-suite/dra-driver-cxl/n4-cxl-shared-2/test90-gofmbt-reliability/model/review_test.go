@@ -22,7 +22,9 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -509,7 +511,7 @@ func TestReviewL3SlicesAbsentAfterKill(t *testing.T) {
 
 // replaySteps replays the first n steps of a steps file with its
 // adoption records (as generate --from does).
-func replaySteps(t *testing.T, cfg *Config, file string, n int) *State {
+func replaySteps(t *testing.T, cfg *Config, file string, n int, refused ...int) *State {
 	t.Helper()
 	data, err := os.ReadFile(file)
 	if err != nil {
@@ -522,8 +524,10 @@ func replaySteps(t *testing.T, cfg *Config, file string, n int) *State {
 		if err != nil {
 			t.Fatalf("step %d: %v", j+1, err)
 		}
-		if !st.allowed(a) {
-			t.Fatalf("step %d %q not allowed in\n%s", j+1, l.Action, st.dump())
+		// (refused: steps of the run that the model refuses now; they
+		// are applied as the run did)
+		if ok, want := st.allowed(a), !slices.Contains(refused, j+1); ok != want {
+			t.Fatalf("step %d %q allowed %v, want %v in\n%s", j+1, l.Action, ok, want, st.dump())
 		}
 		st = st.apply(a)
 		if l.Has {
@@ -1172,5 +1176,90 @@ func TestReviewM9HandoverAtCtrlStart(t *testing.T) {
 	}
 	if strings.Join(got, "; ") != "blocked [hole,local]; running [a-shared0,local]" {
 		t.Fatalf("outcomes %v", got)
+	}
+}
+
+// --stall-window (bug-08 fixed in kube-scheduler): with a window not
+// longer than the settle timeout a stalled contender is not settled:
+// the settle waits for its promotion and fails when the window from the
+// start of the settle that first saw it stalled is over; with the
+// default (6m) it is settled in both states (A19). The D8 sequences.
+func TestReviewStallWindow(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		for _, d8 := range [][]string{
+			{"delete xnuma-a@vm1#0", "settle"},                 // A: the controller stays down
+			{"delete xnuma-a@vm1#0", "ctrl-start a", "settle"}, // B: ctrl-start right after the delete
+		} {
+			s := revState(t, "full", true, "ctrl-kill a", "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle")
+			if strict {
+				s.cfg.StallWindow, s.cfg.StallStrict = 30*time.Second, true
+			}
+			s = steps(t, s, d8...)
+			wantPhase(t, s, "xdax-a@vm1#0", Stalled)
+			since := time.Unix(time.Now().Unix(), 0)
+			o := observation(t, s) // Pending, not allocated
+			v, adopted, _ := checkAltsSince(s, o, "", since.Add(10*time.Second), since, defaultUnblock)
+			if strict {
+				wantVerdict(t, v, VWait, "xdax-a@vm1#0: not allocated yet, want its promotion (a stalled contender, --stall-window 30s)")
+				v, _, _ = checkAltsSince(s, o, "", since.Add(31*time.Second), since, defaultUnblock)
+				wantVerdict(t, v, VFail, "still not allocated 31s after the delete of the claim it waits for (A19, --stall-window 30s)")
+			} else {
+				wantVerdict(t, v, VOK, "ok")
+				if adopted.unblockAt(adopted.cfg.slotIndex("xdax-a@vm1#0")) != since.Unix() {
+					t.Fatalf("stalled since %d, want the settle's start %d", adopted.unblockAt(adopted.cfg.slotIndex("xdax-a@vm1#0")), since.Unix())
+				}
+				v, _ = checkStateAt(adopted, o, "", since.Add(361*time.Second), defaultUnblock)
+				wantVerdict(t, v, VFail, "still not allocated 6m1s after the delete of the claim it waits for (A19, --stall-window 6m0s)")
+			}
+			// promoted: ok in both modes
+			truth := s.clone()
+			i := truth.cfg.slotIndex("xdax-a@vm1#0")
+			if truth.Ctrl[PoolA].Up {
+				truth.Slots[i].Phase = Running
+				truth.Ctrl[PoolA].Att[0][VM1] = TriYes
+				truth.Stacks[stackIndex(VM1, HB0)].push(devKey(pooledDev(PoolA)))
+			} else {
+				truth.Slots[i].Phase = Attaching
+			}
+			v, adopted, _ = checkAltsSince(s, observation(t, truth), "", since.Add(12*time.Second), since, defaultUnblock)
+			wantVerdict(t, v, VOK, "ok")
+			wantPhase(t, adopted, "xdax-a@vm1#0", truth.Slots[i].Phase)
+			// the generator rules stay: the device is the contender's
+			steps(t, s, "!create xnuma-a@vm2#0")
+		}
+	}
+	// the flag: in the header, taken by a replay, in the expectations
+	fs := flag.NewFlagSet("online", flag.ContinueOnError)
+	var c commonFlags
+	c.register(fs, true)
+	if err := fs.Parse([]string{"--stall-window", "30s", "--seed", "1"}); err != nil {
+		t.Fatal(err)
+	}
+	o, err := c.options(true, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.header, "--stall-window 30s") || o.cfg.StallWindow != 30*time.Second || !o.cfg.StallStrict {
+		t.Fatalf("header %q, window %s strict %v", o.header, o.cfg.StallWindow, o.cfg.StallStrict)
+	}
+	fs2 := flag.NewFlagSet("online", flag.ContinueOnError)
+	var c2 commonFlags
+	c2.register(fs2, true)
+	_ = fs2.Parse(nil)
+	_, header := readSteps("# mbt-cxl online seed=1\n# " + o.header + "\nsettle\n")
+	if err := applyHeader(fs2, header, io.Discard); err != nil || c2.stallWindow != 30*time.Second {
+		t.Fatalf("replay: %v, window %s", err, c2.stallWindow)
+	}
+	if o2, _ := c2.options(true, io.Discard); o2.cfg.StallStrict != true {
+		t.Fatalf("replay not strict")
+	}
+	// the default is today's A19: not strict, 6m
+	if d := defaultConfig(); d.StallWindow != 6*time.Minute || d.StallStrict {
+		t.Fatalf("default %s %v", d.StallWindow, d.StallStrict)
+	}
+	st := newState(o.cfg).expect(1, "settle")
+	cfg, err := st.config()
+	if err != nil || cfg.StallWindow != 30*time.Second || !cfg.StallStrict {
+		t.Fatalf("expectation: %v %s %v", err, cfg.StallWindow, cfg.StallStrict)
 	}
 }

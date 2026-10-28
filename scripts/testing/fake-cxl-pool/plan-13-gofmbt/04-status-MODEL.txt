@@ -67,6 +67,8 @@ experiment.go     P4 experiments (each one a soak test of model+oracle)
 sim.go            the simulated SUT
 refpool.go        independent reference of the pool side (section 16)
 simref.go         the simulated SUT with that reference (withRef)
+oracle_pmem.go    the oracle of persistent devices (section 21)
+simpmem.go        the simulated SUT's persistent devices (section 21)
 main.go           subcommands, flags, runtime tuning
 *_test.go         model, oracle, stack, online, generate tests;
                   refpool_test.go the fuzz against the reference
@@ -888,3 +890,326 @@ checkout (for developing gofmbt). Section 2 now reads:
   GOWORK=off go test ./...; GOWORK=off go test -race -timeout 30m ./...
 85 test functions; gofmt, go vet, go test, go test -race clean. Run
 L10 (06-runs.txt) built it in the cluster run.
+
+20. --stall-window: a kube-scheduler with the bug-08 fix (2026-10-27)
+--------------------------------------------------------------------
+10-scheduler-requeue-fix.txt: the patched kube-scheduler on vm2
+requeues the pods DynamicResources rejected when Unreserve drops a
+deleted claim's in-flight allocation, so a stalled contender (A19) gets
+its device ~5-15 s after the holder's delete instead of 5:00-5:30.
+New model flag --stall-window DURATION (online and generate; default
+6m = A19 as before: 360 s), written into the steps-file header
+(--stall-window 6m0s) and taken from it by replays and generate --from
+(modelFlags, A16), carried in the expectation JSON (stallWindow
+seconds when not the default, stallStrict) for `check`.
+- Window longer than the settle timeout (the default): a stalled
+  contender is settled in both states (Pending, claim not allocated, or
+  promoted and adopted), and must be promoted within the window.
+- Window not longer than the settle timeout (--settle-timeout; 180 s
+  off-line), e.g. --stall-window=30s: StallStrict. A stalled contender
+  is not settled: the settle waits ("not allocated yet, want its
+  promotion (a stalled contender, --stall-window 30s)") and fails at
+  once ("still not allocated 31s after the delete of the claim it waits
+  for (A19, --stall-window 30s)") when the window is over.
+- The clock: the window counts from the start of the settle that first
+  saw the contender stalled (the time the "step N settle" line was
+  sent; UnblockAt), which is after the delete by the window's own
+  steps (seconds). Before this round the stamp was the time of that
+  settle's ok poll; now it is the settle's start in both modes (a
+  little stricter, and it is the only stamp that survives the polls of
+  a settle that waits).
+- The generator rules stay (the contested device, no creates for it,
+  the hold after a settle, stallStacksQuiet).
+- The reference (refpool.go) has RequeueOnUnreserve (the fix); the
+  fuzz flag -refpool-stall-window D (<= 180 s: strict, and the
+  reference's scheduler fixed).
+Tests: TestReviewStallWindow (the D8 sequences A and B, both modes:
+default settled stalled and promoted, timed from the settle's start,
+fail after 6m; strict: wait, fail at 31 s, promoted ok; the device stays
+contested; the flag in the header, replay, expectation; the default is
+not strict), TestRefPoolStallWindow (D8's own steps file,
+model/recorded/d8-steps.txt, against the reference for 20 seeds: the
+default with the old scheduler and 30 s with the fixed one without a
+disagreement; 30 s with the old scheduler fails "still not
+allocated"). 87 test functions; gofmt, go vet, GOWORK=off go test and
+go test -race -timeout 30m clean; the fuzz: 5 000 sequences default,
+5 000 short and 1 000 long ones with --stall-window 30s and the fixed
+scheduler: no disagreement.
+Proposed amendment A22: "(bug-08 fixed in kube-scheduler) MBT_ARGS
+--stall-window D bounds how long a stalled contender (A19) may stay
+Pending, from the start of the settle that first saw it stalled;
+default 6m (A19 as is). If D is not longer than MBT_SETTLE_TIMEOUT, a
+stalled contender is not settled: the settle waits for its promotion
+(allocated: waiting for the attach, or Running) and fails when D is
+over; the generator rules of A19 stay. The steps-file header carries
+the flag (A16). For the patched kube-scheduler of 10-scheduler-
+requeue-fix.txt use --stall-window=30s."
+
+21. Persistent and shared devices (A22-A27)
+-------------------------------------------
+From 11-findings-persistent.txt and A22-A27; the executor's observer
+(T/mbt-observe.py, T/mbt.source.sh, T/pmem-rw.py as of 2026-10-27) for
+field names and statuses where the contract does not fix them.
+Files: topology.go (devices c-pmem0 0xc1ae2002 shared, c-pmem1
+0xc1ee2002 exclusive, both 256Mi persistent, pool c; a device table per
+pool, CtrlState.Att per device of the pool; nsSize 266338304),
+kinds.go (pwr pfsd pfsc pbro pbad xpb xpf of pool c, plse; predicates
+persistent, fsKind, blockKind, writer, wholeShared, leaseKind;
+profiles "pmem" (11 slots) and "fullp" = full + 17 slots), state.go
+(phase Refused, lease state LeaseBusy, lease modes pbw pbr pfd pfc,
+SlotState Hold and Refuse, PDev {NS, FS, Tok, Raw, UUID, LsaSha,
+HeadSha} per persistent device, DriverState KillAt/KillAtAt),
+actions.go (verbs pwrite pread hold unhold pwipe driver-kill-at, their
+preconditions and transitions), stack.go (probe events, persistent
+leases as users of c-pmem0 on vm/hb1, the driver-kill-at worlds),
+expect.go, adopt.go (pdevs, hold, refuse, busy; records pns puuid plsa
+phead ptok praw killat), observe.go (A24 parts as raw JSON),
+oracle_pmem.go (Refused, adoption, P1-P10), simpmem.go (the simulated
+SUT's persistent parts), refpool.go (persistent-lease companions),
+coverage.go, pmem_test.go.
+Model rules (A25):
+- A persistent claim is a pool claim (scheduling, attach, A18/A19 as
+  volatile); pwr takes c-pmem0 whole (exclusive attachment, like
+  sexcl), the readers a share, xpb/xpf c-pmem1 whole.
+- PDev changes only at a writer's Prepare on a device without
+  namespace (NS yes, labels and pfn written: hashes reset), pwrite
+  (img: FS yes, Tok = Raw = mbt-<step>; junk: FS no, Raw "") and pwipe
+  (fresh). NS maybe after a writer that may have prepared and is gone
+  (deleted while starting, a controller kill while starting, a stalled
+  writer with its controller up): adopted from pdevs.lsa.
+- Refused: decided when the claim starts (pbad always; fs readers
+  without NS yes and FS yes; pbro without NS yes); the content cannot
+  change while it holds its share, so it lasts until the delete. Its
+  Prepare is a probe event: Blocked by a hole on its stack like any
+  other (then Refused when the hole clears), no region otherwise; pbad
+  has no event (refused before the memdev wait). Under a controller
+  kill a refused claim is Either (refused or attaching).
+- A persistent lease (plse, lease-get pbw|pbr|pfd|pfc) is synchronous:
+  its companion claim is allocated, attached and prepared on the
+  requester's node (a user of c-pmem0's region on vm/hb1, desired
+  attachment, exclusive for pbw); pbw is a writer (makes the
+  namespace). lease-put of an fs lease whose file is held: LeaseBusy
+  (lease Releasing, companion Terminating, bind, mount, region, pread
+  stay; lease-put's done is nonzero: the executor's release --wait
+  ends with exit 3); unhold, a crash or the delete of the requester
+  releases it. A crash ends every hold.
+- driver-kill-at VM MARKER arms a watcher; a settle of a window with a
+  persistent Prepare that shows the marker on the VM (region: a new
+  region; ns: a writer without NS yes; mount: an fs claim or lease
+  whose node mount is not there) has two outcomes: not fired, fired (a
+  driver-kill of the VM: restarts +1, fencing and steering as a kill;
+  the Prepare is retried, the pods end as without the kill; a pod
+  deleted after the kill must leave nothing: S1). The observation
+  decides (driver restarts); unfired it stays armed until the oracle
+  disarms it 70 s after the settle that first saw it (the watcher's 60
+  s), record killat=VM:off.
+Oracle (A26), all from A24 fields, absent = not checked (noted once),
+null = wait: P1 fsMounts per (device, access) of the prepared fs claims
+and leases (direct: /dev/pmem*, erofs, dax=always; cached: a ro dio
+loop over /dev/pmem*; ro,nosuid,nodev; nothing stale); P2 leaseBinds
+one per Ready or busy fs lease at lease-fs/<lease claim uid>/<mbt or
+lease id>, the node mount's source, nothing left; P3 loops = cached
+node mounts; P4 pmem: a region per device with a prepared claim or
+lease (refused, unblocking: either; else "leaked region?"), one fsdax
+namespace (mode memory, map ram) with NS yes, its block device =
+poolClaims blockDevice = CDI node; P5 namespace UUID constant (fail),
+LSA hash constant between the events (fail); P6 pdevs == PDev (lsa,
+pfn, erofs: wait; token, raw, data hash: fail); P7 kernel "bad" lines
+(fail); P8 leaseDirs (orphan lease-fs/, leases/, mounts/ entries:
+wait); P9 attachments exclusive iff a writer (O2 with wholeShared and
+pbw); P10 cdiPool (block: one node, rw iff a writer; fs: no node, a ro
+bind at PATH), inspect pmemNodes (fs: none; block: exactly PATH), the
+fs claim's PATH an ro erofs mount, a plse requester's
+/run/cxl/fs/<name>, env as A22 (SIZE 266338304); P11 at done (pwrite
+on read-only kinds nonzero, pread = Tok or Raw). Also: regions of mode
+pmem without dax devices, preparedPoolClaims.json with the companions
+of persistent leases by count (their claims are not known), the
+transient region of a refused claim's retry on top of its stack
+accepted, companions of busy leases Terminating, leases.json and
+cxl-request list modes block/fs and state Releasing for busy leases,
+refusal events by text ("writable only exclusively", "no fsdax
+namespace", "no erofs filesystem").
+Generation (A27 and the model's own): off-line no driver-kill-at, no
+Refused next to a non-probe pool-c region event on its VM; pwipe only
+with nothing holding, wanting, attached or in flight of the device and
+not held or released in the scheduler (else bash refuses it); pwrite,
+pread, hold on Running pods only (hold: fs claims and fs leases, not
+twice); lease-get p* only when it succeeds within --wait 60s
+(controller up with slices, the device free for the mode and not
+released/held/contested, its region available on vm/hb1, NS yes for
+pbr, NS and FS yes for pfd/pfc, the driver up, no armed watcher on
+the VM); one persistent lease per plse slot; no pbro whose Prepare's
+outcome is open (NS maybe, or a writer of the window that may make
+it). Synchronous (allowed in a forced settle): pwrite, pread, hold,
+pwipe, unhold of a non-busy lease.
+Coverage: C2 kinds with lease mode, -busy and -held, phase refused,
+driver-kill-at:MARKER, per fault "DEV ns-X fs-Y"; C1 driver-kill-at per
+marker; C4 per persistent device its users (incl. lease-MODE.busy,
+.hold) and ns/fs; "can lease-get plse MODE" chances.
+Independent reference: the simulated SUT answers the driver's
+persistent behaviour (refusals, namespaces, mounts, binds, loops,
+backing files) from the model: self-consistency only. refpool.go
+models what is cheap and independent: the scheduling and attachment
+of persistent claims (as volatile ones; pwr's exclusive attachment)
+and the companions of persistent leases (allocated, attached, bound at
+lease-get, released with the lease). Fuzz against it: pmem 7 000 and
+fullp 3 000 sequences (~0.33 M steps), no disagreement; random walks
+of every enabled action (TestPmemWalk) on the model-answering SUT.
+Measurements (400 steps, seed 1, default mix C1x3,C2x2,C3, depth 3):
+  branching: full 215 actions, enabled mean 27.2 (max 73); fullp 353,
+  34.0 (99); pmem 106, 18.6 (37); small 72, 16.0 (40).
+  plan time per step (30 steps, mean/max): depth 2 full 10.6/27 ms,
+  fullp 17.7/52 ms, pmem 1.3/3.6 ms; depth 3 full 0.47/2.1 s, fullp
+  1.11/4.4 s, pmem 24/98 ms.
+  coverage C1/C2/C3/C4 @100 @200 @400: pmem 61/132/145/63,
+  88/197/230/106, 96/291/382/145 (C1 96 of 106 actions; uncovered:
+  pwr@vm0's crash, pwrite and pread, lease-get pbw, pbr@vm2, pwrite
+  junk of plse, pwipe); fullp 54/180/136/82, 106/306/251/143,
+  218/485/432/260 (C1 218 of 353; plan mean 1.8 s, max 10 s, the
+  budget).
+Decision: the persistent slots are not added to "full": +25% mean
+branching and 2.4x plan time at depth 3 for runs that compare with L1-
+L7; "fullp" is the combined profile and "pmem" the first trials.
+Decisions where the contract is silent:
+- A24's JSON: the executor's names (pmem[].region, serials, size,
+  ndRegion, namespaces[].name, mode, size, uuid, holder, map, blockdev;
+  fsMounts/leaseBinds[].target, source, fstype, root, superopts,
+  vfsopts, count, backing, dio, ro; loops[].name, backing, dio, ro;
+  leaseDirs.leaseFs, leases, mounts; poolClaims[uid].devices[].
+  blockDevice; cdiPool[name].deviceNodes[].path, permissions,
+  mounts[].containerPath, options; kernel.lines, bad; killAt.fired;
+  pdevs[dev].lsa, lsaSha, headSha, pfn, dataoff, erofs, token, raw;
+  inspect mount, mounts, pmemNodes; companions[].deleting).
+- A pwrite on a Running read-only kind is generated and must fail
+  (P11); A27's "a pwrite only by a Running writer" is read as "only by
+  a Running pod" (else P11 is never tested).
+- A device released in the last window (F8) contests the first create
+  of it in the next window also for shares, and blocks lease-get and
+  pwipe for that window (the claim's deallocation, and with it the
+  detach, lags the settle).
+- "bind" is not generated: it fires only in a lease's Prepare, and a
+  lease-get under an armed watcher is not generated (the broker dies
+  with the driver while cxl-request waits: its result is not defined).
+Proposed amendments: (a) A24's field names as above; (b) A27: "a
+pwrite only by a Running pod; on a read-only kind or fd it must fail
+(P11)"; (c) A23: lease-put of a held fs lease returns nonzero (exit 3
+after --wait) and leaves LeaseBusy; (d) for S4, define what lease-get
+returns when driver-kill-at bind fires under it (fails and the lease is
+released, or succeeds after the retry), then the model generates it.
+Tests: 87 -> 101 functions (pmem_test.go: TestPmemWriterFirst,
+ReaderBeforeWriter, LeaseBusy, TokensAcrossFaults, DecoderHoles,
+OracleInvariants (17 cases ok/wait/fail), GenerationLimits,
+DriverKillAt, NamespaceAdopted, ExpectationRoundTrip, Deterministic,
+Walk, Online (pmem and fullp, with the reference), CoverageStrings);
+-refpool-profile for the fuzz. gofmt, go vet, GOWORK=off go test (81 s)
+and go test -race -timeout 30m (7 min) clean.
+A29 and A30 (2026-10-27, after the executor's 04-status-EXEC 14): (d)
+driver-kill-at bind is generated; a lease-get of an fs lease under an
+armed bind watcher expects status "either" (new DoneJSON status): 0
+with the lease Ready, or nonzero (EOF, 14.6): then the lease is "open"
+(SlotState.LeaseOpen, record lopen=SLOT:failed; no pread, pwrite, hold,
+lease-put on it) and the settle has both outcomes, kept (still Lending,
+Ready after kubelet's Prepare retry, 71-97 s, within the settle
+timeout) and released (its region, mount and bind gone: a bind left is
+P2's "bind left", S4), each with and without the kill; the observation
+decides. killAt on the observe line (A30): done without firing disarms
+the watcher at once (record killat=VM:off), fired while the model's
+outcome is the one without the kill waits for the other. Node mounts
+count 1 in the simulator (not checked); a failed write on a read-only
+kind is any nonzero status (1); raw null without a namespace (as
+before). bug-11/12 (a region leaked after a cut Prepare whose claim or
+lease is released before the retry): no generator restriction, the
+model predicts no leaked region (P4 "leaked region?", P2) as the
+orchestrator asked; A30's last sentence ("the generator must not
+release ... until bug-11 is fixed") is not implemented. Tests 101 ->
+104 (TestPmemKillAtBind: both statuses x kept/released x fired/not,
+TestPmemKillAtState, TestPmemStalledRefusedThroughHole: a stalled
+refused reader promoted through a hole is Blocked first, found by the
+fuzz, fixed in the oracle); fuzz pmem 3 000 + fullp 1 500 sequences
+(0.15 M steps), no disagreement; gofmt, vet, GOWORK=off go test, go
+test -race clean.
+A31 (2026-10-28, run PM2): driver-kill, driver-restart and
+containerd-restart disarm the driver-kill-at watcher of their VM in the
+model (KillAt 0; the done/observe reason "disarmed by VERB" is then
+consistent, a later fire of it is a difference), kubelet-restart does
+not. A fired report must account for its restart: besides a Prepare at
+the marker in the window, a refused claim's retry (every 60-90 s, the
+region made and rolled back) on the VM is a candidate of "region"
+(PM2's pfsd-c@vm2#0), so that settle has the outcome with the kill; and
+a driver fault on a VM whose armed watcher may already have fired (such
+a candidate) is not generated (the order of kill and fault would be
+open). The watcher's done reason is otherwise adopted as before (done
+without firing: disarmed at once). TestPmemKillAtDisarm (the three
+verbs, kubelet-restart, the PM2 case); 105 tests; gofmt, vet, go test,
+go test -race clean; fuzz pmem 3 000 + fullp 1 000 sequences, no
+disagreement.
+PM3 (2026-10-28, step 179): the A11 completeness check ("a running
+container of every Running pod and companion is observed") failed on a
+busy fs lease's companion: Terminating, phase still Running, its pause
+container terminated (crictl lists none). It now goes by the
+containers' states of the pod status (pods[].containers and
+companions[].containers, "running"), the phase only when they are not
+observed. TestPmemPM3TerminatingCompanion replays PM3 to step 178
+(model/recorded/pm3-*) and checks its observation of step 179: ok (a
+running but unobserved container still waits); 106 tests; gofmt, vet,
+go test, go test -race clean; fuzz pmem 2 000 sequences, no
+disagreement.
+FP1 (2026-10-28, step 300): driver-kill-at vm0 mount, then create
+pfsd-c@any#0: the scheduler put the "any" reader on vm0, its node mount
+fired the watcher, and the model had no kill outcome (the Prepare's
+node was unknown when the candidates were taken). The watcher worlds
+are now taken per world of the slices and the hosts of the "any" pods
+(stack.go killWorlds, fireKillAt; the order of the alternatives as
+before, so old #adopt alt=J stay valid): a VM's watcher fires only
+where a Prepare there may show its marker. killCandidate now also
+counts Prepares without an event of the window: an "any" pod not yet
+placed (any host of its pool), a stalled contender's promotion (its
+controller up) and an unblocking pod's retry (whole Prepares), a
+refused claim's retry (region made, probed and rolled back) and a
+blocked pod's retry (cxl create-region makes the region before the hole
+refuses it: region only). The markers follow the watcher
+(T/mbt-observe.py Marker): ns is any namespace with a size in a new
+pmem region, so also a reader's on a device with one (from the labels)
+and a refused probe's on a device with a namespace and no erofs, not
+only a writer's on a fresh device; a region or node mount whose last
+user is unprepared in the window may come back new; volatile kinds show
+none (ram regions are ignored, the mount and bind markers are
+persistent-only). As before, a driver fault on a VM whose watcher may
+have fired is not generated: FP1's own step 182 (containerd-restart vm0
+while the promoted, refused xpf-c@vm0#0 probes c-pmem1, which has a
+namespace, under ns) is not generated now. TestPmemFP1AnyFiresWatcher
+replays FP1 to step 299 (step 182 applied as the run did;
+model/recorded/fp1-*): its observation of step 300 is ok, adopted with
+the kill and the reader on vm0, no kill outcome with the reader
+elsewhere; TestPmemKillAtUnplacedPrepares (any, a reader's ns, refused,
+blocked, unblocking, stalled on each host, gone and back, volatile).
+Found by the fuzz and fixed: an unblocking writer's retry may make the
+namespace (NS maybe, adopted from pdevs; seen Running: made; fullp seed
+7985, TestPmemUnblockedWriterNamespace); a stalled contender seen not
+allocated and unschedulable in a world without its pool's slices
+(ctrl-restart, then ctrl-kill) is Unsched, not a stall past
+--stall-window (TestRefPoolStalledWithoutSlices; allocated before the
+slices went, it waits for the attach as before); the simulator's truth
+makes no namespace that the reference let no writer prepare (simref.go
+refWriterPrepared; pmem seeds 9442, 9762, TestRefPoolTruthNamespace).
+111 tests; gofmt, vet, go test, go test -race clean; fuzz 7 500
+sequences (fullp, fullp --stall-window 30s, pmem, pmem 30s, full), no
+disagreement but pmem seed 10091 (below).
+A18 (2026-10-28, fuzz pmem seed 10091, also with the model before FP1):
+an allocated claim keeps its allocation when its pool's slices go (the
+scheduler deallocates only on its own failures and timeouts). A stalled
+contender promoted before ctrl-restart deleted the slices, then
+ctrl-kill, was adopted allocated and waiting for the attach; ctrl-start
+then made it Starting, and after a ctrl-kill the world without the
+slices forced it to Unsched. SlotState.Alloc (in the canonical key,
+cleared at the settle) marks a claim that ctrl-start made Starting from
+Attaching or Either; the world without the slices leaves it Starting,
+so the settle has it Either (attached before the kill and prepared, or
+waiting for the attach) as with the slices. (ctrl-restart is not
+generated while a claim of the pool is Starting, so the race comes only
+through a stalled contender, which the oracle resolves.)
+TestRefPoolAllocatedWithoutSlices (the model's worlds, and seed 10091's
+sequence against the reference with the default and 30 s stall
+windows); 112 tests; gofmt, vet, go test, go test -race clean; fuzz
+8 500 sequences (pmem, pmem 30s, fullp, fullp 30s, full, full slow), no
+disagreement.

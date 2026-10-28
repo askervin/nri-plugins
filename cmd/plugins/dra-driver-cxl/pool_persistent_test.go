@@ -40,7 +40,10 @@ import (
 // super options) of the first one, and removes an autoclear loop device
 // with its last mount.
 type fakeMounter struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+	// cutAt kills the plugin after a Mount at that target (cutPrepare),
+	// "" for none
+	cutAt     string
 	mounts    []mountInfo
 	calls     []string
 	loops     map[string]string // loop device -> backing
@@ -94,6 +97,7 @@ func (m *fakeMounter) Mount(source, target, fstype string, flags uintptr, data s
 			bind.Root = m.bindRoot
 		}
 		m.mounts = append(m.mounts, bind)
+		m.cut(target)
 		return nil
 	}
 	opts := []string{"ro", data}
@@ -106,7 +110,18 @@ func (m *fakeMounter) Mount(source, target, fstype string, flags uintptr, data s
 		}
 	}
 	m.mounts = append(m.mounts, mountInfo{Root: "/", Target: target, FsType: fstype, Source: source, SuperOpts: opts, MountFlags: []string{"ro", "nosuid", "nodev"}})
+	m.cut(target)
 	return nil
+}
+
+// cut kills the plugin after a mount at the target of cutAt. Called with
+// m.mu held, which the deferred unlock of the caller releases.
+func (m *fakeMounter) cut(target string) {
+	if m.cutAt == "" || filepath.Clean(target) != m.cutAt {
+		return
+	}
+	m.cutAt = ""
+	panic(errCut)
 }
 
 func (m *fakeMounter) Unmount(target string) error {
@@ -198,7 +213,7 @@ func (m *fakeMounter) Holder(dev string) (string, error) {
 		return h, nil
 	}
 	for loop, backing := range m.loops {
-		if backing == dev {
+		if sameDevice(backing, dev) { // as sysMounter compares them
 			return filepath.Base(loop), nil
 		}
 	}
@@ -707,6 +722,9 @@ func TestPoolPersistentForeignNodeMount(t *testing.T) {
 		}
 		e.m.mounts = nil
 		delete(e.m.loops, "/dev/loop5")
+		// a foreign mount of the block device held it at the rollback:
+		// the claim stays until kubelet unprepares it, which releases it
+		noErr(t, unprepare(t, p, "r1"))
 		e.wantClean(t, p)
 	}
 	// an erofs of the device over a loop device over it is reused
@@ -776,22 +794,16 @@ func TestWaitNoHolder(t *testing.T) {
 }
 
 func TestPoolPersistentSyncFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root writes a read-only directory")
-	}
 	e := newPoolTestEnv(t)
 	e.f.plugPersistent(persistentSerial)
 	e.f.labels = true
 	p := e.driver(t)
-	dir := filepath.Dir(e.stateFile)
-	noErr(t, os.MkdirAll(p.mountsDir(), 0o755))
-	noErr(t, os.Chmod(dir, 0o555))
-	defer func() { _ = os.Chmod(dir, 0o755) }()
+	defer e.failStateSave(t)()
 	wantErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err, poolStateFileName)
 	e.wantNoMounts(t, p)
 	e.f.wantReleased(t)
-	if len(p.prepared) != 0 {
-		t.Fatalf("prepared %v", p.prepared)
+	if len(p.prepared) != 0 || len(p.preparing) != 0 || len(e.preparingFile(t)) != 0 {
+		t.Fatalf("prepared %v, preparing %v", p.prepared, p.preparing)
 	}
 }
 
@@ -1054,11 +1066,21 @@ func TestPoolLeaseBindErrors(t *testing.T) {
 		t.Fatalf("busy bind %+v, stale %v", mi, p.staleBinds)
 	}
 	e.wantRegion(t, true)
+	if p.preparing["uid-cxl-lease-l7"] == nil {
+		t.Fatal("the claim of a rollback that did not release the device was forgotten")
+	}
 	e.m.setBusy(target, false)
 	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
 	noErr(t, unprepare(t, p, "d1"))
 	if len(p.staleBinds) != 0 {
 		t.Fatalf("stale binds %v", p.staleBinds)
+	}
+	// kubelet unprepares the claim of the failed Prepare: nothing is left
+	// to release
+	ncmds := e.f.commands()
+	noErr(t, unprepare(t, p, "uid-cxl-lease-l7"))
+	if e.f.commands() != ncmds {
+		t.Fatalf("commands of the Unprepare:\n%s", strings.TrimPrefix(e.f.commands(), ncmds))
 	}
 	checkClean("stale bind")
 }
@@ -1066,14 +1088,8 @@ func TestPoolLeaseBindErrors(t *testing.T) {
 // TestPoolLeaseBindSyncFailure unmounts the bind of a companion claim whose
 // state cannot be written.
 func TestPoolLeaseBindSyncFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root writes a read-only directory")
-	}
 	e, p, hooks := newPoolLeaseEnv(t)
-	dir := filepath.Dir(e.stateFile)
-	noErr(t, os.MkdirAll(p.mountsDir(), 0o755))
-	noErr(t, os.Chmod(dir, 0o555))
-	defer func() { _ = os.Chmod(dir, 0o755) }()
+	defer e.failStateSave(t)()
 	wantErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err, poolStateFileName)
 	e.wantNoMounts(t, p)
 	e.f.wantReleased(t)
@@ -1230,8 +1246,10 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	target := filepath.Join(hooks.fsDir, "models")
 	stale := []staleBind{{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"}}
 	// releaseLater runs a release of an unrelated failed Prepare, unbusies
-	// the bind before that if unbusy, and checks the result
-	releaseLater := func(what string) {
+	// the bind before that if unbusy, and checks the result; the claim of
+	// a failed Prepare that did not release the device (failed, "" none)
+	// is kept until kubelet unprepares it, which releases nothing more
+	releaseLater := func(what, failed string) {
 		t.Helper()
 		e.wantRegion(t, true)
 		e.m.setBusy(target, false)
@@ -1240,6 +1258,13 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 			t.Fatalf("%s: stale binds %v left", what, p.staleBinds)
 		}
 		e.f.wantReleased(t)
+		if failed != "" {
+			if p.preparing[failed] == nil {
+				t.Fatalf("%s: claim %s of a rollback that did not release the device forgotten", what, failed)
+			}
+			noErr(t, unprepare(t, p, failed))
+			e.f.wantReleased(t)
+		}
 		e.wantClean(t, p)
 		e.wantNoMounts(t, p)
 		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
@@ -1261,7 +1286,7 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	if !slices.Equal(p.staleBinds, stale) || strings.Contains(e.f.commands(), "disable-region") {
 		t.Fatalf("stale binds %+v, commands:\n%s", p.staleBinds, e.f.commands())
 	}
-	releaseLater("failed prepare")
+	releaseLater("failed prepare", "uid-cxl-lease-l1")
 
 	// R3: a bind that fails its check and cannot be unmounted
 	e.m.bindFlags = []string{"ro", "relatime"}
@@ -1271,7 +1296,7 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	if !slices.Equal(p.staleBinds, stale) {
 		t.Fatalf("stale binds %+v", p.staleBinds)
 	}
-	releaseLater("failed check")
+	releaseLater("failed check", "uid-cxl-lease-l2")
 
 	// R2: a bind of no prepared claim at start (a crash before the state
 	// write) that is busy, of a cached node mount: its block device is the
@@ -1287,7 +1312,7 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	if mi, _ := e.m.Mounted(p.nodeMountPath(0xc1ae0001, "cached")); mi != nil {
 		t.Fatalf("node mount of no claim left: %+v", mi)
 	}
-	releaseLater("restart")
+	releaseLater("restart", "")
 
 	// a stale bind that a Prepare again adopts is forgotten, not unmounted
 	noErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err)
@@ -1302,4 +1327,62 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	e.f.wantReleased(t)
 	e.wantClean(t, p)
 	e.wantNoMounts(t, p)
+}
+
+// TestPoolCachedMountAfterRestart: after a restart of the driver container
+// the backing file of the loop device of a cached node mount, set up by
+// the previous container, reads "/pmem0" in sysfs (plan-13 bug-13, run
+// PM1b): the restart keeps the node mount, a new cached claim of the
+// device uses it, a stale lease bind of it has the block device
+// /dev/pmem0, and the loop device holds /dev/pmem0 while a container still
+// has the erofs on it, so that the region is not released under it.
+func TestPoolCachedMountAfterRestart(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plugPersistent(persistentSerial)
+	e.f.labels = true
+	p := e.driver(t)
+	cached := p.nodeMountPath(0xc1ae0001, "cached")
+	noErr(t, prepare(t, p, persistentClaim("c1", persistentData, fsConfig("cached", ""))).Err)
+	if d := p.prepared["c1"].Devices[0]; d.LoopDevice != "/dev/loop0" || e.m.loops["/dev/loop0"] != "/dev/pmem0" {
+		t.Fatalf("prepared %+v, loops %v", d, e.m.loops)
+	}
+	// a container has the node mount (its CDI bind)
+	ctr := filepath.Join(t.TempDir(), "ctr-models")
+	noErr(t, os.MkdirAll(ctr, 0o755))
+	noErr(t, e.m.Mount(cached, ctr, "", unix.MS_BIND, ""))
+
+	// the restart in another mount namespace
+	e.m.loops["/dev/loop0"] = "/pmem0"
+	p2 := e.driver(t)
+	if mi, _ := e.m.Mounted(cached); mi == nil || mi.Source != "/dev/loop0" || p2.prepared["c1"].Devices[0].LoopDevice != "/dev/loop0" {
+		t.Fatalf("node mount after the restart %+v, prepared %+v", mi, p2.prepared["c1"].Devices[0])
+	}
+	if err := p2.checkBlockDevice(&p2.prepared["c1"].Devices[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p2.checkNodeMount(0xc1ae0001, "/dev/pmem0", "cached", findMount(e.m.mounts, cached)); err != nil {
+		t.Fatalf("the cached node mount after the restart: %v", err)
+	}
+	// a new cached claim uses the node mount
+	noErr(t, prepare(t, p2, persistentClaim("c2", persistentData, fsConfig("cached", ""))).Err)
+	if calls := e.m.callsOf("loop /dev"); len(calls) != 1 {
+		t.Fatalf("loop devices set up %q", calls)
+	}
+	// the origin of a stale lease bind of it
+	if serial, dev := p2.bindOrigin(e.m.mounts, "/dev/loop0"); serial != 0xc1ae0001 || dev != "/dev/pmem0" {
+		t.Fatalf("bind origin 0x%x %q", serial, dev)
+	}
+	// the container's bind keeps the loop device: the release waits
+	noErr(t, unprepare(t, p2, "c2"))
+	wantErr(t, unprepare(t, p2, "c1"), "device 0xc1ae0001: /dev/pmem0 is still in use")
+	e.wantRegion(t, true)
+	if h, _ := e.m.Holder("/dev/pmem0"); h != "loop0" {
+		t.Fatalf("holder %q", h)
+	}
+	// the container is gone: released
+	noErr(t, e.m.Unmount(ctr))
+	noErr(t, unprepare(t, p2, "c1"))
+	e.f.wantReleased(t)
+	e.wantClean(t, p2)
+	e.wantNoMounts(t, p2)
 }

@@ -1,0 +1,207 @@
+BUG-12: A HOLLOW CXL REGION BREAKS THE DEVICE SCAN OF THE NODE PLUGIN
+
+Branch 5jg-cxl, 2026-10-28. Found by the executor of the model-based
+test (04-status-EXEC.txt 14.7 B2), a consequence of bug-11. Fixed in
+the working tree (uncommitted), unit tested; not verified on the
+cluster.
+
+D/ = cmd/plugins/dra-driver-cxl/, M/ = pkg/cxl/memctl/, C/ = pkg/cxl/,
+R/ = /tmp/p13-pexec/. Line numbers of HEAD (1178bf032) unless "new".
+
+========================================================================
+1. SUMMARY
+
+A region whose memory device was removed before the region was
+destroyed stays in sysfs hollow: commit 0, its targetN empty, its
+address range (resource, size) and uuid kept, no nvdimm or dax region.
+cxl create-region leaves the same state for a moment while it sets a
+new region up (and for good when it is killed before it sets the
+target). The device scan of pkg/cxl read targetN with "%s" and ignored
+only missing files: an empty target0 failed the whole scan. So, while
+such a region exists:
+- every rescan of cxl.nri.io fails ("rescanAndPublish: failed to detect
+  devices: cxl: missing line: no line in
+  "/sys/bus/cxl/devices/region1/target0" matches format "%s""): the
+  node's ResourceSlice is no longer updated (local memdevs, regions,
+  DRAM, pool devices coming and going);
+- a start of the plugin fails (the first scan, and the scan of the local
+  allocator): the plugin crash-loops until the region is removed by
+  hand;
+- cxl-dump fails the same way (the teardown's pool-cxl-wait);
+- cxl destroy-region cannot remove the region ("error locating decoder
+  for target0").
+
+Severity: high: no publishing of the node, and no start, for as long as
+the region exists; the region itself leaks its address range of the
+window. Triggered by bug-11, and by any removal of a memdev with a
+region (a forced pod deletion that lets the controller detach a device
+in use, a surprise removal).
+
+========================================================================
+2. REPRODUCTION
+
+bug-11's runs 3 and 6: after the controller detached the device with
+region1 on it. By hand on a VM: create a region on a pool device, detach
+the device at the pool without destroying the region (or device_del it
+in the qemu monitor); /sys/bus/cxl/devices/region1/target0 is empty, cxl
+list shows nothing, and the next rescan of the plugin fails.
+
+========================================================================
+3. EVIDENCE
+
+- R/evidence-s1/vm1-state.txt: "E1027 21:09:48.286677 driver.go:752]
+  rescanAndPublish: failed to detect devices: cxl: missing line: no line
+  in "/sys/bus/cxl/devices/region1/target0" matches format "%s"" (vm1,
+  run 6), region1 commit 0, target0 "", resource 0x850000000, size
+  0x10000000, uuid 675e71d7-...; "cxl list": "Warning: no matching
+  devices found".
+- vm2 20:28:22 and 20:30:33 (run 3, R/runs/run3-out/
+  nri-dra-driver-cxl.vm.log): the same error; R/evidence-bind/
+  vm2-state.txt: region1 hollow at 0x890000000, the root decoders
+  decoder0.0 and decoder0.1 with region "" on every decoder.
+- R/evidence-bind/vm2-cleanup.txt: cxl destroy-region region1:
+  "libcxl: cxl_region_get_target_decoder: region1: error locating
+  decoder for target0", "decoder_region_action: region1: failed: No
+  such device or address", "destroyed 0 regions", rc 1; then the name
+  written to decoder0.1/delete_region: rc 0, "no region left".
+
+========================================================================
+4. ROOT CAUSE
+
+- C/devices.go:372-386 regionDeviceFromSysfs: parseIgnoring
+  (ErrMissingFile) + parseWithSscanf(targetN, "%s"): an empty file has
+  no line that matches "%s", that is ErrMissingLine, which is not
+  ignored; DevicesFromSysfs returns the error for the whole scan
+  (:91-94).
+- D/driver.go:750-754 rescan logs it and keeps the old devices;
+  D/driver.go:565 (newDriverState, the first scan) and :622-624
+  (newLocalHelper) return it, and the start fails.
+- The kernel: the removal of a memdev removes its endpoint decoder,
+  which detaches it from its region (decode reset, the target cleared,
+  the region driver released with its nvdimm or dax region), but keeps
+  the region device and its address range until delete_region of the
+  root decoder (or the removal of the root decoder). targetN is shown
+  for N below interleave_ways, empty when not set.
+- ndctl: cxl destroy-region resets the decode, then for each of
+  interleave_ways targets calls cxl_region_get_target_decoder(), which
+  finds no decoder for an empty target: -ENXIO, before the last step,
+  cxl_region_delete() (the write of the region's name to delete_region
+  of its root decoder). The kernel's delete_region (unregister_region)
+  takes a region without targets.
+
+========================================================================
+5. THE FIX
+
+a) C/devices.go regionDeviceFromSysfs (:356 new): targetN up to the
+   first missing file; an empty one is skipped (a debug log), not an
+   error. A hollow region has no Targets and no Memories (no endpoint
+   decoder names it) and is disabled (node -1), as a region being set
+   up. C/types.go: the comment of Targets. This also fixes cxl-dump.
+b) D/node_state.go (new :268-326): buildDevInfosHeld skips a region
+   without targets and memories (isHollow; regions of the testability
+   configuration excluded) and logs once per region (its path and
+   address) while it stays hollow (hollowRegionLog.observe):
+   "CXL region region1 (mode pmem, resource 0x850000000, size
+   0x10000000) has no target decoder: it is not published. It is left
+   behind when its memory device was removed before the region was
+   destroyed (or is being created right now). It maps no memory but
+   holds its address range; cxl destroy-region cannot remove it, if it
+   stays: echo region1 > /sys/bus/cxl/devices/decoder0.1/delete_region"
+   (the root decoder is the parent of the region's sysfs directory).
+   Every other device is published as before.
+c) M/decoders.go (new :171-273): HollowRegion (commit 0 or no commit
+   file, every targetN empty), RegionRootDecoder (the parent device of
+   the region, a cxl_decoder_root), HollowRegions(decoder) and
+   DeleteHollowRegion: the region must stay hollow, with the same
+   resource and uuid, for 5 poll intervals (1 s; cxl create-region sets
+   the target of a new region within milliseconds), then its name is
+   written to <root decoder>/delete_region and the region must be gone.
+   A committed region, or one with a target, is never deleted.
+d) The pool driver deletes hollow regions of its own devices
+   (D/pool_persistent.go releaseDevices :326 new, deleteHollowRegions
+   :448 new):
+   - the regions recorded by the devices of a prepared claim whose
+     memdev is gone at its Unprepare (the device was detached first);
+   - after the release of a claim whose Prepare did not finish (bug-11)
+     and after the rollback of a failed Prepare: the hollow regions
+     under the root decoder of the device's region type (rootDecoder
+     :427 new), which a cut or failed cxl create-region leaves and which
+     the memdev does not list.
+   An error is logged with the delete_region command and does not fail
+   the Unprepare: a hollow region maps no memory and does not keep the
+   pool from removing the device.
+e) Not done: cxl.nri.io does not delete hollow regions that no record of
+   the pool driver names. Their owner is unknown (a region being set up
+   by the local allocator, which runs concurrently, or by another tool),
+   and nothing in sysfs links them to a serial any more; they are
+   reported once, with the command.
+
+========================================================================
+6. TESTS
+
+- C/devices_test.go TestHollowRegion (new): the test14 dump with a
+  hollow region1 added: the scan works, region0 and mem0 as before,
+  region1 without targets and memories, disabled; a two-way region with
+  target0 empty keeps target1. HEAD's devices.go fails it.
+- M/decoders_test.go TestHollowRegion (new): hollow or not (committed,
+  with a target, missing), the root decoder, the hollow regions of a
+  decoder, refusals (a target, no root decoder, a canceled wait),
+  deletion through delete_region, a gone region, a region that gets its
+  target during the wait is kept (-count=3 -race).
+- D/pool_unfinished_test.go: TestBuildDevInfosHollowRegion (not
+  published, the other region is; warned once while it stays, forgotten
+  when it goes; a fake region is never hollow), TestPoolCutCreateRegion
+  (bug-11 cut inside cxl create-region: deleted after the release of
+  the unfinished claim), TestPoolUnprepareHollowRegion (the recorded
+  region of a prepared claim whose memdev is gone is deleted; committed,
+  it is kept). Removing either deletion fails its test.
+- gofmt, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+  ./pkg/cxl/... -skip TestMemdevSettings: ok.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER
+
+- Make a hollow region on a VM (as in 2.): the plugin keeps publishing
+  (no "failed to detect devices"), logs the warning once with the
+  delete_region command; cxl-dump works; a plugin restart starts.
+- bug-11's scenarios: no hollow region left; when the cut happened
+  inside cxl create-region, "deleted hollow regionN" in the log.
+- A forced deletion of a pod with a pool claim (the controller detaches
+  first): the Unprepare deletes the region of the claim ("has no target
+  decoder (its memdev was removed before the region was destroyed):
+  deleting it").
+
+========================================================================
+8. STATUS
+
+Fixed in the working tree, not committed: C/devices.go, C/types.go,
+C/devices_test.go, M/decoders.go, M/decoders_test.go, D/node_state.go,
+D/pool_persistent.go, D/pool_unfinished_test.go;
+docs/memory/cxl/pool.md (Ordering and failure semantics). With bug-11.
+No image built, no cluster run.
+
+========================================================================
+9. FOLLOW-UP AFTER REVIEW (05-review-DRV3.txt G1-G8)
+
+Replaces 5c, 5d and 5e where they differ.
+- c) DeleteHollowRegion (M/decoders.go) no longer samples the region
+  twice 1 s apart. It holds the lock that every region creation of the
+  process takes (regionCreateMu, with the reading of the next region
+  name, M/memctl.go), so a region that this process is setting up is
+  never taken for hollow, and it refuses a region whose address range
+  still has online memory blocks (kmem keeps them until a reboot), as
+  ReleaseRegion does. HollowRegions is gone.
+- d) The pool driver deletes only hollow regions that it knows as its
+  own and that no other prepared claim records: the recorded region of
+  a prepared claim whose memdev is gone, and the regions whose names it
+  recorded before cxl create-region ran (bug-11 9). There is no sweep
+  of a root decoder any more, so 5e holds for the pool driver too.
+- b) pkg/cxl sets RegionDevice.Hollow (no target set); the scan of
+  cxl.nri.io skips such a region also when the memory of its range is
+  still online (it then has a node and is enabled), and does not count
+  that node as DRAM. The warning no longer says that it maps no memory,
+  and names the delete_region command for when no block is online.
+- Tests: M/TestHollowRegion (lock held by a creation, online memory, no
+  address range), TestBuildDevInfosHollowRegion (a hollow region with
+  node 3 and online memory: not published, node 3 not DRAM),
+  TestPoolUnprepareHollowRegion (online memory: kept).

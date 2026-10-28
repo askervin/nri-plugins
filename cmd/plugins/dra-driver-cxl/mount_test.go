@@ -20,6 +20,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // mountInfoSample has the mounts of mode fs as the kernel of the e2e VMs
@@ -84,7 +86,7 @@ func TestParseMountInfo(t *testing.T) {
 
 func TestSysMounterHolder(t *testing.T) {
 	root := t.TempDir()
-	m := &sysMounter{sysRoot: root, devRoot: filepath.Join(root, "dev")}
+	m := &sysMounter{sysRoot: root, devRoot: filepath.Join(root, "dev"), loopStatus: func(string) (*unix.LoopInfo64, error) { return nil, unix.ENXIO }}
 	loop := func(name, backing string) {
 		t.Helper()
 		dir := filepath.Join(root, "block", name, "loop")
@@ -119,6 +121,72 @@ func TestSysMounterHolder(t *testing.T) {
 		t.Fatalf("holder %q %v", h, err)
 	}
 	for backing, want := range map[string]bool{"/dev/pmem0": true, "/dev/x/pmem0": false, "/tmp/pmem0": false, "pmem0": false} {
+		if got := sameDevice(backing, "/dev/pmem0"); got != want {
+			t.Errorf("sameDevice(%q) = %v", backing, got)
+		}
+	}
+}
+
+// TestSysMounterLoopBackingAfterRestart: the loop device of a cached node
+// mount was set up by an earlier driver container through its /dev, and
+// sysfs shows its backing file relative to the root of that devtmpfs
+// mount ("/pmem1", plan-13 bug-13). LoopBackingFile finds the block device
+// by its device number, and without it the path is taken as a path under
+// /dev: the loop device is the holder of /dev/pmem1 either way.
+func TestSysMounterLoopBackingAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	devRoot := filepath.Join(root, "dev")
+	write := func(rel, val string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(val+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("block/loop0/loop/backing_file", "/pmem1")
+	write("dev/block/259:1/uevent", "MAJOR=259\nMINOR=1\nDEVNAME=pmem1\nDEVTYPE=disk")
+	write("block/loop1/loop/backing_file", "/var/lib/images/a.img") // a file
+	status := map[string]*unix.LoopInfo64{
+		filepath.Join(devRoot, "loop0"): {Rdevice: unix.Mkdev(259, 1)},
+		filepath.Join(devRoot, "loop1"): {Device: unix.Mkdev(253, 0), Inode: 12},
+	}
+	m := &sysMounter{sysRoot: root, devRoot: devRoot, loopStatus: func(path string) (*unix.LoopInfo64, error) {
+		if st := status[path]; st != nil {
+			return st, nil
+		}
+		return nil, unix.ENXIO
+	}}
+	pmem1 := filepath.Join(devRoot, "pmem1")
+	if b, err := m.LoopBackingFile("/dev/loop0"); err != nil || b != pmem1 {
+		t.Fatalf("backing of loop0 %q %v, expected %s", b, err, pmem1)
+	}
+	if b, err := m.LoopBackingFile("/dev/loop1"); err != nil || b != "/var/lib/images/a.img" {
+		t.Fatalf("backing of loop1 %q %v", b, err)
+	}
+	if h, err := m.Holder(pmem1); err != nil || h != "loop0" {
+		t.Fatalf("holder of %s %q %v", pmem1, h, err)
+	}
+	// the device number of a loop device without its device node: the
+	// path in sysfs, under /dev
+	delete(status, filepath.Join(devRoot, "loop0"))
+	if b, err := m.LoopBackingFile("/dev/loop0"); err != nil || b != "/pmem1" || !sameDevice(b, "/dev/pmem1") || devPath(b) != "/dev/pmem1" {
+		t.Fatalf("backing of loop0 %q %v", b, err)
+	}
+	m.devRoot = "/dev"
+	if h, err := m.Holder("/dev/pmem1"); err != nil || h != "loop0" {
+		t.Fatalf("holder of /dev/pmem1 %q %v", h, err)
+	}
+	// a sysfs entry without DEVNAME
+	m.devRoot = devRoot
+	status[filepath.Join(devRoot, "loop0")] = &unix.LoopInfo64{Rdevice: unix.Mkdev(259, 1)}
+	write("dev/block/259:1/uevent", "MAJOR=259\nMINOR=1")
+	if b, err := m.LoopBackingFile("/dev/loop0"); err != nil || b != "/pmem1" {
+		t.Fatalf("backing of loop0 %q %v", b, err)
+	}
+	for backing, want := range map[string]bool{"/pmem0": true, "/pmem1": false, "/": false} {
 		if got := sameDevice(backing, "/dev/pmem0"); got != want {
 			t.Errorf("sameDevice(%q) = %v", backing, got)
 		}

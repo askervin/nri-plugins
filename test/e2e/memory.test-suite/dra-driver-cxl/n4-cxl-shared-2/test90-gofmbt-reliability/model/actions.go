@@ -44,12 +44,20 @@ const (
 	VServerRestart
 	VKubeletRestart
 	VContainerdRestart
+	// persistent devices (A23)
+	VPWrite       // pwrite SLOT img|junk
+	VPRead        // pread SLOT
+	VHold         // hold SLOT
+	VUnhold       // unhold SLOT
+	VPWipe        // pwipe P DEV
+	VDriverKillAt // driver-kill-at VM MARKER
 	nVerbs
 )
 
 var verbNames = [nVerbs]string{"", "settle", "create", "delete", "crash", "write", "read",
 	"lease-get", "lease-put", "driver-kill", "driver-restart", "ctrl-kill", "ctrl-start",
-	"ctrl-restart", "server-restart", "kubelet-restart", "containerd-restart"}
+	"ctrl-restart", "server-restart", "kubelet-restart", "containerd-restart",
+	"pwrite", "pread", "hold", "unhold", "pwipe", "driver-kill-at"}
 
 func (v Verb) String() string { return verbNames[v] }
 
@@ -63,11 +71,13 @@ func parseVerb(s string) (Verb, bool) {
 }
 
 // slotVerb: the verb takes a slot.
-func (v Verb) slotVerb() bool { return v >= VCreate && v <= VLeasePut }
+func (v Verb) slotVerb() bool {
+	return (v >= VCreate && v <= VLeasePut) || (v >= VPWrite && v <= VUnhold)
+}
 
 // vmFault: the verb is a fault of a VM.
 func (v Verb) vmFault() bool {
-	return v == VDriverKill || v == VDriverRestart || v == VKubeletRestart || v == VContainerdRestart
+	return v == VDriverKill || v == VDriverRestart || v == VKubeletRestart || v == VContainerdRestart || v == VDriverKillAt
 }
 
 // poolFault: the verb is a fault of a pool.
@@ -78,15 +88,33 @@ func (v Verb) poolFault() bool {
 func (v Verb) fault() bool { return v.vmFault() || v.poolFault() }
 
 // observes: the step returns an observation that the oracle checks.
-func (v Verb) observes() bool { return v == VWrite || v == VRead || v == VLeaseGet }
+func (v Verb) observes() bool {
+	return v == VWrite || v == VRead || v == VLeaseGet || v == VPWrite || v == VPRead
+}
 
 // Act is an action.
 type Act struct {
 	Verb Verb
 	Slot int16 // slot verbs: the slot index
 	VM   VM    // VM faults
-	Pool Pool  // pool faults
+	Pool Pool  // pool faults (and pwipe)
 	Mode LeaseMode
+	// Arg: pwrite 0 img, 1 junk; driver-kill-at the marker; pwipe the
+	// device (DevID)
+	Arg uint8
+}
+
+// argName is the second argument of pwrite, pwipe and driver-kill-at.
+func (a Act) argName() string {
+	switch a.Verb {
+	case VPWrite:
+		return [...]string{"img", "junk"}[a.Arg]
+	case VPWipe:
+		return DevID(a.Arg).String()
+	case VDriverKillAt:
+		return markerNames[a.Arg]
+	}
+	return ""
 }
 
 // name is the action line (VERB ARGS...).
@@ -96,12 +124,18 @@ func (a Act) name(cfg *Config) string {
 		return "settle"
 	case a.Verb == VLeaseGet:
 		return fmt.Sprintf("lease-get %s %s", cfg.Slots[a.Slot].Name, a.Mode)
+	case a.Verb == VPWrite:
+		return "pwrite " + cfg.Slots[a.Slot].Name + " " + a.argName()
 	case a.Verb.slotVerb():
 		return a.Verb.String() + " " + cfg.Slots[a.Slot].Name
+	case a.Verb == VDriverKillAt:
+		return a.Verb.String() + " " + a.VM.String() + " " + a.argName()
 	case a.Verb.vmFault():
 		return a.Verb.String() + " " + a.VM.String()
 	case a.Verb.poolFault():
 		return a.Verb.String() + " " + a.Pool.String()
+	case a.Verb == VPWipe:
+		return "pwipe " + a.Pool.String() + " " + a.argName()
 	}
 	return "none"
 }
@@ -125,11 +159,18 @@ func (a Act) format(cfg *Config) (string, []any) {
 		if a.Verb == VLeaseGet {
 			f += " " + a.Mode.String()
 		}
+		if a.Verb == VPWrite {
+			f += " " + a.argName()
+		}
 		return f, args
+	case a.Verb == VDriverKillAt:
+		return a.Verb.String() + " %s " + a.argName(), []any{a.VM.String()}
 	case a.Verb.vmFault():
 		return a.Verb.String() + " %s", []any{a.VM.String()}
 	case a.Verb.poolFault():
 		return a.Verb.String() + " %s", []any{a.Pool.String()}
+	case a.Verb == VPWipe:
+		return "pwipe %s " + a.argName(), []any{a.Pool.String()}
 	}
 	return "none", nil
 }
@@ -163,13 +204,23 @@ func parseAct(cfg *Config, line string) (Act, error) {
 			if len(f) < 3 {
 				return Act{}, fmt.Errorf("lease-get: no mode")
 			}
+			m, ok := parseLeaseMode(f[2])
+			if !ok || m.persistent() != (cfg.Slots[i].Kind == KPlse) {
+				return Act{}, fmt.Errorf("lease-get: invalid mode %q for %s", f[2], f[1])
+			}
+			a.Mode = m
+		}
+		if v == VPWrite {
+			want = 2
+			if len(f) < 3 {
+				return Act{}, fmt.Errorf("pwrite: no img or junk")
+			}
 			switch f[2] {
-			case "numa":
-				a.Mode = ModeNuma
-			case "dax":
-				a.Mode = ModeDax
+			case "img":
+			case "junk":
+				a.Arg = 1
 			default:
-				return Act{}, fmt.Errorf("lease-get: invalid mode %q", f[2])
+				return Act{}, fmt.Errorf("pwrite: %q is not img or junk", f[2])
 			}
 		}
 	case v.vmFault():
@@ -181,6 +232,36 @@ func parseAct(cfg *Config, line string) (Act, error) {
 			return Act{}, fmt.Errorf("%s: invalid VM %q", f[0], f[1])
 		}
 		a.VM = vm
+		if v == VDriverKillAt {
+			want = 2
+			if len(f) < 3 {
+				return Act{}, fmt.Errorf("driver-kill-at: no marker")
+			}
+			mk, ok := parseMarker(f[2])
+			if !ok {
+				return Act{}, fmt.Errorf("driver-kill-at: invalid marker %q", f[2])
+			}
+			a.Arg = uint8(mk)
+		}
+	case v == VPWipe:
+		want = 2
+		if len(f) < 3 {
+			return Act{}, fmt.Errorf("pwipe: POOL DEV")
+		}
+		p, err := parsePool(f[1])
+		if err != nil {
+			return Act{}, fmt.Errorf("pwipe: %w", err)
+		}
+		d := DevID(-1)
+		for x := DevID(0); x < nDevs; x++ {
+			if devices[x].Name == f[2] && devices[x].Persistent && devices[x].Pool == p {
+				d = x
+			}
+		}
+		if d < 0 {
+			return Act{}, fmt.Errorf("pwipe: %q is not a persistent device of pool %s", f[2], p)
+		}
+		a.Pool, a.Arg = p, uint8(d)
 	case v.poolFault():
 		if len(f) < 2 {
 			return Act{}, fmt.Errorf("%s: no pool", f[0])
@@ -221,10 +302,49 @@ func allActs(cfg *Config) []Act {
 			add(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool, Mode: ModeDax})
 			add(Act{Verb: VLeasePut, Slot: int16(i), VM: VMAny, Pool: noPool})
 		}
+		slotAct := func(v Verb, arg uint8) {
+			add(Act{Verb: v, Slot: int16(i), VM: VMAny, Pool: noPool, Arg: arg})
+		}
+		if sl.Kind.persistent() && sl.Kind != KPBad {
+			slotAct(VPWrite, 0)
+			if sl.Kind.writer() {
+				slotAct(VPWrite, 1)
+			}
+			slotAct(VPRead, 0)
+			if sl.Kind.fsKind() {
+				slotAct(VHold, 0)
+				slotAct(VUnhold, 0)
+			}
+		}
+		if sl.Kind == KPlse {
+			for _, m := range []LeaseMode{ModePBW, ModePBR, ModePFD, ModePFC} {
+				add(Act{Verb: VLeaseGet, Slot: int16(i), VM: VMAny, Pool: noPool, Mode: m})
+			}
+			add(Act{Verb: VLeasePut, Slot: int16(i), VM: VMAny, Pool: noPool})
+			slotAct(VPWrite, 0)
+			slotAct(VPWrite, 1)
+			slotAct(VPRead, 0)
+			slotAct(VHold, 0)
+			slotAct(VUnhold, 0)
+		}
 	}
 	for _, v := range []Verb{VDriverKill, VDriverRestart, VKubeletRestart, VContainerdRestart} {
 		for vm := VM(0); vm < nVMs; vm++ {
 			add(Act{Verb: v, Slot: -1, VM: vm, Pool: noPool})
+		}
+	}
+	if cfg.devUsed(cPmem0) || cfg.devUsed(cPmem1) {
+		// the markers of a persistent Prepare ("bind": of an fs
+		// lease's, A29 d)
+		for vm := VM(0); vm < nVMs; vm++ {
+			for mk := range markerNames {
+				add(Act{Verb: VDriverKillAt, Slot: -1, VM: vm, Pool: noPool, Arg: uint8(mk)})
+			}
+		}
+	}
+	for _, d := range []DevID{cPmem0, cPmem1} {
+		if cfg.devUsed(d) {
+			add(Act{Verb: VPWipe, Slot: -1, VM: VMAny, Pool: PoolC, Arg: uint8(d)})
 		}
 	}
 	for _, v := range []Verb{VCtrlKill, VCtrlStart, VCtrlRestart, VServerRestart} {
@@ -270,11 +390,18 @@ func (a Act) args(c *Config) []string {
 		if a.Verb == VLeaseGet {
 			xs = append(xs, a.Mode.String())
 		}
+		if a.Verb == VPWrite {
+			xs = append(xs, a.argName())
+		}
 		return xs
+	case a.Verb == VDriverKillAt:
+		return []string{a.VM.String(), a.argName()}
 	case a.Verb.vmFault():
 		return []string{a.VM.String()}
 	case a.Verb.poolFault():
 		return []string{a.Pool.String()}
+	case a.Verb == VPWipe:
+		return []string{a.Pool.String(), a.argName()}
 	}
 	return nil
 }
@@ -308,14 +435,14 @@ func (s *State) next(a Act) *State {
 		}
 		return s.apply(a)
 	}
-	if s.forced() && a.Verb != VWrite && a.Verb != VRead {
+	if s.forced() && !s.synchronous(a) {
 		return nil
 	}
 	if !s.allowed(a) {
 		return nil
 	}
 	n := s.apply(a)
-	if !s.stackRulesOK(a, n) || !n.stallStacksQuiet(s) {
+	if !s.stackRulesOK(a, n) || !n.stallStacksQuiet(s) || !n.persistentRulesOK(s, a) {
 		return nil
 	}
 	// off-line nothing adopts whether a contender stalled (A19), and
@@ -364,6 +491,90 @@ func (n *State) stallStacksQuiet(s *State) bool {
 		}
 	}
 	return true
+}
+
+// synchronous: the action changes nothing that a settle would wait for
+// (it is allowed when the limit of unsettled operations is reached).
+func (s *State) synchronous(a Act) bool {
+	switch a.Verb {
+	case VWrite, VRead, VPWrite, VPRead, VHold, VPWipe:
+		return true
+	case VUnhold:
+		return s.Slots[a.Slot].Lease != LeaseBusy
+	}
+	return false
+}
+
+// persistentRulesOK: the generation limits of persistent devices (A27):
+// no reader whose Prepare's outcome is not known (a namespace that a
+// writer of the window may or may not have made), and off-line no
+// Refused claim next to a region change of pool c on the same VM.
+func (n *State) persistentRulesOK(s *State, a Act) bool {
+	for i := range n.Slots {
+		// (an fs reader is refused without an erofs anyway, and there
+		// is none while the namespace is not known: only pbro)
+		ss, sl := &n.Slots[i], n.slot(i)
+		if sl.Kind != KPBro {
+			continue
+		}
+		if (ss.Phase == Starting || ss.Phase == Stalled) && s.Slots[i].Phase != ss.Phase && n.nsOpen(sl.Dev) {
+			return false
+		}
+	}
+	if !n.cfg.Online {
+		for v := VM(0); v < nVMs; v++ {
+			si := stackIndex(v, HB1)
+			refused := false
+			for i := range n.Slots {
+				if ss := &n.Slots[i]; n.slot(i).Kind.persistent() && ss.Node == v && ss.Refuse && ss.Phase.holding() {
+					refused = true
+				}
+			}
+			if !refused {
+				continue
+			}
+			for _, e := range changedStacksOn(s.Ev, n.Ev, si) {
+				if !e.Probe {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// nsOpen: whether the persistent device has its namespace is not known
+// before the settle: maybe, or a writer of the device that may or may not
+// prepare in this window makes it.
+func (n *State) nsOpen(d DevID) bool {
+	pd := &n.PDev[pmemIndex(d)]
+	if pd.NS == TriMaybe {
+		return true
+	}
+	if pd.NS == TriYes {
+		return false
+	}
+	for i := range n.Slots {
+		ss, sl := &n.Slots[i], n.slot(i)
+		if sl.Kind.writer() && sl.Dev == d && ss.Phase == Deleting && n.hasPrepare(int16(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// changedStacksOn returns the events of a stack that an action added.
+func changedStacksOn(before, after []stackEvent, si int) []stackEvent {
+	var out []stackEvent
+	for j, e := range after {
+		if j < len(before) && before[j] == e {
+			continue
+		}
+		if int(e.Stack) == si {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // count counts the slots in a phase.
@@ -509,9 +720,9 @@ func (s *State) allowed(a Act) bool {
 		// a containerd restart restarts the driver container in
 		// place too (contract A8): the same back-off
 		d := &s.Drv[a.VM]
-		return int(d.Restarts) < s.cfg.MaxRestarts && !d.Killed
+		return int(d.Restarts) < s.cfg.MaxRestarts && !d.Killed && !s.killAtMayHaveFired(a.VM)
 	case VDriverRestart:
-		return !s.Drv[a.VM].Killed
+		return !s.Drv[a.VM].Killed && !s.killAtMayHaveFired(a.VM)
 	case VCtrlKill:
 		// off-line, a kill right after a graceful restart would leave
 		// open whether the slices came back (A18)
@@ -524,8 +735,115 @@ func (s *State) allowed(a Act) bool {
 		return s.Ctrl[a.Pool].Up && !s.poolStarting(a.Pool)
 	case VServerRestart, VKubeletRestart:
 		return true
+	case VDriverKillAt:
+		// on-line only (A27): the observation tells if it fired
+		d := &s.Drv[a.VM]
+		return s.cfg.Online && int(d.Restarts) < s.cfg.MaxRestarts && !d.Killed && d.KillAt == 0
+	case VPWipe:
+		return s.pwipeOK(DevID(a.Arg))
 	}
 	return false
+}
+
+// pwipeOK: nothing holds, wants or has attached the device (the server
+// would refuse the wipe, and a claim may be allocating).
+func (s *State) pwipeOK(d DevID) bool {
+	if s.contested(Res(d)) || s.held(Res(d)) || s.Released&(1<<uint(d)) != 0 {
+		return false
+	}
+	for i := range s.Slots {
+		ss, sl := &s.Slots[i], s.slot(i)
+		if sl.Kind.pooled() && sl.Dev == d && ss.Phase != Absent {
+			return false
+		}
+		if sl.Kind == KPlse && d == cPmem0 && ss.Lease != LeaseNone {
+			return false
+		}
+	}
+	c := &s.Ctrl[devices[d].Pool]
+	for v := VM(0); v < nVMs; v++ {
+		if c.Att[devIndex(d)][v] != TriNo {
+			return false
+		}
+	}
+	for _, e := range s.Ev {
+		if e.Key == devKey(d) {
+			return false
+		}
+	}
+	return c.Up
+}
+
+// killAtMayHaveFired: an armed driver-kill-at watcher of the VM may have
+// fired already: the window has a Prepare at its marker, or a refused
+// claim's retry makes the region at any time. A driver fault would
+// disarm it (A31), and whether the kill came first would be open: not
+// generated then.
+func (s *State) killAtMayHaveFired(v VM) bool {
+	k := s.Drv[v].KillAt
+	return k != 0 && s.killCandidate(v, int(k-1))
+}
+
+// killAtBind: a lease-get of an fs lease of slot i comes while a
+// driver-kill-at bind watcher is armed on its VM: it may return 0 with
+// the lease Ready or fail with the lease released (A29 d).
+func (s *State) killAtBind(i int, m LeaseMode) bool {
+	return m.fs() && s.Drv[s.slot(i).VM].KillAt == markerBind+1
+}
+
+// waitingPBro: a pbro claim waits for the device.
+func (s *State) waitingPBro(d DevID) bool {
+	w := s.waiter(Res(d))
+	return w >= 0 && s.slot(w).Kind == KPBro
+}
+
+// pleaseOK: a persistent lease of the mode can be had now (cxl-request
+// request --wait 60 s would fail else, A27): the controller of pool c up
+// with its slices, the device free for it (no waiter, not contested or
+// held in the scheduler), its region available on the VM's hb1 stack,
+// the content its Prepare needs, the driver up and no watcher armed.
+func (s *State) pleaseOK(i int, m LeaseMode) bool {
+	sl := s.slot(i)
+	c := &s.Ctrl[PoolC]
+	// (under an armed watcher only "bind", whose outcome A29 d defines)
+	if k := s.Drv[sl.VM].KillAt; !c.Up || c.Slices != SlicesPresent || s.Drv[sl.VM].Killed || (k != 0 && int(k-1) != markerBind) {
+		return false
+	}
+	r := Res(cPmem0)
+	o := s.occ()
+	if o.waiter[r] >= 0 || s.contested(r) || s.held(r) || s.Released&(1<<uint(r)) != 0 || s.unschedHolder(r) {
+		return false
+	}
+	if m == ModePBW {
+		if o.exclAll[cPmem0]+o.shareAll[cPmem0] != 0 {
+			return false
+		}
+	} else if o.exclAll[cPmem0] != 0 {
+		return false
+	}
+	pd := &s.PDev[pmemIndex(cPmem0)]
+	switch m {
+	case ModePBR:
+		if pd.NS != TriYes {
+			return false
+		}
+	case ModePFD, ModePFC:
+		if pd.NS != TriYes || pd.FS != TriYes {
+			return false
+		}
+	}
+	si := stackIndex(sl.VM, HB1)
+	if len(s.eventsOn(si)) > 0 || s.unblockingOn(si) {
+		return false
+	}
+	st := &s.Stacks[si]
+	return st.contains(devKey(cPmem0)) || !st.hasHole()
+}
+
+// leaseFile: the slot has a persistent fs lease whose file can be read
+// or held (Ready, or Releasing while held).
+func (ss *SlotState) leaseFS() bool {
+	return (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && ss.LeaseMode.fs()
 }
 
 func (s *State) slotEnabled(a Act) bool {
@@ -544,6 +862,11 @@ func (s *State) slotEnabled(a Act) bool {
 		// candidate for its device when they are back (A18)
 		return s.occ().waiter[sl.Res] < 0 && !s.contested(sl.Res) && !s.unschedHolder(sl.Res)
 	case VDelete:
+		if sl.Kind.writer() && ss.Phase == Starting && s.PDev[pmemIndex(sl.Dev)].NS == TriNo && s.waitingPBro(sl.Dev) {
+			// the waiting block reader would get the device after a
+			// Prepare that may or may not have made the namespace
+			return false
+		}
 		return ss.Phase != Absent && ss.Phase != Deleting
 	case VCrash:
 		return ss.Phase == Running && int(ss.Restarts) < s.cfg.MaxRestarts
@@ -553,11 +876,45 @@ func (s *State) slotEnabled(a Act) bool {
 		if ss.Phase != Running || ss.Lease != LeaseNone || s.Drv[sl.VM].Killed {
 			return false
 		}
+		if sl.Kind == KPlse {
+			return s.pleaseOK(i, a.Mode)
+		}
 		r := localRes(sl.VM)
 		o := s.occ()
 		return int(o.localAll[sl.VM])+1 <= s.cfg.LocalBlocks[sl.VM] && o.waiter[r] < 0 && !s.contested(r) && s.leaseRegionOK(sl.VM)
 	case VLeasePut:
-		return ss.Phase == Running && ss.Lease == LeaseHeld && !s.Drv[sl.VM].Killed
+		return ss.Phase == Running && ss.Lease == LeaseHeld && !s.Drv[sl.VM].Killed && !ss.LeaseOpen
+	case VPWrite:
+		if ss.Phase != Running {
+			return false
+		}
+		if sl.Kind == KPlse {
+			// through the lease (block: its fd, the broker's); not a
+			// lease still Lending (A30)
+			if ss.Lease != LeaseHeld || ss.LeaseOpen || !ss.LeaseMode.persistent() || (!ss.LeaseMode.fs() && s.Drv[sl.VM].Killed) {
+				return false
+			}
+			return a.Arg == 0 || ss.LeaseMode == ModePBW
+		}
+		return a.Arg == 0 || sl.Kind.writer()
+	case VPRead:
+		if ss.Phase != Running {
+			return false
+		}
+		if sl.Kind == KPlse {
+			return !ss.LeaseOpen && (ss.leaseFS() || (ss.Lease == LeaseHeld && ss.LeaseMode.persistent() && !s.Drv[sl.VM].Killed))
+		}
+		return true
+	case VHold:
+		if ss.Phase != Running || ss.Hold {
+			return false
+		}
+		if sl.Kind == KPlse {
+			return ss.Lease == LeaseHeld && ss.LeaseMode.fs() && !ss.LeaseOpen
+		}
+		return sl.Kind.fsKind()
+	case VUnhold:
+		return ss.Phase == Running && ss.Hold
 	}
 	return false
 }
@@ -584,11 +941,17 @@ func (s *State) apply(a Act) *State {
 	case VRead:
 		return n
 	case VLeaseGet:
-		n.leaseGet(int(a.Slot), a.Mode)
+		if a.Mode.persistent() {
+			n.leaseGetP(int(a.Slot), a.Mode)
+		} else {
+			n.leaseGet(int(a.Slot), a.Mode)
+		}
 	case VLeasePut:
 		n.leasePut(int(a.Slot))
 	case VDriverKill:
 		d := &n.Drv[a.VM]
+		// it disarms a driver-kill-at watcher of the VM first (A31)
+		d.KillAt, d.KillAtAt = 0, 0
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
@@ -601,6 +964,7 @@ func (s *State) apply(a Act) *State {
 		// ("error reading from server: EOF") and kubelet creates it
 		// again: restarts +1 (M6, run L5), as for a kubelet restart.
 		d := &n.Drv[a.VM]
+		d.KillAt, d.KillAtAt = 0, 0 // (A31)
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
@@ -608,6 +972,7 @@ func (s *State) apply(a Act) *State {
 		n.restartSlack(a.VM)
 	case VDriverRestart:
 		d := &n.Drv[a.VM]
+		d.KillAt, d.KillAtAt = 0, 0 // (A31)
 		d.PodGen++
 		d.Restarts = 0
 		d.Inc++
@@ -636,9 +1001,150 @@ func (s *State) apply(a Act) *State {
 	case VServerRestart:
 		// The specification: nothing observable changes: the pool
 		// server reloads its state file.
+	case VPWrite:
+		n.pwrite(int(a.Slot), a.Arg == 1)
+		return n
+	case VPRead:
+		return n
+	case VHold:
+		n.Slots[a.Slot].Hold = true
+		return n
+	case VUnhold:
+		ss := &n.Slots[a.Slot]
+		ss.Hold = false
+		if ss.Lease != LeaseBusy {
+			return n
+		}
+		// the busy release of the fs lease completes (A25)
+		n.releasePLease(int(a.Slot))
+	case VPWipe:
+		// zeros over the LSA and the first 4 MiB of the data (A23)
+		n.PDev[pmemIndex(DevID(a.Arg))] = freshPDev
+		return n
+	case VDriverKillAt:
+		// armed; the settle has a world in which it fired (stack.go
+		// killWorlds)
+		d := &n.Drv[a.VM]
+		d.KillAt, d.KillAtAt = a.Arg+1, 0
 	}
 	n.Unsettled++
 	return n
+}
+
+// refusedNow tells if the Prepare of a persistent claim of slot i is
+// refused with the device's content now (A25): pbad by its config, fs
+// readers without the namespace and the erofs, pbro without the
+// namespace; writers never.
+func (n *State) refusedNow(i int) bool {
+	sl := n.slot(i)
+	if !sl.Kind.persistent() {
+		return false
+	}
+	pd := &n.PDev[pmemIndex(sl.Dev)]
+	switch {
+	case sl.Kind == KPBad:
+		return true
+	case sl.Kind.fsKind():
+		return pd.NS != TriYes || pd.FS != TriYes
+	case sl.Kind == KPBro:
+		return pd.NS != TriYes
+	}
+	return false
+}
+
+// prepareEvent records the Prepare of slot i (after: the event that
+// released what it gets): a probe for a refused one, none for pbad
+// (refused by its config before the memdev wait: no region).
+func (n *State) prepareEvent(i int, after int16) int16 {
+	ss, sl := &n.Slots[i], n.slot(i)
+	if sl.Kind == KPBad {
+		return -1
+	}
+	seq := n.addEvent(int16(i), evPrepare, false, after)
+	if seq >= 0 && ss.Refuse {
+		n.Ev[seq].Probe = true
+	}
+	return seq
+}
+
+// pwrite writes the template erofs with the token mbt-<step> (img) or
+// zeros (junk) at offset 0 of the device of a writer claim or a pbw lease
+// (A23); a read-only claim or fd refuses it.
+func (n *State) pwrite(i int, junk bool) {
+	if !n.pwriteOK(i) {
+		return
+	}
+	pd := &n.PDev[pmemIndex(n.pdevOf(i))]
+	pd.HeadSha = ""
+	if junk {
+		pd.FS, pd.Raw, pd.Tok = TriNo, tokZero, tokUnknown
+		return
+	}
+	tok := Token{Known: true, Text: fmt.Sprintf("mbt-%d", n.Steps)}
+	pd.FS, pd.Raw, pd.Tok = TriYes, tok, tok
+}
+
+// pwriteOK: the slot writes its persistent device: a writer claim or a
+// pbw lease.
+func (s *State) pwriteOK(i int) bool {
+	sl := s.slot(i)
+	if sl.Kind == KPlse {
+		return s.Slots[i].LeaseMode == ModePBW
+	}
+	return sl.Kind.writer()
+}
+
+// pdevOf is the persistent device of a slot (plse: c-pmem0).
+func (s *State) pdevOf(i int) DevID {
+	if s.slot(i).Kind == KPlse {
+		return cPmem0
+	}
+	return s.slot(i).Dev
+}
+
+// preadToken is what pread of slot i reads: hello.txt (fs claims and fs
+// leases) or bytes 0-63 (block claims and leases).
+func (s *State) preadToken(i int) Token {
+	sl, ss := s.slot(i), &s.Slots[i]
+	pd := &s.PDev[pmemIndex(s.pdevOf(i))]
+	if sl.Kind.fsKind() || (sl.Kind == KPlse && ss.LeaseMode.fs()) {
+		return pd.Tok
+	}
+	return pd.Raw
+}
+
+// leaseGetP takes a persistent lease of c-pmem0 (A23): its companion
+// claim is allocated, attached and prepared on the requester's node
+// before cxl-request returns (synchronous); a pbw lease is a writer: its
+// Prepare makes the namespace of a fresh device.
+func (n *State) leaseGetP(i int, m LeaseMode) {
+	ss := &n.Slots[i]
+	ss.Lease, ss.LeaseMode, ss.Hold = LeaseHeld, m, false
+	n.setLeaseID(i, "")
+	n.addEvent(n.leaseUser(i), evPrepare, true, -1)
+	if m == ModePBW {
+		n.madeNamespace(cPmem0)
+	}
+}
+
+// madeNamespace: a writer's Prepare made the fsdax namespace of a device
+// without one (labels and pfn info written: the hashes change).
+func (n *State) madeNamespace(d DevID) {
+	pd := &n.PDev[pmemIndex(d)]
+	if pd.NS == TriYes {
+		return
+	}
+	pd.NS, pd.UUID, pd.LsaSha, pd.HeadSha = TriYes, "", "", ""
+	pd.Raw = tokZero
+}
+
+// releasePLease releases the persistent lease of a plse slot: its
+// companion's Unprepare (the bind, the node mount and the region with the
+// last user), the device to a waiter.
+func (n *State) releasePLease(i int) {
+	n.Slots[i].Lease = LeaseReleasing
+	seq := n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
+	n.promote(Res(cPmem0), seq, false)
 }
 
 // restartSlack: a kubelet or containerd restart on a VM may restart once
@@ -703,16 +1209,17 @@ func (n *State) create(i int) {
 func (n *State) start(i int, after int16) int16 {
 	ss := &n.Slots[i]
 	sl := n.slot(i)
-	ss.RaceKill = false
+	ss.RaceKill, ss.Alloc = false, false
 	if sl.Kind.pooled() && n.Ctrl[sl.Pool].Slices == SlicesAbsent {
 		// no slices: the scheduler cannot allocate it (A18)
 		ss.Phase = Unsched
 		return -1
 	}
 	ss.Phase = Starting
+	ss.Refuse = n.refusedNow(i)
 	seq := int16(-1)
 	if sl.Kind.local() || (sl.Kind.pooled() && n.Ctrl[sl.Pool].Up) {
-		seq = n.addEvent(int16(i), evPrepare, false, after)
+		seq = n.prepareEvent(i, after)
 	}
 	switch sl.Kind {
 	case KLSteer:
@@ -763,14 +1270,16 @@ func (n *State) delete(i int) {
 		seq = n.addEvent(u, evUnprepare, false, -1)
 	case Unblocking, Stalled:
 		// its retry (its promotion) may have made its region
-		n.addEvent(u, evPrepare, false, -1)
+		n.prepareEvent(i, -1)
 		n.setOptional(u)
 		seq = n.addEvent(u, evUnprepare, false, -1)
 	}
+	ss.Hold = false
 	released, lseq := false, int16(-1)
-	if sl.Kind == KLease && ss.Lease == LeaseHeld {
-		// released when the requester pod is deleted
-		ss.Lease = LeaseReleasing
+	if sl.Kind.leaseKind() && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) {
+		// released when the requester pod is deleted (a held file goes
+		// with its container)
+		ss.Lease, ss.LeaseOpen = LeaseReleasing, false
 		released = true
 		lseq = n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
 	}
@@ -780,8 +1289,11 @@ func (n *State) delete(i int) {
 		// for a while: its contender may stall (A19)
 		n.promote(sl.Res, seq, sl.Kind.pooled() && prev.unbound())
 	}
-	if released {
+	if released && sl.Kind == KLease {
 		n.promote(localRes(sl.VM), lseq, false)
+	}
+	if released && sl.Kind == KPlse {
+		n.promote(Res(cPmem0), lseq, false)
 	}
 }
 
@@ -814,6 +1326,7 @@ func (n *State) promote(r Res, after int16, stall bool) {
 func (n *State) stall(i int) {
 	ss := &n.Slots[i]
 	ss.Phase, ss.RaceKill = Stalled, false
+	ss.Refuse = n.refusedNow(i)
 	n.setUnblockAt(i, 0)
 	if sl := n.slot(i); sl.Kind == KXNuma {
 		n.Data[sl.Dev] = tokUnknown
@@ -837,6 +1350,11 @@ func (n *State) crash(i int) {
 	ss := &n.Slots[i]
 	ss.Phase = Restarting
 	ss.Restarts++
+	// a holder dies with the container: a busy fs lease is released
+	ss.Hold = false
+	if ss.Lease == LeaseBusy {
+		n.releasePLease(i)
+	}
 	if n.slot(i).Kind == KLSteer {
 		// a new container gets a new manager
 		ss.Steer = n.newSteer(n.slot(i).VM)
@@ -872,8 +1390,18 @@ func (n *State) leaseGet(i int, m LeaseMode) {
 	}
 }
 
-// leasePut releases the lease of a slot.
+// leasePut releases the lease of a slot. A persistent fs lease whose
+// file is held stays (LeaseBusy) until unhold, a crash or the delete
+// (A25).
 func (n *State) leasePut(i int) {
+	if n.slot(i).Kind == KPlse {
+		if ss := &n.Slots[i]; ss.Hold && ss.LeaseMode.fs() {
+			ss.Lease = LeaseBusy
+			return
+		}
+		n.releasePLease(i)
+		return
+	}
 	n.Slots[i].Lease = LeaseReleasing
 	seq := n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
 	n.promote(localRes(n.slot(i).VM), seq, false)
@@ -964,13 +1492,13 @@ func (n *State) ctrlKill(p Pool) {
 	// since, or of one deleted before its pod was bound, may have been
 	// in flight at the server; and an attachment that only claims being
 	// allocated want may have been detached by a reconcile before them
-	var flux, settled [2][nVMs]bool
+	var flux, settled [devsPerPool][nVMs]bool
 	for i := range n.Slots {
 		sl, ss := n.slot(i), &n.Slots[i]
 		if !sl.Kind.pooled() || sl.Pool != p || ss.Node == VMAny {
 			continue
 		}
-		d := int(sl.Dev) - 2*int(p)
+		d := devIndex(sl.Dev)
 		if ss.Phase == Stalled || (ss.Phase == Deleting && ss.Prev.unbound()) {
 			flux[d][ss.Node] = true
 		}
@@ -978,14 +1506,14 @@ func (n *State) ctrlKill(p Pool) {
 			settled[d][ss.Node] = true
 		}
 	}
-	for d := 0; d < 2; d++ {
+	for d := range poolDevs(p) {
 		for v := VM(0); v < nVMs; v++ {
 			if c.Att[d][v] == TriYes && want[d][v] && !settled[d][v] {
 				flux[d][v] = true
 			}
 		}
 	}
-	for d := 0; d < 2; d++ {
+	for d := range poolDevs(p) {
 		for v := VM(0); v < nVMs; v++ {
 			cur := c.Att[d][v]
 			if cur == TriMaybe || (cur == TriYes) != want[d][v] || flux[d][v] {
@@ -1028,12 +1556,16 @@ func (n *State) ctrlStart(p Pool) {
 			}
 			// (Attaching: no binding timeout any more)
 			n.setUnblockAt(i, 0)
+			// (Attaching, Either: allocated, kept without the
+			// slices; Unsched: not allocated)
+			ss.Alloc = ss.Phase != Unsched
 			ss.Phase = Starting
 			ss.RaceKill = false
-			n.handoverAfterRelease(i, n.addEvent(int16(i), evPrepare, false, -1))
+			ss.Refuse = n.refusedNow(i)
+			n.handoverAfterRelease(i, n.prepareEvent(i, -1))
 		case ss.Phase == Starting && !n.hasPrepare(int16(i)):
 			// created (or promoted) while the controller was down
-			n.handoverAfterRelease(i, n.addEvent(int16(i), evPrepare, false, -1))
+			n.handoverAfterRelease(i, n.prepareEvent(i, -1))
 		case ss.Phase == Starting && ss.RaceKill:
 			// its Prepare comes now for sure
 			ss.RaceKill = false
@@ -1066,6 +1598,7 @@ func (n *State) handoverAfterRelease(i int, seq int16) {
 // settle is the stable state that the SUT reaches after the operations
 // in flight.
 func (n *State) settle() {
+	n.settlePDevs()
 	n.Released = 0
 	for i := range n.Slots {
 		ss, sl := &n.Slots[i], n.slot(i)
@@ -1098,8 +1631,17 @@ func (n *State) settle() {
 				ss.Phase = Either
 			case sl.Kind.pooled() && !n.Ctrl[sl.Pool].Up:
 				ss.Phase = Attaching
+			case ss.Refuse:
+				ss.Phase = Refused
 			default:
 				ss.Phase = Running
+			}
+		case Unblocking:
+			if ss.Refuse {
+				// its retry is refused: the content cannot change
+				// while it holds its share (A25)
+				ss.Phase = Refused
+				n.setUnblockAt(i, 0)
 			}
 		case Restarting:
 			ss.Phase = Running
@@ -1108,7 +1650,7 @@ func (n *State) settle() {
 				ss.Phase = Running
 			}
 		}
-		ss.RaceKill = false
+		ss.RaceKill, ss.Alloc = false, false
 		if ss.Lease == LeaseReleasing {
 			ss.Lease = LeaseNone
 			n.setLeaseID(i, "")
@@ -1131,11 +1673,40 @@ func (n *State) settle() {
 	n.Unsettled = 0
 }
 
+// settlePDevs applies a window's writer Prepares to the persistent
+// devices (A25): a writer Running after a Prepare of the window made the
+// namespace of a device without one; one that may have prepared and is
+// gone again (deleted while starting), may have been attached (a
+// controller kill) or may prepare any time (stalled, unblocking) leaves
+// it maybe, adopted from pdevs.
+func (n *State) settlePDevs() {
+	for i := range n.Slots {
+		ss, sl := &n.Slots[i], n.slot(i)
+		if !sl.Kind.writer() {
+			continue
+		}
+		pd := &n.PDev[pmemIndex(sl.Dev)]
+		switch {
+		case pd.NS == TriYes:
+		case ss.Phase == Running && n.hasPrepare(int16(i)):
+			n.madeNamespace(sl.Dev)
+		case ss.Phase == Deleting && n.hasPrepare(int16(i)) && (ss.Prev == Starting || n.Ctrl[sl.Pool].Up),
+			ss.Phase == Starting && ss.RaceKill,
+			ss.Phase == Stalled && n.Ctrl[sl.Pool].Up,
+			ss.Phase == Unblocking:
+			// (a stalled writer may be promoted and prepare any time
+			// its controller attaches it; an unblocking one's retry
+			// comes any time)
+			pd.NS, pd.LsaSha, pd.HeadSha = TriMaybe, "", ""
+		}
+	}
+}
+
 // deriveAtt sets the attachments of a pool whose controller is up to
 // those that its claims want.
 func (n *State) deriveAtt(p Pool) {
 	want, _ := n.desiredAtt(p)
-	for d := 0; d < 2; d++ {
+	for d := range poolDevs(p) {
 		for v := VM(0); v < nVMs; v++ {
 			if want[d][v] {
 				n.Ctrl[p].Att[d][v] = TriYes

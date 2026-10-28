@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // VM is a VM id: 0, 1 or 2 (vm0, vm1, vm2); VMAny is the unknown node of
@@ -101,31 +102,78 @@ const (
 )
 
 // DevID is a pool device: pool*2 for its exclusive device P-pooled0,
-// pool*2+1 for its shared device P-shared0.
+// pool*2+1 for its shared device P-shared0, then pool-c's persistent
+// devices c-pmem0 (shared) and c-pmem1 (exclusive) (A22).
 type DevID int8
 
-const nDevs = 2 * nPools
+const (
+	nDevs = 2*nPools + 2
+	// devsPerPool is the most devices of one pool (CtrlState.Att)
+	devsPerPool = 4
+	cPmem0      = DevID(2 * nPools)
+	cPmem1      = DevID(2*nPools + 1)
+	// nsSize is the SIZE of the fsdax namespace of a 256Mi persistent
+	// device (pfn info and alignment, A22)
+	nsSize = uint64(266338304)
+)
 
 // Device is a pool device.
 type Device struct {
-	Name   string
-	Serial uint64
-	Size   uint64
-	Shared bool
-	Pool   Pool
+	Name       string
+	Serial     uint64
+	Size       uint64
+	Shared     bool
+	Pool       Pool
+	Persistent bool
 }
 
 var devices = [nDevs]Device{
-	{"a-pooled0", 0xc1ee0001, 512 * mi, false, PoolA},
-	{"a-shared0", 0xc1ae0001, 256 * mi, true, PoolA},
-	{"b-pooled0", 0xc1ee1001, 512 * mi, false, PoolB},
-	{"b-shared0", 0xc1ae1001, 256 * mi, true, PoolB},
-	{"c-pooled0", 0xc1ee2001, 256 * mi, false, PoolC},
-	{"c-shared0", 0xc1ae2001, 256 * mi, true, PoolC},
+	{"a-pooled0", 0xc1ee0001, 512 * mi, false, PoolA, false},
+	{"a-shared0", 0xc1ae0001, 256 * mi, true, PoolA, false},
+	{"b-pooled0", 0xc1ee1001, 512 * mi, false, PoolB, false},
+	{"b-shared0", 0xc1ae1001, 256 * mi, true, PoolB, false},
+	{"c-pooled0", 0xc1ee2001, 256 * mi, false, PoolC, false},
+	{"c-shared0", 0xc1ae2001, 256 * mi, true, PoolC, false},
+	{"c-pmem0", 0xc1ae2002, 256 * mi, true, PoolC, true},
+	{"c-pmem1", 0xc1ee2002, 256 * mi, false, PoolC, true},
 }
 
 func pooledDev(p Pool) DevID { return DevID(2 * p) }
 func sharedDev(p Pool) DevID { return DevID(2*p + 1) }
+
+// poolDevTable lists the devices of each pool in the order of
+// CtrlState.Att (-1: none).
+var poolDevTable = [nPools][devsPerPool]DevID{
+	PoolA: {0, 1, -1, -1},
+	PoolB: {2, 3, -1, -1},
+	PoolC: {4, 5, cPmem0, cPmem1},
+}
+
+// poolDevs are the devices of a pool, in the order of CtrlState.Att.
+func poolDevs(p Pool) []DevID {
+	var out []DevID
+	for _, d := range poolDevTable[p] {
+		if d >= 0 {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// devIndex is the index of a device in its pool's CtrlState.Att.
+func devIndex(d DevID) int {
+	for x, e := range poolDevTable[devices[d].Pool] {
+		if e == d {
+			return x
+		}
+	}
+	return -1
+}
+
+// pmemIndex is the index of a persistent device in State.PDev.
+func pmemIndex(d DevID) int { return int(d - cPmem0) }
+
+const nPDevs = 2
 
 func (d DevID) String() string { return devices[d].Name }
 
@@ -200,6 +248,14 @@ type Config struct {
 	Avoid       []string      // MBT_AVOID rules
 	AvoidHoles  bool          // never destroy a region below the top of its stack (A9)
 	PlanStates  int           // states the planner caches per plan at most (canon.go); 0: no cache
+	// StallWindow: a stalled contender (A19) must be promoted this long
+	// after the settle that first saw it stalled (--stall-window).
+	// StallStrict (the window is not longer than the settle timeout: a
+	// fixed kube-scheduler, bug-08): a stalled contender is not
+	// settled, the settle waits for its promotion; else it is settled
+	// in both states.
+	StallWindow time.Duration
+	StallStrict bool
 	// Verbs that the generator may use; nil: every verb.
 	slotByName map[string]int
 }
@@ -208,6 +264,7 @@ type Config struct {
 func defaultConfig() *Config {
 	return &Config{
 		PlanStates:  defaultPlanStates,
+		StallWindow: defaultStallWindow,
 		Profile:     "full",
 		LocalBlocks: [nVMs]int{VM0: 2, VM1: 2, VM2: 8},
 		NodeHB:      [nBridges]int{HB0: 2, HB1: 3},

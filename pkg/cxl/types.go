@@ -50,7 +50,8 @@ type RegionDevice struct {
 	Mode       string          // Mode string, e.g. "ram"
 	Node       int             // NUMA node where region memory is located, -1 if region is disabled
 	OnlineSize uint64          // Size of onlined memory in this region in bytes (may be 0 even if region is enabled)
-	Targets    []string        // Target decoders, e.g. ["decoder4.0", "decoder7.0"]
+	Targets    []string        // Target decoders that are set, e.g. ["decoder4.0", "decoder7.0"]
+	Hollow     bool            // No target decoder is set: a region left behind by removed memory devices, or one being set up (see regionDeviceFromSysfs)
 	Memories   []*MemoryDevice // Memory devices associated with this region
 	Enabled    bool            // Whether the region is enabled (Node != -1)
 }

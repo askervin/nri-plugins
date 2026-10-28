@@ -63,6 +63,9 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 		if a.Steer != b.Steer && (a.Steer == SteerOn || a.Steer == SteerOff) {
 			items = append(items, "steer="+name+":"+a.Steer.String())
 		}
+		if !b.LeaseOpen && a.LeaseOpen {
+			items = append(items, "lopen="+name+":failed")
+		}
 		if adopted.LeaseIDs[i] != base.LeaseIDs[i] && adopted.LeaseIDs[i] != "" {
 			items = append(items, "lease="+name+":"+url.QueryEscape(adopted.LeaseIDs[i]))
 		}
@@ -76,7 +79,7 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 		}
 	}
 	for p := Pool(0); p < nPools; p++ {
-		for d := 0; d < 2; d++ {
+		for d, dev := range poolDevs(p) {
 			for v := VM(0); v < nVMs; v++ {
 				x, y := adopted.Ctrl[p].Att[d][v], base.Ctrl[p].Att[d][v]
 				if x != y && x != TriMaybe {
@@ -84,7 +87,7 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 					if x == TriYes {
 						val = "yes"
 					}
-					items = append(items, "att="+devices[2*int(p)+d].Name+"@"+v.String()+":"+val)
+					items = append(items, "att="+devices[dev].Name+"@"+v.String()+":"+val)
 				}
 			}
 		}
@@ -97,6 +100,32 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 	for d := DevID(0); d < nDevs; d++ {
 		if base.held(Res(d)) && !adopted.held(Res(d)) {
 			items = append(items, "held="+d.String()+":off")
+		}
+	}
+	for x := range adopted.PDev {
+		a, b := &adopted.PDev[x], &base.PDev[x]
+		name := (cPmem0 + DevID(x)).String()
+		if a.NS != b.NS && a.NS != TriMaybe {
+			items = append(items, "pns="+name+":"+triName(a.NS))
+		}
+		for _, f := range []struct {
+			item string
+			a, b string
+		}{{"puuid", a.UUID, b.UUID}, {"plsa", a.LsaSha, b.LsaSha}, {"phead", a.HeadSha, b.HeadSha}} {
+			if f.a != f.b && f.a != "" {
+				items = append(items, f.item+"="+name+":"+url.QueryEscape(f.a))
+			}
+		}
+		if a.Tok != b.Tok && a.Tok.Known {
+			items = append(items, "ptok="+name+":"+url.QueryEscape(a.Tok.Text))
+		}
+		if a.Raw != b.Raw && a.Raw.Known {
+			items = append(items, "praw="+name+":"+url.QueryEscape(a.Raw.Text))
+		}
+	}
+	for v := VM(0); v < nVMs; v++ {
+		if base.Drv[v].KillAt != 0 && adopted.Drv[v].KillAt == 0 {
+			items = append(items, "killat="+v.String()+":off")
 		}
 	}
 	for si := 0; si < nStacks; si++ {
@@ -202,6 +231,15 @@ func (n *State) applyItem(kind, key, val string) error {
 		default:
 			return fmt.Errorf("invalid steering %q", val)
 		}
+	case "lopen":
+		i, err := slot()
+		if err != nil {
+			return err
+		}
+		if n.slot(i).Kind != KPlse || n.Slots[i].Lease != LeaseHeld {
+			return fmt.Errorf("no persistent lease of %s whose lease-get failed", key)
+		}
+		n.Slots[i].LeaseOpen = true
 	case "lease":
 		i, err := slot()
 		if err != nil {
@@ -239,7 +277,7 @@ func (n *State) applyItem(kind, key, val string) error {
 		if val == "yes" {
 			t = TriYes
 		}
-		n.Ctrl[p].Att[int(d)-2*int(p)][v] = t
+		n.Ctrl[p].Att[devIndex(d)][v] = t
 	case "slices":
 		p, err := parsePool(key)
 		if err != nil {
@@ -253,6 +291,41 @@ func (n *State) applyItem(kind, key, val string) error {
 		default:
 			return fmt.Errorf("invalid slices %q", val)
 		}
+	case "pns", "puuid", "plsa", "phead", "ptok", "praw":
+		x := -1
+		for d := cPmem0; d < nDevs; d++ {
+			if d.String() == key {
+				x = pmemIndex(d)
+			}
+		}
+		if x < 0 {
+			return fmt.Errorf("unknown persistent device %q", key)
+		}
+		text, err := url.QueryUnescape(val)
+		if err != nil {
+			return err
+		}
+		pd := &n.PDev[x]
+		switch kind {
+		case "pns":
+			pd.NS = parseTri(text)
+		case "puuid":
+			pd.UUID = text
+		case "plsa":
+			pd.LsaSha = text
+		case "phead":
+			pd.HeadSha = text
+		case "ptok":
+			pd.Tok = Token{Known: true, Text: text}
+		case "praw":
+			pd.Raw = Token{Known: true, Text: text}
+		}
+	case "killat":
+		v, err := parseVM(key)
+		if err != nil || v == VMAny || val != "off" {
+			return fmt.Errorf("invalid killat %q:%q", key, val)
+		}
+		n.Drv[v].KillAt, n.Drv[v].KillAtAt = 0, 0
 	case "held":
 		for d := DevID(0); d < nDevs; d++ {
 			if d.String() == key && val == "off" {

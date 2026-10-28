@@ -26,7 +26,8 @@ Usage:
   mbt-observe.py assemble --step N --poll K --nodes ID=NODE,...
                           --vm ID=FILE... --attachments P=FILE...
                           [--inspected-in FILE] [--inspected-out FILE]
-                          [--summary FILE]
+                          [--summary FILE] [--pdev NAME=DATA:LSA...]
+                          [--kill-at ID]
       On the host: merge the outputs of "vm" (FILE: what the VM printed)
       and the attachment lists of the pool servers (FILE: the JSON of
       GET /api/v1/attachments) into the settle observation of contract
@@ -35,6 +36,9 @@ Usage:
       --inspected-out gets those of the pods that still exist plus the
       ones inspected now.
       --summary gets lines for the shell: "driver ID POD RESTARTS READY".
+      --pdev: "pdevs" of the persistent device NAME from its backing
+      files DATA and LSA on the host. --kill-at: "killAt", the state of
+      the driver-kill-at watcher of VM ID (A23).
 
 Python 3 standard library only. Every part is read in its own try: a part
 that cannot be read is null, and the reason is in the "errors" list of the
@@ -100,13 +104,97 @@ Where the data comes from:
                 ID=pool-ID) its cxl-pool.nri.io slices: name, device
                 names, nodes (VM ids of the nodeSelector), [] for none
                 (A18)
+Persistent pool devices (A24), all from sysfs, /proc/self/mountinfo and
+the driver's files; no file under a node mount or a lease bind is opened
+and no /dev/pmem* (the driver's umount would get EBUSY, its O_EXCL
+holder check and a concurrent erofs mount would fail):
+  pmem          per CXL region of mode pmem: its serials, resource, size,
+                the nvdimm region of the same physical address
+                (/sys/bus/nd/devices/regionM/resource) and its namespaces
+                with a size: name, mode (memory = fsdax), size, uuid,
+                holder (pfnM.K), map (the pfn's mode: ram = map mem),
+                blockdev (pmemK), major, minor
+  fsMounts      the mounts under <pool plugin dir>/mounts in the mount
+                namespace of the VM (the node mounts): target, source,
+                fstype, superopts, vfsopts, root, count (a node mount is
+                listed twice: the rshared self-bind of /var/lib/kubelet),
+                and for a loop device source its backing file, dio, ro
+  leaseBinds    the mounts under <cxl.nri.io plugin dir>/lease-fs: as
+                fsMounts
+  leaseDirs     the names in lease-fs/ (per lease claim uid, the names in
+                lease-fs/<uid>, which are mount points: not followed),
+                leases/ and mounts/
+  loops         loop devices whose backing file is /dev/pmem*: name,
+                backing, dio, ro, autoclear
+  ctrMounts     per running container of NS (as containers): its erofs
+                mounts from /proc/PID/mountinfo: target, source, root,
+                vfsopts
+  poolClaims    preparedPoolClaims.json: per claim uid its claimName, the
+                devices (serial, device, shared, mode, readOnly, region,
+                persistent, ndRegion, namespace, blockDevice, major,
+                minor, access, path, nodeMount, loopDevice) and lend
+  cdiPool       the CDI devices of the pool driver's spec (cxl-pool.*):
+                per device name its env, deviceNodes (path, type, major,
+                minor, permissions) and mounts (hostPath, containerPath,
+                type, options)
+  kernel        /dev/kmsg records since the last observation that match
+                BUG:|Oops|WARNING:|general protection|nd_pmem|pfn|erofs
+                (lines, the first 20; count; bad: of them, those of
+                BUG:|Oops|WARNING:|general protection), and badTotal and
+                badFirst since the first observation of the run (state
+                in /run/mbt-observe/kernel.json)
+  killAt        the state of a driver-kill-at watcher (kill-at below) in
+                /run/mbt-killat/state.json, null if none
+  driverLog     also counts of lines with "device or resource busy"
+                (busy), "is still in use" (inUse), "stale lease bind"
+                (staleBind), "not mounting"/"not binding" (notRemounted),
+                "belongs to no prepared claim" (orphan)
+  inspect       of the persistent kinds and plse, one kubectl exec: env,
+                "mount" (the mountinfo entry of CXL_<KEY>_PATH, null if
+                none), "mounts" (the entries under /run/cxl/fs), and
+                "pmemNodes" (the /dev/pmem* of the container); plse also
+                its leases
+  pdevs         (assemble, on the host: --pdev NAME=DATA:LSA) the content
+                of the backing files of a persistent device: lsa zero|
+                labels, lsaSha, headSha (sha256 of the first 4 MiB of the
+                data file), pfn ("NVDIMM_PFN_INFO" at 4096), dataoff (le64
+                at 4152), erofs (its magic at dataoff+1024), token (the 32
+                bytes at dataoff+4096, stripped, if erofs, else null), raw
+                (the string in bytes 0-63 at dataoff; null without pfn)
+
+  mbt-observe.py kill-at --marker region|ns|mount|bind [--timeout S]
+                         [--interval MS]
+      In a VM, as root: arm a one-shot watcher (A23 driver-kill-at) and
+      print its state once it is armed; mbt.source.sh runs it detached
+      (setsid). It SIGKILLs the driver process of the node (crictl, as
+      dra-driver-kill) at the first poll (every MS, default 2) that sees
+      the marker of a persistent Prepare that was not there when it was
+      armed: region a CXL region of mode pmem; ns a namespace with a
+      size in the nvdimm region of such a region; mount a mount under
+      the pool plugin's mounts/; bind a mount under lease-fs/. It gives
+      up after S seconds (default 60). It is bound to the driver
+      process it was armed against (a pidfd): if that one ends first
+      (any driver restart), it ends, not fired; it never kills another
+      process. State in /run/mbt-killat/state.json: marker, armed,
+      fired, done, reason (fired, expired, driver restarted, disarmed by
+      VERB, or an error), ms (from arming to the kill or the end), seen
+      (what it saw), pid, container, stateChanged (preparedPoolClaims
+      .json changed between arming and the kill).
+  mbt-observe.py kill-at-disarm [--verb VERB]
+      Stop that watcher and print its state, done; not fired yet: reason
+      "disarmed by VERB".
 """
 
 import argparse
+import errno
 import glob
+import hashlib
 import json
 import os
 import re
+import select
+import signal
+import struct
 import subprocess
 import sys
 import threading
@@ -114,10 +202,16 @@ import time
 
 CXL = "/sys/bus/cxl/devices"
 DAX = "/sys/bus/dax/devices"
+ND = "/sys/bus/nd/devices"
 NODES = "/sys/devices/system/node"
 MEMORY = "/sys/devices/system/memory"
 LOCAL_DIR = "/var/lib/kubelet/plugins/cxl.nri.io"
 POOL_DIR = "/var/lib/kubelet/plugins/cxl-pool.nri.io"
+POOL_MOUNTS = POOL_DIR + "/mounts"
+LEASE_FS = LOCAL_DIR + "/lease-fs"
+LEASES_DIR = LOCAL_DIR + "/leases"
+LEASE_FS_CTR = "/run/cxl/fs"
+KILLAT_DIR = "/run/mbt-killat"
 CDI_DIRS = ["/etc/cdi", "/var/run/cdi"]
 SLOT_LABEL = "mbt.slot"
 LEASE_LABEL = "cxl.nri.io/lease"
@@ -532,7 +626,10 @@ def crictl_inspect(ids):
     return out
 
 
-def containers(ns, errors):
+def containers(ns, errors, ctr_mounts=None):
+    """The running containers of namespace ns (contract 6.3, A11). With
+    ctr_mounts (a list), append to it the erofs mounts of each one (A24
+    ctrMounts)."""
     r = run(["crictl", "ps", "-o", "json", "--namespace", "^%s$" % re.escape(ns)])
     if r.returncode != 0:
         raise RuntimeError("crictl ps: %s" % r.stderr.strip()[-300:])
@@ -574,20 +671,41 @@ def containers(ns, errors):
             else:
                 continue  # it exited meanwhile
         out.append(entry)
+        if ctr_mounts is not None:
+            cm = {"pod": entry["pod"], "uid": entry["uid"], "name": entry["name"], "id": entry["id"], "mounts": None}
+            try:
+                cm["mounts"] = [{"target": m["target"], "source": m["source"], "root": m["root"],
+                                 "vfsopts": m["vfsopts"], "superopts": m["superopts"]}
+                                for m in mountinfo("/proc/%d/mountinfo" % pid) if m["fstype"] == "erofs"]
+            except (OSError, ValueError) as e:
+                if os.path.exists("/proc/%d" % pid):
+                    errors.append("ctrMounts %s/%s/%s: %s" % (entry["ns"], entry["pod"], entry["name"], e))
+            ctr_mounts.append(cm)
+    if ctr_mounts is not None:
+        ctr_mounts.sort(key=lambda e: (e["pod"] or "", e["name"] or ""))
     return sorted(out, key=lambda e: (e["pod"] or "", e["name"] or ""))
 
 
 DRIVER_STATE_DIR = "/run/mbt-observe"
 PANIC = re.compile(r"panic|fatal error|SIGSEGV")
 LENDS_RESTORED = "NRI fence: lends restored"
+# Counted lines of the driver log (A24): the persistent devices' troubles.
+LOG_COUNTS = [
+    ("busy", re.compile(r"device or resource busy")),
+    ("inUse", re.compile(r"is still in use")),
+    ("staleBind", re.compile(r"stale lease bind")),
+    ("notRemounted", re.compile(r"not mounting|not binding")),
+    ("orphan", re.compile(r"belongs to no prepared claim")),
+]
 
 
 def driver_log(errors):
     """The running driver container of the node and what its log says
-    (amendment A13, A15)."""
+    (amendment A13, A15, A24)."""
     out = {"container": None, "pod": None, "attempt": None, "started": None, "panics": 0, "errors": [],
            "lendsRestored": False, "sockets": all(os.path.exists("/var/lib/kubelet/plugins/%s/dra.sock" % d)
                                                    for d in ("cxl.nri.io", "cxl-pool.nri.io"))}
+    out.update((k, 0) for k, _ in LOG_COUNTS)
     r = run(["crictl", "ps", "-q", "--state", "running", "--namespace", "^kube-system$",
              "--name", "^%s$" % DRIVER_CONTAINER])
     if r.returncode != 0:
@@ -610,6 +728,7 @@ def driver_log(errors):
     os.makedirs(DRIVER_STATE_DIR, exist_ok=True)
     statefile = os.path.join(DRIVER_STATE_DIR, "driverlog-%s.json" % cid)
     saved = {"offset": 0, "panics": 0, "errors": [], "lendsRestored": False}
+    saved.update((k, 0) for k, _ in LOG_COUNTS)
     try:
         with open(statefile) as f:
             saved.update(json.load(f))
@@ -633,6 +752,9 @@ def driver_log(errors):
             saved["panics"] += 1
             if len(saved["errors"]) < 5:
                 saved["errors"].append(content[:300])
+        for k, rx in LOG_COUNTS:
+            if rx.search(content):
+                saved[k] += 1
     saved["offset"] += end
     try:
         with open(statefile + ".tmp", "w") as f:
@@ -641,7 +763,418 @@ def driver_log(errors):
     except OSError as e:
         errors.append("driverLog: %s: %s" % (statefile, e))
     out.update(panics=saved["panics"], errors=saved["errors"], lendsRestored=saved["lendsRestored"])
+    out.update((k, saved[k]) for k, _ in LOG_COUNTS)
     return out
+
+
+###
+### Persistent pool devices (A24)
+###
+
+def unescape_mount(text):
+    """A field of mountinfo with its octal escapes (\\040 ...) decoded."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), text)
+
+
+def mountinfo(path="/proc/self/mountinfo"):
+    """The entries of a mountinfo file: id, parent, majmin, root, target,
+    vfsopts, optional (fields), fstype, source, superopts."""
+    out = []
+    with open(path) as f:
+        text = f.read()
+    for line in text.splitlines():
+        pre, sep, post = line.partition(" - ")
+        a, b = pre.split(" "), post.split(" ")
+        if not sep or len(a) < 6:
+            raise ValueError("%s: cannot parse %r" % (path, line))
+        out.append({"id": int(a[0]), "parent": int(a[1]), "majmin": a[2], "root": unescape_mount(a[3]),
+                    "target": unescape_mount(a[4]), "vfsopts": a[5], "optional": a[6:],
+                    "fstype": b[0], "source": unescape_mount(b[1]) if len(b) > 1 else "",
+                    "superopts": b[2] if len(b) > 2 else ""})
+    return out
+
+
+def loop_info(name):
+    """A loop device (loopN): its backing file, dio, ro, autoclear.
+    backing_file is the path as the process that set the loop up saw
+    it: after that process's mount namespace is gone (a driver
+    container restarted), a /dev/pmemN shows as /pmemN, relative to the
+    devtmpfs root. backing is normalized to /dev/pmemN then, backingRaw
+    keeps what the kernel said."""
+    base = "/sys/block/%s" % name
+    out = {"name": name, "backing": None, "backingRaw": None, "dio": None, "ro": None, "autoclear": None}
+    for key, path in (("backing", "loop/backing_file"), ("dio", "loop/dio"), ("ro", "ro"),
+                      ("autoclear", "loop/autoclear")):
+        try:
+            v = read(os.path.join(base, path))
+            out[key] = v if key == "backing" else v == "1"
+        except OSError:
+            pass
+    raw = out["backing"]
+    out["backingRaw"] = raw
+    if raw and re.fullmatch(r"/pmem\d+(\.\d+)?s?", raw) and os.path.exists("/dev" + raw):
+        out["backing"] = "/dev" + raw
+    return out
+
+
+def mounts_under(entries, base):
+    """The mounts of entries (mountinfo) under the directory base, one per
+    target with the number of entries (count)."""
+    base = base.rstrip("/") + "/"
+    out = {}
+    for m in entries:
+        if not m["target"].startswith(base):
+            continue
+        e = out.get(m["target"])
+        if e is not None:
+            e["count"] += 1
+            continue
+        e = {"target": m["target"], "source": m["source"], "fstype": m["fstype"], "root": m["root"],
+             "superopts": m["superopts"], "vfsopts": m["vfsopts"], "count": 1}
+        if re.fullmatch(r"/dev/loop\d+", m["source"]):
+            li = loop_info(os.path.basename(m["source"]))
+            e.update(backing=li["backing"], backingRaw=li["backingRaw"], dio=li["dio"], ro=li["ro"])
+        out[m["target"]] = e
+    return [out[t] for t in sorted(out)]
+
+
+def loops_over_pmem():
+    out = []
+    for p in sorted(glob.glob("/sys/block/loop[0-9]*"), key=natkey):
+        li = loop_info(os.path.basename(p))
+        if (li["backing"] or "").startswith("/dev/pmem"):
+            out.append(li)
+    return out
+
+
+def listdir(path):
+    """The names in directory path, sorted; None if it does not exist."""
+    try:
+        return sorted(os.listdir(path))
+    except FileNotFoundError:
+        return None
+
+
+def lease_dirs():
+    """The names in lease-fs/ (per lease claim uid, the names in it: the
+    mount points of its binds, not followed), leases/ and mounts/."""
+    fs = None
+    names = listdir(LEASE_FS)
+    if names is not None:
+        fs = {}
+        for uid in names:
+            try:
+                fs[uid] = sorted(os.listdir(os.path.join(LEASE_FS, uid)))
+            except NotADirectoryError:
+                fs[uid] = None
+            except FileNotFoundError:
+                continue
+    return {"leaseFs": fs, "leases": listdir(LEASES_DIR), "mounts": listdir(POOL_MOUNTS)}
+
+
+def int_or_none(text):
+    try:
+        return int(text, 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def nd_namespace(path):
+    """A namespace of an nvdimm region with its pfn device and block device."""
+    name = os.path.basename(path)
+    ns = {"name": name, "mode": None, "size": None, "uuid": None, "holder": None, "map": None,
+          "blockdev": None, "major": None, "minor": None}
+    for key in ("mode", "uuid", "holder"):
+        try:
+            ns[key] = read(path + "/" + key) or None
+        except OSError:
+            pass
+    try:
+        ns["size"] = int(read(path + "/size"), 0)
+    except (OSError, ValueError):
+        pass
+    blocks = glob.glob(path + "/block/pmem*")
+    if ns["holder"]:
+        hp = ND + "/" + ns["holder"]
+        try:
+            ns["map"] = read(hp + "/mode")
+        except OSError:
+            pass
+        blocks = glob.glob(hp + "/block/pmem*") or blocks
+    if blocks:
+        bd = os.path.basename(sorted(blocks, key=natkey)[0])
+        ns["blockdev"] = bd
+        try:
+            major, minor = read("/sys/block/%s/dev" % bd).split(":")
+            ns["major"], ns["minor"] = int(major), int(minor)
+        except (OSError, ValueError):
+            pass
+    return ns
+
+
+def nd_regions():
+    """The physical start address -> path of every nvdimm region."""
+    out = {}
+    for r in glob.glob(ND + "/region[0-9]*"):
+        try:
+            out[int(read(r + "/resource"), 0)] = r
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def pmem(errors):
+    """Per CXL region of mode pmem: its nvdimm region and namespaces."""
+    eps = endpoint_memdevs()
+    serials = {}
+    for p in glob.glob(CXL + "/mem[0-9]*"):
+        try:
+            serials[os.path.basename(p)] = serial_text(read(p + "/serial"))
+        except OSError:
+            continue
+    nds = nd_regions()
+    out = []
+    for p in sorted(glob.glob(CXL + "/region[0-9]*"), key=natkey):
+        name = os.path.basename(p)
+        try:
+            if read(p + "/mode") != "pmem":
+                continue
+        except OSError:
+            continue
+        r = {"region": name, "serials": [], "resource": None, "size": None, "ndRegion": None, "namespaces": []}
+        try:
+            r["resource"] = int_or_none(read(p + "/resource"))
+            r["size"] = int_or_none(read(p + "/size"))
+        except OSError as e:
+            errors.append("pmem %s: %s" % (name, e))
+        for t in sorted(glob.glob(p + "/target[0-9]*"), key=natkey):
+            try:
+                m = re.fullmatch(r"decoder(\d+)\.\d+", read(t))
+            except OSError:
+                continue
+            mem = eps.get(m.group(1)) if m else None
+            if mem:
+                r["serials"].append(serials.get(mem, mem))
+        nd = nds.get(r["resource"]) if r["resource"] is not None else None
+        if nd:
+            r["ndRegion"] = os.path.basename(nd)
+            for ns in sorted(glob.glob(nd + "/namespace[0-9]*.[0-9]*"), key=natkey):
+                entry = nd_namespace(ns)
+                if entry["size"]:
+                    r["namespaces"].append(entry)
+        out.append(r)
+    return out
+
+
+def pool_claims(obj):
+    """preparedPoolClaims.json reduced to what the oracle checks. The
+    driver writes the file at its first pool claim: no file is no
+    prepared pool claim."""
+    if obj is None:
+        return {}
+    keys = ("device", "shared", "mode", "readOnly", "region", "persistent", "ndRegion", "namespace",
+            "blockDevice", "blockMajor", "blockMinor", "access", "path", "nodeMount", "loopDevice", "dax")
+    out = {}
+    for uid, pc in sorted(obj.items()):
+        pc = pc or {}
+        devs = []
+        for d in pc.get("devices") or []:
+            e = {k: d.get(k) for k in keys}
+            e["serial"] = serial_text(d["serial"]) if d.get("serial") is not None else None
+            devs.append(e)
+        lend = pc.get("lend")
+        if lend is not None:
+            lend = {k: lend.get(k) for k in ("lease", "pod", "container", "fsDir", "name", "mounts")}
+        out[uid] = {"claimName": pc.get("claimName"), "devices": devs, "lend": lend}
+    return out
+
+
+def yaml_scalar(text):
+    t = text.strip()
+    if not t or t in ("null", "~"):
+        return None
+    if t.startswith('"'):
+        return json.loads(t)
+    if t.startswith("'") and t.endswith("'"):
+        return t[1:-1].replace("''", "'")
+    if t.startswith("[") and t.endswith("]"):
+        inner = t[1:-1].strip()
+        return [yaml_scalar(x) for x in inner.split(",")] if inner else []
+    if t == "{}":
+        return {}
+    if t in ("true", "false"):
+        return t == "true"
+    if re.fullmatch(r"-?\d+", t):
+        return int(t)
+    return t
+
+
+def yaml_key_value(text):
+    """(key, rest) of "key: rest" or "key:", None if text is no such line."""
+    if text[:1] in ("'", '"', "[", "{"):
+        return None
+    m = re.match(r"([^:#]+):(?:\s+(.*))?$", text)
+    if not m:
+        return None
+    return m.group(1).strip(), (m.group(2) or "")
+
+
+def yaml_load(text):
+    """The YAML subset of Go's YAML output (block mappings and sequences,
+    plain, quoted and flow scalars), enough for CDI spec files."""
+    lines = []
+    for raw in text.splitlines():
+        s = raw.rstrip()
+        if not s.strip() or s.strip().startswith("#") or s.strip() == "---":
+            continue
+        lines.append([len(s) - len(s.lstrip(" ")), s.strip()])
+    pos = [0]
+
+    def node(ind):
+        if pos[0] >= len(lines):
+            return None
+        i, s = lines[pos[0]]
+        if s == "-" or s.startswith("- "):
+            return seq(i)
+        return mapping(i)
+
+    def seq(ind):
+        out = []
+        while pos[0] < len(lines):
+            i, s = lines[pos[0]]
+            if i != ind or not (s == "-" or s.startswith("- ")):
+                break
+            rest = s[1:].strip()
+            if not rest:
+                pos[0] += 1
+                out.append(node(lines[pos[0]][0]) if pos[0] < len(lines) and lines[pos[0]][0] > ind else None)
+            elif yaml_key_value(rest):
+                lines[pos[0]] = [ind + 2, rest]
+                out.append(mapping(ind + 2))
+            else:
+                pos[0] += 1
+                out.append(yaml_scalar(rest))
+        return out
+
+    def mapping(ind):
+        out = {}
+        while pos[0] < len(lines):
+            i, s = lines[pos[0]]
+            if i != ind or s == "-" or s.startswith("- "):
+                break
+            kv = yaml_key_value(s)
+            if kv is None:
+                raise ValueError("cannot parse YAML line %r" % s)
+            key, rest = kv
+            pos[0] += 1
+            if rest.strip():
+                out[key] = yaml_scalar(rest)
+            elif pos[0] < len(lines) and (lines[pos[0]][0] > ind or
+                                          (lines[pos[0]][0] == ind and (lines[pos[0]][1] == "-" or
+                                                                        lines[pos[0]][1].startswith("- ")))):
+                out[key] = node(lines[pos[0]][0])
+            else:
+                out[key] = None
+        return out
+
+    return node(0)
+
+
+def cdi_pool(errors):
+    """The CDI devices of the pool driver's spec file(s): name -> env,
+    deviceNodes, mounts."""
+    out = {}
+    for d in CDI_DIRS:
+        for path in sorted(glob.glob(d + "/cxl-pool*")):
+            try:
+                with open(path) as f:
+                    text = f.read()
+                spec = json.loads(text) if path.endswith(".json") else yaml_load(text)
+            except Exception as e:
+                errors.append("cdiPool %s: %s: %s" % (path, type(e).__name__, e))
+                continue
+            for dev in (spec or {}).get("devices") or []:
+                ed = dev.get("containerEdits") or {}
+                out[dev.get("name")] = {
+                    "file": path,
+                    "env": sorted(e for e in ed.get("env") or [] if not str(e).startswith("CXL_CLAIM_")),
+                    "deviceNodes": [{k: n.get(k) for k in ("path", "type", "major", "minor", "permissions")}
+                                    for n in ed.get("deviceNodes") or []],
+                    "mounts": [{k: m.get(k) for k in ("hostPath", "containerPath", "type", "options")}
+                               for m in ed.get("mounts") or []],
+                }
+    return out
+
+
+KERNEL_STATE = DRIVER_STATE_DIR + "/kernel.json"
+KERNEL_MATCH = re.compile(r"BUG:|Oops|WARNING:|general protection|nd_pmem|pfn|erofs")
+KERNEL_BAD = re.compile(r"BUG:|Oops|WARNING:|general protection")
+KERNEL_LINES = 20
+
+
+def kernel(errors):
+    """The kernel log records since the last observation that match
+    KERNEL_MATCH (A24)."""
+    st = None
+    try:
+        with open(KERNEL_STATE) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        pass
+    first = st is None
+    st = st or {"seq": -1, "badTotal": 0, "badFirst": []}
+    out = {"lines": [], "count": 0, "bad": 0, "badTotal": st["badTotal"], "badFirst": st["badFirst"], "seq": st["seq"]}
+    fd = os.open("/dev/kmsg", os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        while True:
+            try:
+                rec = os.read(fd, 8192)
+            except BlockingIOError:
+                break
+            except OSError as e:
+                if e.errno == errno.EPIPE:
+                    continue  # records overwritten while reading
+                raise
+            head, _, msg = rec.decode(errors="replace").partition(";")
+            f = head.split(",")
+            try:
+                seq, ts = int(f[1]), int(f[2])
+            except (IndexError, ValueError):
+                continue
+            if seq <= st["seq"]:
+                continue
+            st["seq"] = out["seq"] = seq
+            msg = msg.split("\n", 1)[0]
+            if first or not KERNEL_MATCH.search(msg):
+                continue  # the first observation is the baseline: the log from then on
+            out["count"] += 1
+            line = "[%d.%06d] %s" % (ts // 1000000, ts % 1000000, msg[:300])
+            if len(out["lines"]) < KERNEL_LINES:
+                out["lines"].append(line)
+            if KERNEL_BAD.search(msg):
+                out["bad"] += 1
+                st["badTotal"] += 1
+                if len(st["badFirst"]) < 5:
+                    st["badFirst"].append(line)
+    finally:
+        os.close(fd)
+    out["badTotal"], out["badFirst"] = st["badTotal"], st["badFirst"]
+    try:
+        os.makedirs(DRIVER_STATE_DIR, exist_ok=True)
+        with open(KERNEL_STATE + ".tmp", "w") as f:
+            json.dump(st, f)
+        os.replace(KERNEL_STATE + ".tmp", KERNEL_STATE)
+    except OSError as e:
+        errors.append("kernel: %s: %s" % (KERNEL_STATE, e))
+    return out
+
+
+def kill_at_state():
+    try:
+        with open(KILLAT_DIR + "/state.json") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
 
 
 def vm_observation(ns):
@@ -654,8 +1187,21 @@ def vm_observation(ns):
     obs["nodes"] = part(errors, "nodes", numa_nodes)
     obs["state"] = part(errors, "state", state, errors)
     obs["cdi"] = part(errors, "cdi", cdi, errors)
-    obs["containers"] = part(errors, "containers", containers, ns, errors)
+    ctr_mounts = []
+    obs["containers"] = part(errors, "containers", containers, ns, errors, ctr_mounts)
+    obs["ctrMounts"] = ctr_mounts if obs["containers"] is not None else None
     obs["driverLog"] = part(errors, "driverLog", driver_log, errors)
+    # Persistent pool devices (A24).
+    obs["pmem"] = part(errors, "pmem", pmem, errors)
+    mi = part(errors, "mountinfo", mountinfo)
+    obs["fsMounts"] = None if mi is None else mounts_under(mi, POOL_MOUNTS)
+    obs["leaseBinds"] = None if mi is None else mounts_under(mi, LEASE_FS)
+    obs["leaseDirs"] = part(errors, "leaseDirs", lease_dirs)
+    obs["loops"] = part(errors, "loops", loops_over_pmem)
+    obs["poolClaims"] = part(errors, "poolClaims", lambda: pool_claims(json_file(POOL_DIR + "/preparedPoolClaims.json")))
+    obs["cdiPool"] = part(errors, "cdiPool", cdi_pool, errors)
+    obs["kernel"] = part(errors, "kernel", kernel, errors)
+    obs["killAt"] = part(errors, "killAt", kill_at_state)
     obs["errors"] = errors
     return obs
 
@@ -901,7 +1447,95 @@ def cxl_leases(text):
         return [json.loads(l) for l in text.splitlines() if l.strip().startswith("{")]
 
 
+# The kinds of persistent pool devices (A22) and the lease kind of
+# persistent leases: inspected with one exec (inspect_persistent).
+PERSISTENT_BASES = ("pwr", "pfsd", "pfsc", "pbro", "pbad", "xpb", "xpf")
+# The script of that exec: the environment, the container's mountinfo
+# (read by cat in the container's mount namespace, no file under a mount
+# opened), the names in /dev, and the leases of a lease kind.
+INSPECT_SCRIPT = """env
+echo @@mountinfo
+cat /proc/self/mountinfo
+echo @@dev
+ls -1 /dev
+if [ "$1" = lease ]; then echo @@leases; exec %s list; fi
+""" % CXL_REQUEST
+
+
+def persistent_kind(kind):
+    return kind == "plse" or kind.split("-")[0] in PERSISTENT_BASES
+
+
+def inspect_sections(text):
+    """The sections of the output of INSPECT_SCRIPT: name -> lines."""
+    out, cur = {"env": []}, "env"
+    for line in text.splitlines():
+        if line.startswith("@@") and line[2:] in ("mountinfo", "dev", "leases"):
+            cur = line[2:]
+            out[cur] = []
+            continue
+        out[cur].append(line)
+    return out
+
+
+def inspect_persistent(ns, pod, kind, out, errors, lock):
+    """inspect of a pod of a persistent kind or plse (A24): env, the mount
+    of CXL_<KEY>_PATH, the mounts under /run/cxl/fs, the /dev/pmem* nodes,
+    and the leases of plse."""
+    name = pod["name"]
+    lease = kind == "plse"
+    r = run(["kubectl", "exec", "-n", ns, name, "-c", MAIN, "--", "sh", "-c", INSPECT_SCRIPT, "sh",
+             "lease" if lease else "claim"], timeout=EXEC_TIMEOUT)
+    if r.returncode != 0:
+        with lock:
+            errors.append("inspect %s: exit %d: %s" % (name, r.returncode, (r.stdout + r.stderr).strip()[-200:]))
+        return
+    sec = inspect_sections(r.stdout)
+    env = {}
+    for line in sec.get("env") or []:
+        k, sep, v = line.partition("=")
+        if sep and k.startswith("CXL_"):
+            env[k] = v
+    mounts, mount = [], None
+    try:
+        # mountinfo() reads a file: parse the lines of the section the same way.
+        entries = []
+        for line in sec.get("mountinfo") or []:
+            pre, sep, post = line.partition(" - ")
+            a, b = pre.split(" "), post.split(" ")
+            if not sep or len(a) < 6:
+                continue
+            entries.append({"root": unescape_mount(a[3]), "target": unescape_mount(a[4]), "vfsopts": a[5],
+                            "fstype": b[0], "source": unescape_mount(b[1]) if len(b) > 1 else "",
+                            "superopts": b[2] if len(b) > 2 else ""})
+        paths = [v for k, v in env.items() if k.endswith("_PATH") and not v.startswith("/dev/")]
+        for e in entries:
+            if e["target"] in paths:
+                mount = e
+            if e["target"].startswith(LEASE_FS_CTR + "/"):
+                mounts.append(e)
+    except Exception as e:
+        with lock:
+            errors.append("inspect %s: mountinfo: %s" % (name, e))
+    leases = None
+    if lease:
+        try:
+            leases = cxl_leases("\n".join(sec.get("leases") or []))
+        except ValueError as e:
+            with lock:
+                errors.append("inspect %s: cxl-request list: %s" % (name, e))
+            return
+    pmem_nodes = sorted("/dev/" + n for n in sec.get("dev") or [] if n.startswith("pmem"))
+    with lock:
+        out[pod["slot"]] = {"uid": pod["uid"], "restarts": pod["restarts"], "env": env, "leases": leases,
+                            "mount": mount, "mounts": sorted(mounts, key=lambda m: m["target"]),
+                            "pmemNodes": pmem_nodes}
+
+
 def inspect_pod(ns, pod, kind, out, errors, lock):
+    if persistent_kind(kind):
+        inspect_persistent(ns, pod, kind, out, errors, lock)
+        return
     name = pod["name"]
     r = run(["kubectl", "exec", "-n", ns, name, "-c", MAIN, "--", "env"], timeout=EXEC_TIMEOUT)
     if r.returncode != 0:
@@ -1055,8 +1689,248 @@ def cmd_vm(args):
 
 
 ###
+### driver-kill-at (A23): a one-shot watcher in the VM
+###
+
+def write_json(path, obj):
+    with open(path + ".tmp", "w") as f:
+        json.dump(obj, f, sort_keys=True)
+    os.replace(path + ".tmp", path)
+
+
+def proc_start(pid):
+    """The start time of process pid (field 22 of /proc/PID/stat), None if
+    it is gone."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return int(f.read().rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def driver_process():
+    """(container id, pid) of the running driver container of the node."""
+    r = run(["crictl", "ps", "-q", "--state", "running", "--namespace", "^kube-system$",
+             "--name", "^%s$" % DRIVER_CONTAINER])
+    ids = r.stdout.split() if r.returncode == 0 else []
+    if not ids:
+        return None, None
+    info = crictl_inspect(ids[:1])
+    pid = ((info[0].get("info") or {}).get("pid") or 0) if info else 0
+    return ids[0], pid or None
+
+
+class Marker:
+    """The marker of a persistent Prepare that kill-at waits for. seen()
+    returns what it saw that was not there when it was armed, else None:
+    what disappears is forgotten, so that a region or mount made again
+    with the name of an old one counts as new."""
+
+    def __init__(self, kind):
+        self.kind = kind
+        self.ignore = set()   # new regions of another mode than pmem
+        self.base = self.present()
+
+    def present(self):
+        if self.kind in ("region", "ns"):
+            return set(n for n in os.listdir(CXL) if n.startswith("region"))
+        base = (POOL_MOUNTS if self.kind == "mount" else LEASE_FS).rstrip("/") + "/"
+        with open("/proc/self/mountinfo") as f:
+            text = f.read()
+        out = set()
+        for line in text.splitlines():
+            a = line.split(" ", 5)
+            if len(a) >= 5 and a[4].startswith(base):
+                out.add((a[0], unescape_mount(a[4])))
+        return out
+
+    def seen(self):
+        now = self.present()
+        self.base &= now
+        self.ignore &= now
+        new = now - self.base - self.ignore
+        if self.kind in ("mount", "bind"):
+            return sorted(t for _, t in new)[0] if new else None
+        for name in sorted(new):
+            p = CXL + "/" + name
+            try:
+                mode = read(p + "/mode")
+            except OSError:
+                continue
+            if mode != "pmem":
+                if mode:
+                    self.ignore.add(name)  # a ram region: never this marker
+                continue
+            if self.kind == "region":
+                return name
+            try:
+                res = int(read(p + "/resource"), 0)
+            except (OSError, ValueError):
+                continue
+            nd = nd_regions().get(res)
+            if not nd:
+                continue
+            for ns in glob.glob(nd + "/namespace[0-9]*.[0-9]*"):
+                try:
+                    if int(read(ns + "/size"), 0) > 0:
+                        return "%s %s %s" % (name, os.path.basename(nd), os.path.basename(ns))
+                except (OSError, ValueError):
+                    continue
+        return None
+
+
+def file_stamp(path):
+    try:
+        st = os.stat(path)
+        return [st.st_mtime_ns, st.st_size, st.st_ino]
+    except OSError:
+        return None
+
+
+class DriverProcess:
+    """The driver process that a watcher was armed against, and only that
+    one: a pidfd where the kernel has them (signals go to that process or
+    fail), else its pid and start time."""
+
+    def __init__(self, pid):
+        self.pid, self.start, self.fd = pid, proc_start(pid), None
+        try:
+            self.fd = os.pidfd_open(pid)
+        except (AttributeError, OSError):
+            pass
+
+    def alive(self):
+        if self.fd is not None:
+            r, _, _ = select.select([self.fd], [], [], 0)
+            return not r  # a pidfd is readable once its process exited
+        return self.start is not None and proc_start(self.pid) == self.start
+
+    def kill(self):
+        if self.fd is not None:
+            signal.pidfd_send_signal(self.fd, signal.SIGKILL)
+        elif self.alive():
+            os.kill(self.pid, signal.SIGKILL)
+        else:
+            raise ProcessLookupError("process %d is gone" % self.pid)
+
+
+def cmd_kill_at(args):
+    """A23 driver-kill-at: the watcher. It is bound to the driver process
+    of the container running when it was armed: if that process ends
+    first (driver-kill, driver-restart, containerd-restart, a crash), the
+    watcher ends, done and not fired, reason "driver restarted"; it never
+    kills another process. reason: fired, expired, driver restarted,
+    disarmed by VERB (kill-at-disarm), or an error."""
+    os.makedirs(KILLAT_DIR, exist_ok=True)
+    statefile = KILLAT_DIR + "/state.json"
+    claims = POOL_DIR + "/preparedPoolClaims.json"
+    t0 = time.monotonic()
+    st = {"marker": args.marker, "armed": False, "fired": False, "done": False, "ms": None, "seen": None,
+          "pid": None, "container": None, "watcher": os.getpid(), "armedAt": time.time(), "error": None,
+          "reason": None}
+    cid, pid = driver_process()
+    if not pid:
+        st.update(done=True, error="no running driver container", reason="no running driver container")
+        write_json(statefile, st)
+        print(json.dumps(st, sort_keys=True))
+        return
+    drv = DriverProcess(pid)
+    marker = Marker(args.marker)
+    stamp = file_stamp(claims)
+    st.update(armed=True, pid=pid, container=cid)
+    write_json(statefile, st)
+    print(json.dumps(st, sort_keys=True), flush=True)
+    interval = args.interval / 1000.0
+    while time.monotonic() - t0 < args.timeout:
+        if not drv.alive():
+            st.update(done=True, reason="driver restarted", ms=int((time.monotonic() - t0) * 1000))
+            write_json(statefile, st)
+            return
+        try:
+            hit = marker.seen()
+        except OSError:
+            hit = None
+        if hit:
+            killed_at = time.monotonic()
+            err = None
+            try:
+                drv.kill()
+            except OSError as e:
+                err = "kill %s: %s" % (pid, e)
+            st.update(fired=err is None, done=True, seen=hit, error=err,
+                      reason="fired" if err is None else "driver restarted",
+                      ms=int((killed_at - t0) * 1000), stateChanged=file_stamp(claims) != stamp)
+            write_json(statefile, st)
+            return
+        time.sleep(interval)
+    st.update(done=True, expired=True, reason="expired", ms=int((time.monotonic() - t0) * 1000))
+    write_json(statefile, st)
+
+
+def cmd_kill_at_disarm(args):
+    """Stop the watcher of kill-at, if it runs, and print its state: done;
+    if it had not fired or ended yet, not fired, reason "disarmed by
+    VERB"."""
+    statefile = KILLAT_DIR + "/state.json"
+    try:
+        with open(statefile) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        print("null")
+        return
+    w = st.get("watcher")
+    if w and not st.get("done"):
+        try:
+            os.kill(w, signal.SIGTERM)
+        except OSError:
+            pass
+        for _ in range(100):
+            if proc_start(w) is None:
+                break
+            time.sleep(0.01)
+        with open(statefile) as f:
+            st = json.load(f)  # it may have fired or ended meanwhile
+        if not st.get("done"):
+            st.update(done=True, reason="disarmed by %s" % args.verb,
+                      ms=int((time.time() - st.get("armedAt", time.time())) * 1000))
+            write_json(statefile, st)
+    print(json.dumps(st, sort_keys=True))
+
+
+###
 ### The host: the settle observation (contract 6.1)
 ###
+
+PFN_SIG = b"NVDIMM_PFN_INFO\0"
+EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"
+PFN_OFF = 4096       # the pfn info block in the namespace
+HEAD = 4 << 20       # headSha: the first 4 MiB of the data file
+
+
+def pdev(data, lsa):
+    """The content of a persistent device in its backing files (A24
+    pdevs): no guest involved."""
+    out = {"lsa": None, "lsaSha": None, "headSha": None, "pfn": False, "dataoff": None, "erofs": False,
+           "token": None, "raw": None}
+    with open(lsa, "rb") as f:
+        lb = f.read()
+    out["lsa"] = "zero" if lb.count(0) == len(lb) else "labels"
+    out["lsaSha"] = hashlib.sha256(lb).hexdigest()
+    with open(data, "rb") as f:
+        head = f.read(HEAD)
+        out["headSha"] = hashlib.sha256(head).hexdigest()
+        if head[PFN_OFF:PFN_OFF + len(PFN_SIG)] != PFN_SIG:
+            return out
+        out["pfn"] = True
+        off = struct.unpack_from("<Q", head, PFN_OFF + 56)[0]
+        out["dataoff"] = off
+        f.seek(off)
+        img = f.read(8192)
+    out["raw"] = img[:64].split(b"\0", 1)[0].decode(errors="replace")
+    if img[1024:1028] == EROFS_MAGIC:
+        out["erofs"] = True
+        out["token"] = img[4096:4128].decode(errors="replace").strip("\0 \n")
+    return out
 
 def load_first_json(path):
     with open(path) as f:
@@ -1142,6 +2016,22 @@ def cmd_assemble(args):
             errors.append("attachments %s: %s" % (pool, e))
             obs["attachments"][pool] = None
     mark_missing(obs, errors)
+    if args.pdev:
+        obs["pdevs"] = {}
+        for spec in args.pdev:
+            name, _, files = spec.partition("=")
+            data, _, lsa = files.partition(":")
+            try:
+                obs["pdevs"][name] = pdev(data, lsa)
+            except Exception as e:
+                errors.append("pdevs %s: %s: %s" % (name, type(e).__name__, e))
+                obs["pdevs"][name] = None
+    if args.kill_at:
+        # A23: the state of the driver-kill-at watcher of that VM.
+        v = obs["vms"].get(args.kill_at)
+        obs["killAt"] = (v or {}).get("killAt") if v is not None else None
+        if v is not None and obs["killAt"] is None:
+            obs["killAt"] = {"armed": False, "fired": False, "done": True, "error": "no watcher state in %s" % args.kill_at}
     obs["errors"] = errors
     if args.inspected_out:
         before = []
@@ -1182,9 +2072,21 @@ def main():
     a.add_argument("--inspected-in")
     a.add_argument("--inspected-out")
     a.add_argument("--summary")
+    a.add_argument("--pdev", action="append")
+    a.add_argument("--kill-at")
+    k = sub.add_parser("kill-at")
+    k.add_argument("--marker", required=True, choices=("region", "ns", "mount", "bind"))
+    k.add_argument("--timeout", type=float, default=60)
+    k.add_argument("--interval", type=float, default=2)
+    kd = sub.add_parser("kill-at-disarm")
+    kd.add_argument("--verb", default="the executor")
     args = ap.parse_args()
     if args.cmd == "vm":
         cmd_vm(args)
+    elif args.cmd == "kill-at":
+        cmd_kill_at(args)
+    elif args.cmd == "kill-at-disarm":
+        cmd_kill_at_disarm(args)
     else:
         cmd_assemble(args)
 

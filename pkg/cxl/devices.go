@@ -15,6 +15,7 @@
 package cxl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -369,22 +370,28 @@ func regionDeviceFromSysfs(sysfsRegionPath string) (*RegionDevice, error) {
 		return nil, err
 	}
 
-	// parse decoders from regionX/targetN for N=0,1,...
+	// Parse decoders from regionX/targetN for N=0,1,...: the kernel shows
+	// targetN for N below interleave_ways only. A target that is not set
+	// is empty: in a region that cxl create-region is still setting up, and
+	// in a region whose memory devices were removed before it was destroyed
+	// (the kernel detaches their endpoint decoders and keeps the region,
+	// hollow). Such a region is Hollow, with no Targets and no Memories.
 	for i := 0; ; i++ {
 		var targetDecoder string
-		err := parse(
-			parseIgnoring(ErrMissingFile), // allow missing targetN files
-			parseWithSscanf(fmt.Sprintf("%s/target%d", sysfsRegionPath, i), "%s", &targetDecoder),
-		)
-		if err != nil {
+		path := fmt.Sprintf("%s/target%d", sysfsRegionPath, i)
+		err := parse(parseWithSscanf(path, "%s", &targetDecoder))
+		switch {
+		case errors.Is(err, ErrMissingFile):
+			region.Hollow = len(region.Targets) == 0
+			return region, nil
+		case errors.Is(err, ErrMissingLine):
+			log.Debugf("region %s: %s is not set", region.Name, path)
+			continue
+		case err != nil:
 			return nil, err
-		}
-		if targetDecoder == "" {
-			break
 		}
 		region.Targets = append(region.Targets, targetDecoder)
 	}
-	return region, nil
 }
 
 func endpointDeviceFromSysfs(sysfsEndpointPath string) (*EndpointDevice, error) {

@@ -16,6 +16,7 @@ package memctl
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -163,4 +164,93 @@ func (mc *Manager) explainCreateRegion(memdev string, err error) error {
 	}
 	return fmt.Errorf("%w (CXL decoders released out of order: %s; the kernel creates no region through these ports until %s)",
 		err, strings.Join(s, "; "), until)
+}
+
+// HollowRegion tells whether a region is hollow: it is not committed and
+// has no target decoder set. That is what is left of a region whose memory
+// devices were removed before it was destroyed: the kernel detaches their
+// endpoint decoders and resets the decode, but keeps the region with its
+// address range in the root decoder (the window); no decoder maps that
+// range any more. It is also, for a moment, the state of a region that cxl
+// create-region is setting up, and for good that of one whose setup was
+// cut (the tool killed). cxl destroy-region refuses a hollow region
+// ("cxl_region_get_target_decoder: regionN: error locating decoder for
+// target0"): see DeleteHollowRegion.
+func (mc *Manager) HollowRegion(region string) bool {
+	dir := mc.cxlDev(region)
+	if _, err := os.Stat(dir); err != nil {
+		return false
+	}
+	if c, err := readTrim(filepath.Join(dir, "commit")); err == nil && c != "0" {
+		return false
+	}
+	targets, _ := filepath.Glob(filepath.Join(dir, "target[0-9]*"))
+	for _, t := range targets {
+		if v, err := readTrim(t); err != nil || v != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// RegionRootDecoder returns the root decoder of a region: the parent of its
+// sysfs directory (.../root0/decoder0.1/region1).
+func (mc *Manager) RegionRootDecoder(region string) (string, error) {
+	real, err := filepath.EvalSymlinks(mc.cxlDev(region))
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Base(filepath.Dir(real))
+	if t, _ := readTrim(mc.cxlDev(parent, "devtype")); t != "cxl_decoder_root" {
+		return "", fmt.Errorf("%s: its parent device %s is not a root decoder", region, parent)
+	}
+	return parent, nil
+}
+
+// DeleteHollowRegion deletes a hollow region (see HollowRegion) by writing
+// its name to the delete_region attribute of its root decoder, which is
+// what cxl destroy-region does last, after the target decoders that a
+// hollow region does not have. It holds the lock of the region creations
+// of the process (regionCreateMu): the region is then not one that a cxl
+// create-region of this process is setting up. The caller must know the
+// region as its own (see RegionNote): another process may be setting a
+// hollow region up. A region with memory blocks that are not offline is
+// not deleted: kmem keeps that memory until a reboot, and the region stays
+// with it, as ReleaseRegion keeps such a region. A missing region is not
+// an error.
+func (mc *Manager) DeleteHollowRegion(region string) error {
+	regionCreateMu.Lock()
+	defer regionCreateMu.Unlock()
+	dir := mc.cxlDev(region)
+	if _, err := os.Stat(dir); err != nil {
+		return nil
+	}
+	if !mc.HollowRegion(region) {
+		return fmt.Errorf("%s is not hollow: it is committed or has a target decoder", region)
+	}
+	if blocks, err := mc.RegionBlocks(region); err == nil {
+		var online []int
+		for _, b := range blocks {
+			if st, err := readTrim(mc.block(b, "state")); err != nil || st != "offline" {
+				online = append(online, b)
+			}
+		}
+		if len(online) > 0 {
+			return fmt.Errorf("%s: memory blocks %v of its address range are not offline (kmem keeps them until a reboot): not deleting it", region, online)
+		}
+	}
+	decoder, err := mc.RegionRootDecoder(region)
+	if err != nil {
+		return err
+	}
+	res, _ := readTrim(filepath.Join(dir, "resource"))
+	attr := mc.cxlDev(decoder, "delete_region")
+	if err := mc.writeFile(attr, region); err != nil {
+		return fmt.Errorf("%s: deleting hollow %s: %w", attr, region, err)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("%s: %s still exists after its deletion", attr, region)
+	}
+	mc.logf("deleted hollow %s (resource %s) through %s", region, res, attr)
+	return nil
 }

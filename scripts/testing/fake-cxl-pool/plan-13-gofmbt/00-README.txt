@@ -97,3 +97,8 @@ Status
   model/go.mod requires it, code.var.sh builds with GOWORK=off, the
   stock build is gone (04-status-MODEL.txt 19). L10 (257 steps, 10
   min) PASS on that build.
+2026-10-27: bug-08 fixed in kube-scheduler (10-scheduler-requeue-
+  fix.txt; kubernetes branch 5jr-dra-requeue, commit 4de1561b97c),
+  deployed on vm2, verified A/B; model flag --stall-window (A28).
+  Persistent devices researched (11-findings-persistent.txt), adopted
+  as A22-A27; executor and model work started.

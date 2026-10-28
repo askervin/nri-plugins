@@ -575,3 +575,382 @@ b: b [] with controller b failed (run L1's state); right after
 ctrl-start b still [] (the stub waited 4 s), then a new b slice
 (...-ljkkb). R/run9.log, R/run9-out. Cluster left clean (no
 cxl-pool-demo, ResourceSlices, servers, units, CXL devices).
+
+
+14. Persistent pool devices: A22-A27 (and A28's stall window)
+-------------------------------------------------------------
+2026-10-27 (EXEC, persistent). Inputs 11-findings-persistent.txt (F),
+contract A22-A28. R = /tmp/p13-pexec: runs/runN.log (console),
+runs/runN-out (mbt-*, observations, trace, driver logs),
+evidence-bind/ (the leak of 14.7), steps-hunt.txt. Image: the newest,
+392e3abf548d (v0.15.0-41-g8026ed091-dirty), not rebuilt. The model is
+not updated yet: every run is MBT_STUB=1.
+
+14.1 The erofs template (F 2.2, the risky assumption): it works
+- hello.erofs.hex (8192 bytes, mkfs.erofs 1.9 -b4096 -Enoinline_data):
+  superblock at 1024, feature_compat 7 (SB_CHKSUM | MTIME |
+  XATTR_FILTER, not 3 as F says), root nid 36 (inodes in block 0),
+  hello.txt's 32 bytes in block 1 (4096), bytes 0-1023 zero. The
+  kernel's checksum is crc32c over bytes 1024-4095 of block 0 with the
+  checksum field zeroed (erofs_superblock_csum_verify, "to allow for x86
+  boot sectors"): recomputed off-line, it equals the stored 0x427e00cc,
+  so patching bytes 0-63 and 4096-4127 cannot break it; erofs has no
+  data checksum.
+- pmem-rw.py image writes the template with hello.txt = TOKEN padded
+  with spaces to 31 bytes + "\n" and bytes 0-63 = TOKEN NUL-padded, then
+  fsync. Checked in vm1 (7.3.0-rc4) with a loop device as the driver's
+  cached access makes it (losetup -r --direct-io=on, mount -t erofs -o
+  ro,dax=never) and plainly: hello.txt reads "mbt-777"; the junk image
+  (zeros) is refused, "cannot find valid erofs superblock".
+- Through the driver (runs 1-5): writer pwr-c on vm0 writes, readers on
+  the other VMs read the token: pfsd-c direct (dax=always on
+  /dev/pmem1), pfsc-c cached (loop, dio, dax=never), xpf-c direct on
+  the exclusive device, fs leases direct (pfd) and cached (pfc), block
+  readers (pbro-c, pbr lease) bytes 0-63; the host files show the token
+  at dataoff 2 MiB (pdevs). No contract change needed; the token format
+  is in 14.6.
+- The template is a copy in T (T/hello.erofs.hex): the P8 file is not
+  in git (untracked), a test must not depend on it.
+
+14.2 What was built
+T/pmem-rw.py (new; ConfigMap dax-rw /tools/pmem-rw.py with
+  /tools/hello.erofs.hex): image|junk|read DEV, --fd N image|junk|read,
+  read-file|write-file DIR, hold DIR STOPFILE (mmap read-only, prints
+  "holding ..."), lease block|fs|any OP (the newest Ready or Releasing
+  lease of the container: block through "cxl-request fd --exec ... --fd
+  3", fs at its path; image/junk there are write-file, read read-file).
+  Exit 1 on EACCES/EPERM/EROFS/EBADF, 2 usage.
+dra.source.sh: dra-dax-tool-install VMDIR [NAME=HOST-FILE...] (extra
+  ConfigMap files; old callers unchanged).
+code.var.sh:
+  - mbt-kernel-require in all three VMs: ZONE_DEVICE CXL_REGION CXL_PMEM
+    LIBNVDIMM BLK_DEV_PMEM ND_PFN NVDIMM_PFN DEV_DAX FS_DAX FS_DAX_PMD
+    BLK_DEV_LOOP EROFS_FS =y|m, else a clear error naming the missing
+    ones (all =y on 7.3.0-rc4 everywhere).
+  - pool-c: c-pmem0 (256Mi shared persistent 0xc1ae2002) and c-pmem1
+    (256Mi exclusive persistent 0xc1ee2002) always; their .raw/.lsa in
+    /tmp/fake-cxl-pool-pool-c removed before the server starts, after
+    the end, and in both EXIT traps (a temporary one until dra-install;
+    mbt-exit-trap); mbt-pdev-files checks the paths and a 256 KiB zero
+    LSA. The hb1 slot assert (4 per host) holds: 4 pool-c devices.
+  - the first observation must show both pdevs fresh (lsa zero, no pfn)
+    and no pmem region, node mount, lease bind or pmem loop anywhere.
+  - A28 (orchestrator's request): the kube-scheduler pod's image and its
+    "Starting Kubernetes Scheduler" version; "dra-requeue" in either ->
+    --stall-window=30s; MBT_STALL_WINDOW set by the user wins (6m
+    restores A19); printed ("mbt: stall window: 30s: the kube-scheduler
+    has the dra-requeue fix of bug-08" in runs 1-5: image
+    localhost/kube-scheduler:v1.37.1-dra-requeue.2). The flag is passed
+    after the MBT_* (a measured fact, as --local-blocks); replay warns
+    when the header's --stall-window differs; mbt-header-flags keeps
+    stall-window.
+  Setup cost of the persistent devices: two sparse files and two static
+  devices more in pool-c (no measurable change of the server start), 7
+  templates more in the same apply, two ConfigMap files more, one ssh
+  per VM for the kernel check and two client calls for the files: about
+  1-2 s; from run_tests.sh to step 1 took ~95 s in runs 4-5 (the
+  framework's checks included). Profiles without persistent kinds see the two
+  devices only in pool-c's ResourceSlice (the model's checks ignore
+  devices nobody claims).
+mbt.source.sh:
+  - kinds pwr|pfsd|pfsc|pbro|pbad|xpb|xpf-P (P with persistent devices:
+    c only, other pools: "not a slot", 2) and plse (pods use template
+    mbt-lease, A22); templates as F 2.5 (dra-shared-claim-yaml ...
+    cxl-pool-persistent); mbt-pclass (block, block-ro, fs, plse, none),
+    mbt-pmem-key (C1AE2002 / C1EE2002).
+  - verbs (A23): pwrite SLOT img|junk (token mbt-STEP), pread, hold,
+    unhold, lease-get plse pbw|pbr|pfd|pfc (lease numa|dax as before;
+    each refuses the other's modes, 2), lease-put (plse: --wait
+    $MBT_PLEASE_PUT_WAIT=20s), pwipe P DEV (host, refused 2 while the
+    server lists an attachment of DEV or does not answer; done has
+    "pdev"), driver-kill-at VM region|ns|mount|bind. Persistent verbs on
+    other kinds: 2 (pwrite/pread: none; hold/unhold: not fs/plse).
+  - killAt: mbt-run adds the watcher's state to every done line after
+    the arming (one ssh per step while armed), mbt-observe passes
+    --kill-at VM so the observe line has it too; the first line with
+    "done" true reports it, then it is forgotten. A new arming stops an
+    armed watcher; teardown and the error path stop it.
+  - mbt-observe: --pdev c-pmem0=DATA:LSA and c-pmem1 for assemble.
+  - teardown: per VM no node mount, lease bind or pmem loop
+    (mbt-pmem-held), and nothing under lease-fs/ and mounts/ (60 s).
+  - mbt-exit-trap: after dra-cleanup, if a VM still holds a persistent
+    device, plain umount of the lease binds then node mounts
+    (mbt-pmem-unmount, never -l); if still held: the servers are only
+    stopped and the manual steps printed (test16's rule: releasing a
+    region under a live erofs may crash the guest); else pool-cleanup
+    and the backing files removed.
+mbt-observe.py: the A24 parts (14.4) and "kill-at" (14.3).
+mbt-stub.py: PSTEPS, 98 steps (default list = the volatile list + it,
+  163 steps; MBT_STUB_LIST=volatile|persistent|all), step checks
+  "ACTION => status=N,status!=N,text=$W0" and settle checks
+  "detached=DEV, pdev=DEV:FIELD=V, companions=ready, pmem=none,
+  until=fired"; every settle also waits for the pdevs of a written
+  device to show its token, a pbad pod to be refused ("writable only
+  exclusively" in its events), a fired watcher's driver to restart,
+  and kernel.badTotal 0.
+
+14.3 driver-kill-at: the watcher
+"mbt-observe.py kill-at --marker M --timeout 60" is started with
+setsid -f by one ssh, which waits until state.json says armed (0.5 s).
+The pid of the driver container (crictl, as dra-driver-kill) and the
+baseline are taken at arming; every 2 ms it looks for what was not
+there: region = a CXL region of mode pmem (name not in the baseline, or
+gone and back), ns = a namespace with a size in the nvdimm region of
+such a region (matched by physical address), mount = a new mountinfo
+entry under the pool plugin's mounts/, bind = one under lease-fs/; then
+SIGKILL (the pid again via crictl if the process changed). State:
+marker, armed, fired, done, ms (arming to kill), seen, pid, container,
+stateChanged (preparedPoolClaims.json changed between arming and kill),
+expired, error. In runs 3-5 every marker fired 6.0-6.1 s after arming,
+i.e. at the persistent Prepare that the next create or lease-get
+caused, with stateChanged false (before the save): region "region1"
+(reader pfsd-c on vm1), ns "region1 region1 namespace1.0" (pbro-c on
+vm0, labels present), mount ".../mounts/c1ae2002-cached" (pfsc-c on
+vm1 next to pfsd-c), bind ".../lease-fs/<uid>/mbt" (lease pfd on vm2).
+After a kill the driver container restarts in place; kubelet retries
+the Prepare after ~90 s (the A12 back-off): the region is reused
+("memctl: mem1: reusing region1"), the orphan mount and bind were
+unmounted at start ("... belongs to no prepared claim, unmounting it")
+and are made again; settle 71-96 s.
+
+14.4 Observation additions (A24) and their cost
+Per VM: pmem [{region, serials, resource, size, ndRegion, namespaces
+[{name, mode "memory", size, uuid, holder pfnM.K, map "ram", blockdev,
+major, minor}]}] (seed namespaces of size 0 left out); fsMounts and
+leaseBinds [{target, source, fstype, root, superopts, vfsopts, count,
++ backing/dio/ro for loop sources}]; leaseDirs {leaseFs: {uid: [names]},
+leases: [uids], mounts: [names]} (null for a missing directory);
+loops [{name, backing, dio, ro, autoclear}]; ctrMounts [{pod, uid,
+name, id, mounts: [erofs mounts of /proc/PID/mountinfo]}]; poolClaims
+{uid: {claimName, devices [...], lend {lease, pod, container, fsDir,
+name, mounts}}}; cdiPool {device: {file, env (without the CXL_CLAIM_
+marker), deviceNodes, mounts}} (a small YAML reader: PyYAML is missing
+in vm2 and vm0); kernel {lines (first 20), count, bad, badTotal,
+badFirst, seq} from /dev/kmsg (the first observation of a run is the
+baseline: mbt-observer-install resets it); killAt (state file or null);
+driverLog + busy, inUse, staleBind, notRemounted, orphan. Settle:
+pdevs {dev: {lsa, lsaSha, headSha, pfn, dataoff, erofs, token, raw}}
+and killAt (armed only). inspect of persistent kinds and plse: one
+kubectl exec (env, mountinfo, ls /dev, cxl-request list for plse):
+mount (the mountinfo entry of CXL_<KEY>_PATH, null for block and plse),
+mounts (under /run/cxl/fs), pmemNodes; plse also leases.
+Nothing under a node mount or bind is opened (mountinfo, sysfs,
+listdir of the directories that contain the mount points), no
+/dev/pmem* is opened; the host part reads the backing files only.
+Cost: the VM part on an idle vm1, 10 runs each: HEAD's observer 157
+ms and 410 bytes, the new one 166 ms and 1021 bytes: +9 ms (+6%); the
+host part pdevs of two devices 2 x 3.6 ms (4 MiB head + LSA + sha256).
+Whole settle observations: run 4 (98 persistent steps, up to 8 pods
+and 3 companions) 0.62-0.82 s, mean 0.66 (n 142), at most 25 KB; run 5
+volatile part (steps 1-65) mean 0.71 s, max 1.02 (n 33; run 1 had 0.55
+mean with 10 pods on the cluster of 2026-10-24), persistent part mean
+0.65 s, max 0.87 (n 145). The inspect of a pod of a persistent kind or
+plse is one kubectl exec (the lease kind keeps its two).
+Seen in the cluster (runs 3-5): one pmem region per VM per device
+(region1, nd region1, namespace1.0 with the same uuid on all VMs: the
+labels), the node mount listed once in mountinfo (not twice as F 1.4
+says), cached loop dio and ro and autoclear, CDI minor omitted (0).
+
+14.5 Verified live (MBT_STUB=1; R/runs/runN.log and runN-out)
+  run 1 MBT_STUB_LIST=persistent: FAIL step 39, hold hung 150 s: "eval
+        CMD > log &" in ash keeps the saved copies of the exec's stdout
+        and stderr open in the background job, so kubectl exec waits
+        for the holder; now the holder is an external command started
+        with its redirections (returns in 0.5 s). Steps 1-38 fine.
+  run 2 FAIL step 42: unhold's pgrep matched its own sh -c script; now
+        an anchored pattern of the holder's argv (MBT_HOLDER_RE).
+  run 3 98 steps passed, FAIL in the teardown: vm2 kept a hollow pmem
+        region1 (B1 in 14.7), cxl-dump and the driver's device scan
+        failing on it (B2). The error path cleaned up everything else;
+        the region was removed by hand (delete_region). R/evidence-bind.
+  run 4 MBT_STUB_LIST=persistent, the bind kill followed by a wait for
+        the companion's retry (settle => companions=ready): PASS, 98
+        steps, 12.2 min in all, steps 583 s (four driver-kill-at
+        settles 71-97 s are 330 s of it). Every verb, kind and lease
+        mode, both accesses on two VMs, a reader on each other VM of the
+        writer, hold + lease-put (exit 3 after 20 s, lease Releasing and
+        readable, released 11.9 s after unhold), hold + crash of a claim
+        reader, pwipe when idle (a new writer made the namespace again:
+        lsa zero -> labels, pdevs token of the new pwrite), pwipe of an
+        unknown device (2), the four markers, a crash of the requester of
+        a Ready fs lease (S8: the new container sees the bind, pread
+        ok). Clean teardown and cleanup.
+  run 5 the default list (volatile 65 + persistent 98 = 163 steps):
+        PASS, 14.4 min: the volatile part passes as before with the
+        new executor and observer.
+  run 6 R/steps-hunt.txt, MBT_SETTLE_TIMEOUT=240: S2 (ns marker on a
+        fresh device's writer: killed when the namespace got its size)
+        converged: kubelet's retry 74 s later prepared the writer, the
+        labels were written, the token written and read back, a reader
+        on vm0 read it. S1 with a static claim (region marker, pod
+        deleted 2 s after the kill, before kubelet's retry): FAIL as F
+        predicted, hollow region1 on vm1 (B1). R/evidence-s1, run6-out.
+  After every run: no pods in cxl-pool-demo, no servers, ports 9909-
+  9911 free, no controller units, no CXL memdevs, regions or committed
+  decoders in the VMs (the two hollow regions removed by hand; the
+  error path now does that itself, mbt-hollow-regions-remove), the
+  backing files of c-pmem0/1 removed, nodes Ready. The kube-scheduler
+  of vm2 was not touched. The screen session was not touched. vm1's
+  kernel log has one line "erofs test WARNING: mbt observer self-test"
+  of mine (20:13 UTC), the kernel part's test; every run resets its
+  baseline.
+Durations (run 4, seconds, min-max (n)): create 0.41-0.76 (13), delete
+0.32-0.49 (13), crash 0.41 (2), pwrite 0.52-0.87 (9), pread 0.52-0.92
+(18) and 31.4 on a Refused pod (the exec retry of A15: "container not
+found"), hold 0.53 (2), unhold 0.65, lease-get 5.6-6.2 (5), lease-put
+2.0-4.2 (4) and 20.5 while held, pwipe 0.10, driver-kill-at 0.49-0.57
+(4); a writer or reader Running 8 s after its create; a settle after a
+driver-kill-at that hit a Prepare 71-97 s (kubelet's Prepare retry).
+
+14.6 Deviations from A22-A27, proposed amendment changes
+- A22: c-pmem1 is configured in every profile (bash cannot know the
+  profile's slots, contract 3): amend "in profiles that name xpb/xpf"
+  to "always". Cost: none measurable (14.2). Kinds of a pool without
+  persistent devices are "not a slot" (2).
+- A23 pwrite: the token is mbt-<step> (mbt-run passes the step); in
+  hello.txt it is padded with spaces to 31 bytes and a newline, in
+  bytes 0-63 NUL padded; pread strips both. junk: done text "". On fs
+  kinds and fs leases pwrite tries hello.txt under the mount (status 1,
+  EROFS), on pbro the device node read-write (1, EPERM), on a pbr lease
+  the fd (1, EBADF): P11's "writes fail" are all status 1, and status 2
+  stays for kinds without a persistent device.
+- A23 plse verbs act on the newest lease of the container that is Ready
+  or Releasing (cxl-request list), block through "cxl-request fd
+  --exec", fs at its path; no lease: status 1 ("no Ready block or fs
+  lease"). A lease that is still Lending (after a driver-kill-at bind,
+  until kubelet's retry) is not used: status 1.
+- A23 lease-put of plse: --wait 20s (MBT_PLEASE_PUT_WAIT): a held fs
+  lease gives status 3 after 20 s (the plugin's 120 s default would
+  block the step); the done JSON has "response". Amend: "lease-put of a
+  held fs lease: status 3, the lease Releasing (LeaseBusy)".
+- A23 hold: status 0 once the holder printed "holding" (0.5 s), 1 if it
+  did not (no fs lease, mount gone). unhold: status 0 when no holder
+  runs (also when none ran), 1 if one still runs after 5 s.
+- A23 killAt: on every done and observe line from the arming on, until
+  and including the first one whose state has done true: {"marker",
+  "armed", "fired", "done", "ms" (arming to kill), "seen", "pid",
+  "container", "stateChanged", "watcher", "expired"|"error"}. The model
+  must not read fired false as final while done is false. The arming
+  step's own done line has it (armed). driver-kill-at returns status 1
+  when no driver container runs (not armed).
+- A23 pwipe: refused (2) also when the server does not answer or DEV is
+  not a persistent device of P; done {"pdev": <pdevs entry after>}.
+- A24: fsMounts count is 1 here (F 1.4 said 2: no rshared self-bind
+  duplicate in this cluster); pdevs raw is null without a pfn info
+  block (no namespace), "" for zeros at dataoff; extra headSha (sha256
+  of the first 4 MiB: changes at a writer's namespace creation, pwrite,
+  pwipe only); driverLog "orphan" ("belongs to no prepared claim")
+  extra; inspect "mount" is null for block kinds and plse, plse has
+  "mounts" (under /run/cxl/fs); cdiPool env leaves out the CXL_CLAIM_
+  marker; kernel {lines, count, bad, badTotal, badFirst, seq}: P7 should
+  use badTotal (cumulative since the run's first observation).
+- A25 timing facts: a Prepare cut by driver-kill-at is retried by
+  kubelet ~90 s later (settle 71-97 s); the lease of a companion whose
+  Prepare was cut stays Lending until then (lease-get itself fails,
+  status 1, "reading response: ... EOF"); a held fs lease is released
+  ~12 s after unhold; a refused pbad shows "writable only exclusively"
+  in a Warning event within one settle.
+- A26 P4 and A27: until B1 is fixed, a delete of the pod (or a release
+  of the lease) of a claim whose Prepare a driver-kill-at cut, before
+  kubelet's retry, leaks the region: generate must not do that (or
+  predict B1: a hollow region of the device on that VM, see 14.7).
+- A28: implemented as asked (14.2).
+
+14.7 Suspected SUT bugs (not fixed; for the orchestrator)
+B1 (S1 of F 4, confirmed twice) A driver killed in a persistent Prepare
+   after the region was created and before the state was saved, and the
+   claim released before kubelet retries the Prepare: the pmem region
+   is never destroyed. The Unprepare of the claim that the restarted
+   driver does not know returns nil (D/pool.go:786-789), restoreMounts
+   unmounts the orphan node mount and bind but sweeps no region
+   (D/pool.go:252-277); the controller then detaches the memdev, and the
+   kernel leaves the region behind hollow: mode pmem, commit 0, target0
+   "", no nvdimm region, its HPA range of the window kept.
+   a) run 6 (static claim): driver-kill-at vm1 region, create
+      pfsd-c@vm1#0, kill 6.1 s later at region1 (stateChanged false),
+      delete 2 s later; kubelet: NodeUnprepareResources Unavailable while
+      the driver restarted, then ok; c-pmem0 detached from vm1; vm1
+      region1 hollow (resource 0x850000000) until removed by hand.
+      R/evidence-s1/vm1-state.txt, R/runs/run6-out (mbt-obs, trace,
+      nri-dra-driver-cxl.vm1.*.log), run6.log steps 19-23.
+   b) run 3 (lease): driver-kill-at vm2 bind, lease-get plse@vm2#0 pfd:
+      the killed driver logged "prepared c-pmem0 ... region1 ... mount"
+      and "lease 3a2c8f5d: bound ..." 20:28:01.31, then died; the new one
+      "lease-fs/<uid>/mbt belongs to no prepared claim, unmounting it",
+      ".../mounts/c1ae2002-direct belongs to no prepared claim", loaded
+      the lease (Lending); lease-put 14 s later "releasing (released by
+      main, was Lending)", "released"; the companion's Unprepare freed
+      nothing; vm2 region1 hollow (0x890000000). R/evidence-bind/
+      vm2-state.txt, R/runs/run3-out/nri-dra-driver-cxl.vm.*.log.
+   Effects: pool-vm-reset of the next test restarts that VM (it counts
+   regions); cxl destroy-region refuses it ("cxl_region_get_target_
+   decoder: region1: error locating decoder for target0"); delete_region
+   of root decoder decoder0.1 removes it. Fix ideas (driver): sweep
+   pmem regions of pool serials that no prepared claim has at start (as
+   restoreMounts sweeps mounts), or persist an in-flight record before
+   CreatePmemRegion.
+B2 (consequence of B1, in pkg/cxl) While a hollow region exists the
+   driver's device scan fails on every rescan: "rescanAndPublish:
+   failed to detect devices: cxl: missing line: no line in
+   "/sys/bus/cxl/devices/region1/target0" matches format "%s"" (vm2
+   20:28:22 and 20:30:33, R/runs/run3-out/nri-dra-driver-cxl.vm.log;
+   vm1 21:09:48, R/evidence-s1/vm1-state.txt), so the node's
+   ResourceSlices are no longer updated, and cxl-dump (the teardown's
+   pool-cxl-wait) fails the same way. An empty target should not fail
+   the whole scan.
+Not bugs, facts: the bind kill makes the requester's lease-get fail
+with EOF (the broker is in the killed process) and the lease stays
+Lending until kubelet's retry (71 s), then Ready and readable (run 4);
+S2 (kill when the fresh namespace got its size) converged (run 6); S8
+(requester crash with a Ready fs lease) keeps the bind visible (runs
+4, 5).
+
+14.8 Open
+- The model (another agent) has to read the A24 fields above; the
+  stub only checks what 14.2 lists.
+- pread/pwrite on a pod that is not Running (pbad) take 31 s: the
+  kubectl exec retry of A15 also retries "container not found". The
+  model should not send them, or the retry could skip that message.
+- MBT_STUB=1 now takes ~14.5 min (was 4.3 min): MBT_STUB_LIST=volatile
+  gives the old smoke test.
+- shellcheck: mbt.source.sh, code.var.sh only SC2016 (retry-until
+  snippets) and the cross-file SC2034/SC2154 as before; dra.source.sh
+  unchanged classes (22 SC2016, 6 SC2034, 1 SC2154).
+
+15. driver-kill-at and driver restarts (run PM2, steps 58-63)
+-------------------------------------------------------------
+2026-10-28 (EXEC). The bug (mine): at a hit, the watcher re-resolved the
+driver via crictl when its armed process had changed, so after
+driver-restart vm2 (step 59) it SIGKILLed the NEW container 10.2 s after
+arming (the extra restart that failed step 63).
+Fixed (T/mbt-observe.py, T/mbt.source.sh):
+- The watcher is bound to the process it was armed against (a pidfd:
+  os.pidfd_open, signal.pidfd_send_signal; without pidfds, pid + start
+  time). Every poll checks it: once it has ended (any driver restart),
+  the watcher ends with done true, fired false, reason "driver
+  restarted". A kill can only reach that process; no re-resolve.
+- New state field "reason": fired | expired | driver restarted |
+  disarmed by VERB | no running driver container.
+- Explicit disarm (my call, for the model to predict): driver-kill,
+  driver-restart and containerd-restart of the VM of an armed watcher
+  disarm it first (mbt-observe.py kill-at-disarm): done true, fired
+  false, reason "disarmed by <verb>" (unless it fired or ended before:
+  then that state); the done line of that same step carries it, and
+  killAt is not reported after it. kubelet-restart does not disarm (the
+  driver keeps running; it stays armed).
+- killAt reporting (A30) was not broken: the done lines of steps 59-62
+  carried the armed state and observation 1 of step 63 carried done/
+  fired true (mbt-exec.log 00:12:56.499 "driver-kill-at vm2 done" in
+  step 63's first observation); observations 2-31 have null by A30, and
+  obs-000063-001.json was rotated out of mbt-obs (MBT_OBS_KEEP 30).
+  With the disarm the final state now comes in the driver-restart line.
+Verified: run 7 (MBT_STUB=1 MBT_STUB_STEPS=R/steps-disarm.txt, stub
+checks "killat=REASON" and "restarts=VM:N" added), PASS, 23 steps:
+driver-kill-at vm2 region + driver-restart vm2 -> its done line
+{"done": true, "fired": false, "reason": "disarmed by driver-restart"},
+pfsd-c@vm2#0 Running, driver vm2 restarts 0; driver-kill-at vm1 +
+driver-kill vm1 -> "disarmed by driver-kill", restarts 1 only; a watcher
+that is left alone still fires (vm0, reason "fired", 6.1 s). Pidfd
+binding tested locally too: once the armed process exited, the kill
+fails (ESRCH) and a new process is untouched. Cluster left clean, lock
+released. R/runs/run7.log, run7-out.

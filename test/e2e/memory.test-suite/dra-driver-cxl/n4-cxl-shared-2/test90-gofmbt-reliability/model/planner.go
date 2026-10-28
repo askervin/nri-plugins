@@ -75,7 +75,9 @@ func newMbtModel(cfg *Config) *mbtModel {
 		mm.actions = append(mm.actions, act)
 		mm.all = append(mm.all, i)
 		mm.formats = append(mm.formats, f)
-		if a.Verb == VSettle || a.Verb == VWrite || a.Verb == VRead {
+		switch a.Verb {
+		case VSettle, VWrite, VRead, VPWrite, VPRead, VHold, VUnhold, VPWipe:
+			// (the synchronous ones are allowed when a settle is forced)
 			mm.forced = append(mm.forced, i)
 		}
 	}

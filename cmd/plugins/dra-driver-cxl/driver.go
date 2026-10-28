@@ -492,6 +492,10 @@ PluginDataDirectoryPath: %v`,
 		pool.lending().set(lender, driver.broker)
 		driver.state.lending.set(lender, driver.broker)
 		driver.broker.start(lender)
+	} else {
+		// lending disabled: a lend recorded before is not revoked
+		pool.lending().set(nil, nil)
+		driver.state.lending.set(nil, nil)
 	}
 
 	// Start udev event watcher for NUMA node hotplug detection.

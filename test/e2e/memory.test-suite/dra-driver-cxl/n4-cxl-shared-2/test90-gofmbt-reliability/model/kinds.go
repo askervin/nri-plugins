@@ -37,16 +37,46 @@ const (
 	KLSteer             // a numa slice with steering policy auto
 	KLease              // a lease claim
 	KPlain              // no claim
+	// persistent pool devices (A22): c-pmem0 shared, c-pmem1 exclusive
+	KPWr  // the writer: c-pmem0 whole (no shares), block rw
+	KPFsd // a share, fs direct (read-only)
+	KPFsc // a share, fs cached at /models (read-only)
+	KPBro // a share, block read-only
+	KPBad // a share, block rw: refused by the config at every Prepare
+	KXPb  // c-pmem1, block rw (writer)
+	KXPf  // c-pmem1, fs direct (read-only)
+	KPlse // a lease claim whose leases are of c-pmem0 (pbw, pbr, pfd, pfc)
 	nKinds
 )
 
 // kindNames are the families (the kind without its pool).
-var kindNames = [nKinds]string{"xnuma", "xdax", "sdax", "sro", "sexcl", "lnuma", "ldax", "lsteer", "lease", "plain"}
+var kindNames = [nKinds]string{"xnuma", "xdax", "sdax", "sro", "sexcl", "lnuma", "ldax", "lsteer", "lease", "plain",
+	"pwr", "pfsd", "pfsc", "pbro", "pbad", "xpb", "xpf", "plse"}
 
 func (k Kind) String() string { return kindNames[k] }
 
 // pooled: the kind has a pool device.
-func (k Kind) pooled() bool { return k <= KSExcl }
+func (k Kind) pooled() bool { return k <= KSExcl || k.persistent() }
+
+// persistent: the kind has a persistent pool device (A22).
+func (k Kind) persistent() bool { return k >= KPWr && k <= KXPf }
+
+// fsKind: the claim mounts an erofs of a persistent device (read-only).
+func (k Kind) fsKind() bool { return k == KPFsd || k == KPFsc || k == KXPf }
+
+// blockKind: the claim is a block device of a persistent device.
+func (k Kind) blockKind() bool { return k == KPWr || k == KPBro || k == KPBad || k == KXPb }
+
+// writer: the claim may write a persistent device (block rw, the whole
+// device); its Prepare creates the fsdax namespace of a fresh device.
+func (k Kind) writer() bool { return k == KPWr || k == KXPb }
+
+// wholeShared: the claim takes a shared device without shares: its
+// attachment is exclusive.
+func (k Kind) wholeShared() bool { return k == KSExcl || k == KPWr }
+
+// leaseKind: the slot's claim is a lease claim.
+func (k Kind) leaseKind() bool { return k == KLease || k == KPlse }
 
 // local: the kind has a slice of the local memdev.
 func (k Kind) local() bool { return k == KLNuma || k == KLDax || k == KLSteer }
@@ -60,7 +90,9 @@ func (k Kind) dax() bool {
 }
 
 // share: the kind takes a share of a shared device.
-func (k Kind) share() bool { return k == KSDax || k == KSRo }
+func (k Kind) share() bool {
+	return k == KSDax || k == KSRo || k == KPFsd || k == KPFsc || k == KPBro || k == KPBad
+}
 
 // onShared: the kind uses the shared device of its pool.
 func (k Kind) onShared() bool { return k == KSDax || k == KSRo || k == KSExcl }
@@ -165,9 +197,16 @@ func parseSlot(name string) (Slot, error) {
 		if vm != VMAny && !poolHasHost(p, vm) {
 			return Slot{}, fmt.Errorf("slot %q: pool %s has no host %s", name, p, vm)
 		}
-		if k.onShared() {
+		switch {
+		case k.persistent() && p != PoolC:
+			return Slot{}, fmt.Errorf("slot %q: persistent devices are pool-c's (A22)", name)
+		case k == KXPb || k == KXPf:
+			s.Dev = cPmem1
+		case k.persistent():
+			s.Dev = cPmem0
+		case k.onShared():
 			s.Dev = sharedDev(p)
-		} else {
+		default:
 			s.Dev = pooledDev(p)
 		}
 		s.Res = Res(s.Dev)
@@ -215,9 +254,26 @@ var profiles = map[string][]string{
 		"xnuma-a@vm1#0", "xdax-a@vm2#0", "sdax-c@vm0#0", "sexcl-c@vm1#0",
 		"lnuma@vm0#0", "ldax@vm0#0", "lsteer@vm2#0", "lease@vm0#0", "plain@vm0#0",
 	},
+	// persistent devices, first trials (11-findings-persistent.txt 3.3):
+	// a writer on two VMs, both accesses on two VMs, a block reader,
+	// fs leases, volatile hb1 neighbours for A9
+	"pmem": {
+		"pwr-c@vm0#0", "pwr-c@vm2#0", "pfsd-c@vm1#0", "pfsd-c@vm2#0",
+		"pfsc-c@vm1#0", "pfsc-c@vm2#0", "pbro-c@vm0#0", "plse@vm1#0",
+		"plse@vm2#0", "sdax-c@vm0#0", "xnuma-c@vm1#0",
+	},
+}
+
+// persistentSlots are fullp's slots beyond full (3.3, with c-pmem1).
+var persistentSlots = []string{
+	"pwr-c@vm0#0", "pwr-c@vm2#0", "pwr-c@any#0", "pfsd-c@vm1#0",
+	"pfsd-c@vm2#0", "pfsd-c@vm2#1", "pfsd-c@any#0", "pfsc-c@vm0#0",
+	"pfsc-c@vm1#0", "pfsc-c@vm2#0", "pbro-c@vm1#0", "pbad-c@vm0#0",
+	"plse@vm0#0", "plse@vm1#0", "plse@vm2#0", "xpb-c@vm1#0", "xpf-c@vm0#0",
 }
 
 func init() {
+	profiles["fullp"] = append(append([]string(nil), profiles["full"]...), persistentSlots...)
 	// "union": the slots of full and small (replays of runs that used
 	// both, like the executor's stub lists)
 	seen := map[string]bool{}

@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -921,6 +922,70 @@ var settleOffline = 500 * time.Millisecond
 
 var regionNameRe = regexp.MustCompile(`"region"\s*:\s*"(region\d+)"`)
 
+// regionCreateMu serializes the region creations of the process (the pool
+// driver and the local allocator, each with a Manager of its own) with
+// DeleteHollowRegion, so that the name of the next region read before a
+// creation is the one it gets (from this process), and a hollow region is
+// never one that this process is setting up.
+var regionCreateMu sync.Mutex
+
+// RegionNote is told the region that a cxl create-region creates under a
+// root decoder: before it runs (created false), the name of the next
+// region of the decoder (its create_ram_region or create_pmem_region, ""
+// if it cannot be read), and after it succeeded (created true), the name
+// of the region it created. A caller records the name to find a region
+// that a create-region which did not finish (the process killed) leaves
+// hollow. An error of the first call is returned and no region is
+// created; an error of the second call is logged.
+type RegionNote func(region, decoder string, created bool) error
+
+// createRegion runs cxl create-region for a region of the type (RegionRAM
+// or RegionPmem) of size bytes (0: all of the capacity) on the memdev
+// under the decoder, telling note (nil: none), and returns the region.
+func (mc *Manager) createRegion(ctx context.Context, memdev, decoder, regionType string, size uint64, note RegionNote) (string, error) {
+	args := []string{"create-region", "-t", regionType, "-d", decoder, "-m", memdev}
+	if size > 0 {
+		args = append(args, "-s", strconv.FormatUint(size, 10))
+	}
+	attr := "create_ram_region"
+	if regionType == RegionPmem {
+		attr = "create_pmem_region"
+	}
+	var noteErr error
+	out, err := func() (string, error) {
+		regionCreateMu.Lock()
+		defer regionCreateMu.Unlock()
+		if note != nil {
+			next, _ := readTrim(mc.cxlDev(decoder, attr))
+			if noteErr = note(next, decoder, false); noteErr != nil {
+				return "", noteErr
+			}
+		}
+		return mc.Exec(ctx, "cxl", args...)
+	}()
+	if noteErr != nil {
+		return "", noteErr
+	}
+	if err != nil {
+		return "", mc.explainCreateRegion(memdev, err)
+	}
+	region := ""
+	if m := regionNameRe.FindStringSubmatch(out); m != nil {
+		region = m[1]
+	} else if rs := mc.Regions(memdev); len(rs) > 0 {
+		region = rs[0]
+	} else {
+		return "", fmt.Errorf("cxl create-region did not report a region: %s", out)
+	}
+	if note != nil {
+		if err := note(region, decoder, true); err != nil {
+			mc.logf("%s: %s: %v", memdev, region, err)
+		}
+	}
+	mc.logf("%s: created %s (%s) under %s", memdev, region, regionType, decoder)
+	return region, nil
+}
+
 // CreateRegion creates a volatile region on the memdev under the decoder
 // (the root decoder of its host bridge if ""), and binds its dax device for
 // the mode: device_dax for ModeDax (memory never onlined), kmem for
@@ -934,6 +999,12 @@ func (mc *Manager) CreateRegion(ctx context.Context, memdev, mode, decoder strin
 // (cxl create-region -s), 0 maps all of it. The size must be a multiple of
 // 256 MiB, the alignment of CXL regions.
 func (mc *Manager) CreateRegionSize(ctx context.Context, memdev, mode, decoder string, size uint64) (*RegionInfo, error) {
+	return mc.CreateRegionNoted(ctx, memdev, mode, decoder, size, nil)
+}
+
+// CreateRegionNoted is CreateRegionSize, telling note (nil: none) about a
+// region that it creates (not about one that it reuses).
+func (mc *Manager) CreateRegionNoted(ctx context.Context, memdev, mode, decoder string, size uint64, note RegionNote) (*RegionInfo, error) {
 	if err := ValidMode(mode); err != nil {
 		return nil, err
 	}
@@ -954,22 +1025,10 @@ func (mc *Manager) CreateRegionSize(ctx context.Context, memdev, mode, decoder s
 			}
 			decoder = d
 		}
-		args := []string{"create-region", "-t", "ram", "-d", decoder, "-m", memdev}
-		if size > 0 {
-			args = append(args, "-s", strconv.FormatUint(size, 10))
+		var err error
+		if region, err = mc.createRegion(ctx, memdev, decoder, RegionRAM, size, note); err != nil {
+			return nil, err
 		}
-		out, err := mc.Exec(ctx, "cxl", args...)
-		if err != nil {
-			return nil, mc.explainCreateRegion(memdev, err)
-		}
-		if m := regionNameRe.FindStringSubmatch(out); m != nil {
-			region = m[1]
-		} else if rs := mc.Regions(memdev); len(rs) > 0 {
-			region = rs[0]
-		} else {
-			return nil, fmt.Errorf("cxl create-region did not report a region: %s", out)
-		}
-		mc.logf("%s: created %s under %s", memdev, region, decoder)
 	}
 	// the dax device appears asynchronously
 	var dax string

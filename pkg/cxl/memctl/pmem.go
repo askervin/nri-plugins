@@ -356,6 +356,12 @@ func (mc *Manager) Namespaces(ctx context.Context, ndregion string) ([]Namespace
 // enabled if needed; an existing region of the memdev is reused. The
 // namespaces are those of the labels of the memdev.
 func (mc *Manager) CreatePmemRegion(ctx context.Context, memdev, decoder string) (*PmemRegion, error) {
+	return mc.CreatePmemRegionNoted(ctx, memdev, decoder, nil)
+}
+
+// CreatePmemRegionNoted is CreatePmemRegion, telling note (nil: none)
+// about a region that it creates (not about one that it reuses).
+func (mc *Manager) CreatePmemRegionNoted(ctx context.Context, memdev, decoder string, note RegionNote) (*PmemRegion, error) {
 	if _, err := os.Stat(mc.cxlDev(memdev, "driver")); err != nil {
 		if _, err := mc.Exec(ctx, "cxl", "enable-memdev", memdev); err != nil {
 			return nil, err
@@ -376,18 +382,10 @@ func (mc *Manager) CreatePmemRegion(ctx context.Context, memdev, decoder string)
 			}
 			decoder = d
 		}
-		out, err := mc.Exec(ctx, "cxl", "create-region", "-t", RegionPmem, "-d", decoder, "-m", memdev)
-		if err != nil {
-			return nil, mc.explainCreateRegion(memdev, err)
+		var err error
+		if region, err = mc.createRegion(ctx, memdev, decoder, RegionPmem, 0, note); err != nil {
+			return nil, err
 		}
-		if m := regionNameRe.FindStringSubmatch(out); m != nil {
-			region = m[1]
-		} else if rs := mc.Regions(memdev); len(rs) > 0 {
-			region = rs[0]
-		} else {
-			return nil, fmt.Errorf("cxl create-region did not report a region: %s", out)
-		}
-		mc.logf("%s: created %s (pmem) under %s", memdev, region, decoder)
 	}
 	// the nvdimm region appears asynchronously
 	var nd string

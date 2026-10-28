@@ -52,6 +52,16 @@ func freesClaim(st *State, a Act) bool {
 	return sl.Kind.claimed() && !sl.Kind.pooled() && ss.Phase != Pending && ss.Phase != Absent
 }
 
+// releasesPLease: the action released the persistent lease of a plse
+// slot (its companion goes).
+func releasesPLease(from, to *State, i int) bool {
+	if i < 0 || from.slot(i).Kind != KPlse {
+		return false
+	}
+	f, t := from.Slots[i].Lease, to.Slots[i].Lease
+	return (f == LeaseHeld || f == LeaseBusy) && t == LeaseReleasing && from.Slots[i].LeaseMode.persistent()
+}
+
 // refPoll advances the reference to the poll of a settle (bash observes
 // about 0.5 s after the step, then every MBT_POLL 3 s) and resolves the
 // prediction against it.
@@ -127,8 +137,7 @@ func (s *sim) refMismatch(st *State) int {
 		if (c.Slices == SlicesPresent) != rc.slices || c.Slices == SlicesUnknown {
 			n++
 		}
-		for d := 0; d < 2; d++ {
-			dev := DevID(2*int(p) + d)
+		for d, dev := range poolDevs(p) {
 			for v := VM(0); v < nVMs; v++ {
 				got := r.attState(dev, v)
 				switch c.Att[d][v] {
@@ -203,10 +212,13 @@ func (s *sim) resolveRef(pred *State) *State {
 		}
 		switch ss.Phase {
 		case Either:
-			if ph == rpBound {
-				ss.Phase = Running
-			} else {
+			switch {
+			case ph != rpBound:
 				ss.Phase = Attaching
+			case ss.Refuse:
+				ss.Phase = Refused
+			default:
+				ss.Phase = Running
 			}
 		case Stalled:
 			if ph != rpAlloc && ph != rpBound {
@@ -225,11 +237,16 @@ func (s *sim) resolveRef(pred *State) *State {
 				// its Prepare: the region, unless a hole is in
 				// the way (A9)
 				if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-					if n.Stacks[si].hasHole() {
+					switch {
+					case n.Stacks[si].hasHole() && sl.Kind != KPBad:
 						ss.Phase = Blocked
-					} else {
+					case ss.Refuse:
+					default:
 						n.Stacks[si].push(key)
 					}
+				}
+				if ss.Refuse && ss.Phase == Running {
+					ss.Phase = Refused
 				}
 			}
 		}
@@ -276,16 +293,55 @@ func (s *sim) resolveRef(pred *State) *State {
 		}
 	}
 	n.growFence()
+	// a namespace that the truth leaves maybe was not made if the
+	// reference let no writer of the device prepare (fuzz, pmem seeds
+	// 9442, 9762: the truth's own window had the writer's Prepare that
+	// the reference never allowed)
+	for x := range n.PDev {
+		if pd := &n.PDev[x]; pd.NS == TriMaybe && s.prev != nil && !s.refWriterPrepared(n, cPmem0+DevID(x)) {
+			p := &s.prev.PDev[x]
+			pd.NS, pd.LsaSha, pd.HeadSha = p.NS, p.LsaSha, p.HeadSha
+		}
+	}
+	s.fixPDev(n)
+	for v := range n.Drv {
+		n.Drv[v].KillAt, n.Drv[v].KillAtAt = 0, 0
+	}
 	return n
+}
+
+// refWriterPrepared: the reference may have let a writer of device d
+// prepare (its claim attached or its pod bound, also a deleted one), or
+// a pbw lease is in the state.
+func (s *sim) refWriterPrepared(n *State, d DevID) bool {
+	r := s.ref
+	for i := range n.Slots {
+		sl := n.slot(i)
+		if sl.Kind == KPlse && n.Slots[i].LeaseMode == ModePBW {
+			return true
+		}
+		if !sl.Kind.writer() || sl.Dev != d {
+			continue
+		}
+		if p := r.pod(i); p != nil && (p.attached || p.bound) {
+			return true
+		}
+		for _, p := range r.old {
+			if p.slot == i && (p.attached || p.bound) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // refAtts sets the attachments of a state to the reference's (attached
 // and detaching ones have their memdev in the VM).
 func (s *sim) refAtts(st *State) {
 	for p := Pool(0); p < nPools; p++ {
-		for d := 0; d < 2; d++ {
+		for d, dev := range poolDevs(p) {
 			for v := VM(0); v < nVMs; v++ {
-				switch s.ref.attState(DevID(2*int(p)+d), v) {
+				switch s.ref.attState(dev, v) {
 				case "attached", "detaching":
 					st.Ctrl[p].Att[d][v] = TriYes
 				default:

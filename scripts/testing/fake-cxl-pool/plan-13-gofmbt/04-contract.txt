@@ -350,3 +350,130 @@ A21 (20-mbtopt-04-status-DEBUG.txt, M9; refinements of A19 and A9)
    Simulator (not contract): the plain simulator's hold lasts one
    window after the settle that ended the delete's window; a promoted
    stalled contender is Blocked by a hole on its stack like any other.
+A22-A27 (2026-10-27, adopted from 11-findings-persistent.txt section 5;
+   the reason and the evidence of every rule are there; the stall
+   window of A19 is configurable for a fixed kube-scheduler: A28 to
+   come with --stall-window)
+A22 (persistent devices) Pool-c gets c-pmem0 256Mi shared persistent
+   0xc1ae2002 and, in profiles that name xpb/xpf, c-pmem1 256Mi
+   exclusive persistent 0xc1ee2002; their data and .lsa files are
+   removed before pool-c starts and at the cleanup. Kinds (claim c0,
+   class cxl-pool-persistent, serial selector; env of CXL_<KEY>_,
+   SIZE = the namespace size, 266338304 for 256Mi):
+     pwr-P   no shares, device {mode: block}
+             MODE=block SHARED=1 READONLY=0 PATH=/dev/pmem* SIZE
+     pfsd-P  shares 1, {mode: fs, readOnly: true}
+             MODE=fs ACCESS=direct READONLY=1 PATH=/run/cxl-fs/<KEY>
+     pfsc-P  shares 1, {mode: fs, readOnly: true, access: cached,
+             path: /models}  MODE=fs ACCESS=cached PATH=/models
+     pbro-P  shares 1, {mode: block, readOnly: true}  READONLY=1
+     pbad-P  shares 1, {mode: block}: Refused at every Prepare
+     xpb-P, xpf-P  c-pmem1, no capacity, block rw / fs direct, SHARED=0
+     plse    class cxl-lease (template mbt-lease); persistent leases
+   Every fs container has no /dev/pmem*, every block container exactly
+   PATH. Profiles "pmem" and "fullp" (11-findings-persistent.txt 3.3).
+A23 (verbs)
+   pwrite SLOT img|junk  writer kinds and plse with a pbw lease: img
+     writes the 8192-byte template erofs whose hello.txt (32 bytes) and
+     bytes 0-63 hold "mbt-<step>" padded, then fsync; junk writes zeros
+     over 0-8191. done {"text": token|null, "stderr"}; nonzero on a
+     read-only claim or fd.
+   pread SLOT  fs kinds: hello.txt under PATH (claim) or the lease's
+     path; block kinds and pbw/pbr leases: bytes 0-63. done {"text"}.
+   hold SLOT, unhold SLOT  fs claims and fs leases: a background
+     process maps hello.txt read-only until unhold; crash and delete
+     end it. done {}.
+   lease-get SLOT pbw|pbr|pfd|pfc  plse: request --serial of c-pmem0
+     --mode block | --shared --read-only --mode block | --shared
+     --read-only --mode fs --name mbt | ... --access cached; --wait
+     60s; done as A1 lease-get. lease-put as before.
+   pwipe P DEV  host: zero DEV's .lsa and the first 4 MiB of its data
+     file; refused (status 2) while the server lists an attachment.
+   driver-kill-at VM MARKER (MARKER region|ns|mount|bind)  arm a
+     one-shot watcher that kills the driver of VM at the marker of the
+     next persistent Prepare there; return at once; the next done or
+     observe line carries "killAt":{"fired":bool,"marker":...,"ms":N}.
+   Bash refuses these verbs on other kinds with status 2.
+A24 (observation) per VM: "pmem", "fsMounts", "leaseBinds",
+   "leaseDirs", "loops", "ctrMounts", "poolClaims", "cdiPool",
+   "kernel" as 11-findings-persistent.txt 2.6, driverLog counts
+   "busy", "inUse", "staleBind", "notRemounted"; settle "pdevs":{"c-
+   pmem0":{"lsa":"zero|labels","lsaSha":...,"pfn":bool,"dataoff":N,
+   "erofs":bool,"token":...|null,"raw":...}}; inspect adds "mount"
+   (the mountinfo line of PATH) and "pmemNodes" (ls /dev/pmem*). The
+   observer opens no file under a node mount or a lease bind and never
+   opens /dev/pmem* (A11 completeness: a null part is "wait").
+A25 (predictions) Phase Refused: an allocated, attached claim whose
+   Prepare the device refuses (fs: no fsdax namespace or no erofs;
+   block ro: no namespace) or the config refuses (pbad); Pending,
+   ContainerCreating, its Warning event names the cause; retried
+   ~60-90 s apart; it holds its share; its region may be seen or not;
+   its share keeps every writer out, so the content cannot become
+   valid meanwhile: Refused lasts until the pod is deleted. Device
+   content PDev (NS, FS, token) changes only at a writer's Prepare on
+   a device without namespace, pwrite and pwipe; a writer deleted or
+   killed while Starting leaves NS maybe, adopted from pdevs. LeaseBusy:
+   lease-put of a held fs lease leaves the lease Releasing, its
+   companion Terminating, bind, node mount and region in place and
+   pread working, until unhold, crash or delete; then released within
+   60 s. A persistent region on vm/hb1 lives from the first to the
+   last prepared claim of the device on the VM (A9 shared-device
+   rule); a Refused claim's retry pushes and pops it at the top.
+   Faults do not change PDev, mounts or binds; after any driver restart
+   the node mounts and binds of prepared claims are those of before.
+A26 (invariants) P1-P11 of 11-findings-persistent.txt 3.9: no stale
+   node mount, no bind left, no loop without a cached mount, no pmem
+   region without a prepared claim (Refused: either), no namespace
+   lost (UUID constant), data and labels intact (pdevs == PDev;
+   hashes change only at A25's events), no kernel BUG/Oops/WARNING
+   and no failed or leaked attachment of a persistent device, lease
+   directories only for prepared lease claims, exclusive attachment
+   iff a writer holds the device, CDI and env as A22.
+A27 (generation) off-line: no driver-kill-at, no pwipe while a claim
+   of the device may be allocating, no Refused next to a pool-c region
+   change on the same VM; a pwrite only by a Running writer; hold only
+   on a Running fs kind; at most one persistent lease per plse slot.
+   MBT_AVOID can name pwipe, driver-kill-at and hold.
+A28 (2026-10-27, bug-08 fixed in kube-scheduler, 10-scheduler-requeue-
+   fix.txt) MBT_ARGS --stall-window D bounds how long a stalled
+   contender (A19) may stay Pending, counted from the start of the
+   settle that first saw it stalled; default 6m (A19 as is). If D is
+   not longer than MBT_SETTLE_TIMEOUT, a stalled contender is not
+   settled: the settle waits for its promotion (allocated and waiting
+   for the attach, or Running) and fails when D is over. The A19
+   generator rules stay. The steps-file header carries the flag (A16).
+   For the patched kube-scheduler use --stall-window=30s.
+A29 (2026-10-27, 04-status-MODEL section 21) (a) the JSON names of A24
+   are the executor's (T/mbt-observe.py); (b) A27's pwrite is "by a
+   Running pod" of any persistent kind: on a read-only claim or fd it
+   must fail (P11); (c) lease-put of a held fs lease returns nonzero
+   (cxl-request release --wait exits 3) and leaves the lease
+   LeaseBusy (A25); (d) S4: a lease-get while driver-kill-at bind is
+   armed on its VM either returns 0 with the lease Ready (after the
+   driver's restart and the broker's reconcile) or nonzero with the
+   lease Failed and released; the oracle accepts both and adopts the
+   observed one; the bind marker is then generated like the others.
+A30 (2026-10-27, 04-status-EXEC section 14) c-pmem0 and c-pmem1 are
+   always configured on pool-c (bash cannot know the profile); the
+   erofs image is the 8 KiB template T/hello.erofs.hex patched (the
+   superblock checksum covers bytes 1024-4095 only; feature_compat
+   7); a failed write on a read-only kind exits 1 (status 2 stays
+   "verb refused for this kind"); lease-put on plse waits 20 s and
+   exits 3 on a held lease (A29 c); killAt is on every done and observe
+   line until one has "done": true ("fired": false is final only
+   then); a node mount appears once in mountinfo; "raw" is null
+   without a namespace. code.var.sh passes --stall-window=30s when vm2
+   runs the fixed kube-scheduler (A28; MBT_STALL_WINDOW wins).
+   No generator restriction for bug-11: the model predicts the correct
+   behaviour (no leaked region, P2/P4); runs before the fix leave
+   driver-kill-at out with MBT_AVOID.
+A31 (2026-10-28, run PM2, 04-status-EXEC section 15) A driver-kill-at
+   watcher is bound to the driver process it was armed against (a
+   pidfd): it never kills another process. driver-kill, driver-restart
+   and containerd-restart on its VM disarm it first: that step's done
+   line carries killAt done true, fired false, reason "disarmed by
+   <verb>" (or the fired/ended state if that came first).
+   kubelet-restart does not disarm it. If its process ends otherwise,
+   it ends with done true, fired false, reason "driver restarted".
+   killAt.reason is one of fired, expired, driver restarted, disarmed
+   by VERB, no running driver container.
