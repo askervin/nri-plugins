@@ -485,3 +485,9 @@ A32 (2026-10-28, run FP4, A31 refined) An armed driver-kill-at watcher
    fault on that VM is not generated in a window in which such a
    Prepare existed before any of its steps, also when its claim is
    gone; the settle of that window has the outcome with the kill.
+A33 (2026-10-28, run FP5, A29 d refined) A lease-get under an armed bind
+   watcher that fires returns nonzero (EOF); the lease stays Lending
+   until kubelet's retry of its companion's Prepare (60-90 s) makes it
+   Ready, or is released; until Ready its requester has no
+   /run/cxl/fs/<name> (a wait, not a fail). The executor inspects a pod
+   again while it lists a lease that is Creating, Pending or Lending.

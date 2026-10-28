@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -706,6 +707,19 @@ func TestPmemKillAtBind(t *testing.T) {
 				v, _ = checkState(st, o, "")
 				wantVerdict(t, v, VWait, "bind left")
 			}
+			if lease == LeaseHeld && c.open {
+				// kept, before kubelet's retry (FP5): Lending, no
+				// mount in the requester's container yet
+				o := observation(t, truth)
+				in := o.Inspect["plse@vm1#0"]
+				in.Mounts = []ObsMount{}
+				in.Leases = rawJSON([]ObsLease{{Lease: "L1", State: "Lending", Mode: "fs"}})
+				v, _ = checkState(st, o, "")
+				wantVerdict(t, v, VWait, "its lease L1 is Lending")
+				in.Leases = rawJSON([]ObsLease{{Lease: "L1", State: "Ready", Mode: "fs"}})
+				v, _ = checkState(st, o, "")
+				wantVerdict(t, v, VFail, "an fs lease it cannot see")
+			}
 		}
 	}
 }
@@ -1003,6 +1017,100 @@ func TestPmemKillAtAfterSettle(t *testing.T) {
 		t.Fatalf("volatile: vm1 driver %+v", v.Drv[VM1])
 	}
 	steps(t, v, "driver-kill vm1")
+}
+
+// FP5 (step 968): lease-get plse@vm0#0 pfc (967) under driver-kill-at
+// vm0 bind (965). The watcher killed the driver at the lease bind of the
+// companion's Prepare, cxl-request failed (EOF): the lease open. The
+// restarted driver kept the companion's region for kubelet's retry and
+// the lease Lending, which is the kept outcome (A29 d, A30), but its
+// first observation failed at once: the requester has no /run/cxl/fs
+// mount before its lease is Ready (the bind comes before Ready). That
+// waits while the requester's inspection lists the lease on its way to
+// Ready; kubelet's retry (Ready, the mount in the container) is ok,
+// adopted with the kill; a Ready fs lease it cannot see still fails.
+func TestPmemFP5LendingAfterCutBind(t *testing.T) {
+	cfg := testConfig(t, "fullp", true)
+	cfg.Unsettled = 3
+	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
+	st := replaySteps(t, cfg, "recorded/fp5-mbt-steps.txt", 967)
+	if ss := slotOf(t, st, "plse@vm0#0"); ss.Lease != LeaseHeld || ss.LeaseMode != ModePFC || !ss.LeaseOpen {
+		t.Fatalf("plse@vm0#0 %+v, want an open pfc lease", ss)
+	}
+	pred := steps(t, st, "settle")
+	js, err := os.ReadFile("recorded/fp5-fail-968.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseObservation(js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _ := checkState(pred, o, "")
+	wantVerdict(t, v, VWait, "")
+	if want := "inspect plse@vm0#0: no /run/cxl/fs/ in its container, its lease 357df1e0 is Lending"; !slices.Contains(v.Diffs, want) {
+		t.Fatalf("diffs without %q:\n  %s", want, strings.Join(v.Diffs, "\n  "))
+	}
+	// kubelet's retry of the companion's Prepare: Ready
+	var kept *State
+	for _, a := range alts(pred) {
+		if slotOf(t, a, "plse@vm0#0").Lease == LeaseHeld && a.Drv[VM0].Restarts == 2 {
+			kept = a.clone()
+		}
+	}
+	if kept == nil {
+		t.Fatalf("no outcome with the lease kept and the kill:\n%s", dumpAlts(pred))
+	}
+	kept.Alts = nil
+	kept.setLeaseID(cfg.slotIndex("plse@vm0#0"), "357df1e0")
+	ready := observation(t, kept)
+	ready.PDevs = o.PDevs // (the simulator's hashes are its own)
+	v, adopted := checkState(pred, ready, "")
+	wantVerdict(t, v, VOK, "ok")
+	if ss := slotOf(t, adopted, "plse@vm0#0"); ss.Lease != LeaseHeld || ss.LeaseOpen || adopted.Drv[VM0].Restarts != 2 {
+		t.Fatalf("adopted plse@vm0#0 %+v, vm0 driver %+v", ss, adopted.Drv[VM0])
+	}
+	wantStack(t, adopted, stackIndex(VM0, HB1), "[c-shared0,c-pmem0]")
+	// Ready, the requester without the mount
+	ready.Inspect["plse@vm0#0"].Mounts = []ObsMount{}
+	v, _ = checkState(pred, ready, "")
+	wantVerdict(t, v, VFail, "an fs lease it cannot see")
+	// FP5V, its replay in short: c-pmem0 written, the lease-get under
+	// the bind watcher; observation 2 of the settle: Lending, no mount
+	// (inspected again while Lending); 22: kubelet's retry 79 s after the
+	// kill made it Ready and the requester sees /run/cxl/fs/<id>, the
+	// companion not yet Running; 23: ok, kept with the kill
+	st = replaySteps(t, cfg, "recorded/fp5v-mbt-steps.txt", 10)
+	pred = steps(t, st, "settle")
+	for _, c := range []struct {
+		poll    int
+		status  VStatus
+		inspect string // a diff of the inspection, "" none
+	}{{2, VWait, "its lease 425c9a1b is Lending"}, {22, VWait, ""}, {23, VOK, ""}} {
+		if js, err = os.ReadFile("recorded/fp5v-obs-11-" + strconv.Itoa(c.poll) + ".json"); err != nil {
+			t.Fatal(err)
+		}
+		if o, err = parseObservation(js); err != nil {
+			t.Fatal(err)
+		}
+		if c.poll == 22 && (o.Inspect["plse@vm0#0"] == nil || len(o.Inspect["plse@vm0#0"].Mounts) != 1) {
+			t.Fatalf("FP5V observation 22: inspection %+v, want the lease's mount", o.Inspect["plse@vm0#0"])
+		}
+		v, adopted = checkState(pred, o, "")
+		inspect := ""
+		for _, d := range v.Diffs {
+			if strings.HasPrefix(d, "inspect ") {
+				inspect = d
+			}
+		}
+		if v.Status != c.status || !strings.Contains(inspect, c.inspect) || (c.inspect == "") != (inspect == "") {
+			t.Fatalf("FP5V observation %d: verdict %s %q, want %s with inspect diff %q; diffs:\n  %s", c.poll, v.Status, v.Msg, c.status, c.inspect, strings.Join(v.Diffs, "\n  "))
+		}
+	}
+	if ss := slotOf(t, adopted, "plse@vm0#0"); ss.Lease != LeaseHeld || ss.LeaseOpen || adopted.Drv[VM0].Restarts != 1 || adopted.Drv[VM0].KillAt != 0 {
+		t.Fatalf("FP5V: adopted plse@vm0#0 %+v, vm0 driver %+v", ss, adopted.Drv[VM0])
+	}
+	wantStack(t, adopted, stackIndex(VM0, HB1), "[c-pmem0]")
 }
 
 // killAlt: an outcome of the settle s has the kill of the watcher armed

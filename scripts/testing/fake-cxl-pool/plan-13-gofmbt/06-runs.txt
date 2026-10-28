@@ -420,3 +420,28 @@ FP4V 2026-10-28 (debugging agent), image 2ba73741f42a, replay of a
    (the watcher fired 0.2 s after the settle's observation); PASS with
    the fixed model (the kill adopted, clean teardown); the same
    observations fail on the old model ("has 1 restarts, want 0").
+FP5 2026-10-28 13:20, image 2ba73741f42a, model with the FP4 fix,
+   profile fullp, new random seed 1793186577, 120m, every fault. FAIL
+   at step 968 after 967 steps (3642 s in all), at once: lease
+   357df1e0 of plse@vm0#0 still Lending with its companion, where the
+   model wants none; region2 of c-pmem0 on vm0 without a prepared
+   claim (stack vm0/hb1 [c-shared0,c-pmem0], want [c-shared0]). MODEL
+   ERROR (no driver bug): lease-get plse@vm0#0 pfc (967) under
+   driver-kill-at vm0 bind failed (EOF, the kill at the companion's
+   lease bind); the restarted driver kept the lease Lending and region2
+   for kubelet's retry, the kept outcome (A29 d), but that outcome
+   failed at once on "inspect plse@vm0#0: no /run/cxl/fs/ in its
+   container": the requester sees the lease only once it is Ready.
+   Fixed: the oracle waits while the inspection lists the lease on its
+   way to Ready; the executor inspects such a pod again at each poll
+   (04-status-MODEL.txt FP5, 04-status-EXEC.txt 16).
+   Copy: /tmp/p13-runs/fp5.
+FP5V 2026-10-28 (debugging agent), image 2ba73741f42a, replay of an
+   11-step steps file (/tmp/p13-runs/fp5v: c-pmem0 written, create
+   plse@vm0#0, driver-kill-at vm0 bind, lease-get plse@vm0#0 pfc,
+   settle). Old model and observer: lease-get exit 1 (EOF), step 11
+   FAIL at once as FP5 (before-out). Fixed: the same EOF, the settle
+   waited 83.6 s, kubelet's retry 79.5 s after the kill made the lease
+   Ready, the requester (inspected again) saw /run/cxl/fs/425c9a1b;
+   adopted kept with the kill; PASS, 13 steps with the teardown,
+   cluster clean (after-out).

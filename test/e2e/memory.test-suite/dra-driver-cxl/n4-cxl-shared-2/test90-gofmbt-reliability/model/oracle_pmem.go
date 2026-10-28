@@ -817,7 +817,14 @@ func (k *checker) checkInspectPersistent(i int, in *ObsInspect) {
 					found = true
 				}
 			}
-			if !found {
+			switch l := unreadyLease(in, ss.LeaseMode, k.rs.LeaseIDs[i]); {
+			case found:
+			case l != nil:
+				// the bind comes before Ready: a lease whose
+				// companion's Prepare was cut at the bind (A29 d,
+				// A30) has none until kubelet's retry (FP5)
+				k.waitf("inspect %s: no /run/cxl/fs/%s in its container, its lease %s is %s", sl.Name, name, l.Lease, l.State)
+			default:
 				k.failf("inspect %s: no /run/cxl/fs/%s in its container (an fs lease it cannot see)", sl.Name, name)
 			}
 		}
@@ -839,6 +846,22 @@ func (k *checker) checkInspectPersistent(i int, in *ObsInspect) {
 			k.failf("inspect %s: %s is a %s mount (%s), want a read-only erofs", sl.Name, m.Target, m.Fstype, m.Vfsopts)
 		}
 	}
+}
+
+// unreadyLease returns the lease of mode m (and id, if known) that an
+// inspection lists on its way to Ready (Creating, Pending, Lending), or
+// nil.
+func unreadyLease(in *ObsInspect, m LeaseMode, id string) *ObsLease {
+	list, _ := in.leases()
+	for j := range list {
+		l := &list[j]
+		switch {
+		case id != "" && l.Lease != id, !leaseModeIs(l.Mode, m):
+		case l.State == "Creating", l.State == "Pending", l.State == "Lending":
+			return l
+		}
+	}
+	return nil
 }
 
 // adoptPRead learns a token that a pread saw where the model did not

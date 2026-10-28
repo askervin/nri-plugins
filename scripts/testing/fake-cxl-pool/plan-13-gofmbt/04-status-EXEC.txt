@@ -954,3 +954,21 @@ that is left alone still fires (vm0, reason "fired", 6.1 s). Pidfd
 binding tested locally too: once the armed process exited, the kill
 fails (ESRCH) and a new process is untouched. Cluster left clean, lock
 released. R/runs/run7.log, run7-out.
+
+16. Inspected again while a lease is on its way to Ready (run FP5)
+-----------------------------------------------------------------
+2026-10-28 (debugging agent; the analysis is 04-status-MODEL.txt FP5).
+A pod is inspected once per UID:RESTARTS (the inspected table). A plse
+requester whose lease-get failed under driver-kill-at bind (A29 d) was
+inspected at the first poll of the settle, its lease Lending and no
+/run/cxl/fs mount, and never again: what the requester sees after
+kubelet's retry made the lease Ready (60-90 s later) went unchecked,
+and the model, which now waits on that inspection, could not see it.
+Fixed (T/mbt-observe.py assemble): an inspection that lists a lease
+on its way to Ready (Creating, Pending, Lending: leases_unready) is
+not entered in --inspected-out, so the next poll inspects the pod
+again until the lease is Ready or gone. Only such a lease costs one
+kubectl exec per poll. Verified: replay FP5V (/tmp/p13-runs/fp5v/
+after-out): polls 2-21 of step 11 inspected plse@vm0#0 again (Lending,
+no mount), poll 22 saw it Ready with /run/cxl/fs/425c9a1b (erofs over
+loop0) and entered it in the table, poll 23 had no inspection; PASS.

@@ -34,7 +34,8 @@ Usage:
       6.1, printed as one JSON line. --inspected-in has the
       UID:RESTARTS:SLOT entries inspected before (one per line),
       --inspected-out gets those of the pods that still exist plus the
-      ones inspected now.
+      ones inspected now, but for those that list a lease on its way to
+      Ready (Creating, Pending, Lending): inspected again next time.
       --summary gets lines for the shell: "driver ID POD RESTARTS READY".
       --pdev: "pdevs" of the persistent device NAME from its backing
       files DATA and LSA on the host. --kill-at: "killAt", the state of
@@ -1436,6 +1437,15 @@ def driver_part(pods, vm_of):
     return by_vm
 
 
+# The states of a lease on its way to Ready (pkg/cxl/api).
+LEASE_UNREADY = ("Creating", "Pending", "Lending")
+
+
+def leases_unready(leases):
+    """Whether an inspection lists a lease on its way to Ready."""
+    return any(isinstance(l, dict) and l.get("state") in LEASE_UNREADY for l in leases or [])
+
+
 def cxl_leases(text):
     text = text.strip()
     try:
@@ -2043,7 +2053,12 @@ def cmd_assemble(args):
         else:
             uids = set(p["uid"] for p in obs["pods"])
             keep = [e for e in before if e.split(":")[0] in uids]
-            keep += ["%s:%s:%s" % (i["uid"], i["restarts"], slot) for slot, i in (obs["inspect"] or {}).items()]
+            # A pod with a lease on its way to Ready is inspected again:
+            # an fs lease is in its container only once Ready, and a
+            # lease whose companion's Prepare was cut stays Lending
+            # until kubelet's retry (A29 d, A30; FP5).
+            keep += ["%s:%s:%s" % (i["uid"], i["restarts"], slot) for slot, i in (obs["inspect"] or {}).items()
+                     if not leases_unready(i.get("leases"))]
         with open(args.inspected_out, "w") as f:
             f.write("".join(e + "\n" for e in sorted(set(keep))))
     if args.summary:

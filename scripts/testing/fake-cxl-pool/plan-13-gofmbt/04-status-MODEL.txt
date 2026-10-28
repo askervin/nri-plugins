@@ -1298,3 +1298,79 @@ observation of the settle that saw it armed. A driver fault on that VM
 is not generated in a window in which such a Prepare existed before
 any of its steps, also when its claim is gone; the settle of that
 window has the outcome with the kill.
+FP5 (2026-10-28, step 968): MODEL ERROR (the oracle), with a gap of
+the executor's inspection; no driver bug. "leases of plse@vm0#0: lease
+357df1e0 Lending, want none" (+5: its companion, region2 of c-pmem0 on
+vm0/hb1 above c-shared0, leases.json), at once. The life of lease
+357df1e0 (driver, kubelet, controller logs; UTC): driver-kill-at vm0
+bind (965) armed against pid 2055133; lease-get plse@vm0#0 pfc (967)
+12:22:05.50, the broker made the companion cxl-lease-357df1e0, the
+controller attached c-pmem0 to vm0 (12:22:06.24); the companion's
+Prepare made region2, namespace2.0, the cached node mount over loop0
+and the lease bind (12:22:10.85), where the watcher killed the driver
+(seen: the bind) before the state save and Ready; kubelet's
+NodePrepareResources got EOF, so did cxl-request (exit 1, record
+lopen=plse@vm0#0:failed). The new driver (12:22:11.7): "its Prepare
+did not finish", unmounted the bind and the node mount (of no prepared
+claim), kept the claim and region2 for kubelet's retry (bug-14's
+companion exception); the broker kept the lease Lending (its companion
+and requester there). Settle 968's first observation (12:22:15.99):
+Lending in leases.json and in the requester's cxl-request list,
+companion Pending, region2 on top, driver restarts 2, killAt fired.
+The teardown after the fail deleted the pods (12:22:19): only then did
+the broker release the lease ("requester container gone") and the
+companion's Unprepare destroy region2 (12:22:21.8).
+The settle had four outcomes (kept or released, with or without the
+kill). In the kept outcome with the kill every difference was a wait
+(companion Pending, leases.json Lending want Ready, no node mount, no
+lease bind, no loop, the companion not in preparedPoolClaims.json) but
+one fail, P10's "inspect plse@vm0#0: no /run/cxl/fs/ in its container
+(an fs lease it cannot see)": the requester sees an fs lease once the
+companion's Prepare has made the bind (before Ready), and a kept lease
+is Lending until kubelet's retry, 60-90 s later. The released outcomes
+fail as they should on a lease listed Lending. So the best was a fail.
+The SUT's behaviour is the kept outcome (EXEC 14.7 saw it, Ready after
+71 s), confirmed by FP5V below. The inspection is made once per pod
+UID:RESTARTS, so the requester's view after the retry was not checked
+at all even with a wait.
+Fix: (a) T/model oracle_pmem.go checkInspectPersistent: a requester
+without the mount of its fs lease waits while its inspection lists the
+lease on its way to Ready (Creating, Pending, Lending; unreadyLease,
+also by its id when known); a Ready lease it cannot see still fails.
+(b) T/mbt-observe.py assemble (the executor's): a pod whose inspection
+lists a lease on its way to Ready is left out of the inspected table,
+so the next poll inspects it again until the lease is Ready or gone.
+Simulator unchanged: its transient observations have no inspections
+and its kept lease is Ready at once, so the fuzz could not meet FP5.
+Tests: TestPmemFP5LendingAfterCutBind replays FP5 to step 967
+(model/recorded/fp5-*): the observation of 968 waits with the
+inspection's "its lease 357df1e0 is Lending"; the kept outcome with
+the kill, Ready with the mount, is ok, adopted (restarts 2, vm0/hb1
+[c-shared0,c-pmem0]); Ready without the mount fails; and FP5V's
+observations of its settle (model/recorded/fp5v-*): poll 2 Lending
+(wait), poll 22 Ready with /run/cxl/fs/425c9a1b in the container (no
+inspection difference, the companion not Running yet: wait), poll 23
+ok, kept with the kill. TestPmemKillAtBind: the kept outcome of an
+open lease, Lending without the mount, waits; Ready without it fails.
+Both fail without (a). 115 tests; gofmt, vet, GOWORK=off go test, go
+test -race clean.
+Cluster: replay FP5V (/tmp/p13-runs/fp5v: steps.txt, before-out,
+after-out; 11 steps: c-pmem0 written by pwr-c@vm0#0, create
+plse@vm0#0, driver-kill-at vm0 bind, lease-get plse@vm0#0 pfc,
+settle), image 2ba73741f42a. Old model: lease-get exit 1 (EOF), step
+11 FAILED at once with FP5's difference. New model and observer: the
+same EOF; the settle waited 83.6 s (23 polls): kubelet's retry 79.5 s
+after the kill reused region1, bound, the lease Ready; the requester,
+inspected again, saw /run/cxl/fs/425c9a1b (erofs over loop0); adopted
+alt=1 (kept, with the kill); delete plse@vm0#0 released lease and
+region; PASS, clean teardown.
+Not a driver bug: the lease is not left Lending (Ready at the retry),
+and the kept region is the retry's. bug-14's open case stays as it
+was: a cut companion released before its retry with a newer region
+above it leaves the hole the model predicts.
+Proposed amendment A33 (A29 d refined): a lease-get under an armed
+bind watcher that fires returns nonzero (EOF); the lease stays
+Lending until kubelet's retry of its companion's Prepare (60-90 s)
+makes it Ready, or is released; until Ready its requester has no
+/run/cxl/fs/<name> (a wait, not a fail). The executor inspects a pod
+again while it lists a lease that is Creating, Pending or Lending.
