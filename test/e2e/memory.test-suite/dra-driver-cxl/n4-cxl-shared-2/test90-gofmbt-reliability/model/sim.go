@@ -59,6 +59,12 @@ type sim struct {
 	// lateKill: the truth keeps the armed driver-kill-at watcher of the
 	// VM through the window after a settle (keepKillAt)
 	lateKill [nVMs]bool
+	// the driver pods' restarts of kubelet restarts while their
+	// containers were being created again (driverRace): creating from
+	// a kill until a step waits for the driver, extra in the window,
+	// settleExtra of the window being settled
+	creating           [nVMs]bool
+	extra, settleExtra [nVMs]uint8
 }
 
 func newSim(cfg *Config, seed int64) *sim {
@@ -80,6 +86,7 @@ func (s *sim) do(step int, a Act) *DoneObs {
 	from := s.truth
 	if a.Verb == VSettle {
 		s.prev = from
+		s.settleExtra, s.extra, s.creating = s.extra, [nVMs]uint8{}, [nVMs]bool{}
 		if s.ref != nil {
 			// resolved against the reference at every poll
 			s.pend = from.apply(a)
@@ -90,6 +97,7 @@ func (s *sim) do(step int, a Act) *DoneObs {
 		return nil
 	}
 	from = s.fireLate(from)
+	s.driverRace(a)
 	if s.ref != nil {
 		s.ref.do(a, refHint{freesClaim: freesClaim(from, a), releasesLease: releasesPLease(from, from.apply(a), int(a.Slot))})
 	}
@@ -281,7 +289,40 @@ func (s *sim) resolve(st *State) *State {
 	n.growFence()
 	s.fixPDev(n)
 	s.keepKillAt(n)
+	s.driverRestarts(n)
 	return n
+}
+
+// driverRace: a kubelet restart while the container of the VM's driver
+// is being created again after a kill (a driver-kill, or a watcher that
+// fired before the step) gives the driver pod one more restart, at
+// random: the old kubelet created the container and stopped before it
+// started it, the new one creates it again (FP6). The verbs that wait
+// for the driver end the race. Independent of the model's Slack.
+func (s *sim) driverRace(a Act) {
+	switch a.Verb {
+	case VDriverKill:
+		s.creating[a.VM] = true
+	case VKubeletRestart:
+		if s.creating[a.VM] && s.rng.Intn(2) == 0 {
+			s.extra[a.VM]++
+		}
+		s.creating[a.VM] = false
+	case VContainerdRestart:
+		s.creating[a.VM] = false
+	case VDriverRestart:
+		// (a new pod)
+		s.creating[a.VM], s.extra[a.VM] = false, 0
+	}
+}
+
+// driverRestarts adds the restarts of driverRace to the settled truth;
+// the model's Slack is the oracle's, not the simulated kubelet's.
+func (s *sim) driverRestarts(n *State) {
+	for v := range n.Drv {
+		n.Drv[v].Restarts += s.settleExtra[v]
+		n.Drv[v].Slack = 0
+	}
 }
 
 // keepKillAt ends the truth's armed driver-kill-at watchers at a settle,
@@ -314,6 +355,11 @@ func (s *sim) fireLate(st *State) *State {
 		}
 	}
 	if f := st.fireKillAt(fired, false); f != nil {
+		for v := VM(0); v < nVMs; v++ {
+			if fired[v] {
+				s.creating[v] = true
+			}
+		}
 		return f
 	}
 	return st

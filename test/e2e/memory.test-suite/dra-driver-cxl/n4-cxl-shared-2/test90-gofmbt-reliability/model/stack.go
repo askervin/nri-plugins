@@ -30,6 +30,8 @@ package main
 // one window race for the order) to get the outcomes.
 
 import (
+	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -714,7 +716,84 @@ func (n *State) settleAll() *State {
 	p := alts[0]
 	p.Alts = alts[1:]
 	p.Truncated = truncated
+	if truncated && len(n.unplacedAny()) > 0 {
+		// (the hosts of its "any" pods multiply its worlds: the
+		// oracle settles it again with the nodes it observes)
+		p.Wide = n
+	}
 	return p
+}
+
+// unplacedAny returns the "any" pods that prepare in this window on a
+// node that is not known yet, in slot order.
+func (n *State) unplacedAny() []int {
+	var anys []int
+	for _, e := range n.Ev {
+		if e.Stack >= 0 {
+			continue
+		}
+		if i, lease := n.userSlot(e.User); !lease && !slices.Contains(anys, i) {
+			anys = append(anys, i)
+		}
+	}
+	sort.Ints(anys)
+	return anys
+}
+
+// narrowed settles a truncated settle (R10) again with the nodes of some
+// of its "any" pods known (observed bound): settleAll's worlds are those
+// of the full enumeration with these nodes, fewer of them, so that the
+// races on their stacks are enumerated (fuzz, fullp seed 1484: three
+// "any" pods prepared at a ctrl-start, 27 host worlds of up to 6 stack
+// orders, the 64 outcomes all with the first pod on vm0 or vm1, seen on
+// vm2). nil if there is no such settle or no such node.
+func (p *State) narrowed(nodes map[int]VM) *State {
+	w := p.Wide
+	if w == nil {
+		return nil
+	}
+	c := w.clone()
+	c.Ev = append([]stackEvent(nil), w.Ev...)
+	var items []string
+	for _, i := range w.unplacedAny() {
+		v, ok := nodes[i]
+		if !ok {
+			continue
+		}
+		sl := c.slot(i)
+		c.Slots[i].Node = v
+		for j := range c.Ev {
+			if c.Ev[j].Stack < 0 && int(c.Ev[j].User) == i {
+				c.Ev[j].Stack = int8(stackIndex(v, poolBridge[sl.Pool]))
+			}
+		}
+		items = append(items, sl.Name+":"+v.String())
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	n := c.settleAll()
+	n.Narrow = strings.Join(items, ",")
+	return n
+}
+
+// narrowTo is narrowed by the adoption record's any=SLOT:VM,...
+func (p *State) narrowTo(list string) (*State, error) {
+	nodes := map[int]VM{}
+	for _, item := range strings.Split(list, ",") {
+		name, vm, ok := strings.Cut(item, ":")
+		i := p.cfg.slotIndex(name)
+		v, err := parseVM(vm)
+		if !ok || i < 0 || err != nil || v == VMAny || !p.cfg.Slots[i].hostOK(v) {
+			return nil, fmt.Errorf("invalid node of an \"any\" pod %q", item)
+		}
+		nodes[i] = v
+	}
+	n := p.narrowed(nodes)
+	if n == nil || n.Narrow != list {
+		return nil, fmt.Errorf("no settle to narrow to %s", list)
+	}
+	return n, nil
 }
 
 // expandLeaseOpen returns a state per world of the leases whose
@@ -783,8 +862,10 @@ func (n *State) killWorlds(late bool) [][nVMs]bool {
 // steps (KillMay) fired also without such a Prepare, and one of them
 // did (the other worlds are the first pass's). A watcher that fired
 // killed the driver (a driver-kill: restarts +1, fencing seeded,
-// steering as after a kill); the interrupted Prepare is retried after
-// the restart, so the pods end as without the kill.
+// steering as after a kill; one more if a kubelet restart may have come
+// while its container was being created again, KillSlack); the
+// interrupted Prepare is retried after the restart, so the pods end as
+// without the kill.
 func (n *State) fireKillAt(fired [nVMs]bool, late bool) *State {
 	if fired == [nVMs]bool{} {
 		return n
@@ -811,7 +892,11 @@ func (n *State) fireKillAt(fired [nVMs]bool, late bool) *State {
 		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false
 		d.Restarts++
 		d.Inc++
-		d.Killed = true
+		d.Killed, d.Creating = true, true
+		if d.KillSlack && d.Slack < 255 {
+			d.Slack++
+		}
+		d.KillSlack = false
 		f.driverRestarted(v, SteerOff)
 	}
 	return f

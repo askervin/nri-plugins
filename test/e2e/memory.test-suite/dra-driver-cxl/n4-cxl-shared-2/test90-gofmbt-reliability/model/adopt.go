@@ -17,11 +17,14 @@ package main
 // Adoption records (05-review R5): what an on-line run adopted from its
 // observations, written to mbt-steps.txt after the step as
 //
-//	#adopt N alt=J phase=SLOT:PHASE node=SLOT:VM steer=SLOT:on|off
-//	        att=DEV@VM:yes|no stack=VM/hbB:K,K lease=SLOT:ID data=SLOT:TEXT
+//	#adopt N any=SLOT:VM,SLOT:VM alt=J phase=SLOT:PHASE node=SLOT:VM
+//	        steer=SLOT:on|off att=DEV@VM:yes|no stack=VM/hbB:K,K
+//	        lease=SLOT:ID data=SLOT:TEXT restarts=SLOT:R+S
+//	        restarts=VM:R+S (the driver pod of VM)
 //
 // (one line, items separated by spaces, TEXT query-escaped): the
-// alternative of the settle that fitted and what the observation
+// nodes of "any" pods by which a truncated settle was narrowed (R10),
+// the alternative of the settle that fitted and what the observation
 // decided beyond it. `generate --from` replays them, so that its
 // expectations follow the run, and replays ignore them (they observe
 // again).
@@ -40,11 +43,18 @@ const adoptPrefix = "#adopt "
 // (the settled state of the step, alternatives in pred.Alts) given the
 // alternative alt that fitted; "" if nothing.
 func adoptionRecord(pred *State, alt int, adopted *State) string {
+	var items []string
+	if adopted.Narrow != "" {
+		// (the alternative is the narrowed settle's)
+		if n, err := pred.narrowTo(adopted.Narrow); err == nil {
+			pred = n
+			items = append(items, "any="+adopted.Narrow)
+		}
+	}
 	base := pred
 	if alt > 0 && alt <= len(pred.Alts) {
 		base = pred.Alts[alt-1]
 	}
-	var items []string
 	if alt > 0 {
 		items = append(items, "alt="+strconv.Itoa(alt))
 	}
@@ -127,6 +137,9 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 		if base.Drv[v].KillAt != 0 && adopted.Drv[v].KillAt == 0 {
 			items = append(items, "killat="+v.String()+":off")
 		}
+		if a, b := &adopted.Drv[v], &base.Drv[v]; a.Restarts != b.Restarts || a.Slack != b.Slack {
+			items = append(items, "restarts="+v.String()+":"+strconv.Itoa(int(a.Restarts))+"+"+strconv.Itoa(int(a.Slack)))
+		}
 	}
 	for si := 0; si < nStacks; si++ {
 		if !adopted.Stacks[si].equal(&base.Stacks[si]) {
@@ -141,9 +154,17 @@ func adoptionRecord(pred *State, alt int, adopted *State) string {
 }
 
 // applyAdoption applies a record to the state after a step: the
-// alternative first (settle), then the items.
+// narrowing and the alternative first (settle), then the items.
 func applyAdoption(st *State, rec string) (*State, error) {
 	fields := strings.Fields(rec)
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "any=") {
+		n, err := st.narrowTo(strings.TrimPrefix(fields[0], "any="))
+		if err != nil {
+			return nil, fmt.Errorf("adoption %q: %w", rec, err)
+		}
+		st = n
+		fields = fields[1:]
+	}
 	if len(fields) > 0 && strings.HasPrefix(fields[0], "alt=") {
 		j, err := strconv.Atoi(strings.TrimPrefix(fields[0], "alt="))
 		if err != nil || j < 0 || j > len(st.Alts) {
@@ -207,15 +228,20 @@ func (n *State) applyItem(kind, key, val string) error {
 		}
 		n.Slots[i].Node = v
 	case "restarts":
-		i, err := slot()
-		if err != nil {
-			return err
-		}
 		r, sl, _ := strings.Cut(val, "+")
 		nr, err1 := strconv.Atoi(r)
 		ns, err2 := strconv.Atoi(sl)
 		if err1 != nil || err2 != nil {
 			return fmt.Errorf("invalid restarts %q", val)
+		}
+		if v, err := parseVM(key); err == nil && v != VMAny {
+			// the driver pod of the VM (FP6)
+			n.Drv[v].Restarts, n.Drv[v].Slack = uint8(nr), uint8(ns)
+			return nil
+		}
+		i, err := slot()
+		if err != nil {
+			return err
 		}
 		n.Slots[i].Restarts, n.Slots[i].Slack = uint8(nr), uint8(ns)
 	case "steer":

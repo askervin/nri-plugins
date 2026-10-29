@@ -491,3 +491,26 @@ A33 (2026-10-28, run FP5, A29 d refined) A lease-get under an armed bind
    Ready, or is released; until Ready its requester has no
    /run/cxl/fs/<name> (a wait, not a fail). The executor inspects a pod
    again while it lists a lease that is Creating, Pending or Lending.
+A34 (2026-10-28, run FP6; A6, A15 and M2 refined) A kubelet-restart of
+   VM while the driver container of VM may be being created again after
+   a kill (a driver-kill of VM earlier in the window with no
+   kubelet-restart of VM since; or an armed driver-kill-at watcher of VM
+   that may have fired before the kubelet-restart, in the outcome in
+   which it fired) may give the driver pod one restart more than its
+   kills: the old kubelet created the container and was stopped before
+   starting it, the new one creates it again. The settle accepts the
+   driver pod's restarts from R to R+1 and adopts the observed count
+   (#adopt N restarts=VM:R+0). containerd-restart, driver-restart and
+   kubelet-restart wait for the driver; a later kubelet restart adds
+   none.
+A35 (2026-10-28, the model's fuzz after FP6, 04-status-MODEL "FP6
+   fuzz") (a) under A25: a writer whose Prepare is Blocked by a decoder
+   hole makes no namespace (the region fails before ndctl
+   create-namespace, pool_persistent.go preparePersistent); (b) under
+   A18: the attachment of a lease released in the window of a
+   ctrl-kill may be kept or detached (adopted); (c) under A19: at
+   ctrl-start, a claim that waited for its pool's slices stalls if its
+   device is still in the scheduler's hold. A settle cut off by the
+   outcome bound (R10) keeps its pre-settle state and settles again
+   with the observed nodes of its "any" pods (adoption records carry
+   any=SLOT:VM before alt=J).

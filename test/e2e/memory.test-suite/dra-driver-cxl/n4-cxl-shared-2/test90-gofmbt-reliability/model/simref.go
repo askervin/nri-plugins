@@ -99,7 +99,10 @@ func (s *sim) refMismatch(st *State) int {
 			if ph != rpNone || r.deletingPod(i) != nil {
 				n++
 			}
-		case Running, Blocked, Unblocking:
+		case Running, Blocked, Unblocking, Refused:
+			// (Refused: bound, its Prepare refused; the node of an
+			// "any" one decides the worlds of the watchers its
+			// probe may fire: fuzz, fullp seeds 50748, 72622)
 			if ph != rpBound || !nodeOK {
 				n++
 			}
@@ -183,6 +186,20 @@ func (s *sim) otherUser(st *State, i, si int, key RKey) bool {
 func (s *sim) resolveRef(pred *State) *State {
 	r := s.ref
 	cands := append([]*State{pred}, pred.Alts...)
+	if pred.Wide != nil {
+		// a truncated settle: its outcomes with the nodes of the
+		// "any" pods that the reference allocated (fuzz, fullp seed
+		// 1484)
+		nodes := map[int]VM{}
+		for _, i := range pred.Wide.unplacedAny() {
+			if rp := r.pod(i); rp != nil && rp.alloc && rp.gen == pred.Slots[i].Gen {
+				nodes[i] = rp.node
+			}
+		}
+		if n := pred.narrowed(nodes); n != nil {
+			cands = append([]*State{n}, n.Alts...)
+		}
+	}
 	var best []*State
 	bestN := -1
 	for _, c := range cands {
@@ -292,6 +309,24 @@ func (s *sim) resolveRef(pred *State) *State {
 			d.PodBefore = ""
 		}
 	}
+	// the truth's hold of a device ends as the oracle ends the
+	// model's (heldSeconds after the settle that ended the window of
+	// the unbound delete): one kept for ever stalled every later
+	// create of the device in the truth, where the model had it
+	// Starting, and such a stalled "any" pod fired a watcher late on a
+	// host that the reference did not give it (fuzz, fullp seed 72622;
+	// the stalled writers of seeds 1452, 2264, 3780)
+	now := s.refWall().Unix()
+	for d := DevID(0); d < nDevs; d++ {
+		switch {
+		case !n.held(Res(d)):
+		case n.HeldAt[d] == 0:
+			n.HeldAt[d] = now
+		case now-n.HeldAt[d] >= heldSeconds:
+			n.Held &^= 1 << uint(d)
+			n.HeldAt[d] = 0
+		}
+	}
 	n.growFence()
 	// a namespace that the truth leaves maybe was not made if the
 	// reference let no writer of the device prepare (fuzz, pmem seeds
@@ -305,12 +340,16 @@ func (s *sim) resolveRef(pred *State) *State {
 	}
 	s.fixPDev(n)
 	s.keepKillAt(n)
+	s.driverRestarts(n)
 	return n
 }
 
 // refWriterPrepared: the reference may have let a writer of device d
 // prepare (its claim attached or its pod bound, also a deleted one), or
-// a pbw lease is in the state.
+// a pbw lease is in the state. A writer that the truth has Blocked did
+// not: its Prepare fails at the region through the hole, before any
+// namespace (pool_persistent.go preparePersistent; fuzz, fullp seeds
+// 1452, 2264, 3780: a stalled writer promoted through a hole).
 func (s *sim) refWriterPrepared(n *State, d DevID) bool {
 	r := s.ref
 	for i := range n.Slots {
@@ -321,7 +360,7 @@ func (s *sim) refWriterPrepared(n *State, d DevID) bool {
 		if !sl.Kind.writer() || sl.Dev != d {
 			continue
 		}
-		if p := r.pod(i); p != nil && (p.attached || p.bound) {
+		if p := r.pod(i); p != nil && (p.attached || p.bound) && n.Slots[i].Phase != Blocked {
 			return true
 		}
 		for _, p := range r.old {

@@ -670,3 +670,260 @@ func TestRefPoolAllocatedWithoutSlices(t *testing.T) {
 		}
 	}
 }
+
+// R10, narrowed (fuzz, fullp --refpool-len 120 seed 1484): ctrl-start c
+// prepares three "any" pods that waited for the attach: 27 worlds of
+// their hosts, each with up to 6 orders of the regions on their stacks;
+// the settle's first 64 outcomes (truncated) all had xdax-c@any#0 on vm0
+// or vm1, and it was seen bound on vm2. The oracle settles it again with
+// the nodes it observes (adopted with any=SLOT:VM,... before alt=J), the
+// simulator's truth with those that the reference allocated.
+func TestRefPoolNarrowedAnyNodes(t *testing.T) {
+	script := []string{"ctrl-kill c", "create xdax-c@any#0", "create sdax-c@any#0", "settle",
+		"create pwr-c@any#0", "settle", "ctrl-start c", "create sdax-c@vm0#0", "settle"}
+	s := revState(t, "fullp", true, script...)
+	if !s.Truncated || s.Wide == nil {
+		t.Fatalf("%d outcomes, truncated %v, wide %v: not the case of seed 1484", len(s.Alts)+1, s.Truncated, s.Wide != nil)
+	}
+	cfg := s.cfg
+	x, sd, pw := cfg.slotIndex("xdax-c@any#0"), cfg.slotIndex("sdax-c@any#0"), cfg.slotIndex("pwr-c@any#0")
+	n := s.narrowed(map[int]VM{x: VM2, sd: VM1, pw: VM1})
+	if n == nil || n.Truncated || n.Narrow != "xdax-c@any#0:vm2,sdax-c@any#0:vm1,pwr-c@any#0:vm1" {
+		t.Fatalf("narrowed %v", n)
+	}
+	enumerated := map[string]bool{}
+	for _, a := range alts(s) {
+		enumerated[a.altKey()] = true
+	}
+	var truth *State
+	for _, a := range alts(n) {
+		if !enumerated[a.altKey()] {
+			truth = a
+		}
+	}
+	if truth == nil {
+		t.Fatalf("every narrowed outcome is enumerated: the settle is no case of R10 any more")
+	}
+	o := observation(t, truth.clone())
+	v, adopted, alt := checkAltsSince(s, o, "", time.Now(), time.Now(), defaultUnblock)
+	wantVerdict(t, v, VOK, "ok")
+	if adopted.Narrow != n.Narrow || adopted.Slots[x].Node != VM2 || adopted.Stacks != truth.Stacks {
+		t.Fatalf("adopted (narrow %q):\n%s\nwant\n%s", adopted.Narrow, adopted.dump(), truth.dump())
+	}
+	rec := adoptionRecord(s, alt, adopted)
+	if !strings.HasPrefix(rec, "any="+n.Narrow+" ") {
+		t.Fatalf("adoption record %q", rec)
+	}
+	back, err := applyAdoption(s, rec)
+	if err != nil || back.altKey() != adopted.altKey() {
+		t.Fatalf("applyAdoption %q: %v\n%v", rec, err, back)
+	}
+	// not narrowed: "not all enumerated"
+	w := s.clone()
+	w.Alts, w.Truncated = s.Alts, true
+	v, _, _ = checkAltsSince(w, o, "", time.Now(), time.Now(), defaultUnblock)
+	wantVerdict(t, v, VFail, "not all enumerated")
+	// against the reference: this window and the fuzz's sequence
+	for seed := int64(1); seed <= 10; seed++ {
+		if f := refScriptIn(t, "fullp", seed, 0, script...); f != nil {
+			t.Fatalf("%s", f)
+		}
+	}
+	if f := refScriptIn(t, "fullp", 1484, 0, "create ldax@vm2#0", "create xdax-c@vm2#0", "ctrl-kill c", "settle",
+		"create pwr-c@any#0", "ctrl-kill b", "create pwr-c@vm0#0", "settle", "create ldax@vm0#0", "create sro-b@vm0#0",
+		"delete sro-b@vm0#0", "settle", "driver-kill vm2", "create xnuma-b@vm0#0", "delete xdax-c@vm2#0", "settle",
+		"create sdax-b@vm0#1", "create sdax-b@vm0#0", "create sro-a@vm1#0", "settle", "create lsteer@vm2#0",
+		"create xdax-c@any#0", "settle", "driver-restart vm1", "delete sdax-b@vm0#0", "ctrl-kill a", "settle",
+		"delete sro-a@vm1#0", "create sdax-c@vm2#0", "create sdax-c@any#0", "settle", "create xdax-b@vm0#0",
+		"delete sdax-b@vm0#1", "create plain@vm0#0", "settle", "delete xnuma-b@vm0#0", "ctrl-start c",
+		"create sdax-c@vm0#0", "settle"); f != nil {
+		t.Fatalf("seed 1484:\n%s", f)
+	}
+}
+
+// F5 for persistent leases (fuzz, pmem --refpool-len 120 seed 30671): a
+// lease of c-pmem0 got and put in one window (its companion attached
+// synchronously, after the last settle), then ctrl-kill c: the detach of
+// its released claim may not have come before the kill, so the
+// attachment is maybe (adopted), not "no".
+func TestRefPoolKillAfterLeasePut(t *testing.T) {
+	s := revState(t, "pmem", true, "create plse@vm2#0", "settle", "lease-get plse@vm2#0 pbw", "lease-put plse@vm2#0", "ctrl-kill c")
+	if a := s.Ctrl[PoolC].Att[devIndex(cPmem0)][VM2]; a != TriMaybe {
+		t.Fatalf("c-pmem0@vm2 %v after the kill, want maybe", a)
+	}
+	// (and the new controller detaches what is left)
+	for seed := int64(1); seed <= 20; seed++ {
+		if f := refScriptIn(t, "pmem", seed, 0, "create plse@vm2#0", "settle", "lease-get plse@vm2#0 pbw",
+			"lease-put plse@vm2#0", "ctrl-kill c", "settle", "ctrl-start c", "settle"); f != nil {
+			t.Fatalf("%s", f)
+		}
+	}
+}
+
+// fp6Regressions are the fuzz's sequences of the disagreements after FP6
+// (plan-13-gofmbt/04-status-MODEL.txt, FP6 fuzz), with their profile,
+// seed and --stall-window (--refpool-len 120): each ran into a model or
+// simulator error, and runs without a disagreement now.
+var fp6Regressions = []struct {
+	why     string
+	profile string
+	seed    int64
+	window  time.Duration
+	steps   string
+}{
+	{"a stalled writer promoted through a hole made a namespace in the truth (c-pmem1)", "fullp", 2264, 0,
+		"create lnuma@vm2#0 | create sdax-c@vm1#0 | create xpf-c@vm0#0 | pwipe c c-pmem0 | " +
+			"pwipe c c-pmem0 | pwipe c c-pmem0 | settle | ctrl-restart a | create xdax-a@vm2#0 | " +
+			"ctrl-kill b | settle | create sro-a@vm1#0 | ctrl-kill a | ctrl-kill c | settle | " +
+			"ctrl-start a | create pfsc-c@vm2#0 | create pwr-c@vm2#0 | settle | delete " +
+			"sdax-c@vm1#0 | delete pfsc-c@vm2#0 | create sdax-b@vm0#0 | settle | create " +
+			"sro-b@vm0#0 | create sdax-a@vm2#1 | delete sdax-a@vm2#1 | settle | server-restart c | " +
+			"delete xpf-c@vm0#0 | driver-kill-at vm1 mount | settle | create sro-a@vm2#0 | create " +
+			"sdax-b@vm0#1 | delete xdax-a@vm2#0 | settle | delete lnuma@vm2#0 | delete " +
+			"sdax-b@vm0#1 | create pfsd-c@vm2#1 | settle | create xdax-a@vm1#0 | create " +
+			"xnuma-a@vm1#0 | create xnuma-c@vm1#0 | settle | crash xdax-a@vm1#0 | ctrl-restart a | " +
+			"settle | create xpf-c@vm0#0 | delete pfsd-c@vm2#1 | create pbad-c@vm0#0 | settle | " +
+			"driver-kill-at vm2 region | ctrl-start b | server-restart c | settle | delete " +
+			"xpf-c@vm0#0 | delete sdax-b@vm0#0 | driver-kill-at vm0 bind | settle | create " +
+			"ldax@vm1#0 | create xdax-c@vm2#0 | create sdax-a@vm1#0 | settle | create " +
+			"sexcl-b@vm0#0 | delete sro-a@vm1#0 | ctrl-kill a | settle | delete sro-b@vm0#0 | " +
+			"delete pwr-c@vm2#0 | ctrl-start c | settle | pwipe c c-pmem1 | delete sexcl-b@vm0#0 | " +
+			"create pwr-c@any#0 | create lsteer@vm2#0 | settle | ctrl-restart c | delete " +
+			"sro-a@vm2#0 | settle | create sdax-c@vm1#0 | delete xnuma-a@vm1#0 | delete " +
+			"xnuma-c@vm1#0 | settle | create xpb-c@vm1#0 | driver-kill-at vm1 region | create " +
+			"xnuma-a@vm1#0 | settle"},
+	{"a stalled writer promoted through a hole made a namespace in the truth (c-pmem0)", "fullp", 1452, 0,
+		"ctrl-kill b | ctrl-kill c | server-restart c | settle | ctrl-restart a | create " +
+			"sdax-c@vm2#0 | ctrl-start c | settle | create xdax-a@vm2#0 | crash sdax-c@vm2#0 | " +
+			"create pfsd-c@any#0 | settle | create xnuma-b@vm0#0 | delete pfsd-c@any#0 | create " +
+			"pwr-c@vm0#0 | settle | create xdax-c@any#0 | settle | create sro-c@vm0#0 | ctrl-kill " +
+			"c | ctrl-restart a | settle | create xpb-c@vm1#0 | create sdax-a@vm1#0 | create " +
+			"xnuma-a@vm2#0 | settle | delete xnuma-b@vm0#0 | settle | create sro-a@vm1#0 | pwrite " +
+			"pwr-c@vm0#0 img | create sdax-c@vm0#0 | settle | delete xdax-a@vm2#0 | pwrite " +
+			"pwr-c@vm0#0 img | create sro-c@vm2#0 | create pbro-c@vm1#0 | settle | ctrl-kill a | " +
+			"delete xnuma-a@vm2#0 | delete sdax-c@vm2#0 | pwrite pwr-c@vm0#0 junk | settle | " +
+			"create sexcl-a@vm2#0 | create lease@vm2#0 | create lsteer@vm1#0 | settle | " +
+			"server-restart a | pwrite pwr-c@vm0#0 img | create sdax-c@vm2#0 | server-restart c | " +
+			"pwrite pwr-c@vm0#0 img | pwrite pwr-c@vm0#0 junk | pwrite pwr-c@vm0#0 img | pwrite " +
+			"pwr-c@vm0#0 img | pwrite pwr-c@vm0#0 junk | pwrite pwr-c@vm0#0 img | settle | delete " +
+			"xpb-c@vm1#0 | delete pwr-c@vm0#0 | create xnuma-c@vm1#0 | settle | delete " +
+			"sexcl-a@vm2#0 | create sro-b@vm0#0 | create ldax@vm1#1 | settle | delete sro-c@vm2#0 " +
+			"| create sro-a@vm2#0 | delete pbro-c@vm1#0 | settle | driver-kill-at vm0 mount | " +
+			"ctrl-start c | create xnuma-a@vm2#0 | settle | create sdax-b@vm0#0 | create " +
+			"sexcl-a@vm2#0 | create sexcl-b@vm0#0 | settle | pwipe c c-pmem0 | create " +
+			"sexcl-c@vm1#0 | create lnuma@vm0#1 | driver-kill-at vm2 bind | settle | create " +
+			"xnuma-a@vm1#0 | delete sdax-a@vm1#0 | create pwr-c@vm2#0 | settle"},
+	{"three \"any\" pods prepared at a ctrl-start: truncated, narrowed by the observed nodes", "fullp", 1484, 0,
+		"create ldax@vm2#0 | create xdax-c@vm2#0 | ctrl-kill c | settle | create pwr-c@any#0 | " +
+			"ctrl-kill b | create pwr-c@vm0#0 | settle | create ldax@vm0#0 | create sro-b@vm0#0 | " +
+			"delete sro-b@vm0#0 | settle | driver-kill vm2 | create xnuma-b@vm0#0 | delete " +
+			"xdax-c@vm2#0 | settle | create sdax-b@vm0#1 | create sdax-b@vm0#0 | create " +
+			"sro-a@vm1#0 | settle | create lsteer@vm2#0 | create xdax-c@any#0 | settle | " +
+			"driver-restart vm1 | delete sdax-b@vm0#0 | ctrl-kill a | settle | delete sro-a@vm1#0 " +
+			"| create sdax-c@vm2#0 | create sdax-c@any#0 | settle | create xdax-b@vm0#0 | delete " +
+			"sdax-b@vm0#1 | create plain@vm0#0 | settle | delete xnuma-b@vm0#0 | ctrl-start c | " +
+			"create sdax-c@vm0#0 | settle"},
+	{"lease-get, lease-put, ctrl-kill: the companion's detach may not have come", "pmem", 30671, 0,
+		"create xnuma-c@vm1#0 | driver-kill-at vm2 bind | create pwr-c@vm0#0 | settle | " +
+			"driver-kill-at vm1 ns | settle | create pfsd-c@vm1#0 | delete pwr-c@vm0#0 | settle | " +
+			"driver-kill vm2 | settle | delete xnuma-c@vm1#0 | create pfsc-c@vm2#0 | " +
+			"kubelet-restart vm2 | settle | ctrl-restart c | settle | create pfsd-c@vm2#0 | delete " +
+			"pfsd-c@vm1#0 | driver-kill-at vm0 bind | settle | create pfsd-c@vm1#0 | settle | " +
+			"driver-kill vm2 | create sdax-c@vm0#0 | delete pfsd-c@vm2#0 | settle | create " +
+			"pfsd-c@vm2#0 | settle | ctrl-kill c | ctrl-start c | server-restart c | settle | " +
+			"delete pfsc-c@vm2#0 | kubelet-restart vm2 | delete pfsd-c@vm1#0 | settle | create " +
+			"pfsc-c@vm1#0 | settle | delete sdax-c@vm0#0 | ctrl-kill c | settle | delete " +
+			"pfsd-c@vm2#0 | driver-restart vm2 | server-restart c | settle | delete pfsc-c@vm1#0 | " +
+			"create pfsc-c@vm2#0 | server-restart c | settle | create pfsd-c@vm2#0 | settle | " +
+			"driver-kill-at vm2 mount | create plse@vm2#0 | ctrl-start c | settle | driver-kill " +
+			"vm1 | driver-kill vm2 | ctrl-kill c | settle | ctrl-start c | create pwr-c@vm2#0 | " +
+			"server-restart c | settle | ctrl-restart c | kubelet-restart vm1 | create " +
+			"sdax-c@vm0#0 | settle | driver-kill-at vm0 ns | containerd-restart vm2 | settle | " +
+			"delete pfsc-c@vm2#0 | delete pfsd-c@vm2#0 | kubelet-restart vm0 | settle | create " +
+			"pfsd-c@vm2#0 | delete pwr-c@vm2#0 | delete pfsd-c@vm2#0 | settle | server-restart c | " +
+			"server-restart c | ctrl-restart c | settle | lease-get plse@vm2#0 pbw | lease-put " +
+			"plse@vm2#0 | ctrl-kill c | settle"},
+	{"ctrl-start: the waiter of an unbound claim deleted while the slices were gone stalls", "pmem", 4588, 0,
+		"ctrl-restart c | kubelet-restart vm1 | kubelet-restart vm2 | settle | driver-kill-at " +
+			"vm0 mount | ctrl-kill c | create pfsc-c@vm2#0 | settle | delete pfsc-c@vm2#0 | " +
+			"driver-kill-at vm2 region | driver-kill-at vm1 region | settle | containerd-restart " +
+			"vm1 | settle | create pwr-c@vm2#0 | kubelet-restart vm1 | driver-restart vm1 | settle " +
+			"| create pfsc-c@vm1#0 | delete pfsc-c@vm1#0 | create pfsd-c@vm2#0 | settle | delete " +
+			"pfsd-c@vm2#0 | settle | create pbro-c@vm0#0 | settle | driver-kill-at vm1 bind | " +
+			"create sdax-c@vm0#0 | delete sdax-c@vm0#0 | settle | delete pwr-c@vm2#0 | ctrl-start " +
+			"c | settle | create xnuma-c@vm1#0 | driver-restart vm1 | delete pbro-c@vm0#0 | settle " +
+			"| create pbro-c@vm0#0 | ctrl-restart c | ctrl-kill c | settle | create pwr-c@vm0#0 | " +
+			"delete pbro-c@vm0#0 | ctrl-start c | settle"},
+	{"a refused \"any\" pod on the reference's node in the truth (its probe and a watcher)", "fullp", 50748, 0,
+		"create sdax-c@any#0 | create pfsc-c@vm1#0 | ctrl-kill b | settle | kubelet-restart " +
+			"vm1 | create xdax-c@any#0 | driver-kill-at vm0 region | settle | create pbro-c@vm1#0 " +
+			"| create pfsd-c@any#0 | create pbad-c@vm0#0 | settle | create sdax-a@vm2#0 | delete " +
+			"sdax-a@vm2#0 | create xnuma-c@vm1#0 | settle"},
+	{"the truth's hold ends as the model's (a stalled \"any\" pod fired a watcher late)", "fullp", 72622, 30 * time.Second,
+		"ctrl-kill b | create lsteer@vm2#0 | create pfsd-c@any#0 | settle | create " +
+			"pfsc-c@vm1#0 | server-restart c | driver-kill-at vm0 region | settle | ctrl-restart c " +
+			"| settle | create lease@vm1#0 | create pfsd-c@vm2#0 | create sdax-a@vm2#0 | settle | " +
+			"create xpb-c@vm1#0 | delete sdax-a@vm2#0 | driver-kill-at vm2 ns | settle | create " +
+			"pwr-c@vm2#0 | delete pwr-c@vm2#0 | create sro-a@vm1#0 | settle | create lnuma@vm0#0 | " +
+			"create sro-a@vm2#0 | delete pfsd-c@any#0 | settle | driver-kill-at vm1 mount | " +
+			"ctrl-kill c | create sro-c@vm2#0 | settle | create sdax-b@vm0#0 | server-restart a | " +
+			"create ldax@vm0#0 | settle | create pfsd-c@vm1#0 | ctrl-restart a | create " +
+			"pbro-c@vm1#0 | settle | pwrite xpb-c@vm1#0 img | delete xpb-c@vm1#0 | delete " +
+			"pfsd-c@vm1#0 | delete sdax-b@vm0#0 | settle | driver-restart vm2 | create " +
+			"sdax-a@vm2#0 | create plain@vm0#0 | settle | create pbad-c@vm0#0 | ctrl-kill a | " +
+			"create sexcl-c@vm1#0 | settle | create sdax-b@vm0#1 | kubelet-restart vm2 | " +
+			"ctrl-start b | settle | ctrl-kill b | create xpb-c@vm1#0 | ctrl-start c | settle | " +
+			"create xnuma-b@vm0#0 | create pwr-c@any#0 | settle | create xdax-c@any#0 | crash " +
+			"sro-a@vm1#0 | create ldax@vm1#1 | settle | crash lsteer@vm2#0 | create sdax-b@vm0#0 | " +
+			"delete sro-a@vm2#0 | pwrite xpb-c@vm1#0 img | settle | delete xpb-c@vm1#0 | create " +
+			"plse@vm0#0 | create lease@vm2#0 | settle | create sexcl-b@vm0#0 | delete " +
+			"xnuma-b@vm0#0 | delete xdax-c@any#0 | settle | delete sro-a@vm1#0 | delete " +
+			"pbro-c@vm1#0 | delete sdax-b@vm0#1 | settle | create xnuma-b@vm0#0 | kubelet-restart " +
+			"vm2 | driver-kill-at vm0 region | settle | create xnuma-c@vm1#0 | delete sdax-a@vm2#0 " +
+			"| delete xnuma-c@vm1#0 | settle | delete pfsc-c@vm1#0 | delete pwr-c@any#0 | create " +
+			"pfsd-c@any#0 | pwipe c c-pmem1 | settle"},
+}
+
+// fp6Steps returns the steps of the fp6Regressions entry of a seed.
+func fp6Steps(t *testing.T, seed int64) []string {
+	t.Helper()
+	for _, r := range fp6Regressions {
+		if r.seed == seed {
+			return strings.Split(r.steps, " | ")
+		}
+	}
+	t.Fatalf("no sequence of seed %d", seed)
+	return nil
+}
+
+func TestRefPoolFP6Regressions(t *testing.T) {
+	for _, r := range fp6Regressions {
+		if f := refScriptIn(t, r.profile, r.seed, r.window, strings.Split(r.steps, " | ")...); f != nil {
+			t.Errorf("%s:\n%s", r.why, f)
+		}
+	}
+}
+
+// A19 at ctrl-start (fuzz, pmem seed 4588): pwr-c@vm0#0 waits for
+// c-pmem0 of an allocated claim that waits for the attach while pool c
+// has no slices (ctrl-restart, ctrl-kill); that claim is deleted before
+// its pod was bound, so its device stays in flight in the scheduler, and
+// ctrl-start publishes the slices: the waiter's attempt (requeued by the
+// publish, before the hold ended) fails, and nothing requeues it: it is
+// stalled, not starting.
+func TestRefPoolStallAtCtrlStart(t *testing.T) {
+	s := revState(t, "pmem", true, "create pfsc-c@vm2#0", "delete pfsc-c@vm2#0", "settle", "create pfsc-c@vm1#0")
+	wantPhase(t, s, "pfsc-c@vm1#0", Stalled)
+	s = steps(t, s, "ctrl-restart c", "ctrl-kill c", "settle")
+	truth := adoptSlices(t, s, PoolC, SlicesAbsent).clone()
+	truth.Slots[truth.cfg.slotIndex("pfsc-c@vm1#0")].Phase = Attaching
+	v, adopted := checkState(s, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	adopted.Held = 0 // (the hold of the first delete is over)
+	w := steps(t, adopted, "create pwr-c@vm0#0", "delete pfsc-c@vm1#0")
+	wantPhase(t, w, "pwr-c@vm0#0", Unsched)
+	wantPhase(t, steps(t, w, "ctrl-start c"), "pwr-c@vm0#0", Stalled)
+	if f := refScriptIn(t, "pmem", 4588, 0, fp6Steps(t, 4588)...); f != nil {
+		t.Fatalf("%s", f)
+	}
+}

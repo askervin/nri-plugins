@@ -1374,3 +1374,188 @@ Lending until kubelet's retry of its companion's Prepare (60-90 s)
 makes it Ready, or is released; until Ready its requester has no
 /run/cxl/fs/<name> (a wait, not a fail). The executor inspects a pod
 again while it lists a lease that is Creating, Pending or Lending.
+FP6 (2026-10-28, step 1352): MODEL ERROR, no driver bug. "driver vm0:
+pod nri-dra-driver-cxl-t6gbc has 2 restarts, want 1" (a wait, 50 polls,
+the settle timeout). Steps 1349-1352: delete plse@vm0#0, driver-kill
+vm0, kubelet-restart vm0, settle. The pod t6gbc (driver-restart vm0,
+step 1341) ran its container three times (containerd's and kubelet's
+journals on vm0, the observations; UTC): attempt 0 (d8aae614, pid
+2213141, since 14:27:11.6) killed by driver-kill vm0 (1350): the ns
+watcher of 1346 disarmed first (fired false, seen nothing), exit 137
+at 14:28:58.49; attempt 1 (84dff799): the pod's first restart has no
+back-off, the old kubelet created the container again at 14:28:59.029
+and kubelet-restart vm0 (1351) stopped it 18 ms later
+(14:28:59.047), before its StartContainer; that container never ran
+(kubectl logs --previous: "previous terminated container not found");
+the new kubelet (14:28:59.09) removed it at 14:29:00.52 and created
+attempt 2 (3a4a4c49, running since 14:29:00.72, ready 3.1 s after the
+kubelet was back, no panic). restartCount is the newest container's
+attempt: 2 for one kill. This is M2 (04-status-EXEC M2: a kubelet
+restart while a container is being created restarts it once more) for
+the driver pod; restartSlack gave that slack to slot pods only, the
+driver's restarts had to equal its kills. Neither (c), a watcher that
+fired before the kill disarmed it, nor an executor error: the
+disarm's report is final and consistent.
+Fix (T/model): DriverState.Slack, as a slot's: the oracle accepts the
+driver pod's restarts R..R+Slack once it is Ready and adopts the
+observed count (resolve; checkDrivers compares with it; the adoption
+record "restarts=VM:R+S" next to the slots' "restarts=SLOT:R+S").
+kubelet-restart gives it (actions.go driverSlack) where the driver's
+container may be being created again: after a driver-kill of the
+window that no step has waited out (DriverState.Creating, set by
+driver-kill, cleared by kubelet-restart, which waits for the driver,
+and by the settle; containerd-restart and driver-restart wait for the
+driver too and are not generated after a driver-kill of the window),
+once per kill, on its own VM; and in the world in which an armed
+watcher that may have fired before the kubelet restart
+(killAtMayHaveFired: KillMay or a candidate Prepare of the window) did
+fire (DriverState.KillSlack, applied by fireKillAt). None for a kubelet
+restart before the kill, after a containerd-restart or driver-restart
+of the VM, or before any Prepare that could fire the watcher;
+driver-restart zeroes the Slack (a new pod). Slack, Creating and
+KillSlack are in the canonical key (the driver's third byte gets
+Creating<<6 | KillSlack<<7, a fourth byte holds Slack; TestKeyLayout-
+Bounds now checks that KillAt fits its 3 bits), Slack in the
+expectation ("slack") and the dump. generate --from without adoption
+records keeps a driver's Slack until a driver-restart, as a slot's.
+Simulator: an independent race (sim.go driverRace): a kubelet restart
+while the simulated driver's container is being created again (after
+a driver-kill, or a watcher fired by fireLate before the step, until a
+step that waits for the driver) gives the driver pod one more restart
+at random, added at the settle; the model's Slack is not used. With
+the fix disabled the fuzz finds FP6 (fullp --refpool-len 120: 4 of
+6 000 sequences, "driver vmN: pod ... has N restarts, want N"); with
+it none.
+Tests: TestPmemFP6DriverCreatedTwice replays FP6 to step 1351
+(model/recorded/fp6-*): vm0's driver at restarts 1, slack 1; the run's
+observation of step 1352 is ok, adopted with 2 restarts (also with 1),
+recorded "restarts=vm0:2+0", which applyAdoption replays; 3 restarts
+wait. TestPmemDriverSlack: the rule (driver-kill then kubelet-restart,
+once per kill, also with a step between them (the back-off of a later
+kill), on the killed driver's VM only; none for the other order, after
+containerd-restart or driver-restart), the settle's adoption and its
+record, the JSON expectation, no slack note without slack (the old
+wait), and the watcher: a refused reader's retry under a region
+watcher, kubelet-restart, settle: one more restart only in the outcome
+with the kill; none with the kubelet restart before any Prepare that
+could fire it. Both fail without the fix. 117 tests; gofmt, vet (also
+-tags gofmbtstock), GOWORK=off go test, go test -race -timeout 30m
+clean.
+Fuzz: 18 000 sequences with the fix (fullp --refpool-len 120 6 000,
+pmem 4 000, full 4 000, fullp --stall-window 30s 4 000): no
+disagreement but four of fullp --refpool-len 120 (seeds 2264 and one
+more: "pdevs: c-pmem1: the LSA changed ... without a writer's Prepare
+on a fresh device or pwipe"; 1452: the same of c-pmem0; 1484: "pod
+xdax-c@any#0: on vm2, want vm1 ... not all enumerated"), the same four
+on the model of HEAD (no driver race in its simulator): not of FP6,
+open.
+Cluster: replay FP6V (/tmp/p13-runs/fp6v: steps.txt 16 cycles,
+steps48.txt 48 cycles of FP6's pattern on a fresh driver pod:
+driver-restart VM, settle, driver-kill-at VM ns, driver-kill VM,
+kubelet-restart VM, settle; vm0 and vm1 in turn), image 2ba73741f42a.
+The race is narrow: the kubelet stop comes 0.51-0.56 s after the
+kill's exit, and the old kubelet's CreateContainer (~60 ms, at a
+random point of its 1 s relist) must still run then (12 and 18 ms
+after it began in the two hits). Fixed model:
+16 cycles no hit, PASS (after-out); 48 cycles one hit, step 13 on vm1
+(after48-out, vm1's journal in after48-vm1-journal-step13.txt): exit
+137 at 15:15:06.136, the old kubelet's CreateContainer attempt 1 at
+06.667, "Stopping kubelet" at 06.679, that container never started,
+the new kubelet removed it and created attempt 2 at 08.16: restarts 2,
+ok at the first poll, "#adopt 13 restarts=vm1:2+0"; PASS, 289 steps,
+cluster clean. The model of HEAD (MBT_BIN, before48-out): 48 cycles,
+no hit, PASS; it fails such an observation as FP6 did (FP6's own
+observation in TestPmemFP6DriverCreatedTwice).
+Proposed amendment A34 (A6, A15 and M2 refined): a kubelet-restart of
+VM while the driver container of VM may be being created again after
+a kill (a driver-kill of VM earlier in the window with no
+kubelet-restart of VM since; or an armed driver-kill-at watcher of VM
+that may have fired before the kubelet-restart, in the outcome in which
+it fired) may give the driver pod one restart more than its kills: the
+old kubelet created the container and was stopped before starting it,
+the new one creates it again. The settle accepts the driver pod's
+restarts from R to R+1 and adopts the observed count (#adopt N
+restarts=VM:R+0). containerd-restart, driver-restart and kubelet-
+restart wait for the driver; a later kubelet restart adds none.
+FP6 fuzz (2026-10-28, no cluster): the four disagreements that FP6's
+fuzz shared with the model of HEAD, all fullp --refpool-len 120
+(TestRefPoolFuzz -args -refpool-profile fullp -refpool-len 120
+-refpool-seed S -refpool-seqs 1): seeds 1452 (c-pmem0), 2264 and 3780
+(c-pmem1) "pdevs: ... the LSA changed ... without a writer's Prepare on a
+fresh device or pwipe" (86, 86, 92 steps), seed 1484 "pod xdax-c@any#0:
+on vm2, want vm1 ... not all enumerated" (39 steps). No driver or pool
+server bug in them, nor in the five that the wider fuzz found next.
+(1) 1452, 2264, 3780: SIMULATOR ERROR over an ORACLE ERROR. A writer
+(pwr, xpb, xpf) promoted through a hole on its vm/hb1 stack is Blocked:
+its Prepare fails in CreatePmemRegionNoted at the region, before ndctl
+create-namespace (pool_persistent.go preparePersistent), its LSA stays
+zero. The truth kept its holds (A19) for ever and so had the writer
+Stalled where the model had it Starting (the hold over; Blocked, no
+namespace: right); the truth's settle left the namespace maybe,
+resolveRef promoted the writer to Blocked, refWriterPrepared counted it
+(bound), fixPDev drew labels. Below that the oracle had the converse
+error: resolve's promotion of a Stalled writer made the namespace before
+the hole made it Blocked, so it waited for labels that never come
+(settle timeout, "want its namespace"); the truth's draw per poll hid it.
+Cluster: a writer stalled by the hold and promoted while its vm/hb1 stack
+has a hole (in the settle that waits for it with --stall-window 30s, else
+in a later one); not met in a run yet. Fix: oracle.go resolve makes the
+namespace only for a promoted writer that is Running (Blocked: the
+settle's maybe stays, adopted from pdevs); simref.go: the truth's holds
+end as the oracle ends the model's (6 s after the settle that stamped
+them), refWriterPrepared does not count a writer that the truth has
+Blocked. TestPmemStalledWriterThroughHole (the oracle's case; against the
+reference the writer stalled, --stall-window 0 and 30s, and starting, 10
+seeds; no namespace of a Blocked writer in the truth): fails without
+either fix.
+(2) 1484: MODEL ERROR, R10's bound. ctrl-start c made three "any" pods
+that waited for the attach prepare (xdax-c, sdax-c, pwr-c@any#0): 27 host
+worlds with up to 6 region orders each; settleAll stopped at 64 outcomes
+(Truncated), all with xdax-c@any#0 on vm0 or vm1; it was bound on vm2.
+Fix: such a truncated settle keeps the state it was settled from
+(State.Wide; it and Narrow are not cloned, not in the key); when no
+outcome is ok, checkAltsSince settles it again with the nodes of the
+"any" pods it sees bound (stack.go narrowed: the full enumeration's
+worlds with those nodes) and adopts from that; the record is "#adopt N
+any=SLOT:VM,... alt=J ..." (J of the narrowed settle; applyAdoption
+narrows alike, so generate --from follows; the on-line log says a
+truncated settle is narrowed). The truth narrows by the nodes that the
+reference allocated. TestRefPoolNarrowedAnyNodes (a 9-step window of that
+shape; an outcome outside the 64 is ok, its record replays; not narrowed:
+"not all enumerated"; the window and 1484's sequence against the
+reference): fails without either part.
+Found by the wider fuzz, each also on the model before (1) and (2), with
+the fuzz's own sequences in TestRefPoolFP6Regressions (with 2264, 1452,
+1484): (3) pmem --refpool-len 120 seed 30671, MODEL ERROR (F5 for
+persistent leases): lease-get plse@vm2#0 pbw, lease-put, ctrl-kill c in
+one window; the companion, attached synchronously after the last settle,
+was released and the kill came before the detach: c-pmem0@vm2 stayed
+attached, the model had "no" (Att changes at settles only: neither want
+nor flux saw it), "attached, no claim wants it" to the timeout. ctrlKill
+makes the attachment of a persistent lease released in the window maybe
+(adopted; the next controller detaches it). TestRefPoolKillAfterLeasePut.
+(4) pmem seed 4588, MODEL ERROR (A19 at ctrl-start): pwr-c@vm0#0 waited
+for c-pmem0 of a claim allocated and waiting for the attach while pool c
+had no slices (ctrl-restart, ctrl-kill); that claim was deleted unbound,
+the waiter became Unsched (no slices), ctrl-start made it Starting; the
+publish requeued it within the scheduler's hold of the device, the
+attempt failed, nothing requeued it (bug-08): Pending for 5 min.
+ctrl-start now stalls an Unsched claim whose device is held or deleted
+unbound in the window (contested, as a create). TestRefPoolStallAtCtrl-
+Start. (5) fullp seeds 50748 and 72622 (--stall-window 30s), SIMULATOR
+ERRORS, "driver vm0: ... has 1 restarts, want 0": the truth fired vm0's
+watcher for the probe of a refused "any" reader on vm0 that the
+reference had bound on vm1 (refMismatch did not compare the node of
+Refused pods: now as bound), or late for an "any" pod that only its kept
+hold had stalled ((1)'s hold).
+Fuzz with all fixes: 91 000 sequences, 5.2 million steps (fullp and pmem
+--refpool-len 120 with the default and 30 s windows, fullp, pmem, full,
+full --refpool-len 120 30 s, full and fullp slow with up to 400 steps),
+no disagreement. 117 -> 122 tests; gofmt, vet (also -tags gofmbtstock),
+GOWORK=off go test, go test -race -timeout 30m clean.
+Proposed amendments: A25: a writer's Prepare that a decoder hole refuses
+(Blocked, A9) makes no namespace; A18/F5: after a lease of c-pmem0
+released in a window with a controller kill after it, its attachment is
+either (adopted); A19: a claim that waited for the slices is requeued by
+their publish at ctrl-start and stalls if its device is in the
+scheduler's hold then.

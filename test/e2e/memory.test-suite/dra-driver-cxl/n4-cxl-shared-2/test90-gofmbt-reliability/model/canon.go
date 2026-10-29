@@ -33,9 +33,10 @@ package main
 //	                                     LeaseMode | Hold<<3 | Refuse<<4 |
 //	                                     LeaseOpen<<5 | Alloc<<6
 //	Ctrl[p] (every pool)         4       Up | Slices<<1 | Att[d][v]<<(3+2*(3d+v))
-//	Drv[v] (every VM)            3       Restarts; F | FMaybe<<4;
+//	Drv[v] (every VM)            4       Restarts; F | FMaybe<<4;
 //	                                     Killed | Restarted<<1 | KillAt<<2 |
-//	                                     KillMay<<5
+//	                                     KillMay<<5 | Creating<<6 |
+//	                                     KillSlack<<7; Slack
 //	PDev[x] (every pmem device)  1       NS | FS<<2
 //	Stacks[si] (every stack)     1+N/2   N, then the keys+1 as nibbles
 //	Contested, Held, Released    2 each  little endian
@@ -68,8 +69,9 @@ package main
 //	            slices, the namespace UUID: expectations and the oracle
 //	Slots[i].Gen
 //	            pod name generation: the oracle and the simulator only
-//	Alts, Truncated
-//	            the other outcomes of a settle: the oracle only
+//	Alts, Truncated, Wide, Narrow
+//	            the other outcomes of a settle, and what narrows a
+//	            truncated one: the oracle only
 //	cfg         shared by every state of a planner
 //
 // The canonical object of a key carries the left-out fields of whichever
@@ -105,7 +107,8 @@ func (s *State) appendKey(b []byte) []byte {
 	}
 	for v := range s.Drv {
 		d := &s.Drv[v]
-		b = append(b, d.Restarts, d.F|d.FMaybe<<4, b2u(d.Killed)|b2u(d.Restarted)<<1|d.KillAt<<2|b2u(d.KillMay)<<5)
+		b = append(b, d.Restarts, d.F|d.FMaybe<<4,
+			b2u(d.Killed)|b2u(d.Restarted)<<1|d.KillAt<<2|b2u(d.KillMay)<<5|b2u(d.Creating)<<6|b2u(d.KillSlack)<<7, d.Slack)
 	}
 	for x := range s.PDev {
 		b = append(b, byte(s.PDev[x].NS)|byte(s.PDev[x].FS)<<2)

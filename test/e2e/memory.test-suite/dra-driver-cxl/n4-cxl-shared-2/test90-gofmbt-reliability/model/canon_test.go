@@ -32,7 +32,7 @@ import (
 // searchView is a copy of a state without the fields that the key
 // leaves out (canon.go).
 func searchView(s *State) *State {
-	v := s.clone() // (no Alts, Truncated, memos)
+	v := s.clone() // (no Alts, Truncated, Wide, Narrow, memos)
 	v.Steps, v.Last = 0, Act{}
 	v.HeldAt = [nDevs]int64{}
 	v.UnblockAt, v.LeaseIDs, v.SlotData = nil, nil, nil
@@ -90,6 +90,7 @@ func noisyTwin(s *State, rng *rand.Rand) *State {
 	}
 	n.Alts = []*State{s}
 	n.Truncated = rng.Intn(2) == 0
+	n.Wide, n.Narrow = s, fmt.Sprintf("slot-%d:vm%d", rng.Intn(100), rng.Intn(3))
 	return n
 }
 
@@ -303,7 +304,7 @@ func TestKeyLayoutBounds(t *testing.T) {
 		t.Fatalf("fence bits do not fit 4 bits")
 	case nStacks+1 > 8:
 		t.Fatalf("event stack+1 does not fit 3 bits")
-	case int(SteerAny) > 3 || int(LeaseBusy) > 3 || int(nModes) > 8 || int(SlicesUnknown) > 3 || int(TriMaybe) > 3 || len(markerNames)+1 > 63:
+	case int(SteerAny) > 3 || int(LeaseBusy) > 3 || int(nModes) > 8 || int(SlicesUnknown) > 3 || int(TriMaybe) > 3 || len(markerNames) > 7:
 		t.Fatalf("an enum does not fit its bits")
 	case 2*96 > 255:
 		t.Fatalf("users do not fit a byte")

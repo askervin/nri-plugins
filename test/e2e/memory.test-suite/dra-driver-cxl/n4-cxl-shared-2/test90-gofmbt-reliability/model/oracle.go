@@ -174,7 +174,32 @@ func checkAlts(st *State, o *Observation, prefix string, now time.Time, unblock 
 
 // checkAltsSince is checkAlts for a settle that started at since (the
 // clock of stalled contenders, A19).
+//
+// A truncated settle (R10) with "any" pods whose nodes were not known
+// is settled again with the nodes observed (narrowed); the outcome
+// adopted from it says so (Narrow, the adoption record's any=), and
+// the alternative's index is the narrowed settle's.
 func checkAltsSince(st *State, o *Observation, prefix string, now, since time.Time, unblock time.Duration) (Verdict, *State, int) {
+	best, bestRS, bestJ := checkEach(st, o, prefix, now, since, unblock)
+	truncated := st.Truncated
+	if best.Status != VOK && st.Wide != nil {
+		if n := st.narrowed(observedAnyNodes(st.Wide, o)); n != nil {
+			v, rs, j := checkEach(n, o, prefix, now, since, unblock)
+			if v.Status < best.Status || (v.Status == best.Status && len(v.Diffs) < len(best.Diffs)) {
+				best, bestRS, bestJ, truncated = v, rs, j, n.Truncated
+				bestRS.Narrow = n.Narrow
+			}
+		}
+	}
+	if best.Status != VOK && truncated {
+		// R10: say it, do not hide it
+		best.Msg += " (the outcomes of this settle's races were not all enumerated: the observed one may be legal)"
+	}
+	return best, bestRS, bestJ
+}
+
+// checkEach checks a settle and its alternatives; the best verdict.
+func checkEach(st *State, o *Observation, prefix string, now, since time.Time, unblock time.Duration) (Verdict, *State, int) {
 	best, bestRS := checkOne(st, o, prefix, now, since, unblock)
 	bestJ := 0
 	for j, alt := range st.Alts {
@@ -186,11 +211,27 @@ func checkAltsSince(st *State, o *Observation, prefix string, now, since time.Ti
 			best, bestRS, bestJ = v, rs, j+1
 		}
 	}
-	if best.Status != VOK && st.Truncated {
-		// R10: say it, do not hide it
-		best.Msg += " (the outcomes of this settle's races were not all enumerated: the observed one may be legal)"
-	}
 	return best, bestRS, bestJ
+}
+
+// observedAnyNodes returns the nodes of the "any" pods that prepare in
+// the window of w on a node not known yet and are seen bound to a host
+// of their pool.
+func observedAnyNodes(w *State, o *Observation) map[int]VM {
+	nodes := map[int]VM{}
+	for _, i := range w.unplacedAny() {
+		sl := w.slot(i)
+		for j := range o.Pods {
+			p := &o.Pods[j]
+			if p.Slot != sl.Name && p.Slot != sl.Label() || p.Gen != int(w.Slots[i].Gen) || p.Deleting || p.Node == nil {
+				continue
+			}
+			if v, err := parseVM(*p.Node); err == nil && v != VMAny && sl.hostOK(v) {
+				nodes[i] = v
+			}
+		}
+	}
+	return nodes
 }
 
 func checkOne(st *State, o *Observation, prefix string, now, since time.Time, unblock time.Duration) (Verdict, *State) {
@@ -305,10 +346,6 @@ func (k *checker) resolve() {
 					ss.Phase = Refused
 				} else if rs.Ctrl[sl.Pool].Up || bound {
 					ss.Phase = Running
-					if sl.Kind.writer() {
-						// its Prepare makes the namespace (A25)
-						rs.madeNamespace(sl.Dev)
-					}
 					if si, key, ok := rs.userRegion(int16(i)); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
 						if rs.Stacks[si].hasHole() {
 							// its Prepare needs a new region
@@ -317,6 +354,15 @@ func (k *checker) resolve() {
 						} else {
 							unblocked[si] = append(unblocked[si], key)
 						}
+					}
+					if sl.Kind.writer() && ss.Phase == Running {
+						// its Prepare makes the namespace (A25);
+						// through a hole it fails at the region,
+						// before any namespace (pool_persistent.go
+						// preparePersistent: CreatePmemRegionNoted
+						// first): the settle's maybe stays, adopted
+						// from pdevs
+						rs.madeNamespace(sl.Dev)
 					}
 				} else {
 					ss.Phase = Attaching
@@ -438,9 +484,15 @@ func (k *checker) resolve() {
 		}
 	}
 	for v := VM(0); v < nVMs; v++ {
-		if od := k.o.Drivers[v.String()]; od != nil && od.Ready && od.Pod != rs.Drv[v].PodBefore {
-			rs.Drv[v].Pod = od.Pod
-			rs.Drv[v].PodBefore = ""
+		d := &rs.Drv[v]
+		if od := k.o.Drivers[v.String()]; od != nil && od.Ready && od.Pod != d.PodBefore {
+			d.Pod = od.Pod
+			d.PodBefore = ""
+			if d.Slack > 0 && od.Restarts >= int(d.Restarts) && od.Restarts <= int(d.Restarts)+int(d.Slack) {
+				// adopt the restart that a kubelet restart gave
+				// (M2 for the driver pod, FP6)
+				d.Restarts, d.Slack = uint8(od.Restarts), 0
+			}
 		}
 	}
 	for i := range rs.Slots {
@@ -877,6 +929,13 @@ func slackNote(ss *SlotState) string {
 	return fmt.Sprintf(" (+%d for kubelet or containerd restarts while it was being created)", ss.Slack)
 }
 
+func driverSlackNote(d *DriverState) string {
+	if d.Slack == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (up to +%d for a kubelet restart while its container was being created again)", d.Slack)
+}
+
 // holderNames lists the slots that hold a resource, but slot i.
 func (k *checker) holderNames(r Res, i int) string {
 	var names []string
@@ -1061,11 +1120,11 @@ func (k *checker) checkPoolSlices() {
 	}
 }
 
-// O8 (drivers): Ready, restarts only from driver-kill, a new pod after
-// driver-restart.
+// O8 (drivers): Ready, restarts only from driver-kill (and the slack of
+// kubelet restarts, adopted by resolve), a new pod after driver-restart.
 func (k *checker) checkDrivers() {
 	for v := VM(0); v < nVMs; v++ {
-		d := &k.st.Drv[v]
+		d, r := &k.st.Drv[v], &k.rs.Drv[v]
 		od := k.o.Drivers[v.String()]
 		switch {
 		case od == nil:
@@ -1076,8 +1135,8 @@ func (k *checker) checkDrivers() {
 			k.waitf("driver %s: pod %s, want %s (no driver-restart)", v, od.Pod, d.Pod)
 		case !od.Ready:
 			k.waitf("driver %s: pod %s not Ready", v, od.Pod)
-		case od.Restarts != int(d.Restarts):
-			k.waitf("driver %s: pod %s has %d restarts, want %d", v, od.Pod, od.Restarts, d.Restarts)
+		case od.Restarts != int(r.Restarts):
+			k.waitf("driver %s: pod %s has %d restarts, want %d%s", v, od.Pod, od.Restarts, r.Restarts, driverSlackNote(r))
 		}
 	}
 }

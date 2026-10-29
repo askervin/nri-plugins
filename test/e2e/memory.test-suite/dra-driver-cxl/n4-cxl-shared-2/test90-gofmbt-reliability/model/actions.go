@@ -968,10 +968,13 @@ func (s *State) apply(a Act) *State {
 	case VDriverKill:
 		d := &n.Drv[a.VM]
 		// it disarms a driver-kill-at watcher of the VM first (A31)
-		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false
+		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = 0, 0, false, false
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
+		// (kubelet creates its container again at once, or after
+		// the back-off; nothing waits for it before the settle)
+		d.Creating = true
 		n.driverRestarted(a.VM, SteerOff)
 	case VContainerdRestart:
 		// The driver exits on the loss of its NRI connection and its
@@ -981,7 +984,7 @@ func (s *State) apply(a Act) *State {
 		// ("error reading from server: EOF") and kubelet creates it
 		// again: restarts +1 (M6, run L5), as for a kubelet restart.
 		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false // (A31)
+		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = 0, 0, false, false // (A31)
 		d.Restarts++
 		d.Inc++
 		d.Killed = true
@@ -989,9 +992,9 @@ func (s *State) apply(a Act) *State {
 		n.restartSlack(a.VM)
 	case VDriverRestart:
 		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt, d.KillMay = 0, 0, false // (A31)
+		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = 0, 0, false, false // (A31)
 		d.PodGen++
-		d.Restarts = 0
+		d.Restarts, d.Slack, d.Creating = 0, 0, false
 		d.Inc++
 		d.Restarted = true
 		if d.PodBefore == "" {
@@ -1009,6 +1012,7 @@ func (s *State) apply(a Act) *State {
 		// slice is gone for ~30 s (S3): local claims wait, which the
 		// settle waits for.
 		n.restartSlack(a.VM)
+		n.driverSlack(a.VM)
 	case VCtrlRestart:
 		// A graceful stop deletes the pool's slices, the new
 		// controller publishes them again (A18): unknown until a
@@ -1042,7 +1046,7 @@ func (s *State) apply(a Act) *State {
 		// armed; the settle has a world in which it fired (stack.go
 		// killWorlds)
 		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt, d.KillMay = a.Arg+1, 0, false
+		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = a.Arg+1, 0, false, false
 	}
 	n.Unsettled++
 	return n
@@ -1174,6 +1178,24 @@ func (n *State) restartSlack(v VM) {
 		if ss.Node == v && (ss.Phase == Starting || ss.Phase == Restarting || ss.Phase == Unblocking) && ss.Slack < 255 {
 			ss.Slack++
 		}
+	}
+}
+
+// driverSlack: a kubelet restart on a VM may restart the driver pod
+// once more if its container may be being created again after a kill
+// (M2 for the driver pod, FP6: the old kubelet created it after
+// driver-kill and stopped before starting it, the new one created it
+// again), and in the world in which an armed watcher that may have
+// fired before this step did (fireKillAt). The verb waits for the
+// driver: a later kubelet restart of the window finds it running.
+func (n *State) driverSlack(v VM) {
+	d := &n.Drv[v]
+	if d.Creating && d.Slack < 255 {
+		d.Slack++
+	}
+	d.Creating = false
+	if n.killAtMayHaveFired(v) {
+		d.KillSlack = true
 	}
 }
 
@@ -1523,6 +1545,15 @@ func (n *State) ctrlKill(p Pool) {
 			settled[d][ss.Node] = true
 		}
 	}
+	// the companion of a persistent lease released in this window: its
+	// claim's detach may not have come before the kill, also when the
+	// lease was got in this window (attached, synchronously, after the
+	// last settle; fuzz, pmem --refpool-len 120 seed 30671)
+	for i := range n.Slots {
+		if sl, ss := n.slot(i), &n.Slots[i]; p == PoolC && sl.Kind == KPlse && ss.Lease == LeaseReleasing && ss.LeaseMode.persistent() {
+			flux[devIndex(cPmem0)][sl.VM] = true
+		}
+	}
 	for d := range poolDevs(p) {
 		for v := VM(0); v < nVMs; v++ {
 			if c.Att[d][v] == TriYes && want[d][v] && !settled[d][v] {
@@ -1564,6 +1595,15 @@ func (n *State) ctrlStart(p Pool) {
 			continue
 		}
 		switch {
+		case ss.Phase == Unsched && (n.unboundDeleting(sl.Res) || n.held(sl.Res)):
+			// the publish requeues it, but its device may still be
+			// in flight in the scheduler for a claim deleted before
+			// its pod was bound: an attempt within that hold fails
+			// and nothing requeues it (A19; fuzz, pmem seed 4588: the
+			// waiter of an Attaching claim deleted while the slices
+			// were gone)
+			n.Contested |= 1 << uint(sl.Res)
+			n.stall(i)
 		case ss.Phase == Attaching || ss.Phase == Either || ss.Phase == Unsched:
 			// (Unsched: the new controller publishes the slices; a
 			// claim created before they are there would race with
@@ -1689,6 +1729,9 @@ func (n *State) settle() {
 		// (the settle's observation decides; a refused claim's retry
 		// after it marks the next window again)
 		n.Drv[v].KillMay = false
+		// (the settle waits for the driver; the oracle adopts its
+		// restarts within the Slack)
+		n.Drv[v].Creating, n.Drv[v].KillSlack = false, false
 	}
 	n.Unsettled = 0
 }

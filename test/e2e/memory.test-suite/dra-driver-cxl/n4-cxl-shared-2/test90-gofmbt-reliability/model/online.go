@@ -482,7 +482,11 @@ func (r *onlineRun) settle(n int, name string, to *State, sent time.Time, final 
 		}
 		polls++
 		if polls == 1 && to.Truncated {
-			r.log.Printf("step %d settle: the outcomes of its races were not all enumerated (R10): issue order only for some stack", n)
+			how := "issue order only for some stack"
+			if to.Wide != nil {
+				how = "narrowed by the nodes of its \"any\" pods once they are seen bound"
+			}
+			r.log.Printf("step %d settle: the outcomes of its races were not all enumerated (R10): %s", n, how)
 		}
 		v, adopted, alt := checkAltsSince(to, o, prefix, r.now(), sent, r.unblockTimeout)
 		for _, note := range v.Notes {

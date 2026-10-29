@@ -282,6 +282,18 @@ type DriverState struct {
 	// before one of the window's steps, also when its claim is gone by
 	// the settle (FP4)
 	KillMay bool
+	// Slack: restarts the pod may have more than its kills (FP6, M2 for
+	// the driver pod: a kubelet restart while its container was being
+	// created again after a kill); adopted at the settle
+	Slack uint8
+	// Creating: its container may be being created again after a
+	// driver-kill of the window that no step has waited out yet
+	// (kubelet-restart waits for the driver)
+	Creating bool
+	// KillSlack: a kubelet restart came while the armed watcher may
+	// have fired (killAtMayHaveFired): the world in which it fired
+	// has Slack +1
+	KillSlack bool
 }
 
 // Kill markers of driver-kill-at (A23).
@@ -360,7 +372,14 @@ type State struct {
 	Ev        []stackEvent // region events of the current window (copy on write)
 	Alts      []*State     // a settle: the other possible outcomes (A9 races)
 	Truncated bool         // a settle: its outcomes were not all enumerated
-	Contested uint16       // resources with an unsettled transfer: no creates
+	// Wide: a truncated settle with "any" pods whose nodes were not
+	// known: the state it was settled from, so that the oracle can
+	// settle it again with the nodes it observes (narrowed). Narrow: a
+	// settle so narrowed, and the outcome adopted from it: those nodes
+	// ("SLOT:VM,...", the adoption record's any=). Neither is cloned.
+	Wide      *State
+	Narrow    string
+	Contested uint16 // resources with an unsettled transfer: no creates
 	// Held: pool devices whose claim was deleted before its pod was
 	// bound, in a window that a settle ended: kube-scheduler may still
 	// hold the device in flight (up to 5 s after the delete, A19): a
@@ -965,6 +984,15 @@ func (s *State) dump() string {
 		}
 		if d.KillMay {
 			b.WriteString(" may have fired")
+		}
+		if d.Slack > 0 {
+			fmt.Fprintf(&b, " slack %d", d.Slack)
+		}
+		if d.Creating {
+			b.WriteString(" creating")
+		}
+		if d.KillSlack {
+			b.WriteString(" kubelet restarted after a possible kill")
 		}
 		if d.PodBefore != "" {
 			fmt.Fprintf(&b, " not %q", d.PodBefore)

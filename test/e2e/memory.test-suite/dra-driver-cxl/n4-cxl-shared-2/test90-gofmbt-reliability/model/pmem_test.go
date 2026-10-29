@@ -1113,6 +1113,169 @@ func TestPmemFP5LendingAfterCutBind(t *testing.T) {
 	wantStack(t, adopted, stackIndex(VM0, HB1), "[c-pmem0]")
 }
 
+// FP6 (step 1352): delete plse@vm0#0, driver-kill vm0 (restarts 1),
+// kubelet-restart vm0, settle: "driver vm0: pod nri-dra-driver-cxl-t6gbc
+// has 2 restarts, want 1". The old kubelet created the killed driver's
+// container again (attempt 1, 0.5 s after the exit) and was stopped
+// before it started it; the new kubelet removed it and created attempt
+// 2: M2 for the driver pod. The settle accepts and adopts the extra
+// restart; the run's own observation of step 1352 is ok now.
+func TestPmemFP6DriverCreatedTwice(t *testing.T) {
+	cfg := testConfig(t, "fullp", true)
+	cfg.Unsettled = 3
+	cfg.StallWindow, cfg.StallStrict = 30*time.Second, true // the run's header
+	st := replaySteps(t, cfg, "recorded/fp6-mbt-steps.txt", 1351)
+	if d := st.Drv[VM0]; d.Restarts != 1 || d.Slack != 1 || d.Creating || d.KillAt != 0 {
+		t.Fatalf("vm0 driver %+v, want restarts 1, slack 1", d)
+	}
+	pred := steps(t, st, "settle")
+	js, err := os.ReadFile("recorded/fp6-fail-1352.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		restarts int
+		status   VStatus
+		msg      string
+	}{{2, VOK, "ok"}, {1, VOK, "ok"}, {3, VWait, "driver vm0: pod nri-dra-driver-cxl-t6gbc has 3 restarts, want 1 (up to +1 for a kubelet restart"}} {
+		o, err := parseObservation(js)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.Drivers["vm0"].Restarts = c.restarts
+		v, adopted, alt := checkAlts(pred, o, "", time.Now(), defaultUnblock)
+		wantVerdict(t, v, c.status, c.msg)
+		if c.status != VOK {
+			continue
+		}
+		if d := adopted.Drv[VM0]; int(d.Restarts) != c.restarts || d.Slack != 0 {
+			t.Fatalf("%d restarts: adopted vm0 driver %+v", c.restarts, d)
+		}
+		rec := adoptionRecord(pred, alt, adopted)
+		if !strings.Contains(rec, "restarts=vm0:"+strconv.Itoa(c.restarts)+"+0") {
+			t.Fatalf("%d restarts: adoption record %q", c.restarts, rec)
+		}
+		re, err := applyAdoption(pred, rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := re.Drv[VM0]; int(d.Restarts) != c.restarts || d.Slack != 0 {
+			t.Fatalf("%d restarts: replayed vm0 driver %+v", c.restarts, d)
+		}
+	}
+}
+
+// The driver pod's slack of a kubelet restart (FP6): only while its
+// container may be being created again, after a driver-kill of the
+// window that no step waited out (kubelet-restart waits for the driver),
+// or in the world in which an armed watcher that may have fired before
+// the kubelet restart did; once per kill, on the VM's own driver; carried
+// by the expectation, adopted and recorded at the settle.
+func TestPmemDriverSlack(t *testing.T) {
+	for _, c := range []struct {
+		lines []string
+		slack [nVMs]uint8
+	}{
+		{[]string{"driver-kill vm2", "kubelet-restart vm2"}, [nVMs]uint8{VM2: 1}},
+		{[]string{"driver-kill vm2", "kubelet-restart vm2", "kubelet-restart vm2"}, [nVMs]uint8{VM2: 1}},
+		// (the back-off of a second kill: created again later)
+		{[]string{"driver-kill vm2", "create plain@vm2#0", "kubelet-restart vm2"}, [nVMs]uint8{VM2: 1}},
+		{[]string{"driver-kill vm2", "driver-kill vm1", "kubelet-restart vm1"}, [nVMs]uint8{VM1: 1}},
+		{[]string{"driver-kill vm2", "kubelet-restart vm1"}, [nVMs]uint8{}},
+		{[]string{"kubelet-restart vm2", "driver-kill vm2"}, [nVMs]uint8{}},
+		{[]string{"containerd-restart vm2", "kubelet-restart vm2"}, [nVMs]uint8{}},
+		{[]string{"driver-restart vm2", "kubelet-restart vm2"}, [nVMs]uint8{}},
+	} {
+		s := revState(t, "fullp", true, c.lines...)
+		for v := VM(0); v < nVMs; v++ {
+			if s.Drv[v].Slack != c.slack[v] {
+				t.Fatalf("%v: %s driver %+v, want slack %d", c.lines, v, s.Drv[v], c.slack[v])
+			}
+		}
+		k := steps(t, s, "settle")
+		for v := VM(0); v < nVMs; v++ {
+			if d := k.Drv[v]; d.Slack != c.slack[v] || d.Creating || d.KillSlack {
+				t.Fatalf("%v: settled %s driver %+v", c.lines, v, d)
+			}
+		}
+	}
+	s := revState(t, "fullp", true, "driver-kill vm2", "kubelet-restart vm2", "settle")
+	for _, c := range []struct {
+		restarts int
+		status   VStatus
+		msg      string
+	}{{1, VOK, "ok"}, {2, VOK, "ok"}, {3, VWait, "has 3 restarts, want 1 (up to +1"}, {0, VWait, "has 0 restarts, want 1 (up to +1"}} {
+		o := observation(t, s)
+		o.Drivers["vm2"].Restarts = c.restarts
+		v, adopted := checkState(s, o, "")
+		wantVerdict(t, v, c.status, c.msg)
+		if c.status == VOK {
+			if d := adopted.Drv[VM2]; int(d.Restarts) != c.restarts || d.Slack != 0 {
+				t.Fatalf("adopted %+v", d)
+			}
+			if rec := adoptionRecord(s, 0, adopted); !strings.Contains(" "+rec+" ", " restarts=vm2:"+strconv.Itoa(c.restarts)+"+0 ") {
+				t.Fatalf("adoption record %q", rec)
+			}
+		}
+	}
+	// through the JSON expectation, as `check` does
+	js, _ := json.Marshal(s.expect(int(s.Steps), "settle"))
+	e := &Expectation{}
+	if err := json.Unmarshal(js, e); err != nil {
+		t.Fatal(err)
+	}
+	o := observation(t, s)
+	o.Drivers["vm2"].Restarts = 2
+	wantVerdict(t, checkSettle(e, o), VOK, "ok")
+	// without the slack an extra restart still waits (FP6 before)
+	n := revState(t, "fullp", true, "kubelet-restart vm2", "driver-kill vm2", "settle")
+	o = observation(t, n)
+	o.Drivers["vm2"].Restarts = 2
+	v, _ := checkState(n, o, "")
+	wantVerdict(t, v, VWait, "driver vm2: pod nri-dra-driver-cxl-vm2-0 has 2 restarts, want 1")
+	if strings.Contains(v.Msg, "up to") {
+		t.Fatalf("a slack note without slack: %q", v.Msg)
+	}
+	// a watcher that may have fired before the kubelet restart (PM2: a
+	// refused reader's retry makes its region): one more in the world
+	// in which it fired, none in the other
+	r := revState(t, "fullp", true, "create pfsd-c@vm2#0", "settle", "driver-kill-at vm2 region", "kubelet-restart vm2")
+	wantPhase(t, r, "pfsd-c@vm2#0", Refused)
+	if d := r.Drv[VM2]; !d.KillSlack || d.Slack != 0 {
+		t.Fatalf("vm2 driver %+v, want kubelet restarted after a possible kill", d)
+	}
+	r = steps(t, r, "settle")
+	if len(r.Alts) != 1 || r.Drv[VM2].Restarts != 0 || r.Drv[VM2].Slack != 0 || r.Alts[0].Drv[VM2].Restarts != 1 || r.Alts[0].Drv[VM2].Slack != 1 {
+		t.Fatalf("outcomes:\n%s", dumpAlts(r))
+	}
+	for _, c := range []struct {
+		restarts int
+		fired    bool
+		status   VStatus
+	}{{2, true, VOK}, {1, true, VOK}, {3, true, VWait}, {0, false, VOK}} {
+		o := observation(t, r)
+		o.Drivers["vm2"].Restarts = c.restarts
+		o.VMs["vm2"].KillAt = json.RawMessage(`{"armed":true,"fired":` + strconv.FormatBool(c.fired) + `,"done":` + strconv.FormatBool(c.fired) + `}`)
+		v, adopted := checkState(r, o, "")
+		if v.Status != c.status {
+			t.Fatalf("%d restarts, fired %v: verdict %s %q, want %s", c.restarts, c.fired, v.Status, v.Msg, c.status)
+		}
+		if c.status == VOK && int(adopted.Drv[VM2].Restarts) != c.restarts {
+			t.Fatalf("%d restarts, fired %v: adopted %+v", c.restarts, c.fired, adopted.Drv[VM2])
+		}
+	}
+	// a kubelet restart before any Prepare that could fire it: none
+	q := revState(t, "fullp", true, "driver-kill-at vm2 region", "kubelet-restart vm2", "create pfsd-c@vm2#0", "settle")
+	for _, a := range alts(q) {
+		if a.Drv[VM2].Slack != 0 {
+			t.Fatalf("slack of a kill after the kubelet restart:\n%s", dumpAlts(q))
+		}
+	}
+	if !killAlt(q, VM2) {
+		t.Fatalf("no outcome with the kill:\n%s", dumpAlts(q))
+	}
+}
+
 // killAlt: an outcome of the settle s has the kill of the watcher armed
 // on v (fired: disarmed, the driver restarted).
 func killAlt(s *State, v VM) bool {
@@ -1241,5 +1404,56 @@ func TestPmemUnblockedWriterNamespace(t *testing.T) {
 	wantPhase(t, adopted, "xpb-c@vm1#0", Running)
 	if pd := adopted.PDev[pmemIndex(cPmem1)]; pd.NS != TriYes {
 		t.Fatalf("adopted c-pmem1 ns %v, want yes", pd.NS)
+	}
+}
+
+// A writer stalled by the scheduler's hold (A19) and promoted through a
+// hole on its stack is Blocked: its Prepare fails at the region, before
+// any namespace (pool_persistent.go preparePersistent). The oracle took
+// it as Running first and made the namespace (a settle that waits for
+// the promotion, --stall-window 30s, timed out on "want its namespace");
+// the simulator's truth made one at random when the reference bound such
+// a writer, and kept its holds for ever, so that it had writers stalled
+// that the model had Starting (fuzz, fullp --refpool-len 120 seeds 1452,
+// 2264, 3780: "the LSA changed ... without a writer's Prepare").
+func TestPmemStalledWriterThroughHole(t *testing.T) {
+	hole := []string{"create xnuma-c@vm1#0", "settle", "create sdax-c@vm1#0", "settle", "delete xnuma-c@vm1#0", "settle"}
+	held := []string{"create xpf-c@vm0#0", "delete xpf-c@vm0#0", "settle"}
+	stalled := append(append(append([]string(nil), hole...), held...), "create xpb-c@vm1#0", "settle")
+	s := revState(t, "fullp", true, stalled...)
+	wantStack(t, s, stackIndex(VM1, HB1), "[hole,c-shared0]")
+	wantPhase(t, s, "xpb-c@vm1#0", Stalled)
+	if pd := pdevOf(s, cPmem1); pd.NS != TriMaybe {
+		t.Fatalf("stalled writer: c-pmem1 ns %v, want maybe", pd.NS)
+	}
+	truth := s.clone()
+	truth.Slots[truth.cfg.slotIndex("xpb-c@vm1#0")].Phase = Blocked
+	pdevOf(truth, cPmem1).NS = TriNo
+	v, adopted := checkState(s, observation(t, truth), "")
+	wantVerdict(t, v, VOK, "ok")
+	wantPhase(t, adopted, "xpb-c@vm1#0", Blocked)
+	if pd := pdevOf(adopted, cPmem1); pd.NS != TriNo {
+		t.Fatalf("adopted c-pmem1 ns %v, want no", pd.NS)
+	}
+	// against the reference: the writer stalled (30 s: the settle
+	// waits for its promotion, and the truth has it Blocked without a
+	// namespace); the writer created after the hold ended (Starting in
+	// the model and in the truth)
+	var sm *sim
+	dbgPred = func(_ *State, s *sim) { sm = s }
+	defer func() { dbgPred = nil }()
+	starting := append(append(append([]string(nil), held...), hole...), "create xpb-c@vm1#0", "settle")
+	for _, w := range []time.Duration{0, 30 * time.Second} {
+		for seed := int64(1); seed <= 10; seed++ {
+			for _, script := range [][]string{stalled, starting} {
+				if f := refScriptIn(t, "fullp", seed, w, script...); f != nil {
+					t.Fatalf("--stall-window %s:\n%s", w, f)
+				}
+				x := sm.truth.cfg.slotIndex("xpb-c@vm1#0")
+				if ph, ns := sm.truth.Slots[x].Phase, pdevOf(sm.truth, cPmem1).NS; ph == Blocked && ns != TriNo {
+					t.Fatalf("--stall-window %s, seed %d: the truth's blocked writer made a namespace (%v)", w, seed, ns)
+				}
+			}
+		}
 	}
 }

@@ -445,3 +445,64 @@ FP5V 2026-10-28 (debugging agent), image 2ba73741f42a, replay of an
    Ready, the requester (inspected again) saw /run/cxl/fs/425c9a1b;
    adopted kept with the kill; PASS, 13 steps with the teardown,
    cluster clean (after-out).
+FP6 2026-10-28 14:57, image 2ba73741f42a, model with the FP4/FP5
+   fixes, profile fullp, new random seed 1793192294, 120m, every
+   fault. FAIL at step 1352 after 1351 steps (5712 s in all): "driver
+   vm0: pod nri-dra-driver-cxl-t6gbc has 2 restarts, want 1". Steps
+   1346-1351: driver-kill-at vm0 ns, delete, settle, delete plse@vm0#0,
+   driver-kill vm0, kubelet-restart vm0. No panic in the driver logs.
+   MODEL ERROR (no driver bug): M2 for the driver pod. driver-kill vm0
+   disarmed the ns watcher (not fired) and killed the driver (exit 137
+   at 14:28:58.49 UTC); the old kubelet created its container again at
+   once (attempt 1, 14:28:59.029) and kubelet-restart stopped it 18 ms
+   later, before StartContainer; the new kubelet removed that container
+   and created attempt 2: restartCount 2 for one kill. The model gave
+   the M2 slack to slot pods only. Fixed in the model (the driver's
+   Slack, adopted at the settle; 04-status-MODEL.txt FP6, proposed
+   contract A34). Copy: /tmp/p13-runs/fp6 (with vm0's containerd and
+   kubelet journals of the window: containerd-1350.txt,
+   kubelet-1350.txt).
+FP6V 2026-10-28 (debugging agent), image 2ba73741f42a, replays of FP6's
+   pattern on a fresh driver pod (/tmp/p13-runs/fp6v: driver-restart,
+   settle, driver-kill-at ns, driver-kill, kubelet-restart, settle; vm0
+   and vm1 in turn). Fixed model: 16 cycles (steps.txt, after-out) no
+   hit, PASS; 48 cycles (steps48.txt, after48-out) one hit at step 13
+   on vm1 (the old kubelet's CreateContainer 12 ms before its stop,
+   never started; attempt 2 by the new kubelet): restarts 2 ok at the
+   first poll, adopted "restarts=vm1:2+0"; PASS, 289 steps, cluster
+   clean. The model of HEAD (MBT_BIN, before48-out): 48 cycles, no hit
+   (the race is about one in 20-50 cycles), PASS; FP6 is its failure.
+FP7 2026-10-28 17:43, image 2ba73741f42a, model with the FP4/FP5/FP6
+   fixes (A32-A34), profile fullp, new random seed 1793202268, 120m,
+   every fault, 200 observations kept. PASS: 2005 steps in 2h0m51s
+   (7398 s in all) with a clean teardown. Steps: settle 343, read 212,
+   write 202, delete 180, create 180, driver-kill-at 145, crash 117,
+   pwrite 90, pread 78, driver-restart 70, kubelet-restart 54, driver-
+   kill 47, containerd-restart 46, server-restart 38, hold 37, ctrl-
+   start 34, ctrl-kill 34, unhold 30, pwipe 26, ctrl-restart 26, lease-
+   get 11, lease-put 5
+   Coverage 4963 strings in round 1; plans 2015 (reused 1943),
+   planning 1h06m, bash waited 37 min. No driver or controller
+   failure, no oracle difference. Copy: /tmp/p13-runs/fp7.
+FP8 2026-10-28 19:48, image 2ba73741f42a, model with the A35 fixes (the
+   fuzz after FP6), profile fullp, new random seed 1793209711, 120m,
+   every fault, 200 observations kept. PASS: 2110 steps in 2h1m11s (7422
+   s in all) with a clean teardown. Steps: settle 285, pwrite 229, read
+   203, write 188, pread 186, delete 130, create 130, driver-kill-at
+   116, crash 109, hold 100, unhold 86, driver-restart 56, kubelet-
+   restart 50, containerd-restart 38, driver-kill 34, ctrl-start 34,
+   ctrl-kill 34, server-restart 32, pwipe 30, ctrl-restart 21, lease-get
+   13, lease-put 6. Coverage 5046 strings in round 1; plans 2108 (reused
+   2072), planning 1h22m, bash waited 54 min. No driver or controller
+   failure, no oracle difference. Copy: /tmp/p13-runs/fp8.
+FP9 2026-10-28 21:53, image 2ba73741f42a, model with the A35 fixes,
+   profile fullp, new random seed 1793217221, 120m, every fault, 200
+   observations kept. PASS: 1978 steps in 2h1m20s (7428 s in all) with a
+   clean teardown. Steps: settle 296, write 177, pwrite 164, read 162,
+   pread 142, delete 142, create 142, driver-kill-at 125, crash 116,
+   hold 91, unhold 73, driver-restart 61, kubelet-restart 47, driver-
+   kill 42, containerd-restart 39, server-restart 32, ctrl-start 29,
+   ctrl-kill 29, pwipe 28, ctrl-restart 23, lease-get 13, lease-put 5.
+   Coverage 4939 strings in round 1; plans 1988 (reused 1924), planning
+   1h17m, bash waited 49 min. No driver or controller failure, no oracle
+   difference. Copy: /tmp/p13-runs/fp9.
