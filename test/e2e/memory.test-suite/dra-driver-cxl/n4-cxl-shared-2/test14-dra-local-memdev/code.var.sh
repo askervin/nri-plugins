@@ -354,6 +354,30 @@ dax-write dax-1 "$DAX1_DAX" "$TAG: dax-1"
 dax-read dax-s2 "$SHARED_DAX" "$TAG: shared-slice"
 dax-read dax-1 "$DAX1_DAX" "$TAG: dax-1"
 echo "two dax slices, two different strings at 1M: the slices are isolated, the shared slice is shared"
+# Every page of both slices, not one offset: each pod fills its whole
+# slice with a pattern of its own, then each verifies its slice. A device
+# or a slicing that maps two slices (partly) onto the same memory, like
+# the device that ignored an address bit on real hardware
+# (test/hw/dra-driver-cxl-local/debug-1-slicing), fails here: the slice
+# written second overwrites pages of the first. Then the strings at 1M are
+# written again for the steps below.
+dax-fill() {
+    # Usage: dax-fill POD DEV SEED
+    dra-exec "$VM2" "$1" python3 /tools/dax-rw.py fill "$2" "$3" ||
+        command-error "cannot fill $2 in $1"
+}
+dax-verify() {
+    # Usage: dax-verify POD DEV SEED
+    dra-exec "$VM2" "$1" python3 /tools/dax-rw.py verify "$2" "$3" ||
+        error "$1: $2 does not hold the pattern $3 on every page: $COMMAND_OUTPUT"
+}
+dax-fill dax-1 "$DAX1_DAX" 0xd1
+dax-fill dax-s1 "$SHARED_DAX" 0x51
+dax-verify dax-1 "$DAX1_DAX" 0xd1
+dax-verify dax-s2 "$SHARED_DAX" 0x51
+dax-write dax-s1 "$SHARED_DAX" "$TAG: shared-slice"
+dax-write dax-1 "$DAX1_DAX" "$TAG: dax-1"
+echo "two dax slices of one region, every page: what one claim wrote, the other one did not change"
 # Four claims, five pods on one device: the scheduler accounted every
 # claim once, in whole blocks, and the slices take exactly that of the
 # region (dra-local-slices-wait checked available_size).

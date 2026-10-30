@@ -478,22 +478,35 @@ same offset in the first 64 GiB, of another claim, silently, in modes
 
 The plugin protects against such devices in two ways:
 
-- `verifyAddressing` (default `true`): every new region is probed with an
-  address line test before its first slice or shared claim: for every
-  power of two P from 4 KiB up to the region size it writes a marker at a
-  few offsets X and X+P, bypassing the CPU caches, and reads X back. When
-  X holds the marker of X+P, only the first P bytes are distinct: the
-  region is destroyed and created again with only those bytes
-  (`cxl create-region -s P`), the memdev is published with that size from
-  the next scan on, and the result is kept in `localProbes.json` in the
-  plugin data directory, also across reboots (remove the file to probe
-  the whole memdev again). The probe takes milliseconds and writes 16
-  bytes at a few hundred offsets of the new region before anything uses
-  it. A marker that reads back as something else fails the claim.
+- `verifyAddressing` (default `true`): every new region is probed for
+  aliasing before its first slice or shared claim, with every store and
+  load bypassing the CPU caches, in two passes:
+  - an address line test: for every power of two P from 4 KiB up to the
+    region size it writes a marker at a few offsets X and X+P and reads X
+    back. When X holds the marker of X+P, address bit log2(P) is ignored.
+  - an own-address test on a 256 MiB grid: it writes its own offset at
+    the same place of every 256 MiB chunk of the region and reads them all
+    back. A chunk that holds the offset of another chunk is the same
+    memory. This finds remapped chunks that are not a power of two apart.
+
+  When offsets X < Y reach the same memory, only the region below Y (Y
+  rounded down to 256 MiB, or P) is usable: the region is destroyed and
+  created again with only those bytes (`cxl create-region -s`), and probed
+  again, until the probe finds no aliasing (a smaller region can reveal
+  an alias that a larger one hid; the claim fails after 4 tries or when
+  the size does not shrink). The memdev is published with the usable size
+  from the next scan on, and the result is kept in `localProbes.json` in
+  the plugin data directory, also across reboots (remove the file to
+  probe the whole memdev again). The probe takes a few milliseconds and
+  writes 8 bytes at a few hundred offsets of the new region before
+  anything uses it. A marker that reads back as something else fails the
+  claim.
 
   ```
-  local: memdev mem0 (serial 0x...): address line probe of region0 (206158430208 bytes): offsets 0x0 and 0x2000000000 reach the same memory (address bit 37 is ignored): only the first 137438953472 bytes are distinct in <t>
-  local: memdev mem0 (serial 0x...): region0: ...; using only the first 137438953472 bytes of the memdev from now on
+  local: memdev mem0 (serial 0x...): address line probe of region0 (206158430208 bytes): offsets 0x3000c0 and 0x1f803000c0 reach the same memory: only the first 135291469824 bytes are usable in <t>
+  local: memdev mem0 (serial 0x...): region0: ...; using only the first 135291469824 bytes of the memdev from now on
+  local: memdev mem0 (serial 0x...): released aliased region0, creating a region of 135291469824 bytes
+  local: memdev mem0 (serial 0x...): address line probe of region0 (135291469824 bytes): no aliasing in <t>
   ```
 
   The claim that triggers the probe was allocated against the capacity

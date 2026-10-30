@@ -25,6 +25,13 @@ import (
 // mapping has n*size bytes, and offsets X and X+size reach the same memory,
 // as on a device that ignores the address bit log2(size).
 func aliasedMapping(t *testing.T, size, n int) []byte {
+	chunks := make([]int, n)
+	return chunkMapping(t, size, size, chunks)
+}
+
+// chunkMapping maps chunks of chunk bytes of a memfd of size bytes in a
+// row: chunk i of the mapping is the memfd at offset chunks[i]*chunk.
+func chunkMapping(t *testing.T, size, chunk int, chunks []int) []byte {
 	fd, err := unix.MemfdCreate("probe-test", 0)
 	if err != nil {
 		t.Skipf("memfd_create: %v", err)
@@ -33,15 +40,15 @@ func aliasedMapping(t *testing.T, size, n int) []byte {
 	if err := unix.Ftruncate(fd, int64(size)); err != nil {
 		t.Fatal(err)
 	}
-	all, err := unix.Mmap(-1, 0, size*n, unix.PROT_NONE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	all, err := unix.Mmap(-1, 0, chunk*len(chunks), unix.PROT_NONE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = unix.Munmap(all) })
 	base := uintptr(unsafe.Pointer(&all[0]))
-	for i := 0; i < n; i++ {
-		_, _, errno := unix.Syscall6(unix.SYS_MMAP, base+uintptr(i*size), uintptr(size),
-			unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_FIXED, uintptr(fd), 0)
+	for i, c := range chunks {
+		_, _, errno := unix.Syscall6(unix.SYS_MMAP, base+uintptr(i*chunk), uintptr(chunk),
+			unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_FIXED, uintptr(fd), uintptr(c*chunk))
 		if errno != 0 {
 			t.Fatalf("mmap: %v", errno)
 		}
@@ -65,8 +72,17 @@ func TestProbeAliasing(t *testing.T) {
 	// 3 x 8 MiB: like a 192 GiB device with 128 GiB distinct, offsets
 	// 16 MiB.. alias 0.., and 8 MiB.. alias 0.. too
 	a := probeAliasing(aliasedMapping(t, 8<<20, 3))
-	if a.Offset != 8<<20 || a.Base != 0 {
+	if a.Offset != 8<<20 || a.Base != 0 || a.Bit != 23 {
 		t.Fatalf("expected aliasing at +8 MiB from 0, got %s", a)
+	}
+	t.Log(a)
+
+	// 4 chunks of 256 MiB, the last one is the first one again: not a
+	// power of two apart, like the 256 MiB at 126 GiB of a 128 GiB
+	// region on real hardware
+	a = probeAliasing(chunkMapping(t, 3*probeGrid, probeGrid, []int{0, 1, 2, 0}))
+	if a.Offset != 3*probeGrid || a.Base != probeGridDelta || a.Alias != 3*probeGrid+probeGridDelta || a.Bit != -1 {
+		t.Fatalf("expected chunk 3 to alias chunk 0, got %s", a)
 	}
 	t.Log(a)
 }

@@ -62,10 +62,10 @@ type fakeLocalSys struct {
 	// failSeq has the results of the next writes of sysfs attributes
 	// (relative path), nil for a write that succeeds.
 	failSeq  map[string][]error
-	zeroed   []string         // "major:minor size align" of zeroed slices
-	zeroErr  error            // error of zeroing
-	probed   []string         // dax devices of address line probes
-	aliasing *memctl.Aliasing // the result of the next probe, nil: no aliasing
+	zeroed   []string           // "major:minor size align" of zeroed slices
+	zeroErr  error              // error of zeroing
+	probed   []string           // dax devices of address line probes
+	aliasing []*memctl.Aliasing // the results of the next probes, then no aliasing
 	// regionStart and regionSize are the memory of region0.
 	regionStart, regionSize uint64
 	// bs is the memory block size.
@@ -522,17 +522,18 @@ func (f *fakeLocalSys) allocatorOfBoot(t *testing.T, dir, boot string) *localAll
 	return a
 }
 
-// probe records an address line probe of a dax device and returns
-// f.aliasing (no aliasing if nil) once, then no aliasing.
+// probe records an aliasing probe of a dax device and returns the next
+// result of f.aliasing, no aliasing when there are none.
 func (f *fakeLocalSys) probe(dax string) (*memctl.Aliasing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.probed = append(f.probed, dax)
-	if a := f.aliasing; a != nil {
-		f.aliasing = nil
+	if len(f.aliasing) > 0 {
+		a := f.aliasing[0]
+		f.aliasing = f.aliasing[1:]
 		return a, nil
 	}
-	return &memctl.Aliasing{Garbage: -1}, nil
+	return &memctl.Aliasing{Bit: -1, Garbage: -1}, nil
 }
 
 // zero records the zeroing of a slice.
@@ -1312,7 +1313,7 @@ func TestLocalAliasedRegion(t *testing.T) {
 	dir := t.TempDir()
 	a := f.allocator(t, dir)
 	half := f.regionSize / 2
-	f.aliasing = &memctl.Aliasing{Offset: half, Base: 0, Garbage: -1}
+	f.aliasing = []*memctl.Aliasing{{Offset: half, Base: 0, Alias: half, Bit: 29, Garbage: -1}}
 	acquire(t, a, "u1", api.ModeDax, 8*mib)
 	if n := strings.Count(f.commands(), "create-region"); n != 2 {
 		t.Fatalf("expected the region to be created twice, got %d:\n%s", n, f.commands())
@@ -1330,6 +1331,38 @@ func TestLocalAliasedRegion(t *testing.T) {
 	b := f.allocator(t, dir)
 	if got := b.Snapshot().probed(0xc100e2e1); got != half {
 		t.Fatalf("probed usable size after a restart %d, expected %d", got, half)
+	}
+}
+
+// A smaller region can reveal aliasing that the larger one hid: the
+// region shrinks until the probe finds none, and fails when it does not
+// shrink.
+func TestLocalAliasedRegionShrinks(t *testing.T) {
+	f := newFakeLocalSys(t)
+	a := f.allocator(t, t.TempDir())
+	half, quarter := f.regionSize/2, f.regionSize/4
+	f.aliasing = []*memctl.Aliasing{
+		{Offset: half, Base: 0, Alias: half, Bit: 29, Garbage: -1},
+		{Offset: quarter, Base: 0, Alias: quarter + 3<<20, Bit: -1, Garbage: -1},
+	}
+	acquire(t, a, "u1", api.ModeDax, 8*mib)
+	if n := strings.Count(f.commands(), "create-region"); n != 3 {
+		t.Fatalf("expected the region to be created 3 times, got %d:\n%s", n, f.commands())
+	}
+	f.wantCommand(t, fmt.Sprintf("cxl create-region -t ram -d decoder0.0 -m mem0 -s %d", quarter))
+	if got := a.Snapshot().probed(0xc100e2e1); got != quarter {
+		t.Fatalf("probed usable size %d, expected %d", got, quarter)
+	}
+
+	g := newFakeLocalSys(t)
+	b := g.allocator(t, t.TempDir())
+	same := &memctl.Aliasing{Offset: g.regionSize / 2, Alias: g.regionSize / 2, Bit: -1, Garbage: -1}
+	g.aliasing = []*memctl.Aliasing{same, same}
+	if _, _, err := b.Acquire(context.Background(), "u1", "mem", 0xc100e2e1, api.ModeDax, 8*mib, false); err == nil || !strings.Contains(err.Error(), "still aliases") {
+		t.Fatalf("expected a failure when the region does not shrink, got %v", err)
+	}
+	if b.Snapshot().uses(0xc100e2e1) {
+		t.Fatal("the device is still used after the failure")
 	}
 }
 

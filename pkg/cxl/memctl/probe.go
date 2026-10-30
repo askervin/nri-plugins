@@ -29,14 +29,20 @@ import (
 // cache lines cannot be flushed.
 var ErrProbeUnsupported = errors.New("address aliasing probe is not supported on this architecture")
 
-// Aliasing is the result of an address line probe of memory.
+// Aliasing is the result of an aliasing probe of memory.
 type Aliasing struct {
-	// Offset is the smallest power of two P for which offsets X and X+P
-	// reach the same memory, 0 if no aliasing was found. The memory
-	// holds Offset distinct bytes at most: only [0, Offset) can be used.
+	// Offset is where the usable memory ends, 0 if no aliasing was
+	// found: offsets Base and Alias reach the same memory, Alias is the
+	// higher one, and only [0, Offset) can be used without using both.
+	// Offset is Alias rounded down to probeGrid (256 MiB, the alignment
+	// of CXL regions), or the power of two of an ignored address bit.
 	Offset uint64
-	// Base is the first offset X where it was seen.
-	Base uint64
+	// Base and Alias are the first pair of offsets that reach the same
+	// memory.
+	Base, Alias uint64
+	// Bit is the ignored address bit when the aliasing is a power of two
+	// apart, -1 otherwise.
+	Bit int
 	// Garbage is the offset of a marker that read back neither as written
 	// nor as the marker of an alias, -1 if none.
 	Garbage int64
@@ -45,21 +51,38 @@ type Aliasing struct {
 const (
 	probeMarker = 0x5a17c0ffee000000
 	probePage   = 4096
+	// probeGrid is the stride of the own-address pass: CXL regions and
+	// their remapping are 256 MiB granular.
+	probeGrid = 256 << 20
+	// probeGridDelta is where in every probeGrid chunk the own-address
+	// pass writes, away from the probeBases.
+	probeGridDelta = 3<<20 + 3*64
+	// probeGridMarker marks the records of the own-address pass.
+	probeGridMarker = 0x6a17c0ffee000000
 )
 
-// probeBases are the offsets below every power of two that the probe
-// writes markers at: the start, an odd page, and a few far from the start.
+// probeBases are the offsets below every power of two that the address
+// line test writes markers at: the start, an odd page, and a few far from
+// the start.
 var probeBases = []uint64{0, 3 * probePage, 5 << 20, 7<<30 + 5*probePage, 33<<30 + 11*probePage}
 
-// ProbeAliasing runs an address line test (memtest86 "walking ones") on
-// the memory of a dax device: for every power of two P from 4 KiB up to
-// the size of the device and a few base offsets X below it, it writes a
-// marker at X, another one at X+P, and reads X back. If X holds the marker
-// of X+P, both reach the same memory: the device or the platform ignores
-// the address bit log2(P). Every store and load bypasses the CPU caches
-// (cache lines are flushed), so that a dirty line of an aliased address
-// cannot hide the aliasing. The probe overwrites 16 bytes at a few hundred
-// offsets: run it before the memory is in use. Takes milliseconds.
+// ProbeAliasing finds aliasing in the memory of a dax device, offsets
+// that reach the same memory, with two passes:
+//
+//   - Address line test (memtest86 "walking ones"): for every power of
+//     two P from 4 KiB up to the size and a few base offsets X below it,
+//     write a marker at X, another one at X+P, and read X back. If X
+//     holds the marker of X+P, the address bit log2(P) is ignored.
+//   - Own-address test on a 256 MiB grid: write its own offset at the
+//     same place of every 256 MiB chunk, then read them all back. A chunk
+//     that holds the offset of another chunk is the same memory as that
+//     chunk. This finds remapped chunks that are not a power of two
+//     apart.
+//
+// Every store and load bypasses the CPU caches (cache lines are flushed),
+// so that a dirty line of an aliased address cannot hide the aliasing.
+// The probe overwrites 8 bytes at a few hundred offsets: run it before the
+// memory is in use. Takes milliseconds.
 func (mc *Manager) ProbeAliasing(dax string) (*Aliasing, error) {
 	if !cacheFlushSupported {
 		return nil, ErrProbeUnsupported
@@ -69,7 +92,7 @@ func (mc *Manager) ProbeAliasing(dax string) (*Aliasing, error) {
 		return nil, err
 	}
 	if size == 0 {
-		return &Aliasing{Garbage: -1}, nil
+		return &Aliasing{Bit: -1, Garbage: -1}, nil
 	}
 	major, minor, err := mc.DaxDevNumbers(dax)
 	if err != nil {
@@ -98,10 +121,10 @@ func (mc *Manager) ProbeAliasing(dax string) (*Aliasing, error) {
 	return probeAliasing(mem), nil
 }
 
-// probeAliasing runs the address line test on mapped memory.
+// probeAliasing runs both passes on mapped memory.
 func probeAliasing(mem []byte) *Aliasing {
 	size := uint64(len(mem))
-	res := &Aliasing{Garbage: -1}
+	res := &Aliasing{Bit: -1, Garbage: -1}
 	word := func(off uint64) *uint64 { return (*uint64)(unsafe.Pointer(&mem[off])) }
 	store := func(off, v uint64) {
 		atomic.StoreUint64(word(off), v)
@@ -113,7 +136,20 @@ func probeAliasing(mem []byte) *Aliasing {
 		memoryFence()
 		return atomic.LoadUint64(word(off))
 	}
+	found := func(base, alias, usable uint64, bit int) {
+		if res.Offset == 0 || usable < res.Offset {
+			res.Offset, res.Base, res.Alias, res.Bit = usable, base, alias, bit
+		}
+	}
+	garbage := func(off uint64) {
+		if res.Garbage < 0 {
+			res.Garbage = int64(off)
+		}
+	}
+
+	// address line test
 	for p := uint64(probePage); p < size; p <<= 1 {
+		hit := false
 		for _, b := range probeBases {
 			if b+p+8 > size || b >= p {
 				continue
@@ -123,18 +159,37 @@ func probeAliasing(mem []byte) *Aliasing {
 			switch v := load(b); v {
 			case probeMarker | 1:
 			case probeMarker | 2:
-				if res.Offset == 0 {
-					res.Offset, res.Base = p, b
+				if !hit {
+					found(b, b+p, p, bitIndex(p))
+					hit = true
 				}
 			default:
-				if res.Garbage < 0 {
-					res.Garbage = int64(b)
-				}
+				garbage(b)
 			}
 		}
-		if res.Offset != 0 {
+		if hit {
 			break
 		}
+	}
+
+	// own-address test on a grid
+	var offs []uint64
+	for off := uint64(probeGridDelta); off+8 <= size; off += probeGrid {
+		offs = append(offs, off)
+		store(off, probeGridMarker^off)
+	}
+	for _, off := range offs {
+		v := load(off)
+		if v == probeGridMarker^off {
+			continue
+		}
+		other := v ^ probeGridMarker
+		if other < size && other%probeGrid == probeGridDelta && other != off {
+			lo, hi := min(off, other), max(off, other)
+			found(lo, hi, hi/probeGrid*probeGrid, -1)
+			continue
+		}
+		garbage(off)
 	}
 	return res
 }
@@ -143,9 +198,12 @@ func (a *Aliasing) String() string {
 	switch {
 	case a == nil:
 		return "not probed"
-	case a.Offset != 0:
+	case a.Offset != 0 && a.Bit >= 0:
 		return fmt.Sprintf("offsets %#x and %#x reach the same memory (address bit %d is ignored): only the first %d bytes are distinct",
-			a.Base, a.Base+a.Offset, bitIndex(a.Offset), a.Offset)
+			a.Base, a.Alias, a.Bit, a.Offset)
+	case a.Offset != 0:
+		return fmt.Sprintf("offsets %#x and %#x reach the same memory: only the first %d bytes are usable",
+			a.Base, a.Alias, a.Offset)
 	case a.Garbage >= 0:
 		return fmt.Sprintf("no aliasing, but offset %#x did not read back what was written", a.Garbage)
 	}

@@ -81,9 +81,7 @@ func (c *DriverConfig) configuredUsableSize(memdev string, serial uint64) uint64
 		return 0
 	}
 	for _, s := range c.MemdevSettings {
-		switch s.Device {
-		case memdev, strconv.FormatUint(serial, 10), fmt.Sprintf("0x%x", serial), strconv.FormatUint(serial, 16):
-		default:
+		if s.Device != memdev && !serialMatches(s.Device, serial) {
 			continue
 		}
 		if s.UsableSize == "" {
@@ -96,6 +94,16 @@ func (c *DriverConfig) configuredUsableSize(memdev string, serial uint64) uint64
 		return uint64(q.Value())
 	}
 	return 0
+}
+
+// serialMatches tells whether spec is the serial in decimal, 0x<hex> or
+// <hex>, leading zeros allowed.
+func serialMatches(spec string, serial uint64) bool {
+	if v, err := strconv.ParseUint(spec, 0, 64); err == nil && v == serial {
+		return true
+	}
+	v, err := strconv.ParseUint(spec, 16, 64)
+	return err == nil && v == serial
 }
 
 // verifyAddressing tells whether the allocator probes new regions for
@@ -244,10 +252,14 @@ func (a *localAllocator) probeRegion(d *localDevice) (uint64, error) {
 }
 
 // createProbedRegion creates the devdax region of a device with the usable
-// size of the memdev, probes it and, when its memory aliases, creates it
-// again with the distinct bytes only.
+// size of the memdev, probes it and, while its memory aliases, creates it
+// again with the usable bytes only. A smaller region can reveal aliasing
+// that a larger one hid (two aliases of the same memory: the probe sees
+// the one written last).
 func (a *localAllocator) createProbedRegion(ctx context.Context, d *localDevice, bs uint64) error {
-	for try := 0; ; try++ {
+	const maxTries = 4
+	last := uint64(0)
+	for try := 1; ; try++ {
 		if err := a.createRegion(ctx, d, bs); err != nil {
 			return err
 		}
@@ -255,9 +267,10 @@ func (a *localAllocator) createProbedRegion(ctx context.Context, d *localDevice,
 		if err != nil || usable == 0 {
 			return err
 		}
-		if try > 0 {
-			return fmt.Errorf("memdev %s (serial 0x%x): %s of %d bytes still aliases", d.Memdev, d.Serial, d.Region, usable)
+		if try == maxTries || (last != 0 && usable >= last) {
+			return fmt.Errorf("memdev %s (serial 0x%x): %s still aliases after %d tries (usable size %d)", d.Memdev, d.Serial, d.Region, try, usable)
 		}
+		last = usable
 		if err := a.mem.ReleaseRegion(ctx, d.Region); err != nil {
 			return fmt.Errorf("memdev %s (serial 0x%x): releasing aliased %s: %w", d.Memdev, d.Serial, d.Region, err)
 		}

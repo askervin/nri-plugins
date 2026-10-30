@@ -13,6 +13,10 @@ Usage:
   pool-dax-rw.py check-ro DEV OFFSET          exit 0 if the device cannot be written:
                                               open for writing (DEV) and a writable
                                               mapping are refused; print the errors
+  pool-dax-rw.py fill DEV SEED                write SEED and the page index into the
+                                              first 16 bytes of every 4 KiB page of DEV
+  pool-dax-rw.py verify DEV SEED              check every page that fill wrote, print
+                                              "verify: pages P bad B", exit 1 if B > 0
   pool-dax-rw.py --fd N OP OFFSET [ARG]       the same through the open fd N
 
 DEV is /dev/daxX.Y. OFFSET is in bytes, or with a K, M or G suffix.
@@ -38,6 +42,7 @@ import errno
 import mmap
 import os
 import stat
+import struct
 import sys
 import time
 
@@ -116,6 +121,19 @@ def watch(m, offset, stopfile):
     print("final: " + text, flush=True)
 
 
+def fill(m, size, seed):
+    for i, off in enumerate(range(0, size, 4096)):
+        m[off:off + 16] = struct.pack("<QQ", i, seed)
+    print("fill: pages %d seed %#x" % (size // 4096, seed))
+
+
+def verify(m, size, seed):
+    bad = sum(1 for i, off in enumerate(range(0, size, 4096))
+              if struct.unpack_from("<QQ", m, off) != (i, seed))
+    print("verify: pages %d bad %d seed %#x" % (size // 4096, bad, seed))
+    return bad == 0
+
+
 def main():
     args = sys.argv[1:]
     fd = None
@@ -124,14 +142,26 @@ def main():
             sys.exit(__doc__)
         fd, args = int(args[1]), args[2:]
         args = args[:1] + ["fd:%d" % fd] + args[1:]   # the place of DEV
-    nargs = {"write": 4, "read": 3, "watch": 4, "check-ro": 3}
+    nargs = {"write": 4, "read": 3, "watch": 4, "check-ro": 3, "fill": 3, "verify": 3}
     if len(args) < 3 or nargs.get(args[0]) != len(args):
         sys.exit(__doc__)
-    op, dev, offset = args[0], args[1], parse_offset(args[2])
+    op, dev = args[0], args[1]
     if fd is None:
         size = dax_size(dev)
     else:
         size = fd_size(fd)
+    if op in ("fill", "verify"):
+        seed = int(args[2], 0)
+        if fd is None:
+            fd = os.open(dev, os.O_RDWR if op == "fill" else os.O_RDONLY)
+        prot = mmap.PROT_READ | (mmap.PROT_WRITE if op == "fill" else 0)
+        m = mmap.mmap(fd, size, mmap.MAP_SHARED, prot)
+        if op == "fill":
+            fill(m, size, seed)
+        elif not verify(m, size, seed):
+            sys.exit(1)
+        return
+    offset = parse_offset(args[2])
     if offset < 0 or offset + MAX_STRING > size:
         sys.exit("offset %d out of range, %s has %d bytes" % (offset, dev, size))
     own = fd is None
