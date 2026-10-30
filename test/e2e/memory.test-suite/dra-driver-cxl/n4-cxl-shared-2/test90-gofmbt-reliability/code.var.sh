@@ -14,7 +14,7 @@
 # driver must survive (the driver killed in place or restarted, also at
 # a chosen point of a persistent Prepare, a pool controller killed,
 # started and restarted, a pool server restarted on its state, kubelet
-# and containerd restarted). After
+# and containerd restarted, with MBT_REBOOT a worker node rebooted). After
 # the steps that change the cluster a "settle" observes the pods, claims,
 # pool attachments, the CXL devices of the VMs, the driver's state files
 # and CDI specs and the cpusets of the containers, and the model compares
@@ -32,6 +32,22 @@
 # time-based), MBT_DURATION (20m), MBT_STEPS (0: no limit), MBT_DEPTH (3),
 # MBT_PROFILE (full), MBT_UNSETTLED (3), MBT_SETTLE_TIMEOUT (180 s),
 # MBT_POLL (3 s), MBT_AVOID (verbs or verb:arg to leave out),
+# MBT_FENCING (the fencing mode of the drivers, amendments A36, A37:
+# allowed-mems, the default, the driver's default; none, the driver
+# configuration has "defaults: {container: {fencing: none}}"; switch,
+# starts in allowed-mems and the model may switch the mode of every
+# driver with the step fencing-switch; the model gets --fencing=MODE; a
+# replay and an off-line run take it from the header of MBT_REPLAY or
+# MBT_SCRIPT: set, it must be the header's, else the test fails),
+# MBT_REBOOT (the verb node-reboot of vm0 and vm1, amendments A41-A44,
+# 12-findings-reboot.txt: guest, a guest reboot, systemctl reboot, qemu
+# keeps running with its devices; qemu, a restart of the qemu process, a
+# power cycle after which the pool controllers attach their devices again
+# and the executor the local memdev; empty, the default: none; a reboot
+# step costs ~2 min; the model gets --reboot=MODE; a replay and an
+# off-line run take it from the header of their file as MBT_FENCING (set,
+# also empty, it must be the header's); guest needs the qemu fix of
+# plan-13 bug-17 in the qemu processes of vm0 and vm1, checked at the start),
 # MBT_STALL_WINDOW (--stall-window, A28: default 30s if the kube-scheduler
 # of the cluster has the fix of bug-08, its image or version has
 # "dra-requeue", else the model's default, 6m), MBT_REPLAY,
@@ -44,9 +60,11 @@
 # kept in mbt-obs/), MBT_STUB=1 (run mbt-stub.py, a fixed list of steps
 # that exercises every action, instead of the model; also when there is no
 # model/; MBT_STUB_LIST=volatile|persistent|all picks its lists, all by
-# default, ~15 min; MBT_STUB_STEPS=FILE a list of one's own), MBT_BIN
+# default, ~15 min; reboot, the node-reboot list of the MBT_REBOOT variant;
+# MBT_STUB_STEPS=FILE a list of one's own), MBT_BIN
 # (another generator), MBT_KILLAT_TIMEOUT (60 s: a
-# driver-kill-at watcher gives up), MBT_PLEASE_PUT_WAIT (20s: lease-put of
+# driver-kill-at watcher gives up), MBT_REBOOT_WAIT (180 s: node-reboot
+# waits that long for ssh with a new boot id), MBT_PLEASE_PUT_WAIT (20s: lease-put of
 # persistent leases waits that long for Released).
 #
 # Persistent pool devices (A22): pool-c has c-pmem0 (256Mi, shared,
@@ -73,9 +91,10 @@ if [[ "$distro" != *"fedora"* ]]; then
 fi
 
 # The MBT_* that the user set (replay: they override the header of the
-# steps file, amendment A16).
+# steps file, amendment A16; MBT_FENCING and MBT_REBOOT must agree with
+# it, below).
 MBT_USER_SET=" "
-for v in MBT_SEED MBT_DEPTH MBT_PROFILE MBT_UNSETTLED MBT_AVOID MBT_STALL_WINDOW; do
+for v in MBT_SEED MBT_DEPTH MBT_PROFILE MBT_UNSETTLED MBT_AVOID MBT_STALL_WINDOW MBT_FENCING MBT_REBOOT; do
     [ -z "${!v+x}" ] || MBT_USER_SET+="$v "
 done
 MBT_MODE="${MBT_MODE:-online}"
@@ -99,7 +118,50 @@ case "$MBT_MODE" in
     offline) [ -f "$MBT_SCRIPT" ] || error "MBT_MODE=offline needs MBT_SCRIPT, a code.gen.sh of mbt-cxl generate, not '$MBT_SCRIPT'";;
     *) error "MBT_MODE is $MBT_MODE: online, replay or offline";;
 esac
-echo "### mbt: mode $MBT_MODE, seed $MBT_SEED, duration $MBT_DURATION, steps $MBT_STEPS, profile $MBT_PROFILE, depth $MBT_DEPTH"
+# The fencing mode (A36) and the reboot variant (A41) configure both the
+# cluster (the driver configuration, the node-reboot verb) and the model:
+# a replay and an off-line run take them from the header of their file
+# (MBT_REPLAY, MBT_SCRIPT; a header without them: allowed-mems, no
+# reboot). An MBT_FENCING or MBT_REBOOT that the user set (also set to
+# "": MBT_REBOOT= is no reboot) must be the header's, or the test fails
+# here (the model refuses such a contradiction too). Edit the header to
+# run a file in another mode. A file without a header has no mode: the
+# MBT_* or their defaults.
+mbt_mode_file=""
+case "$MBT_MODE" in
+    replay) mbt_mode_file=$MBT_REPLAY;;
+    offline) mbt_mode_file=$MBT_SCRIPT;;
+esac
+if [ -n "$mbt_mode_file" ] && hdr_fencing=$(mbt-header-mode "$mbt_mode_file" fencing allowed-mems); then
+    hdr_reboot=$(mbt-header-mode "$mbt_mode_file" reboot "")
+    [ -z "${MBT_FENCING+x}" ] || [ "${MBT_FENCING:-allowed-mems}" == "$hdr_fencing" ] ||
+        error "MBT_FENCING=$MBT_FENCING, but $mbt_mode_file is of --fencing $hdr_fencing: unset MBT_FENCING, or edit the header of the file"
+    [ -z "${MBT_REBOOT+x}" ] || [ "$MBT_REBOOT" == "$hdr_reboot" ] ||
+        error "MBT_REBOOT='$MBT_REBOOT', but $mbt_mode_file is of --reboot='$hdr_reboot': unset MBT_REBOOT, or edit the header of the file"
+    MBT_FENCING=$hdr_fencing MBT_REBOOT=$hdr_reboot
+    echo "mbt: the header of $mbt_mode_file: --fencing $MBT_FENCING --reboot='$MBT_REBOOT'"
+fi
+MBT_FENCING="${MBT_FENCING:-allowed-mems}"
+case "$MBT_FENCING" in
+    allowed-mems|switch) MBT_FENCING_START=allowed-mems;;
+    none)
+        MBT_FENCING_START=none
+        # The driver configuration of dra-install (dra-helm-values): the
+        # node default of every container, with what else is configured.
+        ! grep -q '^defaults:' <<< "$DRA_DRIVER_CONFIG" ||
+            error "MBT_FENCING=none: DRA_DRIVER_CONFIG has defaults already: $DRA_DRIVER_CONFIG"
+        DRA_DRIVER_CONFIG+="${DRA_DRIVER_CONFIG:+
+}defaults: {container: {fencing: none}}";;
+    *) error "MBT_FENCING is $MBT_FENCING: allowed-mems, none or switch";;
+esac
+MBT_FENCING_RUN=$MBT_FENCING
+MBT_REBOOT="${MBT_REBOOT:-}"
+case "$MBT_REBOOT" in
+    ""|guest|qemu) ;;
+    *) error "MBT_REBOOT is $MBT_REBOOT: guest, qemu or empty (no node-reboot)";;
+esac
+MBT_REBOOT_RUN=$MBT_REBOOT
+echo "### mbt: mode $MBT_MODE, seed $MBT_SEED, duration $MBT_DURATION, steps $MBT_STEPS, profile $MBT_PROFILE, depth $MBT_DEPTH, fencing $MBT_FENCING, reboot ${MBT_REBOOT:-none}"
 
 echo "### 0: the generator"
 # Built before the cluster is set up: a model that does not build stops the
@@ -152,6 +214,10 @@ echo "### 0: preconditions: patched qemu, hdm_for_passthrough=on, CONFIG_FS_DAX 
 pool-vm-require "$VM2" "$(basename "$TOPOLOGY_DIR")"
 pool-vm-require "$VM1" n4-cxl-shared-1
 pool-vm-require "$VM0" n4-cxl-shared-0
+if [ "$MBT_REBOOT" == guest ]; then
+    echo "### 0: preconditions: MBT_REBOOT=guest: the qemu of vm1 and vm0 has the fix of bug-17"
+    mbt-qemu-fixed-require "$VM1" "$VM0"
+fi
 echo "### 0: preconditions: the kernel features of persistent pool devices (pmem, fsdax, erofs, loop) in the three VMs"
 for vm in "${VMS[@]}"; do
     mbt-kernel-require "$vm"
@@ -247,6 +313,8 @@ for p in "${MBT_POOL_IDS[@]}"; do
     dra-vm-command "$VM2" "journalctl --no-pager -o cat -u ${MBT_POOL_UNIT[$p]} | grep -m1 -F 'pool ${MBT_POOL_SERVER[$p]} (from the server)'" ||
         command-error "${MBT_POOL_UNIT[$p]} did not take the pool name ${MBT_POOL_SERVER[$p]} from its server"
 done
+echo "### 0: the fencing mode of every driver: $MBT_FENCING_START (MBT_FENCING=$MBT_FENCING)"
+mbt-fencing-check "$MBT_FENCING_START"
 trap 'echo "mbt: SIGTERM"; exit 143' TERM
 
 echo "### 0: the local memdev of every VM, attached by the server that knows it"
@@ -322,7 +390,9 @@ mbt-flag MBT_SEED --seed="$MBT_SEED"
 mbt-flag MBT_DEPTH --depth="$MBT_DEPTH"
 mbt-flag MBT_PROFILE --profile="$MBT_PROFILE"
 mbt-flag MBT_UNSETTLED --unsettled="$MBT_UNSETTLED"
+mbt-flag MBT_FENCING --fencing="$MBT_FENCING"
 [ -z "$MBT_AVOID" ] || mbt-flag MBT_AVOID --avoid="$MBT_AVOID"
+[ -z "$MBT_REBOOT" ] || mbt-flag MBT_REBOOT --reboot="$MBT_REBOOT"
 MBT_FLAGS+=(
     --duration="$MBT_DURATION"
     --steps="$MBT_STEPS"

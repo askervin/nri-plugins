@@ -1,0 +1,298 @@
+BUG-21: A DAX DRIVER ID LEFT BY DAXCTL REBINDS A LOCAL SLICE IN ITS
+RESIZE; THE FAILED PREPARE'S ROLLBACK LEAVES A DECODER HOLE
+
+Branch 5jg-cxl, 2026-10-29. Found by run FR2 of the model-based test
+(15-runs-fencing-reboot.txt; step 728 settle failed after 3 min, right
+after the qemu restart of vm0 at step 726: "pod lnuma@vm0#0: phase
+Pending ready false (ContainerCreating)", "stack vm0/hb0: committed
+decoders [hole,b-pooled0], want [b-pooled0,local] in any order").
+Fixed in the working tree (uncommitted, pkg/cxl/memctl only), unit
+tested, the kernel behaviour reproduced and the fix checked by hand on
+vm0, replayed on the cluster (section 7).
+
+D/ = cmd/plugins/dra-driver-cxl/, M/ = pkg/cxl/memctl/, R/ =
+/tmp/p13-runs/FR2/, B/ = /tmp/p13-runs/b21/, L/ = the kernel of the VMs
+(7.3.0-rc4, ~/.claude/jobs/plan7-fs/FA/rc4tree), X/ = ndctl v85 (the
+daxctl of the driver image, D/Dockerfile NDCTL_VERSION=85; source
+~/.claude/jobs/plan7-fs/FA/dl-ndctl/ndctl). Line numbers: M/ of HEAD
+(73dba0f5a, unchanged in the tree before this fix), D/ of the tree that
+image 9d9dff4cadce was built from (HEAD + the bug-15/18/19 fixes),
+unless "new". Times of the driver logs and the kubelet journal are UTC,
+of mbt-cxl.log and mbt-exec.log local (UTC+2).
+
+========================================================================
+1. SUMMARY
+
+The dax bus of Linux has per-driver id lists. Writing a name to
+/sys/bus/dax/drivers/DRIVER/new_id adds it to the list and makes the
+kernel attach DRIVER to every unbound dax device that it matches
+(driver_attach), by an id in its list or, kmem, by the device's type.
+daxctl reconfigure-device binds with new_id and bind, and leaves the
+id; it removes an id only when it unbinds (remove_id, then unbind).
+memctl bound with daxctl (SetDaxDriver) and unbound with a bare unbind
+(UnbindDax). So every dax device that memctl ever bound to device_dax
+with daxctl stayed in device_dax's id list for the rest of the boot,
+and whenever it was unbound, any new_id of device_dax, for any device
+by anyone, bound it again.
+
+memctl resizes a dax device by unbinding it and writing its size
+(ResizeDaxDevice). The local allocator does that to cut the slice of a
+claim out of the first dax device of the local region, which it has
+just bound to device_dax with daxctl for the address line probe. When
+the pool driver binds its own dax device with daxctl at that moment
+(xdax: a dax-mode pool claim), device_dax takes the local device back
+between the unbind and the size write, and the write fails with EBUSY
+(L/drivers/dax/bus.c dev_dax_resize: "if (dev->driver) return
+-EBUSY"). The local Prepare rolls back: it deletes the slice and,
+since no claim uses the local memdev, destroys its region. When the
+local and the pool device are under one host bridge, the concurrent
+pool Prepare has put its region on the decoders above: the destroy
+leaves a hole (bug-02), and the kernel creates no region through that
+host bridge (the local memdev, every pool device under it) until the
+pool region is gone. kubelet's retries of the local claims fail with
+"failed to set target0 to memN" for as long as the pool claim lives.
+
+Local and pool Prepares rarely overlap while a node runs: kubelet
+prepares a pod's claims when the pod arrives. After a node reboot
+kubelet prepares every pod of the node again as soon as the two kubelet
+plugins register (bug-15), so a local and a pool Prepare start within
+milliseconds of each other: FR2 hit it at the first reboot of vm0 that
+had both a local and an xdax claim.
+
+A second effect of the same ids: a new region's first dax device whose
+name is still in device_dax's list (a destroyed region's daxN.0)
+binds to device_dax at creation instead of its default kmem (seen on
+vm0 after FR2, section 3). A numa region is then switched to kmem with
+daxctl, whose kmem new_id makes kmem probe every unbound dax device of
+the CXL regions (memctl's own comment, M/memctl.go:850-851).
+
+Severity: medium-high. A spurious Prepare failure, and, when the local
+memdev shares the host bridge with a pool device (vm0 and vm1 of the
+cluster: the local memdev and pools a/b on hb0), a decoder hole that
+blocks the host bridge for the life of the pool claim. Needs a local
+slice resize (any local numa or dax claim's Prepare: the first slice
+of a new region always resizes dax0.0) concurrent with a daxctl bind
+to device_dax (a dax-mode pool claim's Prepare, a local dax slice or a
+shared local device of another claim); most likely after a node reboot.
+The model cannot predict it and should not: the driver can avoid it.
+
+========================================================================
+2. REPRODUCTION
+
+Deterministic, at the kernel (B/experiment-A.log, vm0, a local memdev
+hot-added through qmp-e2e.sock):
+  cxl create-region -t ram -d decoder0.0 -m mem0
+  daxctl reconfigure-device --mode=devdax --force dax0.0   memctl's bind
+  echo dax0.0 > /sys/bus/dax/drivers/device_dax/unbind     memctl's unbind
+  echo 134217728 > .../dax0.0/size                         ok
+  dax_region/create, dax0.1 size 64Mi (unbound)
+  daxctl reconfigure-device --mode=devdax dax0.1           "another Prepare"
+    -> dax0.0 driver=device_dax: bound again by dax0.1's new_id
+  echo 67108864 > .../dax0.0/size  -> "Device or resource busy"
+Unit test (section 6): TestDaxIDsNotLeft runs FR2's interleaving
+(another Manager binds dax0.1 with daxctl between UnbindDax(dax0.0)
+and the size write) and fails without the fix with FR2's error:
+"dax0.0: set size 67108864: device or resource busy".
+In the cluster: a pod with a local claim (lnuma or ldax) and one with a
+dax pool claim on the same host bridge of one node, a node reboot
+(B/steps.txt, section 7). The collision needs the pool's daxctl bind
+inside the local resize, a window of milliseconds; not every reboot
+hits it.
+
+========================================================================
+3. EVIDENCE
+
+FR2 (R/), vm0, after the qemu restart of step 726 (boot 13ead201, up at
+18:02:33, journalctl --list-boots), the new driver process (pid 3136,
+R/nri-dra-driver-cxl.vm0.log, pod nri-dra-driver-cxl-npmxh), kubelet's
+journal of that boot (B/kubelet-vm0-boot-13ead201.log):
+- Fresh boot, nothing committed: observations 1-6 of settle 728
+  (R/mbt-obs/obs-000728-001..006, up to 18:04:00.8) list the three
+  memdevs (mem0 c-pooled0, mem1 b-pooled0, mem2 the local 0xc100e2e1)
+  and no region or committed decoder. The local memdev was published at
+  18:03:37.75, before any Prepare.
+- 18:04:02.494 the Prepare of lnuma (claim 9f4fc2b4,
+  mbt-lnuma-vm0-0-g3-c0-b5v5k; D/node_state.go:1272), 18:04:02.509 of
+  xdax-b (claim 3627f5ac, b-pooled0 mode dax; D/pool.go:608): 15 ms
+  apart, the two drivers of one process (a.mu and p.mu, not one lock).
+- 18:04:02.591 "mem2: created region0 (ram) under decoder0.0": the
+  local region at the bottom of hb0 (port2 decoder2.0, switch port4
+  decoder4.0, HPA 27111981056, 256Mi, endpoint decoder7.0);
+  18:04:02.629 "mem1: created region2 (ram) under decoder0.0": the pool
+  region above it (decoder2.1, decoder4.1, HPA 27380416512, 512Mi).
+- 18:04:03.436 "dax0.0: bound to device_dax" (M/memctl.go:1062
+  CreateRegionNoted ModeDax -> SetDaxDriver -> daxctl, from D/local.go
+  :665): device_dax has the id dax0.0 from now on. 18:04:03.437
+  "created region0 (devdax, dax dax0.0, node 2) in 932ms", 03.438
+  probe "no aliasing".
+- 18:04:03.527 "dax0.0: unbound from device_dax": D/local.go:720
+  addSlice -> M/memctl.go:430 ResizeDaxDevice -> UnbindDax (unbind
+  only, M/memctl.go:394).
+- 18:04:03.533 "dax2.0: bound to device_dax": xdax-b's Prepare, D/pool
+  .go:1401 CreateRegionNoted ModeDax -> SetDaxDriver -> daxctl
+  reconfigure-device --mode=devdax --force dax2.0: kmem remove_id and
+  unbind, device_dax new_id dax2.0 and bind (X/daxctl/lib/libdaxctl.c
+  :851-910 daxctl_bind, :912-934 daxctl_unbind); the new_id attaches
+  device_dax to dax0.0 too (L/drivers/dax/bus.c:91-132 do_id_store ->
+  driver_attach, :249-256 dax_bus_match by id).
+- The size write fails, kubelet 18:04:03.665: "NodePrepareResources
+  failed for ResourceClaim mbt-lnuma-vm0-0-g3-c0-b5v5k: ... memdev mem2
+  (serial 0xc100e2e1): dax0.0: set size 134217728: write
+  /sys/bus/dax/devices/dax0.0/size: device or resource busy"
+  (M/memctl.go:435). The only EBUSY of this kind in all runs under
+  /tmp/p13-runs.
+- 18:04:03.557 "dax0.0: unbound from device_dax" a second time (the
+  rollback's DeleteDaxDevice, D/local.go:743): dax0.0 had been bound
+  again after 03.527 - by nothing in the driver. "size 0", "deleted
+  slice dax0.0 mode numa".
+- 18:04:03.652 "destroyed region0", "released region0 in 93.808ms"
+  (D/local.go:373 Acquire -> dropUnused :1154 -> releaseRegion :1143):
+  the bottom of hb0's stack, below region2: the hole.
+- Observation 7 (18:04:04.49) on: port2 and port4 "committed 2",
+  decoder2.0/4.0 without a region (start 27111981056, size 256Mi:
+  region0's), decoder2.1/4.1 region2, until the timeout.
+- 18:04:12.53 the Prepare of ldax (mbt-ldax-vm0-0-g2-c0-2499l): "cxl
+  create-region -t ram -d decoder0.0 -m mem2: ... failed to set target0
+  to mem2" and memctl's explanation "CXL decoders released out of
+  order: port2 has 2 committed decoders, decoder2.0 without a region
+  below region2; port4 ...". Again 18:05:28 (ldax), 18:05:32 and
+  18:06:40 (lnuma). Nothing else destroyed or created a region on hb0
+  until the teardown (18:06:48 destroyed region2).
+Ruled out: decoders exhausted (4 per port, 2 committed); an endpoint
+decoder or region of the old boot (none at polls 1-6; qemu restarted,
+bug-17's reset not involved); the executor's re-attach of the local
+memdev (done in the step, published before the Prepares; with both
+Prepares successful either order is fine, the model accepts any);
+bug-15's stale-claim Unprepare (no Unprepare until the teardown); bug-19
+(both Prepares passed the NRI wait); the model (A43: the boot leaves no
+hole, the claims Blocked before it are prepared after it; the hole of
+before the boot, R/mbt-cxl.log step 700, is gone with the qemu
+restart).
+Kernel behaviour, by hand on vm0 after FR2 (B/experiment-*.log):
+- A: the sequence of section 2 gave EBUSY. Its first create-region
+  bound dax0.0 to device_dax by itself, not to kmem: the id dax0.0 that
+  FR2's driver left at 18:04:03.436 was still in device_dax's list.
+- B: with remove_id before the unbind of dax0.0 and after the daxctl
+  bind of dax0.1, dax0.0 stayed unbound through a new daxctl bind of
+  dax0.1, and its resize succeeded. remove_id of a name that is not an
+  id succeeds.
+- C: without an id a new region's dax0.0 binds to kmem; after "echo
+  dax0.0 > device_dax/new_id" (the id that daxctl leaves) the next
+  region's dax0.0 binds to device_dax.
+
+========================================================================
+4. ROOT CAUSE
+
+- M/memctl.go:819-838 SetDaxDriver: daxctl reconfigure-device, which
+  leaves the id of the device in the driver (X/daxctl/lib/libdaxctl.c
+  :886-891 new_id, no remove_id after); SetDaxDriverSysfs removed it
+  (M/memctl.go:866) but only after a successful bind.
+- M/memctl.go:384-402 UnbindDax: a bare unbind, the id stays (daxctl
+  itself writes remove_id before unbind).
+- L/drivers/dax/bus.c:91-132: new_id adds the id and runs
+  driver_attach, which binds the driver to every unbound device it
+  matches (dax_bus_match :249-256: an id, else the type: kmem for the
+  devices of volatile CXL regions, IORESOURCE_DAX_KMEM); bus.c:1044 a
+  bound device cannot be resized (EBUSY).
+- M/memctl.go:430-446 ResizeDaxDevice relies on the device staying
+  unbound between UnbindDax and the size write; the local allocator
+  (D/local.go:720, :722 CreateDaxDevice, D/local.go:428/531/943 binds
+  with SetDaxDriver) and the pool driver (D/pool.go:1401) run
+  concurrently.
+- The rollback of the failed Acquire (D/local.go:373, :1154) releases
+  the local region wherever it is in the decoder stack (bug-02's hole).
+
+========================================================================
+5. THE FIX
+
+In memctl, no dax driver keeps an id of a device that memctl bound or
+unbound:
+a) M/memctl.go UnbindDax (new :391-410): remove_id of the device in its
+   current driver before the unbind, as daxctl does (removeDaxID, new
+   :412-419; a failure is logged, the kernel ignores a name that is not
+   an id). Also clears ids that someone else left (daxctl by hand, an
+   older driver binary in the same boot).
+b) M/memctl.go SetDaxDriver (new :832-859): remove_id after daxctl
+   reconfigure-device, also when daxctl failed (it may have written
+   new_id before failing), for device_dax and kmem.
+c) M/memctl.go SetDaxDriverSysfs (new :861-892): the id removed also
+   after a failed bind (defer).
+Then a device that memctl has unbound matches only its default driver
+by type (kmem for volatile CXL regions), and a new region's first dax
+device binds to its default driver.
+Not changed: the rollback of a failed local Acquire still releases the
+local region (D/local.go:373). With spurious failures gone a local
+Prepare fails only on real errors (no room, a probe that finds
+aliasing, a kmem bind or online failure, a cancelled context), and such
+a failure concurrent with a pool Prepare on the same host bridge can
+still pop the local region below the pool's (section 8).
+
+========================================================================
+6. TESTS
+
+- M/memctl_test.go fakeSys models the dax bus closer to the kernel:
+  per-driver ids (new_id adds and attaches the driver to every unbound
+  device it matches: by id, kmem also by type; remove_id; bind fails
+  for a bound device and for size 0), and daxctl v85's
+  reconfigure-device (remove_id and unbind of the current driver,
+  new_id and bind, the id left; "failed to enable" if not bound).
+- M/memctl_test.go TestDaxIDsNotLeft (new), subtests daxctl, sysfs,
+  "left by another tool" (an id of dax0.0 put in device_dax's list
+  first): the local region's dax0.0 bound to device_dax, resized,
+  dax0.1 created unbound; ResizeDaxDevice(dax0.0) with a WriteFile hook
+  that binds dax0.1 with another Manager (SetDaxDriver, daxctl or
+  sysfs) between the unbind and the size write, as in FR2: the resize
+  succeeds, dax0.0 stays unbound, dax0.1 is bound; no id is left after
+  any bind, also after a failed one (size 0).
+- Changed: TestDaxDriverSysfs expects device_dax/remove_id before the
+  unbind.
+Mutations: memctl.go of HEAD: daxctl and "left" fail with FR2's error
+("resize with a concurrent bind of dax0.1: dax0.0: set size 67108864:
+device or resource busy"), sysfs fails (id left after a failed bind),
+TestDaxDriverSysfs fails; without a) only: "left by another tool" fails
+with the EBUSY; without b) only: ids of dax0.0 and dax0.1 left (daxctl,
+left); without the sysfs remove_id: sysfs fails.
+gofmt, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... ./scripts/testing/fake-cxl-pool/... -skip
+TestMemdevSettings: ok. golangci-lint ./pkg/cxl/memctl/...: only the 3
+errcheck findings of probe.go/probe_test.go that were there before.
+
+========================================================================
+7. VERIFICATION
+
+- Kernel and the fixed sequence by hand on vm0: section 3 (A, B, C).
+- Image ed0a60406c88 (v0.15.0-47-g73dba0f5a-dirty: the tree of
+  9d9dff4cadce + this fix), build/images, the newest.
+- Cluster replay B/steps.txt (FR2's header; xdax-b@vm0#0, lnuma@vm0#0,
+  ldax@vm0#0 created and settled, then 4x node-reboot vm0 + settle:
+  each boot prepares the two local claims and the pool dax claim on
+  hb0 concurrently): RESULT_PENDING
+Not run again: FR2 itself (728 steps). The collision is a window of
+milliseconds; the deterministic checks are the unit test and the
+experiment.
+
+========================================================================
+8. STATUS
+
+Fixed in the working tree, not committed: M/memctl.go,
+M/memctl_test.go. Image ed0a60406c88. The ids that the old drivers had
+left in the kernels of vm0, vm1, vm2 (they live until a reboot) were
+removed by hand after FR2 (remove_id of dax0.0-dax31.15 in device_dax
+and kmem).
+Left:
+- A failing local Prepare concurrent with a pool Prepare on the same
+  host bridge still destroys the local region below the pool region
+  (D/local.go:373 dropUnused). Keeping it when regions of other
+  memdevs are above it (M/decoders.go RegionsAbove, as bug-14's
+  release at start does) would need the next Acquire and Reconcile to
+  reuse a region without claims instead of releasing it (D/local.go
+  :572-578), and Release to stay as it is (the model predicts the
+  holes of out-of-order releases, A9). Not done: no failure of that
+  kind is left in the model's world, and the model would need a rule
+  for the kept region.
+- memctl's daxctl --mode=system-ram (SetDaxDriver to kmem, only when
+  the kernel did not bind kmem itself, M/memctl.go CreateRegionNoted
+  ModeNUMA) still writes kmem's new_id, which probes every unbound dax
+  device of the CXL regions by type. With no device_dax ids left the
+  kernel binds a new volatile region to kmem itself and the call is a
+  no-op; a bind-only kmem path (as D/local.go:828 uses) would close it.

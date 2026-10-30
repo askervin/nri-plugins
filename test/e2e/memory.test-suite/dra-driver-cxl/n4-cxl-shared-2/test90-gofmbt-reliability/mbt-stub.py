@@ -13,8 +13,8 @@ the executor (code.var.sh, mbt.source.sh, mbt-observe.py) without the
 model, and is a smoke test of the cluster: MBT_STUB=1 ./run_tests.sh ...
 
 Usage:
-  mbt-stub.py online [--stub-steps FILE | --replay FILE] [--stub-list all|volatile|persistent]
-                     [--settle-timeout SECONDS] [--out DIR] [--FLAG VALUE...]
+  mbt-stub.py online [--stub-steps FILE | --replay FILE] [--stub-list all|volatile|persistent|reboot]
+                     [--reboot guest|qemu] [--settle-timeout SECONDS] [--out DIR] [--FLAG VALUE...]
       The on-line generator: send the steps, answer done with ok and
       observe with wait or ok, or fail after the settle timeout (default
       180 s, also --settle-timeout=180s). Other flags of mbt-cxl are
@@ -29,23 +29,34 @@ Usage:
 
 The steps: --replay FILE (an mbt-steps.txt), --stub-steps FILE, else
 $MBT_STUB_STEPS (a file), else the built-in lists below (--stub-list or
-$MBT_STUB_LIST: volatile, persistent, or all, the default: both), one
-action per line ("#" comments).
+$MBT_STUB_LIST: volatile, persistent, or all, the default: both; reboot,
+the node-reboot list of the variant of --reboot, the MBT_REBOOT of the
+run, guest or qemu: A41-A44), one action per line ("#" comments).
 
 A step line may end with " => CHECK,CHECK..." (the stub's own checks, not
 sent to the executor). For an action: status=N, status!=N, text=VALUE (the
 "text" of its done JSON; $W0 and $W1 are the tokens last written to
 c-pmem0 and c-pmem1 by a pwrite that succeeded: "mbt-<step>", "" after
 junk), fired (the last armed driver-kill-at fired), killat=REASON (its done
-line reports the watcher done with a reason starting with REASON). A failed
-check fails the
+line reports the watcher done with a reason starting with REASON),
+boot=VM (node-reboot: its "boot" is a boot id, not the one VM had at the
+last quiet settle). A failed check fails the
 step. For a settle: detached=DEV (no attachment of DEV in any pool),
 pdev=DEV:FIELD=VALUE (a field of pdevs DEV, VALUE $W0/$W1 too): the
 settle waits for them; companions=ready (every companion pod Running and
 Ready); pmem=none (no pmem region in any VM); restarts=VM:N (the driver
 pod of VM has N restarts); until=fired ends the settle as soon as a
 driver-kill-at fired, quiet or not (to act before kubelet retries the
-Prepare). Every settle also waits until the pdevs of a device
+Prepare); mems=SLOT:NODES (the cpuset.mems.effective of the container
+main of the pod of SLOT is NODES, e.g. 0-3); devices=VM (every dax or
+pmem device node in a container of VM, the "devices" of A44, is the
+device of that name in the VM's cxlDevices with the same major:minor: no
+stale device node); rebooted=VM (after a node-reboot of VM: its bootID is
+the "boot" of that step, every slot pod on VM that was there at the last
+quiet settle and the driver pod of VM have one restart more than then,
+not more). Every quiet settle logs the
+cpuset.mems and cpuset.mems.effective of every container and the fencing
+mode of every driver (A36) to stderr (mbt-cxl.log). Every settle also waits until the pdevs of a device
 written by a pwrite that succeeded have its token (token, raw, erofs), a
 pbad pod is Refused (Pending with a Warning event that its block claim of
 a share is refused), what a driver-kill-at watcher killed has restarted,
@@ -54,6 +65,7 @@ and no VM logged a kernel BUG/Oops/WARNING (kernel.badTotal).
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -81,6 +93,16 @@ read ldax@vm0#0
 lease-get lease@vm2#0 numa
 settle
 lease-put lease@vm2#0
+settle
+# dnuma (A39): one container with a local numa slice (node 2) and
+# c-pooled0 in numa (node 3); write and read are for dax kinds only
+create dnuma@vm0#0
+settle => mems=dnuma@vm0#0:0-3
+write dnuma@vm0#0 => status=2
+read dnuma@vm0#0 => status=2
+crash dnuma@vm0#0
+settle => mems=dnuma@vm0#0:0-3
+delete dnuma@vm0#0
 settle
 crash ldax@vm0#0
 crash xnuma-a@vm1#0
@@ -247,6 +269,71 @@ delete plse@vm2#0
 settle => detached=c-pmem0,pmem=none
 """
 
+# Node reboots (A41-A44): a pod of each family on vm1 (pool numa, a
+# persistent device, a local dax slice, a lease of local numa memory, no
+# claim), then a reboot of vm1 of the run's variant: every pod back with
+# one restart, the device nodes of the new boot in the containers. Today
+# (a driver without the fix of plan-13 bug-15) the containers get the
+# device nodes of the old boot: the settle after the reboot fails on
+# devices=vm1, as it should.
+REBOOT_STEPS = {
+    "guest": """
+# guest: systemctl reboot, qemu keeps its devices (needs the qemu fix of
+# bug-17); a block writer of c-pmem0 on vm1
+create xnuma-c@vm1#0
+create pwr-c@vm1#0
+create ldax@vm1#0
+create lease@vm1#0
+create plain@vm1#0
+settle => devices=vm1
+pwrite pwr-c@vm1#0 img => status=0
+write ldax@vm1#0 => status=0
+lease-get lease@vm1#0 numa => status=0
+settle => devices=vm1
+node-reboot vm2 => status=2
+node-reboot vm1 => status=0,boot=vm1
+settle => rebooted=vm1,devices=vm1
+pread pwr-c@vm1#0 => status=0,text=$W0
+read ldax@vm1#0 => status=0,text=
+delete xnuma-c@vm1#0
+delete pwr-c@vm1#0
+delete ldax@vm1#0
+delete lease@vm1#0
+delete plain@vm1#0
+settle => detached=c-pmem0,pmem=none
+""",
+    "qemu": """
+# qemu: the qemu process of vm1 restarts, every device attached again (the
+# local memdev by the executor); an erofs reader of c-pmem0 direct on vm1
+create pwr-c@vm1#0
+settle
+pwrite pwr-c@vm1#0 img => status=0
+delete pwr-c@vm1#0
+settle => detached=c-pmem0
+create xnuma-c@vm1#0
+create pfsd-c@vm1#0
+create ldax@vm1#0
+create lease@vm1#0
+create plain@vm1#0
+settle => devices=vm1
+pread pfsd-c@vm1#0 => status=0,text=$W0
+write ldax@vm1#0 => status=0
+lease-get lease@vm1#0 numa => status=0
+settle => devices=vm1
+node-reboot vm2 => status=2
+node-reboot vm1 => status=0,boot=vm1
+settle => rebooted=vm1,devices=vm1
+pread pfsd-c@vm1#0 => status=0,text=$W0
+read ldax@vm1#0 => status=0,text=
+delete xnuma-c@vm1#0
+delete pfsd-c@vm1#0
+delete ldax@vm1#0
+delete lease@vm1#0
+delete plain@vm1#0
+settle => detached=c-pmem0,pmem=none
+""",
+}
+
 TRANSIENT_OK = ("attached",)
 # A pbad claim (a share with mode block, writable): the driver refuses its
 # Prepare with this (D/pool_persistent.go, Doc/usage.md).
@@ -293,9 +380,14 @@ def steps(opts):
         text = open(path).read()
     else:
         which = opts.get("stub-list") or os.environ.get("MBT_STUB_LIST") or "all"
-        text = {"volatile": STEPS, "persistent": PSTEPS, "all": STEPS + PSTEPS}.get(which)
+        if which == "reboot":
+            text = REBOOT_STEPS.get(opts.get("reboot"))
+            if text is None:
+                sys.exit("mbt-stub: --stub-list reboot needs --reboot guest or qemu (MBT_REBOOT), not %r" % opts.get("reboot"))
+        else:
+            text = {"volatile": STEPS, "persistent": PSTEPS, "all": STEPS + PSTEPS}.get(which)
         if text is None:
-            sys.exit("mbt-stub: --stub-list %r: volatile, persistent or all" % which)
+            sys.exit("mbt-stub: --stub-list %r: volatile, persistent, all or reboot" % which)
     out = []
     for l in text.splitlines():
         l = l.strip()
@@ -323,10 +415,17 @@ def subst(value, tokens):
     return value.replace("$W0", tokens.get("c-pmem0", "")).replace("$W1", tokens.get("c-pmem1", ""))
 
 
-def check_done(checks, status, result, tokens, fired):
-    """What is wrong with a done line by the checks of its step."""
+def check_done(checks, status, result, tokens, fired, boot_seen=None):
+    """What is wrong with a done line by the checks of its step.
+    boot_seen: VM -> its boot id at the last quiet settle."""
     why = []
     for c in checks:
+        if c.startswith("boot="):
+            vm = c[len("boot="):]
+            got, old = (result or {}).get("boot"), (boot_seen or {}).get(vm)
+            if not got or got == old:
+                why.append("boot %r, want a new boot id of %s (it had %s)" % (got, vm, old))
+            continue
         if c == "fired":
             if not fired:
                 why.append("no driver-kill-at fired")
@@ -355,9 +454,12 @@ def check_done(checks, status, result, tokens, fired):
     return why
 
 
-def settle_checks(obs, checks, tokens, written):
+def settle_checks(obs, checks, tokens, written, ctx=None):
     """Why the settle checks of a step and the pdevs of the written
-    devices do not hold yet."""
+    devices do not hold yet. ctx: "boots" (VM -> the boot of its last
+    node-reboot), "seen" (slot or "driver VM" -> restarts at the last
+    quiet settle)."""
+    ctx = ctx or {}
     why = []
     pdevs = obs.get("pdevs") or {}
     for dev, tok in sorted(written.items()):
@@ -392,6 +494,16 @@ def settle_checks(obs, checks, tokens, written):
             for c in obs.get("companions") or []:
                 if c.get("phase") != "Running" or not c.get("ready"):
                     why.append("companion %s %s%s" % (c.get("name"), c.get("phase"), "" if c.get("ready") else " not ready"))
+        elif key == "mems":
+            # mems=SLOT:NODES: cpuset.mems.effective of its container main
+            slot, _, want = val.partition(":")
+            got = mems_of(obs, slot)
+            if got != want:
+                why.append("%s: cpuset.mems.effective %s, want %s" % (slot, got, want))
+        elif key == "devices":
+            why.extend(stale_devices(obs, val))
+        elif key == "rebooted":
+            why.extend(not_rebooted(obs, val, ctx))
         elif key == "pdev":
             dev, _, fv = val.partition(":")
             field, _, want = fv.partition("=")
@@ -402,6 +514,94 @@ def settle_checks(obs, checks, tokens, written):
         else:
             why.append("unknown settle check %r" % c)
     return why
+
+
+DEV_NAME = re.compile(r"^(dax\d+\.\d+|pmem\d+)$")
+
+
+def stale_devices(obs, vm):
+    """devices=VM: the dax and pmem device nodes in the containers of VM
+    that are not the VM's device of that name (A44)."""
+    v = (obs.get("vms") or {}).get(vm)
+    if not v:
+        return ["%s: not observed" % vm]
+    if v.get("cxlDevices") is None or v.get("containers") is None:
+        return ["%s: cxlDevices or containers not observed" % vm]
+    cur = {d.get("name"): d for d in v["cxlDevices"]}
+    why = []
+    for c in v["containers"]:
+        for d in c.get("devices") or []:
+            name = (d.get("path") or "").rsplit("/", 1)[-1]
+            if not DEV_NAME.match(name):
+                continue
+            have = cur.get(name)
+            if have is None:
+                why.append("%s: %s/%s has %s %s, the VM has no %s" % (vm, c.get("pod"), c.get("name"), d.get("path"), d.get("dev"), name))
+            elif have.get("dev") != d.get("dev"):
+                why.append("%s: %s/%s has %s %s, the VM's %s is %s (serial %s)" % (
+                    vm, c.get("pod"), c.get("name"), d.get("path"), d.get("dev"), name, have.get("dev"), have.get("serial")))
+    return why
+
+
+def not_rebooted(obs, vm, ctx):
+    """rebooted=VM: why VM does not look rebooted yet: its boot id, one
+    restart more of the slot pods on it and of its driver pod."""
+    why = []
+    want = (ctx.get("boots") or {}).get(vm)
+    got = ((obs.get("vms") or {}).get(vm) or {}).get("bootID")
+    if not want or got != want:
+        why.append("%s: boot id %s, want %s (the boot of node-reboot)" % (vm, got, want))
+    seen = ctx.get("seen") or {}
+    for p in obs.get("pods") or []:
+        if p.get("node") != vm or p.get("deleting") or p.get("slot") not in seen:
+            continue
+        if p.get("restarts", 0) != seen[p["slot"]] + 1:
+            why.append("%s: %d restarts, want %d (one for the reboot)" % (p["slot"], p.get("restarts", 0), seen[p["slot"]] + 1))
+    key = "driver " + vm
+    got = ((obs.get("drivers") or {}).get(vm) or {}).get("restarts", 0)
+    if key in seen and got != seen[key] + 1:
+        why.append("driver %s: %d restarts, want %d" % (vm, got, seen[key] + 1))
+    return why
+
+
+def log_devices(n, obs):
+    """Log the boot id and the CXL devices of every VM and the dax and pmem
+    device nodes of every container (the evidence of A44)."""
+    for vm, v in sorted((obs.get("vms") or {}).items()):
+        if not v:
+            continue
+        devs = " ".join("%s=%s/%s" % (d.get("name"), d.get("dev"), d.get("serial")) for d in v.get("cxlDevices") or [])
+        log("step %d devices %s: boot %s, cxlDevices %s" % (n, vm, v.get("bootID"), devs or "-"))
+        for c in v.get("containers") or []:
+            nodes = " ".join("%s=%s" % (d.get("path"), d.get("dev")) for d in c.get("devices") or []
+                             if DEV_NAME.match((d.get("path") or "").rsplit("/", 1)[-1]))
+            if nodes:
+                log("step %d devices %s: %s/%s %s (%s)" % (n, vm, c.get("pod"), c.get("name"), nodes, c.get("devicesFrom")))
+
+
+def mems_of(obs, slot, container="main"):
+    """The cpuset.mems.effective of the container of the pod of slot that
+    is not being deleted, None if it is not observed."""
+    pod = next((p for p in obs.get("pods") or [] if p.get("slot") == slot and not p.get("deleting")), None)
+    if not pod or not pod.get("node"):
+        return None
+    for c in ((obs.get("vms") or {}).get(pod["node"]) or {}).get("containers") or []:
+        if c.get("pod") == pod.get("name") and c.get("name") == container:
+            return c.get("mems_effective")
+    return None
+
+
+def log_mems(n, obs):
+    """Log the fencing mode of every driver and the cpusets of every
+    container (the evidence of A38)."""
+    for vm, v in sorted((obs.get("vms") or {}).items()):
+        if not v:
+            continue
+        nodes = ",".join("%s:%dMi" % (k, (d.get("memtotal") or 0) >> 20) for k, d in sorted((v.get("nodes") or {}).items()))
+        log("step %d mems %s: fencing %s, nodes %s" % (n, vm, (v.get("driverLog") or {}).get("fencing"), nodes))
+        for c in v.get("containers") or []:
+            log("step %d mems %s: %s/%s mems %s effective %s memory.high %s" % (
+                n, vm, c.get("pod"), c.get("name"), c.get("mems"), c.get("mems_effective"), c.get("memory_high")))
 
 
 def unquiet(obs, controllers=None, restarts=None):
@@ -511,6 +711,8 @@ def online(opts):
     written = {}      # persistent device -> the token its pdevs must show
     lease_modes = {}  # plse slot -> the mode of its lease
     killat = {"vm": None, "fired": False}
+    boots = {}        # VM -> the boot id of its last node-reboot
+    boot_seen = {}    # VM -> its boot id at the last quiet settle
 
     def killat_seen(state):
         # A23: a driver-kill-at that fired restarts the driver of its VM.
@@ -562,9 +764,11 @@ def online(opts):
                     written.pop(words[2], None)
                 elif words[0] == "lease-get" and words[1].startswith("plse@"):
                     lease_modes[words[1]] = words[2]
+                elif words[0] == "node-reboot" and result.get("boot"):
+                    boots[words[1]] = result["boot"]
             if words[0] in ("lease-put", "delete"):
                 lease_modes.pop(words[1], None)
-            why = check_done(checks, status, result, tokens, killat["fired"])
+            why = check_done(checks, status, result, tokens, killat["fired"], boot_seen)
             if why:
                 fail(n, "%s: %s" % (action, "; ".join(why)))
                 return
@@ -588,18 +792,23 @@ def online(opts):
                     print("ok %d" % n, flush=True)
                     break
             else:
-                why = unquiet(obs, controllers, restarts) + settle_checks(obs, checks, tokens, written)
+                why = unquiet(obs, controllers, restarts) + settle_checks(obs, checks, tokens, written,
+                                                                          {"boots": boots, "seen": seen})
             if obs.get("errors"):
                 log("step %d poll %s: errors %s" % (n, obs.get("poll"), obs["errors"]))
             if not why:
                 restarts = {}
                 seen = {p["slot"]: p.get("restarts", 0) for p in obs.get("pods") or []}
                 seen.update(("driver " + vm, d.get("restarts", 0)) for vm, d in (obs.get("drivers") or {}).items())
+                boot_seen.update((vm, v.get("bootID")) for vm, v in (obs.get("vms") or {}).items() if v)
                 log("step %d: quiet after %.1f s, poll %s" % (n, time.monotonic() - t0, obs.get("poll")))
+                log_mems(n, obs)
+                log_devices(n, obs)
                 print("ok %d" % n, flush=True)
                 break
             msg = "; ".join(why)
             if time.monotonic() - t0 > timeout:
+                log_devices(n, obs)
                 fail(n, "settle: not quiet in %.0f s: %s" % (timeout, msg))
                 return
             print("wait %d %s" % (n, msg), flush=True)

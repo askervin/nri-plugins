@@ -381,6 +381,13 @@ func (mc *Manager) daxDeviceResource(dax string) (uint64, error) {
 // UnbindDax unbinds a dax device from its driver. A device that kmem has
 // with memory blocks that are not offline is not unbound: the kernel could
 // not remove that memory, it would stay online until a reboot.
+//
+// The name of the device is removed from the ids of the driver first, as
+// daxctl does before it unbinds: a new_id of a dax driver, for any device
+// (daxctl reconfigure-device of another claim's device), makes the kernel
+// attach the driver to every unbound dax device that it matches, and an id
+// that is left matches this device. It would be bound again while it is
+// unbound for a resize, whose write of size then fails with EBUSY (bug-21).
 func (mc *Manager) UnbindDax(ctx context.Context, dax string) error {
 	cur := mc.DaxDriver(dax)
 	if cur == "" {
@@ -391,6 +398,7 @@ func (mc *Manager) UnbindDax(ctx context.Context, dax string) error {
 			return err
 		}
 	}
+	mc.removeDaxID(cur, dax)
 	if err := mc.writeFile(filepath.Join(mc.SysRoot, "bus", "dax", "drivers", cur, "unbind"), dax); err != nil {
 		return fmt.Errorf("unbind %s from %s: %w", dax, cur, err)
 	}
@@ -399,6 +407,15 @@ func (mc *Manager) UnbindDax(ctx context.Context, dax string) error {
 	}
 	mc.logf("%s: unbound from %s", dax, cur)
 	return nil
+}
+
+// removeDaxID removes the name of a dax device from the ids of a dax
+// driver (remove_id; the kernel ignores a name that is not an id). A
+// failure is logged only: the device is bound or unbound as asked anyway.
+func (mc *Manager) removeDaxID(driver, dax string) {
+	if err := mc.writeFile(filepath.Join(mc.SysRoot, "bus", "dax", "drivers", driver, "remove_id"), dax); err != nil {
+		mc.logf("%s: remove_id %s: %v", driver, dax, err)
+	}
 }
 
 // checkOffline returns an error that lists the memory blocks of a dax
@@ -815,7 +832,11 @@ func (mc *Manager) has(cmd string) bool {
 // SetDaxDriver binds a dax device to device_dax or kmem, with daxctl
 // reconfigure-device when it is installed, else through sysfs (see
 // SetDaxDriverSysfs). Memory of kmem must be offline before switching
-// away.
+// away. daxctl binds with new_id and leaves the id in the driver; it is
+// removed afterwards, as SetDaxDriverSysfs does: else the driver takes the
+// device again whenever it is unbound and someone writes a new_id (bug-21),
+// and a later device of that name binds to it instead of its default
+// driver.
 func (mc *Manager) SetDaxDriver(ctx context.Context, dax, driver string) error {
 	cur := mc.DaxDriver(dax)
 	if cur == driver {
@@ -829,7 +850,9 @@ func (mc *Manager) SetDaxDriver(ctx context.Context, dax, driver string) error {
 	if driver == DriverKmem {
 		args = []string{"reconfigure-device", "--mode=system-ram", "--no-online", dax}
 	}
-	if _, err := mc.Exec(ctx, "daxctl", args...); err != nil {
+	_, err := mc.Exec(ctx, "daxctl", args...)
+	mc.removeDaxID(driver, dax)
+	if err != nil {
 		return err
 	}
 	return mc.checkDaxDriver(dax, driver)
@@ -850,20 +873,20 @@ func (mc *Manager) SetDaxDriverSysfs(ctx context.Context, dax, driver string) er
 	// is enough; a new_id would make kmem probe every unbound dax device
 	// of the regions. device_dax does not match them by type: new_id
 	// makes it match and probe the device, bind is a fallback if the id
-	// was already there. The id is removed again afterwards, so that a
-	// later device with the same name binds to its default driver.
+	// was already there. The id is removed again afterwards, also after a
+	// failed bind, so that a later device with the same name binds to its
+	// default driver and the driver does not take this device whenever it
+	// is unbound (bug-21).
 	if driver != DriverKmem {
 		if err := mc.writeFile(filepath.Join(drivers, driver, "new_id"), dax); err != nil {
 			mc.logf("%s: new_id: %v", driver, err)
 		}
+		defer mc.removeDaxID(driver, dax)
 	}
 	if mc.DaxDriver(dax) != driver {
 		if err := mc.writeFile(filepath.Join(drivers, driver, "bind"), dax); err != nil {
 			return fmt.Errorf("bind %s to %s: %w", dax, driver, err)
 		}
-	}
-	if driver != DriverKmem {
-		_ = mc.writeFile(filepath.Join(drivers, driver, "remove_id"), dax)
 	}
 	return mc.checkDaxDriver(dax, driver)
 }

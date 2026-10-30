@@ -399,30 +399,39 @@ func Discover(procRoot string) ([]*Process, error) {
 }
 
 func readStartTime(statPath string) uint64 {
+	_, st := readStat(statPath)
+	return st
+}
+
+// readStat returns the state and the start time of a process from its
+// stat file, 0 if it cannot be read.
+func readStat(statPath string) (string, uint64) {
 	b, err := os.ReadFile(statPath)
 	if err != nil {
-		return 0
+		return "", 0
 	}
 	i := bytes.LastIndexByte(b, ')')
 	if i < 0 {
-		return 0
+		return "", 0
 	}
 	f := strings.Fields(string(b[i+1:]))
 	// fields after comm: state(3) ... starttime is field 22 overall
 	if len(f) < 20 {
-		return 0
+		return "", 0
 	}
 	v, _ := strconv.ParseUint(f[19], 10, 64)
-	return v
+	return f[0], v
 }
 
-// ProcessAlive returns true if the process exists and has the start time.
+// ProcessAlive returns true if the process exists, has the start time and
+// is not a zombie (an exited qemu that is not reaped yet has closed its
+// monitor sockets; Discover does not list it either).
 func ProcessAlive(procRoot string, pid int, startTime uint64) bool {
 	if pid <= 0 {
 		return false
 	}
-	st := readStartTime(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
-	if st == 0 {
+	state, st := readStat(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
+	if st == 0 || state == "Z" || state == "X" {
 		return false
 	}
 	return startTime == 0 || st == startTime

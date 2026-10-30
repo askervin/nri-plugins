@@ -592,6 +592,16 @@ and cannot make it the companion of a lease it did not request.
   `cxl-lease-<value of the lease label>` and have no lease in the table.
 - Plugin restart: the sockets of the lease claims are created again in
   the mounted directories, leases continue.
+- Node reboot: the lease table records the boot id of the kernel
+  (`/proc/sys/kernel/random/boot_id`). A lease does not survive a reboot
+  (the fds of `dax` and `block` leases went with their processes, the
+  binds of `fs` leases are unmounted, the memory of `numa` leases is
+  gone), so at start the plugin drops the leases of another boot: the
+  requester containers, which restart too, have no leases and ask again;
+  the first reconcile deletes the companions, whose claims the drivers
+  then unprepare (their device is released, nothing was lent in the new
+  boot). The lease claims stay; kubelet prepares them again. A table
+  without a boot id (of an older plugin) is taken as one of this boot.
 - Mode `fs`: the bind `lease-fs/<claim uid>/<name>` is the lend of the
   device, made by the pool driver when it prepares the companion claim and
   recorded with it (`preparedPoolClaims.json`); its unmount when the

@@ -30,7 +30,9 @@ Usage:
                                  (cxl-request fd --exec) with image, junk or
                                  read; an fs lease at its path with read-file,
                                  write-file or hold, image and junk being
-                                 write-file and read read-file there
+                                 write-file and read read-file there; when the
+                                 driver does not answer cxl-request list, an
+                                 fs lease is the one mount under LEASE_FS_DIR
 
 The erofs superblock (offset 1024) has a checksum over bytes 1024-4095 of
 block 0 only ("to allow for x86 boot sectors"): bytes 0-63 and the file
@@ -52,6 +54,7 @@ FILE_LEN = 32
 RAW_LEN = 64
 FILE = "hello.txt"
 CXL_REQUEST = "cxl-request"
+LEASE_FS_DIR = "/run/cxl/fs"  # the mounts of the fs leases of the container
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "hello.erofs.hex")
 
@@ -153,10 +156,14 @@ def hold(d, stop):
     print("released", flush=True)
 
 
+class LeaseListError(Exception):
+    """cxl-request list failed: the driver does not answer."""
+
+
 def leases():
     p = subprocess.run([CXL_REQUEST, "list"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
-        fail("cxl-request list: exit %d: %s" % (p.returncode, (p.stderr or p.stdout).decode(errors="replace").strip()))
+        raise LeaseListError("cxl-request list: exit %d: %s" % (p.returncode, (p.stderr or p.stdout).decode(errors="replace").strip()))
     text = p.stdout.decode().strip()
     try:
         j = json.loads(text) if text else []
@@ -167,12 +174,31 @@ def leases():
         return [json.loads(l) for l in text.splitlines() if l.strip().startswith("{")]
 
 
+def fs_lease_mount(err):
+    """The path of the one fs lease mounted under LEASE_FS_DIR, for an fs
+    lease used while the driver does not answer (err: why cxl-request list
+    failed). The mount needs no driver; finding it by name does."""
+    try:
+        paths = [os.path.join(LEASE_FS_DIR, n) for n in sorted(os.listdir(LEASE_FS_DIR))]
+    except OSError as e:
+        fail("%s; and %s: %s" % (err, LEASE_FS_DIR, errtext(e)))
+    paths = [p for p in paths if os.path.ismount(p)]
+    if len(paths) != 1:
+        fail("%s; and %d fs lease mounts under %s" % (err, len(paths), LEASE_FS_DIR))
+    return paths[0]
+
+
 def lease(mode, op, args):
     """OP on the newest Ready (or Releasing) lease of mode (block, fs, or
     any of them) of this container: a block lease through its fd, an fs
     lease at its path (image and junk: write-file, read: read-file)."""
     modes = ("block", "fs") if mode == "any" else (mode,)
-    found = [l for l in leases() if l.get("mode") in modes and l.get("state") in ("Ready", "Releasing")]
+    try:
+        found = [l for l in leases() if l.get("mode") in modes and l.get("state") in ("Ready", "Releasing")]
+    except LeaseListError as e:
+        if "fs" not in modes:
+            fail(str(e))
+        found = [{"mode": "fs", "lease": "?", "path": fs_lease_mount(str(e))}]
     if not found:
         fail("no Ready %s lease in this container" % " or ".join(modes))
     l = found[-1]

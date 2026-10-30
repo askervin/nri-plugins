@@ -76,6 +76,45 @@ type ObsPod struct {
 	// the containers of the pod status (executor): their state
 	// running, waiting or terminated; nil: not observed
 	Containers []ObsPodContainer `json:"containers"`
+	// Claims: every claim of the pod in the order of its spec (A39);
+	// Claim is the first
+	Claims []ObsClaim `json:"claims"`
+	// the local claim of a dnuma pod (dualClaims; its pool claim is
+	// then Claim, allocated when both are)
+	localClaim *ObsClaim
+}
+
+// dualClaims returns the pool claim and the local claim of a dnuma pod
+// (A39) from "claims": by the driver of their devices once allocated
+// (cxl.nri.io the local one), by their order before (c0 local, c1 pool).
+func (p *ObsPod) dualClaims() (pool, local *ObsClaim, ok bool) {
+	if len(p.Claims) != 2 {
+		return nil, nil, false
+	}
+	isLocal := func(c *ObsClaim) bool {
+		for _, d := range c.Devices {
+			if d.Driver != "" {
+				return d.Driver == localDriver
+			}
+		}
+		return false
+	}
+	a, b := &p.Claims[0], &p.Claims[1]
+	switch {
+	case isLocal(b) || (len(a.Devices) > 0 && !isLocal(a)):
+		return a, b, true
+	}
+	return b, a, true
+}
+
+// localDriver is the DRA driver of local claims (pool claims are
+// cxl-pool.nri.io's).
+const localDriver = "cxl.nri.io"
+
+// claimAllocated: a claim of the pod is allocated (a dnuma pod: one of
+// its two).
+func (p *ObsPod) claimAllocated() bool {
+	return (p.Claim != nil && p.Claim.Allocated) || (p.localClaim != nil && p.localClaim.Allocated)
 }
 
 // ObsPodContainer is a container of a pod's status.
@@ -112,6 +151,9 @@ type ObsClaim struct {
 	Allocated bool             `json:"allocated"`
 	Devices   []ObsClaimDevice `json:"devices"`
 	Attached  *bool            `json:"attached"`
+	// AttachFailed: the claim's AttachFailed condition is True (A44
+	// note: a pool claim of a VM whose qemu restarts, for a moment)
+	AttachFailed *bool `json:"attachFailed"`
 }
 
 type ObsClaimDevice struct {
@@ -170,7 +212,50 @@ type ObsVM struct {
 	CDIPool    json.RawMessage `json:"cdiPool,omitempty"`
 	Kernel     json.RawMessage `json:"kernel,omitempty"`
 	KillAt     json.RawMessage `json:"killAt,omitempty"`
-	Errors     []string        `json:"errors,omitempty"`
+	// CXLDevs: the dax and pmem devices of the VM (A44 "cxlDevices"),
+	// raw: absent = not checked (noted), null = not read (wait)
+	CXLDevs json.RawMessage `json:"cxlDevices,omitempty"`
+	Errors  []string        `json:"errors,omitempty"`
+}
+
+// ObsCXLDev is a dax device of "regions" or the block device of a
+// namespace of "pmem" of a VM (A44 cxlDevices, EXEC): its name, path and
+// kind (dax, pmem), the major:minor of its device node (dev, null if
+// sysfs has none), its driver (dax: kmem, device_dax), its region and the
+// serial of the memdev of the region's first target (serials: all).
+type ObsCXLDev struct {
+	Name    string   `json:"name"`
+	Path    string   `json:"path"`
+	Kind    string   `json:"kind"`
+	Major   *int     `json:"major"`
+	Minor   *int     `json:"minor"`
+	Dev     *string  `json:"dev"`
+	Driver  *string  `json:"driver"`
+	Region  string   `json:"region"`
+	Serial  string   `json:"serial"`
+	Serials []string `json:"serials"`
+}
+
+// ObsDevNode is a device node of a container (A44 "devices", EXEC: from
+// /proc/PID/root/dev, the top level and one directory below, runc's
+// defaults left out): its path there, type (c, b) and major:minor.
+type ObsDevNode struct {
+	Path  string  `json:"path"`
+	Type  string  `json:"type"`
+	Major *int    `json:"major"`
+	Minor *int    `json:"minor"`
+	Dev   *string `json:"dev"`
+}
+
+// devNumbers is major:minor of a device ("" if not known).
+func devNumbers(dev *string, major, minor *int) string {
+	switch {
+	case dev != nil && *dev != "":
+		return *dev
+	case major != nil && minor != nil:
+		return fmt.Sprintf("%d:%d", *major, *minor)
+	}
+	return ""
 }
 
 // ObsPmemRegion is a CXL region of mode pmem with its nvdimm region and
@@ -305,8 +390,12 @@ type ObsDriverLog struct {
 	Container     *string  `json:"container"`
 	Panics        int      `json:"panics"`
 	Errors        []string `json:"errors"`
-	LendsRestored *bool    `json:"lendsRestored"` // A15: NRI and lending up
-	Sockets       *bool    `json:"sockets"`       // A15: both dra.sock
+	LendsRestored *bool    `json:"lendsRestored"` // A15: NRI and lending up (fencing none: NRI synchronized)
+	// Fencing: the mode of the current driver container's start line
+	// (null before it); NRISynced: NRI's first Synchronize (A36)
+	Fencing   *string `json:"fencing"`
+	NRISynced *bool   `json:"nriSynced"`
+	Sockets   *bool   `json:"sockets"` // A15: both dra.sock
 	// A24: counts of lines of persistent devices
 	Busy         *int `json:"busy"`
 	InUse        *int `json:"inUse"`
@@ -420,6 +509,11 @@ type ObsContainer struct {
 	Mems          string `json:"mems"`
 	MemsEffective string `json:"mems_effective"`
 	MemoryHigh    string `json:"memory_high"`
+	// DevNodes: its device nodes (A44 "devices"), raw: absent = not
+	// checked, null = not read (wait); DevicesFrom: proc, or spec when
+	// the executor took them from the runtime spec
+	DevNodes    json.RawMessage `json:"devices,omitempty"`
+	DevicesFrom string          `json:"devicesFrom,omitempty"`
 }
 
 type ObsInspect struct {
@@ -471,6 +565,10 @@ type DoneObs struct {
 	Text   *string `json:"text"`
 	Stderr string  `json:"stderr"`
 	Lease  *string `json:"lease"`
+	// fencing-switch: the mode the drivers run now (A37)
+	Fencing *string `json:"fencing"`
+	// node-reboot: the boot id of the new boot (A42)
+	Boot *string `json:"boot"`
 }
 
 func parseObservation(data []byte) (*Observation, error) {

@@ -37,6 +37,9 @@ func refStepStrings(mm *mbtModel, cov Coverage, st *m.Step) []string {
 	}
 	if w := cov.W[1]; w > 0 {
 		out = append(out, weigh(w, "C2.", faultContext(from, a))...)
+		if a.Verb == VSettle {
+			out = append(out, weigh(w, "C2.", memsStrings(to))...)
+		}
 	}
 	if w := cov.W[3]; w > 0 {
 		out = append(out, weigh(w, "C4.", to.abstract())...)

@@ -506,3 +506,120 @@ FP9 2026-10-28 21:53, image 2ba73741f42a, model with the A35 fixes,
    Coverage 4939 strings in round 1; plans 1988 (reused 1924), planning
    1h17m, bash waited 49 min. No driver or controller failure, no oracle
    difference. Copy: /tmp/p13-runs/fp9.
+FR1 2026-10-29 13:54, image 9d9dff4cadce (bug-15/18/19 fixes + review
+   follow-ups), scheduler v1.37.1-dra-requeue.2, vm0 and vm1 run the
+   bug-17 qemu fix, vm2 the old qemu (never rebooted). Profile fullp,
+   MBT_FENCING=switch, MBT_REBOOT=guest, new random seed 1793274771,
+   120m planned, 300 observations kept. FAIL at step 944 after 943
+   steps (4912 s = 1h21m52s in all): "pread plse@vm0#0: exit status 1:
+   cxl-request list: exit 1: cxl-request: dial unix /run/cxl/cxl.sock:
+   connect: connection refused" (prediction wanted the read to
+   succeed). Steps: settle 163, create 82, read 74, write 73, pwrite
+   70, delete 67, driver-kill-at 66, crash 58, pread 49, kubelet-
+   restart 26, hold 24, driver-restart 24, containerd-restart 20,
+   driver-kill 19, pwipe 17, unhold 16, fencing-switch 16, ctrl-start
+   15, ctrl-kill 15, server-restart 14, lease-get 14, ctrl-restart 11,
+   lease-put 6, node-reboot 5. Plans 943 (reused 928), planning 52m,
+   bash waited 35m. Both new features (node-reboot guest x5,
+   fencing-switch x16) worked with no prediction miss before the
+   failure. MODEL ERROR (no driver bug): T/model/actions.go
+   slotEnabled's VPRead/VPWrite/VHold for kind plse never check driver
+   liveness (s.Drv[VM].Killed or killAtMayHaveFired) when the lease
+   mode is fs (pfd/pfc, actions.go:974-981, 961-973, 982-988), assuming
+   an fs lease's read/write needs no live driver; but T/pmem-rw.py's
+   lease() always calls "cxl-request list" first regardless of mode
+   (pmem-rw.py:156,170), which dials the driver's per-lease
+   /run/cxl/cxl.sock (D/lease_claims.go:54,64) and fails while the
+   driver is down. Here driver-kill-at vm0 "region" fired at step
+   939/940 (13:16:01.8 UTC); step 944's pread ran at 13:16:04.3 UTC,
+   11.6 s before the new driver process started logging
+   (13:16:15.9 UTC, nri-dra-driver-cxl.vm0.log:1) - a crash-loop-
+   backoff-widened window the model should have excluded via
+   killAtMayHaveFired, as it already does for VLeaseGet (pleaseOK,
+   actions.go:876) and the driver-fault verbs. Not fixed (diagnose-
+   only task); details and a suggested fix in
+   15-runs-fencing-reboot.txt. Cluster clean after teardown (verified
+   over ssh). R2 and R3 not run (stop at first failure). Copy:
+   /tmp/p13-runs/FR1.
+FR1b 2026-10-29 15:58, image 9d9dff4cadce, scheduler v1.37.1-dra-
+   requeue.2, T/pmem-rw.py with the orchestrator's E-FR1 fallback (fs
+   plse lease falls back to its mount under /run/cxl/fs when
+   cxl-request list fails - not exercised in this run, no plse pread/
+   pwrite/hold ran before the failure). Profile fullp, MBT_FENCING=
+   switch, MBT_REBOOT=guest, new random seed 1793281249, 120m planned.
+   FAIL at step 349 after 348 steps (635 s = 10m35s): settle timeout
+   after 3m2s: "pod ldax@vm0#0: not bound yet, want blocked on vm0".
+   Likely DRIVER BUG (medium confidence), not a model error or the
+   E-FR1 fix: vm0's 2 local blocks were held by dnuma@vm0#0
+   (attaching, A39's reserved-while-pending local half) and the
+   companion of lease@vm0#0; deleting lease@vm0#0 (step 348) made the
+   driver release the companion's dax slice and region0 cleanly in
+   under a second (nri-dra-driver-cxl.vm0.log:82,84) and republish its
+   ResourceSlice at once (line 100) and twice more within the settle's
+   180 s budget (14:11:57, matching the kube-scheduler's own event
+   broadcaster retrying mbt-ldax-vm0-0-g1 with Series{Count:13,
+   LastObservedTime:14:11:57.465} per crictl logs on vm2) - yet
+   ldax@vm0#0 never got allocated. The "some fields were dropped by
+   the apiserver" warning on every publish is chronic (also present,
+   2:1 with publishes, in FR1's successful driver logs) and not the
+   cause. A secondary, separate minor finding: mbt-observe.py's
+   reported FailedScheduling event was stale for all 50 settle polls
+   (frozen at count 2/14:08:48Z, the pre-delete value) while the real
+   object reached count 13 - worth fixing so a future diagnosis does
+   not need crictl logs on the control-plane node. Not fixed (task is
+   diagnose-only); full chain of evidence and a suggested
+   confirmation (capture resourceslices/resourceclaim at the stall, or
+   a minimal dnuma+lease+ldax replay) in 15-runs-fencing-reboot.txt.
+   Cluster clean after teardown (verified over ssh). FR2 and FR3 not
+   run (stop at first failure). Copy: /tmp/p13-runs/FR1b.
+FR1c 2026-10-29 17:14, image 9d9dff4cadce, scheduler localhost/kube-
+   scheduler:v1.37.1-dra-requeue.3 (bug-20 fix), T/pmem-rw.py with the
+   E-FR1 fs-lease fallback. Profile fullp, MBT_FENCING=switch,
+   MBT_REBOOT=guest, new random seed 1793286773, 120m, 300
+   observations kept. PASS: 1727 steps in 2h0m45s (7245 s in all) with
+   a clean teardown. Steps: settle 275, pwrite 141, write 134, delete
+   132, create 132, read 130, pread 128, driver-kill-at 108, crash 92,
+   hold 61, driver-restart 49, unhold 46, kubelet-restart 42, driver-
+   kill 34, containerd-restart 34, ctrl-start 32, ctrl-kill 32, server-
+   restart 31, pwipe 27, ctrl-restart 24, fencing-switch 16, lease-get
+   14, node-reboot 8, lease-put 5. dnuma created 5 times (2x vm0, 3x
+   vm1), no related failure (bug-20's fix held). Coverage 4919 strings
+   in round 1; plans 1734 (reused 1688), planning 1h9m, bash waited 42
+   min. No driver or controller failure, no oracle difference. The
+   E-FR1 fs-lease fallback was exercised (step 825 pwrite plse@vm1#0
+   ran 0.59s before the replacement driver process on vm1 even logged
+   its first line; result EROFS, the predicted outcome, not a
+   crash) and worked; no plse pread/pwrite/hold anywhere in the run
+   surfaced a raw "connection refused". Copy: /tmp/p13-runs/FR1c.
+FR2 2026-10-29 19:21, image 9d9dff4cadce, scheduler localhost/kube-
+   scheduler:v1.37.1-dra-requeue.3. Profile full, MBT_FENCING=none,
+   MBT_REBOOT=qemu, new random seed 1793294441, 60m, 300 observations
+   kept. The qemu reboot variant worked mechanically both times it ran
+   (step 33 vm1, step 726 vm0: both "status 0", ~81 s, local memdev
+   reattached). FAIL at step 728 after 727 steps: settle timeout after
+   3m3s: "pod lnuma@vm0#0: phase Pending ready false (ContainerCreating),
+   want Running (+12 more)"; also ldax@vm0#0 stuck, vm0 "no local
+   region, want 2 slices", "stack vm0/hb0: committed decoders [hole,
+   b-pooled0]". MODEL/ORACLE ERROR (high confidence), not a new driver
+   bug: this is bug-02 (a decoder hole, Linux/hardware limit, not a
+   driver bug) recurring right after a node-reboot. Verified via
+   kubelet's own journal on vm0 (journalctl -u kubelet, a permanent
+   component the test does not tear down): both local claims
+   (mbt-lnuma-vm0-0-g3, mbt-ldax-vm0-0-g2) already hit "cxl region:
+   create_region: region0: failed to set target0 to mem3" at their
+   very first Prepare, 18:01:17-18:02:00 UTC, 20-60 s BEFORE node-
+   reboot vm0 (step 726) even started - i.e. they were already
+   Blocked by a hole when the model generated the reboot - and the
+   identical error recurred on the renamed device (mem2) immediately
+   after the reboot (18:04:03 onward, kubelet's own retries). The
+   error is the driver's own documented decoder-hole signature
+   (D/pkg/cxl/memctl/decoders.go:37,190-193), not a new symptom.
+   04-contract.txt A42 does not exclude node-reboot of a VM with a
+   Blocked pod, and A43 promises such a pod comes back "(no hole):
+   Running" after the boot - a promise this run falsifies. Not fixed
+   (diagnose-only task); full evidence, what's verified vs assumed,
+   and a suggested fix direction (exclude Blocked from A42's node-
+   reboot eligibility, or let the oracle adopt Blocked after a reboot
+   too) in 15-runs-fencing-reboot.txt. Cluster clean after teardown
+   (verified over ssh). FR3 not run (FR2 failed). Copy:
+   /tmp/p13-runs/FR2.

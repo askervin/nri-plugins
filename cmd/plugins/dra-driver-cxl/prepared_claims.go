@@ -18,8 +18,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 
@@ -106,6 +108,32 @@ func reconcilePreparedClaims(prepared claimPreparations, infos PreparedClaimsInf
 	sort.Strings(preparing)
 	sort.Strings(unpreparing)
 	return preparing, unpreparing
+}
+
+// forgetOtherBoot drops the claims prepared in another boot than bootID
+// from the prepared claims and their infos. A reboot leaves nothing of
+// what their Prepares made (the local allocator forgets the slices of
+// another boot), and kubelet prepares every claim of the node again after
+// a reboot before it starts the containers of the claim: that Prepare
+// prepares the claim anew. Kept, a claim would be "already prepared" with
+// the slices, dax devices and lent nodes of the old boot (plan-13 bug-15).
+// A claim whose pod went during the reboot is unprepared instead, and that
+// finds nothing to release. The info of a claim without a boot id (saved
+// by an older driver) is taken as of this boot and gets bootID.
+func forgetOtherBoot(prepared claimPreparations, infos PreparedClaimsInfo, bootID string) {
+	for _, uid := range slices.Sorted(maps.Keys(infos)) {
+		info := infos[uid]
+		switch {
+		case info == nil:
+		case otherBoot(info.BootID, bootID):
+			klog.Warningf("claim %s (%s) was prepared in another boot (%s, this is %s): not prepared any more, its Prepare again prepares it anew",
+				info.ClaimName, uid, info.BootID, bootID)
+			delete(prepared, uid)
+			delete(infos, uid)
+		case info.BootID == "":
+			info.BootID = bootID
+		}
+	}
 }
 
 // readPreparedClaimsFromFile returns the prepared claims of the file path.

@@ -36,8 +36,9 @@ type fakeSys struct {
 	tmp     string // where write prepares a file before renaming it
 	mu      sync.Mutex
 	cmds    []string
-	writes  []string // dax bus driver attributes written
-	nextDax int      // id of the next dax device that dax_region/create makes
+	writes  []string                   // dax bus driver attributes written
+	nextDax int                        // id of the next dax device that dax_region/create makes
+	ids     map[string]map[string]bool // the ids of the dax drivers (new_id)
 }
 
 func (f *fakeSys) p(rel string) string { return filepath.Join(f.root, rel) }
@@ -82,7 +83,7 @@ func (f *fakeSys) link(rel, target string) {
 const memPath = "devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0"
 
 func newFakeSys(t *testing.T) *fakeSys {
-	f := &fakeSys{t: t, root: t.TempDir(), tmp: t.TempDir()}
+	f := &fakeSys{t: t, root: t.TempDir(), tmp: t.TempDir(), ids: map[string]map[string]bool{}}
 	f.write("devices/system/memory/block_size_bytes", "8000000")
 	for _, b := range []int{74, 75} {
 		f.write("devices/system/memory/memory"+itoa(b)+"/state", "offline")
@@ -202,27 +203,64 @@ func (f *fakeSys) writeAttr(path, val string) error {
 		return nil
 	case filepath.Dir(dir) == "bus/dax/drivers":
 		f.writes = append(f.writes, rel)
-		driver := filepath.Base(dir)
-		switch attr {
-		case "unbind":
-			t, err := os.Readlink(f.p(daxRegionPath + "/" + val + "/driver"))
-			if err != nil || filepath.Base(t) != driver {
-				return syscall.ENODEV
-			}
-			_ = os.Remove(f.p(daxRegionPath + "/" + val + "/driver"))
-		case "new_id", "bind":
-			switch {
-			case f.daxBound(val):
-				return syscall.EBUSY
-			case f.daxSize(val) == 0 && attr == "bind":
-				return syscall.ENXIO
-			case f.daxSize(val) > 0:
-				f.bindDax(val, driver)
-			}
-		}
-		return nil
+		return f.driverAttr(filepath.Base(dir), attr, val)
 	}
 	return os.WriteFile(path, []byte(val), 0o644)
+}
+
+// driverAttr does what the kernel does for an attribute of a dax driver
+// (drivers/dax/bus.c): unbind; bind, which fails for a bound device and
+// for one of size 0 (dax_bus_probe); new_id adds the id and attaches the
+// driver to every unbound device that it matches (driver_attach), remove_id
+// removes the id (a name that is not one is ignored).
+func (f *fakeSys) driverAttr(driver, attr, val string) error {
+	switch attr {
+	case "unbind":
+		t, err := os.Readlink(f.p(daxRegionPath + "/" + val + "/driver"))
+		if err != nil || filepath.Base(t) != driver {
+			return syscall.ENODEV
+		}
+		_ = os.Remove(f.p(daxRegionPath + "/" + val + "/driver"))
+	case "bind":
+		switch {
+		case f.daxBound(val):
+			return syscall.EBUSY
+		case f.daxSize(val) == 0:
+			return syscall.ENXIO
+		}
+		f.bindDax(val, driver)
+	case "new_id":
+		if f.ids[driver] == nil {
+			f.ids[driver] = map[string]bool{}
+		}
+		f.ids[driver][val] = true
+		f.attach(driver)
+	case "remove_id":
+		delete(f.ids[driver], val)
+	}
+	return nil
+}
+
+// attach binds a dax driver to every unbound dax device of region0 that it
+// matches, as driver_attach does: by an id of the driver, and kmem also by
+// type (region0 is a volatile CXL region, IORESOURCE_DAX_KMEM). A device of
+// size 0 fails its probe.
+func (f *fakeSys) attach(driver string) {
+	m, _ := filepath.Glob(f.p(daxRegionPath + "/dax0.*"))
+	for _, d := range m {
+		name := filepath.Base(d)
+		if f.daxBound(name) || f.daxSize(name) == 0 {
+			continue
+		}
+		if f.ids[driver][name] || driver == DriverKmem {
+			f.bindDax(name, driver)
+		}
+	}
+}
+
+// hasID tells whether a dax driver has the name of a device as an id.
+func (f *fakeSys) hasID(driver, dax string) bool {
+	return f.ids[driver][dax]
 }
 
 // daxRanges returns the memory of the dax devices of region0: their
@@ -310,11 +348,27 @@ func (f *fakeSys) exec(ctx context.Context, name string, args ...string) (string
 		_ = os.Remove(f.p(memPath + "/driver"))
 		return "", nil
 	case "daxctl reconfigure-device":
-		drv := "kmem"
+		// daxctl (libdaxctl.c, v85): disable unbinds after a remove_id
+		// of the current driver, enable binds with new_id and bind, and
+		// leaves the id.
+		drv := DriverKmem
 		if strings.Contains(strings.Join(args, " "), "--mode=devdax") {
-			drv = "device_dax"
+			drv = DriverDeviceDax
 		}
-		f.bindDax(args[len(args)-1], drv)
+		dax := args[len(args)-1]
+		if t, err := os.Readlink(f.p(daxRegionPath + "/" + dax + "/driver")); err == nil {
+			cur := filepath.Base(t)
+			if cur == drv {
+				return "", nil
+			}
+			_ = f.driverAttr(cur, "remove_id", dax)
+			_ = f.driverAttr(cur, "unbind", dax)
+		}
+		_ = f.driverAttr(drv, "new_id", dax)
+		_ = f.driverAttr(drv, "bind", dax)
+		if !f.daxBound(dax) {
+			return "", errors.New("daxctl: " + dax + ": failed to enable")
+		}
 		return "", nil
 	}
 	return "", errors.New("unexpected command " + name + " " + strings.Join(args, " "))
@@ -734,7 +788,7 @@ func TestDaxDriverSysfs(t *testing.T) {
 	if err := g.SetDaxDriver(ctx, dax, DriverKmem); err != nil || g.DaxDriver(dax) != DriverKmem {
 		t.Fatalf("kmem bind: %v, driver %q", err, g.DaxDriver(dax))
 	}
-	if w := strings.Join(f.writes, ","); w != "bus/dax/drivers/device_dax/unbind,bus/dax/drivers/kmem/bind" {
+	if w := strings.Join(f.writes, ","); w != "bus/dax/drivers/device_dax/remove_id,bus/dax/drivers/device_dax/unbind,bus/dax/drivers/kmem/bind" {
 		t.Fatalf("kmem bind writes %s", w)
 	}
 }
@@ -1135,6 +1189,92 @@ func TestSetDaxDriverSysfs(t *testing.T) {
 	}
 	if len(f.commands()) != ncmds {
 		t.Fatalf("daxctl used:\n%s", f.commands()[ncmds:])
+	}
+}
+
+// bug-21: whoever writes a new_id of a dax driver makes the kernel attach
+// the driver to every unbound dax device whose name it has as an id. daxctl
+// binds with new_id and leaves the id, so device_dax took back the slice
+// dax0.0 of a local Prepare, which UnbindDax had just unbound to resize it,
+// when a pool Prepare bound its device with daxctl at that moment, and the
+// resize failed: "dax0.0: set size 134217728: write .../size: device or
+// resource busy" (FR2). No id is left after a bind, and UnbindDax removes
+// the id first, also one that someone else left.
+func TestDaxIDsNotLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		daxctl bool
+		left   bool // an id of dax0.0 left in device_dax by another tool
+	}{
+		{name: "daxctl", daxctl: true},
+		{name: "sysfs"},
+		{name: "left by another tool", daxctl: true, left: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeSys(t)
+			f.plug("0xc100e2e1")
+			g := f.manager()
+			if !tc.daxctl {
+				g.LookPath = func(string) (string, error) { return "", errors.New("not found") }
+			}
+			ctx := context.Background()
+			noID := func(dax string) {
+				t.Helper()
+				if f.hasID(DriverDeviceDax, dax) {
+					t.Errorf("device_dax has the id %s after binding it", dax)
+				}
+			}
+			// the local region: dax0.0 bound to device_dax for the
+			// address line probe, then a slice of it
+			if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
+				t.Fatal(err)
+			}
+			noID("dax0.0")
+			if err := g.ResizeDaxDevice(ctx, "dax0.0", 128<<20); err != nil {
+				t.Fatal(err)
+			}
+			// another unbound device, to be bound by "another Prepare"
+			other, err := g.CreateDaxDevice(ctx, "region0", 64<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.SetDaxDriver(ctx, "dax0.0", DriverDeviceDax); err != nil {
+				t.Fatal(err)
+			}
+			noID("dax0.0")
+			if tc.left {
+				f.ids[DriverDeviceDax] = map[string]bool{"dax0.0": true}
+			}
+			// The other Prepare binds its device between the unbind of
+			// dax0.0 and the write of its size, as in FR2.
+			pool := f.manager()
+			pool.LookPath = g.LookPath
+			injected := false
+			g.WriteFile = func(path, val string) error {
+				if !injected && strings.HasSuffix(path, "/bus/dax/devices/dax0.0/size") {
+					injected = true
+					if err := pool.SetDaxDriver(ctx, other, DriverDeviceDax); err != nil {
+						t.Errorf("the other bind: %v", err)
+					}
+				}
+				return f.writeAttr(path, val)
+			}
+			if err := g.ResizeDaxDevice(ctx, "dax0.0", 64<<20); err != nil {
+				t.Fatalf("resize with a concurrent bind of %s: %v", other, err)
+			}
+			if !injected || f.daxBound("dax0.0") || f.daxSize("dax0.0") != 64<<20 || g.DaxDriver(other) != DriverDeviceDax {
+				t.Fatalf("injected %v; dax0.0 bound %v size %d; %s bound to %q", injected, f.daxBound("dax0.0"), f.daxSize("dax0.0"), other, g.DaxDriver(other))
+			}
+			noID(other)
+			// a failed bind leaves no id either: dax0.0 has size 0 now
+			if err := g.ResizeDaxDevice(ctx, "dax0.0", 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.SetDaxDriver(ctx, "dax0.0", DriverDeviceDax); err == nil {
+				t.Fatal("a device of size 0 was bound")
+			}
+			noID("dax0.0")
+		})
 	}
 }
 

@@ -118,12 +118,15 @@ func weigh(w int, tag string, xs []string) []string {
 // "fault VERB -" when it affects none. Lease pods with a lease are of
 // kind lease-numa or lease-dax.
 func faultContext(s *State, a Act) []string {
-	if a.Verb == VCrash {
+	switch {
+	case a.Verb == VCrash:
 		return crashContext(s, a)
-	}
-	if !a.Verb.fault() {
+	case a.Verb == VFencingSwitch:
+		return switchContext(s)
+	case !a.Verb.fault():
 		return nil
 	}
+	fv := faultVerb(a)
 	var out []string
 	for i := range s.Slots {
 		ss := &s.Slots[i]
@@ -141,7 +144,7 @@ func faultContext(s *State, a Act) []string {
 				continue
 			}
 		}
-		out = append(out, "fault "+faultVerb(a)+" "+contextKind(sl, ss)+" "+ss.Phase.String())
+		out = append(out, "fault "+fv+" "+contextKind(sl, ss)+" "+ss.Phase.String())
 	}
 	// a decoder hole is a context of its own (A9): pods blocked behind it
 	// show up as "blocked" above
@@ -152,6 +155,7 @@ func faultContext(s *State, a Act) []string {
 				out = append(out, "fault "+faultVerb(a)+" hole hb"+string(rune('0'+b)))
 			}
 		}
+
 	case a.Verb.poolFault():
 		for _, v := range poolHosts[a.Pool] {
 			if s.Stacks[stackIndex(v, poolBridge[a.Pool])].hasHole() {
@@ -166,12 +170,64 @@ func faultContext(s *State, a Act) []string {
 			d := cPmem0 + DevID(x)
 			if s.cfg.devUsed(d) {
 				pd := &s.PDev[x]
-				out = append(out, "fault "+faultVerb(a)+" "+d.String()+" ns-"+triName(pd.NS)+" fs-"+triName(pd.FS))
+				out = append(out, "fault "+fv+" "+d.String()+" ns-"+triName(pd.NS)+" fs-"+triName(pd.FS))
 			}
 		}
 	}
 	// a fault that affects nothing is no context (06-runs P1: faults on
 	// an empty cluster); C1 covers the verb once
+	sort.Strings(out)
+	return uniq(out)
+}
+
+// memsStrings are the strings of the cpuset.mems of the containers of a
+// settled state (A40): one "mems|MODE|e=E|f=F|m=M" per running container
+// of a slot or a companion, MODE am or none, E its CXL nodes (claimed or
+// lent), F the fenced nodes of its VM, M the CXL nodes with memory there
+// ("-" for none). From the predicted state, as the planner sees it.
+func memsStrings(s *State) []string {
+	var out []string
+	for v := VM(0); v < nVMs; v++ {
+		f, m := nodesOf(s.bitNodes(s.Drv[v].F)), s.memNodes(v)
+		str := func(e nodeSet) string {
+			return "mems|" + s.Fence.short() + "|e=" + e.String() + "|f=" + f.String() + "|m=" + m.String()
+		}
+		for i := range s.Slots {
+			sl, ss := s.slot(i), &s.Slots[i]
+			if sl.Kind.leaseKind() && sl.VM == v && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && (sl.Kind == KLease || ss.LeaseMode.persistent()) {
+				// its companion
+				out = append(out, str(0))
+			}
+			if ss.Phase == Running && ss.Node == v {
+				out = append(out, str(s.claimNodes(i)))
+			}
+		}
+	}
+	sort.Strings(out)
+	return uniq(out)
+}
+
+// switchContext is C2 of fencing-switch (A40): "fault fencing-switch>MODE
+// KIND" for every pod with a container (running, starting or restarting)
+// and the mode it switches to: what matters is the cpuset.mems that the
+// containers keep or get. (Not by phase or VM: a switch is three driver
+// restarts, 45-90 s.)
+func switchContext(s *State) []string {
+	to := FenceNone
+	if s.Fence == FenceNone {
+		to = FenceAM
+	}
+	fv := "fault " + VFencingSwitch.String() + ">" + to.short()
+	var out []string
+	for i := range s.Slots {
+		ss := &s.Slots[i]
+		if ss.Phase == Running || ss.Phase == Starting || ss.Phase == Restarting {
+			out = append(out, fv+" "+contextKind(s.slot(i), ss))
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, fv+" -")
+	}
 	sort.Strings(out)
 	return uniq(out)
 }

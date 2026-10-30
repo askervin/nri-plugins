@@ -239,7 +239,11 @@ connection (when containerd or CRI-O restarts, for example), and connects
 again only when it is restarted: the DaemonSet restarts its container, a
 host process needs `Restart=on-failure` (or `always`). `RestartSec` gives
 the runtime time to bring its NRI socket back: a plugin that cannot reach
-it at start runs on without NRI.
+it at start runs on without NRI. The plugin connects to NRI before it
+registers its kubelet plugins, and a Prepare waits until NRI has
+synchronized (at most 30 s, then it fails and kubelet retries): kubelet
+creates the containers of a claim after its Prepare, and the plugin
+steers and fences only the containers whose creation it sees.
 
 `templates/deviceclasses.yaml` is plain YAML: applied as it is, the
 classes carry no configuration. Classes with the presets of a
@@ -1474,15 +1478,15 @@ restarts.
 | file | |
 |:-----|:-|
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, and its lend |
+| `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, its lend and the boot id of its Prepare: a claim of another boot is not prepared at start ([local.md](local.md#what-prepare-does)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, and the claims of shared local devices |
 | `/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json` | the serials of pool devices and of local memdevs that the plugin has seen, and the pools it has listed: a pool device is never published as a local memdev while its controller's ResourceSlices are absent; edit it only while the plugin is stopped ([local.md](local.md#what-the-plugin-publishes)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/steeredContainers.json` | the containers that the steering of the plugin throttles, with their cgroups: a restarted plugin removes their `memory.high` ([Steering](#steering)) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table |
+| `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table, with the boot id of its leases: the leases of another boot are dropped at start ([leases.md](leases.md#life-cycle)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |
 | `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json` | prepared claims of `cxl-pool.nri.io` |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json` | claims of `cxl-pool.nri.io` whose Prepare has touched a device and not finished: a restarted plugin releases the device at start, or keeps the claim for its Unprepare or its Prepare again ([pool.md](pool.md#ordering-and-failure-semantics)) |
+| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json` | prepared claims of `cxl-pool.nri.io`, with the boot id of their Prepare |
+| `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json` | claims of `cxl-pool.nri.io` whose Prepare has touched a device and not finished: a restarted plugin releases the device at start, or keeps the claim for its Unprepare or its Prepare again; and the stale claims (`stale`: prepared in another boot), kept for their Unprepare or their Prepare again ([pool.md](pool.md#ordering-and-failure-semantics)) |
 | `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access>` | the node mount of the erofs of a persistent pool device for mode `fs` |
 | `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node |
 | `<cdi root>/cxl-leases.yaml` | CDI kind `nri.io/cxl`: a device `lease-<uid>` per lease claim |

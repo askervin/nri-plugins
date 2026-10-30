@@ -1,0 +1,275 @@
+BUG-17: QEMU KEEPS MEM_ENABLE OF THE CXL DEVICE DVSEC ACROSS A RESET
+
+qemu of the test VMs, Q branch 5jL-fix-cxl-hot-remove (ff076b1e6c),
+2026-10-29. Found by the node reboot research (12-findings-reboot.txt
+R4). Fixed in Q's working tree (uncommitted), built into the VMs'
+build directory; qtest and an A/B register check pass; verified on vm1
+(a guest reboot with a committed region: the memdev probes and takes a
+region after the boot). Only vm1 runs the fixed qemu so far (9).
+
+Q = ~/github.com/qemu/qemu, L = ~/github.com/torvalds/linux (the VMs
+run 7.3.0-rc4), E = ~/github.com/containers/nri-plugins/test/e2e,
+RR = /tmp/p13-runs/reboot-research, B = /tmp/bug17. Line numbers of
+ff076b1e6c unless "new".
+
+========================================================================
+1. SUMMARY
+
+After a guest reboot ("systemctl reboot", qemu keeps running) no CXL
+memdev of the VM can be used: cxl_pci refuses every endpoint with
+"Range register decodes outside platform defined CXL ranges", so there
+is no endpoint port, no region, no dax or pmem device, and "cxl list
+-M" is empty. The memdevs stay in sysfs without a driver. Only a
+hot-remove and re-add of the device, or a qemu restart, gives a working
+device again.
+
+Cause: the guest's writes to the PCIe DVSEC for CXL Devices survive a
+reset of the device. Linux sets Mem_Enable when it enables CXL.mem;
+after the reset the HDM decoders are disabled again (qemu resets them)
+but Mem_Enable is still set, which Linux reads as "firmware set the
+device up through the DVSEC range registers" and then rejects (the
+ranges, base 0, are in no CFMWS).
+
+Severity: high for the test environment (blocks the guest-reboot
+variant of the model's node-reboot fault, 12-findings 1.3 and 7.1),
+none for real hardware (a platform reset clears the DVSEC). Every
+cxl-type3 device is affected, cold-plugged and hot-plugged (both are
+reset by a system reset); the cluster's devices are all hot-plugged.
+
+========================================================================
+2. REPRODUCTION
+
+On a VM with a CXL memdev that cxl_pci has probed (any attached pool
+device or the test's local memdev): systemctl reboot in the guest; after
+the boot dmesg has, for each memdev that was enabled before:
+  cxl_pci 0000:0f:00.0: Range register decodes outside platform defined CXL ranges.
+  cxl_mem mem0: endpoint7 failed probe
+Without a guest: B/dvsec-reset-check.py QEMU [hotplug] (qtest; programs
+ECAM and the root port's bus numbers, writes Mem_Enable and range 1
+base of the device DVSEC, system_reset over QMP, reads them back).
+
+========================================================================
+3. EVIDENCE
+
+- RR/post1/cxl-dmesg.txt (vm1 after the guest reboot of 12-findings 3,
+  06:29 UTC): the ENXIO message for 0000:12:00.0, 1c:00.0, 0f:00.0,
+  1d:00.0 and "cxl_mem memN: endpointK failed probe" for mem2, mem3,
+  mem0, mem4; /sys/bus/cxl/devices/mem0..4 with their serials and no
+  driver (mem1, 1b:00.0, has no line of its own in the capture, which
+  is a filtered excerpt); no endpoint, no region (RR/post1/vm.txt).
+  The qemu restart
+  after it (12-findings 4) made the same devices probe normally.
+- B/ab-result.txt, the A/B register check (2.) with the old binary
+  (B/qemu-system-x86_64.old, a copy of /proc/660594/exe, inode 27828811,
+  the binary every VM ran) and the new one, both for a cold-plugged and
+  a hot-plugged cxl-type3 behind a cxl-rp:
+    old: after realize ctrl=0x0002, base 0; after the guest's writes
+         ctrl=0x0006 (Mem_Enable=1), base 0x110000000; after
+         system_reset ctrl=0x0006 (Mem_Enable=1), base 0x110000000:
+         FAIL
+    new: after system_reset ctrl=0x0002 (Mem_Enable=0), base 0: PASS
+
+========================================================================
+4. ROOT CAUSE
+
+- Linux enables CXL.mem by setting Mem_Enable (bit 2) of the DVSEC CXL
+  Control register (L/drivers/cxl/core/pci.c:183-221,
+  cxl_set_mem_enable / devm_cxl_enable_mem). It clears it only through
+  the devm action at unbind (clear_mem_enable, :206); a reboot does not
+  unbind, so the bit is still set when the guest resets.
+- qemu makes the register writable (Q/hw/cxl/cxl-component-utils.c:
+  505-523: control 0xFD/0x4F, control2, lock, range 1/2 base high and
+  low) and keeps whatever the guest wrote there.
+- A reset does not touch it: pci_do_device_reset() clears only the
+  standard header (command, status, interrupt line, cache line size,
+  PM state, BARs; Q/hw/pci/pci.c:569-601). ct3d_reset() (Q/hw/mem/
+  cxl_type3.c:1327-1354) refills the link capability, resets the
+  component registers (HDM decoders uncommitted, HDM decoding disabled)
+  and the device registers and CCIs, but not the DVSEC; its realize
+  value (.ctrl = 0x2, IO_Enable only; bases 0) is written once, by
+  build_dvsecs() at realize (:337-388).
+- The next kernel: cxl_dvsec_rr_decode() (L/drivers/cxl/core/pci.c:263)
+  reads mem_enabled = 1 and the DVSEC ranges (base 0, size of the
+  device); cxl_hdm_decode_init() (:368) finds the HDM decoder
+  capability globally disabled with mem_enabled set, so it requires a
+  DVSEC range inside a CFMWS (:410-446); base 0 is in none, hence
+  -ENXIO and the message at :444.
+- Hot-plug is not affected: a newly realized device starts from
+  build_dvsecs(). That is why hot-remove plus re-add (the workaround)
+  and a qemu restart work.
+- The hot-remove patch of the branch (ff076b1e6c: ct3_exit releases the
+  backends, cxl-downstream advertises a power controller) does not
+  touch reset or the DVSEC; no interaction. With this fix the
+  remove/re-add workaround is no longer needed.
+
+Other CXL devices (checked):
+- cxl-rp (cxl_rp_reset_hold, Q/hw/pci-bridge/cxl_root_port.c:192),
+  cxl-downstream (cxl_dsp_reset, Q/hw/pci-bridge/cxl_downstream.c:92)
+  and cxl-upstream (cxl_usp_reset, Q/hw/pci-bridge/cxl_upstream.c:97)
+  reset their component registers but not their DVSECs either. Writable
+  there (Q/hw/cxl/cxl-component-utils.c:527-583): Extensions DVSEC Port
+  Control and the alternate bus/memory ranges (all three), GPF Port
+  DVSEC phase 1/2 control (rp, dsp), Flex Bus Port control (rp, dsp).
+- Linux 7.3 writes only two of them: the GPF port timeouts of each
+  dport at port probe (update_gpf_port_dvsec, L/drivers/cxl/core/
+  pci.c:819; it writes the same maximum every time and skips the write
+  when the register has it already), and Unmask SBR of Port Control
+  around a CXL bus reset (cxl_reset_bus_function, L/drivers/pci/
+  pci.c:5015), which it restores afterwards. A stale value is therefore
+  either the value Linux would write anyway or never left behind: no
+  effect on the probe after a reboot. Not changed by this fix (spec-
+  wise the same class of bug; a follow-up can do the same for the
+  ports).
+- pxb-cxl (the host bridges) has no DVSEC; pxb_cxl_dev_reset resets its
+  component registers (Q/hw/pci-bridge/pci_expander_bridge.c:300).
+- The type3's other writable DVSEC, the GPF Device DVSEC (phase 2
+  duration and power), is not written by Linux; not changed.
+
+========================================================================
+5. THE FIX
+
+Q/hw/mem/cxl_type3.c only (git diff --stat: 37 insertions, 5
+deletions):
+- ct3_device_dvsec_init() (new :341): the body of build_dvsecs() that
+  computes the device DVSEC (range sizes from the volatile/persistent
+  backends, .cap 0x1e, .ctrl 0x2, .status2 0x2, bases 0) fills a
+  CXLDVSECDevice; build_dvsecs() (new :408) creates the DVSEC from it as
+  before.
+- ct3d_reset_device_dvsec() (new :395): builds the same body again and
+  copies it past the DVSEC header (the header keeps the link to the
+  next extended capability) into config space at
+  cxl_cstate.dvsecs[PCIE_CXL_DEVICE_DVSEC] (the range that
+  cxl_component_create_dvsec() records). Nothing in qemu changes the
+  device DVSEC at run time, so the rebuilt body is exactly the realize
+  value: Mem_Enable, Cache_Enable etc., control2, the lock and the range
+  bases go back to 0, the read-only fields stay as they are.
+- ct3d_reset() calls it (new :1366), next to the reset of the
+  component registers. ct3 has no FLR, so this runs only on the resets
+  that also reset the HDM decoders (system reset, a secondary bus reset
+  of a port above it, and the reset at hot-plug, where it is a no-op).
+- scripts/checkpatch.pl: no errors, no warnings.
+
+========================================================================
+6. TESTS
+
+- Build: ninja -C Q/build qemu-system-x86_64 (3 s: cxl_type3.c, relink).
+  The linker (GNU ld 2.45) unlinks the output and writes a new file:
+  inode 27828811 -> 27809749; the running qemus keep the old inode
+  (/proc/PID/exe "(deleted)") and were not disturbed (checked with a
+  test program first, and on the five running VMs after the build).
+- qtest: Q/build/tests/qtest/cxl-test with QTEST_QEMU_BINARY=
+  ./qemu-system-x86_64: 21/21 ok (topologies with pxb-cxl, cxl-rp,
+  switches, volatile/persistent type3, CFMW options; none reads the
+  DVSEC).
+- A/B register check (2., 3.): old FAIL, new PASS, cold-plugged and
+  hot-plugged.
+- On the cluster: 7.
+
+========================================================================
+7. VERIFICATION ON THE CLUSTER
+
+Lock /tmp/p13-cluster.lock (owner bug-17) 09:16:33-09:19:36 local
+time (07:16-07:19 UTC); waited ~17 min for exec-fencing. Raw output in
+B/ (B/scripts/v.sh: gstate LABEL writes B/LABEL.txt with the guest's
+boot id, memdevs and their driver, endpoints, cxl list, lspci CXLCtl,
+the cxl lines of dmesg; B/scripts/qmp.py: one QMP command on a VM's
+qmp-e2e.sock).
+- Before: no cxl-type3 in the qemu of vm0/vm1/vm2 (qom-list
+  /machine/peripheral), no memdev in vm1 (B/pre0-oldqemu.txt), nodes
+  Ready, no pod in cxl-pool-demo, no driver DaemonSet, no pool server.
+- qemu restart of vm1 onto the new binary: RR/qemu-restart.sh (as
+  vmdir-restart: shutdown -h, vagrant up --no-provision), ssh after
+  30 s (B/restart-vm1.txt). vm1's qemu: pid 1450401, /proc/PID/exe Q/
+  build/qemu-system-x86_64, inode 27809749 (the new build).
+- device_add cxl-type3 id=bug17mem0 bus=cxlsw_ds3_usrp0hb0 (behind
+  cxl-rp, cxl-upstream and cxl-downstream of cxlhb0) sn=0xc100e2e1
+  volatile-memdev=beram_cxl_memdev1__..._sn_0xc100e2e1 (the test's local
+  memdev, the backend on vm1's command line): mem0 0xc100e2e1 cxl_mem,
+  endpoint4, lspci "CXLCtl: Cache- IO+ Mem+" (Linux set Mem_Enable;
+  B/s2-attached.txt). cxl create-region -t ram -d decoder0.0 -m mem0:
+  region0 at 0x650000000, decode_state commit, dax0.0 system-ram, 0 of
+  2 blocks online (B/s3-region.txt, B/s4-before-reboot.txt).
+- systemctl reboot in the guest at 07:18:08 UTC: new boot id after
+  20 s (487d3eb7-... -> 55c83621-...). After the boot (B/s5-after-
+  reboot.txt): mem0 0xc100e2e1 with driver cxl_mem, endpoint4, cxl list
+  -M lists it; dmesg has 0 "Range register decodes outside platform
+  defined CXL ranges" and no "failed probe" (before the fix: 12-findings
+  3.2, every memdev). region0 is gone (HDM decoders reset, as before
+  the fix). cxl create-region again: region0 commit, dax0.0
+  (B/s6-region-after-reboot.txt): the device is usable.
+- Cleanup: cxl destroy-region -f region0 (B/s7-cleanup-region.txt);
+  device_del bug17mem0: DEVICE_DELETED (B/s7-device-del.txt).
+- After (12-findings 8): no cxl-type3 in any of the three qemus; in
+  each guest 0 memdevs, regions, endpoints and dax devices,
+  auto_online_blocks offline, the prepared-claims files "{}"; the three
+  nodes Ready (kube-proxy on vm1 Running again after the qemu restart
+  and the reboot); no pod or claim in cxl-pool-demo; no driver
+  DaemonSet; no pool server. Lock released.
+Not done on the cluster: a cold-plugged cxl-type3 (the cluster has
+none; the A/B check covers it, and a system reset runs the same
+ct3d_reset for both), and a persistent (pmem) device (same DVSEC code;
+the range 2 base is reset with the rest).
+
+========================================================================
+8. PROPOSED COMMIT MESSAGE (Q; Signed-off-by is the author's to add)
+
+hw/cxl: Reset the CXL device DVSEC of a Type 3 device
+
+The guest writes to the PCIe DVSEC for CXL Devices: Linux sets
+Mem_Enable in its control register when it enables CXL.mem, and the
+range base registers and the lock are writable too. ct3d_reset() resets
+the component registers, so the HDM decoders come back uncommitted and
+disabled, but nothing resets the DVSEC: the generic PCI reset only
+clears the standard header, and the DVSEC is built once, at realize.
+
+After a guest reboot the next kernel finds Mem_Enable set while HDM
+decoding is disabled. It takes the device for one that firmware set up
+through the DVSEC range registers, finds those ranges outside every CXL
+fixed memory window and refuses the device:
+
+  cxl_pci 0000:0f:00.0: Range register decodes outside platform defined CXL ranges.
+  cxl_mem mem0: endpoint7 failed probe
+
+so every CXL memory device of the guest stays unusable until it is
+unplugged and plugged again or QEMU is restarted. A reset of a real
+device clears these registers.
+
+Build the device DVSEC in one function, used at realize and on reset,
+so that a reset gives the DVSEC its initial values again.
+
+The DVSECs of the root and switch ports have writable registers that
+are not reset either, but Linux writes there only the GPF timeouts
+(the same values on every probe) and Unmask SBR (restored after a bus
+reset), so they are left as they are.
+
+Fixes: e1706ea83da0 ("hw/cxl/device: Add a memory device (8.2.8.5)")
+
+========================================================================
+9. STATUS
+
+Fixed in Q's working tree, not committed, not pushed: hw/mem/
+cxl_type3.c (the diff: /tmp/bug17-qemu.diff).
+Built into Q/build/qemu-system-x86_64, the binary of every VM (QEMU_BIN
+in the env file of each VM dir; E/lib/vm.bash:493-593). Only that
+target was rebuilt; the other qemu-system-* of Q/build are older and
+do not have the fix.
+
+How the VMs pick up the new binary: a qemu process keeps the binary it
+was started from; a guest reboot does not change it. Each VM runs the
+fixed qemu after its next qemu (re)start: vmdir-restart (E/lib/
+k8s.bash:144-176), vm-reboot (E/lib/vm.bash:862-938), or a vagrant
+halt/up. No rebuild or config change is needed for that.
+
+What runs now (09:19 local time, /proc/PID/exe):
+  vm1 n4-cxl-shared-1   pid 1450401  Q/build, inode 27809749: FIXED
+  vm0 n4-cxl-shared-0   pid 660594   old binary (deleted), 27828811
+  vm2 n4-cxl-shared-2   pid 2276569  old binary (deleted), 27828811
+  n4-cxl                pid 2703863  old binary (deleted), 27828811
+  n6-hbm-cxl            pid 2765051  old binary (deleted), 27828811
+  (n4c16-dra, n4c16 run /usr/bin/qemu-system-x86_64: not affected.)
+Not restarted by this work. Before the guest-reboot variant of
+node-reboot is used on vm0, vm0 needs one qemu restart (vmdir-restart
+vm0) with the cluster idle; vm2 only if it ever gets a guest reboot
+with an enabled memdev (12-findings 5 keeps it out of the model). The
+old binary is kept as B/qemu-system-x86_64.old (87 MB) for the A/B
+check; it can be deleted.

@@ -1,0 +1,334 @@
+BUG-18: WITH FENCING NONE A LEND PINS AND A REVOKE NARROWS THE
+CPUSET.MEMS OF A CONTAINER
+
+Branch 5jg-cxl, 2026-10-29. Found by the executor of the model-based
+test in stub run SW3 (04-status-EXEC.txt 17.4 "none, lend and revoke",
+04-contract.txt A38 "(EXEC, 2026-10-29) A38 evidence"). Fixed in the
+working tree (uncommitted), unit tested; untested in the cluster.
+Changed after a review the same day (section 10).
+
+D/ = cmd/plugins/dra-driver-cxl/, R/ = /tmp/p13-runs/exec-fencing/runs/
+switch3-out/. Line numbers of HEAD (73dba0f5a) unless "new".
+
+========================================================================
+1. SUMMARY
+
+With defaults.container.fencing none the driver keeps no container off
+a CXL node (D/lend.go:68 "with fencing none the plugin keeps no
+container off a node"; 13-design-fencing 1; A38 none: mems.effective
+= D + M). A container that the runtime creates with an empty
+cpuset.mems inherits every node with memory, also one whose memory
+goes online later. But the lend primitives treated it like a container
+with a cpuset.mems of its own:
+- a lend wrote cpuset.mems = base + the lent nodes, base being its
+  cpuset.mems.effective at start without the lent node: the container
+  got an explicit cpuset.mems and no longer followed the nodes with
+  memory (node 3 online did not reach it);
+- a revoke wrote base without the node: the node left the container
+  although it still had memory (the numa slice of another pod), which
+  mode none should leave alone.
+NRI cannot undo it: an update with an empty cpuset.mems changes
+nothing (containerd/nri pkg/adaptation/result.go: "if v :=
+cpu.GetMems(); v != """), so the container stays pinned until it is
+created again.
+
+Severity: medium. Every numa lease of a requester in mode none
+(lease-get, lease-put) pins the requester and takes the node away at
+the release; its later memory on new CXL nodes is lost to it for its
+lifetime. No data loss: offlining migrates pages anyway.
+
+Smaller finding, fixed with it: in mode none the driver never logged
+the point where NRI is synchronized and the lends of a restarted
+plugin are restored (D/lend.go:1052 startFencing returned before the
+log when there is no fence), so the executor could not wait for it
+(04-status-EXEC 17.2, A40).
+
+========================================================================
+2. REPRODUCTION
+
+Steps of SW3 (R/mbt-steps.txt, MBT_FENCING=switch), from the switch to
+none on:
+  fencing-switch               (step 16) to none, every driver restarts
+  create lnuma@vm1#0           node 2 of vm1 gets memory
+  create lease@vm1#0           a requester created in none: cpuset.mems
+                               "", effective 0-2
+  settle
+  lease-get lease@vm1#0 numa   (step 27) node 2 lent: cpuset.mems "0-2"
+                               set
+  settle
+  lease-put lease@vm1#0        (step 29) node 2 revoked: cpuset.mems
+                               "0-1" set, node 2 still has lnuma's memory
+  settle
+In general: fencing none, a lease requester whose cpuset.mems is empty,
+a numa lease, then its release.
+
+========================================================================
+3. EVIDENCE
+
+- R/nri-dra-driver-cxl.vm1.nri-dra-driver-cxl-t4c4f.log:
+  07:03:31.977 "defaults.container.fencing: none: containers are not
+  kept off the CXL nodes of the driver";
+  07:04:01.189 "NRI StartContainer: ctr=cxl-pool-demo/
+  mbt-lease-vm1-0-g1/main ... baseMems=0-2";
+  07:04:09.316 "NRI lend: lend node 2 for 2fe0f4c5: ctr=cxl-pool-demo/
+  mbt-lease-vm1-0-g1/main id=4ef64a62... cpuset.mems=0-2 (base=0-1
+  lent=2)";
+  07:04:10.824 "NRI lend: revoke node 2 for 2fe0f4c5: ... cpuset.mems=
+  0-1 (base=0-1 lent=)".
+- R/mbt-obs (the requester mbt-lease-vm1-0-g1/main; lnuma-vm1 next to
+  it): obs-000026-*: mems 0-2, effective 0-2, inherited true;
+  obs-000028-001 (after lease-get): 0-2, inherited false;
+  obs-000030-001 (after lease-put): 0-1, inherited false, while
+  mbt-lnuma-vm1-0-g1 is 0-2 (node 2 has memory).
+- 04-status-EXEC.txt 17.4: containers created in none follow N_MEMORY
+  by themselves (plain@vm0 0-2 -> 0-3 inh when node 3 went online); the
+  requester after its lend does not.
+- No line "NRI fence: lends restored" in any mode-none driver log
+  (17.2: the first switch to none waited 120 s for it, run SW2).
+
+========================================================================
+4. ROOT CAUSE
+
+- D/lend.go:765-784 changeLend, the branch of a container that is
+  neither fenced nor steered. That is a container of fencing none only:
+  the fencing is node-level (N/pkg/cxl/config/resolve.go:67 "set by the
+  driver configuration only"), so every container that is not steered
+  is fenced in allowed-mems. The branch computed
+  base = tc.base.Difference(nodeSet) (:766) and
+  mems = base.Union(lent) (:767) and wrote it (:800-801) without
+  looking at whether the container had a cpuset.mems at all.
+- D/lend.go:286-304 baseMems: tc.base is the cpuset.mems.effective at
+  start (minus the nodes lent at the time), for an inheriting container
+  every node with memory then. :766 drops the lent node from it, as a
+  CXL node lent after a restart is not its own: at the revoke the node
+  went, also when it still had memory.
+- The same branch could drop a node of the container's claims: base
+  has a claimed node only from the effective set at start, and loses it
+  at a lend of that node (:766), at Synchronize's seed of a kept lease
+  of it (:468) and when another container has it lent (baseMems :303).
+  A container fenced by a plugin with allowed-mems before a switch to
+  none (A37 "loose", cpuset.mems = own \ F + claimed + lent) then lost
+  its claimed node at the next revoke: of a lease of the same node
+  (host bridge 0: the local slice and the pool-a/b devices share node
+  2), or of a lease of node 3 after a restart in which another
+  requester's kept lease held node 2 (TestLendNoneFencedBefore).
+- D/lend.go:1051-1053 startFencing: "if p.fence == nil ||
+  !p.lendsRestored { return }" before the log line of :1062.
+
+========================================================================
+5. THE FIX
+
+Design: with fencing none the plugin keeps the cpuset.mems that the
+runtime gave a container (nri.go memoryNone: "the memory nodes of the
+container are left as they are"), and lending works with it:
+a) A container that is neither fenced nor steered whose cpuset.mems is
+   empty (curMems: that of its cgroup once started, else of its spec)
+   is never updated by a lend or a revoke: it has the node already
+   whenever the node has memory, and an update would pin it for good
+   (NRI cannot ask for an empty cpuset.mems again). The lend is only
+   recorded (tc.lent, the holders), so LentNodes, the "gone with lent
+   nodes" log, keptLends/seedLends after a restart and the broker's
+   bookkeeping are as before; BaseMems drops the node as before.
+   D/lend.go changeLend (new :783-786, :813-828): "inherits"; a change
+   of the holders is logged at V(3):
+     NRI lend: lend node 2 for 2fe0f4c5: ctr=NS/POD/CTR id=ID: cpuset.mems left empty, it has the nodes of its parent (fencing none, lent=2)
+     NRI lend: revoke node 2 for 2fe0f4c5: ctr=NS/POD/CTR id=ID: cpuset.mems left empty, it has the nodes of its parent (fencing none, lent=)
+   (format "NRI lend: %s node %d for %s: ctr=%s id=%s: cpuset.mems left
+   empty, it has the nodes of its parent (fencing none, lent=%s)"); an
+   unchanged re-lend of the broker's reconcile stays at V(4).
+   A lend that adds a holder warns when the cpuset.mems.effective of the
+   container lacks a lent node (cgroupLacks: a parent cgroup restricts
+   it, or the node has no memory), and still succeeds (D/lend.go new
+   :814-817, :860-863; review, section 10):
+     NRI lend: lend node 2 for l1: ctr=NS/POD/CTR id=ID: its cpuset.mems.effective lacks the lent nodes 2 (a parent cgroup restricts it, or they have no memory): it cannot use them
+   A container without a cgroup dir and without cpuset.mems in its spec
+   inherits too: its lend is now recorded without an update, where HEAD
+   refused it ("base memory nodes unknown, refusing to set cpuset.mems
+   without them"). A container whose cpuset.mems of its own has only the
+   lent node is still refused.
+   Rejected: "a revoke restores the runtime's spec": impossible for an
+   empty one through NRI; writing every node with memory instead would
+   still pin it.
+   Rejected: "no update at all in mode none": a container with a
+   cpuset.mems of its own (b) would not get the lent node, and its lease
+   would be Ready without the node being usable.
+b) A container with a cpuset.mems of its own (set by the runtime, e.g.
+   kubelet's memory manager; or fenced by a plugin with allowed-mems
+   before a switch to none, A37's loose containers, which keep that
+   cpuset.mems in mode none until they are created again) gets
+   base + the lent nodes as before: a lend adds the node, a revoke
+   removes it again. New: the nodes of its claims (tc.claimed) that its
+   cpuset.mems had before any lend count as its own (tc.ownClaimed,
+   recordOwnClaimed, D/lend.go new :176-178, :305-318): they are in base
+   and never removed by a revoke (D/lend.go new :818-847, the revoke
+   without a holder of a node in base sends nothing). ownClaimed is
+   recorded at CreateContainer (its spec, D/nri.go new :443), at the
+   first start (its cgroup, new :299-301) and when Synchronize finds the
+   container (its cgroup, or its spec if it is only created, new :505):
+   a lend never reaches the cpuset.mems before (a container that has not
+   started gets no update in mode none). A claimed node that only a lend
+   added leaves at the revoke. For a loose container after a restart in
+   none this gives exactly the loose rule of A38: D + E present. After a
+   plugin restart a claimed node that a lend of the previous plugin
+   added counts as its own: Synchronize cannot tell it from a node of a
+   container fenced before the switch (the claim and a lease can share a
+   node), and keeping a claimed node is the safe side.
+   An update whose cpuset.mems the cgroup (curMems) and the spec as the
+   plugin knows it (tc.mems) have already is not sent (new :841-847):
+   a lend of a claimed node that it has, and its revoke. The spec counts
+   too: a later update of the resources of the container (kubelet's
+   resize, another plugin) writes the cpuset.mems of the spec to the
+   cgroup (containerd updateContainerResources applies the whole
+   resources of the merged spec). base and the holders are recorded as
+   for any change without an update.
+c) Steered containers, fenced containers (allowed-mems) and containers
+   that have not started are unchanged.
+d) D/lend.go startFencing (new :1091-1106): in mode none, once NRI has
+   synchronized and the lends are restored (LendsRestored: the broker's
+   first reconcile, or at start without a broker), it logs once at V(3)
+     NRI fence: lends restored (fencing none)
+   (same prefix "NRI fence: lends restored" as allowed-mems' "NRI
+   fence: lends restored, fencing running containers"), and sets
+   fenceReady; no pass runs (fencePass and fenceAtStart do nothing
+   without fenced nodes).
+e) Header comment of D/lend.go: a paragraph "Fencing none"; the doc
+   comments of changeLend and startFencing. Not changed: nri.go, the
+   broker, the containers of allowed-mems.
+Not fixed: a container that a driver before this fix pinned (a lend in
+mode none) keeps its explicit cpuset.mems; after the restart it is
+handled as in b) until it is created again.
+
+========================================================================
+6. TESTS
+
+D/lend_test.go:
+- TestLendNoneInherits (new): fencing none, a container with an empty
+  cpuset.mems, effective 0-2: lends and revokes of node 2 by two
+  holders and of node 3 (no memory yet) send no update, LentNodes
+  follows the holders, the cgroup's cpuset.mems stays "", six "left
+  empty" lines (one per change of the holders), no "cpuset.mems=";
+  after a restart (Synchronize with the kept lease l1, then a re-lend,
+  LendsRestored, the revoke of a lease released while the plugin was
+  down, the revoke of l1): no update, BaseMems 0-1. HEAD's lend.go
+  fails it ("updates ["c1 mems=0-2"], expected []").
+- TestLendNoneFencedBefore (new): after a switch to none, a requester
+  fenced to 0-2 with its kept lease of node 2 and a container with a
+  numa claim of node 2 fenced to 0-3 with its kept lease of node 3:
+  the reconcile sends nothing, the revokes give 0-1 and 0-2 (the
+  claimed node stays), a lease of the claimed node keeps it at the
+  revoke, a new lease of the requester adds and removes node 3. HEAD
+  fails it ("updates ["c2 mems=0-1"], expected ["c2 mems=0-2"]").
+- TestLendNonePinnedClaimed (new, review): a container pinned to 0-1
+  with a numa claim of node 2: lend 2 -> "c1 mems=0-2", revoke ->
+  "c1 mems=0-1" (the version before the review kept 0-2); a container
+  pinned to 0-2 with its claimed node 2: a lease of node 2 sends
+  nothing, nor its revoke, node 3 comes and goes (0-3, 0-2), BaseMems
+  0-2; after a restart a claimed node in the cgroup is kept at the
+  revoke. The reviewer's probe /tmp/review-b18/pinned_claimed_test.go
+  gives "c1 mems=0-1" now.
+- TestLendNoneSkipNeedsSpec (new, review): after a restart the cgroup has
+  0-2, the spec 0-1: the re-lend of node 2 is sent ("c1 mems=0-2"), the
+  revoke too.
+- TestLendNoneParentRestricts (new, review): an inheriting container with
+  cpuset.mems.effective 0-1: the lend of node 2 is recorded without an
+  update and warned about, a re-lend does not warn again.
+- TestLendNoneInherits: also checks the warning of node 3 (no memory
+  yet) and that no other node is warned about.
+- TestLendNoneFencedBefore: the lend and the revoke of the lease of the
+  claimed node 2 send nothing now (the cgroup and the spec have 0-2).
+- TestLendsRestoredLogged (new): both modes, Synchronize then
+  LendsRestored and the other order, a second Synchronize and
+  LendsRestored: the mode's line once, not the other mode's line, and
+  none before both. HEAD fails the fencing none cases.
+- Changed to containers with a cpuset.mems of their own (runPinned,
+  new: spec cpuset.mems set as kubelet's memory manager does), their
+  arithmetic unchanged: TestLendMemsArithmetic, TestLendTwoHolders,
+  TestLendGoneContainer, TestLendUpdateFailures, TestLendConcurrent,
+  TestLendBaseExcludesNodesLentToOthers (its lender), TestLend-
+  NeverWithoutBaseMems (the only own node is the lent one). Its first
+  case (no cgroup, no spec cpuset.mems) now inherits: the lend is
+  recorded without an update instead of being refused for an unknown
+  base.
+- Mutations, each failing tests: ownClaimed recomputed at the revoke
+  (TestLendNonePinnedClaimed); the skip without the spec condition
+  (TestLendNoneSkipNeedsSpec, TestLendSynchronize); no skip
+  (TestLendNoneFencedBefore, TestLendNonePinnedClaimed); no warning
+  (TestLendNoneInherits, TestLendNoneParentRestricts).
+- After the review: go test -race of the whole package (-skip
+  TestMemdevSettings) ok; the other failures below are gone with the
+  bug-15 work.
+- gofmt, go vet; go test -run 'TestLend|TestFence|TestReview|
+  TestSynchronize|TestCreateContainer|TestManage|TestSteering|TestNRI|
+  TestContainer|TestCompanion|TestBroker' (also -race): ok. The
+  package's tests did not build at the time because of bug-15 work in
+  progress in the same directory (pool_persistent_test.go); they were
+  run with go test -overlay putting HEAD's pool_persistent_test.go in
+  its place. The other failures of the whole package then
+  (TestMemdevSettings, TestPoolPersistentRestoreChecks, TestPoolOther-
+  Boot) fail with HEAD's lend.go too.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER
+
+- MBT_FENCING=none (or switch), a lease requester created in none:
+  after lease-get numa and after lease-put its cpuset.mems stays empty
+  (inherited), mems.effective D + M; the driver logs "cpuset.mems left
+  empty" for the lend and the revoke, no "cpuset.mems=" line; a node
+  that gets memory later (dnuma, xnuma-c) reaches it.
+- A loose requester (created in allowed-mems, lease-get after the
+  switch to none): lend 0-2 set, revoke 0-1 set, as before.
+- Every driver of mode none logs "NRI fence: lends restored (fencing
+  none)" after "NRI Synchronize: N pods, M containers tracked": A15's
+  ready line of mode none can be that line (17.2's workaround can go).
+
+========================================================================
+8. PROPOSED COMMIT MESSAGE
+
+cxl: fencing none: lends leave an inherited cpuset.mems alone
+
+With defaults.container.fencing none a lend gave a container
+cpuset.mems = base + lent nodes, and a revoke base without the node. A
+container with an empty cpuset.mems has every node with memory. The
+lend pinned its cpuset.mems, so it no longer got the nodes whose memory
+went online later. The revoke took the node off it, although the node
+still had memory of other claims.
+
+A lend or a revoke of such a container now only records the holders of
+the node. Its cpuset.mems is never set, as NRI cannot make it empty
+again. A lend warns when a parent cgroup keeps the node from it. A lend
+to a container with no cgroup directory and no cpuset.mems in its spec
+is now recorded instead of refused. A container with a cpuset.mems of
+its own still gets base + lent nodes. A revoke keeps the nodes of its
+claims that it had before any lend: a container fenced before a switch
+to none has them. An update that its cgroup and spec have already is not
+sent.
+
+Log "NRI fence: lends restored (fencing none)" when NRI has
+synchronized and the lends are restored, as fencing allowed-mems does.
+
+========================================================================
+9. STATUS
+
+Fixed in the working tree, not committed: D/lend.go, D/lend_test.go,
+D/nri.go (recordOwnClaimed at CreateContainer). Fixed, untested in the
+cluster. In image 9d9dff4cadce (build/images, with bug-15, bug-19 and the
+review fixes); no cluster run.
+
+========================================================================
+10. REVIEW 2026-10-29
+
+An independent review of the fix (the diff and the bug file):
+- CONFIRMED, changed: a pinned container (cpuset.mems of the runtime)
+  with a numa claim of a node outside its cpuset.mems kept the node
+  after a lend and a revoke of it: the claimed nodes were intersected
+  with the cpuset.mems at the revoke, which the lend had grown (probe
+  /tmp/review-b18/pinned_claimed_test.go: spec 0-1, claim of node 2,
+  lend 2 -> 0-2, revoke -> still 0-2; HEAD 0-1). Now the claimed nodes
+  that it had before any lend (ownClaimed, 5b).
+- Nit, changed: an update that changes nothing is not sent; only when
+  the spec has it too (5b).
+- PLAUSIBLE, changed: a lend to an inheriting container did not check
+  that its cpuset.mems.effective has the node (a parent cgroup could
+  restrict it): now a warning, the lend still succeeds (5a). And stated:
+  a lend to a container without a cgroup dir and spec cpuset.mems is now
+  recorded instead of refused (5a, section 8).

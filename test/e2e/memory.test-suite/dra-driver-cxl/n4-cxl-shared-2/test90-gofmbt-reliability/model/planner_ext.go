@@ -116,6 +116,10 @@ func (cs *covStrings) computeStep(st *m.Step) []string {
 		if fc := faultContext(from, cs.mm.acts[i]); len(fc) > 0 {
 			out = append(clip(out), weigh(w, "C2.", fc)...)
 		}
+		if cs.mm.acts[i].Verb == VSettle {
+			// the cpuset.mems of the containers at a settle (A40)
+			out = append(clip(out), weigh(w, "C2.", memsStrings(to))...)
+		}
 	}
 	if w := cs.w[3]; w > 0 {
 		out = append(clip(out), weigh(w, "C4.", to.abstract())...)

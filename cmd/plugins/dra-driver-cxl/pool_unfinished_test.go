@@ -20,6 +20,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -754,4 +755,390 @@ func TestBuildDevInfosHollowRegion(t *testing.T) {
 			t.Fatalf("scan %d: hollow %v, warned %v", i, got, h.warned)
 		}
 	}
+}
+
+// Claims prepared in another boot (plan-13 bug-15): a reboot leaves none
+// of the regions, dax and block devices, node mounts, lease binds and
+// online memory of the prepared claims, and kubelet prepares every claim
+// of the node again before it starts its containers. The start of the new
+// boot keeps such a claim as stale (demote): not prepared, no CDI device,
+// nothing released at start.
+
+// wantStale checks that the claim uid is stale for a reason that begins
+// with why: in the preparing claims of p and in the preparing file, of the
+// boot of p, and not prepared: not in the state file, no CDI device, no
+// results.
+func (e *poolTestEnv) wantStale(t *testing.T, p *poolDriver, uid, why string) {
+	t.Helper()
+	recs := e.preparingFile(t)
+	for what, rec := range map[string]*preparingPoolClaim{"preparing file": recs[uid], "plugin": p.preparing[uid]} {
+		if rec == nil || !strings.HasPrefix(rec.Stale, why) || rec.BootID != p.bootID {
+			t.Fatalf("%s: claim %s %+v, expected stale %q in boot %q", what, uid, rec, why, p.bootID)
+		}
+	}
+	if data, _ := os.ReadFile(e.stateFile); p.prepared[uid] != nil || strings.Contains(string(data), `"`+uid+`"`) {
+		t.Fatalf("claim %s is prepared:\n%s", uid, data)
+	}
+	if cdiDeviceByName(e.cdiSpec(t), "claim-"+uid+"-0") != nil || p.ClaimResults(uid) != nil {
+		t.Fatalf("claim %s: CDI spec %+v, results %+v", uid, e.cdiSpec(t), p.ClaimResults(uid))
+	}
+}
+
+// reboot makes the fake node as a reboot leaves it, and the next driver
+// one of the boot ("": unknown): mem0 is there with its driver, without a
+// region, dax device, nvdimm region or online memory, the labels of its
+// persistent memory stay, nothing is mounted and no loop device set up.
+func (e *poolTestEnv) reboot(boot string) {
+	_ = os.RemoveAll(e.f.p("bus/cxl/devices/region0"))
+	_ = os.Remove(e.f.p("bus/dax/devices/dax0.0"))
+	e.f.removeNdRegion()
+	for _, b := range []string{"74", "75"} {
+		e.f.write("devices/system/memory/memory"+b+"/state", "offline")
+	}
+	if _, err := os.Lstat(e.f.p("bus/cxl/devices/mem0")); err == nil {
+		e.f.link(fakeMemPath+"/driver", "../../../../../../../bus/cxl/drivers/cxl_mem")
+	}
+	e.m.mounts = nil
+	e.m.loops = map[string]string{}
+	e.bootID = boot
+}
+
+// TestPoolOtherBoot: a claim of each mode prepared before a reboot. The
+// start of the new boot runs no command, mounts nothing, fences no node and
+// keeps the serial a pool serial. kubelet's Prepare again prepares the
+// device anew: a new region, the dax and block device numbers of the new
+// boot in the CDI device, the node mount mounted again, the claim of the
+// new boot, also after a restart. Or kubelet unprepares the claim (its pod
+// went during the reboot), which releases the memdev.
+func TestPoolOtherBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, config, mode string
+		serial                   uint64
+	}{
+		{"numa", exclusiveData, "", api.ModeNUMA, 0xc1ee0001},
+		{"dax", exclusiveData, daxConfig, api.ModeDax, 0xc1ee0001},
+		{"block", writerData, blockConfig, api.ModeBlock, 0xc1ae0001},
+		{"fs direct", persistentData, fsConfig("direct", ""), api.ModeFs, 0xc1ae0001},
+		{"fs cached", persistentData, fsConfig("cached", ""), api.ModeFs, 0xc1ae0001},
+	} {
+		for _, next := range []string{"prepare again", "unprepare"} {
+			t.Run(tc.name+" "+next, func(t *testing.T) {
+				e := newPoolTestEnv(t)
+				if tc.serial == 0xc1ae0001 {
+					e.f.plugPersistent(persistentSerial)
+					e.f.labels = true
+				} else {
+					e.f.plug("0xc1ee0001")
+				}
+				claim := poolClaim("u1", "c1", "pooled0", tc.data)
+				if tc.config != "" {
+					claim = withConfig(claim, resourceapi.AllocationConfigSourceClaim, nil, tc.config)
+				}
+				p := e.driver(t)
+				res := prepare(t, p, claim)
+				noErr(t, res.Err)
+				if pc := p.prepared["u1"]; pc.BootID != "boot-1" {
+					t.Fatalf("prepared in boot %q", pc.BootID)
+				}
+
+				e.reboot("boot-2")
+				e.f.daxDev, e.f.pmemDev = "251:7", "259:4"
+				ncmds, ncalls := e.f.commands(), len(e.m.calls)
+				p2 := e.driver(t)
+				e.wantStale(t, p2, "u1", "prepared in another boot (boot-1, this is boot-2)")
+				if e.f.commands() != ncmds || len(e.m.calls) != ncalls {
+					t.Fatalf("the start touched the device:\n%s\n%q", strings.TrimPrefix(e.f.commands(), ncmds), e.m.calls[ncalls:])
+				}
+				if !p2.Serials()[tc.serial] || len(p2.numaNodes()) != 0 {
+					t.Fatalf("serials %v, fenced nodes %v", p2.Serials(), p2.numaNodes())
+				}
+				rec := p2.preparing["u1"]
+				if d := rec.Devices[0]; len(rec.Regions) != 0 || len(rec.Devices) != 1 || d.Mode != tc.mode || d.Serial != tc.serial ||
+					d.Memdev != "" || d.Region != "" || d.DaxDevice != "" || d.BlockDevice != "" || d.NodeMount != "" || d.Node != -1 {
+					t.Fatalf("record %+v", rec)
+				}
+				if next == "unprepare" {
+					noErr(t, unprepare(t, p2, "u1"))
+					if got := e.f.commandsSince(ncmds); got != "cxl disable-memdev mem0" {
+						t.Fatalf("commands of the Unprepare:\n%s", got)
+					}
+					e.wantClean(t, p2)
+					e.wantNoMounts(t, p2)
+					return
+				}
+
+				res2 := prepare(t, p2, claim)
+				if !reflect.DeepEqual(res2, res) {
+					t.Fatalf("result %+v, expected %+v", res2, res)
+				}
+				if n := strings.Count(e.f.commands(), "create-region"); n != 2 {
+					t.Fatalf("region created %d times:\n%s", n, e.f.commands())
+				}
+				pc := p2.prepared["u1"]
+				if pc == nil || pc.BootID != "boot-2" || len(p2.preparing) != 0 || len(e.preparingFile(t)) != 0 {
+					t.Fatalf("prepared %+v, preparing %v, file %v", pc, p2.preparing, e.preparingFile(t))
+				}
+				cd := cdiDeviceByName(e.cdiSpec(t), "claim-u1-0")
+				if cd == nil {
+					t.Fatalf("no CDI device: %+v", e.cdiSpec(t))
+				}
+				switch nodes := cd.ContainerEdits.DeviceNodes; tc.mode {
+				case api.ModeNUMA:
+					e.f.wantBlocks(t, "online_movable")
+					if got := p2.numaNodes(); !slices.Equal(got, []int{2}) {
+						t.Fatalf("fenced nodes %v", got)
+					}
+				case api.ModeDax:
+					if len(nodes) != 1 || nodes[0].Major != 251 || nodes[0].Minor != 7 {
+						t.Fatalf("device nodes %+v", nodes)
+					}
+				case api.ModeBlock:
+					if len(nodes) != 1 || nodes[0].Major != 259 || nodes[0].Minor != 4 {
+						t.Fatalf("device nodes %+v", nodes)
+					}
+				case api.ModeFs:
+					if mi, _ := e.m.Mounted(pc.Devices[0].NodeMount); mi == nil || len(cd.ContainerEdits.Mounts) != 1 {
+						t.Fatalf("node mount %+v, CDI mounts %+v", mi, cd.ContainerEdits.Mounts)
+					}
+				}
+				// a restart in the same boot keeps the claim
+				ncmds, ncalls = e.f.commands(), len(e.m.calls)
+				p3 := e.driver(t)
+				if p3.prepared["u1"] == nil || len(p3.preparing) != 0 || e.f.commands() != ncmds || len(e.m.calls) != ncalls {
+					t.Fatalf("after a restart: prepared %v, preparing %v, commands:\n%s", p3.prepared, p3.preparing, strings.TrimPrefix(e.f.commands(), ncmds))
+				}
+				if res3 := prepare(t, p3, claim); !reflect.DeepEqual(res3, res) || e.f.commands() != ncmds {
+					t.Fatalf("result after a restart %+v", res3)
+				}
+				noErr(t, unprepare(t, p3, "u1"))
+				e.f.wantReleased(t)
+				e.wantClean(t, p3)
+				e.wantNoMounts(t, p3)
+			})
+		}
+	}
+}
+
+// TestPoolOtherBootStateSaveFails (bug-15 review): the start of the new
+// boot saves the preparing file with the demoted claim but not the state
+// file, which keeps the claim of the old boot. The Unprepare that forgets
+// the stale record saves the state file first: otherwise a restart in the
+// same boot would demote the claim again, and nothing would unprepare it.
+// While the state file cannot be saved, the Unprepare fails and keeps the
+// record.
+func TestPoolOtherBootStateSaveFails(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ee0001")
+	p := e.driver(t)
+	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
+	e.reboot("boot-2")
+	undo := e.failStateSave(t)
+	p2 := e.driver(t)
+	if rec := e.preparingFile(t)["u1"]; rec == nil || rec.Stale == "" || p2.preparing["u1"] == nil || p2.prepared["u1"] != nil {
+		t.Fatalf("not demoted: preparing file %+v, preparing %v, prepared %v", rec, p2.preparing, p2.prepared)
+	}
+	if data, _ := os.ReadFile(e.stateFile); !strings.Contains(string(data), `"u1"`) {
+		t.Fatalf("the state file was saved:\n%s", data)
+	}
+	wantErr(t, unprepare(t, p2, "u1"), poolStateFileName+".tmp")
+	if rec := e.preparingFile(t)["u1"]; rec == nil || p2.preparing["u1"] == nil {
+		t.Fatalf("record forgotten: preparing file %+v, preparing %v", rec, p2.preparing)
+	}
+	undo()
+	noErr(t, unprepare(t, p2, "u1"))
+	e.wantClean(t, p2)
+	if data, _ := os.ReadFile(e.stateFile); strings.Contains(string(data), `"u1"`) {
+		t.Fatalf("the state file has the claim:\n%s", data)
+	}
+	// a restart in the same boot: nothing to demote
+	p3 := e.driver(t)
+	e.wantClean(t, p3)
+}
+
+// TestPoolOtherBootNewClaim: the device of a claim of another boot is not
+// that of a prepared claim: a new claim prepares it in another mode (the
+// device record of the old boot is not compared with), and the Unprepare
+// of the new claim releases it.
+func TestPoolOtherBootNewClaim(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ee0001")
+	p := e.driver(t)
+	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
+	e.reboot("boot-2")
+	p2 := e.driver(t)
+	u2 := withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
+	noErr(t, prepare(t, p2, u2).Err)
+	if d := p2.prepared["u2"].Devices[0]; d.Mode != api.ModeDax {
+		t.Fatalf("prepared %+v", d)
+	}
+	noErr(t, unprepare(t, p2, "u2"))
+	e.f.wantReleased(t)
+	noErr(t, unprepare(t, p2, "u1"))
+	e.wantClean(t, p2)
+}
+
+// TestPoolOtherBootCompanion: the companion claims of a numa lease and of
+// an fs lease prepared before a reboot. The start keeps them without the
+// nodes that they lent. Their Unprepare (the broker deleted the companions
+// of the leases of another boot) revokes nothing, also before the lender
+// is set up, and releases the device; that of the fs lease unmounts no
+// bind and removes its directory. Their Prepare again fails at the lease,
+// which the broker dropped, before it touches a device: the claim stays
+// for its Unprepare.
+func TestPoolOtherBootCompanion(t *testing.T) {
+	for _, next := range []string{"unprepare", "prepare again"} {
+		t.Run("numa "+next, func(t *testing.T) {
+			e := newPoolTestEnv(t)
+			e.f.plug("0xc1ee0001")
+			lender := newFakeLender(testRef)
+			p := e.driver(t)
+			p.lender.set(lender, &fakeHooks{})
+			claim := poolClaim("uid-cxl-lease-l1", "cxl-lease-l1", "pooled0", exclusiveData)
+			claim.ObjectMeta = companionClaim("l1").ObjectMeta
+			noErr(t, prepare(t, p, claim).Err)
+			if got := lender.LentNodes(testPodUID, testCtr); !slices.Equal(got, []int{2}) {
+				t.Fatalf("lent nodes %v", got)
+			}
+
+			e.reboot("boot-2")
+			lender = newFakeLender(testRef)
+			p2 := e.driver(t) // the lender is not set up yet
+			e.wantStale(t, p2, "uid-cxl-lease-l1", "prepared in another boot")
+			if rec := p2.preparing["uid-cxl-lease-l1"]; rec.Lend == nil || rec.Lend.Lease != "l1" || len(rec.Lend.Nodes) != 0 {
+				t.Fatalf("lend %+v", rec.Lend)
+			}
+			if got := p2.numaNodes(); len(got) != 0 {
+				t.Fatalf("fenced nodes %v", got)
+			}
+			ncmds := e.f.commands()
+			if next == "prepare again" {
+				// refused before a device is touched: kept
+				p2.lender.set(lender, &fakeHooks{lendingErr: errors.New("claim demo/cxl-lease-l1: not the companion of lease l1")})
+				wantErr(t, prepare(t, p2, claim).Err, "not the companion of lease l1")
+				e.wantStale(t, p2, "uid-cxl-lease-l1", "prepared in another boot")
+				if got := e.f.commandsSince(ncmds); got != "" {
+					t.Fatalf("commands of the Prepare:\n%s", got)
+				}
+			}
+			noErr(t, unprepare(t, p2, "uid-cxl-lease-l1"))
+			if got := e.f.commandsSince(ncmds); got != "cxl disable-memdev mem0" || lender.callLog() != "" {
+				t.Fatalf("commands:\n%s\nlender: %s", got, lender.callLog())
+			}
+			e.wantClean(t, p2)
+		})
+	}
+
+	t.Run("fs", func(t *testing.T) {
+		e, p, hooks := newPoolLeaseEnv(t)
+		target := filepath.Join(hooks.fsDir, "models")
+		noErr(t, prepare(t, p, fsCompanion("l1", "direct")).Err)
+		e.reboot("boot-2")
+		p2 := e.leaseDriver(t, hooks)
+		e.wantStale(t, p2, "uid-cxl-lease-l1", "prepared in another boot")
+		if rec := p2.preparing["uid-cxl-lease-l1"]; rec.Lend == nil || !slices.Equal(rec.Lend.Mounts, []string{target}) {
+			t.Fatalf("lend %+v", rec.Lend)
+		}
+		noErr(t, unprepare(t, p2, "uid-cxl-lease-l1"))
+		if log := hooks.log(); !strings.HasSuffix(log, "releasing l1") {
+			t.Fatalf("hooks:\n%s", log)
+		}
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Fatalf("bind directory left: %v", err)
+		}
+		e.wantClean(t, p2)
+		e.wantNoMounts(t, p2)
+	})
+}
+
+// TestPoolOtherBootCutPrepare: a Prepare cut in cxl create-region before a
+// reboot recorded the name region1, and in the new boot region1 is a
+// hollow region of someone else. The start keeps the claim as stale
+// without the names of its regions and runs no command (it released the
+// memdev and deleted region1 before); the Unprepare releases the memdev
+// and leaves region1.
+func TestPoolOtherBootCutPrepare(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ee0001")
+	p := e.driver(t)
+	e.cutInCreateRegion(p, "region1")
+	cutPrepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
+	e.reboot("boot-2")
+	ncmds := e.f.commands()
+	p2 := e.driver(t)
+	e.wantStale(t, p2, "u1", "its Prepare did not finish in another boot (boot-1)")
+	if rec := p2.preparing["u1"]; len(rec.Regions) != 0 {
+		t.Fatalf("regions %v of another boot", rec.Regions)
+	}
+	if e.f.commands() != ncmds || !p2.mem.HollowRegion("region1") {
+		t.Fatalf("the start ran commands:\n%s", strings.TrimPrefix(e.f.commands(), ncmds))
+	}
+	noErr(t, unprepare(t, p2, "u1"))
+	if got := e.f.commandsSince(ncmds); got != "cxl disable-memdev mem0" || !p2.mem.HollowRegion("region1") {
+		t.Fatalf("commands of the Unprepare:\n%s", got)
+	}
+	e.wantClean(t, p2)
+}
+
+// TestPoolNoBootID: the claims saved without a boot id (by a driver that did
+// not record it) are taken as prepared in this boot and get its id, and
+// every claim is taken as prepared in this boot while the boot id of the
+// kernel is unknown.
+func TestPoolNoBootID(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ee0001")
+	claim := poolClaim("u1", "c1", "pooled0", exclusiveData)
+	e.bootID = ""
+	p := e.driver(t)
+	res := prepare(t, p, claim)
+	noErr(t, res.Err)
+	if data, _ := os.ReadFile(e.stateFile); strings.Contains(string(data), "bootID") {
+		t.Fatalf("a boot id of an unknown boot:\n%s", data)
+	}
+	// the file of an older driver
+	e.bootID = "boot-1"
+	ncmds := e.f.commands()
+	p = e.driver(t)
+	if pc := p.prepared["u1"]; pc == nil || pc.BootID != "boot-1" || len(p.preparing) != 0 || e.f.commands() != ncmds {
+		t.Fatalf("prepared %+v, preparing %v", pc, p.preparing)
+	}
+	if data, _ := os.ReadFile(e.stateFile); !strings.Contains(string(data), `"bootID": "boot-1"`) {
+		t.Fatalf("the boot id was not saved:\n%s", data)
+	}
+	// the boot id of the kernel unknown
+	e.bootID = ""
+	p = e.driver(t)
+	if pc := p.prepared["u1"]; pc == nil || pc.BootID != "boot-1" {
+		t.Fatalf("prepared %+v", pc)
+	}
+	if res2 := prepare(t, p, claim); !reflect.DeepEqual(res2, res) || e.f.commands() != ncmds {
+		t.Fatalf("result %+v, expected %+v", res2, res)
+	}
+	e.reboot("boot-2")
+	p = e.driver(t)
+	e.wantStale(t, p, "u1", "prepared in another boot (boot-1, this is boot-2)")
+	noErr(t, unprepare(t, p, "u1"))
+	e.wantClean(t, p)
+}
+
+// TestPoolOtherBootMemdevAway: a claim of another boot whose memdev is
+// away at a start (not attached again yet after a power cycle) stays
+// stale, as a prepared claim stays prepared: when the device is back, its
+// Unprepare releases it before the pool detaches it.
+func TestPoolOtherBootMemdevAway(t *testing.T) {
+	e := newPoolTestEnv(t)
+	e.f.plug("0xc1ee0001")
+	p := e.driver(t)
+	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
+	e.reboot("boot-2")
+	e.f.unplug()
+	e.wantStale(t, e.driver(t), "u1", "prepared in another boot (boot-1, this is boot-2)")
+	p = e.driver(t)
+	e.wantStale(t, p, "u1", "prepared in another boot (boot-1, this is boot-2)")
+	e.f.plug("0xc1ee0001")
+	ncmds := e.f.commands()
+	noErr(t, unprepare(t, p, "u1"))
+	if got := e.f.commandsSince(ncmds); got != "cxl disable-memdev mem0" {
+		t.Fatalf("commands of the Unprepare:\n%s", got)
+	}
+	e.wantClean(t, p)
 }

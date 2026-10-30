@@ -186,6 +186,10 @@ type refPool struct {
 	// Anomalies are situations the reference does not model: never
 	// expected (none are detected at the moment)
 	Anomalies []string
+	// LocalFree tells if the local memdev of the VM of dnuma slot i has
+	// a block for its local claim (A39): the node side, the simulated
+	// SUT's; nil: always
+	LocalFree func(i int) bool
 }
 
 func newRefPool(cfg *Config, seed int64) *refPool {
@@ -326,6 +330,9 @@ func (r *refPool) do(a Act, h refHint) {
 		if h.releasesLease {
 			r.leaseRelease(int(a.Slot))
 		}
+		if h.freesClaim {
+			r.requeueAt(r.now + r.rnd(700, 2900))
+		}
 	case VCtrlKill:
 		cost = r.rnd(200, 400)
 		c := &r.ctrl[a.Pool]
@@ -361,8 +368,55 @@ func (r *refPool) do(a Act, h refHint) {
 		if r.rng.Intn(3) == 0 {
 			r.requeueAt(r.now + r.rnd(1000, 4000))
 		}
+	case VNodeReboot:
+		// the VM goes down: a guest reboot keeps the attachments; a
+		// qemu restart ends the qemu process after ~3.5 s and the pool
+		// servers drop its attachments (bug-16), the controllers attach
+		// them into the new qemu once the servers have discovered it.
+		// ssh after ~20 s, the driver ready after ~45 s (12-findings
+		// 3.1, 4.1): the lease broker of the new boot releases the
+		// VM's leases (bug-15), their companions go; the node's slice
+		// is published again.
+		r.advance(r.now + r.rnd(3000, 5500))
+		if r.cfg.Reboot == RebootQemu {
+			r.dropHost(a.VM)
+		}
+		r.advance(r.now + r.rnd(36000, 42000))
+		for i := range r.comps {
+			if r.comps[i] != nil && r.slot(i).VM == a.VM {
+				r.leaseRelease(i)
+			}
+		}
+		if h.freesClaim {
+			r.requeueAt(r.now + r.rnd(700, 2900))
+		}
+		if r.rng.Intn(2) == 0 {
+			r.requeueAt(r.now + r.rnd(1000, 4000))
+		}
+		cost = r.rnd(1000, 3000)
 	}
 	r.advance(r.now + cost)
+}
+
+// dropHost: the qemu of VM v restarted: the pool servers drop its
+// attachments; an attach fails (503) until a server has discovered the
+// new qemu (2-6 s), then the controllers' reconcile attaches what their
+// claims want (bug-16).
+func (r *refPool) dropHost(v VM) {
+	atts := r.atts[:0]
+	for _, a := range r.atts {
+		if a.host == v {
+			r.logf("qemu of %s restarted: %s@%s dropped", v, a.dev, v)
+			continue
+		}
+		atts = append(atts, a)
+	}
+	r.atts = atts
+	for p := range r.ctrl {
+		if c := &r.ctrl[p]; c.running {
+			c.syncAt = r.now + r.rnd(2000, 6000)
+		}
+	}
 }
 
 func (r *refPool) create(i int) {
@@ -761,6 +815,9 @@ func (r *refPool) attempt(rp *refPod) {
 		why = "no ResourceSlice of pool " + sl.Pool.String()
 	} else if o := r.conflict(rp); o != "" {
 		why = "device " + sl.Dev.String() + " taken by " + o
+	} else if sl.Kind.dual() && !rp.comp && r.LocalFree != nil && !r.LocalFree(rp.slot) {
+		// (its claims are allocated together)
+		why = "no block of the local memdev of " + sl.VM.String()
 	}
 	if why != "" {
 		if !rp.unsched {

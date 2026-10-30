@@ -145,6 +145,9 @@ func (p *poolDriver) preparePersistent(ctx context.Context, memdev string, data 
 		return err
 	}
 	dev.NodeMount = mnt
+	// mounted: the claims of it that the start could not mount it for have
+	// their CDI devices again with the next sync
+	delete(p.unrestored, mnt)
 	return nil
 }
 
@@ -408,6 +411,56 @@ func (p *poolDriver) currentBlockDevice(serial uint64) string {
 		}
 	}
 	return ""
+}
+
+// releasedDevices returns the devices of a prepared claim as releaseDevices
+// releases them. The block device of a persistent device is the recorded
+// one, unless the start could not mount its node mount again (unrestored)
+// or it is not the one of its region now (checkBlockDevice: the region is
+// gone, or its namespace has other numbers). Then the recorded one may be
+// another device's now, and the release would wait for its holder in vain
+// (plan-13 bug-15 review): it is that of its region now
+// (currentBlockDevice), as for a claim whose Prepare did not finish, none
+// when the memdev has no region. The recorded one stays when the
+// namespaces of the region cannot be read now: none would release the
+// device without the holder check.
+func (p *poolDriver) releasedDevices(pc *preparedPoolClaim) []preparedPoolDevice {
+	devs := slices.Clone(pc.Devices)
+	for i := range devs {
+		d := &devs[i]
+		if !d.Persistent || d.BlockDevice == "" {
+			continue
+		}
+		err, unrestored := p.unrestored[d.NodeMount]
+		if d.NodeMount == "" || !unrestored {
+			err = p.checkBlockDevice(d)
+		}
+		if err == nil {
+			continue
+		}
+		s := api.FormatSerial(d.Serial)
+		cur := p.currentBlockDevice(d.Serial)
+		switch {
+		case cur == "" && p.hasRegion(d.Serial):
+			klog.Warningf("%s: claim %s: %v; the block device of the region of device %s is not known now: its release waits for the holders of %s as prepared",
+				p.name, pc.ClaimName, err, s, d.BlockDevice)
+			continue
+		case cur == "":
+			klog.Infof("%s: claim %s: %v; device %s has no region now: its release waits for no holder of %s",
+				p.name, pc.ClaimName, err, s, d.BlockDevice)
+		default:
+			klog.Infof("%s: claim %s: %v; the release of device %s waits for the holders of %s, the block device of its region now, not of %s",
+				p.name, pc.ClaimName, err, s, cur, d.BlockDevice)
+		}
+		d.BlockDevice = cur
+	}
+	return devs
+}
+
+// hasRegion tells whether the memdev with the serial has a region.
+func (p *poolDriver) hasRegion(serial uint64) bool {
+	memdev, err := p.mem.FindMemdev(serial)
+	return err == nil && len(p.mem.Regions(memdev)) > 0
 }
 
 // deleteHollowRegions deletes the regions that the pool driver knows as
@@ -787,9 +840,17 @@ func (p *poolDriver) restoreLeaseMounts() {
 }
 
 // restoreMounts mounts again the node mounts of the prepared claims that
-// are missing and the lease binds of prepared companion claims that are
-// missing, and unmounts the lease binds and the node mounts that no
-// prepared claim uses.
+// are missing (restoreNodeMount) and the lease binds of prepared companion
+// claims that are missing, and unmounts the lease binds and the node
+// mounts that no prepared claim uses. A node mount that is not mounted
+// after that is unrestored: the CDI device of a claim of it would bind a
+// directory that is missing, and every start of its container would fail
+// on the bind (plan-13 bug-15 R2: the region of the device is gone, by a
+// reboot that the boot ids do not tell, or a device removed and added
+// again). Its claims, but companion claims, stay prepared without a CDI
+// device: a new container of them fails at its creation on an
+// unresolvable CDI device, their Unprepare releases the device, their
+// Prepare again and the next start try to mount it again.
 func (p *poolDriver) restoreMounts() {
 	want := map[string]bool{}
 	loops := map[string]string{} // node mount -> its loop device, mounted ones only
@@ -802,25 +863,23 @@ func (p *poolDriver) restoreMounts() {
 				continue
 			}
 			want[d.NodeMount] = true
-			mi, err := p.mounter.Mounted(d.NodeMount)
+			loop, err := p.restoreNodeMount(pc.ClaimName, d)
 			if err != nil {
 				klog.Errorf("%s: claim %s: %v", p.name, pc.ClaimName, err)
-				continue
-			}
-			if mi == nil {
-				klog.Infof("%s: claim %s: device 0x%x: %s is not mounted, mounting it again", p.name, pc.ClaimName, d.Serial, d.NodeMount)
-				if err := p.checkBlockDevice(d); err != nil {
-					klog.Errorf("%s: claim %s: not mounting %s again: %v", p.name, pc.ClaimName, d.NodeMount, err)
-					p.removeMountDir(d.NodeMount)
-					continue
+				if mi, merr := p.mounter.Mounted(d.NodeMount); merr == nil && mi == nil {
+					p.unrestored[d.NodeMount] = err
 				}
-			}
-			loop, err := p.ensureNodeMount(d.Serial, d.BlockDevice, d.Access, d.NodeMount)
-			if err != nil {
-				klog.Errorf("%s: claim %s: %v", p.name, pc.ClaimName, err)
 				continue
 			}
 			loops[d.NodeMount] = loop
+		}
+	}
+	for _, uid := range slices.Sorted(maps.Keys(p.prepared)) {
+		if pc := p.prepared[uid]; pc.Lend == nil {
+			if mnt := p.unrestoredMount(pc); mnt != "" {
+				klog.Errorf("%s: claim %s (%s) has no CDI device: its node mount %s is not mounted (%v); a new container of it fails on its CDI device, its Prepare again tries to mount it again, its Unprepare releases the device",
+					p.name, pc.ClaimName, uid, mnt, p.unrestored[mnt])
+			}
 		}
 	}
 	for _, pc := range p.prepared {
@@ -858,6 +917,75 @@ func (p *poolDriver) restoreMounts() {
 			klog.Errorf("%s: %v", p.name, err)
 		}
 	}
+}
+
+// restoreNodeMount mounts the node mount of a device of the prepared claim
+// claimName again when it is missing and the block device of the region of
+// the device is the one prepared (checkBlockDevice), and returns the loop
+// device of a cached node mount (ensureNodeMount).
+func (p *poolDriver) restoreNodeMount(claimName string, d *preparedPoolDevice) (string, error) {
+	mi, err := p.mounter.Mounted(d.NodeMount)
+	if err != nil {
+		return "", err
+	}
+	if mi == nil {
+		klog.Infof("%s: claim %s: device 0x%x: %s is not mounted, mounting it again", p.name, claimName, d.Serial, d.NodeMount)
+		if err := p.checkBlockDevice(d); err != nil {
+			p.removeMountDir(d.NodeMount)
+			return "", fmt.Errorf("not mounting %s again: %w", d.NodeMount, err)
+		}
+	}
+	return p.ensureNodeMount(d.Serial, d.BlockDevice, d.Access, d.NodeMount)
+}
+
+// unrestoredMount returns the first node mount of a prepared claim that the
+// start could not mount again (unrestored), "" if it has none.
+func (p *poolDriver) unrestoredMount(pc *preparedPoolClaim) string {
+	for i := range pc.Devices {
+		if mnt := pc.Devices[i].NodeMount; mnt != "" {
+			if _, ok := p.unrestored[mnt]; ok {
+				return mnt
+			}
+		}
+	}
+	return ""
+}
+
+// remount mounts again the node mounts of a prepared claim that the start
+// could not mount (unrestoredMount), for kubelet's Prepare again of the
+// claim, and rewrites the CDI spec and the state file when it mounted one:
+// the claims of the node mount have their CDI device again. An error
+// names the node mount that stays unmounted; the claim must be unprepared
+// to be prepared anew. Called with p.mu held.
+func (p *poolDriver) remount(pc *preparedPoolClaim) error {
+	changed := false
+	for mnt := p.unrestoredMount(pc); mnt != ""; mnt = p.unrestoredMount(pc) {
+		i := slices.IndexFunc(pc.Devices, func(d preparedPoolDevice) bool { return d.NodeMount == mnt })
+		d := &pc.Devices[i]
+		loop, err := p.restoreNodeMount(pc.ClaimName, d)
+		if err != nil {
+			p.unrestored[mnt] = err
+			if changed {
+				_ = p.sync()
+			}
+			return fmt.Errorf("device %s: its node mount %s is not mounted and cannot be mounted again: %w; unprepare the claim (delete its pods) to prepare it anew",
+				api.FormatSerial(d.Serial), mnt, err)
+		}
+		delete(p.unrestored, mnt)
+		for _, other := range p.prepared {
+			for j := range other.Devices {
+				if other.Devices[j].NodeMount == mnt {
+					other.Devices[j].LoopDevice = loop
+				}
+			}
+		}
+		klog.Infof("%s: claim %s: %s is mounted again: the claims of it have their CDI devices again", p.name, pc.ClaimName, mnt)
+		changed = true
+	}
+	if changed {
+		return p.sync()
+	}
+	return nil
 }
 
 // checkBlockDevice returns an error if the block device of a prepared

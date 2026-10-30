@@ -440,6 +440,7 @@ func (p *nriPlugin) CreateContainer(_ context.Context, pod *api.PodSandbox, ctr 
 	tc := p.trackCreated(pod, ctr)
 	tc.memory = m.memory
 	tc.claimed = m.claimed
+	tc.recordOwnClaimed()
 	if m.plan != nil {
 		p.pending[ctrID] = pendingSteering{name: ctrName, plan: m.plan, unsteered: unsteeredMemory(m.eff)}
 	}

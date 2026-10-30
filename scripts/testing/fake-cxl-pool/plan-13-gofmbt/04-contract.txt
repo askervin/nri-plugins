@@ -514,3 +514,343 @@ A35 (2026-10-28, the model's fuzz after FP6, 04-status-MODEL "FP6
    outcome bound (R10) keeps its pre-settle state and settles again
    with the observed nodes of its "any" pods (adoption records carry
    any=SLOT:VM before alt=J).
+   (review, 2026-10-29) Also with the observed bindings of its race-kill
+   pods (optional Prepares after a ctrl-kill): bound or with the pool
+   claim Attached, its Prepares come; neither, they do not. The items of
+   any= are then also SLOT:bound and SLOT:unbound (after the SLOT:VM
+   ones, in slot order); generate --from narrows alike.
+A36 (2026-10-29, 13-design-fencing F1) The fencing mode of a run:
+   MBT_FENCING=allowed-mems (default) | none | switch, documented in
+   code.var.sh. none: the driver configuration (DRA_DRIVER_CONFIG of
+   dra-install) has "defaults: {container: {fencing: none}}". The
+   model gets --fencing=allowed-mems|none|switch; switch starts in
+   allowed-mems. The mode is recorded in mbt-steps.txt's header so
+   that a replay uses it.
+A37 (2026-10-29, F2) Verb "fencing-switch" (no argument; only with
+   --fencing=switch). The executor patches config.yaml of the ConfigMap
+   nri-dra-driver-cxl-config in kube-system to the other mode and
+   restarts the driver pod of vm2, vm1 and vm0 in that order as
+   driver-restart does (disarming driver-kill-at watchers first). done
+   status 0 when all three are Ready with the new mode in their log
+   ("defaults.container.fencing: MODE"), 1 otherwise. The model flips
+   the mode and applies a driver restart to every VM. Containers that
+   exist at a switch to none keep their cpuset.mems until their
+   container is created again; the oracle checks them as "loose"
+   (A38). The cleanup restores the ConfigMap with the helm uninstall.
+   (MODEL, 2026-10-29) The header of mbt-steps.txt carries
+   "--fencing MODE" with the other model flags (A16: a replay and
+   generate --from take it from there; files without it are
+   allowed-mems). fencing-switch's done JSON: as EXEC's note, {"fencing":
+   MODE}; the model fails the step when MODE is not the mode it
+   switched to ({} is accepted);
+   it is generated when a driver-restart of every VM would be (no
+   driver-kill of the window, no armed watcher that may have fired:
+   A31, A32), and is a VM fault of all three VMs for A34 (the slack of
+   the driver pods ends as at driver-restart). Loose containers: those
+   of the pods running, starting, restarting, unblocking or stalled at
+   the switch to none (their container may exist before it), and the
+   companions of the leases held then; a crash after the switch, a new
+   pod or a new lease ends it; a switch to allowed-mems ends every one
+   (the new drivers' first fence pass makes them exact). C2 of the
+   switch: "fault fencing-switch>MODE KIND" per pod with a container
+   (MODE: the one it switches to, am or none), not per phase or VM (a
+   switch costs 45-90 s).
+   (review, 2026-10-29) At most one fencing-switch per window: no other
+   one until a settle (State.Switched, in the canonical key): two in a
+   row (generate full seed 11, steps 172-173) switched back before
+   anything observed the first. EXEC: a new driver pod that logs the old
+   mode is deleted once more before the verb fails (its ConfigMap
+   volume is filled from kubelet's copy of the ConfigMap, which with the
+   default change detection is the watch shared with the old pod of the
+   node: current in practice, not at once in principle); MBT_NOTE says
+   "... -> POD (it had MODE)". Status 1 if the second pod has the old
+   mode too, or if a pod logs no mode (no second try then).
+A38 (2026-10-29, F3) O5 is exact. For each observed container of a
+   slot or companion on VM v: D = the DRAM nodes (0, 1); M = the CXL
+   nodes with memory on v (predicted); E = the numa nodes of its claims
+   and the nodes lent to it (a held numa lease: node 2).
+   allowed-mems, not steered: mems.effective = D + E + (M \ F), where a
+   node in FMaybe may be present or absent. none: mems.effective =
+   D + M. Steered, or loose (A37): D + E present, no CXL node outside
+   E + M. Otherwise a wait, then the settle fails as before.
+   (MODEL, 2026-10-29) A node without memory is never in
+   mems.effective (the kernel intersects it with the nodes with
+   memory): E is a subset of M. A steered container's cpuset.mems is
+   its steering manager's (pkg/cgmpolmgr allowNodes: the nodes of its
+   steps and the nearest DRAM node with normal memory, e.g. 0,2): D is
+   not required for it, E is. Steered: an lsteer container with
+   memory.high set (SteerOn), or either (SteerAny); with fencing none
+   also one whose manager a driver restart ended (its cpuset.mems is
+   left as the manager wrote it). Companions have E = {} (as before).
+   With fencing none a lease requester is predicted D + M like any
+   container (13-design-fencing 1: the documented intent), although
+   D/lend.go changeLend gives a container that is not fenced
+   base + lent as an explicit cpuset.mems. (MODEL, after EXEC's
+   evidence) That is bug-18; the model keeps the intended D + M (lend
+   and revoke never narrow a container in mode none), with no tolerance.
+   driverLog "fencing", when observed and not null, must be the
+   predicted mode (else a wait); "nriSynced" is decoded, not checked;
+   lendsRestored is checked as before (EXEC sets it for mode none).
+A39 (2026-10-29, F4) Kind dnuma: one container with two claims, from
+   the templates mbt-lnuma (a local numa slice, node 2) and mbt-xnuma-c
+   (pool-c's exclusive device c-pooled0 in numa, node 3). Slots
+   dnuma@vm0#0, dnuma@vm1#0 in profiles full and fullp, also
+   xnuma-c@vm0#0 and xnuma-c@vm2#0. It is Running only with both
+   allocated; it holds one local slice and c-pooled0; its env has the
+   variables of both claims; write/read/crash act on it as on lnuma.
+   E = {2, 3}.
+   (MODEL, 2026-10-29) The pod of a dnuma slot has resourceClaims c0
+   (template mbt-lnuma) and c1 (template mbt-xnuma-c), and its main
+   container uses both (resources.claims c0, c1); label dnuma_VM_I,
+   pod mbt-dnuma-VM-I-gN; the kind name has no pool suffix. Verbs:
+   create, delete, crash (no write or read: lnuma has none). The
+   observation of every pod gets "claims": one object as "claim" (6.1)
+   per entry of spec.resourceClaims, in that order; "claim" stays the
+   first one. The model reads a dnuma pod's claims from "claims" (by
+   their devices' driver once allocated: cxl.nri.io the local one,
+   cxl-pool.nri.io c-pooled0; by the order c0, c1 before); a dnuma pod
+   without "claims" fails the settle. Its env (inspect): CXL_C100E2E1_
+   MODE=numa SHARED=0 SIZE=134217728 NODE=2 SERIAL=0xc100e2e1 and
+   CXL_C1EE2001_ MODE=numa SHARED=0 SIZE=268435456 NODE=3
+   SERIAL=0xc1ee2001, no other CXL_* than the claim markers. Its claim
+   uids: the local one in preparedClaims.json, localDevices.json and
+   cxl-claims.yaml, the pool one in preparedPoolClaims.json and
+   cxl-pool.yaml of its VM. The model never generates a step after
+   which one of its two Prepares could be refused by a decoder hole
+   (A9), nor a stalled dnuma over a hole: it is never Blocked. Nor is
+   a dnuma pod deleted before it is bound (starting, attaching, either,
+   stalled; also on-line): its local claim would stay in flight in the
+   scheduler like its pool claim (A19), which the model does not know
+   of local claims. While a dnuma pod waits for pool-c's slices or is
+   stalled, no other claim or lease takes a block of its VM's local
+   memdev (the model keeps the block for it).
+A40 (2026-10-29, F5) Coverage: at each settle one string per running
+   observed container, "mems|MODE|e=E|f=F|m=M" (MODE am or none, the
+   sets restricted to the CXL nodes, "-" if empty). fencing-switch is a
+   fault in context (C2).
+   (MODEL, 2026-10-29) The strings are those of the predicted state of
+   every settle step (the planner's), counted with C2's weight; E of a
+   companion is "-"; F is the driver's F (not FMaybe).
+   (EXEC, 2026-10-29) A36: the executor checks after dra-install that the
+   driver of every VM logged "defaults.container.fencing: MODE" of the
+   run's start mode (the test fails otherwise). MBT_FENCING=none puts
+   the line into DRA_DRIVER_CONFIG next to what it has (an error if it
+   has defaults already). A replay without MBT_FENCING takes the mode
+   from --fencing of the steps file's header (mbt-header-flags keeps
+   it). Per VM driverLog gets "fencing" (the mode of the current driver
+   container's start line, null before it) and "nriSynced" (NRI's first
+   Synchronize, "... containers tracked"). A driver of mode none never
+   logs "NRI fence: lends restored" (D/lend.go startFencing returns
+   when there is no fence): A15's "ready" in mode none is that line
+   instead (bash mbt-driver-ready; the observer's lendsRestored is true
+   for fencing none and nriSynced).
+   (review, 2026-10-29) This replaces "a replay without MBT_FENCING takes
+   the mode from the header" here and in A41 (EXEC): the fencing mode
+   and the reboot variant configure the cluster and the model, so they
+   always agree. A replay (MBT_REPLAY) and an off-line run (MBT_SCRIPT:
+   the "# --profile ..." line of its code.gen.sh) run in the --fencing
+   and --reboot of the file's header (bash mbt-header-mode; a header
+   without them: allowed-mems, no reboot; a file without a header: the
+   MBT_* or their defaults). An MBT_FENCING or MBT_REBOOT that the user
+   set (also set empty: ${VAR+x}; MBT_FENCING= is allowed-mems,
+   MBT_REBOOT= no reboot) and that differs fails the test at the start.
+   The model refuses (exit 2) a --fencing or --reboot of the command
+   line that contradicts the header of --replay or --from (the same
+   defaults; a file without a header: the command line's); the other
+   model flags of the header still replace the command line's (A16).
+   (EXEC, 2026-10-29) A37: "fencing-switch" with an argument, or in a run
+   whose MBT_FENCING is not switch, is refused with status 2. The done
+   JSON is {"fencing": "<new mode>"} (with killAt per A30). A
+   driver-kill-at watcher of a VM is disarmed when that VM's driver is
+   restarted, reason "disarmed by fencing-switch". On a failure the verb
+   stops at that VM (status 1): the ConfigMap is patched already, the
+   VMs after it keep their old pod and mode. The new config.yaml is the
+   old one with defaults.container.fencing set (block YAML, the rest
+   kept). One switch took 17.6-17.8 s (three restarts) in run SW3.
+   (EXEC, 2026-10-29) A39: per pod "claims": the claim part (as "claim")
+   of every claim in the order of the pod spec, [] for none; dnuma: c0
+   (mbt-lnuma, memdev-c100e2e1 of the node's pool, attached null) and c1
+   (mbt-xnuma-c, c-pooled0, attached true); "claim" stays the first
+   (c0). write and read of dnuma return 2 (no dax device), as for lnuma;
+   crash and delete as for any kind. The inspected env has the CXL_*
+   of both claims: CXL_C100E2E1_{MODE=numa,NODE=2,SERIAL,SHARED=0,
+   SIZE=134217728} and CXL_C1EE2001_{MODE=numa,NODE=3,SERIAL,SHARED=0,
+   SIZE=268435456}, and one CXL_CLAIM_<uid>_0 marker per claim.
+   (EXEC, 2026-10-29) A38 evidence (04-status-EXEC.txt 17): in mode none
+   a revoke of a lent node writes cpuset.mems = base without the node
+   (D/lend.go:765-786): a lease requester created in none lost node 2
+   at lease-put although node 2 had memory (0-2 -> 0-1, set). The rule
+   "none: D + M" does not hold for a container that had a lend.
+A41 (2026-10-29, 14-design-reboot) Run-level reboot variant:
+   MBT_REBOOT=guest|qemu (default empty: no reboot), documented in
+   code.var.sh; the model gets --reboot=guest|qemu, recorded in the
+   steps header like --fencing (A36). MBT_AVOID=node-reboot still
+   removes the verb.
+   (EXEC, 2026-10-29) code.var.sh refuses another MBT_REBOOT than guest,
+   qemu or empty. --reboot=MODE is passed only when MBT_REBOOT is set
+   (empty: no flag, a model without the flag runs as before). A replay
+   without MBT_REBOOT takes it from "--reboot" of the steps file's header
+   (mbt-header-flags keeps it). MBT_REBOOT=guest checks at the start that
+   the qemu processes of vm1 and vm0 run the binary they were started from
+   (/proc/PID/exe not "(deleted)") and that it is not older than
+   hw/mem/cxl_type3.c of its source tree (bug-17); the test fails at once
+   otherwise. MBT_REBOOT_WAIT (180 s) is the wait for ssh. The stub has
+   MBT_STUB_LIST=reboot (a list per variant).
+   (review, 2026-10-29) The bug-17 check no longer compares the binary
+   with the time of hw/mem/cxl_type3.c (a git checkout touches it):
+   /proc/PID/exe "(deleted)" fails; the binary has the name of the fix's
+   function ct3d_reset_device_dvsec (its debug information; the function
+   is inlined): ok; build_dvsecs only: fail (unfixed); neither (no debug
+   information): a warning.
+   (MODEL, 2026-10-29) The header of mbt-steps.txt carries
+   "--reboot=MODE" ("--reboot=" for none) with the other model flags
+   (A16; files without it: none). Both variants have the same
+   prediction; the model's reference of the pool side (the fuzz) drops
+   and re-attaches the VM's attachments in the qemu variant only.
+A42 (2026-10-29) Verb "node-reboot VM", VM vm0 or vm1. The executor
+   disarms a driver-kill-at watcher of VM (A31; reason "disarmed by
+   node-reboot"), records the boot id, reboots (guest: systemctl
+   reboot in the guest; qemu: the qemu process restarted as
+   vmdir-restart does, then dra-local-device for the test's local
+   memdev), waits up to 180 s for ssh with a new boot id, sets
+   auto_online_blocks offline, refollows traces, waits for the driver
+   (A15). done status 0, 1 on failure (MBT_ERR), 2 bad argument;
+   done carries "boot": the new boot id.
+   (EXEC, 2026-10-29) Status 2 also in a run without MBT_REBOOT (done
+   JSON {}). The done JSON is {"boot": "<id>"}; "boot" is null when the
+   step failed before ssh came back; killAt per A31 as for the other
+   verbs (the state the watcher had when it was disarmed before the
+   boot: /run of the VM is new after it). Order: disarm; save the log of
+   the running driver container as nri-dra-driver-cxl.<vm>.<pod>.r<N>.log
+   (N its restarts); read the boot id; guest: "systemctl reboot" over an
+   ssh connection of its own (its status ignored); qemu: vmdir-restart
+   (shutdown -h, vagrant up --no-provision), the qemu pid must change;
+   close the ssh ControlMaster of VM; wait for ssh (connections without a
+   master) with another boot id; auto_online_blocks offline; the
+   observer's kernel state (A24) is reset so that the first observation
+   reads the whole log of the new boot, the counts of before kept; qemu:
+   once pool-a or pool-b lists the local memdev detached (60 s at most),
+   dra-local-device --pool LOCAL_SERVER[VM] VM (it waits for the
+   memdev-c100e2e1 of the node's slice, i.e. for the driver); the udev
+   and kubelet trace collectors of VM again; mbt-driver-ready-wait; the
+   driver log followed from the reboot. The driver pod keeps its name
+   (restarts +1: SandboxChanged); the executor records the new count, so
+   the next observation sees no restart of its own. Measured (image
+   2ba73741f42a, no bug-15 fix): guest 46.2 s (ssh 15.0 s, driver ready
+   44.8 s); qemu 81.9 s (ssh 32.3 s, of which ~27 s are vagrant up; the
+   local memdev attached at +33 s; driver ready 80.3 s).
+   (MODEL, 2026-10-29) Generated for vm0 and vm1 only after a settle
+   (an empty window) and followed by a settle (only synchronous steps of
+   pods elsewhere between), when every pool controller runs with its
+   slices, no armed driver-kill-at watcher of the VM may have fired (A31,
+   A32: as for driver faults), and no pod that is or may be on the VM is
+   Unblocking, Stalled, Attaching or Unsched (whether its retry or
+   promotion came before the boot decides its restarts). Pending pods are
+   not bound: untouched. A held lease of the VM is released by the boot
+   (bug-15: dropped at the broker's start, its companion deleted by the
+   first reconcile; a Prepare of the companion's claim before that fails
+   before it touches a device: no region). Off-line (no adoption) only
+   when no stack of the VM gets two or more regions. done: "boot" must
+   differ from the boot id known before (fail); it is adopted as the
+   VM's boot id; done without it ({} or null): the settle wants another
+   one than before. killAt of the done is not checked.
+A43 (2026-10-29) Prediction (14-design-reboot 2), with the driver
+   fixed (bug-15): pods of VM keep UIDs, containers +1 restart, the
+   driver pod +1; claims keep allocations; devices prepared again with
+   new dax/pmem names; volatile dax content unknown until the next
+   write; local slices again (ldax empty); leases of VM released, their
+   companions gone; persistent content kept; decoder stacks of VM
+   adopted from the observation; guest: attachments unchanged, qemu:
+   attached again; F of VM reseeded from the claims prepared after the
+   boot.
+   (MODEL, 2026-10-29) Details of the prediction: every container of a
+   Running pod on VM restarts once; a pod without a claim (plain) may
+   restart once more, and so may the driver pod (Slack 1, the observed
+   count adopted: their containers do not wait for the driver, and
+   kubelet started twice in the boot, 12-findings 3.1); claimed pods
+   exactly +1. A pod Blocked by a decoder hole on VM is prepared after
+   the boot (no hole): Running, restarts unchanged; a refused one stays
+   Refused (also one that was Blocked). The stacks of VM are empty at the
+   boot and get the regions of the claims prepared again; with two or
+   more regions on a stack the order is open: any permutation of the
+   predicted regions (no hole) fits and is adopted (#adopt stack=...);
+   the waiter of a block or of c-pmem0 that a released lease held gets
+   it (Running, restarts 0). Volatile dax content (xdax, sdax, sro, sexcl
+   of a Running pod on VM): "token or zeros": a read may give the last
+   token or "" and decides it; a write makes it known (expectations: the
+   token JSON with "|zero" after it, done "orZero": true). ldax slices
+   read "", numa bytes unknown, persistent content and PDev unchanged
+   (also the LSA and head hashes). lsteer containers on VM are steered,
+   no container on VM is loose (A37), its holds end, the leases of VM
+   and their companions go (companions still listed are a wait). The
+   settle has MBT_SETTLE_TIMEOUT (180 s): pods Running with a terminated
+   container, Ready false, restarts 0 (the boot's first Prepares) are a
+   wait like any pod not Running yet.
+   (review, 2026-10-29) lsteer on VM stays strictly steered (SteerOn, not
+   SteerAny): a driver that serves a Prepare after the boot before its
+   NRI plugin is up leaves the container unsteered, which is the
+   driver's race bug-19 (bug-19-prepare-before-nri-loses-steering.txt,
+   fixed in the driver); a run with such a driver fails the settle, as
+   intended.
+A44 (2026-10-29) Observation and oracle: each VM's "bootId"
+   (/proc/sys/kernel/random/boot_id); a new one after each node-reboot
+   of it and never otherwise (fail). For each container the observer
+   lists its device nodes (path, major:minor) and the CXL dax and pmem
+   devices of the VM (name, major:minor, serial); every device node of
+   a claim is the current device of that claim (fail after the
+   settle's timeout). A numa claim's CXL_<KEY>_NODE has memory.
+   (EXEC, 2026-10-29) The boot id is "bootID" of 6.3 (unchanged; Go's
+   encoding/json matches a field tagged "bootId" to it, case-insensitive).
+   Per container (6.3 "containers") "devices": [{"path": "/dev/dax0.0",
+   "type": "c"|"b", "major": 252, "minor": 0, "dev": "252:0"}] from
+   /proc/PID/root/dev (the top level and one directory below it, but pts,
+   shm and mqueue; runc's null, zero, full, random, urandom, tty, console
+   and ptmx left out), "devicesFrom": "proc", or "spec" when /proc could
+   not be read (the devices of the runtime spec). Per VM "cxlDevices":
+   [{"name": "dax0.1"|"pmem3", "path": "/dev/NAME", "kind": "dax"|"pmem",
+   "major", "minor", "dev": "M:m" (null if sysfs has no dev; seen: kmem
+   dax devices have one too), "driver" (dax: kmem, device_dax, null),
+   "region", "serial" (the memdev of the region's first target),
+   "serials"}]: the dax devices of "regions" and the block devices of the
+   namespaces of "pmem"; null if either part is null. Device nodes of the
+   CDI devices of a claim are in "devices" of its container (the stub
+   checks: every dax*/pmem* node there is the VM's device of that name
+   with the same dev). While the pods come back after a boot the pod
+   status says Running with containers "terminated" and Warning events
+   "DRA driver ... is not registered" for ~60 s; containers the status
+   calls running and crictl does not list are in "missing" (a wait, A11);
+   no observation part failed (errors []) in the runs of 04-status-EXEC
+   18.
+   (MODEL, 2026-10-29) The oracle reads per VM "bootID", "cxlDevices"
+   (name, kind, dev or else major:minor, serial or else serials[0]), per
+   container "devices" (path, dev or else major:minor; only the nodes
+   whose name starts with dax or pmem are checked; devicesFrom not
+   read). Rules: (1) the boot id of a VM is learnt at every settle; after
+   a node-reboot it must differ from the one before, else it must be the
+   one learnt (fail; off-line: not checked, no ids are known). (2) For
+   every container of a slot's pod that the model has Running on the VM
+   (not companions): each of its dax/pmem nodes is a device of
+   "cxlDevices" of that name with the same major:minor ("stale" else),
+   of the claim's serial and kind (local memdev for ldax); dax kinds and
+   block kinds (pwr, pbro, xpb) have exactly one, others (numa, fs,
+   plain, dnuma) none; lease kinds (lease, plse) are not counted (a
+   lease's device is an fd), their nodes must only be current. A
+   difference is a wait (a fail at the settle's timeout); a part null is
+   a wait, absent a note. (3) In the env of an inspected pod the
+   CXL_<KEY>_DAX (dax kinds) or _PATH (block kinds) is a current
+   cxlDevices name of the claim's serial and kind (fail: an inspection is
+   not repeated), and a CXL_<KEY>_NODE has MemTotal > 0 on the pod's VM
+   (wait: O3's MemTotal check says it at every poll too). (4) bug-16: per
+   claim (6.1 "claim" and "claims") an optional "attachFailed": true iff
+   the claim's AttachFailed condition is True (absent/null: not checked):
+   on a pod the model has Running it is a wait in the settle of a
+   node-reboot of its VM, a fail at any other settle. EXEC: please add it
+   if cheap; nothing else depends on it.
+   (review, 2026-10-29) Added: mbt-observe.py claim_part, for "claim"
+   and every entry of "claims": true iff the status entry of a pool
+   device of the allocation has the condition cxl-pool.nri.io/
+   AttachFailed True (fake-cxl-pool pkg/controller/status.go condFailed;
+   the controller removes Attached when it sets it and the other way
+   round), false for an allocated pool claim without it, null for a claim
+   without pool devices (a local claim, one not allocated). The
+   simulated SUT says false, the reference its AttachFailed flag.

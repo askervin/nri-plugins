@@ -60,6 +60,9 @@ func (m *metrics) add(step int, cfg *Config, from *State, a Act, to *State) {
 	}
 	addAll(0, a.name(cfg))
 	addAll(1, faultContext(from, a)...)
+	if a.Verb == VSettle {
+		addAll(1, memsStrings(to)...)
+	}
 	f, args := a.format(cfg)
 	if len(args) > 0 {
 		f = "[" + f + "]"
@@ -198,11 +201,12 @@ func expRun(o runOpts, steps int, budget planBudget) (*expResult, error) {
 		after := next
 		res.verbs[a.Verb]++
 		if a.Verb == VSettle {
-			s.do(n, a)
 			// the oracle's clock (the scheduler's hold of A19 ends
 			// 6 s after a settle): the wall clock, or with --step-time
 			// a clock that advances per step whatever the plans take;
-			// recorded with --steps-out and replayed with --from
+			// recorded with --steps-out and replayed with --from. The
+			// simulated SUT has it too: kubelet's retries and the
+			// scheduler's promotions keep to it (sim.overdue).
 			now := time.Now()
 			if o.stepTime > 0 {
 				now = refEpoch.Add(time.Duration(n) * o.stepTime)
@@ -210,6 +214,8 @@ func expRun(o runOpts, steps int, budget planBudget) (*expResult, error) {
 			if t, ok := o.replayNow[n]; ok {
 				now = time.Unix(t, 0)
 			}
+			s.now, s.since = now, now
+			s.do(n, a)
 			if stepsOut != nil {
 				fmt.Fprintf(stepsOut, "%s%d %d\n", nowPrefix, n, now.Unix())
 			}
@@ -411,7 +417,7 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 				r.resets, r.random, mean.Round(time.Microsecond), max.Round(time.Microsecond))
 			fmt.Fprintf(stdout, "  paths mean %.0f max %d, cached states mean %.0f max %d\n", pm, pmax, sm, smax)
 			var vc []string
-			for _, v := range []Verb{VCrash, VWrite, VRead, VLeaseGet, VLeasePut, VSettle} {
+			for _, v := range []Verb{VCrash, VWrite, VRead, VLeaseGet, VLeasePut, VSettle, VFencingSwitch, VNodeReboot} {
 				vc = append(vc, fmt.Sprintf("%s=%d", v, r.verbs[v]))
 			}
 			faults := 0
@@ -433,6 +439,21 @@ func runExperiment(args []string, stdout, stderr io.Writer) int {
 				cs = append(cs, fmt.Sprintf("%s=%d", w, ctx[w]))
 			}
 			fmt.Fprintf(stdout, "  verbs %s faults=%d; C2 contexts %s\n", strings.Join(vc, " "), faults, strings.Join(cs, " "))
+			// the cpuset.mems strings (A40) and the actions of A39
+			var mems, dual []string
+			for x := range r.m.sets[1] {
+				if strings.HasPrefix(x, "mems|") {
+					mems = append(mems, x)
+				}
+			}
+			sort.Strings(mems)
+			for x := range r.m.sets[0] {
+				if strings.Contains(x, "dnuma@") || strings.Contains(x, "xnuma-c@vm0") || strings.Contains(x, "xnuma-c@vm2") {
+					dual = append(dual, x)
+				}
+			}
+			sort.Strings(dual)
+			fmt.Fprintf(stdout, "  mems strings %d: %s\n  dnuma and new xnuma-c actions %d: %s\n", len(mems), strings.Join(mems, " "), len(dual), strings.Join(dual, ", "))
 			if *showUncovered {
 				fmt.Fprintf(stdout, "  uncovered: %s\n", strings.Join(r.uncovered(), ", "))
 			}

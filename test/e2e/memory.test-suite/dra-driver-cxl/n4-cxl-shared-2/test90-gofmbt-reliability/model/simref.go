@@ -35,6 +35,7 @@ var refEpoch = time.Unix(1800000000, 0)
 // withRef gives the simulated SUT the reference of the pool side.
 func (s *sim) withRef(seed int64) *sim {
 	s.ref = newRefPool(s.cfg, seed)
+	s.ref.LocalFree = s.localFree
 	return s
 }
 
@@ -50,6 +51,13 @@ func freesClaim(st *State, a Act) bool {
 	sl := st.slot(int(a.Slot))
 	ss := &st.Slots[a.Slot]
 	return sl.Kind.claimed() && !sl.Kind.pooled() && ss.Phase != Pending && ss.Phase != Absent
+}
+
+// freesBlock: the action releases a local lease (lease-put; its
+// companion's claim is deallocated, a requeueing event: a dnuma pod may
+// wait for the block, A39).
+func freesBlock(st *State, a Act) bool {
+	return a.Verb == VLeasePut && st.slot(int(a.Slot)).Kind == KLease && st.Slots[a.Slot].Lease == LeaseHeld
 }
 
 // releasesPLease: the action released the persistent lease of a plse
@@ -76,11 +84,34 @@ func (s *sim) refPoll(poll int) {
 	}
 }
 
+// refFactWeight is what a fact of the reference counts in refMismatch
+// against an attachment, which may be in flux (a detach that the
+// controller has not done yet): the node of an allocated pod, and the
+// companion of a persistent lease (a lease-get cut at its bind keeps or
+// releases the lease: the reference decides, A29 d). Counted as one, a
+// pending detach tied with them: the truth's node side took another host
+// than the reference's binding (review fuzz, full guest seed 652722:
+// "pod sdax-c@any#0: on vm2, want vm0", its inspected env of a dax
+// device of vm0), or kept a lease that the reference released (fullp
+// qemu switch 30s, seed 1380903: "attachment c-pmem0@vm0: missing" a
+// settle later, when the detach came).
+const refFactWeight = 100
+
 // refMismatch counts the pool facts in which a settled outcome of the
-// model differs from the reference.
+// model differs from the reference (the facts of refFactWeight weigh
+// more).
 func (s *sim) refMismatch(st *State) int {
 	r := s.ref
 	n := 0
+	for i := range st.Slots {
+		if st.slot(i).Kind != KPlse {
+			continue
+		}
+		l := st.Slots[i].Lease
+		if kept := l == LeaseHeld || l == LeaseBusy; kept != (r.comps[i] != nil) {
+			n += refFactWeight
+		}
+	}
 	for i := range st.Slots {
 		sl := st.slot(i)
 		if !sl.Kind.pooled() {
@@ -94,6 +125,9 @@ func (s *sim) refMismatch(st *State) int {
 			continue
 		}
 		nodeOK := rp == nil || !rp.alloc || ss.Node == VMAny || ss.Node == rp.node
+		if !nodeOK {
+			n += refFactWeight - 1 // (and one below)
+		}
 		switch ss.Phase {
 		case Absent:
 			if ph != rpNone || r.deletingPod(i) != nil {
@@ -196,7 +230,15 @@ func (s *sim) resolveRef(pred *State) *State {
 				nodes[i] = rp.node
 			}
 		}
-		if n := pred.narrowed(nodes); n != nil {
+		// and the bindings of its race-kill pods (review fuzz, fullp
+		// seed 710078)
+		bound := map[int]bool{}
+		for _, i := range pred.Wide.optPrepared() {
+			if rp := r.pod(i); rp != nil && rp.gen == pred.Slots[i].Gen {
+				bound[i] = rp.bound || (rp.alloc && rp.attached)
+			}
+		}
+		if n := pred.narrowed(nodes, bound); n != nil {
 			cands = append([]*State{n}, n.Alts...)
 		}
 	}
@@ -212,6 +254,7 @@ func (s *sim) resolveRef(pred *State) *State {
 		}
 	}
 	n := best[s.rng.Intn(len(best))].clone()
+	s.reorderStacks(n)
 	for i := range n.Slots {
 		ss := &n.Slots[i]
 		sl := n.slot(i)
@@ -253,14 +296,8 @@ func (s *sim) resolveRef(pred *State) *State {
 				ss.Phase = Running
 				// its Prepare: the region, unless a hole is in
 				// the way (A9)
-				if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-					switch {
-					case n.Stacks[si].hasHole() && sl.Kind != KPBad:
-						ss.Phase = Blocked
-					case ss.Refuse:
-					default:
-						n.Stacks[si].push(key)
-					}
+				if prepareRegions(n, i, ss.Refuse) {
+					ss.Phase = Blocked
 				}
 				if ss.Refuse && ss.Phase == Running {
 					ss.Phase = Refused
@@ -281,12 +318,10 @@ func (s *sim) resolveRef(pred *State) *State {
 	}
 	for i := range n.Slots {
 		ss := &n.Slots[i]
-		if ss.Phase == Unblocking && s.rng.Intn(2) == 0 {
+		if ss.Phase == Unblocking && (s.rng.Intn(2) == 0 || s.overdue(n, i, s.refWall(), kubeletRetryCap)) {
 			ss.Phase = Running
 			n.setUnblockAt(i, 0)
-			if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-				n.Stacks[si].push(key)
-			}
+			prepareRegions(n, i, false)
 		}
 		if ss.Steer == SteerAny && ss.Phase == Running {
 			if s.rng.Intn(2) == 0 {
@@ -409,6 +444,9 @@ func (s *sim) refOverride(o *Observation) {
 		}
 		seen[i] = true
 		claim := &ObsClaim{Name: p.Name + "-c0", UID: claimUID(sl, rp.gen)}
+		if sl.Kind.dual() {
+			claim.Name = p.Name + "-c1"
+		}
 		switch rp.phase() {
 		case rpUnalloc, rpAlloc:
 			p.Phase, p.Ready, p.Node, p.Waiting, p.Event, p.Events = "Pending", false, nil, nil, nil, nil
@@ -422,6 +460,10 @@ func (s *sim) refOverride(o *Observation) {
 				} else {
 					claim.Attached = &f
 				}
+				// the reference's AttachFailed condition (a conflict:
+				// a binding failure at PreBind's next poll)
+				failed := rp.failed
+				claim.AttachFailed = &failed
 			}
 		case rpBound:
 			node := rp.node.String()
@@ -430,10 +472,15 @@ func (s *sim) refOverride(o *Observation) {
 				p.Phase, p.Ready, p.Unschedulable = "Running", true, false
 			}
 			p.Node = &node
-			claim.Allocated, claim.Attached = true, &t
+			claim.Allocated, claim.Attached, claim.AttachFailed = true, &t, &f
 			claim.Devices = []ObsClaimDevice{{Driver: "cxl-pool.nri.io", Pool: "pool-" + sl.Pool.String(), Device: devices[sl.Dev].Name}}
 		}
 		p.Claim = claim
+		if sl.Kind.dual() {
+			// its local claim is allocated with the pool claim
+			p.Claim, p.Claims = nil, simDualClaims(sl, rp.gen, p.Name, *claim)
+			p.Claim = &p.Claims[0]
+		}
 		pods = append(pods, p)
 	}
 	for i := range s.cfg.Slots {
@@ -445,6 +492,12 @@ func (s *sim) refOverride(o *Observation) {
 			// a pod the model's truth does not have
 			p := ObsPod{Slot: sl.Name, Name: podName(sl, rp.gen), UID: podUID(sl, rp.gen), Gen: int(rp.gen), Phase: "Pending", Unschedulable: rp.unsched && !rp.alloc,
 				Claim: &ObsClaim{Name: podName(sl, rp.gen) + "-c0", UID: claimUID(sl, rp.gen), Allocated: rp.alloc}}
+			if sl.Kind.dual() {
+				c := *p.Claim
+				c.Name = p.Name + "-c1"
+				p.Claims = simDualClaims(sl, rp.gen, p.Name, c)
+				p.Claim = &p.Claims[0]
+			}
 			if rp.bound {
 				node := rp.node.String()
 				p.Phase, p.Ready, p.Node = "Running", true, &node

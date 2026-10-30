@@ -356,8 +356,14 @@ Regions do not survive a node reboot: the state file records the boot id
 of the kernel (`/proc/sys/kernel/random/boot_id`), and the state of
 another boot is dropped without touching any region, so that a region
 that firmware or an admin created under the same name is never taken for
-the plugin's. A `dax` slice that is gone gets no device node and no
-`CXL_<KEY>_DAX` in its CDI device.
+the plugin's. The info of each prepared claim (`preparedClaimsInfo.json`)
+records the boot id too: a claim prepared in another boot is not prepared
+at start (no CDI device, its numa slices not fenced), kubelet's Prepare
+again after the reboot gets a new slice, and its Unprepare (the pod went
+during the reboot) finds nothing to release. A claim saved without a boot
+id (by an older plugin) is taken as prepared in this boot. A `dax` slice
+that is gone gets no device node and no `CXL_<KEY>_DAX` in its CDI
+device.
 
 ## Shared local devices
 

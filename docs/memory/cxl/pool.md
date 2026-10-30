@@ -640,7 +640,47 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   are checked by the device number of the block device: a loop device of
   a cached node mount that the previous plugin container set up shows its
   backing file in sysfs relative to the root of that container's `/dev`
-  (`/pmem1`), which is not a path the plugin can compare.
+  (`/pmem1`), which is not a path the plugin can compare. A node mount
+  that is missing is mounted again when the fsdax namespace of the
+  region of the device is the one prepared (name, block device and its
+  numbers). The claims of a node mount that is not mounted after that
+  (the region is gone, the namespace or block device is another one, the
+  mount failed) stay prepared without a CDI device, so that a container
+  of them fails at its creation on an unresolvable CDI device instead of
+  the bind of a missing directory at every start. The next start,
+  kubelet's Prepare again of such a claim (with a new pod sandbox) and
+  the Prepare of another claim of the node mount mount it again if they
+  can, and the CDI devices come back; the Prepare again fails with the
+  reason otherwise ("its node mount ... is not mounted and cannot be
+  mounted again: ...; unprepare the claim (delete its pods) to prepare
+  it anew"). The Unprepare releases the device as usual. Before the
+  release it waits until nothing holds the block device of the region
+  of the device now, not the recorded one, when that is not the one
+  prepared (for claims of mode `block` too): the recorded name may be
+  another device's now. Without a region it waits for no block device.
+  Companion claims have no CDI device; their lease bind is bound again
+  only with the node mount.
+- Node reboot: every prepared claim records the boot id of the kernel
+  (`/proc/sys/kernel/random/boot_id`). A reboot leaves none of what a
+  Prepare made: no region, namespace probe, dax or block device, node
+  mount, lease bind or online memory, and the new boot gives the names
+  and numbers of those devices (`/dev/daxX.Y`, `/dev/pmemK`, 252:N, 259:N)
+  to other devices. kubelet keeps the pods and their claims, and prepares
+  every claim of the node again before it starts its containers. At
+  start the plugin keeps a claim of another boot as a stale claim in
+  `preparingPoolClaims.json` (`stale`): not prepared, no CDI device, no
+  results for NRI, its NUMA nodes not fenced, its device no longer that
+  of a prepared claim (another claim may prepare it, and a release does
+  not wait for it), nothing released at start. Its Prepare again
+  prepares the device anew and returns the result of the new boot; its
+  Unprepare (the pod went during the reboot) releases the device (`cxl
+  disable-memdev`) before the controller detaches it, also when the
+  device was away at a start. The record of a Prepare that did not
+  finish in another boot loses the region names and lent nodes of that
+  boot and is kept the same way. Claims saved without a boot id (by an
+  older plugin) are taken as prepared in this boot, and so is every claim
+  when the plugin cannot read the boot id: then only the node mount
+  check above keeps the claims of mode `fs` from the old boot's devices.
 - Plugin stopped in a Prepare (killed, crashed, or exited on the loss of
   NRI): before a Prepare touches a device it records the claim and the
   device in

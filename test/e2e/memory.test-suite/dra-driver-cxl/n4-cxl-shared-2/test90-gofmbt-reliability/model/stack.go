@@ -188,8 +188,27 @@ func (s Stack) String() string {
 
 // A user of a region is the claim of a slot's pod (user = slot index) or
 // the companion slice of the lease of a lease slot (user = nSlots +
-// slot index).
+// slot index). A dnuma pod has two claims (A39): its pool claim is the
+// slot's user, its local slice the second one (nSlots + slot index).
 func (s *State) leaseUser(i int) int16 { return int16(len(s.Slots) + i) }
+
+// claimUsers are the users of the claims of the pod of slot i: the slot,
+// and for a dnuma pod its local claim.
+func (s *State) claimUsers(i int) []int16 {
+	if s.slot(i).Kind.dual() {
+		return []int16{int16(i), s.leaseUser(i)}
+	}
+	return []int16{int16(i)}
+}
+
+// dualUser returns the user of the local claim of a dnuma slot whose pool
+// claim is user u, -1 for other users.
+func (s *State) dualUser(u int16) int16 {
+	if int(u) < len(s.Slots) && s.slot(int(u)).Kind.dual() {
+		return s.leaseUser(int(u))
+	}
+	return -1
+}
 
 // userSlot returns the slot of a user and whether it is a lease.
 func (s *State) userSlot(u int16) (int, bool) {
@@ -212,6 +231,9 @@ func (s *State) userRegion(u int16) (int, RKey, bool) {
 			// the companion of a persistent lease: c-pmem0 on the
 			// requester's node
 			return stackIndex(sl.VM, HB1), devKey(cPmem0), true
+		case sl.Kind.dual():
+			// the local claim of a dnuma pod
+			return stackIndex(sl.VM, HB0), rkLocal, true
 		}
 		return 0, 0, false
 	}
@@ -303,10 +325,12 @@ func (s *State) hasUnprepare(u int16) bool {
 	return false
 }
 
-// setOptional makes the prepare events of a user optional.
+// setOptional makes the prepare events of a user optional (of both
+// claims of a dnuma pod).
 func (n *State) setOptional(u int16) {
+	lu := n.dualUser(u)
 	for j := range n.Ev {
-		if n.Ev[j].User == u && n.Ev[j].Kind == evPrepare && !n.Ev[j].Opt {
+		if (n.Ev[j].User == u || (lu >= 0 && n.Ev[j].User == lu)) && n.Ev[j].Kind == evPrepare && !n.Ev[j].Opt {
 			n.Ev = append([]stackEvent(nil), n.Ev...)
 			n.Ev[j].Opt = true
 		}
@@ -329,7 +353,7 @@ func (s *State) eventsOn(si int) []stackEvent {
 func (s *State) preparedAtStart(u int16) bool {
 	i, lease := s.userSlot(u)
 	ss := &s.Slots[i]
-	if lease {
+	if lease && !s.slot(i).Kind.dual() {
 		return (ss.Lease == LeaseHeld || ss.Lease == LeaseReleasing || ss.Lease == LeaseBusy) && !s.hasPrepare(u)
 	}
 	if s.hasPrepare(u) {
@@ -479,8 +503,11 @@ func (s *State) outcomesCut(si int) ([]*stackOutcome, bool) {
 	evs := s.eventsOn(si)
 	var start playState
 	start.S = s.Stacks[si]
-	// every user of the stack, also those without events
-	for u := int16(0); int(u) < 2*len(s.Slots); u++ {
+	// every user of the stack, also those without events (none after a
+	// node-reboot of its VM in this window: nothing is prepared at the
+	// boot)
+	booted := s.rebooted(si)
+	for u := int16(0); int(u) < 2*len(s.Slots) && !booted; u++ {
 		if ssi, k, ok := s.userRegion(u); ok && ssi == si {
 			if s.preparedAtStart(u) {
 				start.prepared.set(u)
@@ -515,7 +542,10 @@ func (s *State) outcomesCut(si int) ([]*stackOutcome, bool) {
 		issue.apply(&evs[j])
 	}
 	add(&issue)
-	if len(evs) == 0 {
+	if len(evs) == 0 || (booted && s.Reorder&(1<<uint(si)) != 0) {
+		// (a stack rebuilt by a node-reboot: every order of its
+		// prepares is an outcome, with the same regions and users; the
+		// oracle adopts the observed order, Reorder)
 		return outs, false
 	}
 	if len(evs) > maxEvents {
@@ -602,6 +632,12 @@ func (s *State) unblockingOn(si int) bool {
 		if ssi, _, ok := s.userRegion(int16(i)); ok && ssi == si {
 			return true
 		}
+		// (a stalled dnuma pod gets its local slice with its promotion)
+		if lu := s.dualUser(int16(i)); lu >= 0 {
+			if ssi, _, ok := s.userRegion(lu); ok && ssi == si {
+				return true
+			}
+		}
 		// an "any" pod whose node is not known yet: any host of its
 		// pool
 		if sl := s.slot(i); sl.Kind.pooled() && s.Slots[i].Node == VMAny && poolBridge[sl.Pool] == stackBridge(si) && poolHasHost(sl.Pool, stackVM(si)) {
@@ -627,10 +663,11 @@ func (s *State) stacksTouched() []int {
 }
 
 // setRequired makes the prepare events of a user happen for sure (its
-// controller is up again).
+// controller is up again; both claims of a dnuma pod).
 func (n *State) setRequired(u int16) {
+	lu := n.dualUser(u)
 	for j := range n.Ev {
-		if n.Ev[j].User == u && n.Ev[j].Kind == evPrepare && n.Ev[j].Opt {
+		if (n.Ev[j].User == u || (lu >= 0 && n.Ev[j].User == lu)) && n.Ev[j].Kind == evPrepare && n.Ev[j].Opt {
 			n.Ev = append([]stackEvent(nil), n.Ev...)
 			n.Ev[j].Opt = false
 		}
@@ -687,10 +724,12 @@ func (n *State) settleAll() *State {
 			for j, si := range sis {
 				a.applyOutcome(si, outs[j][idx[j]])
 			}
-			a.settle()
-			if k := a.altKey(); !seen[k] {
-				seen[k] = true
-				alts = append(alts, a)
+			if a.applyDual(b, sis, outs, idx) {
+				a.settle()
+				if k := a.altKey(); !seen[k] {
+					seen[k] = true
+					alts = append(alts, a)
+				}
 			}
 			if len(alts) >= maxAlts {
 				truncated = true
@@ -713,15 +752,59 @@ func (n *State) settleAll() *State {
 			break
 		}
 	}
+	if len(alts) == 0 {
+		// (cannot happen: the issue order prepares both claims of a
+		// dnuma pod, or one is blocked)
+		a := bases[0].clone()
+		a.settle()
+		alts = append(alts, a)
+	}
 	p := alts[0]
 	p.Alts = alts[1:]
 	p.Truncated = truncated
-	if truncated && len(n.unplacedAny()) > 0 {
-		// (the hosts of its "any" pods multiply its worlds: the
-		// oracle settles it again with the nodes it observes)
+	if truncated && (len(n.unplacedAny()) > 0 || len(n.optPrepared()) > 0) {
+		// (the hosts of its "any" pods and the optional Prepares of
+		// its race-kill pods multiply its worlds: the oracle settles it
+		// again with the nodes and the bindings it observes)
 		p.Wide = n
 	}
 	return p
+}
+
+// optPrepared returns the slots whose Prepares in this window are
+// optional (Opt: a controller kill came while they were attaching; both
+// claims of a dnuma pod), in slot order.
+func (n *State) optPrepared() []int {
+	var out []int
+	for _, e := range n.Ev {
+		if !e.Opt || e.Kind != evPrepare {
+			continue
+		}
+		i, lease := n.userSlot(e.User)
+		if lease && !n.slot(i).Kind.dual() {
+			continue
+		}
+		if !slices.Contains(out, i) {
+			out = append(out, i)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// dropPrepares removes the prepare events of user u (and of the local
+// claim of a dnuma pod): the world in which its optional Prepare does
+// not come (copy on write; an event After one removed is free).
+func (n *State) dropPrepares(u int16) {
+	lu := n.dualUser(u)
+	ev := make([]stackEvent, 0, len(n.Ev))
+	for _, e := range n.Ev {
+		if (e.User == u || (lu >= 0 && e.User == lu)) && e.Kind == evPrepare {
+			continue
+		}
+		ev = append(ev, e)
+	}
+	n.Ev = ev
 }
 
 // unplacedAny returns the "any" pods that prepare in this window on a
@@ -741,13 +824,19 @@ func (n *State) unplacedAny() []int {
 }
 
 // narrowed settles a truncated settle (R10) again with the nodes of some
-// of its "any" pods known (observed bound): settleAll's worlds are those
-// of the full enumeration with these nodes, fewer of them, so that the
+// of its "any" pods known (observed bound), and whether some of its
+// race-kill pods are bound (observed bound or Attached: their optional
+// Prepares come; neither: they do not): settleAll's worlds are those of
+// the full enumeration with these facts, fewer of them, so that the
 // races on their stacks are enumerated (fuzz, fullp seed 1484: three
 // "any" pods prepared at a ctrl-start, 27 host worlds of up to 6 stack
 // orders, the 64 outcomes all with the first pod on vm0 or vm1, seen on
-// vm2). nil if there is no such settle or no such node.
-func (p *State) narrowed(nodes map[int]VM) *State {
+// vm2; review fuzz, fullp seed 710078: six race-kill pods, a dnuma one
+// of them with two Prepares, on four stacks, the 64 outcomes all with
+// the dnuma pod's Prepare, seen not bound). nil if there is no such
+// settle or no such fact. The items of Narrow: SLOT:VM, SLOT:bound,
+// SLOT:unbound.
+func (p *State) narrowed(nodes map[int]VM, bound map[int]bool) *State {
 	w := p.Wide
 	if w == nil {
 		return nil
@@ -769,6 +858,19 @@ func (p *State) narrowed(nodes map[int]VM) *State {
 		}
 		items = append(items, sl.Name+":"+v.String())
 	}
+	for _, i := range w.optPrepared() {
+		b, ok := bound[i]
+		if !ok {
+			continue
+		}
+		if b {
+			c.setRequired(int16(i))
+			items = append(items, c.slot(i).Name+":bound")
+		} else {
+			c.dropPrepares(int16(i))
+			items = append(items, c.slot(i).Name+":unbound")
+		}
+	}
 	if len(items) == 0 {
 		return nil
 	}
@@ -779,17 +881,21 @@ func (p *State) narrowed(nodes map[int]VM) *State {
 
 // narrowTo is narrowed by the adoption record's any=SLOT:VM,...
 func (p *State) narrowTo(list string) (*State, error) {
-	nodes := map[int]VM{}
+	nodes, bound := map[int]VM{}, map[int]bool{}
 	for _, item := range strings.Split(list, ",") {
 		name, vm, ok := strings.Cut(item, ":")
 		i := p.cfg.slotIndex(name)
+		if ok && i >= 0 && (vm == "bound" || vm == "unbound") {
+			bound[i] = vm == "bound"
+			continue
+		}
 		v, err := parseVM(vm)
 		if !ok || i < 0 || err != nil || v == VMAny || !p.cfg.Slots[i].hostOK(v) {
 			return nil, fmt.Errorf("invalid node of an \"any\" pod %q", item)
 		}
 		nodes[i] = v
 	}
-	n := p.narrowed(nodes)
+	n := p.narrowed(nodes, bound)
 	if n == nil || n.Narrow != list {
 		return nil, fmt.Errorf("no settle to narrow to %s", list)
 	}
@@ -1072,7 +1178,8 @@ func (n *State) expandSlices() []*State {
 				}
 			}
 			for _, e := range absent.Ev {
-				if i, lease := absent.userSlot(e.User); !lease && absent.Slots[i].Phase == Unsched {
+				// (both claims of a dnuma pod)
+				if i, lease := absent.userSlot(e.User); (!lease || absent.slot(i).Kind.dual()) && absent.Slots[i].Phase == Unsched {
 					continue
 				}
 				ev = append(ev, e)
@@ -1091,6 +1198,11 @@ func (s *State) blockedOn(si int) bool {
 		if s.Slots[i].Phase == Blocked {
 			if ssi, _, ok := s.userRegion(int16(i)); ok && ssi == si {
 				return true
+			}
+			if lu := s.dualUser(int16(i)); lu >= 0 {
+				if ssi, _, ok := s.userRegion(lu); ok && ssi == si {
+					return true
+				}
 			}
 		}
 	}
@@ -1181,6 +1293,53 @@ func (a *State) applyOutcome(si int, o *stackOutcome) {
 		}
 		ss.RaceKill = false
 	}
+}
+
+// applyDual sets the phase of a dnuma pod by the outcomes of both of its
+// claims' stacks (applyOutcome sets it by its pool claim's): its local
+// slice blocked by a hole makes it Blocked (or Unblocking without one).
+// It returns false for a combination of outcomes in which one of its two
+// Prepares came and the other did not although none was refused: kubelet
+// prepares both claims of a bound pod, a pod that is not bound neither
+// (a controller kill while it was starting).
+func (a *State) applyDual(b *State, sis []int, outs [][]*stackOutcome, idx []int) bool {
+	outOf := func(si int) *stackOutcome {
+		for j, x := range sis {
+			if x == si {
+				return outs[j][idx[j]]
+			}
+		}
+		return nil
+	}
+	for i := range a.Slots {
+		sl, ss := a.slot(i), &a.Slots[i]
+		if !sl.Kind.dual() || ss.Phase == Deleting || ss.Phase == Absent {
+			continue
+		}
+		u, lu := int16(i), a.leaseUser(i)
+		if !b.hasPrepare(u) && !b.hasPrepare(lu) && !b.blockedAtStart(u) {
+			continue
+		}
+		pool, local := outOf(stackIndex(ss.Node, poolBridge[sl.Pool])), outOf(stackIndex(ss.Node, HB0))
+		if local != nil && local.Blocked[lu] {
+			if local.S.hasHole() {
+				ss.Phase = Blocked
+			} else if ss.Phase != Blocked {
+				if ss.Phase != Unblocking {
+					a.setUnblockAt(i, 0)
+				}
+				ss.Phase = Unblocking
+			}
+			continue
+		}
+		if pool != nil && pool.Blocked[u] {
+			continue
+		}
+		if b.hasPrepare(u) && b.hasPrepare(lu) && (pool != nil && pool.Prepared[u]) != (local != nil && local.Prepared[lu]) {
+			return false
+		}
+	}
+	return true
 }
 
 // altKey identifies a settled outcome.

@@ -233,7 +233,8 @@ type Attachment struct {
 	State           string `json:"state"`
 	Error           string `json:"error,omitempty"`
 	// Owner is the owner given in the attach request that created the
-	// attachment ("" if none, or adopted).
+	// attachment ("" if none, or adopted). An attachment without owner
+	// takes the owner of the first attach request that has one.
 	Owner string `json:"owner,omitempty"`
 	// Exclusive is the flag of the last attach request: no other host may
 	// attach the device meanwhile.

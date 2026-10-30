@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -40,16 +41,22 @@ type Expectation struct {
 	NodeHB      [nBridges]int `json:"nodeHB"`
 	// StallWindow (seconds; 0: the default) and StallStrict: A19's
 	// window of stalled contenders, and whether settles wait for them
-	StallWindow int          `json:"stallWindow,omitempty"`
-	StallStrict bool         `json:"stallStrict,omitempty"`
-	Slots       []SlotJSON   `json:"slots"`
-	Pools       []PoolJSON   `json:"pools"`
-	Drivers     []DriverJSON `json:"drivers"`
-	Data        []string     `json:"data,omitempty"`
-	PDevs       []PDevJSON   `json:"pdevs,omitempty"`
+	StallWindow int  `json:"stallWindow,omitempty"`
+	StallStrict bool `json:"stallStrict,omitempty"`
+	// Fencing: the fencing mode of the drivers (A36, A37): "none", or
+	// "" for allowed-mems
+	Fencing string       `json:"fencing,omitempty"`
+	Slots   []SlotJSON   `json:"slots"`
+	Pools   []PoolJSON   `json:"pools"`
+	Drivers []DriverJSON `json:"drivers"`
+	Data    []string     `json:"data,omitempty"`
+	PDevs   []PDevJSON   `json:"pdevs,omitempty"`
 	// Stacks are the decoder stacks (A9): "vm0/hb0": ["local",
 	// "b-pooled0", "hole", ...] bottom first.
 	Stacks map[string][]string `json:"stacks,omitempty"`
+	// Reorder are the stacks that a node-reboot rebuilt: their regions
+	// in any order (A43)
+	Reorder []string `json:"reorder,omitempty"`
 	// Alts are the other outcomes that races for the decoder stacks
 	// can have; the oracle takes the one that fits.
 	Alts []*Expectation `json:"alts,omitempty"`
@@ -77,6 +84,8 @@ type SlotJSON struct {
 	Hold      bool   `json:"hold,omitempty"`      // A23: a file of its fs claim or lease is held
 	Refuse    bool   `json:"refuse,omitempty"`    // A25: its Prepare is refused
 	LeaseOpen bool   `json:"leaseOpen,omitempty"` // A29 d: a failed lease-get, the lease kept or released
+	Loose     bool   `json:"loose,omitempty"`     // A37: its container existed at a switch to fencing none
+	CompLoose bool   `json:"compLoose,omitempty"` // so did the companion of its lease
 }
 
 // PDevJSON is the content of a persistent device (A25).
@@ -114,6 +123,13 @@ type DriverJSON struct {
 	KillAtAt  int64  `json:"killAtAt,omitempty"`
 	KillMay   bool   `json:"killAtMay,omitempty"` // it may have fired in the window (FP4)
 	Slack     int    `json:"slack,omitempty"`     // restarts it may have more (FP6)
+	// node-reboot (A42-A44): in its window or the window its settle
+	// ended, the reboots, the boot id learnt and the one that must be
+	// gone
+	Rebooted   bool   `json:"rebooted,omitempty"`
+	Reboots    int    `json:"reboots,omitempty"`
+	Boot       string `json:"boot,omitempty"`
+	BootBefore string `json:"bootBefore,omitempty"`
 }
 
 // DoneJSON is what a non-settle step must return.
@@ -122,25 +138,41 @@ type DoneJSON struct {
 	Status string  `json:"status"`          // "zero", "nonzero" or "either"
 	Text   *string `json:"text,omitempty"`  // read: the string; nil: anything
 	Lease  bool    `json:"lease,omitempty"` // lease-get: a lease ID
+	// fencing-switch: the mode switched to (A37: done {"fencing": MODE})
+	Fencing string `json:"fencing,omitempty"`
+	// read: zeros ("") are right too (A43: a dax device after a node
+	// reboot, until the next write)
+	OrZero bool `json:"orZero,omitempty"`
+	// node-reboot: the boot id that the new one must differ from (A44:
+	// done {"boot": ID})
+	BootNot string `json:"bootNot,omitempty"`
 }
 
+// tokenJSON is a token in an expectation: "?" unknown, the quoted text,
+// and "|zero" after it when zeros are right too.
 func tokenJSON(t Token) string {
 	if !t.Known {
 		return "?"
 	}
 	b, _ := json.Marshal(t.Text)
+	if t.OrZero {
+		return string(b) + orZeroSuffix
+	}
 	return string(b)
 }
+
+const orZeroSuffix = "|zero"
 
 func parseTokenJSON(s string) (Token, error) {
 	if s == "?" || s == "" {
 		return tokUnknown, nil
 	}
+	q, orZero := strings.CutSuffix(s, orZeroSuffix)
 	var t string
-	if err := json.Unmarshal([]byte(s), &t); err != nil {
+	if err := json.Unmarshal([]byte(q), &t); err != nil {
 		return tokUnknown, fmt.Errorf("invalid data %q", s)
 	}
-	return Token{Known: true, Text: t}, nil
+	return Token{Known: true, Text: t, OrZero: orZero && t != ""}, nil
 }
 
 // expect returns the prediction of the step that led to s.
@@ -153,6 +185,9 @@ func (s *State) expect(step int, action string) *Expectation {
 		LocalBlocks: s.cfg.LocalBlocks,
 		NodeHB:      s.cfg.NodeHB,
 		StallStrict: s.cfg.StallStrict,
+	}
+	if s.Fence != FenceAM {
+		e.Fencing = s.Fence.String()
 	}
 	if w := s.cfg.StallWindow; w > 0 && w != defaultStallWindow {
 		e.StallWindow = int(w / time.Second)
@@ -176,6 +211,8 @@ func (s *State) expect(step int, action string) *Expectation {
 			Hold:      ss.Hold,
 			Refuse:    ss.Refuse,
 			LeaseOpen: ss.LeaseOpen,
+			Loose:     ss.Loose,
+			CompLoose: ss.CompLoose,
 		}
 		if ss.Node != VMAny {
 			j.Node = ss.Node.String()
@@ -220,18 +257,22 @@ func (s *State) expect(step int, action string) *Expectation {
 	for v := VM(0); v < nVMs; v++ {
 		d := &s.Drv[v]
 		e.Drivers = append(e.Drivers, DriverJSON{
-			VM:        v.String(),
-			PodGen:    int(d.PodGen),
-			Restarts:  int(d.Restarts),
-			Inc:       int(d.Inc),
-			Pod:       d.Pod,
-			PodBefore: d.PodBefore,
-			F:         s.bitNodes(d.F),
-			FMaybe:    s.bitNodes(d.FMaybe),
-			KillAt:    killAtName(d.KillAt),
-			KillAtAt:  d.KillAtAt,
-			KillMay:   d.KillMay,
-			Slack:     int(d.Slack),
+			VM:         v.String(),
+			PodGen:     int(d.PodGen),
+			Restarts:   int(d.Restarts),
+			Inc:        int(d.Inc),
+			Pod:        d.Pod,
+			PodBefore:  d.PodBefore,
+			F:          s.bitNodes(d.F),
+			FMaybe:     s.bitNodes(d.FMaybe),
+			KillAt:     killAtName(d.KillAt),
+			KillAtAt:   d.KillAtAt,
+			KillMay:    d.KillMay,
+			Slack:      int(d.Slack),
+			Rebooted:   d.Rebooted,
+			Reboots:    int(d.Reboots),
+			Boot:       d.Boot,
+			BootBefore: d.BootBefore,
 		})
 	}
 	for d := DevID(0); d < nDevs; d++ {
@@ -259,6 +300,9 @@ func (s *State) expect(step int, action string) *Expectation {
 			keys = append(keys, k.String())
 		}
 		e.Stacks[stackName(si)] = keys
+		if s.Reorder&(1<<uint(si)) != 0 {
+			e.Reorder = append(e.Reorder, stackName(si))
+		}
 	}
 	for _, a := range s.Alts {
 		e.Alts = append(e.Alts, a.expect(step, action))
@@ -296,7 +340,7 @@ func expectDone(from, to *State, a Act, step int) *Expectation {
 	case VRead:
 		if t := from.token(int(a.Slot)); t.Known {
 			txt := t.Text
-			d.Text = &txt
+			d.Text, d.OrZero = &txt, t.OrZero
 		}
 	case VLeaseGet:
 		d.Lease = true
@@ -327,6 +371,10 @@ func expectDone(from, to *State, a Act, step int) *Expectation {
 		if to.Slots[a.Slot].Lease == LeaseBusy {
 			d.Status = "nonzero"
 		}
+	case VFencingSwitch:
+		d.Fencing = to.Fence.String()
+	case VNodeReboot:
+		d.BootNot = to.Drv[a.VM].BootBefore
 	}
 	e.Done = d
 	return e
@@ -365,6 +413,13 @@ func (e *Expectation) state() (*State, error) {
 	}
 	s := newState(cfg)
 	s.Steps = int32(e.Step)
+	switch e.Fencing {
+	case "", FenceAM.String():
+	case FenceNone.String():
+		s.Fence = FenceNone
+	default:
+		return nil, fmt.Errorf("expectation: invalid fencing %q", e.Fencing)
+	}
 	for _, j := range e.Slots {
 		i := cfg.slotIndex(j.Slot)
 		if i < 0 {
@@ -409,6 +464,7 @@ func (e *Expectation) state() (*State, error) {
 			ss.LeaseMode = m
 		}
 		ss.Hold, ss.Refuse, ss.LeaseOpen = j.Hold, j.Refuse, j.LeaseOpen
+		ss.Loose, ss.CompLoose = j.Loose, j.CompLoose
 		s.LeaseIDs[i] = j.LeaseID
 		s.setUnblockAt(i, j.UnblockAt)
 		ss.Slack = uint8(j.Slack)
@@ -463,6 +519,7 @@ func (e *Expectation) state() (*State, error) {
 		}
 		d.KillAtAt, d.KillMay = dj.KillAtAt, dj.KillMay
 		d.Slack = uint8(dj.Slack)
+		d.Rebooted, d.Reboots, d.Boot, d.BootBefore = dj.Rebooted, uint8(dj.Reboots), dj.Boot, dj.BootBefore
 	}
 	for _, pj := range e.PDevs {
 		x := -1
@@ -508,6 +565,13 @@ func (e *Expectation) state() (*State, error) {
 				return nil, fmt.Errorf("expectation: stack %s: invalid region %q", name, kn)
 			}
 			s.Stacks[si].push(k)
+		}
+	}
+	for _, name := range e.Reorder {
+		for si := 0; si < nStacks; si++ {
+			if stackName(si) == name {
+				s.Reorder |= 1 << uint(si)
+			}
 		}
 	}
 	for p := Pool(0); p < nPools; p++ {

@@ -30,6 +30,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type sim struct {
@@ -65,6 +66,45 @@ type sim struct {
 	// settleExtra of the window being settled
 	creating           [nVMs]bool
 	extra, settleExtra [nVMs]uint8
+	// next: the truth after the action being done (ref.do: localFree)
+	next *State
+	// now and since: the oracle's clock at the settle being resolved
+	// and at its start (expRun sets them; with ref the reference's
+	// clock); zero: not known. An unblocking pod's retry and a stalled
+	// contender's promotion are a coin at every settle, but never later
+	// than kubelet's back-off and the scheduler's window allow (A9,
+	// A19): the oracle fails them after that.
+	now, since time.Time
+}
+
+// kubeletRetryCap is the cap of kubelet's back-off of a failed Prepare
+// (A9): the retry of a pod whose decoder hole cleared comes within this
+// long, so it runs within MBT_UNBLOCK_TIMEOUT (330 s) of the settle that
+// saw the hole clear.
+const kubeletRetryCap = 300 * time.Second
+
+// clock is the oracle's clock of the settle being resolved (zero: not
+// known).
+func (s *sim) clock() time.Time {
+	if s.ref != nil {
+		return s.refWall()
+	}
+	return s.now
+}
+
+// overdue: slot i of the truth n has waited for a retry or a promotion
+// since the settle that first saw it so (at, recorded in its UnblockAt
+// as the oracle records it in the model's state) for bound or longer by
+// the oracle's clock: it comes now. Never without a clock.
+func (s *sim) overdue(n *State, i int, at time.Time, bound time.Duration) bool {
+	now := s.clock()
+	if now.IsZero() {
+		return false
+	}
+	if n.unblockAt(i) == 0 {
+		n.setUnblockAt(i, at.Unix())
+	}
+	return now.Sub(time.Unix(n.unblockAt(i), 0)) >= bound
 }
 
 func newSim(cfg *Config, seed int64) *sim {
@@ -98,10 +138,17 @@ func (s *sim) do(step int, a Act) *DoneObs {
 	}
 	from = s.fireLate(from)
 	s.driverRace(a)
-	if s.ref != nil {
-		s.ref.do(a, refHint{freesClaim: freesClaim(from, a), releasesLease: releasesPLease(from, from.apply(a), int(a.Slot))})
-	}
 	to := from.apply(a)
+	if s.ref != nil {
+		// the reference's scheduler asks the truth after the action for
+		// the free blocks of a local memdev (localFree): the requeues
+		// that the action causes come after what it releases (the
+		// block of a lease-put, the leases of a node-reboot: fuzz, full
+		// qemu seed 270849, a dnuma pod never allocated)
+		s.next = to
+		s.ref.do(a, refHint{freesClaim: freesClaim(from, a) || freesBlock(from, a) || rebootFreesBlock(from, a), releasesLease: releasesPLease(from, to, int(a.Slot))})
+		s.next = nil
+	}
 	d := &DoneObs{}
 	switch a.Verb {
 	case VWrite:
@@ -142,6 +189,25 @@ func (s *sim) do(step int, a Act) *DoneObs {
 			to = to.clone()
 			to.setLeaseID(int(a.Slot), id)
 		}
+	case VFencingSwitch:
+		mode := to.Fence.String()
+		d.Fencing = &mode
+	case VNodeReboot:
+		// the content of a dax device whose region the boot made again:
+		// kept or zeros (A43), the simulated SUT's choice
+		to = to.clone()
+		for dev := range to.Data {
+			if t := &to.Data[dev]; t.OrZero {
+				if s.rng.Intn(2) == 0 {
+					t.OrZero = false
+				} else {
+					*t = tokZero
+				}
+			}
+		}
+		boot := simBootID(a.VM, to.Drv[a.VM].Reboots)
+		d.Boot = &boot
+		to = adoptDone(to, a, d)
 	case VPWrite, VPRead, VLeasePut:
 		s.doPmem(from, to, a, d)
 		to = adoptDone(to, a, d)
@@ -175,6 +241,7 @@ func (s *sim) resolve(st *State) *State {
 		}
 	}
 	n := st.clone()
+	s.reorderStacks(n)
 	// The scheduler's hold of a device whose claim was deleted before
 	// its pod was bound ends within 5 s of the delete (A19, bug-08):
 	// here it lasts through the window after the settle that ended the
@@ -195,7 +262,9 @@ func (s *sim) resolve(st *State) *State {
 	}
 	for i := range n.Slots {
 		ss := &n.Slots[i]
-		if ss.Phase == Stalled && s.rng.Intn(2) == 0 {
+		// (the coin first: the random sequences stay those of a run
+		// without a clock until something is overdue)
+		if ss.Phase == Stalled && (s.rng.Intn(2) == 0 || s.overdue(n, i, s.since, n.cfg.stallWindow())) {
 			sl := n.slot(i)
 			n.setUnblockAt(i, 0)
 			if n.Ctrl[sl.Pool].Up {
@@ -207,14 +276,8 @@ func (s *sim) resolve(st *State) *State {
 					ss.Node = hosts[s.rng.Intn(len(hosts))]
 				}
 				ss.Phase = Running
-				if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-					switch {
-					case n.Stacks[si].hasHole() && sl.Kind != KPBad:
-						ss.Phase = Blocked
-					case ss.Refuse:
-					default:
-						n.Stacks[si].push(key)
-					}
+				if prepareRegions(n, i, ss.Refuse) {
+					ss.Phase = Blocked
 				}
 				if ss.Refuse && ss.Phase == Running {
 					// its Prepare is refused (A25): no region
@@ -225,12 +288,10 @@ func (s *sim) resolve(st *State) *State {
 			}
 			continue
 		}
-		if ss.Phase == Unblocking && s.rng.Intn(2) == 0 {
+		if ss.Phase == Unblocking && (s.rng.Intn(2) == 0 || s.overdue(n, i, s.now, kubeletRetryCap)) {
 			ss.Phase = Running
 			n.setUnblockAt(i, 0)
-			if si, key, ok := n.userRegion(int16(i)); ok && !n.Stacks[si].contains(key) {
-				n.Stacks[si].push(key)
-			}
+			prepareRegions(n, i, false)
 		}
 	}
 	for i := range n.Slots {
@@ -308,7 +369,8 @@ func (s *sim) driverRace(a Act) {
 			s.extra[a.VM]++
 		}
 		s.creating[a.VM] = false
-	case VContainerdRestart:
+	case VContainerdRestart, VNodeReboot:
+		// (the verbs wait for the driver)
 		s.creating[a.VM] = false
 	case VDriverRestart:
 		// (a new pod)
@@ -365,14 +427,151 @@ func (s *sim) fireLate(st *State) *State {
 	return st
 }
 
+// reorderStacks puts the regions of the stacks that a node-reboot rebuilt
+// in the order in which the simulated kubelet prepared their claims again
+// (at random: A43); the truth knows it.
+func (s *sim) reorderStacks(n *State) {
+	for si := 0; si < nStacks; si++ {
+		if n.Reorder&(1<<uint(si)) == 0 {
+			continue
+		}
+		st := &n.Stacks[si]
+		s.rng.Shuffle(int(st.N), func(a, b int) { st.E[a], st.E[b] = st.E[b], st.E[a] })
+	}
+	n.Reorder = 0
+}
+
+// rebootFreesBlock: the action is a node-reboot that releases a local
+// lease (its companion's claim is deallocated: a requeueing event).
+func rebootFreesBlock(st *State, a Act) bool {
+	if a.Verb != VNodeReboot {
+		return false
+	}
+	for i := range st.Slots {
+		if sl := st.slot(i); sl.Kind == KLease && sl.VM == a.VM && st.Slots[i].Lease != LeaseNone {
+			return true
+		}
+	}
+	return false
+}
+
+// The names of the simulated devices: the regions of a boot of a VM
+// (pool device d, or -1 for the local memdev), their dax devices and
+// major:minor, the boot ids. A boot gives every region a new number, as
+// the kernel would (12-findings-reboot.txt 3.5).
+func simBootID(v VM, reboots uint8) string { return fmt.Sprintf("boot-%s-%d", v, reboots) }
+
+func simRegionNo(st *State, v VM, d int) int {
+	if v < 0 || v >= nVMs {
+		v = 0
+	}
+	return 10 + d + 20*int(st.Drv[v].Reboots)
+}
+
+func simDaxName(r, k int) string { return fmt.Sprintf("dax%d.%d", r, k) }
+func simDaxDev(r, k int) string  { return fmt.Sprintf("252:%d", r*256+k) }
+func simPmemDev(st *State, v VM, d DevID) string {
+	return fmt.Sprintf("259:%d", pmemIndex(d)+2*int(st.Drv[v].Reboots))
+}
+
+// simDaxOf is the dax device of the claim of slot i on its node: the
+// region's of a pool device, the slot's slice of the local memdev.
+func simDaxOf(st *State, i int) (name, dev string) {
+	sl, ss := st.slot(i), &st.Slots[i]
+	if sl.Kind == KLDax {
+		r := simRegionNo(st, ss.Node, -1)
+		return simDaxName(r, 1+i), simDaxDev(r, 1+i)
+	}
+	r := simRegionNo(st, ss.Node, int(sl.Dev))
+	return simDaxName(r, 0), simDaxDev(r, 0)
+}
+
+// simDevNodes are the /dev/dax* and /dev/pmem* of the container of slot
+// i (A44).
+func simDevNodes(st *State, i int) []ObsDevNode {
+	sl, ss := st.slot(i), &st.Slots[i]
+	nodes := []ObsDevNode{}
+	switch {
+	case sl.Kind.dax():
+		name, dev := simDaxOf(st, i)
+		nodes = append(nodes, simNode("/dev/"+name, "c", dev))
+	case sl.Kind.blockKind():
+		nodes = append(nodes, simNode(simBlockdev(sl.Dev), "b", simPmemDev(st, ss.Node, sl.Dev)))
+	}
+	return nodes
+}
+
+// simNode is a device node of a container, simCXLDev a CXL device of a VM
+// (A44, the executor's forms).
+func simNode(path, typ, dev string) ObsDevNode {
+	var major, minor int
+	fmt.Sscanf(dev, "%d:%d", &major, &minor)
+	return ObsDevNode{Path: path, Type: typ, Major: &major, Minor: &minor, Dev: &dev}
+}
+
+func simCXLDev(name, kind, dev string, serial uint64) ObsCXLDev {
+	n := simNode("/dev/"+name, "", dev)
+	return ObsCXLDev{Name: name, Path: n.Path, Kind: kind, Major: n.Major, Minor: n.Minor, Dev: n.Dev, Serial: formatSerial(serial), Serials: []string{formatSerial(serial)}}
+}
+
+// prepareRegions makes the regions of the claims of slot i that are not
+// there yet (the Prepare of a promoted or unblocked pod; both claims of a
+// dnuma pod): blocked if one needs a new region through a hole (A9); a
+// refused Prepare makes none (A25).
+func prepareRegions(n *State, i int, refuse bool) (blocked bool) {
+	for _, u := range n.claimUsers(i) {
+		si, key, ok := n.userRegion(u)
+		if !ok || n.Stacks[si].contains(key) {
+			continue
+		}
+		switch {
+		case n.Stacks[si].hasHole() && n.slot(i).Kind != KPBad:
+			blocked = true
+		case refuse:
+		default:
+			n.Stacks[si].push(key)
+		}
+	}
+	return blocked
+}
+
+// localFree: the local memdev of the VM of slot i has a block for the
+// local claim of its dnuma pod in the truth: the claims and leases that
+// hold one and are not going away, but the slot's own (refPool.LocalFree).
+func (s *sim) localFree(i int) bool {
+	st := s.truth
+	if s.next != nil {
+		st = s.next
+	}
+	v := st.slot(i).VM
+	held, _ := st.localUse(v)
+	if st.Slots[i].Phase.holding() {
+		held--
+	}
+	return held+1 <= s.cfg.LocalBlocks[v]
+}
+
+// simDualClaims are the claims of a dnuma pod (A39): c0 its local slice,
+// allocated with its pool claim c1.
+func simDualClaims(sl *Slot, gen uint16, pod string, pool ObsClaim) []ObsClaim {
+	local := ObsClaim{Name: pod + "-c0", UID: localClaimUID(sl, gen), Allocated: pool.Allocated}
+	if local.Allocated {
+		local.Devices = []ObsClaimDevice{{Driver: localDriver, Pool: sl.VM.String(), Device: "memdev-c100e2e1"}}
+	}
+	return []ObsClaim{local, pool}
+}
+
 // names of the simulated objects
 func podName(sl *Slot, gen uint16) string {
 	return fmt.Sprintf("mbt-%s-%s-%d-g%d", sl.KindName(), sl.VM, sl.Index, gen)
 }
 func podUID(sl *Slot, gen uint16) string   { return fmt.Sprintf("pod-%s-%d", sl.Label(), gen) }
 func claimUID(sl *Slot, gen uint16) string { return fmt.Sprintf("c-%s-%d", sl.Label(), gen) }
-func companionName(id string) string       { return "cxl-lease-" + strings.ToLower(id) }
-func companionUID(id string) string        { return "comp-" + strings.ToLower(id) }
+
+// localClaimUID is the uid of the local claim of a dnuma pod.
+func localClaimUID(sl *Slot, gen uint16) string { return fmt.Sprintf("c-%s-%d-local", sl.Label(), gen) }
+func companionName(id string) string            { return "cxl-lease-" + strings.ToLower(id) }
+func companionUID(id string) string             { return "comp-" + strings.ToLower(id) }
 
 // observe returns the stable observation of the truth.
 func (s *sim) observe(step, poll int) *Observation {
@@ -432,8 +631,16 @@ func (s *sim) observe(step, poll int) *Observation {
 				} else {
 					c.Attached = &t
 				}
+				// (the observer's "attachFailed" of an allocated pool
+				// claim, A44 (4): the truth's attaches do not fail)
+				c.AttachFailed = &f
 			}
 			p.Claim = c
+			if sl.Kind.dual() {
+				c.Name = p.Name + "-c1"
+				p.Claims = simDualClaims(sl, ss.Gen, p.Name, *c)
+				p.Claim = &p.Claims[0]
+			}
 		}
 		o.Pods = append(o.Pods, p)
 		if sl.Kind.leaseKind() && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) {
@@ -524,12 +731,16 @@ func (s *sim) env(sl *Slot, ss *SlotState) map[string]string {
 	if !sl.Kind.claimed() {
 		delete(env, "CXL_CLAIM_"+strings.ReplaceAll(claimUID(sl, ss.Gen), "-", "_")+"_0")
 	}
+	if sl.Kind.dual() {
+		env["CXL_CLAIM_"+strings.ReplaceAll(localClaimUID(sl, ss.Gen), "-", "_")+"_0"] = "1"
+	}
 	for k, v := range envWant(s.cfg, sl) {
 		switch {
 		case v == "/dev/pmem*":
 			v = simBlockdev(sl.Dev)
 		case strings.HasSuffix(v, "*"):
-			v = strings.TrimSuffix(v, "*") + "3.1"
+			name, _ := simDaxOf(s.truth, s.cfg.slotIndex(sl.Name))
+			v = "/dev/" + name
 		}
 		env[k] = v
 	}
@@ -545,7 +756,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	}
 	cfg := s.cfg
 	ov := &ObsVM{
-		BootID:  "boot-" + v.String(),
+		BootID:  simBootID(v, st.Drv[v].Reboots),
 		Memdevs: []ObsMemdev{{Name: "mem1", Serial: formatSerial(localSerial), Size: uint64(cfg.LocalBlocks[v]) * blockSize}},
 		Regions: []ObsRegion{},
 		Nodes:   map[string]ObsNode{"0": {MemTotal: 4 << 30}, "1": {MemTotal: 4 << 30}},
@@ -565,30 +776,78 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	localClaims := map[string]json.RawMessage{}
 	kmem, ddax := "kmem", "device_dax"
 	var localDax []ObsDax
-	slice := func(uid string, numa bool) {
+	cxlDevs := []ObsCXLDev{}
+	localNo := simRegionNo(st, v, -1)
+	// (the slice of slot k-1, or of the companion of the lease of slot
+	// k-1-len(Slots))
+	slice := func(uid string, numa bool, k int) {
 		localClaims[uid] = json.RawMessage(`[{"request":"c0","size":134217728}]`)
 		if numa {
-			localDax = append(localDax, ObsDax{Name: fmt.Sprintf("dax9.%d", len(localDax)+1), Size: blockSize, Driver: &kmem, Online: blockSize})
+			localDax = append(localDax, ObsDax{Name: simDaxName(localNo, k), Size: blockSize, Driver: &kmem, Online: blockSize})
 			mem[cfg.bridgeNode(HB0)] += blockSize
 		} else {
-			localDax = append(localDax, ObsDax{Name: fmt.Sprintf("dax9.%d", len(localDax)+1), Size: blockSize, Driver: &ddax})
+			localDax = append(localDax, ObsDax{Name: simDaxName(localNo, k), Size: blockSize, Driver: &ddax})
 		}
+		cxlDevs = append(cxlDevs, simCXLDev(simDaxName(localNo, k), "dax", simDaxDev(localNo, k), localSerial))
 	}
 	containers := []ObsContainer{}
+	// the cpuset.mems.effective of the containers as the driver makes
+	// it (D/lend.go wantMems, A38): the CXL nodes with memory first
+	var memNodes nodeSet
+	for i := range st.Slots {
+		ss, sl := &st.Slots[i], st.slot(i)
+		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
+			memNodes |= nodeBit(cfg.bridgeNode(HB0))
+		}
+		if ss.Phase != Running || ss.Node != v {
+			continue
+		}
+		switch sl.Kind {
+		case KXNuma:
+			memNodes |= nodeBit(cfg.bridgeNode(poolBridge[sl.Pool]))
+		case KLNuma, KLSteer:
+			memNodes |= nodeBit(cfg.bridgeNode(HB0))
+		case KDNuma:
+			memNodes |= nodeBit(cfg.bridgeNode(HB0)) | nodeBit(cfg.bridgeNode(HB1))
+		}
+	}
+	fenced := nodesOf(st.bitNodes(st.Drv[v].F | st.Drv[v].FMaybe))
+	if st.Fence == FenceAM {
+		// a node is fenced before its memory goes online (D/fence.go)
+		fenced |= memNodes
+	}
+	dram := nodeBit(0) | nodeBit(1)
+	effective := func(claimed nodeSet, loose, steered bool) string {
+		var n nodeSet
+		switch {
+		case steered:
+			// the manager's steps and the nearest DRAM node
+			n = nodeBit(0) | claimed
+		case loose:
+			n = dram | claimed
+		case st.Fence == FenceNone:
+			n = dram | memNodes
+		default:
+			n = dram | claimed | (memNodes &^ fenced)
+		}
+		return n.String()
+	}
 	for i := range st.Slots {
 		ss := &st.Slots[i]
 		sl := st.slot(i)
 		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld {
 			id := st.LeaseIDs[i]
 			prepared = append(prepared, companionUID(id))
-			slice(companionUID(id), ss.LeaseMode == ModeNuma)
-			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: "0-1", MemsEffective: "0-1", MemoryHigh: "max"})
+			slice(companionUID(id), ss.LeaseMode == ModeNuma, 1+len(st.Slots)+i)
+			ms := effective(0, ss.CompLoose, false)
+			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: ms, MemsEffective: ms, MemoryHigh: "max"})
 		}
 		if sl.Kind == KPlse && sl.VM == v && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) && ss.LeaseMode.persistent() {
 			// the companion's pool claim: prepared, no CDI device
 			id := st.LeaseIDs[i]
 			pool = append(pool, "pool-"+companionUID(id))
-			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: "0-1", MemsEffective: "0-1", MemoryHigh: "max"})
+			ms := effective(0, ss.CompLoose, false)
+			containers = append(containers, ObsContainer{Ns: "mbt", Pod: companionName(id), Name: "pause", Mems: ms, MemsEffective: ms, MemoryHigh: "max"})
 		}
 		if ss.Phase != Running || ss.Node != v {
 			continue
@@ -599,6 +858,18 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		case sl.Kind.persistent():
 			pool = append(pool, uid)
 			poolCDI = append(poolCDI, "claim-"+uid+"-0")
+		case sl.Kind.dual():
+			// c-pooled0 in numa and a numa slice (A39)
+			pool = append(pool, uid)
+			poolCDI = append(poolCDI, "claim-"+uid+"-0")
+			poolMode[sl.Dev] = 1
+			mem[sl.numaNode(cfg)] += devices[sl.Dev].Size
+			mems[sl.numaNode(cfg)] = true
+			luid := localClaimUID(sl, ss.Gen)
+			prepared = append(prepared, luid)
+			claimsCDI = append(claimsCDI, "claim-"+luid+"-0")
+			slice(luid, true, 1+i)
+			mems[cfg.bridgeNode(HB0)] = true
 		case sl.Kind.pooled():
 			pool = append(pool, uid)
 			poolCDI = append(poolCDI, "claim-"+uid+"-0")
@@ -612,7 +883,7 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		case sl.Kind.local():
 			prepared = append(prepared, uid)
 			claimsCDI = append(claimsCDI, "claim-"+uid+"-0")
-			slice(uid, sl.Kind != KLDax)
+			slice(uid, sl.Kind != KLDax, 1+i)
 			if sl.Kind.numa() {
 				mems[sl.numaNode(cfg)] = true
 			}
@@ -628,8 +899,12 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		if sl.Kind == KLSteer && ss.Steer == SteerOn {
 			high = "134479872"
 		}
-		ms := nodeListString(mems)
-		containers = append(containers, ObsContainer{Ns: "mbt", Pod: podName(sl, ss.Gen), Name: "main", ID: fmt.Sprintf("ctr-%s-%d-%d", sl.Label(), ss.Gen, ss.Restarts), Mems: ms, MemsEffective: ms, MemoryHigh: high})
+		delete(mems, 0)
+		delete(mems, 1)
+		steered := sl.Kind == KLSteer && (ss.Steer == SteerOn || (st.Fence == FenceNone && ss.Steer == SteerOff))
+		ms := effective(nodesOfMap(mems), ss.Loose, steered)
+		containers = append(containers, ObsContainer{Ns: "mbt", Pod: podName(sl, ss.Gen), Name: "main", ID: fmt.Sprintf("ctr-%s-%d-%d", sl.Label(), ss.Gen, ss.Restarts), Mems: ms, MemsEffective: ms, MemoryHigh: high,
+			DevNodes: rawJSON(simDevNodes(st, i)), DevicesFrom: "proc"})
 	}
 	for d := DevID(0); d < nDevs; d++ {
 		if poolMode[d] == 0 {
@@ -637,41 +912,45 @@ func (s *sim) observeVM(v VM) *ObsVM {
 		}
 		dev := devices[d]
 		node := cfg.bridgeNode(poolBridge[dev.Pool])
-		r := ObsRegion{Name: fmt.Sprintf("region%d", 10+int(d)), Serials: []string{formatSerial(dev.Serial)}, Mode: "ram", Size: dev.Size, Node: &node}
+		no := simRegionNo(st, v, int(d))
+		r := ObsRegion{Name: fmt.Sprintf("region%d", no), Serials: []string{formatSerial(dev.Serial)}, Mode: "ram", Size: dev.Size, Node: &node}
 		if poolMode[d] == 1 {
-			r.Dax = []ObsDax{{Name: fmt.Sprintf("dax%d.0", 10+int(d)), Size: dev.Size, Driver: &kmem, Online: dev.Size}}
+			r.Dax = []ObsDax{{Name: simDaxName(no, 0), Size: dev.Size, Driver: &kmem, Online: dev.Size}}
 		} else {
-			r.Dax = []ObsDax{{Name: fmt.Sprintf("dax%d.0", 10+int(d)), Size: dev.Size, Driver: &ddax}}
+			r.Dax = []ObsDax{{Name: simDaxName(no, 0), Size: dev.Size, Driver: &ddax}}
 		}
+		cxlDevs = append(cxlDevs, simCXLDev(simDaxName(no, 0), "dax", simDaxDev(no, 0), dev.Serial))
 		ov.Regions = append(ov.Regions, r)
 	}
 	ld := &ObsLocalDevices{BootID: ov.BootID, Devices: []ObsLocalDevice{}}
 	if len(localDax) > 0 {
 		node := cfg.bridgeNode(HB0)
-		dax := append([]ObsDax{{Name: "dax9.0", Size: 0, Driver: &ddax}}, localDax...)
-		ov.Regions = append(ov.Regions, ObsRegion{Name: "region9", Serials: []string{formatSerial(localSerial)}, Mode: "ram",
+		dax := append([]ObsDax{{Name: simDaxName(localNo, 0), Size: 0, Driver: &ddax}}, localDax...)
+		region := fmt.Sprintf("region%d", localNo)
+		ov.Regions = append(ov.Regions, ObsRegion{Name: region, Serials: []string{formatSerial(localSerial)}, Mode: "ram",
 			Size: uint64(cfg.LocalBlocks[v]) * blockSize, Node: &node, Dax: dax})
 		ld.Devices = append(ld.Devices, ObsLocalDevice{Serial: json.RawMessage(strconv.FormatUint(localSerial, 10)),
-			SerialHex: "c100e2e1", Region: "region9", Claims: localClaims})
+			SerialHex: "c100e2e1", Region: region, Claims: localClaims})
 	}
 	for _, n := range cfg.cxlNodes() {
 		ov.Nodes[strconv.Itoa(n)] = ObsNode{MemTotal: mem[n]}
 	}
 	ov.State = &ObsDriverState{Prepared: prepared, Info: append([]string(nil), prepared...), Pool: pool, LocalDevices: ld, Leases: s.leaseStore(v)}
 	ctr, yes := fmt.Sprintf("drv-%s-%d", v, st.Drv[v].Inc), true
-	ov.DriverLog = &ObsDriverLog{Container: &ctr, LendsRestored: &yes, Sockets: &yes}
+	mode := st.Fence.String()
+	ov.DriverLog = &ObsDriverLog{Container: &ctr, LendsRestored: &yes, Sockets: &yes, Fencing: &mode, NRISynced: &yes}
 	ov.Missing = json.RawMessage("[]")
 	for b := Bridge(0); b < nBridges; b++ {
-		st := &st.Stacks[stackIndex(v, b)]
+		stk := &st.Stacks[stackIndex(v, b)]
 		hb := "hb" + string(rune('0'+b))
-		port := ObsPort{Port: fmt.Sprintf("port%d", 2+int(b)), Kind: "hostbridge", HB: &hb, Committed: int(st.N), Decoders: []ObsDecoder{}}
-		for x, k := range st.keys() {
+		port := ObsPort{Port: fmt.Sprintf("port%d", 2+int(b)), Kind: "hostbridge", HB: &hb, Committed: int(stk.N), Decoders: []ObsDecoder{}}
+		for x, k := range stk.keys() {
 			d := ObsDecoder{Name: fmt.Sprintf("decoder%d.%d", 2+int(b), x)}
 			switch {
 			case k == rkLocal:
-				d.Region = "region9"
+				d.Region = fmt.Sprintf("region%d", localNo)
 			case k != rkHole:
-				d.Region = fmt.Sprintf("region%d", 10+int(k-1))
+				d.Region = fmt.Sprintf("region%d", simRegionNo(st, v, int(k-1)))
 			}
 			port.Decoders = append(port.Decoders, d)
 		}
@@ -682,6 +961,12 @@ func (s *sim) observeVM(v VM) *ObsVM {
 	ov.CDI["/etc/cdi/cxl-leases.yaml"] = leasesCDI
 	ov.Containers = containers
 	s.observePmemVM(st, v, ov)
+	for d := cPmem0; d < nDevs; d++ {
+		if pd := &st.PDev[pmemIndex(d)]; pd.NS == TriYes && s.pmemVM(st, v).devs[d] {
+			cxlDevs = append(cxlDevs, simCXLDev(strings.TrimPrefix(simBlockdev(d), "/dev/"), "pmem", simPmemDev(st, v, d), devices[d].Serial))
+		}
+	}
+	ov.CXLDevs = rawJSON(cxlDevs)
 	return ov
 }
 
@@ -855,10 +1140,12 @@ func (s *sim) serve(in io.Reader, out io.Writer) error {
 		} else {
 			d := s.do(n, a)
 			js, _ := json.Marshal(struct {
-				Text   *string `json:"text"`
-				Stderr string  `json:"stderr"`
-				Lease  *string `json:"lease,omitempty"`
-			}{d.Text, d.Stderr, d.Lease})
+				Text    *string `json:"text"`
+				Stderr  string  `json:"stderr"`
+				Lease   *string `json:"lease,omitempty"`
+				Fencing *string `json:"fencing,omitempty"`
+				Boot    *string `json:"boot,omitempty"`
+			}{d.Text, d.Stderr, d.Lease, d.Fencing, d.Boot})
 			fmt.Fprintf(out, "done %d %d %s\n", n, d.Status, js)
 		}
 		ans, err := readLine()

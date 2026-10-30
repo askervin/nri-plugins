@@ -376,10 +376,18 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	fence := newNodeFence(driverConfig.fencing())
 	driverConfig.logDefaults()
 
+	// The prepared claims, the slices of local memdevs and the leases of
+	// another boot are not prepared: nothing of what their Prepares made
+	// survives a reboot (plan-13 bug-15).
+	bootID := readBootID(sysfsRoot)
+	if bootID != "" {
+		klog.Infof("boot id %s", bootID)
+	}
+
 	// The pool driver's prepared claims are loaded before the first
 	// scan, so that its devices are never published as cxl.nri.io
 	// devices (D29). Its kubelet plugin is started after cxl.nri.io.
-	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot, fence)
+	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot, fence, bootID)
 	if err != nil {
 		return nil, err
 	}
@@ -392,10 +400,12 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// device on the node is never a local memdev, also while the pool
 	// controller has deleted its ResourceSlices.
 	poolSlices := newPoolSlices(config.Client, config.Flags.NodeName, cxlFlags.PoolDriverName, filepath.Join(config.KubeletPluginDir, poolSerialsFileName))
-	state, err := newDriverState(ctx, config, driverConfig, sysfsRoot, preparedClaimsFilePath, pool, poolSlices, fence)
+	state, err := newDriverState(ctx, config, driverConfig, sysfsRoot, preparedClaimsFilePath, pool, poolSlices, fence, bootID)
 	if err != nil {
 		return nil, err
 	}
+	// Not the nodes of the claims of another boot: they have no memory
+	// online, their Prepares again fence the nodes before they online it.
 	fence.seed(preparedNodes(state, pool))
 
 	driver := &driver{
@@ -418,12 +428,59 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 			Image:       cxlFlags.LeaseCompanionImage,
 			WaitDefault: cxlFlags.LeaseWait,
 			PoolDriver:  pool.driverName(),
+			BootID:      bootID,
 		})
 		if err != nil {
 			return nil, err
 		}
 		driver.broker = b
 		driver.state.leases = b
+	}
+
+	// The NRI plugin starts before the kubelet plugins: kubelet creates the
+	// containers of a pod after its claims are prepared, and a container
+	// created before the NRI plugin is in the runtime is only found by
+	// Synchronize: its CreateContainer is never seen (plan-13 bug-19). Its
+	// Synchronize may use the prepared claims of both drivers and the
+	// lease table, loaded above. A Prepare still waits for the first
+	// Synchronize (waitNRI): the stub starts when the runtime has
+	// configured it, before it synchronizes.
+	nriOpts := NRIOpts{
+		Name:   cxlFlags.NRIName,
+		Idx:    cxlFlags.NRIIdx,
+		Socket: cxlFlags.NRISocket,
+	}
+	var leases leaseNodes // the lease table is loaded: Synchronize may use it
+	if driver.broker != nil {
+		leases = driver.broker
+	}
+	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, driverConfig.containerDefaults(), fence, pool, leases, sysfsRoot, config.KubeletPluginDir)
+	if err != nil {
+		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
+		fence.setNoNRI()
+	} else {
+		driver.nriPlugin = nri
+		if pool != nil {
+			pool.nri = nri
+		}
+		if driver.broker == nil {
+			// no lends to restore
+			nri.LendsRestored()
+		}
+	}
+	// A nil lender (NRI not connected) makes lease requests and companion
+	// claims fail with errLendingUnavailable.
+	var lender nodeLender
+	if driver.nriPlugin != nil {
+		lender = driver.nriPlugin
+	}
+	if driver.broker != nil {
+		pool.lending().set(lender, driver.broker)
+		driver.state.lending.set(lender, driver.broker)
+	} else {
+		// lending disabled: a lend recorded before is not revoked
+		pool.lending().set(nil, nil)
+		driver.state.lending.set(nil, nil)
 	}
 
 	klog.Infof(`Starting DRA driver kubelet plugin
@@ -461,41 +518,8 @@ PluginDataDirectoryPath: %v`,
 	driver.rescanned.Store(time.Now().UnixNano())
 	go driver.poolWatch(ctx)
 
-	// Start NRI plugin for container lifecycle hooks.
-	nriOpts := NRIOpts{
-		Name:   cxlFlags.NRIName,
-		Idx:    cxlFlags.NRIIdx,
-		Socket: cxlFlags.NRISocket,
-	}
-	var leases leaseNodes // the lease table is loaded: Synchronize may use it
 	if driver.broker != nil {
-		leases = driver.broker
-	}
-	nri, err := startNRIPlugin(ctx, &driver.state, nriOpts, driverConfig.containerDefaults(), fence, pool, leases, sysfsRoot, config.KubeletPluginDir)
-	if err != nil {
-		klog.Warningf("Failed to start NRI plugin (continuing without it): %v", err)
-		fence.setNoNRI()
-	} else {
-		driver.nriPlugin = nri
-		if driver.broker == nil {
-			// no lends to restore
-			nri.LendsRestored()
-		}
-	}
-	if driver.broker != nil {
-		// A nil lender (NRI not connected) makes lease requests and
-		// companion claims fail with errLendingUnavailable.
-		var lender nodeLender
-		if driver.nriPlugin != nil {
-			lender = driver.nriPlugin
-		}
-		pool.lending().set(lender, driver.broker)
-		driver.state.lending.set(lender, driver.broker)
 		driver.broker.start(lender)
-	} else {
-		// lending disabled: a lend recorded before is not revoked
-		pool.lending().set(nil, nil)
-		driver.state.lending.set(nil, nil)
 	}
 
 	// Start udev event watcher for NUMA node hotplug detection.
@@ -528,10 +552,10 @@ PluginDataDirectoryPath: %v`,
 	return driver, nil
 }
 
-// loadPoolDriver returns the pool driver with its prepared claims loaded
-// and the fenced nodes fence, or nil if it is disabled (empty
-// --pool-driver-name).
-func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence) (*poolDriver, error) {
+// loadPoolDriver returns the pool driver with its prepared claims loaded,
+// those of another boot than bootID not prepared, and the fenced nodes
+// fence, or nil if it is disabled (empty --pool-driver-name).
+func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence, bootID string) (*poolDriver, error) {
 	if cxlFlags.PoolDriverName == "" {
 		return nil, nil
 	}
@@ -541,7 +565,7 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, 
 	}
 	mem := newMemctl(sysfsRoot)
 	pool, err := newPoolDriver(cxlFlags.PoolDriverName, mem, newSysMounter(mem.SysRoot), filepath.Join(poolDataDir, poolStateFileName),
-		cxlFlags.PoolPrepareTimeout, filepath.Join(config.KubeletPluginDir, leaseFsDirName))
+		cxlFlags.PoolPrepareTimeout, filepath.Join(config.KubeletPluginDir, leaseFsDirName), bootID)
 	if err != nil {
 		return nil, fmt.Errorf("pool driver: %w", err)
 	}
@@ -551,13 +575,13 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, 
 
 // newDriverState returns the node state with the devices of the first scan
 // and the local allocator, which fences the nodes of numa slices with
-// fence.
-func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot, preparedClaimsFilePath string, pool *poolDriver, poolSlices *poolSlices, fence *nodeFence) (*nodeState, error) {
+// fence. The claims prepared in another boot than bootID are not prepared.
+func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot, preparedClaimsFilePath string, pool *poolDriver, poolSlices *poolSlices, fence *nodeFence, bootID string) (*nodeState, error) {
 	// The local allocator's state is reconciled before the first scan,
 	// so that the regions it created are never published as region
 	// devices.
 	scanConfig, poolSerials := scanInput(ctx, driverConfig, pool, poolSlices)
-	local, err := newLocalHelper(ctx, config, driverConfig, sysfsRoot, poolSerials)
+	local, err := newLocalHelper(ctx, config, driverConfig, sysfsRoot, poolSerials, bootID)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +596,7 @@ func newDriverState(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	}
 
 	klog.V(3).Info("Creating new NodeState")
-	state, err := newNodeState(devInfos, config.Flags.CDIRoot, preparedClaimsFilePath, config.Flags.NodeName, driverConfig, local)
+	state, err := newNodeState(devInfos, config.Flags.CDIRoot, preparedClaimsFilePath, config.Flags.NodeName, driverConfig, local, bootID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new NodeState: %v", err)
 	}
@@ -605,23 +629,27 @@ func newMemctl(sysfsRoot string) *memctl.Manager {
 // false).
 //   - poolSerials: the serials of pool devices, which are never shared
 //     local devices
-func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot string, poolSerials map[uint64]bool) (*localAllocator, error) {
+//   - bootID: the boot id of the running kernel, "" if unknown
+func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *DriverConfig, sysfsRoot string, poolSerials map[uint64]bool, bootID string) (*localAllocator, error) {
 	if !driverConfig.manageMemdevs() {
 		return nil, nil
 	}
 	dataDir := config.KubeletPluginDir
-	local, err := newLocalAllocator(newMemctl(sysfsRoot), filepath.Join(dataDir, localStateFileName), readBootID(sysfsRoot))
+	local, err := newLocalAllocator(newMemctl(sysfsRoot), filepath.Join(dataDir, localStateFileName), bootID)
 	if err != nil {
 		return nil, fmt.Errorf("local allocator: %w", err)
 	}
-	// the claims of both files (newNodeState forgets the others)
+	// the claims of both files of this boot (newNodeState forgets the
+	// others)
 	_, claims, _, _, err := loadPreparedClaims(filepath.Join(dataDir, device.PreparedClaimsFileName))
 	if err != nil {
 		return nil, fmt.Errorf("local allocator: %w", err)
 	}
 	prepared := map[string]bool{}
-	for uid := range claims {
-		prepared[uid] = true
+	for uid, info := range claims {
+		if !otherBoot(info.BootID, bootID) {
+			prepared[uid] = true
+		}
 	}
 	detected, err := nricxl.DevicesFromSysfs(sysfsRoot)
 	if err != nil {
@@ -656,12 +684,48 @@ func (d *driver) PrepareResourceClaims(ctx context.Context, claims []*resourceap
 	klog.V(5).Infof("NodePrepareResource is called: request: %+v", claims)
 
 	response := map[types.UID]kubeletplugin.PrepareResult{}
+	if err := waitNRI(ctx, d.nriPlugin); err != nil {
+		klog.Warningf("%s: preparing %d claims: %v", device.DriverName, len(claims), err)
+		for _, claim := range claims {
+			response[claim.UID] = kubeletplugin.PrepareResult{Err: err}
+		}
+		return response, nil
+	}
 
 	for _, claim := range claims {
 		response[claim.UID] = d.prepareResourceClaim(ctx, claim)
 	}
 
 	return response, nil
+}
+
+// nriPrepareWait bounds how long a Prepare waits for the first NRI
+// Synchronize (waitNRI): well within kubelet's 45 s timeout of the call,
+// so that kubelet gets the error and retries (a variable for tests).
+var nriPrepareWait = 30 * time.Second
+
+// waitNRI waits before a Prepare of claims until the NRI plugin has
+// synchronized with the runtime, at most nriPrepareWait. kubelet creates
+// the containers of a pod after its claims are prepared, also after the
+// Prepare of a claim that is prepared already. A container created before
+// the NRI plugin is in the runtime is only found by Synchronize, and its
+// CreateContainer is never seen: a container that its claims steer is
+// never steered, a fenced one runs with the fenced nodes until the first
+// fence pass (plan-13 bug-19). Once Synchronize has returned, the runtime
+// creates no container before the plugin gets its CreateContainer. No
+// wait without an NRI plugin (nil: it failed to start, and the driver runs
+// without it). The lends do not need to be restored: a new container gets
+// the kept lends of its leases at its creation.
+func waitNRI(ctx context.Context, nri *nriPlugin) error {
+	if nri == nil {
+		return nil
+	}
+	wctx, cancel := context.WithTimeout(ctx, nriPrepareWait)
+	defer cancel()
+	if err := nri.WaitSynchronized(wctx); err != nil {
+		return fmt.Errorf("%w: the containers of the claims would be created before the NRI plugin sees them; kubelet retries the Prepare", err)
+	}
+	return nil
 }
 
 func (d *driver) prepareResourceClaim(ctx context.Context, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {

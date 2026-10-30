@@ -271,10 +271,19 @@ func (a *localAllocator) readBlockSize() (uint64, error) {
 func readBootID(sysfsRoot string) string {
 	b, err := os.ReadFile(filepath.Join(sysfsRoot, "/", bootIDFile))
 	if err != nil {
-		klog.Warningf("local: cannot read the boot id: %v", err)
+		klog.Warningf("cannot read the boot id: %v; the claims, slices and leases of an earlier boot are taken as those of this one", err)
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// otherBoot tells whether a record of the boot recorded is of another boot
+// than the running one, bootID. A record without a boot id, written by a
+// driver that did not record it, is taken as one of this boot (a driver
+// upgraded without a reboot), and so is every record when the boot id of
+// the running kernel is unknown.
+func otherBoot(recorded, bootID string) bool {
+	return recorded != "" && bootID != "" && recorded != bootID
 }
 
 // rollbackContext returns a context for cleaning up after a failure that

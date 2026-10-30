@@ -445,6 +445,7 @@ func newLocalTestState(t *testing.T) *localTestState {
 		local:          f.allocator(t, dir),
 		lending:        newCompanionLender(device.DriverName),
 		locks:          &nodeLocks{},
+		bootID:         "boot-1",
 	}
 	e.rescan()
 	return e
@@ -524,6 +525,9 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	res := e.Prepared["u1"]
 	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) {
 		t.Fatalf("prepared %+v", res.Devices)
+	}
+	if boot := e.preparedClaims["u1"].BootID; boot != "boot-1" {
+		t.Fatalf("prepared in boot %q", boot)
 	}
 	e.wantDeviceInfo(t, "u1", PreparedDeviceInfo{
 		RequestName: "mem", DeviceName: localDeviceName, DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA,

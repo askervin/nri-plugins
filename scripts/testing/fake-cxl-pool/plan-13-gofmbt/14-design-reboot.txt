@@ -1,0 +1,69 @@
+plan-13: node reboot in the model
+=================================
+2026-10-29 (orchestrator). Inputs: 12-findings-reboot.txt (the
+research, bugs R1-R5), bug-15 (driver, R1/R2), bug-16 (pool server
+and controller, R3/R5), bug-17 (qemu, R4). Contract: A41-A44.
+
+1. Decisions
+------------
+- Verb "node-reboot VM" for vm0 and vm1 only. vm2 runs the API server,
+  etcd, the fixed kube-scheduler and the pool controllers (Restart=no),
+  and every executor command goes through it (12-findings 5).
+- Two variants, chosen per run: MBT_REBOOT=guest (systemctl reboot,
+  qemu keeps running: the realistic one; needs bug-17 in the qemu of
+  the VMs) or MBT_REBOOT=qemu (the qemu process restarts: power cycle;
+  needs bug-16; the executor attaches the test's local memdev again).
+  Empty (default): no reboot. The model gets --reboot=guest|qemu.
+- The model predicts the correct behaviour (bug-15 fixed). Runs on an
+  image without the fix fail at the first reboot; that is intended.
+- Weight: a reboot and its settle take ~2 min (12-findings 7.2). The
+  generator treats node-reboot as a fault like the others; a run of
+  2 h gets ~10-15 if coverage asks for them. MBT_AVOID=node-reboot
+  keeps them out of a run with MBT_REBOOT set.
+
+2. Prediction after node-reboot VM (12-findings 7.4)
+----------------------------------------------------
+- Every pod on VM keeps its UID; each of its containers restarts once
+  (restarts +1); the driver pod restarts once. Pods elsewhere: as
+  they were. The settle waits up to MBT_SETTLE_TIMEOUT (180 s).
+- Claims keep allocation and reservedFor. kubelet prepares each claim
+  again; the driver redoes the device work (bug-15).
+- Volatile pool numa: region again, memory online, the node fenced
+  (allowed-mems). Volatile pool dax (xdax, sdax, sro, sexcl): region
+  and dax device again, new names in CDI and env; the content is
+  unknown until the next write ("token or zeros"). Shared devices of
+  other VMs keep their regions and content.
+- Local slices: allocated again; ldax reads empty; lsteer steered.
+- Leases on VM: released; the requester has none; the companion pod
+  and claim go; lease-get works again.
+- Persistent block/fs: content survives; namespace and erofs found
+  again; node mounts and lease binds again; pread gives the last
+  pwrite. Refused kinds stay refused.
+- Decoder stacks of VM: rebuilt in kubelet's order, which the model
+  cannot know: the settle adopts the observed order (A9 adoption).
+- Attachments: guest: unchanged. qemu: every attachment of VM again
+  (new qemu device ids); the local memdev again by the executor.
+- Driver state on VM: F reseeded from the claims prepared in this
+  boot; KillMay and driver-kill-at watchers of VM disarmed (A31).
+- Fencing switch (A37) and reboot compose: the mode of the run's
+  ConfigMap applies after the boot.
+
+3. Oracle additions
+-------------------
+- boot id per VM (observer: /proc/sys/kernel/random/boot_id); the
+  model counts reboots and expects a new boot id after each.
+- Every device node in a container (dax, pmem) is the current device
+  of its claim on that node (name and major:minor): catches stale CDI
+  in one settle, also without a reboot.
+- A numa claim's CXL_<KEY>_NODE has memory and is in cpuset.mems.
+- No container of a test pod in CrashLoopBackOff unless predicted.
+
+4. Executor (node-reboot VM)
+----------------------------
+Disarm a driver-kill-at watcher of VM; record the boot id; reboot
+(guest: systemctl reboot; qemu: the way vmdir-restart does); wait for
+ssh with a new boot id (180 s); set auto_online_blocks offline (as
+pool-vm-reset); qemu: dra-local-device again; refollow traces;
+mbt-driver-ready-wait (A15). done status 0, 1 on any failure. The
+observer accepts containers that are not running yet while the pods
+come back (a wait).

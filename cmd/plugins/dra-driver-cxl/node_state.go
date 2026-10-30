@@ -97,6 +97,9 @@ type PreparedClaimInfo struct {
 	Devices   []PreparedDeviceInfo `json:"devices"`
 	// Lend is the lend of a companion claim.
 	Lend *lendRecord `json:"lend,omitempty"`
+	// BootID is the boot id of the kernel that the claim was prepared
+	// in: its slices and lent nodes do not survive a reboot (otherBoot).
+	BootID string `json:"bootID,omitempty"`
 }
 
 // PreparedClaimsInfo maps claim UIDs to their full claim information.
@@ -128,6 +131,9 @@ type nodeState struct {
 	// writes of the CDI specs and the files of the prepared claims; nil
 	// for no serialization.
 	locks *nodeLocks
+	// bootID is the boot id of the running kernel, recorded with every
+	// prepared claim, "" if it is unknown.
+	bootID string
 }
 
 // nodeLocks serializes the work on each claim, and the writes of the
@@ -180,7 +186,11 @@ func (l *nodeLocks) lockWrite() func() {
 	return l.write.Unlock
 }
 
-func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, nodeName string, driverConfig *DriverConfig, local *localAllocator) (*nodeState, error) {
+// newNodeState returns the state of cxl.nri.io with the devices devInfo and
+// the prepared claims of preparedClaimsFilePath and the info file next to
+// it, but those prepared in another boot than bootID ("": unknown), and
+// rewrites the CDI spec of the claims.
+func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, nodeName string, driverConfig *DriverConfig, local *localAllocator, bootID string) (*nodeState, error) {
 	klog.V(5).Info("Refreshing CDI registry")
 	if err := cdiapi.Configure(cdiapi.WithSpecDirs(cdiRoot)); err != nil {
 		return nil, fmt.Errorf("unable to refresh the CDI registry: %v", err)
@@ -210,6 +220,7 @@ func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, n
 	for _, uid := range unpreparing {
 		klog.Warningf("claim %s: info of a claim that is not prepared (the plugin stopped in its Unprepare): forgotten, its devices are released", uid)
 	}
+	forgetOtherBoot(preparedClaims, claimsInfo, bootID)
 	claimsInfoFilePath := filepath.Join(filepath.Dir(preparedClaimsFilePath), preparedClaimsInfoFileName)
 
 	klog.V(5).Info("Creating NodeState")
@@ -229,6 +240,7 @@ func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, n
 		local:          local,
 		lending:        newCompanionLender(device.DriverName),
 		locks:          &nodeLocks{},
+		bootID:         bootID,
 	}
 
 	// The CDI specs of the claims prepared before a restart.
@@ -1100,7 +1112,8 @@ func (s *nodeState) persist() error {
 }
 
 // forgetGoneSlices drops the dax devices of the slices of prepared claims
-// that the local allocator does not hold (gone with a reboot), so that a
+// that the local allocator does not hold (gone with a reboot that the boot
+// ids do not tell: the claims of another boot are not prepared), so that a
 // stale device number never reaches a container.
 func (s *nodeState) forgetGoneSlices() {
 	for uid, info := range s.preparedClaims {
@@ -1223,6 +1236,7 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 	allocatedDevices = kubeletplugin.PrepareResult{}
 	claimInfo = &PreparedClaimInfo{
 		ClaimName: claim.Namespace + "/" + claim.Name,
+		BootID:    s.bootID,
 	}
 
 	hasLease := false

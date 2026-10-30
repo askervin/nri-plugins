@@ -216,3 +216,101 @@ func TestStackUsersOfOneRegion(t *testing.T) {
 	s = steps(t, s, "lease-put lease@vm2#0", "settle")
 	wantStack(t, s, si, "[]")
 }
+
+// simStep applies one action line to the model and to the simulated SUT,
+// as expRun does: a settle at the oracle's clock now (also the sim's),
+// checked by the oracle; the adopted state.
+func simStep(t *testing.T, sm *sim, model *State, n int, line string, now time.Time) *State {
+	t.Helper()
+	a := mustAct(t, model.cfg, line)
+	if !model.enabled(a) {
+		t.Fatalf("step %d %q: not enabled in\n%s", n, line, model.dump())
+	}
+	next := model.apply(a)
+	if a.Verb != VSettle {
+		d := sm.do(n, a)
+		if v := checkDone(expectDone(model, next, a, n), d); v.Status != VOK {
+			t.Fatalf("step %d %q: %s", n, line, v.Msg)
+		}
+		return adoptDone(next, a, d)
+	}
+	sm.now, sm.since = now, now
+	sm.do(n, a)
+	v, adopted := checkStateAt(next, sm.observe(n, 1), "", now, defaultUnblock)
+	if v.Status != VOK {
+		t.Fatalf("step %d settle at +%s: the oracle disagrees with the simulated SUT: %s %s\nmodel:\n%s\ntruth:\n%s", n, now.Sub(refEpoch), v.Status, v.Msg, next.dump(), sm.truth.dump())
+	}
+	return adopted
+}
+
+// The simulated SUT's retry of an unblocking pod and its promotion of a
+// stalled contender are a coin at every settle, but never later than the
+// oracle allows by its clock (A9: kubelet's back-off is capped at 5 min;
+// A19: --stall-window). Review of 2026-10-29: experiment --exp growth
+// --profile fullp --seed 22 --reboot=guest --step-time 20s failed at
+// step 181, "pod pwr-c@vm2#0: not Running 7m20s after its decoder hole
+// cleared": the truth had kept it Unblocking through 5 settles 80-120 s
+// apart. Here settles come 80 s apart.
+func TestSimRetryDeadlines(t *testing.T) {
+	const gap = 80 * time.Second
+	cfg := testConfig(t, "full", true)
+	run := func(seed int64, slot string, want Phase, lines ...string) (settles int) {
+		sm := newSim(cfg, seed)
+		model := newState(cfg)
+		now := refEpoch
+		for n, line := range lines {
+			if line == "settle" {
+				now = now.Add(gap)
+			}
+			model = simStep(t, sm, model, n+1, line, now)
+		}
+		// (the coin of the settle that first saw it so may have been
+		// heads: settles 0)
+		i := cfg.slotIndex(slot)
+		first := now
+		for k := 1; model.Slots[i].Phase == want; k++ {
+			if now.Sub(first) > 6*time.Minute+gap {
+				t.Fatalf("seed %d: %s still %s %s after the first settle that saw it so", seed, slot, want, now.Sub(first))
+			}
+			// (a window of a pod elsewhere, then its settle)
+			other := "create plain@vm2#0"
+			if k%2 == 0 {
+				other = "delete plain@vm2#0"
+			}
+			model = simStep(t, sm, model, len(lines)+2*k-1, other, now)
+			now = now.Add(gap)
+			model = simStep(t, sm, model, len(lines)+2*k, "settle", now)
+			settles = k
+		}
+		return settles
+	}
+	hole := []string{"create ldax@vm0#0", "settle", "create xdax-b@vm0#0", "settle", "create sdax-b@vm0#0", "settle",
+		"delete xdax-b@vm0#0", "settle", "create xnuma-b@vm0#0", "settle", "delete sdax-b@vm0#0", "settle"}
+	stall := []string{"ctrl-kill a", "create xnuma-a@vm1#0", "settle", "create xdax-a@vm1#0", "settle", "delete xnuma-a@vm1#0", "settle"}
+	var forced, early [2]int
+	for seed := int64(1); seed <= 64; seed++ {
+		// kubelet: by the settle 300 s after the one that saw the hole
+		// clear (the 4th one after it, at 320 s)
+		switch k := run(seed, "xnuma-b@vm0#0", Unblocking, hole...); {
+		case k > 4:
+			t.Fatalf("seed %d: unblocked at the %dth settle", seed, k)
+		case k == 4:
+			forced[0]++
+		default:
+			early[0]++
+		}
+		// the scheduler: within --stall-window (6m) of the settle that
+		// first saw it stalled (the 5th one after it, at 400 s)
+		switch k := run(seed, "xdax-a@vm1#0", Stalled, stall...); {
+		case k > 5:
+			t.Fatalf("seed %d: promoted at the %dth settle", seed, k)
+		case k == 5:
+			forced[1]++
+		default:
+			early[1]++
+		}
+	}
+	if forced[0] == 0 || early[0] == 0 || forced[1] == 0 || early[1] == 0 {
+		t.Fatalf("forced %v, by the coin %v: want both", forced, early)
+	}
+}

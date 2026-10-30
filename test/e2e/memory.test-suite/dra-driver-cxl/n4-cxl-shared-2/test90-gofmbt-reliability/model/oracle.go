@@ -159,9 +159,12 @@ func checkStateAt(st *State, o *Observation, prefix string, now time.Time, unblo
 }
 
 // stallWindow is --stall-window (A19).
-func (k *checker) stallWindow() time.Duration {
-	if k.cfg.StallWindow > 0 {
-		return k.cfg.StallWindow
+func (k *checker) stallWindow() time.Duration { return k.cfg.stallWindow() }
+
+// stallWindow is --stall-window (A19), the default if not set.
+func (c *Config) stallWindow() time.Duration {
+	if c.StallWindow > 0 {
+		return c.StallWindow
 	}
 	return defaultStallWindow
 }
@@ -175,15 +178,16 @@ func checkAlts(st *State, o *Observation, prefix string, now time.Time, unblock 
 // checkAltsSince is checkAlts for a settle that started at since (the
 // clock of stalled contenders, A19).
 //
-// A truncated settle (R10) with "any" pods whose nodes were not known
-// is settled again with the nodes observed (narrowed); the outcome
-// adopted from it says so (Narrow, the adoption record's any=), and
-// the alternative's index is the narrowed settle's.
+// A truncated settle (R10) with "any" pods whose nodes were not known,
+// or with race-kill pods (optional Prepares), is settled again with the
+// nodes and the bindings observed (narrowed); the outcome adopted from it
+// says so (Narrow, the adoption record's any=), and the alternative's
+// index is the narrowed settle's.
 func checkAltsSince(st *State, o *Observation, prefix string, now, since time.Time, unblock time.Duration) (Verdict, *State, int) {
 	best, bestRS, bestJ := checkEach(st, o, prefix, now, since, unblock)
 	truncated := st.Truncated
 	if best.Status != VOK && st.Wide != nil {
-		if n := st.narrowed(observedAnyNodes(st.Wide, o)); n != nil {
+		if n := st.narrowed(observedAnyNodes(st.Wide, o), observedBound(st.Wide, o)); n != nil {
 			v, rs, j := checkEach(n, o, prefix, now, since, unblock)
 			if v.Status < best.Status || (v.Status == best.Status && len(v.Diffs) < len(best.Diffs)) {
 				best, bestRS, bestJ, truncated = v, rs, j, n.Truncated
@@ -212,6 +216,31 @@ func checkEach(st *State, o *Observation, prefix string, now, since time.Time, u
 		}
 	}
 	return best, bestRS, bestJ
+}
+
+// observedBound tells for the race-kill pods of the window of w (their
+// Prepares optional) whether they are seen bound or with their pool
+// claim Attached (PreBind binds it at its next poll: its Prepare comes),
+// or neither (not before the controller attaches it, after the settle).
+func observedBound(w *State, o *Observation) map[int]bool {
+	bound := map[int]bool{}
+	for _, i := range w.optPrepared() {
+		sl := w.slot(i)
+		for j := range o.Pods {
+			p := &o.Pods[j]
+			if p.Slot != sl.Name && p.Slot != sl.Label() || p.Gen != int(w.Slots[i].Gen) || p.Deleting {
+				continue
+			}
+			c := p.Claim
+			if sl.Kind.dual() {
+				if pool, _, ok := p.dualClaims(); ok {
+					c = pool
+				}
+			}
+			bound[i] = p.Node != nil || (c != nil && c.Attached != nil && *c.Attached)
+		}
+	}
+	return bound
 }
 
 // observedAnyNodes returns the nodes of the "any" pods that prepare in
@@ -283,8 +312,32 @@ func (k *checker) indexPods() {
 			k.failf("pods %s and %s: two pods of generation %d of slot %s", k.cur[i].Name, p.Name, gen, p.Slot)
 		default:
 			k.cur[i] = p
+			if k.cfg.Slots[i].Kind.dual() {
+				k.cur[i] = k.dualClaims(p)
+			}
 		}
 	}
+}
+
+// dualClaims returns the pod of a dnuma slot with its two claims from
+// "claims" (A39): a copy whose Claim is its pool claim, allocated when
+// both are (the scheduler allocates them together; PreBind writes one
+// after the other), with its local claim beside it.
+func (k *checker) dualClaims(p *ObsPod) *ObsPod {
+	if p.Claim == nil && len(p.Claims) == 0 {
+		// (no claim observed, as of a pod being deleted)
+		return p
+	}
+	pool, local, ok := p.dualClaims()
+	if !ok {
+		k.failf("pod %s: %d claims observed (\"claims\"), want its two (A39)", p.Name, len(p.Claims))
+		return p
+	}
+	c := *pool
+	c.Allocated = pool.Allocated && local.Allocated
+	n := *p
+	n.Claim, n.localClaim = &c, local
+	return &n
 }
 
 // resolve sets what the model leaves open from the observation: the node
@@ -346,13 +399,16 @@ func (k *checker) resolve() {
 					ss.Phase = Refused
 				} else if rs.Ctrl[sl.Pool].Up || bound {
 					ss.Phase = Running
-					if si, key, ok := rs.userRegion(int16(i)); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
-						if rs.Stacks[si].hasHole() {
-							// its Prepare needs a new region
-							// through a hole (A9)
-							ss.Phase = Blocked
-						} else {
-							unblocked[si] = append(unblocked[si], key)
+					// (a dnuma pod: its local slice too)
+					for _, u := range rs.claimUsers(i) {
+						if si, key, ok := rs.userRegion(u); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
+							if rs.Stacks[si].hasHole() {
+								// its Prepare needs a new region
+								// through a hole (A9)
+								ss.Phase = Blocked
+							} else {
+								unblocked[si] = append(unblocked[si], key)
+							}
 						}
 					}
 					if sl.Kind.writer() && ss.Phase == Running {
@@ -391,9 +447,11 @@ func (k *checker) resolve() {
 					rs.madeNamespace(sl.Dev)
 				}
 				// (users of one region: the local memdev, the shares
-				// of a node, make it once)
-				if si, key, ok := rs.userRegion(int16(i)); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
-					unblocked[si] = append(unblocked[si], key)
+				// of a node, make it once; both claims of a dnuma pod)
+				for _, u := range rs.claimUsers(i) {
+					if si, key, ok := rs.userRegion(u); ok && !rs.Stacks[si].contains(key) && !containsKey(unblocked[si], key) {
+						unblocked[si] = append(unblocked[si], key)
+					}
 				}
 			case rs.unblockAt(i) == 0 && !k.now.IsZero():
 				rs.setUnblockAt(i, k.now.Unix())
@@ -449,6 +507,31 @@ func (k *checker) resolve() {
 		case k.now.Unix()-rs.HeldAt[d] >= heldSeconds:
 			rs.Held &^= 1 << uint(d)
 			rs.HeldAt[d] = 0
+		}
+	}
+	// the stacks that a node-reboot rebuilt have their regions in the
+	// order in which kubelet prepared the claims again: the observed one,
+	// if it has the predicted regions (A43)
+	for si := 0; si < nStacks; si++ {
+		if rs.Reorder&(1<<uint(si)) == 0 {
+			continue
+		}
+		st := &rs.Stacks[si]
+		got, ok, unknown := k.observedStack(stackVM(si), stackBridge(si))
+		for got.N > st.N && k.refusedKey(si, got.top()) {
+			// (a refused claim's retry, for a moment: A25)
+			got.N--
+			got.E[got.N] = 0
+		}
+		if ok && unknown == "" && got.N == st.N && !got.hasHole() && sameKeys(got.keys(), st.keys()) {
+			*st = got
+			rs.Reorder &^= 1 << uint(si)
+		}
+	}
+	// the boot ids (A44): the one observed is the VM's now
+	for v := VM(0); v < nVMs; v++ {
+		if ov := k.o.VMs[v.String()]; ov != nil && ov.BootID != "" {
+			rs.Drv[v].Boot, rs.Drv[v].BootBefore = ov.BootID, ""
 		}
 	}
 	// kubelet retries every blocked pod at its own resync (A12): the
@@ -603,7 +686,7 @@ func (k *checker) checkPods() {
 				k.waitf("%s: phase %s, want Pending", name, p.Phase)
 			case p.Restarts > 0:
 				k.failf("%s: %d restarts while Pending", name, p.Restarts)
-			case p.Claim != nil && p.Claim.Allocated:
+			case p.claimAllocated():
 				k.waitf("%s: claim allocated, want unallocated (its %s is held by %s)", name, sl.Res, k.holderNames(sl.Res, i))
 			case p.Node != nil:
 				k.waitf("%s: bound to %s, want unschedulable", name, *p.Node)
@@ -657,7 +740,7 @@ func (k *checker) checkPods() {
 				k.failf("%s: Running on %s, but pool %s has no ResourceSlices", name, nodeOf(p), sl.Pool)
 			case p.Phase != "Pending":
 				k.waitf("%s: phase %s, want Pending for the slices of pool %s", name, p.Phase, sl.Pool)
-			case p.Claim != nil && p.Claim.Allocated:
+			case p.claimAllocated():
 				k.waitf("%s: claim allocated, but pool %s has no ResourceSlices", name, sl.Pool)
 			case !p.Unschedulable:
 				k.waitf("%s: not unschedulable yet (pool %s has no ResourceSlices)", name, sl.Pool)
@@ -753,6 +836,10 @@ func (k *checker) checkDriverLog(v VM, ov *ObsVM) {
 	}
 	if dl.LendsRestored == nil {
 		k.notef("vms.%s.driverLog.lendsRestored not observed", v)
+	}
+	// A36: the driver runs the predicted fencing mode
+	if dl.Fencing != nil && *dl.Fencing != "" && *dl.Fencing != k.rs.Fence.String() {
+		k.waitf("driver %s: fencing %s, want %s", v, *dl.Fencing, k.rs.Fence)
 	}
 }
 
@@ -940,7 +1027,7 @@ func driverSlackNote(d *DriverState) string {
 func (k *checker) holderNames(r Res, i int) string {
 	var names []string
 	for j := range k.rs.Slots {
-		if j != i && k.rs.slot(j).Res == r && k.rs.Slots[j].holds() {
+		if j != i && k.rs.slot(j).holdsRes(r) && k.rs.Slots[j].holds() {
 			names = append(names, k.rs.slot(j).Name)
 		}
 	}
@@ -1000,6 +1087,16 @@ func (k *checker) checkRunning(i int, name string) {
 		}
 		if c.Attached == nil || !*c.Attached {
 			k.waitf("%s: claim not Attached", name)
+		}
+		if c.AttachFailed != nil && *c.AttachFailed {
+			// the controller's attach into the new qemu of a VM fails
+			// with 503 until the pool server has discovered it
+			// (bug-16): only in the settle of the reboot
+			if ss.Node != VMAny && k.rs.Drv[ss.Node].Rebooted {
+				k.waitf("%s: claim AttachFailed (after the node-reboot of %s)", name, ss.Node)
+			} else {
+				k.failf("%s: claim AttachFailed, want Attached", name)
+			}
 		}
 	}
 }
@@ -1282,6 +1379,18 @@ func (k *checker) predictVM(v VM) *vmPred {
 			if uid != "" {
 				pr.poolUIDs[uid] = true
 			}
+		case sl.Kind.dual():
+			// c-pooled0 in numa and a numa slice (A39)
+			pr.poolMode[sl.Dev] = 1
+			pr.memTotal[k.cfg.bridgeNode(poolBridge[sl.Pool])] += devices[sl.Dev].Size
+			pr.slicesN++
+			pr.memTotal[hb0] += blockSize
+			if uid != "" {
+				pr.poolUIDs[uid] = true
+			}
+			if p := k.cur[i]; p != nil && p.localClaim != nil && p.localClaim.UID != "" {
+				pr.localUIDs[p.localClaim.UID] = true
+			}
 		case sl.Kind.pooled():
 			mode := int8(2)
 			if sl.Kind == KXNuma {
@@ -1348,6 +1457,8 @@ func (k *checker) checkVM(v VM) {
 	k.checkSlices(v)
 	k.checkLeaseStore(v, ov)
 	k.checkPersistentVM(v, ov)
+	k.checkBoot(v, ov)
+	k.checkDevNodes(v, ov)
 }
 
 // checkPorts compares the committed decoders of the host bridges of a VM
@@ -1377,9 +1488,18 @@ func (k *checker) checkPorts(v VM, ov *ObsVM) {
 		for got.N > want.N && (k.unblockingKey(si, got.top()) || k.refusedKey(si, got.top())) {
 			got.N--
 		}
-		if !got.equal(&want) {
-			k.waitf("stack %s: committed decoders %s, want %s", stackName(si), got, want)
+		if got.equal(&want) {
+			continue
 		}
+		if k.rs.Reorder&(1<<uint(si)) != 0 {
+			// (rebuilt by a node-reboot: the regions in any order)
+			if got.N == want.N && !got.hasHole() && sameKeys(got.keys(), want.keys()) {
+				continue
+			}
+			k.waitf("stack %s: committed decoders %s, want %s in any order (rebuilt by a node-reboot)", stackName(si), got, want)
+			continue
+		}
+		k.waitf("stack %s: committed decoders %s, want %s", stackName(si), got, want)
 	}
 }
 
@@ -1857,29 +1977,42 @@ func sameSet(a, b map[string]bool) bool {
 	return true
 }
 
-// O5: fencing and memory.high of the containers of the test's pods.
+// O5: fencing and memory.high of the containers of the test's pods. The
+// cpuset.mems.effective of every container is exact (A38, memsRule): D,
+// the DRAM nodes, M, the CXL nodes with memory (predicted), E, the numa
+// nodes of its claims and the nodes lent to it, F and FMaybe, the fenced
+// nodes of the driver.
 func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 	rs := k.rs
 	d := &rs.Drv[v]
-	memNodes := map[int]bool{}
+	var mem nodeSet
 	for n, b := range pr.memTotal {
 		if b > 0 {
-			memNodes[n] = true
+			mem |= nodeBit(n)
 		}
 	}
-	fenced := map[int]bool{}
-	for _, n := range rs.bitNodes(d.F) {
-		fenced[n] = true
-	}
+	dram := nodesOf(k.cfg.DRAMNodes)
+	cxl := nodesOf(k.cfg.cxlNodes())
+	fenced, maybe := nodesOf(rs.bitNodes(d.F)), nodesOf(rs.bitNodes(d.FMaybe))
 	podSlot := map[string]int{}
 	for i, p := range k.cur {
 		if p != nil {
 			podSlot[p.Name] = i
 		}
 	}
-	companions := map[string]bool{}
+	// companions and the lease slots whose leases they are
+	companions := map[string]int{}
 	for _, c := range k.o.Companions {
-		companions[c.Name] = true
+		companions[c.Name] = -1
+		for i := range rs.Slots {
+			sl := rs.slot(i)
+			if !sl.Kind.leaseKind() || rs.Slots[i].Lease == LeaseNone {
+				continue
+			}
+			if (c.Requester != nil && (*c.Requester == sl.Name || *c.Requester == sl.Label())) || (c.Lease != "" && c.Lease == rs.LeaseIDs[i]) {
+				companions[c.Name] = i
+			}
+		}
 	}
 	// A11: every running container of the test's pods is observed
 	listed := map[string]bool{}
@@ -1901,12 +2034,15 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 	for j := range ov.Containers {
 		c := &ov.Containers[j]
 		i, isSlot := podSlot[c.Pod]
-		if !isSlot && !companions[c.Pod] {
+		lslot, isComp := companions[c.Pod]
+		if !isSlot && !isComp {
 			continue
 		}
-		entitled := map[int]bool{}
+		var claimed nodeSet
 		name := "companion " + c.Pod
 		steer := SteerNone
+		loose := isComp && lslot >= 0 && rs.Slots[lslot].CompLoose
+		steered := false
 		if isSlot {
 			ss := &rs.Slots[i]
 			sl := rs.slot(i)
@@ -1914,16 +2050,16 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 			if ss.Phase != Running || ss.Node != v {
 				continue
 			}
-			if sl.Kind.numa() {
-				entitled[sl.numaNode(k.cfg)] = true
-			}
-			if sl.Kind == KLease && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
-				entitled[k.cfg.bridgeNode(HB0)] = true
-			}
+			claimed = rs.claimNodes(i)
 			steer = ss.Steer
 			if sl.Kind == KLSteer && steer == SteerNone {
 				steer = SteerOn
 			}
+			// the cpuset.mems of a steered container is its manager's;
+			// with fencing none so is the one of a container whose
+			// manager a driver restart ended (it is left as it was)
+			steered = steer == SteerOn || steer == SteerAny || (sl.Kind == KLSteer && rs.Fence == FenceNone)
+			loose = ss.Loose
 		}
 		// A11: cpuset.mems.effective of a live cgroup is never empty;
 		// cpuset.mems is empty when the container inherits its
@@ -1933,17 +2069,31 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 			k.waitf("%s: container of %s: cpuset.mems.effective not observed", v, name)
 			continue
 		}
-		mems, err := parseNodeList(memsStr)
+		got, err := parseNodeList(memsStr)
 		if err != nil {
 			k.waitf("%s: container %s: %v", v, name, err)
 			continue
 		}
-		for _, n := range k.cfg.cxlNodes() {
+		r := memsRule(rs.Fence, dram, claimed, fenced, maybe, mem, steered, loose)
+		gotSet := nodesOfMap(got)
+		for _, n := range (r.must &^ gotSet).nodes() {
 			switch {
-			case entitled[n] && !mems[n]:
-				k.waitf("%s: container of %s: cpuset.mems %q lacks its node %d", v, name, memsStr, n)
-			case !entitled[n] && mems[n] && (fenced[n] || memNodes[n]):
-				k.waitf("%s: container of %s: cpuset.mems %q has fenced CXL node %d", v, name, memsStr, n)
+			case claimed&nodeBit(n) != 0:
+				k.waitf("%s: container of %s: cpuset.mems %q lacks its node %d (%s)", v, name, memsStr, n, r)
+			case dram&nodeBit(n) != 0:
+				k.waitf("%s: container of %s: cpuset.mems %q lacks DRAM node %d (%s)", v, name, memsStr, n, r)
+			default:
+				k.waitf("%s: container of %s: cpuset.mems %q lacks CXL node %d with memory (%s)", v, name, memsStr, n, r)
+			}
+		}
+		for _, n := range (gotSet &^ r.allowed).nodes() {
+			switch {
+			case fenced&nodeBit(n) != 0:
+				k.waitf("%s: container of %s: cpuset.mems %q has fenced CXL node %d (%s)", v, name, memsStr, n, r)
+			case cxl&nodeBit(n) != 0:
+				k.waitf("%s: container of %s: cpuset.mems %q has CXL node %d (%s)", v, name, memsStr, n, r)
+			default:
+				k.waitf("%s: container of %s: cpuset.mems %q has node %d (%s)", v, name, memsStr, n, r)
 			}
 		}
 		switch steer {
@@ -1958,6 +2108,92 @@ func (k *checker) checkFencing(v VM, ov *ObsVM, pr *vmPred) {
 			}
 		}
 	}
+}
+
+// nodeSet is a set of NUMA nodes: bit n is node n (0..63).
+type nodeSet uint64
+
+func nodeBit(n int) nodeSet {
+	if n < 0 || n > 63 {
+		return 0
+	}
+	return 1 << uint(n)
+}
+
+func nodesOf(ns []int) nodeSet {
+	var s nodeSet
+	for _, n := range ns {
+		s |= nodeBit(n)
+	}
+	return s
+}
+
+func nodesOfMap(m map[int]bool) nodeSet {
+	var s nodeSet
+	for n, on := range m {
+		if on {
+			s |= nodeBit(n)
+		}
+	}
+	return s
+}
+
+// nodes returns the nodes of the set in order.
+func (s nodeSet) nodes() []int {
+	var out []int
+	for n := 0; n < 64; n++ {
+		if s&nodeBit(n) != 0 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// String is the set as a list "0,1,3", "-" if empty.
+func (s nodeSet) String() string {
+	ns := s.nodes()
+	if len(ns) == 0 {
+		return "-"
+	}
+	parts := make([]string, len(ns))
+	for j, n := range ns {
+		parts[j] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ",")
+}
+
+// memsWant is what cpuset.mems.effective of a container must have
+// (must) and may have (allowed, a superset of must).
+type memsWant struct {
+	must, allowed nodeSet
+	why           string
+}
+
+func (r memsWant) String() string {
+	if r.must == r.allowed {
+		return r.why + ": want " + r.must.String()
+	}
+	return r.why + ": want " + r.must.String() + " and at most " + r.allowed.String()
+}
+
+// memsRule is the rule of A38 for a container: with fencing allowed-mems
+// a fenced container has D + E + (M \ F), a node in FMaybe either way;
+// with fencing none every container has D + M; a steered container has
+// its nodes E and no CXL node outside E + M (its manager's cpuset.mems:
+// its steps' nodes and the nearest DRAM node with normal memory); a loose
+// one (A37) D + E and no CXL node outside E + M. A node without memory
+// is never in mems.effective (E is in M).
+func memsRule(mode FenceMode, d, e, f, fmaybe, m nodeSet, steered, loose bool) memsWant {
+	switch {
+	case steered:
+		return memsWant{must: e, allowed: d | e | m, why: "steered"}
+	case loose:
+		return memsWant{must: d | e, allowed: d | e | m, why: "loose after the switch to fencing none"}
+	case mode == FenceNone:
+		return memsWant{must: d | m | e, allowed: d | m | e, why: "fencing none"}
+	}
+	want := d | e | (m &^ f &^ fmaybe)
+	return memsWant{must: want, allowed: want | (fmaybe & m), why: "allowed-mems, fenced " + (f | fmaybe&m).String()}
 }
 
 // O6: env and leases of inspected pods. Fatal: an inspection is not
@@ -1982,6 +2218,7 @@ func (k *checker) checkInspect() {
 		for _, d := range envDiffs(k.cfg, sl, in.Env) {
 			k.failf("env of %s: %s", sl.Name, d)
 		}
+		k.checkInspectDevices(i, in)
 		if sl.Kind.leaseKind() {
 			k.checkInspectLeases(i, in)
 		}
@@ -2042,6 +2279,11 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		}
 	}
 	switch k := sl.Kind; {
+	case k == KDNuma:
+		// both claims (A39)
+		dev := devices[sl.Dev]
+		add(dev.Serial, "numa", dev.Size, false, false, cfg.bridgeNode(poolBridge[sl.Pool]))
+		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNode(HB0))
 	case k.persistent():
 		// A22: block MODE PATH READONLY, fs MODE ACCESS PATH READONLY
 		dev := devices[sl.Dev]
@@ -2158,12 +2400,24 @@ func checkDone(e *Expectation, d *DoneObs) Verdict {
 			switch {
 			case d.Text == nil:
 				k.failf("%s: no text read", what)
-			case want.Text != nil && *d.Text != *want.Text:
-				k.failf("%s: read %q, want %q", what, *d.Text, *want.Text)
+			case want.Text != nil && *d.Text != *want.Text && !(want.OrZero && *d.Text == ""):
+				if want.OrZero {
+					k.failf("%s: read %q, want %q or zeros", what, *d.Text, *want.Text)
+				} else {
+					k.failf("%s: read %q, want %q", what, *d.Text, *want.Text)
+				}
 			}
 		case "lease-get":
 			if d.Status == 0 && (d.Lease == nil || *d.Lease == "") {
 				k.failf("%s: no lease", what)
+			}
+		case "fencing-switch":
+			if want.Fencing != "" && d.Fencing != nil && *d.Fencing != want.Fencing {
+				k.failf("%s: the drivers run fencing %s, want %s", what, *d.Fencing, want.Fencing)
+			}
+		case "node-reboot":
+			if want.BootNot != "" && d.Boot != nil && *d.Boot == want.BootNot {
+				k.failf("%s: boot id %s as before (A44)", what, *d.Boot)
 			}
 		}
 	}
@@ -2204,7 +2458,12 @@ func adoptDone(s *State, a Act, d *DoneObs) *State {
 		n := s.clone()
 		adoptPRead(n, int(a.Slot), *d.Text)
 		return n
-	case a.Verb == VRead && d.Text != nil && !s.token(int(a.Slot)).Known:
+	case a.Verb == VNodeReboot && d.Boot != nil && *d.Boot != "":
+		// the new boot's id (A42)
+		n := s.clone()
+		n.Drv[a.VM].Boot, n.Drv[a.VM].BootBefore = *d.Boot, ""
+		return n
+	case a.Verb == VRead && d.Text != nil && (!s.token(int(a.Slot)).Known || s.token(int(a.Slot)).OrZero):
 		n := s.clone()
 		t := Token{Known: true, Text: *d.Text}
 		if sl := n.slot(int(a.Slot)); sl.Kind == KLDax {

@@ -192,17 +192,38 @@ func (m LeaseMode) kind() Kind {
 	return KLease
 }
 
-// Token is what offset 0 of a dax device holds.
+// Token is what offset 0 of a dax device holds. OrZero: Text or zeros
+// (""), not known which: a volatile dax device whose region a node
+// reboot made again (A43), until the next write or read decides.
 type Token struct {
-	Known bool
-	Text  string
+	Known  bool
+	Text   string
+	OrZero bool
 }
 
 func (t Token) String() string {
 	if !t.Known {
 		return "?"
 	}
+	if t.OrZero {
+		return fmt.Sprintf("%q|zero", t.Text)
+	}
 	return fmt.Sprintf("%q", t.Text)
+}
+
+// orZero is the token of a device whose content may be gone: the token
+// or zeros (an unknown or zero token stays as it is).
+func orZero(t Token) Token {
+	if !t.Known || t.Text == "" {
+		return t
+	}
+	t.OrZero = true
+	return t
+}
+
+// accepts tells if a read of text fits the token.
+func (t Token) accepts(text string) bool {
+	return !t.Known || text == t.Text || (t.OrZero && text == "")
 }
 
 var (
@@ -253,12 +274,33 @@ type SlotState struct {
 	// while a claim is being allocated; a stalled contender promoted
 	// before the slices went is the oracle's.) Cleared at the settle.
 	Alloc bool
+	// Loose: the container existed at a switch of the fencing mode to
+	// none (A37): it keeps the cpuset.mems it had until it is created
+	// again (a crash after the switch, a new pod). CompLoose: so does
+	// the companion of its lease, until the lease is released.
+	Loose, CompLoose bool
 }
 
 // holds: the slot holds its resource now (also while deleting).
 func (ss *SlotState) holds() bool {
 	return ss.Phase.holding() || (ss.Phase == Deleting && ss.Prev.holding())
 }
+
+// FenceMode is the fencing mode of the drivers (defaults.container.fencing
+// of the driver configuration, A36): allowed-mems or none.
+type FenceMode uint8
+
+const (
+	FenceAM FenceMode = iota
+	FenceNone
+)
+
+var fenceModeNames = []string{"allowed-mems", "none"}
+
+func (m FenceMode) String() string { return fenceModeNames[m] }
+
+// short is the mode in coverage strings (A40): am or none.
+func (m FenceMode) short() string { return [...]string{"am", "none"}[m] }
 
 // DriverState is the driver of a VM.
 type DriverState struct {
@@ -294,6 +336,17 @@ type DriverState struct {
 	// have fired (killAtMayHaveFired): the world in which it fired
 	// has Slack +1
 	KillSlack bool
+	// Rebooted: node-reboot of the VM in the current window, or in the
+	// window that the last settle ended (that settle's observation is
+	// the first of the new boot: A43, A44); cleared when the next window
+	// starts
+	Rebooted bool
+	// Reboots counts the node-reboots of the VM (the simulator's boot
+	// ids); Boot is the boot id learnt at a settle or from node-reboot's
+	// done, BootBefore the one that must be gone after a node-reboot
+	// (A44): the oracle's
+	Reboots          uint8
+	Boot, BootBefore string
 }
 
 // Kill markers of driver-kill-at (A23).
@@ -395,10 +448,23 @@ type State struct {
 	// would race with it: one candidate (contested) per such device
 	Released  uint16
 	Unsettled uint8
-	Steps     int32 // steps executed: the next step is Steps+1
-	Last      Act   // the action that led to this state
-	memo      atomic.Pointer[stateMemo]
-	occMemo   atomic.Pointer[occupancy]
+	// Fence: the fencing mode of the drivers now (fencing-switch flips
+	// it, A37); with none no driver fences (F and FMaybe stay empty)
+	Fence FenceMode
+	// Switched: a fencing-switch came in this window: no other one
+	// until the settle (two in a row would switch back before anything
+	// observed the first)
+	Switched bool
+	// Reorder: the decoder stacks (bit si) that a node-reboot of this
+	// window, or of the window that the last settle ended, rebuilt with
+	// two or more regions: kubelet prepares the claims again in an order
+	// that the model does not know; the stack has the regions in slot
+	// order and the oracle adopts the observed order (A43, A9)
+	Reorder uint8
+	Steps   int32 // steps executed: the next step is Steps+1
+	Last    Act   // the action that led to this state
+	memo    atomic.Pointer[stateMemo]
+	occMemo atomic.Pointer[occupancy]
 }
 
 type stateMemo struct {
@@ -425,6 +491,9 @@ func newState(cfg *Config) *State {
 	for x := range s.PDev {
 		s.PDev[x] = freshPDev
 	}
+	if cfg.Fencing == FencingNone {
+		s.Fence = FenceNone
+	}
 	s.Last = Act{Verb: VNone, Slot: -1}
 	return s
 }
@@ -447,6 +516,8 @@ func (s *State) clone() *State {
 		Released:  s.Released,
 		HeldAt:    s.HeldAt,
 		Unsettled: s.Unsettled,
+		Fence:     s.Fence,
+		Reorder:   s.Reorder,
 		Steps:     s.Steps,
 		Last:      s.Last,
 	}
@@ -541,9 +612,22 @@ func (s *State) computeOcc() *occupancy {
 		}
 		if ss.Phase == Pending {
 			o.waiter[sl.Res] = int16(i)
+			if sl.Kind.dual() {
+				// (it waits for both: the scheduler allocates the
+				// claims of a pod together)
+				o.waiter[localRes(sl.VM)] = int16(i)
+			}
 			continue
 		}
 		held, all := ss.Phase.holding(), ss.holds()
+		if sl.Kind.dual() {
+			if held {
+				o.localHeld[sl.VM]++
+			}
+			if all {
+				o.localAll[sl.VM]++
+			}
+		}
 		switch {
 		case sl.Kind.local():
 			if held {
@@ -600,6 +684,11 @@ func (s *State) fitsIn(o *occupancy, i int) (now, later bool) {
 		return int(o.localAll[sl.VM])+1 <= b, int(o.localHeld[sl.VM])+1 <= b
 	case sl.Kind.share():
 		return o.exclAll[sl.Dev] == 0, o.exclHeld[sl.Dev] == 0
+	case sl.Kind.dual():
+		// c-pooled0 and a block of the local memdev
+		d, b := sl.Dev, s.cfg.LocalBlocks[sl.VM]
+		return o.exclAll[d]+o.shareAll[d] == 0 && int(o.localAll[sl.VM])+1 <= b,
+			o.exclHeld[d]+o.shareHeld[d] == 0 && int(o.localHeld[sl.VM])+1 <= b
 	default: // exclusive use of a pool device
 		d := sl.Dev
 		return o.exclAll[d]+o.shareAll[d] == 0, o.exclHeld[d]+o.shareHeld[d] == 0
@@ -613,7 +702,7 @@ func (s *State) fits(i int) (now, later bool) { return s.fitsIn(s.computeOcc(), 
 func (s *State) holders(r Res) int {
 	n := 0
 	for i := range s.Slots {
-		if s.slot(i).Res == r && s.Slots[i].Phase.holding() {
+		if s.slot(i).holdsRes(r) && s.Slots[i].Phase.holding() {
 			n++
 		}
 	}
@@ -623,7 +712,7 @@ func (s *State) holders(r Res) int {
 // waiter returns the Pending slot of a resource, -1 if none.
 func (s *State) waiter(r Res) int {
 	for i := range s.Slots {
-		if s.Slots[i].Phase == Pending && s.slot(i).Res == r {
+		if s.Slots[i].Phase == Pending && s.slot(i).holdsRes(r) {
 			return i
 		}
 	}
@@ -772,6 +861,10 @@ func (s *State) computeAbstract() []string {
 	for i := range s.cfg.Slots {
 		sl := s.slot(i)
 		switch {
+		case sl.Kind.dual():
+			devUsed[sl.Dev] = true
+			poolUsed[sl.Pool] = true
+			vmLocal[sl.VM] = true
 		case sl.Kind.pooled():
 			devUsed[sl.Dev] = true
 			poolUsed[sl.Pool] = true
@@ -834,7 +927,7 @@ func (s *State) computeAbstract() []string {
 		for i := range s.Slots {
 			sl := s.slot(i)
 			ss := &s.Slots[i]
-			if sl.Kind.local() && sl.VM == v && ss.Phase != Absent {
+			if sl.Kind.hasLocal() && sl.VM == v && ss.Phase != Absent {
 				items = append(items, sl.Kind.String()+"."+phaseClass(ss.Phase))
 			}
 			if sl.Kind == KLease && sl.VM == v && ss.Lease != LeaseNone {
@@ -860,8 +953,13 @@ func (s *State) computeAbstract() []string {
 			st = "killed"
 		case d.Restarted:
 			st = "restarted"
+		case d.Rebooted && s.Unsettled > 0:
+			st = "rebooted"
 		}
 		out = append(out, fmt.Sprintf("drv %s %s F=%d", v, st, d.F))
+	}
+	if s.Fence != FenceAM {
+		out = append(out, "fencing "+s.Fence.String())
 	}
 	for si := 0; si < nStacks; si++ {
 		st := &s.Stacks[si]
@@ -913,7 +1011,10 @@ func uniq(sorted []string) []string {
 // dump is the full state, for files and messages.
 func (s *State) dump() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "steps %d, unsettled %d, contested %s", s.Steps, s.Unsettled, s.contestedString())
+	fmt.Fprintf(&b, "steps %d, unsettled %d, contested %s, fencing %s", s.Steps, s.Unsettled, s.contestedString(), s.Fence)
+	if s.Switched {
+		b.WriteString(" (switched in this window)")
+	}
 	for d := DevID(0); d < nDevs; d++ {
 		if s.held(Res(d)) {
 			fmt.Fprintf(&b, ", held %s since %d", d, s.HeldAt[d])
@@ -950,6 +1051,12 @@ func (s *State) dump() string {
 		}
 		if ss.Alloc {
 			b.WriteString(" allocated")
+		}
+		if ss.Loose {
+			b.WriteString(" loose")
+		}
+		if ss.CompLoose {
+			b.WriteString(" companion-loose")
 		}
 		b.WriteString("\n")
 	}
@@ -994,6 +1101,15 @@ func (s *State) dump() string {
 		if d.KillSlack {
 			b.WriteString(" kubelet restarted after a possible kill")
 		}
+		if d.Rebooted {
+			b.WriteString(" rebooted")
+		}
+		if d.Reboots > 0 || d.Boot != "" || d.BootBefore != "" {
+			fmt.Fprintf(&b, " reboots %d boot %q", d.Reboots, d.Boot)
+			if d.BootBefore != "" {
+				fmt.Fprintf(&b, " not %q", d.BootBefore)
+			}
+		}
 		if d.PodBefore != "" {
 			fmt.Fprintf(&b, " not %q", d.PodBefore)
 		}
@@ -1001,13 +1117,20 @@ func (s *State) dump() string {
 	}
 	for si := 0; si < nStacks; si++ {
 		if s.Stacks[si].N > 0 {
-			fmt.Fprintf(&b, "  stack %s %s\n", stackName(si), s.Stacks[si])
+			fmt.Fprintf(&b, "  stack %s %s", stackName(si), s.Stacks[si])
+			if s.Reorder&(1<<uint(si)) != 0 {
+				b.WriteString(" (order not known: rebuilt by a node-reboot)")
+			}
+			b.WriteString("\n")
 		}
 	}
 	for _, e := range s.Ev {
 		i, lease := s.userSlot(e.User)
 		who := s.slot(i).Name
-		if lease {
+		switch {
+		case lease && s.slot(i).Kind.dual():
+			who = "local claim of " + who
+		case lease:
 			who = "lease of " + who
 		}
 		fmt.Fprintf(&b, "  event %d %s %s of %s on %d opt %v sync %v after %d\n", e.Seq, map[evKind]string{evPrepare: "prepare", evUnprepare: "unprepare"}[e.Kind], e.Key, who, e.Stack, e.Opt, e.Sync, e.After)
@@ -1029,6 +1152,8 @@ func (s *State) stackUsed(si int) bool {
 	for i := range s.cfg.Slots {
 		sl := s.slot(i)
 		switch {
+		case sl.Kind.dual() && b == HB0 && sl.VM == v:
+			return true
 		case sl.Kind.pooled():
 			if poolBridge[sl.Pool] == b && (sl.VM == v || (sl.Any() && poolHasHost(sl.Pool, v))) {
 				return true
@@ -1053,4 +1178,33 @@ func (s *State) contestedString() string {
 		return "-"
 	}
 	return strings.Join(rs, ",")
+}
+
+// claimNodes are the CXL nodes that the claims and leases of the pod of
+// slot i give its container (E of A38): the numa nodes of its claims and
+// the node that a held numa lease lends it.
+func (s *State) claimNodes(i int) nodeSet {
+	sl, ss := s.slot(i), &s.Slots[i]
+	e := nodesOf(sl.numaNodes(s.cfg))
+	if sl.Kind == KLease && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
+		e |= nodeBit(s.cfg.bridgeNode(HB0))
+	}
+	return e
+}
+
+// memNodes are the CXL nodes of VM v with memory (M of A38) in a settled
+// state: the numa memory of its Running pods and of its held numa leases
+// (the oracle's vmPred.memTotal).
+func (s *State) memNodes(v VM) nodeSet {
+	var m nodeSet
+	for i := range s.Slots {
+		sl, ss := s.slot(i), &s.Slots[i]
+		if sl.Kind == KLease && sl.VM == v && ss.Lease == LeaseHeld && ss.LeaseMode == ModeNuma {
+			m |= nodeBit(s.cfg.bridgeNode(HB0))
+		}
+		if ss.Phase == Running && ss.Node == v {
+			m |= nodesOf(sl.numaNodes(s.cfg))
+		}
+	}
+	return m
 }

@@ -165,6 +165,9 @@ func (p *fakePool) handler() http.Handler {
 		}
 		if a, ok := p.atts[id]; ok {
 			a.Exclusive = req.Exclusive
+			if a.Owner == "" {
+				a.Owner = req.Owner // taken over
+			}
 			p.atts[id] = a
 			writeJSON(w, 200, a)
 			return
@@ -800,6 +803,77 @@ func TestForeignAttachmentsKept(t *testing.T) {
 	}
 	if ids := e.pool.attachmentIDs(); len(ids) != 4 {
 		t.Fatalf("attachments changed: %v", ids)
+	}
+}
+
+// bug-16: the server adopted the device of a claim without owner (the
+// controller's own attachment, dropped after a qemu restart): the
+// controller takes it over where it is and detaches it when the claim
+// goes.
+func TestAdoptedAttachmentTakenOver(t *testing.T) {
+	e := newEnv(t)
+	claim := e.createClaimConfig("c", "pooled0", "node1", "", 0, []resourceapi.DeviceAllocationConfiguration{
+		claimConfig(`"pool": {"opaque": {"fake-cxl-pool": {"slot": "ds7"}}}`)})
+	e.pool.addAttachment(api.Attachment{Device: "pooled0", Host: "vm1", Serial: "0xc1ee0001", Adopted: true,
+		Slot: api.Slot{Bus: "ds6"}, QemuDeviceID: "fcp_pooled0.hp6"})
+	e.sync()
+	e.sync()
+	att, det := e.pool.calls()
+	if len(att) != 1 || att[0] != "pooled0@vm1 "+e.c.Owner(claim.UID) || len(det) != 0 {
+		t.Fatalf("unexpected requests %v %v", att, det)
+	}
+	if reqs := e.pool.requests(); reqSettings(reqs[0]) != "" {
+		t.Fatalf("settings sent for an existing attachment: %+v", reqs[0])
+	}
+	e.pool.mu.Lock()
+	a := e.pool.atts["pooled0@vm1"]
+	e.pool.mu.Unlock()
+	if a.Owner != e.c.Owner(claim.UID) {
+		t.Fatalf("not taken over: %+v", a)
+	}
+	_, st := e.condition("c", "cxl-pool.nri.io/Attached")
+	var data DeviceData
+	if st == nil || json.Unmarshal(st.Data.Raw, &data) != nil || data.QemuDeviceID != "fcp_pooled0.hp6" {
+		t.Fatalf("unexpected status %+v", st)
+	}
+	if !strings.Contains(e.logs.String(), "taking over attachment pooled0@vm1 without owner (attached, adopted true, qemu device fcp_pooled0.hp6)") {
+		t.Fatalf("take-over not logged:\n%s", e.logs.String())
+	}
+	e.deallocate("c")
+	e.sync()
+	if _, det := e.pool.calls(); len(det) != 1 || det[0] != "pooled0@vm1" {
+		t.Fatalf("unexpected detach requests %v", det)
+	}
+}
+
+// R5 of 12-findings-reboot.txt: after a re-attach (a qemu restart) the
+// device data of an Attached claim is that of the new attachment.
+func TestReattachUpdatesDeviceData(t *testing.T) {
+	e := newEnv(t)
+	e.createClaim("c", "pooled0", "node1", "")
+	e.sync()
+	e.waitStatus("c", 1)
+	// the server dropped the attachment and the controller attached again
+	e.pool.mu.Lock()
+	a := e.pool.atts["pooled0@vm1"]
+	a.QemuDeviceID, a.Slot.Bus = "fcp_pooled0.hp9", "ds9"
+	e.pool.atts["pooled0@vm1"] = a
+	e.pool.mu.Unlock()
+	e.sync()
+	e.waitLister("c", func(c *resourceapi.ResourceClaim) bool {
+		cond := hasCondition(c, c.Status.Allocation.Devices.Results[1], "cxl-pool.nri.io/Attached")
+		return cond != nil && cond.Message == "pooled0 attached to vm1 (slot ds9)"
+	})
+	_, st := e.condition("c", "cxl-pool.nri.io/Attached")
+	var data DeviceData
+	if err := json.Unmarshal(st.Data.Raw, &data); err != nil || data.QemuDeviceID != "fcp_pooled0.hp9" {
+		t.Fatalf("unexpected data %s %v", st.Data.Raw, err)
+	}
+	// steady state again: no status write
+	rv := e.claim("c").ResourceVersion
+	e.sync()
+	if e.claim("c").ResourceVersion != rv {
+		t.Fatal("status rewritten in steady state")
 	}
 }
 

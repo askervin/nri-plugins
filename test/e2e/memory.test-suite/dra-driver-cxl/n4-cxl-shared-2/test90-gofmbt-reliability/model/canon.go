@@ -26,12 +26,12 @@ package main
 //	field                        bytes   encoding
 //	Slots[i] (every slot)        4       Phase | Prev<<4;
 //	                                     Node+1 | RaceKill<<2 | Steer<<3 |
-//	                                     Lease<<5;
+//	                                     Lease<<5 | CompLoose<<7;
 //	                                     min(Restarts,15) | min(Slack,15)<<4
 //	                                     (15: the exact bytes are in the
 //	                                     trailer);
 //	                                     LeaseMode | Hold<<3 | Refuse<<4 |
-//	                                     LeaseOpen<<5 | Alloc<<6
+//	                                     LeaseOpen<<5 | Alloc<<6 | Loose<<7
 //	Ctrl[p] (every pool)         4       Up | Slices<<1 | Att[d][v]<<(3+2*(3d+v))
 //	Drv[v] (every VM)            4       Restarts; F | FMaybe<<4;
 //	                                     Killed | Restarted<<1 | KillAt<<2 |
@@ -41,6 +41,8 @@ package main
 //	Stacks[si] (every stack)     1+N/2   N, then the keys+1 as nibbles
 //	Contested, Held, Released    2 each  little endian
 //	Unsettled                    1
+//	Fence, Switched              1       Fence | Switched<<1
+//	Reorder, Drv[v].Rebooted     1 each  the stacks' bits; bit v of the VMs
 //	Ev                           2+7/ev  the count (2 bytes), then per event
 //	                                     Stack+1 | Kind<<3 | Opt<<4 |
 //	                                     Sync<<5 | Handover<<6 | Probe<<7;
@@ -63,6 +65,9 @@ package main
 //	Drv.Pod, Drv.PodBefore, Drv.PodGen, Drv.Inc
 //	            driver pod names and incarnations: the oracle and the
 //	            simulator only
+//	Drv.Boot, Drv.BootBefore, Drv.Reboots
+//	            boot ids and the count of node-reboots (A44): the oracle
+//	            and the simulator only
 //	LeaseIDs    lease IDs learnt from observations: the oracle only
 //	SlotData, Data, PDev[x].Tok, .Raw, .UUID
 //	            the tokens of dax and persistent devices and ldax
@@ -90,9 +95,9 @@ func (s *State) appendKey(b []byte) []byte {
 		ss := &s.Slots[i]
 		b = append(b,
 			byte(ss.Phase)|byte(ss.Prev)<<4,
-			byte(ss.Node+1)|b2u(ss.RaceKill)<<2|byte(ss.Steer)<<3|byte(ss.Lease)<<5,
+			byte(ss.Node+1)|b2u(ss.RaceKill)<<2|byte(ss.Steer)<<3|byte(ss.Lease)<<5|b2u(ss.CompLoose)<<7,
 			nib(ss.Restarts)|nib(ss.Slack)<<4,
-			byte(ss.LeaseMode)|b2u(ss.Hold)<<3|b2u(ss.Refuse)<<4|b2u(ss.LeaseOpen)<<5|b2u(ss.Alloc)<<6)
+			byte(ss.LeaseMode)|b2u(ss.Hold)<<3|b2u(ss.Refuse)<<4|b2u(ss.LeaseOpen)<<5|b2u(ss.Alloc)<<6|b2u(ss.Loose)<<7)
 		esc = esc || ss.Restarts >= 15 || ss.Slack >= 15
 	}
 	for p := range s.Ctrl {
@@ -125,7 +130,12 @@ func (s *State) appendKey(b []byte) []byte {
 		}
 	}
 	b = append(b, byte(s.Contested), byte(s.Contested>>8), byte(s.Held), byte(s.Held>>8),
-		byte(s.Released), byte(s.Released>>8), s.Unsettled)
+		byte(s.Released), byte(s.Released>>8), s.Unsettled, byte(s.Fence)|b2u(s.Switched)<<1)
+	var rebooted byte
+	for v := range s.Drv {
+		rebooted |= b2u(s.Drv[v].Rebooted) << uint(v)
+	}
+	b = append(b, s.Reorder, rebooted)
 	b = append(b, byte(len(s.Ev)), byte(len(s.Ev)>>8))
 	for j := range s.Ev {
 		e := &s.Ev[j]

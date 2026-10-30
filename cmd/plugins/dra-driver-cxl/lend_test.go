@@ -230,6 +230,22 @@ func (e *ltEnv) run(pod *api.PodSandbox, id, name string, pid uint32, effMems st
 	return ctr
 }
 
+// runPinned is run of a container whose spec has the cpuset.mems mems, as
+// kubelet's memory manager pins it: its cgroup has it as cpuset.mems and
+// cpuset.mems.effective. With fencing none the lends of a container change
+// its cpuset.mems only if it has one of its own (lend.go).
+func (e *ltEnv) runPinned(pod *api.PodSandbox, id, name string, pid uint32, mems string) *api.Container {
+	e.t.Helper()
+	ctr := specMems(ltCtr(pod, id, name, pid), mems)
+	if _, _, err := e.p.CreateContainer(context.Background(), pod, ctr); err != nil {
+		e.t.Fatal(err)
+	}
+	e.stub.setSpecOnly(ctr.GetId(), true)
+	e.proc(pid, "kubepods/"+pod.GetUid()+"/"+id, mems, mems)
+	e.startCtr(pod, ctr)
+	return ctr
+}
+
 // startCtr starts a created container: StartContainer, then the runtime
 // marks it started (its updates reach the cgroup) and PostStartContainer.
 // Waits for the OnContainerStarted callback and the fence passes.
@@ -361,7 +377,7 @@ func TestLendContainerTable(t *testing.T) {
 func TestLendMemsArithmetic(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
-	e.run(ltPod("u1"), "c1", "app", 101, "0-1")
+	e.runPinned(ltPod("u1"), "c1", "app", 101, "0-1")
 
 	steps := []struct {
 		lend bool
@@ -409,7 +425,7 @@ func TestLendMemsArithmetic(t *testing.T) {
 func TestLendTwoHolders(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
-	e.run(ltPod("u1"), "c1", "app", 101, "0-1")
+	e.runPinned(ltPod("u1"), "c1", "app", 101, "0-1")
 	cg := filepath.Join(cgroupRoot, "kubepods/u1/c1")
 	setMems := func(mems string) {
 		t.Helper()
@@ -489,7 +505,7 @@ func TestLendGoneContainer(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
 	pod := ltPod("u1")
-	ctr := e.run(pod, "c1", "app", 101, "0")
+	ctr := e.runPinned(pod, "c1", "app", 101, "0")
 	if err := e.p.LendNode(ctx, "u1", "app", 3, "l1"); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +527,7 @@ func TestLendGoneContainer(t *testing.T) {
 	}
 
 	// The restarted container (new id) starts without lends.
-	e.run(pod, "c1b", "app", 111, "0")
+	e.runPinned(pod, "c1b", "app", 111, "0")
 	if got := e.p.LentNodes("u1", "app"); len(got) != 0 {
 		t.Fatalf("restarted container has lends: %v", got)
 	}
@@ -551,7 +567,7 @@ func TestLendRefusedWhenSteered(t *testing.T) {
 func TestLendUpdateFailures(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
-	e.run(ltPod("u1"), "c1", "app", 101, "0")
+	e.runPinned(ltPod("u1"), "c1", "app", 101, "0")
 
 	e.stub.fail = true
 	if err := e.p.LendNode(ctx, "u1", "app", 2, "l1"); err == nil || !strings.Contains(err.Error(), "failed") {
@@ -588,17 +604,19 @@ func TestLendNeverWithoutBaseMems(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
 	pod := ltPod("u1")
-	// No cgroup and no spec mems: base unknown.
+	// No cgroup and no spec mems: base unknown, but with fencing none it
+	// inherits every node, nothing is set (bug-18).
 	ctr := ltCtr(pod, "c1", "app", 0)
 	if _, _, err := e.p.CreateContainer(ctx, pod, ctr); err != nil {
 		t.Fatal(err)
 	}
 	e.startCtr(pod, ctr)
-	if err := e.p.LendNode(ctx, "u1", "app", 2, "l1"); err == nil || !strings.Contains(err.Error(), "base memory nodes unknown") {
-		t.Fatalf("lend without base: %v", err)
+	noErr(t, e.p.LendNode(ctx, "u1", "app", 2, "l1"))
+	if got := e.p.LentNodes("u1", "app"); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("lent %v", got)
 	}
 	// The only own node is the node being lent.
-	e.run(ltPod("u2"), "c2", "app", 201, "2")
+	e.runPinned(ltPod("u2"), "c2", "app", 201, "2")
 	if err := e.p.LendNode(ctx, "u2", "app", 2, "l1"); err == nil || !strings.Contains(err.Error(), "base memory nodes unknown") {
 		t.Fatalf("lend of the only node: %v", err)
 	}
@@ -621,7 +639,7 @@ func TestLendNeverWithoutBaseMems(t *testing.T) {
 func TestLendBaseExcludesNodesLentToOthers(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
-	e.run(ltPod("u1"), "c1", "app", 101, "0-1")
+	e.runPinned(ltPod("u1"), "c1", "app", 101, "0-1")
 	if err := e.p.LendNode(ctx, "u1", "app", 2, "l1"); err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +742,7 @@ func TestLendSynchronize(t *testing.T) {
 func TestLendConcurrent(t *testing.T) {
 	e := newLtEnv(t)
 	ctx := context.Background()
-	e.run(ltPod("u1"), "c1", "app", 101, "0")
+	e.runPinned(ltPod("u1"), "c1", "app", 101, "0")
 	var wg sync.WaitGroup
 	for n := 1; n <= 8; n++ {
 		wg.Add(1)
@@ -744,5 +762,333 @@ func TestLendConcurrent(t *testing.T) {
 	ups := e.stub.taken()
 	if len(ups) != 8 || ups[7] != "c1 mems=0-8" {
 		t.Fatalf("updates %q", ups)
+	}
+}
+
+// TestLendNoneInherits (bug-18) checks that with fencing none a lend and a
+// revoke leave the empty cpuset.mems of a container alone: it has every
+// node with memory, also one whose memory goes online later, and a revoke
+// must not take a node that has memory of others off it. Also after a
+// plugin restart, with the lease kept or released while it was down.
+func TestLendNoneInherits(t *testing.T) {
+	e := newLtEnv(t)
+	logs := captureKlog(t)
+	ctx := context.Background()
+	pod := ltPod("u1")
+	// node 2 has memory, a numa slice of another pod
+	e.run(pod, "c1", "main", 101, "0-2")
+	for i, s := range []struct {
+		lend   bool
+		node   int
+		holder string
+		lent   []int
+	}{
+		{true, 2, "l1", []int{2}},
+		{true, 2, "l1", []int{2}}, // the reconcile of the broker
+		{true, 2, "l2", []int{2}},
+		{false, 2, "l1", []int{2}},
+		{true, 3, "l3", []int{2, 3}}, // no memory yet
+		{false, 2, "l2", []int{3}},
+		{false, 2, "l2", []int{3}},
+		{false, 3, "l3", []int{}},
+	} {
+		if s.lend {
+			noErr(t, e.p.LendNode(ctx, "u1", "main", s.node, s.holder))
+		} else {
+			noErr(t, e.p.RevokeNode(ctx, "u1", "main", s.node, s.holder))
+		}
+		e.expectUpdates()
+		if got := e.p.LentNodes("u1", "main"); !reflect.DeepEqual(got, s.lent) {
+			t.Fatalf("step %d: lent %v, expected %v", i, got, s.lent)
+		}
+	}
+	if got := e.cgroupMems("kubepods/u1/c1"); got != "" {
+		t.Fatalf("cgroup mems %q, expected empty", got)
+	}
+	out := logs()
+	if n := strings.Count(out, "cpuset.mems left empty, it has the nodes of its parent (fencing none"); n != 6 {
+		t.Errorf("%d \"left empty\" lines, expected 6 (one per change of the holders):\n%s", n, out)
+	}
+	if strings.Contains(out, "cpuset.mems=") {
+		t.Errorf("cpuset.mems set:\n%s", out)
+	}
+	// node 3 has no memory yet: not in its cpuset.mems.effective
+	if !strings.Contains(out, "lend node 3 for l3: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent nodes 3 (") {
+		t.Errorf("no warning of node 3:\n%s", out)
+	}
+	if n := strings.Count(out, "cpuset.mems.effective lacks"); n != strings.Count(out, "lacks the lent nodes 3 (") {
+		t.Errorf("warning of another node:\n%s", out)
+	}
+
+	// a restarted plugin: the broker keeps the lease l1 of node 2, the
+	// lease l3 of node 3 was released while the plugin was down
+	n := newLtEnv(t)
+	leases := &fakeLeases{}
+	leases.set("u1", "main", 2, "l1")
+	n.p.leases = leases
+	n.proc(101, "kubepods/u1/c1", "0-3", "")
+	c1 := ltCtr(pod, "c1", "main", 101)
+	c1.State = api.ContainerState_CONTAINER_RUNNING
+	if _, err := n.p.Synchronize(ctx, []*api.PodSandbox{pod}, []*api.Container{c1}); err != nil {
+		t.Fatal(err)
+	}
+	noErr(t, n.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	n.p.LendsRestored()
+	noErr(t, n.p.RevokeNode(ctx, "u1", "main", 3, "l3"))
+	leases.set("u1", "main", 2)
+	noErr(t, n.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	n.expectUpdates()
+	if got := n.p.LentNodes("u1", "main"); len(got) != 0 {
+		t.Fatalf("lent %v after the revokes", got)
+	}
+	if got := n.cgroupMems("kubepods/u1/c1"); got != "" {
+		t.Fatalf("cgroup mems %q after the restart, expected empty", got)
+	}
+	// the lent nodes are not its own, as with a cpuset.mems of its own
+	if ref, _ := n.p.Container("u1", "main"); ref.BaseMems != "0-1" {
+		t.Fatalf("BaseMems %q", ref.BaseMems)
+	}
+}
+
+// TestLendNoneFencedBefore (bug-18) checks lends with fencing none to the
+// containers that a plugin with fencing allowed-mems fenced before the
+// switch to none: they keep their cpuset.mems, a lend adds the node and a
+// revoke removes it again, but not a node of their claims.
+func TestLendNoneFencedBefore(t *testing.T) {
+	e := newLtEnv(t)
+	e.p.state = fenceClaims()
+	leases := &fakeLeases{}
+	e.p.leases = leases
+	ctx := context.Background()
+	p1, p2 := ltPod("u1"), ltPod("u2")
+	// a requester with node 2 of its lease l1, and a container with a numa
+	// slice of node 2 and node 3 of its lease l2, both kept by the broker
+	leases.set("u1", "main", 2, "l1")
+	leases.set("u2", "main", 3, "l2")
+	e.proc(101, "kubepods/u1/c1", "0-2", "0-2")
+	c1 := specMems(ltCtr(p1, "c1", "main", 101), "0-2")
+	c1.State = api.ContainerState_CONTAINER_RUNNING
+	e.proc(201, "kubepods/u2/c2", "0-3", "0-3")
+	c2 := withClaims(specMems(ltCtr(p2, "c2", "main", 201), "0-3"), "numa")
+	c2.State = api.ContainerState_CONTAINER_RUNNING
+	if _, err := e.p.Synchronize(ctx, []*api.PodSandbox{p1, p2}, []*api.Container{c1, c2}); err != nil {
+		t.Fatal(err)
+	}
+	// the reconcile of the broker: lent already
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	noErr(t, e.p.LendNode(ctx, "u2", "main", 3, "l2"))
+	e.p.LendsRestored()
+	e.passes()
+	e.expectUpdates()
+
+	// the leases are released
+	leases.set("u1", "main", 2)
+	leases.set("u2", "main", 3)
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-1")
+	noErr(t, e.p.RevokeNode(ctx, "u2", "main", 3, "l2"))
+	e.expectUpdates("c2 mems=0-2")
+
+	// a lease of the node of its claim: the node stays at the revoke, and
+	// as its cgroup and spec have it, nothing is sent
+	noErr(t, e.p.LendNode(ctx, "u2", "main", 2, "l3"))
+	e.expectUpdates()
+	if got := e.p.LentNodes("u2", "main"); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("lent %v, expected [2]", got)
+	}
+	noErr(t, e.p.RevokeNode(ctx, "u2", "main", 2, "l3"))
+	e.expectUpdates()
+	noErr(t, e.p.RevokeNode(ctx, "u2", "main", 2, "l3"))
+	e.expectUpdates()
+	if got := e.p.LentNodes("u2", "main"); len(got) != 0 {
+		t.Fatalf("lent %v after the revoke", got)
+	}
+	// a new lease of the requester
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 3, "l4"))
+	e.expectUpdates("c1 mems=0-1,3")
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 3, "l4"))
+	e.expectUpdates("c1 mems=0-1")
+	for _, c := range []struct{ rel, mems string }{{"kubepods/u1/c1", "0-1"}, {"kubepods/u2/c2", "0-2"}} {
+		if got := e.cgroupMems(c.rel); got != c.mems {
+			t.Errorf("%s: cgroup mems %q, expected %q", c.rel, got, c.mems)
+		}
+	}
+}
+
+// TestLendNonePinnedClaimed (bug-18 review) checks that with fencing none
+// a revoke keeps only the claimed nodes that a pinned container had before
+// any lend: a claimed node that only a lend added leaves at the revoke.
+// After a plugin restart a claimed node in its cpuset.mems is its own.
+func TestLendNonePinnedClaimed(t *testing.T) {
+	e := newLtEnv(t)
+	e.p.state = fenceClaims()
+	ctx := context.Background()
+	runClaimed := func(pod *api.PodSandbox, id string, pid uint32, mems string) {
+		t.Helper()
+		ctr := withClaims(specMems(ltCtr(pod, id, "main", pid), mems), "numa")
+		if _, _, err := e.p.CreateContainer(ctx, pod, ctr); err != nil {
+			t.Fatal(err)
+		}
+		e.stub.setSpecOnly(ctr.GetId(), true)
+		e.proc(pid, "kubepods/"+pod.GetUid()+"/"+id, mems, mems)
+		e.startCtr(pod, ctr)
+	}
+	// pinned to 0-1, its numa claim of node 2 not in it (fencing none
+	// adds nothing)
+	runClaimed(ltPod("u1"), "c1", 101, "0-1")
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-1")
+	if got := e.cgroupMems("kubepods/u1/c1"); got != "0-1" {
+		t.Fatalf("c1: cgroup mems %q, expected 0-1", got)
+	}
+
+	// pinned to 0-2 with its claimed node 2: a lease of node 2 sends
+	// nothing, and the node stays at the revoke; a lease of node 3 comes
+	// and goes
+	runClaimed(ltPod("u2"), "c2", 201, "0-2")
+	noErr(t, e.p.LendNode(ctx, "u2", "main", 2, "l2"))
+	e.expectUpdates()
+	noErr(t, e.p.RevokeNode(ctx, "u2", "main", 2, "l2"))
+	e.expectUpdates()
+	noErr(t, e.p.LendNode(ctx, "u2", "main", 3, "l3"))
+	e.expectUpdates("c2 mems=0-3")
+	noErr(t, e.p.RevokeNode(ctx, "u2", "main", 3, "l3"))
+	e.expectUpdates("c2 mems=0-2")
+	if ref, _ := e.p.Container("u2", "main"); ref.BaseMems != "0-2" {
+		t.Fatalf("c2: BaseMems %q, expected 0-2", ref.BaseMems)
+	}
+
+	// A restarted plugin: c1 has node 2 of the kept lease l1. It cannot
+	// tell a lent node from an own one: the claimed node is kept.
+	n := newLtEnv(t)
+	n.p.state = fenceClaims()
+	leases := &fakeLeases{}
+	leases.set("u1", "main", 2, "l1")
+	n.p.leases = leases
+	pod := ltPod("u1")
+	n.proc(101, "kubepods/u1/c1", "0-2", "0-2")
+	c1 := withClaims(specMems(ltCtr(pod, "c1", "main", 101), "0-2"), "numa")
+	c1.State = api.ContainerState_CONTAINER_RUNNING
+	if _, err := n.p.Synchronize(ctx, []*api.PodSandbox{pod}, []*api.Container{c1}); err != nil {
+		t.Fatal(err)
+	}
+	noErr(t, n.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	leases.set("u1", "main", 2)
+	noErr(t, n.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	n.expectUpdates()
+	if got := n.cgroupMems("kubepods/u1/c1"); got != "0-2" {
+		t.Fatalf("c1 after the restart: cgroup mems %q, expected 0-2", got)
+	}
+}
+
+// TestLendNoneSkipNeedsSpec (bug-18 review) checks that an update that the
+// cgroup of a pinned container has already is skipped only when its spec
+// has it too: a later update of its resources would write the spec's
+// cpuset.mems to the cgroup.
+func TestLendNoneSkipNeedsSpec(t *testing.T) {
+	e := newLtEnv(t)
+	ctx := context.Background()
+	pod := ltPod("u1")
+	// a lend of the previous plugin reached the cgroup, the spec as the
+	// plugin learns it has the nodes of the runtime
+	e.proc(101, "kubepods/u1/c1", "0-2", "0-2")
+	c1 := specMems(ltCtr(pod, "c1", "main", 101), "0-1")
+	c1.State = api.ContainerState_CONTAINER_RUNNING
+	if _, err := e.p.Synchronize(ctx, []*api.PodSandbox{pod}, []*api.Container{c1}); err != nil {
+		t.Fatal(err)
+	}
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-2")
+	noErr(t, e.p.RevokeNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates("c1 mems=0-1")
+}
+
+// TestLendNoneParentRestricts (bug-18 review) checks that a lend to an
+// inheriting container whose cpuset.mems.effective lacks the node (a
+// parent cgroup restricts it) is recorded, without an update, and warned
+// about once per new holder.
+func TestLendNoneParentRestricts(t *testing.T) {
+	e := newLtEnv(t)
+	logs := captureKlog(t)
+	ctx := context.Background()
+	const warning = "NRI lend: lend node 2 for l1: ctr=ns/pod-u1/main id=c1: its cpuset.mems.effective lacks the lent nodes 2 (a parent cgroup restricts it, or they have no memory): it cannot use them"
+	// node 2 has memory, but a parent cgroup gives it 0-1 only
+	e.run(ltPod("u1"), "c1", "main", 101, "0-1")
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates()
+	if got := e.p.LentNodes("u1", "main"); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("lent %v, expected [2]", got)
+	}
+	out := logs()
+	n := strings.Count(out, warning)
+	if n == 0 {
+		t.Fatalf("no warning %q:\n%s", warning, out)
+	}
+	// the reconcile of the broker: no warning again
+	noErr(t, e.p.LendNode(ctx, "u1", "main", 2, "l1"))
+	e.expectUpdates()
+	if out := logs(); strings.Count(out, warning) != n {
+		t.Fatalf("warned again at a re-lend:\n%s", out)
+	}
+	if got := e.cgroupMems("kubepods/u1/c1"); got != "" {
+		t.Fatalf("cgroup mems %q, expected empty", got)
+	}
+}
+
+// TestLendsRestoredLogged (bug-18) checks that the plugin logs once when
+// NRI has synchronized and the lends are restored, in either order, with
+// fencing none too, where no fence pass runs.
+func TestLendsRestoredLogged(t *testing.T) {
+	const (
+		none   = "NRI fence: lends restored (fencing none)"
+		fenced = "NRI fence: lends restored, fencing running containers"
+	)
+	for _, tc := range []struct {
+		fencing, line, other string
+		restoredFirst        bool
+	}{
+		{config.FencingNone, none, fenced, false},
+		{config.FencingNone, none, fenced, true},
+		{config.FencingAllowedMems, fenced, none, false},
+		{config.FencingAllowedMems, fenced, none, true},
+	} {
+		t.Run(fmt.Sprintf("%s/restoredFirst=%v", tc.fencing, tc.restoredFirst), func(t *testing.T) {
+			var e *ltEnv
+			if tc.fencing == config.FencingAllowedMems {
+				e = newFenceEnv(t, "0-2", 2)
+			} else {
+				e = newLtEnv(t)
+			}
+			logs := captureKlog(t)
+			ctx := context.Background()
+			if tc.restoredFirst {
+				e.p.LendsRestored()
+			} else {
+				_, err := e.p.Synchronize(ctx, nil, nil)
+				noErr(t, err)
+			}
+			if out := logs(); strings.Contains(out, "lends restored") {
+				t.Fatalf("logged before both:\n%s", out)
+			}
+			if tc.restoredFirst {
+				_, err := e.p.Synchronize(ctx, nil, nil)
+				noErr(t, err)
+			} else {
+				e.p.LendsRestored()
+			}
+			_, err := e.p.Synchronize(ctx, nil, nil)
+			noErr(t, err)
+			e.p.LendsRestored()
+			e.passes()
+			out := logs()
+			if n := strings.Count(out, tc.line); n != 1 {
+				t.Errorf("%d lines %q, expected 1:\n%s", n, tc.line, out)
+			}
+			if strings.Contains(out, tc.other) {
+				t.Errorf("line %q logged:\n%s", tc.other, out)
+			}
+		})
 	}
 }

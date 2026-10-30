@@ -1,0 +1,181 @@
+BUG-19: A PREPARE BEFORE THE NRI PLUGIN IS CONNECTED LOSES THE
+STEERING AND THE FENCE OF THE CONTAINERS OF THE CLAIM
+
+Branch 5jg-cxl, 2026-10-29. Found in a review (the start order checked
+by the orchestrator). Fixed in the working tree (uncommitted), unit
+tested; untested in the cluster.
+
+D/ = cmd/plugins/dra-driver-cxl/, K/ = ~/github.com/kubernetes/kubernetes
+pkg/kubelet/ (v1.37.1-22), NRI/ = github.com/containerd/nri v0.12.2 (the
+module of go.mod). Line numbers of HEAD (73dba0f5a) unless "new".
+
+========================================================================
+1. SUMMARY
+
+The driver registered its kubelet plugins before it started its NRI
+plugin. Between the two, kubelet could prepare a claim, and then create
+the containers of the pod before the NRI plugin was in the runtime. The
+plugin never saw the CreateContainer of such a container; it found the
+container only at its Synchronize:
+- a container that its claims steer (container.steering, e.g. policy
+  auto) got no steering plan at CreateContainer and so no manager at
+  StartContainer. Synchronize takes it as not steered by this process
+  (syncManagement, releaseSteering), and it runs unsteered for its
+  life, memory.high max;
+- a fenced container (fencing allowed-mems) got no cpuset.mems
+  adjustment at CreateContainer, and ran with the fenced nodes until the
+  first fence pass (NRI synchronized and the lends restored).
+The window opens at every start of the driver. After a node reboot
+kubelet retries the Prepare of every pod of the node every ~10 s while
+the driver starts, so the window is likely hit then. After a driver
+restart in the same boot it needs a new pod whose Prepare comes then.
+
+Severity: medium. Steering is lost for the life of the container, with
+no error; a fenced container uses fenced nodes for a while. No data loss.
+
+========================================================================
+2. REPRODUCTION
+
+Not reproduced on the cluster. In general: a claim that steers its
+container (or fencing allowed-mems), and a Prepare that kubelet sends
+after the kubelet plugin of the driver is registered and before the
+NRI plugin has synchronized (a node reboot with such a pod kept, or a
+new pod while the driver starts). Unit test: section 6
+(TestPrepareWaitsForNRI fails without the wait).
+
+========================================================================
+3. EVIDENCE
+
+- D/driver.go newDriver: kubeletplugin.Start (:435) registers the
+  kubelet plugin of cxl.nri.io; startPoolDriver (:452) that of
+  cxl-pool.nri.io; PublishResourceSlice (:458); only then
+  startNRIPlugin (:474). D/driver.go:655 PrepareResourceClaims and
+  D/pool.go:462 do not wait for NRI.
+- D/nri.go:421 CreateContainer builds the steering plan
+  (p.pending) and the fence adjustment; StartContainer (new :666) starts
+  a manager only for a pending plan. D/lend.go:506 syncManagement: "it
+  is never steered: steering is planned at CreateContainer"; :538
+  releaseSteering.
+- K/cm/dra/manager.go: kubelet prepares the claims of a pod in its sync
+  before it creates the containers; K/kuberuntime/
+  kuberuntime_manager.go:1718-1729 after a reboot (bug-15).
+- NRI/pkg/stub/stub.go:453-465: Start returns after the runtime has
+  configured the plugin (cfgErrC), before Synchronize.
+  NRI/pkg/adaptation/adaptation.go:682-704: the runtime synchronizes a
+  new plugin and adds it to its plugins under syncLock;
+  :803 BlockPluginSync: container creation holds it as a reader. A
+  container whose creation starts after the Synchronize of the plugin
+  has returned is created with the plugin.
+
+========================================================================
+4. ROOT CAUSE
+
+The start order of newDriver: the kubelet plugins before the NRI
+plugin, and no Prepare that waits for it. Nothing needed that order:
+startNRIPlugin uses the node state, the prepared claims of the pool
+driver (loaded by loadPoolDriver) and the lease table (newBroker), all
+there before the kubelet plugins start.
+
+========================================================================
+5. THE FIX
+
+a) D/driver.go newDriver (new :440-484): the NRI plugin starts after the
+   broker is created and before kubeletplugin.Start, and the lenders of
+   both drivers are set then too (a companion Prepare right after the
+   registration has its lender). The broker starts its reconcile where
+   it did, after the ResourceSlice is published (new :522). A failed
+   NRI start continues without it as before (fence.setNoNRI).
+b) D/driver.go waitNRI (new :702-729) and nriPrepareWait (30 s, well
+   within kubelet's 45 s call timeout, K/cm/dra/plugin/
+   dra_plugin.go:43): PrepareResourceClaims of cxl.nri.io (new :687) and
+   of cxl-pool.nri.io (D/pool.go new :514, before p.mu, so that the wait
+   does not hold up the Unprepares) wait until the NRI plugin has
+   synchronized (WaitSynchronized), at most nriPrepareWait. On a timeout
+   every claim of the call gets the error, nothing is touched, and
+   kubelet retries the Prepare:
+     NRI not synchronized yet: context deadline exceeded: the containers of the claims would be created before the NRI plugin sees them; kubelet retries the Prepare
+   and the driver logs it as a warning ("cxl.nri.io: preparing N claims:
+   ..."). No wait without an NRI plugin (it failed to start). The pool
+   driver gets the plugin as poolDriver.nri (D/pool.go new :88).
+   With a), the wait ends at once in practice: the plugin is in the
+   runtime long before kubelet has found the registration socket. It is
+   kept because stub.Start returns before Synchronize, and it makes the
+   order a guarantee.
+c) A Prepare of a claim that is prepared already waits too, as a new
+   one: kubelet creates the containers of the pod after any successful
+   Prepare (in the same boot kubelet does not prepare a claim again that
+   its checkpoint has as prepared, so after a driver restart nothing
+   waits for these; after a reboot that the boot ids do not tell, the
+   claims answer "already prepared" and their containers are created
+   then). Its cost is nil once NRI has synchronized.
+d) Not waited for: the lends restored (the broker's first reconcile,
+   which needs the API server). A new container gets the kept lends of
+   its leases at CreateContainer (keptLends), and a fenced one its
+   cpuset.mems without the fenced nodes then; neither needs the
+   reconcile.
+Not changed: the driver restart in the same boot (kubelet does not
+prepare the prepared claims again; the running containers are found by
+Synchronize as before), Unprepare (no container is created after it).
+Left: a container created between the end of our Synchronize handler
+and the runtime adding the plugin is impossible (the runtime holds
+syncLock across both); one created while NRI is down (the plugin lost
+its connection and the process exits to be restarted) is found by the
+Synchronize of the next process, as before.
+
+========================================================================
+6. TESTS
+
+- D/driver_test.go TestPrepareWaitsForNRI (new), cxl.nri.io (a local
+  claim) and cxl-pool.nri.io (a pool claim): with an NRI plugin that has
+  not synchronized and nriPrepareWait 20 ms the Prepare fails with the
+  error of 5b and touches nothing (no command, not prepared, no
+  preparing record); a Prepare that waits (nriPrepareWait 1 min) does
+  not return within 50 ms and succeeds after Synchronize; a Prepare of
+  the claim prepared already waits for a new plugin too; without an NRI
+  plugin it does not wait. Mutation: no wait in waitNRI fails both
+  subtests. -race -count=3: ok.
+- The start order of newDriver has no unit test (it needs kubelet and
+  the NRI socket); checked by reading, and by section 7.
+- gofmt, go vet, golangci-lint run ./cmd/plugins/dra-driver-cxl/... (0
+  issues), go test -race ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...
+  ./scripts/testing/fake-cxl-pool/... -skip TestMemdevSettings: ok.
+
+========================================================================
+7. TO VERIFY ON THE CLUSTER
+
+- The driver log at start: "NRI plugin started" and "NRI Synchronize: N
+  pods, M containers tracked" before "Starting DRA driver kubelet
+  plugin"; the lease broker and "NRI fence: lends restored" as before.
+- A node reboot (or a qemu restart, bug-15 7) with a pod whose claim
+  steers its container (policy auto): after the reboot the container has
+  a manager ("NRI StartContainer: ... cgroupsPath=", memory steering
+  steps), not "NRI Synchronize: ctr=...: steering not restarted"; a
+  fenced container is created without the fenced nodes ("NRI
+  CreateContainer: ctr=...: cpuset.mems=... (fenced nodes ...)").
+- No "NRI not synchronized yet" in the log in normal starts.
+
+========================================================================
+8. PROPOSED COMMIT MESSAGE
+
+cxl: start NRI before the kubelet plugins, Prepare waits for it
+
+The driver registered its kubelet plugins before it started its NRI
+plugin. kubelet could prepare a claim in between and create its
+containers before the NRI plugin was in the runtime. The plugin never
+saw their CreateContainer: a container that its claims steer ran
+unsteered for its life, a fenced one ran with the fenced nodes until the
+first fence pass. After a node reboot kubelet retries every Prepare
+while the driver starts, so this is likely then.
+
+Start the NRI plugin and set the lenders before the kubelet plugins. A
+Prepare of either driver waits until the NRI plugin has synchronized, at
+most 30 s, and fails for kubelet to retry otherwise. Without an NRI
+plugin it does not wait.
+
+========================================================================
+9. STATUS
+
+Fixed, untested in the cluster. Working tree, not committed:
+D/driver.go, D/pool.go, D/driver_test.go; docs/memory/cxl/usage.md. In
+image 9d9dff4cadce (build/images, the newest: e2e runs take it), with
+bug-15, bug-18 and their review fixes.

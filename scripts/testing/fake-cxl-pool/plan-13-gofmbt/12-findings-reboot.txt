@@ -1,0 +1,434 @@
+plan-13: node reboot findings
+=============================
+2026-10-29 (research agent). Question: how the CXL DRA driver, the
+pool controllers, the pool servers and Kubernetes behave when a worker
+node of the test90 cluster reboots, so that the model can get a "node
+reboot" fault. Findings only: no model, executor or driver change.
+
+Names: N = repo root, D = N/cmd/plugins/dra-driver-cxl,
+F = N/scripts/testing/fake-cxl-pool, T = test90-gofmbt-reliability,
+E = N/test/e2e, K = ~/github.com/kubernetes/kubernetes (v1.37.1-22,
+the cluster runs v1.37.1), Q = ~/github.com/qemu/qemu (branch
+5jL-fix-cxl-hot-remove, ff076b1e6c, the qemu of the VMs), L =
+~/github.com/torvalds/linux (the VMs run 7.3.0-rc4). RR =
+/tmp/p13-runs/reboot-research (raw logs of this research). Image of
+the driver: 2ba73741f42a (c74eff381 + bug-14, the image of FP4-FP9).
+
+0. Summary
+----------
+- A guest reboot of vm1 (systemctl reboot) takes ~23 s to ssh, ~44 s
+  until the driver is ready (A15) and ~90-115 s until every pod with a
+  claim runs again. Restarting qemu (vmdir-restart) costs about the
+  same: ~19 s to ssh, ~46 s to the driver, ~95-120 s to the pods.
+- Kubernetes keeps every pod (same UID, restarts +1, new sandbox) and
+  every claim (allocation and reservedFor unchanged). kubelet v1.37
+  calls NodePrepareResources again for every claim after the boot.
+- The driver answers "already prepared" with the result of the old
+  boot. Only the local allocator knows the boot id. The containers
+  start with the CDI devices of the old boot: device nodes with old
+  numbers, a NODE without memory, a bind mount of a node mount that
+  is gone. One stale device node reached another claim's device: the
+  container of an rw claim of c-pmem1 read c-pmem0 (R1, severe).
+- A guest reboot leaves every CXL memdev unusable in the guest: a
+  qemu bug keeps Mem_Enable of the device DVSEC across the reset and
+  Linux refuses the endpoints (R4). Only a qemu restart gives working
+  devices; it drops every attachment of the host, and the pool
+  controllers attach the claimed devices again; the test's local
+  memdev is not attached again.
+- The pool server of pool-c (HMP) races with the qemu restart: the
+  controller's new attachments are dropped one second later and
+  adopted without owner; the controller never detaches them (R3).
+- vm2 should stay out of the model (section 5).
+- The cluster was cleaned and the lock released (section 8).
+
+1. The reboot variants
+----------------------
+1.1 Guest reboot: "systemctl reboot" in the guest. qemu keeps running
+  and keeps its hot-plugged devices: the reset is a qemu system reset,
+  no qemu option stops it (no -no-reboot in the command lines of the
+  three qemu processes). ct3d_reset resets the component registers,
+  so every HDM decoder is uncommitted after the reset
+  (Q/hw/mem/cxl_type3.c:1327-1337). The pool servers see no change:
+  the attachments stay "attached" (RR/pre1/att-*.json and
+  RR/post1/att-*.json are the same). This is what a real platform
+  reset looks like if the fabric keeps the devices bound to the host.
+1.2 qemu restart: vm-reboot (E/lib/vm.bash:862-938, VM2) or
+  vmdir-restart (E/lib/k8s.bash:144-176, VM1 and VM0): shutdown -h,
+  then vagrant up --no-provision. Every hot-plugged device is gone.
+  The server drops the attachments of the host ("qemu restarted (pid
+  A -> B)" or "qemu process not found", F/pkg/server/server.go:682,
+  766-788); the pool controller still wants them (the claims are
+  allocated) and attaches them again into the new qemu
+  (F/pkg/controller/reconciler.go:186-213). The local memdev of the
+  test (owner e2e:dra-local-device, T/code.var.sh:280-284) has no
+  controller: it stays detached. This is a power cycle in which the
+  fabric unbinds the devices and binds them again.
+1.3 Which one: the guest reboot is the realistic one and the cheaper
+  one to write (the executor needs nothing but the reboot and the
+  waits). It needs R4 fixed in qemu first: today it makes every CXL
+  device of the VM useless until its qemu restarts. The qemu restart
+  works today but needs R3 fixed (or it leaks pool-c devices) and an
+  executor that attaches the local memdev again.
+
+2. The experiment
+-----------------
+- Lock /tmp/p13-cluster.lock (owner research-reboot), 08:15-08:47
+  local time (06:15-06:47 UTC).
+- test90 in replay mode, with a generator wrapper that pauses before
+  the model's teardown (RR/gen-wrap.py: MBT_BIN, it forwards the lines
+  of mbt-cxl and waits for RR/continue before step 26; "end" there
+  sends "end" instead, so that the executor's mbt-teardown and cleanup
+  run). From E:
+    MBT_MODE=replay MBT_REPLAY=RR/steps.txt MBT_BIN=RR/gen-wrap.py \
+    MBT_READ_TIMEOUT=21600 WRAP_STEPS=25 MBT_OBS_KEEP=200 \
+    ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/\
+    test90-gofmbt-reliability
+  RR/steps.txt (profile fullp): pwr-c@vm0 and xpb-c@vm1 write the
+  erofs image (tokens mbt-5 on c-pmem0, mbt-6 on c-pmem1), pwr-c is
+  deleted, then on vm1: pfsd-c (fs direct of c-pmem0), xnuma-c
+  (c-pooled0, node 3), xdax-a (a-pooled0, dax), ldax (local slice),
+  lease (a local numa lease), plain; writes on xdax-a and ldax, preads
+  on pfsd-c and xpb-c. All 25 steps PASS. (Two earlier tries stopped
+  at once on slot names that fullp does not have and on "create
+  pbro-c" not enabled next to pfsd-c: RR/run0-slot-error.log,
+  RR/run1-pbro-diverged.log.)
+- During the pause: snapshot (RR/h.sh snap: pods, claims, slices,
+  attachments, the guest's cxl/daxctl/ndctl lists, every driver state
+  file, CDI specs, the kubelet DRA checkpoint, cpuset.mems of each
+  container) before (RR/pre1), after the guest reboot (RR/post1) and
+  after the qemu restart (RR/post2); a poller (RR/poll.sh) every ~3 s
+  (RR/reboot1-poll2.txt, RR/reboot2-poll.txt).
+- After the qemu restart two pods of my own on vm1:
+  research-pbro-vm1 (template mbt-pbro-c) and research-sdax-vm1
+  (mbt-sdax-c), RR/post2/research-*.yaml.
+- Output of the run: RR/out (a copy of the test output directory),
+  RR/run.log.
+
+3. Guest reboot of vm1 (06:29:27.5 UTC)
+---------------------------------------
+3.1 Timeline (seconds after "systemctl reboot")
+    +1.2   the last journal line of the old boot
+    +5.5   the new kernel runs (uptime -s 06:29:33)
+    +14    kubelet started (it started again at +25)
+    +22.6  ssh works with the new boot id (at the latest: the poller
+           started then and found it at once)
+    +26    kubelet's first Prepares fail: "DRA driver cxl.nri.io is
+           not registered" (RR/post1/kubelet-vm1.journal)
+    +27    the driver container runs again (pod q5l2v, restarts 0->1);
+           the plain pod runs (restarts 1)
+    +27-42 the driver waits 15 s for the API server: "listing the
+           ResourceSlices of pool controllers: ... context deadline
+           exceeded" (RR/post1/driver-vm1.log:19)
+    +42.4  pool driver registered; +43.5 "NRI fence: lends restored"
+    +87-106 kubelet calls NodePrepareResources for each claim again
+           (driver log lines 83-112, kubelet's back-off after the
+           failed first try); the containers start 06:30:55-06:31:20
+    pfsd-c: CrashLoopBackOff from +88 s on, never recovers.
+  The node never became NotReady: the outage (~25 s without a
+  kubelet) is shorter than the node monitor grace period (40 s).
+3.2 The guest after the boot (RR/post1/vm.txt, cxl-dmesg.txt)
+  - The five memdevs are in sysfs with their serials, under new names
+    (0xc1ae2002 was mem2, now mem3; 0xc100e2e1 was mem0, now mem2),
+    but none has a driver: "Range register decodes outside platform
+    defined CXL ranges", "cxl_mem memN: endpointK failed probe" for
+    each. No endpoint, no region, no dax device, no pmem block device,
+    "cxl list -M" lists nothing. Cause: R4.
+  - NUMA nodes 2 and 3 do not exist (only node0 and node1 are online;
+    the possible nodes are 0-3). auto_online_blocks is "offline".
+  - The persistent devices' content lives in the host files and is
+    kept: c-pmem0.raw has mbt-5 and c-pmem1.raw mbt-6 at offset
+    0x200000 (the erofs after the pfn info block), the .lsa files keep
+    their namespace labels. The guest cannot read them (no endpoint).
+3.3 The driver after the boot (RR/post1/driver-vm1.log)
+  - Pool driver: "loaded 4 prepared claims" (D/pool.go:1370-1396);
+    the memdevs are there (same serials), so no "gone" warning; no
+    boot id in preparedPoolClaims.json. restoreMounts: "not mounting
+    .../mounts/c1ae2002-direct again: device 0xc1ae2002: mem3 has no
+    region" (D/pool_persistent.go:810-816): the mount directory is
+    removed, the claim stays prepared with its CDI mount.
+  - Local allocator: "localDevices.json is from another boot ...
+    forgetting its 1 memdevs without touching them" (D/local.go:1337-
+    1341); preparedClaimsInfo.json keeps the ldax claim, the lease's
+    companion claim and the lease claim; forgetGoneSlices drops the
+    device node of the ldax slice (D/node_state.go:1105-1117).
+  - Lease broker: "loaded 1 lease claims and 1 leases"; lease c800a395
+    stays Ready with node 2 (cxl-request list in the requester), and
+    after the qemu restart of 4 the lender re-applies node 2 every
+    minute ("lend node 2 for c800a395 ... cpuset.mems unchanged
+    (base=0-1 lent=2)", RR/out/nri-dra-driver-cxl.vm1.log:89-248).
+  - The node's cxl.nri.io slice lost memdev-c100e2e1 (the memdev has
+    no driver); the ldax claim on it stays allocated.
+  - Every Prepare of kubelet: "was already prepared"
+    (D/pool.go:475, D/node_state.go:980) with the old result.
+3.4 kubelet: the pods keep their UIDs (RR/pre1/pod-uids.txt), each
+  container restarts once (restarts 0->1, "SandboxChanged", a new pod
+  IP); the claims keep allocation and reservedFor
+  (RR/pre1/claims.json, RR/post1/claims.json). kubelet loads its DRA
+  checkpoint (/var/lib/kubelet/dra_manager_state) with prepared=false
+  (K/pkg/kubelet/cm/dra/claiminfo.go:142-148) and prepares every claim
+  again before its containers start (K/.../manager.go:372-420). This
+  corrects 01-findings-driver.txt 3.10 ("does not prepare them
+  again"): the driver gets a Prepare for each claim after a boot, so
+  it can redo the device work there.
+3.5 The containers (RR/post1/containers.txt)
+  - xdax-a: CXL_C1EE0001_DAX=/dev/dax5.0 and a device node 252:4 that
+    the guest no longer has; dax-rw.py read fails (no
+    /sys/bus/dax/devices/dax5.0).
+  - xpb-c: /dev/pmem1 259:0 rw (blkext: the minor is given to the next
+    block device of the boot); read: ENXIO.
+  - xnuma-c: CXL_C1EE2001_NODE=3, cpuset.mems 0-1 (node 3 is offline).
+  - ldax: the claim's env without CXL_..._DAX, no device node.
+  - lease requester: its lease Ready on node 2, mems 0-1.
+  - pfsd-c: "failed to fulfil mount request: open .../mounts/
+    c1ae2002-direct: no such file or directory" (CrashLoopBackOff).
+  - plain: runs.
+3.6 Pool side: nothing changes. The servers keep the attachments, the
+  controllers keep the claims' Attached conditions.
+
+4. qemu restart of vm1 (06:34:11.98 UTC, after 3)
+-------------------------------------------------
+4.1 Timeline (RR/reboot2-times.txt, RR/reboot2-poll.txt)
+    +3.4   qemu stopped (guest shutdown -h)
+    +5.0   pool-a (QMP: SHUTDOWN event): "qemu process not found",
+           drops a-pooled0 and the local memdev
+    +6.1   pool-c (HMP) reads the new qemu's monitor: the old devices
+           are "gone", finalized; the controller attaches c-pmem0,
+           c-pmem1, c-pooled0 into the new qemu (owner k8s:)
+    +7.2   pool-c: "qemu restarted (pid 1073827 -> 1253342)": drops
+           the three new attachments, then adopts the same qemu
+           devices without owner (R3)
+    +15.6  pool-a: a-pooled0 attached again by its controller (owner
+           k8s:); the local memdev is not
+    +18.6  ssh with the new boot id
+    +29.9  vagrant up returns; the driver runs (restarts 1->2)
+    +45.2  pool driver registered; +46.3 lends restored
+    +95-118 the claimed containers start (06:35:47-06:36:10)
+    pfsd-c: CrashLoopBackOff (8 restarts by +5 min).
+4.2 The guest: the four pool memdevs probe normally (endpoints, no
+  regions); the local memdev is missing. The driver does as in 3.3
+  ("already prepared" for every claim; restoreMounts fails again:
+  "mem0 has no region"). The fence seeds nodes 2-3 of the prepared
+  claims (D/driver.go:399, D/fence.go:125).
+4.3 New claims work: research-pbro-vm1 (c-pmem0, block ro) got
+  region1, the old namespace (uuid 5a373a37-6fca-46ab-b5bc-
+  1699ba55d02c, the one of before the reboots: labels kept in the LSA)
+  as /dev/pmem1 259:0, and read mbt-5: persistent content survives.
+  research-sdax-vm1 got dax2.0 (252:1).
+4.4 The stale device node of xpb-c (claim of c-pmem1, rw) is 259:0:
+  now c-pmem0's block device. From the xpb-c container:
+  "python3 /tools/pmem-rw.py read /dev/pmem1" printed mbt-5, the
+  token of c-pmem0 (RR/post2/xpb-stale-read.txt). The node is rw
+  (brw-rw-rw-, an rw claim): that container could overwrite the
+  shared erofs image that the readers of every VM mount. Not tried.
+4.5 Pool-c's three devices stay attached to vm1 without owner; the
+  controller POSTs attach for each every ~5 s and logs "already
+  attached (attached, owner "", exclusive false)" (120 times in 5 min,
+  RR/post2/controllers.log). After the teardown deleted the claims the
+  devices stayed on vm1: mbt-teardown failed "pkg/cxl in vm1 did not
+  reach regions == [] and memdevs == [0xc100e2e1]" (RR/run.log
+  teardown section), and the cleanup did not detach them either (3
+  cxl-type3 in vm1's qemu after pool-cleanup).
+4.6 The claims of pool-c keep the old qemuDeviceId in their device
+  data (hp2-hp4, the devices are hp6-hp8): writeStatus writes only
+  when the Attached condition is missing (F/pkg/controller/
+  reconciler.go:365). Pool-a's claim was rewritten because its attach
+  failed in between ("host ... is not running"). Cosmetic (R5).
+
+5. vm2 (control plane)
+----------------------
+- A reboot of vm2 stops the API server, etcd, the scheduler with the
+  bug-08 fix and the three pool controllers. The controllers run as
+  transient units with Restart=no (N/test/e2e/memory.test-suite/
+  dra-driver-cxl/dra.source.sh:463): they do not come back after a
+  boot; the model would need ctrl-start of all three after it.
+- Every executor command and the observer's kubectl run on vm2
+  (mbt-sh vm2, dra-vm-command "$OUTPUT_DIR"): each would need retries
+  for the whole outage, and the trace collectors die.
+- Drivers on vm1 and vm0 lose the API for the outage: slices, the
+  pool watch and lease companions fail meanwhile; a model of that is a
+  fault of its own ("API outage"), not a node reboot.
+- Recommendation: leave vm2 out (MBT_REBOOT takes vm0 and vm1 only).
+  A control-plane reboot can come later as its own verb.
+
+6. Bugs
+-------
+R1 (driver, severe) Prepared claims survive a reboot with the
+   devices of the old boot.
+   Steps: claims of every kind on a node; reboot the node (either
+   variant); kubelet prepares each claim again.
+   Evidence: 3.3-3.5, 4.4; RR/post1/driver-vm1.log:83-112,
+   RR/post1/containers.txt, RR/post2/xpb-stale-read.txt.
+   Cause: the pool driver has no boot id (preparedPoolClaims.json,
+   D/pool.go:1370-1396) and returns the stored result for a claim it
+   has (D/pool.go:472-480); its CDI spec is built from the stored
+   dax and block numbers and node mounts (D/pool.go:1314-1341);
+   restoreMounts drops a mount it cannot restore but keeps the claim
+   (D/pool_persistent.go:810-816). cxl.nri.io keeps the claims of
+   preparedClaimsInfo.json although the allocator forgot their
+   slices (D/local.go:1337-1341, D/node_state.go:977-985); only dax
+   device nodes are dropped (D/node_state.go:1105-1117). The lease
+   store has no boot id either (D/lease_store.go:156-178).
+   Effect: containers run without their memory (numa: NODE=N with no
+   memory; dax: a device node of nothing; fs: never starts), and a
+   stale device node may be another device's after the boot: block
+   devices (blkext 259:N) and dax devices (252:N) get their numbers
+   anew. Shown: an rw container of c-pmem1 read c-pmem0.
+   Fix: write the boot id into preparedPoolClaims.json,
+   preparedClaimsInfo.json and leases.json (or one boot-id file per
+   data directory). At start, a claim prepared in another boot is
+   "stale": keep its record (Unprepare must still work and release),
+   write no CDI device of it, and redo its device work at the next
+   Prepare, which kubelet sends before the containers start (3.4):
+   regions, onlining, dax devices, namespaces, node mounts, local
+   slices, steering; then write the new result and CDI spec. Leases
+   of another boot: release them (their fds died with the processes;
+   a numa lease's memory is gone) and mark them Released, so that
+   the requester asks again. Never reuse a device record of another
+   boot for a new claim (checkSamePreparation, D/pool.go:705-723,
+   compares with it).
+R2 (driver, medium; part of R1) An fs claim whose node mount cannot
+   be restored stays prepared with a CDI bind mount of a missing
+   directory: the container fails at every start, also without a
+   reboot (a region gone for any reason). Evidence: 3.5 pfsd-c.
+   Cause: D/pool_persistent.go:810-816 removes the directory and goes
+   on. Fix: with R1, re-prepare; without it, drop the claim's CDI
+   device so that the start fails with a clear Prepare error.
+R3 (fake-cxl-pool server and controller, medium) After a qemu
+   restart of an HMP-controlled host the controller's new
+   attachments are dropped and adopted without owner, and never
+   detached.
+   Steps: claims of pool-c on vm1; vmdir-restart vm1.
+   Evidence: 4.1, 4.5; RR/out/fake-cxl-pool-server-pool-c.log
+   08:34:18.05-08:34:19.17, RR/post2/controllers.log.
+   Cause: for a configured HMP host the server takes liveness from its
+   monitor; the new qemu answers on the same monitor.sock path before
+   the process scan has seen the new pid, so reconcile finalizes the
+   old attachments and accepts new ones into the new qemu; the next
+   process scan then drops every attachment of the host
+   (F/pkg/server/server.go:676-683, 766-788) and adopts the devices
+   it finds (server.go:996-1013, Adopted, no owner). The controller
+   ignores adopted and ownerless attachments
+   (F/pkg/controller/reconciler.go:178) and so attaches (200, already
+   attached) forever and never detaches.
+   Fix: in the server, check the identity of the qemu behind a monitor
+   (pid of the socket peer, SO_PEERCRED, or qom/uuid plus start time)
+   before using its tree, and treat a new identity as "qemu
+   restarted" first; or keep attachments created after the new
+   process started. In the controller, take over an adopted
+   attachment of a device that a claim of ours wants on that host
+   (set its owner), so that it is detached later.
+R4 (qemu, test environment; blocks the guest-reboot variant) After
+   a guest reboot no CXL memdev can be used.
+   Evidence: 3.2, RR/post1/cxl-dmesg.txt.
+   Cause: Linux sets Mem_Enable in the CXL device DVSEC control
+   register when it enables a device; qemu stores it (write mask
+   Q/hw/cxl/cxl-component-utils.c:507-508); the PCI reset clears only
+   the standard header (Q/hw/pci/pci.c:569-601) and ct3d_reset resets
+   the HDM registers but not the DVSEC (Q/hw/mem/cxl_type3.c:1327-
+   1337; the realize value is .ctrl = 0x2, line 373). The next kernel
+   finds Mem_Enable set with HDM decoding off and DVSEC ranges outside
+   every CFMWS: -ENXIO (L/drivers/cxl/core/pci.c:378-447, message at
+   444). Firmware on real hardware resets this.
+   Fix (qemu): restore the device DVSEC (control and range bases) to
+   its realize values in ct3d_reset. Workaround: hot-remove and add
+   the devices again, or restart qemu.
+R5 (controller, cosmetic) The device data of an Attached claim keeps
+   the qemuDeviceId of before a re-attach (4.6).
+Not bugs, facts: the local memdev of the test is not re-attached
+   after a qemu restart (it is the test's, not a claim's); the driver
+   waits 15 s for the API after a boot (the service network comes
+   up late) and publishes no local memdev until a list succeeds;
+   kubelet's first Prepares after a boot fail ("driver not
+   registered") and its back-off adds ~45-70 s.
+
+7. Recommendation for the model
+-------------------------------
+7.1 Variant and VMs: verb "node-reboot VM" for vm0 and vm1 only.
+  Guest reboot (systemctl reboot) once R4 is fixed in the qemu of the
+  VMs; until then the qemu restart (vmdir-restart), which also needs
+  R3 fixed and the executor to attach the local memdev again
+  (dra-local-device --pool LOCAL_SERVER[VM] VM) before the settle.
+  Either way R1 (and R2) must be fixed first: today the model would
+  have to predict containers without memory and a CrashLoopBackOff,
+  and the oracle would have to accept a stale device node that is
+  another claim's.
+7.2 Cost: ~2 min per reboot step and its settle (3.1, 4.1): ssh ~20
+  s, driver ready ~45 s, claimed pods Running at ~90-120 s. The
+  settle timeout (180 s) is enough. At about 1 reboot per 10 minutes
+  a 2 h run has ~12, a fifth of the time; weight it low.
+7.3 Executor (node-reboot VM): disarm a driver-kill-at watcher of VM
+  (as containerd-restart, A31); note the boot id; systemctl reboot
+  (the ssh returns or breaks); wait for ssh with a new boot id
+  (vmdir-ssh-wait, 180 s); echo offline > auto_online_blocks (as
+  pool-vm-reset; it was "offline" after both boots here); qemu
+  variant: dra-local-device again; restart the trace collectors of VM
+  (MBT_TRACE_REFOLLOW, dra-trace); mbt-driver-ready-wait (A15). The
+  observer must accept container states Unknown/waiting while the
+  pods come back (kubectl shows "0/1 Unknown" for ~60 s).
+7.4 Predicted state after the step, with R1 fixed (re-prepare):
+  - Every pod of VM: same UID, each container restarts +1 (allow +1
+    only), Running again; pod IPs change. The driver pod: restarts
+    +1. Pods on other VMs: unchanged.
+  - Claims: allocation and reservedFor unchanged; no new claim.
+  - Volatile pool numa (xnuma): region again, memory online on its
+    node, the node fenced (A36 allowed-mems).
+  - Volatile pool dax (xdax, sdax, sro, sexcl): region and dax device
+    again, new names and numbers in CDI and env. Content: the host
+    backing file keeps it (guest reboot: the same backend; qemu
+    restart: the same file); real memory might not. Predict "token or
+    zeros" for a read until the next write. Shared devices on other
+    VMs keep their regions and data.
+  - Local slices (lnuma, ldax, lsteer): re-acquired from the local
+    memdev (the allocator of the new boot starts empty); ldax zeroed
+    (read gives ""); lsteer steered again (memory.high).
+  - Leases (lease): released by the reboot; the requester has none,
+    its companion pod and claim go; lease-get works again.
+  - Persistent block/fs (pwr, pbro, xpb, pfsd, pfsc, xpf, plse): the
+    content survives (host files, labels in the LSA: 3.2, 4.3); the
+    namespace and erofs are found again, node mounts and lease binds
+    made again; pread gives the last pwrite. Refused kinds stay
+    refused (A25).
+  - plain: restarts +1.
+  - Decoder stacks of VM (A9): empty at the boot, then rebuilt in
+    kubelet's re-prepare order, which is not known: adopt the
+    observed order for VM after a reboot.
+  - Attachments: guest reboot: unchanged (same qemu device ids). qemu
+    restart: every attachment of VM again with new qemu device ids
+    and slots; the local memdev re-attached by the executor.
+7.5 Oracle additions: the boot id of each VM (observation:
+  /proc/sys/kernel/random/boot_id; the driver's state files carry it
+  after R1) and a reboot count; every device node in a container's
+  CDI devices matches the current device of its claim on that node
+  (name and major:minor of its dax or pmem device): this check finds
+  R1 in one step; numa claims: CXL_<KEY>_NODE has memory and is in
+  cpuset.mems; fs claims: the node mount exists; no container in
+  CrashLoopBackOff; leases of VM empty after the reboot; pread tokens.
+  Today's checks (regions, CDI, env, state files) catch R1 too.
+7.6 Optional from run_tests.sh: MBT_REBOOT (default empty: no
+  reboots), documented in the header of T/code.var.sh next to
+  MBT_AVOID: "MBT_REBOOT=guest|qemu: the verb node-reboot of vm0 and
+  vm1 (12-findings-reboot.txt), guest reboot or qemu restart; empty:
+  none". code.var.sh passes --reboot=MODE to mbt-cxl; the model
+  enables the verb only then; replay keeps the flag in the steps
+  file's header (A16), and MBT_AVOID=node-reboot still removes it.
+  The default stays off: a reboot costs ~2 min, and the guest variant
+  needs the qemu fix (R4).
+
+8. Cleanup and lock
+-------------------
+- "end" in RR/continue: mbt-teardown deleted every pod and claim,
+  then failed on vm1's three ownerless pool-c devices (R3); the exit
+  trap (mbt-exit-trap) ran dra-cleanup (driver and controllers
+  uninstalled, state files removed) and pool-cleanup (local memdevs
+  of vm2 and vm0 released and detached, servers stopped), and removed
+  the c-pmem backing files. Verdict FAIL (expected).
+- vm1's qemu still had the three pool-c devices: vm1 restarted by
+  hand the way vmdir-restart does (RR/qemu-restart.sh,
+  RR/cleanup-vm1-restart.txt), auto_online_blocks set offline.
+- Checked after: no cxl-type3 device in any qemu, no memdev or region
+  in any guest, no committed decoder, the three nodes Ready, no pod
+  or claim in cxl-pool-demo, no DaemonSet of the driver, no pool
+  server running, the prepared-claims files of the guests "{}" (as
+  after every run). /etc/cdi/spec.3809626605.tmp (empty) on vm1 is
+  from 2026-10-28 16:28, before this research: left alone.
+- Lock /tmp/p13-cluster.lock removed at 08:47 local time.

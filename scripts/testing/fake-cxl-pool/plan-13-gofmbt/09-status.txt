@@ -1,8 +1,9 @@
 plan-13: status
 ===============
-2026-10-26 (orchestrator). Task ../5jo-task-apply-mbt.txt. Read with
-00-README.txt (files), 07-results.txt (the integration answer) and
-06-runs.txt (every cluster run).
+2026-10-26, updated 2026-10-29 (orchestrator). Task
+../5jo-task-apply-mbt.txt. Read with 00-README.txt (files),
+07-results.txt (the integration answer) and 06-runs.txt (every cluster
+run).
 
 What exists
 -----------
@@ -27,6 +28,51 @@ What exists
   on any node, driver readiness, local devices through any server,
   pool-server-restart on its state, pool-vm-decoders (pool-vm-reset
   restarts a VM with committed CXL decoders).
+
+What is modelled (2026-10-29)
+----------------------------
+Cluster: vm2 (control plane), vm1, vm0; pools a (vm1, vm2; hb0), b
+(vm0; hb0), c (all; hb1); per VM two CXL NUMA nodes: node 2 = hb0
+(the local memdev and pool-a/b devices share it: one node per host
+bridge window), node 3 = hb1 (pool-c).
+Kinds (contract 2, A22): volatile pool devices xnuma, xdax (exclusive),
+sdax, sro, sexcl (shared device: share rw/ro, exclusive use); local
+memdev slices lnuma, ldax, lsteer (steering auto); lease (cxl-request,
+local numa/dax); plain (no claim); persistent pool devices on pool-c
+only: c-pmem0 (shared) and c-pmem1 (exclusive), kinds pwr (block
+writer), pfsd/pfsc (fs readers, direct/cached), pbro (read-only
+block), pbad (always refused), xpb/xpf (c-pmem1 block/fs), plse
+(persistent leases pbw/pbr/pfd/pfc).
+Profiles: full (volatile, 43 slots), fullp (full + 17 persistent),
+pmem (persistent, 11), small, tiny, union.
+Verbs: create, delete, crash, write, read, lease-get, lease-put,
+settle; persistent: pwrite, pread, hold, unhold, pwipe; faults:
+driver-kill, driver-restart, driver-kill-at (region|ns|mount|bind),
+ctrl-kill, ctrl-start, ctrl-restart, server-restart, kubelet-restart,
+containerd-restart.
+Oracle: pods and phases, claims, attachments, regions and slices,
+decoder stacks (holes, A9), driver state files, CDI, env, data tokens,
+persistent content (pdevs), node mounts, lease binds, loops, leases,
+fencing in mode allowed-mems (a container has its claimed CXL node and
+no other CXL node with memory), memory.high of steered containers,
+driver restarts and panics.
+Fencing (A36-A40, 13-design-fencing.txt, implemented and reviewed
+2026-10-29; model runs FR1-FR3 in 15-runs-fencing-reboot.txt): MBT_FENCING=allowed-mems|none|
+switch; verb fencing-switch (ConfigMap patched, every driver
+restarted); exact O5: allowed-mems D+E+(M\F), none D+M, "loose"
+containers after a switch to none; kind dnuma (local numa slice on
+node 2 + c-pooled0 numa on node 3 in one container) and pool-c numa
+slots on every VM; coverage "mems|MODE|e=E|f=F|m=M". Stub runs in the
+cluster matched the predictions, except bug-18 (a lease revoke in
+mode none narrows cpuset.mems).
+Node reboot (A41-A44, 12-findings-reboot.txt, 14-design-reboot.txt,
+implemented and reviewed 2026-10-29): verb node-reboot of vm0 and vm1
+behind MBT_REBOOT=guest|qemu (default off; a reboot step ~45 s guest,
+~81 s qemu, pods back after ~2 min); bootID per VM, container device
+nodes against the VM's current dax/pmem devices, decoder order
+adopted after a boot; needs bug-15 to 17 fixed.
+Not modelled yet: the static shared local device, a claim shared by
+two pods, more persistent devices (hb0 slots are full).
 
 Bugs (bug-NN files)
 -------------------
@@ -79,6 +125,39 @@ Bugs (bug-NN files)
      holder check missed the loop: FIXED (backing by device number)
   14 a cut Prepare's region kept for kubelet's retry ended below newer
      regions; its later release left a decoder hole (FP3): FIXED
+  15 after a node reboot the driver returned the prepared claims of
+     the old boot: stale dax/pmem nodes (an rw container read another
+     claim's pmem), numa nodes without memory, fs claims in
+     CrashLoopBackOff, leases on gone memory (severe; reboot research)
+     FIXED (boot id in every state file, stale claims prepared again,
+     leases of another boot dropped; R2 unrestorable node mounts),
+     verified by a qemu restart of vm1; review findings applied
+  16 fake pool: a qemu restart let the server adopt the controller's
+     new attachments without owner; they leaked for good
+     FIXED (qemu identity checked after monitor calls and around
+     device_add; controller takes over ownerless attachments; R5
+     status rewrite), verified by a qemu restart of vm1
+  17 qemu: a guest reset did not reset the CXL device DVSEC; after a
+     guest reboot Linux refused every memdev
+     FIXED in ~/github.com/qemu/qemu (working tree, not committed),
+     verified on vm1; vm0 and vm1 run the fixed binary
+  18 fencing none: a lease revoke narrowed cpuset.mems of a container
+     that inherits its nodes, and pinned it for good
+     FIXED (lends leave an inherited cpuset.mems alone; claimed nodes
+     kept), found by the fencing stub runs
+  19 a Prepare could succeed before the NRI plugin was connected: the
+     container of a steered claim was never steered (found by review
+     of the reboot model)
+     FIXED (NRI starts before the kubelet plugin registers; Prepare
+     waits for NRI's first Synchronize, 30 s)
+  20 kube-scheduler: a pod waiting in PreBind for binding conditions
+     had its claim's consumed capacity counted twice (assume cache and
+     in flight): a local slice next to it looked full (FR1b, dnuma)
+     FIXED locally (K 5jr-dra-requeue working tree, not committed),
+     vm2 runs v1.37.1-dra-requeue.3; A/B replay verified
+  Driver image with 15, 18, 19: 9d9dff4cadce (uncommitted tree).
+  Executor error E-FR1 (fs lease used without the driver): fixed in
+  pmem-rw.py, not a driver bug (15-runs-fencing-reboot.txt).
      (unfinished Prepares released at plugin start), verified by
      replay B14
 All code (driver, test90, model, helpers) is in the commits
@@ -105,9 +184,10 @@ reached the cluster.
 Persistent devices (A22-A35): PM1-PM3 (profile pmem) and FP1-FP8
 (fullp, every fault incl. driver-kill-at, new random seeds from FP3
 on). FP2, FP7, FP8 and FP9 PASS 2 h each (2021, 2005, 2110, 1978
-steps, clean teardown); FP3 found bug-14; PM1b bug-13; the persistent executor
-bug-11/12; FP4-FP6 and the model's fuzz found model gaps (A32-A35),
-all fixed. Image of FP4-FP8: 2ba73741f42a (c74eff381 + bug-14 fix).
+steps, clean teardown); FP3 found bug-14; PM1b bug-13; the
+persistent executor bug-11/12; FP4-FP6 and the model's fuzz found
+model gaps (A32-A35), all fixed. Image of FP4-FP9: 2ba73741f42a
+(c74eff381 + bug-14 fix).
 
 Open
 ----
@@ -120,6 +200,4 @@ Q2 test90 runs in every suite run (its name matches no
    a *long* name?
 Q3 bug-08 is worth an upstream Kubernetes issue (08-analysis has the
    reproduction and the source lines).
-Not modelled yet (02-design 5): persistent pool devices (block, fs),
-node reboot, driver reconfiguration (fencing none, sharedDevices),
-the static shared local device, a claim shared by two pods.
+Not modelled yet: see "What is modelled" above.

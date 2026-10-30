@@ -288,6 +288,34 @@ func TestDiscoverSelf(t *testing.T) {
 	}
 }
 
+// An exited qemu that is not reaped yet (a zombie) is not alive: its
+// monitor sockets are closed, another qemu may serve their paths.
+func TestProcessAliveZombie(t *testing.T) {
+	root := t.TempDir()
+	for pid, state := range map[string]string{"10": "S", "11": "Z", "12": "X"} {
+		// starttime is the 22nd field, the 20th after the comm
+		stat := pid + " (qemu-system-x86) " + state + strings.Repeat(" 0", 18) + " 500 0 0\n"
+		if err := os.MkdirAll(filepath.Join(root, pid), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, pid, "stat"), []byte(stat), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		pid   int
+		start uint64
+		alive bool
+	}{
+		{10, 500, true}, {10, 0, true}, {10, 501, false},
+		{11, 500, false}, {12, 0, false}, {13, 0, false},
+	} {
+		if got := ProcessAlive(root, tc.pid, tc.start); got != tc.alive {
+			t.Errorf("ProcessAlive(%d, %d) = %v, want %v", tc.pid, tc.start, got, tc.alive)
+		}
+	}
+}
+
 func TestCommandLines(t *testing.T) {
 	b := MemoryBackend{QomType: MemoryBackendFile, ID: "fcp_d0.hp1", Size: 256 << 20, MemPath: "/tmp/p/d0.raw", Share: true}
 	if s := HMPObjectAdd(b); s != "object_add memory-backend-file,id=fcp_d0.hp1,size=268435456,share=on,mem-path=/tmp/p/d0.raw" {

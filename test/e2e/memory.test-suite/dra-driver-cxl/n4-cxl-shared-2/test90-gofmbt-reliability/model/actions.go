@@ -51,13 +51,18 @@ const (
 	VUnhold       // unhold SLOT
 	VPWipe        // pwipe P DEV
 	VDriverKillAt // driver-kill-at VM MARKER
+	// fencing-switch: the other fencing mode, the drivers of every VM
+	// restarted (A37)
+	VFencingSwitch
+	// node-reboot VM: a reboot of vm0 or vm1 (A41, A42)
+	VNodeReboot
 	nVerbs
 )
 
 var verbNames = [nVerbs]string{"", "settle", "create", "delete", "crash", "write", "read",
 	"lease-get", "lease-put", "driver-kill", "driver-restart", "ctrl-kill", "ctrl-start",
 	"ctrl-restart", "server-restart", "kubelet-restart", "containerd-restart",
-	"pwrite", "pread", "hold", "unhold", "pwipe", "driver-kill-at"}
+	"pwrite", "pread", "hold", "unhold", "pwipe", "driver-kill-at", "fencing-switch", "node-reboot"}
 
 func (v Verb) String() string { return verbNames[v] }
 
@@ -77,7 +82,7 @@ func (v Verb) slotVerb() bool {
 
 // vmFault: the verb is a fault of a VM.
 func (v Verb) vmFault() bool {
-	return v == VDriverKill || v == VDriverRestart || v == VKubeletRestart || v == VContainerdRestart || v == VDriverKillAt
+	return v == VDriverKill || v == VDriverRestart || v == VKubeletRestart || v == VContainerdRestart || v == VDriverKillAt || v == VNodeReboot
 }
 
 // poolFault: the verb is a fault of a pool.
@@ -85,7 +90,8 @@ func (v Verb) poolFault() bool {
 	return v == VCtrlKill || v == VCtrlStart || v == VCtrlRestart || v == VServerRestart
 }
 
-func (v Verb) fault() bool { return v.vmFault() || v.poolFault() }
+// fault: a VM fault, a pool fault or fencing-switch (a fault of every VM).
+func (v Verb) fault() bool { return v.vmFault() || v.poolFault() || v == VFencingSwitch }
 
 // observes: the step returns an observation that the oracle checks.
 func (v Verb) observes() bool {
@@ -122,6 +128,8 @@ func (a Act) name(cfg *Config) string {
 	switch {
 	case a.Verb == VSettle:
 		return "settle"
+	case a.Verb == VFencingSwitch:
+		return "fencing-switch"
 	case a.Verb == VLeaseGet:
 		return fmt.Sprintf("lease-get %s %s", cfg.Slots[a.Slot].Name, a.Mode)
 	case a.Verb == VPWrite:
@@ -146,11 +154,13 @@ func (a Act) format(cfg *Config) (string, []any) {
 	switch {
 	case a.Verb == VSettle:
 		return "settle", nil
+	case a.Verb == VFencingSwitch:
+		return "fencing-switch", nil
 	case a.Verb.slotVerb():
 		sl := &cfg.Slots[a.Slot]
 		f := a.Verb.String() + " " + sl.Kind.String()
 		args := []any{}
-		if sl.Kind.pooled() {
+		if sl.Kind.poolSuffix() {
 			f += "-%s"
 			args = append(args, sl.Pool.String())
 		}
@@ -188,7 +198,7 @@ func parseAct(cfg *Config, line string) (Act, error) {
 	a := Act{Verb: v, Slot: -1, VM: VMAny, Pool: noPool}
 	want := 1
 	switch {
-	case v == VSettle:
+	case v == VSettle || v == VFencingSwitch:
 		want = 0
 	case v.slotVerb():
 		if len(f) < 2 {
@@ -230,6 +240,9 @@ func parseAct(cfg *Config, line string) (Act, error) {
 		vm, err := parseVM(f[1])
 		if err != nil || vm == VMAny {
 			return Act{}, fmt.Errorf("%s: invalid VM %q", f[0], f[1])
+		}
+		if v == VNodeReboot && !rebootVM(vm) {
+			return Act{}, fmt.Errorf("node-reboot: %s runs the control plane (vm0 or vm1, A42)", vm)
 		}
 		a.VM = vm
 		if v == VDriverKillAt {
@@ -352,6 +365,14 @@ func allActs(cfg *Config) []Act {
 			add(Act{Verb: v, Slot: -1, VM: VMAny, Pool: p})
 		}
 	}
+	if cfg.Fencing == FencingSwitch {
+		add(Act{Verb: VFencingSwitch, Slot: -1, VM: VMAny, Pool: noPool})
+	}
+	if cfg.Reboot != RebootNone {
+		for _, vm := range []VM{VM0, VM1} {
+			add(Act{Verb: VNodeReboot, Slot: -1, VM: vm, Pool: noPool})
+		}
+	}
 	return acts
 }
 
@@ -441,8 +462,19 @@ func (s *State) next(a Act) *State {
 	if !s.allowed(a) {
 		return nil
 	}
+	if a.Verb == VDelete && s.slot(int(a.Slot)).Kind.dual() && s.Slots[a.Slot].Phase.unbound() {
+		// a dnuma pod deleted before it was bound would leave its local
+		// claim in flight in the scheduler too (A19), which the model
+		// does not know for local claims (A39)
+		return nil
+	}
 	n := s.apply(a)
-	if !s.stackRulesOK(a, n) || !n.stallStacksQuiet(s) || !n.persistentRulesOK(s, a) {
+	if !s.stackRulesOK(a, n) || !n.stallStacksQuiet(s) || !n.persistentRulesOK(s, a) || !n.dualRulesOK() {
+		return nil
+	}
+	if a.Verb == VNodeReboot && !s.cfg.Online && n.Reorder != 0 {
+		// (off-line nothing adopts the order in which kubelet prepares
+		// the claims again: at most one region per stack of the VM)
 		return nil
 	}
 	// off-line nothing adopts whether a contender stalled (A19), and
@@ -479,8 +511,14 @@ func (n *State) stallStacksQuiet(s *State) bool {
 				stacks = append(stacks, stackIndex(v, poolBridge[sl.Pool]))
 			}
 		}
+		lu := n.dualUser(int16(i))
+		if lu >= 0 {
+			// a dnuma pod gets its local slice with its promotion: no
+			// other event on the hb0 stack of its VM either
+			stacks = append(stacks, stackIndex(sl.VM, HB0))
+		}
 		for _, e := range n.Ev {
-			if e.Key == key && (waits || e.Kind == evPrepare) {
+			if e.Key == key && (waits || e.Kind == evPrepare) || (lu >= 0 && e.User == lu) {
 				continue
 			}
 			for _, si := range stacks {
@@ -614,6 +652,10 @@ func (s *State) stackRulesOK(a Act, n *State) bool {
 			if o.Cleared && o.Pushed && (len(o.Blocked) > 0 || s.blockedOn(si)) {
 				return false
 			}
+			// a dnuma pod is never blocked (A39)
+			if n.dualBlocked(o) {
+				return false
+			}
 		}
 		if s.cfg.Online && !s.cfg.AvoidHoles {
 			continue
@@ -735,12 +777,23 @@ func (s *State) allowed(a Act) bool {
 		return s.Ctrl[a.Pool].Up && !s.poolStarting(a.Pool)
 	case VServerRestart, VKubeletRestart:
 		return true
+	case VFencingSwitch:
+		// a driver-restart of every VM (A37)
+		for v := VM(0); v < nVMs; v++ {
+			if s.Drv[v].Killed || s.killAtMayHaveFired(v) {
+				return false
+			}
+		}
+		// (one per window: a settle between two)
+		return s.cfg.Fencing == FencingSwitch && !s.Switched
 	case VDriverKillAt:
 		// on-line only (A27): the observation tells if it fired
 		d := &s.Drv[a.VM]
 		return s.cfg.Online && int(d.Restarts) < s.cfg.MaxRestarts && !d.Killed && d.KillAt == 0
 	case VPWipe:
 		return s.pwipeOK(DevID(a.Arg))
+	case VNodeReboot:
+		return s.rebootOK(a.VM)
 	}
 	return false
 }
@@ -872,6 +925,13 @@ func (s *State) slotEnabled(a Act) bool {
 		if sl.Res == resNone {
 			return true
 		}
+		if sl.Kind.hasLocal() {
+			// (dnuma: both of its resources)
+			r := localRes(sl.VM)
+			if s.localReserved(sl.VM) || (sl.Kind.dual() && (s.occ().waiter[r] >= 0 || s.contested(r))) {
+				return false
+			}
+		}
 		// a claim that waits for its pool's slices is the only
 		// candidate for its device when they are back (A18)
 		return s.occ().waiter[sl.Res] < 0 && !s.contested(sl.Res) && !s.unschedHolder(sl.Res)
@@ -895,7 +955,7 @@ func (s *State) slotEnabled(a Act) bool {
 		}
 		r := localRes(sl.VM)
 		o := s.occ()
-		return int(o.localAll[sl.VM])+1 <= s.cfg.LocalBlocks[sl.VM] && o.waiter[r] < 0 && !s.contested(r) && s.leaseRegionOK(sl.VM)
+		return int(o.localAll[sl.VM])+1 <= s.cfg.LocalBlocks[sl.VM] && o.waiter[r] < 0 && !s.contested(r) && s.leaseRegionOK(sl.VM) && !s.localReserved(sl.VM)
 	case VLeasePut:
 		return ss.Phase == Running && ss.Lease == LeaseHeld && !s.Drv[sl.VM].Killed && !ss.LeaseOpen
 	case VPWrite:
@@ -942,6 +1002,14 @@ func (s *State) apply(a Act) *State {
 	n.Last = a
 	if a.Verb != VSettle {
 		n.markKillMay()
+		if n.Unsettled == 0 {
+			// a new window: what a node-reboot left to the settle of
+			// its window is over
+			n.Reorder = 0
+			for v := range n.Drv {
+				n.Drv[v].Rebooted = false
+			}
+		}
 	}
 	switch a.Verb {
 	case VSettle:
@@ -991,16 +1059,15 @@ func (s *State) apply(a Act) *State {
 		n.driverRestarted(a.VM, SteerOff)
 		n.restartSlack(a.VM)
 	case VDriverRestart:
-		d := &n.Drv[a.VM]
-		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = 0, 0, false, false // (A31)
-		d.PodGen++
-		d.Restarts, d.Slack, d.Creating = 0, 0, false
-		d.Inc++
-		d.Restarted = true
-		if d.PodBefore == "" {
-			d.PodBefore = d.Pod
+		n.restartDriver(a.VM)
+	case VFencingSwitch:
+		// the drivers come up with the other mode (A37): vm2, vm1, vm0
+		// one at a time, like driver-restart
+		n.switchFencing()
+		n.Switched = true
+		for _, v := range []VM{VM2, VM1, VM0} {
+			n.restartDriver(v)
 		}
-		n.driverRestarted(a.VM, SteerOff)
 	case VCtrlKill:
 		n.ctrlKill(a.Pool)
 	case VCtrlStart:
@@ -1047,9 +1114,95 @@ func (s *State) apply(a Act) *State {
 		// killWorlds)
 		d := &n.Drv[a.VM]
 		d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = a.Arg+1, 0, false, false
+	case VNodeReboot:
+		n.nodeReboot(a.VM)
+		// the settle comes next (only synchronous steps before it): the
+		// pods come back in kubelet's time, 90-120 s (12-findings 7.2)
+		if u := min(n.cfg.Unsettled, 255) - 1; int(n.Unsettled) < u {
+			n.Unsettled = uint8(u)
+		}
 	}
 	n.Unsettled++
 	return n
+}
+
+// restartDriver is a driver-restart of a VM: a new driver pod.
+func (n *State) restartDriver(v VM) {
+	d := &n.Drv[v]
+	d.KillAt, d.KillAtAt, d.KillMay, d.KillSlack = 0, 0, false, false // (A31)
+	d.PodGen++
+	d.Restarts, d.Slack, d.Creating = 0, 0, false
+	d.Inc++
+	d.Restarted = true
+	if d.PodBefore == "" {
+		d.PodBefore = d.Pod
+	}
+	n.driverRestarted(v, SteerOff)
+}
+
+// switchFencing flips the fencing mode (A37). The containers that exist
+// at a switch to none keep their cpuset.mems until they are created
+// again (Loose): those of running pods and of pods whose container may
+// have been created before the switch (starting, restarting, a retry or
+// a promotion that comes any time); so do the companions of the leases
+// held then. The first fence pass of the drivers after a switch to
+// allowed-mems makes every container exact.
+func (n *State) switchFencing() {
+	if n.Fence == FenceNone {
+		n.Fence = FenceAM
+		for i := range n.Slots {
+			n.Slots[i].Loose, n.Slots[i].CompLoose = false, false
+		}
+		return
+	}
+	n.Fence = FenceNone
+	for i := range n.Slots {
+		ss := &n.Slots[i]
+		switch ss.Phase {
+		case Running, Restarting, Starting, Unblocking, Stalled:
+			ss.Loose = true
+		}
+		ss.CompLoose = ss.Lease != LeaseNone
+	}
+}
+
+// localReserved: a dnuma pod of the VM waits for its pool's slices or is
+// stalled (A19): its local claim is not allocated yet, but the model
+// keeps its block for it (it is the only candidate of its pool device):
+// no other claim or lease may take a block of the VM then (it could take
+// the block that the dnuma pod's allocation needs).
+func (s *State) localReserved(v VM) bool {
+	for i := range s.Slots {
+		if sl := s.slot(i); sl.Kind.dual() && sl.VM == v && (s.Slots[i].Phase == Unsched || s.Slots[i].Phase == Stalled) {
+			return true
+		}
+	}
+	return false
+}
+
+// dualRulesOK: no dnuma pod stalled over a decoder hole on one of its
+// stacks (its promotion would be Blocked: A39, not modelled).
+func (n *State) dualRulesOK() bool {
+	for i := range n.Slots {
+		sl, ss := n.slot(i), &n.Slots[i]
+		if !sl.Kind.dual() || ss.Phase != Stalled {
+			continue
+		}
+		if n.Stacks[stackIndex(sl.VM, HB0)].hasHole() || n.Stacks[stackIndex(sl.VM, poolBridge[sl.Pool])].hasHole() {
+			return false
+		}
+	}
+	return true
+}
+
+// dualBlocked: a dnuma pod's claim is blocked by a hole in an outcome.
+func (s *State) dualBlocked(o *stackOutcome) bool {
+	for u, on := range o.Blocked {
+		if i, _ := s.userSlot(u); on && s.slot(i).Kind.dual() {
+			return true
+		}
+	}
+	return false
 }
 
 // refusedNow tells if the Prepare of a persistent claim of slot i is
@@ -1084,6 +1237,11 @@ func (n *State) prepareEvent(i int, after int16) int16 {
 	seq := n.addEvent(int16(i), evPrepare, false, after)
 	if seq >= 0 && ss.Refuse {
 		n.Ev[seq].Probe = true
+	}
+	if sl.Kind.dual() {
+		// and its local slice, after the same event (the pod was bound
+		// after it: kubelet prepares both claims)
+		n.addEvent(n.leaseUser(i), evPrepare, false, after)
 	}
 	return seq
 }
@@ -1140,7 +1298,7 @@ func (s *State) preadToken(i int) Token {
 // Prepare makes the namespace of a fresh device.
 func (n *State) leaseGetP(i int, m LeaseMode) {
 	ss := &n.Slots[i]
-	ss.Lease, ss.LeaseMode, ss.Hold = LeaseHeld, m, false
+	ss.Lease, ss.LeaseMode, ss.Hold, ss.CompLoose = LeaseHeld, m, false, false
 	n.setLeaseID(i, "")
 	n.addEvent(n.leaseUser(i), evPrepare, true, -1)
 	if m == ModePBW {
@@ -1232,6 +1390,9 @@ func (n *State) create(i int) {
 		// it may stall behind a claim deleted before its pod was
 		// bound (A19)
 		n.Contested |= 1 << uint(sl.Res)
+		if sl.Kind.dual() {
+			n.Contested |= 1 << uint(localRes(sl.VM))
+		}
 		if (n.unboundDeleting(sl.Res) || n.held(sl.Res)) && n.Ctrl[sl.Pool].Slices != SlicesAbsent {
 			n.stall(i)
 			return
@@ -1263,7 +1424,7 @@ func (n *State) start(i int, after int16) int16 {
 	switch sl.Kind {
 	case KLSteer:
 		ss.Steer = n.newSteer(sl.VM)
-	case KXNuma:
+	case KXNuma, KDNuma:
 		// onlined as system RAM: the bytes are gone
 		n.Data[sl.Dev] = tokUnknown
 	case KLDax:
@@ -1300,6 +1461,7 @@ func (n *State) delete(i int) {
 	ss.RaceKill = false
 	u := int16(i)
 	seq := int16(-1)
+	lseq := int16(-1)
 	switch prev {
 	case Running, Restarting:
 		seq = n.addEvent(u, evUnprepare, false, -1)
@@ -1313,8 +1475,12 @@ func (n *State) delete(i int) {
 		n.setOptional(u)
 		seq = n.addEvent(u, evUnprepare, false, -1)
 	}
+	if sl.Kind.dual() && seq >= 0 {
+		// and its local slice
+		lseq = n.addEvent(n.leaseUser(i), evUnprepare, false, -1)
+	}
 	ss.Hold = false
-	released, lseq := false, int16(-1)
+	released := false
 	if sl.Kind.leaseKind() && (ss.Lease == LeaseHeld || ss.Lease == LeaseBusy) {
 		// released when the requester pod is deleted (a held file goes
 		// with its container)
@@ -1327,6 +1493,9 @@ func (n *State) delete(i int) {
 		// the binding conditions) holds its device in the scheduler
 		// for a while: its contender may stall (A19)
 		n.promote(sl.Res, seq, sl.Kind.pooled() && prev.unbound())
+		if sl.Kind.dual() {
+			n.promote(localRes(sl.VM), lseq, false)
+		}
 	}
 	if released && sl.Kind == KLease {
 		n.promote(localRes(sl.VM), lseq, false)
@@ -1349,9 +1518,15 @@ func (n *State) promote(r Res, after int16, stall bool) {
 	}
 	if _, later := n.fits(w); later {
 		n.Contested |= 1 << uint(r)
+		wsl := n.slot(w)
+		if wsl.Kind.dual() {
+			n.Contested |= 1<<uint(wsl.Res) | 1<<uint(localRes(wsl.VM))
+		}
 		// (also when another claim of the device deleted in this
-		// window, or before the last settle, was not bound)
-		if (stall || n.unboundDeleting(r) || n.held(r)) && n.Ctrl[n.slot(w).Pool].Slices != SlicesAbsent {
+		// window, or before the last settle, was not bound; a dnuma
+		// pod promoted by a local release: of its pool device)
+		pr := wsl.Res
+		if wsl.Kind.pooled() && (stall && r == pr || n.unboundDeleting(pr) || n.held(pr)) && n.Ctrl[wsl.Pool].Slices != SlicesAbsent {
 			n.stall(w)
 			return
 		}
@@ -1367,7 +1542,7 @@ func (n *State) stall(i int) {
 	ss.Phase, ss.RaceKill = Stalled, false
 	ss.Refuse = n.refusedNow(i)
 	n.setUnblockAt(i, 0)
-	if sl := n.slot(i); sl.Kind == KXNuma {
+	if sl := n.slot(i); sl.Kind == KXNuma || sl.Kind == KDNuma {
 		n.Data[sl.Dev] = tokUnknown
 	}
 }
@@ -1389,6 +1564,8 @@ func (n *State) crash(i int) {
 	ss := &n.Slots[i]
 	ss.Phase = Restarting
 	ss.Restarts++
+	// a new container: not loose (A37)
+	ss.Loose = false
 	// a holder dies with the container: a busy fs lease is released
 	ss.Hold = false
 	if ss.Lease == LeaseBusy {
@@ -1420,9 +1597,10 @@ func (n *State) leaseGet(i int, m LeaseMode) {
 	ss := &n.Slots[i]
 	ss.Lease = LeaseHeld
 	ss.LeaseMode = m
+	ss.CompLoose = false
 	n.setLeaseID(i, "")
 	n.addEvent(n.leaseUser(i), evPrepare, true, -1)
-	if m == ModeNuma {
+	if m == ModeNuma && n.Fence == FenceAM {
 		// the companion's slice is fenced before it goes online
 		d := &n.Drv[n.slot(i).VM]
 		d.F |= n.fenceBit(n.cfg.bridgeNode(HB0))
@@ -1469,7 +1647,10 @@ func (n *State) driverRestarted(v VM, running Steer) {
 			continue
 		}
 		if sl.Kind.numa() {
-			bit := n.fenceBit(sl.numaNode(n.cfg))
+			var bit uint8
+			for _, node := range sl.numaNodes(n.cfg) {
+				bit |= n.fenceBit(node)
+			}
 			switch ss.Phase {
 			case Running, Restarting:
 				def |= bit
@@ -1497,6 +1678,10 @@ func (n *State) driverRestarted(v VM, running Steer) {
 	d := &n.Drv[v]
 	d.F = def
 	d.FMaybe = maybe &^ def
+	if n.Fence == FenceNone {
+		// fencing none: no fence (D/fence.go newNodeFence)
+		d.F, d.FMaybe = 0, 0
+	}
 }
 
 // poolStarting: a claim of the pool is being allocated (Starting).
@@ -1710,6 +1895,7 @@ func (n *State) settle() {
 		ss.RaceKill, ss.Alloc = false, false
 		if ss.Lease == LeaseReleasing {
 			ss.Lease = LeaseNone
+			ss.CompLoose = false
 			n.setLeaseID(i, "")
 		}
 	}
@@ -1723,6 +1909,7 @@ func (n *State) settle() {
 	n.growFence()
 	n.Ev = nil
 	n.Contested = 0
+	n.Switched = false
 	for v := range n.Drv {
 		n.Drv[v].Killed = false
 		n.Drv[v].Restarted = false
@@ -1783,6 +1970,9 @@ func (n *State) deriveAtt(p Pool) {
 // growFence adds the nodes of the numa memory prepared on each VM to its
 // fenced nodes (they only grow until the driver restarts).
 func (n *State) growFence() {
+	if n.Fence == FenceNone {
+		return
+	}
 	for i := range n.Slots {
 		ss := &n.Slots[i]
 		sl := n.slot(i)
@@ -1792,7 +1982,10 @@ func (n *State) growFence() {
 		if !sl.Kind.numa() || ss.Node == VMAny {
 			continue
 		}
-		bit := n.fenceBit(sl.numaNode(n.cfg))
+		var bit uint8
+		for _, node := range sl.numaNodes(n.cfg) {
+			bit |= n.fenceBit(node)
+		}
 		switch ss.Phase {
 		case Running:
 			n.Drv[ss.Node].F |= bit

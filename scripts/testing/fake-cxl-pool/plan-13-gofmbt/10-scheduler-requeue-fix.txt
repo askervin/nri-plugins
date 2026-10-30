@@ -111,3 +111,21 @@ the implementer (a subtest of test/integration/dra/binding_conditions.go
 with one device with binding conditions, pod1 waiting, pod2 pending,
 delete pod1, claim2 allocated within ~30 s), and a release note
 (/tmp/kube-scheduler-dra-requeue.releasenote).
+
+5. v1.37.1-dra-requeue.3 (2026-10-29)
+-------------------------------------
+bug-20 (bug-20-scheduler-double-counts-capacity-in-binding-wait.txt):
+GatherAllocatedState counted the consumed capacity of a claim twice
+while its pod waited in PreBind for binding conditions (in the assume
+cache and in flight). Fix in the working tree of 5jr-dra-requeue on top
+of 4de1561b97c (not committed; /tmp/kube-scheduler-dra-capacity.patch,
+.commitmsg, .releasenote): DR/allocateddevices.go, DR/dra_manager.go,
+DR/dra_manager_test.go. Built with KUBE_GIT_VERSION=v1.37.1-dra-
+requeue.3 make WHAT=cmd/kube-scheduler (go1.26.10), image
+localhost/kube-scheduler:v1.37.1-dra-requeue.3 (/tmp/ksched-img3:
+FROM registry.k8s.io/kube-scheduler:v1.37.1 + the binary; podman save
+--format docker-archive, ctr -n k8s.io images import on vm2). vm2's
+manifest: image .3, imagePullPolicy Never, nothing else changed; the .2
+manifest is /root/kube-scheduler.yaml.dra-requeue.2, kubeadm's original
+/root/kube-scheduler.yaml.orig. Verified by the A/B replay of bug-20
+(/tmp/p13-runs/fr1b-debug). It keeps the bug-08 fix.

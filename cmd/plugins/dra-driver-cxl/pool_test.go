@@ -15,6 +15,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -60,6 +61,10 @@ type fakePoolSys struct {
 	cutAfter string
 	// failCmd is the beginning of a command that fails, "" for none.
 	failCmd string
+	// daxDev is the dev of dax0.0 that cxl create-region makes, "" for
+	// 251:3; pmemDev that of pmem0 of the fsdax namespace, "" for 259:0
+	// (a reboot gives the devices other numbers).
+	daxDev, pmemDev string
 }
 
 const fakeMemPath = "devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0"
@@ -169,7 +174,7 @@ func (f *fakePoolSys) run(ctx context.Context, name string, args ...string) (str
 		f.mkdir(daxPath)
 		f.link("bus/dax/devices/dax0.0", "../../../"+daxPath)
 		f.write(daxPath+"/target_node", "2")
-		f.write(daxPath+"/dev", "251:3")
+		f.write(daxPath+"/dev", cmp.Or(f.daxDev, "251:3"))
 		f.link(daxPath+"/driver", "../../../../../dax/drivers/kmem")
 		return `[{"region":"region0","resource":"0x250000000","size":"256.00 MiB"}]`, nil
 	case "cxl enable-memdev":
@@ -200,6 +205,12 @@ func (f *fakePoolSys) commands() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return strings.Join(f.cmds, "\n")
+}
+
+// commandsSince returns the commands run after those of before, an earlier
+// commands().
+func (f *fakePoolSys) commandsSince(before string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(f.commands(), before), "\n")
 }
 
 func (f *fakePoolSys) manager() *memctl.Manager {
@@ -292,6 +303,7 @@ type poolTestEnv struct {
 	cdiDir      string
 	stateFile   string
 	leaseFsRoot string // of the pool driver, "" for none
+	bootID      string // of the kernel of the next driver
 }
 
 func newPoolTestEnv(t *testing.T) *poolTestEnv {
@@ -301,6 +313,7 @@ func newPoolTestEnv(t *testing.T) *poolTestEnv {
 		m:         newFakeMounter(),
 		cdiDir:    filepath.Join(dir, "cdi"),
 		stateFile: filepath.Join(dir, poolStateFileName),
+		bootID:    "boot-1",
 	}
 }
 
@@ -315,7 +328,7 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond, e.leaseFsRoot)
+	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond, e.leaseFsRoot, e.bootID)
 	if err != nil {
 		t.Fatal(err)
 	}

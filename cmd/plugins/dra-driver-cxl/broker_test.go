@@ -198,6 +198,7 @@ type brokerEnv struct {
 	lender *fakeLender
 	b      *broker
 	mounts func() ([]mountInfo, error) // brokerConfig.Mounts of restart
+	bootID string                      // brokerConfig.BootID of restart
 }
 
 func requesterPod() *corev1.Pod {
@@ -236,6 +237,7 @@ func newBrokerEnv(t *testing.T) *brokerEnv {
 		cli:    filepath.Join(dir, "cxl-request"),
 		client: fake.NewClientset(requesterPod(), leaseClaimObj()),
 		lender: newFakeLender(testRef),
+		bootID: "boot-1",
 	}
 	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
 	noErr(t, os.WriteFile(e.cli, []byte("#!/bin/true\n"), 0o755))
@@ -261,6 +263,7 @@ func (e *brokerEnv) restart() {
 		WaitDefault: 5 * time.Second,
 		PoolDriver:  device.PoolDriverName,
 		Mounts:      e.mounts,
+		BootID:      e.bootID,
 	})
 	noErr(e.t, err)
 	b.pollInterval = 5 * time.Millisecond
@@ -927,6 +930,89 @@ func TestBrokerRestartAndReconcile(t *testing.T) {
 	}
 	if !strings.Contains(e.lender.callLog(), "revoke pod-uid-1/app 2") {
 		t.Fatalf("not revoked:\n%s", e.lender.callLog())
+	}
+}
+
+// TestBrokerOtherBoot: the leases of another boot are dropped at start
+// (plan-13 bug-15). A numa lease is not Ready on the memory of the old
+// boot, its node is neither lent to the restarted requester (LeaseNodes,
+// the reconcile) nor revoked, and the reconcile deletes its companion; the
+// lease claim keeps its socket, and the requester asks again. A store
+// without a boot id (saved by an older driver) is of this boot; a store
+// that is not decoded is not rewritten.
+func TestBrokerOtherBoot(t *testing.T) {
+	e := newBrokerEnv(t)
+	noErr(t, e.b.OpenClaim(leaseClaimObj()))
+	e.start()
+	resp, _ := e.call(api.Request{Op: "request", Size: "256Mi", Wait: "0s"})
+	id := resp.Lease
+	e.waitClaim(companionName(id))
+	_, err := e.b.OnLending(id, companionClaim(id))
+	noErr(t, err)
+	e.b.OnPrepared(id, []lentDevice{{Source: api.SourcePool, Serial: 0xc1ee0001, Size: 1 << 28, Mode: api.ModeNUMA, Node: 2}})
+	e.waitState(id, api.StateReady)
+
+	// a store without a boot id is of this boot, and gets its id
+	e.b.stop()
+	path := filepath.Join(e.dir, leasesFileName)
+	data, err := os.ReadFile(path)
+	noErr(t, err)
+	var store map[string]any
+	noErr(t, json.Unmarshal(data, &store))
+	if store["bootID"] != "boot-1" {
+		t.Fatalf("boot id of the store %v", store["bootID"])
+	}
+	delete(store, "bootID")
+	data, err = json.Marshal(store)
+	noErr(t, err)
+	noErr(t, os.WriteFile(path, data, 0o600))
+	e.b = nil
+	e.restart()
+	if l := e.lease(id); l == nil || l.State != api.StateReady || l.Node != 2 {
+		t.Fatalf("lease of a store without a boot id %+v", l)
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"bootID": "boot-1"`) {
+		t.Fatalf("store without the boot id:\n%s", data)
+	}
+
+	// a reboot: the requester restarted without the node
+	e.bootID = "boot-2"
+	e.lender.mu.Lock()
+	e.lender.lent = map[string]map[int][]string{}
+	e.lender.calls = nil
+	e.lender.mu.Unlock()
+	e.restart()
+	if e.lease(id) != nil || e.b.LeaseNodes(testPodUID, testCtr) != nil {
+		t.Fatalf("lease of another boot %+v, lease nodes %v", e.lease(id), e.b.LeaseNodes(testPodUID, testCtr))
+	}
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), id) || !strings.Contains(string(data), `"bootID": "boot-2"`) {
+		t.Fatalf("store after the reboot:\n%s", data)
+	}
+	e.start()
+	list, _ := e.call(api.Request{Op: "list"})
+	if list.Error != "" || list.Leases == nil || len(*list.Leases) != 0 {
+		t.Fatalf("list after the reboot %+v", list)
+	}
+	e.b.reconcile()
+	e.wantGone(companionName(id))
+	if got := e.lender.LentNodes(testPodUID, testCtr); len(got) != 0 || e.lender.callLog() != "" {
+		t.Fatalf("lent nodes %v, lender calls:\n%s", got, e.lender.callLog())
+	}
+	// the requester asks again: a new lease (the test's ids restart)
+	resp, _ = e.call(api.Request{Op: "request", Size: "256Mi", Wait: "0s"})
+	if resp.Error != "" || resp.State != api.StatePending {
+		t.Fatalf("new request %+v", resp)
+	}
+	e.waitClaim(companionName(resp.Lease))
+
+	// a table that is not decoded is not rewritten at start
+	e.b.stop()
+	noErr(t, os.WriteFile(path, []byte("{"), 0o600))
+	e.b = nil
+	e.bootID = "boot-3"
+	e.restart()
+	if data, _ := os.ReadFile(path); string(data) != "{" || !e.b.store.Recovered {
+		t.Fatalf("recovered store %+v, file %q", e.b.store, data)
 	}
 }
 

@@ -1,0 +1,258 @@
+BUG-20: KUBE-SCHEDULER COUNTS THE CONSUMED CAPACITY OF A CLAIM TWICE
+WHILE ITS POD WAITS FOR BINDING CONDITIONS
+
+2026-10-29 (debugging agent). Found by run FR1b (15-runs-fencing-
+reboot.txt), step 349. Classification: Kubernetes kube-scheduler v1.37
+(DynamicResources plugin), upstream; NOT the CXL driver, the pool
+controller or the model. Fixed in K's working tree (uncommitted),
+deployed on vm2 as kube-scheduler v1.37.1-dra-requeue.3, verified by
+an A/B replay.
+
+K/ = ~/github.com/kubernetes/kubernetes, branch 5jr-dra-requeue (HEAD
+4de1561b97c, release-1.37 + the bug-08 fix). DR/ = K/pkg/scheduler/
+framework/plugins/dynamicresources/. DRA/ = K/staging/src/k8s.io/
+dynamic-resource-allocation/structured/. Line numbers of HEAD unless
+"new". Upstream master (dd410c4864a, 2026-10-27) has the same code.
+
+========================================================================
+1. SUMMARY
+
+A claim of a pod that waits in PreBind for device binding conditions is
+counted twice by the scheduler's allocation state: once from the assume
+cache, where PreBind (bindClaim) stored the allocation, and once from
+the in-flight allocations, from which it is removed only when PreBind
+succeeds. Devices are collected in sets, so a dedicated device is not
+hurt by this. The consumed capacity of a device that allows multiple
+allocations (consumable capacity) is summed: it counts twice.
+
+dnuma (A39) is the first kind whose pod has both a local claim on the
+memdev-c100e2e1 of its node (consumable capacity: 2 blocks of 128Mi on
+vm0, 256Mi) and a pool claim with binding conditions (c-pooled0). With
+pool-c's controller down, dnuma's 128Mi block counted as 256Mi: vm0's
+memdev looked full although only one block was used, and ldax@vm0#0
+stayed Pending ("cannot allocate all claims") after the lease companion
+had released the other block. It would have stayed so until dnuma's
+PreBind ended (binding timeout 10 min) or its claim was deallocated.
+
+Severity: medium (upstream). Any cluster with DRAConsumableCapacity and
+DRADeviceBindingConditions: while a pod waits for its binding conditions
+(attach of a fabric device, up to the binding timeout), every other
+device with consumable capacity allocated to the same pod looks fuller
+by that pod's share. Pods that fit are not scheduled meanwhile. No
+over-allocation (the error is on the safe side).
+
+========================================================================
+2. REPRODUCTION
+
+/tmp/p13-runs/fr1b-debug/steps-dnuma.txt (the header of FR1b's
+mbt-steps.txt, profile fullp, fencing switch, reboot guest), from
+N/test/e2e:
+  MBT_MODE=replay MBT_REPLAY=/tmp/p13-runs/fr1b-debug/steps-dnuma.txt \
+  MBT_OBS_KEEP=300 ./run_tests.sh memory.test-suite/dra-driver-cxl/\
+  n4-cxl-shared-2/test90-gofmbt-reliability
+Steps:
+  settle; create lease@vm0#0; settle; lease-get lease@vm0#0 dax; settle
+  (the companion holds block 1 of vm0's memdev); ctrl-kill c;
+  create dnuma@vm0#0; settle (both claims allocated, block 2, the pod
+  waits in PreBind for the attach); create ldax@vm0#0; settle (Pending,
+  both blocks used); delete lease@vm0#0; settle (want: ldax Running).
+Control: steps-lnuma.txt, the same with lnuma@vm0#0 (a local claim
+only, no binding conditions) in place of dnuma@vm0#0.
+`mbt-cxl generate --from` accepts both files (the model predicts ldax
+Running at the last settle).
+
+Results (scheduler at --v=5 --vmodule=dra_manager=6,allocateddevices=6
+for these runs, copies under /tmp/p13-runs/fr1b-debug/):
+  A-stock  dnuma, v1.37.1-dra-requeue.2: FAIL at step 12, "settle
+           timeout after 3m1s: pod ldax@vm0#0: phase Pending ready false,
+           want Running" (as FR1b step 349).
+  B-stock  lnuma (control), v1.37.1-dra-requeue.2: PASS; ldax allocated
+           0.8 ms after the companion's release, step 12 settled in 4 s.
+  A-fixed  dnuma, v1.37.1-dra-requeue.3 (this fix): PASS; ldax allocated
+           0.7 ms after the companion's release while dnuma still waited
+           for the attach, step 12 settled in 4.4 s.
+
+========================================================================
+3. EVIDENCE
+
+FR1b (/tmp/p13-runs/FR1b):
+- mbt-obs/obs-000281-001.json on: dnuma@vm0#0's claims allocated
+  (c0-2bkd4 memdev-c100e2e1, c1-5xtnm c-pooled0 attached false), pod
+  Pending (in PreBind: pool-c's controller killed at step 278, never
+  restarted). obs-000349-002..050: the lease companion and its claim
+  gone, vm0's slices unchanged (dram, lease, memdev-c100e2e1), ldax's
+  claim unallocated for the whole settle.
+- kube-scheduler.vm2.log (saved from the .2 container on vm2 after the
+  run, default verbosity): the event broadcaster's FailedScheduling
+  series of mbt-ldax-vm0-0-g1 reached Count 13, LastObservedTime
+  14:11:57, i.e. the scheduler retried for 2+ min after the release
+  (14:09:41) and failed every time. Not a requeue gap (bug-08).
+A-stock (/tmp/p13-runs/fr1b-debug/A-stock/sched.log, UTC):
+  14:51:48.608 "Added in-flight claim" mbt-dnuma-vm0-0-g1-c0-4fhcv (Reserve)
+  14:51:48.635 allocateddevices.go:219 "Observed consumed capacity"
+               memdev-c100e2e1 128Mi claim mbt-dnuma-vm0-0-g1-c0-4fhcv
+               (bindClaim's AssumeClaimAfterAPICall), then "Claim stored
+               in assume cache"; PreBind waits for the binding conditions
+  14:51:51.256 "Observed consumed capacity release" 128Mi of the
+               companion's claim cxl-lease-eecad987
+  14:51:51.256, 14:51:51.424, 14:53:26 (x2), 14:53:56, 14:54:55,
+  14:54:56.374: ldax attempts, "Done with allocation" success=false;
+               each GatherAllocatedState logs dra_manager.go:417 "Device
+               is in flight for allocation" consumed capacity memdev-
+               c100e2e1 claim mbt-dnuma-vm0-0-g1-c0-4fhcv: 128Mi from the
+               cache + 128Mi in flight = 256Mi, the device's capacity
+  14:54:56.381 the teardown deleted dnuma: its claim's allocation left
+               the cache ("Observed consumed capacity release"), it was
+               still in flight; ldax's next attempt (14:54:56.381) had
+               success=true at once.
+- Claims and slices during the stall (A-stock/snap-001..009, 20 s
+  apart): memdev-c100e2e1 of vm0's slice, capacity memory 256Mi,
+  allowMultipleAllocations, no taints, the same in every snapshot;
+  claims: dnuma c0 (128Mi, shareID c1dbd10d), dnuma c1 (c-pooled0,
+  bindingConditions cxl-pool.nri.io/Attached), ldax c0 (requests
+  128Mi, unallocated). The API had 128Mi of 256Mi in use.
+- Ruled out: the driver's slice (unchanged, see above, also in FR1b's
+  driver log: the release took 85 ms and the republish changed nothing;
+  the "some fields were dropped" warning is chronic), the companion's
+  claim (deleted, its capacity release logged), its in-flight entry
+  (removed at 14:51:42.717 when its PreBind succeeded), a request
+  mismatch (ldax and dnuma's c0 both request 128Mi of class cxl-local),
+  a missing requeue (the scheduler retried, A-stock and FR1b), the model
+  (B-stock and A-fixed pass the same prediction).
+
+========================================================================
+4. ROOT CAUSE
+
+- DR/dynamicresources.go Reserve:1615 puts the allocation in flight
+  (SignalClaimPendingAllocation). PreBind → bindClaim writes it to the
+  claim (UpdateStatus) and stores the result in the assume cache
+  (AssumeClaimAfterAPICall, :1892, in the deferred function). The
+  in-flight entry is removed only by prebindSuccessCleanup (:1904),
+  which PreBind runs when it returns success (:1742), i.e. after the
+  binding-conditions poll (:1777, every 5 s up to bindingTimeout, 10
+  min). bug-08's fix relies on that hold, so it stays.
+- The assume cache emits the update to allocatedDevices (K/pkg/
+  scheduler/util/assumecache/assume_cache.go:462), which adds the
+  claim's consumed capacity (DR/allocateddevices.go:238).
+- DR/dra_manager.go GatherAllocatedState starts from allocatedDevices
+  (:381-383) and adds every in-flight allocation (:404-419) without
+  checking whether the claim is already included: aggregatedCapacity.
+  Insert (:418) sums (DRA/schedulerapi/types.go:171, ConsumedCapacity.
+  Add). The device sets (allocated.Insert,
+  allocatedSharedDeviceIDs.Insert) are idempotent, so only the capacity
+  doubles.
+- The allocator compares the doubled sum with the device's capacity:
+  DRA/internal/incubating/allocator_incubating.go:1259 (the allocator
+  in use, "allocator_incubating.go" in the log) and experimental :1500
+  CmpRequestOverCapacity with allocatedState.AggregatedCapacity.
+ListAllAllocatedDevices (:321-345) has the same overlap, harmless
+there (a set). K/pkg/scheduler/framework/plugins/noderesources/
+resource_allocation.go:297 also uses GatherAllocatedState.
+
+========================================================================
+5. THE FIX (K working tree, 3 files, +101 -2)
+
+- DR/allocateddevices.go: allocatedDevices tracks the UIDs of the claims
+  whose devices it includes (claims, inserted in addDevices, deleted in
+  removeDevices under the same lock and revision bump as the devices;
+  new :106, :245, :293); HasClaim(claimUID) (new :151) reports whether
+  a claim is included, valid for the current revision like Get,
+  GetSharedDeviceIDs and Capacities.
+- DR/dra_manager.go GatherAllocatedState (new :403-412): skip the
+  in-flight entry of a claim that allocatedDevices includes. The
+  existing revision check at the end (revision1 == Revision()) covers
+  the lookups too: if the set changed during the loop, the caller
+  retries. Checking the assume cache instead would race: its events
+  reach allocatedDevices asynchronously (emitEvents after the unlock),
+  so a claim could be allocated in the cache and not yet in the
+  snapshot, and would then be counted zero times.
+- Not changed: the in-flight life cycle (bug-08 and pod groups need
+  it), ListAllAllocatedDevices (sets; the result is the same).
+- Left (upstream note): the special claim of extended resources backed
+  by DRA is in flight under a temporary UID (DR/
+  extendeddynamicresources.go:189) and gets its real UID when bindClaim
+  creates it, so the UID match does not dedupe it; with binding
+  conditions and consumable capacity it would still count twice. Not
+  used here; a full fix would move its in-flight entry to the created
+  claim's UID in bindClaim.
+Patch: /tmp/kube-scheduler-dra-capacity.patch; commit message
+/tmp/kube-scheduler-dra-capacity.commitmsg (section 8); release note
+/tmp/kube-scheduler-dra-capacity.releasenote.
+
+========================================================================
+6. TESTS
+
+- DR/dra_manager_test.go TestGatherAllocatedStateWhileWaitingForBinding-
+  Conditions (new :280): a claim tracker wired as NewDRAManager wires it
+  (assume cache + allocatedDevices handlers), a claim with consumed
+  capacity 1 through pending, Reserve (in flight), bindClaim
+  (AssumeClaimAfterAPICall: in flight and allocated), the informer
+  catching up, PreBind success (MaybeRemoveClaimPendingAllocation) and
+  deallocation; the consumed capacity must be nil, 1, 1, 1, 1, nil.
+  Without the fix it fails: "in flight and allocated: consumed my-cap:
+  got 2, want 1".
+- The existing TestGatherAllocatedState (dynamicresources_test.go:5917,
+  in-flight claims not in the cache still add up: 2) passes unchanged.
+- go test ./pkg/scheduler/framework/plugins/dynamicresources/...
+  ./pkg/scheduler/framework/plugins/noderesources/...: ok; -race of the
+  claim-tracker tests and TestPlugin: ok; hack/verify-golangci-lint.sh
+  ./pkg/scheduler/framework/plugins/dynamicresources/...: 0 issues.
+  Go 1.26.3 (host) and 1.26.10 (K's .go-version, GOTOOLCHAIN) for the
+  plugin's package; make built the binary with 1.26.10.
+- For an upstream PR, an integration test in test/integration/dra
+  (binding_conditions.go): a device with consumable capacity for two
+  claims, pod1 with a claim on it plus one with binding conditions that
+  are never met, pod2 with a claim that fits; pod2 must be scheduled
+  while pod1 waits.
+
+========================================================================
+7. DEPLOYMENT AND VERIFICATION
+
+- Built with KUBE_GIT_VERSION=v1.37.1-dra-requeue.3 make WHAT=cmd/kube-
+  scheduler; image localhost/kube-scheduler:v1.37.1-dra-requeue.3 FROM
+  registry.k8s.io/kube-scheduler:v1.37.1 with the binary (/tmp/ksched-
+  img3/Dockerfile), podman save --format docker-archive (/tmp/kube-
+  scheduler-dra-requeue.3.tar), ctr -n k8s.io images import on vm2.
+- vm2's /etc/kubernetes/manifests/kube-scheduler.yaml: the image .3,
+  otherwise as for .2 (kubeadm's original differs in image and
+  imagePullPolicy Never only; /root/kube-scheduler.yaml.orig). The .2
+  manifest is kept as /root/kube-scheduler.yaml.dra-requeue.2 for a
+  rollback (the .2 image is still in containerd). The --v=5/--vmodule
+  flags used for the A/B runs are removed again. `kube-scheduler
+  --version` in the running container: v1.37.1-dra-requeue.3.
+- The A/B of section 2: A-stock FAIL, B-stock PASS, A-fixed PASS. The
+  executor's stall-window detection (image or version has
+  "dra-requeue", A28) applies to .3 as to .2.
+
+========================================================================
+8. PROPOSED COMMIT MESSAGE (K, branch 5jr-dra-requeue)
+
+DRA scheduler: count consumed capacity of a claim in PreBind once
+
+While PreBind waits for device binding conditions, the allocation of a
+claim is both in the assume cache, where bindClaim stored it after the
+status update, and in flight: the in-flight entry is removed only when
+PreBind succeeds. GatherAllocatedState adds the in-flight allocations to
+what allocatedDevices has observed in the assume cache. Devices end up
+in sets, so for them the overlap is harmless, but the consumed capacity
+of a device that allows multiple allocations is summed and was counted
+twice. Such a device looked fuller than it was until PreBind finished,
+up to the binding timeout, and pods whose claims would have fit on it
+were rejected with "cannot allocate all claims".
+
+Track which claims allocatedDevices includes and skip their in-flight
+entries in GatherAllocatedState. The revision check, which already
+guards the result against concurrent changes, also covers the lookup.
+
+========================================================================
+9. STATUS
+
+Fixed locally (K working tree on 5jr-dra-requeue, not committed:
+DR/allocateddevices.go, DR/dra_manager.go, DR/dra_manager_test.go),
+deployed on vm2 (v1.37.1-dra-requeue.3), verified by the A/B replay.
+Not proposed upstream yet (with bug-08: one issue each). The model
+needs no change: its prediction (ldax Running once the companion's
+block is free, contract A19: a bound holder hands its device over at
+once) is the correct behaviour. FR1b's observer note: see 15-runs-
+fencing-reboot.txt, FR1b "Validation" (the frozen event count is the
+apiserver's, not a cache of the observer).

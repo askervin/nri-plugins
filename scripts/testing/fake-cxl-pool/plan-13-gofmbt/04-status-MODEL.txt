@@ -1559,3 +1559,481 @@ released in a window with a controller kill after it, its attachment is
 either (adopted); A19: a claim that waited for the slices is requeued by
 their publish at ctrl-start and stalls if its device is in the
 scheduler's hold then.
+
+22. Fencing modes, exact O5, dnuma, mems coverage (A36-A40)
+-----------------------------------------------------------
+2026-10-29 (MODEL), from 13-design-fencing.txt F1-F5. No cluster run;
+the executor's side is EXEC's (same contract). Contract details decided
+here: "(MODEL, 2026-10-29)" paragraphs under A37, A38, A39, A40.
+
+Files: topology.go (FencingRun, Config.Fencing and DRAMNodes {0,1}),
+kinds.go (KDNuma "dnuma": pooled, pool c, Dev c-pooled0, and a block of
+its VM's local memdev; poolSuffix, dual, hasLocal, numaNodes, holdsRes;
+full gets xnuma-c@vm0#0, xnuma-c@vm2#0, dnuma@vm0#0, dnuma@vm1#0: 47
+slots, fullp 64), state.go (FenceMode, State.Fence, SlotState.Loose and
+CompLoose, the dual occupancy, claimNodes = E, memNodes = M), actions.go
+(VFencingSwitch, restartDriver, switchFencing, localReserved,
+dualRulesOK, dualBlocked; F only with allowed-mems), stack.go (the local
+claim of a dnuma pod is its second user, nSlots+i: userRegion,
+claimUsers, dualUser; applyDual), oracle.go (checkFencing exact:
+memsRule, nodeSet; dualClaims; predictVM, envWant), observe.go
+("claims"), coverage.go (memsStrings, switchContext), planner_ext.go
+(the mems strings of settle steps as C2), expect.go ("fencing", "loose",
+"compLoose"), canon.go (Fence, Loose<<7 and CompLoose<<7 in the key),
+main.go (--fencing, in the header, a model flag of A16), sim.go,
+simref.go, refpool.go (dnuma in the simulated SUT; LocalFree, the
+requeue of a lease-put), experiment.go (mems strings and the new actions
+in growth's report).
+
+Rules
+- Mode (A36): State.Fence; none: no driver fences (driverRestarted,
+  growFence, leaseGet leave F and FMaybe empty). Steps-file header
+  --fencing MODE; a file without it is allowed-mems.
+- fencing-switch (A37): with --fencing switch only; enabled when a
+  driver-restart of every VM is (no driver-kill of the window, no armed
+  watcher that may have fired: A31, A32). The mode flips first, then
+  driver-restart vm2, vm1, vm0 (A31 disarm, A34 slack and Creating
+  ended, F reseeded in the new mode, steering off). At a switch to none
+  the pods running, starting, restarting, unblocking or stalled become
+  Loose, the leases held CompLoose; a crash after it, a new pod, a new
+  lease end it; a switch back clears all (the first fence pass).
+- O5 (A38), per observed container of a slot or companion on VM v, with
+  D = Config.DRAMNodes, M = vmPred.memTotal > 0, E = claimNodes (numa
+  nodes of its claims, node 2 of a held numa lease; companions none):
+  allowed-mems D + E + (M \ F \ FMaybe), FMaybe & M either way; none
+  D + M; loose D + E present, nothing outside D + E + M; steered (lsteer
+  SteerOn or SteerAny, and every lsteer with none) E present, nothing
+  outside D + E + M (its manager writes its steps' nodes and the nearest
+  DRAM node, e.g. 0,2: D is not required). Old messages kept ("lacks its
+  node N", "has fenced CXL node N"), new ones: "lacks DRAM node N",
+  "lacks CXL node N with memory", "has CXL node N", "has node N", each
+  with the rule, e.g. "(allowed-mems, fenced 2,3: want 0,1,3)".
+  Timing: M is the settled prediction (Running claimers, held numa
+  leases); in allowed-mems every node of M is in F after resolve
+  (growFence), so M \ F is empty there and FMaybe never meets M: the
+  exact rule is D + E. A node that is fenced and whose memory went
+  offline is out of M and out of F's effect (the kernel drops it from
+  mems.effective): no special case.
+- dnuma (A39): a pool claim of c-pooled0 (every pool rule: attach,
+  Attaching, Either, Unsched, Stalled, held, contested, flux) plus a
+  local slice: it counts a local block while it holds (occupancy), fits
+  only with both, is the Pending waiter of both (no other create or
+  lease-get of either then), is promoted by either release (the stall
+  test of its pool device also when a local release promotes it).
+  Prepare and Unprepare events for both users (setOptional and
+  setRequired of the slot cover both); applyDual sets its phase by both
+  stacks and drops the worlds in which one Prepare of a pod that is not
+  deleted came and the other did not (a pod is bound or not; kubelet
+  prepares both claims of a bound pod). Data of c-pooled0 unknown when
+  it starts or stalls. F gets 2 and 3. Generation limits (on-line too):
+  never Blocked (stackRulesOK rejects an action with an outcome in which
+  a dnuma claim is blocked; dualRulesOK: not stalled over a hole; its
+  stacks are frozen while stalled: unblockingOn covers its hb0 stack,
+  stallStacksQuiet too); not deleted before it is bound (its local claim
+  would stay in flight in the scheduler, A19, which the model does not
+  know of local claims); while it is Unsched or Stalled no other local
+  claim or lease of its VM (localReserved: its block is kept for it).
+  Oracle: its two claims from "claims" (by the devices' driver, else
+  c0 local, c1 pool), Claim = the pool one allocated iff both are;
+  pending checks any allocation; its local claim uid in preparedClaims,
+  localDevices, cxl-claims.yaml, its pool one in preparedPoolClaims,
+  cxl-pool.yaml; regions: c-pooled0 numa on node 3 and a numa slice;
+  MemTotal of both nodes; env of both claims.
+- Coverage (A40): memsStrings of the end state of every settle step,
+  one "mems|MODE|e=E|f=F|m=M" per running container of a slot and per
+  companion, weighed as C2. fencing-switch: C1 "fault fencing-switch";
+  C2 "fault fencing-switch>MODE KIND" per pod with a container (MODE the
+  target), no phase, VM, hole or pdev context: with them the planner
+  took 22 switches in 300 steps (8 now).
+
+Validation against the recorded runs: every recorded failure observation
+(L4 131, L5 26, L7 1529, PM3 179, FP1 300, FP5 968, FP6 1352: replayed to
+its step, every alternative of its settle) has no O5 difference under
+the exact rule, as under the old one; with their "0-1" containers
+changed to "0-3" the rule reports 6-92 differences per observation (the
+scan is not kept as a test; the fixtures' own tests pass unchanged).
+
+Tests: 122 -> 132 (fencing_test.go: TestFencingExactAllowedMems (a
+node-3-only claimer while node 2 is fenced with memory, node-2 claimer,
+plain, dnuma, steered, a lent node and its companion), TestFencingRule,
+TestFencingExactNone, TestFencingSwitch (the transition, loose after
+the switch, exact after a crash, exact after the switch back, C2),
+TestDualOccupancy, TestDualNeverBlocked (a hole, an unbound delete, a
+controller kill: both claims or none), TestMemsStrings,
+TestFencingHeaderAndExpectation, TestGenerateFencingAgainstSim;
+refpool_test.go: TestFencingFuzz, -refpool-fencing). gofmt, GOWORK=off
+go vet, go test (107 s), go test -race (549 s) clean.
+Fuzz (TestRefPoolFuzz, -refpool-len 120): seeds 50000-52999, full and
+fullp each in allowed-mems, none and switch (18 000 sequences, 1.14
+million steps), and with the final switch rules seeds 60000-62999, full
+and fullp in none and switch (12 000 sequences, 0.74 million steps): no
+disagreement.
+
+Off-line (mbt-cxl generate --profile full --steps 300 --seed 7, depth 3,
+C1x3,C2x2,C3; each script executed on the simulated SUT with every
+expectation checked: ok): allowed-mems 309 steps, none 304, switch 311
+(25 fencing-switch before the C2 change, 7 after); dnuma 5-8 steps,
+xnuma-c@vm0/vm2 5-6 steps per script. Growth (experiment --exp growth,
+full, 300 steps, seed 3, --step-time 20s, with the simulated SUT and the
+oracle): allowed-mems @100/@200 C1 65/122 C2 121/218 C3 146/229, 16 mems
+strings (among them e=3|f=2,3|m=2,3: node 3 claimed while node 2 is
+fenced with memory, and e=2,3); none C1 66/121 C2 125/213, 9 mems
+strings; switch (after the C2 change) C1 56/110 C2 144/262, 8 switches,
+24 mems strings of both modes. Every new action taken: create, delete,
+crash of dnuma@vm0#0, dnuma@vm1#0, xnuma-c@vm0#0, xnuma-c@vm2#0.
+Plan time (experiment --exp plantime, fullp, depth 3, 30 steps,
+--plan-time 0, seed 1, --step-time 20s): before mean 1.66-1.68 s (308k
+paths), now 1.68-1.71 s (290k paths), switch 1.60 s (288k): about 5.4
+and 5.8 us per path; no noticeable change.
+
+After EXEC's cluster evidence (04-status-EXEC 17; 2026-10-29): the
+modes behave as modelled (allowed-mems exact D + E + (M \ F); loose
+after a switch to none; new containers in none follow onlined nodes;
+none from the start exactly D + M; fenced at once after the switch
+back). The lease revoke in mode none is bug-18 (the driver's): the model
+keeps D + M, TestFencingExecutorEvidence has the run's case (0-1 after
+the lease-put is a wait). Also: fencing-switch's done {"fencing": MODE}
+is checked against the predicted mode (DoneJSON.Fencing); driverLog
+"fencing" must be the predicted mode when observed (wait), "nriSynced"
+decoded; the executor's dnuma claims (c0 local with attached null and
+its node's pool, c1 c-pooled0) are read as such. 133 tests, all pass.
+
+Doubts on the driver's predicted behaviour (a run decides):
+- none and leases (D/lend.go changeLend, the branch of a container that
+  is not fenced, ~765-786): a lend sets an explicit cpuset.mems =
+  base + lent, base = the container's mems.effective at its start
+  without lent nodes; a revoke sets base without the node. So with
+  fencing none a lease requester (1) started before node 3 had memory
+  keeps node 3 out after its first lease-get, and (2) loses node 2 at
+  the lease-put even while other slices keep memory there. The model
+  predicts D + M (13-design-fencing 1, the intent): a none run with
+  lease-get on a VM that also has numa memory of another claim should
+  fail with "lacks CXL node N with memory" on mbt-lease-VM. If that is
+  the accepted behaviour, the model's rule for a lease requester with
+  fencing none should become loose after its first lend (one line in
+  checkFencing: loose = loose || (none && leaseKind && had a lend)).
+- Containers created while F was empty (allowed-mems): no adjustment,
+  cpuset.mems "" (effective = every node with memory); the first Fence
+  fences before onlining and its pass sets own \ F with own = the nodes
+  with memory then: exact. No doubt found; also after a driver restart
+  with a smaller F (explicit "0-1" stays right).
+- Switch to allowed-mems: the new driver's pass uses tc.mems from
+  Synchronize (the runtime's cpuset.mems; a lease requester's explicit
+  "0-2" from none is own, without fenced nodes plus its restored lend):
+  exact; containers created while the drivers restart get no adjustment
+  until the pass (A15's readiness waits for "lends restored").
+- Steered containers: the manager's cpuset.mems may lack DRAM node 1
+  (0,2): D not required (A38 note). An lsteer container with fencing
+  none whose manager ended keeps the manager's cpuset.mems (checked as
+  steered).
+
+23. Node reboot (A41-A44)
+-------------------------
+2026-10-29 (MODEL), from 14-design-reboot.txt, 12-findings-reboot.txt
+7.4 and bug-15's fix (bug-15-stale-claims-after-reboot.txt). No cluster
+run; the executor's side is EXEC's (04-status-EXEC 18). Contract details
+decided here: "(MODEL, 2026-10-29)" paragraphs under A41, A42, A43, A44.
+
+Files: topology.go (RebootRun, Config.Reboot, rebootVM), reboot.go (new:
+rebootOK, nodeReboot, windowKeys; the rules in its header comment),
+actions.go (VNodeReboot "node-reboot VM", a VM fault; vm2 refused by the
+parser; generated only with --reboot; the window flags cleared when a
+window starts; off-line rule in next), state.go (Token.OrZero, orZero,
+accepts; DriverState.Rebooted, Reboots, Boot, BootBefore; State.Reorder;
+abstract "drv VM rebooted" in the window; dump), stack.go (outcomesCut:
+a rebooted stack starts empty with nothing prepared; with Reorder the
+issue order only), oracle.go (resolve adopts a Reorder stack's observed
+order and the boot ids; checkPorts accepts a permutation while Reorder;
+AttachFailed; read "orZero"; node-reboot's done "boot"; adoptDone),
+oracle_reboot.go (new: checkBoot, checkDevNodes, checkInspectDevices),
+observe.go ("cxlDevices", container "devices", "devicesFrom", claim
+"attachFailed", done "boot"), expect.go ("reorder", driver "rebooted",
+"reboots", "boot", "bootBefore", done "orZero", "bootNot", tokens
+"..."|zero), adopt.go (a settle's record clears Reorder; openChoice),
+canon.go (Reorder and the Rebooted bits in the key; boot ids left out),
+main.go (--reboot, in the header and the model flags of A16), online.go
+(logged), sim.go, simpmem.go, simref.go (boot ids per boot, region and
+dax numbers new with every boot, dev numbers, "devices" and
+"cxlDevices", the truth's stack order shuffled for Reorder, "token or
+zeros" decided at random, done "boot"), refpool.go (node-reboot: ~45 s;
+qemu: the VM's attachments dropped and attached again after the
+servers' discovery; the plse companions of the VM dropped), experiment.go
+(node-reboot in the verbs line).
+
+Rules (A43 with bug-15 fixed)
+- When (rebootOK, next): vm0, vm1; the window empty (a settle came
+  last); then only a settle (Unsettled is set to the limit: synchronous
+  steps of pods elsewhere may come between); every pool controller up
+  with its slices; no armed watcher of the VM that may have fired (A31,
+  A32, as driver faults); no pod that is or may be on the VM Unblocking,
+  Stalled, Attaching, Either or Unsched (their retry or promotion may
+  come before or after the boot: restarts 0 or 1). Pending pods (not
+  bound) are not touched. Starting, Restarting, Deleting pods and
+  Lending leases exist only inside a window: none at a reboot (a pod
+  deleted just before is gone: the settle waited for it).
+- Transition: Running pods of VM -> Restarting, restarts +1; a pod
+  without a claim (plain) Slack 1 (its container does not wait for the
+  driver; kubelet started twice in the boot, 12-findings 3.1: the M2
+  race); claimed pods exactly +1 (their containers start after their
+  Prepare, after the driver registered). The driver pod +1, Slack 1
+  (adopted; EXEC saw exactly +1 every time). Blocked pods: prepared (no
+  hole after the boot), Running, restarts unchanged; Blocked with Refuse
+  -> Refused; Refused stays (content unchanged). Holds end, nobody is
+  loose (A37), lsteer is steered (SteerOn). The VM's stacks are emptied
+  and every claim of a Running or Blocked pod on it gets a prepare event
+  (both claims of dnuma; refused ones probe nothing); a stack with two or
+  more regions gets the Reorder bit: the window plays its prepares in
+  issue (slot) order only and the oracle adopts the observed order (the
+  extension of A9's adoption; "#adopt N stack=..."). Leases of VM:
+  Releasing (gone at the settle), their companions with them; the waiter
+  of the block (lease) or of c-pmem0 (plse) is promoted. The companion's
+  claim makes no region after the boot (bug-15: its Prepare fails before
+  it touches a device, OnLending), so no restriction for leases was
+  needed (a first version had one; removed after the fix's notes).
+  Volatile dax data of a Running pod's device on VM: token or zeros
+  (Token.OrZero, decided by a read, ended by a write); ldax slices zero;
+  numa bytes unknown; PDev unchanged. F of VM = the numa nodes of the
+  claims prepared again (allowed-mems; none: empty), FMaybe empty. The
+  watcher of VM disarmed. Boot: BootBefore = the boot id learnt, Boot ""
+  until the done's "boot" or the settle's observation.
+- Oracle: boot ids (fail), device nodes (wait, i.e. fail at the
+  timeout), env DAX/PATH of an inspection is a current cxlDevices device
+  of the claim (fail), env NODE has memory (wait), AttachFailed of a
+  Running pod's claim (a wait in the reboot's settle, a fail otherwise),
+  reads "token or zeros". Pods "Running" with a terminated container,
+  Ready false, restarts 0 for 30-60 s after the verb (EXEC 18.4) are a
+  wait as before; the settle timeout (180 s) is enough by EXEC's
+  timings (guest: pods Running ~110 s after the verb's start, the verb
+  ~45 s; qemu ~122 s, the verb ~81 s).
+- Off-line (no adoption): a node-reboot is generated only when no stack
+  of the VM gets two regions (Reorder 0); the boot ids are not checked
+  (no ids known); the slack of plain pods and of the driver pod stays in
+  the expectations (R+1 or R+2 accepted).
+- Coverage: C1 "fault node-reboot" (once, as other faults); C2 the
+  default VM-fault context: "fault node-reboot KIND PHASE" per pod on
+  the VM, its holes and the pdev contents. No coarsening was needed:
+  2-4 reboots per 300 steps (below), about 1 per 100 steps: with ~1500
+  steps in 2 h and ~2 min per reboot, 10-20 reboots and a quarter of
+  the time at most.
+
+Validation against EXEC's recorded runs (/tmp/exec-reboot/runs, image
+without bug-15, MBT_STUB lists): guest2 and qemu2 replayed through the
+model (a throwaway test, not kept): the settles before the reboots ok;
+the settle after node-reboot vm1 fails as expected without the fix
+(env of ldax lacks CXL_C100E2E1_DAX: fail; no regions, NODE=3 without
+memory, the lease kept Ready, ldax with 0 device nodes of its claim,
+cpuset.mems without node 3: waits); the teardown settle ok. Every new
+field ("cxlDevices", "devices", "bootID") was decoded: no "not observed"
+note of A44.
+
+Tests: 133 -> 147 (reboot_test.go: TestNodeRebootVerb (parse, allActs,
+MBT_AVOID, the header), TestNodeRebootPreconditions, TestNodeRebootTransition
+(per kind, forced settle, Reorder, data, F, the adoption of a permuted
+stack and its record and replay, the driver's slack, token-or-zeros
+reads, the expectation JSON, C2), TestNodeRebootLeases (release, the
+companion, the promoted waiter, a lease-get again, the companion's
+region gone), TestNodeRebootDual, TestNodeRebootFencing (none; loose
+after a switch becomes exact; allowed-mems reseeded),
+TestNodeRebootPersistent (content, pread, refused, Reorder on hb1),
+TestNodeRebootBootID, TestDevNodes (stale nodes of another boot or
+claim, numbers, counts, plain, block, null/absent, env DAX/PATH, NODE
+without memory, after a reboot), TestNodeRebootAttachFailed,
+TestGenerateRebootAgainstSim (off-line script with node-reboot run on
+the simulated SUT), TestRebootFuzz (guest and qemu with the reference),
+TestRefPoolQemuRestart, TestOnlineReboot (the protocol, done "boot",
+adoption records, generate --from); TestCanonicalKeyComplete got two
+runs with --reboot each on-line and off-line). gofmt, GOWORK=off go vet,
+go test (119 s), go test -race (586 s: under the default 10 min timeout,
+with TestRebootFuzz at 25 sequences per variant and the small profile
+for TestGenerateRebootAgainstSim; 549 s before) clean.
+Fuzz (TestRefPoolFuzz -refpool-len 120 -refpool-seqs 3000): full guest
+(seed 80000: 977 reboots), full qemu (980), fullp guest (791), fullp
+qemu (791), fullp guest with fencing none (seed 90000: 756) and switch
+(740): 18 000 sequences, 1.13 million steps, no disagreement.
+
+Generation (mbt-cxl generate --steps 300, depth 3, C1x3,C2x2,C3,
+--reboot=guest; steps with the teardown): full seed 7: 2 node-reboots
+in 308 steps; fullp seed 7: 3 in 315; seeds 1, 2, 3: full 2, 1, 1 (305-
+310 steps), fullp 3, 3, 3 (312-314 steps). The off-line rule (no stack
+with two regions after the boot) keeps full lower: its VMs have more
+hb0 regions. Without --reboot the scripts are byte for byte those of
+the binary before the change (full seed 7, 300 steps; fullp seed 3, 120
+steps), but the header's "--reboot=".
+On-line growth (experiment --exp growth, 300 steps, seed 3, --step-time
+20s, the simulated SUT and the oracle, no disagreement): full 3
+reboots (C1 178/229 actions @300, C2 239 @200 vs 218 without), fullp 4.
+Plan time: experiment --exp plantime fullp depth 3, 30 steps,
+--plan-time 0, seed 1: before 1.866 s mean (290186 paths, 6.4 us per
+path), now without --reboot 1.787 s (the same paths: no regression),
+with --reboot=guest 1.358 s (247548 paths, 5.5 us). Growth full 300
+steps: before 673 ms mean (143081 paths), now 664 ms (the same paths),
+with --reboot 743 ms (142289 paths, 5.2 vs 4.7 us per path: two more
+actions per state). Growth fullp with --reboot: 3.66 s mean (431545
+paths, 8.5 us) vs 2.62 s before (382696 paths, 6.8 us): its trajectory
+has more pods.
+
+Doubts on the predicted behaviour (a run decides)
+- Restarts: claimed pods exactly +1, plain and the driver +1 or +2. If a
+  run shows +2 on a claimed pod (a kubelet restart inside the boot while
+  it created the container), give every container on the VM Slack 1.
+- Volatile dax content: "token or zeros" is the contract's; the qemu
+  memory backends (files) keep it, so a run reads the token; a read of
+  junk (neither) fails.
+- The LSA and the head hashes of a persistent device are predicted
+  unchanged across the boot (the driver finds the namespace by its
+  labels; bug-15 says pmem keeps its content); if the kernel rewrote
+  labels at the region's assembly, pdevs would differ (wait, then fail).
+- ldax after a qemu restart: Prepare fails until the executor attached
+  the local memdev again; kubelet's retry back-off (up to ~90 s) must fit
+  in the settle (180 s after the ~81 s verb): bug-15's verification saw
+  it Running.
+- An "any" pod on the VM: treated like the VM's own pods (its node is
+  known once Running); a Pending "any" pod is not touched.
+- A refused claim's retry after the boot makes and rolls back its region
+  at the top of the rebuilt stack (A25): the adoption trims it, as
+  checkPorts did.
+
+24. Review of the fencing, dnuma and reboot changes (2026-10-29)
+----------------------------------------------------------------
+2026-10-29 (review fixes; MODEL and EXEC sides, no cluster run). The
+reviewer's findings 1-8 (builds and outputs in /tmp/review-mbt,
+/tmp/review-gen); my sweeps in /tmp/mbt-fix/sweep*/out. Contract notes
+"(review, 2026-10-29)" under A18 (the any= items), A36, A37, A41, A43,
+A44. The executor's side: 04-status-EXEC 19.
+
+1 (kept) reboot.go nodeReboot: an lsteer pod on a rebooted VM stays
+  predicted SteerOn; a comment says why (a driver that serves a Prepare
+  after the boot before its NRI plugin is up leaves it unsteered: the
+  driver's race bug-19, bug-19-prepare-before-nri-loses-steering.txt,
+  fixed in the driver; a run with such a driver fails, as intended). No
+  code change.
+2 main.go applyHeader: --fencing and --reboot are cluster flags
+  (clusterFlags): a command line value that contradicts the header of
+  --replay or --from is an error (exit 2, "... it configures the cluster
+  too: MBT_FENCING ..."), never replaced; a header without them has the
+  defaults (allowed-mems, ""), a file without a header the command
+  line's. The other model flags are replaced with a message as before
+  (A16). Before, the cluster ran in the user's MBT_FENCING/MBT_REBOOT
+  and the model in the header's, and MBT_REBOOT= could not disable the
+  reboots of a replay (it now fails, as code.var.sh does).
+  TestHeaderClusterFlags (10 header/command line cases, A16 still
+  replacing --profile, online --replay and generate --from refuse).
+3 "attachFailed" of the observer (EXEC 19) is now also in the
+  simulated SUT's observations: false for an allocated pool claim (also
+  the pool claim of "claims"), null for a local one; the reference sets
+  its AttachFailed flag. TestNodeRebootAttachFailed checks the encoding
+  and a dnuma pool claim with attachFailed true (fail).
+4 Root cause: the SIMULATED SUT, not the model or the driver. sim.go
+  resolve (and simref.go resolveRef) decided the retry of an Unblocking
+  pod by a coin at every settle (every poll with the reference), with no
+  notion of time; the oracle requires it Running within
+  MBT_UNBLOCK_TIMEOUT (330 s) of the settle that saw the hole clear
+  (A9: kubelet caps its Prepare back-off at 5 min). With --step-time 20s
+  and settles 80-120 s apart, pwr-c@vm2#0 (blocked on vm2/hb1 since step
+  151, hole cleared by the delete of sdax-c@vm2#0 at 156, Unblocking at
+  the settle of 159) lost the coin at the settles 163, 167, 171, 175 and
+  181 (1/32): 7m20s at 181. The vm2 faults before it were not involved.
+  The driver side was checked: a Prepare after a cleared hole goes
+  through CreatePmemRegionNoted again with nothing cached
+  (pool_persistent.go preparePersistent, memctl decoders.go portHole
+  reads sysfs each time), so the oracle's rule stands. Fix: the sim gets
+  the oracle's clock (sim.now/since, set by expRun before every settle;
+  the reference's clock with ref) and keeps the coin, but an Unblocking
+  pod runs at the latest kubeletRetryCap (300 s) after the settle that
+  first saw it so, and the non-reference sim promotes a Stalled
+  contender at the latest --stall-window after its settle (the same
+  class, not met in a sweep: with --stall-window 30s and 80 s between
+  settles one lost coin would fail it). The first sighting is kept in the truth's UnblockAt, as
+  the oracle keeps it in the model's; the coin is drawn first, so runs
+  without anything overdue keep their random sequences (the reviewer's
+  replay is the same up to step 181). TestSimRetryDeadlines (64 seeds,
+  settles 80 s apart, both cases, forced and by the coin; fails without
+  the fix). The reviewer's command and its --from replay: no
+  disagreement (300 steps, 8.5 min).
+5 (EXEC 19) off-line MBT_SCRIPT reads --fencing and --reboot from the
+  header line of its code.gen.sh, with the rule of 2.
+6 (EXEC 19) fencing-switch deletes a driver pod that logs the old mode
+  once more.
+7 actions.go: fencing-switch at most once per window (State.Switched,
+  set by the switch, cleared by the settle; in the canonical key with
+  Fence: Fence | Switched<<1). Last is not in the key, so "the previous
+  step" could not be the rule; one per window also forbids switch,
+  write, switch. generate full seed 11 --fencing switch --reboot=guest
+  300 steps: 7 switches (8 before; 3 to allowed-mems, 4 to none), a
+  settle between every two; fullp seed 12: 10 (9 before; 5 and 5);
+  both modes in the expectations of both.
+8 (EXEC 19) the bug-17 check by the binary's content.
+
+More disagreements found by the sweeps (all of the simulated SUT, the
+model unchanged; every one with a regression test that fails without
+its fix):
+(a) full qemu seed 270849 (sweep 1): a dnuma pod waiting for a block of
+  vm0's local memdev held by a dax lease; node-reboot vm0 releases the
+  lease; the model promotes the dnuma pod (right: the broker of the new
+  boot drops the lease, its companion's claim is deallocated, a
+  requeueing event), the reference never allocated it: its requeue
+  fired inside ref.do of the reboot and asked LocalFree, which answered
+  from the truth before the step (the lease still held). Fix: sim.next =
+  the truth after the action while ref.do runs (localFree uses it); the
+  same latent order for lease-put. TestRefPoolReviewRegressions.
+(b) full guest fencing none seed 652722 (sweep 2): "pod sdax-c@any#0: on
+  vm2, want vm0". The reference bound the "any" pod on vm2 while the
+  controller had not detached c-shared0 from vm0 yet (the claim of
+  sdax-c@vm0#0 deleted in the window, a server-restart c); refMismatch
+  scored the vm0 world (node wrong, attachment right) and the vm2 world
+  (node right, attachment in flux) one each, the tie went to vm0: the
+  truth's node side and the inspected env (dax35.0 of vm0) said vm0.
+  Fix: a pod's node counts refFactWeight (100) in refMismatch: a fact
+  once allocated. TestRefPoolReviewRegressions.
+(c) fullp fencing none seed 710078 (sweep 2): "dnuma@vm0#0: phase
+  Pending ..., want Running (... not all enumerated ...)": R10's bound.
+  Six race-kill pods (ctrl-start c, ctrl-kill c in the window; a dnuma
+  one with two optional Prepares) on four stacks: the 64 enumerated
+  outcomes all had the dnuma pod's Prepare; the reference had it
+  allocated and attached but its Attached condition not written before
+  the kill (not bound). Fix (model and truth): a truncated settle with
+  race-kill pods keeps its pre-settle state (Wide) too, and narrowed()
+  also takes their observed bindings: bound or the pool claim Attached
+  (its Prepares come: setRequired), neither (dropPrepares); the record's
+  any= has SLOT:bound / SLOT:unbound after the SLOT:VM items, narrowTo
+  parses them (generate --from follows). TestRefPoolNarrowedRaceKill
+  (the 64 all Running, narrowed all Either, narrowTo round trip; the
+  fuzz sequence fails without the oracle's and the truth's narrowing).
+(d) fullp qemu switch --stall-window 30s seed 1380903 (sweep 3), the
+  class of (b): lease-get plse@vm0#0 pfd cut by the bind watcher of vm0
+  (A29 d: kept or released, "the reference decides"); the reference
+  released it, but refMismatch never looked at the reference's
+  companions, and at the settle's first poll the kept world matched one
+  fact more (c-pmem0@vm0 not detached yet): the truth and the model kept
+  the lease, "attachment c-pmem0@vm0: missing" a settle later (timeout).
+  Fix: the companion of a plse lease in the reference counts
+  refFactWeight against the world's lease (Held or Busy: kept).
+  TestRefPoolReviewRegressions (the fuzz's hold of the lease is refused
+  now, the steps before it pass).
+
+Sweeps (no cluster):
+- sweep 1 (fixes 4, 7, 2, 3): 54 experiments, experiment --exp growth
+  --mixes C1,C2,C3 --steps 300 --step-time 20s, profiles full and fullp
+  x --reboot none, guest, qemu x --fencing allowed-mems, none, switch x
+  seeds 31, 32, 33 (33 with --stall-window 30s): 16 200 steps, 180
+  fencing-switches, 96 node-reboots, 16 mems strings of am and 9 of
+  none: no disagreement. TestRefPoolFuzz -refpool-len 120, the 18
+  combinations x 3000 sequences and the 6 switch ones x 2000 with
+  -refpool-stall-window 30s (66 000 sequences, ~4.1 million steps): (a).
+- sweep 2 (+ (a)): the 18 combinations x 3000 and x 2000 with 30s, new
+  seeds (90 000 sequences, ~5.7 million steps): (b), (c).
+- sweep 3 (+ (b), (c)): the seeds of sweep 2 again and new ones (the 18
+  combinations x 3000 and x 2000 with 30s each: 180 000 sequences): (d);
+  20 experiments (the 18 combinations, seed 41, and the reviewer's
+  fullp seed 22 --reboot=guest with the default and the 30s window:
+  6 000 steps, 64 fencing-switches, 38 node-reboots): no disagreement.
+- sweep 4 (the final code, + (d)): the 18 combinations x 3000 and x 2000
+  with 30s for the seed bases of sweeps 2, 3 and new ones (270 000
+  sequences, ~17 million steps): no disagreement.
+Every sweep's commands and outputs: /tmp/mbt-fix/sweep{,2,3,4}/
+(jobs.txt, out/).
+Tests: 147 -> 151 (TestSimRetryDeadlines, TestHeaderClusterFlags,
+TestRefPoolReviewRegressions, TestRefPoolNarrowedRaceKill; extended:
+TestNodeRebootAttachFailed). gofmt,
+GOWORK=off go vet ./..., go test ./... (119 s), go test -race clean
+(588 s: close to go test's default 10 min, run it with -timeout 30m).

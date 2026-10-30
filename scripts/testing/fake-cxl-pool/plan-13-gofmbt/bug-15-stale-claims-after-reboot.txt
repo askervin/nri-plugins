@@ -1,0 +1,565 @@
+BUG-15: PREPARED CLAIMS SURVIVE A NODE REBOOT WITH THE DEVICES OF THE
+OLD BOOT
+
+Branch 5jg-cxl, 2026-10-29. Found by the reboot research
+(12-findings-reboot.txt sections 3 and 4, bugs R1 and R2). Fixed in the
+working tree (uncommitted), unit tested, verified on the cluster with the
+qemu restart of vm1 (section 7; the guest reboot needs R4 fixed).
+Changed after a second review the same day (section 11), not verified on
+the cluster again.
+
+D/ = cmd/plugins/dra-driver-cxl/, K/ = ~/github.com/kubernetes/kubernetes
+pkg/kubelet/ (v1.37.1-22), RR/ = /tmp/p13-runs/reboot-research/,
+B/ = /tmp/p13-runs/b15/ (the verification). Line
+numbers of HEAD (73dba0f5a) unless "new". Times of the driver logs are
+UTC.
+
+========================================================================
+1. SUMMARY
+
+After a node reboot kubelet keeps the pods and their claims, loads its
+DRA checkpoint with every claim not prepared and calls
+NodePrepareResources for each claim before it starts the containers of
+the claim (K/cm/dra/claiminfo.go:142-148, K/kuberuntime/
+kuberuntime_manager.go:1718-1729: with a new pod sandbox). Both drivers
+of the plugin and the lease broker answered from their files with what
+the old boot had:
+- the pool driver (cxl-pool.nri.io): "already prepared" and the result
+  and CDI devices of the old boot: dax device nodes (252:N) that the new
+  boot does not have or gives to another device, block device nodes
+  (blkext 259:N) that the new boot gives to the next block device, a
+  NUMA node without memory, the bind of a node mount that is gone;
+- cxl.nri.io: "already prepared" for local slices that the local
+  allocator forgot with the state of the old boot, lease claims and the
+  companion claims of local leases;
+- the lease broker: leases Ready on memory that is gone; the node of a
+  numa lease lent again to the restarted requester every minute.
+One stale block device node reached another claim's device: after the
+qemu restart the container of an rw claim of c-pmem1 read c-pmem0 (its
+token mbt-5) through /dev/pmem1 259:0, and could have overwritten the
+erofs image that the readers of every VM mount.
+
+R2, part of it and also without a reboot: an fs claim whose node mount
+could not be mounted again at start stayed prepared with a CDI bind
+mount of the removed directory: every start of its container failed
+("failed to fulfil mount request: open .../mounts/c1ae2002-direct: no
+such file or directory"), CrashLoopBackOff for ever.
+
+Severity: high. Every reboot of a node with claims (a guest reboot or a
+power cycle) gives the containers memory that is not theirs or none: a
+container of an rw device can write another device's data, numa claims
+run without their memory, fs claims never start, leases lie Ready.
+
+========================================================================
+2. REPRODUCTION
+
+12-findings-reboot.txt section 2: test90 in replay mode with the pausing
+generator wrapper RR/gen-wrap.py and RR/steps.txt (profile fullp: pwr-c
+and xpb-c write erofs images on c-pmem0 and c-pmem1, pwr-c deleted, then
+on vm1 pfsd-c, xnuma-c, xdax-a, ldax, lease, plain), from N/test/e2e:
+  MBT_MODE=replay MBT_REPLAY=RR/steps.txt MBT_BIN=RR/gen-wrap.py \
+  MBT_READ_TIMEOUT=21600 WRAP_STEPS=25 MBT_OBS_KEEP=200 \
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/\
+  test90-gofmbt-reliability
+During the pause: "systemctl reboot" in vm1 (3.), then a qemu restart
+of vm1 (vmdir-restart, 4.). In general: any claim prepared on a node,
+then a reboot of the node with the pod kept.
+
+========================================================================
+3. EVIDENCE
+
+- RR/post1/driver-vm1.log (after the guest reboot of 06:29:27):
+  :15 "cxl-pool.nri.io: loaded 4 prepared claims from
+  .../preparedPoolClaims.json" (no boot id in the file);
+  :17 "not mounting .../mounts/c1ae2002-direct again: device 0xc1ae2002:
+  mem3 has no region" (the claim stays prepared, R2);
+  :21 "local: .../localDevices.json is from another boot
+  ("1783df01-...", this is "e7a6c370-..."): forgetting its 1 memdevs";
+  :28 "claim 639cb3b0-...: no device node for the dax slice /dev/dax0.0:
+  the slice is gone" (ldax kept prepared);
+  :29 "NRI fence: fencing CXL nodes 2-3 of prepared claims" (nodes
+  without memory);
+  :30 "lease broker: loaded 1 lease claims and 1 leases";
+  :83-84 "Claim 0b80f1d3-... was already prepared, nothing to do" and
+  "lease c800a395: Ready (source local, serial 0xc100e2e1, mode numa,
+  node 2 ...)";
+  :91, :98, :105, :112 "cxl-pool.nri.io: claim ... was already
+  prepared" for xpb-c, xdax-a, xnuma-c, pfsd-c.
+- RR/post1/containers.txt: xdax-a CXL_C1EE0001_DAX=/dev/dax5.0 with a
+  device node 252:4 that the guest has not; xpb-c /dev/pmem1 259:0 rw;
+  xnuma-c CXL_C1EE2001_NODE=3 with Mems_allowed_list 0-1; ldax without
+  its dax device; the lease requester with a lease Ready on node 2.
+- RR/post2/xpb-stale-read.txt (after the qemu restart, 4.4): from the
+  container of xpb-c (claim of c-pmem1), /dev/pmem1 259:0 rw, pmem-rw.py
+  read printed "mbt-5", the token of c-pmem0.
+- RR/out/nri-dra-driver-cxl.vm1.log:89-248: the lender re-applied node 2
+  for lease c800a395 every minute after the qemu restart.
+- 12-findings-reboot.txt 3.4: the pods keep their UIDs, every container
+  restarts once, the claims keep allocation and reservedFor; 3.5:
+  pfsd-c in CrashLoopBackOff from +88 s on.
+
+========================================================================
+4. ROOT CAUSE
+
+- D/pool.go:472-480 prepareClaim returns pc.Result for any claim in
+  p.prepared; D/pool.go:1370-1396 load reads preparedPoolClaims.json
+  without a boot id; D/pool.go:1314-1341 buildCDISpec builds the CDI
+  devices from the stored dax and block numbers and node mounts. Nothing
+  tells the claims of the old boot.
+- D/pool_persistent.go:810-816 restoreMounts: a node mount whose device
+  check fails (checkBlockDevice: "mem3 has no region") is removed and the
+  claim kept prepared with its CDI bind mount (R2).
+- D/node_state.go:977-985 prepare: "already prepared" for every claim of
+  preparedClaimsInfo.json, although the local allocator dropped the
+  state of another boot (D/local.go:1337-1341); D/node_state.go:1105-1117
+  forgetGoneSlices drops only the dax device nodes.
+- D/lease_store.go:156-178 loadLeaseStore and D/broker.go:133-179
+  newBroker: no boot id; the reconcile re-applies the node of every Ready
+  numa lease (relendContainer), and NRI Synchronize seeds the restarted
+  requester with it (keptLends, LeaseNodes).
+- D/pool.go:705-723 checkSamePreparation compares a new claim's device
+  with the device records of every prepared claim, those of the old boot
+  too; D/driver.go:399 seeds the fence with the nodes of every prepared
+  claim (12-findings 4.2: "fencing CXL nodes 2-3").
+- Only the local allocator knew the boot (localDevices.json bootID,
+  D/local.go:225-228).
+- The kernel: a reboot leaves no region, nvdimm region, dax or block
+  device, mount or online memory of the old boot; dax (252:N) and blkext
+  (259:N) minors are given out anew. The labels of persistent memory
+  stay in the LSA (12-findings 3.2, 4.3).
+
+========================================================================
+5. THE FIX
+
+Design: every record of a Prepare carries the boot id of its kernel
+(/proc/sys/kernel/random/boot_id, read once at start). At start a claim
+of another boot is not prepared: its record is kept for its Unprepare,
+it has no CDI device, and kubelet's Prepare again (which comes before
+the containers start) prepares it as a new Prepare. Leases of another
+boot are dropped. The pool driver keeps its stale claims as records of
+preparingPoolClaims.json, the machinery of bug-11 (no CDI device, not a
+user of the device for other claims and releases, Unprepare releases
+"as they are now", Prepare again replaces the record), marked Stale so
+that the start does not release them (bug-14 releases only what a cut
+Prepare left at the top of the decoders; another boot left nothing).
+Not chosen: keep stale claims in the prepared map with a flag (every
+user of p.prepared, CDI, results, fence, preparedDevice, mountUsed,
+regionUsed, leaseBindUsed, restoreMounts, would need the filter); release
+stale claims at start (it disables memdevs that kubelet prepares again a
+minute later, +2 s probe grace each; the Unprepare of a claim whose pod
+went releases its device as the pool expects anyway).
+
+a) Boot id: D/local.go readBootID (:271, its warning no longer says
+   "local:") and otherBoot (new :285): a record is of another boot when
+   both ids are known and differ. A record without a boot id (written by
+   a driver before this fix) is taken as one of this boot and gets the
+   id at start: the upgrade of the driver happens without a reboot, and
+   taking such claims as stale would leave the running pods without CDI
+   devices (kubelet does not prepare them again in the same boot) and
+   release slices under running containers (the allocator's reconcile).
+   The local allocator keeps its own rule (a state file without a boot
+   id is of another boot): it forgets without touching. With the boot id
+   of the kernel unknown, every record is of this boot, as before.
+   D/driver.go newDriver (new :382) reads it once and passes it to the
+   pool driver, the local allocator, cxl.nri.io and the broker.
+b) Pool driver, D/pool.go:
+   - preparedPoolClaim.BootID (new :276), set by prepareClaim (new :548);
+     preparingPoolClaim.BootID and Stale (new :295, :302), set by
+     notePreparing (new :868), which clears Stale (the Prepare touches
+     the devices now).
+   - newPoolDriver (new :375): load, loadPreparing, demoteOtherBoot,
+     restoreMounts, releaseUnfinished, updateSerials.
+   - demoteOtherBoot (new :1024): the prepared claims of another boot are
+     demoted; those without a boot id get this one (saved).
+   - demote (new :1058): the claim leaves p.prepared and becomes a stale
+     record of preparing: its devices as notePreparing records them
+     (untouched, new :240: no memdev, region, dax, namespace, block
+     device, node mount, loop device), the NUMA node of the region of a
+     numa device now (regionNode: -1 after a reboot, so nothing is
+     fenced for it; a region there now is fenced), the lend of a
+     companion claim. The region names and lent nodes of the old boot
+     are dropped (forgetBoot, new :1001): the new boot names other
+     regions so, and a revoke of the nodes would wait for the lender for
+     nothing. saveDemoted (new :1088): the preparing file first, then the
+     state file (a crash in between leaves the claim in both files, and
+     the next start demotes it again; if the preparing file cannot be
+     saved, the state file keeps the claim). If only the state file cannot
+   be saved, it keeps the claim of the other boot: the forget of a stale
+   record that is not prepared again (forgetPreparing, new :903-931)
+   saves the state file first, and fails (the record kept, the
+   Unprepare fails for kubelet to retry) if it cannot. Otherwise a
+   restart in the same boot demoted the claim again into a stale record
+   that no Unprepare forgets (review, section 11).
+   - loadPreparing (new :955, :962): the record of a Prepare cut in
+     another boot is stale ("its Prepare did not finish in another
+     boot"), without region names and lent nodes: before, the start
+     released it and deleted hollow regions by the names of the old
+     boot, which may be another owner's now. A stale record is kept also
+     while its memdevs are away (a power cycle before the controller
+     attached them again), as a prepared claim is: its Unprepare
+     releases the memdev when it is back.
+   - releaseUnfinished (new :1124) skips stale records.
+   - load (new :1576) does not warn about gone memdevs of stale claims.
+   - unprepareUnfinished logs "not prepared any more (...)" for a stale
+     claim (new :1273).
+   What follows from it: no CDI device for a stale claim (buildCDISpec
+   reads p.prepared), no results for NRI (ClaimResults), no fenced node
+   at start (numaNodes: results of prepared claims and nodes of records
+   with a region now; D/driver.go:409 new, comment), its serial still a
+   pool serial (Serials: hidden from the local publisher), its device no
+   longer that of a prepared claim (checkSamePreparation, the release of
+   another claim, mountUsed, regionUsed, leaseBindUsed), its node mounts
+   swept by restoreMounts as those of no claim. Its Unprepare
+   (unprepareUnfinished) tells the broker of a companion, revokes
+   nothing (no lent nodes), unbinds what the lend names (nothing is
+   mounted after a reboot; the directories are removed), releases the
+   devices as they are now (unfinishedDevices: current block device and
+   node mount; after a reboot: cxl disable-memdev), deletes recorded
+   regions that are hollow (none of another boot), forgets the record.
+   Its Prepare again is a new Prepare (region, onlining with the fence
+   before, dax device, namespace probe, node mount, lease bind, lend),
+   writes the new result and CDI spec, and forgets the record; a Prepare
+   again that fails before it touches a device (a companion whose lease
+   is gone) keeps the record for the Unprepare, one that fails after it
+   rolls back the devices of the record too (bug-11).
+c) R2, D/pool_persistent.go restoreMounts (new :804, :820),
+   restoreNodeMount (new :876), unrestoredMount (new :893), remount (new
+   :910); D/pool.go poolDriver.unrestored (new :122), prepareClaim (new
+   :526), buildCDISpec (new :1508): a node mount that is not mounted after
+   the restore at start (checkBlockDevice: the region is gone, or the
+   namespace or block device is another one; or the mount failed) is
+   unrestored, in memory: every start checks again. Its claims, but
+   companion claims, stay prepared and get no CDI device: a container of
+   them fails at its creation on an unresolvable CDI device instead of the
+   bind of a missing directory at every start, and the start logs "claim
+   ... has no CDI device: its node mount ... is not mounted (...)".
+   The Unprepare of a prepared claim (D/pool.go unprepareClaim new :1489,
+   D/pool_persistent.go releasedDevices new :416-464) waits for the
+   holders of the block device of the region now when the recorded one
+   is not the one prepared: its node mount is unrestored, or
+   checkBlockDevice fails (for mode block too). The recorded name may be
+   another device's now, whose holder it would wait for in vain ("still
+   in use" at every retry). Without a region it waits for no block device
+   (as unfinishedDevices); when the region is there but its namespaces
+   cannot be read, it waits for the recorded one, as a release without
+   the check could release a device in use. Logged:
+     cxl-pool.nri.io: claim NS/C: device 0x...: mem0 has no region; device 0x... has no region now: its release waits for no holder of /dev/pmem0
+     cxl-pool.nri.io: claim NS/C: ...; the release of device 0x... waits for the holders of /dev/pmem1, the block device of its region now, not of /dev/pmem0
+   (review, section 11).
+   kubelet's Prepare again of such a claim (with a new pod sandbox)
+   mounts it again if it can (remount) and rewrites the CDI spec, or
+   fails and says why: "device 0x...: its node mount M is not mounted and
+   cannot be mounted again: ...; unprepare the claim (delete its pods) to
+   prepare it anew". The Prepare of another claim that mounts the node
+   mount (preparePersistent, new D/pool_persistent.go:150) gives them
+   their CDI devices back. The Unprepare is that of a prepared claim: the
+   holder checks, the release, the recorded region deleted when hollow.
+   This is also the safety net for a reboot that the boot ids do not tell
+   (an older driver's file, an unreadable boot id): the fs claims fail
+   their Prepare again clearly instead of starting on nothing. Companion
+   claims are not changed (no CDI device; their lease bind is bound again
+   only with the node mount, as before).
+   Not chosen (the first version, changed after the review of section
+   10): demote such a claim as one of another boot. A claim of this boot
+   may still have running containers, and its other devices would lose
+   the protection of a prepared claim (the releases of other claims,
+   regionsAbove); a mount that failed for a passing reason would stay
+   failed for the rest of the boot.
+d) cxl.nri.io: PreparedClaimInfo.BootID (D/node_state.go new :102),
+   set by prepareAllocatedDevices (new :1239); newNodeState (new :193,
+   :223) calls forgetOtherBoot (D/prepared_claims.go new :123): the
+   claims of another boot are dropped from both maps and the files (their
+   slices and lent nodes are gone; the local allocator forgot them),
+   those without a boot id get this one. Their Unprepare finds nothing
+   (nil), their Prepare again prepares them anew (a new slice, the lease
+   socket of a lease claim again, OpenClaim keeps its FsDir). The local
+   allocator's reconcile at start takes only the claims of this boot as
+   prepared (D/driver.go newLocalHelper new :637).
+e) Leases: leaseStore.BootID (D/lease_store.go new :153) and
+   forgetOtherBoot (new :200), called by newBroker (D/broker.go new
+   :172) before the sockets are created: the leases of another boot are
+   dropped and logged ("lease ... is of another boot (...): released,
+   its companion is deleted"), the store gets this boot (saved). A table
+   that could not be decoded (Recovered) is neither changed nor saved: a
+   save would replace it by an empty table, and the next start would
+   remove the directories of the lease claims (sweepFsDirs). The
+   lease claims stay (kubelet prepares them again). The first reconcile
+   deletes the companion pods and claims, which have no lease now
+   (deleteOrphans); kubelet then unprepares the companion claims (pool:
+   stale record, the device released; local: nothing). A Prepare again
+   of a companion before that fails (OnLending: not the companion of a
+   lease of the broker). Nothing is lent again: LeaseNodes and the
+   reconcile see no lease, so neither NRI Synchronize (keptLends) nor
+   relendContainer gives the restarted requester the old node, and
+   LendsRestored follows the first reconcile as before. The requester
+   lists no leases and asks again. A store without a boot id is of this
+   boot.
+f) The fence (D/driver.go:409 new): seeded with the nodes of the
+   prepared claims of this boot only; the Prepare again of a numa claim
+   fences its node before it onlines the memory.
+g) Unchanged within a boot: the boot ids are equal, nothing is demoted
+   or dropped, results, CDI specs, regions and mounts stay as they were
+   at every driver restart (the test90 model relies on it), but the CDI
+   devices of the claims of a node mount that the start cannot mount
+   again (c; before, they bound a missing directory). The files
+   get the field "bootID" (per claim in preparedPoolClaims.json,
+   preparingPoolClaims.json and preparedClaimsInfo.json; at the top of
+   leases.json); the observer and oracle of test90 decode them
+   leniently. leases.json is written at start when its boot id changes
+   (also when it did not exist: {"claims":{},"leases":{},"bootID":...}).
+h) Docs: docs/memory/cxl/pool.md (Ordering and failure semantics: node
+   plugin restart, new item Node reboot), leases.md (Life cycle: Node
+   reboot), local.md (What Prepare does), usage.md (Files on the node).
+
+Left (open):
+- An older driver's files across a reboot (upgrade during a reboot) are
+  taken as this boot's once: R1 then for that boot, but for fs claims
+  (no CDI device, their Prepare again fails clearly, c) and dax slices
+  of cxl.nri.io (forgetGoneSlices).
+- A region on the device of a stale claim at start (firmware-committed
+  decoders that Linux assembles, possible on real hardware, not in the
+  qemu VMs: the reset uncommits every HDM decoder) is kept for the
+  Prepare again, which reuses it; a late release by a failing retry or
+  the Unprepare could then leave a decoder hole as in bug-14. Its numa
+  node is fenced at start.
+- Downgrade: an older driver decodes leases.json strictly and starts with
+  an empty lease table on the new field (as for every field added).
+- The fs lease of a companion claim whose node mount cannot be restored
+  stays Ready without its bind (as before); the broker is not told at
+  start.
+- A reboot that the boot ids do not tell: the fs claims fail their
+  Prepare again clearly (c); the claims of the other modes get the old
+  devices as before (the dax slices of cxl.nri.io lose their device
+  node, forgetGoneSlices).
+- In one boot a block claim whose namespace got other numbers keeps its
+  old CDI device node (only fs claims are checked at start).
+- While the boot id cannot be read the lease table keeps the boot id
+  that it has: leases made meanwhile are dropped at a later start that
+  reads another boot id.
+
+========================================================================
+6. TESTS
+
+- D/pool_unfinished_test.go (new section "Claims prepared in another
+  boot"): fakes reboot (mem0 kept with its driver, region, dax device,
+  nvdimm region and online memory gone, mounts and loops gone, the
+  labels kept, the next driver of another boot) and wantStale.
+  - TestPoolOtherBoot: numa, dax, block, fs direct, fs cached, each with
+    "prepare again" and "unprepare": the start runs no command, mounts
+    nothing, fences nothing, keeps the serial a pool serial; the record
+    has no device of the old boot. Prepare again: the same result, a new
+    region, the dax device node 251:7 and block device node 259:4 of the
+    new boot in the CDI device (the old ones were 251:3 and 259:0), the
+    node mount mounted again, the claim of boot-2, also after a restart
+    in the same boot (no command, the same result). Unprepare: only
+    "cxl disable-memdev mem0".
+  - TestPoolOtherBootNewClaim: after the reboot a new claim prepares the
+    device of a stale numa claim in mode dax (refused before: "another
+    claim prepared it in mode numa"), and its Unprepare releases it.
+  - TestPoolOtherBootCompanion: numa companion: no lent nodes in the
+    record, nothing fenced, the Unprepare before the lender is set up
+    works and revokes nothing; a Prepare again refused at the lease keeps
+    the record. fs companion: the Unprepare tells the broker, removes the
+    bind directory, releases.
+  - TestPoolOtherBootCutPrepare: a Prepare cut in cxl create-region in
+    boot-1 recorded region1; in boot-2 the start runs no command and
+    keeps the hollow region1 (someone else's now), the Unprepare too.
+  - TestPoolNoBootID: claims of a driver without boot ids are taken as of
+    this boot and saved with its id; with the boot id unknown a claim of
+    boot-1 stays prepared; then a reboot demotes it.
+  - TestPoolOtherBootMemdevAway: the memdev of a stale claim is away at
+    two starts: the claim stays stale; back, its Unprepare disables it.
+- D/pool_persistent_test.go TestPoolPersistentRestoreChecks (rewritten,
+  R2): another block device in the namespace, or the region gone (a
+  reboot with the boot id unknown); two claims of the node mount; each
+  with "unprepare", "prepare again" and "new claim": not mounted, both
+  claims prepared without CDI devices, the state file unchanged, no
+  command, also at a restart. Prepare again: fails with the reason; with
+  the device as prepared again it mounts the node mount, and both claims
+  have their CDI devices (the bind of each claim's path). A new claim of
+  the device that mounts the node mount gives them back too. The
+  Unprepares release (only "cxl disable-memdev" without a region).
+- D/pool_persistent_test.go TestPoolPersistentUnprepareStaleBlockDevice
+  (new, review): fs and block claims, the region gone (a reboot with the
+  boot id unknown) or the namespace's block device renamed to /dev/pmem1
+  (259:1), and a busy holder of the stale /dev/pmem0 (another device's
+  now): the Unprepare releases ("cxl disable-memdev mem0" without a
+  region), waits for /dev/pmem1 when it is held ("device 0xc1ae0001:
+  /dev/pmem1 is still in use"), and with the nvdimm region gone waits for
+  the recorded /dev/pmem0. Before: "/dev/pmem0 is still in use" in every
+  case.
+- D/pool_unfinished_test.go TestPoolOtherBootStateSaveFails (new,
+  review): the start of boot-2 saves the preparing file but not the
+  state file; the Unprepare fails while the state file cannot be saved
+  and keeps the record; then it succeeds, the state file loses the
+  claim, and a restart in the same boot is clean. Before: the Unprepare
+  succeeded without saving it, and the restart demoted the claim again
+  (a stale record and a pool serial forever).
+- D/main_test.go TestPreparedClaimsOtherBoot: claims of boot-1, boot-2
+  and without a boot id; newNodeState in boot-2 drops boot-1 from the
+  maps, the files and the CDI spec, stamps the third, fences only the
+  nodes of this boot; the Unprepare of the dropped claim is nil, its
+  Prepare again prepares it in boot-2 with a CDI device; with the boot
+  id unknown all three stay.
+- D/broker_test.go TestBrokerOtherBoot: a Ready numa lease; a store
+  without a boot id keeps it and gets the id; after a restart in another
+  boot the lease is gone from the table and the file, LeaseNodes is
+  empty, the socket answers list with no leases, the reconcile deletes
+  the companion, the lender neither lends nor revokes, a new request
+  creates a new lease; a table that is not decoded stays on disk as it
+  is.
+- Changed: pool, broker, node state and local helper tests pass the boot
+  id (boot-1); the fakes take the dax and pmem device numbers of the next
+  region (daxDev, pmemDev) and give commandsSince; TestPrepareLocalNUMA
+  checks the boot id of the info.
+- Mutations, each failing tests: no demoteOtherBoot (TestPoolOtherBoot,
+  -NewClaim, -Companion, TestPoolNoBootID); no forgetOtherBoot in
+  newNodeState (TestPreparedClaimsOtherBoot); no lease store
+  forgetOtherBoot (TestBrokerOtherBoot); no forgetBoot in loadPreparing, and
+  a cut Prepare of another boot not stale (TestPoolOtherBootCutPrepare);
+  stale records released at start (TestPoolOtherBoot, -CutPrepare,
+  TestPoolNoBootID); region names and lent nodes of another boot kept
+  (TestPoolOtherBoot, -Companion); the CDI devices of unrestored claims
+  written, no remount at the Prepare again, a new node mount that does
+  not clear unrestored (TestPoolPersistentRestoreChecks); the memdev
+  rule for stale records (TestPoolOtherBootMemdevAway); a recovered
+  lease table saved (TestBrokerOtherBoot).
+- gofmt, go vet, golangci-lint run ./cmd/plugins/dra-driver-cxl/... (0
+  issues), go test -race ./cmd/plugins/dra-driver-cxl/... -skip
+  TestMemdevSettings: ok; go test ./pkg/cxl/... -skip
+  TestMemdevSettings: ok (not changed). TestMemdevSettings fails as
+  before (since c55476444, 09-status.txt).
+
+========================================================================
+7. VERIFICATION
+
+Cluster (lock bug-15 10:09-10:29 local time, after exec-fencing and
+exec-reboot), image 2b31c32cef34 (v0.15.0-47-g73dba0f5a-dirty: this fix,
+and the changes of D/lend.go of another agent that were in the tree; the
+strings of the fix checked in the layer of the binary), the replay of
+section 2 (B/steps.txt = RR/steps.txt, B/gen-wrap.py, mbt-cxl built from
+the model of the tree, B/run.log), all 25 steps PASS; during the pause a
+qemu restart of vm1 (B/qemu-restart.sh, 30 s to ssh, boot 0f7ff579 ->
+12f67d1c), auto_online_blocks offline. Not the guest reboot: R4.
+- Before (B/pre1/vm.txt: every state file has "bootID": "0f7ff579-...";
+  B/pre1/containers.txt): xpb-c /dev/pmem1 259:0 reads mbt-6, pfsd-c
+  mbt-5, xdax-a /dev/dax5.0 252:4 mbt-18, xnuma-c node 3, the lease
+  requester mems 0-2 (lease ad7184c7 on node 2).
+- The driver of the new boot (B/post2/driver-vm1.log): :15 "boot id
+  12f67d1c-..."; :17-20 "claim .../mbt-xdax-a..., -xpb-c..., -pfsd-c...,
+  -xnuma-c... is not prepared any more: prepared in another boot
+  (0f7ff579-..., this is 12f67d1c-...). It has no CDI device"; :32-34
+  "claim .../mbt-ldax..., .../cxl-lease-ad7184c7, .../mbt-lease... was
+  prepared in another boot"; :35 "lease broker: lease ad7184c7 of
+  .../mbt-lease-vm1-0-g1/main (mode numa, Ready, node 2) is of another
+  boot: released"; :70-71 "deleting companion pod/claim
+  .../cxl-lease-ad7184c7 without a lease"; no "fencing CXL nodes ... of
+  prepared claims"; :120 "fencing CXL node 3" before :146 xnuma-c
+  "prepared c-pooled0 ... as mem3 region2 ... node 3"; :91-92 pfsd-c
+  "mounted /dev/pmem1 at .../c1ae2002-direct", "prepared c-pmem0 ... as
+  mem1 region1 namespace namespace1.0 block /dev/pmem1"; :151 xpb-c
+  "prepared c-pmem1 ... as mem2 region3 namespace namespace3.0 block
+  /dev/pmem3"; :205 xdax-a "prepared a-pooled0 ... as mem0 region0 dax
+  dax0.0".
+- The containers (B/post2/containers.txt), every one restarted once and
+  Running at +2 min: xpb-c CXL_C1EE2002_PATH=/dev/pmem3 259:1, reads
+  mbt-6, its own token (RR/post2/xpb-stale-read.txt: /dev/pmem1 259:0,
+  mbt-5 of c-pmem0); pfsd-c Running, reads mbt-5 (before: CrashLoopBackOff);
+  xdax-a /dev/dax0.0 252:3, reads mbt-18 (the host file kept it);
+  xnuma-c NODE=3 in Mems_allowed_list 0-1,3, node 3 256 MiB
+  (B/post2/vm.txt); the lease requester mems 0-1 and no lease, its
+  companion pod and claim gone; ldax not started: "NodePrepareResources
+  failed for ResourceClaim mbt-ldax-vm1-0-g1-c0-k6xjn: could not find
+  allocatable device memdev-c100e2e1" (the local memdev of the test is
+  not attached again after a qemu restart, 12-findings 4.2; before: a
+  container without its dax device).
+- A driver restart in the new boot (B/post2/driver-vm1-restart.log):
+  "loaded 4 prepared claims", no "not prepared any more", no memctl
+  command, "fencing CXL nodes 3 of prepared claims"; the CDI specs
+  byte-identical and preparingPoolClaims.json {} before and after
+  (B/post2/cdi-before-restart.txt, cdi-after-restart.txt).
+- Teardown: FAIL as in the research ("pkg/cxl in vm1 did not reach
+  regions == [] and memdevs == [0xc100e2e1]": the local memdev is not
+  attached again); the cleanup detached every device this time (no
+  cxl-type3 in any qemu: info qtree over the monitors, no memdev,
+  region or committed decoder in any guest, the nodes Ready, no pod or
+  claim, no driver, no pool server, the prepared-claims files {}).
+  B/out is the test output.
+Not run on the cluster: R2 without a reboot (the unit tests cover it),
+the guest reboot (R4).
+
+========================================================================
+8. STATUS
+
+Fixed, verified on the cluster (qemu restart, section 7); the review
+changes of section 11 are unit tested only. Working tree, not committed:
+D/pool.go, D/pool_persistent.go, D/node_state.go, D/prepared_claims.go,
+D/lease_store.go, D/broker.go, D/driver.go, D/local.go;
+D/pool_test.go, D/pool_unfinished_test.go, D/pool_persistent_test.go,
+D/main_test.go, D/node_state_test.go, D/broker_test.go,
+D/driver_test.go; docs/memory/cxl/pool.md, leases.md, local.md,
+usage.md. Image 2b31c32cef34 (build/images) is the verified one; the
+review changes are in image 9d9dff4cadce (the newest: e2e runs take it),
+with bug-18 and bug-19. (D/lend.go and D/lend_test.go in the working
+tree have changes of another agent, fencing none; they are not part of
+this fix, but in the images.)
+For the model (12-findings 7.4): the predictions with R1 fixed hold for
+the driver; the oracle can read the boot id of each record.
+
+========================================================================
+9. PROPOSED COMMIT MESSAGE
+
+cxl: do not return claims of an earlier boot as prepared
+
+After a node reboot kubelet prepares every claim again before it
+starts the containers. The driver answered with the result of the old
+boot: device nodes that the new boot gives to other devices, a NUMA
+node without memory, the bind of a node mount that is gone. A
+container of an rw claim read another pool device's data.
+
+Record the boot id with the prepared claims of both drivers, with the
+records of unfinished pool Prepares and in the lease table. At start a
+claim of another boot is not prepared. It has no CDI device and its
+nodes are not fenced. kubelet's Prepare again prepares its devices
+anew, its Unprepare releases them. The leases of another boot are
+dropped, and the reconcile deletes their companions. A pool claim
+whose node mount is not mounted again at start gets no CDI device
+until it is. Its Unprepare waits for the holders of the block device of
+its region now, not of the recorded one. Records without a boot id are
+taken as of this boot.
+
+========================================================================
+10. REVIEW
+
+An independent review of the first version (a reviewer agent, the diff
+only): no finding on the path of another boot; these were changed:
+- R2 demoted a claim of this boot like one of another boot: its other
+  devices lost the protection of a prepared claim while its containers
+  may run, and a passing mount failure stayed for the boot. Now the
+  claim stays prepared without a CDI device (5c).
+- The broker saved the boot id at start also over a lease table that it
+  could not decode (Recovered), which the next start would have taken as
+  empty and swept the directories of the lease claims. Now not (5e).
+- A stale record was forgotten at a later start while its memdevs were
+  away, and its Unprepare then did not release the memdev that came
+  back. Now kept (5b).
+Not changed, in "Left": the lease table's boot id while the kernel's is
+unreadable, and block claims (only fs claims are checked at start).
+
+========================================================================
+11. REVIEW 2026-10-29
+
+A second independent review (the diff and this file):
+- PLAUSIBLE, changed (5c): the Unprepare of a claim whose node mount is
+  unrestored, or whose checkBlockDevice fails, waited for the holders of
+  the recorded block device, which may be another device's now: "still
+  in use" for as long as that device is held, the claim never
+  unprepared. Now the block device of the region now (releasedDevices).
+  Verified: TestPoolPersistentUnprepareStaleBlockDevice fails in every
+  case with the release of pc.Devices as before.
+- PLAUSIBLE, changed (5b): if savePreparing succeeded at start and the
+  state file save failed (only logged), the forget of the stale record
+  saved only the preparing file; after a restart in the same boot the
+  claim was demoted again and never unprepared. Now forgetPreparing
+  saves the state file first for a stale record. Verified with a probe:
+  without the save, the restart has the stale record and its serial.

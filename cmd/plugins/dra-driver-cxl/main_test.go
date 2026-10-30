@@ -15,18 +15,23 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	resourcev1 "k8s.io/api/resource/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
+	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
@@ -266,7 +271,7 @@ func TestPreparedClaimsReconcile(t *testing.T) {
 
 	// a restarted node state prepares u2 again, has no info of u3 (its
 	// fenced node and lend are gone) and writes both files so
-	s, err := newNodeState(device.DevicesInfo{}, t.TempDir(), path, "n1", &DriverConfig{}, nil)
+	s, err := newNodeState(device.DevicesInfo{}, t.TempDir(), path, "n1", &DriverConfig{}, nil, "boot-1")
 	noErr(t, err)
 	if _, found := s.preparedInfo("u2"); found {
 		t.Error("u2 is prepared")
@@ -281,5 +286,89 @@ func TestPreparedClaimsReconcile(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("temporary file left: %v", err)
+	}
+}
+
+// TestPreparedClaimsOtherBoot: the claims of cxl.nri.io prepared in another
+// boot are not prepared at start (plan-13 bug-15): not in the files, no CDI
+// device, the nodes of their numa slices not fenced; their Unprepare finds
+// nothing, their Prepare again prepares them anew. A claim without a boot
+// id (saved by an older driver) is of this boot and gets its id; with the
+// boot id of the kernel unknown every claim is.
+func TestPreparedClaimsOtherBoot(t *testing.T) {
+	dir := t.TempDir()
+	cdiDir := filepath.Join(dir, "cdi")
+	noErr(t, os.MkdirAll(cdiDir, 0o755))
+	path := filepath.Join(dir, device.PreparedClaimsFileName)
+	result := func(uid string) kubeletplugin.PrepareResult {
+		return kubeletplugin.PrepareResult{Devices: []kubeletplugin.Device{{
+			Requests: []string{"mem"}, PoolName: "n1", DeviceName: "memdev-c100e2e1", CDIDeviceIDs: []string{"nri.io/cxl=claim-" + uid + "-0"}}}}
+	}
+	info := func(boot string, node int) *PreparedClaimInfo {
+		return &PreparedClaimInfo{ClaimName: "ns/c", BootID: boot, Devices: []PreparedDeviceInfo{{RequestName: "mem", DeviceName: "memdev-c100e2e1",
+			DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{node}, Serial: "0xc100e2e1", TotalBytes: 1 << 27}}}
+	}
+	write := func() {
+		t.Helper()
+		noErr(t, writePreparedClaimsToFile(path, claimPreparations{"u1": result("u1"), "u2": result("u2"), "u3": result("u3")}))
+		noErr(t, writePreparedClaimsInfoToFile(filepath.Join(dir, preparedClaimsInfoFileName),
+			PreparedClaimsInfo{"u1": info("boot-1", 3), "u2": info("boot-2", 2), "u3": info("", 2)}))
+	}
+	cdiDevices := func() []string {
+		t.Helper()
+		m, _ := filepath.Glob(filepath.Join(cdiDir, device.ClaimsCDISpecName+".*"))
+		if len(m) != 1 {
+			t.Fatalf("CDI specs %v", m)
+		}
+		data, err := os.ReadFile(m[0])
+		noErr(t, err)
+		var names []string
+		for _, line := range strings.Split(string(data), "\n") {
+			if name, ok := strings.CutPrefix(strings.TrimSpace(line), "- name: "); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	devs := device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}}
+
+	write()
+	s, err := newNodeState(devs, cdiDir, path, "n1", &DriverConfig{}, nil, "boot-2")
+	noErr(t, err)
+	if _, found := s.preparedInfo("u1"); found || s.GetClaimInfo("u3").BootID != "boot-2" {
+		t.Fatalf("prepared %v, infos %v", s.Prepared, s.preparedClaims)
+	}
+	prepared, infos, _, _, err := loadPreparedClaims(path)
+	noErr(t, err)
+	if len(prepared) != 2 || len(infos) != 2 || infos["u1"] != nil || infos["u3"].BootID != "boot-2" {
+		t.Fatalf("files after the start: %v %v", prepared, infos)
+	}
+	if got := cdiDevices(); !slices.Equal(got, []string{"claim-u2-0", "claim-u3-0"}) {
+		t.Fatalf("CDI devices %v", got)
+	}
+	if got := preparedNodes(s, nil); got.String() != "2" {
+		t.Fatalf("fenced nodes %s", got)
+	}
+	ctx := context.Background()
+	noErr(t, s.Unprepare(ctx, "u1"))
+	claim := &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{UID: "u1", Name: "c", Namespace: "ns"},
+		Status: resourcev1.ResourceClaimStatus{Allocation: &resourcev1.AllocationResult{Devices: resourcev1.DeviceAllocationResult{
+			Results: []resourcev1.DeviceRequestAllocationResult{{Request: "mem", Driver: device.DriverName, Pool: "n1", Device: "dram"}}}}},
+	}
+	noErr(t, s.Prepare(ctx, claim))
+	if info := s.GetClaimInfo("u1"); info == nil || info.BootID != "boot-2" || info.Devices[0].DeviceType != device.DeviceTypeDRAM {
+		t.Fatalf("prepared again %+v", info)
+	}
+	if got := cdiDevices(); !slices.Equal(got, []string{"claim-u1-0", "claim-u2-0", "claim-u3-0"}) {
+		t.Fatalf("CDI devices %v", got)
+	}
+
+	// the boot id of the kernel unknown
+	write()
+	s, err = newNodeState(devs, cdiDir, path, "n1", &DriverConfig{}, nil, "")
+	noErr(t, err)
+	if len(s.Prepared) != 3 || s.GetClaimInfo("u3").BootID != "" {
+		t.Fatalf("prepared %v, infos %v", s.Prepared, s.preparedClaims)
 	}
 }

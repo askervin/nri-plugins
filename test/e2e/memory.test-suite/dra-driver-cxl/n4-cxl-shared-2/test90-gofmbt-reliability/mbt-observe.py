@@ -82,13 +82,35 @@ Where the data comes from:
                 running ones; one that exits between the listing and
                 the reading is dropped). assemble lists in "missing"
                 every container that the pod status says runs and that
-                is not here (A11)
+                is not here (A11). "devices" (A44): the device nodes in
+                the container's /dev (through /proc/PID/root/dev, the
+                top level and one directory below it but pts, shm and
+                mqueue): path, type (c or b), major, minor, dev
+                ("MAJOR:MINOR"); runc's default nodes (null, zero, full,
+                random, urandom, tty, console, ptmx) are left out.
+                devicesFrom is "proc", or "spec" when /proc could not
+                be read: the device nodes of the runtime spec (crictl
+                inspect info.runtimeSpec.linux.devices)
+  cxlDevices    (A44) the CXL dax and pmem devices of the VM: name
+                (dax0.1, pmem1), path (/dev/NAME), kind (dax, pmem),
+                major, minor, dev ("MAJOR:MINOR"; null for a dax device
+                without a device number), driver (of a dax device:
+                kmem, device_dax or null), region (the CXL region),
+                serial (the memdev of the region's first target; serials
+                all of them): the dax devices of "regions", the block
+                devices of the namespaces of "pmem"
   driverLog     the running nri-dra-driver-cxl container of the node
                 (crictl): its id, pod, attempt, start, the log lines of
                 its log file (status.logPath) that match "panic|fatal
                 error|SIGSEGV" (count, the first 5), lendsRestored (its
                 log has "NRI fence: lends restored": NRI and lending are
-                up, A15) and sockets (both dra.sock files exist); the
+                up, A15), fencing (the mode of its start line
+                "defaults.container.fencing: MODE: ...", null before
+                it, A36), nriSynced (its log has NRI's first Synchronize,
+                "... containers tracked"; a driver of mode none never
+                logs "lends restored", it has no fence: its lendsRestored
+                is fencing none and nriSynced) and sockets (both dra.sock
+                files exist); the
                 file is read incrementally, the position is kept in
                 /run/mbt-observe (A13)
   pods[].events one "kubectl get events -n NS --field-selector
@@ -97,8 +119,28 @@ Where the data comes from:
                 (at most 4000 bytes: a longer one keeps its first 1900
                 and last 2000 bytes around " [...] ", so that the end,
                 where the driver's reason is, stays), count,
-                lastTimestamp; "event" is the first of them, null if
-                none (A10, A12)
+                lastTimestamp, firstTimestamp, series; "event" is the
+                first of them, null if none (A10, A12). count and
+                lastTimestamp are the apiserver's: of an events.k8s.io
+                series (series true; the kube-scheduler's
+                FailedScheduling) the recorder (client-go tools/events)
+                writes them at the second occurrence and then only every
+                30 min and when the series ends, 6 min after its last
+                occurrence; meanwhile the count stays, though the
+                scheduler retries (FR1b). firstTimestamp is the first
+                occurrence (eventTime or firstTimestamp)
+  pods[].claims every claim of the pod in the order of its spec, each as
+                "claim" (which is the first one): [] for none; two for
+                dnuma (A39), c0 of mbt-lnuma and c1 of mbt-xnuma-c
+  claim.attachFailed  (of "claim" and of every entry of "claims", A44
+                (4)) true iff the status entry of a pool device of the
+                claim's allocation has the condition
+                cxl-pool.nri.io/AttachFailed True (the pool controller's,
+                fake-cxl-pool pkg/controller/status.go condFailed: it
+                removes Attached when it sets it and the other way
+                round), false for an allocated pool claim without it,
+                null for a claim without pool devices (a local claim, one
+                not allocated)
   slices        one "kubectl get resourceslices": per VM the devices of
                 its cxl.nri.io slices: name, serial, shared, type (A13);
   poolSlices    from the same call, per pool id (--pools ID=POOL, default
@@ -195,6 +237,7 @@ import os
 import re
 import select
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -627,6 +670,80 @@ def crictl_inspect(ids):
     return out
 
 
+# The device nodes that runc gives every container (left out of "devices").
+DEFAULT_DEVS = {"null", "zero", "full", "random", "urandom", "tty", "console", "ptmx"}
+SKIP_DEV_DIRS = {"pts", "shm", "mqueue"}
+
+
+def dev_entry(path, kind, major, minor):
+    return {"path": path, "type": kind, "major": major, "minor": minor,
+            "dev": "%d:%d" % (major, minor) if major is not None and minor is not None else None}
+
+
+def container_devices(pid):
+    """The device nodes in /dev of the container of process pid (A44),
+    runc's defaults left out."""
+    out = []
+    base = "/proc/%d/root/dev" % pid
+
+    def walk(path, rel, depth):
+        for name in sorted(os.listdir(path), key=natkey):
+            p = path + "/" + name
+            try:
+                st = os.lstat(p)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                if depth == 0 and name not in SKIP_DEV_DIRS:
+                    walk(p, rel + "/" + name, 1)
+                continue
+            if stat.S_ISCHR(st.st_mode):
+                kind = "c"
+            elif stat.S_ISBLK(st.st_mode):
+                kind = "b"
+            else:
+                continue
+            if depth == 0 and name in DEFAULT_DEVS:
+                continue
+            out.append(dev_entry("/dev" + rel + "/" + name, kind, os.major(st.st_rdev), os.minor(st.st_rdev)))
+    walk(base, "", 0)
+    return out
+
+
+def spec_devices(info):
+    """The device nodes of the runtime spec of a container (crictl inspect)."""
+    devs = (((info.get("info") or {}).get("runtimeSpec") or {}).get("linux") or {}).get("devices") or []
+    return [dev_entry(d.get("path"), d.get("type"), d.get("major"), d.get("minor")) for d in devs]
+
+
+def cxl_devices(regs, pm):
+    """The CXL dax and pmem devices of the VM (A44), from the parts
+    "regions" and "pmem" (null if one of them is)."""
+    if regs is None or pm is None:
+        raise RuntimeError("regions or pmem not read")
+    out = []
+    for r in regs:
+        for d in r.get("dax") or []:
+            major = minor = None
+            try:
+                major, minor = (int(x) for x in read("%s/%s/dev" % (DAX, d["name"])).split(":"))
+            except (OSError, ValueError):
+                pass
+            e = dev_entry("/dev/" + d["name"], "c", major, minor)
+            e.update(name=d["name"], kind="dax", driver=d.get("driver"), region=r.get("name"),
+                     serial=(r.get("serials") or [None])[0], serials=r.get("serials") or [])
+            out.append(e)
+    for r in pm:
+        for ns in r.get("namespaces") or []:
+            if not ns.get("blockdev"):
+                continue
+            e = dev_entry("/dev/" + ns["blockdev"], "b", ns.get("major"), ns.get("minor"))
+            e.update(name=ns["blockdev"], kind="pmem", driver=None, region=r.get("region"),
+                     serial=(r.get("serials") or [None])[0], serials=r.get("serials") or [])
+            out.append(e)
+    return sorted(out, key=lambda e: natkey(e["name"]))
+
+
 def containers(ns, errors, ctr_mounts=None):
     """The running containers of namespace ns (contract 6.3, A11). With
     ctr_mounts (a list), append to it the erofs mounts of each one (A24
@@ -650,8 +767,14 @@ def containers(ns, errors, ctr_mounts=None):
             "id": st.get("id"),
             "attempt": md.get("attempt"),
             "mems": None, "mems_effective": None, "mems_inherited": None, "memory_high": None,
+            "devices": None, "devicesFrom": None,
         }
         pid = (c.get("info") or {}).get("pid") or 0
+        try:
+            entry["devices"], entry["devicesFrom"] = container_devices(pid), "proc"
+        except OSError:
+            # Not readable (it exited meanwhile, or no pid): the spec's.
+            entry["devices"], entry["devicesFrom"] = spec_devices(c), "spec"
         try:
             with open("/proc/%d/cgroup" % pid) as f:
                 cg = "/sys/fs/cgroup" + [l[3:].strip() for l in f if l.startswith("0::")][0]
@@ -690,6 +813,14 @@ def containers(ns, errors, ctr_mounts=None):
 DRIVER_STATE_DIR = "/run/mbt-observe"
 PANIC = re.compile(r"panic|fatal error|SIGSEGV")
 LENDS_RESTORED = "NRI fence: lends restored"
+# The driver's start line of its fencing mode (D/driver.go logDefaults, A36).
+FENCING_LOG = re.compile(r"defaults\.container\.fencing: ([a-z-]+):")
+# NRI's first Synchronize (D/lend.go "NRI Synchronize: N pods, M containers
+# tracked"): a driver of fencing mode none without the fix of plan-13 bug-18
+# has no fence to start and never logs LENDS_RESTORED; this is its ready
+# line. With the fix it logs "NRI fence: lends restored (fencing none)",
+# which LENDS_RESTORED matches.
+NRI_SYNCED = "containers tracked"
 # Counted lines of the driver log (A24): the persistent devices' troubles.
 LOG_COUNTS = [
     ("busy", re.compile(r"device or resource busy")),
@@ -704,7 +835,7 @@ def driver_log(errors):
     """The running driver container of the node and what its log says
     (amendment A13, A15, A24)."""
     out = {"container": None, "pod": None, "attempt": None, "started": None, "panics": 0, "errors": [],
-           "lendsRestored": False, "sockets": all(os.path.exists("/var/lib/kubelet/plugins/%s/dra.sock" % d)
+           "lendsRestored": False, "fencing": None, "sockets": all(os.path.exists("/var/lib/kubelet/plugins/%s/dra.sock" % d)
                                                    for d in ("cxl.nri.io", "cxl-pool.nri.io"))}
     out.update((k, 0) for k, _ in LOG_COUNTS)
     r = run(["crictl", "ps", "-q", "--state", "running", "--namespace", "^kube-system$",
@@ -728,7 +859,7 @@ def driver_log(errors):
         raise RuntimeError("no logPath of container %s" % cid)
     os.makedirs(DRIVER_STATE_DIR, exist_ok=True)
     statefile = os.path.join(DRIVER_STATE_DIR, "driverlog-%s.json" % cid)
-    saved = {"offset": 0, "panics": 0, "errors": [], "lendsRestored": False}
+    saved = {"offset": 0, "panics": 0, "errors": [], "lendsRestored": False, "fencing": None, "nriSynced": False}
     saved.update((k, 0) for k, _ in LOG_COUNTS)
     try:
         with open(statefile) as f:
@@ -749,6 +880,12 @@ def driver_log(errors):
         content = line.split(" ", 3)[3] if line.count(" ") >= 3 else line
         if not saved["lendsRestored"] and LENDS_RESTORED in content:
             saved["lendsRestored"] = True
+        if not saved["nriSynced"] and NRI_SYNCED in content:
+            saved["nriSynced"] = True
+        if saved["fencing"] is None:
+            m = FENCING_LOG.search(content)
+            if m:
+                saved["fencing"] = m.group(1)
         if PANIC.search(content):
             saved["panics"] += 1
             if len(saved["errors"]) < 5:
@@ -763,7 +900,8 @@ def driver_log(errors):
         os.replace(statefile + ".tmp", statefile)
     except OSError as e:
         errors.append("driverLog: %s: %s" % (statefile, e))
-    out.update(panics=saved["panics"], errors=saved["errors"], lendsRestored=saved["lendsRestored"])
+    out.update(panics=saved["panics"], errors=saved["errors"], fencing=saved["fencing"], nriSynced=saved["nriSynced"],
+               lendsRestored=saved["lendsRestored"] or (saved["fencing"] == "none" and saved["nriSynced"]))
     out.update((k, saved[k]) for k, _ in LOG_COUNTS)
     return out
 
@@ -1194,6 +1332,7 @@ def vm_observation(ns):
     obs["driverLog"] = part(errors, "driverLog", driver_log, errors)
     # Persistent pool devices (A24).
     obs["pmem"] = part(errors, "pmem", pmem, errors)
+    obs["cxlDevices"] = part(errors, "cxlDevices", cxl_devices, obs["regions"], obs["pmem"])
     mi = part(errors, "mountinfo", mountinfo)
     obs["fsMounts"] = None if mi is None else mounts_under(mi, POOL_MOUNTS)
     obs["leaseBinds"] = None if mi is None else mounts_under(mi, LEASE_FS)
@@ -1243,37 +1382,53 @@ def container_status(pod, name):
     return None
 
 
-def claim_part(pod, claims):
+def claim_parts(pod, claims):
+    """The claim parts of every claim of the pod, in the order of its
+    spec (dnuma, A39: c0 of mbt-lnuma, c1 of mbt-xnuma-c)."""
     spec_claims = (pod.get("spec") or {}).get("resourceClaims") or []
-    if not spec_claims:
+    return [claim_part(pod, claims, i) for i in range(len(spec_claims))]
+
+
+def claim_part(pod, claims, index=0):
+    """Claim index of the spec of the pod (contract 6.1 "claim"), None if
+    it has none."""
+    spec_claims = (pod.get("spec") or {}).get("resourceClaims") or []
+    if index >= len(spec_claims):
         return None
-    cname = spec_claims[0].get("name")
-    name = spec_claims[0].get("resourceClaimName")
+    cname = spec_claims[index].get("name")
+    name = spec_claims[index].get("resourceClaimName")
     for s in (pod.get("status") or {}).get("resourceClaimStatuses") or []:
         if s.get("name") == cname and s.get("resourceClaimName"):
             name = s["resourceClaimName"]
     claim = claims.get(name) if name else None
     if claim is None:
-        return {"name": name, "uid": None, "allocated": False, "devices": [], "attached": None}
+        return {"name": name, "uid": None, "allocated": False, "devices": [], "attached": None, "attachFailed": None}
     st = claim.get("status") or {}
     alloc = st.get("allocation")
     results = ((alloc or {}).get("devices") or {}).get("results") or []
     devices = [{"driver": r.get("driver"), "pool": r.get("pool"), "device": r.get("device")} for r in results]
-    attached = None
+    # Attached: every pool device of the allocation has the condition
+    # Attached True; attachFailed: one has AttachFailed True (A44 (4))
+    attached = attach_failed = None
     pool_results = [r for r in results if r.get("driver") == POOL_DRIVER]
     if pool_results:
-        attached = True
+        attached, attach_failed = True, False
         for r in pool_results:
             ok = False
             for d in st.get("devices") or []:
                 if (d.get("driver"), d.get("pool"), d.get("device")) != (r.get("driver"), r.get("pool"), r.get("device")):
                     continue
                 for c in d.get("conditions") or []:
-                    if c.get("type") == POOL_DRIVER + "/Attached" and c.get("status") == "True":
+                    if c.get("status") != "True":
+                        continue
+                    if c.get("type") == POOL_DRIVER + "/Attached":
                         ok = True
+                    elif c.get("type") == POOL_DRIVER + "/AttachFailed":
+                        attach_failed = True
             attached = attached and ok
     return {"name": name, "uid": (claim.get("metadata") or {}).get("uid"),
             "allocated": alloc is not None, "devices": devices, "attached": attached,
+            "attachFailed": attach_failed,
             "deleting": bool((claim.get("metadata") or {}).get("deletionTimestamp"))}
 
 
@@ -1304,7 +1459,8 @@ def short_message(text):
 
 def warning_events(items):
     """Pod uid -> its Warning events, newest first, at most MAX_EVENTS:
-    reason, message, count, lastTimestamp."""
+    reason, message, count, lastTimestamp (the apiserver's, of a series
+    as its recorder last wrote it), firstTimestamp, series."""
     by_uid = {}
     for e in items:
         io = e.get("involvedObject") or {}
@@ -1314,7 +1470,8 @@ def warning_events(items):
             or (e.get("metadata") or {}).get("creationTimestamp")
         by_uid.setdefault(io["uid"], []).append((event_time(e), {
             "reason": e.get("reason"), "message": short_message(e.get("message")),
-            "count": (e.get("series") or {}).get("count") or e.get("count") or 1, "lastTimestamp": last}))
+            "count": (e.get("series") or {}).get("count") or e.get("count") or 1, "lastTimestamp": last,
+            "firstTimestamp": e.get("eventTime") or e.get("firstTimestamp"), "series": e.get("series") is not None}))
     return {uid: [ev for _, ev in sorted(evs, key=lambda x: x[0], reverse=True)[:MAX_EVENTS]]
             for uid, evs in by_uid.items()}
 
@@ -1408,6 +1565,7 @@ def pod_part(pod, claims, vm_of, events=None):
         "lastExit": last,
         "unschedulable": bool(sched and sched.get("status") == "False" and sched.get("reason") == "Unschedulable"),
         "claim": claim_part(pod, claims),
+        "claims": claim_parts(pod, claims),
         "events": (events or {}).get(md.get("uid")) or [],
         "event": next(iter((events or {}).get(md.get("uid")) or []), None),
         "containers": container_states(pod),

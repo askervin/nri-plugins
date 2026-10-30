@@ -31,6 +31,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 )
@@ -121,6 +122,8 @@ type commonFlags struct {
 	unblock       time.Duration
 	planStates    int
 	stallWindow   time.Duration
+	fencing       string
+	reboot        string
 }
 
 // defaultCoverage is the default mix, chosen by the P4 experiments
@@ -144,6 +147,8 @@ func (c *commonFlags) register(fs *flag.FlagSet, online bool) {
 	fs.IntVar(&c.maxPaths, "max-paths", 0, "paths evaluated per plan at most (0: no limit; reproducible)")
 	fs.IntVar(&c.planStates, "plan-states", defaultPlanStates, "states the planner caches per plan at most (0: no cache; 150000 caches a whole depth-3 plan: ~30% less plan time for ~0.7 GB; GOMEMLIMIT bounds the heap, default 768 MiB)")
 	fs.BoolVar(&c.avoidHoles, "avoid-holes", false, "never generate an action that destroys a CXL region below the top of its decoder stack (A9)")
+	fs.StringVar(&c.fencing, "fencing", "allowed-mems", "the fencing mode of the drivers (MBT_FENCING, A36): allowed-mems, none, or switch (starts in allowed-mems, generates fencing-switch)")
+	fs.StringVar(&c.reboot, "reboot", "", "the node-reboot variant (MBT_REBOOT, A41): guest (systemctl reboot) or qemu (the qemu process restarted); empty: no node-reboot")
 	fs.DurationVar(&c.stallWindow, "stall-window", defaultStallWindow, "a stalled contender (A19) is promoted within this long of the settle that first saw it; if not longer than the settle timeout (a kube-scheduler with the bug-08 fix: ~5-15 s), settles wait for its promotion, else it is settled stalled or promoted")
 	if online {
 		fs.DurationVar(&c.duration, "duration", 20*time.Minute, "time budget of the run before the teardown (0: no limit)")
@@ -183,6 +188,16 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 		return runOpts{}, errors.New("--stall-window must be positive")
 	}
 	cfg.StallWindow = c.stallWindow
+	fencing, err := parseFencingRun(c.fencing)
+	if err != nil {
+		return runOpts{}, fmt.Errorf("--fencing: %w", err)
+	}
+	cfg.Fencing = fencing
+	reboot, err := parseRebootRun(c.reboot)
+	if err != nil {
+		return runOpts{}, fmt.Errorf("--reboot: %w", err)
+	}
+	cfg.Reboot = reboot
 	settleTimeout := c.settleTimeout
 	if !online {
 		settleTimeout = 180 * time.Second // MBT_SETTLE_TIMEOUT's default (check --settle-timeout)
@@ -232,8 +247,8 @@ func (c *commonFlags) options(online bool, stderr io.Writer) (runOpts, error) {
 		outDir:         c.out,
 		unblockTimeout: c.unblock,
 	}
-	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --stall-window %s --max-paths %d --plan-states %d",
-		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.stallWindow, c.maxPaths, c.planStates)
+	o.header = fmt.Sprintf("--profile %s --seed %d --depth %d --coverage %s --randomness %d --unsettled %d --max-restarts %d --local-blocks %s --node-hb0 %d --node-hb1 %d --avoid %q --avoid-holes=%v --stall-window %s --fencing %s --reboot=%s --max-paths %d --plan-states %d",
+		cfg.Profile, seed, c.depth, cov, c.randomness, c.unsettled, c.maxRestarts, formatLocalBlocks(cfg.LocalBlocks), c.nodeHB0, c.nodeHB1, c.avoid, c.avoidHoles, c.stallWindow, cfg.Fencing, cfg.Reboot, c.maxPaths, c.planStates)
 	if online {
 		o.header += fmt.Sprintf(" --steps %d --duration %s --settle-timeout %s --unblock-timeout %s --plan-ahead=%v --plan-time %s", c.steps, c.duration, c.settleTimeout, c.unblock, c.planAhead, c.planTime)
 	} else {
@@ -292,19 +307,32 @@ func runOnline(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // modelFlags are the flags of a steps file's header that define the
-// model of a replay or --from (A16): they win over the command line. The
+// model of a replay or --from (A16): they win over the command line
+// (--fencing and --reboot must agree with it: clusterFlags). The
 // measured facts of the cluster (--local-blocks, --node-hb0/1) stay the
 // command line's (EXEC warns when they differ from the header), and so
 // do the budget, the timeouts and the planner.
 var modelFlags = map[string]bool{
-	"profile": true, "unsettled": true, "max-restarts": true, "avoid": true, "avoid-holes": true, "stall-window": true,
+	"profile": true, "unsettled": true, "max-restarts": true, "avoid": true, "avoid-holes": true, "stall-window": true, "fencing": true, "reboot": true,
 }
 
+// clusterFlags are the model flags of a steps file's header that also
+// configure the cluster (code.var.sh: --fencing is MBT_FENCING, the
+// driver configuration of every node; --reboot is MBT_REBOOT, the
+// node-reboot verb of the executor): a command line value that
+// contradicts the header is an error, never replaced, or the model and
+// the cluster would run in different modes. A header without one has
+// its default (A37, A41: files made before it); a file without a header
+// has no model of its own: the command line's.
+var clusterFlags = map[string]bool{"fencing": true, "reboot": true}
+
 // applyHeader sets the model flags of a steps file's header over the
-// command line's, and says where they differ.
+// command line's, and says where they differ; an error for a cluster
+// flag that differs.
 func applyHeader(fs *flag.FlagSet, header []string, stderr io.Writer) error {
 	explicit := map[string]string{}
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = f.Value.String() })
+	inHeader := map[string]string{}
 	for i := 0; i < len(header); i++ {
 		name, val, hasVal := strings.Cut(strings.TrimLeft(header[i], "-"), "=")
 		if !hasVal && i+1 < len(header) && !strings.HasPrefix(header[i+1], "--") {
@@ -315,7 +343,27 @@ func applyHeader(fs *flag.FlagSet, header []string, stderr io.Writer) error {
 		if f == nil || !modelFlags[name] {
 			continue
 		}
+		inHeader[name] = val
+	}
+	if len(header) > 0 {
+		for name := range clusterFlags {
+			if _, ok := inHeader[name]; !ok {
+				inHeader[name] = fs.Lookup(name).DefValue
+			}
+		}
+	}
+	names := make([]string, 0, len(inHeader))
+	for name := range inHeader {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		val := inHeader[name]
 		if old, ok := explicit[name]; ok && old != val {
+			if clusterFlags[name] {
+				return fmt.Errorf("--%s=%s of the command line, but the steps file is of --%s=%s (it configures the cluster too: MBT_%s; edit the header to run the file in another mode)",
+					name, old, name, val, strings.ToUpper(name))
+			}
 			fmt.Fprintf(stderr, "mbt-cxl: --%s %q of the command line replaced by %q of the steps file (A16)\n", name, old, val)
 		}
 		if err := fs.Set(name, val); err != nil {

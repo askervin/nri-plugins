@@ -168,7 +168,7 @@ func (s *sim) observePmemVM(st *State, v VM, ov *ObsVM) {
 		}
 		size := devices[d].Size
 		nd := fmt.Sprintf("region%d", 100+pmemIndex(d))
-		r := ObsPmemRegion{Region: fmt.Sprintf("region%d", 10+int(d)), Serials: []string{formatSerial(devices[d].Serial)}, Size: &size, NdRegion: &nd, Namespaces: []ObsNamespace{}}
+		r := ObsPmemRegion{Region: fmt.Sprintf("region%d", simRegionNo(st, v, int(d))), Serials: []string{formatSerial(devices[d].Serial)}, Size: &size, NdRegion: &nd, Namespaces: []ObsNamespace{}}
 		if pd := &st.PDev[pmemIndex(d)]; pd.NS == TriYes {
 			mode, mp, uuid, holder, sz := "memory", "ram", pd.UUID, fmt.Sprintf("pfn%d.0", pmemIndex(d)), nsSize
 			bd := strings.TrimPrefix(simBlockdev(d), "/dev/")

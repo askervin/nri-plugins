@@ -45,6 +45,14 @@ type testEnv struct {
 	logbuf *lockedBuf
 	// hmpSockets: the monitor.sock of every VM exists, too
 	hmpSockets bool
+	// bySocket: a monitor reaches the fake that serves its socket path at
+	// the time of each call (socketMonitor), not the one of its creation
+	bySocket bool
+	// restartAt: the qemu of vm1 restarts once (restartIf), after the call
+	// of that name of a socketMonitor of vm1 ("object_add", "device_add")
+	// or after a "liveness check" of it; restarted is the new qemu
+	restartAt string
+	restarted *qemu.Fake
 }
 
 // lockedBuf is a log buffer that tests read while the server writes.
@@ -151,12 +159,20 @@ func (e *testEnv) start() {
 		},
 		ProcessAlive: func(pid int, st uint64) bool {
 			e.mu.Lock()
-			defer e.mu.Unlock()
-			return e.alive[pid]
+			alive := e.alive[pid]
+			e.mu.Unlock()
+			if pid == 101 {
+				// right after a check that it runs
+				e.restartIf("liveness check")
+			}
+			return alive
 		},
 		NewMonitor: func(proto, path string) qemu.Monitor {
 			e.mu.Lock()
 			defer e.mu.Unlock()
+			if e.bySocket {
+				return &socketMonitor{e: e, path: path}
+			}
 			if f, ok := e.fakes[path]; ok {
 				return f
 			}

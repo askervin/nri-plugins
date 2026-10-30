@@ -12,7 +12,8 @@
 # and pool-c); slots KIND@VM#I, KIND one of the kinds of contract 2, VM a
 # VM id or "any"; a slot holds at most one pod, mbt-KIND-VM-I-g<gen>, with
 # the label mbt.slot=KIND_VM_I and the claim c0 from the
-# ResourceClaimTemplate mbt-KIND.
+# ResourceClaimTemplate mbt-KIND (dnuma, amendment A39: c0 from mbt-lnuma
+# and c1 from mbt-xnuma-c).
 #
 # Every action is a function mbt-act-<verb> that sets MBT_STATUS (via its
 # return value), MBT_RESULT (the done JSON of contract 6.2) and MBT_NOTE
@@ -41,6 +42,12 @@ MBT_OBS_TIMEOUT="${MBT_OBS_TIMEOUT:-60}"        # seconds of one VM's part of an
 MBT_NRI_RESTART_WAIT=60                         # containerd-restart: seconds to wait for the driver's restart
 MBT_DRIVER_READY_WAIT="${MBT_DRIVER_READY_WAIT:-120}"   # seconds to wait for a driver to be ready (mbt-driver-ready)
 MBT_LENDS_RESTORED="NRI fence: lends restored"  # the driver's log line when NRI and lending are up
+MBT_NRI_SYNCED="containers tracked"             # and of NRI's first Synchronize: the ready line of fencing none
+MBT_FENCING_LOG="defaults.container.fencing: "  # the driver's start line of its fencing mode (A36)
+MBT_FENCING_CM=nri-dra-driver-cxl-config        # the ConfigMap of the driver configuration (config.yaml), in kube-system
+MBT_FENCING_RUN=""                 # the fencing mode of the run (MBT_FENCING of code.var.sh): allowed-mems, none or switch
+MBT_FENCING_NOW=""                 # the mode of the drivers now: allowed-mems or none (mbt-fencing-check, fencing-switch)
+MBT_FENCING_GOT=""                 # the mode that the last mbt-fencing-wait read in a driver's log, empty if none
 MBT_POLL="${MBT_POLL:-3}"                       # seconds between settle observations
 MBT_SETTLE_TIMEOUT="${MBT_SETTLE_TIMEOUT:-180}" # off-line: seconds of a settle (on-line: Go's)
 MBT_VMIDS=(vm2 vm1 vm0)
@@ -67,6 +74,10 @@ MBT_KILLAT_TIMEOUT="${MBT_KILLAT_TIMEOUT:-60}"      # driver-kill-at: seconds un
 MBT_KILLAT_STATE=/run/mbt-killat/state.json         # its state in the VM
 MBT_KILLAT_VM=""                   # the VM id of an armed driver-kill-at watcher not reported done yet
 MBT_KILLAT_JSON=""                 # mbt-killat-state: the state of that watcher
+MBT_KILLAT_LAST=""                 # its state when node-reboot disarmed it (its VM has no /run of it after the boot)
+MBT_REBOOT_RUN=""                  # the reboot variant of the run (MBT_REBOOT of code.var.sh, A41): guest, qemu or none
+MBT_REBOOT_WAIT="${MBT_REBOOT_WAIT:-180}"           # node-reboot: seconds to wait for ssh with a new boot id
+MBT_KERNEL_STATE=/run/mbt-observe/kernel.json       # the observer's state of the kernel log in the VM (mbt-observe.py kernel)
 declare -A MBT_VMDIR=()            # VM id -> VMDIR (mbt-setup-ids)
 declare -A MBT_NODE=()             # VM id -> Kubernetes node name
 declare -A MBT_POOL_UNIT=()        # pool id -> systemd unit of its controller
@@ -95,6 +106,7 @@ MBT_ERR=""                         # and its stderr
 MBT_OBS=""                         # mbt-observe: the settle observation (one JSON line),
 MBT_OBS_FILE=""                    # its file,
 MBT_OBS_SECONDS=""                 # and how long it took
+MBT_DRIVER_NEW=""                  # mbt-driver-replace: the new driver pod
 MBT_KIND="" MBT_BASE="" MBT_POOL="" MBT_SVM="" MBT_SIDX="" MBT_SLABEL="" MBT_SPOD=""  # mbt-slot
 MBT_LAST_STEP="" MBT_LAST_VERB="" MBT_LAST_DONE=""   # off-line: the last mbt-step,
 MBT_LAST_STATUS=0 MBT_LAST_CHECKED=1                 # its status, and whether an mbt-expect checked it
@@ -159,7 +171,7 @@ mbt-slot() {
     # MBT_SIDX (I), MBT_SLABEL (its label value, sdax-a_vm1_0) and MBT_SPOD
     # (its pod name without the generation, mbt-sdax-a-vm1-0). Return 2 if
     # SLOT is not a slot.
-    local re='^((xnuma|xdax|sdax|sro|sexcl|pwr|pfsd|pfsc|pbro|pbad|xpb|xpf)-([abc])|lnuma|ldax|lsteer|lease|plse|plain)@(vm[012]|any)#([0-9]+)$'
+    local re='^((xnuma|xdax|sdax|sro|sexcl|pwr|pfsd|pfsc|pbro|pbad|xpb|xpf)-([abc])|lnuma|ldax|lsteer|dnuma|lease|plse|plain)@(vm[012]|any)#([0-9]+)$'
     [[ "$1" =~ $re ]] || { MBT_ERR="not a slot: '$1'"; return 2; }
     MBT_KIND=${BASH_REMATCH[1]}
     MBT_POOL=${BASH_REMATCH[3]}
@@ -342,7 +354,9 @@ mbt-pod-yaml() {
     # the node of its VM unless the slot is "any", restartPolicy Always,
     # terminationGracePeriodSeconds 2, its claim c0 from the template of
     # its kind (none for plain), image $DRA_TOOLS_IMAGE with the tools of
-    # dra-dax-tool-install in /tools, main process $MBT_WORKLOAD.
+    # dra-dax-tool-install in /tools, main process $MBT_WORKLOAD. dnuma
+    # (A39): two claims that its container uses, c0 from mbt-lnuma (a
+    # local numa slice) and c1 from mbt-xnuma-c (c-pooled0 in numa).
     local slot="$1" name="$2" selector="" claims="" uses="" template
     mbt-slot "$slot" || return 2
     [ "$MBT_SVM" == any ] || selector="
@@ -350,7 +364,19 @@ mbt-pod-yaml() {
     kubernetes.io/hostname: ${MBT_NODE[$MBT_SVM]}"
     template="mbt-$MBT_KIND"
     [ "$MBT_KIND" != plse ] || template=mbt-lease   # A22: persistent leases, the lease claim of lease
-    if [ "$MBT_KIND" != plain ]; then
+    if [ "$MBT_KIND" == dnuma ]; then
+        claims="
+  resourceClaims:
+  - name: c0
+    resourceClaimTemplateName: mbt-lnuma
+  - name: c1
+    resourceClaimTemplateName: mbt-xnuma-c"
+        uses="
+    resources:
+      claims:
+      - name: c0
+      - name: c1"
+    elif [ "$MBT_KIND" != plain ]; then
         claims="
   resourceClaims:
   - name: c0
@@ -840,6 +866,9 @@ mbt-killat-state() {
     [ -n "$vm" ] || return 1
     if [ -n "${1:-}" ]; then
         MBT_KILLAT_JSON=$1
+    elif [ -n "$MBT_KILLAT_LAST" ]; then
+        # node-reboot disarmed it: its state of then, /run of the VM is new.
+        MBT_KILLAT_JSON=$MBT_KILLAT_LAST
     else
         MBT_KILLAT_JSON=$(dra-vm-command-q "${MBT_VMDIR[$vm]}" "cat $MBT_KILLAT_STATE 2>/dev/null")
         [ -n "$MBT_KILLAT_JSON" ] || MBT_KILLAT_JSON='{"armed": false, "fired": false, "done": true, "error": "no watcher state"}'
@@ -847,7 +876,7 @@ mbt-killat-state() {
     if dra-py assert "$MBT_KILLAT_JSON" "j is None or j.get('done') is not False" 2>/dev/null; then
         echo "    driver-kill-at $vm: $(head -c 300 <<< "$MBT_KILLAT_JSON")"
         echo "$(date +%T.%N) driver-kill-at $vm done: $MBT_KILLAT_JSON" >> "$MBT_EXEC_LOG"
-        MBT_KILLAT_VM=""
+        MBT_KILLAT_VM="" MBT_KILLAT_LAST=""
     fi
     return 0
 }
@@ -856,7 +885,7 @@ mbt-killat-disarm() {
     # Usage: mbt-killat-disarm VM VERB
     #
     # Before VERB restarts the driver of VM (driver-kill, driver-restart,
-    # containerd-restart): disarm the driver-kill-at watcher armed there,
+    # containerd-restart, fencing-switch, node-reboot): disarm the driver-kill-at watcher armed there,
     # if any (mbt-observe.py kill-at-disarm): it ends done, not fired,
     # reason "disarmed by VERB", unless it fired or ended before; the done
     # line of the step reports it (mbt-run). Never fails.
@@ -871,7 +900,7 @@ mbt-killat-stop() {
     # of the run). Never fails.
     local vm=$MBT_KILLAT_VM
     [ -n "$vm" ] || return 0
-    MBT_KILLAT_VM=""
+    MBT_KILLAT_VM="" MBT_KILLAT_LAST=""
     dra-vm-command-q "${MBT_VMDIR[$vm]}" "pkill -f '$MBT_OBSERVER_VM kill-at'; true" > /dev/null 2>&1
     return 0
 }
@@ -952,7 +981,12 @@ mbt-driver-ready() {
     # Return 0 if the driver of VM is ready (amendment A15): a container of
     # it runs on the node, the log of that container (its log file, and
     # its rotated files) has "$MBT_LENDS_RESTORED" (NRI and lending are up:
-    # the last step of the driver's start), both kubelet plugin sockets
+    # the last step of the driver's start; a driver of fencing mode none
+    # with the fix of plan-13 bug-18 logs "$MBT_LENDS_RESTORED (fencing
+    # none)", which matches too; an older one never logs it, it has no
+    # fence to start: "${MBT_FENCING_LOG}none:" and "$MBT_NRI_SYNCED" of
+    # NRI's first Synchronize instead, A36),
+    # both kubelet plugin sockets
     # (cxl.nri.io and cxl-pool.nri.io dra.sock) exist and the node has its
     # cxl.nri.io ResourceSlice. One ssh. MBT_ERR says what is missing.
     local vmdir=${MBT_VMDIR[$1]} name=${MBT_NODE[$1]}
@@ -960,8 +994,9 @@ mbt-driver-ready() {
 [ -n \"\$id\" ] || { echo 'no running driver container'; exit 1; }
 log=\$(crictl inspect -o go-template --template '{{.status.logPath}}' \$id 2>/dev/null)
 [ -n \"\$log\" ] || { echo \"no log path of \$id\"; exit 1; }
-grep -qF '$MBT_LENDS_RESTORED' \"\$log\" 2>/dev/null || zgrep -qF '$MBT_LENDS_RESTORED' \"\$log\".* 2>/dev/null ||
-    { echo \"no '$MBT_LENDS_RESTORED' in the log of \${id:0:13} yet\"; exit 1; }
+has() { grep -qF \"\$1\" \"\$log\" 2>/dev/null || zgrep -qF \"\$1\" \"\$log\".* 2>/dev/null; }
+has '$MBT_LENDS_RESTORED' || { has '${MBT_FENCING_LOG}none:' && has '$MBT_NRI_SYNCED'; } ||
+    { echo \"no '$MBT_LENDS_RESTORED' (fencing none: '$MBT_NRI_SYNCED') in the log of \${id:0:13} yet\"; exit 1; }
 for d in $DRA_LOCAL_DRIVER $DRA_POOL_DRIVER; do
     test -S /var/lib/kubelet/plugins/\$d/dra.sock || { echo \"no /var/lib/kubelet/plugins/\$d/dra.sock\"; exit 1; }
 done
@@ -989,16 +1024,28 @@ mbt-act-driver-restart() {
     # Usage: mbt-act-driver-restart VM
     #
     # Delete the pod of the driver of VM and wait until a new pod of the
-    # DaemonSet runs there and is ready (mbt-driver-ready: NRI and lending
-    # up, the plugin sockets, the node's cxl.nri.io slice; the pool slices
-    # are left out: a restarted controller may not have published them
-    # yet). Like dra-driver-restart, but it returns non-zero instead of
-    # failing the test. The log of the old pod is
+    # DaemonSet runs there and is ready (mbt-driver-replace).
+    mbt-vm-arg "$1" || return 2
+    mbt-driver-replace "$1" driver-restart
+}
+
+mbt-driver-replace() {
+    # Usage: mbt-driver-replace VM VERB
+    #
+    # The driver restart of VERB (driver-restart, fencing-switch): disarm a
+    # driver-kill-at watcher of VM (mbt-killat-disarm VM VERB), delete the
+    # pod of the driver of VM and wait until a new pod of the DaemonSet
+    # runs there and is ready (mbt-driver-ready: NRI and lending up, the
+    # plugin sockets, the node's cxl.nri.io slice; the pool slices are left
+    # out: a restarted controller may not have published them yet). Like
+    # dra-driver-restart, but it returns non-zero instead of failing the
+    # test. The log of the old pod is
     # $TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.<pod>.log; a running trace
-    # follows the new pod.
-    local vm="$1" vmdir label name old new=""
-    mbt-vm-arg "$vm" || return 2
-    mbt-killat-disarm "$vm" driver-restart
+    # follows the new pod. MBT_NOTE is "OLD -> NEW", MBT_DRIVER_NEW the new
+    # pod.
+    local vm="$1" verb="$2" vmdir label name old new=""
+    MBT_DRIVER_NEW=""
+    mbt-killat-disarm "$vm" "$verb"
     vmdir=${MBT_VMDIR[$vm]}
     label=$(dra-vm-label "$vmdir")
     name=${MBT_NODE[$vm]}
@@ -1011,6 +1058,7 @@ mbt-act-driver-restart() {
     mbt-driver-ready-wait "$vm" || return 1
     dra-vm-command-q "$vmdir" "test -x $DRA_REQUEST_NODE_BIN" || { MBT_ERR="no $DRA_REQUEST_NODE_BIN on $name"; return 1; }
     MBT_NOTE="$old -> $new"
+    MBT_DRIVER_NEW=$new
     MBT_DRIVER_SEEN[$vm]="$new 0"
     unset "MBT_TRACE_REFOLLOW[$vm]"
     [ -z "$DRA_TRACE_RUNNING" ] || dra-trace-driver-follow "$vmdir"
@@ -1094,6 +1142,359 @@ mbt-act-containerd-restart() {
     mbt-driver-ready-wait "$vm"
 }
 
+###
+### Node reboot (amendments A41-A44, 12-findings-reboot.txt)
+###
+
+mbt-boot-id() {
+    # Usage: mbt-boot-id VMDIR
+    #
+    # Print the boot id of the VM of VMDIR, quietly, over an ssh connection
+    # of its own (never through a ControlMaster, which may still be one to
+    # the guest before its reboot), 15 s at most. Return non-zero if ssh
+    # does not reach the VM.
+    command timeout 15 ssh -F "$1/.ssh-config" -o ConnectTimeout=5 -o ControlMaster=no -o ControlPath=none \
+        node cat /proc/sys/kernel/random/boot_id 2>/dev/null
+}
+
+mbt-ssh-reset() {
+    # Usage: mbt-ssh-reset VMDIR
+    #
+    # Stop the ssh ControlMaster of the VM of VMDIR, if there is one: the
+    # next command opens a new connection. After a reboot the old master
+    # may still have its socket and hang. Never fails.
+    command timeout 10 ssh -F "$1/.ssh-config" -O exit node > /dev/null 2>&1
+    return 0
+}
+
+mbt-qemu-fixed-require() { # script API
+    # Usage: mbt-qemu-fixed-require VMDIR...
+    #
+    # MBT_REBOOT=guest: fail the test unless the qemu process of each VM
+    # runs a binary with the fix of plan-13 bug-17 (without it a guest
+    # reboot leaves every CXL memdev unusable until qemu restarts): the
+    # binary it was started from is still there (its /proc/PID/exe is not
+    # "(deleted)", the binary of an older build that a rebuild replaced),
+    # and it has the function of the fix, ct3d_reset_device_dvsec of
+    # hw/mem/cxl_type3.c, by name (in its debug information: the function
+    # is inlined; an unfixed binary has build_dvsecs only). A binary
+    # without debug information cannot tell: a warning. The source tree
+    # and its times are not looked at (a git checkout touches them).
+    local vmdir pid exe bin label
+    for vmdir in "$@"; do
+        label=$(dra-vm-label "$vmdir")
+        pid=$(vm-qemu-pid "$vmdir" | head -n 1)
+        [ -n "$pid" ] || error "MBT_REBOOT=guest: no qemu process of $label ($vmdir)"
+        exe=$(readlink "/proc/$pid/exe") || error "MBT_REBOOT=guest: cannot read /proc/$pid/exe of the qemu of $label"
+        bin=${exe% (deleted)}
+        [ "$bin" == "$exe" ] ||
+            error "MBT_REBOOT=guest: the qemu of $label (pid $pid) runs a binary that is gone ($exe): an older build, maybe without the fix of plan-13 bug-17 (a guest reboot leaves every CXL memdev unusable). Restart its qemu (vmdir-restart, as /tmp/p13-runs/reboot-research/qemu-restart.sh does, with the cluster idle) so that it runs $bin"
+        if grep -qaF ct3d_reset_device_dvsec "$bin"; then
+            echo "$label: qemu pid $pid runs $bin (built $(date -r "$bin" '+%F %T')), with the fix of bug-17"
+        elif grep -qaF build_dvsecs "$bin"; then
+            error "MBT_REBOOT=guest: the qemu binary $bin of $label (pid $pid) does not have the fix of plan-13 bug-17 (no ct3d_reset_device_dvsec): rebuild it with the fix and restart the qemu of the VM"
+        else
+            echo "WARNING: MBT_REBOOT=guest: cannot tell if the qemu binary $bin of $label (pid $pid) has the fix of plan-13 bug-17 (no debug information): a guest reboot without it leaves every CXL memdev unusable"
+        fi
+    done
+}
+
+mbt-trace-vm-again() {
+    # Usage: mbt-trace-vm-again VM
+    #
+    # After a reboot of VM: start the collectors of a running trace in the
+    # VM again that the boot ended, udev and kubelet as dra-trace-start
+    # does (the streams go on in the same files). The driver log is
+    # followed once the driver runs (mbt-act-node-reboot). Nothing if no
+    # trace runs.
+    local vmdir=${MBT_VMDIR[$1]} label
+    [ -n "$DRA_TRACE_RUNNING" ] || return 0
+    label=$(dra-vm-label "$vmdir")
+    dra-trace-collect-vm "$vmdir" "$label.udev" lines "stdbuf -oL udevadm monitor -k -u -s cxl -s dax -s memory -s node"
+    dra-trace-collect-vm "$vmdir" "$label.kubelet" lines "journalctl -f -n0 -o cat -u kubelet | grep --line-buffered -iE 'dra|resourceclaim|cxl'"
+}
+
+mbt-local-again() {
+    # Usage: mbt-local-again VM
+    #
+    # After a qemu restart of VM: attach the local memdev of the test again,
+    # as the setup does (dra-local-device with the server that knows it,
+    # LOCAL_SERVER of code.var.sh), once its server has dropped the
+    # attachment of the old qemu process (60 s at most; a server that still
+    # lists it attached would make dra-local-device wait for a device that
+    # is not there). Return non-zero on failure, with MBT_ERR. The output of
+    # dra-local-device goes to the executor log; it runs in a subshell, so
+    # that its error() fails only the step.
+    local vm="$1" vmdir=${MBT_VMDIR[$1]} srv state="" deadline
+    srv=${LOCAL_SERVER[$vmdir]:-}
+    [ -n "$srv" ] || { MBT_ERR="no server of the local memdev of $vm (LOCAL_SERVER)"; return 1; }
+    deadline=$(( SECONDS + 60 ))
+    while :; do
+        state=$( { dra-local-find --pool "$srv" "$vmdir" >> "$MBT_EXEC_LOG" 2>&1 && echo "$DRA_LOCAL_ATTACHMENT"; } )
+        echo "$(date +%T.%N) $vm: the local memdev in $srv: ${state:-not found}" >> "$MBT_EXEC_LOG"
+        [ "$state" != detached ] || break
+        if [ "$state" == attached ] && dra-vm-command-q "$vmdir" "grep -qix '$MBT_LOCAL_SERIAL' /sys/bus/cxl/devices/mem*/serial" 2>/dev/null; then
+            break   # in the new qemu already
+        fi
+        [ "$SECONDS" -lt "$deadline" ] || { MBT_ERR="$srv lists the local memdev of $vm as '${state:-not found}' 60 s after the qemu restart, not detached"; return 1; }
+        sleep 1
+    done
+    ( dra-local-device --pool "$srv" "$vmdir" ) >> "$MBT_EXEC_LOG" 2>&1 ||
+        { MBT_ERR="dra-local-device --pool $srv failed for $vm: $(grep '^error' "$MBT_EXEC_LOG" | tail -n 1)"; return 1; }
+}
+
+mbt-act-node-reboot() {
+    # Usage: mbt-act-node-reboot VM
+    #
+    # Reboot the node of VM, vm0 or vm1 (amendment A42), the way MBT_REBOOT
+    # of the run says: guest, systemctl reboot in the guest (qemu keeps
+    # running and keeps its devices); qemu, the qemu process restarted as
+    # vmdir-restart does (shutdown -h, vagrant up --no-provision: its
+    # devices are gone, the pool controllers attach theirs again), then
+    # the local memdev of the test attached again (mbt-local-again).
+    # Before: a driver-kill-at watcher of VM disarmed (reason "disarmed by
+    # node-reboot"), the log of the driver container saved as
+    # $TEST_OUTPUT_DIR/nri-dra-driver-cxl.<vm>.<pod>.r<N>.log (N: its
+    # restarts), the boot id noted. After: ssh with a new boot id
+    # (MBT_REBOOT_WAIT s at most), auto_online_blocks offline (as
+    # pool-vm-reset), what the executor keeps of VM made anew (the ssh
+    # ControlMaster, the trace collectors of VM, the restarts of its driver
+    # in MBT_DRIVER_SEEN, the observer's kernel log state with the counts
+    # of before: the whole log of the new boot is read), and the driver
+    # ready (mbt-driver-ready-wait, A15). The result has the new boot id
+    # ("boot", null until there is one). Return 2 for a VM that is not
+    # vm0 or vm1 or in a run without MBT_REBOOT, 1 on a failure (MBT_ERR).
+    local vm="$1" vmdir label old_boot new_boot="" kstate before pod restarts ready since t0=$EPOCHREALTIME
+    local qold="" qnew="" t_ssh t_ready deadline notes=""
+    case "$vm" in
+        vm0|vm1) ;;
+        *) MBT_ERR="node-reboot is for vm0 and vm1, not '$vm'"; return 2;;
+    esac
+    case "$MBT_REBOOT_RUN" in
+        guest|qemu) ;;
+        *) MBT_ERR="node-reboot needs MBT_REBOOT=guest or qemu, this run has ${MBT_REBOOT_RUN:-none}"; return 2;;
+    esac
+    vmdir=${MBT_VMDIR[$vm]}
+    label=$(dra-vm-label "$vmdir")
+    MBT_RESULT='{"boot":null}'
+    if [ -n "$MBT_KILLAT_VM" ] && [ "$MBT_KILLAT_VM" == "$vm" ]; then
+        mbt-killat-disarm "$vm" node-reboot
+        [ "${MBT_OUT:0:1}" != "{" ] || MBT_KILLAT_LAST=$MBT_OUT
+    fi
+    mbt-sh "$vm" "cat /proc/sys/kernel/random/boot_id; cat $MBT_KERNEL_STATE 2>/dev/null; true" ||
+        { MBT_ERR="cannot read the boot id of $vm: $MBT_ERR"; return 1; }
+    old_boot=$(head -n 1 <<< "$MBT_OUT")
+    kstate=$(tail -n +2 <<< "$MBT_OUT")
+    [ -n "$old_boot" ] || { MBT_ERR="no boot id of $vm"; return 1; }
+    if before=$(mbt-driver-restarts "$vm"); then
+        read -r pod restarts ready <<< "$before"
+        dra-vm-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER" \
+            > "$TEST_OUTPUT_DIR/$DRA_CONTAINER.$label.$pod.r$restarts.log" 2>&1
+    fi
+    MBT_TRACE_REFOLLOW[$vm]=$(mbt-utc 2)
+    since=${MBT_TRACE_REFOLLOW[$vm]}
+    echo "$(date +%T.%N) $vm: node-reboot ($MBT_REBOOT_RUN), boot $old_boot, driver ${before:-none}" >> "$MBT_EXEC_LOG"
+    t0=$EPOCHREALTIME
+    case "$MBT_REBOOT_RUN" in
+        guest)
+            # The ssh returns, or breaks when sshd stops: either is fine.
+            command timeout 30 ssh -F "$vmdir/.ssh-config" -o ConnectTimeout=5 -o ControlMaster=no -o ControlPath=none \
+                node sudo systemctl reboot >> "$MBT_EXEC_LOG" 2>&1
+            echo "$(date +%T.%N) $vm: systemctl reboot: exit status $?" >> "$MBT_EXEC_LOG"
+            mbt-ssh-reset "$vmdir";;
+        qemu)
+            qold=$(vm-qemu-pid "$vmdir" | head -n 1)
+            # vmdir-restart fails the test with error(): in a subshell it
+            # fails the step only.
+            ( vmdir-restart "$vmdir" ) >> "$MBT_EXEC_LOG" 2>&1 ||
+                { MBT_ERR="vmdir-restart of $vm failed (see $MBT_EXEC_LOG)"; return 1; }
+            qnew=$(vm-qemu-pid "$vmdir" | head -n 1)
+            echo "$(date +%T.%N) $vm: qemu pid ${qold:-none} -> ${qnew:-none}" >> "$MBT_EXEC_LOG"
+            [ -n "$qnew" ] && [ "$qnew" != "$qold" ] ||
+                { MBT_ERR="the qemu of $vm did not restart: pid ${qold:-none} -> ${qnew:-none}"; return 1; }
+            notes+=", qemu $qold -> $qnew"
+            mbt-ssh-reset "$vmdir";;
+    esac
+    deadline=$(( SECONDS + MBT_REBOOT_WAIT ))
+    while :; do
+        new_boot=$(mbt-boot-id "$vmdir") && [ -n "$new_boot" ] && [ "$new_boot" != "$old_boot" ] && break
+        new_boot=""
+        [ "$SECONDS" -lt "$deadline" ] ||
+            { MBT_ERR="no ssh to $vm with a new boot id in ${MBT_REBOOT_WAIT}s (boot $old_boot before)"; return 1; }
+        sleep 1
+    done
+    t_ssh=$(printf '%.1f' "$(echo "$EPOCHREALTIME - $t0" | bc)")
+    MBT_RESULT=$(mbt-json boot "$new_boot")
+    echo "$(date +%T.%N) $vm: ssh with boot $new_boot after $t_ssh s" >> "$MBT_EXEC_LOG"
+    mbt-ssh-reset "$vmdir"
+    # The observer's kernel state (A24) of the old boot, its counts kept:
+    # every record of the new boot is read, the boot's own too.
+    kstate=$(python3 -c '
+import json, sys
+try:
+    st = json.loads(sys.argv[1])
+except ValueError:
+    st = {}
+print(json.dumps({"seq": -1, "badTotal": st.get("badTotal", 0), "badFirst": st.get("badFirst", []), "rebootFrom": sys.argv[2]}))' "$kstate" "$old_boot")
+    mbt-sh "$vm" "echo offline > /sys/devices/system/memory/auto_online_blocks && cat /sys/devices/system/memory/auto_online_blocks
+mkdir -p ${MBT_KERNEL_STATE%/*} && cat > $MBT_KERNEL_STATE <<'MBT_EOF'
+$kstate
+MBT_EOF" || { MBT_ERR="$vm after the boot: cannot set auto_online_blocks offline: $MBT_ERR"; return 1; }
+    if [ "$MBT_REBOOT_RUN" == qemu ]; then
+        mbt-local-again "$vm" || return 1
+        notes+=", local memdev attached again"
+    fi
+    mbt-trace-vm-again "$vm"
+    mbt-driver-ready-wait "$vm" || return 1
+    t_ready=$(printf '%.1f' "$(echo "$EPOCHREALTIME - $t0" | bc)")
+    echo "$(date +%T.%N) $vm: driver ready $t_ready s after the reboot" >> "$MBT_EXEC_LOG"
+    # The driver container restarted in its pod: what the next
+    # observation would see as a restart (mbt-drivers-seen) is done here,
+    # the log of the old container was saved above.
+    if before=$(mbt-driver-restarts "$vm"); then
+        read -r pod restarts ready <<< "$before"
+        MBT_DRIVER_SEEN[$vm]="$pod $restarts"
+        if [ -n "$DRA_TRACE_RUNNING" ]; then
+            dra-trace-collect-vm "$vmdir" "$label.driver" lines "kubectl logs -n kube-system -f --since-time=$since -c $DRA_CONTAINER $pod"
+        fi
+        unset "MBT_TRACE_REFOLLOW[$vm]"
+        notes+=", driver $pod restarts $restarts"
+    fi
+    MBT_NOTE="$MBT_REBOOT_RUN: boot ${old_boot:0:8} -> ${new_boot:0:8}, ssh after $t_ssh s, driver ready after $t_ready s$notes"
+}
+
+###
+### Fencing modes (amendments A36, A37)
+###
+
+mbt-driver-fencing() {
+    # Usage: mbt-driver-fencing VM [POD]
+    #
+    # Print the fencing mode that the driver pod POD of VM (default: its
+    # running pod) logged at its start ("defaults.container.fencing: MODE:
+    # ...", D/driver.go logDefaults), quietly. Return 1 if there is no such
+    # pod or line yet.
+    local vm="$1" pod="${2:-}" line
+    [ -n "$pod" ] || pod=$(dra-driver-pod "${MBT_VMDIR[$vm]}") || return 1
+    line=$(dra-vm-command-q "$OUTPUT_DIR" "kubectl logs -n kube-system $pod -c $DRA_CONTAINER 2>/dev/null | grep -m1 -o '${MBT_FENCING_LOG}[a-z-]*'" 2>/dev/null)
+    [ -n "$line" ] || return 1
+    echo "${line#"$MBT_FENCING_LOG"}"
+}
+
+mbt-fencing-wait() {
+    # Usage: mbt-fencing-wait VM MODE [POD]
+    #
+    # Wait until the driver pod POD of VM (default: its running pod) has
+    # logged its fencing mode, 30 s at most, and return 0 if that is MODE.
+    # MBT_ERR says what it logged otherwise. MBT_FENCING_GOT is the mode
+    # it logged, empty if none.
+    local vm="$1" want="$2" pod="${3:-}" got=""
+    MBT_FENCING_GOT=""
+    retry-until --timeout 30 --interval 1 --message "$vm: the driver logged '$MBT_FENCING_LOG...'" \
+        'got=$(mbt-driver-fencing "$vm" "$pod")' >/dev/null ||
+        { MBT_ERR="the driver ${pod:-pod} of $vm has not logged '$MBT_FENCING_LOG' in 30 s"; return 1; }
+    MBT_FENCING_GOT=$got
+    echo "$(date +%T.%N) $vm: the driver ${pod:-pod} logged fencing $got" >> "$MBT_EXEC_LOG"
+    [ "$got" == "$want" ] || { MBT_ERR="the driver ${pod:-pod} of $vm logged fencing $got, expected $want"; return 1; }
+}
+
+mbt-fencing-check() { # script API
+    # Usage: mbt-fencing-check MODE
+    #
+    # After dra-install: fail the test unless the driver of every VM logged
+    # the fencing mode MODE (allowed-mems or none) at its start. Set
+    # MBT_FENCING_NOW to MODE.
+    local vm
+    for vm in "${MBT_VMIDS[@]}"; do
+        mbt-fencing-wait "$vm" "$1" || error "mbt-fencing-check: $MBT_ERR"
+        echo "$vm: the driver $(dra-driver-pod "${MBT_VMDIR[$vm]}") has $MBT_FENCING_LOG$1"
+    done
+    MBT_FENCING_NOW=$1
+}
+
+mbt-fencing-config() {
+    # Usage: mbt-fencing-config CONFIG-YAML
+    #
+    # Print "OLD NEW" and, on the next line, the merge patch of the
+    # ConfigMap $MBT_FENCING_CM that switches config.yaml CONFIG-YAML (the
+    # driver configuration) to the other fencing mode: OLD is its
+    # defaults.container.fencing (allowed-mems when it is not set), NEW the
+    # other one; the rest of the configuration is kept. Return 1 if it is
+    # not a YAML mapping or has another mode.
+    python3 - "$1" <<'EOF'
+import json, sys, yaml
+c = yaml.safe_load(sys.argv[1]) or {}
+if not isinstance(c, dict):
+    sys.exit("config.yaml is not a mapping: %r" % sys.argv[1][:200])
+ctr = c.setdefault("defaults", {}).setdefault("container", {})
+old = ctr.get("fencing") or "allowed-mems"
+new = {"allowed-mems": "none", "none": "allowed-mems"}.get(old)
+if new is None:
+    sys.exit("config.yaml has fencing %r, not allowed-mems or none" % old)
+ctr["fencing"] = new
+print(old, new)
+print(json.dumps({"data": {"config.yaml": yaml.safe_dump(c, default_flow_style=False)}}))
+EOF
+}
+
+mbt-act-fencing-switch() {
+    # Usage: mbt-act-fencing-switch
+    #
+    # Switch the fencing mode of every driver (A37, only when the run's
+    # MBT_FENCING is switch): read config.yaml of the ConfigMap
+    # $MBT_FENCING_CM in kube-system, patch it to the other mode
+    # (mbt-fencing-config: the rest of the configuration is kept), then
+    # restart the driver of vm2, vm1 and vm0 in this order as
+    # driver-restart does (mbt-driver-replace, disarming a driver-kill-at
+    # watcher with "disarmed by fencing-switch"), each new pod checked to
+    # log the new mode. The DaemonSet keeps the checksum/config annotation
+    # of helm: the pods are deleted explicitly, and helm uninstall deletes
+    # the patched ConfigMap at the cleanup. The driver reads config.yaml
+    # from a ConfigMap volume (not subPath) at its start; kubelet fills the
+    # volume of a new pod from its own copy of the ConfigMap, which with
+    # the default change detection (Watch) is the watch it keeps for the
+    # pods of the node that use it: updated by the patch's watch event
+    # long before the new pod starts in practice, not at once in principle.
+    # So a new pod that logs the old mode is deleted once more (noted in
+    # MBT_NOTE) before the verb fails. The result has the new mode
+    # ("fencing"). Return 2 if the run is not of mode switch, 1 if a step
+    # fails (MBT_ERR).
+    local cm modes old new patch vm notes=""
+    [ "$MBT_FENCING_RUN" == switch ] || { MBT_ERR="fencing-switch needs MBT_FENCING=switch, this run has MBT_FENCING=${MBT_FENCING_RUN:-(unset)}"; return 2; }
+    mbt-sh vm2 "kubectl get configmap -n kube-system $MBT_FENCING_CM -o jsonpath='{.data.config\.yaml}'" ||
+        { MBT_ERR="cannot read the ConfigMap $MBT_FENCING_CM: $MBT_ERR"; return 1; }
+    cm=$MBT_OUT
+    modes=$(mbt-fencing-config "$cm" 2>"$MBT_TMP/stderr") || { MBT_ERR="config.yaml of $MBT_FENCING_CM: $(<"$MBT_TMP/stderr")"; return 1; }
+    read -r old new <<< "$(head -n 1 <<< "$modes")"
+    patch=$(tail -n +2 <<< "$modes")
+    [ "$old" == "$MBT_FENCING_NOW" ] ||
+        echo "$(date +%T.%N) fencing-switch: the ConfigMap has $old, the drivers had $MBT_FENCING_NOW" >> "$MBT_EXEC_LOG"
+    mbt-sh vm2 "kubectl patch configmap -n kube-system $MBT_FENCING_CM --type merge --patch-file /dev/stdin <<'MBT_EOF'
+$patch
+MBT_EOF
+kubectl get configmap -n kube-system $MBT_FENCING_CM -o jsonpath='{.data.config\.yaml}'" ||
+        { MBT_ERR="cannot patch the ConfigMap $MBT_FENCING_CM: $MBT_ERR"; return 1; }
+    MBT_FENCING_NOW=$new
+    MBT_RESULT=$(mbt-json fencing "$new")
+    for vm in vm2 vm1 vm0; do
+        mbt-driver-replace "$vm" fencing-switch || { MBT_ERR="$vm: $MBT_ERR"; return 1; }
+        notes+=", $vm $MBT_NOTE"
+        mbt-fencing-wait "$vm" "$new" "$MBT_DRIVER_NEW" && continue
+        # (no mode logged: the driver is broken, no second try)
+        [ -n "$MBT_FENCING_GOT" ] || return 1
+        echo "$(date +%T.%N) fencing-switch: $MBT_ERR (a stale ConfigMap volume?): deleting it once more" >> "$MBT_EXEC_LOG"
+        mbt-driver-replace "$vm" fencing-switch || { MBT_ERR="$vm, again: $MBT_ERR"; return 1; }
+        notes+=" -> ${MBT_NOTE#* -> } (it had $MBT_FENCING_GOT)"
+        mbt-fencing-wait "$vm" "$new" "$MBT_DRIVER_NEW" || { MBT_ERR="$MBT_ERR (also after a second restart)"; return 1; }
+        MBT_ERR=""
+    done
+    MBT_NOTE="fencing $old -> $new$notes"
+}
+
+###
+### A step
+###
+
 mbt-run() { # script API
     # Usage: mbt-run STEP VERB ARGS...
     #
@@ -1109,7 +1510,7 @@ mbt-run() { # script API
         lease-get|pwrite|pwipe|driver-kill-at) nargs=2;;
     esac
     case "$verb" in
-        create|delete|crash|read|lease-put|lease-get|driver-kill|driver-restart|ctrl-kill|ctrl-start|ctrl-restart|server-restart|kubelet-restart|containerd-restart|pread|hold|unhold|pwipe|driver-kill-at)
+        create|delete|crash|read|lease-put|lease-get|driver-kill|driver-restart|ctrl-kill|ctrl-start|ctrl-restart|server-restart|kubelet-restart|containerd-restart|pread|hold|unhold|pwipe|driver-kill-at|node-reboot)
             if [ $# != "$nargs" ]; then
                 MBT_ERR="$verb takes $nargs arguments, got $#: $*"
                 MBT_STATUS=2
@@ -1124,6 +1525,14 @@ mbt-run() { # script API
                 MBT_STATUS=2
             else
                 "mbt-act-$verb" "$@" "$step"
+                MBT_STATUS=$?
+            fi;;
+        fencing-switch)
+            if [ $# != 0 ]; then
+                MBT_ERR="$verb takes no arguments, got $#: $*"
+                MBT_STATUS=2
+            else
+                mbt-act-fencing-switch
                 MBT_STATUS=$?
             fi;;
         *)
@@ -1473,16 +1882,17 @@ mbt-header-flags() { # script API
     # Usage: mbt-header-flags STEPS-FILE
     #
     # Print the model flags of the header of STEPS-FILE (an mbt-steps.txt
-    # of mbt-cxl online: "# --profile P --seed S ..."), one --flag=value
-    # per line: those that decide which steps are enabled and how the
-    # oracle judges them (amendment A16). Not the run's budget (--steps,
-    # --duration, the replay runs the file), its files (--out, --replay)
-    # or what the cluster is (--local-blocks, --node-hb0/1: measured).
-    # Nothing if the file has no such header.
+    # of mbt-cxl online, or a code.gen.sh of mbt-cxl generate: its first
+    # line "# --profile P --seed S ..."), one --flag=value per line: those
+    # that decide which steps are enabled and how the oracle judges them
+    # (amendment A16). Not the run's budget (--steps, --duration, the
+    # replay runs the file), its files (--out, --replay) or what the
+    # cluster is (--local-blocks, --node-hb0/1: measured). Nothing if the
+    # file has no such header.
     python3 -c '
 import shlex, sys
 keep = {"profile", "seed", "depth", "coverage", "randomness", "unsettled", "max-restarts", "avoid",
-        "avoid-holes", "max-paths", "settle-timeout", "unblock-timeout", "stall-window"}
+        "avoid-holes", "max-paths", "settle-timeout", "unblock-timeout", "stall-window", "fencing", "reboot"}
 for line in open(sys.argv[1]):
     if not line.startswith("# --"):
         continue
@@ -1500,6 +1910,20 @@ for line in open(sys.argv[1]):
         if name in keep:
             print("--%s=%s" % (name, value) if eq else "--" + name)
     break' "$1"
+}
+
+mbt-header-mode() { # script API
+    # Usage: mbt-header-mode FILE FLAG DEFAULT
+    #
+    # Print the value of --FLAG (fencing, reboot) of the header of FILE
+    # (mbt-header-flags), DEFAULT if the header has no --FLAG (a file of a
+    # generator before amendments A36, A41). Return 1 if FILE has no
+    # header: it has no mode of its own.
+    local flags line
+    grep -q '^# --' "$1" || return 1
+    flags=$(mbt-header-flags "$1") || return 1
+    line=$(grep -m1 -e "^--$2=" <<< "$flags") || { echo "$3"; return 0; }
+    echo "${line#"--$2="}"
 }
 
 mbt-check() {

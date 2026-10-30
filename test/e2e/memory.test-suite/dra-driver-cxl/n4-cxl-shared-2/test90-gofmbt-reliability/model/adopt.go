@@ -17,13 +17,14 @@ package main
 // Adoption records (05-review R5): what an on-line run adopted from its
 // observations, written to mbt-steps.txt after the step as
 //
-//	#adopt N any=SLOT:VM,SLOT:VM alt=J phase=SLOT:PHASE node=SLOT:VM
-//	        steer=SLOT:on|off att=DEV@VM:yes|no stack=VM/hbB:K,K
-//	        lease=SLOT:ID data=SLOT:TEXT restarts=SLOT:R+S
-//	        restarts=VM:R+S (the driver pod of VM)
+//	#adopt N any=SLOT:VM,SLOT:bound|unbound alt=J phase=SLOT:PHASE
+//	        node=SLOT:VM steer=SLOT:on|off att=DEV@VM:yes|no
+//	        stack=VM/hbB:K,K lease=SLOT:ID data=SLOT:TEXT
+//	        restarts=SLOT:R+S restarts=VM:R+S (the driver pod of VM)
 //
 // (one line, items separated by spaces, TEXT query-escaped): the
-// nodes of "any" pods by which a truncated settle was narrowed (R10),
+// nodes of "any" pods and the bindings of race-kill pods by which a
+// truncated settle was narrowed (R10),
 // the alternative of the settle that fitted and what the observation
 // decided beyond it. `generate --from` replays them, so that its
 // expectations follow the run, and replays ignore them (they observe
@@ -193,6 +194,12 @@ func applyAdoption(st *State, rec string) (*State, error) {
 		if n.Ctrl[p].Up {
 			n.deriveAtt(p)
 		}
+	}
+	if n.Last.Verb == VSettle {
+		// the observation decided the order of the stacks that a
+		// node-reboot rebuilt (their stack= items, none if it was the
+		// predicted one: A43)
+		n.Reorder = 0
 	}
 	n.growFence()
 	return n, nil
@@ -394,6 +401,9 @@ func (n *State) applyItem(kind, key, val string) error {
 func (s *State) openChoice() string {
 	if len(s.Alts) > 0 {
 		return fmt.Sprintf("%d outcomes of races", len(s.Alts)+1)
+	}
+	if s.Reorder != 0 {
+		return "the order of the decoder stacks rebuilt by a node-reboot"
 	}
 	for i := range s.Slots {
 		ss := &s.Slots[i]

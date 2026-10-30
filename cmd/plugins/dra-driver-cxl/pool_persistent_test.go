@@ -15,9 +15,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -268,7 +270,7 @@ func (f *fakePoolSys) fsdax() {
 	f.write(pd+"/mode", "ram")
 	f.link("bus/nd/devices/pfn0.0", "../../../"+pd)
 	f.link(pd+"/driver", f.p("bus/nd/drivers/nd_pmem"))
-	f.write(pd+"/block/pmem0/dev", "259:0")
+	f.write(pd+"/block/pmem0/dev", cmp.Or(f.pmemDev, "259:0"))
 	f.write(pd+"/block/pmem0/size", fmt.Sprint(fakePmemBytes/512))
 	f.link("class/block/pmem0", "../../"+pd+"/block/pmem0")
 }
@@ -738,38 +740,183 @@ func TestPoolPersistentForeignNodeMount(t *testing.T) {
 	e.wantClean(t, p)
 }
 
+// TestPoolPersistentRestoreChecks: the start does not mount a node mount
+// again whose block device is not the one prepared: another block device
+// is the namespace's now, or the region is gone (a reboot that the boot
+// ids do not tell). The claims of the node mount stay prepared without a
+// CDI device that would bind the missing directory (plan-13 bug-15 R2),
+// also at a restart. Their Prepare again mounts it again when the device
+// is the one prepared again, else fails and says why; the Prepare of a new
+// claim that mounts the node mount gives them their CDI devices again;
+// their Unprepare releases the device. A companion claim of such a node
+// mount is kept as before (TestPoolLeaseBindRestart).
 func TestPoolPersistentRestoreChecks(t *testing.T) {
-	e := newPoolTestEnv(t)
-	e.f.plugPersistent(persistentSerial)
-	e.f.labels = true
-	p := e.driver(t)
-	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
-	direct := p.nodeMountPath(0xc1ae0001, "direct")
-	state, _ := os.ReadFile(e.stateFile)
-	nmounts := len(e.m.callsOf("mount "))
+	for _, tc := range []struct {
+		name, why string
+		change    func(e *poolTestEnv)
+	}{
+		{"block device", "device 0xc1ae0001: its fsdax namespace is namespace0.0 with /dev/pmem0 (259:4), not namespace0.0 with /dev/pmem0 (259:0)",
+			func(e *poolTestEnv) {
+				e.m.mounts = nil
+				e.f.write(fakeNdRegionPath+"/pfn0.0/block/pmem0/dev", "259:4")
+			}},
+		{"region gone", "device 0xc1ae0001: mem0 has no region",
+			func(e *poolTestEnv) { e.reboot("") }},
+	} {
+		for _, next := range []string{"unprepare", "prepare again", "new claim"} {
+			t.Run(tc.name+" "+next, func(t *testing.T) {
+				e := newPoolTestEnv(t)
+				e.f.plugPersistent(persistentSerial)
+				e.f.labels = true
+				p := e.driver(t)
+				claims := []*resourceapi.ResourceClaim{
+					persistentClaim("d1", persistentData, fsConfig("direct", "")),
+					persistentClaim("d2", persistentData, fsConfig("direct", "/models")),
+				}
+				for _, c := range claims {
+					noErr(t, prepare(t, p, c).Err)
+				}
+				direct := p.nodeMountPath(0xc1ae0001, "direct")
+				nmounts := len(e.m.callsOf("mount "))
 
-	// another block device is the namespace's now: not mounted, logged
-	e.m.mounts = nil
-	e.f.write(fakeNdRegionPath+"/pfn0.0/block/pmem0/dev", "259:4")
-	e.driver(t)
-	if mi, _ := e.m.Mounted(direct); mi != nil || len(e.m.callsOf("mount ")) != nmounts {
-		t.Fatalf("mounted a changed device: %q", e.m.calls)
+				tc.change(e)
+				state, _ := os.ReadFile(e.stateFile)
+				ncmds := e.f.commands()
+				for range 2 { // and a restart
+					p = e.driver(t)
+					if mi, _ := e.m.Mounted(direct); mi != nil || len(e.m.callsOf("mount ")) != nmounts {
+						t.Fatalf("mounted a changed device: %q", e.m.calls)
+					}
+					if _, err := os.Stat(direct); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("mount directory left: %v", err)
+					}
+					if p.prepared["d1"] == nil || p.prepared["d2"] == nil || e.cdiSpec(t) != nil || e.f.commands() != ncmds {
+						t.Fatalf("prepared %v, CDI spec %+v; the start ran commands:\n%s", p.prepared, e.cdiSpec(t), e.f.commandsSince(ncmds))
+					}
+					if now, _ := os.ReadFile(e.stateFile); string(now) != string(state) {
+						t.Fatalf("state changed:\n%s", now)
+					}
+				}
+				switch next {
+				case "prepare again":
+					wantErr(t, prepare(t, p, claims[0]).Err, "cxl-pool.nri.io: preparing claim default/c-d1: device 0xc1ae0001: its node mount "+direct+
+						" is not mounted and cannot be mounted again: not mounting "+direct+" again: "+tc.why)
+					if e.cdiSpec(t) != nil {
+						t.Fatalf("CDI spec %+v", e.cdiSpec(t))
+					}
+					if tc.name == "region gone" {
+						break
+					}
+					// the device is the one prepared again
+					e.f.write(fakeNdRegionPath+"/pfn0.0/block/pmem0/dev", "259:0")
+					noErr(t, prepare(t, p, claims[0]).Err)
+					if mi, _ := e.m.Mounted(direct); mi == nil {
+						t.Fatal("not mounted again")
+					}
+					noErr(t, prepare(t, p, claims[1]).Err)
+				case "new claim":
+					// a claim of the device that mounts the node mount
+					e.f.pmemDev = "259:4"
+					noErr(t, prepare(t, p, persistentClaim("d3", persistentData, fsConfig("direct", ""))).Err)
+					if mi, _ := e.m.Mounted(direct); mi == nil {
+						t.Fatal("not mounted")
+					}
+				}
+				if next == "new claim" || (next == "prepare again" && tc.name != "region gone") {
+					// the CDI devices are back
+					cd := cdiDeviceByName(e.cdiSpec(t), "claim-d2-0")
+					if cd == nil || len(cd.ContainerEdits.Mounts) != 1 || cd.ContainerEdits.Mounts[0].HostPath != direct || cd.ContainerEdits.Mounts[0].ContainerPath != "/models" {
+						t.Fatalf("CDI device %+v", cd)
+					}
+					if cdiDeviceByName(e.cdiSpec(t), "claim-d1-0") == nil {
+						t.Fatalf("no CDI device of d1: %+v", e.cdiSpec(t))
+					}
+				}
+				for _, uid := range slices.Sorted(maps.Keys(p.prepared)) {
+					noErr(t, unprepare(t, p, uid))
+				}
+				if tc.name == "region gone" && next != "new claim" {
+					// nothing but the memdev to release
+					if got := e.f.commandsSince(ncmds); got != "cxl disable-memdev mem0" {
+						t.Fatalf("commands of the Unprepares:\n%s", got)
+					}
+				} else {
+					e.f.wantReleased(t)
+				}
+				e.wantClean(t, p)
+				e.wantNoMounts(t, p)
+			})
+		}
 	}
-	if _, err := os.Stat(direct); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("mount directory left: %v", err)
+}
+
+// renamePmem gives the fsdax namespace of region0 the block device name
+// with the numbers dev, as the next boot or a new probe may.
+func (f *fakePoolSys) renamePmem(name, dev string) {
+	pd := fakeNdRegionPath + "/pfn0.0"
+	_ = os.RemoveAll(f.p(pd + "/block/pmem0"))
+	_ = os.Remove(f.p("class/block/pmem0"))
+	f.write(pd+"/block/"+name+"/dev", dev)
+	f.write(pd+"/block/"+name+"/size", fmt.Sprint(fakePmemBytes/512))
+	f.link("class/block/"+name, "../../"+pd+"/block/"+name)
+}
+
+// TestPoolPersistentUnprepareStaleBlockDevice (bug-15 review): the
+// Unprepare of a prepared claim whose recorded block device is not the one
+// of its device now (the region is gone, or its namespace has another
+// block device; for fs, its node mount is unrestored) waits for the
+// holders of the block device of its region now, not for those of the
+// recorded one, which may be another device's. Before, it failed "still in
+// use" for as long as the other device was held. When the namespaces of
+// the region cannot be read, it waits for the recorded one: a release
+// without a holder check could release a device in use.
+func TestPoolPersistentUnprepareStaleBlockDevice(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, config string
+		change             func(e *poolTestEnv)
+		waits              string // the block device whose holders the release waits for
+	}{
+		{"fs region gone", persistentData, fsConfig("direct", ""), func(e *poolTestEnv) { e.reboot("") }, ""},
+		{"block region gone", writerData, blockConfig, func(e *poolTestEnv) { e.reboot("") }, ""},
+		{"fs renamed", persistentData, fsConfig("direct", ""), func(e *poolTestEnv) {
+			e.m.mounts = nil
+			e.f.renamePmem("pmem1", "259:1")
+		}, "/dev/pmem1"},
+		{"block renamed", writerData, blockConfig, func(e *poolTestEnv) { e.f.renamePmem("pmem1", "259:1") }, "/dev/pmem1"},
+		{"block namespaces unreadable", writerData, blockConfig, func(e *poolTestEnv) { e.f.removeNdRegion() }, "/dev/pmem0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPoolTestEnv(t)
+			e.f.plugPersistent(persistentSerial)
+			e.f.labels = true
+			p := e.driver(t)
+			noErr(t, prepare(t, p, persistentClaim("d1", tc.data, tc.config)).Err)
+			tc.change(e)
+			ncmds := e.f.commands()
+			p = e.driver(t)
+			if p.prepared["d1"] == nil {
+				t.Fatalf("not prepared after the start: %v", p.prepared)
+			}
+			// another device's block device has the recorded name now
+			e.m.holders["/dev/pmem0"] = "mounted by a claim of another device"
+			if tc.waits != "" {
+				// it is held: the release waits for it
+				e.m.holders[tc.waits] = "opened by a container"
+				wantErr(t, unprepare(t, p, "d1"), "device 0xc1ae0001: "+tc.waits+" is still in use")
+				delete(e.m.holders, tc.waits)
+			}
+			noErr(t, unprepare(t, p, "d1"))
+			if tc.waits == "" {
+				if got := e.f.commandsSince(ncmds); got != "cxl disable-memdev mem0" {
+					t.Fatalf("commands of the Unprepare:\n%s", got)
+				}
+			} else {
+				e.f.wantReleased(t)
+			}
+			e.wantClean(t, p)
+			e.wantNoMounts(t, p)
+		})
 	}
-	if now, _ := os.ReadFile(e.stateFile); string(now) != string(state) {
-		t.Fatalf("state changed:\n%s", now)
-	}
-	// the region is gone (a reboot): not mounted
-	e.f.removeNdRegion()
-	_ = os.RemoveAll(e.f.p("bus/cxl/devices/region0"))
-	p = e.driver(t)
-	if len(e.m.callsOf("mount ")) != nmounts || p.prepared["d1"] == nil {
-		t.Fatalf("mounted without a region: %q", e.m.calls)
-	}
-	noErr(t, unprepare(t, p, "d1"))
-	e.wantClean(t, p)
 }
 
 func TestWaitNoHolder(t *testing.T) {

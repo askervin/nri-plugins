@@ -199,8 +199,8 @@ func (r *onlineRun) run() (err error) {
 		}
 	}()
 	r.start = r.now()
-	r.log.Printf("start: profile %s (%d slots, %d actions), seed %d, depth %d, coverage %s, gofmbt %s, plan-ahead %v, unsettled %d",
-		r.cfg.Profile, len(r.cfg.Slots), len(r.mm.acts), r.seed, r.depth, r.cov, gofmbtVersion, r.planAhead, r.cfg.Unsettled)
+	r.log.Printf("start: profile %s (%d slots, %d actions), seed %d, depth %d, coverage %s, gofmbt %s, plan-ahead %v, unsettled %d, fencing %s, reboot %q",
+		r.cfg.Profile, len(r.cfg.Slots), len(r.mm.acts), r.seed, r.depth, r.cov, gofmbtVersion, r.planAhead, r.cfg.Unsettled, r.cfg.Fencing, r.cfg.Reboot)
 	settle := Act{Verb: VSettle, Slot: -1, VM: VMAny, Pool: noPool}
 	replaying := r.replay != nil
 	next := 0
@@ -484,7 +484,7 @@ func (r *onlineRun) settle(n int, name string, to *State, sent time.Time, final 
 		if polls == 1 && to.Truncated {
 			how := "issue order only for some stack"
 			if to.Wide != nil {
-				how = "narrowed by the nodes of its \"any\" pods once they are seen bound"
+				how = "narrowed by the nodes of its \"any\" pods once they are seen bound, and by the bindings of its race-kill pods"
 			}
 			r.log.Printf("step %d settle: the outcomes of its races were not all enumerated (R10): %s", n, how)
 		}

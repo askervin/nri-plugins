@@ -1,0 +1,350 @@
+BUG-16: AFTER A QEMU RESTART THE POOL SERVER ADOPTS THE CONTROLLER'S
+NEW ATTACHMENTS WITHOUT OWNER, AND NOTHING DETACHES THEM
+
+Branch 5jg-cxl, 2026-10-29. Found by the node reboot research
+(12-findings-reboot.txt 4.1, 4.5, 4.6, bugs R3 and R5). Fixed in the
+working tree (uncommitted), unit tested, verified on the cluster: the
+research's qemu restart passes its teardown now (section 7). Changed
+after a review the same day (section 10), unit tested only.
+
+F/ = scripts/testing/fake-cxl-pool/, T/ = test/e2e/memory.test-suite/
+dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability/, RR/ =
+/tmp/p13-runs/reboot-research/ (the research), B/ = /tmp/p13-runs/b16/
+(this verification). Line numbers of HEAD (73dba0f5a) unless "new".
+Server times are local (UTC+2), controller times UTC (the VM clock is
+~0.2 s behind).
+
+========================================================================
+1. SUMMARY
+
+A qemu restart of a VM (vmdir-restart, vm-reboot: shutdown, then
+vagrant up) gives a new qemu process on the same monitor socket paths.
+The server learns the new pid only at its next discovery (every 10 s).
+Meanwhile any monitor call reaches the new qemu, and the server took its
+answers for those of the old process:
+a) the tree of the new qemu has none of the hotplugged devices: the
+   attachments were finalized ("qemu device ... is gone", object_del
+   into the new qemu);
+b) the controller attached the claimed devices again, into the new
+   qemu, with its owner;
+c) the next discovery saw the new pid: "qemu restarted (pid A -> B)"
+   dropped every attachment of the host, b) included, and the reconcile
+   right after it found b)'s devices in qemu and adopted them: adopted,
+   no owner;
+d) the controller ignores adopted and ownerless attachments: it POSTed
+   attach for each device every ~5 s ("already attached (attached,
+   owner "", ...)") and never detached them. After the claims were
+   deleted the devices stayed in the VM: the teardown failed.
+Also (R5): the device data of an Attached claim kept the qemuDeviceId of
+before the re-attach; the controller writes the status only when the
+Attached condition is missing.
+
+The finding said "a configured HMP host". pool-c has no hosts in its
+config: its hosts are discovered, with discovery control hmp. The
+window is the same for every host whose qemu process is known: from the
+moment the new qemu listens until the next discovery. QMP is affected
+too: the QMP monitor reconnects to the same path at the next command
+(F/pkg/qemu/qmp.go:228-253). pool-a (QMP) escaped by timing: its
+discovery at 08:34:16.98 ran after its qemu had exited (SHUTDOWN
+08:34:14.35, refused 08:34:14.93) and before the new one listened; it
+stopped the host, and a discovered host has no monitor until the next
+discovery (08:34:26.99), which found the new pid. pool-c's discoveries
+were at :09.15 and :19.15; the GET /hosts of its controller at
+08:34:18.05 read the new qemu in between.
+
+Severity: medium. Every qemu restart (a node "power cycle" of the
+model, 12-findings 7.1) of a VM with pool devices risks it; the window
+is up to one discovery interval after the new qemu starts. The effect
+is leaked pool devices: never detached, an exclusive device blocked for
+every other node, a failed teardown.
+
+========================================================================
+2. REPRODUCTION
+
+As in 12-findings section 4: claims of pool-c on vm1 (test90 replay of
+RR/steps.txt, paused before the teardown by RR/gen-wrap.py), then a qemu
+restart of vm1 (RR/qemu-restart.sh: shutdown -h in the guest, vagrant up
+--no-provision --provider qemu). It happens when a monitor call of the
+server comes after the new qemu listens and before the next discovery:
+the controller's GET /hosts (every sync and on every server event) is
+such a call.
+Unit tests: section 6 (TestQemuRestartSeenByMonitorFirst fails on HEAD).
+
+========================================================================
+3. EVIDENCE
+
+RR/out/fake-cxl-pool-server-pool-c.log, vm1 =
+n4-cxl-shared-1-fedora-43-containerd, old qemu pid 1073827:
+- 08:34:15.366 "info qtree": "connect: connection refused", "host vm1:
+  monitor hmp unreachable": the old qemu is gone; the host keeps its
+  pid and attachments (unreachable).
+- 08:34:18.053 "host vm1: running, qemu 11.1.50 ..., control hmp": the
+  new qemu answers on the same monitor.sock (a refresh of a GET /hosts);
+  "attachment c-pmem0@vm1: qemu device fcp_c-pmem0.hp3 is gone" (and
+  c-pmem1 hp2, c-pooled0 hp4); object_del of their backends in the new
+  qemu ("not found"); "detached".
+- 08:34:18.119-18.343 the controller's attaches: c-pmem0 as hp6,
+  c-pmem1 hp7, c-pooled0 hp8, POST -> 201.
+- 08:34:19.152 "host vm1: stopped: qemu restarted (pid 1073827 ->
+  1253342)", "attachment c-pmem0@vm1: dropped: qemu restarted ..." (and
+  the other two).
+- 08:34:19.174 "adopted qemu device fcp_c-pooled0.hp8", "... hp7", "...
+  hp6".
+- From 08:34:19.672 on, three POSTs -> 200 every ~5 s.
+RR/post2/controllers.log (pool-c): 06:34:18.005-18.138 "attached c-pmem0
+... qemu device fcp_c-pmem0.hp6, owner k8s:resourceclaim/4f1e200a-...";
+from 06:34:19.466 on "attach c-pmem0 to vm1 for claim ...: already
+attached (attached, owner "", exclusive false)", 120 times in 5 min
+(12-findings 4.5).
+RR/run.log, teardown: "pkg/cxl in vm1 did not reach regions == [] and
+memdevs == [0xc100e2e1]"; after pool-cleanup 3 cxl-type3 in vm1's qemu.
+R5: the claims of pool-c kept qemuDeviceId hp2-hp4 in their device data
+(RR/post2/claims.json), the devices were hp6-hp8 (RR/post2/att-9911.json:
+adopted, no owner).
+pool-a (QMP), RR/out/fake-cxl-pool-server-pool-a.log: 08:34:14.345
+"event SHUTDOWN", 08:34:14.93 "monitor qmp unreachable", 08:34:16.985
+"stopped: qemu process not found" (discovery), 08:34:26.990 "using qmp
+monitor", 08:34:27.645 a-pooled0 "attached" (owner k8s:): right.
+
+========================================================================
+4. ROOT CAUSE
+
+- F/pkg/server/server.go:462-547 queryHosts uses the answer of a
+  monitor (version, tree) without checking that the qemu process behind
+  it is the one that the host has (h.pid, h.startTime). The monitor is
+  bound to a socket path (setMonitorLocked :724-762, the key
+  proto:path, :746), not to a process. HMP connects for every command
+  (F/pkg/qemu/hmp.go:111), QMP again after its connection broke
+  (qmp.go:228-253).
+- The restart is noticed only by discovery: updateHostLocked
+  (server.go:663-683): a new pid or start time is "qemu restarted",
+  hostGoneLocked (:766-788) drops every attachment of the host, also
+  those made into the new qemu.
+- reconcile (:931-1030) then adopts the qemu devices that use a known
+  backend and have no attachment (:993-1013: Adopted, no owner).
+- Attach (F/pkg/server/ops.go:672-905) reads the tree through the same
+  monitor (:729) and plugs into whatever qemu answers.
+- The controller skips adopted and ownerless attachments
+  (F/pkg/controller/reconciler.go:178): the claim's attach request gets
+  200 (the server's existing attachment, ops.go:697-709) every sync,
+  and with no attachment in "actual" there is never a detach (:219-229).
+  The README says so: "never adopted ones or those made with the CLI".
+- R5: writeStatus returns when the Attached condition exists
+  (reconciler.go:365-367), before it compares the device data.
+
+========================================================================
+5. THE FIX
+
+a) Server: after every monitor call of a refresh, and after the tree
+   read of an attach, check that the known qemu process still runs
+   (qemuGoneLocked, F/pkg/server/server.go new :740; called in
+   queryHosts new :516 and Attach, ops.go new :741). If it does not,
+   the host stops at once as if discovery had not found the process
+   ("host H: stopped: qemu process PID not found"): the attachments are
+   dropped, the tree is not used, an attach fails with 503 "host is not
+   running", and the next discovery takes the new process, whose pid is
+   then the first one of the host (no "qemu restarted", nothing dropped
+   later). A config host takes its liveness from its configured monitor
+   again, as before. The common part of updateHostLocked is
+   processGoneLocked (new :715). Checked both when the call fails (the
+   exit is seen at once, 3: 08:34:15.366) and when it answers (the new
+   qemu, 08:34:18.05).
+   Phase 2 of an attach (object_add, device_add; F/pkg/server/ops.go
+   new :835-906) checks it too, before every command and after the
+   device_add (attachStoppedLocked, new :931-943: the attachment dropped
+   meanwhile, or qemuGoneLocked). A qemu that restarts after the tree of
+   phase 1 was read gets nothing: the attach fails with 503 "attach D to
+   H failed: host H stopped during the attach: its qemu process is gone",
+   and the host stops. A new qemu listens only after the old one has
+   exited, so what was added before a failed check went to the old qemu
+   and is gone with it: no object_del (the monitor of the stopped host is
+   closed anyway). A device_add that the old qemu took right before it
+   exited fails the attach too, instead of an attachment Attached in a
+   dead qemu. Not covered: an exit right after a check and a new qemu
+   that listens before the next command, within microseconds (review,
+   section 10).
+b) F/pkg/qemu/discovery.go ProcessAlive (new :429): a zombie (state Z
+   or X) is not alive. Discover never listed one (empty cmdline); now
+   both agree, and a qemu that exited but is not reaped yet does not
+   pass the check of a).
+c) Server: an attach request with an owner for an attachment without
+   owner (adopted, or attached without one) takes it over: the
+   attachment gets the owner (200, nothing plugged; logged "taken over
+   by owner O (it had none, adopted B)", saved, published).
+   updateExistingLocked (ops.go new :915, it was updateExclusiveLocked).
+   Adopted stays as it is: where the attachment came from.
+d) Controller: an attachment without owner on a host of its nodes of a
+   device that a claim wants there is taken over (reconciler.go new
+   :190, :213-218: logged "taking over attachment D@H without owner
+   (STATE, adopted B, qemu device ID)"): the attach request carries the
+   claim's owner and no slot or NUMA settings (an existing attachment
+   stays where it is). Then it is the controller's: detached when no
+   claim wants it. The filter of its own attachments is the owner
+   prefix only (adopted ones with its owner are its own). Ownerless
+   attachments that no claim wants, and attachments of other owners,
+   are left alone as before. A safety net now: with a) the race does not
+   adopt; a lost state file still does.
+e) R5: writeStatus builds the condition and the device data first and
+   writes when they differ from the claim's (attachedUpToDate,
+   F/pkg/controller/status.go new :91, compared as DeviceData): after a
+   re-attach the claim gets the new qemuDeviceId and slot. In steady
+   state no write, as before (the comparison uses the informer's copy).
+f) Docs: F/README.md (discovery: a restarted qemu; the controller's
+   take-over; the attach API's owner), F/pkg/api/types.go
+   (Attachment.Owner).
+
+========================================================================
+6. TESTS
+
+- F/pkg/server/restart_test.go (new):
+  TestQemuRestartSeenByMonitorFirst, subtests qmp, hmp, config-hmp: an
+  attachment with an owner, the qemu of vm1 stops and a new one (another
+  pid) serves the same socket, then GET /hosts reads it before
+  discovery: vm1 stopped "qemu process 101 not found", the attachment
+  dropped, no "qemu device ... is gone", no command into the new qemu;
+  an attach fails until discovery (a config host runs again from its
+  monitor at once); after discovery the attachment made into the new
+  qemu keeps its owner, is not adopted, and two more discoveries keep
+  it. Fails on HEAD ("vm1 not stopped": running, pid 101).
+  TestQemuExitSeenByMonitorFirst: the monitor fails after the exit: the
+  host stops at once (HEAD: unreachable, the attachment kept); the new
+  qemu on the same socket is not used until discovery.
+  TestQemuRestartDuringAttach (new, review), qmp and hmp: the qemu of
+  vm1 restarts right after the check of phase 1, after the object_add,
+  or after the device_add: the attach fails (503, "host vm1 stopped
+  during the attach: its qemu process is gone"), vm1 stops, the
+  attachment is dropped, no command reaches the new qemu; after
+  discovery the attach plugs the device into the new qemu with its
+  owner, and two more discoveries keep it (no "qemu restarted", no
+  "adopted"). With the phase 2 of before every case fails (the first
+  two: Attached in the new qemu, or a device_add into it).
+  testEnv.restartAt and socketMonitor.restartAt restart the qemu at those
+  points (a restart after a ProcessAlive of pid 101 for the first).
+  TestAttachTakesOverAttachmentWithoutOwner: an adopted attachment;
+  attach without owner keeps it ownerless, with owner k8s:a takes it
+  over, k8s:b does not; nothing plugged; the owner survives a server
+  restart.
+  socketMonitor: a monitor of a socket path whose every call goes to
+  the fake qemu that serves the path then (testEnv.bySocket,
+  server_test.go).
+- F/pkg/qemu/parse_test.go TestProcessAliveZombie (new): stat files of a
+  running, a zombie and a dead process, a wrong start time, no process.
+- F/pkg/controller/controller_test.go: TestAdoptedAttachmentTakenOver
+  (new): an adopted ownerless attachment of a claim's device in another
+  slot than the claim's config: one attach request with the claim's
+  owner and no settings, Attached with its qemuDeviceId, the take-over
+  logged, detached after the deallocation. TestReattachUpdatesDeviceData
+  (new): the attachment changes (qemu device, slot): the claim's data
+  and message follow, then no write in steady state. The fake pool's
+  attach gives an ownerless attachment the request's owner, like the
+  server. TestForeignAttachmentsKept (an adopted ownerless attachment no
+  claim wants: kept) unchanged and passing.
+- Mutations, each failing tests: no qemuGoneLocked (both restart
+  tests); no take-over in the server (TestAttachTakesOver...); the
+  controller's old Adopted filter (TestAdoptedAttachmentTakenOver: two
+  attaches, no detach); settings sent for the take-over (same test);
+  R5's early return (TestReattachUpdatesDeviceData); no zombie check
+  (TestProcessAliveZombie).
+- gofmt -l, go vet, go test -race ./scripts/testing/fake-cxl-pool/...:
+  ok.
+
+========================================================================
+7. VERIFICATION
+
+Cluster, lock taken 09:20:15, released 09:29:17 (owner bug-16). The
+research again: test90 replay of B/steps.txt (RR/steps.txt, 25 steps)
+with B/gen-wrap.py (the pause before the teardown), binaries of the
+working tree (dra-build and pool-server-start run make: bin/ 09:21:32),
+driver image 2ba73741f42a. From N/test/e2e:
+  MBT_MODE=replay MBT_REPLAY=/tmp/p13-runs/b16/steps.txt \
+  MBT_BIN=/tmp/p13-runs/b16/gen-wrap.py MBT_READ_TIMEOUT=21600 \
+  WRAP_STEPS=25 MBT_OBS_KEEP=200 ./run_tests.sh memory.test-suite/\
+  dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability
+- The 25 steps passed; at the pause pool-c had c-pmem0 hp3, c-pmem1 hp2,
+  c-pooled0 hp4 on vm1 with k8s: owners, as in the research
+  (B/pre/att-9911.json).
+- qemu restart of vm1 by B/qemu-restart.sh (the research's script),
+  t0 07:23:56.07 UTC: stopped +3.5 s, vagrant up returned +29.8 s
+  (B/restart-times.txt). B/poll.sh polled every 2 s (B/poll.txt).
+- pool-c (B/out/fake-cxl-pool-server-pool-c.log): 09:24:03.246 the GET
+  /hosts of the controller read vm1's monitor (no monitor error: the new
+  qemu answered, the race of R3): "host vm1: stopped: qemu process
+  1450401 not found", the three attachments "dropped: qemu process
+  1450401 not found"; the controller's attaches 503 until the discovery
+  09:24:06.43 ("using hmp monitor", "running"); 09:24:06.99-07.12
+  c-pmem0 hp7, c-pmem1 hp8, c-pooled0 hp9 attached with the claims'
+  owners. No "qemu restarted", no "adopted" in any server log.
+- pool-a (QMP) the same way: 09:24:02.687 "stopped: qemu process 1450401
+  not found" (a monitor call, not its discovery), 09:24:04.25 the new
+  qemu, a-pooled0 hp6 attached with its owner.
+- Controllers (B/controllers-restart.log): AttachError "host ... is not
+  running" for ~3 s, then "attached c-pmem0 ... fcp_c-pmem0.hp7, owner
+  k8s:resourceclaim/..." (and hp8, hp9); no "already attached" and no
+  owner "" in 5 min. The claims' device data: hp7, hp8, hp9, hp6
+  (B/post/claims.json), the attachments' (B/post/att-99*.json): owned,
+  not adopted.
+- The local memdev of vm1 attached again by hand (pool-a, owner
+  e2e:dra-local-device, as 12-findings 7.1 wants of the executor):
+  hp10, published as memdev-c100e2e1. Then "end": the teardown deleted
+  the pods and claims, the controller detached hp7, hp8, hp9
+  (09:27:36-09:27:56), "### 2: teardown: every pod deleted, every device
+  back", Test verdict: PASS (B/run.log; the research's run failed here,
+  section 3).
+- After: no cxl-type3 in any qemu, no memdev, region or committed
+  decoder in any guest, auto_online_blocks offline, the prepared-claims
+  files "{}", the three nodes Ready, no pod or claim in cxl-pool-demo,
+  no DaemonSet of the driver, no pool server or controller running.
+Not verified on the cluster: the controller's take-over (the server
+adopts nothing now; unit tests only); a config host.
+
+========================================================================
+8. PROPOSED COMMIT MESSAGE
+
+fake-cxl-pool: do not take a restarted qemu for the old one
+
+A restarted qemu answers on the monitor socket of the old one before
+the next discovery has seen its pid. The server took its answers for
+the old process. It finalized the attachments, the controller attached
+the claimed devices into the new qemu, and the next discovery dropped
+them ("qemu restarted") and adopted the devices without owner. The
+controller skipped adopted attachments, so it never detached them.
+
+The server now checks after every monitor call, and before every
+command of an attach, that the qemu process of the host still runs. If
+not, the host stops at once and the next discovery takes the new
+process; an attach then fails without plugging into the new qemu. A
+zombie process is not alive.
+
+An attach request with an owner takes over an attachment without one.
+The controller takes over such an attachment of a device that a claim
+wants on that node, so that it detaches it later. It also updates the
+device data of an Attached claim when the attachment changed.
+
+========================================================================
+9. STATUS
+
+Fixed in the working tree, not committed (the review change of section
+10 unit tested only): F/pkg/server/server.go,
+F/pkg/server/ops.go, F/pkg/server/server_test.go,
+F/pkg/server/restart_test.go (new), F/pkg/qemu/discovery.go,
+F/pkg/qemu/parse_test.go, F/pkg/controller/reconciler.go,
+F/pkg/controller/status.go, F/pkg/controller/controller_test.go,
+F/pkg/api/types.go, F/README.md. Not in the driver image: the e2e run
+builds the server and the controller from the tree (make in dra-build
+and pool-server-start), so the next run takes the review change.
+Not changed: the model and the oracle. The oracle still fails on any
+adopted attachment (T/model/oracle.go:1198), also on one that the
+controller took over; with a) the qemu restart adopts nothing.
+
+========================================================================
+10. REVIEW 2026-10-29
+
+An independent review (the diff and this file):
+- PLAUSIBLE, changed (5a): phase 2 of an attach did not check the qemu
+  process after its object_add and device_add. A qemu restart between
+  phase 1 and the device_add put the device into the new qemu as
+  Attached; the next discovery dropped it ("qemu restarted") and adopted
+  it without owner. Now it checks before each command and after the
+  device_add, and fails the attach without a command into the new qemu.
+  Verified: TestQemuRestartDuringAttach fails in every case with the
+  phase 2 of before.

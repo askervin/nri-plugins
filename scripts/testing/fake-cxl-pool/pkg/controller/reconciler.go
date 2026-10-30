@@ -168,24 +168,32 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		}
 	}
 
-	// 2. actual
+	// 2. actual: the attachments of our owners on the hosts of our nodes.
+	// An attachment without owner (the server adopts the devices that it
+	// finds in qemu, for instance after a lost state file) is taken over
+	// in 3 if a claim wants it, so that 5 detaches it later.
 	atts, err := c.pool.Attachments(ctx, "", "")
 	if err != nil {
 		return fmt.Errorf("list attachments: %w", err)
 	}
 	actual := map[attKey]api.Attachment{}
+	ownerless := map[attKey]api.Attachment{}
 	for _, a := range atts {
-		if a.Adopted || !strings.HasPrefix(a.Owner, c.cfg.OwnerPrefix) {
-			continue
-		}
 		if _, ours := hm.hostNode[a.Host]; !ours {
 			continue
 		}
-		actual[attKey{a.Device, a.Host}] = a
+		k := attKey{a.Device, a.Host}
+		switch {
+		case strings.HasPrefix(a.Owner, c.cfg.OwnerPrefix):
+			actual[k] = a
+		case a.Owner == "":
+			ownerless[k] = a
+		}
 	}
 
 	// 3. attach, or set the exclusive flag of an attachment to that of
-	// its claims (an attachment serves all claims of the node)
+	// its claims (an attachment serves all claims of the node), or take
+	// over an attachment without owner (the attach request gives it ours)
 	// Attachments that exist come first: dropping the exclusive flag of
 	// the attachment of one node lets the new attachments of the other
 	// nodes in, in the same reconcile.
@@ -202,7 +210,13 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			continue
 		}
 		w := desired[k][0]
-		a, f := c.attach(ctx, w, k, exclusive, actual, desired)
+		_, exists := actual[k]
+		if o, ok := ownerless[k]; ok {
+			c.logf("attach %s to %s for %s: taking over attachment %s without owner (%s, adopted %v, qemu device %s)",
+				k.device, k.host, w, o.ID, o.State, o.Adopted, o.QemuDeviceID)
+			exists = true
+		}
+		a, f := c.attach(ctx, w, k, exclusive, exists, actual, desired)
 		switch {
 		case f != nil:
 			failures[k] = *f
@@ -272,9 +286,10 @@ func sortedKeys[V any](m map[attKey]V) []attKey {
 	return ks
 }
 
-// attach attaches the device of a desired key. It returns the attachment,
-// or a failure, or neither (attaching continues, or waiting for a detach).
-func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
+// attach attaches the device of a desired key (exists: it is attached
+// already). It returns the attachment, or a failure, or neither
+// (attaching continues, or waiting for a detach).
+func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive, exists bool, actual map[attKey]api.Attachment, desired map[attKey][]*want) (*api.Attachment, *failure) {
 	owner := c.Owner(w.claim.UID)
 	req := api.AttachRequest{
 		Host:      k.host,
@@ -285,7 +300,7 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive bo
 	}
 	// the settings place a new attachment; an existing one stays where it
 	// is
-	if _, ok := actual[k]; !ok {
+	if !exists {
 		req.Slot, req.NumaNode = w.settings.Slot, w.settings.NumaNode
 		if s := w.settings.String(); s != "" {
 			c.debugf("attach %s to %s for %s: %s", k.device, k.host, w, s)
@@ -332,7 +347,8 @@ func (c *Controller) attach(ctx context.Context, w *want, k attKey, exclusive bo
 }
 
 // writeStatus writes Attached or AttachFailed into the claim status of a
-// want when it is not there yet.
+// want when it is not there yet, and the device data of Attached when it
+// changed (a new attachment after a qemu restart).
 func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey]api.Attachment, failures map[attKey]failure) {
 	var f *failure
 	switch {
@@ -362,12 +378,6 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		}
 		return
 	}
-	if hasCondition(w.claim, w.result, c.condAttached()) != nil {
-		return
-	}
-	if s := w.settings.Slot; s != "" && s != a.Slot.Bus {
-		c.logf("%s: attachment %s is in slot %s, not in the configured slot %s: kept", w, a.ID, a.Slot.Bus, s)
-	}
 	d := c.devices[w.result.Device]
 	serial := a.Serial
 	if serial == "" {
@@ -389,6 +399,12 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		Status:  metav1.ConditionTrue,
 		Reason:  ReasonAttached,
 		Message: fmt.Sprintf("%s attached to %s (slot %s)", w.result.Device, a.Host, a.Slot.Bus),
+	}
+	if attachedUpToDate(w.claim, w.result, cond, data) {
+		return
+	}
+	if s := w.settings.Slot; s != "" && s != a.Slot.Bus {
+		c.logf("%s: attachment %s is in slot %s, not in the configured slot %s: kept", w, a.ID, a.Slot.Bus, s)
 	}
 	c.updateStatus(ctx, w, cond, data, corev1.EventTypeNormal, EventAttached)
 }

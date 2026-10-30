@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -146,6 +148,9 @@ type leaseStore struct {
 	path   string
 	Claims map[string]*leaseClaim `json:"claims"` // lease claim uid -> ...
 	Leases map[string]*lease      `json:"leases"` // lease id -> ...
+	// BootID is the boot id of the kernel of the leases: a lease does not
+	// survive a reboot (forgetOtherBoot), its lease claim does.
+	BootID string `json:"bootID,omitempty"`
 	// Recovered is true when the stored table could not be decoded and
 	// the store started empty: the lease claims of the node are unknown.
 	Recovered bool `json:"-"`
@@ -179,6 +184,31 @@ func loadLeaseStore(path string) (*leaseStore, error) {
 // save writes the store atomically.
 func (s *leaseStore) save() error {
 	return writeJSONFile(s.path, s)
+}
+
+// forgetOtherBoot drops the leases of another boot than bootID ("":
+// unknown) and returns them, and makes the store one of bootID. A reboot
+// ended the processes that had the fds of dax and block leases, unmounted
+// the binds of fs leases and took the memory of numa leases: the requester
+// containers start anew without them, and ask again. Kept, a lease would
+// stay Ready on memory that is gone, and the node of a numa lease would be
+// lent again to the restarted requester (plan-13 bug-15). The companion
+// pods and claims of the dropped leases are deleted by the reconcile
+// (deleteOrphans). Leases without a boot id (saved by an older driver)
+// are taken as of this boot. The lease claims stay: kubelet prepares them
+// again.
+func (s *leaseStore) forgetOtherBoot(bootID string) []*lease {
+	var gone []*lease
+	if otherBoot(s.BootID, bootID) {
+		for _, id := range slices.Sorted(maps.Keys(s.Leases)) {
+			gone = append(gone, s.Leases[id])
+			delete(s.Leases, id)
+		}
+	}
+	if bootID != "" {
+		s.BootID = bootID
+	}
+	return gone
 }
 
 // leasesOf returns the leases received on the lease claim's socket.

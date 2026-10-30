@@ -256,9 +256,69 @@ type Config struct {
 	// in both states.
 	StallWindow time.Duration
 	StallStrict bool
+	// Fencing: the fencing mode of the run (--fencing, A36); switch
+	// starts in allowed-mems and generates fencing-switch
+	Fencing FencingRun
+	// Reboot: the node-reboot variant of the run (--reboot, A41): none
+	// (the verb is not generated), a guest reboot or a qemu restart
+	Reboot RebootRun
+	// DRAMNodes are the NUMA nodes of DRAM of every VM (D of A38)
+	DRAMNodes []int
 	// Verbs that the generator may use; nil: every verb.
 	slotByName map[string]int
 }
+
+// FencingRun is the fencing mode of a run (A36).
+type FencingRun uint8
+
+const (
+	FencingAM FencingRun = iota
+	FencingNone
+	FencingSwitch
+)
+
+var fencingRunNames = []string{"allowed-mems", "none", "switch"}
+
+func (f FencingRun) String() string { return fencingRunNames[f] }
+
+// parseFencingRun parses allowed-mems, none or switch.
+func parseFencingRun(s string) (FencingRun, error) {
+	for f, n := range fencingRunNames {
+		if n == s {
+			return FencingRun(f), nil
+		}
+	}
+	return 0, fmt.Errorf("invalid fencing mode %q (allowed-mems, none or switch)", s)
+}
+
+// RebootRun is the node-reboot variant of a run (A41): none, guest
+// (systemctl reboot in the guest, qemu keeps running) or qemu (the qemu
+// process restarts: a power cycle).
+type RebootRun uint8
+
+const (
+	RebootNone RebootRun = iota
+	RebootGuest
+	RebootQemu
+)
+
+var rebootRunNames = []string{"", "guest", "qemu"}
+
+func (r RebootRun) String() string { return rebootRunNames[r] }
+
+// parseRebootRun parses "", guest or qemu.
+func parseRebootRun(s string) (RebootRun, error) {
+	for r, n := range rebootRunNames {
+		if n == s {
+			return RebootRun(r), nil
+		}
+	}
+	return 0, fmt.Errorf("invalid reboot variant %q (guest, qemu, or empty: none)", s)
+}
+
+// rebootVM: a VM that node-reboot may reboot: vm0 and vm1; vm2 runs the
+// control plane (12-findings-reboot.txt 5).
+func rebootVM(v VM) bool { return v == VM0 || v == VM1 }
 
 // defaultConfig returns the configuration of the contract's defaults.
 func defaultConfig() *Config {
@@ -271,6 +331,7 @@ func defaultConfig() *Config {
 		Unsettled:   3,
 		MaxRestarts: 2,
 		Online:      true,
+		DRAMNodes:   []int{0, 1},
 	}
 }
 

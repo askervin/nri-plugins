@@ -51,6 +51,22 @@ package main
 // the pool snapshot lock serialsMu), then the lease table of the broker;
 // p.mu is never held across UpdateContainers.
 //
+// Fencing none: a container that is neither fenced nor steered (only with
+// fencing none, claims cannot set the fencing) keeps the cpuset.mems that
+// the runtime gave it. If that is empty (the usual case), the container
+// has the memory nodes of its parent, every node with memory, also those
+// whose memory goes online later, and a lend or a revoke only records the
+// holders of the node (a lend of a node that its cpuset.mems.effective
+// lacks is logged: a parent cgroup restricts it). An update would set its
+// cpuset.mems for good: an update with an empty cpuset.mems changes
+// nothing, so the container would not inherit any more, and a revoke
+// would take a node that still has memory off it. A container with a
+// cpuset.mems of its own (set by the runtime, such as by kubelet's memory
+// manager, or fenced by a plugin with fencing allowed-mems before a switch
+// to none: it keeps that until it is created again) gets base + the lent
+// nodes: a lend adds the node, a revoke removes it, but not a node of its
+// claims that its cpuset.mems had before any lend (recordOwnClaimed).
+//
 // Updates before the start: containerd (2.x, container_start.go) applies
 // an NRI update to the cgroup only of a container that it has marked
 // started, which it does after task start, right before
@@ -157,6 +173,9 @@ type trackedContainer struct {
 	lent    lentNodes     // nodes lent to this container id
 	mems    string        // cpuset.mems of the spec as the plugin knows it
 	claimed cpuset.CPUSet // NUMA nodes of the CXL numa memory of its results
+	// ownClaimed are the claimed nodes that its cpuset.mems had before any
+	// lend (recordOwnClaimed): with fencing none a revoke keeps them.
+	ownClaimed cpuset.CPUSet
 }
 
 // lentNodes maps the nodes lent to a container to their holders.
@@ -261,9 +280,11 @@ func (p *nriPlugin) trackCreated(pod *api.PodSandbox, ctr *api.Container) *track
 }
 
 // trackStarted records pid, cgroup and base memory nodes of a started
-// container. Caller holds p.mu. Returns the entry.
+// container, and at its first start the claimed nodes that its cgroup
+// has (recordOwnClaimed). Caller holds p.mu. Returns the entry.
 func (p *nriPlugin) trackStarted(pod *api.PodSandbox, ctr *api.Container) *trackedContainer {
 	tc := p.trackCreated(pod, ctr)
+	first := !tc.started
 	tc.started = true
 	tc.ref.Pid = ctr.GetPid()
 	if tc.ref.CgroupPath == "" {
@@ -275,7 +296,25 @@ func (p *nriPlugin) trackStarted(pod *api.PodSandbox, ctr *api.Container) *track
 	}
 	tc.base = p.baseMems(tc, ctr)
 	tc.ref.BaseMems = tc.base.String()
+	if first {
+		tc.recordOwnClaimed()
+	}
 	return tc
+}
+
+// recordOwnClaimed records the claimed nodes that the cpuset.mems of a
+// container has (curMems) as its own. Called before any lend can reach its
+// cpuset.mems: at its creation, at its first start and when Synchronize
+// finds it. A lend to a container that has not started does not reach it
+// (with fencing none its spec has the nodes of the runtime). After a
+// plugin restart a claimed node that a lend of the previous plugin added
+// counts as its own too: Synchronize cannot tell the two apart, and a
+// claimed node is better kept than taken. Caller holds p.mu.
+func (tc *trackedContainer) recordOwnClaimed() {
+	tc.ownClaimed = cpuset.New()
+	if set, err := cpuset.Parse(tc.curMems()); err == nil {
+		tc.ownClaimed = tc.claimed.Intersection(set)
+	}
 }
 
 // baseMems returns the memory nodes a container has of its own: its
@@ -463,6 +502,7 @@ func (p *nriPlugin) Synchronize(_ context.Context, pods []*api.PodSandbox, ctrs 
 		if !known {
 			tc.synced = true
 			p.syncManagement(tc, ctr)
+			tc.recordOwnClaimed()
 			if lent := p.seedLends(tc, p.keptLends(pod.GetUid(), tc.ref.Name)); !lent.IsEmpty() {
 				// not its own nodes, as in baseMems
 				tc.base = tc.base.Difference(lent)
@@ -688,14 +728,19 @@ func (p *nriPlugin) RevokeNode(ctx context.Context, podUID, name string, node in
 // nodes of a container and applies cpuset.mems = base + the nodes that
 // have a holder through NRI. The node is a CXL node, so it is also
 // dropped from the base set (it is there after a plugin restart, see
-// Synchronize). The base of a fenced container is its own nodes without
-// the fenced nodes, and its cpuset.mems has the CXL numa nodes of its
-// results too (wantMems). The cpuset.mems of a steered container is not
-// changed. A lend that the bookkeeping has is applied again when the
-// cgroup of the container lacks it (an update before its start reached
-// its spec only, see the header). A container that has not started has
-// only the lends of its creation (seedLends): a lend of one of them is
-// done, a revoke drops it, from the spec of a fenced container too.
+// Synchronize), unless it is a node of its claims that its cpuset.mems
+// had before any lend (ownClaimed). The base of a fenced container is its
+// own nodes without the fenced nodes, and its cpuset.mems has the CXL numa
+// nodes of its results too (wantMems). The cpuset.mems of a steered
+// container is not changed, nor that of a container that is not fenced
+// whose cpuset.mems is empty (fencing none, see the header). An update
+// that would change neither the cgroup nor the spec of a container that
+// is not fenced is not sent. A lend that the bookkeeping has is
+// applied again when the cgroup of the container lacks it (an update
+// before its start reached its spec only, see the header). A container
+// that has not started has only the lends of its creation (seedLends): a
+// lend of one of them is done, a revoke drops it, from the spec of a
+// fenced container too.
 func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node int, holder string, lend bool) error {
 	op := "revoke"
 	if lend {
@@ -753,24 +798,36 @@ func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node in
 	nodeSet := cpuset.New(node)
 	holders := tc.lent.with(node, holder, lend)
 	lent := tc.lent.after(node, holders)
-	var base cpuset.CPUSet
+	var base, unusable cpuset.CPUSet
 	var mems string
-	var needed bool
+	var needed, inherits, pinned bool
 	if tc.memory == memoryFenced || p.steeredLocked(tc) {
 		var err error
 		if base, mems, needed, err = p.fencedLend(tc, nodeSet, lent); err != nil {
 			p.mu.Unlock()
 			return fmt.Errorf("%s node %d: ctr=%s: %w", op, node, ctrName, err)
 		}
+	} else if cur := tc.curMems(); cur == "" {
+		// fencing none, it inherits: it has the node, an update would
+		// pin it (see the header)
+		base, inherits = tc.base.Difference(nodeSet), true
+		if lend {
+			// unless a parent cgroup restricts its nodes
+			unusable = cgroupLacks(tc.ref.CgroupPath, lent)
+		}
 	} else {
-		base = tc.base.Difference(nodeSet)
+		// The claimed nodes that it had before any lend are its own: a
+		// container fenced before a switch to none has them. Not those
+		// that a lend added (recordOwnClaimed).
+		pinned = true
+		base = tc.base.Difference(nodeSet).Union(tc.ownClaimed)
 		mems = base.Union(lent).String()
-		needed = !sameSet(lent, tc.lent.nodes()) || !sameSet(base, tc.base)
+		needed = !sameSet(lent, tc.lent.nodes()) || !sameSet(base, tc.base.Union(tc.ownClaimed))
 		switch {
 		case !lend && !needed && len(holders) == 0:
 			// Not lent as far as we know, but a lend from before a plugin
 			// restart that is not re-applied still shows in cpuset.mems.
-			needed = cgroupMemsContain(tc.ref.CgroupPath, node)
+			needed = !base.Contains(node) && cgroupMemsContain(tc.ref.CgroupPath, node)
 		case lend && !needed:
 			if missing := cgroupLacks(tc.ref.CgroupPath, lent); !missing.IsEmpty() {
 				// lost only if an update had them (not a seeded lend:
@@ -781,10 +838,31 @@ func (p *nriPlugin) changeLend(ctx context.Context, podUID, name string, node in
 				needed = true
 			}
 		}
+		if needed && !base.IsEmpty() && sameMems(base.Union(lent), cur) && sameMems(base.Union(lent), tc.mems) {
+			// Its cgroup and its spec have it already: a lend of a node of
+			// its claims, or the revoke of one. The spec counts too: a
+			// later update of its resources writes the cpuset.mems of the
+			// spec to the cgroup.
+			needed = false
+		}
 	}
 	if !needed {
+		changed := tc.lent[node][holder] != lend
 		tc.lent = tc.lent.set(node, holders)
+		if inherits || pinned {
+			tc.base = base
+			tc.ref.BaseMems = base.String()
+		}
 		p.mu.Unlock()
+		if inherits && changed {
+			klog.V(3).Infof("NRI lend: %s node %d for %s: ctr=%s id=%s: cpuset.mems left empty, it has the nodes of its parent (fencing none, lent=%s)",
+				op, node, holder, ctrName, id, lent)
+			if !unusable.IsEmpty() {
+				klog.Warningf("NRI lend: lend node %d for %s: ctr=%s id=%s: its cpuset.mems.effective lacks the lent nodes %s (a parent cgroup restricts it, or they have no memory): it cannot use them",
+					node, holder, ctrName, id, unusable)
+			}
+			return nil
+		}
 		klog.V(4).Infof("NRI lend: %s node %d for %s: ctr=%s: cpuset.mems unchanged (base=%s lent=%s, node holders %d)",
 			op, node, holder, ctrName, base, lent, len(holders))
 		return nil
@@ -1047,14 +1125,23 @@ func (p *nriPlugin) LendsRestored() {
 
 // startFencing makes fencing of running containers ready when NRI has
 // synchronized and the lends are restored, and then starts a fence pass
-// in the background. Caller holds p.mu.
+// in the background. With fencing none there is no pass, but the point
+// is logged all the same: it tells when the lends of a restarted plugin
+// are back. Caller holds p.mu.
 func (p *nriPlugin) startFencing() {
-	if p.fence == nil || !p.lendsRestored {
+	if !p.lendsRestored {
 		return
 	}
 	select {
 	case <-p.syncedC:
 	default:
+		return
+	}
+	if p.fence == nil {
+		if !p.fenceReady {
+			p.fenceReady = true
+			klog.V(3).Info("NRI fence: lends restored (fencing none)")
+		}
 		return
 	}
 	if !p.fenceReady {

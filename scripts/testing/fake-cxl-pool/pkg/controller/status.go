@@ -85,6 +85,19 @@ func hasCondition(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequestA
 	return nil
 }
 
+// attachedUpToDate returns true if the status entry of a result has the
+// Attached condition cond (True, same reason and message) and the device
+// data.
+func attachedUpToDate(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequestAllocationResult, cond metav1.Condition, data DeviceData) bool {
+	old := hasCondition(claim, r, cond.Type)
+	if old == nil || old.Reason != cond.Reason || old.Message != cond.Message {
+		return false
+	}
+	e := deviceStatus(claim, r)
+	var oldData DeviceData
+	return e.Data != nil && json.Unmarshal(e.Data.Raw, &oldData) == nil && oldData == data
+}
+
 // hasResult returns true if the claim is still allocated with the result.
 func hasResult(claim *resourceapi.ResourceClaim, r resourceapi.DeviceRequestAllocationResult) bool {
 	if claim.Status.Allocation == nil {

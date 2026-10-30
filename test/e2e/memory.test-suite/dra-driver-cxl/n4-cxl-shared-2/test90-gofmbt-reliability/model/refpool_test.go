@@ -27,6 +27,7 @@ import (
 	"math/rand"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -39,6 +40,8 @@ var (
 	refMax     = flag.Int("refpool-len", 60, "longest sequence of TestRefPoolFuzz")
 	refSlow    = flag.Bool("refpool-slow", false, "TestRefPoolFuzz: controllers stay down long (ctrl-start rare)")
 	refProfile = flag.String("refpool-profile", "full", "TestRefPoolFuzz: the profile (pmem, fullp: persistent devices)")
+	refFencing = flag.String("refpool-fencing", "allowed-mems", "TestRefPoolFuzz: --fencing (allowed-mems, none, switch)")
+	refReboot  = flag.String("refpool-reboot", "", "TestRefPoolFuzz: --reboot (guest, qemu; empty: no node-reboot)")
 	refStall   = flag.Duration("refpool-stall-window", 0, "TestRefPoolFuzz: --stall-window (0: the default); not above 180 s: settles wait for stalled contenders, the reference's scheduler has the bug-08 fix")
 )
 
@@ -82,6 +85,11 @@ func fuzzWeight(cfg *Config, a Act) float64 {
 		return 0.4
 	case VDriverKill, VDriverRestart, VContainerdRestart:
 		return 0.15
+	case VFencingSwitch:
+		return 0.3
+	case VNodeReboot:
+		// (enabled only after a settle with every controller up)
+		return 2
 	case VPWrite, VLeaseGet, VLeasePut:
 		return 1.5
 	case VPRead, VPWipe, VDriverKillAt:
@@ -250,6 +258,14 @@ func runRefFuzz(t *testing.T, profile string, seqs int, seed0 int64, maxLen int)
 	t.Helper()
 	cfg := testConfig(t, profile, true)
 	cfg.Unsettled = 3 // MBT_UNSETTLED of the runs
+	fencing, err := parseFencingRun(*refFencing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Fencing = fencing
+	if cfg.Reboot, err = parseRebootRun(*refReboot); err != nil {
+		t.Fatal(err)
+	}
 	if *refStall > 0 {
 		cfg.StallWindow, cfg.StallStrict = *refStall, *refStall <= 180*time.Second
 	}
@@ -284,6 +300,27 @@ func TestRefPoolFuzz(t *testing.T) {
 		fs := kinds[k]
 		sort.Slice(fs, func(i, j int) bool { return len(fs[i].steps) < len(fs[j].steps) })
 		t.Errorf("%d x %s\nshortest:\n%s", len(fs), k, fs[0])
+	}
+}
+
+// TestFencingFuzz is TestRefPoolFuzz with the fencing modes none and
+// switch (A36, A37), the two-claim kind on both CXL nodes (A39) in every
+// sequence's profile.
+func TestFencingFuzz(t *testing.T) {
+	seqs := *refSeqs / 4
+	if testing.Short() {
+		seqs = 15
+	}
+	old := *refFencing
+	defer func() { *refFencing = old }()
+	for _, mode := range []string{"none", "switch"} {
+		*refFencing = mode
+		kinds, st := runRefFuzz(t, *refProfile, seqs, *refSeed+1000, *refMax)
+		t.Logf("fencing %s: %d sequences (%d failed), %d steps, %d settles; verbs %v", mode, seqs, seqs-st.seqs, st.steps, st.settles, st.verbs)
+		for k, fs := range kinds {
+			sort.Slice(fs, func(i, j int) bool { return len(fs[i].steps) < len(fs[j].steps) })
+			t.Errorf("fencing %s: %d x %s\nshortest:\n%s", mode, len(fs), k, fs[0])
+		}
 	}
 }
 
@@ -687,7 +724,7 @@ func TestRefPoolNarrowedAnyNodes(t *testing.T) {
 	}
 	cfg := s.cfg
 	x, sd, pw := cfg.slotIndex("xdax-c@any#0"), cfg.slotIndex("sdax-c@any#0"), cfg.slotIndex("pwr-c@any#0")
-	n := s.narrowed(map[int]VM{x: VM2, sd: VM1, pw: VM1})
+	n := s.narrowed(map[int]VM{x: VM2, sd: VM1, pw: VM1}, nil)
 	if n == nil || n.Truncated || n.Narrow != "xdax-c@any#0:vm2,sdax-c@any#0:vm1,pwr-c@any#0:vm1" {
 		t.Fatalf("narrowed %v", n)
 	}
@@ -925,5 +962,73 @@ func TestRefPoolStallAtCtrlStart(t *testing.T) {
 	wantPhase(t, steps(t, w, "ctrl-start c"), "pwr-c@vm0#0", Stalled)
 	if f := refScriptIn(t, "pmem", 4588, 0, fp6Steps(t, 4588)...); f != nil {
 		t.Fatalf("%s", f)
+	}
+}
+
+// A truncated settle (R10) narrowed by the bindings of its race-kill pods
+// (review fuzz, fullp fencing none, seed 710078): six pods whose Prepares
+// were optional (a ctrl-kill c), a dnuma one with two of them, on four
+// stacks; the 64 outcomes enumerated all had the dnuma pod's Prepare
+// (Running), the reference had it allocated, not bound (its Attached not
+// written before the kill). Narrowed by "unbound" it is Either (the
+// oracle: Attaching), and the record's any= replays it.
+func TestRefPoolNarrowedRaceKill(t *testing.T) {
+	cfg := testConfig(t, "fullp", true)
+	cfg.Unsettled = 3
+	cfg.Fencing = FencingNone
+	lines := strings.Split("create pbro-c@vm1#0 | create plain@vm0#0 | driver-kill-at vm1 mount | settle | "+
+		"create sro-a@vm1#0 | create pfsc-c@vm1#0 | ctrl-kill b | settle | create sdax-a@vm2#1 | "+
+		"create plse@vm1#0 | create xdax-a@vm2#0 | settle | driver-kill-at vm2 mount | "+
+		"create xnuma-c@vm1#0 | create sexcl-c@vm1#0 | settle | driver-restart vm2 | "+
+		"create sro-c@vm2#0 | ctrl-kill c | settle | ctrl-start b | create pwr-c@any#0 | "+
+		"create xpf-c@vm0#0 | settle | server-restart c | delete sro-c@vm2#0 | ctrl-restart b | "+
+		"settle | server-restart b | delete sro-a@vm1#0 | create sro-c@vm2#0 | settle | "+
+		"delete pfsc-c@vm1#0 | ctrl-start c | delete xnuma-c@vm1#0 | settle | create xnuma-c@vm0#0 | "+
+		"ctrl-kill a | delete pbro-c@vm1#0 | settle | delete sdax-a@vm2#1 | create ldax@vm2#0 | "+
+		"server-restart b | settle | ctrl-restart c | pread pwr-c@any#0 | create sdax-a@vm1#0 | "+
+		"create xdax-b@vm0#0 | pwrite pwr-c@any#0 img | pwrite pwr-c@any#0 img | "+
+		"pwrite pwr-c@any#0 img | settle | delete pwr-c@any#0 | create plain@vm2#0 | "+
+		"delete xnuma-c@vm0#0 | settle | ctrl-kill c | ctrl-kill b | create xdax-a@vm1#0 | settle | "+
+		"delete sexcl-c@vm1#0 | kubelet-restart vm2 | delete xdax-b@vm0#0 | settle | ctrl-start b | "+
+		"delete xdax-a@vm2#0 | server-restart c | settle | driver-kill-at vm2 bind | "+
+		"create sdax-c@vm1#0 | delete sdax-c@vm1#0 | settle | create xdax-a@vm2#0 | "+
+		"create dnuma@vm0#0 | create sro-b@vm0#0 | settle | create xnuma-c@vm2#0 | "+
+		"create pfsc-c@vm2#0 | delete xdax-a@vm1#0 | settle | driver-kill-at vm0 ns | "+
+		"create xdax-b@vm0#0 | settle | ctrl-restart b | create sdax-c@vm2#0 | create xdax-a@vm1#0 | "+
+		"settle | create sdax-c@vm1#0 | create pfsc-c@vm0#0 | driver-kill-at vm1 region | settle | "+
+		"delete ldax@vm2#0 | ctrl-start c | ctrl-kill c | settle", " | ")
+	var last *State
+	dbgPred = func(p *State, _ *sim) { last = p }
+	defer func() { dbgPred = nil }()
+	if f := refSequence(cfg, allActs(cfg), 710078, 0, lines, &fuzzStats{verbs: map[Verb]int{}, ref: map[string]int{}}); f != nil {
+		t.Fatalf("%s", f)
+	}
+	d := cfg.slotIndex("dnuma@vm0#0")
+	if last == nil || !last.Truncated || last.Wide == nil || !slices.Contains(last.Wide.optPrepared(), d) {
+		t.Fatalf("not the case of seed 710078: the last settle is not truncated with dnuma@vm0#0's Prepare optional")
+	}
+	for _, a := range alts(last) {
+		if a.Slots[d].Phase != Running {
+			t.Fatalf("an enumerated outcome has dnuma@vm0#0 %s: no case of R10 any more", a.Slots[d].Phase)
+		}
+	}
+	n := last.narrowed(nil, map[int]bool{d: false})
+	if n == nil || n.Narrow != "dnuma@vm0#0:unbound" {
+		t.Fatalf("narrowed %v", n)
+	}
+	for _, a := range alts(n) {
+		if a.Slots[d].Phase != Either {
+			t.Fatalf("narrowed: dnuma@vm0#0 %s, want either", a.Slots[d].Phase)
+		}
+	}
+	back, err := last.narrowTo(n.Narrow)
+	if err != nil || back.Narrow != n.Narrow || len(alts(back)) != len(alts(n)) || back.altKey() != n.altKey() {
+		t.Fatalf("narrowTo %q: %v", n.Narrow, err)
+	}
+	if b, err := last.narrowTo("dnuma@vm0#0:bound"); err != nil || b.Slots[d].Phase != Running {
+		t.Fatalf("narrowTo bound: %v", err)
+	}
+	if _, err := last.narrowTo("dnuma@vm0#0:maybe"); err == nil {
+		t.Fatalf("narrowTo maybe accepted")
 	}
 }

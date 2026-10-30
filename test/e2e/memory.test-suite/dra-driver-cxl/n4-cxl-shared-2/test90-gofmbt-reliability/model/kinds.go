@@ -46,17 +46,33 @@ const (
 	KXPb  // c-pmem1, block rw (writer)
 	KXPf  // c-pmem1, fs direct (read-only)
 	KPlse // a lease claim whose leases are of c-pmem0 (pbw, pbr, pfd, pfc)
+	// two claims in one container (A39): a local numa slice (node 2) and
+	// pool-c's exclusive device c-pooled0 in numa (node 3)
+	KDNuma
 	nKinds
 )
 
 // kindNames are the families (the kind without its pool).
 var kindNames = [nKinds]string{"xnuma", "xdax", "sdax", "sro", "sexcl", "lnuma", "ldax", "lsteer", "lease", "plain",
-	"pwr", "pfsd", "pfsc", "pbro", "pbad", "xpb", "xpf", "plse"}
+	"pwr", "pfsd", "pfsc", "pbro", "pbad", "xpb", "xpf", "plse", "dnuma"}
 
 func (k Kind) String() string { return kindNames[k] }
 
 // pooled: the kind has a pool device.
-func (k Kind) pooled() bool { return k <= KSExcl || k.persistent() }
+func (k Kind) pooled() bool { return k <= KSExcl || k.persistent() || k == KDNuma }
+
+// poolSuffix: the kind's name has its pool (xnuma-a); dnuma has pool c
+// only.
+func (k Kind) poolSuffix() bool { return k.pooled() && k != KDNuma }
+
+// dual: the pod has two claims, its pool device and a local slice (A39).
+// Its pool claim is the slot's claim (Res, Dev); the local one is a
+// second user of the decoder stacks (State.leaseUser) and holds a block
+// of the local memdev of its VM.
+func (k Kind) dual() bool { return k == KDNuma }
+
+// hasLocal: the kind holds a block of the local memdev of its VM.
+func (k Kind) hasLocal() bool { return k.local() || k == KDNuma }
 
 // persistent: the kind has a persistent pool device (A22).
 func (k Kind) persistent() bool { return k >= KPWr && k <= KXPf }
@@ -82,7 +98,7 @@ func (k Kind) leaseKind() bool { return k == KLease || k == KPlse }
 func (k Kind) local() bool { return k == KLNuma || k == KLDax || k == KLSteer }
 
 // numa: the kind's memory is online on a node of the container.
-func (k Kind) numa() bool { return k == KXNuma || k == KLNuma || k == KLSteer }
+func (k Kind) numa() bool { return k == KXNuma || k == KLNuma || k == KLSteer || k == KDNuma }
 
 // dax: the container has a dax device to write and read.
 func (k Kind) dax() bool {
@@ -106,8 +122,11 @@ func parseKind(s string) (Kind, Pool, error) {
 		if kindNames[k] != fam {
 			continue
 		}
-		if k.pooled() != hasPool {
+		if k.poolSuffix() != hasPool {
 			break
+		}
+		if k == KDNuma {
+			return k, PoolC, nil
 		}
 		if !hasPool {
 			return k, noPool, nil
@@ -134,7 +153,7 @@ type Slot struct {
 
 // KindName is the kind with its pool (xnuma-a).
 func (s *Slot) KindName() string {
-	if s.Kind.pooled() {
+	if s.Kind.poolSuffix() {
 		return s.Kind.String() + "-" + s.Pool.String()
 	}
 	return s.Kind.String()
@@ -158,15 +177,34 @@ func (s *Slot) hostOK(v VM) bool {
 	return s.Any() || s.VM == v
 }
 
-// numaNode is the node of the numa memory of the slot's claim, -1 if none.
+// numaNode is the node of the numa memory of the slot's claim, -1 if none
+// (dnuma: of its pool claim).
 func (s *Slot) numaNode(c *Config) int {
 	switch s.Kind {
-	case KXNuma:
+	case KXNuma, KDNuma:
 		return c.bridgeNode(poolBridge[s.Pool])
 	case KLNuma, KLSteer:
 		return c.bridgeNode(HB0)
 	}
 	return -1
+}
+
+// numaNodes are the nodes of the numa memory of the slot's claims (E of
+// A38 without lent nodes).
+func (s *Slot) numaNodes(c *Config) []int {
+	switch {
+	case s.Kind == KDNuma:
+		return []int{c.bridgeNode(HB0), c.bridgeNode(HB1)}
+	case s.Kind.numa():
+		return []int{s.numaNode(c)}
+	}
+	return nil
+}
+
+// holdsRes: the slot's claims take the resource (dnuma: its pool device
+// and the local memdev of its VM).
+func (s *Slot) holdsRes(r Res) bool {
+	return r != resNone && (s.Res == r || (s.Kind == KDNuma && r == localRes(s.VM)))
 }
 
 // parseSlot parses KIND@VM#I.
@@ -204,6 +242,8 @@ func parseSlot(name string) (Slot, error) {
 			s.Dev = cPmem1
 		case k.persistent():
 			s.Dev = cPmem0
+		case k == KDNuma && vm == VMAny:
+			return Slot{}, fmt.Errorf("slot %q: a local kind needs a VM", name)
 		case k.onShared():
 			s.Dev = sharedDev(p)
 		default:
@@ -244,6 +284,9 @@ var profiles = map[string][]string{
 		"lease@vm0#0", "lease@vm1#0", "lease@vm2#0",
 		// plain
 		"plain@vm0#0", "plain@vm1#0", "plain@vm2#0",
+		// both CXL nodes of a VM (A39): pool-c numa slots on every VM
+		// and the two-claim kind
+		"xnuma-c@vm0#0", "xnuma-c@vm2#0", "dnuma@vm0#0", "dnuma@vm1#0",
 	},
 	"small": {
 		"xnuma-a@vm1#0", "xdax-a@vm2#0", "sdax-c@vm0#0", "sdax-c@vm2#0",

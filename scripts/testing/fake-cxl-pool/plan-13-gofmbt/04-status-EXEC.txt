@@ -972,3 +972,350 @@ kubectl exec per poll. Verified: replay FP5V (/tmp/p13-runs/fp5v/
 after-out): polls 2-21 of step 11 inspected plse@vm0#0 again (Lending,
 no mount), poll 22 saw it Ready with /run/cxl/fs/425c9a1b (erofs over
 loop0) and entered it in the table, poll 23 had no inspection; PASS.
+
+17. Fencing modes, fencing-switch, dnuma (A36-A40; 13-design-fencing)
+-------------------------------------------------------------------
+2026-10-29 (EXEC). R = /tmp/p13-runs/exec-fencing: steps-*.txt (the
+stub lists), runs/<run>.log (console), runs/<run>-out (mbt-cxl.log with
+the stub's per-settle cpuset lines, mbt-exec.log, mbt-obs/, driver logs).
+17.1 What was built
+- code.var.sh: MBT_FENCING=allowed-mems (default) | none | switch,
+  validated, documented with the other MBT_*; a replay takes it from the
+  header unless set. none appends "defaults: {container: {fencing:
+  none}}" to DRA_DRIVER_CONFIG (dra-helm-values writes config: of the
+  helm values; DRA_DRIVER_CONFIG with defaults already is an error).
+  --fencing=$MBT_FENCING via mbt-flag (and "fencing" in the kept header
+  flags). After dra-install mbt-fencing-check: every driver logged the
+  start mode (switch starts in allowed-mems).
+- mbt.source.sh: mbt-act-fencing-switch (A37): reads config.yaml of
+  ConfigMap nri-dra-driver-cxl-config, mbt-fencing-config (host python
+  yaml: flips defaults.container.fencing, keeps the rest) gives a merge
+  patch, kubectl patch --patch-file /dev/stdin, then mbt-driver-replace
+  vm2, vm1, vm0 (the old body of mbt-act-driver-restart, now shared:
+  disarm with the verb, old log saved, MBT_DRIVER_SEEN, trace follow)
+  and mbt-fencing-wait on each new pod. Status 2 with an argument or
+  when MBT_FENCING is not switch. helm uninstall removes the patched
+  ConfigMap; the next dra-install starts from the helm values (seen:
+  every run after a switch run started in its own mode).
+  dnuma: slot regexp, pod with c0 (mbt-lnuma) and c1 (mbt-xnuma-c) used
+  by container main; mbt-dax-key refuses it (write/read status 2, as
+  lnuma). Templates unchanged (both exist).
+- mbt-observe.py: pods[].claims (every claim in spec order); driverLog
+  fencing and nriSynced.
+- mbt-stub.py: volatile list has a dnuma@vm0#0 sequence (create, write
+  2, read 2, crash, delete; settle checks mems=dnuma@vm0#0:0-3); new
+  settle check mems=SLOT:NODES; every quiet settle logs every
+  container's cpuset.mems/effective and each driver's fencing mode.
+- A11 completeness: "containers" is every running container of DRA_NS
+  (crictl, by namespace), slot pods and companions alike, and "missing"
+  uses every container of the pod status: nothing kind-specific, a pod
+  with two claims is covered.
+17.2 Found: mode none has no A15 ready line
+A driver of fencing none never logs "NRI fence: lends restored"
+(D/lend.go startFencing: p.fence == nil returns before the log), so the
+first fencing-switch to none waited 120 s for vm2 and failed (run SW2,
+step 16). Executor fix: in mode none ready = "defaults.container.
+fencing: none:" and "NRI Synchronize: N pods, M containers tracked"
+(lend.go:489) in the container's log; the observer's lendsRestored is
+true for fencing none + nriSynced. Lends restored by the broker are not
+observable in mode none (reconcile logs nothing). Suggestion for the
+driver: log the lends-restored point independently of the fence.
+17.3 Runs (image of the cluster as before; all cleaned up by teardown)
+SW1 switch, FAIL step 12: my list had xnuma-c@vm0 and dnuma@vm1 at once
+    (c-pooled0 is exclusive: dnuma Pending unschedulable). List fixed.
+SW2 switch, FAIL step 16: 17.2.
+SW3 switch, PASS, 42 steps (fencing-switch 17.8 s and 17.6 s).
+N1  none, PASS, 18 steps.
+V1  default (allowed-mems), MBT_STUB_LIST=volatile, PASS, 73 steps
+    (the new dnuma@vm0#0 sequence: 0-3 before and after its crash).
+17.4 Evidence: cpuset.mems.effective (set = cpuset.mems written,
+inh = empty cpuset.mems, inherited); D = 0-1
+allowed-mems (SW1/SW3 steps 4-15):
+  no CXL memory: plain@vm0, plain@vm1 0-1 set
+  vm0 nodes 2 (lnuma) and 3 (xnuma-c) online: plain@vm0 0-1,
+    lnuma@vm0 0-2, xnuma-c@vm0 0-1,3 (SW1 step 8)
+  vm1 dnuma (nodes 2, 3): dnuma@vm1 0-3, plain@vm1 0-1; after crash
+    dnuma 0-3 again
+  = D + E + (M \ F) exactly.
+switch allowed-mems -> none (SW3 step 17, 0.7 s after the done):
+  every old container keeps its fenced set: plain@vm0 0-1, lnuma@vm0
+  0-2, plain@vm1 0-1, dnuma@vm1 0-3 (all set). The "loose" rule holds.
+  New containers in none: plain@vm0#0 after a crash and the new pod
+  plain@vm0#1: 0-2 inh (M = {2}).
+none, memory going online/offline:
+  SW3 step 26, dnuma@vm0 onlines node 3 and more of node 2: plain@vm0#0
+  and plain@vm0#1 (both created in none) 0-2 -> 0-3 inh, by themselves;
+  lnuma@vm0 (created in allowed-mems) stays 0-2 set; dnuma@vm0 0-3 inh.
+  N1: plain@vm0 0-1 inh -> 0-3 when lnuma and xnuma-c come (step 6);
+  lnuma@vm0 and xnuma-c@vm0 0-3 inh (they get the unclaimed node too);
+  after delete xnuma-c (node 3 offline, step 13): plain 0-2, lnuma
+  0-2; dnuma@vm1 0-3 inh. = D + M exactly, for containers created in
+  none (cpuset.mems is empty: cgroup v2 inheritance follows N_MEMORY).
+none, lend and revoke (SW3 steps 26-30, lease@vm1 created in none):
+  0-2 inh -> lease-get numa: 0-2 set (driver "lend node 2 ... cpuset.
+  mems=0-2 (base=0-1 lent=2)") -> lease-put: 0-1 set ("revoke node 2
+  ... cpuset.mems=0-1 (base=0-1 lent=)"), while node 2 still has memory
+  (lnuma@vm1 holds it). It no longer follows N_MEMORY either (set).
+  This contradicts A38's none rule D + M (13-design 1, the suspected
+  case): either a driver bug (a revoke in mode none should restore the
+  empty/inherited cpuset.mems, or base + M) or the model must treat a
+  container with a lend in mode none as loose from the lend on.
+switch none -> allowed-mems (SW3 step 32, first observation 0.7 s after
+  the done; F reseeded: vm0 {2, 3}, vm1 {2}):
+  plain@vm0#0, plain@vm0#1 0-3 inh -> 0-1 set; dnuma@vm0 0-3 inh -> 0-3
+  set; lnuma@vm0 0-2; lease@vm1 0-1; lnuma@vm1 0-2 inh -> 0-2 set;
+  plain@vm1 0-1. Running containers are fenced at once, exactly
+  D + E + (M \ F), as 13-design F2 predicts.
+dnuma env (inspect): CXL_C100E2E1_* (numa, NODE 2, 134217728) and
+  CXL_C1EE2001_* (numa, NODE 3, 268435456), two CXL_CLAIM markers.
+17.5 State
+Cluster clean after every run (teardown/exit trap; checked after V1:
+no pods in DRA_NS, no helm release, no ConfigMap, no CXL memdev or
+region on vm2, no controller unit, no pool server), lock released.
+bash -n, shellcheck (only the known SC2016/SC2034/SC2154 classes),
+py_compile of mbt-observe.py and mbt-stub.py: clean.
+
+18. Node reboot (A41-A44; 12-findings-reboot, 14-design-reboot)
+---------------------------------------------------------------
+2026-10-29 (EXEC). R = /tmp/exec-reboot: steps-*.txt (own stub lists),
+runs/<run>.log (console), runs/<run>-out (a copy of O: mbt-cxl.log with
+the stub's per-settle "devices" lines, mbt-exec.log, mbt-obs/, trace.txt,
+driver logs). Image 2ba73741f42a (c74eff381 + bug-14: no bug-15 fix);
+fake-cxl-pool of the working tree (dra-build: with the bug-16 fix); qemu
+of every VM's QEMU_BIN with the bug-17 fix (vm1 restarted onto it by the
+bug-17/bug-16 agents, vm0 by me before the runs, 09:29:44, as
+RR/qemu-restart.sh; vm2 still runs a deleted binary, it never reboots).
+18.1 What was built
+- code.var.sh: MBT_REBOOT=guest|qemu|"" validated and documented next to
+  MBT_FENCING; MBT_USER_SET has it; a replay without it takes --reboot
+  from the steps header; --reboot=MODE via mbt-flag only when set;
+  MBT_REBOOT=guest runs mbt-qemu-fixed-require vm1 vm0 after
+  pool-vm-require (the orchestrator's request); header lines for
+  MBT_STUB_LIST=reboot and MBT_REBOOT_WAIT.
+- mbt.source.sh: mbt-act-node-reboot (order in A42 EXEC), helpers
+  mbt-boot-id (ssh without ControlMaster, 15 s), mbt-ssh-reset (ssh -O
+  exit), mbt-qemu-fixed-require, mbt-trace-vm-again (udev, kubelet
+  collectors of the VM), mbt-local-again (wait for the server to list the
+  local memdev detached, then dra-local-device in a subshell so that its
+  error() fails the step only); MBT_KILLAT_LAST: the watcher's state
+  from the disarm before the boot, used by mbt-killat-state (the VM's /run
+  is new); node-reboot in mbt-run's verb list; "reboot" in
+  mbt-header-flags' keep set. vmdir-restart also runs in a subshell.
+- Per-VM state of the executor after a boot: the ssh ControlMaster
+  (closed after the reboot command and again after the new boot id),
+  trace collectors (udev, kubelet started again; the driver followed
+  with --since-time of the reboot once ready), MBT_DRIVER_SEEN (set to
+  the new restart count: mbt-drivers-seen sees no restart and does not
+  overwrite the saved log), MBT_TRACE_REFOLLOW (unset), the killAt
+  watcher (disarmed before), the observer's state in /run/mbt-observe
+  (kernel.json written anew with seq -1 and the old counts: the whole
+  log of the new boot is read; the driverlog state is per container id,
+  new anyway), auto_online_blocks. Not per VM state: the inspect table
+  (UID:RESTARTS: restarted pods are inspected again by themselves), the
+  observer and tools on disk, images.
+- mbt-observe.py: per container "devices" and "devicesFrom", per VM
+  "cxlDevices" (A44 EXEC). "bootID" was there already.
+- mbt-stub.py: MBT_STUB_LIST=reboot with a list per --reboot variant
+  (guest: xnuma-c, pwr-c, ldax, lease with a numa lease, plain on vm1;
+  qemu: c-pmem0 written by pwr-c, then pfsd-c instead of pwr-c), checks
+  boot=VM (done), devices=VM and rebooted=VM (settle), log_devices at
+  every quiet settle and at a settle's timeout.
+- bug-18 (orchestrator): a driver with the fix logs "NRI fence: lends
+  restored (fencing none)" in mode none; mbt-driver-ready (grep -F) and
+  the observer (substring) match it already with the allowed-mems line;
+  the fallback for older images ("defaults.container.fencing: none:" and
+  "containers tracked") stays. Comments only.
+18.2 Runs (MBT_STUB=1; all cleaned up by the teardown or the exit trap)
+G1 MBT_STUB_LIST=reboot MBT_REBOOT=guest: FAIL step 13 (the settle after
+   node-reboot vm1), as expected without bug-15: "vm1: mbt-pwr-c-vm1-0-
+   g1/main has /dev/pmem3 259:0, the VM has no pmem3".
+Q1 MBT_STUB_LIST=reboot MBT_REBOOT=qemu: FAIL step 18 (the settle after
+   node-reboot vm1), as expected (R2): "pfsd-c@vm1#0 Running
+   CrashLoopBackOff; 4 restarts, want 1".
+G2 MBT_STUB_STEPS=R/steps-teardown.txt MBT_REBOOT=guest: PASS, 18 steps:
+   xnuma-c, ldax, lease (numa lease), plain on vm1, plain on vm0 (no
+   dax/pmem node in a container after the boot: the device check passes
+   under bug-15), node-reboot vm1, settle, node-reboot vm0, settle, the
+   deletes and the normal teardown.
+Q2 the same with MBT_REBOOT=qemu: PASS, 18 steps; the teardown's "exactly
+   its local cxl-type3 per qemu" holds after the re-attach by pool-a (vm1)
+   and pool-b (vm0).
+K1 MBT_STUB_STEPS=R/steps-killat.txt MBT_REBOOT=guest: PASS: driver-kill-at
+   vm1 region, "node-reboot" without argument status 2, node-reboot vm1
+   done with killAt {"done": true, "fired": false, "reason": "disarmed by
+   node-reboot", "ms": 849}, settle rebooted=vm1.
+Status 2 also checked: node-reboot vm2 (G1, Q1: "node-reboot is for vm0
+and vm1"), and off-cluster without MBT_REBOOT ("node-reboot needs
+MBT_REBOOT=guest or qemu, this run has none", done {}).
+18.3 Timings (s after the step's start; the verb ends when the driver is
+ready)
+           verb   ssh   driver ready  settle after   pods Running
+guest vm1  46.2   15.0  44.8          (failed, G1)
+guest vm1  45.3   14.9  43.9          63.5 (18 obs)  ~109 (G2)
+guest vm0  44.4   15.5  43.0          30.5 (9 obs)   (plain only)
+guest vm1  46.2   15.0  44.4          30.2 (9 obs)   (plain only, K1)
+qemu  vm1  81.9   32.3  80.3          (failed, Q1)
+qemu  vm1  80.9   31.9  79.3          41.6 (12 obs)  ~122 (Q2)
+qemu  vm0  80.6   33.0  79.0          1.2 (1 obs)    (plain only)
+qemu: ~27 s of the 32 s to ssh are vmdir-restart (shutdown, vagrant
+status polling, vagrant up); the server listed the local memdev detached
+at once (pool-a, pool-b: "qemu process N not found" seconds after the
+shutdown), dra-local-device attached it at +33 s and then waited ~47 s
+for memdev-c100e2e1 in the node's slice, i.e. for the driver: driver
+ready was then 0.45 s later. A reboot step plus its settle: ~110 s guest,
+~120 s qemu (12-findings 7.2: ~2 min).
+18.4 Evidence (observations in R/runs/*-out/mbt-obs, stub lines in
+mbt-cxl.log)
+- Boot ids: new after every node-reboot and in the first observation
+  after it (G1 vm1 19b46ec5 -> a20ec22f; Q1 a20ec22f -> 6f109216; G2 vm1
+  -> a74adf81, vm0 47b06078 -> aa233df7; Q2 vm1 -> 7fda4518, vm0 ->
+  94bbab79; K1 vm1 -> 0f7ff579); vm2's never changed (9ca81363).
+- Driver pod: same name, restarts 0 -> 1 every time; its log of before
+  is nri-dra-driver-cxl.<vm>.<pod>.r0.log; the trace has the new
+  container's log from its start ("loaded 1 prepared claims ..." G2).
+- Pods: same UIDs; for ~30-60 s after the verb the pod status says
+  Running with the container "terminated", Ready false, restarts 0 and a
+  Warning "DRA driver cxl.nri.io (cxl-pool.nri.io) is not registered"
+  (kubelet's first Prepares); then restarts 1. The observer had no
+  errors and "missing" stayed [] (the containers the status calls
+  running are listed by crictl), so the tolerance is the oracle's wait.
+- Before the reboot (G1 step 10, Q1 step 15) vm1's cxlDevices: dax0.0
+  252:0 (0xc100e2e1, device_dax: ldax), dax0.1 252:3 (0xc100e2e1, kmem:
+  the numa lease; kmem dax devices have a dev number too), dax1.0 252:1
+  (0xc1ee2001, kmem: xnuma-c), pmem3 259:0 (0xc1ae2002: pwr-c); containers:
+  ldax /dev/dax0.0 252:0, pwr-c /dev/pmem3 259:0 (from /proc), matching.
+- After the guest reboot (G1): memdevs mem0 0xc1ae2002, mem1 0xc100e2e1,
+  mem2 0xc1ee2001 all enabled (bug-17 fixed: they probe; renamed), no
+  region, cxlDevices []. pwr-c's container: /dev/pmem3 259:0, a device
+  node of nothing (bug-15/R1); ldax's container: no dax node (the driver
+  dropped it: forgetGoneSlices) with the claim still prepared;
+  xnuma-c: cpuset.mems.effective 0-1 (node 3 gone); the lease
+  requester 0-1 (lease still in leases.json). The stub's device check
+  failed on pwr-c: the evidence R1 predicts, in one settle.
+- After the qemu restart (Q1): the same picture (no region, cxlDevices
+  []); pfsd-c RunContainerError then CrashLoopBackOff (R2: the bind of
+  a node mount that is gone). Pool-c with the bug-16 fix: "qemu process
+  1484916 not found" drops c-pmem0 and c-pooled0 of vm1, the controller
+  attaches both again 4 s later (owner k8s:, adopted false), kept until
+  the teardown; the cleanup detached everything (no cxl-type3 in any
+  qemu after Q1). R3 did not show.
+- Kernel: the first observation after each boot read the whole kmsg of
+  the boot: no BUG/Oops/WARNING (badTotal 0 in every run).
+18.5 Cleanup and teardown after reboots
+- Normal teardown after guest and qemu reboots (G2, Q2): pods, claims,
+  k8s: attachments gone, regions [] and memdevs [local] per VM, one
+  cxl-type3 per qemu, then dra-cleanup, dra-local-detach, pool-cleanup:
+  clean. Exit trap after a failed settle (G1, Q1): clean too (no
+  cxl-type3 in any qemu, no memdev or region in any guest).
+- bug-16 is not worked around: pool-cleanup still skips adopted
+  attachments; a leak would show as the teardown's pool-cxl-wait error
+  and the final cxl-type3 check, and the next setup's pool-vm-reset
+  restarts that VM. Not seen with the fix.
+18.6 State
+Cluster clean after K1 (checked: no cxl-type3 in the qemu of vm0, vm1,
+vm2; no CXL memdev, region or endpoint in the guests; auto_online_blocks
+offline; nodes Ready; no cxl-pool-demo namespace, no driver DaemonSet, no
+helm release, no controller unit, no pool server, ports 9909-9911 free).
+vm0 and vm1 run the fixed qemu (pids 1595722, 1593957, after Q2). Lock
+/tmp/p13-cluster.lock held 09:29:22-10:08:35 local time, released.
+bash -n, shellcheck (only SC2016/SC2034/SC2154, as before), py_compile of
+mbt-observe.py and mbt-stub.py: clean.
+Open for MODEL: the oracle of A44 can use per container "devices" and
+per VM "cxlDevices" as above; until bug-15 is fixed every reboot with a
+pool claim or an fs claim on the VM fails the settle (a wait until the
+timeout).
+
+19. Review of the fencing, dnuma and reboot changes (2026-10-29)
+----------------------------------------------------------------
+2026-10-29 (review fixes; executor side; no cluster run). The model's
+side and the sweeps: 04-status-MODEL 24. Contract notes "(review,
+2026-10-29)" under A36, A37, A41, A44.
+19.1 code.var.sh: one rule for the fencing mode and the reboot variant
+of a replay and of an off-line run (findings 2 and 5). Both configure
+the cluster (the driver configuration, the node-reboot verb) and the
+model, so they must agree. With MBT_MODE=replay (MBT_REPLAY) or
+offline (MBT_SCRIPT, the "# --profile ..." line of a code.gen.sh, which
+was not read before) the file's header gives --fencing and --reboot
+(mbt-header-mode, new in mbt.source.sh, via mbt-header-flags; a header
+without them: allowed-mems and no reboot; a file without a header: the
+MBT_* or their defaults, as for online). An MBT_FENCING or MBT_REBOOT
+set by the user (${VAR+x}, so MBT_REBOOT= counts: no reboot; MBT_FENCING=
+is allowed-mems) that differs fails the test before anything is set up:
+"MBT_REBOOT='', but FILE is of --reboot='guest': unset MBT_REBOOT, or
+edit the header of the file". The old per-variable sed of the replay
+header is gone (it also treated MBT_REBOOT= as unset). The model refuses
+a contradicting --fencing/--reboot too (exit 2). Checked with the block
+of code.var.sh in a harness (15 cases: the reviewer's on-fullp-guest
+steps file and gen-full-guest-switch / gen-full-qemu-none scripts, a
+header without the flags, a file without a header, online): as above;
+DRA_DRIVER_CONFIG gets the none line from an off-line script of none.
+19.2 mbt-observe.py claim_part: "attachFailed" (finding 3, A44 (4)), for
+"claim" and every entry of "claims": true iff the status entry of a pool
+device of the allocation has cxl-pool.nri.io/AttachFailed True (the
+pool controller's condFailed, pkg/controller/status.go; it removes
+Attached when it sets it and the other way round), false for an
+allocated pool claim without it, null for a claim without pool devices
+(local, not allocated, no claim object). Checked with claim objects of
+the controller's shape (Attached, AttachFailed True and False, none, a
+local claim, a missing claim, a dnuma pod's two claims).
+19.3 mbt-act-fencing-switch (finding 6). The chart mounts the ConfigMap
+as a volume (deployment/helm/dra-driver-cxl/templates/daemonset.yaml:
+dra-driver-cxl-config-vol at /etc/nri/dra-driver-cxl, not subPath; the
+driver reads config.yaml with -f at its start; checksum/config is of
+the helm values, so a patched ConfigMap does not roll the DaemonSet).
+kubelet fills the volume of a new pod from its configmap manager: with
+the default change detection (Watch) that is the reflector it keeps for
+the pods of the node that use the ConfigMap, i.e. the watch the old pod
+registered, updated by the patch's watch event (milliseconds; the old
+pod's deletion takes seconds before the new pod is even created). A
+stale content is possible in principle only (a lagging watch), never
+seen. So: mbt-fencing-wait sets MBT_FENCING_GOT (the mode the pod
+logged, "" if none); a new pod that logged the old mode is deleted once
+more (mbt-driver-replace again, exec log "deleting it once more",
+MBT_NOTE "VM OLD -> NEW1 -> NEW2 (it had MODE)") and the verb fails only
+if that one logs the old mode too ("(also after a second restart)") or a
+pod logs no mode (no second try). MBT_ERR is cleared after a successful
+retry (mbt-run would print it as stderr). The model is not affected (a
+new driver pod either way; the oracle wants one other than the old).
+Checked with stubs of mbt-sh, mbt-driver-replace and the driver log:
+fine, stale once (status 0, 4 replaces), stale twice (status 1), no mode
+(status 1, no retry).
+19.4 mbt-qemu-fixed-require (finding 8): no comparison with the time of
+hw/mem/cxl_type3.c any more (a git checkout makes the source newer than
+a fixed binary). /proc/PID/exe "(deleted)": fail (as before); the binary
+contains the name of the fix's function ct3d_reset_device_dvsec (its
+DWARF strings: the static function is inlined, nm shows nothing): ok;
+only build_dvsecs (the function before and after the fix): fail, no fix;
+neither (no debug information): a warning. Checked against paused
+machine-less qemu processes (-machine none -S): the fixed
+Q/build/qemu-system-x86_64 (ok), the older Q/build/qemu-system-aarch64
+(no fix: fail), a deleted copy of it (fail), qemu-system-alpha (no
+CXL: the warning). grep -a over the 87 MB binary takes ~50 ms.
+19.5 State: bash -n of code.var.sh and mbt.source.sh, shellcheck (only
+SC2016/SC2034/SC2154, the classes of HEAD), py_compile of mbt-observe.py
+and mbt-stub.py: clean. No cluster used, no lock taken.
+
+20. FR1: fs leases without the driver (2026-10-29, orchestrator)
+  FR1 failed at step 944: pread plse@vm0#0 ran while a driver-kill-at
+  kill restarted the driver, and pmem-rw.py's "cxl-request list" got
+  "connection refused". The model allows using an fs lease through
+  its mount without the driver. pmem-rw.py lease() now falls back to
+  the one mount under /run/cxl/fs when cxl-request list fails and the
+  mode allows fs (LeaseListError, fs_lease_mount). 15-runs-fencing-
+  reboot.txt has the diagnosis and its validation.
+
+21. FR1b: event counts of a series (2026-10-29, debugging agent)
+  FR1b's observations showed ldax@vm0#0's FailedScheduling at count 2
+  for minutes while the scheduler retried (13 times by its own log).
+  Not a cache of the observer: it reads the events per poll and takes
+  series.count and series.lastObservedTime. The apiserver's copy lags:
+  client-go's events recorder writes a series at its second occurrence,
+  then only every 30 min and when it ends, 6 min after the last one.
+  mbt-observe.py warning_events adds "firstTimestamp" (eventTime or
+  firstTimestamp) and "series" (true for such a series) to each event,
+  and the doc of pods[].events says that count and lastTimestamp of a
+  series are the apiserver's. The model does not read them. Checked
+  with A-stock's events (/tmp/p13-runs/fr1b-debug/A-stock/
+  events-009.json): the FailedScheduling series of ldax "count": 2,
+  "series": true, kubelet's events "series": false. The failure itself:
+  bug-20 (kube-scheduler).

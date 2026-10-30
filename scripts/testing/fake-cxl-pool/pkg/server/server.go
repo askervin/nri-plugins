@@ -513,6 +513,9 @@ func (s *Server) queryHosts(ctx context.Context, hs []*host) {
 			if h.mon != mon {
 				return // monitor replaced meanwhile
 			}
+			if s.qemuGoneLocked(h) {
+				return
+			}
 			if err != nil {
 				if h.state != api.HostUnreachable {
 					s.logf("host %s: monitor %s unreachable: %v", h.name, h.control, err)
@@ -662,20 +665,7 @@ func (s *Server) updateHostsLocked(procs []*qemu.Process, discovered bool) {
 // running or not found).
 func (s *Server) updateHostLocked(h *host, p *qemu.Process) {
 	if p == nil {
-		if h.pid > 0 || (h.cfg == nil && h.state != api.HostStopped) {
-			s.hostGoneLocked(h, "qemu process not found")
-		}
-		if h.cfg != nil {
-			// liveness of a config host without a known process comes
-			// from its monitor
-			if h.cfg.UUID != "" {
-				h.uuid = h.cfg.UUID
-			}
-			s.setMonitorLocked(h, h.cfg.QMP, h.cfg.HMP)
-			if h.state == api.HostStopped && h.mon != nil {
-				h.state = api.HostUnreachable
-			}
-		}
+		s.processGoneLocked(h, "qemu process not found")
 		return
 	}
 	if h.pid != 0 && (h.pid != p.PID || (h.startTime != 0 && p.StartTime != 0 && h.startTime != p.StartTime)) {
@@ -719,6 +709,40 @@ func (s *Server) updateHostLocked(h *host, p *qemu.Process) {
 	if s.cfg.Discovery.LocalDevicesEnabled() {
 		s.updateLocalDevicesLocked(h, p)
 	}
+}
+
+// processGoneLocked handles a host whose qemu process is not running.
+func (s *Server) processGoneLocked(h *host, why string) {
+	if h.pid > 0 || (h.cfg == nil && h.state != api.HostStopped) {
+		s.hostGoneLocked(h, why)
+	}
+	if h.cfg != nil {
+		// liveness of a config host without a known process comes
+		// from its monitor
+		if h.cfg.UUID != "" {
+			h.uuid = h.cfg.UUID
+		}
+		s.setMonitorLocked(h, h.cfg.QMP, h.cfg.HMP)
+		if h.state == api.HostStopped && h.mon != nil {
+			h.state = api.HostUnreachable
+		}
+	}
+}
+
+// qemuGoneLocked checks after a monitor call that the qemu process of the
+// host still runs. A monitor socket outlives its qemu: a restarted qemu
+// answers on the same path before discovery has seen its new pid. Its
+// tree is not the old process's, and the next discovery would drop a
+// device attached into it ("qemu restarted") and adopt it without owner.
+// If the process is gone, the host stops now, as if discovery had not
+// found it, and the next discovery takes the new process. It returns true
+// then.
+func (s *Server) qemuGoneLocked(h *host) bool {
+	if h.pid == 0 || s.opts.ProcessAlive(h.pid, h.startTime) {
+		return false
+	}
+	s.processGoneLocked(h, fmt.Sprintf("qemu process %d not found", h.pid))
+	return true
 }
 
 func (s *Server) setMonitorLocked(h *host, qmpPath, hmpPath string) {

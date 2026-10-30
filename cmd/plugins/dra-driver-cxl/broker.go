@@ -103,6 +103,9 @@ type brokerConfig struct {
 	// Mounts returns the mounts of the plugin's mount namespace; nil:
 	// /proc/self/mountinfo.
 	Mounts func() ([]mountInfo, error)
+	// BootID is the boot id of the running kernel, "" if unknown: the
+	// leases of another boot are dropped at start.
+	BootID string
 }
 
 type broker struct {
@@ -127,9 +130,10 @@ type broker struct {
 	newID           func() string
 }
 
-// newBroker loads the lease store, rewrites the CDI spec and re-creates
-// the sockets of the stored lease claims. Requests are answered with
-// errLendingUnavailable until start sets the lender.
+// newBroker loads the lease store, drops the leases of another boot,
+// rewrites the CDI spec and re-creates the sockets of the stored lease
+// claims. Requests are answered with errLendingUnavailable until start
+// sets the lender.
 func newBroker(cfg brokerConfig) (*broker, error) {
 	if cfg.WaitDefault <= 0 {
 		cfg.WaitDefault = defaultLeaseWait
@@ -164,6 +168,18 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// A table that was not decoded stays on disk as it is (Recovered).
+	if boot := store.BootID; !store.Recovered {
+		for _, l := range store.forgetOtherBoot(cfg.BootID) {
+			klog.Warningf("lease broker: lease %s of %s/%s/%s (mode %s, %s, node %d) is of another boot (%s, this is %s): released, its companion is deleted",
+				l.ID, l.Pod.Namespace, l.Pod.Name, l.Container, l.Mode, l.State, l.Node, boot, cfg.BootID)
+		}
+		if store.BootID != boot {
+			if err := store.save(); err != nil {
+				klog.Errorf("lease broker: %v", err)
+			}
+		}
+	}
 	if err := b.writeCDISpec(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("lease broker: %w", err)

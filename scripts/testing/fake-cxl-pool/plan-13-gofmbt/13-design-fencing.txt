@@ -1,0 +1,96 @@
+plan-13: fencing modes and exact CXL nodes in the model
+======================================================
+2026-10-29 (orchestrator). Task (user, 2026-10-29): extend the model
+with fencing; test both fencing modes; check that a container uses
+exactly the CXL NUMA nodes it has claimed and no other. N = repo root,
+D = N/cmd/plugins/dra-driver-cxl, T = test90. Contract: A36-A40.
+
+1. The driver
+-------------
+- The mode is node-level only: defaults.container.fencing of the
+  driver configuration, read at start (D/driver.go:165, logDefaults).
+  A claim cannot set it (N/pkg/cxl/config/resolve.go:67 "set by the
+  driver configuration only"). The configuration is the ConfigMap
+  nri-dra-driver-cxl-config of the helm chart, the same for every node.
+- allowed-mems: the fenced set F holds every node on which the driver
+  onlines CXL memory, before it goes online; it only grows and is
+  seeded from the prepared claims at start (D/fence.go). A fenced
+  container (not steered) gets cpuset.mems = own \ F + claimed + lent
+  (D/lend.go wantMems); own is its spec's cpuset.mems or, when that is
+  empty, the nodes with memory (ownMems). A pass updates running
+  containers when a node is fenced, when fencing becomes ready and at
+  every Synchronize.
+- none: no fence (newNodeFence returns nil), no adjustment at create,
+  no pass. Lends and revokes still change cpuset.mems of a container
+  that is not fenced: base = tc.base without the node, mems = base +
+  lent (D/lend.go:765-786). So a revoke may take node 2 off a
+  container that mode none should leave alone. The model predicts the
+  documented intent (no container is kept off a node); a run decides.
+- Steered containers (lsteer) are never updated or lent to.
+- Topology of every VM: DRAM nodes 0-1; CXL node 2 = host bridge 0
+  (the local memdev and the pool-a/b devices), node 3 = host bridge 1
+  (pool-c). Node 2 and node 3 are different nodes, and the pool-c
+  exclusive device c-pooled0 is the only pool-c device that onlines
+  memory (numa).
+
+2. The gap
+----------
+- O5 (oracle.go checkFencing) checks the CXL nodes only: a claimed
+  node is present, an unclaimed node that is fenced or has memory is
+  absent. It never checks the DRAM nodes, and it knows one mode.
+- FP7-FP9 show the coverage gap: the last 200 observations of each
+  run have cpuset.mems.effective "0-1" (5000+ containers) or "0-2"
+  (1600), never one with node 3. FP9 created xnuma-c (the only pool-c
+  numa slot, on vm1) 3 times in 2 h. No container ever claimed node 3
+  while node 2 was fenced with memory on the same VM, or both.
+
+3. Changes
+----------
+F1 Mode of a run (A36): MBT_FENCING=allowed-mems (default) | none |
+   switch, documented in code.var.sh. none puts
+   "defaults: {container: {fencing: none}}" into the driver
+   configuration (DRA_DRIVER_CONFIG of dra-install). The model gets
+   --fencing=MODE. switch starts in allowed-mems and adds the fault
+   fencing-switch.
+F2 fencing-switch (A37): the executor patches the ConfigMap to the
+   other mode and restarts the driver pod of every VM (vm2, vm1, vm0,
+   one at a time, like driver-restart). The model flips the mode and
+   applies driverRestarted to every VM. Expected after the switch:
+   to allowed-mems: F is reseeded from the prepared claims, every
+   fenced container is exact after the settle (startFencing pass);
+   to none: containers created before keep the cpuset.mems they had
+   until their container is created again (crash, delete); the oracle
+   checks them loosely (claimed nodes and DRAM present, no node
+   without memory requirement). New containers are exact.
+F3 Exact O5 (A38): for each observed container of a slot or companion
+   on VM v, with M = CXL nodes with memory on v (predicted) and
+   E = its claimed numa nodes and lent nodes:
+     allowed-mems, not steered: mems.effective == {0,1} + E + (M \ F);
+     nodes in FMaybe may be present or absent; other CXL nodes absent.
+     none: mems.effective == {0,1} + M (+ E, a subset of M).
+     steered: {0,1} + E present (memory.high as today).
+   The DRAM nodes come from the topology (Config.DRAMNodes = 0, 1).
+F4 Kind dnuma (A39): one container with two claims, a local numa
+   slice (the mbt-lnuma template, node 2) and the pool-c exclusive
+   device in numa (the mbt-xnuma-c template, node 3). Pinned slots
+   dnuma@vm0#0 and dnuma@vm1#0. It runs when both claims are allocated
+   (the scheduler allocates them together); it is the holder of a
+   local slice and of c-pooled0. E = {2, 3}. Env, data and restart
+   rules are those of its two parts. More pool-c numa slots:
+   xnuma-c@vm0#0 and xnuma-c@vm2#0 in full and fullp.
+F5 Coverage (A40): at every settle, one string per running observed
+   container: "mems|MODE|e=E|f=F|m=M" with E, F, M restricted to the
+   CXL nodes (e.g. "mems|am|e=3|f=2,3|m=2,3"; "-" for empty). At most
+   2 x 4 x 4 x 4 strings; the generator seeks a container that claims
+   node 3 while node 2 is fenced with memory, both nodes, and so on.
+   fencing-switch is a fault in context (C2) for the pods it affects.
+
+4. Cost
+-------
+F1 and F3-F5 cost no step time. A fencing-switch is three driver
+restarts (~45-90 s). Two runs cover both modes; switch is the third.
+
+5. Reboot
+---------
+Node reboot is designed separately (12-findings-reboot.txt, then
+14-design-reboot.txt), behind MBT_REBOOT (default off).

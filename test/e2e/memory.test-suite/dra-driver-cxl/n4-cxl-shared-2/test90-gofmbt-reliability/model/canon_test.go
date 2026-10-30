@@ -49,6 +49,7 @@ func searchView(s *State) *State {
 	}
 	for d := range v.Drv {
 		v.Drv[d].Pod, v.Drv[d].PodBefore, v.Drv[d].PodGen, v.Drv[d].Inc = "", "", 0, 0
+		v.Drv[d].Boot, v.Drv[d].BootBefore, v.Drv[d].Reboots = "", "", 0
 	}
 	if len(v.Ev) == 0 {
 		v.Ev = nil
@@ -80,13 +81,16 @@ func noisyTwin(s *State, rng *rand.Rand) *State {
 		n.PDev[x].UUID = fmt.Sprintf("u%d", rng.Intn(100))
 	}
 	for d := range n.Data {
-		n.Data[d] = Token{Known: rng.Intn(2) == 0, Text: fmt.Sprintf("mbt-%d", rng.Intn(100))}
+		n.Data[d] = Token{Known: rng.Intn(2) == 0, Text: fmt.Sprintf("mbt-%d", rng.Intn(100)), OrZero: rng.Intn(2) == 0}
 	}
 	for v := range n.Drv {
 		n.Drv[v].Pod = fmt.Sprintf("pod-%d", rng.Intn(100))
 		n.Drv[v].PodBefore = fmt.Sprintf("pod-%d", rng.Intn(100))
 		n.Drv[v].PodGen = uint16(rng.Intn(100))
 		n.Drv[v].Inc = uint16(rng.Intn(100))
+		n.Drv[v].Boot = fmt.Sprintf("boot-%d", rng.Intn(100))
+		n.Drv[v].BootBefore = fmt.Sprintf("boot-%d", rng.Intn(100))
+		n.Drv[v].Reboots = uint8(rng.Intn(100))
 	}
 	n.Alts = []*State{s}
 	n.Truncated = rng.Intn(2) == 0
@@ -204,21 +208,29 @@ func TestCanonicalKeyComplete(t *testing.T) {
 		seed       int64
 		depth, max int // max: groups whose behaviour is compared
 		width      int // canonWalk.width
+		reboot     bool
 	}
 	var runs []run
 	for _, online := range []bool{false, true} {
 		for seed := int64(1); seed <= 4; seed++ {
-			runs = append(runs, run{"full", online, seed, 2, 30, 0})
+			runs = append(runs, run{"full", online, seed, 2, 30, 0, false})
 		}
-		runs = append(runs, run{"small", online, 7, 3, 30, 0})
+		runs = append(runs, run{"small", online, 7, 3, 30, 0, false})
 		for seed := int64(8); seed <= 9; seed++ {
-			runs = append(runs, run{"full", online, seed, 3, 30, 6})
+			runs = append(runs, run{"full", online, seed, 3, 30, 6, false})
+		}
+		// node-reboot (A42)
+		for seed := int64(10); seed <= 11; seed++ {
+			runs = append(runs, run{"full", online, seed, 2, 30, 0, true})
 		}
 	}
 	for _, r := range runs {
 		cfg := defaultConfig()
 		cfg.PlanStates = maxPlanStates
 		cfg.Online = r.online
+		if r.reboot {
+			cfg.Reboot = RebootGuest
+		}
 		if err := cfg.loadProfile(r.profile); err != nil {
 			t.Fatal(err)
 		}

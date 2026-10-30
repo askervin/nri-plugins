@@ -137,6 +137,16 @@ The server scans `/proc/*/cmdline` for `qemu-system-*`:
   `DEVICE_DELETED` event. HMP (`monitor.sock`) is used when there is no
   QMP socket or the config says `control: hmp`, with a new connection per
   command like `vm-monitor` does; device deletion is polled.
+- a qemu that restarted (a new pid or start time) has none of the
+  hotplugged devices: the server drops the attachments of the host. A
+  monitor socket outlives its qemu, and a new qemu answers on the same path
+  before the next scan has seen its pid. So after every monitor call the
+  server checks that the qemu process behind it still runs; if not, the
+  host stops at once (`host H: stopped: qemu process PID not found`), and
+  the next scan takes the new process. An attach checks it also before
+  each `object_add` and `device_add` and after the `device_add`: an
+  attach during a qemu restart fails (503) and plugs nothing into the new
+  qemu.
 - pre-declared backends `beram_<memdev>__bus_<bus>__sn_<serial>` and
   `befile_...` (test/e2e/lib/topology2qemuopts.py) become *local* devices of
   that VM (`scope: local`): attach plugs them into their own bus with their
@@ -302,8 +312,13 @@ the server, the controller and the driver in the e2e VMs. The controller:
 
 The attachment owner is `k8s:resourceclaim/<claim uid>` (`-owner-prefix`).
 The controller is stateless: it only touches attachments with its owner
-prefix on hosts that are Nodes of its cluster, never adopted ones or those
-made with the CLI, so a restart just re-confirms existing attachments.
+prefix on hosts that are Nodes of its cluster, never those of other
+owners, so a restart just re-confirms existing attachments. An attachment
+without owner (adopted, or made with the CLI without `--owner`) of a device
+that a claim wants on that node is taken over: the attach request gives it
+the owner of the claim (log: `attach D to H for claim ...: taking over
+attachment D@H without owner (...)`), and it is detached when no claim wants
+it any more. Ownerless attachments that no claim wants are left alone.
 Each cluster runs one controller per server; several clusters may share
 one server, and then share its devices, including shared devices attached
 to nodes of different clusters. The e2e VMs of n4-cxl-shared-2, -1 and -0
@@ -449,7 +464,9 @@ GET    /events                    (text/event-stream)
 Attach: 201 attached, 200 already attached, 202 attaching (`wait: false`),
 409 sharing/ownership/slot/capacity conflicts, 503 qemu errors. An
 attachment records the `owner` of the attach request that created it
-(fake-cxl-pool-controller filters its own attachments by it). Detach: 200
+(fake-cxl-pool-controller filters its own attachments by it); an
+attachment without owner takes the owner of the first attach request that
+has one (200, nothing is plugged again). Detach: 200
 detached, 202 detaching (`wait=false`), 409 the guest did not release the
 device in time (attachment `failed`).
 

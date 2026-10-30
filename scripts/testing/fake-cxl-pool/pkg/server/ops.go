@@ -696,7 +696,7 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	}
 	if existing, ok, err := s.existingAttachmentLocked(d, h, req); ok || err != nil {
 		if err == nil {
-			err = s.updateExclusiveLocked(d, h, existing, req)
+			err = s.updateExistingLocked(d, h, existing, req)
 		}
 		att, state := existing.Attachment, existing.State // copy under the lock
 		s.mu.Unlock()
@@ -738,12 +738,17 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		h.opMu.Unlock()
 		return api.Attachment{}, 0, api.Unavailable("host %q: qemu monitor changed (VM restarted?)", h.name)
 	}
+	if s.qemuGoneLocked(h) {
+		s.mu.Unlock()
+		h.opMu.Unlock()
+		return api.Attachment{}, 0, api.Unavailable("host %q is not running (%s): its qemu process is gone", h.name, h.state)
+	}
 	// the slot choice needs this tree even if attachments changed while it
 	// was read (they are in s.atts); reconcile skips it in that case
 	s.storeTreeLocked(h, tree, gen, true)
 	if existing, ok, err := s.existingAttachmentLocked(d, h, req); ok || err != nil {
 		if err == nil {
-			err = s.updateExclusiveLocked(d, h, existing, req)
+			err = s.updateExistingLocked(d, h, existing, req)
 		}
 		att := existing.Attachment
 		s.mu.Unlock()
@@ -835,8 +840,27 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		if len(backends) > 0 {
 			err = files.ensureFiles()
 		}
+		// Before every command and after the device_add: the qemu of the
+		// host still runs. A qemu that restarted after the tree was read
+		// answers on the same socket, and the next discovery would drop a
+		// device plugged into it as the old qemu's and adopt it without
+		// owner. A new qemu listens only after the old one has exited, so
+		// what was added before a failed check went to the old qemu and is
+		// gone with it: no object_del, and the monitor of a stopped host is
+		// closed anyway.
+		stopped := false
+		check := func() error {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			err := s.attachStoppedLocked(h, a)
+			stopped = err != nil
+			return err
+		}
 		var added []string
 		for _, be := range backends {
+			if err == nil {
+				err = check()
+			}
 			if err != nil {
 				break
 			}
@@ -845,9 +869,12 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 			}
 		}
 		if err == nil {
+			err = check()
+		}
+		if err == nil {
 			err = mon.DeviceAdd(ctx, t3)
 		}
-		if err != nil {
+		if err != nil && !stopped {
 			for _, id := range added {
 				if derr := mon.ObjectDel(context.WithoutCancel(ctx), id); derr != nil {
 					s.logf("attachment %s: object-del %s after failed device_add: %v", a.ID, id, derr)
@@ -857,9 +884,9 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		a.Updated = time.Now().UTC()
-		if err == nil && s.atts[a.ID] != a {
-			// dropped meanwhile: the qemu of the host stopped or restarted
-			err = fmt.Errorf("host %s stopped or restarted during the attach", h.name)
+		if err == nil {
+			// plugged; a qemu that exited meanwhile took the device with it
+			err = s.attachStoppedLocked(h, a)
 		}
 		if err != nil {
 			a.State = api.AttachmentFailed
@@ -901,23 +928,49 @@ func (s *Server) Attach(ctx context.Context, name string, req api.AttachRequest)
 	return a.Attachment, AttachCreated, nil
 }
 
-// updateExclusiveLocked sets the exclusive flag of an existing attachment
-// to that of an attach request. Exclusive needs the device attached to no
-// other host.
-func (s *Server) updateExclusiveLocked(d *device, h *host, a *attachment, req api.AttachRequest) error {
-	if a.Exclusive == req.Exclusive {
-		return nil
+// attachStoppedLocked returns an error if the host of an attachment that is
+// being attached stopped: the attachment was dropped meanwhile (the qemu of
+// the host stopped or restarted), or the qemu process of the host is gone
+// now (qemuGoneLocked, which stops the host and drops the attachment).
+func (s *Server) attachStoppedLocked(h *host, a *attachment) error {
+	switch {
+	case s.atts[a.ID] != a:
+		return fmt.Errorf("host %s stopped or restarted during the attach", h.name)
+	case s.qemuGoneLocked(h):
+		return fmt.Errorf("host %s stopped during the attach: its qemu process is gone", h.name)
 	}
-	if req.Exclusive {
-		for _, o := range s.deviceAttachmentsLocked(d.Name) {
-			if o.Host != h.name {
-				return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, o.Host)
+	return nil
+}
+
+// updateExistingLocked updates an existing attachment for an attach
+// request. The exclusive flag becomes that of the request: exclusive needs
+// the device attached to no other host. An attachment without owner
+// (adopted, or attached without one) gets the owner of the request: the
+// owner takes it over, and fake-cxl-pool-controller detaches only the
+// attachments that it owns.
+func (s *Server) updateExistingLocked(d *device, h *host, a *attachment, req api.AttachRequest) error {
+	changed := false
+	if a.Exclusive != req.Exclusive {
+		if req.Exclusive {
+			for _, o := range s.deviceAttachmentsLocked(d.Name) {
+				if o.Host != h.name {
+					return api.Conflict("device %q is attached to %q: an exclusive attach needs it attached nowhere else", d.Name, o.Host)
+				}
 			}
 		}
+		a.Exclusive = req.Exclusive
+		s.logf("attachment %s: exclusive %v", a.ID, a.Exclusive)
+		changed = true
 	}
-	a.Exclusive = req.Exclusive
+	if a.Owner == "" && req.Owner != "" {
+		a.Owner = req.Owner
+		s.logf("attachment %s: taken over by owner %s (it had none, adopted %v)", a.ID, a.Owner, a.Adopted)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
 	a.Updated = time.Now().UTC()
-	s.logf("attachment %s: exclusive %v", a.ID, a.Exclusive)
 	s.saveStateLocked()
 	s.publishAttachmentLocked(a)
 	return nil
