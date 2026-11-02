@@ -264,6 +264,9 @@ For every allocated `memdev` device of a claim:
    (the block size is read again for every slice). A region the plugin
    left without claims (after a restart) is destroyed first.
 2. The first claim of a device creates a devdax region on the memdev.
+   The device is recorded with the claim before the region is created,
+   and the name of the region before `cxl create-region` runs, so that a
+   restart knows the region of a Prepare that it cut (see Restart below).
 3. The claim's slice: the region's dax device `daxX.0` when no slice uses
    it and kmem does not have it, else a new dax device of the dax region,
    placed first-fit by the kernel and checked for whole blocks (see
@@ -306,8 +309,10 @@ For every allocated `memdev` device of a claim:
    read-only request, a container that references the read-only one
    gets only the read-only device node.
 
-A Prepare that fails releases what it took for the claim. Preparing a
-claim that is prepared already touches no device. The plugin's use of the
+A Prepare that fails releases what it took for the claim, but a region
+that only this claim used and that lies below a region of another memory
+device is kept for the claim (see Restart below). Preparing a claim that
+is prepared already touches no device. The plugin's use of the
 devices is stored in `localDevices.json` in the `cxl.nri.io` plugin data
 directory, with the mode of every slice.
 
@@ -352,6 +357,39 @@ left a claim in one only, which is not prepared then) are released
 (`numa` slices offlined first), and so are the slices of the
 owner `-`, dax devices of the region that belong to no slice are deleted,
 and a region of the plugin without claims is destroyed.
+A Prepare that the plugin did not finish while it created the region of
+the first claim of a memdev (a restart, kill or crash of the plugin cuts
+a running Prepare: the Prepare of kubelet fails with `Unavailable` and
+kubelet retries it 60-90 s later) leaves the region, enabled or disabled
+by a cut rollback, and the device recorded with the claim and the name of
+the region that it was creating. The start destroys that region, and the
+Prepare again of the claim creates a new one. A region that a cut
+`cxl create-region` left without a target is deleted. A region on the
+memdev with another name is not the plugin's: it is not touched, and the
+memdev is not published. A device recorded by an older plugin, without
+the name, takes every region on the memdev as what the creation left:
+the memdev had none when the device was recorded. On a memdev that is a
+pool device now nothing is touched.
+Linux commits the HDM decoders of a CXL port in order, and destroying a
+region below the region of another memory device on the same host bridge
+or switch leaves a hole: no new region goes through that port until the
+regions above are gone (the Prepares fail with "CXL decoders released
+out of order", [pool.md](pool.md#ordering-and-failure-semantics)). So the
+region of claims whose Prepares did not finish (cut, or failed and rolled
+back), with no slice of another claim, is kept for these claims when a
+region of another memory device lies above it, at start and in the
+rollback of a failed Prepare: their Unprepare destroys it, their Prepare
+again uses it. The release in the running plugin checks again after
+`cxl disable-region`, under the lock of the region creations of the
+plugin, that no region came above it meanwhile (a pool Prepare on the
+same host bridge); if one did, the region stays, disabled, and is kept.
+A kept region has no slices, and its Prepare again sets it up like a new
+one first: enabled again if a cut release disabled it, its dax devices
+deleted and `daxX.0` made over the whole region, bound to `device_dax`,
+probed (and zeroed for a shared device). When nothing lies above it any
+more, the Prepare again destroys it and creates a new one instead. A
+kept region whose memory aliases is not created again smaller until
+nothing lies above it; the Prepare fails meanwhile.
 Regions do not survive a node reboot: the state file records the boot id
 of the kernel (`/proc/sys/kernel/random/boot_id`), and the state of
 another boot is dropped without touching any region, so that a region

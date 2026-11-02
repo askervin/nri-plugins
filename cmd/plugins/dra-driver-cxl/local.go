@@ -97,16 +97,28 @@ type localDevice struct {
 	SerialHex string `json:"serialHex"`
 	Memdev    string `json:"memdev"`
 	// Region is the region that the allocator created on the memdev, ""
-	// while it is created: then every region on the memdev is the
-	// allocator's.
+	// while it is created: then the region on the memdev that Creating
+	// names is the allocator's, or every region on the memdev if Creating
+	// is "" (the memdev had none, checkRegions).
 	Region string `json:"region,omitempty"`
-	Node   int    `json:"node"`          // NUMA node of the memory of the region, -1 if unknown
-	Dax    string `json:"dax,omitempty"` // first dax device of the region
+	// Creating is the region that cxl create-region creates for the
+	// device while Region is "", recorded before it runs (regionNote); ""
+	// if its name is not known (a record of an older plugin).
+	Creating string `json:"creating,omitempty"`
+	Node     int    `json:"node"` // NUMA node of the memory of the region, -1 if unknown
+	// Dax is the first dax device of the region, "" while the region is
+	// not set up: its creation failed or was cut, or it was kept for
+	// claims whose Prepare did not finish (keepRegion), until setUpRegion.
+	Dax string `json:"dax,omitempty"`
 	// Shared is true for a shared memdev: every claim has the whole dax
 	// device Dax.
 	Shared bool `json:"shared,omitempty"`
 	// Claims are the slices of the claims that use the memdev, by claim
-	// UID.
+	// UID. A claim without slices holds the region: the claim whose
+	// Acquire creates the region (recorded before it, so that a Prepare
+	// cut in the creation leaves its claim), and a claim whose Prepare
+	// did not finish, for its Unprepare or its Prepare again
+	// (keepRegion).
 	Claims map[string][]*localSlice `json:"claims"`
 }
 
@@ -364,13 +376,13 @@ func (a *localAllocator) Acquire(ctx context.Context, claimUID, request string, 
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	d, err := a.device(ctx, serial, bs)
+	d, err := a.device(ctx, serial, bs, claimUID)
 	if err != nil {
 		return nil, -1, err
 	}
 	s := &localSlice{Request: request, Region: d.Region, Mode: mode, Size: size, ReadOnly: readOnly}
 	if err := a.addSlice(ctx, d, claimUID, s, bs); err != nil {
-		a.dropUnused(ctx, d)
+		a.dropUnused(ctx, d, claimUID)
 		return nil, -1, fmt.Errorf("memdev %s (serial 0x%x): %w", d.Memdev, serial, err)
 	}
 	d.Claims[claimUID] = append(d.Claims[claimUID], s)
@@ -420,7 +432,7 @@ func (a *localAllocator) AcquireShared(ctx context.Context, claimUID, request st
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.shared[serial] = true
-	d, err := a.sharedDevice(ctx, serial)
+	d, err := a.sharedDevice(ctx, serial, claimUID)
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +445,9 @@ func (a *localAllocator) AcquireShared(ctx context.Context, claimUID, request st
 		s.Major, s.Minor, err = a.mem.DaxDevNumbers(d.Dax)
 	}
 	if err != nil {
+		if len(d.Claims[claimUID]) == 0 {
+			delete(d.Claims, claimUID)
+		}
 		a.persist()
 		return nil, fmt.Errorf("memdev %s (serial 0x%x): %s: %w", d.Memdev, serial, d.Dax, err)
 	}
@@ -447,10 +462,15 @@ func (a *localAllocator) AcquireShared(ctx context.Context, claimUID, request st
 	return s, nil
 }
 
-// sharedDevice returns the shared device with the serial, with its devdax
-// region created if it has none. A device that is used as slices by claims
-// is refused; one that is sliced without claims is released first.
-func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64) (*localDevice, error) {
+// sharedDevice returns the shared device with the serial for an Acquire of
+// a claim, with its devdax region created and zeroed if it has none. A
+// device that is used as slices by claims is refused; one that is sliced
+// without claims is released first. A region that is not set up (its
+// creation failed or was cut, or it was kept for a claim) is made anew, or
+// set up and zeroed again when its release would leave a hole in the
+// decoders (releaseInOrder, setUpRegion). A new device records the claim
+// before its region is created (see device).
+func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64, claimUID string) (*localDevice, error) {
 	memdev, err := a.mem.FindMemdev(serial)
 	if err != nil {
 		return nil, err
@@ -479,9 +499,20 @@ func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64) (*loca
 		d = nil
 	}
 	if d != nil && (d.Region == "" || d.Dax == "") {
-		// leftovers of a failed creation
-		if err := a.releaseRegion(ctx, d); err != nil {
+		// leftovers of a creation that failed or was cut, or a region
+		// kept for a claim
+		a.adoptCreated(d)
+		var above []string
+		if d.Region != "" {
+			above, err = a.releaseInOrder(ctx, d)
+		} else {
+			err = a.releaseRegion(ctx, d)
+		}
+		switch {
+		case err != nil:
 			return nil, err
+		case len(above) > 0:
+			return a.setUpShared(ctx, d)
 		}
 		d = nil
 	}
@@ -497,7 +528,7 @@ func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64) (*loca
 		Memdev:    memdev,
 		Node:      -1,
 		Shared:    true,
-		Claims:    map[string][]*localSlice{},
+		Claims:    map[string][]*localSlice{claimUID: nil},
 	}
 	a.devices[serial] = d
 	a.updateSnapshot()
@@ -517,7 +548,30 @@ func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64) (*loca
 		err = a.save()
 	}
 	if err != nil {
-		a.dropUnused(ctx, d)
+		// not set up (or not zeroed): setUpShared if it is kept
+		d.Dax = ""
+		a.dropUnused(ctx, d, claimUID)
+		return nil, err
+	}
+	return d, nil
+}
+
+// setUpShared sets up the kept region of a shared device again
+// (setUpRegion) and zeroes its dax device, as for a new region.
+func (a *localAllocator) setUpShared(ctx context.Context, d *localDevice) (*localDevice, error) {
+	if err := a.checkRegions(d.Memdev, d); err != nil {
+		return nil, err
+	}
+	err := a.setUpRegion(ctx, d)
+	if err == nil {
+		err = a.zeroShared(ctx, d)
+	}
+	if err == nil {
+		err = a.save()
+	}
+	if err != nil {
+		d.Dax = ""
+		a.persist()
 		return nil, err
 	}
 	return d, nil
@@ -550,9 +604,13 @@ func (a *localAllocator) zeroShared(ctx context.Context, d *localDevice) error {
 	return nil
 }
 
-// device returns the device with the serial, with its region created
-// (memory blocks of bs bytes) and the slices of failed releases released.
-func (a *localAllocator) device(ctx context.Context, serial, bs uint64) (*localDevice, error) {
+// device returns the device with the serial for an Acquire of a claim,
+// with its region created (memory blocks of bs bytes) and the slices of
+// failed releases released (see reuse). A new device records the claim
+// before its region is created: a Prepare cut in the creation leaves a
+// record with the claim, which then holds what the creation made
+// (Reconcile).
+func (a *localAllocator) device(ctx context.Context, serial, bs uint64, claimUID string) (*localDevice, error) {
 	memdev, err := a.mem.FindMemdev(serial)
 	if err != nil {
 		return nil, err
@@ -570,26 +628,23 @@ func (a *localAllocator) device(ctx context.Context, serial, bs uint64) (*localD
 			a.persist()
 			return nil, err
 		}
-		if len(d.Claims) == 0 {
-			// leftovers of a failed release or of a restart
-			if err := a.releaseRegion(ctx, d); err != nil {
-				return nil, err
-			}
-			d = nil
+		reuse, err := a.reuse(ctx, d)
+		if err != nil {
+			return nil, err
+		}
+		if reuse {
+			return d, nil
 		}
 	}
-	if err := a.checkRegions(memdev, d); err != nil {
+	if err := a.checkRegions(memdev, nil); err != nil {
 		return nil, err
-	}
-	if d != nil {
-		return d, nil
 	}
 	d = &localDevice{
 		Serial:    serial,
 		SerialHex: fmt.Sprintf("%x", serial),
 		Memdev:    memdev,
 		Node:      -1,
-		Claims:    map[string][]*localSlice{},
+		Claims:    map[string][]*localSlice{claimUID: nil},
 	}
 	a.devices[serial] = d
 	a.updateSnapshot()
@@ -601,10 +656,47 @@ func (a *localAllocator) device(ctx context.Context, serial, bs uint64) (*localD
 		err = a.save()
 	}
 	if err != nil {
-		a.dropUnused(ctx, d)
+		// not set up: setUpRegion if it is kept
+		d.Dax = ""
+		a.dropUnused(ctx, d, claimUID)
 		return nil, err
 	}
 	return d, nil
+}
+
+// reuse tells whether an Acquire uses the region of a known device, and
+// releases the region if not. A device without claims has the leftovers
+// of a failed release or of a restart: released. A region that is not set
+// up (Dax "": its creation failed or was cut, or it was kept for claims
+// whose Prepare did not finish) is released when that leaves no hole in
+// the decoders now (releaseInOrder), else set up again (setUpRegion). The
+// one region that a creation left (Region "") is taken as such a region
+// first (adoptCreated); a creation that left none, or more than one, is
+// released.
+func (a *localAllocator) reuse(ctx context.Context, d *localDevice) (bool, error) {
+	a.adoptCreated(d)
+	if len(d.Claims) == 0 || d.Region == "" {
+		return false, a.releaseRegion(ctx, d)
+	}
+	if d.Dax == "" {
+		above, err := a.releaseInOrder(ctx, d)
+		if err != nil || len(above) == 0 {
+			return false, err
+		}
+	}
+	if err := a.checkRegions(d.Memdev, d); err != nil {
+		return false, err
+	}
+	if d.Dax == "" {
+		if err := a.setUpRegion(ctx, d); err != nil {
+			a.persist()
+			return false, err
+		}
+		if err := a.save(); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // checkRegions returns an error if the memdev has a region other than the
@@ -623,24 +715,21 @@ func (a *localAllocator) checkRegions(memdev string, d *localDevice) error {
 // the memory blocks of bs bytes is logged.
 func (a *localAllocator) createRegion(ctx context.Context, d *localDevice, bs uint64) error {
 	start := time.Now()
-	ri, err := a.region(ctx, d.Memdev, d.Serial)
+	ri, err := a.region(ctx, d)
 	if err != nil && isAddDevError(err) {
 		klog.Warningf("local: memdev %s (serial 0x%x): %v; retrying once in %v", d.Memdev, d.Serial, err, a.retryDelay)
 		select {
 		case <-ctx.Done():
 		case <-time.After(a.retryDelay):
-			ri, err = a.region(ctx, d.Memdev, d.Serial)
+			ri, err = a.region(ctx, d)
 		}
 	}
 	if err != nil {
-		// The memdev had no region before: a region on it now is what
-		// the failed creation left.
-		if rs := a.mem.Regions(d.Memdev); len(rs) == 1 {
-			d.Region = rs[0]
-		}
+		// the region that the failed creation left, if any
+		a.adoptCreated(d)
 		return fmt.Errorf("memdev %s (serial 0x%x): %w", d.Memdev, d.Serial, err)
 	}
-	d.Region, d.Dax, d.Node = ri.Region, ri.Dax, ri.Node
+	d.Region, d.Dax, d.Node, d.Creating = ri.Region, ri.Dax, ri.Node, ""
 	klog.Infof("local: memdev %s (serial 0x%x): created %s (devdax, dax %s, node %d) in %s", d.Memdev, d.Serial, d.Region, d.Dax, d.Node, since(start))
 	if r, err := a.mem.RegionRange(d.Region); err == nil && r.Start%bs != 0 {
 		whole, end := uint64(0), (r.End+1)/bs*bs
@@ -653,23 +742,124 @@ func (a *localAllocator) createRegion(ctx context.Context, d *localDevice, bs ui
 	return nil
 }
 
-// region creates the devdax region of a memdev.
-func (a *localAllocator) region(ctx context.Context, memdev string, serial uint64) (*memctl.RegionInfo, error) {
-	size := a.usableSize(memdev, serial)
-	if ram, err := a.mem.RamSize(memdev); err == nil && size >= ram {
+// region creates the devdax region of the memdev of a device, and records
+// its name in the device first (regionNote).
+func (a *localAllocator) region(ctx context.Context, d *localDevice) (*memctl.RegionInfo, error) {
+	size := a.usableSize(d.Memdev, d.Serial)
+	if ram, err := a.mem.RamSize(d.Memdev); err == nil && size >= ram {
 		size = 0
 	}
 	if size > 0 {
-		klog.Infof("local: memdev %s (serial 0x%x): creating a region of its first %d bytes only (usable size)", memdev, serial, size)
+		klog.Infof("local: memdev %s (serial 0x%x): creating a region of its first %d bytes only (usable size)", d.Memdev, d.Serial, size)
 	}
-	ri, err := a.mem.CreateRegionSize(ctx, memdev, memctl.ModeDax, "", size)
+	ri, err := a.mem.CreateRegionNoted(ctx, d.Memdev, memctl.ModeDax, "", size, a.regionNote(d))
 	if err != nil {
 		return nil, err
 	}
 	if ri.Driver != memctl.DriverDeviceDax {
-		return nil, fmt.Errorf("%s: %s is bound to %q, not %s", memdev, ri.Dax, ri.Driver, memctl.DriverDeviceDax)
+		return nil, fmt.Errorf("%s: %s is bound to %q, not %s", d.Memdev, ri.Dax, ri.Driver, memctl.DriverDeviceDax)
 	}
 	return ri, nil
+}
+
+// regionNote returns the memctl.RegionNote of the creation of the region
+// of a device: the name of the new region is recorded in the device
+// (Creating) and saved before cxl create-region runs, and replaced by the
+// name that it created if that differs. A start after a cut creation then
+// releases that region only, also one that the cut left hollow
+// (createdRegions, deleteHollowCreated).
+func (a *localAllocator) regionNote(d *localDevice) memctl.RegionNote {
+	return func(region, _ string, _ bool) error {
+		if region == "" || region == d.Creating {
+			return nil
+		}
+		old := d.Creating
+		d.Creating = region
+		if err := a.save(); err != nil {
+			d.Creating = old
+			return fmt.Errorf("recording region %s: %w", region, err)
+		}
+		return nil
+	}
+}
+
+// setUpRegion sets up a region that was kept for claims without being set
+// up (Dax ""): its creation failed or was cut, or its last slices are
+// gone, and its release would have left a hole in the decoders
+// (keepRegion). Like a new region it gets its
+// first dax device over all of its memory, bound to device_dax, and the
+// address line probe. A region that a cut release disabled is enabled
+// again, and the kernel gives it that dax device; else the dax devices
+// that the cut left are deleted, and the first one is made again. A region
+// whose memory aliases is not made smaller: that needs a new region, which
+// the next Acquire makes once nothing lies above it (errAliasedBelow).
+func (a *localAllocator) setUpRegion(ctx context.Context, d *localDevice) error {
+	start := time.Now()
+	var err error
+	if _, _, _, derr := a.mem.DaxRegionInfo(d.Region); derr != nil {
+		// disabled: no dax region
+		err = a.mem.EnableRegion(ctx, d.Region)
+	} else {
+		err = a.spanKept(ctx, d)
+	}
+	var ri *memctl.RegionInfo
+	if err == nil {
+		// reuses the region of the memdev: waits for its dax device,
+		// offlines the memory that kmem has, binds device_dax
+		ri, err = a.mem.CreateRegionSize(ctx, d.Memdev, memctl.ModeDax, "", 0)
+	}
+	if err == nil && ri.Driver != memctl.DriverDeviceDax {
+		err = fmt.Errorf("%s is bound to %q, not %s", ri.Dax, ri.Driver, memctl.DriverDeviceDax)
+	}
+	if err != nil {
+		return fmt.Errorf("memdev %s (serial 0x%x): setting up kept %s: %w", d.Memdev, d.Serial, d.Region, err)
+	}
+	d.Dax, d.Node = ri.Dax, ri.Node
+	klog.Infof("local: memdev %s (serial 0x%x): set up kept %s (devdax, dax %s, node %d) in %s", d.Memdev, d.Serial, d.Region, d.Dax, d.Node, since(start))
+	usable, err := a.probeRegion(d)
+	if err == nil && usable > 0 {
+		err = errAliasedBelow(d, usable)
+	}
+	if err != nil {
+		d.Dax = ""
+		return err
+	}
+	return nil
+}
+
+// spanKept gives the first dax device of the kept region of a device all
+// of the memory of the region, bound to device_dax, unless it has it and a
+// driver already. The dax devices of the region (none is a slice: the
+// region was not set up) are deleted first, numa ones offlined: a cut
+// resize or driver switch leaves the first one smaller or unbound.
+func (a *localAllocator) spanKept(ctx context.Context, d *localDevice) error {
+	avail, _, devs, err := a.mem.DaxRegionInfo(d.Region)
+	if err != nil {
+		return err
+	}
+	first := ""
+	for _, dax := range devs {
+		if strings.HasSuffix(dax, ".0") {
+			first = dax
+		}
+	}
+	if first == "" {
+		return fmt.Errorf("%s has no dax device", d.Region)
+	}
+	if avail == 0 && len(devs) == 1 && a.mem.DaxDriver(first) != "" {
+		return nil
+	}
+	a.deleteOrphans(ctx, d)
+	if own := d.Claims[orphanOwner]; len(own) > 0 {
+		return fmt.Errorf("%d dax devices of %s cannot be deleted", len(own), d.Region)
+	}
+	if avail, _, _, err = a.mem.DaxRegionInfo(d.Region); err == nil {
+		err = a.mem.ResizeDaxDevice(ctx, first, avail)
+	}
+	if err == nil {
+		err = a.mem.SetDaxDriver(ctx, first, memctl.DriverDeviceDax)
+	}
+	return err
 }
 
 // since returns the time since start in milliseconds for logs ("12.345ms").
@@ -993,9 +1183,23 @@ func (d *localDevice) usesDax(dax string) bool {
 // the region of a memdev whose last slice they were. The claims of a
 // shared memdev are dropped; its region stays while the memdev is
 // configured shared. The memdev stays enabled. Nothing to release is not
-// an error.
+// an error, and does not wait for the Acquires of other claims (listed).
 func (a *localAllocator) Release(ctx context.Context, claimUID string) error {
-	if a == nil {
+	return a.release(ctx, claimUID, false)
+}
+
+// ReleaseFailed releases what a Prepare of a claim that failed acquired, as
+// Release does, but keeps the region of a memdev whose last claim it is
+// for the claim while regions of other memdevs lie above it (keepRegion):
+// the Unprepare of the claim releases it, its Prepare again reuses it.
+func (a *localAllocator) ReleaseFailed(ctx context.Context, claimUID string) error {
+	return a.release(ctx, claimUID, true)
+}
+
+// release releases the slices of a claim (Release), keeping the regions
+// that keepRegion keeps if keep.
+func (a *localAllocator) release(ctx context.Context, claimUID string, keep bool) error {
+	if a == nil || !a.listed(claimUID) {
 		return nil
 	}
 	a.mu.Lock()
@@ -1008,7 +1212,7 @@ func (a *localAllocator) Release(ctx context.Context, claimUID string) error {
 			continue
 		}
 		changed = true
-		if err := a.releaseClaim(ctx, d, claimUID); err != nil {
+		if err := a.releaseClaim(ctx, d, claimUID, keep); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1019,12 +1223,31 @@ func (a *localAllocator) Release(ctx context.Context, claimUID string) error {
 	return errors.Join(errs...)
 }
 
+// listed tells whether the snapshot of the uses of the devices lists the
+// claim. The callers of Release and ReleaseFailed hold the lock of the
+// claim (nodeState.locks), and only an Acquire of the claim adds it to a
+// device (and to the snapshot, before it creates a region). So a claim
+// that is not listed has nothing to release, and its release need not
+// wait for a.mu, which an Acquire of another claim may hold for long (the
+// zeroing of a whole shared device).
+func (a *localAllocator) listed(claimUID string) bool {
+	a.snapMu.Lock()
+	defer a.snapMu.Unlock()
+	for _, u := range a.usesSnap {
+		if slices.Contains(u.Claims, claimUID) {
+			return true
+		}
+	}
+	return false
+}
+
 // releaseClaim releases the slices of a claim on a device, and the region
-// of the device if the claim was its last one. On error the claim keeps
+// of the device if the claim was its last one, unless keep and regions of
+// other memdevs lie above it (releaseOrKeep). On error the claim keeps
 // what is not released yet.
-func (a *localAllocator) releaseClaim(ctx context.Context, d *localDevice, claimUID string) error {
+func (a *localAllocator) releaseClaim(ctx context.Context, d *localDevice, claimUID string, keep bool) error {
 	if d.Shared {
-		return a.releaseShared(ctx, d, claimUID)
+		return a.releaseShared(ctx, d, claimUID, keep)
 	}
 	if err := a.deleteSlices(ctx, d, claimUID); err != nil {
 		return err
@@ -1043,12 +1266,27 @@ func (a *localAllocator) releaseClaim(ctx context.Context, d *localDevice, claim
 		klog.Errorf("local: %v", err)
 		return nil
 	}
+	if keep {
+		return a.releaseOrKeep(ctx, d, []string{claimUID})
+	}
 	return a.releaseRegion(ctx, d)
 }
 
+// releaseOrKeep releases the region of a device whose last claims are
+// uids, whose Prepares did not finish (releaseInOrder), or keeps it for
+// them when regions of other memdevs lie above it (keepRegion).
+func (a *localAllocator) releaseOrKeep(ctx context.Context, d *localDevice, uids []string) error {
+	above, err := a.releaseInOrder(ctx, d)
+	if len(above) > 0 {
+		a.keepRegion(ctx, d, uids, above)
+	}
+	return err
+}
+
 // releaseShared drops a claim of a shared device, and releases the region
-// of the device if it has no claims left and is not configured shared.
-func (a *localAllocator) releaseShared(ctx context.Context, d *localDevice, claimUID string) error {
+// of the device if it has no claims left and is not configured shared,
+// unless keep and regions of other memdevs lie above it (releaseOrKeep).
+func (a *localAllocator) releaseShared(ctx context.Context, d *localDevice, claimUID string, keep bool) error {
 	delete(d.Claims, claimUID)
 	uids := d.claimUIDs()
 	klog.Infof("local: memdev %s (serial 0x%x): claim %s: released shared %s, claims left %v", d.Memdev, d.Serial, claimUID, d.Dax, uids)
@@ -1058,6 +1296,9 @@ func (a *localAllocator) releaseShared(ctx context.Context, d *localDevice, clai
 	if a.shared[d.Serial] {
 		klog.Infof("local: memdev %s (serial 0x%x): keeping %s and %s of the idle shared device", d.Memdev, d.Serial, d.Region, d.Dax)
 		return nil
+	}
+	if keep {
+		return a.releaseOrKeep(ctx, d, []string{claimUID})
 	}
 	return a.releaseRegion(ctx, d)
 }
@@ -1136,30 +1377,146 @@ func (a *localAllocator) offlineSlice(d *localDevice, claimUID string, s *localS
 }
 
 // releaseRegion releases the region of a device and forgets the device. A
-// device without a known region is only forgotten.
+// device whose region is being created (Region "") releases what the
+// creation left (createdRegions, deleteHollowCreated).
 func (a *localAllocator) releaseRegion(ctx context.Context, d *localDevice) error {
+	_, err := a.releaseRegions(ctx, d, false)
+	return err
+}
+
+// releaseInOrder releases the region of a device and forgets the device,
+// as releaseRegion does, unless regions of other memdevs lie above it in
+// the decoders: its release would leave a hole below them. It returns them
+// then and keeps the device; the region stays, disabled if they came
+// during the release. memctl.ReleaseRegionInOrder checks again after cxl
+// disable-region, under the lock of the region creations of the process,
+// so that a region that a pool Prepare creates meanwhile counts.
+func (a *localAllocator) releaseInOrder(ctx context.Context, d *localDevice) ([]string, error) {
+	return a.releaseRegions(ctx, d, true)
+}
+
+// releaseRegions is releaseRegion, and releaseInOrder if inOrder.
+func (a *localAllocator) releaseRegions(ctx context.Context, d *localDevice, inOrder bool) ([]string, error) {
 	start := time.Now()
-	if d.Region != "" {
-		if err := a.mem.ReleaseRegion(ctx, d.Region); err != nil {
-			return fmt.Errorf("memdev %s (serial 0x%x): releasing its region: %w", d.Memdev, d.Serial, err)
+	regions := []string{d.Region}
+	if d.Region == "" {
+		if err := a.deleteHollowCreated(d); err != nil {
+			return nil, err
+		}
+		regions = a.createdRegions(d)
+	}
+	for _, r := range regions {
+		var above []string
+		var err error
+		if inOrder {
+			above, err = a.mem.ReleaseRegionInOrder(ctx, d.Memdev, r)
+		} else {
+			err = a.mem.ReleaseRegion(ctx, r)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("memdev %s (serial 0x%x): releasing its region: %w", d.Memdev, d.Serial, err)
+		}
+		if len(above) > 0 {
+			return above, nil
 		}
 	}
 	delete(a.devices, d.Serial)
-	klog.Infof("local: memdev %s (serial 0x%x): released %s in %s", d.Memdev, d.Serial, d.Region, since(start))
+	if len(regions) == 0 {
+		klog.Infof("local: memdev %s (serial 0x%x): forgetting it, it has no region of the plugin", d.Memdev, d.Serial)
+		return nil, nil
+	}
+	klog.Infof("local: memdev %s (serial 0x%x): released %s in %s", d.Memdev, d.Serial, strings.Join(regions, ", "), since(start))
+	return nil, nil
+}
+
+// createdRegions returns the regions that the creation of the region of a
+// device (Region "") left on its memdev: the region recorded for it
+// (Creating) if the memdev has it, else none. Without a recorded name
+// (an older plugin) every region on the memdev is what the creation left:
+// the memdev had none (checkRegions).
+func (a *localAllocator) createdRegions(d *localDevice) []string {
+	regions := a.mem.Regions(d.Memdev)
+	if d.Creating == "" {
+		return regions
+	}
+	if slices.Contains(regions, d.Creating) {
+		return []string{d.Creating}
+	}
 	return nil
 }
 
-// dropUnused releases a device that no claim uses after a failed Acquire,
-// and saves the state.
-func (a *localAllocator) dropUnused(ctx context.Context, d *localDevice) {
+// adoptCreated makes the one region that the creation of the region of a
+// device with claims left (Region "", createdRegions) the region of the
+// device, not set up (Dax ""), and tells whether it did: the claims hold
+// it then as a region kept for them (keepRegion).
+func (a *localAllocator) adoptCreated(d *localDevice) bool {
+	if d.Region != "" || len(d.claimUIDs()) == 0 {
+		return false
+	}
+	regions := a.createdRegions(d)
+	if len(regions) != 1 {
+		return false
+	}
+	d.Region, d.Dax, d.Node, d.Creating = regions[0], "", -1, ""
+	return true
+}
+
+// deleteHollowCreated deletes the region recorded for the creation of the
+// region of a device (Creating) if the creation left it hollow: a cxl
+// create-region killed before it set the target (memctl.HollowRegion).
+// Regions does not list such a region, and it holds its address range in
+// the root decoder until it is deleted.
+func (a *localAllocator) deleteHollowCreated(d *localDevice) error {
+	if d.Creating == "" || !a.mem.HollowRegion(d.Creating) {
+		return nil
+	}
+	klog.Warningf("local: memdev %s (serial 0x%x): %s, whose creation did not finish, has no target decoder: deleting it", d.Memdev, d.Serial, d.Creating)
+	if err := a.mem.DeleteHollowRegion(d.Creating); err != nil {
+		return fmt.Errorf("memdev %s (serial 0x%x): %w", d.Memdev, d.Serial, err)
+	}
+	return nil
+}
+
+// dropUnused releases the region of a device after a failed Acquire of a
+// claim if no other claim uses it, and saves the state. When regions of
+// other memdevs lie above it, the region is kept for the claim instead
+// (keepRegion): its release would leave a hole in the decoders now.
+func (a *localAllocator) dropUnused(ctx context.Context, d *localDevice, claimUID string) {
+	if len(d.Claims[claimUID]) == 0 {
+		delete(d.Claims, claimUID)
+	}
 	if len(d.Claims) == 0 {
 		ctx, cancel := rollbackContext(ctx)
 		defer cancel()
-		if err := a.releaseRegion(ctx, d); err != nil {
+		if err := a.releaseOrKeep(ctx, d, []string{claimUID}); err != nil {
 			klog.Errorf("local: %v", err)
 		}
 	}
 	a.persist()
+}
+
+// keepRegion keeps the region of a device, which has no slices, for claims
+// whose Prepare did not finish (cut, or failed), instead of releasing it:
+// the regions above, of other memdevs, would leave a hole in the decoders
+// of their ports (memctl.DecoderHole), and the kernel would create no
+// region through those ports until they are gone. The claims hold the
+// region: their Unprepare releases it, their Prepare again sets it up
+// again (setUpRegion) and uses it. The dax devices of the region that
+// belong to no slice are deleted, so that no memory of it stays online,
+// and the region is not set up any more (Dax ""): its first dax device has
+// no memory now, and a cut release may have disabled the region.
+func (a *localAllocator) keepRegion(ctx context.Context, d *localDevice, uids, above []string) {
+	for _, uid := range uids {
+		d.Claims[uid] = nil
+	}
+	a.deleteOrphans(ctx, d)
+	d.Dax = ""
+	region := d.Region
+	if region == "" {
+		region = strings.Join(a.mem.Regions(d.Memdev), ", ")
+	}
+	klog.Warningf("local: memdev %s (serial 0x%x): keeping %s for claims %v, whose Prepare did not finish: %s lie above it, its release would leave a hole in the decoders of their ports; their Unprepare releases it, their Prepare again reuses it",
+		d.Memdev, d.Serial, region, uids, strings.Join(above, ", "))
 }
 
 // persist refreshes the snapshot and saves the state, logging an error.
@@ -1174,17 +1531,22 @@ func (a *localAllocator) persist() {
 // devices whose memdev or region is gone are forgotten, slices that are
 // gone are dropped, claims that are not in prepared are released (numa
 // slices offlined), and so are the slices of failed releases, devices
-// without claims and dax devices that belong to no slice. A slice whose
-// release fails is kept for orphanOwner. A shared device without claims
-// keeps its region while it is configured shared (SetShared).
-func (a *localAllocator) Reconcile(ctx context.Context, prepared map[string]bool) {
+// without claims and dax devices that belong to no slice. The regions
+// that the creation of the region of a device left (reconcileCreating) are
+// released, but not those of a memdev that is a pool device now (pool, by
+// serial). A region of claims that are not prepared, whose Prepares did
+// not finish, is kept for them when regions of other memdevs lie above it
+// (keepRegion). A slice whose release fails is kept for orphanOwner. A
+// shared device without claims keeps its region while it is configured
+// shared (SetShared).
+func (a *localAllocator) Reconcile(ctx context.Context, prepared map[string]bool, pool map[uint64]bool) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, serial := range a.serials() {
-		a.reconcileDevice(ctx, a.devices[serial], prepared)
+		a.reconcileDevice(ctx, a.devices[serial], prepared, pool)
 	}
 	a.updateSnapshot()
 	if err := a.save(); err != nil {
@@ -1194,7 +1556,7 @@ func (a *localAllocator) Reconcile(ctx context.Context, prepared map[string]bool
 }
 
 // reconcileDevice reconciles one device (see Reconcile).
-func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, prepared map[string]bool) {
+func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, prepared map[string]bool, pool map[uint64]bool) {
 	memdev, err := a.mem.FindMemdev(d.Serial)
 	if err != nil {
 		klog.Warningf("local: memdev %s (serial 0x%x) is gone, forgetting it and its claims %v", d.Memdev, d.Serial, slices.Sorted(maps.Keys(d.Claims)))
@@ -1203,8 +1565,7 @@ func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, pr
 	}
 	d.Memdev = memdev
 	if d.Region == "" {
-		klog.Warningf("local: memdev %s (serial 0x%x): its region was being created, forgetting it without touching the memdev", memdev, d.Serial)
-		delete(a.devices, d.Serial)
+		a.reconcileCreating(ctx, d, pool)
 		return
 	}
 	if !slices.Contains(a.mem.Regions(memdev), d.Region) {
@@ -1216,33 +1577,79 @@ func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, pr
 		a.reconcileShared(ctx, d, prepared)
 		return
 	}
+	// the claims that are not prepared lose their slices (those whose
+	// release fails go to orphanOwner), and get the region if it is kept
+	// for them
+	var unfinished []string
 	for _, uid := range slices.Sorted(maps.Keys(d.Claims)) {
 		switch {
 		case uid == orphanOwner:
 			a.dropGoneSlices(d, uid)
 		case !prepared[uid]:
 			klog.Infof("local: memdev %s (serial 0x%x): claim %s is not prepared, releasing it", memdev, d.Serial, uid)
-			if err := a.releaseClaim(ctx, d, uid); err != nil {
+			if err := a.deleteSlices(ctx, d, uid); err != nil {
 				klog.Errorf("local: %v", err)
 				d.keepOrphans(uid)
 			}
+			delete(d.Claims, uid)
+			unfinished = append(unfinished, uid)
 		default:
 			a.dropGoneSlices(d, uid)
 		}
 	}
-	if a.devices[d.Serial] != nil {
-		if err := a.releaseOrphans(ctx, d); err != nil {
-			klog.Errorf("local: %v", err)
-		}
+	if err := a.releaseOrphans(ctx, d); err != nil {
+		klog.Errorf("local: %v", err)
 	}
 	switch {
-	case a.devices[d.Serial] == nil:
-	case len(d.Claims) == 0:
-		if err := a.releaseRegion(ctx, d); err != nil {
+	case len(d.Claims) > 0:
+		// held by prepared claims, or by slices that cannot be released
+		a.deleteOrphans(ctx, d)
+	case len(unfinished) > 0:
+		if err := a.releaseOrKeep(ctx, d, unfinished); err != nil {
 			klog.Errorf("local: %v", err)
 		}
 	default:
-		a.deleteOrphans(ctx, d)
+		if err := a.releaseRegion(ctx, d); err != nil {
+			klog.Errorf("local: %v", err)
+		}
+	}
+}
+
+// reconcileCreating reconciles a device whose region was being created
+// (Region ""): the plugin stopped during the creation (a driver restart
+// cuts a running Prepare, and so do a kill and a crash). What the creation
+// left (createdRegions: the region recorded for it, enabled or disabled
+// by a cut rollback, or hollow) is released, unless the memdev is a pool
+// device now (pool): its regions are then not touched. When a region of
+// another memdev lies above the region that the creation left, its
+// release would leave a hole in the decoders: it is kept for the claims of
+// the record (the claim whose Prepare created it, releaseOrKeep), and set
+// up again by their Prepare again (setUpRegion).
+func (a *localAllocator) reconcileCreating(ctx context.Context, d *localDevice, pool map[uint64]bool) {
+	left := a.createdRegions(d)
+	if d.Creating != "" && a.mem.HollowRegion(d.Creating) {
+		left = append(left, d.Creating+" (hollow)")
+	}
+	switch {
+	case len(left) == 0:
+		klog.Warningf("local: memdev %s (serial 0x%x): its region was being created, the creation left none: forgetting it", d.Memdev, d.Serial)
+		delete(a.devices, d.Serial)
+		return
+	case pool[d.Serial]:
+		klog.Warningf("local: memdev %s (serial 0x%x): its region was being created, and it is a pool device now: forgetting it without touching its regions %v", d.Memdev, d.Serial, a.mem.Regions(d.Memdev))
+		delete(a.devices, d.Serial)
+		return
+	}
+	if uids := d.claimUIDs(); a.adoptCreated(d) {
+		klog.Warningf("local: memdev %s (serial 0x%x): its region was being created: %s is what the creation left, releasing it", d.Memdev, d.Serial, d.Region)
+		if err := a.releaseOrKeep(ctx, d, uids); err != nil {
+			klog.Errorf("local: %v", err)
+		}
+		return
+	}
+	klog.Warningf("local: memdev %s (serial 0x%x): its region was being created: releasing %v, what the creation left", d.Memdev, d.Serial, left)
+	if err := a.releaseRegion(ctx, d); err != nil {
+		klog.Errorf("local: %v", err)
 	}
 }
 

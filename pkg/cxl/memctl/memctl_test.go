@@ -332,6 +332,10 @@ func (f *fakeSys) exec(ctx context.Context, name string, args ...string) (string
 		f.bindDax("dax0.0", "kmem")
 		f.nextDax = 1
 		return `[{"region":"region0","resource":"0x250000000","size":"256.00 MiB"}]` + "\ncxl region: cmd_create_region: created 1 region\n", nil
+	case "cxl enable-region":
+		_ = os.MkdirAll(f.p("bus/cxl/drivers/cxl_region"), 0o755)
+		f.link("bus/cxl/devices/"+args[1]+"/driver", "../../drivers/cxl_region")
+		return "", nil
 	case "cxl disable-region", "cxl enable-memdev":
 		if args[0] == "enable-memdev" {
 			f.link(memPath+"/driver", "../../../../../../../bus/cxl/drivers/cxl_mem")
@@ -824,6 +828,34 @@ func TestBlocksNodeAndReleaseRegion(t *testing.T) {
 	}
 	if err := g.ReleaseRegion(ctx, "region0"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// EnableRegion enables a disabled region (what a release that did not
+// finish leaves after cxl disable-region) and leaves an enabled one alone.
+func TestEnableRegion(t *testing.T) {
+	f := newFakeSys(t)
+	f.plug("0xc100e2e1")
+	g := f.manager()
+	ctx := context.Background()
+	if err := g.EnableRegion(ctx, "region0"); err == nil || !strings.Contains(err.Error(), "region0") {
+		t.Fatalf("expected an error for a missing region, got %v", err)
+	}
+	if _, err := g.CreateRegion(ctx, "mem0", ModeDax, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.EnableRegion(ctx, "region0"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(f.commands(), "cxl enable-region region0") {
+		t.Fatalf("disabled region0 not enabled:\n%s", f.commands())
+	}
+	before := f.commands()
+	if err := g.EnableRegion(ctx, "region0"); err != nil {
+		t.Fatal(err)
+	}
+	if f.commands() != before {
+		t.Fatalf("an enabled region was enabled again:\n%s", f.commands())
 	}
 }
 

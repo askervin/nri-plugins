@@ -907,6 +907,11 @@ func (s *nodeState) Unprepare(ctx context.Context, claimUID string) error {
 func (s *nodeState) unprepare(ctx context.Context, claimUID string) error {
 	info, found := s.preparedInfo(claimUID)
 	if !found {
+		// A claim whose Prepare did not finish may hold the region of a
+		// local memdev that was kept for it (localAllocator.keepRegion).
+		if err := s.local.Release(ctx, claimUID); err != nil {
+			return fmt.Errorf("claim %s: %w", claimUID, err)
+		}
 		return nil
 	}
 	if info != nil && info.Lend != nil {
@@ -1047,11 +1052,13 @@ func (s *nodeState) prepare(ctx context.Context, claim *resourcev1.ResourceClaim
 }
 
 // releaseLocal releases the memory of local memdevs that a failed Prepare
-// of a claim acquired.
+// of a claim acquired. A region that the claim held alone is kept for it
+// if its release would leave a hole in the decoders
+// (localAllocator.ReleaseFailed).
 func (s *nodeState) releaseLocal(ctx context.Context, claim *resourcev1.ResourceClaim) {
 	ctx, cancel := rollbackContext(ctx)
 	defer cancel()
-	if err := s.local.Release(ctx, string(claim.UID)); err != nil {
+	if err := s.local.ReleaseFailed(ctx, string(claim.UID)); err != nil {
 		klog.Errorf("claim %v/%v: rollback: %v", claim.Namespace, claim.Name, err)
 	}
 }

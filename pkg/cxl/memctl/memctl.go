@@ -1160,6 +1160,25 @@ func (mc *Manager) Release(ctx context.Context, memdev string) error {
 	return nil
 }
 
+// EnableRegion enables a region that is disabled (cxl enable-region): what
+// a ReleaseRegion that did not finish leaves after its cxl disable-region,
+// with the decoders still committed. The kernel then makes the dax or
+// nvdimm region of the region again. An enabled region is left as it is.
+func (mc *Manager) EnableRegion(ctx context.Context, region string) error {
+	dir := mc.cxlDev(region)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("%s: %w", region, err)
+	}
+	if hasDriver(dir) {
+		return nil
+	}
+	if _, err := mc.Exec(ctx, "cxl", "enable-region", region); err != nil {
+		return err
+	}
+	mc.logf("enabled %s", region)
+	return nil
+}
+
 // ReleaseRegions releases the memdev's regions (see ReleaseRegion). The
 // memdev stays enabled. A missing memdev is not an error.
 func (mc *Manager) ReleaseRegions(ctx context.Context, memdev string) error {
@@ -1183,19 +1202,43 @@ func (mc *Manager) ReleaseRegions(ctx context.Context, memdev string) error {
 // the next reboot"), and destroying the region would leave online memory
 // that no decoder maps, which reads garbage.
 func (mc *Manager) ReleaseRegion(ctx context.Context, region string) error {
+	_, err := mc.releaseRegion(ctx, region, nil)
+	return err
+}
+
+// ReleaseRegionInOrder releases a region of the memdev as ReleaseRegion
+// does, unless regions of other memdevs lie above the memdev's regions in
+// the decoders of its ports (RegionsAbove): destroying it would leave a
+// hole below them (DecoderHole). It returns those regions then, and the
+// region stays: as it was if they were there before the release, disabled
+// if they came during it. The last check and cxl destroy-region hold the
+// lock of the region creations of the process (regionCreateMu): no region
+// that this process creates comes above it in between. A missing region is
+// not an error.
+func (mc *Manager) ReleaseRegionInOrder(ctx context.Context, memdev, region string) ([]string, error) {
+	if above := mc.RegionsAbove(memdev); len(above) > 0 {
+		return above, nil
+	}
+	return mc.releaseRegion(ctx, region, func() []string { return mc.RegionsAbove(memdev) })
+}
+
+// releaseRegion releases a region (ReleaseRegion). With above (nil: none),
+// the region is destroyed only if above, called after cxl disable-region
+// with regionCreateMu held, returns no region; else it returns them.
+func (mc *Manager) releaseRegion(ctx context.Context, region string, above func() []string) ([]string, error) {
 	if _, err := os.Stat(mc.cxlDev(region)); err != nil {
-		return nil
+		return nil, nil
 	}
 	// Offline every memory block of the region, whatever the driver of its
 	// dax devices: a failed driver switch can leave blocks added and
 	// online without kmem.
 	if blocks, err := mc.RegionBlocks(region); err == nil && len(blocks) > 0 {
 		if err := mc.SetBlocksState(blocks, "offline"); err != nil {
-			return fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
+			return nil, fmt.Errorf("%s: cannot offline memory (in use?): %w", region, err)
 		}
 	}
 	if _, err := mc.Exec(ctx, "cxl", "disable-region", region); err != nil {
-		return err
+		return nil, err
 	}
 	if blocks, err := mc.RegionBlocks(region); err == nil {
 		var online []int
@@ -1205,14 +1248,22 @@ func (mc *Manager) ReleaseRegion(ctx context.Context, region string) error {
 			}
 		}
 		if len(online) > 0 {
-			return fmt.Errorf("%s: memory blocks %v are online after disabling it (the kernel could not remove them, see dmesg): not destroying the region, the memory would read garbage", region, online)
+			return nil, fmt.Errorf("%s: memory blocks %v are online after disabling it (the kernel could not remove them, see dmesg): not destroying the region, the memory would read garbage", region, online)
+		}
+	}
+	if above != nil {
+		regionCreateMu.Lock()
+		defer regionCreateMu.Unlock()
+		if rs := above(); len(rs) > 0 {
+			mc.logf("not destroying disabled %s: %s came above it in the decoders", region, strings.Join(rs, ", "))
+			return rs, nil
 		}
 	}
 	if _, err := mc.Exec(ctx, "cxl", "destroy-region", region); err != nil {
-		return err
+		return nil, err
 	}
 	mc.logf("destroyed %s", region)
-	return nil
+	return nil, nil
 }
 
 // offlineSettled offlines memory blocks and waits until all of them have

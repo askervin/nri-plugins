@@ -266,7 +266,13 @@ errcheck findings of probe.go/probe_test.go that were there before.
 - Cluster replay B/steps.txt (FR2's header; xdax-b@vm0#0, lnuma@vm0#0,
   ldax@vm0#0 created and settled, then 4x node-reboot vm0 + settle:
   each boot prepares the two local claims and the pool dax claim on
-  hb0 concurrently): RESULT_PENDING
+  hb0 concurrently): PASS, 17 steps in 8m7s, 4 qemu restarts of vm0,
+  image ed0a60406c88 (B/after.log; orchestrator, 2026-11-02, after the
+  agent's session ended). No EBUSY and no hole. In this replay the
+  local and the pool Prepares came about 1 s apart, so the collision
+  window of milliseconds was not hit: the replay shows that the fix
+  keeps re-prepare after a boot working, not that it closes the race.
+  The race is shown closed by TestDaxIDsNotLeft and experiment B.
 Not run again: FR2 itself (728 steps). The collision is a window of
 milliseconds; the deterministic checks are the unit test and the
 experiment.

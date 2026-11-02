@@ -62,7 +62,7 @@ func wantUse(t *testing.T, a *localAllocator, want *localUse) {
 // acquireShared gives the shared local memdev to a claim.
 func acquireShared(t *testing.T, a *localAllocator, uid string, readOnly bool) *localSlice {
 	t.Helper()
-	s, err := a.AcquireShared(context.Background(), uid, "mem", localSerial, readOnly, "1 share")
+	s, err := a.AcquireShared(testContext(t), uid, "mem", localSerial, readOnly, "1 share")
 	noErr(t, err)
 	return s
 }
@@ -164,13 +164,13 @@ func TestLocalSharedReconcile(t *testing.T) {
 	// configured shared: the claim that is not prepared is dropped
 	b := f.allocator(t, dir)
 	b.SetShared(map[uint64]bool{localSerial: true})
-	b.Reconcile(ctx, map[string]bool{"u2": true})
+	b.Reconcile(ctx, map[string]bool{"u2": true}, nil)
 	wantUse(t, b, &localUse{Shared: true, Claims: []string{"u2"}})
 	f.wantDax(t, "dax0.0", localRegionSize, "device_dax")
 	// configured shared, no claims: kept idle
 	b = f.allocator(t, dir)
 	b.SetShared(map[uint64]bool{localSerial: true})
-	b.Reconcile(ctx, nil)
+	b.Reconcile(ctx, nil, nil)
 	wantUse(t, b, &localUse{Shared: true, Claims: []string{}})
 	f.wantRegionCount(t, 1, 0)
 	acquireShared(t, b, "u3", false)
@@ -178,7 +178,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 
 	// not configured shared: kept for its prepared claim, released after
 	c := f.allocator(t, dir)
-	c.Reconcile(ctx, map[string]bool{"u3": true})
+	c.Reconcile(ctx, map[string]bool{"u3": true}, nil)
 	wantUse(t, c, &localUse{Shared: true, Claims: []string{"u3"}})
 	f.wantRegionCount(t, 1, 0)
 	noErr(t, c.Release(ctx, "u3"))
@@ -190,7 +190,7 @@ func TestLocalSharedReconcile(t *testing.T) {
 	noErr(t, c.Release(ctx, "u4"))
 	f.wantRegionCount(t, 2, 1)
 	d := f.allocator(t, dir)
-	d.Reconcile(ctx, nil)
+	d.Reconcile(ctx, nil, nil)
 	f.wantRegionReleased(t, "region0")
 	wantUse(t, d, nil)
 }
@@ -625,7 +625,7 @@ func TestLocalSharedReconcileOtherBootAndHalfMade(t *testing.T) {
 	acquireShared(t, a, "u1", false)
 	before := f.commands()
 	b := f.allocatorOfBoot(t, dir, "boot-2")
-	b.Reconcile(ctx, map[string]bool{"u1": true})
+	b.Reconcile(ctx, map[string]bool{"u1": true}, nil)
 	wantUse(t, b, nil)
 	if f.commands() != before {
 		t.Fatalf("another boot's state touched the system:\n%s", strings.TrimPrefix(f.commands(), before))
@@ -635,7 +635,7 @@ func TestLocalSharedReconcileOtherBootAndHalfMade(t *testing.T) {
 	a = f.allocator(t, t.TempDir())
 	a.devices[localSerial] = &localDevice{Serial: localSerial, SerialHex: "c100e2e1", Memdev: "mem0", Region: "region0", Node: -1, Shared: true, Claims: map[string][]*localSlice{}}
 	a.SetShared(map[uint64]bool{localSerial: true})
-	a.Reconcile(ctx, nil)
+	a.Reconcile(ctx, nil, nil)
 	wantUse(t, a, &localUse{Shared: true, Claims: []string{}})
 	acquireShared(t, a, "u2", false)
 	f.wantRegionCount(t, 2, 1)

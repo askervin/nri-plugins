@@ -571,3 +571,280 @@ FR2 2026-10-29 19:21, image 9d9dff4cadce, scheduler localhost/kube-
 
 FR3: not run (FR2 failed; the task's rule is "then FR3 (if both
 pass)" - FR1c passed but FR2 did not, so FR3 does not run).
+
+Validation of the FR2 diagnosis (orchestrator, 2026-11-02)
+------------------------------------------------------------
+The preliminary diagnosis (model error, A43 wrong) was not right. A
+qemu restart leaves no decoder committed; the hole of FR2 was made
+after the boot. An Opus debug agent traced it (bug-21): the local
+Prepare of lnuma resized dax0.0 of the new local region while the
+pool Prepare of xdax-b bound dax2.0 with daxctl; daxctl's new_id of
+device_dax bound dax0.0 again (an id left by memctl's earlier daxctl
+bind), the size write failed with EBUSY, and the rollback destroyed
+the local region below the pool region: a hole on hb0 for the life of
+the pool claim. Driver bug (memctl), not a model error; A43 stays.
+Fix in pkg/cxl/memctl (ids removed around every bind and unbind),
+unit test TestDaxIDsNotLeft, kernel behaviour checked by hand on vm0
+(B/experiment-A..C), image ed0a60406c88; replay /tmp/p13-runs/b21
+PASS (4 qemu restarts; the millisecond window was not hit there).
+Next: FR2 again with a new seed, then FR3.
+
+FR2b, FR3 (2026-11-02, run agent "sonnet-run2")
+=================================================
+Plan: FR2b (full, fencing none, reboot qemu, 60m), then FR3 (fullp,
+allowed-mems, guest, 60m) only if FR2b passed. FR2b FAILed, so FR3 was
+not started. Names: D = N/cmd/plugins/dra-driver-cxl, C = N/pkg/cxl/
+memctl, T = N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+test90-gofmbt-reliability. Times: UTC for driver, kubelet and kernel
+logs, local (= UTC+2) for mbt-exec.log, mbt-cxl.log and trace.txt stamps.
+
+FR2b 2026-11-02 08:39 (local), image f8de05705008 (confirmed from the
+   run log: "ctr -n k8s.io images import nri-dra-driver-cxl-image-
+   f8de05705008.tar" on vm2, vm0 and vm1, run_tests.log lines 152, 866,
+   872; the drivers log "Starting nri-dra-driver-cxl version v0.15.0-47-
+   g73dba0f5a-dirty (build 73dba0f5a ...)"), scheduler localhost/kube-
+   scheduler:v1.37.1-dra-requeue.3 (run_tests.log:1926: image ... version
+   "v1.37.1-dra-requeue.3"; "mbt: stall window: 30s: the kube-scheduler
+   has the dra-requeue fix of bug-08"). Profile full, MBT_FENCING=none
+   (all three drivers log "has defaults.container.fencing: none" before
+   step 1), MBT_REBOOT=qemu, new random seed 1793601575, 60m planned,
+   MBT_OBS_KEEP=300. qemu: vm0 and vm1 patched (".../qemu-system-x86_64:
+   ... v11.1.0-1741-gff076b1e6c-dirty"), vm2 the old one "(deleted)".
+   FAIL at step 299 after 298 steps and 21m11s of stepping (mbt-cxl.log
+   08:41:03 - 09:02:14; the run took 28 min with setup and teardown):
+   "settle timeout after 3m2s: pod lnuma@vm0#0: phase Pending ready
+   false (ContainerCreating), want Running (+9 more)".
+   Differences of the oracle (mbt-fail.txt): lnuma@vm0#0 Pending; "vm0:
+   local region region2: 0 numa and 0 dax slices, want 1 and 0"; "vm0:
+   node 2 MemTotal 0, want 128Mi"; "claim abdb5a05-... not in
+   preparedClaims.json"; "vm0: localDevices.json has no local memdev,
+   want 1 slices"; "vm0: cxl.nri.io slice without memdev-c100e2e1"; and
+   as a consequence "container of xdax-b@vm0#0 / xnuma-c@vm0#0:
+   cpuset.mems 0-1,3 lacks CXL node 2 with memory" (fencing none).
+   Steps (299 incl. the failing settle): settle 56, write 45, read 44,
+   create 39 (dnuma 2: vm1#0, vm0#0), delete 27, crash 25, kubelet-
+   restart 12, driver-restart 11, containerd-restart 10, driver-kill 8,
+   server-restart 4, ctrl-start 4, ctrl-restart 4, ctrl-kill 4, lease-get
+   3, node-reboot 2, lease-put 1; fencing-switch 0 (fencing none, as
+   designed). Plans 298 (reused 294, replanned 4); planned-ahead time
+   244 s, bash waited 67 s for plans. Coverage line is not printed on a
+   FAIL (C1x3,C2x2,C3 requested). The qemu node-reboot worked: step 104
+   and step 191, both vm1, status 0, 80.7 s and 80.6 s, followed by clean
+   settles (42 s and 39 s, no prediction miss); vm0 was NOT rebooted in
+   this run (boot id 77150ba2-... at the start, run_tests.log:1919, and
+   at the failure: obs-000299-050.json vms.vm0.bootID), so the failure
+   has nothing to do with the node-reboot, bug-21 or fencing none.
+   Copies: /tmp/p13-runs/FR2b (out/ = the test output dir, run_tests.log,
+   diag/ = kubelet and journal excerpts of vm0, the replay steps file,
+   qmp-check.py), /tmp/p13-runs/FR2b-e3-repro (see the reproduction).
+
+   Diagnosis
+   ---------
+   Classification: DRIVER BUG (local memdev lost for good when the driver
+   process stops during the creation of its local region). It is the
+   open finding E3 of 01-findings-driver.txt (lines 694-706, "driver
+   killed during the creation of a local region (medium-high)"), which
+   was predicted there and never fixed. Not a model/oracle error, not an
+   executor/observer problem, not kube-scheduler/kubelet/kernel/qemu,
+   not environment. Not bug-21 (no hole: the stack of vm0/hb0 is fine,
+   the failing region is the only region of the local memdev). Confidence
+   high: reproduced at the first of six tries in a replay (below), the
+   chain is timestamped across the driver, the kernel (udev) and the
+   kubelet, and the code path is read.
+
+   What happened (FR2b, vm0, UTC, from trace.txt, the driver logs and
+   the kubelet journal; kubelet journal and driver logs copied in
+   /tmp/p13-runs/FR2b/diag and out/):
+   - 06:59:08.06  step 297 "create lnuma@vm0#0" (mbt-exec.log:3262); the
+     claim abdb5a05 is allocated at 06:59:08.547 (scheduler, memdev-
+     c100e2e1 of vm0). The local memdev mem0 (serial 0xc100e2e1) had
+     no region (no local claim before; hb0 held only b-pooled0 of
+     xdax-b).
+   - 06:59:08.538  step 298 "driver-restart vm0": the executor reads the
+     old pod's log first (T/mbt.source.sh:1053, so the executor's copy
+     ends at 06:59:08.936), then "kubectl delete pod nri-dra-driver-cxl-
+     58lm8".
+   - 06:59:08.648  the old driver (pid 80321) starts the Prepare of the
+     claim (node_state.go:1272 "claim ...-h9kff request mem result 0").
+     06:59:08.693 "memctl: mem0: created region2 (ram) under
+     decoder0.0" (driver.go:622). The kernel adds region2, dax2.0, node 2,
+     memory206/207 (udev, trace.txt:13209-13225); the driver rescan at
+     06:59:08.927 sees region2 Enabled:true Node:2 "created by the plugin
+     on local memory device memdev-c100e2e1". The creation is not done:
+     D/local.go createRegion (:644) would log "created region2 (devdax,
+     dax ..., node N) in X ms" when it is (a normal local create takes
+     ~0.9 s, e.g. 06:42:23.87 -> 06:42:24.72 in this run), and that line
+     never comes.
+   - 06:59:09.363  kubelet stops the container: "Received signal
+     terminated, exiting." (main.go:309); the NRI plugin and the gRPC
+     servers are stopped within 3 ms (06:59:09.364-366); kubelet gets
+     "NodePrepareResources: rpc error: code = Unavailable desc = error
+     reading from server: EOF" at 06:59:09.365 (kubelet journal). The
+     containerd exit event of the container (pid 80321) is at
+     06:59:09.387 (journal vm0, "received container exit event ...
+     exited_at ... nanos:387221078"). No further line of the old driver:
+     no "local: ... released", no error line.
+   - 06:59:09.39 (kernel udev events, trace.txt:13286-13301, arrival
+     stamps 09.636-09.645 local minus the trace latency of ~0.25 s):
+     remove memory206/207, remove node2, unbind and remove dax2.0, unbind
+     dax_region2, unbind region2: this is `cxl disable-region` of the
+     rollback (C/memctl/memctl.go:1185-1215 ReleaseRegion: offline blocks,
+     disable-region, then destroy-region). There is no "remove region2"
+     event and no "memctl: destroyed region2" log: the process was gone
+     before destroy-region.
+   - 06:59:10.538  the new driver (pod nr5gb, pid 81021) starts. 06:59:10.
+     589 "local: loaded 1 memdevs from .../localDevices.json"; 06:59:10.
+     599 "local: memdev mem0 (serial 0xc100e2e1): its region was being
+     created, forgetting it without touching the memdev" (local.go:1206);
+     06:59:10.609 region2 {Size 256Mi, Node -1, Targets [decoder4.0],
+     Enabled:false} "ignoring region device region2: region is disabled",
+     "not publishing memory device mem0 as a local memory device: it has
+     regions [region2] that the plugin did not create" (node_state.go:
+     606, 599). "Publishing resources len=2" at 06:59:10.879: the slice
+     of vm0 no longer has memdev-c100e2e1. Repeated at every later
+     rescan (07:00:09, 07:02:11, 07:02:18, 07:02:24) until the teardown.
+   - kubelet (journal vm0) retries the Prepare at 07:00:39.177 and
+     07:02:00.182: "NodePrepareResources failed for ResourceClaim mbt-
+     lnuma-vm0-0-g1-c0-h9kff: could not find allocatable device
+     memdev-c100e2e1 (pool n4-cxl-shared-0-fedora-43-containerd)". The
+     new driver never saw a Prepare of this claim (its log has the claim
+     uid only at the teardown, 07:02:17 "Freed devices for claim
+     'abdb5a05-...'"). The observation of the last poll has vm0 region2
+     with no dax device, decoder4.0 still committed to it, mem0 enabled,
+     localDevices.json devices [] (obs-000299-050.json vms.vm0.ports,
+     .regions, .state).
+   - 07:02:14  the settle gives up (3m2s). The region stayed until the
+     exit trap's pool-cleanup released the memdev (the cleanup of the
+     driver state files then even skipped vm0: dra.source.sh:558 "CXL
+     regions exist, keeping the CXL state of the driver").
+
+   Root cause in the driver (D = N/cmd/plugins/dra-driver-cxl):
+   - D/local.go:594-606 (device()): the device record is saved with
+     Region "" BEFORE the region is created (:596) and saved again only
+     after createProbedRegion returned (:601; createProbedRegion also
+     probes, local_probe.go:249-275). A stop of the process in between
+     leaves a record with Region "" and a real region on the memdev.
+   - D/local.go:1205-1209 (reconcileDevice, i.e. every driver start):
+     "Region == "" -> its region was being created, forgetting it without
+     touching the memdev": the record is dropped, the region is not. The
+     comment in 01-findings-driver.txt (:523) says it is intentional, and
+     the unit test covers only the no-region case (local_test.go:1264).
+   - D/local.go:612-618 checkRegions and D/node_state.go:599, 652: a
+     memdev with a region the plugin has no record of is never
+     published again ("it has regions ... that the plugin did not
+     create"); nothing destroys such a region. D/local.go:1140-1150
+     releaseRegion does nothing to the memdev when Region is "" (it only
+     deletes the record), so the other "leftovers of a failed creation"
+     branches (local.go:481-486, 573-580) cannot clean it either. Contrast
+     the in-process failure path, local.go:636-640: "The memdev had no
+     region before: a region on it now is what the failed creation left"
+     (d.Region = rs[0], then dropUnused -> ReleaseRegion). The restart
+     path lacks that same inference.
+   - Why the process stops mid-Prepare at a "graceful" driver-restart: D/
+     main.go:306-313 returns from run() right after driver.Shutdown, and
+     Shutdown stops the DRA helper (driver.go:861) whose gRPC server is
+     stopped abruptly (vendor/k8s.io/dynamic-resource-allocation/
+     kubeletplugin/nonblockinggrpcserver.go:217 s.server.Stop(), which
+     does not wait for the running handlers). The Prepare goroutine is
+     cut wherever it is, also in its rollback (rollbackContext, local.go:
+     291, survives the cancel but not the process exit). A driver-kill
+     (SIGKILL) or a containerd-restart that kills the container cuts it
+     the same way; there the record is identical.
+   - Effect for a user: the local memdev of the node is gone for the
+     scheduler until the region is destroyed by hand (or a reboot); every
+     claim allocated on it stays in ContainerCreating with kubelet's
+     "could not find allocatable device", and every new local claim of
+     the node is Unschedulable.
+
+   Reproduction (diagnostic replay, not a model run): T/model steps file
+   /tmp/p13-runs/FR2b/diag/steps-e3.txt (the header of FR2b's mbt-steps,
+   then 6 times: create lnuma@vm0#0, driver-restart vm0, settle, delete
+   lnuma@vm0#0, settle), MBT_MODE=replay MBT_REPLAY=that file, same
+   image and scheduler, 09:15-09:21 local, log /tmp/p13-runs/FR2b-e3-
+   repro.run_tests.log, copy /tmp/p13-runs/FR2b-e3-repro. FAIL at step 4
+   (the first settle, iteration 1): the same settle timeout 3m2s for
+   lnuma@vm0#0. Old driver: Prepare 07:16:37.765, "created region0 (ram)"
+   07:16:37.806, SIGTERM 07:16:38.415 (0.6 s into the creation), the
+   region left enabled with its full-size dax0.0 this time (the cut was
+   before the rollback: "vm0: local region region0: a slice of 268435456
+   bytes, want 134217728", "numa slice with 0 bytes online"). New driver:
+   07:16:39.577 "its region was being created, forgetting it without
+   touching the memdev" (local.go:1206), 07:16:39.588 "not publishing
+   memory device mem0 ...: it has regions [region0] that the plugin did
+   not create"; kubelet 07:18:05.187 and 07:19:13.175 "could not find
+   allocatable device memdev-c100e2e1". So two different cut points of
+   the Prepare (after the rollback's disable-region in FR2b, before the
+   rollback in the replay) end the same way.
+
+   Verified (read in logs/code, not assumed):
+   - the order of events above and their times, including that the new
+     driver never received the Prepare and that kubelet's error is about
+     the slice (the published slice decides: node_state.go:606);
+   - vm0 was never rebooted; the node-reboots were vm1 and clean;
+   - the persisted record had Region "" (the new driver's local.go:1206
+     warning proves it) and the kernel had the region (sysfs observation,
+     driver rescans);
+   - the failure reproduces by a driver-restart right after a local
+     create, twice of two (FR2b and the replay), in a fresh VM state;
+   - the code lines cited.
+   Assumed (not directly seen):
+   - the exact statement the old process was in when SIGTERM came
+     (createRegion/probe, or the rollback in FR2b): the old driver's log
+     ends at 06:59:09.366 and verbose logging was off. From the missing
+     "created region2 (devdax..." line at local.go:644, the missing
+     rollback log lines and the udev events I infer it was in
+     CreateRegionSize/probe and then in ReleaseRegion;
+   - that `cxl destroy-region` did not run because the process exited
+     first (no log, no udev "remove region2"; the +-20 ms ordering of
+     disable-region against the exit event is not resolved);
+   - that a driver-kill (SIGKILL) and containerd-restart leave the same
+     record: by the code yes, not run here.
+   Why not earlier: the window is the ~0.9 s region creation of the FIRST
+   claim on a local memdev that has no region, cut by a driver stop. The
+   pair "create <local slot>" directly followed by a driver stop is not
+   rare in the earlier runs' mbt-steps.txt (counted with a script over
+   /tmp/p13-runs: FR2b 3 in 299 steps, FR1c 7 in 1727, FR2 5 in 728,
+   fp9 10 in 1978, fp8 4 in 2110, FR1 4 in 944; the stops there are
+   driver-restart, driver-kill, containerd-restart, driver-kill-at), and
+   those runs passed. I did NOT check which of those creates were the
+   first claim on an empty memdev (a second slice on an existing region
+   creates no region) or where the stop landed; so how often a long
+   run meets this is unknown, only that the exact pair of FR2b (create
+   lnuma on an empty memdev, then driver-restart) hit it at once in the
+   replay. A long run may meet it again; the frequency is unmeasured.
+   Suggested fix direction (not applied; driver, model and executor code
+   untouched): (1) the real fix, D/local.go:1205-1209: a record with
+   Region "" means the plugin was creating a region on a memdev that had
+   none (checkRegions, :612-618, enforces that before the record is
+   made), so release the regions of the memdev (C/memctl ReleaseRegions,
+   memctl.go:1165, offline + disable + destroy) instead of forgetting it,
+   as createRegion's own failure path does; also let releaseRegion
+   (:1140) and sharedDevice's leftovers branch (:481-486) do that for
+   Region "". (2) save d.Region right after memctl created the region,
+   before the probe (narrows the window, does not close it, SIGKILL).
+   (3) Shutdown should wait for the running Prepare/rollback (bounded by
+   the pod's grace period) before run() returns; helps the graceful
+   restart only. A model-side workaround (no driver-restart/-kill while a
+   first local Prepare is in flight) would hide the bug and is not
+   recommended. The oracle's expectation (A15: a driver restart is
+   survivable; lnuma runs again) is right.
+   Unit-test direction: local_test.go next to :1264: a persisted device
+   with Region "" and a real (fake sysfs) region on the memdev, Reconcile,
+   then the memdev must be publishable again and the region gone.
+
+   Cluster state after the run and the replay: clean (verified over ssh
+   and qmp): all three nodes Ready; kube-system only (kubectl: no
+   cxl-pool-demo namespace, no pod or ResourceClaim outside kube-system,
+   no DaemonSet of the driver); no region or memdev under /sys/bus/cxl/
+   devices on vm0, vm1, vm2 (root0, port*, decoder*, nvdimm-bridge0
+   only); preparedClaims.json "{}" on all three; no CXL device in any
+   qemu (query-pci: no type3 device); no fake-cxl-pool server or
+   controller process. One leftover of the failure itself: because vm0
+   still had region2 when the exit trap ran, the state-file cleanup
+   skipped vm0 (dra.source.sh:558) and left localDevices.json, leases.json,
+   poolSerials.json, preparedPoolClaims.json and preparingPoolClaims.json
+   there, all empty; I removed them by hand with the same rm -f that the
+   no-region branch runs (vm0 now looks like vm1 and vm2). The lock
+   /tmp/p13-cluster.lock is released at the end of this task.
+
+FR3: not run (FR2b failed; the task's rule).

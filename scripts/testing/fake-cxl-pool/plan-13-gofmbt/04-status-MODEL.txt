@@ -2037,3 +2037,14 @@ TestRefPoolReviewRegressions, TestRefPoolNarrowedRaceKill; extended:
 TestNodeRebootAttachFailed). gofmt,
 GOWORK=off go vet ./..., go test ./... (119 s), go test -race clean
 (588 s: close to go test's default 10 min, run it with -timeout 30m).
+
+25. Open: a kept local region after bug-22 (2026-11-02, orchestrator)
+  bug-22's review fixes keep a cut local creation's region (no slices)
+  when a pool region is above it, until the claim's retry. The model
+  waits for that retry (oracle.go checkRegions, checkStateFiles). Low
+  confidence corner case: lnuma and xdax-b unblocking on one stack, a
+  driver-restart cutting lnuma's creation with b-pooled0 above: a pod
+  long blocked may be at kubelet's ~5 min back-off cap, past the 180 s
+  settle. If a run shows it: accept a local region without slices and
+  a not-prepared claim without slices while its pod waits for
+  kubelet's retry (as unblockingKey in checkPorts).

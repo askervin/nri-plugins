@@ -660,7 +660,7 @@ func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *Dri
 	}
 	local.SetShared(sharedSerials(driverConfig, detected.MemoryDevices, poolSerials))
 	local.SetUsableSizes(driverConfig.configuredUsableSize, driverConfig.verifyAddressing())
-	local.Reconcile(ctx, prepared)
+	local.Reconcile(ctx, prepared, poolSerials)
 	return local, nil
 }
 

@@ -124,6 +124,68 @@ func TestRegionsAbove(t *testing.T) {
 	}
 }
 
+// TestReleaseRegionInOrder: region0 of mem2 is released when no region of
+// another memdev lies above it, and not touched when one does. A region
+// that comes above it during the release (a create-region of a pool
+// Prepare between the first check and cxl destroy-region) keeps it
+// disabled. The last check and cxl destroy-region hold regionCreateMu.
+func TestReleaseRegionInOrder(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// regions on the decoders of the ports before the release, and
+		// after its cxl disable-region (nil: the same)
+		before, during []string
+		want           []string
+		cmds           string
+	}{
+		{name: "alone", before: []string{"region0"},
+			cmds: "cxl disable-region region0\ncxl destroy-region region0"},
+		{name: "below", before: []string{"region0", "region3"}, want: []string{"region3"}},
+		{name: "came above", before: []string{"region0"}, during: []string{"region0", "region3"}, want: []string{"region3"},
+			cmds: "cxl disable-region region0"},
+	} {
+		f := holeSys(t, false)
+		ports := func(regions []string) {
+			f.portDecoders(hbPortPath, "2", len(regions), regions...)
+			f.portDecoders(swPortPath, "3", len(regions), regions...)
+		}
+		ports(tc.before)
+		f.write("bus/cxl/devices/region0/target0", "decoder6.0")
+		g := f.manager()
+		g.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+			switch name + " " + args[0] {
+			case "cxl disable-region":
+				if tc.during != nil {
+					ports(tc.during)
+				}
+			case "cxl destroy-region":
+				if regionCreateMu.TryLock() {
+					regionCreateMu.Unlock()
+					t.Errorf("%s: cxl destroy-region without regionCreateMu", tc.name)
+				}
+			}
+			return f.exec(ctx, name, args...)
+		}
+		above, err := g.ReleaseRegionInOrder(ctx, "mem2", "region0")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !reflect.DeepEqual(above, tc.want) || f.commands() != tc.cmds {
+			t.Errorf("%s: above %v, want %v; commands:\n%s\nwant:\n%s", tc.name, above, tc.want, f.commands(), tc.cmds)
+		}
+		_, err = os.Stat(f.p("bus/cxl/devices/region0"))
+		if exists := err == nil; exists != (tc.want != nil) {
+			t.Errorf("%s: region0 exists %v", tc.name, exists)
+		}
+	}
+	// a missing region
+	f := holeSys(t, false)
+	if above, err := f.manager().ReleaseRegionInOrder(ctx, "mem2", "region7"); above != nil || err != nil || f.commands() != "" {
+		t.Errorf("missing region: above %v, error %v, commands %q", above, err, f.commands())
+	}
+}
+
 func TestCreateRegionExplainsDecoderHole(t *testing.T) {
 	for _, hole := range []bool{true, false} {
 		f := holeSys(t, hole)

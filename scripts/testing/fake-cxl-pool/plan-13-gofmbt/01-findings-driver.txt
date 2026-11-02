@@ -520,7 +520,9 @@ numa memory on node 2 may allocate from all memory on node 2
     without touching anything (D/local.go:1314-1318); Reconcile against
     the keys of preparedClaimsInfo.json (D/driver.go:557-585,
     D/local.go:1148-1241): memdev gone -> forget; Region == "" (it was
-    being created) -> forget WITHOUT touching the memdev; region gone
+    being created) -> forget WITHOUT touching the memdev (bug-22: now
+    its leftover region is released, or kept for the cut claim below a
+    newer region); region gone
     -> forget; claims not prepared -> released (numa offlined first;
     on failure kept as "-"); "-" slices released; dax devices of no
     slice deleted; a device without claims -> region destroyed; shared:
@@ -704,6 +706,10 @@ E3 driver killed during the creation of a local region (medium-high)
   devdax region may be published as a region device [I, 1.1].
   test: SIGKILL during the first claim of a memdev; the 1G shared
   zeroing gives a wide window.
+  status (2026-11-02): confirmed by run FR2b (a driver-restart during
+  the first lnuma Prepare of vm0) and fixed: bug-22-local-region-leaks-
+  after-cut-creation.txt (the start releases what the creation left, or
+  keeps it for the cut claim below a newer region).
 
 E4 split, non-atomic persistence of cxl.nri.io claims (medium: small
   window, large effect)

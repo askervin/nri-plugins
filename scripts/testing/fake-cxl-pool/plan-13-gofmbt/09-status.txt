@@ -155,7 +155,20 @@ Bugs (bug-NN files)
      in flight): a local slice next to it looked full (FR1b, dnuma)
      FIXED locally (K 5jr-dra-requeue working tree, not committed),
      vm2 runs v1.37.1-dra-requeue.3; A/B replay verified
-  Driver image with 15, 18, 19: 9d9dff4cadce (uncommitted tree).
+  21 a dax driver id left by daxctl rebound a local slice during its
+     resize when a pool Prepare bound its dax device at the same time:
+     EBUSY, and the rollback destroyed the local region below the pool
+     region, a decoder hole on the host bridge (FR2, after a reboot)
+     FIXED in pkg/cxl/memctl (no id left), unit test, kernel check on
+     vm0; replay PASS
+  22 a driver stop during the creation of a local region leaked the
+     region and the local memdev was never published again (E3 of
+     01-findings-driver, found by FR2b): FIXED (the cut creation's
+     region released at start, or kept for the claim when a newer
+     region is above it), unit tests, E3 replay PASS
+  Driver image with 15-21: f8de05705008 (HEAD 366ccf18c, committed);
+  with 22: df534ddd7424; with 22 and its review fixes: ddfcc29194a8
+  (uncommitted tree).
   Executor error E-FR1 (fs lease used without the driver): fixed in
   pmem-rw.py, not a driver bug (15-runs-fencing-reboot.txt).
      (unfinished Prepares released at plugin start), verified by

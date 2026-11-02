@@ -623,3 +623,50 @@ FR2 2026-10-29 19:21, image 9d9dff4cadce, scheduler localhost/kube-
    too) in 15-runs-fencing-reboot.txt. Cluster clean after teardown
    (verified over ssh). FR3 not run (FR2 failed). Copy:
    /tmp/p13-runs/FR2.
+FR2b 2026-11-02 08:39, image f8de05705008 (driver v0.15.0-47-g73dba0f5a-
+   dirty; bug-15..21 fixes), scheduler localhost/kube-scheduler:v1.37.1-
+   dra-requeue.3 (bug-20 fix; both confirmed from the run log). Profile
+   full, MBT_FENCING=none (all three drivers log it before step 1),
+   MBT_REBOOT=qemu, new random seed 1793601575, 60m planned, 300
+   observations kept. FAIL at step 299 after 298 steps and 21m11s
+   (mbt-cxl 08:41:03-09:02:14): settle timeout after 3m2s: "pod
+   lnuma@vm0#0: phase Pending ready false (ContainerCreating), want
+   Running (+9 more)", with "vm0: localDevices.json has no local memdev",
+   "vm0: cxl.nri.io slice without memdev-c100e2e1", "local region
+   region2: 0 numa and 0 dax slices", "node 2 MemTotal 0". Steps (299
+   incl. the failing settle): settle 56, write 45, read 44, create 39
+   (dnuma 2), delete 27, crash 25, kubelet-restart 12, driver-restart 11,
+   containerd-restart 10, driver-kill 8, server-restart 4, ctrl-start 4,
+   ctrl-restart 4, ctrl-kill 4, lease-get 3, node-reboot 2 (both vm1,
+   qemu, 80.7 s and 80.6 s, clean settles after), lease-put 1; fencing-
+   switch 0 (fencing none). Plans 298 (reused 294), planned ahead 244 s,
+   bash waited 67 s. vm0 was not rebooted in the run.
+   DRIVER BUG (high confidence; the open finding E3 of 01-findings-
+   driver.txt:694-706, never fixed), not a model error: step 297 "create
+   lnuma@vm0#0" then step 298 "driver-restart vm0". The old driver was
+   creating the region of the empty local memdev (06:59:08.693 "created
+   region2 (ram)"); kubelet's SIGTERM (06:59:09.363) stopped the process
+   (main.go:306-313; the DRA gRPC server is stopped abruptly, vendor
+   nonblockinggrpcserver.go:217) in the middle of the Prepare and its
+   rollback (udev: disable-region done at ~06:59:09.39, no destroy-
+   region). The persisted device record still had Region "", so the new
+   driver "forgot it without touching the memdev" (local.go:1205-1209)
+   and then never published the memdev again ("it has regions [region2]
+   that the plugin did not create", node_state.go:606): kubelet's
+   Prepare retries fail with "could not find allocatable device
+   memdev-c100e2e1" (07:00:39, 07:02:00), the new driver never saw a
+   Prepare, the pod stays ContainerCreating for good. Reproduced at the
+   first of six tries in a replay (create lnuma@vm0#0, driver-restart
+   vm0, settle; /tmp/p13-runs/FR2b-e3-repro), where the cut was before
+   the rollback and the region stayed enabled; same outcome. Verified:
+   the event chain across driver, kernel (udev) and kubelet logs, the
+   code lines, the reproduction. Assumed: the exact statement the old
+   process was in (the old log ends at 06:59:09.366), and that
+   driver-kill and containerd-restart leave the same record (by the
+   code, not run). Fix direction (not applied): at Region "" release the
+   regions of the memdev instead of forgetting it (as createRegion's own
+   failure path infers, local.go:636-640), and let Shutdown wait for the
+   running Prepare. Full evidence in 15-runs-fencing-reboot.txt. Cluster
+   clean after teardown (verified over ssh/qmp; vm0's empty leftover
+   state files removed by hand). FR3 not run (FR2b failed). Copies:
+   /tmp/p13-runs/FR2b, /tmp/p13-runs/FR2b-e3-repro.

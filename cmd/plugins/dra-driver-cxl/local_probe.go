@@ -243,9 +243,21 @@ func (a *localAllocator) probeRegion(d *localDevice) (uint64, error) {
 	return usable, nil
 }
 
+// errAliasedBelow returns the error of the region of a device whose memory
+// aliases, with usable distinct bytes, and that lies below regions of other
+// memdevs: it is not released to be created again smaller, which would
+// leave a hole in the decoders; the next Acquire does that once nothing
+// lies above it.
+func errAliasedBelow(d *localDevice, usable uint64) error {
+	return fmt.Errorf("memdev %s (serial 0x%x): %s aliases: it is created again with its first %d bytes only once no region of another memory device lies above it in the decoders",
+		d.Memdev, d.Serial, d.Region, usable)
+}
+
 // createProbedRegion creates the devdax region of a device with the usable
 // size of the memdev, probes it and, when its memory aliases, creates it
-// again with the distinct bytes only.
+// again with the distinct bytes only. A region below regions of other
+// memdevs is not released for that (errAliasedBelow), also when they come
+// during its release (memctl.ReleaseRegionInOrder).
 func (a *localAllocator) createProbedRegion(ctx context.Context, d *localDevice, bs uint64) error {
 	for try := 0; ; try++ {
 		if err := a.createRegion(ctx, d, bs); err != nil {
@@ -258,8 +270,12 @@ func (a *localAllocator) createProbedRegion(ctx context.Context, d *localDevice,
 		if try > 0 {
 			return fmt.Errorf("memdev %s (serial 0x%x): %s of %d bytes still aliases", d.Memdev, d.Serial, d.Region, usable)
 		}
-		if err := a.mem.ReleaseRegion(ctx, d.Region); err != nil {
+		above, err := a.mem.ReleaseRegionInOrder(ctx, d.Memdev, d.Region)
+		if err != nil {
 			return fmt.Errorf("memdev %s (serial 0x%x): releasing aliased %s: %w", d.Memdev, d.Serial, d.Region, err)
+		}
+		if len(above) > 0 {
+			return errAliasedBelow(d, usable)
 		}
 		klog.Infof("local: memdev %s (serial 0x%x): released aliased %s, creating a region of %d bytes", d.Memdev, d.Serial, d.Region, a.usableSize(d.Memdev, d.Serial))
 		d.Region, d.Dax, d.Node = "", "", -1

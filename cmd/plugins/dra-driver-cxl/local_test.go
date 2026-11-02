@@ -72,6 +72,15 @@ type fakeLocalSys struct {
 	bs uint64
 	// noKmemBlocks: kmem adds no memory blocks.
 	noKmemBlocks bool
+	// cutProbe: the plugin is killed (errCut) in the next address line
+	// probe; cutBefore is the beginning of a command before which it is
+	// killed, "" for none (cutAfter: after it).
+	cutProbe  bool
+	cutBefore string
+	// before has functions that run before the first command that begins
+	// with their key, once: a pool Prepare that creates a region
+	// meanwhile.
+	before map[string]func()
 }
 
 func newFakeLocalSys(t *testing.T) *fakeLocalSys {
@@ -98,6 +107,27 @@ func (f *fakeLocalSys) record(name string, args ...string) {
 }
 
 func (f *fakeLocalSys) exec(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := name + " " + strings.Join(args, " ")
+	f.mu.Lock()
+	cut := f.cutBefore != "" && strings.HasPrefix(cmd, f.cutBefore)
+	if cut {
+		f.cutBefore = ""
+	}
+	var hook func()
+	for prefix, fn := range f.before {
+		if strings.HasPrefix(cmd, prefix) {
+			hook = fn
+			delete(f.before, prefix)
+			break
+		}
+	}
+	f.mu.Unlock()
+	if cut {
+		panic(errCut)
+	}
+	if hook != nil {
+		hook()
+	}
 	switch name + " " + args[0] {
 	case "cxl create-region":
 		if f.failCreate > 0 {
@@ -112,15 +142,24 @@ func (f *fakeLocalSys) exec(ctx context.Context, name string, args ...string) (s
 		out, err := f.fakePoolSys.exec(ctx, name, args...)
 		f.write("bus/cxl/devices/region0/resource", fmt.Sprintf("0x%x", f.regionStart))
 		f.write("bus/cxl/devices/region0/size", fmt.Sprintf("0x%x", f.regionSize))
-		f.write(localDaxAttrs+"/align", strconv.Itoa(2*mib))
-		f.write(localDaxAttrs+"/create", "")
-		f.write(daxPath+"/dev", "252:0")
-		f.setRanges("dax0.0", []memctl.Range{{Start: f.regionStart, End: f.regionStart + f.regionSize - 1}})
-		f.available()
-		// the kernel binds the dax device of a ram region to kmem
-		f.addBlocks("dax0.0")
-		f.nextDax = 1
+		f.makeDaxRegion()
 		return out, err
+	case "cxl disable-region":
+		// the kernel removes the dax region and its dax devices (the
+		// memory of kmem, offline), the decoders stay committed
+		m, _ := filepath.Glob(f.p("bus/dax/devices/dax0.*"))
+		for _, d := range m {
+			if f.daxDriver(filepath.Base(d)) == memctl.DriverKmem {
+				f.removeBlocks(filepath.Base(d))
+			}
+			_ = os.Remove(d)
+		}
+		_ = os.RemoveAll(f.p(localDaxRegion))
+		return f.fakePoolSys.exec(ctx, name, args...)
+	case "cxl enable-region":
+		f.record(name, args...)
+		f.makeDaxRegion()
+		return "", nil
 	case "cxl destroy-region":
 		m, _ := filepath.Glob(f.p("bus/dax/devices/dax0.*"))
 		for _, d := range m {
@@ -150,6 +189,22 @@ func (f *fakeLocalSys) exec(ctx context.Context, name string, args ...string) (s
 		return "", nil
 	}
 	return f.fakePoolSys.exec(ctx, name, args...)
+}
+
+// makeDaxRegion makes the dax region of region0 with dax0.0 over all of
+// its memory, bound to kmem as the kernel binds the dax device of a ram
+// region (its memory blocks offline).
+func (f *fakeLocalSys) makeDaxRegion() {
+	f.write(localDaxAttrs+"/align", strconv.Itoa(2*mib))
+	f.write(localDaxAttrs+"/create", "")
+	f.write(daxPath+"/dev", "252:0")
+	f.write(daxPath+"/target_node", "2")
+	f.link("bus/dax/devices/dax0.0", "../../../"+daxPath)
+	f.link(daxPath+"/driver", "../../../../../dax/drivers/kmem")
+	f.setRanges("dax0.0", []memctl.Range{{Start: f.regionStart, End: f.regionStart + f.regionSize - 1}})
+	f.available()
+	f.addBlocks("dax0.0")
+	f.nextDax = 1
 }
 
 func (f *fakeLocalSys) daxSize(dax string) uint64 {
@@ -330,6 +385,8 @@ func (f *fakeLocalSys) writeAttr(path, val string) error {
 		return f.mapDax(filepath.Base(dir), val)
 	case filepath.Dir(dir) == "bus/dax/drivers":
 		return f.driverAttr(filepath.Base(dir), attr, val)
+	case attr == "delete_region":
+		return f.fakePoolSys.writeAttr(path, val)
 	}
 	return os.WriteFile(path, []byte(val), 0o644)
 }
@@ -528,6 +585,10 @@ func (f *fakeLocalSys) probe(dax string) (*memctl.Aliasing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.probed = append(f.probed, dax)
+	if f.cutProbe {
+		f.cutProbe = false
+		panic(errCut)
+	}
 	if a := f.aliasing; a != nil {
 		f.aliasing = nil
 		return a, nil
@@ -557,7 +618,7 @@ func wantUsed(t *testing.T, a *localAllocator, used bool) {
 // acquire acquires a slice of the local memdev and checks the node.
 func acquire(t *testing.T, a *localAllocator, uid, mode string, size uint64) *localSlice {
 	t.Helper()
-	s, node, err := a.Acquire(context.Background(), uid, "mem", localSerial, mode, size, false)
+	s, node, err := a.Acquire(testContext(t), uid, "mem", localSerial, mode, size, false)
 	noErr(t, err)
 	if want := map[string]int{api.ModeNUMA: 2, api.ModeDax: -1}[mode]; node != want {
 		t.Fatalf("%s: node %d, expected %d", uid, node, want)
@@ -911,7 +972,7 @@ func TestLocalFailedReleases(t *testing.T) {
 	busy := []error{syscall.EBUSY, syscall.EBUSY}
 	f.failSeq = map[string][]error{blockPath(74) + "/state": busy}
 	a = f.allocator(t, dir)
-	a.Reconcile(ctx, map[string]bool{"u2": true})
+	a.Reconcile(ctx, map[string]bool{"u2": true}, nil)
 	d := a.devices[localSerial]
 	if len(d.Claims[orphanOwner]) != 1 || d.Claims[orphanOwner][0].Dax != "dax0.0" || d.Claims["u1"] != nil {
 		t.Fatalf("claims after reconcile %+v", d.Claims)
@@ -982,7 +1043,7 @@ func TestLocalUntrackedKmem(t *testing.T) {
 	f.wantMemoryBlocks(t, "online_movable", 74)
 	wantErr(t, a.mem.ResizeDaxDevice(ctx, "dax0.0", 0), "dax0.0: memory blocks [74] are not offline")
 	a = f.allocator(t, dir)
-	a.Reconcile(ctx, map[string]bool{"u2": true, "u3": true})
+	a.Reconcile(ctx, map[string]bool{"u2": true, "u3": true}, nil)
 	f.wantDax(t, "dax0.0", 0, "")
 	f.wantMemoryBlocks(t, "")
 }
@@ -1062,7 +1123,7 @@ func TestLocalRegionErrors(t *testing.T) {
 	_, _, err = none.Acquire(ctx, "u1", "mem", localSerial, api.ModeDax, localBlockSize, false)
 	wantErr(t, err, "manageMemdevs: false")
 	noErr(t, none.Release(ctx, "u1"))
-	none.Reconcile(ctx, nil)
+	none.Reconcile(ctx, nil, nil)
 }
 
 func TestLocalStateAndReconcile(t *testing.T) {
@@ -1088,7 +1149,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	// offlined and its slice deleted
 	a = f.allocator(t, dir)
 	wantUsed(t, a, true)
-	a.Reconcile(ctx, map[string]bool{"u1": true, "u3": true})
+	a.Reconcile(ctx, map[string]bool{"u1": true, "u3": true}, nil)
 	if f.daxExists("dax0.1") || len(a.devices[localSerial].Claims) != 2 {
 		t.Fatalf("after reconcile: %+v", a.devices[localSerial])
 	}
@@ -1103,7 +1164,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	noErr(t, m.SetDaxDriverSysfs(ctx, dax, memctl.DriverKmem))
 	noErr(t, m.SetBlocksState(f.blocks(dax), "online_movable"))
 	a = f.allocator(t, dir)
-	a.Reconcile(ctx, map[string]bool{"u1": true, "u3": true})
+	a.Reconcile(ctx, map[string]bool{"u1": true, "u3": true}, nil)
 	if f.daxExists(dax) {
 		t.Fatalf("orphan %s not deleted", dax)
 	}
@@ -1114,7 +1175,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	// the region goes
 	noErr(t, m.ResizeDaxDevice(ctx, "dax0.0", 2*localBlockSize))
 	a = f.allocator(t, dir)
-	a.Reconcile(ctx, map[string]bool{"u1": true})
+	a.Reconcile(ctx, map[string]bool{"u1": true}, nil)
 	wantUsed(t, a, false)
 	f.wantRegionReleased(t, "region0")
 
@@ -1124,7 +1185,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	noErr(t, a.save())
 	a = f.allocator(t, dir)
 	wantUsed(t, a, true)
-	a.Reconcile(ctx, map[string]bool{"u1": true})
+	a.Reconcile(ctx, map[string]bool{"u1": true}, nil)
 	wantUsed(t, a, false)
 	f.wantRegionReleased(t, "region0")
 	f.wantMemoryBlocks(t, "")
@@ -1135,12 +1196,12 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	_, err = f.exec(ctx, "cxl", "destroy-region", "region0")
 	noErr(t, err)
 	a = f.allocator(t, dir)
-	a.Reconcile(ctx, map[string]bool{"u1": true})
+	a.Reconcile(ctx, map[string]bool{"u1": true}, nil)
 	wantUsed(t, a, false)
 	acquire(t, a, "u1", api.ModeDax, localBlockSize)
 	f.unplug()
 	a = f.allocator(t, dir)
-	a.Reconcile(ctx, map[string]bool{"u1": true})
+	a.Reconcile(ctx, map[string]bool{"u1": true}, nil)
 	wantUsed(t, a, false)
 
 	// a broken state file
@@ -1238,7 +1299,8 @@ func TestLocalSliceFailures(t *testing.T) {
 }
 
 // The state of another boot is forgotten, and an entry whose region was
-// being created is dropped, both without touching the memdev.
+// being created and whose memdev has no region is dropped, both without
+// touching the memdev.
 func TestLocalStateOfAnotherBoot(t *testing.T) {
 	f := newFakeLocalSys(t)
 	dir := t.TempDir()
@@ -1256,17 +1318,19 @@ func TestLocalStateOfAnotherBoot(t *testing.T) {
 	wantUsed(t, c, true)
 	b := f.allocatorOfBoot(t, dir, "boot-2")
 	wantUsed(t, b, false)
-	b.Reconcile(ctx, map[string]bool{"u1": true})
+	b.Reconcile(ctx, map[string]bool{"u1": true}, nil)
 	if len(f.commands()) != ncmds {
 		t.Fatalf("the state of another boot touched the memdev:\n%s", f.commands()[ncmds:])
 	}
 
-	// an entry without a region
+	// an entry without a region, the creation left none
+	noErr(t, a.Release(ctx, "u1"))
+	ncmds = len(f.commands())
 	noErr(t, os.WriteFile(filepath.Join(dir, localStateFileName),
 		[]byte(`{"bootID":"boot-1","devices":[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","node":-1,"claims":{}}]}`), 0o600))
 	a = f.allocator(t, dir)
 	wantUsed(t, a, true)
-	a.Reconcile(ctx, nil)
+	a.Reconcile(ctx, nil, nil)
 	wantUsed(t, a, false)
 	if len(f.commands()) != ncmds {
 		t.Fatalf("an entry without a region touched the memdev:\n%s", f.commands()[ncmds:])

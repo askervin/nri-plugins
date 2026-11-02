@@ -1,0 +1,616 @@
+BUG-22: THE REGION OF A LOCAL MEMDEV LEAKS WHEN THE PLUGIN STOPS
+DURING ITS CREATION, AND THE MEMDEV IS NEVER PUBLISHED AGAIN
+
+Branch 5jg-cxl, 2026-11-02. Found by run FR2b of the model-based test
+(15-runs-fencing-reboot.txt, FR2b; step 299 settle failed after 3 min:
+"pod lnuma@vm0#0: phase Pending ready false (ContainerCreating)").
+Predicted as E3 in 01-findings-driver.txt section 4 and never fixed.
+Fixed in the working tree (uncommitted), unit tested, verified on the
+cluster by the replay that failed before the fix (section 7).
+
+D/ = cmd/plugins/dra-driver-cxl/, M/ = pkg/cxl/memctl/,
+R/ = /tmp/p13-runs/FR2b/, B/ = /tmp/p13-runs/b22/. Line numbers of HEAD
+(366ccf18c) unless "new". Times of the driver logs and the kubelet
+journal are UTC, of mbt-exec.log and mbt-cxl.log local (UTC+2).
+
+========================================================================
+1. SUMMARY
+
+The local allocator records a new local device in localDevices.json
+with Region "" before it creates the devdax region of the memdev's
+first claim, and again with the region after the region is created and
+probed. When the plugin process stops in between, the region stays on
+the memdev and the state has the device without it. The start forgot
+such a device "without touching the memdev". The publisher then never
+published the memdev again ("it has regions [region2] that the plugin
+did not create"), and kubelet's Prepare retries of the claim failed for
+ever with "could not find allocatable device memdev-c100e2e1". Every new
+local claim of the node was Unschedulable until the region was destroyed
+by hand or the node rebooted.
+
+A graceful driver restart (SIGTERM) is enough: run() returns right
+after driver.Shutdown, and the gRPC server of the kubelet plugin stops
+without waiting for a running Prepare, which is cut wherever it is,
+also in its rollback. A driver kill, a crash and a containerd restart
+cut it the same way. The window is the creation of the region of the
+first claim on a memdev without a region, about 0.9 s on the cluster
+(region, kmem settle, device_dax bind, address line probe); for a shared
+local device it includes the zeroing of the whole device.
+
+Severity: high for the node: the local memdev is lost until a manual
+cleanup or a reboot. Needs a driver stop during the first local Prepare
+of a memdev. A driver-restart right after a create of an lnuma pod hit
+it at the first try (FR2b and its replay).
+
+========================================================================
+2. REPRODUCTION
+
+Replay B/steps-e3.txt (= R/diag/steps-e3.txt: FR2b's header, then six
+times create lnuma@vm0#0, driver-restart vm0, settle, delete
+lnuma@vm0#0, settle), from N/test/e2e:
+  MBT_MODE=replay MBT_REPLAY=/tmp/p13-runs/b22/steps-e3.txt \
+    ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability
+Before the fix it failed at step 4, the first settle (image
+f8de05705008, /tmp/p13-runs/FR2b-e3-repro).
+In general: a driver-restart, driver-kill or containerd-restart of a
+node while the Prepare of the first local claim of its memdev runs.
+
+========================================================================
+3. EVIDENCE
+
+FR2b (R/, vm0, image f8de05705008; the full timeline is in the FR2b
+entry of 15-runs-fencing-reboot.txt):
+- 06:59:08.648 the old driver starts the Prepare of lnuma (claim
+  abdb5a05, mbt-lnuma-vm0-0-g1-c0-h9kff); 06:59:08.693 "memctl: mem0:
+  created region2 (ram) under decoder0.0". The line "created region2
+  (devdax, ...)" of D/local.go:644 never comes.
+- 06:59:09.363 "Received signal terminated, exiting." (D/main.go:309);
+  kubelet gets "NodePrepareResources: rpc error: code = Unavailable
+  desc = error reading from server: EOF" at 06:59:09.365.
+- 06:59:09.39 udev: memory206/207, node2, dax2.0 and dax_region2 go,
+  region2 is unbound: the cxl disable-region of the rollback. No
+  "remove region2", no "destroyed region2": the process was gone.
+- 06:59:10.599 the new driver: "local: memdev mem0 (serial
+  0xc100e2e1): its region was being created, forgetting it without
+  touching the memdev" (D/local.go:1206); 06:59:10.609 "not publishing
+  memory device mem0 as a local memory device: it has regions
+  [region2] that the plugin did not create" (D/node_state.go:599), at
+  every later scan.
+- kubelet 07:00:39.177 and 07:02:00.182: "NodePrepareResources failed
+  for ResourceClaim mbt-lnuma-vm0-0-g1-c0-h9kff: could not find
+  allocatable device memdev-c100e2e1".
+- The last observation (obs-000299-050.json): vm0 region2 without a dax
+  device, decoder4.0 still committed to it, localDevices.json devices
+  [].
+Replay before the fix (/tmp/p13-runs/FR2b-e3-repro, image
+f8de05705008): FAIL at step 4. SIGTERM 0.6 s into the creation, before
+the rollback: region0 left enabled with its full-size dax0.0; the new
+driver "its region was being created, forgetting it without touching
+the memdev", "not publishing memory device mem0 ...: it has regions
+[region0] that the plugin did not create"; kubelet "could not find
+allocatable device memdev-c100e2e1" at 07:18:05 and 07:19:13.
+
+========================================================================
+4. ROOT CAUSE
+
+- D/local.go:587-606 device(): the new device is saved with Region ""
+  (:596) before createProbedRegion (:598, region and probe,
+  D/local_probe.go:249-275); the second save (:601) comes after it.
+  D/local.go:494-517 sharedDevice() does the same (:504, :517), with
+  the zeroing of the whole device (zeroShared, :514) inside the window.
+- D/local.go:612-618 checkRegions: the record is made only for a memdev
+  without a region. So every region on the memdev of a record with
+  Region "" is what the creation left. D/local.go:636-640 (createRegion)
+  draws that conclusion for a failure in the running process; the start
+  did not.
+- D/local.go:1205-1209 reconcileDevice: a record with Region "" was
+  forgotten "without touching the memdev".
+- D/local.go:1140-1150 releaseRegion did nothing to the memdev of a
+  record with Region "", so the leftovers branches of sharedDevice
+  (:481-486) and device() (:573-578) could not clean it either.
+- D/node_state.go:599 (and :652 for a shared device): a memdev with a
+  region that the allocator does not know is not published.
+- D/main.go:306-313 and D/driver.go:861 (helper.Stop, the gRPC server's
+  Stop): a running Prepare is cut, also in its rollback (rollbackContext
+  survives the cancel but not the process exit). A SIGTERM cancels the
+  Prepare's context first: the creation fails, and its rollback
+  (dropUnused) destroys the region in the old process if it gets that
+  far.
+Decoder order (bug-02, M/decoders.go): when a region of another memdev
+lies above the leftover region in the decoders of the host bridge (a
+pool Prepare on the same host bridge that ran concurrently), releasing
+the leftover leaves a hole, and no region goes through those ports until
+the regions above are gone. The rollback of a failed local Prepare had
+the same problem (bug-21 section 8 "Left": dropUnused, D/local.go:1154).
+
+========================================================================
+5. THE FIX
+
+Design: a record with Region "" means "the plugin was creating a region
+on a memdev that had none", and since the review it names the region
+that cxl create-region creates (Creating). What the creation left is
+released when that is in order, and kept for the claim of the cut
+Prepare when a region of another memdev lies above it (bug-14's rule for
+the pool driver, memctl.RegionsAbove): the claim holds the region, its
+Unprepare releases it (the hole of an Unprepare is the order the user
+chose, A9), its Prepare again sets it up as a new region and slices it.
+The same rule for the rollback of a failed Prepare in the running
+process. Line numbers "new" are of the working tree after the review
+(section 10).
+
+a) The claim is recorded before the region is created (new
+   D/local.go:647 device(), :531 sharedDevice()): the first save has
+   Claims {uid: null}. A claim without slices holds the region (doc of
+   localDevice.Claims, new :116-122). The Acquire that fails deletes
+   the entry again unless the region is kept for it.
+b) The name of the region is recorded too (review, finding 4): region()
+   (new :747) creates it with memctl CreateRegionNoted and regionNote
+   (new :771), which saves Creating (new :104-107) before cxl
+   create-region runs, and the created name if that differs.
+   createdRegions (new :1437) is what a creation left: the region named
+   Creating if the memdev has it, else none; for a record without the
+   name (an older plugin) every region on the memdev (the memdev had
+   none, checkRegions). deleteHollowCreated (new :1469) deletes the
+   region named Creating if a cut cxl create-region left it hollow
+   (memctl HollowRegion, DeleteHollowRegion). adoptCreated (new :1452)
+   takes the one region that a creation left as the region of a record
+   with claims, not set up (Region = it, Dax "").
+c) Start (Reconcile, new :1542, reconcileDevice :1559, reconcileCreating
+   new :1628), for a record with Region "": the creation left nothing
+   (no region, none hollow): forgotten (as before, no command); the
+   serial is a pool serial now (Reconcile's new pool argument, the
+   poolSerials of newLocalHelper, D/driver.go:663): forgotten without
+   touching its regions; one region and a claim in the record: adopted,
+   then released in order or kept for the claim (releaseOrKeep, new
+   :1278); else what the creation left is released (releaseRegion) and
+   the record forgotten. For a record with a region, the claims that are
+   not prepared lose their slices as before (those whose release fails
+   go to orphanOwner, and the claim still counts, finding 2); when no
+   prepared claim or orphan holds the region any more, it is kept for
+   them if a region of another memdev lies above it, else released
+   (before: released always, also below newer regions).
+d) keepRegion (new :1508): the claims get entries without slices, the
+   dax devices that belong to no slice are deleted (numa ones offlined:
+   no memory of a kept region stays online), the region counts as not
+   set up (Dax "", finding 1), a warning names the regions above.
+e) Dax "" with a region marks a region that is not set up (its creation
+   failed or was cut, or it was kept; doc new :109-111). device() (new
+   :613, through reuse, new :676) and sharedDevice() (new :473) set such
+   a region up again while a region of another memdev lies above it,
+   else release it in order and create a new one. setUpRegion (new
+   :796): enable-region if a cut release disabled it (no dax region; new
+   memctl EnableRegion, M/memctl.go new :1167), else spanKept (new :835:
+   delete the dax devices that the cut left, daxN.0 over the whole
+   region, bound to device_dax), then memctl CreateRegionSize reuses the
+   region (waits for the dax device, offlines kmem memory, binds
+   device_dax), and the address line probe runs again. A shared device is
+   zeroed again (setUpShared, new :561). A kept region whose memory
+   aliases is not created again smaller below newer regions
+   (errAliasedBelow, D/local_probe.go new :251, also in
+   createProbedRegion new :261): the Prepare fails until nothing lies
+   above it.
+f) releaseRegion (new :1382) of a record with Region "" releases what
+   the creation left (b); the leftovers branches of device() and
+   sharedDevice() use it.
+g) Releases in order (review, finding 3): releaseInOrder (new :1394)
+   uses the new memctl ReleaseRegionInOrder (M/memctl.go new :1218): no
+   release while a region of another memdev lies above, and a second
+   check after cxl disable-region with regionCreateMu held across it and
+   cxl destroy-region, so that a region that a pool Prepare creates in
+   between keeps the region (disabled; setUpRegion enables it again).
+   Used by releaseOrKeep, reuse, sharedDevice and the alias release of
+   createProbedRegion.
+h) The rollback of a failed Prepare: dropUnused (new :1484) and
+   nodeState.releaseLocal (D/node_state.go new :1058, the new
+   localAllocator.ReleaseFailed, new :1195) keep the region of a memdev
+   whose last claim this is when a region of another memdev lies above
+   it (releaseOrKeep). Release (the Unprepare) is unchanged.
+i) nodeState.unprepare (D/node_state.go new :907-915): the Unprepare of
+   a claim that is not prepared releases what the local allocator holds
+   for it (a kept region); nothing to release is a no-op as before, and
+   since the review returns without waiting for a.mu when the snapshot
+   does not list the claim (listed, new :1233, finding 5).
+j) Docs: docs/memory/cxl/local.md (What Prepare does: the claim and the
+   region name recorded before the region, the failed Prepare's kept
+   region; Restart: the cut creation, the decoder order rule, the check
+   after cxl disable-region, the setup of a kept region).
+Decided against:
+- Saving the region right after cxl create-region, before the probe:
+  it narrows the window but cannot close it (cxl create-region itself,
+  SIGKILL). It would also need a mark for "not set up / not zeroed",
+  which Dax "" now is. The review added the name before cxl
+  create-region instead (b), in its own field: Region stays "" until the
+  region is set up.
+- A bounded wait of Shutdown for running Prepares: it helps only the
+  graceful restart (kill, crash, containerd-restart and OOM still cut),
+  delays every restart, and the order of the stops (NRI first,
+  D/driver.go:844-863) would have to change. The start must handle a cut
+  anyway, and now does.
+Not changed: the model and the contract (section 6, "Model").
+
+========================================================================
+6. TESTS
+
+- D/local_cut_test.go (new):
+  TestLocalCutCreation: the creation cut in the probe (enabled,
+    device_dax), before the device_dax bind (kmem), in the rollback
+    after cxl disable-region (disabled, FR2b): the record has the claim
+    and no region; at start "cxl disable-region region0, cxl
+    destroy-region region0", the memdev is published again (the
+    publisher's view, buildDevInfos with the region on the memdev), the
+    Prepare again creates a new region.
+  TestLocalCutCreationBelowNewer: the same with region9 of another
+    memdev above region0 (stackPorts), also disabled and with daxN.0
+    unbound: no release at two restarts, the record adopts region0 (Dax
+    ""), the memdev is published, the Prepare again makes no region,
+    enables a disabled one, probes, gets its slice.
+  TestLocalCutCreationKeptGoes (through nodeState): the cut claim's
+    Unprepare (not prepared) releases the kept region; when the region
+    above goes before the Prepare again, the kept region is released and
+    created anew.
+  TestLocalCutCreationPoolOrNone: a pool serial: no command at start; a
+    creation that left no region: forgotten, no command.
+  TestLocalRestartWithoutCut: restarts with prepared claims and a region
+    above run no command and keep the slices.
+  TestLocalCutAfterSlice: a Prepare cut after its slice was saved: the
+    slice goes; the region is released, or kept below a newer region
+    (not set up, Dax "") and set up and sliced again; with a prepared
+    claim the unprepared one goes.
+  TestLocalFailedCreationBelowNewer: in-process failures below a newer
+    region (device_dax bind, kmem online) keep the region for the
+    claim; a kept region that aliases stays kept, and is created again
+    smaller once nothing is above.
+  TestLocalCutSharedCreation: a shared device cut in the probe: released
+    and made anew, or kept below a newer region, set up and zeroed once;
+    leftover records without a region (shared, sliced) release what is
+    on the memdev.
+  TestPrepareLocalFailedBelowNewer (through nodeState): a failed Prepare
+    (local bind; a missing second device after the local slice) keeps
+    the region for the claim; the Prepare again reuses it; the Unprepare
+    of the not prepared claim releases it.
+  New in the review (section 10):
+  TestLocalKeptRegionSetUpAgain (finding 1): the Unprepare of a kept
+    claim cut after cxl disable-region, a restart keeps the disabled
+    region again; Acquire(u2) and the kept claim's Acquire enable it
+    (cxl enable-region) and get slices; a shared device not configured
+    shared whose last claim fails below a newer region: its Acquire again
+    gets dax0.0 over the whole region, zeroed again.
+  TestLocalCutAfterSliceOrphaned (finding 2): the slice of a claim that
+    is not prepared fails to offline once at start (EBUSY, orphanOwner,
+    released again right away): kept below a newer region for the claim,
+    released without one.
+  TestLocalRegionComesAboveInRelease (finding 3): region9 comes above
+    region0 during its release (before cxl disable-region): in the
+    rollback of a failed creation, in the release of a kept region whose
+    region above went, in the alias release of a new region: region0 is
+    disabled, not destroyed, kept for the claim, enabled again by the
+    next Acquire.
+  TestLocalCutCreationRecordedRegion (finding 4): the cut record names
+    region0 (Creating); a region of another name on the memdev is not
+    touched (and the memdev not published); a region that a cut cxl
+    create-region left hollow is deleted (delete_region); an Acquire of
+    a record with Region "" below a newer region adopts and sets it up
+    (no release).
+  TestUnprepareUnknownClaimDoesNotWait (finding 5, through nodeState):
+    the Unprepare of an unknown claim returns while a.mu is held.
+  The cut tests and the acquire, acquireShared and cutLocal helpers use
+  testContext (20 s, finding 6).
+- D/local_test.go: fakeLocalSys models cxl disable-region (the dax
+  region, its dax devices and kmem's memory blocks go) and cxl
+  enable-region (dax0.0 over the region, kmem), and cuts in the probe
+  (cutProbe) and before a command (cutBefore). Since the review: hooks
+  that run before a command (before, a region that comes above), and
+  delete_region of a root decoder (the pool fake's).
+  TestLocalStateOfAnotherBoot: the entry without a region is now one
+  whose creation left none (the memdev had region0 of an earlier claim,
+  which the new rule releases).
+- M/memctl_test.go TestEnableRegion (new): a missing region is an
+  error, a disabled one is enabled, an enabled one is left alone.
+- M/decoders_test.go TestReleaseRegionInOrder (new, finding 3): alone:
+  released; below a region of another memdev: no command; one that comes
+  above after cxl disable-region: disabled, not destroyed; cxl
+  destroy-region runs with regionCreateMu held (TryLock fails); a
+  missing region is no error.
+Mutations, each failing tests: the old reconcile of Region "" (4
+tests); no regions-above guard at start (3); no claim in the first save
+(4); the Unprepare of a not prepared claim does nothing (2); the
+rollback releases (1); no spanKept (the BelowNewer subtests hang in
+memctl's wait for a bound dax device, as a Prepare would until its
+deadline); releaseRegion of Region "" forgets only (2); dropUnused
+does not keep (2); no keep of unfinished claims at start (2); no pool
+check (1); no aliasing guard in setUpRegion (1).
+Mutations of the review (/tmp/b22mut/mutate.py), each failing tests:
+keepRegion keeps Dax (1); a claim handed to keepOrphans is not
+unfinished (1); held computed before releaseOrphans (1); no second
+check after cxl disable-region (TestReleaseRegionInOrder and 3 subtests
+of TestLocalRegionComesAboveInRelease); cxl destroy-region
+without regionCreateMu (1); the alias release not in order (1 subtest);
+reuse releases a kept region plainly (3 subtests); createdRegions = all
+regions (1); no hollow delete (1); no region note (1); reuse does not
+adopt (1); the release waits for a.mu (1); no spanKept: now fails after
+the 20 s of testContext per Acquire (3 subtests, 63 s) instead of
+hanging. Again with the restructured code: the start forgets a cut
+creation, releaseOrKeep never keeps, the rollback uses Release, the
+Unprepare of a not prepared claim does nothing: each failing tests.
+gofmt -s, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... -skip TestMemdevSettings: ok (also after the review).
+golangci-lint ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/memctl/...:
+only the 3 errcheck findings of probe.go/probe_test.go that were there
+before.
+Model: no change. A9: "faults neither create nor destroy regions",
+the local region lives from the first to the last claim, the events of
+a window play in every order. A driver-restart during "create
+lnuma@vm0#0" keeps lnuma's prepare event in the window, and the oracle
+wants lnuma Running after kubelet's retry with the local region pushed
+in an order of the window. The driver now gives that: nothing above:
+released at start, pushed again by the retry (an order where the
+prepare comes later); a region above: kept in its place (the order
+"local first"), the retry slices it; the pod deleted before the retry:
+its Unprepare destroys the kept region (a hole when still below, as A9
+predicts for that unprepare). A claim without slices in
+localDevices.json is "wait" for the oracle (oracle.go:1891-1894) until
+the retry. No regression test in T/model: its prediction did not
+change. The review's model check (finding 8) is in section 10.
+
+========================================================================
+7. VERIFICATION
+
+Cluster (lock /tmp/p13-cluster.lock taken 10:21:45 local, released
+10:34:56), replay B/steps-e3.txt (section 2; the same file as
+R/diag/steps-e3.txt), image df534ddd7424 (the drivers log "Starting
+nri-dra-driver-cxl version v0.15.0-48-g366ccf18c-dirty"), scheduler and
+VMs as in FR2b:
+- Before, image f8de05705008: FAIL at step 4, the first settle
+  (/tmp/p13-runs/FR2b-e3-repro, section 3).
+- After: PASS, "done: 31 steps in 9m17s" (B/after.run_tests.log, copy
+  of the test output B/after-out). Every one of the six driver-restarts
+  cut the creation of region0, between "memctl: mem0: created region0
+  (ram)" and "created region0 (devdax ...)", and every new driver
+  released it at start before kubelet's retry made it again, e.g.
+  (B/after-out/nri-dra-driver-cxl.vm0.nri-dra-driver-cxl-vptt8.log and
+  -99cnh.log, UTC):
+    08:23:29.907 claim .../mbt-lnuma-vm0-0-g1-c0-269gz request mem
+    08:23:29.955 memctl: mem0: created region0 (ram) under decoder0.0
+    (the old driver is restarted)
+    08:23:31.895 local: memdev mem0 (serial 0xc100e2e1): its region was
+                 being created: releasing [region0], what the creation
+                 left
+    08:23:31.975 memctl: destroyed region0
+    08:24:49.176 claim .../mbt-lnuma-vm0-0-g1-c0-269gz request mem
+                 (kubelet's retry)
+    08:24:50.081 created region0 (devdax, dax dax0.0, node 2) in 895ms
+    08:24:50.158 onlined slice dax0.0 mode numa size 134217728 node 2
+  The settles after the restarts: ok after 21-25 polls, 74-88 s (the
+  retry at kubelet's resync), the settles after the deletes after 2.
+  The case with a region above (kept for the claim) is not in this
+  replay: no pool claim on vm0's hb0; it is covered by the unit tests
+  (TestLocalCutCreationBelowNewer, -KeptGoes, -FailedBelowNewer).
+- Cluster after the run (exit trap: dra-cleanup and pool-cleanup):
+  the three nodes Ready; namespaces default and kube-* only, no pod
+  outside kube-system, no ResourceClaim, no ResourceSlice, no DaemonSet
+  but kube-proxy; on vm0, vm1, vm2 no memdev or region under
+  /sys/bus/cxl/devices (root0, port1, port2, decoders, nvdimm-bridge0),
+  decoders_committed 0 on every port, preparedClaims.json "{}", no
+  localDevices.json; no CXL type3 device in any qemu (query-pci through
+  qmp-e2e.sock); no fake-cxl-pool server or controller process (the
+  screen session "fake-cxl-pool" of 2026-10-02 is the user's).
+Not run again: FR2b itself (299 steps).
+
+========================================================================
+8. PROPOSED COMMIT MESSAGE
+
+cxl: release or keep the local region of a cut creation
+
+The local allocator saves a new device without its region before it
+creates the region of the first claim of a local memdev. When the
+plugin stopped during the creation, the start forgot the device but not
+the region. The memdev was then never published again, and kubelet's
+retries of the claim failed with "could not find allocatable device".
+A driver restart is enough: it does not wait for a running Prepare.
+
+The device is now saved with its claim and with the name of the region
+before cxl create-region runs, and the start releases that region, or
+deletes it if the cut left it hollow. When a region of another memory
+device lies above it in the decoders, the region is kept for the claim
+instead: its release would leave a hole, and the kernel would make no
+region through those ports until the regions above are gone. The
+Unprepare of the claim releases a kept region, its Prepare again sets
+the region up as a new one: enabled again, its dax device over all of
+it, probed, and zeroed for a shared device. The rollback of a failed
+Prepare keeps such a region too. A region of the creation is not
+released on a memdev that is a pool device now.
+
+A release in order checks again after cxl disable-region, with the lock
+of the region creations held until cxl destroy-region: a region that a
+pool Prepare creates meanwhile keeps the local region. The Unprepare of
+a claim that the local allocator does not know does not wait for the
+Prepares of other claims.
+
+Add memctl EnableRegion and ReleaseRegionInOrder.
+
+========================================================================
+9. STATUS
+
+Fixed in the working tree, not committed: D/local.go, D/local_probe.go,
+D/node_state.go, D/driver.go, D/local_test.go, D/local_shared_test.go,
+D/local_cut_test.go (new), M/memctl.go, M/memctl_test.go,
+M/decoders_test.go, docs/memory/cxl/local.md. The review (section 10)
+is in the working tree only (not staged). Image ddfcc29194a8
+(v0.15.0-48-g366ccf18c-dirty, build/images, the newest: e2e runs take
+it; built after the review). The replay of section 2 PASSed on the
+image before the review, df534ddd7424 (section 7); not run on
+ddfcc29194a8 (the cluster was in use). No change of the model.
+Left:
+- Closed by the review: the hollow region of a killed cxl create-region
+  (finding 4, the name is recorded and the region deleted), and the race
+  of RegionsAbove with the release against a pool Prepare of the same
+  process (finding 3).
+- A cxl create-region of another process (not the driver) between the
+  second check and cxl destroy-region still makes the hole; so does one
+  of the driver whose name differs from the recorded one when the
+  plugin is cut between the end of cxl create-region and the save of
+  the created name (then the record names the other process's region).
+- A record without the recorded name (the create_ram_region of the root
+  decoder unreadable, or an older plugin) takes every region on the
+  memdev as what its creation left, as before.
+- At start, a claim that is not prepared and whose slices fail to
+  release twice in a row (deleteSlices, then releaseOrphans) is dropped;
+  orphanOwner holds the region, and the next Acquire releases it once
+  the orphans go, also below a newer region. One failure keeps it
+  (finding 2).
+- A kept region is set up as a new one: the address line probe runs
+  again on it, and a shared one is zeroed again (finding 1).
+- Regions without any claim (a cut Unprepare, a failed release, a
+  record of an older plugin without its claim) are released at start
+  wherever they are, as before: their claims' Unprepare was what made
+  them go, and the model predicts the hole of that.
+- Two local memdevs on one port: Reconcile goes by serial and does not
+  repeat, so a leftover below another leftover that the same start
+  releases is kept (one local memdev per node on the cluster).
+- reconcileShared: a shared device that is not configured shared any
+  more and has only claims that are not prepared releases its region
+  even below a newer one (shared local devices are not in the model).
+- Model (section 10, finding 8): a kept region of a pod that waits a
+  long kubelet back-off may outlast the settle timeout of the oracle.
+
+========================================================================
+10. REVIEW 2026-11-02
+
+A review of the fix above (working tree), with throwaway overlay tests
+in /tmp/b22review/. Each finding was checked against the code; all were
+applied. Unit tests and mutations: section 6. Line numbers are of the
+working tree after the review.
+
+1. CONFIRMED. A kept region that kept its dax device in the record (Dax
+   set) blocked every Acquire on the memdev. Reproduced with the
+   reviewer's TestReviewKeptDisabledDaxSet: a Prepare cut after its
+   slice was saved, with region9 above: region0 kept with Dax dax0.0
+   and no slices; the Unprepare of that claim cut after cxl
+   disable-region; the restart keeps the disabled region0 again with
+   Dax set; Acquire(u2) failed: "open .../region0/dax_region0/
+   dax_region/available_size: no such file or directory" (device()
+   returned the device as set up, addSlice read the missing dax region).
+   The shared keep path was broken too: keepRegion's deleteOrphans
+   resized the shared dax0.0 to 0 and the record kept it, so the next
+   AcquireShared would have handed out a slice of 0 bytes.
+   Fix: keepRegion (D/local.go:1508) sets Dax "": a kept region has no
+   slices, and is set up again by the next Acquire (setUpRegion: cxl
+   enable-region if it is disabled, else spanKept). That covers a
+   failed DaxRegionInfo too. Cost: a kept region is probed again (and a
+   shared one zeroed again) when it is set up.
+   Test: TestLocalKeptRegionSetUpAgain. TestLocalCutAfterSlice,
+   TestLocalFailedCreationBelowNewer and TestPrepareLocalFailedBelowNewer
+   now expect Dax "" for a kept region.
+2. CONFIRMED. At start, a claim that is not prepared and whose
+   deleteSlices failed once went to orphanOwner (keepOrphans) and was not
+   counted in unfinished; releaseOrphans then released the slice, held
+   was false, unfinished empty, and the default branch released the
+   region below the newer one. The reviewer's TestReviewOrphanRetryLosesKeep
+   ran "cxl disable-region region0", "cxl destroy-region region0" with
+   region9 above.
+   Fix: reconcileDevice (D/local.go:1559) counts every claim that is not
+   prepared as unfinished, also one handed to keepOrphans, and takes the
+   unfinished claims out of the record for the decision; after
+   releaseOrphans the region is held if the record still has claims
+   (prepared ones, or orphans that cannot be released), else released
+   in order or kept for the unfinished claims (releaseOrKeep).
+   Test: TestLocalCutAfterSliceOrphaned. Two failures in a row: Left.
+3. PLAUSIBLE, fixed. releaseOrKeep checked RegionsAbove and then
+   released (offline, cxl disable-region, cxl destroy-region); a pool
+   Prepare holds only its own lock and regionCreateMu around its exec of
+   cxl create-region, so it could commit a decoder above in between.
+   Fix: memctl ReleaseRegionInOrder (M/memctl.go:1218, releaseRegion
+   :1228): no release while a region of another memdev lies above;
+   after cxl disable-region it takes regionCreateMu, checks again, and
+   runs cxl destroy-region under it; a region that came above leaves
+   the region disabled, and the local allocator keeps it (releaseInOrder
+   D/local.go:1394, used by releaseOrKeep, reuse, sharedDevice and the
+   alias release of createProbedRegion D/local_probe.go:273); setUpRegion
+   enables it again (after fix 1). Lock order: a.mu -> regionCreateMu
+   (local); the pool lock -> regionCreateMu (pool create-region; its
+   note saves the preparing file and takes no lock); DeleteHollowRegion
+   takes regionCreateMu alone. Nothing holds regionCreateMu and waits for
+   a.mu or the pool lock. The only exec of cxl create-region is memctl
+   createRegion (M/memctl.go:969), under regionCreateMu. At start there
+   is no race (Reconcile runs before startPoolDriver); the same function
+   is used. A cxl create-region of another process is not covered: Left.
+   Tests: M TestReleaseRegionInOrder, TestLocalRegionComesAboveInRelease.
+4. PLAUSIBLE, implemented fully (not only the device() case 2 check).
+   The record names the region before cxl create-region runs (Creating,
+   regionNote with memctl CreateRegionNoted, as the pool driver's
+   regionNote); createdRegions is that region if the memdev has it, else
+   none; deleteHollowCreated deletes it when a killed cxl create-region
+   left it hollow (DeleteHollowRegion, under regionCreateMu); a record
+   without the name (an older plugin) falls back to every region on the
+   memdev. adoptCreated takes the one region of a creation as a region
+   kept for its claims, in reconcileCreating, in createRegion's failure
+   path, and in device() (reuse, D/local.go:676) and sharedDevice():
+   the adopt-if-above rule of device() case 2 now holds there (released
+   in order, else set up). Region stays "" until the region is set up,
+   so no other code reads a region that may not exist. This closes the
+   "hollow region" item of the Left list.
+   Test: TestLocalCutCreationRecordedRegion.
+5. PLAUSIBLE, fixed. The Unprepare of a claim that was never prepared
+   took a.mu, behind any running local Prepare (a whole shared device's
+   zeroing). Fix: localAllocator.release (Release and ReleaseFailed)
+   returns at once when the snapshot does not list the claim (listed,
+   D/local.go:1233, under snapMu). Safe: the callers hold the lock of the
+   claim; only the claim's own Acquire adds it to a device, and it
+   updates the snapshot before it creates a region (a new device) or
+   right after the slice; the Acquires of other claims only remove its
+   entries (reuse releasing a kept region). A stale listing only takes
+   the slow path. Test: TestUnprepareUnknownClaimDoesNotWait.
+6. Done. testContext (D/local_cut_test.go): context.WithTimeout of
+   t.Context(), 20 s, in the cut tests and in the acquire, acquireShared
+   and cutLocal helpers. The "no spanKept" mutation now fails (3
+   subtests, 63 s) instead of hanging go test.
+7./8. Model check (read-only; nothing in T/model changed). The model
+   predicts no local Prepare that fails on its own below a pool region:
+   the only failed local Prepare it predicts is "blocked by a decoder
+   hole" (T/model/stack.go:443-458: a prepare is blocked only when the
+   key has no region and the stack has a hole). Then cxl create-region
+   fails at "set target0", the tool deletes its region, the memdev has
+   no region, RegionsAbove is nil, and nothing is kept. Lend failures
+   cannot happen in the model's preconditions (VLeaseGet,
+   T/model/actions.go:949-960, 741-748, synchronous); dnuma is never
+   blocked; the pool's refused/probe claims are not local; real errors
+   (aliasing, busy kmem, no room) are not modelled. Where the keep does
+   happen: faults inside the running driver that cancel a Prepare
+   (kubelet-restart, driver-restart and fencing-switch by SIGTERM, a
+   kubelet timeout). These match A9: the prepare of the window stays,
+   the kept region sits where "local first" puts it, kubelet's retry
+   slices it, a delete before the retry makes the hole at the Unprepare
+   that the model predicts for that order. The oracle waits while the
+   claim is kept (oracle.go:1755 "local region ... not released", and
+   localDevices.json :1891 not prepared, :1894 slices, :1898 count),
+   about 75-90 s until kubelet's retry, within the 180 s settle timeout.
+   One corner case (low confidence, not seen in a run): two pods
+   unblocking on one stack after a hole cleared (lnuma@vm0#0 and
+   xdax-b@vm0#0), lnuma's retry creates the local region and xdax-b's
+   pushes b-pooled0 above it, and a driver-restart of vm0 cuts lnuma in
+   its creation: the region is kept for lnuma. checkPorts accepts it
+   (unblocking keys, oracle.go:1488), but checkRegions and
+   checkStateFiles count only Running pods and wait for lnuma's next
+   retry; a pod blocked for long can be at kubelet's back-off cap (about
+   5 min), beyond the settle timeout: a spurious settle failure. Before
+   the fix the same race failed differently (a hole, lnuma blocked
+   again, checkUnblocking :1008).
+   Suggested model change: in checkRegions and checkStateFiles accept a
+   local region without slices, and a localDevices.json claim without
+   slices that is not prepared, when its UID is that of a local pod of
+   the VM that waits for kubelet's retry (waitsRetry), as unblockingKey
+   does in checkPorts. Optionally a model test: "create lnuma@vm0#0,
+   create xdax-b@vm0#0, kubelet-restart vm0, settle" has an outcome
+   [local, b-pooled0] with lnuma Running, and with "delete lnuma@vm0#0"
+   before the settle an outcome [hole, b-pooled0]; and a note under A9:
+   a failed or cut local Prepare may leave its claim holding the region
+   without slices, listed in localDevices.json, until its retry or its
+   Unprepare.
+The reviewer's overlay tests after the review: TestReviewKeptDisabledDaxSet
+stops at its first check (it expects the old Dax dax0.0 of a kept
+region); the same steps pass in TestLocalKeptRegionSetUpAgain.
+TestReviewOrphanRetryLosesKeep keeps the region now. The regression
+tests of section 6 replace them.
+Checks: gofmt -s, go vet, go test -race ./cmd/plugins/dra-driver-cxl/...
+./pkg/cxl/... -skip TestMemdevSettings: ok; golangci-lint of the two
+packages: only the 3 old errcheck findings. Image ddfcc29194a8.
