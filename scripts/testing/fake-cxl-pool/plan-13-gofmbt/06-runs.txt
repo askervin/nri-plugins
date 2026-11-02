@@ -670,3 +670,51 @@ FR2b 2026-11-02 08:39, image f8de05705008 (driver v0.15.0-47-g73dba0f5a-
    clean after teardown (verified over ssh/qmp; vm0's empty leftover
    state files removed by hand). FR3 not run (FR2b failed). Copies:
    /tmp/p13-runs/FR2b, /tmp/p13-runs/FR2b-e3-repro.
+FR2c 2026-11-02 10:38, image df534ddd7424 (driver v0.15.0-48-g366ccf18c-
+   dirty, the bug-22 fix; imported on vm2, vm0, vm1: run log), scheduler
+   localhost/kube-scheduler:v1.37.1-dra-requeue.3 (stall window 30 s).
+   Profile full, MBT_FENCING=none (all three drivers log it before step
+   1), MBT_REBOOT=qemu, new random seed 1793608676, 60m, 300
+   observations kept. PASS: 1088 steps in 1h0m38s, clean teardown.
+   Steps: settle 208, read 146, write 140, delete 121, create 121 (dnuma
+   8), crash 97, driver-restart 41, kubelet-restart 37, containerd-
+   restart 34, driver-kill 32, server-restart 27, ctrl-start 23, ctrl-
+   kill 23, ctrl-restart 20, lease-get 9, node-reboot 6 (qemu; vm0 x3,
+   vm1 x3; 79.6-81.8 s each; the settle after each 27.6-42.4 s, no
+   prediction miss), lease-put 3; fencing-switch 0. Coverage 2489 in
+   round 1; plans 1094 (reused 1044, replanned 25), planning 10m42s,
+   bash waited 2m36s. At least 10 settles waited on pods blocked by a
+   decoder hole (bug-02, predicted, A9), all accepted. The bug-22 fix
+   was exercised live twice (first time in a random-seed run): "create
+   lsteer@vm2#0" then "driver-restart vm2" (step 617-618), and "create
+   ldax@vm1#0" then "containerd-restart vm1" (661-663) each cut the
+   first local Prepare of an empty memdev; the new driver logged "its
+   region was being created: releasing [regionK], what the creation
+   left", destroyed the region in 90-153 ms and the pod ran after
+   kubelet's Prepare retry (settles of 1m12s and 1m15s, inside the
+   180 s timeout). Cluster clean after teardown (checked over ssh).
+   Copy: /tmp/p13-runs/FR2c.
+FR3 2026-11-02, image df534ddd7424 (confirmed from the run log, vm2, vm0,
+   vm1), scheduler v1.37.1-dra-requeue.3. A first start (11:46) took
+   the newest image by mtime, ddfcc29194a8 (built 11:24 during FR2c,
+   with driver edits that FR2c did not have), not the one named in the
+   task: aborted at step 13, log /tmp/p13-runs/FR3-aborted-image-
+   ddfcc.run_tests.log, cluster clean; the run of record imports
+   df534ddd7424 (its tar's mtime set to now for the start and put back
+   after the imports). Profile fullp, MBT_FENCING=allowed-mems (drivers
+   log it), MBT_REBOOT=guest (the bug-17 qemu precondition ok), new
+   random seed 1793613055, 60m, 300 observations kept. PASS: 677 steps
+   in 1h0m35s, clean teardown. Steps: settle 115, create 59 (dnuma 2),
+   delete 59, write 57, read 54, driver-kill-at 47, pwrite 43, pread
+   37, crash 36, driver-restart 23, hold 21, kubelet-restart 18,
+   containerd-restart 16, driver-kill 16, unhold 14, ctrl-start 11, ctrl-
+   kill 11, server-restart 11, lease-get 8, ctrl-restart 8, pwipe 6,
+   lease-put 4, node-reboot 3 (guest; vm1 x2, vm0 x1; 46-47 s each, the
+   settle after 72-76 s, no prediction miss). Coverage 2931 in round 1;
+   plans 671 (reused 649, replanned 11), planning 39m34s, bash waited
+   27m35s (45% of the run, hence few steps). driver-kill-at fired 0
+   times of 47 armed (42 results: disarmed 36, expired 6; FR1c: 6 of
+   91), a coverage gap of the seed, no failure. Held plse fs leases
+   stayed Releasing (unmount EBUSY retries, 3.7 and 7.3 min) until the
+   holder pod was deleted: by design. Cluster clean after teardown
+   (checked over ssh). Copy: /tmp/p13-runs/FR3.

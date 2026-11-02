@@ -57,7 +57,13 @@ fencing in mode allowed-mems (a container has its claimed CXL node and
 no other CXL node with memory), memory.high of steered containers,
 driver restarts and panics.
 Fencing (A36-A40, 13-design-fencing.txt, implemented and reviewed
-2026-10-29; model runs FR1-FR3 in 15-runs-fencing-reboot.txt): MBT_FENCING=allowed-mems|none|
+2026-10-29). Model runs (15-runs-fencing-reboot.txt): FR1 (executor
+E-FR1), FR1b (bug-20), FR2 (bug-21), FR2b (bug-22) failed and were
+fixed; FR1c PASS 2 h (fullp, switch, guest reboots), FR2c PASS 1 h
+(full, none, qemu restarts), FR3 PASS 1 h (fullp, allowed-mems,
+guest reboots), all on df534ddd7424; B22R PASS and FR4 (1196 steps,
+no difference, stopped on request) on ddfcc29194a8. Runs paused
+2026-11-02 until the next driver feature: MBT_FENCING=allowed-mems|none|
 switch; verb fencing-switch (ConfigMap patched, every driver
 restarted); exact O5: allowed-mems D+E+(M\F), none D+M, "loose"
 containers after a switch to none; kind dnuma (local numa slice on

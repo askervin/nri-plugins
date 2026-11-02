@@ -848,3 +848,171 @@ FR2b 2026-11-02 08:39 (local), image f8de05705008 (confirmed from the
    /tmp/p13-cluster.lock is released at the end of this task.
 
 FR3: not run (FR2b failed; the task's rule).
+
+FR2c, FR3 (2026-11-02, run agent "sonnet-run3")
+===============================================
+Plan: FR2c (full, fencing none, reboot qemu, 60m), then FR3 (fullp,
+allowed-mems, guest, 60m) only if FR2c passed. FR2c PASSed, FR3 PASSed
+(after one aborted start, below). Both on image df534ddd7424 (bug-22 fix
+on top of 366ccf18c; drivers log "version v0.15.0-48-g366ccf18c-dirty").
+Variables as in FR2b. Times local (UTC+2) unless marked UTC; driver logs
+are UTC. Lock /tmp/p13-cluster.lock (owner sonnet-run3) taken 10:37,
+released at the end of this task.
+
+FR2c 2026-11-02 10:38, image df534ddd7424 (confirmed from the run log:
+   "ctr -n k8s.io images import ...nri-dra-driver-cxl-image-df534ddd7424
+   .tar" on vm2 (run_tests.log:149, the playbook), vm0 (:863) and vm1
+   (:869)), scheduler localhost/kube-scheduler:v1.37.1-dra-requeue.3
+   (:1923 "version \"v1.37.1-dra-requeue.3\"", :1924 "stall window: 30s:
+   the kube-scheduler has the dra-requeue fix of bug-08"). Profile
+   full, MBT_FENCING=none (all three drivers log "has defaults.
+   container.fencing: none" before step 1, :978-981), MBT_REBOOT=qemu,
+   new random seed 1793608676 (MBT_SEED unset), 60m, 300 observations
+   kept. qemu of vm0 and vm1 started 10:22 today (pids 2466180, 3161486,
+   the current Q/build binary); vm2 the old (deleted) one, never
+   rebooted. PASS: 1088 steps in 1h0m38s (mbt-cxl 10:39:21-11:39:59; the
+   run 10:37:47-11:40:56), clean teardown (Test verdict: PASS).
+   Steps: settle 208, read 146, write 140, delete 121, create 121 (dnuma
+   8: vm0#0 x4, vm1#0 x4), crash 97, driver-restart 41, kubelet-restart
+   37, containerd-restart 34, driver-kill 32, server-restart 27, ctrl-
+   start 23, ctrl-kill 23, ctrl-restart 20, lease-get 9, node-reboot 6,
+   lease-put 3; fencing-switch 0 (fencing none, as designed); profile
+   full does not generate the persistent verbs (pread, pwrite, hold,
+   pwipe, ...) or driver-kill-at. Coverage 2489 strings in round 1; plans 1094 (reused 1044,
+   replanned 25), planning 10m42s, bash waited 2m36s. Settles 208, mean
+   9.6 s, longest 82 s, none timed out.
+   node-reboot qemu fired 6 times with no prediction miss: step 48 vm0
+   (81.4 s), 103 vm1 (80.9 s), 129 vm0 (80.8 s), 505 vm1 (79.6 s), 588
+   vm0 (81.8 s), 883 vm1 (80.3 s), all "status 0"; the settle after
+   each ok (31.4, 38.7, 42.4, 31.5, 27.6, 31.5 s). A reboot of a VM
+   that holds a decoder hole (the FR2 trap) was not provoked in this
+   seed; "blocked on vm0/vm2" (decoder hole, bug-02, predicted by the
+   model, A9) occurred in at least 10 settles (steps 97, 124, 520,
+   539, 565, 581, 826, 835, 899, 949) and the oracle accepted every
+   one, e.g. step 835 "pod sro-b@vm0#0 ... decoder hole of vm0/hb0
+   [hole,b-pooled0,local]"; the driver's create_region "failed to set
+   target0" error lines (8, 08:46-08:47 UTC, vm0) match step 97's
+   blocked pods at 10:46 local (matched by time, not traced one by
+   one).
+   bug-22 fix exercised live twice (the first time in a random-seed model
+   run; the b22 replay was a fixed list of steps): the
+   driver stopped in the middle of the first local Prepare of an empty
+   memdev, and the new driver logged the new line
+   "local: memdev memN (serial 0xc100e2e1): its region was being
+   created: releasing [regionK], what the creation left", then
+   "memctl: destroyed regionK" and "released regionK in 89..153 ms".
+   Case 1: step 617 "create lsteer@vm2#0" then step 618 "driver-restart
+   vm2" (new driver 09:16:52.56 UTC, released region2 at 09:16:52.771;
+   the kubelet's Prepare retry at 09:18:01.7 created region2 in 890 ms;
+   step 619's settle 1m11.9 s ok). Case 2: step 661 "create ldax@vm1#0"
+   (662 read) then step 663 "containerd-restart vm1" (new driver
+   09:20:51.43 UTC: releasing [region0], released in 89.6 ms; step
+   664's settle 1m15.4 s ok). These are the FR2b/E3 pair; before the
+   fix a node stayed without its local memdev for good. The ~72-75 s
+   of the two settles is the kubelet's retry interval of the failed
+   Prepare (FR2b: retries 80 s apart); the 180 s settle timeout holds
+   it with ~100 s to spare.
+   Noise in the driver logs, all pre-existing and not new: "handling
+   stream failed ... Unimplemented device health" (302), "update
+   ResourceSlice ... some fields were dropped by the apiserver" (FR1b,
+   chronic).
+   Cluster after FR2c: clean (checked over ssh before FR3 started: the
+   three nodes Ready, kube-system only, no region or memdev under
+   /sys/bus/cxl/devices, preparedClaims.json "{}" on all three, no pool
+   server or controller process).
+   Copy: /tmp/p13-runs/FR2c (out/ = the test output dir, run_tests.log).
+
+FR3 2026-11-02, two starts.
+   Start 1 (11:46, aborted by me after 3 min, step 13): the run took the
+   NEWEST image of N/build/images by mtime, which was no longer
+   df534ddd7424: ddfcc29194a8 had been built at 11:24:44, during FR2c
+   (run log: images import ...-ddfcc29194a8.tar), after edits at 11:03-
+   11:22 of pkg/cxl/memctl/{decoders_test,memctl}.go and cmd/plugins/
+   dra-driver-cxl/{local,local_probe,node_state,local_test,
+   local_shared_test,local_cut_test}.go, which FR2c did not have. The
+   task named df534ddd7424, so I stopped that start (SIGTERM to the
+   test's run.sh: the exit trap ran, "Test verdict: FAIL" is the abort;
+   cluster checked clean afterwards) and kept its log as
+   /tmp/p13-runs/FR3-aborted-image-ddfcc.run_tests.log (seed 1793612801,
+   no result of any value). No source or build file edited. To have
+   the run import df534ddd7424 I set the mtime of that one image file
+   to now (touch) before start 2 and put it back to its original
+   10:19:36.781279235 right after the three imports were in the log;
+   build/images has the same mtimes as before (ddfcc29194a8 11:24:44
+   newest). NOTE FOR THE ORCHESTRATOR: ddfcc29194a8 (later driver edits)
+   is not covered by FR2c or FR3.
+   Start 2 (the run of record), 11:50, image df534ddd7424 (log lines
+   149 vm2, 853 vm0, 859 vm1), scheduler v1.37.1-dra-requeue.3 (:1913),
+   stall window 30 s (:1914). Profile fullp, MBT_FENCING=allowed-mems
+   (all three drivers log "has defaults.container.fencing:
+   allowed-mems", :969-971), MBT_REBOOT=guest (precondition: "the qemu of
+   vm1 and vm0 has the fix of bug-17", :181-183, pids 3395218, 3338114,
+   binary built 2026-10-29 08:59:50), new random seed 1793613055, 60m,
+   300 observations kept. PASS: 677 steps in 1h0m35s (mbt-cxl 11:52:16-
+   12:52:51; run ends 12:53:51), clean teardown (Test verdict: PASS).
+   Steps: settle 115, create 59 (dnuma 2: vm0#0, vm1#0), delete 59,
+   write 57, read 54, driver-kill-at 47 (ns 11, mount 12, bind 12,
+   region 12), pwrite 43, pread 37, crash 36, driver-restart 23, hold 21
+   (plse 9), containerd-restart 16, driver-kill 16, kubelet-restart 18,
+   unhold 14, ctrl-start 11, ctrl-kill 11, server-restart 11, lease-get
+   8, ctrl-restart 8, pwipe 6, lease-put 4, node-reboot 3; fencing-
+   switch 0 (allowed-mems fixed). Persistent verbs on plse 17 pread, 15
+   pwrite, 9 hold, 6 unhold, on pfsc/pfsd/xpb/pbro/pbad also; pwipe c 6.
+   Coverage 2931 strings in round 1; plans 671 (reused 649, replanned
+   11), planning 39m34s, bash waited 27m35s (45% of the run: fullp has
+   64 slots, 370 actions, up to ~1.3M paths; hence only 677 steps vs
+   1727 in FR1c's 120 min). Settles 115, mean 9.6 s, longest 90.5 s, none
+   timed out.
+   node-reboot guest fired 3 times with no prediction miss: step 163
+   vm1 (46.2 s, boot 4d49cc33 -> 37aafbf1, ssh after 14.9 s, driver
+   ready 44.2 s after the reboot), 208 vm1 (46.1 s), 521 vm0 (47.0 s);
+   the settles after: 75.5 s (21 polls), 71.6 s (20 polls, after a
+   pread and a hold), 72.2 s (20 polls), like FR1's 71 s.
+   driver-kill-at: 47 armed, 0 fired (42 results logged: "fired":
+   false, disarmed by containerd-restart 13, driver-kill 11, driver-
+   restart 10, node-reboot 2, expired 6; FR1c had 6 fired of 91, so 0
+   of 42 is ~6% at that rate): a coverage gap of this seed, not a
+   failure. Nothing in this run cut a persistent Prepare at a chosen
+   marker, and the bug-22 release line did not occur (no "was being
+   created" in any driver log).
+   plse held leases: lease-put "done 3: ok (20.5 s)" (still Releasing
+   after the 20 s wait of MBT_PLEASE_PUT_WAIT: predicted) at steps 360
+   and 585; the driver logged "unpreparing claim ...: lease 7dd34f8e:
+   unmounting ...: device or resource busy" 18 times from 12:27:18 (and
+   32 times for f52bb9ce from 12:45:15) until "delete plse@vm1#0" at
+   12:30:58 (resp. "delete plse@vm2#0" at 12:52:28) released the
+   holder: unbound 12:31:00 (12:52:31), "released" 12:31:07. By design
+   (a held lease cannot be unmounted), not a bug; "connection
+   refused" appears only twice in mbt-exec.log, both in the settle-time
+   inspection of a plse lease (handled as a wait since FP5).
+   Cluster after FR3: clean (verified over ssh): three nodes Ready,
+   kube-system only (kubectl: no pod, ResourceClaim or DaemonSet
+   elsewhere), no region or memdev under /sys/bus/cxl/devices on
+   vm0/vm1/vm2, preparedClaims.json "{}" on all three, no pool server
+   or controller process on the host, no run_tests/mbt process.
+   /etc/cdi/spec.3809626605.tmp (empty) on vm1 is the old leftover of
+   2026-10-28 (12-findings-reboot.txt 8), left alone. The exit trap of
+   both runs found no region left, so it cleaned the state files of
+   every VM (no manual cleanup needed, unlike FR2b).
+   Copy: /tmp/p13-runs/FR3 (out/, run_tests.log, and the aborted start's
+   log); runs summary FR2c/FR3 above; mbt-steps.txt of each is in out/
+   for a replay.
+
+Verdicts FR2c, FR3: PASS, PASS. First model runs with the bug-21 and
+bug-22 fixes: FR2c is the FR2 configuration (full, none, qemu) that
+failed with bug-21 and (as FR2b) with bug-22, now 1088 steps and six
+qemu node-reboots clean, and it exercised the bug-22 fix twice.
+
+B22R, FR4 (2026-11-02, orchestrator)
+------------------------------------
+B22R: the bug-22 replay (/tmp/p13-runs/b22/steps-e3.txt) on image
+ddfcc29194a8 (bug-22 and its review fixes): PASS. Copy:
+/tmp/p13-runs/B22R.
+FR4: profile fullp, MBT_FENCING=switch, MBT_REBOOT=guest, 120m, image
+ddfcc29194a8. Stopped by the user's request after 1196 steps, every
+step ok, no oracle difference, no driver panic (not a verdict). The
+stop skipped the exit trap; the cluster was cleaned with a one-step
+replay (/tmp/p13-runs/cleanup, PASS) and checked: no memdev or region
+in any guest, no pods, no driver DaemonSet, no pool server. Log:
+/tmp/p13-runs/FR4.run_tests.log.
+Paused: the next gofmbt runs come after the next driver feature.
