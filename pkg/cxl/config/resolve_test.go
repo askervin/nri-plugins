@@ -207,7 +207,30 @@ func TestResolveMerge(t *testing.T) {
 				class(`"device": {"mode": "dax", "readOnly": true}`, "r"),
 				claimed(`"device": {"readOnly": false}`),
 			},
-			want: `{"device":{"mode":"dax"}}`,
+			want: `{"device":{"mode":"dax","readOnly":false}}`,
+		},
+		{
+			name: "readOnly false is kept",
+			entries: []cfg{
+				claimed(`"device": {"mode": "fs", "readOnly": false, "fsType": "ext4"}`),
+			},
+			want: `{"device":{"mode":"fs","readOnly":false,"fsType":"ext4"}}`,
+		},
+		{
+			name: "null removes readOnly",
+			entries: []cfg{
+				class(`"device": {"mode": "fs", "readOnly": false, "fsType": "ext4"}`, "r"),
+				claimed(`"device": {"readOnly": null}`),
+			},
+			want: `{"device":{"mode":"fs","fsType":"ext4"}}`,
+		},
+		{
+			name: "null removes readOnly and the device section",
+			entries: []cfg{
+				class(`"device": {"readOnly": false}`, "r"),
+				claimed(`"device": {"readOnly": null}`),
+			},
+			want: `{}`,
 		},
 		{
 			name: "pool opaque merges per key",

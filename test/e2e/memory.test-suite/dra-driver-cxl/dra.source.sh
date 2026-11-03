@@ -48,7 +48,7 @@ DRA_DAEMONSET=nri-dra-driver-cxl
 DRA_CONTAINER=nri-dra-driver-cxl
 DRA_POD_LABEL=app.kubernetes.io/name=nri-dra-driver-cxl
 # The DeviceClasses that the chart creates.
-DRA_CLASSES=(cxl-local cxl-local-shared cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease)
+DRA_CLASSES=(cxl-local cxl-local-shared cxl-local-persistent cxl-pool cxl-pool-shared cxl-pool-persistent cxl-region cxl-dram cxl-lease)
 # The "shares" capacity of every shared device, local or pool
 # (device.SharesUnlimited, printed 1M). A claim that requests no shares
 # consumes all of them, the device exclusively; shares: "1" is one share.
@@ -96,6 +96,9 @@ DRA_POOL_DRIVER=cxl-pool.nri.io    # pool devices, published by the controller
 # one per device and access: <serial hex without 0x>-<direct|cached>.
 DRA_POOL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_POOL_DRIVER/mounts
 DRA_LOCAL_DRIVER=cxl.nri.io        # node-local CXL and DRAM, published by the driver
+# The node mounts of persistent local memdevs, named like those of pool
+# devices.
+DRA_LOCAL_MOUNT_DIR=/var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/mounts
 # The opaque configuration of the claims and DeviceClasses of both drivers
 # (docs/memory/cxl/usage.md): one kind with the sections device (how the
 # kubelet plugin prepares a device), container (how the NRI plugin manages
@@ -1253,25 +1256,26 @@ dra-lease-cdi-assert() { # script API
 }
 
 dra-fs-mounts() { # script API
-    # Usage: dra-fs-mounts VMDIR
+    # Usage: dra-fs-mounts VMDIR [DIR]
     #
-    # Print the mounts under $DRA_POOL_MOUNT_DIR in the mount namespace of
-    # the VM of VMDIR as a JSON list, quietly, one object per mount:
-    # target, source, fstype, options (the superblock options), and for a
+    # Print the mounts under DIR (default $DRA_POOL_MOUNT_DIR) in the mount
+    # namespace of the VM of VMDIR as a JSON list, quietly, one object per
+    # mount: target, source, fstype, options (the superblock options, "ro"
+    # or "rw" first), vfs (the options of the mount itself), and for a
     # loop device source its backing file (backing), direct I/O (dio) and
     # read-only (ro) flags ("" for other sources). COMMAND_OUTPUT has the
     # list. Return non-zero if the mounts cannot be read or a line of
     # findmnt cannot be parsed.
-    local lines
-    lines=$(dra-vm-command-q "$1" "findmnt -rn -o TARGET,SOURCE,FSTYPE,FS-OPTIONS | while read -r t s f o; do
-    case \"\$t\" in $DRA_POOL_MOUNT_DIR/*) ;; *) continue;; esac
-    o=\${o:--} b=- d=- r=-
+    local lines dir="${2:-$DRA_POOL_MOUNT_DIR}"
+    lines=$(dra-vm-command-q "$1" "findmnt -rn -o TARGET,SOURCE,FSTYPE,FS-OPTIONS,VFS-OPTIONS | while read -r t s f o v; do
+    case \"\$t\" in $dir/*) ;; *) continue;; esac
+    o=\${o:--} v=\${v:--} b=- d=- r=-
     case \"\$s\" in /dev/loop[0-9]*) l=/sys/block/\${s#/dev/}; b=\$(cat \$l/loop/backing_file); d=\$(cat \$l/loop/dio); r=\$(cat \$l/ro);; esac
-    echo \"\$t \$s \$f \$o \$b \$d \$r\"
+    echo \"\$t \$s \$f \$o \$v \$b \$d \$r\"
 done") || return 1
     COMMAND_OUTPUT=$(python3 -c '
 import json, sys
-keys = ["target", "source", "fstype", "options", "backing", "dio", "ro"]
+keys = ["target", "source", "fstype", "options", "vfs", "backing", "dio", "ro"]
 out = []
 for line in sys.stdin.read().splitlines():
     fields = line.split()

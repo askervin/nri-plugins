@@ -104,7 +104,7 @@ func refusedMessage(st *State, i int) string {
 	case pd.NS != TriYes:
 		return "device " + s + ": " + refusedNoNS + " in region0: has a writer written the device?"
 	}
-	return "device " + s + ": " + simBlockdev(sl.Dev) + " has " + refusedNoErofs + ": invalid argument"
+	return "device " + s + ": " + simBlockdev(sl.Dev) + " " + refusedNoErofs + " (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType"
 }
 
 // pmemPrepared tells per device and access which persistent claims and

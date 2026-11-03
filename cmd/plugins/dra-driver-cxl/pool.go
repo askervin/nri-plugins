@@ -87,15 +87,9 @@ type poolDriver struct {
 	lender     *companionLender              // lends companion claims
 	nri        *nriPlugin                    // a Prepare waits for its first Synchronize (waitNRI); nil: none
 	retryDelay time.Duration
-	mounter    nodeMounter   // node mounts and loop devices of mode fs
-	holderWait time.Duration // how long Unprepare waits for a held block device
-	// leaseFsRoot is the directory of the lease-fs directories of the
-	// lease claims, where the binds of fs leases are; "": no sweep of
-	// stale binds at start.
-	leaseFsRoot string
-	// staleBinds are lease binds of no prepared claim that could not be
-	// unmounted; releaseDevices tries again.
-	staleBinds []staleBind
+	// pn are the node mounts, block devices and lease binds of the
+	// persistent devices (persistent.go).
+	pn *persistentNode
 	// fence gets the NUMA nodes of devices in mode numa before their
 	// memory goes online, nil for none.
 	fence *nodeFence
@@ -117,10 +111,6 @@ type poolDriver struct {
 	// bootID is the boot id of the running kernel, "" if it is unknown:
 	// the claims prepared in another boot are not prepared any more.
 	bootID string
-	// unrestored are the node mounts (-> why) that the start could not
-	// mount again: the prepared claims of such a node mount, but companion
-	// claims, have no CDI device until it is mounted again (remount).
-	unrestored map[string]error
 
 	// serials is a snapshot of the serials of prepared and inflight
 	// devices, and of the devices of claims whose Prepare did not finish,
@@ -160,7 +150,7 @@ type preparedPoolDevice struct {
 	Shared    bool   `json:"shared"`
 	Size      uint64 `json:"size"`
 	Mode      string `json:"mode"`               // api.ModeNUMA, ModeDax, ModeBlock or ModeFs
-	ReadOnly  bool   `json:"readOnly,omitempty"` // dax, block: the CDI device node allows reads only; fs: always
+	ReadOnly  bool   `json:"readOnly,omitempty"` // dax, block: the CDI device node allows reads only; fs: the mount
 	Memdev    string `json:"memdev"`
 	Region    string `json:"region"`
 	Dax       string `json:"dax"`
@@ -175,10 +165,13 @@ type preparedPoolDevice struct {
 	BlockDevice string `json:"blockDevice,omitempty"` // its block device, /dev/pmemK
 	BlockMajor  int    `json:"blockMajor,omitempty"`
 	BlockMinor  int    `json:"blockMinor,omitempty"`
-	Access      string `json:"access,omitempty"`     // fs: api.AccessDirect or api.AccessCached
-	Path        string `json:"path,omitempty"`       // fs: the directory in the container
-	NodeMount   string `json:"nodeMount,omitempty"`  // fs: the node mount of the serial and access
-	LoopDevice  string `json:"loopDevice,omitempty"` // fs, cached: the loop device of the node mount
+	Access      string `json:"access,omitempty"` // fs: api.AccessDirect or api.AccessCached ("" in a record of preparing: the default)
+	// FsType is the filesystem type of mode fs: the one mounted, the
+	// declared one ("": detect) in a record of preparing.
+	FsType     string `json:"fsType,omitempty"`
+	Path       string `json:"path,omitempty"`       // fs: the directory in the container
+	NodeMount  string `json:"nodeMount,omitempty"`  // fs: the node mount of the serial and access
+	LoopDevice string `json:"loopDevice,omitempty"` // fs, cached: the loop device of the node mount
 	// ResultSettings are the container settings of the resolved
 	// MemoryConfig of the result and their origins.
 	config.ResultSettings
@@ -201,6 +194,7 @@ func (d *preparedPoolDevice) lent(driver string) lentDevice {
 		DaxDevice:   d.DaxDevice,
 		BlockDevice: d.BlockDevice,
 		Access:      d.Access,
+		FsType:      d.FsType,
 		NodeMount:   d.NodeMount,
 	}
 }
@@ -218,6 +212,7 @@ func (d *preparedPoolDevice) memory(key string) api.Memory {
 		Dax:      d.DaxDevice,
 		Path:     d.memoryPath(),
 		Access:   d.Access,
+		FsType:   d.FsType,
 		ReadOnly: d.ReadOnly,
 	}
 }
@@ -251,6 +246,7 @@ func (d *preparedPoolDevice) untouched() preparedPoolDevice {
 		ReadOnly:   d.ReadOnly,
 		Persistent: d.Persistent,
 		Access:     d.Access,
+		FsType:     d.FsType,
 		Path:       d.Path,
 		Node:       -1,
 	}
@@ -313,28 +309,50 @@ type preparingRegion struct {
 
 // poolDeviceData is claim.status.devices[].data written by the pool
 // controller. Serial, shared and size are required; exclusive (a shared
-// device whose claim consumed all of its shares) and persistent are false
-// when missing.
+// device whose claim consumed all of its shares), persistent, singleHost
+// (no other host has the device while the claim is allocated) and
+// coherent (other hosts' writes are visible without cache maintenance) are
+// false when missing.
 type poolDeviceData struct {
 	Serial     string  `json:"serial"`
 	Shared     *bool   `json:"shared"`
 	Size       *uint64 `json:"size"`
 	Exclusive  bool    `json:"exclusive"`
 	Persistent bool    `json:"persistent"`
+	SingleHost bool    `json:"singleHost"`
+	Coherent   bool    `json:"coherent"`
 }
 
 // poolDevice is the parsed poolDeviceData of an allocation result, with
-// the mode, read-only setting, access and path of its device settings.
+// the mode, read-only setting, access, filesystem type and path of its
+// device settings.
 type poolDevice struct {
 	Serial     uint64
 	Shared     bool
 	Size       uint64
 	Exclusive  bool
 	Persistent bool
+	SingleHost bool
+	Coherent   bool
 	Mode       string
 	ReadOnly   bool
-	Access     string // fs: api.AccessDirect or api.AccessCached
+	Access     string // fs: api.AccessDirect, api.AccessCached or "" (by type)
+	FsType     string // fs: the declared type, "" to detect it
 	Path       string // fs: the directory in the container
+}
+
+// facts returns the facts of the device (contract of plan-14 section 1): a
+// device that is not shared has one claim at most, and no other host while
+// it is allocated.
+func (d *poolDevice) facts() config.DeviceFacts {
+	single := d.Exclusive || !d.Shared
+	return config.DeviceFacts{
+		Persistent: d.Persistent,
+		Shared:     d.Shared,
+		Exclusive:  single,
+		SingleHost: d.SingleHost || single,
+		Coherent:   d.Coherent,
+	}
 }
 
 // newPoolDriver returns a pool driver whose prepared claims are loaded
@@ -342,33 +360,41 @@ type poolDevice struct {
 // preparing file next to it, with the claims prepared in another boot than
 // bootID ("": unknown) not prepared any more (demoteOtherBoot), the missing
 // node mounts and lease binds of the prepared claims mounted again, the
-// stale lease binds under leaseFsRoot ("": none) and node mounts
-// unmounted, and what the Prepares that did not finish touched released
-// (releaseUnfinished). The kubelet plugin is started separately (start).
-func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration, leaseFsRoot, bootID string) (*poolDriver, error) {
+// stale lease binds of its node mounts under leaseFsRoot ("": none) and
+// its node mounts unmounted, and what the Prepares that did not finish
+// touched released (releaseUnfinished). fsTypes are the filesystem types
+// that mode fs mounts (none: config.KnownFsTypes). The kubelet plugin is
+// started separately (start).
+func newPoolDriver(name string, mem *memctl.Manager, mounter nodeMounter, stateFile string, timeout time.Duration, leaseFsRoot, bootID string, fsTypes ...string) (*poolDriver, error) {
 	if timeout <= 0 {
 		timeout = defaultPoolPrepareTimeout
 	}
 	p := &poolDriver{
-		name:        name,
-		mem:         mem,
-		stateFile:   stateFile,
-		timeout:     timeout,
-		probeGrace:  defaultMemdevProbeGrace,
-		retryDelay:  defaultRegionRetryDelay,
-		mounter:     mounter,
-		holderWait:  defaultHolderWait,
-		lender:      newCompanionLender(name),
-		leaseFsRoot: leaseFsRoot,
-		prepared:    map[string]*preparedPoolClaim{},
-		inflight:    map[uint64]int{},
-		preparing:   map[string]*preparingPoolClaim{},
+		name:       name,
+		mem:        mem,
+		stateFile:  stateFile,
+		timeout:    timeout,
+		probeGrace: defaultMemdevProbeGrace,
+		retryDelay: defaultRegionRetryDelay,
+		pn: newPersistentNode(persistentConfig{
+			Driver:      name,
+			Mounter:     mounter,
+			MountsDir:   filepath.Join(filepath.Dir(stateFile), mountsDirName),
+			LeaseFsRoot: leaseFsRoot,
+			FsTypes:     fsTypes,
+		}),
+		lender:    newCompanionLender(name),
+		prepared:  map[string]*preparedPoolClaim{},
+		inflight:  map[uint64]int{},
+		preparing: map[string]*preparingPoolClaim{},
 		// the same directory: one rename never moves a claim between
 		// file systems
 		preparingFile: filepath.Join(filepath.Dir(stateFile), poolPreparingFileName),
 		bootID:        bootID,
-		unrestored:    map[string]error{},
 	}
+	// a release changes the read-only flag of a block device only when it
+	// is the one of the device now
+	p.pn.SetCheck(p.checkUseBlockDevice)
 	if err := p.load(); err != nil {
 		return nil, err
 	}
@@ -607,17 +633,15 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		res := resolved[n]
 		klog.V(3).Infof("%s: claim %s request %s result %d: MemoryConfig %s", p.name, claimName, r.Request, n, res.Config.Compact())
 		cfg := res.Config.DeviceSection()
-		if data.Mode, err = cfg.PoolMode(config.PoolFacts{Persistent: data.Persistent, Shared: data.Shared, Exclusive: data.Exclusive}); err != nil {
+		if data.Mode, err = cfg.PoolMode(data.facts()); err != nil {
 			return fail(fmt.Errorf("device %s serial 0x%x: %w", r.Device, data.Serial, err))
 		}
-		data.ReadOnly = cfg.ReadOnly
+		data.ReadOnly = cfg.IsReadOnly()
 		// the env key of the device, as buildCDISpec counts them
 		key := keys.next(api.Key(data.Serial, 1))
 		if data.Mode == api.ModeFs {
-			data.Access, data.Path = cfg.Access, cfg.Path
-			if data.Access == "" {
-				data.Access = api.AccessDirect
-			}
+			// access "": by the type of the filesystem, at its Prepare
+			data.Access, data.Path, data.FsType = cfg.Access, cfg.Path, cfg.FsType
 			if data.Path == "" {
 				data.Path = defaultFsPath(key)
 			}
@@ -634,13 +658,15 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 		touched = append(touched, data.Serial)
 		p.inflight[data.Serial]++
 		p.updateSerials()
-		dev, err := p.prepareDevice(ctx, uid, &r, data)
+		// the uses of the device by the prepared claims and this Prepare
+		others := append(p.persistentUses(data.Serial, uid), persistentUsesOf(uid, pc.Devices)...)
+		dev, err := p.prepareDevice(ctx, uid, n, &r, data, others)
 		if err != nil && isAddDevError(err) {
 			klog.Warningf("%s: claim %s: device %s: %v; retrying once in %v", p.name, claimName, r.Device, err, p.retryDelay)
 			select {
 			case <-ctx.Done():
 			case <-time.After(p.retryDelay):
-				dev, err = p.prepareDevice(ctx, uid, &r, data)
+				dev, err = p.prepareDevice(ctx, uid, n, &r, data, others)
 			}
 		}
 		if err != nil {
@@ -660,9 +686,9 @@ func (p *poolDriver) prepareClaim(ctx context.Context, claim *resourceapi.Resour
 			ShareID:      r.ShareID,
 		})
 		if dev.Persistent {
-			klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s namespace %s block %s access %q mount %q loop %q",
+			klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s namespace %s block %s access %q fs %q mount %q loop %q",
 				p.name, claimName, r.Device, data.Serial, data.Shared, dev.Mode, dev.ReadOnly, dev.Memdev, dev.Region,
-				dev.Namespace, dev.BlockDevice, dev.Access, dev.NodeMount, dev.LoopDevice)
+				dev.Namespace, dev.BlockDevice, dev.Access, dev.FsType, dev.NodeMount, dev.LoopDevice)
 			continue
 		}
 		klog.Infof("%s: claim %s: prepared %s (serial 0x%x, shared %v, mode %s, read-only %v) as %s %s dax %s node %d",
@@ -870,6 +896,7 @@ func (p *poolDriver) notePreparing(uid, claimName string, lend *lendRecord, n in
 		ReadOnly:   data.ReadOnly,
 		Persistent: data.Persistent,
 		Access:     data.Access,
+		FsType:     data.FsType,
 		Path:       data.Path,
 		Node:       -1,
 	}
@@ -1260,12 +1287,8 @@ func (p *poolDriver) unfinishedDevices(rec *preparingPoolClaim, except []int) []
 			d.BlockDevice = p.currentBlockDevice(d.Serial)
 		}
 		if d.Mode == api.ModeFs && d.BlockDevice != "" && d.NodeMount == "" {
-			mnt := p.nodeMountPath(d.Serial, d.Access)
-			if mi, err := p.mounter.Mounted(mnt); err == nil && mi != nil {
-				if _, err := p.checkNodeMount(d.Serial, d.BlockDevice, d.Access, mi); err == nil {
-					d.NodeMount = mnt
-				}
-			}
+			// the access "" of a record is the default: either
+			d.NodeMount = p.pn.DeviceMount(d.Serial, d.BlockDevice, d.Access)
 		}
 		devs = append(devs, d)
 	}
@@ -1348,7 +1371,8 @@ func parsePoolDeviceData(raw []byte) (*poolDevice, error) {
 	if err != nil {
 		return nil, fmt.Errorf("device data: %w", err)
 	}
-	return &poolDevice{Serial: serial, Shared: *d.Shared, Size: *d.Size, Exclusive: d.Exclusive, Persistent: d.Persistent}, nil
+	return &poolDevice{Serial: serial, Shared: *d.Shared, Size: *d.Size, Exclusive: d.Exclusive, Persistent: d.Persistent,
+		SingleHost: d.SingleHost, Coherent: d.Coherent}, nil
 }
 
 // waitMemdev returns the memdev with the serial, waiting up to the
@@ -1367,17 +1391,19 @@ func (p *poolDriver) waitMemdev(ctx context.Context, serial uint64) (string, err
 	return p.mem.WaitMemdev(wctx, serial)
 }
 
-// prepareDevice returns the device of an allocation result of the claim
-// uid prepared as data says; with an error of a device of persistent
-// memory, the device as far as it was prepared. The NUMA node of a device
-// in mode numa is fenced before its memory goes online. A region that it
-// creates is recorded in the claim's record first (regionNote).
-func (p *poolDriver) prepareDevice(ctx context.Context, uid string, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice) (*preparedPoolDevice, error) {
+// prepareDevice returns the device of the allocation result n of the
+// claim uid prepared as data says, next to the uses others of a persistent
+// device; with an error of a device of persistent memory, the device as
+// far as it was prepared. The NUMA node of a device in mode numa is fenced
+// before its memory goes online. A region that it creates is recorded in
+// the claim's record first (regionNote).
+func (p *poolDriver) prepareDevice(ctx context.Context, uid string, n int, r *resourceapi.DeviceRequestAllocationResult, data *poolDevice, others []persistentUse) (*preparedPoolDevice, error) {
 	memdev, err := p.waitMemdev(ctx, data.Serial)
 	if err != nil {
 		return nil, err
 	}
 	dev := &preparedPoolDevice{
+		Result:   n,
 		Request:  r.Request,
 		Device:   r.Device,
 		Pool:     r.Pool,
@@ -1391,7 +1417,7 @@ func (p *poolDriver) prepareDevice(ctx context.Context, uid string, r *resourcea
 	}
 	if data.Persistent {
 		dev.Persistent = true
-		if err := p.preparePersistent(ctx, memdev, data, dev, p.regionNote(uid, data.Serial)); err != nil {
+		if err := p.preparePersistent(ctx, uid, memdev, data, dev, p.regionNote(uid, data.Serial), others); err != nil {
 			return dev, err
 		}
 		return dev, nil
@@ -1539,7 +1565,7 @@ func (p *poolDriver) buildCDISpec() *cdiSpecs.Spec {
 			case api.ModeDax:
 				edits.DeviceNodes = []*cdiSpecs.DeviceNode{daxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
 			case api.ModeBlock:
-				edits.DeviceNodes = []*cdiSpecs.DeviceNode{blockDeviceNode(d)}
+				edits.DeviceNodes = []*cdiSpecs.DeviceNode{blockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
 			case api.ModeFs:
 				edits.Mounts = []*cdiSpecs.Mount{fsMount(d)}
 			}
@@ -1591,6 +1617,14 @@ func (p *poolDriver) load() error {
 	}
 	if p.prepared == nil {
 		p.prepared = map[string]*preparedPoolClaim{}
+	}
+	for _, pc := range p.prepared {
+		for i := range pc.Devices {
+			// every filesystem of a driver without types was erofs
+			if d := &pc.Devices[i]; d.Mode == api.ModeFs && d.FsType == "" {
+				d.FsType = config.FsTypeErofs
+			}
+		}
 	}
 	for uid, pc := range p.prepared {
 		if otherBoot(pc.BootID, p.bootID) {

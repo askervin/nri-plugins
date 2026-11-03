@@ -334,11 +334,12 @@ dra-kubectl "$VM2" "get resourceslices"
 dra-json "$VM2" resourceslices
 SLICES="$COMMAND_OUTPUT"
 # A memdev of source local, with the attributes of a pool memdev (test10)
-# and those of a node-local device. Nothing about its slices: no mode, no
-# name of the memdev in the VM.
-dra-assert "$SLICES" "attr($LD, 'type') == 'memdev' and attr($LD, 'source') == 'local' and attr($LD, 'shared') == False"
+# except coherent, and those of a node-local device; volatile memory, not
+# persistent (test21 has a persistent one). Nothing about its slices: no
+# mode, no name of the memdev in the VM.
+dra-assert "$SLICES" "attr($LD, 'type') == 'memdev' and attr($LD, 'source') == 'local' and attr($LD, 'shared') == False and attr($LD, 'persistent') == False"
 dra-assert "$SLICES" "attr($LD, 'serial') == '$DRA_LOCAL_SERIAL' and attr($LD, 'size') == $DRA_LOCAL_SIZE"
-dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'serial', 'shared', 'size', 'source', 'type']"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type']"
 # Host bridge 0 is on CPU node 0 (pxb-cxl numa_node=0).
 dra-assert "$SLICES" "attr($LD, 'nodeAffinity') == $AFFINITY and $AFFINITY == 0"
 # Capacity in steps of the memory block size, the smallest claim one

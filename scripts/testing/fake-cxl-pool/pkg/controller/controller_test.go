@@ -53,6 +53,9 @@ type fakePool struct {
 	attachErr map[string]string
 	// detachHold: detach leaves the attachment detaching and returns 409
 	detachHold bool
+	// attachHook, when set, is called with each attach request and may
+	// return an error code to answer with
+	attachHook func(name string, req api.AttachRequest) string
 	attaches   []string // "device@host owner"
 	attachReqs []api.AttachRequest
 	detaches   []string // "device@host"
@@ -150,6 +153,12 @@ func (p *fakePool) handler() http.Handler {
 		if code := p.attachErr[name]; code != "" {
 			writeErr(w, &api.Error{Code: code, Message: "injected " + code})
 			return
+		}
+		if p.attachHook != nil {
+			if code := p.attachHook(name, req); code != "" {
+				writeErr(w, &api.Error{Code: code, Message: "injected " + code})
+				return
+			}
 		}
 		id := api.AttachmentID(name, req.Host)
 		for _, a := range p.atts {
@@ -514,18 +523,18 @@ func TestPublish(t *testing.T) {
 		t.Fatal("device in state error published")
 	}
 	// exactly the attributes of the contract: type, source, serial,
-	// shared, persistent, size
+	// shared, persistent, size, coherent
 	for _, name := range []string{"pooled0", "shared0"} {
 		var keys []string
 		for k := range byName[name].Attributes {
 			keys = append(keys, string(k))
 		}
 		sort.Strings(keys)
-		if got := strings.Join(keys, ","); got != "persistent,serial,shared,size,source,type" {
+		if got := strings.Join(keys, ","); got != "coherent,persistent,serial,shared,size,source,type" {
 			t.Fatalf("%s: attributes %s", name, got)
 		}
 		if a := byName[name].Attributes; *a["type"].StringValue != "memdev" || *a["source"].StringValue != "pool" ||
-			a["persistent"].BoolValue == nil || *a["persistent"].BoolValue {
+			a["persistent"].BoolValue == nil || *a["persistent"].BoolValue || a["coherent"].BoolValue == nil || !*a["coherent"].BoolValue {
 			t.Fatalf("%s: type %q source %q", name, *a["type"].StringValue, *a["source"].StringValue)
 		}
 	}

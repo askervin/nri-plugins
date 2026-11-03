@@ -35,11 +35,12 @@ import (
 const killAtDisarm = 70
 
 // refusal texts of the driver (pkg/cxl/config/device.go,
-// D/pool_persistent.go) per cause
+// D/pool_persistent.go, the filesystem probe) per cause; refusedNoErofs:
+// no signature of a known filesystem type
 const (
 	refusedWritable = "writable only exclusively"
 	refusedNoNS     = "no fsdax namespace"
-	refusedNoErofs  = "no erofs filesystem"
+	refusedNoErofs  = "has no filesystem of a type that the plugin knows"
 )
 
 // pdevs decodes the observation's pdevs (nil, false: not observed).

@@ -30,6 +30,10 @@
                 "path": {
                     "type": "string",
                     "pattern": "^/"
+                },
+                "fsType": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
                 }
             }
         },
@@ -287,6 +291,9 @@
                     "$ref": "#/definitions/localMemoryConfig"
                 },
                 "cxl-local-shared": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-local-persistent": {
                     "$ref": "#/definitions/localMemoryConfig"
                 },
                 "cxl-pool": {

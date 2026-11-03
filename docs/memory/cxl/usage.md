@@ -5,9 +5,9 @@ CAUTION: experimental. Interfaces may change.
 `nri-dra-driver-cxl` runs two DRA drivers on every node: `cxl.nri.io` for
 the memory of the node (local CXL memory devices, CXL regions, DRAM, the
 lease device) and `cxl-pool.nri.io` for the devices of a CXL memory pool.
-The words used below (`source`, `type`, `shared`, `persistent`, `mode`,
-`readOnly`, `access`, `serial`, `size`, `shares`) are defined in the
-[Vocabulary](index.md#vocabulary).
+The words used below (`source`, `type`, `shared`, `persistent`,
+`coherent`, `mode`, `readOnly`, `access`, `fsType`, `serial`, `size`,
+`shares`) are defined in the [Vocabulary](index.md#vocabulary).
 
 - [Requirements](#requirements)
 - [Build and deploy](#build-and-deploy)
@@ -39,10 +39,14 @@ all of it in the e2e test VMs.
 - Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
   `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE`, and `CONFIG_FS_DAX` for
   mode `dax` (without it every devdax `mmap` fails).
-- For pool devices of persistent memory (modes `block` and `fs`):
-  `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
-  `CONFIG_ND_PFN` and `CONFIG_FS_DAX`; for mode `fs` also
-  `CONFIG_EROFS_FS`, and `CONFIG_BLK_DEV_LOOP` for `access: cached`.
+- For devices of persistent memory (pool devices and persistent local
+  memdevs, modes `block` and `fs`): `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`,
+  `CONFIG_BLK_DEV_PMEM`, `CONFIG_ND_PFN` and `CONFIG_FS_DAX`; for mode
+  `fs` also the filesystems that the node mounts (`CONFIG_EROFS_FS`,
+  `CONFIG_EXT4_FS`, `CONFIG_XFS_FS`, ..., see
+  [Persistent memory](#persistent-memory)), and `CONFIG_BLK_DEV_LOOP` for
+  `access: cached`. A cluster filesystem (gfs2 with `lock_dlm`) also needs
+  its cluster stack (corosync, `dlm_controld`) on every host.
 - The `cxl` (ndctl) tool for local memdevs and pool devices, `daxctl` for
   pool devices, `ndctl` for pool devices of persistent memory
   ([local.md](local.md#node-requirements),
@@ -148,14 +152,14 @@ creates the DaemonSet `nri-dra-driver-cxl` with its ServiceAccount, the
 ClusterRole and ClusterRoleBinding of the driver, a
 ValidatingAdmissionPolicy that lets the driver's ServiceAccount change only
 the ResourceSlices of its own node, a ConfigMap with the
-[configuration file](#configuration-file), and the eight
+[configuration file](#configuration-file), and the nine
 [DeviceClasses](#deviceclasses). The pod of the DaemonSet is privileged,
 runs in the host PID namespace (the lease broker maps the process ids of
 its callers to containers), and mounts `/var/lib/kubelet/plugins`,
 `/var/lib/kubelet/plugins_registry`, `/etc/cdi`, `/var/run/cdi`,
 `/var/run/nri`, `/sys`, `/dev` and `/lib/modules` (read-only) of the host
 at the same paths. `/var/lib/kubelet/plugins` has `mountPropagation:
-Bidirectional`: the filesystems that the pool driver mounts there for mode
+Bidirectional`: the filesystems that both drivers mount there for mode
 `fs` reach the host, where the container runtime binds them into
 containers. Its image has the `cxl`, `daxctl` and `ndctl` tools. So every
 feature works in the DaemonSet: local memdevs, pool devices, steering and
@@ -267,6 +271,7 @@ under the driver `cxl.nri.io`:
     source:          {string: local}
     serial:          {string: "0xc100e2e1"}
     shared:          {bool: false}
+    persistent:      {bool: false}
     size:            {int: 1073741824}          # RAM capacity of the memdev
     nodeAffinity:    {int: 0}                   # CPU NUMA node; absent if unknown
     memoryBlockSize: {int: 134217728}           # every slice is a multiple of it
@@ -280,7 +285,20 @@ under the driver `cxl.nri.io`:
     source:          {string: local}
     serial:          {string: "0xc100e2e2"}
     shared:          {bool: true}
+    persistent:      {bool: false}
     size:            {int: 1073741824}
+    nodeAffinity:    {int: 0}
+  capacity:
+    shares: {value: 1M}                         # no requestPolicy
+  allowMultipleAllocations: true
+- name: memdev-c100f5e1              # a persistent local memdev
+  attributes:
+    type:            {string: memdev}
+    source:          {string: local}
+    serial:          {string: "0xc100f5e1"}
+    shared:          {bool: false}              # true when in sharedDevices
+    persistent:      {bool: true}
+    size:            {int: 536870912}           # persistent capacity of the memdev
     nodeAffinity:    {int: 0}
   capacity:
     shares: {value: 1M}                         # no requestPolicy
@@ -314,13 +332,14 @@ under the driver `cxl.nri.io`:
 |:----------|:--------|:------|
 | `type` | all | `memdev`, `region`, `dram` or `lease` |
 | `source` | `memdev`, `region`, `dram` | `local` (pool devices have `pool`) |
-| `size` | `memdev`, `region`, `dram` | bytes: the RAM capacity of a memdev, the size of a region, the DRAM of the nodes |
+| `size` | `memdev`, `region`, `dram` | bytes: the RAM capacity of a memdev (the persistent capacity of a persistent memdev), the size of a region, the DRAM of the nodes |
 | `serial` | `memdev` | `0x` and lower-case hex |
-| `shared` | `memdev` | `false`: every claim gets a slice of its own; `true`: a shared local device, whose claims map the same bytes |
+| `shared` | `memdev` | `false`: every claim gets a slice of its own, or a persistent memdev that no other host uses; `true`: a shared local device, whose claims map the same bytes, or a persistent memdev in `sharedDevices` |
+| `persistent` | `memdev` | `true`: a memdev of persistent memory, used in modes `block` and `fs`; `false`: every other memdev |
 | `node` | `region` | the NUMA node of the region |
 | `nodes` | `dram` | the DRAM NUMA nodes, cpuset syntax |
 | `nodeAffinity` | `memdev`, `region` | the CPU NUMA node of the device; absent if unknown (for a region: unless all its memdevs agree) |
-| `memoryBlockSize` | `memdev`, not shared | the memory block size of the node in bytes |
+| `memoryBlockSize` | `memdev`, not shared, not persistent | the memory block size of the node in bytes |
 
 - `memdev-<serial hex>`, type `memdev`: a CXL memory device without a
   region; every claim gets a slice of it, created when the claim is
@@ -328,8 +347,14 @@ under the driver `cxl.nri.io`:
   the [configuration file](#configuration-file) has `shared: true` and a
   `shares` capacity instead: every claim maps the whole device as devdax
   ([local.md](local.md#shared-local-devices)).
-- `<region>-node<N>`, type `region`: a region that exists already
-  (created by the BIOS or an admin) and is online as NUMA node N; claims
+- `memdev-<serial hex>` with `persistent: true`: a memdev of persistent
+  memory only (no RAM capacity), with a `shares` capacity; its claims get
+  its block device or a filesystem on it, as for pool devices of
+  persistent memory ([local.md](local.md#persistent-local-memdevs),
+  [Persistent memory](#persistent-memory)).
+- `<region>-node<N>`, type `region`: a region of RAM that exists already
+  (created by the BIOS or an admin) and is online as NUMA node N (regions
+  of persistent memory are never published); claims
   consume its capacity, and their containers that opt in to steering are
   steered to N.
 - `dram`, type `dram`: one device for all DRAM nodes, for steering;
@@ -342,7 +367,7 @@ Every memory device has `allowMultipleAllocations` and `capacity.memory`
 with `DRANodeAllocatableResources`, `nodeAllocatableResources` maps the
 claimed memory to the node's allocatable memory. Pool devices are published by the pool controller
 under `cxl-pool.nri.io` with the same memdev attributes (`type`, `source`,
-`serial`, `shared`, `size`) and `persistent`, see
+`serial`, `shared`, `persistent`, `size`) and `coherent`, see
 [pool.md](pool.md#what-the-pool-controller-publishes).
 
 Write selectors that test `type` first. Every device has `type`, every
@@ -359,11 +384,12 @@ of the Helm chart:
 
 | class | selects | gets |
 |:------|:--------|:-----|
-| `cxl-local` | `cxl.nri.io`, `type == "memdev"`, `shared == false` | a slice of a local memdev: RAM of its NUMA node (mode `numa`, default) or a devdax device (`device.mode: dax`) |
-| `cxl-local-shared` | `cxl.nri.io`, `type == "memdev"`, `shared == true` | a shared local device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
+| `cxl-local` | `cxl.nri.io`, `type == "memdev"`, `shared == false`, `persistent == false` | a slice of a local memdev: RAM of its NUMA node (mode `numa`, default) or a devdax device (`device.mode: dax`) |
+| `cxl-local-shared` | `cxl.nri.io`, `type == "memdev"`, `shared == true`, `persistent == false` | a shared local device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
+| `cxl-local-persistent` | `cxl.nri.io`, `type == "memdev"`, `persistent == true` | a persistent local memdev, shared or not: its block device (`device.mode: block`) or a filesystem on it (`device.mode: fs`, read-only, or read-write with `readOnly: false`); exclusively without a capacity request, one share with `capacity.requests.shares: "1"` |
 | `cxl-pool` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`device.mode: dax`) |
 | `cxl-pool-shared` | `cxl-pool.nri.io`, `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
-| `cxl-pool-persistent` | `cxl-pool.nri.io`, `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: the block device of its fsdax namespace (`device.mode: block`) or a read-only erofs filesystem on it (`device.mode: fs`); a shared device exclusively without a capacity request, one share with `capacity.requests.shares: "1"` |
+| `cxl-pool-persistent` | `cxl-pool.nri.io`, `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: the block device of its fsdax namespace (`device.mode: block`) or a filesystem on it (`device.mode: fs`, read-only, or read-write with `readOnly: false`); a shared device exclusively without a capacity request, one share with `capacity.requests.shares: "1"` |
 | `cxl-region` | `cxl.nri.io`, `type == "region"` | capacity of a pre-created CXL NUMA node, CXL memory for [steering](#steering) |
 | `cxl-dram` | `cxl.nri.io`, `type == "dram"` | DRAM capacity for steering |
 | `cxl-lease` | `cxl.nri.io`, `type == "lease"` | the lease socket and `cxl-request` |
@@ -378,6 +404,13 @@ spec:
   selectors:
   - cel: {expression: 'device.driver == "cxl-pool.nri.io" && device.attributes["cxl-pool.nri.io"].type == "memdev" && device.attributes["cxl-pool.nri.io"].shared == false && device.attributes["cxl-pool.nri.io"].persistent == false'}
 ```
+
+`cxl-local` and `cxl-local-shared` test the attribute `persistent`,
+which the ResourceSlices of an older driver lack: when the chart is
+upgraded, claims of these classes do not allocate until the new driver
+has published its ResourceSlices again. Upgrade the DaemonSet before the
+classes (with a host process, apply `deviceclasses.yaml` after the
+driver), or expect that window.
 
 The classes carry no configuration unless the Helm value
 `deviceClassConfig` gives them one: how a device is prepared and how the
@@ -433,9 +466,10 @@ an entry of a claim, *node* the `defaults.container` of the
 
 | field | section | owner | values | default | where it may be set | |
 |:------|:--------|:------|:-------|:--------|:--------------------|:-|
-| `device.mode` | `device` | kubelet plugin | `numa`, `dax`; `block`, `fs` (`cxl-pool.nri.io`) | `numa`; `dax` for shared devices; none for persistent devices | class, claim | `numa`: the memory is online as system RAM of a NUMA node. `dax`: the container gets a devdax device `/dev/daxX.Y` of its own to `mmap`. Shared devices of volatile memory are `dax` only. `block`, `fs`: pool devices of persistent memory only, which have no other modes, see [Persistent memory](#persistent-memory). |
-| `device.readOnly` | `device` | kubelet plugin | `false`, `true` | `false` | class, claim | `dax`, `block`: the container's device node has CDI permissions `r`, so its device cgroup allows opening it for reading only. `fs`: required, the filesystem is mounted read-only. |
-| `device.access` | `device` | kubelet plugin | `direct`, `cached` | `direct` | class, claim | `fs` only: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node. |
+| `device.mode` | `device` | kubelet plugin | `numa`, `dax`, `block`, `fs` | `numa`; `dax` for shared devices; none for persistent devices | class, claim | `numa`: the memory is online as system RAM of a NUMA node. `dax`: the container gets a devdax device `/dev/daxX.Y` of its own to `mmap`. Shared devices of volatile memory are `dax` only. `block`, `fs`: devices of persistent memory only (pool devices and persistent local memdevs), which have no other modes, see [Persistent memory](#persistent-memory). |
+| `device.readOnly` | `device` | kubelet plugin | `false`, `true` | `false`; in mode `fs` read-only | class, claim | `dax`, `block`: the container's device node has CDI permissions `r`, so its device cgroup allows opening it for reading only. `fs`: absent or `true` mounts the filesystem read-only, `false` read-write (the opt-in to write). `null` returns it to the default of the mode. |
+| `device.access` | `device` | kubelet plugin | `direct`, `cached` | `direct` when the filesystem has DAX (erofs, ext4, xfs), `cached` otherwise | class, claim | `fs` only: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node. The default is decided at Prepare, when the filesystem is known. |
+| `device.fsType` | `device` | kubelet plugin | a filesystem type: lower-case letters, digits, `_` and `-` | detected | class, claim | `fs` only: the expected type of the filesystem (`ext4`); a type that the plugin does not detect is mounted as declared when the node allows it, see [Filesystems](#filesystems) |
 | `device.path` | `device` | kubelet plugin | an absolute path | `/run/cxl-fs/<KEY>` | class, claim | `fs` only: the directory of the filesystem in the container; not `/`, not in `/dev`, `/proc`, `/sys`, `/run/cxl` or `/var/run/cxl`. |
 | `container.steering.policy` | `container` | NRI plugin | `none`, `auto`, `first-dram`, `first-cxl`, `start-interleaved`, `end-interleaved`, `waypoints` | `none` | class, claim, node | how the allocations of the container are spread over the DRAM and CXL memory of its results, see [Steering](#steering); `none`: not steered |
 | `container.steering.waypoints` | `container` | NRI plugin | list of `{targetUsages: [{memoryType: DRAM or CXL, usage: <quantity>}]}` | | class, claim, node | policy `waypoints` only, which needs them: the target usage per memory type at each waypoint; a type that is not listed keeps its usage of the previous waypoint; usages never decrease |
@@ -447,9 +481,12 @@ an entry of a claim, *node* the `defaults.container` of the
 The `device` fields per device:
 
 - Local memdev (`cxl-local`): `mode` `numa` (default) or `dax`;
-  `readOnly` needs `dax`; `access` and `path` are refused.
+  `readOnly` needs `dax`; `access`, `path` and `fsType` are refused.
 - Shared local device (`cxl-local-shared`): `dax`, the default and only
   mode; `readOnly` is allowed.
+- Persistent local memdev (`cxl-local-persistent`): `block` or `fs` only,
+  as devices of persistent memory of the pool
+  ([local.md](local.md#persistent-local-memdevs)).
 - Regions and DRAM (`cxl-region`, `cxl-dram`): `numa` only; `mode: numa`
   is allowed and nothing else. In a claim that has such requests next to
   `dax` memdev requests, list the memdev requests in the `requests` of
@@ -457,7 +494,7 @@ The `device` fields per device:
 - Lease device (`cxl-lease`): no `device` field.
 - Pool devices: `numa` (exclusive devices, their default) or `dax`;
   shared devices of volatile memory `dax` only; devices of persistent
-  memory `block` or `fs` only, and `fs` needs `readOnly: true`
+  memory `block` or `fs` only; `fs` is read-only unless `readOnly: false`
   ([pool.md](pool.md#options-of-pool-devices)).
 
 | device | `device` | the container gets |
@@ -473,13 +510,18 @@ The `device` fields per device:
 | any of the `dax` rows | `readOnly: true` | the same, the device node read-only |
 | persistent pool device (`cxl-pool-persistent`), exclusively (no capacity request) | `mode: block` | the block device of its fsdax namespace, writable; the namespace is created if there is none |
 | persistent pool device | `mode: block`, `readOnly: true` | the block device, read-only |
-| persistent pool device | `mode: fs`, `readOnly: true` | the erofs filesystem on it at `path`, `access: direct` (default) or `cached` |
+| persistent pool device | `mode: fs` | the filesystem on it at `path`, read-only, `access` direct (default for erofs, ext4 and xfs) or `cached` |
+| persistent pool device | `mode: fs`, `readOnly: false` | the filesystem at `path`, read-write; no other host has the device meanwhile (ReadWriteOnce), unless it is a cluster filesystem on coherent memory |
+| persistent local memdev (`cxl-local-persistent`) | `mode: block`, `mode: fs` | as a persistent pool device; read-write only while no other host uses the memdev (not in `sharedDevices`), or a cluster filesystem on coherent memory |
 
 Read-only is enforced by the kernel for every process of the container,
 whatever its capabilities, except in privileged containers (their device
-cgroup allows everything). It is a property of the claim, not of the
-device: another claim of the same device may write, and the readers see
-it.
+cgroup allows everything, and they may remount their own bind of a
+filesystem read-write, which writes while a writer of the node has the
+superblock read-write, see [One node](#one-node-superblock-block-device-binds)).
+It is a property of the
+claim, not of the device: another claim of the same device may write,
+and the readers see it.
 
 ### Merge order
 
@@ -502,11 +544,14 @@ claim:
    and `null` removes a field, which returns it to its default (`null`
    never counts as setting a field).
 5. The result is decoded and validated again, and the driver checks it
-   against the device (type, shared, persistent, exclusive).
+   against the device (type, shared, persistent, exclusive, single host,
+   coherent; [Configuration errors](#configuration-errors)).
 
 So a class with `device: {mode: dax}` and a claim with
 `device: {readOnly: true}` give a read-only dax slice, and a claim with
-`device: {mode: null}` gives a numa slice of the same class. The node
+`device: {mode: null}` gives a numa slice of the same class; a class with
+`device: {mode: fs, readOnly: false}` and a claim with
+`device: {readOnly: null}` give a read-only filesystem. The node
 defaults are no part of a result: they apply per container.
 
 ### Container settings
@@ -620,7 +665,7 @@ kind: DeviceClass
 metadata: {name: cxl-local-dax}
 spec:
   selectors:
-  - cel: {expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == false'}
+  - cel: {expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == false && device.attributes["cxl.nri.io"].persistent == false'}
   config:
   - opaque:
       driver: cxl.nri.io
@@ -727,24 +772,43 @@ Of the `device` section, `cxl.nri.io`, in this order:
   `MemoryConfig: device: a dram is used as numa only`
 - `MemoryConfig: device: the lease device has no device settings`
 
+A persistent local memdev (`cxl-local-persistent`) is checked like a
+persistent pool device, with the texts of `cxl-pool.nri.io` below; its
+facts come from the configuration file instead of the claim status
+(shared: in `sharedDevices`; single host: not in `sharedDevices`;
+coherent: `memdevSettings[].coherent`).
+
 Of the `device` section, `cxl-pool.nri.io`, first those of the section
 alone:
 
 - `MemoryConfig: device.mode: invalid mode "..." (numa, dax, block or fs)`
 - `MemoryConfig: device.access needs mode fs`
 - `MemoryConfig: device.path needs mode fs`
+- `MemoryConfig: device.fsType needs mode fs`
+- `MemoryConfig: device.fsType: invalid filesystem type "..." (lower-case letters, digits, "_" and "-")`
+  (a type is 1 to 32 of them, starting with a letter or digit)
 - `MemoryConfig: device.access: invalid access "..." (direct or cached)`
 - `MemoryConfig: device.path: invalid path "..." (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)`
-- `MemoryConfig: device.readOnly: mode fs is read-only: set readOnly: true (write the device with mode block)`
 - `MemoryConfig: device.readOnly needs mode dax, block or fs`
 
-then those that need the claim status data of the device (`persistent`,
-`shared`, `exclusive`, [pool.md](pool.md#what-the-pool-controller-writes)):
+then those that need the facts of the device (of a pool device the claim
+status data `persistent`, `shared`, `exclusive`, `singleHost` and
+`coherent`, [pool.md](pool.md#what-the-pool-controller-writes)):
 
 - `MemoryConfig: device.mode block needs a persistent device` (or `fs`)
 - `MemoryConfig: device: a persistent device needs mode block or fs` (no
   mode, `numa` or `dax` on a persistent device)
 - `MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)`
+  (a writable `block` claim of a shared device with a `shares` request;
+  of a persistent local memdev
+  `MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)`)
+- `MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block`
+  (a writable `block` claim of a persistent local memdev in
+  `sharedDevices`, which no pool controller keeps from other hosts)
+- `MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory`
+  (a read-write `fs` claim without the single host fact, unless it
+  declares `fsType: gfs2` on a coherent device; the filesystem on the
+  device decides then, [Several nodes](#several-nodes-readwriteonce-and-cluster-filesystems))
 - `MemoryConfig: device: a shared device is used as dax only`
 - `MemoryConfig: device.readOnly needs mode dax, block or fs` (readOnly
   without a mode on an exclusive volatile device, which is `numa` by
@@ -757,74 +821,344 @@ and of both drivers, for an allocation of a shared device whose
 
 ### Persistent memory
 
-A pool device of persistent memory (attribute `persistent: true`, class
-`cxl-pool-persistent`) holds data that outlives the claims: an erofs
-image that a writer stores once and readers on many nodes use in place.
-The pool driver creates a pmem region on the device; its nvdimm region
-has the namespaces of the labels of the device.
+A device of persistent memory holds data that outlives the claims: a pool
+device with `persistent: true` (class `cxl-pool-persistent`, driver
+`cxl-pool.nri.io`) or a persistent local memdev (class
+`cxl-local-persistent`, driver `cxl.nri.io`,
+[local.md](local.md#persistent-local-memdevs)). A writer stores a
+filesystem image once and readers on many nodes use it in place, or the
+claims of one node read and write a filesystem together. Both drivers
+prepare these devices with the same code and the same rules: the driver
+creates a pmem region on the device; its nvdimm region has the
+namespaces of the labels of the device.
 
 - `mode: block` gives the container the block device `/dev/pmemK` of the
   fsdax namespace (map `mem`) of the region: a CDI device node of type
   `b`, permissions `r` when `readOnly`. A writable block claim on a region
   without such a namespace creates it (`ndctl create-namespace -f -r
-  regionK -m fsdax -M mem`), which writes the labels of the device; a
+  regionK -m fsdax -M mem`), which writes the labels of the device. A
   shared device is writable only by a claim that has it exclusively,
-  without a `shares` request. A read-only
-  claim never creates a namespace. `CXL_<KEY>_PATH` is the device node,
-  `CXL_<KEY>_SIZE` the size of the namespace.
-- `mode: fs` gives the container a read-only erofs filesystem of the
-  fsdax namespace at `path`, and no device node. The node plugin mounts it
-  once per device and access on the node, at
-  `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access>`
-  (`c1ae0001-direct`), and every claim of the node gets a read-only bind
-  mount of it (CDI mount, options `bind,ro,nosuid,nodev`). `access:
-  direct` mounts `/dev/pmemK` with `dax=always`: mappings of the files
-  are the memory of the device, no page cache. `access: cached` mounts a
-  read-only direct-I/O loop device over `/dev/pmemK` with `dax=never`: the
-  files are read into the page cache of the node once. Both accesses of
-  one device coexist on a node. A reader never creates or changes a
-  namespace or labels.
+  without a `shares` request, and a persistent local memdev in
+  `sharedDevices` is never written in mode `block` (other hosts may use
+  it). A read-only claim never creates a namespace. `CXL_<KEY>_PATH` is
+  the device node, `CXL_<KEY>_SIZE` the size of the namespace.
+- `mode: fs` gives the container a filesystem of the fsdax namespace at
+  `path`, read-only or read-write, and no device node. The node plugin
+  mounts it once per device and access on the node, the *node mount*, at
+  `<driver data dir>/mounts/<serial hex>-<access>`
+  (`/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct` for
+  a pool device, `/var/lib/kubelet/plugins/cxl.nri.io/mounts/...` for a
+  local memdev), and every claim of the node gets a bind mount of it (CDI
+  mount, options `bind,ro,nosuid,nodev` read-only, `bind,nosuid,nodev`
+  read-write). `access: direct` mounts `/dev/pmemK` with `dax=always`:
+  mappings of the files are the memory of the device, no page cache.
+  `access: cached` mounts a direct-I/O loop device over `/dev/pmemK`
+  (with `dax=never` for the types that have DAX): the files are read into
+  the page cache of the node once. A reader never creates or changes a
+  namespace or labels, and the plugin never creates a filesystem: a
+  writer in mode `block` writes it ([Filesystem images](#filesystem-images)).
 - Claims of one device on a node may mix `block` and `fs` and both
-  accesses; a volatile preparation of the serial is refused.
+  accesses within the rules of [One node](#one-node-superblock-block-device-binds);
+  a volatile preparation of the serial is refused.
+
+`CXL_<KEY>_FSTYPE` is the type of the filesystem, `CXL_<KEY>_ACCESS` the
+effective access and `CXL_<KEY>_READONLY` `0` for a read-write claim
+([Environment variables](#environment-variables)).
+
+#### Filesystems
+
+The plugin detects the type of the filesystem: it reads the first 128 KiB
+of the block device and looks for the signatures of the types it knows.
+Each type has a class, which says who may write it:
+
+| type | class | DAX (`access: direct`) | mount data, read-only | mount data, read-write |
+|:-----|:------|:-----------------------|:----------------------|:-----------------------|
+| `erofs` | read-only | yes | `dax=always` or `dax=never` | (never read-write) |
+| `squashfs` | read-only | no | | (never read-write) |
+| `ext4` | single-host | yes | `dax=always` or `dax=never` | `dax=always` or `dax=never` |
+| `xfs` | single-host | yes | `dax=...`, `nouuid` | `dax=...` |
+| `btrfs` | single-host | no | | |
+| `gfs2` | cluster; single-host with lock protocol `lock_nolock` in its superblock | no | `spectator` | |
+| any other type | single-host | no | | |
+
+- *read-only*: never mounted read-write; any number of hosts read it.
+- *single-host*: read-write on one host at a time; other hosts read it
+  only while no host writes it
+  ([Several nodes](#several-nodes-readwriteonce-and-cluster-filesystems)).
+- *cluster*: gfs2 with lock protocol `lock_dlm`: read-write on several
+  hosts at a time, on memory that is coherent between the hosts only.
+
+`dax=always` is the data of `access: direct`, `dax=never` that of
+`access: cached`, for the types with DAX only; `access` defaults to
+`direct` for them and to `cached` for the others, and an explicit
+`access: direct` on a type without DAX is refused. `nouuid` lets the
+direct and the cached superblock of one xfs coexist on a node, and every
+read-only gfs2 mount is a `spectator` (no journal). The plugin never passes
+`lockproto`, `locktable`, `noload`, `norecovery` or options of the user:
+a filesystem that needs recovery is not mounted read-only without it, and
+the lock protocol of gfs2 is that of its superblock.
+
+`device.fsType` is optional; with it the claim says what it expects:
+
+- one signature found: that is the type; a declared `fsType` must be it;
+- signatures of several types (a filesystem written over another one):
+  `fsType` must name one of them;
+- no signature: a declared type that the plugin does not know is mounted
+  as declared (class single-host, no DAX); without `fsType`, or with a
+  type that the plugin knows, the claim is refused;
+- when the node mount of the device and access exists already, its type
+  is the detected type.
+
+Then the type must be one that the node mounts: `fsTypes` of the
+[configuration file](#configuration-file) (default `erofs`, `squashfs`,
+`ext4`, `xfs`, `btrfs`, `gfs2`; a type that the plugin does not know
+mounts only when the list has it), and never one that
+`/proc/filesystems` marks `nodev` (`tmpfs`, `nfs`, `overlay`).
+
+Mounting a filesystem means that the kernel of the node parses metadata
+that whoever wrote the device chose. erofs is designed for untrusted
+images; ext4, xfs and btrfs are not hardened against crafted images.
+With mode `block` and read-write `fs`, a tenant chooses what the kernels
+of other nodes parse. So the types that a node mounts are the admin's:
+`fsTypes: [erofs]` on the nodes whose devices untrusted tenants may
+write.
+
+#### One node: superblock, block device, binds
+
+`device.readOnly` of mode `fs` is the opt-in to write: absent or `true`
+is read-only, `false` read-write. A *writer* of a device is a prepared
+claim (or lease companion) of the node that writes it: mode `fs` with
+`readOnly: false`, or mode `block` that is not read-only. Over the prepared
+claims of a device on the node:
+
+- One superblock per device and access, read-write while the device has
+  a writer on the node and read-only otherwise. The containers of writers
+  get read-write binds of it, those of readers read-only binds: the
+  writers and readers of one node share one consistent filesystem, and
+  the readers see what the writers write. A write through a read-only
+  bind fails with `Read-only file system`.
+- With a writer the node mount is the only mount of the device on the
+  node: a claim with the other access is refused, and so is a writer
+  while both accesses are mounted, or while the other access only is.
+  Without a writer both accesses coexist. A writable `block` claim needs
+  the device alone on the node: no other claim of the device is next to
+  it (the scheduler sees to that already: it has all shares).
+- `/dev/pmemK`, and the loop device of `access: cached`, is read-only
+  (`BLKROSET`) while the device has no writer on the node, before any
+  read-only mount is made, and read-write before the mount, upgrade or
+  block device of a writer. A read-only mount on a writable block device
+  writes: xfs writes its log at mount and unmount, ext4 and xfs replay a
+  dirty journal or log. On a read-only block device nothing writes, a
+  filesystem that needs recovery is refused (it was not unmounted
+  cleanly; a read-write claim on one node recovers it), and nobody, root
+  and privileged containers included, can make the superblock writable.
+  The read-only flag is changed only on the block device that the driver
+  verifies as the current one of the device (the namespace and its
+  numbers as prepared); otherwise it is left alone and logged.
+- The plugin looks at the superblocks of the device in every mount
+  namespace of the node (`/dev/pmemK` and the loop devices over it,
+  through `/proc/<pid>/mountinfo`). A superblock that no node mount of
+  the claims of the node explains, such as a mount left over by a crashed
+  container or made by an admin, keeps a writer, an upgrade, a fresh
+  mount of a writable type and a writable `block` claim back until that
+  mount is gone (the Prepare fails, kubelet retries); a read-write one
+  also keeps the block device from becoming read-only. When the
+  superblocks cannot be read, the plugin does none of these (it fails
+  closed).
+- Upgrade: a writer is prepared while read-only claims of its access have
+  the superblock: the block device (`/dev/pmemK`, then the loop device)
+  becomes read-write, then the superblock is reconfigured read-write; the
+  binds of the readers stay read-only. Only ext4 and xfs are upgraded in
+  place. For btrfs, gfs2 (its read-only mounts are spectators) and the
+  types that the plugin does not know, a writer is refused while
+  read-only claims of the node have the filesystem mounted: it waits
+  (kubelet retries its Prepare) until they are gone.
+- Downgrade: the last writer is unprepared while read-only claims stay:
+  the filesystem is synced, the superblock reconfigured read-only, then
+  the block device made read-only (the loop device, then `/dev/pmemK`). A file still open for writing
+  (`device or resource busy`), or any other error, fails the Unprepare,
+  and kubelet retries.
 - Unprepare of the last claim of an access on the node unmounts it
   (never detaching it); a mount that is busy fails the Unprepare, kubelet
   retries. Unprepare of the last claim of the device on the node waits
   until nothing holds `/dev/pmemK`, up to 10 s for all devices of the
-  claim together (no mount, no loop device, no
-  container that still has the bind mount) before it releases the region;
-  else it fails and kubelet retries. Releasing the region touches neither
-  labels nor data.
+  claim together (no mount, no loop device, no container that still has
+  the bind mount) before it releases the region (a pool device's memdev
+  is disabled, a local memdev stays enabled); else it fails and kubelet
+  retries. Releasing the region touches neither labels nor data.
 - After a restart of the plugin, the node mounts of prepared claims that
-  are missing are mounted again, when the fsdax namespace of the device
-  still has the block device that Prepare recorded (else the plugin logs
-  it and mounts nothing); mounts in the directory of node mounts that no
-  prepared claim uses are unmounted.
+  are missing are mounted again, read-write when the device has a writer,
+  when the fsdax namespace of the device still has the block device that
+  Prepare recorded (else the plugin logs it and mounts nothing); a node
+  mount whose superblock is read-only with a writer, or read-write
+  without one, is upgraded or downgraded (a failure is logged, the next
+  Prepare or Unprepare of the device tries again; a type that cannot be
+  upgraded logs `device 0x<serial>: <mnt> is mounted read-only and
+  cannot be remounted read-write (<type>)`); the block devices get
+  their read-only flag again; mounts in the directory of node mounts that
+  no prepared claim uses are unmounted.
 
-Errors of the Prepare after the configuration checks above:
+The superblock and the read-only flag of the block device follow from
+the prepared claims; neither is stored. The plugin logs them (verbosity
+0, with the driver name `cxl-pool.nri.io` or `cxl.nri.io` first;
+`<source>` the block device or the loop device, `<data>` the mount data,
+left out with its comma when there is none, as in `(btrfs, rw)`):
 
-- `device 0x<serial>: memN has no persistent memory`: the status data
-  says `persistent`, the memdev has no persistent capacity.
-- `device 0x<serial>: no fsdax namespace in regionK: has a writer written the device?`:
+```
+cxl-pool.nri.io: device 0x<serial>: mounted <source> at <mnt> (<type>, ro|rw, <data>)
+cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-write
+cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-only
+cxl-pool.nri.io: device 0x<serial>: /dev/pmemK read-only
+cxl-pool.nri.io: device 0x<serial>: /dev/loopN read-write
+cxl-pool.nri.io: device 0x<serial>: unmounted <mnt>
+```
+
+#### Several nodes: ReadWriteOnce and cluster filesystems
+
+A single-host filesystem with a writer on one host and anybody else on
+another corrupts or misleads: two writers have two allocators, journals
+and caches of the same blocks; a reader next to a writer elsewhere sees
+metadata halfway (the writer's cache and journal are not on the device
+yet), keeps stale pages until it unmounts, and reports filesystem errors.
+So a read-write claim of a single-host filesystem has the device on its
+node only, as a Kubernetes volume of access mode ReadWriteOnce:
+
+- The pool controller attaches the device exclusively to the node of a
+  claim that writes a single-host filesystem, and writes
+  `singleHost: true` into the claim status. While the attachment is
+  exclusive, the pool attaches the device to no other host, also not for
+  another cluster that uses the pool. The claims of the writer's node
+  share the attachment, read-write and read-only alike.
+- Readers and writers on other nodes wait: their claims get the
+  condition `cxl-pool.nri.io/AttachFailed` with reason `Conflict`, and the
+  scheduler allocates them again (after the backoff of their pods) until
+  the writing claims are deallocated. A writer waits the same way while
+  another host has the device. The scheduler does not know to prefer the
+  writer's node: put readers and writers of one device on one node with a
+  `podAffinity` to the writer's pod, or a node selector
+  ([pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)).
+- The node mounts read-write only when the claim status says
+  `singleHost` (or `exclusive`), or the device is not shared, so a pool
+  controller that does not implement this makes the writes fail
+  ([Configuration errors](#configuration-errors)), never corrupt.
+- The controller makes the attachment shareable again only after the
+  writing claims are deallocated, which follows their Unprepare, which
+  syncs and remounts the superblock read-only (or unmounts it): no other
+  host sees the device before the data is in it. pmem writes go through
+  the CPU caches to the memory, and Linux writes back and invalidates the
+  CPU caches of a CXL region when it commits and tears it down, so what
+  host A wrote, synced and released, host B reads after it creates its
+  region, on any hardware.
+- A persistent local memdev that is not in `sharedDevices` is on one
+  host by construction: its claims write as the claims of one node do. A
+  memdev in `sharedDevices` may be used by other hosts that no pool
+  controller coordinates: it is not written in mode `block`, and in mode
+  `fs` only by a cluster filesystem on coherent memory.
+
+A cluster filesystem is read-write on several hosts at a time when
+everything agrees: the claim declares `fsType: gfs2`, the device is
+coherent (status data `coherent` of a pool device, from its attribute
+`coherent`, [pool.md](pool.md#what-the-pool-controller-publishes);
+`memdevSettings[].coherent` of a local memdev), and the plugin finds gfs2
+with lock protocol `lock_dlm` on the device. The pool controller then
+makes no exclusive attachment. Coherence is the condition because two
+hosts that use the memory at the same time, one of them writing, need
+memory that the hardware keeps coherent between them (CXL shared memory
+with back-invalidation); without it one host reads stale cache lines of
+the other's writes, and a cluster filesystem is corrupted like a
+single-host one. The cluster stack (corosync and `dlm_controld` for gfs2
+with `lock_dlm`) is the node admin's; without it the mount fails. A
+claim that declares `gfs2` for a device with another filesystem is
+refused on every node before anything is mounted.
+
+#### Errors of persistent devices
+
+Errors of the Prepare after the configuration checks above, each starting
+with `device 0x<serial>: ` (`<dev>` `/dev/pmemK`):
+
+- `memN has no persistent memory`: the status data says `persistent`,
+  the memdev has no persistent capacity.
+- `no fsdax namespace in regionK: has a writer written the device?`:
   mode `fs` or a read-only `block` claim on a region without an fsdax
   namespace with map `mem`.
-- `device 0x<serial>: /dev/pmemK has no erofs filesystem: <mount error>`
-- `device 0x<serial>: erofs on /dev/pmemK was mounted without DAX`:
-  `access: direct`, and the mount did not get `dax=always` (another mount
-  of `/dev/pmemK` on the node, outside the plugin, has its superblock);
-  the plugin unmounts it again. The same when the node mount of the
-  device and `access: direct` exists without `dax=always`; then it is
-  left alone.
-- `device 0x<serial>: <node mount> is a <type> mount of <source>, not of /dev/pmemK`
+- `<dev> has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType`
+- `<dev> has signatures of several filesystems (<t1>, <t2>): set device.fsType`
+- `<dev> has a filesystem of type <found>, not <declared>`
+- `<dev> has no filesystem of type <declared> (no signature of a type that the plugin knows)`:
+  a known type is declared, and the device has no signature of any.
+- `filesystem type <t> is not allowed on this node (fsTypes: <t1>, <t2>, ...)`
+- `filesystem type <t> does not mount a block device`: `/proc/filesystems`
+  marks it `nodev`.
+- `<t> is a read-only filesystem: set readOnly: true`: a read-write claim
+  of erofs or squashfs.
+- `<t> has no DAX: use access cached`
+- `read-write on several hosts needs a cluster filesystem on coherent memory: <reason>`,
+  `<reason>` one of `<t> is a single-host filesystem`,
+  `gfs2 with lock_nolock is a single-host filesystem` (or another lock
+  protocol than `lock_dlm`), `gfs2 without a lock protocol is a single-host filesystem`
+  and `the device is not coherent between hosts`: a read-write claim
+  without the single host fact.
+- `it is mounted read-write with access <a> on this node: access <b> would mount it a second time`
+- `it is mounted with access direct and cached on this node: a read-write claim needs one access only`
+- `it is mounted with access <a> only on this node: a read-write claim with access <b> would mount it a second time`
+- `<t> is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone`:
+  a writer of a type that is not upgraded in place (not ext4 or xfs).
+- `mode block read-write needs the device alone on this node`: a
+  writable `block` claim next to another claim of the device on the
+  node, or a claim next to it (the `shares` rules normally refuse it
+  first).
+- `<t> on <dev> needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does`:
+  a read-only claim of an ext4 whose journal needs recovery, or a
+  read-only mount of any type that the read-only block device refuses
+  (`EROFS`).
+- `<dev> has no <t> filesystem: <mount error>[: <messages of the filesystem context>]`:
+  the mount failed; the messages that the kernel's filesystem context
+  logged follow the error, separated by `; `.
+- `<t> on <dev> was mounted without DAX`: `access: direct`, and the mount
+  did not get `dax=always` (another mount of `/dev/pmemK` on the node,
+  outside the plugin, has its superblock, or xfs or erofs could not use
+  DAX and mounted without it); the plugin unmounts it
+  again. The same when the node mount of the device and `access: direct`
+  exists without `dax=always`; then it is left alone.
+- `remounting <mnt> read-write: <error>`: the upgrade failed; the block
+  device is read-only again.
+- `<dev> has a superblock that no claim of this node explains (<source> mounted <ro|rw> in <where>): it is not used until that mount is gone`:
+  a mount of `/dev/pmemK`, or of a loop device over it (`<source>`
+  `/dev/loopN`), that is no node mount of the claims of the node;
+  `<where>` is `pid <P> at <mount point>`. `the superblocks of <dev>: <error>`:
+  they cannot be read, so no writer is mounted.
+- `not making <dev> read-only: <source> is mounted read-write in <where>`,
+  `not making <dev> read-only: its superblocks: <error>`: the block
+  device stays writable; `making <dev> read-only: <error>` (or
+  `read-write`): the `BLKROSET` failed.
+- `<node mount> is a <type> mount of <source>, not of /dev/pmemK`
   (`access: direct`), `..., not of a loop device over /dev/pmemK`
-  (`access: cached`): something else is mounted at the node mount; the
-  plugin neither uses nor unmounts it.
+  (`access: cached`), `..., not <t>` (a mount of another type than the
+  claim's): something else is mounted at the node mount; the plugin
+  neither uses nor unmounts it.
 
 When a Prepare fails after the region was created, the plugin releases
 the region again only when nothing holds `/dev/pmemK` (as Unprepare
-does, below); else it leaves the region and logs it.
+does); else it leaves the region and logs it.
 
-Errors of the Unprepare: `device 0x<serial>: unmounting <mount>: device or
-resource busy` and `device 0x<serial>: /dev/pmemK is still in use`.
+Errors of the Unprepare: `device 0x<serial>: remounting <mnt> read-only: <error>`
+(the downgrade, `device or resource busy` while a file is open for
+writing), `device 0x<serial>: unmounting <mount>: device or resource
+busy` and `device 0x<serial>: /dev/pmemK is still in use`.
+
+#### Filesystem images
+
+A writer in mode `block` makes the filesystem: it writes an image into
+the block device, for example with `dd if=IMAGE of=$CXL_<KEY>_PATH bs=2M
+oflag=direct conv=fsync`, or runs `mkfs` on it. The image must fit
+`CXL_<KEY>_SIZE`.
+
+For `access: direct` the block size of ext4 and xfs must be the page size
+(`mkfs.ext4 -b 4096`): ext4 refuses `dax=always` with another one (the
+mount fails), xfs mounts without DAX (the Prepare fails with the text of
+a mount without DAX).
+An ext4 image with the files of a directory is
+`mkfs.ext4 -F -b 4096 -d DIR IMAGE SIZE`.
 
 The erofs image for `access: direct` must keep each file in one plain,
 2 MiB-aligned extent. Without `-Enoinline_data` the tail of a file is
@@ -835,11 +1169,13 @@ whole file although the mount says `dax=always`. Build it with exactly
 mkfs.erofs -b4096 --dsunit=512 -Enoinline_data IMAGE DIR
 ```
 
-(erofs-utils 1.8.6 or newer), and write it into the block device of a
-writer, for example with `dd if=IMAGE of=$CXL_<KEY>_PATH bs=2M oflag=direct
-conv=fsync`. The image must fit `CXL_<KEY>_SIZE`.
+(erofs-utils 1.8.6 or newer).
 [pool-persistent-erofs.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml)
-has a writer and two readers.
+has a writer and two readers of an erofs,
+[pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)
+a read-write and a read-only pod of one ext4 on one node, and
+[local-persistent-fs.yaml](blob:/deployment/samples/dra-driver-cxl/local-persistent-fs.yaml)
+a writer and a reader of a persistent local memdev.
 
 ## Steering
 
@@ -1029,7 +1365,7 @@ container the same set of variables:
 | variable | value | present for |
 |:---------|:------|:------------|
 | `CXL_<KEY>_SERIAL` | `0x<hex>` | memdevs (local and pool) |
-| `CXL_<KEY>_SHARED` | `0` or `1` | memdevs: `1` for a shared device, also when the claim or lease uses it exclusively |
+| `CXL_<KEY>_SHARED` | `0` or `1` | memdevs: `1` for a shared device, also when the claim or lease uses it exclusively; of a persistent local memdev its attribute `shared`, whatever the `shares` request |
 | `CXL_<KEY>_MODE` | `numa`, `dax`, `block` or `fs` | every memory device |
 | `CXL_<KEY>_SIZE` | bytes | every memory device: what the claim or lease got (the slice of a local memdev, the whole pool device, the consumed capacity of a region or DRAM; of modes `block` and `fs` the size of the fsdax namespace) |
 | `CXL_<KEY>_NODE` | NUMA node | mode `numa`: memdev slices, pool devices, regions |
@@ -1037,8 +1373,9 @@ container the same set of variables:
 | `CXL_<KEY>_DAX` | `/dev/daxX.Y` | mode `dax`: the device node of a claim; of a lease, the host path (informational: the container has no such node) |
 | `CXL_<KEY>_FD` | file descriptor number | leases of modes `dax` and `block`, the command of `cxl-request request --exec` and `cxl-request fd --exec`: instead of `DAX` (`dax`) or `PATH` (`block`) |
 | `CXL_<KEY>_PATH` | path | mode `block`: the block device node `/dev/pmemK` of a claim; of a lease, the host path (informational: the container has no such node); mode `fs`: the directory of the filesystem in the container (`path` of a claim, `/run/cxl/fs/<name>` of a lease) |
-| `CXL_<KEY>_ACCESS` | `direct` or `cached` | mode `fs` |
-| `CXL_<KEY>_READONLY` | `0` or `1` | modes `dax` and `block`; `1` in mode `fs` |
+| `CXL_<KEY>_ACCESS` | `direct` or `cached` | mode `fs`: the effective access |
+| `CXL_<KEY>_FSTYPE` | filesystem type (`erofs`, `ext4`, ...) | mode `fs`: the type that is mounted |
+| `CXL_<KEY>_READONLY` | `0` or `1` | modes `dax`, `block` and `fs` |
 
 `<KEY>`:
 
@@ -1094,18 +1431,21 @@ one value of each.
   ([local.md](local.md#shared-local-devices)).
 - Shared pool devices: the same bytes for every host that has the device
   attached, as long as the pool keeps the device.
-- Pool devices of persistent memory: the data and the namespace labels
-  stay in the device as long as the pool keeps it, also while no host has
-  it attached; releasing a claim changes neither. A new device is all
-  zeros, without labels: the first writable `block` claim creates the
-  fsdax namespace, readers find it in the labels. Readers see what the
-  last writer wrote; erofs never writes the device.
+- Devices of persistent memory: the data and the namespace labels stay
+  in the device as long as the pool keeps it (a persistent local memdev:
+  as long as the memdev keeps them, also across reboots), also while no
+  host has it attached; releasing a claim changes neither. A new device
+  is all zeros, without labels: the first writable `block` claim creates
+  the fsdax namespace, readers find it in the labels. Readers see what
+  the last writer wrote; a read-only mount never writes the device (its
+  block device is read-only), and a read-write `fs` claim writes it
+  through the filesystem. The plugin never zeroes a persistent device.
 
 ## Example claims
 
 [`deployment/samples/dra-driver-cxl`](tree:/deployment/samples/dra-driver-cxl)
 has a complete claim and pod for each case. The pods of claims 1-10 and
-13-15 use their claim as `mem` the same way:
+13-17 use their claim as `mem` the same way:
 
 ```yaml
 apiVersion: v1
@@ -1330,11 +1670,15 @@ the shared pool device `0xc1ae0001`.
 
     ```
     CXL_C1AE0001_ACCESS=direct
+    CXL_C1AE0001_FSTYPE=erofs
     CXL_C1AE0001_MODE=fs
     CXL_C1AE0001_PATH=/models
     CXL_C1AE0001_READONLY=1
     ...
     ```
+
+    `readOnly: true` may be left out: mode `fs` is read-only unless the
+    claim says `readOnly: false`.
 
 13. The shared local device `0xc100e2e2` exclusively (the writer): no
     capacity request
@@ -1376,6 +1720,58 @@ the shared pool device `0xc1ae0001`.
 
     As with a shared pool device, a reader that asks while the writer has
     the device waits until the writer's claim is deallocated.
+
+16. A read-write filesystem and a reader of it on the same node: an ext4
+    that a writer in mode `block` stored in the persistent pool device
+    `0xc1ae0001`
+    ([pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)).
+    The writer, one share, read-write:
+
+    ```yaml
+    requests: [{name: mem, exactly: {deviceClassName: cxl-pool-persistent, capacity: {requests: {shares: "1"}}}}]
+    config:
+    - opaque: {driver: cxl-pool.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: fs, readOnly: false, path: /data}}}
+    ```
+
+    ```
+    CXL_C1AE0001_ACCESS=direct
+    CXL_C1AE0001_FSTYPE=ext4
+    CXL_C1AE0001_MODE=fs
+    CXL_C1AE0001_PATH=/data
+    CXL_C1AE0001_READONLY=0
+    CXL_C1AE0001_SERIAL=0xc1ae0001
+    CXL_C1AE0001_SHARED=1
+    CXL_C1AE0001_SIZE=534773760
+    CXL_CLAIM_<uid>_0=1
+    ```
+
+    The reader, one share with `device: {mode: fs, path: /data}`, and its
+    pod with a `podAffinity` to the writer's pod (`topologyKey:
+    kubernetes.io/hostname`): on another node it would wait until the
+    writer is gone ([Several nodes](#several-nodes-readwriteonce-and-cluster-filesystems)).
+    `CXL_C1AE0001_READONLY=1`; it reads what the writer writes.
+
+17. A persistent local memdev `0xc100f5e1`: a writer in mode `block`
+    without a capacity request stores an ext4 in it; then claims of one
+    share each mount it read-write or read-only
+    ([local-persistent-fs.yaml](blob:/deployment/samples/dra-driver-cxl/local-persistent-fs.yaml)):
+
+    ```yaml
+    requests: [{name: mem, exactly: {deviceClassName: cxl-local-persistent, capacity: {requests: {shares: "1"}}}}]
+    config:
+    - opaque: {driver: cxl.nri.io, parameters: {apiVersion: cxl.nri.io/v1alpha1, kind: MemoryConfig, device: {mode: fs, readOnly: false, path: /data}}}
+    ```
+
+    ```
+    CXL_C100F5E1_ACCESS=direct
+    CXL_C100F5E1_FSTYPE=ext4
+    CXL_C100F5E1_MODE=fs
+    CXL_C100F5E1_PATH=/data
+    CXL_C100F5E1_READONLY=0
+    CXL_C100F5E1_SERIAL=0xc100f5e1
+    CXL_C100F5E1_SHARED=0
+    ...
+    ```
 
 ## nri-dra-driver-cxl flags
 
@@ -1425,6 +1821,9 @@ manageMemdevs: true
 memdevSettings:
 - device: "0xc1ffe2ef"
   usableSize: 128Gi
+- device: "0xc100f5e2"
+  coherent: true
+fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]
 verifyAddressing: true
 udevStableDuration: 200ms
 defaults:
@@ -1445,8 +1844,9 @@ defaults:
 | `ignoreDRAMNodes` | bool | `false` | publish no `dram` device |
 | `udevStableDuration` | duration | `200ms` | quiet period after the last udev event before the devices are scanned again |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
-| `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0` or serial in decimal or `0x` hex) and `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory)) |
-| `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)) |
+| `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0` or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedDevices`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
+| `fsTypes` | list of strings | `[erofs, squashfs, ext4, xfs, btrfs, gfs2]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. A type that the plugin does not know may be listed (class single-host, [Filesystems](#filesystems)); `[erofs]` keeps the node's kernel from parsing anything else that tenants write, `[]` mounts nothing. The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node` |
+| `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev of RAM, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)); persistent memdevs are not probed |
 | `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
 | `defaults.container.fencing` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |
 | `testability` | object | | fake devices for testing without CXL hardware: `fakeRegionDevices`, `fakeUdevFifo` |
@@ -1455,8 +1855,9 @@ defaults:
 [MemoryConfig](#memoryconfig-fields) only: the node defaults of the
 settings of containers, which their results override field by field
 ([Container settings](#container-settings)). It is decoded strictly and
-case-sensitively, and an error stops the plugin:
+case-sensitively. These errors stop the plugin:
 
+- `fsTypes: invalid filesystem type "X" (lower-case letters, digits, "_" and "-")`
 - `defaults: json: unknown field "F"` (`device`, `pool`,
   `container.Fencing`, ...)
 - `defaults.container.fencing: invalid value "X" (allowed-mems, mempolicy or none)`,
@@ -1479,15 +1880,16 @@ restarts.
 |:-----|:-|
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaims.json` | prepared claims of `cxl.nri.io` (kubelet plugin helper) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/preparedClaimsInfo.json` | devices of every prepared claim of `cxl.nri.io`, with the request and the resolved `container` settings of each result, its lend and the boot id of its Prepare: a claim of another boot is not prepared at start ([local.md](local.md#what-prepare-does)) |
-| `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, and the claims of shared local devices |
+| `/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json` | regions and slices of local memdevs, the claims of shared local devices, and the pmem regions and claims of persistent local memdevs |
 | `/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json` | the serials of pool devices and of local memdevs that the plugin has seen, and the pools it has listed: a pool device is never published as a local memdev while its controller's ResourceSlices are absent; edit it only while the plugin is stopped ([local.md](local.md#what-the-plugin-publishes)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/steeredContainers.json` | the containers that the steering of the plugin throttles, with their cgroups: a restarted plugin removes their `memory.high` ([Steering](#steering)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases.json` | the lease table, with the boot id of its leases: the leases of another boot are dropped at start ([leases.md](leases.md#life-cycle)) |
 | `/var/lib/kubelet/plugins/cxl.nri.io/leases/<claim uid>/cxl.sock` | the lease socket of a lease claim |
 | `/var/lib/kubelet/plugins/cxl.nri.io/cxl-request` | the lease CLI that the plugin of the Helm chart copies from its image (`--lease-cli-source`) |
+| `/var/lib/kubelet/plugins/cxl.nri.io/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent local memdev for mode `fs` ([Persistent memory](#persistent-memory)) |
 | `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json` | prepared claims of `cxl-pool.nri.io`, with the boot id of their Prepare |
 | `/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json` | claims of `cxl-pool.nri.io` whose Prepare has touched a device and not finished: a restarted plugin releases the device at start, or keeps the claim for its Unprepare or its Prepare again; and the stale claims (`stale`: prepared in another boot), kept for their Unprepare or their Prepare again ([pool.md](pool.md#ordering-and-failure-semantics)) |
-| `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access>` | the node mount of the erofs of a persistent pool device for mode `fs` |
+| `/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/<serial hex>-<access>` | the node mount of the filesystem of a persistent pool device for mode `fs` |
 | `<cdi root>/cxl-claims.yaml` | CDI kind `nri.io/cxl`: a device `claim-<uid>-<n>` per allocation result n of a prepared `cxl.nri.io` claim, with the marker, the result's variables and its dax device node |
 | `<cdi root>/cxl-leases.yaml` | CDI kind `nri.io/cxl`: a device `lease-<uid>` per lease claim |
 | `<cdi root>/cxl-pool.yaml` | CDI kind `nri.io/cxl-pool`: a device `claim-<uid>-<n>` per allocation result n of a prepared pool claim, likewise |

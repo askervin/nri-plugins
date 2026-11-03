@@ -81,8 +81,14 @@ type lease struct {
 	// DeviceSource is the source of the device that Serial names when
 	// a ResourceSlice has it and no source was requested, "" otherwise.
 	DeviceSource string `json:"deviceSource,omitempty"`
-	ReadOnly     bool   `json:"readOnly,omitempty"` // dax, block: the fd is opened read-only; fs: always
-	Access       string `json:"access,omitempty"`   // fs: api.AccessDirect or api.AccessCached
+	ReadOnly     bool   `json:"readOnly,omitempty"` // dax, block: the fd is opened read-only; fs: !ReadWrite
+	// ReadWrite is the opt-in of an fs lease to mount the filesystem
+	// read-write.
+	ReadWrite bool   `json:"readWrite,omitempty"`
+	Access    string `json:"access,omitempty"` // fs: api.AccessDirect or api.AccessCached, "" by type until Ready
+	// FsType is the filesystem type of an fs lease: the requested one ("":
+	// detect), the one mounted once Ready.
+	FsType string `json:"fsType,omitempty"`
 	// Name is the mount point of an fs lease in api.FsDir, unique among
 	// the leases of the lease claim.
 	Name string `json:"name,omitempty"`
@@ -106,6 +112,12 @@ type lease struct {
 	Created time.Time `json:"created"`
 }
 
+// readOnly tells whether a lease allows reads only: an fs lease unless it
+// is read-write.
+func (l *lease) readOnly() bool {
+	return l.ReadOnly || (l.Mode == api.ModeFs && !l.ReadWrite)
+}
+
 // deviceShared tells whether the device of a lease is a shared device:
 // one share of it, or the whole device.
 func (l *lease) deviceShared() bool {
@@ -123,18 +135,27 @@ func (l *lease) memory() (api.Memory, bool) {
 	if l.Mode == api.ModeBlock {
 		path = l.Block
 	}
-	return api.Memory{
+	// a persistent device: its attribute shared, whatever the share
+	shared := l.deviceShared()
+	if persistentMode(l.Mode) {
+		shared = l.SharedDevice
+	}
+	m := api.Memory{
 		Key:      api.Key(serial, 1),
 		Serial:   l.Serial,
-		Shared:   l.deviceShared(),
+		Shared:   shared,
 		Mode:     l.Mode,
 		Size:     l.Bytes,
 		Node:     l.Node,
 		Dax:      l.Dax,
 		Path:     path,
 		Access:   l.Access,
-		ReadOnly: l.ReadOnly || l.Mode == api.ModeFs,
-	}, true
+		ReadOnly: l.readOnly(),
+	}
+	if l.Mode == api.ModeFs {
+		m.FsType = l.FsType
+	}
+	return m, true
 }
 
 // companionName is the name of the companion claim and pod of a lease.

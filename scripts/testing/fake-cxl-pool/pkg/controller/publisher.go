@@ -63,6 +63,8 @@ func (c *Controller) convertDevice(name string, d api.Device) resourceapi.Device
 			"shared":     {BoolValue: ptr.To(d.Shared)},
 			"persistent": {BoolValue: ptr.To(d.Persistent)},
 			"size":       {IntValue: ptr.To(d.Size)},
+			// a missing coherent attribute is false
+			device.AttrCoherent: {BoolValue: ptr.To(c.coherent(name))},
 		},
 		BindsToNode:              ptr.To(true),
 		BindingConditions:        []string{c.condAttached()},

@@ -22,13 +22,13 @@ import (
 )
 
 func TestRequestResponseRoundTrip(t *testing.T) {
-	req := Request{Op: OpRequest, Source: SourcePool, Mode: ModeFs, Shared: true, ReadOnly: true, Access: AccessCached,
-		Name: "models", Size: "256Mi", Serial: "0xc1ae0001", Wait: "10s", RequestID: "r1", Lease: "1a2b3c4d", All: true}
+	req := Request{Op: OpRequest, Source: SourcePool, Mode: ModeFs, Shared: true, ReadOnly: true, ReadWrite: true, Access: AccessCached,
+		FsType: "ext4", Name: "models", Size: "256Mi", Serial: "0xc1ae0001", Wait: "10s", RequestID: "r1", Lease: "1a2b3c4d", All: true}
 	data, err := json.Marshal(&req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"op":"request","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"cached","name":"models","size":"256Mi","serial":"0xc1ae0001","wait":"10s","requestId":"r1","lease":"1a2b3c4d","all":true}`
+	want := `{"op":"request","source":"pool","mode":"fs","shared":true,"readOnly":true,"readWrite":true,"access":"cached","fsType":"ext4","name":"models","size":"256Mi","serial":"0xc1ae0001","wait":"10s","requestId":"r1","lease":"1a2b3c4d","all":true}`
 	if string(data) != want {
 		t.Fatalf("request JSON\n%s\nwant\n%s", data, want)
 	}
@@ -58,12 +58,12 @@ func TestRequestResponseRoundTrip(t *testing.T) {
 	}
 
 	fs := Response{Lease: "1a2b3c4d", State: StateReady, Source: SourcePool, Mode: ModeFs, Shared: true, ReadOnly: true,
-		Access: AccessDirect, Path: FsDir + "/models", Size: 534773760, Serial: "0xc1ae0001"}
+		Access: AccessDirect, FsType: "erofs", Path: FsDir + "/models", Size: 534773760, Serial: "0xc1ae0001"}
 	data, err = json.Marshal(&fs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"direct","path":"/run/cxl/fs/models","size":534773760,"serial":"0xc1ae0001"}`
+	want = `{"lease":"1a2b3c4d","state":"Ready","source":"pool","mode":"fs","shared":true,"readOnly":true,"access":"direct","fsType":"erofs","path":"/run/cxl/fs/models","size":534773760,"serial":"0xc1ae0001"}`
 	if string(data) != want {
 		t.Fatalf("fs response JSON\n%s\nwant\n%s", data, want)
 	}
@@ -108,8 +108,9 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpRequest, Mode: ModeBlock, Shared: true, Source: SourceLocal}, "mode block with shared needs readOnly"},
 		{Request{Op: OpRequest, Mode: ModeBlock, Access: AccessDirect, Size: "64Mi"}, "access needs mode fs"},
 		{Request{Op: OpRequest, Mode: ModeBlock, Name: "x", Size: "64Mi"}, "name needs mode fs"},
-		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeBlock, Size: "64Mi"}, "mode block needs source pool"},
-		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeBlock, Shared: true, ReadOnly: true}, "mode block needs source pool"},
+		// local persistent memdevs have mode block
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeBlock, Size: "64Mi"}, ""},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeBlock, Shared: true, ReadOnly: true}, ""},
 		{Request{Op: OpRequest, Mode: ModeBlock}, "size or serial is required"},
 		// mode fs
 		{Request{Op: OpRequest, Shared: true, ReadOnly: true, Mode: ModeFs, Serial: "0xc1ae0001"}, ""},
@@ -134,11 +135,28 @@ func TestValidate(t *testing.T) {
 		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: "a b", Size: "64Mi"}, `invalid name "a b"`},
 		{Request{Op: OpRequest, ReadOnly: true, Mode: ModeFs, Name: strings.Repeat("n", 256), Size: "64Mi"}, `invalid name "nnn`},
 		{Request{Op: OpRequest, Mode: ModeFs, Name: "a/b", Size: "64Mi"}, `invalid name "a/b"`},
-		{Request{Op: OpRequest, Serial: "0xc1ae0001", Shared: true, Mode: ModeFs}, "mode fs needs readOnly"},
-		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, Size: "64Mi"}, "mode fs needs readOnly"},
-		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, ReadOnly: true, Shared: true, Size: "64Mi"}, "mode fs needs source pool"},
-		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, ReadOnly: true}, "mode fs needs source pool"},
+		// mode fs is read-only unless readWrite, of any source
+		{Request{Op: OpRequest, Serial: "0xc1ae0001", Shared: true, Mode: ModeFs}, ""},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, Size: "64Mi"}, ""},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, ReadOnly: true, Shared: true, Size: "64Mi"}, ""},
+		{Request{Op: OpRequest, Source: SourceLocal, Mode: ModeFs, ReadWrite: true, Serial: "0xc100f5e1"}, ""},
+		{Request{Op: OpRequest, Mode: ModeFs, ReadWrite: true, FsType: "ext4", Shared: true}, ""},
+		{Request{Op: OpRequest, Mode: ModeFs, FsType: "my_fs-2", Size: "64Mi"}, ""},
+		{Request{Op: OpRequest, Mode: ModeFs, FsType: "0" + strings.Repeat("f", 31), Size: "64Mi"}, ""},
+		// fsType and readWrite, in this order
+		{Request{Op: OpRequest, Mode: ModeFs, Name: "a/b", FsType: "Ext4", ReadOnly: true, ReadWrite: true}, `invalid name "a/b"`},
+		{Request{Op: OpRequest, Mode: ModeDax, FsType: "Ext4", ReadWrite: true, Size: "64Mi"}, "fsType needs mode fs"},
+		{Request{Op: OpRequest, FsType: "ext4", Size: "64Mi"}, "fsType needs mode fs"},
+		{Request{Op: OpRequest, Shared: true, FsType: "ext4"}, "fsType needs mode fs"},
+		{Request{Op: OpRequest, Mode: ModeFs, FsType: "Ext4", ReadOnly: true, ReadWrite: true}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
+		{Request{Op: OpRequest, Mode: ModeFs, FsType: "-x", Size: "64Mi"}, `invalid fsType "-x" (lower-case letters, digits, "_" and "-")`},
+		{Request{Op: OpRequest, Mode: ModeFs, FsType: "fuse.sshfs", Size: "64Mi"}, `invalid fsType "fuse.sshfs"`},
+		{Request{Op: OpRequest, Mode: ModeFs, FsType: strings.Repeat("f", 33), Size: "64Mi"}, `invalid fsType "fff`},
+		{Request{Op: OpRequest, Mode: ModeBlock, ReadWrite: true, ReadOnly: true, Size: "64Mi"}, "readWrite needs mode fs"},
+		{Request{Op: OpRequest, Shared: true, ReadWrite: true}, "readWrite needs mode fs"},
+		{Request{Op: OpRequest, Mode: ModeFs, ReadOnly: true, ReadWrite: true, Shared: true}, "readOnly and readWrite exclude each other"},
 		{Request{Op: OpRequest, Mode: ModeFs, ReadOnly: true}, "size or serial is required"},
+		{Request{Op: OpRequest, Mode: ModeFs, ReadWrite: true}, "size or serial is required"},
 		{Request{Op: OpRequest, Mode: ModeFs, ReadOnly: true, Serial: "c1ae0001"}, `invalid serial "c1ae0001"`},
 		{Request{Op: OpRequest, Shared: true, Mode: ModeNUMA}, "shared memory is never onlined as RAM: use mode dax"},
 		// a share of a shared local device
@@ -231,6 +249,14 @@ func TestEnv(t *testing.T) {
 			map[string]string{"CXL_C1AE0001_2_SERIAL": "0xc1ae0001", "CXL_C1AE0001_2_SHARED": "1", "CXL_C1AE0001_2_MODE": "fs",
 				"CXL_C1AE0001_2_SIZE": "534773760", "CXL_C1AE0001_2_PATH": "/run/cxl-fs/C1AE0001_2", "CXL_C1AE0001_2_ACCESS": "cached",
 				"CXL_C1AE0001_2_READONLY": "1"}},
+		{"pool device fs read-write", Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Shared: true, Mode: ModeFs, Size: 534773760,
+			Path: "/data", Access: AccessDirect, FsType: "ext4"},
+			map[string]string{"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_MODE": "fs",
+				"CXL_C1AF0001_SIZE": "534773760", "CXL_C1AF0001_PATH": "/data", "CXL_C1AF0001_ACCESS": "direct",
+				"CXL_C1AF0001_READONLY": "0", "CXL_C1AF0001_FSTYPE": "ext4"}},
+		{"block has no FSTYPE", Memory{Key: Key(0xc1af0001, 1), Serial: "0xc1af0001", Mode: ModeBlock, Size: 1, Path: "/dev/pmem0", FsType: "ext4"},
+			map[string]string{"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "0", "CXL_C1AF0001_MODE": "block",
+				"CXL_C1AF0001_SIZE": "1", "CXL_C1AF0001_PATH": "/dev/pmem0", "CXL_C1AF0001_READONLY": "0"}},
 		{"dax lease without a device path", Memory{Key: Key(0xc1ee0001, 1), Serial: "0xc1ee0001", Mode: ModeDax, Size: 1},
 			map[string]string{"CXL_C1EE0001_SERIAL": "0xc1ee0001", "CXL_C1EE0001_SHARED": "0", "CXL_C1EE0001_MODE": "dax",
 				"CXL_C1EE0001_SIZE": "1", "CXL_C1EE0001_READONLY": "0"}},
@@ -312,5 +338,20 @@ func TestSerials(t *testing.T) {
 	}
 	if s := FormatSerial(0xc100e2e1); s != "0xc100e2e1" {
 		t.Fatalf("FormatSerial %s", s)
+	}
+}
+
+func TestValidFsType(t *testing.T) {
+	valid := []string{"erofs", "ext4", "gfs2", "9p", "my_fs", "a-b", "x", strings.Repeat("a", 32)}
+	invalid := []string{"", "Ext4", "_x", "-x", "fuse.sshfs", "a b", "a/b", strings.Repeat("a", 33)}
+	for _, name := range valid {
+		if !ValidFsType(name) {
+			t.Errorf("ValidFsType(%q) = false", name)
+		}
+	}
+	for _, name := range invalid {
+		if ValidFsType(name) {
+			t.Errorf("ValidFsType(%q) = true", name)
+		}
 	}
 }

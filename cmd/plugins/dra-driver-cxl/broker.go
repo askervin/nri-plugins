@@ -484,16 +484,16 @@ func (b *broker) parseWait(s string) time.Duration {
 // requestOptions sets the source, mode, sharing, access, name, size and
 // device of a validated request on the lease.
 func (b *broker) requestOptions(l *lease, req *api.Request) error {
-	if b.cfg.PoolDriver == "" && (req.Source == api.SourcePool || persistentMode(req.Mode)) {
+	if b.cfg.PoolDriver == "" && req.Source == api.SourcePool {
 		return errPoolDisabled
 	}
 	l.Source, l.Shared, l.ReadOnly, l.Mode = req.Source, req.Shared, req.ReadOnly, req.EffectiveMode()
 	l.SharedDevice = req.Shared
 	if l.Mode == api.ModeFs {
-		l.Access, l.Name = req.Access, req.Name
-		if l.Access == "" {
-			l.Access = api.AccessDirect
-		}
+		// read-only unless readWrite; access "": by the type of the
+		// filesystem, decided by the driver of the device
+		l.Access, l.Name, l.FsType, l.ReadWrite = req.Access, req.Name, req.FsType, req.ReadWrite
+		l.ReadOnly = !req.ReadWrite
 	}
 	if req.Size != "" {
 		q, err := resource.ParseQuantity(req.Size)
@@ -511,7 +511,8 @@ func (b *broker) requestOptions(l *lease, req *api.Request) error {
 // serialOptions sets the serial of a validated request on the lease and,
 // when it names a shared device, that the device is shared and, for a
 // device of volatile memory, mode dax. Modes block and fs need a
-// persistent device, and a persistent device needs mode block or fs.
+// persistent device, and a persistent device needs mode block or fs. A
+// share needs a device with the capacity shares.
 func (b *broker) serialOptions(l *lease, req *api.Request) error {
 	serial, _ := api.ParseSerial(req.Serial)
 	l.Serial = api.FormatSerial(serial)
@@ -521,9 +522,9 @@ func (b *broker) serialOptions(l *lease, req *api.Request) error {
 		return err
 	case dev == nil:
 		return nil
-	case !dev.shared && l.Shared:
+	case !dev.shares && l.Shared:
 		return fmt.Errorf("device %s: not shareable", l.Serial)
-	case !dev.shared:
+	case !dev.shared && !dev.persistent:
 	case req.Source == api.SourceLocal && dev.driver != device.DriverName:
 		return fmt.Errorf("device %s: not a local device", l.Serial)
 	case req.Source == api.SourcePool && dev.driver == device.DriverName:
@@ -566,7 +567,8 @@ func deviceSourceOf(dev *sliceDevice, req *api.Request) string {
 type sliceDevice struct {
 	name       string
 	shared     bool
-	persistent bool   // a pool device of persistent memory
+	shares     bool   // the device has the capacity shares
+	persistent bool   // a device of persistent memory
 	driver     string // the driver of the ResourceSlice
 	node       string // the node of a ResourceSlice of cxl.nri.io
 }
@@ -603,6 +605,7 @@ func (b *broker) deviceBySerial(serial uint64) (*sliceDevice, error) {
 			if a, ok := deviceAttribute(d, rs.Spec.Driver, device.AttrPersistent); ok && a.BoolValue != nil {
 				dev.persistent = *a.BoolValue
 			}
+			_, dev.shares = d.Capacity[device.CapacityShares]
 			if rs.Spec.Driver == device.DriverName && rs.Spec.NodeName != nil {
 				dev.node = *rs.Spec.NodeName
 			}
@@ -646,8 +649,8 @@ func deviceSerial(d *resourceapi.Device, driver string) (uint64, bool) {
 
 // leaseInfo is the response of a lease. Called with b.mu held.
 func leaseInfo(l *lease) *api.Response {
-	r := &api.Response{Lease: l.ID, State: l.State, Source: l.Source, Mode: l.Mode, Shared: l.Shared, ReadOnly: l.ReadOnly,
-		Access: l.Access, Path: l.Path, Serial: l.Serial, Dax: l.Dax, Block: l.Block, Error: l.Error, Size: l.Bytes}
+	r := &api.Response{Lease: l.ID, State: l.State, Source: l.Source, Mode: l.Mode, Shared: l.Shared, ReadOnly: l.readOnly(),
+		Access: l.Access, FsType: l.FsType, Path: l.Path, Serial: l.Serial, Dax: l.Dax, Block: l.Block, Error: l.Error, Size: l.Bytes}
 	if l.Node >= 0 {
 		n := l.Node
 		r.Node = &n
@@ -1009,12 +1012,6 @@ func (b *broker) companionObjects(l *lease) (*resourceapi.ResourceClaim, *corev1
 // claim of a lease accepts, the preferred one first: the requested one,
 // that of the device of the serial, or local, then pool.
 func (b *broker) companionSources(l *lease) ([]string, error) {
-	if persistentMode(l.Mode) {
-		if b.cfg.PoolDriver == "" {
-			return nil, errPoolDisabled
-		}
-		return []string{api.SourcePool}, nil
-	}
 	var sources []string
 	for _, s := range []string{api.SourceLocal, api.SourcePool} {
 		switch {
@@ -1061,10 +1058,15 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 			})
 			requests = []string{companionClaimRef + "/" + source}
 		}
-		dev := &config.Device{Mode: l.Mode, ReadOnly: l.ReadOnly}
-		if l.Mode == api.ModeFs {
+		dev := &config.Device{Mode: l.Mode}
+		switch {
+		case l.Mode == api.ModeFs:
+			// readOnly explicitly, access and fsType only when asked for;
 			// no path: the companion pod gets no mount
-			dev.Access = l.Access
+			dev.ReadOnly = ptr(l.readOnly())
+			dev.Access, dev.FsType = l.Access, l.FsType
+		case l.ReadOnly:
+			dev.ReadOnly = ptr(true)
 		}
 		cfg := &config.MemoryConfig{APIVersion: config.APIVersion, Kind: config.Kind, Device: dev}
 		params, err := json.Marshal(cfg)
@@ -1086,18 +1088,24 @@ func (b *broker) companionRequest(l *lease) (*resourceapi.DeviceRequest, []resou
 
 // companionDevices returns what the companion claim of a lease requests
 // from one source, and the driver of its devices: the DeviceClass (of
-// persistent pool devices for modes block and fs), the selectors of the
-// serial and, on shared devices, of the size, and the capacity: memory on
-// devices that are not shared, one share when the lease shares a shared
-// device, none (the whole device) when it takes a shared device
-// exclusively.
+// persistent devices for modes block and fs), the selectors of the serial
+// and, on devices with shares, of the size, and the capacity: memory on
+// devices without shares, one share when the lease shares a device, none
+// (the whole device) when it takes a device with shares exclusively. Every
+// persistent local memdev has shares.
 func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDeviceRequest, string, error) {
 	driver := device.DriverName
 	exact := &resourceapi.ExactDeviceRequest{DeviceClassName: device.ClassLocal}
-	if l.deviceShared() {
+	shares := l.deviceShared()
+	switch {
+	case persistentMode(l.Mode):
+		exact.DeviceClassName = device.ClassLocalPersistent
+		shares = true
+	case l.deviceShared():
 		exact.DeviceClassName = device.ClassLocalShared
 	}
 	if source == api.SourcePool {
+		shares = l.deviceShared()
 		driver, exact.DeviceClassName = b.cfg.PoolDriver, device.ClassPool
 		if l.deviceShared() {
 			exact.DeviceClassName = device.ClassPoolShared
@@ -1119,7 +1127,7 @@ func (b *broker) companionDevices(l *lease, source string) (*resourceapi.ExactDe
 		size = q
 	}
 	switch {
-	case !l.deviceShared():
+	case !shares:
 		if l.Size != "" {
 			exact.Capacity = &resourceapi.CapacityRequirements{
 				Requests: map[resourceapi.QualifiedName]resource.Quantity{device.CapacityMemory: size},
@@ -1610,12 +1618,17 @@ func (b *broker) OnPrepared(id string, devs []lentDevice) {
 	l.Serial = api.FormatSerial(d.Serial)
 	l.Bytes = d.Size
 	l.Source = d.Source
-	l.SharedDevice = l.SharedDevice || d.Shared
+	if persistentMode(d.Mode) {
+		// the attribute shared of the device, whatever the share
+		l.SharedDevice = d.Shared
+	} else {
+		l.SharedDevice = l.SharedDevice || d.Shared
+	}
 	switch d.Mode {
 	case api.ModeDax:
 		l.Node, l.Dax = -1, d.DaxDevice
 	case api.ModeFs:
-		l.Access, l.Path = d.Access, api.FsDir+"/"+l.Name
+		l.Access, l.FsType, l.Path = d.Access, d.FsType, api.FsDir+"/"+l.Name
 		l.Node, l.Dax = -1, ""
 	case api.ModeBlock:
 		l.Block = d.BlockDevice
@@ -1625,8 +1638,8 @@ func (b *broker) OnPrepared(id string, devs []lentDevice) {
 	}
 	l.State, l.Error = api.StateReady, ""
 	b.saveLocked()
-	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, node %d, dax %q, block %q, access %q, path %q, %d bytes)",
-		l.ID, l.Source, l.Serial, l.Mode, l.Node, l.Dax, l.Block, l.Access, l.Path, l.Bytes)
+	klog.Infof("lease broker: lease %s: Ready (source %s, serial %s, mode %s, read-only %v, node %d, dax %q, block %q, access %q, fs %q, path %q, %d bytes)",
+		l.ID, l.Source, l.Serial, l.Mode, l.readOnly(), l.Node, l.Dax, l.Block, l.Access, l.FsType, l.Path, l.Bytes)
 }
 
 // OnLendFailed fails the lease with the lend error (for example a

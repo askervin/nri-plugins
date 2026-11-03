@@ -25,7 +25,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -36,215 +35,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"golang.org/x/sys/unix"
 )
-
-// fakeMounter is the mount table and the loop devices of a node. Like the
-// kernel it gives a second mount of a source the superblock (and the
-// super options) of the first one, and removes an autoclear loop device
-// with its last mount.
-type fakeMounter struct {
-	mu sync.Mutex
-	// cutAt kills the plugin after a Mount at that target (cutPrepare),
-	// "" for none
-	cutAt     string
-	mounts    []mountInfo
-	calls     []string
-	loops     map[string]string // loop device -> backing
-	nextLoop  int
-	mountErr  map[string]error    // source -> error of Mount
-	superOpts map[string][]string // source -> super options of a new superblock
-	busy      map[string]bool     // targets whose Unmount fails with EBUSY
-	bindRoot  string              // the root of a new bind, "": that of its source
-	holders   map[string]string   // block device -> holder, like a container's bind mount
-	holderErr error               // error of Holder
-	detachErr error               // error of Release(true) of a loop device
-	bindFlags []string            // the per-mount flags of a new bind, nil: those of its source
-}
-
-func newFakeMounter() *fakeMounter {
-	return &fakeMounter{
-		loops:     map[string]string{},
-		mountErr:  map[string]error{},
-		superOpts: map[string][]string{},
-		busy:      map[string]bool{},
-		holders:   map[string]string{},
-	}
-}
-
-func (m *fakeMounter) call(format string, args ...any) {
-	m.calls = append(m.calls, fmt.Sprintf(format, args...))
-}
-
-func (m *fakeMounter) Mount(source, target, fstype string, flags uintptr, data string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.call("mount %s %s %s 0x%x %s", source, target, fstype, flags, data)
-	if err := m.mountErr[source]; err != nil {
-		return err
-	}
-	if _, err := os.Stat(target); err != nil {
-		return err
-	}
-	if flags&unix.MS_BIND != 0 {
-		// a bind has the superblock and the per-mount flags of its source
-		src := findMount(m.mounts, source)
-		if src == nil {
-			return unix.EINVAL
-		}
-		bind := *src
-		bind.Target = filepath.Clean(target)
-		if m.bindFlags != nil {
-			bind.MountFlags = slices.Clone(m.bindFlags)
-		}
-		if m.bindRoot != "" {
-			bind.Root = m.bindRoot
-		}
-		m.mounts = append(m.mounts, bind)
-		m.cut(target)
-		return nil
-	}
-	opts := []string{"ro", data}
-	if o, ok := m.superOpts[source]; ok {
-		opts = o
-	}
-	for _, mi := range m.mounts {
-		if mi.Source == source {
-			opts = mi.SuperOpts
-		}
-	}
-	m.mounts = append(m.mounts, mountInfo{Root: "/", Target: target, FsType: fstype, Source: source, SuperOpts: opts, MountFlags: []string{"ro", "nosuid", "nodev"}})
-	m.cut(target)
-	return nil
-}
-
-// cut kills the plugin after a mount at the target of cutAt. Called with
-// m.mu held, which the deferred unlock of the caller releases.
-func (m *fakeMounter) cut(target string) {
-	if m.cutAt == "" || filepath.Clean(target) != m.cutAt {
-		return
-	}
-	m.cutAt = ""
-	panic(errCut)
-}
-
-func (m *fakeMounter) Unmount(target string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.call("umount %s", target)
-	if m.busy[target] {
-		return unix.EBUSY
-	}
-	mi := findMount(m.mounts, target)
-	if mi == nil {
-		return unix.EINVAL
-	}
-	source := mi.Source
-	m.mounts = slices.DeleteFunc(m.mounts, func(x mountInfo) bool { return x.Target == target })
-	m.autoclear(source)
-	return nil
-}
-
-// autoclear removes an autoclear loop device without mounts.
-func (m *fakeMounter) autoclear(loop string) {
-	if _, ok := m.loops[loop]; !ok {
-		return
-	}
-	for _, mi := range m.mounts {
-		if mi.Source == loop {
-			return
-		}
-	}
-	delete(m.loops, loop)
-}
-
-func (m *fakeMounter) Mounts() ([]mountInfo, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return slices.Clone(m.mounts), nil
-}
-
-func (m *fakeMounter) Mounted(target string) (*mountInfo, error) {
-	mounts, _ := m.Mounts()
-	return findMount(mounts, target), nil
-}
-
-type fakeLoop struct {
-	m    *fakeMounter
-	path string
-}
-
-func (l *fakeLoop) Path() string { return l.path }
-
-func (l *fakeLoop) Release(detach bool) error {
-	l.m.mu.Lock()
-	defer l.m.mu.Unlock()
-	l.m.call("loop-release %s detach=%v", l.path, detach)
-	if detach && l.m.detachErr != nil {
-		return l.m.detachErr
-	}
-	if detach {
-		delete(l.m.loops, l.path)
-	} else {
-		l.m.autoclear(l.path)
-	}
-	return nil
-}
-
-func (m *fakeMounter) AttachLoop(backing string) (loopDevice, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	path := fmt.Sprintf("/dev/loop%d", m.nextLoop)
-	m.nextLoop++
-	m.call("loop %s %s", path, backing)
-	m.loops[path] = backing
-	return &fakeLoop{m: m, path: path}, nil
-}
-
-func (m *fakeMounter) LoopBackingFile(loop string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.loops[loop], nil
-}
-
-func (m *fakeMounter) Holder(dev string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.holderErr != nil {
-		return "", m.holderErr
-	}
-	if h := m.holders[dev]; h != "" {
-		return h, nil
-	}
-	for loop, backing := range m.loops {
-		if sameDevice(backing, dev) { // as sysMounter compares them
-			return filepath.Base(loop), nil
-		}
-	}
-	for _, mi := range m.mounts {
-		if mi.Source == dev {
-			return "in use", nil
-		}
-	}
-	return "", nil
-}
-
-// setBusy makes the Unmount of target fail with EBUSY, or not.
-func (m *fakeMounter) setBusy(target string, busy bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.busy[target] = busy
-}
-
-func (m *fakeMounter) callsOf(prefix string) []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []string
-	for _, c := range m.calls {
-		if strings.HasPrefix(c, prefix) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
 
 // The nvdimm region of a pmem region0 of mem0, as the kernel of the e2e
 // VMs shows it (see pkg/cxl/memctl/pmem_test.go).
@@ -334,6 +124,7 @@ func persistentClaim(uid, data, config string) *resourceapi.ResourceClaim {
 // directories left.
 func (e *poolTestEnv) wantNoMounts(t *testing.T, p *poolDriver) {
 	t.Helper()
+	e.m.wantNoViolations(t)
 	mounts, _ := e.m.Mounts()
 	entries, _ := os.ReadDir(p.mountsDir())
 	if len(mounts) != 0 || len(e.m.loops) != 0 || len(entries) != 0 {
@@ -424,7 +215,7 @@ func TestPoolPersistentReaders(t *testing.T) {
 		return []*cdiSpecs.Mount{{HostPath: host, ContainerPath: ctr, Type: "bind", Options: []string{"bind", "ro", "nosuid", "nodev"}}}
 	}
 	env := func(uid, path, access string) []string {
-		return []string{"CXL_C1AE0001_ACCESS=" + access, "CXL_C1AE0001_MODE=fs", "CXL_C1AE0001_PATH=" + path, "CXL_C1AE0001_READONLY=1",
+		return []string{"CXL_C1AE0001_ACCESS=" + access, "CXL_C1AE0001_FSTYPE=erofs", "CXL_C1AE0001_MODE=fs", "CXL_C1AE0001_PATH=" + path, "CXL_C1AE0001_READONLY=1",
 			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=534773760", "CXL_CLAIM_" + uid + "_0=1"}
 	}
 	for _, c := range []struct{ uid, host, path, access string }{
@@ -485,7 +276,7 @@ func TestPoolPersistentSamePreparation(t *testing.T) {
 	claim.Status.Allocation.Devices.Results = append(claim.Status.Allocation.Devices.Results,
 		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
 	noErr(t, prepare(t, p, claim).Err)
-	e.wantCDIDevice(t, "claim-r3-2", []string{"CXL_C1AE0001_2_ACCESS=direct", "CXL_C1AE0001_2_MODE=fs", "CXL_C1AE0001_2_PATH=/run/cxl-fs/C1AE0001_2",
+	e.wantCDIDevice(t, "claim-r3-2", []string{"CXL_C1AE0001_2_ACCESS=direct", "CXL_C1AE0001_2_FSTYPE=erofs", "CXL_C1AE0001_2_MODE=fs", "CXL_C1AE0001_2_PATH=/run/cxl-fs/C1AE0001_2",
 		"CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001", "CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=534773760", "CXL_CLAIM_r3_2=1"})
 	if n := len(e.m.callsOf("mount ")); n != 2 {
 		t.Fatalf("%d mounts: %q", n, e.m.calls)
@@ -1209,8 +1000,8 @@ func TestPoolLeaseBindErrors(t *testing.T) {
 		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
 	e.m.setBusy(target, true)
 	wantErr(t, prepare(t, p, c).Err, "lease l7: more than one filesystem device")
-	if mi, _ := e.m.Mounted(target); mi == nil || !slices.Equal(p.staleBinds, []staleBind{{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"}}) {
-		t.Fatalf("busy bind %+v, stale %v", mi, p.staleBinds)
+	if mi, _ := e.m.Mounted(target); mi == nil || !slices.Equal(p.pn.StaleBinds(), []staleBind{{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"}}) {
+		t.Fatalf("busy bind %+v, stale %v", mi, p.pn.StaleBinds())
 	}
 	e.wantRegion(t, true)
 	if p.preparing["uid-cxl-lease-l7"] == nil {
@@ -1219,8 +1010,8 @@ func TestPoolLeaseBindErrors(t *testing.T) {
 	e.m.setBusy(target, false)
 	noErr(t, prepare(t, p, persistentClaim("d1", persistentData, fsConfig("direct", ""))).Err)
 	noErr(t, unprepare(t, p, "d1"))
-	if len(p.staleBinds) != 0 {
-		t.Fatalf("stale binds %v", p.staleBinds)
+	if len(p.pn.StaleBinds()) != 0 {
+		t.Fatalf("stale binds %v", p.pn.StaleBinds())
 	}
 	// kubelet unprepares the claim of the failed Prepare: nothing is left
 	// to release
@@ -1401,8 +1192,8 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 		e.wantRegion(t, true)
 		e.m.setBusy(target, false)
 		wantErr(t, prepare(t, p, badConfigClaim("x-"+what)).Err, `invalid mode "ext4"`)
-		if len(p.staleBinds) != 0 {
-			t.Fatalf("%s: stale binds %v left", what, p.staleBinds)
+		if len(p.pn.StaleBinds()) != 0 {
+			t.Fatalf("%s: stale binds %v left", what, p.pn.StaleBinds())
 		}
 		e.f.wantReleased(t)
 		if failed != "" {
@@ -1425,13 +1216,13 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "llm0", ConsumedCapacity: poolConsumed(persistentData)})
 	e.m.setBusy(target, true)
 	wantErr(t, prepare(t, p, c).Err, "lease l1: more than one filesystem device")
-	if !slices.Equal(p.staleBinds, stale) {
-		t.Fatalf("stale binds %+v", p.staleBinds)
+	if !slices.Equal(p.pn.StaleBinds(), stale) {
+		t.Fatalf("stale binds %+v", p.pn.StaleBinds())
 	}
 	// a release while the bind is still busy keeps it and the region
 	wantErr(t, prepare(t, p, badConfigClaim("x0")).Err, `invalid mode "ext4"`)
-	if !slices.Equal(p.staleBinds, stale) || strings.Contains(e.f.commands(), "disable-region") {
-		t.Fatalf("stale binds %+v, commands:\n%s", p.staleBinds, e.f.commands())
+	if !slices.Equal(p.pn.StaleBinds(), stale) || strings.Contains(e.f.commands(), "disable-region") {
+		t.Fatalf("stale binds %+v, commands:\n%s", p.pn.StaleBinds(), e.f.commands())
 	}
 	releaseLater("failed prepare", "uid-cxl-lease-l1")
 
@@ -1440,8 +1231,8 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	e.m.setBusy(target, true)
 	wantErr(t, prepare(t, p, fsCompanion("l2", "direct")).Err, "is not a read-only nosuid nodev erofs mount")
 	e.m.bindFlags = nil
-	if !slices.Equal(p.staleBinds, stale) {
-		t.Fatalf("stale binds %+v", p.staleBinds)
+	if !slices.Equal(p.pn.StaleBinds(), stale) {
+		t.Fatalf("stale binds %+v", p.pn.StaleBinds())
 	}
 	releaseLater("failed check", "uid-cxl-lease-l2")
 
@@ -1453,8 +1244,8 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	noErr(t, p.save())
 	e.m.setBusy(target, true)
 	p = e.leaseDriver(t, hooks)
-	if !slices.Equal(p.staleBinds, stale) {
-		t.Fatalf("stale binds after the restart %+v", p.staleBinds)
+	if !slices.Equal(p.pn.StaleBinds(), stale) {
+		t.Fatalf("stale binds after the restart %+v", p.pn.StaleBinds())
 	}
 	if mi, _ := e.m.Mounted(p.nodeMountPath(0xc1ae0001, "cached")); mi != nil {
 		t.Fatalf("node mount of no claim left: %+v", mi)
@@ -1467,8 +1258,8 @@ func TestPoolLeaseStaleBinds(t *testing.T) {
 	p.addStaleBind(staleBind{Target: target, Serial: 0xc1ae0001, BlockDevice: "/dev/pmem0"})
 	noErr(t, prepare(t, p, fsCompanion("l4", "direct")).Err)
 	wantErr(t, prepare(t, p, badConfigClaim("x1")).Err, `invalid mode "ext4"`)
-	if mi, _ := e.m.Mounted(target); mi == nil || len(p.staleBinds) != 0 {
-		t.Fatalf("adopted bind %+v, stale binds %v", mi, p.staleBinds)
+	if mi, _ := e.m.Mounted(target); mi == nil || len(p.pn.StaleBinds()) != 0 {
+		t.Fatalf("adopted bind %+v, stale binds %v", mi, p.pn.StaleBinds())
 	}
 	noErr(t, unprepare(t, p, "uid-cxl-lease-l4"))
 	e.f.wantReleased(t)

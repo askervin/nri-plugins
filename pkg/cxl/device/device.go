@@ -71,6 +71,9 @@ const (
 	AttrNodes           resourcev1.QualifiedName = "nodes"
 	AttrNodeAffinity    resourcev1.QualifiedName = "nodeAffinity"
 	AttrMemoryBlockSize resourcev1.QualifiedName = "memoryBlockSize"
+	// AttrCoherent of a pool device tells whether the hardware keeps its
+	// memory coherent between the hosts that share it; absent is false.
+	AttrCoherent resourcev1.QualifiedName = "coherent"
 
 	// CapacityMemory is the memory capacity of a device in bytes.
 	// Matches v1.ResourceMemory.
@@ -90,8 +93,10 @@ const (
 	// ClassLocalShared selects local memdevs that the driver
 	// configuration declares shared.
 	ClassLocalShared = "cxl-local-shared"
-	ClassPool        = "cxl-pool"
-	ClassPoolShared  = "cxl-pool-shared"
+	// ClassLocalPersistent selects local memdevs of persistent memory.
+	ClassLocalPersistent = "cxl-local-persistent"
+	ClassPool            = "cxl-pool"
+	ClassPoolShared      = "cxl-pool-shared"
 	// ClassPoolPersistent selects pool devices with persistent memory.
 	ClassPoolPersistent = "cxl-pool-persistent"
 	ClassRegion         = "cxl-region"
@@ -141,10 +146,13 @@ type DRAM struct {
 type Memdev struct {
 	Name         string // memN
 	Serial       uint64
-	Size         uint64 // RAM capacity, bytes
+	Size         uint64 // RAM capacity, bytes (persistent capacity of a persistent memdev)
 	NodeAffinity int    // CPU NUMA node of the memdev, -1 if unknown
 	BlockSize    uint64 // memory block size, bytes: slices are multiples of it
 	Shared       bool   // published shared: one devdax device for all claims
+	// Persistent is true for a memdev of persistent memory: modes block
+	// and fs, one pmem region for all claims.
+	Persistent bool
 }
 
 // LeaseToken is the Dev of the lease device: it has no hardware, no

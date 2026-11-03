@@ -54,10 +54,11 @@ const (
 	// (leases).
 	ModeDax = "dax"
 	// ModeBlock gives persistent memory as the block device of its fsdax
-	// namespace (claims) or its fd (leases), of pool devices only.
+	// namespace (claims) or its fd (leases).
 	ModeBlock = "block"
-	// ModeFs gives persistent memory as a read-only filesystem mounted
-	// from its fsdax namespace (pool devices only).
+	// ModeFs gives persistent memory as a filesystem mounted from its
+	// fsdax namespace, read-only unless the claim or lease opts in to
+	// read-write.
 	ModeFs = "fs"
 
 	// AccessDirect is a mode fs mount whose file pages are the device's
@@ -94,7 +95,9 @@ type Request struct {
 	Mode      string `json:"mode,omitempty"`
 	Shared    bool   `json:"shared,omitempty"`
 	ReadOnly  bool   `json:"readOnly,omitempty"`
+	ReadWrite bool   `json:"readWrite,omitempty"`
 	Access    string `json:"access,omitempty"`
+	FsType    string `json:"fsType,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Size      string `json:"size,omitempty"`
 	Serial    string `json:"serial,omitempty"`
@@ -107,7 +110,7 @@ type Request struct {
 // Response is one response line on a lease socket. The response of a
 // Ready dax or block lease to request and fd carries the open fd of its
 // device (SCM_RIGHTS). Path is the directory of the filesystem of a Ready
-// fs lease in the container. Dax and Block are the host paths of the
+// fs lease in the container, FsType its filesystem type. Dax and Block are the host paths of the
 // devices of Ready dax and block leases, informational: the container has
 // no such device nodes.
 type Response struct {
@@ -118,6 +121,7 @@ type Response struct {
 	Shared   bool              `json:"shared"`
 	ReadOnly bool              `json:"readOnly"`
 	Access   string            `json:"access,omitempty"`
+	FsType   string            `json:"fsType,omitempty"`
 	Path     string            `json:"path,omitempty"`
 	Size     uint64            `json:"size,omitempty"`
 	Serial   string            `json:"serial,omitempty"`
@@ -183,14 +187,18 @@ func (r *Request) validateRequest() error {
 		return errors.New("name needs mode fs")
 	case r.Name != "" && !ValidName(r.Name):
 		return fmt.Errorf(`invalid name %q (letters, digits, ".", "_" and "-", not "." or "..")`, r.Name)
-	case mode == ModeFs && !r.ReadOnly:
-		return errors.New("mode fs needs readOnly")
+	case r.FsType != "" && mode != ModeFs:
+		return errors.New("fsType needs mode fs")
+	case r.FsType != "" && !ValidFsType(r.FsType):
+		return fmt.Errorf(`invalid fsType %q (lower-case letters, digits, "_" and "-")`, r.FsType)
+	case r.ReadWrite && mode != ModeFs:
+		return errors.New("readWrite needs mode fs")
+	case r.ReadOnly && r.ReadWrite:
+		return errors.New("readOnly and readWrite exclude each other")
 	case mode == ModeBlock && r.Shared && !r.ReadOnly:
 		return errors.New("mode block with shared needs readOnly")
 	case r.ReadOnly && mode != ModeDax && mode != ModeFs && mode != ModeBlock:
 		return errors.New("readOnly needs mode dax, fs or block")
-	case (mode == ModeFs || mode == ModeBlock) && r.Source == SourceLocal:
-		return fmt.Errorf("mode %s needs source pool", mode)
 	case !r.Shared && r.Serial == "" && r.Size == "":
 		return errors.New("size or serial is required")
 	}
@@ -233,6 +241,24 @@ func ValidName(name string) bool {
 	return true
 }
 
+// ValidFsType returns true if name is a valid filesystem type name: 1 to
+// 32 bytes of lower-case letters, digits, "_" and "-", starting with a
+// letter or a digit.
+func ValidFsType(name string) bool {
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case (c == '_' || c == '-') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Memory is what a claim or a lease gives a container of one device:
 //   - Key: the env key (Key, RegionKey, DRAMKey)
 //   - Serial: 0x<hex> of a memdev, "" for regions and DRAM
@@ -247,7 +273,9 @@ func ValidName(name string) bool {
 //   - Path: the device node (/dev/pmemK) of block memory (of a lease: the
 //     host path), the directory in the container of fs memory
 //   - Access: AccessDirect or AccessCached of fs memory
-//   - ReadOnly: dax and block memory allows reads only; fs memory always
+//   - FsType: the filesystem type of fs memory
+//   - ReadOnly: dax and block memory allows reads only, fs memory is
+//     mounted read-only
 type Memory struct {
 	Key      string
 	Serial   string
@@ -259,6 +287,7 @@ type Memory struct {
 	Dax      string
 	Path     string
 	Access   string
+	FsType   string
 	ReadOnly bool
 }
 
@@ -294,7 +323,8 @@ func Nth(key string, n int) string {
 // Env returns the environment variables CXL_<KEY>_<FIELD> of a memory:
 // SERIAL and SHARED of memdevs, MODE and SIZE always, NODE or NODES of
 // numa memory, DAX and READONLY of dax memory, PATH and READONLY of block
-// memory, PATH, ACCESS and READONLY of fs memory.
+// memory, PATH, ACCESS, READONLY and FSTYPE (when the type is known) of fs
+// memory.
 func Env(m Memory) map[string]string {
 	p := "CXL_" + m.Key + "_"
 	env := map[string]string{
@@ -318,6 +348,9 @@ func Env(m Memory) map[string]string {
 		env[p+"PATH"] = m.Path
 		env[p+"ACCESS"] = m.Access
 		env[p+"READONLY"] = boolEnv(m.ReadOnly)
+		if m.FsType != "" {
+			env[p+"FSTYPE"] = m.FsType
+		}
 	case m.Nodes != "":
 		env[p+"NODES"] = m.Nodes
 	default:

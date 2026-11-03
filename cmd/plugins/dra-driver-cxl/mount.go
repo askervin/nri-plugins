@@ -31,12 +31,18 @@ import (
 
 // mountInfo is a mount of /proc/self/mountinfo.
 type mountInfo struct {
+	DevNum     string // major:minor of the device of the superblock
 	Root       string // the directory of the filesystem that is mounted, / for its root
 	Target     string // mount point
 	FsType     string
 	Source     string
 	SuperOpts  []string // super options, like dax=always
 	MountFlags []string // per-mount options, like ro
+}
+
+// superReadOnly tells whether the superblock of a mount is read-only.
+func (m *mountInfo) superReadOnly() bool {
+	return m.hasSuperOpt("ro")
 }
 
 // hasSuperOpt tells whether the super options of a mount have opt.
@@ -47,6 +53,17 @@ func (m *mountInfo) hasSuperOpt(opt string) bool {
 		}
 	}
 	return false
+}
+
+// superblock is a superblock on a block device, as one of its mounts shows
+// it.
+type superblock struct {
+	// Device is the block device of the superblock, /dev/pmemK or
+	// /dev/loopN.
+	Device   string
+	Source   string // the source of the mount
+	ReadOnly bool   // the superblock is read-only
+	Where    string // the mount: "pid P at <mount point>"
 }
 
 // loopDevice is a loop device set up by nodeMounter.AttachLoop, held open
@@ -64,6 +81,35 @@ type loopDevice interface {
 type nodeMounter interface {
 	// Mount mounts the filesystem of source at target (mount(2)).
 	Mount(source, target, fstype string, flags uintptr, data string) error
+	// FsMount mounts the filesystem of source at target with the new mount
+	// API: fsopen(fstype), the source, the flag "ro" unless readWrite, the
+	// options ("key=value" as strings, others as flags), FSCONFIG_CMD_CREATE,
+	// fsmount with MOUNT_ATTR_NOSUID|MOUNT_ATTR_NODEV, move_mount. Its error
+	// wraps the errno and has the messages that the filesystem context
+	// logged.
+	FsMount(source, target, fstype string, readWrite bool, options []string) error
+	// Reconfigure makes the superblock of the mount at target read-write or
+	// read-only (fspick, the flag "rw" or "ro", FSCONFIG_CMD_RECONFIGURE).
+	Reconfigure(target string, readWrite bool) error
+	// Syncfs writes the dirty data of the filesystem of the mount at target
+	// to its device (syncfs(2)).
+	Syncfs(target string) error
+	// BindReadOnly binds the mount at source at target as a read-only,
+	// nosuid, nodev mount (open_tree with OPEN_TREE_CLONE, mount_setattr,
+	// move_mount).
+	BindReadOnly(source, target string) error
+	// SetReadOnly sets or clears the read-only flag of a block device
+	// (BLKROSET).
+	SetReadOnly(dev string, readOnly bool) error
+	// ReadOnly returns the read-only flag of a block device (BLKROGET).
+	ReadOnly(dev string) (bool, error)
+	// ReadHead returns the first n bytes of a device, fewer when it is
+	// shorter.
+	ReadHead(dev string, n int) ([]byte, error)
+	// Superblocks returns the superblocks of the node on the block device
+	// dev and on the loop devices over it, in every mount namespace, one
+	// per device with a mount.
+	Superblocks(dev string) ([]superblock, error)
 	// Unmount unmounts target without detaching it (umount2(target, 0)).
 	Unmount(target string) error
 	// Mounted returns the topmost mount at target, nil if there is none.
@@ -74,9 +120,10 @@ type nodeMounter interface {
 	// (/dev/loopN), "" if it has none: a block device as /dev/<its name>,
 	// whatever mount namespace set the loop device up.
 	LoopBackingFile(loop string) (string, error)
-	// AttachLoop returns a new read-only, direct-I/O, autoclear loop
-	// device over the file or block device backing.
-	AttachLoop(backing string) (loopDevice, error)
+	// AttachLoop returns a new direct-I/O, autoclear loop device over the
+	// file or block device backing: read-only, or with writable a loop
+	// device whose backing is opened read-write.
+	AttachLoop(backing string, writable bool) (loopDevice, error)
 	// Holder returns what holds a block device, "" if nothing does: a loop
 	// device over it, or "in use" when it cannot be opened exclusively.
 	Holder(dev string) (string, error)
@@ -86,6 +133,9 @@ type nodeMounter interface {
 type sysMounter struct {
 	sysRoot string
 	devRoot string
+	// procRoot is the procfs of the processes of the node (the driver runs
+	// in the host's pid namespace).
+	procRoot string
 	// loopStatus returns the status of a loop device (LOOP_GET_STATUS64 of
 	// the device node), nil for that ioctl (a variable for tests).
 	loopStatus func(path string) (*unix.LoopInfo64, error)
@@ -93,7 +143,7 @@ type sysMounter struct {
 
 // newSysMounter returns the nodeMounter of the system.
 func newSysMounter(sysRoot string) *sysMounter {
-	return &sysMounter{sysRoot: sysRoot, devRoot: "/dev"}
+	return &sysMounter{sysRoot: sysRoot, devRoot: "/dev", procRoot: "/proc"}
 }
 
 func (m *sysMounter) Mount(source, target, fstype string, flags uintptr, data string) error {
@@ -151,6 +201,7 @@ func parseMountInfo(r io.Reader) ([]mountInfo, error) {
 			return nil, fmt.Errorf("invalid mountinfo line %q", s.Text())
 		}
 		mi := mountInfo{
+			DevNum:     f[2],
 			Root:       unescapeMountInfo(f[3]),
 			Target:     unescapeMountInfo(f[4]),
 			MountFlags: strings.Split(f[5], ","),
@@ -205,8 +256,14 @@ func (l *sysLoop) Release(detach bool) error {
 // another process configures the one it got first.
 const loopAttachTries = 5
 
-func (m *sysMounter) AttachLoop(backing string) (loopDevice, error) {
-	bf, err := os.OpenFile(backing, os.O_RDONLY, 0)
+func (m *sysMounter) AttachLoop(backing string, writable bool) (loopDevice, error) {
+	// the kernel makes a loop device read-only when either its backing or
+	// the loop device itself is not opened for writing
+	mode := os.O_RDONLY
+	if writable {
+		mode = os.O_RDWR
+	}
+	bf, err := os.OpenFile(backing, mode, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -222,12 +279,15 @@ func (m *sysMounter) AttachLoop(backing string) (loopDevice, error) {
 			return nil, fmt.Errorf("%s: LOOP_CTL_GET_FREE: %w", ctl.Name(), err)
 		}
 		path := filepath.Join(m.devRoot, "loop"+strconv.Itoa(n))
-		lf, err := os.OpenFile(path, os.O_RDONLY, 0)
+		lf, err := os.OpenFile(path, mode, 0)
 		if err != nil {
 			return nil, err
 		}
 		cfg := &unix.LoopConfig{Fd: uint32(bf.Fd())}
-		cfg.Info.Flags = unix.LO_FLAGS_READ_ONLY | unix.LO_FLAGS_DIRECT_IO | unix.LO_FLAGS_AUTOCLEAR
+		cfg.Info.Flags = unix.LO_FLAGS_DIRECT_IO | unix.LO_FLAGS_AUTOCLEAR
+		if !writable {
+			cfg.Info.Flags |= unix.LO_FLAGS_READ_ONLY
+		}
 		copy(cfg.Info.File_name[:len(cfg.Info.File_name)-1], backing)
 		err = unix.IoctlLoopConfigure(int(lf.Fd()), cfg)
 		if errors.Is(err, unix.EBUSY) && try < loopAttachTries {
@@ -358,4 +418,212 @@ func (m *sysMounter) Holder(dev string) (string, error) {
 		return "", fmt.Errorf("open %s: %w", dev, err)
 	}
 	return "", unix.Close(fd)
+}
+
+func (m *sysMounter) FsMount(source, target, fstype string, readWrite bool, options []string) error {
+	fd, err := unix.Fsopen(fstype, unix.FSOPEN_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("fsopen %s: %w", fstype, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.FsconfigSetString(fd, "source", source); err != nil {
+		return fsContextError(fd, err)
+	}
+	if !readWrite {
+		if err := unix.FsconfigSetFlag(fd, "ro"); err != nil {
+			return fsContextError(fd, err)
+		}
+	}
+	for _, o := range options {
+		k, v, isString := strings.Cut(o, "=")
+		if isString {
+			err = unix.FsconfigSetString(fd, k, v)
+		} else {
+			err = unix.FsconfigSetFlag(fd, k)
+		}
+		if err != nil {
+			return fsContextError(fd, fmt.Errorf("%s: %w", o, err))
+		}
+	}
+	if err := unix.FsconfigCreate(fd); err != nil {
+		return fsContextError(fd, err)
+	}
+	mfd, err := unix.Fsmount(fd, unix.FSMOUNT_CLOEXEC, unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NODEV)
+	if err != nil {
+		return fsContextError(fd, fmt.Errorf("fsmount: %w", err))
+	}
+	defer func() { _ = unix.Close(mfd) }()
+	if err := unix.MoveMount(mfd, "", unix.AT_FDCWD, target, unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+		return fmt.Errorf("move_mount to %s: %w", target, err)
+	}
+	return nil
+}
+
+func (m *sysMounter) Reconfigure(target string, readWrite bool) error {
+	fd, err := unix.Fspick(unix.AT_FDCWD, target, unix.FSPICK_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("fspick %s: %w", target, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	flag := "ro"
+	if readWrite {
+		flag = "rw"
+	}
+	if err := unix.FsconfigSetFlag(fd, flag); err != nil {
+		return fsContextError(fd, err)
+	}
+	if err := unix.FsconfigReconfigure(fd); err != nil {
+		return fsContextError(fd, err)
+	}
+	return nil
+}
+
+// fsContextError returns err with the messages that the filesystem
+// context of fd logged, if any.
+func fsContextError(fd int, err error) error {
+	var msgs []string
+	buf := make([]byte, 4096)
+	for range 64 {
+		n, rerr := unix.Read(fd, buf)
+		if rerr != nil || n <= 0 {
+			break
+		}
+		msgs = append(msgs, strings.TrimSpace(string(buf[:n])))
+	}
+	if len(msgs) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, strings.Join(msgs, "; "))
+}
+
+func (m *sysMounter) Syncfs(target string) error {
+	fd, err := unix.Open(target, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", target, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Syncfs(fd); err != nil {
+		return fmt.Errorf("syncfs %s: %w", target, err)
+	}
+	return nil
+}
+
+func (m *sysMounter) BindReadOnly(source, target string) error {
+	fd, err := unix.OpenTree(unix.AT_FDCWD, source, unix.OPEN_TREE_CLONE|unix.O_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("open_tree %s: %w", source, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	attr := &unix.MountAttr{Attr_set: unix.MOUNT_ATTR_RDONLY | unix.MOUNT_ATTR_NOSUID | unix.MOUNT_ATTR_NODEV}
+	if err := unix.MountSetattr(fd, "", unix.AT_EMPTY_PATH, attr); err != nil {
+		return fmt.Errorf("mount_setattr of the clone of %s: %w", source, err)
+	}
+	if err := unix.MoveMount(fd, "", unix.AT_FDCWD, target, unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+		return fmt.Errorf("move_mount of the clone of %s to %s: %w", source, target, err)
+	}
+	return nil
+}
+
+func (m *sysMounter) SetReadOnly(dev string, readOnly bool) error {
+	f, err := os.OpenFile(dev, os.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	v := 0
+	if readOnly {
+		v = 1
+	}
+	if err := unix.IoctlSetPointerInt(int(f.Fd()), unix.BLKROSET, v); err != nil {
+		return fmt.Errorf("%s: BLKROSET %d: %w", dev, v, err)
+	}
+	return nil
+}
+
+func (m *sysMounter) ReadOnly(dev string) (bool, error) {
+	f, err := os.OpenFile(dev, os.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	v, err := unix.IoctlGetInt(int(f.Fd()), unix.BLKROGET)
+	if err != nil {
+		return false, fmt.Errorf("%s: BLKROGET: %w", dev, err)
+	}
+	return v != 0, nil
+}
+
+func (m *sysMounter) ReadHead(dev string, n int) ([]byte, error) {
+	f, err := os.OpenFile(dev, os.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, n)
+	got, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("reading %s: %w", dev, err)
+	}
+	return buf[:got], nil
+}
+
+// Superblocks scans the mountinfo of a process of each mount namespace of
+// the node for the mounts whose device number is that of dev or of a loop
+// device over it (by sysfs: the dev file of the block device, the backing
+// of the loop devices).
+func (m *sysMounter) Superblocks(dev string) ([]superblock, error) {
+	devs := map[string]string{} // major:minor -> device node
+	num, err := os.ReadFile(filepath.Join(m.sysRoot, "class", "block", filepath.Base(dev), "dev"))
+	if err != nil {
+		return nil, fmt.Errorf("the device number of %s: %w", dev, err)
+	}
+	devs[strings.TrimSpace(string(num))] = dev
+	loops, _ := filepath.Glob(filepath.Join(m.sysRoot, "block", "loop*", "loop", "backing_file"))
+	for _, p := range loops {
+		loop := filepath.Base(filepath.Dir(filepath.Dir(p)))
+		backing, err := m.LoopBackingFile(loop)
+		if err != nil || !sameDevice(backing, dev) {
+			continue
+		}
+		n, err := os.ReadFile(filepath.Join(m.sysRoot, "block", loop, "dev"))
+		if err != nil {
+			return nil, fmt.Errorf("the device number of %s: %w", loop, err)
+		}
+		devs[strings.TrimSpace(string(n))] = filepath.Join(m.devRoot, loop)
+	}
+	entries, err := os.ReadDir(m.procRoot)
+	if err != nil {
+		return nil, err
+	}
+	seenNS := map[string]bool{}
+	seen := map[string]bool{}
+	var out []superblock
+	for _, e := range entries {
+		pid := e.Name()
+		if _, err := strconv.Atoi(pid); err != nil {
+			continue
+		}
+		ns, err := os.Readlink(filepath.Join(m.procRoot, pid, "ns", "mnt"))
+		if err != nil || seenNS[ns] {
+			continue // gone, or a namespace that is read
+		}
+		data, err := os.ReadFile(filepath.Join(m.procRoot, pid, "mountinfo"))
+		if err != nil {
+			continue
+		}
+		mounts, err := parseMountInfo(bytes.NewReader(data))
+		if err != nil {
+			continue
+		}
+		seenNS[ns] = true
+		for _, mi := range mounts {
+			d, ok := devs[mi.DevNum]
+			if !ok || seen[mi.DevNum] {
+				continue
+			}
+			seen[mi.DevNum] = true
+			out = append(out, superblock{Device: d, Source: mi.Source, ReadOnly: mi.superReadOnly(), Where: "pid " + pid + " at " + mi.Target})
+		}
+	}
+	return out, nil
 }

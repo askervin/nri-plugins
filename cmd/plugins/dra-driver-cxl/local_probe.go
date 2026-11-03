@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -53,6 +54,10 @@ type MemdevSetting struct {
 	// whose memory is broken or aliased above it. Rounded down to a
 	// multiple of 256 MiB.
 	UsableSize string `json:"usableSize,omitempty"`
+	// Coherent tells that the memory of the memdev is coherent between
+	// the hosts that share it (sharedDevices): other hosts' writes are
+	// visible without cache maintenance.
+	Coherent bool `json:"coherent,omitempty"`
 }
 
 // validateMemdevSettings returns an error if a memdev setting is invalid.
@@ -74,28 +79,57 @@ func (c *DriverConfig) validateMemdevSettings() error {
 	return nil
 }
 
+// memdevSetting returns the first memdev setting that matches the memdev
+// name or serial, nil if none.
+func (c *DriverConfig) memdevSetting(memdev string, serial uint64) *MemdevSetting {
+	if c == nil {
+		return nil
+	}
+	for i := range c.MemdevSettings {
+		if s := &c.MemdevSettings[i]; settingMatches(s.Device, memdev, serial) {
+			return s
+		}
+	}
+	return nil
+}
+
+// settingMatches tells whether the device of a memdev setting matches the
+// memdev name or serial: the name, or the serial in decimal, 0x<hex> or
+// <hex>, compared as a number.
+func settingMatches(spec, memdev string, serial uint64) bool {
+	if spec == memdev {
+		return true
+	}
+	if hex, ok := strings.CutPrefix(spec, "0x"); ok {
+		v, err := strconv.ParseUint(hex, 16, 64)
+		return err == nil && v == serial
+	}
+	if v, err := strconv.ParseUint(spec, 10, 64); err == nil && v == serial {
+		return true
+	}
+	v, err := strconv.ParseUint(spec, 16, 64)
+	return err == nil && v == serial
+}
+
 // configuredUsableSize returns the usableSize of the first memdev setting
 // that matches the memdev name or serial, 0 if none.
 func (c *DriverConfig) configuredUsableSize(memdev string, serial uint64) uint64 {
-	if c == nil {
+	s := c.memdevSetting(memdev, serial)
+	if s == nil || s.UsableSize == "" {
 		return 0
 	}
-	for _, s := range c.MemdevSettings {
-		switch s.Device {
-		case memdev, strconv.FormatUint(serial, 10), fmt.Sprintf("0x%x", serial), strconv.FormatUint(serial, 16):
-		default:
-			continue
-		}
-		if s.UsableSize == "" {
-			return 0
-		}
-		q, err := resource.ParseQuantity(s.UsableSize)
-		if err != nil || q.Value() <= 0 {
-			return 0
-		}
-		return uint64(q.Value())
+	q, err := resource.ParseQuantity(s.UsableSize)
+	if err != nil || q.Value() <= 0 {
+		return 0
 	}
-	return 0
+	return uint64(q.Value())
+}
+
+// memdevCoherent returns coherent of the first memdev setting that matches
+// the memdev name or serial, false if none.
+func (c *DriverConfig) memdevCoherent(memdev string, serial uint64) bool {
+	s := c.memdevSetting(memdev, serial)
+	return s != nil && s.Coherent
 }
 
 // verifyAddressing tells whether the allocator probes new regions for

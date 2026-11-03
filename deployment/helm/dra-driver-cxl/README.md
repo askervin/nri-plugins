@@ -70,8 +70,9 @@ helm install my-dra-driver-cxl nri-plugins/nri-dra-driver-cxl --namespace kube-s
 The command above deploys the driver on the Kubernetes cluster within the
 `kube-system` namespace with default configuration. Besides the DaemonSet
 the chart installs the DeviceClasses `cxl-local`, `cxl-local-shared`,
-`cxl-pool`, `cxl-pool-shared`, `cxl-pool-persistent`, `cxl-region`,
-`cxl-dram` and `cxl-lease`, a ClusterRole
+`cxl-local-persistent`, `cxl-pool`, `cxl-pool-shared`,
+`cxl-pool-persistent`, `cxl-region`, `cxl-dram` and `cxl-lease`, a
+ClusterRole
 and a ValidatingAdmissionPolicy that lets the driver modify only the
 ResourceSlices of its own node. To customize the available parameters as
 described in the [Configuration options](#configuration-options) below, you
@@ -85,6 +86,8 @@ config:
   ignoreDevices: ["mem0"]
   # local devices shared by the claims of class cxl-local-shared
   sharedDevices: ["0xc100e2e1"]
+  # the filesystem types that mode fs mounts on the nodes (the default)
+  fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]
   defaults:
     container:
       fencing: allowed-mems
@@ -147,7 +150,11 @@ customize with their own values, along with the default values.
 
 The keys of `config` are described in the
 [configuration file](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#configuration-file)
-section of the CXL memory documentation. `config.defaults.container`
+section of the CXL memory documentation. `config.fsTypes` lists the
+filesystem types that `device.mode: fs` mounts on the nodes, for local
+and pool devices: the node's kernel parses what the writer of a device
+wrote, so narrow it (for example to `[erofs]`) when writers are not
+trusted. `config.defaults.container`
 holds the node defaults of the settings of containers:
 `fencing` (`allowed-mems` by default) keeps the CXL nodes of the driver
 away from the containers that have not claimed memory on them; with an

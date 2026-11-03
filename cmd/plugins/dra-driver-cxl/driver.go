@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,6 +138,12 @@ type DriverConfig struct {
 	// the usable part of a memdev whose memory aliases.
 	MemdevSettings []MemdevSetting `json:"memdevSettings,omitempty"`
 
+	// FsTypes are the filesystem types that mode fs mounts on the node,
+	// for the local and the pool driver; nil is config.KnownFsTypes, an
+	// empty list mounts none. A type that the plugin does not know is
+	// single-host. Example: ["erofs"]
+	FsTypes []string `json:"fsTypes,omitempty"`
+
 	// VerifyAddressing runs an address line test on every new region of
 	// a local memdev before it is used: a memdev whose memory aliases
 	// (offsets X and X+P reach the same memory) is used only up to P,
@@ -198,6 +205,11 @@ func (c *DriverConfig) validate() error {
 	if err := c.validateMemdevSettings(); err != nil {
 		return err
 	}
+	for _, t := range c.FsTypes {
+		if !config.ValidFsType(t) {
+			return fmt.Errorf(`fsTypes: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, t)
+		}
+	}
 	c.defaults = nil
 	if len(c.Defaults) > 0 {
 		d, err := config.ParseDefaults(c.Defaults)
@@ -207,6 +219,25 @@ func (c *DriverConfig) validate() error {
 		c.defaults = d
 	}
 	return nil
+}
+
+// fsTypes returns the filesystem types that mode fs mounts on the node:
+// FsTypes, config.KnownFsTypes when it is not set.
+func (c *DriverConfig) fsTypes() []string {
+	if c == nil || c.FsTypes == nil {
+		return slices.Clone(config.KnownFsTypes)
+	}
+	return slices.Clone(c.FsTypes)
+}
+
+// logFsTypes logs the filesystem types that mode fs mounts on the node.
+func (c *DriverConfig) logFsTypes() {
+	types := c.fsTypes()
+	if len(types) == 0 {
+		klog.Infof("fsTypes: none: mode fs mounts no filesystem on this node")
+		return
+	}
+	klog.Infof("fsTypes: %s: the filesystem types that mode fs mounts on this node", strings.Join(types, ", "))
 }
 
 // manageMemdevs tells whether local memdevs are published and get regions
@@ -375,6 +406,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// without NRI too.
 	fence := newNodeFence(driverConfig.fencing())
 	driverConfig.logDefaults()
+	driverConfig.logFsTypes()
 
 	// The prepared claims, the slices of local memdevs and the leases of
 	// another boot are not prepared: nothing of what their Prepares made
@@ -387,7 +419,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// The pool driver's prepared claims are loaded before the first
 	// scan, so that its devices are never published as cxl.nri.io
 	// devices (D29). Its kubelet plugin is started after cxl.nri.io.
-	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot, fence, bootID)
+	pool, err := loadPoolDriver(config, cxlFlags, sysfsRoot, fence, bootID, driverConfig.fsTypes())
 	if err != nil {
 		return nil, err
 	}
@@ -407,6 +439,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 	// Not the nodes of the claims of another boot: they have no memory
 	// online, their Prepares again fence the nodes before they online it.
 	fence.seed(preparedNodes(state, pool))
+	sweepStaleLeaseBinds(ctx, state, pool)
 
 	driver := &driver{
 		state:      *state,
@@ -553,9 +586,10 @@ PluginDataDirectoryPath: %v`,
 }
 
 // loadPoolDriver returns the pool driver with its prepared claims loaded,
-// those of another boot than bootID not prepared, and the fenced nodes
-// fence, or nil if it is disabled (empty --pool-driver-name).
-func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence, bootID string) (*poolDriver, error) {
+// those of another boot than bootID not prepared, the fenced nodes fence
+// and the filesystem types fsTypes of mode fs, or nil if it is disabled
+// (empty --pool-driver-name).
+func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, fence *nodeFence, bootID string, fsTypes []string) (*poolDriver, error) {
 	if cxlFlags.PoolDriverName == "" {
 		return nil, nil
 	}
@@ -565,12 +599,27 @@ func loadPoolDriver(config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot string, 
 	}
 	mem := newMemctl(sysfsRoot)
 	pool, err := newPoolDriver(cxlFlags.PoolDriverName, mem, newSysMounter(mem.SysRoot), filepath.Join(poolDataDir, poolStateFileName),
-		cxlFlags.PoolPrepareTimeout, filepath.Join(config.KubeletPluginDir, leaseFsDirName), bootID)
+		cxlFlags.PoolPrepareTimeout, filepath.Join(config.KubeletPluginDir, leaseFsDirName), bootID, fsTypes...)
 	if err != nil {
 		return nil, fmt.Errorf("pool driver: %w", err)
 	}
 	pool.fence = fence
 	return pool, nil
+}
+
+// sweepStaleLeaseBinds unmounts the lease binds that no prepared claim of
+// either driver lists, which neither driver swept at its start (their node
+// mount is gone), and then releases the idle persistent local memdevs that
+// such a bind held.
+func sweepStaleLeaseBinds(ctx context.Context, state *nodeState, pool *poolDriver) {
+	wanted := state.leaseBinds()
+	maps.Copy(wanted, pool.leaseBinds())
+	var poolNode *persistentNode
+	if pool != nil {
+		poolNode = pool.pn
+	}
+	sweepLeaseBinds(wanted, poolNode, state.local.persistentNode())
+	state.local.ReleaseIdle(ctx)
 }
 
 // newDriverState returns the node state with the devices of the first scan
@@ -635,10 +684,19 @@ func newLocalHelper(ctx context.Context, config *pluginConfig, driverConfig *Dri
 		return nil, nil
 	}
 	dataDir := config.KubeletPluginDir
-	local, err := newLocalAllocator(newMemctl(sysfsRoot), filepath.Join(dataDir, localStateFileName), bootID)
+	mem := newMemctl(sysfsRoot)
+	local, err := newLocalAllocator(mem, filepath.Join(dataDir, localStateFileName), bootID)
 	if err != nil {
 		return nil, fmt.Errorf("local allocator: %w", err)
 	}
+	// The node mounts of persistent memdevs are restored by Reconcile.
+	local.SetPersistent(newPersistentNode(persistentConfig{
+		Driver:      device.DriverName,
+		Mounter:     newSysMounter(mem.SysRoot),
+		MountsDir:   filepath.Join(dataDir, mountsDirName),
+		LeaseFsRoot: filepath.Join(dataDir, leaseFsDirName),
+		FsTypes:     driverConfig.fsTypes(),
+	}))
 	// the claims of both files of this boot (newNodeState forgets the
 	// others)
 	_, claims, _, _, err := loadPreparedClaims(filepath.Join(dataDir, device.PreparedClaimsFileName))

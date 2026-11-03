@@ -47,7 +47,10 @@ func (c *Controller) condAttached() string { return c.cfg.DriverName + "/Attache
 func (c *Controller) condFailed() string   { return c.cfg.DriverName + "/AttachFailed" }
 
 // DeviceData is the data of a claim status device entry, read by the node
-// plugin (serial, shared and size are required there).
+// plugin (serial, shared and size are required there). Exclusive: the
+// result has all shares of a shared device. SingleHost: the attachment is
+// exclusive to the host for this claim. Coherent: the memory of the device
+// is coherent between hosts.
 type DeviceData struct {
 	Serial       string `json:"serial"`
 	Shared       bool   `json:"shared"`
@@ -58,6 +61,8 @@ type DeviceData struct {
 	Attachment   string `json:"attachment"`
 	QemuDeviceID string `json:"qemuDeviceId"`
 	Exclusive    bool   `json:"exclusive,omitempty"`
+	SingleHost   bool   `json:"singleHost,omitempty"`
+	Coherent     bool   `json:"coherent,omitempty"`
 }
 
 // deviceStatus returns the status entry of a result, matched by driver,

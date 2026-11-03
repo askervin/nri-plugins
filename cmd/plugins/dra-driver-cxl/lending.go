@@ -54,6 +54,7 @@ type lentDevice struct {
 	// device, /dev/pmemK.
 	BlockDevice string
 	Access      string // fs: api.AccessDirect or api.AccessCached
+	FsType      string // fs: the filesystem type
 	NodeMount   string // fs: the host path of the node mount of the device
 }
 

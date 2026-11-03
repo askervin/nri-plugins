@@ -2286,6 +2286,7 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 		add(localSerial, "numa", blockSize, false, false, cfg.bridgeNode(HB0))
 	case k.persistent():
 		// A22: block MODE PATH READONLY, fs MODE ACCESS PATH READONLY
+		// FSTYPE
 		dev := devices[sl.Dev]
 		p := "CXL_" + serialKey(dev.Serial) + "_"
 		w[p+"SIZE"] = strconv.FormatUint(nsSize, 10)
@@ -2299,6 +2300,7 @@ func envWant(cfg *Config, sl *Slot) map[string]string {
 			}
 			w[p+"PATH"] = fsPath(sl)
 			w[p+"READONLY"] = "1"
+			w[p+"FSTYPE"] = "erofs"
 		} else {
 			w[p+"MODE"] = "block"
 			w[p+"PATH"] = "/dev/pmem*"

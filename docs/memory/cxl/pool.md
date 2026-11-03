@@ -78,6 +78,7 @@ spec:
       serial: {string: "0xc1ee0001"}       # /sys/bus/cxl/devices/memN/serial, lower-case hex
       shared: {bool: false}
       persistent: {bool: false}
+      coherent: {bool: true}               # absent is false
       size:   {int: 536870912}             # bytes
     capacity:
       memory: {value: 512Mi}               # exclusive devices only
@@ -91,6 +92,7 @@ spec:
       serial: {string: "0xc1ae0001"}
       shared: {bool: true}
       persistent: {bool: false}
+      coherent: {bool: true}
       size:   {int: 268435456}
     allowMultipleAllocations: true
     capacity:
@@ -105,6 +107,7 @@ spec:
       serial: {string: "0xc1ae0002"}
       shared: {bool: true}
       persistent: {bool: true}
+      coherent: {bool: true}
       size:   {int: 536870912}
     allowMultipleAllocations: true
     capacity:
@@ -122,10 +125,11 @@ spec:
 | `shared` | bool | required: whether several hosts may have the device attached at a time; a shared device has a `shares` capacity |
 | `persistent` | bool | required on every device: whether the device is persistent memory (the DeviceClasses test it, and a CEL selector that reads an attribute a device lacks fails) |
 | `size` | bytes | required |
+| `coherent` | bool | optional, absent is `false`: whether the hardware keeps the memory of the device coherent between the hosts that have it attached at a time, so that one host sees the other's writes without cache maintenance; a cluster filesystem is read-write on several hosts only on such a device. The reference controller publishes it on every device (`true`: the devices of fake-cxl-pool are memory of the qemu host that every VM maps) |
 
 These are the attributes that `cxl.nri.io` publishes for local memdevs
 too ([usage.md](usage.md#devices-of-cxlnriio)), so that selectors and
-environment variables are the same for both sources, plus `persistent`.
+environment variables are the same for both sources, plus `coherent`.
 The DeviceClasses select pool devices by `type`, `shared` and
 `persistent`, the lease broker finds a
 device by `serial` and reads its `shared`, and `cxl.nri.io`
@@ -160,6 +164,13 @@ publish further attributes under a domain of its own (for example
   own sees no namespace, or another one. fake-cxl-pool gives a persistent
   device a data file and an LSA file, both shared by every qemu that
   attaches it (`cxl-type3` with `persistent-memdev=` and `lsa=`).
+- *Coherent* devices (`coherent: true`): several hosts that use the
+  device at the same time see each other's writes. Without coherence a
+  host may read stale lines of its CPU caches while another host writes;
+  the node driver then allows read-write filesystems on one host at a
+  time only (ReadWriteOnce,
+  [usage.md](usage.md#several-nodes-readwriteonce-and-cluster-filesystems)).
+  A controller that does not know publishes no `coherent`.
 
 ## DeviceClasses and claims
 
@@ -171,7 +182,7 @@ of the Helm chart select pool devices:
 |:------|:--------|:-----|
 | `cxl-pool` | `type == "memdev"`, `shared == false`, `persistent == false` | a whole exclusive pool device: a new NUMA node (default) or a devdax device (`mode: dax`) |
 | `cxl-pool-shared` | `type == "memdev"`, `shared == true`, `persistent == false` | a shared pool device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
-| `cxl-pool-persistent` | `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: its block device (`mode: block`) or a read-only erofs filesystem (`mode: fs`), see [usage.md](usage.md#persistent-memory) |
+| `cxl-pool-persistent` | `type == "memdev"`, `persistent == true` | a pool device of persistent memory, shared or not: its block device (`mode: block`) or a filesystem on it (`mode: fs`, read-only, or read-write with `readOnly: false`), see [usage.md](usage.md#persistent-memory) |
 
 Claims:
 
@@ -206,6 +217,8 @@ Complete examples with pods:
 [pool-dax.yaml](blob:/deployment/samples/dra-driver-cxl/pool-dax.yaml),
 [pool-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/pool-shared-writer-readers.yaml),
 [pool-persistent-erofs.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-erofs.yaml),
+[pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)
+(a read-write and a read-only pod of one ext4 on one node),
 [local-then-pool-dax.yaml](blob:/deployment/samples/dra-driver-cxl/local-then-pool-dax.yaml)
 (local memory if a local memdev has room, else pool memory).
 
@@ -238,8 +251,9 @@ Prepare with `unknown kind "..." (MemoryConfig)`.
 | field | values | |
 |---|---|---|
 | `device.mode` | `numa`, `dax`, `block`, `fs` | `numa`: the memory becomes a NUMA node (exclusive devices only, their default). `dax`: a devdax device `/dev/daxX.Y` that containers `mmap` (the default and only mode of shared devices). Devices of persistent memory have `block` and `fs` only, and no default ([usage.md](usage.md#persistent-memory)). |
-| `device.readOnly` | `false`, `true` | `dax`, `block`: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only. `fs`: required. |
-| `device.access` | `direct`, `cached` | `fs` only, default `direct`: file pages in the device (DAX) or in the page cache of the node |
+| `device.readOnly` | `false`, `true` | `dax`, `block`: the container gets the device node with CDI permissions `r`, so its device cgroup lets it open the device for reading only (default `false`). `fs`: absent or `true` mounts the filesystem read-only, `false` read-write. |
+| `device.access` | `direct`, `cached` | `fs` only, default `direct` when the filesystem has DAX (erofs, ext4, xfs), else `cached`: file pages in the device (DAX) or in the page cache of the node |
+| `device.fsType` | filesystem type | `fs` only, default detected: the expected type of the filesystem ([usage.md](usage.md#filesystems)) |
 | `device.path` | absolute path | `fs` only, default `/run/cxl-fs/<KEY>`: where the filesystem is in the container |
 | `container.steering` | | mode `numa`: the steering of the containers that use the device, default policy `none` ([usage.md](usage.md#steering)) |
 | `pool.opaque.<key>` | an object | the settings of the pool controllers with controller key `<key>`, for example `fake-cxl-pool: {numaNode: 1}` ([Configuration of a pool controller](#configuration-of-a-pool-controller)) |
@@ -274,6 +288,16 @@ has finished or is deleted, or its lease is released.
 [e2e.md](e2e.md#example-f-a-shared-file-one-writer-three-readers) shows it
 with a file that one writer stores in a shared device and three readers
 read in place.
+
+A filesystem of a persistent device is shared the same way, read-only on
+any number of hosts. A read-write `fs` claim (`readOnly: false`) of a
+single-host filesystem (ext4, xfs, btrfs) is ReadWriteOnce: the claims of
+its node, read-write and read-only, share the device, also with one share
+each, and claims of other nodes wait (`AttachFailed` reason `Conflict`)
+until the writing claims are deallocated
+([usage.md](usage.md#several-nodes-readwriteonce-and-cluster-filesystems)).
+A cluster filesystem (gfs2 with `lock_dlm`) on a `coherent` device is
+read-write on several hosts at a time.
 
 ## What the scheduler does
 
@@ -319,14 +343,29 @@ status:
       qemuDeviceId: <qemu device id>
       exclusive: true            # only when the allocation consumed the whole shares value
       persistent: true           # only for a device of persistent memory
+      singleHost: true           # only for a claim that needs the attachment exclusive
+      coherent: true             # only for a coherent device
 ```
 
 The node plugin matches the entry by (driver, pool, device): several
 pools under one driver need no change. It reads
-only `serial`, `shared`, `size`, `exclusive` and `persistent` from
-`data`; a missing `exclusive` or `persistent` is `false`. `exclusive`
-lets a `block` claim of a shared persistent device write; `persistent`
-selects modes `block` and `fs`.
+only `serial`, `shared`, `size`, `exclusive`, `persistent`, `singleHost`
+and `coherent` from `data`; a missing `exclusive`, `persistent`,
+`singleHost` or `coherent` is `false`:
+
+| data | the node plugin |
+|:-----|:----------------|
+| `exclusive` | the claim has the device alone: a `block` claim of a shared persistent device may write |
+| `persistent` | modes `block` and `fs` |
+| `singleHost` | no other host has the device while the claim is allocated: an `fs` claim may mount it read-write. Written for the results that need the attachment exclusive (read-write `fs` claims, claims of all shares) once it is ([Configuration of a pool controller](#configuration-of-a-pool-controller)); the readers of the writer's node do not need it |
+| `coherent` | the device is `coherent`: a cluster filesystem may be read-write on several hosts |
+
+The node takes a device that is not shared, or a claim with `exclusive`,
+as single-host too. Without `singleHost`, `exclusive` or a cluster
+filesystem on a `coherent` device, a read-write `fs` claim of a shared
+device fails its Prepare
+([usage.md](usage.md#configuration-errors)): a controller that does not
+know the rule makes writes fail, never corrupt the data.
 
 On failure the controller sets `cxl-pool.nri.io/AttachFailed` to True
 instead (reasons used by the reference controller: `NoHost`,
@@ -397,7 +436,52 @@ unknown ones and never looks into the objects.
 
 **Not yours.** The `device` and `container` sections belong to the node
 driver (how the device is prepared, how containers are managed). A
-controller does not interpret them.
+controller does not interpret them, except for the one question below
+that only the controller can enforce, which it asks through
+`config.ExclusiveHost`.
+
+**ReadWriteOnce.** A claim that mounts a single-host filesystem
+read-write (mode `fs`, `readOnly: false`, a type that is not a cluster
+filesystem on a coherent device) must have the device on its node only,
+because another host that reads or writes the filesystem meanwhile
+corrupts or misreads it
+([usage.md](usage.md#several-nodes-readwriteonce-and-cluster-filesystems)).
+The node cannot see other hosts; the controller can:
+
+- For each allocation result of a shared device, the attachment that
+  the result wants is exclusive when the result consumed all shares (as
+  before) or when `config.ExclusiveHost(res, coherent)` is true for its
+  resolved `MemoryConfig` and the `coherent` attribute of its device. A
+  device that is not shared is attached to one host anyway. An
+  attachment of a device to a host serves every claim of the host, and it
+  is exclusive when any of them wants it so: then no other host gets the
+  device, also not from another cluster that shares the pool, until no
+  claim of the host wants exclusivity any more (they are deallocated).
+- Write `singleHost: true` into the status data of every result that
+  wants the attachment exclusive, once it is (`exclusive` keeps meaning
+  "all shares"), and `coherent: true` for a coherent device. The readers
+  of the writer's node share the attachment without `singleHost`.
+- A claim of another host while the attachment is exclusive, and an
+  exclusive one while another host has the device, gets `AttachFailed`
+  with reason `Conflict`, and the scheduler allocates it again until the
+  device is free.
+- Fail only the claim that wanted the exclusivity. When an existing
+  attachment of the host cannot be made exclusive (another host has the
+  device), only the results that want it exclusive get `AttachFailed`;
+  the other claims of the host keep, or get, `Attached` from the existing
+  attachment. When a new attachment is refused as exclusive, attach it
+  again without exclusivity for the results that do not need it: they
+  are `Attached` if that succeeds, and only the exclusive ones fail. A
+  new attachment that fails otherwise fails every result that wanted it.
+- Release the exclusivity only when the writing claims are deallocated:
+  their Unprepare syncs the filesystem and remounts it read-only or
+  unmounts it before that, so that no other host sees the device before
+  the data is in it. Fail closed: a writer that is attached already and
+  whose configuration can no longer be resolved keeps its attachment
+  exclusive; and when the attach without exclusivity gets no answer
+  (still attaching, waiting for a detach, a timeout), only the results
+  that want the attachment exclusive get `AttachFailed`, the others wait
+  for the attachment.
 
 **Errors.** An invalid `MemoryConfig` entry of the driver (also one of
 another request of the claim, which fails the node's Prepare anyway) or
@@ -428,6 +512,7 @@ res, err := config.Resolve(claim, driver, r.Request)               // the merged
 var s Settings
 found, err := config.PoolOpaque(res, key, &s)                     // pool.opaque.<key>, other keys ignored
 // any err: AttachFailed=True, reason InvalidConfig, message err.Error()
+exclusive := allSharesConsumed(r) || (deviceShared && config.ExclusiveHost(res.Config, deviceCoherent)) // the attachment of the host
 ```
 
 The error texts start with `MemoryConfig: `, for example
@@ -435,6 +520,8 @@ The error texts start with `MemoryConfig: `, for example
 `MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "port"`.
 `Resolve` also validates the values of the `container` section (an
 invalid steering policy fails it); it checks no device fields.
+`ExclusiveHost` is true for mode `fs` with `readOnly: false`, unless
+`fsType` is a cluster filesystem (gfs2) and the device is coherent.
 
 **The reference controller.** fake-cxl-pool-controller has the key
 `fake-cxl-pool` (flag `-config-key`) and the object:
@@ -475,6 +562,17 @@ attachment that exists already (a shared device attached for another
 claim on the node, or found after a restart) stays in its slot, because
 the device may be in use; the `Attached` message names the slot.
 
+It attaches a device exclusively for a read-write `fs` claim and logs,
+when it sends that attach request,
+`attach <device> to <host> for claim <ns>/<name> device <device> node <node>: exclusive for a read-write <fsType> claim`
+(`filesystem` for `<fsType>` when the claim declares none; no line for a
+writer that joins an attachment that is exclusive already, nor when a
+claim of all shares makes it exclusive). A new attachment that it
+attaches again without exclusivity for the readers logs
+`attach <device> to <host> for claim ...: not exclusive for the claims that do not need it`.
+Its devices all have `coherent: true`, and so has the status data of
+their claims.
+
 ## What the node plugin does
 
 nri-dra-driver-cxl registers the `cxl-pool.nri.io` driver with kubelet
@@ -488,8 +586,8 @@ publishes ResourceSlices.
 
 NodePrepareResources, for each allocated device of the driver:
 
-1. Read `serial`, `shared`, `size`, `exclusive` and `persistent` from
-   the claim status entry. A missing entry or missing data is an error;
+1. Read `serial`, `shared`, `size`, `exclusive`, `persistent`,
+   `singleHost` and `coherent` from the claim status entry. A missing entry or missing data is an error;
    kubelet retries. An allocation of a shared device that consumed less
    than one share fails ([usage.md](usage.md#configuration-errors)).
 2. Resolve the `MemoryConfig` of the result: the entries of the driver
@@ -530,8 +628,11 @@ NodePrepareResources, for each allocated device of the driver:
    region under a root decoder for persistent memory, find the fsdax
    namespace with map `mem` of its nvdimm region (a writable `block` claim
    creates it if there is none), and give the container its block device
-   or the read-only bind of the node mount of its erofs, see
-   [usage.md](usage.md#persistent-memory).
+   or a bind of the node mount of its filesystem, read-only or
+   read-write, see [usage.md](usage.md#persistent-memory). The rules of
+   one node (one read-write superblock, a read-only block device without
+   a writer) are the same as for persistent local memdevs, in the same
+   code.
 5. Return the device's CDI device `nri.io/cxl-pool=claim-<claim uid>-<n>`
    (spec file `cxl-pool`, n the index of the allocation result in the
    claim) with the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a
@@ -547,6 +648,7 @@ NodePrepareResources, for each allocated device of the driver:
    CXL_<KEY>_DAX=/dev/daxX.Y          (dax)
    CXL_<KEY>_PATH=/dev/pmemK|<dir>    (block, fs)
    CXL_<KEY>_ACCESS=direct|cached     (fs)
+   CXL_<KEY>_FSTYPE=<type>            (fs)
    CXL_<KEY>_READONLY=0|1             (dax, block, fs)
    ```
 
@@ -566,8 +668,10 @@ NodePrepareResources, for each allocated device of the driver:
    device of a claim fails, the devices prepared for it are released
    again.
 
-NodeUnprepareResources: unmount the node mount of mode `fs` that no other
-prepared claim on the node uses (a busy mount fails, kubelet retries);
+NodeUnprepareResources: remount the node mount of mode `fs` read-only
+when the last writer of the node goes and readers stay, unmount it when
+no other prepared claim on the node uses it (a busy mount fails, kubelet
+retries);
 when no other prepared claim on the node uses the device, wait until
 nothing holds the block device of a persistent device, offline its
 memory (mode `numa`), disable and destroy its region and disable the
@@ -590,10 +694,12 @@ companion pod and lend it to the container, as a NUMA node or as an open
 dax file descriptor. A device of persistent memory is lent in mode
 `block`, as an open file descriptor of its block device
 (`cxl-request request --serial ... --mode block`, the writer, or
-`--shared --read-only --mode block`), or in mode `fs`: its read-only erofs
-filesystem is mounted into the running container at `/run/cxl/fs/<name>`
-(`cxl-request request --serial ... --shared --read-only --mode fs`). See
-[leases.md](leases.md).
+`--shared --read-only --mode block`), or in mode `fs`: its filesystem is
+mounted into the running container at `/run/cxl/fs/<name>`, read-only
+(`cxl-request request --serial ... --shared --mode fs`) or read-write
+(`--read-write`). The companion claim of a read-write lease is a claim
+like any other: ReadWriteOnce applies to it, and its lease waits while
+another host has the device. See [leases.md](leases.md).
 
 ## Node requirements
 
@@ -606,7 +712,9 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   `CONFIG_DEV_DAX_KMEM`, `CONFIG_FS_DAX` (devdax mmap) and
   `CONFIG_MEMORY_HOTREMOVE`; for devices of persistent memory
   `CONFIG_CXL_PMEM`, `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`,
-  `CONFIG_ND_PFN`, `CONFIG_EROFS_FS` and `CONFIG_BLK_DEV_LOOP`.
+  `CONFIG_ND_PFN`, `CONFIG_BLK_DEV_LOOP` and the filesystems that the node
+  mounts (`CONFIG_EROFS_FS`, `CONFIG_EXT4_FS`, ...,
+  [usage.md](usage.md#filesystems)).
 - `/sys/devices/system/memory/auto_online_blocks` should be `offline`,
   so that the kernel never onlines shared devices as RAM on its own, and
   no udev rule may online hot-added memory (`40-redhat.rules` of RHEL and
@@ -625,7 +733,12 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   the device detached while the node still uses the memory. The host
   cannot complete the hot-remove; the device stays half removed until the
   host reboots. This is not handled; do not force-delete pods that use
-  pool memory.
+  pool memory. It breaks ReadWriteOnce too: the claim of a force-deleted
+  pod, or of a node that is lost, can be deallocated before its
+  Unprepare, and another node may then mount the filesystem while the
+  first one still has it read-write. In normal operation kubelet
+  unprepares the claims of a pod after its containers stopped and before
+  it reports the pod terminal, and only then is the claim deallocated.
 - A second exclusive claim while all devices are taken stays pending in
   the scheduler (no device); it is not a failure.
 - Controller restart: the controller recomputes the attachments from the
@@ -636,8 +749,12 @@ filesystem is mounted into the running container at `/run/cxl/fs/<name>`
   and for up to 5 minutes while the pool has no ResourceSlices
   ([local.md](local.md#what-the-plugin-publishes)).
 - Node plugin restart: the prepared claims file restores the prepared
-  devices; regions are found again by serial. Node mounts of mode `fs`
-  are checked by the device number of the block device: a loop device of
+  devices; regions are found again by serial. The superblock of a node
+  mount and the read-only flag of the block device follow from the
+  prepared claims (read-write while a writer is prepared), as at a
+  Prepare ([usage.md](usage.md#one-node-superblock-block-device-binds)).
+  Node mounts of mode `fs` are checked by the device number of the block
+  device: a loop device of
   a cached node mount that the previous plugin container set up shows its
   backing file in sysfs relative to the root of that container's `/dev`
   (`/pmem1`), which is not a path the plugin can compare. A node mount

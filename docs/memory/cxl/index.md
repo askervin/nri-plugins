@@ -42,10 +42,12 @@ its protocol.
 | `source` | `local`, `pool` | who provides the memory: `local` a device attached to the node, managed by `cxl.nri.io`; `pool` a device of a memory pool, attached by a pool controller, prepared by `cxl-pool.nri.io` |
 | `type` | `memdev`, `region`, `dram`, `lease` | what a published device is: `memdev` a CXL memory device whose region the plugin creates when a claim needs it; `region` a region that existed before the plugin, online as a NUMA node; `dram` the DRAM nodes of the system; `lease` the device whose claim lets a container request memory while it runs |
 | `shared` | `true`, `false` | `true`: the same bytes may be mapped by several claims at a time: a pool device attached to several hosts, or a local device that the node's configuration declares shared (both with a `shares` capacity); such memory is never onlined as RAM. `false`: the bytes belong to one claim at a time (a slice of a local memdev, an exclusive pool device) |
-| `persistent` | `true`, `false` | `true`: a pool device of persistent memory, whose data and namespace labels outlive the claims; it is used in modes `block` and `fs` only |
-| `mode` | `numa`, `dax`, `block`, `fs` | how a container gets the memory: `numa` as system RAM of a NUMA node; `dax` as a devdax device of its own (claims) or an open file descriptor (leases); `block` as the block device of the fsdax namespace of a persistent pool device; `fs` as a read-only erofs filesystem on it, mounted at a path of the container. Default `numa`; shared volatile memory is `dax` only; `block` and `fs` are for persistent pool devices only, through claims and leases (`block`: an open file descriptor of the block device for a running container; `fs`: mounted at `/run/cxl/fs/<name>` of a running container) |
-| `readOnly` | `true`, `false` | `dax`, `block`: the device node (claims) or the file descriptor (leases) allows reads only; `fs` is always read-only |
-| `access` | `direct`, `cached` | mode `fs`: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node |
+| `persistent` | `true`, `false` | `true`: a device of persistent memory (a pool device or a local memdev), whose data and namespace labels outlive the claims; it is used in modes `block` and `fs` only |
+| `coherent` | `true`, `false` | `true`: the hardware keeps the memory of a device coherent between the hosts that use it at a time (pool attribute and claim status data; `memdevSettings` of a local memdev); only then a cluster filesystem is read-write on several hosts |
+| `mode` | `numa`, `dax`, `block`, `fs` | how a container gets the memory: `numa` as system RAM of a NUMA node; `dax` as a devdax device of its own (claims) or an open file descriptor (leases); `block` as the block device of the fsdax namespace of a persistent device; `fs` as a filesystem on it, read-only or read-write, mounted at a path of the container. Default `numa`; shared volatile memory is `dax` only; `block` and `fs` are for persistent devices only, through claims and leases (`block`: an open file descriptor of the block device for a running container; `fs`: mounted at `/run/cxl/fs/<name>` of a running container) |
+| `readOnly` | `true`, `false` | `dax`, `block`: the device node (claims) or the file descriptor (leases) allows reads only; `fs`: read-only unless `readOnly: false` (`--read-write` of a lease), the opt-in to write |
+| `access` | `direct`, `cached` | mode `fs`: `direct` maps the file pages to the memory of the device (DAX), `cached` reads them into the page cache of the node; default `direct` for the filesystems with DAX (erofs, ext4, xfs) |
+| `fsType` | `erofs`, `squashfs`, `ext4`, `xfs`, `btrfs`, `gfs2`, ... | mode `fs`: the type of the filesystem, detected by the plugin or declared; its class says who may write it: read-only (erofs, squashfs), single-host (read-write on one host at a time: ReadWriteOnce), cluster (gfs2 with `lock_dlm`, read-write on several hosts of coherent memory) |
 | `serial` | `0x` and lower-case hex | `/sys/bus/cxl/devices/memN/serial`, the identity of a memdev in both drivers; upper-case hex without `0x` in environment variable names |
 | `size` | bytes, or a quantity such as `512Mi` | attribute `size` and `CXL_<KEY>_SIZE` are bytes; requests and the `--size` of `cxl-request` take a quantity, "at least this much" |
 | `shares` | integer | capacity of a shared device. A claim that requests none has the device exclusively; a claim that requests `shares: "1"` shares it. The value (1M for local devices and the reference pool) is the most claims that may hold the device at a time; a pool whose devices have a head limit publishes its heads |
@@ -53,9 +55,9 @@ its protocol.
 
 ## DeviceClasses
 
-The Helm chart installs eight DeviceClasses,
+The Helm chart installs nine DeviceClasses,
 [`templates/deviceclasses.yaml`](blob:/deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml).
-They select device kinds; `mode`, `readOnly`, `access` and `path`, and
+They select device kinds; `mode`, `readOnly`, `access`, `fsType` and `path`, and
 steering, are set with a `MemoryConfig` of the claim, or of the class as
 a preset (Helm value `deviceClassConfig`), see
 [Opaque configurations](usage.md#opaque-configurations).
@@ -64,9 +66,10 @@ a preset (Helm value `deviceClassConfig`), see
 |:------|:-----|
 | `cxl-local` | a slice of a local memdev: RAM of its NUMA node (default) or a devdax device (`mode: dax`) |
 | `cxl-local-shared` | a shared local device as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
+| `cxl-local-persistent` | a local memdev of persistent memory: its block device (`mode: block`, the writer, exclusively) or a filesystem on it (`mode: fs`, read-only or read-write, `shares: "1"` each) |
 | `cxl-pool` | a whole exclusive pool device of volatile memory: a new NUMA node (default) or a devdax device (`mode: dax`) |
 | `cxl-pool-shared` | a shared pool device of volatile memory as devdax: exclusively (no capacity request), or one share with `capacity.requests.shares: "1"` |
-| `cxl-pool-persistent` | a pool device of persistent memory, shared or not: its block device (`mode: block`, the writer, exclusively) or a read-only erofs filesystem on it (`mode: fs`, the readers, `shares: "1"` each on a shared device) |
+| `cxl-pool-persistent` | a pool device of persistent memory, shared or not: its block device (`mode: block`, the writer, exclusively) or a filesystem on it (`mode: fs`, `shares: "1"` each on a shared device: readers on any number of nodes, or readers and writers of one node) |
 | `cxl-region` | capacity of a pre-created CXL NUMA node, for steering |
 | `cxl-dram` | DRAM capacity for steering |
 | `cxl-lease` | the lease socket and `cxl-request` in the container |

@@ -120,8 +120,9 @@ exclusive attachment keeps out every other host, of any cluster.
   with
   [`test/e2e/playbook/files/qemu-cxl-kernel.config`](blob:/test/e2e/playbook/files/qemu-cxl-kernel.config)
   (CXL regions, devdax, kmem, memory hot-remove, `CONFIG_FS_DAX` for
-  devdax `mmap` and fsdax pmem namespaces, `CONFIG_EROFS_FS`, DMI for
-  the VM's uuid). The configuration was made on
+  devdax `mmap` and fsdax pmem namespaces, the filesystems of mode `fs`:
+  `CONFIG_EROFS_FS`, `CONFIG_SQUASHFS`, `CONFIG_EXT4_FS`, `CONFIG_XFS_FS`
+  and `CONFIG_BTRFS_FS`, DMI for the VM's uuid). The configuration was made on
   7.3.0-rc4; the VMs of the examples below run 7.3.0-rc7 with it.
   Without a cached build the e2e framework clones and builds the kernel
   inside the VM, which takes long.
@@ -151,6 +152,13 @@ exclusive attachment keeps out every other host, of any cluster.
   The VMs pull `ghcr.io/ggml-org/llama.cpp:server-b11681` and VM1
   installs `erofs-utils` with dnf, through their own proxies. The guest
   kernel needs `CONFIG_EROFS_FS=y` (the configuration above has it).
+- For `test20-dra-fs-read-write`: nothing on the host. VM1 builds the
+  filesystem images in `/var/tmp/cxl-fs-e2e` and installs what it lacks
+  of `e2fsprogs`, `xfsprogs`, `btrfs-progs`, `squashfs-tools` and
+  `erofs-utils` with dnf (Fedora has neither `xfsprogs` nor
+  `squashfs-tools` installed by default); VM2 needs `e2fsprogs`
+  (`dumpe2fs`). For `test21-dra-local-persistent`: VM2 builds an ext4
+  image with `e2fsprogs`.
 
 ## Build
 
@@ -247,7 +255,7 @@ tests of `n4-cxl-shared-2`):
 | `test01-shared-cxl` | CXL memory shared by VM1 and VM2 through fake-cxl-pool, without Kubernetes |
 | `test10-dra-pooling` | pool devices for pods: exclusive devices as NUMA node and as dax device; the pool's slice is for the nodes it reaches, VM1 and VM2 |
 | `test11-dra-sharing` | a shared device claimed on two nodes at once, one share each: VM1 writes, VM2 reads, VM1 lets go while VM2 still reads |
-| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the filesystems of fs leases in the container of a lease claim, empty and read-only; refused requests, among them fs leases that are not read-only, not of the pool or of a volatile device, access or name without mode `fs`, and block leases that share a device writably, are not of the pool or are of a volatile device |
+| `test12-dra-live-attach` | leases of pool memory for running containers; the directory of the filesystems of fs leases in the container of a lease claim, empty and read-only; refused requests, among them fs leases of a volatile device (read-only by default or `--read-write`), access, name, `--fs-type` or `--read-write` without mode `fs`, an invalid `--fs-type`, `--read-only` with `--read-write`, and block leases that share a device writably or are of a volatile device |
 | `test13-dra-shared-one-writer-many-readers` | single-writer sharing on two nodes: an exclusive writer, then read-only readers on VM1 and VM2 |
 | `test14-dra-local-memdev` | slices of a local memdev, `numa` and `dax` |
 | `test15-dra-local-live-attach` | leases of local memory for running containers |
@@ -255,9 +263,12 @@ tests of `n4-cxl-shared-2`):
 | `test17-dra-local-shared` | the local memdev of VM2 configured shared (`sharedDevices`), through claims of `cxl-local-shared`: an exclusive writer, read-only readers that wait for it and then share it, refused configurations and `shares: "0"`, the region and the bytes kept with no claims and across driver restarts, gone without the configuration |
 | `test18-dra-local-shared-one-writer-many-readers` | single-writer sharing of the local shared memdev of VM2 with leases, the steps of the local demo: an exclusive writer lease, three read-only reader leases that wait and then hold it at once, a refused write, a late exclusive request, requests by size, nothing left after the pods go |
 | `test19-many-pools` | three pools in the cluster, one server and one controller each: pool-a (VM1, VM2), pool-b (VM0), pool-c (every VM, host bridge 1, over HMP). Their slices and node selectors; pods without a `nodeSelector` scheduled where their claim's pool reaches; "any 512Mi" landing on the only pool with a free one; a pod pinned to a node that its pool does not reach staying Pending; one pod with devices of two pools; data shared across racks through pool-c |
+| `test20-dra-fs-read-write` | filesystems of any type on a shared persistent pool device (`fs0`), images built in VM1 and written by a block writer: ReadWriteOnce of an ext4 (two read-write claims and a read-only one on VM2 share one superblock; claims of VM1 wait with `AttachFailed` reason `Conflict`; the last writer's Unprepare downgrades the superblock to read-only, a reader starts on VM1, a writer of VM2 waits for it and then upgrades the superblock under the read-only bind of the reader); access cached next to a read-write direct mount, a wrong `fsType`, an ext4 that needs recovery, erofs read-write and btrfs with access direct refused; squashfs read-only and btrfs read-write through cached loop devices; xfs read-only with access direct and cached on VM2 (`nouuid`) and on VM1 at once, then read-write on VM1; read-only and read-write fs leases next to a writer, and a read-write lease of another node that is never Ready |
+| `test21-dra-local-persistent` | a persistent local memdev: a second fake-cxl-pool-server without a controller (`local-pmem`, port 9912, host bridge 1 over HMP) hot-plugs a persistent device into VM2, which the driver publishes as a local memdev with `persistent: true` (class `cxl-local-persistent`, not `cxl-local`); a writable block claim with a shares request refused, a block writer writes an ext4 image, a read-write and a read-only fs claim share it, an fs lease reads it after the region was gone; the region goes with the last claim, the memdev stays enabled until the server detaches it |
 
 The tests need the port 9909 of the host for their own
-fake-cxl-pool-server (`test19-many-pools` also 9910 and 9911): stop the
+fake-cxl-pool-server (`test19-many-pools` also 9910 and 9911,
+`test21-dra-local-persistent` also 9912): stop the
 server of [Deploy by hand](#deploy-by-hand) first. They remove a driver that is installed as below (release `test`)
 and the pool controller before they install their own. The output of a
 test, with the log of the driver, is in

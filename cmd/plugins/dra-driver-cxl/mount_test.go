@@ -46,6 +46,7 @@ func TestParseMountInfo(t *testing.T) {
 		t.Fatalf("%d mounts", len(mounts))
 	}
 	want := mountInfo{
+		DevNum:     "259:0",
 		Root:       "/",
 		Target:     "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct",
 		FsType:     "erofs",
@@ -190,5 +191,48 @@ func TestSysMounterLoopBackingAfterRestart(t *testing.T) {
 		if got := sameDevice(backing, "/dev/pmem0"); got != want {
 			t.Errorf("sameDevice(%q) = %v", backing, got)
 		}
+	}
+}
+
+// TestSysMounterSuperblocks reads the superblocks of a block device and of
+// the loop devices over it from the mountinfo of one process per mount
+// namespace.
+func TestSysMounterSuperblocks(t *testing.T) {
+	root := t.TempDir()
+	sys, proc := filepath.Join(root, "sys"), filepath.Join(root, "proc")
+	m := &sysMounter{sysRoot: sys, devRoot: "/dev", procRoot: proc, loopStatus: func(string) (*unix.LoopInfo64, error) { return nil, unix.ENXIO }}
+	write := func(path, data string) {
+		t.Helper()
+		noErr(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		noErr(t, os.WriteFile(path, []byte(data), 0o644))
+	}
+	process := func(pid, ns, mountinfo string) {
+		t.Helper()
+		write(filepath.Join(proc, pid, "mountinfo"), mountinfo)
+		noErr(t, os.MkdirAll(filepath.Join(proc, pid, "ns"), 0o755))
+		noErr(t, os.Symlink("mnt:["+ns+"]", filepath.Join(proc, pid, "ns", "mnt")))
+	}
+	write(filepath.Join(sys, "class/block/pmem0/dev"), "259:0\n")
+	write(filepath.Join(sys, "block/loop3/loop/backing_file"), "/dev/pmem0\n")
+	write(filepath.Join(sys, "block/loop3/dev"), "7:3\n")
+	write(filepath.Join(sys, "block/loop4/loop/backing_file"), "/var/tmp/img\n")
+	write(filepath.Join(sys, "block/loop4/dev"), "7:4\n")
+	process("100", "1", "301 22 259:0 / /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct rw,nosuid,nodev shared:150 - ext4 /dev/pmem0 rw,dax=always\n"+
+		"302 22 7:4 / /mnt/img rw - ext4 /dev/loop4 rw\n")
+	process("200", "1", "301 22 259:0 / /other ro - ext4 /dev/pmem0 ro\n") // the same namespace: not read
+	process("300", "2", "401 1 7:3 / /run/cxl/fs/x ro,nosuid,nodev - ext4 /dev/loop3 ro,dax=never\n"+
+		"402 1 259:0 / /run/cxl/fs/y ro,nosuid,nodev - ext4 /dev/pmem0 rw,dax=always\n")
+	write(filepath.Join(proc, "self", "mountinfo"), "")
+	sbs, err := m.Superblocks("/dev/pmem0")
+	noErr(t, err)
+	want := []superblock{
+		{Device: "/dev/pmem0", Source: "/dev/pmem0", Where: "pid 100 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct"},
+		{Device: "/dev/loop3", Source: "/dev/loop3", ReadOnly: true, Where: "pid 300 at /run/cxl/fs/x"},
+	}
+	if !reflect.DeepEqual(sbs, want) {
+		t.Fatalf("superblocks %+v", sbs)
+	}
+	if _, err := m.Superblocks("/dev/pmem9"); err == nil {
+		t.Fatal("no error for a device without a number")
 	}
 }

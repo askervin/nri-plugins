@@ -550,8 +550,10 @@ func TestBrokerAuthRejection(t *testing.T) {
 		{api.Request{Op: "request", Size: "64Mi", Access: "cached"}, "access needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Name: "x"}, "name needs mode fs"},
 		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Name: "a/b"}, `invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "fs"}, "mode fs needs readOnly"},
-		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, Source: "local"}, "mode fs needs source pool"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "dax", FsType: "ext4"}, "fsType needs mode fs"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", FsType: "Ext4"}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "block", ReadWrite: true}, "readWrite needs mode fs"},
+		{api.Request{Op: "request", Size: "64Mi", Mode: "fs", ReadOnly: true, ReadWrite: true}, "readOnly and readWrite exclude each other"},
 		{api.Request{Op: "request"}, "size or serial is required"},
 		{api.Request{Op: "request", Serial: "xyz"}, `invalid serial "xyz"`},
 		{api.Request{Op: "release"}, "release takes --lease ID or --all"},
@@ -727,7 +729,7 @@ func TestBrokerSharedLeaseFd(t *testing.T) {
 	if !reflect.DeepEqual(*claim.Spec.Devices.Requests[0].Exactly, want) {
 		t.Fatalf("shared request %+v", claim.Spec.Devices.Requests[0].Exactly)
 	}
-	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.ReadOnly {
+	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	sharedEnv := map[string]string{"CXL_C1AE0001_DAX": "/dev/dax0.0", "CXL_C1AE0001_MODE": "dax", "CXL_C1AE0001_READONLY": "0",
@@ -1222,11 +1224,32 @@ func poolSlice() *resourceapi.ResourceSlice {
 }
 
 // localResourceSlice is the cxl.nri.io ResourceSlice of node1 with the local
-// memdev 0xc100e2e1 and the shared local memdev 0xc100e2e2.
+// memdev 0xc100e2e1, the shared local memdev 0xc100e2e2 and the persistent
+// local memdev 0xc100f5e1.
 func localResourceSlice() *resourceapi.ResourceSlice {
 	return nodeResourceSlice(testNode,
 		localMemdevDevice(localDeviceName, &device.Memdev{Serial: localSerial, Size: localRegionSize, NodeAffinity: 0, BlockSize: localBlockSize}),
-		localMemdevDevice("memdev-c100e2e2", &device.Memdev{Serial: 0xc100e2e2, Size: localRegionSize, NodeAffinity: 0, Shared: true}))
+		localMemdevDevice("memdev-c100e2e2", &device.Memdev{Serial: 0xc100e2e2, Size: localRegionSize, NodeAffinity: 0, Shared: true}),
+		persistentLocalDevice())
+}
+
+// persistentLocalDevice is the persistent local memdev 0xc100f5e1 as
+// cxl.nri.io publishes it (contract of plan-14 section 7).
+func persistentLocalDevice() resourceapi.Device {
+	return persistentLocalDeviceOf("0xc100f5e1")
+}
+
+// persistentLocalDeviceOf is a persistent local memdev with the serial.
+func persistentLocalDeviceOf(serial string) resourceapi.Device {
+	return resourceapi.Device{
+		Name: "memdev-" + strings.TrimPrefix(serial, "0x"),
+		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+			"type": {StringValue: ptr("memdev")}, "source": {StringValue: ptr("local")}, "serial": {StringValue: ptr(serial)},
+			"shared": {BoolValue: ptr(false)}, "persistent": {BoolValue: ptr(true)}, "size": {IntValue: ptr(int64(1 << 30))},
+		},
+		Capacity:                 map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{"shares": {Value: resource.MustParse("1M")}},
+		AllowMultipleAllocations: ptr(true),
+	}
 }
 
 // nodeResourceSlice returns the cxl.nri.io ResourceSlice of a node with the
@@ -1274,7 +1297,8 @@ func persistentPoolSlice() *resourceapi.ResourceSlice {
 // 0xc100e2e3, and the persistent pool devices.
 func newSlicesBrokerEnv(t *testing.T) *brokerEnv {
 	e := newBrokerEnv(t)
-	node2 := nodeResourceSlice("node2", localMemdevDevice("memdev-c100e2e3", &device.Memdev{Serial: 0xc100e2e3, Size: localRegionSize, NodeAffinity: -1, Shared: true}))
+	node2 := nodeResourceSlice("node2", localMemdevDevice("memdev-c100e2e3", &device.Memdev{Serial: 0xc100e2e3, Size: localRegionSize, NodeAffinity: -1, Shared: true}),
+		persistentLocalDeviceOf("0xc100f5e2"))
 	for _, s := range []*resourceapi.ResourceSlice{poolSlice(), localResourceSlice(), node2, persistentPoolSlice()} {
 		_, err := e.client.ResourceV1().ResourceSlices().Create(context.Background(), s, metav1.CreateOptions{})
 		noErr(t, err)
@@ -1322,13 +1346,28 @@ func TestBrokerRequestOptions(t *testing.T) {
 		{req: api.Request{Size: "lots"}, err: `invalid size "lots"`},
 		// mode fs on persistent devices, shared or not
 		{req: api.Request{Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs"},
-			want: lease{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true, Access: "direct"}},
+			want: lease{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true}},
 		{req: api.Request{Serial: "0xc1af0001", ReadOnly: true, Mode: "fs", Access: "cached", Name: "models", Source: "pool"},
 			want: lease{Source: "pool", Serial: "0xc1af0001", SharedDevice: true, Mode: "fs", ReadOnly: true, Access: "cached", Name: "models"}},
 		{req: api.Request{Serial: "0xc1af0002", ReadOnly: true, Mode: "fs", Size: "512Mi"},
-			want: lease{Serial: "0xc1af0002", DeviceSource: "pool", Mode: "fs", ReadOnly: true, Access: "direct", Size: "512Mi"}},
+			want: lease{Serial: "0xc1af0002", DeviceSource: "pool", Mode: "fs", ReadOnly: true, Size: "512Mi"}},
 		{req: api.Request{Shared: true, ReadOnly: true, Mode: "fs", Size: "256Mi"},
-			want: lease{Shared: true, SharedDevice: true, Mode: "fs", ReadOnly: true, Access: "direct", Size: "256Mi"}},
+			want: lease{Shared: true, SharedDevice: true, Mode: "fs", ReadOnly: true, Size: "256Mi"}},
+		// read-only without readOnly, read-write by the opt-in, a type
+		{req: api.Request{Serial: "0xc1af0001", Shared: true, Mode: "fs", FsType: "ext4"},
+			want: lease{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadOnly: true, FsType: "ext4"}},
+		{req: api.Request{Serial: "0xc1af0001", Shared: true, Mode: "fs", ReadWrite: true, Access: "cached"},
+			want: lease{Serial: "0xc1af0001", Shared: true, SharedDevice: true, DeviceSource: "pool", Mode: "fs", ReadWrite: true, Access: "cached"}},
+		// a persistent local memdev: a share although it is not shared
+		{req: api.Request{Serial: "0xc100f5e1", Shared: true, Mode: "fs"},
+			want: lease{Serial: "0xc100f5e1", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "fs", ReadOnly: true}},
+		{req: api.Request{Serial: "0xc100f5e1", Source: "local", Mode: "block"},
+			want: lease{Source: "local", Serial: "0xc100f5e1", Mode: "block"}},
+		{req: api.Request{Serial: "0xc100f5e1", Mode: "dax"}, err: "device 0xc100f5e1: a persistent device needs mode block or fs"},
+		// the source and node checks of a persistent local memdev that is not shared
+		{req: api.Request{Serial: "0xc100f5e1", Source: "pool", Mode: "fs"}, err: "device 0xc100f5e1: not a pool device"},
+		{req: api.Request{Serial: "0xc100f5e2", Shared: true, Mode: "fs"}, err: "device 0xc100f5e2: a local device of node node2, not of this node"},
+		{req: api.Request{Serial: "0xc1af0002", Source: "local", Mode: "block"}, err: "device 0xc1af0002: not a local device"},
 		// B3, B4 after the checks of the device and its source
 		{req: api.Request{Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "fs"}, err: "device 0xc1ae0001: mode fs needs a persistent device"},
 		{req: api.Request{Serial: "0xc1ee0001", ReadOnly: true, Mode: "fs"}, err: "device 0xc1ee0001: mode fs needs a persistent device"},
@@ -1372,8 +1411,10 @@ func TestBrokerRequestOptions(t *testing.T) {
 	}{
 		{req: api.Request{Size: "1Gi", Source: "pool"}, err: "pool driver disabled (--pool-driver-name)"},
 		{req: api.Request{Size: "1Gi", Source: "pool", Shared: true}, err: "pool driver disabled (--pool-driver-name)"},
-		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: true}, err: "pool driver disabled (--pool-driver-name)"},
-		{req: api.Request{Size: "1Gi", Mode: "block"}, err: "pool driver disabled (--pool-driver-name)"},
+		{req: api.Request{Size: "1Gi", Source: "pool", Mode: "fs", ReadOnly: true}, err: "pool driver disabled (--pool-driver-name)"},
+		// persistent local memdevs serve modes fs and block
+		{req: api.Request{Size: "1Gi", Mode: "fs", ReadOnly: true}, want: lease{Size: "1Gi", Mode: "fs", ReadOnly: true}},
+		{req: api.Request{Size: "1Gi", Mode: "block"}, want: lease{Size: "1Gi", Mode: "block"}},
 		// shared local devices serve --shared
 		{req: api.Request{Shared: true, Size: "64Mi"}, want: lease{Shared: true, SharedDevice: true, Size: "64Mi", Mode: "dax"}},
 		{req: api.Request{Serial: "0xc100e2e2", Shared: true}, want: lease{Serial: "0xc100e2e2", Shared: true, SharedDevice: true, DeviceSource: "local", Mode: "dax"}},
@@ -1476,7 +1517,7 @@ func TestBrokerExclusiveReadOnlySharedLease(t *testing.T) {
 	if ex == nil || ex.DeviceClassName != "cxl-pool-shared" || ex.Capacity != nil {
 		t.Fatalf("exclusive request %+v", claim.Spec.Devices.Requests[0])
 	}
-	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || !dc.ReadOnly {
+	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || !dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	e.wantDaxFd(resp, fd)
@@ -1499,7 +1540,7 @@ func TestBrokerPoolDaxLease(t *testing.T) {
 	if size := ex.Capacity.Requests["memory"]; ex.DeviceClassName != device.ClassPool || size.String() != "256Mi" {
 		t.Fatalf("memory request %+v", ex)
 	}
-	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.ReadOnly {
+	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	e.pe.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
@@ -1581,8 +1622,12 @@ func TestBrokerCompanionClaims(t *testing.T) {
 		poolDax   = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
 		poolRO    = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax","readOnly":true}}`
 		// no path: the companion pod gets no mount
-		poolFsDirect = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":"direct"}}`
+		// readOnly explicitly, access and fsType only when requested
+		poolFs       = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`
 		poolFsCached = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":"cached"}}`
+		poolFsRW     = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":false,"access":"direct","fsType":"ext4"}}`
+		localFs      = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`
+		localBlock   = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`
 		poolBlock    = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`
 		poolBlockRO  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block","readOnly":true}}`
 	)
@@ -1767,7 +1812,7 @@ func TestBrokerCompanionClaims(t *testing.T) {
 			req:  api.Request{Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs"},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
-			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsDirect}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFs}},
 		},
 		{
 			name: "fs cached of a shared persistent device, whole",
@@ -1781,14 +1826,42 @@ func TestBrokerCompanionClaims(t *testing.T) {
 			req:  api.Request{Serial: "0xc1af0002", ReadOnly: true, Mode: "fs", Size: "512Mi"},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
 				DeviceClassName: "cxl-pool-persistent", Capacity: memory("512Mi"), Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0002"))}},
-			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsDirect}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFs}},
 		},
 		{
-			name: "fs of a share of any persistent device of a size: the pool only",
+			name: "fs of a share of any persistent device of a size, local then pool",
 			req:  api.Request{Shared: true, ReadOnly: true, Mode: "fs", Size: "64Mi"},
+			want: resourceapi.DeviceRequest{Name: "lease", FirstAvailable: []resourceapi.DeviceSubRequest{
+				{Name: "local", DeviceClassName: "cxl-local-persistent", Capacity: share, Selectors: sel(`device.attributes["cxl.nri.io"].size >= 67108864`)},
+				{Name: "pool", DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(`device.attributes["cxl-pool.nri.io"].size >= 67108864`)},
+			}},
+			configs: []opaqueConfig{
+				{driver: "cxl.nri.io", requests: []string{"lease/local"}, params: localFs},
+				{driver: "cxl-pool.nri.io", requests: []string{"lease/pool"}, params: poolFs},
+			},
+		},
+		{
+			name: "fs read-write of a share of a shared persistent device",
+			req:  api.Request{Serial: "0xc1af0001", Shared: true, ReadWrite: true, Mode: "fs", Access: "direct", FsType: "ext4"},
 			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
-				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(`device.attributes["cxl-pool.nri.io"].size >= 67108864`)}},
-			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsDirect}},
+				DeviceClassName: "cxl-pool-persistent", Capacity: share, Selectors: sel(serial("cxl-pool.nri.io", "0xc1af0001"))}},
+			configs: []opaqueConfig{{driver: "cxl-pool.nri.io", params: poolFsRW}},
+		},
+		{
+			name: "fs of a share of a persistent local memdev",
+			req:  api.Request{Serial: "0xc100f5e1", Shared: true, Mode: "fs"},
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-persistent", Capacity: share, Selectors: sel(serial("cxl.nri.io", "0xc100f5e1"))}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localFs}},
+		},
+		{
+			name:   "block of a persistent local memdev, whole, without the pool driver",
+			req:    api.Request{Serial: "0xc100f5e1", Mode: "block", Size: "64Mi"},
+			noPool: true,
+			want: resourceapi.DeviceRequest{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
+				DeviceClassName: "cxl-local-persistent",
+				Selectors:       sel(serial("cxl.nri.io", "0xc100f5e1"), `device.attributes["cxl.nri.io"].size >= 67108864`)}},
+			configs: []opaqueConfig{{driver: "cxl.nri.io", params: localBlock}},
 		},
 		{
 			name: "block of a shared persistent device, whole (the writer)",
@@ -1846,9 +1919,9 @@ func TestBrokerCompanionClaims(t *testing.T) {
 	e.b.cfg.PoolDriver = ""
 	_, _, err := e.b.companionObjects(&lease{ID: "x", Source: api.SourcePool, Shared: true, Mode: api.ModeDax, Pod: pod})
 	wantErr(t, err, "pool driver disabled (--pool-driver-name)")
-	_, _, err = e.b.companionObjects(&lease{ID: "x", Shared: true, ReadOnly: true, Mode: api.ModeFs, Access: api.AccessDirect, Pod: pod})
+	_, _, err = e.b.companionObjects(&lease{ID: "x", Source: api.SourcePool, Shared: true, ReadOnly: true, Mode: api.ModeFs, Access: api.AccessDirect, Pod: pod})
 	wantErr(t, err, "pool driver disabled (--pool-driver-name)")
-	_, _, err = e.b.companionObjects(&lease{ID: "x", Mode: api.ModeBlock, Serial: "0xc1af0001", SharedDevice: true, Pod: pod})
+	_, _, err = e.b.companionObjects(&lease{ID: "x", Mode: api.ModeBlock, Serial: "0xc1af0001", SharedDevice: true, DeviceSource: api.SourcePool, Pod: pod})
 	wantErr(t, err, "pool driver disabled (--pool-driver-name)")
 }
 
@@ -1898,7 +1971,7 @@ func TestBrokerLocalDaxLease(t *testing.T) {
 	res, err := config.Resolve(c, device.DriverName, "lease/local")
 	noErr(t, err)
 	dc := res.Config.DeviceSection()
-	if mode, err := dc.MemdevMode(false); err != nil || mode != api.ModeDax || !dc.ReadOnly || res.Config.Container != nil || res.Origins != nil {
+	if mode, err := dc.MemdevMode(false); err != nil || mode != api.ModeDax || !dc.IsReadOnly() || res.Config.Container != nil || res.Origins != nil {
 		t.Fatalf("MemoryConfig %s: mode %q %v", res.Config.Compact(), mode, err)
 	}
 	// the entry of the pool driver targets the pool subrequest only
@@ -2165,7 +2238,7 @@ func (e *leaseFsEnv) prepareFs(id string, req api.Request) (*resourceapi.Resourc
 
 // fsEnv returns the environment of an fs lease of llm0.
 func fsEnv(access, path string) map[string]string {
-	return map[string]string{"CXL_C1AF0001_ACCESS": access, "CXL_C1AF0001_MODE": "fs", "CXL_C1AF0001_PATH": path, "CXL_C1AF0001_READONLY": "1",
+	return map[string]string{"CXL_C1AF0001_ACCESS": access, "CXL_C1AF0001_FSTYPE": "erofs", "CXL_C1AF0001_MODE": "fs", "CXL_C1AF0001_PATH": path, "CXL_C1AF0001_READONLY": "1",
 		"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_SIZE": "534773760"}
 }
 
@@ -2181,7 +2254,8 @@ func TestBrokerFsLease(t *testing.T) {
 
 	// a direct lease with the default name
 	claim, resp, fd := e.prepareFs("000000a1", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Wait: "5s"})
-	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true,"access":"direct"}}`
+	// no access: the default of the type, decided by the pool driver
+	params := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`
 	wantSpec := resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{
 		Requests: []resourceapi.DeviceRequest{{Name: "lease", Exactly: &resourceapi.ExactDeviceRequest{
 			DeviceClassName: "cxl-pool-persistent",
@@ -2198,7 +2272,7 @@ func TestBrokerFsLease(t *testing.T) {
 	if fd >= 0 {
 		t.Fatalf("fd %d with an fs lease", fd)
 	}
-	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", Shared: true, ReadOnly: true, Access: "direct",
+	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "direct",
 		Path: "/run/cxl/fs/000000a1", Size: fakePmemBytes, Serial: "0xc1af0001", Env: fsEnv("direct", "/run/cxl/fs/000000a1")})
 	bind := filepath.Join(fsDir, "000000a1")
 	if mi, _ := e.pe.m.Mounted(bind); mi == nil || mi.FsType != "erofs" || mi.Source != "/dev/pmem0" {
@@ -2220,7 +2294,7 @@ func TestBrokerFsLease(t *testing.T) {
 	// a cached lease with a name
 	_, resp, _ = e.prepareFs("000000a2", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs",
 		Access: "cached", Name: "models", Wait: "5s"})
-	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", Shared: true, ReadOnly: true, Access: "cached",
+	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "cached",
 		Path: "/run/cxl/fs/models", Size: fakePmemBytes, Serial: "0xc1af0001", Env: fsEnv("cached", "/run/cxl/fs/models")})
 	models := filepath.Join(fsDir, "models")
 	if mi, _ := e.pe.m.Mounted(models); mi == nil || mi.Source != "/dev/loop0" || len(e.pe.m.callsOf(bindCall(cached, models))) != 1 {
@@ -2658,7 +2732,7 @@ func TestBrokerBlockLease(t *testing.T) {
 	if !reflect.DeepEqual(claim.Spec, wantSpec) {
 		t.Fatalf("claim spec:\n%s", toJSON(claim.Spec))
 	}
-	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || dc.ReadOnly || dc.Access != "" || dc.Path != "" {
+	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || dc.IsReadOnly() || dc.Access != "" || dc.Path != "" {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	e.pe.f.wantCommand(t, "ndctl create-namespace -f -r region0 -m fsdax -M mem")
@@ -2714,7 +2788,7 @@ func TestBrokerBlockLease(t *testing.T) {
 		!reflect.DeepEqual(ex.Selectors, serialSel) {
 		t.Fatalf("reader request %s", toJSON(claim.Spec.Devices.Requests))
 	}
-	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || !dc.ReadOnly {
+	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || !dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	e.wantBlockFd(fd)

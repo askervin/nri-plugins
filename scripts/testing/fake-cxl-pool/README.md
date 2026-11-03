@@ -274,8 +274,10 @@ the server, the controller and the driver in the e2e VMs. The controller:
   `pool <name>: no node of the cluster is a host of the server, publishing
   nothing`; then `publishing pool <name> for nodes [...]: ...` again).
   Every device has the attributes `type: memdev`, `source: pool`, `serial`,
-  `shared`, `persistent` (bool, false for volatile devices) and `size`
-  (bytes). Exclusive devices have `capacity.memory`, shared devices
+  `shared`, `persistent` (bool, false for volatile devices), `size`
+  (bytes) and `coherent: true` (the memory of a device is coherent between
+  the hosts that share it: every VM maps the same qemu memory backend of
+  the host; a controller that does not publish `coherent` means false). Exclusive devices have `capacity.memory`, shared devices
   `allowMultipleAllocations` and `capacity.shares` with value `1M`
   (1000000) and no `requestPolicy`: a claim that requests no shares
   consumes all of them and has the device exclusively, `shares: "1"` is
@@ -294,7 +296,8 @@ the server, the controller and the driver in the e2e VMs. The controller:
   ignored), else the host whose name is the node name. Then it writes
   `cxl-pool.nri.io/Attached=True` and the device data (serial, shared,
   persistent (only when true), size, host, hostUUID, attachment,
-  qemuDeviceId, exclusive) into
+  qemuDeviceId, exclusive, singleHost, coherent; the last three only when
+  true) into
   `claim.status.devices[]`, which releases the
   scheduler's binding wait and tells the node plugin which memdev to wait
   for. A node that is not a pool host, a 409 or another error gives
@@ -304,7 +307,22 @@ the server, the controller and the driver in the e2e VMs. The controller:
   claim's `MemoryConfig` (below).
 - attaches exclusively (`AttachRequest.exclusive`) for a claim that
   consumes all `shares` of a shared device (`exclusive: true` in its
-  device data).
+  device data), and for a share whose `MemoryConfig` mounts a filesystem
+  read-write (`device.mode: fs`, `readOnly: false`), unless it is a
+  cluster filesystem (`device.fsType: gfs2`) on a coherent device
+  (`config.ExclusiveHost`; ReadWriteOnce, log: `attach D to H for claim
+  ...: exclusive for a read-write <fsType or "filesystem"> claim`). The
+  device data of a claim whose attachment is exclusive for it has
+  `singleHost: true` (the node mounts read-write only then). The other
+  claims of that node share the attachment; claims of other nodes get
+  `AttachFailed` reason `Conflict` until no claim of the node needs it
+  exclusively. When an existing attachment cannot be made exclusive
+  (another host has the device), only the claims that need it exclusively
+  get `AttachFailed`; the others of the node stay `Attached`. When a new
+  exclusive attachment conflicts, it is attached again without the flag
+  for the claims of the node that do not need it (log: `attach D to H for
+  claim ...: not exclusive for the claims that do not need it`); only when
+  that conflicts too, every claim of the node gets `AttachFailed`.
 - detaches a device when no allocated claim wants it on that node any more.
   The node plugin has released it in NodeUnprepare by then; if the guest
   still holds it, the attachment stays `detaching` (or `failed`) and the

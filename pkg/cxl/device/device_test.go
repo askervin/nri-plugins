@@ -28,7 +28,7 @@ import (
 
 // TestDeviceClassesMatchConstants checks that the DeviceClasses of the raw
 // helm chart file (deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml)
-// are the eight classes of the Class* constants, each selecting the driver,
+// are the nine classes of the Class* constants, each selecting the driver,
 // type and sharing that the constant stands for, and no config: the raw
 // file has none, configs come only into rendered classes with the Helm
 // value deviceClassConfig.
@@ -52,8 +52,11 @@ func TestDeviceClassesMatchConstants(t *testing.T) {
 		return fmt.Sprintf(`device.driver == %q && device.attributes[%q].%s == %q`, driver, driver, AttrType, typ)
 	}
 	want := map[string]string{
-		ClassLocal:       selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, DriverName, AttrShared),
-		ClassLocalShared: selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, DriverName, AttrShared),
+		ClassLocal: selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, DriverName, AttrShared) +
+			fmt.Sprintf(` && device.attributes[%q].%s == false`, DriverName, AttrPersistent),
+		ClassLocalShared: selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, DriverName, AttrShared) +
+			fmt.Sprintf(` && device.attributes[%q].%s == false`, DriverName, AttrPersistent),
+		ClassLocalPersistent: selects(DriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, DriverName, AttrPersistent),
 		ClassPool: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrShared) +
 			fmt.Sprintf(` && device.attributes[%q].%s == false`, PoolDriverName, AttrPersistent),
 		ClassPoolShared: selects(PoolDriverName, DeviceTypeMemdev) + fmt.Sprintf(` && device.attributes[%q].%s == true`, PoolDriverName, AttrShared) +
@@ -92,5 +95,19 @@ func TestSharesUnlimited(t *testing.T) {
 	}
 	if CapacityShares != "shares" || ClassLocalShared != "cxl-local-shared" {
 		t.Fatalf("names %s %s", CapacityShares, ClassLocalShared)
+	}
+}
+
+// TestNames checks names that other components write or match.
+func TestNames(t *testing.T) {
+	for _, c := range []struct{ got, want string }{
+		{string(AttrCoherent), "coherent"},
+		{string(AttrPersistent), "persistent"},
+		{ClassLocalPersistent, "cxl-local-persistent"},
+		{ClassPoolPersistent, "cxl-pool-persistent"},
+	} {
+		if c.got != c.want {
+			t.Errorf("name %q, expected %q", c.got, c.want)
+		}
 	}
 }

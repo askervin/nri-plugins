@@ -658,18 +658,19 @@ refused 2 'invalid source "remote" (local or pool)' request --source remote --si
 refused 2 'invalid mode "memory" (numa, dax, fs or block)' request --mode memory --size 64Mi
 refused 2 "shared memory is never onlined as RAM: use mode dax" request --shared --mode numa --size 64Mi
 refused 2 "readOnly needs mode dax, fs or block" request --size 64Mi --read-only
-# Filesystems of persistent pool devices: read-only, of the pool only, and
-# access and name are for mode fs.
-refused 2 "mode fs needs readOnly" request --serial "$SHARED_SERIAL" --shared --mode fs
+# Filesystems of persistent devices: access, name, fsType and readWrite
+# are for mode fs, readWrite is the opt-in to write (read-only without
+# it), and readOnly with it is a contradiction.
 refused 2 'invalid access "slow" (direct or cached)' request --mode fs --read-only --access slow --shared --size 64Mi
 refused 2 "access needs mode fs" request --access cached --size 64Mi
 refused 2 "name needs mode fs" request --name x --size 64Mi
 refused 2 'invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")' request --mode fs --read-only --name a/b --shared --size 64Mi
-refused 2 "mode fs needs source pool" request --source local --mode fs --read-only --shared --size 64Mi
-# Block devices of persistent pool devices: of the pool only, and a share
-# of a device is read-only.
+refused 2 "fsType needs mode fs" request --fs-type ext4 --size 64Mi
+refused 2 'invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")' request --serial "$SHARED_SERIAL" --shared --mode fs --fs-type Ext4
+refused 2 "readWrite needs mode fs" request --read-write --size 64Mi
+refused 2 "readOnly and readWrite exclude each other" request --serial "$SHARED_SERIAL" --shared --mode fs --read-only --read-write
+# Block devices of persistent devices: a share of a device is read-only.
 refused 2 "mode block with shared needs readOnly" request --serial "$SHARED_SERIAL" --shared --mode block
-refused 2 "mode block needs source pool" request --source local --mode block --size 64Mi
 refused 2 'invalid serial "pooled0"' request --serial pooled0
 refused 2 "--exec is for request, fd and env" list --exec true
 refused 2 "fd needs --exec" fd --lease 0123abcd
@@ -677,8 +678,12 @@ refused 2 "release takes --lease ID or --all" release
 refused 2 "release takes --lease ID or --all" release --lease 0123abcd --all
 refused 2 'invalid wait "soon"' request --size 64Mi --wait soon
 refused 1 "device $POOLED0_SERIAL: not shareable" request --serial "$POOLED0_SERIAL" --shared
-# shared0 is volatile: it has no filesystem and no block device.
+# shared0 is volatile: it has no filesystem and no block device. mode fs
+# without readOnly (read-only) and with --read-write passes cxl-request
+# and reaches the node plugin.
 refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --read-only --mode fs
+refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs
+refused 1 "device $SHARED_SERIAL: mode fs needs a persistent device" request --serial "$SHARED_SERIAL" --shared --mode fs --read-write --fs-type ext4
 refused 1 "device $SHARED_SERIAL: mode block needs a persistent device" request --serial "$SHARED_SERIAL" --mode block
 dra-leases "$VM2" borrower/main
 dra-assert "$DRA_LEASES" "j == []"

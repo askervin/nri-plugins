@@ -315,7 +315,7 @@ SLICES="$COMMAND_OUTPUT"
 dra-assert "$SLICES" "attr($LD, 'type') == 'memdev' and attr($LD, 'source') == 'local' and attr($LD, 'shared') == True"
 dra-assert "$SLICES" "attr($LD, 'serial') == '$DRA_LOCAL_SERIAL' and attr($LD, 'size') == $DRA_LOCAL_SIZE"
 # No memoryBlockSize: a shared device is never sliced.
-dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['nodeAffinity', 'serial', 'shared', 'size', 'source', 'type']"
+dra-assert "$SLICES" "sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and attr($LD, 'persistent') == False"
 # One capacity, shares, without a requestPolicy: no memory to consume,
 # and nothing to put online.
 dra-assert "$SLICES" "sorted(${LD}.get('capacity') or {}) == ['shares'] and quantity(capacity($LD, 'shares')) == $DRA_SHARES and request_policy($LD, 'shares') is None"
@@ -529,7 +529,7 @@ dra-plugin-log-wait "$VM2" "(serial $DRA_LOCAL_SERIAL): not configured shared an
 dra-local-slices-none "$VM2" unshared
 T_UNSHARE=$(echo "$EPOCHREALTIME - $t0" | bc)
 dra-wait "$VM2" sliced-again resourceslices \
-    "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
+    "attr($LD, 'shared') == False and sorted(k.split('/')[-1] for k in ${LD}['attributes']) == ['memoryBlockSize', 'nodeAffinity', 'persistent', 'serial', 'shared', 'size', 'source', 'type'] and quantity(capacity($LD, 'memory')) == $DRA_LOCAL_SIZE" 60
 
 echo "### I: what every component did, in order"
 dra-trace-stop

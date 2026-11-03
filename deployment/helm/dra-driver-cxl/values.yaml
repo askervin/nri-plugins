@@ -49,6 +49,14 @@ config: {}
 #   manageMemdevs: true
 #   # local devices shared by the claims of class cxl-local-shared
 #   sharedDevices: ["0xc100e2e1"]
+#   # the filesystem types that mode fs mounts on the node (the default);
+#   # the node's kernel parses what the writer of a device wrote
+#   fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]
+#   # settings of individual local memdevs: coherent declares the memory
+#   # of a memdev of sharedDevices coherent between the hosts that share it
+#   memdevSettings:
+#   - device: "0xc100e2e1"
+#     coherent: true
 #   # node defaults of the settings of containers, which the
 #   # MemoryConfigs of their claims override
 #   defaults:

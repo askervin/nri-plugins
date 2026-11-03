@@ -308,9 +308,12 @@ type poolTestEnv struct {
 
 func newPoolTestEnv(t *testing.T) *poolTestEnv {
 	dir := t.TempDir()
+	m := newFakeMounter()
+	// the image that the writer of the persistent device wrote
+	m.images["/dev/pmem0"] = fsImage("erofs")
 	return &poolTestEnv{
 		f:         newFakePoolSys(t),
-		m:         newFakeMounter(),
+		m:         m,
 		cdiDir:    filepath.Join(dir, "cdi"),
 		stateFile: filepath.Join(dir, poolStateFileName),
 		bootID:    "boot-1",
@@ -332,8 +335,10 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the common sweep of driver.go, of the pool driver alone
+	sweepLeaseBinds(p.leaseBinds(), p.persistent())
 	p.probeGrace = 20 * time.Millisecond
-	p.holderWait = 50 * time.Millisecond
+	p.pn.cfg.HolderWait = 50 * time.Millisecond
 	p.cdi = cache
 	if err := p.writeCDISpec(); err != nil {
 		t.Fatal(err)
@@ -865,7 +870,8 @@ func TestPoolConfigErrors(t *testing.T) {
 		{exclusiveData, roConfig, "MemoryConfig: device.readOnly needs mode dax, block or fs"},
 		{exclusiveData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"ram"}}`, `MemoryConfig: device.mode: invalid mode "ram" (numa, dax, block or fs)`},
 		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"access":"cached"}}`, "MemoryConfig: device.access needs mode fs"},
-		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"fsType":"erofs"}}`, `unknown field "device.fsType"`},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"fsType":"erofs"}}`, "MemoryConfig: device.fsType needs mode fs"},
+		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"fsTypes":["erofs"]}}`, `unknown field "device.fsTypes"`},
 		{sharedData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"block"}}`, "MemoryConfig: device.mode block needs a persistent device"},
 		{exclusiveData, `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"fs","readOnly":true}}`, "MemoryConfig: device.mode fs needs a persistent device"},
 		{sharedData, `{"apiVersion":"v1","kind":"MemoryConfig"}`, `MemoryConfig: apiVersion "v1", expected "cxl.nri.io/v1alpha1"`},

@@ -250,6 +250,7 @@ func TestPublishSharedLocalMemdev(t *testing.T) {
 			"source":       {StringValue: ptr("local")},
 			"serial":       {StringValue: ptr("0xc100e2e1")},
 			"shared":       {BoolValue: ptr(true)},
+			"persistent":   {BoolValue: ptr(false)},
 			"size":         {IntValue: ptr(int64(localRegionSize))},
 			"nodeAffinity": {IntValue: ptr(int64(0))},
 		},

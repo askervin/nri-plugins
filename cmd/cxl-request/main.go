@@ -19,7 +19,7 @@
 // docs/memory/cxl/leases.md.
 //
 //	cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared] [--read-only]
-//	                    [--access direct|cached] [--name NAME]
+//	                    [--read-write] [--access direct|cached] [--fs-type TYPE] [--name NAME]
 //	                    [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
 //	                    [--exec CMD [ARG...]]
 //	cxl-request release (--lease ID | --all) [--wait DURATION]
@@ -32,7 +32,7 @@
 // prints the environment of the lease as sorted KEY=VALUE lines. With
 // --exec CMD runs with the environment of the lease, and with the fd of a
 // dax lease (a devdax device) or a block lease (the block device of a
-// persistent pool device) as fd 3; an fs lease has its filesystem at
+// persistent device) as fd 3; an fs lease has its filesystem at
 // CXL_<KEY>_PATH. Exit codes: 0 ok, 1 error, 2 usage, 3 the lease is
 // Failed, not Ready (request, fd, env) or not Released (release) within
 // --wait, or fd of a lease that is neither a dax nor a block lease. With
@@ -69,7 +69,7 @@ const (
 
 const usage = `usage:
   cxl-request request [--source local|pool] [--mode numa|dax|fs|block] [--shared] [--read-only]
-                      [--access direct|cached] [--name NAME]
+                      [--read-write] [--access direct|cached] [--fs-type TYPE] [--name NAME]
                       [--size SIZE] [--serial SERIAL] [--wait DURATION] [--request-id ID]
                       [--exec CMD [ARG...]]
   cxl-request release (--lease ID | --all) [--wait DURATION]
@@ -79,14 +79,18 @@ const usage = `usage:
   cxl-request help
 request: memory for this container, exclusive unless --shared:
   --source    local (a memdev of this node) or pool; default local, then pool
-  --mode      numa (lent as a NUMA node), dax (a devdax fd), fs (a read-only
-              filesystem of a persistent pool device at /run/cxl/fs/NAME) or
-              block (an fd of the block device of a persistent pool device);
+  --mode      numa (lent as a NUMA node), dax (a devdax fd), fs (the
+              filesystem of a persistent device at /run/cxl/fs/NAME) or
+              block (an fd of the block device of a persistent device);
               default numa, dax with --shared or for a shared device
   --shared    one share of a shared device (default: the whole device, exclusive)
-  --read-only a dax or block fd that allows reads only; fs needs it
+  --read-only a dax or block fd that allows reads only; fs is read-only
+              without --read-write
+  --read-write fs: mount the filesystem read-write (default read-only)
   --access    fs: direct (file pages are the memory of the device) or
-              cached (the page cache of the node); default direct
+              cached (the page cache of the node); default direct when the
+              filesystem has DAX, cached otherwise
+  --fs-type   fs: the expected filesystem type (default: detected)
   --name      fs: the mount point /run/cxl/fs/NAME; default the lease id
   --size      at least this much, a quantity such as 512Mi
   --serial    this device (0x hex or decimal)
@@ -100,7 +104,8 @@ The socket is $CXL_LEASE_SOCKET.
 
 // options lists the options of each operation; --exec is the last one.
 var options = map[string][]string{
-	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--access", "--name", "--size", "--serial", "--wait", "--request-id", "--exec"},
+	api.OpRequest: {"--source", "--mode", "--shared", "--read-only", "--read-write", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
+		"--request-id", "--exec"},
 	api.OpRelease: {"--lease", "--all", "--wait"},
 	api.OpList:    {},
 	api.OpFd:      {"--lease", "--wait", "--exec"},
@@ -169,7 +174,7 @@ func parseArgs(args []string) (*command, error) {
 // values returns the options with a value of the command.
 func (cmd *command) values() map[string]*string {
 	return map[string]*string{
-		"--source": &cmd.req.Source, "--mode": &cmd.req.Mode, "--access": &cmd.req.Access, "--name": &cmd.req.Name,
+		"--source": &cmd.req.Source, "--mode": &cmd.req.Mode, "--access": &cmd.req.Access, "--fs-type": &cmd.req.FsType, "--name": &cmd.req.Name,
 		"--size": &cmd.req.Size, "--serial": &cmd.req.Serial,
 		"--wait": &cmd.req.Wait, "--request-id": &cmd.req.RequestID, "--lease": &cmd.req.Lease,
 	}
@@ -177,7 +182,7 @@ func (cmd *command) values() map[string]*string {
 
 // flags returns the options without a value of the command.
 func (cmd *command) flags() map[string]*bool {
-	return map[string]*bool{"--shared": &cmd.req.Shared, "--read-only": &cmd.req.ReadOnly, "--all": &cmd.req.All}
+	return map[string]*bool{"--shared": &cmd.req.Shared, "--read-only": &cmd.req.ReadOnly, "--read-write": &cmd.req.ReadWrite, "--all": &cmd.req.All}
 }
 
 // isFlag tells whether an option takes no value.

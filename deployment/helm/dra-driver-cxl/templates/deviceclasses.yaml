@@ -8,8 +8,9 @@
 # file is plain YAML too: applied with kubectl, the classes have no config.
 # See docs/memory/cxl/usage.md.
 #
-# cxl-local: a slice of a CXL memory device attached to the node, as RAM
-# of its NUMA node (default) or as a devdax device (device.mode: dax).
+# cxl-local: a slice of a CXL memory device of volatile memory attached to
+# the node, as RAM of its NUMA node (default) or as a devdax device
+# (device.mode: dax).
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass
 metadata:
@@ -17,12 +18,12 @@ metadata:
 spec:
   selectors:
   - cel:
-      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == false'
+      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == false && device.attributes["cxl.nri.io"].persistent == false'
   # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "cxl-local" "driver" "cxl.nri.io") }}
 ---
-# cxl-local-shared: a whole CXL memory device attached to the node that the
-# driver configuration declares shared (sharedDevices), as a devdax device;
-# exclusive unless capacity.requests.shares: 1.
+# cxl-local-shared: a whole CXL memory device of volatile memory attached to
+# the node that the driver configuration declares shared (sharedDevices), as
+# a devdax device; exclusive unless capacity.requests.shares: 1.
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass
 metadata:
@@ -30,8 +31,23 @@ metadata:
 spec:
   selectors:
   - cel:
-      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == true'
+      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].shared == true && device.attributes["cxl.nri.io"].persistent == false'
   # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "cxl-local-shared" "driver" "cxl.nri.io") }}
+---
+# cxl-local-persistent: a CXL memory device of persistent memory attached
+# to the node, shared or not, as the block device of its fsdax namespace
+# (device.mode: block) or as a filesystem on it (device.mode: fs,
+# read-only unless readOnly: false); exclusive unless
+# capacity.requests.shares: 1.
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: cxl-local-persistent
+spec:
+  selectors:
+  - cel:
+      expression: 'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].persistent == true'
+  # {{- include "dra-driver-cxl.classConfig" (dict "root" $ "class" "cxl-local-persistent" "driver" "cxl.nri.io") }}
 ---
 # cxl-pool: a whole exclusive device of volatile memory of a memory pool,
 # as a new NUMA node (default) or as a devdax device (device.mode: dax).
@@ -59,8 +75,9 @@ spec:
 ---
 # cxl-pool-persistent: a device of persistent memory of a memory pool,
 # shared or not, as the block device of its fsdax namespace (device.mode:
-# block) or as a read-only filesystem on it (device.mode: fs). A shared
-# device is exclusive unless capacity.requests.shares: 1.
+# block) or as a filesystem on it (device.mode: fs, read-only unless
+# readOnly: false). A shared device is exclusive unless
+# capacity.requests.shares: 1.
 apiVersion: resource.k8s.io/v1
 kind: DeviceClass
 metadata:

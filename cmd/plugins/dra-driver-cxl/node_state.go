@@ -43,6 +43,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
+	"github.com/containers/nri-plugins/pkg/cxl/memctl"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
@@ -80,10 +81,27 @@ type PreparedDeviceInfo struct {
 	DaxDevice string `json:"daxDevice,omitempty"`
 	DaxMajor  int    `json:"daxMajor,omitempty"`
 	DaxMinor  int    `json:"daxMinor,omitempty"`
-	ReadOnly  bool   `json:"readOnly,omitempty"` // dax slice: the device node is read-only
+	ReadOnly  bool   `json:"readOnly,omitempty"` // dax slice, block: the device node is read-only; fs: the filesystem
 	// Shared is true for a shared local memdev: the dax device is the
-	// whole device, which other claims may have too.
+	// whole device, which other claims may have too; of a persistent
+	// memdev, its attribute shared.
 	Shared bool `json:"shared,omitempty"`
+	// Persistent is true for a persistent local memdev in mode block or
+	// fs: Namespace is the fsdax namespace of its region, BlockDevice its
+	// block device (/dev/pmemK) with its numbers; fs: Access is the
+	// effective access, Path the directory in the containers, NodeMount
+	// the node mount of the filesystem of type FsType, LoopDevice the loop
+	// device of a cached node mount.
+	Persistent  bool   `json:"persistent,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	BlockDevice string `json:"blockDevice,omitempty"`
+	BlockMajor  int    `json:"blockMajor,omitempty"`
+	BlockMinor  int    `json:"blockMinor,omitempty"`
+	Access      string `json:"access,omitempty"`
+	Path        string `json:"path,omitempty"`
+	NodeMount   string `json:"nodeMount,omitempty"`
+	LoopDevice  string `json:"loopDevice,omitempty"`
+	FsType      string `json:"fsType,omitempty"`
 	// ResultSettings are the container settings of the resolved
 	// MemoryConfig of the result and their origins.
 	config.ResultSettings
@@ -134,6 +152,12 @@ type nodeState struct {
 	// bootID is the boot id of the running kernel, recorded with every
 	// prepared claim, "" if it is unknown.
 	bootID string
+	// unrestored are the prepared claims (uid -> why) whose persistent
+	// local memdevs are not what they were prepared with (the start found
+	// them gone, changed, or could not mount their node mounts again):
+	// they have no CDI devices until RemountPersistent mounts them.
+	// Guarded by the mutex of baseState.
+	unrestored map[string]error
 }
 
 // nodeLocks serializes the work on each claim, and the writes of the
@@ -237,6 +261,7 @@ func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, n
 		preparedClaims: claimsInfo,
 		claimsFilePath: claimsInfoFilePath,
 		podClaims:      make(map[string]map[string]bool),
+		unrestored:     map[string]error{},
 		local:          local,
 		lending:        newCompanionLender(device.DriverName),
 		locks:          &nodeLocks{},
@@ -244,8 +269,7 @@ func newNodeState(devInfo device.DevicesInfo, cdiRoot, preparedClaimsFilePath, n
 	}
 
 	// The CDI specs of the claims prepared before a restart.
-	state.forgetGoneSlices()
-	if err := state.persist(); err != nil {
+	if err := state.restore(); err != nil {
 		return nil, err
 	}
 
@@ -353,6 +377,9 @@ func buildDevInfosHeld(driverConfig *DriverConfig, detectedDevices *nricxl.Devic
 		}
 		if !regDev.Enabled {
 			ignoreReason = "region is disabled"
+		}
+		if ignoreReason == "" && regDev.Mode == memctl.RegionPmem {
+			ignoreReason = "region of persistent memory"
 		}
 		cxlNodes[regDev.Node] = true
 		for _, ignoreRegSpec := range driverConfig.IgnoreRegions {
@@ -554,11 +581,13 @@ func logSharedRefusal(memDev *nricxl.MemoryDevice, reason string) {
 // addLocalMemdevs adds the local memdevs that the local allocator can use
 // to devInfos. Per memdev, ignoreDevices takes precedence over pool
 // devices, pool devices over sharedDevices, and sharedDevices over sliced
-// memdevs. A shared memdev is published when it is enabled, has RAM
-// capacity, no regions but the allocator's and no claims of slices. A
-// sliced memdev is published when it is enabled, its RAM capacity is sure
-// to hold a whole memory block, it has no regions but the allocator's and
-// no claims that use it shared.
+// memdevs. A memdev of persistent memory only (no RAM capacity) is a
+// persistent memdev, shared when sharedDevices lists it
+// (addPersistentMemdev). A shared memdev is published when it is enabled,
+// has RAM capacity, no regions but the allocator's and no claims of
+// slices. A sliced memdev is published when it is enabled, its RAM
+// capacity is sure to hold a whole memory block, it has no regions but the
+// allocator's and no claims that use it shared or persistent.
 func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, detectedDevices *nricxl.Devices, poolSerials, held map[uint64]bool, local *localSnapshot) {
 	bs := uint64(0)
 	if local != nil {
@@ -574,6 +603,13 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 		listed, refusal := sharedListingHeld(driverConfig, memDev, poolSerials, held)
 		if refusal != "" {
 			logSharedRefusal(memDev, refusal)
+		}
+		if memDev.PmemSize > 0 && memDev.RamSize == 0 {
+			addPersistentMemdev(devInfos, driverConfig, memDev, listed && refusal == "", poolSerials, held, regions[memDev.Serial], local)
+			continue
+		}
+		if memDev.PmemSize > 0 {
+			klog.V(3).Infof("- memory device %q: persistent capacity of a memdev with RAM capacity is not used", memDev.Name)
 		}
 		if listed && refusal == "" {
 			addSharedMemdev(devInfos, memDev, memdevUsableSize(driverConfig, memDev, local), regions[memDev.Serial], local, bs)
@@ -597,6 +633,8 @@ func addLocalMemdevs(devInfos device.DevicesInfo, driverConfig *DriverConfig, de
 			reason = heldReason
 		case len(regions[memDev.Serial]) > 0 && !used:
 			reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions[memDev.Serial])
+		case use.Persistent && len(use.Claims) > 0:
+			reason = fmt.Sprintf("used as a persistent device by claims %v", use.Claims)
 		case use.Shared && len(use.Claims) > 0:
 			reason = fmt.Sprintf("used shared by claims %v", use.Claims)
 		default:
@@ -650,6 +688,8 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, s
 		reason = "memory device is disabled"
 	case len(regions) > 0 && !used:
 		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
+	case use.Persistent && len(use.Claims) > 0:
+		reason = fmt.Sprintf("used as a persistent device by claims %v", use.Claims)
 	case !use.Shared && len(use.Claims) > 0:
 		reason = fmt.Sprintf("used as slices by claims %v", use.Claims)
 	}
@@ -671,6 +711,63 @@ func addSharedMemdev(devInfos device.DevicesInfo, memDev *nricxl.MemoryDevice, s
 		SysfsPath: memDev.SysfsPath,
 	}
 	klog.V(3).Infof("discovered shared local memory device %s: %s serial 0x%x size %d", name, memDev.Name, memDev.Serial, memDev.RamSize)
+}
+
+// addPersistentMemdev adds a memdev of persistent memory to devInfos as a
+// persistent local device, shared when sharedDevices lists it, unless it
+// is ignored, a pool device or held back, disabled, has regions that the
+// allocator did not create, or claims that use it as slices, as a
+// volatile shared device, or as a persistent device of the other sharing.
+//   - shared: sharedDevices lists the memdev, which is neither ignored nor
+//     a pool device
+//   - regions: the regions on the memdev
+func addPersistentMemdev(devInfos device.DevicesInfo, driverConfig *DriverConfig, memDev *nricxl.MemoryDevice, shared bool, poolSerials, held map[uint64]bool, regions []string, local *localSnapshot) {
+	use, used := local.use(memDev.Serial)
+	reason := memdevIgnoreReason(driverConfig, memDev)
+	switch {
+	case reason != "":
+	case poolSerials[memDev.Serial]:
+		reason = "pool device"
+	case held[memDev.Serial]:
+		reason = heldReason
+	case !memDev.Enabled:
+		reason = "memory device is disabled"
+	case len(regions) > 0 && !used:
+		reason = fmt.Sprintf("it has regions %v that the plugin did not create", regions)
+	case len(use.Claims) == 0:
+	case !use.Persistent && use.Shared:
+		reason = fmt.Sprintf("used shared by claims %v", use.Claims)
+	case !use.Persistent:
+		reason = fmt.Sprintf("used as slices by claims %v", use.Claims)
+	case use.Shared != shared:
+		reason = fmt.Sprintf("used as a %s persistent device by claims %v", sharedWord(use.Shared), use.Claims)
+	}
+	if reason != "" {
+		klog.V(4).Infof("- not publishing memory device %q as a persistent local memory device: %s", memDev.Name, reason)
+		return
+	}
+	name := memdevDeviceName(memDev.Serial)
+	devInfos[name] = &device.DeviceInfo{
+		Name: name,
+		Dev: &device.Memdev{
+			Name:         memDev.Name,
+			Serial:       memDev.Serial,
+			Size:         memDev.PmemSize,
+			NodeAffinity: memDev.NodeAffinity,
+			Shared:       shared,
+			Persistent:   true,
+		},
+		SysfsPath: memDev.SysfsPath,
+	}
+	klog.V(3).Infof("discovered persistent local memory device %s: %s serial 0x%x size %d shared %v", name, memDev.Name, memDev.Serial, memDev.PmemSize, shared)
+}
+
+// sharedWord returns "shared" or "not shared".
+func sharedWord(shared bool) string {
+	if shared {
+		return "shared"
+	}
+	return "not shared"
 }
 
 // memdevDeviceName returns the device name of a local memdev:
@@ -795,15 +892,16 @@ func dramDevice(name string, dev *device.DRAM) resourcev1.Device {
 
 // localMemdevDevice returns the ResourceSlice device of a local memdev.
 func localMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
-	if dev.Shared {
+	if dev.Persistent || dev.Shared {
 		return sharedMemdevDevice(name, dev)
 	}
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-		device.AttrType:   {StringValue: ptr(device.DeviceTypeMemdev)},
-		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
-		device.AttrSerial: {StringValue: ptr(api.FormatSerial(dev.Serial))},
-		device.AttrShared: {BoolValue: ptr(false)},
-		device.AttrSize:   {IntValue: ptr(int64(dev.Size))},
+		device.AttrType:       {StringValue: ptr(device.DeviceTypeMemdev)},
+		device.AttrSource:     {StringValue: ptr(api.SourceLocal)},
+		device.AttrSerial:     {StringValue: ptr(api.FormatSerial(dev.Serial))},
+		device.AttrShared:     {BoolValue: ptr(false)},
+		device.AttrPersistent: {BoolValue: ptr(false)},
+		device.AttrSize:       {IntValue: ptr(int64(dev.Size))},
 		// every slice is a multiple of the memory block size
 		device.AttrMemoryBlockSize: {IntValue: ptr(int64(dev.BlockSize))},
 	}
@@ -825,17 +923,19 @@ func localMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
 	}
 }
 
-// sharedMemdevDevice returns the ResourceSlice device of a shared local
-// memdev: a shares capacity without a request policy, so that a claim that
-// requests no shares has the device exclusively; no memory capacity and
-// nothing node allocatable, as its memory is never onlined.
+// sharedMemdevDevice returns the ResourceSlice device of a shared or a
+// persistent local memdev: a shares capacity without a request policy, so
+// that a claim that requests no shares has the device exclusively; no
+// memory capacity and nothing node allocatable, as its memory is never
+// onlined.
 func sharedMemdevDevice(name string, dev *device.Memdev) resourcev1.Device {
 	attrs := map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
-		device.AttrType:   {StringValue: ptr(device.DeviceTypeMemdev)},
-		device.AttrSource: {StringValue: ptr(api.SourceLocal)},
-		device.AttrSerial: {StringValue: ptr(api.FormatSerial(dev.Serial))},
-		device.AttrShared: {BoolValue: ptr(true)},
-		device.AttrSize:   {IntValue: ptr(int64(dev.Size))},
+		device.AttrType:       {StringValue: ptr(device.DeviceTypeMemdev)},
+		device.AttrSource:     {StringValue: ptr(api.SourceLocal)},
+		device.AttrSerial:     {StringValue: ptr(api.FormatSerial(dev.Serial))},
+		device.AttrShared:     {BoolValue: ptr(dev.Shared)},
+		device.AttrPersistent: {BoolValue: ptr(dev.Persistent)},
+		device.AttrSize:       {IntValue: ptr(int64(dev.Size))},
 	}
 	if dev.NodeAffinity >= 0 {
 		attrs[device.AttrNodeAffinity] = resourcev1.DeviceAttribute{IntValue: ptr(int64(dev.NodeAffinity))}
@@ -921,7 +1021,13 @@ func (s *nodeState) unprepare(ctx context.Context, claimUID string) error {
 		if err := s.lending.revoke(ctx, info.Lend, info.ClaimName); err != nil {
 			return fmt.Errorf("claim %s: %w", info.ClaimName, err)
 		}
+		// The bind holds the superblock of the device: the region is
+		// released only after it is gone.
+		if err := s.unbindLeases(info.Lend, claimUID); err != nil {
+			return fmt.Errorf("claim %s: %w", info.ClaimName, err)
+		}
 	}
+	s.unbindStale(ctx, claimUID)
 	if info.usesLocalMemdevs() {
 		if err := s.local.Release(ctx, claimUID); err != nil {
 			return fmt.Errorf("claim %s: %w", info.ClaimName, err)
@@ -969,6 +1075,7 @@ func (s *nodeState) forget(claimUID string) {
 	defer s.Unlock()
 	delete(s.Prepared, claimUID)
 	delete(s.preparedClaims, claimUID)
+	delete(s.unrestored, claimUID)
 
 	// Clean up pod to claim mapping.
 	for podUID, claims := range s.podClaims {
@@ -997,8 +1104,9 @@ func (s *nodeState) prepare(ctx context.Context, claim *resourcev1.ResourceClaim
 		klog.V(3).Infof("Claim %s was already prepared, nothing to do", claimUID)
 		if info != nil && info.Lend != nil {
 			s.lending.reprepared(info.Lend, claim, s.lentDevices(info))
+			return nil
 		}
-		return nil
+		return s.remountUnrestored(claim)
 	}
 
 	if claim.Status.Allocation == nil {
@@ -1026,12 +1134,18 @@ func (s *nodeState) prepare(ctx context.Context, claim *resourcev1.ResourceClaim
 
 	allocatedDevices, claimInfo, err := s.prepareAllocatedDevices(ctx, claim, allocatable, resolved)
 	if err == nil && lend != nil {
-		err = s.lendClaim(ctx, lend, claimInfo)
+		// the bind is the lend of an fs device: in place before Ready
+		if err = s.bindLeases(claim, lend, claimInfo); err == nil {
+			err = s.lendClaim(ctx, lend, claimInfo)
+		} else {
+			s.lending.failed(lend.Lease, err)
+		}
 		// The memory of a companion claim belongs to the borrower, and
 		// the companion pod references no claim: no CDI devices.
 		dropCDIDevices(&allocatedDevices)
 	}
 	if err != nil {
+		s.unbindFailed(claimUID, lend, claimInfo)
 		s.releaseLocal(ctx, claim)
 		return err
 	}
@@ -1075,6 +1189,7 @@ func (s *nodeState) rollback(ctx context.Context, claim *resourcev1.ResourceClai
 		}
 		s.lending.failed(info.Lend.Lease, cause)
 	}
+	s.unbindFailed(string(claim.UID), info.Lend, info)
 	s.releaseLocal(rctx, claim)
 	s.forget(string(claim.UID))
 	if err := s.persist(); err != nil {
@@ -1116,6 +1231,18 @@ func (s *nodeState) persist() error {
 		return fmt.Errorf("failed to write prepared claims info to file: %v", err)
 	}
 	return nil
+}
+
+// restore makes the prepared claims of a start what the local allocator
+// has: no stale dax device nodes (forgetGoneSlices), no CDI devices of
+// claims whose persistent memdevs are not restored (findUnrestored), the
+// lease binds of companion claims bound again; and writes the CDI spec and
+// the files of the prepared claims.
+func (s *nodeState) restore() error {
+	s.forgetGoneSlices()
+	s.findUnrestored()
+	s.restoreLeaseBinds()
+	return s.persist()
 }
 
 // forgetGoneSlices drops the dax devices of the slices of prepared claims
@@ -1205,9 +1332,12 @@ func (s *nodeState) lentDevices(info *PreparedClaimInfo) []lentDevice {
 			Shared:   d.Shared,
 			Node:     -1,
 		}
-		if d.Mode == api.ModeDax {
+		switch {
+		case d.Persistent:
+			ld.BlockDevice, ld.Access, ld.NodeMount, ld.FsType = d.BlockDevice, d.Access, d.NodeMount, d.FsType
+		case d.Mode == api.ModeDax:
 			ld.DaxDevice = d.DaxDevice
-		} else if len(d.NUMANodes) > 0 {
+		case len(d.NUMANodes) > 0:
 			ld.Node = d.NUMANodes[0]
 		}
 		devs = append(devs, ld)
@@ -1247,6 +1377,8 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 	}
 
 	hasLease := false
+	// the env keys of the memdevs, as buildClaimsCDISpec counts them
+	keys := envKeys{}
 	for n, allocatedDevice := range claim.Status.Allocation.Devices.Results {
 		// ATM the only pool is cluster node's pool: all devices on current node.
 		if allocatedDevice.Driver != device.DriverName || allocatedDevice.Pool != s.NodeName {
@@ -1278,7 +1410,11 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 		}
 		klog.V(3).Infof("claim %s/%s request %s result %d: MemoryConfig %s", claim.Namespace, claim.Name, allocatedDevice.Request, n, res.Config.Compact())
 
-		devInfo, err := s.preparedDeviceInfo(ctx, claim, &allocatedDevice, allocatableDevice, res.Config.DeviceSection())
+		key := ""
+		if m, ok := allocatableDevice.Dev.(*device.Memdev); ok {
+			key = keys.next(api.Key(m.Serial, 1))
+		}
+		devInfo, err := s.preparedDeviceInfo(ctx, claim, &allocatedDevice, n, key, allocatableDevice, res.Config.DeviceSection())
 		if err != nil {
 			return allocatedDevices, nil, err
 		}
@@ -1309,9 +1445,10 @@ func (s *nodeState) prepareAllocatedDevices(ctx context.Context, claim *resource
 	return allocatedDevices, claimInfo, nil
 }
 
-// preparedDeviceInfo prepares the device of an allocation result as its
-// device settings cfg say and returns its info.
-func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, allocatable *device.DeviceInfo, cfg config.Device) (PreparedDeviceInfo, error) {
+// preparedDeviceInfo prepares the device of the allocation result n, whose
+// memory has the env key key, as its device settings cfg say and returns
+// its info.
+func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.ResourceClaim, r *resourcev1.DeviceRequestAllocationResult, n int, key string, allocatable *device.DeviceInfo, cfg config.Device) (PreparedDeviceInfo, error) {
 	devInfo := PreparedDeviceInfo{
 		RequestName: r.Request,
 		DeviceName:  r.Device,
@@ -1346,6 +1483,10 @@ func (s *nodeState) preparedDeviceInfo(ctx context.Context, claim *resourcev1.Re
 		}
 		devInfo.DeviceType = device.DeviceTypeLease
 	case *device.Memdev:
+		if dev.Persistent {
+			err := s.prepareLocalPersistent(ctx, claim, r, n, key, dev, cfg, &devInfo)
+			return devInfo, err
+		}
 		// the slice is what the claim consumes
 		err := s.prepareLocalMemdev(ctx, claim, r, dev, cfg, &devInfo)
 		return devInfo, err
@@ -1378,7 +1519,7 @@ func (s *nodeState) prepareLocalMemdev(ctx context.Context, claim *resourcev1.Re
 		return fmt.Errorf("claim %v/%v: request %s: %w", claim.Namespace, claim.Name, r.Request, err)
 	}
 	if dev.Shared {
-		return s.prepareSharedMemdev(ctx, claim, r, dev, cfg.ReadOnly, shareUse(shares, device.SharesUnlimited), devInfo)
+		return s.prepareSharedMemdev(ctx, claim, r, dev, cfg.IsReadOnly(), shareUse(shares, device.SharesUnlimited), devInfo)
 	}
 	if _, ok := r.ConsumedCapacity[device.CapacityShares]; ok {
 		return fmt.Errorf("claim %v/%v: request %s: device %s: allocated as a shared device, which it is not any more", claim.Namespace, claim.Name, r.Request, api.FormatSerial(dev.Serial))
@@ -1390,7 +1531,7 @@ func (s *nodeState) prepareLocalMemdev(ctx context.Context, claim *resourcev1.Re
 	if consumed, ok := r.ConsumedCapacity[device.CapacityMemory]; ok && consumed.Value() > 0 {
 		size = uint64(consumed.Value())
 	}
-	slice, node, err := s.local.Acquire(ctx, string(claim.UID), r.Request, dev.Serial, mode, size, cfg.ReadOnly)
+	slice, node, err := s.local.Acquire(ctx, string(claim.UID), r.Request, dev.Serial, mode, size, cfg.IsReadOnly())
 	if err != nil {
 		return fmt.Errorf("claim %v/%v: device %s: %w", claim.Namespace, claim.Name, r.Device, err)
 	}
@@ -1546,7 +1687,7 @@ func (s *nodeState) buildClaimsCDISpec() *cdiSpecs.Spec {
 	}
 	for _, claimUID := range slices.Sorted(maps.Keys(s.Prepared)) {
 		info := s.preparedClaims[claimUID]
-		if info == nil || info.Lend != nil {
+		if info == nil || info.Lend != nil || s.unrestored[claimUID] != nil {
 			continue
 		}
 		keys := envKeys{}
@@ -1557,8 +1698,13 @@ func (s *nodeState) buildClaimsCDISpec() *cdiSpecs.Spec {
 			if m, ok := d.memory(keys); ok {
 				maps.Copy(env, api.Env(m))
 			}
-			if d.Mode == api.ModeDax && d.DaxDevice != "" {
+			switch {
+			case d.Mode == api.ModeDax && d.DaxDevice != "":
 				edits.DeviceNodes = []*cdiSpecs.DeviceNode{daxDeviceNode(d.DaxDevice, d.DaxMajor, d.DaxMinor, d.ReadOnly)}
+			case d.Persistent && d.Mode == api.ModeBlock:
+				edits.DeviceNodes = []*cdiSpecs.DeviceNode{blockDeviceNode(d.BlockDevice, d.BlockMajor, d.BlockMinor, d.ReadOnly)}
+			case d.Persistent && d.Mode == api.ModeFs:
+				edits.Mounts = []*cdiSpecs.Mount{fsCDIMount(d.NodeMount, d.Path, d.ReadOnly)}
 			}
 			edits.Env = api.EnvList(env)
 			spec.Devices = append(spec.Devices, cdiSpecs.Device{Name: claimCDIDeviceName(claimUID, d.Result), ContainerEdits: edits})
@@ -1585,6 +1731,12 @@ func (d *PreparedDeviceInfo) memory(keys envKeys) (api.Memory, bool) {
 		}
 		m.Key, m.Serial, m.Size = keys.next(api.Key(serial, 1)), d.Serial, d.TotalBytes
 		m.Dax, m.ReadOnly, m.Shared = d.DaxDevice, d.ReadOnly, d.Shared
+		switch {
+		case d.Persistent && d.Mode == api.ModeBlock:
+			m.Path = d.BlockDevice
+		case d.Persistent && d.Mode == api.ModeFs:
+			m.Path, m.Access, m.FsType = d.Path, d.Access, d.FsType
+		}
 	case device.DeviceTypeRegion:
 		m.Key = keys.next(api.RegionKey(d.Region))
 	case device.DeviceTypeDRAM:

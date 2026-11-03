@@ -297,6 +297,7 @@ func TestGetResourcesLocalMemdev(t *testing.T) {
 			"source":          {StringValue: ptr("local")},
 			"serial":          {StringValue: ptr("0xc100e2e1")},
 			"shared":          {BoolValue: ptr(false)},
+			"persistent":      {BoolValue: ptr(false)},
 			"size":            {IntValue: ptr(int64(localRegionSize))},
 			"nodeAffinity":    {IntValue: ptr(int64(0))},
 			"memoryBlockSize": {IntValue: ptr(int64(134217728))},

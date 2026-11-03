@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
+	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/api"
 	"github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/pkg/client"
@@ -48,9 +49,20 @@ type want struct {
 	device string // server device name, "" if not in the pool
 	node   string
 	host   *api.Host // nil: the node is not a pool host
-	// exclusive: a shared device allocated with all of its shares
-	// capacity, attached with AttachRequest.Exclusive
+	// allShares: a shared device allocated with all of its shares
+	// capacity
+	allShares bool
+	// writer: a share of a shared device that the result writes with a
+	// single-host filesystem (config.ExclusiveHost)
+	writer bool
+	// fsType: device.fsType of the MemoryConfig of the result
+	fsType string
+	// exclusive: allShares or writer, attached with
+	// AttachRequest.Exclusive
 	exclusive bool
+	// keepExclusive: the want is attached and its MemoryConfig cannot be
+	// resolved: it is exclusive if its attachment is
+	keepExclusive bool
 	// settings: where to attach, from the MemoryConfig of the result
 	settings PoolSettings
 	// cfgErr: the MemoryConfig of the result is invalid, no attach
@@ -68,6 +80,36 @@ func (c *Controller) exclusiveResult(r *resourceapi.DeviceRequestAllocationResul
 	}
 	q, ok := r.ConsumedCapacity[device.CapacityShares]
 	return !ok || q.Value() >= device.SharesUnlimited
+}
+
+// firstShared returns the first want that is not exclusive, nil if
+// every want is.
+func firstShared(ws []*want) *want {
+	for _, w := range ws {
+		if !w.exclusive {
+			return w
+		}
+	}
+	return nil
+}
+
+// coherent reports whether the hardware keeps the memory of a pool device
+// coherent between the hosts that share it: the devices of fake-cxl-pool
+// are qemu memory backends that every host maps from the same host memory.
+func (c *Controller) coherent(string) bool {
+	return true
+}
+
+// writerResult reports whether an allocation result of a shared device
+// with the resolved MemoryConfig makes its attachment exclusive to the
+// host: a read-write filesystem that is not a cluster filesystem on
+// coherent memory.
+func (c *Controller) writerResult(r *resourceapi.DeviceRequestAllocationResult, res *config.Resolved) bool {
+	d, ok := c.devices[r.Device]
+	if !ok || !d.Shared || res == nil {
+		return false
+	}
+	return config.ExclusiveHost(res.Config, c.coherent(r.Device))
 }
 
 // anyExclusive reports whether one of the wants of an attachment is
@@ -96,6 +138,9 @@ func (w *want) String() string {
 type failure struct {
 	reason  string
 	message string
+	// exclusiveOnly: making an existing attachment exclusive failed; the
+	// wants that are not exclusive keep the attachment
+	exclusiveOnly bool
 }
 
 // Owner returns the attachment owner of a claim.
@@ -146,19 +191,27 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			if r.Driver != c.cfg.DriverName || r.Pool != c.cfg.PoolName {
 				continue
 			}
-			w := &want{claim: claim, result: r, node: node, exclusive: c.exclusiveResult(&r)}
+			w := &want{claim: claim, result: r, node: node, allShares: c.exclusiveResult(&r)}
 			if d, ok := c.devices[r.Device]; ok {
 				w.device = d.Name
 			}
 			if h, ok := hm.nodeHost[node]; ok {
 				w.host = &h
 			}
-			w.settings, w.cfgErr = c.poolSettings(claim, &r)
+			var res *config.Resolved
+			w.settings, res, w.cfgErr = c.poolSettings(claim, &r)
+			if res != nil {
+				w.fsType = res.Config.DeviceSection().FsType
+			}
+			w.writer = c.writerResult(&r, res)
+			w.exclusive = w.allShares || w.writer
 			if w.cfgErr != nil {
 				cfgSeen[c.logConfigError(w)] = true
 				if hasCondition(claim, r, c.condAttached()) != nil {
-					// attached already: a device in use is never detached
+					// attached already: a device in use is never detached,
+					// and an unknown writer keeps its exclusive flag
 					w.cfgErr = nil
+					w.keepExclusive = res == nil
 				}
 			}
 			wants = append(wants, w)
@@ -190,6 +243,12 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			ownerless[k] = a
 		}
 	}
+	for _, w := range wants {
+		if a, ok := actual[w.key()]; ok && w.keepExclusive && a.Exclusive && !w.exclusive {
+			c.debugf("%s: configuration not resolved: attachment %s stays exclusive", w, a.ID)
+			w.exclusive = true
+		}
+	}
 
 	// 3. attach, or set the exclusive flag of an attachment to that of
 	// its claims (an attachment serves all claims of the node), or take
@@ -210,6 +269,9 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			continue
 		}
 		w := desired[k][0]
+		if exclusive {
+			c.logWriter(k, desired[k])
+		}
 		_, exists := actual[k]
 		if o, ok := ownerless[k]; ok {
 			c.logf("attach %s to %s for %s: taking over attachment %s without owner (%s, adopted %v, qemu device %s)",
@@ -217,10 +279,25 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 			exists = true
 		}
 		a, f := c.attach(ctx, w, k, exclusive, exists, actual, desired)
-		switch {
-		case f != nil:
+		if f != nil && exclusive && f.reason == ReasonConflict {
+			if _, ok := actual[k]; ok {
+				// an existing attachment stays for the other wants
+				f.exclusiveOnly = true
+			} else if r := firstShared(desired[k]); r != nil {
+				// a new attachment: the other wants may have one that
+				// is not exclusive
+				c.logf("attach %s to %s for %s: not exclusive for the claims that do not need it", k.device, k.host, r)
+				// no answer (attaching continues, waiting for a
+				// detach): the other wants wait, they are not refused
+				if ra, rf := c.attach(ctx, r, k, false, exists, actual, desired); rf == nil {
+					a, f.exclusiveOnly = ra, true
+				}
+			}
+		}
+		if f != nil {
 			failures[k] = *f
-		case a != nil:
+		}
+		if a != nil {
 			actual[k] = *a
 		}
 	}
@@ -252,6 +329,27 @@ func (c *Controller) reconcile(ctx context.Context, hm hostMap) error {
 		}
 	}
 	return nil
+}
+
+// logWriter logs the wants of an exclusive attachment that are exclusive
+// because they write a single-host filesystem, unless one of the wants
+// has all shares of the device.
+func (c *Controller) logWriter(k attKey, ws []*want) {
+	for _, w := range ws {
+		if w.allShares {
+			return
+		}
+	}
+	for _, w := range ws {
+		if !w.writer {
+			continue
+		}
+		fsType := w.fsType
+		if fsType == "" {
+			fsType = "filesystem"
+		}
+		c.logf("attach %s to %s for %s: exclusive for a read-write %s claim", k.device, k.host, w, fsType)
+	}
 }
 
 // logConfigError logs the configuration error of a want once and returns
@@ -353,13 +451,13 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 	var f *failure
 	switch {
 	case w.cfgErr != nil:
-		f = &failure{ReasonInvalidConfig, w.cfgErr.Error()}
+		f = &failure{reason: ReasonInvalidConfig, message: w.cfgErr.Error()}
 	case w.device == "":
-		f = &failure{ReasonAttachError, fmt.Sprintf("device %s is not in pool %s", w.result.Device, c.cfg.PoolName)}
+		f = &failure{reason: ReasonAttachError, message: fmt.Sprintf("device %s is not in pool %s", w.result.Device, c.cfg.PoolName)}
 	case w.host == nil:
-		f = &failure{ReasonNoHost, fmt.Sprintf("node %q is not a host of the pool", w.node)}
+		f = &failure{reason: ReasonNoHost, message: fmt.Sprintf("node %q is not a host of the pool", w.node)}
 	default:
-		if x, ok := failures[w.key()]; ok {
+		if x, ok := failures[w.key()]; ok && (w.exclusive || !x.exclusiveOnly) {
 			f = &x
 		}
 	}
@@ -392,7 +490,9 @@ func (c *Controller) writeStatus(ctx context.Context, w *want, actual map[attKey
 		HostUUID:     w.host.UUID,
 		Attachment:   a.ID,
 		QemuDeviceID: a.QemuDeviceID,
-		Exclusive:    w.exclusive,
+		Exclusive:    w.allShares,
+		SingleHost:   w.exclusive && a.Exclusive,
+		Coherent:     c.coherent(w.result.Device),
 	}
 	cond := metav1.Condition{
 		Type:    c.condAttached(),

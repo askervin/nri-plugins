@@ -116,12 +116,26 @@ type Device struct {
 	// device type.
 	Mode string `json:"mode,omitempty"`
 	// ReadOnly makes the dax or block device node of the container
-	// read-only; mode fs needs it.
-	ReadOnly bool `json:"readOnly,omitempty"`
-	// Access is "direct" or "cached" of mode fs; "" is direct.
+	// read-only, or the filesystem of mode fs read-only (true) or
+	// read-write (false). Absent is read-only of mode fs and false of the
+	// other modes: read it with IsReadOnly.
+	ReadOnly *bool `json:"readOnly,omitempty"`
+	// Access is "direct" or "cached" of mode fs; "" is direct when the
+	// filesystem has DAX, cached otherwise.
 	Access string `json:"access,omitempty"`
 	// Path is the directory of the filesystem of mode fs in the container.
 	Path string `json:"path,omitempty"`
+	// FsType is the filesystem type of mode fs; "" is the detected type.
+	FsType string `json:"fsType,omitempty"`
+}
+
+// IsReadOnly returns whether the device is read-only: readOnly when it is
+// set, else true for mode fs and false for the other modes.
+func (d Device) IsReadOnly() bool {
+	if d.ReadOnly == nil {
+		return d.Mode == ModeFs
+	}
+	return *d.ReadOnly
 }
 
 // Container is how a container that uses a request is managed.

@@ -64,11 +64,21 @@ func TestParseArgs(t *testing.T) {
 			api.Request{Op: "request", Serial: "0xc1ae0001", ReadOnly: true, Mode: "fs", Access: "direct", Name: "m.1"}, nil, ""},
 		{[]string{"request", "--source", "pool", "--mode", "fs", "--read-only", "--shared", "--size", "64Mi"},
 			api.Request{Op: "request", Source: "pool", Mode: "fs", ReadOnly: true, Shared: true, Size: "64Mi"}, nil, ""},
+		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs"},
+			api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, Mode: "fs"}, nil, ""},
+		{[]string{"request", "--serial", "0xc1af0001", "--shared", "--mode", "fs", "--read-write", "--fs-type", "ext4", "--exec", "sh", "/tmp/w.sh"},
+			api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, Mode: "fs", ReadWrite: true, FsType: "ext4"}, []string{"sh", "/tmp/w.sh"}, ""},
+		{[]string{"request", "--source=local", "--serial=0xc100f5e1", "--mode=fs", "--read-write=true", "--fs-type=xfs", "--access=cached", "--name=data"},
+			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "fs", ReadWrite: true, FsType: "xfs", Access: "cached", Name: "data"}, nil, ""},
+		{[]string{"request", "--serial", "0xc1af0001", "--mode", "fs", "--read-write=false", "--fs-type", "btrfs"},
+			api.Request{Op: "request", Serial: "0xc1af0001", Mode: "fs", FsType: "btrfs"}, nil, ""},
 		// mode block
 		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "block", "--exec", "sh", "/tmp/w.sh"},
 			api.Request{Op: "request", Serial: "0xc1ae0001", Mode: "block"}, []string{"sh", "/tmp/w.sh"}, ""},
 		{[]string{"request", "--serial=0xc1ae0001", "--shared", "--read-only", "--mode=block", "--source", "pool"},
 			api.Request{Op: "request", Serial: "0xc1ae0001", Shared: true, ReadOnly: true, Mode: "block", Source: "pool"}, nil, ""},
+		{[]string{"request", "--source", "local", "--serial", "0xc100f5e1", "--mode", "block"},
+			api.Request{Op: "request", Source: "local", Serial: "0xc100f5e1", Mode: "block"}, nil, ""},
 		// validation errors
 		{[]string{"request", "--size", "1Gi", "--source", "any"}, api.Request{}, nil, `invalid source "any" (local or pool)`},
 		{[]string{"request", "--size", "1Gi", "--mode", "devdax"}, api.Request{}, nil, `invalid mode "devdax" (numa, dax, fs or block)`},
@@ -100,6 +110,10 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"request", "--size", "1Gi", "--name"}, api.Request{}, nil, "--name needs a value"},
 		{[]string{"env", "--lease", "1a2b3c4d", "--access", "direct"}, api.Request{}, nil, "--access is not an option of env"},
 		{[]string{"release", "--all", "--name", "x"}, api.Request{}, nil, "--name is not an option of release"},
+		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--fs-type"}, api.Request{}, nil, "--fs-type needs a value"},
+		{[]string{"request", "--mode", "fs", "--size", "1Gi", "--read-write=rw"}, api.Request{}, nil, `--read-write: invalid value "rw"`},
+		{[]string{"env", "--lease", "1a2b3c4d", "--read-write"}, api.Request{}, nil, "--read-write is not an option of env"},
+		{[]string{"fd", "--lease", "1a2b3c4d", "--fs-type", "ext4", "--exec", "cat"}, api.Request{}, nil, "--fs-type is not an option of fd"},
 	} {
 		cmd, err := parseArgs(c.args)
 		if c.err != "" {
@@ -119,18 +133,28 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestOptions(t *testing.T) {
-	want := []string{"--source", "--mode", "--shared", "--read-only", "--access", "--name", "--size", "--serial", "--wait", "--request-id", "--exec"}
+	want := []string{"--source", "--mode", "--shared", "--read-only", "--read-write", "--access", "--fs-type", "--name", "--size", "--serial", "--wait",
+		"--request-id", "--exec"}
 	if got := options[api.OpRequest]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("options of request %v, want %v", got, want)
 	}
 	cmd := &command{}
-	for _, name := range []string{"--access", "--name"} {
+	for _, name := range []string{"--access", "--name", "--fs-type"} {
 		if cmd.values()[name] == nil || cmd.isFlag(name) {
 			t.Errorf("%s is not an option with a value", name)
 		}
 	}
-	for _, line := range []string{"[--mode numa|dax|fs|block]", "[--access direct|cached] [--name NAME]", "fs: the mount point /run/cxl/fs/NAME; default the lease id",
-		"--read-only a dax or block fd that allows reads only; fs needs it", "block (an fd of the block device of a persistent pool device);",
+	for _, name := range []string{"--shared", "--read-only", "--read-write", "--all"} {
+		if !cmd.isFlag(name) || cmd.values()[name] != nil {
+			t.Errorf("%s is not a flag", name)
+		}
+	}
+	for _, line := range []string{"[--mode numa|dax|fs|block]", "[--read-write] [--access direct|cached] [--fs-type TYPE] [--name NAME]",
+		"fs: the mount point /run/cxl/fs/NAME; default the lease id",
+		"--read-only a dax or block fd that allows reads only; fs is read-only\n              without --read-write",
+		"--read-write fs: mount the filesystem read-write (default read-only)",
+		"--fs-type   fs: the expected filesystem type (default: detected)",
+		"block (an fd of the block device of a persistent device);",
 		"--exec      run CMD with the lease's environment and a dax or block lease's fd 3"} {
 		if !strings.Contains(usage, line) {
 			t.Errorf("usage lacks %q", line)
@@ -147,7 +171,6 @@ func TestRunRefusesFs(t *testing.T) {
 	}{
 		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "blk"}, `invalid mode "blk" (numa, dax, fs or block)`},
 		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--mode", "block"}, "mode block with shared needs readOnly"},
-		{[]string{"request", "--source", "local", "--mode", "block", "--size", "64Mi"}, "mode block needs source pool"},
 		{[]string{"request", "--mode", "block", "--access", "direct", "--size", "64Mi"}, "access needs mode fs"},
 		{[]string{"request", "--mode", "fs", "--read-only", "--access", "slow", "--shared", "--size", "64Mi"}, `invalid access "slow" (direct or cached)`},
 		{[]string{"request", "--access", "cached", "--size", "64Mi"}, "access needs mode fs"},
@@ -155,9 +178,11 @@ func TestRunRefusesFs(t *testing.T) {
 		{[]string{"request", "--mode", "fs", "--read-only", "--name", "a/b", "--size", "64Mi"},
 			`invalid name "a/b" (letters, digits, ".", "_" and "-", not "." or "..")`},
 		{[]string{"request", "--mode", "fs", "--read-only", "--name", "..", "--size", "64Mi"}, `invalid name ".."`},
-		{[]string{"request", "--serial", "0xc1ae0001", "--shared", "--mode", "fs"}, "mode fs needs readOnly"},
+		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "dax", "--fs-type", "ext4"}, "fsType needs mode fs"},
+		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "fs", "--fs-type", "Ext4"}, `invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")`},
+		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "block", "--read-write"}, "readWrite needs mode fs"},
+		{[]string{"request", "--serial", "0xc1ae0001", "--mode", "fs", "--read-only", "--read-write"}, "readOnly and readWrite exclude each other"},
 		{[]string{"request", "--size", "64Mi", "--read-only", "--mode", "numa"}, "readOnly needs mode dax, fs or block"},
-		{[]string{"request", "--source", "local", "--mode", "fs", "--read-only", "--shared", "--size", "64Mi"}, "mode fs needs source pool"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(c.args, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "cxl-request: "+c.err) {

@@ -46,25 +46,26 @@ func (s PoolSettings) String() string {
 }
 
 // poolSettings returns the settings of the controller for an allocation
-// result of the claim: pool.opaque.<config key> of the MemoryConfig of the
-// result, zero when absent. It returns an error if a MemoryConfig entry of
-// the driver in the claim or the object is invalid.
-func (c *Controller) poolSettings(claim *resourceapi.ResourceClaim, r *resourceapi.DeviceRequestAllocationResult) (PoolSettings, error) {
+// result of the claim, pool.opaque.<config key> of the MemoryConfig of the
+// result (zero when absent), and the resolved MemoryConfig of the result
+// (nil when it cannot be resolved). It returns an error if a MemoryConfig
+// entry of the driver in the claim or the object is invalid.
+func (c *Controller) poolSettings(claim *resourceapi.ResourceClaim, r *resourceapi.DeviceRequestAllocationResult) (PoolSettings, *config.Resolved, error) {
 	var s PoolSettings
 	// every entry of the driver, also of other requests: the node driver
 	// refuses the whole claim for any of them
 	if err := config.CheckEntries(claim, c.cfg.DriverName); err != nil {
-		return s, err
+		return s, nil, err
 	}
 	res, err := config.Resolve(claim, c.cfg.DriverName, r.Request)
 	if err != nil {
-		return s, err
+		return s, nil, err
 	}
 	if _, err := config.PoolOpaque(res, c.cfg.ConfigKey, &s); err != nil {
-		return PoolSettings{}, err
+		return PoolSettings{}, res, err
 	}
 	if s.NumaNode != nil && *s.NumaNode < 0 {
-		return PoolSettings{}, fmt.Errorf("MemoryConfig: pool.opaque.%s.numaNode: invalid NUMA node %d", c.cfg.ConfigKey, *s.NumaNode)
+		return PoolSettings{}, res, fmt.Errorf("MemoryConfig: pool.opaque.%s.numaNode: invalid NUMA node %d", c.cfg.ConfigKey, *s.NumaNode)
 	}
-	return s, nil
+	return s, res, nil
 }

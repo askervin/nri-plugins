@@ -77,7 +77,10 @@ var errNoRoom = errors.New("no room for the slice")
 // dax device of the region of the memdev.
 type localSlice struct {
 	Request string `json:"request"`
-	Region  string `json:"region"`
+	// Result is the index of the allocation result in the claim (of a
+	// persistent device).
+	Result int    `json:"result,omitempty"`
+	Region string `json:"region"`
 	// Mode is api.ModeNUMA (the memory of the slice is system RAM of the
 	// NUMA node of the region) or api.ModeDax (a devdax device).
 	Mode string `json:"mode"`
@@ -89,6 +92,16 @@ type localSlice struct {
 	Major     int    `json:"major,omitempty"`
 	Minor     int    `json:"minor,omitempty"`
 	ReadOnly  bool   `json:"readOnly,omitempty"`
+	// The use of a persistent device by the allocation result (Mode
+	// api.ModeBlock or api.ModeFs, Size the size of the block device,
+	// ReadOnly effective): fs: the effective access, the type and the node
+	// mount of the filesystem, the loop device of a cached node mount and
+	// the directory in the containers.
+	Access     string `json:"access,omitempty"`
+	FsType     string `json:"fsType,omitempty"`
+	NodeMount  string `json:"nodeMount,omitempty"`
+	LoopDevice string `json:"loopDevice,omitempty"`
+	Path       string `json:"path,omitempty"`
 }
 
 // localDevice is a local memdev that the allocator uses.
@@ -111,8 +124,22 @@ type localDevice struct {
 	// claims whose Prepare did not finish (keepRegion), until setUpRegion.
 	Dax string `json:"dax,omitempty"`
 	// Shared is true for a shared memdev: every claim has the whole dax
-	// device Dax.
+	// device Dax; of a persistent device, sharedDevices listed it when its
+	// region was created.
 	Shared bool `json:"shared,omitempty"`
+	// Persistent is true for a memdev of persistent memory: its region is
+	// a pmem region that all claims use, never sliced, zeroed or onlined.
+	Persistent bool `json:"persistent,omitempty"`
+	// NdRegion is the nvdimm region of the pmem region, "" while the
+	// region is not set up (the role of Dax of other devices).
+	NdRegion string `json:"ndRegion,omitempty"`
+	// Namespace is the fsdax namespace (map mem) of NdRegion, BlockDevice
+	// its block device (/dev/pmemK) and BlockMajor, BlockMinor its
+	// numbers; "" while there is none.
+	Namespace   string `json:"namespace,omitempty"`
+	BlockDevice string `json:"blockDevice,omitempty"`
+	BlockMajor  int    `json:"blockMajor,omitempty"`
+	BlockMinor  int    `json:"blockMinor,omitempty"`
 	// Claims are the slices of the claims that use the memdev, by claim
 	// UID. A claim without slices holds the region: the claim whose
 	// Acquire creates the region (recorded before it, so that a Prepare
@@ -181,13 +208,21 @@ type localAllocator struct {
 	blockSize uint64
 	// probes are the results of the address line probes, by serial.
 	probes map[uint64]localProbe
+
+	// pn is the shared persistent code of the node mounts of persistent
+	// memdevs, nil until SetPersistent. badBlock has the persistent
+	// devices whose block device the start found changed, by serial.
+	pn       *persistentNode
+	badBlock map[uint64]error
 }
 
 // localUse is how the allocator uses a memdev.
 type localUse struct {
 	// Shared is true when the memdev is used as a shared device, false
-	// when it is sliced.
+	// when it is sliced; of a persistent device, whether it is shared.
 	Shared bool
+	// Persistent is true when the memdev is used as a persistent device.
+	Persistent bool
 	// Claims are the UIDs of the claims that use the memdev.
 	Claims []string
 }
@@ -326,7 +361,7 @@ func (a *localAllocator) Snapshot() *localSnapshot {
 func (a *localAllocator) updateSnapshot() {
 	m := make(map[uint64]localUse, len(a.devices))
 	for serial, d := range a.devices {
-		m[serial] = localUse{Shared: d.Shared, Claims: d.claimUIDs()}
+		m[serial] = localUse{Shared: d.Shared, Persistent: d.Persistent, Claims: d.claimUIDs()}
 	}
 	a.snapMu.Lock()
 	a.usesSnap = m
@@ -479,6 +514,11 @@ func (a *localAllocator) sharedDevice(ctx context.Context, serial uint64, claimU
 	if d != nil {
 		d.Memdev = memdev
 	}
+	if d != nil && d.Persistent {
+		if d, err = a.notPersistent(ctx, d, "a shared device"); err != nil {
+			return nil, err
+		}
+	}
 	if d != nil && !d.Shared {
 		if uids := d.claimUIDs(); len(uids) > 0 {
 			return nil, fmt.Errorf("memdev %s (serial 0x%x): used as slices by claims %v; a shared device cannot be sliced", memdev, serial, uids)
@@ -616,6 +656,12 @@ func (a *localAllocator) device(ctx context.Context, serial, bs uint64, claimUID
 		return nil, err
 	}
 	d := a.devices[serial]
+	if d != nil && d.Persistent {
+		d.Memdev = memdev
+		if d, err = a.notPersistent(ctx, d, "a sliced device"); err != nil {
+			return nil, err
+		}
+	}
 	if d != nil && d.Shared {
 		d.Memdev = memdev
 		if uids := d.claimUIDs(); len(uids) > 0 {
@@ -1246,6 +1292,9 @@ func (a *localAllocator) listed(claimUID string) bool {
 // other memdevs lie above it (releaseOrKeep). On error the claim keeps
 // what is not released yet.
 func (a *localAllocator) releaseClaim(ctx context.Context, d *localDevice, claimUID string, keep bool) error {
+	if d.Persistent {
+		return a.releasePersistent(ctx, d, claimUID, keep)
+	}
 	if d.Shared {
 		return a.releaseShared(ctx, d, claimUID, keep)
 	}
@@ -1457,7 +1506,7 @@ func (a *localAllocator) adoptCreated(d *localDevice) bool {
 	if len(regions) != 1 {
 		return false
 	}
-	d.Region, d.Dax, d.Node, d.Creating = regions[0], "", -1, ""
+	d.Region, d.Dax, d.NdRegion, d.Node, d.Creating = regions[0], "", "", -1, ""
 	return true
 }
 
@@ -1509,8 +1558,11 @@ func (a *localAllocator) keepRegion(ctx context.Context, d *localDevice, uids, a
 	for _, uid := range uids {
 		d.Claims[uid] = nil
 	}
-	a.deleteOrphans(ctx, d)
-	d.Dax = ""
+	if !d.Persistent {
+		// a pmem region has no dax devices of the allocator
+		a.deleteOrphans(ctx, d)
+	}
+	d.Dax, d.NdRegion = "", ""
 	region := d.Region
 	if region == "" {
 		region = strings.Join(a.mem.Regions(d.Memdev), ", ")
@@ -1548,6 +1600,7 @@ func (a *localAllocator) Reconcile(ctx context.Context, prepared map[string]bool
 	for _, serial := range a.serials() {
 		a.reconcileDevice(ctx, a.devices[serial], prepared, pool)
 	}
+	a.restorePersistent(ctx)
 	a.updateSnapshot()
 	if err := a.save(); err != nil {
 		klog.Errorf("local: %v", err)
@@ -1571,6 +1624,10 @@ func (a *localAllocator) reconcileDevice(ctx context.Context, d *localDevice, pr
 	if !slices.Contains(a.mem.Regions(memdev), d.Region) {
 		klog.Warningf("local: memdev %s (serial 0x%x): %s is gone, forgetting it and its claims %v", memdev, d.Serial, d.Region, slices.Sorted(maps.Keys(d.Claims)))
 		delete(a.devices, d.Serial)
+		return
+	}
+	if d.Persistent {
+		a.reconcilePersistent(d, prepared)
 		return
 	}
 	if d.Shared {

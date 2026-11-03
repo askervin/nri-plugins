@@ -26,15 +26,29 @@ import (
 // not be in.
 var forbiddenPathDirs = []string{"/dev", "/proc", "/sys", "/run/cxl", "/var/run/cxl"}
 
-// PoolFacts are the claim status data of a pool device that its device
-// section is checked against.
-type PoolFacts struct {
-	// Persistent: the device has persistent memory.
+// DeviceFacts are the facts of a pool device or of a local persistent
+// memdev that its device section is checked against.
+type DeviceFacts struct {
+	// Persistent: the device is persistent memory.
 	Persistent bool
-	// Shared: the device may be attached to several hosts.
+	// Shared: other hosts may use the device at the same time (a shared
+	// pool device, a local memdev listed in sharedDevices).
 	Shared bool
-	// Exclusive: the allocation consumed all shares of a shared device.
+	// Exclusive: no other claim has the device while this one is
+	// allocated (the result consumed all shares; a pool device that is
+	// not shared has one claim at most).
 	Exclusive bool
+	// SingleHost: no other host has the device while this claim is
+	// allocated (status data singleHost or exclusive of a pool device, a
+	// pool device that is not shared, a local memdev that is not in
+	// sharedDevices).
+	SingleHost bool
+	// Coherent: other hosts' writes are visible without cache
+	// maintenance (status data coherent of a pool device, memdevSettings
+	// coherent of a local memdev).
+	Coherent bool
+	// Local: the device is a local memdev.
+	Local bool
 }
 
 // MemdevMode returns the mode of a slice of a local memdev of volatile
@@ -52,7 +66,7 @@ func (d Device) MemdevMode(shared bool) (string, error) {
 		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s or %s)", errPrefix, d.Mode, ModeNUMA, ModeDax)
 	}
 	switch {
-	case d.ReadOnly && mode != ModeDax:
+	case d.IsReadOnly() && mode != ModeDax:
 		return "", fmt.Errorf("%sdevice.readOnly needs mode %s", errPrefix, ModeDax)
 	case shared && mode != ModeDax:
 		return "", fmt.Errorf("%sdevice: a shared device is used as %s only", errPrefix, ModeDax)
@@ -60,6 +74,8 @@ func (d Device) MemdevMode(shared bool) (string, error) {
 		return "", errNeedsFs("access")
 	case d.Path != "":
 		return "", errNeedsFs("path")
+	case d.FsType != "":
+		return "", errNeedsFs("fsType")
 	}
 	return mode, nil
 }
@@ -76,10 +92,12 @@ func (d Device) NUMAOnly(what string) error {
 	return err
 }
 
-// CheckLease returns an error if the device section sets a field: the
-// lease device has no device settings.
+// CheckLease returns an error if the device section sets a field other
+// than readOnly: false: the lease device has no device settings.
 func (d Device) CheckLease() error {
-	if d != (Device{}) {
+	other := d
+	other.ReadOnly = nil
+	if other != (Device{}) || d.IsReadOnly() {
 		return fmt.Errorf("%sdevice: the %s device has no device settings", errPrefix, device.DeviceTypeLease)
 	}
 	return nil
@@ -88,38 +106,24 @@ func (d Device) CheckLease() error {
 // PoolMode returns the mode of a pool device with the device section. The
 // checks of the section alone come first, then those that need the facts
 // of the device: block and fs are of persistent devices only and a
-// persistent device has no other modes; a shared device is writable in
-// mode block only exclusively; a shared device of volatile memory is dax
-// (default and only); numa is the default of other volatile devices.
-func (d Device) PoolMode(f PoolFacts) (string, error) {
-	mode := d.Mode
-	switch mode {
-	case "", ModeNUMA, ModeDax, ModeBlock, ModeFs:
-	default:
-		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s, %s, %s or %s)", errPrefix, mode, ModeNUMA, ModeDax, ModeBlock, ModeFs)
-	}
-	switch {
-	case d.Access != "" && mode != ModeFs:
-		return "", errNeedsFs("access")
-	case d.Path != "" && mode != ModeFs:
-		return "", errNeedsFs("path")
-	case d.Access != "" && d.Access != AccessDirect && d.Access != AccessCached:
-		return "", fmt.Errorf("%sdevice.access: invalid access %q (%s or %s)", errPrefix, d.Access, AccessDirect, AccessCached)
-	case d.Path != "" && !validFsPath(d.Path):
-		return "", fmt.Errorf("%sdevice.path: invalid path %q (an absolute path outside %s)", errPrefix, d.Path, listAnd(forbiddenPathDirs))
-	case mode == ModeFs && !d.ReadOnly:
-		return "", fmt.Errorf("%sdevice.readOnly: mode %s is read-only: set readOnly: true (write the device with mode %s)", errPrefix, ModeFs, ModeBlock)
-	case d.ReadOnly && mode == ModeNUMA:
-		return "", errReadOnlyMode()
+// persistent device has no other modes, a writer of a persistent device
+// needs the facts that allow it (Exclusive, SingleHost, Coherent), a
+// shared device of volatile memory is dax (default and only), numa is the
+// default of other volatile devices.
+func (d Device) PoolMode(f DeviceFacts) (string, error) {
+	mode, err := d.persistentSection()
+	if err != nil {
+		return "", err
 	}
 	switch {
 	case !f.Persistent && persistentMode(mode):
 		return "", fmt.Errorf("%sdevice.mode %s needs a persistent device", errPrefix, mode)
 	case f.Persistent && !persistentMode(mode):
 		return "", fmt.Errorf("%sdevice: a persistent device needs mode %s or %s", errPrefix, ModeBlock, ModeFs)
-	case mode == ModeBlock && f.Shared && !f.Exclusive && !d.ReadOnly:
-		return "", fmt.Errorf("%sdevice.mode %s: a shared device is writable only exclusively (no %s request)", errPrefix, ModeBlock, device.CapacityShares)
 	case f.Persistent:
+		if err := d.checkWriter(mode, f); err != nil {
+			return "", err
+		}
 		return mode, nil
 	}
 	// volatile memory
@@ -132,10 +136,78 @@ func (d Device) PoolMode(f PoolFacts) (string, error) {
 	switch {
 	case f.Shared && mode != ModeDax:
 		return "", fmt.Errorf("%sdevice: a shared device is used as %s only", errPrefix, ModeDax)
-	case d.ReadOnly && mode != ModeDax:
+	case d.IsReadOnly() && mode != ModeDax:
 		return "", errReadOnlyMode()
 	}
 	return mode, nil
+}
+
+// PersistentMode returns the mode of a persistent device, a pool device
+// of persistent memory or a local persistent memdev, with the device
+// section: the rules of PoolMode for persistent devices.
+func (d Device) PersistentMode(f DeviceFacts) (string, error) {
+	f.Persistent = true
+	return d.PoolMode(f)
+}
+
+// checkWriter returns an error if the device section writes a persistent
+// device in the mode and the facts do not allow it: a writable block
+// device needs the device exclusively, and on this host only; a
+// read-write filesystem needs the device on this host only, or a cluster
+// filesystem type on coherent memory.
+func (d Device) checkWriter(mode string, f DeviceFacts) error {
+	if d.IsReadOnly() {
+		return nil
+	}
+	switch {
+	case mode == ModeBlock && !f.Exclusive && f.Local:
+		return fmt.Errorf("%sdevice.mode %s: a persistent local device is writable only exclusively (no %s request)", errPrefix, ModeBlock, device.CapacityShares)
+	case mode == ModeBlock && !f.Exclusive:
+		return fmt.Errorf("%sdevice.mode %s: a shared device is writable only exclusively (no %s request)", errPrefix, ModeBlock, device.CapacityShares)
+	case mode == ModeBlock && !f.SingleHost:
+		return fmt.Errorf("%sdevice.mode %s: other hosts may use the device: it is not written in mode %s", errPrefix, ModeBlock, ModeBlock)
+	case mode == ModeFs && !f.SingleHost && (!FsTypeCluster(d.FsType) || !f.Coherent):
+		return fmt.Errorf("%sdevice.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType %s) on coherent memory", errPrefix, FsTypeGfs2)
+	}
+	return nil
+}
+
+// persistentSection returns the mode of the device section, "" for the
+// default, and an error if a field is invalid alone or does not fit the
+// mode, of a device that may be persistent.
+func (d Device) persistentSection() (string, error) {
+	mode := d.Mode
+	switch mode {
+	case "", ModeNUMA, ModeDax, ModeBlock, ModeFs:
+	default:
+		return "", fmt.Errorf("%sdevice.mode: invalid mode %q (%s, %s, %s or %s)", errPrefix, mode, ModeNUMA, ModeDax, ModeBlock, ModeFs)
+	}
+	switch {
+	case d.Access != "" && mode != ModeFs:
+		return "", errNeedsFs("access")
+	case d.Path != "" && mode != ModeFs:
+		return "", errNeedsFs("path")
+	case d.FsType != "" && mode != ModeFs:
+		return "", errNeedsFs("fsType")
+	case d.FsType != "" && !ValidFsType(d.FsType):
+		return "", fmt.Errorf(`%sdevice.fsType: invalid filesystem type %q (lower-case letters, digits, "_" and "-")`, errPrefix, d.FsType)
+	case d.Access != "" && d.Access != AccessDirect && d.Access != AccessCached:
+		return "", fmt.Errorf("%sdevice.access: invalid access %q (%s or %s)", errPrefix, d.Access, AccessDirect, AccessCached)
+	case d.Path != "" && !validFsPath(d.Path):
+		return "", fmt.Errorf("%sdevice.path: invalid path %q (an absolute path outside %s)", errPrefix, d.Path, listAnd(forbiddenPathDirs))
+	case d.IsReadOnly() && mode == ModeNUMA:
+		return "", errReadOnlyMode()
+	}
+	return mode, nil
+}
+
+// ExclusiveHost tells whether the attachment of a device for an
+// allocation result with the resolved configuration must be exclusive to
+// its host: mode fs read-write, unless the filesystem type is a cluster
+// type and the device is coherent between hosts.
+func ExclusiveHost(resolved MemoryConfig, coherent bool) bool {
+	d := resolved.DeviceSection()
+	return d.Mode == ModeFs && !d.IsReadOnly() && (!FsTypeCluster(d.FsType) || !coherent)
 }
 
 // errNeedsFs returns the error of a field of mode fs in another mode.

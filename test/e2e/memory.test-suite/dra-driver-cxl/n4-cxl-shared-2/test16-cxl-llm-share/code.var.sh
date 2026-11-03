@@ -398,7 +398,7 @@ reader-check() {
     echo "### $r on $(pool-vm-label "$vm"), $access, $(reader-kind "$r") reader, at $path (log: $TEST_OUTPUT_DIR/$r.log):"
     grep -E '^(CXL_|mount: |files: |no pmem devices$|pmem devices: |write under |cxl-request )' <<< "$log"
     dra-env-assert "$r" "$log" "$LLM_HEX" \
-        SERIAL="$LLM_SERIAL" SHARED=1 MODE=fs SIZE="$LLM_NS_SIZE" PATH="$path" ACCESS="$access" READONLY=1
+        SERIAL="$LLM_SERIAL" SHARED=1 MODE=fs SIZE="$LLM_NS_SIZE" PATH="$path" ACCESS="$access" READONLY=1 FSTYPE=erofs
     grep -qx "no pmem devices" <<< "$log" ||
         error "$r has pmem devices: $(grep '^pmem devices:' <<< "$log")"
     grep -qE "^write under $path refused: .*Read-only file system$" <<< "$log" ||
@@ -466,8 +466,9 @@ lease-check() {
     #
     # Fail the test unless the lease reader READER, whose log is LOG, has
     # exactly its lease in "cxl-request list": Ready, a read-only share of
-    # the persistent pool device in mode fs with its access, the namespace
-    # size, its path and the environment of the log; "cxl-request env"
+    # the persistent pool device in mode fs with its access, the detected
+    # filesystem type erofs, the namespace size, its path and the
+    # environment of the log; "cxl-request env"
     # prints that environment and CXL_LEASE; "cxl-request fd" refuses the
     # lease (exit status 3); and the companion objects (lease-companion-check),
     # the CDI device of its lease claim (dra-lease-cdi-assert) and the bind
@@ -477,7 +478,7 @@ lease-check() {
         error "$r: the command of cxl-request has CXL_LEASE=$(dra-env-value "$log" CXL_LEASE), expected $lease"
     env=$(grep -E "^CXL_${LLM_HEX}_[A-Z]+=" <<< "$log" | LC_ALL=C sort)
     dra-leases "$VM2" "$r/main"
-    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), l.get('access'), l.get('shared'), l.get('readOnly'), l.get('serial'), int(l.get('size', 0)), l.get('path')) for l in j] == [('$lease', 'Ready', 'pool', 'fs', '$access', True, True, '$LLM_SERIAL', $LLM_NS_SIZE, '$path')]"
+    dra-assert "$DRA_LEASES" "[(l['lease'], l['state'], l.get('source'), l.get('mode'), l.get('access'), l.get('fsType'), l.get('shared'), l.get('readOnly'), l.get('serial'), int(l.get('size', 0)), l.get('path')) for l in j] == [('$lease', 'Ready', 'pool', 'fs', '$access', 'erofs', True, True, '$LLM_SERIAL', $LLM_NS_SIZE, '$path')]"
     dra-assert "$DRA_LEASES" "'node' not in j[0] and 'dax' not in j[0]"
     dra-assert "$DRA_LEASES" "j[0].get('env') == $(python3 -c 'import json, sys; print(json.dumps(dict(l.split("=", 1) for l in sys.argv[1].splitlines())))' "$env")"
     # The environment again, with the lease, and no fd: the lease has none.
@@ -509,7 +510,8 @@ lease-companion-check() {
     # main), the pod runs on the node of READER and holds the claim, and
     # the claim asks for one share of the device in class
     # cxl-pool-persistent with a MemoryConfig of the pool driver, device
-    # section {mode: fs, readOnly: true, access} and no path, is allocated the device on
+    # section {mode: fs, readOnly: true, access} (no fsType: the lease
+    # names none) and no path, is allocated the device on
     # that node, attached, persistent and not exclusive, and has no CDI
     # device.
     local r="$1" vm="${READER_VM[$1]}" access="${READER_ACCESS[$1]}" lease="${READER_LEASE[$1]}" uid="${READER_UID[$1]}" node name json claim_uid cdis
