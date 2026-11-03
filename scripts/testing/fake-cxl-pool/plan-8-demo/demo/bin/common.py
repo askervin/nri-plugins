@@ -282,7 +282,7 @@ def claim_configs(claim):
 
 
 def claim_params(claim, driver=None, request=None):
-    """Return the DeviceConfig parameters that apply to a result of DRIVER and REQUEST."""
+    """Return the MemoryConfig parameters that apply to a result of DRIVER and REQUEST."""
     best = {}
     for drv, reqs, params in claim_configs(claim):
         if driver and drv and drv != driver:
@@ -381,7 +381,7 @@ def lease_memory(claim):
         return "waiting"
     r = res[0]
     params = claim_params(claim, r.get("driver"), r.get("request"))
-    mode = params.get("mode") or "numa"
+    mode = params.get("device", {}).get("mode", "<mode?>")
     access = "ro" if params.get("readOnly") else "rw"
     consumed = consumed_shares(r)
     if consumed is None and shares_request(claim) is None and not any(
@@ -544,8 +544,8 @@ def title(text, stale=False, now=None, width=WIDTH, extra=""):
     """Return the title line: TEXT left, [stale] [EXTRA] HH:MM:SS right."""
     clock = time.strftime("%H:%M:%S", time.localtime(now if now is not None else time.time()))
     right = ("stale " if stale else "") + (extra + " " if extra else "") + clock
-    text = text[:max(0, width - len(right) - 1)]
-    return text + " " * (width - len(text) - len(right)) + right
+    text = text[:max(0, width - len(right))]
+    return text + " " * max(0, (width - len(text) - len(right) - 1)) + right
 
 
 def fit(lines, rows=CONTENT_ROWS):

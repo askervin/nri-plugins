@@ -436,6 +436,7 @@ class Trace:
         self.uid_claim = {}     # claim uid prefix -> claim name
         self.claims = {}        # claim name -> (allocated, deleting)
         self.busy = set()       # lease ids whose busy unmount is shown
+        self.new_lines = 0      # new lines between latest and previous poll()
 
     def lease_who(self, name):
         """Return a marker of the requester of a companion claim or pod cxl-lease-ID, else NAME.
@@ -497,6 +498,7 @@ class Trace:
             fn = getattr(self, "on_" + kind, None)
             if fn:
                 fn(t, tag, text)
+        self.new_lines = len(self.events) - before
         return len(self.events) != before
 
     def on_events(self, t, tag, text):
@@ -700,14 +702,18 @@ class Trace:
             self.emit(t, "ctrl", "ERROR " + text)
 
 
-def render_t5(trace, state, now=None, stale=False):
-    lines = [c.title("TRACE", stale, now)]
+def render_t5(trace, state, now=None, stale=False, new_lines_only=False):
+    if new_lines_only:
+        lines = []
+        row_data = []
+        if trace.new_lines > 0:
+            row_data = trace.events[-trace.new_lines:]
+    else:
+        lines = [c.title("TRACE", stale, now)]
+        row_data = trace.events[-c.CONTENT_ROWS:]
     rows = ["%s %-5s %s" % (time.strftime("%H:%M:%S", time.localtime(t)), tag, trace.text(text))
-            for t, tag, text in trace.events[-c.CONTENT_ROWS:]] if trace else []
-    if not rows:
-        rows = ["no events yet"]
+            for t, tag, text in row_data] if trace else []
     return lines + rows
-
 
 ###
 ### Collecting, painting
@@ -771,19 +777,27 @@ TITLES = {"t2": "PODS & LEASES", "t3": "SCHEDULER: DEVICES AND CLAIMS", "t4": "N
 RENDER = {"t2": render_t2, "t3": render_t3, "t4": render_t4, "t5": render_t5, "t6": render_t6}
 
 
-def paint(lines, color):
-    out = ["\033[H"]
-    for i, line in enumerate(lines[:c.ROWS]):
+def paint(lines, color, clear=True):
+    out = []
+    if clear:
+        out.append("\033[H")
+        lines = lines[:c.ROWS]
+    else:
+        out.append("\033[K")
+    for i, line in enumerate(lines):
         line = c.cut(line)
-        if color:
+        if clear and color:
             line = (c.BOLD + line + c.RESET) if i == 0 else c.colorize(line)
-        out.append(line + "\033[K" + ("\n" if i < len(lines) - 1 else ""))
+        else:
+            line = c.colorize(line)
+        out.append(line + "\033[K" + ("\n" if True else "")) # DELME if i < len(lines) - 1 else ""))
     out.append("\033[J")
     sys.stdout.write("".join(out))
     sys.stdout.flush()
 
 
 def loop(view, case, color, interval, once):
+    new_lines_only = False
     last, trace, trace_dir = None, None, None
     if not once:
         sys.stdout.write("\033[2J\033[?25l")
@@ -802,8 +816,9 @@ def loop(view, case, color, interval, once):
                     if trace is None or trace_dir != state.get("TRACE_DIR"):
                         trace_dir = state.get("TRACE_DIR")
                         trace = Trace(trace_dir, state)
-                    trace.poll()
-                    lines = render_t5(trace, state)
+                    new_data_found = trace.poll()
+                    lines = render_t5(trace, state, new_lines_only=new_lines_only)
+                    new_lines_only = new_lines_only or new_data_found
                 else:
                     err = ""
                     try:
@@ -821,7 +836,7 @@ def loop(view, case, color, interval, once):
             if once:
                 print("\n".join(c.cut(l) for l in lines))
                 return
-            paint(lines, color)
+            paint(lines, color, clear=(not new_lines_only))
             time.sleep(max(0.1, interval - (time.time() - start)))
     except KeyboardInterrupt:
         pass
