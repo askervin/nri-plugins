@@ -1,0 +1,680 @@
+plan-8 20-official: status of stream FSCASE
+===========================================
+D = test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read,
+N = nri-plugins. Design 22-official-design.txt section 3 (pool-fs), 5-7,
+amendments A1-A4 (section 8).
+
+FSCASE check done (2026-11-03)
+==============================
+Every line of every pool-fs capture (run1, run2: R2 R4 R5 R7 R7b R8 R9
+R10 R11; xfs, btrfs: R3 R4 R7 R9 R10) checked against its truth dump
+(claims yaml with status, pool attachments, pmem ro flags and blkid,
+mountinfo, losetup, the trace since the step) and the dumpe2fs, events,
+claims watch and zoom files; T5 also as a whole: the trace streams
+rebuilt from the truth dumps' trace sections (/tmp/fscase/check) and
+translated by the current views.py; T1 against run/steps.log. No VM used.
+Wrong, fixed at the cause:
+W1 T3 at R2 and R3 said "writer on vm1 only: writer rw" for the block
+   lease of the whole device: the controller sets singleHost (and
+   exclusive) for that claim too (truth: data exclusive true, singleHost
+   true). fs_holder_rows: a claim with all shares is "exclusive:" first;
+   "writer on N only:" is a share that writes. Sample block claim now
+   carries the live data; selftest checks "  exclusive: writer rw".
+W2 T6 "superblock written HH:MM:SS" (ext4 s_wtime) stayed at the mount
+   time after the downgrade (dumpe2fs: Last write time 15:39:04 at R4 and
+   at R9, the remount read-only keeps it), and README said "the time of
+   the remount": the line is gone (the view says less); zoom fs names
+   the fields as dumpe2fs does ("mount count", "last write time").
+W3 T5 R4 "writer: fs0 excl: rw ext4" in README and the sample: the
+   controller logs the claim's fsType, and the lease declares none: the
+   live line is "writer: fs0 excl: rw filesystem" (README, sample,
+   selftest follow it).
+W4 T5 R9: "sched reader-a waits: 0/3 nodes are available: 1 resourceclaim
+   not available on the node, ..." (a FailedScheduling after the
+   scheduler deallocated the claim of the last failed attempt, cut at 50
+   columns): now "reader-a waits: claim deallocated".
+W5 T5 btrfs R4 "vm1 writer: prepared btrfs rw cached" is 36 columns, cut
+   in T5: the access is left out when the line would not fit ("prepared
+   btrfs rw"; T4 and T1 say "cached").
+W6 Between two attempts the waiting readers' claims are allocated again
+   for about 0.5 s without a condition (claims watch: allocated with
+   AttachFailed about 4.5 s, deallocated about 1.5 s, allocated without
+   conditions about 0.5 s, every 7 s): T2/T3 would flicker to
+   "attaching". attach_failure now reads the Events also for an
+   allocated claim without the Attached condition, so "waiting
+   (Conflict)" stays (how the last attempt ended). At R9 the same holds
+   for at most the second until the Attached condition. MOVE's callers
+   pass no Events: no change for them.
+W7 README timings: R3 writes the 510 MiB in 2.0-2.1 s in the VM (0.3-0.6
+   s on the host); section 9 has the measured R1-R11, setup 65-69 s,
+   teardown 38 s.
+True as captured (C1-C10):
+- C1 setup logged "driver configuration fsTypes: [erofs, <type>]" and the
+  note; state.env POOL_DEVICE=fs0, DEMO_FSTYPE; DEMO_FSTYPE reached the
+  test. The driver's own "fsTypes: ..." start line is before the trace
+  and not in any capture; that ext4, xfs and btrfs mounted in R4 (the
+  default refuses them) shows the configuration took.
+- C3 the Alpine mkfs (e2fsprogs 1.47.4, xfsprogs 7.0.1, btrfs-progs
+  6.17.1) mounted on the VM kernels in every run; blkid on the device
+  found the type and label demo; ext4 uuid of zoom fs = blkid's.
+- C4 R4: the writer's claim data singleHost true, the attachment
+  exclusive true (pool API), T2 "fs rw (vm1 only)", T3 "writer on vm1
+  only: writer rw", T4 node mount and bind rw (mountinfo), T6 "needs
+  recovery" = dumpe2fs needs_recovery. No "vm1 pmem0 read-write" line
+  comes (the region's new block device is writable already).
+- C6 R7/R7b: reader-c Ready in about 5 s; reader-a/b claims allocated
+  with AttachFailed reason Conflict at both captures; the Event message
+  "attach fs0 to <vm2 node>: Conflict: device "fs0" is attached
+  exclusively to ..." (parsed as Conflict); the scheduler retries every
+  7 s (AttachFailed at 13.2, 19.8, 26.8, ... s); T2 "waiting
+  (Conflict)", T3 "waiting (Conflict): reader-a reader-b"; T5 one
+  Conflict line per reader and nothing of the eight retries per reader
+  up to R8 (no ERROR, AttachFailed or PreBind line).
+- C7 R9 order (vm1): writer unmounted data, node mount now read-only,
+  pmem0 read-only (btrfs: loop0 read-only first), unprepared, "fs0 on
+  vm1: not exclusive", the attach to vm2, vm2 pmem0 read-only, node
+  mount ext4 ro, readers Ready 5.7 s (ext4) / 3.0-3.1 s (xfs, btrfs)
+  after the release; T6 "attached: vm1, vm2" with exclusive false (pool
+  API); dumpe2fs clean, no needs_recovery; T4 both nodes superblock ro,
+  pmem0 ro=1 (btrfs: losetup RO 1).
+- C8 R10, R11 as expected; T6 at R11 "attached: vm1 detaching, vm2"
+  (pool API state detaching), T4 "disabled, no region".
+- C9 btrfs: access cached, loop0 on both nodes, the downgrade under
+  reader-c worked (mountinfo ro on vm1 at R9); T6 generation 8 at R4 and
+  R7 (the cached writes not committed yet), 9 at R9. There is no
+  independent reading of the btrfs generation in the truth dumps.
+Not checked (needs a live look; commands for RUN, any time a pool-fs
+demo is set up):
+  ./bin/demo zoom driver vm1 400 | grep -E 'fsTypes'          # the driver's start line
+  dd if=/tmp/fake-cxl-pool/fs0.raw of=/tmp/fs0-sb.img bs=1M skip=2 count=4 status=none &&
+      /usr/sbin/btrfs inspect-internal dump-super /tmp/fs0-sb.img | grep -E '^generation'; rm -f /tmp/fs0-sb.img
+                                                    # btrfs, at R4 and R9: = T6 generation
+  ./bin/demo view t5                                # 50 x 10, during R7-R9 (MOVE's L5 too)
+Desk checks after the fixes: selftest ok (219 renderings, every expect
+ok, new: the retry state "waiting (Conflict)", R2 T3 exclusive), every
+bin/*.py, bin/tools/cxl-demo.py, testdata/*.py parses, bash -n and
+shellcheck of bin/demo, plain ASCII; renderings.txt and the pool-fs
+samples written again. Files changed in this check: bin/common.py
+(attach_failure), bin/views.py (fs_holder_rows order, FailedScheduling
+after deallocation, prepared fs line width), bin/fsinfo.py (lines,
+details), bin/selftest.py, testdata/make-samples-pool-fs.py, README.txt
+(6c, 7, 9).
+
+FSCASE phase B done (2026-11-03)
+================================
+The edits of section 3 below are in the shared files, each a small Edit
+of pool-fs, re-read before it, next to MOVE's and WIZARD's concurrent
+changes (adapted where they had moved: bin/demo CASES and usage have
+wizard, test90 has DEMO_SETUP_START and the wizard's PMEM_CASE use, the
+selftest main has released_test and attaching_test). Nothing committed,
+stashed, reset or restored; no VM used.
+Change from the plan (the coordinator's addition): T2 labels the
+writer's lease "fs rw (vm1 only)" (views.fs_lease_memory: a share with
+singleHost on node N says "(N only)"), not "excl", which the other
+cases use for a whole-device lease; README 6c says so.
+Files edited: image/Dockerfile, bin/tools/cxl-demo.py, bin/probe.py,
+bin/common.py, bin/views.py, bin/steps.py, bin/zoom.py, bin/selftest.py,
+bin/demo, e2e/.../test90-demo-setup/code.var.sh, e2e/.../test91-demo-
+teardown/code.var.sh (wording), README.txt (intro, sections 1, 2, 3, new
+6c, 7, 8, 9, 10); testdata/pool-fs-* and trace-pool-fs made again,
+testdata/renderings.txt written by selftest --write.
+Desk checks (pass): demo selftest (219 renderings fit 50 x 10, every
+expect ok, the pool-fs tests included); every bin/*.py,
+bin/tools/cxl-demo.py and testdata/*.py parses (py_compile); bash -n and
+shellcheck of bin/demo; sh -n of every bin/tools wrapper (fswrite too);
+bash -n of both code.var.sh, shellcheck -s bash -e SC2154,SC2034 of
+test91 clean and of test90 clean except one SC2016 info at the wizard's
+cap_pmem check (line 158, WIZARD's code in progress, not pool-fs); plain
+ASCII in README, bin/, manifests/pool-fs, the new testdata files, the
+Dockerfile, both code.var.sh. /demo/mkfs --type ext4 ran in the demo
+image (localhost/cxl-demo-tools:572bcd92fbb0, the tag of the new
+Dockerfile, built on the host) on a 510 MiB file as fd 3: "wrote an
+empty ext4 of 510 MiB in 0.6 s".
+
+Live-run commands for RUN (pool-fs; one run at a time, no run_tests.sh)
+-----------------------------------------------------------------------
+Prerequisites as MOVE's section 5 (VMs up, driver image built, port 9909
+free). The demo image tag changed (A4): it exists on this host, the first
+setup of any case imports it into vm1 and vm2 once.
+
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet
+
+ext4 (key steps R2, R4, R5, R7, R8, R9, R10, R11; R7b 30 s after R7,
+the scheduler's retries):
+  ./bin/demo setup pool-fs
+  grep -E 'driver configuration|NOTE|  this trusts|erofs alone' run/test90-demo-setup.log
+  grep -E '^(DEMO_CASE|DEMO_FSTYPE|POOL_DEVICE|POOL_DEVICE_FILES|SERIAL)=' run/state.env
+  for n in 1 2 3 4 5 6 7 8 9 10 11; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo pool-fs $n --auto
+      case $n in 2|4|5|7|8|9|10|11) ./bin/demo capture run1-R$n --truth;; esac
+      if [ $n == 7 ]; then
+          ./bin/demo zoom claim reader-a > captures/pool-fs-run1-R7-zoom-claim.txt 2>&1
+          ./bin/demo zoom pod reader-a > captures/pool-fs-run1-R7-zoom-pod.txt 2>&1
+          ./bin/demo zoom mounts vm1 > captures/pool-fs-run1-R7-zoom-mounts-vm1.txt 2>&1
+          ./bin/demo zoom fs > captures/pool-fs-run1-R7-zoom-fs.txt 2>&1
+          ssh -F ../../../../n4-cxl-shared-2-fedora-43-containerd/.ssh-config node \
+              'sudo kubectl get events -n cxl-demo -o wide' > captures/pool-fs-run1-R7-events.txt 2>&1
+          timeout 40 ssh -F ../../../../n4-cxl-shared-2-fedora-43-containerd/.ssh-config node \
+              'sudo kubectl get resourceclaims -n cxl-demo -w -o json' > captures/pool-fs-run1-R7-claims-watch.json 2>&1
+          ./bin/demo capture run1-R7b --truth
+      fi
+      if [ $n == 9 ]; then
+          ./bin/demo zoom mounts vm1 > captures/pool-fs-run1-R9-zoom-mounts-vm1.txt 2>&1
+          ./bin/demo zoom mounts vm2 > captures/pool-fs-run1-R9-zoom-mounts-vm2.txt 2>&1
+          ./bin/demo zoom fs > captures/pool-fs-run1-R9-zoom-fs.txt 2>&1
+          dd if=/tmp/fake-cxl-pool/fs0.raw of=/tmp/fs0-sb.img bs=1M skip=2 count=4 status=none &&
+              /usr/sbin/dumpe2fs -h /tmp/fs0-sb.img > captures/pool-fs-run1-R9-dumpe2fs.txt 2>&1; rm -f /tmp/fs0-sb.img
+      fi
+  done
+  cp run/steps.log captures/pool-fs-run1-steps.log; tail -n 1 run/timings.txt
+  ./bin/demo teardown
+  ls /tmp/fake-cxl-pool/fs0.raw /tmp/fake-cxl-pool/fs0.lsa 2>&1   # gone
+  (after R4 too, the same dd and dumpe2fs -h while the writer has it:
+   "needs_recovery" in its features; the block device starts 2 MiB into
+   fs0.raw, after the pfn info block; dumpe2fs's "file?offset=" form does
+   not work, checked)
+xfs and btrfs (once each; key steps R3, R4, R7, R9, R10):
+  ./bin/demo setup pool-fs xfs     (then: ./bin/demo setup pool-fs btrfs)
+  for n in 1 2 3 4 5 6 7 8 9 10 11; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo pool-fs $n --auto
+      case $n in 3|4|7|9|10) ./bin/demo capture xfs-R$n --truth;; esac
+  done
+  ./bin/demo teardown
+Then once more ext4 as run2 (design 7: two --auto runs in a row), and
+"./bin/demo view t5" in a 50 x 10 terminal during R7-R9 of run2. After
+each teardown the VM checks of MOVE's section 5 (no memdevs, regions,
+pmem or dax devices, mounts of them, loop devices; port 9909 free).
+
+What to check in the captures and truth dumps (each view line true):
+C1 setup: the fsTypes line and the NOTE in the setup log; the driver logs
+   "fsTypes: erofs, ext4: the filesystem types that mode fs mounts on
+   this node" (truth: driver logs); state.env POOL_DEVICE=fs0,
+   DEMO_FSTYPE=ext4 (it reached the test through run_tests.sh).
+C2 R2: T4 "pmem0 510M no file system (block rw)", T6 "no file system
+   (zeros)" and "attached: vm1 exclusive" against truth (pmem bytes, ro
+   flag, pool attachments).
+C3 R3 (ext4, xfs, btrfs): T1 "wrote an empty <type> of 510 MiB in N s"
+   (N in the VM), T4 "<type> (block rw)" against truth's blkid TYPE; the
+   Alpine mkfs (xfsprogs 7.0.1: exchange=1, parent=1, nrext64=1;
+   e2fsprogs 1.47.4: orphan_file, metadata_csum_seed) mounts in R4 on the
+   VM kernel (else R4 fails: zoom kernel vm1, zoom driver vm1).
+C4 R4: the writer's companion claim has status.devices data singleHost
+   true (truth claims yaml) -> T2 "fs rw (vm1 only)", T3 "writer on vm1
+   only: writer rw", T1 "attached to vm1 only (ReadWriteOnce)"; T5
+   "writer: fs0 excl: rw ext4", "vm1 node mount pmem0 ext4 rw", whether a
+   "vm1 pmem0 read-write" line comes; T4 "node mount ext4 rw (dax)" and
+   "mounted: writer (dax rw)" against truth mountinfo; T6 "needs recovery"
+   against dumpe2fs on the backing file.
+C5 R5, R8: T1 lines; R8 'reader-c reads it at once: "A second line, ..."'.
+C6 R7 and R7b: reader-c Ready within seconds (T1, T2 "fs ro share");
+   reader-a/b "waiting (Conflict)" in T2 and "waiting (Conflict):
+   reader-a reader-b" in T3 at both captures (never "fs ro share" during
+   an attempt, never "attaching" for long); the AttachFailed Event's
+   message is "attach fs0 to <vm2 node>: Conflict: device ..." (events
+   capture; the reason is parsed from it); how often the scheduler
+   retries (events count, claims watch); the companion pods'
+   FailedScheduling message; T5 shows "reader-a: fs0 not on vm2:
+   Conflict" once per reader and no ERROR/AttachFailed/PreBind lines at
+   R7b; zoom claim and zoom pod readable.
+C7 R9: T5 order: "vm1 writer: unmounted data", "vm1 node mount now
+   read-only", "vm1 pmem0 read-only", "fs0 on vm1: not exclusive", attach
+   to vm2, "vm2 pmem0 read-only", "vm2 node mount pmem0 ext4 ro", readers
+   Ready; T1 time "readers' leases Ready after N s" (the check waits 180
+   s; scheduler backoff up to 10 s plus the attach) and "vm1: ext4
+   read-only, pmem0 read-only" against truth; T4 both nodes "(block ro)",
+   "node mount ext4 ro (dax)"; T6 "clean" and the time of the remount
+   against dumpe2fs (state clean, no needs_recovery).
+C8 R10: T1 "3 readers read the same 2 lines" and the Read-only file
+   system line; R11: T2 empty, T3 no claims, T4 no CXL memory, T6
+   "attached: nowhere", the ext4 stays.
+C9 btrfs: access cached (loop0) on both nodes: T4 "node mount btrfs rw
+   (cached loop0)", "mounted: reader-c (cached), writer (cached rw)"; the
+   downgrade of btrfs under reader-c in R9 (remount read-only; the docs
+   name only the upgrade as ext4/xfs-only); T6 generation grows between R4
+   and R9. xfs: T4 "node mount xfs rw (dax)", R9 the xfs log clean so that
+   vm2 mounts it read-only on a read-only block device.
+C10 timings of run1/run2 (run/timings.txt) for README section 9.
+
+Phase A done (2026-11-03): new files only
+=========================================
+No shared file of D edited; nothing committed, stashed, reset or
+restored; no VM used. The edits of the shared files are below (section
+3), rehearsed on copies of the current files in a scratch directory: with
+all of them applied, "selftest" passes (203 renderings fit 50 x 10, every
+expect ok), py_compile of every bin/*.py and bin/tools/cxl-demo.py, bash
+-n and shellcheck of bin/demo, and shellcheck -s bash -e SC2154,SC2034 of
+both code.var.sh. The rehearsed hunks (OLD/NEW text, each matching once)
+are kept outside the tree in ~/.cache/nri-plugins-plan8-fscase/hunks/
+<file>.hunks (working material, not normative: phase B re-reads each file
+and applies them with Edit, adapted to what MOVE and WIZARD changed).
+
+1. Decisions and deviations from the design
+-------------------------------------------
+- R4 has --shared: "cxl-request release --all && cxl-request request
+  --serial S --shared --mode fs --read-write --name data". Without
+  --shared a lease takes the whole device (all 1M shares, leases.md
+  "Without --shared the lease takes the whole device"), and reader-c's
+  share could not be allocated next to it: R7 ("vm1's reader at once")
+  would not happen. The writer's exclusiveness is the attachment's
+  (ReadWriteOnce: singleHost in its claim status), not the shares': T2
+  says "fs rw (vm1 only)" from singleHost (phase B; was "excl"), T5 "vm1 writer asks fs rw share"
+  (what it asks), T3 "writer on vm1 only: writer rw".
+- R8 command: kubectl exec writer -- /demo/fswrite --append "A second
+  line, $(date +%T)"; kubectl exec reader-c -- cat /run/cxl/fs/data/hello.txt
+  (the design leaves the text open; a longer one makes T1 11 rows).
+- R7 and R8 captions (58, 52 and 78 columns for R9) wrap into two lines.
+  The selftest's caption rule becomes "at most two lines" (was "at most
+  50 columns", which the exact captions of section 3 break). R7's result
+  is two rows (Step rows=2): its caption (2) and command (4) leave no
+  room for a third.
+- mkfs --type writes the whole image (510 MiB) through the fd (finding
+  V4: measured 0.3-0.6 s for 510 MiB on the host and in the demo image,
+  docker on the host, a file as fd 3), then compares the superblock on
+  the device with the image's; ext4 is made with -b 4096 (DAX), every
+  type with label "demo". The tool keeps the fd DEMO_HOLD (3) s as
+  /demo/mkfs of pool-shared-fs does (T4 "open: writer rw").
+- Waiting with a reason (T2 "waiting (Conflict)", T3 "waiting
+  (Conflict): ..."): the AttachFailed condition lasts only until the
+  scheduler deallocates the claim (dra-claim-condition-watch says so), so
+  a 1 s view misses it. The reason comes from the condition of an
+  allocated claim, else from the claim's last AttachFailed Event (newer
+  than an Attached Event; message "attach fs0 to H: Conflict: ..."). The
+  probe gains the kind "events" (namespace of the demo), fetched by t2
+  and t3 of pool-fs only.
+- pool-fs's T2 and T3 also say "attaching" for an allocated claim of a
+  pool device without the Attached condition, and treat an allocated
+  claim with AttachFailed as waiting: the scheduler allocates the
+  waiting readers again every ~10 s, and lease_memory would show "fs ro
+  share" for each such attempt (checked: the current views do, on the
+  R7 sample). Kept to pool-fs (the samples of the other cases have no
+  claim status); see the request to MOVE.
+- T5: a reader's Conflict is shown once ("reader-a: fs0 not on vm2:
+  Conflict", from the controller's ERROR line or the AttachFailed Event,
+  whichever comes first); the lines of the next attempts of the same
+  requester (allocated, waits for the attach, scheduled, FailedScheduling,
+  AttachFailed) are left out until it is attached, Ready or deleted, or
+  the pool server says "exclusive false" (then the attempts that succeed
+  are shown). The controller's "status of <claim>: ...=True reason ...: ..."
+  lines are left out everywhere (they repeat the line before them; today
+  "AttachFailed" in them matched the generic error pattern: "ERROR status
+  of claim ..." at every attempt). Checked on the trace sample: 3
+  attempts per reader give one line each.
+- T4 of pool-fs: a "node mount <type> ro|rw (dax|cached loopN)" line per
+  node mount under the pmem line (superblock ro/rw from mountinfo), on
+  top of MOVE's "(block ro|rw)" and the lease binds "mounted: reader-c
+  (dax), writer (dax rw)". Kept to pool-fs (it adds a row per node to
+  pool-shared-fs otherwise).
+- T6 of pool-fs: the superblock in the backing file, read by the new
+  bin/fsinfo.py (no files of ext4, xfs or btrfs are parsed): 'ext4 "demo"
+  510M, clean' or ', needs recovery' (the journal is in use: a node has
+  it read-write) and "superblock written HH:MM:SS"; 'xfs "demo" 510M';
+  'btrfs "demo" 510M, generation N'; "no file system (zeros)";
+  "signatures of ext4, xfs" (the driver refuses several).
+- The fs0 branch of the setup is a separate elif next to pool-shared-fs's
+  (no change of MOVE's branch); PMEM_CASE (pool-shared-fs or pool-fs)
+  selects the demo image and the block udev stream; POOL_DEVICE and
+  DEMO_FSTYPE go into state.env.
+
+2. New files (phase A)
+----------------------
+D/manifests/pool-fs/writer.yaml, readers.yaml
+    the pods of pool-shared-fs with the lease template; comments name
+    pool-fs, mkfs of ext4/xfs/btrfs and /run/cxl/fs/data.
+D/bin/tools/fswrite
+    the wrapper of "cxl-demo.py fswrite" (ConfigMap demo-tools).
+D/bin/fsinfo.py
+    fs_super(data): type (erofs, ext4, xfs, btrfs, zeros, none, several),
+    size, block size, label, uuid; ext4 clean, errors, needsRecovery,
+    written, mounts, features; btrfs generation. lines(sb): the T6 lines;
+    details(sb): the zoom fs lines. Magics as probe.py FS_MAGICS. Checked
+    with images made by mkfs.ext4 1.47.3, mkfs.xfs 6.19, mkfs.btrfs 6.19 on
+    the host and by the demo image's mkfs (1.47.4, 7.0.1, 6.17.1).
+D/testdata/make-samples-pool-fs.py
+    writes testdata/pool-fs-R1, R2, R3, R5, R7, R9, R11 (ext4),
+    pool-fs-xfs-R7, R9, pool-fs-btrfs-R7, R9 (cached, loop0) and
+    trace-pool-fs (R1-R11, three Conflict attempts per vm2 reader), with
+    the helpers of make-samples.py (loaded with importlib, no edit of it):
+    companion claims with the controller's claim status (Attached,
+    AttachFailed Conflict, data singleHost of the writer), Events of the
+    namespace in vm2.json k8s.events, pool.json with fsinfo.fs_super of
+    the superblocks; "--super" makes pool-fs-super.json again with mkfs.
+D/testdata/pool-fs-super.json
+    the superblock ranges of empty ext4, xfs, btrfs of 510 MiB (label
+    demo) made by the host's mkfs.
+D/testdata/pool-fs-*/, trace-pool-fs/
+    generated. The current selftest renders them already and passes (166
+    renderings); their pool-fs words appear with the edits of phase B.
+Built, not in the tree: localhost/cxl-demo-tools:572bcd92fbb0 on the host
+(docker), the image of the new Dockerfile below: demo setup will find it
+and skip the build (the sha12 of the new Dockerfile is 572bcd92fbb0).
+
+3. Edits of the shared files (phase B), file / function / change
+-----------------------------------------------------------------
+image/Dockerfile
+- header comment: pool-shared-fs and pool-fs; apk add erofs-utils
+  e2fsprogs xfsprogs btrfs-progs. NOTE for RUN: the image tag follows the
+  Dockerfile's sha: every case's next setup uses the new tag (built
+  already on this host, so no rebuild; imported into the VMs once).
+bin/tools/cxl-demo.py
+- docstring: /demo/mkfs --type TYPE, /demo/fswrite [--append] TEXT, the
+  lease of fswrite.
+- constants EMPTY_IMAGE (/tmp/empty.img), CHUNK (4 MiB), MKFS (ext4 -b
+  4096, xfs, btrfs; -L demo), SUPERBLOCK (offset, length per type).
+- new do_mkfs_type(fstype) (inside the fd of the block lease: size by
+  lseek, sparse image in /tmp, mkfs, pwrite all of it, fsync, compare the
+  superblock, "wrote an empty ext4 of 510 MiB in 0.4 s", hold DEMO_HOLD,
+  EBADF -> "refused: read-only (EBADF)") and do_fswrite(text, append)
+  (newest Ready fs lease with readOnly false, DEMO_LEASE; write or append
+  TEXT and a newline to <path>/hello.txt, fsync; 'wrote <path>: "TEXT"' or
+  'appended to <path>: "TEXT"'; EROFS etc. -> "refused: <path>: <error>").
+- main: "mkfs --type T" -> with_fd("_mkfs", T, modes=("block",)), "_mkfs",
+  "fswrite TEXT", "fswrite --append TEXT".
+bin/demo
+- CASES gains pool-fs; usage: "setup CASE [TYPE]" (TYPE of pool-fs: ext4
+  default, xfs, btrfs), "pool-fs [N|N-|--auto]".
+- cmd-setup: second argument fstype (pool-fs only, validated, default
+  ext4; other cases refuse one); "demo setup pool-fs ext4: driver image
+  ..."; DEMO_FSTYPE="$fstype" passed to e2e-run with DEMO_CASE.
+- main: pool-fs runs steps.py.
+bin/steps.py
+- docstring usage, CASES gain pool-fs.
+- Step gains rows=3 (the result rows); run_step prints
+  result_lines(result, step.rows).
+- steps(case, serial, fstype="ext4"): pool-fs -> new poolfs_steps(S,
+  fstype): R1-R11 with the captions and commands of design section 3
+  (R4 --shared, R8 text: section 1 above); checks: R1 check_running
+  writer, R2 check_lease, R3 check_last_line, R4 new check_fs_writer
+  ("lease L Ready ext4 rw (direct)", "path /run/cxl/fs/data", "attached to
+  vm1 only (ReadWriteOnce)" from the claim's singleHost, waited for 30 s),
+  R5 check_last_line, R6 check_running readers, R7 new check_join
+  (rows=2; waits 120 s until the readers of the writer's node are Ready
+  and the others have an attach failure: "reader-c Ready on vm1, next to
+  the writer", "reader-a reader-b waiting: Conflict (N s)"), R8 new
+  check_append ('reader-c reads it at once: "A second line, ..."'), R9
+  new check_writer_leaves (check_readers_get_it, then the probe of vm1:
+  "vm1: ext4 read-only, pmem0 read-only"), R10 new check_read_refused
+  ("3 readers read the same 2 lines", the "Read-only file system" line;
+  expect_fail), R11 check_gone.
+- new lease_claims(k, names) (requester -> newest companion claim).
+- wait_for(state, cond, timeout, kinds="pods,claims").
+- step_letter: R for pool-fs.
+- main: steps(case, SERIAL, DEMO_FSTYPE or ext4).
+bin/common.py (one hunk after lease_memory)
+- POOL_DRIVER, device_status(claim, result) (the status.devices entry),
+  condition(status, type), single_host(claim) (node of data singleHost),
+  attach_failure(claim, events) (AttachFailed condition reason, else the
+  last AttachFailed Event's "attach X to H: <Reason>: " unless an Attached
+  Event is newer), attaching(claim) (pool result without Attached).
+bin/probe.py
+- docstring; kind "events": resource events, namespace scope like pods
+  and claims, the Events of the namespace.
+bin/views.py
+- docstring usage, CASES gain pool-fs; import fsinfo.
+- render_t2: pool-fs uses new fs_lease_memory(cl, events) (releasing;
+  "waiting (Conflict)" / "waiting (attach)"; "attaching"; lease_memory
+  with "share" -> "excl" for a singleHost writer).
+- render_t3: pool-fs rows from new fs_holder_rows(entry, claims, events,
+  state): "writer on vm1 only: writer rw", "exclusive: ...", "shared:
+  ...", "attaching: ...", "waiting (Conflict): reader-a reader-b",
+  "waiting: ..."; "no claims" when there are none (device_holders not
+  used for pool-fs).
+- pmem_lines(..., node_mounts=False) and node_lines(..., node_mounts=False):
+  the node mount line; render_t4 passes node_mounts for pool-fs.
+- render_t6_pool: pool-fs -> fsinfo.lines(pool["super"]).
+- collect: t2 and t3 add ",events" to the probe kinds for pool-fs; t6 of
+  pool-fs reads fsinfo.READ_LEN bytes of the block device in the backing
+  file (common.read_fsdax) into "super".
+- Trace: retrying set (__init__); on_events: suppression of the attempts
+  of a retrying requester, the AttachFailed Conflict Event as the ctrl
+  line "who: dev not on node: Conflict" (once); on_claims: no "allocated"
+  line while retrying, DELETED clears; on_driver Ready clears; on_server
+  "exclusive false" clears all; on_controller: attached-for clears, the
+  ERROR Conflict line once per requester, "status of ..." lines ignored.
+bin/zoom.py
+- docstring (fs and bytes of pool-fs); import fsinfo; zoom_fs of pool-fs
+  prints fsinfo.details of the block device's superblock; bytes of
+  pool-fs as of pool-shared-fs (the block device in the backing file);
+  "demo setup ...|pool-fs". "zoom mounts" of MOVE already shows
+  superblock and mount point ro/rw, the pmem read-only flags, loop
+  devices and lease binds (design: "demo zoom mounts vm1|vm2").
+bin/selftest.py
+- docstring; import fsinfo; new fsinfo_test (the three types of
+  pool-fs-super.json: type, 510 MiB, 4096, label; ext4 clean and needs
+  recovery; btrfs generation; several; erofs; zeros; a cut superblock),
+  trace_poolfs_test (the expected lines of trace-pool-fs, one Conflict
+  line per reader, "allocated" twice per reader, no ERROR, AttachFailed or
+  PreBind line, 35 columns), poolfs_helper_test (fs_lease_memory of the
+  R7 and R9 samples, check_join and check_fs_writer with steps.k8s
+  replaced by the R7 sample, check_append, check_read_refused);
+  presenter_test: pool-fs with ext4, xfs and btrfs, the caption rule "at
+  most two lines", result rows of the step; main calls the new tests.
+- renderings.txt again with --write.
+e2e/.../test90-demo-setup/code.var.sh
+- header (pool-fs device, fsTypes, image, block udev, DEMO_FSTYPE).
+- DEMO_FSTYPE (default ext4; pool-fs: ext4|xfs|btrfs, else empty).
+- DEMO_TOOLS gains fswrite; POOL_DEVICE=shared0; PMEM_CASE.
+- server: elif pool-fs: rm fs0.raw fs0.lsa, fs0 512Mi shared persistent
+  serial 0xc1ae0001, pool-device-files checks, POOL_DEVICE=fs0,
+  POOL_DEVICE_FILES.
+- after the local driver configuration: pool-fs sets DRA_DRIVER_CONFIG
+  "fsTypes: [erofs, <type>]" and prints it and the trust note:
+    demo setup: NOTE: the nodes mount ext4 now, a type that is not hardened against crafted images:
+      this trusts every party that can write fs0 raw (a read-write block claim or lease of it, as the
+      writer's of R2, on any node of any cluster that shares the pool, and a read-write fs claim);
+      erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)
+- the demo image and the block udev trace for PMEM_CASE (was
+  pool-shared-fs); state.env: DEMO_FSTYPE, POOL_DEVICE=$POOL_DEVICE,
+  DEMO_IMAGE for PMEM_CASE.
+e2e/.../test91-demo-teardown/code.var.sh
+- wording only: "no filesystem mounts" and "a live filesystem" instead of
+  erofs (comments and the "###" line). The files of fs0 are removed by
+  the existing POOL_DEVICE_FILES branch.
+README.txt
+- intro: four scripts, pool-fs in the list; design pointer
+  22-official-design.txt section 3.
+- section 1: docker also for pool-fs, the image's packages.
+- section 2: "demo setup pool-fs [ext4|xfs|btrfs]", "demo reset pool-fs",
+  the server's fs0 and its files, fsTypes and the trust note, /demo/fswrite,
+  teardown "no filesystem mount".
+- section 3: T1 "demo pool-fs", steps R1-R11 (T1 title "R3/11").
+- new section 6c (the draft below).
+- section 7: zoom fs and bytes of pool-fs.
+- section 8: pool-fs entries (below).
+- section 9: pool-fs timings (to be measured by RUN).
+- section 10: bin/fsinfo.py, manifests/pool-fs, testdata/make-samples-
+  pool-fs.py and pool-fs-super.json, the image of pool-shared-fs and
+  pool-fs.
+
+4. To check live (stream RUN), pool-fs
+--------------------------------------
+Commands as MOVE's section 5, with "./bin/demo setup pool-fs" (and once
+each "setup pool-fs xfs", "setup pool-fs btrfs"), key steps R2, R3, R4,
+R7, R9, R10, R11 (capture --truth), and after R7 a pause of 30 s and
+"demo capture run1-R7b --truth" (the retries).
+- setup: "demo setup: driver configuration fsTypes: [erofs, ext4]" and
+  the NOTE in run/test90-demo-setup.log; the driver logs "fsTypes: erofs,
+  ext4: the filesystem types that mode fs mounts on this node"; state.env
+  POOL_DEVICE=fs0 DEMO_FSTYPE=ext4; DEMO_FSTYPE reaches the test through
+  run_tests.sh (as DEMO_CASE does).
+- R3: the mkfs of the Alpine image (xfsprogs 7.0.1: exchange=1,
+  parent=1, nrext64=1 by default; e2fsprogs 1.47.4: orphan_file,
+  metadata_csum_seed) must mount on the VM kernels (R4 for xfs); time of
+  the 510 MiB write through the fd in the VM (0.3-0.6 s on the host).
+- R4: the writer's companion claim has status data singleHost true (T2
+  "fs rw (vm1 only)", T3 "writer on vm1 only"); T5 "writer: fs0 excl: rw
+  ext4", "vm1 node mount pmem0 ext4 rw"; whether "vm1 pmem0 read-write"
+  appears; T6 ext4 "needs recovery" while mounted read-write (the
+  superblock in the backing file, read on the host while the guest has
+  it mapped).
+- R7: reader-c Ready within seconds; reader-a/b: the AttachFailed Event's
+  message "attach fs0 to <vm2 node>: Conflict: device ..." (the reason
+  parsed from it), how often the scheduler retries (pod backoff), what
+  the companion pods' FailedScheduling message says (T5 leaves it out
+  after the first Conflict), whether T2/T3 flicker between "waiting
+  (Conflict)" and "attaching" during an attempt.
+- R9: the order and the lines: vm1 "remounted ... read-only", "/dev/pmem0
+  read-only", the pool server's "exclusive false", the attach to vm2, the
+  readers Ready (time: scheduler backoff up to 10 s plus attach; check
+  waits 180 s); T6 "clean" after the downgrade and "superblock written"
+  at the remount; check_writer_leaves's probe of vm1.
+- btrfs: access cached (loop0) on both nodes, the downgrade of btrfs
+  under reader-c (remount read-only; the docs list only the upgrade as
+  ext4/xfs-only), "node mount btrfs rw (cached loop0)" in T4.
+- teardown after each: fs0.raw and fs0.lsa removed, the VMs clean.
+
+5. Requests to other streams
+----------------------------
+MOVE: (a) the views of pool and pool-shared-fs show an allocated pool
+  claim as holding the device ("dax ro share", "shared: reader-a ro")
+  before its Attached condition, and during the scheduler's attempts of
+  a claim that fails; pool-fs uses common.attach_failure/attaching for
+  that; the other cases may want it too (their samples would need the
+  claim status). (b) truth.py of pool-fs: the superblock in fs0.raw by an
+  independent tool, e.g. on the host "dd if=fs0.raw bs=1M skip=2 count=4
+  of=X; /usr/sbin/dumpe2fs -h X" (pfn dataoff 2 MiB) and "blkid -p -O
+  2097152 fs0.raw" (both checked on an image), and the claim status data (singleHost) and the
+  Events of the demo namespace (kubectl get events) if not in it yet.
+  (c) make-samples.py companion(): the uids of the readers' claims are
+  equal ("c1a1%04x" % len(name)); make-samples-pool-fs.py sets its own.
+WIZARD: common.attach_failure, single_host, attaching and the probe kind
+  "events" are general (any pool claim), fsinfo.fs_super reads any
+  block device start (lp0 of the wizard).
+
+6. README section draft (6c, phase B puts it after 6b)
+------------------------------------------------------
+6c. Script 4: pool-fs (fs0 persistent, 512Mi, serial 0xc1ae0001)
+------------------------------------------------------------------
+Any filesystem, read-write: the writer formats fs0 with ext4 (or xfs,
+btrfs: "demo setup pool-fs xfs") through a block lease, then mounts it
+read-write through an fs lease and writes hello.txt; the readers ask for
+it read-only. A reader on the writer's node shares its superblock at
+once; the readers of the other node wait while the writer writes
+(ReadWriteOnce): a single-host filesystem written on one host and read on
+another corrupts or misleads. When the writer leaves, its node turns the
+filesystem read-only and the other node mounts it. The pods use the demo
+image (mkfs.ext4, mkfs.xfs, mkfs.btrfs). S = 0xc1ae0001, the writer on
+vm1, reader-a and reader-b on vm2, reader-c on vm1; the filesystem is at
+/run/cxl/fs/data in the containers.
+Trust: setup configures the driver with fsTypes: [erofs, ext4] (the
+default is erofs only). ext4, xfs and btrfs are not hardened against
+crafted images: a node that mounts them trusts every party that can write
+the device raw (a read-write block claim or lease of it, as the writer's
+in R2, on any node of any cluster that shares the pool, and a read-write
+fs claim). erofs alone trusts nobody (docs/memory/cxl/usage.md,
+Filesystems). Setup prints this note.
+R1 "a writer starts on vm1; it has no CXL memory yet"
+   $ kubectl apply -f pool-fs/writer.yaml
+   T3 "fs0 @pool 512Mi shared persistent", "no claims". T4 no CXL memory.
+   T6 "fs0 512Mi shared persistent free", "attached: nowhere", "no file
+   system (zeros)" (setup removed its files; a re-run finds the last
+   filesystem).
+R2 "the writer asks for the device as a block device"
+   $ kubectl exec writer -- cxl-request request --serial S --mode block
+   As F2 of pool-shared-fs: T1 "lease L Ready block rw (exclusive)",
+   "block /dev/pmem0"; T2 "block rw excl"; T3 "exclusive: writer rw"; T4
+   vm1 "mem0 c1ae0001 512M  region0 pmem 512M", "pmem0 510M no file
+   system (block rw)"; T6 "attached: vm1 exclusive".
+R3 "the writer makes an empty ext4 filesystem on it"
+   $ kubectl exec writer -- /demo/mkfs --type ext4
+   T1 "wrote an empty ext4 of 510 MiB in 0.4 s". T4 "pmem0 510M ext4
+   (block rw)", "open: writer rw" for 3 seconds. T6 'ext4 "demo" 510M,
+   clean', "superblock written 12:01:12": read from the backing file on
+   the host, 2 MiB into the device (zoom fs).
+   Say: mkfs.ext4 makes an image file of the block device's size in the
+   container; the tool writes all of it through the fd of the lease (the
+   container has no device node).
+R4 "the writer mounts it read-write instead"
+   $ kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request
+     request --serial S --shared --mode fs --read-write --name data'
+   T1 "lease L Ready ext4 rw (direct)", "path /run/cxl/fs/data", "attached
+   to vm1 only (ReadWriteOnce)". T2 writer "fs rw (vm1 only)". T3 "writer on
+   vm1 only: writer rw". T4 vm1 "node mount ext4 rw (dax)", "mounted:
+   writer (dax rw)". T5 "vm1 writer asks fs rw share", "writer: fs0 excl:
+   rw ext4" (the controller attaches fs0 to vm1 exclusively for a
+   read-write ext4), "vm1 node mount pmem0 ext4 rw", "vm1 writer: prepared
+   ext4 rw direct", "vm1 writer: mounted data", "vm1 writer: lease Ready
+   fs data". T6 "attached: vm1 exclusive", 'ext4 ... needs recovery' (the
+   journal is in use while a node has it read-write).
+   Say: the lease is one share of fs0, so readers can share it; the
+   attachment is the node's alone: no other host gets fs0 while vm1
+   writes.
+R5 "the writer writes hello.txt"
+   $ kubectl exec writer -- /demo/fswrite "Hello from the writer, $(date +%T)"
+   T1 'wrote /run/cxl/fs/data/hello.txt: "Hello from the writer,
+   12:01:30"'. T6 unchanged: the view reads the superblock only, never
+   the files of ext4 (zoom fs).
+R6 "three readers start: two on vm2, one on vm1"
+   $ kubectl apply -f pool-fs/readers.yaml
+R7 "readers ask to read: vm1's reader at once, vm2's must wait"
+   $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request
+     request --serial S --shared --mode fs --name data --wait 0s; done
+   T1 "reader-c Ready on vm1, next to the writer", "reader-a reader-b
+   waiting: Conflict (N s)". T2 reader-c "fs ro share", reader-a and
+   reader-b "waiting (Conflict)". T3 "shared: reader-c ro", "waiting
+   (Conflict): reader-a reader-b". T4 vm1 "mounted: reader-c (dax),
+   writer (dax rw)" (one superblock: reader-c's bind is read-only), vm2
+   no CXL memory. T5 "reader-a: fs0 not on vm2: Conflict" once per
+   reader: the scheduler allocates their claims again every few seconds
+   and the attach of vm2 fails each time; the trace shows it once. T6
+   "attached: vm1 exclusive".
+   Pause here: nothing reaches vm2 while vm1 writes. Zooms "claim
+   reader-a" (no allocation, or the AttachFailed condition during an
+   attempt), "pod reader-a".
+R8 "the writer adds a line; vm1's reader sees it at once"
+   $ kubectl exec writer -- /demo/fswrite --append "A second line,
+     $(date +%T)"; kubectl exec reader-c -- cat /run/cxl/fs/data/hello.txt
+   T1 'reader-c reads it at once: "A second line, 12:02:10"'.
+   Say: one node, one superblock: the reader sees what the writer wrote,
+   through a read-only bind.
+R9 "the writer is done: vm1 turns the filesystem read-only, vm2's readers mount it"
+   $ kubectl exec writer -- cxl-request release --all
+   T1 "released: L Released", "readers' leases Ready after N s", "vm1:
+   ext4 read-only, pmem0 read-only". T2 three "fs ro share". T3 "shared:
+   reader-a ro, reader-b ro, reader-c ro". T4 both nodes "pmem0 510M ext4
+   (block ro)", "node mount ext4 ro (dax)"; vm2 "mounted: reader-a
+   reader-b (dax)". T5 "vm1 writer: unmounted data", "vm1 node mount now
+   read-only", "vm1 pmem0 read-only", "fs0 on vm1: not exclusive", the
+   attach to vm2, "vm2 pmem0 read-only", "vm2 node mount pmem0 ext4 ro",
+   "vm2 reader-a: lease Ready fs data". T6 "attached: vm1, vm2", 'ext4 ...
+   clean' and the time of the remount.
+   Say: the writer's release synced the ext4 and made it read-only on
+   vm1 (block device too) before the controller let another host in;
+   vm2 reads what vm1 wrote.
+R10 "each reader reads hello.txt; a write fails"
+   $ for r in reader-a reader-b reader-c; do kubectl exec $r -- cat
+     /run/cxl/fs/data/hello.txt; done; kubectl exec reader-a -- sh -c
+     'echo x >> /run/cxl/fs/data/hello.txt'
+   T1 "3 readers read the same 2 lines", "sh: can't create
+   /run/cxl/fs/data/hello.txt: Read-only file system" (the step expects
+   the failure).
+R11 "everything goes away"
+   $ kubectl delete -f pool-fs/
+   T2 empty. T3 "no claims". T4 both "no CXL memory". T6 "attached:
+   nowhere", free, 'ext4 "demo" 510M, clean' stays for the next run.
+xfs: as ext4 (direct, dax), T6 'xfs "demo" 510M'. btrfs: no DAX, so
+access cached: T4 "node mount btrfs rw (cached loop0)", "mounted:
+reader-c (cached), writer (cached rw)", T5 "node mount loop0 btrfs rw",
+T6 'btrfs "demo" 510M, generation N' (each commit increments it).
+Section 8 additions:
+- pool-fs: readers stay "waiting (Conflict)" after R9: the writer's
+  release has not finished (T1 says so); "demo zoom mounts vm1" shows the
+  superblock still rw while a file of the writer is open. "demo zoom pod
+  reader-a" shows the scheduler's reason.
+- pool-fs: R3 fails with "mkfs.xfs failed" or R4 does not mount: the
+  kernel of the VMs lacks a feature of the image's mkfs ("demo zoom
+  kernel vm1").
+Section 7 additions: "demo zoom fs" of pool-fs prints the superblock
+(type, size, label, uuid; ext4 state, needs_recovery, mounts, last write,
+features; btrfs generation), no files; "demo zoom bytes 1024" shows the
+ext4 superblock.
+
+7. Phase B plan
+---------------
+After the go: re-read each shared file, apply its hunks with Edit (one
+hunk per Edit, adapted to the current text), file by file: Dockerfile,
+cxl-demo.py, probe.py, common.py, fsinfo use in views.py, steps.py,
+zoom.py, selftest.py, bin/demo, setup, teardown, README; then
+make-samples-pool-fs.py again, selftest --write (renderings.txt), the
+desk checks (py_compile, bash -n, shellcheck, sh -n of the tools,
+selftest, plain ASCII), and this file updated.

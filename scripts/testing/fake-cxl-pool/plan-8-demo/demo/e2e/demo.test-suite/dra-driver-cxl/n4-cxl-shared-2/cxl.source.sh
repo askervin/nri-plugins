@@ -1,1 +1,0 @@
-../../../../../../../../../test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/cxl.source.sh

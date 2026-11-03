@@ -1,0 +1,29 @@
+1792700001.000000 vm.events cxl-demo   Pod   writer   Scheduled   Successfully assigned cxl-demo/writer to n4-cxl-shared-1-fedora-43-containerd
+1792700020.400000 vm.events cxl-demo   Pod   cxl-lease-3f2a91c0   BindingConditionsPending   waiting for binding conditions
+1792700100.000000 vm.events cxl-demo   Pod   reader-a   Scheduled   Successfully assigned cxl-demo/reader-a to n4-cxl-shared-2-fedora-43-containerd
+1792700101.000000 vm.events cxl-demo   Pod   reader-b   Scheduled   Successfully assigned cxl-demo/reader-b to n4-cxl-shared-2-fedora-43-containerd
+1792700102.000000 vm.events cxl-demo   Pod   reader-c   Scheduled   Successfully assigned cxl-demo/reader-c to n4-cxl-shared-1-fedora-43-containerd
+1792700121.300000 vm.events cxl-demo   Pod   cxl-lease-e0c4d3f1   Scheduled   Successfully assigned cxl-demo/cxl-lease-e0c4d3f1 to n4-cxl-shared-1-fedora-43-containerd
+1792700121.600000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   BindingConditionsPending   waiting for binding conditions
+1792700121.900000 vm.events cxl-demo   ResourceClaim   cxl-lease-8c1d02e4   AttachFailed   attach fs0 to n4-cxl-shared-2-fedora-43-containerd: Conflict: device "fs0" is attached exclusively to "n4-cxl-shared-1-fedora-43-containerd"
+1792700122.100000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   BindingConditionsPending   waiting for binding conditions
+1792700122.200000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   FailedScheduling   running PreBind plugin "DynamicResources": claim cxl-demo/cxl-lease-8c1d02e4: binding failed: cxl-pool.nri.io/AttachFailed
+1792700122.400000 vm.events cxl-demo   ResourceClaim   cxl-lease-51aa7b09   AttachFailed   attach fs0 to n4-cxl-shared-2-fedora-43-containerd: Conflict: device "fs0" is attached exclusively to "n4-cxl-shared-1-fedora-43-containerd"
+1792700122.700000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   FailedScheduling   running PreBind plugin "DynamicResources": claim cxl-demo/cxl-lease-51aa7b09: binding failed: cxl-pool.nri.io/AttachFailed
+1792700131.600000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   BindingConditionsPending   waiting for binding conditions
+1792700131.900000 vm.events cxl-demo   ResourceClaim   cxl-lease-8c1d02e4   AttachFailed   attach fs0 to n4-cxl-shared-2-fedora-43-containerd: Conflict: device "fs0" is attached exclusively to "n4-cxl-shared-1-fedora-43-containerd"
+1792700132.100000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   BindingConditionsPending   waiting for binding conditions
+1792700132.200000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   FailedScheduling   running PreBind plugin "DynamicResources": claim cxl-demo/cxl-lease-8c1d02e4: binding failed: cxl-pool.nri.io/AttachFailed
+1792700132.400000 vm.events cxl-demo   ResourceClaim   cxl-lease-51aa7b09   AttachFailed   attach fs0 to n4-cxl-shared-2-fedora-43-containerd: Conflict: device "fs0" is attached exclusively to "n4-cxl-shared-1-fedora-43-containerd"
+1792700132.700000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   FailedScheduling   running PreBind plugin "DynamicResources": claim cxl-demo/cxl-lease-51aa7b09: binding failed: cxl-pool.nri.io/AttachFailed
+1792700141.600000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   BindingConditionsPending   waiting for binding conditions
+1792700141.900000 vm.events cxl-demo   ResourceClaim   cxl-lease-8c1d02e4   AttachFailed   attach fs0 to n4-cxl-shared-2-fedora-43-containerd: Conflict: device "fs0" is attached exclusively to "n4-cxl-shared-1-fedora-43-containerd"
+1792700142.100000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   BindingConditionsPending   waiting for binding conditions
+1792700142.200000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   FailedScheduling   running PreBind plugin "DynamicResources": claim cxl-demo/cxl-lease-8c1d02e4: binding failed: cxl-pool.nri.io/AttachFailed
+1792700142.400000 vm.events cxl-demo   ResourceClaim   cxl-lease-51aa7b09   AttachFailed   attach fs0 to n4-cxl-shared-2-fedora-43-containerd: Conflict: device "fs0" is attached exclusively to "n4-cxl-shared-1-fedora-43-containerd"
+1792700142.700000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   FailedScheduling   running PreBind plugin "DynamicResources": claim cxl-demo/cxl-lease-51aa7b09: binding failed: cxl-pool.nri.io/AttachFailed
+1792700181.900000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   FailedScheduling   0/3 nodes are available: 1 resourceclaim not available on the node, 2 node(s) didn't satisfy plugin(s) [NodeAffinity]. deallocation of ResourceClaim completed, preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.
+1792700186.100000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   BindingConditionsPending   waiting for binding conditions
+1792700186.300000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   BindingConditionsPending   waiting for binding conditions
+1792700190.500000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   Scheduled   Successfully assigned cxl-demo/cxl-lease-8c1d02e4 to n4-cxl-shared-2-fedora-43-containerd
+1792700191.500000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   Scheduled   Successfully assigned cxl-demo/cxl-lease-51aa7b09 to n4-cxl-shared-2-fedora-43-containerd

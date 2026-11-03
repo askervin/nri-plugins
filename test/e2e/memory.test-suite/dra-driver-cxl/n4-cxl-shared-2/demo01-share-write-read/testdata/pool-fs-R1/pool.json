@@ -1,0 +1,22 @@
+{
+ "device": {
+  "allocation": null,
+  "attachments": [],
+  "lsaPath": "/tmp/fake-cxl-pool/fs0.lsa",
+  "name": "fs0",
+  "path": "/tmp/fake-cxl-pool/fs0.raw",
+  "persistent": true,
+  "scope": "pool",
+  "serial": "0xc1ae0001",
+  "shared": true,
+  "size": 536870912,
+  "state": "free",
+  "static": true
+ },
+ "fsOffset": 2097152,
+ "super": {
+  "error": "",
+  "signatures": [],
+  "type": "zeros"
+ }
+}

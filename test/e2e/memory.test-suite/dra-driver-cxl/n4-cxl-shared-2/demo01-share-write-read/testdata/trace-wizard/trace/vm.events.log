@@ -1,0 +1,4 @@
+1792700001.300000 vm.events cxl-demo   Pod   w1   Scheduled   Successfully assigned cxl-demo/w1 to n4-cxl-shared-2-fedora-43-containerd
+1792700010.300000 vm.events cxl-demo   Pod   w4   BindingConditionsPending   waiting for binding conditions
+1792700021.200000 vm.events cxl-demo   ResourceClaim   w5   AttachFailed   Conflict: fs0 is attached exclusively to n4-cxl-shared-1-fedora-43-containerd
+1792700030.000000 vm.events cxl-demo   Pod   w7   FailedScheduling   0/3 nodes are available: 3 cannot allocate all claims.

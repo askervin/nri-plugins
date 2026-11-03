@@ -1,0 +1,922 @@
+plan-8 20-official: status of stream WIZARD
+===========================================
+D = test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read,
+N = nri-plugins. Design 22-official-design.txt section 4 (wizard), 5-7.
+
+Phase A done (2026-11-03): new files only
+=========================================
+No shared file of D edited; nothing committed, stashed, reset or
+restored; no VM used. Desk checks of the new files, all pass:
+python3 -m py_compile of bin/wizard.py, wizard_views.py, wizard_check.py,
+tools/cxl-wizard.py, testdata/make-wizard-samples.py; bash -n and
+shellcheck of bin/wizard-rules.sh; "python3 bin/wizard.py check" (25
+accepted and 37 refused rule rows, every YAML read back equal, the
+question screens and the views of the samples within 50 x 10, the states
+of the W8 objects, the 71 rows of wizard-rules.sh); "bin/wizard-rules.sh
+--dry-run" (51 rows ok); plain ASCII. The current "demo selftest" still
+passes with the new testdata/ directories (182 renderings; the wizard
+samples render through the generic views until phase B dispatches them).
+The pod tool was run at the desk with files as devices (dax write/read,
+fs write/read, mkfs ext4 on a device node, mkfs btrfs and ext4 through fd
+3, a read-only fd refused with EBADF, xfs with its protofile accepted by
+mkfs.xfs 6.19).
+
+1. Decisions (what the design leaves to the stream)
+---------------------------------------------------
+- Devices of demo setup wizard (design section 4) and their serials:
+  vm2's local 1Gi (0xc100e2e1 in the VMs) and vm1's local 256Mi (its
+  serial from the server, dra-local-find), both sliced (no
+  sharedDevices); lp0 512Mi persistent local of vm2, serial 0xc100f5e1,
+  through a second fake-cxl-pool-server "local-pmem" (port 9912, --hosts
+  VM2, --control hmp, --slots cxlsw_ds3_usrp0hb1, --local-devices no,
+  DRA_UNCONTROLLED_POOLS, as test21); pool A (the default server, QMP,
+  cabled to vm1 and vm2) with --slots "*hb0 cxlsw_ds[012]_usrp0hb1": hb0
+  has two pool ports and the local devices' port (ds3), so three pool
+  devices on one node need hb1 too, and ds3 of hb1 is local-pmem's on
+  vm2. pooled0 512Mi exclusive volatile 0xc1ee0001, shared0 256Mi shared
+  volatile 0xc1ae0001, fs0 512Mi shared persistent 0xc1ae0002 (its files
+  removed first). fsTypes: [erofs, ext4, xfs, btrfs].
+- Formatting: manifests/wizard/formatter.yaml, a template (placeholders
+  __NAME__, __CLASS__, __DRIVER__, __SERIAL__, __KEY__, __NODE__,
+  __TEXT__, valid YAML before and after): a ResourceClaim of the whole
+  device in mode block (writable, exclusive) and a pod of the demo image
+  on vm2 that zeroes the first MiB and runs mkfs.ext4 -q -F -b 4096 -d
+  /tmp/fs (hello.txt "Hello from the wizard setup, HH:MM:SS") on
+  $CXL_<KEY>_PATH, then "writer exit N" (fs-writer-wait of fs.source.sh
+  waits for it). One for fs0 (cxl-pool-persistent), one for lp0
+  (cxl-local-persistent); setup deletes pod and claim and waits until fs0
+  is free and lp0 has no region. The demo image has e2fsprogs already
+  (FSCASE's Dockerfile).
+- Claims are what the lease broker makes for the same request
+  (companionRequest/companionDevices of broker.go): persistent -> class
+  cxl-local-persistent / cxl-pool-persistent; volatile and shared, or a
+  serial of a shared device -> cxl-*-shared; else cxl-local / cxl-pool.
+  shares "1" for --sharing shared; memory SIZE only on cxl-local and
+  cxl-pool; a serial selector device.attributes["<driver>"].serial ==;
+  --source any is firstAvailable [local, pool] with one MemoryConfig per
+  driver for "mem/local" and "mem/pool" (sample local-then-pool-dax.yaml).
+  The MemoryConfig always names the mode; readOnly true for read-only dax
+  and block; fs always has readOnly (false is the opt-in), fsType,
+  access, path only when chosen; container.steering.policy when not none.
+- A shared volatile device taken exclusively needs its serial (as
+  cxl-request: without --shared and --serial a request is of the
+  non-shared classes); --size of shared and persistent devices is refused
+  (design: SIZE is a slice or the least size of an exclusive pool
+  device), although the broker would turn it into a size selector.
+- A SIZE that is not whole memory blocks is accepted (the request policy
+  rounds it up) with a note of the slice it gets.
+- Command of the container: bin/tools/cxl-wizard.py (new, ConfigMap
+  demo-tools): env, read (dax: the string at 0; block: the type on the
+  device; fs: hello.txt), write TEXT (dax at 0; fs hello.txt), mkfs TYPE
+  (erofs, ext4, xfs with a protofile of hello.txt, btrfs; on the device
+  node of a claim, through fd 3 of a lease: an image of the device's
+  size written whole). write and mkfs on a read-only device are allowed
+  with a note: the kernel refuses them, which shows read-only; read and
+  write of numa, write of block, mkfs of non-block are refused.
+- Claims: the pod runs "sh -c 'python3 /demo/cxl-wizard.py "$@"; idle'"
+  (output in the pod's log). Leases: a ResourceClaimTemplate <name>-lease
+  of cxl-lease per object (its generated claim carries the labels too)
+  and an idle pod that tails /tmp/wizard.log into its log; once it runs,
+  the wizard runs "kubectl exec NAME -- python3 /demo/cxl-wizard.py lease
+  <cxl-request args> -- CMD": cxl-request request ARGS --request-id NAME
+  --wait 0s (printed), then in the background (new session) the same with
+  --wait 600s --exec cxl-wizard.py CMD. The lease's fs name is the object
+  name (/run/cxl/fs/NAME): --path is refused for leases, --steering too
+  (cxl-request has none).
+- Questions also accept "default" for --access and --path; the
+  interactive mode numbers the valid choices, marks the default "*", and
+  lists the others grouped by the reason (wrapped at 50 columns).
+- new prints "NAME: Running|Ready|waiting: why|Pending: why" last (the
+  scripted set checks it); it waits up to DEMO_WIZARD_WAIT (30) s and
+  stops early when the scheduler cannot allocate or the attach failed.
+- Every file is run/wizard/<name>.yaml (a comment header of what it asks
+  for in words, the warnings and notes, then the objects; the YAML is
+  written by wizard.py's own block-style writer, standard library only)
+  and is what kubectl apply gets in vm2 (stdin). delete removes the pods,
+  then the claims and templates by label cxl-demo/wizard, waits until no
+  lease companion of them is left, and removes the files.
+- Views of the case (new bin/wizard_views.py, dispatched from views.py in
+  phase B): T2 "POD NOD STATE CLAIM MEMORY" with "claim" or the lease id
+  and e.g. "numa 256Mi c100e2e1", "dax rw excl shared0", "fs rw share
+  fs0", "block rw excl lp0", "waiting (Conflict)"; T3 a row per published
+  memdev (local first) with its holders ("w1 256Mi", "w4 rw share") and a
+  "waiting:" row (claim and device or reason); T4 a row per memdev of each
+  node (regions, kmem node, dax, pmem block device with fs and ro/rw) and
+  a "used:" row (mappers, openers, lease binds, node mounts): the generic
+  T4 needs 8 more rows for the wizard's devices; T6 the devices of both
+  servers with attachments and the filesystem state from the backing
+  file through FSCASE's bin/fsinfo.py ("ext4 clean", "ext4 needs
+  recovery"). T5 is unchanged (generic).
+- Samples: testdata/make-wizard-samples.py (new; loads make-samples.py
+  with importlib, no edit of it) writes wizard-W0 (after setup),
+  wizard-W8 (eight objects in the states the scripted set shows, the
+  claims made by wizard.claim_doc) and trace-wizard.
+
+2. New files (phase A)
+----------------------
+D/bin/wizard.py            the wizard: rules, YAML, kubectl in vm2,
+                           interactive, new/list/yaml/delete, "check"
+D/bin/wizard_views.py      T2, T3, T4, T6 of the case, collect_t6
+D/bin/wizard_check.py      the desk checks ("wizard.py check")
+D/bin/wizard-rules.sh      the scripted set (live; --dry-run at the desk)
+D/bin/tools/cxl-wizard.py  the pod tool (ConfigMap demo-tools)
+D/manifests/wizard/formatter.yaml   the setup's formatter template
+D/testdata/make-wizard-samples.py, wizard-W0/, wizard-W8/, trace-wizard/
+Depends on FSCASE's new D/bin/fsinfo.py (fs_super, READ_LEN).
+
+3. Edits of the shared files (phase B): file / function / change
+----------------------------------------------------------------
+Each a small Edit hunk, the file re-read first; FSCASE edits the same
+places (CASES, usage, setup branches, PMEM_CASE, POOL_DEVICE, the
+fsTypes config): adapt to their text.
+bin/demo
+- CASES: add wizard.
+- usage(): after the pool-shared-fs lines:
+    wizard [new OPTIONS|list|yaml NAME|delete NAME...|--all]
+                             the wizard (T1): a pod and a claim or lease of
+                             any device of the case, its YAML; "demo
+                             wizard new --help" lists the options
+- main(): "wizard) exec python3 "$DEMO_BIN/wizard.py" "$@";;".
+- cmd-reset(): after the case check: [ "$case" != wizard ] || exec
+  python3 "$DEMO_BIN/wizard.py" delete --all.
+- print-commands needs nothing (T1 "demo wizard").
+bin/views.py
+- docstring: case list with wizard; CASES: add "wizard".
+- imports: "import wizard_views as wv" after "import common as c".
+- render_t2, render_t3, render_t4: first line "if state.get("DEMO_CASE")
+  == "wizard": return wv.render_tN(data, state, now, stale)".
+- render_t6: the same before the pool_case test.
+- collect(): before "if view == "t6" and pool_case(state):": "if view ==
+  "t6" and state.get("DEMO_CASE") == "wizard": return wv.collect_t6(state)".
+bin/zoom.py
+- docstring and the "demo not set up" text: wizard.
+- companions(): also the objects labeled cxl-demo/wizard=POD that are
+  not of class cxl-lease (a wizard pod's own claim and the pod itself),
+  so that "zoom claim wN" shows the ResourceClaim and "zoom pod wN" why
+  it waits; zoom_claim prints "(lease ID)" only for leases.
+- main, env: for the wizard case "kubectl exec POD -- sh -c 'python3
+  /demo/cxl-wizard.py env; [ -z "$CXL_LEASE_SOCKET" ] || /demo/env'".
+- fs and bytes: the wizard case as pool-fs (fsinfo.details of fs0's
+  block device; bytes of the block device in fs0.raw), the conditions of
+  FSCASE extended to wizard.
+bin/selftest.py
+- docstring: the wizard checks.
+- "import wizard_check" after "import views"; new wizard_test(): runs
+  wizard_check.yaml_scalar_test, rule_test, question_test, status_test,
+  script_test and adds wizard_check.failures to failures; main() calls
+  it. The views of wizard-W0/W8 and trace-wizard are rendered by
+  render_scenarios (the dispatch above). renderings.txt again with
+  --write.
+image/Dockerfile: nothing (FSCASE adds e2fsprogs, xfsprogs, btrfs-progs).
+common.py, probe.py, steps.py: nothing.
+e2e/.../test90-demo-setup/code.var.sh
+- header: the wizard case (devices, local-pmem, formatter, fsTypes).
+- the DEMO_DIR check message: wizard in the case list.
+- constants: LP_SERVER=local-pmem LP_PORT=9912 LP_DEVICE=lp0
+  LP_SERIAL=0xc100f5e1 POOLED_SERIAL=0xc1ee0001 FS0_SERIAL=0xc1ae0002
+  WIZARD_FS_TYPES="erofs, ext4, xfs, btrfs"; DEMO_TOOLS gains cxl-wizard.py.
+- preconditions (wizard): fs-kernel-require for VM2 and VM1; every root
+  decoder of VM2 and VM1 has cap_pmem (the loop of test21, both VMs).
+- server: elif wizard: rm -f fs0.raw fs0.lsa of $POOL_DIR and
+  /tmp/fake-cxl-pool-local-pmem/lp0.{raw,lsa}; DRA_UNCONTROLLED_POOLS=(
+  "$LP_SERVER"); pool-server-start --slots "*hb0 cxlsw_ds[012]_usrp0hb1"
+  with pooled0, shared0, fs0 (section 1); pool-device-files fs0;
+  POOL_DEVICE=fs0 POOL_DEVICE_FILES="fs0 data lsa"; SERIAL=$FS0_SERIAL.
+- driver configuration: wizard sets DRA_DRIVER_CONFIG (or the helm
+  values file, as the local branch) to "fsTypes: [erofs, ext4, xfs,
+  btrfs]" and prints:
+    demo setup: NOTE: the nodes mount ext4, xfs and btrfs too, types that are not hardened
+      against crafted images: this trusts every party that can write fs0 or lp0 raw (a
+      read-write block claim or lease of it, on any node of any cluster that shares the pool,
+      and a read-write fs claim); erofs alone, the default, trusts nobody
+      (docs/memory/cxl/usage.md, Filesystems)
+- after dra-install (wizard): dra-local-device "$VM2" and "$VM1"
+  (VM2_LOCAL_SERIAL, VM1_LOCAL_SERIAL); pool-server-start --name
+  local-pmem --port 9912 --hosts "$VM2" --control hmp --slots
+  cxlsw_ds3_usrp0hb1 --local-devices no with lp0 (512Mi, shared false,
+  persistent true, serial 0xc100f5e1); pool-device-files --pool
+  local-pmem lp0 (append to POOL_DEVICE_FILES); pool-host-client --pool
+  local-pmem -o json attach lp0 --host $POOL_VM2_NAME --owner demo:wizard;
+  dra-wait VM2 lp0-published resourceslices "device('memdev-c100f5e1',
+  '$DRA_LOCAL_DRIVER', '$POOL_VM2_NAME') is not None and attr(...,
+  'persistent') == True" 360.
+- images: the demo image for wizard too (PMEM_CASE of FSCASE gains
+  wizard), the pause image for the lease companions.
+- after the ConfigMap and the kubeconfig (wizard): wizard-format NAME
+  SERIAL CLASS DRIVER for fs0 and lp0: sed of the formatter template,
+  dra-apply VM2, fs-writer-wait VM2 format-NAME 240, dra-delete-pod,
+  dra-delete resourceclaim --wait=true; then retry-until 90 s fs0 free
+  and attached nowhere (pool-host-client devices fs0), and lp0 without a
+  region (pool-cxl-wait, as region-wait no of test21).
+- trace: the block udev collectors for wizard too (PMEM_CASE).
+- state.env (wizard): VM2_LOCAL_SERIAL, VM1_LOCAL_SERIAL, LP_SERVER,
+  LP_PORT, LP_URL=http://127.0.0.1:9912, LP_DEVICE, LP_SERIAL,
+  LP_SERVER_PID (POOL_SERVER_PIDS[local-pmem]), FS_TYPES="erofs ext4 xfs
+  btrfs", FS_SETUP=ext4, FS_SERIALS="0xc1ae0002 0xc100f5e1", and
+  POOL_DEVICE=fs0, SERIAL=0xc1ae0002, DEMO_IMAGE the demo image.
+e2e/.../test91-demo-teardown/code.var.sh
+- header: the wizard case (its claims and templates, local-pmem, lp0).
+- defaults LP_SERVER_PID="" LP_SERVER=local-pmem LP_PORT=9912 before the
+  state is read; after the POOL_SERVER_PID checks: if LP_SERVER_PID runs,
+  POOL_SERVERS=(fake-cxl-pool if POOL_SERVER_PID, local-pmem) with
+  POOL_SERVER_PIDS and POOL_SERVER_PORTS, so that pool-cleanup releases,
+  detaches and stops both; if not but port 9912 is busy, its pid from ss.
+- the pods and leases: also "kubectl delete resourceclaims,
+  resourceclaimtemplates -n NS -l 'app in (cxl-demo-wizard,
+  cxl-demo-setup)' --wait=true --timeout=90s".
+- the shared-device unconfigure only when DEMO_CASE is not wizard (its
+  local devices are sliced); after dra-uninstall, wizard: dra-local-detach
+  "$VM2" and "$VM1".
+- the mounts check also of $DRA_LOCAL_MOUNT_DIR (dra-fs-mounts VM DIR):
+  lp0's node mounts are under cxl.nri.io/mounts.
+- the files: POOL_DEVICE_FILES has those of fs0 and lp0 (unchanged code).
+README.txt: the intro list, section 2 "demo setup wizard" (devices,
+  formatter, fsTypes and the trust note, "demo reset wizard" = demo
+  wizard delete --all), section 3 T1 "demo wizard", the new section 6d
+  (draft in section 7 below), section 7 zooms claim/pod/env of wizard
+  pods, section 8 entries, section 9 timings (RUN), section 10 the new
+  files.
+
+4. To check live (stream RUN), wizard
+-------------------------------------
+- setup: both servers up (9909, 9912), lp0 published by cxl.nri.io of vm2
+  (hold-back up to 5 min), the two formatters "writer exit 0", fs0 free,
+  the trust note, state.env keys; t2-t6 of W0 against the truth.
+- "bin/wizard-rules.sh" (it starts and ends with delete --all), twice in
+  a row; captures and truth at: after line 53 (w8, group 1 full), after
+  w13 (waiting for shared0), after "await w13", after w18 (waiting,
+  Conflict), after "await w18", after w19, after w24 (two writers of lp0
+  on vm2), after w29. Where a row fails, "--from LINE" goes on from it.
+- To look at: the YAML of every row is accepted by the apiserver; the
+  firstAvailable claims (w7, w29) get local resp. pool; the lease tool
+  (python3 in the demo image, setsid of the background cxl-request); the
+  pod logs of read/write/mkfs; mkfs.xfs -p protofile on lp0 and w26
+  reading hello.txt (mkfs.xfs 7.0.1 of the image: not tried at the desk;
+  a failure is "mkfs.xfs failed" in w25's log); mkfs through a lease (w27: 510 MiB
+  through fd 3); T4 rows with all devices attached; T6 "needs recovery"
+  while a node writes; the teardown releases lp0 (local-pmem) and both
+  local devices, the VMs clean.
+
+5. Requests to other streams
+----------------------------
+MOVE: truth.py of the wizard case: the second server's devices and
+  attachments (LP_URL), the backing files of fs0 and lp0 (the superblock
+  through fsinfo, no files), and the objects labeled app=cxl-demo-wizard
+  (they are in kubectl get pods,resourceclaims of the namespace already)
+  plus resourceclaimtemplates.
+FSCASE: wizard_views and the wizard's setup use your fsinfo.py
+  (fs_super, READ_LEN) and PMEM_CASE/POOL_DEVICE of the setup; please
+  keep those names, or tell me.
+
+6. Phase B plan
+---------------
+After the go: re-read each shared file, apply its hunks of section 3 with
+Edit, file by file: bin/demo, views.py, zoom.py, selftest.py, setup,
+teardown, README; then selftest --write, py_compile of bin/*.py and the
+tools, bash -n and shellcheck of bin/demo and bin/wizard-rules.sh,
+shellcheck -s bash -e SC2154,SC2034 of both code.var.sh, wizard.py check,
+wizard-rules.sh --dry-run, plain ASCII; this file updated.
+
+7. README section draft (6d, after FSCASE's 6c)
+-----------------------------------------------
+6d. Script 5: wizard (every kind of device, any claim)
+-------------------------------------------------------
+Not a script but a wizard: a few questions choose a pod and its claim (or
+lease) among the combinations that the driver accepts, show the YAML,
+create it in the demo namespace and delete it again. To demonstrate a
+case, and to show what its YAML looks like. demo setup wizard makes every
+kind of device:
+  vm2's local 1Gi and vm1's local 256Mi CXL memory devices: sliced, a
+      claim gets a slice of its own (or the whole device);
+  lp0 (0xc100f5e1): a persistent local memdev of vm2, 512Mi, through a
+      second fake-cxl-pool-server (local-pmem) that has no pool
+      controller, so the node's driver publishes it as local;
+  pool A (cabled to vm1 and vm2): pooled0 (512Mi, exclusive, volatile,
+      0xc1ee0001), shared0 (256Mi, shared, volatile, 0xc1ae0001), fs0
+      (512Mi, shared, persistent, 0xc1ae0002).
+Setup formats fs0 and lp0 with an ext4 holding hello.txt (a block writer
+pod of the demo image, manifests/wizard/formatter.yaml), so that fs
+claims find something, and configures the driver with fsTypes: [erofs,
+ext4, xfs, btrfs]. Trust: ext4, xfs and btrfs are not hardened against
+crafted images: a node that mounts them trusts every party that can write
+the device raw (a read-write block claim or lease of it, on any node of
+any cluster that shares the pool, and a read-write fs claim); erofs alone,
+the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems).
+Setup prints this note.
+T1 runs "demo wizard": fifteen questions, each with its choices numbered,
+the default marked "*" (Enter takes it), and the choices that the driver
+refuses with the reason ("- numa, dax: a persistent device needs mode
+block or fs"); q stops. Then what it asks for in words, the warnings
+(the pod will wait: why), the same as a command line, and "Enter create,
+y the YAML, q quit". The same without questions:
+  demo wizard new [OPTIONS] [--dry-run]   (--dry-run prints the YAML)
+  demo wizard list                        name, kind, state, node,
+                                          device, mode, access
+  demo wizard yaml NAME                   run/wizard/NAME.yaml
+  demo wizard delete NAME...|--all        pods, claims, leases gone
+The options, in the order of the questions ("demo wizard new --help"):
+  --kind claim|lease     the pod has a ResourceClaim of the device, or a
+                         lease claim and the wizard runs cxl-request in it
+  --source local|pool|any        any: firstAvailable, local then pool
+  --memory volatile|persistent
+  --sharing exclusive|shared     shared: capacity shares "1"
+  --mode numa|dax|block|fs
+  --size whole|SIZE              a slice of a local memdev, or the least
+                                 size of an exclusive pool device
+  --serial any|SERIAL            the published devices that fit are listed
+  --read-only|--read-write       dax, block, fs (fs: read-only unless asked)
+  --fs-type detect|TYPE  --access default|direct|cached  --path default|PATH
+  --steering none|auto|first-dram|...   (numa, claims)
+  --node vm1|vm2|any
+  --command idle|env|read|write TEXT|mkfs TYPE   (/demo/cxl-wizard.py)
+  --name NAME                    default w<N>
+The rules are the driver's (docs/memory/cxl, pkg/cxl/config/device.go):
+- volatile local (sliced): numa (default) or dax, readOnly with dax only,
+  a slice of SIZE (rounded up to memory blocks) or the whole device;
+- volatile pool, exclusive device (pooled0): numa or dax, the whole
+  device, SIZE its least size;
+- volatile pool, shared device (shared0): dax only, exclusively (by its
+  serial) or one share;
+- persistent (lp0, fs0): block or fs only, the whole device, exclusively
+  or one share; block read-write only exclusively; fs read-only by
+  default, read-write by opt-in (not erofs); a shared persistent device is
+  read-write on one node at a time: a pod of another node waits
+  (AttachFailed Conflict); access direct for erofs, ext4, xfs only;
+- a lease: the same rules, through cxl-request (no path: its filesystem is
+  at /run/cxl/fs/NAME; no steering; a request needs a size, a serial or a
+  share; a local device only in a pod of its node).
+A choice that the devices cannot satisfy now is taken with a warning,
+and the pod (or lease) waits: that is how waiting is shown.
+Point at: T1 the question screens and the YAML (the comment header says
+in words what it asks for); T2 the wizard's pods: "claim" or the lease id
+and what it got ("numa 256Mi c100e2e1", "dax rw excl shared0", "fs rw
+share fs0", "block rw excl lp0", "waiting (Conflict)"); T3 every device
+with its holders and the waiting claims; T4 both nodes, a row per memdev
+(region, kmem node, dax device, pmem block device with its filesystem and
+ro/rw) and who uses it; T5 the trace; T6 both pool servers: devices,
+attachments (exclusive), the filesystem state of fs0 and lp0 in their
+backing files ("ext4 clean", "ext4 needs recovery" while a node writes).
+A walk (bin/wizard-rules.sh runs all of it and checks each result):
+  demo wizard new --name w1 --source local --mode numa --size 256Mi --node vm2
+      -> w1: Running; T2 "numa 256Mi c100e2e1", T4 "region0 256M kmem node2"
+  demo wizard new --name w12 --source pool --mode dax --serial 0xc1ae0001 --node vm1 --command write "Hello"
+  demo wizard new --name w13 --kind lease --source pool --sharing shared --read-only --serial 0xc1ae0001 --node vm2 --command read
+      -> w13: waiting: cannot allocate (w12 has shared0 exclusively)
+  demo wizard delete w12   -> w13 Ready, its log reads "Hello"
+  demo wizard new --name w18 --source pool --memory persistent --sharing shared --mode fs --read-write --serial 0xc1ae0002 --node vm1
+      -> waits while another node has fs0 (AttachFailed Conflict), then
+         vm1 alone has it read-write (T6 "vm1 exclusive; ext4 needs recovery")
+  demo wizard yaml w18     -> the claim and the pod
+  demo wizard delete --all
+"demo reset wizard" is "demo wizard delete --all".
+Timings: (RUN measures them).
+Section 8 additions:
+- A wizard pod stays Pending or "waiting": the warning of "demo wizard
+  new" said why; "demo zoom pod wN" (the scheduler), "demo zoom claim wN"
+  (the claim and its allocation), "kubectl logs wN" in vm2 (the tool's
+  output; of a lease pod: the background cxl-request).
+Section 10 additions: bin/wizard.py (the wizard), bin/wizard_views.py
+  (its views), bin/wizard_check.py ("demo wizard check" at the desk, part
+  of selftest), bin/wizard-rules.sh (the scripted set), bin/tools/
+  cxl-wizard.py (the pod tool), manifests/wizard/formatter.yaml,
+  testdata/make-wizard-samples.py, run/wizard/ (the YAML of each object).
+
+WIZARD phase B done (2026-11-03)
+================================
+The shared files carry the wizard's hunks (small Edits, each file re-read
+first, next to FSCASE's pool-fs hunks and MOVE's fixes). Nothing
+committed, stashed, reset or restored; no VM used.
+
+8. What phase B changed (as planned in section 3, with these adaptations)
+-------------------------------------------------------------------------
+bin/demo: CASES gains wizard (after FSCASE's pool-fs); the usage "setup"
+  line and the wizard lines; main routes "wizard" to bin/wizard.py;
+  cmd-reset of wizard is "wizard.py delete --all". FSCASE's cmd-setup
+  refuses a TYPE for wizard, as for every case but pool-fs.
+bin/views.py: docstring, "import wizard_views as wv", CASES gains wizard;
+  render_t2, render_t3, render_t4, render_t6 dispatch to wv for the
+  wizard case; collect() t6 of wizard is wv.collect_t6.
+bin/zoom.py: docstring; companions() also gives a wizard pod and its own
+  claim (not its lease template's claim); zoom claim prints "(lease ID)"
+  only for leases; zoom pod says "pod" for a non-companion; zoom env of
+  the wizard prints the container's CXL_* (cxl-wizard.py env) and, in a
+  lease pod, /demo/env; zoom fs and bytes of wizard as of pool-fs (fs0,
+  fsinfo); the "demo not set up" text.
+bin/selftest.py: docstring; "import wizard_check"; wizard_test() runs
+  the wizard's checks (rules, YAML, question screens, states, scripted
+  set) and adds their failures; the wizard samples render with the other
+  scenarios. renderings.txt written again (--write).
+test90-demo-setup/code.var.sh: header and the case lists; PMEM_CASE
+  (FSCASE's) gains wizard (demo image, block udev trace); the wizard's
+  constants, DEMO_TOOLS += cxl-wizard.py, wizard-format(); preconditions
+  fs-kernel-require and cap_pmem of every root decoder of VM2 and VM1;
+  the server branch (pooled0, shared0, fs0; --slots "*hb0
+  cxlsw_ds[012]_usrp0hb1"; DRA_UNCONTROLLED_POOLS=(local-pmem);
+  POOL_DEVICE=fs0); SERIAL of fs0, DRA_DRIVER_CONFIG "fsTypes: [erofs,
+  ext4, xfs, btrfs]" (set directly, as FSCASE's pool-fs branch) and the
+  trust NOTE; after dra-install the local devices of VM2 and VM1, the
+  local-pmem server with lp0 attached to VM2 and its publication (360
+  s); after the labels the two formatters, fs0 free, lp0 without region;
+  the state.env keys of section 3, lists comma-separated (FS_TYPES,
+  FS_SERIALS: printf %q escapes spaces, which common.load_state does not
+  undo; wizard.py reads the commas, the samples were made again).
+test91-demo-teardown/code.var.sh: header; LP_SERVER, LP_PORT,
+  LP_SERVER_PID (from the state, else the pid on port 9912); both servers
+  in POOL_SERVERS for pool-cleanup; the claims and templates of the
+  wizard (and of its formatter) deleted by label; no shared-device
+  unconfigure for wizard; dra-local-detach of VM1 too; the mounts check
+  also of $DRA_LOCAL_MOUNT_DIR; pool-cleanup when either server runs;
+  port 9912 must be free at the end.
+README.txt: intro (the wizard), design pointer, section 2 (setup, reset,
+  server, fsTypes, image, tools, teardown of the wizard), section 3 T1
+  "demo wizard", the new section 6d (the draft of section 7 above, the
+  walk with wrapped commands), section 7 (zoom claim, pod, env, fs, bytes
+  of the wizard), section 8 (a waiting wizard pod), section 10 (the new
+  files, run/wizard/). Section 9 has no wizard timings: RUN measures them.
+Not changed: common.py, probe.py, steps.py, image/Dockerfile (FSCASE's
+  has the mkfs tools), truth.py (request to MOVE, section 5).
+
+Desk checks, all pass: python3 -m py_compile bin/*.py bin/tools/cxl-demo.py
+bin/tools/cxl-wizard.py testdata/make-wizard-samples.py; bash -n and
+shellcheck of bin/demo and bin/wizard-rules.sh; shellcheck -s bash -e
+SC2154,SC2034 of both code.var.sh; "demo wizard check" (25 accepted, 37
+refused rule rows, 71 rows of wizard-rules.sh); "bin/wizard-rules.sh
+--dry-run" (51 ok); "demo selftest" (219 renderings fit 50 x 10, the
+wizard checks in it); the interactive mode driven by a here-document on
+the sample (section 9); plain ASCII of README, bin, tools,
+manifests/wizard, the setup and the teardown.
+
+9. Live run commands (stream RUN), case wizard
+----------------------------------------------
+Prerequisites as MOVE's section 5 (three VMs up, the driver image built,
+no run_tests.sh, ports 9909 and 9912 free); the demo image of FSCASE's
+Dockerfile (setup builds it if it is missing).
+
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet && ./bin/demo wizard check --quiet && ./bin/wizard-rules.sh --dry-run | tail -1
+  ./bin/demo setup wizard
+  grep -E 'NOTE|fsTypes|wizard-format|lp0-published|holding back' run/test90-demo-setup.log
+  grep -E '^(VM[12]_LOCAL_SERIAL|LP_|FS_|POOL_DEVICE|SERIAL)=' run/state.env
+  ./bin/demo capture W0 --truth
+  ./bin/demo wizard list            # "no objects of the wizard"
+
+The scripted set, run 1 whole:
+  ./bin/wizard-rules.sh 2>&1 | tee run/wizard-rules-1.log
+  tail -n 3 run/wizard-rules-1.log  # "N ok, 0 not as expected"
+Run 2 with captures and truth dumps at its key points (the script does
+not stop; take each capture when its log has the line; line numbers are
+those of bin/wizard-rules.sh):
+  ./bin/wizard-rules.sh > run/wizard-rules-2.log 2>&1 &
+  at() { until grep -q "line $1: OK" run/wizard-rules-2.log; do sleep 1; done; ./bin/demo capture "$2" --truth; }
+  at 53 G1-local        # w1-w8 made: slices, lease, steering, the two waits
+  at 64 G2-wait         # w13 waits while w12 has shared0 exclusively
+  at 66 G2-ready        # w13 Ready after w12 went
+  at 78 G3-conflict     # w18 waits (AttachFailed Conflict): w17 has fs0 on vm2
+  at 80 G3-rw           # w18 alone on vm1, fs0 read-write
+  at 94 G4-lp0          # w23, w24: two writers of lp0's ext4 on vm2
+  at 104 G4-any         # w29 of any source: fs0 on vm1
+  wait; tail -n 3 run/wizard-rules-2.log
+A row that fails: "./bin/wizard-rules.sh --from LINE" goes on from it
+(it starts with delete --all).
+The pod logs of the rows (what the tool read, wrote, made), at any point:
+  ssh -F ../../../../n4-cxl-shared-2-fedora-43-containerd/.ssh-config node \
+      'sudo bash -lc "export KUBECONFIG=/root/demo/kubeconfig; for p in \$(kubectl get pods -l app=cxl-demo-wizard -o name); do echo == \$p; kubectl logs \$p | tail -n 3; done"'
+
+The interactive mode (T1), driven by here-documents. A lease of one
+read-only share of shared0 on vm2 that reads it ("y" shows the YAML, the
+empty line creates it):
+  ./bin/demo wizard <<'ANSWERS'
+lease
+pool
+volatile
+shared
+dax
+whole
+0xc1ae0001
+read-only
+vm2
+read
+wi1
+y
+
+ANSWERS
+  -> the question screens without "not taken", "the same: demo wizard new
+     --kind lease ... --name wi1", the YAML, "created run/wizard/wi1.yaml",
+     "wi1 lease XXXXXXXX: ...", "wi1: Ready"
+  ./bin/demo wizard list; ./bin/demo wizard yaml wi1 | head -20
+  ./bin/demo zoom claim wi1; ./bin/demo zoom env wi1
+A claim with a refused answer first ("fs" is refused for volatile memory:
+"not taken: mode fs needs a persistent device", then "numa" is taken):
+  ./bin/demo wizard <<'ANSWERS'
+claim
+local
+volatile
+exclusive
+fs
+numa
+128Mi
+any
+
+vm2
+env
+wi2
+
+ANSWERS
+  -> "not taken: mode fs needs a persistent device", ..., "wi2: Running"
+  ./bin/demo zoom claim wi2; ./bin/demo zoom pod wi2
+  ./bin/demo wizard delete --all    # "deleted: wi1 wi2", "no leases left"
+(The empty line after "any" takes the default steering "none"; the last
+one creates it.)
+
+Teardown and the VMs:
+  ./bin/demo teardown
+  grep -E 'local-pmem|lp0|dra-local-detach|removed' run/test91-demo-teardown.log
+  for vm in 1 2; do
+      ssh -F ../../../../n4-cxl-shared-$vm-fedora-43-containerd/.ssh-config node \
+          'sudo cxl list -M -R; ls /dev/pmem* /dev/dax* 2>/dev/null; findmnt -rn | grep -E "pmem|cxl"; sudo losetup -l'
+  done
+  ss -ltn 'sport = :9909 or sport = :9912'
+  ls /tmp/fake-cxl-pool/fs0.* /tmp/fake-cxl-pool-local-pmem/lp0.* 2>&1   # gone
+Done: the scripted set twice with "0 not as expected", every view line
+of the captures true against its truth dump, the interactive runs as
+above, the VMs clean.
+
+10. RUN must verify live (not checkable at the desk)
+----------------------------------------------------
+Setup and teardown
+- pool A with --slots "*hb0 cxlsw_ds[012]_usrp0hb1" still attaches the
+  local devices (port ds3 of hb0) and three pool devices at once on a
+  node; local-pmem on cxlsw_ds3_usrp0hb1 of VM2 over HMP next to pool
+  A's QMP; the root decoders of VM1 have cap_pmem (fs0 there).
+- lp0 published by cxl.nri.io of vm2 (the hold-back of poolSerials up to
+  5 min: how long it took), its slice has persistent true and shares.
+- the formatters: the demo image's mkfs.ext4 -d on /dev/pmemK in a
+  container ("writer exit 0"), fs0 free and lp0 without region
+  afterwards, T6 "ext4 clean" for both.
+- state.env: LP_SERVER_PID set, FS_TYPES and FS_SERIALS with commas.
+- teardown: pool-cleanup with both servers (lp0 released and detached by
+  local-pmem), dra-local-detach of VM2 and VM1, both ports free, the files
+  of fs0 and lp0 removed, the VMs without memdevs and regions.
+The wizard
+- every YAML of the scripted set accepted by the apiserver (the kubectl
+  apply output in each row's output); the firstAvailable claims (w7
+  local, w29 pool) and their MemoryConfig entries with requests
+  mem/local, mem/pool.
+- the waits: w6 (no cxl-local-shared device), w8 (vm2's device, the pod
+  on vm1) and w11 (1Gi) Pending "cannot allocate"; w13 waiting while w12
+  has shared0, Ready after the delete; w18 waiting with AttachFailed
+  Conflict while w17 has fs0 on vm2, Running after; w19 waiting for the
+  writer. Whether new's early stop (after 5 s, on "cannot allocate" or
+  AttachFailed) catches the Conflict, which lasts only until the
+  scheduler deallocates (FSCASE's finding): else the row ends "Pending"
+  after 30 s, which the script accepts as a wait.
+- the lease path: python3 /demo/cxl-wizard.py lease in the pod, its
+  response line, the background cxl-request --exec (a new session)
+  surviving the kubectl exec, its output in the pod's log (tail -F of
+  /tmp/wizard.log).
+- the pod tool: dax write and read (w2, w3: zeros of a fresh slice; w12
+  -> w13, w14 "Hello from w12"), fs read of hello.txt (w16, w17), fs
+  write (w18, w23, w24), block read (w22), mkfs ext4 on a device node
+  (w21), mkfs xfs with the protofile (w25; w26 reads hello.txt if
+  mkfs.xfs 7.0.1 of the image takes the file from the protofile), mkfs
+  ext4 through fd 3 of a lease (w27, 510 MiB written whole).
+- the views with the wizard's objects (T2 rows, T3 holders and waiting,
+  T4 with up to five memdevs on vm1, T6 "ext4 needs recovery" while w18
+  or w23 write, "clean" after), every line against the truth dumps.
+- demo wizard delete: claims with finalizers gone after their unprepare,
+  lease companions gone, run/wizard/NAME.yaml removed.
+- timings: setup, teardown, each row of the scripted set (README section
+  9).
+
+WIZARD fix after the live run (2026-11-03)
+==========================================
+RUN's wizard run (25-official-runs.txt, "wizard"): setup, the interactive
+runs, delete --all and teardown OK; wizard-rules.sh 48 ok, 5 not as
+expected in both runs (lines 78, 80, 81, 98, 114 of that version). No VM
+used for this fix; nothing committed, stashed, reset or restored.
+
+11. The cause and the fix
+-------------------------
+- Setup writes every state value with printf %q, which escapes commas
+  and spaces with backslashes (FS_TYPES=erofs\,ext4\,xfs\,btrfs,
+  POOL_DEVICE_FILES=/tmp/...raw\ /tmp/...lsa). common.load_state only
+  stripped matching quotes, so the wizard read the fsTypes "erofs\",
+  "ext4\", ... and refused --fs-type ext4, xfs and erofs (rows 78, 98,
+  114); w18 was never made (80), so w19 had no writer to wait for (81).
+  Fix at the reader: common.state_value (new) decodes a value as the
+  shell does (shlex, POSIX), and load_state uses it; teardown sources the
+  same file, so the views, steps, zooms, truth and the wizard now read
+  what setup wrote (POOL_DEVICE_FILES too). One hunk in common.py.
+- Desk check (wizard_check.py state_test, part of selftest): a state file
+  written by bash with the setup's printf '%s=%q\n' loop (commas, spaces,
+  quotes, $, ;, an empty value) reads back equal; the state.env of the
+  live setup (testdata/state-wizard-setup.env, copied from
+  run/test90-demo-setup.log) gives FS_TYPES erofs,ext4,xfs,btrfs, an
+  empty DEMO_FSTYPE, four POOL_DEVICE_FILES, the Context's fsTypes and fs
+  serials, and --fs-type ext4 / xfs / erofs accepted. The old reader
+  fails this check.
+
+12. A second finding of the run: one serial, two local devices
+--------------------------------------------------------------
+The local devices of vm1 and vm2 have the same serial 0xc100e2e1 (the
+truth dumps: memdev-c100e2e1 in both node slices; VM1_LOCAL_SERIAL ==
+VM2_LOCAL_SERIAL in state.env). The wizard took the first device of a
+serial, so "a lease of 0xc100e2e1 on vm2" was refused as "vm1's" (row
+127 passed for the wrong reason) and w8 ("vm2's device, the pod on vm1")
+waited only because vm1's device was full. Fixed:
+- wizard.py: Context.all_by_serial and serial_label ("c100e2e1 of vm1,
+  vm2"); a lease of a local serial may run on every node that has it
+  (lease_nodes); the default node of such a serial is "any"; the serial
+  question lists each serial once with all sizes; the warnings already
+  take every device of the serial (a pod gets the one of its node).
+- wizard-rules.sh: w8 is now lp0 (vm2's only) in a pod on vm1 (wait!),
+  the refused row is a lease of lp0 on vm1 ("in a pod of its node only
+  (vm2)"); the comment of group 1 says why. The rows after line 47 moved
+  (see 14 for the current line numbers).
+- wizard_check.py: the refused row as above; a new accepted row: a lease
+  of 0xc100e2e1 on vm2 (both nodes have it).
+- samples: vm1's local device has the serial 0xc100e2e1, as in the VMs.
+- README 6d: the two local devices have one serial.
+
+13. The views against the truth dumps (W0, G1-local, G2-wait, G2-ready,
+    G4-lp0, G4-any)
+----------------------------------------------------------------------
+Every line was checked against the truth dump of the same moment
+(kubectl objects, cxl list, dax devices, pmem, mounts, both pool servers,
+the backing files, the trace).
+True as captured: W0 t2-t6 (no objects; the six memdevs with nodes and
+sizes; no regions; both servers' devices, attachments and "ext4 clean"
+from blkid/dumpe2fs of fs0 and lp0; T5 empty: the trace began after the
+formatters); G1 t2 (w1-w8 with modes, sizes, nodes, the lease of w4, w6
+and w8 Pending), t5, t6; G2-wait t2, t3, t5, t6 (w12 Exiting, w13
+waiting for shared0, shared0 on vm1 exclusive, pooled0 attached to vm1);
+G2-ready t2 ("attaching shared0" of w14 before its Attached condition),
+t5, t6 (shared0 on vm2 only); G4-lp0 and G4-any t2-t6 (true, but taken
+after the scripted set had ended: see 14).
+Mismatches and their fixes (wizard_views.py):
+- G1 t4 "region0 1.0G kmem node2 kme": the dax devices of a region with
+  several slices were all on the memdev's row and cut. Now the row is
+  the memdev and its region; the dax devices follow on it when they fit,
+  else on a "dax:" row: kmem slices summed per node ("kmem node2 512M"),
+  devdax ones by name and size ("dax0.3 256M"). True to the truth's
+  /sys/bus/dax/devices (dax0.0-0.2 kmem 512M on node 2, dax0.3 256M).
+- G1 t3 "waiting: w6, w8 (c100e2e1, c100e2e1)": the label of each
+  device of the serial; now each name once.
+- G2-ready t3 "shared0 ...: w13 ro share, w14 ro share": w14 was only
+  allocated (no Attached condition; T2 rightly said "attaching"). Now a
+  holder that is not attached yet is "w14 attaching", and T2's memory
+  word of an unattached pool claim is "attaching DEVICE" for every claim
+  (before: only for claims with shares).
+- The samples' attached pool claims have the controller's Attached
+  condition (their views would say "attaching" now).
+Also: demo wizard new writes run/step.env (STEP=wizard-NAME and its
+start), so that a truth dump has the logs since the last object was
+made (it had the 60 s default).
+
+14. Next live run (stream RUN), case wizard
+-------------------------------------------
+As section 9, with these changes. The scripted set takes the captures
+itself at the moment after the row (wizard-rules.sh --capture LINE:LABEL,
+synchronous, the views and the truth of that moment), so no helper
+watches its log. Line numbers of the current bin/wizard-rules.sh:
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet && ./bin/demo wizard check --quiet && ./bin/wizard-rules.sh --dry-run | tail -1
+  ./bin/demo setup wizard
+  grep -E '^FS_TYPES|^VM[12]_LOCAL_SERIAL' run/state.env     # FS_TYPES=erofs\,ext4\,xfs\,btrfs (shell-escaped: right)
+  ./bin/demo capture W0 --truth
+  ./bin/wizard-rules.sh 2>&1 | tee run/wizard-rules-1.log; tail -n 3 run/wizard-rules-1.log
+  ./bin/wizard-rules.sh --capture 58:G1-local --capture 69:G2-wait --capture 71:G2-ready \
+      --capture 83:G3-conflict --capture 85:G3-rw --capture 86:G3-reader-waits \
+      --capture 99:G4-lp0 --capture 109:G4-any 2>&1 | tee run/wizard-rules-2.log
+  tail -n 3 run/wizard-rules-2.log       # "N ok, 0 not as expected"
+  grep 'captured' run/wizard-rules-2.log # eight captures
+What the captures hold: 58 w1-w8 (local slices, a lease, steering,
+firstAvailable, w6 and w8 Pending); 69 w13 waiting while w12 has shared0
+exclusively; 71 w13 Ready; 83 w18 waiting (AttachFailed Conflict: w17
+has fs0 on vm2); 85 w18 alone on vm1, fs0 read-write ("ext4 needs
+recovery" in T6); 86 w19 of vm2 waiting for the writer; 99 w23 and w24
+writing lp0's ext4 on vm2; 109 w29 of any source on vm1 (fs0).
+Then the interactive runs, delete --all, teardown and the VM-clean check
+as in section 9 (unchanged), and the pod logs:
+  ssh -F ../../../../n4-cxl-shared-2-fedora-43-containerd/.ssh-config node \
+      'sudo bash -lc "export KUBECONFIG=/root/demo/kubeconfig; for p in \$(kubectl get pods -l app=cxl-demo-wizard -o name); do echo == \$p; kubectl logs \$p | tail -n 3; done"'
+  (best right after the captures at 85 and 99: run the scripted set with
+  --from 79 and stop it with Ctrl-C after "line 99: OK", then delete --all)
+Still to verify live: section 10, and now: rows 83-86 (w18 waits, then
+writes alone; w19 waits), 103 (w26 reads lp0's xfs: the protofile), the
+lease of 0xc100e2e1 in a pod of vm2 (not in the scripted set: "demo
+wizard new --name wl --kind lease --source local --mode dax --serial
+0xc100e2e1 --node vm2 --size whole --command read" -> Ready on vm2's
+device), the T4 "dax:" rows with several slices, T3 "attaching".
+
+Desk checks after the fix, all pass: demo selftest (219 renderings fit
+50 x 10, the wizard checks with state_test in it; renderings.txt
+written), demo wizard check (26 accepted, 37 refused rule rows, 71 rows
+of wizard-rules.sh), wizard-rules.sh --dry-run (51 ok), py_compile of
+bin/*.py, bin/tools/*.py and testdata/*.py, bash -n and shellcheck of
+bin/demo and bin/wizard-rules.sh, shellcheck -s bash -e SC2154,SC2034 of
+both code.var.sh, plain ASCII.
+
+WIZARD fix done
+
+WIZARD fix 2: w26 after w25's mkfs xfs (2026-11-03)
+====================================================
+The final round (25-official-runs.txt, "final"): every row of the wizard
+passed but "line 103: BAD: expected Running: w26: Pending", in both
+runs. No VM used for this fix; nothing committed, stashed, reset or
+restored.
+
+15. The cause
+-------------
+From the trace of the run (test90-demo-setup/trace of the setup output,
+vm.events.log, vm.driver.log, vm.claims.log), both runs alike:
+- w25 (claim of lp0, block read-write, command mkfs xfs): container
+  Started at 14:43:41.80, "Killing: Stopping container main" at
+  14:43:43.13, 1.3 s later; its claim deleted at 14:43:44.3.
+- w26 (claim of lp0, fs, fsType xfs): Prepare failed with "device
+  0xc100f5e1: /dev/pmem1 has no filesystem of type xfs (no signature of
+  a type that the plugin knows)": no signature of any type at all.
+So w25 was deleted while it ran: "demo wizard new" said "w25: Running" as
+soon as the pod ran, the scripted set deleted it at once, and the tool
+had zeroed the first MiB of lp0 (as it does before every mkfs) but
+mkfs.xfs had not written its superblock when the container was stopped.
+lp0 had no filesystem; the driver was right to refuse w26. The rows of
+w21 (mkfs ext4 of fs0, killed 1.0 s after its start) and w27 (lease mkfs
+ext4 of lp0, 4.2 s) raced the same way and happened to finish (w28 found
+ext4).
+
+16. The fix
+-----------
+- bin/wizard.py: a claim's pod runs 'python3 /demo/cxl-wizard.py CMD;
+  echo "cxl-wizard exit $?"'; after Running (claim) or Ready (lease), new
+  waits for that line in the pod's log (wait_command, kubectl logs, up to
+  max(DEMO_WIZARD_WAIT, 120) s), prints the command's last output lines,
+  and ends "NAME: Running; mkfs xfs exit 0" ("...; CMD still running" if
+  it has not ended). A command of idle is not waited for.
+- bin/tools/cxl-wizard.py: the background cxl-request ... --exec of a
+  lease runs under sh with the same "cxl-wizard exit N" after it (the
+  pod's log tails /tmp/wizard.log); CXL_WIZARD_LOG names the log (desk).
+- bin/wizard-rules.sh: a Running or Ready row also needs its command
+  done with exit 0 (a "exit N" other than 0 or "still running" is BAD),
+  so a row can no longer pass while its command is cut off.
+- README 6d: new waits for the command; delete only after it.
+- Desk check (wizard_check.py command_test, and selftest's wizard_test
+  now runs state_test and command_test too; state_test was not in
+  selftest before, now it is): the claim pod's own command line, run by
+  sh with the tool of bin/tools on a directory as the filesystem, ends
+  with "cxl-wizard exit 0" after the tool's output; the lease start with
+  a fake cxl-request prints the response and its background command
+  writes the read and "cxl-wizard exit 0" to the log; command_result
+  parses the marker. A pod command without the marker fails it. (The
+  timing of a delete against a running mkfs itself needs the cluster.)
+
+17. Verify live (stream RUN)
+----------------------------
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet && ./bin/demo wizard check --quiet && ./bin/wizard-rules.sh --dry-run | tail -1
+  ./bin/demo setup wizard
+  # the mkfs rows alone, from group 3 on (w16 at line 81), twice:
+  ./bin/wizard-rules.sh --from 79 2>&1 | tee run/wizard-rules-mkfs.log
+  grep -E 'line (93|104|106|108):' run/wizard-rules-mkfs.log
+    # 93 w21: Running; mkfs ext4 exit 0
+    # 104 w25: Running; mkfs xfs exit 0
+    # 106 w26: Running; read exit 0
+    # 108 w27: Ready; mkfs ext4 exit 0
+  grep -B3 'line 106:' run/wizard-rules-mkfs.log   # w26 read lp0/hello.txt (xfs): "Hello from w25, HH:MM:SS"
+  # every row, twice, with the captures of section 14 (lines unchanged):
+  ./bin/wizard-rules.sh --capture 58:G1-local --capture 69:G2-wait --capture 71:G2-ready \
+      --capture 83:G3-conflict --capture 85:G3-rw --capture 86:G3-reader-waits \
+      --capture 99:G4-lp0 --capture 109:G4-any 2>&1 | tee run/wizard-rules-1.log
+  ./bin/wizard-rules.sh 2>&1 | tee run/wizard-rules-2.log
+  tail -n 3 run/wizard-rules-1.log run/wizard-rules-2.log   # "N ok, 0 not as expected"
+  # the order in the trace: w25's container ends (its log "cxl-wizard exit 0") before "Killing":
+  T=$(sed -n 's/^TRACE_DIR=//p' run/state.env)
+  grep -h ' w25 ' "$T"/vm.events.log | grep -E 'Started|Killing'
+  ./bin/demo teardown
+then the VM-clean check of section 9. Also to see: how long each mkfs
+takes on the VMs (the rows' times in the logs), and that "demo wizard
+new ... --command mkfs xfs" in T1 prints the tool's 'made xfs (... bytes)
+with hello.txt' line before its last line.
+
+WIZARD fix 2 done
+
+WIZARD fix 3: mkfs xfs and dax write (2026-11-03)
+==================================================
+Live round "final 2": the exit check of fix 2 caught two bugs of the pod
+tool. No VM used; nothing committed, stashed, reset or restored.
+
+18. Causes and fixes
+--------------------
+- mkfs xfs (row of w25): "mkfs.xfs failed with exit status -11". Reproduced
+  at the desk in the demo image (localhost/cxl-demo-tools:572bcd92fbb0,
+  xfsprogs 7.0.1 on Alpine): mkfs.xfs segfaults with any -p, the classic
+  protofile (even one with an empty root) and a directory alike, on a
+  file of the namespace's size or a smaller one; without -p it works
+  (FSCASE's /demo/mkfs --type xfs has no -p). Fix: cxl-wizard.py makes
+  xfs without -p and says 'made xfs (N bytes), no files (an fs claim
+  read-write writes hello.txt)'; erofs, ext4 and btrfs keep hello.txt.
+  The scripted set's xfs reader thus has nothing to read after mkfs: w26
+  is now a read-write fs claim of lp0 declaring xfs that writes hello.txt,
+  and a new w30 (read-only, xfs, same node, one superblock) reads it
+  next to it; README 6d says that an xfs of mkfs is empty.
+- dax write (rows of w2, w7, w12, w15): "m.flush() ... OSError: [Errno
+  22] Invalid argument": msync of a devdax mapping fails with EINVAL.
+  cxl-demo.py's write never calls it. Fix: no msync in cxl-wizard.py's
+  dax write (a comment says why); the stores are the device's memory.
+- Desk checks (wizard_check.py):
+  - dax_test: write and read of the tool on a dax "device" whose mapping
+    raises EINVAL on flush, as devdax does; the read must show the
+    written text (also in selftest).
+  - image_test: inside the demo image of the current Dockerfile (docker,
+    the image that demo setup builds; skipped with a note if docker or
+    the image is missing, so not in selftest): mkfs of xfs, ext4, btrfs,
+    erofs and read, on a device node (a file of 534773760 bytes) and
+    through fd 3 as a lease has it; every mkfs must succeed and read must
+    find its type. Both checks fail on the tool before this fix (checked:
+    "OSError(22, 'Invalid argument')" and "mkfs.xfs failed with exit
+    status -11").
+
+19. Verify live (stream RUN)
+----------------------------
+Line numbers of the current bin/wizard-rules.sh (the new row w30 moved
+the rows after line 107 by one):
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet && ./bin/demo wizard check --quiet && ./bin/wizard-rules.sh --dry-run | tail -1
+      # wizard check runs the image test: no "note: image test skipped"
+  ./bin/demo setup wizard
+  ./bin/wizard-rules.sh 2>&1 | tee run/wizard-rules-1.log
+  grep -E 'line (55|60|71|77|93|105|107|108|110):' run/wizard-rules-1.log
+      # 55 w2, 60 w7, 71 w12: Running; write exit 0   77 w15: Ready; write exit 0
+      # 93 w21: Running; mkfs ext4 exit 0   105 w25: Running; mkfs xfs exit 0
+      # 107 w26: Running; write exit 0      108 w30: Running; read exit 0
+      # 110 w27: Ready; mkfs ext4 exit 0
+  grep -B3 -E 'line (56|75|108):' run/wizard-rules-1.log
+      # the reads after the writes: w3 zeros (its own slice), w14
+      # 'read at 0: "Hello from w12"', w30 'read .../hello.txt (xfs): "Hello from w26"'
+      # (w13's read runs in its lease's background: kubectl logs w13 in vm2)
+  ./bin/wizard-rules.sh --capture 61:G1-local --capture 72:G2-wait --capture 74:G2-ready \
+      --capture 86:G3-conflict --capture 88:G3-rw --capture 89:G3-reader-waits \
+      --capture 103:G4-lp0 --capture 114:G4-any 2>&1 | tee run/wizard-rules-2.log
+  tail -n 3 run/wizard-rules-1.log run/wizard-rules-2.log     # "N ok, 0 not as expected"
+  ./bin/demo teardown
+then the VM-clean check of section 9. Also to see: the xfs on lp0 mounts
+read-write (w26) and read-only next to it (w30) with dax=always (vm2's
+driver log "mounted /dev/pmem1 at ... (xfs, rw, dax=always)"); the mkfs
+times in the rows.
+
+WIZARD fix 3 done
+
+WIZARD fix 4: mkfs on a block device node (2026-11-03)
+=======================================================
+Live round "final 3": writes and ext4 fixed live; the xfs rows failed:
+"w25: Running; mkfs xfs exit 1", "mkfs.xfs: error - cannot set blocksize
+4096 on block device /dev/pmem1: Permission denied". No VM used; nothing
+committed, stashed, reset or restored.
+
+20. Cause and fix
+-----------------
+- mkfs.xfs on a block device node sets the device's block size
+  (BLKBSZSET), which needs CAP_SYS_ADMIN; an unprivileged container has
+  the node (CDI, rw) but not the capability. mkfs.ext4 and mkfs.btrfs do
+  not, which is why only xfs failed. The desk tests used a regular file
+  as the "node", which has no such ioctl.
+- Fix (cxl-wizard.py do_mkfs), as FSCASE's /demo/mkfs: every type is made
+  in an image file of the device's size in /tmp (erofs: its own small
+  image), then written whole through the device: the node of a claim
+  (opened read-write, no ioctl) and fd 3 of a lease alike; the image is
+  removed after, the line says the bytes and the time ('made xfs
+  (534773760 bytes in 0.8 s), no files ...'). The first MiB is zeroed
+  first, as before. README 6d says how mkfs works.
+- Desk check (wizard.py check --block, opt-in: it attaches a loop device
+  through a privileged docker container, the only privileged step, and
+  detaches it in any case): a loop device over a file of 534773760 bytes
+  is /dev/pmem9 of an unprivileged container of the demo image (docker
+  run --device, no --privileged). There mkfs.xfs on the node fails with
+  "cannot set blocksize 512 on block device /dev/pmem9: Permission
+  denied" (the live error, reproduced), and the tool's mkfs of xfs,
+  ext4, btrfs and erofs succeeds and read finds each type. The tool of
+  before this fix fails it (xfs). Run at the desk: passes; losetup -a is
+  empty afterwards. Without --block the check says it was not run.
+
+21. Verify live (stream RUN)
+----------------------------
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet && ./bin/demo wizard check --quiet --block && ./bin/wizard-rules.sh --dry-run | tail -1
+  ./bin/demo setup wizard
+  ./bin/wizard-rules.sh --from 82 2>&1 | tee run/wizard-rules-mkfs.log    # group 3 and 4 (w16 at line 84)
+  grep -E 'line (93|105|107|108|110):' run/wizard-rules-mkfs.log
+      # 93 w21: Running; mkfs ext4 exit 0     105 w25: Running; mkfs xfs exit 0
+      # 107 w26: Running; write exit 0        108 w30: Running; read exit 0
+      # 110 w27: Ready; mkfs ext4 exit 0
+  grep -E 'made (ext4|xfs)|read .*hello.txt \(xfs\)' run/wizard-rules-mkfs.log
+      # "made xfs (534773760 bytes in N s), no files ...", w30 'read /run/cxl-fs/C100F5E1/hello.txt (xfs): "Hello from w26"'
+  ./bin/wizard-rules.sh 2>&1 | tee run/wizard-rules-1.log
+  ./bin/wizard-rules.sh --capture 61:G1-local --capture 72:G2-wait --capture 74:G2-ready \
+      --capture 86:G3-conflict --capture 88:G3-rw --capture 89:G3-reader-waits \
+      --capture 103:G4-lp0 --capture 114:G4-any 2>&1 | tee run/wizard-rules-2.log
+  tail -n 3 run/wizard-rules-1.log run/wizard-rules-2.log      # "N ok, 0 not as expected"
+  ./bin/demo teardown
+then the VM-clean check of section 9; and in vm2's driver log the xfs
+mounts of w26 (rw) and w30 (ro) with dax=always.
+
+WIZARD fix 4 done

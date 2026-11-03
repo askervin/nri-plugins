@@ -1,0 +1,1223 @@
+25-official-runs.txt: live runs of the demo, stream RUN, 2026-11-03 (EET), image nri-dra-driver-cxl-image-b0a0eb6c6c91.tar
+Prechecks OK: no run_tests.sh/pool server, ports 9909 and 9912 free, 3 nodes Ready, no pods outside kube-system.
+Driver script /tmp/plan14-scripts/demorun.sh; raw outputs /tmp/plan14-demo/<case>.{txt,setup.out,stepN.out,capN.out,teardown.out}; framework logs N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/run/{test90-demo-setup.log,test91-demo-teardown.log,steps.log,timings.txt} (the last case's run/ overwrote earlier ones).
+Captures: N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/<case>-run1-<L|F><n>-t2..t6.txt and <case>-run1-<step>-truth.txt for L2 L5 L6 L7 L9 (local, pool) and F2 F3 F5 F6 F7 F9 (pool-shared-fs).
+
+=== case local ===
+case local setup start 2026-11-03 14:49:29
+setup end 14:50:43 rc=0
+step 1 start 14:50:43 end 14:50:46 rc=0 :: 2026-11-03 14:50:46 local: L1=2.1s
+step 2 start 14:50:46 end 14:50:49 rc=0 :: 2026-11-03 14:50:49 local: L2=2.0s
+  capture run1-L2 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run1-L2-truth.txt (801 lines, 0.5 s) 
+step 3 start 14:50:49 end 14:50:54 rc=0 :: 2026-11-03 14:50:54 local: L3=3.9s
+step 4 start 14:50:54 end 14:50:58 rc=0 :: 2026-11-03 14:50:58 local: L4=2.1s
+step 5 start 14:50:58 end 14:51:00 rc=0 :: 2026-11-03 14:51:00 local: L5=0.9s
+  capture run1-L5 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run1-L5-truth.txt (1726 lines, 0.6 s) 
+step 6 start 14:51:00 end 14:51:04 rc=0 :: 2026-11-03 14:51:04 local: L6=2.3s
+  capture run1-L6 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run1-L6-truth.txt (1877 lines, 0.5 s) 
+step 7 start 14:51:04 end 14:51:08 rc=0 :: 2026-11-03 14:51:08 local: L7=3.2s
+  capture run1-L7 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run1-L7-truth.txt (1801 lines, 0.5 s) 
+step 8 start 14:51:09 end 14:51:11 rc=0 :: 2026-11-03 14:51:11 local: L8=0.5s
+step 9 start 14:51:11 end 14:51:15 rc=0 :: 2026-11-03 14:51:15 local: L9=3.2s
+  capture run1-L9 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run1-L9-truth.txt (432 lines, 0.5 s) 
+teardown start 14:51:16
+teardown end 14:52:06 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- port: 0 listening
+DONE local
+
+=== case pool ===
+case pool setup start 2026-11-03 14:52:07
+setup end 14:53:08 rc=0
+step 1 start 14:53:08 end 14:53:11 rc=0 :: 2026-11-03 14:53:11 pool: L1=2.1s
+step 2 start 14:53:11 end 14:53:19 rc=0 :: 2026-11-03 14:53:19 pool: L2=6.4s
+  capture run1-L2 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run1-L2-truth.txt (987 lines, 0.5 s) 
+step 3 start 14:53:19 end 14:53:24 rc=0 :: 2026-11-03 14:53:24 pool: L3=4.0s
+step 4 start 14:53:24 end 14:53:28 rc=0 :: 2026-11-03 14:53:27 pool: L4=2.2s
+step 5 start 14:53:28 end 14:53:29 rc=0 :: 2026-11-03 14:53:29 pool: L5=0.8s
+  capture run1-L5 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run1-L5-truth.txt (1881 lines, 0.6 s) 
+step 6 start 14:53:30 end 14:53:43 rc=0 :: 2026-11-03 14:53:43 pool: L6=11.8s
+  capture run1-L6 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run1-L6-truth.txt (2426 lines, 0.6 s) 
+step 7 start 14:53:44 end 14:53:48 rc=0 :: 2026-11-03 14:53:48 pool: L7=3.3s
+  capture run1-L7 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run1-L7-truth.txt (2085 lines, 0.6 s) 
+step 8 start 14:53:49 end 14:53:50 rc=0 :: 2026-11-03 14:53:50 pool: L8=0.5s
+step 9 start 14:53:50 end 14:53:53 rc=0 :: 2026-11-03 14:53:53 pool: L9=2.1s
+  capture run1-L9 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run1-L9-truth.txt (646 lines, 0.6 s) 
+teardown start 14:53:54
+teardown end 14:54:32 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- port: 0 listening
+DONE pool
+
+=== case pool-shared-fs ===
+case pool-shared-fs setup start 2026-11-03 14:54:32
+setup end 14:55:37 rc=0
+step 1 start 14:55:37 end 14:55:40 rc=0 :: 2026-11-03 14:55:40 pool-shared-fs: F1=2.1s
+step 2 start 14:55:40 end 14:55:47 rc=0 :: 2026-11-03 14:55:46 pool-shared-fs: F2=5.6s
+  capture run1-F2 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run1-F2-truth.txt (952 lines, 0.5
+step 3 start 14:55:47 end 14:55:52 rc=0 :: 2026-11-03 14:55:52 pool-shared-fs: F3=3.8s
+  capture run1-F3 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run1-F3-truth.txt (843 lines, 0.5
+step 4 start 14:55:53 end 14:55:56 rc=0 :: 2026-11-03 14:55:56 pool-shared-fs: F4=2.1s
+step 5 start 14:55:56 end 14:55:58 rc=0 :: 2026-11-03 14:55:58 pool-shared-fs: F5=0.9s
+  capture run1-F5 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run1-F5-truth.txt (1868 lines, 0.
+step 6 start 14:55:58 end 14:56:10 rc=0 :: 2026-11-03 14:56:10 pool-shared-fs: F6=10.4s
+  capture run1-F6 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run1-F6-truth.txt (2358 lines, 0.
+step 7 start 14:56:11 end 14:56:13 rc=0 :: 2026-11-03 14:56:12 pool-shared-fs: F7=0.7s
+  capture run1-F7 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run1-F7-truth.txt (2064 lines, 0.
+step 8 start 14:56:13 end 14:56:15 rc=0 :: 2026-11-03 14:56:15 pool-shared-fs: F8=0.4s
+step 9 start 14:56:15 end 14:56:18 rc=0 :: 2026-11-03 14:56:18 pool-shared-fs: F9=2.2s
+  capture run1-F9 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run1-F9-truth.txt (666 lines, 0.6
+teardown start 14:56:19
+teardown end 14:56:55 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- port: 0 listening
+DONE pool-shared-fs
+
+Failures: none. Every setup, step (each step's own result line above) and teardown ended rc=0.
+
+################ RUN 2 (after MOVE fixes), 2026-11-03 EET, image b0a0eb6c6c91 ################
+Prechecks OK (no run_tests/pool server, ports free, 3 nodes Ready, no pods outside kube-system); demo selftest: ok, 182 renderings fit 50 x 10.
+Driver script /tmp/plan14-scripts/demorun2.sh; raw outputs /tmp/plan14-demo2/. Captures N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/<case>-run2-<step>-t2..t6.txt and -truth.txt.
+Zoom outputs (step 7; local set chosen by RUN: claim reader-a, cxl vm2, cdi vm2, env reader-a, driver vm2 20, kernel vm2, mounts vm2, bytes; pool and pool-shared-fs as in the MOVE status): captures/local-run2-zooms.txt, pool-run2-zooms.txt, pool-shared-fs-run2-zooms.txt. All zooms rc=0.
+Note: the kernel zooms show old dmesg lines 'cxl_port endpointN: failed to attach decoderN.0 to regionN: -16' with timestamps 09:02-09:17 (earlier runs of the VM, not this run).
+
+=== run 2, case local ===
+case local setup start 2026-11-03 15:10:58
+setup end 15:12:04 rc=0
+step 1 start 15:12:04 end 15:12:07 rc=0 :: 2026-11-03 15:12:07 local: L1=2.1s
+step 2 start 15:12:07 end 15:12:10 rc=0 :: 2026-11-03 15:12:10 local: L2=2.0s
+  capture run2-L2 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run2-L2-truth.txt (798 lines, 0.6 s) 
+step 3 start 15:12:11 end 15:12:16 rc=0 :: 2026-11-03 15:12:16 local: L3=3.8s
+step 4 start 15:12:16 end 15:12:19 rc=0 :: 2026-11-03 15:12:19 local: L4=2.1s
+step 5 start 15:12:19 end 15:12:21 rc=0 :: 2026-11-03 15:12:21 local: L5=0.8s
+  capture run2-L5 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run2-L5-truth.txt (1723 lines, 0.5 s) 
+step 6 start 15:12:21 end 15:12:26 rc=0 :: 2026-11-03 15:12:26 local: L6=3.6s
+  capture run2-L6 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run2-L6-truth.txt (1877 lines, 0.6 s) 
+step 7 start 15:12:27 end 15:12:31 rc=0 :: 2026-11-03 15:12:31 local: L7=3.1s
+  zooms -> captures/local-run2-zooms.txt: 8 zooms, rcs: rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 
+  capture run2-L7 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run2-L7-truth.txt (1804 lines, 0.5 s) 
+step 8 start 15:12:34 end 15:12:36 rc=0 :: 2026-11-03 15:12:36 local: L8=0.5s
+step 9 start 15:12:36 end 15:12:39 rc=0 :: 2026-11-03 15:12:39 local: L9=2.2s
+  capture run2-L9 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/local-run2-L9-truth.txt (432 lines, 0.5 s) 
+teardown start 15:12:40
+teardown end 15:13:31 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- port: 0 listening
+DONE local
+
+=== run 2, case pool ===
+case pool setup start 2026-11-03 15:13:31
+setup end 15:14:33 rc=0
+step 1 start 15:14:33 end 15:14:36 rc=0 :: 2026-11-03 15:14:36 pool: L1=2.0s
+step 2 start 15:14:36 end 15:14:44 rc=0 :: 2026-11-03 15:14:44 pool: L2=6.4s
+  capture run2-L2 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run2-L2-truth.txt (990 lines, 0.5 s) 
+step 3 start 15:14:44 end 15:14:49 rc=0 :: 2026-11-03 15:14:49 pool: L3=3.9s
+step 4 start 15:14:49 end 15:14:52 rc=0 :: 2026-11-03 15:14:52 pool: L4=2.2s
+step 5 start 15:14:52 end 15:14:54 rc=0 :: 2026-11-03 15:14:54 pool: L5=0.9s
+  capture run2-L5 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run2-L5-truth.txt (1881 lines, 0.6 s) 
+step 6 start 15:14:55 end 15:15:08 rc=0 :: 2026-11-03 15:15:08 pool: L6=11.7s
+  capture run2-L6 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run2-L6-truth.txt (2424 lines, 0.6 s) 
+step 7 start 15:15:08 end 15:15:13 rc=0 :: 2026-11-03 15:15:13 pool: L7=3.3s
+  zooms -> captures/pool-run2-zooms.txt: 9 zooms, rcs: rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 
+  capture run2-L7 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run2-L7-truth.txt (2091 lines, 0.6 s) 
+step 8 start 15:15:16 end 15:15:18 rc=0 :: 2026-11-03 15:15:18 pool: L8=0.5s
+step 9 start 15:15:18 end 15:15:21 rc=0 :: 2026-11-03 15:15:21 pool: L9=1.9s
+  capture run2-L9 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-run2-L9-truth.txt (660 lines, 0.6 s) 
+teardown start 15:15:22
+teardown end 15:15:59 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- port: 0 listening
+DONE pool
+
+=== run 2, case pool-shared-fs ===
+case pool-shared-fs setup start 2026-11-03 15:15:59
+setup end 15:17:03 rc=0
+step 1 start 15:17:03 end 15:17:06 rc=0 :: 2026-11-03 15:17:06 pool-shared-fs: F1=2.1s
+step 2 start 15:17:06 end 15:17:13 rc=0 :: 2026-11-03 15:17:13 pool-shared-fs: F2=5.6s
+  capture run2-F2 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run2-F2-truth.txt (952 lines, 0.5
+step 3 start 15:17:14 end 15:17:18 rc=0 :: 2026-11-03 15:17:18 pool-shared-fs: F3=3.8s
+  capture run2-F3 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run2-F3-truth.txt (843 lines, 0.5
+step 4 start 15:17:19 end 15:17:22 rc=0 :: 2026-11-03 15:17:22 pool-shared-fs: F4=2.1s
+step 5 start 15:17:22 end 15:17:24 rc=0 :: 2026-11-03 15:17:24 pool-shared-fs: F5=0.8s
+  capture run2-F5 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run2-F5-truth.txt (1868 lines, 0.
+step 6 start 15:17:25 end 15:17:36 rc=0 :: 2026-11-03 15:17:36 pool-shared-fs: F6=10.3s
+  capture run2-F6 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run2-F6-truth.txt (2358 lines, 0.
+step 7 start 15:17:37 end 15:17:39 rc=0 :: 2026-11-03 15:17:39 pool-shared-fs: F7=0.7s
+  zooms -> captures/pool-shared-fs-run2-zooms.txt: 7 zooms, rcs: rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 rc=0 
+  capture run2-F7 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run2-F7-truth.txt (2066 lines, 0.
+step 8 start 15:17:42 end 15:17:43 rc=0 :: 2026-11-03 15:17:43 pool-shared-fs: F8=0.4s
+step 9 start 15:17:43 end 15:17:47 rc=0 :: 2026-11-03 15:17:47 pool-shared-fs: F9=3.2s
+  capture run2-F9 rc=0: demo truth: test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-shared-fs-run2-F9-truth.txt (681 lines, 0.6
+teardown start 15:17:48
+teardown end 15:18:25 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- port: 0 listening
+DONE pool-shared-fs
+
+Failures: none. Every setup, step, capture, zoom and teardown ended rc=0; VMs clean and ports free after each teardown.
+
+################ pool-fs (2026-11-03 EET; image b0a0eb6c6c91) ################
+Script /tmp/plan14-scripts/demofs.sh; raw outputs /tmp/plan14-demofs/. Captures N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/pool-fs-<label>-... ; labels run1, xfs, btrfs, run2 (captures <label>-R<n>-t2..t6/-truth: ext4 runs R2 R4 R5 R7 R7b R8 R9 R10 R11; xfs and btrfs R3 R4 R7 R9 R10). Per ext4 run also: pool-fs-<label>-R4-dumpe2fs.txt, -R7-zoom-{claim,pod,mounts-vm1,fs}.txt, -R7-events.txt, -R7-claims-watch.json, -R9-zoom-{mounts-vm1,mounts-vm2,fs}.txt, -R9-dumpe2fs.txt, pool-fs-<label>-steps.log.
+Not done: the live 'demo view t5' terminal check during R7-R9 of run2 (no terminal).
+Verdict: all four runs: setup rc=0, steps R1-R11 rc=0 (each step's own result line below), teardown rc=0, no failures.
+dumpe2fs: R4 features include needs_recovery and orphan_present (mounted rw by the writer); R9 no needs_recovery, 'Filesystem state: clean' (both ext4 runs).
+
+=== pool-fs run1 ===
+[run1] precheck: ok
+[run1] setup start 2026-11-03 15:37:25
+setup end 15:38:34 rc=0
+demo setup: driver configuration fsTypes: [erofs, ext4]
+demo setup: NOTE: the nodes mount ext4 now, a type that is not hardened against crafted images:
+  this trusts every party that can write fs0 raw (a read-write block claim or lease of it, as the
+  erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/dra-driver-cxl.helm-values.yaml:
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=ext4
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+POOL_DEVICE_FILES=/tmp/fake-cxl-pool/fs0.raw\ /tmp/fake-cxl-pool/fs0.lsa
+step 1 start 15:38:34 end 15:38:37 rc=0 :: 2026-11-03 15:38:37 pool-fs: R1=2.1s
+step 2 start 15:38:37 end 15:38:44 rc=0 :: 2026-11-03 15:38:44 pool-fs: R2=5.6s
+  capture run1-R2 rc=0
+step 3 start 15:38:44 end 15:38:52 rc=0 :: 2026-11-03 15:38:52 pool-fs: R3=6.1s
+step 4 start 15:38:52 end 15:39:05 rc=0 :: 2026-11-03 15:39:05 pool-fs: R4=12.7s
+  capture run1-R4 rc=0
+  dumpe2fs R4 -> captures/pool-fs-run1-R4-dumpe2fs.txt: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present;Filesystem state:  
+step 5 start 15:39:06 end 15:39:08 rc=0 :: 2026-11-03 15:39:08 pool-fs: R5=0.5s
+  capture run1-R5 rc=0
+step 6 start 15:39:08 end 15:39:12 rc=0 :: 2026-11-03 15:39:12 pool-fs: R6=2.2s
+step 7 start 15:39:12 end 15:39:21 rc=0 :: 2026-11-03 15:39:21 pool-fs: R7=8.1s
+  capture run1-R7 rc=0
+  R7 zooms/events/watch -> captures/pool-fs-run1-R7-*; capture run1-R7b rc=0
+step 8 start 15:40:04 end 15:40:06 rc=0 :: 2026-11-03 15:40:06 pool-fs: R8=0.7s
+  capture run1-R8 rc=0
+step 9 start 15:40:07 end 15:40:16 rc=0 :: 2026-11-03 15:40:16 pool-fs: R9=7.9s
+  capture run1-R9 rc=0
+  R9 zooms, dumpe2fs -> captures/pool-fs-run1-R9-*: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum;Filesystem state:         clean;
+step 10 start 15:40:17 end 15:40:19 rc=0 :: 2026-11-03 15:40:19 pool-fs: R10=0.9s
+  capture run1-R10 rc=0
+step 11 start 15:40:20 end 15:40:24 rc=0 :: 2026-11-03 15:40:24 pool-fs: R11=3.0s
+  capture run1-R11 rc=0
+2026-11-03 15:40:24 pool-fs: R11=3.0s
+teardown start 15:40:25
+teardown end 15:41:03 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening
+--- files: ls: cannot access '/tmp/fake-cxl-pool/fs0.*': No such file or directory 
+DONE run1
+
+=== pool-fs xfs ===
+[xfs] precheck: ok
+[xfs] setup start 2026-11-03 15:41:04
+setup end 15:42:09 rc=0
+demo setup: driver configuration fsTypes: [erofs, xfs]
+demo setup: NOTE: the nodes mount xfs now, a type that is not hardened against crafted images:
+  this trusts every party that can write fs0 raw (a read-write block claim or lease of it, as the
+  erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/dra-driver-cxl.helm-values.yaml:
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=xfs
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+POOL_DEVICE_FILES=/tmp/fake-cxl-pool/fs0.raw\ /tmp/fake-cxl-pool/fs0.lsa
+step 1 start 15:42:09 end 15:42:12 rc=0 :: 2026-11-03 15:42:12 pool-fs: R1=2.1s
+step 2 start 15:42:12 end 15:42:19 rc=0 :: 2026-11-03 15:42:19 pool-fs: R2=5.7s
+step 3 start 15:42:19 end 15:42:26 rc=0 :: 2026-11-03 15:42:26 pool-fs: R3=6.0s
+  capture xfs-R3 rc=0
+step 4 start 15:42:27 end 15:42:41 rc=0 :: 2026-11-03 15:42:41 pool-fs: R4=12.8s
+  capture xfs-R4 rc=0
+step 5 start 15:42:42 end 15:42:43 rc=0 :: 2026-11-03 15:42:43 pool-fs: R5=0.5s
+step 6 start 15:42:43 end 15:42:46 rc=0 :: 2026-11-03 15:42:46 pool-fs: R6=2.1s
+step 7 start 15:42:46 end 15:42:56 rc=0 :: 2026-11-03 15:42:56 pool-fs: R7=8.0s
+  capture xfs-R7 rc=0
+step 8 start 15:42:56 end 15:42:58 rc=0 :: 2026-11-03 15:42:58 pool-fs: R8=0.7s
+step 9 start 15:42:58 end 15:43:04 rc=0 :: 2026-11-03 15:43:04 pool-fs: R9=5.3s
+  capture xfs-R9 rc=0
+step 10 start 15:43:05 end 15:43:07 rc=0 :: 2026-11-03 15:43:07 pool-fs: R10=1.0s
+  capture xfs-R10 rc=0
+step 11 start 15:43:08 end 15:43:11 rc=0 :: 2026-11-03 15:43:11 pool-fs: R11=2.0s
+2026-11-03 15:43:11 pool-fs: R11=2.0s
+teardown start 15:43:11
+teardown end 15:43:49 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening
+--- files: ls: cannot access '/tmp/fake-cxl-pool/fs0.*': No such file or directory 
+DONE xfs
+
+=== pool-fs btrfs ===
+[btrfs] precheck: ok
+[btrfs] setup start 2026-11-03 15:43:50
+setup end 15:44:55 rc=0
+demo setup: driver configuration fsTypes: [erofs, btrfs]
+demo setup: NOTE: the nodes mount btrfs now, a type that is not hardened against crafted images:
+  this trusts every party that can write fs0 raw (a read-write block claim or lease of it, as the
+  erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/dra-driver-cxl.helm-values.yaml:
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=btrfs
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+POOL_DEVICE_FILES=/tmp/fake-cxl-pool/fs0.raw\ /tmp/fake-cxl-pool/fs0.lsa
+step 1 start 15:44:55 end 15:44:58 rc=0 :: 2026-11-03 15:44:58 pool-fs: R1=2.1s
+step 2 start 15:44:58 end 15:45:05 rc=0 :: 2026-11-03 15:45:05 pool-fs: R2=5.7s
+step 3 start 15:45:05 end 15:45:12 rc=0 :: 2026-11-03 15:45:12 pool-fs: R3=6.0s
+  capture btrfs-R3 rc=0
+step 4 start 15:45:12 end 15:45:26 rc=0 :: 2026-11-03 15:45:26 pool-fs: R4=12.7s
+  capture btrfs-R4 rc=0
+step 5 start 15:45:27 end 15:45:28 rc=0 :: 2026-11-03 15:45:28 pool-fs: R5=0.5s
+step 6 start 15:45:28 end 15:45:32 rc=0 :: 2026-11-03 15:45:32 pool-fs: R6=2.1s
+step 7 start 15:45:32 end 15:45:41 rc=0 :: 2026-11-03 15:45:41 pool-fs: R7=8.1s
+  capture btrfs-R7 rc=0
+step 8 start 15:45:42 end 15:45:43 rc=0 :: 2026-11-03 15:45:43 pool-fs: R8=0.7s
+step 9 start 15:45:43 end 15:45:50 rc=0 :: 2026-11-03 15:45:50 pool-fs: R9=5.2s
+  capture btrfs-R9 rc=0
+step 10 start 15:45:50 end 15:45:52 rc=0 :: 2026-11-03 15:45:52 pool-fs: R10=0.9s
+  capture btrfs-R10 rc=0
+step 11 start 15:45:53 end 15:45:57 rc=0 :: 2026-11-03 15:45:57 pool-fs: R11=3.0s
+2026-11-03 15:45:57 pool-fs: R11=3.0s
+teardown start 15:45:57
+teardown end 15:46:35 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening
+--- files: ls: cannot access '/tmp/fake-cxl-pool/fs0.*': No such file or directory 
+DONE btrfs
+
+=== pool-fs run2 ===
+[run2] precheck: ok
+[run2] setup start 2026-11-03 15:46:36
+setup end 15:47:42 rc=0
+demo setup: driver configuration fsTypes: [erofs, ext4]
+demo setup: NOTE: the nodes mount ext4 now, a type that is not hardened against crafted images:
+  this trusts every party that can write fs0 raw (a read-write block claim or lease of it, as the
+  erofs alone, the default, trusts nobody (docs/memory/cxl/usage.md, Filesystems)
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/dra-driver-cxl.helm-values.yaml:
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=ext4
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+POOL_DEVICE_FILES=/tmp/fake-cxl-pool/fs0.raw\ /tmp/fake-cxl-pool/fs0.lsa
+step 1 start 15:47:42 end 15:47:45 rc=0 :: 2026-11-03 15:47:45 pool-fs: R1=2.1s
+step 2 start 15:47:45 end 15:47:52 rc=0 :: 2026-11-03 15:47:52 pool-fs: R2=5.7s
+  capture run2-R2 rc=0
+step 3 start 15:47:52 end 15:48:00 rc=0 :: 2026-11-03 15:48:00 pool-fs: R3=6.0s
+step 4 start 15:48:00 end 15:48:13 rc=0 :: 2026-11-03 15:48:13 pool-fs: R4=12.7s
+  capture run2-R4 rc=0
+  dumpe2fs R4 -> captures/pool-fs-run2-R4-dumpe2fs.txt: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present;Filesystem state:  
+step 5 start 15:48:14 end 15:48:16 rc=0 :: 2026-11-03 15:48:16 pool-fs: R5=0.5s
+  capture run2-R5 rc=0
+step 6 start 15:48:17 end 15:48:20 rc=0 :: 2026-11-03 15:48:20 pool-fs: R6=2.1s
+step 7 start 15:48:20 end 15:48:29 rc=0 :: 2026-11-03 15:48:29 pool-fs: R7=8.1s
+  capture run2-R7 rc=0
+  R7 zooms/events/watch -> captures/pool-fs-run2-R7-*; capture run2-R7b rc=0
+step 8 start 15:49:12 end 15:49:14 rc=0 :: 2026-11-03 15:49:14 pool-fs: R8=0.7s
+  capture run2-R8 rc=0
+step 9 start 15:49:15 end 15:49:24 rc=0 :: 2026-11-03 15:49:23 pool-fs: R9=7.8s
+  capture run2-R9 rc=0
+  R9 zooms, dumpe2fs -> captures/pool-fs-run2-R9-*: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum;Filesystem state:         clean;
+step 10 start 15:49:25 end 15:49:27 rc=0 :: 2026-11-03 15:49:27 pool-fs: R10=0.9s
+  capture run2-R10 rc=0
+step 11 start 15:49:28 end 15:49:31 rc=0 :: 2026-11-03 15:49:31 pool-fs: R11=2.0s
+  capture run2-R11 rc=0
+2026-11-03 15:49:31 pool-fs: R11=2.0s
+teardown start 15:49:32
+teardown end 15:50:10 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening
+--- files: ls: cannot access '/tmp/fake-cxl-pool/fs0.*': No such file or directory 
+DONE run2
+
+################ wizard (2026-11-03 EET) ################
+Script /tmp/plan14-scripts/demowiz.sh; raw outputs /tmp/plan14-demowiz/; logs N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/run/{wizard-rules-1.log,wizard-rules-2.log,test90-demo-setup.log,test91-demo-teardown.log}. Captures: W0, G1-local, G2-wait, G2-ready, G4-lp0, G4-any (captures/wizard-<label>-t2..t6 and -truth; G3-conflict and G3-rw NOT taken, see failures); interactive runs: captures/wizard-int1.txt, wizard-int1-after.txt, wizard-int2.txt, wizard-int2-after.txt.
+Verdict: setup, interactive runs, delete --all and teardown OK; the scripted set FAILED in both runs: 'wizard-rules: 48 ok, 5 not as expected' (identical in run 1 and run 2). lp0 publication: not slow (setup rc=0 in 94 s, wizard-format wrote lp0 15:51:46).
+Failures (quoted from run/wizard-rules-1.log, the same in -2):
+  line 78: expected a wait: wizard: refused: --fs-type ext4: filesystem type ext4 is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+  line 80: w18 did not match /Running/ in 120s: 
+  line 81: expected a wait: w19: Running
+  line 98: expected Running: wizard: refused: --fs-type xfs: filesystem type xfs is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+  line 114: expected refused:erofs_is_a_read-only_filesystem, exit 2: wizard: refused: --fs-type erofs: filesystem type erofs is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+Rows 78/80/81/98/114 all hit: wizard refuses --fs-type ext4 / xfs / erofs with 'filesystem type X is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)' although the setup's driver configuration is fsTypes [erofs, ext4, xfs, btrfs]; the list is shown with backslash-escaped commas, so the wizard's parsing of the node's fsTypes looks wrong (to be looked at by WIZARD). Consequently w18 never ran and capture lines 78 and 80 of the script never got 'OK' (G3-conflict, G3-rw skipped after waiting 288 s and 1 s).
+
+=== wizard run log ===
+precheck: ok
+selftest: ok, 219 renderings fit 50 x 10
+wizard check: ok, 25 accepted and 37 refused rule rows, 71 rows of wizard-rules.sh
+wizard-rules: 51 ok, 0 not as expected
+setup start 2026-11-03 15:50:26
+setup end 15:52:00 rc=0
+demo setup: driver configuration fsTypes: [erofs, ext4, xfs, btrfs]
+demo setup: NOTE: the nodes mount ext4, xfs and btrfs too, types that are not hardened against
+  fsTypes: [erofs, ext4, xfs, btrfs]
+E2EISH {"op":"launch","plugin":"dra-driver-cxl","topology":[{"mem":"4G","threads":2,"cores":2,"nodes":1,"packages":2},{"hdm-for-passthrough":true,"cxl":[[{"switch":[{"pool-slot":"1G"},{"pool-slot":"1G"},{"mem":"256M","present":false,"shared":true,"file":"/tmp/fake-cxl-pool/static-shared0.raw","sn":"
+dra ok: lp0-published: device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd') is not None and attr(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'persistent') == True
+wizard-format: fs0 (0xc1ae0002) has an ext4 with hello.txt: "Hello from the wizard setup, 15:51:37"
+wizard-format: lp0 (0xc100f5e1) has an ext4 with hello.txt: "Hello from the wizard setup, 15:51:46"
+SERIAL=0xc1ae0002
+POOL_DEVICE=fs0
+VM2_LOCAL_SERIAL=0xc100e2e1
+VM1_LOCAL_SERIAL=0xc100e2e1
+capture W0 rc=0
+no objects of the wizard: demo wizard new ...
+rules run 1 start 15:52:02
+rules run 1 end 15:58:21
+  line 81: expected a wait: w19: Running
+  line 98: expected Running: wizard: refused: --fs-type xfs: filesystem type xfs is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+  line 114: expected refused:erofs_is_a_read-only_filesystem, exit 2: wizard: refused: --fs-type erofs: filesystem type erofs is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+no objects of the wizard
+rules run 2 start 15:58:21
+  capture G1-local at line 53 rc=0 15:58:58
+  capture G2-wait at line 64 rc=0 15:59:41
+  capture G2-ready at line 66 rc=0 15:59:56
+  capture G3-conflict SKIPPED: line 78 not OK (waited 288s)
+  capture G3-rw SKIPPED: line 80 not OK (waited 1s)
+  capture G4-lp0 at line 94 rc=0 16:04:48
+  capture G4-any at line 104 rc=0 16:04:49
+rules run 2 end 16:04:49 rc=0
+  line 81: expected a wait: w19: Running
+  line 98: expected Running: wizard: refused: --fs-type xfs: filesystem type xfs is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+  line 114: expected refused:erofs_is_a_read-only_filesystem, exit 2: wizard: refused: --fs-type erofs: filesystem type erofs is not allowed on this node (fsTypes: erofs\, ext4\, xfs\, btrfs)
+no objects of the wizard
+created run/wizard/w1.yaml:
+resourceclaim.resource.k8s.io/w1 created
+pod/w1 created
+w1: Running
+created run/wizard/w2.yaml:
+resourceclaim.resource.k8s.io/w2 created
+pod/w2 created
+w2: Running
+created run/wizard/w3.yaml:
+resourceclaim.resource.k8s.io/w3 created
+pod/w3 created
+w3: Running
+created run/wizard/w4.yaml:
+resourceclaimtemplate.resource.k8s.io/w4-lease created
+pod/w4 created
+w4 lease cfc72e57: Pending
+started in the background, pid 21: env (output in /tmp/wizard.log)
+w4: Ready
+created run/wizard/w5.yaml:
+--- interactive 1
+rc=0
+  name: wi1
+    cxl-demo/wizard: wi1
+    resourceClaimTemplateName: wi1-lease
+Enter create, y the YAML, q quit: created run/wizard/wi1.yaml:
+resourceclaimtemplate.resource.k8s.io/wi1-lease created
+pod/wi1 created
+wi1 lease e5cc4d36: Pending
+wi1: Ready
+--- interactive 2
+rc=0
+[numa]: not taken: mode fs needs a persistent device
+the same: demo wizard new --kind claim --source local --memory volatile --sharing exclusive --mode numa --size 128Mi --serial any --steering none --node vm2 --command env --name wi2
+Enter create, y the YAML, q quit: created run/wizard/wi2.yaml:
+resourceclaim.resource.k8s.io/wi2 created
+pod/wi2 created
+wi2: Running
+pod "wi1" deleted from cxl-demo namespace
+pod "wi2" deleted from cxl-demo namespace
+resourceclaim.resource.k8s.io "wi2" deleted from cxl-demo namespace
+resourceclaimtemplate.resource.k8s.io "wi1-lease" deleted from cxl-demo
+  namespace
+no leases left
+deleted: wi1 wi2
+delete --all rc=0
+teardown start 16:05:09
+teardown end 16:06:12 rc=0
+removed '/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json'
+removed '/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/leases.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json'
+removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
+removed '/var/lib/kubelet/plugins/cxl-pool.nri.io/preparedPoolClaims.json'
+removed '/var/lib/kubelet/plugins/cxl-pool.nri.io/preparingPoolClaims.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/leases.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json'
+removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/localDevices.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/leases.json'
+removed '/var/lib/kubelet/plugins/cxl.nri.io/poolSerials.json'
+removed directory '/var/lib/kubelet/plugins/cxl.nri.io/leases'
+dra-local-detach vm: n4-cxl-shared-2-fedora-43-containerd.memdev1 detached
+dra-local-detach vm1: n4-cxl-shared-1-fedora-43-containerd.memdev1 detached
+pool-cleanup: detaching devices left attached on local-pmem:
+lp0 n4-cxl-shared-2-fedora-43-containerd 0xc100f5e1
+[38;5;11mhost>[0m scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9912 detach lp0 --host n4-cxl-shared-2-fedora-43-containerd
+lp0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds3_usrp0hb1  1     fcp_lp0.hp2  fcp_lp0.hp2  0xc100f5e1  detached  -
+pool-server-stop: stopped fake-cxl-pool-server local-pmem pid 166974
+demo teardown: removed /tmp/fake-cxl-pool/fs0.raw /tmp/fake-cxl-pool/fs0.lsa /tmp/fake-cxl-pool-local-pmem/lp0.raw /tmp/fake-cxl-pool-local-pmem/lp0.lsa
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: ls: cannot access '/tmp/fake-cxl-pool/fs0.*': No such file or directory ls: cannot access '/tmp/fake-cxl-pool-local-pmem/lp0.*': No such file or directory 
+DONE
+
+################ final (2026-11-03 EET; image b0a0eb6c6c91) ################
+Scripts /tmp/plan14-scripts/final.sh and demowiz2.sh; raw outputs /tmp/plan14-final-demo/ and /tmp/plan14-finalwiz/. Captures N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/captures/<case>-final-<step>-t2..t6/-truth (run A); zooms <case>-<label>-zooms.txt (local, pool, pool-shared-fs: the run-2 zoom sets, taken at step 7 of run A); pool-fs extras pool-fs-poolfs-ext4A-R{4,9}-dumpe2fs.txt, -R7-zoom-*, -R7-events.txt, -R7-claims-watch.json, -R9-zoom-*.
+Per item: one setup, run A (captures), 'demo reset CASE' (rc=0), run B plain (--auto, all steps), teardown. Labels in step lines: <item>A / <item>B. Every setup, step (18 per case, 22 for pool-fs ext4, 11 for xfs and btrfs), capture, reset and teardown ended rc=0; no failures in items 1, 2, 4(see t5 below).
+Note: the VM-clean check prints 'files: 2/3 patterns gone' for local and pool: that is only /tmp/fake-cxl-pool/shared0.* (the ordinary non-persistent pool backing file, which teardown keeps); fs0.*/lp0.* gone. VM state (memdevs, regions, pmem/dax, mounts, loops) clean and ports free after every teardown.
+
+=== item local ===
+[local] precheck: ok
+[local] setup start 2026-11-03 16:17:52
+setup end 16:18:59 rc=0
+localA step 1 start 16:18:59 end 16:19:02 rc=0 :: 2026-11-03 16:19:02 local: L1=2.1s
+localA step 2 start 16:19:02 end 16:19:05 rc=0 :: 2026-11-03 16:19:05 local: L2=2.0s
+  capture final-L2 rc=0
+localA step 3 start 16:19:06 end 16:19:11 rc=0 :: 2026-11-03 16:19:11 local: L3=3.9s
+localA step 4 start 16:19:11 end 16:19:14 rc=0 :: 2026-11-03 16:19:14 local: L4=2.0s
+localA step 5 start 16:19:14 end 16:19:16 rc=0 :: 2026-11-03 16:19:16 local: L5=0.8s
+  capture final-L5 rc=0
+localA step 6 start 16:19:17 end 16:19:22 rc=0 :: 2026-11-03 16:19:22 local: L6=3.6s
+  capture final-L6 rc=0
+localA step 7 start 16:19:22 end 16:19:27 rc=0 :: 2026-11-03 16:19:27 local: L7=3.3s
+  capture final-L7 rc=0
+  zooms -> captures/local-localA-zooms.txt: rcs       8 rc=0 
+localA step 8 start 16:19:31 end 16:19:32 rc=0 :: 2026-11-03 16:19:32 local: L8=0.5s
+localA step 9 start 16:19:32 end 16:19:36 rc=0 :: 2026-11-03 16:19:36 local: L9=3.0s
+  capture final-L9 rc=0
+reset rc=0
+localB step 1 start 16:19:37 end 16:19:41 rc=0 :: 2026-11-03 16:19:41 local: L1=2.1s
+localB step 2 start 16:19:41 end 16:19:42 rc=0 :: 2026-11-03 16:19:42 local: L2=0.5s
+localB step 3 start 16:19:42 end 16:19:47 rc=0 :: 2026-11-03 16:19:47 local: L3=3.9s
+localB step 4 start 16:19:47 end 16:19:50 rc=0 :: 2026-11-03 16:19:50 local: L4=2.1s
+localB step 5 start 16:19:50 end 16:19:52 rc=0 :: 2026-11-03 16:19:52 local: L5=0.8s
+localB step 6 start 16:19:52 end 16:19:57 rc=0 :: 2026-11-03 16:19:57 local: L6=3.7s
+localB step 7 start 16:19:57 end 16:20:01 rc=0 :: 2026-11-03 16:20:01 local: L7=3.3s
+localB step 8 start 16:20:01 end 16:20:03 rc=0 :: 2026-11-03 16:20:03 local: L8=0.4s
+localB step 9 start 16:20:03 end 16:20:07 rc=0 :: 2026-11-03 16:20:06 local: L9=2.6s
+teardown start 16:20:07
+teardown end 16:20:58 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 2/3 patterns gone
+DONE local
+
+=== item pool ===
+[pool] precheck: ok
+[pool] setup start 2026-11-03 16:20:59
+setup end 16:22:01 rc=0
+poolA step 1 start 16:22:01 end 16:22:05 rc=0 :: 2026-11-03 16:22:05 pool: L1=2.1s
+poolA step 2 start 16:22:05 end 16:22:12 rc=0 :: 2026-11-03 16:22:12 pool: L2=6.4s
+  capture final-L2 rc=0
+poolA step 3 start 16:22:13 end 16:22:18 rc=0 :: 2026-11-03 16:22:18 pool: L3=3.9s
+poolA step 4 start 16:22:18 end 16:22:21 rc=0 :: 2026-11-03 16:22:21 pool: L4=2.1s
+poolA step 5 start 16:22:21 end 16:22:23 rc=0 :: 2026-11-03 16:22:23 pool: L5=0.9s
+  capture final-L5 rc=0
+poolA step 6 start 16:22:24 end 16:22:36 rc=0 :: 2026-11-03 16:22:36 pool: L6=11.7s
+  capture final-L6 rc=0
+poolA step 7 start 16:22:37 end 16:22:42 rc=0 :: 2026-11-03 16:22:42 pool: L7=3.4s
+  capture final-L7 rc=0
+  zooms -> captures/pool-poolA-zooms.txt: rcs       9 rc=0 
+poolA step 8 start 16:22:46 end 16:22:47 rc=0 :: 2026-11-03 16:22:47 pool: L8=0.5s
+poolA step 9 start 16:22:47 end 16:22:50 rc=0 :: 2026-11-03 16:22:50 pool: L9=1.9s
+  capture final-L9 rc=0
+reset rc=0
+poolB step 1 start 16:22:52 end 16:22:55 rc=0 :: 2026-11-03 16:22:55 pool: L1=2.1s
+poolB step 2 start 16:22:55 end 16:23:07 rc=0 :: 2026-11-03 16:23:07 pool: L2=11.5s
+poolB step 3 start 16:23:07 end 16:23:12 rc=0 :: 2026-11-03 16:23:12 pool: L3=4.0s
+poolB step 4 start 16:23:12 end 16:23:15 rc=0 :: 2026-11-03 16:23:15 pool: L4=2.1s
+poolB step 5 start 16:23:15 end 16:23:17 rc=0 :: 2026-11-03 16:23:17 pool: L5=0.9s
+poolB step 6 start 16:23:17 end 16:23:29 rc=0 :: 2026-11-03 16:23:29 pool: L6=10.4s
+poolB step 7 start 16:23:29 end 16:23:33 rc=0 :: 2026-11-03 16:23:33 pool: L7=3.4s
+poolB step 8 start 16:23:33 end 16:23:35 rc=0 :: 2026-11-03 16:23:35 pool: L8=0.5s
+poolB step 9 start 16:23:35 end 16:23:38 rc=0 :: 2026-11-03 16:23:38 pool: L9=2.3s
+teardown start 16:23:38
+teardown end 16:24:17 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 2/3 patterns gone
+DONE pool
+
+=== item pool-shared-fs ===
+[pool-shared-fs] precheck: ok
+[pool-shared-fs] setup start 2026-11-03 16:24:18
+setup end 16:25:23 rc=0
+pool-shared-fsA step 1 start 16:25:23 end 16:25:27 rc=0 :: 2026-11-03 16:25:27 pool-shared-fs: F1=2.1s
+pool-shared-fsA step 2 start 16:25:27 end 16:25:33 rc=0 :: 2026-11-03 16:25:33 pool-shared-fs: F2=5.7s
+  capture final-F2 rc=0
+pool-shared-fsA step 3 start 16:25:34 end 16:25:39 rc=0 :: 2026-11-03 16:25:39 pool-shared-fs: F3=3.9s
+  capture final-F3 rc=0
+pool-shared-fsA step 4 start 16:25:40 end 16:25:43 rc=0 :: 2026-11-03 16:25:43 pool-shared-fs: F4=2.1s
+pool-shared-fsA step 5 start 16:25:43 end 16:25:45 rc=0 :: 2026-11-03 16:25:45 pool-shared-fs: F5=0.8s
+  capture final-F5 rc=0
+pool-shared-fsA step 6 start 16:25:46 end 16:25:57 rc=0 :: 2026-11-03 16:25:57 pool-shared-fs: F6=10.3s
+  capture final-F6 rc=0
+pool-shared-fsA step 7 start 16:25:58 end 16:26:00 rc=0 :: 2026-11-03 16:26:00 pool-shared-fs: F7=0.8s
+  capture final-F7 rc=0
+  zooms -> captures/pool-shared-fs-pool-shared-fsA-zooms.txt: rcs       7 rc=0 
+pool-shared-fsA step 8 start 16:26:03 end 16:26:04 rc=0 :: 2026-11-03 16:26:04 pool-shared-fs: F8=0.4s
+pool-shared-fsA step 9 start 16:26:04 end 16:26:09 rc=0 :: 2026-11-03 16:26:09 pool-shared-fs: F9=3.1s
+  capture final-F9 rc=0
+reset rc=0
+pool-shared-fsB step 1 start 16:26:10 end 16:26:13 rc=0 :: 2026-11-03 16:26:13 pool-shared-fs: F1=2.1s
+pool-shared-fsB step 2 start 16:26:13 end 16:26:25 rc=0 :: 2026-11-03 16:26:25 pool-shared-fs: F2=10.8s
+pool-shared-fsB step 3 start 16:26:25 end 16:26:30 rc=0 :: 2026-11-03 16:26:30 pool-shared-fs: F3=3.9s
+pool-shared-fsB step 4 start 16:26:30 end 16:26:33 rc=0 :: 2026-11-03 16:26:33 pool-shared-fs: F4=2.1s
+pool-shared-fsB step 5 start 16:26:33 end 16:26:35 rc=0 :: 2026-11-03 16:26:35 pool-shared-fs: F5=0.9s
+pool-shared-fsB step 6 start 16:26:35 end 16:26:47 rc=0 :: 2026-11-03 16:26:47 pool-shared-fs: F6=10.6s
+pool-shared-fsB step 7 start 16:26:47 end 16:26:49 rc=0 :: 2026-11-03 16:26:49 pool-shared-fs: F7=0.8s
+pool-shared-fsB step 8 start 16:26:49 end 16:26:50 rc=0 :: 2026-11-03 16:26:50 pool-shared-fs: F8=0.4s
+pool-shared-fsB step 9 start 16:26:50 end 16:26:53 rc=0 :: 2026-11-03 16:26:53 pool-shared-fs: F9=2.2s
+teardown start 16:26:53
+teardown end 16:27:32 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 3/3 patterns gone
+DONE pool-shared-fs
+
+=== item poolfs-ext4 ===
+[poolfs-ext4] precheck: ok
+[poolfs-ext4] setup start 2026-11-03 16:27:33
+setup end 16:28:38 rc=0
+demo setup: driver configuration fsTypes: [erofs, ext4]
+demo setup: NOTE: the nodes mount ext4 now, a type that is not hardened against crafted images:
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=ext4
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+  driver log: fsTypes: erofs, ext4: the filesystem types that mode fs mounts on this node
+poolfs-ext4A step 1 start 16:28:39 end 16:28:42 rc=0 :: 2026-11-03 16:28:42 pool-fs: R1=2.1s
+poolfs-ext4A step 2 start 16:28:42 end 16:28:49 rc=0 :: 2026-11-03 16:28:49 pool-fs: R2=5.7s
+  capture final-R2 rc=0
+poolfs-ext4A step 3 start 16:28:49 end 16:28:58 rc=0 :: 2026-11-03 16:28:58 pool-fs: R3=7.1s
+poolfs-ext4A step 4 start 16:28:58 end 16:29:11 rc=0 :: 2026-11-03 16:29:11 pool-fs: R4=12.7s
+  capture final-R4 rc=0
+  dumpe2fs R4: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit f;Filesystem state:         clean;
+poolfs-ext4A step 5 start 16:29:12 end 16:29:14 rc=0 :: 2026-11-03 16:29:14 pool-fs: R5=0.5s
+  capture final-R5 rc=0
+poolfs-ext4A step 6 start 16:29:15 end 16:29:18 rc=0 :: 2026-11-03 16:29:18 pool-fs: R6=2.2s
+poolfs-ext4A step 7 start 16:29:18 end 16:29:27 rc=0 :: 2026-11-03 16:29:27 pool-fs: R7=8.1s
+  capture final-R7 rc=0
+  R7 zooms/events/watch -> captures/pool-fs-poolfs-ext4A-R7-*; capture final-R7b rc=0
+poolfs-ext4A step 8 start 16:30:10 end 16:30:12 rc=0 :: 2026-11-03 16:30:12 pool-fs: R8=0.6s
+  capture final-R8 rc=0
+poolfs-ext4A step 9 start 16:30:13 end 16:30:22 rc=0 :: 2026-11-03 16:30:22 pool-fs: R9=7.9s
+  capture final-R9 rc=0
+  R9 zooms/dumpe2fs -> captures/pool-fs-poolfs-ext4A-R9-*: Filesystem state:         clean;
+poolfs-ext4A step 10 start 16:30:23 end 16:30:25 rc=0 :: 2026-11-03 16:30:25 pool-fs: R10=0.9s
+  capture final-R10 rc=0
+poolfs-ext4A step 11 start 16:30:26 end 16:30:29 rc=0 :: 2026-11-03 16:30:29 pool-fs: R11=1.9s
+  capture final-R11 rc=0
+reset rc=0
+poolfs-ext4B step 1 start 16:30:30 end 16:30:33 rc=0 :: 2026-11-03 16:30:33 pool-fs: R1=2.1s
+poolfs-ext4B step 2 start 16:30:33 end 16:30:45 rc=0 :: 2026-11-03 16:30:45 pool-fs: R2=10.8s
+poolfs-ext4B step 3 start 16:30:45 end 16:30:53 rc=0 :: 2026-11-03 16:30:53 pool-fs: R3=7.0s
+poolfs-ext4B step 4 start 16:30:53 end 16:31:07 rc=0 :: 2026-11-03 16:31:07 pool-fs: R4=12.7s
+poolfs-ext4B step 5 start 16:31:07 end 16:31:09 rc=0 :: 2026-11-03 16:31:09 pool-fs: R5=0.5s
+  t5 typescript started before step 6 16:31:09
+poolfs-ext4B step 6 start 16:31:09 end 16:31:12 rc=0 :: 2026-11-03 16:31:12 pool-fs: R6=2.1s
+poolfs-ext4B step 7 start 16:31:12 end 16:31:21 rc=0 :: 2026-11-03 16:31:21 pool-fs: R7=8.4s
+poolfs-ext4B step 8 start 16:31:21 end 16:31:23 rc=0 :: 2026-11-03 16:31:23 pool-fs: R8=0.7s
+poolfs-ext4B step 9 start 16:31:23 end 16:31:29 rc=0 :: 2026-11-03 16:31:29 pool-fs: R9=5.2s
+poolfs-ext4B step 10 start 16:31:29 end 16:31:31 rc=0 :: 2026-11-03 16:31:31 pool-fs: R10=0.9s
+poolfs-ext4B step 11 start 16:31:31 end 16:31:34 rc=0 :: 2026-11-03 16:31:34 pool-fs: R11=1.9s
+2026-11-03 16:31:34 pool-fs: R11=1.9s
+teardown start 16:31:34
+teardown end 16:32:13 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 3/3 patterns gone
+DONE poolfs-ext4
+
+=== item poolfs-xfs ===
+[poolfs-xfs] precheck: ok
+[poolfs-xfs] setup start 2026-11-03 16:32:14
+setup end 16:33:19 rc=0
+demo setup: driver configuration fsTypes: [erofs, xfs]
+demo setup: NOTE: the nodes mount xfs now, a type that is not hardened against crafted images:
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=xfs
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+  driver log: fsTypes: erofs, xfs: the filesystem types that mode fs mounts on this node
+poolfs-xfs step 1 start 16:33:19 end 16:33:22 rc=0 :: 2026-11-03 16:33:22 pool-fs: R1=2.0s
+poolfs-xfs step 2 start 16:33:22 end 16:33:29 rc=0 :: 2026-11-03 16:33:29 pool-fs: R2=5.7s
+poolfs-xfs step 3 start 16:33:29 end 16:33:36 rc=0 :: 2026-11-03 16:33:36 pool-fs: R3=6.0s
+poolfs-xfs step 4 start 16:33:36 end 16:33:50 rc=0 :: 2026-11-03 16:33:50 pool-fs: R4=12.7s
+poolfs-xfs step 5 start 16:33:50 end 16:33:51 rc=0 :: 2026-11-03 16:33:51 pool-fs: R5=0.5s
+poolfs-xfs step 6 start 16:33:51 end 16:33:55 rc=0 :: 2026-11-03 16:33:54 pool-fs: R6=2.1s
+poolfs-xfs step 7 start 16:33:55 end 16:34:04 rc=0 :: 2026-11-03 16:34:04 pool-fs: R7=8.1s
+poolfs-xfs step 8 start 16:34:04 end 16:34:05 rc=0 :: 2026-11-03 16:34:05 pool-fs: R8=0.6s
+poolfs-xfs step 9 start 16:34:05 end 16:34:10 rc=0 :: 2026-11-03 16:34:10 pool-fs: R9=3.9s
+poolfs-xfs step 10 start 16:34:10 end 16:34:12 rc=0 :: 2026-11-03 16:34:12 pool-fs: R10=0.9s
+poolfs-xfs step 11 start 16:34:12 end 16:34:15 rc=0 :: 2026-11-03 16:34:15 pool-fs: R11=1.9s
+teardown start 16:34:15
+teardown end 16:34:53 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 3/3 patterns gone
+DONE poolfs-xfs
+
+=== item poolfs-btrfs ===
+[poolfs-btrfs] precheck: ok
+[poolfs-btrfs] setup start 2026-11-03 16:34:54
+setup end 16:35:59 rc=0
+demo setup: driver configuration fsTypes: [erofs, btrfs]
+demo setup: NOTE: the nodes mount btrfs now, a type that is not hardened against crafted images:
+dra-install: helm values with the driver configuration, test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/
+DEMO_CASE=pool-fs
+DEMO_FSTYPE=btrfs
+SERIAL=0xc1ae0001
+POOL_DEVICE=fs0
+  driver log: fsTypes: erofs, btrfs: the filesystem types that mode fs mounts on this node
+poolfs-btrfs step 1 start 16:36:00 end 16:36:03 rc=0 :: 2026-11-03 16:36:03 pool-fs: R1=2.0s
+poolfs-btrfs step 2 start 16:36:03 end 16:36:10 rc=0 :: 2026-11-03 16:36:10 pool-fs: R2=5.7s
+poolfs-btrfs step 3 start 16:36:10 end 16:36:17 rc=0 :: 2026-11-03 16:36:17 pool-fs: R3=6.1s
+poolfs-btrfs step 4 start 16:36:17 end 16:36:31 rc=0 :: 2026-11-03 16:36:31 pool-fs: R4=12.7s
+  btrfs R4: dump-super generation		8 ; T6: btrfs "demo" 510M, generation 8 
+poolfs-btrfs step 5 start 16:36:31 end 16:36:33 rc=0 :: 2026-11-03 16:36:33 pool-fs: R5=0.5s
+poolfs-btrfs step 6 start 16:36:33 end 16:36:36 rc=0 :: 2026-11-03 16:36:36 pool-fs: R6=2.1s
+poolfs-btrfs step 7 start 16:36:36 end 16:36:45 rc=0 :: 2026-11-03 16:36:45 pool-fs: R7=8.2s
+poolfs-btrfs step 8 start 16:36:45 end 16:36:47 rc=0 :: 2026-11-03 16:36:47 pool-fs: R8=0.7s
+poolfs-btrfs step 9 start 16:36:47 end 16:36:53 rc=0 :: 2026-11-03 16:36:53 pool-fs: R9=5.1s
+  btrfs R9: dump-super generation		9 ; T6: btrfs "demo" 510M, generation 9 
+poolfs-btrfs step 10 start 16:36:54 end 16:36:56 rc=0 :: 2026-11-03 16:36:56 pool-fs: R10=0.9s
+poolfs-btrfs step 11 start 16:36:56 end 16:37:00 rc=0 :: 2026-11-03 16:37:00 pool-fs: R11=3.1s
+teardown start 16:37:00
+teardown end 16:37:38 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 3/3 patterns gone
+DONE poolfs-btrfs
+
+=== item 2 live looks ===
+driver start lines (zoom driver vm1 400 | grep fsTypes): ext4 run 'fsTypes: erofs, ext4: the filesystem types that mode fs mounts on this node'; xfs 'fsTypes: erofs, xfs: ...'; btrfs 'fsTypes: erofs, btrfs: ...'.
+btrfs generation read independently (dd skip=2M + btrfs inspect-internal dump-super) vs T6 of the capture: R4 dump-super 8 / T6 'generation 8'; R9 dump-super 9 / T6 'generation 9' -> equal.
+
+=== item 4: t5 terminal behaviour (during ext4 run B steps 6-11, /tmp/plan14-t5.typescript, 4680 bytes; the command was 'timeout 40 script -qfc "stty cols 50 rows 10; ./bin/demo view t5"', stty added so the pty has 50x10) ===
+First screen: ESC[2J ESC[?25l ESC[H then the title and the last events (byte 134). From 16:31:09 to 16:31:46 new events (writer released, readers Ready, fs0 detached ...) appear as appended lines, each ending ESC[K CR LF; no cursor-home and no clear in between.
+One more ESC[H occurs at byte 4484 of 4680, at 16:31:48, after the last event line and after teardown had started (16:31:34): the title is redrawn with the new clock, followed by 'demo not set up: demo setup local|pool|pool-shared...' and the typescript ends. So during the steps there is no cursor-home; the single later one is the final refresh when the demo state vanished. Excerpt (cat -v):
+Script started on 2026-11-03 16:31:09+02:00 [COMMAND="stty cols 50 rows 10; ./bin/demo view t5" <not executed on termina
+^[[2J^[[?25l^[[H^[[1mTRACE                                    16:31:09^[[0m^[[K^M
+16:31:02 kern  vm1 add mem0^[[K^M
+16:31:02 ctrl  writer: fs0 ^[[32mexcl^[[0m: rw filesystem^[[K^M
+16:31:39 ctrl  detach fs0 from vm2^[[K^M
+16:31:39 pool  fs0 ^[[33mdetaching^[[0m from vm1^[[K^M
+16:31:44 kern  vm1 remove mem0^[[K^M
+16:31:45 pool  fs0 detached from vm1^[[K^M
+16:31:46 ctrl  detach fs0 from vm1^[[K^[[H^[[1mTRACE                                    16:31:48^[[0m^[[K^M
+demo not set up: demo setup local|pool|pool-^[[32mshared^[[0m^[[K^[[J
+Script done on 2026-11-03 16:31:51+02:00 [COMMAND_EXIT_CODE="0"]
+
+################ final: wizard ################
+Section 14 followed (script demowiz2.sh; logs N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/run/{wizard-rules-1.log,wizard-rules-2.log,test90-demo-setup.log,test91-demo-teardown.log}; captures captures/wizard-{W0,G1-local,G2-wait,G2-ready,G3-conflict,G3-rw,G3-reader-waits,G4-lp0,G4-any}-t2..t6/-truth; interactive: wizard-int1.txt, wizard-int1-after.txt, wizard-int2.txt, wizard-int2-after.txt; pod logs wizard-final-podlogs.txt).
+Verdict: scripted set run 1 and run 2 both 'wizard-rules: 52 ok, 1 not as expected'; the one: 'line 103: expected Running: w26: Pending' (w26 = reader of lp0 declaring xfs after w25's mkfs xfs; the tool warned 'demo setup made ext4 on lp0: unless a writer made xfs there since, its Prepare fails and the pod waits'). All 8 captures taken (captured lines: 8), rows 83-86 now pass (w18 waits, writes alone, w19 waits). Interactive runs OK, delete --all OK, teardown OK, VMs clean.
+
+precheck: ok
+selftest: ok, 219 renderings fit 50 x 10
+wizard check: ok, 26 accepted and 37 refused rule rows, 71 rows of wizard-rules.sh
+wizard-rules: 51 ok, 0 not as expected
+setup start 2026-11-03 16:38:24
+setup end 16:39:59 rc=0
+demo setup: driver configuration fsTypes: [erofs, ext4, xfs, btrfs]
+demo setup: NOTE: the nodes mount ext4, xfs and btrfs too, types that are not hardened against
+  fsTypes: [erofs, ext4, xfs, btrfs]
+E2EISH {"op":"launch","plugin":"dra-driver-cxl","topology":[{"mem":"4G","threads":2,"cores":2,"nodes":1,"packages":2},{"hdm-for-passthrough":true,"cxl":[[{"switch":[{"pool-slot":"1G"},{"pool-slot":"1G"},{"mem":"256M","present":false,"shared":true,"file":"/tmp/fake-cxl-pool/static-shared0.raw","sn":"
+dra ok: lp0-published: device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd') is not None and attr(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'persistent') == True
+wizard-format: fs0 (0xc1ae0002) has an ext4 with hello.txt: "Hello from the wizard setup, 16:39:35"
+wizard-format: lp0 (0xc100f5e1) has an ext4 with hello.txt: "Hello from the wizard setup, 16:39:45"
+VM2_LOCAL_SERIAL=0xc100e2e1
+VM1_LOCAL_SERIAL=0xc100e2e1
+FS_TYPES=erofs\,ext4\,xfs\,btrfs
+capture W0 rc=0
+no objects of the wizard: demo wizard new ...
+rules run 1 start 16:40:01
+rules run 1 end 16:44:52
+no objects of the wizard
+wizard-rules: 52 ok, 1 not as expected
+  line 103: expected Running: w26: Pending
+rules run 2 start 16:44:52
+rules run 2 end 16:50:03 rc=0
+no objects of the wizard
+wizard-rules: 52 ok, 1 not as expected
+  line 103: expected Running: w26: Pending
+wizard-rules: line 58: captured G1-local
+wizard-rules: line 69: captured G2-wait
+wizard-rules: line 71: captured G2-ready
+wizard-rules: line 83: captured G3-conflict
+wizard-rules: line 85: captured G3-rw
+wizard-rules: line 86: captured G3-reader-waits
+wizard-rules: line 99: captured G4-lp0
+wizard-rules: line 109: captured G4-any
+captured lines: 8
+wizard-rules: line 103: BAD: expected Running: w26: Pending
+--- interactive 1
+rc=0
+  name: wi1
+    cxl-demo/wizard: wi1
+    resourceClaimTemplateName: wi1-lease
+Enter create, y the YAML, q quit: created run/wizard/wi1.yaml:
+resourceclaimtemplate.resource.k8s.io/wi1-lease created
+pod/wi1 created
+wi1 lease f132a3ec: Pending
+wi1: Ready
+--- interactive 2
+rc=0
+[numa]: not taken: mode fs needs a persistent device
+the same: demo wizard new --kind claim --source local --memory volatile --sharing exclusive --mode numa --size 128Mi --serial any --steering none --node vm2 --command env --name wi2
+Enter create, y the YAML, q quit: created run/wizard/wi2.yaml:
+resourceclaim.resource.k8s.io/wi2 created
+pod/wi2 created
+wi2: Running
+pod "wi1" deleted from cxl-demo namespace
+pod "wi2" deleted from cxl-demo namespace
+resourceclaim.resource.k8s.io "wi2" deleted from cxl-demo namespace
+resourceclaimtemplate.resource.k8s.io "wi1-lease" deleted from cxl-demo
+  namespace
+no leases left
+deleted: wi1 wi2
+delete --all rc=0
+teardown start 16:50:24
+teardown end 16:51:28 rc=0
+dra-local-detach vm: n4-cxl-shared-2-fedora-43-containerd.memdev1 detached
+dra-local-detach vm1: n4-cxl-shared-1-fedora-43-containerd.memdev1 detached
+pool-cleanup: detaching devices left attached on local-pmem:
+lp0 n4-cxl-shared-2-fedora-43-containerd 0xc100f5e1
+[38;5;11mhost>[0m scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9912 detach lp0 --host n4-cxl-shared-2-fedora-43-containerd
+lp0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds3_usrp0hb1  1     fcp_lp0.hp2  fcp_lp0.hp2  0xc100f5e1  detached  -
+pool-server-stop: stopped fake-cxl-pool-server local-pmem pid 224181
+demo teardown: removed /tmp/fake-cxl-pool/fs0.raw /tmp/fake-cxl-pool/fs0.lsa /tmp/fake-cxl-pool-local-pmem/lp0.raw /tmp/fake-cxl-pool-local-pmem/lp0.lsa
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: ls: cannot access '/tmp/fake-cxl-pool/fs0.*': No such file or directory ls: cannot access '/tmp/fake-cxl-pool-local-pmem/lp0.*': No such file or directory 
+DONE
+
+################ final 2 (2026-11-03 EET; image b0a0eb6c6c91) ################
+Script /tmp/plan14-scripts/final2.sh; raw outputs /tmp/plan14-final2/; logs N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/run/{wizard-rules-mkfs.log,wizard-rules-1.log,wizard-rules-2.log}.
+
+=== item 1: wizard (section 17) ===
+Verdict: FAIL (setup, delete --all, teardown, VM clean OK; the scripted rows not).
+mkfs rows (--from 79): 35 ok, 2 not as expected: line 93 OK (w21 mkfs ext4 exit 0), line 108 OK (w27 mkfs ext4 exit 0); line 104 BAD: 'w25: Running; mkfs xfs exit 1' with the pod output 'mkfs.xfs failed with exit status -11' (SIGSEGV); line 106 BAD: 'w26: Pending' (w26 could not read lp0's hello.txt: no xfs was made).
+Full sets: both BAD at 55 (w2), 60 (w7), 71 (w12), 77 (w15), 104, 106; e.g. 'wizard-rules: line 55: BAD: expected Running and its command done: w2: Running; write exit 1' with the pod output
+    m.flush()
+    ~~~~~~~^^
+    OSError: [Errno 22] Invalid argument
+  (the writes into a dax mapping fail on msync: m.flush() OSError Errno 22; these rows passed in the previous round, so this is new on this run).
+Captures: only 6 of 8 taken (G1-local, G2-wait, G2-ready, G3-rw, G3-reader-waits, G4-any); G3-conflict and G4-lp0 not taken (their rows did not end as expected). The trace grep for w25 printed Started then Killing about 1.7-1.8 s apart in both sets (the pod ran only that long: mkfs.xfs died with -11), lines below.
+precheck: ok
+selftest: ok, 219 renderings fit 50 x 10
+wizard check: ok, 26 accepted and 37 refused rule rows, 71 rows of wizard-rules.sh
+wizard-rules: 51 ok, 0 not as expected
+setup start 2026-11-03 16:57:42
+setup end 16:59:16 rc=0
+mkfs rows start 16:59:16
+mkfs rows end 17:02:19
+wizard-rules: 35 ok, 2 not as expected
+  line 104: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 106: expected Running and its command done: w26: Pending
+wizard-rules: line 93: OK: w21: Running; mkfs ext4 exit 0
+wizard-rules: line 104: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 106: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 108: OK: w27: Ready; mkfs ext4 exit 0
+  line 104: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 106: expected Running and its command done: w26: Pending
+resourceclaim.resource.k8s.io/w26 created
+pod/w26 created
+w26: Pending
+wizard-rules: line 106: BAD: expected Running and its command done: w26: Pending
+--
+no objects of the wizard
+wizard-rules: 35 ok, 2 not as expected
+  line 104: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 106: expected Running and its command done: w26: Pending
+full set 1 (captures) start 17:02:19
+full set 1 end 17:07:34
+full set 2 end 17:12:38
+==> run/wizard-rules-1.log <==
+  line 77: expected Ready and its command done: w15: Ready; write exit 1
+  line 104: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 106: expected Running and its command done: w26: Pending
+
+==> run/wizard-rules-2.log <==
+  line 77: expected Ready and its command done: w15: Ready; write exit 1
+  line 104: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 106: expected Running and its command done: w26: Pending
+captured lines: 6
+wizard-rules: line 55: BAD: expected Running and its command done: w2: Running; write exit 1
+wizard-rules: line 60: BAD: expected Running and its command done: w7: Running; write exit 1
+wizard-rules: line 71: BAD: expected Running and its command done: w12: Running; write exit 1
+wizard-rules: line 77: BAD: expected Ready and its command done: w15: Ready; write exit 1
+wizard-rules: line 104: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 106: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 55: BAD: expected Running and its command done: w2: Running; write exit 1
+wizard-rules: line 60: BAD: expected Running and its command done: w7: Running; write exit 1
+wizard-rules: line 71: BAD: expected Running and its command done: w12: Running; write exit 1
+wizard-rules: line 77: BAD: expected Ready and its command done: w15: Ready; write exit 1
+wizard-rules: line 104: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 106: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 93: OK: w21: Running; mkfs ext4 exit 0
+wizard-rules: line 104: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 106: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 108: OK: w27: Ready; mkfs ext4 exit 0
+  line 104: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 106: expected Running and its command done: w26: Pending
+TRACE_DIR=test/e2e/n4-cxl-shared-2-fedora-43-containerd/demo.test-suite/dra-driver-cxl/test90-demo-setup/trace
+1793718064.914899 vm.events cxl-demo   Pod             w25                                    Started                    Container started
+1793718066.636868 vm.events cxl-demo   Pod             w25                                    Killing                    Stopping container main
+1793718378.405950 vm.events cxl-demo      Pod             w25                                    Started                         Container started
+1793718380.185888 vm.events cxl-demo      Pod             w25                                    Killing                         Stopping container main
+1793718684.942696 vm.events cxl-demo      Pod             w25                                    Started                         Container started
+1793718686.694893 vm.events cxl-demo      Pod             w25                                    Killing                         Stopping container main
+no objects of the wizard
+delete --all rc=0
+teardown start 17:12:39
+teardown end 17:13:44 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 2/2 patterns gone
+DONE
+
+=== item 2: t5 across a teardown (/tmp/plan14-t5b.typescript, 3366 bytes, 63 lines) ===
+PASS: exactly one ESC[H (byte 134, the first screen: ESC[2J ESC[?25l ESC[H title); no ESC[1;1H; the events of the 9 local steps (17:14:53-17:15:23) appear as appended lines; one appended line '--- 17:15:42 no demo (teardown, or not set up)' (teardown ran 17:15:28-17:16:20) and nothing after it until the script ended at 17:21:31 (timeout 400). Excerpt (cat -v):
+Script started on 2026-11-03 17:14:49+02:00 [COMMAND="stty cols 50 rows 10; ./bin/demo view t5" <not executed 
+^[[2J^[[?25l^[[H^[[1mTRACE                                    17:14:49^[[0m^[[K^[[J^M
+17:14:53 sched writer: scheduled on vm2^[[K^M
+17:14:56 drv   vm2 writer asks dax rw ^[[32mexcl^[[0m^[[K^M
+  ...
+17:15:22 drv   vm2 reader-a: lease released^[[K^M
+17:15:23 drv   vm2 reader-c: lease released^[[K^M
+17:15:23 drv   vm2 reader-b: lease released^[[K^M
+--- 17:15:42 no demo (teardown, or not set up)^[[K
+Script done on 2026-11-03 17:21:31+02:00 [COMMAND_EXIT_CODE="0"]
+precheck: ok
+setup end 17:14:49 rc=0
+t5 started 17:14:49
+step 1 17:14:52-17:14:55 rc=0 :: 2026-11-03 17:14:55 local: L1=2.1s
+step 2 17:14:55-17:14:58 rc=0 :: 2026-11-03 17:14:58 local: L2=2.0s
+step 3 17:14:58-17:15:03 rc=0 :: 2026-11-03 17:15:03 local: L3=4.0s
+step 4 17:15:03-17:15:07 rc=0 :: 2026-11-03 17:15:07 local: L4=2.1s
+step 5 17:15:07-17:15:08 rc=0 :: 2026-11-03 17:15:08 local: L5=0.8s
+step 6 17:15:08-17:15:13 rc=0 :: 2026-11-03 17:15:13 local: L6=3.7s
+step 7 17:15:13-17:15:18 rc=0 :: 2026-11-03 17:15:18 local: L7=3.3s
+step 8 17:15:18-17:15:19 rc=0 :: 2026-11-03 17:15:19 local: L8=0.5s
+step 9 17:15:19-17:15:23 rc=0 :: 2026-11-03 17:15:23 local: L9=3.2s
+teardown start 17:15:28
+teardown end 17:16:20 rc=0
+t5 ended 17:21:31
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 2/2 patterns gone
+DONE
+
+################ final 3 (2026-11-03 EET; image b0a0eb6c6c91) ################
+Script /tmp/plan14-scripts/final3.sh; raw /tmp/plan14-final3/; logs N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/run/{wizard-rules-1.log,wizard-rules-2.log}; captures captures/wizard-{G1-local,G2-wait,G2-ready,G3-conflict,G3-rw,G3-reader-waits,G4-lp0,G4-any}-t2..t6/-truth (all 8 taken at lines 61 72 74 86 88 89 103 114).
+Verdict: FAIL, 3 rows. Run 1: 'wizard-rules: 51 ok, 3 not as expected'; run 2: same 3 rows. Setup rc=0 (17:28:18-17:29:54), run 1 17:29:54-17:35:40, run 2 17:35:40-17:41:29, delete --all rc=0, teardown rc=0 (17:41:30-17:42:34), VMs clean, ports free, fs0/lp0 files gone.
+Rows OK: 55 w2, 60 w7, 71 w12 (write exit 0), 77 w15 (Ready; write exit 0), 93 w21 mkfs ext4 exit 0, 110 w27 mkfs ext4 exit 0; reads 56 w3 (zeros), 75 w14 'Hello from w12'. (The writes that failed in final 2 now pass.)
+Rows BAD (the xfs ones): 105 w25 'Running; mkfs xfs exit 1' with the pod output:
+    mkfs.xfs: error - cannot set blocksize 4096 on block device /dev/pmem1:
+      Permission denied
+    mkfs.xfs failed with exit status 1
+  107 w26 'Pending' and 108 w30 'Pending' (no xfs on lp0, so their Prepare waits).
+Driver-log check of lp0's xfs mounts (zoom driver vm2 3000 | grep xfs): only the start line 'fsTypes: erofs, ext4, xfs, btrfs: ...' and the MemoryConfig lines 'claim w26 ... {mode fs, readOnly false, fsType xfs}' and 'claim w30 ... {mode fs, readOnly true, fsType xfs}' (each twice, one per run); NO 'mounted /dev/pmem1 ... (xfs, rw, dax=always)' line, because w26 and w30 never got past Prepare.
+
+precheck: ok
+selftest: ok, 219 renderings fit 50 x 10
+wizard check: ok, 26 accepted and 37 refused rule rows, 72 rows of wizard-rules.sh
+wizard-rules: 52 ok, 0 not as expected
+setup start 2026-11-03 17:28:18
+setup end 17:29:54 rc=0
+run 1 start 17:29:54
+run 1 end 17:35:40
+wizard-rules: line 55: OK: w2: Running; write exit 0
+wizard-rules: line 60: OK: w7: Running; write exit 0
+wizard-rules: line 71: OK: w12: Running; write exit 0
+wizard-rules: line 77: OK: w15: Ready; write exit 0
+wizard-rules: line 93: OK: w21: Running; mkfs ext4 exit 0
+wizard-rules: line 105: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 107: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 108: BAD: expected Running and its command done: w30: Pending
+wizard-rules: line 110: OK: w27: Ready; mkfs ext4 exit 0
+  line 105: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 107: expected Running and its command done: w26: Pending
+  line 108: expected Running and its command done: w30: Pending
+--- context lines 56 75 108
+pod/w3 created
+C100E2E1: read at 0: ""
+w3: Running; read exit 0
+wizard-rules: line 56: OK: w3: Running; read exit 0
+--
+pod/w14 created
+C1AE0001: read at 0: "Hello from w12"
+w14: Running; read exit 0
+wizard-rules: line 75: OK: w14: Running; read exit 0
+--
+resourceclaim.resource.k8s.io/w30 created
+pod/w30 created
+w30: Pending
+wizard-rules: line 108: BAD: expected Running and its command done: w30: Pending
+--
+wizard-rules: 51 ok, 3 not as expected
+  line 105: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 107: expected Running and its command done: w26: Pending
+  line 108: expected Running and its command done: w30: Pending
+run 2 start 17:35:40
+run 2 end 17:41:29
+==> run/wizard-rules-1.log <==
+  line 105: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 107: expected Running and its command done: w26: Pending
+  line 108: expected Running and its command done: w30: Pending
+
+==> run/wizard-rules-2.log <==
+  line 105: expected Running and its command done: w25: Running; mkfs xfs exit 1
+  line 107: expected Running and its command done: w26: Pending
+  line 108: expected Running and its command done: w30: Pending
+captured lines: 8
+wizard-rules: line 61: captured G1-local
+wizard-rules: line 72: captured G2-wait
+wizard-rules: line 74: captured G2-ready
+wizard-rules: line 86: captured G3-conflict
+wizard-rules: line 88: captured G3-rw
+wizard-rules: line 89: captured G3-reader-waits
+wizard-rules: line 103: captured G4-lp0
+wizard-rules: line 114: captured G4-any
+wizard-rules: line 105: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 107: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 108: BAD: expected Running and its command done: w30: Pending
+wizard-rules: line 105: BAD: expected Running and its command done: w25: Running; mkfs xfs exit 1
+wizard-rules: line 107: BAD: expected Running and its command done: w26: Pending
+wizard-rules: line 108: BAD: expected Running and its command done: w30: Pending
+--- driver log vm2 (xfs mounts of lp0)
+fsTypes: erofs, ext4, xfs, btrfs: the filesystem types that mode fs mounts on this node
+claim w26 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":false,"fsType":"xfs"}}
+claim w30 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":true,"fsType":"xfs"}}
+claim w26 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":false,"fsType":"xfs"}}
+claim w30 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":true,"fsType":"xfs"}}
+no objects of the wizard
+delete --all rc=0
+teardown start 17:41:30
+teardown end 17:42:34 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 2/2 patterns gone
+DONE
+
+################ final 4 (2026-11-03 EET; image b0a0eb6c6c91) ################
+Script /tmp/plan14-scripts/final4.sh; raw /tmp/plan14-final4/; logs N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read/run/{wizard-rules-mkfs.log,wizard-rules-1.log,wizard-rules-2.log}; captures captures/wizard-{G1-local,G2-wait,G2-ready,G3-conflict,G3-rw,G3-reader-waits,G4-lp0,G4-any}-t2..t6/-truth (lines 61 72 74 86 88 89 103 114).
+Verdict: PASS. selftest ok; wizard check ok without --block ('note: block test not run', as instructed); --dry-run 52 ok. Setup 17:48:44-17:50:19 rc=0. --from 82: 38 ok, 0 not as expected (17:50:19-17:53:02); full set 1: 54 ok, 0 not as expected (17:53:02-17:57:57); full set 2 with 8 captures: 54 ok, 0 not as expected (17:57:57-18:02:55). delete --all rc=0; teardown rc=0 (18:02:56-18:04:01); VMs clean, ports free, fs0/lp0 files gone.
+Rows: 93 w21 mkfs ext4 exit 0 (made ext4 534773760 bytes in 2.2 s); 105 w25 mkfs xfs exit 0 (made xfs in 2.3 s); 107 w26 write exit 0; 108 w30 read exit 0: 'read /run/cxl-fs/C100F5E1/hello.txt (xfs): "Hello from w26"'; 110 w27 mkfs ext4 exit 0 (1.3 s).
+Driver log vm2: 'cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at .../c100f5e1-direct (xfs, rw, dax=always)' for w26 (MemoryConfig fsType xfs readOnly false) and the MemoryConfig of w30 (readOnly true, fsType xfs) next to it; the driver log has NO separate "(xfs, ro, dax=always)" node-mount line for w30 (only the one xfs rw mount line was seen; w30 read the file through the shared xfs mount); other mounts in the set: ext4 rw/ro dax=always of lp0 and ext4 ro of fs0.
+
+precheck: ok
+selftest: ok, 219 renderings fit 50 x 10
+note: block test not run: wizard.py check --block (attaches a loop device through privileged docker)
+wizard check: ok, 26 accepted and 37 refused rule rows, 72 rows of wizard-rules.sh
+wizard-rules: 52 ok, 0 not as expected
+setup start 2026-11-03 17:48:44
+setup end 17:50:19 rc=0
+mkfs rows (--from 82) start 17:50:19
+mkfs rows end 17:53:02
+wizard-rules: line 139: OK: wizard: refused: --command mkfs ext4: mkfs writes a block device: mode block
+no objects of the wizard
+wizard-rules: 38 ok, 0 not as expected
+wizard-rules: line 93: OK: w21: Running; mkfs ext4 exit 0
+wizard-rules: line 105: OK: w25: Running; mkfs xfs exit 0
+wizard-rules: line 107: OK: w26: Running; write exit 0
+wizard-rules: line 108: OK: w30: Running; read exit 0
+wizard-rules: line 110: OK: w27: Ready; mkfs ext4 exit 0
+C1AE0002: made ext4 (534773760 bytes in 2.2 s) with hello.txt: "Hello from w21,
+C100F5E1: made xfs (534773760 bytes in 2.3 s), no files (an fs claim read-write
+warning: demo setup made ext4 on lp0: unless a writer made xfs there since, its
+warning: demo setup made ext4 on lp0: unless a writer made xfs there since, its
+C100F5E1: read /run/cxl-fs/C100F5E1/hello.txt (xfs): "Hello from w26"
+C100F5E1: made ext4 (534773760 bytes in 1.3 s) with hello.txt: "Hello from w27,
+run 1 start 17:53:02
+run 1 end 17:57:57
+run 2 start 17:57:57
+run 2 end 18:02:55
+==> run/wizard-rules-1.log <==
+wizard-rules: line 139: OK: wizard: refused: --command mkfs ext4: mkfs writes a block device: mode block
+no objects of the wizard
+wizard-rules: 54 ok, 0 not as expected
+
+==> run/wizard-rules-2.log <==
+wizard-rules: line 139: OK: wizard: refused: --command mkfs ext4: mkfs writes a block device: mode block
+no objects of the wizard
+wizard-rules: 54 ok, 0 not as expected
+captured lines: 8
+wizard-rules: line 61: captured G1-local
+wizard-rules: line 72: captured G2-wait
+wizard-rules: line 74: captured G2-ready
+wizard-rules: line 86: captured G3-conflict
+wizard-rules: line 88: captured G3-rw
+wizard-rules: line 89: captured G3-reader-waits
+wizard-rules: line 103: captured G4-lp0
+wizard-rules: line 114: captured G4-any
+--- driver log vm2 (xfs mounts of lp0)
+fsTypes: erofs, ext4, xfs, btrfs: the filesystem types that mode fs mounts on this node
+cxl-pool.nri.io: device 0xc1ae0002: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct (ext4, ro, dax=always)
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, rw, dax=always)
+claim w26 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":false,"fsType":"xfs"}}
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (xfs, rw, dax=always)
+local: memdev mem1 (serial 0xc100f5e1) region1: claim ea805818-04b5-4f86-ba13-3c8cfdd8b393 request mem: persistent /dev/pmem1 mode fs read-only false access "direct" fs "xfs"
+claim w30 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":true,"fsType":"xfs"}}
+local: memdev mem1 (serial 0xc100f5e1) region1: claim 6a354b6a-51b0-4faa-b95c-3ee9e50af67f request mem: persistent /dev/pmem1 mode fs read-only true access "direct" fs "xfs"
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, ro, dax=always)
+cxl-pool.nri.io: device 0xc1ae0002: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct (ext4, ro, dax=always)
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, rw, dax=always)
+claim w26 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":false,"fsType":"xfs"}}
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (xfs, rw, dax=always)
+local: memdev mem1 (serial 0xc100f5e1) region1: claim 38dbe85e-f8c8-4913-a6f1-1598b908cb99 request mem: persistent /dev/pmem1 mode fs read-only false access "direct" fs "xfs"
+claim w30 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":true,"fsType":"xfs"}}
+local: memdev mem1 (serial 0xc100f5e1) region1: claim e6e8f610-ba9e-4822-afaa-72fd31af7140 request mem: persistent /dev/pmem1 mode fs read-only true access "direct" fs "xfs"
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, ro, dax=always)
+cxl-pool.nri.io: device 0xc1ae0002: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0002-direct (ext4, ro, dax=always)
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, rw, dax=always)
+claim w26 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":false,"fsType":"xfs"}}
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (xfs, rw, dax=always)
+local: memdev mem1 (serial 0xc100f5e1) region1: claim d607f7d3-c3f0-4e27-971a-b33f681a8b04 request mem: persistent /dev/pmem1 mode fs read-only false access "direct" fs "xfs"
+claim w30 request mem result 0: MemoryConfig {"device":{"mode":"fs","readOnly":true,"fsType":"xfs"}}
+local: memdev mem1 (serial 0xc100f5e1) region1: claim 5c98d8a3-3b69-4bbb-a4c5-8ff1406289f4 request mem: persistent /dev/pmem1 mode fs read-only true access "direct" fs "xfs"
+cxl.nri.io: device 0xc100f5e1: mounted /dev/pmem1 at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, ro, dax=always)
+no objects of the wizard
+delete --all rc=0
+teardown start 18:02:56
+teardown end 18:04:01 rc=0
+--- vm1 state:
+  Warning: no matching devices found
+
+[]
+--- vm2 state:
+  Warning: no matching devices found
+
+[]
+--- ports: 0 listening; files: 2/2 patterns gone
+DONE

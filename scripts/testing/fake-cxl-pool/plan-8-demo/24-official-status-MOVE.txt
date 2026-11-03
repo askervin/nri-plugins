@@ -1,0 +1,574 @@
+plan-8 20-official: status of stream MOVE
+=========================================
+D = test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read,
+OLD = scripts/testing/fake-cxl-pool/plan-8-demo/demo, N = nri-plugins,
+E = N/test/e2e.
+
+MOVE desk done (2026-11-03)
+===========================
+Phase 1 (design sections 1 and 2, desk) is done. Nothing committed,
+stashed, reset or restored; no VM used. FSCASE and WIZARD may start; from
+now on MOVE owns D/bin/{common.py,probe.py,zoom.py,truth.py,demo,
+demo-terminals.el} and the parts of views.py, steps.py, selftest.py and
+e2e/ of the current cases (23-official-plan).
+
+Desk checks (all pass): demo selftest (118 renderings fit 50 x 10, every
+expect ok); python3 -m py_compile of bin/*.py, bin/tools/cxl-demo.py,
+testdata/make-samples.py; bash -n and shellcheck of bin/demo, bin/tools/
+{env,hold,mkfs,read,write} (sh -n), both code.var.sh (shellcheck -s bash
+-e SC2154,SC2034: the framework's variables) and the shell scripts inside
+truth.py and zoom.py (extracted); plain ASCII in all of D (captures/ not
+checked: rehearsal output).
+
+1. What moved where
+-------------------
+- git mv OLD D: the 37 tracked files (staged renames). The directory
+  rename carried the untracked captures/ and testdata/ along (testdata/
+  was never in git: the global rule testdata/ of N/.gitignore hid it).
+- OLD/run/ (logs of 2026-10-22 runs, no state.env) moved back to OLD:
+  runtime state, not moved. So OLD is not empty and was not removed; it
+  holds only run/ (plus run/captured-test13-old-driver, see testdata
+  below). Remove OLD by hand when the logs are not wanted.
+- testdata/captured-test13 (objects and a trace of an e2e run of the
+  driver before plan-9 and plan-12: DeviceConfig, capacity hosts) moved to
+  OLD/run/captured-test13-old-driver: the samples must match the current
+  driver; make-samples.py no longer uses it.
+- D/.gitignore: run/ and captures/ ignored, !testdata/ and !bin/tools/
+  re-included (checked with git check-ignore --no-index: testdata/ and
+  bin/tools/mkfs not ignored, run/ and captures/ ignored). testdata/ now
+  shows as untracked: "git add" it with the move (not done here).
+- run_tests.sh and D: tests-dir-filters takes suite/policy/topology/test
+  (at most four levels under a *.test-suite); in a topology only
+  "$TOPOLOGY_DIR"/test* directories run, the topology level sources only
+  its own *.source.* files and vm-files/. So
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2 (and
+  memory.test-suite, and .../n4-cxl-shared-2/demo01-share-write-read
+  itself: test filter, no test* matches) runs nothing of D. Not run.
+  No Makefile or workflow scans test/e2e with shellcheck or Go tools; D
+  has no Go code.
+
+2. Changes per file
+-------------------
+bin/demo
+- finds N with nri-src(): the nearest directory above D with the go.mod
+  of module github.com/containers/nri-plugins (NRI_PLUGINS_SRC wins); no
+  fixed depth.
+- e2e-links: the links of the private suite with paths computed by
+  realpath -s --relative-to from the link's directory (now
+  ../../../../../X for every helper), and e2e/lib (../../../../../lib) made
+  again too; every link checked. Run at the desk: the tracked links point
+  at the official suite again; fs.source.sh (new in the official
+  topology) is linked too (untracked).
+- capture LABEL [--truth]: COLUMNS=50 LINES=10 for views.py --once
+  (common.py takes the terminal size since 9469f3da6; redirected to a file
+  it fell back to 80 x 24); --truth runs the truth dump at the same time.
+- truth LABEL [--since EPOCH]: new command (bin/truth.py).
+- usage and header name the new place.
+bin/truth.py (new): "demo truth LABEL", the ground-truth dump of design
+  section 2 at captures/<case>-LABEL-truth.txt, sections taken in parallel
+  and stamped with the host clock: kubectl get pods,resourceclaims -o yaml
+  (demo namespace), resourceslices -o yaml, the driver pods, the events;
+  per node (vm2, vm1) cxl list -M -R -X -u, /sys/bus/dax/devices (driver,
+  size, target node), pmem block devices (bytes, /sys/block/pmemK/ro,
+  blkid -p TYPE), mountinfo lines of the node mounts, lease binds and
+  mounts of pmem and loop devices, losetup -l, the processes that map a
+  dax device (perms) or hold a pmem fd (fdinfo flags) with their pod uid,
+  the first 64 bytes of every dax device (mmap: devdax has no read); the
+  pool server's devices and attachments and the backing file of the demo
+  device (bytes at 0, the pfn info block at 4096, where "Hello" is); every
+  trace line of TRACE_DIR since the start of the last step (run/step.env)
+  or --since. Tried offline (fake state, no VMs): file written, failed
+  sections say why.
+bin/steps.py: run/step.env (STEP=L5, START=epoch) written when a step's
+  command starts (truth's "since"); docstrings name README instead of the
+  plan files.
+bin/common.py
+- claim_configs: only opaque parameters of apiVersion cxl.nri.io/v1alpha1,
+  kind MemoryConfig; no DeviceConfig.
+- new device_section (the device section of the MemoryConfig of a
+  result), device_read_only (readOnly, else true of mode fs only:
+  config.Device.IsReadOnly), device_mode (mode, else dax of a shared
+  volatile class, numa otherwise: MemdevMode/PoolMode defaults).
+- holding() and lease_memory() read the device section (before: top-level
+  readOnly, the user's device.mode with "<mode?>"); lease_memory treats
+  -persistent classes as devices with shares (block/fs excl or share).
+- the user's title() change of 5325df62c kept as it is.
+bin/views.py
+- t5: render_t5 unchanged in behaviour (the user's); loop: the first
+  screen with events is painted whole (title and the last rows at the top
+  of the screen), then only the new events below it; a new TRACE_DIR or
+  no demo starts a whole screen again (before, "demo not set up" lines
+  were appended every second after a teardown). paint(): the "DELME"
+  leftover removed: a whole screen is "\033[H" + lines joined by newlines
+  + "\033[J" (no newline after the last line, as before 5325df62c: the
+  other views never scroll); appended lines are each "\n" + line, so the
+  cursor stays at the end of the last line and the terminal scrolls.
+  Differences to 5325df62c, all outside the described behaviour: the first
+  t5 screen starts at the top (5325df62c appended it wherever the cursor
+  was after \033[2J), the title stays until the first new event (an
+  ending newline scrolled it off at once in a 10-row terminal), the full
+  views do not scroll by one line per refresh, and --no-color is no color
+  (5325df62c colorized every line). Checked with a pty and a growing
+  trace file. --once and capture print the title and the last rows.
+- t4 pmem lines: "pmem0 254M erofs (block ro|rw)" (the read-only flag of
+  the block device, from probe "ro"), any filesystem type name, a lease
+  bind mounted read-write is "(dax rw)", "mounted: -" for any detected
+  filesystem.
+- Trace: regexes below; docstring says how t5 paints.
+bin/probe.py: namespaces carry "ro" (/sys/block/<blk>/ro); blockfs detects
+  erofs, ext4, xfs and btrfs by their superblock magics; fs_mounts (was
+  erofs_mounts) takes every filesystem type, with fstype, ro (superblock
+  options) and mountRO (mount point options); node mounts of both drivers
+  (cxl-pool.nri.io/mounts and cxl.nri.io/mounts).
+bin/zoom.py: "mounts NODE" lists the mounts of pmem and loop devices and
+  of the node mount and lease-fs directories with mount point and
+  superblock options (findmnt VFS-OPTIONS, FS-OPTIONS), the read-only
+  flags of the pmem block devices, losetup -l, the lease binds; help of
+  cdi names the per-result devices and markers CXL_CLAIM_<uid>_<n>;
+  docstring names README.
+bin/selftest.py: fake pmem node with /sys/block/pmem0/ro; expects ro,
+  fstype and mount ro fields; trace-fs expects the node mount, read-only
+  and unmount lines; new trace_formats_test: log lines written with the
+  format strings of the current broker.go, pool.go, persistent.go,
+  local.go and reconciler.go, each must give its trace line (21 lines);
+  helper checks of MemoryConfig parsing (fs default ro, rw excl, block,
+  DeviceConfig ignored) and of a lease response with fsType and
+  CXL_<KEY>_FSTYPE.
+bin/tools/cxl-demo.py: docstring says the tools keep their files in /tmp
+  (/run/cxl of the container is read-only); no tool wrote under /run/cxl
+  before either (F8 writes there on purpose and expects "Read-only file
+  system").
+bin/demo-terminals.el: comments name the demo directory.
+testdata/make-samples.py and every sample (regenerated; renderings.txt
+  written by selftest --write)
+- companions: one MemoryConfig (cxl.nri.io/v1alpha1) with the device
+  section as companionRequest builds it (fs: readOnly explicit, access
+  only when asked); the pool slice with a nodeSelector of its hosts (no
+  allNodes) and the coherent attribute; the local memdev with persistent
+  false; pmem namespaces with "ro" (F6: ro on both nodes), mounts with
+  fstype, ro, mountRO.
+- traces: the current format strings and file:line of broker.go
+  (requests with access and name, Ready with read-only and fs), pool.go
+  (prepared ... fs %q, unprepared), persistent.go (bound, unbound, mounted,
+  /dev/pmem0 read-only, unmounted), local.go (created, zeroed new shared,
+  shared, released shared, keeping), pool driver name cxl-pool.nri.io
+  (was cxl-pool.generic).
+- captured-test13 dropped (see 1).
+README.txt: the new place, why it is no test, how bin/demo finds N, the
+  e2e links, the t5 sequence, terminal size vs captures, demo truth and
+  capture --truth, block device flags and node mount lines of
+  pool-shared-fs (F2, F3, F6, F9), the MemoryConfig of zoom claim (L5,
+  F5), CXL_<KEY>_FSTYPE of zoom env, zoom mounts, the files list.
+e2e/.../test90-demo-setup/code.var.sh: header names D; removes
+  run/step.env of an earlier demo; shellcheck SC2016 directive (retry-until
+  evaluates its condition).
+e2e/.../test91-demo-teardown/code.var.sh: header names D; shellcheck
+  SC2016 and SC1090 directives.
+e2e/ links: all made again by e2e-links (see bin/demo).
+Outside D: plan-8-demo/00-README.txt (one line at D instead of the demo/
+  entry); test90-gofmbt-reliability/code.var.sh and pmem-rw.py (comments:
+  hello.erofs.hex is a copy of demo01-share-write-read/testdata; same
+  bytes, checked with cmp).
+
+3. Regexes: changed, added, checked
+-----------------------------------
+Changed:
+- views.py Trace.on_driver, prepared persistent device:
+  ... access "([^"]*)"  ->  ... access "([^"]*)"(?: fs "([^"]*)")?
+  Why: pool.go:689 logs fs %q since plan-14; the view printed "erofs" and
+  took fs as always read-only. Now "prepared <fs type>[ rw] <access>"
+  (35 columns: "vm1 writer: prepared ext4 rw direct").
+- probe.py: blockfs magic of erofs only -> FS_MAGICS (erofs 1024, ext4
+  1080, xfs 0, btrfs 65600); mountinfo filter right[0] == "erofs" ->
+  every type; POOL_MOUNT_DIR -> NODE_MOUNT_DIRS (both drivers). Why: any
+  filesystem (plan-14), local persistent memdevs.
+- zoom.py mounts: findmnt -t erofs -> the mounts of pmem/loop devices and
+  of the node mount and lease-fs directories (awk on findmnt -rn). Why:
+  any filesystem, superblock and mount point ro/rw.
+Added (new log lines of plan-13/14):
+- views.py Trace.on_node_mount, lines "<driver>: device <serial>: ...":
+  mounted (\S+) at \S+ \(([^,)]+), (ro|rw)(?:, [^)]*)?\)$  persistent.go:573
+  remounted \S+ (read-write|read-only)$                    persistent.go:618, 634
+  unmounted \S+$                                           persistent.go:820
+  (/dev/\S+) (read-only|read-write)$                       persistent.go:679
+  -> "vm2 node mount pmem0 erofs ro", "vm1 node mount now read-only",
+  "vm2 node mount unmounted", "vm2 pmem0 read-only".
+- views.py Trace.on_controller:
+  attach (\S+) to (\S+) for claim \S+?/(\S+) .*: exclusive for a read-write (\S+) claim$
+  (reconciler.go:351) -> "writer: fs0 excl: rw ext4";
+  ERROR: (\w+) for claim \S+?/(\S+) device (\S+) node (\S+):
+  (reconciler.go:443) -> "reader-a: fs0 not on vm2: Conflict" (before: a
+  generic "ERROR ..." line cut at 50 columns).
+Checked unchanged against the format strings (selftest
+trace_formats_test or by reading): KLOG prefix (klog text, logLevel 4);
+lease broker requests (broker.go:729), Ready (1646: block/path/dax of
+ready_what), releasing (1189), released (1258), errors (level E, 1618);
+dax prepared (pool.go:694), unprepared (1343, 1521); lease bind bound
+(persistent.go:1130), bound again (1412), unbound (1246), busy unmount
+(pool.go:1509 wraps "lease X: unmounting T: ...busy" of UnbindLease;
+kubelet's "UnprepareResourceClaims failed" carries it too); local shared
+claim (local.go:491), created (779), zeroed new shared (643), released
+shared (1341), keeping idle (1346), released regions (1477), not
+configured shared (1730/1732); controller attached (reconciler.go:417)
+and detached (561); pool server attachment X@H: attached/detached/
+failed/exclusive (ops.go:897-962, server.go:1222); claims of the stamper
+(dra.source.sh claim_line); events (custom columns of dra-trace-start);
+udev (udevadm monitor -k). steps.py has no log regexes: its checks read
+the JSON lines of cxl-request (api.Response: lease, state, mode,
+readOnly, shared, access, fsType, path, dax, block, error, leases) and the
+"read at 0:"/"holding" lines of cxl-demo.py; all still match. zoom.py
+driver strips the klog prefix with the same pattern.
+
+4. Not checkable at the desk (to check live, phase 2)
+-----------------------------------------------------
+L1 setup and teardown from D: e2e-links, run_tests.sh on
+   D/e2e/demo.test-suite/... (E2E_LIB_DIR through D/e2e/lib, VM name from
+   the topology n4-cxl-shared-2, output dir, fs.source.sh now sourced
+   too); DRA_WORKERS/trace collector counts with three nodes (plan-10
+   edited the setup statically, never run since).
+L2 the real driver lines: the node mount line (source, type, ro, data
+   "dax=always"), the "/dev/pmem0 read-only" line (on which node, when:
+   F6 after the attach to vm2 and vm1?), whether "remounted" or a
+   read-write flag line appears in pool-shared-fs, bound/unbound, the busy
+   unmount, the local zeroing line; their order against the udev and
+   controller lines in t5.
+L3 the probe on real nodes: /sys/block/pmem0/ro on the writer's node (rw)
+   and on reader nodes (ro), blockfs erofs, fs_mounts mountRO and
+   superblock options from the real mountinfo, the node mount directory.
+L4 real companion claims: MemoryConfig in status.allocation.devices.config
+   (FromClaim after any FromClass entry: claim_params takes the last),
+   consumedCapacity of the exclusive writer (all shares) and the readers
+   ("1"): t2 "dax rw excl", "dax ro share", "block rw excl", "fs ro share";
+   t3 holders and waiting by serial.
+L5 t5 in a real terminal and in Emacs vterm: the first screen at the top,
+   appended events scroll, Ctrl-C, a teardown and a new setup while it
+   runs (a whole screen again).
+L6 demo truth on the VMs: blkid, losetup, findmnt present; time of a dump
+   (the /proc scans, the 256 MiB scan of the backing file); the mmap of
+   every dax device by root in the VMs (read-only; not a pod process, so
+   no view shows it).
+L7 zoom env shows CXL_<KEY>_FSTYPE=erofs for the readers' fs leases;
+   zoom claim shows the MemoryConfig (fs: readOnly true, no access);
+   zoom mounts output on vm1 and vm2.
+L8 README timings (section 9) are of 2026-10-20/22: to be measured again.
+L9 every view line of every key step against its truth dump (design
+   section 2): the phase 2 work.
+
+5. Live run commands (stream RUN), one case at a time
+-----------------------------------------------------
+Prerequisites: the three VMs up (README section 1), the driver image built
+(cd N && make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1
+OTHER_IMAGE_TARGETS= BINARIES= images), no run_tests.sh running, port
+9909 free. Each "demo capture X --truth" writes captures/<case>-X-tN.txt
+(t2-t6, 50 x 10) and captures/<case>-X-truth.txt at the same moment.
+
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet
+
+local (key steps L2, L5, L6, L7, L9):
+  ./bin/demo setup local
+  for n in 1 2 3 4 5 6 7 8 9; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo local $n --auto
+      case $n in 2|5|6|7|9) ./bin/demo capture run1-L$n --truth;; esac
+  done
+  ./bin/demo teardown
+
+pool (key steps L2, L5, L6, L7, L9):
+  ./bin/demo setup pool
+  for n in 1 2 3 4 5 6 7 8 9; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo pool $n --auto
+      case $n in 2|5|6|7|9) ./bin/demo capture run1-L$n --truth;; esac
+  done
+  ./bin/demo teardown
+
+pool-shared-fs (key steps F2, F3, F5, F6, F7, F9):
+  ./bin/demo setup pool-shared-fs
+  for n in 1 2 3 4 5 6 7 8 9; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo pool-shared-fs $n --auto
+      case $n in 2|3|5|6|7|9) ./bin/demo capture run1-F$n --truth;; esac
+  done
+  ./bin/demo teardown
+
+After each teardown, the VMs clean (no memdevs, regions, pmem or dax
+devices, mounts of them, loop devices) and the port free:
+  for vm in 1 2; do
+      ssh -F ../../../../n4-cxl-shared-$vm-fedora-43-containerd/.ssh-config node \
+          'sudo cxl list -M -R; ls /dev/pmem* /dev/dax* 2>/dev/null; findmnt -rn | grep -E "pmem|cxl" ; sudo losetup -l'
+  done
+  ss -ltn 'sport = :9909'
+Also per case once: run/steps.log, run/timings.txt (one line per step
+with --auto), and "./bin/demo view t5" in a 50 x 10 terminal during a
+second run (L5 of section 4). A whole --auto run as before:
+"./bin/demo <case> --auto" (no captures).
+
+Requests to other streams
+-------------------------
+FSCASE: probe.py detects ext4, xfs, btrfs and erofs on the pmem block
+  device and reports every mount of it (fstype, ro, mountRO); t4 shows
+  "(block ro|rw)" and "(dax rw)" for read-write lease binds; t5 already
+  translates the node mount, remount, block read-only and the
+  controller's writer-exclusive and Conflict lines; zoom mounts shows
+  superblock and mount point ro/rw. The new case needs only its own
+  words on top (e.g. t2 "waiting (Conflict)", t6 for fs0).
+WIZARD: common.device_section/device_read_only/device_mode give the
+  MemoryConfig device section of any claim result; probe covers the node
+  mounts of cxl.nri.io (local persistent memdevs).
+
+MOVE phase 2 done (2026-11-03)
+==============================
+Input: RUN's live run 1 of local, pool and pool-shared-fs
+(25-official-runs.txt, driver image b0a0eb6c6c91), the captures and truth
+dumps D/captures/<case>-run1-<step>-{t2..t6,truth}.txt and the step
+outputs /tmp/plan14-demo/<case>.step<N>.out. No VM used. Method: every
+line of t2, t3, t4, t6 of every captured step against the objects,
+node sections and pool server JSON of its truth dump (parsed with a
+summary script: pods, claims with requests, results, consumed shares,
+MemoryConfig, slices); t5: the trace lines of all truth dumps of a case
+replayed through views.Trace (every event, not only the 9 captured)
+against the raw driver, controller, pool server, udev, claims and events
+lines; zooms slice, claim, pod and pool run offline with the truth
+objects; T1 result lines against the truth.
+
+Checked and true (no change needed)
+-----------------------------------
+local L2 L5 L6 L7 L9:
+- t2: pods, nodes, phases, lease ids, "dax rw excl" (MemoryConfig mode
+  dax, consumed shares 1M of 1M), "dax ro share" (readOnly true, shares
+  "1"), "waiting" (no allocation), "-" after the release.
+- t3: drivers vm2/vm1 ok (Running, ready; vm0 not shown: no demo pod
+  there), memdev-c100e2e1 @vm2 1Gi shared (slice attributes),
+  "exclusive: writer rw", "waiting: reader-a reader-b reader-c" (CEL
+  serial of the unallocated companions), "shared: ... ro", "no claims".
+- t4: mem0 c100e2e1 1.0G, region0 1.0G, dax0.0 1.0G device_dax (cxl list,
+  /sys/bus/dax), "mapped: -" (no process maps a dax device at L2, L5, L6,
+  L9), L7 "mapped: reader-a ro, reader-b ro, reader-c ro" (r--s maps of
+  the three reader pods, uids checked), vm1 no CXL memory.
+- t6: zeros at L2 (fresh region, zeroed), the writer's line from L5 on
+  (first 64 bytes of /dev/dax0.0), holders and waiting as t3.
+- t5: every event true; only width defects (below).
+pool L2 L5 L6 L7 L9:
+- t2, t3 as local with shared0 @pool 256Mi shared, "pool ok" (the pool
+  slice); t4 vm1 then both nodes mem0 c1ae0001 256M region0 dax0.0, L7
+  mapped reader-c on vm1, reader-a reader-b on vm2; t6 device state,
+  "attached: vm1 exclusive" (L2, L5: attachment exclusive true), "vm1,
+  vm2" (L6, L7), the bytes of the backing file (L2 "dra-one-writer ..."
+  is what the file held from an e2e test before: true, the setup keeps
+  the file), L9 "detaching", "attached: vm1, vm2 detaching" (vm1
+  attached, vm2 detaching).
+- t5: every event true (attach excl, "waits for the attach", the readers
+  allocated together, no detach from vm1 at L6).
+pool-shared-fs F2 F3 F5 F6 F7 F9:
+- t2 "block rw excl" (mode block, 1M), "fs ro share" (mode fs, readOnly
+  true); t3 shared0 @pool 256Mi shared persistent, holders and waiting;
+  t4 region0 pmem 256M, pmem0 254M (266338304 bytes), "no file system"
+  at F2, erofs from F3 (blkid TYPE=erofs), "(block rw)" F2-F5 (ro=0 on
+  the writer's node), "(block ro)" F6, F7 on both nodes (ro=1),
+  "mounted: -" F3, F5 (no mount), F6, F7 "mounted: reader-c (dax)" on
+  vm1 and "reader-a reader-b (dax)" on vm2 (lease-fs/<lease claim uid>
+  binds of their lease claims, dax=always); t6 "no file system (zeros)"
+  at F2, "erofs: hello.txt 32 bytes" and its text from F3 on (truth: the
+  text at 2101248 = 2 MiB dataoff + block 1), attachments as pool.
+- t5: every event true, including the new node mount, read-only block
+  device and unmount lines.
+T1 of all steps: lease words, "Pending" of the waiting readers (the
+  lease state), the read and write results, the timings.
+Zooms offline: claim (request, class, CEL, shares, allocation, consumed,
+  MemoryConfig: fs readOnly true, no access), pod (PodScheduled False
+  Unschedulable and the scheduler's message), pool (devices,
+  attachments, owners) true.
+
+Wrong, and fixed
+----------------
+W1 t5 (local L9, pool L9, fs F9): "vm2 reader-b: released dax0.0, 1 le"
+   and "vm2 reader-a releasing: container gone" were cut at 50 columns.
+   Fix views.py: "vm2 reader-b: released, 1 left"; releasing reasons
+   shortened ("requester container gone" -> "vm2 reader-a releases: ctr
+   gone"). Same for the teardown-only "not configured shared any more"
+   lines ("vm2 unshared: keeping|releasing the region"). The selftest now
+   checks that every trace line of the format strings fits 35 columns.
+W2 t4 (pool L9, fs F9): "vm1 mem0 c1ae0001 256M  no region" for memdevs
+   that the driver had released (unbound, "memctl: mem0: disabled",
+   "released mem0") before the detach. Fix: probe.py reports "enabled"
+   (the memdev's driver link), t4 says "disabled, no region". The truth
+   dump and zoom cxl list -i now, so that disabled memdevs show there
+   too (the truth's cxl list -M had hidden them).
+W3 t5 missing events: the driver's "released mem0" (before every detach,
+   and at L6/F6 on vm1 although shared0 stays attached there), the pool
+   server's "detaching", the controller's "already attached" for
+   reader-c on vm1, and the memdev's enable again on vm1 (udev bind).
+   Fix views.py: "vm1 released mem0", "shared0 detaching from vm2",
+   "reader-c: shared0 on vm1 already", "kern vm1 bind mem0" (a memdev bind
+   not right after its add); "shared0 on vm1: exclusive false" says
+   "not exclusive".
+W4 t6 (pool L2): a text longer than the row was cut without its closing
+   quote. Fix: text_at cuts it to the row with '"...'.
+W5 zoom slice: the pool slice said "all nodes" (it has a nodeSelector of
+   vm1 and vm2: the current controller never sets allNodes), and without
+   a DEVICE it listed the DRAM devices of every node. Fix zoom.py: the
+   slice's nodes ("nodes vm1 vm2", "node vm2", "all nodes"), every memdev
+   by default.
+W6 README: F6 said "the detach from vm1, the attach to vm2 and vm1"; the
+   device stays attached to vm1 (not exclusive any more) and only vm2 is
+   attached. Fixed in F6, section 9, pool L6 (with the release and bind
+   of mem0 on vm1), pool L9 and F9 (released memdevs, "detaching"
+   first), pool L1 (old bytes in the backing file), the 2026-11-03
+   timings.
+Samples: make-samples.py follows the live run: shared0 stays on vm1 at
+   F6 (exclusive false, already attached, release and bind of mem0),
+   released memdevs and the server's detaching before each detach,
+   "requester container gone"; new sample pool-L9-release (disabled
+   memdevs, detaching); memdevs carry "enabled". selftest: released_test
+   (t4 disabled, t6 detaching, a long text), the new trace lines in
+   trace-fs and trace_formats_test, the fake nodes' memdev driver link.
+Desk checks green: selftest (170 renderings, with the samples of the
+other streams), py_compile, bash -n, shellcheck (also of the shell
+scripts inside truth.py and zoom.py), ASCII.
+
+Not checkable offline (live check needed)
+-----------------------------------------
+- zoom cdi, env, driver, kernel, cxl, mounts, fs, bytes (they read the
+  VMs or the backing file, which teardown removed).
+- t4 "disabled, no region" and the new t5 lines on the VMs (probe's
+  enabled flag from /sys/bus/cxl/devices/mem0/driver).
+- t5 painting in a terminal (append mode) was not part of RUN's run.
+Commands for RUN (run 2, captures with the fixed views; pool L9 and F9
+are the steps whose views changed, L6/F6 for the new t5 lines):
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo selftest --quiet
+  ./bin/demo setup pool
+  for n in 1 2 3 4 5 6 7 8 9; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo pool $n --auto
+      case $n in 2|5|6|7|9) ./bin/demo capture run2-L$n --truth;; esac
+      [ $n == 7 ] && for z in "slice" "claim reader-a" "pool" "cxl vm1" "cdi vm1" "env reader-a" "driver vm1 20" "kernel vm1" "bytes"; do
+          echo "== zoom $z"; ./bin/demo zoom $z; done > captures/pool-run2-zooms.txt 2>&1
+  done
+  ./bin/demo teardown
+  ./bin/demo setup pool-shared-fs
+  for n in 1 2 3 4 5 6 7 8 9; do
+      DEMO_AUTO_PAUSE=0 ./bin/demo pool-shared-fs $n --auto
+      case $n in 2|3|5|6|7|9) ./bin/demo capture run2-F$n --truth;; esac
+      [ $n == 7 ] && for z in "claim reader-a" "env reader-a" "mounts vm1" "mounts vm2" "fs" "bytes 1024" "cdi vm2"; do
+          echo "== zoom $z"; ./bin/demo zoom $z; done > captures/pool-shared-fs-run2-zooms.txt 2>&1
+  done
+  ./bin/demo teardown
+  (local: the same as run 1 with run2-L labels; its views changed only in
+  the t5 widths.) A live t5: "./bin/demo view t5" in a 50 x 10 terminal
+  during one of the runs. MOVE then checks run 2 against its truth.
+
+MOVE phase 3 done (2026-11-03)
+==============================
+Input: RUN's run 2 of the three cases (25-official-runs.txt, run 2),
+D/captures/<case>-run2-<step>-*, the step-7 zoom sets
+<case>-run2-zooms.txt; the requests of FSCASE (5a-c) and WIZARD (truth).
+
+1. Run 2 checked against its truth dumps
+----------------------------------------
+- t2: an independent check (claims of the truth: requester, allocation,
+  consumed shares, MemoryConfig device section) of every row of every
+  captured step of run 1 and run 2: all true.
+- t3, t4, t6: run 2 rendered the same as run 1 (diffed, times and ids
+  normalized) except where the fixes or the state differ, each checked:
+  pool L2 t6 "at 0: (zeros)" (the backing file was zeros this time:
+  truth at 0 zeros); pool L9 and fs F9 t4 "mem0 c1ae0001 256M  disabled,
+  no region" on both nodes (truth, cxl list -i: state disabled, no
+  regions) - fix W2 true live; t6 "attached: vm1 detaching, vm2" (truth:
+  vm1 detaching, vm2 attached). t4 mapped/pmem/mounts at L7, F3, F6
+  against the truth's maps, blkid, ro flags and lease binds: true.
+- t5: every event of run 2 replayed; the same event kinds as run 1 in
+  another order (concurrent readers), none over 35 columns; the new
+  lines live and true against the raw lines: "vm1 released mem0",
+  "shared0 on vm1: not exclusive", "reader-c: shared0 on vm1 already",
+  "kern vm1 bind mem0", "shared0 detaching from vm1|vm2" (W1, W3).
+- zooms against the truth: claim (MemoryConfig, consumed, CEL), slice
+  ("nodes vm1 vm2", memdevs only: W5 true), pool, cxl vm1/vm2 (= the
+  truth's cxl list), env (CXL_C1AE0001_FSTYPE=erofs, ACCESS, PATH of
+  the fs leases), fs (superblock, hello.txt; its UUID 9b8a8e14... in the
+  bytes at 0x430 = blkid's UUID of the truth), bytes (the text at 0,
+  the erofs magic at 1024), mounts (= the truth's mountinfo lines, ro
+  superblock and mount point, ro flag 1), driver (the log). Wrong:
+  Z1 zoom cdi printed "no CDI specs ... prepared on this node" after
+     the specs it had listed (the "ls" of both globs failed on the empty
+     /var/run/cdi). Fixed: the message only when no spec file exists.
+  Z2 zoom kernel showed dmesg since boot, lines of earlier tests at
+     09:02-09:17, and in the VM's clock (UTC, the views show the host's).
+     Fixed: setup records DEMO_SETUP_START (state.env); the zoom shows
+     journalctl -k --since @DEMO_SETUP_START in the host's time zone,
+     headed "kernel lines since demo setup (<time>)"; without the key or
+     the journal it falls back to dmesg headed "since boot ... the older
+     ones are of earlier tests".
+  Z3 zoom mounts printed nothing under "loop devices" and "lease binds"
+     when there are none: now "none".
+  Z4 no cxl-pool.yaml at pool L7 / fs F7: expected (coordinator, from
+     leases.md "Companion objects" and pool.md step 5): companion claims
+     of leases get no CDI device; the containers' only CDI device is the
+     lease device in cxl-leases.yaml. zoom cdi now says so ("no pool
+     claims with CDI devices (cxl-pool.yaml): leases have none, their
+     memory comes through the lease device"); only the wizard's static
+     pool claims fill cxl-pool.yaml. The live check below only confirms.
+
+2. FSCASE's and WIZARD's requests
+---------------------------------
+(5a) allocated but not attached: common.lease_memory says "attaching"
+     while a pool result has no Attached condition and "waiting
+     (<reason>)" with an AttachFailed condition (local results have no
+     condition: unchanged); t3's device_holders returns the attaching
+     claims apart ("  attaching: reader-a reader-b") and those of a
+     failed attach in waiting with the reason; t6 local unchanged. The
+     pool and pool-shared-fs samples carry the Attached condition (as
+     live), pool-L6-attaching is new (reader-a allocated, not attached);
+     selftest attaching_test and lease_memory checks.
+(5b) truth.py: for a persistent demo device the dataoff of its pfn info
+     block, "blkid -p -O <dataoff> -o export" of the backing file on the
+     host, and for ext2/3/4 "dumpe2fs -h" of a copy of its first 8 MiB
+     (dumpe2fs has no offset; the "?offset=" form fails: blkid takes the
+     "=" as a tag). Tried on an ext4 made at 2 MiB of a file: TYPE,
+     LABEL, UUID, "Filesystem state: clean". Claim status data
+     (singleHost) and the events were in the dump already.
+(5c) make-samples.py companion(): uid from a crc of the requester (the
+     readers had the same uid); the fs samples' reader configs without
+     access, as live.
+WIZARD: truth.py dumps the local-pmem server (LP_URL, LP_DEVICE: its
+     devices, attachments, the backing file with its superblock as
+     above) when the state has LP_URL, the pool server whenever POOL_URL
+     is set (the wizard's fs0 as POOL_DEVICE), and the namespace's
+     resourceclaimtemplates -o yaml.
+README: pool L6 (T2/T3 attaching), zoom kernel. Desk checks green:
+selftest (219 renderings), py_compile, bash -n, shellcheck of my files
+and of the scripts in truth.py and zoom.py, ASCII. One shellcheck note
+is in WIZARD's hunk of test90 (line 158, SC2016 of a single-quoted
+pool-vm-command, info level): request to WIZARD.
+
+Live checks (RUN), one run of pool and pool-shared-fs:
+  cd ~/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read
+  ./bin/demo setup pool
+  for n in 1 2 3 4 5; do DEMO_AUTO_PAUSE=0 ./bin/demo pool $n --auto; done
+  ./bin/demo pool 6 --auto & sleep 3; ./bin/demo capture run3-L6a --truth; wait   # T2/T3 "attaching" during the attach
+  DEMO_AUTO_PAUSE=0 ./bin/demo pool 7 --auto
+  for z in "kernel vm1" "kernel vm2" "cdi vm1" "cdi vm2" "mounts vm1"; do echo "== zoom $z"; ./bin/demo zoom $z; done > captures/pool-run3-zooms.txt 2>&1
+  ssh -F ../../../../n4-cxl-shared-1-fedora-43-containerd/.ssh-config node 'sudo ls -l /etc/cdi /var/run/cdi; sudo cat /etc/cdi/cxl-pool.yaml /var/run/cdi/cxl-pool.yaml' >> captures/pool-run3-zooms.txt 2>&1
+  for n in 8 9; do DEMO_AUTO_PAUSE=0 ./bin/demo pool $n --auto; done
+  ./bin/demo teardown
+  ./bin/demo setup pool-shared-fs
+  for n in 1 2 3; do DEMO_AUTO_PAUSE=0 ./bin/demo pool-shared-fs $n --auto; done
+  ./bin/demo truth run3-F3        # blkid TYPE=erofs at the dataoff of shared0.raw
+  for n in 4 5 6 7 8 9; do DEMO_AUTO_PAUSE=0 ./bin/demo pool-shared-fs $n --auto; done
+  ./bin/demo teardown
+(The "sleep 3" is a timing to land inside the 10 s attach of L6, for a
+capture only, no check depends on it.)
+
+Phase 3 addendum: the cdi zoom explains an absent cxl-pool.yaml (Z4).
+Phase 3 addendum 2: t5 as one sequence. RUN's typescript showed a cursor
+home and a redrawn "demo not set up" screen at the teardown. views.py:
+loop_t5 (the live t5) paints the first screen once (ESC[2J ESC[H, the
+title and the last events) and from then on only appends lines: the
+events, one "--- HH:MM:SS no demo (teardown, or not set up)" when the
+state goes away, one "--- HH:MM:SS new trace: setup <case>" and that
+trace's events when a new one starts; loop keeps the whole screens of
+t2-t4, t6 and --once/capture of t5 (title and last events). Checked in a
+pseudo-terminal (script -qfc, stty 50x10, a fake state: events, more
+events, the state removed, a new state with another trace; cat -v): one
+ESC[H, one line each for the teardown and the new trace, the new
+trace's events after it. selftest t5_sequence_test drives the loop the
+same way and counts ESC[H, ESC[2J and the two lines. README and the
+views.py docstring say so. Desk checks green (selftest 219 renderings,
+py_compile, ASCII).

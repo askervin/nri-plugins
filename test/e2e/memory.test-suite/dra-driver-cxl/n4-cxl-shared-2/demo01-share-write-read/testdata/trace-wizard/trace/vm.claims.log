@@ -1,0 +1,6 @@
+1792700001.000000 vm.claims ADDED claim cxl-demo/w1 uid=5a7e0001 allocated=- node=- reservedFor=- status=-
+1792700001.200000 vm.claims MODIFIED claim cxl-demo/w1 uid=5a7e0001 allocated=cxl.nri.io/n4-cxl-shared-2-fedora-43-containerd/memdev-c100e2e1 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-
+1792700010.000000 vm.claims ADDED claim cxl-demo/w4 uid=5a7e0004 allocated=- node=- reservedFor=- status=-
+1792700010.200000 vm.claims MODIFIED claim cxl-demo/w4 uid=5a7e0004 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-1-fedora-43-containerd reservedFor=- status=-
+1792700020.000000 vm.claims ADDED claim cxl-demo/w5 uid=5a7e0005 allocated=- node=- reservedFor=- status=-
+1792700020.200000 vm.claims MODIFIED claim cxl-demo/w5 uid=5a7e0005 allocated=cxl-pool.nri.io/fake-cxl-pool/fs0 node=n4-cxl-shared-2-fedora-43-containerd reservedFor=- status=-

@@ -1,0 +1,76 @@
+plan-8 20-official: final status
+================================
+Written 2026-11-03 (orchestrator). Nothing committed. D =
+test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/demo01-share-write-read.
+Streams' records: 24-official-status-{MOVE,FSCASE,WIZARD}.txt; live runs:
+25-official-runs.txt.
+
+Result
+------
+1. The demo is in D (git mv of the 37 tracked files, staged; the new
+   files are untracked, see "For the user"). bin/demo finds the repository
+   root by go.mod; its setup and teardown stay a private suite D/e2e
+   (run_tests.sh runs only test* directories of a topology and at most
+   four levels, so suite runs never start the demo); D/.gitignore ignores
+   run/ and captures/ and lets testdata/ and bin/tools/ in. The old
+   directory is gone; its untracked logs and pre-plan-12 samples are in
+   D/run/old-plan-8-demo/.
+2. local, pool, pool-shared-fs on the current driver: MemoryConfig only,
+   per-result markers, the current log lines (new trace events, a
+   selftest of the translations from the Go format strings), read-only
+   /dev/pmemK and node mounts shown, pending pool attaches shown as
+   "attaching"; "demo truth LABEL" (and "capture LABEL --truth") dumps the
+   ground truth. Every view line at the key steps of two live runs per
+   case was checked against the truth: run 1 found six defects, run 2
+   none, three zoom defects fixed. t5 is a pure sequence: one screen,
+   then only appended lines, one line at a teardown or a new trace
+   (checked live in a 50x10 pseudo-terminal: one ESC[H).
+3. New case pool-fs [ext4|xfs|btrfs]: R1-R11, the writer formats fs0
+   (512Mi persistent) through a block lease, mounts it read-write (one
+   share; T2 "fs rw (vm1 only)"), reader-c on vm1 joins at once, reader-a
+   and reader-b on vm2 wait (AttachFailed Conflict, from Events), the
+   writer's release turns vm1's filesystem read-only and vm2 mounts it,
+   a reader's write fails. Live: ext4 three times, xfs twice, btrfs twice,
+   all steps pass; the view lines checked against the truth (six defects
+   fixed); the btrfs generation and the ext4 superblock state read
+   independently match T6.
+4. New case wizard: setup with local sliced devices on both nodes, a local
+   persistent lp0 (second server without a controller), pool pooled0,
+   shared0, fs0; fs0 and lp0 formatted ext4 with hello.txt; "demo wizard"
+   (interactive), new/list/yaml/delete NAME|--all, YAML in
+   run/wizard/<name>.yaml with a plain-words header; the driver's rules
+   (26 accepted, 37 refused rule rows at the desk); the scripted set
+   bin/wizard-rules.sh (54 rows live). Live: the final run passed every
+   row twice with the eight captures (0 not as expected), the interactive
+   mode worked. Bugs found live and fixed: state.env values read with
+   their shell escapes (fsTypes refused), the same serial on both VMs'
+   local devices, "new" returning before the pod's command ended (a
+   delete cut mkfs short), msync of a devdax mapping (EINVAL), mkfs.xfs
+   segfaulting with -p in Alpine's xfsprogs 7.0.1 (an xfs made by mkfs is
+   empty), mkfs.xfs needing CAP_SYS_ADMIN on a block device node (every
+   mkfs now writes an image through the device).
+Desk checks on the final tree: demo selftest (219 renderings fit
+50 x 10, with the trace, state, command, dax and t5-sequence checks),
+demo wizard check, wizard-rules.sh --dry-run (52 ok), py_compile,
+bash -n, shellcheck, plain ASCII. The VMs are clean (no CXL memdevs,
+regions, mounts, loops; ports 9909 and 9912 free).
+
+Notes
+-----
+- With a writer on a node there is one superblock: a read-only claim of
+  the same node gets a read-only bind of it, so the driver logs one
+  read-write mount and no second read-only one (plan-14 design).
+- The pool demos take the newest driver image of build/images; the demo
+  image (localhost/cxl-demo-tools, now with e2fsprogs, xfsprogs,
+  btrfs-progs) is built on the host by setup when missing.
+- WIZARD's "wizard.py check --block" runs a privileged docker container
+  on the host to attach a loop device (opt-in, not run by default).
+
+For the user
+------------
+- git add the untracked files of D (185: .gitignore, bin/fsinfo.py,
+  bin/truth.py, bin/wizard*.py, bin/wizard-rules.sh, bin/tools/{cxl-
+  wizard.py,fswrite}, manifests/pool-fs, manifests/wizard, the private
+  suite's fs.source.sh link, testdata/), then commit with the staged
+  moves.
+- D/testdata/__pycache__ (empty, ignored) may be removed.

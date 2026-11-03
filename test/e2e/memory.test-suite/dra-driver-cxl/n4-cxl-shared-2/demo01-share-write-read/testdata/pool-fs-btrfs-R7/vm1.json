@@ -1,0 +1,79 @@
+{
+ "errors": [],
+ "node": {
+  "hostname": "n4-cxl-shared-1-fedora-43-containerd",
+  "mappers": [],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc1ae0001",
+    "size": 536870912
+   }
+  ],
+  "mounts": [
+   {
+    "block": "pmem0",
+    "dax": false,
+    "fstype": "btrfs",
+    "kind": "node",
+    "loop": true,
+    "mountRO": false,
+    "ro": false,
+    "source": "/dev/loop0",
+    "target": "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-cached"
+   },
+   {
+    "block": "pmem0",
+    "claimUID": "1ea5e000-0000-4000-8000-000097a0d882",
+    "dax": false,
+    "fstype": "btrfs",
+    "kind": "lease",
+    "loop": true,
+    "mountRO": false,
+    "name": "data",
+    "ro": false,
+    "source": "/dev/loop0",
+    "target": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/1ea5e000-0000-4000-8000-000097a0d882/data"
+   },
+   {
+    "block": "pmem0",
+    "claimUID": "1ea5e000-0000-4000-8000-000052dff6b6",
+    "dax": false,
+    "fstype": "btrfs",
+    "kind": "lease",
+    "loop": true,
+    "mountRO": true,
+    "name": "data",
+    "ro": false,
+    "source": "/dev/loop0",
+    "target": "/var/lib/kubelet/plugins/cxl.nri.io/lease-fs/1ea5e000-0000-4000-8000-000052dff6b6/data"
+   }
+  ],
+  "openers": [],
+  "regions": [
+   {
+    "dax": [],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "pmem",
+    "name": "region0",
+    "namespaces": [
+     {
+      "block": "pmem0",
+      "fs": "btrfs",
+      "major": 259,
+      "minor": 0,
+      "mode": "fsdax",
+      "name": "namespace0.0",
+      "ro": false,
+      "size": 534773760
+     }
+    ],
+    "size": 536870912
+   }
+  ]
+ }
+}

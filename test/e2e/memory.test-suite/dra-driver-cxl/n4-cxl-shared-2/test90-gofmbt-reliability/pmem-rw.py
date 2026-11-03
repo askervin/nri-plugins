@@ -2,7 +2,7 @@
 """Write and read a persistent CXL pool device in the pods of test90.
 
 dra-dax-tool-install puts this into the ConfigMap dax-rw (/tools in the
-pods), next to the erofs template hello.erofs.hex (plan-8-demo/demo/
+pods), next to the erofs template hello.erofs.hex (demo01-share-write-read/
 testdata: 8192 bytes of mkfs.erofs 1.9 -b4096 -Enoinline_data with one
 32-byte hello.txt in block 1).
 

@@ -1,0 +1,25 @@
+1792500020.000000 vm.driver I1020 12:00:20.000000  4242 broker.go:729] lease broker: lease 3f2a91c0: cxl-demo/writer/main requests size "" serial "0xc100e2e1" (source "", mode dax, shared false, shared device true, read-only false, access "", name "")
+1792500021.250000 vm.driver I1020 12:00:21.000000  4242 local.go:779] local: memdev mem0 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in 412ms
+1792500021.270000 vm.driver I1020 12:00:21.000000  4242 local.go:643] local: memdev mem0 (serial 0xc100e2e1): zeroed new shared dax0.0 size 1073741824 in 210ms
+1792500021.300000 vm.driver I1020 12:00:21.000000  4242 local.go:491] local: memdev mem0 (serial 0xc100e2e1): claim c1a10006-0000-4000-8000-000000000000 request lease: shared dax0.0 size 1073741824 read-only false exclusive
+1792500021.500000 vm.driver I1020 12:00:21.000000  4242 broker.go:1646] lease broker: lease 3f2a91c0: Ready (source local, serial 0xc100e2e1, mode dax, read-only false, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", 1073741824 bytes)
+1792500060.000000 vm.driver I1020 12:00:00.000000  4242 broker.go:729] lease broker: lease 8c1d02e4: cxl-demo/reader-a/main requests size "" serial "0xc100e2e1" (source "", mode dax, shared true, shared device true, read-only true, access "", name "")
+1792500061.000000 vm.driver I1020 12:00:01.000000  4242 broker.go:729] lease broker: lease 51aa7b09: cxl-demo/reader-b/main requests size "" serial "0xc100e2e1" (source "", mode dax, shared true, shared device true, read-only true, access "", name "")
+1792500062.000000 vm.driver I1020 12:00:02.000000  4242 broker.go:729] lease broker: lease e0c4d3f1: cxl-demo/reader-c/main requests size "" serial "0xc100e2e1" (source "", mode dax, shared true, shared device true, read-only true, access "", name "")
+1792500100.000000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease 3f2a91c0: releasing (released by main, was Ready)
+1792500101.400000 vm.driver I1020 12:00:41.000000  4242 local.go:1341] local: memdev mem0 (serial 0xc100e2e1): claim c1a10006-0000-4000-8000-000000000000: released shared dax0.0, claims left []
+1792500101.450000 vm.driver I1020 12:00:41.000000  4242 local.go:1346] local: memdev mem0 (serial 0xc100e2e1): keeping region0 and dax0.0 of the idle shared device
+1792500101.600000 vm.driver I1020 12:00:41.000000  4242 broker.go:1258] lease broker: lease 3f2a91c0: released
+1792500103.000000 vm.driver I1020 12:00:43.000000  4242 local.go:491] local: memdev mem0 (serial 0xc100e2e1): claim c1a1000a-0000-4000-8000-000000000000 request lease: shared dax0.0 size 1073741824 read-only true 1 share
+1792500103.100000 vm.driver I1020 12:00:43.000000  4242 broker.go:1646] lease broker: lease 8c1d02e4: Ready (source local, serial 0xc100e2e1, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", 1073741824 bytes)
+1792500103.200000 vm.driver I1020 12:00:43.000000  4242 local.go:491] local: memdev mem0 (serial 0xc100e2e1): claim c1a1000b-0000-4000-8000-000000000000 request lease: shared dax0.0 size 1073741824 read-only true 1 share
+1792500103.300000 vm.driver I1020 12:00:43.000000  4242 broker.go:1646] lease broker: lease 51aa7b09: Ready (source local, serial 0xc100e2e1, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", 1073741824 bytes)
+1792500103.400000 vm.driver I1020 12:00:43.000000  4242 local.go:491] local: memdev mem0 (serial 0xc100e2e1): claim c1a1000c-0000-4000-8000-000000000000 request lease: shared dax0.0 size 1073741824 read-only true 1 share
+1792500103.500000 vm.driver I1020 12:00:43.000000  4242 broker.go:1646] lease broker: lease e0c4d3f1: Ready (source local, serial 0xc100e2e1, mode dax, read-only true, node -1, dax "/dev/dax0.0", block "", access "", fs "", path "", 1073741824 bytes)
+1792500105.000000 vm.driver E1020 12:00:45.000000  4242 driver.go:942] "DRAPlugin encountered an error." err="pool \"n4-cxl-shared-2-fedora-43-containerd\", slice #0: some fields were dropped by the apiserver, probably because these features are disabled: unknown"
+1792500160.000000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease 8c1d02e4: releasing (requester container gone, was Ready)
+1792500160.300000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease 51aa7b09: releasing (requester container gone, was Ready)
+1792500160.600000 vm.driver I1020 12:00:40.000000  4242 broker.go:1189] lease broker: lease e0c4d3f1: releasing (requester container gone, was Ready)
+1792500161.200000 vm.driver I1020 12:00:41.000000  4242 broker.go:1258] lease broker: lease 8c1d02e4: released
+1792500161.500000 vm.driver I1020 12:00:41.000000  4242 broker.go:1258] lease broker: lease 51aa7b09: released
+1792500161.800000 vm.driver I1020 12:00:41.000000  4242 broker.go:1258] lease broker: lease e0c4d3f1: released

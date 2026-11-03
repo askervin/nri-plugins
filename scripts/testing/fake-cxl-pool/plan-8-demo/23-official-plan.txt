@@ -1,0 +1,53 @@
+plan-8 20-official: plan
+========================
+Written 2026-11-03 (orchestrator). Design 22-official-design.txt (normative),
+facts 21-official-findings.txt. Nothing is committed by the streams.
+
+Streams (Opus 5.5 high unless said otherwise)
+---------------------------------------------
+MOVE    design sections 1 and 2: git mv to D, paths, links, .gitignore,
+        the current cases on the current driver (desk), the truth dump
+        ("demo truth"), the t5 cleanup; then the view checks of the
+        current cases from RUN's captures and truth dumps, and the fixes.
+        Owns all of D until it says "MOVE desk done"; after that it owns
+        D/bin/{common.py,probe.py,zoom.py,demo,demo-terminals.el} and the
+        parts of views.py, steps.py, selftest.py and e2e/ of the current
+        cases.
+FSCASE  design section 3 (pool-fs): manifests/pool-fs, the image, the
+        tools (mkfs --type, fswrite), the steps R1-R11 in steps.py, its
+        views parts, its setup and teardown branches, testdata, README
+        section. Starts after "MOVE desk done".
+WIZARD  design section 4 (wizard): bin/wizard.py, the bin/demo commands,
+        its setup and teardown branches, its views parts, testdata,
+        README section. Starts after "MOVE desk done", in parallel with
+        FSCASE.
+RUN     (Sonnet, medium) the live runs: setup, --auto, captures and
+        truth dumps at the key steps, teardown, VM state; never edits
+        code.
+Shared files (views.py, steps.py, selftest.py, bin/demo, the setup test,
+README.txt) are edited by several streams after MOVE: only with small
+Edit hunks of one's own case, re-reading the file first, never by
+rewriting a file.
+
+Order
+-----
+1. MOVE desk (the move and the desk updates; selftest passes).
+2. RUN: the three current cases live (captures and truth at the key
+   steps). In parallel FSCASE and WIZARD desk.
+3. MOVE checks every view line against the truth, fixes, RUN again,
+   until every line is true; FSCASE and WIZARD then live in turn through
+   RUN, and fix.
+4. Final: every case twice --auto (wizard: its scripted set twice),
+   checked, VMs clean; 29-official-status.txt.
+
+Rules
+-----
+- Read first: N/.github/skills/coding-style/SKILL.md and run-e2e-tests,
+  20-23 of these files, then OLD/README.txt and the plan-8 design files
+  that it names (03-demo-design.txt, 12-fs-demo-design.txt).
+- Status file 24-official-status-<STREAM>.txt kept current; requests to
+  others there; end with "<STREAM> done".
+- Only RUN uses the VMs, one run at a time; never two demos or a demo
+  and run_tests.sh at once; never force-delete pods with pool devices;
+  teardown leaves the VMs clean.
+- Plain ASCII; comments what, not how; no sleeps where a wait-until fits.

@@ -1,0 +1,208 @@
+plan-8 20-official: design (normative)
+======================================
+Written 2026-11-03 (orchestrator) from 21-official-findings.txt (D, F, P,
+V numbers). D = test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+demo01-share-write-read (new), OLD = scripts/testing/fake-cxl-pool/
+plan-8-demo/demo, E = test/e2e, N = nri-plugins. Names, commands, step
+captions and texts below are exact; what is not fixed here is the
+stream's choice (documented in its status file).
+
+1. Location and layout
+----------------------
+- D gets everything of OLD with git mv (tracked files; untracked
+  captures/ moved too; run/ not moved: it is runtime state, recreated).
+  OLD is removed afterwards; plan-8-demo's older plan files keep their
+  history and are not rewritten (00-README gets one line pointing at D).
+- D keeps the layout: bin/, manifests/<case>/, image/, testdata/, e2e/,
+  README.txt, run/, captures/. D/e2e/demo.test-suite/dra-driver-cxl/
+  n4-cxl-shared-2/{test90-demo-setup,test91-demo-teardown} stay a private
+  suite (F1): run_tests.sh is called on them as today. D/e2e/lib links to
+  E/lib; the helper links point into the official suite with relative
+  paths computed from D (no fixed depth in bin/demo: it finds the
+  repository root by walking up to the directory with go.mod of module
+  github.com/containers/nri-plugins, or NRI_PLUGINS_SRC).
+- D/.gitignore: "run/" and "captures/" ignored; "!testdata/" and
+  "!bin/tools/" re-included, so that no git add -f is needed.
+- Every path in README, bin/*, e2e/*, zoom and help texts says D. The
+  docs that mention the demo (docs/memory/cxl/e2e.md, plan-8-demo/
+  00-README.txt) point at D.
+
+2. Current cases on the current driver
+--------------------------------------
+- local, pool and pool-shared-fs keep their steps (L1-L9, L1-L9, F1-F9),
+  captions and the manifests' shape; whatever the driver changed (P2-P4)
+  is followed: companion and claim configs are MemoryConfig only
+  (common.py parses no DeviceConfig), CDI markers per result, the env of
+  fs leases with FSTYPE, read-only /run/cxl (no tool writes there), the
+  pmem block device read-only on reader nodes, the new log lines.
+- Every line every view shows must be true. Method: at the key steps of
+  each case (local L2, L5, L6, L7, L9; pool L2, L5, L6, L7, L9;
+  pool-shared-fs F2, F3, F5, F6, F7, F9) a capture of t2-t6 (demo capture)
+  is taken together with a ground-truth dump of the same moment (a new
+  "demo truth LABEL": kubectl get pods,resourceclaims -o yaml in the demo
+  namespace; resourceslices; cxl list -M -R -X and ls /sys/bus/dax/devices
+  in vm1 and vm2; /proc/self/mountinfo lines of the mounts directories
+  and lease-fs; /sys/block/pmem*/ro; the pool server's devices and
+  attachments; the driver logs of both nodes since the step began). Each
+  view line is checked against it; every mismatch is a defect to fix
+  (wrong, stale or missing information alike), or, if a view cannot know
+  something, the view says less.
+- t5 stays a pure sequence (D5): a title and the last rows once, then
+  only new lines; no cursor movement after that; the "DELME" leftover of
+  paint() is cleaned up without changing the behaviour; --once and
+  capture still print one screen (title and the last rows). Every event
+  kind that the trace showed before must show again with the current log
+  lines (P4, P5).
+
+3. New case "pool-fs": any filesystem, one writer, three readers
+-----------------------------------------------------------------
+Setup: demo setup pool-fs [ext4|xfs|btrfs] (default ext4; the type is
+DEMO_FSTYPE of run/state.env). Device fs0: 512Mi, shared, persistent,
+serial 0xc1ae0001, its files removed first (no filesystem). The driver is
+installed with fsTypes: [erofs, <type>] (the trust note of the docs is
+printed by setup and in README). The pods use the demo image, which
+gains e2fsprogs, xfsprogs and btrfs-progs. Writer on vm1; reader-a and
+reader-b on vm2; reader-c on vm1. Steps R1-R11 (T1 title "R3/11"):
+R1  "a writer starts on vm1; it has no CXL memory yet"
+    kubectl apply -f pool-fs/writer.yaml
+R2  "the writer asks for the device as a block device"
+    kubectl exec writer -- cxl-request request --serial S --mode block
+R3  "the writer makes an empty <type> filesystem on it"
+    kubectl exec writer -- /demo/mkfs --type <type>
+    (mkfs.<type> of an image file of the block device's size in the
+    container, written through the lease fd)
+R4  "the writer mounts it read-write instead"
+    kubectl exec writer -- sh -c 'cxl-request release --all && cxl-request request --serial S --mode fs --read-write --name data'
+R5  "the writer writes hello.txt"
+    kubectl exec writer -- /demo/fswrite "Hello from the writer, $(date +%T)"
+R6  "three readers start: two on vm2, one on vm1"
+    kubectl apply -f pool-fs/readers.yaml
+R7  "readers ask to read: vm1's reader at once, vm2's must wait"
+    for r in reader-a reader-b reader-c; do kubectl exec $r -- cxl-request request --serial S --shared --mode fs --name data --wait 0s; done
+    (reader-c Ready: same node as the writer, one superblock; reader-a
+    and reader-b waiting: their claims get AttachFailed reason Conflict,
+    the device is attached exclusively to vm1 for a writer)
+R8  "the writer adds a line; vm1's reader sees it at once"
+    kubectl exec writer -- /demo/fswrite --append "...";
+    kubectl exec reader-c -- cat /run/cxl/fs/data/hello.txt
+R9  "the writer is done: vm1 turns the filesystem read-only, vm2's readers mount it"
+    kubectl exec writer -- cxl-request release --all
+    (vm1 remounts read-only, /dev/pmemK read-only; the attachment is no
+    longer exclusive; vm2 attaches, reader-a and reader-b Ready)
+R10 "each reader reads hello.txt; a write fails"
+    for r ...; cat; then kubectl exec reader-a -- sh -c 'echo x >> /run/cxl/fs/data/hello.txt' (expects "Read-only file system")
+R11 "everything goes away"
+    kubectl delete -f pool-fs/
+The views show what is new: t2 "fs rw excl" / "fs ro share" and
+"waiting (Conflict)"; t3 the writer and the waiting readers with the
+reason; t4 per node the node mount's type and its superblock rw/ro, the
+pmem block device's read-only flag, the lease binds; t5 the controller's
+"exclusive for a read-write ... claim", AttachFailed Conflict, the
+driver's "mounted ... (<type>, rw|ro ...)", "remounted ... read-only";
+t6 fs0, its attachments (exclusive or not) and the filesystem's type and
+state from the backing file (superblock magic; for ext4 clean or needs
+recovery), without parsing files of the writable types.
+Zooms as for pool-shared-fs, plus "demo zoom mounts vm1|vm2" showing
+superblock ro/rw and the block device's flag.
+
+4. New case "wizard"
+--------------------
+Setup: demo setup wizard. Devices: vm2's local 1G and vm1's local 256M
+(sliced, not shared); a local persistent memdev lp0 512Mi on vm2 through a
+second fake-cxl-pool-server without a controller (as test21, serial
+0xc100f5e1); pool A (cabled to vm1 and vm2) with pooled0 (512Mi,
+exclusive, volatile), shared0 (256Mi, shared, volatile) and fs0 (512Mi,
+shared, persistent). Setup formats fs0 and lp0 with ext4 holding
+hello.txt (a block writer pod of the demo image) so that fs claims find
+something. fsTypes: [erofs, ext4, xfs, btrfs]. The views show the wizard's
+objects generically (section 5).
+Commands (bin/demo wizard, implemented in bin/wizard.py):
+  demo wizard                      interactive: questions, preview, create
+  demo wizard new [OPTIONS]        the same without questions; --dry-run
+                                   prints the YAML only
+  demo wizard list                 the objects it made: name, kind, pod
+                                   phase, device(s), node, mode, access
+  demo wizard yaml NAME            the YAML of NAME
+  demo wizard delete NAME...|--all delete objects it made (pod and claim)
+Options (questions in this order; only valid choices are offered; each
+answer has a default; the interactive mode shows why a choice is not
+available):
+  --kind claim|lease               a pod with a ResourceClaim of the
+                                   device (claim), or a pod with the
+                                   cxl-lease claim and the cxl-request
+                                   command to run in it (lease, which the
+                                   wizard runs with kubectl exec)
+  --source local|pool|any          any = firstAvailable: local, then pool
+  --memory volatile|persistent
+  --sharing exclusive|shared       shared = capacity shares "1"
+  --mode numa|dax|block|fs
+  --size whole|SIZE                SIZE: a slice of a local volatile
+                                   memdev (block multiples), or the
+                                   least size of an exclusive pool device
+  --serial any|SERIAL              a device by its serial (the wizard lists
+                                   the published devices that fit)
+  --read-only / --read-write
+  --fs-type detect|TYPE --access direct|cached --path PATH   (fs)
+  --steering none|auto|...         (numa)
+  --node vm1|vm2|any
+  --command idle|env|mkfs TYPE|write TEXT|read
+  --name NAME                      default w<N>
+Rules (the driver's, pkg/cxl/config and docs/memory/cxl): volatile local
+sliced: numa (default) or dax, readOnly dax only, slice or whole;
+volatile pool exclusive: numa or dax, whole device, a least size; volatile
+pool shared: dax only, exclusive or shared; persistent (local or pool):
+block or fs only; block read-write only exclusively; fs read-only by
+default, read-write opt-in; a shared persistent device read-write on one
+node at a time (the wizard says that a pod of another node waits);
+access direct for DAX types only. A choice that the setup's devices
+cannot satisfy is still allowed with a warning (the pod will wait), so
+that waiting can be shown.
+YAML: one file per object in run/wizard/<name>.yaml (a ResourceClaim and
+a Pod, labels app=cxl-demo-wizard, cxl-demo/wizard=<name>), with a
+comment header that says in words what it asks for; MemoryConfig
+entries with apiVersion cxl.nri.io/v1alpha1. Created with kubectl apply
+in vm2 (the demo namespace), deleted with kubectl delete.
+
+5. Views for every case
+-----------------------
+- Each view shows the objects of the case (local, pool, pool-shared-fs,
+  pool-fs: the demo pods; wizard: the wizard's pods), within 50 x 10.
+  For wizard: t2 pods with their claims (static or lease) and what they
+  got; t3 every published device (local and pool) with its holders and
+  the waiting claims; t4 both nodes; t5 the trace; t6 the pool server and
+  the local persistent device.
+- The selftest renders every view of every case from testdata/ (new
+  samples for pool-fs and wizard) and checks 50 x 10.
+
+6. Documentation
+----------------
+D/README.txt: the new location, sections for pool-fs and wizard (steps,
+what to point at, timings), the trust note of fsTypes, the move's effect
+on the commands (paths). docs/memory/cxl/e2e.md: one paragraph on the
+demo and its location.
+
+7. Verification
+---------------
+Desk: python3 -m py_compile of bin/*.py, bash -n and shellcheck of the
+shell files, demo selftest, plain ASCII. Live (stream RUN): for each case
+setup, --auto run (wizard: a scripted set of "demo wizard new" covering
+every rule row, then delete --all), captures and ground-truth dumps at
+the key steps, teardown; the VMs clean afterwards (no CXL memdevs,
+regions, mounts, loops; ports free). Done: every case passes two --auto
+runs in a row with every view line checked true at the key steps.
+
+8. Amendments
+-------------
+A1 (FSCASE) R4 is cxl-request request --serial S --shared --mode fs
+   --read-write --name data: without --shared the writer's companion takes
+   all shares and no reader of vm1 could join in R7. The writer still has
+   its node alone (the controller's exclusive attachment, singleHost).
+A2 (FSCASE) "waiting (Conflict)" comes from the claim's Events (the
+   AttachFailed condition goes when the scheduler deallocates the claim):
+   the probe gains a kind "events". The controller's "status of ..." lines
+   are not trace events. A reader whose attach fails is never shown as
+   having a share.
+A3 (FSCASE) Captions longer than 50 columns wrap into at most two lines
+   in T1 (R7, R9).
+A4 (FSCASE) The demo image gains e2fsprogs, xfsprogs and btrfs-progs:
+   its tag changes for every case (imported into the VMs once).

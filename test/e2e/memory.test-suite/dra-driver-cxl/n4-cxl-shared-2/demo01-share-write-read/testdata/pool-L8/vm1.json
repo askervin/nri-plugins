@@ -1,0 +1,42 @@
+{
+ "errors": [],
+ "node": {
+  "hostname": "n4-cxl-shared-1-fedora-43-containerd",
+  "mappers": [
+   {
+    "comm": "python3",
+    "dax": "dax0.0",
+    "perms": "r--s",
+    "pid": 5003,
+    "podUID": "7d1c55e0-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+   }
+  ],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc1ae0001",
+    "size": 268435456
+   }
+  ],
+  "regions": [
+   {
+    "dax": [
+     {
+      "driver": "device_dax",
+      "name": "dax0.0",
+      "size": 268435456,
+      "targetNode": 2
+     }
+    ],
+    "memdevs": [
+     "mem0"
+    ],
+    "mode": "ram",
+    "name": "region0",
+    "size": 268435456
+   }
+  ]
+ }
+}

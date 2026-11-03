@@ -1,0 +1,3 @@
+1792500021.000000 vm.udev KERNEL[5021.000000] add      /devices/platform/ACPI0017:00/root0/decoder0.0/region0 (cxl)
+1792500021.100000 vm.udev KERNEL[5021.100000] add      /devices/platform/ACPI0017:00/root0/decoder0.0/region0/dax_region0 (cxl)
+1792500021.200000 vm.udev KERNEL[5021.200000] add      /devices/platform/ACPI0017:00/root0/decoder0.0/region0/dax_region0/dax0.0 (dax)

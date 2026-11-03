@@ -34,8 +34,6 @@ Files
                              why, the two scripts step by step, Q&A zooms
   04-plan.txt                streams, ownership, order, checks
   05-status-<S>.txt          one per stream; 09-status.txt orchestrator
-  demo/                      the demo itself: README (how to run it),
-                             bin/ (views, step runners, setup, teardown),
-                             manifests
+  The demo itself is E/n4-cxl-shared-2/demo01-share-write-read (since 2026-11-03).
 Paths: N = ~/github.com/containers/nri-plugins, D = N/cmd/plugins/dra-driver-cxl,
 E = N/test/e2e/memory.test-suite/dra-driver-cxl, P = N/scripts/testing/fake-cxl-pool.

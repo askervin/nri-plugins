@@ -72,7 +72,7 @@
 # their backing files new (removed before the server starts and at the
 # end: host RAM); the settle observation reads their content from those
 # files ("pdevs"). The pods write and read them with pmem-rw.py and the
-# erofs template hello.erofs.hex (a copy of plan-8-demo/demo/testdata; ConfigMap
+# erofs template hello.erofs.hex (a copy of demo01-share-write-read/testdata; ConfigMap
 # dax-rw at /tools): no mkfs.erofs, no image build.
 #
 # Output in the test output directory: mbt-steps.txt (the steps, for

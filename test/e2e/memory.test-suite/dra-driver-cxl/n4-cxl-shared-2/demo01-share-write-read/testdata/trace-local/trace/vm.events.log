@@ -1,0 +1,11 @@
+1792500001.000000 vm.events cxl-demo   Pod   writer   Scheduled   Successfully assigned cxl-demo/writer to n4-cxl-shared-2-fedora-43-containerd
+1792500020.200000 vm.events cxl-demo   Pod   cxl-lease-3f2a91c0   Scheduled   Successfully assigned cxl-demo/cxl-lease-3f2a91c0 to n4-cxl-shared-2-fedora-43-containerd
+1792500055.000000 vm.events cxl-demo   Pod   reader-a   Scheduled   Successfully assigned cxl-demo/reader-a to n4-cxl-shared-2-fedora-43-containerd
+1792500056.000000 vm.events cxl-demo   Pod   reader-b   Scheduled   Successfully assigned cxl-demo/reader-b to n4-cxl-shared-2-fedora-43-containerd
+1792500057.000000 vm.events cxl-demo   Pod   reader-c   Scheduled   Successfully assigned cxl-demo/reader-c to n4-cxl-shared-2-fedora-43-containerd
+1792500060.300000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   FailedScheduling   0/2 nodes are available: 1 cannot allocate all claims, 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/2 nodes are available: 2 Preemption is not helpful for scheduling.
+1792500061.300000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   FailedScheduling   0/2 nodes are available: 1 cannot allocate all claims, 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/2 nodes are available: 2 Preemption is not helpful for scheduling.
+1792500062.300000 vm.events cxl-demo   Pod   cxl-lease-e0c4d3f1   FailedScheduling   0/2 nodes are available: 1 cannot allocate all claims, 1 node(s) didn't match Pod's node affinity/selector. preemption: 0/2 nodes are available: 2 Preemption is not helpful for scheduling.
+1792500102.200000 vm.events cxl-demo   Pod   cxl-lease-8c1d02e4   Scheduled   Successfully assigned cxl-demo/cxl-lease-8c1d02e4 to n4-cxl-shared-2-fedora-43-containerd
+1792500102.300000 vm.events cxl-demo   Pod   cxl-lease-51aa7b09   Scheduled   Successfully assigned cxl-demo/cxl-lease-51aa7b09 to n4-cxl-shared-2-fedora-43-containerd
+1792500102.400000 vm.events cxl-demo   Pod   cxl-lease-e0c4d3f1   Scheduled   Successfully assigned cxl-demo/cxl-lease-e0c4d3f1 to n4-cxl-shared-2-fedora-43-containerd

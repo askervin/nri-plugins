@@ -1,0 +1,101 @@
+plan-8 20-official: findings
+============================
+Written 2026-11-03 (orchestrator) from the tree at 5325df62c. D = the
+demo directory, N = nri-plugins, E = N/test/e2e.
+
+The demo today
+--------------
+D1 D = plan-8-demo/demo: bin/ (demo bash entry; views.py, steps.py,
+   zoom.py, common.py, probe.py run over ssh in the VMs, selftest.py,
+   demo-terminals.el, tools/ = the pod tools of ConfigMap demo-tools:
+   write, read, hold, env, mkfs -> cxl-demo.py), manifests/{local,pool,
+   pool-shared-fs} (pods with the cxl-lease ResourceClaimTemplate),
+   image/Dockerfile (python:3-alpine + erofs-utils, built at setup),
+   e2e/ (a private suite: demo.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+   test90-demo-setup, test91-demo-teardown, every helper a symlink into
+   memory.test-suite; e2e/lib a symlink to E/lib), testdata/ (samples of
+   the selftest), README.txt (the presenter's guide), run/ (state.env,
+   logs, timings; untracked), captures/ (untracked). 37 tracked files;
+   testdata/ and bin/tools/mkfs are hidden by global .gitignore rules
+   (testdata/), so they needed git add -f.
+D2 bin/demo computes the repository root as D/../../../../.. and the
+   suites from it; e2e-links recreates the symlinks with fixed relative
+   prefixes; setup runs run_tests.sh on D/e2e/.../test90-demo-setup with
+   DEMO_CASE, the newest driver image of N/build/images.
+D3 Cases: local (vm2's own device, sharedDevices, dax leases: writer
+   exclusive, readers shares, L1-L9), pool (shared0 256Mi volatile, writer
+   vm1, readers vm2 vm2 vm1, L1-L9), pool-shared-fs (shared0 256Mi
+   persistent: block lease, mkfs.erofs through the fd, fs leases at
+   /run/cxl/fs/hello, F1-F9). Everything is a lease: the pods hold only the
+   cxl-lease claim; the broker builds the companion claims (MemoryConfig
+   since plan-12).
+D4 Views (50 x 10): t2 pods and leases (kubectl), t3 devices and claims
+   (slices, claims, driver pods), t4 nodes (probe.py: cxl list, sysfs,
+   mappings, pmem, mounts), t5 trace (driver, controller, pool server,
+   kernel udev and kube events collected by dra-trace-start, parsed by
+   regexes of views.py Trace), t6 memory (local: bytes of vm2's device;
+   pool: the pool server API and the backing file; pool-shared-fs: the
+   erofs parsed from the backing file). common.py has a parser of claim
+   configs (a "DeviceConfig" docstring at 272, MemoryConfig at 285).
+D5 The user's commit 5325df62c: t5 paints a title and the last rows once,
+   then prints only new lines (no repaint), so the terminal scrolls; the
+   paint() now always ends lines with "\n" (a "DELME" comment) and
+   colorizes the appended lines.
+
+The framework (E/run_tests.sh)
+------------------------------
+F1 A test path is suite/policy/topology/test with a *.test-suite root
+   (tests-dir-filters, at most four levels); in a topology only test*
+   directories run. So E/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/
+   demo01-share-write-read is skipped by suite runs, and a test inside it
+   (five levels) cannot be run by run_tests.sh: the demo's setup and
+   teardown stay a suite of their own inside D (D/e2e/demo.test-suite).
+F2 E2E_LIB_DIR is <suite root>/../lib: D/e2e/lib must point at E/lib.
+F3 The VM of a topology is derived from the topology directory's name
+   (n4-cxl-shared-2) and the *.var.* files along the path; the private
+   suite's links to topology.var.json and vm_network.var.sh keep it.
+
+The driver since the demo (plans 10-14)
+---------------------------------------
+P1 plan-10: three nodes (vm0 second worker); the demo's pool is cabled to
+   vm1 and vm2.
+P2 plan-12: MemoryConfig (apiVersion cxl.nri.io/v1alpha1) for both
+   drivers; CDI markers per result CXL_CLAIM_<uid>_<n>; steering opt-in.
+P3 plan-13: robustness fixes; log lines changed in places.
+P4 plan-14: any filesystem; fsTypes defaults to [erofs] (pool-shared-fs
+   needs nothing; any other type needs the driver configuration); fs
+   leases are read-only unless --read-write (--read-only still
+   accepted); env CXL_<KEY>_FSTYPE; cxl-request list has fsType; the
+   companion's config has access only when given; /run/cxl is read-only
+   in containers; a node without a writer has /dev/pmemK read-only
+   (/sys/block/pmemK/ro 1); node mounts and lease binds log
+   "mounted <source> at <mnt> (<t>, <ro|rw>[, <data>])", "remounted <mnt>
+   read-write|read-only", "<dev> read-only|read-write"; the controller
+   makes a writer's attachment exclusive and logs "attach <device> to
+   <host> for <want>: exclusive for a read-write <t> claim"; claims of
+   other nodes get AttachFailed reason Conflict (pods wait); local
+   persistent memdevs (class cxl-local-persistent) exist; test21 makes
+   one with a second fake-cxl-pool-server without a controller
+   (DRA_UNCONTROLLED_POOLS of dra.source.sh).
+P5 Which regexes of views.py Trace, zoom.py and steps.py checks still
+   match the current driver is to be measured on a live run (some local
+   lines still match, e.g. "local: memdev %s (serial 0x%x): claim %s
+   request %s: shared %s size %d read-only %v %s").
+
+The VMs
+-------
+V1 VM2: a local 1G device (present false: plugged by the pool server as a
+   local device), pool slots 2 on host bridge 0 and 4 on host bridge 1;
+   VM1: a local 256M device and a static shared 256M (present false),
+   the same pool slots. Both root decoders of VM2 allow pmem (test21).
+V2 xfs needs a filesystem of at least 300 MiB: shared0 (256Mi) is too
+   small for the new fs case; a 512Mi device has a 510 MiB block device.
+V3 Alpine packages for the demo image: erofs-utils, e2fsprogs, xfsprogs,
+   btrfs-progs.
+V4 A container cannot open /proc/self/fd/3 of a block lease again (device
+   cgroup): a tool writes an image through the fd (today's /demo/mkfs);
+   an empty filesystem image of the device's size is mostly zeros, so the
+   tool may skip zero blocks (the device starts zeroed or keeps old bytes:
+   it must write every block of the image's metadata, and zero what an
+   older filesystem left where the image has zeros only if the type needs
+   it: write whole image unless measured otherwise).
