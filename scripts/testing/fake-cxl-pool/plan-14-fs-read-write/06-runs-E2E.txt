@@ -1,0 +1,154 @@
+plan-14 RUN: e2e runs (stream RUN), image build/images/nri-dra-driver-cxl-image-1631d8c97a93.tar
+Preconditions at 2026-11-02 ~18:29: no run_tests.sh, ports 9909 and 9912 free, 3 nodes Ready.
+
+=== Run 1: test20-dra-fs-read-write, 2026-11-02 18:30:26 - 18:42:38 EET (12m12s) ===
+Verdict: PASS (well under the expected ~30 min)
+Full log: /tmp/plan14-run-test20.log ; output dir: /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/dra-driver-cxl/test20-dra-fs-read-write
+State after (checked after test21's start-up, nothing left over from test20 was seen before it): see state of run 2.
+
+=== Run 2: test21-dra-local-persistent, 2026-11-02 18:50:11 - 18:51:38 EET (1m27s) ===
+Verdict: FAIL
+Failing phase: A (device attached and published; DeviceClass check). Everything before it passed (pool server, attach, memdev published, attributes, capacity).
+Error: error: DRA assertion failed: names() == ['cxl-local-persistent', 'cxl-local']
+Cause (a test bug, not a driver bug): names() in dra.source.sh (line 2669) returns sorted(...), i.e.
+  ['cxl-local', 'cxl-local-persistent'], while code.var.sh line 198 compares it with the unsorted list
+  ['$CLASS', 'cxl-local'] = ['cxl-local-persistent', 'cxl-local']. Both classes exist and their CEL selectors are right
+  (persistent == true / persistent == false). Fix: compare sorted(['$CLASS','cxl-local']) or set(names()) == {...}.
+  (Also seen, harmless: line 270 'timed out after 5 s' waiting for nri-resource-policy pods, a retry of the framework.)
+Driver log lines around: VM2 log has 'pool serials: memdev mem0 (serial 0xc100f5e1) is a local memory device' and
+  'discovered persistent local memory device memdev-c100f5e1 ... size 536870912 shared false'; no ERROR/remount/mounted/AttachFailed/Conflict lines; local-pmem server log has no errors.
+Cleanup: trap ran, device detached (lp0 detached), both servers stopped.
+Logs: /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/dra-driver-cxl/test21-dra-local-persistent/{nri-dra-driver-cxl.vm.log,vm0.log,vm1.log,fake-cxl-pool-server.log,fake-cxl-pool-server-local-pmem.log,trace.txt,summary.txt}; full test output /tmp/plan14-run-test21.log
+
+--- 60 lines of test output before the failure (log lines 391-451 of /tmp/plan14-run-test21.log, cut to 300 cols) ---
+  "backend": "file",
+  "path": "/tmp/fake-cxl-pool-local-pmem/lp0.raw",
+  "lsaPath": "/tmp/fake-cxl-pool-local-pmem/lp0.lsa",
+  "pool": "default",
+  "scope": "pool",
+  "static": true,
+  "state": "free",
+  "allocation": null,
+  "attachments": [],
+  "created": "2026-11-02T16:51:08.084626047Z"
+}
+pool-device-files: lp0: data /tmp/fake-cxl-pool-local-pmem/lp0.raw, LSA /tmp/fake-cxl-pool-local-pmem/lp0.lsa
+fake-cxl-pool ok: j['persistent'] == True and j['shared'] == False and j['serial'] == '0xc100f5e1'
+[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-poo
+[38;5;11mroot@vm dra-driver-cxl/test21-dra-local-persistent>[0m mv "vm-put-file.fake-cxl-pool-client" "/usr/local/bin/fake-cxl-pool-client"
+[38;5;11mhost>[0m scp -F /home/akervine/github.com/containers/nri-plugins/test/e2e/n4-cxl-shared-2-fedora-43-containerd/.ssh-config -o ControlMaster=auto -o ControlPersist=60 -o ControlPath=/tmp/ssh-%C "/home/akervine/github.com/containers/nri-plugins/test/e2e/memory.test-suite/dra-driver-cxl/n4-c
+[38;5;11mroot@vm dra-driver-cxl/test21-dra-local-persistent>[0m mv "vm-put-file.pool-dax-rw.py" "/usr/local/bin/pool-dax-rw.py"
+[38;5;11mroot@vm dra-driver-cxl/test21-dra-local-persistent>[0m chmod 755 /usr/local/bin/fake-cxl-pool-client /usr/local/bin/pool-dax-rw.py && fake-cxl-pool-client --help | head -n 1
+Usage: fake-cxl-pool-client [--server URL] [-o table|json] COMMAND [ARGS]
+[38;5;11mhost>[0m /home/akervine/github.com/containers/nri-plugins/scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client --server http://127.0.0.1:9912 -o json attach lp0 --host n4-cxl-shared-2-fedora-43-containerd --owner e2e:test21
+{
+  "id": "lp0@n4-cxl-shared-2-fedora-43-containerd",
+  "device": "lp0",
+  "host": "n4-cxl-shared-2-fedora-43-containerd",
+  "serial": "0xc100f5e1",
+  "slot": {
+    "bus": "cxlsw_ds0_usrp0hb1",
+    "kind": "downstream",
+    "hostBridge": "cxlhb1",
+    "numaNode": 1,
+    "device": "fcp_lp0.hp1",
+    "attachment": "lp0@n4-cxl-shared-2-fedora-43-containerd"
+  },
+  "qemuDeviceId": "fcp_lp0.hp1",
+  "qemuObjectId": "fcp_lp0.hp1",
+  "qemuLsaObjectId": "fcp_lp0.hp1-lsa",
+  "state": "attached",
+  "owner": "e2e:test21",
+  "created": "2026-11-02T16:51:10.904535815Z",
+  "updated": "2026-11-02T16:51:10.955624205Z"
+}
+waiting for: pkg/cxl: by_serial(0xc100f5e1) is not None and by_serial(0xc100f5e1)['Enabled'] and by_serial(0xc100f5e1)['PmemSize'] == 536870912 and by_serial(0xc100f5e1)['RamSize'] == 0
+cxl-dump lp0-attached: 1 memdevs (mem0), 0 regions (), 1 endpoints, nodes 0:3944M, 1:4030M
+pkg/cxl ok: [r for r in regions if by_serial(0xc100f5e1) is not None and by_serial(0xc100f5e1)['Name'] in names(r['Memories'])] == []
+waiting for: vm: kubectl get resourceslices: device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd') is not None
+dra ok: lp0-published: device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd') is not None
+hold-back lines of the driver of VM2: none
+[38;5;11mroot@vm dra-driver-cxl/test21-dra-local-persistent>[0m kubectl get resourceslices
+NAME                                                          NODE                                   DRIVER            POOL                                   AGE
+00000-cxl-pool.nri.io-rw8q5                                                                          cxl-pool.nri.io   fake-cxl-pool                          17s
+00000-cxl.nri.io-n4-cxl-shared-0-fedora-43-containerd-7cglv   n4-cxl-shared-0-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-0-fedora-43-containerd   24s
+00000-cxl.nri.io-n4-cxl-shared-1-fedora-43-containerd-x6hxl   n4-cxl-shared-1-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-1-fedora-43-containerd   24s
+00000-cxl.nri.io-n4-cxl-shared-2-fedora-43-containerd-bhs7m   n4-cxl-shared-2-fedora-43-containerd   cxl.nri.io        n4-cxl-shared-2-fedora-43-containerd   24s
+dra ok: attr(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'type') == 'memdev' and attr(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'source') == 'local' and attr(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43
+dra ok: set(k.split('/')[-1] for k in device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd')['attributes']) - {'nodeAffinity'} == {'persistent', 'serial', 'shared', 'size', 'source', 'type'}
+dra ok: sorted(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd').get('capacity') or {}) == ['shares'] and quantity(capacity(device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd'), 'shares')) == 1000000 and request_policy(device('memdev-c100f5e1'
+dra ok: device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd').get('allowMultipleAllocations') == True and not device('memdev-c100f5e1', 'cxl.nri.io', 'n4-cxl-shared-2-fedora-43-containerd').get('nodeAllocatableResources')
+dra ok: not any(attr(d, 'serial') == '0xc100f5e1' for d in devices('cxl-pool.nri.io'))
+[38;5;13mroot@vm>[0m kubectl get deviceclass cxl-local-persistent cxl-local -o json
+
+error: DRA assertion failed: names() == ['cxl-local-persistent', 'cxl-local']
+
+--- State after the runs (2026-11-02 18:52) ---
+n4-cxl-shared-0-fedora-43-containerd   Ready   <none>          12d   v1.37.1
+n4-cxl-shared-1-fedora-43-containerd   Ready   <none>          12d   v1.37.1
+n4-cxl-shared-2-fedora-43-containerd   Ready   control-plane   12d   v1.37.1
+      9 kube-system
+VM1
+0
+ls: cannot access '/var/lib/kubelet/plugins/*/mounts': No such file or directory
+ls: cannot access '/dev/dax*': No such file or directory
+ls: cannot access '/dev/pmem*': No such file or directory
+decoder0.0 decoder0.1 decoder2.0 decoder2.1 decoder2.2 decoder2.3 nvdimm-bridge0 port1 port2 root0 
+VM2
+0
+ls: cannot access '/var/lib/kubelet/plugins/*/mounts': No such file or directory
+ls: cannot access '/dev/dax*': No such file or directory
+ls: cannot access '/dev/pmem*': No such file or directory
+decoder0.0 decoder0.1 decoder1.0 decoder1.1 decoder1.2 decoder1.3 decoder2.0 decoder2.1 decoder2.2 decoder2.3 nvdimm-bridge0 port1 port2 root0 
+ports-checked
+
+=== Run 3: test21-dra-local-persistent rerun (line 198 now compares names() with sorted([...])), 2026-11-02 18:53:13 - 18:55:33 EET (2m20s) ===
+Verdict: PASS
+Before: no run_tests.sh/pool servers, ports 9909 and 9912 free, 3 nodes Ready; no background work of mine left running.
+Full log: /tmp/plan14-run-test21b.log ; output dir: test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/dra-driver-cxl/test21-dra-local-persistent
+23 "dra ok" assertions; only error line is the framework's harmless 5 s retry waiting for nri-resource-policy pods.
+State after:
+      9 kube-system
+VM1
+0
+ls: cannot access '/dev/dax*': No such file or directory
+ls: cannot access '/dev/pmem*': No such file or directory
+VM2
+0
+ls: cannot access '/dev/dax*': No such file or directory
+ls: cannot access '/dev/pmem*': No such file or directory
+lp0@n4-cxl-shared-2-fedora-43-containerd  cxlsw_ds0_usrp0hb1  1     fcp_lp0.hp1  fcp_lp0.hp1  0xc100f5e1  detached  -
+cxl-dump lp0-detached: 0 memdevs (), 0 regions (), 0 endpoints, nodes 0:3944M, 1:4030M
+pool-server-stop: stopped fake-cxl-pool-server local-pmem pid 3834189
+pool-server-stop: stopped fake-cxl-pool-server fake-cxl-pool pid 3830901
+
+=== Final runs on image nri-dra-driver-cxl-image-b86cf8d56946.tar (2026-11-02, EET) ===
+Format: N test start end duration verdict. Logs: /tmp/plan14-final-N-<test>.log; output dirs test/e2e/n4-cxl-shared-2-fedora-43-containerd/memory.test-suite/dra-driver-cxl/<test>. Before each run: no run_tests/pool server, ports 9909/9912 free, 3 nodes Ready, no pods outside kube-system (checked by script /tmp/plan14-scripts/runone.sh).
+1 test20-dra-fs-read-write start=19:10:26 end=19:22:29 dur=12m3s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test20-dra-fs-read-write
+2 test21-dra-local-persistent start=19:22:40 end=19:24:57 dur=2m17s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test21-dra-local-persistent
+3 test20-dra-fs-read-write start=19:25:08 end=19:36:55 dur=11m47s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test20-dra-fs-read-write
+4 test21-dra-local-persistent start=19:36:56 end=19:39:12 dur=2m16s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test21-dra-local-persistent
+5 test16-cxl-llm-share start=19:39:21 end=19:44:29 dur=5m8s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+6 test12-dra-live-attach start=19:44:29 end=19:50:38 dur=6m9s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+7 test10-dra-pooling start=19:50:38 end=19:52:43 dur=2m5s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test10-dra-pooling
+8 test13-dra-shared-one-writer-many-readers start=19:52:43 end=19:56:10 dur=3m27s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+9 test14-dra-local-memdev start=19:56:10 end=20:00:52 dur=4m42s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test14-dra-local-memdev
+10 test15-dra-local-live-attach start=20:00:52 end=20:05:46 dur=4m54s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test15-dra-local-live-attach
+11 test17-dra-local-shared start=20:05:47 end=20:10:16 dur=4m29s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test17-dra-local-shared
+12 test18-dra-local-shared-one-writer-many-readers start=20:10:17 end=20:14:07 dur=3m50s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test18-dra-local-shared-one-writer-many-readers
+13 test11-dra-sharing start=20:14:08 end=20:16:03 dur=1m55s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test11-dra-sharing
+14 test19-many-pools start=20:16:04 end=20:18:58 dur=2m54s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test19-many-pools
+15 test90-gofmbt-reliability start=20:19:08 end=20:51:53 dur=32m45s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability
+Run 15 ran with MBT_DURATION=30m: seed 1793643561, 736 steps in 30m21s, PASS, clean teardown; cluster after: 3 nodes Ready, no pods outside kube-system, ports free.
+
+=== Security changes, image b0a0eb6c6c91 (2026-11-03, EET) ===
+Logs /tmp/plan14-sec-N-<test>.log; same prechecks before each run (script /tmp/plan14-scripts/runsec.sh).
+1 test21-dra-local-persistent start=10:17:00 end=10:20:02 dur=3m2s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test21-dra-local-persistent
+2 test20-dra-fs-read-write start=10:20:02 end=10:32:09 dur=12m7s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test20-dra-fs-read-write
+3 test12-dra-live-attach start=10:32:10 end=10:38:24 dur=6m14s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test12-dra-live-attach
+4 test16-cxl-llm-share start=10:38:25 end=10:43:32 dur=5m7s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test16-cxl-llm-share
+5 test15-dra-local-live-attach start=10:43:33 end=10:48:27 dur=4m54s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test15-dra-local-live-attach
+6 test13-dra-shared-one-writer-many-readers start=10:48:27 end=10:51:53 dur=3m26s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test13-dra-shared-one-writer-many-readers
+7 test18-dra-local-shared-one-writer-many-readers start=10:51:53 end=10:55:43 dur=3m50s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test18-dra-local-shared-one-writer-many-readers
+8 test90-gofmbt-reliability start=10:55:44 end=11:18:30 dur=22m46s rc=0 verdict: PASS dra-driver-cxl/n4-cxl-shared-2/test90-gofmbt-reliability
+Run 8 with MBT_DURATION=20m: done: 507 steps in 20m19s

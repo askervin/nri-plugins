@@ -86,8 +86,9 @@ config:
   ignoreDevices: ["mem0"]
   # local devices shared by the claims of class cxl-local-shared
   sharedDevices: ["0xc100e2e1"]
-  # the filesystem types that mode fs mounts on the nodes (the default)
-  fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]
+  # the filesystem types that mode fs mounts on the nodes (default: erofs
+  # only); ext4 trusts everyone who can write the devices raw
+  fsTypes: [erofs, ext4]
   defaults:
     container:
       fencing: allowed-mems
@@ -152,9 +153,14 @@ The keys of `config` are described in the
 [configuration file](https://github.com/containers/nri-plugins/blob/main/docs/memory/cxl/usage.md#configuration-file)
 section of the CXL memory documentation. `config.fsTypes` lists the
 filesystem types that `device.mode: fs` mounts on the nodes, for local
-and pool devices: the node's kernel parses what the writer of a device
-wrote, so narrow it (for example to `[erofs]`) when writers are not
-trusted. `config.defaults.container`
+and pool devices; without it the nodes mount erofs only, the type that is
+built for images of untrusted writers, and `[]` mounts none. The node's
+kernel parses what the writer of a device wrote, and ext4, xfs, btrfs,
+squashfs and gfs2 are not hardened against crafted images: adding a type
+trusts every party that can write the devices raw, that is every
+read-write block claim and lease of a persistent device on any node of
+any cluster that shares the pool. The chart sets no `fsTypes`.
+`config.defaults.container`
 holds the node defaults of the settings of containers:
 `fencing` (`allowed-mems` by default) keeps the CXL nodes of the driver
 away from the containers that have not claimed memory on them; with an

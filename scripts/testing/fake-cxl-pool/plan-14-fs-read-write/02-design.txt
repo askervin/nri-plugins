@@ -1,0 +1,217 @@
+plan-14: design options and recommendations
+===========================================
+Written 2026-11-02 (orchestrator) from 01-findings.txt (C, K, E, A numbers
+below). Nothing is published: compatibility is kept only where it is free
+(existing erofs claims and leases keep working as they are written).
+
+Requirements
+------------
+R1  Mode fs mounts any block filesystem, not only erofs.
+R2  Read-write mounts, by an explicit opt-in.
+R3  The driver never makes the corruption of K13 possible: no two
+    read-write superblocks of a single-host filesystem (two hosts, or two
+    block devices on one host, K2); no read-only superblock on one host
+    while another host has the filesystem read-write; no write by a
+    read-only mount (K3).
+R4  Several pods of one host may mount the filesystem read-write; some
+    pods of that host read-only next to them.
+R5  Filesystems built for several writers (gfs2 lock_dlm) may be mounted
+    read-write on several hosts.
+R6  Readable errors before anything is mounted; a temporary condition
+    (another host has the device) makes the pod wait, not fail.
+R7  One rule set for local and pool devices.
+R8  Claims and leases of erofs written today keep working unchanged.
+
+Answers in short (the user's questions)
+---------------------------------------
+- Two pods read-write on the same host: yes. One superblock on the host,
+  one bind mount per container; that is what the kernel is built for.
+- One pod read-write and one read-only on the same host: yes. The same
+  superblock; the read-only container's bind has the ro attribute, which
+  the kernel enforces (EROFS) for every process that cannot change its
+  own mounts (K7). A privileged container could remount its own bind
+  read-write; that is one host and one superblock, so it breaks the
+  read-only intent, not the filesystem.
+- Two pods read-write on different hosts: refused for every filesystem
+  that is not built for it (K13); allowed for cluster filesystems (gfs2
+  lock_dlm) on memory that is coherent between hosts (K11).
+- A writer on one host and readers on others: refused for single-host
+  filesystems while the writer has it; the readers wait (A1, A2).
+- How the driver knows: the filesystem's class from its superblock (a
+  probe of known types, D), the device's sharing from the claim status
+  (shared, exclusive, and two new facts written by the pool controller:
+  singleHost and coherent, S and M). The node refuses a read-write mount
+  that the facts do not prove safe, so even a pool controller that does
+  not implement any of this cannot make the driver corrupt data.
+
+D. Knowing the filesystem
+-------------------------
+D1  Declared only (device.fsType required). - safety would rest on the
+    claim's word; nothing to check a wrong type against.
+D2  Detected only (a probe of the superblock magic of known types). - an
+    unknown filesystem can never be used.
+D3  Both (recommended): device.fsType is optional. The plugin reads the
+    superblock area of the block device (the first 128 KiB) and matches
+    the known types:
+      erofs     magic 0xE0F5E1E2 (le32) at 1024
+      ext4      magic 0xEF53 (le16) at 1080 (ext2/ext3 mount as ext4)
+      xfs       "XFSB" at 0
+      btrfs     "_BHRfS_M" at 65600
+      squashfs  "hsqs" at 0
+      gfs2      0x01161970 (be32) at 65536 with meta type 1 (superblock),
+                lock protocol at 65536 + 96
+    Exactly one match is the type; a declared fsType must equal it
+    ("device X: /dev/pmemK has an ext4 filesystem, not xfs"); several
+    matches need a declared fsType that is one of them; none: a declared
+    type is mounted as declared if the node allows it (T), else
+    "no filesystem that the plugin knows". A type the plugin cannot detect
+    has class single-host (F).
+
+F. Filesystem classes (the table of the plugin, shared by the node driver
+   and controllers through pkg/cxl/config)
+-------------------------------------------------------------------------
+  class         types                         read-write   several hosts
+  read-only     erofs, squashfs               never        read-only, any number
+  single-host   ext4, xfs, btrfs; gfs2 with   one host     read-only when no host writes;
+                lock_nolock; any type the                  read-write on one host only
+                plugin does not know
+  cluster       gfs2 with lock_dlm            any hosts    read-write on several hosts,
+                                                           coherent memory only (M)
+  DAX (access direct): erofs, ext4, xfs. The default access becomes
+  "direct when the filesystem has DAX, cached otherwise"; an explicit
+  direct on another type is refused.
+  Mount data the plugin passes: dax=always (direct) or dax=never (cached)
+  for the DAX types; nouuid for read-only xfs mounts (a direct and a
+  cached superblock may coexist, K2); spectator for read-only gfs2
+  mounts on a read-only device (K9); never lockproto, noload, norecovery
+  (K4, K9). No user mount options in this step.
+
+W. The opt-in to write
+----------------------
+W1  device.readOnly becomes tri-state (*bool in Go); mode fs: absent is
+    read-only, readOnly: false is the read-write opt-in (recommended).
+    Today's claims say readOnly: true and keep working (R8); a claim that
+    writes says so in one word. Other modes are unchanged (absent = false).
+W2  Tri-state, and mode fs needs readOnly either way (absent refused).
+    + nothing implicit. - one more line for every reader.
+W3  A new field (readWrite: true). - two fields for one fact.
+Recommendation W1. The lease CLI: --mode fs is read-only, --read-write
+opts in (--read-only stays accepted).
+
+S. Several hosts: who decides (the core)
+----------------------------------------
+S1  The scheduler only: a read-write fs claim of a shared device needs
+    the device exclusively (no shares request), as a block writer today.
+    + no controller change, race free, holds across clusters (exclusive
+    attachment). - several pods of one host share the device only by
+    sharing one ResourceClaim, and then all of them write (no read-only
+    pod next to a writer, R4 only half); a lease never joins a writer.
+S2  The node drivers coordinate (locks in API objects). - two nodes that
+    check each other deadlock or race; stale locks after a crash; no.
+S3  ReadWriteOnce through the pool controller (recommended, A1). A claim
+    that writes a single-host filesystem makes the attachment of its
+    node exclusive: the controller sets AttachRequest.Exclusive, which the
+    pool server enforces (C5): no other host gets the device while the
+    attachment is exclusive, also from another cluster; a claim of another
+    node gets AttachFailed reason Conflict and waits (the scheduler
+    allocates it again until the writer is gone). Claims of the writer's
+    node share the attachment, read-write or read-only. The controller
+    writes singleHost: true into the status data of the writing claim; the
+    node mounts read-write only with singleHost or exclusive in the data
+    (or a cluster filesystem, M), so a controller without S3 makes writes
+    fail, never corrupt.
+    + R4 complete with separate claims and leases; the mechanism and its
+    cross-cluster guarantee exist (C5); Kubernetes users know the
+    semantics. - the controller reads the device section (mode, readOnly,
+    fsType; P12 contract amended); a pod on another node bounces through
+    allocation and AttachFailed until the writer goes (the scheduler does
+    not know to prefer the writer's node: podAffinity or a node selector
+    for co-location); a small controller fix (C5 detail: an exclusive
+    upgrade that fails must fail only the claim that wanted it).
+    S1 stays valid as the stricter variant (an exclusive claim writes too).
+Order on the writer's node (H): the controller drops the exclusive flag
+only after the writing claim is deallocated, which follows its
+Unprepare, which flushes and remounts the superblock read-only (or
+unmounts it): no other host sees the device before the data is in it
+(K11).
+
+H. One host: superblock, block device, binds
+--------------------------------------------
+- Writable types (single-host, cluster) are mounted with the new mount
+  API (K7): mount attributes nosuid,nodev, the superblock read-write iff a
+  prepared claim of the device on this node writes. Read-only types keep
+  mount(2) with MS_RDONLY (today's erofs path, C1).
+- /dev/pmemK is read-only (BLKROSET, K6) while no prepared claim of the
+  device on the node writes (fs read-write, block read-write): every
+  read-only mount is then free of writes (K3, K4), a dirty filesystem is
+  refused with a clear text, and nobody can remount it read-write (K4).
+- Upgrade (the first writer joins readers of the node): BLKROSET 0, then
+  fspick + "rw" + reconfigure; readers keep their ro binds (K7 probe B4).
+  Downgrade (the last writer leaves, readers stay): syncfs, fspick + "ro"
+  + reconfigure (EBUSY while something writes: the Unprepare fails and
+  kubelet retries), then BLKROSET 1. The last claim: unmount, as today.
+- A superblock that is read-write is the only one of the device on the
+  node: claims of the other access are refused while it is
+  ("... is mounted read-write with access direct on this node: access
+  cached would mount it a second time"), and a writer is refused while
+  both accesses are mounted. Read-only, both accesses coexist (K2; xfs
+  with nouuid).
+- CDI bind of a claim: [bind, ro, nosuid, nodev] read-only, [bind, nosuid,
+  nodev] read-write. Lease binds: read-only by open_tree clone +
+  mount_setattr RDONLY|NOSUID|NODEV + move_mount (a plain bind of a
+  writable node mount would be writable after an upgrade), read-write by
+  a plain bind (C4 changes).
+- Environment: CXL_<KEY>_FSTYPE=<type> next to PATH, ACCESS, READONLY.
+
+M. Several hosts writing (cluster filesystems)
+----------------------------------------------
+M1  Never: read-write is single-host for every type. + simple. - R5 lost.
+M2  When everything agrees (recommended): the claim declares a cluster
+    fsType (gfs2), the device is coherent between hosts, and the probe
+    on each node finds that type in cluster mode (gfs2 lock_dlm). The pool
+    controller makes no exclusive attachment for such a claim when its
+    device is coherent; the node mounts read-write without singleHost
+    only for a verified cluster filesystem on a device whose status data
+    says coherent. Coherence is the pool's knowledge: a new attribute
+    coherent (bool) on every pool device and coherent: true in the status
+    data (the fake pool: true, qemu shares host memory, K11). A claim that
+    declares gfs2 for an ext4 device is refused at Prepare on every node
+    before anything is mounted. The cluster stack (corosync, dlm_controld)
+    is the node admin's; without it the mount fails (K9).
+
+T. Which types a node mounts (K12)
+----------------------------------
+A key of the driver configuration, fsTypes (list): the types that mode
+fs may mount on the node; default the known types (erofs, squashfs, ext4,
+xfs, btrfs, gfs2). An admin narrows it (erofs only, for untrusted
+writers) or adds a type the plugin does not know (class single-host).
+A type that /proc/filesystems marks nodev is never mounted (tmpfs, proc,
+overlay, nfs). fsType values: lower-case letters, digits, "_" and "-"
+(kernel filesystem names), checked in the MemoryConfig.
+
+L. Leases
+---------
+fs leases mount any type like claims: cxl-request request --mode fs
+[--fs-type TYPE] [--read-write] [--access ...] [--name ...]; the companion
+claim's MemoryConfig gets fsType and readOnly; the lease bind as in H;
+the companion is a claim like any other, so S3 applies to it unchanged.
+
+X. Local devices (R7)
+---------------------
+The local driver has no persistent memdevs, and volatile memory has no
+block device (C10): mode fs is pool-only until persistent local memdevs
+exist. Rules for then: a local memdev is single-host by construction
+(read-write safe across hosts, H on the node); a memdev in sharedDevices
+is reachable by other hosts that no controller coordinates: read-only
+only, or a cluster filesystem on coherent memory.
+
+Decisions for the user (recommended first)
+------------------------------------------
+Q1  S3 ReadWriteOnce through the pool controller, or S1 exclusive claims
+    only.
+Q2  Cluster filesystems: M2 with an e2e on gfs2 (a GFS2 kernel, corosync
+    and dlm on two VMs), M2 with unit tests only, or M1 (no multi-host
+    writes now).
+Q3  Local devices: rules only (X), or persistent local memdevs in this
+    step.
+Q4  Leases in this step (L), or claims first.

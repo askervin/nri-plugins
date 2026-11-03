@@ -461,7 +461,7 @@ func TestBrokerLeaseClaimSocketAndCDI(t *testing.T) {
 	}
 	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
 	wantMounts := []*specs.Mount{
-		{HostPath: filepath.Dir(e.sock()), ContainerPath: "/run/cxl", Type: "bind", Options: []string{"rbind", "rw"}},
+		{HostPath: filepath.Dir(e.sock()), ContainerPath: "/run/cxl", Type: "bind", Options: []string{"rbind", "ro"}},
 		{HostPath: fsDir, ContainerPath: "/run/cxl/fs", Type: "bind", Options: []string{"rbind", "ro", "rslave"}},
 		{HostPath: e.cli, ContainerPath: "/usr/local/bin/cxl-request", Type: "bind", Options: []string{"bind", "ro"}},
 	}

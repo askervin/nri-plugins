@@ -1,0 +1,99 @@
+plan-14: implementation plan
+============================
+Written 2026-11-02 (orchestrator). The contract is 04-contract.txt (04),
+the facts 01-findings.txt (01), the options 02-design.txt (02). Paths as
+in 04. Branch 5jg-cxl, working tree; nothing is committed by the streams
+(the user commits).
+
+Streams (one agent each; Opus, high effort, unless said otherwise)
+------------------------------------------------------------------
+API     CFG/**, A/**, DEV/**, C/** (04 sections 1, 2, 5 constants, 6 api
+        and CLI), and the mechanical call-site changes in D that the new
+        readOnly accessor needs so that the tree builds (nothing else in
+        D). Then CTRL: P/** (04 section 5: controller, attribute coherent,
+        DeviceData, per-want failure, README) with unit tests.
+DRV-POOL D: the shared persistent code (04 sections 3, 4: new files, e.g.
+        persistent.go, fsprobe.go), mount.go (new mount API, BLKROSET,
+        loop variants; the fake mounter of the tests), pool.go,
+        pool_persistent.go, pool_*.go, broker.go, lease_claims.go,
+        lease_store.go, lending.go, lend.go (04 section 6 broker part) and
+        their tests. Requests to DRV-LOCAL for driver.go wiring.
+DRV-LOCAL D: local.go, local_probe.go, node_state.go, node_slices.go,
+        driver.go, prepared_claims.go, new local_persistent.go, and their
+        tests (04 sections 7, 8); H/** (classes, values, schema, chart
+        README); N/deployment/samples/dra-driver-cxl/**. Uses DRV-POOL's
+        shared code, never a copy.
+E2E     E/** : S2/test20-dra-fs-read-write, S2/test21-dra-local-persistent,
+        the updates of 04 section 11 (test10, test12, test14, test17,
+        test16, test90 model, dra.source.sh, pool.source.sh, llm.source.sh
+        as needed), DOC/e2e.md. Desk work only (bash -n, shellcheck, go
+        test of the test90 model); never runs run_tests.sh.
+DOC     DOC/usage.md, pool.md, local.md, leases.md, index.md,
+        N/docs/deployment/helm/dra-driver-cxl.md (04 section 10). Texts
+        from 04 first, then rechecked against the code when API, DRV-POOL
+        and DRV-LOCAL are done.
+RUN     (Sonnet, medium effort) runs the e2e tests on the VMs, one at a
+        time, watches them finish, and reports verdicts with the failing
+        lines and logs; never edits code or tests.
+The orchestrator: relays Requests, builds the image when the driver
+streams are done (or tells a stream to), reviews, keeps 00-README and
+09-status.
+
+Order
+-----
+1. API, E2E (desk), DOC start together. DRV-POOL and DRV-LOCAL start
+   together with them in a study phase: read, design the internal
+   factoring (the shared persistent code, its interface, what stays per
+   driver), write it into the status file, edit no Go file; then stop.
+2. API done (CFG/A/DEV/C build and test; D builds) -> DRV-POOL and
+   DRV-LOCAL implement (DRV-LOCAL first the parts that need no shared
+   code: publication, classes, configuration keys, allocator state;
+   then Prepare/Unprepare on DRV-POOL's shared code as soon as its
+   status file says the interface is in the tree). API goes on with CTRL.
+3. Driver streams and CTRL done -> image (make PLUGINS=nri-dra-driver-cxl
+   SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images) -> RUN: test20,
+   test21, then the regression list (below). Failures go to the owning
+   stream (the orchestrator decides which), fixes, new image, rerun.
+4. Reviews: an independent reviewer of the driver diff and of the tests;
+   accepted findings fixed by the owners; final runs. DOC rechecks.
+
+Regression list of RUN (one at a time, from N/test/e2e):
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test20-dra-fs-read-write
+  ./run_tests.sh memory.test-suite/dra-driver-cxl/n4-cxl-shared-2/test21-dra-local-persistent
+  then test16, test12, test10, test13, test14, test15, test17, test18,
+  test11, test19 (n4-cxl-shared-2/testNN-*), and test90 with
+  MBT_DURATION=30m (a shortened reliability run: the persistent and fs
+  paths that it covers must still pass).
+Done: test20 and test21 PASS twice in a row on the final image, every
+test of the regression list PASS once on it.
+
+Rules for every stream
+----------------------
+- Read first: N/.github/skills/coding-style/SKILL.md,
+  build-nri-policy-images/SKILL.md, run-e2e-tests/SKILL.md, then 00, 01,
+  02, 03, 04 of plan-14, then what your stream section names. Earlier
+  plans the contract rests on: P7 22-erofs-design.txt (sections 4, 5, 10),
+  P7 32-dynamic-bind-mount-design.txt, P12 04-contract.txt (sections 1-3,
+  12, 14).
+- Edit only the files your stream owns. A change you need elsewhere is a
+  Request in your status file 05-status-<STREAM>.txt (the orchestrator
+  relays it). Texts, names and paths exactly as in 04; a deviation is a
+  Request with the reason, and you continue with the contract meanwhile
+  unless it cannot work.
+- Keep the status file current as you go (a section per step: what was
+  done, verification commands and their results, deviations, open
+  issues, Requests), so that an interrupted stream can be continued. End
+  it with "<STREAM> done" when the done-criteria of your section hold.
+- Nothing is committed (no git commit, stash, checkout, reset, rebase,
+  restore). No new host dependencies (no installs on the host); builds
+  for VMs happen inside VMs.
+- Only RUN uses the VMs (n4-cxl-shared-0/1/2, one cluster of three nodes,
+  VM2 the control plane); never two run_tests.sh at a time; never
+  device_del a CXL device that a guest uses; never umount -l a DAX
+  filesystem; never force-delete a pod that holds pool devices. Driver
+  streams and E2E may read the VMs (ssh -F N/test/e2e/<vm dir>/.ssh-config
+  vagrant@node) for facts, without changing them, and only when RUN is
+  not running.
+- Plain ASCII; comments say what, not how; no sleeps in tests
+  (wait-until).
+- Verification of 04 section 12 on your files before "done".

@@ -1,0 +1,571 @@
+plan-14: contract (normative)
+============================
+Written 2026-11-02 (orchestrator) from 01-findings.txt and 02-design.txt
+with the user's decisions (00-README "Decisions"). Every stream builds
+exactly these names, texts, paths and rules; a stream that needs a change
+writes a Request in its status file (05-status-<S>.txt) and goes on with
+the rest. Paths: N = ~/github.com/containers/nri-plugins,
+D = N/cmd/plugins/dra-driver-cxl, CFG = N/pkg/cxl/config, A = N/pkg/cxl/api,
+DEV = N/pkg/cxl/device, C = N/cmd/cxl-request,
+P = N/scripts/testing/fake-cxl-pool, E = N/test/e2e/memory.test-suite/
+dra-driver-cxl, S2 = E/n4-cxl-shared-2, DOC = N/docs/memory/cxl,
+H = N/deployment/helm/dra-driver-cxl.
+
+0. Vocabulary
+-------------
+- persistent device: a pool device with persistent: true, or (new) a
+  local memdev of persistent memory (section 7). Modes block and fs.
+- writer: a prepared claim (static or companion) of a persistent device
+  with mode fs and read-write, or mode block and read-write.
+- the node mount of (device, access): <driver data dir>/mounts/<serial hex
+  without 0x>-<access>; driver data dir /var/lib/kubelet/plugins/
+  cxl-pool.nri.io (pool) or /var/lib/kubelet/plugins/cxl.nri.io (local).
+- class of a filesystem type (section 2): read-only, single-host, cluster.
+
+1. MemoryConfig device section (CFG, stream API)
+-----------------------------------------------
+Device gains:
+  fsType    string   mode fs only; "" = detect (section 3)
+and readOnly becomes tri-state (Go *bool, json "readOnly,omitempty"):
+  - mode fs: absent = read-only; readOnly: false = read-write (the opt-in);
+    readOnly: true = read-only.
+  - every other mode: absent = false, as today.
+  A merge that sets readOnly to null removes it (back to the default of
+  the mode). Callers read it through one accessor of CFG (name of the API
+  stream's choice, listed in its status), never by dereferencing.
+access: "" is "direct when the filesystem has DAX (erofs, ext4, xfs),
+cached otherwise", decided at Prepare after the filesystem is known; an
+explicit access stays as given (P7 when direct is impossible).
+Texts of the section alone (CFG, "MemoryConfig: " prefix as today; in
+this order among today's texts: after "device.path needs mode fs"):
+  C1  MemoryConfig: device.fsType needs mode fs
+  C2  MemoryConfig: device.fsType: invalid filesystem type "X" (lower-case letters, digits, "_" and "-")
+      (valid: ^[a-z0-9][a-z0-9_-]{0,31}$)
+Removed: "MemoryConfig: device.readOnly: mode fs is read-only: set
+readOnly: true (write the device with mode block)".
+Kept unchanged: every other text of usage.md "Configuration errors".
+
+Facts of a persistent device (CFG type, replacing PoolFacts; fields):
+  Persistent  the device is persistent memory
+  Shared      other hosts may use the device at the same time (a shared
+              pool device; a local memdev listed in sharedDevices)
+  Exclusive   no other claim has the device while this one is allocated
+              (the result consumed all shares; a pool device that is not
+              shared has one claim at most)
+  SingleHost  no other host has the device while this claim is allocated
+              (status data singleHost or exclusive of a pool device; a pool
+              device that is not shared; a local memdev that is not in
+              sharedDevices)
+  Coherent    other hosts' writes are visible without cache maintenance
+              (status data coherent of a pool device; memdevSettings
+              coherent of a local memdev)
+  Local       the device is a local memdev (for the texts)
+Rules of the device section with the facts (CFG; checked before the
+device is touched, in this order after today's mode texts):
+  F1  mode block, read-write, not Exclusive:
+      pool:  MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)   (unchanged text)
+      local: MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)
+  F2  mode block, read-write, Exclusive, not SingleHost (a local memdev of
+      sharedDevices):
+      MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block
+  F3  mode fs, read-write, not SingleHost, unless fsType is a cluster type
+      (section 2) and Coherent:
+      MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory
+      (fsType gfs2 on a coherent device passes; the probe decides, P8)
+Unchanged: block and fs need a persistent device, a persistent device
+needs mode block or fs, the other texts.
+Controller helper (CFG): ExclusiveHost(resolved MemoryConfig, coherent
+bool) bool: mode fs, read-write, and not (fsType is a cluster type and
+coherent). Pool controllers call it per result (section 5).
+
+2. Filesystem types (CFG table, stream API; read by D and P)
+------------------------------------------------------------
+  type      class        DAX   read-only mount data   read-write data
+  erofs     read-only    yes   dax=always|dax=never   (never)
+  squashfs  read-only    no    -                      (never)
+  ext4      single-host  yes   dax=always|dax=never   dax=always|dax=never
+  xfs       single-host  yes   dax=...,nouuid         dax=...
+  btrfs     single-host  no    -                      -
+  gfs2      cluster *    no    spectator              -
+  any other single-host  no    -                      -
+  * gfs2 is a cluster type; a gfs2 filesystem with lock protocol
+    lock_nolock in its superblock is single-host (section 3).
+  dax=always for access direct, dax=never for access cached, only for the
+  DAX types. The plugin never passes lockproto, locktable, noload,
+  norecovery or user options.
+Exported by CFG: KnownFsTypes (in this order: erofs, squashfs, ext4, xfs,
+btrfs, gfs2), and per type: read-only, DAX, cluster (names of the API
+stream's choice).
+
+3. Detecting the filesystem (D, stream DRV-POOL, used by both drivers)
+--------------------------------------------------------------------
+The plugin reads the first 128 KiB of the block device (O_RDONLY) and
+matches:
+  erofs     le32 0xE0F5E1E2 at 1024
+  ext4      le16 0xEF53 at 1080
+  xfs       "XFSB" at 0
+  btrfs     "_BHRfS_M" at 65600
+  squashfs  "hsqs" at 0
+  gfs2      be32 0x01161970 at 65536 and be32 1 (meta type superblock) at
+            65540; lock protocol: the NUL-terminated string at 65536+96
+ext4 needs recovery: le32 s_feature_incompat at 1024+0x60 has bit 0x4.
+Result, with D = the declared fsType:
+  one match T, D "" or T            -> T
+  one match T, D another known type -> P3
+  one match T, D an unknown type    -> P3
+  several matches, D among them     -> D
+  several matches, D "" or not among them -> P2
+  no match, D ""                    -> P1
+  no match, D an unknown type       -> D (mounted as declared)
+  no match, D a known type          -> P3b
+When the node mount of the device and access exists already, its
+filesystem type (mountinfo) is the detected type.
+Then, before anything is mounted:
+  P4 the type is not in the node's fsTypes (section 8)
+  P5 /proc/filesystems lists the type as "nodev"
+  P6 read-write and the type is read-only class
+  P7 explicit access direct and the type has no DAX
+  P8 read-write, not SingleHost, and the instance is not cluster (a type
+     that is not gfs2, gfs2 with lock_nolock) or the device is not
+     Coherent
+  P9 the access and read-write rules of one node (section 4)
+  P10 read-only (no writer of the device on the node) and ext4 needs
+     recovery; also an EROFS of a read-only mount of any type
+Texts, each prefixed "device 0x<serial>: ":
+  P1  <dev> has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType
+  P2  <dev> has signatures of several filesystems (<t1>, <t2>): set device.fsType
+  P3  <dev> has a filesystem of type <found>, not <declared>
+  P3b <dev> has no filesystem of type <declared> (no signature of a type that the plugin knows)
+  P4  filesystem type <t> is not allowed on this node (fsTypes: <t1>, <t2>, ...)
+  P5  filesystem type <t> does not mount a block device
+  P6  <t> is a read-only filesystem: set readOnly: true
+  P7  <t> has no DAX: use access cached
+  P8  read-write on several hosts needs a cluster filesystem on coherent memory: <reason>
+      reasons: "<t> is a single-host filesystem", "gfs2 with lock_nolock is a single-host filesystem", "the device is not coherent between hosts"
+  P9  see section 4
+  P10 <t> on <dev> needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does
+  P11 <dev> has no <t> filesystem: <mount error>[: <messages of the filesystem context>]   (was "... has no erofs filesystem: ...")
+  P12 <t> on <dev> was mounted without DAX   (was "erofs on ... was mounted without DAX"; also for ext4 and xfs)
+The texts of today's erofs path that name erofs become these with <t>
+erofs (test16 and docs follow).
+
+4. One node: superblock, block device, binds (D, stream DRV-POOL;
+   the same code for both drivers)
+------------------------------------------------------------------
+Rules per (device, node), over the prepared claims of the device on the
+node (static and companion claims of the driver that owns the device):
+- writer present: the superblock of the node mount is read-write and is
+  the only mount of the device on the node: one access only.
+  P9a (a claim with the other access while a writer exists):
+      device 0x<serial>: it is mounted read-write with access <a> on this node: access <b> would mount it a second time
+  P9b (a writer while both accesses are mounted):
+      device 0x<serial>: it is mounted with access direct and cached on this node: a read-write claim needs one access only
+  P9c (mode block read-write next to an fs claim of the node, or an fs
+      claim next to it): refused by F1 already (block writers are
+      exclusive).
+- no writer: superblock read-only; both accesses may coexist (xfs with
+  nouuid, section 2).
+- /dev/pmemK is read-only (ioctl BLKROSET 1) whenever the device has no
+  writer on the node, before any read-only mount is made; read-write
+  (BLKROSET 0) before a writer's mount, upgrade or block device. A cached
+  mount's loop device follows the same rule with BLKROSET. Read-only
+  types (erofs, squashfs) keep today's read-only loop device; writable
+  types use a loop device whose backing file is opened O_RDWR, with
+  LO_FLAGS_DIRECT_IO|LO_FLAGS_AUTOCLEAR, made read-only by BLKROSET.
+- Mounts of writable types use the new mount API: fsopen(type), source,
+  the superblock flag ro unless there is a writer, the data of section 2,
+  FSCONFIG_CMD_CREATE, fsmount with MOUNT_ATTR_NOSUID|MOUNT_ATTR_NODEV (no
+  MOUNT_ATTR_RDONLY), move_mount to the node mount path. Read-only types
+  have MOUNT_ATTR_RDONLY too (today's flags ro,nosuid,nodev). A mount
+  error carries the messages that the filesystem context logged (read of
+  the fsopen fd) after the errno.
+- After every mount: DAX types with access direct must show dax=always in
+  the super options, else unmount and P12 (today's T14 check).
+- Upgrade (a writer is prepared while read-only claims of the same access
+  have the superblock): BLKROSET 0 on the block device (and loop), then
+  fspick(node mount) + FSCONFIG_SET_FLAG "rw" + FSCONFIG_CMD_RECONFIGURE.
+  Error: device 0x<serial>: remounting <mnt> read-write: <error>
+  (the Prepare fails, BLKROSET 1 again).
+- Downgrade (Unprepare of the last writer while read-only claims stay):
+  syncfs, fspick + "ro" + reconfigure, then BLKROSET 1. EBUSY (a file open
+  for writing) or any error fails the Unprepare, kubelet retries:
+  device 0x<serial>: remounting <mnt> read-only: <error>
+- Last claim of the access: unmount as today (no detach; EBUSY fails the
+  Unprepare); last claim of the device: holder wait and release as today
+  (pool: memctl.Release with the memdev disabled; local: section 7).
+- CDI mount of a claim: Options [bind, ro, nosuid, nodev] read-only,
+  [bind, nosuid, nodev] read-write; HostPath the node mount; no device
+  node.
+- Lease binds (section 6): read-only: open_tree(node mount,
+  OPEN_TREE_CLONE) + mount_setattr(MOUNT_ATTR_RDONLY|NOSUID|NODEV) +
+  move_mount(target); read-write: a plain MS_BIND of the node mount.
+  After the bind its mountinfo must show the type, the source of the node
+  mount and the flags ro,nosuid,nodev (read-only) or rw,nosuid,nodev
+  (read-write); else unmount and today's E4 text with "read-only" or
+  "read-write" in it:
+  device 0x<serial>: the bind of <node mount> at <target> is not a read-only nosuid nodev <t> mount
+  device 0x<serial>: the bind of <node mount> at <target> is not a read-write nosuid nodev <t> mount
+- Environment of a claim or lease of mode fs: MODE=fs, PATH, ACCESS (the
+  effective one), READONLY=0|1, FSTYPE=<type>, SERIAL, SHARED, SIZE.
+  Mode block unchanged (no FSTYPE).
+- State: the prepared device records FsType and ReadOnly (effective) next
+  to today's fields; the pool state file keeps its field names. The
+  superblock state and the block device's read-only flag are derived
+  from the prepared claims, never stored.
+- Restart: today's restore, plus: a missing node mount is mounted with the
+  derived superblock state; an existing one whose superblock state differs
+  from the derived one is upgraded or downgraded (a failure is logged,
+  the next Prepare or Unprepare of the device tries again); the block
+  devices get the derived read-only flag.
+- Logs (V(0) Infof, tests grep them): "<driver>: device 0x<serial>:
+  mounted <source> at <mnt> (<t>, <ro|rw>, <data>)", "... remounted
+  <mnt> read-write", "... remounted <mnt> read-only", "... <dev>
+  read-only" / "... <dev> read-write" (BLKROSET).
+One implementation for both drivers: the code of this section and of
+section 3 lives in files shared by the pool and the local driver (no
+copy); D/pool_persistent.go keeps what is the pool driver's own.
+
+5. Pool: status data, attribute, controller (stream API for P)
+--------------------------------------------------------------
+- Attribute coherent (bool) on every pool device of the reference
+  controller: true (fake-cxl-pool devices are qemu memory backends shared
+  by host memory, 01 K11). DEV gains AttrCoherent. Other controllers:
+  absent is false (docs pool.md).
+- Status data (the controller writes, the node reads): singleHost: true
+  when the result's attachment is exclusive to the node (written for
+  exclusive results too); coherent: true for a coherent device. The node
+  reads them into the facts (section 1); missing is false.
+- fake-cxl-pool-controller: want.exclusive = exclusiveResult(r) ||
+  config.ExclusiveHost(resolved, device coherent). An attachment is
+  exclusive when any of its wants is (today). DeviceData gains SingleHost
+  (= want.exclusive when the attachment is exclusive) and Coherent.
+  When making an existing attachment exclusive fails (Conflict), only
+  the wants that are exclusive get AttachFailed; the other wants of the
+  key keep or get Attached from the existing attachment. A new
+  attachment that fails fails every want of its key (today).
+  Log: "attach <device> to <host> for <want>: exclusive for a read-write
+  <fsType or "filesystem"> claim" (V(0)) when ExclusiveHost decides it.
+- The pool server needs no change (exclusive attachments exist).
+- P/README.md: coherent and singleHost.
+
+6. Leases (A, C, D broker, stream API for A/C, DRV-POOL for the broker)
+---------------------------------------------------------------------
+- api.Request gains FsType (json "fsType", omitempty) and ReadWrite (json
+  "readWrite", omitempty); api.Response and api.Memory gain FsType (json
+  "fsType", omitempty); Env adds FSTYPE for mode fs.
+- Validate (texts in this order; the CLI exits 2 before it connects):
+  V1  invalid source "X" (local or pool)                      unchanged
+  V2  invalid mode "X" (numa, dax, block or fs)               unchanged
+  V3  invalid access "X" (direct or cached)                   unchanged
+  V4  shared memory is never onlined as RAM: use mode dax     unchanged
+  V5  access needs mode fs                                    unchanged
+  V6  name needs mode fs                                      unchanged
+  V7  invalid name "X" (...)                                  unchanged
+  V8  removed ("mode fs needs readOnly"): mode fs is read-only unless readWrite
+  V8a fsType needs mode fs
+  V8b invalid fsType "X" (lower-case letters, digits, "_" and "-")
+  V8c readWrite needs mode fs
+  V8d readOnly and readWrite exclude each other
+  V9  readOnly needs mode dax, block or fs                    unchanged
+  V10 removed ("mode fs needs source pool"): local persistent memdevs
+      have mode fs; "mode block needs source pool" likewise removed if it
+      exists
+  V11, V12 unchanged
+- cxl-request request: --fs-type TYPE and --read-write (synopsis, help,
+  values()); help: "--read-write  fs: mount the filesystem read-write
+  (default read-only)", "--fs-type  fs: the expected filesystem type
+  (default: detected)".
+- Broker: an fs lease is read-only unless ReadWrite; companion
+  MemoryConfig device {mode: fs, readOnly: <true|false explicitly>,
+  access, fsType}; companion class cxl-pool-persistent (source pool) or
+  cxl-local-persistent (source local, section 7); source any tries local
+  first as today. B3 "mode fs needs a persistent device" and B4 "a
+  persistent device needs mode fs" (or block) apply to local devices too
+  (attribute persistent of cxl.nri.io devices). The lease records FsType
+  and ReadWrite; the response has fsType, readOnly, path. "fd" on an fs
+  lease: unchanged (exit 3).
+- The companion of a read-write lease is a claim like any other: section
+  5 applies (an exclusive attachment, or a Conflict while another host has
+  the device; then the lease stays Creating until its --wait ends).
+
+7. Local persistent memdevs (D local driver, stream DRV-LOCAL)
+-------------------------------------------------------------
+Publication: a memdev with persistent capacity (PmemSize > 0) and no RAM
+capacity (RamSize == 0), enabled, not a pool device, not in
+ignoreDevices, without regions that the plugin did not create, is
+published as
+  - name: memdev-<serial hex>
+    attributes: type memdev, source local, serial, shared (true iff in
+      sharedDevices), persistent: true, size (PmemSize bytes),
+      nodeAffinity (when known)
+    capacity: shares {value: 1M} (no requestPolicy)
+    allowMultipleAllocations: true
+  (no memoryBlockSize, no nodeAllocatableResources). A memdev with RAM and
+  persistent capacity is published as today (its RAM) and its persistent
+  capacity is not used (V(3) log "persistent capacity of a memdev with RAM
+  capacity is not used"). Every other local memdev gains the attribute
+  persistent: false.
+Classes (H/templates/deviceclasses.yaml, values, schema, chart README):
+  cxl-local and cxl-local-shared add
+    && device.attributes["cxl.nri.io"].persistent == false
+  new cxl-local-persistent:
+    device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].persistent == true
+  DEV gains ClassLocalPersistent = "cxl-local-persistent".
+Facts (section 1): Local true, Persistent true, Shared = in sharedDevices,
+Exclusive = consumed all shares, SingleHost = not in sharedDevices,
+Coherent = memdevSettings coherent.
+Prepare (modes block and fs only; the texts of sections 1 and 3 with the
+local prefixes of today, "claim NS/NAME: request R: "):
+  a pmem region on the memdev under a root decoder with pmem capacity
+  (memctl.CreatePmemRegionNoted), recorded in localDevices.json like the
+  allocator's other regions (created at the first claim of the device on
+  the node, the decoder order rules and hollow-region handling of local
+  regions apply); the fsdax namespace (map mem) of its nvdimm region,
+  created only by a writable block claim (today's pool rule); then
+  sections 3 and 4 with node mounts under /var/lib/kubelet/plugins/
+  cxl.nri.io/mounts. The CDI device claim-<uid>-<n> (kind nri.io/cxl) has
+  the block device node (permissions r when read-only) or the bind mount,
+  the env of section 4 and the marker.
+Unprepare: section 4; the last claim of the device releases its region
+(holder wait as for pool devices; the memdev stays enabled: a local
+memdev is never disabled).
+A shared local memdev that is persistent is never zeroed (its data is the
+point); the volatile shared-device rules do not apply to it.
+Restart and reboot: as for local regions (localDevices.json) plus section
+4's restore.
+Leases: cxl-request request --source local --serial S --mode fs|block
+... (companion class cxl-local-persistent), lease binds as section 4.
+
+8. Driver configuration (D driver.go, stream DRV-LOCAL)
+------------------------------------------------------
+  fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]   # the default
+    the filesystem types that mode fs mounts on the node, for both
+    drivers; a list replaces the default; names as C2; unknown types
+    allowed (class single-host); refused at start: invalid names
+    ("fsTypes: invalid filesystem type "X" (...)").
+  memdevSettings[].coherent: bool (default false): the memory of the
+    memdev is coherent between the hosts that share it (sharedDevices).
+docs usage.md "Configuration file" lists both.
+
+9. Fake pool for local persistent devices in the e2e (stream E2E)
+----------------------------------------------------------------
+No code change: a second fake-cxl-pool-server (pool-server-start --name
+local-pmem --hosts VM2 --control hmp --slots of one host bridge that the
+default server is not cabled to; the default server is started with the
+other slots; the window of that host bridge must allow persistent memory,
+cap_pmem of its root decoder) without a pool controller holds a
+persistent shared:false
+device with a serial that no pool server publishes and no test has used
+(0xc100f5e1 if free); the test attaches it to VM2 with that server's
+client. The local driver sees a hot-added memdev with persistent
+capacity and publishes it (section 7). If the hold-back rules of
+poolSerials (docs local.md) delay it, the test waits for the device in
+the ResourceSlice (up to 6 minutes) and logs the hold-back line.
+
+10. Documentation (stream DOC)
+------------------------------
+DOC/usage.md: MemoryConfig fields table (fsType; readOnly tri-state for
+fs; access default), device rows per device (local persistent memdevs),
+the "Persistent memory" section rewritten for any type, read-write, the
+rules of one node (section 4) and several nodes (ReadWriteOnce, cluster
+filesystems, coherence), the trust note of 01 K12, every text of sections
+1 and 3 and 4 in "Configuration errors" / "Persistent memory", env FSTYPE,
+the configuration keys of section 8, files on the node (mounts of
+cxl.nri.io). DOC/pool.md: attribute coherent, status data singleHost and
+coherent, "What the pool controller writes", the ReadWriteOnce rule for
+implementers of controllers in "Configuration of a pool controller"
+(ExclusiveHost, per-want failure), class table. DOC/local.md: persistent
+local memdevs (publication, class, modes, region life cycle, sharedDevices
+rules, limitations). DOC/leases.md: fs leases of any type, --read-write,
+--fs-type, local sources, texts V8a-V8d, removed V8/V10. DOC/index.md:
+classes, vocabulary. N/docs/deployment/helm/dra-driver-cxl.md: the new
+class. deployment/samples/dra-driver-cxl: pool-persistent-fs-rw.yaml (a
+read-write and a read-only pod of one ext4 on one node: two claims with
+shares "1", the reader with podAffinity to the writer) and
+local-persistent-fs.yaml (a writer and a reader of a local persistent
+memdev).
+
+11. e2e (stream E2E desk, stream RUN runs)
+------------------------------------------
+New S2/test20-dra-fs-read-write (pool, ext4 and others). Device fs0:
+persistent, shared, 512Mi, serial from the pool's scheme. Images built in
+VM1 (mkfs.ext4 -F -b 4096 -d DIR IMG, mkfs.xfs, mkfs.btrfs, mksquashfs,
+mkfs.erofs as test16; tools installed by dnf if missing), written into fs0
+by a block writer claim (exclusive) with dd, as test16 does. Phases:
+  A preconditions; slice: fs0 persistent true, coherent true; class
+    cxl-pool-persistent.
+  B ext4 image written; writer gone, device free.
+  C ReadWriteOnce on VM2: rw-a and rw-b (fs, readOnly: false, shares 1,
+    no fsType, access default) and ro-c (fs, readOnly absent) on VM2: rw-a
+    writes a file, rw-b reads it and writes another, ro-c reads both and
+    its write fails "Read-only file system"; env FSTYPE=ext4,
+    READONLY=0/0/1, ACCESS=direct; on VM2 one node mount of fs0, type
+    ext4, superblock rw, dax=always; /sys/block/pmemN/ro is 0; the claim
+    status data of rw-a and rw-b has singleHost true; the pool server's
+    attachment of fs0 on VM2 is exclusive; the controller log has the
+    "exclusive for a read-write" line; CDI mounts: rw-a/rw-b
+    [bind, nosuid, nodev], ro-c [bind, ro, nosuid, nodev].
+  D other hosts while the writers run: ro-d (VM1, read-only) and rw-e
+    (VM1, read-write) stay Pending; their claims get AttachFailed reason
+    Conflict (message names the exclusive attachment); fs0 has no
+    attachment to VM1; nothing mounted on VM1.
+  E downgrade: delete rw-a and rw-b; VM2's node mount is read-only
+    (superblock ro), /sys/block/pmemN/ro is 1, the driver log has
+    "remounted ... read-only"; the ext4 on VM2's /dev/pmemN is clean
+    (dumpe2fs -h: no needs_recovery); ro-d starts on VM1 and reads both
+    files (written on VM2); VM1's /dev/pmemM is read-only; rw-e stays
+    Pending (VM1 and VM2 now have fs0): delete rw-e.
+  F upgrade refused, then done: rw-f (VM2, read-write) stays Pending
+    (Conflict: VM1 has fs0); delete ro-d; rw-f starts on VM2; VM2's
+    superblock is rw again ("remounted ... read-write"), ro-c is still
+    read-only and reads rw-f's new file.
+  G one node, two accesses: a claim of fs0 on VM2 with access cached while
+    rw-f runs: its pod's events have P9a; delete it.
+  H refusals (each a pod whose events have the text; no mount, nothing
+    left): fsType xfs on the ext4 (P3); after a dirty ext4 image (the
+    image with debugfs "feature needs_recovery") is written by a block
+    writer: a read-only claim (P10); an erofs image: a read-write claim
+    (P6); a btrfs image: access direct (P7), then btrfs read-write with
+    access cached on VM2 works (write, read back, FSTYPE=btrfs); fsType
+    f2fs declared on the btrfs (P3).
+  I xfs: an xfs image; ro-x1 direct and ro-x2 cached on VM2 and ro-x3 on
+    VM1: all read the file; VM2 has two node mounts (direct, cached;
+    nouuid); then all deleted; one rw-x on VM1 writes.
+  J leases on the ext4 (rewrite the ext4 image after H): a lease pod on
+    VM2 next to rw-g (VM2 read-write claim): "cxl-request request --serial
+    S --shared --mode fs --exec ..." (read-only) reads rw-g's file, write
+    fails; "--read-write" lease on VM2 writes a file that rw-g sees; a
+    read-write lease on VM1 does not get Ready (cxl-request exits with the
+    lease timeout and the companion's Conflict); release; everything
+    gone.
+  K stop: no mounts under the mounts directories, no loop over pmem, no
+    regions on either node, fs0 free, its files removed (EXIT trap as
+    test16).
+New S2/test21-dra-local-persistent (section 9): A the second server, the
+  device attached to VM2, published as memdev-<serial> with persistent
+  true, shared false, capacity shares 1M; class cxl-local-persistent
+  matches it, cxl-local does not. B a block writer (cxl-local-persistent,
+  no shares) writes an ext4 image; a block writer with shares "1" is
+  refused (F1 local text). C fs rw (shares 1) and fs ro (shares 1) pods on
+  VM2 share data; node mount under cxl.nri.io/mounts; env; superblock rw;
+  ro write refused. D an fs lease from the device (--source local
+  --mode fs) in a lease pod on VM2 reads the data. E Unprepare of all: the
+  region is released, the memdev stays enabled; the device is detached by
+  the second server; nothing left.
+Updates: test10 (exact attribute list: coherent), test12 (V8/V10 texts:
+the refusal "mode fs needs readOnly" is gone; add V8a-V8d), test14 and
+test17 (local attribute lists: persistent false, if they assert exact
+lists), test16 (texts and env FSTYPE if asserted), test90 model
+(oracle envWant: FSTYPE=erofs for its fs kinds; any exact attribute
+list), dra.source.sh DRA_CLASSES (+cxl-local-persistent), e2e.md rows.
+
+12. Verification (every stream, on its files)
+---------------------------------------------
+gofmt, go vet, go test -race of pkg/cxl/..., cmd/cxl-request/...,
+cmd/plugins/dra-driver-cxl/..., P/...; golangci-lint of those packages
+with no new findings; helm template renders; bash -n and shellcheck
+(exclusions SC2154, SC2034, SC1090, SC2148, SC2016) of the e2e files;
+plain ASCII; comments say what, not how (N/.github/skills/coding-style).
+
+13. Amendments (orchestrator, during the implementation)
+--------------------------------------------------------
+A1 (DRV-LOCAL R1) device.Memdev gains Persistent (bool); the local driver
+   sets it, DRV-LOCAL adds the field once stream API is done with DEV.
+A2 (DRV-LOCAL R3) Leases: a companion of source local for a persistent
+   device works without the pool driver (class cxl-local-persistent);
+   source any tries local first. --shared (Request.Shared) means one share
+   ("shares: 1") on every device with a shares capacity, also a persistent
+   local memdev whose attribute shared is false; without it the companion
+   has the device exclusively (no shares request), as today.
+A3 (DRV-LOCAL R4) The sweep of stale lease binds under
+   <cxl.nri.io data dir>/lease-fs runs once over the prepared claims of
+   both drivers (a bind is stale only if no prepared claim of either
+   driver lists it), wired in driver.go after both drivers are loaded.
+A4 (DRV-LOCAL R5) newPoolDriver gets fsTypes before its restore runs.
+A5 (DRV-LOCAL Q1-Q3) A change of sharedDevices for a persistent memdev in
+   use takes effect when it is idle (as for shared local devices; it stays
+   unpublished meanwhile); read-write fs claims with shares "1" on a local
+   persistent memdev that is not in sharedDevices are intended (single
+   host by construction); the region scan does not publish pmem regions as
+   region devices.
+A6 (DRV-LOCAL R7, for DOC) usableSize and verifyAddressing do not apply to
+   persistent capacity; the region of a persistent local memdev goes with
+   its last claim on the node.
+A7 (probe 2, K14) An upgrade in place (section 4) is done for ext4 and xfs
+   only. For every other writable type (btrfs, gfs2 whose read-only
+   mounts are spectator mounts, unknown types) a writer is refused while
+   read-only claims of the device have it mounted on the node:
+   P9e device 0x<serial>: <t> is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone
+   (the Prepare fails, kubelet retries). CFG exports which types can be
+   upgraded (stream API, or DRV-POOL in the shared code if API is done).
+A8 (probe 2, K15) Upgrade order: BLKROSET 0 on /dev/pmemK, then on the
+   loop device, then reconfigure rw. Downgrade order: syncfs, reconfigure
+   ro, BLKROSET 1 on the loop device, then on /dev/pmemK.
+A9 (DRV-POOL A1, A2) New texts:
+   P9d device 0x<serial>: it is mounted with access <a> only on this node: a read-write claim with access <b> would mount it a second time
+   P9c device 0x<serial>: mode block read-write needs the device alone on this node (defensive; F1 normally refuses it first)
+A10 (DRV-POOL A3) Read-only lease binds of read-only types (erofs,
+   squashfs) stay a plain MS_BIND of the read-only node mount (today's
+   path, covered by test90); writable types use open_tree clone +
+   mount_setattr as section 4 says.
+A11 (DRV-POOL A4, replaces A3) Each driver sweeps the stale binds of its
+   own node mounts at its start; one sweep over the wanted binds of both
+   drivers runs from driver.go after both are loaded (DRV-LOCAL wires it).
+A12 (DRV-POOL A8) CXL_<KEY>_SHARED of a lease or claim of a local
+   persistent memdev is the device's attribute shared, whatever the
+   shares request.
+A13 (CTRL, accepted) ExclusiveHost is applied to shared pool devices only
+   (a device that is not shared is attached to one host anyway). Status
+   data exclusive keeps meaning "all shares"; singleHost is written for the
+   exclusive wants on an exclusive attachment (all-shares claims
+   included), not for the readers of the writer's node. The log line
+   "attach <device> to <host> for <want>: exclusive for a read-write
+   <fsType or "filesystem"> claim" is written only when an attach request
+   is sent: a second writer that joins an attachment that is exclusive
+   already has no line (the e2e greps the first writer's line).
+A14 (E2E R1, CTRL) A new attachment of a key that is attempted as
+   exclusive and refused with Conflict is attempted again non-exclusively
+   for the non-exclusive wants of the key in the same reconcile: they are
+   Attached if it succeeds, and only the exclusive wants get AttachFailed.
+A15 (E2E R2, R3, DRV-POOL) The companion MemoryConfig of an fs lease has
+   fsType only when --fs-type was given, access only when --access was
+   given; cxl-request list entries and responses carry fsType (the
+   effective type) for fs leases.
+A16 (DRV-LOCAL, accepted) When regions of other memdevs lie above the
+   pmem region of a persistent local memdev, its last Unprepare keeps the
+   region (decoder order, as for local RAM regions); the next claim reuses
+   it, a later idle release or a restart releases it. Such a device cannot
+   be hot-removed until its region is gone.
+A17 (review B1, S1; DRV-POOL) Node-wide superblocks: before a fresh mount
+   of a writable type, an upgrade (Prepare and restore) and a block
+   writer's BLKROSET 0, the plugin reads the superblocks of /dev/pmemK and
+   of the loop devices over it in every mount namespace (/proc/<pid>/
+   mountinfo, one process per namespace; the driver is hostPID). One that
+   is not the source of a node mount listed by a use of the device fails
+   the Prepare:
+   device 0x<serial>: <dev> has a superblock that no claim of this node explains (<source> mounted <ro|rw> in <where>): it is not used until that mount is gone
+   BLKROSET 1 is refused while a read-write superblock exists anywhere on
+   the node (a read-only leftover does not stop it: read-only is safer).
+   When the superblocks cannot be read: no writable fresh mount, no
+   upgrade, no block writer, no BLKROSET 1 (fail closed).
+A18 (review R1) Release changes the read-only flag only of a block device
+   that the driver verifies as the device's current namespace (name and
+   major:minor as recorded); otherwise it skips and logs. Both drivers set
+   the check (persistentConfig.SetCheck).
+A19 (review S2, S3; CTRL) An attached writer whose configuration cannot be
+   resolved keeps the exclusive flag of its attachment; the A14 fallback
+   that gets no answer fails only the exclusive wants.
+A20 (user, 2026-11-03: "we must not trust writers or whatever runs in
+   containers") fsTypes defaults to [erofs] (section 8 said the six known
+   types). erofs is designed for untrusted images; the other types are not
+   hardened against crafted images, and anyone who had a read-write block
+   claim or lease of a device can plant one. Listing another type trusts
+   every party that can write the node's devices raw. The shared code's own
+   fallback is [erofs] as well; "fsTypes: none" in P4 for an empty list.
+A21 (user, 2026-11-03; security review H-1) The lease CDI device mounts
+   the lease socket directory <data dir>/leases/<claim uid> at /run/cxl
+   with options rbind,ro (was rbind,rw): containers cannot write the host
+   directory. The driver sets the socket's mode without following a path
+   that a container could replace (containers of before the change keep
+   their read-write bind until they restart) and removes the directory's
+   entries by name, without the broker lock.

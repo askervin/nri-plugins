@@ -1,0 +1,319 @@
+plan-14: independent review of the driver change (DRV)
+=====================================================
+Reviewer: an agent outside the streams, 2026-11-02. Scope: the working
+tree against HEAD 78a3e449f, plus the untracked files of cmd/, pkg/ and
+P/pkg (persistent.go, fsprobe.go, local_persistent.go, mount.go, pool*.go,
+local*.go, node_state.go, broker.go, lease_store.go, driver.go,
+pkg/cxl/{config,api,device}, cmd/cxl-request, P/pkg/controller). Read
+against 04-contract.txt sections 1-8 and 13, 01-findings.txt K1-K16.
+The 05-status-* files were read only after the findings below were
+written (last section).
+
+Verification done by the reviewer
+- go test -count=1 of pkg/cxl/..., cmd/cxl-request/...,
+  cmd/plugins/dra-driver-cxl/..., P/pkg/...: all ok.
+- The claims marked "verified with the fake" were run as throwaway
+  tests through `go test -overlay` (no file of the tree was written):
+  /tmp/review-overlay/review_test.go, run with
+  go test -overlay /tmp/review-overlay/overlay.json -run TestReview .
+  in cmd/plugins/dra-driver-cxl. The fake mounter (mount_fake_test.go)
+  records rule violations like the kernel; its output is quoted.
+- No VM was used.
+
+Severity: B = can corrupt data or crash, R = real defect otherwise,
+S = minor. "plausible" = the code path is verified, the trigger in a
+real cluster is not.
+
+
+B1  The rules of one node count the prepared uses, not what holds the
+    block device (plausible trigger, code path verified with the fake)
+--------------------------------------------------------------------
+Where: cmd/plugins/dra-driver-cxl/persistent.go:296-309 (Prepare: the
+block-writer rule is `blockWriter || (block && !ReadOnly &&
+len(others) > 0)`), :395-404 (P9a/P9b/P9d use firstWriter(others) and
+fsAccesses(others)), :430-443 (a fresh node mount: no check of other
+mounts of the device), :487 (BLKROSET before a fresh mount),
+:651-671 (writableMount: the plugin's mountinfo only).
+
+What is wrong: the contract (section 4) says a writer's superblock is
+"the only mount of the device on the node" and that /dev/pmemK is never
+made read-only under a read-write superblock. The code decides both from
+`others` (uses of prepared claims) and from the plugin's own mountinfo.
+A superblock of the device that no prepared use lists is invisible to
+it. Such superblocks exist by the code's own account:
+  - a stale lease bind (bindLease/UnbindLease/sweepBinds fail with
+    EBUSY -> addStaleBind; the failed Prepare of a companion keeps the
+    record in preparing, so the claim is not in `others`); the node
+    mount itself unmounts fine while the bind keeps the superblock;
+  - a node mount that SweepNodeMounts or a DAX-check rollback could not
+    unmount (persistent.go:538-543, :976-983: logged, left mounted);
+  - a lease bind's propagated copy in a borrower container that
+    survived the host-side unmount (the WaitNoHolder comment at
+    :815-821 describes exactly this), which is in another mount
+    namespace and so never in writableMount's view.
+
+Failure scenarios:
+  (a) verified with the fake: a cached ext4 reader mount stays (its use
+      gone), then a writer with access direct is prepared with
+      others = nil. Result: err=nil, calls "blkroset /dev/pmem0 0",
+      "fsmount /dev/pmem0 .../c1ae0001-direct ext4 rw dax=always", and
+      the fake reports "a second superblock of /dev/pmem0 (/dev/loop0
+      and /dev/pmem0), one read-write" (K2, K13: the reader keeps stale
+      pages and metadata; inconsistent metadata can oops the node).
+  (b) verified with the fake: an xfs reader mount (direct) stays, its
+      use gone; a block writer is prepared with others = nil. Result:
+      err=nil, "blkroset /dev/pmem0 0", the container gets /dev/pmem0
+      rw. The leftover ro xfs superblock now sits on a writable block
+      device; at its final unmount xfs writes its log (K3, xfs_log.c
+      "internal writes for ... unmount purposes") over what the block
+      writer wrote: data corruption.
+  (c) code path: a read-write lease's propagated bind survives in the
+      borrower's namespace, the companion's Unprepare succeeds (host
+      side unmounted), the node mount goes, the region stays held
+      (holder wait). A new read-only claim of the device on the node:
+      no node mount, no others -> mountNode -> setReadOnly(dev, true):
+      writableMount sees nothing -> BLKROSET 1 under the live rw
+      superblock (the ensuing FsMount fails EBUSY "would change RO
+      state", but the flag is already set and is not undone by that
+      error path, persistent.go:514-522). The surviving writer gets
+      I/O errors, ext4 aborts its journal.
+
+Fix: make "nothing else holds the device" a precondition of (1) a
+fresh node mount, (2) an upgrade, (3) a block writer, (4) BLKROSET 1:
+every holder of the block device must be explained by a node mount that
+`others` lists and that is mounted (mountinfo source = dev, or a loop
+whose backing is dev and whose node mount is listed); an unexplained
+holder (Holder(dev) "in use" with no listed direct node mount mounted,
+or a loop over dev that is not a listed node mount's) refuses the
+Prepare with a text in the style of P9 ("device 0x..: /dev/pmemK is
+held by <holder> that no claim of this node has"). Holder's O_EXCL open
+sees superblocks of every mount namespace, which is what writableMount
+cannot. Add the two fake scenarios above as unit tests.
+
+
+R1  Release sets the read-only flag of the recorded block device of the
+    remaining uses, which may be another device's now (verified with the
+    fake; trigger plausible)
+--------------------------------------------------------------------
+Where: persistent.go:786 (`dev := blockDeviceOf(remaining)`) and :808
+(`n.setReadOnly(serial, dev, true)`); callers pool_persistent.go:195
+(`p.persistentUses(serial, uid)`: recorded BlockDevice) and
+local_persistent.go:382 (`a.persistentUses(d, claimUID)`: d.BlockDevice
+as recorded).
+
+What is wrong: releasedDevices (pool_persistent.go:247-283) replaces the
+recorded block device of the *gone* devices when it is not the one of
+the region now (plan-13 bug-15: the region gone, renumbered pmem), but
+the remaining uses keep theirs, and Release uses theirs for BLKROSET.
+
+Failure scenario: device X has claims A and B prepared with /dev/pmem0;
+X's region goes (memdev removed and added again, or a reboot the boot ids
+do not tell) and device Y gets /dev/pmem0. Unprepare of A: Release(gone
+A, remaining B) -> B's node mount is not mounted (skipped) -> no writer
+remains -> BLKROSET 1 on /dev/pmem0, which is Y's. If Y has a block
+writer, its writes fail with EPERM from then on; if Y has an fs writer,
+writableMount refuses and A's Unprepare fails at every kubelet retry
+until B goes. Fake: Release(gone=[use on pmem0], remaining=[use of the
+same serial recorded on /dev/pmem7]) issues "blkroset /dev/pmem7 1".
+
+Fix: pass the block device to Release from the caller after the same
+check that releasedDevices/checkUseBlockDevice does, and skip the
+BLKROSET (log it) when the remaining uses' block device is not the
+device's now; unit test with a renumbered pmem.
+
+
+R2  ReadWriteOnce depends on kubelet unpreparing the writer before the
+    claim is deallocated (plausible, design level)
+--------------------------------------------------------------------
+Where: P/pkg/controller/reconciler.go:246-289 (an existing exclusive
+attachment loses its flag in the reconcile that no longer sees an
+exclusive want, keys with attachments first, so another node's new
+attachment follows in the same pass); persistent.go:769-809 (the
+downgrade happens in the node's Unprepare, and may fail with EBUSY and
+be retried by kubelet).
+
+What is wrong: the controller decides exclusivity from the claims'
+allocations, the node downgrades in Unprepare; nothing orders the two.
+The resourceclaim controller removes a pod from ReservedFor (and the
+claim is deallocated) once the pod's phase is terminal; kubelet's
+UnprepareResources runs in SyncTerminatedPod and may still be failing or
+pending then (the contract itself lets a downgrade fail with EBUSY "and
+kubelet retries").
+
+Failure scenario: writer W and reader R of an ext4 on node A; W's pod is
+deleted; W's claim is deallocated while A's downgrade is still failing
+(a file open for writing). The controller drops the exclusive flag (R
+remains on A), attaches the device to node B for reader R2; B mounts the
+ext4 read-only while A's superblock is still read-write: K13 (stale
+pages, half-written metadata, possible oops on B).
+
+Fix (suggestion): keep the attachment exclusive until the node reports
+that the device has no writer any more, e.g. the node driver clears a
+claim-status condition or an annotation in its successful Unprepare
+(or the controller keeps the flag while a deallocated writer claim's
+node still has its CDI device / a lease of the device). At least
+document it in pool.md for controller implementers.
+
+
+S1  writableMount fails open (persistent.go:651-671)
+    Mounts() error -> nil ("no writable mount") -> BLKROSET 1 proceeds;
+    a LoopBackingFile error skips the loop. The guard of "never
+    read-only under a read-write superblock" should fail closed: return
+    an error from setReadOnly(readOnly=true) when the mount table or a
+    loop's backing cannot be read.
+
+S2  Controller: an attached writer whose configuration cannot be
+    resolved loses its exclusive flag (plausible: after a controller
+    upgrade or a change of its config key)
+    reconciler.go:199-212 with config.go:58-65: poolSettings returns a
+    nil Resolved on any error (also on a pool.opaque error at :65, where
+    res is known); writerResult(nil) is false; cfgErr is then cleared
+    for an Attached want ("a device in use is never detached"), so the
+    want joins desired as non-exclusive and the next reconcile drops the
+    exclusive flag of a mounted read-write ext4. Fix: return res at :65;
+    for an Attached want whose config cannot be resolved keep the
+    attachment's current exclusive flag.
+
+S3  Controller A14 fallback: when the non-exclusive retry returns
+    neither an attachment nor a failure (reconciler.go:279, attach()
+    "waiting for its detach", or a cancelled context), f keeps
+    exclusiveOnly false and every want of the key, readers included, is
+    written AttachFailed Conflict although nothing refused them. Set
+    exclusiveOnly (or drop the failure of the non-exclusive wants) when
+    rf == nil.
+
+S4  Mount log with no data (persistent.go:546): btrfs, squashfs and
+    unknown types log "(btrfs, rw, )". Matches the contract's pattern
+    literally; a grep for "(btrfs, rw)" would not match. Omit the
+    trailing ", " when data is empty, or tell E2E.
+
+S5  The classes cxl-local and cxl-local-shared now require the attribute
+    persistent (deviceclasses.yaml): with the new classes and a node
+    driver of before plan-14 (rolling upgrade, chart applied first) the
+    CEL lookup of a missing attribute is an evaluation error and those
+    nodes' local memdevs are not allocatable. Document the order (driver
+    first), or write the selector so that a missing attribute counts as
+    false.
+
+S6  Broker serialOptions (broker.go:520-534): `case !dev.shared:` ends
+    the switch before the source and node checks, so a lease for a
+    persistent local memdev that is not in sharedDevices on another node
+    (or with --source pool) gets no "a local device of node X, not of
+    this node" / "not a pool device" text; its companion stays
+    unschedulable until --wait ends. Pre-existing for local slices, new
+    reach with local persistent memdevs.
+
+S7  cxl-request help spacing: "--read-write fs: ..." (one space) and
+    "--fs-type   fs: ..." against the contract's "--read-write  fs:" /
+    "--fs-type  fs:" (main.go usage, asserted by main_test.go:155-156 as
+    implemented). No e2e asserts it; align the contract or the text.
+
+
+Checked and found as the contract says (no finding)
+- No MNT_DETACH anywhere (Unmount is umount2(target, 0)); unmounts of
+  busy node mounts and lease binds are errors that keep the claim.
+- A8 order: upgrade dev, loop, reconfigure rw (persistent.go:576-586);
+  downgrade syncfs, reconfigure ro, loop, dev (:597-609); failed upgrade
+  makes both read-only again; RestoreMounts the same order per writer.
+- Read-only fresh mounts set BLKROSET 1 before the mount, a cached one
+  also on the writable loop before the mount (TestPersistentCachedOrder).
+- Same-access double superblocks are refused by the kernel (sget "would
+  change RO state"), so B1 is about the other access and the block mode.
+- F1/F2/F3 texts and order (pkg/cxl/config/device.go:159-172), C1/C2,
+  P1-P12, P9a-P9e, E4 bind texts, upgrade/downgrade texts, env FSTYPE and
+  READONLY, CDI options [bind, ro, nosuid, nodev] / [bind, nosuid,
+  nodev], attribute coherent, status data singleHost/coherent, the
+  controller's log line, V8a-V8d order, classes: as in 04 and 13.
+- Controller per-want failure (A13, A14) and writeStatus never writes
+  Attached for an exclusive want on a non-exclusive attachment
+  (reconciler.go:460).
+- Old state: pool records of mode fs get FsType erofs at load
+  (pool.go:1618-1625); old leases keep ReadOnly true (readOnly()).
+- Prepare failure paths: pn.Prepare changes nothing before its last
+  step; a failed mount after BLKROSET 0 leaves the flag to Release,
+  which resets it when uses remain, or the region goes; rollback of
+  earlier results downgrades (Release with no writer remaining).
+- Restart: restore before releaseUnfinished derives the superblock
+  state without unfinished writers (TestPoolPersistentCutUpgrade);
+  lease binds swept before node mounts (pool), the cross-driver sweep
+  after both drivers (driver.go sweepStaleLeaseBinds).
+- Locks: pool under p.mu throughout; local persistent work under a.mu;
+  nodeState.otherBind takes s.Lock only from paths that do not hold it;
+  no a.mu <-> s.Lock inversion found.
+- Shared listing refusals (ignored, pool device, held) are re-checked
+  by addPersistentMemdev, so a listed memdev is never published as not
+  shared.
+
+
+Tests
+- Strong: the fake mounter refuses rw on a ro device (EACCES), EIO on a
+  writable loop over a ro backing, EROFS for a dirty ro mount, and
+  records three rule violations; every pnEnv step asserts none.
+- Missing: the one-node rules against an unlisted holder (B1 a, b);
+  Release with a stale remaining block device (R1); writableMount's
+  error path (S1); controller S2/S3. (golangci-lint ineffassign on the
+  package: 0 issues now; the finding that DRV-LOCAL reported is gone.)
+
+
+After reading 05-status-DRV-POOL.txt and 05-status-DRV-LOCAL.txt
+- B1, R1: not mentioned in either status; no accepted deviation covers
+  them. DRV-POOL 5.2 lists "the restore and release reconcile now" as a
+  risk and kept it to writable types; that does not touch the
+  unlisted-holder gap.
+- R2: not discussed (the status files treat the controller as given).
+- a.mu held across mounts, syncfs and the holder wait: accepted risk in
+  DRV-LOCAL 7.3; not reported as a finding here.
+- DRV-POOL request A2 proposed another P9c text; contract A9 overrides
+  it and the code has A9's text (no finding).
+- DRV-POOL "deviation": the extra P8 reason "gfs2 without a lock
+  protocol is a single-host filesystem" is noted there; acceptable.
+- DRV-POOL notes the start checks every persistent device's block
+  device (up to 5 s each when namespaces probe): a start-time cost, not
+  a defect.
+
+
+Summary
+-------
+B 1, R 2, S 7.
+Most important:
+1. B1: the one-node rules and the read-only guard see only prepared uses
+   and the plugin's own mountinfo; a leftover superblock (stale lease
+   bind, failed sweep, surviving propagated bind) lets a writer mount a
+   second, read-write superblock, a block writer write under a read-only
+   xfs, or BLKROSET 1 land under a live read-write superblock. Fix: an
+   unexplained Holder of the block device refuses the Prepare.
+2. R1: Release uses the remaining uses' recorded block device for
+   BLKROSET 1; after a renumbering it flags another device read-only (or
+   blocks the Unprepare forever).
+3. R2: ReadWriteOnce release is not ordered with the node's downgrade:
+   the controller drops exclusivity on deallocation, which may precede a
+   failing or pending Unprepare.
+
+Orchestrator decisions (2026-11-02)
+-----------------------------------
+B1 accepted: node-wide superblock view from /proc/*/mountinfo (hostPID) and
+   loop backings; unexplained superblocks refuse writers, upgrades, fresh
+   writable mounts and BLKROSET changes (new text, amendment A17). DRV-POOL.
+R1 accepted: BLKROSET only on the verified current block device. DRV-POOL.
+R2 not a defect in normal operation: kubelet calls NodeUnprepare after the
+   containers stopped and before it posts a terminal phase, and retries a
+   failed Unprepare without posting it (kubernetes pkg/kubelet/kubelet.go
+   SyncTerminatingPod: "resources must be unprepared AFTER all containers
+   have stopped and BEFORE the pod status is changed on the API server";
+   status_manager.go: no terminal phase while couldHaveRunningContainers);
+   for deleted pods the pod object stays until kubelet finishes. The
+   ResourceClaim controller deallocates on a terminal phase or a removed
+   pod (resourceclaim/controller.go isPodDone, podNeedsClaims). So only a
+   force deletion or a lost node deallocates a writer's claim before its
+   Unprepare: the force deletion hazard of pool.md, which now also breaks
+   ReadWriteOnce (DOC documents it).
+S1 accepted (fail closed), with B1. DRV-POOL.
+S2, S3 accepted: controller, after the e2e run (the e2e builds
+   fake-cxl-pool from the tree). API/CTRL.
+S4 accepted if no e2e grep breaks. DRV-POOL.
+S5 documented (DOC): during a chart upgrade the local classes test an
+   attribute that slices of the old driver lack: upgrade the driver
+   DaemonSet before the classes, or expect claims of those classes to fail
+   to allocate until the new slices are published.
+S6 accepted. DRV-POOL.
+S7 no change (the help follows the file's alignment).

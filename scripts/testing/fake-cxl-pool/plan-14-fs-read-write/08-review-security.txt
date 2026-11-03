@@ -1,0 +1,89 @@
+08 - Security review of the CXL DRA driver (branch 5jg-cxl, working tree)
+==========================================================================
+
+Scope: cmd/plugins/dra-driver-cxl (broker, lease claims/store, lending,
+NRI, persistent/pool/local fs paths, mount.go), cmd/cxl-request,
+pkg/cxl/{api,config}, deployment/helm/dra-driver-cxl,
+scripts/testing/fake-cxl-pool/pkg/controller.
+Threat model: as given by the user (tenants and everything in their
+containers untrusted; admins, controller, kubelet, runtime, privileged
+pods trusted).
+Method: code reading with kernel/runc semantics; throwaway tests (under
+/tmp, go test -overlay, nothing added to the tree) where a finding says
+so. "Verified" below means confirmed by reading the code path end to
+end; "reasoned" means it depends on kernel or runtime behaviour that is
+cited but was not exercised.
+Wording: findings describe the weakness, the precondition and the impact
+in enough detail to judge severity and fix it. They deliberately leave
+out step-by-step exploit recipes.
+
+Severity: C critical, H high, M medium, L low.
+
+
+FINDINGS
+--------
+
+H-1  Lease socket directory is a tenant-writable host directory
+     cmd/plugins/dra-driver-cxl/lease_claims.go:125-130 (mount "rbind","rw"),
+     lease_claims.go:396-418 (listen), 288-298 (removeClaimDirs)
+     What: <data dir>/leases/<claim uid> (root:root 0755, on the host
+     filesystem of /var/lib/kubelet) is bind-mounted read-write at /run/cxl
+     into every container of the lease claim. A container that runs as uid
+     0 without a user namespace (the default capabilities include
+     CAP_DAC_OVERRIDE, CAP_FOWNER) can create, rename and unlink anything
+     in it except the mount point "fs".
+     Precondition: a pod with a lease claim; the container runs as root
+     (allowed by PSA baseline) and hostUsers is not false.
+     Impact:
+     (a) Disk: files written there are on the node's /var/lib/kubelet
+         filesystem, outside the container's writable layer and outside
+         every emptyDir, so kubelet does not count them against the pod's
+         ephemeral-storage limit and does not evict the pod for them. A
+         tenant fills the node disk (or its inodes) -> DiskPressure,
+         eviction of other tenants' pods, kubelet/containerd failures.
+         Node-wide DoS beyond quota.
+     (b) chmod through a symlink at a driver restart: newBroker calls
+         listen() for every stored claim while their containers run.
+         listen does os.Remove(sock), net.ListenUnix(sock), then
+         os.Chmod(sock, 0666), which follows symlinks. A container that
+         keeps rename(2)-ing a symlink over /run/cxl/cxl.sock wins the
+         window between bind and chmod with useful probability (it can
+         loop for as long as it likes; the driver restarts on upgrades,
+         crashes, OOM kills - the driver has no memory limit but a 128Mi
+         request, see M-x for ways to make it allocate). The privileged
+         driver then makes an arbitrary path of its mount namespace mode
+         0666: host /dev nodes (/dev/mem, disks), /sys attributes, files
+         under /var/lib/kubelet/plugins (other drivers' state and
+         sockets), /etc/cdi and /var/run/cdi specs (a CDI spec writable by
+         others is a container-escape primitive for any host user or
+         hostPath pod). The tenant's own container does not see those
+         paths, so this is an integrity break of the host that other
+         principals exploit, not a direct root shell for the tenant:
+         rated within H, not C.
+     (c) The tenant can unlink cxl.sock and bind its own socket there:
+         the other pods that share the claim (same namespace) talk to a
+         fake broker. Same tenant: low on its own.
+     (d) CloseClaim and sweepFsDirs run removeClaimDirs, an os.RemoveAll
+         of everything the tenant wrote, with b.mu held: millions of
+         files (or a deep tree) stall every lease operation of every
+         claim on the node for as long as the removal takes (M-level on
+         its own).
+     The Remove/RemoveAll calls themselves are safe against symlinks
+     (unlinkat, Go's RemoveAll opens with O_NOFOLLOW); hard links into the
+     directory can only come from the same bind mount (EXDEV otherwise);
+     FIFOs are never opened.
+     Verified: code path end to end; kernel semantics: connect(2) to a
+     unix socket needs write permission on the inode only
+     (unix_find_bsd -> path_permission(MAY_WRITE)); neither the mount's
+     MNT_READONLY nor SB_RDONLY applies to socket inodes
+     (sb_permission checks S_ISREG/S_ISDIR/S_ISLNK only), so a read-only
+     bind keeps the socket usable.
+     Fix: mount the socket directory "rbind","ro" (cxl-request never
+     writes there; the driver already pre-creates the "fs" mount point in
+     makeFsDirs, so runc needs no write access to create it). With the
+     directory read-only for containers, (a)-(d) disappear. Belt and
+     braces: create the socket with a restrictive umask and chmod it with
+     unix.Fchmodat(AT_FDCWD, sock, 0666, AT_SYMLINK_NOFOLLOW) (fchmodat2,
+     Linux >= 6.6) or Lstat-check that sock is the socket just bound, and
+     run removeClaimDirs outside b.mu.
+

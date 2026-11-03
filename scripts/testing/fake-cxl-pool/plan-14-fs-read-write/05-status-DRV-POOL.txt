@@ -1,0 +1,781 @@
+plan-14: status of stream DRV-POOL
+=================================
+Files (implementation phase), in D = cmd/plugins/dra-driver-cxl: new
+persistent.go, fsprobe.go (contract 3, 4: shared by both drivers), mount.go,
+pool.go, pool_persistent.go, pool_*.go, broker.go, lease_claims.go,
+lease_store.go, lending.go, lend.go and their tests. Paths and texts as in
+04 (P = its section 3 texts, F = section 1, V = section 6).
+
+Study phase (2026-11-02): read the skills, 00-04 and probe1.sh, P7 22
+(4, 5, 10), 31, 32, P12 04 (1-3, 9, 10, 14), P13 09-status and bug-11..22
+(fixes), docs pool.md (node plugin, ordering), usage.md (Persistent
+memory), leases.md (life cycle); the code of pool.go, pool_persistent.go,
+mount.go, lending.go, broker.go, lease_store.go, lease_claims.go, the pool
+tests and the fake mounter, and of the local driver enough for the
+boundary (local.go, node_state.go, prepared_claims.go, driver.go wiring),
+plus 05-status-DRV-LOCAL.txt (its N1-N9 and R3-R6 are answered below).
+No Go file edited.
+
+
+Design (study phase)
+====================
+
+1. The shared persistent code
+-----------------------------
+1.1 What is shared and what stays per driver
+Shared (persistent.go, fsprobe.go, mount.go): the filesystem probe and
+type resolution (3), the rules P4-P12 and P9 of one node (4), node mounts
+(make, reuse check, upgrade, downgrade, unmount), BLKROSET of the pmem
+and loop devices, the holder wait, restore of node mounts at start
+(derived state, unrestored node mounts, remount), lease binds (bind,
+check, unbind, stale binds, restore, sweeps), the namespace choice of a
+pmem region, the block device checks by memctl and serial, CDI helpers.
+Per driver: its state and files, its lock, the list of the uses of a
+device on the node (the shared code is told them, it never stores them),
+region creation and release (pool: memctl.CreatePmemRegionNoted with
+regionNote and preparingPoolClaims.json, memctl.Release which disables
+the memdev; local: the allocator and localDevices.json, ReleaseRegion,
+memdev stays enabled), the facts of a device, the decision "last claim
+of the device" (pool: preparedDevice; local: d.Claims), CDI spec files,
+lending to the broker.
+The shared object holds no device state: the superblock state and the
+read-only flags are derived from the uses that the caller passes, at
+every Prepare, Release and restore (contract 4 "derived, never stored").
+Device operations are serialized by the caller's lock (pool p.mu, local
+a.mu), which is held across them as today. The object has an internal
+mutex only for its own two lists (unrestored node mounts, stale binds),
+because the local driver binds leases outside a.mu.
+
+1.2 Types (persistent.go)
+  // persistentUse is a prepared use of a persistent device on the node:
+  // one allocation result of mode block or fs of a static or companion
+  // claim.
+  type persistentUse struct {
+      UID         string
+      Result      int
+      Serial      uint64
+      Mode        string // api.ModeBlock or api.ModeFs
+      ReadOnly    bool   // effective
+      Access      string // fs: effective
+      FsType      string // fs: the type of the node mount
+      BlockDevice string // /dev/pmemK as prepared
+      NodeMount   string // fs
+      LoopDevice  string // fs, cached
+  }
+  func (u *persistentUse) writer() bool // !ReadOnly, block or fs
+  // persistentTarget is a device as its driver prepared it: the block
+  // device of the fsdax namespace of its region and its facts.
+  type persistentTarget struct {
+      Serial      uint64
+      BlockDevice string
+      Facts       config.<facts type of API>  // Shared, Exclusive, SingleHost, Coherent, Local
+  }
+  // persistentWant is what an allocation result asks of the device.
+  type persistentWant struct {
+      UID      string
+      Result   int
+      Mode     string
+      ReadOnly bool   // the CFG accessor (fs: absent = true)
+      Access   string // "" = by type (3)
+      FsType   string // declared, "" = detect
+  }
+  type persistentConfig struct {
+      Driver      string        // log prefix and texts: cxl-pool.nri.io, cxl.nri.io
+      Mounter     nodeMounter
+      MountsDir   string        // <driver data dir>/mounts
+      LeaseFsRoot string        // <cxl.nri.io data dir>/lease-fs, "": no binds
+      FsTypes     []string      // section 8; nil: config.KnownFsTypes
+      Filesystems string        // "/proc/filesystems" (tests: a file)
+      HolderWait  time.Duration // 0: defaultHolderWait (10 s)
+  }
+  type persistentNode struct { cfg; mu (lists only); unrestored map[string]error; staleBinds []staleBind }
+  func newPersistentNode(cfg persistentConfig) *persistentNode
+
+1.3 Functions
+  // Prepare prepares the use w of the device t next to others, the other
+  // uses of the device on the node (the prepared uses of the other claims
+  // and those that the Prepare of w's claim prepared already), and
+  // returns it with its effective access, type, node mount and loop
+  // device. On error nothing of the device changed but what cannot be
+  // undone (logged).
+  func (n *persistentNode) Prepare(ctx context.Context, t persistentTarget, w persistentWant, others []persistentUse) (persistentUse, error)
+  // Release releases the uses gone of the device with the serial; the
+  // uses remaining stay. It unmounts the node mounts that no remaining use
+  // has, makes read-only the superblock of a node mount whose remaining
+  // uses have no writer, and the block devices when no writer remains. An
+  // error (EBUSY of an unmount or a downgrade) changes nothing more: the
+  // caller fails the Unprepare.
+  func (n *persistentNode) Release(ctx context.Context, serial uint64, gone, remaining []persistentUse) error
+  func (n *persistentNode) WaitNoHolder(ctx context.Context, serial uint64, blockDev string, deadline time.Time) error  // today's waitNoHolder
+  // Restore mounts at start what the prepared uses of the driver derive
+  // (below) and sweeps the mounts directory; it returns the loop device
+  // of each mounted node mount (node mount -> loop, "" direct); a node
+  // mount that is not mounted afterwards is unrestored (with why).
+  func (n *persistentNode) Restore(uses []persistentUse, check func(serial uint64, blockDev string) error) map[string]string
+  func (n *persistentNode) Unrestored(mnt string) (error, bool)
+  func (n *persistentNode) Remount(mnt string, uses []persistentUse, check func(uint64, string) error) (string, error) // R2 path of the Prepare again
+  func (n *persistentNode) NodeMountPath(serial uint64, access string) string
+  // DeviceMount returns the node mount of the device with the access ("":
+  // either) when it is a mount of blockDev (direct) or of a loop device
+  // over it (cached), "" otherwise: a Prepare that did not finish.
+  func (n *persistentNode) DeviceMount(serial uint64, blockDev, access string) string
+  Lease binds (6):
+  func (n *persistentNode) BindLease(rec *lendRecord, uses []persistentUse, otherBind func(target string) bool) error
+  func (n *persistentNode) UnbindLease(rec *lendRecord, otherBind func(string) bool) error
+  func (n *persistentNode) KeepStale(rec *lendRecord, u *persistentUse)  // the fail path's addStaleBind
+  func (n *persistentNode) UnbindStale(otherBind func(string) bool) []staleBind // gone binds: the caller releases their device if unused (pool: releaseUnused)
+  // leaseBindClaim: a prepared companion claim with its lend and fs use.
+  func (n *persistentNode) RestoreLeaseBinds(claims []leaseBindClaim)
+  func sweepLeaseBinds(wanted map[string]bool, nodes ...*persistentNode)
+  Helpers by value (DRV-LOCAL R6, N8):
+  func pmemNamespace(ctx context.Context, mem *memctl.Manager, serial uint64, pr *memctl.PmemRegion, mode string, readOnly bool) (*memctl.Namespace, error) // T12 text; only a writable block use creates one
+  func checkPmemBlockDevice(mem *memctl.Manager, timeout time.Duration, serial uint64, ns, blockDev string, major, minor int) error // today's checkBlockDevice
+  func currentPmemBlockDevice(mem *memctl.Manager, timeout time.Duration, serial uint64) string
+  func fsCDIMount(nodeMount, path string, readOnly bool) *cdiSpecs.Mount   // [bind, ro, nosuid, nodev] | [bind, nosuid, nodev]
+  func blockDeviceNode(dev string, major, minor int, readOnly bool) *cdiSpecs.DeviceNode
+  func mountData(fsType, access string, readWrite bool) []string  // contract 2
+
+1.4 The fs probe (fsprobe.go, contract 3)
+  const fsProbeBytes = 128 << 10
+  type fsSignature struct {
+      Types             []string // known types matched, in KnownFsTypes order
+      Gfs2LockProto     string   // NUL-terminated string at 65536+96
+      Ext4NeedsRecovery bool     // le32 at 1024+0x60 has 0x4
+  }
+  func parseFsSignature(head []byte) fsSignature            // the offsets of 3; a short head matches what it covers
+  func readFsSignature(m nodeMounter, dev string) (fsSignature, error)  // m.ReadHead(dev, fsProbeBytes), O_RDONLY
+  // fsType returns the type of the filesystem: the table of 3 (P1, P2, P3, P3b).
+  func (s fsSignature) fsType(serial uint64, dev, declared string) (string, error)
+  // cluster tells whether the instance is a cluster filesystem (gfs2 with
+  // lock_dlm), and else the P8 reason.
+  func (s fsSignature) cluster(fsType string) (bool, string)
+When a node mount of the device exists (either access), its mountinfo
+type is the detected type and the device is not read (no probe while a
+writer may have it); a declared type must equal it (P3, found = that
+type). P5 reads Filesystems each Prepare ("nodev\t<t>": refused; a type
+not listed is tried, the kernel may load a module; P11 if it fails).
+
+1.5 Prepare of one use: the state machine (contract 4)
+Order of checks, before anything is touched: type (1.4); P4 (FsTypes);
+P5; P6 (rw and read-only class); default access ("" -> direct for DAX
+types, else cached); P7 (explicit direct, no DAX); P8 (rw, not
+SingleHost: needs cluster() and Coherent, reasons of P8); P9 over others
+(the uses of the serial); P10 only when a new read-only superblock is
+made (ext4 Ext4NeedsRecovery; also EROFS from the mount itself).
+P9 with W = a writer in others, A = accesses of the fs uses in others:
+  - w fs, W fs with access a != w.Access          -> P9a
+  - w fs writer, A = {direct, cached}             -> P9b
+  - w fs writer, A = {the other access} only      -> P9d (Request A1)
+  - w block writer with any other use, or w next to a block writer
+    (F1 makes block writers exclusive: defensive) -> P9c (Request A2)
+Derived state after w joins: writer := W or w.writer(); per node mount:
+superblock rw iff writer (there is at most one access then); block
+devices (pmem and the loop of a cached mount) read-only iff no writer.
+Steps (the logs of contract 4 at V(0)):
+  block:   BLKROSET pmem := !writer (0 before a writer's open).
+  fs, the node mount of (serial, access) exists: reuse check (source:
+           pmem for direct, a loop over it by device number for cached,
+           bug-13; then P12 for DAX types with direct); if w is a writer
+           and the superblock is ro: upgrade = BLKROSET 0 pmem, BLKROSET 0
+           loop, Reconfigure(mnt, rw); a failure: BLKROSET 1 again and
+           "device 0x<serial>: remounting <mnt> read-write: <error>".
+  fs, no node mount: writable types: writer -> BLKROSET 0 pmem; cached ->
+           AttachLoop(pmem, writable=true) (loop opened O_RDWR, see A6),
+           BLKROSET of the loop as the pmem; FsMount(source, mnt, type,
+           rw=writer, mountData); reader -> BLKROSET 1 first (pmem and
+           loop), then FsMount ro.
+           Read-only types: BLKROSET 1 pmem, then today's path (mount(2)
+           MS_RDONLY|MS_NOSUID|MS_NODEV; cached on the read-only loop).
+           After the mount: P12 check (unmount, P11/P12 texts as 3).
+  Any failure undoes what this Prepare made (unmount, loop release,
+  BLKROSET back to the derived state without w).
+Release (gone, remaining): remaining's writer R; for each node mount of
+the gone uses: no remaining use of it -> Unmount (no detach; EBUSY: the
+contract text "device 0x<serial>: unmounting <mnt>: <error>") and remove
+its directory; else, if its superblock is rw and not R: Syncfs, then
+Reconfigure(mnt, ro) ("device 0x<serial>: remounting <mnt> read-only:
+<error>", EBUSY included). Then, remaining not empty: BLKROSET := R
+(read-only only when every superblock of the device on the node is ro:
+mountinfo of pmem and its loops). remaining empty: nothing (the region
+goes). The release reconciles, it does not trust w.ReadOnly: a rw
+superblock with no remaining writer is downgraded also when the gone use
+was recorded read-only (an unfinished upgrade, below).
+Invariant kept by every path, also restore: BLKROSET 1 never while a
+superblock of the device is rw; a superblock is made rw only on a device
+with BLKROSET 0; a read-only mount of a writable type only on a device
+with BLKROSET 1.
+
+1.6 Restore at start
+Restore(uses, check): per serial of the uses, the derived state as 1.5
+(uses only); per node mount: missing -> check(serial, blockDev) (today's
+checkBlockDevice rule), then BLKROSET as derived and mount with the
+derived superblock state (an existing rw writer gets rw; P10 can make it
+unrestored); existing -> reuse check, then upgrade or downgrade if its
+superblock state differs (a failure is logged; the next Prepare or
+Release of the device reconciles again, as 1.5 always derives); then
+BLKROSET per device as derived (logged failures); then the sweep of
+MountsDir (unmount what no use wants, as today). Unrestored node mounts
+are kept in n.unrestored (pool: no CDI devices of their claims, today's
+R2 of bug-15; Remount for the Prepare again). The use types for old state
+files: FsType "" of mode fs is erofs (1.7).
+Pool start (newPoolDriver), order unchanged: load (FsType normalized),
+loadPreparing, demoteOtherBoot, restoreMounts = Restore over the
+persistent uses of p.prepared + LoopDevice updates + log of the claims
+without CDI device, RestoreLeaseBinds (rebind missing binds of prepared
+companions whose node mount is mounted; unmount binds under LeaseFsRoot
+that no pool claim wants AND whose source is the source of a mount in the
+pool's MountsDir), releaseUnfinished, updateSerials. A cut Prepare's
+writer upgrade (no prepared claim has it) is downgraded by Restore when
+readers stay, or unmounted by the sweep.
+Then once, after both drivers loaded (driver.go, DRV-LOCAL, Request L1):
+sweepLeaseBinds(union of the wanted binds of both drivers, pool.pn,
+local.pn): unmount every remaining mount under LeaseFsRoot that neither
+wants (binds whose node mount is gone); one that cannot be unmounted is a
+stale bind of the driver whose MountsDir names its serial (bindOrigin),
+else of the pool. This answers DRV-LOCAL R4 without unmounting local
+binds at the pool's start, and keeps the pool's own binds swept before
+releaseUnfinished as today.
+Local start: DRV-LOCAL's allocator Reconcile, then Restore and
+RestoreLeaseBinds with its uses (see "Interface for DRV-LOCAL").
+
+1.7 Lease binds read-only/read-write (contract 4, 6)
+BindLease, for the fs use of a companion: target <FsDir>/<Name>; the
+existing checks (name, FsDir, one fs device, ValidName, "is a <t> mount
+of <src>, not of <node mount>", "is the bind of another lease"). New
+bind: read-only -> Mounter.BindReadOnly(node mount, target) (open_tree
+OPEN_TREE_CLONE + mount_setattr RDONLY|NOSUID|NODEV + move_mount); but see
+Request A3 (read-only types keep today's plain MS_BIND); read-write ->
+Mount(node mount, target, "", MS_BIND, ""). Check: the bind's FsType ==
+the node mount's, Source and Root equal, MountFlags have ro (or rw),
+nosuid, nodev; else unmount and E4 with "read-only"/"read-write" and <t>.
+UnbindLease and UnbindStale: a mount at a target is a lease bind when its
+source is a block device (/dev/...) and its type one of KnownFsTypes or
+FsTypes (was: erofs); else the "is a <t> mount of <src>, not a lease
+bind" error as today. The ro/rw of a bind comes from the companion's use
+(ReadOnly), restore binds again with the same.
+
+2. nodeMounter additions and the fake (mount.go, tests)
+------------------------------------------------------
+Additions (sysMounter on golang.org/x/sys v0.49.0, all present there):
+  // FsMount mounts the filesystem of source at target with the new mount
+  // API: fsopen(fstype), source, the flag "ro" unless readWrite, options
+  // ("k=v" as strings, others as flags), FSCONFIG_CMD_CREATE,
+  // fsmount(MOUNT_ATTR_NOSUID|MOUNT_ATTR_NODEV), move_mount. Its error is
+  // the errno followed by the messages of the filesystem context (read
+  // of the fsopen fd until EAGAIN/ENODATA, joined with "; ").
+  FsMount(source, target, fstype string, readWrite bool, options []string) error
+  // Reconfigure makes the superblock of the mount at target read-write
+  // or read-only (fspick, the flag "rw" or "ro", RECONFIGURE), with the
+  // messages as FsMount.
+  Reconfigure(target string, readWrite bool) error
+  Syncfs(target string) error                 // open O_RDONLY|O_DIRECTORY, syncfs
+  BindReadOnly(source, target string) error   // open_tree + mount_setattr + move_mount
+  SetReadOnly(dev string, readOnly bool) error // BLKROSET
+  ReadOnly(dev string) (bool, error)          // BLKROGET (restore, logs)
+  ReadHead(dev string, n int) ([]byte, error) // the first n bytes, O_RDONLY
+Changed: AttachLoop(backing string, writable bool): writable opens the
+backing file and /dev/loopN O_RDWR without LO_FLAGS_READ_ONLY (the
+kernel forces read-only when either fd lacks write access, loop.c:1061);
+read-only is today's. Mount, Unmount, Mounted, Mounts, LoopBackingFile,
+Holder unchanged. mountInfo gains superReadOnly() (super option "ro").
+The fake (fakeMounter, moved to mount_fake_test.go for both drivers'
+tests): a model of the node's block devices and superblocks:
+  - devs: dev -> {ro (BLKROSET), image []byte (ReadHead; a loop reads its
+    backing's)}; superblocks by source: {type, ro, opts, dirty};
+  - FsMount: mountErr/ctxMsgs per source; rw on a ro device -> EACCES;
+    ro of a dirty image on a ro device -> EROFS with the message; the
+    second superblock of an image (pmem and a loop over it) of xfs
+    without nouuid -> EINVAL "duplicate UUID"; a new superblock gets
+    superOpts[source] or ro|rw + data; per-mount flags rw,nosuid,nodev;
+  - Reconfigure: rw on a ro device -> EACCES; ro while busyWrite[target]
+    -> EBUSY; changes the superblock seen by every mount of it;
+  - BindReadOnly: a copy with ro,nosuid,nodev; MS_BIND inherits (today);
+    cutAt also after FsMount, Reconfigure, BindReadOnly, SetReadOnly
+    (driver-kill-at of the unit tests);
+  - invariants recorded in m.violations and asserted empty after every
+    step of every test: BLKROSET 1 while a superblock of the device or
+    its loop is rw; a rw superblock next to another superblock of the
+    same image; a read-only mount of a writable type on a writable
+    device; Unmount with a detach flag (never used);
+  - calls in m.calls ("blkroset /dev/pmem0 1", "fsmount ... ro
+    dax=always", "reconfigure <mnt> rw", "syncfs <mnt>", "robind s t")
+    for order assertions; images built by a helper fsImage(type, opts)
+    with the signatures of 3 (ext4 needs_recovery, gfs2 lockproto, two
+    signatures for P2).
+
+3. The pool driver: state file and new facts
+-------------------------------------------
+- preparedPoolDevice keeps every json name; gains FsType `json:"fsType,
+  omitempty"` (mode fs: the detected type in a prepared record, the
+  declared one, maybe "", in a preparing record); ReadOnly stays
+  `json:"readOnly,omitempty"`, now the effective value (fs writers
+  false). Old files: fs records were all read-only (ReadOnly true) and
+  erofs: load and loadPreparing set FsType "erofs" for mode fs with ""
+  (in memory; written with the next save). Access in a preparing record
+  may be "" (default not resolved before the cut): DeviceMount checks
+  both paths. untouched() copies FsType.
+- poolDeviceData gains SingleHost `json:"singleHost"` and Coherent
+  `json:"coherent"` (missing false); poolDevice gains SingleHost,
+  Coherent, FsType (declared). Facts per result: Persistent, Shared,
+  Exclusive as today, SingleHost = singleHost || exclusive || !shared,
+  Coherent, Local false; passed to the CFG device check (F1-F3, the
+  API's replacement of PoolMode) and to Prepare (P8). Not stored: only
+  a new use needs them (restore mounts what was allowed).
+- prepareClaim: access and path defaults: path as today; access stays ""
+  until Prepare decides it (the env key and checkSamePreparation do not
+  need it); notePreparing records FsType and ReadOnly; preparePersistent
+  = CreatePmemRegionNoted (pool's), pmemNamespace, then pn.Prepare with
+  others = p.persistentUses(serial, uid) + the persistent devices in
+  pc.Devices so far. Prepared log line gains "fs %q". memory() gains
+  FsType; lent() gains FsType; buildCDISpec uses fsCDIMount(ReadOnly)
+  and blockDeviceNode; the unrestored test reads pn.Unrestored.
+- releaseDevices: pn.UnbindStale (gone binds -> releaseUnused as today),
+  then per serial pn.Release(serial, uses of devs, p.persistentUses(
+  serial, uid)); a failure marks the serial failed (as today's unmount
+  failure); then holder wait (pn.WaitNoHolder, one deadline per call) and
+  release as today. releasedDevices, currentBlockDevice, unfinished
+  devices, deleteHollowRegions, regionsAbove, demote, stale records:
+  unchanged but for the helpers by value.
+- checkSamePreparation unchanged (shared/exclusive and the volatile vs
+  persistent mode families); the access and writer rules are P9.
+- Fields moving into pn: mounter use, holderWait, leaseFsRoot,
+  staleBinds, unrestored (tests: p.pn.cfg.HolderWait; 16 staleBinds and
+  11 leaseFsRoot uses in tests). newPoolDriver gains fsTypes (DRV-LOCAL
+  R5) or a ready persistentConfig.
+
+4. Broker (contract 6; DRV-LOCAL R3)
+------------------------------------
+- lease (lease_store.go) gains FsType `json:"fsType,omitempty"` (declared,
+  then the prepared type at Ready) and ReadWrite `json:"readWrite,
+  omitempty"`; ReadOnly of mode fs = !ReadWrite (old entries: ReadWrite
+  false, read-only as before). memory(): FsType, ReadOnly = fs ?
+  !ReadWrite : ReadOnly (no more "|| fs"). leaseInfo: FsType, effective
+  ReadOnly, Path. The strict store decodes the new fields.
+- requestOptions: errPoolDisabled only for source pool (persistent
+  modes may be local now); fs: ReadWrite, FsType from the request,
+  Access as requested ("" = decided by the node: the companion config
+  has no access then; the Ready lease has the effective one).
+- serialOptions: B3/B4 for every device found (the attribute persistent
+  of cxl.nri.io devices is read already); "not shareable" refuses
+  --shared only for a device without the capacity shares (sliceDevice
+  gains shares from the device's capacity): a local persistent memdev
+  (shared: false, capacity shares) accepts --shared = one share.
+- companionSources: persistent modes like the volatile ones (requested
+  source, the serial's source, else local first then pool; local alone
+  without the pool driver; errPoolDisabled when none is left).
+- companionDevices: class ClassLocalPersistent (local) or
+  ClassPoolPersistent (pool) for modes block and fs; capacity of a local
+  persistent memdev as for shared devices (size as a selector on the
+  attribute size, shares "1" with --shared, none = exclusive); pool as
+  today.
+- companionRequest: device {mode, readOnly explicitly true|false for fs
+  (CFG *bool), access when set, fsType when set}; other modes as today.
+- OnPrepared: fs: l.FsType = d.FsType, Access, Path as today;
+  lentDevice gains FsType. The Ready log names fsType and read-only.
+- "fd" on an fs lease unchanged (exit 3). A read-write lease is a
+  companion like any claim: the pool controller's Conflict keeps it
+  Creating until --wait ends (nothing in the broker).
+- lease_claims.go, lending.go (but FsType), lend.go: no change.
+
+5. Tests, risks, questions
+--------------------------
+5.1 Unit tests (go test -race ./cmd/plugins/dra-driver-cxl/...; the
+fake of 2 with its invariants checked after every step)
+- fsprobe_test: each signature; gfs2 meta type and lockproto; ext4
+  needs_recovery; P1, P2 (with and without a declared match), P3 (known
+  and unknown declared), P3b, unknown declared without match accepted;
+  short heads.
+- persistent_test (shared code, uses passed by the test): one test per
+  text P4-P12, P9a, P9b, P9d, P9c, the upgrade and downgrade texts, the
+  unmount text; default access by type; mountData per type (dax,
+  nouuid only ro xfs, spectator only ro gfs2; never lockproto, noload,
+  norecovery); BLKROSET order (before a ro mount, before a rw mount,
+  upgrade and block writer, after a downgrade; loops); upgrade failure
+  restores BLKROSET 1; downgrade EBUSY keeps the use; writer + writer
+  + reader of one access; both accesses read-only (xfs nouuid); the
+  second result of one claim (others has the first); Release of an
+  unfinished writer downgrades; Restore: missing rw/ro mounted, rw
+  downgraded, ro upgraded, failures logged and reconciled by the next
+  Prepare/Release, unrestored and Remount, foreign mount left alone;
+  binds ro (BindReadOnly) and rw (MS_BIND) with both E4 texts, adopted
+  bind, unbind of an ext4 bind, stale binds, RestoreLeaseBinds sweeps
+  only binds of its own node mounts, sweepLeaseBinds with the union;
+  CDI options; erofs path calls exactly today's mount(2) and loop.
+- pool tests: every existing TestPoolPersistent*, TestPoolLeaseBind*,
+  pool_unfinished_test, TestPoolOtherBoot* pass with the call lists
+  extended by BLKROSET only; new: TestPoolPersistentReadWrite (ext4
+  rw-a, rw-b, ro-c on one node as test20 C: env FSTYPE/READONLY, CDI
+  options, state fields), F3 without singleHost, gfs2 coherent passes F3
+  and P8 refuses lock_nolock, downgrade on Unprepare of the writers,
+  restart with a rw node mount, old state file (no fsType) restored
+  without a reconfigure, cut after the upgrade (cutAt) downgraded at
+  start, cut before the mount with access "".
+- broker_test: rw and ro fs leases (companion config readOnly explicit,
+  fsType, no access unless requested), class local/pool persistent,
+  source any = firstAvailable local then pool for fs, local persistent
+  capacity, --shared on a local persistent memdev, B3/B4 for local
+  devices, response fsType/readOnly, env FSTYPE and READONLY=0, store
+  round trip and an old store.
+- mount_test: options split, fs context message reading (a pipe), and
+  root-only tests (skipped unless root and loop available) of FsMount,
+  Reconfigure, BindReadOnly and BLKROSET on a loop device over a file.
+5.2 Risks (test90's covered paths first)
+- BLKROSET is new on the erofs path (pmem read-only while readers are
+  prepared): every erofs Prepare and the restore issue it. Its failure
+  fails the Prepare. test90 checks loops' ro (unchanged: the erofs loop
+  stays LO_FLAGS_READ_ONLY) but not the pmem's. A kept region (bug-14
+  keep case) keeps ro=1; the next block writer sets 0 before its use.
+- Lease binds of erofs through open_tree instead of MS_BIND (cut points,
+  propagation from the driver container measured only from a host
+  shell in probe B): Request A3 keeps MS_BIND for read-only types.
+- The lease-fs sweep split: the pool's own stale binds are swept as
+  before releaseUnfinished; only binds whose node mount is gone move to
+  the sweep after both drivers loaded.
+- The restore and release reconcile now (upgrade/downgrade); a bug there
+  touches every fs restart path of test90 (driver-kill-at mount|bind,
+  driver-restart, reboot): kept behind "writable types only" (read-only
+  types never have a rw superblock, their restore is today's plus
+  BLKROSET).
+- Log texts change: "mounted <source> at <mnt> (<t>, <ro|rw>, <data>)"
+  replaces "mounted <loop> over <pmem> at <mnt> (dax=never)" and
+  "... (dax=always)"; the Prepare line gains fs. E2E greps (test16,
+  test90) must follow.
+- The companion config of an fs lease without --access has no access
+  now (was "direct"); E2E checks of companion configs must follow.
+- State compatibility: names kept; new fields omitempty; FsType
+  normalized for old fs records; test90's observer decodes leniently.
+- Unverified kernel behaviour (A5): upgrade of an ext4/xfs superblock
+  that was mounted on a read-only device, after BLKROSET 0; probe 1 B4
+  reconfigured on a writable loop only.
+5.3 Requests (contract amendments, with reasons)
+ A1 P9d text, a writer whose access differs from the only access mounted
+    (P9a/P9b do not cover it; mounting it would be two superblocks, one
+    rw): "device 0x<serial>: it is mounted with access <b> on this node:
+    a read-write claim with access <a> would mount it a second time".
+ A2 P9c defensive text (F1 normally prevents it): "device 0x<serial>: it
+    is written in mode block on this node: <mode> would use it at the
+    same time" (a block writer next to any other use, or any use next to
+    a block writer).
+ A3 Read-only lease binds of read-only types (erofs, squashfs) stay a
+    plain MS_BIND of the node mount (its attributes are ro, nothing can
+    make them rw), open_tree only for writable types. Reason: the erofs
+    lease paths are test90's (driver-kill-at bind, restore, sweep) and
+    the result (ro,nosuid,nodev) is the same.
+ A4 The lease-fs sweep split of 1.6 (contract 4 "Restart" is silent):
+    each driver sweeps binds of its own node mounts at its start, one
+    process sweep of the union after both. Reason: lease-fs/<uid> is
+    shared by pool and local fs leases (DRV-LOCAL R4).
+ A5 (orchestrator, RUN or E2E) a probe 2 on a VM before the e2e: ext4,
+    xfs and btrfs mounted ro (new mount API) on a loop with BLKROSET 1,
+    then BLKROSET 0 and fspick rw: writes work; then syncfs, fspick ro,
+    BLKROSET 1; and the same with open_tree + move_mount from a
+    privileged container with a Bidirectional hostPath. Reason: 1.5
+    rests on both, measured only partly (01 K7).
+ A6 None needed, noted: a writable loop needs /dev/loopN opened O_RDWR
+    too (loop.c forces read-only otherwise).
+ A7 gfs2: a node whose readers mounted spectator cannot upgrade (gfs2
+    refuses rw for spectator): a writer's Prepare fails with the upgrade
+    text until the node's readers are gone. Accept and document (DOC),
+    or drop spectator (then a ro gfs2 mount takes a journal).
+ A8 SHARED of a lease of a local persistent memdev taken with --shared
+    is the device's attribute shared (false), not 1: the broker's
+    deviceShared() means "has a share", not "other hosts may use it".
+ Q1 The fs probe reads through the page cache of /dev/pmemK (O_RDONLY as
+    the contract says). The cache dies with the region; RWO keeps other
+    hosts from writing meanwhile. O_DIRECT is not proposed.
+ Q2 A block reader next to an fs writer on one node is allowed by the
+    contract (reads may see a filesystem in flux; no corruption): keep.
+
+
+Interface for DRV-LOCAL
+=======================
+The local driver calls (all under a.mu, which serializes its device
+work; the binds may run outside it):
+- newPersistentNode(persistentConfig{Driver: device.DriverName, Mounter:
+  newSysMounter(sysRoot) (tests: the shared fakeMounter), MountsDir:
+  <KubeletPluginDir>/mounts, LeaseFsRoot: <KubeletPluginDir>/lease-fs,
+  FsTypes: driverConfig.fsTypes(), Filesystems: "/proc/filesystems"})
+  before Reconcile. The pool gets the same FsTypes (newPoolDriver
+  parameter or persistentConfig).
+- Prepare of a result: its region (CreatePmemRegionNoted under its
+  bookkeeping), pmemNamespace(ctx, mem, serial, pr, mode, readOnly), then
+  pn.Prepare(ctx, persistentTarget{Serial, BlockDevice, Facts},
+  persistentWant{UID, Result, Mode, ReadOnly, Access, FsType}, others):
+  others = the uses of the serial of other claims in d.Claims and the
+  uses that this claim acquired already. Store the returned use's
+  FsType, Access, NodeMount, LoopDevice, BlockDevice (+ numbers,
+  Namespace) in its records.
+- Release of a claim's uses of a device: pn.Release(ctx, serial, gone,
+  remaining) first (error: keep, the Unprepare fails); when it was the
+  last claim: pn.WaitNoHolder(ctx, serial, blockDev, deadline) (one
+  deadline per Unprepare), then its region release (memdev enabled).
+  Before each release: gone := pn.UnbindStale(otherBind); release the
+  devices of gone binds that no claim has.
+- Companion claims: pn.BindLease(rec, uses, otherBind) before lending;
+  pn.UnbindLease(rec, otherBind) at Unprepare after the revoke and
+  before Release; on a failed Prepare UnbindLease, and pn.KeepStale when
+  it fails. otherBind(target) = a prepared claim other than this one has
+  target in its Lend.Mounts.
+- Start: after Reconcile has dropped users of claims that are not
+  prepared, and before it releases the regions of idle devices: pn.
+  Restore(all prepared uses, check) where check(serial, blockDev) =
+  checkPmemBlockDevice(mem, timeout, serial, ns, blockDev, major, minor)
+  of the recorded namespace (or the allocator's equivalent); the
+  returned loops update the records; pn.Unrestored(mnt) drives "no CDI
+  device" and pn.Remount the Prepare again. Then pn.RestoreLeaseBinds(
+  the prepared local companions with their fs use). The idle-device
+  release must come after Restore swept the mounts dir, else the holder
+  check refuses it (a cut Prepare's node mount).
+- driver.go (Request L1): after newDriverState, before the kubelet
+  plugins register: sweepLeaseBinds(wanted binds of both drivers,
+  pool.pn, local.pn) (nil-safe for a disabled driver or unmanaged
+  memdevs).
+- CDI and env: fsCDIMount(nodeMount, path, readOnly),
+  blockDeviceNode(dev, major, minor, readOnly); api.Memory with FsType;
+  currentPmemBlockDevice for the release of a device whose recorded block
+  device is not the current one (pool's releasedDevices rule).
+The local driver provides: its uses as []persistentUse (built from
+d.Claims slices: Mode, ReadOnly, Access, FsType, NodeMount, LoopDevice,
+BlockDevice), the facts (contract 7), the otherBind function, its region
+release, and never calls pn while holding s.Lock (baseState).
+Answers to DRV-LOCAL 7.4: N1 yes (no device lock; an internal one for the
+two lists only); N2/N3 one Prepare for both modes; N4 Release; N5
+WaitNoHolder; N6 Restore + Remount + the two block device helpers; N7
+BindLease/UnbindLease/RestoreLeaseBinds/sweepLeaseBinds; N8 by value;
+N9 persistentUse. R3 is section 4; R4 is A4 and L1; R5 yes; R6 yes.
+
+Shared code in tree (2026-11-02, implementation step 1)
+-------------------------------------------------------
+persistent.go, fsprobe.go and the nodeMounter additions (mount.go) are in
+the tree; go build ./cmd/plugins/dra-driver-cxl/ passes. Final names
+(differences to the design above: Restore is RestoreMounts + sweep;
+leaseBindClaim has Fs or Uses):
+  type persistentUse {UID, Result, Serial, Mode, ReadOnly, Access, FsType,
+       BlockDevice, NodeMount, LoopDevice}; writer()
+  type persistentTarget {Serial, BlockDevice, Facts config.DeviceFacts}
+  type persistentWant {UID, Result, Mode, ReadOnly, Access, FsType}
+  type persistentConfig {Driver, Mounter, MountsDir, LeaseFsRoot, FsTypes,
+       Filesystems, HolderWait}
+  newPersistentNode(cfg) *persistentNode
+  (n) NodeMountPath(serial, access) string; MountsDir() string
+  (n) Prepare(ctx, target, want, others []persistentUse) (persistentUse, error)
+  (n) Release(ctx, serial, gone, remaining []persistentUse) error
+  (n) WaitNoHolder(ctx, serial, blockDev, deadline) error; HolderWait()
+  (n) Restore(uses, check func(serial uint64, blockDev string) error) map[string]string
+      = RestoreMounts (map[string]restoredMount{Loop, Err}, errors logged)
+      + SweepNodeMounts(uses); the pool calls the parts with its
+      RestoreLeaseBinds in between
+  (n) Remount(mnt, usesOfAllClaims, check) (loop string, err error)
+  (n) Unrestored(mnt) (error, bool)
+  (n) DeviceMount(serial, blockDev, access "" = either) string
+  (n) BindLease(rec, uses, otherBind func(target string) bool) error
+  (n) UnbindLease(rec, otherBind) error
+  (n) KeepStale(rec, *persistentUse or nil); StaleBinds() []staleBind
+  (n) UnbindStale(otherBind) []staleBind   // devices to release if unused
+  (n) RestoreLeaseBinds([]leaseBindClaim{UID, ClaimName, Lend, Fs or Uses}) map[string]bool (wanted)
+  sweepLeaseBinds(wanted map[string]bool, nodes ...*persistentNode)
+  pmemNamespace(ctx, mem, serial, pr, mode, readOnly) (*memctl.Namespace, error)
+  checkPmemBlockDevice(mem, timeout, serial, ns, blockDev, major, minor) error
+  currentPmemBlockDevice(mem, timeout, serial) string
+  fsCDIMount(nodeMount, path, readOnly) *cdiSpecs.Mount
+  blockDeviceNode(dev, major, minor, readOnly) *cdiSpecs.DeviceNode
+  config.FsTypeUpgradable(t) (pkg/cxl/config/fstypes.go, A7)
+  lentDevice.FsType (lending.go)
+Next: the fake mounter (mount_fake_test.go) for both drivers' tests, unit
+tests of the shared code, then the pool integration and the broker.
+
+Implementation (2026-11-02)
+---------------------------
+Files (D = cmd/plugins/dra-driver-cxl): new D/persistent.go, D/fsprobe.go,
+D/mount_fake_test.go (the fake mounter, moved out of
+pool_persistent_test.go and extended), D/persistent_test.go,
+D/fsprobe_test.go, D/pool_rw_test.go, D/broker_fsrw_test.go; changed
+D/mount.go, D/pool.go, D/pool_persistent.go, D/broker.go,
+D/lease_store.go, D/lending.go and the tests pool_test.go,
+pool_persistent_test.go, broker_test.go; pkg/cxl/config/fstypes.go
+(+ FsTypeUpgradable, A7) and fstypes_test.go.
+- Contract 3: fsprobe.go (signatures, P1, P2, P3, P3b, gfs2 lock
+  protocol, ext4 needs_recovery); the type of an existing node mount of
+  the device is the detected type.
+- Contract 4 + A7-A10: persistent.go Prepare/Release/RestoreMounts/
+  Remount/SweepNodeMounts; checks P4-P12 in the contract's order, P9a,
+  P9b, P9c, P9d, P9e (A9 texts); default access by type; mount data from
+  config.FsMountData; read-only types keep mount(2) MS_RDONLY and the
+  read-only loop; writable types fsopen/fsmount (NOSUID|NODEV), writable
+  loop (backing and loop opened O_RDWR); BLKROSET: read-only before every
+  read-only mount, read-write before a writer, never read-only under a
+  read-write superblock (checked in the code and by the fake); upgrade
+  pmem -> loop -> reconfigure rw (ext4, xfs only), downgrade syncfs ->
+  reconfigure ro -> loop -> pmem (A8); Release reconciles a read-write
+  superblock without a writer (a cut upgrade); restore derives the
+  superblock state and the flags (the flags only of devices whose block
+  device check passes). Logs as the contract ("mounted <src> at <mnt>
+  (<t>, ro|rw, <data>)", "remounted <mnt> read-write|read-only",
+  "<dev> read-only|read-write").
+- Lease binds: read-only binds of writable types by open_tree clone +
+  mount_setattr (BindReadOnly), erofs/squashfs and read-write binds a
+  plain MS_BIND (A10); E4 texts with read-only/read-write and <t>;
+  unbind accepts a mount of a block device of a known or allowed type.
+  A11: each driver sweeps at its start only the binds whose source is a
+  node mount of its own; sweepLeaseBinds(wanted, nodes...) is the common
+  sweep (wired by DRV-LOCAL in driver.go sweepStaleLeaseBinds; the pool
+  tests call it in poolTestEnv.driver).
+- Pool: state file names kept, + fsType (old fs records loaded as
+  erofs), readOnly effective; status data singleHost and coherent;
+  facts SingleHost = singleHost || exclusive || !shared (A13), Coherent;
+  access "" until the Prepare decides it; newPoolDriver(..., fsTypes...)
+  (A4); pool.leaseBinds(), pool.persistent(); CDI options by read-only;
+  env FSTYPE; Prepare log line with fs.
+- Broker (contract 6, A2, A12, E2E R2/R3): fs leases read-only unless
+  readWrite, fsType; persistent leases of source local (class
+  cxl-local-persistent, local first then pool, local alone without the
+  pool driver); --shared on any device with the capacity shares (a
+  persistent local memdev); companion MemoryConfig {mode, readOnly
+  explicitly, access and fsType only when requested}; the lease table
+  records readWrite and fsType; responses and list entries have fsType
+  (the detected type at Ready); SHARED of a persistent device is its
+  attribute shared; Ready log with read-only and fs.
+Deviation: leaseBindClaim has both Fs and Uses (DRV-LOCAL used either
+during the work); RestoreMounts errors are returned per node mount and
+logged by the pool with the claim name. P8 reason for a gfs2 without a
+lock protocol: "gfs2 without a lock protocol is a single-host
+filesystem" (not in the contract; lock_nolock gives the contract text).
+Checked against the E2E list (05-status-E2E.txt): driver texts, log
+lines, env, companion config, list fsType match the implementation.
+
+Verification
+------------
+gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl          -> nothing
+go vet ./cmd/plugins/dra-driver-cxl/ ./pkg/cxl/...    -> ok
+go test -race -count=1 ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...
+                                                      -> all ok
+golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/config/...
+                                                      -> no findings
+plain ASCII in every file of this stream.
+Image (DRV-LOCAL done):
+  make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images
+  -> build/images/nri-dra-driver-cxl-image-1631d8c97a93.tar
+     (nri-dra-driver-cxl:v0.15.0-50-g78a3e449f-dirty)
+
+Open for RUN / review
+- The open_tree + move_mount bind from the driver container is measured
+  only by test20 J; its errors name the step ("open_tree", "mount_setattr
+  of the clone of", "move_mount of the clone of ... to ...").
+- The restore now checks the block device of every persistent device at
+  start (for the read-only flags), up to 5 s each when namespaces probe.
+
+DRV-POOL done
+
+Review fixes (07-review-DRV.txt, 2026-11-02)
+--------------------------------------------
+No image built (an e2e run uses 1631d8c97a93); build/images untouched.
+B1 (and S1) node-wide superblocks:
+- nodeMounter.Superblocks(dev) (mount.go): the device numbers of dev
+  (sysfs class/block/<dev>/dev) and of the loop devices over it (sysfs
+  backing_file and the loop backing device, block/loopN/dev); then the
+  mountinfo of one process per mount namespace (/proc/<pid>/ns/mnt,
+  hostPID), field 3 (mountInfo.DevNum, new) matched against them; one
+  superblock per device with its source, ro/rw and "pid P at <mount
+  point>". Read only when a decision is due (below), not at reconciles.
+- A superblock is explained when its device is the source of a node
+  mount of the plugin that a use of the device lists (others, plus the
+  node mount being upgraded). Checked (checkUnexplained) before: a fresh
+  mount of a writable type (Prepare and restore), an upgrade (Prepare
+  and restore), a block writer's BLKROSET 0 (every superblock of the
+  device is foreign then). An unexplained superblock fails the Prepare
+  (kubelet retries); at restore it is logged / the node mount is
+  unrestored.
+- BLKROSET 1 (setReadOnly) refuses under a read-write superblock
+  anywhere on the node ("device 0x..: not making <dev> read-only: <src>
+  is mounted read-write in pid P at <mnt>").
+- S1: an unreadable mount table fails closed: no fresh writable mount,
+  no upgrade, no block writer ("device 0x..: the superblocks of <dev>:
+  <err>"), no BLKROSET 1 ("... not making <dev> read-only: its
+  superblocks: <err>").
+- Deviation (for the orchestrator to accept or overrule): BLKROSET 1 is
+  NOT skipped for an unexplained read-only superblock. Setting the
+  device read-only under it only makes it safer (its unmount cannot
+  write, K3/K4); skipping would leave a writable device under a
+  forgotten read-only xfs, the review's scenario (b). A read-write one
+  refuses, as above.
+- Amendment proposal A17, the new text:
+  device 0x<serial>: <dev> has a superblock that no claim of this node explains (<source> mounted <ro|rw> in <where>): it is not used until that mount is gone
+  <where> is "pid <P> at <mount point>"; a superblock of a loop device
+  over <dev> shows the loop device as <source> (/dev/loopN).
+R1: persistentConfig.Check / persistentNode.SetCheck(func(serial,
+  blockDev) error): Release changes the read-only flag of the remaining
+  uses' recorded block device only when Check passes, else logs
+  "not changing the read-only flag of <dev>: <why>" and skips it (the
+  downgrade of a mounted superblock still happens; its loop device is
+  taken from the live mount). The pool sets Check to checkUseBlockDevice
+  (checkPmemBlockDevice of the recorded namespace and numbers); restore
+  already set flags only after the check.
+S4: the mount log has no empty data: "(btrfs, rw)", "(ext4, rw,
+  dax=always)"; the e2e greps (test20/test21 code.var.sh, 05-status-E2E
+  list) all have data or end in "(xfs, ro, ": they still match.
+S6: broker serialOptions runs the source and node checks for persistent
+  devices that are not shared too: "device 0x..: not a pool device",
+  "... not a local device", "... a local device of node X, not of this
+  node" instead of an unschedulable companion.
+Tests (fake mounter: Superblocks over its mounts and mounts of other
+namespaces, addForeign, superErr; Holder and the violation checks see
+the foreign mounts): TestPersistentUnexplainedSuperblocks (review a, b,
+c, an upgrade next to a foreign loop superblock, a foreign bind of the
+node mount is explained, S1 for Prepare and Release),
+TestPersistentReleaseVerifiedDevice (R1), TestSysMounterSuperblocks
+(procfs/sysfs parsing, one process per namespace), TestParseMountInfo
+(DevNum), TestBrokerRequestOptions (S6 cases). Order assertions ignore
+the "superblocks" reads.
+Request to DRV-LOCAL (L-R3): call pn.SetCheck(<its checkUseBlockDevice>)
+  on the local persistentNode, so that its Release gets R1 too (until
+  then Check is nil there: today's behaviour).
+Verification: gofmt clean; go vet ok; go test -race ./cmd/plugins/
+dra-driver-cxl/... ./pkg/cxl/... all ok; golangci-lint of the package and
+pkg/cxl/config: no findings; plain ASCII.
+
+DRV-POOL done (review fixes; image not rebuilt, waiting for the
+orchestrator)
+
+Security fixes (08-review-security.txt H-1, amendments A20, A21; 2026-11-03)
+---------------------------------------------------------------------------
+No image built.
+A21 / H-1 (lease_claims.go, broker.go):
+- The lease CDI device mounts <data dir>/leases/<claim uid> at /run/cxl
+  with "rbind","ro" (was "rw"). Nothing in a container needs to write
+  there: cxl-request only connects to the socket (no file creation in
+  cmd/cxl-request or pkg/cxl/api), and the mount point "fs" of api.FsDir
+  is made by the driver before (makeFsDirs).
+- The socket is created in <data dir>/.lease-sockets (0700, no container
+  has it), given mode 0666 there, and renamed into the claim's directory:
+  the rename replaces a symlink or file that a container of before the
+  change put at cxl.sock and follows nothing. The mount point "fs" is
+  made by mkdirNoFollow: whatever else is there (a symlink) is removed,
+  the mode is set by fchmod on the directory opened O_NOFOLLOW.
+- removeClaimDirs runs without b.mu (CloseClaim, release, sweepFsDirs,
+  newBroker and reconcile no longer hold it there): it removes
+  lease-fs/<uid> as before, then the entries of leases/<uid> by name
+  (os.RemoveAll per entry: a symlink itself, never its target) and the
+  directory. While it runs the claim is marked (broker.removing) and
+  listen refuses to start its socket ("the directories of lease claim
+  <uid> are being removed, retry"); a claim in the store is never
+  removed.
+- Tests: TestBrokerLeaseClaimSocketAndCDI (mount options rbind,ro),
+  TestBrokerLeaseSocketNoFollow (a symlink at cxl.sock: its target keeps
+  its mode, the socket is a socket of mode 0666; a symlink at "fs" is
+  replaced by a directory of mode 0755, its target unchanged; the
+  entries a container wrote are removed at CloseClaim, the targets of
+  symlinks stay).
+A20 (persistent.go): newPersistentNode falls back to [erofs] when it gets
+  no fsTypes (nil); an empty list mounts none and P4 reads "(fsTypes:
+  none)". The pool and shared-code tests pass the known types
+  explicitly; new P4 cases for "none" and the erofs default.
+Request to DRV-LOCAL (L-R4): local_persistent_test.go:738
+  (TestLocalPersistentFsTypes) expects "(fsTypes: )" for an empty list;
+  A20 makes it "(fsTypes: none)". It is the only failing test of the
+  package.
+Verification: gofmt clean; go vet ok; go test -race ./pkg/cxl/... ok,
+./cmd/plugins/dra-driver-cxl/... ok but TestLocalPersistentFsTypes
+(above); golangci-lint of the package and pkg/cxl/config: no findings;
+plain ASCII.
+
+DRV-POOL done (security fixes; image not rebuilt)

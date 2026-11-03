@@ -14,10 +14,12 @@ filesystem of the memdev
 persistent. Two keys of `config` are about filesystems of persistent
 memory:
 
-- `fsTypes`: the filesystem types that mode `fs` mounts on the node
-  (default `[erofs, squashfs, ext4, xfs, btrfs, gfs2]`); `[erofs]` keeps
-  the kernel of the node from parsing other filesystems that tenants
-  write.
+- `fsTypes`: the filesystem types that mode `fs` mounts on the node,
+  default `[erofs]`, the only type designed for untrusted images (with it
+  no read-write mount is possible). Every type added, such as
+  `[erofs, ext4]`, trusts every party that can write the devices raw:
+  the read-write block claims and leases of a device on any node of any
+  cluster that shares the pool.
 - `memdevSettings[].coherent`: the memory of a local memdev in
   `sharedDevices` is coherent between the hosts that share it, so that a
   cluster filesystem may be read-write on it.

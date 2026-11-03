@@ -72,7 +72,9 @@ its CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file `cxl-claims`,
 only the marker `CXL_CLAIM_<uid>_<n>=1`) and the CDI device `nri.io/cxl=lease-<claim uid>`
 (spec file `cxl-leases`):
 
-- bind mount (rbind, rw) of the socket directory at `/run/cxl`,
+- bind mount (rbind, ro) of the socket directory at `/run/cxl`: a
+  container cannot write the host directory, and connecting to the socket
+  works all the same,
 - bind mount (rbind, ro, rslave) of the `lease-fs` directory at
   `/run/cxl/fs`: the filesystems of `fs` leases appear below it in the
   running containers,
@@ -402,7 +404,7 @@ cxl-request request --serial 0xc1af0001 --shared --read-only --mode fs \
 cxl-request request --serial 0xc1af0001 --shared --read-only --mode fs --access cached --name models \
     --exec llama-server -m /run/cxl/fs/models/model.gguf         # cached, at a fixed path
 cxl-request request --serial 0xc1af0002 --shared --mode fs --read-write --fs-type ext4 --name data \
-    --exec sh -c 'date > /run/cxl/fs/data/stamp'               # read-write ext4, ReadWriteOnce
+    --exec sh -c 'date > /run/cxl/fs/data/stamp'               # read-write ext4 (fsTypes lists ext4), ReadWriteOnce
 cxl-request request --source local --serial 0xc100f5e1 --mode fs   # a persistent local memdev, read-only
 cxl-request request --serial 0xc1af0001 --mode block \
     --exec sh -c 'cat /tmp/model.erofs >&3'                   # the writer: an erofs image into the device
@@ -684,8 +686,9 @@ and cannot make it the companion of a lease it did not request.
   is involved, so this cannot crash the node. Close the fd before
   releasing.
 - Directories: when the lease claim is unprepared, the socket is
-  removed, then `lease-fs/<claim uid>`, then `leases/<claim uid>` with
-  whatever a container wrote into its `/run/cxl`. While a bind is still
+  removed, then `lease-fs/<claim uid>`, then `leases/<claim uid>` (its
+  entries removed by name; a container of an older driver, whose bind
+  is read-write until it restarts, may have written there). While a bind is still
   in `lease-fs/<claim uid>`, both directories stay (removing the mount
   point of `/run/cxl/fs` would detach the bind lazily in a container that
   is still there) and are removed when the last lease of the claim is
@@ -717,6 +720,7 @@ and cannot make it the companion of a lease it did not request.
   a path in the container is not available (a tool that writes to a path,
   such as `mkfs.erofs`, writes a file that is then copied through the fd).
   Mode `fs` mounts the filesystem types that the node allows (`fsTypes`,
+  erofs only by default,
   [usage.md](usage.md#filesystems)), read-only or read-write.
 - The filesystem of an `fs` lease is visible in every container of the
   lease claim that has `/run/cxl/fs` (every container that lists the

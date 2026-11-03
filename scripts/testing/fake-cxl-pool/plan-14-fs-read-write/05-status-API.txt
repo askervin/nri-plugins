@@ -1,0 +1,409 @@
+plan-14: status of stream API
+=============================
+Files: pkg/cxl/config/**, pkg/cxl/api/**, pkg/cxl/device/**,
+cmd/cxl-request/**, and the mechanical call-site changes in
+cmd/plugins/dra-driver-cxl that the type and API changes force.
+
+Baseline (2026-11-02, before any change)
+----------------------------------------
+go test ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...:
+all ok except cmd/plugins/dra-driver-cxl TestMemdevSettings
+(local_probe_test.go:53 "mem0 probed 0: usable size 206158430208, expected
+137438953472"), deterministic at HEAD, not related to this stream (still
+fails the same way after the changes below; nobody's file of this stream).
+
+Part 1 (API core): done
+=======================
+
+Contract section 1 (pkg/cxl/config: types.go, device.go)
+--------------------------------------------------------
+- Device gains FsType string `json:"fsType,omitempty"` (last field, so
+  Compact output of existing configs is unchanged).
+- Device.ReadOnly is *bool `json:"readOnly,omitempty"`. Accessor:
+      func (d Device) IsReadOnly() bool
+  readOnly when set; else true for mode fs (d.Mode == "fs") and false for
+  every other mode. Drivers never dereference ReadOnly.
+  To set it in Go: ptr.To(true) (k8s.io/utils/ptr); in package main of the
+  driver the existing generic ptr(v) helper (node_state.go) shadows that
+  import name, so broker.go uses ptr(true).
+- Merge and decoding unchanged: a merge with "readOnly": null removes the
+  field (IsReadOnly falls back to the mode's default); "readOnly": false is
+  kept as a set value (Compact shows it); strict decoding as before.
+- Facts type (replaces PoolFacts):
+      type DeviceFacts struct {
+          Persistent, Shared, Exclusive, SingleHost, Coherent, Local bool
+      }
+  meanings as in contract section 1 (field comments say them).
+- Mode functions:
+      func (d Device) PoolMode(f DeviceFacts) (string, error)
+          pool devices (volatile and persistent); Local false.
+      func (d Device) PersistentMode(f DeviceFacts) (string, error)
+          a persistent device: PoolMode with f.Persistent = true; the local
+          driver calls it for local persistent memdevs with Local true.
+  One rule set (one implementation): section-alone checks, then the
+  facts checks, then F1-F3 (only when !IsReadOnly()).
+- Unchanged signatures: MemdevMode(shared bool), NUMAOnly(what),
+  CheckLease(). MemdevMode and NUMAOnly also refuse fsType with C1.
+  CheckLease refuses any set field, fsType included; readOnly: false is
+  accepted as today (it was indistinguishable from absent before).
+- Controller helper:
+      func ExclusiveHost(resolved MemoryConfig, coherent bool) bool
+  mode fs, !IsReadOnly(), and not (FsTypeCluster(fsType) && coherent).
+  Call it with Resolved.Config.
+
+Order of PoolMode / PersistentMode checks (texts in section "Texts"):
+  invalid mode; access needs mode fs; path needs mode fs; C1 fsType needs
+  mode fs; C2 invalid fsType; invalid access; invalid path; readOnly with
+  mode numa; then facts: mode X needs a persistent device; a persistent
+  device needs mode block or fs; then F1 (local text when f.Local), F2,
+  F3; then the volatile rules (shared dax only; readOnly needs dax...).
+
+Contract section 2 (pkg/cxl/config/fstypes.go)
+----------------------------------------------
+  const FsTypeErofs, FsTypeSquashfs, FsTypeExt4, FsTypeXfs, FsTypeBtrfs,
+        FsTypeGfs2                        ("erofs", ... "gfs2")
+  const FsClassReadOnly = "read-only", FsClassSingleHost = "single-host",
+        FsClassCluster = "cluster"
+  var   KnownFsTypes = []string{erofs, squashfs, ext4, xfs, btrfs, gfs2}
+  func  ValidFsType(name string) bool     ^[a-z0-9][a-z0-9_-]{0,31}$
+                                          (same as api.ValidFsType)
+  func  KnownFsType(name string) bool
+  func  FsTypeClass(name string) string   unknown types: single-host
+  func  FsTypeReadOnly(name string) bool  erofs, squashfs
+  func  FsTypeCluster(name string) bool   gfs2 (by type; the instance with
+                                          lock_nolock is the probe's: P8)
+  func  FsTypeDAX(name string) bool       erofs, ext4, xfs
+  func  FsMountData(name, access string, readOnly bool) []string
+        items "key" or "key=value" in order: dax=always (access direct) or
+        dax=never (any other access) for DAX types; then nouuid for
+        read-only xfs, spectator for read-only gfs2. Nothing else ever
+        (no lockproto, locktable, noload, norecovery, user options).
+        For fsconfig: split at "=" (FSCONFIG_SET_STRING) or flag
+        (FSCONFIG_SET_FLAG); for mount(2) data: strings.Join(items, ",").
+        Read-only types are given readOnly true by the caller (they are
+        never mounted read-write; P6 refuses that before).
+
+Contract section 5 constants (pkg/cxl/device)
+---------------------------------------------
+  device.AttrCoherent         resourcev1.QualifiedName = "coherent"
+  device.ClassLocalPersistent = "cxl-local-persistent"
+(device.Memdev.Persistent of amendment A1 is DRV-LOCAL's: not added.)
+
+Contract section 6 (pkg/cxl/api, cmd/cxl-request)
+-------------------------------------------------
+- api.Request: ReadWrite bool `json:"readWrite,omitempty"` (after
+  ReadOnly), FsType string `json:"fsType,omitempty"` (after Access).
+- api.Response: FsType string `json:"fsType,omitempty"` (after Access).
+- api.Memory: FsType string. api.Env: CXL_<KEY>_FSTYPE for mode fs when
+  Memory.FsType != "" (the drivers always set it for fs; no empty variable
+  otherwise); mode block never has FSTYPE.
+- api.ValidFsType(name string) bool (the C2 regexp; config.ValidFsType
+  calls it: pkg/cxl/api has no dependency on config).
+- Validate order: V1 source, V2 mode, V3 access (validateValues), V4
+  shared numa, V5 access needs mode fs, V6 name needs mode fs, V7 invalid
+  name, V8a, V8b, V8c, V8d, "mode block with shared needs readOnly"
+  (kept, unnumbered in the contract), V9, "size or serial is required",
+  "invalid serial" (V11, V12). Removed: "mode fs needs readOnly",
+  "mode fs needs source pool", "mode block needs source pool".
+- cxl-request request: --read-write (flag, also --read-write=BOOL) and
+  --fs-type TYPE (value); options order: --source --mode --shared
+  --read-only --read-write --access --fs-type --name --size --serial
+  --wait --request-id --exec; synopsis line 2 "[--read-write] [--access
+  direct|cached] [--fs-type TYPE] [--name NAME]"; help as the contract
+  with the file's column alignment ("--read-write fs: mount the filesystem
+  read-write (default read-only)", "--fs-type   fs: the expected
+  filesystem type (default: detected)"); --mode, --read-only and --access
+  help say: fs/block of "a persistent device" (not "pool device"), fs is
+  read-only without --read-write, access default direct when the
+  filesystem has DAX, cached otherwise. Validation errors exit 2 before
+  connecting (tested).
+
+Mechanical changes in cmd/plugins/dra-driver-cxl
+------------------------------------------------
+- pool.go Prepare: facts
+      single := data.Exclusive || !data.Shared
+      config.DeviceFacts{Persistent, Shared, Exclusive: single, SingleHost: single}
+  (status data singleHost/coherent are not read yet: DRV-POOL);
+  data.ReadOnly = cfg.IsReadOnly().
+  Note for DRV-POOL: with that, mode fs readOnly: false on a non-shared
+  or exclusive device passes PoolMode now; today's erofs path still mounts
+  read-only (MS_RDONLY, CDI fsMountOptions [bind, ro, nosuid, nodev]) but
+  data.ReadOnly is false, so env READONLY=0, until DRV-POOL implements
+  section 4.
+- node_state.go: cfg.ReadOnly -> cfg.IsReadOnly() (two calls).
+- broker.go companion config: dev.ReadOnly = ptr(true) only when the
+  lease is read-only (the companion JSON is byte-identical to before);
+  section 6 "readOnly explicitly" is DRV-POOL's broker work.
+- broker_test.go: dc.ReadOnly -> dc.IsReadOnly() (6 lines); the removed
+  texts "mode fs needs readOnly", "mode fs needs source pool" replaced by
+  V8a-V8d cases in TestBrokerAuthRejection.
+- pool_test.go TestPoolConfigErrors: device.fsType is a field now: the
+  case expects C1 "MemoryConfig: device.fsType needs mode fs", and a new
+  case keeps the unknown-field check with "device.fsTypes".
+
+Error texts implemented (full list, for DOC)
+--------------------------------------------
+MemoryConfig device section (pkg/cxl/config), new:
+  MemoryConfig: device.fsType needs mode fs                                 (C1)
+  MemoryConfig: device.fsType: invalid filesystem type "X" (lower-case letters, digits, "_" and "-")   (C2)
+  MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)   (F1 local)
+  MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block   (F2)
+  MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory   (F3)
+unchanged (all still produced):
+  MemoryConfig: device.mode: invalid mode "X" (numa or dax)
+  MemoryConfig: device.mode: invalid mode "X" (numa, dax, block or fs)
+  MemoryConfig: device.readOnly needs mode dax
+  MemoryConfig: device.readOnly needs mode dax, block or fs
+  MemoryConfig: device: a shared device is used as dax only
+  MemoryConfig: device: a region is used as numa only / a dram is used as numa only
+  MemoryConfig: device: the lease device has no device settings
+  MemoryConfig: device.access needs mode fs
+  MemoryConfig: device.path needs mode fs
+  MemoryConfig: device.access: invalid access "X" (direct or cached)
+  MemoryConfig: device.path: invalid path "X" (an absolute path outside /dev, /proc, /sys, /run/cxl and /var/run/cxl)
+  MemoryConfig: device.mode block needs a persistent device
+  MemoryConfig: device.mode fs needs a persistent device
+  MemoryConfig: device: a persistent device needs mode block or fs
+  MemoryConfig: device.mode block: a shared device is writable only exclusively (no shares request)   (F1 pool)
+removed:
+  MemoryConfig: device.readOnly: mode fs is read-only: set readOnly: true (write the device with mode block)
+Lease requests (pkg/cxl/api Validate), new:
+  fsType needs mode fs                                                     (V8a)
+  invalid fsType "X" (lower-case letters, digits, "_" and "-")             (V8b)
+  readWrite needs mode fs                                                  (V8c)
+  readOnly and readWrite exclude each other                                (V8d)
+removed: mode fs needs readOnly; mode fs needs source pool; mode block
+  needs source pool.
+unchanged: invalid source "X" (local or pool); invalid mode "X" (numa,
+  dax, fs or block); invalid access "X" (direct or cached); shared memory
+  is never onlined as RAM: use mode dax; access needs mode fs; name needs
+  mode fs; invalid name "X" (letters, digits, ".", "_" and "-", not "." or
+  ".."); mode block with shared needs readOnly; readOnly needs mode dax,
+  fs or block (V9: the contract's "dax, block or fs" order is a summary,
+  the text is unchanged as the contract says); size or serial is required;
+  invalid serial "X"; and the op/wait/lease texts.
+cxl-request usage errors, new: "--fs-type needs a value", `--read-write:
+  invalid value "X"`, "--read-write is not an option of OP", "--fs-type is
+  not an option of OP" (the generic texts of the option parser).
+
+Unit tests added or changed
+---------------------------
+pkg/cxl/config: TestMemdevMode, TestNUMAOnly, TestCheckLease (fsType,
+  readOnly false), TestIsReadOnly (defaults per mode, true/false),
+  TestPoolMode (every section text in order, facts texts, F1-F3, fs
+  read-write allowed cases), TestPersistentMode (local facts, F1 local,
+  F2, F3), TestExclusiveHost, TestResolveMerge (readOnly false kept, null
+  removes readOnly, null empties the section), fstypes_test.go
+  (KnownFsTypes order, table, FsMountData, ValidFsType).
+pkg/cxl/api: round trip with readWrite/fsType, TestValidate (V8a-V8d
+  order, removed V8/V10 now pass, local fs/block), TestEnv (FSTYPE, none
+  for block), TestValidFsType.
+pkg/cxl/device: TestNames (coherent, cxl-local-persistent).
+cmd/cxl-request: TestParseArgs (--read-write, --read-write=BOOL,
+  --fs-type, local fs/block, usage errors), TestOptions (order, flags,
+  help lines), TestRunRefusesFs (V8a-V8d exit 2, removed texts gone).
+
+Requests
+--------
+R1 (to DRV-LOCAL, via orchestrator) pkg/cxl/device/device_test.go
+   TestDeviceClassesMatchConstants asserts the exact class set and CEL of
+   deployment/helm/dra-driver-cxl/templates/deviceclasses.yaml. When
+   DRV-LOCAL changes that file (cxl-local, cxl-local-shared gain
+   "&& device.attributes["cxl.nri.io"].persistent == false", new
+   cxl-local-persistent), the test's want map must change in the same
+   step, or the test fails. Either DRV-LOCAL edits these lines of
+   device_test.go, or tell me and I do it:
+     ClassLocal:       ... == false (shared) + ` && device.attributes[%q].%s == false` (DriverName, AttrPersistent)
+     ClassLocalShared: ... == true (shared)  + the same persistent == false
+     ClassLocalPersistent: selects(DriverName, DeviceTypeMemdev) + ` && device.attributes[%q].%s == true` (DriverName, AttrPersistent)
+   and the doc comment "eight classes" -> "nine classes".
+No deviation from the contract otherwise; notes: FSTYPE only when the type
+is set (Env), help column alignment of the file, V9 text unchanged.
+
+Verification (contract section 12), 2026-11-02
+----------------------------------------------
+gofmt -l pkg/cxl cmd/cxl-request cmd/plugins/dra-driver-cxl
+  scripts/testing/fake-cxl-pool                         -> nothing
+go vet ./pkg/cxl/... ./cmd/cxl-request/... ./cmd/plugins/dra-driver-cxl/...
+  ./scripts/testing/fake-cxl-pool/...                   -> ok
+go test -race -count=1 ./pkg/cxl/... ./cmd/cxl-request/...
+  ./cmd/plugins/dra-driver-cxl/... ./scripts/testing/fake-cxl-pool/...
+  -> all ok except the baseline TestMemdevSettings (above)
+golangci-lint run ./pkg/cxl/... ./cmd/cxl-request/...
+  ./cmd/plugins/dra-driver-cxl/... ./scripts/testing/fake-cxl-pool/...
+  -> no finding in any file of this stream (two staticcheck QF1001 of
+  the new code fixed); the remaining findings are pre-existing, in files
+  not touched: pkg/cxl/memctl/probe.go, probe_test.go and
+  scripts/testing/fake-cxl-pool (cmd/fake-cxl-pool-client, pkg/client,
+  pool, qemu, server).
+Plain ASCII: grep -P '[^\x00-\x7F]' over the changed Go files -> nothing.
+
+API core done
+
+Part 2 (CTRL, contract section 5): done
+=======================================
+Files: scripts/testing/fake-cxl-pool/pkg/controller/{config.go,
+reconciler.go, status.go, publisher.go, controller_test.go (TestPublish
+attribute list), readwrite_test.go (new)}, scripts/testing/fake-cxl-pool/
+README.md. The pool server is unchanged.
+
+- Attribute: every published pool device has coherent: true
+  (device.AttrCoherent; Controller.coherent(device) is true for every
+  fake-cxl-pool device: qemu memory backends mapped by every VM from the
+  same host memory).
+- Resolution: poolSettings now returns (PoolSettings, *config.Resolved,
+  error); the existing per-result resolution feeds both the settings and
+  config.ExclusiveHost.
+- want: allShares = exclusiveResult(r) (unchanged rule); writer =
+  writerResult(r, resolved) = the device is shared and
+  config.ExclusiveHost(resolved.Config, coherent(device)); exclusive =
+  allShares || writer (AttachRequest.Exclusive, as anyExclusive per
+  attachment today).
+  Deviation (small, noted): ExclusiveHost applies to shared devices only,
+  as exclusiveResult does: a device that is not shared is single-host by
+  the server's rule already, and its attach requests stay without the
+  flag (as today; the node derives SingleHost from shared false).
+- DeviceData: Exclusive = allShares (all shares of a shared device, the
+  node's Exclusive fact, unchanged meaning: a read-write share is not
+  Exclusive); SingleHost `json:"singleHost,omitempty"` = want.exclusive
+  && the attachment is exclusive (so also for all-shares results; readers
+  of the writer's node get none); Coherent `json:"coherent,omitempty"`.
+- Per-want failure: when the attach that makes an existing attachment
+  exclusive fails with Conflict, the failure is marked exclusiveOnly and
+  writeStatus gives AttachFailed only to the exclusive wants of the key;
+  the others keep or get Attached from the existing attachment (their
+  status is not rewritten while the writer waits). A new attachment that
+  fails, or another reason, still fails every want of its key.
+- Log (logf, V(0)), before the attach request of an exclusive attachment,
+  once per writer want, unless a want of the key has all shares:
+    attach <device> to <host> for <want>: exclusive for a read-write <fsType or "filesystem"> claim
+  e.g. "attach fs0 to vm1 for claim default/rw-a device fs0 node node1:
+  exclusive for a read-write filesystem claim". It is logged when an
+  attach request is made: a second writer joining an attachment that is
+  exclusive already makes no request and no line (E2E: grep for the
+  first writer's line).
+- README.md: attribute coherent, device data exclusive/singleHost/
+  coherent, the ReadWriteOnce rule, per-want failure, the log line.
+
+Unit tests (pkg/controller/readwrite_test.go):
+  TestReadWriteFsExclusive: a read-write fs share makes an exclusive
+    attachment (attach request "... exclusive", singleHost true, coherent
+    true, no exclusive in the data, the log line); a reader and a second
+    writer of the node are Attached (reader without singleHost); a reader
+    and a writer of node2 get AttachFailed Conflict, nothing attached to
+    node2; after the writers are deallocated the node1 attachment is not
+    exclusive and node2's reader attaches.
+  TestReadWriteFsJoinsReadersOfTwoNodes: readers on node1 and node2; an
+    ext4 writer on node1 fails alone (Conflict, the ext4 log line), both
+    readers stay Attached and their status is not rewritten; when the
+    node2 reader goes, the writer gets the attachment exclusively.
+  TestReadWriteFsNewAttachmentConflict: a new attachment that conflicts
+    (another cluster has the device) fails every want of the key.
+  TestReadWriteFsClusterAndExclusive: gfs2 read-write on node1 and node2
+    of a coherent device: no exclusive attach, no singleHost, no log; a
+    read-write claim of all shares: exclusive and singleHost true, not
+    logged as a writer; a read-write claim of a device that is not shared:
+    no exclusive flag, no singleHost.
+  TestPublish: attributes coherent,persistent,serial,shared,size,source,
+    type; coherent true.
+  go test -race -count=5 -run ReadWrite: ok (no flakes).
+
+Checked pkg/cxl/device and pkg/cxl/config again: DRV-LOCAL's
+device.Memdev.Persistent (A1) and FsTypeUpgradable in fstypes.go (A7) are
+in the tree; go vet and go test of both packages ok; no change of mine
+there, no Request needed. (R1 above: device_test.go builds and passes with
+the tree as it is now.)
+
+Verification (part 2), 2026-11-02
+---------------------------------
+gofmt -l scripts/testing/fake-cxl-pool/pkg scripts/testing/fake-cxl-pool/cmd -> nothing
+go vet ./pkg/cxl/... ./scripts/testing/fake-cxl-pool/...                 -> ok
+make -C scripts/testing/fake-cxl-pool lint                               -> ok
+go test -race -count=1 ./scripts/testing/fake-cxl-pool/...               -> all ok
+golangci-lint run ./scripts/testing/fake-cxl-pool/pkg/controller/...     -> 0 issues
+make -C scripts/testing/fake-cxl-pool -> bin/fake-cxl-pool-server,
+  bin/fake-cxl-pool-client, bin/fake-cxl-pool-controller built (17:58).
+Plain ASCII: README.md and pkg/controller/*.go -> nothing non-ASCII.
+
+CTRL done
+
+CTRL follow-up: amendment A14 (E2E R1), 2026-11-02
+--------------------------------------------------
+- reconciler.go step 3: when the attach of a NEW attachment (no actual
+  attachment of the key) is exclusive and fails with Conflict, and a want
+  of the key is not exclusive, the key is attached again in the same
+  reconcile without the flag, owner = the first non-exclusive want
+  (firstShared). Success: the attachment is recorded and the failure is
+  exclusiveOnly (the non-exclusive wants get Attached, the exclusive ones
+  AttachFailed reason Conflict with the first attempt's message). Failure
+  (or no answer): every want of the key fails with the first attempt's
+  failure, as before. The existing-attachment rule is unchanged; from the
+  next reconcile on the key has an attachment, so the writer's upgrade
+  attempt is that rule (exclusiveOnly).
+  Log (V(0)): "attach <device> to <host> for <want>: not exclusive for the
+  claims that do not need it".
+- README.md: one sentence on it.
+- Tests (readwrite_test.go):
+  TestReadWriteFsNewAttachmentReaderAndWriter (new): ro-1 on node1
+    attached non-exclusively; ro-d and rw-e of node2 allocated together:
+    the attach requests are "fs0@node2 ... exclusive" then the same
+    without the flag; ro-d Attached (no singleHost), rw-e AttachFailed
+    Conflict, ro-1 Attached; the next reconcile keeps that without
+    rewriting ro-d's status; after ro-1 is deallocated (detach, then the
+    upgrade in the next reconcile) rw-e is Attached with singleHost and
+    the node2 attachment is exclusive, nothing on vm1.
+  TestReadWriteFsNewAttachmentConflict (changed): the foreign attachment
+    is exclusive, so the attach without the flag conflicts too: both
+    claims of node1 fail Conflict, no Attached.
+  go test -race -count=3 -run ReadWrite: ok.
+Verification:
+  gofmt -l scripts/testing/fake-cxl-pool/{pkg,cmd}                -> nothing
+  go vet ./scripts/testing/fake-cxl-pool/...                      -> ok
+  go test -race -count=1 ./scripts/testing/fake-cxl-pool/...      -> all ok
+  golangci-lint run ./scripts/testing/fake-cxl-pool/pkg/controller/... -> 0 issues
+  make -C scripts/testing/fake-cxl-pool -> server, client, controller built (18:07)
+
+CTRL done (A14 included)
+
+CTRL: review findings S2, S3 (07-review-DRV.txt), 2026-11-02
+------------------------------------------------------------
+S2 (fail closed for an attached writer whose config cannot be resolved):
+- config.go poolSettings returns the resolved MemoryConfig also with the
+  errors of the controller's own object (pool.opaque decoding, invalid
+  numaNode): the device section still decides the writer.
+- reconciler.go: an Attached want whose MemoryConfig cannot be resolved
+  at all (res nil; cfgErr cleared as before, "attached already, kept")
+  gets keepExclusive; after the actual attachments are listed it is
+  exclusive when its attachment is exclusive now (V(debug) log
+  "<want>: configuration not resolved: attachment <id> stays
+  exclusive"). It never makes an attachment exclusive that is not.
+S3 (A14 fallback without an answer):
+- reconciler.go: when the attach without the flag returns no failure
+  (an attachment, or none: attaching continues, waiting for a detach,
+  context ended), the failure of the exclusive attempt is exclusiveOnly:
+  the non-exclusive wants get no AttachFailed and wait (no status until
+  the attachment is there); only the exclusive wants get Conflict. A
+  failure of the attach without the flag fails every want, as before.
+Tests (readwrite_test.go; controller_test.go fakePool gains attachHook):
+  TestReadWriteFsUnresolvedWriterKeepsExclusive: an attached writer's
+    config becomes unresolvable (unknown field), a reader joins: the
+    attachment stays exclusive, no attach request without the flag for
+    vm1, both Attached, a reader of node2 gets Conflict; after the writer
+    is deallocated the attachment is shared again.
+  TestPoolSettingsErrorKeepsResolved: numaNode -1 gives an error and the
+    resolved config (a writer); an unknown field gives no resolved config.
+  TestReadWriteFsFallbackNoAnswer: the reconcile's context ends during
+    the attach without the flag: the writer of node2 gets Conflict, its
+    reader neither AttachFailed nor Attached; the next reconcile attaches
+    the reader.
+  Each of the three fails with its fix reverted (checked, then restored).
+Verification:
+  gofmt -l scripts/testing/fake-cxl-pool/{pkg,cmd}                -> nothing
+  go vet ./scripts/testing/fake-cxl-pool/...                      -> ok
+  go test -race -count=1 ./scripts/testing/fake-cxl-pool/...      -> all ok
+  go test -race -count=3 -run 'ReadWrite|PoolSettingsError' (controller) -> ok
+  golangci-lint run ./scripts/testing/fake-cxl-pool/pkg/controller/... -> 0 issues
+  make -C scripts/testing/fake-cxl-pool -> server, client, controller built (19:00-19:01)
+No e2e started.
+
+CTRL done (S2, S3 included)

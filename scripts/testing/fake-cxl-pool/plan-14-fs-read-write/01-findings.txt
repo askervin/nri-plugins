@@ -1,0 +1,266 @@
+plan-14: findings (any filesystem, read-write mounts)
+====================================================
+Written 2026-11-02 (orchestrator) from the code of branch 5jg-cxl at
+78a3e449f (clean tree), the Linux source at ~/github.com/torvalds/linux
+(v7.2-15794-g1b78070aaef6, the 7.3 merge window; the VMs run 7.3.0-rc4),
+probe/probe1.sh run as root on VM0 (loop devices over files in /var/tmp,
+no CXL device, no cluster object; output quoted below), and the earlier
+plans: P7 = plan-7-e2e-cxl-llm-share (21 = 21-erofs-findings, 22 =
+22-erofs-design, 31/32 = 3x-dynamic-bind-mount, B = 01-research-B, C =
+01-research-C), P12 = plan-12-steering-config. N = nri-plugins,
+D = N/cmd/plugins/dra-driver-cxl, CFG = N/pkg/cxl/config,
+CTRL = N/scripts/testing/fake-cxl-pool/pkg/controller,
+SRV = N/scripts/testing/fake-cxl-pool/pkg/server,
+E = N/test/e2e/memory.test-suite/dra-driver-cxl/n4-cxl-shared-2.
+
+1. The driver today
+-------------------
+C1  Mode fs is erofs only. D/pool_persistent.go: fsType = "erofs" (62),
+    node mount per (serial, access) at <pool data dir>/mounts/<hex>-<access>
+    (93), made by mount(2) with MS_RDONLY|MS_NOSUID|MS_NODEV (64): access
+    direct on /dev/pmemK with dax=always, cached on a read-only direct-I/O
+    autoclear loop device over /dev/pmemK with dax=never (159-215). The
+    container gets the CDI bind [bind, ro, nosuid, nodev] (74, 1042). Texts
+    "has no erofs filesystem", "erofs on /dev/pmemK was mounted without DAX".
+C2  CFG/device.go PoolMode: mode fs without readOnly is refused ("mode fs
+    is read-only: set readOnly: true (write the device with mode block)");
+    a writable block claim of a shared device needs the status data
+    exclusive (all shares). CFG/types.go Device.ReadOnly is a bool with
+    omitempty: "readOnly: false" cannot be told from no readOnly.
+C3  D/pool.go:761 checkSamePreparation: on one node, block and fs claims of
+    a device and both accesses share one pmem region; readOnly may differ
+    per claim (it is a property of the CDI device, not of the region).
+C4  Leases of mode fs (P7 32): the lease bind is a plain MS_BIND of the
+    node mount, read-only only because the node mount is (P7 31 P4: a bind
+    inherits the source mount's flags; P2: a remount of the plugin's copy
+    does not reach the propagated copies). D/pool_persistent.go
+    leaseBindFlags = ro, nosuid, nodev is checked after the bind.
+C5  The pool controller keeps one attachment per (device, host); it
+    serves every claim of the node (CTRL/reconciler.go:194-225). The
+    attachment is exclusive when any of its claims is (anyExclusive); a
+    claim is exclusive when its result consumed all shares
+    (exclusiveResult, 60-71). The pool server refuses to attach a device to
+    another host while an exclusive attachment exists, and refuses to make
+    an attachment exclusive while another host has the device, both as
+    Conflict (SRV/ops.go:532-550, 945-965); the controller then writes
+    AttachFailed reason Conflict. The server is shared by every cluster that
+    uses the pool, so this holds across clusters.
+    Detail: a failed attach is recorded per attachment key and written by
+    writeStatus to every claim of that key (reconciler.go:352-366), also to
+    claims of the node that are attached already.
+C6  The controller resolves the MemoryConfig of every result already
+    (CTRL/config.go:52-70: config.Resolve, then pool.opaque): reading the
+    device section is one more field access, but P12 04-contract section 1
+    says each owner reads only its section.
+C7  Scheduler (docs pool.md): a shared device publishes shares 1M, a claim
+    without a shares request consumes all of it (exclusive), a share is
+    shares "1"; bindsToNode pins a claim to the node the scheduler picked,
+    so the pods that share one ResourceClaim all run on that node; an
+    AttachFailed condition makes the scheduler deallocate the claim and
+    allocate it again (pod backoff, then a new attempt).
+C8  The node reads serial, shared, size, exclusive and persistent from the
+    claim status data (pool.md "What the pool controller writes").
+C9  Tests that assert texts or exact sets this step changes: test12:663
+    "mode fs needs readOnly" (lease CLI); test90's oracle flags every
+    unexpected CXL_* variable (E/test90.../model/oracle.go envDiffs) and
+    expects READONLY=1 for its fs kinds, which say readOnly: true
+    explicitly (mbt.source.sh:306-311); test10 asserts the exact attribute
+    list of pool devices (P7 29, R2).
+C10 Local devices: the local driver has no persistent memdevs (docs
+    local.md Limitations: shared local devices are dax only, "modes block
+    and fs are for pool devices of persistent memory only"); volatile CXL
+    memory never becomes a block device (P7 21 F1). A memdev shared with
+    other hosts but not managed by a pool controller looks local
+    (sharedDevices; "exclusivity across hosts is not coordinated by one
+    node's plugin").
+C11 The driver configuration file is strict (unknown keys refused), read
+    at start (docs usage.md "Configuration file").
+
+2. Kernel facts
+---------------
+K1  DAX (access direct) exists in erofs, ext4 and xfs (fuse aside;
+    users of dax_iomap in fs/*). ext2 has none in 7.3 and is not in the
+    kernel config. ext4 dax=always with a block size other than PAGE_SIZE
+    fails the mount ("unsupported blocksize for DAX", ext4/super.c:4809);
+    xfs and erofs turn DAX off silently and mount ("DAX unsupported by
+    block device. Turning off DAX.", xfs_super.c:369-375,
+    erofs/super.c:207): the super options must be checked after the mount,
+    as C1 does for erofs. xfs DAX with reflink works on one device
+    (xfs_super.c:382 refuses multi-partition only).
+K2  One block device has one superblock per kernel; a second mount reuses
+    it with the first one's options (P7 21 F9). Two superblocks of one
+    filesystem on one host need two block devices (pmem and a loop device
+    over it). Both read-only: fine for ext4 (probe C "both mounted"); xfs
+    refuses the second without nouuid (probe D3: "Filesystem has duplicate
+    UUID ... can't mount"; with nouuid ok); btrfs gives a cloned
+    single-device filesystem a temporary fsid (volumes.c:603-801). With one
+    of them read-write it is two caches and two journals of the same
+    blocks: corruption.
+K3  A read-only mount on a writable block device may write:
+    - xfs writes for a clean log at mount or unmount: probe D1 "clean, ro
+      mount on writable bdev: changed"; xfs_log.c:287-305 "Read-only
+      mounts allow internal writes for log recovery and unmount purposes".
+    - xfs and ext4 replay a dirty log or journal: probe D5 "image changed
+      (log recovered)"; ext4/super.c:6170-6180 "write access will be
+      enabled during recovery".
+    - ext4 left a clean image unchanged (probe A1), which is not a
+      guarantee (jbd2_journal_wipe(journal, !really_read_only),
+      ext4/super.c:6185).
+K4  A read-only block device (BLKROSET, blockdev --setro) makes ext4, xfs
+    and btrfs read-only for real (ext4 really_read_only, xfs
+    xfs_readonly_buftarg, btrfs "log replay required on RO media"):
+    - probe A2, D2: a clean filesystem mounted read-only and unmounted,
+      images unchanged.
+    - a filesystem that needs recovery is refused with EROFS: ext4 "INFO:
+      recovery required on readonly filesystem", "write access unavailable,
+      cannot proceed (try mounting with noload)" (probe A5, also through
+      fsopen/fsconfig: "[Errno 30] Read-only file system"); xfs "write
+      access unavailable, cannot proceed.", "log mount/recovery failed:
+      error -30" (probe D4).
+    - a read-write mount is refused with EACCES (fs/super.c:1819);
+      util-linux mount then falls back to read-only by itself ("WARNING:
+      source write-protected, mounted read-only", probe A4): the plugin must
+      not.
+    - remounting or reconfiguring the superblock read-write is refused
+      with EACCES for every caller, root included (fs/super.c:1099-1103;
+      probe A3 "cannot remount /dev/loop0 read-write, is write-protected",
+      A3b fspick+reconfigure "[Errno 13] Permission denied"). So a
+      privileged container cannot make a read-only superblock writable.
+    Mount options noload/norecovery are not needed (and would hide an
+    unrecovered filesystem); lockproto (gfs2) must never be passed (K9).
+K5  The block layer only warns about bios that write to a read-only
+    block device (bio_check_ro, block/blk-core.c:566-584): filesystems and
+    the loop driver are trusted to check the flag (K4). Userspace may open
+    a read-only block device for writing (fs/super.c:1812-1816), but
+    write() on it fails with EPERM and a shared mapping is read-only
+    (block/fops.c:733, 923; P7 B 3.3 "O_DIRECT write EPERM"); opening it
+    for a filesystem or a holder with write access fails with EACCES
+    (block/bdev.c:1128-1132). A loop device whose backing file is a
+    read-only /dev/pmemK opened O_RDWR therefore fails its writes too.
+    Containers of mode fs have no device node (P7 22); a read-only block
+    claim keeps its device cgroup "r".
+K6  Two ways to make /dev/pmemK read-only: BLKROSET on the block device,
+    or "read_only" of the nvdimm region in sysfs, which marks every
+    namespace disk of the region read-only (nvdimm/region_devs.c:516-529,
+    bus.c:624-638, also for a namespace that attaches later). Both show in
+    /sys/block/pmemK/ro and blockdev --getro, both last until the region
+    is destroyed, root on the node can undo both (P7 B 3.3 measured the
+    region attribute: O_DIRECT write EPERM).
+K7  The new mount API separates the superblock's read-only flag
+    (fsconfig "ro") from the mount attributes (fsmount, mount_setattr).
+    probe B (a shared directory, seen from a slave mount namespace like a
+    container's):
+    - fsmount with superblock ro and attributes nosuid,nodev: the host and
+      the slave see "mnt=rw,nosuid,nodev sb=ro"; writes fail
+      "Read-only file system" through every mount.
+    - a read-only bind made by open_tree(OPEN_TREE_CLONE) +
+      mount_setattr(MOUNT_ATTR_RDONLY|NOSUID|NODEV) + move_mount reaches
+      the slave as "mnt=ro".
+    - fspick + fsconfig "rw" + FSCONFIG_CMD_RECONFIGURE: every mount with
+      the rw attribute becomes writable ("rw1 write ok"); the ro bind stays
+      read-only ("cannot touch ... ro1/b: Read-only file system"); a
+      CDI-like bind made afterwards from the node mount, remounted
+      bind,nosuid,nodev, is writable; one remounted bind,ro,nosuid,nodev
+      is not.
+    - reconfigure "ro" while a file is open for writing in the slave:
+      "[Errno 16] Device or resource busy"; after the holder exited it
+      succeeds, and ext4 is clean ("Filesystem state: clean", no
+      needs_recovery in the features).
+    golang.org/x/sys v0.49.0 (go.mod) has Fsopen, FsconfigSetFlag,
+    FsconfigSetString, FsconfigCreate, FsconfigReconfigure, Fsmount,
+    MoveMount, OpenTree, MountSetattr and Fspick.
+K8  mount(2) with MS_RDONLY makes the superblock and the mount read-only;
+    the copy that propagates to the host keeps the mount's ro attribute
+    whatever the plugin remounts later (C4, P7 31 P2), and runc binds a
+    CDI mount from the host's copy. A node mount made that way is no
+    source of a writable bind after an upgrade to read-write.
+K9  gfs2: the lock protocol comes from the superblock (sb_lockproto at
+    64 KiB + 96, "lock_dlm" for a cluster, "lock_nolock" for one host),
+    and the mount option lockproto= overrides it (gfs2/ops_fstype.c:
+    335-357); magic 0x01161970 at 64 KiB (GFS2_SB_ADDR 128 sectors). A
+    read-only gfs2 mount still takes a journal and may recover the
+    journals of failed nodes; "spectator" is read-only without a journal
+    (ops_fstype.c:1130). ocfs2 marks a single-host filesystem with the
+    incompat feature LOCAL_MOUNT (ocfs2_fs.h:110). Both need a cluster
+    stack on every host (gfs2 lock_dlm: corosync and dlm_controld; ocfs2:
+    o2cb); without it their mount fails.
+K10 ext4 MMP (mkfs -O mmp) refuses a second read-write mount on another
+    host through a heartbeat block, read-write mounts only
+    (ext4/super.c:5521): no protection for a reader next to a writer.
+K11 CPU caches. Linux writes back and invalidates the CPU caches of a CXL
+    region when it commits the region and before it tears it down
+    (drivers/cxl/core/region.c:226-260, 385-398; bypassed in VMs, the e2e
+    kernel has CXL_REGION_INVALIDATION_TEST=y). pmem writes go through
+    memcpy_flushcache, reads through copy_mc_to_kernel and the cache
+    (nvdimm/pmem.c:133, 152); DAX writes reach the memory at fsync/syncfs
+    (dax_writeback_mapping_range). So "write, sync, release on host A;
+    region on host B later" shows B what A wrote on any hardware.
+    Concurrent access of two hosts with a writer among them needs memory
+    that the hardware keeps coherent between hosts (CXL 3 shared memory
+    with back-invalidation); otherwise the other host reads stale cache
+    lines. In qemu both VMs map the same host memory, so the e2e is
+    coherent (P7 C 1.3). A cluster filesystem on non-coherent shared
+    memory corrupts it like a single-host one.
+K12 Mounting a filesystem means the node's kernel parses metadata that
+    whoever wrote the device chose. erofs is designed for untrusted
+    images; ext4, xfs, btrfs are not hardened against crafted images
+    (their maintainers do not treat those as supported). With mode block
+    and read-write fs, a tenant chooses what other nodes' kernels parse:
+    the filesystem types that the plugin mounts belong to the admin.
+K13 A single-host filesystem on several hosts: two writers corrupt it
+    (two allocators, journals, caches). A writer and readers elsewhere:
+    the readers see metadata halfway (the writer's cache and uncommitted
+    journal are not on the device), keep stale pages forever (P7 B 3.3:
+    cached readers keep stale data until unmount; DAX readers see data
+    change at once and cache metadata), report filesystem errors or oops
+    on inconsistent metadata, and on a writable block device write as in
+    K3. One host with a writer and readers is one superblock: consistent.
+
+3. The VMs and tools
+--------------------
+E1  qemu-cxl-kernel.config: EXT4_FS=y, XFS_FS=y, BTRFS_FS=y, SQUASHFS=y,
+    EROFS_FS=y, FS_DAX=y, BLK_DEV_LOOP=y, CXL_PMEM=y, DLM=y; GFS2_FS,
+    OCFS2_FS and EXT2_FS not set.
+E2  VM1: e2fsprogs 1.47.3, btrfs-progs 6.17, erofs-utils 1.9.4 installed;
+    Fedora 43 has xfsprogs 6.15.0 (installed on VM0 by the probe),
+    squashfs-tools 4.6.1, gfs2-utils 3.6.1, dlm 4.3.0, corosync 3.1.10,
+    ocfs2-tools 1.8.8.
+E3  The cluster n4-cxl-shared-0/1/2 (7.3.0-rc4, Kubernetes v1.37.1, three
+    nodes Ready, restarted 2026-11-02 14:30); no test running. A GFS2
+    kernel is a new tarball (P7 23 stream K built one inside a VM in about
+    four minutes plus installs and reboots); a gfs2 cluster also needs
+    corosync and dlm_controld configured on the nodes over the VM network.
+
+4. Prior art
+------------
+A1  Kubernetes PersistentVolume access modes: ReadWriteOnce (read-write
+    on one node, by any number of pods of that node), ReadOnlyMany,
+    ReadWriteMany (filesystems built for it), ReadWriteOncePod. The
+    attach-detach controller refuses a second node of a ReadWriteOnce
+    volume ("Multi-Attach error"); the pod waits until the volume is free.
+    Here the pool controller is that attacher, and C5 is the mechanism.
+A2  ReadOnlyMany of a single-host filesystem over shared storage is safe
+    only for a filesystem that nobody writes meanwhile and that is clean;
+    Kubernetes itself does not check either.
+
+5. Probe 2 (2026-11-02, VM0, loop devices; probe/probe2.sh)
+-----------------------------------------------------------
+K14 Upgrade of a superblock that was mounted on a read-only block device
+    (mount API, superblock ro, attributes nosuid,nodev; then BLKROSET 0,
+    fspick + "rw" + reconfigure, a write, reconfigure "ro", BLKROSET 1):
+    ext4: works, and afterwards "Filesystem state: clean" without
+    needs_recovery; xfs: works; btrfs: the reconfigure to rw fails with
+    "[Errno 13] Permission denied" although the block device is writable
+    again (btrfs keeps the read-only open of its device). So upgrading in
+    place is measured for ext4 and xfs only.
+K15 A loop device configured with its backing /dev/loopB opened O_RDWR
+    while /dev/loopB is read-only (BLKROSET 1) is not read-only itself
+    (/sys/block/loopN/ro 0); with BLKROSET 1 on the loop a read-only mount
+    works; BLKROSET 0 on the loop alone and reconfigure "rw" fails with
+    EIO ("I/O error while writing superblock": the loop's write to the
+    read-only backing is refused, K5). With both writable the filesystem
+    mounts read-write and writes. So the order of an upgrade is: backing
+    device, loop, reconfigure; of a downgrade the reverse.
+K16 The filesystem context of fsopen logged no messages for these mounts
+    and reconfigures (the reads of the fd returned nothing): the errors
+    rely on the errno and the kernel log.

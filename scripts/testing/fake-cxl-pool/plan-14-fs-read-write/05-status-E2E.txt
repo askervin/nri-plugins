@@ -1,0 +1,425 @@
+plan-14: status of stream E2E (desk phase)
+==========================================
+Files of the stream (E = N/test/e2e/memory.test-suite/dra-driver-cxl,
+S2 = E/n4-cxl-shared-2): nothing else was edited. Nothing was run on the
+VMs except read-only commands for facts (section "Facts read from the
+VMs"); run_tests.sh was not run.
+
+Files written or changed
+------------------------
+  S2/test20-dra-fs-read-write/code.var.sh       new (contract 11, phases A-K)
+  S2/test21-dra-local-persistent/code.var.sh    new (contract 11 test21, 9)
+  S2/fs.source.sh                               new helpers (fs-*), sourced for
+                                                every test of the topology,
+                                                defines functions and variables only
+  E/dra.source.sh        DRA_CLASSES + cxl-local-persistent; DRA_LOCAL_MOUNT_DIR
+                         (/var/lib/kubelet/plugins/cxl.nri.io/mounts);
+                         dra-fs-mounts VMDIR [DIR] (DIR default the pool mounts)
+                         with the new field "vfs" (findmnt VFS-OPTIONS)
+  S2/test10-dra-pooling  exact pool attribute list + coherent; coherent == True
+  S2/test12-dra-live-attach  V8 "mode fs needs readOnly" and V10 "mode fs needs
+                         source pool", "mode block needs source pool" removed;
+                         V8a-V8d added (exit 2); fs leases without readOnly
+                         and with --read-write reach the plugin (exit 1,
+                         "mode fs needs a persistent device" on volatile shared0)
+  S2/test14-dra-local-memdev  exact local attribute list + persistent;
+                         persistent == False
+  S2/test17-dra-local-shared  both exact local attribute lists + persistent
+  S2/test16-cxl-llm-share  readers' env + FSTYPE=erofs; cxl-request list of a
+                         lease reader has fsType erofs
+  S2/test90-gofmbt-reliability/model  oracle.go envWant FSTYPE=erofs for the fs
+                         kinds; oracle_pmem.go refusedNoErofs = the P1 text;
+                         simpmem.go refusedMessage the whole P1 text;
+                         recorded/fp4-fail-1177.json event texts rewritten from
+                         "has no erofs filesystem: invalid argument" to P1
+  N/docs/memory/cxl/e2e.md  rows of test20 and test21, test12 row, kernel
+                         filesystems, VM prerequisites (xfsprogs,
+                         squashfs-tools, ...), port 9912
+
+Verification (desk)
+-------------------
+- bash -n of dra.source.sh + S2/*.source.sh + code.var.sh for test10,
+  test12, test14, test16, test17, test20, test21: ok.
+- shellcheck -e SC2154,SC2034,SC1090,SC2148,SC2016 dra.source.sh
+  S2/fs.source.sh and the seven code.var.sh: no findings.
+- Plain ASCII in all of them and e2e.md.
+- The Python snippets of fs-node-mounts-assert and fs-ctr-mount-assert,
+  and the expression of fs-event-wait, run on hand-made mountinfo/findmnt
+  samples (xfs direct+cached nouuid, squashfs cached, ro/rw container
+  mounts): pass and fail as intended.
+- test90 model: gofmt -l empty, GOWORK=off go vet ./... ok,
+  GOWORK=off go test ./... ok (118 s). Before the recorded fixture was
+  rewritten, TestPmemFP4RefusedRetryAfterSettle failed on the old text.
+
+test20-dra-fs-read-write, per phase
+-----------------------------------
+fs0: persistent, shared, 512Mi, serial 0xc1ae0001 (key C1AE0001, node
+mounts c1ae0001-direct/-cached), default server (VM1, VM2). Every image
+has one file hello.txt; images built in VM1 (/var/tmp/cxl-fs-e2e, removed
+at the end), each written by a block writer on VM1 (claim class
+cxl-pool-persistent, no shares, mode block; the writer zeroes the first
+MiB, dd's the image, checks its sha256) right before it is used, then
+fs0-free (no memdev in either VM, free in the server, no region, no node
+mount, no loop over pmem). Pods: dra-pod-yaml (nodeSelector), commands by
+kubectl exec. "RW" = device {mode: fs, readOnly: false}, "RO" = {mode: fs}.
+A  nodes; slice: fs0 persistent, coherent, shared, serial, size, shares
+   1M without requestPolicy; class cxl-pool-persistent exists.
+B  ext4 (64M, -b 4096) written; namespace size >= 320 MiB (the xfs image).
+C  rw-a (RW), then rw-b (RW), then ro-c (RO), shares 1, VM2. Each: env
+   exactly SERIAL SHARED=1 MODE=fs SIZE PATH=/run/cxl-fs/C1AE0001
+   ACCESS=direct READONLY=0/0/1 FSTYPE=ext4; container mount rw/rw/ro
+   ext4, no pmem node; reads hello.txt; CDI claim-<uid>-0 kind
+   nri.io/cxl-pool, no deviceNodes, exactly one mount (hostPath
+   mounts/c1ae0001-direct, containerPath the default path, type bind,
+   options [bind, nosuid, nodev] or [bind, ro, nosuid, nodev]). rw-a writes
+   a.txt, rw-b reads it and writes b.txt, ro-c reads both, ro-c's write
+   fails "Read-only file system". VM2: exactly one node mount, ext4,
+   superblock rw, mount attributes rw,nosuid,nodev, /dev/pmemN, dax=always;
+   /sys/block/pmemN/ro 0. Status data: rw-a, rw-b singleHost true,
+   coherent true, persistent true, no exclusive; ro-c coherent, persistent,
+   no singleHost (A13). Server: one attachment, VM2, exclusive. Controller
+   journal: the first writer's line (A13), exactly "attach fs0 to <VM2> for
+   claim cxl-pool-demo/rw-a device fs0 node <VM2>: exclusive for a
+   read-write filesystem claim".
+D  ro-d (RO) and rw-e (RW) on VM1: AttachFailed reason Conflict
+   (dra-claim-condition-watch), message contains "\"<VM2>\""; both Pending
+   without nodeName; attachments still only VM2 exclusive; VM1 no memdev,
+   no region, no node mount.
+E  delete rw-a, rw-b: VM2 superblock ro (wait 60 s), pmemN ro 1, driver
+   log "remounted <mnt>/c1ae0001-direct read-only", dumpe2fs -h: no
+   needs_recovery, "Filesystem state: clean"; ro-c still reads, write
+   refused; ro-d Running (wait 240 s), env READONLY=1 FSTYPE=ext4, reads
+   a.txt b.txt; VM1 node mount ext4 ro direct, its pmem ro 1; attachments
+   VM1 and VM2 both not exclusive; rw-e Conflict again naming VM2, Pending;
+   ro-d's data has no singleHost; delete rw-e.
+F  rw-f (RW, VM2): Conflict naming "\"<VM1>\"", Pending; ro-c's claim
+   Attached True and AttachFailed not True (per-want failure); delete
+   ro-d; VM1 memdev gone; rw-f Running (240 s); VM2 superblock rw, pmemN
+   ro 0, log "remounted <mnt> read-write"; attachment VM2 exclusive; rw-f
+   env READONLY=0; rw-f writes f.txt; ro-c still ro, reads f.txt, write
+   refused.
+G  cached-g {mode: fs, access: cached} on VM2: event has P9a (full text,
+   below); node mounts and loops unchanged; VM2 still one rw direct mount.
+H  (fs-refused: pod event has the texts, pod ContainerCreating, node
+   mounts and loops of the node unchanged, then pod and claim deleted)
+   xfs-on-ext4 {fsType: xfs} while rw-f/ro-c run: "device 0xc1ae0001: "
+   and "has a filesystem of type ext4, not xfs". rw-f, ro-c deleted.
+   ext4-dirty (debugfs "feature needs_recovery"): dirty-ro (RO): "device
+   0xc1ae0001: ext4 on /dev/pmem" and "needs recovery (it was not
+   unmounted cleanly): a read-only mount cannot recover it, a read-write
+   claim on one node does".
+   squashfs: sq-r (RO) Running, env ACCESS=cached READONLY=1
+   FSTYPE=squashfs, ro squashfs mount, reads, write refused; node mount
+   squashfs ro cached on a dio read-only loop over pmem, attributes
+   ro,nosuid,nodev.  (Not in the contract's list: an added proof of a
+   read-only type without DAX.)
+   erofs: erofs-rw (RW): "device 0xc1ae0001: erofs is a read-only
+   filesystem: set readOnly: true".
+   btrfs (256M): btrfs-direct {access: direct}: "device 0xc1ae0001: btrfs
+   has no DAX: use access cached"; btrfs-ro (RO) Running, env
+   ACCESS=cached READONLY=1 FSTYPE=btrfs, node mount btrfs ro cached; then
+   btrfs-rw (RW, access default): event P9e (A7: btrfs is not upgraded in
+   place), node mount still ro, btrfs-ro still reads; delete btrfs-ro:
+   btrfs-rw Running within 240 s (kubelet retries its Prepare), env
+   ACCESS=cached READONLY=0 FSTYPE=btrfs, writes and reads w.txt; node
+   mount btrfs rw cached on a dio loop with ro 0; singleHost; attachment
+   VM2 exclusive. f2fs-on-btrfs {fsType: f2fs}: "device 0xc1ae0001: " and
+   "has a filesystem of type btrfs, not f2fs".
+   (The contract says "btrfs read-write with access cached"; the test
+   leaves access out and asserts ACCESS=cached, which also proves the
+   default.)
+I  xfs (320M, file put in by a loop mount in VM1): ro-x1 {access: direct}
+   and ro-x2 {access: cached} on VM2, ro-x3 (RO) on VM1, at once: env
+   ACCESS direct/cached/direct READONLY=1 FSTYPE=xfs, ro xfs mounts, read,
+   write refused; VM2 node mounts direct and cached, xfs, superblock ro,
+   nouuid in both; pmem ro 1; driver log lines with "at <mnt>-direct (xfs,
+   ro, " and "at <mnt>-cached (xfs, ro, "; VM1 node mount xfs ro nouuid
+   direct; attachments VM1, VM2 not exclusive. All deleted, fs0-free.
+   rw-x (RW) on VM1: env ACCESS=direct READONLY=0 FSTYPE=xfs, writes and
+   reads x.txt; VM1 node mount xfs rw direct dax=always, pmem ro 0;
+   attachment VM1 exclusive.
+J  ext4 rewritten. ro-j (RO, direct by default) on VM2, then rw-cached
+   {readOnly: false, access: cached}: event P9d (A9), node mount
+   unchanged (ext4 ro direct); both deleted. rw-g (RW, VM2) writes g.txt. lease-a (lease template,
+   VM2): "cxl-request request --serial 0xc1ae0001 --shared --mode fs --name
+   ro --wait 120s --exec sh -c ..." reads g.txt, write refused; its env
+   exactly SERIAL SHARED=1 MODE=fs SIZE PATH=/run/cxl/fs/ro ACCESS=direct
+   READONLY=1 FSTYPE=ext4; list: Ready, pool, fs, fsType ext4, readOnly
+   true, serial, path; lease bind at lease-fs/<claim uid>/ro: ext4, the
+   source of the direct node mount, vfs ro,nosuid,nodev. Then "--read-write
+   --name rw": env READONLY=0, writes l.txt, rw-g reads it; list fsType
+   ext4 readOnly false; bind rw,nosuid,nodev; companion claim class
+   cxl-pool-persistent, shares "1", device {mode: fs, readOnly: false}
+   (readOnly present and false), status data singleHost true; attachment
+   VM2 exclusive. Both released (state Released, companions gone, no lease
+   mounts). lease-b (VM1): "request ... --read-write --wait 30s" exits 3,
+   response state Failed with error containing "timeout: not Ready after"
+   (broker waitReady releases at the timeout), companion gone; then
+   "--wait 0s": state Creating/Pending/Lending, companion claim exists, its
+   AttachFailed Conflict names "\"<VM2>\"", "cxl-request env --lease ID
+   --wait 10s" exits 3; attachment still VM2 exclusive; VM1 no node and no
+   lease mounts; released. All pods, claims, template deleted.
+K  fs0-free; no lease mounts on either VM; no objects in the namespace;
+   no lease-fs directories (60 s); no CDI devices with CXL_C1AE0001_; no
+   cxl-type3 in qemu; image directory removed. Trace summary, TIMING lines.
+EXIT trap (exit-cleanup): dra-cleanup; then fs-held on VM2 and VM1 (node
+mounts of both drivers, lease mounts, loops over pmem): nothing held ->
+pool-cleanup and rm of fs0.raw/fs0.lsa; held -> stop the server only and
+print how to clean up (never releasing a device under a mount).
+
+test21-dra-local-persistent, per phase
+--------------------------------------
+Setup (contract 9): default server --slots "*hb0", no devices (the
+controller and dra-install need it); dra-install; then server local-pmem
+--port 9912 --hosts VM2 --control hmp --slots "*hb1" --local-devices no
+with lp0: 512Mi, shared false, persistent true, serial 0xc100f5e1 (files
+/tmp/fake-cxl-pool-local-pmem/lp0.raw, lp0.lsa, removed first). Started
+after dra-install, so it has no controller (asserted:
+DRA_CONTROLLER_UNITS is fake-cxl-pool-controller only). Attached by
+"fake-cxl-pool-client --server <local-pmem> attach lp0 --host <VM2>
+--owner e2e:test21".
+A  memdev in VM2: Enabled, PmemSize 512Mi, RamSize 0, no region; device
+   memdev-c100f5e1 in the cxl.nri.io slice of VM2 within 360 s (the
+   hold-back line "pool serials: holding back new memdev" printed if the
+   log has one); attributes type memdev, source local, serial, shared
+   false, persistent true, size 536870912, and exactly those plus an
+   optional nodeAffinity (no memoryBlockSize); capacity exactly shares,
+   1M, no requestPolicy; allowMultipleAllocations true; no
+   nodeAllocatableResources; no pool device has the serial. Classes
+   cxl-local-persistent and cxl-local exist; the CEL of
+   cxl-local-persistent has "cxl.nri.io", "memdev" and ".persistent ==
+   true", that of cxl-local ".persistent == false"; a claim of cxl-local
+   with the serial selector stays unschedulable ("cannot allocate all
+   claims").
+B  blk-share (shares 1, {mode: block}): event has "MemoryConfig:
+   device.mode block: a persistent local device is writable only
+   exclusively (no shares request)", nothing mounted, no region. ext4
+   image built in VM2, block writer (no shares, class
+   cxl-local-persistent) writes it: env SHARED=0 MODE=block PATH=/dev/pmem*
+   READONLY=0 SIZE; then the region is released, the memdev stays enabled,
+   no mounts.
+C  fs-rw (shares 1, readOnly: false), fs-ro (shares 1, mode fs): claims
+   allocated (cxl.nri.io, memdev-c100f5e1) on VM2; env exactly SERIAL
+   SHARED=0 MODE=fs SIZE PATH=/run/cxl-fs/C100F5E1 ACCESS=direct
+   READONLY=0/1 FSTYPE=ext4; rw/ro ext4 container mounts; reads hello;
+   CDI kind nri.io/cxl, one bind of cxl.nri.io/mounts/c100f5e1-direct with
+   [bind, nosuid, nodev] / [bind, ro, nosuid, nodev], no deviceNodes;
+   fs-rw writes c.txt, fs-ro reads it, its write refused; node mount under
+   cxl.nri.io/mounts: ext4, superblock rw, dax=always, rw,nosuid,nodev; no
+   mount under the pool driver's mounts; pmem ro 0; driver log "mounted
+   <pmem> at <mnt> (ext4, rw, dax=always)"; one region on the memdev.
+   fs-rw and fs-ro keep running into D. (The image outlived the region
+   of the writer of B: C reads it from a new region.)
+D  leaser (lease template, VM2), next to fs-rw and fs-ro: "cxl-request
+   request --source local --serial 0xc100f5e1 --shared --mode fs --name
+   data --wait 120s --exec sh -c ..." (A2: --shared is one share of a
+   persistent local memdev): env exactly SERIAL SHARED=0 (A12) MODE=fs
+   SIZE PATH=/run/cxl/fs/data ACCESS=direct READONLY=1 FSTYPE=ext4; reads
+   c.txt; write refused; list: Ready, local, fs, fsType ext4, readOnly
+   true, serial, path; companion claim class cxl-local-persistent, shares
+   "1", allocated memdev-c100f5e1, device {mode: fs, readOnly: true};
+   lease bind: ext4 on the source of the cxl.nri.io node mount,
+   ro,nosuid,nodev; the node mount stays rw (fs-rw), pmem ro 0; fs-ro
+   still reads. Released (Released, companion gone).
+E  leaser, fs-rw, fs-ro and the template deleted; region released,
+   memdev enabled; no
+   mounts, no loops, no lease-fs entries, no objects, no CDI devices of
+   CXL_C100F5E1_; "fake-cxl-pool-client guest release 0xc100f5e1" in VM2
+   and "detach lp0 --host <VM2>" on local-pmem; memdev gone; the device
+   leaves the slice within 180 s; no cxl-type3 in qemu.
+EXIT trap: as test20 for VM2 (fs-held), pool-cleanup releases and
+detaches lp0 if still attached, both servers stopped, lp0 files removed.
+
+Driver texts asserted (substrings of pod events unless said otherwise)
+--------------------------------------------------------------------
+  P3   "device 0xc1ae0001: " + "has a filesystem of type ext4, not xfs"
+       "device 0xc1ae0001: " + "has a filesystem of type btrfs, not f2fs"
+  P6   "device 0xc1ae0001: erofs is a read-only filesystem: set readOnly: true"
+  P7   "device 0xc1ae0001: btrfs has no DAX: use access cached"
+  P9a  "device 0xc1ae0001: it is mounted read-write with access direct on this node: access cached would mount it a second time"
+  P9d  "device 0xc1ae0001: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
+  P9e  "device 0xc1ae0001: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
+  P10  "device 0xc1ae0001: ext4 on /dev/pmem" + "needs recovery (it was not unmounted cleanly): a read-only mount cannot recover it, a read-write claim on one node does"
+  F1 local  "MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)"
+  P1 (test90 oracle, any fs reader without a filesystem): "has no filesystem of a type that the plugin knows"
+       (simulator: "device S: /dev/pmemK has no filesystem of a type that the plugin knows (erofs, squashfs, ext4, xfs, btrfs or gfs2): set device.fsType")
+  cxl-request (test12, exit 2, stdout or stderr):
+       "fsType needs mode fs"                       (--fs-type ext4 --size 64Mi)
+       'invalid fsType "Ext4" (lower-case letters, digits, "_" and "-")'
+       "readWrite needs mode fs"                    (--read-write --size 64Mi)
+       "readOnly and readWrite exclude each other"  (--mode fs --read-only --read-write)
+     (exit 1) "device 0xc1ae0001: mode fs needs a persistent device" for
+       --mode fs without --read-only and with --read-write --fs-type ext4
+  broker (test20 J): response state Failed, error contains "timeout: not Ready after"
+  pool server via controller (AttachFailed Conflict message): contains the
+       quoted host name of the attachment in the way ("\"<host>\"").
+
+Log lines asserted
+------------------
+  driver (dra-plugin-log-wait, fixed substrings):
+    "mounted /dev/pmemN at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct (ext4, rw, dax=always)"
+    "remounted /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct read-only"
+    "remounted /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct read-write"
+    "at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct (xfs, ro, "
+    "at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-cached (xfs, ro, "
+    "mounted /dev/pmemN at /var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct (ext4, rw, dax=always)"
+    (printed only: "pool serials: holding back new memdev")
+    The BLKROSET lines are not asserted; /sys/block/pmemN/ro is.
+  controller (journal of fake-cxl-pool-controller, the first writer's line):
+    "attach fs0 to <VM2> for claim cxl-pool-demo/rw-a device fs0 node <VM2>: exclusive for a read-write filesystem claim"
+
+Environment variables asserted (exact sets, dra-env-assert)
+-----------------------------------------------------------
+  fs claims and leases: SERIAL SHARED MODE=fs SIZE PATH ACCESS READONLY FSTYPE
+  block writers: SERIAL SHARED MODE=block SIZE PATH=/dev/pmem* READONLY=0 (no FSTYPE)
+  test16 readers + FSTYPE=erofs; test90 envWant + FSTYPE=erofs.
+
+Status fields, attributes, objects asserted
+-------------------------------------------
+  pool device attributes: coherent (bool, True on fake-cxl-pool devices),
+    test10's exact list [coherent, persistent, serial, shared, size,
+    source, type].
+  local memdev attributes: persistent false (test14, test17 exact lists
+    + persistent); persistent local memdev: type, source, serial, shared,
+    persistent, size, [nodeAffinity]; capacity shares 1M only.
+  claim status data (device_data): singleHost true (writers, exclusive
+    attachment), coherent true, persistent true; readers without
+    singleHost (ro-d).
+  conditions: cxl-pool.nri.io/AttachFailed reason Conflict (watched);
+    Attached True of ro-c kept while rw-f fails.
+  pool server attachments: (host, exclusive, state attached).
+  cxl-request list: fsType (test16 erofs, test20/21 ext4), readOnly,
+    source, mode, path. Companion MemoryConfig device: readOnly explicit
+    (false for --read-write, true otherwise); test16 asserts exactly
+    {mode, readOnly, access}: no fsType key when the lease names none.
+  DeviceClasses: cxl-local-persistent in the chart (DRA_CLASSES, so
+    dra-install, test14 and test17 expect it); its CEL.
+  CDI: kind nri.io/cxl-pool (pool) and nri.io/cxl (local), mount options
+    as contract 4.
+
+Contract amendments A1-A13 (section 13): aligned
+-------------------------------------------------
+A2 test21 D --shared next to claims; A7 test20 H btrfs writer waits for
+the reader (P9e), no upgrade expected for btrfs; A9 P9d in test20 J (P9c
+not tested: F1 refuses first); A12 SHARED=0 for lp0; A13 controller line
+of rw-a only, ro-c without singleHost; A8, A10, A11 internal (the lease
+binds of erofs in test16 are still checked ro,nosuid,nodev, which a plain
+bind of the read-only node mount gives). V9 asserted unchanged ("readOnly
+needs mode dax, fs or block", test12). DRV-POOL's note "the companion
+config of an fs lease without --access has no access": test16's leases
+give --access, its exact companion config check stays; test20/21 check
+mode and readOnly only. The driver texts asserted were checked against
+cmd/plugins/dra-driver-cxl/persistent.go, fsprobe.go and
+pkg/cxl/config/device.go of the working tree (2026-11-02): they match.
+
+Assumptions (not verifiable at the desk)
+----------------------------------------
+- The default path of an fs claim without "path" stays /run/cxl-fs/<KEY>
+  for local devices too.
+- findmnt FS-OPTIONS starts with the superblock flag (ro|rw); VFS-OPTIONS
+  shows rw for writable types (no MOUNT_ATTR_RDONLY) and ro for erofs and
+  squashfs. The loop device of a writable type's cached mount shows ro 1
+  in /sys/block/loopN/ro while the superblock is read-only (BLKROSET on
+  the loop, contract 4) and dio 1.
+- The log data string of an ext4 direct rw mount is exactly "dax=always"
+  (contract 2): "(ext4, rw, dax=always)".
+- A P3 refusal while the node mount exists (xfs-on-ext4) names ext4
+  either way (mountinfo or probe).
+- mkfs.xfs 6.15 accepts a 320M file; mkfs.btrfs --rootdir on a 256M
+  file; blkid knows erofs and squashfs; the busybox dd of
+  python:3-alpine has conv=fsync (test16's writer uses it already).
+- The lp0 device of a persistent fake-cxl-pool device has PmemSize = its
+  size and RamSize 0; the published size is 536870912.
+- The local driver publishes the hot-added lp0 (no pool slice names
+  0xc100f5e1; the default pool has its slice); else the 360 s wait covers
+  the 5 minute hold-back.
+- An AttachFailed Conflict is written to the companion claim of a lease
+  like to any claim, and the scheduler retries while the lease exists.
+
+Expected run time
+-----------------
+  test20: about 30 minutes (7 image builds and writes of about 1 minute
+  each, about 25 claim pods, 6 Conflict watches of up to 2 minutes each
+  bound by the scheduler's backoff, up to 4 minutes for ro-d in E and
+  rw-f in F); 45 minutes worst case before a timeout fails it.
+  test21: about 8 minutes, up to 14 if the driver holds the memdev back.
+  test90 model unit tests: 2 minutes.
+
+Requests
+--------
+R1 (controller, contract 5) A NEW attachment that fails Conflict because
+   one of its wants is exclusive fails every want of its key (today's
+   rule kept by the contract). Two claims of one node, a reader and a
+   writer, allocated in the same reconcile then fail together, and since
+   both go back to the scheduler at the same moment with the same backoff
+   they can keep meeting: the reader may never start although it could.
+   test20 E has exactly that: ro-d (reader) and rw-e (writer) on VM1 after
+   VM2's downgrade; the test waits 240 s for ro-d. Proposed: for a new
+   attachment whose exclusive attach conflicts, attach non-exclusively for
+   the non-exclusive wants (when that does not conflict too) and fail only
+   the exclusive wants: the per-want rule of an upgrade. Without it test20
+   E may flake; with it ro-d starts in one reconcile.
+R2 (broker, contract 6) The companion MemoryConfig of an fs lease without
+   --fs-type must have no fsType key (omitempty): test16's
+   lease-companion-check asserts the device section exactly {mode:
+   fs, readOnly: true, access}. If the broker writes the detected type or
+   "", test16 changes (tell E2E).
+R3 (broker/API) "cxl-request list" entries and request responses of fs
+   leases carry fsType (api.Response.FsType): test16, test20, test21
+   assert it.
+R4 (contract 6/7, DOC) resolved by A2: test21 D leases one share
+   (--shared) next to the running claims. DOC: leases.md still lists
+   "--shared with ... a local memdev that is not configured shared" as
+   "not shareable"; with A2 that is a volatile one only.
+R5 (info for DRV-POOL) test90's fs readers on a device without a
+   filesystem now expect P1, "has no filesystem of a type that the plugin
+   knows", in the Warning event (no fsType declared, no signature).
+
+Facts read from the VMs (read-only ssh, 2026-11-02)
+---------------------------------------------------
+- VM1 and VM2: 7.3.0-rc4, CONFIG_EXT4_FS, XFS_FS, BTRFS_FS, SQUASHFS,
+  EROFS_FS, FS_DAX all =y; f2fs not in /proc/filesystems.
+- Both: e2fsprogs 1.47.3, btrfs-progs 6.17, blkid, debugfs, dumpe2fs;
+  xfsprogs and squashfs-tools not installed; erofs-utils only on VM1.
+- VM2 root decoders: decoder0.0 cap_pmem 1 (target 12, host bridge
+  pci0000:0c), decoder0.1 cap_pmem 1 (target 24, pci0000:18): both
+  windows allow persistent memory. Topology (topology.var.json): host
+  bridge 0 has 2 pool slots, the static shared device and the 1G local
+  device; host bridge 1 has 4 pool slots. So local-pmem gets "*hb1", the
+  default server "*hb0" (as test19's pools).
+
+Security changes (A20, A21; 2026-11-03)
+---------------------------------------
+A20 fsTypes defaults to [erofs]:
+- test20 installs the driver with DRA_DRIVER_CONFIG="fsTypes: [erofs,
+  squashfs, ext4, xfs, btrfs]" (helm values "config:", dra-helm-values),
+  header says so.
+- test21: phase B2, after the block writer wrote the ext4 and with the
+  driver on its default configuration: fs claim ext4-default (shares 1,
+  {mode: fs}) refused, pod event contains
+    "filesystem type ext4 is not allowed on this node (fsTypes: erofs)"
+  nothing mounted, region gone; then DRA_DRIVER_CONFIG="fsTypes: [erofs,
+  ext4]" and dra-install again (EXIT trap set again, trace follows the new
+  driver pod, ConfigMap of the tools again, still one controller), lp0
+  published again within 360 s; C, D, E as before.
+- dra.source.sh: DRA_UNCONTROLLED_POOLS (servers of pool-server-start
+  without a pool controller; dra-install skips them, dra-pool-names and
+  so dra-wait-node leave them out). test21 lists local-pmem there, so the
+  second dra-install starts no controller for it (before, it was safe
+  only because local-pmem started after the only dra-install).
+- test16, test12, test90 stay on the default (erofs only): unchanged.
+A21 the lease socket directory is read-only in containers:
+- dra-lease-cdi-assert (used by test12 and test16): the mount of
+  <leases>/<uid> at /run/cxl has options [rbind, ro] (was [rbind, rw]).
+- test12 A: after the lease CDI check, "touch /run/cxl/x" in container
+  main fails with "Read-only file system", nothing appears in
+  <leases>/<uid> on the node, and "cxl-request list" still works (empty).
+  Every later lease of test12 also goes through the socket.
+- e2e.md rows of test12, test20, test21 updated.
+Checks: bash -n of dra.source.sh + S2/*.source.sh + code.var.sh of test12,
+test16, test20, test21: ok; shellcheck with the exclusions on
+dra.source.sh, fs.source.sh and test10/12/14/16/17/20/21: no findings;
+ASCII. test90 model not touched by these changes (its tests passed
+before).
+
+E2E done

@@ -1,0 +1,136 @@
+plan-14: final status
+=====================
+Written 2026-11-02 (orchestrator). Branch 5jg-cxl at 78a3e449f plus the
+working tree; nothing committed. Contract 04-contract.txt with amendments
+A1-A19; runs in 06-runs-E2E.txt; review in 07-review-DRV.txt.
+
+Result
+------
+Mode fs of the CXL DRA driver mounts any block filesystem:
+- The plugin detects erofs, squashfs, ext4, xfs, btrfs and gfs2 from the
+  superblock. device.fsType (optional) must match, or names a type the
+  plugin does not know. The node's driver configuration key fsTypes
+  decides which types are mounted (default: the six known types).
+- Read-write mounts are opt-in: readOnly: false. For mode fs an absent
+  readOnly means read-only.
+- On one node there is one superblock per device. It is read-write while
+  a claim of the node writes, and containers get read-write or read-only
+  binds of it. ext4 and xfs are upgraded and downgraded in place; other
+  writable types make a writer wait until the node's readers are gone.
+  /dev/pmemK is read-only (BLKROSET) whenever the node has no writer, so
+  read-only mounts never write (xfs would), a dirty filesystem is
+  refused, and nobody can remount it read-write. Every mount namespace is
+  checked: a superblock of the device that no claim explains keeps
+  writers and read-only flag changes back.
+- Across nodes, ReadWriteOnce is enforced by the pool controller with
+  exclusive per-host attachments (also across clusters). Claims of other
+  nodes wait with AttachFailed reason Conflict. The node mounts read-write
+  only when the claim status says singleHost (or exclusive), so a
+  controller without this rule fails writes instead of corrupting.
+- Cluster filesystems (gfs2 lock_dlm) may be read-write on several nodes,
+  but only on a device the pool marks coherent (attribute coherent,
+  status data coherent). This path is unit-tested only (user decision Q2).
+- Persistent local memdevs: published by cxl.nri.io with persistent: true
+  and shares 1M (class cxl-local-persistent), modes block and fs, the
+  same rules on the same shared code; sharedDevices memdevs are written
+  only by a cluster filesystem with memdevSettings coherent.
+- Leases of mode fs mount any type, read-only by default, read-write with
+  --read-write, the expected type with --fs-type; local sources are
+  supported.
+
+Answers to the task's questions (00-README, 02-design "Answers in short"):
+- Two pods may share a read-write mount on one node.
+- A read-write pod and a read-only pod may share the device on one node.
+- Read-write on two nodes is refused for single-host filesystems and
+  allowed for cluster filesystems on coherent memory.
+- A writer and readers on different nodes: the readers wait.
+- The driver knows a mount is dangerous from the superblock type plus the
+  pool's facts (shared, exclusive, singleHost, coherent).
+
+Code (stat of tracked files: 52 changed, +2975 -1502; new files about
+7800 lines with tests):
+- pkg/cxl/config (fstypes.go, device rules F1-F3, IsReadOnly,
+  DeviceFacts, ExclusiveHost), pkg/cxl/api, pkg/cxl/device, cmd/cxl-request.
+- cmd/plugins/dra-driver-cxl: persistent.go and fsprobe.go (the shared
+  code), mount.go (the new mount API, BLKROSET, loops, the superblock
+  scan over all mount namespaces), mount_fake_test.go (a fake that models
+  block devices and superblocks and records rule violations),
+  pool*.go, broker.go, local_persistent.go, node_state.go, local.go,
+  driver.go.
+- scripts/testing/fake-cxl-pool/pkg/controller: attribute coherent,
+  exclusive attachments for writers, singleHost/coherent status data,
+  per-want failures and fallback.
+- deployment/helm/dra-driver-cxl (classes, schema, values, README),
+  deployment/samples/dra-driver-cxl (pool-persistent-fs-rw.yaml,
+  local-persistent-fs.yaml).
+- docs/memory/cxl usage.md, pool.md, local.md, leases.md, index.md, e2e.md;
+  docs/deployment/helm/dra-driver-cxl.md.
+- e2e: new test20-dra-fs-read-write, test21-dra-local-persistent,
+  fs.source.sh; test10, test12, test14, test16, test17 and the test90
+  model updated.
+
+Verification
+------------
+unit: gofmt clean; go vet and go test -race pass for pkg/cxl/...,
+  cmd/cxl-request, cmd/plugins/dra-driver-cxl and fake-cxl-pool/...
+  (TestMemdevSettings, failing on HEAD since c55476444, is fixed);
+  golangci-lint of the changed packages has no findings; helm lint and
+  helm template pass.
+probes: probe1 and probe2 on VM0 (01-findings K3-K7, K14-K16).
+e2e on the final image nri-dra-driver-cxl-image-b86cf8d56946.tar, one
+  run at a time: test20 PASS twice (12m03s, 11m47s), test21 PASS twice
+  (2m17s, 2m16s); test16, test12, test10, test13, test14, test15, test17,
+  test18, test11, test19 PASS; test90 with MBT_DURATION=30m PASS (736
+  steps, no model mismatch). Earlier image 1631d8c97a93: test20 PASS on
+  its first run; test21 failed once on a test bug (fixed).
+review: an independent Opus reviewer found B1 (superblocks in other
+  mount namespaces were invisible: fixed by A17), R1 (fixed, A18), R2
+  (refuted from the kubelet source: NodeUnprepare runs before the
+  terminal phase; only force deletion or a lost node opens the window,
+  now documented), S1-S7 (fixed or documented).
+
+Open
+----
+O1 Cluster filesystems are not tested end to end: the e2e kernel has no
+   GFS2 and the VMs have no corosync/dlm (user decision Q2).
+O2 The open_tree + mount_setattr read-only lease bind from the driver
+   container is proven only by test20 phase J (it passes).
+O3 Force deletion of a writer's pod, or a lost node, can let another node
+   mount while the first still writes (pool.md hazard; no fencing).
+O4 Upgrading the chart: until the new driver republishes its slices,
+   claims of cxl-local and cxl-local-shared do not allocate (their
+   classes test the new attribute persistent).
+O5 Mounting means the node kernel parses what the writer wrote: restrict
+   fsTypes for untrusted writers (erofs is designed for that; ext4, xfs
+   and btrfs are not).
+O6 E2E rewrote the event texts in the untracked fixture
+   test90-gofmbt-reliability/model/recorded/fp4-fail-1177.json to the new
+   P1 text (the replay test needs it).
+O7 At commit time: go mod tidy, if json-patch and sigs.k8s.io/json became
+   direct dependencies (plan-12 O6, still open).
+
+Security changes (2026-11-03, user)
+-----------------------------------
+- fsTypes defaults to [erofs] (A20): only erofs is designed for untrusted
+  images; another type is the admin's statement of trust in every party
+  that can write the node's devices raw. Both drivers and the shared
+  code's fallback; chart values, schema, README and samples say so.
+- The lease socket directory is mounted read-only at /run/cxl (A21,
+  review H-1): a container cannot write the host directory. The socket is
+  bound in a driver-only directory, given its mode there and renamed into
+  place (nothing follows a path that an older read-write container could
+  have replaced); the directory's entries are removed by name, without
+  the broker lock.
+- e2e: test20 and test21 configure fsTypes explicitly; test21 proves the
+  default refuses ext4 (P4 event "filesystem type ext4 is not allowed on
+  this node (fsTypes: erofs)"); test12 proves /run/cxl is read-only
+  ("touch: /run/cxl/x: Read-only file system") while cxl-request works;
+  the lease CDI assertions expect rbind,ro. Docs updated (DOC phase 4).
+- Verification on image nri-dra-driver-cxl-image-b0a0eb6c6c91.tar: unit
+  tests, vet, gofmt, lint clean; test21, test20, test12, test16, test15,
+  test13, test18 PASS, test90 20 min PASS (507 steps).
+- Open (O8): the security review (08-review-security.txt) covers H-1
+  only; its remaining scope (lease ownership and caller identification,
+  protocol limits, companion objects, whether a class can force
+  read-only, the controller, RBAC) was not reviewed: both attempts were
+  cut off.

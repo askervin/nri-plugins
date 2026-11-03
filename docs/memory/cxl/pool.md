@@ -291,7 +291,8 @@ read in place.
 
 A filesystem of a persistent device is shared the same way, read-only on
 any number of hosts. A read-write `fs` claim (`readOnly: false`) of a
-single-host filesystem (ext4, xfs, btrfs) is ReadWriteOnce: the claims of
+single-host filesystem (ext4, xfs, btrfs, on nodes whose `fsTypes` lists
+it; the default is erofs only) is ReadWriteOnce: the claims of
 its node, read-write and read-only, share the device, also with one share
 each, and claims of other nodes wait (`AttachFailed` reason `Conflict`)
 until the writing claims are deallocated

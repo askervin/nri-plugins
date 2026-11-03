@@ -331,7 +331,8 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond, e.leaseFsRoot, e.bootID)
+	// the tests mount every known type; the default is erofs only
+	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond, e.leaseFsRoot, e.bootID, config.KnownFsTypes...)
 	if err != nil {
 		t.Fatal(err)
 	}

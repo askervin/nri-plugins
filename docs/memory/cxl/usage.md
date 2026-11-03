@@ -910,18 +910,23 @@ the lock protocol of gfs2 is that of its superblock.
   is the detected type.
 
 Then the type must be one that the node mounts: `fsTypes` of the
-[configuration file](#configuration-file) (default `erofs`, `squashfs`,
-`ext4`, `xfs`, `btrfs`, `gfs2`; a type that the plugin does not know
-mounts only when the list has it), and never one that
-`/proc/filesystems` marks `nodev` (`tmpfs`, `nfs`, `overlay`).
+[configuration file](#configuration-file), by default `[erofs]` only (a
+type that the plugin does not know mounts only when the list has it),
+and never one that `/proc/filesystems` marks `nodev` (`tmpfs`, `nfs`,
+`overlay`).
 
 Mounting a filesystem means that the kernel of the node parses metadata
 that whoever wrote the device chose. erofs is designed for untrusted
-images; ext4, xfs and btrfs are not hardened against crafted images.
-With mode `block` and read-write `fs`, a tenant chooses what the kernels
-of other nodes parse. So the types that a node mounts are the admin's:
-`fsTypes: [erofs]` on the nodes whose devices untrusted tenants may
-write.
+images; squashfs, ext4, xfs, btrfs and gfs2 are not hardened against
+crafted images. Whoever can write a device raw (a read-write `block`
+claim or lease of it, on any node of any cluster that shares the pool,
+and a read-write `fs` claim) chooses what the kernels of the nodes that
+mount it parse. So the types that a node mounts are the admin's, and the
+default is erofs alone: with it no read-write mount is possible (erofs is
+read-only), and an image is mounted only when it is an erofs. A type
+added to `fsTypes` trusts every party that can write the node's devices
+raw, for example `fsTypes: [erofs, ext4]` for the read-write filesystems
+of the samples.
 
 #### One node: superblock, block device, binds
 
@@ -1086,7 +1091,9 @@ with `device 0x<serial>: ` (`<dev>` `/dev/pmemK`):
 - `<dev> has a filesystem of type <found>, not <declared>`
 - `<dev> has no filesystem of type <declared> (no signature of a type that the plugin knows)`:
   a known type is declared, and the device has no signature of any.
-- `filesystem type <t> is not allowed on this node (fsTypes: <t1>, <t2>, ...)`
+- `filesystem type <t> is not allowed on this node (fsTypes: <t1>, <t2>, ...)`:
+  with the default `fsTypes` every type but erofs (`fsTypes: erofs`), with
+  an empty list `fsTypes: none`.
 - `filesystem type <t> does not mount a block device`: `/proc/filesystems`
   marks it `nodev`.
 - `<t> is a read-only filesystem: set readOnly: true`: a read-write claim
@@ -1725,6 +1732,9 @@ the shared pool device `0xc1ae0001`.
     that a writer in mode `block` stored in the persistent pool device
     `0xc1ae0001`
     ([pool-persistent-fs-rw.yaml](blob:/deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml)).
+    The node must allow ext4 (`fsTypes: [erofs, ext4]` in the
+    [configuration file](#configuration-file)), which trusts every raw
+    writer of its devices.
     The writer, one share, read-write:
 
     ```yaml
@@ -1753,7 +1763,8 @@ the shared pool device `0xc1ae0001`.
 
 17. A persistent local memdev `0xc100f5e1`: a writer in mode `block`
     without a capacity request stores an ext4 in it; then claims of one
-    share each mount it read-write or read-only
+    share each mount it read-write or read-only (with ext4 in `fsTypes`,
+    as for 16)
     ([local-persistent-fs.yaml](blob:/deployment/samples/dra-driver-cxl/local-persistent-fs.yaml)):
 
     ```yaml
@@ -1823,7 +1834,7 @@ memdevSettings:
   usableSize: 128Gi
 - device: "0xc100f5e2"
   coherent: true
-fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]
+fsTypes: [erofs, ext4]          # default [erofs]; ext4 trusts every raw writer of the devices
 verifyAddressing: true
 udevStableDuration: 200ms
 defaults:
@@ -1845,7 +1856,7 @@ defaults:
 | `udevStableDuration` | duration | `200ms` | quiet period after the last udev event before the devices are scanned again |
 | `manageMemdevs` | bool | `true` | publish the local memdevs that have no region and create their regions for claims |
 | `memdevSettings` | list | | settings of individual local memdevs: `device` (name `mem0` or serial in decimal or `0x` hex), `usableSize` (quantity): only the first `usableSize` bytes of the memdev are published and mapped by its regions ([local.md](local.md#broken-and-aliased-memory); not for persistent memdevs), and `coherent` (bool, default `false`): the memory of the memdev is coherent between the hosts that share it (`sharedDevices`), so that a cluster filesystem may be read-write on it ([local.md](local.md#persistent-local-memdevs)) |
-| `fsTypes` | list of strings | `[erofs, squashfs, ext4, xfs, btrfs, gfs2]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. A type that the plugin does not know may be listed (class single-host, [Filesystems](#filesystems)); `[erofs]` keeps the node's kernel from parsing anything else that tenants write, `[]` mounts nothing. The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node` |
+| `fsTypes` | list of strings | `[erofs]` | the filesystem types that mode `fs` mounts on the node, for both drivers; a list replaces the default. erofs is the only type designed for untrusted images: every other type in the list (`squashfs`, `ext4`, `xfs`, `btrfs`, `gfs2`, or one that the plugin does not know, class single-host, [Filesystems](#filesystems)) trusts every party that can write the node's devices raw, that is the read-write `block` claims and leases of the devices on any node of any cluster that shares the pool. With the default no read-write mount is possible. `[]` mounts nothing (the refusal says `fsTypes: none`). The plugin logs the list at start: `fsTypes: <t1>, <t2>, ...: the filesystem types that mode fs mounts on this node`, or `fsTypes: none: mode fs mounts no filesystem on this node` |
 | `verifyAddressing` | bool | `true` | run an address line test on every new region of a local memdev of RAM, and use only the distinct bytes of a memdev whose memory aliases ([local.md](local.md#broken-and-aliased-memory)); persistent memdevs are not probed |
 | `defaults.container.steering` | object | `{policy: none}` | the steering of every container of the node whose results do not set it, the fields of `container.steering` ([MemoryConfig fields](#memoryconfig-fields), [Steering](#steering)); `{policy: auto}` steers every container with `numa` memory |
 | `defaults.container.fencing` | string | `allowed-mems` | how the plugin manages the memory of containers on the CXL nodes it onlines: `allowed-mems`, `mempolicy` (not implemented) or `none` ([Containers without claims](#containers-without-claims)) |

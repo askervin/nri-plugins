@@ -1,0 +1,651 @@
+plan-14: status of stream DRV-LOCAL
+==================================
+Files (implementation phase): D/local.go, local_probe.go, node_state.go,
+node_slices.go, driver.go, prepared_claims.go, new local_persistent.go and
+their tests; H/** (deviceclasses, values, schema, chart README);
+N/deployment/samples/dra-driver-cxl/**. Paths and names as in 04.
+
+Study phase (2026-11-02): read 00-04, the skills, DOC local.md, usage.md
+(Configuration file, Persistent memory), pool.md (node plugin), P9, P4
+01-findings, P13 bug-12/14/21/22; the code of node_state.go, local.go,
+local_probe.go, driver.go, prepared_claims.go, node_slices.go,
+pool.go/pool_persistent.go (as the model), broker.go (companions, read
+only), lending.go, memctl/pmem.go, pkg/cxl devices.go. No Go file edited.
+05-status-DRV-POOL.txt did not exist yet: "Needs from the shared code"
+(7.4) is what this design assumes; the implementation adapts to the
+interface DRV-POOL writes.
+Baseline note: API's baseline lists TestMemdevSettings failing at HEAD
+(local_probe_test.go:53). Cause: configuredUsableSize compares the
+setting text with fmt "0x%x", so "0x0badc0dedeadbeef" (leading zero)
+never matches serial 0xbadc0dedeadbeef. Fixed in the implementation by
+matching a serial setting numerically (api.ParseSerial); coherent (8)
+uses the same matcher, so it must be right.
+
+
+Design (study phase)
+====================
+
+1. Publication (contract 7), node_state.go
+------------------------------------------
+Where: addLocalMemdevs, a new branch before the shared and the sliced
+branches; ResourceSlice device in localMemdevDevice.
+- persistent := memDev.PmemSize > 0 && memDev.RamSize == 0.
+  - persistent: addPersistentMemdev(devInfos, cfg, memDev, shared,
+    regions, local, poolSerials, held), shared = listed in sharedDevices
+    and no refusal (sharedListingHeld, unchanged; its refusals are still
+    logged once by logSharedRefusal). Not published, V(4) "- not
+    publishing memory device %q as a persistent local memory device:
+    <reason>", in this order: ignoreDevices (memdevIgnoreReason), pool
+    device, held back (heldReason), disabled, "it has regions %v that the
+    plugin did not create" (regions on the memdev and !used), "used as
+    slices by claims %v" / "used shared by claims %v" (state not
+    persistent, with claims), "used as a shared|not shared persistent
+    device by claims %v" (state persistent, its Shared != shared, with
+    claims: a change of sharedDevices takes effect when the device is
+    idle, as for shared local devices). The block size does not matter
+    (bs 0 is fine), memdevUsableSize and the probe do not apply.
+  - RamSize > 0 && PmemSize > 0: today's path (RAM), plus V(3) "- memory
+    device %q: persistent capacity of a memdev with RAM capacity is not
+    used" (every scan, V(3)).
+  - sliced branch: one more refusal "used as a persistent device by
+    claims %v" (state persistent with claims; a repartitioned memdev).
+- device.Memdev{Name, Serial, Size: PmemSize, NodeAffinity, Shared,
+  Persistent: true}, BlockSize 0. Request R1 (DEV): Memdev.Persistent.
+- localMemdevDevice: Persistent -> persistentMemdevDevice(name, dev):
+    attributes type memdev, source local, serial, shared (bool),
+      persistent true, size (PmemSize), nodeAffinity when >= 0
+    capacity shares {value: device.SharesUnlimited} (no requestPolicy)
+    allowMultipleAllocations true; no memoryBlockSize, no NAR.
+  sliced (localMemdevDevice) and shared (sharedMemdevDevice) gain
+  device.AttrPersistent false. Regions, dram, lease: unchanged (the
+  classes test type first).
+- Regions: the allocator's pmem region is hidden by localIgnoreReason
+  (local.uses(serial)) as today: the device is recorded before
+  cxl create-region runs (bug-22 order kept). A foreign region on a
+  persistent memdev: memdev not published (as above); the region itself
+  goes through today's region filter (see Q3).
+- poolSerials / hold-back: unchanged (Gate is per serial, mode-blind): a
+  hot-added persistent memdev is held back like any new memdev; Acquire
+  checks poolGuard (checkPool) before it creates the region.
+- localUse gains Persistent bool (updateSnapshot from localDevice).
+
+2. Allocator (local.go, local_persistent.go)
+--------------------------------------------
+New vs reused. localDevice gains (all omitempty, old files load as
+today):
+  Persistent  bool    a memdev of persistent memory: one pmem region,
+                      never sliced, zeroed, probed or onlined
+  NdRegion    string  nvdimm region of Region; "" while the region is not
+                      set up (the role of Dax for volatile devices)
+  Namespace, BlockDevice, BlockMajor, BlockMinor   the fsdax namespace
+                      (map mem) of NdRegion and its block device, "" none
+  Shared      (existing) for a persistent device: in sharedDevices when
+                      its region was created (facts, publication check)
+localSlice gains, for a persistent user (one per allocation result):
+  Mode block|fs, ReadOnly (effective), Size (namespace size), Access,
+  FsType (detected), NodeMount, LoopDevice, Path. Dax fields empty.
+Claims: d.Claims[uid] = the users of the claim. The superblock state and
+BLKROSET are derived from the users with slices (writer = fs read-write
+or block read-write), never stored (contract 4).
+Example entry of localDevices.json:
+  {"serial":3238065633,"serialHex":"c100f5e1","memdev":"mem2",
+   "region":"region3","node":-1,"persistent":true,"ndRegion":"region3",
+   "namespace":"namespace3.0","blockDevice":"/dev/pmem3",
+   "blockMajor":259,"blockMinor":0,
+   "claims":{"<uid>":[{"request":"mem","region":"region3","mode":"fs",
+     "size":4261412864,"access":"direct","fsType":"ext4",
+     "nodeMount":"/var/lib/kubelet/plugins/cxl.nri.io/mounts/c100f5e1-direct",
+     "path":"/run/cxl-fs/C100F5E1"}]}}
+
+AcquirePersistent(ctx, claimUID, request, serial, want) (*localSlice,
+error), local_persistent.go, under a.mu (like Acquire/AcquireShared);
+want = {Mode, ReadOnly, Access, FsType, Path, Facts, Claim (for texts)}:
+ 1. a == nil: "local memdevs are not managed (manageMemdevs: false)";
+    checkPool(serial); memdev := FindMemdev; mem.Persistent(memdev) else
+    "device 0x%x: %s has no persistent memory" (pool text).
+ 2. persistentDevice(ctx, serial, memdev, want.Shared, uid) (mirrors
+    sharedDevice):
+    - d exists, !d.Persistent: claims -> "memdev %s (serial 0x%x): used
+      as slices by claims %v; a persistent device cannot be sliced" (or
+      "used shared by claims %v; ..."); none -> releaseOrphans,
+      releaseRegion, d = nil.
+    - d.Persistent, d.Shared != want.Shared, other claims -> "memdev %s
+      (serial 0x%x): used as a shared|not shared persistent device by
+      claims %v" (stale allocation; not published meanwhile).
+    - region recorded but not in mem.Regions(memdev): warn "%s of the
+      persistent device is gone, forgetting it and its claims %v",
+      forget d (the claims' CDI devices go, 3 restart).
+    - not set up (Region "" or NdRegion ""): adoptCreated; Region != ""
+      -> releaseInOrder: above -> setUpPersistent (EnableRegion when its
+      nvdimm region is missing, wait for it, Namespaces); else d = nil.
+    - set up: reused as it is (persistent data: no zeroing, ever; an idle
+      device kept after a held release is reused too).
+    - checkRegions(memdev, d); new d {Persistent, Shared, Node -1,
+      Claims{uid: nil}} saved before the region (bug-22), then
+      createPmemRegion: mem.CreatePmemRegionNoted(ctx, memdev, "",
+      a.regionNote(d)) with the add_dev retry of createRegion, log
+      "local: memdev %s (serial 0x%x): created %s (pmem, nvdimm %s) in
+      %s", save. Error: NdRegion = "", dropUnused (keep when above).
+ 3. namespace: FsdaxNamespace(namespaces); none: mode fs or read-only ->
+    "device 0x%x: no fsdax namespace in %s: has a writer written the
+    device?" (pool text); writable block -> mem.CreateFsdaxNamespace;
+    recorded on d.
+ 4. block: the shared code sets BLKROSET from the users plus this one
+    (N3). fs: the shared code (N2) probes, checks P4-P10 with fsTypes,
+    the facts and the other users (P9), mounts or upgrades the node mount
+    <data dir>/mounts/<hex>-<access>.
+ 5. append the slice to d.Claims[uid], log "local: memdev %s (serial
+    0x%x) %s: claim %s request %s: persistent %s mode %s read-only %v
+    access %q fs %q block %s", updateSnapshot, save.
+ Error after step 2: the shared code undid its own mount/upgrade; this
+ claim's empty entry goes with dropUnused when it has no other user
+ (holder wait first, N5; releaseOrKeep: decoder order).
+Release (releaseClaim branches first on d.Persistent ->
+releasePersistent(ctx, d, uid, keep)):
+ - per slice of the claim: N4 with the remaining users (unmount the
+   access mount when it has no user left, or downgrade when the last
+   writer went; BLKROSET); an error keeps the slices (Unprepare fails,
+   kubelet retries); done slices are dropped.
+ - other claims left: delete(d.Claims, uid), done.
+ - last claim: d.Claims[uid] = nil (holds the region), holder wait on
+   BlockDevice (N5, defaultHolderWait 10 s per Release call; error ->
+   kept, kubelet retries), then keep ? releaseOrKeep : releaseRegion
+   (memctl.ReleaseRegion: labels and data untouched; the memdev stays
+   enabled, never disable-memdev). Log as today ("released %s").
+ Unprepare uses releaseRegion like volatile devices (no order check);
+ ReleaseFailed and Reconcile use releaseOrKeep (keepRegion).
+Branches that must test Persistent first (regressions otherwise):
+ device() (refuse "used as a persistent device by claims %v; ..."),
+ sharedDevice() (same), releaseClaim, reconcileDevice, releaseShared is
+ never reached, keepRegion (sets Dax and NdRegion ""; deleteOrphans
+ skipped: a pmem region has no dax devices of the allocator, a devdax
+ namespace's must never be deleted), adoptCreated (NdRegion "" too),
+ spanKept/setUpRegion/probe/zero never for persistent. a.shared (idle
+ regions of volatile shared devices) is never consulted: a persistent
+ device's region goes with its last claim, shared or not (contract 7).
+Reconcile (start, under a.mu): reconcileDevice -> memdev gone / Region
+"" (reconcileCreating, unchanged: hollow and cut creations, pool
+serials) / region gone as today; then reconcilePersistent: users of
+claims not in prepared are dropped (no device work per user) and
+collected as unfinished; the namespace now is checked against the
+recorded one (name, block device, numbers; pool's checkBlockDevice
+rule): differs -> the users' claims are unrestored (3). After all
+devices: the shared restore (N6) mounts the wanted node mounts with the
+derived superblock state, up/downgrades, sets BLKROSET, sweeps
+<data dir>/mounts; then idle persistent devices (no users): unfinished
+-> releaseOrKeep, else releaseRegion, each only when nothing holds the
+block device now (no wait at start); held -> kept, logged "keeping %s of
+the idle persistent device: %s is held: %s" (published, reused by the
+next claim, released by a later Release or start).
+Reboot: unchanged: a localDevices.json of another boot is dropped
+without touching any region; claims of another boot are not prepared
+(forgetOtherBoot); the Prepare again creates the region anew; the data
+is on the device. Stale dirs under mounts/ are removed by the sweep.
+
+3. Prepare / Unprepare (node_state.go, local_persistent.go)
+-----------------------------------------------------------
+prepareLocalMemdev: dev.Persistent -> prepareLocalPersistent (new file):
+ - shares, err := consumedShares(serial, r) (every persistent memdev has
+   shares; "< 1" refused before anything); a result that consumed
+   "memory" -> "claim %s/%s: request %s: device 0x%x: allocated as a
+   device of volatile memory, which it is not any more".
+ - facts (API's type, contract 1): Local true, Persistent true, Shared
+   dev.Shared, Exclusive shares >= device.SharesUnlimited, SingleHost
+   !dev.Shared, Coherent s.config.memdevCoherent(dev.Name, dev.Serial).
+ - mode via API's mode function with the facts (F1 local text, F2, F3,
+   B/fs needs persistent, ...), readOnly = cfg.IsReadOnly(), fsType =
+   cfg.FsType, access = cfg.Access ("" decided after the probe), path =
+   cfg.Path or defaultFsPath(key), key = the env key of the result
+   (keys.next(api.Key(serial,1)) over the memdev results in
+   prepareAllocatedDevices order: the same keys as memory()).
+ - texts: "claim NS/NAME: request R: " + the text of 1 or 3/4 (those of
+   3/4 start "device 0x<serial>: ").
+ - s.local.AcquirePersistent(...) -> devInfo: DeviceType memdev, Mode,
+   Serial, Shared, SysfsPath (region), NodeAffinities, TotalBytes =
+   ConsumedBytes = namespace size, ReadOnly (effective), and new
+   PreparedDeviceInfo fields (omitempty): Persistent, Namespace,
+   BlockDevice, BlockMajor, BlockMinor, Access (effective), Path,
+   NodeMount, LoopDevice, FsType. Contract 4 "the prepared device
+   records FsType and ReadOnly".
+CDI (buildClaimsCDISpec): block -> DeviceNodes [blockDeviceNode by
+value, "r" when read-only]; fs -> Mounts [fsMount: bind, (ro,) nosuid,
+nodev; HostPath NodeMount, ContainerPath Path]; no device node of fs.
+memory(): Path (block: BlockDevice, fs: Path), Access, FsType,
+ReadOnly, Shared, Size = TotalBytes; env by api.Env: MODE, PATH, ACCESS,
+READONLY, FSTYPE (fs), SERIAL, SHARED, SIZE; marker as today.
+Unrestored claims (nodeState.unrestored, uid -> why, from the allocator
+after Reconcile and N6): no CDI devices for the claim (pool's rule,
+companions aside), logged as the pool does; prepare() of an already
+prepared unrestored claim calls s.local.RemountPersistent(ctx, uid) (N6
+for its devices): mounted -> CDI devices back (persist); else the
+pool's text "device 0x%x: its node mount %s is not mounted and cannot
+be mounted again: %v; unprepare the claim (delete its pods) to prepare
+it anew". A block user whose namespace changed stays unrestored until
+its Unprepare.
+Unprepare: unchanged order plus N7 unbind (below); s.local.Release.
+Prepare failure: releaseLocal -> ReleaseFailed (releasePersistent with
+keep). forgetGoneSlices: extended by the unrestored set (never a stale
+block device node or bind).
+lentDevices: BlockDevice, Access, NodeMount, Size, Shared, ReadOnly for
+persistent devices (the broker opens BlockDevice for an fd).
+Restart: newLocalHelper sets the shared persistent object (5) before
+Reconcile; newNodeState gets the unrestored set; lease binds restored
+after (4).
+
+4. Leases from local persistent memdevs
+---------------------------------------
+- nodeState.prepare, companion claim (lend != nil): after
+  prepareAllocatedDevices, for each fs device: N7 bind of NodeMount at
+  rec.FsDir/rec.Name (read-only: open_tree clone + mount_setattr;
+  read-write: MS_BIND; checked; "lease %s: the device is of mode fs,
+  the lease is not", one fs device per lease: the pool's checks),
+  rec.Mounts recorded, then lendClaim; any error: unbind, revoke,
+  failed, releaseLocal (as the pool's fail path).
+- block: nothing to bind; lentDevices.BlockDevice is what the broker
+  opens for "fd" (read-only per lease); BLKROSET follows the users (a
+  read-write block lease is an exclusive writer, F1).
+- unprepare: releasing, revoke, N7 unbind (busy -> error, kubelet
+  retries), then s.local.Release (the bind holds the superblock).
+- restart: binds of prepared local companion claims bound again when
+  their node mount is mounted (N7 restore); the lease-fs sweep must
+  know both drivers' binds (Request R4).
+- Broker (DRV-POOL, Request R3): companions of local persistent memdevs.
+
+5. Driver configuration (contract 8), driver.go, local_probe.go
+---------------------------------------------------------------
+DriverConfig:
+  // FsTypes are the filesystem types that mode fs mounts on the node,
+  // for both drivers; nil is config.KnownFsTypes, [] mounts none.
+  FsTypes []string `json:"fsTypes,omitempty"`
+MemdevSetting:
+  // Coherent tells that the memory of the memdev is coherent between
+  // the hosts that share it (sharedDevices).
+  Coherent bool `json:"coherent,omitempty"`
+- Strict parsing unchanged (yaml.UnmarshalStrict: unknown keys refused).
+- validate(): every FsTypes entry config.ValidFsType, else
+  fmt.Errorf(`fsTypes: invalid filesystem type %q (lower-case letters,
+  digits, "_" and "-")`, t) - start fails (newDriverConfigFromString).
+  Duplicates allowed. Unknown names allowed (class single-host).
+  memdevSettings: an entry with only device and coherent is valid.
+- fsTypes() returns a copy of config.KnownFsTypes when nil; start log
+  V(0) "fsTypes: erofs, squashfs, ext4, xfs, btrfs, gfs2: the filesystem
+  types that mode fs mounts on this node".
+- memdevCoherent(memdev, serial): coherent of the first memdevSettings
+  entry that matches (name, or serial compared numerically), false
+  otherwise; the same matcher as configuredUsableSize (one setting per
+  memdev, the first wins for all its keys, as today).
+- usableSize and verifyAddressing do not apply to persistent capacity
+  (CreatePmemRegion maps all of it; the probe needs a dax device): DOC
+  (Request R7).
+- Wiring in newDriver: one value from driverConfig.fsTypes() for both
+  drivers: loadPoolDriver passes it to the pool driver before its
+  restore (Request R5: a parameter of newPoolDriver or of DRV-POOL's
+  shared object); newLocalHelper builds the local shared object (name
+  device.DriverName, mounts dir <KubeletPluginDir>/mounts, a
+  newSysMounter, fsTypes, holder wait) and gives it to the allocator
+  (SetPersistent) before Reconcile.
+
+6. Chart and samples
+--------------------
+H/templates/deviceclasses.yaml: cxl-local and cxl-local-shared add
+  && device.attributes["cxl.nri.io"].persistent == false
+new class after cxl-local-shared (comment, include line, as the others):
+  # cxl-local-persistent: a CXL memory device of persistent memory
+  # attached to the node, as the block device of its fsdax namespace
+  # (device.mode: block) or a filesystem on it (device.mode: fs);
+  # exclusive unless capacity.requests.shares: 1.
+  name cxl-local-persistent, expression
+  'device.driver == "cxl.nri.io" && device.attributes["cxl.nri.io"].type == "memdev" && device.attributes["cxl.nri.io"].persistent == true'
+  The cxl-pool-persistent comment: "a read-only filesystem" -> "a
+  filesystem on it (read-only unless readOnly: false)".
+H/values.yaml: config example gains fsTypes (commented default list)
+  and a memdevSettings entry with coherent; deviceClassConfig comment
+  unchanged.
+H/values.schema.json: deviceClassConfig.properties "cxl-local-persistent"
+  ($ref localMemoryConfig); definitions.device gains "fsType": {type
+  string, pattern ^[a-z0-9][a-z0-9_-]{0,31}$}. config stays a free
+  object (the driver validates it).
+H/README.md: class list (+ cxl-local-persistent), config example
+  (fsTypes), the deviceClassConfig row names it. (N/docs/deployment/helm/
+  dra-driver-cxl.md is DOC's.)
+Samples (contract 10), with the serials of the existing samples' scheme:
+- pool-persistent-fs-rw.yaml: a formatter claim (cxl-pool-persistent,
+  serial selector, no shares, mode block) whose pod runs
+  mkfs.ext4 -F -b 4096 "$CXL_<KEY>_PATH" (e2fsprogs from dnf) and exits;
+  then writer and reader claims with shares "1": writer device {mode:
+  fs, readOnly: false, path: /data}, reader {mode: fs, path: /data}; the
+  reader pod has podAffinity (labelSelector app: fs-rw-writer,
+  topologyKey kubernetes.io/hostname) to the writer; the writer writes a
+  file and stays; the reader reads it and shows that a write fails.
+- local-persistent-fs.yaml: the same on cxl-local-persistent and
+  driver cxl.nri.io with serial 0xc100f5e1 (no podAffinity: a local
+  device pins both pods to its node).
+
+7. Tests, risks, requests
+------------------------
+7.1 Unit tests (go test -race ./cmd/plugins/dra-driver-cxl/...):
+- driver_test/local_probe_test: fsTypes default, override, [] (none),
+  invalid name text, unknown key refused; coherent parse and matching
+  (name, 0x hex with leading zero, decimal); TestMemdevSettings passes.
+- node_state_test: publication table (pmem-only published with exact
+  attributes and capacity; RAM+pmem as RAM + log; sliced and shared with
+  persistent false; persistent in sharedDevices shared true; ignored,
+  pool, held, disabled, foreign region, block size 0, state conflicts
+  not published); prepare: facts -> F1 local/F2/F3 texts, shares < 1,
+  memory-capacity allocation refused; CDI spec of block (r) and fs
+  (ro/rw options), env with FSTYPE; unrestored claim without CDI
+  devices and its remount; lentDevices fields.
+- local_persistent_test.go (fakeLocalSys with a pmem memdev, nd region
+  and namespaces as fakePoolSys does; fakeMounter of
+  pool_persistent_test.go): first claim creates "create-region -t pmem"
+  with Creating saved first; fs claim without namespace refused, region
+  released, kept when a region lies above (RegionsAbove fake); block
+  writer creates the namespace; readers reuse; writer + readers derive
+  rw/ro and BLKROSET (calls of the fake); last Release releases the
+  region, no disable-memdev; held block device keeps claim and region,
+  the retry releases; ReleaseFailed keeps in decoder order; cut creation
+  (Region "", Creating, hollow) at Reconcile; another boot dropped
+  untouched; restart: prepared users kept, others dropped, node mounts
+  restored with the derived state, unwanted swept, idle device released
+  or kept when held, namespace change -> unrestored; sliced/shared/
+  persistent conflicts with their texts; keepRegion never deletes dax
+  devices of a pmem region.
+- unchanged expectations of local_test, local_shared_test,
+  local_cut_test, node_slices_test except the persistent false attribute.
+7.2 e2e (E2E writes, RUN runs): test21 (04 section 11), and the local
+regressions test14, test17, test18, test19, test11 and test90 30m.
+7.3 Risks
+- Regressions of sliced and shared devices through the new branches
+  (2, "must test Persistent first"); kept small by mirroring
+  sharedDevice and keeping every volatile path byte-for-byte.
+- localDevices.json: forward compatible (omitempty); a downgrade with a
+  prepared persistent local device is unsafe (an older plugin takes it
+  as a sliced device with Dax "" and releases its region without a
+  holder wait): DOC should say "unprepare persistent local claims
+  before a downgrade".
+- CEL: cxl-local/cxl-local-shared now read persistent; ResourceSlices
+  of an older driver lack it (a CEL error on missing attributes) during
+  a chart upgrade window: chart and image together.
+- a.mu is held across mounts, syncfs and the holder wait (<= 10 s), as
+  the pool holds p.mu: other local Prepares/Unprepares wait meanwhile
+  (well under kubelet's 45 s).
+- test90: its local paths are numa/dax slices and shared devices (no
+  local pmem in the VMs): affected only by the attribute and class
+  changes (E2E: exact attribute lists, oracle).
+- Lease-fs sweep across drivers (R4): without it a pool restart unmounts
+  the binds of local fs leases.
+- Hot-added persistent memdev hold-back (up to 5 min, test21 waits 6).
+- No address line probe on pmem regions (aliasing would corrupt the
+  filesystem silently): documented limitation.
+7.4 Needs from the shared code (DRV-POOL; this design's assumptions)
+ N1 one object per driver: driver name (log prefix), mounts dir,
+    mounter (nodeMounter + new mount API + BLKROSET), fsTypes, holder
+    wait, /proc root; no lock of its own (callers hold a.mu / p.mu).
+ N2 fs user prepare: (serial, block device, declared fsType, readOnly,
+    access "", facts, the other users of the device on this node) ->
+    (fsType, effective access, node mount, loop device); texts P1-P12,
+    P9a/b; mount or upgrade; BLKROSET; undoes its own change on error.
+ N3 block user: BLKROSET from the users (writer or not).
+ N4 user release with the remaining users: unmount / downgrade /
+    BLKROSET, texts of 4.
+ N5 holder wait (waitNoHolder) as a function of (name, serial, dev,
+    deadline).
+ N6 restore of all users of a driver: mounts with derived state,
+    up/downgrade, BLKROSET, sweep of the mounts dir; returns unrestored
+    node mounts with why; the block device check of a device now
+    (checkBlockDevice/currentBlockDevice as functions of memctl and
+    serial, not of preparedPoolDevice).
+ N7 lease binds: bind/unbind/restore by (uid, node mount, target,
+    readOnly, fsType), stale binds; the lease-fs sweep over a want set.
+ N8 CDI helpers by value: blockDeviceNode(path, major, minor, ro),
+    fsMount(nodeMount, path, ro).
+ N9 a "user" type (mode, access, writer, node mount) that both drivers
+    build from their records (pool: p.prepared; local: d.Claims).
+7.5 Requests
+ R1 (API, DEV) device.Memdev gains Persistent bool ("persistent memory:
+    modes block and fs, one pmem region"): the publisher and Prepare
+    branch on it; a wrapper type in D would touch every Memdev switch.
+ R2 (API) names of the facts type, the mode function and its Local
+    field (F1 local text) in 05-status-API.txt when ready.
+ R3 (DRV-POOL, broker; contract 6 amendment) companions of local
+    persistent memdevs: companionSources for modes block/fs gives local
+    (first) and pool, local alone without a pool driver (no
+    errPoolDisabled for --source local); class cxl-local-persistent;
+    capacity: a local persistent memdev always has shares, so --shared
+    asks one share (shares "1") and no --shared none (exclusive), also
+    when its attribute shared is false (serialOptions must not refuse it
+    as "not shareable": the device has shares). Reason: otherwise an fs
+    lease next to running claims of the device (test21 D) is exclusive
+    and never Ready. E2E: test21 D passes --shared (or its claims are
+    gone first).
+ R4 (DRV-POOL) the lease-fs sweep (restoreLeaseMounts' unmount of
+    mounts under lease-fs/ that no prepared claim wants) runs once over
+    the wanted binds of both drivers, called from driver.go after both
+    are loaded (DRV-LOCAL wires it); restore of missing binds stays per
+    driver. Reason: lease-fs/<uid> is the lease claim's directory, shared
+    by pool and local fs leases.
+ R5 (DRV-POOL) newPoolDriver (or its shared object) takes fsTypes
+    before its restore runs (newPoolDriver calls restoreMounts).
+ R6 (DRV-POOL) N8 by value, N5/N6 helpers not bound to
+    preparedPoolDevice.
+ R7 (DOC) local.md/usage.md: persistent local memdevs ignore usableSize
+    and verifyAddressing; a persistent shared local device's region goes
+    with its last claim (unlike volatile shared devices); a change of
+    sharedDevices takes effect when the device is idle; downgrade note.
+ Q1 (orchestrator) contract 7 says nothing on a sharedDevices change for
+    a persistent memdev in use: this design does not publish it until
+    idle (as shared local devices). Accept?
+ Q2 Exclusive of a local persistent memdev = consumed all shares (as
+    contract 7); a claim with shares "1" of a non-shared memdev is a
+    writer allowed by F3 (SingleHost). Confirming that rw fs with shares
+    "1" on cxl-local-persistent is intended (test21 C says so).
+ Q3 a foreign pmem region (an admin's) is published as a region device
+    when the scan gives it a node (zone of its pages); proposal: skip
+    regions of mode pmem in buildDevInfos (V(4) "region of persistent
+    memory"). Low risk either way; not in 04: needs a yes.
+
+
+Implementation (started 2026-11-02 after the coordinator's go)
+==============================================================
+Batch 1 (no shared code needed), in the tree:
+- pkg/cxl/device: Memdev.Persistent (A1); device_test.go
+  TestDeviceClassesMatchConstants expects the nine classes (API R1).
+- H: deviceclasses.yaml (persistent == false on cxl-local and
+  cxl-local-shared, new cxl-local-persistent, comments), values.yaml
+  (fsTypes, memdevSettings coherent example), values.schema.json
+  (device.fsType pattern, deviceClassConfig cxl-local-persistent),
+  README.md (class list, fsTypes). helm template renders (checked with a
+  cxl-local-persistent preset).
+- driver.go: DriverConfig.FsTypes, validate (fsTypes text of 8),
+  fsTypes(), logFsTypes at start; local_probe.go: MemdevSetting.Coherent,
+  memdevSetting/settingMatches (serials compared as numbers: fixes the
+  baseline TestMemdevSettings failure), memdevCoherent.
+- node_state.go: publication of persistent memdevs (addPersistentMemdev,
+  attributes via sharedMemdevDevice with persistent), persistent false on
+  sliced and shared memdevs, regions of mode pmem not published (A5),
+  "used as a persistent device by claims" refusals.
+- local.go: localDevice/localSlice/localUse fields, Persistent branches
+  (device, sharedDevice, releaseClaim, reconcileDevice, keepRegion,
+  adoptCreated), Reconcile calls restorePersistent.
+Batch 2 (on DRV-POOL's shared code, persistent.go as of 18:00):
+- local_persistent.go: AcquirePersistent, persistentDevice,
+  createPmemRegion, setUpPersistent, addPersistentUse (pmemNamespace,
+  pn.Prepare), releasePersistent (pn.Release, WaitNoHolder,
+  releaseOrKeep / releaseIdle in decoder order), ReleaseIdle,
+  reconcilePersistent, restorePersistent (RestoreMounts, SweepNodeMounts,
+  then the idle releases: DRV-POOL's ordering), PersistentRestored,
+  RemountPersistent; nodeState: prepareLocalPersistent (facts,
+  PersistentMode), findUnrestored, remountUnrestored, lease binds
+  (bindLeases, unbindLeases, unbindFailed with KeepStale, unbindStale,
+  restoreLeaseBinds), leaseBinds.
+- node_state.go: PreparedDeviceInfo persistent fields, CDI (block node,
+  fsCDIMount), memory() Path/Access/FsType, lentDevices, unrestored
+  claims without CDI devices, prepare/unprepare/rollback lease binds.
+- driver.go newLocalHelper: newPersistentNode before Reconcile.
+Deviation (choice): the last Release of a persistent device releases its
+  region in decoder order (releaseInOrder); while regions of other
+  memdevs lie above it the idle device keeps its region (logged, reused
+  by its next claim, released by ReleaseIdle at the next stale-bind
+  release or start). Reason: a hole blocks the host bridge, an idle pmem
+  region is harmless (no zeroing, data persistent).
+
+Batch 3 (wiring, tests)
+- driver.go: loadPoolDriver passes driverConfig.fsTypes() to
+  newPoolDriver (A4); sweepStaleLeaseBinds after newDriverState and
+  fence.seed, before the kubelet plugins: sweepLeaseBinds over the
+  Lend.Mounts of both drivers' prepared claims (pool.leaseBinds,
+  nodeState.leaseBinds) with both persistent nodes, then
+  local.ReleaseIdle (A11; L-R1 answered by DRV-POOL's leaseBinds and
+  pool.pn).
+- node_state.go: newNodeState calls restore() (forgetGoneSlices,
+  findUnrestored, restoreLeaseBinds, persist); lentDevice.FsType set.
+- local_persistent.go: releasePersistent keeps the claim when the region
+  release fails (kubelet's retry releases it).
+- Samples: deployment/samples/dra-driver-cxl/pool-persistent-fs-rw.yaml
+  (formatter, writer readOnly: false, reader with podAffinity) and
+  local-persistent-fs.yaml (the same on cxl-local-persistent,
+  0xc100f5e1).
+- Tests: local_persistent_publish_test.go (publication table with every
+  refusal, pmem regions not published, exact ResourceSlice device shared
+  and not, fsTypes parsing and texts, coherent and numeric serial
+  matching); local_persistent_test.go (life cycle: readers before a
+  writer refused and the region released, config rules F1 local, no
+  mode, shares 0, memory allocation, block writer makes the namespace,
+  CDI block node and env, fs writers + reader on one node mount with CDI
+  options and env FSTYPE/READONLY, downgrade after the last writer, held
+  block device keeps claim and region, release without disable-memdev;
+  restart: unchanged, mount missing -> mounted rw, writer not prepared ->
+  downgraded, none prepared -> swept and released, reboot untouched;
+  unrestored: failed mount at start -> no CDI device, Prepare again
+  remounts; namespace changed -> refused until Unprepare; decoder order:
+  idle device keeps its region below another region, reused, released by
+  ReleaseIdle; cut creation released or kept below a newer region and
+  reused; sharedDevices: F2/F3 texts, SHARED=1, change while in use not
+  published, stale allocation refused; conflicts with sliced/shared use;
+  leases: ro fs bind before lend, lent device fields, combined sweep
+  keeps the lease's bind and unmounts a stale one, restart binds again,
+  unbind at Unprepare, block lease; state file fields; two results of
+  one claim: one mount, keys _2). The fake mounter's rule violations are
+  asserted empty in each.
+- Existing tests adjusted: persistent false in the exact attribute maps
+  (node_state_test.go, local_shared_test.go), the nine classes
+  (pkg/cxl/device/device_test.go).
+
+Verification (2026-11-02)
+- gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl/device: nothing
+- go vet ./cmd/plugins/dra-driver-cxl/: ok
+- go test -race -count=1 ./cmd/plugins/dra-driver-cxl/ ./pkg/cxl/...: ok
+  (TestMemdevSettings passes now)
+- golangci-lint run ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...: no
+  finding in a file of this stream (one ineffassign in DRV-POOL's
+  persistent_test.go:394; memctl probe findings pre-existing)
+- helm lint and helm template render; the schema refuses a bad fsType in
+  a cxl-local-persistent preset
+- plain ASCII in every changed file of this stream
+
+Requests
+--------
+L-R1 (answered: pool.leaseBinds, pool.pn, newPoolDriver fsTypes...) for the A11 wiring in driver.go I need, nil-safe on a
+  nil pool driver: (p *poolDriver) persistentNode() *persistentNode and
+  (p *poolDriver) leaseBinds() map[string]bool (the Lend.Mounts of its
+  prepared claims); and newPoolDriver's fsTypes parameter (A4). Until
+  they exist the sweep is not wired (a sweep with only the local wanted
+  binds would unmount the pool's).
+L-R2 (answered, in use) lentDevice.FsType (its section 4): the local
+  lentDevices sets it once the field exists.
+
+Notes for E2E/DOC
+- The last Unprepare of a persistent local memdev releases its region in
+  decoder order; below another region the idle device keeps it (log
+  "keeping regionN of the idle persistent device: ... lie above it").
+- Logs of the local driver: "local: memdev memN (serial 0x...): created
+  regionN (pmem, nvdimm regionN)", "... claim U request R: persistent
+  /dev/pmemK mode M read-only B access A fs T", "... claim U: released
+  persistent /dev/pmemK, claims left [...]", "released regionN"; the
+  node mount lines are the shared code's with prefix "cxl.nri.io:".
+- V(4) refusal "- not publishing memory device "memN" as a persistent
+  local memory device: <reason>".
+
+DRV-LOCAL done
+
+
+Review follow-up (07-review-DRV.txt R1; amendments A17, A18; DRV-POOL L-R3)
+==========================================================================
+- local_persistent.go SetPersistent: pn.SetCheck(a.checkUseBlockDevice)
+  (A18): a Release of the local driver changes the read-only flag of the
+  remaining uses' block device only when it is the recorded block device
+  of the persistent device and that of the fsdax namespace of its region
+  now (name, major:minor: checkPmemBlockDevice); else the shared code
+  logs "not changing the read-only flag of /dev/pmemK: ..." and skips.
+  The check runs inside pn.Release, under a.mu (no lock of its own).
+- A17 on the local paths: every fresh mount, upgrade, block writer and
+  BLKROSET of the local driver goes through pn.Prepare, pn.Release and
+  pn.RestoreMounts, which read the node-wide superblocks; the uses passed
+  (d.Claims of the device) list the node mounts that explain them. No
+  local path sets BLKROSET or mounts outside the shared code.
+- Tests (local_persistent_test.go):
+  TestLocalPersistentReleaseVerifiedDevice: three block readers; with the
+  flag cleared, the release of one sets "blkroset /dev/pmem0 1"; after
+  the namespace got other numbers (259:7), the next release issues no
+  BLKROSET.
+  TestLocalPersistentUnexplainedSuperblock: a rw superblock of /dev/pmem0
+  in another mount namespace refuses an fs writer with the A17 text, and
+  a block writer; without it the writer prepares; a container's copy of
+  the node mount (same source) is explained and a second writer
+  prepares; everything released, no rule violations.
+- Verification: gofmt -l cmd/plugins/dra-driver-cxl pkg/cxl: nothing;
+  go vet ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...: ok;
+  go test -race -count=1 ./cmd/plugins/dra-driver-cxl/... ./pkg/cxl/...:
+  all ok; golangci-lint run ./cmd/plugins/dra-driver-cxl/...
+  ./pkg/cxl/device/...: 0 issues; plain ASCII. No image built, no e2e.
+
+DRV-LOCAL done (review follow-up)
+
+
+Security: fsTypes default (user, 2026-11-03)
+============================================
+- driver.go: defaultFsTypes = [erofs]; DriverConfig.fsTypes() returns it
+  when the key is absent (was config.KnownFsTypes); an explicit list
+  replaces it, [] mounts none. The FsTypes doc comment says why (the node
+  kernel parses what the writer chose; another type trusts every raw
+  writer). The start log names the effective list ("fsTypes: erofs: the
+  filesystem types that mode fs mounts on this node"). Both drivers get
+  the same value: newLocalHelper (local persistent node) and
+  loadPoolDriver -> newPoolDriver(..., fsTypes...).
+- Tests: TestDriverConfigFsTypes (default [erofs], a copy, explicit
+  lists, [] , invalid names); TestLocalPersistentFsTypes (default:
+  ext4 refused "claim demo/claim-ro1: request mem: device 0xc100f5e1:
+  filesystem type ext4 is not allowed on this node (fsTypes: erofs)",
+  nothing mounted, device not held; [erofs, ext4] mounts it; [] refuses);
+  TestLoadPoolDriverFsTypes (the pool driver's persistent node gets
+  [erofs] by default, the explicit list otherwise). The other local
+  persistent tests set the known types explicitly on their persistent
+  node.
+- Chart: values.yaml example comment (default erofs only; adding a type
+  trusts every party that can write the devices raw: read-write block
+  claims and leases on any node of any cluster sharing the pool; example
+  [erofs, ext4]); values.schema.json config.$comment and
+  config.properties.fsTypes (array of names with the C2 pattern, comment
+  on the default and the trust); README.md (example and paragraph). The
+  chart's default config is {}: helm template renders no fsTypes.
+- Samples pool-persistent-fs-rw.yaml and local-persistent-fs.yaml say
+  that they need fsTypes: [erofs, ext4] and what that trusts.
+- No e2e file touched, no image built.
+- Verification: gofmt clean; go vet ./cmd/plugins/dra-driver-cxl/...
+  ./pkg/cxl/...: ok; go test -race -count=1 ./cmd/plugins/dra-driver-cxl/...
+  ./pkg/cxl/...: all ok; golangci-lint run ./cmd/plugins/dra-driver-cxl/...:
+  0 issues; helm lint ok; helm template renders, with
+  config.fsTypes [erofs, ext4] in the config map, and the schema refuses
+  "Ext4"; plain ASCII.
+Requests
+- S-R1 (DRV-POOL) persistent.go newPersistentNode: a nil FsTypes defaults
+  to config.KnownFsTypes; make it [erofs] (defaultFsTypes) too, so that a
+  caller that passes none (newPoolDriver without fsTypes, tests) never
+  gets the six types. Production passes the list from driver.go, so this
+  is defence in depth.
+- S-R2 (DRV-POOL, cosmetic) P4 with fsTypes [] reads "(fsTypes: )";
+  "(fsTypes: none)" would be clearer.
+- S-R3 (DOC, orchestrator) usage.md "Configuration file" and contract
+  section 8: the default of fsTypes is [erofs].
+
+DRV-LOCAL done (security: fsTypes default)

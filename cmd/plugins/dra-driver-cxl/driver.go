@@ -139,9 +139,11 @@ type DriverConfig struct {
 	MemdevSettings []MemdevSetting `json:"memdevSettings,omitempty"`
 
 	// FsTypes are the filesystem types that mode fs mounts on the node,
-	// for the local and the pool driver; nil is config.KnownFsTypes, an
-	// empty list mounts none. A type that the plugin does not know is
-	// single-host. Example: ["erofs"]
+	// for the local and the pool driver; nil is defaultFsTypes (erofs
+	// only), an empty list mounts none. The node kernel parses what the
+	// writer of a device wrote: a type other than erofs trusts every party
+	// that can write the devices raw. A type that the plugin does not know
+	// is single-host. Example: ["erofs", "ext4"]
 	FsTypes []string `json:"fsTypes,omitempty"`
 
 	// VerifyAddressing runs an address line test on every new region of
@@ -221,11 +223,16 @@ func (c *DriverConfig) validate() error {
 	return nil
 }
 
+// defaultFsTypes are the filesystem types that mode fs mounts when the
+// configuration has no fsTypes: erofs only, the type that is designed for
+// images from untrusted writers.
+var defaultFsTypes = []string{config.FsTypeErofs}
+
 // fsTypes returns the filesystem types that mode fs mounts on the node:
-// FsTypes, config.KnownFsTypes when it is not set.
+// FsTypes, defaultFsTypes when it is not set.
 func (c *DriverConfig) fsTypes() []string {
 	if c == nil || c.FsTypes == nil {
-		return slices.Clone(config.KnownFsTypes)
+		return slices.Clone(defaultFsTypes)
 	}
 	return slices.Clone(c.FsTypes)
 }

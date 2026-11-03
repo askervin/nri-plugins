@@ -52,6 +52,10 @@ const (
 	leaseDirName = "leases"
 	// leaseSocketName is the socket in a claim's directory.
 	leaseSocketName = "cxl.sock"
+	// leaseSocketTmpDirName is the directory in the cxl.nri.io plugin
+	// data directory where the sockets are created before they are
+	// renamed into the claims' directories: no container has it.
+	leaseSocketTmpDirName = ".lease-sockets"
 	// leaseFsDirName is the directory of the per-claim directories of the
 	// mounts of fs leases in the cxl.nri.io plugin data directory. Only
 	// the plugin writes them; containers have them read-only.
@@ -122,11 +126,13 @@ func (b *broker) leaseFsDir(claimUID string) string {
 func (b *broker) leaseCDIDevice(claimUID string) cdiSpecs.Device {
 	edits := cdiSpecs.ContainerEdits{
 		Env: []string{api.SocketEnv + "=" + api.DefaultSocket},
+		// read-only: connect(2) needs write access to the socket only,
+		// and the containers never write the host directory
 		Mounts: []*cdiSpecs.Mount{{
 			HostPath:      b.leaseDir(claimUID),
 			ContainerPath: leaseContainerDir,
 			Type:          "bind",
-			Options:       []string{"rbind", "rw"},
+			Options:       []string{"rbind", "ro"},
 		}},
 	}
 	// The containers of a claim prepared without FsDir were created
@@ -259,13 +265,13 @@ func (b *broker) CloseClaim(ctx context.Context, uid string) error {
 	}
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if l := b.listeners[uid]; l != nil {
 		_ = l.Close()
 		delete(b.listeners, uid)
 	}
 	delete(b.store.Claims, uid)
 	errs := []error{b.store.save(), b.writeCDISpec()}
+	b.mu.Unlock()
 	sock := filepath.Join(b.leaseDir(uid), leaseSocketName)
 	if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
 		errs = append(errs, err)
@@ -277,30 +283,61 @@ func (b *broker) CloseClaim(ctx context.Context, uid string) error {
 	return errors.Join(errs...)
 }
 
-// removeClaimDirs removes the directories of a closed lease claim and
-// returns the paths that are left: lease-fs/<uid> (removeFsDir, os.Remove
-// only), then, once it is gone, leases/<uid> with everything a container
-// wrote into its /run/cxl. While a bind is in lease-fs/<uid>, leases/<uid>
-// stays with the mount point of api.FsDir in it: an rmdir of that mount
-// point would detach the bind lazily in a container that is still there.
-// Nothing is mounted below leases/<uid> in the plugin's mount namespace.
-// Called with b.mu held.
+// removeClaimDirs removes the directories of a lease claim that is not in
+// the store and returns the paths that are left: lease-fs/<uid>
+// (removeFsDir, os.Remove only), then, once it is gone, the entries of
+// leases/<uid> by name (with whatever a container of before its read-only
+// mount wrote into its /run/cxl; never following a symlink) and the
+// directory. While a bind is in lease-fs/<uid>, leases/<uid> stays with the
+// mount point of api.FsDir in it: an rmdir of that mount point would detach
+// the bind lazily in a container that is still there. Nothing is mounted
+// below leases/<uid> in the plugin's mount namespace. Called without b.mu:
+// the removal of what a container wrote may take long; the claim's socket
+// is not started meanwhile (listen).
 func (b *broker) removeClaimDirs(uid string) []string {
+	b.mu.Lock()
+	if b.store.Claims[uid] != nil || b.removing[uid] {
+		b.mu.Unlock()
+		return nil
+	}
+	b.removing[uid] = true
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.removing, uid)
+		b.mu.Unlock()
+	}()
 	if !b.removeFsDir(uid) {
 		return []string{b.leaseFsDir(uid)}
 	}
 	dir := b.leaseDir(uid)
-	if err := os.RemoveAll(dir); err != nil {
-		klog.Warningf("lease broker: removing %s: %v", dir, err)
-		return []string{dir}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	return nil
+	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, e := range entries {
+		// RemoveAll removes a symlink itself, never its target
+		errs = append(errs, os.RemoveAll(filepath.Join(dir, e.Name())))
+	}
+	if err := errors.Join(errs...); err == nil {
+		err = os.Remove(dir)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		errs = append(errs, err)
+	}
+	klog.Warningf("lease broker: removing %s: %v", dir, errors.Join(errs...))
+	return []string{dir}
 }
 
 // removeFsDir removes the lease-fs directory of a lease claim and its
 // entries, except entries that are mount points or have mounts below them:
 // those and the directory stay. It reports whether the directory is gone.
-// Called with b.mu held; errors are logged.
+// Errors are logged.
 func (b *broker) removeFsDir(uid string) bool {
 	dir := b.leaseFsDir(uid)
 	entries, err := os.ReadDir(dir)
@@ -353,14 +390,17 @@ func mountedAtOrBelow(mounts []mountInfo, p string) bool {
 }
 
 // sweepFsDirs removes the lease-fs and socket directories of lease
-// claims that are not in the store (removeClaimDirs), unless the store was
-// recovered empty: then the lease claims of the node are unknown, and
-// nothing is removed. Called with b.mu held.
+// claims that are not in the store (removeClaimDirs, without b.mu),
+// unless the store was recovered empty: then the lease claims of the node
+// are unknown, and nothing is removed. Called without b.mu.
 func (b *broker) sweepFsDirs() {
+	b.mu.Lock()
 	if b.store.Recovered {
+		b.mu.Unlock()
 		klog.V(3).Infof("lease broker: the lease table was not decoded, keeping the directories of lease claims")
 		return
 	}
+	var uids []string
 	seen := map[string]bool{}
 	for _, root := range []string{b.leaseFsRoot(), filepath.Join(b.cfg.DataDir, leaseDirName)} {
 		entries, err := os.ReadDir(root)
@@ -373,8 +413,12 @@ func (b *broker) sweepFsDirs() {
 				continue
 			}
 			seen[uid] = true
-			b.removeClaimDirs(uid)
+			uids = append(uids, uid)
 		}
+	}
+	b.mu.Unlock()
+	for _, uid := range uids {
+		b.removeClaimDirs(uid)
 	}
 }
 
@@ -392,6 +436,9 @@ func (b *broker) listen(uid string) error {
 	if b.listeners[uid] != nil {
 		return nil
 	}
+	if b.removing[uid] {
+		return fmt.Errorf("the directories of lease claim %s are being removed, retry", uid)
+	}
 	dir := b.leaseDir(uid)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -402,18 +449,33 @@ func (b *broker) listen(uid string) error {
 	if err := b.makeFsDirs(uid); err != nil {
 		return err
 	}
-	sock := filepath.Join(dir, leaseSocketName)
-	_ = os.Remove(sock)
-	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
+	// The socket is made and given its mode where no container can
+	// replace it by a symlink, then renamed into the claim's directory
+	// (which containers of before its read-only mount can write): the
+	// rename replaces whatever is at the path, and follows nothing.
+	tmpDir := filepath.Join(b.cfg.DataDir, leaseSocketTmpDirName)
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(tmpDir, uid+".sock")
+	_ = os.Remove(tmp)
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: tmp, Net: "unix"})
 	if err != nil {
-		return fmt.Errorf("listening on %s: %w", sock, err)
+		return fmt.Errorf("listening on %s: %w", tmp, err)
 	}
 	// The socket is removed explicitly (CloseClaim): a plugin that
 	// stops must leave the path to the next instance.
 	l.SetUnlinkOnClose(false)
-	if err := os.Chmod(sock, 0666); err != nil {
+	sock := filepath.Join(dir, leaseSocketName)
+	if err := os.Chmod(tmp, 0666); err != nil {
 		_ = l.Close()
+		_ = os.Remove(tmp)
 		return err
+	}
+	if err := os.Rename(tmp, sock); err != nil {
+		_ = l.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("placing the lease socket %s: %w", sock, err)
 	}
 	selinuxLabel(dir, sock)
 	b.listeners[uid] = l
@@ -431,15 +493,40 @@ func (b *broker) makeFsDirs(uid string) error {
 		return nil
 	}
 	mp := filepath.Join(b.leaseDir(uid), leaseFsMountPoint)
-	for _, d := range []string{mp, tc.FsDir} {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			return err
-		}
-		if err := os.Chmod(d, 0755); err != nil {
+	if err := mkdirNoFollow(mp); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tc.FsDir, 0755); err != nil {
+		return err
+	}
+	if err := os.Chmod(tc.FsDir, 0755); err != nil {
+		return err
+	}
+	selinuxLabel(mp, tc.FsDir)
+	return nil
+}
+
+// mkdirNoFollow makes p a directory of mode 0755 in a directory that a
+// container may write: whatever else is at p (a symlink, a file) is
+// removed first, and the mode is set on the directory opened without
+// following a symlink.
+func mkdirNoFollow(p string) error {
+	if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+		if err := os.Remove(p); err != nil {
 			return err
 		}
 	}
-	selinuxLabel(mp, tc.FsDir)
+	if err := os.Mkdir(p, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	fd, err := unix.Open(p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", p, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Fchmod(fd, 0755); err != nil {
+		return fmt.Errorf("chmod %s: %w", p, err)
+	}
 	return nil
 }
 

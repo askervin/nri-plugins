@@ -280,7 +280,18 @@
             }
         },
         "config": {
-            "type": "object"
+            "type": "object",
+            "$comment": "the driver configuration file, validated by the driver; fsTypes (list of filesystem types that mode fs mounts) defaults to [erofs]: adding a type trusts every party that can write the devices raw (read-write block claims and leases on any node of any cluster that shares the pool)",
+            "properties": {
+                "fsTypes": {
+                    "type": "array",
+                    "$comment": "default [erofs] when absent; every other type trusts the writers of the devices",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+                    }
+                }
+            }
         },
         "deviceClassConfig": {
             "type": "object",

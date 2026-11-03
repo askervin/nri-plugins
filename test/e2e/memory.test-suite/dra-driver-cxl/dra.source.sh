@@ -59,6 +59,10 @@ DRA_SHARES=1000000
 DRA_DRIVER_CONFIG=""
 # The EXIT trap that dra-install sets, "" for "dra-cleanup; pool-cleanup".
 DRA_EXIT_TRAP=""
+# The pool servers of pool-server-start (by --name) that dra-install runs
+# no pool controller for: their devices are never published as pool
+# devices (test21: a persistent device that the node takes as local).
+DRA_UNCONTROLLED_POOLS=()
 # Lending memory to running containers (docs/memory/cxl/leases.md): the CLI
 # that the driver puts on the node and mounts into containers that claim
 # the lease device "lease" (DeviceClass cxl-lease), there and in the
@@ -357,11 +361,11 @@ dra-install() { # script API
     # test as a transient systemd unit of the same name, with the admin
     # kubeconfig of the VM: one per pool server that pool-server-start
     # started, unit fake-cxl-pool-controller for the first one and
-    # fake-cxl-pool-controller-<name> for the others, each with the URL of
-    # its server; the controller names its DRA pool after its server. The
-    # chart
-    # creates the DeviceClasses of the driver (DRA_CLASSES), and the driver
-    # puts cxl-request on its nodes ($DRA_REQUEST_NODE_BIN) for the
+    # fake-cxl-pool-controller-<name> for the others (but those of
+    # DRA_UNCONTROLLED_POOLS), each with the URL of its server; the
+    # controller names its DRA pool after its server. The chart creates
+    # the DeviceClasses of the driver (DRA_CLASSES), and the driver puts
+    # cxl-request on its nodes ($DRA_REQUEST_NODE_BIN) for the
     # containers of lease claims. The other nodes get the image of the
     # driver first (dra-image-put). Remove what an earlier run left first:
     # the release, the controller, DeviceClasses, and driver state that
@@ -382,6 +386,7 @@ dra-install() { # script API
     units=("$DRA_CONTROLLER_UNIT")
     urls=("$url")
     for name in "${POOL_SERVERS[@]:1}"; do
+        ! dra-pool-uncontrolled "$name" || continue
         v=$(pool-guest-url "$name") || error "dra-install: no URL of the pool server $name"
         units+=("$DRA_CONTROLLER_UNIT-$name")
         urls+=("$v")
@@ -618,11 +623,24 @@ dra-pool-names() {
     # Usage: dra-pool-names
     #
     # Print the DRA pool names of the pool servers that pool-server-start
-    # started, one per line: their names. Print nothing if there are none.
+    # started and that have a pool controller (not in
+    # DRA_UNCONTROLLED_POOLS), one per line: their names. Print nothing if
+    # there are none.
     local name
     for name in "${POOL_SERVERS[@]}"; do
-        echo "$name"
+        dra-pool-uncontrolled "$name" || echo "$name"
     done
+}
+
+dra-pool-uncontrolled() {
+    # Usage: dra-pool-uncontrolled NAME
+    #
+    # Return 0 if the pool server NAME is in DRA_UNCONTROLLED_POOLS.
+    local n
+    for n in "${DRA_UNCONTROLLED_POOLS[@]}"; do
+        [ "$n" != "$1" ] || return 0
+    done
+    return 1
 }
 
 dra-pool-urls() {
@@ -1239,7 +1257,7 @@ dra-lease-cdi-assert() { # script API
     # Fail the test unless the VM of VMDIR has the CDI device lease-CLAIM-UID
     # of kind nri.io/cxl, the device of a lease claim that may lease
     # filesystems: env CXL_LEASE_SOCKET=/run/cxl/cxl.sock and exactly three
-    # bind mounts, $DRA_LEASE_DIR/CLAIM-UID at /run/cxl (rbind, rw), then
+    # bind mounts, $DRA_LEASE_DIR/CLAIM-UID at /run/cxl (rbind, ro), then
     # $DRA_LEASE_FS_DIR/CLAIM-UID at $DRA_LEASE_FS_CTR_DIR (rbind, ro,
     # rslave), and $DRA_REQUEST_NODE_BIN at $DRA_REQUEST_CTR_BIN (bind, ro).
     local vmdir="$1" uid="$2" cdi mounts
@@ -1250,7 +1268,7 @@ dra-lease-cdi-assert() { # script API
         error "the CDI device lease-$uid has no env CXL_LEASE_SOCKET=/run/cxl/cxl.sock"
     mounts=$(dra-cdi-mounts "$cdi") || error "cannot parse the mounts of the CDI device lease-$uid"
     echo "mounts of lease-$uid: $mounts"
-    dra-assert "$mounts" "sorted((m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j) == sorted([('$DRA_LEASE_DIR/$uid', '/run/cxl', 'bind', ['rbind', 'rw']), ('$DRA_LEASE_FS_DIR/$uid', '$DRA_LEASE_FS_CTR_DIR', 'bind', ['rbind', 'ro', 'rslave']), ('$DRA_REQUEST_NODE_BIN', '$DRA_REQUEST_CTR_BIN', 'bind', ['bind', 'ro'])])"
+    dra-assert "$mounts" "sorted((m.get('hostPath'), m.get('containerPath'), m.get('type'), m.get('options')) for m in j) == sorted([('$DRA_LEASE_DIR/$uid', '/run/cxl', 'bind', ['rbind', 'ro']), ('$DRA_LEASE_FS_DIR/$uid', '$DRA_LEASE_FS_CTR_DIR', 'bind', ['rbind', 'ro', 'rslave']), ('$DRA_REQUEST_NODE_BIN', '$DRA_REQUEST_CTR_BIN', 'bind', ['bind', 'ro'])])"
     # The socket directory first: the filesystem directory is mounted inside it.
     dra-assert "$mounts" "[m['containerPath'] for m in j].index('/run/cxl') < [m['containerPath'] for m in j].index('$DRA_LEASE_FS_CTR_DIR')"
 }

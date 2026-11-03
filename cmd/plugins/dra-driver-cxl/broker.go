@@ -116,10 +116,14 @@ type broker struct {
 	listeners map[string]*net.UnixListener // lease claim uid -> socket
 	releasing map[string]bool              // lease id -> release goroutine runs
 	deleting  map[string]bool              // lease id -> revoked, companion deletion requested
-	changed   chan struct{}                // closed and replaced on every lease change
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	// removing are the lease claims (uid) whose directories are being
+	// removed (removeClaimDirs, without b.mu): their socket is not
+	// started meanwhile.
+	removing map[string]bool
+	changed  chan struct{} // closed and replaced on every lease change
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 
 	closeTimeout    time.Duration
 	pollInterval    time.Duration
@@ -155,6 +159,7 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 		listeners:       map[string]*net.UnixListener{},
 		releasing:       map[string]bool{},
 		deleting:        map[string]bool{},
+		removing:        map[string]bool{},
 		changed:         make(chan struct{}),
 		ctx:             ctx,
 		cancel:          cancel,
@@ -167,7 +172,6 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 		newID:           randomLeaseID,
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	// A table that was not decoded stays on disk as it is (Recovered).
 	if boot := store.BootID; !store.Recovered {
 		for _, l := range store.forgetOtherBoot(cfg.BootID) {
@@ -181,6 +185,7 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 		}
 	}
 	if err := b.writeCDISpec(); err != nil {
+		b.mu.Unlock()
 		cancel()
 		return nil, fmt.Errorf("lease broker: %w", err)
 	}
@@ -189,6 +194,7 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 			klog.Errorf("lease broker: lease claim %s: %v", uid, err)
 		}
 	}
+	b.mu.Unlock()
 	b.sweepFsDirs()
 	klog.Infof("lease broker: loaded %d lease claims and %d leases from %s", len(store.Claims), len(store.Leases), store.path)
 	return b, nil
@@ -1244,10 +1250,11 @@ func (b *broker) release(l *lease) {
 	b.saveLocked()
 	// the lease-fs directory of a closed lease claim may have waited for
 	// the unmount of the companion's bind
-	if b.store.Claims[l.Claim] == nil && len(b.store.leasesOf(l.Claim)) == 0 {
+	closed := b.store.Claims[l.Claim] == nil && len(b.store.leasesOf(l.Claim)) == 0
+	b.mu.Unlock()
+	if closed {
 		b.removeClaimDirs(l.Claim)
 	}
-	b.mu.Unlock()
 	klog.Infof("lease broker: lease %s: released", l.ID)
 }
 
@@ -1476,9 +1483,7 @@ func (b *broker) reconcile() {
 		}
 	}
 	b.deleteOrphans()
-	b.mu.Lock()
 	b.sweepFsDirs()
-	b.mu.Unlock()
 }
 
 // companionGone reports whether a companion pod no longer holds its

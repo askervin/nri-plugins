@@ -653,7 +653,7 @@ and the device has no default mode:
 |:--|:--|
 | the block device, writable (the writer of an image) | no capacity request, a `MemoryConfig` with `device: {mode: block}` |
 | the block device, read-only | `capacity: {requests: {shares: "1"}}`, `device: {mode: block, readOnly: true}` |
-| the filesystem, read-write | `shares: "1"`, `device: {mode: fs, readOnly: false}` |
+| the filesystem, read-write (a type other than erofs, which `fsTypes` must list) | `shares: "1"`, `device: {mode: fs, readOnly: false}` |
 | the filesystem, read-only | `shares: "1"`, `device: {mode: fs}` |
 | a specific device | add `selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100f5e1"'}}]` |
 

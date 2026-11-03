@@ -49,9 +49,14 @@ config: {}
 #   manageMemdevs: true
 #   # local devices shared by the claims of class cxl-local-shared
 #   sharedDevices: ["0xc100e2e1"]
-#   # the filesystem types that mode fs mounts on the node (the default);
-#   # the node's kernel parses what the writer of a device wrote
-#   fsTypes: [erofs, squashfs, ext4, xfs, btrfs, gfs2]
+#   # the filesystem types that mode fs mounts on the node; without the
+#   # key erofs only, the type built for images of untrusted writers. The
+#   # node's kernel parses what the writer of a device wrote: adding a type
+#   # (ext4, xfs, btrfs, squashfs, gfs2 are not hardened against crafted
+#   # images) trusts every party that can write the devices raw, that is
+#   # read-write block claims and leases on any node of any cluster that
+#   # shares the pool
+#   fsTypes: [erofs, ext4]
 #   # settings of individual local memdevs: coherent declares the memory
 #   # of a memdev of sharedDevices coherent between the hosts that share it
 #   memdevSettings:

@@ -12,8 +12,8 @@
 #   the node's cxl.nri.io ResourceSlice (DeviceClass cxl-lease). The
 #   device has no memory, and any number of pods may claim it. Preparing
 #   that claim, nri-dra-driver-cxl mounts a unix socket and the CLI
-#   cxl-request into the container (/run/cxl/cxl.sock,
-#   /usr/local/bin/cxl-request), and an empty read-only directory
+#   cxl-request into the container (/run/cxl/cxl.sock in a read-only
+#   directory, /usr/local/bin/cxl-request), and an empty read-only directory
 #   (/run/cxl/fs) where the filesystems of fs leases appear (test16).
 #   Nothing else changes for the pod.
 # - "cxl-request request --source pool --size 512Mi" in the container
@@ -614,11 +614,20 @@ dra-exec "$VM2" borrower/main sh -c 'echo "$CXL_LEASE_SOCKET"; test -S /run/cxl/
     command-error "container main has no lease socket or cxl-request"
 [ "$COMMAND_OUTPUT" == "/run/cxl/cxl.sock
 ok" ] || error "container main: expected CXL_LEASE_SOCKET=/run/cxl/cxl.sock, a socket there, and cxl-request"
-# The CDI device of the claim: the socket directory, the directory of the
-# filesystems of fs leases (read-only, a slave of the host's directory, so
-# that a mount the driver makes there later appears in the running
-# container) and the CLI.
+# The CDI device of the claim: the socket directory (read-only), the
+# directory of the filesystems of fs leases (read-only, a slave of the
+# host's directory, so that a mount the driver makes there later appears
+# in the running container) and the CLI.
 dra-lease-cdi-assert "$VM2" "$LEASE_CLAIM_UID"
+# The container cannot write the host directory of its socket, and the
+# socket still works.
+dra-exec "$VM2" borrower/main touch /run/cxl/x &&
+    error "container main could create a file in /run/cxl, the read-only directory of its lease socket"
+grep -qF "Read-only file system" <<< "$COMMAND_OUTPUT
+$DRA_EXEC_STDERR" || error "creating a file in /run/cxl failed for another reason than \"Read-only file system\": $DRA_EXEC_STDERR"
+vm-command "test ! -e $DRA_LEASE_DIR/$LEASE_CLAIM_UID/x" || error "the write in /run/cxl reached $DRA_LEASE_DIR/$LEASE_CLAIM_UID on the node"
+dra-leases "$VM2" borrower/main
+dra-assert "$DRA_LEASES" "j == []"
 vm-command "ls -la $DRA_LEASE_FS_DIR/$LEASE_CLAIM_UID/" ||
     command-error "no filesystem directory of claim $LEASE_CLAIM in $DRA_LEASE_FS_DIR"
 # In container main an empty read-only directory, mounted as a slave.
