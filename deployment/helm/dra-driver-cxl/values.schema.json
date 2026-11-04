@@ -1,0 +1,353 @@
+{
+    "$schema": "http://json-schema.org/schema#",
+    "required": [
+        "image",
+        "resources",
+        "nri",
+        "pool",
+        "leases"
+    ],
+    "definitions": {
+        "quantity": {
+            "type": ["string", "integer"],
+            "$comment": "a Kubernetes quantity"
+        },
+        "device": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["numa", "dax", "block", "fs"]
+                },
+                "readOnly": {
+                    "type": "boolean"
+                },
+                "access": {
+                    "type": "string",
+                    "enum": ["direct", "cached"]
+                },
+                "path": {
+                    "type": "string",
+                    "pattern": "^/"
+                },
+                "fsType": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+                }
+            }
+        },
+        "container": {
+            "type": "object",
+            "additionalProperties": false,
+            "$comment": "fencing is set by config.defaults.container only",
+            "properties": {
+                "steering": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "policy": {
+                            "type": "string",
+                            "enum": ["none", "auto", "first-dram", "first-cxl", "start-interleaved", "end-interleaved", "waypoints"]
+                        },
+                        "waypoints": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "targetUsages": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "required": [
+                                                "memoryType",
+                                                "usage"
+                                            ],
+                                            "properties": {
+                                                "memoryType": {
+                                                    "type": "string",
+                                                    "enum": ["DRAM", "CXL"]
+                                                },
+                                                "usage": {
+                                                    "$ref": "#/definitions/quantity"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "minStep": {
+                            "$ref": "#/definitions/quantity"
+                        },
+                        "maxStep": {
+                            "$ref": "#/definitions/quantity"
+                        }
+                    }
+                }
+            }
+        },
+        "pool": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "opaque": {
+                    "type": "object",
+                    "$comment": "controller key -> an object that the controller defines",
+                    "additionalProperties": {
+                        "type": "object"
+                    }
+                }
+            }
+        },
+        "localMemoryConfig": {
+            "type": "object",
+            "$comment": "a MemoryConfig body for a class of cxl.nri.io",
+            "additionalProperties": false,
+            "properties": {
+                "device": {
+                    "$ref": "#/definitions/device"
+                },
+                "container": {
+                    "$ref": "#/definitions/container"
+                }
+            }
+        },
+        "poolMemoryConfig": {
+            "type": "object",
+            "$comment": "a MemoryConfig body for a class of cxl-pool.nri.io",
+            "additionalProperties": false,
+            "properties": {
+                "device": {
+                    "$ref": "#/definitions/device"
+                },
+                "container": {
+                    "$ref": "#/definitions/container"
+                },
+                "pool": {
+                    "$ref": "#/definitions/pool"
+                }
+            }
+        }
+    },
+    "properties": {
+        "image": {
+            "type": "object",
+            "required": [
+                "name",
+                "pullPolicy"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                },
+                "pullPolicy": {
+                    "type": "string",
+                    "enum": ["Never", "Always", "IfNotPresent"]
+                }
+            }
+        },
+        "initContainerImage": {
+            "type": "object",
+            "required": [
+                "name",
+                "pullPolicy"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                },
+                "pullPolicy": {
+                    "type": "string",
+                    "enum": ["Never", "Always", "IfNotPresent"]
+                }
+            }
+        },
+        "resources": {
+            "type": "object",
+            "required": [
+                "cpu",
+                "memory"
+            ],
+            "properties": {
+                "cpu": {
+                    "type": "string"
+                },
+                "memory": {
+                    "type": "string"
+                }
+            }
+        },
+        "nri": {
+            "type": "object",
+            "required": [
+                "plugin",
+                "runtime"
+            ],
+            "properties": {
+                "plugin": {
+                    "type": "object",
+                    "required": [
+                        "index"
+                    ],
+                    "properties": {
+                        "index": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 99
+                        }
+                    }
+                },
+                "runtime": {
+                    "type": "object",
+                    "required": [
+                        "patchConfig"
+                    ],
+                    "properties": {
+                        "patchConfig": {
+                            "type": "boolean"
+                        },
+                        "config": {
+                            "type": "object",
+                            "required": [
+                                "pluginRegistrationTimeout",
+                                "pluginRequestTimeout"
+                            ],
+                            "properties": {
+                                "pluginRegistrationTimeout": {
+                                    "type": "string",
+                                    "$comment": "allowed range is 5-30s",
+                                    "pattern": "^(([5-9])|([1-2][0-9])|(30))s$"
+                                },
+                                "pluginRequestTimeout": {
+                                    "type": "string",
+                                    "$comment": "allowed range is 2-30s",
+                                    "pattern": "^(([2-9])|([1-2][0-9])|(30))s$"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "pool": {
+            "type": "object",
+            "required": [
+                "driverName",
+                "prepareTimeout"
+            ],
+            "properties": {
+                "driverName": {
+                    "type": "string",
+                    "$comment": "a DNS subdomain, empty disables the pool driver",
+                    "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
+                },
+                "prepareTimeout": {
+                    "type": "string",
+                    "$comment": "a Go duration",
+                    "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+)$"
+                }
+            }
+        },
+        "leases": {
+            "type": "object",
+            "required": [
+                "enabled",
+                "wait",
+                "companionImage"
+            ],
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "wait": {
+                    "type": "string",
+                    "$comment": "a Go duration",
+                    "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+)$"
+                },
+                "companionImage": {
+                    "type": "string",
+                    "minLength": 1
+                }
+            }
+        },
+        "config": {
+            "type": "object",
+            "$comment": "the driver configuration file, validated by the driver; fsTypes (list of filesystem types that mode fs mounts) defaults to [erofs]: adding a type trusts every party that can write the devices raw (read-write block claims and leases on any node of any cluster that shares the pool)",
+            "properties": {
+                "fsTypes": {
+                    "type": "array",
+                    "$comment": "default [erofs] when absent; every other type trusts the writers of the devices",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+                    }
+                }
+            }
+        },
+        "deviceClassConfig": {
+            "type": "object",
+            "$comment": "DeviceClass name -> the body of a MemoryConfig, rendered into the class's spec.config",
+            "additionalProperties": false,
+            "properties": {
+                "cxl-local": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-local-shared": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-local-persistent": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-pool": {
+                    "$ref": "#/definitions/poolMemoryConfig"
+                },
+                "cxl-pool-shared": {
+                    "$ref": "#/definitions/poolMemoryConfig"
+                },
+                "cxl-pool-persistent": {
+                    "$ref": "#/definitions/poolMemoryConfig"
+                },
+                "cxl-region": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-dram": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                },
+                "cxl-lease": {
+                    "$ref": "#/definitions/localMemoryConfig"
+                }
+            }
+        },
+        "logLevel": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "extraEnv": {
+            "type": "object",
+            "additionalProperties": {
+                "type": ["string", "number", "boolean"]
+            }
+        },
+        "tolerations": {
+            "type": "array"
+        },
+        "affinity": {
+            "type": "object"
+        },
+        "nodeSelector": {
+            "type": "object"
+        },
+        "podPriorityClassNodeCritical": {
+            "type": "boolean"
+        }
+    }
+}

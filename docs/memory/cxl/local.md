@@ -1,0 +1,889 @@
+# Local CXL memory devices
+
+CAUTION: experimental. Interfaces may change.
+
+A CXL memory device (memdev) attached to a node, at boot or by hotplug,
+holds no usable memory until a region is created on it. The `cxl.nri.io`
+driver of nri-dra-driver-cxl publishes such free devices in the node's
+ResourceSlice and creates and destroys their regions on demand: every
+claim gets a slice of a device, as memory of a NUMA node or as a devdax
+device, slices of both kinds share a device, and a running container can
+lease local memory and give it back
+(`cxl-request request --source local --size 64Mi`, see
+[leases.md](leases.md)). A device that the configuration declares shared
+is not sliced: all its claims and leases map the same bytes, see
+[Shared local devices](#shared-local-devices). A memdev of persistent
+memory gives its claims its block device or a filesystem, see
+[Persistent local memdevs](#persistent-local-memdevs).
+
+Regions that exist already (created by the BIOS or an admin, onlined as
+RAM) are published as `region` devices
+([usage.md](usage.md#devices-of-cxlnriio)); this document is about the
+devices the plugin manages itself.
+
+## What the plugin publishes
+
+A memdev is published as a device of type `memdev` when it is enabled
+(bound to the `cxl_mem` driver; the kernel enables a hotplugged memdev,
+and the plugin never disables a local one), has RAM capacity (or, a
+[persistent memdev](#persistent-local-memdevs), persistent capacity
+only), is not a pool device (prepared by the pool driver, see [pool.md](pool.md)), is not
+excluded by `ignoreDevices` (name, `cxl/memN`, `major:minor` or serial)
+and has no region that the plugin did not create itself. A memdev listed
+in `sharedDevices` is published as a shared device instead; the sections
+up to [Shared local devices](#shared-local-devices) describe sliced
+memdevs. A memdev with a
+foreign region is left alone: its RAM region is a `region` device, a
+foreign devdax region is not published. Destroy the region to let the
+plugin manage the device.
+
+Local and pool devices are told apart by serial. A memdev is a pool
+device when the pool driver prepares it for a claim, or when its serial
+is the `serial` attribute (or `<driver>/serial`) of a device in a
+ResourceSlice of the pool driver (`--pool-driver-name`, by default
+`cxl-pool.nri.io`; the slices of other DRA drivers do not count): a pool
+controller publishes its devices before it attaches one to a node, so a
+pool device is never offered as a local one, not even between its attach
+and its Prepare, or when its pod never starts. The plugin lists these
+ResourceSlices at every scan, and scans at least every 2 minutes (plus at
+most 30 seconds) also without udev events. When a list fails it keeps
+the serials of the last successful one; until a list has succeeded it
+publishes no `memdev` device at all (regions are published as usual),
+and it tries again every 30 seconds while the list fails.
+
+A pool controller deletes its ResourceSlices when it stops gracefully,
+while its devices stay attached to their nodes. So the plugin remembers
+serials in `poolSerials.json` in its data directory (written atomically
+and synced to disk, kept across restarts and reboots):
+
+- A serial that it has seen in a ResourceSlice of the pool driver, that
+  the pool driver prepared, or that the status of a pool claim allocated
+  to the node names, stays a pool device serial: such a memdev is never
+  published as a local memdev, whatever the ResourceSlices say at the
+  moment, and also after a restart of the plugin while the
+  ResourceSlices are absent. The serial is forgotten only after the
+  plugin has observed it absent (in no ResourceSlice, not prepared, not
+  on the node) for 24 hours. Absence is observed by the scans; it counts
+  over scans that are at most 5 minutes apart, and starts again after a
+  longer gap (a stopped plugin, a failing list, a step of the clock) and
+  after a restart of the plugin.
+- A memdev that it has published as a local memdev before stays local,
+  unless the pool driver publishes or prepares its serial: then it is a
+  pool device, and the next scan (within about 2.5 minutes) withdraws it
+  from the ResourceSlice. If local claims use it at that moment, the log
+  has an error; they keep their memory, but no new local claim is
+  prepared on it.
+- Any other memdev is new. While a pool claim that is allocated to the
+  node is not attached yet (its status has neither a serial nor a failed
+  attach), a new memdev is held back for as long as that lasts: it may be
+  the device of that claim. A new memdev is local at once otherwise,
+  unless a pool that the plugin remembers has been observed without
+  ResourceSlices for less than an hour, the list fails, or
+  `poolSerials.json` could not be read in the last hour (it exists but is
+  corrupt: the log has an error). Then it is held back: it is not
+  published at all for up to 5 minutes, until the pool is back. If the
+  pool's ResourceSlices list the serial, it is a pool device; otherwise,
+  or after the 5 minutes, it is local. The log has
+  `pool serials: holding back new memdev ...`.
+
+A memdev that is held back, or a pool device, is not used by the plugin
+even if a local claim was allocated on it: before it creates a region on
+a memdev or onlines its memory, the plugin lists the ResourceSlices of
+the pool driver again, and Prepare fails with `memory device serial
+0x... is a pool device ...: it is not used as a local memory device`.
+
+Memdevs that are on the node when the plugin first starts (as local
+memdevs are on a real machine, from boot) and a local memdev that is
+hot-added while all pools have their ResourceSlices are published at
+once. After a restart of the plugin, the hour of a pool without
+ResourceSlices starts again, because absence is not kept across
+restarts. The rules depend on the file: if it is lost (deleted,
+or a first start with this version) while a pool controller is stopped,
+an unprepared pool device on the node is taken as local, unless the
+status of a pool claim of the node names it or a pool claim of the node
+is still being attached. A pool device whose claim was deleted before
+the controller detached it is not covered then. Shared pool memory must
+never be onlined as RAM, so keep the file with the other state of the
+plugin, and upgrade while the pool controllers run.
+
+A pool device that stays attached stays a pool device. To use a former
+pool device as a local memdev without detaching it, stop the plugin,
+remove the record of its serial from `poolSerials.json` (`jq
+'.serials |= map(select(.serial != "0x..."))'`) and start the plugin.
+
+```yaml
+- name: memdev-c100e2e1               # "memdev-" + serial in lower-case hex
+  attributes:
+    type:            {string: memdev}
+    source:          {string: local}
+    serial:          {string: "0xc100e2e1"}
+    shared:          {bool: false}
+    persistent:      {bool: false}
+    size:            {int: 1073741824}
+    nodeAffinity:    {int: 0}
+    memoryBlockSize: {int: 134217728}
+  capacity:
+    memory:
+      value: 1Gi
+      requestPolicy:
+        default: 1Gi                  # the whole device
+        validRange: {min: 128Mi, step: 128Mi}   # the memory block size
+  allowMultipleAllocations: true
+  nodeAllocatableResources: {memory: {mapping: {capacityKey: memory, capacityMultiplier: "1"}}}
+```
+
+| Attribute | |
+|:--|:--|
+| `type` | `memdev` |
+| `source` | `local` (pool devices have `source: pool`) |
+| `serial` | serial of the memdev, `0x` and lower-case hex, as the pool controller publishes serials |
+| `shared` | `false`: every claim gets a slice of its own (`true` for a [shared local device](#shared-local-devices)) |
+| `persistent` | `false` (`true` for a [persistent local memdev](#persistent-local-memdevs)) |
+| `size` | RAM capacity of the memdev in bytes |
+| `nodeAffinity` | CPU NUMA node of the memdev; absent if unknown |
+| `memoryBlockSize` | memory block size of the node in bytes: every slice is a multiple of it |
+
+Every slice, `numa` or `dax`, is a multiple of the memory block size of
+the node, `/sys/devices/system/memory/block_size_bytes` (hex without
+`0x`: `8000000` is 128 MiB; 128 MiB in the e2e VMs, up to 2 GiB on servers
+with much RAM), and lies on whole memory blocks. Capacity `memory` is
+what whole blocks of the device's region are sure to hold: the RAM
+capacity rounded down to whole blocks. With blocks larger than 256 MiB
+(the alignment of CXL regions in their window) a region can start up to
+block size - 256 MiB after a block boundary, so that head is subtracted
+first: floor((RAM - (block size - 256 MiB)) / block size) blocks. The
+request policy makes the scheduler account exactly what the plugin
+carves: requests are rounded up to the block size
+(`requestPolicy.validRange` min and step); a request without an amount
+consumes `requestPolicy.default`, the whole capacity. The API server
+requires a `default` with a `validRange`, and a range needs room for its
+`min` and one `step`: a capacity of one block has `validValues: [<block
+size>]` instead. A memdev without the room for one whole block is not
+published, and no memdev is published while the block size cannot be
+read. `nodeAllocatableResources` maps the capacity to the node's memory as
+for `region` devices (with the `DRANodeAllocatableResources` feature
+gate only).
+
+The option `manageMemdevs: false` of the
+[configuration file](usage.md#configuration-file) (`-f`, the `config`
+value of the Helm chart) turns all of this off: free memdevs are not
+published and no regions are created.
+
+## Modes
+
+The DeviceClass `cxl-local` selects every local memdev that is neither
+shared nor persistent (`shared == false`, `persistent == false`). Every claim of a
+device gets a slice of its own, in one of two modes, and slices of both
+modes share a device at the same time:
+
+- `numa` (default): the slice is onlined as system RAM in movable memory
+  blocks of the NUMA node N of the device. All `numa` slices of a device
+  (and of the devices under one CXL host bridge) are on the same node N;
+  the containers are isolated by NUMA node (`cpuset.mems`), not per slice.
+- `dax`: the slice is a character device `/dev/daxX.Y` of its own.
+
+The mode, and `readOnly` for `dax` slices, is the `device` section of a
+`MemoryConfig` of the claim or its class
+([usage.md](usage.md#opaque-configurations)):
+
+```yaml
+config:
+- opaque:
+    driver: cxl.nri.io
+    parameters:
+      apiVersion: cxl.nri.io/v1alpha1
+      kind: MemoryConfig
+      device:
+        mode: dax        # numa (default) or dax
+        readOnly: true   # dax only: the device node allows reads only
+```
+
+### Slices and memory blocks
+
+A slice is a dax device of the device's devdax region. Memory that is
+onlined as RAM must start and end at memory block boundaries (the kernel's
+kmem driver adds only the whole blocks of a dax device). Because every
+slice is a multiple of the block size, the kernel's first-fit placement of
+dax devices keeps every slice and every free gap of a block-aligned region
+block-aligned, also after releases (a slice larger than any gap gets
+several ranges, each block-aligned). The plugin checks every range of
+every slice, `dax` slices too, before it binds a driver
+(`daxX.Y/mappingN`). A slice that first-fit placed across a block boundary
+(a region that does not start at a block boundary) is deleted and created
+again on the first whole free blocks of the region, combining several
+free ranges if one is not enough (`daxX.Y/mapping`), so that the head and
+tail of such a region are never used and no slice splits a block. The
+plugin logs it, and a region that does not start at a block boundary when
+it is created:
+
+```
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: slice dax0.2 at [0x...] is not aligned to the memory block size 536870912, placing it explicitly
+local: memdev mem1 (serial 0xc100e2e1): region0 at 0x250000000-0x2cfffffff does not start at a memory block boundary (block size 536870912): slices use only its 1610612736 bytes of whole blocks
+```
+
+### Node size
+
+The memory of node N is the sum of the online `numa` slices: N grows by
+the block size for every block of a `numa` slice that is prepared, and
+shrinks when the slice is released (N disappears from `numactl -H` or
+has 0 kB when the last `numa` slice is gone). `dax` slices add nothing to
+N. Capacity that no claim has stays offline. The containers whose claims
+or leases are on N share it; `memory.max` and cgmpolmgr's quota of each
+container (the slice size of its claims) bound what a container uses.
+
+All regions under one CXL host bridge share one NUMA node (the node of
+the host bridge's memory window): two memdevs under one host bridge are
+one node to the containers.
+
+### Claims
+
+| | claim on `cxl-local` |
+|:--|:--|
+| 128Mi as NUMA memory | `exactly: {deviceClassName: cxl-local, capacity: {requests: {memory: 128Mi}}}` |
+| a 128Mi dax slice | the same and a `MemoryConfig` with `device: {mode: dax}` |
+| a read-only slice | a `MemoryConfig` with `device: {mode: dax, readOnly: true}` |
+| steered to the slice's node | a `MemoryConfig` with `container: {steering: {policy: auto}}` |
+| a specific device | add `selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100e2e1"'}}]` |
+| the whole device | no capacity request |
+| a slice shared by pods | one ResourceClaim (not a template) that several pods reference |
+
+Requests are rounded up to the memory block size (64Mi gets a 128Mi slice
+with 128 MiB blocks). Pods that reference the same ResourceClaim land on
+the node of the claim's device; kubelet prepares the claim once, so all of
+them get the same slice.
+
+Examples in [`deployment/samples/dra-driver-cxl`](tree:/deployment/samples/dra-driver-cxl):
+[`local-numa.yaml`](blob:/deployment/samples/dra-driver-cxl/local-numa.yaml),
+[`local-dax-readonly.yaml`](blob:/deployment/samples/dra-driver-cxl/local-dax-readonly.yaml),
+[`local-dax-shared-claim.yaml`](blob:/deployment/samples/dra-driver-cxl/local-dax-shared-claim.yaml)
+(two pods, one claim).
+
+## What Prepare does
+
+For every allocated `memdev` device of a claim:
+
+1. The mode and read-only setting come from the `device` section of the
+   result's `MemoryConfig` ([usage.md](usage.md#merge-order)), the
+   size from the allocation's consumed capacity (the whole device if
+   there is none), rounded up to a multiple of the memory block size
+   (the block size is read again for every slice). A region the plugin
+   left without claims (after a restart) is destroyed first.
+2. The first claim of a device creates a devdax region on the memdev.
+   The device is recorded with the claim before the region is created,
+   and the name of the region before `cxl create-region` runs, so that a
+   restart knows the region of a Prepare that it cut (see Restart below).
+3. The claim's slice: the region's dax device `daxX.0` when no slice uses
+   it and kmem does not have it, else a new dax device of the dax region,
+   placed first-fit by the kernel and checked for whole blocks (see
+   above). A dax region with less free memory than the slice fails the
+   Prepare with "no room for the slice" (the scheduler accounts the
+   capacity: this is not expected).
+4. `numa`: the slice is bound to kmem through sysfs, its memory blocks
+   are onlined movable, and N is the slice's `target_node`. The claim has
+   node N with the slice size as its total and consumed bytes: the
+   containers that use it have N in their `cpuset.mems`, and those that
+   opt in to steering are steered to N exactly as for `region` devices
+   ([usage.md](usage.md#steering)).
+5. `dax`: the slice is bound to `device_dax`. The plugin writes zeros to
+   the whole slice before the claim gets it, so a claim never reads what
+   an earlier claim left there (this takes size / memory write bandwidth,
+   about 30 ms for 64 MiB and 120 ms for 256 MiB of DRAM). A read-only
+   slice has device node permissions `r`: the device cgroup refuses opens
+   for writing, whatever the container's capabilities. Applications
+   `mmap` the device (`MAP_SHARED`, aligned to the device alignment,
+   2 MiB) and agree on the layout of the memory themselves.
+6. The slice's CDI device `nri.io/cxl=claim-<claim uid>-<n>` (spec file
+   `cxl-claims`, n the index of the allocation result in the claim) has
+   the marker `CXL_CLAIM_<uid>_<n>=1`, the device node of a `dax` slice
+   and the variables of [usage.md](usage.md#environment-variables):
+
+   ```
+   CXL_<KEY>_SERIAL=0x<serial>
+   CXL_<KEY>_SHARED=0
+   CXL_<KEY>_MODE=numa                (or dax)
+   CXL_<KEY>_SIZE=<slice bytes>
+   CXL_<KEY>_NODE=<N>                 (numa)
+   CXL_<KEY>_DAX=/dev/daxX.Y          (dax)
+   CXL_<KEY>_READONLY=0|1             (dax)
+   ```
+
+   `<KEY>` is the serial in upper-case hex without `0x`, `<serial>` in
+   lower-case hex; the second and later slices of the same memdev in the
+   claim have `<KEY>_2`, `<KEY>_3`, ... A container gets the devices of
+   the requests it references only: of a claim with a read-write and a
+   read-only request, a container that references the read-only one
+   gets only the read-only device node.
+
+A Prepare that fails releases what it took for the claim, but a region
+that only this claim used and that lies below a region of another memory
+device is kept for the claim (see Restart below). Preparing a claim that
+is prepared already touches no device. The plugin's use of the
+devices is stored in `localDevices.json` in the `cxl.nri.io` plugin data
+directory, with the mode of every slice.
+
+Unprepare: a `numa` slice's memory blocks are offlined (only the blocks
+of that slice), then the slice is unbound, set to size 0 and deleted
+(`daxX.0` is kept with size 0); a `dax` slice is deleted the same way.
+When the last slice of a device is gone, of either mode, its region is
+destroyed. The memdev stays enabled (unlike a pool device): the device is
+back in its initial state. An offline that
+fails because pages cannot move fails the Unprepare and keeps the slice;
+kubelet retries (the pages of other containers on the movable node
+migrate on a later try). kmem is never unbound from memory that is not
+offline: the kernel could not remove it, and it would stay online until a
+reboot.
+
+A slice whose release fails where no claim is left to retry it (a
+restart's release of a claim that is not prepared, the rollback of a
+failed Prepare, a dax device that belongs to no slice) is kept in the
+state under the owner `-` (no claim UID is `-`). Such a slice is never
+handed out again; the next Prepare on the device releases it first, and
+fails with the release error while it cannot, and so does every restart.
+The region stays while such a slice exists.
+
+The plugin logs every step of a slice with its dax device, mode, size and
+duration:
+
+```
+local: memdev mem1 (serial 0xc100e2e1): created region0 (devdax, dax dax0.0, node 2) in 112.031ms
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: created slice dax0.1 mode numa size 134217728 at [0x258000000-0x25fffffff] in 3.208ms
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: onlined slice dax0.1 mode numa size 134217728 blocks [75] node 2 in 41.002ms
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: zeroed slice dax0.0 mode dax size 134217728 in 60.415ms
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: offlined slice dax0.1 mode numa size 134217728 blocks [75] in 20.117ms
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: deleted slice dax0.1 mode numa size 134217728 in 5.420ms
+local: memdev mem1 (serial 0xc100e2e1): released region0 in 90.733ms
+```
+
+Restart: the state file is read again; regions are found by the memdev
+serial and slices by name; a slice that is gone is dropped, the slices of
+claims that are not in the prepared claims (in both `preparedClaims.json`
+and `preparedClaimsInfo.json`: a plugin stopped between their writes
+left a claim in one only, which is not prepared then) are released
+(`numa` slices offlined first), and so are the slices of the
+owner `-`, dax devices of the region that belong to no slice are deleted,
+and a region of the plugin without claims is destroyed.
+A Prepare that the plugin did not finish while it created the region of
+the first claim of a memdev (a restart, kill or crash of the plugin cuts
+a running Prepare: the Prepare of kubelet fails with `Unavailable` and
+kubelet retries it 60-90 s later) leaves the region, enabled or disabled
+by a cut rollback, and the device recorded with the claim and the name of
+the region that it was creating. The start destroys that region, and the
+Prepare again of the claim creates a new one. A region that a cut
+`cxl create-region` left without a target is deleted. A region on the
+memdev with another name is not the plugin's: it is not touched, and the
+memdev is not published. A device recorded by an older plugin, without
+the name, takes every region on the memdev as what the creation left:
+the memdev had none when the device was recorded. On a memdev that is a
+pool device now nothing is touched.
+Linux commits the HDM decoders of a CXL port in order, and destroying a
+region below the region of another memory device on the same host bridge
+or switch leaves a hole: no new region goes through that port until the
+regions above are gone (the Prepares fail with "CXL decoders released
+out of order", [pool.md](pool.md#ordering-and-failure-semantics)). So the
+region of claims whose Prepares did not finish (cut, or failed and rolled
+back), with no slice of another claim, is kept for these claims when a
+region of another memory device lies above it, at start and in the
+rollback of a failed Prepare: their Unprepare destroys it, their Prepare
+again uses it. The release in the running plugin checks again after
+`cxl disable-region`, under the lock of the region creations of the
+plugin, that no region came above it meanwhile (a pool Prepare on the
+same host bridge); if one did, the region stays, disabled, and is kept.
+A kept region has no slices, and its Prepare again sets it up like a new
+one first: enabled again if a cut release disabled it, its dax devices
+deleted and `daxX.0` made over the whole region, bound to `device_dax`,
+probed (and zeroed for a shared device). When nothing lies above it any
+more, the Prepare again destroys it and creates a new one instead. A
+kept region whose memory aliases is not created again smaller until
+nothing lies above it; the Prepare fails meanwhile.
+Regions do not survive a node reboot: the state file records the boot id
+of the kernel (`/proc/sys/kernel/random/boot_id`), and the state of
+another boot is dropped without touching any region, so that a region
+that firmware or an admin created under the same name is never taken for
+the plugin's. The info of each prepared claim (`preparedClaimsInfo.json`)
+records the boot id too: a claim prepared in another boot is not prepared
+at start (no CDI device, its numa slices not fenced), kubelet's Prepare
+again after the reboot gets a new slice, and its Unprepare (the pod went
+during the reboot) finds nothing to release. A claim saved without a boot
+id (by an older plugin) is taken as prepared in this boot. A `dax` slice
+that is gone gets no device node and no `CXL_<KEY>_DAX` in its CDI
+device.
+
+## Shared local devices
+
+A local memdev that the [configuration file](usage.md#configuration-file)
+lists in `sharedDevices` is not sliced. It is one devdax device of the
+whole memdev that every claim and lease of the device maps: the same
+bytes, zeroed by the plugin only when it creates the device's region,
+mode `dax` only. A claim without a
+`shares` request has the device exclusively (the writer of single-writer
+data sharing); a claim with `shares: "1"` is one of its sharers (the
+readers, usually `readOnly: true`). This is the model of shared pool
+devices ([pool.md](pool.md)) on one node. This section is about memdevs
+of volatile memory; a persistent memdev in `sharedDevices` is a
+[shared persistent memdev](#shared-persistent-memdevs).
+
+### Configuration
+
+```yaml
+sharedDevices: ["0xc100e2e1"]   # as ignoreDevices: memN, cxl/memN, major:minor, serial
+```
+
+An entry is matched as in `ignoreDevices`. The serial is the stable
+form; `memN` changes with the probe order of the devices. A memdev
+matched by more than one setting is used by the first of
+`ignoreDevices`, pool device (its serial is in a pool ResourceSlice, or
+the pool driver prepared it), `sharedDevices`, and is otherwise sliced. A
+device of `sharedDevices` that is not published shared is logged with the
+reason, once per memdev and reason when it is ignored or a pool device,
+at verbosity 4 at every scan otherwise (no RAM capacity, disabled,
+regions that the plugin did not create, slices of prepared claims):
+
+```
+- not publishing memory device "<memN>" as a shared local device: <reason>
+```
+
+The configuration is read at start: a change of `sharedDevices` takes
+effect with a restart of the plugin (the Helm chart restarts the
+DaemonSet when its `config` value changes). A device switches between
+sliced and shared use only when it is idle: while claims of the other
+use are prepared, the device is not published at all, and the plugin
+keeps serving those claims ([Life cycle](#life-cycle-of-a-shared-local-device)).
+
+### The published device
+
+```yaml
+- name: memdev-c100e2e1               # "memdev-" + serial, as every memdev
+  attributes:
+    type:         {string: memdev}
+    source:       {string: local}
+    serial:       {string: "0xc100e2e1"}
+    shared:       {bool: true}
+    persistent:   {bool: false}
+    size:         {int: 1073741824}   # RAM capacity of the memdev
+    nodeAffinity: {int: 0}            # absent if unknown
+  allowMultipleAllocations: true
+  capacity:
+    shares: {value: 1M}               # no requestPolicy: no request = all, "1" = one share
+```
+
+A shared device has no `memory` capacity (every allocation would consume
+it), no `memoryBlockSize` (it has no slices) and no
+`nodeAllocatableResources` (nothing is onlined). It is published when it
+is enabled, has RAM capacity, is not a pool device, is not ignored, has
+no region that the plugin did not create, and no slices of prepared
+claims; the memory block size does not matter. `shares` has no request
+policy: a claim that requests no shares consumes the whole value and is
+the only holder of the device, a claim that requests `shares: "1"` is
+one of up to 1M holders. Nobody needs to know the value.
+
+### Claims of shared local devices
+
+The DeviceClass `cxl-local-shared` selects shared local devices of
+volatile memory (`cxl.nri.io`, `type == "memdev"`, `shared == true`,
+`persistent == false`); `cxl-local` never offers them.
+
+| | claim on `cxl-local-shared` |
+|:--|:--|
+| the device exclusively (the writer) | `exactly: {deviceClassName: cxl-local-shared}` and a `serial` selector, no capacity request |
+| one share | the same and `capacity: {requests: {shares: "1"}}` |
+| one share, read-only (a reader) | the same and a `MemoryConfig` with `device: {readOnly: true}` |
+| one share for several pods | one ResourceClaim (not a template) that the pods reference |
+
+The mode is `dax` with or without a `device.mode` that says so. While an
+exclusive claim holds the device, the scheduler allocates the device to
+no other claim: the pods of waiting claims stay Pending. The environment
+of each case is in [usage.md](usage.md#example-claims) (examples 13-15);
+[local-shared-writer-readers.yaml](blob:/deployment/samples/dra-driver-cxl/local-shared-writer-readers.yaml)
+has a writer and three readers. A running container leases the device
+with `cxl-request request --serial 0xc100e2e1` (exclusively) or
+`--serial 0xc100e2e1 --shared --read-only` (one read-only share), see
+[leases.md](leases.md#cxl-request).
+
+### What Prepare does for a shared device
+
+1. The mode (`dax`) and `readOnly` come from the `device` section; the size
+   is that of the device's dax device. A claim that consumed less than one share is refused
+   before any device is touched
+   ([usage.md](usage.md#configuration-errors)).
+2. The first claim of the device creates its devdax region. The region's
+   dax device `daxX.0` is the shared device: bound to `device_dax`, the
+   size of the region, never resized. The plugin writes zeros to the
+   whole device when it creates the region, so that the first sharer
+   never reads what earlier tenants of the memdev (slices, or the memory
+   before a reboot) left there; this makes the first claim of a large
+   device slower. When the zeroing fails, the new region is released
+   again and the claim gets nothing. A region that exists already, kept
+   from earlier claims, is used again and not zeroed.
+3. The claim is recorded on the device in `localDevices.json`, with the
+   dax device, mode, size and `readOnly`; the device entry says
+   `"shared": true`.
+4. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
+   marker `CXL_CLAIM_<uid>_<n>=1`, the variables of
+   [usage.md](usage.md#environment-variables) with
+   `CXL_<KEY>_SHARED=1` and `CXL_<KEY>_SIZE` the size of `daxX.0` (the
+   region of the whole memdev), and
+   the device node `/dev/daxX.0`, with permissions `r` for a read-only
+   claim. Every claim of the device on the node has a CDI device of its
+   own for the same device node.
+
+Unprepare drops the claim and nothing else: the region, `daxX.0` and the
+bytes stay. Pods that reference one claim share one share (kubelet
+prepares the claim once); every claim of the device is a share of its
+own, with its own `readOnly`.
+
+The plugin logs every claim of a shared device (the last word is
+`exclusive`, `1 share` or `<n> shares`), its release, and an idle device
+whose region it keeps, the zeroing of a new region, and a region that
+disappeared while the plugin ran:
+
+```
+local: memdev mem1 (serial 0xc100e2e1): zeroed new shared dax0.0 size 1073741824 in <t>
+local: memdev mem1 (serial 0xc100e2e1): region0 of the shared device is gone, forgetting it and its claims [<uids>]
+local: memdev mem1 (serial 0xc100e2e1): claim <uid> request mem: shared dax0.0 size 1073741824 read-only false exclusive
+local: memdev mem1 (serial 0xc100e2e1): claim <uid>: released shared dax0.0, claims left [<uids>]
+local: memdev mem1 (serial 0xc100e2e1): keeping region0 and dax0.0 of the idle shared device
+```
+
+and at start:
+
+```
+local: memdev mem1 (serial 0xc100e2e1): keeping shared region0 and dax0.0, claims [<uids>]
+local: memdev mem1 (serial 0xc100e2e1): claim <uid> of the shared device is not prepared, dropping it
+local: memdev mem1 (serial 0xc100e2e1): not configured shared any more: keeping region0 for claims [<uids>], not publishing the memdev until they are gone
+local: memdev mem1 (serial 0xc100e2e1): not configured shared any more, releasing its region
+```
+
+Errors of the Prepare about shared use. The last three come from stale
+allocations only: the scheduler never allocates such claims, because a
+device is not published while it changes between sliced and shared use.
+The two errors about the other use are prefixed with
+`claim <ns>/<name>: device memdev-<hex>: `:
+
+| case | error |
+|:-----|:------|
+| zeroing the new region of a shared device fails | `memdev <memN> (serial 0x<hex>): zeroing new shared dax0.0: <cause>` |
+| a claim that consumed shares of a memdev that is not configured shared any more | `claim <ns>/<name>: request <req>: device 0x<serial>: allocated as a shared device, which it is not any more` |
+| a claim of a shared device whose state has slices | `memdev <memN> (serial 0x<hex>): used as slices by claims [<uids>]; a shared device cannot be sliced` |
+| a claim of a sliced device whose state is shared | `memdev <memN> (serial 0x<hex>): used shared by claims [<uids>]; a sliced device cannot be shared` |
+
+### Life cycle of a shared local device
+
+| event | what happens |
+|:------|:-------------|
+| the device appears, listed in `sharedDevices` | published shared; no region yet |
+| first claim or lease | the devdax region is created, `daxX.0` bound to `device_dax` and zeroed once; mapped by the claim's containers or passed as an fd |
+| more claims | the same `daxX.0`, each with its own CDI device or fd and its own `readOnly` |
+| the region disappears while the plugin runs | the plugin forgets the region and its claims; the next claim creates a new region and zeroes it |
+| an exclusive claim (no `shares` request) | no other claim is allocated until it is gone; waiting claims are Pending (Unschedulable) |
+| the last claim is gone | the claim is dropped; the region, `daxX.0` and the bytes stay; the ResourceSlice is unchanged; `cxl list` shows the region on an idle node |
+| plugin start, the device in `sharedDevices` | the state file of the same boot names the device shared with its region: the region is found by serial, `daxX.0` by name, both kept; claims that are not prepared are dropped. Without state nothing happens until the first claim |
+| plugin start, the device not in `sharedDevices` | the state says shared: with prepared claims the device stays as it is and serves them, and is not published; without claims the region is destroyed, the state entry dropped, and the device is published as a sliced memdev at the next scan |
+| plugin restart | as plugin start (the same boot) |
+| node reboot | the region and the bytes are gone (volatile); the state of another boot is dropped without touching any region; the first claim creates the region again and zeroes it |
+| hot-remove | refused by the kernel while the region exists: remove the device from `sharedDevices` and restart the plugin first; a device that is gone anyway is forgotten |
+| the device joins `sharedDevices` | after the restart: not published while slices of prepared claims exist; published shared when idle, with no region until the first claim |
+
+The memdev stays enabled. A shared device has no memory blocks and no
+alignment rule of its own: it is the whole region as one `device_dax`
+device, mapped with the 2 MiB alignment of devdax devices, and it does
+not return to its initial state when idle.
+
+## Persistent local memdevs
+
+A local memdev of persistent memory holds data that outlives the claims
+and the reboots of the node. The plugin publishes it as a device of
+persistent memory, used like a pool device of persistent memory: its
+claims get its block device (mode `block`) or a filesystem on it (mode
+`fs`, read-only or read-write), see
+[usage.md](usage.md#persistent-memory). The rules and the code of
+persistent devices are the same for both drivers.
+
+### The published persistent device
+
+A memdev with persistent capacity and no RAM capacity is published as
+a persistent memdev when it is enabled, is not a pool device, is not
+excluded by `ignoreDevices`, has no region that the plugin did not create
+and no claims that use it otherwise (as slices, as a shared device of
+volatile memory, or with the other sharing of `sharedDevices`), and
+`manageMemdevs` is not `false`. The hold-back rules of new memdevs above
+apply to it too: a hot-added persistent memdev may be held back while a
+pool lacks its ResourceSlices. `usableSize` and `verifyAddressing` do not
+apply to persistent capacity. A memdev that is not published is logged at
+verbosity 4:
+
+```
+- not publishing memory device "<memN>" as a persistent local memory device: <reason>
+```
+
+```yaml
+- name: memdev-c100f5e1               # "memdev-" + serial, as every memdev
+  attributes:
+    type:         {string: memdev}
+    source:       {string: local}
+    serial:       {string: "0xc100f5e1"}
+    shared:       {bool: false}       # true when the memdev is in sharedDevices
+    persistent:   {bool: true}
+    size:         {int: 536870912}    # persistent capacity of the memdev
+    nodeAffinity: {int: 0}            # absent if unknown
+  allowMultipleAllocations: true
+  capacity:
+    shares: {value: 1M}               # no requestPolicy: no request = all, "1" = one share
+```
+
+It has no `memory` capacity, no `memoryBlockSize` and no
+`nodeAllocatableResources`: nothing of it is onlined. A claim that
+requests no shares has the device exclusively, a claim with
+`shares: "1"` is one of its sharers. A memdev with RAM and persistent
+capacity is published as before, by its RAM; its persistent capacity is
+not used (logged at verbosity 3:
+`- memory device "<memN>": persistent capacity of a memdev with RAM capacity is not used`).
+Every other local memdev has `persistent: false`. Regions of persistent
+memory that the plugin did not create are not published as `region`
+devices.
+
+### Claims of persistent local memdevs
+
+The DeviceClass `cxl-local-persistent` selects persistent local memdevs
+(`cxl.nri.io`, `type == "memdev"`, `persistent == true`), shared or not;
+`cxl-local` and `cxl-local-shared` never offer them (`persistent ==
+false`). The modes are `block` and `fs`, as for persistent pool devices,
+and the device has no default mode:
+
+| | claim on `cxl-local-persistent` |
+|:--|:--|
+| the block device, writable (the writer of an image) | no capacity request, a `MemoryConfig` with `device: {mode: block}` |
+| the block device, read-only | `capacity: {requests: {shares: "1"}}`, `device: {mode: block, readOnly: true}` |
+| the filesystem, read-write (a type other than erofs, which `fsTypes` must list) | `shares: "1"`, `device: {mode: fs, readOnly: false}` |
+| the filesystem, read-only | `shares: "1"`, `device: {mode: fs}` |
+| a specific device | add `selectors: [{cel: {expression: 'device.attributes["cxl.nri.io"].serial == "0xc100f5e1"'}}]` |
+
+A writable `block` claim with a `shares` request fails its Prepare with
+`MemoryConfig: device.mode block: a persistent local device is writable only exclusively (no shares request)`.
+[local-persistent-fs.yaml](blob:/deployment/samples/dra-driver-cxl/local-persistent-fs.yaml)
+has a writer and a reader. A running container leases the device with
+`cxl-request request --source local --serial 0xc100f5e1 --mode fs`
+(`--read-write` to write, `--mode block` for its block device), see
+[leases.md](leases.md#cxl-request).
+
+### What Prepare does for a persistent memdev
+
+1. The mode, `readOnly`, `access` and `fsType` come from the `device`
+   section; the facts of the device from the configuration
+   ([Shared persistent memdevs](#shared-persistent-memdevs)). The checks
+   and their texts are those of persistent pool devices
+   ([usage.md](usage.md#configuration-errors)), prefixed with
+   `claim <ns>/<name>: request <req>: `.
+2. The first claim of the device on the node creates a pmem region on the
+   memdev under a root decoder with persistent capacity. The region is
+   recorded in `localDevices.json` like the regions of slices (the name
+   before `cxl create-region` runs), and the rules of local regions
+   apply to it: the decoder order of a host bridge, kept regions, hollow
+   regions ([What Prepare does](#what-prepare-does)).
+3. The fsdax namespace (map `mem`) of the region's nvdimm region: found
+   in the labels of the device, or created by a writable `block` claim
+   when there is none.
+4. Mode `block`: the block device `/dev/pmemK`. Mode `fs`: the filesystem
+   is detected and mounted at the node mount
+   `/var/lib/kubelet/plugins/cxl.nri.io/mounts/<serial hex>-<access>`,
+   with the rules of one node of
+   [usage.md](usage.md#one-node-superblock-block-device-binds) (one
+   read-write superblock, a read-only block device without a writer,
+   upgrade and downgrade).
+5. The claim's CDI device `nri.io/cxl=claim-<claim uid>-<n>` has the
+   marker, the variables of
+   [usage.md](usage.md#environment-variables) (`CXL_<KEY>_FSTYPE` in
+   mode `fs`), and the block device node (permissions `r` when
+   read-only) or the bind mount of the node mount.
+
+Unprepare follows the rules of one node (downgrade, unmount); the last
+claim of the device on the node waits until nothing holds `/dev/pmemK`
+and releases the region, also of a device in `sharedDevices` (unlike a
+shared device of volatile memory, whose region stays). A release that
+fails keeps the claim, and kubelet retries. When regions of other memdevs
+lie above the pmem region (the decoder order of
+[What Prepare does](#what-prepare-does)), the idle device keeps its
+region: its next claim uses it, and the next start of the plugin, or a
+later release of idle devices, releases it when nothing lies above it any
+more. Such a device cannot be hot-removed until its region is gone. The
+memdev stays enabled: a local memdev is never disabled. The plugin never
+zeroes a persistent memdev: its data is the point. After a restart the
+regions are found again as those of slices, and the node mounts are
+restored as those of pool devices; a reboot leaves no region, and the
+next claim creates one again on the same data and labels.
+
+The plugin logs (the node mounts, upgrades and downgrades with the lines
+of [usage.md](usage.md#one-node-superblock-block-device-binds), prefix
+`cxl.nri.io:`):
+
+```
+local: memdev mem1 (serial 0xc100f5e1): created region1 (pmem, nvdimm region1) in <t>
+local: memdev mem1 (serial 0xc100f5e1) region1: claim <uid> request mem: persistent /dev/pmem1 mode fs read-only false access "direct" fs "ext4"
+local: memdev mem1 (serial 0xc100f5e1): claim <uid>: released persistent /dev/pmem1, claims left [<uids>]
+local: memdev mem1 (serial 0xc100f5e1): keeping region1 of the idle persistent device: region2 lie above it, its release would leave a hole in the decoders of their ports
+local: memdev mem1 (serial 0xc100f5e1): keeping persistent region1, claims [<uids>]
+```
+
+(the last one at start). Errors of the Prepare about other uses of the
+memdev come from stale allocations only (the memdev is not published
+meanwhile): `memdev <memN> (serial 0x<hex>): used <how> by claims [<uids>]; a persistent device cannot be used so`,
+`memdev <memN> (serial 0x<hex>): used as a persistent device by claims [<uids>]; <use> cannot be a persistent device`,
+and `memdev <memN> (serial 0x<hex>): used as a shared persistent device by claims [<uids>]; it is not shared now (sharedDevices)`
+(or the reverse).
+
+### Shared persistent memdevs
+
+A persistent memdev in `sharedDevices` (`shared: true`) is memory that
+other hosts may use at the same time, and no pool controller keeps them
+off it. The single host fact of the device is false, so:
+
+- mode `block` is read-only only:
+  `MemoryConfig: device.mode block: other hosts may use the device: it is not written in mode block`;
+- mode `fs` is read-only, or read-write only for a cluster filesystem on
+  coherent memory: `device.fsType: gfs2`, gfs2 with `lock_dlm` on the
+  device, and `coherent: true` for the memdev in `memdevSettings` of the
+  [configuration file](usage.md#configuration-file):
+
+  ```yaml
+  sharedDevices: ["0xc100f5e2"]
+  memdevSettings:
+  - device: "0xc100f5e2"
+    coherent: true   # the hardware keeps the memory coherent between the hosts
+  ```
+
+  else `MemoryConfig: device.readOnly: false: other hosts may use the device: read-write needs it on this node only (claim status singleHost), or a cluster filesystem (device.fsType gfs2) on coherent memory`.
+
+`CXL_<KEY>_SHARED` is the attribute `shared` of the memdev (`1` here),
+whatever the `shares` request. Readers of a shared persistent memdev on
+this node see a consistent filesystem only while no other host writes
+it: that is for the hosts to agree on. The rules of shared local devices
+of volatile memory (one devdax device, zeroed at the creation of its
+region, kept while idle) do not apply to a persistent memdev. A change of
+`sharedDevices` for a persistent memdev takes effect when it is idle: it
+is not published while claims of the other sharing are prepared.
+
+## Broken and aliased memory
+
+A CXL memory device may advertise more memory than it decodes. For
+instance, a broken device/setup that advertised 192 GiB, offsets X and
+X+128 GiB of every region reached the same memory: address bit 37 was
+ignored, and a slice in the last 64 GiB overwrote the slice at the
+same offset in the first 64 GiB, of another claim, silently, in modes
+`numa` and `dax` alike.
+
+The plugin protects against such devices in two ways:
+
+- `verifyAddressing` (default `true`): every new region is probed with an
+  address line test before its first slice or shared claim: for every
+  power of two P from 4 KiB up to the region size it writes a marker at a
+  few offsets X and X+P, bypassing the CPU caches, and reads X back. When
+  X holds the marker of X+P, only the first P bytes are distinct: the
+  region is destroyed and created again with only those bytes
+  (`cxl create-region -s P`), the memdev is published with that size from
+  the next scan on, and the result is kept in `localProbes.json` in the
+  plugin data directory, also across reboots (remove the file to probe
+  the whole memdev again). The probe takes milliseconds and writes 16
+  bytes at a few hundred offsets of the new region before anything uses
+  it. A marker that reads back as something else fails the claim.
+
+  ```
+  local: memdev mem0 (serial 0x...): address line probe of region0 (206158430208 bytes): offsets 0x0 and 0x2000000000 reach the same memory (address bit 37 is ignored): only the first 137438953472 bytes are distinct in <t>
+  local: memdev mem0 (serial 0x...): region0: ...; using only the first 137438953472 bytes of the memdev from now on
+  ```
+
+  The claim that triggers the probe was allocated against the capacity
+  published before it. If its slices do not fit in the usable size, its
+  Prepare fails with "no room for the slice"; recreate the claim.
+
+- `memdevSettings` with `usableSize` limits a memdev by configuration,
+  before any claim: regions map only its first `usableSize` bytes, and
+  the published capacity is computed from it.
+
+  ```yaml
+  memdevSettings:
+  - device: "0x..."
+    usableSize: 128Gi
+  ```
+
+## Limitations
+
+- One region per device, no interleaving across devices.
+- `numa` capacity is online per claim but not isolated per claim:
+  `cpuset.mems` is per node, all containers with `numa` claims or leases
+  on the node share its memory; `memory.max` and cgmpolmgr bound each.
+  Other containers do not get the node, unless `defaults.container.fencing`
+  is `none` ([usage.md](usage.md#containers-without-claims)).
+- Slice sizes are multiples of the memory block size, also for `dax`
+  slices: a 64Mi dax claim gets 128Mi with 128 MiB blocks, 2Gi with 2 GiB
+  blocks.
+- The memory of node N can be a little less than its `numa` slices when
+  the kernel takes the struct pages of hotplugged memory from the memory
+  itself (`memory_hotplug.memmap_on_memory`).
+- With memory blocks larger than 256 MiB a device publishes one block
+  less than its RAM capacity (for a RAM capacity of whole blocks): its
+  region may start after a block boundary, and only whole blocks hold
+  slices. An unaligned end needs no such room: it holds less than a block,
+  which the rounding down excludes already.
+- Two claims of one device in one container set the same
+  `CXL_<KEY>_*` names (the device nodes of `dax` slices differ).
+- With `DRANodeAllocatableResources`, a dax claim raises the container's
+  memory limit by the slice size although dax memory is not charged to
+  the cgroup.
+- Leases of local memory have the limitations of every lease
+  ([leases.md](leases.md#limitations)): memory limits of the requester,
+  no `numa` lease for a steered container, SIGBUS after a release of a
+  mapped dax fd.
+- A region that an admin creates on a memdev while the plugin uses it is
+  not published as a `region` device until the plugin has released the
+  memdev: the plugin hides every region of the memdevs it uses.
+- A memdev that is shared with other hosts but not managed by a pool
+  controller looks like a local device. Onlining it as RAM corrupts the
+  other hosts' data: exclude it with `ignoreDevices`, or declare it in
+  `sharedDevices`: the plugin then never onlines it and shares it dax
+  only (a persistent one read-only, or read-write by a cluster
+  filesystem on coherent memory); exclusivity across hosts is not
+  coordinated by one node's plugin.
+- Hot-removing a local device that is in use is not supported; the kernel
+  refuses to remove a device with an online region.
+- Shared local devices: the sharers are whoever may create a claim of
+  `cxl-local-shared` on the node, and `readOnly` guards against writes,
+  not reads. The bytes are zeroed only when the region is created: a
+  claim reads what the last writer left, also after the device was idle.
+  The region of a shared
+  device stays while the device is configured shared, also with no
+  claims. A shared device of volatile memory is `dax` only
+  (`device.mode: numa` fails) and is never sliced: modes `block` and `fs`
+  are for devices of persistent memory (pool devices and persistent
+  local memdevs).
+- A memdev with RAM and persistent capacity is used by its RAM only; its
+  persistent capacity is not published.
+
+## Node requirements
+
+- Kernel with CXL regions (`CONFIG_CXL_REGION`), `CONFIG_DEV_DAX`,
+  `CONFIG_DEV_DAX_KMEM`, `CONFIG_MEMORY_HOTREMOVE`, and `CONFIG_FS_DAX`
+  for the `dax` mode (without it every devdax `mmap` fails); for
+  persistent memdevs also what pool devices of persistent memory need
+  ([usage.md](usage.md#requirements)): `CONFIG_CXL_PMEM`,
+  `CONFIG_LIBNVDIMM`, `CONFIG_BLK_DEV_PMEM`, `CONFIG_ND_PFN`,
+  `CONFIG_BLK_DEV_LOOP` and the filesystems that the node mounts, and the
+  `ndctl` tool.
+- The `cxl` (ndctl) tool. `daxctl` is optional: dax drivers are switched
+  with `daxctl` when it is installed, else through sysfs; slices are made
+  through sysfs. The container image of the driver has both; a host
+  process needs them installed on the node.
+- `/sys/devices/system/memory/auto_online_blocks` should be `offline`:
+  the plugin onlines the blocks of `numa` slices movable itself (kmem is
+  bound through sysfs, not with `daxctl`). Region creation also adds the
+  whole region through kmem for a moment (the kernel binds the dax device
+  of a new RAM region to kmem) before the plugin switches it to
+  `device_dax`: with `online` the kernel onlines the whole region in a
+  kernel zone, and the offline before the switch can fail.
+- No udev rule that onlines hot-added memory, such as `40-redhat.rules`
+  of RHEL, CentOS Stream and Fedora (override it, see
+  [usage.md](usage.md#requirements)). Such a rule onlines the blocks of a
+  new region after the plugin offlined them: the plugin offlines them
+  again until they stay offline for 500 ms (logging `memoryN: online again
+  after offlining it (auto-onlined by udev?)`) and fails the Prepare after
+  30 s. The plugin never destroys a region whose memory is online after
+  it is disabled (the kernel could not remove it): online memory without
+  its region would read garbage.
