@@ -1,0 +1,506 @@
+# fake-cxl-pool
+
+A fake CXL memory pooling and sharing appliance for testing on one host:
+
+- `fake-cxl-pool-server` runs on the host. It owns memory devices (backing
+  files in pool directories) and hotplugs/hot-removes them as `cxl-type3`
+  devices into running qemu VMs over their QMP or HMP monitor sockets, without
+  restarting the VMs.
+- `fake-cxl-pool-client` (CLI) and `pkg/client` (Go library) talk to the
+  server's REST API. In a VM, the client also prepares hotplugged memory for
+  use and releases it before detach (`guest` commands).
+- `fake-cxl-pool-controller` connects a Kubernetes cluster to the server:
+  it publishes the pool devices for DRA (driver `cxl-pool.nri.io`) and
+  attaches and detaches them as the scheduler allocates and frees claims
+  (see [fake-cxl-pool-controller](#fake-cxl-pool-controller)).
+
+One server is one pool appliance; several servers on one host are several
+appliances, each with a controller of its own (see
+[Several pool servers](#several-pool-servers)).
+
+A device may be *exclusive* (attached to one VM at a time, used as system RAM
+or as devdax there) or *shared* (the same backing file attached to several
+VMs, same serial in every VM, used as devdax only). Independently of that, a
+device is *volatile* (default) or *persistent* (persistent memory with a
+label storage area, see [Persistent devices](#persistent-devices)).
+
+## Build and test
+
+```
+make -C scripts/testing/fake-cxl-pool          # bin/fake-cxl-pool-{server,client,controller}
+make -C scripts/testing/fake-cxl-pool test     # unit tests (go test -race)
+make -C scripts/testing/fake-cxl-pool lint     # go vet + gofmt
+```
+
+The client and the controller are built static for amd64
+(`CGO_ENABLED=0 GOARCH=amd64`), so they can be copied into the e2e VMs as is:
+
+```
+scp -F test/e2e/<vm>/.ssh-config scripts/testing/fake-cxl-pool/bin/fake-cxl-pool-client vagrant@node:/tmp/
+ssh -F test/e2e/<vm>/.ssh-config vagrant@node sudo install /tmp/fake-cxl-pool-client /usr/local/bin/
+```
+
+## Running the server
+
+```
+bin/fake-cxl-pool-server [-config config.example.yaml] [-listen 127.0.0.1:9909] [-state FILE|-] [-v]
+```
+
+Without a config file the server listens on 127.0.0.1:9909, has one pool
+`default` in /tmp/fake-cxl-pool (8Gi), discovers qemu processes every 10s
+and keeps its state in /tmp/fake-cxl-pool.state.json. `-v` logs every qemu
+command and HTTP request. See [config.example.yaml](config.example.yaml)
+for all keys (name, pools, static devices, static hosts, discovery filters,
+detach timeout).
+
+- `name` (default `fake-cxl-pool`): the name of the server, a DNS label
+  (lower-case letters, digits, `-`). `GET /status` and the CLI `status`
+  show it, fake-cxl-pool-controller publishes the devices under it as the
+  DRA pool name. The start log line is `fake-cxl-pool-server <name>
+  listening on http://<addr> (state file <file>[, discovery names
+  [...]][, discovery control hmp][, discovery slots [...]])`.
+- `discovery.names`: the VMs the server is cabled to (path.Match patterns
+  on the VM name; default all).
+- `discovery.control: qmp|hmp` (default: QMP if the VM has a QMP socket,
+  else HMP): the monitor protocol of every host without a
+  `hosts[].control` of its own. With `hmp` a VM without an HMP socket gets
+  the error `no monitor socket`.
+- `discovery.slots`, `hosts[].slots` (default: every slot): the CXL slots
+  (ports) the server is cabled to, path.Match patterns on the slot bus name
+  (`"*hb1"`, `"cxlsw_ds[01]_usrp0hb0"`); a host's own patterns override
+  those of discovery, and `slots: []` on a host means every slot of that
+  host. The server knows only matching slots: `hosts NAME`
+  lists them, an attach picks one of them, `attach --slot` of another one
+  fails (`host "..." has no CXL slot "..."`), and so does the attach of a
+  local device whose slot does not match: a server cabled to some ports
+  only cannot attach local devices on other ports, set `localDevices:
+  false` or include their ports. The fixed memory window of a host bridge
+  is shared by all servers.
+
+### Serial numbers
+
+The guest finds a device by its serial (`/sys/bus/cxl/devices/memN/serial`),
+so serials are unique over all devices of the server. Devices created
+without a serial get the next free one above the base of their kind:
+`0xc1` = CXL, then `00` = present at boot (the e2e topology's local devices
+are `0xc100e2e0+i`), `ae` = shared pool devices (`sharedSerialBase`,
+default `0xc1ae0000`: `0xc1ae0001`, ...), `ee` = exclusive pool devices
+(`exclusiveSerialBase`, default `0xc1ee0000`: `0xc1ee0001`, ...). The kind
+is decided when the serial is assigned; a later `PATCH shared` keeps it.
+
+### Persistent devices
+
+A device with `persistent: true` (config, or `"persistent": true` in
+`POST /devices`, or `create --persistent`) is CXL persistent memory. It has
+two files:
+
+- the data file (`<pool dir>/<device>.raw`, or `file:`), of the device size;
+- the label storage area (LSA) file, 256 KiB: the data file with its
+  extension replaced by `.lsa` (`llm0.raw` -> `llm0.lsa`; a file without
+  extension gets `.lsa` appended).
+
+Both are created and removed together (a missing one is created again at
+startup and at attach; deleting a device created over the API removes both).
+The device JSON has `"persistent": true` and `"lsaPath"`; volatile devices
+have `"persistent": false` and no `lsaPath`. Attach adds two
+`memory-backend-file` objects, `share=on`: the data `fcp_<device>.hp<N>` and
+the LSA `fcp_<device>.hp<N>-lsa` (`size=262144`), and plugs
+`cxl-type3,persistent-memdev=fcp_<device>.hp<N>,lsa=fcp_<device>.hp<N>-lsa`
+instead of `volatile-memdev=`. Detach deletes both objects after
+`device_del`, as does a failed `device_add`. Every qemu that attaches a
+persistent device maps the same two files, so the namespace labels in the
+LSA are shared by all VMs: a namespace created in one VM appears in the
+others from the labels. A persistent device cannot use a backend
+pre-declared on a qemu command line (`befile_...`): such a backend has no
+LSA.
+
+VMs with slirp networking (the e2e VMs) reach the host loopback at
+192.168.76.2, which is the client's default server:
+`http://192.168.76.2:9909`. Override with `--server URL` or
+`$FAKE_CXL_POOL_SERVER`. On the host use `http://127.0.0.1:9909`.
+
+### Discovery of qemu VMs
+
+The server scans `/proc/*/cmdline` for `qemu-system-*`:
+
+- host name = `<name>` of `.vagrant/machines/<name>/` in a `-drive` path
+  (== VM hostname), else `-name guest=<name>`; uuid from `-uuid`.
+- monitor sockets from `-qmp unix:...`, `-monitor unix:...` and
+  `-chardev socket,path=...` + `-mon chardev=...,mode=control|readline`.
+  Relative paths are resolved against the vagrant project directory (the
+  e2e output dir): qemu `-daemonize` chdirs to `/`, so `/proc/PID/cwd` is
+  useless. Socket paths close to the 108 byte `sun_path` limit are
+  connected through `/proc/self/fd/N/<name>` of their directory.
+- QMP is preferred (`qmp.sock`); `qmp-e2e.sock` is never used, it is the
+  test framework's (`vm-qmp`). A QMP socket serves one client at a time; the
+  server keeps one persistent QMP connection per VM, so it never misses a
+  `DEVICE_DELETED` event. HMP (`monitor.sock`) is used when there is no
+  QMP socket or the config says `control: hmp`, with a new connection per
+  command like `vm-monitor` does; device deletion is polled.
+- a qemu that restarted (a new pid or start time) has none of the
+  hotplugged devices: the server drops the attachments of the host. A
+  monitor socket outlives its qemu, and a new qemu answers on the same path
+  before the next scan has seen its pid. So after every monitor call the
+  server checks that the qemu process behind it still runs; if not, the
+  host stops at once (`host H: stopped: qemu process PID not found`), and
+  the next scan takes the new process. An attach checks it also before
+  each `object_add` and `device_add` and after the `device_add`: an
+  attach during a qemu restart fails (503) and plugs nothing into the new
+  qemu.
+- pre-declared backends `beram_<memdev>__bus_<bus>__sn_<serial>` and
+  `befile_...` (test/e2e/lib/topology2qemuopts.py) become *local* devices of
+  that VM (`scope: local`): attach plugs them into their own bus with their
+  own serial and never object-adds or object-deletes them. A `scope: local`
+  device is what the DRA driver `cxl.nri.io` publishes as a device with
+  `source: local`; only `scope: pool` devices are published by
+  fake-cxl-pool-controller. A `befile_`
+  backend whose file is declared in several VMs is one shared device bound to
+  all of them (`localHosts`); if its file is a configured pool device, the
+  pool device is bound to the VM.
+- a host bridge's NUMA node and fixed memory window size come from qemu
+  (`qom-get /machine cxl-fmw`) or from the command line.
+- `hotRemoveCapable: false` means stock qemu: it cannot complete hot-removal
+  from a `cxl-downstream` port (no power controller); the device stays in
+  qemu as a zombie, its slot and backend can never be reused until the VM
+  restarts. Use the patched qemu (`qemu_bin=...` in test/e2e) for
+  detach/re-attach.
+
+Devices that someone else plugged (for instance `vm-cxl-hotplug`) and that
+use a known backend are *adopted* as attachments (`adopted: true`). A
+device `fcp_<device>.hp<N>` whose serial is not the serial of `<device>` is
+another pool server's device of the same name: it is not adopted, and the
+server logs once `WARNING: host H has qemu device ID with serial S, not
+the serial S' of device D: not adopted (another pool server's device?)`.
+
+## Client CLI
+
+```
+fake-cxl-pool-client [--server URL] [-o table|json] COMMAND
+  status | pools [NAME] | hosts [NAME] | whoami | rescan
+  devices [NAME] [--shared] [--free] [--host H]
+  create --size 256Mi [--shared] [--persistent] [--name N] [--pool P] [--serial 0x..] [--label k=v]...
+  delete NAME [--force]
+  attach DEVICE (--self | --host HOST) [--slot BUS] [--numa N] [--owner O] [--no-wait] [--timeout 30s] [--force] [--exclusive]
+  detach DEVICE (--self | --host HOST) [--timeout 30s] [--no-wait] [--owner O] [--force]
+  attachments [--self | --host H] [--device D]
+  allocate DEVICE --owner O [--note TEXT] ; release DEVICE [--owner O] [--force]
+  events
+  guest wait DEVICE [--timeout 30s]          # prints memN when the serial shows up
+  guest memdev DEVICE
+  guest region create DEVICE --mode numa|dax [--decoder decoderX.Y]
+  guest online DEVICE [--movable]            # mode numa
+  guest info DEVICE                          # memdev, region, dax device, mode numa|dax, node
+  guest release DEVICE
+```
+
+`--host` takes a host name or uuid. `--self` resolves the VM the client
+runs in from its hostname and system uuid (`/sys/class/dmi/id/product_uuid`,
+else `/etc/machine-id`; uuids are compared without dashes). `guest`
+commands take a device name (the serial is looked up from the server) or a
+serial (`0xc1ee0001` or decimal, no server needed) and must run as root.
+Sizes are printed in binary units (`256Mi`, `1Gi`); `--size` takes
+`256Mi`, `256M`, `256MiB`, bytes or `0x` hex. Serials are printed as `0x`
+and lower-case hex. Exit codes: 0 ok, 1 error, 2 usage, 3 conflict or
+timeout (the device is still held).
+
+The `devices` table has the columns `NAME SERIAL SIZE SHARED PERSISTENT
+SCOPE STATE ATTACHED-TO OWNER`; `devices NAME` prints `memory: persistent`
+(or `volatile`) and, for a persistent device, `lsa: <file>`.
+
+`attach --exclusive` makes an exclusive attachment: no other host can
+attach the device until it is detached, also a shared device. It is the
+pool side of the exclusive use of a shared device: fake-cxl-pool-controller
+attaches exclusively for a claim that requests no `shares` of a shared
+device (`AttachRequest.exclusive` in the REST API).
+
+### Sharing a device between two VMs (mode dax)
+
+```
+# anywhere (host or VM):
+fake-cxl-pool-client create --size 256Mi --shared --name shared0
+fake-cxl-pool-client attach shared0 --host vm-a
+fake-cxl-pool-client attach shared0 --host vm-b
+# in each VM:
+sudo fake-cxl-pool-client guest wait shared0
+sudo fake-cxl-pool-client guest region create shared0 --mode dax   # -> /dev/daxN.M
+#   apps: open /dev/daxN.M, mmap MAP_SHARED (length multiple of 2Mi)
+# done, in each VM:
+sudo fake-cxl-pool-client guest release shared0
+fake-cxl-pool-client detach shared0 --self
+```
+
+Never online a shared device as system RAM in more than one VM: both
+kernels would use the same memory (silent corruption). devdax mmap needs a
+guest kernel with `CONFIG_FS_DAX=y`.
+
+### Pooling an exclusive device (mode numa, system RAM)
+
+```
+fake-cxl-pool-client attach pooled0 --self
+sudo fake-cxl-pool-client guest wait pooled0
+sudo fake-cxl-pool-client guest region create pooled0 --mode numa
+sudo fake-cxl-pool-client guest online pooled0 --movable   # a new NUMA node
+...
+sudo fake-cxl-pool-client guest release pooled0            # offline, destroy region, disable memdev
+fake-cxl-pool-client detach pooled0 --self
+```
+
+Release in the guest **before** detach. `device_del` makes the guest remove
+the PCI device after about 5 s whatever its state. If its memory was still
+online, qemu can never finalize the device: no `DEVICE_DELETED`, and the
+backend stays mapped into that guest until the VM restarts. The server then
+reports the attachment `failed` (exit code 3 / HTTP 409), keeps it listed,
+and keeps an exclusive device in state `error`, so that it is not given to
+another VM. `detach --force` forgets a failed attachment. A timed-out
+attachment clears itself if qemu deletes the device later.
+
+## fake-cxl-pool-controller
+
+The cluster side of the DRA driver `cxl-pool.nri.io`. The node side is the
+pool driver `cxl-pool.nri.io` of nri-dra-driver-cxl, the CXL DRA driver of
+this repository (cmd/plugins/dra-driver-cxl); the contract between the two
+is [docs/memory/cxl/pool.md](../../../docs/memory/cxl/pool.md).
+[docs/memory/cxl/e2e.md](../../../docs/memory/cxl/e2e.md) shows how to run
+the server, the controller and the driver in the e2e VMs. The controller:
+
+- publishes the pool devices of the server (`GET /devices?scope=pool`) as one
+  cluster-scoped ResourceSlice of the pool named after the server (the
+  `name` of `GET /status`, `fake-cxl-pool` for a server without one;
+  `-pool-name` overrides it), with the node selector
+  `kubernetes.io/hostname In [...]` of the nodes whose VMs the server
+  reaches (the Nodes that map to a server host as below; a node without
+  the label by its name), so that the scheduler allocates the devices on
+  those nodes only. While no node is reachable, nothing is published (log:
+  `pool <name>: no node of the cluster is a host of the server, publishing
+  nothing`; then `publishing pool <name> for nodes [...]: ...` again).
+  Every device has the attributes `type: memdev`, `source: pool`, `serial`,
+  `shared`, `persistent` (bool, false for volatile devices), `size`
+  (bytes) and `coherent: true` (the memory of a device is coherent between
+  the hosts that share it: every VM maps the same qemu memory backend of
+  the host; a controller that does not publish `coherent` means false). Exclusive devices have `capacity.memory`, shared devices
+  `allowMultipleAllocations` and `capacity.shares` with value `1M`
+  (1000000) and no `requestPolicy`: a claim that requests no shares
+  consumes all of them and has the device exclusively, `shares: "1"` is
+  one share; all have `bindsToNode` and the binding conditions
+  `cxl-pool.nri.io/Attached` / `cxl-pool.nri.io/AttachFailed`. Device
+  names become DNS labels; devices in state `error` are not published. The
+  slice is updated when the device list or the reachable nodes change
+  (server events, Node events, or every sync interval) and deleted when the
+  controller stops (it has no owner, nothing else garbage collects it).
+  The controller touches the slices of its own pool only
+  (resourceslice `ReconcilePoolWithName`), so the controllers of several
+  servers publish side by side under the same driver.
+- attaches a device when the scheduler allocates it to a claim: node =
+  `allocation.nodeSelector` (`metadata.name`), host = the server host whose
+  uuid is the Node's `status.nodeInfo.systemUUID` (lower case, dashes
+  ignored), else the host whose name is the node name. Then it writes
+  `cxl-pool.nri.io/Attached=True` and the device data (serial, shared,
+  persistent (only when true), size, host, hostUUID, attachment,
+  qemuDeviceId, exclusive, singleHost, coherent; the last three only when
+  true) into
+  `claim.status.devices[]`, which releases the
+  scheduler's binding wait and tells the node plugin which memdev to wait
+  for. A node that is not a pool host, a 409 or another error gives
+  `AttachFailed=True` (reason `NoHost`, `Conflict`, `Timeout`,
+  `AttachError`), and the scheduler allocates again.
+- attaches where the claim says: `pool.opaque.fake-cxl-pool` of the
+  claim's `MemoryConfig` (below).
+- attaches exclusively (`AttachRequest.exclusive`) for a claim that
+  consumes all `shares` of a shared device (`exclusive: true` in its
+  device data), and for a share whose `MemoryConfig` mounts a filesystem
+  read-write (`device.mode: fs`, `readOnly: false`), unless it is a
+  cluster filesystem (`device.fsType: gfs2`) on a coherent device
+  (`config.ExclusiveHost`; ReadWriteOnce, log: `attach D to H for claim
+  ...: exclusive for a read-write <fsType or "filesystem"> claim`). The
+  device data of a claim whose attachment is exclusive for it has
+  `singleHost: true` (the node mounts read-write only then). The other
+  claims of that node share the attachment; claims of other nodes get
+  `AttachFailed` reason `Conflict` until no claim of the node needs it
+  exclusively. When an existing attachment cannot be made exclusive
+  (another host has the device), only the claims that need it exclusively
+  get `AttachFailed`; the others of the node stay `Attached`. When a new
+  exclusive attachment conflicts, it is attached again without the flag
+  for the claims of the node that do not need it (log: `attach D to H for
+  claim ...: not exclusive for the claims that do not need it`); only when
+  that conflicts too, every claim of the node gets `AttachFailed`.
+- detaches a device when no allocated claim wants it on that node any more.
+  The node plugin has released it in NodeUnprepare by then; if the guest
+  still holds it, the attachment stays `detaching` (or `failed`) and the
+  controller only logs it.
+
+The attachment owner is `k8s:resourceclaim/<claim uid>` (`-owner-prefix`).
+The controller is stateless: it only touches attachments with its owner
+prefix on hosts that are Nodes of its cluster, never those of other
+owners, so a restart just re-confirms existing attachments. An attachment
+without owner (adopted, or made with the CLI without `--owner`) of a device
+that a claim wants on that node is taken over: the attach request gives it
+the owner of the claim (log: `attach D to H for claim ...: taking over
+attachment D@H without owner (...)`), and it is detached when no claim wants
+it any more. Ownerless attachments that no claim wants are left alone.
+Each cluster runs one controller per server; several clusters may share
+one server, and then share its devices, including shared devices attached
+to nodes of different clusters. The e2e VMs of n4-cxl-shared-2, -1 and -0
+are one cluster of three nodes (n4-cxl-shared-2 the control plane, -1 and
+-0 workers) with one controller per server, on n4-cxl-shared-2.
+
+```
+fake-cxl-pool-controller [-server http://192.168.76.2:9909] [-kubeconfig FILE]
+    [-driver-name cxl-pool.nri.io] [-pool-name ""]
+    [-sync-interval 10s] [-attach-timeout 60s] [-detach-timeout 60s]
+    [-owner-prefix k8s:] [-config-key fake-cxl-pool] [-v]
+```
+
+`-server` defaults to `$FAKE_CXL_POOL_SERVER`, `-kubeconfig` to
+`$KUBECONFIG`, else the in-cluster config. `-pool-name ""` (the default)
+is the name of the server; the controller logs it at start: `driver
+cxl-pool.nri.io, pool <name> (from the server), server <url>, sync
+interval 10s, config key fake-cxl-pool`. In the e2e VMs, on the control
+plane:
+
+```
+systemd-run --unit fake-cxl-pool-controller /usr/local/bin/fake-cxl-pool-controller -kubeconfig /root/.kube/config -v
+```
+
+[deploy/fake-cxl-pool-controller.yaml](deploy/fake-cxl-pool-controller.yaml)
+runs it as a Deployment with a ServiceAccount and the RBAC it needs
+(`resourceclaims/driver` `arbitrary-node:update` for `cxl-pool.nri.io`,
+`resourceclaims/status`, `resourceslices`, nodes, events).
+
+### Where a device is attached
+
+The `MemoryConfig` entries of `cxl-pool.nri.io` in a claim or its
+DeviceClass may choose the slot of the host that the server attaches the
+device to, under the controller key (`-config-key`, default
+`fake-cxl-pool`) in `pool.opaque`:
+
+```yaml
+spec:
+  devices:
+    requests:
+    - name: mem
+      exactly: {deviceClassName: cxl-pool}
+    config:
+    - requests: [mem]
+      opaque:
+        driver: cxl-pool.nri.io
+        parameters:
+          apiVersion: cxl.nri.io/v1alpha1
+          kind: MemoryConfig
+          pool:
+            opaque:
+              fake-cxl-pool: {numaNode: 1}
+```
+
+| field | type | |
+|:--|:--|:--|
+| `slot` | string | an exact CXL slot (bus name) of the host, as `fake-cxl-pool-client hosts NAME` lists them; the attach fails (`AttachError`, `host "..." has no CXL slot "..."`) for another one, `Conflict` while it is occupied |
+| `numaNode` | integer >= 0 | prefer the free slots of host bridges on that NUMA node of the host; any free slot when none is |
+
+Both go into the attach request (`slot`, `numaNode`, as `attach --slot`
+and `--numa` of the client). The controller resolves the configuration of
+every allocation result with pkg/cxl/config (class entries first, then the
+claim's, merged field by field) and reads only its own key: the objects of
+other keys and the `device` and `container` sections are ignored. An
+invalid entry of the driver, or an invalid object under its key (unknown
+field, wrong type, a negative `numaNode`), attaches nothing: the result
+gets `cxl-pool.nri.io/AttachFailed=True` with reason `InvalidConfig` and
+the error as message, a Warning event `AttachFailed` with the same message
+on the claim, and the log line `ERROR: claim <ns>/<name>: request <request>
+device <device>: invalid configuration: <error>`.
+
+The settings place a new attachment only. An attachment that exists
+already (one claim of a shared device on the node made it, the controller
+restarted, a claim of all shares makes it exclusive) is kept where it is:
+a device is never moved while it may be in use. Its `Attached` message
+names its slot, and a slot other than the configured one is logged
+(`... attachment <id> is in slot <bus>, not in the configured slot <slot>:
+kept`). For the same reason, a result that is `Attached` already keeps its
+attachment when the controller finds its configuration invalid (attached
+by a controller of another version, say); the log line then ends with
+` (attached already, kept)`.
+
+The contract for other pool controllers is
+[Configuration of a pool controller](../../../docs/memory/cxl/pool.md#configuration-of-a-pool-controller).
+
+### Several pool servers
+
+A cluster that spans several pool appliances (one per rack, say) runs a
+server and a controller per appliance. Every controller publishes its own
+pool under the driver `cxl-pool.nri.io`, for the nodes its server reaches,
+and the scheduler puts a pod on a node that reaches a pool with a free
+device for its claim. The node plugin needs no change: it matches claims by
+(driver, pool, device) and finds devices by serial. A VM may be cabled to
+several servers.
+
+Each server has a config file of its own (see "Several pool servers" in
+[config.example.yaml](config.example.yaml)):
+
+- a distinct `name` (the DRA pool name), `listen` port, pool `dir`s and
+  `stateFile`, and `discovery.names` of the VMs it is cabled to;
+- serials unique over all servers of the cluster, because the guests and
+  the DRA drivers find a device by its serial: the serial bases
+  `sharedSerialBase: 0xc1aeP000` and `exclusiveSerialBase: 0xc1eeP000` for
+  pool index P (one hex digit; 0 is the default of a single server);
+- device names unique over the servers cabled to one VM: the qemu ids are
+  `fcp_<device>.hp<N>`, a second server's device of the same name would
+  collide on `device_add`;
+- QMP or HMP: a QMP socket serves one client and the first server keeps
+  `qmp.sock` of its VMs connected. A second server cabled to a VM that
+  another server holds over QMP uses HMP: `discovery.control: hmp` (a
+  connection per command on `monitor.sock`, device events polled);
+- slot patterns: servers that share a VM use distinct CXL ports of it, for
+  instance `discovery.slots: ["*hb0"]` for one and `["*hb1"]` for the
+  other, so that they never race for a free port.
+
+The e2e tests (test/e2e/memory.test-suite/dra-driver-cxl, `pool-server-start
+--name NAME ...`) run the controller of the default server as the systemd
+unit `fake-cxl-pool-controller` and the controller of every other server
+as `fake-cxl-pool-controller-<name>`, all without `-pool-name`.
+
+## REST API
+
+Base URL `http://HOST:9909/api/v1`, JSON, errors as
+`{"error": "...", "code": "NotFound|Conflict|InvalidArgument|Unavailable|Internal"}`.
+The authoritative spec is plan/20-rest-api.md (also lists the deviations of
+this implementation); routes are in [pkg/api/routes.go](pkg/api/routes.go):
+
+```
+GET    /status
+GET    /pools                     GET /pools/{name}
+GET    /hosts                     GET /hosts/{name|uuid}     POST /hosts/rescan
+GET    /hosts/resolve?hostname=H&uuid=U
+GET    /devices?shared=&state=&host=&pool=&scope=
+POST   /devices                   GET|PATCH|DELETE /devices/{name}[?force=true]
+PUT    /devices/{name}/allocation DELETE /devices/{name}/allocation[?owner=&force=]
+POST   /devices/{name}/attachments                       {"host": ..., "slot", "numaNode", "owner", "wait", "timeout", "force", "exclusive"}
+GET    /devices/{name}/attachments[/{host}]
+DELETE /devices/{name}/attachments/{host}?wait=&timeout=&owner=&force=
+GET    /attachments?host=&device=  GET /attachments/{device@host}
+GET    /events                    (text/event-stream)
+```
+
+Attach: 201 attached, 200 already attached, 202 attaching (`wait: false`),
+409 sharing/ownership/slot/capacity conflicts, 503 qemu errors. An
+attachment records the `owner` of the attach request that created it
+(fake-cxl-pool-controller filters its own attachments by it); an
+attachment without owner takes the owner of the first attach request that
+has one (200, nothing is plugged again). Detach: 200
+detached, 202 detaching (`wait=false`), 409 the guest did not release the
+device in time (attachment `failed`).
+
+## Layout
+
+```
+cmd/fake-cxl-pool-server   server main
+cmd/fake-cxl-pool-client   CLI
+cmd/fake-cxl-pool-controller  DRA pool controller (cxl-pool.nri.io) main
+pkg/api                    JSON types, routes, errors, size/serial units
+pkg/client                 Go client library
+pkg/controller             DRA pool controller: ResourceSlice publisher, attach/detach reconciler
+pkg/server                 config, state machine, persistence, HTTP handlers
+pkg/qemu                   Monitor interface: QMP (persistent, events, QOM tree), HMP
+                           (text protocol, info qtree parser), discovery, fake monitor
+pkg/pool                   pools, backing files, serials
+pkg/cxl/memctl in nri-plugins  guest side: sysfs + cxl/daxctl
+deploy/                    Kubernetes manifests (controller Deployment + RBAC)
+```
