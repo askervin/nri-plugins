@@ -22,6 +22,9 @@ Usage: wizard.py check [--quiet] [--block]
   device node and through fd 3 (when docker has the image);
 - with --block: the same on a real block device (a loop device) in an
   unprivileged container, where mkfs.xfs on the node itself fails;
+- every pod of the wizard (each rule row, the scripted set, --node any of
+  a claim and a lease) and every Pod of manifests/ lands only on a node
+  with the label cxl-demo/node (vm1, vm2): vm0 has no demo image;
 - the state file read as setup writes it (printf %q; the file of a live
   setup, testdata/state-wizard-setup.env).
 Exit status 1 on the first failed check, after the report.
@@ -222,6 +225,46 @@ def rule_test():
             expect("refused %r" % text, e.question == q and reason in e.reason, "%s: %s" % (e.question, e.reason))
 
 
+DEMO_NODES = ("vm1", "vm2")   # the values of the label cxl-demo/node of demo setup
+
+
+def on_demo_nodes(pod):
+    """Return True if POD can only land on a node with the label cxl-demo/node (vm1, vm2) of demo setup."""
+    spec = pod.get("spec") or {}
+    if (spec.get("nodeSelector") or {}).get(w.NODE_LABEL) in DEMO_NODES:
+        return True
+    req = (((spec.get("affinity") or {}).get("nodeAffinity") or {}).get("requiredDuringSchedulingIgnoredDuringExecution") or {})
+    terms = req.get("nodeSelectorTerms") or []
+
+    def demo_term(t):
+        for e in t.get("matchExpressions") or []:
+            if e.get("key") == w.NODE_LABEL and (e.get("operator") == "Exists" or
+                                                 (e.get("operator") == "In" and set(e.get("values") or []) <= set(DEMO_NODES))):
+                return True
+        return False
+    return bool(terms) and all(demo_term(t) for t in terms)
+
+
+def manifests_test():
+    """Check that every Pod of manifests/ (the cases' pods, the setup's formatter) is pinned to a demo node."""
+    mdir = os.path.join(c.DEMO_DIR, "manifests")
+    count = 0
+    for case in sorted(os.listdir(mdir)):
+        for f in sorted(os.listdir(os.path.join(mdir, case))):
+            if not f.endswith(".yaml"):
+                continue
+            with open(os.path.join(mdir, case, f)) as fh:
+                docs = re.split(r"^---$", fh.read(), flags=re.M)
+            for doc in docs:
+                if not re.search(r"^kind: Pod$", doc, re.M):
+                    continue
+                count += 1
+                expect("manifests/%s/%s" % (case, f),
+                       re.search(r"^  nodeSelector:\n    %s: (%s)\b" % (re.escape(w.NODE_LABEL), "|".join(DEMO_NODES)), doc, re.M),
+                       "a Pod without nodeSelector %s: vm1|vm2:\n%s" % (w.NODE_LABEL, doc[:300]))
+    expect("manifests", count >= 10, "%d Pods" % count)
+
+
 def yaml_test(name, a, ctx, docs):
     """Check the YAML of the answers A: ASCII, header width, labels, read back equal to DOCS."""
     warn, note = w.warnings(a, ctx)
@@ -231,6 +274,8 @@ def yaml_test(name, a, ctx, docs):
     expect(name, head and all(len(l) <= 79 for l in head), "header lines over 79: %s" % [l for l in head if len(l) > 79])
     for d in docs:
         expect(name, d["metadata"]["labels"] == {"app": w.APP, w.NAME_LABEL: a["name"]}, "labels %s" % d["metadata"])
+    expect(name, on_demo_nodes(docs[-1]), "the pod may land on a node without %s: %s" % (
+        w.NODE_LABEL, json.dumps(docs[-1]["spec"].get("affinity") or docs[-1]["spec"].get("nodeSelector"))))
     try:
         back = w.from_yaml(text)
     except ValueError as e:
@@ -346,6 +391,7 @@ def script_test():
             continue
         seen["new"] += 1
         expect(where, "name" in given, "a row names its object (--name)")
+        expect(where, on_demo_nodes(w.pod_doc(a, ctx.state)), "the pod may land on a node without %s" % w.NODE_LABEL)
         names.add(a["name"])
         warn, _ = w.warnings(a, ctx)
         if word == "wait!":
@@ -611,9 +657,26 @@ def block_test(notes):
         expect("block mkfs %s" % t, ("K: made %s " % t) in text and ("bytes: %s" % t) in text, "in %s:\n%s" % (tag, text))
 
 
+def node_test():
+    """Check the pods of --node any, vm1 and vm2 of a claim and a lease, and that a pod without a demo node fails the check."""
+    ctx, _, _ = context("wizard-W0")
+    for text in ("--node any", "--node vm1", "--node vm2", "--kind lease --size 128Mi --node any",
+                 "--kind lease --size 128Mi --node vm2"):
+        given, _ = opts(text, {})
+        a = w.resolve(given, ctx)
+        pod = w.pod_doc(a, ctx.state)
+        expect("node %r" % text, on_demo_nodes(pod), json.dumps(pod["spec"].get("affinity") or pod["spec"].get("nodeSelector")))
+        if a["node"] == "any":
+            expect("node %r header" % text, "any demo node (vm1 or vm2)" in " ".join(w.describe(a, ctx)), str(w.describe(a, ctx)))
+    expect("node check itself", not on_demo_nodes({"spec": {}}) and
+           not on_demo_nodes({"spec": {"nodeSelector": {"kubernetes.io/hostname": "n4-cxl-shared-0"}}}), "accepts a free pod")
+
+
 def main(args):
     out = []
     notes = []
+    node_test()
+    manifests_test()
     state_test()
     command_test()
     dax_test()

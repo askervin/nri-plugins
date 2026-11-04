@@ -90,7 +90,7 @@ wizard-format() {
     key=${key^^}
     text="Hello from the wizard setup, $(date +%T)"
     dra-apply "$VM2" <<< "$(sed -e "s|__NAME__|$name|g; s|__CLASS__|$class|g; s|__DRIVER__|$driver|g" \
-        -e "s|__SERIAL__|$serial|g; s|__KEY__|$key|g; s|__NODE__|$POOL_VM2_NAME|g; s|__TEXT__|$text|g" \
+        -e "s|__SERIAL__|$serial|g; s|__KEY__|$key|g; s|__TEXT__|$text|g" \
         "$DEMO_DIR/manifests/wizard/formatter.yaml")"
     fs-writer-wait "$VM2" "$name" 240
     dra-delete-pod "$VM2" "$name"

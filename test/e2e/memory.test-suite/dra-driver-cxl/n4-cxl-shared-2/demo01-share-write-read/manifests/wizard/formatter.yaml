@@ -4,7 +4,8 @@
 # mode block, writable, and a pod of the demo image that makes an ext4
 # with hello.txt on the block device (block size 4096, which DAX needs),
 # then idles until setup deletes it. Setup replaces __NAME__, __CLASS__,
-# __DRIVER__, __SERIAL__, __KEY__, __NODE__ and __TEXT__.
+# __DRIVER__, __SERIAL__, __KEY__ and __TEXT__. The pod runs on vm2 (the
+# label of demo setup), whose driver and pool reach both devices.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -35,7 +36,7 @@ metadata:
   labels: {app: cxl-demo-setup}
 spec:
   nodeSelector:
-    kubernetes.io/hostname: __NODE__
+    cxl-demo/node: vm2          # the label of demo setup: vm1 or vm2
   terminationGracePeriodSeconds: 2
   restartPolicy: Never
   resourceClaims:

@@ -28,7 +28,8 @@ choices that the driver accepts are taken, the others say why not):
   --access default|direct|cached fs
   --path default|PATH            fs, claims
   --steering none|auto|...       numa, claims
-  --node vm1|vm2|any             the node of the pod
+  --node vm1|vm2|any             the node of the pod; any: a demo node
+                                 (label cxl-demo/node: vm1 or vm2)
   --command idle|env|read|write TEXT|mkfs TYPE
                                  what the container runs (/demo/cxl-wizard.py)
   --name NAME                    default w<N>
@@ -98,7 +99,7 @@ LABELS = {
     ("access", "default"): "direct if the type has DAX",
     ("access", "direct"): "pages are device memory",
     ("access", "cached"): "the node's page cache",
-    ("node", "any"): "where the scheduler likes",
+    ("node", "any"): "vm1 or vm2, as it fits",
     ("command", "idle"): "nothing", ("command", "env"): "print its CXL_* variables",
     ("command", "read"): "read what is there",
     ("command", "write"): "write TEXT",
@@ -747,6 +748,10 @@ def pod_doc(a, state):
     spec = {}
     if a["node"] != "any":
         spec["nodeSelector"] = {NODE_LABEL: a["node"]}
+    else:
+        # Any demo node: setup labels vm1 and vm2 only (vm0 has no demo image).
+        spec["affinity"] = {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {
+            "nodeSelectorTerms": [{"matchExpressions": [{"key": NODE_LABEL, "operator": "Exists"}]}]}}}
     spec.update({
         "terminationGracePeriodSeconds": 2, "restartPolicy": "Never", "resourceClaims": claims,
         "volumes": [{"name": "demo", "configMap": {"name": "demo-tools", "defaultMode": Raw("0755")}}],
@@ -787,7 +792,7 @@ def describe(a, ctx):
         "the device %s" % a["serial"] if a["serial"] != "any" else "any device that fits")
     sentences = []
     holder = "a ResourceClaim" if a["kind"] == "claim" else "a lease (cxl-request in the running container)"
-    node = "on %s" % a["node"] if a["node"] != "any" else "on any node"
+    node = "on %s" % a["node"] if a["node"] != "any" else "on any demo node (vm1 or vm2)"
     sentences.append("A pod %s with %s of %s: %s." % (node, holder, describe_device(a), who))
     if a["source"] == "any":
         sentences.append("The request lists a local and a pool alternative (firstAvailable): "

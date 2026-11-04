@@ -518,7 +518,11 @@ The options, in the order of the questions ("demo wizard new --help"):
   --fs-type detect|TYPE  --access default|direct|cached
   --path default|PATH            fs, claims
   --steering none|auto|first-dram|...   numa, claims
-  --node vm1|vm2|any
+  --node vm1|vm2|any             any: a demo node, vm1 or vm2 (a required
+                                 node affinity on the label cxl-demo/node);
+                                 vm0 is left out: it has no demo image,
+                                 no pool cable and no view, although it
+                                 publishes a lease device and DRAM too
   --command idle|env|read|write TEXT|mkfs TYPE   (/demo/cxl-wizard.py;
                          mkfs makes an image of the device's size in
                          the container and writes it whole through the

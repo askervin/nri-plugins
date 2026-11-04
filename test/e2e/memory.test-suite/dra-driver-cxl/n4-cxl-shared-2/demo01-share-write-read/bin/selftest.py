@@ -587,7 +587,8 @@ def wizard_test():
     """Run the checks of the wizard; its views are rendered with the other scenarios."""
     for test in (wizard_check.yaml_scalar_test, wizard_check.rule_test, wizard_check.question_test,
                  wizard_check.status_test, wizard_check.script_test, wizard_check.state_test,
-                 wizard_check.command_test, wizard_check.dax_test):
+                 wizard_check.command_test, wizard_check.dax_test, wizard_check.node_test,
+                 wizard_check.manifests_test):
         test()
     failures.extend("wizard: " + f for f in wizard_check.failures)
 

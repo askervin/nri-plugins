@@ -920,3 +920,64 @@ then the VM-clean check of section 9; and in vm2's driver log the xfs
 mounts of w26 (rw) and w30 (ro) with dax=always.
 
 WIZARD fix 4 done
+
+WIZARD fix 5: "--node any" means any demo node (2026-11-03)
+=============================================================
+Found by the user: w3, a lease pod with node "any", had no node
+constraint; the cxl-lease device (and dram) is published on every node,
+so the scheduler put it on vm0, which has no demo image
+(localhost/cxl-demo-tools:demo, imagePullPolicy Never): ErrImageNeverPull.
+Desk work only; the user's running demo (w1, w2, w3), the cluster and the
+VMs were not touched (no live wizard command ran; the checks use the
+samples).
+
+22. Fix
+-------
+- bin/wizard.py pod_doc: a pod of --node any gets a required node
+  affinity: nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution,
+  matchExpressions key cxl-demo/node operator Exists (setup labels vm1
+  and vm2 only); --node vm1|vm2 keeps nodeSelector cxl-demo/node. The
+  header says "A pod on any demo node (vm1 or vm2) ..."; the interactive
+  choice "any" reads "vm1 or vm2, as it fits"; the usage of --node says
+  it. README 6d: what any means, and why vm0 is left out (no demo image,
+  no pool cable, no view, although it publishes a lease device and DRAM).
+- The other generated pods: every Pod of manifests/local, pool,
+  pool-shared-fs and pool-fs has nodeSelector cxl-demo/node already; the
+  setup's formatter (manifests/wizard/formatter.yaml) had
+  kubernetes.io/hostname of VM2, now nodeSelector cxl-demo/node: vm2 like
+  the others (setup labels the nodes before it formats; the __NODE__
+  placeholder and its sed in test90 are gone). The lease companion pods
+  are the broker's, pinned to the requester's node.
+- Desk checks (wizard_check.py, also in selftest): on_demo_nodes(pod):
+  the pod's nodeSelector cxl-demo/node is vm1 or vm2, or every term of its
+  required node affinity tests cxl-demo/node (Exists, or In vm1/vm2).
+  Applied to the pod of every accepted rule row (yaml_test), of every new
+  row of wizard-rules.sh (script_test), of --node any/vm1/vm2 of a claim
+  and a lease (node_test, with the header text), and to every Pod of
+  manifests/*/*.yaml (manifests_test); node_test also checks that a pod
+  without a constraint, or pinned to vm0's hostname, fails it.
+Desk checks: demo selftest (219 renderings fit 50 x 10; renderings.txt
+written), demo wizard check, wizard-rules.sh --dry-run (52 ok),
+py_compile, bash -n and shellcheck of bin/demo and bin/wizard-rules.sh,
+shellcheck -s bash -e SC2154,SC2034 of both code.var.sh, plain ASCII: all
+pass.
+
+23. The user's running w3, and the next live run
+------------------------------------------------
+A pod's node constraints cannot change: w3 stays on vm0
+(ErrImageNeverPull) until it is deleted. With the fixed wizard:
+  ./bin/demo wizard delete w3
+  ./bin/demo wizard new --name w3 ... (the same choices; "demo wizard
+                               yaml w3" before the delete shows in its
+                               header what w3 asked for)
+or "demo wizard" again (interactive); with --node any it lands on vm1 or
+vm2. The delete removes run/wizard/w3.yaml too: keep a copy first if
+wanted. The
+views and zooms that run now keep their loaded code until restarted
+(nothing of theirs changed in this fix). Next live run (RUN): after
+setup, "demo wizard new --name wa --kind lease --size 128Mi --node any
+--command env" three times with names wa, wb, wc: each "Ready" on vm1 or
+vm2, never vm0 (kubectl get pods -o wide in vm2); and the scripted set
+as in section 21.
+
+WIZARD fix 5 done

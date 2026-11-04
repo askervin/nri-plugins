@@ -74,3 +74,17 @@ For the user
   suite's fs.source.sh link, testdata/), then commit with the staged
   moves.
 - D/testdata/__pycache__ (empty, ignored) may be removed.
+
+Follow-up (2026-11-03, the user's report)
+-----------------------------------------
+A wizard pod with node "any" (w3, a lease) was scheduled to vm0 and
+failed with ErrImageNeverPull: the wizard wrote no node constraint, the
+lease device and dram are published on every node, and the demo image is
+imported into vm1 and vm2 only. Fixed in bin/wizard.py: "any" is any demo
+node, a required node affinity on cxl-demo/node (Exists), which only vm1
+and vm2 carry; the setup's formatter pod now uses cxl-demo/node: vm2 like
+the other manifests; a desk check asserts that every generated pod and
+every manifest pod can land on a labelled node only; README 6d explains
+it. Desk checks green; live confirmation pending (three lease pods with
+--node any must land on vm1 or vm2: 24-official-status-WIZARD.txt
+section 23).
