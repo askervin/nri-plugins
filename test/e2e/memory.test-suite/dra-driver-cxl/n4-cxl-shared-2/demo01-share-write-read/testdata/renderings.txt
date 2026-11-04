@@ -1,0 +1,1813 @@
+# demo selftest: every rendering of testdata/, TZ=UTC (bin/selftest.py --write)
++--------------------------------------------------+ local-L1 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running -        -                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L1 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ local-L1 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  no region                 |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L1 t6
+|MEMORY: c100e2e1 on vm2                  12:41:07 |
+|mem0 0xc100e2e1: no region, no dax device yet     |
+|the first claim creates them                      |
+|used by: nobody (the bytes stay)                  |
++--------------------------------------------------+
++--------------------------------------------------+ local-L2 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running 3f2a91c0 dax rw excl       |
++--------------------------------------------------+
++--------------------------------------------------+ local-L2 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ local-L2 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: -                                     |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L2 t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: (zeros)                                     |
+|0000: 00000000 00000000 00000000 00000000         |
+|used by: writer rw (exclusive)                    |
++--------------------------------------------------+
++--------------------------------------------------+ local-L3 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running 3f2a91c0 dax rw excl       |
++--------------------------------------------------+
++--------------------------------------------------+ local-L3 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ local-L3 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: writer rw                             |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L3 t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|used by: writer rw (exclusive)                    |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running 3f2a91c0 dax rw excl       |
+|reader-a  vm2  Running 8c1d02e4 waiting           |
+|reader-b  vm2  Running 51aa7b09 waiting           |
+|reader-c  vm2  Running e0c4d3f1 waiting           |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  exclusive: writer rw                            |
+|  waiting: reader-a reader-b reader-c             |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: -                                     |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5 t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|used by: writer rw (exclusive)                    |
+|waiting: reader-a reader-b reader-c               |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5-stale t2
+|PODS & LEASES                      stale 12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running 3f2a91c0 dax rw excl       |
+|reader-a  vm2  Running 8c1d02e4 waiting           |
+|reader-b  vm2  Running 51aa7b09 waiting           |
+|reader-c  vm2  Running e0c4d3f1 waiting           |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5-stale t3
+|SCHEDULER: DEVICES AND CLAIMS      stale 12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  exclusive: writer rw                            |
+|  waiting: reader-a reader-b reader-c             |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5-stale t4
+|NODES: CXL IN THE KERNEL           stale 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: -                                     |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L5-stale t6
+|MEMORY: dax0.0 on vm2              stale 12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|used by: writer rw (exclusive)                    |
+|waiting: reader-a reader-b reader-c               |
++--------------------------------------------------+
++--------------------------------------------------+ local-L6 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 dax ro share      |
+|reader-b  vm2  Running 51aa7b09 dax ro share      |
+|reader-c  vm2  Running e0c4d3f1 dax ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ local-L6 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ local-L6 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: -                                     |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L6 t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|shared by: reader-a ro, reader-b ro, reader-c ro  |
++--------------------------------------------------+
++--------------------------------------------------+ local-L8 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 dax ro share      |
+|reader-b  vm2  Running 51aa7b09 dax ro share      |
+|reader-c  vm2  Running e0c4d3f1 dax ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ local-L8 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ local-L8 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: reader-a ro, reader-b ro, reader-c ro |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L8 t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|shared by: reader-a ro, reader-b ro, reader-c ro  |
++--------------------------------------------------+
++--------------------------------------------------+ local-L9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|no demo pods yet                                  |
++--------------------------------------------------+
++--------------------------------------------------+ local-L9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok                           |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ local-L9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: -                                     |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-L9 t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|used by: nobody (the bytes stay)                  |
++--------------------------------------------------+
++--------------------------------------------------+ local-overflow t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm2  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 dax ro share      |
+|reader-b  vm2  Running 51aa7b09 dax ro share      |
+|reader-c  vm2  Running e0c4d3f1 dax ro share      |
+|reader-d  vm2  Running a0000064 dax ro share      |
+|reader-e  vm2  Running a0000065 dax ro share      |
+|reader-f  vm2  Running a0000066 dax ro share      |
+|... 6 more                                        |
++--------------------------------------------------+
++--------------------------------------------------+ local-overflow t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 restarting  vm1 down                 |
+|memdev-c100e2e1 @vm2 1Gi shared                   |
+|  shared: reader-a ro, reader-b ro, reader-c ro,  |
+|    reader-d ro, reader-e ro, reader-f ro,        |
+|    reader-g ro, reader-h ro, reader-i ro,        |
+|    reader-j ro, reader-k ro, reader-l ro         |
++--------------------------------------------------+
++--------------------------------------------------+ local-overflow t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: reader-a ro, reader-b ro, reader-c ro,|
+|      reader-d ro, reader-e ro, reader-f ro,      |
+|      reader-g ro, reader-h ro, reader-i ro,      |
+|      reader-j ro, reader-k ro, reader-l ro       |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ local-overflow t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"...|
+|0000: 78787878 78787878 78787878 78787878         |
+|shared by: reader-a ro, reader-b ro, reader-c ro, |
+|    reader-d ro, reader-e ro, reader-f ro,        |
+|    reader-g ro, reader-h ro, reader-i ro,        |
+|    reader-j ro, reader-k ro, reader-l ro         |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L1 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L1 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L1 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 no CXL memory                                 |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L1 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  free                        |
+|  attached: nowhere                               |
+|at 0: (zeros)                                     |
+|0000: 00000000 00000000 00000000 00000000         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L3 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 dax rw excl       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L3 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L3 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: writer rw                             |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L3 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  attached                    |
+|  attached: vm1 exclusive                         |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L5 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 dax rw excl       |
+|reader-a  vm2  Running 8c1d02e4 waiting           |
+|reader-b  vm2  Running 51aa7b09 waiting           |
+|reader-c  vm1  Running e0c4d3f1 waiting           |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L5 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  exclusive: writer rw                            |
+|  waiting: reader-a reader-b reader-c             |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L5 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: -                                     |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L5 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  attached                    |
+|  attached: vm1 exclusive                         |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 dax ro share      |
+|reader-b  vm2  Running 51aa7b09 dax ro share      |
+|reader-c  vm1  Running e0c4d3f1 dax ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: -                                     |
+|vm2 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: -                                     |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  attached                    |
+|  attached: vm1, vm2                              |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6-attaching t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 attaching         |
+|reader-b  vm2  Running 51aa7b09 dax ro share      |
+|reader-c  vm1  Running e0c4d3f1 dax ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6-attaching t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  shared: reader-b ro, reader-c ro                |
+|  attaching: reader-a                             |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6-attaching t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: -                                     |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L6-attaching t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  attached                    |
+|  attached: vm1                                   |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L8 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 dax ro share      |
+|reader-b  vm2  Running 51aa7b09 dax ro share      |
+|reader-c  vm1  Running e0c4d3f1 dax ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L8 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L8 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: reader-c ro                           |
+|vm2 mem0 c1ae0001 256M  region0 256M              |
+|    dax0.0 256M device_dax                        |
+|    mapped: reader-a ro, reader-b ro              |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L8 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  attached                    |
+|  attached: vm1, vm2                              |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|no demo pods yet                                  |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 no CXL memory                                 |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  free                        |
+|  attached: nowhere                               |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9-release t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|no demo pods yet                                  |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9-release t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared                        |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9-release t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  disabled, no region       |
+|vm2 mem0 c1ae0001 256M  disabled, no region       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-L9-release t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared  detaching                   |
+|  attached: vm1, vm2 detaching                    |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|file /tmp/fake-cxl-pool/shared0.mem               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R1 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R1 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R1 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 no CXL memory                                 |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R1 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  free                 |
+|  attached: nowhere                               |
+|no file system (zeros)                            |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R11 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|no demo pods yet                                  |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R11 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R11 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 no CXL memory                                 |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R11 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  free                 |
+|  attached: nowhere                               |
+|ext4 "demo" 510M, clean                           |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R2 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 block rw excl     |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R2 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R2 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M no file system (block rw)          |
+|    open: writer rw                               |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R2 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive                         |
+|  owner: k8s:resourceclaim/c1a10010-0000-4000-8000|
+|no file system (zeros)                            |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R3 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 block rw excl     |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R3 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R3 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M ext4 (block rw)                    |
+|    open: writer rw                               |
+|    mounted: -                                    |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R3 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive                         |
+|  owner: k8s:resourceclaim/c1a10010-0000-4000-8000|
+|ext4 "demo" 510M, clean                           |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R5 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 7b3e5a10 fs rw (vm1 only)  |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R5 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  writer on vm1 only: writer rw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R5 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M ext4 (block rw)                    |
+|    node mount ext4 rw (dax)                      |
+|    mounted: writer (dax rw)                      |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R5 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive                         |
+|ext4 "demo" 510M, needs recovery                  |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R7 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 7b3e5a10 fs rw (vm1 only)  |
+|reader-a  vm2  Running 8c1d02e4 waiting (Conflict)|
+|reader-b  vm2  Running 51aa7b09 waiting (Conflict)|
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R7 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  writer on vm1 only: writer rw                   |
+|  shared: reader-c ro                             |
+|  waiting (Conflict): reader-a reader-b           |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R7 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M ext4 (block rw)                    |
+|    node mount ext4 rw (dax)                      |
+|    mounted: reader-c (dax), writer (dax rw)      |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R7 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive                         |
+|ext4 "demo" 510M, needs recovery                  |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 fs ro share       |
+|reader-b  vm2  Running 51aa7b09 fs ro share       |
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M ext4 (block ro)                    |
+|    node mount ext4 ro (dax)                      |
+|    mounted: reader-c (dax)                       |
+|vm2 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M ext4 (block ro)                    |
+|    node mount ext4 ro (dax)                      |
+|    mounted: reader-a reader-b (dax)              |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-R9 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1, vm2                              |
+|ext4 "demo" 510M, clean                           |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R7 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 7b3e5a10 fs rw (vm1 only)  |
+|reader-a  vm2  Running 8c1d02e4 waiting (Conflict)|
+|reader-b  vm2  Running 51aa7b09 waiting (Conflict)|
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R7 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  writer on vm1 only: writer rw                   |
+|  shared: reader-c ro                             |
+|  waiting (Conflict): reader-a reader-b           |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R7 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M btrfs (block rw)                   |
+|    node mount btrfs rw (cached loop0)            |
+|    mounted: reader-c (cached), writer (cached rw)|
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R7 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive                         |
+|btrfs "demo" 510M, generation 8                   |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 fs ro share       |
+|reader-b  vm2  Running 51aa7b09 fs ro share       |
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M btrfs (block ro)                   |
+|    node mount btrfs ro (cached loop0)            |
+|    mounted: reader-c (cached)                    |
+|vm2 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M btrfs (block ro)                   |
+|    node mount btrfs ro (cached loop0)            |
+|    mounted: reader-a reader-b (cached)           |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-btrfs-R9 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1, vm2                              |
+|btrfs "demo" 510M, generation 8                   |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R7 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 7b3e5a10 fs rw (vm1 only)  |
+|reader-a  vm2  Running 8c1d02e4 waiting (Conflict)|
+|reader-b  vm2  Running 51aa7b09 waiting (Conflict)|
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R7 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  writer on vm1 only: writer rw                   |
+|  shared: reader-c ro                             |
+|  waiting (Conflict): reader-a reader-b           |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R7 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M xfs (block rw)                     |
+|    node mount xfs rw (dax)                       |
+|    mounted: reader-c (dax), writer (dax rw)      |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R7 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive                         |
+|xfs "demo" 510M                                   |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 fs ro share       |
+|reader-b  vm2  Running 51aa7b09 fs ro share       |
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|fs0 @pool 512Mi shared persistent                 |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M xfs (block ro)                     |
+|    node mount xfs ro (dax)                       |
+|    mounted: reader-c (dax)                       |
+|vm2 mem0 c1ae0001 512M  region0 pmem 512M         |
+|    pmem0 510M xfs (block ro)                     |
+|    node mount xfs ro (dax)                       |
+|    mounted: reader-a reader-b (dax)              |
++--------------------------------------------------+
++--------------------------------------------------+ pool-fs-xfs-R9 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1, vm2                              |
+|xfs "demo" 510M                                   |
+|file /tmp/fake-cxl-pool/fs0.raw                   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F2 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 block rw excl     |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F2 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared persistent             |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F2 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M no file system (block rw)          |
+|    open: writer rw                               |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F2 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared persistent  allocated        |
+|  attached: vm1 exclusive                         |
+|  owner: k8s:resourceclaim/c1a1d882-0000-4000-8000|
+|no file system (zeros)                            |
+|file /tmp/fake-cxl-pool/shared0.raw               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F3 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 block rw excl     |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F3 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared persistent             |
+|  exclusive: writer rw                            |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F3 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M erofs (block rw)                   |
+|    open: writer rw                               |
+|    mounted: -                                    |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F3 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared persistent  allocated        |
+|  attached: vm1 exclusive                         |
+|  owner: k8s:resourceclaim/c1a1d882-0000-4000-8000|
+|erofs: hello.txt 32 bytes                         |
+|  "Hello from the writer, 12:01:12"               |
+|file /tmp/fake-cxl-pool/shared0.raw               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F5 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running 3f2a91c0 block rw excl     |
+|reader-a  vm2  Running 8c1d02e4 waiting           |
+|reader-b  vm2  Running 51aa7b09 waiting           |
+|reader-c  vm1  Running e0c4d3f1 waiting           |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F5 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared persistent             |
+|  exclusive: writer rw                            |
+|  waiting: reader-a reader-b reader-c             |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F5 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M erofs (block rw)                   |
+|    mounted: -                                    |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F5 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared persistent  allocated        |
+|  attached: vm1 exclusive                         |
+|  owner: k8s:resourceclaim/c1a1d882-0000-4000-8000|
+|erofs: hello.txt 32 bytes                         |
+|  "Hello from the writer, 12:01:12"               |
+|file /tmp/fake-cxl-pool/shared0.raw               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F6 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|writer    vm1  Running -        -                 |
+|reader-a  vm2  Running 8c1d02e4 fs ro share       |
+|reader-b  vm2  Running 51aa7b09 fs ro share       |
+|reader-c  vm1  Running e0c4d3f1 fs ro share       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F6 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared persistent             |
+|  shared: reader-a ro, reader-b ro, reader-c ro   |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F6 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M erofs (block ro)                   |
+|    mounted: reader-c (dax)                       |
+|vm2 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M erofs (block ro)                   |
+|    mounted: reader-a reader-b (dax)              |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F6 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared persistent  allocated        |
+|  attached: vm1, vm2                              |
+|erofs: hello.txt 32 bytes                         |
+|  "Hello from the writer, 12:01:12"               |
+|file /tmp/fake-cxl-pool/shared0.raw               |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F9 t2
+|PODS & LEASES                            12:41:07 |
+|POD       NODE STATE   LEASE    MEMORY            |
+|no demo pods yet                                  |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F9 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|shared0 @pool 256Mi shared persistent             |
+|  no claims                                       |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F9 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 no CXL memory                                 |
+|vm2 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ pool-shared-fs-F9 t6
+|POOL: fake-cxl-pool-server               12:41:07 |
+|shared0 256Mi shared persistent  free             |
+|  attached: nowhere                               |
+|erofs: hello.txt 32 bytes                         |
+|  "Hello from the writer, 12:01:12"               |
+|file /tmp/fake-cxl-pool/shared0.raw               |
++--------------------------------------------------+
++--------------------------------------------------+ trace-fs t5 at 16:27:42
+|TRACE                                    16:27:42 |
+|16:27:31 sched reader-b: scheduled on vm2         |
+|16:27:32 sched reader-c: scheduled on vm1         |
+|16:27:40 drv   vm2 reader-a asks fs ro share      |
+|16:27:40 api   reader-a: claim created            |
+|16:27:40 sched reader-a waits: cannot allocate    |
+|16:27:41 drv   vm2 reader-b asks fs ro share      |
+|16:27:41 api   reader-b: claim created            |
+|16:27:41 sched reader-b waits: cannot allocate    |
+|16:27:42 drv   vm1 reader-c asks fs ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ trace-fs t5 at 16:28:26
+|TRACE                                    16:28:26 |
+|16:28:23 pool  shared0 attached to vm2            |
+|16:28:23 ctrl  reader-c: shared0 on vm1 already   |
+|16:28:24 ctrl  reader-a: attach shared0 to vm2    |
+|16:28:24 kern  vm2 add mem0                       |
+|16:28:26 kern  vm1 bind mem0                      |
+|16:28:26 kern  vm2 add region0                    |
+|16:28:26 kern  vm1 add region0                    |
+|16:28:26 kern  vm2 add pmem0                      |
+|16:28:26 kern  vm1 add pmem0                      |
++--------------------------------------------------+
++--------------------------------------------------+ trace-fs t5 at 16:29:24
+|TRACE                                    16:29:24 |
+|16:28:30 drv   vm1 reader-c: lease Ready fs hello |
+|16:29:20 drv   vm2 reader-a releases: ctr gone    |
+|16:29:20 drv   vm2 reader-b releases: ctr gone    |
+|16:29:20 drv   vm1 reader-c releases: ctr gone    |
+|16:29:21 drv   vm2 reader-a: unmount busy, retry  |
+|16:29:24 drv   vm2 reader-a: unmounted hello      |
+|16:29:24 drv   vm2 reader-a: unprepared           |
+|16:29:24 api   reader-a: claim deleted            |
+|16:29:24 drv   vm2 reader-a: lease released       |
++--------------------------------------------------+
++--------------------------------------------------+ trace-fs t5 at 16:29:29
+|TRACE                                    16:29:29 |
+|16:29:26 kern  vm1 remove pmem0 region0           |
+|16:29:26 pool  shared0 detached from vm2          |
+|16:29:27 ctrl  detach shared0 from vm2            |
+|16:29:27 kern  vm2 remove mem0                    |
+|16:29:28 drv   vm1 released mem0                  |
+|16:29:28 pool  shared0 detaching from vm1         |
+|16:29:28 pool  shared0 detached from vm1          |
+|16:29:29 ctrl  detach shared0 from vm1            |
+|16:29:29 kern  vm1 remove mem0                    |
++--------------------------------------------------+
++--------------------------------------------------+ trace-local t5 at 12:40:55
+|TRACE                                    12:40:55 |
+|12:40:20 drv   vm2 writer asks dax rw excl        |
+|12:40:20 api   writer: allocated memdev-c100e2e1  |
+|12:40:20 sched writer: lease scheduled on vm2     |
+|12:40:21 kern  vm2 add region0 dax0.0             |
+|12:40:21 drv   vm2 created region0 dax0.0         |
+|12:40:21 drv   vm2 zeroed new dax0.0 (once)       |
+|12:40:21 drv   vm2 writer: dax0.0 rw excl         |
+|12:40:21 drv   vm2 writer: lease Ready dax0.0     |
+|12:40:55 sched reader-a: scheduled on vm2         |
++--------------------------------------------------+
++--------------------------------------------------+ trace-local t5 at 12:41:40
+|TRACE                                    12:41:40 |
+|12:41:00 sched reader-a waits: cannot allocate    |
+|12:41:01 drv   vm2 reader-b asks dax ro share     |
+|12:41:01 api   reader-b: claim created            |
+|12:41:01 sched reader-b waits: cannot allocate    |
+|12:41:02 drv   vm2 reader-c asks dax ro share     |
+|12:41:02 api   reader-c: claim created            |
+|12:41:02 sched reader-c waits: cannot allocate    |
+|12:41:40 drv   vm2 writer: lease releasing        |
+|12:41:40 api   writer: claim deleting             |
++--------------------------------------------------+
++--------------------------------------------------+ trace-local t5 at 12:41:43
+|TRACE                                    12:41:43 |
+|12:41:42 api   reader-a: allocated memdev-c100e2e1|
+|12:41:42 api   reader-b: allocated memdev-c100e2e1|
+|12:41:42 api   reader-c: allocated memdev-c100e2e1|
+|12:41:42 sched reader-a: lease scheduled on vm2   |
+|12:41:42 sched reader-b: lease scheduled on vm2   |
+|12:41:42 sched reader-c: lease scheduled on vm2   |
+|12:41:43 drv   vm2 reader-a: dax0.0 ro share      |
+|12:41:43 drv   vm2 reader-a: lease Ready dax0.0   |
+|12:41:43 drv   vm2 reader-b: dax0.0 ro share      |
++--------------------------------------------------+
++--------------------------------------------------+ trace-local t5 at 12:42:41
+|TRACE                                    12:42:41 |
+|12:42:40 drv   vm2 reader-a releases: ctr gone    |
+|12:42:40 drv   vm2 reader-b releases: ctr gone    |
+|12:42:40 drv   vm2 reader-c releases: ctr gone    |
+|12:42:41 api   reader-a: claim deleted            |
+|12:42:41 drv   vm2 reader-a: lease released       |
+|12:42:41 api   reader-b: claim deleted            |
+|12:42:41 drv   vm2 reader-b: lease released       |
+|12:42:41 api   reader-c: claim deleted            |
+|12:42:41 drv   vm2 reader-c: lease released       |
++--------------------------------------------------+
++--------------------------------------------------+ trace-pool-fs t5 at 20:15:01
+|TRACE                                    20:15:01 |
+|20:14:25 kern  vm1 add mem0                       |
+|20:14:27 kern  vm1 add region0 pmem0              |
+|20:14:28 drv   vm1 pmem0 read-write               |
+|20:14:28 drv   vm1 node mount pmem0 ext4 rw       |
+|20:14:28 drv   vm1 writer: prepared ext4 rw direct|
+|20:14:28 drv   vm1 writer: mounted data           |
+|20:14:28 drv   vm1 writer: lease Ready fs data    |
+|20:15:00 sched reader-a: scheduled on vm2         |
+|20:15:01 sched reader-b: scheduled on vm2         |
++--------------------------------------------------+
++--------------------------------------------------+ trace-pool-fs t5 at 20:15:32
+|TRACE                                    20:15:32 |
+|20:15:21 api   reader-a: allocated fs0            |
+|20:15:21 sched reader-a: waits for the attach     |
+|20:15:21 ctrl  reader-a: fs0 not on vm2: Conflict |
+|20:15:22 api   reader-b: allocated fs0            |
+|20:15:22 drv   vm1 reader-c: prepared ext4 direct |
+|20:15:22 sched reader-b: waits for the attach     |
+|20:15:22 drv   vm1 reader-c: mounted data         |
+|20:15:22 drv   vm1 reader-c: lease Ready fs data  |
+|20:15:22 ctrl  reader-b: fs0 not on vm2: Conflict |
++--------------------------------------------------+
++--------------------------------------------------+ trace-pool-fs t5 at 20:16:30
+|TRACE                                    20:16:30 |
+|20:16:26 api   reader-a: allocated fs0            |
+|20:16:26 sched reader-a: waits for the attach     |
+|20:16:26 api   reader-b: allocated fs0            |
+|20:16:26 sched reader-b: waits for the attach     |
+|20:16:26 pool  fs0 attached to vm2                |
+|20:16:27 ctrl  reader-a: attach fs0 to vm2        |
+|20:16:27 kern  vm2 add mem0                       |
+|20:16:29 kern  vm2 add region0 pmem0              |
+|20:16:30 sched reader-a: lease scheduled on vm2   |
++--------------------------------------------------+
++--------------------------------------------------+ trace-pool-fs t5 at 20:17:26
+|TRACE                                    20:17:26 |
+|20:17:23 drv   vm1 reader-c: lease released       |
+|20:17:23 kern  vm2 remove pmem0 region0           |
+|20:17:23 pool  fs0 detached from vm2              |
+|20:17:24 ctrl  detach fs0 from vm2                |
+|20:17:24 kern  vm2 remove mem0                    |
+|20:17:25 kern  vm1 remove pmem0 region0           |
+|20:17:25 pool  fs0 detached from vm1              |
+|20:17:26 ctrl  detach fs0 from vm1                |
+|20:17:26 kern  vm1 remove mem0                    |
++--------------------------------------------------+
++--------------------------------------------------+ trace-wizard t5 at 20:13:22
+|TRACE                                    20:13:22 |
+|20:13:21 api   w1: allocated memdev-c100e2e1      |
+|20:13:21 sched w1: scheduled on vm2               |
+|20:13:22 drv   vm2 created region0 dax0.0         |
+|20:13:22 drv   vm2 w1: prepared dax0.0 rw         |
++--------------------------------------------------+
++--------------------------------------------------+ trace-wizard t5 at 20:13:31
+|TRACE                                    20:13:31 |
+|20:13:21 api   w1: allocated memdev-c100e2e1      |
+|20:13:21 sched w1: scheduled on vm2               |
+|20:13:22 drv   vm2 created region0 dax0.0         |
+|20:13:22 drv   vm2 w1: prepared dax0.0 rw         |
+|20:13:30 api   w4: allocated fs0                  |
+|20:13:30 sched w4: waits for the attach           |
+|20:13:31 ctrl  w4: fs0 excl: rw ext4              |
++--------------------------------------------------+
++--------------------------------------------------+ trace-wizard t5 at 20:13:40
+|TRACE                                    20:13:40 |
+|20:13:21 sched w1: scheduled on vm2               |
+|20:13:22 drv   vm2 created region0 dax0.0         |
+|20:13:22 drv   vm2 w1: prepared dax0.0 rw         |
+|20:13:30 api   w4: allocated fs0                  |
+|20:13:30 sched w4: waits for the attach           |
+|20:13:31 ctrl  w4: fs0 excl: rw ext4              |
+|20:13:32 ctrl  w4: attach fs0 to vm1 excl         |
+|20:13:35 drv   vm1 node mount pmem0 ext4 rw       |
+|20:13:40 api   w5: allocated fs0                  |
++--------------------------------------------------+
++--------------------------------------------------+ trace-wizard t5 at 20:13:50
+|TRACE                                    20:13:50 |
+|20:13:22 drv   vm2 w1: prepared dax0.0 rw         |
+|20:13:30 api   w4: allocated fs0                  |
+|20:13:30 sched w4: waits for the attach           |
+|20:13:31 ctrl  w4: fs0 excl: rw ext4              |
+|20:13:32 ctrl  w4: attach fs0 to vm1 excl         |
+|20:13:35 drv   vm1 node mount pmem0 ext4 rw       |
+|20:13:40 api   w5: allocated fs0                  |
+|20:13:41 ctrl  w5: fs0 not on vm2: Conflict       |
+|20:13:50 sched w7 waits: cannot allocate          |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W0 t2
+|PODS & CLAIMS                            12:41:07 |
+|POD    NOD STATE   CLAIM    MEMORY                |
+|no pods yet: demo wizard                          |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W0 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|c100e2e1 @vm1 256Mi: -                            |
+|c100e2e1 @vm2 1Gi: -                              |
+|lp0 @vm2 512Mi pers: -                            |
+|pooled0 @pool 512Mi: -                            |
+|shared0 @pool 256Mi shared: -                     |
+|fs0 @pool 512Mi pers: -                           |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W0 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G no region                  |
+|    mem1 c100f5e1 512M no region                  |
+|vm1 mem0 c100e2e1 256M no region                  |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W0 t6
+|POOL SERVERS: fake-cxl-pool, local-pmem  12:41:07 |
+|pooled0 512Mi exclusive  free                     |
+|  attached: nowhere                               |
+|shared0 256Mi shared  free                        |
+|  attached: nowhere                               |
+|fs0 512Mi shared persistent  free                 |
+|  attached: nowhere; ext4 clean                   |
+|lp0 512Mi local persistent  allocated             |
+|  attached: vm2; ext4 clean                       |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W8 t2
+|PODS & CLAIMS                            12:41:07 |
+|POD    NOD STATE   CLAIM    MEMORY                |
+|w1     vm2 Running claim    numa 256Mi c100e2e1   |
+|w2     vm1 Running claim    dax rw excl shared0   |
+|w3     vm2 Running 3a3a0003 waiting               |
+|w4     vm1 Running claim    fs rw share fs0       |
+|w5     -   Pending claim    waiting (Conflict)    |
+|w6     vm2 Running claim    block rw excl lp0     |
+|w7     -   Pending claim    waiting               |
+|w8     vm1 Running 8b8b0008 dax ro 128Mi c100e2e1 |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W8 t3
+|SCHEDULER: DEVICES AND CLAIMS            12:41:07 |
+|drivers: vm2 ok  vm1 ok  pool ok                  |
+|c100e2e1 @vm1 256Mi: w8 128Mi                     |
+|c100e2e1 @vm2 1Gi: w1 256Mi                       |
+|lp0 @vm2 512Mi pers: w6 rw excl                   |
+|pooled0 @pool 512Mi: -                            |
+|shared0 @pool 256Mi shared: w2 rw excl            |
+|fs0 @pool 512Mi pers: w4 rw share                 |
+|waiting: w3 (shared0), w5 (Conflict, fs0), w7     |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W8 t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G region0 1.0G               |
+|    dax: kmem node2 256M                          |
+|    mem1 c100f5e1 512M region1 pmem0 ext4 rw      |
+|    used: w6 rw                                   |
+|vm1 mem0 c100e2e1 256M region0 256M dax0.0 128M   |
+|    mem1 c1ae0001 256M region1 256M dax1.0 256M   |
+|    mem2 c1ae0002 512M region2 pmem0 ext4 rw      |
+|    used: w2 rw, w8 ro, mount ext4 rw             |
++--------------------------------------------------+
++--------------------------------------------------+ wizard-W8 t6
+|POOL SERVERS: fake-cxl-pool, local-pmem  12:41:07 |
+|pooled0 512Mi exclusive  free                     |
+|  attached: nowhere                               |
+|shared0 256Mi shared  allocated                   |
+|  attached: vm1 exclusive                         |
+|fs0 512Mi shared persistent  allocated            |
+|  attached: vm1 exclusive; ext4 needs recovery    |
+|lp0 512Mi local persistent  allocated             |
+|  attached: vm2; ext4 needs recovery              |
++--------------------------------------------------+
++--------------------------------------------------+ probe on a fake node, t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm2 mem0 c100e2e1 1.0G  region0 1.0G              |
+|    dax0.0 1.0G device_dax                        |
+|    mapped: reader-a ro, writer rw                |
+|vm1 no CXL memory                                 |
++--------------------------------------------------+
++--------------------------------------------------+ probe on a fake node, t6
+|MEMORY: dax0.0 on vm2                    12:41:07 |
+|at 0: "Hello from the writer, 12:01:12"           |
+|0000: 48656c6c 6f206672 6f6d2074 68652077         |
+|shared by: reader-a ro, reader-b ro, reader-c ro  |
++--------------------------------------------------+
++--------------------------------------------------+ probe on a fake pmem node, t4
+|NODES: CXL IN THE KERNEL                 12:41:07 |
+|vm1 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M erofs (block rw)                   |
+|    open: reader-a ro, writer rw                  |
+|    mounted: reader-c (dax)                       |
+|vm2 mem0 c1ae0001 256M  region0 pmem 256M         |
+|    pmem0 254M erofs (block ro)                   |
+|    mounted: reader-a reader-b (dax)              |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L1
+|PRESENTER local L1/9                     12:41:07 |
+|a writer starts on vm2; it has no CXL memory yet  |
+|$ kubectl apply -f local/writer.yaml              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L2
+|PRESENTER local L2/9                     12:41:07 |
+|the writer asks for the whole device, exclusively |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc100e2e1 --mode dax                |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L3
+|PRESENTER local L3/9                     12:41:07 |
+|the writer writes a line into the device          |
+|$ kubectl exec writer -- /demo/write "Hello from  |
+|    the writer, $(date +%T)"                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L4
+|PRESENTER local L4/9                     12:41:07 |
+|three readers start                               |
+|$ kubectl apply -f local/readers.yaml             |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L5
+|PRESENTER local L5/9                     12:41:07 |
+|readers ask for a read-only share: they must wait |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cxl-request request --serial       |
+|    0xc100e2e1 --shared --read-only --wait 0s;    |
+|    done                                          |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L6
+|PRESENTER local L6/9                     12:41:07 |
+|the writer is done and releases the device        |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L7
+|PRESENTER local L7/9                     12:41:07 |
+|each reader reads the line and keeps it mapped    |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- /demo/read; kubectl exec $r --     |
+|    /demo/hold; done                              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L8
+|PRESENTER local L8/9                     12:41:07 |
+|a reader tries to write: the kernel refuses       |
+|$ kubectl exec reader-a -- /demo/write "overwrite"|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 local L9
+|PRESENTER local L9/9                     12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f local/                        |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L1
+|PRESENTER pool L1/9                      12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f pool/writer.yaml               |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L2
+|PRESENTER pool L2/9                      12:41:07 |
+|the writer asks for the whole device, exclusively |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode dax                |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L3
+|PRESENTER pool L3/9                      12:41:07 |
+|the writer writes a line into the device          |
+|$ kubectl exec writer -- /demo/write "Hello from  |
+|    the writer, $(date +%T)"                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L4
+|PRESENTER pool L4/9                      12:41:07 |
+|three readers start: two on vm2, one on vm1       |
+|$ kubectl apply -f pool/readers.yaml              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L5
+|PRESENTER pool L5/9                      12:41:07 |
+|readers ask for a read-only share: they must wait |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cxl-request request --serial       |
+|    0xc1ae0001 --shared --read-only --wait 0s;    |
+|    done                                          |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L6
+|PRESENTER pool L6/9                      12:41:07 |
+|the writer is done and releases the device        |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L7
+|PRESENTER pool L7/9                      12:41:07 |
+|each reader reads the line and keeps it mapped    |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- /demo/read; kubectl exec $r --     |
+|    /demo/hold; done                              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L8
+|PRESENTER pool L8/9                      12:41:07 |
+|a reader tries to write: the kernel refuses       |
+|$ kubectl exec reader-a -- /demo/write "overwrite"|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool L9
+|PRESENTER pool L9/9                      12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f pool/                         |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F1
+|PRESENTER pool-shared-fs F1/9            12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f pool-shared-fs/writer.yaml     |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F2
+|PRESENTER pool-shared-fs F2/9            12:41:07 |
+|the writer asks for the device as a block device  |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode block              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F3
+|PRESENTER pool-shared-fs F3/9            12:41:07 |
+|the writer makes a file system with hello.txt     |
+|$ kubectl exec writer -- /demo/mkfs "Hello from   |
+|    the writer, $(date +%T)"                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F4
+|PRESENTER pool-shared-fs F4/9            12:41:07 |
+|three readers start: two on vm2, one on vm1       |
+|$ kubectl apply -f pool-shared-fs/readers.yaml    |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F5
+|PRESENTER pool-shared-fs F5/9            12:41:07 |
+|readers ask for the file system: they must wait   |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cxl-request request --serial       |
+|    0xc1ae0001 --shared --read-only --mode fs     |
+|    --name hello --wait 0s; done                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F6
+|PRESENTER pool-shared-fs F6/9            12:41:07 |
+|the writer is done and releases the device        |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F7
+|PRESENTER pool-shared-fs F7/9            12:41:07 |
+|each reader reads hello.txt from its mount        |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cat /run/cxl/fs/hello/hello.txt;   |
+|    done                                          |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F8
+|PRESENTER pool-shared-fs F8/9            12:41:07 |
+|a reader tries to write: read-only file system    |
+|$ kubectl exec reader-a -- sh -c 'echo overwrite >|
+|    /run/cxl/fs/hello/hello.txt'                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-shared-fs F9
+|PRESENTER pool-shared-fs F9/9            12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f pool-shared-fs/               |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R1
+|PRESENTER pool-fs R1/11                  12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f pool-fs/writer.yaml            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R2
+|PRESENTER pool-fs R2/11                  12:41:07 |
+|the writer asks for the device as a block device  |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode block              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R3
+|PRESENTER pool-fs R3/11                  12:41:07 |
+|the writer makes an empty ext4 filesystem on it   |
+|$ kubectl exec writer -- /demo/mkfs --type ext4   |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R4
+|PRESENTER pool-fs R4/11                  12:41:07 |
+|the writer mounts it read-write instead           |
+|$ kubectl exec writer -- sh -c 'cxl-request       |
+|    release --all && cxl-request request --serial |
+|    0xc1ae0001 --shared --mode fs --read-write    |
+|    --name data'                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R5
+|PRESENTER pool-fs R5/11                  12:41:07 |
+|the writer writes hello.txt                       |
+|$ kubectl exec writer -- /demo/fswrite "Hello from|
+|    the writer, $(date +%T)"                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R6
+|PRESENTER pool-fs R6/11                  12:41:07 |
+|three readers start: two on vm2, one on vm1       |
+|$ kubectl apply -f pool-fs/readers.yaml           |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R7
+|PRESENTER pool-fs R7/11                  12:41:07 |
+|readers ask to read: vm1's reader at once, vm2's  |
+|  must wait                                       |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cxl-request request --serial       |
+|    0xc1ae0001 --shared --mode fs --name data     |
+|    --wait 0s; done                               |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R8
+|PRESENTER pool-fs R8/11                  12:41:07 |
+|the writer adds a line; vm1's reader sees it at   |
+|  once                                            |
+|$ kubectl exec writer -- /demo/fswrite --append "A|
+|    second line, $(date +%T)"; kubectl exec       |
+|    reader-c -- cat /run/cxl/fs/data/hello.txt    |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R9
+|PRESENTER pool-fs R9/11                  12:41:07 |
+|the writer is done: vm1 turns the filesystem      |
+|  read-only, vm2's readers mount it               |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R10
+|PRESENTER pool-fs R10/11                 12:41:07 |
+|each reader reads hello.txt; a write fails        |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cat /run/cxl/fs/data/hello.txt;    |
+|    done; kubectl exec reader-a -- sh -c 'echo x  |
+|    >> /run/cxl/fs/data/hello.txt'                |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs ext4 R11
+|PRESENTER pool-fs R11/11                 12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f pool-fs/                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R1
+|PRESENTER pool-fs R1/11                  12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f pool-fs/writer.yaml            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R2
+|PRESENTER pool-fs R2/11                  12:41:07 |
+|the writer asks for the device as a block device  |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode block              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R3
+|PRESENTER pool-fs R3/11                  12:41:07 |
+|the writer makes an empty xfs filesystem on it    |
+|$ kubectl exec writer -- /demo/mkfs --type xfs    |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R4
+|PRESENTER pool-fs R4/11                  12:41:07 |
+|the writer mounts it read-write instead           |
+|$ kubectl exec writer -- sh -c 'cxl-request       |
+|    release --all && cxl-request request --serial |
+|    0xc1ae0001 --shared --mode fs --read-write    |
+|    --name data'                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R5
+|PRESENTER pool-fs R5/11                  12:41:07 |
+|the writer writes hello.txt                       |
+|$ kubectl exec writer -- /demo/fswrite "Hello from|
+|    the writer, $(date +%T)"                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R6
+|PRESENTER pool-fs R6/11                  12:41:07 |
+|three readers start: two on vm2, one on vm1       |
+|$ kubectl apply -f pool-fs/readers.yaml           |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R7
+|PRESENTER pool-fs R7/11                  12:41:07 |
+|readers ask to read: vm1's reader at once, vm2's  |
+|  must wait                                       |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cxl-request request --serial       |
+|    0xc1ae0001 --shared --mode fs --name data     |
+|    --wait 0s; done                               |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R8
+|PRESENTER pool-fs R8/11                  12:41:07 |
+|the writer adds a line; vm1's reader sees it at   |
+|  once                                            |
+|$ kubectl exec writer -- /demo/fswrite --append "A|
+|    second line, $(date +%T)"; kubectl exec       |
+|    reader-c -- cat /run/cxl/fs/data/hello.txt    |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R9
+|PRESENTER pool-fs R9/11                  12:41:07 |
+|the writer is done: vm1 turns the filesystem      |
+|  read-only, vm2's readers mount it               |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R10
+|PRESENTER pool-fs R10/11                 12:41:07 |
+|each reader reads hello.txt; a write fails        |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cat /run/cxl/fs/data/hello.txt;    |
+|    done; kubectl exec reader-a -- sh -c 'echo x  |
+|    >> /run/cxl/fs/data/hello.txt'                |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs xfs R11
+|PRESENTER pool-fs R11/11                 12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f pool-fs/                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R1
+|PRESENTER pool-fs R1/11                  12:41:07 |
+|a writer starts on vm1; it has no CXL memory yet  |
+|$ kubectl apply -f pool-fs/writer.yaml            |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R2
+|PRESENTER pool-fs R2/11                  12:41:07 |
+|the writer asks for the device as a block device  |
+|$ kubectl exec writer -- cxl-request request      |
+|    --serial 0xc1ae0001 --mode block              |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R3
+|PRESENTER pool-fs R3/11                  12:41:07 |
+|the writer makes an empty btrfs filesystem on it  |
+|$ kubectl exec writer -- /demo/mkfs --type btrfs  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R4
+|PRESENTER pool-fs R4/11                  12:41:07 |
+|the writer mounts it read-write instead           |
+|$ kubectl exec writer -- sh -c 'cxl-request       |
+|    release --all && cxl-request request --serial |
+|    0xc1ae0001 --shared --mode fs --read-write    |
+|    --name data'                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R5
+|PRESENTER pool-fs R5/11                  12:41:07 |
+|the writer writes hello.txt                       |
+|$ kubectl exec writer -- /demo/fswrite "Hello from|
+|    the writer, $(date +%T)"                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R6
+|PRESENTER pool-fs R6/11                  12:41:07 |
+|three readers start: two on vm2, one on vm1       |
+|$ kubectl apply -f pool-fs/readers.yaml           |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R7
+|PRESENTER pool-fs R7/11                  12:41:07 |
+|readers ask to read: vm1's reader at once, vm2's  |
+|  must wait                                       |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cxl-request request --serial       |
+|    0xc1ae0001 --shared --mode fs --name data     |
+|    --wait 0s; done                               |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R8
+|PRESENTER pool-fs R8/11                  12:41:07 |
+|the writer adds a line; vm1's reader sees it at   |
+|  once                                            |
+|$ kubectl exec writer -- /demo/fswrite --append "A|
+|    second line, $(date +%T)"; kubectl exec       |
+|    reader-c -- cat /run/cxl/fs/data/hello.txt    |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R9
+|PRESENTER pool-fs R9/11                  12:41:07 |
+|the writer is done: vm1 turns the filesystem      |
+|  read-only, vm2's readers mount it               |
+|$ kubectl exec writer -- cxl-request release --all|
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R10
+|PRESENTER pool-fs R10/11                 12:41:07 |
+|each reader reads hello.txt; a write fails        |
+|$ for r in reader-a reader-b reader-c; do kubectl |
+|    exec $r -- cat /run/cxl/fs/data/hello.txt;    |
+|    done; kubectl exec reader-a -- sh -c 'echo x  |
+|    >> /run/cxl/fs/data/hello.txt'                |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+
++--------------------------------------------------+ T1 pool-fs btrfs R11
+|PRESENTER pool-fs R11/11                 12:41:07 |
+|everything goes away                              |
+|$ kubectl delete -f pool-fs/                      |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   rrrrrrrrrrrrr                                  |
+|-> rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr|
+|   12.3 s (command 10.1 s); Enter: next           |
++--------------------------------------------------+

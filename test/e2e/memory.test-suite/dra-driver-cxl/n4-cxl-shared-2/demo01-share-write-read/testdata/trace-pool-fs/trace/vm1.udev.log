@@ -1,0 +1,8 @@
+1792700021.200000 vm1.udev KERNEL[7021.200000] add      /devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0 (cxl)
+1792700023.600000 vm1.udev KERNEL[7023.600000] add      /devices/platform/ACPI0017:00/root0/decoder0.0/region0 (cxl)
+1792700061.700000 vm1.udev KERNEL[7061.700000] remove   /devices/platform/ACPI0017:00/root0/decoder0.0/region0 (cxl)
+1792700062.100000 vm1.udev KERNEL[7062.100000] remove   /devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0 (cxl)
+1792700065.200000 vm1.udev KERNEL[7065.200000] add      /devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0 (cxl)
+1792700067.600000 vm1.udev KERNEL[7067.600000] add      /devices/platform/ACPI0017:00/root0/decoder0.0/region0 (cxl)
+1792700245.700000 vm1.udev KERNEL[7245.700000] remove   /devices/platform/ACPI0017:00/root0/decoder0.0/region0 (cxl)
+1792700246.100000 vm1.udev KERNEL[7246.100000] remove   /devices/pci0000:0c/0000:0c:00.0/0000:0d:00.0/0000:0e:00.0/0000:0f:00.0/mem0 (cxl)

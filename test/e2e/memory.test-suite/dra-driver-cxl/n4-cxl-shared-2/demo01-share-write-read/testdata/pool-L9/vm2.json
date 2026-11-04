@@ -1,0 +1,235 @@
+{
+ "errors": [],
+ "k8s": {
+  "claims": {
+   "apiVersion": "v1",
+   "items": [],
+   "kind": "List"
+  },
+  "drivers": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "kind": "Pod",
+     "metadata": {
+      "name": "nri-dra-driver-cxl-2",
+      "namespace": "kube-system"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd"
+     },
+     "status": {
+      "containerStatuses": [
+       {
+        "ready": true,
+        "restartCount": 0
+       }
+      ],
+      "phase": "Running"
+     }
+    },
+    {
+     "kind": "Pod",
+     "metadata": {
+      "name": "nri-dra-driver-cxl-1",
+      "namespace": "kube-system"
+     },
+     "spec": {
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd"
+     },
+     "status": {
+      "containerStatuses": [
+       {
+        "ready": true,
+        "restartCount": 0
+       }
+      ],
+      "phase": "Running"
+     }
+    }
+   ],
+   "kind": "List"
+  },
+  "pods": {
+   "apiVersion": "v1",
+   "items": [],
+   "kind": "List"
+  },
+  "slices": {
+   "apiVersion": "v1",
+   "items": [
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "name": "n4-cxl-shared-2-fedora-43-containerd-cxl.nri.io-x"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       },
+       {
+        "attributes": {
+         "size": {
+          "int": 8362471424
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166476Ki"
+         }
+        },
+        "name": "dram"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-2-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-2-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "name": "n4-cxl-shared-1-fedora-43-containerd-cxl.nri.io-x"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "type": {
+          "string": "lease"
+         }
+        },
+        "name": "lease"
+       },
+       {
+        "attributes": {
+         "size": {
+          "int": 8362471424
+         },
+         "source": {
+          "string": "local"
+         },
+         "type": {
+          "string": "dram"
+         }
+        },
+        "capacity": {
+         "memory": {
+          "value": "8166476Ki"
+         }
+        },
+        "name": "dram"
+       }
+      ],
+      "driver": "cxl.nri.io",
+      "nodeName": "n4-cxl-shared-1-fedora-43-containerd",
+      "pool": {
+       "generation": 1,
+       "name": "n4-cxl-shared-1-fedora-43-containerd",
+       "resourceSliceCount": 1
+      }
+     }
+    },
+    {
+     "apiVersion": "resource.k8s.io/v1",
+     "kind": "ResourceSlice",
+     "metadata": {
+      "name": "fake-cxl-pool-x"
+     },
+     "spec": {
+      "devices": [
+       {
+        "allowMultipleAllocations": true,
+        "attributes": {
+         "coherent": {
+          "bool": false
+         },
+         "persistent": {
+          "bool": false
+         },
+         "serial": {
+          "string": "0xc1ae0001"
+         },
+         "shared": {
+          "bool": true
+         },
+         "size": {
+          "int": 268435456
+         },
+         "source": {
+          "string": "pool"
+         },
+         "type": {
+          "string": "memdev"
+         }
+        },
+        "bindingConditions": [
+         "cxl-pool.nri.io/Attached"
+        ],
+        "bindingFailureConditions": [
+         "cxl-pool.nri.io/AttachFailed"
+        ],
+        "bindsToNode": true,
+        "capacity": {
+         "shares": {
+          "value": "1M"
+         }
+        },
+        "name": "shared0"
+       }
+      ],
+      "driver": "cxl-pool.nri.io",
+      "nodeSelector": {
+       "nodeSelectorTerms": [
+        {
+         "matchExpressions": [
+          {
+           "key": "kubernetes.io/hostname",
+           "operator": "In",
+           "values": [
+            "n4-cxl-shared-1-fedora-43-containerd",
+            "n4-cxl-shared-2-fedora-43-containerd"
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      "pool": {
+       "generation": 1,
+       "name": "fake-cxl-pool",
+       "resourceSliceCount": 1
+      }
+     }
+    }
+   ],
+   "kind": "List"
+  }
+ },
+ "node": {
+  "hostname": "n4-cxl-shared-2-fedora-43-containerd",
+  "mappers": [],
+  "memdevs": [],
+  "regions": []
+ }
+}

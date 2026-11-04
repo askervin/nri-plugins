@@ -1,0 +1,224 @@
+#!/bin/bash
+# demo: the live demo of CXL memory sharing (README.txt of this directory).
+
+DEMO_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEMO_DIR="$(dirname "$DEMO_BIN")"
+
+nri-src() {
+    # Usage: nri-src
+    #
+    # Print the nri-plugins tree of the demo: the nearest directory above
+    # it with the go.mod of module github.com/containers/nri-plugins.
+    local d="$DEMO_DIR"
+    while [ "$d" != / ] && [ -n "$d" ]; do
+        d="$(dirname "$d")"
+        if [ -f "$d/go.mod" ] && grep -qx 'module github.com/containers/nri-plugins' "$d/go.mod"; then
+            echo "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+NRI_SRC="${NRI_PLUGINS_SRC:-$(nri-src)}"
+[ -n "$NRI_SRC" ] || { echo "demo: no nri-plugins tree above $DEMO_DIR: set NRI_PLUGINS_SRC" >&2; exit 1; }
+E2E_DIR="$NRI_SRC/test/e2e"
+E2E_SUITE="$E2E_DIR/memory.test-suite/dra-driver-cxl"
+DEMO_SUITE="$DEMO_DIR/e2e/demo.test-suite/dra-driver-cxl"
+export DEMO_DIR
+export DEMO_STATE_DIR="${DEMO_STATE_DIR:-$DEMO_DIR/run}"
+STATE="$DEMO_STATE_DIR/state.env"
+CASES="local|pool|pool-shared-fs|pool-fs|wizard"
+
+usage() {
+    cat <<EOF
+usage: demo COMMAND
+  setup CASE [TYPE]        set up the cluster for a demo (minutes);
+                           CASE is local, pool, pool-shared-fs, pool-fs or
+                           wizard; TYPE of pool-fs: ext4 (default), xfs or
+                           btrfs
+  teardown                 remove all of it, leave the VMs clean
+  reset CASE               delete the demo pods and leases, start over
+  commands                 print the commands of the six terminals
+  view t2|t3|t4|t5|t6 [CASE] [--once] [--no-color]
+                           a live view: t2 pods and leases, t3 scheduler,
+                           t4 nodes, t5 trace, t6 memory (pool server)
+  local [N|N-|--auto]      the steps of the local demo (T1)
+  pool [N|N-|--auto]       the steps of the pool demo (T1)
+  pool-shared-fs [N|N-|--auto]
+                           the steps of the file system demo (T1)
+  pool-fs [N|N-|--auto]    the steps of the read-write filesystem demo (T1)
+  wizard [new OPTIONS|list|yaml NAME|delete NAME...|--all]
+                           the wizard (T1): a pod and a claim or lease of
+                           any device of the case, its YAML; "demo
+                           wizard new --help" lists the options
+  zoom WHAT [ARGS]         details for questions, "demo zoom help"
+  capture LABEL [--truth]  the views T2-T6 once (50 x 10), to
+                           captures/CASE-LABEL-tN.txt; --truth takes the
+                           truth dump of LABEL at the same time
+  truth LABEL [--since EPOCH]
+                           a ground-truth dump of the cluster, the nodes,
+                           the pool server and the logs since the last step
+                           began (or EPOCH), to captures/CASE-LABEL-truth.txt
+  selftest                 render every view from testdata/, check 50 x 10
+EOF
+}
+
+die() {
+    echo "demo: $*" >&2
+    exit 1
+}
+
+state-get() {
+    # Usage: state-get KEY
+    sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1
+}
+
+e2e-links() {
+    # Usage: e2e-links
+    #
+    # Link the helpers of the dra-driver-cxl e2e suite into the demo suite
+    # again, with paths relative to the links: the policy level
+    # (dra.source.sh, helm values), every file of the topology
+    # n4-cxl-shared-2 (sources, vars, tools), and e2e/lib to the e2e lib.
+    local f sub
+    [ -f "$E2E_SUITE/dra.source.sh" ] || die "no e2e suite in $E2E_SUITE"
+    find "$DEMO_SUITE" -maxdepth 2 -type l -delete
+    for sub in "" /n4-cxl-shared-2; do
+        for f in "$E2E_SUITE$sub"/*; do
+            [ -f "$f" ] || continue
+            ln -s "$(realpath -s --relative-to="$DEMO_SUITE$sub" "$f")" "$DEMO_SUITE$sub/${f##*/}" ||
+                die "cannot link $f into $DEMO_SUITE$sub"
+        done
+    done
+    ln -sfn "$(realpath -s --relative-to="$DEMO_DIR/e2e" "$E2E_DIR/lib")" "$DEMO_DIR/e2e/lib" ||
+        die "cannot link $E2E_DIR/lib to $DEMO_DIR/e2e/lib"
+    for f in "$DEMO_SUITE"/* "$DEMO_SUITE"/n4-cxl-shared-2/* "$DEMO_DIR/e2e/lib"; do
+        [ -e "$f" ] || die "broken link $f"
+    done
+}
+
+e2e-run() {
+    # Usage: e2e-run TEST
+    #
+    # Run the test TEST of the demo suite with run_tests.sh, the way the
+    # e2e tests run (one at a time: no other run_tests.sh may run).
+    local out
+    if command -v pgrep >/dev/null && pgrep -x run_tests.sh >/dev/null; then
+        die "run_tests.sh runs already: wait until it is done (the VMs serve one run at a time)"
+    fi
+    e2e-links
+    out="$DEMO_STATE_DIR/$1.log"
+    mkdir -p "$DEMO_STATE_DIR"
+    echo "demo: running $1 through the e2e framework, log $out"
+    (cd "$E2E_DIR" && ./run_tests.sh "$DEMO_SUITE/n4-cxl-shared-2/$1") 2>&1 | tee "$out"
+    grep -q "^PASS " "$out"
+}
+
+print-commands() {
+    local case="${1:-$CASES}"
+    cat <<EOF
+Six terminals of 50 x 10, two columns, three rows:
+  T1 (left top)     $DEMO_BIN/demo $case
+  T2 (right top)    $DEMO_BIN/demo view t2
+  T3 (left middle)  $DEMO_BIN/demo view t3
+  T4 (right middle) $DEMO_BIN/demo view t4
+  T5 (left bottom)  $DEMO_BIN/demo view t5
+  T6 (right bottom) $DEMO_BIN/demo view t6
+EOF
+}
+
+cmd-setup() {
+    local case="$1" fstype="$2" tar
+    [[ "$case" =~ ^($CASES)$ ]] || die "setup $CASES"
+    if [ "$case" == pool-fs ]; then
+        fstype="${fstype:-ext4}"
+        [[ "$fstype" =~ ^(ext4|xfs|btrfs)$ ]] || die "setup pool-fs [ext4|xfs|btrfs]"
+    elif [ -n "$fstype" ]; then
+        die "setup $case takes no filesystem type"
+    fi
+    [ ! -f "$STATE" ] || die "a demo ($(state-get DEMO_CASE)) is set up already: demo teardown first"
+    # shellcheck disable=SC2012 # the newest by mtime, like the e2e framework
+    tar=$(ls -1t "$NRI_SRC"/build/images/nri-dra-driver-cxl-image-*.tar 2>/dev/null | head -n 1)
+    [ -n "$tar" ] || die "no image of the driver, build it: make PLUGINS=nri-dra-driver-cxl SKIP_LICENSES=1 OTHER_IMAGE_TARGETS= BINARIES= images"
+    echo "demo setup $case${fstype:+ $fstype}: driver image $tar"
+    DEMO_CASE="$case" DEMO_FSTYPE="$fstype" e2e-run test90-demo-setup ||
+        die "setup failed, see $DEMO_STATE_DIR/test90-demo-setup.log (its EXIT trap cleaned up)"
+    echo
+    print-commands "$case"
+}
+
+cmd-teardown() {
+    e2e-run test91-demo-teardown || die "teardown failed, see $DEMO_STATE_DIR/test91-demo-teardown.log; run it again"
+    echo "demo teardown: done, the VMs are clean"
+}
+
+cmd-reset() {
+    local case="$1" vm2
+    [ -f "$STATE" ] || die "demo not set up"
+    [ "$case" == "$(state-get DEMO_CASE)" ] || die "the demo is set up for $(state-get DEMO_CASE), not '$case'"
+    [ "$case" != wizard ] || exec python3 "$DEMO_BIN/wizard.py" delete --all
+    vm2="$(state-get VM2_DIR)"
+    echo "demo reset $case: deleting the demo pods and their leases"
+    ssh -F "$vm2/.ssh-config" node sudo bash -l -s -- "$case" <<'EOF'
+cd /root/demo && export KUBECONFIG=/root/demo/kubeconfig
+kubectl delete -f "$1/" --ignore-not-found --wait=true --timeout=90s
+for i in $(seq 90); do
+    left=$(kubectl get pods,resourceclaims -l cxl.nri.io/lease -o name 2>/dev/null)
+    [ -z "$left" ] && { echo "no leases left"; exit 0; }
+    sleep 1
+done
+echo "still there: $left"
+exit 1
+EOF
+}
+
+cmd-capture() {
+    # Usage: cmd-capture LABEL [--truth]
+    #
+    # Write one plain rendering of 50 x 10 of each view T2-T6 to
+    # captures/<case>-LABEL-tN.txt, taken in parallel; with --truth the
+    # truth dump of LABEL too, at the same time.
+    local label="$1" case t
+    [ -n "$label" ] && [[ "$label" != -* ]] || die "capture LABEL [--truth]"
+    case="$(state-get DEMO_CASE)"
+    [ -n "$case" ] || die "demo not set up"
+    mkdir -p "$DEMO_DIR/captures"
+    for t in t2 t3 t4 t5 t6; do
+        COLUMNS=50 LINES=10 python3 "$DEMO_BIN/views.py" "$t" --once > "$DEMO_DIR/captures/$case-$label-$t.txt" &
+    done
+    if [ "$2" == --truth ]; then
+        python3 "$DEMO_BIN/truth.py" "$label" &
+    fi
+    wait
+}
+
+cmd-zoom() {
+    if [ -t 1 ] && command -v less >/dev/null; then
+        python3 "$DEMO_BIN/zoom.py" "$@" 2>&1 | less -FRX
+    else
+        python3 "$DEMO_BIN/zoom.py" "$@"
+    fi
+}
+
+main() {
+    local cmd="$1"
+    shift
+    case "$cmd" in
+        setup) cmd-setup "$@";;
+        teardown) cmd-teardown;;
+        reset) cmd-reset "$@";;
+        commands) print-commands "$(state-get DEMO_CASE)";;
+        view) exec python3 "$DEMO_BIN/views.py" "$@";;
+        local|pool|pool-shared-fs|pool-fs) exec python3 "$DEMO_BIN/steps.py" "$cmd" "$@";;
+        wizard) exec python3 "$DEMO_BIN/wizard.py" "$@";;
+        zoom) cmd-zoom "$@";;
+        capture) cmd-capture "$@";;
+        truth) exec python3 "$DEMO_BIN/truth.py" "$@";;
+        selftest) exec python3 "$DEMO_BIN/selftest.py" "$@";;
+        ""|-h|--help|help) usage;;
+        *) usage; exit 2;;
+    esac
+}
+
+main "$@"

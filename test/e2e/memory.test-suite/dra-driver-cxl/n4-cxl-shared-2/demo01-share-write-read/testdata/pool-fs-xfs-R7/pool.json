@@ -1,0 +1,35 @@
+{
+ "device": {
+  "allocation": null,
+  "attachments": [
+   {
+    "device": "fs0",
+    "exclusive": true,
+    "host": "n4-cxl-shared-1-fedora-43-containerd",
+    "state": "attached"
+   }
+  ],
+  "lsaPath": "/tmp/fake-cxl-pool/fs0.lsa",
+  "name": "fs0",
+  "path": "/tmp/fake-cxl-pool/fs0.raw",
+  "persistent": true,
+  "scope": "pool",
+  "serial": "0xc1ae0001",
+  "shared": true,
+  "size": 536870912,
+  "state": "allocated",
+  "static": true
+ },
+ "fsOffset": 2097152,
+ "super": {
+  "blockSize": 4096,
+  "error": "",
+  "label": "demo",
+  "signatures": [
+   "xfs"
+  ],
+  "size": 534773760,
+  "type": "xfs",
+  "uuid": "ec28abf3-15cf-4680-b8f2-c8c115c196eb"
+ }
+}

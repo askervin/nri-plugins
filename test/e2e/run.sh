@@ -282,7 +282,7 @@ fi
 
 # Note: lib/test.bash is read for its documentation only. It is not sourced
 # here, but by the test case itself, see run_tests.sh.
-script_source="$(< "$0") $(< "$LIB_DIR/vm.bash") $(< "$LIB_DIR/test.bash")"
+script_source="$(< "$0") $(< "$LIB_DIR/vm.bash") $(< "$LIB_DIR/test.bash") $(< "$LIB_DIR/k8s.bash")"
 
 help() { # script API
     # Usage: help [FUNCTION|all]
@@ -466,6 +466,7 @@ helm-launch() { # script API
     #
     # Supported TARGETs:
     #     topology-aware, balloons, template: launch the given NRI resource policy plugin on VM.
+    #     dra-driver-cxl: launch the CXL DRA driver on VM.
     #
     # Environment variables:
     #     helm_config: configuration helm override values for the plugin
@@ -477,6 +478,9 @@ helm-launch() { # script API
     #         default: test
     #     launch_timeout: timeout to wait for DaemonSet to become available
     #         default: 20s
+    #     launch_available: number of available DaemonSet pods to wait for,
+    #         for instance the number of nodes of a multi-node cluster
+    #         default: 1
     #     cfgresource: config custom resource to wait for node status to change in
     #         default: balloonspolicies/default or topologyawarepolicies/default
     #     expect_error: don't exit, expect availability error
@@ -488,6 +492,7 @@ helm-launch() { # script API
     local helm_config="${helm_config:-$TEST_DIR/helm-config.yaml}"
     local ds_name="${daemonset_name:-}" ctr_name="${container_name:-nri-resource-policy-$1}"
     local helm_name="${helm_name:-test}" timeout="${launch_timeout:-20s}"
+    local available="${launch_available:-1}"
     local expect_error="${expect_error:-0}"
     local plugin="$1" cfgresource=${cfgresource:-} cfgstatus
     local deadline rollback may_fail
@@ -540,6 +545,10 @@ helm-launch() { # script API
                 ds_name=nri-memtierd
                 ctr_name=nri-memtierd
                 ;;
+            *dra-driver-cxl*)
+                ds_name=nri-dra-driver-cxl
+                ctr_name=nri-dra-driver-cxl
+                ;;
             *)
                 error "Can't wait for plugin $plugin to start, daemonset_name not set"
                 return 0
@@ -549,7 +558,7 @@ helm-launch() { # script API
 
     deadline=$(deadline-for-timeout $timeout)
     vm-command "kubectl wait -n kube-system ds/${ds_name} --timeout=$timeout \
-                    --for=jsonpath='{.status.numberAvailable}'=1"
+                    --for=jsonpath='{.status.numberAvailable}'=$available"
     # When expect_error=1, numberAvailable may happen to be 0 or 1,
     # depending on crash timing, and COMMAND_STATUS zero or non-zero.
     # Skip exit and cfgresource status checks to avoid failing the

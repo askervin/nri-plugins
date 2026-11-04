@@ -1,0 +1,19 @@
+{
+ "errors": [],
+ "node": {
+  "hostname": "n4-cxl-shared-1-fedora-43-containerd",
+  "mappers": [],
+  "memdevs": [
+   {
+    "enabled": true,
+    "name": "mem0",
+    "numaNode": 0,
+    "serial": "0xc100e2e1",
+    "size": 268435456
+   }
+  ],
+  "mounts": [],
+  "openers": [],
+  "regions": []
+ }
+}

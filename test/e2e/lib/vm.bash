@@ -659,6 +659,37 @@ vm-setup() {
     local MEM=$(echo $VM_QEMU_CPUMEM | sed 's/MACHINE:.*CPU:.*SMP:.*MEM:-m \([^|]*\).*/\1/g')
     local EXTRA_ARGS=$(echo $VM_QEMU_CPUMEM | sed 's/MACHINE:.*CPU:.*SMP:.*MEM:.*EXTRA:\([^|]*\).*/\1/g')
     local EXTRA_ARGS+="${EXTRA_ARGS:+,} \"-monitor\", \"unix:monitor.sock,server,nowait\""
+    # A QMP socket serves one client at a time. qmp.sock is for clients that
+    # keep the connection open, like a CXL memory pool emulator waiting for
+    # device events, and qmp-e2e.sock is for vm-qmp, which connects for one
+    # command at a time. Sockets are relative to the output dir, the working
+    # directory of qemu.
+    EXTRA_ARGS+=", \"-qmp\", \"unix:qmp.sock,server,nowait\", \"-qmp\", \"unix:qmp-e2e.sock,server,nowait\""
+
+    # SMBIOS system UUID of the VM is a version 5 UUID of the VM name, so it
+    # is known without asking the VM. The VM sees it in
+    # /sys/class/dmi/id/product_uuid, and kubelet reports it as
+    # node.status.nodeInfo.systemUUID, which lets tools on the host map
+    # Kubernetes nodes to qemu processes. It is recorded in the env file of
+    # the VM as VM_UUID. cloud-init takes a UUID that starts with "ec2" for
+    # an EC2 instance, so in that case hash "<VM name>-1" (-2, ...) instead.
+    local vm_uuid
+    vm_uuid=$(python3 -c '
+import sys, uuid
+name, suffix = sys.argv[1], 0
+vm_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, name)
+while str(vm_uuid).startswith("ec2"):
+    suffix += 1
+    vm_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, "%s-%d" % (name, suffix))
+print(vm_uuid)' "$vmname") || error "cannot create UUID for VM $vmname"
+    EXTRA_ARGS+=", \"-uuid\", \"$vm_uuid\""
+
+    # Run the VM in a custom qemu, for instance in a development build, if
+    # qemu_bin is set when the VM is created. It is recorded in the env file
+    # of the VM, so that every later vagrant up keeps using the same qemu.
+    if [ -n "$qemu_bin" ] && { [[ "$qemu_bin" != /* ]] || [ ! -x "$qemu_bin" ]; }; then
+        error "qemu_bin=$qemu_bin is not an absolute path of an executable"
+    fi
 
     case $efi in
         "") ;;
@@ -691,6 +722,7 @@ vm-setup() {
     fi
 
     VM_MONITOR="(cd \"$output_dir\" && socat STDIO unix-connect:monitor.sock)"
+    VM_QMP="$output_dir/qmp-e2e.sock"
 
     if [ "$vagrant_debug" == "1" ]; then
 	echo "MACHINE: $MACHINE"
@@ -738,6 +770,8 @@ vm-setup() {
 		-e "s/SSH_PORT=/SSH_PORT=$SSH_PORT/g" \
                 -e "s:CACHE_DIR=:CACHE_DIR=\"$CACHE_DIR\":g" \
                 -e "s:E2E_NO_PROVISION=:E2E_NO_PROVISION=$e2e_no_provision:g" \
+                -e "s:QEMU_BIN=:QEMU_BIN=\"$qemu_bin\":g" \
+                -e "s:VM_UUID=:VM_UUID=$vm_uuid:g" \
 		"$files/env.in" > "$vagrantdir/env"
 	else
 	    sed -e "s/DNS_NAMESERVER=\"\"/DNS_NAMESERVER=\"$dns_nameserver\"/g" \
@@ -745,8 +779,13 @@ vm-setup() {
 		-e "s/SSH_PORT=/SSH_PORT=$SSH_PORT/g" \
                 -e "s:CACHE_DIR=:CACHE_DIR=\"$CACHE_DIR\":g" \
                 -e "s:E2E_NO_PROVISION=:E2E_NO_PROVISION=$e2e_no_provision:g" \
+                -e "s:QEMU_BIN=:QEMU_BIN=\"$qemu_bin\":g" \
+                -e "s:VM_UUID=:VM_UUID=$vm_uuid:g" \
 		"$files/env.in" > "$vagrantdir/env"
 	fi
+    elif [ -n "$qemu_bin" ] && ! grep -qx "QEMU_BIN=\"$qemu_bin\"" "$vagrantdir/env"; then
+        echo "WARNING: ignoring qemu_bin=$qemu_bin, the VM exists already." \
+             "Its qemu is QEMU_BIN in $vagrantdir/env." >&2
     fi
 
     # An env file written before this VM was known to come from a box has no
@@ -757,6 +796,17 @@ vm-setup() {
         sed -i 's/^E2E_NO_PROVISION=.*$/E2E_NO_PROVISION=1/' "$vagrantdir/env"
         grep -q '^E2E_NO_PROVISION=1$' "$vagrantdir/env" ||
             echo "E2E_NO_PROVISION=1" >> "$vagrantdir/env"
+    fi
+
+    # The NIC of the VM network of the topology, if it has one. An existing
+    # VM gets it at its next start (vm-vmnet-ensure restarts it).
+    if [ -n "$vm_network" ]; then
+        vm-vmnet-record "$vagrantdir" "$vm_network" ||
+            error "cannot record VM network $vm_network in $vagrantdir/env"
+        vm-vmnet-patch-vagrantfile "$vagrantdir/Vagrantfile.erb" "$vagrantdir" ||
+            error "cannot add the NIC of VM network $vm_network to $vagrantdir/Vagrantfile.erb"
+        vm-vmnet-patch-vagrantfile "$vagrantdir/Vagrantfile" "$vagrantdir" ||
+            error "cannot add the NIC of VM network $vm_network to $vagrantdir/Vagrantfile"
     fi
 
     (cd "$vagrantdir";
@@ -785,6 +835,15 @@ vm-setup() {
              exit 1
          fi
      fi
+
+     # Qemu creates the files of file-backed memory, like CXL memory shared
+     # with other VMs, but not the directories of the files. Create them on
+     # every start, as they may be in a tmpfs emptied after VM creation.
+     local mem_path
+     for mem_path in $(grep -o 'mem-path=[^,"]*' Vagrantfile | sed 's/^mem-path=//'); do
+         mkdir -p "$(dirname "$mem_path")" ||
+             error "cannot create directory for qemu memory backend file $mem_path"
+     done
 
      if ! (export ANSIBLE_SSH_ARGS="$SSH_PERSIST_OPTS"
            vagrant up $no_provision --provider qemu || error "failed to bring up VM"); then
@@ -835,6 +894,114 @@ EOF
         wait-for-node-ready
         wait-for-dns-ready
     fi
+}
+
+# A VM network connects the VMs of topologies that set vm_network (in
+# vm_network.var.sh of the topology), for instance to make a multi-node
+# Kubernetes cluster of them (vm-k8s-reinit). Each VM gets a second virtio
+# NIC, on a root port of its own, backed by a qemu socket netdev on a
+# multicast group of the host loopback: no host privileges, any number of
+# VMs, nothing leaves the host. The VM keeps its slirp NIC for everything
+# else. vm-setup adds the NIC to the qemu command line of the VM, and
+# vm-vmnet-ensure (lib/k8s.bash) configures it in the VM.
+VMNET_CIDR_PREFIX=10.76
+VMNET_PREFIX_LEN=16
+
+vm-vmnet-values() {
+    # Usage: vm-vmnet-values VMDIR NETWORK
+    #
+    # Print the settings of the VM of output directory VMDIR in VM network
+    # NETWORK, as env file lines VMNET_NAME, VMNET_MCAST, VMNET_MAC and
+    # VMNET_IP. They are derived, not configured: the multicast group and
+    # port from the user, the e2e output root (the parent of VMDIR) and
+    # NETWORK, so that the VMs of two users or two checkouts never share a
+    # segment ($vm_network_mcast=GROUP:PORT overrides it); the MAC and the
+    # address (in $VMNET_CIDR_PREFIX.0.0/$VMNET_PREFIX_LEN) from VM_UUID in
+    # VMDIR/env, so they are unique per VM name and stable.
+    local vmdir="$1" network="$2" vm_uuid
+    vm_uuid=$(sed -n 's/^VM_UUID=//p' "$vmdir/env" 2>/dev/null)
+    [ -n "$vm_uuid" ] || {
+        echo "vm-vmnet-values: no VM_UUID in $vmdir/env" >&2
+        return 1
+    }
+    python3 - "$vmdir" "$network" "$vm_uuid" "${vm_network_mcast:-}" "$VMNET_CIDR_PREFIX" <<'EOF'
+import hashlib, os, sys, uuid
+vmdir, network, vm_uuid, mcast, prefix = sys.argv[1:6]
+root = os.path.dirname(os.path.realpath(vmdir))
+h = hashlib.sha256(("%d:%s:%s" % (os.getuid(), root, network)).encode()).digest()
+if not mcast:
+    mcast = "239.255.%d.%d:%d" % (h[0], h[1], 17600 + (h[2] * 256 + h[3]) % 2000)
+b = uuid.UUID(vm_uuid).bytes
+c, d = b[3], b[4]
+if (c, d) == (0, 0):
+    d = 1
+elif (c, d) == (255, 255):
+    d = 254
+print("VMNET_NAME=%s" % network)
+print("VMNET_MCAST=%s" % mcast)
+print("VMNET_MAC=52:54:00:%02x:%02x:%02x" % (b[0], b[1], b[2]))
+print("VMNET_IP=%s.%d.%d" % (prefix, c, d))
+EOF
+}
+
+vm-vmnet-get() {
+    # Usage: vm-vmnet-get VMDIR VAR
+    #
+    # Print VAR (VMNET_NAME, VMNET_MCAST, VMNET_MAC or VMNET_IP) from the
+    # env file of the VM of VMDIR, nothing if it is not there.
+    sed -n "s/^$2=//p" "$1/env" 2>/dev/null | tail -n 1
+}
+
+vm-vmnet-record() {
+    # Usage: vm-vmnet-record VMDIR NETWORK
+    #
+    # Record the VM network settings of the VM of VMDIR in its env file,
+    # unless they are there, and add the network to NO_PROXY there. Fail if
+    # the VM is in another VM network.
+    local vmdir="$1" network="$2" old cidr="$VMNET_CIDR_PREFIX.0.0/$VMNET_PREFIX_LEN"
+    old=$(vm-vmnet-get "$vmdir" VMNET_NAME)
+    if [ -n "$old" ] && [ "$old" != "$network" ]; then
+        echo "vm-vmnet-record: $(basename "$vmdir") is in VM network $old, not $network" >&2
+        return 1
+    fi
+    if [ -z "$old" ]; then
+        vm-vmnet-values "$vmdir" "$network" >> "$vmdir/env" || return 1
+    fi
+    if grep -q '^NO_PROXY="' "$vmdir/env" && ! grep -q "^NO_PROXY=\".*$cidr" "$vmdir/env"; then
+        sed -i "s#^NO_PROXY=\"\([^\"]*\)\"#NO_PROXY=\"\1,$cidr\"#" "$vmdir/env" || return 1
+    fi
+}
+
+vm-vmnet-patch-vagrantfile() {
+    # Usage: vm-vmnet-patch-vagrantfile FILE VMDIR
+    #
+    # Add the NIC of the VM network of the VM of VMDIR (VMNET_* in its env
+    # file) to the qemu arguments in FILE, its Vagrantfile or
+    # Vagrantfile.erb, unless it is there. A running VM gets the NIC at its
+    # next start. The NIC has a root port of its own, after the devices of
+    # the topology, so that it takes no CXL slot and no PCI address of
+    # another device moves.
+    local file="$1" vmdir="$2" mcast mac line
+    [ -f "$file" ] || return 0
+    grep -q 'id=vmnet0' "$file" && return 0
+    mcast=$(vm-vmnet-get "$vmdir" VMNET_MCAST)
+    mac=$(vm-vmnet-get "$vmdir" VMNET_MAC)
+    [ -n "$mcast" ] && [ -n "$mac" ] || {
+        echo "vm-vmnet-patch-vagrantfile: no VMNET_MCAST/VMNET_MAC in $vmdir/env" >&2
+        return 1
+    }
+    line="    qemu.extra_qemu_args += [\"-netdev\", \"socket,id=vmnet0,mcast=$mcast,localaddr=127.0.0.1\", \"-device\", \"pcie-root-port,id=rp_vmnet,bus=pcie.0,port=0xa,chassis=6\", \"-device\", \"virtio-net-pci,netdev=vmnet0,bus=rp_vmnet,mac=$mac\"] # VM network $(vm-vmnet-get "$vmdir" VMNET_NAME)"
+    grep -q '^ *qemu\.disk_resize' "$file" || {
+        echo "vm-vmnet-patch-vagrantfile: no qemu.disk_resize line in $file to put the NIC before" >&2
+        return 1
+    }
+    sed -i "/^ *qemu\.disk_resize/i\\
+$line" "$file" || return 1
+    if command -v ruby >/dev/null && ! ruby -c "$file" >/dev/null; then
+        echo "vm-vmnet-patch-vagrantfile: $file is not valid Ruby after the patch" >&2
+        return 1
+    fi
+    echo "vm-vmnet-patch-vagrantfile: added the NIC of VM network $(vm-vmnet-get "$vmdir" VMNET_NAME) ($mac, $mcast) to $file"
 }
 
 vm-play() {
@@ -947,8 +1114,8 @@ vm-reboot() { # script API
         fi
 
         if [ $_shutdown = 0 ]; then
-            for _pid in $(lsof -Fp monitor.sock 2>/dev/null); do
-                kill ${_pid#p} || :
+            for _pid in $(vm-qemu-pid "$_vagrantdir"); do
+                kill $_pid || :
             done
             sleep 3
             vagrant status 2>/dev/null | grep running || {
@@ -958,8 +1125,8 @@ vm-reboot() { # script API
         fi
 
         if [ $_shutdown = 0 ]; then
-            for _pid in $(lsof -Fp monitor.sock 2>/dev/null); do
-                kill -9 ${_pid#p} || :
+            for _pid in $(vm-qemu-pid "$_vagrantdir"); do
+                kill -9 $_pid || :
             done
             sleep 3
             vagrant status 2>/dev/null | grep running || {
@@ -977,6 +1144,24 @@ vm-reboot() { # script API
         vagrant up --no-provision
     )
     deadline=$_deadline host-wait-vm-ssh-server $_vagrantdir
+}
+
+vm-qemu-pid() { # script API
+    # Usage: vm-qemu-pid [VAGRANTDIR]
+    #
+    # Print the process id of the qemu of the VM in VAGRANTDIR, the output
+    # directory. The default is $OUTPUT_DIR.
+    #
+    # Neither "lsof monitor.sock" nor the working directory of qemu tells
+    # VMs apart: every qemu has the same relative socket paths, and works in
+    # "/" after daemonizing. The disk image of the VM is in VAGRANTDIR.
+    local _dir _pid
+    _dir="$(realpath "${1:-$OUTPUT_DIR}")"
+    for _pid in $(pgrep qemu-system); do
+        if grep -qaF "$_dir/.vagrant/machines/" "/proc/$_pid/cmdline" 2>/dev/null; then
+            echo "$_pid"
+        fi
+    done
 }
 
 vm-cpu-hotplug() { # script API
@@ -1027,12 +1212,14 @@ vm-cxl-hw() { # script API
     for plugged_id in $(vm-monitor "info qtree -b" | awk -F\" '/dev: cxl-type3/{print $2}' | sed 's/\.hp.*//g'); do
         plugged[$plugged_id]=1
     done
-    vm-monitor "info memdev" | awk '/ beram_cxl_memdev/{print $3}' | while read beram_id; do
-        read dev bus sn <<< "$(sed -e 's/^beram_\(cxl_memdev[0-9]\+\)__bus_\(.*\)__sn_\(.*\)$/\1 \2 \3/g' <<< "$beram_id")"
+    # Backends of the devices are beram_* (memory-backend-ram) or befile_*
+    # (memory-backend-file), see topology2qemuopts.py.
+    vm-monitor "info memdev" | awk '/ be(ram|file)_cxl_memdev/{print $3}' | while read be_id; do
+        read dev bus sn <<< "$(sed -e 's/^be\(ram\|file\)_\(cxl_memdev[0-9]\+\)__bus_\(.*\)__sn_\(.*\)$/\2 \3 \4/g' <<< "$be_id")"
         echo -n "$dev"
         [ "$show_bus" = 1 ] && echo -n " bus=$bus"
         [ "$show_sn" = 1 ] && echo -n " sn=$sn"
-        [ "$show_be" = 1 ] && echo -n " volatile-memdev=$beram_id"
+        [ "$show_be" = 1 ] && echo -n " volatile-memdev=$be_id"
         [ "${plugged[$dev]}" = 1 ] && echo -n " plugged"
         echo
     done
@@ -1199,6 +1386,80 @@ vm-monitor() { # script API
         error "sending command to Qemu monitor failed"
     fi
     echo ""
+}
+
+vm-qmp() { # script API
+    # Usage: vm-qmp COMMAND [ARGUMENTS_JSON]
+    #        vm-qmp QMP_REQUEST_JSON
+    #
+    # Execute COMMAND on Qemu Machine Protocol (QMP) monitor, and print
+    # the response, {"return": ...} or {"error": ...}, as a line of JSON.
+    # Return non-zero exit status if the response is an error. Fail the
+    # test if there is no response in ${qmp_timeout:-30} seconds. Events
+    # that qemu sends before the response are not printed.
+    #
+    # vm-qmp has a QMP socket of its own, so it works also when another
+    # QMP client is connected to qmp.sock in the output directory.
+    #
+    # Examples:
+    #   vm-qmp query-version
+    #   vm-qmp qom-list '{"path": "/machine/peripheral"}'
+    #   vm-qmp '{"execute": "query-memdev"}'
+    local rv
+    [ -n "$VM_QMP" ] ||
+        error "VM is not running"
+    [ -S "$VM_QMP" ] ||
+        error "QMP socket $VM_QMP not found, VM created without it?"
+    python3 - "$VM_QMP" "$1" "$2" "${qmp_timeout:-30}" <<'EOF'
+import json, os, socket, sys
+
+sock_path, command, arguments, timeout = sys.argv[1:5]
+if command.lstrip().startswith("{"):
+    request = json.loads(command)
+else:
+    request = {"execute": command}
+    if arguments:
+        request["arguments"] = json.loads(arguments)
+
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(float(timeout))
+    # The absolute path of a socket in an output directory may be too long
+    # for connect().
+    os.chdir(os.path.dirname(sock_path))
+    s.connect(os.path.basename(sock_path))
+    f = s.makefile("rwb")
+
+    def send(msg):
+        f.write(json.dumps(msg).encode() + b"\n")
+        f.flush()
+
+    def receive():
+        """Return next greeting or response, skip events."""
+        while True:
+            line = f.readline()
+            if not line:
+                raise EOFError("connection closed by qemu")
+            msg = json.loads(line)
+            if "QMP" in msg or "return" in msg or "error" in msg:
+                return msg
+
+    receive()
+    send({"execute": "qmp_capabilities"})
+    receive()
+    send(request)
+    response = receive()
+except Exception as e:
+    print("vm-qmp: %s: %s" % (sock_path, e), file=sys.stderr)
+    sys.exit(2)
+print(json.dumps(response))
+sys.exit(1 if "error" in response else 0)
+EOF
+    rv=$?
+    if [ "$rv" = "2" ]; then
+        error "sending command to Qemu QMP monitor failed"
+    fi
+    return $rv
 }
 
 vm-run-until() { # script API
@@ -1802,22 +2063,23 @@ wait-for-node-ready() {
     local now=$(date +%s)
     local deadline=$(($now + 5 * 60))
 
+    # The API server runs on the control plane of the cluster of the VM,
+    # which is another VM if this one is a worker: ask the API server
+    # itself instead of looking for its container in this VM.
     while true; do
-        vm-command "crictl ps | grep kube-apiserver | grep Running"
-        if ! grep -q Running <<< $COMMAND_OUTPUT; then
-            sleep 5
-        else
+        vm-command "kubectl get --raw=/readyz 2>&1"
+        if grep -q "^ok" <<< $COMMAND_OUTPUT; then
             vm-command "kubectl wait --for=condition=Ready=True nodes/$VM_HOSTNAME --timeout=15s"
             if grep -q "condition met" <<< $COMMAND_OUTPUT; then
                 break
             fi
-
-            sleep 1
-            now=$(date +%s)
-            if [ $now -gt $deadline ]; then
-                command-error "failed to wait for VM k8s node to get ready"
-            fi
         fi
+
+        now=$(date +%s)
+        if [ $now -gt $deadline ]; then
+            command-error "failed to wait for VM k8s node to get ready"
+        fi
+        sleep 1
     done
 }
 

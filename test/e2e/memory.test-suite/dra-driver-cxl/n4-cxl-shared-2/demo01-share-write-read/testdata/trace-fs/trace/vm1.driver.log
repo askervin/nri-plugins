@@ -1,0 +1,19 @@
+1792600020.000000 vm1.driver I1022 12:00:20.000000  4242 broker.go:729] lease broker: lease 3f2a91c0: cxl-demo/writer/main requests size "" serial "0xc1ae0001" (source "", mode block, shared false, shared device true, read-only false, access "", name "")
+1792600023.000000 vm1.driver I1022 12:00:23.000000  4242 pool.go:689] cxl-pool.nri.io: claim cxl-demo/cxl-lease-3f2a91c0: prepared shared0 (serial 0xc1ae0001, shared true, mode block, read-only false) as mem0 region0 namespace namespace1.0 block /dev/pmem0 access "" fs "" mount "" loop ""
+1792600023.200000 vm1.driver I1022 12:00:23.000000  4242 broker.go:1646] lease broker: lease 3f2a91c0: Ready (source pool, serial 0xc1ae0001, mode block, read-only false, node -1, dax "", block "/dev/pmem0", access "", fs "", path "", 266338304 bytes)
+1792600062.000000 vm1.driver I1022 12:01:02.000000  4242 broker.go:729] lease broker: lease e0c4d3f1: cxl-demo/reader-c/main requests size "" serial "0xc1ae0001" (source "", mode fs, shared true, shared device true, read-only true, access "", name "hello")
+1792600100.000000 vm1.driver I1022 12:01:40.000000  4242 broker.go:1189] lease broker: lease 3f2a91c0: releasing (released by main, was Ready)
+1792600100.960000 vm1.driver I1022 12:01:40.000000  4242 pool.go:1479] cxl-pool.nri.io: released mem0 (serial 0xc1ae0001)
+1792600101.000000 vm1.driver I1022 12:01:41.000000  4242 pool.go:1521] cxl-pool.nri.io: unprepared claim cxl-demo/cxl-lease-3f2a91c0 (c1a10006-0000-4000-8000-000000000000)
+1792600102.600000 vm1.driver I1022 12:01:42.000000  4242 broker.go:1258] lease broker: lease 3f2a91c0: released
+1792600110.050000 vm1.driver I1022 12:01:50.000000  4242 persistent.go:679] cxl-pool.nri.io: device 0xc1ae0001: /dev/pmem0 read-only
+1792600110.100000 vm1.driver I1022 12:01:50.000000  4242 persistent.go:573] cxl-pool.nri.io: device 0xc1ae0001: mounted /dev/pmem0 at /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct (erofs, ro, dax=always)
+1792600110.200000 vm1.driver I1022 12:01:50.000000  4242 pool.go:689] cxl-pool.nri.io: claim cxl-demo/cxl-lease-e0c4d3f1: prepared shared0 (serial 0xc1ae0001, shared true, mode fs, read-only true) as mem0 region0 namespace namespace1.0 block /dev/pmem0 access "direct" fs "erofs" mount "/var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct" loop ""
+1792600110.300000 vm1.driver I1022 12:01:50.000000  4242 persistent.go:1130] cxl-pool.nri.io: lease e0c4d3f1: bound /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct at /var/lib/kubelet/plugins/cxl.nri.io/lease-fs/1ea5e000-0000-4000-8000-000052dff6b6/hello
+1792600110.400000 vm1.driver I1022 12:01:50.000000  4242 broker.go:1646] lease broker: lease e0c4d3f1: Ready (source pool, serial 0xc1ae0001, mode fs, read-only true, node -1, dax "", block "", access "direct", fs "erofs", path "/run/cxl/fs/hello", 266338304 bytes)
+1792600160.600000 vm1.driver I1022 12:02:40.000000  4242 broker.go:1189] lease broker: lease e0c4d3f1: releasing (requester container gone, was Ready)
+1792600165.000000 vm1.driver I1022 12:02:45.000000  4242 persistent.go:1246] cxl-pool.nri.io: lease e0c4d3f1: unbound /var/lib/kubelet/plugins/cxl.nri.io/lease-fs/1ea5e000-0000-4000-8000-000052dff6b6/hello
+1792600165.050000 vm1.driver I1022 12:02:45.000000  4242 persistent.go:820] cxl-pool.nri.io: device 0xc1ae0001: unmounted /var/lib/kubelet/plugins/cxl-pool.nri.io/mounts/c1ae0001-direct
+1792600165.100000 vm1.driver I1022 12:02:45.000000  4242 pool.go:1521] cxl-pool.nri.io: unprepared claim cxl-demo/cxl-lease-e0c4d3f1 (c1a1000c-0000-4000-8000-000000000000)
+1792600165.300000 vm1.driver I1022 12:02:45.000000  4242 broker.go:1258] lease broker: lease e0c4d3f1: released
+1792600168.400000 vm1.driver I1022 12:02:48.000000  4242 pool.go:1479] cxl-pool.nri.io: released mem0 (serial 0xc1ae0001)
