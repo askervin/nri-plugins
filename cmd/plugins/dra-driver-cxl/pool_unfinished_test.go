@@ -27,6 +27,7 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -940,7 +941,12 @@ func TestPoolOtherBootStateSaveFails(t *testing.T) {
 	if data, _ := os.ReadFile(e.stateFile); !strings.Contains(string(data), `"u1"`) {
 		t.Fatalf("the state file was saved:\n%s", data)
 	}
-	wantErr(t, unprepare(t, p2, "u1"), poolStateFileName+".tmp")
+	// the write of the state file fails: on the store, that of state.json
+	failed := poolStateFileName + ".tmp"
+	if !stateFilesMode {
+		failed = store.FileName + ".tmp"
+	}
+	wantErr(t, unprepare(t, p2, "u1"), failed)
 	if rec := e.preparingFile(t)["u1"]; rec == nil || p2.preparing["u1"] == nil {
 		t.Fatalf("record forgotten: preparing file %+v, preparing %v", rec, p2.preparing)
 	}

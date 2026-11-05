@@ -568,6 +568,7 @@ func (f *fakeLocalSys) allocator(t *testing.T, dir string) *localAllocator {
 // dir.
 func (f *fakeLocalSys) allocatorOfBoot(t *testing.T, dir, boot string) *localAllocator {
 	t.Helper()
+	restartStore(dir, boot)
 	a, err := newLocalAllocator(f.manager(), filepath.Join(dir, localStateFileName), boot)
 	noErr(t, err)
 	a.retryDelay = time.Millisecond

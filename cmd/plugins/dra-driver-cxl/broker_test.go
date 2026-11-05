@@ -254,6 +254,7 @@ func (e *brokerEnv) restart() {
 	}
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
 	noErr(e.t, err)
+	restartStore(e.dir, e.bootID)
 	b, err := newBroker(brokerConfig{
 		Client:      e.client,
 		NodeName:    testNode,
@@ -375,6 +376,20 @@ func (e *brokerEnv) wantGone(name string) {
 	if !apierrors.IsNotFound(err) {
 		e.t.Fatalf("companion claim %s still exists (%v)", name, err)
 	}
+}
+
+// waitGoneDir waits until the directory dir is removed.
+func (e *brokerEnv) waitGoneDir(dir string) {
+	e.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, err := os.Stat(dir)
+	e.t.Fatalf("directory %s left: %v", dir, err)
 }
 
 func (e *brokerEnv) lease(id string) *lease {
@@ -943,6 +958,7 @@ func TestBrokerRestartAndReconcile(t *testing.T) {
 // without a boot id (saved by an older driver) is of this boot; a store
 // that is not decoded is not rewritten.
 func TestBrokerOtherBoot(t *testing.T) {
+	fileBackendOnly(t, "edits leases.json between restarts; successor TestBrokerOtherBootOnStore")
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
@@ -2065,6 +2081,7 @@ func TestBrokerDefaultLeaseFromPool(t *testing.T) {
 // TestBrokerStrictStore starts with an empty lease table when the store
 // cannot be decoded strictly.
 func TestBrokerStrictStore(t *testing.T) {
+	fileBackendOnly(t, "an undecodable leases.json under a running store (strict decoding is that of state.json, LOST)")
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.b.stop()
@@ -2376,13 +2393,12 @@ func TestBrokerFsLease(t *testing.T) {
 	if _, err := os.Stat(models); err != nil {
 		t.Fatalf("bind directory swept while mounted: %v", err)
 	}
-	// the bind goes, the lease is dropped and the directory removed
+	// the bind goes, the lease is dropped and the directory removed: by
+	// the release, after it dropped the lease
 	e.pe.m.setBusy(models, false)
 	e.waitState("000000a2", api.StateReleased)
 	for _, d := range []string{fsDir, filepath.Dir(e.sock())} {
-		if _, err := os.Stat(d); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("directory %s left: %v", d, err)
-		}
+		e.waitGoneDir(d)
 	}
 	e.pe.f.wantReleased(t)
 	e.pe.wantClean(t, e.p)

@@ -62,6 +62,7 @@ func makeOpaqueConfig(driver string, source resourcev1.AllocationConfigSource, c
 }
 
 func TestPreparedClaimsInfo_Persistence(t *testing.T) {
+	fileBackendOnly(t, "preparedClaimsInfo.json alone; successor TestLocalContentRoundTrip (u-numa)")
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
 
@@ -159,6 +160,7 @@ func TestPreparedClaimsInfo_CreateEmpty(t *testing.T) {
 }
 
 func TestPreparedClaimsInfo_NoSettings(t *testing.T) {
+	fileBackendOnly(t, "preparedClaimsInfo.json alone; successor TestLocalContentRoundTrip (u-two)")
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "preparedClaimsInfo.json")
 
@@ -817,6 +819,7 @@ func TestPrepareLocalLendErrors(t *testing.T) {
 }
 
 func TestPreparedClaimsInfo_LocalFields(t *testing.T) {
+	fileBackendOnly(t, "preparedClaimsInfo.json alone; successor TestLocalContentRoundTrip (u-comp, u-dax)")
 	filePath := filepath.Join(t.TempDir(), preparedClaimsInfoFileName)
 	noErr(t, os.WriteFile(filePath, []byte(`{"u1":{"claimName":"ns/c","devices":[{"requestName":"r","deviceName":"region0-node2","deviceType":"region","mode":"numa","region":"region0","numaNodes":[2],"totalBytes":1,"consumedBytes":1}]}}`), 0600))
 	claims, err := getOrCreatePreparedClaimsInfo(filePath)

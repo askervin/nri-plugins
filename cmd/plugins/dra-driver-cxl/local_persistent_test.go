@@ -81,6 +81,7 @@ func newPmemTestState(t *testing.T) *pmemTestState {
 // allocator reconciled with the prepared claims.
 func (e *pmemTestState) start(t *testing.T, boot string) {
 	t.Helper()
+	restartStore(e.dir, boot)
 	a, err := newLocalAllocator(e.f.manager(), filepath.Join(e.dir, localStateFileName), boot)
 	noErr(t, err)
 	a.retryDelay = time.Millisecond

@@ -215,6 +215,7 @@ func TestEnsureDir(t *testing.T) {
 }
 
 func TestPreparedClaimsFile(t *testing.T) {
+	fileBackendOnly(t, "preparedClaims.json alone, and an undecodable one (the store keeps it with its info; LOST replaces an undecodable file)")
 	path := filepath.Join(t.TempDir(), device.PreparedClaimsFileName)
 	prepared, err := getOrCreatePreparedClaims(path)
 	if err != nil || len(prepared) != 0 {
@@ -249,6 +250,7 @@ func TestPreparedClaimsFile(t *testing.T) {
 // The two files of the prepared claims after a crash between their writes
 // (bug-07): a claim is prepared only when both have it.
 func TestPreparedClaimsReconcile(t *testing.T) {
+	fileBackendOnly(t, "the two claim files with different claims, a window that one commit of both does not have")
 	dir := t.TempDir()
 	path := filepath.Join(dir, device.PreparedClaimsFileName)
 	result := func(uid string) kubeletplugin.PrepareResult {
@@ -346,6 +348,7 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 	devs := device.DevicesInfo{"dram": {Name: "dram", Dev: &device.DRAM{Nodes: []int{0}, Size: 1 << 30}}}
 
 	write()
+	restartStore(dir, "boot-2")
 	s, err := newNodeState(devs, cdiDir, path, "n1", &DriverConfig{}, nil, "boot-2")
 	noErr(t, err)
 	if _, found := s.preparedInfo("u1"); found || s.GetClaimInfo("u3").BootID != "boot-2" {
@@ -379,6 +382,7 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 
 	// the boot id of the kernel unknown
 	write()
+	restartStore(dir, "")
 	s, err = newNodeState(devs, cdiDir, path, "n1", &DriverConfig{}, nil, "")
 	noErr(t, err)
 	if len(s.Prepared) != 3 || s.GetClaimInfo("u3").BootID != "" {

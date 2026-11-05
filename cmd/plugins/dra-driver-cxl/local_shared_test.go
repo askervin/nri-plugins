@@ -514,6 +514,7 @@ func TestBrokerLocalSharedLease(t *testing.T) {
 // A lease table of hosts capacities fails the strict decode: the plugin
 // starts with an empty table.
 func TestLeaseStoreWithHosts(t *testing.T) {
+	fileBackendOnly(t, "saves a lease without a state, which the broker never writes")
 	path := filepath.Join(t.TempDir(), leasesFileName)
 	old := `{"claims":{},"leases":{"000000a1":{"id":"000000a1","claim":"lc1","mode":"dax","shared":false,"hosts":"4","pod":{"namespace":"demo","name":"p","uid":"u"},"container":"c","state":"Ready","node":-1,"created":"2026-10-19T00:00:00Z"}}}`
 	noErr(t, os.WriteFile(path, []byte(old), 0o600))
