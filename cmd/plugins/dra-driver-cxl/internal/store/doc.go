@@ -14,8 +14,8 @@
 
 // Package store keeps the one persistent document of the CXL DRA driver,
 // state.json in the plugin data directory of cxl.nri.io: the records of
-// package state (Preparation, Grant, Memdev, Region, Provenance, Lease,
-// LeaseClaim, Steered), their states documented in
+// package state (Preparation, Grant, Memdev, Region, Provenance,
+// ListedPool, Lease, LeaseClaim, Steered), their states documented in
 // docs/memory/cxl/states.md.
 //
 // A commit is a pure function of the document applied to a copy; one

@@ -49,8 +49,15 @@ func TestBootOfAnotherBoot(t *testing.T) {
 	}
 	for _, g := range doc.Grants {
 		o := orig.Grant(g.Ref)
-		if g.Got != (state.Got{}) || g.Intent != (state.Intent{}) {
-			t.Errorf("grant %s keeps Got or Intent after a reboot", g.Ref)
+		lend := g.Intent.Lend
+		if g.Got != (state.Got{}) || g.Intent.Region != "" || g.Intent.MountPath != "" || (lend != nil && lend.NumaNode != nil) {
+			t.Errorf("grant %s keeps Got or Intent after a reboot: %+v", g.Ref, g.Intent)
+		}
+		if ol := o.Got.Lend; ol != nil && (lend == nil || lend.Lease != ol.Lease || lend.Pod != ol.Pod) {
+			t.Errorf("grant %s lost the identity of its lend", g.Ref)
+		}
+		if ob := o.Got.Bind; ob != nil && g.Intent.BindTarget != ob.Target {
+			t.Errorf("grant %s lost the target of its lease bind", g.Ref)
 		}
 		if g.Serial != o.Serial || g.Asked != o.Asked || g.State != o.State {
 			t.Errorf("grant %s lost Serial, Asked or its state", g.Ref)

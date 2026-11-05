@@ -119,6 +119,9 @@ type Intent struct {
 	// Region is the region the grant uses or creates: its noted name, set
 	// to the created name with Got.Region when the kernel gave another.
 	Region RegionRef `json:"region,omitempty"`
+	// Noted are the regions that earlier Prepares of the grant noted and
+	// did not create, before Region.
+	Noted []RegionRef `json:"noted,omitempty"`
 	// NdRegion is the nd region whose fsdax namespace the grant may
 	// create.
 	NdRegion string `json:"ndRegion,omitempty"`
@@ -136,17 +139,28 @@ type Got struct {
 	// Dax is the name of the dax device of the grant in the region's
 	// DaxDevices.
 	Dax string `json:"dax,omitempty"`
-	// NumaNode is the NUMA node of the memory of a numa grant.
+	// DaxDev are the device numbers of the dax device, the identity that
+	// a restart verifies; for the views of the state files
+	// (transitional: removed in H6 (schema 2)).
+	DaxDev DevNumbers `json:"daxDev,omitzero"`
+	// NumaNode is the NUMA node of the memory of a numa grant (-1 when it
+	// was not known).
 	NumaNode *int `json:"numaNode,omitempty"`
 	// Size is the bytes that the grant got.
 	Size        uint64       `json:"size,omitempty"`
 	Namespace   string       `json:"namespace,omitempty"`
 	BlockDevice *BlockDevice `json:"blockDevice,omitempty"`
 	// Mount is the access of the region's node mount that the grant
-	// uses.
-	Mount Access     `json:"mount,omitempty"`
-	Bind  *Bind      `json:"bind,omitempty"`
-	Lend  *GrantLend `json:"lend,omitempty"`
+	// uses; MountPath, Loop and FsType are the path, the loop device of a
+	// cached mount and the filesystem type of that mount as the grant got
+	// it, the identity that a restart verifies; for the views of the state
+	// files (transitional: removed in H6 (schema 2)).
+	Mount     Access     `json:"mount,omitempty"`
+	MountPath string     `json:"mountPath,omitempty"`
+	Loop      string     `json:"loop,omitempty"`
+	FsType    string     `json:"fsType,omitempty"`
+	Bind      *Bind      `json:"bind,omitempty"`
+	Lend      *GrantLend `json:"lend,omitempty"`
 }
 
 // BlockDevice is a block device of an fsdax namespace (/dev/pmemK).

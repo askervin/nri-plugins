@@ -35,12 +35,8 @@ var update = flag.Bool("update", false, "write the golden files of the views")
 // fixtureViews returns the views of the test records by file name.
 func fixtureViews(t *testing.T, doc *Document) map[string][]byte {
 	t.Helper()
-	files, err := views(doc, viewOptions{
-		localDir:   statetest.LocalDir,
-		poolDir:    statetest.PoolDir,
-		poolDriver: statetest.PoolDriver,
-		sysRoot:    "/sys",
-	})
+	files, err := views(doc, ViewOptions{PoolDriver: statetest.PoolDriver, SysRoot: "/sys", DevRoot: "/dev"},
+		statetest.LocalDir, statetest.PoolDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,24 +354,18 @@ func TestLocalDeviceOfARegionBeingCreated(t *testing.T) {
 	}
 }
 
-func TestLeaseSharedDevice(t *testing.T) {
-	for _, tc := range []struct {
-		mode       state.Mode
-		asked, got bool
-		want       bool
-	}{
-		{state.ModeDax, true, false, true},
-		{state.ModeDax, false, true, true},
-		{state.ModeNUMA, false, false, false},
-		{state.ModeFs, true, false, false},
-		{state.ModeBlock, false, true, true},
-	} {
-		l := &state.Lease{
-			Asked: state.LeaseAsked{Mode: tc.mode, SharedDevice: tc.asked},
-			Got:   &state.LeaseGot{SharedDevice: tc.got},
-		}
-		if got := sharedDevice(l); got != tc.want {
-			t.Errorf("%s lease, asked %v, got %v: sharedDevice %v, want %v", tc.mode, tc.asked, tc.got, got, tc.want)
-		}
+func TestLeaseOfADevice(t *testing.T) {
+	l := &state.Lease{
+		ID: "l", State: state.LeaseReady,
+		Asked: state.LeaseAsked{Mode: state.ModeFs, Source: state.SourceLocal, SharedDevice: true, Access: state.AccessDirect},
+		Got:   &state.LeaseGot{Source: state.SourcePool, SharedDevice: false, Access: state.AccessCached, Serial: 0xc1ae, Bytes: 7},
+	}
+	v := leaseView(l)
+	if v.Source != "pool" || v.SharedDevice || v.Access != "cached" || v.Serial != "0xc1ae" || v.Bytes != 7 {
+		t.Errorf("a lease with a device %+v", v)
+	}
+	l.Got = nil
+	if v := leaseView(l); v.Source != "local" || !v.SharedDevice || v.Access != "direct" || v.Serial != "" {
+		t.Errorf("a lease without a device %+v", v)
 	}
 }

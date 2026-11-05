@@ -474,6 +474,22 @@ Steered is the record of a container whose cgroup a steering manager of the driv
 
 **Locks and waits.** The container plugin's table mutex.
 
+## ListedPool
+
+ListedPool is a CXL memory pool whose ResourceSlices the driver listed with serials in them: the memdevs of a remembered pool whose slices are missing for less than an hour are held.
+
+**Identity.** Pool, &lt;driver>/&lt;pool>.
+
+**States.** None; the record exists from the first list with serials of the pool.
+
+**Transitions.** None.
+
+**Invariants.** A pool has at most one record.
+
+**Persistence.** Fact; Listed committed with the provenance records.
+
+**Locks and waits.** The provenance watcher is the only writer.
+
 ## Invariants over the document
 
 Checked by `state.Check` over the records alone; the engine checks the invariants that also

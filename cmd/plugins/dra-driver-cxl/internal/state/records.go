@@ -33,6 +33,7 @@ type Records struct {
 	Leases       []Lease       `json:"leases,omitempty"`
 	Provenance   []Provenance  `json:"provenance,omitempty"`
 	Steered      []Steered     `json:"steered,omitempty"`
+	ListedPools  []ListedPool  `json:"listedPools,omitempty"`
 }
 
 // Object is a record type with the transition tables of its State fields.
@@ -55,6 +56,7 @@ func Catalogue() []Object {
 		{Name: "Lease", Tables: []TableText{LeaseTable.Text()}},
 		{Name: "LeaseClaim", Tables: []TableText{LeaseClaimTable.Text()}},
 		{Name: "Steered"},
+		{Name: "ListedPool"},
 	}
 }
 
@@ -156,6 +158,7 @@ func (r *Records) Sort() {
 	slices.SortStableFunc(r.Leases, func(a, b Lease) int { return cmp.Compare(a.ID, b.ID) })
 	slices.SortStableFunc(r.Provenance, func(a, b Provenance) int { return cmp.Compare(a.Serial, b.Serial) })
 	slices.SortStableFunc(r.Steered, func(a, b Steered) int { return cmp.Compare(a.Container, b.Container) })
+	slices.SortStableFunc(r.ListedPools, func(a, b ListedPool) int { return cmp.Compare(a.Pool, b.Pool) })
 }
 
 // Clone returns a deep copy of the records that shares no memory with
@@ -170,6 +173,7 @@ func (r *Records) Clone() Records {
 		Leases:       cloneEach(r.Leases, (*Lease).Clone),
 		Provenance:   slices.Clone(r.Provenance),
 		Steered:      slices.Clone(r.Steered),
+		ListedPools:  slices.Clone(r.ListedPools),
 	}
 }
 
@@ -211,6 +215,7 @@ func (r *Region) Clone() Region {
 // Clone returns a deep copy of the grant.
 func (g *Grant) Clone() Grant {
 	c := *g
+	c.Intent.Noted = slices.Clone(g.Intent.Noted)
 	c.Intent.Lend = cloneLend(g.Intent.Lend)
 	c.Got.NumaNode = clonePtr(g.Got.NumaNode)
 	c.Got.BlockDevice = clonePtr(g.Got.BlockDevice)
@@ -226,6 +231,11 @@ func (p *Preparation) Clone() Preparation {
 		rc := *r
 		rc.Settings = cloneSettings(r.Settings)
 		rc.Grant = clonePtr(r.Grant)
+		if r.Memdev != nil {
+			m := *r.Memdev
+			m.NumaAffinity = slices.Clone(r.Memdev.NumaAffinity)
+			rc.Memdev = &m
+		}
 		if r.Region != nil {
 			reg := *r.Region
 			reg.NumaAffinity = slices.Clone(r.Region.NumaAffinity)

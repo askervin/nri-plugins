@@ -566,8 +566,13 @@ func TestLock(t *testing.T) {
 	s := open(t, dir, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if _, err := Open(ctx, Options{Dir: dir}); !errors.Is(err, ErrLocked) {
-		t.Errorf("second Open: %v, want ErrLocked", err)
+	host, _ := os.Hostname()
+	holder := fmt.Sprintf("pid %d host %s", os.Getpid(), host)
+	if _, err := Open(ctx, Options{Dir: dir}); !errors.Is(err, ErrLocked) || !strings.Contains(err.Error(), "held by "+holder) {
+		t.Errorf("second Open: %v, want ErrLocked held by %s", err, holder)
+	}
+	if got := lockHolder(filepath.Join(t.TempDir(), LockName)); got != "another process" {
+		t.Errorf("holder of no lock file %q", got)
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -650,5 +655,20 @@ func TestOrigin(t *testing.T) {
 		if strings.HasPrefix(o.String(), "origin ") {
 			t.Errorf("origin %d has no name", o)
 		}
+	}
+}
+
+func TestCommitsGiveAnUnknownBoot(t *testing.T) {
+	s := open(t, t.TempDir(), nil, func(o *Options) { o.BootID = "" })
+	defer closeStore(t, s)
+	err := s.Commit(context.Background(), Durable, func(doc *Document) error {
+		doc.BootID = "boot-7"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc := s.Snapshot(); doc.BootID != "boot-7" || doc.Generation != 2 {
+		t.Errorf("the boot of a store without a running boot: %+v", doc)
 	}
 }

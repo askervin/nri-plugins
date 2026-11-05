@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -38,16 +39,17 @@ var (
 	poolOldFiles = []string{"preparedPoolClaims.json", "preparingPoolClaims.json"}
 )
 
-// OldStateError is the refusal to start with old state files while CXL
-// regions exist.
+// OldStateError is the refusal to start with old state files whose records
+// name CXL regions that exist.
 type OldStateError struct {
-	Files []string
+	Files   []string
+	Regions []string
 }
 
-// Error returns the refusal and the files.
+// Error returns the refusal, the files and the regions.
 func (e *OldStateError) Error() string {
 	return "old state files found; drain the node's claims or start with --discard-old-state: " +
-		strings.Join(e.Files, ", ")
+		strings.Join(e.Files, ", ") + " (regions " + strings.Join(e.Regions, ", ") + ")"
 }
 
 // OldFiles returns the old state files in the plugin data directories
@@ -80,10 +82,11 @@ func OldFiles(localDir, poolDir string) ([]string, error) {
 }
 
 // HandleOldFiles moves the old state files of localDir and poolDir aside
-// (OldSuffix) when no document exists in localDir, and returns them. With
-// CXL regions on the node (regionsExist) it refuses with an
-// *OldStateError instead, unless discard.
-func HandleOldFiles(localDir, poolDir string, regionsExist, discard bool) ([]string, error) {
+// (OldSuffix) when no document exists in localDir, and returns them. When
+// a record of one of them names a CXL region that exists (regionExists,
+// nil: none exists) it refuses with an *OldStateError instead, unless
+// discard.
+func HandleOldFiles(localDir, poolDir string, regionExists func(name string) bool, discard bool) ([]string, error) {
 	for _, name := range []string{FileName, PrevName} {
 		if _, err := os.Lstat(filepath.Join(localDir, name)); err == nil {
 			return nil, nil
@@ -93,8 +96,18 @@ func HandleOldFiles(localDir, poolDir string, regionsExist, discard bool) ([]str
 	if err != nil || len(files) == 0 {
 		return nil, err
 	}
-	if regionsExist && !discard {
-		return nil, &OldStateError{Files: files}
+	if !discard && regionExists != nil {
+		var existing []string
+		for _, f := range files {
+			for _, r := range oldRegions(f) {
+				if regionExists(r) && !slices.Contains(existing, r) {
+					existing = append(existing, r)
+				}
+			}
+		}
+		if len(existing) > 0 {
+			return nil, &OldStateError{Files: files, Regions: existing}
+		}
 	}
 	for _, f := range files {
 		if err := os.Rename(f, f+OldSuffix); err != nil {
@@ -102,6 +115,65 @@ func HandleOldFiles(localDir, poolDir string, regionsExist, discard bool) ([]str
 		}
 	}
 	return files, nil
+}
+
+// oldRegions returns the CXL regions of the driver that the records of an
+// old state file name: the regions and the regions being created of
+// localDevices.json and of the pool's files, the regions of the local
+// memdevs of preparedClaimsInfo.json. Its region devices are regions that
+// the driver did not create.
+func oldRegions(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var v any
+	if json.Unmarshal(data, &v) != nil {
+		return nil
+	}
+	var out []string
+	add := func(name string) {
+		if name != "" && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	switch filepath.Base(path) {
+	case "preparedClaimsInfo.json":
+		claims, _ := v.(map[string]any)
+		for _, c := range claims {
+			info, _ := c.(map[string]any)
+			devs, _ := info["devices"].([]any)
+			for _, d := range devs {
+				if dev, _ := d.(map[string]any); dev["deviceType"] == "memdev" {
+					if p, _ := dev["sysfsPath"].(string); p != "" {
+						add(filepath.Base(p))
+					}
+				}
+			}
+		}
+	case "localDevices.json", "preparedPoolClaims.json", "preparingPoolClaims.json":
+		walkRegions(v, add)
+	}
+	return out
+}
+
+// walkRegions calls add with every string value of a key "region" or
+// "creating" in v.
+func walkRegions(v any, add func(string)) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, e := range t {
+			if s, ok := e.(string); ok && (k == "region" || k == "creating") {
+				add(s)
+				continue
+			}
+			walkRegions(e, add)
+		}
+	case []any:
+		for _, e := range t {
+			walkRegions(e, add)
+		}
+	}
 }
 
 // holdsRecords tells whether the content of an old state file has records:

@@ -316,7 +316,7 @@ func Records() state.Records {
 				Results: []state.Result{
 					{
 						Index: 0, Kind: state.ResultRegion, Request: "region", Pool: Node, Device: "region5-node5",
-						Region: &state.RegionResult{Name: "region5", NumaNode: 5, Size: 2 * gi, Consumed: int64(gi), NumaAffinity: []int{1}},
+						Region: &state.RegionResult{Name: "region5", SysfsPath: "/sys/bus/cxl/devices/region5", NumaNode: 5, Size: 2 * gi, Consumed: int64(gi), NumaAffinity: []int{1}},
 					},
 					grantResult(ClaimMixed, 1, "shared", Node, "memdev-c100e2e2"),
 					{

@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -60,8 +61,8 @@ var (
 )
 
 // Document is the one persistent document of the driver: every record it
-// remembers. The store owns Schema, Generation and BootID; commits change
-// the records.
+// remembers. The store owns Schema and Generation, and BootID when it
+// knows the running boot; commits change the records.
 type Document struct {
 	Schema int `json:"schema"`
 	// Generation counts the writes of the document.
@@ -187,15 +188,16 @@ type Options struct {
 	PoolDir string
 	// PoolDriver is the name of the pool driver.
 	PoolDriver string
-	// BootID is the running boot id, "" if it is unknown.
+	// BootID is the running boot id, "" if it is unknown: then the
+	// commits give the document its boot id.
 	BootID string
 	// NewState makes a new document when neither the document nor the
 	// previous one decodes.
 	NewState bool
-	// RegionsExist tells whether CXL regions exist on the node, and
-	// DiscardOldState whether the old state files are moved aside also
-	// then.
-	RegionsExist    bool
+	// RegionExists tells whether a CXL region of the name exists on the
+	// node (nil: none exists), and DiscardOldState whether the old state
+	// files are moved aside also when they name one.
+	RegionExists    func(name string) bool
 	DiscardOldState bool
 	// DropOtherBoot tells whether the load drops the preparations of the
 	// driver of another boot, with their grants, instead of keeping them
@@ -204,9 +206,9 @@ type Options struct {
 	// CompatViews writes the views of the five files that test90's
 	// observer reads after every commit.
 	CompatViews bool
-	// SysRoot is the sysfs mount point in the paths of the views, "/sys"
-	// if "".
-	SysRoot string
+	// SysRoot and DevRoot are the sysfs mount point and the directory of
+	// the device nodes in the paths of the views, "/sys" and "/dev" if "".
+	SysRoot, DevRoot string
 
 	files fileOps
 }
@@ -258,8 +260,16 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	if opts.SysRoot == "" {
 		opts.SysRoot = "/sys"
 	}
-	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
-		return nil, err
+	if opts.DevRoot == "" {
+		opts.DevRoot = "/dev"
+	}
+	for _, dir := range []string{opts.Dir, opts.PoolDir} {
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
 	}
 	lock, err := lockFile(ctx, filepath.Join(opts.Dir, LockName))
 	if err != nil {
@@ -295,7 +305,11 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		}
 	}
 	s.doc = doc
-	s.writeViews(doc)
+	if opts.CompatViews {
+		s.writeViews(doc)
+	} else {
+		s.removeViews()
+	}
 	go s.writer()
 	return s, nil
 }
@@ -316,7 +330,7 @@ func (s *Store) load() (*Document, bool, error) {
 	prevMissing := errors.Is(prevErr, os.ErrNotExist)
 	switch {
 	case stateMissing && prevMissing:
-		moved, err := HandleOldFiles(s.opts.Dir, s.opts.PoolDir, s.opts.RegionsExist, s.opts.DiscardOldState)
+		moved, err := HandleOldFiles(s.opts.Dir, s.opts.PoolDir, s.opts.RegionExists, s.opts.DiscardOldState)
 		if err != nil {
 			return nil, false, err
 		}
@@ -491,7 +505,10 @@ func (s *Store) commitGroup(cur *Document, group []*request) {
 			req.applied <- err
 			continue
 		}
-		next.Schema, next.Generation, next.BootID = cur.Schema, cur.Generation, cur.BootID
+		next.Schema, next.Generation = cur.Schema, cur.Generation
+		if s.opts.BootID != "" {
+			next.BootID = cur.BootID
+		}
 		work = next
 		req.ok = true
 		ok++
@@ -503,7 +520,7 @@ func (s *Store) commitGroup(cur *Document, group []*request) {
 	var err error
 	work.Sort()
 	work.dropEmpty()
-	if !reflect.DeepEqual(work.Records, cur.Records) {
+	if !reflect.DeepEqual(work.Records, cur.Records) || work.BootID != cur.BootID {
 		work.Generation = cur.Generation + 1
 		if err = s.write(work); err == nil {
 			s.mu.Lock()
@@ -566,20 +583,44 @@ func lockFile(ctx context.Context, path string) (*os.File, error) {
 	for waited := false; ; waited = true {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return f, nil
+			return f, writeHolder(f)
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, errors.Join(fmt.Errorf("locking %s: %w", path, err), f.Close())
 		}
 		if !waited {
-			klog.Warningf("store: waiting for the lock of %s held by another process", path)
+			klog.Warningf("store: waiting for the lock of %s held by %s", path, lockHolder(path))
 		}
 		select {
 		case <-ctx.Done():
-			return nil, errors.Join(fmt.Errorf("%w: %s", ErrLocked, path), f.Close())
+			return nil, errors.Join(fmt.Errorf("%w: %s held by %s", ErrLocked, path, lockHolder(path)), f.Close())
 		case <-time.After(lockPoll):
 		}
 	}
+}
+
+// writeHolder writes the holder of the lock, this process, into the lock
+// file f: "pid <pid> host <host name>".
+func writeHolder(f *os.File) error {
+	host, _ := os.Hostname()
+	holder := fmt.Sprintf("pid %d host %s\n", os.Getpid(), host)
+	if err := f.Truncate(0); err != nil {
+		return errors.Join(fmt.Errorf("writing the holder of %s: %w", f.Name(), err), f.Close())
+	}
+	if _, err := f.WriteAt([]byte(holder), 0); err != nil {
+		return errors.Join(fmt.Errorf("writing the holder of %s: %w", f.Name(), err), f.Close())
+	}
+	return nil
+}
+
+// lockHolder returns the holder that the lock file path names, "another
+// process" if it names none.
+func lockHolder(path string) string {
+	data, err := os.ReadFile(path)
+	if holder := strings.TrimSpace(string(data)); err == nil && strings.HasPrefix(holder, "pid ") {
+		return holder
+	}
+	return "another process"
 }
 
 // unlock releases the lock of the document.

@@ -15,6 +15,8 @@
 package store
 
 import (
+	"fmt"
+	"reflect"
 	"slices"
 
 	"k8s.io/klog/v2"
@@ -34,11 +36,12 @@ func otherBoot(recorded, running string) bool {
 // record of another boot exists in the kernel any more: its preparations
 // become PREPARED_STALE (kubelet prepares them again or unprepares them),
 // or are dropped with their grants when drop(driver) is true; the grants of
-// a stale preparation keep Serial, Source and Asked and lose Got and
-// Intent; the memdev and region records and the leases are dropped (the
-// first reconcile deletes the leases' companions); lease claims,
-// provenance and steering records are kept. A preparation without a boot
-// id is of the boot of the document.
+// a stale preparation keep Serial, Source and Asked, and of Got and Intent
+// only the lease and requester of a lend and the target of a lease bind;
+// the memdev and region records, the grants that no preparation names and
+// the leases are dropped (the first reconcile deletes the leases'
+// companions); lease claims, provenance and steering records are kept. A
+// preparation without a boot id is of the boot of the document.
 func applyBoot(doc *Document, running string, drop func(driver string) bool) (bool, error) {
 	if running == "" {
 		return false, nil
@@ -90,14 +93,18 @@ func stalePreparations(doc *Document, running string, drop func(driver string) b
 			}
 			changed = true
 			continue
+		case p.State == state.PreparationStale && !otherBoot(doc.BootID, running):
+			kept = append(kept, p)
+			continue
 		case p.State != state.PreparationStale:
 			klog.Warningf("store: claim %s (%s) of %s was prepared in boot %s, this is %s: not prepared any more",
 				p.ClaimName, p.UID, p.Driver, boot, running)
-			changed = true
 		}
+		p.Reason = staleReason(&p, boot, running)
 		if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationStale, state.TriggerLoad); err != nil {
 			return changed, err
 		}
+		changed = true
 		cleared, err := clearGrants(doc, &p)
 		if err != nil {
 			return changed, err
@@ -109,7 +116,17 @@ func stalePreparations(doc *Document, running string, drop func(driver string) b
 	return changed, nil
 }
 
+// staleReason returns why a preparation of the boot boot is not prepared
+// in the boot running, in the words of the pool driver's records.
+func staleReason(p *state.Preparation, boot, running string) string {
+	if p.State == state.PreparationPrepared {
+		return fmt.Sprintf("prepared in another boot (%s, this is %s)", boot, running)
+	}
+	return fmt.Sprintf("its Prepare did not finish in another boot (%s)", boot)
+}
+
 // clearGrants clears Got and Intent of the grants of a stale preparation
+// but the lease and requester of a lend and the target of a lease bind,
 // and returns whether it changed one.
 func clearGrants(doc *Document, p *state.Preparation) (bool, error) {
 	changed := false
@@ -118,13 +135,28 @@ func clearGrants(doc *Document, p *state.Preparation) (bool, error) {
 			continue
 		}
 		g := doc.Grant(*res.Grant)
-		if g == nil || (g.Got == state.Got{} && g.Intent == state.Intent{}) {
+		if g == nil {
 			continue
 		}
 		if err := state.GrantTable.Check(g.State, g.State, state.TriggerLoad); err != nil {
 			return changed, err
 		}
-		g.Got, g.Intent = state.Got{}, state.Intent{}
+		kept := state.Intent{BindTarget: g.Intent.BindTarget, Lend: g.Intent.Lend}
+		if kept.Lend == nil {
+			kept.Lend = g.Got.Lend
+		}
+		if g.Got.Bind != nil && kept.BindTarget == "" {
+			kept.BindTarget = g.Got.Bind.Target
+		}
+		if kept.Lend != nil {
+			l := *kept.Lend
+			l.NumaNode = nil
+			kept.Lend = &l
+		}
+		if g.Got == (state.Got{}) && reflect.DeepEqual(g.Intent, kept) {
+			continue
+		}
+		g.Got, g.Intent = state.Got{}, kept
 		changed = true
 	}
 	return changed, nil
@@ -166,30 +198,62 @@ func dropPreparation(doc *Document, p *state.Preparation) error {
 	return nil
 }
 
-// dropOtherBoot drops the leases and the memdev and region records of a
-// document of another boot than running, and returns whether it dropped
-// one.
-func dropOtherBoot(doc *Document, running string) (bool, error) {
+// checkDrops returns the error of the first lease, memdev or region record
+// whose table refuses its drop on load.
+func checkDrops(doc *Document) error {
 	for i := range doc.Leases {
 		if err := state.LeaseTable.Check(doc.Leases[i].State, state.LeaseNone, state.TriggerLoad); err != nil {
-			return false, err
+			return err
 		}
 	}
 	for i := range doc.Memdevs {
 		if err := state.MemdevTable.Check(doc.Memdevs[i].State, state.MemdevUnused, state.TriggerLoad); err != nil {
-			return false, err
+			return err
 		}
 	}
 	for i := range doc.Regions {
 		if err := state.RegionTable.Check(doc.Regions[i].State, state.RegionNone, state.TriggerLoad); err != nil {
-			return false, err
+			return err
 		}
 	}
-	if len(doc.Leases) == 0 && len(doc.Memdevs) == 0 && len(doc.Regions) == 0 {
+	return nil
+}
+
+// namedGrants returns the grants that a result of a preparation names.
+func namedGrants(doc *Document) map[state.GrantRef]bool {
+	named := map[state.GrantRef]bool{}
+	for i := range doc.Preparations {
+		for _, r := range doc.Preparations[i].Results {
+			if r.Grant != nil {
+				named[*r.Grant] = true
+			}
+		}
+	}
+	return named
+}
+
+// dropOtherBoot drops the leases and the memdev and region records of a
+// document of another boot than running, and returns whether it dropped
+// one.
+func dropOtherBoot(doc *Document, running string) (bool, error) {
+	if err := checkDrops(doc); err != nil {
+		return false, err
+	}
+	named := namedGrants(doc)
+	grants := slices.DeleteFunc(slices.Clone(doc.Grants), func(g state.Grant) bool { return !named[g.Ref] })
+	for i := range doc.Grants {
+		if g := &doc.Grants[i]; !named[g.Ref] {
+			if err := state.GrantTable.Check(g.State, state.GrantReleased, state.TriggerLoad); err != nil {
+				return false, err
+			}
+		}
+	}
+	unnamed := len(doc.Grants) - len(grants)
+	if len(doc.Leases) == 0 && len(doc.Memdevs) == 0 && len(doc.Regions) == 0 && unnamed == 0 {
 		return false, nil
 	}
-	klog.Warningf("store: the document is of boot %s, this is %s: dropping %d leases, %d memdevs and %d regions",
-		doc.BootID, running, len(doc.Leases), len(doc.Memdevs), len(doc.Regions))
-	doc.Leases, doc.Memdevs, doc.Regions = nil, nil, nil
+	klog.Warningf("store: the document is of boot %s, this is %s: dropping %d leases, %d memdevs, %d regions and %d grants of no claim",
+		doc.BootID, running, len(doc.Leases), len(doc.Memdevs), len(doc.Regions), unnamed)
+	doc.Leases, doc.Memdevs, doc.Regions, doc.Grants = nil, nil, nil, grants
 	return true, nil
 }
