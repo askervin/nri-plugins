@@ -1,0 +1,28 @@
+Node 0, zone    DMA32
+        present  524154
+  start_pfn:           1
+Node 0, zone   Normal
+        present  524288
+  start_pfn:           1048576
+Node 0, zone  Movable
+        present  0
+Node 0, zone   Device
+        present  0
+Node 1, zone    DMA32
+        present  0
+Node 1, zone   Normal
+        present  1048576
+  start_pfn:           1572864
+Node 1, zone  Movable
+        present  0
+Node 1, zone   Device
+        present  0
+Node 2, zone    DMA32
+        present  0
+Node 2, zone   Normal
+        present  0
+Node 2, zone  Movable
+        present  98304
+  start_pfn:           6881280
+Node 2, zone   Device
+        present  0
