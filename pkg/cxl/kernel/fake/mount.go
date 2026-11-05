@@ -419,6 +419,7 @@ func (m *mountTable) clearLoop(loop string) {
 	name := filepath.Base(loop)
 	n := strings.TrimPrefix(name, "loop")
 	_ = os.RemoveAll(m.f.P("block/" + name))
+	_ = os.Remove(m.f.P("class/block/" + name))
 	_ = os.RemoveAll(m.f.P("dev/block/7:" + n))
 	_ = os.Remove(loop)
 	m.f.changed()
@@ -531,6 +532,8 @@ func (m *mountTable) AttachLoop(backing string, writable bool) (kernel.Loop, err
 			return nil, err
 		}
 	}
+	// /sys/class/block/loopN, as for every block device
+	m.f.Link("class/block/"+name, "../../block/"+name)
 	m.f.changed()
 	return &loop{m: m, path: path}, nil
 }
