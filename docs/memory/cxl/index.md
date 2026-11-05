@@ -84,6 +84,8 @@ a preset (Helm value `deviceClassConfig`), see
 - [Leases: memory for running containers, the cxl-request CLI and its protocol](leases.md)
 - [Trying the CXL DRA driver in e2e VMs](e2e.md): a developer guide with
   copy-paste examples on qemu VMs and a fake CXL memory pool
+- [States of the driver's records](states.md): every state field and its
+  transitions, generated from the code
 - [Helm chart of the driver](../../deployment/helm/dra-driver-cxl.md)
 
 ```{toctree}
@@ -95,4 +97,5 @@ local.md
 pool.md
 leases.md
 e2e.md
+states.md
 ```
