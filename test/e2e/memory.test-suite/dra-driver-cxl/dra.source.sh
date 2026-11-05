@@ -557,13 +557,16 @@ dra-state-cleanup() {
     #
     # Remove the state of the driver in the VM of VMDIR that refers to CXL
     # regions, if the VM has no regions: then it is a leftover of an earlier
-    # VM boot. That is the prepared and preparing pool claims
-    # (preparedPoolClaims.json, preparingPoolClaims.json),
-    # the regions and slices of local devices (localDevices.json), the
-    # leases (leases.json), the lease sockets of lease claims (leases/) and
-    # the serials of pool devices seen by the driver (poolSerials.json, so
-    # that every test starts with the pools of its own servers only).
-    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparingPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/poolSerials.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
+    # VM boot. That is the state document of the driver (state.json,
+    # state.json.prev), the prepared claims and their info
+    # (preparedClaims.json, preparedClaimsInfo.json), the prepared and
+    # preparing pool claims (preparedPoolClaims.json,
+    # preparingPoolClaims.json), the regions and slices of local devices
+    # (localDevices.json), the leases (leases.json), the lease sockets of
+    # lease claims (leases/) and the serials of pool devices seen by the
+    # driver (poolSerials.json, so that every test starts with the pools of
+    # its own servers only).
+    dra-vm-command "$1" "if ls /sys/bus/cxl/devices/ | grep -q '^region[0-9]'; then echo 'CXL regions exist, keeping the CXL state of the driver'; else rm -fv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/state.json.prev /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/preparedClaims.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/preparedClaimsInfo.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparedPoolClaims.json /var/lib/kubelet/plugins/$DRA_POOL_DRIVER/preparingPoolClaims.json $DRA_LOCAL_STATE /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases.json /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/poolSerials.json; rm -rfv /var/lib/kubelet/plugins/$DRA_LOCAL_DRIVER/leases; fi"
 }
 
 dra-wait-node() {
