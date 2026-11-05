@@ -50,9 +50,10 @@ GO_TEST_MODS ?= $(shell find . -name \*_test.go -exec dirname {} \; | \
                        [ -e $$dir/go.mod ] && echo $$dir; \
                    done)
 
-# Packages of the CXL memory driver, tested by test-cxl.
-CXL_TEST_PKGS ?= $(shell find ./cmd/plugins/dra-driver-cxl ./pkg/cxl ./pkg/cgmpolmgr \
-                   -name \*_test.go -exec dirname {} \; | sort -u)
+# Package directories of the CXL memory driver that test-cxl builds, vets and
+# tests, also the packages without tests.
+CXL_TEST_PKGS ?= $(shell $(GO_CMD) list -e -f '{{.Dir}}' ./cmd/plugins/dra-driver-cxl/... \
+                   ./pkg/cxl/... ./pkg/cgmpolmgr/...)
 
 GOLANG_CILINT := golangci-lint
 TEST_SETUP    := test-setup.sh
@@ -191,7 +192,9 @@ allclean: clean clean-cache
 
 test: test-setup test-run-pkgs test-run-mods test-cleanup
 
+.PHONY: test-cxl gostats-cxl
 test-cxl:
+	$(Q)$(GO_VET) $(CXL_TEST_PKGS)
 	$(Q)$(MAKE) test GO_TEST_PKGS="$(CXL_TEST_PKGS)" GO_TEST_MODS=
 
 # Code metrics of the CXL memory driver against its structural limits. The
