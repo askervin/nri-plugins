@@ -51,7 +51,9 @@ var DocumentInvariants = []Invariant{
 			"region a memdev references is a record of ours that targets it; a FOREIGN region is owned by no one. " +
 			"Every grant belongs to one result of one preparation and is listed by the memdev of its serial " +
 			"(except the grants of a PREPARED_STALE preparation); what Got names lists the grant among its users, " +
-			"and every user of a dax device or a node mount names it back. A PREPARED preparation's grants are " +
+			"and every user of a dax device or a node mount names it back; a grant result names a grant record, " +
+			"but of a PREPARING or UNPREPARING preparation (not journaled yet, or released before the front-end's " +
+			"commit). A PREPARED preparation's grants are " +
 			"REALISED, a PREPARED_UNRESTORED one's REALISED or REALISED_UNRESTORED, and the lease claim of their " +
 			"lease results exists. A node mount is MOUNTED_RW iff a writer uses it. A lease lends only while READY, " +
 			"releasing or FAILED.",
@@ -100,7 +102,7 @@ func CheckStates(r *Records) error {
 // The states that a record in the store may have, by table; the others
 // are defined next to their tables.
 var (
-	memdevStored     = list(MemdevActive, MemdevIdleKept, MemdevLeftover, MemdevGone)
+	memdevStored     = list(MemdevActive, MemdevIdleKept, MemdevGone)
 	daxDeviceStored  = list(DaxCreating, DaxSized, DaxDeviceDax, DaxKmemOffline, DaxKmemOnline, DaxReleasing, DaxSeed)
 	mountStored      = list(MountedRO, MountedRW, MountForeign, MountUnrestored, MountStale)
 	bindStored       = list(BindAbsent, BindBound, BindStale, BindForeign, BindOtherClaim)
@@ -344,6 +346,9 @@ func checkGrantResult(r *Records, p *Preparation, res *Result, add addFunc) {
 	}
 	g := r.Grant(*res.Grant)
 	switch {
+	case g == nil && (p.State == PreparationPreparing || p.State == PreparationUnpreparing):
+		// not journaled yet, or released by a rollback, the recovery or
+		// the Unprepare before the front-end's commit
 	case g == nil:
 		add(preparationID(p), "grant %s has no record", res.Grant)
 	case p.State == PreparationPrepared && g.State != GrantRealised:

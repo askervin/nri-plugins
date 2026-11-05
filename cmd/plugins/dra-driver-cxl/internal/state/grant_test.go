@@ -61,4 +61,9 @@ func TestGrantLifeCycles(t *testing.T) {
 		st{GrantRealised, TriggerLoad}, st{GrantReleased, TriggerPrepare})
 	walk(t, tb, "dropped with its preparation at a reboot", GrantRealised,
 		st{GrantReleased, TriggerLoad})
+	walk(t, tb, "a rollback that keeps the region below a newer one, then the Unprepare", GrantRequested,
+		st{GrantJournaled, TriggerPrepare}, st{GrantRealising, TriggerPrepare}, st{GrantReleasing, TriggerPrepare},
+		st{GrantJournaled, TriggerPrepare}, st{GrantReleasing, TriggerUnprepare}, st{GrantReleased, TriggerUnprepare})
+	walk(t, tb, "left REALISING by a failed release at a start, released by the Unprepare", GrantRealising,
+		st{GrantReleasing, TriggerUnprepare}, st{GrantReleased, TriggerUnprepare})
 }

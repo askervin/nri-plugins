@@ -28,10 +28,8 @@ import (
 // States: MemdevState. UNUSED: no grant and no region of ours, not in the
 // store. ACTIVE: at least one grant. IDLE_KEPT: no grant, its region kept
 // (a configured shared device; a persistent device below newer regions; a
-// region that a rollback or the recovery kept below newer regions).
-// LEFTOVER: at a start, a region or dax devices of ours that no grant of a
-// PREPARED preparation uses (a cut Prepare). GONE: the memdev is absent
-// while grants exist (a pool device detached under us, a local hot-remove).
+// region that a rollback or the recovery kept below newer regions). GONE:
+// the memdev is absent while grants exist (a pool device detached under us, a local hot-remove).
 // Busy (in memory only, MemdevBusyTable): a wait or zeroing of the memdev is
 // in progress outside the engine lock; other requests for the memdev queue.
 //
@@ -105,7 +103,6 @@ const (
 	MemdevUnused   MemdevState = "UNUSED"
 	MemdevActive   MemdevState = "ACTIVE"
 	MemdevIdleKept MemdevState = "IDLE_KEPT"
-	MemdevLeftover MemdevState = "LEFTOVER"
 	MemdevGone     MemdevState = "GONE"
 )
 
@@ -113,7 +110,7 @@ const (
 var MemdevTable = Table[MemdevState]{
 	Object: "Memdev",
 	Field:  "State",
-	States: list(MemdevUnused, MemdevActive, MemdevIdleKept, MemdevLeftover, MemdevGone),
+	States: list(MemdevUnused, MemdevActive, MemdevIdleKept, MemdevGone),
 	Rows: []Transition[MemdevState]{
 		{
 			From: list(MemdevUnused), To: MemdevActive, Triggers: list(TriggerPrepare),
@@ -154,23 +151,7 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "region destroyed; commit (d) removing the record",
 		},
 		{
-			From: list(MemdevActive, MemdevIdleKept, MemdevGone), To: MemdevLeftover, Triggers: list(TriggerRecover),
-			When: "a region or dax devices of ours exist but no grant of a PREPARED preparation uses them (a cut " +
-				"Prepare)",
-			Effects: "then to UNUSED or IDLE_KEPT, top-most region first across memdevs",
-		},
-		{
-			From: list(MemdevLeftover), To: MemdevUnused, Triggers: list(TriggerRecover),
-			When:    "the leftovers released (top of the stack)",
-			Effects: "commit (d) removing the record",
-		},
-		{
-			From: list(MemdevLeftover), To: MemdevIdleKept, Triggers: list(TriggerRecover),
-			When:    "the leftovers kept below newer regions",
-			Effects: "commit (d)",
-		},
-		{
-			From:     list(MemdevActive, MemdevIdleKept, MemdevLeftover),
+			From:     list(MemdevActive, MemdevIdleKept),
 			To:       MemdevGone,
 			Triggers: list(TriggerRecover, TriggerObserve),
 			When: "the memdev is absent at the start, or it went while grants exist (pool device detached under " +
@@ -190,7 +171,7 @@ var MemdevTable = Table[MemdevState]{
 			Effects: "commit (l)",
 		},
 		{
-			From: list(MemdevActive, MemdevIdleKept, MemdevLeftover, MemdevGone), To: MemdevUnused, Triggers: list(TriggerLoad),
+			From: list(MemdevActive, MemdevIdleKept, MemdevGone), To: MemdevUnused, Triggers: list(TriggerLoad),
 			When:    "the document is of another boot",
 			Effects: "the record dropped: its regions, dax devices, mounts and binds did not survive the reboot",
 		},

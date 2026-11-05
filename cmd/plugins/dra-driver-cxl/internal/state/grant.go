@@ -253,12 +253,13 @@ var GrantTable = Table[GrantState]{
 				"results, then PREPARED last)",
 		},
 		{
-			From: list(GrantRealising), To: GrantReleasing, Triggers: list(TriggerPrepare),
+			From: list(GrantRealising), To: GrantReleasing, Triggers: list(TriggerPrepare, TriggerUnprepare),
 			When: "a persistent refusal (no fsdax namespace for a reader; no allowed filesystem type; a block " +
 				"writer that is not exclusive) or a config refusal found after kernel work; or any other " +
 				"failure (decoder hole, no room, EBUSY online, timeout)",
 			Effects: "Reason REFUSED (the refusal text is the Prepare's error) or the error (a typed error to " +
-				"the front-end); rollback: the objects this grant made are released per Policy (trigger rollback)",
+				"the front-end); rollback: the objects this grant made are released per Policy (trigger rollback); " +
+				"an Unprepare of a grant that a failed release at the start left REALISING releases it the same way",
 		},
 		{
 			From: list(GrantJournaled), To: GrantReleasing, Triggers: list(TriggerPrepare, TriggerUnprepare),
@@ -284,6 +285,14 @@ var GrantTable = Table[GrantState]{
 			From: list(GrantReleasing), Stays: true, Triggers: releasers,
 			When:    "a release step failed (EBUSY offline, busy mount, holder)",
 			Effects: "error up (kubelet retries); records unchanged",
+		},
+		{
+			From: list(GrantReleasing), To: GrantJournaled, Triggers: list(TriggerPrepare, TriggerRecover),
+			When: "the rollback of a failed Prepare, or the recovery of a cut Prepare's REALISED grant, released what " +
+				"the grant made but kept its region below a newer region of another memdev (Policy in order refused, " +
+				"or recovery keep)",
+			Effects: "the grant holds the KEPT region for its claim (Intent.Region; Got cleared but Bind and Lend; the " +
+				"preparation KEPT): its Prepare again reuses it, its Unprepare releases it; commit (d)",
 		},
 		{
 			From: list(GrantRealised), To: GrantUnrestored, Triggers: list(TriggerRecover),

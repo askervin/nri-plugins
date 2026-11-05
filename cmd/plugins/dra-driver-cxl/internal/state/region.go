@@ -268,8 +268,9 @@ var RegionTable = Table[RegionState]{
 		},
 		{
 			From: list(RegionOwned), To: RegionKept, Triggers: releasers,
-			When:    "a release with Policy \"in order\" found a newer region of another memdev above after cxl disable-region",
-			Effects: "the region stays disabled; SetUp false; commit (d)",
+			When: "a release with Policy \"in order\" found a newer region of another memdev above after cxl " +
+				"disable-region; or the recovery keeps a cut Prepare's region untouched below a newer region (Policy keep)",
+			Effects: "the region stays disabled (in order) or as it is (recovery); SetUp false; commit (d)",
 		},
 		{
 			From: list(RegionKept), To: RegionOwned, Triggers: list(TriggerPrepare),
@@ -381,9 +382,22 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 			Effects: "its blocks offlined and held offline; commit (d)",
 		},
 		{
+			From: list(DaxAbsent), To: DaxDeviceDax, Triggers: list(TriggerPrepare),
+			When: "the first device (daxN.0) of a new ram region appeared bound to device_dax (an id of its name " +
+				"that another tool left in device_dax)",
+			Effects: "commit (d)",
+		},
+		{
 			From: list(DaxKmemOffline), To: DaxSized, Triggers: list(TriggerPrepare),
 			When:    "kmem unbound from the offline device (the set-up of a region for device_dax or for slices)",
 			Effects: "commit (d)",
+		},
+		{
+			From: list(DaxDeviceDax), To: DaxSized, Triggers: list(TriggerPrepare),
+			When: "the unused Whole device daxN.0 of a sliced region resized for the first part of a grant (unbound " +
+				"by the resize), or unbound from device_dax for a switch to kmem",
+			Guard:   "no user",
+			Effects: "commit (d); a part: Users the grant, no longer the Whole device",
 		},
 		{
 			From: list(DaxSized), To: DaxSeed, Triggers: list(TriggerPrepare),
@@ -404,7 +418,7 @@ var DaxDeviceTable = Table[DaxDeviceState]{
 		{
 			From: list(DaxSized), To: DaxKmemOffline, Triggers: list(TriggerPrepare),
 			When:    "bound to kmem by sysfs bind (never new_id)",
-			Guard:   "the NUMA node fenced",
+			Guard:   "fenced before its blocks go online (KMEM_OFFLINE -> KMEM_ONLINE)",
 			Effects: "wait for the blocks; commit (d)",
 		},
 		{
