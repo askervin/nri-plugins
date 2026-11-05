@@ -24,56 +24,56 @@ package compat
 // Texts that the e2e tests find in the log of the driver.
 const (
 	// Pinned by test10-dra-pooling rescanned-after-prepare (dra-plugin-log | awk -v prepared).
-	LogClaimPreparedPooled0 = "$DRA_POOL_DRIVER: claim .*: prepared pooled0"
+	LogDRAPoolDriverClaimPreparedPooled0 = "$DRA_POOL_DRIVER: claim .*: prepared pooled0"
 
 	// Pinned by test17-dra-local-shared restart-kept (dra-plugin-log-wait).
-	LogSerialKeepingSharedAndClaims = "(serial $DRA_LOCAL_SERIAL): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
+	LogSerialDRALocalSerialKeepingSharedSharedRegionAndSharedDaxClaims = "(serial $DRA_LOCAL_SERIAL): keeping shared $SHARED_REGION and $SHARED_DAX, claims [$*]"
 
 	// Pinned by test17-dra-local-shared (dra-plugin-log-wait),
 	// test18-dra-local-shared-one-writer-many-readers (dra-plugin-log-wait).
-	LogSerialNotConfiguredSharedAnyMoreReleasingIts = "(serial $DRA_LOCAL_SERIAL): not configured shared any more, releasing its region"
+	LogSerialDRALocalSerialNotConfiguredSharedAnyMoreReleasing = "(serial $DRA_LOCAL_SERIAL): not configured shared any more, releasing its region"
 
 	// Pinned by test14-dra-local-memdev (dra-plugin-log | sed).
-	LogNRICreateContainerCtrPlainMainCpusetMems0 = `.*NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems=\([0-9,-]*\) .*`
+	LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH9df004 = `.*NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems=\([0-9,-]*\) .*`
 
 	// Pinned by test14-dra-local-memdev (dra-plugin-log-wait).
-	LogNRICreateContainerCtrPlainMainCpusetMems = "NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems="
+	LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH79c102 = "NRI CreateContainer: ctr=$DRA_NS/plain/main: cpuset.mems="
 
 	// Pinned by test14-dra-local-memdev (dra-plugin-log-wait).
-	LogNRICreateContainerCtrSplitCDaxSteeringPolicy = "NRI CreateContainer: ctr=$DRA_NS/split/c-dax: steering policy auto: no numa memory to steer"
+	LogNRICreateContainerCtrDRANsSplitCDaxSteering = "NRI CreateContainer: ctr=$DRA_NS/split/c-dax: steering policy auto: no numa memory to steer"
 
 	// Pinned by dra.source.sh dra-memory-wait (dra-plugin-log-wait).
-	LogNRICreateContainerCtrMemory = "NRI CreateContainer: ctr=$ctr: memory $mgmt (${steering:+steering $steering}"
+	LogNRICreateContainerCtrCtrMemoryMgmtSteering = "NRI CreateContainer: ctr=$ctr: memory $mgmt (${steering:+steering $steering}"
 
 	// Pinned by test14-dra-local-memdev (dra-plugin-log-wait).
-	LogNRIFenceFencingCXLNodesOfPreparedClaims = "NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims"
+	LogNRIFenceFencingCXLNodesNumaNodeOfPrepared = "NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims"
 
 	// Pinned by test20-dra-fs-read-write (dra-plugin-log-wait).
-	LogAtXfsRo = "at $MNT_CACHED (xfs, ro, "
+	LogAtMntCachedXfsRo = "at $MNT_CACHED (xfs, ro, "
 
 	// Pinned by test20-dra-fs-read-write (dra-plugin-log-wait).
-	LogAtXfsRo2 = "at $MNT_DIRECT (xfs, ro, "
+	LogAtMntDirectXfsRo = "at $MNT_DIRECT (xfs, ro, "
 
 	// Pinned by test17-dra-local-shared (plugin-log-has).
-	LogClaimRequestMemSharedSizeReadOnlyTrue = "claim $CLAIM_UID request mem: shared $SHARED_DAX size $DRA_LOCAL_SIZE read-only true 1 share"
+	LogClaimClaimUidRequestMemSharedSharedDaxSizeDRALocalSize = "claim $CLAIM_UID request mem: shared $SHARED_DAX size $DRA_LOCAL_SIZE read-only true 1 share"
 
 	// Pinned by test17-dra-local-shared (plugin-log-has).
-	LogClaimRequestMemSharedSizeReadOnlyFalse = "claim $WRITER_UID request mem: shared $SHARED_DAX size $DRA_LOCAL_SIZE read-only false exclusive"
+	LogClaimWriterUidRequestMemSharedSharedDaxSizeDRALocalSize = "claim $WRITER_UID request mem: shared $SHARED_DAX size $DRA_LOCAL_SIZE read-only false exclusive"
 
 	// Pinned by test15-dra-local-live-attach pool-not-local (dra-plugin-log | grep -c).
-	LogDiscoveredLocalMemoryDeviceMemdev = "discovered local memory device memdev-${POOLED0_SERIAL#0x}"
+	LogDiscoveredLocalMemoryDeviceMemdevPooled0Serial = "discovered local memory device memdev-${POOLED0_SERIAL#0x}"
 
 	// Pinned by test16-cxl-llm-share (dra-plugin-log | grep -qE).
-	LogLeaseUnmountingDeviceOrResourceBusy = `lease $LEASE_B: unmounting ${BIND_B//./\\.}: .*device or resource busy`
+	LogLeaseLeaseBUnmountingBindBDeviceOrResourceBusy = `lease $LEASE_B: unmounting ${BIND_B//./\\.}: .*device or resource busy`
 
 	// Pinned by dra.source.sh dra-local-slices-aligned (dra-plugin-log output | grep -E).
 	LogLocalDoesNotStartAtAMemoryBlock = "local: .*(does not start at a memory block boundary|placing it explicitly|rounded up to)"
 
 	// Pinned by test21-dra-local-persistent (dra-plugin-log-wait).
-	LogMountedAtExt4RwDaxAlways = "mounted $PMEM at $MNT_DIRECT (ext4, rw, dax=always)"
+	LogMountedPmemAtMntDirectExt4RwDaxAlways = "mounted $PMEM at $MNT_DIRECT (ext4, rw, dax=always)"
 
 	// Pinned by test20-dra-fs-read-write (dra-plugin-log-wait).
-	LogMountedAtExt4RwDaxAlways2 = "mounted $PMEM2 at $MNT_DIRECT (ext4, rw, dax=always)"
+	LogMountedPmem2AtMntDirectExt4RwDaxAlways = "mounted $PMEM2 at $MNT_DIRECT (ext4, rw, dax=always)"
 
 	// Pinned by test21-dra-local-persistent (dra-plugin-log | grep -F).
 	LogPoolSerialsHoldingBackNewMemdev = "pool serials: holding back new memdev"
@@ -82,10 +82,10 @@ const (
 	LogPreparedPooled0IgnoringRegionRescanAndPublish = "prepared pooled0|ignoring region|rescanAndPublish"
 
 	// Pinned by test20-dra-fs-read-write (dra-plugin-log-wait).
-	LogRemountedReadOnly = "remounted $MNT_DIRECT read-only"
+	LogRemountedMntDirectReadOnly = "remounted $MNT_DIRECT read-only"
 
 	// Pinned by test20-dra-fs-read-write (dra-plugin-log-wait).
-	LogRemountedReadWrite = "remounted $MNT_DIRECT read-write"
+	LogRemountedMntDirectReadWrite = "remounted $MNT_DIRECT read-write"
 
 	// Pinned by test10-dra-pooling rescanned-after-prepare (dra-plugin-log | awk).
 	LogRescanAndPublishPublishedUpdatedResources = "rescanAndPublish: published updated resources"
@@ -99,10 +99,10 @@ const (
 
 	// Pinned by test17-dra-local-shared (plugin-log-has),
 	// test18-dra-local-shared-one-writer-many-readers (dra-plugin-log | grep -F).
-	LogZeroedNewSharedSizeIn = "zeroed new shared $SHARED_DAX size $DRA_LOCAL_SIZE in "
+	LogZeroedNewSharedSharedDaxSizeDRALocalSizeIn = "zeroed new shared $SHARED_DAX size $DRA_LOCAL_SIZE in "
 
 	// Pinned by test17-dra-local-shared restart-kept (dra-plugin-log output | grep -E).
-	LogZeroedNewSharedReleasingItsRegionReleased = "zeroed new shared |releasing its region|released $SHARED_REGION"
+	LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion = "zeroed new shared |releasing its region|released $SHARED_REGION"
 )
 
 // Texts that the e2e tests find in the Events of pods whose claims the driver refused to prepare.
@@ -132,40 +132,40 @@ const (
 	EventMemoryConfigDeviceASharedDeviceIsUsedAs = "MemoryConfig: device: a shared device is used as dax only"
 
 	// Pinned by test14-dra-local-memdev (BAD_TEXT).
-	EventMemoryConfigPoolOnlyForDevicesOf = "MemoryConfig: pool: only for devices of $DRA_POOL_DRIVER"
+	EventMemoryConfigPoolOnlyForDevicesOfDRAPoolDriver = "MemoryConfig: pool: only for devices of $DRA_POOL_DRIVER"
 
 	// Pinned by test14-dra-local-memdev (dra-wait events).
-	EventClaimConflictARequestMemSaysFirstDram = "claim $DRA_NS/conflict-a request mem says first-dram"
+	EventClaimDRANsConflictARequestMemSaysFirst = "claim $DRA_NS/conflict-a request mem says first-dram"
 
 	// Pinned by test14-dra-local-memdev (dra-wait events).
-	EventClaimConflictBRequestMemSaysNone = "claim $DRA_NS/conflict-b request mem says none"
+	EventClaimDRANsConflictBRequestMemSaysNone = "claim $DRA_NS/conflict-b request mem says none"
 
 	// Pinned by test14-dra-local-memdev (dra-wait events).
-	EventContainerConflictMainContainerSteeringPolicy = "container $DRA_NS/conflict/main: container.steering.policy: "
+	EventContainerDRANsConflictMainContainerSteeringPolicy = "container $DRA_NS/conflict/main: container.steering.policy: "
 
 	// Pinned by test17-dra-local-shared (event-wait).
-	EventDeviceConsumedShares0IsLessThan1 = `device $DRA_LOCAL_SERIAL: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
+	EventDeviceDRALocalSerialConsumedShares0IsLessThan = `device $DRA_LOCAL_SERIAL: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`
 
 	// Pinned by test20-dra-fs-read-write (fs-refused).
-	EventDevice = "device $FS_SERIAL: "
+	EventDeviceFSSerial = "device $FS_SERIAL: "
 
 	// Pinned by test20-dra-fs-read-write (fs-refused).
-	EventDeviceBtrfsHasNoDAXUseAccessCached = "device $FS_SERIAL: btrfs has no DAX: use access cached"
+	EventDeviceFSSerialBtrfsHasNoDAXUseAccess = "device $FS_SERIAL: btrfs has no DAX: use access cached"
 
 	// Pinned by test20-dra-fs-read-write (fs-event-wait).
-	EventDeviceBtrfsIsMountedReadOnlyOnThis = "device $FS_SERIAL: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
+	EventDeviceFSSerialBtrfsIsMountedReadOnlyOn = "device $FS_SERIAL: btrfs is mounted read-only on this node and cannot be remounted read-write: a read-write claim waits until the read-only claims of the node are gone"
 
 	// Pinned by test20-dra-fs-read-write (fs-refused).
-	EventDeviceErofsIsAReadOnlyFilesystemSet = "device $FS_SERIAL: erofs is a read-only filesystem: set readOnly: true"
+	EventDeviceFSSerialErofsIsAReadOnlyFilesystem = "device $FS_SERIAL: erofs is a read-only filesystem: set readOnly: true"
 
 	// Pinned by test20-dra-fs-read-write (fs-refused).
-	EventDeviceExt4OnDevPmem = "device $FS_SERIAL: ext4 on /dev/pmem"
+	EventDeviceFSSerialExt4OnDevPmem = "device $FS_SERIAL: ext4 on /dev/pmem"
 
 	// Pinned by test20-dra-fs-read-write (fs-refused).
-	EventDeviceItIsMountedReadWriteWithAccess = "device $FS_SERIAL: it is mounted read-write with access direct on this node: access cached would mount it a second time"
+	EventDeviceFSSerialItIsMountedReadWriteWith = "device $FS_SERIAL: it is mounted read-write with access direct on this node: access cached would mount it a second time"
 
 	// Pinned by test20-dra-fs-read-write (fs-refused).
-	EventDeviceItIsMountedWithAccessDirectOnly = "device $FS_SERIAL: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
+	EventDeviceFSSerialItIsMountedWithAccessDirect = "device $FS_SERIAL: it is mounted with access direct only on this node: a read-write claim with access cached would mount it a second time"
 
 	// Pinned by test21-dra-local-persistent (fs-refused).
 	EventFilesystemTypeExt4IsNotAllowedOnThis = "filesystem type ext4 is not allowed on this node (fsTypes: erofs)"
@@ -192,16 +192,16 @@ const (
 	RequestAccessNeedsModeFS = "access needs mode fs"
 
 	// Pinned by test12-dra-live-attach (refused).
-	RequestDeviceNotShareable = "device $POOLED0_SERIAL: not shareable"
+	RequestDevicePooled0SerialNotShareable = "device $POOLED0_SERIAL: not shareable"
 
 	// Pinned by test18-dra-local-shared-one-writer-many-readers (refused).
-	RequestDeviceNotAPoolDevice = "device $S: not a pool device"
+	RequestDeviceSNotAPoolDevice = "device $S: not a pool device"
 
 	// Pinned by test12-dra-live-attach (refused).
-	RequestDeviceModeBlockNeedsAPersistentDevice = "device $SHARED_SERIAL: mode block needs a persistent device"
+	RequestDeviceSharedSerialModeBlockNeedsAPersistentDevice = "device $SHARED_SERIAL: mode block needs a persistent device"
 
 	// Pinned by test12-dra-live-attach (refused).
-	RequestDeviceModeFSNeedsAPersistentDevice = "device $SHARED_SERIAL: mode fs needs a persistent device"
+	RequestDeviceSharedSerialModeFSNeedsAPersistentDevice = "device $SHARED_SERIAL: mode fs needs a persistent device"
 
 	// Pinned by test12-dra-live-attach (refused).
 	RequestFdNeedsExec = "fd needs --exec"
@@ -547,19 +547,19 @@ const (
 	DocAttachDeviceToHostForClaimNsName = "attach <device> to <host> for claim <ns>/<name> device <device> node <node>: exclusive for a read-write <fsType> claim"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
-	DocCXLPoolNRIIoDevice0xSerialDev = "cxl-pool.nri.io: device 0x<serial>: /dev/loopN read-write"
+	DocCXLPoolNRIIoDevice0xSerialDevH11871f = "cxl-pool.nri.io: device 0x<serial>: /dev/loopN read-write"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
-	DocCXLPoolNRIIoDevice0xSerialDev2 = "cxl-pool.nri.io: device 0x<serial>: /dev/pmemK read-only"
+	DocCXLPoolNRIIoDevice0xSerialDevH3d032c = "cxl-pool.nri.io: device 0x<serial>: /dev/pmemK read-only"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
 	DocCXLPoolNRIIoDevice0xSerialMounted = "cxl-pool.nri.io: device 0x<serial>: mounted <source> at <mnt> (<type>, ro|rw, <data>)"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
-	DocCXLPoolNRIIoDevice0xSerialRemounted = "cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-only"
+	DocCXLPoolNRIIoDevice0xSerialRemountedH548a27 = "cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-only"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
-	DocCXLPoolNRIIoDevice0xSerialRemounted2 = "cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-write"
+	DocCXLPoolNRIIoDevice0xSerialRemountedH6128ac = "cxl-pool.nri.io: device 0x<serial>: remounted <mnt> read-write"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
 	DocCXLPoolNRIIoDevice0xSerialUnmounted = "cxl-pool.nri.io: device 0x<serial>: unmounted <mnt>"

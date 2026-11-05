@@ -177,13 +177,55 @@ func TestDocStrings(t *testing.T) {
 
 func TestDerivedName(t *testing.T) {
 	for text, want := range map[string]string{
-		"NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims":                       "NRIFenceFencingCXLNodesOfPreparedClaims",
-		"(serial $DRA_LOCAL_SERIAL): not configured shared any more, releasing its region": "SerialNotConfiguredSharedAnyMoreReleasingIts",
-		"mounted $PMEM at $MNT_DIRECT (ext4, rw, dax=always)":                              "MountedAtExt4RwDaxAlways",
-		"$X ${Y}": "Text",
+		"NRI fence: fencing CXL nodes $NUMA_NODE of prepared claims":                       "NRIFenceFencingCXLNodesNumaNodeOfPrepared",
+		"(serial $DRA_LOCAL_SERIAL): not configured shared any more, releasing its region": "SerialDRALocalSerialNotConfiguredSharedAnyMoreReleasing",
+		"mounted $PMEM at $MNT_DIRECT (ext4, rw, dax=always)":                              "MountedPmemAtMntDirectExt4RwDaxAlways",
+		"at ${MNT_CACHED} $*": "AtMntCached",
+		"$* $1":               "Text",
 	} {
 		if got := derivedName(text); got != want {
 			t.Errorf("derivedName(%q) = %s, want %s", text, got, want)
 		}
+	}
+}
+
+// TestConstNames checks that a name never moves to another text: texts that
+// share a derived name get hashed names, the others keep theirs whatever is
+// added, and a given name that two texts share is an error.
+func TestConstNames(t *testing.T) {
+	long := "one two three four five six seven eight "
+	a := &entry{kind: kindLog, text: long + "nine"}
+	b := &entry{kind: kindLog, text: long + "ten"}
+	c := &entry{kind: kindLog, text: "other text"}
+	names, err := constNames([]*entry{a, c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names[a] != "LogOneTwoThreeFourFiveSixSevenEight" || names[c] != "LogOtherText" {
+		t.Fatalf("names %v", names)
+	}
+	names2, err := constNames([]*entry{b, c, a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names2[c] != names[c] {
+		t.Errorf("adding a colliding text renamed an unrelated one: %s -> %s", names[c], names2[c])
+	}
+	if names2[a] == names[a] || names2[b] == names[a] || names2[a] == names2[b] {
+		t.Errorf("colliding texts: %s and %s, the bare name was %s", names2[a], names2[b], names[a])
+	}
+	names3, err := constNames([]*entry{a, b, c, {kind: kindLog, text: long + "eleven"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names3[a] != names2[a] || names3[b] != names2[b] {
+		t.Errorf("a third colliding text renamed the hashed names")
+	}
+	_, err = constNames([]*entry{
+		{kind: kindField, name: "X", text: "a"},
+		{kind: kindField, name: "X", text: "b"},
+	})
+	if err == nil {
+		t.Errorf("no error for a given name of two texts")
 	}
 }

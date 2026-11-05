@@ -43,6 +43,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1218,6 +1219,8 @@ func collectDoc(c *collection, file, text string) {
 var (
 	shellExpansion = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9*@#]`)
 	nameWord       = regexp.MustCompile(`[A-Za-z0-9]+`)
+	// expansionVariable is the variable name in a shell expansion.
+	expansionVariable = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
 )
 
 // maxNameWords is the number of words of a text that its derived name has.
@@ -1258,11 +1261,14 @@ func viewName(file string) string {
 	return camel(strings.TrimSuffix(file, filepath.Ext(file)))
 }
 
-// derivedName returns a name of text from its first words without the shell
-// expansions in it.
+// derivedName returns a name of text from its first words, a shell expansion
+// giving the name of its variable as a word.
 func derivedName(text string) string {
 	var b strings.Builder
-	for i, w := range nameWord.FindAllString(shellExpansion.ReplaceAllString(text, " "), -1) {
+	text = shellExpansion.ReplaceAllStringFunc(text, func(x string) string {
+		return " " + camelUpper(expansionVariable.FindString(x)) + " "
+	})
+	for i, w := range nameWord.FindAllString(text, -1) {
 		if i == maxNameWords {
 			break
 		}
@@ -1274,11 +1280,52 @@ func derivedName(text string) string {
 	return b.String()
 }
 
+// constNames returns the constant name of every entry: the kind prefix and
+// the given or derived name, and for derived names that several texts share,
+// a suffix "H" and 6 hex digits of the FNV-1a hash of the text. So a name
+// always means the same text: when a new text collides with a name, the name
+// goes away and code using it stops compiling. A collision left after that
+// is an error.
+func constNames(entries []*entry) (map[*entry]string, error) {
+	base := map[*entry]string{}
+	count := map[string]int{}
+	for _, e := range entries {
+		name := e.name
+		if name == "" {
+			name = derivedName(e.text)
+		}
+		base[e] = kinds[e.kind].prefix + name
+		count[base[e]]++
+	}
+	names := map[*entry]string{}
+	owner := map[string]*entry{}
+	for _, e := range entries {
+		name := base[e]
+		if count[name] > 1 {
+			if e.name != "" {
+				return nil, fmt.Errorf("name %s given to several texts, one is %q", name, e.text)
+			}
+			h := fnv.New32a()
+			h.Write([]byte(e.text))
+			name = fmt.Sprintf("%sH%06x", name, h.Sum32()&0xffffff)
+		}
+		if o, ok := owner[name]; ok {
+			return nil, fmt.Errorf("name %s of both %q and %q", name, o.text, e.text)
+		}
+		owner[name] = e
+		names[e] = name
+	}
+	return names, nil
+}
+
 // render returns the source of strings.go for the entries.
 func render(entries []*entry) ([]byte, error) {
+	names, err := constNames(entries)
+	if err != nil {
+		return nil, err
+	}
 	var b bytes.Buffer
 	b.WriteString(header)
-	used := map[string]bool{}
 	for k := range kinds {
 		var group []*entry
 		for _, e := range entries {
@@ -1291,23 +1338,13 @@ func render(entries []*entry) ([]byte, error) {
 		}
 		fmt.Fprintf(&b, "\n// %s\nconst (\n", kinds[k].title)
 		for i, e := range group {
-			name := e.name
-			if name == "" {
-				name = derivedName(e.text)
-			}
-			name = kinds[k].prefix + name
-			unique := name
-			for n := 2; used[unique]; n++ {
-				unique = fmt.Sprintf("%s%d", name, n)
-			}
-			used[unique] = true
 			if i > 0 {
 				b.WriteString("\n")
 			}
 			for _, l := range wrap(kinds[k].verb+" "+strings.Join(e.pins, ", ")+".", 96) {
 				fmt.Fprintf(&b, "\t// %s\n", l)
 			}
-			fmt.Fprintf(&b, "\t%s = %s\n", unique, goString(e.text))
+			fmt.Fprintf(&b, "\t%s = %s\n", names[e], goString(e.text))
 		}
 		b.WriteString(")\n")
 	}
