@@ -50,6 +50,10 @@ GO_TEST_MODS ?= $(shell find . -name \*_test.go -exec dirname {} \; | \
                        [ -e $$dir/go.mod ] && echo $$dir; \
                    done)
 
+# Packages of the CXL memory driver, tested by test-cxl.
+CXL_TEST_PKGS ?= $(shell find ./cmd/plugins/dra-driver-cxl ./pkg/cxl ./pkg/cgmpolmgr \
+                   -name \*_test.go -exec dirname {} \; | sort -u)
+
 GOLANG_CILINT := golangci-lint
 TEST_SETUP    := test-setup.sh
 TEST_CLEANUP  := test-cleanup.sh
@@ -186,6 +190,9 @@ clean: clean-plugins clean-binaries clean-e2e-report
 allclean: clean clean-cache
 
 test: test-setup test-run-pkgs test-run-mods test-cleanup
+
+test-cxl:
+	$(Q)$(MAKE) test GO_TEST_PKGS="$(CXL_TEST_PKGS)" GO_TEST_MODS=
 
 verify: verify-godeps verify-fmt verify-generate verify-build verify-docs
 
