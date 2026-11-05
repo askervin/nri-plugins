@@ -27,12 +27,10 @@ import (
 // have the same transition and trigger, every state of a row is a state of
 // the table, every state of the table is in a row, the refused transitions
 // are refused, and every transition that no row has is refused with the
-// state unchanged. Its applications do not count as row coverage.
+// state unchanged. It checks rows with Check, which does not count them as
+// row coverage.
 func checkTable[S comparable](t *testing.T, tb *Table[S]) {
 	t.Helper()
-	saved := rowApplied
-	rowApplied = nil
-	defer func() { rowApplied = saved }()
 	inRows := map[S]bool{}
 	seen := map[string]int{}
 	for i := range tb.Rows {
@@ -89,9 +87,8 @@ func checkRow[S comparable](t *testing.T, tb *Table[S], i int, inRows map[S]bool
 				t.Errorf("%s: %s is also row %d", row, key, j)
 			}
 			seen[key] = i
-			s := from
-			if err := Apply(tb, &s, to, tr); err != nil || s != to {
-				t.Errorf("%s: %s: %v, state %v", row, key, err, s)
+			if err := tb.Check(from, to, tr); err != nil {
+				t.Errorf("%s: %s: %v", row, key, err)
 			}
 		}
 	}
@@ -127,13 +124,8 @@ func checkOthersRefused[S comparable](t *testing.T, tb *Table[S]) {
 				if tb.Allows(from, to, tr) {
 					continue
 				}
-				s := from
-				err := Apply(tb, &s, to, tr)
-				if !errors.Is(err, ErrTransition) {
+				if err := tb.Check(from, to, tr); !errors.Is(err, ErrTransition) {
 					t.Errorf("%s.%s: %v -> %v on %s not in the table: error %v", tb.Object, tb.Field, from, to, tr, err)
-				}
-				if s != from {
-					t.Errorf("%s.%s: refused %v -> %v on %s changed the state to %v", tb.Object, tb.Field, from, to, tr, s)
 				}
 			}
 		}

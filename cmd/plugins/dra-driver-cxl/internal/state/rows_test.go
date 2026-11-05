@@ -18,8 +18,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sync"
 	"testing"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // coveredTables are the tables whose every row a life-cycle test must
@@ -32,41 +33,26 @@ var coveredTables = map[string]bool{
 	"LeaseClaim.State":  true,
 }
 
-var (
-	appliedMu sync.Mutex
-	applied   = map[string]map[int]bool{}
-)
-
 // TestMain counts the rows that the tests apply and, when every test ran,
 // fails if a row of coveredTables was applied by no test.
 func TestMain(m *testing.M) {
-	rowApplied = func(object, field string, row int) {
-		appliedMu.Lock()
-		defer appliedMu.Unlock()
-		name := object + "." + field
-		if applied[name] == nil {
-			applied[name] = map[int]bool{}
-		}
-		applied[name][row] = true
-	}
+	rows := fsm.CountRows()
 	code := m.Run()
 	if f := flag.Lookup("test.run"); code == 0 && (f == nil || f.Value.String() == "") {
-		code = reportRows()
+		code = reportRows(rows)
 	}
 	os.Exit(code)
 }
 
 // reportRows prints the rows that no test applied and returns 1 if one of
 // them is of a table of coveredTables.
-func reportRows() int {
+func reportRows(rows *fsm.Rows) int {
 	code := 0
 	for _, o := range Catalogue() {
 		for _, tt := range o.Tables {
 			name := tt.Object + "." + tt.Field
-			for i, r := range tt.Rows {
-				if applied[name][i] {
-					continue
-				}
+			for _, i := range rows.Unapplied(tt) {
+				r := tt.Rows[i]
 				switch {
 				case coveredTables[name]:
 					fmt.Printf("FAIL: %s row %d (%v -> %v on %v) is applied by no life-cycle test\n", name, i, r.From, r.To, r.Triggers)
