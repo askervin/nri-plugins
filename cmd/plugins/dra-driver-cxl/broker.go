@@ -117,9 +117,9 @@ type broker struct {
 	releasing map[string]bool              // lease id -> release goroutine runs
 	deleting  map[string]bool              // lease id -> revoked, companion deletion requested
 	// removing are the lease claims (uid) whose directories are being
-	// removed (removeClaimDirs, without b.mu): their socket is not
-	// started meanwhile.
-	removing map[string]bool
+	// removed (removeClaimDirs, without b.mu), with the channel closed
+	// when the removal ends: their socket is not started meanwhile.
+	removing map[string]chan struct{}
 	changed  chan struct{} // closed and replaced on every lease change
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -159,7 +159,7 @@ func newBroker(cfg brokerConfig) (*broker, error) {
 		listeners:       map[string]*net.UnixListener{},
 		releasing:       map[string]bool{},
 		deleting:        map[string]bool{},
-		removing:        map[string]bool{},
+		removing:        map[string]chan struct{}{},
 		changed:         make(chan struct{}),
 		ctx:             ctx,
 		cancel:          cancel,

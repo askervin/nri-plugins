@@ -293,18 +293,31 @@ func (b *broker) CloseClaim(ctx context.Context, uid string) error {
 // the bind lazily in a container that is still there. Nothing is mounted
 // below leases/<uid> in the plugin's mount namespace. Called without b.mu:
 // the removal of what a container wrote may take long; the claim's socket
-// is not started meanwhile (listen).
+// is not started meanwhile (listen). A removal of the claim's directories
+// in progress (the reconcile's sweep) is waited for, then it is decided
+// again.
 func (b *broker) removeClaimDirs(uid string) []string {
 	b.mu.Lock()
-	if b.store.Claims[uid] != nil || b.removing[uid] {
+	for {
+		if b.store.Claims[uid] != nil {
+			b.mu.Unlock()
+			return nil
+		}
+		busy, ok := b.removing[uid]
+		if !ok {
+			break
+		}
 		b.mu.Unlock()
-		return nil
+		<-busy
+		b.mu.Lock()
 	}
-	b.removing[uid] = true
+	done := make(chan struct{})
+	b.removing[uid] = done
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
 		delete(b.removing, uid)
+		close(done)
 		b.mu.Unlock()
 	}()
 	if !b.removeFsDir(uid) {
@@ -436,7 +449,7 @@ func (b *broker) listen(uid string) error {
 	if b.listeners[uid] != nil {
 		return nil
 	}
-	if b.removing[uid] {
+	if _, ok := b.removing[uid]; ok {
 		return fmt.Errorf("the directories of lease claim %s are being removed, retry", uid)
 	}
 	dir := b.leaseDir(uid)
