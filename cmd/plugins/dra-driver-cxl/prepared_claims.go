@@ -16,10 +16,8 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -48,9 +46,9 @@ type baseState struct {
 // getOrCreatePreparedClaims returns the prepared claims of the file path,
 // and creates the file with no claims if it does not exist.
 func getOrCreatePreparedClaims(path string) (claimPreparations, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if !stateFileExists(path) {
 		klog.V(5).Infof("Creating prepared claims file %s", path)
-		if err := writeJSONFile(path, claimPreparations{}); err != nil {
+		if err := writeStateFile(path, claimPreparations{}); err != nil {
 			return nil, fmt.Errorf("failed to create prepared claims file %s: %w", path, err)
 		}
 		return claimPreparations{}, nil
@@ -138,7 +136,7 @@ func forgetOtherBoot(prepared claimPreparations, infos PreparedClaimsInfo, bootI
 
 // readPreparedClaimsFromFile returns the prepared claims of the file path.
 func readPreparedClaimsFromFile(path string) (claimPreparations, error) {
-	data, err := os.ReadFile(path)
+	data, err := readStateFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read prepared claims file %s: %w", path, err)
 	}
@@ -156,5 +154,5 @@ func writePreparedClaimsToFile(path string, prepared claimPreparations) error {
 	if prepared == nil {
 		prepared = claimPreparations{}
 	}
-	return writeJSONFile(path, prepared)
+	return writeStateFile(path, prepared)
 }

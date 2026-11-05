@@ -959,7 +959,7 @@ func (p *poolDriver) forgetPreparing(uid string) error {
 
 // savePreparing writes the preparing file.
 func (p *poolDriver) savePreparing() error {
-	return writeJSONFile(p.preparingFile, p.preparing)
+	return writeStateFile(p.preparingFile, p.preparing)
 }
 
 // loadPreparing loads the claims whose Prepare did not finish from the
@@ -975,7 +975,7 @@ func (p *poolDriver) savePreparing() error {
 // cannot be read or parsed is logged and taken as empty: what those
 // Prepares touched is then left as before this file existed.
 func (p *poolDriver) loadPreparing() {
-	data, err := os.ReadFile(p.preparingFile)
+	data, err := readStateFile(p.preparingFile)
 	if os.IsNotExist(err) {
 		return
 	}
@@ -1601,11 +1601,11 @@ func (p *poolDriver) writeCDISpec() error {
 }
 
 func (p *poolDriver) save() error {
-	return writeJSONFile(p.stateFile, p.prepared)
+	return writeStateFile(p.stateFile, p.prepared)
 }
 
 func (p *poolDriver) load() error {
-	data, err := os.ReadFile(p.stateFile)
+	data, err := readStateFile(p.stateFile)
 	if os.IsNotExist(err) {
 		return nil
 	}

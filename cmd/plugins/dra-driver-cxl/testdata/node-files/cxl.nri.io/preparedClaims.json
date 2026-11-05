@@ -1,0 +1,35 @@
+{
+  "bf5edfaf-3bf8-4d55-97a0-8cd445c1f6de": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "lease",
+        "CDIDeviceIDs": [
+          "nri.io/cxl=claim-bf5edfaf-3bf8-4d55-97a0-8cd445c1f6de-0",
+          "nri.io/cxl=lease-bf5edfaf-3bf8-4d55-97a0-8cd445c1f6de"
+        ],
+        "ShareID": null,
+        "Metadata": null
+      }
+    ]
+  },
+  "de350b2f-8d8c-40f1-834b-11e8bccc0e2f": {
+    "Err": null,
+    "Devices": [
+      {
+        "Requests": [
+          "lease"
+        ],
+        "PoolName": "n4-cxl-shared-2-fedora-43-containerd",
+        "DeviceName": "memdev-c100e2e1",
+        "CDIDeviceIDs": null,
+        "ShareID": null,
+        "Metadata": null
+      }
+    ]
+  }
+}

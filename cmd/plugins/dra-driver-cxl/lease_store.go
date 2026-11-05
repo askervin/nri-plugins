@@ -181,7 +181,7 @@ type leaseStore struct {
 // exist or cannot be decoded (strictly), Recovered in the latter case.
 func loadLeaseStore(path string) (*leaseStore, error) {
 	s := &leaseStore{path: path}
-	data, err := os.ReadFile(path)
+	data, err := readStateFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -204,7 +204,7 @@ func loadLeaseStore(path string) (*leaseStore, error) {
 
 // save writes the store atomically.
 func (s *leaseStore) save() error {
-	return writeJSONFile(s.path, s)
+	return writeStateFile(s.path, s)
 }
 
 // forgetOtherBoot drops the leases of another boot than bootID ("":

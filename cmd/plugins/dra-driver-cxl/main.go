@@ -32,6 +32,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/version"
 )
@@ -87,6 +88,9 @@ type CXLFlags struct {
 	LeaseWait time.Duration
 	// LeaseCompanionImage is the image of the companion pods.
 	LeaseCompanionImage string
+
+	// Store are the flags of the state store (state.json).
+	Store store.Flags
 }
 
 // pluginConfig is the configuration of the kubelet plugins of the driver.
@@ -148,6 +152,7 @@ func parseFlags(fs *flag.FlagSet, args []string, lookupEnv func(string) (string,
 	fs.StringVar(&f.LeaseCLISource, "lease-cli-source", "", "cxl-request CLI that is copied to --lease-cli at start (empty for none)")
 	fs.DurationVar(&f.LeaseWait, "lease-wait", defaultLeaseWait, "default wait of a lease request for the lease to become Ready")
 	fs.StringVar(&f.LeaseCompanionImage, "lease-companion-image", defaultLeaseCompanionImage, "container image of the companion pods that hold the devices of leases")
+	f.Store.Register(fs)
 	for _, fe := range flagEnvs {
 		fs.Lookup(fe.flag).Usage += " (env " + fe.env + ")"
 	}

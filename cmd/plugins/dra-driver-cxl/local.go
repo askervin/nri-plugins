@@ -1788,13 +1788,13 @@ func (a *localAllocator) save() error {
 	for _, serial := range a.serials() {
 		st.Devices = append(st.Devices, a.devices[serial])
 	}
-	return writeJSONFile(a.stateFile, st)
+	return writeStateFile(a.stateFile, st)
 }
 
 // load reads the state file, if there is one. A list of devices without a
 // boot id is read as the state of an unknown boot.
 func (a *localAllocator) load() error {
-	data, err := os.ReadFile(a.stateFile)
+	data, err := readStateFile(a.stateFile)
 	if os.IsNotExist(err) {
 		return nil
 	}

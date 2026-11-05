@@ -1,0 +1,54 @@
+{
+  "serials": [
+    {
+      "serial": "0xc100e2e1",
+      "local": true,
+      "seen": "2026-11-05T16:05:00.483384555Z"
+    },
+    {
+      "serial": "0xc1ae0001",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ae1001",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ae2001",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ae2002",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ee0001",
+      "pool": "cxl-pool.nri.io/pool-a",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ee1001",
+      "pool": "cxl-pool.nri.io/pool-b",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ee2001",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    },
+    {
+      "serial": "0xc1ee2002",
+      "pool": "cxl-pool.nri.io/pool-c",
+      "seen": "2026-11-05T16:05:00.472920185Z"
+    }
+  ],
+  "pools": {
+    "cxl-pool.nri.io/pool-a": "2026-11-05T16:05:00.472920185Z",
+    "cxl-pool.nri.io/pool-b": "2026-11-05T16:05:00.472920185Z",
+    "cxl-pool.nri.io/pool-c": "2026-11-05T16:05:00.472920185Z"
+  }
+}

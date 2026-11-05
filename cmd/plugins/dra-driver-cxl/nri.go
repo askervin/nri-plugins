@@ -88,7 +88,7 @@ type steeredRecord struct {
 // loadSteeredRecord returns the steering record of the file path.
 func loadSteeredRecord(path string) steeredRecord {
 	r := steeredRecord{path: path, ids: map[string]string{}}
-	data, err := os.ReadFile(path)
+	data, err := readStateFile(path)
 	if err == nil {
 		err = json.Unmarshal(data, &r.ids)
 	}
@@ -156,7 +156,7 @@ func (r *steeredRecord) save() {
 	if ids == nil {
 		ids = map[string]string{}
 	}
-	if err := writeJSONFile(r.path, ids); err != nil {
+	if err := writeStateFile(r.path, ids); err != nil {
 		klog.Warningf("NRI: steering record: %v", err)
 	}
 }

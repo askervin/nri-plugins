@@ -114,7 +114,7 @@ func (p *poolSlices) loadRecords() {
 	if p.file == "" {
 		return
 	}
-	data, err := os.ReadFile(p.file)
+	data, err := readStateFile(p.file)
 	if os.IsNotExist(err) {
 		klog.Infof("pool serials: no %s: no remembered serials", p.file)
 		return
@@ -159,7 +159,7 @@ func (p *poolSlices) saveLocked(changed bool, now time.Time) {
 	for _, s := range slices.Sorted(maps.Keys(p.records)) {
 		f.Serials = append(f.Serials, p.records[s])
 	}
-	if err := writeJSONFile(p.file, &f); err != nil {
+	if err := writeStateFile(p.file, &f); err != nil {
 		klog.Errorf("pool serials: %v", err)
 		return
 	}

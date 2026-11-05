@@ -69,6 +69,9 @@ type driver struct {
 	// last one (UnixNano).
 	rescanMu  sync.Mutex
 	rescanned atomic.Int64
+	// closeStore writes the pending commits of the state store and
+	// closes it.
+	closeStore func()
 }
 
 // TestabilityConfig holds configuration for injecting fake CXL
@@ -423,6 +426,22 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		klog.Infof("boot id %s", bootID)
 	}
 
+	// The state files of both drivers are kept in the state store
+	// (state.json), which writes five of them as its views (the pool
+	// serials, the steering record and the pool's preparing records are
+	// no files); the store drops or marks stale what is of another boot
+	// before they are read.
+	closeStore, err := openDriverStore(ctx, config, cxlFlags, sysfsRoot, bootID)
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			closeStore()
+		}
+	}()
+
 	// The pool driver's prepared claims are loaded before the first
 	// scan, so that its devices are never published as cxl.nri.io
 	// devices (D29). Its kubelet plugin is started after cxl.nri.io.
@@ -454,6 +473,7 @@ func newDriver(ctx context.Context, config *pluginConfig) (*driver, error) {
 		config:     driverConfig,
 		sysfsRoot:  sysfsRoot,
 		poolSlices: poolSlices,
+		closeStore: closeStore,
 	}
 
 	// The lease broker re-creates the sockets of prepared lease claims
@@ -589,7 +609,42 @@ PluginDataDirectoryPath: %v`,
 	}
 
 	klog.V(3).Info("Finished creating new driver")
+	started = true
 	return driver, nil
+}
+
+// storeLockWait is how long the driver waits at start for the lock of the
+// state store that another driver process holds.
+const storeLockWait = 2 * time.Minute
+
+// openDriverStore opens the state store in the plugin data directory of
+// cxl.nri.io with the state files of the pool driver in its own, and
+// returns its close.
+func openDriverStore(ctx context.Context, config *pluginConfig, cxlFlags *CXLFlags, sysfsRoot, bootID string) (func(), error) {
+	poolDir := ""
+	if cxlFlags.PoolDriverName != "" {
+		poolDir = filepath.Join(filepath.Dir(config.KubeletPluginDir), cxlFlags.PoolDriverName)
+		if err := os.MkdirAll(poolDir, 0750); err != nil {
+			return nil, fmt.Errorf("pool driver data directory: %w", err)
+		}
+	}
+	mem := newMemctl(sysfsRoot)
+	// a driver pod that still runs holds the lock: wait for its exit
+	ctx, cancel := context.WithTimeout(ctx, storeLockWait)
+	defer cancel()
+	_, closeStore, err := openStateStore(ctx, stateStoreConfig{
+		LocalDir:   config.KubeletPluginDir,
+		PoolDir:    poolDir,
+		PoolDriver: cxlFlags.PoolDriverName,
+		BootID:     bootID,
+		Flags:      cxlFlags.Store,
+		SysRoot:    mem.SysRoot,
+		DevRoot:    mem.DevRoot,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("state store: %w", err)
+	}
+	return closeStore, nil
 }
 
 // loadPoolDriver returns the pool driver with its prepared claims loaded,
@@ -924,6 +979,9 @@ func (d *driver) Shutdown(ctx context.Context) error {
 	d.pool.stop()
 	d.slices.stop()
 	d.helper.Stop()
+	if d.closeStore != nil {
+		d.closeStore()
+	}
 
 	return nil
 }

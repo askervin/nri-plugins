@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
@@ -63,6 +64,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 		LeaseCLI:            "/usr/local/bin/cxl-request",
 		LeaseWait:           120 * time.Second,
 		LeaseCompanionImage: "registry.k8s.io/pause:3.10",
+		Store:               store.Flags{CompatViews: true},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -114,6 +116,7 @@ func TestParseFlagsEnvironment(t *testing.T) {
 		LeaseCLISource:      "/bin/cxl-request",
 		LeaseWait:           5 * time.Second,
 		LeaseCompanionImage: "pause:test",
+		Store:               store.Flags{CompatViews: true},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("flags\n%+v, expected\n%+v", f, want)
@@ -130,6 +133,16 @@ func TestParseFlagsEnvironment(t *testing.T) {
 	f, err = testParseFlags([]string{"-f", "/config.yaml"}, env)
 	if err != nil || f.ConfigFile != "/config.yaml" || f.ConfigStr != "{}" {
 		t.Fatalf("flags %+v, error %v", f, err)
+	}
+}
+
+func TestParseFlagsStore(t *testing.T) {
+	f, err := testParseFlags([]string{"--compat-views=false", "--discard-old-state", "--new-state"}, map[string]string{"NODE_NAME": "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (store.Flags{DiscardOldState: true, NewState: true}); f.Store != want {
+		t.Fatalf("store flags %+v, expected %+v", f.Store, want)
 	}
 }
 

@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1607,15 +1606,15 @@ func (s *nodeState) preparedResult(claimUID string, n int) (string, PreparedDevi
 // getOrCreatePreparedClaimsInfo loads the prepared claims info from
 // the file or creates an empty file.
 func getOrCreatePreparedClaimsInfo(filePath string) (PreparedClaimsInfo, error) {
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+	if !stateFileExists(filePath) {
 		klog.V(5).Infof("creating empty prepared claims info file %v", filePath)
-		if err := writeJSONFile(filePath, PreparedClaimsInfo{}); err != nil {
+		if err := writeStateFile(filePath, PreparedClaimsInfo{}); err != nil {
 			return nil, fmt.Errorf("failed creating %v: %v", filePath, err)
 		}
 		return make(PreparedClaimsInfo), nil
 	}
 
-	data, err := os.ReadFile(filePath)
+	data, err := readStateFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed reading %v: %v", filePath, err)
 	}
@@ -1633,7 +1632,7 @@ func writePreparedClaimsInfoToFile(filePath string, claims PreparedClaimsInfo) e
 	if claims == nil {
 		claims = PreparedClaimsInfo{}
 	}
-	return writeJSONFile(filePath, claims)
+	return writeStateFile(filePath, claims)
 }
 
 // claimCDIDeviceName returns the CDI device name of the allocation result
