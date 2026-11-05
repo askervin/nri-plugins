@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// gostats prints per-function length and approximate cyclomatic complexity,
-// the struct fields that recur across structs, and the mutexes of the non-test
-// Go files of the directories given as arguments. With -r it descends into
-// subdirectories and ends with a summary over all of them, checked against the
-// limits given as flags. With -gate a limit that is exceeded makes it exit 1.
+// gostats prints per-function length and cyclomatic complexity, the struct
+// fields that recur across structs, and the mutexes of the non-test Go files
+// of the directories given as arguments. Generated files (a "Code generated
+// ... DO NOT EDIT." line) are left out and their lines reported separately.
+// The cyclomatic complexity is gocyclo's: 1 plus one for every if, for,
+// range, case and select case except default, && and ||. With -r it descends
+// into subdirectories. A summary over all directories, checked against the
+// limits given as flags, ends the output with -r, -gate or any limit; with
+// -gate a limit that is exceeded makes it exit 1.
 package main
 
 import (
@@ -53,11 +57,12 @@ type mutex struct {
 }
 
 type stats struct {
-	dir     string
-	lines   int
-	fns     []fn
-	structs []structInfo
-	mutexes []mutex
+	dir       string
+	lines     int
+	generated int // lines of generated files, not in lines
+	fns       []fn
+	structs   []structInfo
+	mutexes   []mutex
 }
 
 // accessFields are the field names that describe how a device is accessed.
@@ -108,7 +113,7 @@ func main() {
 	}
 
 	exceeded := false
-	if *recursive {
+	if *recursive || *gate || limited() {
 		exceeded = summary(all)
 	}
 	if failed {
@@ -117,6 +122,11 @@ func main() {
 	if exceeded && *gate {
 		os.Exit(1)
 	}
+}
+
+// limited returns whether a limit flag is given.
+func limited() bool {
+	return *maxLines != 0 || *maxCyclo15 != -1 || *maxCyclo30 != -1 || *maxMutexes != -1 || *maxAccess != -1
 }
 
 // dirs returns root, and with -r every subdirectory of root except testdata and
@@ -165,6 +175,10 @@ func analyse(dir string) *stats {
 			continue
 		}
 		parsed++
+		if ast.IsGenerated(af) {
+			s.generated += fset.File(af.Pos()).LineCount()
+			continue
+		}
 		s.lines += fset.File(af.Pos()).LineCount()
 		base := filepath.Base(f)
 		for _, d := range af.Decls {
@@ -223,13 +237,22 @@ func (s *stats) addGenDecl(fset *token.FileSet, base string, d *ast.GenDecl) {
 	}
 }
 
-// cyclomatic returns 1 plus the number of branch points in body.
+// cyclomatic returns 1 plus the number of branch points in body, default
+// clauses not counted.
 func cyclomatic(body *ast.BlockStmt) int {
 	c := 1
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
-		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.CaseClause, *ast.CommClause:
+		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt:
 			c++
+		case *ast.CaseClause:
+			if n.List != nil {
+				c++
+			}
+		case *ast.CommClause:
+			if n.Comm != nil {
+				c++
+			}
 		case *ast.BinaryExpr:
 			if n.Op == token.LAND || n.Op == token.LOR {
 				c++
@@ -242,8 +265,8 @@ func cyclomatic(body *ast.BlockStmt) int {
 
 // report prints the statistics of one directory.
 func report(s *stats) {
-	fmt.Printf("==== %s: %d non-test lines, %d functions, %d structs, %d mutexes\n",
-		s.dir, s.lines, len(s.fns), len(s.structs), len(s.mutexes))
+	fmt.Printf("==== %s: %d non-test lines (%d generated lines left out), %d functions, %d structs, %d mutexes\n",
+		s.dir, s.lines, s.generated, len(s.fns), len(s.structs), len(s.mutexes))
 	over80, over150, cyclo15, cyclo30 := 0, 0, 0, 0
 	for _, f := range s.fns {
 		if f.lines > 80 {
@@ -327,12 +350,13 @@ func report(s *stats) {
 // summary prints the totals over all directories against the limits and
 // returns whether a limit is exceeded.
 func summary(all []*stats) bool {
-	lines, cyclo15, cyclo30, cyclo30Kept := 0, 0, 0, 0
+	lines, generated, cyclo15, cyclo30, cyclo30Kept := 0, 0, 0, 0, 0
 	var mutexes []string
 	var access []string
 	var over30 []string
 	for _, s := range all {
 		lines += s.lines
+		generated += s.generated
 		for _, f := range s.fns {
 			if f.cyclo > 15 {
 				cyclo15++
@@ -370,7 +394,7 @@ func summary(all []*stats) bool {
 	}
 
 	fmt.Printf("==== summary of %d directories\n", len(all))
-	check("non-test lines", lines, *maxLines, 0)
+	check(fmt.Sprintf("non-test lines (%d generated lines left out)", generated), lines, *maxLines, 0)
 	check("functions over cyclomatic 15", cyclo15, *maxCyclo15, -1)
 	check(fmt.Sprintf("functions over cyclomatic 30 (%d more in -keep files)", cyclo30Kept), cyclo30, *maxCyclo30, -1)
 	for _, f := range over30 {
