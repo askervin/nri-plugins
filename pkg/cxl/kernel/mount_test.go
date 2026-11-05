@@ -109,7 +109,7 @@ func mountPoint(t *testing.T, name string) string {
 func TestSuperblocks(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
 	direct := mountPoint(t, "direct")
-	noErr(t, k.SetBlockDeviceReadOnly(dev, false))
+	noErr(t, setRO(k, dev, false))
 	noErr(t, k.FsMount(dev, direct, "ext4", true, []string{"dax=always"}))
 	loop, err := k.AttachLoop(dev, false)
 	noErr(t, err)
@@ -152,7 +152,9 @@ func TestSuperblocks(t *testing.T) {
 // that is gone is not an error.
 func TestSetBlockDeviceReadOnly(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
-	noErr(t, k.SetBlockDeviceReadOnly(dev, true))
+	if changed, err := k.SetBlockDeviceReadOnly(dev, true); err != nil || !changed {
+		t.Fatalf("changed %v %v", changed, err)
+	}
 	if ro, err := k.ReadOnly(dev); err != nil || !ro {
 		t.Fatalf("read-only %v %v", ro, err)
 	}
@@ -160,23 +162,25 @@ func TestSetBlockDeviceReadOnly(t *testing.T) {
 		t.Fatalf("calls %v", got)
 	}
 	// unchanged: no call
-	noErr(t, k.SetBlockDeviceReadOnly(dev, true))
-	noErr(t, k.SetBlockDeviceReadOnly(dev, false))
+	if changed, err := k.SetBlockDeviceReadOnly(dev, true); err != nil || changed {
+		t.Fatalf("unchanged: changed %v %v", changed, err)
+	}
+	noErr(t, setRO(k, dev, false))
 	f.AddForeign(300, dev, "/run/cxl/fs/x", "ext4", false)
-	err := k.SetBlockDeviceReadOnly(dev, true)
+	err := setRO(k, dev, true)
 	wantErr(t, err, kernel.ErrEBUSY, "not making "+dev+" read-only: "+dev+" is mounted read-write in pid 300 at /run/cxl/fs/x")
 	if f.IsReadOnly(dev) {
 		t.Fatal("made read-only under a read-write superblock")
 	}
 	f.RemoveForeign(300)
 	f.HideProc(true)
-	wantErr(t, k.SetBlockDeviceReadOnly(dev, true), nil, "its superblocks")
+	wantErr(t, setRO(k, dev, true), nil, "its superblocks")
 	f.HideProc(false)
 	// gone
-	noErr(t, k.SetBlockDeviceReadOnly(f.DevRoot()+"/pmem9", true))
-	noErr(t, k.SetBlockDeviceReadOnly("", true))
+	noErr(t, setRO(k, f.DevRoot()+"/pmem9", true))
+	noErr(t, setRO(k, "", true))
 	f.SetReadOnlyError(dev, syscall.EPERM)
-	wantErr(t, k.SetBlockDeviceReadOnly(dev, true), nil, "making "+dev+" read-only")
+	wantErr(t, setRO(k, dev, true), nil, "making "+dev+" read-only")
 	if v := f.Violations(); len(v) != 0 {
 		t.Fatalf("violations %v", v)
 	}
@@ -240,7 +244,7 @@ func TestHolder(t *testing.T) {
 func TestReconfigureAndBind(t *testing.T) {
 	f, k, dev := fsdaxNode(t)
 	node := mountPoint(t, "node")
-	noErr(t, k.SetBlockDeviceReadOnly(dev, false))
+	noErr(t, setRO(k, dev, false))
 	noErr(t, k.FsMount(dev, node, "ext4", true, nil))
 	bind := mountPoint(t, "bind")
 	noErr(t, k.BindReadOnly(node, bind))
@@ -257,7 +261,7 @@ func TestReconfigureAndBind(t *testing.T) {
 	if mi, _ := k.Mounted(bind); mi == nil || !mi.SuperReadOnly() {
 		t.Fatalf("bind after the reconfigure %+v", mi)
 	}
-	noErr(t, k.SetBlockDeviceReadOnly(dev, true))
+	noErr(t, setRO(k, dev, true))
 	if err := k.Reconfigure(node, true); !errors.Is(err, syscall.EACCES) {
 		t.Fatalf("read-write on a read-only device: %v", err)
 	}
@@ -380,4 +384,10 @@ func TestReadFsSignature(t *testing.T) {
 	if s, err := k.ReadFsSignature(renamed); err != nil || !slices.Equal(s.Types, []string{kernel.FsErofs}) {
 		t.Fatalf("renamed signature %+v %v", s, err)
 	}
+}
+
+// setRO sets the read-only flag of a block device and returns the error.
+func setRO(k *kernel.Kernel, dev string, readOnly bool) error {
+	_, err := k.SetBlockDeviceReadOnly(dev, readOnly)
+	return err
 }

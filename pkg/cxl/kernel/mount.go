@@ -322,43 +322,43 @@ func (k *Kernel) ReadOnly(dev string) (bool, error) {
 }
 
 // SetBlockDeviceReadOnly sets the read-only flag of the block device dev
-// (BLKROSET) when it differs. A block device is never made read-only while
-// a read-write superblock is on it, or on a loop device over it, in any
-// mount namespace (ErrEBUSY), nor when its superblocks cannot be read. A
-// block device that is gone is not an error.
-func (k *Kernel) SetBlockDeviceReadOnly(dev string, readOnly bool) error {
+// (BLKROSET) when it differs, and tells whether it changed it; the caller
+// logs the change. A block device is never made read-only while a
+// read-write superblock is on it, or on a loop device over it, in any mount
+// namespace (ErrEBUSY), nor when its superblocks cannot be read. A block
+// device that is gone is not an error.
+func (k *Kernel) SetBlockDeviceReadOnly(dev string, readOnly bool) (bool, error) {
 	if dev == "" {
-		return nil
+		return false, nil
 	}
 	sys := k.sys()
 	cur, err := sys.ReadOnly(dev)
 	switch {
 	case isGone(err):
-		return nil
+		return false, nil
 	case err == nil && cur == readOnly:
-		return nil
+		return false, nil
 	}
 	if readOnly {
 		// never under a read-write superblock anywhere on the node; and
 		// not when that cannot be known
 		sbs, err := k.Superblocks(dev)
 		if err != nil {
-			return fmt.Errorf("not making %s read-only: its superblocks: %w", dev, err)
+			return false, fmt.Errorf("not making %s read-only: its superblocks: %w", dev, err)
 		}
 		for _, sb := range sbs {
 			if !sb.ReadOnly {
-				return errorf(ErrEBUSY, "not making %s read-only: %s is mounted read-write in %s", dev, sb.Source, sb.Where)
+				return false, errorf(ErrEBUSY, "not making %s read-only: %s is mounted read-write in %s", dev, sb.Source, sb.Where)
 			}
 		}
 	}
 	if err := sys.SetReadOnly(dev, readOnly); err != nil {
 		if isGone(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("making %s %s: %w", dev, roWord(readOnly), err)
+		return false, fmt.Errorf("making %s %s: %w", dev, roWord(readOnly), err)
 	}
-	k.logf("%s %s", dev, roWord(readOnly))
-	return nil
+	return true, nil
 }
 
 // roWord returns "read-only" or "read-write".

@@ -90,7 +90,7 @@ func (k *Kernel) LoopBackingFile(loop string) (string, error) {
 	dev, err := k.loopBackingDevice(loop)
 	switch {
 	case err != nil:
-		k.logf("%s: the block device of its backing file %s: %v", loop, path, err)
+		k.debugf("%s: the block device of its backing file %s: %v", loop, path, err)
 	case dev != "":
 		return dev, nil
 	}

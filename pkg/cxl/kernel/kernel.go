@@ -45,6 +45,8 @@ type Kernel struct {
 	Events Events
 	// Logf logs what is done (nil: nothing).
 	Logf func(format string, args ...any)
+	// Debugf logs the details of a lookup that falls back (nil: Logf).
+	Debugf func(format string, args ...any)
 	// PollInterval is the interval of the polls of the waits.
 	PollInterval time.Duration
 	// Serialize is optional: it runs fn exclusively of the region
@@ -161,6 +163,14 @@ func (k *Kernel) logf(format string, args ...any) {
 	if k.Logf != nil {
 		k.Logf(format, args...)
 	}
+}
+
+func (k *Kernel) debugf(format string, args ...any) {
+	if k.Debugf != nil {
+		k.Debugf(format, args...)
+		return
+	}
+	k.logf(format, args...)
 }
 
 func (k *Kernel) writeFile(path, val string) error {

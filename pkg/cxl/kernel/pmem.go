@@ -499,21 +499,33 @@ var namespaceNameRe = regexp.MustCompile(`"dev"\s*:\s*"(namespace\d+\.\d+)"`)
 // CreateFsdaxNamespace creates an fsdax namespace with map mem in an nd
 // region, or reconfigures the namespace existing ("" for a new one) as
 // such, with ndctl create-namespace, and returns it when its block device
-// is there. This writes the labels of the region, and destroys what the
-// reconfigured namespace had: it is refused unless the region has finished
-// probing (ErrProbing) and has no fsdax namespace (ErrExists), which a
-// writer may have formatted.
+// is there (StartFsdaxNamespace, then WaitFsdaxNamespace).
 func (k *Kernel) CreateFsdaxNamespace(ctx context.Context, ndregion, existing string) (*Namespace, error) {
-	nss, why, err := k.ProbeNamespaces(ndregion)
+	name, err := k.StartFsdaxNamespace(ctx, ndregion, existing)
 	if err != nil {
 		return nil, err
 	}
+	return k.WaitFsdaxNamespace(ctx, ndregion, name)
+}
+
+// StartFsdaxNamespace runs ndctl create-namespace for an fsdax namespace
+// with map mem in an nd region, of the namespace existing ("" for a new
+// one), and returns the name of the namespace; its block device appears
+// asynchronously (WaitFsdaxNamespace). This writes the labels of the
+// region, and destroys what the reconfigured namespace had: it is refused
+// unless the region has finished probing (ErrProbing) and has no fsdax
+// namespace (ErrExists), which a writer may have formatted.
+func (k *Kernel) StartFsdaxNamespace(ctx context.Context, ndregion, existing string) (string, error) {
+	nss, why, err := k.ProbeNamespaces(ndregion)
+	if err != nil {
+		return "", err
+	}
 	if why != "" {
-		return nil, errorf(ErrProbing, "%s: not creating an fsdax namespace: the namespaces are still probing (%s)", ndregion, why)
+		return "", errorf(ErrProbing, "%s: not creating an fsdax namespace: the namespaces are still probing (%s)", ndregion, why)
 	}
 	for _, ns := range nss {
 		if ns.Mode == NamespaceFsdax {
-			return nil, errorf(ErrExists, "%s: not creating an fsdax namespace: %s is one already (map %q)", ndregion, ns.Name, ns.Map)
+			return "", errorf(ErrExists, "%s: not creating an fsdax namespace: %s is one already (map %q)", ndregion, ns.Name, ns.Map)
 		}
 	}
 	args := []string{"create-namespace", "-f", "-r", ndregion, "-m", NamespaceFsdax, "-M", MapMem}
@@ -522,22 +534,28 @@ func (k *Kernel) CreateFsdaxNamespace(ctx context.Context, ndregion, existing st
 	}
 	out, err := k.exec(ctx, "ndctl", args...)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	m := namespaceNameRe.FindStringSubmatch(out)
 	if m == nil {
-		return nil, fmt.Errorf("ndctl create-namespace did not report a namespace: %s", out)
+		return "", fmt.Errorf("ndctl create-namespace did not report a namespace: %s", out)
 	}
+	return m[1], nil
+}
+
+// WaitFsdaxNamespace waits until the namespace name of an nd region is an
+// fsdax namespace with its block device, and returns it.
+func (k *Kernel) WaitFsdaxNamespace(ctx context.Context, ndregion, name string) (*Namespace, error) {
 	var found *Namespace
 	var nsErr error
-	err = k.poll(ctx, func() (bool, error) {
+	err := k.poll(ctx, func() (bool, error) {
 		nss, err := k.Namespaces(ctx, ndregion)
 		if err != nil {
 			nsErr = err
 			return false, err
 		}
 		for i := range nss {
-			if ns := &nss[i]; ns.Name == m[1] && ns.Mode == NamespaceFsdax && ns.BlockDevice != "" {
+			if ns := &nss[i]; ns.Name == name && ns.Mode == NamespaceFsdax && ns.BlockDevice != "" {
 				found = ns
 				return true, nil
 			}
@@ -548,7 +566,7 @@ func (k *Kernel) CreateFsdaxNamespace(ctx context.Context, ndregion, existing st
 	case nsErr != nil:
 		return nil, nsErr
 	case err != nil:
-		return nil, fmt.Errorf("%s: %s has no fsdax block device: %w", ndregion, m[1], err)
+		return nil, fmt.Errorf("%s: %s has no fsdax block device: %w", ndregion, name, err)
 	}
 	k.logf("%s: created %s (fsdax, map %s, %s, %d bytes)", ndregion, found.Name, found.Map, found.BlockDevice, found.Size)
 	return found, nil

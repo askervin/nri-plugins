@@ -270,3 +270,30 @@ func TestCreateFsdaxNamespaceReconfigures(t *testing.T) {
 		t.Fatal("bogus device numbers accepted")
 	}
 }
+
+// An fsdax namespace in two steps: ndctl returns the name, the wait gives
+// the namespace with its block device.
+func TestFsdaxNamespaceInTwoSteps(t *testing.T) {
+	f, k := pmemNode(t)
+	f.PmemDelay = 20 * time.Millisecond
+	createRegion(t, k, "mem0", kernel.RegionPmem, 0)
+	ctx := ctxTimeout(t, 5*time.Second)
+	nd, err := k.WaitNdRegion(ctx, "region0")
+	noErr(t, err)
+	_, err = k.Namespaces(ctx, nd)
+	noErr(t, err)
+	name, err := k.StartFsdaxNamespace(ctx, nd, "")
+	noErr(t, err)
+	ns, err := k.WaitFsdaxNamespace(ctx, nd, name)
+	noErr(t, err)
+	if ns.Name != name || ns.Mode != kernel.NamespaceFsdax || ns.BlockDevice == "" {
+		t.Fatalf("namespace %+v", ns)
+	}
+	_, err = k.StartFsdaxNamespace(ctx, nd, "")
+	wantErr(t, err, kernel.ErrExists, "is one already")
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := k.WaitFsdaxNamespace(short, nd, "namespace9.9"); err == nil || !strings.Contains(err.Error(), "has no fsdax block device") {
+		t.Fatalf("waiting for a missing namespace: %v", err)
+	}
+}
