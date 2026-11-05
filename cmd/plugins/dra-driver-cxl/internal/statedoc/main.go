@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Command statedoc renders the transition tables and the record headers of
-// the CXL driver's internal/state package into docs/memory/cxl/states.md.
+// the CXL driver's internal/state package, and those of the kernel objects
+// of pkg/cxl/kernel, into docs/memory/cxl/states.md.
 // It runs by go generate in cmd/plugins/dra-driver-cxl.
 package main
 
@@ -25,9 +26,10 @@ import (
 
 func main() {
 	stateDir := flag.String("state", "internal/state", "the directory of the Go files of the state package")
+	kernelDir := flag.String("kernel", "../../../pkg/cxl/kernel", "the directory of the Go files of the kernel package")
 	out := flag.String("o", "../../../docs/memory/cxl/states.md", "the markdown file to write")
 	flag.Parse()
-	data, err := render(*stateDir)
+	data, err := render(*stateDir, *kernelDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "statedoc: %v\n", err)
 		os.Exit(1)
