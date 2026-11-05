@@ -79,9 +79,6 @@ const (
 	// Pinned by test21-dra-local-persistent (dra-plugin-log | grep -F).
 	LogPoolSerialsHoldingBackNewMemdev = "pool serials: holding back new memdev"
 
-	// Pinned by test10-dra-pooling (dra-plugin-log | grep -E).
-	LogPreparedPooled0IgnoringRegionRescanAndPublish = "prepared pooled0|ignoring region|rescanAndPublish"
-
 	// Pinned by test20-dra-fs-read-write (dra-plugin-log-wait).
 	LogRemountedMntDirectReadOnly = "remounted $MNT_DIRECT read-only"
 
@@ -533,9 +530,6 @@ const (
 	DocNotPublishingMemoryDeviceMemNAsAShared = `- not publishing memory device "<memN>" as a shared local device: <reason>`
 
 	// Quoted in docs/memory/cxl/pool.md section "Configuration of a pool controller".
-	DocERRORClaimNsNameRequestRequestDeviceDevice = "ERROR: claim <ns>/<name>: request <request> device <device>: invalid configuration: <error>"
-
-	// Quoted in docs/memory/cxl/pool.md section "Configuration of a pool controller".
 	DocMemoryConfigPoolOpaqueFakeCXLPoolJsonUnknown = `MemoryConfig: pool.opaque.fake-cxl-pool: json: unknown field "port"`
 
 	// Quoted in docs/memory/cxl/usage.md section "Steering".
@@ -555,12 +549,6 @@ const (
 
 	// Quoted in docs/memory/cxl/usage.md section "Steering".
 	DocNRICreateContainerCtrCtrSteeringPolicyAutoNo = "NRI CreateContainer: ctr=<ctr>: steering policy auto: no numa memory to steer"
-
-	// Quoted in docs/memory/cxl/pool.md section "Configuration of a pool controller".
-	DocAttachDeviceToHostForClaimNotExclusive = "attach <device> to <host> for claim ...: not exclusive for the claims that do not need it"
-
-	// Quoted in docs/memory/cxl/pool.md section "Configuration of a pool controller".
-	DocAttachDeviceToHostForClaimNsName = "attach <device> to <host> for claim <ns>/<name> device <device> node <node>: exclusive for a read-write <fsType> claim"
 
 	// Quoted in docs/memory/cxl/usage.md section "One node: superblock, block device, binds".
 	DocCXLPoolNRIIoDevice0xSerialDevH11871f = "cxl-pool.nri.io: device 0x<serial>: /dev/loopN read-write"
@@ -668,7 +656,6 @@ var regexps = []struct {
 	{LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH9df004, dialect{basic: true, fold: false}},
 	{LogLeaseLeaseBUnmountingBindBDeviceOrResourceBusy, dialect{basic: false, fold: false}},
 	{LogLocalDoesNotStartAtAMemoryBlock, dialect{basic: false, fold: false}},
-	{LogPreparedPooled0IgnoringRegionRescanAndPublish, dialect{basic: false, fold: false}},
 	{LogRescanAndPublishPublishedUpdatedResources, dialect{basic: false, fold: false}},
 	{LogUnpreparReleas, dialect{basic: false, fold: true}},
 	{LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion, dialect{basic: false, fold: false}},

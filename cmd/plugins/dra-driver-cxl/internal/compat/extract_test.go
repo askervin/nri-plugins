@@ -20,8 +20,9 @@ package compat
 //     (dra.source.sh, n4-cxl-shared-2/*.source.sh, the code.var.sh of every
 //     test and test90's mbt.source.sh; not the demo01 copy of the suite):
 //     the TEXT arguments of the matchers in shellMatchers, the patterns of
-//     grep, awk and sed reading `dra-plugin-log` (a grep piped into head or
-//     tail only displays lines and is skipped), the values of the *_TEXT
+//     grep, awk and sed reading `dra-plugin-log` whose exit status is used
+//     (a grep piped into head or tail only displays lines and is skipped,
+//     and so is a pipeline whose status nothing reads), the values of the *_TEXT
 //     arrays, the texts of the event lists of dra-wait expressions, the
 //     readiness lines of test90's executor (executorLines), and the fixed
 //     strings that a grep finds in $COMMAND_OUTPUT of cxl-request or of a
@@ -34,9 +35,11 @@ package compat
 //     CDI spec glob of cdi_pool() and the socket of driver_log().
 //   - test90's model/oracle*.go: the string constants, and the json fields
 //     of leases.json that checkLeaseStore decodes.
-//   - docs/memory/cxl/*.md: the lines of fenced blocks without a language
-//     that a paragraph mentioning a log introduces, and the inline code
-//     spans of 20 or more characters with ": " in sentences mentioning a log.
+//   - docs/memory/cxl/*.md, not the generated ones: the lines of fenced
+//     blocks without a language that a paragraph mentioning a log
+//     introduces, and the inline code spans of 20 or more characters with
+//     ": " in sentences mentioning a log; in the sections about the pool
+//     controller only the MemoryConfig texts (driverText).
 
 import (
 	"bytes"
@@ -496,6 +499,10 @@ type shellPipeline struct {
 	cmds []*shellCommand
 	fn   string
 	line int
+	// used is set when the exit status of the pipeline is used: it is a
+	// condition (if, elif, while, until, !), next to && or ||, in $(...) or
+	// (...), or the last pipeline of a function.
+	used bool
 }
 
 // shellPipelines returns the pipelines of the tokens, the functions they are
@@ -517,6 +524,7 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 		substs     []string // per open $(: the variable it is assigned to
 		pluginLogs = map[string]bool{}
 		prevOp     string
+		lastEnd    string // the operator that ended the last pipeline
 	)
 	fn := func() string {
 		if len(fns) == 0 {
@@ -527,7 +535,13 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 	endCommand := func() {
 		for len(cmd.args) > 0 {
 			switch cmd.args[0].word {
-			case "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "time":
+			case "if", "elif", "while", "until", "!":
+				if len(cur.cmds) == 0 {
+					cur.used = true
+				}
+				cmd.args = cmd.args[1:]
+				continue
+			case "then", "else", "fi", "do", "done", "time":
 				cmd.args = cmd.args[1:]
 				continue
 			}
@@ -541,13 +555,17 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 		}
 		cmd = &shellCommand{}
 	}
-	endPipeline := func() *shellPipeline {
+	endPipeline := func(op string) *shellPipeline {
 		endCommand()
 		done := cur
 		if len(done.cmds) > 0 {
 			done.fn = fn()
+			if len(substs) > 0 || op == "&&" || op == "||" || lastEnd == "&&" || lastEnd == "||" {
+				done.used = true
+			}
 			pipes = append(pipes, done)
 		}
+		lastEnd = op
 		cur = &shellPipeline{}
 		return done
 	}
@@ -572,15 +590,15 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 			if prevOp == "|" || prevOp == "&&" || prevOp == "||" {
 				continue
 			}
-			endPipeline()
+			endPipeline(t.op)
 		case ";", ";;", "&", "&&", "||":
-			endPipeline()
+			endPipeline(t.op)
 		case "$(":
 			assigned := ""
 			if len(cur.cmds) == 0 && len(cmd.args) == 1 && strings.HasSuffix(cmd.args[0].word, "=") {
 				assigned = strings.TrimSuffix(cmd.args[0].word, "=")
 			}
-			endPipeline()
+			endPipeline(t.op)
 			substs = append(substs, assigned)
 		case "(":
 			if len(cur.cmds) == 0 && len(cmd.args) == 1 && i+1 < len(toks) && toks[i+1].op == ")" {
@@ -588,13 +606,13 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 				cmd = &shellCommand{}
 				break
 			}
-			endPipeline()
+			endPipeline(t.op)
 			substs = append(substs, "")
 		case ")":
 			if awaitBody != "" && i > 0 && toks[i-1].op == "(" {
 				break
 			}
-			done := endPipeline()
+			done := endPipeline(t.op)
 			if len(substs) > 0 {
 				assigned := substs[len(substs)-1]
 				substs = substs[:len(substs)-1]
@@ -603,22 +621,29 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 				}
 			}
 		case "{":
-			endPipeline()
+			endPipeline(t.op)
 			depth++
 			if awaitBody != "" {
 				fns = append(fns, fnScope{awaitBody, depth})
 				awaitBody = ""
 			}
 		case "}":
-			endPipeline()
+			endPipeline(t.op)
 			if len(fns) > 0 && fns[len(fns)-1].depth == depth {
+				name := fns[len(fns)-1].name
+				for j := len(pipes) - 1; j >= 0; j-- {
+					if pipes[j].fn == name {
+						pipes[j].used = true
+						break
+					}
+				}
 				fns = fns[:len(fns)-1]
 			}
 			depth--
 		}
 		prevOp = t.op
 	}
-	endPipeline()
+	endPipeline("")
 	return pipes, pluginLogs
 }
 
@@ -742,7 +767,7 @@ func (f *shellFile) pipelines(pipes []*shellPipeline, pluginLogs map[string]bool
 	producer := map[string]*shellCommand{} // per function: the command whose output is checked
 	for _, p := range pipes {
 		first := p.cmds[0]
-		if prev := producer[p.fn]; prev != nil && first.name() == "grep" && strings.HasPrefix(first.here, "$COMMAND_OUTPUT") {
+		if prev := producer[p.fn]; prev != nil && p.used && first.name() == "grep" && strings.HasPrefix(first.here, "$COMMAND_OUTPUT") {
 			f.outputCheck(prev, first, p.fn)
 		}
 		switch first.name() {
@@ -781,12 +806,12 @@ func (f *shellFile) pipelines(pipes []*shellPipeline, pluginLogs map[string]bool
 					}
 				}
 			}
-			if name == "dra-plugin-log" && i+1 < len(p.cmds) {
+			if name == "dra-plugin-log" && i+1 < len(p.cmds) && p.used {
 				next := p.cmds[i+1]
 				displayOnly := i+2 < len(p.cmds) && (p.cmds[i+2].name() == "tail" || p.cmds[i+2].name() == "head")
 				f.logReader(next, p.fn, "dra-plugin-log | ", displayOnly)
 			}
-			if name == "grep" && cmd.here != "" && pureVariable.MatchString(cmd.here) &&
+			if name == "grep" && p.used && cmd.here != "" && pureVariable.MatchString(cmd.here) &&
 				pluginLogs[p.fn+"\x00"+strings.Trim(cmd.here, "${}")] {
 				f.logReader(cmd, p.fn, "dra-plugin-log output | ", false)
 			}
@@ -841,6 +866,7 @@ func (f *shellFile) reparse(w shellToken, fn string, pluginLogs map[string]bool)
 	pipes, _ := shellPipelines(toks)
 	for _, p := range pipes {
 		p.fn = fn
+		p.used = true
 	}
 	f.pipelines(pipes, pluginLogs)
 }
@@ -1184,10 +1210,24 @@ func leaseStoreFields(c *collection, file string, body *ast.BlockStmt) bool {
 
 var (
 	mentionsLog = regexp.MustCompile(`(?i)\blog(s|ged|ging)?\b`)
-	codeSpan    = regexp.MustCompile("`([^`]+)`")
-	sentenceEnd = regexp.MustCompile(`[.;:]\s+`)
-	spanRef     = regexp.MustCompile("\x00([0-9]+)\x00")
+	// generatedDoc matches the marker of a generated document in its first
+	// lines: its source is not the documentation.
+	generatedDoc = regexp.MustCompile(`(?i)generated\b.*\bdo not edit`)
+	// controllerSection matches the headings of the sections about the pool
+	// controller: the log lines quoted there are the controller's (the fake
+	// pool controller's reconciler), not the driver's.
+	controllerSection = regexp.MustCompile(`(?i)\bpool controller\b`)
+	codeSpan          = regexp.MustCompile("`([^`]+)`")
+	sentenceEnd       = regexp.MustCompile(`[.;:]\s+`)
+	spanRef           = regexp.MustCompile("\x00([0-9]+)\x00")
 )
+
+// driverText returns whether a line quoted in section is the driver's: not a
+// line of the pool controller, except the MemoryConfig texts of pkg/cxl/config
+// that the controller passes on.
+func driverText(section, line string) bool {
+	return !controllerSection.MatchString(section) || strings.HasPrefix(line, "MemoryConfig: ")
+}
 
 // collectDocs adds the log lines that docs/memory/cxl/*.md quote.
 func collectDocs(c *collection, root string) error {
@@ -1203,6 +1243,10 @@ func collectDocs(c *collection, root string) error {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
+		}
+		lines := strings.SplitN(string(data), "\n", 6)
+		if generatedDoc.MatchString(strings.Join(lines[:min(5, len(lines))], "\n")) {
+			continue
 		}
 		collectDoc(c, docsDir+"/"+filepath.Base(path), string(data))
 	}
@@ -1241,7 +1285,9 @@ func collectDoc(c *collection, file, text string) {
 			for _, m := range spanRef.FindAllStringSubmatch(s, -1) {
 				n, _ := strconv.Atoi(m[1])
 				if span := spans[n]; len(span) >= 20 && strings.Contains(span, ": ") && !strings.Contains(span, "{") {
-					c.add(kindDoc, "", span, pin())
+					if driverText(section, span) {
+						c.add(kindDoc, "", span, pin())
+					}
 				}
 			}
 		}
@@ -1264,7 +1310,7 @@ func collectDoc(c *collection, file, text string) {
 			isLog := strings.TrimPrefix(trimmed, "```") == "" && (mentionsLog.MatchString(intro) || continuation)
 			if isLog {
 				for _, b := range lines[i+1 : min(j, len(lines))] {
-					if b = strings.TrimSpace(b); b != "" {
+					if b = strings.TrimSpace(b); b != "" && driverText(section, b) {
 						c.add(kindDoc, "", b, pin())
 					}
 				}

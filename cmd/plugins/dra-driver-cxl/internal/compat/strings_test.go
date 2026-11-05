@@ -121,6 +121,8 @@ helper() {
 dra-plugin-log-wait "$VM" "literal line"
 fs-refused "$VM" n "$S" "mode: fs" "$CLASS" "$TEXT_A" "second part"
 dra-plugin-log "$VM" | grep -iE 'shown only' | tail -n 3
+dra-plugin-log "$VM" | grep -E 'nobody checks'
+if dra-plugin-log "$VM" | grep -qF "in a condition"; then echo yes; fi
 retry-until 'dra-plugin-log "$VM" | grep -qF "in a quoted command"'
 dra-exec "$VM" pod/main "$CXL_REQUEST" fd --lease "$L" --exec true && error "succeeded"
 [ "$COMMAND_STATUS" == 3 ] || error "exit"
@@ -160,6 +162,7 @@ grep -qF "\"$2\"" <<< "$COMMAND_OUTPUT"
 		"Log: from log|var":                    "test99-x helper (dra-plugin-log output | grep -E)",
 		"Request: lease $L is not a dax lease": "test99-x (cxl-request output | grep -qF)",
 		"Condition: unknown field \"x\"":       "test99-x (dra-claim-condition-watch | grep -qF)",
+		"Log: in a condition":                  "test99-x (dra-plugin-log | grep -qF)",
 		"Log: literal line":                    "test99-x (dra-plugin-log-wait)",
 		"Log: in a quoted command":             "test99-x (dra-plugin-log | grep -qF)",
 	}
@@ -172,14 +175,17 @@ func TestDocStrings(t *testing.T) {
 	text := "# Section\n\nThe plugin logs a line, `cxl.nri.io: device X: mounted A at B`.\n" +
 		"Not a log: `some: inline code span here`.\n\n" +
 		"The plugin logs:\n\n```\nline one: a\nline two: b\n```\n\nand, later,\n\n```\nline three: c\n```\n\n" +
-		"An example:\n\n```\nnot: a log line\n```\n"
+		"An example:\n\n```\nnot: a log line\n```\n" +
+		"## Configuration of a pool controller\n\nThe controller logs `ERROR: claim x: invalid configuration: y` " +
+		"and the condition `MemoryConfig: pool.opaque.x: unknown field` in its log.\n"
 	c := newCollection()
 	collectDoc(c, "d.md", text)
 	var got []string
 	for _, e := range c.byKey {
 		got = append(got, e.text)
 	}
-	want := []string{"cxl.nri.io: device X: mounted A at B", "line one: a", "line three: c", "line two: b"}
+	want := []string{"MemoryConfig: pool.opaque.x: unknown field", "cxl.nri.io: device X: mounted A at B",
+		"line one: a", "line three: c", "line two: b"}
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("doc strings\n got %q\nwant %q", got, want)
