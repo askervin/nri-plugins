@@ -128,11 +128,11 @@ var localCuts = []struct {
 	// bound to device_dax (the replay of bug-22)
 	{"probe", func(f *fakeLocalSys) { f.cutProbe = true }},
 	// before the switch to device_dax: bound to kmem, memory offline
-	{"kmem", func(f *fakeLocalSys) { f.cutBefore = "daxctl reconfigure-device --mode=devdax" }},
+	{"kmem", func(f *fakeLocalSys) { f.cutBefore = "write bus/dax/drivers/kmem/remove_id dax0.0" }},
 	// in the rollback of a failed creation, after its cxl disable-region:
 	// disabled, the decoders committed (FR2b)
 	{"rollback", func(f *fakeLocalSys) {
-		f.failDaxctl = errors.New("daxctl: enable failed")
+		f.failDeviceDax = errors.New("device_dax: enable failed")
 		f.cutAfter = "cxl disable-region"
 	}},
 }
@@ -151,7 +151,7 @@ func TestLocalCutCreation(t *testing.T) {
 			dir := t.TempDir()
 			tc.cut(f)
 			cutLocal(t, f.allocator(t, dir), "u1")
-			f.failDaxctl = nil
+			f.failDeviceDax = nil
 			if rs := f.manager().Regions("mem0"); !slices.Equal(rs, []string{"region0"}) {
 				t.Fatalf("regions %v after the cut", rs)
 			}
@@ -190,7 +190,7 @@ func TestLocalCutCreationBelowNewer(t *testing.T) {
 		left func(f *fakeLocalSys)
 	}{
 		{name: "probe", cut: func(f *fakeLocalSys) { f.cutProbe = true }},
-		{name: "kmem", cut: func(f *fakeLocalSys) { f.cutBefore = "daxctl reconfigure-device --mode=devdax" }},
+		{name: "kmem", cut: func(f *fakeLocalSys) { f.cutBefore = "write bus/dax/drivers/kmem/remove_id dax0.0" }},
 		// disabled by a cut rollback that began before region9 came
 		{name: "disabled", left: func(f *fakeLocalSys) {
 			_, err := f.exec(ctx, "cxl", "disable-region", "region0")
@@ -370,12 +370,12 @@ func TestLocalFailedCreationBelowNewer(t *testing.T) {
 	f := newFakeLocalSys(t)
 	f.stackPorts("region0", "region9")
 	a := f.allocator(t, t.TempDir())
-	f.failDaxctl = errors.New("daxctl: enable failed")
+	f.failDeviceDax = errors.New("device_dax: enable failed")
 	_, _, err := a.Acquire(ctx, "u1", "mem", localSerial, api.ModeNUMA, localBlockSize, false)
 	wantErr(t, err, "enable failed")
 	wantNoRelease(t, f.commands())
 	wantDevice(t, a, "region0", "", map[string]int{"u1": 0})
-	f.failDaxctl = nil
+	f.failDeviceDax = nil
 	acquire(t, a, "u1", api.ModeNUMA, localBlockSize)
 	f.wantRegionCount(t, 1, 0)
 
@@ -392,10 +392,10 @@ func TestLocalFailedCreationBelowNewer(t *testing.T) {
 	// the probe of the kept region finds aliasing: it stays kept, and is
 	// made smaller once nothing lies above it
 	noErr(t, a.Release(ctx, "u2"))
-	f.failDaxctl = errors.New("daxctl: enable failed")
+	f.failDeviceDax = errors.New("device_dax: enable failed")
 	_, _, err = a.Acquire(ctx, "u3", "mem", localSerial, api.ModeNUMA, localBlockSize, false)
 	wantErr(t, err, "enable failed")
-	f.failDaxctl = nil
+	f.failDeviceDax = nil
 	f.aliasing = &memctl.Aliasing{Offset: f.regionSize / 2, Garbage: -1}
 	_, _, err = a.Acquire(ctx, "u3", "mem", localSerial, api.ModeNUMA, localBlockSize, false)
 	wantErr(t, err, "region0 aliases: it is created again with its first 536870912 bytes only once")
@@ -479,9 +479,9 @@ func TestPrepareLocalFailedBelowNewer(t *testing.T) {
 	ctx := testContext(t)
 	e := newLocalTestState(t)
 	e.f.stackPorts("region0", "region9")
-	e.f.failDaxctl = errors.New("daxctl: enable failed")
+	e.f.failDeviceDax = errors.New("device_dax: enable failed")
 	wantErr(t, e.Prepare(ctx, localClaim("u1", localBlockSize)), "enable failed")
-	e.f.failDaxctl = nil
+	e.f.failDeviceDax = nil
 	wantNoRelease(t, e.f.commands())
 	wantDevice(t, e.local, "region0", "", map[string]int{"u1": 0})
 	noErr(t, e.Prepare(ctx, localClaim("u1", localBlockSize)))
@@ -614,10 +614,10 @@ func TestLocalRegionComesAboveInRelease(t *testing.T) {
 			f.before = map[string]func(){"cxl disable-region": comes}
 			switch tc {
 			case "rollback":
-				f.failDaxctl = errors.New("daxctl: enable failed")
+				f.failDeviceDax = errors.New("device_dax: enable failed")
 				_, _, err := a.Acquire(ctx, "u1", "mem", localSerial, api.ModeNUMA, localBlockSize, false)
 				wantErr(t, err, "enable failed")
-				f.failDaxctl = nil
+				f.failDeviceDax = nil
 			case "aliased":
 				f.aliasing = &memctl.Aliasing{Offset: f.regionSize / 2, Garbage: -1}
 				_, _, err := a.Acquire(ctx, "u1", "mem", localSerial, api.ModeNUMA, localBlockSize, false)

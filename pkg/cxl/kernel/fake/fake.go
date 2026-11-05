@@ -14,10 +14,11 @@
 
 // Package fake is the kernel's side of the CXL kernel objects of a node
 // for tests: a sysfs tree, a procfs and a /dev in temporary directories,
-// the cxl, ndctl and daxctl commands, the sysfs attributes that the kernel
-// acts on when they are written, and the system calls of package kernel
-// (mounts, block and loop devices, the memory of dax devices), with the
-// rules of the kernel that the driver depends on:
+// the cxl and ndctl commands (any other command, daxctl too, is an error),
+// the sysfs attributes that the kernel acts on when they are written, and
+// the system calls of package kernel (mounts, block and loop devices, the
+// memory of dax devices), with the rules of the kernel that the driver
+// depends on:
 //
 //   - memdevs under host bridges and switches, enabled and disabled, with
 //     the endpoint port appearing after the driver link (EndpointDelay);
@@ -476,8 +477,6 @@ func (f *Fake) run(name string, args []string) (string, error) {
 		return "", f.disableMemdev(args[1])
 	case "ndctl create-namespace":
 		return f.createNamespace(args[1:])
-	case "daxctl reconfigure-device":
-		return "", f.daxctlReconfigure(args[1:])
 	}
 	return "", errors.New("unexpected command " + name + " " + strings.Join(args, " "))
 }

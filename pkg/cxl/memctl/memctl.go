@@ -17,11 +17,10 @@
 // RAM of a NUMA node) or dax (a dax character device), online or offline
 // its memory, slice the dax region of a region into dax devices, create a
 // region of persistent memory and an fsdax namespace in it, destroy the
-// region and disable the memdev. It drives sysfs and the cxl, daxctl and
-// ndctl CLIs through package kernel, which has the implementation of every
-// step; memctl composes them into these flows for its callers, and binds
-// dax devices with daxctl when it is installed (package kernel never runs
-// it).
+// region and disable the memdev. It drives sysfs and the cxl and ndctl
+// CLIs through package kernel, which has the implementation of every step;
+// memctl composes them into these flows for its callers. Dax devices are
+// bound through sysfs only, never with daxctl.
 package memctl
 
 import (
@@ -29,7 +28,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -72,7 +70,8 @@ type Manager struct {
 	DevRoot string
 	// Exec runs a command and returns its combined output.
 	Exec func(ctx context.Context, name string, args ...string) (string, error)
-	// LookPath finds an executable.
+	// LookPath is not used: memctl runs no executable that it would have
+	// to look for (the field stays for the callers that set it).
 	LookPath func(name string) (string, error)
 	// Logf logs what is done ("" output if nil).
 	Logf func(format string, args ...any)
@@ -89,7 +88,6 @@ func New() *Manager {
 		SysRoot:      "/sys",
 		DevRoot:      "/dev",
 		Exec:         kernel.RunCommand,
-		LookPath:     exec.LookPath,
 		PollInterval: 200 * time.Millisecond,
 	}
 }
@@ -307,48 +305,17 @@ func (mc *Manager) SetBlocksState(blocks []int, state string) error {
 	return mc.kernel().SetBlocksState(blocks, state)
 }
 
-func (mc *Manager) has(cmd string) bool {
-	if mc.LookPath == nil {
-		return false
-	}
-	_, err := mc.LookPath(cmd)
-	return err == nil
-}
-
-// SetDaxDriver binds a dax device to device_dax or kmem, with daxctl
-// reconfigure-device when it is installed, else through sysfs (see
-// SetDaxDriverSysfs). Memory of kmem must be offline before switching
-// away. daxctl binds with new_id and leaves the id in the driver; it is
-// removed afterwards, as SetDaxDriverSysfs does: else the driver takes the
-// device again whenever it is unbound and someone writes a new_id, and a
-// later device of that name binds to it instead of its default driver.
+// SetDaxDriver binds a dax device to device_dax or kmem through the sysfs
+// attributes of the dax bus (kernel.BindDax): kmem with bind only, never
+// its new_id; device_dax with new_id and bind; the name removed from the
+// ids of the drivers before every unbind and after every bind. Memory of
+// kmem must be offline before switching away.
 func (mc *Manager) SetDaxDriver(ctx context.Context, dax, driver string) error {
-	k := mc.kernel()
-	if k.DaxDriver(dax) == driver {
-		return nil
-	}
-	if !mc.has("daxctl") {
-		return k.BindDax(ctx, dax, driver)
-	}
-	// the daxctl modes of device_dax and kmem
-	args := []string{"reconfigure-device", "--mode=devdax", "--force", dax}
-	if driver == DriverKmem {
-		args = []string{"reconfigure-device", "--mode=system-ram", "--no-online", dax}
-	}
-	_, err := mc.Exec(ctx, "daxctl", args...)
-	k.RemoveDaxID(driver, dax)
-	if err != nil {
-		return err
-	}
-	if got := k.DaxDriver(dax); got != driver {
-		return fmt.Errorf("%s is bound to %q, not %q", dax, got, driver)
-	}
-	mc.logf("%s: bound to %s", dax, driver)
-	return nil
+	return mc.kernel().BindDax(ctx, dax, driver)
 }
 
-// SetDaxDriverSysfs binds a dax device to device_dax or kmem through the
-// sysfs attributes of the dax bus (kernel.BindDax). The memory blocks that
+// SetDaxDriverSysfs is SetDaxDriver: it binds a dax device to device_dax or
+// kmem through the sysfs attributes of the dax bus. The memory blocks that
 // kmem adds are offline unless auto_online_blocks onlines them.
 func (mc *Manager) SetDaxDriverSysfs(ctx context.Context, dax, driver string) error {
 	return mc.kernel().BindDax(ctx, dax, driver)
@@ -474,7 +441,7 @@ func (mc *Manager) CreateRegionNoted(ctx context.Context, memdev, mode, decoder 
 	}
 	// A dax device that the kernel bound to kmem by itself looks bound
 	// while its memory is still being added: let the probe finish before
-	// switching drivers (daxctl fails with ENOENT) or onlining.
+	// switching drivers or onlining.
 	if mc.DaxDriver(dax) == DriverKmem {
 		if err := k.WaitRegionBlocks(ctx, region); err != nil {
 			return nil, err

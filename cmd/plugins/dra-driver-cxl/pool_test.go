@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -48,8 +49,8 @@ import (
 )
 
 // fakePoolSys is a sysfs tree with one hotplugged CXL memdev (mem0) under
-// host bridge 12, with the cxl and daxctl CLIs faked on top of it, like
-// the tests of nri-plugins pkg/cxl/memctl.
+// host bridge 12, with the cxl CLI and the attributes of the dax drivers
+// faked on top of it, like the tests of nri-plugins pkg/cxl/memctl.
 type fakePoolSys struct {
 	t      *testing.T
 	root   string
@@ -174,6 +175,8 @@ func (f *fakePoolSys) run(ctx context.Context, name string, args ...string) (str
 		f.mkdir(daxPath)
 		f.link("bus/dax/devices/dax0.0", "../../../"+daxPath)
 		f.write(daxPath+"/target_node", "2")
+		f.write(daxPath+"/size", "268435456")
+		f.write(daxPath+"/resource", "0x250000000")
 		f.write(daxPath+"/dev", cmp.Or(f.daxDev, "251:3"))
 		f.link(daxPath+"/driver", "../../../../../dax/drivers/kmem")
 		return `[{"region":"region0","resource":"0x250000000","size":"256.00 MiB"}]`, nil
@@ -189,13 +192,6 @@ func (f *fakePoolSys) run(ctx context.Context, name string, args ...string) (str
 		return "", nil
 	case "cxl disable-memdev":
 		_ = os.Remove(f.p(fakeMemPath + "/driver"))
-		return "", nil
-	case "daxctl reconfigure-device":
-		drv := "kmem"
-		if strings.Contains(strings.Join(args, " "), "--mode=devdax") {
-			drv = "device_dax"
-		}
-		f.link(daxPath+"/driver", "../../../../../dax/drivers/"+drv)
 		return "", nil
 	}
 	return "", errors.New("unexpected command " + name + " " + strings.Join(args, " "))
@@ -218,7 +214,6 @@ func (f *fakePoolSys) manager() *memctl.Manager {
 		SysRoot:      f.root,
 		DevRoot:      "/dev",
 		Exec:         f.exec,
-		LookPath:     func(string) (string, error) { return "/usr/bin/daxctl", nil },
 		PollInterval: 2 * time.Millisecond,
 		Logf:         f.t.Logf,
 		WriteFile:    f.writeAttr,
@@ -226,8 +221,26 @@ func (f *fakePoolSys) manager() *memctl.Manager {
 }
 
 // writeAttr writes a sysfs attribute; delete_region of a root decoder
-// deletes the region under it, as the kernel does.
+// deletes the region under it, and the attributes of a dax driver bind and
+// unbind dax0.0, as the kernel does. The writes of dax driver attributes
+// are commands ("write bus/dax/drivers/device_dax/new_id dax0.0"); the
+// plugin is killed after the one of cutAfter.
 func (f *fakePoolSys) writeAttr(path, val string) error {
+	if rel, _ := filepath.Rel(f.root, path); filepath.Dir(filepath.Dir(rel)) == "bus/dax/drivers" {
+		cmd := "write " + rel + " " + val
+		f.mu.Lock()
+		f.cmds = append(f.cmds, cmd)
+		cut := f.cutAfter != "" && strings.HasPrefix(cmd, f.cutAfter)
+		if cut {
+			f.cutAfter = ""
+		}
+		f.mu.Unlock()
+		err := f.daxDriverAttr(filepath.Base(filepath.Dir(rel)), filepath.Base(rel), val)
+		if cut {
+			panic(errCut)
+		}
+		return err
+	}
 	if filepath.Base(path) != "delete_region" {
 		return os.WriteFile(path, []byte(val), 0o644)
 	}
@@ -240,6 +253,33 @@ func (f *fakePoolSys) writeAttr(path, val string) error {
 	}
 	_ = os.RemoveAll(dir)
 	_ = os.Remove(f.p("bus/cxl/devices/" + val))
+	return nil
+}
+
+// daxDriverAttr binds dax0.0 to the driver (bind, new_id) or unbinds it
+// (unbind), as the dax bus does; remove_id does nothing that sysfs shows.
+func (f *fakePoolSys) daxDriverAttr(driver, attr, dax string) error {
+	if dax != "dax0.0" {
+		return syscall.ENODEV
+	}
+	cur := ""
+	if t, err := os.Readlink(f.p(daxPath + "/driver")); err == nil {
+		cur = filepath.Base(t)
+	}
+	switch attr {
+	case "unbind":
+		if cur != driver {
+			return syscall.ENODEV
+		}
+		_ = os.Remove(f.p(daxPath + "/driver"))
+	case "bind", "new_id":
+		switch {
+		case cur != "" && attr == "bind":
+			return syscall.EBUSY
+		case cur == "":
+			f.link(daxPath+"/driver", "../../../../../dax/drivers/"+driver)
+		}
+	}
 	return nil
 }
 
@@ -643,7 +683,7 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
 	e.f.wantBlocks(t, "offline") // shared memory is never onlined
-	e.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
+	e.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
 	sharedEnv := func(uid string) []string {
 		return []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
 			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_" + uid + "_0=1"}
@@ -796,7 +836,7 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
-	e.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
+	e.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
 	e.f.wantBlocks(t, "offline") // a dax device is never onlined
 	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0",
 		"CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})

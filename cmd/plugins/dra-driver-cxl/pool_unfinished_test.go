@@ -137,7 +137,7 @@ func TestPoolCutPrepareRetry(t *testing.T) {
 	}{
 		{"fs", persistentData, fsConfig("direct", ""), "cxl create-region", api.ModeFs, true},
 		{"numa", exclusiveData, "", "cxl create-region", api.ModeNUMA, false},
-		{"dax", exclusiveData, daxConfig, "daxctl reconfigure-device", api.ModeDax, false},
+		{"dax", exclusiveData, daxConfig, "write bus/dax/drivers/device_dax/new_id", api.ModeDax, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newPoolTestEnv(t)
@@ -305,7 +305,7 @@ func TestPoolCutVolatilePrepare(t *testing.T) {
 					return err
 				}
 			} else {
-				e.f.cutAfter = "daxctl reconfigure-device --mode=devdax"
+				e.f.cutAfter = "write bus/dax/drivers/device_dax/new_id"
 			}
 			cutPrepare(t, p, claim)
 			if tc.mode == api.ModeNUMA && e.f.read("devices/system/memory/memory74/state") != "online_movable" {
@@ -651,7 +651,7 @@ func TestPoolForgetSaveFails(t *testing.T) {
 	exec := p2.mem.Exec
 	p2.mem.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
 		out, err := exec(ctx, name, args...)
-		if name == "daxctl" || (name == "cxl" && args[0] == "create-region") {
+		if name == "cxl" && args[0] == "create-region" {
 			_ = os.MkdirAll(tmp, 0o755)
 		}
 		return out, err

@@ -16,7 +16,6 @@ package fake
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -449,33 +448,6 @@ func (f *Fake) attach(driver string) {
 			}
 		}
 	}
-}
-
-// daxctlReconfigure runs daxctl reconfigure-device as daxctl v85 does: it
-// unbinds after a remove_id of the current driver, binds with new_id and
-// bind, and leaves the id. Package kernel never runs it.
-func (f *Fake) daxctlReconfigure(args []string) error {
-	if len(args) == 0 {
-		return errors.New("daxctl: no device")
-	}
-	drv := kernel.DriverKmem
-	if slices.Contains(args, "--mode=devdax") {
-		drv = kernel.DriverDeviceDax
-	}
-	dax := args[len(args)-1]
-	if cur := f.daxDriverOf(dax); cur != "" {
-		if cur == drv {
-			return nil
-		}
-		_ = f.daxDriverAttr(cur, "remove_id", dax)
-		_ = f.daxDriverAttr(cur, "unbind", dax)
-	}
-	_ = f.daxDriverAttr(drv, "new_id", dax)
-	_ = f.daxDriverAttr(drv, "bind", dax)
-	if f.daxDriverOf(dax) == "" {
-		return errors.New("daxctl: " + dax + ": failed to enable")
-	}
-	return nil
 }
 
 // blockRel returns the sysfs directory of memory block n, relative.

@@ -55,10 +55,10 @@ const (
 // blocks exist while kmem has the memory of a dax device.
 type fakeLocalSys struct {
 	*fakePoolSys
-	nextDax    int              // id of the next dax device that dax_region/create makes
-	failCreate int              // number of region creations that fail with add_dev
-	fail       map[string]error // sysfs attribute (relative path) -> write error
-	failDaxctl error            // error of daxctl
+	nextDax       int              // id of the next dax device that dax_region/create makes
+	failCreate    int              // number of region creations that fail with add_dev
+	fail          map[string]error // sysfs attribute (relative path) -> write error
+	failDeviceDax error            // error of the writes that bind a dax device to device_dax
 	// failSeq has the results of the next writes of sysfs attributes
 	// (relative path), nil for a write that succeeds.
 	failSeq  map[string][]error
@@ -172,21 +172,6 @@ func (f *fakeLocalSys) exec(ctx context.Context, name string, args ...string) (s
 			_ = os.Remove(d)
 		}
 		return out, err
-	case "daxctl reconfigure-device":
-		f.record(name, args...)
-		if f.failDaxctl != nil {
-			return "", f.failDaxctl
-		}
-		dax := args[len(args)-1]
-		if f.daxSize(dax) == 0 {
-			return "", errors.New("daxctl: " + dax + ": enable failed")
-		}
-		drv := memctl.DriverKmem
-		if strings.Contains(strings.Join(args, " "), "--mode=devdax") {
-			drv = memctl.DriverDeviceDax
-		}
-		f.setDriver(dax, drv)
-		return "", nil
 	}
 	return f.fakePoolSys.exec(ctx, name, args...)
 }
@@ -363,9 +348,21 @@ func (f *fakeLocalSys) writeAttr(path, val string) error {
 	if err != nil {
 		return err
 	}
+	f.mu.Lock()
+	cut := f.cutBefore != "" && strings.HasPrefix("write "+rel+" "+val, f.cutBefore)
+	if cut {
+		f.cutBefore = ""
+	}
+	f.mu.Unlock()
+	if cut {
+		panic(errCut)
+	}
 	if err := f.fail[rel]; err != nil {
 		delete(f.fail, rel)
 		return err
+	}
+	if f.failDeviceDax != nil && (rel == "bus/dax/drivers/device_dax/new_id" || rel == "bus/dax/drivers/device_dax/bind") {
+		return f.failDeviceDax
 	}
 	if q := f.failSeq[rel]; len(q) > 0 {
 		f.failSeq[rel] = q[1:]
@@ -778,11 +775,10 @@ func TestLocalDaxSlices(t *testing.T) {
 	wantUsed(t, a, false)
 }
 
-// Without daxctl, slices of both modes are bound through sysfs.
+// Slices of both modes are bound through sysfs.
 func TestLocalSlicesSysfs(t *testing.T) {
 	f := newFakeLocalSys(t)
 	m := f.manager()
-	m.LookPath = func(string) (string, error) { return "", errors.New("no daxctl") }
 	a, err := newLocalAllocator(m, filepath.Join(t.TempDir(), localStateFileName), "boot-1")
 	noErr(t, err)
 	a.zero = f.zero
@@ -1226,12 +1222,12 @@ func TestLocalSliceFailures(t *testing.T) {
 
 	// the region does not come up in devdax mode: the region that the
 	// failed creation left goes again
-	f.failDaxctl = errors.New("daxctl: enable failed")
+	f.failDeviceDax = errors.New("device_dax: enable failed")
 	_, _, err := a.Acquire(ctx, "u1", "mem", localSerial, api.ModeDax, 8*mib, false)
 	wantErr(t, err, "enable failed")
 	f.wantRegionReleased(t, "region0")
 	wantUsed(t, a, false)
-	f.failDaxctl = nil
+	f.failDeviceDax = nil
 
 	// zeroing fails: the same
 	f.zeroErr = errors.New("mmap: no such device")
@@ -1264,13 +1260,13 @@ func TestLocalSliceFailures(t *testing.T) {
 		t.Fatal("a slice that failed to resize was left")
 	}
 	f.fail = nil
-	f.failDaxctl = errors.New("daxctl: enable failed")
+	f.failDeviceDax = errors.New("device_dax: enable failed")
 	_, _, err = a.Acquire(ctx, "u2", "mem", localSerial, api.ModeDax, 8*mib, false)
 	wantErr(t, err, "enable failed")
 	if f.daxExists("dax0.2") {
 		t.Fatal("a slice that failed to bind was left")
 	}
-	f.failDaxctl = nil
+	f.failDeviceDax = nil
 	f.fail = map[string]error{"devices/system/memory/memory76/state": syscall.EIO}
 	_, _, err = a.Acquire(ctx, "u2", "mem", localSerial, api.ModeNUMA, 2*localBlockSize, false)
 	wantErr(t, err, "memory76: online_movable")

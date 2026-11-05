@@ -38,7 +38,7 @@ const (
 )
 
 // newFake returns a fake with mem0 plugged under host bridge 12 and a
-// Manager on it, with daxctl installed.
+// Manager on it.
 func newFake(t *testing.T, spec fake.MemdevSpec) (*fake.Fake, *Manager) {
 	t.Helper()
 	f := fake.New(t)
@@ -49,7 +49,8 @@ func newFake(t *testing.T, spec fake.MemdevSpec) (*fake.Fake, *Manager) {
 	return f, manager(f)
 }
 
-// manager returns a Manager on the fake, with daxctl installed.
+// manager returns a Manager on the fake. Its LookPath finds daxctl, which
+// memctl must not run: the fake fails every command but cxl and ndctl.
 func manager(f *fake.Fake) *Manager {
 	k := f.Kernel()
 	return &Manager{
@@ -61,10 +62,6 @@ func manager(f *fake.Fake) *Manager {
 		Logf:         k.Logf,
 		WriteFile:    k.WriteFile,
 	}
-}
-
-func noDaxctl(m *Manager) {
-	m.LookPath = func(string) (string, error) { return "", errors.New("not found") }
 }
 
 func noErr(t *testing.T, err error) {
@@ -143,7 +140,7 @@ func TestRegionNUMAOnlineRelease(t *testing.T) {
 }
 
 // A region in mode dax: the disabled memdev is enabled, device_dax bound
-// with daxctl; modes are validated (TestRegionDax of before).
+// through sysfs; modes are validated (TestRegionDax of before).
 func TestRegionDax(t *testing.T) {
 	f, g := newFake(t, fake.MemdevSpec{Disabled: true})
 	ctx := context.Background()
@@ -153,7 +150,7 @@ func TestRegionDax(t *testing.T) {
 		t.Fatalf("region info %+v", ri)
 	}
 	cmds := f.Commands()
-	if !strings.HasPrefix(cmds, "cxl enable-memdev mem0\n") || !strings.Contains(cmds, "daxctl reconfigure-device --mode=devdax --force dax0.0") {
+	if !strings.HasPrefix(cmds, "cxl enable-memdev mem0\n") || strings.Contains(cmds, "daxctl") {
 		t.Fatalf("commands:\n%s", cmds)
 	}
 	if ma, mi, err := g.DaxDevNumbers("dax0.0"); err != nil || ma != 252 || mi != 0 {
@@ -163,7 +160,7 @@ func TestRegionDax(t *testing.T) {
 		t.Fatal("online must fail in mode dax")
 	}
 	if f.HasDaxID(DriverDeviceDax, "dax0.0") {
-		t.Fatal("daxctl left its id")
+		t.Fatal("an id of dax0.0 left in device_dax")
 	}
 	for _, mode := range []string{"bogus", "devdax", "ram", ""} {
 		want := `invalid mode "` + mode + `" (numa or dax)`
@@ -209,10 +206,10 @@ func TestRegionDaxReofflinesAutoOnlined(t *testing.T) {
 	settleOffline = 50 * time.Millisecond
 	f, g := newFake(t, fake.MemdevSpec{})
 	f.AutoOnline = 2
-	f.Before("daxctl", func() {
+	f.Before("write bus/dax/drivers/kmem/unbind", func() {
 		for _, b := range []int{74, 75} {
 			if st := f.BlockState(b); st != kernel.BlockStateOffline {
-				t.Errorf("daxctl with memory%d %s", b, st)
+				t.Errorf("kmem unbound with memory%d %s", b, st)
 			}
 		}
 	})
@@ -222,24 +219,18 @@ func TestRegionDaxReofflinesAutoOnlined(t *testing.T) {
 	}
 }
 
-// bug-21 with daxctl: it binds with new_id and leaves the id; SetDaxDriver
-// removes it, and an id that another tool left is removed by the unbind of
-// a resize (TestDaxIDsNotLeft).
+// bug-21: SetDaxDriver leaves no id after a bind, and an id that another
+// tool left is removed by the unbind of a resize (TestDaxIDsNotLeft).
 func TestDaxIDsNotLeft(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		daxctl bool
-		left   bool
+		name string
+		left bool
 	}{
-		{name: "daxctl", daxctl: true},
 		{name: "sysfs"},
-		{name: "left by another tool", daxctl: true, left: true},
+		{name: "left by another tool", left: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, g := newFake(t, fake.MemdevSpec{})
-			if !tc.daxctl {
-				noDaxctl(g)
-			}
 			ctx := context.Background()
 			_, err := g.CreateRegion(ctx, "mem0", ModeDax, "")
 			noErr(t, err)
@@ -274,8 +265,8 @@ func TestDaxIDsNotLeft(t *testing.T) {
 	}
 }
 
-// Without daxctl, kmem is bound with bind only, device_dax with new_id and
-// bind (TestDaxDriverSysfs, TestSetDaxDriverSysfs).
+// kmem is bound with bind only, device_dax with new_id and bind, also when
+// daxctl is installed (TestDaxDriverSysfs, TestSetDaxDriverSysfs).
 func TestSetDaxDriverSysfs(t *testing.T) {
 	f, g := newFake(t, fake.MemdevSpec{})
 	ctx := context.Background()
@@ -291,20 +282,32 @@ func TestSetDaxDriverSysfs(t *testing.T) {
 	if len(f.Commands()) != ncmds {
 		t.Fatalf("daxctl used:\n%s", f.Commands()[ncmds:])
 	}
-	noDaxctl(g)
 	noErr(t, g.UnbindDax(ctx, "dax0.0"))
+	f.Writes()
 	noErr(t, g.SetDaxDriver(ctx, "dax0.0", DriverDeviceDax))
-	if len(f.Commands()) != ncmds {
-		t.Fatalf("daxctl used:\n%s", f.Commands()[ncmds:])
+	if w := strings.Join(f.Writes(), ","); w != "bus/dax/drivers/device_dax/new_id,bus/dax/drivers/device_dax/remove_id" {
+		t.Fatalf("device_dax bind writes %s", w)
 	}
-	// a daxctl that fails leaves no id
-	g = manager(f)
-	f.FailCommand("daxctl", errors.New("daxctl: failed"))
-	noErr(t, g.UnbindDax(ctx, "dax0.0"))
+	if len(f.Commands()) != ncmds {
+		t.Fatalf("commands:\n%s", f.Commands()[ncmds:])
+	}
+	// a bind that fails leaves no id, kmem's neither
+	noErr(t, g.ResizeDaxDevice(ctx, "dax0.0", 0))
 	f.SetDaxID(DriverKmem, "dax0.0")
 	if err := g.SetDaxDriver(ctx, "dax0.0", DriverKmem); err == nil || f.HasDaxID(DriverKmem, "dax0.0") {
-		t.Fatalf("a failed daxctl: %v, id left %v", err, f.HasDaxID(DriverKmem, "dax0.0"))
+		t.Fatalf("a failed bind: %v, id left %v", err, f.HasDaxID(DriverKmem, "dax0.0"))
 	}
+	if !strings.Contains(err2text(g.SetDaxDriver(ctx, "dax0.0", DriverDeviceDax)), "bind dax0.0 to device_dax: ") {
+		t.Fatal("the text of a failed bind changed")
+	}
+}
+
+// err2text returns the text of err, "" for nil.
+func err2text(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // The dax devices of a region are listed in lexical order, the first one

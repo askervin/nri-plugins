@@ -1543,7 +1543,7 @@ func TestBrokerPoolDaxLease(t *testing.T) {
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
 	}
-	e.pe.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
+	e.pe.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
 	e.pe.f.wantBlocks(t, "offline")
 	e.wantDaxFd(resp, fd)
 	if got := e.opened(); !slices.Equal(got, []bool{false}) {
@@ -2055,7 +2055,7 @@ func TestBrokerDefaultLeaseFromPool(t *testing.T) {
 	if resp.State != api.StateReady || resp.Source != "pool" || resp.Mode != "dax" || resp.Dax != "/dev/dax0.0" || resp.Serial != "0xc1ee0001" {
 		t.Fatalf("lease from the pool %+v", resp)
 	}
-	e.pe.f.wantCommand(t, "daxctl reconfigure-device --mode=devdax --force dax0.0")
+	e.pe.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
 	if l := e.lease(resp.Lease); l.Source != api.SourcePool {
 		t.Fatalf("stored lease %+v", l)
 	}
