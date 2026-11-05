@@ -22,14 +22,16 @@ package compat
 //     the TEXT arguments of the matchers in shellMatchers, the patterns of
 //     grep, awk and sed reading `dra-plugin-log` (a grep piped into head or
 //     tail only displays lines and is skipped), the values of the *_TEXT
-//     arrays, the texts of the event lists of dra-wait expressions, and the
-//     readiness lines of test90's executor (executorLines). A TEXT that is
+//     arrays, the texts of the event lists of dra-wait expressions, the
+//     readiness lines of test90's executor (executorLines), and the fixed
+//     strings that a grep finds in $COMMAND_OUTPUT of cxl-request or of a
+//     claim's device condition just before it (outputCheck). A TEXT that is
 //     one variable is replaced by the value of its only assignment in the
 //     same file, and skipped when there is no such value.
 //   - test90's mbt-observe.py: the driver log patterns from PANIC to the end
 //     of LOG_COUNTS, the names of observerNames, the state view files of
-//     state() and the fields read by local_devices(), pool_claims() and the
-//     CDI spec glob of cdi_pool().
+//     state(), the fields read by local_devices() and pool_claims(), the
+//     CDI spec glob of cdi_pool() and the socket of driver_log().
 //   - test90's model/oracle*.go: the string constants, and the json fields
 //     of leases.json that checkLeaseStore decodes.
 //   - docs/memory/cxl/*.md: the lines of fenced blocks without a language
@@ -68,6 +70,7 @@ const (
 	kindLog kind = iota
 	kindEvent
 	kindRequest
+	kindCondition
 	kindExecutor
 	kindObserver
 	kindOracle
@@ -78,16 +81,17 @@ const (
 )
 
 var kinds = []struct{ prefix, title, verb string }{
-	kindLog:      {"Log", "Texts that the e2e tests find in the log of the driver.", "Pinned by"},
-	kindEvent:    {"Event", "Texts that the e2e tests find in the Events of pods whose claims the driver refused to prepare.", "Pinned by"},
-	kindRequest:  {"Request", "Texts that the e2e tests find in the output of cxl-request.", "Pinned by"},
-	kindExecutor: {"Executor", "Lines of the driver log that the test90 executor waits for.", "Pinned by"},
-	kindObserver: {"Observer", "Patterns of the driver log that the test90 observer counts or waits for.", "Pinned by"},
-	kindOracle:   {"Oracle", "Texts of the Events of the driver that the test90 oracle matches.", "Pinned by"},
-	kindName:     {"Name", "Paths, labels and names of the driver that the test90 observer reads.", "Pinned by"},
-	kindView:     {"View", "State view files that the test90 observer reads.", "Pinned by"},
-	kindField:    {"Field", "Fields of the state views that the test90 observer and oracle read, by view.", "Pinned by"},
-	kindDoc:      {"Doc", "Log lines that docs/memory/cxl quotes.", "Quoted in"},
+	kindLog:       {"Log", "Texts that the e2e tests find in the log of the driver.", "Pinned by"},
+	kindEvent:     {"Event", "Texts that the e2e tests find in the Events of pods whose claims the driver refused to prepare.", "Pinned by"},
+	kindRequest:   {"Request", "Texts that the e2e tests find in the output of cxl-request.", "Pinned by"},
+	kindCondition: {"Condition", "Texts of pkg/cxl/config that the e2e tests find in the device conditions that a pool controller sets.", "Pinned by"},
+	kindExecutor:  {"Executor", "Lines of the driver log that the test90 executor waits for.", "Pinned by"},
+	kindObserver:  {"Observer", "Patterns of the driver log that the test90 observer counts or waits for.", "Pinned by"},
+	kindOracle:    {"Oracle", "Texts of the Events of the driver that the test90 oracle matches.", "Pinned by"},
+	kindName:      {"Name", "Paths, labels and names of the driver that the test90 observer reads.", "Pinned by"},
+	kindView:      {"View", "State view files that the test90 observer reads.", "Pinned by"},
+	kindField:     {"Field", "Fields of the state views that the test90 observer and oracle read, by view.", "Pinned by"},
+	kindDoc:       {"Doc", "Log lines that docs/memory/cxl quotes.", "Quoted in"},
 }
 
 // entry is one string of strings.go.
@@ -619,6 +623,7 @@ func shellPipelines(toks []shellToken) ([]*shellPipeline, map[string]bool) {
 }
 
 var (
+	hasLetter    = regexp.MustCompile(`[A-Za-z]`)
 	pureVariable = regexp.MustCompile(`^\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9*@#])$`)
 	assignment   = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 	textArray    = regexp.MustCompile(`^([A-Z][A-Z0-9_]*_TEXT)=$`)
@@ -708,12 +713,13 @@ func (f *shellFile) resolve(text string) (string, bool) {
 }
 
 // add adds text, resolved, as a string of kind k and returns its entry, nil
-// if text does not resolve.
+// if text does not resolve or has no letter outside its shell expansions.
 func (f *shellFile) add(k kind, name, text, fn, how string) *entry {
-	if v, ok := f.resolve(text); ok {
-		return f.c.add(k, name, v, f.pin(fn, how))
+	v, ok := f.resolve(text)
+	if !ok || !hasLetter.MatchString(templateExpansion.ReplaceAllString(v, "")) {
+		return nil
 	}
-	return nil
+	return f.c.add(k, name, v, f.pin(fn, how))
 }
 
 // arrays adds the values of the arrays *_TEXT=(...) as event texts.
@@ -733,7 +739,19 @@ func (f *shellFile) arrays(toks []shellToken) {
 
 // pipelines adds the strings of the matchers and the log readers of pipes.
 func (f *shellFile) pipelines(pipes []*shellPipeline, pluginLogs map[string]bool) {
+	producer := map[string]*shellCommand{} // per function: the command whose output is checked
 	for _, p := range pipes {
+		first := p.cmds[0]
+		if prev := producer[p.fn]; prev != nil && first.name() == "grep" && strings.HasPrefix(first.here, "$COMMAND_OUTPUT") {
+			f.outputCheck(prev, first, p.fn)
+		}
+		switch first.name() {
+		case "dra-exec", "dra-claim-condition-watch":
+			producer[p.fn] = first
+		case "[", "[[", "error", "command-error", "echo":
+		default:
+			producer[p.fn] = nil
+		}
 		for i, cmd := range p.cmds {
 			name := cmd.name()
 			args := words(cmd.args)
@@ -778,6 +796,39 @@ func (f *shellFile) pipelines(pipes []*shellPipeline, pluginLogs map[string]bool
 				}
 			}
 		}
+	}
+}
+
+// outputCheck adds the fixed string that grep finds in the output of the
+// producer command just before it: the output of cxl-request (dra-exec of
+// $CXL_REQUEST or $DRA_REQUEST_CTR_BIN with no program or the program true)
+// or the device condition of a claim (dra-claim-condition-watch).
+func (f *shellFile) outputCheck(producer, grep *shellCommand, fn string) {
+	args := words(producer.args)
+	k, how := kindRequest, "cxl-request output | grep"
+	switch producer.name() {
+	case "dra-exec":
+		request, program := false, ""
+		for i, a := range args {
+			if a == "$CXL_REQUEST" || a == "$DRA_REQUEST_CTR_BIN" {
+				request = true
+			}
+			if a == "--exec" && i+1 < len(args) {
+				program = args[i+1]
+			}
+		}
+		if !request || (program != "" && program != "true") {
+			return
+		}
+	case "dra-claim-condition-watch":
+		k, how = kindCondition, "dra-claim-condition-watch | grep"
+	}
+	opts, patterns := grepArgs(words(grep.args[1:]))
+	if !strings.Contains(opts, "F") {
+		return
+	}
+	for _, p := range patterns {
+		f.add(k, "", p, fn, how+opts)
 	}
 }
 
@@ -896,6 +947,7 @@ var (
 	pyTuple     = regexp.MustCompile(`(?s)(?:keys = |for k in )\(([^)]*)\)`)
 	pyQuoted    = regexp.MustCompile(`"(\w+)"`)
 	pyGlob      = regexp.MustCompile(`glob\.glob\(d \+ "/([^"]+)"\)`)
+	pySocket    = regexp.MustCompile(`"/var/lib/kubelet/plugins/%s/([\w.]+\.sock)"`)
 )
 
 // collectObserver adds the strings of test90's mbt-observe.py.
@@ -1018,6 +1070,14 @@ func collectObserver(c *collection, root string) error {
 	}
 	for _, m := range pyGlob.FindAllStringSubmatch(b, -1) {
 		c.add(kindName, "CDIPoolSpecGlob", m[1], pin("cdi_pool() (glob)"))
+	}
+
+	b, err = body("driver_log")
+	if err != nil {
+		return err
+	}
+	for _, m := range pySocket.FindAllStringSubmatch(b, -1) {
+		c.add(kindName, "DRASocket", m[1], pin("driver_log() sockets"))
 	}
 	return nil
 }

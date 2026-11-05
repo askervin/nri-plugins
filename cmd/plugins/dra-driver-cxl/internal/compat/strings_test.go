@@ -122,6 +122,15 @@ dra-plugin-log-wait "$VM" "literal line"
 fs-refused "$VM" n "$S" "mode: fs" "$CLASS" "$TEXT_A" "second part"
 dra-plugin-log "$VM" | grep -iE 'shown only' | tail -n 3
 retry-until 'dra-plugin-log "$VM" | grep -qF "in a quoted command"'
+dra-exec "$VM" pod/main "$CXL_REQUEST" fd --lease "$L" --exec true && error "succeeded"
+[ "$COMMAND_STATUS" == 3 ] || error "exit"
+grep -qF "lease $L is not a dax lease" <<< "$COMMAND_OUTPUT
+$DRA_EXEC_STDERR" || error "no text"
+dra-exec "$VM" pod/main "$CXL_REQUEST" fd --lease "$L" --exec sh -c "$prog"
+grep -qF "program output" <<< "$COMMAND_OUTPUT"
+dra-claim-condition-watch "$VM" c "$DRIVER/AttachFailed" InvalidConfig 90
+grep -qF 'unknown field "x"' <<< "$COMMAND_OUTPUT" || error "no field"
+grep -qF "\"$2\"" <<< "$COMMAND_OUTPUT"
 `
 	c := newCollection()
 	f := &shellFile{c: c, path: "x/test99-x/code.var.sh", where: "test99-x", values: map[string][]string{}}
@@ -144,13 +153,15 @@ retry-until 'dra-plugin-log "$VM" | grep -qF "in a quoted command"'
 		got[kinds[e.kind].prefix+": "+e.text] = strings.Join(e.pins, "; ")
 	}
 	want := map[string]string{
-		"Event: first text":         "test99-x (BAD_TEXT)",
-		"Event: second $V":          "test99-x (BAD_TEXT)",
-		"Event: device $S: refused": "test99-x (fs-refused)",
-		"Event: second part":        "test99-x (fs-refused)",
-		"Log: from log|var":         "test99-x helper (dra-plugin-log output | grep -E)",
-		"Log: literal line":         "test99-x (dra-plugin-log-wait)",
-		"Log: in a quoted command":  "test99-x (dra-plugin-log | grep -qF)",
+		"Event: first text":                    "test99-x (BAD_TEXT)",
+		"Event: second $V":                     "test99-x (BAD_TEXT)",
+		"Event: device $S: refused":            "test99-x (fs-refused)",
+		"Event: second part":                   "test99-x (fs-refused)",
+		"Log: from log|var":                    "test99-x helper (dra-plugin-log output | grep -E)",
+		"Request: lease $L is not a dax lease": "test99-x (cxl-request output | grep -qF)",
+		"Condition: unknown field \"x\"":       "test99-x (dra-claim-condition-watch | grep -qF)",
+		"Log: literal line":                    "test99-x (dra-plugin-log-wait)",
+		"Log: in a quoted command":             "test99-x (dra-plugin-log | grep -qF)",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("strings\n got %v\nwant %v", got, want)

@@ -231,6 +231,12 @@ const (
 	// Pinned by test12-dra-live-attach (refused).
 	RequestInvalidWaitSoon = `invalid wait "soon"`
 
+	// Pinned by test12-dra-live-attach lease-env-check (cxl-request output | grep -qF).
+	RequestLeaseMemLeaseIsNotADaxOrBlock = "lease $MEM_LEASE is not a dax or block lease; use env"
+
+	// Pinned by test16-cxl-llm-share lease-check (cxl-request output | grep -qF).
+	RequestLeaseLeaseIsNotADaxOrBlock = "lease $lease is not a dax or block lease; use env"
+
 	// Pinned by test12-dra-live-attach (refused).
 	RequestModeBlockWithSharedNeedsReadOnly = "mode block with shared needs readOnly"
 
@@ -255,6 +261,12 @@ const (
 
 	// Pinned by test12-dra-live-attach (refused).
 	RequestSizeOrSerialIsRequired = "size or serial is required"
+)
+
+// Texts of pkg/cxl/config that the e2e tests find in the device conditions that a pool controller sets.
+const (
+	// Pinned by test10-dra-pooling (dra-claim-condition-watch | grep -qF).
+	ConditionUnknownFieldNumaNod = `unknown field "numaNod"`
 )
 
 // Lines of the driver log that the test90 executor waits for.
@@ -351,6 +363,9 @@ const (
 
 	// Pinned by test90 mbt-observe.py REQUESTER_LABEL.
 	NameRequesterLabel = "cxl.nri.io/requester-uid"
+
+	// Pinned by test90 mbt-observe.py driver_log() sockets.
+	NameDRASocket = "dra.sock"
 
 	// Pinned by test90 mbt-observe.py DRIVER_CONTAINER.
 	NameDriverContainer = "nri-dra-driver-cxl"
