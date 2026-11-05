@@ -96,6 +96,14 @@ type entry struct {
 	name string // the name without the kind prefix, derived from text if empty
 	text string
 	pins []string // who depends on the string, "where (how)"
+	re   *dialect // the dialect of a regular expression, nil for a template
+}
+
+// markRegexp marks e, if not nil, as a regular expression of dialect d.
+func (e *entry) markRegexp(d dialect) {
+	if e != nil {
+		e.re = &d
+	}
 }
 
 // collection is the set of entries, one per kind and text.
@@ -108,11 +116,11 @@ func newCollection() *collection {
 	return &collection{byKey: map[string]*entry{}}
 }
 
-// add records that pin depends on text of kind k, named name if not empty:
-// one entry per kind, name and text.
-func (c *collection) add(k kind, name, text, pin string) {
+// add records that pin depends on text of kind k, named name if not empty,
+// and returns the entry: one per kind, name and text; nil for an empty text.
+func (c *collection) add(k kind, name, text, pin string) *entry {
 	if text == "" {
-		return
+		return nil
 	}
 	key := fmt.Sprintf("%d\x00%s\x00%s", k, name, text)
 	e, ok := c.byKey[key]
@@ -123,10 +131,11 @@ func (c *collection) add(k kind, name, text, pin string) {
 	e.name = name
 	for _, p := range e.pins {
 		if p == pin {
-			return
+			return e
 		}
 	}
 	e.pins = append(e.pins, pin)
+	return e
 }
 
 // collect returns the entries of the sources under the repository root.
@@ -698,11 +707,13 @@ func (f *shellFile) resolve(text string) (string, bool) {
 	return v, true
 }
 
-// add adds text, resolved, as a string of kind k.
-func (f *shellFile) add(k kind, name, text, fn, how string) {
+// add adds text, resolved, as a string of kind k and returns its entry, nil
+// if text does not resolve.
+func (f *shellFile) add(k kind, name, text, fn, how string) *entry {
 	if v, ok := f.resolve(text); ok {
-		f.c.add(k, name, v, f.pin(fn, how))
+		return f.c.add(k, name, v, f.pin(fn, how))
 	}
+	return nil
 }
 
 // arrays adds the values of the arrays *_TEXT=(...) as event texts.
@@ -794,20 +805,23 @@ func (f *shellFile) logReader(cmd *shellCommand, fn, how string, displayOnly boo
 		}
 		opts, patterns := grepArgs(args[1:])
 		for _, p := range patterns {
-			f.add(kindLog, "", p, fn, how+"grep"+opts)
+			e := f.add(kindLog, "", p, fn, how+"grep"+opts)
+			if strings.Contains(opts, "E") {
+				e.markRegexp(dialect{fold: strings.Contains(opts, "i")})
+			}
 		}
 	case "awk":
 		for i := 1; i < len(args); i++ {
 			if args[i] == "-v" && i+1 < len(args) {
 				i++
 				if a := assignment.FindStringSubmatch(args[i]); a != nil {
-					f.add(kindLog, "", a[2], fn, how+"awk -v "+a[1])
+					f.add(kindLog, "", a[2], fn, how+"awk -v "+a[1]).markRegexp(dialect{})
 				}
 				continue
 			}
 			if !strings.HasPrefix(args[i], "-") {
 				for _, m := range awkRegexp.FindAllStringSubmatch(args[i], -1) {
-					f.add(kindLog, "", m[1], fn, how+"awk")
+					f.add(kindLog, "", m[1], fn, how+"awk").markRegexp(dialect{})
 				}
 			}
 		}
@@ -815,7 +829,7 @@ func (f *shellFile) logReader(cmd *shellCommand, fn, how string, displayOnly boo
 		for _, a := range args[1:] {
 			if len(a) > 2 && a[0] == 's' {
 				parts := strings.Split(a[2:], a[1:2])
-				f.add(kindLog, "", parts[0], fn, how+"sed")
+				f.add(kindLog, "", parts[0], fn, how+"sed").markRegexp(dialect{basic: true})
 			}
 		}
 	}
@@ -915,7 +929,7 @@ func collectObserver(c *collection, root string) error {
 	}
 	for _, l := range lines[start:end] {
 		if m := pyCount.FindStringSubmatch(l); m != nil {
-			c.add(kindObserver, "LogCount"+camel(m[1]), m[2], pin("LOG_COUNTS "+m[1]+" (Python regular expression)"))
+			c.add(kindObserver, "LogCount"+camel(m[1]), m[2], pin("LOG_COUNTS "+m[1]+" (Python regular expression)")).markRegexp(dialect{})
 			continue
 		}
 		m := pyAssign.FindStringSubmatch(l)
@@ -923,7 +937,7 @@ func collectObserver(c *collection, root string) error {
 			continue
 		}
 		if r := pyCompile.FindStringSubmatch(m[2]); r != nil {
-			c.add(kindObserver, camelUpper(m[1]), r[1], pin(m[1]+" (Python regular expression)"))
+			c.add(kindObserver, camelUpper(m[1]), r[1], pin(m[1]+" (Python regular expression)")).markRegexp(dialect{})
 		} else if s := pyLiteral.FindStringSubmatch(m[2]); s != nil {
 			c.add(kindObserver, camelUpper(m[1]), s[1], pin(m[1]+" (substring)"))
 		}
@@ -1217,8 +1231,7 @@ func collectDoc(c *collection, file, text string) {
 //
 
 var (
-	shellExpansion = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9*@#]`)
-	nameWord       = regexp.MustCompile(`[A-Za-z0-9]+`)
+	nameWord = regexp.MustCompile(`[A-Za-z0-9]+`)
 	// expansionVariable is the variable name in a shell expansion.
 	expansionVariable = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
 )
@@ -1265,7 +1278,7 @@ func viewName(file string) string {
 // giving the name of its variable as a word.
 func derivedName(text string) string {
 	var b strings.Builder
-	text = shellExpansion.ReplaceAllStringFunc(text, func(x string) string {
+	text = templateExpansion.ReplaceAllStringFunc(text, func(x string) string {
 		return " " + camelUpper(expansionVariable.FindString(x)) + " "
 	})
 	for i, w := range nameWord.FindAllString(text, -1) {
@@ -1348,6 +1361,14 @@ func render(entries []*entry) ([]byte, error) {
 		}
 		b.WriteString(")\n")
 	}
+	b.WriteString("\n// regexps are the constants that are regular expressions and their dialects.\n" +
+		"var regexps = []struct {\n\tpattern string\n\tdialect\n}{\n")
+	for _, e := range entries {
+		if e.re != nil {
+			fmt.Fprintf(&b, "\t{%s, dialect{basic: %v, fold: %v}},\n", names[e], e.re.basic, e.re.fold)
+		}
+	}
+	b.WriteString("}\n")
 	return format.Source(b.Bytes())
 }
 
@@ -1370,9 +1391,10 @@ const header = `// Copyright The NRI Plugins Authors. All Rights Reserved.
 package compat
 
 // The strings are as the tests match them: $NAME, ${...} and $* stand for
-// values that a test substitutes, the patterns of grep -E, awk, sed and the
-// observer's Python are regular expressions, and <...> in a documented line
-// is a placeholder.
+// values that a test substitutes, and <...> in a documented line is a
+// placeholder. The patterns of grep -E, awk, sed and the observer's Python
+// are regular expressions, listed in regexps at the end: match them with
+// MatchesRegexp, the other constants with Matches.
 `
 
 // goString returns text as a Go string literal, a raw one when that is

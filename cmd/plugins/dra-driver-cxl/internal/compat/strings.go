@@ -17,9 +17,10 @@
 package compat
 
 // The strings are as the tests match them: $NAME, ${...} and $* stand for
-// values that a test substitutes, the patterns of grep -E, awk, sed and the
-// observer's Python are regular expressions, and <...> in a documented line
-// is a placeholder.
+// values that a test substitutes, and <...> in a documented line is a
+// placeholder. The patterns of grep -E, awk, sed and the observer's Python
+// are regular expressions, listed in regexps at the end: match them with
+// MatchesRegexp, the other constants with Matches.
 
 // Texts that the e2e tests find in the log of the driver.
 const (
@@ -642,3 +643,25 @@ const (
 	// Quoted in docs/memory/cxl/local.md section "What the plugin publishes".
 	DocPoolSerialsHoldingBackNewMemdev = "pool serials: holding back new memdev ..."
 )
+
+// regexps are the constants that are regular expressions and their dialects.
+var regexps = []struct {
+	pattern string
+	dialect
+}{
+	{LogDRAPoolDriverClaimPreparedPooled0, dialect{basic: false, fold: false}},
+	{LogNRICreateContainerCtrDRANsPlainMainCpusetMemsH9df004, dialect{basic: true, fold: false}},
+	{LogLeaseLeaseBUnmountingBindBDeviceOrResourceBusy, dialect{basic: false, fold: false}},
+	{LogLocalDoesNotStartAtAMemoryBlock, dialect{basic: false, fold: false}},
+	{LogPreparedPooled0IgnoringRegionRescanAndPublish, dialect{basic: false, fold: false}},
+	{LogRescanAndPublishPublishedUpdatedResources, dialect{basic: false, fold: false}},
+	{LogUnpreparReleas, dialect{basic: false, fold: true}},
+	{LogZeroedNewSharedReleasingItsRegionReleasedSharedRegion, dialect{basic: false, fold: false}},
+	{ObserverLogCountOrphan, dialect{basic: false, fold: false}},
+	{ObserverFencingLog, dialect{basic: false, fold: false}},
+	{ObserverLogCountBusy, dialect{basic: false, fold: false}},
+	{ObserverLogCountInUse, dialect{basic: false, fold: false}},
+	{ObserverLogCountNotRemounted, dialect{basic: false, fold: false}},
+	{ObserverPanic, dialect{basic: false, fold: false}},
+	{ObserverLogCountStaleBind, dialect{basic: false, fold: false}},
+}

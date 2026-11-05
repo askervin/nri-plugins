@@ -18,7 +18,9 @@
 // view files and fields that the test90 observer and oracle read, and the log
 // lines that docs/memory/cxl quotes. strings.go is generated from those
 // sources (go generate runs TestStringsUpToDate with -update), and the unit
-// tests fail when it differs from what the sources say now.
+// tests fail when it differs from what the sources say now. Matches and
+// MatchesRegexp tell whether a line of the driver has a constant's text, so
+// that the unit test of the code that emits a pinned text can assert it.
 package compat
 
 //go:generate go test -run TestStringsUpToDate -update
