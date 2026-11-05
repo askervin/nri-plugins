@@ -77,16 +77,22 @@ func (s *BlockState) UnmarshalText(text []byte) error {
 
 // BlockTransitions are the changes of the state of a memory block.
 var BlockTransitions = Table[BlockState]{
-	{From: BlockAbsent, To: BlockOffline, Trigger: "kmem bound to the dax device of its memory (BindDax, or the kernel's default binding of a new ram region)",
-		Guard: "auto_online_blocks offline"},
-	{From: BlockAbsent, To: BlockOnline, Trigger: "kmem bound, with auto_online_blocks or a udev rule onlining hot-added memory"},
-	{From: BlockOffline, To: BlockOnline, Trigger: "OnlineBlocks, or a udev rule (OfflineBlocks offlines it again within its settle time)",
-		Guard: "online_movable: not online in another zone"},
-	{From: BlockOnline, To: BlockOffline, Trigger: "OfflineBlocks",
-		Guard: "its pages can be moved (EBUSY otherwise)"},
-	{From: BlockOffline, To: BlockAbsent, Trigger: "kmem unbound (UnbindDax, DeleteDaxDevice), DisableRegion, hot-remove of its memdev"},
-	{From: BlockOnline, To: BlockAbsent, Trigger: "ReleaseRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax)",
-		Guard: "its pages can be moved"},
+	Object:   "MemoryBlock",
+	Field:    "State",
+	Observed: true,
+	States:   list(BlockAbsent, BlockOffline, BlockOnline),
+	Rows: []Transition[BlockState]{
+		{From: list(BlockAbsent), To: BlockOffline, When: "kmem bound to the dax device of its memory (BindDax, or the kernel's default binding of a new ram region)",
+			Guard: "auto_online_blocks offline"},
+		{From: list(BlockAbsent), To: BlockOnline, When: "kmem bound, with auto_online_blocks or a udev rule onlining hot-added memory"},
+		{From: list(BlockOffline), To: BlockOnline, When: "OnlineBlocks, or a udev rule (OfflineBlocks offlines it again within its settle time)",
+			Guard: "online_movable: not online in another zone"},
+		{From: list(BlockOnline), To: BlockOffline, When: "OfflineBlocks",
+			Guard: "its pages can be moved (EBUSY otherwise)"},
+		{From: list(BlockOffline), To: BlockAbsent, When: "kmem unbound (UnbindDax, DeleteDaxDevice), DisableRegion, hot-remove of its memdev"},
+		{From: list(BlockOnline), To: BlockAbsent, When: "ReleaseRegion (offline, then disable), observed across it; a numa slice release (OfflineBlocks, then UnbindDax)",
+			Guard: "its pages can be moved"},
+	},
 }
 
 // MemoryBlock is the observation of a memory block.

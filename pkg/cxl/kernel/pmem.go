@@ -89,13 +89,19 @@ func (s *NdRegionState) UnmarshalText(text []byte) error {
 
 // NdRegionTransitions are the changes of the state of an nd region.
 var NdRegionTransitions = Table[NdRegionState]{
-	{From: NdAbsent, To: NdProbing, Trigger: "CreateRegion (pmem), EnableRegion", Effect: "the namespaces of the labels are registered"},
-	{From: NdProbing, To: NdSettled, Trigger: "the probe of the region and of its namespaces finished"},
-	{From: NdAbsent, To: NdSettled, Trigger: "CreateRegion (pmem), observed after the probe finished"},
-	{From: NdSettled, To: NdProbing, Trigger: "CreateFsdaxNamespace (ndctl create-namespace)",
-		Guard: "SETTLED, no fsdax namespace", Effect: "the labels written; a pfn device and a block device probed"},
-	{From: NdProbing, To: NdAbsent, Trigger: "DisableRegion, DestroyRegion, hot-remove of its memdev"},
-	{From: NdSettled, To: NdAbsent, Trigger: "DisableRegion, DestroyRegion, hot-remove of its memdev", Effect: "labels and data stay"},
+	Object:   "NdRegion",
+	Field:    "State",
+	Observed: true,
+	States:   list(NdAbsent, NdProbing, NdSettled),
+	Rows: []Transition[NdRegionState]{
+		{From: list(NdAbsent), To: NdProbing, When: "CreateRegion (pmem), EnableRegion", Effects: "the namespaces of the labels are registered"},
+		{From: list(NdProbing), To: NdSettled, When: "the probe of the region and of its namespaces finished"},
+		{From: list(NdAbsent), To: NdSettled, When: "CreateRegion (pmem), observed after the probe finished"},
+		{From: list(NdSettled), To: NdProbing, When: "CreateFsdaxNamespace (ndctl create-namespace)",
+			Guard: "SETTLED, no fsdax namespace", Effects: "the labels written; a pfn device and a block device probed"},
+		{From: list(NdProbing), To: NdAbsent, When: "DisableRegion, DestroyRegion, hot-remove of its memdev"},
+		{From: list(NdSettled), To: NdAbsent, When: "DisableRegion, DestroyRegion, hot-remove of its memdev", Effects: "labels and data stay"},
+	},
 }
 
 // NamespaceState is the state of a namespace.
@@ -134,28 +140,34 @@ func (s *NamespaceState) UnmarshalText(text []byte) error {
 
 // NamespaceTransitions are the changes of the state of a namespace.
 var NamespaceTransitions = Table[NamespaceState]{
-	{From: NsAbsent, To: NsProbing, Trigger: "the probe of the nd region registers it (from the labels, or the seed)"},
-	{From: NsProbing, To: NsSeed, Trigger: "its probe finished without labels"},
-	{From: NsProbing, To: NsRaw, Trigger: "its probe finished without a holder"},
-	{From: NsProbing, To: NsFsdax, Trigger: "its pfn device probed with its block device and mode"},
-	{From: NsProbing, To: NsSector, Trigger: "its btt device probed with its block device"},
-	{From: NsProbing, To: NsDevdax, Trigger: "its dax device probed"},
-	{From: NsSeed, To: NsProbing, Trigger: "CreateFsdaxNamespace", Effect: "labels written"},
-	{From: NsRaw, To: NsProbing, Trigger: "CreateFsdaxNamespace of the existing namespace", Effect: "its content destroyed"},
-	{From: NsProbing, To: NsAbsent, Trigger: "DisableRegion, DestroyRegion"},
-	{From: NsSeed, To: NsAbsent, Trigger: "DisableRegion, DestroyRegion"},
-	{From: NsRaw, To: NsAbsent, Trigger: "DisableRegion, DestroyRegion"},
-	{From: NsFsdax, To: NsAbsent, Trigger: "DisableRegion, DestroyRegion", Effect: "its labels stay"},
-	{From: NsSector, To: NsAbsent, Trigger: "DisableRegion, DestroyRegion"},
-	{From: NsDevdax, To: NsAbsent, Trigger: "DisableRegion, DestroyRegion"},
-	// changes that one call makes between two observations
-	{From: NsSeed, To: NsFsdax, Trigger: "CreateFsdaxNamespace (it returns with the block device), observed across it"},
-	{From: NsRaw, To: NsFsdax, Trigger: "CreateFsdaxNamespace of the existing namespace, observed across it", Effect: "its content destroyed"},
-	{From: NsAbsent, To: NsSeed, Trigger: "the probe of a new nd region without labels, observed after it finished (Namespaces)"},
-	{From: NsAbsent, To: NsRaw, Trigger: "the probe of a new nd region, observed after it finished"},
-	{From: NsAbsent, To: NsFsdax, Trigger: "the probe of a new nd region with the labels of an fsdax namespace, observed after it finished"},
-	{From: NsAbsent, To: NsSector, Trigger: "the probe of a new nd region, observed after it finished"},
-	{From: NsAbsent, To: NsDevdax, Trigger: "the probe of a new nd region, observed after it finished"},
+	Object:   "Namespace",
+	Field:    "State",
+	Observed: true,
+	States:   list(NsAbsent, NsProbing, NsSeed, NsRaw, NsFsdax, NsSector, NsDevdax),
+	Rows: []Transition[NamespaceState]{
+		{From: list(NsAbsent), To: NsProbing, When: "the probe of the nd region registers it (from the labels, or the seed)"},
+		{From: list(NsProbing), To: NsSeed, When: "its probe finished without labels"},
+		{From: list(NsProbing), To: NsRaw, When: "its probe finished without a holder"},
+		{From: list(NsProbing), To: NsFsdax, When: "its pfn device probed with its block device and mode"},
+		{From: list(NsProbing), To: NsSector, When: "its btt device probed with its block device"},
+		{From: list(NsProbing), To: NsDevdax, When: "its dax device probed"},
+		{From: list(NsSeed), To: NsProbing, When: "CreateFsdaxNamespace", Effects: "labels written"},
+		{From: list(NsRaw), To: NsProbing, When: "CreateFsdaxNamespace of the existing namespace", Effects: "its content destroyed"},
+		{From: list(NsProbing), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: list(NsSeed), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: list(NsRaw), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: list(NsFsdax), To: NsAbsent, When: "DisableRegion, DestroyRegion", Effects: "its labels stay"},
+		{From: list(NsSector), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		{From: list(NsDevdax), To: NsAbsent, When: "DisableRegion, DestroyRegion"},
+		// changes that one call makes between two observations
+		{From: list(NsSeed), To: NsFsdax, When: "CreateFsdaxNamespace (it returns with the block device), observed across it"},
+		{From: list(NsRaw), To: NsFsdax, When: "CreateFsdaxNamespace of the existing namespace, observed across it", Effects: "its content destroyed"},
+		{From: list(NsAbsent), To: NsSeed, When: "the probe of a new nd region without labels, observed after it finished (Namespaces)"},
+		{From: list(NsAbsent), To: NsRaw, When: "the probe of a new nd region, observed after it finished"},
+		{From: list(NsAbsent), To: NsFsdax, When: "the probe of a new nd region with the labels of an fsdax namespace, observed after it finished"},
+		{From: list(NsAbsent), To: NsSector, When: "the probe of a new nd region, observed after it finished"},
+		{From: list(NsAbsent), To: NsDevdax, When: "the probe of a new nd region, observed after it finished"},
+	},
 }
 
 // Namespace is the observation of a namespace of an nd region:

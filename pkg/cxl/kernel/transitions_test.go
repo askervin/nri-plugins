@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel/fake"
 )
@@ -30,37 +31,53 @@ import (
 // observed before and after it.
 type scenario[S comparable] func(t *testing.T) (from, to S)
 
+// rowTo returns the state that row i of a table goes to.
+func rowTo[S comparable](table kernel.Table[S], i int) S {
+	if table.Rows[i].Stays {
+		return table.Rows[i].From[0]
+	}
+	return table.Rows[i].To
+}
+
 // rowKey returns the key of the scenario of a row: from->to, and #N for the
-// N-th row (from 0) with the same states.
+// N-th row (from 0) with the same states. A row of a kernel table has one
+// from state.
 func rowKey[S comparable](table kernel.Table[S], i int) string {
 	n := 0
-	for _, tr := range table[:i] {
-		if tr.From == table[i].From && tr.To == table[i].To {
+	for j := range table.Rows[:i] {
+		if table.Rows[j].From[0] == table.Rows[i].From[0] && rowTo(table, j) == rowTo(table, i) {
 			n++
 		}
 	}
-	return fmt.Sprintf("%v->%v#%d", table[i].From, table[i].To, n)
+	return fmt.Sprintf("%v->%v#%d", table.Rows[i].From[0], rowTo(table, i), n)
 }
 
 // checkTable runs the scenario of every row of a table: each row has one,
 // and the scenario observes the transition of its row.
 func checkTable[S comparable](t *testing.T, name string, table kernel.Table[S], scenarios map[string]scenario[S]) {
 	t.Helper()
+	if !table.Observed || table.Field != "State" || len(table.States) == 0 {
+		t.Errorf("%s: table %s.%s, observed %v, states %v", name, table.Object, table.Field, table.Observed, table.States)
+	}
 	used := map[string]bool{}
-	for i, tr := range table {
+	for i, tr := range table.Rows {
+		if len(tr.From) != 1 || len(tr.Triggers) != 0 || tr.When == "" {
+			t.Errorf("%s: row %d: from %v, triggers %v, when %q", name, i, tr.From, tr.Triggers, tr.When)
+			continue
+		}
 		key := rowKey(table, i)
 		used[key] = true
 		run := scenarios[key]
 		if run == nil {
-			t.Errorf("%s: the row %s (%s) has no table test", name, key, tr.Trigger)
+			t.Errorf("%s: the row %s (%s) has no table test", name, key, tr.When)
 			continue
 		}
 		t.Run(key, func(t *testing.T) {
 			from, to := run(t)
-			if from != tr.From || to != tr.To {
-				t.Fatalf("%s (%s): observed %v -> %v", key, tr.Trigger, from, to)
+			if from != tr.From[0] || to != rowTo(table, i) {
+				t.Fatalf("%s (%s): observed %v -> %v", key, tr.When, from, to)
 			}
-			noErr(t, table.Check(name, from, to))
+			noErr(t, table.Check(from, to, fsm.AnyTrigger))
 		})
 	}
 	for key := range scenarios {
@@ -71,14 +88,30 @@ func checkTable[S comparable](t *testing.T, name string, table kernel.Table[S], 
 }
 
 func TestTable(t *testing.T) {
-	table := kernel.Table[kernel.RegionState]{{From: kernel.RegionDisabled, To: kernel.RegionEnabled}}
-	if !table.Allows(kernel.RegionDisabled, kernel.RegionEnabled) || table.Allows(kernel.RegionEnabled, kernel.RegionDisabled) {
+	table := kernel.Table[kernel.RegionState]{
+		Object: "RegionInfo", Field: "State", Observed: true,
+		Rows: []kernel.Transition[kernel.RegionState]{{From: []kernel.RegionState{kernel.RegionDisabled}, To: kernel.RegionEnabled}},
+	}
+	if !table.Allows(kernel.RegionDisabled, kernel.RegionEnabled, fsm.AnyTrigger) ||
+		table.Allows(kernel.RegionEnabled, kernel.RegionDisabled, fsm.AnyTrigger) {
 		t.Fatal("Allows")
 	}
-	noErr(t, table.Check("region0", kernel.RegionHollow, kernel.RegionHollow))
-	err := table.Check("region0", kernel.RegionEnabled, kernel.RegionHollow)
-	if !errors.Is(err, kernel.ErrTransition) || err.Error() != "region0: ENABLED -> HOLLOW is not a transition of the kernel that is known" {
+	noErr(t, table.Check(kernel.RegionHollow, kernel.RegionHollow, fsm.AnyTrigger))
+	err := table.Check(kernel.RegionEnabled, kernel.RegionHollow, fsm.AnyTrigger)
+	if !errors.Is(err, kernel.ErrTransition) || err.Error() != "RegionInfo.State: ENABLED -> HOLLOW: transition not in the table" {
 		t.Fatalf("error %v", err)
+	}
+	tables := 0
+	for _, o := range kernel.Catalogue() {
+		for _, tt := range o.Tables {
+			tables++
+			if !tt.Observed || len(tt.Rows) == 0 {
+				t.Errorf("%s: table %s.%s: observed %v, %d rows", o.Name, tt.Object, tt.Field, tt.Observed, len(tt.Rows))
+			}
+		}
+	}
+	if tables != 6 {
+		t.Errorf("%d tables in the catalogue", tables)
 	}
 	// the names of the states, in JSON too
 	var s kernel.DaxState

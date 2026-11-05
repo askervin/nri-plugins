@@ -15,52 +15,57 @@
 package kernel
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/containers/nri-plugins/pkg/cxl/fsm"
 )
 
 // The states of the kernel objects are the kernel's: this package observes
 // them, and its operations or kernel events change them. Every object with
-// a state has a Table of the transitions that the kernel makes, next to its
-// state type; an observed change that the table does not have is a fact
-// that the design does not know (Table.Check).
+// a state has an observed Table of the transitions that the kernel makes,
+// next to its state type; an observed change that the table does not have
+// is a fact that the design does not know (Table.Check with
+// fsm.AnyTrigger).
 
-// Transition is one change of the state of a kernel object.
-type Transition[S comparable] struct {
-	From, To S
-	// Trigger is what makes the change: an operation of this package or a
-	// kernel event.
-	Trigger string
-	// Guard is the condition of the change, "" for none.
-	Guard string
-	// Effect is what else changes with it, "" for nothing.
-	Effect string
-}
+// Transition is one change of the state of a kernel object: When says what
+// makes it, an operation of this package or a kernel event.
+type Transition[S comparable] = fsm.Transition[S]
 
-// Table is the transitions of the state of one kind of kernel object.
-type Table[S comparable] []Transition[S]
+// Table is the observed transitions of the state of one kind of kernel
+// object.
+type Table[S comparable] = fsm.Table[S]
 
 // ErrTransition is the kind of the error of a change of state that a Table
 // does not have.
-var ErrTransition = errors.New("unknown transition")
+var ErrTransition = fsm.ErrTransition
 
-// Allows tells whether the table has the transition from -> to.
-func (t Table[S]) Allows(from, to S) bool {
-	for _, tr := range t {
-		if tr.From == from && tr.To == to {
-			return true
-		}
-	}
-	return false
+// ObjectTables is a kind of kernel object, by the name that its header
+// comment gives it, with the transition tables of its states.
+type ObjectTables struct {
+	Name   string
+	Tables []fsm.TableText
 }
 
-// Check returns an error of kind ErrTransition unless from equals to or
-// the table has the transition from -> to.
-func (t Table[S]) Check(object string, from, to S) error {
-	if from == to || t.Allows(from, to) {
-		return nil
+// Catalogue returns the kinds of kernel objects in the order of the
+// documentation.
+func Catalogue() []ObjectTables {
+	return []ObjectTables{
+		{Name: "Memdev", Tables: []fsm.TableText{MemdevTransitions.Text()}},
+		{Name: "Port"},
+		{Name: "Region", Tables: []fsm.TableText{RegionTransitions.Text()}},
+		{Name: "DaxRegion and DaxDevice", Tables: []fsm.TableText{DaxTransitions.Text()}},
+		{Name: "MemoryBlock", Tables: []fsm.TableText{BlockTransitions.Text()}},
+		{Name: "NumaNode"},
+		{Name: "NdRegion, Namespace and BlockDevice",
+			Tables: []fsm.TableText{NdRegionTransitions.Text(), NamespaceTransitions.Text()}},
+		{Name: "Superblock and Mount"},
+		{Name: "LoopDevice"},
 	}
-	return errorf(ErrTransition, "%s: %v -> %v is not a transition of the kernel that is known", object, from, to)
+}
+
+// list returns its arguments as a slice.
+func list[S any](values ...S) []S {
+	return values
 }
 
 // stateText returns the name of a state, or "state(n)" for a value without

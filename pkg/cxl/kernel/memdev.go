@@ -67,21 +67,27 @@ func (s *MemdevState) UnmarshalText(text []byte) error {
 
 // MemdevTransitions are the changes of the state of a memdev.
 var MemdevTransitions = Table[MemdevState]{
-	{From: MemdevAbsent, To: MemdevUnbound, Trigger: "hot-add (the pool attaches the device), boot",
-		Effect: "the probe of cxl_mem starts"},
-	{From: MemdevAbsent, To: MemdevBound, Trigger: "hot-add, observed after the probe bound cxl_mem"},
-	{From: MemdevAbsent, To: MemdevReady, Trigger: "hot-add, observed after the probe finished"},
-	{From: MemdevUnbound, To: MemdevBound, Trigger: "EnableMemdev, the probe of cxl_mem",
-		Effect: "the endpoint port is added asynchronously (add_dev() fails until then)"},
-	{From: MemdevUnbound, To: MemdevReady, Trigger: "EnableMemdev, observed after the probe finished"},
-	{From: MemdevBound, To: MemdevReady, Trigger: "the endpoint port added", Effect: "regions can be created"},
-	{From: MemdevBound, To: MemdevUnbound, Trigger: "DisableMemdev"},
-	{From: MemdevReady, To: MemdevUnbound, Trigger: "DisableMemdev",
-		Guard: "no committed decoder of its endpoint", Effect: "the endpoint port goes"},
-	{From: MemdevUnbound, To: MemdevAbsent, Trigger: "hot-remove (the pool detaches the device)"},
-	{From: MemdevBound, To: MemdevAbsent, Trigger: "hot-remove"},
-	{From: MemdevReady, To: MemdevAbsent, Trigger: "hot-remove",
-		Effect: "its regions become hollow"},
+	Object:   "MemdevInfo",
+	Field:    "State",
+	Observed: true,
+	States:   list(MemdevAbsent, MemdevUnbound, MemdevBound, MemdevReady),
+	Rows: []Transition[MemdevState]{
+		{From: list(MemdevAbsent), To: MemdevUnbound, When: "hot-add (the pool attaches the device), boot",
+			Effects: "the probe of cxl_mem starts"},
+		{From: list(MemdevAbsent), To: MemdevBound, When: "hot-add, observed after the probe bound cxl_mem"},
+		{From: list(MemdevAbsent), To: MemdevReady, When: "hot-add, observed after the probe finished"},
+		{From: list(MemdevUnbound), To: MemdevBound, When: "EnableMemdev, the probe of cxl_mem",
+			Effects: "the endpoint port is added asynchronously (add_dev() fails until then)"},
+		{From: list(MemdevUnbound), To: MemdevReady, When: "EnableMemdev, observed after the probe finished"},
+		{From: list(MemdevBound), To: MemdevReady, When: "the endpoint port added", Effects: "regions can be created"},
+		{From: list(MemdevBound), To: MemdevUnbound, When: "DisableMemdev"},
+		{From: list(MemdevReady), To: MemdevUnbound, When: "DisableMemdev",
+			Guard: "no committed decoder of its endpoint", Effects: "the endpoint port goes"},
+		{From: list(MemdevUnbound), To: MemdevAbsent, When: "hot-remove (the pool detaches the device)"},
+		{From: list(MemdevBound), To: MemdevAbsent, When: "hot-remove"},
+		{From: list(MemdevReady), To: MemdevAbsent, When: "hot-remove",
+			Effects: "its regions become hollow"},
+	},
 }
 
 // MemdevInfo is the observation of a memdev.
