@@ -82,6 +82,8 @@ jobs:
           go-version-file: go.mod
       - run: |
           make test-cxl
+      - run: |
+          make gostats-cxl
 
   verify-docs:
     name: Documentation

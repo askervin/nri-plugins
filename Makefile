@@ -194,6 +194,14 @@ test: test-setup test-run-pkgs test-run-mods test-cleanup
 test-cxl:
 	$(Q)$(MAKE) test GO_TEST_PKGS="$(CXL_TEST_PKGS)" GO_TEST_MODS=
 
+# Code metrics of the CXL memory driver against its structural limits. The
+# limits are reported, not enforced: add -gate to make an exceeded limit fail.
+GOSTATS_CXL_FLAGS ?= -r -max-lines 14000 -max-cyclo15 10 -max-cyclo30 0 -keep persistent.go \
+                     -max-mutexes 6 -max-access-structs 2
+
+gostats-cxl:
+	$(Q)$(GO_CMD) run ./scripts/hack/gostats $(GOSTATS_CXL_FLAGS) ./cmd/plugins/dra-driver-cxl
+
 verify: verify-godeps verify-fmt verify-generate verify-build verify-docs
 
 #
