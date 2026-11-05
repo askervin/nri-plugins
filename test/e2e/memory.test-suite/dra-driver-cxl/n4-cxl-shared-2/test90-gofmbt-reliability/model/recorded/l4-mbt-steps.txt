@@ -1,0 +1,165 @@
+# mbt-cxl online seed=5 profile=full coverage=C1x3,C2x2,C3 depth=3 gofmbt=extended
+# --profile full --seed 5 --depth 3 --coverage C1x3,C2x2,C3 --randomness 1 --unsettled 3 --max-restarts 2 --local-blocks vm2=8,vm1=2,vm0=2 --node-hb0 2 --node-hb1 3 --avoid "" --avoid-holes=false --max-paths 0 --steps 0 --duration 2h0m0s --settle-timeout 3m0s --unblock-timeout 5m30s --plan-ahead=true --plan-time 10s
+settle
+#adopt 1
+create lease@vm0#0
+create lease@vm1#0
+settle
+#adopt 4
+lease-get lease@vm1#0 dax
+#adopt 5 lease=lease@vm1#0:4e46232e
+settle
+#adopt 6
+lease-get lease@vm0#0 numa
+#adopt 7 lease=lease@vm0#0:2c3259c6
+create lease@vm2#0
+crash lease@vm1#0
+settle
+#adopt 10
+create lnuma@vm2#0
+create sro-a@vm2#0
+driver-kill vm2
+settle
+#adopt 14
+create xdax-a@vm2#0
+containerd-restart vm2
+settle
+#adopt 17
+create plain@vm2#0
+kubelet-restart vm2
+write xdax-a@vm2#0
+driver-restart vm2
+settle
+#adopt 22 restarts=plain@vm2#0:0+0
+server-restart a
+write sro-a@vm2#0
+lease-get lease@vm2#0 numa
+#adopt 25 lease=lease@vm2#0:3de211f9
+read sro-a@vm2#0
+#adopt 26 data=a-shared0:mbt-110
+create sexcl-a@vm2#0
+settle
+#adopt 28
+ctrl-kill a
+read xdax-a@vm2#0
+write sro-a@vm2#0
+write sro-a@vm2#0
+write xdax-a@vm2#0
+read sro-a@vm2#0
+read xdax-a@vm2#0
+read sro-a@vm2#0
+read sro-a@vm2#0
+write xdax-a@vm2#0
+ctrl-start a
+ctrl-restart a
+settle
+#adopt 41
+crash lnuma@vm2#0
+containerd-restart vm2
+kubelet-restart vm2
+settle
+#adopt 45 restarts=lnuma@vm2#0:1+0
+crash sro-a@vm2#0
+read xdax-a@vm2#0
+driver-restart vm2
+crash xdax-a@vm2#0
+settle
+#adopt 50
+create ldax@vm2#0
+read xdax-a@vm2#0
+create xnuma-a@vm2#0
+settle
+#adopt 54
+create lsteer@vm2#0
+write ldax@vm2#0
+kubelet-restart vm2
+crash ldax@vm2#0
+settle
+#adopt 59 restarts=lsteer@vm2#0:0+0
+delete sro-a@vm2#0
+driver-restart vm2
+containerd-restart vm2
+settle
+#adopt 63
+driver-kill vm2
+crash plain@vm2#0
+kubelet-restart vm2
+settle
+#adopt 67 restarts=plain@vm2#0:1+0
+create sdax-a@vm2#0
+server-restart a
+ctrl-kill a
+settle
+#adopt 71
+delete xdax-a@vm2#0
+driver-restart vm2
+read ldax@vm2#0
+containerd-restart vm2
+settle
+#adopt 76
+crash lsteer@vm2#0
+write ldax@vm2#0
+read ldax@vm2#0
+driver-kill vm2
+settle
+#adopt 81 steer=lsteer@vm2#0:off
+crash lease@vm2#0
+write ldax@vm2#0
+driver-restart vm2
+kubelet-restart vm2
+settle
+#adopt 86 restarts=lease@vm2#0:1+0
+delete sdax-a@vm2#0
+server-restart a
+settle
+#adopt 89 phase=sexcl-a@vm2#0:running stack=vm2/hb0:local,a-shared0
+crash sexcl-a@vm2#0
+write ldax@vm2#0
+delete plain@vm2#0
+settle
+#adopt 93
+delete lease@vm2#0
+write sexcl-a@vm2#0
+delete ldax@vm2#0
+read sexcl-a@vm2#0
+containerd-restart vm2
+settle
+#adopt 99
+create sro-a@vm1#0
+write sexcl-a@vm2#0
+write sexcl-a@vm2#0
+ctrl-start a
+settle
+#adopt 104
+create xdax-a@vm1#0
+write sexcl-a@vm2#0
+settle
+#adopt 107
+ctrl-restart a
+read sexcl-a@vm2#0
+ctrl-kill a
+server-restart a
+settle
+#adopt 112 alt=1
+create sexcl-c@vm1#0
+read sexcl-a@vm2#0
+driver-kill vm1
+settle
+#adopt 116
+driver-restart vm1
+crash xnuma-a@vm2#0
+kubelet-restart vm1
+settle
+#adopt 120
+containerd-restart vm1
+write sexcl-c@vm1#0
+read sexcl-c@vm1#0
+read sexcl-c@vm1#0
+delete sexcl-a@vm2#0
+delete lsteer@vm2#0
+settle
+#adopt 127
+ctrl-start a
+write sexcl-c@vm1#0
+delete xnuma-a@vm2#0
+settle

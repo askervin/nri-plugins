@@ -1,0 +1,219 @@
+# mbt-cxl online seed=12 profile=pmem coverage=C1x3,C2x2,C3 depth=3 gofmbt=v0.0.0-20261027151000-bc12d421910e
+# --profile pmem --seed 12 --depth 3 --coverage C1x3,C2x2,C3 --randomness 1 --unsettled 3 --max-restarts 2 --local-blocks vm2=8,vm1=2,vm0=2 --node-hb0 2 --node-hb1 3 --avoid "" --avoid-holes=false --stall-window 30s --max-paths 0 --plan-states 0 --steps 0 --duration 30m0s --settle-timeout 3m0s --unblock-timeout 5m30s --plan-ahead=true --plan-time 10s
+settle
+#adopt 1 plsa=c-pmem0:8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90 phead=c-pmem0:bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8
+create pfsd-c@vm1#0
+create xnuma-c@vm1#0
+driver-restart vm1
+settle
+#adopt 5
+kubelet-restart vm1
+driver-kill-at vm1 bind
+ctrl-restart c
+settle
+#adopt 9
+server-restart c
+containerd-restart vm1
+ctrl-kill c
+settle
+#adopt 13
+create plse@vm1#0
+settle
+#adopt 15
+ctrl-start c
+driver-kill-at vm1 ns
+crash xnuma-c@vm1#0
+settle
+#adopt 19
+driver-restart vm1
+driver-kill vm1
+settle
+#adopt 22
+crash plse@vm1#0
+settle
+#adopt 24
+create pfsc-c@vm1#0
+delete xnuma-c@vm1#0
+driver-kill-at vm1 mount
+settle
+#adopt 28
+delete pfsd-c@vm1#0
+driver-restart vm1
+driver-kill-at vm1 region
+settle
+#adopt 32
+create sdax-c@vm0#0
+delete plse@vm1#0
+create pbro-c@vm0#0
+settle
+#adopt 36
+create pwr-c@vm2#0
+ctrl-kill c
+read sdax-c@vm0#0
+#adopt 39 data=c-shared0:mbt-45
+ctrl-start c
+settle
+#adopt 41
+crash sdax-c@vm0#0
+settle
+#adopt 43
+delete pwr-c@vm2#0
+ctrl-restart c
+server-restart c
+settle
+#adopt 47
+create pwr-c@vm0#0
+driver-kill vm0
+kubelet-restart vm0
+settle
+#adopt 51
+driver-kill-at vm0 bind
+driver-restart vm0
+containerd-restart vm0
+write sdax-c@vm0#0
+settle
+#adopt 56
+driver-kill-at vm0 region
+delete sdax-c@vm0#0
+delete pbro-c@vm0#0
+settle
+#adopt 60
+delete pfsc-c@vm1#0
+settle
+#adopt 62 alt=1 puuid=c-pmem0:9a579c3c-0c8c-451f-8a19-64a500c38503 plsa=c-pmem0:d2f84bbb9a3321ac58ef341bad7778aa57b80225792a842d14b2a57188f8d710 phead=c-pmem0:7c3eeafd2f85d5ae3be46a266b95d81f72472312f15a94372831fd4b6de7fbc9 killat=vm1:off
+crash pwr-c@vm0#0
+create pfsd-c@vm2#0
+settle
+#adopt 65
+ctrl-kill c
+ctrl-start c
+server-restart c
+pwrite pwr-c@vm0#0 junk
+pwrite pwr-c@vm0#0 img
+settle
+#adopt 71 phead=c-pmem0:5855803b612b423da411662e43f8c3542f13016169100e686b7d9a19c71d0d00
+ctrl-restart c
+pread pwr-c@vm0#0
+pwrite pwr-c@vm0#0 img
+pwrite pwr-c@vm0#0 img
+pwrite pwr-c@vm0#0 junk
+create plse@vm2#0
+driver-kill-at vm2 ns
+settle
+#adopt 79 phead=c-pmem0:7c3eeafd2f85d5ae3be46a266b95d81f72472312f15a94372831fd4b6de7fbc9
+containerd-restart vm2
+settle
+#adopt 81
+kubelet-restart vm2
+pwrite pwr-c@vm0#0 img
+pread pwr-c@vm0#0
+pread pwr-c@vm0#0
+driver-restart vm0
+driver-kill-at vm2 bind
+settle
+#adopt 88 phead=c-pmem0:40015e4eaca8a209bcd0f3dde713a8a67e2dc69ad32e39d489f987ec88ce40a8
+driver-kill-at vm0 mount
+crash plse@vm2#0
+delete pwr-c@vm0#0
+settle
+#adopt 92
+create plse@vm1#0
+settle
+#adopt 94
+lease-get plse@vm2#0 pfd
+#adopt 95 lease=plse@vm2#0:1a19ed37
+lease-get plse@vm1#0 pfc
+#adopt 96 lease=plse@vm1#0:60edb08a
+pwrite plse@vm1#0 img
+pwrite pfsd-c@vm2#0 img
+hold plse@vm2#0
+unhold plse@vm2#0
+pread plse@vm1#0
+hold pfsd-c@vm2#0
+pread pfsd-c@vm2#0
+hold plse@vm1#0
+unhold pfsd-c@vm2#0
+pwrite plse@vm2#0 img
+kubelet-restart vm2
+settle
+#adopt 108
+crash pfsd-c@vm2#0
+pread plse@vm2#0
+unhold plse@vm1#0
+hold plse@vm2#0
+pwrite plse@vm1#0 img
+unhold plse@vm2#0
+pwrite plse@vm1#0 img
+hold plse@vm2#0
+create pfsc-c@vm2#0
+settle
+#adopt 118
+driver-restart vm2
+pread pfsc-c@vm2#0
+hold pfsc-c@vm2#0
+driver-kill-at vm2 ns
+containerd-restart vm2
+settle
+#adopt 124 killat=vm0:off
+crash pfsc-c@vm2#0
+pwrite plse@vm1#0 img
+hold pfsd-c@vm2#0
+hold plse@vm1#0
+pwrite pfsd-c@vm2#0 img
+unhold pfsd-c@vm2#0
+unhold plse@vm2#0
+unhold plse@vm1#0
+pwrite pfsd-c@vm2#0 img
+pread plse@vm2#0
+pwrite plse@vm1#0 img
+driver-kill-at vm2 region
+server-restart c
+settle
+#adopt 138
+driver-kill vm2
+ctrl-kill c
+pwrite plse@vm2#0 img
+pread plse@vm1#0
+pread plse@vm1#0
+pwrite pfsd-c@vm2#0 img
+ctrl-start c
+pwrite pfsc-c@vm2#0 img
+settle
+#adopt 147
+lease-put plse@vm2#0
+hold pfsd-c@vm2#0
+hold pfsc-c@vm2#0
+driver-restart vm2
+pwrite plse@vm1#0 img
+pwrite plse@vm1#0 img
+unhold pfsc-c@vm2#0
+settle
+#adopt 155
+lease-get plse@vm2#0 pbr
+#adopt 156 lease=plse@vm2#0:d7762adb
+hold pfsc-c@vm2#0
+pread pfsc-c@vm2#0
+pwrite plse@vm2#0 img
+driver-kill vm2
+settle
+#adopt 161
+kubelet-restart vm2
+unhold pfsc-c@vm2#0
+pread pfsc-c@vm2#0
+driver-kill-at vm2 bind
+server-restart c
+settle
+#adopt 167
+delete plse@vm2#0
+hold plse@vm1#0
+pread pfsc-c@vm2#0
+pread pfsd-c@vm2#0
+ctrl-restart c
+containerd-restart vm2
+settle
+#adopt 174
+lease-put plse@vm1#0
+hold pfsc-c@vm2#0
+ctrl-kill c
+create sdax-c@vm0#0
+settle

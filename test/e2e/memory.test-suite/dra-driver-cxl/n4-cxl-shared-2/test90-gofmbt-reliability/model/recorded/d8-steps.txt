@@ -1,0 +1,27 @@
+# D8: a claim waits for the attach (controller down), its pod is deleted,
+# another pod pends on the same device. A: the controller stays down for
+# the settle; B: ctrl-start right after the delete.
+settle
+ctrl-kill a
+settle
+create xnuma-a@vm1#0
+settle
+create xdax-a@vm1#0
+settle
+delete xnuma-a@vm1#0
+settle
+ctrl-start a
+settle
+delete xdax-a@vm1#0
+settle
+ctrl-kill a
+settle
+create xnuma-a@vm1#0
+settle
+create xdax-a@vm1#0
+settle
+delete xnuma-a@vm1#0
+ctrl-start a
+settle
+delete xdax-a@vm1#0
+settle
