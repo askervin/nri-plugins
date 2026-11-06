@@ -23,7 +23,6 @@ import (
 	"reflect"
 	"sync"
 
-	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -196,6 +195,11 @@ func jsonSame(a, b []byte) bool {
 	return json.Unmarshal(a, &va) == nil && json.Unmarshal(b, &vb) == nil && reflect.DeepEqual(va, vb)
 }
 
+// putLocalContent replaces the records of cxl.nri.io in a document with
+// those of the content of one of its state files of an older driver, nil
+// in the driver: only the tests write those files (state_local_test.go).
+var putLocalContent func(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error
+
 // putContent replaces the records of the owner of the state file name in
 // doc with those of its content data; prepared is the content of
 // preparedClaims.json written with preparedClaimsInfo.json, nil for that
@@ -203,7 +207,9 @@ func jsonSame(a, b []byte) bool {
 func putContent(doc *store.Document, opts store.ViewOptions, name string, data, prepared []byte) error {
 	switch name {
 	case preparedClaimsInfoFileName, localStateFileName:
-		return putLocalContent(doc, opts, name, data, prepared)
+		if putLocalContent != nil {
+			return putLocalContent(doc, opts, name, data, prepared)
+		}
 	case poolStateFileName, poolPreparingFileName:
 		return putPoolContent(doc, opts, name, data)
 	case leasesFileName:
@@ -228,44 +234,6 @@ func putContent(doc *store.Document, opts store.ViewOptions, name string, data, 
 		return nil
 	}
 	return fmt.Errorf("no records of the state file %s", name)
-}
-
-// putLocalContent replaces the records of cxl.nri.io in doc with those of
-// the content of one of its state files and the others as doc has them.
-func putLocalContent(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error {
-	view := func(n string) ([]byte, error) { return store.ViewContent(doc, n, opts) }
-	var err error
-	if preparedData == nil {
-		if preparedData, err = view(store.ViewPreparedClaims); err != nil {
-			return err
-		}
-	}
-	infoData, localData := data, data
-	if name == localStateFileName {
-		infoData, err = view(store.ViewPreparedClaimsInfo)
-	} else {
-		localData, err = view(store.ViewLocalDevices)
-	}
-	if err != nil {
-		return err
-	}
-	prepared := map[string]kubeletplugin.PrepareResult{}
-	infos := PreparedClaimsInfo{}
-	var local localState
-	if err := json.Unmarshal(preparedData, &prepared); err != nil {
-		return err
-	}
-	if err := json.Unmarshal(infoData, &infos); err != nil {
-		return err
-	}
-	if err := json.Unmarshal(localData, &local); err != nil {
-		// localDevices.json as a list of devices (no boot id)
-		if lerr := json.Unmarshal(localData, &local.Devices); lerr != nil {
-			return err
-		}
-	}
-	putLocal(doc, prepared, infos, &local)
-	return nil
 }
 
 // putPoolContent replaces the records of the pool driver in doc with those
