@@ -33,8 +33,8 @@ import (
 // stateStore keeps the content of the state files of the driver in the
 // records of the store's document: a write of a file is a commit that
 // replaces the records of its owner, a read is the file as the records
-// give it (the view of a file that test90 reads). The store writes the
-// views at the paths of the files.
+// give it (the view of the file). The store writes the five views that
+// test90's observer reads at the paths of the files.
 type stateStore struct {
 	st       *store.Store
 	localDir string

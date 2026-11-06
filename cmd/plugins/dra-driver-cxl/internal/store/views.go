@@ -921,6 +921,13 @@ func regionPath(opts ViewOptions, name string) string {
 	return filepath.Join(opts.SysRoot, "bus", "cxl", "devices", name)
 }
 
+// PoolLendContent returns the lend of a preparation of the pool driver as
+// preparedPoolClaims.json has it, in any state: null for a claim that is
+// not a companion.
+func PoolLendContent(doc *Document, p *state.Preparation) ([]byte, error) {
+	return json.Marshal(lendView(doc, p))
+}
+
 // PoolDevicesContent returns the devices of a preparation of the pool
 // driver as preparedPoolClaims.json has them, in any state.
 func PoolDevicesContent(doc *Document, p *state.Preparation, opts ViewOptions) ([]byte, error) {

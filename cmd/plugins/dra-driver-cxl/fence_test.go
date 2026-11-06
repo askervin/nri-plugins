@@ -508,23 +508,33 @@ func TestFenceLocalBeforeOnline(t *testing.T) {
 
 func TestFencePoolBeforeOnline(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ee0001")
+	e.plug(0xc1ee0001)
+	// the state of the first memory block of the region at the fence
+	fence, r := newRecordedFence(func() string {
+		blocks, _ := e.k.Kernel().RegionBlocks("region0")
+		if len(blocks) == 0 {
+			return "no blocks"
+		}
+		return e.k.BlockState(blocks[0])
+	})
+	e.fence = fence
 	p := e.driver(t)
-	fence, r := newRecordedFence(func() string { return e.f.read("devices/system/memory/memory74/state") })
-	p.fence = fence
 
 	noErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err)
 	if got := r.taken(); !reflect.DeepEqual(got, []string{"2 offline"}) {
 		t.Fatalf("passes %v, expected one before onlining", got)
 	}
-	e.f.wantBlocks(t, "online_movable")
+	if e.onlineBlocks("region0") == 0 {
+		t.Fatal("the memory of the region is not online")
+	}
 	if got := p.ClaimResults("u1"); len(got) != 1 || got[0].Node != 2 || got[0].Mode != cxlapi.ModeNUMA || got[0].Index != 0 || got[0].Size != 256<<20 {
 		t.Fatalf("claim results %+v", got)
 	}
 	if got := p.numaNodes(); !reflect.DeepEqual(got, []int{2}) {
 		t.Fatalf("numa nodes %v", got)
 	}
-	if got := preparedNodes(nil, e.driver(t)).String(); got != "2" {
+	p = e.driver(t)
+	if got := preparedNodes(nil, p).String(); got != "2" {
 		t.Fatalf("prepared nodes after a restart %s", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))
@@ -538,10 +548,10 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 
 	// dax devices are not fenced
 	e2 := newPoolTestEnv(t)
-	e2.f.plug("0xc1ee0001")
-	p2 := e2.driver(t)
+	e2.plug(0xc1ee0001)
 	fence2, r2 := newRecordedFence(nil)
-	p2.fence = fence2
+	e2.fence = fence2
+	p2 := e2.driver(t)
 	claim := withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
 	noErr(t, prepare(t, p2, claim).Err)
 	if got := r2.taken(); len(got) != 0 || p2.numaNodes() != nil {

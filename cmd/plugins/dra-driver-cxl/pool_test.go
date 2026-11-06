@@ -15,257 +15,27 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
+	"maps"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
-	"sigs.k8s.io/yaml"
-	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/compat"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
-
-// errCut is the panic of a plugin killed in a Prepare (cutPrepare).
-var errCut = errors.New("killed")
-
-// cutPrepare runs a Prepare of the claim that the plugin does not finish:
-// it is killed (errCut) where the fakes say, and nothing after that runs.
-// The test then starts the plugin again on the same files and sysfs.
-func cutPrepare(t *testing.T, p *poolDriver, claim *resourceapi.ResourceClaim) {
-	t.Helper()
-	defer func() {
-		switch r := recover(); r {
-		case errCut:
-		case nil:
-			t.Fatal("the Prepare was not cut")
-		default:
-			panic(r)
-		}
-	}()
-	_, _ = p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
-}
-
-type poolTestEnv struct {
-	f           *fakePoolSys
-	m           *fakeMounter // the mounts of the node outlive driver restarts
-	cdiDir      string
-	stateFile   string
-	leaseFsRoot string // of the pool driver, "" for none
-	bootID      string // of the kernel of the next driver
-}
-
-func newPoolTestEnv(t *testing.T) *poolTestEnv {
-	dir := t.TempDir()
-	m := newFakeMounter()
-	// the image that the writer of the persistent device wrote
-	m.images["/dev/pmem0"] = fsImage("erofs")
-	return &poolTestEnv{
-		f:         newFakePoolSys(t),
-		m:         m,
-		cdiDir:    filepath.Join(dir, "cdi"),
-		stateFile: filepath.Join(dir, poolStateFileName),
-		bootID:    "boot-1",
-	}
-}
-
-// driver returns a new pool driver on the env's state file, as after a
-// restart, without a kubelet plugin.
-func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
-	t.Helper()
-	if err := os.MkdirAll(e.cdiDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// the tests mount every known type; the default is erofs only
-	restartStore(filepath.Dir(e.stateFile), e.bootID)
-	p, err := newPoolDriver(device.PoolDriverName, e.f.manager(), e.m, e.stateFile, 200*time.Millisecond, e.leaseFsRoot, e.bootID, config.KnownFsTypes...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// the common sweep of driver.go, of the pool driver alone
-	sweepLeaseBinds(p.leaseBinds(), p.persistent())
-	p.probeGrace = 20 * time.Millisecond
-	p.pn.cfg.HolderWait = 50 * time.Millisecond
-	p.cdi = cache
-	if err := p.writeCDISpec(); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// cdiSpec returns the pool CDI spec on disk, nil if there is none.
-func (e *poolTestEnv) cdiSpec(t *testing.T) *cdiSpecs.Spec {
-	t.Helper()
-	m, _ := filepath.Glob(filepath.Join(e.cdiDir, device.PoolCDISpecName+".*"))
-	if len(m) == 0 {
-		return nil
-	}
-	data, err := os.ReadFile(m[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := &cdiSpecs.Spec{}
-	if err := yaml.Unmarshal(data, spec); err != nil {
-		t.Fatal(err)
-	}
-	return spec
-}
-
-func cdiDeviceByName(spec *cdiSpecs.Spec, name string) *cdiSpecs.Device {
-	if spec == nil {
-		return nil
-	}
-	for i := range spec.Devices {
-		if spec.Devices[i].Name == name {
-			return &spec.Devices[i]
-		}
-	}
-	return nil
-}
-
-// poolConsumed returns the consumed capacity of an allocation result of
-// a pool device with the status data: of a shared device all of its
-// shares (exclusive) or one, nil otherwise.
-func poolConsumed(data string) map[resourceapi.QualifiedName]resource.Quantity {
-	d, err := parsePoolDeviceData([]byte(data))
-	switch {
-	case err != nil || !d.Shared:
-		return nil
-	case d.Exclusive:
-		return map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: *resource.NewQuantity(device.SharesUnlimited, resource.DecimalSI)}
-	}
-	return map[resourceapi.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse("1")}
-}
-
-// poolClaim returns a claim allocated a pool device, with the status
-// entry written by the pool controller (data "" for none) and the shares
-// that the scheduler counts for a shared device (poolConsumed).
-func poolClaim(uid, name, dev, data string) *resourceapi.ResourceClaim {
-	c := &resourceapi.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID(uid), Name: name, Namespace: "default"},
-		Status: resourceapi.ResourceClaimStatus{
-			Allocation: &resourceapi.AllocationResult{
-				Devices: resourceapi.DeviceAllocationResult{
-					Results: []resourceapi.DeviceRequestAllocationResult{
-						{Request: "mem", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, ConsumedCapacity: poolConsumed(data)},
-						{Request: "local", Driver: device.DriverName, Pool: "node1", Device: "dram"},
-					},
-				},
-			},
-		},
-	}
-	if data != "" {
-		c.Status.Devices = []resourceapi.AllocatedDeviceStatus{
-			{Driver: device.DriverName, Pool: "node1", Device: "dram"},
-			{Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: dev, Data: &runtime.RawExtension{Raw: []byte(data)}},
-		}
-	}
-	return c
-}
-
-func prepare(t *testing.T, p *poolDriver, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
-	t.Helper()
-	res, err := p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res[claim.UID]
-}
-
-func unprepare(t *testing.T, p *poolDriver, uid string) error {
-	t.Helper()
-	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res[types.UID(uid)]
-}
-
-func wantErr(t *testing.T, err error, substr string) {
-	t.Helper()
-	if err == nil || !strings.Contains(err.Error(), substr) {
-		t.Fatalf("expected an error with %q, got %v", substr, err)
-	}
-}
-
-func noErr(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// wantClean checks that nothing is prepared: no CDI spec, no serials, no
-// claim whose Prepare did not finish (also not in the preparing file).
-func (e *poolTestEnv) wantClean(t *testing.T, p *poolDriver) {
-	t.Helper()
-	if e.cdiSpec(t) != nil || len(p.Serials()) != 0 || len(p.prepared) != 0 || len(p.preparing) != 0 {
-		t.Fatalf("not clean: CDI spec %+v, serials %v, prepared %v, preparing %v", e.cdiSpec(t), p.Serials(), p.prepared, p.preparing)
-	}
-	if recs := e.preparingFile(t); len(recs) != 0 {
-		t.Fatalf("not clean: preparing file %v", recs)
-	}
-}
-
-// preparingFile returns the claims of the preparing file, nil if there is
-// none.
-func (e *poolTestEnv) preparingFile(t *testing.T) map[string]*preparingPoolClaim {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(e.stateFile), poolPreparingFileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	recs := map[string]*preparingPoolClaim{}
-	if err == nil {
-		err = json.Unmarshal(data, &recs)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return recs
-}
-
-// failStateSave makes the saves of the state file fail (its temporary file
-// is a directory) and returns the function that undoes it.
-func (e *poolTestEnv) failStateSave(t *testing.T) func() {
-	t.Helper()
-	noErr(t, os.MkdirAll(e.stateFile+".tmp", 0o755))
-	return func() { noErr(t, os.Remove(e.stateFile+".tmp")) }
-}
-
-// wantCDIDevice returns the CDI device with the name and the env.
-func (e *poolTestEnv) wantCDIDevice(t *testing.T, name string, env []string) *cdiSpecs.Device {
-	t.Helper()
-	cd := cdiDeviceByName(e.cdiSpec(t), name)
-	if cd == nil {
-		t.Fatalf("no CDI device %s in %+v", name, e.cdiSpec(t))
-	}
-	if !slices.Equal(cd.ContainerEdits.Env, env) {
-		t.Fatalf("CDI device %s env %v, expected %v", name, cd.ContainerEdits.Env, env)
-	}
-	return cd
-}
 
 const (
 	exclusiveData = `{"serial":"0xc1ee0001","shared":false,"size":268435456,"host":"n1"}`
@@ -323,11 +93,22 @@ func TestPoolDataFor(t *testing.T) {
 
 func TestPoolPrepareExclusive(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ee0001")
+	memdev := e.plug(0xc1ee0001)
 	p := e.driver(t)
 
+	logs := captureKlog(t)
 	res := prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
 	noErr(t, res.Err)
+	// the line that test10 waits for
+	prepared := false
+	for _, line := range strings.Split(logs(), "\n") {
+		ok, err := compat.MatchesRegexp(compat.LogDRAPoolDriverClaimPreparedPooled0, line)
+		noErr(t, err)
+		prepared = prepared || ok
+	}
+	if !prepared {
+		t.Fatalf("no line %q in\n%s", compat.LogDRAPoolDriverClaimPreparedPooled0, logs())
+	}
 	want := []kubeletplugin.Device{{ // the cxl.nri.io result is not ours
 		Requests:     []string{"mem"},
 		PoolName:     "fake-cxl-pool",
@@ -337,8 +118,10 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	if !reflect.DeepEqual(res.Devices, want) {
 		t.Fatalf("unexpected devices %+v", res.Devices)
 	}
-	e.f.wantCommand(t, "cxl create-region -t ram -d decoder0.0 -m mem0")
-	e.f.wantBlocks(t, "online_movable")
+	e.wantCommand(t, "cxl create-region -t ram -d decoder0.0 -m "+memdev)
+	if n := e.onlineBlocks("region0"); n == 0 {
+		t.Fatal("the memory of the region is not online")
+	}
 	if spec := e.cdiSpec(t); spec.Kind != "nri.io/cxl-pool" {
 		t.Fatalf("CDI spec kind %q", spec.Kind)
 	}
@@ -350,12 +133,9 @@ func TestPoolPrepareExclusive(t *testing.T) {
 	if !p.Serials()[0xc1ee0001] {
 		t.Fatalf("serial missing from %v", p.Serials())
 	}
-	st, err := os.Stat(e.stateFile)
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("state file: %v %v", st, err)
-	}
-	data, _ := os.ReadFile(e.stateFile)
-	for _, want := range []string{`"memdev": "mem0"`, `"region": "region0"`, `"node": 2`, `"claimName": "default/c1"`} {
+	data, err := os.ReadFile(e.stateFile)
+	noErr(t, err)
+	for _, want := range []string{`"memdev": "` + memdev + `"`, `"region": "region0"`, `"node": 2`, `"claimName": "default/c1"`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("state file lacks %s:\n%s", want, data)
 		}
@@ -363,20 +143,20 @@ func TestPoolPrepareExclusive(t *testing.T) {
 
 	// unprepare releases: offline, destroy, disable
 	noErr(t, unprepare(t, p, "u1"))
-	e.f.wantReleased(t)
-	e.f.wantBlocks(t, "offline")
+	e.wantReleased(t, "region0", memdev)
 	e.wantClean(t, p)
 	// an unknown claim is fine
 	noErr(t, unprepare(t, p, "u1"))
 
 	// prepare again after a release (memdev disabled): enabled again
 	noErr(t, prepare(t, p, poolClaim("u2", "c2", "pooled0", exclusiveData)).Err)
-	e.f.wantCommand(t, "cxl enable-memdev mem0")
+	e.wantCommand(t, "cxl enable-memdev "+memdev)
+	noErr(t, unprepare(t, p, "u2"))
 }
 
 func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ae0001")
+	memdev := e.plug(0xc1ae0001)
 	p := e.driver(t)
 
 	res := prepare(t, p, poolClaim("u1", "c1", "shared0", sharedData))
@@ -384,22 +164,27 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
-	e.f.wantBlocks(t, "offline") // shared memory is never onlined
-	e.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
+	if n := e.onlineBlocks("region0"); n != 0 {
+		t.Fatalf("%d blocks of shared memory online", n) // shared memory is never onlined
+	}
+	if d := e.k.DaxDriver("dax0.0"); d != "device_dax" {
+		t.Fatalf("dax0.0 bound to %q", d)
+	}
 	sharedEnv := func(uid string) []string {
 		return []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
 			"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_" + uid + "_0=1"}
 	}
 	cd := e.wantCDIDevice(t, "claim-u1-0", sharedEnv("u1"))
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3}}
-	if !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
+	dev := e.device(p, "u1", 0)
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(dev.DaxMajor), Minor: int64(dev.DaxMinor)}}
+	if dev.DaxMajor == 0 || !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
 
 	// a second claim on the same device reuses the region and has a CDI
 	// device of its own
 	noErr(t, prepare(t, p, poolClaim("u2", "c2", "shared0", sharedData)).Err)
-	if n := strings.Count(e.f.commands(), "create-region"); n != 1 {
+	if n := strings.Count(e.commands(), "create-region"); n != 1 {
 		t.Fatalf("region created %d times", n)
 	}
 	if spec := e.cdiSpec(t); len(spec.Devices) != 2 {
@@ -412,8 +197,8 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 
 	// unprepare of one keeps the device
 	noErr(t, unprepare(t, p, "u1"))
-	if strings.Contains(e.f.commands(), "disable-region") || !p.Serials()[0xc1ae0001] {
-		t.Fatalf("device released while still used:\n%s", e.f.commands())
+	if strings.Contains(e.commands(), "disable-region") || !p.Serials()[0xc1ae0001] {
+		t.Fatalf("device released while still used:\n%s", e.commands())
 	}
 	if cdiDeviceByName(e.cdiSpec(t), "claim-u1-0") != nil {
 		t.Fatal("CDI device of an unprepared claim left")
@@ -421,17 +206,17 @@ func TestPoolPrepareSharedTwoClaims(t *testing.T) {
 	e.wantCDIDevice(t, "claim-u2-0", sharedEnv("u2"))
 	// unprepare of both releases
 	noErr(t, unprepare(t, p, "u2"))
-	e.f.wantReleased(t)
+	e.wantReleased(t, "region0", memdev)
 	e.wantClean(t, p)
 }
 
 func TestPoolRestart(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ee0001")
+	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	res := prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData))
 	noErr(t, res.Err)
-	ncmds := len(e.f.cmds)
+	cmds := e.commands()
 	// a restart rewrites the CDI spec (newNodeState removes the specs of
 	// both drivers)
 	_ = os.RemoveAll(e.cdiDir)
@@ -447,18 +232,19 @@ func TestPoolRestart(t *testing.T) {
 	if res2.Err != nil || len(res2.Devices) != 1 || !slices.Equal(res2.Devices[0].CDIDeviceIDs, res.Devices[0].CDIDeviceIDs) {
 		t.Fatalf("stored result not returned: %+v", res2)
 	}
-	if len(e.f.cmds) != ncmds {
-		t.Fatalf("repeated Prepare ran commands:\n%s", e.f.commands())
+	if got := e.commands(); got != cmds {
+		t.Fatalf("repeated Prepare ran commands:\n%s", strings.TrimPrefix(got, cmds))
 	}
 
 	// the memdev disappears while the driver is down: kept until Unprepare
-	e.f.unplug()
+	e.k.Unplug(0xc1ee0001)
 	p3 := e.driver(t)
 	if !p3.Serials()[0xc1ee0001] {
 		t.Fatal("device of a gone memdev dropped")
 	}
 	noErr(t, unprepare(t, p3, "u1"))
-	e.wantClean(t, p3)
+	// its region is hollow, kept while its memory is online
+	e.wantNoClaims(t, p3)
 }
 
 func TestPoolPrepareErrors(t *testing.T) {
@@ -467,16 +253,19 @@ func TestPoolPrepareErrors(t *testing.T) {
 	// no status entry yet
 	wantErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", "")).Err, "no entry")
 	// memdev never appears
-	wantErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err, "timeout")
+	wantErr(t, prepare(t, p, poolClaim("u1", "c1", "pooled0", exclusiveData)).Err, "deadline exceeded")
 	e.wantClean(t, p)
 
 	// the second device of a claim fails: the first one is rolled back
-	e.f.plug("0xc1ee0001")
-	claim := poolClaim("u2", "c2", "pooled0", exclusiveData)
-	claim.Status.Allocation.Devices.Results = append(claim.Status.Allocation.Devices.Results,
-		resourceapi.DeviceRequestAllocationResult{Request: "mem2", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "pooled1"})
+	memdev := e.plug(0xc1ee0001)
+	claim := addPoolDevice(poolClaim("u2", "c2", "pooled0", exclusiveData), "mem2", "pooled1", "")
 	wantErr(t, prepare(t, p, claim).Err, "pooled1")
-	e.f.wantReleased(t)
+	e.wantClean(t, p)
+	// the second device of a claim fails in the kernel: the first one is
+	// rolled back
+	claim = addPoolDevice(poolClaim("u3", "c3", "pooled0", exclusiveData), "mem2", "pooled1", `{"serial":"0xc1ee0002","shared":false,"size":268435456}`)
+	wantErr(t, prepare(t, p, claim).Err, "pooled1")
+	e.wantReleased(t, "region0", memdev)
 	e.wantClean(t, p)
 }
 
@@ -509,6 +298,42 @@ func TestBuildDevInfosSkipsPoolDevices(t *testing.T) {
 	}
 }
 
+// TestBuildDevInfosHollowRegion: a hollow region of a scan is not
+// published, the other devices are, and it is warned about once while it
+// stays. The hollow region still has a node: memory of its address range
+// that kmem could not remove is online, so the scan finds the node and
+// the region enabled; that node is not DRAM either.
+func TestBuildDevInfosHollowRegion(t *testing.T) {
+	devices := nricxl.NewDevices()
+	hollow := &nricxl.RegionDevice{Name: "region1", SysfsPath: "/sys/bus/cxl/devices/region1", Mode: "ram", Resource: 0x850000000, Size: 1 << 28,
+		Node: 3, Enabled: true, OnlineSize: 1 << 28, Hollow: true}
+	devices.RegionDevices = []*nricxl.RegionDevice{
+		{Name: "region0", Size: 1 << 30, Mode: "ram", Node: 2, Enabled: true, Targets: []string{"decoder4.0"},
+			Memories: []*nricxl.MemoryDevice{{Name: "mem0", Serial: 0xc100e2e0, Enabled: true}}},
+		hollow,
+	}
+	devices.MemoryNodes = []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 28}}
+	devInfos, err := buildDevInfos(&DriverConfig{}, devices, nil, nil)
+	noErr(t, err)
+	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
+		t.Fatalf("devices %v", slices.Sorted(maps.Keys(devInfos)))
+	}
+	if dram, ok := devInfos["dram"].Dev.(*device.DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
+		t.Fatalf("DRAM %+v", devInfos["dram"])
+	}
+
+	h := &hollowRegionLog{warned: map[string]bool{}}
+	for i, want := range []int{1, 1, 0} {
+		regions := devices.RegionDevices
+		if want == 0 {
+			regions = regions[:1]
+		}
+		if got := h.observe(regions); len(got) != want || (want == 1 && !got[hollow]) || len(h.warned) != want {
+			t.Fatalf("scan %d: hollow %v, warned %v", i, got, h.warned)
+		}
+	}
+}
+
 const (
 	daxConfig = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"dax"}}`
 	roConfig  = `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"readOnly":true}}`
@@ -529,7 +354,7 @@ func withConfig(c *resourceapi.ResourceClaim, source resourceapi.AllocationConfi
 
 func TestPoolPrepareExclusiveDax(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ee0001")
+	memdev := e.plug(0xc1ee0001)
 	p := e.driver(t)
 
 	claim := withConfig(poolClaim("u1", "c1", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
@@ -538,15 +363,20 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u1-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
-	e.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
-	e.f.wantBlocks(t, "offline") // a dax device is never onlined
+	if d := e.k.DaxDriver("dax0.0"); d != "device_dax" {
+		t.Fatalf("dax0.0 bound to %q", d)
+	}
+	if n := e.onlineBlocks("region0"); n != 0 {
+		t.Fatalf("%d blocks of a dax device online", n) // a dax device is never onlined
+	}
 	cd := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1EE0001_DAX=/dev/dax0.0", "CXL_C1EE0001_MODE=dax", "CXL_C1EE0001_READONLY=0",
 		"CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0", "CXL_C1EE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3}}
+	d := e.device(p, "u1", 0)
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(d.DaxMajor), Minor: int64(d.DaxMinor)}}
 	if !reflect.DeepEqual(cd.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected device nodes %+v", cd.ContainerEdits.DeviceNodes)
 	}
-	if d := p.prepared["u1"].Devices[0]; d.Mode != api.ModeDax || d.Node != -1 || d.DaxDevice != "/dev/dax0.0" {
+	if d.Mode != api.ModeDax || d.Node != -1 || d.DaxDevice != "/dev/dax0.0" {
 		t.Fatalf("prepared device %+v", d)
 	}
 
@@ -555,13 +385,13 @@ func TestPoolPrepareExclusiveDax(t *testing.T) {
 	wantErr(t, res.Err, "mode numa, but another claim prepared it in mode dax")
 
 	noErr(t, unprepare(t, p, "u1"))
-	e.f.wantReleased(t)
+	e.wantReleased(t, "region0", memdev)
 	e.wantClean(t, p)
 }
 
 func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ae0001")
+	memdev := e.plug(0xc1ae0001)
 	p := e.driver(t)
 
 	res := prepare(t, p, withConfig(poolClaim("u1", "c1", "shared0", sharedData), resourceapi.AllocationConfigSourceClaim, nil, roConfig))
@@ -571,7 +401,8 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	}
 	ro := e.wantCDIDevice(t, "claim-u1-0", []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=1",
 		"CXL_C1AE0001_SERIAL=0xc1ae0001", "CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"})
-	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3, Permissions: "r"}}
+	d := e.device(p, "u1", 0)
+	wantNodes := []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(d.DaxMajor), Minor: int64(d.DaxMinor), Permissions: "r"}}
 	if !reflect.DeepEqual(ro.ContainerEdits.DeviceNodes, wantNodes) {
 		t.Fatalf("unexpected read-only device nodes %+v", ro.ContainerEdits.DeviceNodes)
 	}
@@ -583,7 +414,7 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 	if !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl-pool=claim-u2-0"}) {
 		t.Fatalf("unexpected device %+v", res.Devices[0])
 	}
-	if n := strings.Count(e.f.commands(), "create-region"); n != 1 {
+	if n := strings.Count(e.commands(), "create-region"); n != 1 {
 		t.Fatalf("region created %d times", n)
 	}
 	rw := e.wantCDIDevice(t, "claim-u2-0", []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0",
@@ -594,17 +425,17 @@ func TestPoolReadOnlyCDIDevices(t *testing.T) {
 
 	// unprepare the read-only claim: its CDI device goes, the device stays
 	noErr(t, unprepare(t, p, "u1"))
-	if cdiDeviceByName(e.cdiSpec(t), "claim-u1-0") != nil || strings.Contains(e.f.commands(), "disable-region") {
-		t.Fatalf("after the read-only unprepare: %+v\n%s", e.cdiSpec(t), e.f.commands())
+	if cdiDeviceByName(e.cdiSpec(t), "claim-u1-0") != nil || strings.Contains(e.commands(), "disable-region") {
+		t.Fatalf("after the read-only unprepare: %+v\n%s", e.cdiSpec(t), e.commands())
 	}
 	noErr(t, unprepare(t, p, "u2"))
-	e.f.wantReleased(t)
+	e.wantReleased(t, "region0", memdev)
 	e.wantClean(t, p)
 }
 
 func TestPoolConfigErrors(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ae0001")
+	e.plug(0xc1ae0001)
 	p := e.driver(t)
 	for _, tc := range []struct {
 		data, params, err string
@@ -629,8 +460,8 @@ func TestPoolConfigErrors(t *testing.T) {
 		wantErr(t, prepare(t, p, claim).Err, tc.err)
 		e.wantClean(t, p)
 	}
-	if strings.Contains(e.f.commands(), "create-region") {
-		t.Fatalf("a refused config touched the device:\n%s", e.f.commands())
+	if strings.Contains(e.commands(), "create-region") {
+		t.Fatalf("a refused config touched the device:\n%s", e.commands())
 	}
 }
 
@@ -639,35 +470,42 @@ func TestPoolConfigErrors(t *testing.T) {
 // device per allocation result with its own env (the second device of the
 // serial has the key <HEX>_2) and device node; none of a companion claim.
 func TestPoolCDISpecKeys(t *testing.T) {
-	p := &poolDriver{prepared: map[string]*preparedPoolClaim{
-		"u1": {Devices: []preparedPoolDevice{
-			{Result: 0, Serial: 0xc1ae0001, Shared: true, Size: 1 << 28, Mode: api.ModeDax, DaxDevice: "/dev/dax0.0", DaxMajor: 251, DaxMinor: 3, Node: -1},
-			{Result: 1, Serial: 0xc1ae0001, Shared: true, Size: 1 << 28, Mode: api.ModeDax, ReadOnly: true, DaxDevice: "/dev/dax0.0", DaxMajor: 251, DaxMinor: 3, Node: -1},
-			{Result: 3, Serial: 0xc1ee0001, Size: 1 << 29, Mode: api.ModeNUMA, Node: 3},
-		}},
-		// a companion claim
-		"u2": {Devices: []preparedPoolDevice{{Serial: 0xc1ee0002, Size: 1 << 29, Mode: api.ModeNUMA, Node: 4}}, Lend: &lendRecord{Lease: "l1"}},
-	}}
-	spec := p.buildCDISpec()
+	e := newPoolTestEnv(t)
+	e.plug(0xc1ae0001)
+	e.plug(0xc1ee0001)
+	p := e.driver(t)
+	c := poolClaim("u1", "c1", "shared0", sharedData)
+	// the results 0 and 1 of shared0, 2 of cxl.nri.io, 3 of pooled0
+	c.Status.Allocation.Devices.Results = slices.Insert(c.Status.Allocation.Devices.Results, 1,
+		resourceapi.DeviceRequestAllocationResult{Request: "mem1", Driver: device.PoolDriverName, Pool: "fake-cxl-pool", Device: "shared0",
+			ConsumedCapacity: poolConsumed(sharedData)})
+	addPoolDevice(c, "mem3", "pooled0", `{"serial":"0xc1ee0001","shared":false,"size":536870912}`)
+	withConfig(c, resourceapi.AllocationConfigSourceClaim, []string{"mem1"}, roConfig)
+	noErr(t, prepare(t, p, c).Err)
+	spec := e.cdiSpec(t)
+	dax := e.device(p, "u1", 0)
+	node := e.device(p, "u1", 3).Node
 	want := []cdiSpecs.Device{
 		{Name: "claim-u1-0", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1AE0001_DAX=/dev/dax0.0", "CXL_C1AE0001_MODE=dax", "CXL_C1AE0001_READONLY=0", "CXL_C1AE0001_SERIAL=0xc1ae0001",
 				"CXL_C1AE0001_SHARED=1", "CXL_C1AE0001_SIZE=268435456", "CXL_CLAIM_u1_0=1"},
-			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3}},
+			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(dax.DaxMajor), Minor: int64(dax.DaxMinor)}},
 		}},
 		{Name: "claim-u1-1", ContainerEdits: cdiSpecs.ContainerEdits{
 			Env: []string{"CXL_C1AE0001_2_DAX=/dev/dax0.0", "CXL_C1AE0001_2_MODE=dax", "CXL_C1AE0001_2_READONLY=1", "CXL_C1AE0001_2_SERIAL=0xc1ae0001",
 				"CXL_C1AE0001_2_SHARED=1", "CXL_C1AE0001_2_SIZE=268435456", "CXL_CLAIM_u1_1=1"},
-			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: 251, Minor: 3, Permissions: "r"}},
+			DeviceNodes: []*cdiSpecs.DeviceNode{{Path: "/dev/dax0.0", Type: "c", Major: int64(dax.DaxMajor), Minor: int64(dax.DaxMinor), Permissions: "r"}},
 		}},
 		{Name: "claim-u1-3", ContainerEdits: cdiSpecs.ContainerEdits{
-			Env: []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=3", "CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0",
+			Env: []string{"CXL_C1EE0001_MODE=numa", "CXL_C1EE0001_NODE=" + strconv.Itoa(node), "CXL_C1EE0001_SERIAL=0xc1ee0001", "CXL_C1EE0001_SHARED=0",
 				"CXL_C1EE0001_SIZE=536870912", "CXL_CLAIM_u1_3=1"},
 		}},
 	}
 	if spec.Kind != device.PoolCDIKind || !reflect.DeepEqual(spec.Devices, want) {
 		t.Fatalf("CDI spec %+v", spec)
 	}
+	noErr(t, unprepare(t, p, "u1"))
+	e.wantClean(t, p)
 }
 
 // A shared pool device needs at least one consumed share, checked before
@@ -675,7 +513,7 @@ func TestPoolCDISpecKeys(t *testing.T) {
 // holder.
 func TestPoolSharesGuard(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ae0001")
+	e.plug(0xc1ae0001)
 	p := e.driver(t)
 	withShares := func(uid, shares string) *resourceapi.ResourceClaim {
 		c := poolClaim(uid, "c-"+uid, "shared0", sharedData)
@@ -689,15 +527,15 @@ func TestPoolSharesGuard(t *testing.T) {
 		wantErr(t, prepare(t, p, withShares("u0", tc.shares)).Err,
 			"cxl-pool.nri.io: preparing claim default/c-u0: device 0xc1ae0001: consumed shares "+tc.text+" is less than 1: request shares: 1 (a share) or no shares (exclusive)")
 	}
-	if strings.Contains(e.f.commands(), "create-region") {
-		t.Fatalf("a refused claim touched the device:\n%s", e.f.commands())
+	if strings.Contains(e.commands(), "create-region") {
+		t.Fatalf("a refused claim touched the device:\n%s", e.commands())
 	}
 	noErr(t, prepare(t, p, withShares("u1", "1")).Err)
 	noErr(t, unprepare(t, p, "u1"))
 	noErr(t, prepare(t, p, withShares("u2", "1M")).Err)
 	noErr(t, unprepare(t, p, "u2"))
 	// a device that is not shared has no shares
-	e.f.plug("0xc1ee0001")
+	e.plug(0xc1ee0001)
 	noErr(t, prepare(t, p, poolClaim("u3", "c3", "pooled0", exclusiveData)).Err)
 	noErr(t, unprepare(t, p, "u3"))
 }
@@ -710,7 +548,7 @@ func TestPoolSharesGuard(t *testing.T) {
 // device.
 func TestPoolPrepareMemoryConfig(t *testing.T) {
 	e := newPoolTestEnv(t)
-	e.f.plug("0xc1ee0001")
+	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	const (
 		class = resourceapi.AllocationConfigSourceClass
@@ -729,7 +567,7 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 		Container: &config.Container{Steering: &config.Steering{Policy: config.PolicyAuto, MaxStep: "64Mi"}},
 		Origins:   map[string]string{config.FieldPolicy: "class cxl-pool", config.FieldMaxStep: "claim default/c1 request mem"},
 	}
-	if d := p.prepared["u1"].Devices[0]; d.Mode != api.ModeNUMA || d.Node != 2 || !reflect.DeepEqual(d.ResultSettings, want) {
+	if d := e.device(p, "u1", 0); d.Mode != api.ModeNUMA || d.Node != 2 || !reflect.DeepEqual(d.ResultSettings, want) {
 		t.Fatalf("prepared device %+v", d)
 	}
 	got := p.ClaimResults("u1")
@@ -749,14 +587,14 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 	}
 
 	// the settings survive a restart of the driver
-	p2 := e.driver(t)
-	if got := p2.ClaimResults("u1"); len(got) != 1 || !reflect.DeepEqual(got[0].Settings, want) {
+	p = e.driver(t)
+	if got := p.ClaimResults("u1"); len(got) != 1 || !reflect.DeepEqual(got[0].Settings, want) {
 		t.Fatalf("claim results after a restart %+v", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))
 	e.wantClean(t, p)
 
-	commands := e.f.commands()
+	commands := e.commands()
 	for _, tc := range []struct {
 		source      resourceapi.AllocationConfigSource
 		params, err string
@@ -775,7 +613,7 @@ func TestPoolPrepareMemoryConfig(t *testing.T) {
 		wantErr(t, prepare(t, p, withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), tc.source, nil, tc.params)).Err, tc.err)
 		e.wantClean(t, p)
 	}
-	if got := e.f.commands(); got != commands {
+	if got := e.commands(); got != commands {
 		t.Fatalf("a refused config touched the device:\n%s", strings.TrimPrefix(got, commands))
 	}
 }

@@ -25,6 +25,34 @@ import (
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 )
 
+// preparingPoolClaim is a value of preparingPoolClaims.json: a claim whose
+// Prepare did not finish, was kept by its rollback or is of another boot,
+// with its devices as far as they are known before they are touched, and
+// the lend of a companion claim.
+type preparingPoolClaim struct {
+	ClaimName string               `json:"claimName"` // namespace/name
+	Devices   []preparedPoolDevice `json:"devices"`
+	Lend      *lendRecord          `json:"lend,omitempty"`
+	// Regions are the regions that the Prepares of the claim create or
+	// created, noted before cxl create-region ran.
+	Regions []preparingRegion `json:"regions,omitempty"`
+	// BootID is the boot id of the kernel of the Prepare, that of Regions
+	// and of the nodes of Lend.
+	BootID string `json:"bootID,omitempty"`
+	// Stale tells why a claim that was prepared is not prepared any more:
+	// it was prepared, or its Prepare was cut, in another boot. "" for a
+	// Prepare of this boot.
+	Stale string `json:"stale,omitempty"`
+}
+
+// preparingRegion is a region that a Prepare creates on the memdev with
+// the serial under the root decoder.
+type preparingRegion struct {
+	Serial  uint64 `json:"serial"`
+	Region  string `json:"region"`
+	Decoder string `json:"decoder,omitempty"`
+}
+
 // putPool replaces the records of the pool driver in doc with those of
 // the content of its state files: the prepared claims
 // (preparedPoolClaims.json, PREPARED) and the claims whose Prepare did not
@@ -175,13 +203,15 @@ func addPreparingRegions(b *recordBuilder, p *state.Preparation, regions []prepa
 }
 
 // preparingContent returns the content of preparingPoolClaims.json of the
-// records of the pool driver in doc: its preparations PREPARING and
-// PREPARED_STALE.
+// records of the pool driver in doc, for operators and the greps of the
+// e2e tests (test90's observer reads preparedPoolClaims.json only): its
+// preparations PREPARING, KEPT (a rollback or the start kept what they
+// made) and PREPARED_STALE.
 func preparingContent(doc *store.Document, opts store.ViewOptions) ([]byte, error) {
 	out := map[string]*preparingPoolClaim{}
 	for i := range doc.Preparations {
 		p := &doc.Preparations[i]
-		if p.Driver != opts.PoolDriver || (p.State != state.PreparationPreparing && p.State != state.PreparationStale) {
+		if p.Driver != opts.PoolDriver || (p.State != state.PreparationPreparing && p.State != state.PreparationKept && p.State != state.PreparationStale) {
 			continue
 		}
 		data, err := store.PoolDevicesContent(doc, p, opts)
@@ -197,6 +227,9 @@ func preparingContent(doc *store.Document, opts store.ViewOptions) ([]byte, erro
 			d.Memdev = ""
 			if g := doc.Grant(state.GrantRef{Claim: p.UID, Result: d.Result}); g != nil {
 				d.Access, d.FsType = string(g.Asked.Access), g.Asked.FsType
+				if d.Mode == string(state.ModeNUMA) && d.Node < 0 {
+					d.Node = regionNode(doc, g)
+				}
 			}
 		}
 		if p.State == state.PreparationStale {
@@ -211,6 +244,19 @@ func preparingContent(doc *store.Document, opts store.ViewOptions) ([]byte, erro
 		out[p.UID] = rec
 	}
 	return json.MarshalIndent(out, "", "  ")
+}
+
+// regionNode returns the NUMA node of the region of a grant, -1 if it has
+// none.
+func regionNode(doc *store.Document, g *state.Grant) int {
+	ref := g.Got.Region
+	if ref == "" {
+		ref = g.Intent.Region
+	}
+	if reg := doc.Region(ref); reg != nil {
+		return state.NumaNodeOf(reg.NumaNode)
+	}
+	return -1
 }
 
 // preparingLend returns the lend of a companion claim whose Prepare did not

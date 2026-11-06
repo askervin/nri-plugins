@@ -301,7 +301,7 @@ func poolFixture() (map[string]*preparedPoolClaim, map[string]*preparingPoolClai
 		"p-comp": {ClaimName: "demo/cxl-lease-1b2c3d4e", Devices: fs(0), Result: result("p-comp", fs(0), true, &share), Lend: lend, BootID: "boot-1"},
 	}
 	untouched := preparedPoolDevice{Result: 0, Request: "mem", Device: "pooled5", Pool: "pool-a", Serial: 0xc1ae2005, Size: gi, Mode: "numa", Node: 5}
-	stale := fs(0)[0].untouched()
+	stale := untouchedDevice(fs(0)[0])
 	staleLend := *lend
 	preparing := map[string]*preparingPoolClaim{
 		"p-cut": {ClaimName: "demo/c-cut", Devices: []preparedPoolDevice{untouched}, BootID: "boot-1",
@@ -501,7 +501,7 @@ func TestStateStoreReboot(t *testing.T) {
 	if rec.Lend == nil || rec.Lend.Lease != "1b2c3d4e" || rec.Lend.Pod.Name != "requester" || len(rec.Lend.Nodes) != 0 || len(rec.Lend.Mounts) != 1 {
 		t.Errorf("lend of the stale companion %+v", rec.Lend)
 	}
-	want := pp["p-comp"].Devices[0].untouched()
+	want := untouchedDevice(pp["p-comp"].Devices[0])
 	jsonEqual(t, "stale device", mustJSON(t, rec.Devices[0]), mustJSON(t, want))
 }
 
@@ -555,10 +555,10 @@ func TestStartOnALostStore(t *testing.T) {
 	ns, err := newNodeState(devs, filepath.Join(root, "cdi"), filepath.Join(local, device.PreparedClaimsFileName), "n1", &DriverConfig{}, nil, "boot-1")
 	noErr(t, err)
 	flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second}
-	p, err := loadPoolDriver(config, flags, root, nil, "boot-1", nil)
+	p, err := loadPoolDriver(ctx, config, flags, root, nil, "boot-1", nil, s.st)
 	noErr(t, err)
-	if len(p.prepared) != 0 || len(p.Serials()) != 0 {
-		t.Errorf("pool driver: prepared %v, serials %v", p.prepared, p.Serials())
+	if r := p.records(); len(r.Preparations) != 0 || len(p.Serials()) != 0 {
+		t.Errorf("pool driver: preparations %v, serials %v", r.Preparations, p.Serials())
 	}
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(filepath.Join(root, "cdi")), cdiapi.WithAutoRefresh(false))
 	noErr(t, err)
@@ -666,4 +666,11 @@ func TestViewsOfDriverFiles(t *testing.T) {
 var importOrder = []string{
 	device.PreparedClaimsFileName, preparedClaimsInfoFileName, localStateFileName, poolStateFileName, poolPreparingFileName,
 	leasesFileName, poolSerialsFileName, steeredFileName,
+}
+
+// untouchedDevice returns a device as a Prepare records it before it touches it:
+// what the claim asks for, without what the Prepare made of it.
+func untouchedDevice(d preparedPoolDevice) preparedPoolDevice {
+	return preparedPoolDevice{Result: d.Result, Request: d.Request, Device: d.Device, Pool: d.Pool, Serial: d.Serial, Shared: d.Shared,
+		Size: d.Size, Mode: d.Mode, ReadOnly: d.ReadOnly, Persistent: d.Persistent, Access: d.Access, FsType: d.FsType, Path: d.Path, Node: -1}
 }

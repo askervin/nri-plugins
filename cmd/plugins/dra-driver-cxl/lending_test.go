@@ -250,7 +250,7 @@ func TestLendRecordJSON(t *testing.T) {
 // driver without a broker or a lender: nothing is touched.
 func TestPoolCompanionRefused(t *testing.T) {
 	pe := newPoolTestEnv(t)
-	pe.f.plug("0xc1ee0001")
+	pe.plug(0xc1ee0001)
 	p := pe.driver(t)
 	claim := poolClaim("u9", "c9", "pooled0", exclusiveData)
 	claim.Namespace = testNS
@@ -260,8 +260,8 @@ func TestPoolCompanionRefused(t *testing.T) {
 	wantErr(t, prepare(t, p, claim).Err, "lending unavailable: NRI not connected")
 	p.lender.set(newFakeLender(testRef), &broker{store: &leaseStore{Leases: map[string]*lease{}}, changed: make(chan struct{})})
 	wantErr(t, prepare(t, p, claim).Err, "claim demo/c9: not the companion of lease abc")
-	if strings.Contains(pe.f.commands(), "create-region") {
-		t.Fatalf("device touched for a refused lend:\n%s", pe.f.commands())
+	if strings.Contains(pe.commands(), "create-region") {
+		t.Fatalf("device touched for a refused lend:\n%s", pe.commands())
 	}
 }
 

@@ -776,16 +776,16 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 
 	t.Run(device.PoolDriverName, func(t *testing.T) {
 		e := newPoolTestEnv(t)
-		e.f.plug("0xc1ee0001")
+		e.plug(0xc1ee0001)
 		p := e.driver(t)
 		nri := newNRI()
 		p.nri = nri
 		claim := poolClaim("u1", "c1", "pooled0", exclusiveData)
 		nriPrepareWait = 20 * time.Millisecond
-		ncmds := e.f.commands()
+		ncmds := e.commands()
 		wantErr(t, prepare(t, p, claim).Err, why)
-		if len(p.prepared) != 0 || len(p.preparing) != 0 || e.f.commands() != ncmds {
-			t.Fatalf("prepared %v, preparing %v, commands:\n%s", p.prepared, p.preparing, e.f.commandsSince(ncmds))
+		if prep := e.preparation("u1"); prep != nil || e.commands() != ncmds {
+			t.Fatalf("preparation %+v, commands:\n%s", prep, strings.TrimPrefix(e.commands(), ncmds))
 		}
 		waits(t, nri, func() kubeletplugin.PrepareResult {
 			res, err := p.PrepareResourceClaims(ctx, []*resourceapi.ResourceClaim{claim})

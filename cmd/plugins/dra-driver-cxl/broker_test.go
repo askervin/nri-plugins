@@ -600,7 +600,7 @@ func TestBrokerAuthRejection(t *testing.T) {
 // unprepare.
 func TestBrokerPoolNumaLease(t *testing.T) {
 	pe := newPoolTestEnv(t)
-	pe.f.plug("0xc1ee0001")
+	pe.plug(0xc1ee0001)
 	p := pe.driver(t)
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
@@ -727,7 +727,7 @@ func TestBrokerPoolNumaLease(t *testing.T) {
 	}
 	// kubelet unprepares the companion claim: revoke again, release
 	noErr(t, unprepare(t, p, string(alloc.UID)))
-	pe.f.wantReleased(t)
+	pe.wantReleased(t, "region0", "mem0")
 	if l := e.lender.LentNodes(testPodUID, testCtr); len(l) != 0 {
 		t.Fatalf("still lent %v", l)
 	}
@@ -800,7 +800,7 @@ func TestBrokerTimeoutReleases(t *testing.T) {
 
 func TestBrokerLendFailure(t *testing.T) {
 	pe := newPoolTestEnv(t)
-	pe.f.plug("0xc1ee0001")
+	pe.plug(0xc1ee0001)
 	p := pe.driver(t)
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
@@ -814,7 +814,7 @@ func TestBrokerLendFailure(t *testing.T) {
 	claim := e.waitClaim("cxl-lease-000000a1")
 	r := prepare(t, p, allocated(claim, "pooled0", exclusiveData))
 	wantErr(t, r.Err, "memory-steered")
-	pe.f.wantReleased(t) // rolled back
+	pe.wantReleased(t, "region0", "mem0") // rolled back
 	resp := <-ch
 	if resp.State != api.StateFailed || !strings.Contains(resp.Error, "memory-steered") {
 		t.Fatalf("lend failure response %+v", resp)
@@ -1480,7 +1480,7 @@ type leaseFdEnv struct {
 
 func newLeaseFdEnv(t *testing.T, serial string) *leaseFdEnv {
 	pe := newPoolTestEnv(t)
-	pe.f.plug(serial)
+	pe.plug(parseHexSerial(t, serial))
 	e := &leaseFdEnv{brokerEnv: newSlicesBrokerEnv(t), pe: pe, p: pe.driver(t)}
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
@@ -1559,8 +1559,8 @@ func TestBrokerPoolDaxLease(t *testing.T) {
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeDax || dc.IsReadOnly() {
 		t.Fatalf("companion device section %+v", dc)
 	}
-	e.pe.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
-	e.pe.f.wantBlocks(t, "offline")
+	e.pe.wantDaxDriver(t, "dax0.0", "device_dax")
+	e.pe.wantOffline(t, "region0")
 	e.wantDaxFd(resp, fd)
 	if got := e.opened(); !slices.Equal(got, []bool{false}) {
 		t.Fatalf("dax opened read-only: %v", got)
@@ -2071,7 +2071,7 @@ func TestBrokerDefaultLeaseFromPool(t *testing.T) {
 	if resp.State != api.StateReady || resp.Source != "pool" || resp.Mode != "dax" || resp.Dax != "/dev/dax0.0" || resp.Serial != "0xc1ee0001" {
 		t.Fatalf("lease from the pool %+v", resp)
 	}
-	e.pe.f.wantCommand(t, "write bus/dax/drivers/device_dax/new_id dax0.0")
+	e.pe.wantDaxDriver(t, "dax0.0", "device_dax")
 	if l := e.lease(resp.Lease); l.Source != api.SourcePool {
 		t.Fatalf("stored lease %+v", l)
 	}
@@ -2204,12 +2204,11 @@ type leaseFsEnv struct {
 
 func newLeaseFsEnv(t *testing.T) *leaseFsEnv {
 	pe := newPoolTestEnv(t)
-	pe.f.plugPersistent("0xc1af0001")
-	pe.f.labels = true
+	pe.plugPersistent(0xc1af0001, "erofs")
 	e := &leaseFsEnv{brokerEnv: newSlicesBrokerEnv(t), pe: pe}
 	pe.leaseFsRoot = filepath.Join(e.dir, leaseFsDirName)
-	e.mounts = pe.m.Mounts
-	e.b.cfg.Mounts = pe.m.Mounts
+	e.mounts = pe.mounts
+	e.b.cfg.Mounts = pe.mounts
 	e.p = pe.driver(t)
 	// added before the broker uses the client: the fake client does not
 	// lock its reactor chain
@@ -2267,7 +2266,7 @@ func TestBrokerFsLease(t *testing.T) {
 	e := newLeaseFsEnv(t)
 	ctx := context.Background()
 	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
-	direct, cached := e.p.nodeMountPath(0xc1af0001, "direct"), e.p.nodeMountPath(0xc1af0001, "cached")
+	direct, cached := e.pe.nodeMount(0xc1af0001, "direct"), e.pe.nodeMount(0xc1af0001, "cached")
 
 	// a direct lease with the default name
 	claim, resp, fd := e.prepareFs("000000a1", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "fs", Wait: "5s"})
@@ -2292,11 +2291,11 @@ func TestBrokerFsLease(t *testing.T) {
 	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "direct",
 		Path: "/run/cxl/fs/000000a1", Size: fakePmemBytes, Serial: "0xc1af0001", Env: fsEnv("direct", "/run/cxl/fs/000000a1")})
 	bind := filepath.Join(fsDir, "000000a1")
-	if mi, _ := e.pe.m.Mounted(bind); mi == nil || mi.FsType != "erofs" || mi.Source != "/dev/pmem0" {
+	if mi, _ := e.pe.mountedErr(bind); mi == nil || mi.FsType != "erofs" || mi.Source != e.pe.pmem {
 		t.Fatalf("bind %+v", mi)
 	}
-	if len(e.pe.m.callsOf(bindCall(direct, bind))) != 1 {
-		t.Fatalf("not a bind of the node mount: %q", e.pe.m.callsOf(""))
+	if len(e.pe.k.MountCalls(bindCall(direct, bind))) != 1 {
+		t.Fatalf("not a bind of the node mount: %q", e.pe.k.MountCalls(""))
 	}
 	// env: the same environment, no fd; fd: not a dax or block lease
 	env, fd := e.call(api.Request{Op: "env", Lease: "000000a1"})
@@ -2314,8 +2313,8 @@ func TestBrokerFsLease(t *testing.T) {
 	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "fs", FsType: "erofs", Shared: true, ReadOnly: true, Access: "cached",
 		Path: "/run/cxl/fs/models", Size: fakePmemBytes, Serial: "0xc1af0001", Env: fsEnv("cached", "/run/cxl/fs/models")})
 	models := filepath.Join(fsDir, "models")
-	if mi, _ := e.pe.m.Mounted(models); mi == nil || mi.Source != "/dev/loop0" || len(e.pe.m.callsOf(bindCall(cached, models))) != 1 {
-		t.Fatalf("bind %+v, calls %q", mi, e.pe.m.callsOf(""))
+	if mi, _ := e.pe.mountedErr(models); mi == nil || mi.Source != filepath.Join(e.pe.k.DevRoot(), "loop0") || len(e.pe.k.MountCalls(bindCall(cached, models))) != 1 {
+		t.Fatalf("bind %+v, calls %q", mi, e.pe.k.MountCalls(""))
 	}
 
 	// names are unique per lease claim, default names included; nothing
@@ -2353,19 +2352,19 @@ func TestBrokerFsLease(t *testing.T) {
 
 	// release while the borrower has files of the bind open: the Unprepare
 	// of the companion fails, the lease stays Releasing, the bind stays
-	e.pe.m.setBusy(bind, true)
+	e.pe.k.SetBusy(bind, true)
 	rel, _ := e.call(api.Request{Op: "release", Lease: "000000a1", Wait: "200ms"})
 	if rel.State != api.StateReleasing {
 		t.Fatalf("release of a busy fs lease %+v", rel)
 	}
-	if mi, _ := e.pe.m.Mounted(bind); mi == nil {
+	if mi, _ := e.pe.mountedErr(bind); mi == nil {
 		t.Fatal("busy bind unmounted")
 	}
 	if _, err := e.client.ResourceV1().ResourceClaims(testNS).Get(ctx, companionName("000000a1"), metav1.GetOptions{}); err != nil {
 		t.Fatalf("companion claim of a busy bind: %v", err)
 	}
 	// the borrower closes the files: kubelet's next try succeeds
-	e.pe.m.setBusy(bind, false)
+	e.pe.k.SetBusy(bind, false)
 	e.waitState("000000a1", api.StateReleased)
 	e.wantGone(companionName("000000a1"))
 	if _, err := os.Stat(bind); !errors.Is(err, os.ErrNotExist) {
@@ -2374,7 +2373,7 @@ func TestBrokerFsLease(t *testing.T) {
 
 	// the pod ends with a busy bind: the lease-fs directory stays while
 	// the bind is in it, also through a reconcile
-	e.pe.m.setBusy(models, true)
+	e.pe.k.SetBusy(models, true)
 	noErr(t, e.b.CloseClaim(ctx, testLeaseClaimUID))
 	if _, err := os.Stat(models); err != nil {
 		t.Fatalf("bind directory removed while mounted: %v", err)
@@ -2395,12 +2394,12 @@ func TestBrokerFsLease(t *testing.T) {
 	}
 	// the bind goes, the lease is dropped and the directory removed: by
 	// the release, after it dropped the lease
-	e.pe.m.setBusy(models, false)
+	e.pe.k.SetBusy(models, false)
 	e.waitState("000000a2", api.StateReleased)
 	for _, d := range []string{fsDir, filepath.Dir(e.sock())} {
 		e.waitGoneDir(d)
 	}
-	e.pe.f.wantReleased(t)
+	e.pe.wantReleased(t, "region0", "mem0")
 	e.pe.wantClean(t, e.p)
 	e.pe.wantNoMounts(t, e.p)
 }
@@ -2595,12 +2594,11 @@ func (h *closingHooks) OnLending(id string, claim *resourceapi.ResourceClaim) (*
 // the reconcile removes the directories.
 func TestBrokerFsLeaseCloseRace(t *testing.T) {
 	pe := newPoolTestEnv(t)
-	pe.f.plugPersistent("0xc1af0001")
-	pe.f.labels = true
+	pe.plugPersistent(0xc1af0001, "erofs")
 	e := newSlicesBrokerEnv(t)
 	pe.leaseFsRoot = filepath.Join(e.dir, leaseFsDirName)
-	e.mounts = pe.m.Mounts
-	e.b.cfg.Mounts = pe.m.Mounts
+	e.mounts = pe.mounts
+	e.b.cfg.Mounts = pe.mounts
 	p := pe.driver(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
@@ -2622,7 +2620,7 @@ func TestBrokerFsLeaseCloseRace(t *testing.T) {
 	if r := <-ch; r.State == api.StateReady {
 		t.Fatalf("lease of a closed claim Ready: %+v", r)
 	}
-	if mi, _ := pe.m.Mounted(bind); mi == nil {
+	if mi, _ := pe.mountedErr(bind); mi == nil {
 		t.Fatal("no bind in the directory made again")
 	}
 	e.waitState("000000a1", api.StateReleased)
@@ -2638,7 +2636,7 @@ func TestBrokerFsLeaseCloseRace(t *testing.T) {
 			t.Fatalf("directory %s left: %v", d, err)
 		}
 	}
-	pe.f.wantReleased(t)
+	pe.wantReleased(t, "region0", "mem0")
 	pe.wantClean(t, p)
 	pe.wantNoMounts(t, p)
 }
@@ -2667,7 +2665,7 @@ func newLeaseBlockEnv(t *testing.T) *leaseBlockEnv {
 		e.mu.Lock()
 		e.opened = append(e.opened, path+" "+access)
 		e.mu.Unlock()
-		if path != "/dev/pmem0" {
+		if path != e.pe.pmem {
 			return nil, fmt.Errorf("unexpected device %s", path)
 		}
 		return os.Open(pmem)
@@ -2719,9 +2717,10 @@ func (e *leaseBlockEnv) wantBlockFd(fd int) {
 	}
 }
 
-// blockEnv returns the environment of a block lease of llm0.
-func blockEnv(readOnly string) map[string]string {
-	return map[string]string{"CXL_C1AF0001_MODE": "block", "CXL_C1AF0001_PATH": "/dev/pmem0", "CXL_C1AF0001_READONLY": readOnly,
+// blockEnv returns the environment of a block lease of llm0 with the block
+// device dev.
+func blockEnv(dev, readOnly string) map[string]string {
+	return map[string]string{"CXL_C1AF0001_MODE": "block", "CXL_C1AF0001_PATH": dev, "CXL_C1AF0001_READONLY": readOnly,
 		"CXL_C1AF0001_SERIAL": "0xc1af0001", "CXL_C1AF0001_SHARED": "1", "CXL_C1AF0001_SIZE": "534773760"}
 }
 
@@ -2732,7 +2731,7 @@ func blockEnv(readOnly string) map[string]string {
 // none with env.
 func TestBrokerBlockLease(t *testing.T) {
 	e := newLeaseBlockEnv(t)
-	e.pe.f.labels = false // a fresh device: the writer creates the namespace
+	e.pe.k.SetLabels(0xc1af0001, false) // a fresh device: the writer creates the namespace
 	serialSel := []resourceapi.DeviceSelector{{CEL: &resourceapi.CELDeviceSelector{Expression: `device.attributes["cxl-pool.nri.io"].serial == "0xc1af0001"`}}}
 
 	// the writer: the whole device, no capacity, read-write
@@ -2751,17 +2750,17 @@ func TestBrokerBlockLease(t *testing.T) {
 	if dc := deviceConfigOf(t, claim, device.PoolDriverName); dc == nil || dc.Mode != api.ModeBlock || dc.IsReadOnly() || dc.Access != "" || dc.Path != "" {
 		t.Fatalf("companion device section %+v", dc)
 	}
-	e.pe.f.wantCommand(t, "ndctl create-namespace -f -r region0 -m fsdax -M mem")
+	e.pe.wantCommand(t, "ndctl create-namespace -f -r region0 -m fsdax -M mem")
 	e.wantBlockFd(fd)
-	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Block: "/dev/pmem0",
-		Size: fakePmemBytes, Serial: "0xc1af0001", Env: blockEnv("0")})
+	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Block: e.pe.pmem,
+		Size: fakePmemBytes, Serial: "0xc1af0001", Env: blockEnv(e.pe.pmem, "0")})
 	if calls := e.lender.callLog(); strings.Contains(calls, "lend") {
 		t.Fatalf("block device lent as a node:\n%s", calls)
 	}
-	if l := e.lease("000000a1"); l == nil || l.Block != "/dev/pmem0" || l.Node != -1 || l.Dax != "" || l.Path != "" {
+	if l := e.lease("000000a1"); l == nil || l.Block != e.pe.pmem || l.Node != -1 || l.Dax != "" || l.Path != "" {
 		t.Fatalf("stored lease %+v", l)
 	}
-	if mounts, _ := e.pe.m.Mounts(); len(mounts) != 0 {
+	if mounts, _ := e.pe.mounts(); len(mounts) != 0 {
 		t.Fatalf("mounts of a block lease %+v", mounts)
 	}
 
@@ -2770,22 +2769,22 @@ func TestBrokerBlockLease(t *testing.T) {
 	e.wantBlockFd(fd)
 	wantResponse(t, r, resp)
 	env, fd := e.call(api.Request{Op: "env", Lease: "000000a1"})
-	if fd >= 0 || !reflect.DeepEqual(env.Env, blockEnv("0")) || env.Block != "/dev/pmem0" {
+	if fd >= 0 || !reflect.DeepEqual(env.Env, blockEnv(e.pe.pmem, "0")) || env.Block != e.pe.pmem {
 		t.Fatalf("env %+v fd %d", env, fd)
 	}
-	if got := e.opens(); !slices.Equal(got, []string{"/dev/pmem0 rw", "/dev/pmem0 rw"}) {
+	if got := e.opens(); !slices.Equal(got, []string{e.pe.pmem + " rw", e.pe.pmem + " rw"}) {
 		t.Fatalf("opens %v", got)
 	}
 	// the store has the block device after a restart
 	e.restart()
 	e.start()
 	e.p.lender.set(e.lender, e.b)
-	if l := e.lease("000000a1"); l == nil || l.Mode != "block" || l.Block != "/dev/pmem0" || l.ReadOnly {
+	if l := e.lease("000000a1"); l == nil || l.Mode != "block" || l.Block != e.pe.pmem || l.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
 	e.wantReleaseAll(1)
 	e.wantGone(companionName("000000a1"))
-	e.pe.f.wantReleased(t)
+	e.pe.wantReleased(t, "region0", "mem0")
 
 	// a reader: one share, read-only; the namespace of the writer
 	e.restart()
@@ -2793,7 +2792,7 @@ func TestBrokerBlockLease(t *testing.T) {
 	e.p.lender.set(e.lender, e.b)
 	pmem := filepath.Join(e.dir, "fake-pmem")
 	e.b.openDevice = func(path string, readOnly bool) (*os.File, error) {
-		if path != "/dev/pmem0" || !readOnly {
+		if path != e.pe.pmem || !readOnly {
 			return nil, fmt.Errorf("unexpected open of %s read-only %v", path, readOnly)
 		}
 		return os.Open(pmem)
@@ -2808,19 +2807,19 @@ func TestBrokerBlockLease(t *testing.T) {
 		t.Fatalf("companion device section %+v", dc)
 	}
 	e.wantBlockFd(fd)
-	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Shared: true, ReadOnly: true, Block: "/dev/pmem0",
-		Size: fakePmemBytes, Serial: "0xc1af0001", Env: blockEnv("1")})
-	if n := strings.Count(e.pe.f.commands(), "ndctl create-namespace"); n != 1 {
-		t.Fatalf("ndctl create-namespace ran %d times:\n%s", n, e.pe.f.commands())
+	wantResponse(t, resp, api.Response{State: api.StateReady, Source: "pool", Mode: "block", Shared: true, ReadOnly: true, Block: e.pe.pmem,
+		Size: fakePmemBytes, Serial: "0xc1af0001", Env: blockEnv(e.pe.pmem, "1")})
+	if n := strings.Count(e.pe.commands(), "ndctl create-namespace"); n != 1 {
+		t.Fatalf("ndctl create-namespace ran %d times:\n%s", n, e.pe.commands())
 	}
 	r, fd = e.call(api.Request{Op: "fd", Lease: "000000a1"})
 	e.wantBlockFd(fd)
-	if r.Error != "" || r.Block != "/dev/pmem0" {
+	if r.Error != "" || r.Block != e.pe.pmem {
 		t.Fatalf("fd %+v", r)
 	}
 	e.wantReleaseAll(1)
 	e.wantGone(companionName("000000a1"))
-	e.pe.f.wantReleased(t)
+	e.pe.wantReleased(t, "region0", "mem0")
 	e.pe.wantClean(t, e.p)
 	e.pe.wantNoMounts(t, e.p)
 }
@@ -2833,11 +2832,11 @@ func TestBrokerBlockLeaseOpenError(t *testing.T) {
 		return nil, syscall.ENXIO
 	}
 	_, resp, fd := e.prepareBlock("000000a1", api.Request{Op: "request", Serial: "0xc1af0001", Shared: true, ReadOnly: true, Mode: "block", Wait: "5s"}, fsLeaseData)
-	if fd >= 0 || resp.Error != "opening /dev/pmem0: no such device or address" || resp.State != api.StateReady {
+	if fd >= 0 || resp.Error != "opening "+e.pe.pmem+": no such device or address" || resp.State != api.StateReady {
 		t.Fatalf("response %+v fd %d", resp, fd)
 	}
 	e.wantReleaseAll(1)
-	e.pe.f.wantReleased(t)
+	e.pe.wantReleased(t, "region0", "mem0")
 }
 
 // TestOpenBlockDevice opens a device read-write and read-only, waits for a
