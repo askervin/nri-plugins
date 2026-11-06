@@ -100,6 +100,12 @@ func New() *Manager {
 // ReleaseRegionInOrder with its cxl destroy-region.
 var regionCreateMu sync.Mutex
 
+// CreationLock returns the lock that serializes the region creations of
+// the process (regionCreateMu): a holder of it runs exclusively of them.
+func CreationLock() sync.Locker {
+	return &regionCreateMu
+}
+
 // serializeCreations runs fn holding regionCreateMu.
 func serializeCreations(fn func() error) error {
 	regionCreateMu.Lock()
