@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -31,6 +32,15 @@ type cutScenario struct {
 	// setup prepares the node before the life cycle (not cut).
 	setup func(v *env)
 	run   func(v *env)
+	// done ends what the life cycle holds on the node (a busy mount) after
+	// the start that follows a cut, nil for nothing.
+	done func(v *env)
+}
+
+// companionTarget returns the lease bind of the companion claims of the
+// scenarios.
+func companionTarget(v *env) string {
+	return filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
 }
 
 // cutScenarios are the life cycles of every kind of grant.
@@ -70,10 +80,54 @@ var cutScenarios = []cutScenario{
 		setup: func(v *env) { v.formatPmem("mem0", "ext4") },
 		run: func(v *env) {
 			req := fsGrant("comp", true, "")
-			req.BindTarget = filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+			req.BindTarget = companionTarget(v)
 			req.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
 			_ = v.prepare(poolDriver, "comp", req)
 			_ = v.unprepare(poolDriver, "comp")
+		},
+	},
+	{
+		// the Unprepare of a companion fails on its busy lease bind; the
+		// release of another claim unbinds it again, and the companion
+		name:  "pool busy companion bind",
+		specs: []fake.MemdevSpec{{Serial: serialP, Pmem: gib}, {Serial: serialA}},
+		setup: func(v *env) { v.formatPmem("mem0", "ext4") },
+		run: func(v *env) {
+			req := fsGrant("comp", true, "")
+			req.BindTarget = companionTarget(v)
+			req.Lend = &state.GrantLend{Lease: "0123abcd", Name: "data"}
+			_ = v.prepare(poolDriver, "comp", req)
+			v.f.SetBusy(companionTarget(v), true)
+			_ = v.unprepare(poolDriver, "comp")
+			v.f.SetBusy(companionTarget(v), false)
+			_ = v.prepare(poolDriver, "a", poolReq("a", 0, serialA, state.ModeDax, state.KindExclusive))
+			_ = v.unprepare(poolDriver, "a")
+			_ = v.unprepare(poolDriver, "comp")
+		},
+		done: func(v *env) { v.f.SetBusy(companionTarget(v), false) },
+	},
+	{
+		name:  "pool fs writer and reader of one claim",
+		specs: []fake.MemdevSpec{{Serial: serialP, Pmem: gib}},
+		setup: func(v *env) { v.formatPmem("mem0", "ext4") },
+		run: func(v *env) {
+			r := fsGrant("c", true, "")
+			r.Ref.Result = 1
+			_ = v.prepare(poolDriver, "c", fsGrant("c", false, ""), r)
+			_ = v.unprepare(poolDriver, "c")
+		},
+	},
+	{
+		// the second grant fails: the rollback releases the first one
+		name:  "pool rollback",
+		specs: []fake.MemdevSpec{{Serial: serialP, Pmem: gib}, {Serial: serialA}},
+		setup: func(v *env) { v.formatPmem("mem0", "ext4") },
+		run: func(v *env) {
+			v.f.FailCommand("cxl create-region", nil, errors.New("cxl region: cmd_create_region: failed"))
+			reqs := []GrantRequest{fsGrant("c", true, ""), poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)}
+			_ = v.prepare(poolDriver, "c", reqs...)
+			_ = v.prepare(poolDriver, "c", reqs...)
+			_ = v.unprepare(poolDriver, "c")
 		},
 	},
 	{
@@ -131,6 +185,9 @@ func TestCutAtEveryCommit(t *testing.T) {
 				what := fmt.Sprintf("cut after commit %d of %d", n, total)
 				v.restart()
 				v.check(what)
+				if s.done != nil {
+					s.done(v)
+				}
 				finish(t, v, what)
 			}
 		})
@@ -164,6 +221,9 @@ func TestCutAtKernelActions(t *testing.T) {
 					}
 					v.restart()
 					v.check(name)
+					if s.done != nil {
+						s.done(v)
+					}
 					finish(t, v, name)
 				})
 			}

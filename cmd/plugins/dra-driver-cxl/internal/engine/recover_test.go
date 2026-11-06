@@ -16,6 +16,9 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -85,7 +88,18 @@ func TestRecoverUnrestored(t *testing.T) {
 		!strings.Contains(err.Error(), "cannot be mounted again") {
 		t.Fatalf("Prepare again: %v", err)
 	}
+	if g := v.grant("w", 0); g.State != state.GrantUnrestored {
+		t.Fatalf("the Prepare again released the grant: %s", g.State)
+	}
+	// the release waits for the holders of the block device of the region
+	// now, not of the one as prepared
+	logs := captureKlog(t)
 	v.mustUnprepare(poolDriver, "w")
+	want := fmt.Sprintf("claim ns/w: its node mount %s was not mounted again at start; the release of device 0x91 waits for the holders of %s, the block device of its region now, not of %s",
+		direct, filepath.Join(v.f.DevRoot(), "pmem3"), filepath.Join(v.f.DevRoot(), "pmem0"))
+	if out := logs(); !strings.Contains(out, want) {
+		t.Fatalf("no %q in\n%s", want, out)
+	}
 	v.clean("unprepared")
 }
 
@@ -127,6 +141,109 @@ func TestRecoverCutPrepare(t *testing.T) {
 	}
 	v.check("recovered")
 	v.mustPrepare(poolDriver, "c", poolReq("c", 0, serialA, state.ModeNUMA, state.KindExclusive))
+	v.mustUnprepare(poolDriver, "c")
+	v.clean("unprepared")
+}
+
+// A process stop inside a rollback: the grant that the rollback left
+// RELEASING is released at the start, the preparation stays PREPARING for
+// kubelet's retry.
+func TestRecoverCutRollback(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialP, Pmem: gib}, fake.MemdevSpec{Serial: serialA})
+	v.formatPmem("mem0", "ext4")
+	v.f.FailCommand("cxl create-region", nil, errors.New("cxl region: cmd_create_region: failed"))
+	ref := state.GrantRef{Claim: "c"}
+	v.e.afterCommit = func() {
+		if g := v.records().Grant(ref); g != nil && g.State == state.GrantReleasing {
+			panic(fake.ErrCut)
+		}
+	}
+	reqs := []GrantRequest{fsGrant("c", true, ""), poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)}
+	if !v.cut(func() { _ = v.prepare(poolDriver, "c", reqs...) }) {
+		t.Fatal("not cut")
+	}
+	out := v.restart()
+	if !slices.Contains(out.Released, ref) || v.records().Grant(ref) != nil {
+		t.Fatalf("recovered %+v, grant %+v", out, v.records().Grant(ref))
+	}
+	if p := v.records().Preparation(poolDriver, "c"); p == nil || p.State != state.PreparationPreparing {
+		t.Fatalf("preparation %+v", p)
+	}
+	if rs := v.f.Kernel().Regions("mem0"); len(rs) > 0 {
+		t.Fatalf("regions %v left", rs)
+	}
+	v.mustPrepare(poolDriver, "c", reqs...)
+	v.mustUnprepare(poolDriver, "c")
+	v.clean("unprepared")
+}
+
+// The keep decision of a cut claim is per memdev: of a claim on two
+// memdevs, the one whose region lies below a region of another memdev is
+// kept and the other released at the start, the preparation KEPT; its
+// Prepare again realises the released part anew and reuses the kept
+// region.
+func TestRecoverClaimKeptInPart(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB}, fake.MemdevSpec{Serial: serialC, HostBridge: 24})
+	free := poolReq("c", 0, serialC, state.ModeDax, state.KindExclusive)
+	below := poolReq("c", 1, serialA, state.ModeDax, state.KindExclusive)
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "c", Driver: poolDriver, ClaimName: "ns/c",
+			BootID: v.f.BootID(), State: state.PreparationPreparing, Results: []state.Result{grantResult("c", 0), grantResult("c", 1)}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{free}); err != nil {
+		t.Fatal(err)
+	}
+	// cut after the region of the second one was made
+	v.cutAfter(4)
+	if !v.cut(func() { _, _ = v.e.PrepareGrants(context.Background(), []GrantRequest{below}) }) {
+		t.Fatal("not cut")
+	}
+	k := v.f.Kernel()
+	d, _ := k.RootDecoder("mem1", kernel.RegionRAM)
+	above, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem1", Decoder: d, Type: kernel.RegionRAM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := k.Regions("mem0")
+	logs := captureKlog(t)
+	out := v.restart()
+	if !slices.Equal(out.Released, []state.GrantRef{{Claim: "c"}}) || !slices.Equal(out.Kept, []state.GrantRef{{Claim: "c", Result: 1}}) {
+		t.Fatalf("recovered %+v", out)
+	}
+	lines := logs()
+	for _, want := range []string{
+		"claim ns/c (c), whose Prepare did not finish: releasing devices 0xc1\n",
+		"claim ns/c (c): not releasing its devices at start: " + above + " lie above their regions",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("no %q in\n%s", want, lines)
+		}
+	}
+	if strings.Contains(lines, "released, its Prepare again") {
+		t.Errorf("the claim is released whole:\n%s", lines)
+	}
+	if p := v.records().Preparation(poolDriver, "c"); p.State != state.PreparationKept {
+		t.Fatalf("preparation %s", p.State)
+	}
+	if g := v.grant("c", 1); g.State != state.GrantJournaled || len(kept) != 1 || g.Intent.Region != state.RegionRef(kept[0]) {
+		t.Fatalf("grant %+v, kept %v", g, kept)
+	}
+	if rs := k.Regions("mem2"); len(rs) > 0 {
+		t.Fatalf("the released part has %v", rs)
+	}
+	v.mustPrepare(poolDriver, "c", free, below)
+	if g := v.grant("c", 1); g.Got.Region != state.RegionRef(kept[0]) {
+		t.Fatalf("the kept region %v is not reused: %+v", kept, g)
+	}
+	if rs := k.Regions("mem2"); len(rs) != 1 || v.grant("c", 0).Got.Region != state.RegionRef(rs[0]) {
+		t.Fatalf("the released part is not realised anew: %v", rs)
+	}
+	if err := k.ReleaseRegion(context.Background(), above); err != nil {
+		t.Fatal(err)
+	}
 	v.mustUnprepare(poolDriver, "c")
 	v.clean("unprepared")
 }
@@ -525,4 +642,225 @@ func TestRecoverRestoreBeforeRelease(t *testing.T) {
 		t.Fatal("the cut grant was not released")
 	}
 	finish(t, v, "finished")
+}
+
+// Recover leaves the records of a source that the engine does not own (an
+// adapter's local claim cut in its Prepare, its region recorded) as they
+// are.
+func TestRecoverOtherSources(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialL}, fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.formatPmem("mem2", "ext4")
+	v.sources = []state.Source{state.SourcePool}
+	ref := state.GrantRef{Claim: "l"}
+	// a node mount of a local claim (an adapter's record: no Mount record
+	// lists it) and a stale lease bind of a local memdev
+	localMount := filepath.Join(v.dir, localDriver, "mounts", "11-direct")
+	staleBind := filepath.Join(v.dir, localDriver, "lease-fs", "lc9", "data")
+	for _, d := range []string{localMount, staleBind} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fsRef := state.GrantRef{Claim: "lfs"}
+	if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+		doc.Preparations = append(doc.Preparations, state.Preparation{UID: "l", Driver: localDriver, BootID: v.f.BootID(),
+			State: state.PreparationPreparing, Results: []state.Result{grantResult("l", 0)}},
+			state.Preparation{UID: "lfs", Driver: localDriver, BootID: v.f.BootID(),
+				State: state.PreparationPrepared, Results: []state.Result{grantResult("lfs", 0)}})
+		doc.Memdevs = append(doc.Memdevs, state.Memdev{Serial: serialL, Source: state.SourceLocal, State: state.MemdevActive,
+			Grants: []state.GrantRef{ref, fsRef}, Regions: []state.RegionRef{"region7"},
+			Stale: []state.StalePath{{Path: staleBind, Kind: state.StaleBind}}})
+		doc.Grants = append(doc.Grants, state.Grant{Ref: ref, Serial: serialL, State: state.GrantJournaled,
+			Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeDax, Kind: state.KindExclusive}},
+			state.Grant{Ref: fsRef, Serial: serialL, State: state.GrantRealised,
+				Asked: state.Asked{Source: state.SourceLocal, Mode: state.ModeFs, Kind: state.KindPersistent},
+				Got:   state.Got{MountPath: localMount}})
+		doc.Regions = append(doc.Regions, state.Region{Name: "region7", Mode: state.RegionRam, Targets: []state.Serial{serialL},
+			Owner: state.OwnerOurs, State: state.RegionOwned})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	local := func() string {
+		doc := v.st.Snapshot()
+		var out []string
+		for _, m := range doc.Memdevs {
+			if m.Source == state.SourceLocal {
+				out = append(out, fmt.Sprintf("%+v", m))
+			}
+		}
+		for _, g := range doc.Grants {
+			if g.Asked.Source == state.SourceLocal {
+				out = append(out, fmt.Sprintf("%+v", g))
+			}
+		}
+		out = append(out, fmt.Sprintf("%+v %+v", doc.Region("region7"), doc.Preparation(localDriver, "l")))
+		return strings.Join(out, "\n")
+	}
+	before := local()
+	v.restart()
+	if after := local(); after != before {
+		t.Fatalf("the records of the local source changed:\n%s\n->\n%s", before, after)
+	}
+	err := v.e.ReleaseGrants(context.Background(), []state.GrantRef{ref}, ReleaseUnprepare)
+	if err == nil || !strings.Contains(err.Error(), "are not the engine's") {
+		t.Fatalf("release of another source: %v", err)
+	}
+	gen := v.st.Snapshot().Generation
+	_, err = v.e.PrepareGrants(context.Background(), []GrantRequest{localReq("l2", 0, serialL, state.ModeDax, state.KindExclusive, 256*mib)})
+	if err == nil || !strings.Contains(err.Error(), "are not the engine's") || v.st.Snapshot().Generation != gen {
+		t.Fatalf("prepare of another source: %v (generation %d -> %d)", err, gen, v.st.Snapshot().Generation)
+	}
+	// a release of the pool retries the stale lease binds of its own
+	// memdevs only
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	v.mustUnprepare(poolDriver, "r")
+	if after := local(); after != before {
+		t.Fatalf("the records of the local source changed:\n%s\n->\n%s", before, after)
+	}
+	for _, d := range []string{localMount, staleBind} {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("a directory of the local source: %v", err)
+		}
+	}
+}
+
+// At a start, the device of a node mount mounted there with other options
+// is still the grant's: it stays REALISED (logged) and its release
+// unmounts it.
+func TestRecoverOwnDeviceOtherOptions(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.mustPrepare(poolDriver, "r", fsGrant("r", true, ""))
+	g := v.grant("r", 0)
+	k := v.f.Kernel()
+	if err := k.Unmount(g.Got.MountPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.FsMount(g.Got.BlockDevice.Name, g.Got.MountPath, "ext4", false, []string{"dax=never"}); err != nil {
+		t.Fatal(err)
+	}
+	logs := captureKlog(t)
+	if out := v.restart(); len(out.Unrestored) > 0 {
+		t.Fatalf("recovered %+v", out)
+	}
+	if out := logs(); !strings.Contains(out, "was mounted without DAX") {
+		t.Fatalf("not logged:\n%s", out)
+	}
+	if g := v.grant("r", 0); g.State != state.GrantRealised {
+		t.Fatalf("grant %s", g.State)
+	}
+	v.mustUnprepare(poolDriver, "r")
+	if mi, _ := k.Mounted(g.Got.MountPath); mi != nil {
+		t.Fatalf("still mounted: %+v", mi)
+	}
+	v.clean("unprepared")
+}
+
+// A cached node mount that the start mounts again on another loop device
+// records that one; a Prepare again that mounts an unrestored node mount
+// again makes its other grants REALISED too.
+func TestRecoverLoopRecorded(t *testing.T) {
+	v := pmemEnv(t, "ext4")
+	v.mustPrepare(poolDriver, "r1", fsGrant("r1", true, state.AccessCached))
+	v.mustPrepare(poolDriver, "r2", fsGrant("r2", true, state.AccessCached))
+	g := v.grant("r1", 0)
+	k := v.f.Kernel()
+	if err := k.Unmount(g.Got.MountPath); err != nil {
+		t.Fatal(err)
+	}
+	// another loop device takes the number of the old one
+	if _, err := k.AttachLoop(filepath.Join(v.dir, "filesystems"), false); err != nil {
+		t.Fatal(err)
+	}
+	v.restart()
+	g = v.grant("r1", 0)
+	m := v.records().Region(g.Got.Region).Mount(g.Got.Mount)
+	if mi, _ := k.Mounted(g.Got.MountPath); mi == nil || mi.Source != m.Loop || g.Got.Loop != m.Loop {
+		t.Fatalf("mounted %+v, mount %+v, grant %+v", mi, m, g.Got)
+	}
+	// unrestored: a block device that is not the one prepared
+	if err := k.Unmount(g.Got.MountPath); err != nil {
+		t.Fatal(err)
+	}
+	v.f.RenamePmem("region0", "pmem3", "259:9")
+	if out := v.restart(); len(out.Unrestored) != 2 {
+		t.Fatalf("recovered %+v", out)
+	}
+	v.f.RenamePmem("region0", "pmem0", "259:1")
+	if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{fsGrant("r1", true, state.AccessCached)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{"r1", "r2"} {
+		if g := v.grant(uid, 0); g.State != state.GrantRealised {
+			t.Fatalf("grant %s: %s", uid, g.State)
+		}
+	}
+	// the preparation of r1 is the front-end's, after PrepareGrants
+	if p := v.records().Preparation(poolDriver, "r2"); p.State != state.PreparationPrepared {
+		t.Fatalf("preparation r2: %s", p.State)
+	}
+	v.mustUnprepare(poolDriver, "r1")
+	v.mustUnprepare(poolDriver, "r2")
+	v.clean("unprepared")
+}
+
+// The start logs what it does with each claim whose Prepare did not
+// finish, and keeps a companion claim of mode numa with a line.
+func TestRecoverClaimLines(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialC, HostBridge: 24},
+		fake.MemdevSpec{Serial: serialP, Pmem: gib})
+	v.formatPmem("mem2", "ext4")
+	companion := poolReq("comp", 0, serialC, state.ModeNUMA, state.KindExclusive)
+	companion.Lend = &state.GrantLend{Lease: "0123abcd", Container: "c"}
+	target := filepath.Join(v.dir, localDriver, "lease-fs", "lc1", "data")
+	for _, c := range []struct {
+		uid string
+		req GrantRequest
+	}{
+		{"plain", poolReq("plain", 0, serialA, state.ModeNUMA, state.KindExclusive)},
+		{"comp", companion},
+		// a companion of mode fs is released at the start, its bind too
+		{"fscomp", bindReq("fscomp", target)},
+	} {
+		if err := v.st.Commit(context.Background(), store.Durable, func(doc *store.Document) error {
+			doc.Preparations = append(doc.Preparations, state.Preparation{UID: c.uid, Driver: poolDriver, ClaimName: "ns/" + c.uid,
+				BootID: v.f.BootID(), State: state.PreparationPreparing, Results: []state.Result{grantResult(c.uid, 0)}})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.e.PrepareGrants(context.Background(), []GrantRequest{c.req}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mi, _ := v.f.Kernel().Mounted(target); mi == nil {
+		t.Fatal("the lease bind is not mounted")
+	}
+	logs := captureKlog(t)
+	recovered := v.restart()
+	out := logs()
+	for _, want := range []string{
+		"claim ns/comp (comp) is a companion claim: its Unprepare releases its devices, its Prepare again reuses them",
+		"claim ns/plain (plain), whose Prepare did not finish: releasing devices 0xa1",
+		"claim ns/plain (plain): released, its Prepare again prepares its devices anew",
+		"claim ns/fscomp (fscomp), whose Prepare did not finish: releasing devices 0x91",
+		"claim ns/fscomp (fscomp): released, its Prepare again prepares its devices anew",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "claim ns/fscomp (fscomp) is a companion claim") {
+		t.Errorf("the fs companion is kept:\n%s", out)
+	}
+	if !slices.Contains(recovered.Released, state.GrantRef{Claim: "fscomp"}) || v.records().Grant(state.GrantRef{Claim: "fscomp"}) != nil {
+		t.Errorf("the fs companion is not released: %+v", recovered)
+	}
+	if mi, _ := v.f.Kernel().Mounted(target); mi != nil {
+		t.Errorf("the lease bind of the released companion is mounted: %+v", mi)
+	}
+	v.mustUnprepare(poolDriver, "fscomp")
+	v.mustUnprepare(poolDriver, "comp")
+	v.mustUnprepare(poolDriver, "plain")
+	v.clean("unprepared")
 }

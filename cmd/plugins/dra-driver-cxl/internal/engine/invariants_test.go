@@ -81,6 +81,11 @@ func TestInvariantViolations(t *testing.T) {
 		{"I8", func(r *state.Records, s *kernel.Snapshot, o *CheckOptions) {
 			s.Mounts = append(s.Mounts, kernel.MountInfo{Target: filepath.Join(o.MountsDirs[0], "a1-direct"), Source: "/dev/pmem7"})
 		}, "no realised grant of a prepared claim lists it"},
+		{"I8", func(r *state.Records, s *kernel.Snapshot, o *CheckOptions) {
+			// a rollback that a stop cut: not a release that kubelet retries
+			r.Grant(state.GrantRef{Claim: "w"}).State = state.GrantReleasing
+			r.Preparation(poolDriver, "w").State = state.PreparationPreparing
+		}, "no realised grant of a prepared claim lists it"},
 		{"I10", func(r *state.Records, s *kernel.Snapshot, o *CheckOptions) {
 			r.Provenance = append(r.Provenance, state.Provenance{Serial: serialL, State: state.ProvenanceHeld})
 			r.Grants = append(r.Grants, state.Grant{Ref: state.GrantRef{Claim: "l"}, Serial: serialL,

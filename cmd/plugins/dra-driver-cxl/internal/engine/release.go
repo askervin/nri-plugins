@@ -22,29 +22,112 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog/v2"
-
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
 
-// ReleaseGrants releases the grants refs in their order as release says
-// (Policy) and returns the errors of those that it could not release. A
-// grant that is released is gone from the store; one whose release failed
-// stays RELEASING with what it still has, and a retry finds out from the
-// kernel what exists. A ref without a grant is not an error. A grant of a
-// PREPARED_STALE preparation is released by its serial: a pool memdev that
-// no grant of this boot uses is disabled.
+// ReleaseGrants releases the grants refs as release says (Policy) and
+// returns the errors of those that it could not release. First the stale
+// lease binds of every memdev are unmounted again (retryAllStale). The
+// grants of one memdev are released together in its queue (the uses that
+// the other grants of the call have are not kept), in the order of the
+// first of them; every holder wait of the call ends at one deadline, which
+// starts at its first holder wait. A grant that is released is gone from
+// the store; one whose release failed stays RELEASING with what it still
+// has, and a retry finds out from the kernel what exists. A ref without a
+// grant is not an error. A grant of a PREPARED_STALE preparation is
+// released by its serial: a pool memdev that no grant of this boot uses is
+// disabled.
 func (e *Engine) ReleaseGrants(ctx context.Context, refs []state.GrantRef, release Release) error {
-	trigger := triggerOf(release)
-	var errs []error
+	r := e.records()
 	for _, ref := range refs {
-		if err := e.releaseOne(ctx, ref, release, trigger); err != nil {
+		if g := r.Grant(ref); g != nil && !e.owns(g.Asked.Source) {
+			return fmt.Errorf("engine: grant %s: the records of source %q are not the engine's", ref, g.Asked.Source)
+		}
+	}
+	e.retryAllStale(ctx, triggerOf(release))
+	call := newReleaseCall(e, release, refs)
+	var errs []error
+	for _, group := range e.byMemdev(refs) {
+		if err := e.releaseGroup(ctx, group, call); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	e.verify(ctx, nil)
 	return errors.Join(errs...)
+}
+
+// releaseCall is what the release of the grants of one call shares: its
+// policy and trigger, its grants, the deadlines of its holder waits, and
+// the results of the release of the uses of its grants per memdev.
+type releaseCall struct {
+	release Release
+	trigger state.Trigger
+	refs    map[state.GrantRef]bool
+	// holder is the holder wait; perClaim makes a deadline per claim (the
+	// recovery's), else the call has one.
+	holder    time.Duration
+	perClaim  bool
+	deadlines map[string]time.Time
+	uses      map[state.Serial]error
+	// unrestored are the node mounts of the grants of the call that the
+	// start did not mount again (UNRESTORED, FOREIGN), by grant.
+	unrestored map[state.GrantRef]string
+}
+
+// newReleaseCall returns the release call of the grants refs.
+func newReleaseCall(e *Engine, release Release, refs []state.GrantRef) *releaseCall {
+	c := &releaseCall{
+		release:    release,
+		trigger:    triggerOf(release),
+		refs:       map[state.GrantRef]bool{},
+		holder:     e.opts.Timeouts.Holder,
+		deadlines:  map[string]time.Time{},
+		uses:       map[state.Serial]error{},
+		unrestored: map[state.GrantRef]string{},
+	}
+	for _, ref := range refs {
+		c.refs[ref] = true
+	}
+	return c
+}
+
+// holderDeadline returns the deadline of the holder waits of the call for a
+// grant of the claim: the holder wait from the first holder wait of the
+// call, or of the claim when the call has a deadline per claim.
+func (c *releaseCall) holderDeadline(claim string) time.Time {
+	if !c.perClaim {
+		claim = ""
+	}
+	d, ok := c.deadlines[claim]
+	if !ok {
+		d = time.Now().Add(c.holder)
+		c.deadlines[claim] = d
+	}
+	return d
+}
+
+// releaseError is the error of the release of a memdev: held tells whether
+// its block device stayed held (errHolder).
+type releaseError struct {
+	serial state.Serial
+	held   bool
+	err    error
+}
+
+// Error returns the error in words.
+func (e *releaseError) Error() string {
+	return fmt.Sprintf("releasing serial %s: %v", serialText(e.serial), e.err)
+}
+
+// Unwrap returns the cause.
+func (e *releaseError) Unwrap() error {
+	return e.err
+}
+
+// Is tells whether target is errHolder and the block device stayed held.
+func (e *releaseError) Is(target error) bool {
+	return target == errHolder && e.held
 }
 
 // triggerOf returns the trigger of the transitions of a release.
@@ -58,9 +141,33 @@ func triggerOf(release Release) state.Trigger {
 	return state.TriggerRecover
 }
 
-// releaseOne releases a grant in the queue of its memdev.
-func (e *Engine) releaseOne(ctx context.Context, ref state.GrantRef, release Release, trigger state.Trigger) error {
-	g := e.records().Grant(ref)
+// byMemdev groups the refs that have a grant by the memdev of their grants,
+// in the order of the first ref of each memdev.
+func (e *Engine) byMemdev(refs []state.GrantRef) [][]state.GrantRef {
+	r := e.records()
+	var order []state.Serial
+	groups := map[state.Serial][]state.GrantRef{}
+	for _, ref := range refs {
+		g := r.Grant(ref)
+		if g == nil || slices.Contains(groups[g.Serial], ref) {
+			continue
+		}
+		if _, ok := groups[g.Serial]; !ok {
+			order = append(order, g.Serial)
+		}
+		groups[g.Serial] = append(groups[g.Serial], ref)
+	}
+	out := make([][]state.GrantRef, 0, len(order))
+	for _, serial := range order {
+		out = append(out, groups[serial])
+	}
+	return out
+}
+
+// releaseGroup releases grants of one memdev, its queue held once: they are
+// RELEASING together before the first of them is released.
+func (e *Engine) releaseGroup(ctx context.Context, refs []state.GrantRef, call *releaseCall) error {
+	g := e.records().Grant(refs[0])
 	if g == nil {
 		return nil
 	}
@@ -69,49 +176,69 @@ func (e *Engine) releaseOne(ctx context.Context, ref state.GrantRef, release Rel
 		return err
 	}
 	defer leave()
-	return e.releaseGrant(ctx, ref, release, trigger)
+	if err := e.startReleases(ctx, refs, call); err != nil {
+		return err
+	}
+	var errs []error
+	for _, ref := range refs {
+		if err := e.releaseGrant(ctx, ref, call); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
-// releaseGrant releases a grant, its memdev's queue held: RELEASING, its
-// lease bind unbound, its node mount and block device released next to the
-// other grants of the memdev, its own dax device deleted, the region per
-// Policy when it was the last grant of the memdev, then RELEASED. A grant
-// of a cut Prepare (JOURNALED, REALISING) that the recovery releases goes
-// to RELEASED directly. A region that the policy keeps for the claim (a
-// rollback or a recovery below a newer region of another memdev) is kept
-// with the grant JOURNALED; the recovery keeps such a grant untouched.
-func (e *Engine) releaseGrant(ctx context.Context, ref state.GrantRef, release Release, trigger state.Trigger) error {
+// releaseGrant releases a grant, its memdev's queue held: RELEASING (unless
+// it is), its lease bind unbound, its node mount and block device released
+// next to the other grants of the memdev, its own dax device deleted, the
+// region per Policy when it was the last grant of the memdev, then
+// RELEASED. A grant of a cut Prepare (JOURNALED, REALISING) that the
+// recovery releases goes to RELEASED directly. A region that the policy
+// keeps for the claim (a rollback below a newer region of another memdev)
+// is kept with the grant JOURNALED; the recovery decides what it keeps
+// before (keepForRecovery).
+func (e *Engine) releaseGrant(ctx context.Context, ref state.GrantRef, call *releaseCall) error {
 	r := e.records()
 	g := r.Grant(ref)
 	if g == nil {
 		return nil
 	}
 	if p := r.PreparationOf(ref); p != nil && p.State == state.PreparationStale {
-		return e.releaseStale(ctx, ref, trigger)
+		return e.releaseStale(ctx, ref, call.trigger)
 	}
-	if release == ReleaseRecovery && e.recoveryKeeps(g) {
-		return e.keepForRecovery(ctx, g, trigger)
-	}
-	cut := release == ReleaseRecovery && (g.State == state.GrantJournaled || g.State == state.GrantRealising)
-	if !cut {
-		if err := e.commit(ctx, func(r *state.Records) error {
-			g := r.Grant(ref)
-			return state.Apply(&state.GrantTable, &g.State, state.GrantReleasing, trigger)
-		}); err != nil {
+	if g.State != state.GrantReleasing {
+		if err := e.startReleases(ctx, []state.GrantRef{ref}, call); err != nil {
 			return err
 		}
 	}
-	e.retryStale(ctx, g.Serial, trigger)
 	cur := e.records().Grant(ref).Clone()
-	if err := e.releaseObjects(ctx, &cur, trigger); err != nil {
+	call.noteUnrestored(e.records(), &cur)
+	if err := e.releaseObjects(ctx, &cur, call); err != nil {
 		return err
 	}
-	last := true
-	if m := e.records().Memdev(cur.Serial); m != nil {
-		last = !slices.ContainsFunc(m.Grants, func(o state.GrantRef) bool { return o != ref })
+	return e.releaseLast(ctx, &cur, call)
+}
+
+// noteUnrestored remembers the node mount of a grant that the start did not
+// mount again (UNRESTORED, FOREIGN).
+func (c *releaseCall) noteUnrestored(r *state.Records, g *state.Grant) {
+	if m := mountRecord(r, g); m != nil && (m.State == state.MountUnrestored || m.State == state.MountForeign) {
+		c.unrestored[g.Ref] = m.Path
 	}
-	if last {
-		kept, err := e.releaseMemdev(ctx, &cur, release, trigger)
+}
+
+// releaseLast releases what the memdev of a grant whose own objects are
+// released has when the grant is its last one of no other call, and
+// records the grant RELEASED, or JOURNALED with the region that the policy
+// keeps for its claim.
+func (e *Engine) releaseLast(ctx context.Context, cur *state.Grant, call *releaseCall) error {
+	ref, trigger := cur.Ref, call.trigger
+	others, ofCall := e.memdevUsers(cur.Serial, ref, call)
+	if others && !ofCall && cur.Asked.Source == state.SourcePool {
+		e.logf(cur.Asked.Source, "serial %s is still used by another claim", serialText(cur.Serial))
+	}
+	if !others && !ofCall {
+		kept, err := e.releaseMemdev(ctx, cur, call)
 		if err != nil {
 			return err
 		}
@@ -119,52 +246,115 @@ func (e *Engine) releaseGrant(ctx context.Context, ref state.GrantRef, release R
 			return e.keptForClaim(ctx, ref, trigger)
 		}
 	}
-	return e.commit(ctx, func(r *state.Records) error { return releasedGrant(r, ref, trigger) })
-}
-
-// keepForRecovery keeps a cut grant whose region lies below a newer region
-// of another memdev untouched (Policy ReleaseRecovery keeps): its region
-// KEPT, the grant JOURNALED (a realised one as it is).
-func (e *Engine) keepForRecovery(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
-	e.warnf(g.Asked.Source, "claim %s: not releasing its memdev %s at start: a region of another memdev lies above its region, a release would leave a hole in the decoders of their ports; its Unprepare releases it, its Prepare again reuses it",
-		g.Ref.Claim, serialText(g.Serial))
-	if err := e.keepMemdev(ctx, g.Serial, trigger, true); err != nil {
+	if err := e.commit(ctx, func(r *state.Records) error { return releasedGrant(r, ref, trigger) }); err != nil {
 		return err
 	}
-	return e.keptForClaim(ctx, g.Ref, trigger)
+	e.forgetDevice(ref)
+	return nil
+}
+
+// startReleases commits the grants refs RELEASING in one commit, but those
+// that are released otherwise: of PREPARED_STALE preparations (by their
+// serial), and of cut Prepares (JOURNALED, REALISING) that the recovery
+// releases (RELEASED directly).
+func (e *Engine) startReleases(ctx context.Context, refs []state.GrantRef, call *releaseCall) error {
+	r := e.records()
+	var start []state.GrantRef
+	for _, ref := range refs {
+		g := r.Grant(ref)
+		p := r.PreparationOf(ref)
+		switch {
+		case g == nil, p != nil && p.State == state.PreparationStale:
+		case call.release == ReleaseRecovery && (g.State == state.GrantJournaled || g.State == state.GrantRealising):
+		default:
+			start = append(start, ref)
+		}
+	}
+	if len(start) == 0 {
+		return nil
+	}
+	return e.commit(ctx, func(r *state.Records) error {
+		for _, ref := range start {
+			if g := r.Grant(ref); g != nil {
+				if err := state.Apply(&state.GrantTable, &g.State, state.GrantReleasing, call.trigger); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// memdevUsers tells whether the memdev with the serial has grants but ref
+// of other calls (others) and of the release call (ofCall).
+func (e *Engine) memdevUsers(serial state.Serial, ref state.GrantRef, call *releaseCall) (others, ofCall bool) {
+	if m := e.records().Memdev(serial); m != nil {
+		for _, o := range m.Grants {
+			others = others || (o != ref && !call.refs[o])
+			ofCall = ofCall || (o != ref && call.refs[o])
+		}
+	}
+	return others, ofCall
+}
+
+// keepForRecovery keeps the cut grants refs of one memdev whose region lies
+// below a newer region of another memdev untouched (Policy ReleaseRecovery
+// keeps), the memdev's queue held: its region KEPT, the grants JOURNALED
+// (realised ones as they are).
+func (e *Engine) keepForRecovery(ctx context.Context, serial state.Serial, refs []state.GrantRef) error {
+	leave, err := e.acquire(ctx, serial)
+	if err != nil {
+		return err
+	}
+	defer leave()
+	if err := e.keepMemdev(ctx, serial, state.TriggerRecover, true); err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		if err := e.keptForClaim(ctx, ref, state.TriggerRecover); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // releaseObjects releases what a grant has of its own or shares: its lease
 // bind, its node mount and block device next to the other grants of the
 // memdev, its own dax device.
-func (e *Engine) releaseObjects(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
-	if err := e.releaseBind(ctx, g, trigger); err != nil {
+func (e *Engine) releaseObjects(ctx context.Context, g *state.Grant, call *releaseCall) error {
+	if err := e.releaseBind(ctx, g, call.trigger); err != nil {
 		return err
 	}
-	if err := e.releaseMount(ctx, g, trigger); err != nil {
+	if err := e.releaseMount(ctx, g, call); err != nil {
 		return err
 	}
-	return e.releaseDax(ctx, g, trigger)
+	return e.releaseDax(ctx, g, call.trigger)
 }
 
-// recoveryKeeps tells whether the recovery keeps the objects of a cut grant
-// untouched: it is the last grant of its memdev, whose region lies below a
-// region of another memdev (Policy ReleaseRecovery keeps).
-func (e *Engine) recoveryKeeps(g *state.Grant) bool {
+// recoveryAbove returns the regions of other memdevs above the regions of
+// the memdev of cut grants that the recovery keeps for their claim, none
+// when it releases them: those are the last grants of the memdev, and the
+// Policy (ReleaseRecovery) of their kind keeps a region below others.
+func (e *Engine) recoveryAbove(serial state.Serial, refs []state.GrantRef) []string {
 	r := e.records()
-	if m := r.Memdev(g.Serial); m == nil || slices.ContainsFunc(m.Grants, func(o state.GrantRef) bool { return o != g.Ref }) {
-		return false
+	m := r.Memdev(serial)
+	if m == nil || slices.ContainsFunc(m.Grants, func(o state.GrantRef) bool { return !slices.Contains(refs, o) }) {
+		return nil
 	}
-	memdev, err := e.k.FindMemdev(uint64(g.Serial))
-	if err != nil {
-		return false
+	g := r.Grant(refs[0])
+	memdev, err := e.k.FindMemdev(uint64(serial))
+	if err != nil || g == nil {
+		return nil
 	}
 	above, err := e.k.RegionsAbove(memdev)
 	if err != nil {
 		above = []string{"(" + err.Error() + ")"}
 	}
-	shared := e.opts.Shared != nil && e.opts.Shared(g.Serial)
-	return Policy(ReleaseRecovery, kindOf(g.Asked, shared), above) == Keep
+	shared := e.opts.Shared != nil && e.opts.Shared(serial)
+	if Policy(ReleaseRecovery, kindOf(g.Asked, shared), above) != Keep {
+		return nil
+	}
+	return above
 }
 
 // keptForClaim records a grant whose region is kept for its claim:
@@ -219,15 +409,30 @@ func releasedGrant(r *state.Records, ref state.GrantRef, trigger state.Trigger) 
 			return state.Apply(&state.MemdevTable, &m.State, state.MemdevActive, trigger)
 		}
 		return nil
-	case len(m.Regions) == 0 && len(m.Hollow) == 0:
-		if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevUnused, trigger); err != nil {
-			return err
-		}
-		removeRecord(&r.Memdevs, func(x *state.Memdev) bool { return x.Serial == serial })
-		return nil
+	case unused(m):
+		return dropMemdev(r, serial, trigger)
 	case m.State == state.MemdevActive && len(m.Regions) > 0:
 		return state.Apply(&state.MemdevTable, &m.State, state.MemdevIdleKept, trigger)
 	}
+	return nil
+}
+
+// unused tells whether nothing is left of a memdev record: no grant, no
+// region of ours, no hollow region and no stale lease bind or node mount.
+func unused(m *state.Memdev) bool {
+	return len(m.Grants) == 0 && len(m.Regions) == 0 && len(m.Hollow) == 0 && len(m.Stale) == 0
+}
+
+// dropMemdev removes the record of the memdev with the serial (UNUSED).
+func dropMemdev(r *state.Records, serial state.Serial, trigger state.Trigger) error {
+	m := r.Memdev(serial)
+	if m == nil {
+		return nil
+	}
+	if err := state.Apply(&state.MemdevTable, &m.State, state.MemdevUnused, trigger); err != nil {
+		return err
+	}
+	removeRecord(&r.Memdevs, func(x *state.Memdev) bool { return x.Serial == serial })
 	return nil
 }
 
@@ -261,6 +466,10 @@ func (e *Engine) releaseBind(ctx context.Context, g *state.Grant, trigger state.
 	}
 	if b.State != state.BindBound && b.State != state.BindStale {
 		return nil
+	}
+	if e.bindUsed(b.Target, g.Ref) {
+		e.warnf(g.Asked.Source, "%s: %s is the bind of another prepared claim, not unmounting it", bindWhat(g), b.Target)
+		return e.commit(ctx, func(r *state.Records) error { return boundTo(r, g.Ref, b.Target, state.BindAbsent, trigger) })
 	}
 	err := e.unbind(g.Asked.Source, bindWhat(g), b.Target)
 	to := state.BindAbsent
@@ -322,35 +531,179 @@ func boundTo(r *state.Records, ref state.GrantRef, target string, to state.BindS
 	return nil
 }
 
-// retryStale unmounts the stale lease binds of the memdev with the serial
-// that no prepared grant lists again, and forgets those that are gone.
-// Errors are logged.
-func (e *Engine) retryStale(ctx context.Context, serial state.Serial, trigger state.Trigger) {
-	m := e.records().Memdev(serial)
-	if m == nil || len(m.Stale) == 0 {
-		return
-	}
-	var gone []state.StalePath
-	for _, sp := range m.Stale {
-		if sp.Kind != state.StaleBind || e.bindUsed(sp.Path, state.GrantRef{}) {
+// retryAllStale unmounts the stale lease binds of every memdev of the
+// sources of the engine that no prepared grant lists again, in the queue of
+// each memdev that no other request holds, and forgets those that are
+// gone; then the grants of the memdev that a stale bind left RELEASING are
+// released again when no other grant of a claim uses the memdev, and a
+// pool memdev without grants is released (its holder wait, its region,
+// disabled). Errors are logged.
+func (e *Engine) retryAllStale(ctx context.Context, trigger state.Trigger) {
+	for _, m := range e.records().Memdevs {
+		if len(m.Stale) == 0 || !e.owns(m.Source) || !slices.ContainsFunc(m.Stale, func(sp state.StalePath) bool { return sp.Kind == state.StaleBind }) {
 			continue
 		}
-		if err := e.unbind(m.Source, "stale lease bind", sp.Path); err != nil {
-			klog.Errorf("%s: %v", e.driver(m.Source), err)
-			continue
-		}
-		gone = append(gone, sp)
-	}
-	if len(gone) == 0 {
-		return
-	}
-	if err := e.commit(ctx, func(r *state.Records) error { return forgetStale(r, serial, gone, trigger) }); err != nil {
-		klog.Errorf("engine: memdev %s: %v", serial, err)
+		e.retryStale(ctx, m.Serial, trigger)
 	}
 }
 
+// retryStale unmounts the stale lease binds of the memdev with the serial
+// in its queue, when no other request of the memdev is in progress (its
+// next release tries again), and forgets those that are gone or that a
+// prepared grant lists again; when none is left, the memdev is released
+// after them.
+func (e *Engine) retryStale(ctx context.Context, serial state.Serial, trigger state.Trigger) {
+	leave := e.tryAcquire(serial)
+	if leave == nil {
+		return
+	}
+	defer leave()
+	m := e.records().Memdev(serial)
+	if m == nil {
+		return
+	}
+	source := m.Source
+	var forget []state.StalePath
+	gone, left := false, false
+	for _, sp := range m.Stale {
+		if sp.Kind != state.StaleBind {
+			continue
+		}
+		if e.bindUsed(sp.Path, state.GrantRef{}) {
+			// a Prepare again bound it for its grant
+			forget = append(forget, sp)
+			continue
+		}
+		if err := e.unbindStale(source, sp.Path); err != nil {
+			e.errorf(source, "unmounting stale lease bind %s: %v", sp.Path, err)
+			left = true
+			continue
+		}
+		forget = append(forget, sp)
+		gone = true
+	}
+	if len(forget) == 0 {
+		return
+	}
+	if err := e.commit(ctx, func(r *state.Records) error { return forgetStale(r, serial, forget, trigger) }); err != nil {
+		e.errorf(source, "serial %s: %v", serialText(serial), err)
+		return
+	}
+	if gone && !left {
+		e.releaseAfterStale(ctx, serial, trigger)
+	}
+}
+
+// releaseAfterStale releases the memdev with the serial after its stale
+// lease binds are gone, its queue held, when no grant of a claim uses it
+// any more: its RELEASING grants, each as the release that it was in, else
+// the memdev itself; the record of a memdev of which nothing is left goes.
+// Errors are logged.
+func (e *Engine) releaseAfterStale(ctx context.Context, serial state.Serial, trigger state.Trigger) {
+	r := e.records()
+	m := r.Memdev(serial)
+	if m == nil {
+		return
+	}
+	var refs []state.GrantRef
+	for _, ref := range m.Grants {
+		if g := r.Grant(ref); g == nil || g.State != state.GrantReleasing {
+			return
+		}
+		refs = append(refs, ref)
+	}
+	source := m.Source
+	call := newReleaseCall(e, ReleaseUnprepare, refs)
+	call.trigger = trigger
+	var errs []error
+	for _, ref := range refs {
+		call.release = releaseOf(r.PreparationOf(ref))
+		errs = append(errs, e.releaseGrant(ctx, ref, call))
+	}
+	if len(refs) == 0 && source == state.SourcePool {
+		errs = append(errs, e.releaseIdle(ctx, *m, call))
+	}
+	e.logAfterStale(source, serial, errs)
+	if err := e.commit(ctx, func(r *state.Records) error {
+		if m := r.Memdev(serial); m != nil && unused(m) {
+			return dropMemdev(r, serial, trigger)
+		}
+		return nil
+	}); err != nil {
+		e.errorf(source, "serial %s: %v", serialText(serial), err)
+	}
+}
+
+// releaseOf returns the release that a RELEASING grant of the preparation p
+// was in: a rollback for a claim whose Prepare did not finish, else an
+// Unprepare.
+func releaseOf(p *state.Preparation) Release {
+	if p != nil && (p.State == state.PreparationPreparing || p.State == state.PreparationKept) {
+		return ReleaseRollback
+	}
+	return ReleaseUnprepare
+}
+
+// logAfterStale logs the errors of the release of the memdev with the
+// serial after its stale lease binds: a block device that stayed held, and
+// the other errors.
+func (e *Engine) logAfterStale(source state.Source, serial state.Serial, errs []error) {
+	var held, failed []error
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		cause := err
+		var re *releaseError
+		if errors.As(err, &re) && re.serial == serial {
+			cause = re.err
+		}
+		if errors.Is(err, errHolder) {
+			held = append(held, cause)
+		} else {
+			failed = append(failed, cause)
+		}
+	}
+	if len(held) > 0 {
+		e.errorf(source, "not releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(held...))
+	}
+	if len(failed) > 0 {
+		e.errorf(source, "releasing serial %s after its stale lease bind: %v", serialText(serial), errors.Join(failed...))
+	}
+}
+
+// releaseIdle releases a pool memdev without grants after its stale lease
+// binds are gone: the holder wait of its block device, its regions,
+// disabled.
+func (e *Engine) releaseIdle(ctx context.Context, m state.Memdev, call *releaseCall) error {
+	memdev, err := e.k.FindMemdev(uint64(m.Serial))
+	if errors.Is(err, kernel.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return &releaseError{serial: m.Serial, err: err}
+	}
+	if dev := e.currentBlockDevice(m.Serial); dev != "" {
+		if err := e.waitNoHolder(ctx, m.Source, m.Serial, dev, call.holderDeadline(""), call.trigger); err != nil {
+			return &releaseError{serial: m.Serial, held: true, err: err}
+		}
+	}
+	g := &state.Grant{Serial: m.Serial, Asked: state.Asked{Source: m.Source, Kind: state.KindPersistent}}
+	if _, err := e.releaseRegions(ctx, g, memdev, Destroy, false, call.trigger); err != nil {
+		return &releaseError{serial: m.Serial, err: err}
+	}
+	if err := e.disableMemdev(ctx, m.Source, m.Serial, memdev); err != nil {
+		return &releaseError{serial: m.Serial, err: err}
+	}
+	return nil
+}
+
+// errHolder is the kind of the error of a holder wait that did not end.
+var errHolder = errors.New("its block device is held")
+
 // forgetStale removes the stale lease binds gone of the memdev with the
-// serial, their grants' binds ABSENT.
+// serial, the binds of their grants that are STALE ABSENT (a BOUND one of
+// a grant that lists it again stays).
 func forgetStale(r *state.Records, serial state.Serial, gone []state.StalePath, trigger state.Trigger) error {
 	m := r.Memdev(serial)
 	if m == nil {
@@ -369,36 +722,77 @@ func forgetStale(r *state.Records, serial state.Serial, gone []state.StalePath, 
 	return nil
 }
 
-// releaseMount releases the use of the block device or node mount of a
-// persistent grant next to the other grants of the memdev, and removes the
-// grant from the users of its node mount. The node mount of a grant that a
-// cut Prepare left is the one of its intent when a mount of its device is
+// releaseMount releases the uses of the block device or node mount of the
+// persistent grants of the call on the memdev of a grant next to the other
+// grants of the memdev, once, and removes those grants from the users of
+// their node mount in one commit. The node mount of a grant that a cut
+// Prepare left is the one of its intent when a mount of its device is
 // there.
-func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, trigger state.Trigger) error {
+func (e *Engine) releaseMount(ctx context.Context, g *state.Grant, call *releaseCall) error {
 	if g.Asked.Kind != state.KindPersistent {
 		return nil
 	}
-	r := e.records()
-	remaining := usesOf(r, g.Serial, g.Ref)
-	u := useOf(g)
-	if u.nodeMount == "" {
-		u = e.cutMountUse(g, u)
-	}
-	leave := func(r *state.Records) error { return leaveMount(r, g.Ref, firstWriter(remaining) != nil, trigger) }
-	if g.Got.BlockDevice == nil && u.nodeMount == "" {
-		return e.commit(ctx, leave)
-	}
-	gone := []use{u}
-	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Mount != "" {
-		if m := reg.Mount(g.Got.Mount); m != nil && (m.State == state.MountUnrestored || m.State == state.MountForeign) {
-			// nothing of ours mounted to release
-			gone = nil
-		}
-	}
-	if err := e.releaseUses(g.Asked.Source, g.Serial, gone, remaining); err != nil {
+	if err, done := call.uses[g.Serial]; done {
 		return err
 	}
-	return e.commit(ctx, leave)
+	r := e.records()
+	var remaining []use
+	for _, u := range usesOf(r, g.Serial, g.Ref) {
+		if !call.refs[u.ref] {
+			remaining = append(remaining, u)
+		}
+	}
+	var refs []state.GrantRef
+	for _, o := range callGrants(r, g, call) {
+		refs = append(refs, o.Ref)
+	}
+	err := e.releaseUses(g.Asked.Source, g.Serial, e.goneUses(r, g, call), remaining)
+	if err != nil {
+		err = fmt.Errorf("releasing %s (serial %s): %w", e.deviceOf(g.Ref), serialText(g.Serial), err)
+	}
+	call.uses[g.Serial] = err
+	if err != nil {
+		return err
+	}
+	return e.commit(ctx, func(r *state.Records) error { return leaveMount(r, refs, firstWriter(remaining) != nil, call.trigger) })
+}
+
+// goneUses returns the uses of the block device or node mount that the
+// grants of a release call on the memdev of g give up, g first: none of a
+// node mount that is not ours (UNRESTORED, FOREIGN).
+func (e *Engine) goneUses(r *state.Records, g *state.Grant, call *releaseCall) []use {
+	var gone []use
+	for _, o := range callGrants(r, g, call) {
+		u := useOf(r, o)
+		if u.nodeMount == "" {
+			u = e.cutMountUse(o, u)
+		}
+		if o.Got.BlockDevice == nil && u.nodeMount == "" {
+			continue
+		}
+		if reg := r.Region(o.Got.Region); reg != nil && o.Got.Mount != "" {
+			if m := reg.Mount(o.Got.Mount); m != nil && (m.State == state.MountUnrestored || m.State == state.MountForeign) {
+				// nothing of ours mounted to release
+				continue
+			}
+		}
+		gone = append(gone, u)
+	}
+	return gone
+}
+
+// callGrants returns g and the other persistent grants of the release call
+// on its memdev.
+func callGrants(r *state.Records, g *state.Grant, call *releaseCall) []*state.Grant {
+	grants := []*state.Grant{g}
+	if m := r.Memdev(g.Serial); m != nil {
+		for _, ref := range m.Grants {
+			if o := r.Grant(ref); o != nil && ref != g.Ref && call.refs[ref] && o.Asked.Kind == state.KindPersistent {
+				grants = append(grants, o)
+			}
+		}
+	}
+	return grants
 }
 
 // cutMountUse returns the use u of a grant of a cut Prepare with the node
@@ -424,43 +818,53 @@ func (e *Engine) cutMountUse(g *state.Grant, u use) use {
 	return u
 }
 
-// leaveMount removes a grant from the users of the node mounts that list
-// it: a mount without users is gone (ABSENT), one without a writer left
+// leaveMount removes grants from the users of the node mounts that list
+// them: a mount without users is gone (ABSENT), one without a writer left
 // read-only.
-func leaveMount(r *state.Records, ref state.GrantRef, writer bool, trigger state.Trigger) error {
-	if rg := r.Grant(ref); rg != nil {
-		rg.Got.Mount, rg.Got.MountPath, rg.Got.Loop = "", "", ""
+func leaveMount(r *state.Records, refs []state.GrantRef, writer bool, trigger state.Trigger) error {
+	for _, ref := range refs {
+		if rg := r.Grant(ref); rg != nil {
+			rg.Got.Mount, rg.Got.MountPath, rg.Got.Loop = "", "", ""
+		}
 	}
 	for i := range r.Regions {
 		reg := &r.Regions[i]
 		for j := 0; j < len(reg.Mounts); j++ {
 			m := &reg.Mounts[j]
-			if !slices.Contains(m.Users, ref) {
+			if !slices.ContainsFunc(m.Users, func(u state.GrantRef) bool { return slices.Contains(refs, u) }) {
 				continue
 			}
-			m.Users = removeRef(m.Users, ref)
-			switch {
-			case m.State == state.MountForeign:
-				// never used or unmounted: it goes with its region
-			case len(m.Users) == 0:
-				if err := state.Apply(&state.MountTable, &m.State, state.MountAbsent, trigger); err != nil {
-					return err
-				}
+			for _, ref := range refs {
+				m.Users = removeRef(m.Users, ref)
+			}
+			gone, err := leftMount(m, writer, trigger)
+			if err != nil {
+				return err
+			}
+			if gone {
 				reg.Mounts = slices.Delete(reg.Mounts, j, j+1)
 				j--
-			case m.State == state.MountedRW && !writer:
-				m.Writer = false
-				if err := state.Apply(&state.MountTable, &m.State, state.MountedRO, trigger); err != nil {
-					return err
-				}
-			case m.State == state.MountedRO || m.State == state.MountedRW:
-				if err := state.Apply(&state.MountTable, &m.State, m.State, trigger); err != nil {
-					return err
-				}
 			}
 		}
 	}
 	return nil
+}
+
+// leftMount applies the transition of a node mount that users left: ABSENT
+// without users (it is gone), read-only without a writer. A FOREIGN one
+// stays: it goes with its region.
+func leftMount(m *state.Mount, writer bool, trigger state.Trigger) (bool, error) {
+	switch {
+	case m.State == state.MountForeign:
+	case len(m.Users) == 0:
+		return true, state.Apply(&state.MountTable, &m.State, state.MountAbsent, trigger)
+	case m.State == state.MountedRW && !writer:
+		m.Writer = false
+		return false, state.Apply(&state.MountTable, &m.State, state.MountedRO, trigger)
+	case m.State == state.MountedRO || m.State == state.MountedRW:
+		return false, state.Apply(&state.MountTable, &m.State, m.State, trigger)
+	}
+	return false, nil
 }
 
 // releaseDax releases the dax device of a grant: its own one (a part of a
@@ -558,38 +962,43 @@ func since(start time.Time) string {
 // that the kernel left hollow are deleted. It tells whether the region was
 // kept for the claim of the grant (a rollback or a recovery below a newer
 // region of another memdev).
-func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, release Release, trigger state.Trigger) (bool, error) {
+func (e *Engine) releaseMemdev(ctx context.Context, g *state.Grant, call *releaseCall) (bool, error) {
+	release, trigger := call.release, call.trigger
 	source, serial := g.Asked.Source, g.Serial
 	memdev, err := e.k.FindMemdev(uint64(serial))
 	if errors.Is(err, kernel.ErrNotFound) {
 		return false, e.releaseGone(ctx, g, trigger)
 	}
 	if err != nil {
-		return false, err
-	}
-	if m := e.records().Memdev(serial); m != nil && len(m.Hollow) > 0 {
-		if err := e.deleteHollow(ctx, serial, trigger, "a cxl create-region of the grant did not finish"); err != nil {
-			return false, err
-		}
+		return false, &releaseError{serial: serial, err: err}
 	}
 	decision := e.decision(g, memdev, release)
 	forClaim := release == ReleaseRollback || release == ReleaseRecovery
 	if decision == Keep {
 		return forClaim, e.keepMemdev(ctx, serial, trigger, forClaim)
 	}
-	if dev := e.blockDeviceOf(g); dev != "" {
-		if err := e.waitNoHolder(ctx, source, serial, dev, time.Now().Add(e.opts.Timeouts.Holder), trigger); err != nil {
-			return false, fmt.Errorf("releasing serial %s: %w", serialText(serial), err)
+	if dev := e.blockDeviceOf(g, call); dev != "" {
+		if err := e.waitNoHolder(ctx, source, serial, dev, call.holderDeadline(g.Ref.Claim), trigger); err != nil {
+			return false, &releaseError{serial: serial, held: true, err: err}
 		}
 	}
 	kept, err := e.releaseRegions(ctx, g, memdev, decision, forClaim, trigger)
-	if err != nil || kept {
-		return kept, err
+	if err == nil && !kept && source == state.SourcePool {
+		err = e.disableMemdev(ctx, source, serial, memdev)
 	}
-	if source == state.SourcePool {
-		return false, e.disableMemdev(ctx, source, serial, memdev)
+	if err != nil {
+		return false, &releaseError{serial: serial, err: err}
 	}
-	return false, nil
+	if m := e.records().Memdev(serial); m != nil && len(m.Hollow) > 0 {
+		why := "left by a Prepare of the claim that did not finish"
+		if release == ReleaseRollback {
+			why = "left by a cxl create-region of the claim"
+		}
+		if err := e.deleteHollow(ctx, serial, trigger, why); err != nil {
+			return false, err
+		}
+	}
+	return kept, nil
 }
 
 // releaseGone releases what is left of a memdev that is gone: its regions
@@ -645,7 +1054,7 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 			return e.k.ReleaseRegion(ctx, name)
 		})
 		if err != nil {
-			return false, fmt.Errorf("memdev %s (serial %s): releasing its region: %w", memdev, serialText(serial), err)
+			return false, err
 		}
 		if len(rs) > 0 {
 			if forClaim {
@@ -660,7 +1069,10 @@ func (e *Engine) releaseRegions(ctx context.Context, g *state.Grant, memdev stri
 		if err := e.commit(ctx, func(r *state.Records) error { return dropRegion(r, ref, trigger) }); err != nil {
 			return false, err
 		}
-		e.logf(source, "released %s (serial %s)", name, serialText(serial))
+		if source != state.SourcePool {
+			// the pool logs the release of its memdev
+			e.logf(source, "released %s (serial %s)", name, serialText(serial))
+		}
 	}
 	return false, nil
 }
@@ -682,18 +1094,60 @@ func (e *Engine) disableMemdev(ctx context.Context, source state.Source, serial 
 }
 
 // blockDeviceOf returns the block device whose holders the release of the
-// last grant of a memdev waits for: the recorded one when it is the one of
-// the region now, else the current one of the region.
-func (e *Engine) blockDeviceOf(g *state.Grant) string {
+// last grant of a memdev, of the call, waits for: the recorded one unless
+// the start did not mount its node mount again or it is not the one of its
+// region now (checkBlockDevice: the region is gone, or its namespace has
+// other numbers); then the recorded one may be another device's now, and
+// the wait is for the current one of the region, none when the memdev has
+// no region. The recorded one stays when the block device of the region is
+// not known now: none would release it without the holder check. A grant
+// of a cut Prepare waits for the current one.
+func (e *Engine) blockDeviceOf(g *state.Grant, call *releaseCall) string {
 	if g.Asked.Kind != state.KindPersistent {
 		return ""
 	}
-	if g.Got.BlockDevice != nil {
-		if err := e.checkBlockDevice(g); err == nil {
-			return g.Got.BlockDevice.Name
-		}
+	if g.Got.BlockDevice == nil {
+		return e.currentBlockDevice(g.Serial)
 	}
-	return e.currentBlockDevice(g.Serial)
+	recorded := g.Got.BlockDevice.Name
+	var err error
+	if path := call.unrestored[g.Ref]; path != "" {
+		err = fmt.Errorf("its node mount %s was not mounted again at start", path)
+	} else {
+		err = e.checkBlockDevice(g)
+	}
+	if err == nil {
+		return recorded
+	}
+	s, claim := serialText(g.Serial), e.claimNameOf(g.Ref)
+	cur := e.currentBlockDevice(g.Serial)
+	switch {
+	case cur == "" && e.hasRegion(g.Serial):
+		e.warnf(g.Asked.Source, "claim %s: %v; the block device of the region of device %s is not known now: its release waits for the holders of %s as prepared",
+			claim, err, s, recorded)
+		return recorded
+	case cur == "":
+		e.logf(g.Asked.Source, "claim %s: %v; device %s has no region now: its release waits for no holder of %s", claim, err, s, recorded)
+	default:
+		e.logf(g.Asked.Source, "claim %s: %v; the release of device %s waits for the holders of %s, the block device of its region now, not of %s",
+			claim, err, s, cur, recorded)
+	}
+	return cur
+}
+
+// hasRegion tells whether the memdev with the serial has a region.
+func (e *Engine) hasRegion(serial state.Serial) bool {
+	memdev, err := e.k.FindMemdev(uint64(serial))
+	return err == nil && len(e.k.Regions(memdev)) > 0
+}
+
+// claimNameOf returns the name of the claim of the grant ref (its
+// preparation's), else its uid.
+func (e *Engine) claimNameOf(ref state.GrantRef) string {
+	if p := e.records().PreparationOf(ref); p != nil && p.ClaimName != "" {
+		return p.ClaimName
+	}
+	return ref.Claim
 }
 
 // dropRegion removes a region of ours that is destroyed or gone from the
@@ -836,7 +1290,7 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 			}
 		}
 	}
-	return e.commit(ctx, func(r *state.Records) error {
+	if err := e.commit(ctx, func(r *state.Records) error {
 		g := r.Grant(ref)
 		if g == nil {
 			return nil
@@ -849,5 +1303,9 @@ func (e *Engine) releaseStale(ctx context.Context, ref state.GrantRef, trigger s
 			m.Grants = removeRef(m.Grants, ref)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	e.forgetDevice(ref)
+	return nil
 }

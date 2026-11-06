@@ -66,6 +66,8 @@ type env struct {
 	commits int
 	fenceMu sync.Mutex
 	fenced  []int
+	// sources are the sources that the engine owns, nil for all.
+	sources []state.Source
 }
 
 // newEnv returns a node with the memdevs of specs plugged.
@@ -102,6 +104,7 @@ func (v *env) open() {
 			state.SourcePool:  filepath.Join(v.dir, poolDriver, "mounts"),
 			state.SourceLocal: filepath.Join(v.dir, localDriver, "mounts"),
 		},
+		Sources:     v.sources,
 		LeaseFsRoot: filepath.Join(v.dir, localDriver, "lease-fs"),
 		FsTypes:     []string{config.FsTypeErofs, config.FsTypeExt4, config.FsTypeXfs},
 		Filesystems: filepath.Join(v.dir, "filesystems"),
@@ -182,7 +185,7 @@ func (v *env) check(what string) {
 	if fenced == nil {
 		fenced = []int{}
 	}
-	for _, viol := range v.e.Check(snap, nil, fenced) {
+	for _, viol := range v.e.Check(snap, v.sources, fenced) {
 		v.t.Errorf("%s: %s", what, viol)
 	}
 }

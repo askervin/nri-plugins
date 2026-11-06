@@ -78,13 +78,44 @@ func (u *use) writer() bool {
 }
 
 // useOf returns a grant as a use.
-func useOf(g *state.Grant) use {
-	u := use{ref: g.Ref, source: g.Asked.Source, serial: g.Serial, mode: g.Asked.Mode, readOnly: g.Asked.ReadOnly,
-		access: string(g.Got.Mount), fsType: g.Got.FsType, nodeMount: g.Got.MountPath, loop: g.Got.Loop}
+func useOf(r *state.Records, g *state.Grant) use {
+	u := use{ref: g.Ref, source: g.Asked.Source, serial: g.Serial, mode: g.Asked.Mode, readOnly: g.Asked.ReadOnly}
+	if m := mountRecord(r, g); m != nil {
+		u.access, u.fsType, u.nodeMount, u.loop = string(m.Access), m.FsType, m.Path, m.Loop
+	}
 	if g.Got.BlockDevice != nil {
 		u.blockDevice = g.Got.BlockDevice.Name
 	}
 	return u
+}
+
+// mountRecord returns the record of the node mount that a grant uses, nil
+// if none: the record of its region, not the grant's transitional fields.
+func mountRecord(r *state.Records, g *state.Grant) *state.Mount {
+	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Mount != "" {
+		return reg.Mount(g.Got.Mount)
+	}
+	return nil
+}
+
+// mountPathOf returns the path of the node mount that a grant uses, "" if
+// none.
+func mountPathOf(r *state.Records, g *state.Grant) string {
+	if m := mountRecord(r, g); m != nil {
+		return m.Path
+	}
+	return ""
+}
+
+// daxDevOf returns the device numbers of the dax device that a grant got:
+// those of its region's record, zero if none.
+func daxDevOf(r *state.Records, g *state.Grant) state.DevNumbers {
+	if reg := r.Region(g.Got.Region); reg != nil && g.Got.Dax != "" {
+		if d := reg.DaxDevice(g.Got.Dax); d != nil {
+			return d.Dev
+		}
+	}
+	return state.DevNumbers{}
 }
 
 // prepared tells whether a grant counts as a use of its device on the
@@ -103,7 +134,7 @@ func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []u
 			(g.Asked.Mode != state.ModeBlock && g.Asked.Mode != state.ModeFs) {
 			continue
 		}
-		out = append(out, useOf(g))
+		out = append(out, useOf(r, g))
 	}
 	return out
 }
@@ -600,8 +631,31 @@ func (e *Engine) recordUse(ctx context.Context, req *GrantRequest, region string
 		m.Users = addRef(m.Users, req.Ref)
 		g := r.Grant(req.Ref)
 		g.Got.Mount, g.Got.MountPath, g.Got.Loop, g.Got.FsType = state.Access(u.access), u.nodeMount, u.loop, u.fsType
-		return nil
+		return remountedUsers(r, m, req.Ref)
 	})
+}
+
+// remountedUsers makes the other REALISED_UNRESTORED grants that use the
+// node mount m, mounted again by the grant ref, REALISED with its loop
+// device, and their preparations PREPARED when all their grants are.
+func remountedUsers(r *state.Records, m *state.Mount, ref state.GrantRef) error {
+	for _, user := range m.Users {
+		g := r.Grant(user)
+		if user == ref || g == nil || g.State != state.GrantUnrestored {
+			continue
+		}
+		if err := state.Apply(&state.GrantTable, &g.State, state.GrantRealised, state.TriggerPrepare); err != nil {
+			return err
+		}
+		g.Got.Loop = m.Loop
+		p := r.PreparationOf(user)
+		if p != nil && p.State == state.PreparationUnrestored && allRealised(r, p) {
+			if err := state.Apply(&state.PreparationTable, &p.State, state.PreparationPrepared, state.TriggerPrepare); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // mountNode returns the loop device of a cached node mount after it
@@ -1244,6 +1298,25 @@ func (e *Engine) unbind(source state.Source, what, target string) error {
 			return fmt.Errorf("%s: unmounting %s: %w", what, target, err)
 		}
 		e.logf(source, "%s: unbound %s", what, target)
+	}
+	e.removeMountDir(source, target)
+	return nil
+}
+
+// unbindStale unmounts a stale lease bind once, when it is one.
+func (e *Engine) unbindStale(source state.Source, target string) error {
+	mi, err := e.k.Mounted(target)
+	switch {
+	case err != nil, mi == nil:
+	case !e.leaseBindType(mi):
+		err = fmt.Errorf("a %s mount of %s is on it", mi.FsType, mi.Source)
+	default:
+		if err = e.locked(func() error { return e.k.Unmount(target) }); err == nil {
+			e.logf(source, "unbound stale lease bind %s", target)
+		}
+	}
+	if err != nil {
+		return err
 	}
 	e.removeMountDir(source, target)
 	return nil

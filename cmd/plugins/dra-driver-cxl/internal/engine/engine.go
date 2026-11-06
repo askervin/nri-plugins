@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -61,12 +62,15 @@ type Engine struct {
 	// mu is the engine lock.
 	mu sync.Mutex
 
-	// qmu guards queues, busy, last and hollowLogged.
+	// qmu guards queues, busy, last, hollowLogged and devices.
 	qmu          sync.Mutex
 	queues       map[state.Serial]chan struct{}
 	busy         map[state.Serial]bool
 	last         *kernel.Snapshot
 	hollowLogged map[string]bool
+	// devices are the DRA devices of the requests of the grants, for the
+	// errors of their release.
+	devices map[state.GrantRef]string
 
 	// afterCommit is called after every commit that the store applied, nil
 	// outside the tests that stop the process at a commit.
@@ -108,6 +112,10 @@ type Options struct {
 	Shared func(serial state.Serial) bool
 	// Sources are the sources whose records the engine owns, nil for all.
 	Sources []state.Source
+	// Records are the names that the log lines of the recovery give the
+	// record of a claim whose Prepare did not finish, per source: for the
+	// pool, the file preparingPoolClaims.json.
+	Records map[state.Source]string
 	// Timeouts are the bounds of the waits; zero values are the defaults.
 	Timeouts Timeouts
 }
@@ -232,6 +240,7 @@ func New(opts Options) (*Engine, error) {
 		queues:       map[state.Serial]chan struct{}{},
 		busy:         map[state.Serial]bool{},
 		hollowLogged: map[string]bool{},
+		devices:      map[state.GrantRef]string{},
 	}, nil
 }
 
@@ -239,40 +248,114 @@ func New(opts Options) (*Engine, error) {
 // result of a claim on a memdev, with what it asks and the facts of the
 // memdev.
 type GrantRequest struct {
-	Ref    state.GrantRef
-	Serial state.Serial
-	Asked  state.Asked
+	Ref state.GrantRef
+	// ClaimName (namespace/name) and Device (the DRA device of the
+	// allocation result) name the grant in the log lines.
+	ClaimName, Device string
+	Serial            state.Serial
+	Asked             state.Asked
 	// Facts are the facts of the memdev that the source knows (the pool
 	// controller's status data, the local configuration).
 	Facts state.MemdevFacts
 	// SingleHost: no other host has the device while the claim is
-	// allocated (pool status data).
+	// allocated. For a pool device: the status data's singleHost or
+	// exclusive, or a device that is not shared.
 	SingleHost bool
 	// BindTarget is the lease bind of the grant of mode fs of a companion
 	// claim, <lease claim FsDir>/<name>; "" for none.
 	BindTarget string
 	// Lend is the lend of a grant of a companion claim, nil for others:
 	// the engine binds the lease of mode fs, the front-end lends the NUMA
-	// node of mode numa.
+	// node of mode numa after PrepareGrants returned (so a rollback never
+	// releases a lent grant) and revokes it before ReleaseGrants.
 	Lend *state.GrantLend
 }
 
-// acquire waits for the queue of the memdev with the serial and returns
-// the function that leaves it.
-func (e *Engine) acquire(ctx context.Context, serial state.Serial) (func(), error) {
+// claimName returns the claim of the request for the log lines: its name,
+// else its uid.
+func (r *GrantRequest) claimName() string {
+	if r.ClaimName != "" {
+		return r.ClaimName
+	}
+	return r.Ref.Claim
+}
+
+// device returns the device of the request for the log lines: the DRA
+// device, else the memdev.
+func (r *GrantRequest) device(memdev string) string {
+	if r.Device != "" {
+		return r.Device
+	}
+	return memdev
+}
+
+// queue returns the queue of the memdev with the serial.
+func (e *Engine) queue(serial state.Serial) chan struct{} {
 	e.qmu.Lock()
+	defer e.qmu.Unlock()
 	q := e.queues[serial]
 	if q == nil {
 		q = make(chan struct{}, 1)
 		e.queues[serial] = q
 	}
-	e.qmu.Unlock()
+	return q
+}
+
+// acquire waits for the queue of the memdev with the serial and returns
+// the function that leaves it; a request whose ctx ended does not start.
+func (e *Engine) acquire(ctx context.Context, serial state.Serial) (func(), error) {
+	q := e.queue(serial)
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("waiting for the requests of memdev %s: %w", serial, err)
+	}
 	select {
 	case q <- struct{}{}:
 		return func() { <-q }, nil
 	case <-ctx.Done():
 		return nil, fmt.Errorf("waiting for the requests of memdev %s: %w", serial, ctx.Err())
 	}
+}
+
+// tryAcquire takes the queue of the memdev with the serial when it is
+// free and returns the function that leaves it, nil when another request
+// of the memdev is in progress.
+func (e *Engine) tryAcquire(serial state.Serial) func() {
+	q := e.queue(serial)
+	select {
+	case q <- struct{}{}:
+		return func() { <-q }
+	default:
+		return nil
+	}
+}
+
+// setDevices remembers the DRA devices of the requests.
+func (e *Engine) setDevices(reqs []GrantRequest) {
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	for i := range reqs {
+		if reqs[i].Device != "" {
+			e.devices[reqs[i].Ref] = reqs[i].Device
+		}
+	}
+}
+
+// forgetDevice forgets the DRA device of a grant that is released.
+func (e *Engine) forgetDevice(ref state.GrantRef) {
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	delete(e.devices, ref)
+}
+
+// deviceOf returns the DRA device of the request of the grant ref for the
+// errors, else the grant.
+func (e *Engine) deviceOf(ref state.GrantRef) string {
+	e.qmu.Lock()
+	defer e.qmu.Unlock()
+	if d := e.devices[ref]; d != "" {
+		return d
+	}
+	return ref.String()
 }
 
 // locked runs fn, a short kernel call, holding the engine lock.
@@ -356,6 +439,12 @@ func (e *Engine) driver(source state.Source) string {
 		return d
 	}
 	return string(source)
+}
+
+// owns tells whether the engine owns the records of the source
+// (Options.Sources).
+func (e *Engine) owns(source state.Source) bool {
+	return e.opts.Sources == nil || slices.Contains(e.opts.Sources, source)
 }
 
 // logf logs at info level with the driver of the source as the prefix.

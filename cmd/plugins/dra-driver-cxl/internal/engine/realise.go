@@ -32,33 +32,77 @@ import (
 // touches it.
 var ErrForeignRegion = errors.New("a region that the plugin did not create")
 
+// foreignRegionError is the error of a grant on the memdev with a region
+// that no record names.
+type foreignRegionError struct {
+	memdev, region string
+}
+
+// Error returns the refusal in words.
+func (e *foreignRegionError) Error() string {
+	return fmt.Sprintf("memdev %s has region %s that the plugin did not create", e.memdev, e.region)
+}
+
+// Is tells whether target is ErrForeignRegion.
+func (e *foreignRegionError) Is(target error) bool {
+	return target == ErrForeignRegion
+}
+
+// keptOnlineError is the error of memory blocks that keep coming online
+// after offlining them.
+type keptOnlineError struct {
+	blocks []int
+}
+
+// Error returns the error in words.
+func (e *keptOnlineError) Error() string {
+	return fmt.Sprintf("memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?", e.blocks)
+}
+
+// Is tells whether target is kernel.ErrBusyOnline.
+func (e *keptOnlineError) Is(target error) bool {
+	return target == kernel.ErrBusyOnline
+}
+
 // PrepareGrants realises the grants of reqs in their order and returns them
 // as recorded, REALISED. A grant that is REALISED already and verifies is
 // reused; one that a cut or failed Prepare left is realised further. On an
 // error the grants of the claims of reqs that this or an earlier Prepare
 // made are released as a rollback (Policy ReleaseRollback), on a context
-// that the end of ctx does not end; what the rollback keeps stays recorded.
+// that the end of ctx does not end; what the rollback keeps stays recorded
+// and is returned with the error.
 func (e *Engine) PrepareGrants(ctx context.Context, reqs []GrantRequest) ([]state.Grant, error) {
 	refs := make([]state.GrantRef, 0, len(reqs))
+	for i := range reqs {
+		if !e.owns(reqs[i].Asked.Source) {
+			return nil, fmt.Errorf("engine: grant %s: the records of source %q are not the engine's", reqs[i].Ref, reqs[i].Asked.Source)
+		}
+	}
+	e.setDevices(reqs)
 	for i := range reqs {
 		refs = append(refs, reqs[i].Ref)
 		if err := e.prepareGrant(ctx, &reqs[i]); err != nil {
 			rctx, cancel := e.rollbackContext(ctx)
-			e.rollback(rctx, reqs)
+			kept := e.rollback(rctx, reqs)
 			e.verify(rctx, nil)
 			cancel()
-			return nil, err
+			return kept, err
 		}
 	}
 	e.verify(ctx, refs)
+	return e.grantsOf(refs), nil
+}
+
+// grantsOf returns the records of the grants refs that the store has.
+func (e *Engine) grantsOf(refs []state.GrantRef) []state.Grant {
 	r := e.records()
-	out := make([]state.Grant, 0, len(reqs))
-	for i := range reqs {
-		if g := r.Grant(reqs[i].Ref); g != nil {
+	var out []state.Grant
+	for _, ref := range refs {
+		if g := r.Grant(ref); g != nil {
 			out = append(out, g.Clone())
 		}
 	}
-	return out, nil
+	return out
 }
 
 // prepareGrant realises one grant in the queue of its memdev.
@@ -80,7 +124,7 @@ func (e *Engine) prepareGrant(ctx context.Context, req *GrantRequest) error {
 		case state.GrantReleasing:
 			// a leftover of a failed release, on the context of a rollback
 			rctx, cancel := e.rollbackContext(ctx)
-			err := e.releaseGrant(rctx, req.Ref, ReleaseRollback, state.TriggerPrepare)
+			err := e.releaseGrant(rctx, req.Ref, newReleaseCall(e, ReleaseRollback, []state.GrantRef{req.Ref}))
 			cancel()
 			if err != nil {
 				return err
@@ -291,11 +335,12 @@ func (e *Engine) ensureRegion(ctx context.Context, req *GrantRequest, memdev str
 		return e.useRegion(ctx, req, memdev, reg)
 	}
 	for _, name := range e.k.Regions(memdev) {
-		return "", fmt.Errorf("%w: memdev %s has region %s that the plugin did not create", ErrForeignRegion, memdev, name)
+		return "", &foreignRegionError{memdev: memdev, region: name}
 	}
 	name, err := e.createRegion(ctx, req, memdev, mode, size)
-	if err != nil && errors.Is(err, kernel.ErrEndpointNotReady) {
-		e.warnf(req.Asked.Source, "claim %s: memdev %s: %v; retrying once in %v", req.Ref.Claim, memdev, err, e.opts.Timeouts.RegionRetry)
+	if errors.Is(err, kernel.ErrEndpointNotReady) {
+		e.warnf(req.Asked.Source, "claim %s: device %s: %v; retrying once in %v", req.claimName(), req.device(memdev), err,
+			e.opts.Timeouts.RegionRetry)
 		select {
 		case <-ctx.Done():
 		case <-time.After(e.opts.Timeouts.RegionRetry):
@@ -316,9 +361,13 @@ func (e *Engine) useRegion(ctx context.Context, req *GrantRequest, memdev string
 	}
 	switch reg.State {
 	case state.RegionOwned:
+		e.k.Logf("%s: reusing %s", memdev, name)
 	case state.RegionKept:
 		if err := e.locked(func() error { return e.k.EnableRegion(ctx, name) }); err != nil {
 			return "", err
+		}
+		if req.Asked.Source == state.SourcePool {
+			e.k.Logf("%s: reusing %s", memdev, name)
 		}
 		e.logf(req.Asked.Source, "memdev %s (serial %s): enabled kept %s", memdev, serialText(req.Serial), name)
 		if err := e.commit(ctx, func(r *state.Records) error {
@@ -448,7 +497,7 @@ func createdRegion(r *state.Records, req *GrantRequest, noted, created, decoder 
 // the recovery.
 func (e *Engine) clearNote(ctx context.Context, req *GrantRequest, noted string) {
 	if _, err := e.k.Region(noted); err == nil {
-		e.errorf(req.Asked.Source, "memdev %s: a failed cxl create-region left %s: the recovery at the next start releases it",
+		e.errorf(req.Asked.Source, "memdev %s: a failed cxl create-region left %s: the rollback releases it",
 			serialText(req.Serial), noted)
 		return
 	}
@@ -696,8 +745,7 @@ func (e *Engine) offlineSettled(ctx context.Context, req *GrantRequest, blocks [
 		}
 		e.k.Logf("memory%d: online again after offlining it (auto-onlined by udev?)", onlined)
 		if time.Now().After(deadline) {
-			return fmt.Errorf("memory blocks %v keep coming online after offlining them: is a udev rule onlining hot-added memory?: %w",
-				blocks, kernel.ErrBusyOnline)
+			return &keptOnlineError{blocks: blocks}
 		}
 	}
 }
@@ -838,6 +886,9 @@ func (e *Engine) realised(ctx context.Context, req *GrantRequest, got state.Got)
 				if err := addDaxUser(reg, got.Dax, req.Ref); err != nil {
 					return err
 				}
+				if !got.DaxDev.IsZero() {
+					reg.DaxDevice(got.Dax).Dev = got.DaxDev
+				}
 			}
 		}
 		if g.State == state.GrantRealised {
@@ -867,9 +918,11 @@ func addDaxUser(reg *state.Region, dax string, ref state.GrantRef) error {
 
 // rollback releases the grants of the claims of reqs that the store has,
 // those of this Prepare and of earlier ones that did not finish (Policy
-// ReleaseRollback). Errors are logged; what is not released stays
-// recorded.
-func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) {
+// ReleaseRollback), and returns those that it did not release (the
+// front-end logs that it keeps their claim's record). The grants of a
+// claim that is prepared (a Prepare again that failed) stay. Errors are
+// logged.
+func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) []state.Grant {
 	r := e.records()
 	var refs []state.GrantRef
 	seen := map[state.GrantRef]bool{}
@@ -880,8 +933,12 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) {
 		}
 	}
 	for i := range reqs {
+		p := r.PreparationOf(reqs[i].Ref)
+		if p != nil && p.Prepared() {
+			continue
+		}
 		add(reqs[i].Ref)
-		if p := r.PreparationOf(reqs[i].Ref); p != nil {
+		if p != nil {
 			for _, res := range p.Results {
 				if res.Grant != nil {
 					add(*res.Grant)
@@ -889,11 +946,18 @@ func (e *Engine) rollback(ctx context.Context, reqs []GrantRequest) {
 			}
 		}
 	}
-	for _, ref := range refs {
-		if err := e.releaseOne(ctx, ref, ReleaseRollback, state.TriggerPrepare); err != nil {
-			klog.Errorf("engine: rollback: grant %s: %v", ref, err)
+	if len(refs) == 0 {
+		return nil
+	}
+	source := r.Grant(refs[0]).Asked.Source
+	e.retryAllStale(ctx, state.TriggerPrepare)
+	call := newReleaseCall(e, ReleaseRollback, refs)
+	for _, group := range e.byMemdev(refs) {
+		if err := e.releaseGroup(ctx, group, call); err != nil {
+			e.errorf(source, "rollback: %v", err)
 		}
 	}
+	return e.grantsOf(refs)
 }
 
 // verifyGrant returns an error if what a REALISED grant got is not what
@@ -907,16 +971,17 @@ func (e *Engine) verifyGrant(g *state.Grant) error {
 	if err != nil || !slices.Contains(ri.Serials, uint64(g.Serial)) {
 		return fmt.Errorf("grant %s: %s is gone", g.Ref, g.Got.Region)
 	}
-	if g.Got.Dax != "" && !g.Got.DaxDev.IsZero() {
+	r := e.records()
+	if dev := daxDevOf(r, g); g.Got.Dax != "" && !dev.IsZero() {
 		major, minor, err := e.k.DaxDevNumbers(g.Got.Dax)
-		if err != nil || major != g.Got.DaxDev.Major || minor != g.Got.DaxDev.Minor {
-			return fmt.Errorf("grant %s: %s is not the dax device %d:%d as prepared", g.Ref, g.Got.Dax, g.Got.DaxDev.Major, g.Got.DaxDev.Minor)
+		if err != nil || major != dev.Major || minor != dev.Minor {
+			return fmt.Errorf("grant %s: %s is not the dax device %d:%d as prepared", g.Ref, g.Got.Dax, dev.Major, dev.Minor)
 		}
 	}
-	if g.Got.MountPath != "" {
-		mi, err := e.k.Mounted(g.Got.MountPath)
+	if path := mountPathOf(r, g); path != "" {
+		mi, err := e.k.Mounted(path)
 		if err != nil || mi == nil {
-			return fmt.Errorf("grant %s: %s is not mounted", g.Ref, g.Got.MountPath)
+			return fmt.Errorf("grant %s: %s is not mounted", g.Ref, path)
 		}
 	}
 	return nil

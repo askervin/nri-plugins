@@ -64,7 +64,9 @@ var Invariants = []Invariant{
 	{Name: "I7", Text: "The block device of a persistent region of ours with prepared grants is read-only iff no writer " +
 		"grant uses it.", check: checkI7},
 	{Name: "I8", Text: "No mount or bind under the driver's directories without a REALISED or REALISED_UNRESTORED grant " +
-		"of a prepared claim that lists it, except the Stale entries of its memdev.", check: checkI8},
+		"of a prepared claim that lists it, except the Stale entries of its memdev, and the node mount and lease bind " +
+		"of a RELEASING grant of an UNPREPARING or KEPT claim (a release that failed, which kubelet's retry " +
+		"finishes).", check: checkI8},
 	{Name: "I9", Text: "Every object that the driver created lies inside a journaled container (the document side is the " +
 		"\"journaled\" invariant of package state).", check: checkI9},
 	{Name: "I10", Text: "No new local grant on a serial whose provenance is POOL or HELD.", check: checkI10},
@@ -312,8 +314,8 @@ func checkI3Grant(c *checker, g *state.Grant) {
 	}
 	checkI3Dax(c, g, id)
 	checkI3Block(c, g, id)
-	if g.Got.MountPath != "" && kernel.FindMount(c.s.Mounts, g.Got.MountPath) == nil {
-		c.add(id, "%s is not mounted", g.Got.MountPath)
+	if path := mountPathOf(c.r, g); path != "" && kernel.FindMount(c.s.Mounts, path) == nil {
+		c.add(id, "%s is not mounted", path)
 	}
 }
 
@@ -324,11 +326,12 @@ func checkI3Dax(c *checker, g *state.Grant, id string) {
 		return
 	}
 	d := c.s.DaxDevice(g.Got.Dax)
+	dev := daxDevOf(c.r, g)
 	switch {
 	case d.State == kernel.DaxAbsent || d.Region != string(g.Got.Region):
 		c.add(id, "%s is not a dax device of %s", g.Got.Dax, g.Got.Region)
-	case !g.Got.DaxDev.IsZero() && (d.Major != g.Got.DaxDev.Major || d.Minor != g.Got.DaxDev.Minor):
-		c.add(id, "%s is %d:%d, recorded %d:%d", g.Got.Dax, d.Major, d.Minor, g.Got.DaxDev.Major, g.Got.DaxDev.Minor)
+	case !dev.IsZero() && (d.Major != dev.Major || d.Minor != dev.Minor):
+		c.add(id, "%s is %d:%d, recorded %d:%d", g.Got.Dax, d.Major, d.Minor, dev.Major, dev.Minor)
 	}
 }
 
@@ -405,18 +408,7 @@ func checkI7(c *checker) {
 }
 
 func checkI8(c *checker) {
-	listed := map[string]bool{}
-	for i := range c.r.Grants {
-		g := &c.r.Grants[i]
-		p := c.r.PreparationOf(g.Ref)
-		if !prepared(g) || p == nil || !p.Prepared() {
-			continue
-		}
-		listed[g.Got.MountPath] = true
-		if g.Got.Bind != nil {
-			listed[g.Got.Bind.Target] = true
-		}
-	}
+	listed := c.listedMounts()
 	for _, m := range c.r.Memdevs {
 		for _, sp := range m.Stale {
 			listed[sp.Path] = true
@@ -435,6 +427,30 @@ func checkI8(c *checker) {
 			c.add("mount "+mi.Target, "no realised grant of a prepared claim lists it")
 		}
 	}
+}
+
+// listedMounts returns the node mounts and lease binds of the realised
+// grants of prepared claims, and of the RELEASING grants of UNPREPARING or
+// KEPT claims (a release that failed).
+func (c *checker) listedMounts() map[string]bool {
+	listed := map[string]bool{}
+	for i := range c.r.Grants {
+		g := &c.r.Grants[i]
+		p := c.r.PreparationOf(g.Ref)
+		if p == nil {
+			continue
+		}
+		releasing := g.State == state.GrantReleasing &&
+			(p.State == state.PreparationUnpreparing || p.State == state.PreparationKept)
+		if !releasing && (!prepared(g) || !p.Prepared()) {
+			continue
+		}
+		listed[mountPathOf(c.r, g)] = true
+		if g.Got.Bind != nil {
+			listed[g.Got.Bind.Target] = true
+		}
+	}
+	return listed
 }
 
 func checkI9(c *checker) {

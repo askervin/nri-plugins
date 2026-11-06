@@ -232,3 +232,40 @@ func TestFenceDeadline(t *testing.T) {
 	}
 	v.mustUnprepare(poolDriver, "c")
 }
+
+// A cxl create-region that fails with add_dev is tried once more, logged
+// with the claim and the DRA device.
+func TestPoolAddDevRetry(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA})
+	v.f.FailCommand("cxl create-region", fake.ErrAddDev)
+	req := poolReq("c1", 0, serialA, state.ModeDax, state.KindExclusive)
+	req.ClaimName, req.Device = "ns/c1", "pooled0"
+	logs := captureKlog(t)
+	v.mustPrepare(poolDriver, "c1", req)
+	if out := logs(); !strings.Contains(out, "cxl-pool.nri.io: claim ns/c1: device pooled0: ") || !strings.Contains(out, "retrying once in") {
+		t.Fatalf("no retry line in\n%s", out)
+	}
+	v.mustUnprepare(poolDriver, "c1")
+	v.clean("unprepared")
+}
+
+// A failed Prepare returns the grants that its rollback kept with the
+// error: the second grant of the claim finds a foreign region, the
+// rollback cannot disable the memdev of the first one.
+func TestPoolRollbackReturnsKept(t *testing.T) {
+	v := newEnv(t, fake.MemdevSpec{Serial: serialA}, fake.MemdevSpec{Serial: serialB})
+	k := v.f.Kernel()
+	d, _ := k.RootDecoder("mem1", kernel.RegionRAM)
+	if _, err := k.CreateRegion(context.Background(), kernel.CreateRegionRequest{Memdev: "mem1", Decoder: d, Type: kernel.RegionRAM}); err != nil {
+		t.Fatal(err)
+	}
+	v.f.FailCommand("cxl disable-memdev", errBusy)
+	b := poolReq("c", 1, serialB, state.ModeDax, state.KindExclusive)
+	kept, err := v.e.PrepareGrants(context.Background(), []GrantRequest{poolReq("c", 0, serialA, state.ModeDax, state.KindExclusive), b})
+	if !errors.Is(err, ErrForeignRegion) {
+		t.Fatalf("error %v", err)
+	}
+	if len(kept) != 1 || kept[0].Ref != (state.GrantRef{Claim: "c"}) || kept[0].State != state.GrantReleasing {
+		t.Fatalf("kept %+v", kept)
+	}
+}
