@@ -125,9 +125,9 @@ func prepared(g *state.Grant) bool {
 }
 
 // usesOf returns the uses of the memdev with the serial by the prepared
-// grants other than except, and by the grants of a local memdev whose
-// release in an Unprepare failed (RELEASING, of an UNPREPARING claim): they
-// keep what they still have until kubelet's retry of the Unprepare.
+// grants other than except, and by the grants whose release in an
+// Unprepare failed (RELEASING, of an UNPREPARING claim): they keep what
+// they still have until kubelet's retry of the Unprepare.
 func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []use {
 	var out []use
 	for i := range r.Grants {
@@ -141,10 +141,10 @@ func usesOf(r *state.Records, serial state.Serial, except ...state.GrantRef) []u
 	return out
 }
 
-// unpreparing tells whether a grant of a local memdev is one whose release
-// in an Unprepare failed: RELEASING, of an UNPREPARING preparation.
+// unpreparing tells whether a grant is one whose release in an Unprepare
+// failed: RELEASING, of an UNPREPARING preparation.
 func unpreparing(r *state.Records, g *state.Grant) bool {
-	if g.State != state.GrantReleasing || g.Asked.Source != state.SourceLocal {
+	if g.State != state.GrantReleasing {
 		return false
 	}
 	p := r.PreparationOf(g.Ref)

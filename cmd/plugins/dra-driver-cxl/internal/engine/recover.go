@@ -1221,14 +1221,15 @@ func keptReleased(r *state.Records, released []state.GrantRef) error {
 
 // listedMounts returns the node mounts and lease binds that the realised
 // grants of prepared claims list, unrestored ones included (a mount there
-// is not ours, or none is there).
+// is not ours, or none is there), and those that a grant whose release in
+// an Unprepare failed still has.
 func (e *Engine) listedMounts() (mounts, binds map[string]bool) {
 	r := e.records()
 	mounts, binds = map[string]bool{}, map[string]bool{}
 	for i := range r.Grants {
 		g := &r.Grants[i]
 		p := r.PreparationOf(g.Ref)
-		if !prepared(g) || p == nil || !p.Prepared() {
+		if (!prepared(g) || p == nil || !p.Prepared()) && !unpreparing(r, g) {
 			continue
 		}
 		if path := mountPathOf(r, g); path != "" {
