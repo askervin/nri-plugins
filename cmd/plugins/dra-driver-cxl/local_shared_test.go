@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -80,7 +79,7 @@ func sharedClaim(uid, shares string, configs ...string) *resourcev1.ResourceClai
 // for not at all.
 func wantSharedUse(t *testing.T, e *localTestEnv, want *localUse) {
 	t.Helper()
-	got, ok := e.s.local.Snapshot().use(localSerial)
+	got, ok := e.localSnapshot().Use(localSerial)
 	switch {
 	case want == nil && ok:
 		t.Fatalf("memdev used %+v, expected unused", got)
@@ -92,7 +91,7 @@ func wantSharedUse(t *testing.T, e *localTestEnv, want *localUse) {
 // sharedPublished returns the local memdev as the node state publishes
 // it, nil if it is not published.
 func sharedPublished(e *localTestEnv) *resourcev1.Device {
-	for _, d := range e.s.GetResources().Pools[testNode].Slices[0].Devices {
+	for _, d := range e.publisher.Resources().Pools[testNode].Slices[0].Devices {
 		if d.Name == localDeviceName {
 			return &d
 		}
@@ -104,7 +103,7 @@ func sharedPublished(e *localTestEnv) *resourcev1.Device {
 // claim.
 func wantCDIDeviceIDs(t *testing.T, e *localTestEnv, uid string, ids ...string) {
 	t.Helper()
-	res, ok := e.s.Prepared[uid]
+	res, ok := e.preparedMap()[uid]
 	if !ok || len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, ids) {
 		t.Fatalf("claim %s: prepared %v %+v, expected CDI devices %v", uid, ok, res.Devices, ids)
 	}
@@ -170,9 +169,7 @@ func publishLocalAs(e *localTestEnv, shared bool) {
 	if devs[localDeviceName] == nil {
 		e.t.Fatalf("the local memdev is not published shared %v", shared)
 	}
-	e.s.Lock()
-	e.s.Allocatable = devs
-	e.s.Unlock()
+	e.publisher.SetDevices(devs)
 }
 
 // The claims of a shared memdev get the same whole dax device: zeroed once
@@ -397,69 +394,6 @@ func TestPublishSharedLocalMemdev(t *testing.T) {
 	}
 }
 
-// Per memdev: ignoreDevices > pool devices > sharedDevices > sliced; any
-// spec form of ignoreDevices matches.
-func TestSharedLocalPrecedence(t *testing.T) {
-	memdev := func(name string, serial uint64) *nricxl.MemoryDevice {
-		return &nricxl.MemoryDevice{Name: name, DevName: "cxl/" + name, RamSize: 1 << 30, Serial: serial, NodeAffinity: -1, Enabled: true, Major: 251, Minor: int(serial & 0xf)}
-	}
-	byName, byDevName, byNumbers, byDecimal, ignored, pooled, sliced, usedSliced, usedShared, foreign :=
-		memdev("mem1", 0xa1), memdev("mem2", 0xa2), memdev("mem3", 0xa3), memdev("mem4", 0xa4), memdev("mem5", 0xa5),
-		memdev("mem6", 0xa6), memdev("mem7", 0xa7), memdev("mem8", 0xa8), memdev("mem9", 0xa9), memdev("mem10", 0xaa)
-	devices := &nricxl.Devices{
-		MemoryDevices: []*nricxl.MemoryDevice{byName, byDevName, byNumbers, byDecimal, ignored, pooled, sliced, usedSliced, usedShared, foreign},
-		RegionDevices: []*nricxl.RegionDevice{{Name: "region9", Size: 1 << 30, Mode: "ram", Node: 3, Enabled: true, Memories: []*nricxl.MemoryDevice{foreign}}},
-	}
-	cfg := &DriverConfig{
-		IgnoreDevices: []string{"0xa5"},
-		SharedDevices: []string{"mem1", "cxl/mem2", "251:3", "164", "a5", "0xa6", "0xa8", "0xaa"},
-	}
-	pool := map[uint64]bool{0xa6: true}
-	local := &localSnapshot{BlockSize: localBlockSize, Uses: map[uint64]localUse{
-		0xa8: {Claims: []string{"s1"}},
-		0xa9: {Shared: true, Claims: []string{"h1"}},
-	}}
-	devInfos, err := buildDevInfos(cfg, devices, pool, local)
-	noErr(t, err)
-	shared := map[string]bool{}
-	for name, d := range devInfos {
-		if m, ok := d.Dev.(*device.Memdev); ok {
-			shared[name] = m.Shared
-		}
-	}
-	want := map[string]bool{"memdev-a1": true, "memdev-a2": true, "memdev-a3": true, "memdev-a4": true, "memdev-a7": false}
-	if !maps.Equal(shared, want) {
-		t.Fatalf("published memdevs (name: shared) %v, expected %v", shared, want)
-	}
-	for _, tc := range []struct {
-		mem  *nricxl.MemoryDevice
-		want string
-	}{
-		{ignored, `ignored by memory device serial "0xa5"`},
-		{pooled, "pool device"},
-		{byName, ""},
-		{sliced, ""},
-	} {
-		if _, got := sharedListing(cfg, tc.mem, pool); got != tc.want {
-			t.Errorf("%s: refusal %q, expected %q", tc.mem.Name, got, tc.want)
-		}
-	}
-	if got := sharedSerials(cfg, devices.MemoryDevices, pool); !maps.Equal(got, map[uint64]bool{0xa1: true, 0xa2: true, 0xa3: true, 0xa4: true, 0xa8: true, 0xaa: true}) {
-		t.Fatalf("shared serials %v", got)
-	}
-
-	// the hidden ones come back when the other use has no claims
-	local.Uses[0xa8] = localUse{Claims: []string{}}
-	local.Uses[0xa9] = localUse{Shared: true, Claims: []string{}}
-	devInfos, err = buildDevInfos(cfg, devices, pool, local)
-	noErr(t, err)
-	for name, s := range map[string]bool{"memdev-a8": true, "memdev-a9": false} {
-		if m, ok := devInfos[name].Dev.(*device.Memdev); !ok || m.Shared != s {
-			t.Errorf("%s: %+v, expected shared %v", name, devInfos[name], s)
-		}
-	}
-}
-
 // The sharedDevices of the configuration: a list of strings.
 func TestDriverConfigSharedDevices(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`sharedDevices: ["0xc100e2e1", "mem1"]`)
@@ -525,7 +459,7 @@ func TestPrepareSharedLocal(t *testing.T) {
 		"MemoryConfig: device: a shared device is used as dax only")
 	wantErr(t, e.prepare(sharedClaim("u9", "1", `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","device":{"mode":"numa","readOnly":true}}`)),
 		"MemoryConfig: device.readOnly needs mode dax")
-	if got := e.k.CommandsSince(before); got != "" || e.s.Prepared["u9"].Devices != nil || e.preparation("u9") != nil {
+	if got := e.k.CommandsSince(before); got != "" || e.preparedMap()["u9"].Devices != nil || e.preparation("u9") != nil {
 		t.Fatalf("a refused claim touched the device:\n%s", got)
 	}
 
@@ -582,7 +516,7 @@ func TestPrepareSharedLocalHiding(t *testing.T) {
 func TestPrepareSharedLocalLend(t *testing.T) {
 	e := newSharedEnv(t)
 	lender, hooks := newFakeLender(), &fakeHooks{}
-	e.s.lending.set(lender, hooks)
+	e.s.Lender().Set(lender, hooks)
 	c := sharedClaim("u1", "1", localROConfig)
 	c.ObjectMeta = companionClaim("l1").ObjectMeta
 	c.UID = "u1"
@@ -591,7 +525,7 @@ func TestPrepareSharedLocalLend(t *testing.T) {
 		!hooks.devs[0].ReadOnly || hooks.devs[0].Size != localRegionSize {
 		t.Fatalf("lent devices %+v", hooks.devs)
 	}
-	if res := e.s.Prepared["u1"]; len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 0 {
+	if res := e.preparedMap()["u1"]; len(res.Devices) != 1 || len(res.Devices[0].CDIDeviceIDs) != 0 {
 		t.Fatalf("CDI devices of a companion claim: %+v", res.Devices)
 	}
 	e.mustUnprepare("u1")
@@ -615,12 +549,12 @@ func TestBrokerLocalSharedLease(t *testing.T) {
 		t.Fatalf("companion capacity %+v", ex.Capacity)
 	}
 	c := allocatedLocal(claim, "lease", localDeviceName)
-	rec, err := lender.check("000000a1", c)
+	rec, err := lender.Check("000000a1", c)
 	noErr(t, err)
 	devs := []lentDevice{{Driver: device.DriverName, Source: api.SourceLocal, Request: "lease", Device: localDeviceName,
 		Serial: localSerial, Shared: true, Size: localRegionSize, Mode: api.ModeDax, ReadOnly: true, Node: -1, DaxDevice: "/dev/dax1.1"}}
-	noErr(t, lender.lend(context.Background(), rec, devs))
-	lender.prepared("000000a1", devs)
+	noErr(t, lender.Lend(context.Background(), rec, devs))
+	lender.Prepared("000000a1", devs)
 	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "local", Mode: "dax", Shared: true, ReadOnly: true,
 		Size: localRegionSize, Serial: "0xc100e2e1", Dax: "/dev/dax1.1", Env: map[string]string{
 			"CXL_C100E2E1_DAX": "/dev/dax1.1", "CXL_C100E2E1_MODE": "dax", "CXL_C100E2E1_READONLY": "1",
@@ -647,39 +581,6 @@ func TestLeaseStoreWithHosts(t *testing.T) {
 	noErr(t, err)
 	if l := s.Leases["000000a2"]; l == nil || !l.SharedDevice || !l.deviceShared() {
 		t.Fatalf("lease %+v", l)
-	}
-}
-
-// The shares guard of shared devices and the use that it logs.
-func TestConsumedShares(t *testing.T) {
-	result := func(shares string) *resourcev1.DeviceRequestAllocationResult {
-		r := &resourcev1.DeviceRequestAllocationResult{}
-		if shares != "" {
-			r.ConsumedCapacity = map[resourcev1.QualifiedName]resource.Quantity{device.CapacityShares: resource.MustParse(shares)}
-		}
-		return r
-	}
-	for _, tc := range []struct {
-		shares string
-		want   int64
-		use    string
-		err    string
-	}{
-		{shares: "1M", want: 1000000, use: "exclusive"},
-		{shares: "1", want: 1, use: "1 share"},
-		{shares: "3", want: 3, use: "3 shares"},
-		{shares: "0", err: `device 0xc100e2e1: consumed shares "0" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-		{shares: "0.5", err: `device 0xc100e2e1: consumed shares "500m" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-		{shares: "", err: `device 0xc100e2e1: consumed shares "" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-		{shares: "-1", err: `device 0xc100e2e1: consumed shares "-1" is less than 1: request shares: 1 (a share) or no shares (exclusive)`},
-	} {
-		got, err := consumedShares(localSerial, result(tc.shares))
-		switch {
-		case tc.err != "" && (err == nil || err.Error() != tc.err):
-			t.Errorf("%q: error %v, expected %q", tc.shares, err, tc.err)
-		case tc.err == "" && (err != nil || got != tc.want || shareUse(got, device.SharesUnlimited) != tc.use):
-			t.Errorf("%q: %d %v, expected %d %s", tc.shares, got, err, tc.want, tc.use)
-		}
 	}
 }
 
@@ -722,7 +623,7 @@ func TestLocalSharedRegionGone(t *testing.T) {
 	noErr(t, e.k.Kernel().ReleaseRegion(context.Background(), "region0"))
 	wantLocalRegionCount(t, e, 1, 1)
 	logs := captureKlog(t)
-	noErr(t, e.s.Prepare(context.Background(), sharedClaim("u2", "1")))
+	noErr(t, prepareOn(context.Background(), e.s, sharedClaim("u2", "1")))
 	e.check("prepared u2")
 	// the other claims of the device: none
 	if want := strings.NewReplacer("mem1", "mem0", "[<uids>]", "[]").Replace(compat.DocLocalMemdevMem1Serial0xc100e2e1Region0OfThe); !strings.Contains(logs(), want) {
@@ -746,7 +647,7 @@ func TestLocalSharedReconcileOtherBootAndHalfMade(t *testing.T) {
 	if got := e.k.CommandsSince(before); got != "" {
 		t.Fatalf("another boot's records touched the system:\n%s", got)
 	}
-	if e.preparation("u1") != nil || e.s.GetClaimInfo("u1") != nil {
+	if e.preparation("u1") != nil || e.s.ClaimInfo("u1") != nil {
 		t.Fatalf("claim of another boot %+v", e.preparation("u1"))
 	}
 	wantSharedUse(t, e, nil)
@@ -767,7 +668,7 @@ func TestPrepareSharedLocalRollback(t *testing.T) {
 	noErr(t, os.RemoveAll(spec))
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
 	wantLocalRegionCount(t, e, 1, 0)
-	if e.preparation("u1") != nil || e.s.GetClaimInfo("u1") != nil {
+	if e.preparation("u1") != nil || e.s.ClaimInfo("u1") != nil {
 		t.Fatalf("rolled back claim %+v", e.preparation("u1"))
 	}
 
@@ -781,8 +682,8 @@ func TestPrepareSharedLocalRollback(t *testing.T) {
 	}
 	wantSharedUse(t, e, &localUse{Shared: true, Claims: []string{}})
 	wantLocalRegionCount(t, e, 1, 0)
-	if len(e.s.Prepared) != 0 {
-		t.Fatalf("prepared %v", e.s.Prepared)
+	if len(e.preparedMap()) != 0 {
+		t.Fatalf("prepared %v", e.preparedMap())
 	}
 }
 

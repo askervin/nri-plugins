@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
@@ -215,7 +216,7 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 	e.start()
 	e.mustPrepare(localClaim("u1", localBlockSize))
 	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
-	if got := preparedNodes(e.s, nil); got.String() == "" {
+	if got := dra.NumaNodes(e.records(), device.DriverName); len(got) == 0 {
 		t.Fatal("no NUMA node of the numa slice")
 	}
 	old := e.k.BootID()
@@ -225,7 +226,7 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 		t.Fatalf("commands at the start:\n%s", got)
 	}
 	for _, uid := range []string{"u1", "u2"} {
-		if e.preparation(uid) != nil || e.s.GetClaimInfo(uid) != nil {
+		if e.preparation(uid) != nil || e.s.ClaimInfo(uid) != nil {
 			t.Fatalf("claim %s of another boot: %+v", uid, e.preparation(uid))
 		}
 	}
@@ -239,15 +240,15 @@ func TestPreparedClaimsOtherBoot(t *testing.T) {
 	if spec := e.cdiSpec(); spec != nil && len(spec.Devices) > 0 {
 		t.Fatalf("CDI devices of another boot %+v", spec.Devices)
 	}
-	if got := preparedNodes(e.s, nil); got.String() != "" {
-		t.Fatalf("fenced nodes %s", got)
+	if got := dra.NumaNodes(e.records(), device.DriverName); len(got) != 0 {
+		t.Fatalf("fenced nodes %v", got)
 	}
 	if e.inUse() {
 		t.Fatal("the memdev is in use")
 	}
 	e.mustUnprepare("u1")
 	e.mustPrepare(localClaim("u1", localBlockSize))
-	if info := e.s.GetClaimInfo("u1"); info == nil || info.BootID != e.k.BootID() || info.BootID == old {
+	if info := e.s.ClaimInfo("u1"); info == nil || info.BootID != e.k.BootID() || info.BootID == old {
 		t.Fatalf("prepared again %+v", info)
 	}
 	if spec := e.cdiSpec(); spec == nil || len(spec.Devices) != 1 || spec.Devices[0].Name != "claim-u1-0" {

@@ -117,7 +117,7 @@ func TestPoolCutCompanionKept(t *testing.T) {
 	p := e.driver(t)
 	hooks := &fakeHooks{}
 	lender := newFakeLender(testRef)
-	p.lender.set(lender, hooks)
+	p.Lender().Set(lender, hooks)
 	claim := poolClaim("uid-cxl-lease-l1", "cxl-lease-l1", "pooled0", exclusiveData)
 	claim.Namespace = testNS
 	claim.Labels = map[string]string{device.LeaseLabel: "l1"}
@@ -131,8 +131,8 @@ func TestPoolCutCompanionKept(t *testing.T) {
 	if prep := e.preparation("uid-cxl-lease-l1"); prep == nil || prep.State != state.PreparationPreparing {
 		t.Fatalf("preparation %+v", prep)
 	}
-	p.lender.set(lender, hooks)
-	p.recoverCompanions()
+	p.Lender().Set(lender, hooks)
+	p.Engine().RecoverCompanions()
 	noErr(t, unprepare(t, p, "uid-cxl-lease-l1"))
 	e.wantClean(t, p)
 }
@@ -195,7 +195,7 @@ func TestPoolViewOfEngineRecords(t *testing.T) {
 	p := e.driver(t)
 	hooks := &fakeHooks{fsDir: filepath.Join(e.leaseFsRoot, "lc1"), name: "models"}
 	noErr(t, os.MkdirAll(hooks.fsDir, 0o755))
-	p.lender.set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(testRef), hooks)
 	shareID := types.UID("share-1")
 	claims := map[string]*resourceapi.ResourceClaim{
 		"n1": poolClaim("n1", "c-n1", "pooled0", exclusiveData),
@@ -262,9 +262,9 @@ func TestPoolViewOfEngineRecords(t *testing.T) {
 	boot := e.k.BootID()
 	// the settings of the result 0 of a claim, resolved from its configs
 	settings := func(uid string) config.ResultSettings {
-		res, err := resolveResults(claims[uid], device.PoolDriverName, func(r *resourceapi.DeviceRequestAllocationResult) bool { return r.Driver == device.PoolDriverName })
+		res, err := config.Resolve(claims[uid], device.PoolDriverName, claims[uid].Status.Allocation.Devices.Results[0].Request)
 		noErr(t, err)
-		return res[0].Settings()
+		return res.Settings()
 	}
 	result := func(uid, dev string, cdi bool, share *types.UID) kubeletplugin.PrepareResult {
 		d := kubeletplugin.Device{Requests: []string{"mem"}, PoolName: "fake-cxl-pool", DeviceName: dev, ShareID: share}

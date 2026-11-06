@@ -49,11 +49,11 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	if !e.inUse() {
 		t.Fatal("memdev not in use")
 	}
-	res := e.s.Prepared["u1"]
+	res := e.preparedMap()["u1"]
 	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-u1-0"}) {
 		t.Fatalf("prepared %+v", res.Devices)
 	}
-	if boot := e.s.GetClaimInfo("u1").BootID; boot != e.k.BootID() {
+	if boot := e.s.ClaimInfo("u1").BootID; boot != e.k.BootID() {
 		t.Fatalf("prepared in boot %q", boot)
 	}
 	// the node of the memory of the region in the kernel
@@ -72,7 +72,7 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	// a dax claim on the same device, and another numa claim on the node
 	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
 	e.mustPrepare(localClaim("u3", 2*localBlockSize))
-	if got := e.s.GetClaimInfo("u3").Devices[0]; !slices.Equal(got.NUMANodes, []int{node}) || got.TotalBytes != 2*localBlockSize || got.ConsumedBytes != 2*localBlockSize {
+	if got := e.s.ClaimInfo("u3").Devices[0]; !slices.Equal(got.NUMANodes, []int{node}) || got.TotalBytes != 2*localBlockSize || got.ConsumedBytes != 2*localBlockSize {
 		t.Fatalf("device info %+v", got)
 	}
 	wantNUMABlocks(e, 74, 76, 77)
@@ -81,12 +81,12 @@ func TestPrepareLocalNUMA(t *testing.T) {
 	e.mustUnprepare("u3")
 	wantNUMABlocks(e)
 	e.mustUnprepare("u2")
-	if e.inUse() || len(e.s.Prepared) != 0 || len(e.regions(localSerial)) != 0 {
-		t.Fatalf("after unprepare: in use %v, prepared %v, regions %v", e.inUse(), e.s.Prepared, e.regions(localSerial))
+	if e.inUse() || len(e.preparedMap()) != 0 || len(e.regions(localSerial)) != 0 {
+		t.Fatalf("after unprepare: in use %v, prepared %v, regions %v", e.inUse(), e.preparedMap(), e.regions(localSerial))
 	}
 	// the whole memdev without consumed capacity
 	e.mustPrepare(localClaim("u4", 0))
-	if got := e.s.GetClaimInfo("u4").Devices[0].ConsumedBytes; got != localRegionSize {
+	if got := e.s.ClaimInfo("u4").Devices[0].ConsumedBytes; got != localRegionSize {
 		t.Fatalf("consumed %d", got)
 	}
 	wantNUMABlocks(e, 74, 75, 76, 77, 78, 79, 80, 81)
@@ -114,7 +114,7 @@ func TestPrepareSharedLocalLifeCycle(t *testing.T) {
 	if d == nil || !d.Shared || d.Region != "region0" || d.Dax != "dax0.0" || len(d.Claims) != 2 {
 		t.Fatalf("view %+v", d)
 	}
-	info := e.s.GetClaimInfo("u1").Devices[0]
+	info := e.s.ClaimInfo("u1").Devices[0]
 	if !info.Shared || info.DaxDevice == "" || !info.ReadOnly || info.TotalBytes != localRegionSize {
 		t.Fatalf("device info %+v", info)
 	}
@@ -154,7 +154,7 @@ func TestPrepareLocalPersistentFs(t *testing.T) {
 	dev := memdevDeviceName(0x91)
 	w := memdevClaim("w1", dev, -int64(device.SharesUnlimited), memoryConfig(api.ModeFs, false, ""))
 	e.mustPrepare(w)
-	info := e.s.GetClaimInfo("w1").Devices[0]
+	info := e.s.ClaimInfo("w1").Devices[0]
 	if !info.Persistent || info.Mode != api.ModeFs || info.NodeMount == "" || info.FsType != "ext4" || info.BlockDevice == "" {
 		t.Fatalf("device info %+v", info)
 	}

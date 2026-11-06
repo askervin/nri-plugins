@@ -15,7 +15,6 @@
 package main
 
 import (
-	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -295,42 +294,6 @@ func TestBuildDevInfosSkipsPoolDevices(t *testing.T) {
 	}
 	if devInfos, _ := buildDevInfos(&DriverConfig{}, devices, nil, nil); devInfos["region1-node3"] == nil {
 		t.Fatal("region1 skipped without the pool driver")
-	}
-}
-
-// TestBuildDevInfosHollowRegion: a hollow region of a scan is not
-// published, the other devices are, and it is warned about once while it
-// stays. The hollow region still has a node: memory of its address range
-// that kmem could not remove is online, so the scan finds the node and
-// the region enabled; that node is not DRAM either.
-func TestBuildDevInfosHollowRegion(t *testing.T) {
-	devices := nricxl.NewDevices()
-	hollow := &nricxl.RegionDevice{Name: "region1", SysfsPath: "/sys/bus/cxl/devices/region1", Mode: "ram", Resource: 0x850000000, Size: 1 << 28,
-		Node: 3, Enabled: true, OnlineSize: 1 << 28, Hollow: true}
-	devices.RegionDevices = []*nricxl.RegionDevice{
-		{Name: "region0", Size: 1 << 30, Mode: "ram", Node: 2, Enabled: true, Targets: []string{"decoder4.0"},
-			Memories: []*nricxl.MemoryDevice{{Name: "mem0", Serial: 0xc100e2e0, Enabled: true}}},
-		hollow,
-	}
-	devices.MemoryNodes = []*nricxl.MemoryNode{{ID: 0, Size: 1 << 30}, {ID: 2, Size: 1 << 30}, {ID: 3, Size: 1 << 28}}
-	devInfos, err := buildDevInfos(&DriverConfig{}, devices, nil, nil)
-	noErr(t, err)
-	if devInfos["region0-node2"] == nil || devInfos["region1-node3"] != nil || len(devInfos) != 2 {
-		t.Fatalf("devices %v", slices.Sorted(maps.Keys(devInfos)))
-	}
-	if dram, ok := devInfos["dram"].Dev.(*device.DRAM); !ok || !slices.Equal(dram.Nodes, []int{0}) {
-		t.Fatalf("DRAM %+v", devInfos["dram"])
-	}
-
-	h := &hollowRegionLog{warned: map[string]bool{}}
-	for i, want := range []int{1, 1, 0} {
-		regions := devices.RegionDevices
-		if want == 0 {
-			regions = regions[:1]
-		}
-		if got := h.observe(regions); len(got) != want || (want == 1 && !got[hollow]) || len(h.warned) != want {
-			t.Fatalf("scan %d: hollow %v, warned %v", i, got, h.warned)
-		}
 	}
 }
 

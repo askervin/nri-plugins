@@ -44,6 +44,7 @@ import (
 	"k8s.io/klog/v2"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -57,7 +58,7 @@ import (
 // scheduler allocates a local memdev (cxl.nri.io) or a pool device to the
 // claim, the pool controller attaches a pool device, and kubelet prepares
 // the claim through the driver of the device, which lends the memory to
-// the requesting container (leaseHooks, lending.go). Deleting the
+// the requesting container (leaseHooks, internal/dra companion.go). Deleting the
 // companion releases it again. See docs/memory/cxl/leases.md.
 
 const (
@@ -79,7 +80,7 @@ const (
 )
 
 var (
-	errLendingUnavailable = errors.New("lending unavailable: NRI not connected")
+	errLendingUnavailable = dra.ErrLendingUnavailable
 	errNotOurPod          = errors.New("not a container of the claim's pod")
 	errPoolDisabled       = errors.New("pool driver disabled (--pool-driver-name)")
 )

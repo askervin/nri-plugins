@@ -25,6 +25,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 )
 
@@ -33,11 +34,7 @@ import (
 const leasesFileName = "leases.json"
 
 // podRef identifies a pod.
-type podRef struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	UID       string `json:"uid"`
-}
+type podRef = state.PodRef
 
 // leaseClaim is a prepared claim on the lease device: it owns the socket
 // <data dir>/leases/<uid>/cxl.sock and, when FsDir is set, the directory
@@ -241,4 +238,13 @@ func (s *leaseStore) leasesOf(claimUID string) []*lease {
 		}
 	}
 	return out
+}
+
+// otherBoot tells whether a record of the boot recorded is of another boot
+// than the running one, bootID. A record without a boot id, written by a
+// driver that did not record it, is taken as one of this boot (a driver
+// upgraded without a reboot), and so is every record when the boot id of
+// the running kernel is unknown.
+func otherBoot(recorded, bootID string) bool {
+	return recorded != "" && bootID != "" && recorded != bootID
 }

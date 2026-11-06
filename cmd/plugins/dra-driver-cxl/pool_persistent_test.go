@@ -27,6 +27,7 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"golang.org/x/sys/unix"
@@ -261,7 +262,7 @@ func TestPoolPersistentRestart(t *testing.T) {
 // persistentData written by a writer, a pool driver with a lease-fs root,
 // and fake hooks that give the lend records of companion claims the
 // lease-fs directory of the lease claim lc1 and the name models.
-func newPoolLeaseEnv(t *testing.T) (*poolTestEnv, *poolDriver, *fakeHooks) {
+func newPoolLeaseEnv(t *testing.T) (*poolTestEnv, *dra.Plugin, *fakeHooks) {
 	t.Helper()
 	e := newPoolTestEnv(t)
 	e.leaseFsRoot = filepath.Join(filepath.Dir(e.stateFile), "lease-fs")
@@ -273,10 +274,10 @@ func newPoolLeaseEnv(t *testing.T) (*poolTestEnv, *poolDriver, *fakeHooks) {
 
 // leaseDriver returns a new pool driver, as after a restart, that lends
 // companion claims with the hooks.
-func (e *poolTestEnv) leaseDriver(t *testing.T, hooks *fakeHooks) *poolDriver {
+func (e *poolTestEnv) leaseDriver(t *testing.T, hooks *fakeHooks) *dra.Plugin {
 	t.Helper()
 	p := e.driver(t)
-	p.lender.set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(testRef), hooks)
 	return p
 }
 

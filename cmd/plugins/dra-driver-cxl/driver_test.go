@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,9 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 
 	"github.com/containers/nri-plugins/pkg/cxl/config"
@@ -612,26 +616,6 @@ func TestDriverConfigManageMemdevs(t *testing.T) {
 	}
 }
 
-// Before the kubelet plugin runs, a rescan updates the devices but does not
-// publish them (there is no helper yet).
-func TestRescanBeforeStart(t *testing.T) {
-	root := t.TempDir()
-	for _, dir := range []string{"sys/bus/cxl/devices", "sys/devices/system/node"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	d := &driver{
-		sysfsRoot: root,
-		config:    &DriverConfig{IgnoreDRAMNodes: true, PublishLeaseDevice: true},
-		state:     nodeState{baseState: &baseState{NodeName: "n1"}},
-	}
-	d.rescanAndPublish(context.Background())
-	if devs, ok := d.state.Allocatable.(device.DevicesInfo); !ok || devs[device.LeaseDeviceName] == nil {
-		t.Fatalf("devices after the rescan: %+v", d.state.Allocatable)
-	}
-}
-
 func TestDriverConfigDefaults(t *testing.T) {
 	for _, tc := range []struct {
 		config string
@@ -678,12 +662,60 @@ func TestDriverConfigDefaults(t *testing.T) {
 
 // The local part of a start: nothing with manageMemdevs false, else the
 // store and kernel of the node; an old file of a gone memdev is not used.
+// The rules of the drivers are the one place of their per-source values:
+// the store drops the preparations of another boot of cxl.nri.io and keeps
+// those of the pool driver PREPARED_STALE, the engine mounts in the
+// MountsDir of each.
+func TestDriverRules(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	local := filepath.Join(dir, device.DriverName)
+	noErr(t, os.MkdirAll(local, 0o750))
+	flags := &CXLFlags{}
+	config := &pluginConfig{Flags: flags, KubeletPluginDir: local}
+	if r := newDriverRules(config, flags); r.pool != nil || len(r.all()) != 1 || r.local.MountsDir != filepath.Join(local, mountsDirName) {
+		t.Fatalf("the rules without the pool driver: %+v", r)
+	}
+	flags.PoolDriverName = device.PoolDriverName
+	rules := newDriverRules(config, flags)
+	want := map[state.Source]string{
+		state.SourceLocal: filepath.Join(local, mountsDirName),
+		state.SourcePool:  filepath.Join(dir, device.PoolDriverName, mountsDirName),
+	}
+	if got := dra.MountsDirs(rules.all()...); !maps.Equal(got, want) {
+		t.Fatalf("mounts directories %v, want %v", got, want)
+	}
+	uid := func(driver string) string { return "u-" + driver }
+	for _, boot := range []string{"b0", "b1"} {
+		st, closeStore, err := openDriverStore(ctx, config, flags, dir, boot, rules)
+		noErr(t, err)
+		if boot == "b0" {
+			noErr(t, st.Commit(ctx, store.Durable, func(doc *store.Document) error {
+				for _, driver := range []string{device.DriverName, device.PoolDriverName} {
+					doc.Preparations = append(doc.Preparations, state.Preparation{UID: uid(driver), Driver: driver,
+						ClaimName: "ns/c", BootID: boot, State: state.PreparationPrepared})
+				}
+				return nil
+			}))
+		} else {
+			r := st.Snapshot().Records
+			if p := r.Preparation(device.DriverName, uid(device.DriverName)); p != nil {
+				t.Errorf("a local preparation of another boot is kept: %+v", p)
+			}
+			if p := r.Preparation(device.PoolDriverName, uid(device.PoolDriverName)); p == nil || p.State != state.PreparationStale {
+				t.Errorf("the pool preparation of another boot: %+v", p)
+			}
+		}
+		closeStore()
+	}
+}
+
 func TestNewLocalHelper(t *testing.T) {
 	ctx := context.Background()
 	// start starts the local part of the driver on a node of its own with
 	// the old state file old ("" for none); the store is closed by the
 	// returned function
-	start := func(cfg *DriverConfig, old string) (*nodeState, string, func()) {
+	start := func(cfg *DriverConfig, old string) (*frontEnds, *deviceEngine, string, func()) {
 		t.Helper()
 		dir := t.TempDir()
 		for _, d := range []string{"sys/bus/cxl/devices", "sys/devices/system/node", "cdi"} {
@@ -695,33 +727,36 @@ func TestNewLocalHelper(t *testing.T) {
 		flags := &CXLFlags{CDIRoot: filepath.Join(dir, "cdi"), NodeName: testNode}
 		flags.Store.CompatViews = true
 		config := &pluginConfig{Flags: flags, KubeletPluginDir: dir}
-		st, closeStore, err := openDriverStore(ctx, config, flags, dir, "")
+		rules := newDriverRules(config, flags)
+		st, closeStore, err := openDriverStore(ctx, config, flags, dir, "", rules)
 		noErr(t, err)
-		devices, err := newDriverDevices(config, flags, cfg, dir, nil, st)
+		devices, err := newDriverDevices(config, flags, cfg, dir, nil, st, rules)
 		if err == nil {
-			var s *nodeState
-			if s, err = newDriverState(ctx, config, cfg, dir, nil, nil, devices, st, ""); err == nil {
-				return s, dir, closeStore
+			var fe *frontEnds
+			if fe, err = newFrontEnds(config, flags, cfg, dir, "", st, devices, nil, rules); err == nil {
+				if err = fe.recover(ctx, flags.CDIRoot, dir, cfg, devices); err == nil {
+					return fe, devices, dir, closeStore
+				}
 			}
 		}
 		closeStore()
 		t.Fatal(err)
-		return nil, "", nil
+		return nil, nil, "", nil
 	}
-	s, _, stop := start(&DriverConfig{ManageMemdevs: ptr(false)}, "")
+	fe, _, _, stop := start(&DriverConfig{ManageMemdevs: ptr(false)}, "")
 	stop()
-	if s.local.managed || s.local.Snapshot() != nil {
-		t.Fatalf("unmanaged memdevs: %+v", s.local)
+	if fe.publisher.LocalSnapshot() != nil {
+		t.Fatalf("unmanaged memdevs: %+v", fe.publisher.LocalSnapshot())
 	}
 	// the state of a memdev that is gone is not used at start
 	old := `[{"serial":3238060769,"serialHex":"c100e2e1","memdev":"mem0","region":"region0","node":2,"claims":{"u1":[{"request":"mem","region":"region0","mode":"numa","size":2097152,"dax":"dax0.1"}]}}]`
-	s, dir, stop := start(&DriverConfig{}, old)
+	fe, devices, dir, stop := start(&DriverConfig{}, old)
 	defer stop()
-	if snap := s.local.Snapshot(); snap == nil || len(snap.Uses) != 0 {
+	if snap := fe.publisher.LocalSnapshot(); snap == nil || len(snap.Uses) != 0 {
 		t.Fatalf("uses %+v of a gone memdev", snap)
 	}
-	if s.local.k.SysRoot != dir+"/sys" {
-		t.Fatalf("local devices on %s", s.local.k.SysRoot)
+	if devices.k.SysRoot != dir+"/sys" {
+		t.Fatalf("local devices on %s", devices.k.SysRoot)
 	}
 	for _, name := range []string{"state.json", localStateFileName + ".old", preparedClaimsInfoFileName} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
@@ -769,30 +804,23 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		e := newLocalTestEnv(t)
 		e.start()
 		nri := newNRI()
-		d := &driver{state: *e.s, nriPlugin: nri}
+		setNRI(e.s, nri)
 		claim := localClaim("u1", 16*mib)
-		prepare := func() kubeletplugin.PrepareResult {
-			res, err := d.PrepareResourceClaims(ctx, []*resourceapi.ResourceClaim{claim})
-			if err != nil {
-				return kubeletplugin.PrepareResult{Err: err}
-			}
-			return res[claim.UID]
-		}
+		prepare := func() kubeletplugin.PrepareResult { return prepareResultOn(ctx, e.s, claim) }
 		nriPrepareWait = 20 * time.Millisecond
 		cmds := e.commands()
 		wantErr(t, prepare().Err, why)
-		d.state.Lock()
-		_, prepared := d.state.Prepared[string(claim.UID)]
-		d.state.Unlock()
+		_, prepared := e.preparedMap()[string(claim.UID)]
 		if prepared || e.preparation("u1") != nil || e.commands() != cmds {
 			t.Fatalf("prepared %v, preparation %+v, commands:\n%s", prepared, e.preparation("u1"), strings.TrimPrefix(e.commands(), cmds))
 		}
 		waits(t, nri, prepare)
 		// prepared already: it waits too
-		d.nriPlugin = newNRI()
-		waits(t, d.nriPlugin, prepare)
+		nri = newNRI()
+		setNRI(e.s, nri)
+		waits(t, nri, prepare)
 		// no NRI plugin
-		d.nriPlugin = nil
+		setNRI(e.s, nil)
 		noErr(t, prepare().Err)
 		e.mustUnprepare("u1")
 		e.wantClean()
@@ -803,7 +831,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 		e.plug(0xc1ee0001)
 		p := e.driver(t)
 		nri := newNRI()
-		p.nri = nri
+		setNRI(p, nri)
 		claim := poolClaim("u1", "c1", "pooled0", exclusiveData)
 		nriPrepareWait = 20 * time.Millisecond
 		ncmds := e.commands()
@@ -818,7 +846,7 @@ func TestPrepareWaitsForNRI(t *testing.T) {
 			}
 			return res[claim.UID]
 		})
-		p.nri = nil
+		setNRI(p, nil)
 		noErr(t, prepare(t, p, claim).Err)
 		noErr(t, unprepare(t, p, "u1"))
 		e.wantClean(t, p)

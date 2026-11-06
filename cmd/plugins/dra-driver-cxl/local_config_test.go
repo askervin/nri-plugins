@@ -20,8 +20,8 @@ import (
 	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 )
 
-// The usable size of a local memdev from its memdevSettings and the probed
-// size, rounded down to 256 MiB; invalid settings are refused.
+// The usable size of a local memdev from its memdevSettings; invalid
+// settings are refused.
 func TestMemdevSettings(t *testing.T) {
 	cfg, err := newDriverConfigFromString(`
 memdevSettings:
@@ -36,23 +36,17 @@ memdevSettings:
 	if err := cfg.validate(); err != nil {
 		t.Fatal(err)
 	}
-	m0 := &nricxl.MemoryDevice{Name: "mem0", Serial: 0x0badc0dedeadbeef, RamSize: 192 << 30}
-	m1 := &nricxl.MemoryDevice{Name: "mem1", Serial: 0x1, RamSize: 2 << 30}
-	m2 := &nricxl.MemoryDevice{Name: "mem2", Serial: 0x2, RamSize: 2 << 30}
+	// the publisher rounds them down (internal/dra TestMemdevUsableSize)
 	for _, tc := range []struct {
-		m      *nricxl.MemoryDevice
-		probed uint64
-		want   uint64
+		m    *nricxl.MemoryDevice
+		want uint64
 	}{
-		{m0, 0, 128 << 30},
-		{m0, 64 << 30, 64 << 30},
-		{m1, 0, 768 << 20},
-		{m2, 0, 2 << 30},
-		{m2, 1 << 30, 1 << 30},
+		{&nricxl.MemoryDevice{Name: "mem0", Serial: 0x0badc0dedeadbeef, RamSize: 192 << 30}, 128 << 30},
+		{&nricxl.MemoryDevice{Name: "mem1", Serial: 0x1, RamSize: 2 << 30}, 1000 << 20},
+		{&nricxl.MemoryDevice{Name: "mem2", Serial: 0x2, RamSize: 2 << 30}, 0},
 	} {
-		snap := &localSnapshot{Probed: map[uint64]uint64{tc.m.Serial: tc.probed}}
-		if got := memdevUsableSize(cfg, tc.m, snap); got != tc.want {
-			t.Errorf("%s probed %d: usable size %d, expected %d", tc.m.Name, tc.probed, got, tc.want)
+		if got := cfg.configuredUsableSize(tc.m.Name, tc.m.Serial); got != tc.want {
+			t.Errorf("%s: configured usable size %d, expected %d", tc.m.Name, got, tc.want)
 		}
 	}
 	for _, bad := range []string{

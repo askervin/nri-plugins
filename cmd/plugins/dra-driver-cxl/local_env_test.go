@@ -33,10 +33,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/dynamic-resource-allocation/kubeletplugin"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -76,7 +79,11 @@ type localTestEnv struct {
 	// st is the store of the node state s; devices its device engine.
 	st      *store.Store
 	devices *deviceEngine
-	s       *nodeState
+	s       *dra.Plugin
+	// publisher publishes the devices of the node; cdi is the CDI cache
+	// of the claims.
+	publisher *dra.Publisher
+	cdi       *cdiapi.Cache
 	// dir is the plugin data directory of cxl.nri.io and of the store,
 	// poolDir that of the pool driver.
 	dir, poolDir string
@@ -158,7 +165,7 @@ func (e *localTestEnv) plug(spec fake.MemdevSpec) string {
 // process does: the store opened (again), the device engine of both
 // sources, its recovery, the node state of cxl.nri.io with the devices of a
 // scan. A node state returned before must not be used after.
-func (e *localTestEnv) start() *nodeState {
+func (e *localTestEnv) start() *dra.Plugin {
 	t := e.t
 	t.Helper()
 	if e.st != nil {
@@ -167,11 +174,12 @@ func (e *localTestEnv) start() *nodeState {
 	var err error
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.poolDir, PoolDriver: device.PoolDriverName,
 		BootID: e.k.BootID(), CompatViews: true, SysRoot: e.k.SysRoot(), DevRoot: e.k.DevRoot(),
-		DropOtherBoot: func(driver string) bool { return driver == device.DriverName }})
+		DropOtherBoot: dra.DropOtherBoot(e.rules()...)})
 	noErr(t, err)
 	e.devices, err = newDeviceEngine(deviceConfig{
 		Kernel:          e.k.Kernel(),
 		Store:           e.st,
+		MountsDirs:      dra.MountsDirs(e.rules()...),
 		PoolDriver:      device.PoolDriverName,
 		PoolDataDir:     e.poolDir,
 		LocalDir:        e.dir,
@@ -203,25 +211,39 @@ func (e *localTestEnv) start() *nodeState {
 		}
 		return nil
 	})
-	local := newLocalDevices(e.devices, e.st, e.k.Kernel(), e.k.BootID(), e.config.manageMemdevs())
+	if e.config.manageMemdevs() {
+		if _, err := e.k.Kernel().BlockSize(); err != nil {
+			klog.Warningf("local: memory block size: %v: local memory devices are not published until the memory block size is known", err)
+		}
+	}
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
 	noErr(t, err)
-	e.s = &nodeState{
-		baseState: &baseState{
-			CdiCache: cache,
-			Prepared: claimPreparations{},
-			NodeName: testNode,
-		},
-		config:         e.config,
-		preparedClaims: PreparedClaimsInfo{},
-		podClaims:      map[string]map[string]bool{},
-		unrestored:     map[string]error{},
-		local:          local,
-		lending:        newCompanionLender(device.DriverName),
-		locks:          &nodeLocks{},
-	}
-	e.devices.setLender(state.SourceLocal, e.s.lending)
-	noErr(t, e.s.restore(e.rec))
+	e.cdi = cache
+	e.publisher, err = dra.NewPublisher(dra.PublishOptions{
+		Config:    e.config.publishConfig(),
+		NodeName:  testNode,
+		Scan:      func() (*nricxl.Devices, error) { return e.detected(), nil },
+		Store:     e.st,
+		Probes:    e.devices.Probes,
+		BlockSize: e.k.Kernel().BlockSize,
+	})
+	noErr(t, err)
+	e.s, err = dra.New(dra.Options{
+		Rules:     e.rules()[0],
+		Store:     e.st,
+		Engine:    e.devices.Engine,
+		NodeName:  testNode,
+		BootID:    e.k.BootID(),
+		DevRoot:   e.k.DevRoot(),
+		CDI:       cache,
+		Local:     e.config.localConfig(),
+		OnShared:  e.devices.addShared,
+		Publisher: e.publisher,
+	})
+	noErr(t, err)
+	e.devices.setLender(state.SourceLocal, e.s.Lender())
+	e.s.Recovered(e.rec, "")
+	noErr(t, e.s.WriteCDI())
 	e.rescan()
 	e.check("started")
 	return e.s
@@ -229,48 +251,61 @@ func (e *localTestEnv) start() *nodeState {
 
 // restart stops the driver and starts it again on the same kernel and
 // files.
-func (e *localTestEnv) restart() *nodeState {
+func (e *localTestEnv) restart() *dra.Plugin {
 	e.t.Helper()
 	return e.start()
 }
 
 // reboot reboots the node: nothing of the kernel objects of the drivers is
 // left, the memdevs stay; the driver is started again.
-func (e *localTestEnv) reboot() *nodeState {
+func (e *localTestEnv) reboot() *dra.Plugin {
 	e.t.Helper()
 	e.k.Reboot()
 	return e.start()
 }
 
-// rescan publishes the local memdevs as rescanAndPublish does.
-func (e *localTestEnv) rescan() {
-	e.t.Helper()
+// detected returns the devices that a scan of the node finds: the local
+// memdevs that the publisher sees and the extra regions.
+func (e *localTestEnv) detected() *nricxl.Devices {
 	detected := &nricxl.Devices{RegionDevices: e.extra}
 	for _, serial := range slices.Sorted(maps.Keys(e.memdevs)) {
 		detected.MemoryDevices = append(detected.MemoryDevices, e.memdevs[serial])
 	}
-	devs, err := buildDevInfos(e.config, detected, e.poolSerials, e.s.local.Snapshot())
-	noErr(e.t, err)
-	e.s.Lock()
-	e.s.Allocatable = devs
-	e.s.Unlock()
+	return detected
+}
+
+// rescan publishes the local memdevs as a scan of the publisher does.
+func (e *localTestEnv) rescan() {
+	e.t.Helper()
+	cfg := e.config.publishConfig()
+	e.publisher = e.publisherOf(cfg)
+	noErr(e.t, e.publisher.ScanWith(context.Background(), cfg, e.poolSerials))
+}
+
+// publisherOf returns the publisher of the env with the configuration cfg
+// (the configuration of the env may have changed since the start).
+func (e *localTestEnv) publisherOf(cfg dra.PublishConfig) *dra.Publisher {
+	e.publisher.SetConfig(cfg)
+	return e.publisher
 }
 
 // prepare prepares a claim on the node state, as the kubelet plugin does,
 // and checks the invariants after it.
 func (e *localTestEnv) prepare(claim *resourcev1.ResourceClaim) error {
 	e.t.Helper()
-	err := e.s.Prepare(context.Background(), claim)
+	res, err := e.s.PrepareResourceClaims(context.Background(), []*resourcev1.ResourceClaim{claim})
+	noErr(e.t, err)
 	e.check("prepared " + string(claim.UID))
-	return err
+	return res[claim.UID].Err
 }
 
 // unprepare unprepares the claim uid and checks the invariants after it.
 func (e *localTestEnv) unprepare(uid string) error {
 	e.t.Helper()
-	err := e.s.Unprepare(context.Background(), uid)
+	res, err := e.s.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
+	noErr(e.t, err)
 	e.check("unprepared " + uid)
-	return err
+	return res[types.UID(uid)]
 }
 
 // mustPrepare prepares a claim, failing the test on an error.
@@ -367,7 +402,60 @@ func (e *localTestEnv) localDevice(serial uint64) *localDevice {
 
 // inUse tells whether the engine has a record of the local memdev.
 func (e *localTestEnv) inUse() bool {
-	return e.s.local.Snapshot().uses(localSerial)
+	return e.localSnapshot().InUse(localSerial)
+}
+
+// rules returns the rules of cxl.nri.io and of the pool driver of the env.
+func (e *localTestEnv) rules() []dra.SourceRules {
+	return []dra.SourceRules{
+		dra.LocalRules(filepath.Join(e.dir, mountsDirName)),
+		dra.PoolRules(device.PoolDriverName, filepath.Join(e.poolDir, mountsDirName), filepath.Join(e.poolDir, poolPreparingFileName)),
+	}
+}
+
+// allocatable returns the devices of the last scan of the node.
+func (e *localTestEnv) allocatable() (device.DevicesInfo, error) {
+	return e.publisher.Devices(), nil
+}
+
+// unmanaged makes cxl.nri.io a driver that does not manage local memdevs,
+// on the same store, engine and publisher.
+func (e *localTestEnv) unmanaged() {
+	e.t.Helper()
+	local := e.config.localConfig()
+	local.Managed = false
+	p, err := dra.New(dra.Options{
+		Rules:     e.rules()[0],
+		Store:     e.st,
+		Engine:    e.devices.Engine,
+		NodeName:  testNode,
+		BootID:    e.k.BootID(),
+		DevRoot:   e.k.DevRoot(),
+		Local:     local,
+		OnShared:  e.devices.addShared,
+		Publisher: e.publisher,
+	})
+	noErr(e.t, err)
+	p.SetCDI(e.cdi)
+	e.s = p
+	e.devices.setLender(state.SourceLocal, e.s.Lender())
+}
+
+// localSnapshot returns the uses of the local memdevs as the publisher sees
+// them.
+func (e *localTestEnv) localSnapshot() *dra.LocalSnapshot {
+	return e.publisher.LocalSnapshot()
+}
+
+// preparedMap returns the PrepareResults of the prepared claims of
+// cxl.nri.io as preparedClaims.json has them.
+func (e *localTestEnv) preparedMap() claimPreparations {
+	e.t.Helper()
+	data, err := e.st.View(store.ViewPreparedClaims)
+	noErr(e.t, err)
+	out := claimPreparations{}
+	noErr(e.t, json.Unmarshal(data, &out))
+	return out
 }
 
 // cdiSpec returns the CDI spec of the claims on disk, nil if there is
@@ -398,7 +486,7 @@ func (e *localTestEnv) wantCDIDevice(name string, env []string, nodes []*cdiSpec
 // wantDeviceInfo checks the info of the first device of a prepared claim.
 func (e *localTestEnv) wantDeviceInfo(uid string, want PreparedDeviceInfo) {
 	e.t.Helper()
-	info := e.s.GetClaimInfo(uid)
+	info := e.s.ClaimInfo(uid)
 	if info == nil || len(info.Devices) == 0 || !reflect.DeepEqual(info.Devices[0], want) {
 		e.t.Fatalf("claim %s: device info\n%+v\nexpected\n%+v", uid, info, want)
 	}

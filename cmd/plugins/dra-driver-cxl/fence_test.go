@@ -32,6 +32,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	cxlapi "github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -156,8 +157,8 @@ func (e *ltEnv) trackedMems(id string) string {
 // fenceClaims is a node state with prepared claims: DRAM, a dax slice, a
 // numa slice of a local memdev and a region, and DRAM and a numa slice
 // that opt in to steering.
-func fenceClaims() *nodeState {
-	return &nodeState{baseState: &baseState{}, preparedClaims: PreparedClaimsInfo{
+func fenceClaims() claimTable {
+	return claimTable{
 		"dram-auto": {ClaimName: "ns/dram-auto", Devices: []PreparedDeviceInfo{
 			{DeviceType: device.DeviceTypeDRAM, Mode: cxlapi.ModeNUMA, NUMANodes: []int{0}, ConsumedBytes: 1 << 30, ResultSettings: optIn(config.PolicyAuto)},
 		}},
@@ -176,7 +177,7 @@ func fenceClaims() *nodeState {
 		"region": {ClaimName: "ns/region", Devices: []PreparedDeviceInfo{
 			{DeviceType: device.DeviceTypeRegion, Mode: cxlapi.ModeNUMA, NUMANodes: []int{4}, ConsumedBytes: 1 << 30},
 		}},
-	}}
+	}
 }
 
 func TestFenceNodes(t *testing.T) {
@@ -208,19 +209,6 @@ func TestFenceNodes(t *testing.T) {
 	f.Fence(ctx, 5)
 	if got := r.taken(); len(got) != 0 || f.Nodes().String() != "2-3,5" {
 		t.Fatalf("passes %v, nodes %s", got, f.Nodes())
-	}
-}
-
-func TestFencePreparedNodes(t *testing.T) {
-	pool := &poolDriver{results: map[string][]poolResult{
-		"p1": {{Mode: cxlapi.ModeNUMA, Node: 3}},
-		"p2": {{Mode: cxlapi.ModeNUMA, Node: 3}, {Index: 1, Mode: cxlapi.ModeNUMA, Node: 6}, {Index: 2, Mode: cxlapi.ModeDax, Node: -1}},
-	}}
-	if got := preparedNodes(fenceClaims(), pool).String(); got != "2-3,6" {
-		t.Fatalf("prepared nodes %s, expected 2-3,6", got)
-	}
-	if got := preparedNodes(nil, nil); !got.IsEmpty() {
-		t.Fatalf("prepared nodes %s of nothing", got)
 	}
 }
 
@@ -258,7 +246,7 @@ func TestFenceWantMems(t *testing.T) {
 
 func TestFenceCreateContainer(t *testing.T) {
 	e := newFenceEnv(t, "0-2")
-	e.p.state = fenceClaims()
+	e.p.claims = fenceClaims()
 	e.p.poolResults = func(uid string) []poolResult {
 		return map[string][]poolResult{"pool": {{Mode: cxlapi.ModeNUMA, Node: 3, Size: 1 << 30}}}[uid]
 	}
@@ -321,7 +309,7 @@ func TestFenceCreateContainer(t *testing.T) {
 
 func TestFencePass(t *testing.T) {
 	e := newFenceEnv(t, "0-2", 2)
-	e.p.state = fenceClaims()
+	e.p.claims = fenceClaims()
 	ctx := context.Background()
 	p1, p2 := ltPod("u1"), ltPod("u2")
 	e.proc(101, "kubepods/u1/c1", "0-2", "")
@@ -499,19 +487,19 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 	if got := p.ClaimResults("u1"); len(got) != 1 || got[0].Node != 2 || got[0].Mode != cxlapi.ModeNUMA || got[0].Index != 0 || got[0].Size != 256<<20 {
 		t.Fatalf("claim results %+v", got)
 	}
-	if got := p.numaNodes(); !reflect.DeepEqual(got, []int{2}) {
+	if got := poolNumaNodes(p); !reflect.DeepEqual(got, []int{2}) {
 		t.Fatalf("numa nodes %v", got)
 	}
 	p = e.driver(t)
-	if got := preparedNodes(nil, p).String(); got != "2" {
+	if got := cpuset.New(poolNumaNodes(p)...).String(); got != "2" {
 		t.Fatalf("prepared nodes after a restart %s", got)
 	}
 	noErr(t, unprepare(t, p, "u1"))
 	if got := p.ClaimResults("u1"); got != nil {
 		t.Fatalf("claim results %v after unprepare", got)
 	}
-	var none *poolDriver
-	if none.ClaimResults("u1") != nil || none.numaNodes() != nil {
+	var none *dra.Plugin
+	if none.ClaimResults("u1") != nil || poolNumaNodes(none) != nil {
 		t.Fatal("nodes of a disabled pool driver")
 	}
 
@@ -523,8 +511,8 @@ func TestFencePoolBeforeOnline(t *testing.T) {
 	p2 := e2.driver(t)
 	claim := withConfig(poolClaim("u2", "c2", "pooled0", exclusiveData), resourceapi.AllocationConfigSourceClaim, nil, daxConfig)
 	noErr(t, prepare(t, p2, claim).Err)
-	if got := r2.taken(); len(got) != 0 || p2.numaNodes() != nil {
-		t.Fatalf("dax device fenced: %v, numa nodes %v", got, p2.numaNodes())
+	if got := r2.taken(); len(got) != 0 || poolNumaNodes(p2) != nil {
+		t.Fatalf("dax device fenced: %v, numa nodes %v", got, poolNumaNodes(p2))
 	}
 }
 
@@ -743,7 +731,7 @@ func TestLendRestartedRequester(t *testing.T) {
 	e.expectUpdates()
 
 	// steered: not lent to at its creation
-	e.p.state = fenceClaims()
+	e.p.claims = fenceClaims()
 	sp := ltPod("u2")
 	leases.set("u2", "main", 2, "l3")
 	if got := e.createMems(sp, withClaims(ltCtr(sp, "c4", "main", 0), "numa-auto")); got != "-" {

@@ -25,6 +25,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -33,6 +34,18 @@ import (
 )
 
 const (
+	// defaultPoolPrepareTimeout is how long a Prepare of the pool driver
+	// waits for the memdev to appear.
+	defaultPoolPrepareTimeout = 30 * time.Second
+	// defaultMemdevProbeGrace is how long a Prepare of the pool driver
+	// waits for the driver of a memdev that is already present. A memdev
+	// disabled by an earlier release is enabled again when its region is
+	// made.
+	defaultMemdevProbeGrace = 2 * time.Second
+	// defaultRegionRetryDelay is the pause before the one retry of a
+	// region creation that failed right after hotplug ("add_dev()
+	// failed").
+	defaultRegionRetryDelay = 3 * time.Second
 	// mountsDirName is the directory of the node mounts of mode fs in the
 	// plugin data directory of a driver.
 	mountsDirName = "mounts"
@@ -57,6 +70,10 @@ type deviceConfig struct {
 	// manages no local memdevs; LeaseFsRoot the directory of the lease-fs
 	// directories of the lease claims, "" for none.
 	LocalDir, LeaseFsRoot string
+	// MountsDirs are the directories of the node mounts of mode fs of the
+	// sources (dra.MountsDirs of the drivers' rules); one for each source
+	// of the engine.
+	MountsDirs map[state.Source]string
 	// FsTypes are the filesystem types that mode fs mounts; Filesystems
 	// the list of the filesystem types of the kernel, "" for
 	// /proc/filesystems.
@@ -97,7 +114,7 @@ type deviceEngine struct {
 	// and those that a claim used shared since the start.
 	shared map[state.Serial]bool
 	// lenders lend the memory of the companion claims of each source.
-	lenders map[state.Source]*companionLender
+	lenders map[state.Source]*dra.Lender
 }
 
 // newDeviceEngine returns the device engine of the sources of cfg: the
@@ -120,7 +137,7 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 		st:      cfg.Store,
 		drivers: map[state.Source]string{},
 		shared:  map[state.Serial]bool{},
-		lenders: map[state.Source]*companionLender{},
+		lenders: map[state.Source]*dra.Lender{},
 	}
 	opts := engine.Options{
 		Kernel:          cfg.Kernel,
@@ -141,20 +158,25 @@ func newDeviceEngine(cfg deviceConfig) (*deviceEngine, error) {
 	if cfg.PoolDriver != "" {
 		d.drivers[state.SourcePool] = cfg.PoolDriver
 		opts.Sources = append(opts.Sources, state.SourcePool)
-		opts.MountsDirs[state.SourcePool] = filepath.Join(cfg.PoolDataDir, mountsDirName)
+		opts.MountsDirs[state.SourcePool] = cfg.MountsDirs[state.SourcePool]
 		opts.Records[state.SourcePool] = filepath.Join(cfg.PoolDataDir, poolPreparingFileName)
 	}
 	if cfg.LocalDir != "" {
 		// the lines of the local memdevs that the local allocator logged
 		d.drivers[state.SourceLocal] = device.DriverName
 		opts.Sources = append(opts.Sources, state.SourceLocal)
-		opts.MountsDirs[state.SourceLocal] = filepath.Join(cfg.LocalDir, mountsDirName)
+		opts.MountsDirs[state.SourceLocal] = cfg.MountsDirs[state.SourceLocal]
 		opts.Records[state.SourceLocal] = filepath.Join(cfg.LocalDir, localStateFileName)
 		opts.ProbesFile = filepath.Join(cfg.LocalDir, localProbesFileName)
 	}
 	if opts.Sources == nil {
 		// no source: an engine that owns nothing
 		opts.Sources = []state.Source{}
+	}
+	for _, src := range opts.Sources {
+		if opts.MountsDirs[src] == "" {
+			return nil, fmt.Errorf("no directory of the node mounts of the %s source", src)
+		}
 	}
 	if cfg.Fence != nil {
 		fence := cfg.Fence
@@ -247,7 +269,7 @@ func (d *deviceEngine) isShared(serial state.Serial) bool {
 }
 
 // setLender sets the lender of the companion claims of the source.
-func (d *deviceEngine) setLender(source state.Source, lender *companionLender) {
+func (d *deviceEngine) setLender(source state.Source, lender *dra.Lender) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.lenders[source] = lender
@@ -267,9 +289,5 @@ func (d *deviceEngine) revoke(ctx context.Context, ref state.GrantRef, lend stat
 	d.mu.Lock()
 	lender := d.lenders[source]
 	d.mu.Unlock()
-	rec := &lendRecord{Lease: lend.Lease, Pod: podRef(lend.Pod), Container: lend.Container}
-	if lend.NumaNode != nil {
-		rec.Nodes = []int{*lend.NumaNode}
-	}
-	return lender.revoke(ctx, rec, claimName)
+	return lender.RevokeGrant(ctx, lend, claimName)
 }

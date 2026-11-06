@@ -205,11 +205,11 @@ func (o *localViewOracle) slice(request, region, mode string, readOnly bool, d k
 func (o *localViewOracle) info(claim *resourcev1.ResourceClaim, n int, serial uint64, s *localSlice) PreparedDeviceInfo {
 	o.e.t.Helper()
 	r := claim.Status.Allocation.Devices.Results[n]
-	res, err := resolveResults(claim, device.DriverName, func(r *resourcev1.DeviceRequestAllocationResult) bool { return r.Driver == device.DriverName })
+	res, err := config.Resolve(claim, device.DriverName, r.Request)
 	noErr(o.e.t, err)
 	d := PreparedDeviceInfo{RequestName: r.Request, DeviceName: r.Device, Result: n, DeviceType: device.DeviceTypeMemdev, Mode: s.Mode,
 		SysfsPath: o.e.k.P("bus/cxl/devices/" + s.Region), NodeAffinities: []int{0}, TotalBytes: s.Size, ConsumedBytes: int64(s.Size),
-		Serial: api.FormatSerial(serial), ResultSettings: res[n].Settings()}
+		Serial: api.FormatSerial(serial), ResultSettings: res.Settings()}
 	switch s.Mode {
 	case api.ModeNUMA:
 		d.NUMANodes = []int{o.node(s.Region)}
@@ -256,7 +256,7 @@ func TestLocalViewOfEngineRecords(t *testing.T) {
 	e.shared[sharedSerial], e.shared[idleSerial] = true, true
 	e.config.FsTypes = slices.Clone(config.KnownFsTypes)
 	e.start()
-	e.s.lending.set(newFakeLender(), &fakeHooks{})
+	e.s.Lender().Set(newFakeLender(), &fakeHooks{})
 	steering := `{"apiVersion":"cxl.nri.io/v1alpha1","kind":"MemoryConfig","container":{"steering":{"policy":"first-dram","maxStep":"1Gi"}}}`
 	two := localClaim("b1", 256*mib)
 	pmemResult := memdevClaim("b1", memdevDeviceName(fsSerial), -1).Status.Allocation.Devices.Results[0]
@@ -301,7 +301,9 @@ func TestLocalViewOfEngineRecords(t *testing.T) {
 	}
 	// a creation of the region cut by a process stop
 	e.k.CutAfter("cxl create-region")
-	if !e.cut(func() { _ = e.s.Prepare(context.Background(), memdevClaim("c1", memdevDeviceName(cutSerial), 128*mib)) }) {
+	if !e.cut(func() {
+		_ = prepareOn(context.Background(), e.s, memdevClaim("c1", memdevDeviceName(cutSerial), 128*mib))
+	}) {
 		t.Fatal("the Prepare of c1 was not cut")
 	}
 
@@ -393,7 +395,7 @@ func TestLocalViewOfEngineRecords(t *testing.T) {
 
 	// the cut claim is released at the start, the others are unprepared
 	e.restart()
-	e.s.lending.set(newFakeLender(), &fakeHooks{})
+	e.s.Lender().Set(newFakeLender(), &fakeHooks{})
 	for _, uid := range append(order, "k1", "c1") {
 		e.mustUnprepare(uid)
 	}

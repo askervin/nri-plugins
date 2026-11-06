@@ -38,7 +38,9 @@ import (
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/engine"
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/provenance"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -138,7 +140,7 @@ func (e *poolTestEnv) formatPmem(memdev string, types ...string) string {
 // driver returns a new pool driver on the env's store, as after a restart
 // (the store opened again, the engine's recovery), without a kubelet
 // plugin. A driver returned before must not be used after.
-func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
+func (e *poolTestEnv) driver(t *testing.T) *dra.Plugin {
 	t.Helper()
 	noErr(t, os.MkdirAll(e.cdiDir, 0o755))
 	cache, err := cdiapi.NewCache(cdiapi.WithSpecDirs(e.cdiDir), cdiapi.WithAutoRefresh(false))
@@ -146,12 +148,14 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 	if e.st != nil {
 		_ = e.st.Close()
 	}
+	rules := dra.PoolRules(device.PoolDriverName, filepath.Join(e.dir, mountsDirName), filepath.Join(e.dir, poolPreparingFileName))
 	e.st, err = store.Open(context.Background(), store.Options{Dir: e.dir, PoolDir: e.dir, PoolDriver: device.PoolDriverName,
-		BootID: e.k.BootID(), CompatViews: true, DropOtherBoot: func(driver string) bool { return driver == device.DriverName }})
+		BootID: e.k.BootID(), CompatViews: true, DropOtherBoot: dra.DropOtherBoot(rules)})
 	noErr(t, err)
 	devices, err := newDeviceEngine(deviceConfig{
 		Kernel:        e.k.Kernel(),
 		Store:         e.st,
+		MountsDirs:    dra.MountsDirs(rules),
 		PoolDriver:    device.PoolDriverName,
 		PoolDataDir:   e.dir,
 		LeaseFsRoot:   e.leaseFsRoot,
@@ -165,21 +169,20 @@ func (e *poolTestEnv) driver(t *testing.T) *poolDriver {
 		OfflineSettle: 20 * time.Millisecond,
 	})
 	noErr(t, err)
-	p, err := newPoolDriver(poolConfig{
-		Name:    device.PoolDriverName,
-		Devices: devices,
+	p, err := dra.New(dra.Options{
+		Rules:   rules,
 		Store:   e.st,
-		DataDir: e.dir,
+		Engine:  devices.Engine,
 		BootID:  e.k.BootID(),
-		FsTypes: config.KnownFsTypes,
-		Fence:   e.fence,
+		DevRoot: e.k.DevRoot(),
+		CDI:     cache,
 	})
 	noErr(t, err)
+	devices.setLender(state.SourcePool, p.Lender())
 	rec, err := devices.recover(context.Background())
 	noErr(t, err)
-	p.recovered(rec)
-	p.cdi = cache
-	noErr(t, p.writeCDISpec(""))
+	p.Recovered(rec, filepath.Join(e.dir, poolStateFileName))
+	noErr(t, p.WriteCDI())
 	checkPool(t, p, "started")
 	return p
 }
@@ -197,13 +200,13 @@ func (e *poolTestEnv) preparation(uid string) *state.Preparation {
 
 // device returns the device of the result n of the claim uid as the view
 // gives it, failing the test without one.
-func (e *poolTestEnv) device(p *poolDriver, uid string, n int) preparedPoolDevice {
+func (e *poolTestEnv) device(p *dra.Plugin, uid string, n int) preparedPoolDevice {
 	e.t.Helper()
 	prep := e.preparation(uid)
 	if prep == nil {
 		e.t.Fatalf("claim %s has no record", uid)
 	}
-	for _, d := range p.devicesOf(prep) {
+	for _, d := range p.PoolDevices(uid) {
 		if d.Result == n {
 			return d
 		}
@@ -253,7 +256,7 @@ func (e *poolTestEnv) wantCDIDevice(t *testing.T, name string, env []string) *cd
 
 // wantClean checks that nothing is prepared: no CDI spec, no serials, no
 // record of the pool driver in the store, no region in the kernel.
-func (e *poolTestEnv) wantClean(t *testing.T, p *poolDriver) {
+func (e *poolTestEnv) wantClean(t *testing.T, p *dra.Plugin) {
 	t.Helper()
 	r := e.records()
 	var left []string
@@ -299,7 +302,7 @@ func (e *poolTestEnv) preparingFile(t *testing.T) map[string]*preparingPoolClaim
 
 // wantNoClaims checks that the pool driver has no claim: no CDI spec, no
 // preparation and no grant.
-func (e *poolTestEnv) wantNoClaims(t *testing.T, p *poolDriver) {
+func (e *poolTestEnv) wantNoClaims(t *testing.T, p *dra.Plugin) {
 	t.Helper()
 	r := e.records()
 	if e.cdiSpec(t) != nil || len(r.Grants) > 0 || slices.ContainsFunc(r.Preparations, func(x state.Preparation) bool { return x.Driver == device.PoolDriverName }) {
@@ -345,7 +348,7 @@ func (e *poolTestEnv) onlineBlocks(region string) int {
 // a pool device with the status data: of a shared device all of its
 // shares (exclusive) or one, nil otherwise.
 func poolConsumed(data string) map[resourceapi.QualifiedName]resource.Quantity {
-	d, err := parsePoolDeviceData([]byte(data))
+	d, err := provenance.ParseDeviceData([]byte(data))
 	switch {
 	case err != nil || !d.Shared:
 		return nil
@@ -393,7 +396,7 @@ func addPoolDevice(c *resourceapi.ResourceClaim, req, dev, data string) *resourc
 	return c
 }
 
-func prepare(t *testing.T, p *poolDriver, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
+func prepare(t *testing.T, p *dra.Plugin, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
 	t.Helper()
 	res, err := p.PrepareResourceClaims(context.Background(), []*resourceapi.ResourceClaim{claim})
 	if err != nil {
@@ -403,7 +406,7 @@ func prepare(t *testing.T, p *poolDriver, claim *resourceapi.ResourceClaim) kube
 	return res[claim.UID]
 }
 
-func unprepare(t *testing.T, p *poolDriver, uid string) error {
+func unprepare(t *testing.T, p *dra.Plugin, uid string) error {
 	t.Helper()
 	res, err := p.UnprepareResourceClaims(context.Background(), []kubeletplugin.NamespacedObject{{UID: types.UID(uid)}})
 	if err != nil {
@@ -417,14 +420,14 @@ func unprepare(t *testing.T, p *poolDriver, uid string) error {
 // of the pool driver and the kernel now: the document's (state.Check) and
 // the engine's; and on a change of a kernel object that no row of its
 // table has since the last check.
-func checkPool(t *testing.T, p *poolDriver, what string) {
+func checkPool(t *testing.T, p *dra.Plugin, what string) {
 	t.Helper()
-	snap, err := p.engine.Observe(context.Background())
+	snap, err := p.Engine().Observe(context.Background())
 	noErr(t, err)
-	for _, v := range p.engine.Check(snap, []state.Source{state.SourcePool}, nil) {
+	for _, v := range p.Engine().Check(snap, []state.Source{state.SourcePool}, nil) {
 		t.Errorf("%s: %s", what, v)
 	}
-	for _, line := range p.engine.UnknownSeen() {
+	for _, line := range p.Engine().UnknownSeen() {
 		t.Errorf("%s: %s%s", what, engine.UnknownTransition, line)
 	}
 }
@@ -449,7 +452,7 @@ var errCut = fake.ErrCut
 // cutPrepare runs a Prepare of the claim that the process does not finish:
 // it stops (panics with fake.ErrCut) at a cut point of the fake. The test
 // then starts the driver again on the same store and kernel.
-func cutPrepare(t *testing.T, p *poolDriver, claim *resourceapi.ResourceClaim) {
+func cutPrepare(t *testing.T, p *dra.Plugin, claim *resourceapi.ResourceClaim) {
 	t.Helper()
 	defer func() {
 		r := recover()
@@ -489,7 +492,7 @@ func (e *poolTestEnv) mounted(target string) *mountInfo {
 
 // wantNoMounts fails the test when a node mount or a lease bind of the
 // pool driver is mounted.
-func (e *poolTestEnv) wantNoMounts(t *testing.T, p *poolDriver) {
+func (e *poolTestEnv) wantNoMounts(t *testing.T, p *dra.Plugin) {
 	t.Helper()
 	ms, err := e.mounts()
 	noErr(t, err)

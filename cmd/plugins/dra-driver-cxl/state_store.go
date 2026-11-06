@@ -59,6 +59,9 @@ type stateStoreConfig struct {
 	// SysRoot and DevRoot are the sysfs mount point and the directory of
 	// the device nodes of the memdevs.
 	SysRoot, DevRoot string
+	// DropOtherBoot is store.Options.DropOtherBoot: the drivers whose
+	// preparations of another boot the load drops (dra.DropOtherBoot).
+	DropOtherBoot func(driver string) bool
 }
 
 // openStateStore opens the store of the state files and registers them.
@@ -78,7 +81,7 @@ func openStateStore(ctx context.Context, cfg stateStoreConfig) (*stateStore, fun
 			_, err := os.Stat(filepath.Join(sysRoot, "bus", "cxl", "devices", name))
 			return err == nil
 		},
-		DropOtherBoot: func(driver string) bool { return driver == device.DriverName },
+		DropOtherBoot: cfg.DropOtherBoot,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -133,7 +136,10 @@ func (s *stateStore) readState(path string) ([]byte, error) {
 	case poolPreparingFileName:
 		return preparingContent(s.st.Snapshot(), s.st.ViewOptions())
 	case poolSerialsFileName:
-		return serialsContent(s.st.Snapshot())
+		if serialsFileContent == nil {
+			return nil, notExist(path)
+		}
+		return serialsFileContent(s.st.Snapshot())
 	case steeredFileName:
 		s.mu.Lock()
 		written := s.steered
@@ -200,6 +206,15 @@ func jsonSame(a, b []byte) bool {
 // in the driver: only the tests write those files (state_local_test.go).
 var putLocalContent func(doc *store.Document, opts store.ViewOptions, name string, data, preparedData []byte) error
 
+// serialsFileContent and putSerialsFileContent read and replace the
+// provenance records of the serials in a document as the content of
+// poolSerials.json, nil in the driver: only the tests read and write that
+// file (state_serials_test.go).
+var (
+	serialsFileContent    func(doc *store.Document) ([]byte, error)
+	putSerialsFileContent func(doc *store.Document, data []byte) error
+)
+
 // putContent replaces the records of the owner of the state file name in
 // doc with those of its content data; prepared is the content of
 // preparedClaims.json written with preparedClaimsInfo.json, nil for that
@@ -219,12 +234,9 @@ func putContent(doc *store.Document, opts store.ViewOptions, name string, data, 
 		}
 		return putLeases(doc, &ls)
 	case poolSerialsFileName:
-		var f poolSerialsFile
-		if err := json.Unmarshal(data, &f); err != nil {
-			return err
+		if putSerialsFileContent != nil {
+			return putSerialsFileContent(doc, data)
 		}
-		putSerials(doc, &f)
-		return nil
 	case steeredFileName:
 		ids := map[string]string{}
 		if err := json.Unmarshal(data, &ids); err != nil {

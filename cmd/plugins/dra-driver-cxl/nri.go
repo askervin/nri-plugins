@@ -224,9 +224,10 @@ type management struct {
 // the fenced containers off the fenced nodes (fence.go), and keeps the
 // table of containers that the lend primitives (lend.go) use.
 type nriPlugin struct {
-	stub  nriStub
-	state *nodeState
-	fence *nodeFence // nil: fencing none
+	stub nriStub
+	// claims has the prepared claims of cxl.nri.io.
+	claims preparedClaims
+	fence  *nodeFence // nil: fencing none
 	// defaults are the container settings of the driver configuration
 	// (defaults.container).
 	defaults config.Container
@@ -279,17 +280,18 @@ func (klogLogger) Errorf(format string, args ...any) { klog.Errorf(format, args.
 // startNRIPlugin creates and starts the NRI plugin. It connects to
 // the container runtime's NRI socket and begins listening for
 // container lifecycle events. The plugin manages containers with the
-// container settings defaults and those of their results, keeps containers
-// off the nodes of fence, gets the results of pool claims from pool, the
+// container settings defaults and those of their results (claims of
+// cxl.nri.io), keeps containers off the nodes of fence, gets the results
+// of pool claims from poolResults (nil: none), the
 // nodes of the leases of containers from leases (nil: none) and the nodes
 // with memory from the sysfs under sysfsRoot, and keeps its steering
 // record (steeredRecord) in the directory dataDir.
-func startNRIPlugin(ctx context.Context, state *nodeState, opts NRIOpts, defaults config.Container, fence *nodeFence, pool *poolDriver, leases leaseNodes, sysfsRoot, dataDir string) (*nriPlugin, error) {
+func startNRIPlugin(ctx context.Context, claims preparedClaims, opts NRIOpts, defaults config.Container, fence *nodeFence, poolResults func(uid string) []poolResult, leases leaseNodes, sysfsRoot, dataDir string) (*nriPlugin, error) {
 	p := &nriPlugin{
-		state:       state,
+		claims:      claims,
 		fence:       fence,
 		defaults:    defaults,
-		poolResults: pool.ClaimResults,
+		poolResults: poolResults,
 		leases:      leases,
 		hasMemory:   filepath.Join(sysfsRoot, "/", hasMemoryFile),
 		pending:     make(map[string]pendingSteering),
@@ -550,7 +552,7 @@ func (p *nriPlugin) defaultMemory() string {
 func (p *nriPlugin) containerResults(ctrName string, refs []resultRef) []containerResult {
 	var out []containerResult
 	for _, ref := range refs {
-		if claim, d, ok := p.state.preparedResult(ref.uid, ref.n); ok {
+		if claim, d, ok := p.preparedResult(ref.uid, ref.n); ok {
 			klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s (%s) result %d: name=%s type=%s mode=%s sysfs=%s numa=%v affinities=%v total=%s consumed=%s request=%s",
 				ctrName, ref.uid, claim, ref.n,
 				d.DeviceName, d.DeviceType, d.Mode, d.SysfsPath, d.NUMANodes, d.NodeAffinities,
@@ -577,6 +579,25 @@ func (p *nriPlugin) containerResults(ctrName string, refs []resultRef) []contain
 		klog.V(5).Infof("NRI CreateContainer: ctr=%s claim=%s result %d: not prepared (driver may have restarted)", ctrName, ref.uid, ref.n)
 	}
 	return out
+}
+
+// preparedClaims are the prepared claims of cxl.nri.io as the NRI plugin
+// reads them.
+type preparedClaims interface {
+	// PreparedResult returns the claim name and the prepared device of
+	// the allocation result n of a prepared claim, and false if there is
+	// none.
+	PreparedResult(uid string, n int) (string, PreparedDeviceInfo, bool)
+}
+
+// preparedResult returns the claim name and the prepared device of the
+// allocation result n of a prepared claim of cxl.nri.io, and false if
+// there is none.
+func (p *nriPlugin) preparedResult(uid string, n int) (string, PreparedDeviceInfo, bool) {
+	if p.claims == nil {
+		return "", PreparedDeviceInfo{}, false
+	}
+	return p.claims.PreparedResult(uid, n)
 }
 
 // poolResult returns the prepared pool allocation result of ref, and false
