@@ -164,7 +164,7 @@ func localPublished(e *localTestEnv) *device.Memdev {
 		devs.RegionDevices = append(devs.RegionDevices, &nricxl.RegionDevice{Name: r, Size: localRegionSize, Mode: "ram", Node: -1,
 			Memories: []*nricxl.MemoryDevice{memdev}})
 	}
-	infos, err := buildDevInfos(e.config, devs, e.poolSerials, e.s.local.Snapshot())
+	infos, err := buildDevInfos(e.config, devs, e.poolSerials, e.localSnapshot())
 	noErr(e.t, err)
 	if d := infos[localDeviceName]; d != nil {
 		m, _ := d.Dev.(*device.Memdev)
@@ -189,7 +189,7 @@ func prepareKeptSliced(t *testing.T, e *localTestEnv, claim *resourcev1.Resource
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	noErr(t, e.s.Prepare(ctx, claim))
+	noErr(t, prepareOn(ctx, e.s, claim))
 	e.check("prepared " + string(claim.UID))
 }
 
@@ -1028,10 +1028,10 @@ func TestUnprepareUnknownClaimDoesNotWait(t *testing.T) {
 		<-release
 	})
 	prepared := make(chan error, 1)
-	go func() { prepared <- e.s.Prepare(context.Background(), localClaim("u1", localBlockSize)) }()
+	go func() { prepared <- prepareOn(context.Background(), e.s, localClaim("u1", localBlockSize)) }()
 	<-entered
 	done := make(chan error, 1)
-	go func() { done <- e.s.Unprepare(context.Background(), "u2") }()
+	go func() { done <- unprepareOn(context.Background(), e.s, "u2") }()
 	select {
 	case err := <-done:
 		close(release)

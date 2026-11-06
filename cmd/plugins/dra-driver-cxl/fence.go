@@ -38,9 +38,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/cpuset"
 
-	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
-	"github.com/containers/nri-plugins/pkg/cxl/device"
 )
 
 // fenceApplier keeps the containers off the fenced nodes.
@@ -146,31 +144,6 @@ func (f *nodeFence) setNoNRI() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.noNRI = true
-}
-
-// preparedNodes returns the NUMA nodes on which claims of both drivers
-// have memory that the driver onlined: numa slices of local memdevs and
-// pool devices in mode numa of prepared claims, and of claims whose
-// Prepare did not finish (a numa companion kept at the start).
-func preparedNodes(state *nodeState, pool *poolDriver) cpuset.CPUSet {
-	nodes := cpuset.New(pool.numaNodes()...)
-	if state == nil || state.baseState == nil {
-		return nodes
-	}
-	nodes = nodes.Union(cpuset.New(nonNegative(state.local.unfinishedNodes())...))
-	state.Lock()
-	defer state.Unlock()
-	for _, info := range state.preparedClaims {
-		if info == nil {
-			continue
-		}
-		for _, d := range info.Devices {
-			if d.DeviceType == device.DeviceTypeMemdev && d.Mode == api.ModeNUMA {
-				nodes = nodes.Union(cpuset.New(nonNegative(d.NUMANodes)...))
-			}
-		}
-	}
-	return nodes
 }
 
 // nonNegative returns the nodes that are not negative.

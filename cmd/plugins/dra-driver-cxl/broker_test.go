@@ -43,8 +43,10 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
+	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 	"tags.cncf.io/container-device-interface/specs-go"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -605,7 +607,7 @@ func TestBrokerPoolNumaLease(t *testing.T) {
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
-	p.lender.set(e.lender, e.b)
+	p.Lender().Set(e.lender, e.b)
 
 	ch := e.async(api.Request{Op: "request", Source: "pool", Size: "256Mi", Wait: "5s", RequestID: "r1"})
 	name := "cxl-lease-000000a1"
@@ -805,7 +807,7 @@ func TestBrokerLendFailure(t *testing.T) {
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
-	p.lender.set(e.lender, e.b)
+	p.Lender().Set(e.lender, e.b)
 	e.lender.mu.Lock()
 	e.lender.lendErr = errSteered
 	e.lender.mu.Unlock()
@@ -1411,7 +1413,7 @@ func deviceConfigOf(t *testing.T, c *resourceapi.ResourceClaim, driver string) *
 type leaseFdEnv struct {
 	*brokerEnv
 	pe       *poolTestEnv
-	p        *poolDriver
+	p        *dra.Plugin
 	mu       sync.Mutex
 	readOnly []bool
 }
@@ -1422,7 +1424,7 @@ func newLeaseFdEnv(t *testing.T, serial string) *leaseFdEnv {
 	e := &leaseFdEnv{brokerEnv: newSlicesBrokerEnv(t), pe: pe, p: pe.driver(t)}
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
-	e.p.lender.set(e.lender, e.b)
+	e.p.Lender().Set(e.lender, e.b)
 	daxFile := filepath.Join(e.dir, "fake-dax")
 	noErr(t, os.WriteFile(daxFile, []byte("TAG"), 0o600))
 	e.b.openDevice = func(path string, readOnly bool) (*os.File, error) {
@@ -1885,8 +1887,8 @@ func newLocalLeaseEnv(t *testing.T) (*brokerEnv, *companionLender) {
 	e := newBrokerEnv(t)
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
-	lender := newCompanionLender(device.DriverName)
-	lender.set(e.lender, e.b)
+	lender := dra.NewLender(device.DriverName)
+	lender.Set(e.lender, e.b)
 	daxFile := filepath.Join(e.dir, "fake-dax")
 	noErr(t, os.WriteFile(daxFile, []byte("TAG"), 0o600))
 	e.b.openDevice = func(path string, readOnly bool) (*os.File, error) {
@@ -1939,15 +1941,15 @@ func TestBrokerLocalDaxLease(t *testing.T) {
 	if lres, err := config.Resolve(c, device.PoolDriverName, "lease/local"); err != nil || lres.Config.Compact() != "{}" {
 		t.Fatalf("pool MemoryConfig of the local subrequest %+v %v", lres, err)
 	}
-	rec, err := lender.check("000000a1", c)
+	rec, err := lender.Check("000000a1", c)
 	noErr(t, err)
 	devs := []lentDevice{{Driver: device.DriverName, Source: api.SourceLocal, Request: "lease/local", Device: localDeviceName,
 		Serial: 0xc100e2e1, Size: 64 << 20, Mode: api.ModeDax, ReadOnly: true, Node: -1, DaxDevice: "/dev/dax1.1"}}
-	noErr(t, lender.lend(context.Background(), rec, devs))
+	noErr(t, lender.Lend(context.Background(), rec, devs))
 	if len(rec.Nodes) != 0 {
 		t.Fatalf("dax slice lent as a node: %+v", rec)
 	}
-	lender.prepared("000000a1", devs)
+	lender.Prepared("000000a1", devs)
 	wantResponse(t, <-ch, api.Response{State: api.StateReady, Source: "local", Mode: "dax", ReadOnly: true,
 		Size: 64 << 20, Serial: "0xc100e2e1", Dax: "/dev/dax1.1", Env: map[string]string{
 			"CXL_C100E2E1_DAX": "/dev/dax1.1", "CXL_C100E2E1_MODE": "dax", "CXL_C100E2E1_READONLY": "1",
@@ -1962,11 +1964,11 @@ func TestBrokerLocalNumaLease(t *testing.T) {
 	e, lender := newLocalLeaseEnv(t)
 	resp, _ := e.call(api.Request{Op: "request", Size: "128Mi", Source: "local", Wait: "0s"})
 	wantResponse(t, resp, api.Response{State: api.StatePending, Source: "local", Mode: "numa", Size: 128 << 20})
-	rec, err := lender.check(resp.Lease, e.waitClaim(companionName(resp.Lease)))
+	rec, err := lender.Check(resp.Lease, e.waitClaim(companionName(resp.Lease)))
 	noErr(t, err)
 	devs := []lentDevice{{Driver: device.DriverName, Source: api.SourceLocal, Serial: 0xc100e2e2, Size: 128 << 20, Mode: api.ModeNUMA, Node: 2}}
-	noErr(t, lender.lend(context.Background(), rec, devs))
-	lender.prepared(resp.Lease, devs)
+	noErr(t, lender.Lend(context.Background(), rec, devs))
+	lender.Prepared(resp.Lease, devs)
 	e.waitState(resp.Lease, api.StateReady)
 	list, _ := e.call(api.Request{Op: "list"})
 	if list.Leases == nil || len(*list.Leases) != 1 {
@@ -2079,11 +2081,11 @@ func TestBrokerTwoLeasesOneNode(t *testing.T) {
 	var ids []string
 	for _, source := range []string{"local", "pool"} {
 		resp, _ := e.call(api.Request{Op: "request", Size: "64Mi", Source: source, Wait: "0s"})
-		rec, err := lender.check(resp.Lease, e.waitClaim(companionName(resp.Lease)))
+		rec, err := lender.Check(resp.Lease, e.waitClaim(companionName(resp.Lease)))
 		noErr(t, err)
 		devs := []lentDevice{{Source: source, Serial: 0xc100e2e1, Size: 64 << 20, Mode: api.ModeNUMA, Node: 2}}
-		noErr(t, lender.lend(context.Background(), rec, devs))
-		lender.prepared(resp.Lease, devs)
+		noErr(t, lender.Lend(context.Background(), rec, devs))
+		lender.Prepared(resp.Lease, devs)
 		e.waitState(resp.Lease, api.StateReady)
 		ids = append(ids, resp.Lease)
 	}
@@ -2104,7 +2106,7 @@ func TestBrokerTwoLeasesOneNode(t *testing.T) {
 	if rel.State != api.StateReleased {
 		t.Fatalf("release %+v", rel)
 	}
-	noErr(t, lender.revoke(context.Background(), &lendRecord{Lease: ids[0], Pod: pod, Container: testCtr, Nodes: []int{2}}, "ns/c"))
+	noErr(t, lender.Revoke(context.Background(), &lendRecord{Lease: ids[0], Pod: pod, Container: testCtr, Nodes: []int{2}}, "ns/c"))
 	if got := e.lender.holders(testPodUID, testCtr, 2); !slices.Equal(got, ids[1:]) {
 		t.Fatalf("holders after the first release: %v", got)
 	}
@@ -2137,7 +2139,7 @@ const fsLeaseData = `{"serial":"0xc1af0001","shared":true,"size":536870912,"pers
 type leaseFsEnv struct {
 	*brokerEnv
 	pe *poolTestEnv
-	p  *poolDriver
+	p  *dra.Plugin
 }
 
 func newLeaseFsEnv(t *testing.T) *leaseFsEnv {
@@ -2164,7 +2166,7 @@ func newLeaseFsEnv(t *testing.T) *leaseFsEnv {
 	})
 	noErr(t, e.b.OpenClaim(leaseClaimObj()))
 	e.start()
-	e.p.lender.set(e.lender, e.b)
+	e.p.Lender().Set(e.lender, e.b)
 	return e
 }
 
@@ -2276,7 +2278,7 @@ func TestBrokerFsLease(t *testing.T) {
 	// the store has the new fields after a restart
 	e.restart()
 	e.start()
-	e.p.lender.set(e.lender, e.b)
+	e.p.Lender().Set(e.lender, e.b)
 	if l := e.lease("000000a2"); l == nil || l.Mode != "fs" || l.Access != "cached" || l.Name != "models" || l.Path != "/run/cxl/fs/models" || !l.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
@@ -2543,7 +2545,7 @@ func TestBrokerFsLeaseCloseRace(t *testing.T) {
 	fsDir := filepath.Join(e.dir, "lease-fs", testLeaseClaimUID)
 	bind := filepath.Join(fsDir, "models")
 	closed := false
-	p.lender.set(e.lender, &closingHooks{broker: e.b, close: func() {
+	p.Lender().Set(e.lender, &closingHooks{broker: e.b, close: func() {
 		noErr(t, e.b.CloseClaim(context.Background(), testLeaseClaimUID))
 		_, err := os.Stat(fsDir)
 		closed = errors.Is(err, os.ErrNotExist)
@@ -2716,7 +2718,7 @@ func TestBrokerBlockLease(t *testing.T) {
 	// the store has the block device after a restart
 	e.restart()
 	e.start()
-	e.p.lender.set(e.lender, e.b)
+	e.p.Lender().Set(e.lender, e.b)
 	if l := e.lease("000000a1"); l == nil || l.Mode != "block" || l.Block != e.pe.pmem || l.ReadOnly {
 		t.Fatalf("lease after a restart %+v", l)
 	}
@@ -2727,7 +2729,7 @@ func TestBrokerBlockLease(t *testing.T) {
 	// a reader: one share, read-only; the namespace of the writer
 	e.restart()
 	e.start()
-	e.p.lender.set(e.lender, e.b)
+	e.p.Lender().Set(e.lender, e.b)
 	pmem := filepath.Join(e.dir, "fake-pmem")
 	e.b.openDevice = func(path string, readOnly bool) (*os.File, error) {
 		if path != e.pe.pmem || !readOnly {
@@ -2871,11 +2873,9 @@ func TestLeaseDevice(t *testing.T) {
 	n := newLocalTestEnv(t)
 	n.start()
 	s := n.s
-	s.Lock()
-	s.Allocatable = devs
-	s.Unlock()
+	n.publisher.SetDevices(devs)
 
-	r := s.GetResources()
+	r := n.publisher.Resources()
 	got := r.Pools[testNode].Slices[0].Devices
 	want := []resourceapi.Device{{
 		Name: "lease",
@@ -2889,24 +2889,28 @@ func TestLeaseDevice(t *testing.T) {
 	}
 
 	// lending disabled: Prepare fails
-	ctx := context.Background()
-	wantErr(t, s.Prepare(ctx, leaseClaimObj()), "claim demo/lease: lending to running containers is disabled (--leases=false)")
+	wantErr(t, n.prepare(leaseClaimObj()), "claim demo/lease: lending to running containers is disabled (--leases=false)")
 	if n.preparation(testLeaseClaimUID) != nil {
 		t.Fatalf("preparation of a refused claim %+v", n.preparation(testLeaseClaimUID))
 	}
 
 	// the lease claim records are the broker's, in the store of its
 	// directory
-	s.leases = e.b
-	noErr(t, s.Prepare(ctx, leaseClaimObj()))
-	res := s.Prepared[testLeaseClaimUID]
+	s.SetLeases(e.b)
+	noErr(t, n.prepare(leaseClaimObj()))
+	res := n.preparedMap()[testLeaseClaimUID]
 	if len(res.Devices) != 1 || !slices.Equal(res.Devices[0].CDIDeviceIDs, []string{"nri.io/cxl=claim-lc1-0", "nri.io/cxl=lease-lc1"}) {
 		t.Fatalf("prepared %+v", res.Devices)
 	}
-	if info := s.GetClaimInfo(testLeaseClaimUID); info == nil || info.Devices[0].DeviceType != "lease" || info.Devices[0].Mode != "" {
+	if info := s.ClaimInfo(testLeaseClaimUID); info == nil || info.Devices[0].DeviceType != "lease" || info.Devices[0].Mode != "" {
 		t.Fatalf("claim info %+v", info)
 	}
 	if _, err := os.Stat(e.sock()); err != nil {
 		t.Fatalf("no lease socket: %v", err)
 	}
+}
+
+// leaseCDIDeviceID is the qualified CDI device name of a lease claim.
+func leaseCDIDeviceID(claimUID string) string {
+	return cdiparser.QualifiedName(device.CDIVendor, device.CDIClass, leaseCDIDeviceName(claimUID))
 }

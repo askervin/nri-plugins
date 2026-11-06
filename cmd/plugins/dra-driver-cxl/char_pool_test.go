@@ -116,7 +116,7 @@ wait:
 		e := newPoolTestEnv(t)
 		e.timeout = d
 		p := e.driver(t)
-		if got := p.engine.Timeouts().Memdev; got != 30*time.Second {
+		if got := p.Engine().Timeouts().Memdev; got != 30*time.Second {
 			t.Fatalf("prepare timeout %v of the pool driver of timeout %v, expected 30s", got, d)
 		}
 	}

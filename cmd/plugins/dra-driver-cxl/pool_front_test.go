@@ -27,6 +27,7 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
 )
@@ -77,7 +78,7 @@ func (l *recordedLender) revokes() []bool {
 // cuts after cxl create-region, below a region that another memdev gets
 // then: the start keeps it (KEPT). It returns the driver and the region
 // above.
-func keptClaim(t *testing.T, e *poolTestEnv) (*poolDriver, string) {
+func keptClaim(t *testing.T, e *poolTestEnv) (*dra.Plugin, string) {
 	t.Helper()
 	e.plug(0xc1ee0001)
 	other := e.plug(0xc1ee0002)
@@ -165,11 +166,11 @@ func TestPoolRefusedPrepareAgain(t *testing.T) {
 	e.plug(0xc1ee0001)
 	p := e.driver(t)
 	hooks := &fakeHooks{}
-	p.lender.set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(testRef), hooks)
 	e.k.CutAfter("write devices/system/memory/memory")
 	cutPrepare(t, p, numaCompanion("l1"))
 	p = e.driver(t)
-	p.lender.set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(testRef), hooks)
 	uid := "uid-cxl-lease-l1"
 	before := e.commands()
 	// the companion gate refuses it (the lease went while the driver was
@@ -200,18 +201,18 @@ func TestPoolUnfinishedNodes(t *testing.T) {
 	e.k.CutAfter("write devices/system/memory/memory")
 	claim := numaCompanion("l1")
 	hooks := &fakeHooks{}
-	p.lender.set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(testRef), hooks)
 	cutPrepare(t, p, claim)
 	p = e.driver(t)
 	uid := "uid-cxl-lease-l1"
 	node := state.NumaNodeOf(e.records().Region("region0").NumaNode)
-	if node < 0 || !slices.Equal(p.numaNodes(), []int{node}) || p.ClaimResults(uid) != nil {
-		t.Fatalf("numa nodes %v (region on %d), results %v", p.numaNodes(), node, p.ClaimResults(uid))
+	if node < 0 || !slices.Equal(poolNumaNodes(p), []int{node}) || p.ClaimResults(uid) != nil {
+		t.Fatalf("numa nodes %v (region on %d), results %v", poolNumaNodes(p), node, p.ClaimResults(uid))
 	}
-	p.lender.set(newFakeLender(testRef), hooks)
+	p.Lender().Set(newFakeLender(testRef), hooks)
 	noErr(t, unprepare(t, p, uid))
-	if p.numaNodes() != nil {
-		t.Fatalf("numa nodes %v", p.numaNodes())
+	if poolNumaNodes(p) != nil {
+		t.Fatalf("numa nodes %v", poolNumaNodes(p))
 	}
 	e.wantClean(t, p)
 }
@@ -226,7 +227,7 @@ func TestPoolCompanionRevoke(t *testing.T) {
 	p := e.driver(t)
 	hooks := &fakeHooks{}
 	lender := &recordedLender{fakeLender: newFakeLender(testRef), e: e, region: "region0"}
-	p.lender.set(lender, hooks)
+	p.Lender().Set(lender, hooks)
 	uid := "uid-cxl-lease-l1"
 	noErr(t, prepare(t, p, numaCompanion("l1")).Err)
 	if !strings.Contains(lender.callLog(), "lend ") {
@@ -247,8 +248,8 @@ func TestPoolCompanionRevoke(t *testing.T) {
 	if prep := e.preparation(uid); prep == nil {
 		t.Fatal("the companion is gone")
 	}
-	p.lender.set(lender, hooks)
-	p.recoverCompanions()
+	p.Lender().Set(lender, hooks)
+	p.Engine().RecoverCompanions()
 	noErr(t, unprepare(t, p, uid))
 	if got := lender.revokes(); !slices.Equal(got, []bool{true, true}) {
 		t.Fatalf("revokes with the memory online: %v", got)
@@ -265,7 +266,7 @@ func TestPoolCompanionRollbackRevokes(t *testing.T) {
 	p := e.driver(t)
 	hooks := &fakeHooks{}
 	lender := &recordedLender{fakeLender: newFakeLender(testRef), e: e, region: "region1"}
-	p.lender.set(lender, hooks)
+	p.Lender().Set(lender, hooks)
 	// a claim with a CDI device, then a CDI directory that cannot be
 	// written
 	noErr(t, prepare(t, p, poolClaim("s1", "c-s1", "shared0", sharedData)).Err)
@@ -364,7 +365,7 @@ func TestPoolOtherBootCompanion(t *testing.T) {
 		p := e.driver(t)
 		hooks := &fakeHooks{}
 		lender := newFakeLender(testRef)
-		p.lender.set(lender, hooks)
+		p.Lender().Set(lender, hooks)
 		uid := "uid-cxl-lease-l1"
 		noErr(t, prepare(t, p, numaCompanion("l1")).Err)
 		e.k.Reboot()
@@ -372,7 +373,7 @@ func TestPoolOtherBootCompanion(t *testing.T) {
 		if prep := e.preparation(uid); prep == nil || prep.State != state.PreparationStale {
 			t.Fatalf("preparation %+v", prep)
 		}
-		p.lender.set(lender, &fakeHooks{lendingErr: errors.New("lease l1 is gone")})
+		p.Lender().Set(lender, &fakeHooks{lendingErr: errors.New("lease l1 is gone")})
 		wantErr(t, prepare(t, p, numaCompanion("l1")).Err, "lease l1 is gone")
 		if prep := e.preparation(uid); prep == nil || prep.State != state.PreparationStale {
 			t.Fatalf("preparation %+v", prep)

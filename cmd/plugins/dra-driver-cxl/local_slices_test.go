@@ -30,7 +30,9 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/dra"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
+	nricxl "github.com/containers/nri-plugins/pkg/cxl"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"github.com/containers/nri-plugins/pkg/cxl/kernel"
@@ -189,7 +191,7 @@ func TestLocalBlockSize(t *testing.T) {
 	e := newSliceTestEnv(t)
 	e.start()
 	// "8000000" is hex
-	if bs := e.s.local.Snapshot().BlockSize; bs != 134217728 {
+	if bs := e.localSnapshot().BlockSize; bs != 134217728 {
 		t.Fatalf("block size %d of %q", bs, e.k.Read("devices/system/memory/block_size_bytes"))
 	}
 	// 2 GiB blocks: a 128 MiB claim needs a 2 GiB slice
@@ -198,7 +200,7 @@ func TestLocalBlockSize(t *testing.T) {
 		t.Fatalf("expected no room, got %v", err)
 	}
 	e.wantRegionReleased("region0")
-	if bs := e.s.local.Snapshot().BlockSize; bs != 2<<30 {
+	if bs := e.localSnapshot().BlockSize; bs != 2<<30 {
 		t.Fatalf("block size %d after the change", bs)
 	}
 	e.wantUsed(false)
@@ -208,18 +210,16 @@ func TestLocalBlockSize(t *testing.T) {
 	// unknown at start: the snapshot reads it again
 	e.k.Remove("devices/system/memory/block_size_bytes")
 	e.restart()
-	if bs := e.s.local.Snapshot().BlockSize; bs != 0 {
+	if bs := e.localSnapshot().BlockSize; bs != 0 {
 		t.Fatalf("block size %d without block_size_bytes", bs)
 	}
 	e.k.SetBlockSize(localBlockSize)
-	if bs := e.s.local.Snapshot().BlockSize; bs != localBlockSize {
+	if bs := e.localSnapshot().BlockSize; bs != localBlockSize {
 		t.Fatalf("block size %d", bs)
 	}
-	var none *localDevices
-	if none.Snapshot() != nil {
-		t.Fatal("snapshot of no local devices")
-	}
-	if off := newLocalDevices(e.devices, e.st, e.k.Kernel(), e.k.BootID(), false); off.Snapshot() != nil {
+	off, err := dra.NewPublisher(dra.PublishOptions{Store: e.st, Scan: func() (*nricxl.Devices, error) { return nricxl.NewDevices(), nil }})
+	noErr(t, err)
+	if off.LocalSnapshot() != nil {
 		t.Fatal("snapshot of unmanaged local devices")
 	}
 }
@@ -236,7 +236,7 @@ func TestLocalMixedSlices(t *testing.T) {
 	if g.Got.Region != "region0" || g.Got.Dax != "dax0.0" || g.Got.Size != localBlockSize || g.Got.DaxDev.Major != 252 || g.Got.DaxDev.Minor != 0 {
 		t.Fatalf("dax slice %+v", g.Got)
 	}
-	if info := e.s.GetClaimInfo("u1").Devices[0]; info.Mode != api.ModeDax || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.0") || info.DaxMajor != 252 || info.TotalBytes != localBlockSize {
+	if info := e.s.ClaimInfo("u1").Devices[0]; info.Mode != api.ModeDax || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.0") || info.DaxMajor != 252 || info.TotalBytes != localBlockSize {
 		t.Fatalf("device info %+v", info)
 	}
 	if !strings.Contains(e.commands(), "cxl create-region -t ram -d decoder0.0 -m mem0") {
@@ -324,7 +324,7 @@ func TestLocalDaxSlices(t *testing.T) {
 	if g := e.grant("u2", 0); g.Got.Dax != "dax0.1" || g.Got.Size != localBlockSize || g.Got.DaxDev.Minor != 1 || !g.Asked.ReadOnly {
 		t.Fatalf("read-only slice %+v %+v", g.Asked, g.Got)
 	}
-	if info := e.s.GetClaimInfo("u2").Devices[0]; !info.ReadOnly || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.1") || info.DaxMinor != 1 {
+	if info := e.s.ClaimInfo("u2").Devices[0]; !info.ReadOnly || info.DaxDevice != filepath.Join(e.k.DevRoot(), "dax0.1") || info.DaxMinor != 1 {
 		t.Fatalf("read-only device info %+v", info)
 	}
 	// a slice larger than the free space
@@ -348,7 +348,7 @@ func TestLocalDaxSlices(t *testing.T) {
 	if g := e.grant("u3", 1); g.Got.Dax != "dax0.2" || g.Got.Size != localBlockSize {
 		t.Fatalf("second slice %+v", g.Got)
 	}
-	if info := e.s.GetClaimInfo("u3"); len(info.Devices) != 2 {
+	if info := e.s.ClaimInfo("u3"); len(info.Devices) != 2 {
 		t.Fatalf("device info %+v", info)
 	}
 	e.mustUnprepare("u2")
@@ -430,9 +430,9 @@ func TestLocalPlacement(t *testing.T) {
 func TestLocalLargeBlocks(t *testing.T) {
 	e := newLargeBlocksEnv(t)
 	bs := uint64(largeBlockSize)
-	dev := e.s.Allocatable.(device.DevicesInfo)[memdevDeviceName(largeSerial)]
+	dev := e.publisher.Devices()[memdevDeviceName(largeSerial)]
 	if dev == nil {
-		t.Fatalf("not published: %v", e.s.Allocatable)
+		t.Fatalf("not published: %v", e.publisher.Devices())
 	}
 	if p := localMemdevDevice(dev.Name, dev.Dev.(*device.Memdev)).Capacity[device.CapacityMemory].RequestPolicy; p == nil ||
 		p.Default.String() != "1536Mi" || p.ValidRange.Step.String() != "512Mi" {
@@ -476,7 +476,7 @@ func TestLocalPlacementFailures(t *testing.T) {
 	e.k.FailWrite("bus/dax/devices/dax0.0/size", nil, syscall.EIO)
 	_ = e.prepareFails(largeClaim("u1", bs), "dax0.0: set size 0: input/output error")
 	e.wantRegionReleased("region0")
-	if e.s.local.Snapshot().uses(largeSerial) {
+	if e.localSnapshot().InUse(largeSerial) {
 		t.Fatal("memdev used after a failed slice")
 	}
 
@@ -496,7 +496,7 @@ func TestLocalPlacementFailures(t *testing.T) {
 	// first-fit device is deleted
 	size := e.k.Read("bus/cxl/devices/region0/size")
 	e.k.Before("write bus/dax/devices/dax0.0/size 0", func() { e.k.Write("bus/cxl/devices/region0/size", "bogus") })
-	err := e.s.Prepare(context.Background(), largeClaim("u2", bs, localDaxConfig))
+	err := prepareOn(context.Background(), e.s, largeClaim("u2", bs, localDaxConfig))
 	e.k.Write("bus/cxl/devices/region0/size", size)
 	// the available size that the fake wrote while the size was bogus
 	free := uint64(0)
@@ -519,7 +519,7 @@ func TestLocalPlacementFailures(t *testing.T) {
 	e.k.NoKmemBlocks = true
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err = e.s.Prepare(ctx, largeClaim("u2", bs))
+	err = prepareOn(ctx, e.s, largeClaim("u2", bs))
 	e.k.NoKmemBlocks = false
 	e.check("prepared u2")
 	wantErr(t, err, "0 of 1 memory blocks appeared: context deadline exceeded")
@@ -594,7 +594,7 @@ func TestLocalFailedReleases(t *testing.T) {
 	// part for its Unprepare
 	e.mustPrepare(localClaim("u2", localBlockSize, localDaxConfig))
 	e.k.CutAfter("write devices/system/memory/memory75/state online_movable")
-	if !e.cut(func() { _ = e.s.Prepare(context.Background(), localClaim("u1", localBlockSize)) }) {
+	if !e.cut(func() { _ = prepareOn(context.Background(), e.s, localClaim("u1", localBlockSize)) }) {
 		t.Fatal("the Prepare was not cut")
 	}
 	e.k.FailWrite("devices/system/memory/memory75/state", syscall.EBUSY)
@@ -633,7 +633,7 @@ func TestLocalUntrackedKmem(t *testing.T) {
 	noErr(t, k.OnlineBlocks([]int{76}, true))
 	// the records do not name it: a Prepare without the check of the
 	// invariants
-	noErr(t, e.s.Prepare(ctx, localClaim("u3", localBlockSize, localDaxConfig)))
+	noErr(t, prepareOn(ctx, e.s, localClaim("u3", localBlockSize, localDaxConfig)))
 	if d := e.dax("u3", 0); d == stray {
 		t.Fatalf("%s with online memory reused", d)
 	}
@@ -728,16 +728,16 @@ func TestLocalRegionErrors(t *testing.T) {
 	}
 	e.k.Plug(fake.MemdevSpec{Serial: localSerial, Ram: localRegionSize})
 	_ = e.prepareFails(localClaim("u1", localBlockSize, memoryConfig("ram", false, "")), `invalid mode "ram"`)
-	devs := e.s.Allocatable.(device.DevicesInfo)
+	devs := e.publisher.Devices()
 	info := *devs[localDeviceName]
 	memdev := *info.Dev.(*device.Memdev)
 	memdev.Size = 0
 	info.Dev = &memdev
-	e.s.Allocatable = device.DevicesInfo{localDeviceName: &info}
+	e.publisher.SetDevices(device.DevicesInfo{localDeviceName: &info})
 	_ = e.prepareFails(localClaim("u1", 0), "size 0")
-	e.s.Allocatable = devs
+	e.publisher.SetDevices(devs)
 	// local memdevs not managed
-	e.s.local = newLocalDevices(e.devices, e.st, e.k.Kernel(), e.k.BootID(), false)
+	e.unmanaged()
 	_ = e.prepareFails(localClaim("u1", localBlockSize), "manageMemdevs: false")
 	e.mustUnprepare("u1")
 	if cmds := e.commands(); cmds != "" {
@@ -775,7 +775,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	// its memory went online): its memory is offlined and its slice
 	// deleted
 	e.k.CutAfter("write devices/system/memory/memory77/state online_movable")
-	if !e.cut(func() { _ = e.s.Prepare(ctx, localClaim("u4", localBlockSize)) }) {
+	if !e.cut(func() { _ = prepareOn(ctx, e.s, localClaim("u4", localBlockSize)) }) {
 		t.Fatal("the Prepare was not cut")
 	}
 	u4 := e.dax("u4", 0)
@@ -823,7 +823,7 @@ func TestLocalStateAndReconcile(t *testing.T) {
 	// restart: a region without claims (a Prepare cut after the region
 	// was created) is destroyed
 	e.k.CutAfter("cxl create-region")
-	if !e.cut(func() { _ = e.s.Prepare(ctx, localClaim("u1", localBlockSize)) }) {
+	if !e.cut(func() { _ = prepareOn(ctx, e.s, localClaim("u1", localBlockSize)) }) {
 		t.Fatal("the Prepare was not cut")
 	}
 	e.restart()
@@ -954,7 +954,7 @@ func TestLocalStateOfAnotherBoot(t *testing.T) {
 
 	// a memdev without a region, whose creation was cut before it made one
 	e.k.CutBefore("cxl create-region")
-	if !e.cut(func() { _ = e.s.Prepare(ctx, localClaim("u2", localBlockSize)) }) {
+	if !e.cut(func() { _ = prepareOn(ctx, e.s, localClaim("u2", localBlockSize)) }) {
 		t.Fatal("the Prepare was not cut")
 	}
 	e.wantUsed(true)
@@ -1001,18 +1001,18 @@ func TestLocalAliasedRegion(t *testing.T) {
 	if p := e.k.Probed(); !slices.Equal(p, probes) {
 		t.Fatalf("expected the probes %v of dax0.0, got %v", probes, p)
 	}
-	if got := e.s.local.Snapshot().probed(localSerial); got != half {
+	if got := e.localSnapshot().ProbedSize(localSerial); got != half {
 		t.Fatalf("probed usable size %d, expected %d", got, half)
 	}
 	if r, err := e.k.Kernel().RegionRange("region0"); err != nil || r.Size() != half {
 		t.Fatalf("region %v: %v", r, err)
 	}
 	e.rescan()
-	if d := e.s.Allocatable.(device.DevicesInfo)[localDeviceName]; d == nil || d.Dev.(*device.Memdev).Size != half {
+	if d := e.publisher.Devices()[localDeviceName]; d == nil || d.Dev.(*device.Memdev).Size != half {
 		t.Fatalf("published %+v", d)
 	}
 	e.restart()
-	if got := e.s.local.Snapshot().probed(localSerial); got != half {
+	if got := e.localSnapshot().ProbedSize(localSerial); got != half {
 		t.Fatalf("probed usable size after a restart %d, expected %d", got, half)
 	}
 	e.mustUnprepare("u1")

@@ -29,7 +29,6 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/klog/v2"
 	cdiapi "tags.cncf.io/container-device-interface/pkg/cdi"
-	cdiparser "tags.cncf.io/container-device-interface/pkg/parser"
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/pkg/cxl/api"
@@ -99,10 +98,6 @@ var _ leaseClaims = (*broker)(nil)
 // leaseCDIDeviceName is the CDI device name of a lease claim.
 func leaseCDIDeviceName(claimUID string) string {
 	return "lease-" + claimUID
-}
-
-func leaseCDIDeviceID(claimUID string) string {
-	return cdiparser.QualifiedName(device.CDIVendor, device.CDIClass, leaseCDIDeviceName(claimUID))
 }
 
 // leaseDir is the host directory of a lease claim.

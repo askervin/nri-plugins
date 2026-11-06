@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
@@ -117,45 +116,6 @@ func leaseRecord(l *lease) (state.Lease, error) {
 		rec.Lend = &state.Lend{NumaNode: state.NumaNodePtr(l.Node)}
 	}
 	return rec, nil
-}
-
-// putSerials replaces the provenance of the serials and the listed pools
-// in doc with those of the content of poolSerials.json.
-func putSerials(doc *store.Document, f *poolSerialsFile) {
-	doc.Provenance, doc.ListedPools = nil, nil
-	for _, r := range f.Serials {
-		if r == nil {
-			continue
-		}
-		v, err := api.ParseSerial(r.Serial)
-		if err != nil {
-			continue
-		}
-		p := state.Provenance{Serial: state.Serial(v), State: state.ProvenancePool, Pool: r.Pool, LastSeen: r.Seen}
-		if r.Local {
-			p.State = state.ProvenanceLocal
-		}
-		doc.Provenance = append(doc.Provenance, p)
-	}
-	for _, pool := range slices.Sorted(maps.Keys(f.Pools)) {
-		doc.ListedPools = append(doc.ListedPools, state.ListedPool{Pool: pool, Listed: f.Pools[pool]})
-	}
-}
-
-// serialsContent returns the content of poolSerials.json of the records in
-// doc.
-func serialsContent(doc *store.Document) ([]byte, error) {
-	f := poolSerialsFile{}
-	for _, p := range doc.Provenance {
-		f.Serials = append(f.Serials, &serialRecord{Serial: p.Serial.String(), Pool: p.Pool, Local: p.State == state.ProvenanceLocal, Seen: p.LastSeen})
-	}
-	if len(doc.ListedPools) > 0 {
-		f.Pools = map[string]time.Time{}
-		for _, lp := range doc.ListedPools {
-			f.Pools[lp.Pool] = lp.Listed
-		}
-	}
-	return json.MarshalIndent(&f, "", "  ")
 }
 
 // putSteered replaces the steering records in doc with those of the content

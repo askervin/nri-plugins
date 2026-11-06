@@ -856,7 +856,7 @@ func TestLendNoneInherits(t *testing.T) {
 // revoke removes it again, but not a node of their claims.
 func TestLendNoneFencedBefore(t *testing.T) {
 	e := newLtEnv(t)
-	e.p.state = fenceClaims()
+	e.p.claims = fenceClaims()
 	leases := &fakeLeases{}
 	e.p.leases = leases
 	ctx := context.Background()
@@ -921,7 +921,7 @@ func TestLendNoneFencedBefore(t *testing.T) {
 // After a plugin restart a claimed node in its cpuset.mems is its own.
 func TestLendNonePinnedClaimed(t *testing.T) {
 	e := newLtEnv(t)
-	e.p.state = fenceClaims()
+	e.p.claims = fenceClaims()
 	ctx := context.Background()
 	runClaimed := func(pod *api.PodSandbox, id string, pid uint32, mems string) {
 		t.Helper()
@@ -963,7 +963,7 @@ func TestLendNonePinnedClaimed(t *testing.T) {
 	// A restarted plugin: c1 has node 2 of the kept lease l1. It cannot
 	// tell a lent node from an own one: the claimed node is kept.
 	n := newLtEnv(t)
-	n.p.state = fenceClaims()
+	n.p.claims = fenceClaims()
 	leases := &fakeLeases{}
 	leases.set("u1", "main", 2, "l1")
 	n.p.leases = leases

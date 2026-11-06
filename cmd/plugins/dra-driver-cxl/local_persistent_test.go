@@ -24,7 +24,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -33,7 +32,6 @@ import (
 	cdiSpecs "tags.cncf.io/container-device-interface/specs-go"
 
 	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/state"
-	"github.com/containers/nri-plugins/cmd/plugins/dra-driver-cxl/internal/store"
 	"github.com/containers/nri-plugins/pkg/cxl/api"
 	"github.com/containers/nri-plugins/pkg/cxl/config"
 	"github.com/containers/nri-plugins/pkg/cxl/device"
@@ -128,7 +126,7 @@ func (e *pmemTestEnv) mounted(target string) *kernel.MountInfo {
 
 // used tells whether the engine has a record of the memdev.
 func (e *pmemTestEnv) used() bool {
-	return e.s.local.Snapshot().uses(localPmemSerial)
+	return e.localSnapshot().InUse(localPmemSerial)
 }
 
 // published returns the memdev as a scan publishes it now, nil if it does
@@ -136,7 +134,7 @@ func (e *pmemTestEnv) used() bool {
 func (e *pmemTestEnv) published() *resourcev1.Device {
 	e.t.Helper()
 	e.rescan()
-	for _, d := range e.s.GetResources().Pools[testNode].Slices[0].Devices {
+	for _, d := range e.publisher.Resources().Pools[testNode].Slices[0].Devices {
 		if d.Name == localPmemDeviceName {
 			return &d
 		}
@@ -240,7 +238,7 @@ func (e *pmemTestEnv) releaseAbove() {
 // infoOf returns the info of the first device of a prepared claim.
 func (e *pmemTestEnv) infoOf(uid string) PreparedDeviceInfo {
 	e.t.Helper()
-	info := e.s.GetClaimInfo(uid)
+	info := e.s.ClaimInfo(uid)
 	if info == nil || len(info.Devices) == 0 {
 		e.t.Fatalf("claim %s is not prepared", uid)
 	}
@@ -457,7 +455,7 @@ func TestLocalPersistentRestart(t *testing.T) {
 	if mi := e.mounted(mnt); mi == nil || !mi.SuperReadOnly() || !e.k.IsReadOnly(pmem) {
 		t.Fatalf("not mounted again read-only: %+v", mi)
 	}
-	if use, _ := e.s.local.Snapshot().use(localPmemSerial); !slices.Equal(use.Claims, []string{"ro1"}) {
+	if use, _ := e.localSnapshot().Use(localPmemSerial); !slices.Equal(use.Claims, []string{"ro1"}) {
 		t.Fatalf("uses %+v", use)
 	}
 
@@ -477,7 +475,7 @@ func TestLocalPersistentRestart(t *testing.T) {
 	e.mustPrepare(pmemClaim("ro2", localPmemShare, localPmemFsRO))
 	before = e.k.Commands()
 	e.reboot()
-	if e.k.CommandsSince(before) != "" || e.used() || e.s.GetClaimInfo("ro2") != nil || e.preparation("ro2") != nil {
+	if e.k.CommandsSince(before) != "" || e.used() || e.s.ClaimInfo("ro2") != nil || e.preparation("ro2") != nil {
 		t.Fatalf("a reboot touched the device or kept the claim:\n%s", e.k.CommandsSince(before))
 	}
 	e.wantNoViolations()
@@ -501,9 +499,7 @@ func TestLocalPersistentUnrestored(t *testing.T) {
 		}
 		e.k.SetMountError(pmem, nil, "")
 		e.mustPrepare(pmemClaim("ro1", localPmemShare, localPmemFsRO))
-		e.s.Lock()
-		why := e.s.unrestored["ro1"]
-		e.s.Unlock()
+		why := e.s.Unrestored()["ro1"]
 		if cdiDeviceByName(e.cdiSpec(), "claim-ro1-0") == nil || why != nil {
 			t.Fatalf("no CDI device after the Prepare again mounted the node mount: %v", why)
 		}
@@ -573,7 +569,7 @@ func TestLocalPersistentFailedDowngrade(t *testing.T) {
 	// fail closed when the superblocks cannot be read
 	e.mustPrepare(pmemClaim("rw2", localPmemShare, localPmemFsRW))
 	e.k.HideProc(true)
-	err := e.s.Unprepare(context.Background(), "rw2")
+	err := unprepareOn(context.Background(), e.s, "rw2")
 	e.k.HideProc(false)
 	wantErr(t, err, "device 0xc100f5e1: not making "+pmem+" read-only: its superblocks: ")
 	e.check("superblocks unreadable")
@@ -620,7 +616,7 @@ func TestLocalPersistentCutCreation(t *testing.T) {
 			e.formatted("ext4")
 			e.start()
 			e.k.CutAfter("cxl create-region")
-			if !e.cut(func() { _ = e.s.Prepare(context.Background(), pmemClaim("ro1", localPmemShare, localPmemFsRO)) }) {
+			if !e.cut(func() { _ = prepareOn(context.Background(), e.s, pmemClaim("ro1", localPmemShare, localPmemFsRO)) }) {
 				t.Fatal("the Prepare was not cut")
 			}
 			if d := e.localDevice(localPmemSerial); d == nil || d.Region != "" || d.Creating != "region0" {
@@ -667,15 +663,13 @@ func TestLocalPersistentCutCreation(t *testing.T) {
 // memory or of RAM, shared or not, as a stale allocation finds it.
 func (e *pmemTestEnv) injectMemdev(persistent, shared bool) {
 	e.t.Helper()
-	devs, err := e.s.allocatable()
+	devs, err := e.allocatable()
 	noErr(e.t, err)
 	m := &device.Memdev{Name: e.memdev(), Serial: localPmemSerial, Size: 512 * mib, NodeAffinity: 0, Shared: shared, Persistent: persistent}
 	if !persistent {
 		m.BlockSize = localBlockSize
 	}
-	e.s.Lock()
 	devs[localPmemDeviceName] = &device.DeviceInfo{Name: localPmemDeviceName, Dev: m}
-	e.s.Unlock()
 }
 
 // A memdev in sharedDevices has no block writer and no fs writer but of a
@@ -749,13 +743,13 @@ func TestLocalPersistentLease(t *testing.T) {
 	hooks := &fakeHooks{fsDir: filepath.Join(e.dir, leaseFsDirName, "lc1"), name: "models"}
 	noErr(t, os.MkdirAll(hooks.fsDir, 0o755))
 	e.start()
-	e.s.lending.set(newFakeLender(), hooks)
+	e.s.Lender().Set(newFakeLender(), hooks)
 	e.mustPrepare(pmemCompanion("c1", localPmemShare, localPmemFsRO))
 	target := filepath.Join(hooks.fsDir, "models")
 	if mi := e.mounted(target); mi == nil || !slices.Contains(mi.MountFlags, "ro") {
 		t.Fatalf("lease bind %+v", mi)
 	}
-	if rec := e.s.GetClaimInfo("c1").Lend; rec == nil || !slices.Equal(rec.Mounts, []string{target}) {
+	if rec := e.s.ClaimInfo("c1").Lend; rec == nil || !slices.Equal(rec.Mounts, []string{target}) {
 		t.Fatalf("lend %+v", rec)
 	}
 	if len(hooks.devs) != 1 || hooks.devs[0].Mode != api.ModeFs || hooks.devs[0].NodeMount != e.nodeMount("direct") || hooks.devs[0].FsType != "ext4" ||
@@ -771,7 +765,7 @@ func TestLocalPersistentLease(t *testing.T) {
 	noErr(t, os.MkdirAll(stale, 0o755))
 	noErr(t, e.k.Kernel().Mount(e.nodeMount("direct"), stale, "", unix.MS_BIND, ""))
 	e.restart()
-	e.s.lending.set(newFakeLender(), hooks)
+	e.s.Lender().Set(newFakeLender(), hooks)
 	if mi := e.mounted(stale); mi != nil {
 		t.Fatal("stale lease bind not swept")
 	}
@@ -781,7 +775,7 @@ func TestLocalPersistentLease(t *testing.T) {
 	// a restart binds it again
 	noErr(t, e.k.Kernel().Unmount(target))
 	e.restart()
-	e.s.lending.set(newFakeLender(), hooks)
+	e.s.Lender().Set(newFakeLender(), hooks)
 	if mi := e.mounted(target); mi == nil {
 		t.Fatal("lease bind not bound again")
 	}
@@ -869,11 +863,11 @@ func TestLocalPersistentReleaseVerifiedDevice(t *testing.T) {
 	_, err = e.k.Kernel().SetBlockDeviceReadOnly(pmem, false)
 	noErr(t, err)
 	n = len(e.k.MountCalls("blkroset"))
-	noErr(t, e.s.Unprepare(context.Background(), "r2"))
+	noErr(t, unprepareOn(context.Background(), e.s, "r2"))
 	if c := e.k.MountCalls("blkroset")[n:]; len(c) != 0 {
 		t.Fatalf("release changed the flag of another device's block device: %q", c)
 	}
-	noErr(t, e.s.Unprepare(context.Background(), "r3"))
+	noErr(t, unprepareOn(context.Background(), e.s, "r3"))
 	e.check("released")
 	e.wantRegions(1, 1)
 	e.wantClean()
@@ -936,36 +930,6 @@ func TestLocalPersistentFsTypes(t *testing.T) {
 	}
 	e.wantClean()
 	e.wantNoViolations()
-}
-
-// The pool driver gets the fsTypes of the driver configuration, erofs
-// only by default.
-func TestLoadPoolDriverFsTypes(t *testing.T) {
-	for _, tc := range []struct {
-		config string
-		want   []string
-	}{
-		{"", []string{"erofs"}},
-		{"fsTypes: [erofs, xfs]", []string{"erofs", "xfs"}},
-	} {
-		cfg, err := newDriverConfigFromString(tc.config)
-		noErr(t, err)
-		dir := t.TempDir()
-		pc := &pluginConfig{KubeletPluginDir: filepath.Join(dir, device.DriverName)}
-		noErr(t, os.MkdirAll(pc.KubeletPluginDir, 0o750))
-		flags := &CXLFlags{PoolDriverName: device.PoolDriverName, PoolPrepareTimeout: time.Second}
-		st, err := store.Open(context.Background(), store.Options{Dir: pc.KubeletPluginDir, PoolDir: filepath.Join(dir, device.PoolDriverName),
-			PoolDriver: device.PoolDriverName, BootID: "boot-1"})
-		noErr(t, err)
-		devices, err := newDriverDevices(pc, flags, cfg, filepath.Join(dir, "sys"), nil, st)
-		noErr(t, err)
-		p, err := loadPoolDriver(pc, flags, nil, "boot-1", cfg.fsTypes(), st, devices)
-		noErr(t, err)
-		if !slices.Equal(p.fsTypes, tc.want) {
-			t.Fatalf("config %q: pool fsTypes %v, expected %v", tc.config, p.fsTypes, tc.want)
-		}
-		noErr(t, st.Close())
-	}
 }
 
 // Two writers and a reader of one ext4 share one read-write superblock,

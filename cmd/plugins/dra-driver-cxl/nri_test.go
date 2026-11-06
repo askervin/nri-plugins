@@ -62,9 +62,9 @@ func claimSettings(claim, request string, s config.Steering) config.ResultSettin
 //   - none: a numa slice on node 2 that says policy none
 //   - dram: DRAM on node 0 with policy first-dram and maxStep 64Mi
 //   - lease: the lease device
-func nriClaims() *nodeState {
+func nriClaims() claimTable {
 	auto := claimSettings("auto", "mem", config.Steering{Policy: config.PolicyAuto})
-	return &nodeState{baseState: &baseState{}, preparedClaims: PreparedClaimsInfo{
+	return claimTable{
 		"split": {ClaimName: "ns/split", Devices: []PreparedDeviceInfo{
 			{Result: 0, RequestName: "numa", DeviceType: device.DeviceTypeMemdev, Mode: api.ModeNUMA, NUMANodes: []int{2}, ConsumedBytes: 1 << 30},
 			{Result: 1, RequestName: "dax", DeviceType: device.DeviceTypeMemdev, Mode: api.ModeDax, ConsumedBytes: 1 << 30},
@@ -83,7 +83,7 @@ func nriClaims() *nodeState {
 				ResultSettings: claimSettings("dram", "mem", config.Steering{Policy: config.PolicyFirstDRAM, MaxStep: "64Mi"})},
 		}},
 		"lease": {ClaimName: "ns/lease", Devices: []PreparedDeviceInfo{{RequestName: "lease", DeviceType: device.DeviceTypeLease}}},
-	}}
+	}
 }
 
 // nriPoolResults returns the prepared results of pool claims: pool result 0
@@ -133,7 +133,7 @@ func TestResultMarkers(t *testing.T) {
 // claimed nodes of the results that it uses only (a claim with requests
 // used by different containers), of both drivers.
 func TestContainerResults(t *testing.T) {
-	p := &nriPlugin{state: nriClaims(), poolResults: nriPoolResults}
+	p := &nriPlugin{claims: nriClaims(), poolResults: nriPoolResults}
 	for _, tc := range []struct {
 		refs    []resultRef
 		mem     cgmpolmgr.MemoryTypes
@@ -199,7 +199,7 @@ func TestManage(t *testing.T) {
 		{name: "conflict with node default", defaults: auto, refs: []resultRef{{"dram", 0}, {"none", 0}},
 			memory: "container ns/pod/ctr: container.steering.policy: claim ns/dram request mem says first-dram, claim ns/none request mem says none"},
 	} {
-		p := &nriPlugin{state: nriClaims(), poolResults: nriPoolResults, defaults: tc.defaults}
+		p := &nriPlugin{claims: nriClaims(), poolResults: nriPoolResults, defaults: tc.defaults}
 		m, err := p.manage("ns/pod/ctr", p.containerResults("ns/pod/ctr", tc.refs), true)
 		if err != nil {
 			if err.Error() != tc.memory {
@@ -222,7 +222,7 @@ func TestManage(t *testing.T) {
 	}
 
 	// an invalid effective steering names the origins
-	p := &nriPlugin{state: nriClaims()}
+	p := &nriPlugin{claims: nriClaims()}
 	results := []containerResult{{settings: claimSettings("a", "r", config.Steering{MaxStep: "1Gi"})}}
 	_, err := p.manage("ns/pod/ctr", results, true)
 	wantErr(t, err, "container ns/pod/ctr: MemoryConfig: container.steering.maxStep needs a policy other than none (policy none (default), maxStep 1Gi from claim ns/a request r)")
@@ -241,7 +241,7 @@ func TestManage(t *testing.T) {
 // conflicting settings.
 func TestCreateContainerManagement(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
-	e.p.state = nriClaims()
+	e.p.claims = nriClaims()
 	e.p.poolResults = nriPoolResults
 	pod := ltPod("u1")
 	memory := func(id string) string {
@@ -284,7 +284,7 @@ func TestCreateContainerManagement(t *testing.T) {
 // numa claim is not steered, and refuses a lend to one that is.
 func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
-	e.p.state = nriClaims()
+	e.p.claims = nriClaims()
 	ctx := context.Background()
 	if _, err := e.p.Synchronize(ctx, nil, nil); err != nil {
 		t.Fatal(err)
@@ -321,7 +321,7 @@ func TestLendToUnsteeredNUMAClaim(t *testing.T) {
 // a restarted plugin learns from Synchronize.
 func TestSynchronizeManagement(t *testing.T) {
 	e := newFenceEnv(t, "0-1", 2)
-	e.p.state = nriClaims()
+	e.p.claims = nriClaims()
 	e.p.poolResults = nriPoolResults
 	ctx := context.Background()
 	p1 := ltPod("u1")
@@ -431,7 +431,7 @@ func readSteeredFile(t *testing.T, path string) map[string]string {
 // container is steered by a new manager, recorded until it stops.
 func TestSynchronizeReleasesSteering(t *testing.T) {
 	e := newFenceEnv(t, "0-3", 2, 3)
-	e.p.state = nriClaims()
+	e.p.claims = nriClaims()
 	e.p.poolResults = nriPoolResults
 	t.Cleanup(e.p.Stop)
 	ctx := context.Background()
@@ -571,7 +571,7 @@ func TestSynchronizeReleasesSteering(t *testing.T) {
 // then on.
 func TestSynchronizeReleasesSteeringLegacy(t *testing.T) {
 	e := newFenceEnv(t, "0-3", 2)
-	e.p.state = nriClaims()
+	e.p.claims = nriClaims()
 	ctx := context.Background()
 	p1 := ltPod("u1")
 	cg1 := e.proc(101, "kubepods/u1/c1", "0,2", "0,2")
@@ -611,7 +611,7 @@ func TestSynchronizeReleasesSteeringLegacy(t *testing.T) {
 // D2).
 func TestReviewReleaseAfterDefaultsChange(t *testing.T) {
 	e := newFenceEnv(t, "0-3", 2)
-	e.p.state = nriClaims()
+	e.p.claims = nriClaims()
 	ctx := context.Background()
 	old := config.Container{Steering: &config.Steering{Policy: config.PolicyAuto}}
 	e.p.defaults = old
@@ -659,7 +659,7 @@ func TestSteeringStartFails(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newFenceEnv(t, "0-3", 2, 3)
-			e.p.state = nriClaims()
+			e.p.claims = nriClaims()
 			ctx := context.Background()
 			record := steeredFile(t, map[string]string{})
 			e.p.steered = loadSteeredRecord(record)
@@ -926,7 +926,7 @@ func waitClosed(t *testing.T, p *nriPlugin) {
 func TestNRIConnectionLostStub(t *testing.T) {
 	start := func(t *testing.T, rt *fakeRuntime) *nriPlugin {
 		t.Helper()
-		p, err := startNRIPlugin(context.Background(), &nodeState{baseState: &baseState{}},
+		p, err := startNRIPlugin(context.Background(), claimTable{},
 			NRIOpts{Name: "test", Idx: "50", Socket: rt.sock}, config.Container{Fencing: config.FencingNone},
 			nil, nil, nil, t.TempDir(), t.TempDir())
 		noErr(t, err)
