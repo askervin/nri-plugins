@@ -15,7 +15,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -35,72 +34,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/cxl/device"
 	"golang.org/x/sys/unix"
 )
-
-// The nvdimm region of a pmem region0 of mem0, as the kernel of the e2e
-// VMs shows it (see pkg/cxl/memctl/pmem_test.go).
-const (
-	fakeNdRegionPath = "devices/platform/ACPI0017:00/root0/nvdimm-bridge0/ndbus0/region0"
-	fakeNsBytes      = 536870912
-	fakePmemBytes    = 534773760
-)
-
-// plugPersistent makes mem0 appear with persistent memory.
-func (f *fakePoolSys) plugPersistent(serial string) {
-	f.plug(serial)
-	f.write(fakeMemPath+"/ram/size", "0x0")
-	f.write(fakeMemPath+"/pmem/size", "0x20000000")
-}
-
-// fsdax gives region0 the fsdax namespace0.0 with map mem and /dev/pmem0.
-func (f *fakePoolSys) fsdax() {
-	ns := fakeNdRegionPath + "/namespace0.0"
-	f.write(ns+"/size", fmt.Sprint(fakeNsBytes))
-	f.write(ns+"/holder", "pfn0.0")
-	pd := fakeNdRegionPath + "/pfn0.0"
-	f.write(pd+"/mode", "ram")
-	f.link("bus/nd/devices/pfn0.0", "../../../"+pd)
-	f.link(pd+"/driver", f.p("bus/nd/drivers/nd_pmem"))
-	f.write(pd+"/block/pmem0/dev", cmp.Or(f.pmemDev, "259:0"))
-	f.write(pd+"/block/pmem0/size", fmt.Sprint(fakePmemBytes/512))
-	f.link("class/block/pmem0", "../../"+pd+"/block/pmem0")
-}
-
-// execPmem fakes cxl create-region -t pmem (the nvdimm region with the
-// namespace of the labels, or the seed) and ndctl create-namespace.
-func (f *fakePoolSys) execPmem(name string, args ...string) (string, bool) {
-	cmd := name + " " + strings.Join(args, " ")
-	switch {
-	case strings.HasPrefix(cmd, "cxl create-region -t pmem "):
-		f.write("bus/cxl/devices/region0/target0", "decoder4.0")
-		f.write("bus/cxl/devices/region0/pmem_region0/uevent", "")
-		f.mkdir("bus/nd/drivers/nd_region")
-		f.mkdir("bus/nd/drivers/nd_pmem")
-		f.link("bus/nd/devices/region0", "../../../"+fakeNdRegionPath)
-		f.write(fakeNdRegionPath+"/init_namespaces", "1/1")
-		f.link(fakeNdRegionPath+"/driver", f.p("bus/nd/drivers/nd_region"))
-		ns := fakeNdRegionPath + "/namespace0.0"
-		f.write(ns+"/size", "0")
-		f.write(ns+"/holder", "")
-		f.link("bus/nd/devices/namespace0.0", "../../../"+ns)
-		if f.labels {
-			f.fsdax()
-		}
-		return `{"region":"region0","size":"512.00 MiB","type":"pmem"}`, true
-	case strings.HasPrefix(cmd, "ndctl create-namespace "):
-		f.labels = true
-		f.fsdax()
-		return `{"dev":"namespace0.0","mode":"fsdax","map":"mem","size":534773760,"blockdev":"pmem0"}`, true
-	}
-	return "", false
-}
-
-// removeNdRegion removes the nvdimm region with region0; the labels stay.
-func (f *fakePoolSys) removeNdRegion() {
-	_ = os.RemoveAll(f.p(fakeNdRegionPath))
-	for _, l := range []string{"bus/nd/devices/region0", "bus/nd/devices/namespace0.0", "bus/nd/devices/pfn0.0", "class/block/pmem0"} {
-		_ = os.Remove(f.p(l))
-	}
-}
 
 const (
 	persistentSerial = "0xc1ae0001"
@@ -639,17 +572,6 @@ func TestPoolPersistentRestoreChecks(t *testing.T) {
 			})
 		}
 	}
-}
-
-// renamePmem gives the fsdax namespace of region0 the block device name
-// with the numbers dev, as the next boot or a new probe may.
-func (f *fakePoolSys) renamePmem(name, dev string) {
-	pd := fakeNdRegionPath + "/pfn0.0"
-	_ = os.RemoveAll(f.p(pd + "/block/pmem0"))
-	_ = os.Remove(f.p("class/block/pmem0"))
-	f.write(pd+"/block/"+name+"/dev", dev)
-	f.write(pd+"/block/"+name+"/size", fmt.Sprint(fakePmemBytes/512))
-	f.link("class/block/"+name, "../../"+pd+"/block/"+name)
 }
 
 // TestPoolPersistentUnprepareStaleBlockDevice (bug-15 review): the
